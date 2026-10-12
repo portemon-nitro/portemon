@@ -202,4 +202,146 @@ function T.map_location_and_flypoint_records_cover_their_roles()
   Assert.isTrue(second[1].matrix.x ~= -1, "location records detach from the producer table")
 end
 
+-- Radio reception sets transcribe the native channel-selection source:
+-- the exact sAlphMaps/sMahoganyMaps lists behind Radio_IsInSpecialMap
+-- plus every header map with radioSignal false behind
+-- MapHeader_CanReceiveRadioSignal. Counts, source order anchors, and
+-- disjointness are pinned; unknown versions fail loudly and records
+-- detach from the producer tables.
+function T.radio_reception_sets_carry_the_source_channel_maps()
+  local PokegearSources = require("romdump.src.config.PokegearSources")
+  for _, versionId in ipairs({ "heartgold", "soulsilver" }) do
+    local reception = PokegearSources.radioReceptionRecords(versionId)
+    Assert.equal(#reception.alph, 5, versionId .. " compiles the five listed Alph maps")
+    Assert.equal(#reception.mahogany, 17, versionId .. " compiles the seventeen listed Mahogany maps")
+    Assert.equal(#reception.forbidden, 34, versionId .. " compiles the thirty-four signal-free maps")
+    Assert.equal(reception.alph[1], "MAP_RUINS_OF_ALPH_UNDERGROUND_HALL", "the Alph set opens in source order")
+    Assert.equal(
+      reception.alph[5],
+      "MAP_RUINS_OF_ALPH_UNDERGROUND_HALL_SINJOH_EVENT_2",
+      "the Alph set closes in source order"
+    )
+    Assert.equal(reception.mahogany[1], "MAP_MAHOGANY", "the Mahogany set opens in source order")
+    Assert.equal(
+      reception.mahogany[17],
+      "MAP_LAKE_OF_RAGE_FISHING_GURU_HOUSE",
+      "the Mahogany set closes in source order"
+    )
+    Assert.equal(reception.forbidden[1], "MAP_EVERYWHERE", "the forbidden set opens in map order")
+    Assert.equal(reception.forbidden[34], "MAP_UNUSED", "the forbidden set closes in map order")
+    local seen = {}
+    for _, set in ipairs({ reception.alph, reception.mahogany, reception.forbidden }) do
+      for _, symbol in ipairs(set) do
+        Assert.isNil(seen[symbol], "no map belongs to two reception sets: " .. symbol)
+        seen[symbol] = true
+      end
+    end
+  end
+  Assert.throws(function()
+    PokegearSources.radioReceptionRecords("platinum")
+  end, "an unsupported version never compiles an empty reception table")
+  local first = PokegearSources.radioReceptionRecords("heartgold")
+  first.alph[1] = "MAP_MUTATED"
+  local second = PokegearSources.radioReceptionRecords("heartgold")
+  Assert.isTrue(second.alph[1] ~= "MAP_MUTATED", "reception records detach from the producer tables")
+end
+
+-- The reception sets agree with the frozen header reference: every listed
+-- symbol resolves to a real header map, and the forbidden set is exactly
+-- the radioSignal-false set (the drift guard runs both directions). The
+-- Mahogany list spans four map sections, pinning why section membership
+-- could never reproduce the source lists.
+function T.radio_reception_sets_agree_with_the_header_reference()
+  local PokegearSources = require("romdump.src.config.PokegearSources")
+  local maps = require("romdump.src.reference.hgss.maps")
+  local bySymbol, unlit = {}, {}
+  for id = 0, maps.count - 1 do
+    local record = assert(maps.byId[id], "header map " .. id .. " exists")
+    bySymbol[record.symbol] = record
+    if record.radioSignal == false then
+      unlit[record.symbol] = true
+    end
+  end
+  local reception = PokegearSources.radioReceptionRecords("heartgold")
+  local sections = {}
+  for _, set in ipairs({ reception.alph, reception.mahogany, reception.forbidden }) do
+    for _, symbol in ipairs(set) do
+      local record = bySymbol[symbol]
+      Assert.notNil(record, "reception symbol resolves to a header map: " .. symbol)
+    end
+  end
+  for _, symbol in ipairs(reception.mahogany) do
+    sections[bySymbol[symbol].mapSection] = true
+  end
+  for _, section in ipairs({ "MAHOGANY_TOWN", "TEAM_ROCKET_HQ", "ROUTE_43", "LAKE_OF_RAGE" }) do
+    Assert.isTrue(sections[section] == true, "the Mahogany set spans " .. section)
+  end
+  local forbiddenCount = 0
+  for _ in pairs(unlit) do
+    forbiddenCount = forbiddenCount + 1
+  end
+  Assert.equal(forbiddenCount, #reception.forbidden, "every signal-free header map is listed")
+  local listed = {}
+  for _, symbol in ipairs(reception.forbidden) do
+    listed[symbol] = true
+  end
+  for symbol in pairs(unlit) do
+    Assert.isTrue(listed[symbol] == true, "no signal-free header map is missing: " .. symbol)
+  end
+end
+
+-- The per-contact phone message banks transcribe the source
+-- sPhoneMessageGmm table behind GetPhoneMessageGmm: seventy-five banks
+-- in phonebook-id order, every bank inside msg_0641..msg_0716, with
+-- msg_0668 absent (no caller reads it). Anchors pin both ends plus the
+-- first three callers; the bank-id helper returns the distinct sorted set
+-- detached from the producer table.
+function T.phone_message_banks_carry_the_source_contact_index()
+  local PokegearSources = require("romdump.src.config.PokegearSources")
+  local banks = PokegearSources.phoneMessageBanks
+  Assert.equal(#banks, 75, "the phone index covers all seventy-five callers")
+  Assert.equal(banks[1], 664, "contact 0 (mother) reads bank 664")
+  Assert.equal(banks[2], 716, "contact 1 (elm) reads bank 716")
+  Assert.equal(banks[3], 666, "contact 2 (oak) reads bank 666")
+  Assert.equal(banks[75], 678, "contact 74 (ernest) reads bank 678")
+  local seen = {}
+  for _, bank in ipairs(banks) do
+    Assert.isTrue(bank >= 641 and bank <= 716, "phone bank " .. bank .. " stays in the msg range")
+    Assert.isTrue(bank ~= 668, "msg_0668 has no caller")
+    seen[bank] = true
+  end
+  local distinct = PokegearSources.phoneMessageBankIds()
+  Assert.equal(#distinct, 75, "every caller owns its own bank")
+  for index = 2, #distinct do
+    Assert.isTrue(distinct[index - 1] < distinct[index], "the bank helper stays sorted")
+  end
+  for _, bank in ipairs(distinct) do
+    Assert.isTrue(seen[bank] == true, "the bank helper covers phone bank " .. bank)
+  end
+  distinct[1] = -1
+  local fresh = PokegearSources.phoneMessageBankIds()
+  Assert.isTrue(fresh[1] ~= -1, "the bank helper detaches from the producer table")
+end
+
+-- Compiled contacts carry their message bank beside their greeting
+-- entry: the record id joins the phone index, and an id outside the
+-- index is corrupt phonebook data, never an empty bank.
+function T.compiled_contacts_carry_their_message_bank()
+  local PokegearCatalogCompiler = require("romdump.src.digest.ui.PokegearCatalogCompiler")
+  local decoded, err = PokegearCatalogCompiler.decodePhonebook(
+    phonebookBytes({ phonebookRecord(5, 11, { 30, 20, 10, 40 }), phonebookRecord(6, 12, { 1, 2, 3, 4 }) })
+  )
+  Assert.notNil(decoded, "a well-formed phonebook must decode: " .. tostring(err and err.message or err))
+  for _, contact in ipairs(decoded.contacts) do
+    Assert.equal(contact.id, 7, "the fixture records carry phonebook number 7")
+    Assert.equal(contact.messageBank, 660, "phonebook number 7 reads the day-care lady bank")
+  end
+  local wild = phonebookBytes({ phonebookRecord(5, 11) })
+  wild = wild:sub(1, 4) .. string.char(200) .. wild:sub(6)
+  local rejected, rejectErr = PokegearCatalogCompiler.decodePhonebook(wild)
+  Assert.isNil(rejected, "a contact id outside the phone index must not decode")
+  Assert.notNil(rejectErr, "an out-of-index contact id must carry an error")
+  Assert.equal(rejectErr.code, "POKEGEAR_PHONEBOOK_INVALID", "the failure carries its attribution")
+end
+
 return { tests = T }

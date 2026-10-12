@@ -389,6 +389,46 @@ function M.pokegearOpen(spec)
   return op("pokegear_open", spec)
 end
 
+function M.pokegearRegisterCard(spec)
+  assert(type(spec) == "table", "companion card registration spec must be a table")
+  return op("pokegear_register_card", spec)
+end
+
+function M.pokegearSetTrigger(spec)
+  assert(type(spec) == "table", "companion trigger spec must be a table")
+  return op("pokegear_set_trigger", spec)
+end
+
+function M.phoneResolveContact(spec)
+  assert(type(spec) == "table", "phonebook resolution spec must be a table")
+  return op("phone_resolve_contact", spec)
+end
+
+function M.phoneContactMessage(spec)
+  assert(type(spec) == "table", "contact message spec must be a table")
+  return op("phone_contact_message", spec)
+end
+
+function M.phoneContactGift(spec)
+  assert(type(spec) == "table", "contact gift spec must be a table")
+  return op("phone_contact_gift", spec)
+end
+
+function M.radioMusicQuery(spec)
+  assert(type(spec) == "table", "radio music query spec must be a table")
+  return op("radio_music_query", spec)
+end
+
+function M.momGiftCheck(spec)
+  assert(type(spec) == "table", "parent gift check spec must be a table")
+  return op("mom_gift_check", spec)
+end
+
+function M.buenaPassword(spec)
+  assert(type(spec) == "table", "broadcast password spec must be a table")
+  return op("buena_password", spec)
+end
+
 function M.pcCapsules()
   return op("pc_capsules")
 end

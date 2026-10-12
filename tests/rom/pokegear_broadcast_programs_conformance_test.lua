@@ -591,5 +591,25 @@ function T.every_native_show_runs_a_real_program_vector_and_returns_from_commerc
   musicProgram:dispose()
 end
 
+function T.compiled_reception_sets_carry_the_source_channel_maps(romFs, versionId)
+  local catalog = compileCatalog(romFs, versionId)
+  local reception = assert(catalog.reception, versionId .. " publishes its compiled reception sets")
+  assert(type(reception) == "table", "the reception sets read as a record")
+  Assert.equal(#reception.alph, 5, "the compiled family carries the five listed Alph maps")
+  Assert.equal(#reception.mahogany, 17, "the compiled family carries the seventeen listed Mahogany maps")
+  Assert.equal(#reception.forbidden, 34, "the compiled family carries the thirty-four signal-free maps")
+  Assert.equal(reception.alph[1], "MAP_RUINS_OF_ALPH_UNDERGROUND_HALL", "the compiled Alph set opens in source order")
+  Assert.equal(
+    reception.mahogany[9],
+    "MAP_TEAM_ROCKET_HEADQUARTERS_B1F",
+    "the compiled Mahogany set keeps its Rocket HQ members"
+  )
+  Assert.equal(
+    reception.forbidden[18],
+    "MAP_SAFARI_ZONE_01",
+    "the compiled forbidden set keeps its Safari Zone members"
+  )
+end
+
 local suite = RomSuite.fromFacts(T)
 return suite

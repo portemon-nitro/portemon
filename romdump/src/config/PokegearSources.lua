@@ -13,6 +13,8 @@ PokegearSources.provenance = {
     "src/phonebook_dat.c",
     "src/application/pokegear/phone/phone_script_defs.c",
     "src/application/pokegear/radio/overlay_101_021F57B8.c",
+    "src/application/pokegear/radio/pokegear_radio.c",
+    "src/map_header.c",
   },
 }
 
@@ -610,6 +612,115 @@ PokegearSources.phoneContactFamilies = {
   "trainer", -- ernest
 }
 
+-- Per-contact phone message banks in phonebook-id order: the exact
+-- sPhoneMessageGmm table behind GetPhoneMessageGmm (src/phonebook_dat.c),
+-- mapping each phonebook contact to the message bank holding that
+-- caller's script messages. Position i + 1 carries contact i's bank.
+-- The per-contact greeting number beside it in the catalog record is the
+-- source phone-script selector (PhoneBookEntry.phoneScriptIfLocal), not a
+-- bank entry: the script table (gPhoneCallScriptDef, 455 scripts) maps
+-- each selector onto its bank message pair, so a greeting number only
+-- resolves as a direct bank entry where the script table maps it onto
+-- itself. Every bank falls in msg_0641..msg_0716; msg_0668 has no caller
+-- and is absent. Trailing names are the decomp PHONE_CONTACT_*
+-- identities in table order.
+PokegearSources.phoneMessageBanks = {
+  664, -- mother
+  716, -- elm
+  666, -- oak
+  662, -- ethan
+  663, -- lyra
+  643, -- kurt
+  661, -- day-care man
+  660, -- day-care lady
+  641, -- buena
+  665, -- bill
+  675, -- joey
+  712, -- ralph
+  680, -- liz
+  684, -- wade
+  711, -- anthony
+  642, -- bike shop
+  706, -- kenji
+  644, -- whitney
+  648, -- falkner
+  704, -- jack
+  685, -- chad
+  688, -- brent
+  713, -- todd
+  714, -- arnie
+  667, -- baoba
+  691, -- irwin
+  645, -- janine
+  649, -- clair
+  646, -- erika
+  650, -- misty
+  651, -- blaine
+  647, -- blue
+  656, -- chuck
+  657, -- brock
+  658, -- bugsy
+  655, -- sabrina
+  652, -- lt. surge
+  653, -- morty
+  654, -- jasmine
+  659, -- pryce
+  674, -- huey
+  705, -- gaven
+  677, -- jamie
+  698, -- reena
+  696, -- vance
+  708, -- parry
+  672, -- erin
+  690, -- beverly
+  671, -- jose
+  695, -- gina
+  689, -- alan
+  700, -- dana
+  693, -- derek
+  694, -- tully
+  669, -- tiffany
+  676, -- wilton
+  715, -- krise
+  703, -- ian
+  710, -- walt
+  670, -- alfred
+  692, -- doug
+  681, -- rob
+  697, -- kyle
+  687, -- kyler
+  702, -- tim and sue
+  699, -- kenny
+  707, -- tanner
+  682, -- josh
+  673, -- torin
+  686, -- hillary
+  683, -- billy
+  679, -- kay and tia
+  701, -- reese
+  709, -- aiden
+  678, -- ernest
+}
+
+-- Distinct message banks referenced by the per-contact phone index, in
+-- stable order, for the demandable bank pipeline. The set deduplicates
+-- against source-referenced banks (msg_0666 already rides the script
+-- bank set); msg_0668 stays absent with no caller behind it.
+---@return integer[]
+function PokegearSources.phoneMessageBankIds()
+  local seen = {}
+  local ids = {}
+  for _, bank in ipairs(PokegearSources.phoneMessageBanks) do
+    assert(type(bank) == "number" and bank % 1 == 0 and bank >= 0, "phone message banks stay bank ids")
+    if seen[bank] ~= true then
+      seen[bank] = true
+      ids[#ids + 1] = bank
+    end
+  end
+  table.sort(ids)
+  return ids
+end
+
 -- Corpus-observed phone-trigger slots: the full script census carries
 -- exactly one trigger-mutation site (the Pokecenter heal script clears
 -- slot 1 beside its heal operation) and no script ever sets a trigger.
@@ -643,6 +754,115 @@ function PokegearSources.phoneTriggerRecords(versionId)
     records[#records + 1] = { key = entry.key, contact = entry.contact, kind = entry.kind }
   end
   assert(#records > 0, "phone trigger records cover the observed trigger set for " .. versionId)
+  return records
+end
+
+-- Native radio reception sets in source order. Alph (5) and Mahogany (17)
+-- are the exact sAlphMaps/sMahoganyMaps lists behind Radio_IsInSpecialMap:
+-- section membership does not reproduce them (RUINS_OF_ALPH covers 21
+-- header maps, MAHOGANY_TOWN covers 8, while the source lists 5 and 17
+-- across four sections including Rocket HQ, Route 43, and Lake of Rage).
+-- Forbidden (34) is every header map with radioSignal false, the exact
+-- predicate behind MapHeader_CanReceiveRadioSignal. Region itself stays on
+-- the header region field the runtime already reads; no region set is
+-- compiled here. Policy order (forbidden, Alph, Kanto/power/EXPN,
+-- Mahogany/hideout, takeover, Johto) stays in RadioReception.
+PokegearSources.radioAlphMaps = {
+  "MAP_RUINS_OF_ALPH_UNDERGROUND_HALL",
+  "MAP_RUINS_OF_ALPH_HALL_ENTRANCE",
+  "MAP_RUINS_OF_ALPH_UNDERGROUND_HALL_SINJOH_EVENT",
+  "MAP_RUINS_OF_ALPH_HALL_ENTRANCE_SINJOH_EVENT",
+  "MAP_RUINS_OF_ALPH_UNDERGROUND_HALL_SINJOH_EVENT_2",
+}
+
+PokegearSources.radioMahoganyMaps = {
+  "MAP_MAHOGANY",
+  "MAP_MAHOGANY_EAST_HOUSE",
+  "MAP_MAHOGANY_GYM_LEADER_ROOM",
+  "MAP_MAHOGANY_GYM_ROOM_2",
+  "MAP_MAHOGANY_GYM_ROOM_1",
+  "MAP_MAHOGANY_POKECENTER_1F",
+  "MAP_MAHOGANY_POKECENTER_B1F",
+  "MAP_MAHOGANY_SOUVENIR_SHOP",
+  "MAP_TEAM_ROCKET_HEADQUARTERS_B1F",
+  "MAP_TEAM_ROCKET_HEADQUARTERS_B2F",
+  "MAP_TEAM_ROCKET_HEADQUARTERS_B3F",
+  "MAP_ROUTE_43",
+  "MAP_ROUTE_43_MAHOGANY_GATEHOUSE",
+  "MAP_ROUTE_43_GATEHOUSE",
+  "MAP_LAKE_OF_RAGE",
+  "MAP_LAKE_OF_RAGE_HIDDEN_POWER_HOUSE",
+  "MAP_LAKE_OF_RAGE_FISHING_GURU_HOUSE",
+}
+
+PokegearSources.radioForbiddenMaps = {
+  "MAP_EVERYWHERE",
+  "MAP_NOTHING",
+  "MAP_UNION",
+  "MAP_UNDERGROUND",
+  "MAP_WIFI_SINGLE_BATTLE_AREA",
+  "MAP_WIFI_MULTI_BATTLE_AREA",
+  "MAP_WHIRL_ISLANDS_B3F_LUGIA_CAVE",
+  "MAP_BATTLE_TOWER_ELEVATOR",
+  "MAP_BATTLE_TOWER_UNUSED_1",
+  "MAP_BATTLE_TOWER_UNUSED_2",
+  "MAP_BATTLE_TOWER_UNUSED_3",
+  "MAP_BATTLE_TOWER_UNUSED_4",
+  "MAP_BATTLE_FRONTIER_BATTLE_FACTORY",
+  "MAP_BATTLE_FRONTIER_BATTLE_HALL",
+  "MAP_BATTLE_FRONTIER_BATTLE_CASTLE",
+  "MAP_BATTLE_FRONTIER_BATTLE_ARCADE",
+  "MAP_BELL_TOWER_ROOF",
+  "MAP_SAFARI_ZONE_01",
+  "MAP_SAFARI_ZONE_02",
+  "MAP_SAFARI_ZONE_03",
+  "MAP_SAFARI_ZONE_04",
+  "MAP_SAFARI_ZONE_05",
+  "MAP_SAFARI_ZONE_06",
+  "MAP_SAFARI_ZONE_07",
+  "MAP_SAFARI_ZONE_08",
+  "MAP_SAFARI_ZONE_09",
+  "MAP_SAFARI_ZONE_10",
+  "MAP_SAFARI_ZONE_11",
+  "MAP_SAFARI_ZONE_12",
+  "MAP_SAFARI_ZONE_13",
+  "MAP_SAFARI_ZONE_14",
+  "MAP_WIFI_PLAZA_WARP_ROOM",
+  "MAP_SINJOH_RUINS_MYSTRI_STAGE",
+  "MAP_UNUSED",
+}
+
+-- Version-qualified catalog radio reception sets for one game version.
+-- Unknown versions fail loudly; a version carrying no set is a producer
+-- error, never an empty reception table. Both versions share the same
+-- header-derived sets; the version is still validated so an unsupported
+-- version fails loudly instead of compiling an empty map.
+-- Returns detached copies; mutating them never touches the producer tables.
+---@param versionId string
+---@return { alph: string[], mahogany: string[], forbidden: string[] }
+function PokegearSources.radioReceptionRecords(versionId)
+  assert(type(versionId) == "string" and versionId ~= "", "radio reception records need a game version")
+  assert(
+    PokegearSources.mapVersions[versionId] == true,
+    "radio reception records name a supported game version, got " .. versionId
+  )
+  local function copy(list)
+    local out = {}
+    for index, symbol in ipairs(list) do
+      assert(type(symbol) == "string" and symbol ~= "", "reception sets carry map symbols")
+      out[index] = symbol
+    end
+    return out
+  end
+  local records = {
+    alph = copy(PokegearSources.radioAlphMaps),
+    mahogany = copy(PokegearSources.radioMahoganyMaps),
+    forbidden = copy(PokegearSources.radioForbiddenMaps),
+  }
+  assert(
+    #records.alph > 0 and #records.mahogany > 0 and #records.forbidden > 0,
+    "radio reception records cover the source sets for " .. versionId
+  )
   return records
 end
 

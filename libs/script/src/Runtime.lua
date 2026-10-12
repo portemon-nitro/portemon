@@ -1914,43 +1914,141 @@ do
     return host
   end
 
+  -- Shared source-operand evaluators for the extended companion lane.
+  -- One table (not one local per helper) because the main chunk sits at
+  -- LuaJIT's local budget: contacts resolve catalogued keys untouched and
+  -- source phonebook numbers through the compiled index, while the
+  -- staged direction/kind codes map only their observed source values.
+  -- Anything else fails loudly instead of staging a plausible request.
+  local GearEval = {
+    directionCodes = { [2] = "incoming" },
+    kindCodes = { [0] = "ordinary" },
+  }
+
+  ---@param value unknown
+  ---@param run table<string, unknown>
+  ---@param op string
+  ---@return string the semantic contact key
+  function GearEval.resolveContactKey(value, run, op)
+    if type(value) == "string" then
+      if value == "" then
+        Errors.raise(
+          ScriptErrors.SCRIPT_INVALID_REFERENCE,
+          "phone contact must name a semantic key",
+          { scriptId = run.instance.scriptId, op = op }
+        )
+      end
+      return value
+    end
+    if type(value) == "number" and value % 1 == 0 and value >= 0 then
+      local index = requireService(run, "phoneContactIndex")
+      local byId = (index --[[@as table<string, unknown>]]).byId
+      assert(type(byId) == "table", "contact resolution reads the compiled contact index")
+      local key = (byId --[[@as table<integer, string>]])[value]
+      if type(key) ~= "string" then
+        Errors.raise(
+          ScriptErrors.SCRIPT_INVALID_REFERENCE,
+          "phone contact number names no catalogued contact",
+          { scriptId = run.instance.scriptId, op = op, contact = value }
+        )
+      end
+      return key --[[@as string]]
+    end
+    Errors.raise(
+      ScriptErrors.SCRIPT_INVALID_REFERENCE,
+      "phone contact must name a semantic key or number",
+      { scriptId = run.instance.scriptId, op = op }
+    )
+    return ""
+  end
+
   ---@param node table<string, unknown>
   ---@param run table<string, unknown>
   ---@param name string
   ---@param op string
-  ---@return string the evaluated semantic key
-  local function evalPhoneKey(node, run, name, op)
+  ---@return string the semantic contact key
+  function GearEval.evalContact(node, run, name, op)
+    return GearEval.resolveContactKey(semanticsFor(run).evaluateValue(node[name], run), run, op)
+  end
+
+  ---@param node table<string, unknown>
+  ---@param run table<string, unknown>
+  ---@param name string
+  ---@param op string
+  ---@return string the semantic direction
+  function GearEval.evalDirection(node, run, name, op)
     local value = semanticsFor(run).evaluateValue(node[name], run)
-    if type(value) ~= "string" or value == "" then
-      Errors.raise(
-        ScriptErrors.SCRIPT_INVALID_REFERENCE,
-        "phone " .. name .. " must name a semantic key",
-        { scriptId = run.instance.scriptId, op = op }
-      )
+    if type(value) == "string" then
+      if PHONE_DIRECTIONS[value] ~= true then
+        Errors.raise(
+          ScriptErrors.SCRIPT_INVALID_REFERENCE,
+          "phone setup names an incoming or outgoing direction",
+          { scriptId = run.instance.scriptId, op = op, direction = value }
+        )
+      end
+      return value
     end
-    return value --[[@as string]]
+    if type(value) == "number" then
+      local direction = GearEval.directionCodes[value]
+      if direction == nil then
+        Errors.raise(
+          ScriptErrors.SCRIPT_INVALID_REFERENCE,
+          "phone setup names a known source direction code",
+          { scriptId = run.instance.scriptId, op = op, direction = value }
+        )
+      end
+      return direction --[[@as string]]
+    end
+    Errors.raise(
+      ScriptErrors.SCRIPT_INVALID_REFERENCE,
+      "phone setup names an incoming or outgoing direction",
+      { scriptId = run.instance.scriptId, op = op }
+    )
+    return ""
+  end
+
+  ---@param node table<string, unknown>
+  ---@param run table<string, unknown>
+  ---@param name string
+  ---@param op string
+  ---@return string the semantic call kind
+  function GearEval.evalKind(node, run, name, op)
+    local value = semanticsFor(run).evaluateValue(node[name], run)
+    if type(value) == "string" then
+      if PHONE_KINDS[value] ~= true then
+        Errors.raise(
+          ScriptErrors.SCRIPT_INVALID_REFERENCE,
+          "phone setup names a known source call kind",
+          { scriptId = run.instance.scriptId, op = op, kind = value }
+        )
+      end
+      return value
+    end
+    if type(value) == "number" then
+      local kind = GearEval.kindCodes[value]
+      if kind == nil then
+        Errors.raise(
+          ScriptErrors.SCRIPT_INVALID_REFERENCE,
+          "phone setup names a known source call kind code",
+          { scriptId = run.instance.scriptId, op = op, kind = value }
+        )
+      end
+      return kind --[[@as string]]
+    end
+    Errors.raise(
+      ScriptErrors.SCRIPT_INVALID_REFERENCE,
+      "phone setup names a known source call kind",
+      { scriptId = run.instance.scriptId, op = op }
+    )
+    return ""
   end
 
   local function handlePhoneSetCall(node, run)
     requireForeground(run, "phone_set_call")
     local host = phoneService(run)
-    local contact = evalPhoneKey(node, run, "contact", "phone_set_call")
-    local direction = evalPhoneKey(node, run, "direction", "phone_set_call")
-    if PHONE_DIRECTIONS[direction] ~= true then
-      Errors.raise(
-        ScriptErrors.SCRIPT_INVALID_REFERENCE,
-        "phone setup names an incoming or outgoing direction",
-        { scriptId = run.instance.scriptId, op = "phone_set_call", direction = direction }
-      )
-    end
-    local kind = evalPhoneKey(node, run, "kind", "phone_set_call")
-    if PHONE_KINDS[kind] ~= true then
-      Errors.raise(
-        ScriptErrors.SCRIPT_INVALID_REFERENCE,
-        "phone setup names a known source call kind",
-        { scriptId = run.instance.scriptId, op = "phone_set_call", kind = kind }
-      )
-    end
+    local contact = GearEval.evalContact(node, run, "contact", "phone_set_call")
+    local direction = GearEval.evalDirection(node, run, "direction", "phone_set_call")
+    local kind = GearEval.evalKind(node, run, "kind", "phone_set_call")
     host:stageCall(run.instance.instanceId, { contact = contact, direction = direction, kind = kind })
     return Runtime.OUTCOME_CONTINUE
   end
@@ -1988,10 +2086,10 @@ do
     local semantics = semanticsFor(run)
     local answer = nil
     if node.kind == "rematch_ready" then
-      local contact = evalPhoneKey(node, run, "contact", "pokegear_query")
+      local contact = GearEval.evalContact(node, run, "contact", "pokegear_query")
       answer = host:queryRematch(contact).ready == true and 1 or 0
     elseif node.kind == "contact_registered" then
-      local contact = evalPhoneKey(node, run, "contact", "pokegear_query")
+      local contact = GearEval.evalContact(node, run, "contact", "pokegear_query")
       answer = host:isContactRegistered(contact) and 1 or 0
     else
       Errors.raise(
@@ -2008,7 +2106,7 @@ do
     requireForeground(run, "pokegear_update")
     local host = phoneService(run)
     if node.kind == "register_contact" then
-      host:registerContact(evalPhoneKey(node, run, "contact", "pokegear_update"))
+      host:registerContact(GearEval.evalContact(node, run, "contact", "pokegear_update"))
     else
       Errors.raise(
         ScriptErrors.SCRIPT_INVALID_REFERENCE,
@@ -2024,23 +2122,9 @@ do
     phoneService(run)
     local scriptId = run.instance.scriptId
     if node.mode == "call" then
-      local contact = evalPhoneKey(node, run, "contact", "pokegear_open")
-      local direction = evalPhoneKey(node, run, "direction", "pokegear_open")
-      if PHONE_DIRECTIONS[direction] ~= true then
-        Errors.raise(
-          ScriptErrors.SCRIPT_INVALID_REFERENCE,
-          "companion open names an incoming or outgoing direction",
-          { scriptId = scriptId, op = "pokegear_open", direction = direction }
-        )
-      end
-      local kind = evalPhoneKey(node, run, "kind", "pokegear_open")
-      if PHONE_KINDS[kind] ~= true then
-        Errors.raise(
-          ScriptErrors.SCRIPT_INVALID_REFERENCE,
-          "companion open names a known source call kind",
-          { scriptId = scriptId, op = "pokegear_open", kind = kind }
-        )
-      end
+      local contact = GearEval.evalContact(node, run, "contact", "pokegear_open")
+      local direction = GearEval.evalDirection(node, run, "direction", "pokegear_open")
+      local kind = GearEval.evalKind(node, run, "kind", "pokegear_open")
       return blockOnTask(run, "pokegear_application", {
         kind = "call",
         request = {
@@ -2058,11 +2142,172 @@ do
     })
   end
 
+  -- Resolves one trigger operand to its durable key: preformed slot keys
+  -- pass through and source slot numbers fold to the same canon. A table
+  -- field (not a second local) for the same local-budget reason as above.
+  ---@param node table<string, unknown>
+  ---@param run table<string, unknown>
+  ---@return string the durable trigger key
+  function GearEval.evalTrigger(node, run)
+    local value = semanticsFor(run).evaluateValue(node.trigger, run)
+    if type(value) == "string" then
+      if value == "" then
+        Errors.raise(
+          ScriptErrors.SCRIPT_INVALID_REFERENCE,
+          "phone trigger must name a trigger key",
+          { scriptId = run.instance.scriptId, op = "pokegear_set_trigger" }
+        )
+      end
+      return value
+    end
+    if type(value) == "number" and value % 1 == 0 and value >= 0 and value <= 255 then
+      return string.format("gear.trigger.%d", value)
+    end
+    Errors.raise(
+      ScriptErrors.SCRIPT_INVALID_REFERENCE,
+      "phone trigger must name a key or source slot",
+      { scriptId = run.instance.scriptId, op = "pokegear_set_trigger", trigger = value }
+    )
+    return ""
+  end
+
+  -- The remaining companion operations register named handlers on the
+  -- shared evaluator table: the main chunk sits at LuaJIT's local
+  -- budget, so no new file-scoped or block-scoped names are introduced
+  -- here.
+  ---@param run table<string, unknown>
+  ---@return table<string, unknown> the durable companion state
+  function GearEval.gearState(run)
+    local state = requireService(run, "pokegearState")
+    assert(state ~= nil, "companion service is available after the missing-service error")
+    return state
+  end
   HANDLERS.phone_set_call = handlePhoneSetCall
   HANDLERS.phone_run_call = handlePhoneRunCall
   HANDLERS.pokegear_query = handlePokegearQuery
   HANDLERS.pokegear_update = handlePokegearUpdate
   HANDLERS.pokegear_open = handlePokegearOpen
+  function GearEval.handlePokegearRegisterCard(node, run)
+    requireForeground(run, "pokegear_register_card")
+    local state = GearEval.gearState(run)
+    assert(type(state.registerCard) == "function", "card registration commits through the companion state")
+    state:registerCard(node.card)
+    return Runtime.OUTCOME_CONTINUE
+  end
+  function GearEval.handlePokegearSetTrigger(node, run)
+    requireForeground(run, "pokegear_set_trigger")
+    local state = GearEval.gearState(run)
+    assert(type(state.setTrigger) == "function", "trigger switches commit through the companion state")
+    state:setTrigger(GearEval.evalTrigger(node, run), node.active == true)
+    return Runtime.OUTCOME_CONTINUE
+  end
+  function GearEval.handlePhoneResolveContact(node, run)
+    local trainer = semanticsFor(run).evaluateValue(node.trainer, run)
+    if type(trainer) ~= "number" or trainer % 1 ~= 0 or trainer < 0 then
+      Errors.raise(
+        ScriptErrors.SCRIPT_INVALID_REFERENCE,
+        "phonebook resolution reads a trainer number",
+        { scriptId = run.instance.scriptId, op = "phone_resolve_contact", trainer = trainer }
+      )
+    end
+    local index = requireService(run, "phoneContactIndex")
+    local byTrainer = (index --[[@as table<string, unknown>]]).byTrainer
+    assert(type(byTrainer) == "table", "contact resolution reads the compiled trainer index")
+    local contact = (byTrainer --[[@as table<integer, integer>]])[trainer]
+    if contact == nil then
+      -- The source none sentinel: scripts guard the resolved entry
+      -- against this value before use.
+      contact = 255
+    end
+    semanticsFor(run).writeRef(node.result, contact, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+  function GearEval.handlePhoneContactMessage(node, run)
+    local contact = GearEval.evalContact(node, run, "contact", "phone_contact_message")
+    local kind = semanticsFor(run).evaluateValue(node.kind, run)
+    if type(kind) ~= "number" or kind % 1 ~= 0 or kind < 0 or kind > 4 then
+      Errors.raise(
+        ScriptErrors.SCRIPT_INVALID_REFERENCE,
+        "contact messages name a source message kind",
+        { scriptId = run.instance.scriptId, op = "phone_contact_message", kind = kind }
+      )
+    end
+    -- The per-kind bank/entry pairs live in phone script data the runtime
+    -- never serves; answering a plausible pair would be a fabricated
+    -- message. Fail with attribution before any effect instead.
+    Errors.raise(
+      ScriptErrors.FEATURE_UNAVAILABLE,
+      "contact message data is unavailable to the script runtime",
+      { scriptId = run.instance.scriptId, op = "phone_contact_message", contact = contact, kind = kind }
+    )
+    return Runtime.OUTCOME_CONTINUE
+  end
+  function GearEval.handlePhoneContactGift(node, run)
+    local contact = GearEval.evalContact(node, run, "contact", "phone_contact_gift")
+    local gifts = requireService(run, "phoneGifts")
+    assert(gifts ~= nil, "companion service is available after the missing-service error")
+    local answer = nil
+    if node.kind == "berry" then
+      answer = gifts:berry(contact)
+    elseif node.kind == "item" then
+      answer = gifts:giftItem(contact)
+    else
+      Errors.raise(
+        ScriptErrors.SCRIPT_INVALID_REFERENCE,
+        "contact gifts name a known gift kind",
+        { scriptId = run.instance.scriptId, op = "phone_contact_gift" }
+      )
+    end
+    semanticsFor(run).writeRef(node.result, answer, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+  function GearEval.handleRadioMusicQuery(node, run)
+    local radio = requireService(run, "radioMusic")
+    assert(radio ~= nil, "companion service is available after the missing-service error")
+    local playing = radio:musicIs(node.effect)
+    if playing == nil then
+      Errors.raise(
+        ScriptErrors.FEATURE_UNAVAILABLE,
+        "radio music queries need the audio latch",
+        { scriptId = run.instance.scriptId, op = "radio_music_query", effect = node.effect }
+      )
+    end
+    semanticsFor(run).writeRef(node.result, playing == true and 1 or 0, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+  function GearEval.handleMomGiftCheck(node, run)
+    local gifts = requireService(run, "phoneGifts")
+    assert(gifts ~= nil, "companion service is available after the missing-service error")
+    semanticsFor(run).writeRef(node.result, gifts:momGift(), run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+  function GearEval.handleBuenaPassword(node, run)
+    local password = semanticsFor(run).evaluateValue(node.password, run)
+    if type(password) ~= "number" or password % 1 ~= 0 or password < 0 then
+      Errors.raise(
+        ScriptErrors.SCRIPT_INVALID_REFERENCE,
+        "broadcast passwords read the numeric password variable",
+        { scriptId = run.instance.scriptId, op = "buena_password" }
+      )
+    end
+    -- The thirty daily passwords form ten consecutive triples; the
+    -- winning word is the announced password entry, so the first shown
+    -- word backs off by the winning offset inside its triple.
+    local index = password % 30
+    local correct = index % 3
+    local firstWord = 40 + index - correct
+    semanticsFor(run).writeRef(node.firstWord, firstWord, run)
+    semanticsFor(run).writeRef(node.correct, correct, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+  HANDLERS.pokegear_register_card = GearEval.handlePokegearRegisterCard
+  HANDLERS.pokegear_set_trigger = GearEval.handlePokegearSetTrigger
+  HANDLERS.phone_resolve_contact = GearEval.handlePhoneResolveContact
+  HANDLERS.phone_contact_message = GearEval.handlePhoneContactMessage
+  HANDLERS.phone_contact_gift = GearEval.handlePhoneContactGift
+  HANDLERS.radio_music_query = GearEval.handleRadioMusicQuery
+  HANDLERS.mom_gift_check = GearEval.handleMomGiftCheck
+  HANDLERS.buena_password = GearEval.handleBuenaPassword
 end
 
 ---@class RuntimeOverworld

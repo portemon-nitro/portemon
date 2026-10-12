@@ -71,9 +71,21 @@ Schema.ENUMS = {
   -- injected companion service commits synchronously.
   pokegear_update_kind = { "register_contact" },
   -- Explicit companion application modes a script may open through the
-  -- shared feature lease. Only call has a concrete child yet; townMap
-  -- and fly stay named but unavailable until their owners arrive.
+  -- shared feature lease. Call and the view-only town map have concrete
+  -- children; fly stays named but unavailable until its field-move
+  -- selection arrives, and a bare fly open fails before any effect.
   pokegear_open_mode = { "call", "townMap", "fly" },
+  -- Companion card identities: the base phone card plus the two optional
+  -- registered-card bits. Numeric source selectors never appear past the
+  -- producer boundary.
+  pokegear_card = { "phone", "map", "radio" },
+  -- Contact gift query kinds: the random berry draw or the fixed gift
+  -- item. Both write the item key or numeric zero when no gift waits.
+  phone_gift_kind = { "berry", "item" },
+  -- Live radio music effects a script may query: the audio-derived enum
+  -- including valid silence. A missing audio service fails; silence
+  -- compares like any other effect.
+  radio_music_effect = { "march", "lullaby", "hoenn", "sinnoh", "unown", "pokeflute", "none" },
   pc_count_kind = { "mailbox", "photos", "seals" },
   pc_terminal_action = { "start", "on", "off", "wait", "release" },
   -- The three persistent follower map-object movement modes opcode 604 may
@@ -380,6 +392,75 @@ Schema.OPERATIONS = {
       contact = { type = "scalar_or_value" },
       direction = { type = "scalar_or_value" },
       kind = { type = "scalar_or_value" },
+    },
+  },
+  -- Companion card registration: commits one card bit through the
+  -- durable companion owner in the same tick. Registering the base
+  -- phone card clears the two optional bits; map and radio set theirs.
+  pokegear_register_card = {
+    fields = {
+      card = { type = "enum:pokegear_card", required = true },
+    },
+  },
+  -- Companion trigger switch: sets or clears one durable phone trigger
+  -- in the same tick. The trigger names a source trigger slot; active
+  -- commits the pending call, inactive clears it.
+  pokegear_set_trigger = {
+    fields = {
+      trigger = { type = "scalar_or_value", required = true },
+      active = { type = "boolean", required = true },
+    },
+  },
+  -- Phonebook entry resolution: reads a trainer number and writes the
+  -- matching phonebook contact number, or the source none sentinel when
+  -- no contact answers for that trainer.
+  phone_resolve_contact = {
+    fields = {
+      trainer = { type = "scalar_or_value", required = true },
+      result = { type = "writable_value", required = true },
+    },
+  },
+  -- Contact message lookup: loads one per-kind message bank/entry pair
+  -- for the entry under discussion into two result variables.
+  phone_contact_message = {
+    fields = {
+      contact = { type = "scalar_or_value", required = true },
+      kind = { type = "scalar_or_value", required = true },
+      bank = { type = "writable_value", required = true },
+      entry = { type = "writable_value", required = true },
+    },
+  },
+  -- Contact gift query: writes the waiting berry or gift item key, or
+  -- numeric zero when no gift waits for that contact.
+  phone_contact_gift = {
+    fields = {
+      contact = { type = "scalar_or_value", required = true },
+      kind = { type = "enum:phone_gift_kind", required = true },
+      result = { type = "writable_value", required = true },
+    },
+  },
+  -- Live radio music query: compares one audio-derived effect and
+  -- writes 1 or 0. Silence compares as its own effect; a missing
+  -- audio service fails instead of answering empty.
+  radio_music_query = {
+    fields = {
+      effect = { type = "enum:radio_music_effect", required = true },
+      result = { type = "writable_value", required = true },
+    },
+  },
+  -- Saved-money gift check: writes the waiting parent gift item key,
+  -- or numeric zero when no gift waits.
+  mom_gift_check = {
+    fields = {
+      result = { type = "writable_value", required = true },
+    },
+  },
+  -- Broadcast password service: writes the first of three consecutive
+  -- password-word message entries and the winning choice index.
+  buena_password = {
+    fields = {
+      firstWord = { type = "writable_value", required = true },
+      correct = { type = "writable_value", required = true },
     },
   },
   wait_ticks = {
@@ -1627,6 +1708,46 @@ Schema.CONSTRUCTORS = {
         signature = "S.pokegearOpen(spec)",
         canonical = "op=pokegear_open",
         notes = "spec={mode,contact=nil,direction=nil,kind=nil}; mode is call, townMap, or fly. The call mode requires its full request; modes without a concrete child fail before any effect.",
+      },
+      {
+        signature = "S.pokegearRegisterCard(spec)",
+        canonical = "op=pokegear_register_card",
+        notes = "spec={card}; card is phone, map, or radio. Phone clears the optional bits; map and radio set theirs.",
+      },
+      {
+        signature = "S.pokegearSetTrigger(spec)",
+        canonical = "op=pokegear_set_trigger",
+        notes = "spec={trigger,active}; trigger names a source slot, active switches it. Clearing never replays.",
+      },
+      {
+        signature = "S.phoneResolveContact(spec)",
+        canonical = "op=phone_resolve_contact",
+        notes = "spec={trainer,result}; writes the matching phonebook number or the none sentinel.",
+      },
+      {
+        signature = "S.phoneContactMessage(spec)",
+        canonical = "op=phone_contact_message",
+        notes = "spec={contact,kind,bank,entry}; loads one per-kind message pair for the entry under discussion.",
+      },
+      {
+        signature = "S.phoneContactGift(spec)",
+        canonical = "op=phone_contact_gift",
+        notes = "spec={contact,kind,result}; kind is berry or item. Writes the item key or numeric zero.",
+      },
+      {
+        signature = "S.radioMusicQuery(spec)",
+        canonical = "op=radio_music_query",
+        notes = "spec={effect,result}; compares one audio-derived effect, writes 1 or 0.",
+      },
+      {
+        signature = "S.momGiftCheck(spec)",
+        canonical = "op=mom_gift_check",
+        notes = "spec={result}; writes the waiting parent gift key or numeric zero.",
+      },
+      {
+        signature = "S.buenaPassword(spec)",
+        canonical = "op=buena_password",
+        notes = "spec={firstWord,correct}; writes the first of three password-word entries and the winning index.",
       },
     },
   },

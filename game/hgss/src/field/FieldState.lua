@@ -11,6 +11,7 @@ local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local PixelScale = require("libs.ui.src.PixelScale")
 local StandardFade = require("libs.hgss.src.presentation.StandardFade")
 local FieldBlackoutRenderer = require("game.hgss.src.field.FieldBlackoutRenderer")
+local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
 
 local KEY_DIRECTIONS =
   { w = "north", up = "north", s = "south", down = "south", a = "west", left = "west", d = "east", right = "east" }
@@ -651,6 +652,44 @@ function FieldState:_drawFieldAttachedUi(resources, hostStatus, alpha)
   end
 end
 
+-- Draws the open companion application through the shared shell renderer:
+-- the normal and scripted surfaces share this one draw owner, and the
+-- status shape is validated before anything draws. Plan images realize
+-- lazily from the generated asset paths on first draw and are retained
+-- for the field lifetime; draw itself never parses ROM data. No game
+-- logic lives here: input, ticks, and effects stay with the owners.
+---@param resources FieldPresentationResources
+---@param appStatus table<string, unknown> the shell status
+function FieldState:_drawPokegearApplication(resources, appStatus)
+  assert(type(appStatus) == "table", "the companion application publishes its status")
+  local plan = assert(appStatus.presentation, "the companion application publishes its plan")
+  assert(type(plan) == "table", "the companion plan stays a record")
+  assert(
+    type(appStatus.tab) == "string" and type(appStatus.focus) == "string",
+    "the companion view carries its card identities"
+  )
+  local PokegearRenderer = require("libs.hgss.src.presentation.PokegearRenderer")
+  local graphics = assert(love and love.graphics, "companion drawing requires its host graphics namespace")
+  self._pokegearImages = self._pokegearImages or {}
+  local images = self._pokegearImages --[[@as table<string, unknown>]]
+  local function realize(node)
+    if type(node) == "table" then
+      for _, value in pairs(node) do
+        realize(value)
+      end
+    elseif type(node) == "string" and node:sub(-4) == ".png" and images[node] == nil then
+      images[node] = graphics.newImage(node)
+    end
+  end
+  realize(plan.content)
+  realize(plan.slots)
+  PokegearRenderer.draw({
+    graphics = graphics,
+    images = images,
+    textRenderer = resources.textRenderer,
+  }, appStatus, plan --[[@as table<string, unknown>]])
+end
+
 -- Draws the incoming-call caller window while the coordinator rings: the
 -- view is read once per frame and the source tile window renders through
 -- the shared placement, window, and text primitives. Modal application
@@ -848,7 +887,11 @@ function FieldState:draw()
       resources:drawStartMenu(menuPresentation --[[@as table<string, unknown>]])
     end
     if hostStatus.application then
-      resources:drawApplication(hostStatus.applicationId, hostStatus.application, self.runtime)
+      if hostStatus.applicationId == FieldApplicationIds.POKEGEAR then
+        self:_drawPokegearApplication(resources, hostStatus.application)
+      else
+        resources:drawApplication(hostStatus.applicationId, hostStatus.application, self.runtime)
+      end
     end
   end
   local presentation = self.runtime.menuHost:presentation()

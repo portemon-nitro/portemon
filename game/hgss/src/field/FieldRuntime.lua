@@ -201,6 +201,9 @@ end
 ---@field pokegearState table<string, unknown> the owned companion state, calendar checkpoint, and persisted draw seeds
 ---@field pokegearRandom table<string, unknown>? the live companion draw pair (nil after teardown)
 ---@field pokegearCalendar table<string, unknown>? the companion-local civil calendar adapter (nil after teardown)
+---@field pokegearManifest table<string, unknown>? the compiled companion family (nil after teardown)
+---@field pokegearCatalog table<string, unknown>? the borrowed compiled contact catalog (nil after teardown)
+---@field pokegear table<string, unknown>? the composed companion feature bundle (nil after teardown)
 ---@field incomingCalls table<string, unknown>? the owned ambient incoming-call coordinator (nil after teardown)
 ---@field playerDataContext table<string, unknown>? the generated charmap and frame-index context behind player validation
 ---@field bagCursor BagCursor the runtime-only field bag cursor
@@ -1038,6 +1041,7 @@ function FieldRuntime:_composeFieldServices(boot)
   self.mailbox = Mailbox.new(boot.loadedGame and boot.loadedGame.mailbox or nil)
   self.photoAlbum = PhotoAlbum.new(boot.loadedGame and boot.loadedGame.photoAlbum or nil)
   self:_composePokegear(boot.loadedGame, boot.cacheFs)
+  self:_composePokegearFeature(boot)
   self:_composeBag(boot.activeGame, boot.loadedGame)
   self:_composeBattleState(
     boot.loadedGame,
@@ -1448,6 +1452,7 @@ function FieldRuntime:_startFieldSession(boot)
     eventState = self.eventState,
     fieldEntranceIndicator = self.fieldEntranceIndicator,
     incomingCalls = assert(self.incomingCalls, "the field session routes the ambient phone opportunity"),
+    pokegearApplications = self.pokegear and self.pokegear.scriptHost or nil,
     enterMapActors = enterMapActors,
     autoAcknowledgePresentation = not self.presentation,
     terrainEffects = self.fieldTerrainEffectController,
@@ -2090,61 +2095,6 @@ function FieldRuntime:_composeBattleState(loadedGame, monRoot, world)
   self._battleHost = { launchBattle = hostLaunch, battleStatus = hostStatus, lastBattleResult = hostResult }
 end
 
--- The ring tone owner over the composed field audio: the coordinator
--- speaks its source sequence identity while the runtime resolves the
--- audio symbol. Missing or partial audio (headless composition) means a
--- silent ring; the banner still notifies.
----@param audio table<string, unknown>?
----@return table<string, unknown>?
-local function ringAudioFor(audio)
-  if audio == nil then
-    return nil
-  end
-  if type(audio.play) ~= "function" or type(audio.isEffectPlaying) ~= "function" or type(audio.stop) ~= "function" then
-    return nil
-  end
-  local symbol = "SEQ_SE_GS_PHONE1"
-  local function playRing(_, sequence)
-    assert(sequence == "PHONE1", "the field ring tone plays its source sequence")
-    audio:play(symbol)
-  end
-  local function isRingPlaying()
-    return audio:isEffectPlaying(symbol)
-  end
-  local function stopRing()
-    audio:stop(symbol)
-  end
-  return {
-    playRing = playRing,
-    isRingPlaying = isRingPlaying,
-    stopRing = stopRing,
-  }
-end
-
--- Composes the one ambient incoming-call owner over the real companion
--- providers: durable state, civil calendar, live draw streams, the bare
--- world adapter, and the audio-derived ring tone owner. The companion
--- host arrives with the final feature composition, so acceptance through
--- this owner fails explicitly until then instead of succeeding falsely.
----@param runtime FieldRuntime
----@param manifest table<string, unknown>
----@return table<string, unknown>
-local function composeIncomingCalls(runtime, manifest)
-  local IncomingCalls = require("game.hgss.src.pokegear.IncomingCalls")
-  local PhoneWorldContext = require("game.hgss.src.pokegear.PhoneWorldContext")
-  assert(type(manifest) == "table" and type(manifest.catalog) == "table", "incoming calls borrow the contact catalog")
-  local catalog = manifest.catalog --[[@as table<string, unknown>]]
-  return IncomingCalls.new({
-    state = assert(runtime.pokegearState, "incoming calls persist through the companion state"),
-    catalog = catalog,
-    calendar = assert(runtime.pokegearCalendar, "incoming calls advance through the companion calendar"),
-    random = assert(runtime.pokegearRandom, "incoming calls draw through the companion streams"),
-    world = PhoneWorldContext.new({ state = assert(runtime.pokegearState, "incoming calls read companion facts") }),
-    host = nil,
-    audio = ringAudioFor(runtime.audio),
-  })
-end
-
 -- Composes the one companion owner: durable state restored with generated
 -- catalog references (or started fresh with the session seed when the
 -- record predates the bucket), the live draw pair continuing the persisted
@@ -2176,7 +2126,80 @@ function FieldRuntime:_composePokegear(loadedGame, cacheFs)
     self.pokegearRandom = PokegearRandom.new(seed)
   end
   self.pokegearCalendar = PokegearCalendar.new(self.pokegearState)
-  self.incomingCalls = composeIncomingCalls(self, manifest)
+  self.pokegearManifest = manifest
+  self.pokegearCatalog = manifest.catalog
+end
+
+-- Composes the one concrete companion feature over the durable owners:
+-- the screen factory, script host, incoming-call owner, and radio
+-- effect reader. Runs once after state, calendar, streams, clock, and
+-- audio exist; script composition consumes the bundle below. A failed
+-- composition releases nothing else: boot stays binary through the
+-- runtime's release path.
+-- Builds the shared phone greeting references from the compiled contact
+-- catalog: one msg.hgss identity per native contact from that contact's
+-- message bank and greeting number, plus the shared lease token. The
+-- token carries the first catalogued caller's real reference: call
+-- sessions freeze the identity but never display it, and per-contact text
+-- resolves at call time through the message provider behind the same
+-- identity language the script dialogue host already speaks. The trailing
+-- number is the source greeting (phone-script) number: it resolves as a
+-- direct bank entry only where the phone script table maps the selector
+-- onto itself, and call-time resolution otherwise fails loudly with its
+-- bank/entry evidence instead of inventing text. A contact without
+-- compiled bank or greeting facts fails the boot instead of installing a
+-- fabricated greeting.
+---@param catalog table<string, unknown> the borrowed compiled contact catalog
+---@return table<string, string> contact key to greeting reference, with .greeting as the lease token
+local function phoneGreetingRefs(catalog)
+  local contacts = assert(catalog.contacts, "companion feature needs its compiled contacts")
+  assert(type(contacts) == "table", "companion greeting references read the compiled contacts")
+  local messages = {}
+  local firstRef = nil
+  for _, record in
+    ipairs(contacts --[[@as table<integer, unknown>]])
+  do
+    local contact = record --[[@as table<string, unknown>]]
+    local key = contact.key
+    local bank = contact.messageBank
+    local entry = contact.greeting
+    assert(type(key) == "string" and key ~= "", "companion greeting references name their contact")
+    assert(
+      type(bank) == "number" and bank % 1 == 0 and bank >= 0,
+      "companion greeting references read the compiled message bank for " .. key
+    )
+    assert(
+      type(entry) == "number" and entry % 1 == 0 and entry >= 0,
+      "companion greeting references read the compiled greeting number for " .. key
+    )
+    local ref = string.format("msg.hgss.%d.%d", bank, entry)
+    messages[
+      key --[[@as string]]
+    ] = ref
+    if firstRef == nil then
+      firstRef = ref
+    end
+  end
+  assert(firstRef ~= nil, "companion greeting references need at least one compiled contact")
+  messages.greeting = firstRef
+  return messages
+end
+
+---@param boot table<string, unknown>
+function FieldRuntime:_composePokegearFeature(boot)
+  local PokegearComposition = require("game.hgss.src.pokegear.PokegearComposition")
+  local manifest = assert(self.pokegearManifest, "companion feature needs its compiled manifest")
+  local catalog = assert(self.pokegearCatalog, "companion feature needs its contact catalog")
+  local bundle = PokegearComposition.compose(self, {
+    state = assert(self.pokegearState, "companion feature needs its durable state"),
+    catalog = catalog,
+    assets = manifest,
+    clock = assert(self.localClock, "companion feature needs its civil clock"),
+    audio = self.audio or boot.audioService,
+    messages = phoneGreetingRefs(catalog),
+  })
+  self.pokegear = bundle
+  self.incomingCalls = assert(bundle.incoming, "companion feature carries its incoming owner")
 end
 
 -- The companion seed boundary: the validated trainer identity when the
@@ -3265,10 +3288,12 @@ function FieldRuntime:_releaseAll()
   self.bagService, self.bagCursor = nil, nil
   self.martService = nil
   self.mailbox, self.photoAlbum = nil, nil
-  if self.incomingCalls ~= nil then
-    self.incomingCalls:dispose()
+  if self.pokegear ~= nil then
+    self.pokegear:dispose()
   end
+  self.pokegear = nil
   self.incomingCalls = nil
+  self.pokegearManifest, self.pokegearCatalog = nil, nil
   self.pokegearState, self.pokegearRandom, self.pokegearCalendar = nil, nil, nil
   self.martStockResolver = nil
   self.itemCatalog = nil

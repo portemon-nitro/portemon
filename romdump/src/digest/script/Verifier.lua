@@ -72,6 +72,8 @@ local BLOCKING_OPS = {
   follower_interact = true,
   pc_open = true,
   pc_hof_open = true,
+  pokegear_open = true,
+  phone_run_call = true,
   prop_animation_wait = true,
   follower_appearance = true,
   follower_recall = true,
@@ -399,6 +401,193 @@ local function checkWaitSignpost(ins, step)
   end
 end
 
+-- Pocket-gear operand checkers: each re-derives its row's mapping from the
+-- raw operands independently of the lowering functions above. Cards,
+-- music effects, and trigger slots re-state the source vocabulary here so
+-- a wrong lowering or a wrong sentinel fails instead of passing quietly.
+local GEAR_CARD_BY_CODE = { [0] = "phone", [1] = "map", [2] = "radio" }
+local GEAR_MUSIC_EFFECT_BY_CODE = { [5] = "pokeflute" }
+local GEAR_ENTRY_TEMP = "VAR_TEMP_x4010"
+
+local function checkGearCard(ins, step)
+  if step.op ~= "pokegear_register_card" then
+    return "opcode 145 card registration changed by translation"
+  end
+  if step.card ~= GEAR_CARD_BY_CODE[ins.operands[1].raw] then
+    return "opcode 145 card selector changed by translation"
+  end
+  return nil
+end
+
+local function checkGearTriggerInner(opcode, ins, step, active)
+  if step.op ~= "pokegear_set_trigger" then
+    return "opcode " .. opcode .. " trigger switch changed by translation"
+  end
+  local raw = ins.operands[1].raw
+  if type(raw) ~= "number" or step.trigger ~= string.format("gear.trigger.%d", raw) then
+    return "opcode " .. opcode .. " trigger slot changed by translation"
+  end
+  if step.active ~= active then
+    return "opcode " .. opcode .. " trigger switch value changed by translation"
+  end
+  return nil
+end
+
+local function checkSetPhoneTrigger(ins, step)
+  local raw = ins.operands[2].raw
+  if type(raw) ~= "number" then
+    return "opcode 148 trigger switch value changed by translation"
+  end
+  return checkGearTriggerInner(148, ins, step, raw ~= 0)
+end
+
+local function checkUnsetPhoneTrigger(ins, step)
+  return checkGearTriggerInner(149, ins, step, false)
+end
+
+local function checkGearContactQuery(opcode, kind)
+  local function check(ins, step)
+    if step.op ~= "pokegear_query" or step.kind ~= kind then
+      return "opcode " .. opcode .. " contact query changed by translation"
+    end
+    if not operandMatches(ins.operands[1].raw, step.contact) then
+      return "opcode " .. opcode .. " contact query contact changed by translation"
+    end
+    if not operandMatches(ins.operands[2].raw, step.result) then
+      return "opcode " .. opcode .. " contact query result variable changed by translation"
+    end
+    return nil
+  end
+  return check
+end
+
+local function checkRegisterGearNumber(ins, step)
+  if step.op ~= "pokegear_update" or step.kind ~= "register_contact" then
+    return "opcode 146 contact registration changed by translation"
+  end
+  if not operandMatches(ins.operands[1].raw, step.contact) then
+    return "opcode 146 registered contact changed by translation"
+  end
+  return nil
+end
+
+local function checkTownMap(ins, step)
+  assert(ins.operands == nil or #ins.operands == 0, "town map launches carry no operands")
+  if step.op ~= "pokegear_open" or step.mode ~= "townMap" then
+    return "opcode 157 town map launch changed by translation"
+  end
+  return nil
+end
+
+local function checkSetPhoneCall(ins, step)
+  if step.op ~= "phone_set_call" then
+    return "opcode 430 call setup changed by translation"
+  end
+  if
+    not operandMatches(ins.operands[1].raw, step.contact)
+    or not operandMatches(ins.operands[2].raw, step.direction)
+    or not operandMatches(ins.operands[3].raw, step.kind)
+  then
+    return "opcode 430 call setup operands changed by translation"
+  end
+  return nil
+end
+
+local function checkRunPhoneCall(ins, step)
+  assert(ins.operands == nil or #ins.operands == 0, "call runs carry no operands")
+  if step.op ~= "phone_run_call" then
+    return "opcode 431 call run changed by translation"
+  end
+  return nil
+end
+
+local function checkLoadPhoneDat(ins, step)
+  if step.op ~= "phone_resolve_contact" then
+    return "opcode 460 phonebook resolution changed by translation"
+  end
+  if not operandMatches(ins.operands[1].raw, step.trainer) then
+    return "opcode 460 phonebook trainer operand changed by translation"
+  end
+  if not operandMatches(ins.operands[2].raw, step.result) then
+    return "opcode 460 phonebook result variable changed by translation"
+  end
+  return nil
+end
+
+local function checkPhoneContactMessage(ins, step)
+  if step.op ~= "phone_contact_message" then
+    return "opcode 461 contact message lookup changed by translation"
+  end
+  local kind = ins.operands[1].raw
+  if type(kind) ~= "number" or step.kind ~= kind then
+    return "opcode 461 contact message kind changed by translation"
+  end
+  local contact = step.contact
+  if type(contact) ~= "table" or contact.value ~= "var" or contact.id ~= GEAR_ENTRY_TEMP then
+    return "opcode 461 contact message entry temp changed by translation"
+  end
+  if not operandMatches(ins.operands[2].raw, step.bank) then
+    return "opcode 461 contact message bank variable changed by translation"
+  end
+  if not operandMatches(ins.operands[3].raw, step.entry) then
+    return "opcode 461 contact message entry variable changed by translation"
+  end
+  return nil
+end
+
+local function checkPhoneContactGift(opcode, kind)
+  local function check(ins, step)
+    if step.op ~= "phone_contact_gift" or step.kind ~= kind then
+      return "opcode " .. opcode .. " contact gift query changed by translation"
+    end
+    local contact = step.contact
+    if type(contact) ~= "table" or contact.value ~= "var" or contact.id ~= GEAR_ENTRY_TEMP then
+      return "opcode " .. opcode .. " contact gift entry temp changed by translation"
+    end
+    if not operandMatches(ins.operands[1].raw, step.result) then
+      return "opcode " .. opcode .. " contact gift result variable changed by translation"
+    end
+    return nil
+  end
+  return check
+end
+
+local function checkRadioMusic(ins, step)
+  if step.op ~= "radio_music_query" then
+    return "opcode 779 radio music query changed by translation"
+  end
+  if step.effect ~= GEAR_MUSIC_EFFECT_BY_CODE[ins.operands[1].raw] then
+    return "opcode 779 radio effect code changed by translation"
+  end
+  if not operandMatches(ins.operands[2].raw, step.result) then
+    return "opcode 779 radio query result variable changed by translation"
+  end
+  return nil
+end
+
+local function checkMomGift(ins, step)
+  if step.op ~= "mom_gift_check" then
+    return "opcode 813 parent gift check changed by translation"
+  end
+  if not operandMatches(ins.operands[1].raw, step.result) then
+    return "opcode 813 parent gift result variable changed by translation"
+  end
+  return nil
+end
+
+local function checkBuenasPassword(ins, step)
+  if step.op ~= "buena_password" then
+    return "opcode 821 password service changed by translation"
+  end
+  if not operandMatches(ins.operands[1].raw, step.firstWord) then
+    return "opcode 821 password first-word variable changed by translation"
+  end
+  if not operandMatches(ins.operands[2].raw, step.correct) then
+    return "opcode 821 password answer variable changed by translation"
+  end
+  return nil
+end
+
 local CHECKERS = {
   [3] = checkWaitFrames,
   [22] = checkGotoTarget,
@@ -441,6 +630,22 @@ local CHECKERS = {
   [502] = checkPcTerminalEffect,
   [308] = checkPcTerminalEffect,
   [309] = checkPcTerminalEffect,
+  [142] = checkGearContactQuery(142, "rematch_ready"),
+  [145] = checkGearCard,
+  [146] = checkRegisterGearNumber,
+  [147] = checkGearContactQuery(147, "contact_registered"),
+  [148] = checkSetPhoneTrigger,
+  [149] = checkUnsetPhoneTrigger,
+  [157] = checkTownMap,
+  [430] = checkSetPhoneCall,
+  [431] = checkRunPhoneCall,
+  [460] = checkLoadPhoneDat,
+  [461] = checkPhoneContactMessage,
+  [613] = checkPhoneContactGift(613, "berry"),
+  [614] = checkPhoneContactGift(614, "item"),
+  [779] = checkRadioMusic,
+  [813] = checkMomGift,
+  [821] = checkBuenasPassword,
 }
 
 -- Walk the lowered items collecting the covering node per source offset.

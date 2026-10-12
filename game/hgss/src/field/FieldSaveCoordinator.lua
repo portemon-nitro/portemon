@@ -85,6 +85,20 @@ function FieldSaveCoordinator:capture(allowMenu)
   if pcHost ~= nil and pcHost:isActive() then
     return nil, "Save deferred: a PC application is active"
   end
+  -- The composed companion feature denies capture while its script host
+  -- holds the feature lease (an accepted or staged call, a town-map
+  -- open, or a pending terminal result): live controllers and staged
+  -- rewards never serialize, while durable facts (contacts, triggers,
+  -- markings, tuning) ride the normal snapshot below. Closing the
+  -- application re-enables capture; the denial never touches the prior
+  -- save.
+  local gear = runtime.pokegear
+  if gear ~= nil then
+    local host = gear.scriptHost
+    if host ~= nil and host.isStableForSave ~= nil and host:isStableForSave() ~= true then
+      return nil, "Save deferred: a companion application is active"
+    end
+  end
   local battleReason = battleBusyReason(runtime)
   if battleReason ~= nil then
     return nil, battleReason

@@ -76,6 +76,12 @@ function PokegearCatalogCompiler.decodePhonebook(bytes)
     -- Native contact identity is the record's own trainer/map/contact
     -- triple; array position is retained only as the producer
     -- translation. A repeated triple is a genuine duplicate identity.
+    -- The greeting number rides beside its message bank: the record id is
+    -- the phonebook number the source GetPhoneMessageGmm switches on for
+    -- the bank, while the greeting number itself is the source
+    -- phone-script selector (PhoneBookEntry.phoneScriptIfLocal), resolved
+    -- onto bank messages by the phone script table. An id outside the
+    -- bank index is corrupt phonebook data, never an empty bank.
     local key = string.format("hg.trainer.%d.map.%d.contact.%d", trainer, map, id)
     local family = PokegearSources.phoneContactFamilies[id + 1]
     if type(family) ~= "string" or family == "" then
@@ -83,6 +89,15 @@ function PokegearCatalogCompiler.decodePhonebook(bytes)
         Errors.new(
           PokegearCatalogCompiler.ERROR.PHONEBOOK_INVALID,
           "phonebook contact id names no conversation family",
+          { id = id, sourceIndex = index }
+        )
+    end
+    local messageBank = PokegearSources.phoneMessageBanks[id + 1]
+    if type(messageBank) ~= "number" then
+      return nil,
+        Errors.new(
+          PokegearCatalogCompiler.ERROR.PHONEBOOK_INVALID,
+          "phonebook contact id names no message bank",
           { id = id, sourceIndex = index }
         )
     end
@@ -99,6 +114,7 @@ function PokegearCatalogCompiler.decodePhonebook(bytes)
       key = key,
       sourceIndex = index,
       id = id,
+      family = family,
       entryType = entryType,
       contactClass = contactClass,
       trainer = trainer,
@@ -106,6 +122,7 @@ function PokegearCatalogCompiler.decodePhonebook(bytes)
       gift = gift,
       localScript = localScript,
       greeting = greeting,
+      messageBank = messageBank,
       rematchWeekday = rematchWeekday,
       rematchTime = rematchTime,
       category = category,
@@ -339,13 +356,13 @@ function PokegearCatalogCompiler.compile(romFs, versionId)
     contacts = decoded.contacts,
     contactOrder = decoded.contactOrder,
     callDefinitions = {},
-    callTriggers = {},
+    callTriggers = PokegearSources.phoneTriggerRecords(versionId),
     rematches = {},
     gifts = {},
     momPurchases = {},
     locations = PokegearSources.mapLocationRecords(versionId),
     flypoints = PokegearSources.mapFlypointRecords(versionId),
-    reception = {},
+    reception = PokegearSources.radioReceptionRecords(versionId),
     shows = PokegearSources.broadcastShowRecords(versionId),
     radioEffects = {},
   }
