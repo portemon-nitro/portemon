@@ -169,6 +169,22 @@ local function isSlotNode(node)
   return type(node) == "number"
 end
 
+-- States that keep a context menu open: confirm arms the menu press,
+-- navigation walks menu rows, pointer capture hit-tests menu entries.
+---@param state string
+---@return boolean
+local function isMenuState(state)
+  return state == "context" or state == "item_context" or state == "mail_context"
+end
+
+-- States that confirm a cursor slot as an action target through the
+-- shared slot-target dispatch; navigation walks party slots.
+---@param state string
+---@return boolean
+local function isTargetingState(state)
+  return state == "choosing_item_target" or state == "choose_hp_target"
+end
+
 -- Compiles layout single-target links into FocusGraph candidate lists.
 -- Every direction key resolves to a (possibly empty) ordered list so the
 -- shared graph mechanics apply without touching layout topology.
@@ -934,16 +950,22 @@ function PartyScreenController:_advanceSlide()
   end
 end
 
+-- Completes a picking flow as cancelled when permitted; browse cancel
+-- keeps its own armed root press and never shares this path.
+function PartyScreenController:_cancelPick()
+  if self._cancellable then
+    self._result = { kind = "cancelled" }
+    self:_transition("closing")
+  end
+end
+
 -- Confirms the focused slot in a picking state: pick completes the
 -- semantic result, target states evaluate compatibility before emitting.
 function PartyScreenController:_confirmSlotTarget()
   local node = self._cursorNode
   if node == "cancel" then
     if self._context == "pick" then
-      if self._cancellable then
-        self._result = { kind = "cancelled" }
-        self:_transition("closing")
-      end
+      self:_cancelPick()
       return
     end
     -- Footer confirmation cancels like the B/pointer surfaces: one
@@ -1186,7 +1208,7 @@ function PartyScreenController:_confirm()
     self:_confirmBrowse()
     return
   end
-  if self._state == "context" or self._state == "item_context" or self._state == "mail_context" then
+  if isMenuState(self._state) then
     self:_beginMenuPress()
     return
   end
@@ -1194,7 +1216,7 @@ function PartyScreenController:_confirm()
     self:_confirmSwapDestination()
     return
   end
-  if self._state == "choosing_item_target" or self._state == "choose_hp_target" then
+  if isTargetingState(self._state) then
     self:_confirmSlotTarget()
     return
   end
@@ -1207,10 +1229,7 @@ end
 function PartyScreenController:_cancel()
   if self._state == "browse" then
     if self._context == "pick" then
-      if self._cancellable then
-        self._result = { kind = "cancelled" }
-        self:_transition("closing")
-      end
+      self:_cancelPick()
       return
     end
     if self._cancellable then
@@ -1218,7 +1237,7 @@ function PartyScreenController:_cancel()
     end
     return
   end
-  if self._state == "context" or self._state == "item_context" or self._state == "mail_context" then
+  if isMenuState(self._state) then
     local menu = assert(self._menu, "menu cancellation needs its open menu")
     local quitIndex = nil
     for index, entry in ipairs(menu) do
@@ -1241,7 +1260,7 @@ function PartyScreenController:_cancel()
     self:_abortSwap()
     return
   end
-  if self._state == "choosing_item_target" or self._state == "choose_hp_target" then
+  if isTargetingState(self._state) then
     self:_requestCancelSound()
     if self._targetOrigin == "context" then
       self._result = { kind = "cancelled" }
@@ -1433,9 +1452,10 @@ local function sameTarget(a, b)
   return a.kind == b.kind and a.slot == b.slot and a.action == b.action and a.index == b.index
 end
 
--- Activates one hit-test target through the shared confirm path. Only
--- the active state's targets consult: slots in picking states, menu entries
--- in menu states, prompt rows in confirm, cancel in browse.
+-- Activates one hit-test target through the shared confirm path: taps
+-- position the cursor or menu focus, then run the keyboard dispatch.
+-- Only the active state's targets consult: slots in picking states,
+-- menu entries in menu states, prompt rows in confirm, cancel in browse.
 ---@param target table<string, unknown>?
 function PartyScreenController:_activate(target)
   if target == nil then
@@ -1449,36 +1469,26 @@ function PartyScreenController:_activate(target)
     if target.kind == "slot" and isSlotNode(target.slot) then
       if self:_selectable(self._view, target.slot) then
         self._cursorNode = target.slot
-        -- Pointer taps share the keyboard confirm dispatch: a picking
-        -- context completes the semantic result instead of opening a menu.
-        if self._context == "pick" then
-          self:_confirmSlotTarget()
-        else
-          self:_confirmBrowse()
-        end
+        self:_confirm()
       end
     end
     return
   end
-  if self._state == "context" or self._state == "item_context" or self._state == "mail_context" then
+  if isMenuState(self._state) then
     if target.kind == "menu" and type(target.index) == "number" then
       local menu = assert(self._menu, "menu activation needs its open menu")
       if target.index >= 1 and target.index <= #menu then
         self._menuIndex = target.index
-        self:_beginMenuPress()
+        self:_confirm()
       end
     end
     return
   end
-  if self._state == "choose_swap" or self._state == "choosing_item_target" or self._state == "choose_hp_target" then
+  if self._state == "choose_swap" or isTargetingState(self._state) then
     if target.kind == "slot" and isSlotNode(target.slot) then
       if self:_selectable(self._view, target.slot) then
         self._cursorNode = target.slot
-        if self._state == "choose_swap" then
-          self:_confirmSwapDestination()
-        else
-          self:_confirmSlotTarget()
-        end
+        self:_confirm()
       end
     elseif target.kind == "cancel" then
       self:_cancel()
@@ -1528,7 +1538,7 @@ function PartyScreenController:_pointerDown(event)
   self._pressId = event.pointerId
   self._pressEpoch = self._epoch
   local layout = assert(self._layout(), "the party layout is required for pointer input")
-  if self._state == "context" or self._state == "item_context" or self._state == "mail_context" then
+  if isMenuState(self._state) then
     local hit = hitMenu(self, layout, event.x, event.y)
     self._pressCapture = hit
     return
@@ -1573,7 +1583,7 @@ function PartyScreenController:_pointerUp(event)
   end
   local layout = assert(self._layout(), "the party layout is required for pointer input")
   local up
-  if self._state == "context" or self._state == "item_context" or self._state == "mail_context" then
+  if isMenuState(self._state) then
     up = hitMenu(self, layout, event.x, event.y)
   else
     up = hitSlots(layout, event.x, event.y)
@@ -1798,17 +1808,12 @@ end
 -- neighbors, slot states walk the compiled graph.
 ---@param event table<string, unknown>
 function PartyScreenController:_navigate(event)
-  if self._state == "context" or self._state == "item_context" or self._state == "mail_context" then
+  if isMenuState(self._state) then
     assert(self._menu ~= nil, "menu motion needs the open menu")
     self:_moveMenu(assert(event.direction, "navigation needs a direction"))
     return
   end
-  if
-    self._state == "browse"
-    or self._state == "choose_swap"
-    or self._state == "choosing_item_target"
-    or self._state == "choose_hp_target"
-  then
+  if self._state == "browse" or self._state == "choose_swap" or isTargetingState(self._state) then
     self:_move(assert(event.direction, "navigation needs a direction"))
     return
   end

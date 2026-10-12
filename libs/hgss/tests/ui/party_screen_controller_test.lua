@@ -751,6 +751,45 @@ function T.swap_revision_change_aborts_without_mutation()
   Assert.equal(nativeStatus(controller).state, "browse", "the abort returns to browse")
 end
 
+-- A stale swap owns its abort: a pointer release and cancel arriving
+-- mid-animation are swallowed by the swapping tick, the frozen-revision
+-- mismatch still aborts without mutation, and later ticks replay
+-- nothing with the cursor back on a selectable slot.
+function T.stale_swap_swallows_pointer_release_and_cancel_without_replay()
+  local controller, calls, model = nativeController({ hitTarget = { kind = "slot", slot = 1 } })
+  controller:updateFixed({ { type = "confirm" } })
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  controller:updateFixed({ { type = "confirm" } })
+  pressThrough(controller)
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.equal(nativeStatus(controller).state, "swapping", "setup is mid-animation")
+  for _ = 1, 10 do
+    controller:updateFixed({})
+  end
+  model.setRevision(12)
+  controller:updateFixed({
+    { type = "pointer_up", pointerId = "p", x = 1, y = 1 },
+    { type = "cancel" },
+  })
+  Assert.equal(nativeStatus(controller).state, "swapping", "the animation still owns the tick")
+  for _ = 1, 30 do
+    controller:updateFixed({})
+  end
+  Assert.equal(#calls.swaps, 0, "a stale swap never publishes")
+  Assert.equal(nativeStatus(controller).state, "browse", "the abort returns to browse")
+  Assert.equal(nativeStatus(controller).cursorNode, 0, "the abort restores the acting slot")
+  Assert.isNil(controller:takeResult(), "the swallowed cancel closes nothing")
+  Assert.isNil(controller:takeIntent(), "the swallowed release emits nothing")
+  for _ = 1, 5 do
+    controller:updateFixed({})
+  end
+  Assert.equal(#calls.swaps, 0, "post-abort ticks never publish")
+  Assert.equal(nativeStatus(controller).state, "browse", "post-abort ticks stay in browse")
+  Assert.isNil(controller:takeResult(), "post-abort ticks replay no result")
+  Assert.isNil(controller:takeIntent(), "post-abort ticks replay no intent")
+end
+
 function T.summary_confirm_emits_a_value_only_intent_once()
   local controller = nativeController()
   controller:updateFixed({ { type = "confirm" } })
@@ -851,6 +890,28 @@ function T.pick_context_cancel_returns_cancelled()
   local controller = nativeController({ context = "pick" })
   controller:updateFixed({ { type = "cancel" } })
   Assert.deepEqual(controller:takeResult(), { kind = "cancelled" })
+end
+
+-- Keyboard and pointer confirmation share one semantic dispatch: tapping
+-- a slot in a picking context completes the same value-only result as
+-- navigating to it and confirming, with no menu, intent, or extra effect.
+function T.pick_pointer_tap_selects_the_same_slot_as_keyboard_confirm()
+  local keyboard = nativeController({ context = "pick" })
+  keyboard:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(nativeStatus(keyboard).cursorNode, 1, "setup focuses the second slot")
+  keyboard:updateFixed({ { type = "confirm" } })
+  local keyboardResult = keyboard:takeResult()
+  Assert.deepEqual(keyboardResult, { kind = "selected", slot = 1 })
+  local tapped = nativeController({ context = "pick", hitTarget = { kind = "slot", slot = 1 } })
+  tapped:updateFixed({ { type = "pointer_down", pointerId = "p", x = 1, y = 1 } })
+  tapped:updateFixed({ { type = "pointer_up", pointerId = "p", x = 1, y = 1 } })
+  Assert.deepEqual(
+    tapped:takeResult(),
+    keyboardResult,
+    "a pointer tap completes the identical semantic result as keyboard confirm"
+  )
+  Assert.isNil(tapped:takeIntent(), "the tap emits no intent")
+  Assert.isNil(tapped:takeResult(), "the tap completes exactly once")
 end
 
 function T.item_target_confirm_emits_use_item_with_bag_identity()
