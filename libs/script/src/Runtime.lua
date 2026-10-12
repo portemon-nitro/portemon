@@ -2117,7 +2117,7 @@ do
     return Runtime.OUTCOME_CONTINUE
   end
 
-  local function handlePokegearOpen(node, run)
+  function GearEval.handlePokegearOpen(node, run)
     requireForeground(run, "pokegear_open")
     phoneService(run)
     local scriptId = run.instance.scriptId
@@ -2186,7 +2186,7 @@ do
   HANDLERS.phone_run_call = handlePhoneRunCall
   HANDLERS.pokegear_query = handlePokegearQuery
   HANDLERS.pokegear_update = handlePokegearUpdate
-  HANDLERS.pokegear_open = handlePokegearOpen
+  HANDLERS.pokegear_open = GearEval.handlePokegearOpen
   function GearEval.handlePokegearRegisterCard(node, run)
     requireForeground(run, "pokegear_register_card")
     local state = GearEval.gearState(run)

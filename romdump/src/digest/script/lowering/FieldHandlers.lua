@@ -11,19 +11,21 @@ local FieldMoveSources = require("romdump.src.config.FieldMoveSources")
 
 -- Field-only operand normalization follows the pinned field direction table,
 -- message-symbol format, and scrcmd.h actor specials.
-local DIRECTION_BY_CODE = { [0] = "north", [1] = "south", [2] = "west", [3] = "east" }
-local STRING_SPECIALS = { obj_player = "player", obj_partner_poke = "partner" }
-local NUMERIC_SPECIALS = {
-  [255] = "player",
-  [253] = "partner",
-  [241] = "camera_target",
+local ACTOR_REFERENCES = {
+  directionByCode = { [0] = "north", [1] = "south", [2] = "west", [3] = "east" },
+  stringSpecials = { obj_player = "player", obj_partner_poke = "partner" },
+  numericSpecials = {
+    [255] = "player",
+    [253] = "partner",
+    [241] = "camera_target",
+  },
 }
 
 local function normalizeFacing(value)
   if type(value) ~= "number" then
     return value
   end
-  local direction = DIRECTION_BY_CODE[value]
+  local direction = ACTOR_REFERENCES.directionByCode[value]
   assert(direction ~= nil, "unknown direction code " .. tostring(value))
   return direction
 end
@@ -43,9 +45,9 @@ local function actorRef(value)
   local raw = Operands.operandValue(value)
   local special
   if type(raw) == "number" then
-    special = NUMERIC_SPECIALS[raw]
+    special = ACTOR_REFERENCES.numericSpecials[raw]
   elseif type(raw) == "string" then
-    special = STRING_SPECIALS[raw]
+    special = ACTOR_REFERENCES.stringSpecials[raw]
   end
   if special ~= nil then
     return { ref = "actor", special = special }
