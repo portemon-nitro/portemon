@@ -518,6 +518,42 @@ function G2dDecoder.decodeCell(data, opts)
   error(result)
 end
 
+-- The cell bank's OBJ VRAM mapping mode (GX_OBJVRAMMODE_CHAR_1D_32K..256K, 0..3):
+-- OBJ tile indices count in 32 << mapping byte units. Kept out of the decoded
+-- cell records, whose shape other producers publish.
+---@param data string
+---@param opts? { label?: string }
+---@return integer?
+---@return Errors.Error?
+function G2dDecoder.decodeCellMapping(data, opts)
+  assert(type(data) == "string", "G2dDecoder.decodeCellMapping requires a string")
+  opts = opts or {}
+  local function decodeMapping()
+    local _, blks, reader = blocks(data, { magics = CONTAINER_MAGICS }, opts.label or "g2d-cell")
+    local blk = mustBlock(blks, "CEBK")
+    if blk.size < 0x20 then
+      Errors.raise(G2dDecoder.ERROR.CHUNK_INVALID, "CELL chunk is shorter than its header", { size = blk.size })
+    end
+    local mapping = reader:u32le(blk.payload + 8)
+    if mapping > 3 then
+      Errors.raise(
+        G2dDecoder.ERROR.CHUNK_INVALID,
+        "CELL mapping type " .. mapping .. " is unsupported",
+        { mapping = mapping }
+      )
+    end
+    return mapping
+  end
+  local ok, result = pcall(decodeMapping)
+  if ok then
+    return result
+  end
+  if Errors.is(result) then
+    return nil, result --[[@as Errors.Error]]
+  end
+  error(result)
+end
+
 ---@param data string
 ---@param opts? { label?: string }
 ---@return { anims: { frames: { cell: integer, duration: integer, element: string, translateX: integer, translateY: integer, scaleX: number, scaleY: number, rotation: number }[], playMode: string, loopStartFrameIdx: integer }[] }?

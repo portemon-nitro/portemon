@@ -121,6 +121,23 @@ function T.screen_options_can_keep_palette_zero_opaque()
   Assert.equal(a, 255)
 end
 
+function T.screen_backdrop_shows_bank_zero_color_zero_behind_empty_pixels()
+  local palette = paletteData(32)
+  local result = rasterizer().renderScreen(
+    charData({ solidTile4(0) }),
+    palette,
+    screenData(8, 8, { entry(0, 1) }),
+    nil,
+    { backdrop = true }
+  )
+  local expected = palette.colors[1]
+  local r, g, b, a = pixelAt(result.pixels, 8, 0, 0)
+  Assert.equal(r, expected.r)
+  Assert.equal(g, expected.g)
+  Assert.equal(b, expected.b)
+  Assert.equal(a, 255)
+end
+
 function T.horizontal_flip_mirrors_tile_columns()
   local module = rasterizer()
   local tiles = charData({ gradientTile4() })
@@ -246,6 +263,24 @@ function T.lower_oam_index_paints_in_front_where_objects_overlap()
   Assert.equal(bg, back.g)
   Assert.equal(bb, back.b)
   Assert.equal(ba, 255)
+end
+
+function T.obj_tile_indices_count_in_the_cell_banks_vram_mapping_units()
+  local module = rasterizer()
+  local chars = charData({ solidTile4(1), solidTile4(2), solidTile4(3) })
+  local palette = paletteData(16)
+  -- Mapping 1 (64K) counts OBJ tiles in 64-byte units: tile 1 is character tile 2.
+  local mapped = module.renderCell(chars, palette, cell(1), nil, { mapping = 1 })
+  local expected = palette.colors[4]
+  local r, g, b = pixelAt(mapped.pixels, 8, 4, 4)
+  Assert.equal(r, expected.r)
+  Assert.equal(g, expected.g)
+  Assert.equal(b, expected.b)
+  -- Mapping 0 (32K) keeps tile indices as 32-byte tiles.
+  local plain = module.renderCell(chars, palette, cell(1), nil, { mapping = 0 })
+  local plainExpected = palette.colors[3]
+  local pr = pixelAt(plain.pixels, 8, 4, 4)
+  Assert.equal(pr, plainExpected.r)
 end
 
 function T.animation_frame_selects_its_cell_instead_of_the_sequence_position()

@@ -22,8 +22,8 @@ G2dRasterizer.ERROR = {
 ---@alias G2dRasterizer.PaletteData { colors: { r: integer, g: integer, b: integer }[] }
 ---@alias G2dRasterizer.ScreenData { width: integer, height: integer, entries: { tile: integer, flipH: boolean, flipV: boolean, palette: integer }[] }
 ---@alias G2dRasterizer.SourceContext { asset: string|nil, member: integer|nil, role: string|nil }
----@alias G2dRasterizer.ScreenOptions { transparentZero?: boolean }
----@alias G2dRasterizer.CellOptions { paletteOverride: integer|nil }
+---@alias G2dRasterizer.ScreenOptions { transparentZero?: boolean, backdrop?: boolean }
+---@alias G2dRasterizer.CellOptions { paletteOverride: integer|nil, mapping: integer|nil }
 
 local function concatChars(chars)
   -- string.char/unpack are limited by the Lua stack; build in row chunks.
@@ -144,6 +144,13 @@ function G2dRasterizer.renderScreen(charData, paletteData, screenData, source, o
     )
   end
   local rgba = newRgba(width, height)
+  if options and options.backdrop then
+    -- Hardware shows palette color 0 wherever no BG pixel is drawn.
+    local backdrop = assert(paletteData.colors[1], "backdrop needs palette color 0")
+    for px = 0, width * height - 1 do
+      rgba[px * 4 + 1], rgba[px * 4 + 2], rgba[px * 4 + 3], rgba[px * 4 + 4] = backdrop.r, backdrop.g, backdrop.b, 255
+    end
+  end
   local transparentZero = not (options and options.transparentZero == false)
   for row = 0, rows - 1 do
     for col = 0, columns - 1 do
@@ -220,6 +227,16 @@ function G2dRasterizer.renderTileStrip(charData, paletteData, firstTile, tileCou
   return { width = width, height = 8, pixels = concatChars(pixels) }
 end
 
+-- OBJ tile indices count in 32 << mapping byte units; the character data counts
+-- 32-byte (4bpp) or 64-byte (8bpp) tiles.
+local function objTileIndex(charData, tile, mapping)
+  mapping = mapping or 0
+  if charData.depth == 3 then
+    return tile * 2 ^ mapping
+  end
+  return mapping >= 1 and tile * 2 ^ (mapping - 1) or tile
+end
+
 -- Render one decoded sprite cell (OBJ list with flips) into raw RGBA pixels.
 -- The canvas is the minimal bounding box of the cell's objects, so negative
 -- object origins shift the pixels rather than clipping them. Tiles lay out
@@ -283,7 +300,7 @@ function G2dRasterizer.renderCell(charData, paletteData, cell, source, options)
           obj.x - minX + destCol * 8,
           obj.y - minY + destRow * 8,
           charData,
-          obj.tile + tileRow * tilesPerRow + tileCol,
+          objTileIndex(charData, obj.tile, options and options.mapping) + tileRow * tilesPerRow + tileCol,
           paletteOverride or obj.palette,
           paletteData.colors,
           obj.flipH,
@@ -376,6 +393,7 @@ end
 ---@param frameIndex integer one-based frame index in the decoded sequence
 ---@param source G2dRasterizer.SourceContext|nil
 ---@param paletteOverride integer|nil
+---@param mapping integer|nil the cell bank's OBJ VRAM mapping mode
 ---@return { width: integer, height: integer, pixels: string, offset: { x: number, y: number } }
 function G2dRasterizer.renderAnimationFrame(
   charData,
@@ -384,7 +402,8 @@ function G2dRasterizer.renderAnimationFrame(
   animation,
   frameIndex,
   source,
-  paletteOverride
+  paletteOverride,
+  mapping
 )
   assert(
     charData ~= nil and paletteData ~= nil and cellData ~= nil and animation ~= nil,
@@ -414,7 +433,13 @@ function G2dRasterizer.renderAnimationFrame(
     })
   end
   assert(cell ~= nil, "missing animation cells fail above")
-  local image = G2dRasterizer.renderCell(charData, paletteData, cell, source, { paletteOverride = paletteOverride })
+  local image = G2dRasterizer.renderCell(
+    charData,
+    paletteData,
+    cell,
+    source,
+    { paletteOverride = paletteOverride, mapping = mapping }
+  )
   if frame.element == "none" then
     return {
       width = image.width,
