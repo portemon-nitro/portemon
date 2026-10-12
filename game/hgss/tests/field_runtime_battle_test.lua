@@ -395,6 +395,122 @@ function T.complete_battle_without_committed_receipt_fails_in_both_field_modes()
   Assert.notNil(presented.errorText, "presented failure reaches the error surface")
 end
 
+-- Presented failures release the same acquired resources exactly once:
+-- a reported battle failure and an unaccepted completion both dispose
+-- the owned port once, clear both holds, restore the field music policy
+-- once, and retain the failed launch for the launching task without
+-- publishing any result. A construction failure under cover instead keeps
+-- its failed launch with no disposal and no receipt, since nothing was
+-- acquired yet.
+function T.presented_failures_release_the_same_acquired_resources_once()
+  local function failureRuntime(double)
+    return fakeRuntime({
+      session = {
+        setBattleActive = function(_, active)
+          double.session[#double.session + 1] = active
+        end,
+        setForegroundHold = function(_, active)
+          double.session[#double.session + 1] = active
+        end,
+      },
+      audio = {
+        resumeFieldPolicy = function(_, token, restore)
+          double.audio[#double.audio + 1] = { token = token, restore = restore }
+        end,
+      },
+    })
+  end
+
+  local function presentedLaunch(id)
+    return { launchId = id, phase = "active", presented = true, request = { id = id } }
+  end
+
+  local function checkReleased(double, runtime, id)
+    Assert.equal(double.disposed, 1, "a presented failure disposes the owned port once")
+    Assert.isNil(runtime.battleCoordinator:activeBattle(), "a presented failure releases the battle owner")
+    Assert.deepEqual(double.session, { false, false }, "a presented failure clears both holds")
+    Assert.equal(#double.audio, 1, "a presented failure restores the field policy once")
+    Assert.equal(double.audio[1].token, id, "the restore names the failed launch")
+    Assert.isTrue(double.audio[1].restore, "a pre-commit failure restores the field music")
+    Assert.isNil(runtime.battleCoordinator._battleLaunch, "a presented failure releases the launch")
+    local receipt = runtime.battleCoordinator._battleReceipt
+    Assert.notNil(receipt, "a presented failure remains visible to the launching task")
+    Assert.equal(receipt.phase, "failed", "the receipt names the failed phase")
+    Assert.isFalse(receipt.committed == true, "a failure never commits a result")
+    Assert.notNil(receipt.error, "the receipt keeps the failure")
+    Assert.equal(runtime.errorText, receipt.error, "the failure reaches the error surface")
+    Assert.isNil(runtime:lastBattleResult(), "a presented failure publishes no result")
+    local status = runtime:battleStatus(id)
+    Assert.notNil(status, "the failed launch stays readable by its identity")
+    Assert.equal(status.phase, "failed", "the readable status names the failed phase")
+    Assert.isFalse(status.committed, "the readable status commits nothing")
+    Assert.equal(status.error, receipt.error, "the readable status keeps the failure")
+  end
+
+  local reported = { session = {}, audio = {}, disposed = 0 }
+  local reportedRuntime = failureRuntime(reported)
+  reportedRuntime.battleCoordinator._battleLaunch = presentedLaunch("presented-status-failure#1")
+  reportedRuntime.battleCoordinator.battleRuntime = {
+    update = function() end,
+    dispose = function()
+      reported.disposed = reported.disposed + 1
+    end,
+    status = function()
+      return { phase = "failed", error = "the wild battle collapsed" }
+    end,
+  }
+  reportedRuntime:updateBattle()
+  checkReleased(reported, reportedRuntime, "presented-status-failure#1")
+  Assert.equal(
+    reportedRuntime.battleCoordinator._battleReceipt.error,
+    "the wild battle collapsed",
+    "the receipt keeps the reported error"
+  )
+
+  local unaccepted = { session = {}, audio = {}, disposed = 0 }
+  local unacceptedRuntime = failureRuntime(unaccepted)
+  unacceptedRuntime.battleCoordinator._battleLaunch = presentedLaunch("presented-unaccepted#1")
+  unacceptedRuntime.battleCoordinator.battleRuntime = {
+    update = function() end,
+    dispose = function()
+      unaccepted.disposed = unaccepted.disposed + 1
+    end,
+    status = function()
+      return { phase = "complete", result = "win", sourceResult = 1 }
+    end,
+  }
+  unacceptedRuntime:updateBattle()
+  checkReleased(unaccepted, unacceptedRuntime, "presented-unaccepted#1")
+
+  local constructing = { session = {}, audio = {}, disposed = 0 }
+  local constructingRuntime = failureRuntime(constructing)
+  constructingRuntime.overworld = {
+    phase = function()
+      return "absent"
+    end,
+  }
+  constructingRuntime.buildBattleScenario = function()
+    error("probe-construction-boom", 0)
+  end
+  constructingRuntime.battleCoordinator._battleLaunch = {
+    launchId = "presented-construction#1",
+    phase = "leaving",
+    presented = true,
+    request = { id = "presented-construction#1", kind = "wild", payload = {} },
+  }
+  constructingRuntime:updateBattle()
+  local stuck = constructingRuntime.battleCoordinator._battleLaunch
+  Assert.notNil(stuck, "a construction failure keeps the failed launch visible")
+  Assert.equal(stuck.phase, "failed", "the kept launch names the failed phase")
+  Assert.equal(stuck.error, "probe-construction-boom", "the kept launch keeps the failure")
+  Assert.equal(constructingRuntime.errorText, "probe-construction-boom", "the failure reaches the error surface")
+  Assert.equal(constructing.disposed, 0, "a construction failure disposes nothing")
+  Assert.equal(#constructing.audio, 0, "a construction failure restores no music")
+  Assert.equal(#constructing.session, 0, "a construction failure moves no hold")
+  Assert.isNil(constructingRuntime.battleCoordinator._battleReceipt, "a pre-commit failure publishes no receipt")
+  Assert.isNil(constructingRuntime:lastBattleResult(), "a pre-commit failure publishes no result")
+end
+
 function T.prepared_encounters_are_consumed_exactly_once()
   local prepared = {
     id = 11,
@@ -877,7 +993,12 @@ function T.launch_environments_reject_unknown_scenes_loudly()
   local runtime = environmentRuntime({
     session = { currentMap = { mapId = 7, fieldData = { battleBackground = "moon" } } },
   })
-  local ok, err = pcall(runtime.battleCoordinator._captureLaunchEnvironment, runtime.battleCoordinator, { kind = "wild", payload = {} }, "grass")
+  local ok, err = pcall(
+    runtime.battleCoordinator._captureLaunchEnvironment,
+    runtime.battleCoordinator,
+    { kind = "wild", payload = {} },
+    "grass"
+  )
   Assert.isFalse(ok, "an unmapped background fails the launch")
   Assert.isTrue(tostring(err):find("unknown scene context", 1) ~= nil, "the failure names the scene")
 end
@@ -941,11 +1062,7 @@ function T.standing_tile_behavior_selects_terrain_before_background_default()
       case.terrain,
       "standing behavior " .. case.behavior .. " selects " .. case.terrain
     )
-    Assert.equal(
-      environment.sceneKey,
-      "general/" .. case.terrain .. "/day",
-      "the classified tile joins its scene"
-    )
+    Assert.equal(environment.sceneKey, "general/" .. case.terrain .. "/day", "the classified tile joins its scene")
     Assert.notNil(
       BattlePresentationCache.parseSceneKey(environment.sceneKey),
       "the classified scene passes the staged scene parser"
@@ -1252,9 +1369,11 @@ function T.direct_battle_blocks_the_first_tick_and_releases_the_next()
   local runtime = fakeRuntime({
     monService = party,
     session = session,
-    applicationHost = { error = function()
-      return nil
-    end },
+    applicationHost = {
+      error = function()
+        return nil
+      end,
+    },
     transition = {
       error = nil,
       updateSourceFrame = function() end,
@@ -1468,11 +1587,7 @@ function T.modal_release_disposes_only_acquired_hosts_in_order()
   Assert.notNil(runtime.pokemonNaming, "release keeps the naming host")
   Assert.equal(runtime.input.calls.cleared, 1, "teardown releases the held menu input exactly once")
   composer:releaseModalHosts()
-  Assert.deepEqual(
-    released,
-    { "dialogue", "signpost", "menu", "applicationHost" },
-    "repeated release stays a no-op"
-  )
+  Assert.deepEqual(released, { "dialogue", "signpost", "menu", "applicationHost" }, "repeated release stays a no-op")
 end
 
 -- A constructor failure after the early host groups propagates the original
@@ -1497,10 +1612,7 @@ function T.failed_modal_construction_publishes_acquired_hosts_for_teardown()
   end)
   StarterChoice.new = originalStarterNew
   Assert.isFalse(ok, "construction failure propagates")
-  Assert.isTrue(
-    tostring(err):find("injected starter failure", 1, true) ~= nil,
-    "the original failure surfaces"
-  )
+  Assert.isTrue(tostring(err):find("injected starter failure", 1, true) ~= nil, "the original failure surfaces")
   Assert.notNil(runtime.menuHost, "acquired hosts publish before the failure")
   Assert.notNil(runtime.dialogue, "acquired dialogue publishes before the failure")
   Assert.notNil(runtime.signpost, "acquired signpost publishes before the failure")
@@ -1607,6 +1719,13 @@ return {
   tests = T,
   metadata = {
     capabilities = { "rom_dump", "derived_assets" },
-    derivedAssets = { "field-runtime", "map:64", "map-data:64", "trainers:global", "encounters:global", "audio-bank:702" },
+    derivedAssets = {
+      "field-runtime",
+      "map:64",
+      "map-data:64",
+      "trainers:global",
+      "encounters:global",
+      "audio-bank:702",
+    },
   },
 }

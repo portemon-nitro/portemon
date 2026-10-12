@@ -33,6 +33,61 @@ local function fieldRuntime(self)
   return assert(self.runtime, "field battle coordinator is disposed")
 end
 
+-- Records one terminal launch failure without touching owned battle ports,
+-- holds, or audio: the caller keeps owning whichever resources its phase
+-- actually acquired. The launch keeps the raw failure identity while the
+-- visible error text falls back only when the source named none.
+---@param self FieldBattleCoordinator
+---@param launch table<string, unknown>
+---@param err unknown
+---@param fallback string?
+local function recordTerminalFailure(self, launch, err, fallback)
+  launch.phase = "failed"
+  launch.error = err
+  if err ~= nil then
+    fieldRuntime(self).errorText = tostring(err)
+  else
+    fieldRuntime(self).errorText = tostring(fallback)
+  end
+end
+
+-- Releases the owned active battle port exactly once and returns the
+-- active hold and field-music policy. Only the active-battle and failed
+-- commit-admission phases hold this exact set, so only they share this path.
+---@param self FieldBattleCoordinator
+---@param launch table<string, unknown>
+local function releaseActiveBattle(self, launch)
+  local battle = self.battleRuntime
+  if battle ~= nil then
+    battle:dispose()
+  end
+  self.battleRuntime = nil
+  self:_resumeBattleAudio(launch, true)
+  if fieldRuntime(self).session ~= nil then
+    fieldRuntime(self).session:setBattleActive(false)
+    fieldRuntime(self).session:setForegroundHold(false)
+  end
+end
+
+-- Releases one scripted-defeat transfer under its authored continuation:
+-- defeat hands music ownership to the recovery path untouched, clears
+-- both holds and stale input, and drops the owned port and launch while
+-- the receipt published at the transfer stays readable.
+---@param self FieldBattleCoordinator
+---@param launch table<string, unknown>
+local function releaseScriptedTransfer(self, launch)
+  self:_resumeBattleAudio(launch, false)
+  if fieldRuntime(self).session ~= nil then
+    fieldRuntime(self).session:setBattleActive(false)
+    fieldRuntime(self).session:setForegroundHold(false)
+  end
+  if fieldRuntime(self).input ~= nil then
+    fieldRuntime(self).input:clearAll()
+  end
+  self.battleRuntime = nil
+  self._battleLaunch = nil
+end
+
 local NEXT_BATTLE_LAUNCH_ID = 0
 
 -- Outdoor background identities selecting source-daylight scenes; every
@@ -349,9 +404,7 @@ function FieldBattleCoordinator:_updatePresentedBattle(launch)
   if phase == "leaving" then
     local overworldPhase, failure = fieldRuntime(self).overworld:phase()
     if failure ~= nil or overworldPhase == "failed" then
-      launch.phase = "failed"
-      launch.error = failure
-      fieldRuntime(self).errorText = tostring(failure or "overworld leave failed")
+      recordTerminalFailure(self, launch, failure, "overworld leave failed")
       return
     end
     if overworldPhase ~= "absent" then
@@ -361,9 +414,7 @@ function FieldBattleCoordinator:_updatePresentedBattle(launch)
       self:startBattle({ request = launch.request })
     end)
     if not okConstruct then
-      launch.phase = "failed"
-      launch.error = constructErr
-      fieldRuntime(self).errorText = tostring(constructErr or "presented battle construction failed")
+      recordTerminalFailure(self, launch, constructErr, "presented battle construction failed")
       return
     end
     launch.phase = "active"
@@ -372,9 +423,7 @@ function FieldBattleCoordinator:_updatePresentedBattle(launch)
   if phase == "active" then
     local battle = self.battleRuntime
     if battle == nil then
-      launch.phase = "failed"
-      launch.error = "presented battle vanished before settlement"
-      fieldRuntime(self).errorText = tostring(launch.error)
+      recordTerminalFailure(self, launch, "presented battle vanished before settlement")
       return
     end
     battle:update()
@@ -383,16 +432,9 @@ function FieldBattleCoordinator:_updatePresentedBattle(launch)
       return
     end
     if status.phase == "failed" then
-      battle:dispose()
-      self.battleRuntime = nil
-      self:_resumeBattleAudio(launch, true)
-      if fieldRuntime(self).session ~= nil then
-        fieldRuntime(self).session:setBattleActive(false)
-        fieldRuntime(self).session:setForegroundHold(false)
-      end
-      launch.phase = "failed"
-      launch.error = status.error or "the battle reported a failure"
-      fieldRuntime(self).errorText = tostring(launch.error)
+      local battleFailure = status.error or "the battle reported a failure"
+      releaseActiveBattle(self, launch)
+      recordTerminalFailure(self, launch, battleFailure)
       self._battleReceipt = launch
       self._battleLaunch = nil
       return
@@ -400,16 +442,8 @@ function FieldBattleCoordinator:_updatePresentedBattle(launch)
     local accepted, decision =
       pcall(fieldRuntime(self).acceptCommittedBattleStatus, fieldRuntime(self), launch, battle, status)
     if not accepted then
-      battle:dispose()
-      self.battleRuntime = nil
-      self:_resumeBattleAudio(launch, true)
-      if fieldRuntime(self).session ~= nil then
-        fieldRuntime(self).session:setBattleActive(false)
-        fieldRuntime(self).session:setForegroundHold(false)
-      end
-      launch.phase = "failed"
-      launch.error = tostring(decision)
-      fieldRuntime(self).errorText = launch.error
+      releaseActiveBattle(self, launch)
+      recordTerminalFailure(self, launch, tostring(decision))
       self._battleReceipt = launch
       self._battleLaunch = nil
       return
@@ -456,9 +490,7 @@ function FieldBattleCoordinator:_updatePresentedBattle(launch)
   if phase == "restoring" then
     local overworldPhase, failure = fieldRuntime(self).overworld:phase()
     if failure ~= nil or overworldPhase == "failed" then
-      launch.phase = "failed"
-      launch.error = failure
-      fieldRuntime(self).errorText = tostring(failure or "overworld restore failed")
+      recordTerminalFailure(self, launch, failure, "overworld restore failed")
       return
     end
     if overworldPhase ~= "present" then
@@ -570,25 +602,19 @@ function FieldBattleCoordinator:_beginAutomaticRecovery(launch)
   launch.recoveryStarted = true
   local flow = fieldRuntime(self).blackoutFlow
   if flow == nil then
-    launch.phase = "failed"
-    launch.error = "automatic defeat recovery requires its blackout flow"
-    fieldRuntime(self).errorText = tostring(launch.error)
+    recordTerminalFailure(self, launch, "automatic defeat recovery requires its blackout flow")
     return
   end
   local travel = fieldRuntime(self).fieldTravel
   if travel == nil or travel.lastHealSpawn == nil then
-    launch.phase = "failed"
-    launch.error = "automatic defeat recovery requires its durable spawn"
-    fieldRuntime(self).errorText = tostring(launch.error)
+    recordTerminalFailure(self, launch, "automatic defeat recovery requires its durable spawn")
     return
   end
   local okStart, runId = pcall(function()
     return flow:start(travel.lastHealSpawn)
   end)
   if not okStart then
-    launch.phase = "failed"
-    launch.error = runId
-    fieldRuntime(self).errorText = tostring(runId or "automatic defeat recovery failed to start")
+    recordTerminalFailure(self, launch, runId, "automatic defeat recovery failed to start")
     return
   end
   launch.recoveryRunId = runId
@@ -609,17 +635,13 @@ end
 function FieldBattleCoordinator:_pumpAutomaticRecovery(launch)
   local flow = fieldRuntime(self).blackoutFlow
   if flow == nil then
-    launch.phase = "failed"
-    launch.error = "automatic defeat recovery lost its blackout flow"
-    fieldRuntime(self).errorText = tostring(launch.error)
+    recordTerminalFailure(self, launch, "automatic defeat recovery lost its blackout flow")
     return
   end
   if launch.recoveryFollowup ~= true then
     local status = flow:status()
     if status.error ~= nil then
-      launch.phase = "failed"
-      launch.error = status.error
-      fieldRuntime(self).errorText = tostring(status.error)
+      recordTerminalFailure(self, launch, status.error)
       return
     end
     if status.complete ~= true then
@@ -636,9 +658,7 @@ function FieldBattleCoordinator:_pumpAutomaticRecovery(launch)
       -- its committed receipt publish together, never a tick apart.
       status = flow:status()
       if status.error ~= nil then
-        launch.phase = "failed"
-        launch.error = status.error
-        fieldRuntime(self).errorText = tostring(status.error)
+        recordTerminalFailure(self, launch, status.error)
         return
       end
       if status.complete ~= true then
@@ -647,23 +667,17 @@ function FieldBattleCoordinator:_pumpAutomaticRecovery(launch)
     end
     local followup = flow:consumeResult(launch.recoveryRunId)
     if type(followup) ~= "string" then
-      launch.phase = "failed"
-      launch.error = "completed blackout supplies no follow-up"
-      fieldRuntime(self).errorText = tostring(launch.error)
+      recordTerminalFailure(self, launch, "completed blackout supplies no follow-up")
       return
     end
     local scheduler = fieldRuntime(self).scripts ~= nil and fieldRuntime(self).scripts.scheduler or nil
     if scheduler == nil then
-      launch.phase = "failed"
-      launch.error = "automatic defeat recovery requires its scheduler"
-      fieldRuntime(self).errorText = tostring(launch.error)
+      recordTerminalFailure(self, launch, "automatic defeat recovery requires its scheduler")
       return
     end
     local composed = scheduler:resolveComposition(followup)
     if composed == nil then
-      launch.phase = "failed"
-      launch.error = "blackout follow-up script is unavailable: " .. tostring(followup)
-      fieldRuntime(self).errorText = tostring(launch.error)
+      recordTerminalFailure(self, launch, "blackout follow-up script is unavailable: " .. tostring(followup))
       return
     end
     local session = fieldRuntime(self).session
@@ -671,18 +685,14 @@ function FieldBattleCoordinator:_pumpAutomaticRecovery(launch)
       return scheduler:createBackground(composed, nil, session ~= nil and session.tick or 0)
     end)
     if not okChild then
-      launch.phase = "failed"
-      launch.error = childErr
-      fieldRuntime(self).errorText = tostring(childErr or "blackout follow-up failed to schedule")
+      recordTerminalFailure(self, launch, childErr, "blackout follow-up failed to schedule")
       return
     end
     launch.recoveryFollowup = true
   end
   local overworldPhase, failure = fieldRuntime(self).overworld:phase()
   if failure ~= nil or overworldPhase == "failed" then
-    launch.phase = "failed"
-    launch.error = failure
-    fieldRuntime(self).errorText = tostring(failure or "recovery restore failed")
+    recordTerminalFailure(self, launch, failure, "recovery restore failed")
     return
   end
   if overworldPhase ~= "present" then
@@ -708,22 +718,11 @@ end
 function FieldBattleCoordinator:_finishScriptedTransfer(launch)
   local overworldPhase, failure = fieldRuntime(self).overworld:phase()
   if failure ~= nil or overworldPhase == "failed" then
-    launch.phase = "failed"
-    launch.error = failure
-    fieldRuntime(self).errorText = tostring(failure or "transfer restore failed")
+    recordTerminalFailure(self, launch, failure, "transfer restore failed")
     return
   end
   if overworldPhase == "present" then
-    self:_resumeBattleAudio(launch, false)
-    if fieldRuntime(self).session ~= nil then
-      fieldRuntime(self).session:setBattleActive(false)
-      fieldRuntime(self).session:setForegroundHold(false)
-    end
-    if fieldRuntime(self).input ~= nil then
-      fieldRuntime(self).input:clearAll()
-    end
-    self.battleRuntime = nil
-    self._battleLaunch = nil
+    releaseScriptedTransfer(self, launch)
     return
   end
   local flow = fieldRuntime(self).blackoutFlow
@@ -738,16 +737,7 @@ function FieldBattleCoordinator:_finishScriptedTransfer(launch)
   if launch.transferBlackoutSeen ~= true then
     return
   end
-  self:_resumeBattleAudio(launch, false)
-  if fieldRuntime(self).session ~= nil then
-    fieldRuntime(self).session:setBattleActive(false)
-    fieldRuntime(self).session:setForegroundHold(false)
-  end
-  if fieldRuntime(self).input ~= nil then
-    fieldRuntime(self).input:clearAll()
-  end
-  self.battleRuntime = nil
-  self._battleLaunch = nil
+  releaseScriptedTransfer(self, launch)
 end
 
 -- Battle host observation for script result reads: the latest committed

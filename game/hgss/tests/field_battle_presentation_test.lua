@@ -957,7 +957,10 @@ function T.schedules_and_layouts_settle_identically()
     local experienceBefore = assert(runtime.monService:partyMon(0), "the live lead is readable").experience
     runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
     local turns, ticks = 0, 0
-    while (runtime.battleCoordinator:activeBattle() ~= nil or runtime.battleCoordinator._battleLaunch ~= nil) and ticks < 6000 do
+    while
+      (runtime.battleCoordinator:activeBattle() ~= nil or runtime.battleCoordinator._battleLaunch ~= nil)
+      and ticks < 6000
+    do
       local battle = runtime.battleCoordinator:activeBattle()
       if battle ~= nil then
         local current = battle:status()
@@ -1064,7 +1067,10 @@ function T.surfing_background_time_and_fallback_rules_hold_for_both_launch_kinds
   for _, launch in ipairs(kinds) do
     local function capture(overrides, method)
       local runtime = launchHarness(overrides)
-      return runtime.battleCoordinator:_captureLaunchEnvironment({ kind = launch.kind, payload = launch.payload }, method)
+      return runtime.battleCoordinator:_captureLaunchEnvironment(
+        { kind = launch.kind, payload = launch.payload },
+        method
+      )
     end
     -- Outdoor night without a readable tile keeps the background default.
     local night = capture({
@@ -1709,10 +1715,8 @@ function T.portrait_demands_speak_exact_canonical_selectors()
   local MonCache = require("libs.assets.src.MonCache")
   local versionId = readyVersions()[1]
   local cacheFs = CacheFs.forVersion(versionId)
-  local portraits = assert(
-    cacheFs:loadLua(MonCache.portraitManifestPath()),
-    versionId .. " carries its staged portrait manifest"
-  )
+  local portraits =
+    assert(cacheFs:loadLua(MonCache.portraitManifestPath()), versionId .. " carries its staged portrait manifest")
   local markers =
     assert(cacheFs:loadLua(MonCache.indexPath()), versionId .. " carries its staged mon index").portraitPages
   local staged = nil
@@ -2619,6 +2623,93 @@ function T.explicit_draws_stay_stable_and_route_render_failures_through_the_host
     Assert.isTrue(unbound, "the lifetime releases its factory binding")
     Assert.isTrue(closed, "teardown releases the presented lifetime")
   end
+end
+
+-- A scripted defeat holds the field covered until its authored release:
+-- while absent with no observed recovery the launch stays with its holds
+-- and music untouched, and both authored releases (a restored present
+-- field, or an observed recovery running idle) clear the same holds,
+-- replay no music, and release the owned port exactly once.
+function T.scripted_transfer_holds_cover_until_its_authored_release()
+  local function transferRuntime(double)
+    local runtime = {
+      overworld = {
+        phase = function()
+          return double.overworldPhase
+        end,
+      },
+      session = {
+        setBattleActive = function(_, active)
+          double.session[#double.session + 1] = active
+        end,
+        setForegroundHold = function(_, active)
+          double.session[#double.session + 1] = active
+        end,
+      },
+      audio = {
+        resumeFieldPolicy = function(_, token, restore)
+          double.audio[#double.audio + 1] = { token = token, restore = restore }
+        end,
+      },
+      input = {
+        clearAll = function()
+          double.clears = double.clears + 1
+        end,
+      },
+      blackoutFlow = double.flow,
+    }
+    runtime.battleCoordinator = FieldBattleCoordinator.new(runtime)
+    return runtime
+  end
+
+  local function checkReleased(double, runtime, id)
+    Assert.isNil(runtime.battleCoordinator._battleLaunch, "an authored release clears the launch")
+    Assert.isNil(runtime.battleCoordinator.battleRuntime, "an authored release clears the owned port")
+    Assert.deepEqual(double.session, { false, false }, "an authored release clears both holds")
+    Assert.equal(#double.audio, 1, "an authored release touches the music policy once")
+    Assert.equal(double.audio[1].token, id, "the music handoff names the released launch")
+    Assert.isFalse(double.audio[1].restore, "a defeat handoff replays no music")
+    Assert.equal(double.clears, 1, "an authored release clears stale input once")
+  end
+
+  local observed = { overworldPhase = "absent", session = {}, audio = {}, clears = 0, flowPhase = "message_wait" }
+  observed.flow = {
+    status = function()
+      return { phase = observed.flowPhase }
+    end,
+  }
+  local observedRuntime = transferRuntime(observed)
+  local held =
+    { launchId = "scripted-transfer-observed#1", phase = "transfer", request = { id = "scripted-transfer-observed#1" } }
+  observedRuntime.battleCoordinator.battleRuntime = {}
+  observedRuntime.battleCoordinator._battleLaunch = held
+  observedRuntime.battleCoordinator._battleReceipt = held
+  observedRuntime.battleCoordinator:_finishScriptedTransfer(held)
+  Assert.isTrue(
+    observedRuntime.battleCoordinator._battleLaunch == held,
+    "the scripted defeat stays absent until its authored release"
+  )
+  Assert.isTrue(held.transferBlackoutSeen, "an observed recovery marks the transfer")
+  Assert.equal(#observed.audio, 0, "a held transfer replays no music")
+  Assert.equal(#observed.session, 0, "a held transfer keeps its holds")
+  Assert.equal(observed.clears, 0, "a held transfer keeps its input")
+  observed.flowPhase = "idle"
+  observedRuntime.battleCoordinator:_finishScriptedTransfer(held)
+  checkReleased(observed, observedRuntime, "scripted-transfer-observed#1")
+  Assert.isTrue(
+    observedRuntime.battleCoordinator._battleReceipt == held,
+    "the release keeps the receipt published at the transfer"
+  )
+
+  local restored = { overworldPhase = "present", session = {}, audio = {}, clears = 0, flow = nil }
+  local restoredRuntime = transferRuntime(restored)
+  local returning =
+    { launchId = "scripted-transfer-restored#1", phase = "transfer", request = { id = "scripted-transfer-restored#1" } }
+  restoredRuntime.battleCoordinator.battleRuntime = {}
+  restoredRuntime.battleCoordinator._battleLaunch = returning
+  restoredRuntime.battleCoordinator._battleReceipt = returning
+  restoredRuntime.battleCoordinator:_finishScriptedTransfer(returning)
+  checkReleased(restored, restoredRuntime, "scripted-transfer-restored#1")
 end
 
 return {
