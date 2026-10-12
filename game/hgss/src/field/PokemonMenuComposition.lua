@@ -68,6 +68,7 @@ local PokemonMenuComposition = {}
 ---@field textPolicy table<string, unknown>? the copied player text-speed cadence for bag children
 ---@field summaryManifest table<string, unknown>? the borrowed summary family for summary children
 ---@field summaryContext fun(): table<string, unknown>? the explicit summary display context per refresh
+---@field dexMode "regional"|"national"? the dex numbering the info panel prints
 ---@field readSummaryNavigation fun(): table<string, unknown>? the read-only summary navigation sample
 ---@field acquireSummaryPreparation fun(): table<string, unknown>? the per-open summary lease factory
 
@@ -329,11 +330,19 @@ function PokemonMenuComposition.create(deps)
       child:open({ currentText = metadata.name, maxLength = 16 })
       return child
     end
+    -- The info panel's dex number follows the summary's dex mode and tables;
+    -- a composition without the summary family prints none.
+    local function dexNumber(speciesKey)
+      local manifest = deps.summaryManifest
+      local numbers = manifest ~= nil and deps.dexMode ~= nil and manifest.dexNumbers[speciesKey] or nil
+      return numbers ~= nil and numbers[deps.dexMode] or nil
+    end
     return StorageScreenState.new({
       mode = mode,
       mons = mons,
       bag = bag,
       manifest = pcManifest,
+      dexNumber = dexNumber,
       measureDisplay = measureDisplay,
       audio = { play = deps.effect },
       overrides = overrides and overrides.storage,

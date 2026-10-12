@@ -71,7 +71,8 @@ function T.tests.storage_changes_publish_through_the_canonical_save_and_reload()
     Assert.equal(mons:partyCount(), 1, "deposit retains the last party mon")
     Assert.notNil(mons:boxMon(0, 0), "deposit publishes into the canonical box slot")
 
-    host:step(handle, { { type = "cancel" } })
+    host:step(handle, { { type = "cancel" } }) -- "Continue Box operations?"
+    host:step(handle, { { type = "cancel" } }) -- No: leave
     Assert.notNil(host:result(handle), "closed child returns once to the source shell")
     host:close(handle)
     runtime.saveCoordinator:save()

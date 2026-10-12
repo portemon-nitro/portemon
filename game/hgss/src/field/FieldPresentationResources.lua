@@ -757,6 +757,14 @@ end
 ---@param runtime FieldRuntime runtime owners borrowed by the app renderers
 function FieldPresentationResources:drawPcApplication(host, runtime)
   host:draw(self:pcApplicationResources(runtime))
+  local plan = host:presentationPlan()
+  if plan ~= nil then
+    drawApplicationFrames(
+      assert(love.graphics, "PC application drawing requires its host graphics namespace"),
+      self,
+      plan
+    )
+  end
 end
 
 -- Draws the Start Menu through its resolved plan: one borrowed resource

@@ -101,6 +101,24 @@ local function checkVisualMap(value, label, count)
   return seen
 end
 
+local function checkColor(color, label)
+  exactKeys(color, { r = true, g = true, b = true }, label)
+  for _, channel in ipairs({ "r", "g", "b" }) do
+    local value = color[channel]
+    if type(value) ~= "number" or value % 1 ~= 0 or value < 0 or value > 255 then
+      fail(label .. "." .. channel .. " must be a byte")
+    end
+  end
+end
+
+local function checkWallpaperSwatches(swatches)
+  exactKeys(swatches, { colors = true, locked = true }, "storage.wallpaperSwatches")
+  for logicalId = 0, 23 do
+    checkColor(swatches.colors[logicalId], "storage.wallpaperSwatches.colors[" .. logicalId .. "]")
+  end
+  checkColor(swatches.locked, "storage.wallpaperSwatches.locked")
+end
+
 local function checkWordDictionary(value)
   if type(value) ~= "table" then
     fail("mail.wordDictionary must be a record")
@@ -345,16 +363,41 @@ function PcAssetSchema.assertManifest(manifest)
     fail("schema does not match " .. PcAssetSchema.SCHEMA)
   end
   local storage = root.storage --[[@as table<string, unknown>]]
-  exactKeys(
-    storage,
-    { backgrounds = true, wallpapers = true, ui = true, boxNames = true, expansionNameFormat = true, geometry = true },
-    "storage"
-  )
+  exactKeys(storage, {
+    backgrounds = true,
+    wallpapers = true,
+    wallpaperSwatches = true,
+    ui = true,
+    boxNames = true,
+    expansionNameFormat = true,
+    geometry = true,
+  }, "storage")
   checkVisualMap(storage.backgrounds, "storage.backgrounds", 1)
   checkVisualMap(storage.wallpapers, "storage.wallpapers", 24)
-  exactKeys(storage.ui, { boxPane = true, partyPane = true, windowFrames = true, markings = true }, "storage.ui")
+  exactKeys(storage.ui, {
+    boxPane = true,
+    infoPane = true,
+    partyTray = true,
+    markingPanel = true,
+    wallpaperBar = true,
+    arrows = true,
+    cursors = true,
+    windowFrames = true,
+    markings = true,
+  }, "storage.ui")
+  checkWallpaperSwatches(storage.wallpaperSwatches)
+  exactKeys(storage.ui.arrows, { left = true, right = true }, "storage.ui.arrows")
+  checkVisual(storage.ui.arrows.left, "storage.ui.arrows.left")
+  checkVisual(storage.ui.arrows.right, "storage.ui.arrows.right")
+  exactKeys(storage.ui.cursors, { browse = true, menu = true, carry = true }, "storage.ui.cursors")
+  for _, pose in ipairs({ "browse", "menu", "carry" }) do
+    checkVisual(storage.ui.cursors[pose], "storage.ui.cursors." .. pose)
+  end
+  checkVisual(storage.ui.wallpaperBar, "storage.ui.wallpaperBar")
   checkVisual(storage.ui.boxPane, "storage.ui.boxPane")
-  checkVisual(storage.ui.partyPane, "storage.ui.partyPane")
+  checkVisual(storage.ui.infoPane, "storage.ui.infoPane")
+  checkVisual(storage.ui.partyTray, "storage.ui.partyTray")
+  checkVisual(storage.ui.markingPanel, "storage.ui.markingPanel")
   exactKeys(storage.ui.windowFrames, { standard = true, accent = true }, "storage.ui.windowFrames")
   for _, style in ipairs({ "standard", "accent" }) do
     local banks = storage.ui.windowFrames[style]

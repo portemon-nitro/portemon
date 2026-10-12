@@ -40,7 +40,7 @@ local function decode(kind, bytes, role)
   return record
 end
 
-local function renderBackground(archive, selection, role, assets, dependencies)
+local function renderBackground(archive, selection, role, assets, dependencies, options)
   local charBytes, charHash = unpackMember(archive, selection.character)
   local paletteBytes, paletteHash = unpackMember(archive, selection.palette)
   local screenBytes, screenHash = unpackMember(archive, selection.screen)
@@ -51,7 +51,8 @@ local function renderBackground(archive, selection, role, assets, dependencies)
     decode("decodeChar", charBytes, role .. ".character"),
     decode("decodePalette", paletteBytes, role .. ".palette"),
     decode("decodeScreen", screenBytes, role .. ".screen"),
-    { role = role }
+    { role = role },
+    options
   )
   local path = PcCache.assetDir() .. "/" .. role .. ".png"
   assets[path] = PngWriter.encode(image.width, image.height, image.pixels)
@@ -143,6 +144,67 @@ local function compileStorageMarkings(archive, fileId, assets, dependencies, sel
     markings[bit] = pair
   end
   return markings
+end
+
+local function compileStorageSprites(archive, assets, dependencies)
+  local members = PcSources.storageArrows
+  local decoded = {}
+  for _, role in ipairs({ "character", "palette", "cell", "animation" }) do
+    local bytes, digest = unpackMember(archive, members[role])
+    dependencies[#dependencies + 1] = { role = "storage.sprites." .. role, sha1 = digest }
+    local kind = role == "character" and "decodeChar"
+      or role == "palette" and "decodePalette"
+      or role == "cell" and "decodeCell"
+      or "decodeAnimation"
+    decoded[role] = decode(kind, bytes, "storage.sprites." .. role)
+  end
+  local cellBytes = unpackMember(archive, members.cell)
+  local mapping = assert(G2dDecoder.decodeCellMapping(cellBytes, { label = "storage.sprites.cell" }))
+  local function frameOf(animationIndex, role, fileStem)
+    local rendered = G2dRasterizer.renderAnimationFrame(
+      decoded.character,
+      decoded.palette,
+      decoded.cell,
+      decoded.animation.anims[animationIndex + 1],
+      1,
+      { role = role, frame = 0 },
+      nil,
+      mapping
+    )
+    local path = PcCache.assetDir() .. "/" .. fileStem .. ".png"
+    assets[path] = PngWriter.encode(rendered.width, rendered.height, rendered.pixels)
+    return {
+      image = path,
+      width = rendered.width,
+      height = rendered.height,
+      anchorX = rendered.offset.x,
+      anchorY = rendered.offset.y,
+    }
+  end
+  local arrows, cursors = {}, {}
+  for side, animationIndex in pairs(members.animations) do
+    arrows[side] = frameOf(animationIndex, "storage.arrows." .. side, "storage-arrow-" .. side)
+  end
+  for pose, animationIndex in pairs(PcSources.storageCursorAnimations) do
+    cursors[pose] = frameOf(animationIndex, "storage.cursors." .. pose, "storage-cursor-" .. pose)
+  end
+  return arrows, cursors
+end
+
+local function compileWallpaperSwatches(archive, dependencies)
+  local source = PcSources.storageWallpaperSwatches
+  local bytes, digest = unpackMember(archive, source.palette)
+  dependencies[#dependencies + 1] = { role = "storage.wallpaperSwatches.palette", sha1 = digest }
+  local palette = decode("decodePalette", bytes, "storage.wallpaperSwatches.palette")
+  local function color(index)
+    local entry = assert(palette.colors[index + 1], "wallpaper swatch palette covers entry " .. index)
+    return { r = entry.r, g = entry.g, b = entry.b }
+  end
+  local colors = {}
+  for logicalId = 0, source.count - 1 do
+    colors[logicalId] = color(logicalId)
+  end
+  return { colors = colors, locked = color(source.lockedIndex) }
 end
 
 local function compileAlbumAnimations(archive, assets, dependencies)
@@ -409,8 +471,8 @@ local function _compile(romFs)
   photoArchive, archives.photoAlbum = openSource(romFs, "photoAlbum", dependencies)
 
   local storageUi = {}
-  for index, members in ipairs(PcSources.storageUiMembers) do
-    local role = index == 1 and "boxPane" or "partyPane"
+  for _, role in ipairs({ "boxPane", "infoPane", "partyTray", "markingPanel", "wallpaperBar" }) do
+    local members = assert(PcSources.storageUiMembers[role], "Storage UI role has source members")
     selections["storage.ui." .. role] = {
       path = PcSources.archives.storage.path,
       fileId = archives.storage.fileId,
@@ -418,6 +480,7 @@ local function _compile(romFs)
     }
     storageUi[role] = renderBackground(storageArchive, members, "storage-" .. role, assets, dependencies)
   end
+  storageUi.arrows, storageUi.cursors = compileStorageSprites(storageArchive, assets, dependencies)
   storageUi.windowFrames =
     compileStorageWindowFrames(storageArchive, archives.storage.fileId, assets, dependencies, selections)
   storageUi.markings = compileStorageMarkings(storageArchive, archives.storage.fileId, assets, dependencies, selections)
@@ -438,6 +501,21 @@ local function _compile(romFs)
     wallpapers[wallpaperId] =
       renderBackground(storageArchive, members, "wallpaper-" .. wallpaperId, assets, dependencies)
   end
+
+  selections["storage.backgrounds.default"] = {
+    path = PcSources.archives.storage.path,
+    fileId = archives.storage.fileId,
+    members = PcSources.storageBaseMembers,
+  }
+  -- The base is the touch screen's backdrop: untouched pixels show palette color 0.
+  local storageBase = renderBackground(
+    storageArchive,
+    PcSources.storageBaseMembers,
+    "storage-base",
+    assets,
+    dependencies,
+    { backdrop = true }
+  )
 
   local stationery = {}
   for _, stationeryType in ipairs(PcSources.stationeryTypes) do
@@ -510,13 +588,13 @@ local function _compile(romFs)
   local text, boxNames, expansionNameFormat, wordDictionary, mailTemplates = compileText(romFs, dependencies)
   local sequences = mergeSequences(albumSequences, mailboxSequences)
 
-  local defaultWallpaper = assert(wallpapers[0])
   local defaultStationery = assert(stationery[0])
   local manifest = {
     schema = PcAssetSchema.SCHEMA,
     storage = {
-      backgrounds = { default = defaultWallpaper },
+      backgrounds = { default = storageBase },
       wallpapers = wallpapers,
+      wallpaperSwatches = compileWallpaperSwatches(storageArchive, dependencies),
       ui = storageUi,
       boxNames = boxNames,
       expansionNameFormat = expansionNameFormat,

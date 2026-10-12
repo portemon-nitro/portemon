@@ -357,6 +357,11 @@ function PhotoAlbumScreenState:draw(resources, status)
   ApplicationPresentation.draw(assert(love.graphics), resources, snapshot, snapshot.presentation)
 end
 
+---@return ApplicationPlan
+function PhotoAlbumScreenState:presentationPlan()
+  return self:status().presentation
+end
+
 function PhotoAlbumScreenState:dispose()
   if self.disposed then
     return

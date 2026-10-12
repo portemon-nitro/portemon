@@ -1,1 +1,3 @@
-return {}
+return {
+  "common.pokecenter_pc",
+}

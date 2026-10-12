@@ -314,6 +314,10 @@ function FieldMenuCompositionCoordinator:composeBag(activeGame, loadedGame)
   runtime.bagCursor = BagCursor.new()
 end
 
+-- The dex numbering every dex-showing surface uses until a national-dex flag is
+-- wired.
+local DEX_MODE = "regional"
+
 -- Builds the explicit read-only Summary display context per open: the
 -- trainer profile identity, the captured civil day, regional Dex mode
 -- (no national-Dex owner exists on this path), zero aprijuice modifiers
@@ -375,7 +379,7 @@ local function summaryContextProvider(innerRuntime, manifest)
     return {
       profile = { trainerId = profile.trainerId, name = profile.name, gender = profile.gender },
       dayOfMonth = day,
-      dexMode = "regional",
+      dexMode = DEX_MODE,
       performanceEnabled = performanceEnabled,
       aprijuiceBySlot = rows,
       specialRibbonDescriptions = specials,
@@ -520,6 +524,7 @@ function FieldMenuCompositionCoordinator:composePokemonMenu(cacheFs)
     textPolicy = bagTextPolicy,
     summaryManifest = summaryManifest,
     summaryContext = summaryContextProvider(runtime, summaryManifest),
+    dexMode = DEX_MODE,
     readSummaryNavigation = readSummaryNavigation,
     acquireSummaryPreparation = acquireSummaryPreparation,
     mons = assert(runtime.monService, "the menu composition requires the live mon service"),
