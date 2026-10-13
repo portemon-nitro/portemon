@@ -294,6 +294,7 @@ local function dependencies(overrides)
     mailbox = Mailbox.new(),
     photoAlbum = PhotoAlbum.new(),
     pcManifest = PcPresentationFixture.manifest(),
+    flypointMaps = {},
     profile = CatalogFixture.profile(),
     versionId = "heartgold",
     cacheFs = {},

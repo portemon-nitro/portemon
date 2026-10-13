@@ -1590,9 +1590,10 @@ end
 -- ready/pending/error before resolution and preparation run.
 ---@param sourceMap table<string, unknown>
 ---@param warp table<string, unknown>
+---@param sourceKind "door"|"warp"|"stairs"|"directional"|"generic"|nil
 ---@return boolean
 ---@return string|nil
-function FieldMapLoader:requestWarp(sourceMap, warp)
+function FieldMapLoader:requestWarp(sourceMap, warp, sourceKind)
   assert(not self.released, "field map loader is released")
   assert(type(sourceMap) == "table", "warp demand requires the source map")
   assert(type(warp) == "table", "warp demand requires the warp record")
@@ -1617,7 +1618,8 @@ function FieldMapLoader:requestWarp(sourceMap, warp)
   if fieldData == nil then
     return false, fieldError
   end
-  local coordinatesOk, coordinatesOrError = pcall(WarpSystem.destinationCoordinates, sourceMap, warp, fieldData)
+  local coordinatesOk, coordinatesOrError =
+    pcall(WarpSystem.destinationCoordinates, sourceMap, warp, fieldData, sourceKind)
   if not coordinatesOk then
     return false, Errors.is(coordinatesOrError) and Errors.format(coordinatesOrError) or tostring(coordinatesOrError)
   end

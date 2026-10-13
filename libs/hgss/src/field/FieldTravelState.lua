@@ -16,6 +16,7 @@
 ---@class FieldTravelState
 ---@field lastHealSpawn string
 ---@field escapeEntrance table<string, unknown>|nil
+---@field private _lastExterior { x: integer, y: integer }|nil
 ---@field private _specialSpawn table<string, unknown>|nil
 local FieldTravelState = {}
 
@@ -78,6 +79,22 @@ local function copySpecialSpawn(value)
   }
 end
 
+local function checkLastExterior(value)
+  assert(type(value) == "table", "last exterior must be a world cell")
+  assert(isNonNegativeInteger(value.x), "last exterior x must be a non-negative integer")
+  assert(isNonNegativeInteger(value.y), "last exterior y must be a non-negative integer")
+  for key in pairs(value) do
+    assert(key == "x" or key == "y", "last exterior only stores world cell coordinates")
+  end
+end
+
+local function copyLastExterior(value)
+  if value == nil then
+    return nil
+  end
+  return { x = value.x, y = value.y }
+end
+
 ---@param travel table<string, unknown> the validated fieldTravel record
 ---@return FieldTravelState
 function FieldTravelState.new(travel)
@@ -89,9 +106,13 @@ function FieldTravelState.new(travel)
   if travel.specialSpawn ~= nil then
     checkSpecialSpawn(travel.specialSpawn)
   end
+  if travel.lastExterior ~= nil then
+    checkLastExterior(travel.lastExterior)
+  end
   return setmetatable({
     lastHealSpawn = travel.lastHealSpawn,
     escapeEntrance = copyEntrance(travel.escapeEntrance),
+    _lastExterior = copyLastExterior(travel.lastExterior),
     _specialSpawn = copySpecialSpawn(travel.specialSpawn),
   }, FieldTravelState)
 end
@@ -104,6 +125,10 @@ function FieldTravelState:capture()
   local specialSpawn = copySpecialSpawn(self._specialSpawn)
   if specialSpawn ~= nil then
     snapshot.specialSpawn = specialSpawn
+  end
+  local lastExterior = copyLastExterior(self._lastExterior)
+  if lastExterior ~= nil then
+    snapshot.lastExterior = lastExterior
   end
   return snapshot
 end
@@ -122,6 +147,21 @@ end
 
 function FieldTravelState:clearEscapeEntrance()
   self.escapeEntrance = nil
+end
+
+-- Record the last source-confirmed outdoor world-map cell. Validation runs
+-- before replacement so malformed writes preserve the known value.
+---@param cell { x: integer, y: integer } saved world-map cell
+function FieldTravelState:setLastExterior(cell)
+  checkLastExterior(cell)
+  self._lastExterior = copyLastExterior(cell)
+end
+
+-- The established outdoor world-map cell as a fresh copy, or nil before a
+-- qualifying transition has recorded one.
+---@return { x: integer, y: integer }|nil
+function FieldTravelState:lastExterior()
+  return copyLastExterior(self._lastExterior)
 end
 
 -- Record the setter-written relocation destination. The record is validated

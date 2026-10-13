@@ -147,4 +147,52 @@ function T.constructor_copies_an_optional_special_spawn_and_rejects_malformed_pe
   end)
 end
 
+function T.last_exterior_defaults_to_nil_and_round_trips_detached_world_cells()
+  local state = FieldTravelState.new(travel())
+  Assert.isNil(state:lastExterior())
+  Assert.isNil(state:capture().lastExterior)
+
+  local exterior = { x = 21, y = 12 }
+  state:setLastExterior(exterior)
+  Assert.deepEqual(state:lastExterior(), exterior)
+  Assert.deepEqual(state:capture().lastExterior, exterior)
+  exterior.x = 99
+  local observed = state:lastExterior()
+  observed.y = 98
+  local snapshot = state:capture()
+  snapshot.lastExterior.x = 97
+  Assert.deepEqual(state:lastExterior(), { x = 21, y = 12 })
+
+  local restored = FieldTravelState.new(travel({ lastExterior = snapshot.lastExterior }))
+  Assert.deepEqual(restored:lastExterior(), { x = 97, y = 12 })
+end
+
+function T.last_exterior_rejects_bad_values_without_replacing_the_prior_cell()
+  local state = FieldTravelState.new(travel())
+  local malformed = {
+    { x = -1, y = 2 },
+    { x = 1.5, y = 2 },
+    { x = 1, y = math.huge },
+    { x = 1, y = 2, map = "MAP_X" },
+    { x = 1 },
+  }
+  for _, exterior in ipairs(malformed) do
+    Assert.throws(function()
+      state:setLastExterior(exterior)
+    end)
+  end
+  Assert.isNil(state:lastExterior(), "failed first writes leave the value unknown")
+
+  state:setLastExterior({ x = 21, y = 12 })
+  for _, exterior in ipairs(malformed) do
+    Assert.throws(function()
+      state:setLastExterior(exterior)
+    end)
+  end
+  Assert.deepEqual(state:lastExterior(), { x = 21, y = 12 }, "failed writes preserve the known cell")
+  Assert.throws(function()
+    FieldTravelState.new(travel({ lastExterior = { x = 1, y = -1 } }))
+  end)
+end
+
 return { tests = T }

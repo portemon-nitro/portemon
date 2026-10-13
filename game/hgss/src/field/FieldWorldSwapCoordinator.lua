@@ -10,7 +10,6 @@ local SurfaceResolver = require("libs.hgss.src.world.SurfaceResolver")
 
 ---@class FieldWorldSwapCoordinator
 ---@field runtime FieldRuntime
----@field pokegearLastExterior { x: integer, y: integer }? the last committed source-confirmed exterior cell
 local FieldWorldSwapCoordinator = {}
 FieldWorldSwapCoordinator.__index = FieldWorldSwapCoordinator
 
@@ -61,8 +60,6 @@ function FieldWorldSwapCoordinator:prepare(resolution, facing)
   local surfaceId, worldY = resolution.surfaceId, resolution.worldY
   if runtime.transition.sourceKind == "door" then
     assert(resolution.destinationWarp, "door destination warp required")
-    fieldX = resolution.destinationWarp.x
-    fieldZ = resolution.destinationWarp.z - 1
     local localX, localZ = FieldCoordinates.fieldToLocal(runtimeMap, fieldX, fieldZ)
     local sample = SurfaceResolver.new(runtimeMap.terrain):resolve({
       localX = localX + FieldCoordinates.TILE_CENTER_OFFSET,
@@ -235,7 +232,7 @@ function FieldWorldSwapCoordinator:commit(resolution, _, prepared)
   if runtimeMap.fieldData.transitionEnvironment ~= "outdoors" then
     local exterior = self:_sourceExteriorCell(sourceMap, sourcePlayer)
     if exterior ~= nil then
-      self.pokegearLastExterior = exterior
+      runtime.fieldTravel:setLastExterior(exterior)
     end
   end
   if previousCoverage then
@@ -291,7 +288,7 @@ function FieldWorldSwapCoordinator:createTransition(runtime, doorAt, escalatorAt
   local function onStart(sourceMap, trigger)
     -- Start destination compilation under the emerging cover. Readiness stays
     -- gated at load_destination, so this early demand never blocks or commits.
-    runtime.mapLoader:requestWarp(sourceMap, trigger.warp)
+    runtime.mapLoader:requestWarp(sourceMap, trigger.warp, trigger.kind)
     if runtime.audio then
       runtime.audio:beginWarp(trigger.warp.destinationMapId)
     end

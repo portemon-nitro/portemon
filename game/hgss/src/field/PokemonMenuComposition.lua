@@ -28,6 +28,7 @@ local BoxNamingState = require("game.hgss.src.pc.BoxNamingState")
 ---@field mailActions table<string, unknown> borrowed action coordinator
 ---@field fieldMoves table<string, unknown> owned field-move runtime
 ---@field fieldTravel table<string, unknown>? borrowed travel owner
+---@field flypointMaps table<string, string> compiled Fly semantic keys to field-map symbols
 ---@field makeBagFlow fun(): table<string, unknown>
 ---@field makePartyFlow fun(): table<string, unknown>
 ---@field makeMailboxChild fun(): table<string, unknown>
@@ -63,6 +64,7 @@ local PokemonMenuComposition = {}
 ---@field contextSources fun(): table<string, unknown> live world reads per check
 ---@field worldPorts table<string, unknown> field world ports (borrowed owners)
 ---@field fieldTravel table<string, unknown>? durable travel owner (borrowed)
+---@field flypointMaps table<string, string> compiled Fly semantic keys to field-map symbols
 ---@field overrides table<string, unknown>? per-case application overrides
 ---@field effect (fun(sequence: string))? the production semantic sound boundary for bag children
 ---@field playCry (fun(species: integer, pattern: integer, form: integer))? the production cry boundary for summary children
@@ -88,8 +90,12 @@ end
 -- Cited spawn landings read through the version cache: unknown keys
 -- resolve to nil so planning refuses loudly, and a missing index fails
 -- loudly instead of warping somewhere convenient.
-local function spawnResolver(cacheFs)
+local function spawnResolver(cacheFs, flypointMaps)
   local function destinationFor(_, spawnKey)
+    local mapSymbol = flypointMaps[spawnKey]
+    if mapSymbol ~= nil then
+      return FieldMapDataCache.spawnDestinationForMap(cacheFs, mapSymbol)
+    end
     return FieldMapDataCache.spawnDestination(cacheFs, spawnKey)
   end
   return {
@@ -115,6 +121,8 @@ function PokemonMenuComposition.create(deps)
   local profile = assert(deps.profile, "the menu composition borrows the live player profile")
   local versionId = assert(deps.versionId, "the menu composition requires the selected game version")
   local cacheFs = assert(deps.cacheFs, "the menu composition requires the selected version cache")
+  local flypointMaps = assert(deps.flypointMaps, "Fly landing resolution needs compiled map identities")
+  assert(type(flypointMaps) == "table", "Fly landing identities are a map")
   local derivedAssets = assert(deps.derivedAssets, "the menu composition requires semantic asset access")
   local charmap = assert(deps.charmap, "the menu composition requires the generated character map")
   assert(deps.heroGender == "male" or deps.heroGender == "female", "the menu composition needs the hero gender")
@@ -155,7 +163,7 @@ function PokemonMenuComposition.create(deps)
     ports[key] = port
   end
   if deps.cacheFs ~= nil then
-    ports.spawns = spawnResolver(deps.cacheFs)
+    ports.spawns = spawnResolver(deps.cacheFs, flypointMaps)
   end
   local world = FieldMoveWorld.new(ports)
   local fieldMoves = FieldMoveRuntime.new({

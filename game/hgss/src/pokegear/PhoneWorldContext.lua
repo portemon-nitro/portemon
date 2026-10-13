@@ -230,24 +230,10 @@ function PhoneWorldContext:mapInit(field, catalog)
     matrixX, matrixY = field.playerX, field.playerZ
   end
   local runtime = self._owners.runtime
-  local worldSwapCoordinator = type(runtime) == "table" and runtime.worldSwapCoordinator or nil
-  local lastExterior = nil
-  if type(worldSwapCoordinator) == "table" then
-    local cell = worldSwapCoordinator.pokegearLastExterior
-    if cell ~= nil then
-      assert(
-        type(cell) == "table"
-          and type(cell.x) == "number"
-          and cell.x % 1 == 0
-          and type(cell.y) == "number"
-          and cell.y % 1 == 0,
-        "the committed exterior carries an integral world cell"
-      )
-      lastExterior = { x = cell.x, y = cell.y }
-    end
-  end
-  local specialSpawn
   local travel = type(runtime) == "table" and runtime.fieldTravel or nil
+  assert(type(travel) == "table" and type(travel.lastExterior) == "function", "map reads field travel state")
+  local lastExterior = travel:lastExterior()
+  local specialSpawn
   if type(travel) == "table" and type(travel.specialSpawn) == "function" then
     local spawn = travel:specialSpawn()
     if type(spawn) == "table" and type(spawn.map) == "string" then

@@ -985,7 +985,7 @@ function FieldTransition:updateFixed()
     -- session keeps pumping; only readiness runs resolution and preparation
     -- once, and failures use the existing abort path.
     local ok, requestReady, requestError = pcall(function()
-      return self.loader:requestWarp(self.sourceMap, self.sourceWarp)
+      return self.loader:requestWarp(self.sourceMap, self.sourceWarp, self.sourceKind)
     end)
     if not ok then
       return self:_abort(requestReady)
@@ -997,7 +997,7 @@ function FieldTransition:updateFixed()
       return false
     end
     local resolveOk, err = pcall(function()
-      local result = self.resolveDestination(self.loader, self.sourceMap, self.sourceWarp)
+      local result = self.resolveDestination(self.loader, self.sourceMap, self.sourceWarp, self.sourceKind)
       self.resolution = result
       if self.profileId == FieldTransitionProfile.HORIZONTAL_STAIRS then
         adjustHorizontalStairDestination(self, result)

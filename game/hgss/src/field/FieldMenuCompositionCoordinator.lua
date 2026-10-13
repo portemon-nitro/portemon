@@ -517,6 +517,15 @@ function FieldMenuCompositionCoordinator:composePokemonMenu(cacheFs)
       runtime.audio:playCry(species, pattern, form)
     end
   end
+  local flypointMaps = {}
+  for _, location in
+    ipairs(assert(runtime.pokegearCatalog, "Fly landings need the compiled Pokegear catalog").locations)
+  do
+    if type(location.flypoint) == "string" then
+      assert(type(location.fieldMap) == "string", "Fly locations name their field map")
+      flypointMaps[location.flypoint] = location.fieldMap
+    end
+  end
   local bagTextPolicy = TextSpeedPolicy.forSpeed(
     assert(runtime.playerData and runtime.playerData.options and runtime.playerData.options.textSpeed)
   )
@@ -571,6 +580,7 @@ function FieldMenuCompositionCoordinator:composePokemonMenu(cacheFs)
     ),
     versionId = runtime.versionId,
     cacheFs = cacheFs,
+    flypointMaps = flypointMaps,
     derivedAssets = assert(runtime.derivedAssets, "the menu composition requires semantic asset access"),
     charmap = assert(
       runtime.fontDef and runtime.fontDef.charmap,

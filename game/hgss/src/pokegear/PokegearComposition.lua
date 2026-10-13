@@ -21,6 +21,7 @@ local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
 ---@class PokegearCompositionBundle
 ---@field screenFactory fun(entry: table<string, unknown>?): table<string, unknown>
 ---@field scriptHost table<string, unknown>
+---@field fieldMoveFlyRequest fun(): { mapContext: table<string, unknown>, destinations: string[] }
 ---@field incoming table<string, unknown>
 ---@field radioEffects table<string, unknown>
 ---@field dispose fun()
@@ -579,6 +580,31 @@ function PokegearComposition.compose(runtime, owners)
     regionMapOwners = hostMapOwners,
   })
 
+  local function fieldMoveFlyRequest()
+    local mapContext = liveMapContext(runtime, world, catalog)
+    local _, facts = hostMapOwners()
+    local visited = facts.flypointVisited --[[@as fun(index: integer): boolean]]
+    local keysByMap = {}
+    for _, location in ipairs(catalog.locations) do
+      if type(location.flypoint) == "string" then
+        keysByMap[location.mapRef] = location.flypoint
+      end
+    end
+    local sourceKeys = {}
+    for _, flypoint in ipairs(catalog.flypoints) do
+      sourceKeys[flypoint.key] = true
+    end
+    local destinations = {}
+    local regionMap = assert(catalog.regionMap, "Fly reads the compiled region-map catalog")
+    for _, flypoint in ipairs(regionMap.flypoints) do
+      local key = keysByMap[flypoint.warpMapId]
+      if key ~= nil and sourceKeys[key] and visited(flypoint.flypoint) then
+        destinations[#destinations + 1] = key
+      end
+    end
+    return { mapContext = mapContext, destinations = destinations }
+  end
+
   local IncomingCalls = require("game.hgss.src.pokegear.IncomingCalls")
   local incoming = IncomingCalls.new({
     state = state,
@@ -665,6 +691,7 @@ function PokegearComposition.compose(runtime, owners)
   return {
     screenFactory = screenFactory,
     scriptHost = host,
+    fieldMoveFlyRequest = fieldMoveFlyRequest,
     incoming = incoming,
     radioEffects = radioEffects,
     dispose = dispose,

@@ -74,7 +74,7 @@ function T.town_to_lab_door_transition_choreographs(romFs, versionId)
   Assert.isTrue(SceneLoaderFixture.entryRole(door) == OPEN_ROLE, "the retained entry state records the played role")
 
   Assert.equal(harness.player.fieldX, 4)
-  Assert.equal(harness.player.fieldZ, 14, "the destination remains on the resolved entrance anchor")
+  Assert.equal(harness.player.fieldZ, 13, "the destination arrival lands one tile inside the entrance")
   Assert.equal(harness.player.motion, "idle")
   Assert.isFalse(harness.transition.locked, "input unlocks once the choreography completes")
   Assert.isNil(harness.transition.suppression, "door warps never carry coordinate suppression")

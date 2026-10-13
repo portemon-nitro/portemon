@@ -16,6 +16,7 @@ local PokegearComposition = require("game.hgss.src.pokegear.PokegearComposition"
 local FieldMenuCompositionCoordinator = require("game.hgss.src.field.FieldMenuCompositionCoordinator")
 local FieldSaveCoordinator = require("game.hgss.src.field.FieldSaveCoordinator")
 local FieldScriptComposition = require("game.hgss.src.field.FieldScriptComposition")
+local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local Runtime = require("libs.script.src.Runtime")
 local RuntimeValues = require("libs.hgss.src.script.RuntimeValues")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
@@ -239,12 +240,13 @@ function T.tests.composition_exposes_its_closed_bundle()
   Assert.notNil(bundle.scriptHost, "the bundle carries its script host")
   Assert.notNil(bundle.incoming, "the bundle carries its incoming owner")
   Assert.notNil(bundle.radioEffects, "the bundle carries its radio reader")
+  Assert.notNil(bundle.fieldMoveFlyRequest, "the bundle supplies its live Fly request facts")
   Assert.notNil(bundle.dispose, "the bundle carries its disposal")
   local count = 0
   for _ in pairs(bundle) do
     count = count + 1
   end
-  Assert.equal(count, 5, "the bundle stays closed")
+  Assert.equal(count, 6, "the bundle stays closed")
 end
 
 function T.tests.screen_factory_builds_a_usable_phone_screen()
@@ -305,6 +307,14 @@ function T.tests.composed_map_tab_samples_live_roamers_without_moving_them()
   }
   runtime.player = { fieldX = 695, fieldZ = 397 }
   runtime.playerData = { profile = { gender = 0 } }
+  runtime.fieldTravel = {
+    lastExterior = function()
+      return nil
+    end,
+    specialSpawn = function()
+      return nil
+    end,
+  }
   runtime.roamerState = roamers
   runtime.messageProvider = {
     acquireBank = function()
@@ -939,6 +949,71 @@ function T.tests.composition_requires_shared_message_references()
   Assert.isFalse(ok, "a composition without message references never assembles silently")
   Assert.equal(err.code, ScriptErrors.SCRIPT_SERVICE_MISSING, "the refusal carries its attribution")
   Assert.notNil(tostring(err.message):find("message references", 1, true), "the refusal names its missing owner")
+end
+
+function T.tests.fly_request_uses_live_map_context_and_visited_compiled_destinations()
+  local friends = companion()
+  friends.catalog.flypoints = { { key = "test.fly.alpha" }, { key = "test.fly.beta" } }
+  friends.catalog.regionMap = {
+    flypoints = {
+      { warpMapId = 10, flypoint = 3 },
+      { warpMapId = 11, flypoint = 15 },
+    },
+  }
+  friends.catalog.locations[#friends.catalog.locations + 1] = {
+    fieldMap = "MAP_A",
+    mapRef = 10,
+    location = "test.location.a",
+    region = "johto",
+    matrix = { x = 12, y = 10 },
+    flypoint = "test.fly.alpha",
+  }
+  friends.catalog.locations[#friends.catalog.locations + 1] = {
+    fieldMap = "MAP_B",
+    mapRef = 11,
+    location = "test.location.b",
+    region = "johto",
+    matrix = { x = 14, y = 10 },
+    flypoint = "test.fly.beta",
+  }
+  local bundle, runtime = composeGear(friends)
+  runtime.session.currentMap = {
+    mapSymbol = "MAP_NEW_BARK",
+    mapSectionNativeId = 60,
+    fieldData = { transitionEnvironment = "outdoors" },
+  }
+  runtime.player = { fieldX = 695, fieldZ = 397 }
+  runtime.playerData = { profile = { gender = 0 } }
+  runtime.fieldTravel = {
+    lastExterior = function()
+      return nil
+    end,
+    specialSpawn = function()
+      return nil
+    end,
+  }
+  local visitedFlag = FieldScriptSymbols.flagsByName.FLAG_SYS_FLYPOINT_PALLET + 3
+  runtime.scripts = {
+    worldState = {
+      isFlagSet = function(_, flag)
+        return flag == visitedFlag
+      end,
+    },
+  }
+  runtime.messageProvider = {
+    acquireBank = function()
+      return {}
+    end,
+    releaseBank = function() end,
+    get = function(_, _, _)
+      return { text = "test" }
+    end,
+  }
+  local request = bundle.fieldMoveFlyRequest()
+  Assert.equal(request.mapContext.fieldMap, "MAP_NEW_BARK", "Fly captures the current field map")
+  Assert.equal(request.mapContext.location, "hg.location.new-bark-town", "Fly uses the compiled current location")
+  Assert.deepEqual(request.destinations, { "test.fly.alpha" }, "Fly includes only visited source flypoints")
+  bundle.dispose()
 end
 
 function T.tests.composition_rejects_the_unresolved_greeting_sentinel()

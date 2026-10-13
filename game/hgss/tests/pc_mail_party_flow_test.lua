@@ -221,6 +221,7 @@ local function makeComposition(attachMail)
     monCatalog = catalog,
     profile = CatalogFixture.profile(),
     versionId = "heartgold",
+    flypointMaps = {},
     derivedAssets = require("tests.support.FieldStatePresentationFixture").iconHost().derivedAssets,
     charmap = CatalogFixture.CHARMAP,
     bagManifest = {},

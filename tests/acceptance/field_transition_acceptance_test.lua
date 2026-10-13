@@ -24,7 +24,7 @@ local HOUSE_WARP = { fieldX = 3, fieldZ = 3 }
 local FACTS = {
   house2fArrival = { fieldX = 3, fieldZ = 4 },
   labFloor = { fieldX = 4, fieldZ = 13 },
-  labDoorAnchor = { fieldX = 4, fieldZ = 14 },
+  labDoorArrival = { fieldX = 4, fieldZ = 13 },
   -- The shop entrance stands one tile north of its approach: the approach
   -- is the logical-local tile (43, 8), the door warp the global tile
   -- (555, 391), and the destination the indoor shop map.
@@ -78,7 +78,7 @@ local function stepOntoHouseStairs(game)
   game:step({ direction = "west" })
 end
 
-function T.tests.door_fade_waits_for_source_ingress_and_preserves_anchor()
+function T.tests.door_fade_waits_for_source_ingress_then_lands_inside_destination()
   withDefaultGame(TOWN, function(game)
     beginTownDoor(game)
     local transition = game.runtime.transition
@@ -88,8 +88,8 @@ function T.tests.door_fade_waits_for_source_ingress_and_preserves_anchor()
     game:advanceUntil("source door ingress completes", function()
       return transition.resolution ~= nil
     end, 120)
-    Assert.equal(transition.resolution.fieldX, FACTS.labDoorAnchor.fieldX)
-    Assert.equal(transition.resolution.fieldZ, FACTS.labDoorAnchor.fieldZ)
+    Assert.equal(transition.resolution.fieldX, FACTS.labDoorArrival.fieldX)
+    Assert.equal(transition.resolution.fieldZ, FACTS.labDoorArrival.fieldZ)
     Assert.equal(transition:presentationStatus().entryAction, "step_down")
     local completed = game:waitForTransition()
     Assert.deepEqual(

@@ -146,6 +146,48 @@ function T.destination_coordinates_share_planning_and_resolution_selection()
   end)
 end
 
+function T.door_arrival_resolves_on_the_inward_cell_before_sampling_terrain()
+  local sourceWarp = { index = 0, x = 4, z = 14, destinationMapId = 60, destinationWarpId = 0, y = 0 }
+  local destinationWarp = { index = 0, x = 684, z = 393, destinationMapId = 61, destinationWarpId = 0, y = 0 }
+  local source = runtimeMap(61, 0, 0, { sourceWarp })
+  local destination = runtimeMap(60, 672, 384, { destinationWarp }, {
+    {
+      id = 3,
+      minX = 0,
+      minZ = 0,
+      maxX = 32,
+      maxZ = 9,
+      normal = { x = 0, y = 1, z = 0 },
+      distance = 0,
+      slopeClass = "flat",
+    },
+  })
+  local loader = {
+    load = function()
+      return destination
+    end,
+  }
+
+  local planned = WarpSystem.destinationCoordinates(source, sourceWarp, destination.fieldData, "door")
+  Assert.equal(planned.fieldX, 684)
+  Assert.equal(planned.fieldZ, 392, "door demand uses the same inward cell as runtime arrival")
+  Assert.equal(
+    WarpSystem.destinationCoordinates(source, sourceWarp, destination.fieldData).fieldZ,
+    393,
+    "unclassified warp planning retains the authored anchor"
+  )
+
+  local result = WarpSystem.resolveDestination(loader, source, sourceWarp, "door")
+  Assert.equal(result.fieldX, 684)
+  Assert.equal(result.fieldZ, 392, "the player lands one tile inward from the door anchor")
+  Assert.equal(result.destinationWarp, destinationWarp, "the source anchor remains available for door choreography")
+  Assert.equal(result.surfaceId, 3, "surface resolution uses the inward player tile")
+  Assert.deepEqual(result.suppression, { mapId = 60, fieldX = 684, fieldZ = 392 })
+  Assert.throws(function()
+    WarpSystem.resolveDestination(loader, source, sourceWarp)
+  end, "an unclassified warp retains its raw arrival coordinates")
+end
+
 -- A loader failure for the destination map is wrapped into the warp-boundary
 -- code with the warp identity in context; any other loader error propagates
 -- unchanged.

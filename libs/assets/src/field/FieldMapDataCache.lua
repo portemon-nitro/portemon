@@ -517,16 +517,15 @@ end
 -- for an unknown spawn key (the caller refuses loudly, never a guess).
 -- A missing or malformed index is corrupt generated data and raises.
 ---@param cacheFs CacheFs
----@param spawnKey string
----@return table<string, unknown>? a fresh { map, fieldX, fieldZ } record
-function FieldMapDataCache.spawnDestination(cacheFs, spawnKey)
-  assert(type(spawnKey) == "string" and spawnKey ~= "", "spawn resolution needs a spawn key")
+---@param context table<string, unknown>
+---@return table<string, table<string, unknown>>
+local function spawnDestinations(cacheFs, context)
   local index = cacheFs:loadLua(FieldMapDataCache.spawnIndexPath()) ---@type table?
   if type(index) ~= "table" or index.schema ~= FieldMapDataCache.SPAWN_INDEX_SCHEMA then
     Errors.raise(
       SPAWN_INDEX_INVALID,
       "teleport landing index is missing or malformed; rebuild the derived cache",
-      { spawn = spawnKey }
+      context
     )
   end
   local spawnIndex = index --[[@as table<string, unknown>]]
@@ -539,15 +538,44 @@ function FieldMapDataCache.spawnDestination(cacheFs, spawnKey)
     Errors.raise(
       SPAWN_INDEX_INVALID,
       "teleport landing index is missing or malformed; rebuild the derived cache",
-      { spawn = spawnKey }
+      context
     )
   end
+  return destinations
+end
+
+function FieldMapDataCache.spawnDestination(cacheFs, spawnKey)
+  assert(type(spawnKey) == "string" and spawnKey ~= "", "spawn resolution needs a spawn key")
+  local destinations = spawnDestinations(cacheFs, { spawn = spawnKey })
   local destination = destinations[spawnKey]
   if destination == nil then
     return nil
   end
   assert(type(destination) == "table", "spawn destinations are records")
   return { map = destination.map, fieldX = destination.fieldX, fieldZ = destination.fieldZ }
+end
+
+-- Resolve the unique cited outdoor landing for a compiled field-map symbol.
+-- Flypoint keys use a different semantic namespace from spawn keys, but
+-- both source catalogs identify the same destination map.
+---@param cacheFs CacheFs
+---@param mapSymbol string
+---@return table<string, unknown>? a fresh landing, nil when absent or ambiguous
+function FieldMapDataCache.spawnDestinationForMap(cacheFs, mapSymbol)
+  assert(type(mapSymbol) == "string" and mapSymbol ~= "", "spawn map resolution needs a map symbol")
+  local match
+  for _, destination in pairs(spawnDestinations(cacheFs, { map = mapSymbol })) do
+    if destination.map == mapSymbol then
+      if match ~= nil then
+        return nil
+      end
+      match = destination
+    end
+  end
+  if match == nil then
+    return nil
+  end
+  return { map = match.map, fieldX = match.fieldX, fieldZ = match.fieldZ }
 end
 
 function FieldMapDataCache.marker(romSha1, mapId, dependencyHash)

@@ -117,8 +117,9 @@ end
 ---@param sourceMap table<string, unknown>
 ---@param warp table<string, unknown>
 ---@param destinationFieldData table<string, unknown>
+---@param sourceKind "door"|"warp"|"stairs"|"directional"|"generic"|nil
 ---@return { fieldX: integer, fieldZ: integer, warp: table<string, unknown> }
-function WarpSystem.destinationCoordinates(sourceMap, warp, destinationFieldData)
+function WarpSystem.destinationCoordinates(sourceMap, warp, destinationFieldData, sourceKind)
   assert(sourceMap and sourceMap.mapId and warp, "source map and warp required")
   assert(
     destinationFieldData and destinationFieldData.events and destinationFieldData.events.warps,
@@ -129,7 +130,11 @@ function WarpSystem.destinationCoordinates(sourceMap, warp, destinationFieldData
   -- dynamic-warp refusal.
   if warp.direct then
     assert(type(warp.x) == "number" and type(warp.z) == "number", "direct warp carries global coordinates")
-    return { fieldX = warp.x, fieldZ = warp.z, warp = warp }
+    return {
+      fieldX = warp.x,
+      fieldZ = sourceKind == "door" and warp.z - 1 or warp.z,
+      warp = warp,
+    }
   end
   if warp.destinationWarpId == WarpSystem.DYNAMIC_WARP_SENTINEL then
     Errors.raise(FieldErrors.FIELD_DYNAMIC_WARP_UNSUPPORTED, "dynamic warp anchors are not supported", {
@@ -149,10 +154,14 @@ function WarpSystem.destinationCoordinates(sourceMap, warp, destinationFieldData
       destinationWarpId = warp.destinationWarpId,
     })
   end
-  return { fieldX = destinationWarp.x, fieldZ = destinationWarp.z, warp = destinationWarp }
+  return {
+    fieldX = destinationWarp.x,
+    fieldZ = sourceKind == "door" and destinationWarp.z - 1 or destinationWarp.z,
+    warp = destinationWarp,
+  }
 end
 
-function WarpSystem.resolveDestination(loader, sourceMap, warp)
+function WarpSystem.resolveDestination(loader, sourceMap, warp, sourceKind)
   assert(loader and loader.load, "warp destination loader required")
   assert(sourceMap and sourceMap.mapId and warp, "source map and warp required")
 
@@ -163,7 +172,7 @@ function WarpSystem.resolveDestination(loader, sourceMap, warp)
   -- including the dynamic-warp refusal.
   if warp.direct then
     local destinationMap = loadDestination(loader, sourceMap, warp)
-    local coordinates = WarpSystem.destinationCoordinates(sourceMap, warp, assert(destinationMap.fieldData))
+    local coordinates = WarpSystem.destinationCoordinates(sourceMap, warp, assert(destinationMap.fieldData), sourceKind)
     local localX, localZ = FieldCoordinates.fieldToLocal(destinationMap, coordinates.fieldX, coordinates.fieldZ)
     local sample = directSurface(destinationMap, warp, localX, localZ)
     -- The direct record is the source trigger and the destination record in
@@ -189,7 +198,7 @@ function WarpSystem.resolveDestination(loader, sourceMap, warp)
   end
 
   local destinationMap = loadDestination(loader, sourceMap, warp)
-  local coordinates = WarpSystem.destinationCoordinates(sourceMap, warp, assert(destinationMap.fieldData))
+  local coordinates = WarpSystem.destinationCoordinates(sourceMap, warp, assert(destinationMap.fieldData), sourceKind)
   local destinationWarp = coordinates.warp
 
   local localX, localZ = FieldCoordinates.fieldToLocal(destinationMap, coordinates.fieldX, coordinates.fieldZ)

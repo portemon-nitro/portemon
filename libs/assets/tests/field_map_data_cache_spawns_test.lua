@@ -44,6 +44,19 @@ function T.known_spawns_resolve_to_fresh_records()
   Assert.equal(second.map, "MAP_NEW_BARK", "callers receive copies, never the live record")
 end
 
+function T.fly_landing_resolves_by_its_compiled_map_symbol()
+  local cache = publishedCache()
+  local destination = assert(
+    FieldMapDataCache.spawnDestinationForMap(cache, "MAP_INDIGO_PLATEAU"),
+    "the compiled Indigo location resolves its cited outdoor landing"
+  )
+  Assert.deepEqual(destination, { map = "MAP_INDIGO_PLATEAU", fieldX = 912, fieldZ = 201 })
+  Assert.isNil(
+    FieldMapDataCache.spawnDestinationForMap(cache, "MAP_NOT_CITED"),
+    "map lookup never invents an uncited landing"
+  )
+end
+
 function T.known_blackout_spawns_resolve_to_fresh_records()
   local cache = publishedCache()
   local first = assert(FieldMapDataCache.blackoutDestination(cache, "SPAWN_NEW_BARK"), "mother blackout spawn resolves")
