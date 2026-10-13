@@ -100,6 +100,7 @@ function SummaryPresentationResources.new(opts)
   local derivedAssets = assert(opts.derivedAssets, "summary preparation needs its compilation seam")
   assert(type(derivedAssets) == "table", "summary preparation demands portrait pages through the provisioner")
   local manifest = assert(opts.manifest, "summary preparation needs the summary family")
+  SummaryCache.validateManifest(manifest)
   local portraitManifest =
     assert(cacheFs:loadLua(MonCache.portraitManifestPath()), "summary preparation needs the portrait manifest")
   assert(type(portraitManifest.entries) == "table", "the portrait manifest carries entries")

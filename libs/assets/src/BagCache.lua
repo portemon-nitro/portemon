@@ -156,6 +156,9 @@ function BagCache.isReady(cacheFs, expectedMarker)
   if type(manifest) ~= "table" or manifest.schema ~= BagCache.SCHEMA then
     return false
   end
+  if not BagAssetSchema.isValidManifest(manifest) then
+    return false
+  end
   local provenance = cacheFs:loadLua(BagCache.provenancePath())
   if
     type(provenance) ~= "table"
