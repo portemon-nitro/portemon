@@ -163,6 +163,59 @@ local SAFARI_CATCH_RATE_STAGES = {
   { 40, 10 },
 }
 
+local FIXED_MULTIPLIER = { GREAT_BALL = 15, SAFARI_BALL = 15, SPORT_BALL = 15, ULTRA_BALL = 20 }
+
+---@param ball string staged ball key under staging
+---@param target table<string, unknown> staged target facts under staging
+---@param env table<string, unknown> staged encounter facts under staging
+---@return integer tenths-fixed ball multiplier
+local function ballMultiplier(ball, target, env)
+  local turns = env.turns --[[@as number]]
+  local fixed = FIXED_MULTIPLIER[ball]
+  if fixed ~= nil then
+    return fixed
+  end
+  if ball == "NET_BALL" and hasAnyType(target.types, { "water", "bug" }) then
+    return 30
+  elseif ball == "DIVE_BALL" and env.method == "surf" then
+    return 35
+  elseif ball == "NEST_BALL" then
+    return nestMultiplier(target.level --[[@as number]])
+  elseif ball == "REPEAT_BALL" and env.pokedexCaught == true then
+    return 30
+  elseif ball == "TIMER_BALL" then
+    return math.min(40, turns + 10)
+  elseif ball == "DUSK_BALL" and (env.timeOfDay == "night" or env.inCave == true) then
+    return 35
+  elseif ball == "QUICK_BALL" and turns < 1 then
+    return 40
+  end
+  return 10
+end
+
+---@param ball string staged ball key under staging
+---@param rate number rate before the ball adjusts it
+---@param target table<string, unknown> staged target facts under staging
+---@param env table<string, unknown> staged encounter facts under staging
+---@return number rate after the ball's own adjustment
+local function ballAdjustedRate(ball, rate, target, env)
+  local baseSpeed = target.baseSpeed --[[@as number]]
+  if ball == "FAST_BALL" and baseSpeed >= 100 then
+    return rate * 4
+  elseif ball == "LURE_BALL" and env.fished == true then
+    return rate * 3
+  elseif ball == "MOON_BALL" and CaptureContext.isMoonLine(target.species) then
+    return rate * 4
+  elseif ball == "HEAVY_BALL" then
+    return rate + heavyAdjustment(target.weight --[[@as number]], rate)
+  elseif ball == "LEVEL_BALL" then
+    return rate * levelRateFactor(env.attackerLevel --[[@as number]], target.level --[[@as number]])
+  elseif ball == "LOVE_BALL" and target.species == env.attackerSpecies and target.gender ~= env.attackerGender then
+    return rate * 8
+  end
+  return rate
+end
+
 ---@param ball string staged ball key under staging
 ---@param target table<string, unknown> staged target facts under staging
 ---@param env table<string, unknown> staged encounter facts under staging
@@ -170,58 +223,19 @@ local SAFARI_CATCH_RATE_STAGES = {
 ---@return number staged tenths-fixed ball multiplier
 local function stageRateAndMultiplier(ball, target, env)
   local rate = target.catchRate --[[@as number]]
-  local multiplier = 10
   if ball == "SAFARI_BALL" and env.safariCatchRateStage ~= nil then
     local stage = env.safariCatchRateStage --[[@as integer]]
     assert(stage % 1 == 0 and stage >= 0 and stage <= 12, "safari throws carry a stage from 0 to 12")
     local pair = SAFARI_CATCH_RATE_STAGES[stage + 1]
     rate = math.floor((pair[1] * rate) / pair[2])
   end
-  if
-    ball == "FAST_BALL"
-    and target.baseSpeed --[[@as number]]
-      >= 100
-  then
-    rate = rate * 4
-  elseif ball == "LURE_BALL" and env.fished == true then
-    rate = rate * 3
-  elseif ball == "MOON_BALL" and CaptureContext.isMoonLine(target.species) then
-    rate = rate * 4
-  elseif ball == "HEAVY_BALL" then
-    rate = rate + heavyAdjustment(target.weight --[[@as number]], rate)
-  elseif ball == "GREAT_BALL" or ball == "SAFARI_BALL" or ball == "SPORT_BALL" then
-    multiplier = 15
-  elseif ball == "ULTRA_BALL" then
-    multiplier = 20
-  elseif ball == "NET_BALL" and hasAnyType(target.types, { "water", "bug" }) then
-    multiplier = 30
-  elseif ball == "DIVE_BALL" and env.method == "surf" then
-    multiplier = 35
-  elseif ball == "NEST_BALL" then
-    multiplier = nestMultiplier(target.level --[[@as number]])
-  elseif ball == "REPEAT_BALL" and env.pokedexCaught == true then
-    multiplier = 30
-  elseif ball == "TIMER_BALL" then
-    multiplier = math.min(40, env.turns --[[@as number]] + 10)
-  elseif ball == "DUSK_BALL" and (env.timeOfDay == "night" or env.inCave == true) then
-    multiplier = 35
-  elseif
-    ball == "QUICK_BALL"
-    and env.turns --[[@as number]]
-      < 1
-  then
-    multiplier = 40
-  elseif ball == "LEVEL_BALL" then
-    rate = rate * levelRateFactor(env.attackerLevel --[[@as number]], target.level --[[@as number]])
-  elseif ball == "LOVE_BALL" and target.species == env.attackerSpecies and target.gender ~= env.attackerGender then
-    rate = rate * 8
-  end
+  rate = ballAdjustedRate(ball, rate, target, env)
   if rate > 0xFF then
     rate = 0xFF
   elseif rate < 0 then
     rate = 1
   end
-  return rate, multiplier
+  return rate, ballMultiplier(ball, target, env)
 end
 
 ---@param target table<string, unknown> staged target facts under staging
@@ -242,6 +256,161 @@ local function stageOdds(target, rate, multiplier)
   return odds
 end
 
+---@param code string refusal code
+---@param message string human-readable reason
+---@param context table<string, unknown>? extra blame beside the code
+local function refuse(code, message, context)
+  local blame = { code = code }
+  for key, value in pairs(context or {}) do
+    blame[key] = value
+  end
+  error(failure(code, message, blame))
+end
+
+--- Resolves the throw's target combatant and its catchable mon.
+---@param attempt CaptureAttempt
+---@param battle table<string, unknown>
+---@return integer targetId
+---@return table<string, unknown> combatant
+---@return table<string, unknown> mon
+local function resolveTarget(attempt, battle)
+  local targetRef = attempt.target
+  if type(targetRef) ~= "table" or type(targetRef.combatant) ~= "number" then
+    refuse("invalid_target", "throws name their target combatant")
+  end
+  local targetId = targetRef.combatant --[[@as integer]]
+  local combatants = battle.combatants
+  local combatant = type(combatants) == "table" and (combatants --[[@as table<integer, unknown>]])[targetId] or nil
+  if type(combatant) ~= "table" then
+    refuse("invalid_target", "the target holds no combatant", { target = targetId })
+  end
+  combatant = combatant --[[@as table<string, unknown>]]
+  if targetRef.activation ~= nil and combatant.activation ~= nil and targetRef.activation ~= combatant.activation then
+    refuse("invalid_target", "the entry token no longer holds the slot", { target = targetId })
+  end
+  local mon = combatant.mon
+  if
+    type(mon) ~= "table" or type((mon --[[@as table<string, unknown>]]).species) ~= "string"
+  then
+    refuse("invalid_target", "the target holds no catchable mon", { target = targetId })
+  end
+  local hp = combatant.hp
+  if type(hp) ~= "number" or type(combatant.maxHp) ~= "number" or hp <= 0 then
+    refuse("invalid_target", "fainted targets are not catchable", { target = targetId })
+  end
+  return targetId, combatant, mon --[[@as table<string, unknown>]]
+end
+
+--- Resolves the mode policy and refuses balls and targets it forbids.
+---@param attempt CaptureAttempt
+---@param battle table<string, unknown>
+---@param combatant table<string, unknown>
+---@param targetId integer
+---@return CapturePolicy
+local function resolvePolicy(attempt, battle, combatant, targetId)
+  local mode = battle.mode
+  if mode == nil then
+    mode = "wild"
+  end
+  if type(mode) ~= "string" then
+    refuse("unknown_mode", "the capture mode is missing")
+  end
+  local policy = CaptureFormats.policyFor(CaptureFormats.register(), mode --[[@as string]])
+  if combatant.ownedByTrainer == true and not policy.trainerCapture then
+    refuse("trainer_target", "trainer targets are refused without cost", { target = targetId })
+  end
+  if policy.scripted then
+    refuse("scripted_battle", "tutorial throws belong to the script", { mode = policy.mode })
+  end
+  if policy.allowedBalls ~= nil then
+    local admitted = false
+    for _, allowed in ipairs(policy.allowedBalls) do
+      admitted = admitted or allowed == attempt.ball
+    end
+    if not admitted then
+      refuse("wrong_ball", "the mode admits only its own balls", { ball = attempt.ball, mode = policy.mode })
+    end
+  end
+  return policy
+end
+
+local SPECIAL_COUNTER_REFUSAL = {
+  safariBalls = "no_safari_balls",
+  sportBalls = "no_sport_balls",
+  parkBalls = "no_park_balls",
+}
+
+--- Refuses a throw whose special counter or shared stack holds no ball.
+---@param attempt CaptureAttempt
+---@param battle table<string, unknown>
+---@param policy CapturePolicy
+local function requireBall(attempt, battle, policy)
+  local ball = attempt.ball
+  if policy.counter ~= nil and policy.specialBall == ball then
+    local counter = battle[policy.counter]
+    if type(counter) ~= "number" or counter < 1 then
+      local code = SPECIAL_COUNTER_REFUSAL[policy.counter] or "no_special_balls"
+      refuse(code, "the special counter has no ball left", { mode = policy.mode })
+    end
+    return
+  end
+  local inventories = battle.inventories
+  local stock = type(inventories) == "table"
+      and (inventories --[[@as table<string, unknown>]])[attempt.inventoryId or "party"]
+    or nil
+  local quantities = type(stock) == "table" and (stock --[[@as table<string, unknown>]]).quantities or nil
+  local units = type(quantities) == "table" and (quantities --[[@as table<string, integer>]])[ball] or 0
+  if type(units) ~= "number" or units < 1 then
+    refuse("empty", "the shared stack has no ball left", { ball = ball })
+  end
+end
+
+--- Reads the target facts, preferring combatant values over the mon's own.
+---@param combatant table<string, unknown>
+---@param mon table<string, unknown>
+---@return table<string, unknown>
+local function targetFactsFor(combatant, mon)
+  return {
+    catchRate = combatant.catchRate or mon.catchRate or Capture.DEFAULT_CATCH_RATE,
+    maxHp = combatant.maxHp,
+    hp = combatant.hp,
+    status = combatant.status or mon.status or "healthy",
+    species = mon.species,
+    types = combatant.types or mon.types,
+    level = combatant.level or mon.level,
+    weight = combatant.weight or mon.weight,
+    baseSpeed = combatant.baseSpeed or mon.baseSpeed,
+    gender = combatant.gender or mon.gender,
+  }
+end
+
+---@param attempt CaptureAttempt
+---@param battle table<string, unknown>
+---@param policy CapturePolicy
+---@return table<string, unknown>
+local function envFactsFor(attempt, battle, policy)
+  local actorSlot = (battle.combatants --[[@as table<integer, unknown>]])[attempt.actor]
+  local holder = type(actorSlot) == "table" and actorSlot --[[@as table<string, unknown>]] or {}
+  local actorMon = type(holder.mon) == "table" and holder.mon --[[@as table<string, unknown>]] or {}
+  local facts = {
+    mode = policy.mode,
+    turns = battle.turns or 0,
+    pokedexCaught = battle.pokedexCaught or false,
+    attackerLevel = holder.level or actorMon.level,
+    attackerSpecies = actorMon.species,
+    attackerGender = holder.gender or actorMon.gender,
+    method = battle.method or "land",
+    fished = battle.fished or false,
+    timeOfDay = battle.timeOfDay or "day",
+    inCave = battle.inCave or false,
+    backdrop = battle.backdrop or "field",
+  }
+  if policy.mode == "safari" and attempt.ball == "SAFARI_BALL" and type(battle.formatState) == "table" then
+    facts.safariCatchRateStage = (battle.formatState --[[@as table<string, unknown>]]).safariCatchRateStage
+  end
+  return facts
+end
+
 --- Stages the validated context for a throw: resolves the target, the mode
 --- policy, legality, resources, and the per-ball facts. Every refusal
 --- below spends nothing.
@@ -252,166 +421,14 @@ end
 ---@return integer target combatant identity for the throw
 ---@return table<string, unknown> target slot holding the mon
 local function stageThrow(attempt, battle)
-  local targetRef = attempt.target
-  if type(targetRef) ~= "table" or type(targetRef.combatant) ~= "number" then
-    error(failure("invalid_target", "throws name their target combatant", { code = "invalid_target" }))
-  end
-  local targetId = targetRef.combatant --[[@as integer]]
   local ball = attempt.ball
   if not CaptureContext.isBall(ball) then
-    error(failure("unknown_ball", "the throw names no recognized ball", { code = "unknown_ball", ball = ball }))
+    refuse("unknown_ball", "the throw names no recognized ball", { ball = ball })
   end
-  local combatants = battle.combatants
-  if type(combatants) ~= "table" then
-    error(failure("invalid_target", "the target holds no combatant", { code = "invalid_target", target = targetId }))
-  end
-  local slot = (combatants --[[@as table<integer, unknown>]])[targetId]
-  if type(slot) ~= "table" then
-    error(failure("invalid_target", "the target holds no combatant", { code = "invalid_target", target = targetId }))
-  end
-  local combatant = slot --[[@as table<string, unknown>]]
-  if targetRef.activation ~= nil and combatant.activation ~= nil and targetRef.activation ~= combatant.activation then
-    error(
-      failure(
-        "invalid_target",
-        "the entry token no longer holds the slot",
-        { code = "invalid_target", target = targetId }
-      )
-    )
-  end
-  local mon = combatant.mon
-  if
-    type(mon) ~= "table" or type((mon --[[@as table<string, unknown>]]).species) ~= "string"
-  then
-    error(
-      failure("invalid_target", "the target holds no catchable mon", { code = "invalid_target", target = targetId })
-    )
-  end
-  if
-    type(combatant.hp) ~= "number"
-    or type(combatant.maxHp) ~= "number"
-    or combatant.hp --[[@as number]]
-      <= 0
-  then
-    error(
-      failure("invalid_target", "fainted targets are not catchable", { code = "invalid_target", target = targetId })
-    )
-  end
-  local mode = battle.mode
-  if mode == nil then
-    mode = "wild"
-  end
-  if type(mode) ~= "string" then
-    error(failure("unknown_mode", "the capture mode is missing", { code = "unknown_mode" }))
-  end
-  local policy = CaptureFormats.policyFor(CaptureFormats.register(), mode --[[@as string]])
-  if combatant.ownedByTrainer == true and not policy.trainerCapture then
-    error(
-      failure(
-        "trainer_target",
-        "trainer targets are refused without cost",
-        { code = "trainer_target", target = targetId }
-      )
-    )
-  end
-  if policy.scripted then
-    error(
-      failure(
-        "scripted_battle",
-        "tutorial throws belong to the script",
-        { code = "scripted_battle", mode = policy.mode }
-      )
-    )
-  end
-  if policy.allowedBalls ~= nil then
-    local admitted = false
-    for _, allowed in ipairs(policy.allowedBalls) do
-      if allowed == ball then
-        admitted = true
-        break
-      end
-    end
-    if not admitted then
-      error(
-        failure(
-          "wrong_ball",
-          "the mode admits only its own balls",
-          { code = "wrong_ball", ball = ball, mode = policy.mode }
-        )
-      )
-    end
-  end
-  local targetFacts = {
-    catchRate = combatant.catchRate or (mon --[[@as table<string, unknown>]]).catchRate or Capture.DEFAULT_CATCH_RATE,
-    maxHp = combatant.maxHp,
-    hp = combatant.hp,
-    status = combatant.status or (mon --[[@as table<string, unknown>]]).status or "healthy",
-    species = (mon --[[@as table<string, unknown>]]).species,
-    types = combatant.types or (mon --[[@as table<string, unknown>]]).types,
-    level = combatant.level or (mon --[[@as table<string, unknown>]]).level,
-    weight = combatant.weight or (mon --[[@as table<string, unknown>]]).weight,
-    baseSpeed = combatant.baseSpeed or (mon --[[@as table<string, unknown>]]).baseSpeed,
-    gender = combatant.gender or (mon --[[@as table<string, unknown>]]).gender,
-  }
-  local actorSlot = (combatants --[[@as table<integer, unknown>]])[attempt.actor]
-  local actorMon = {} ---@type table<string, unknown>
-  if type(actorSlot) == "table" then
-    local holder = actorSlot --[[@as table<string, unknown>]]
-    if type(holder.mon) == "table" then
-      actorMon = holder.mon --[[@as table<string, unknown>]]
-    end
-  end
-  local envFacts = {
-    mode = policy.mode,
-    turns = battle.turns or 0,
-    pokedexCaught = battle.pokedexCaught or false,
-    attackerLevel = (actorSlot --[[@as table<string, unknown>]] or {}).level or actorMon.level,
-    attackerSpecies = actorMon.species,
-    attackerGender = (actorSlot --[[@as table<string, unknown>]] or {}).gender or actorMon.gender,
-    method = battle.method or "land",
-    fished = battle.fished or false,
-    timeOfDay = battle.timeOfDay or "day",
-    inCave = battle.inCave or false,
-    backdrop = battle.backdrop or "field",
-  }
-  if policy.mode == "safari" and ball == "SAFARI_BALL" then
-    local formatState = battle.formatState
-    if type(formatState) == "table" then
-      envFacts.safariCatchRateStage = (formatState --[[@as table<string, unknown>]]).safariCatchRateStage
-    end
-  end
-  local context = CaptureContext.forBall(ball, targetFacts, envFacts)
-  if policy.counter ~= nil and policy.specialBall == ball then
-    local counter = battle[policy.counter]
-    local code = "no_special_balls"
-    if policy.counter == "safariBalls" then
-      code = "no_safari_balls"
-    elseif policy.counter == "sportBalls" then
-      code = "no_sport_balls"
-    elseif policy.counter == "parkBalls" then
-      code = "no_park_balls"
-    end
-    if type(counter) ~= "number" or counter < 1 then
-      error(failure(code, "the special counter has no ball left", { code = code, mode = policy.mode }))
-    end
-  else
-    local inventoryId = attempt.inventoryId or "party"
-    local inventories = battle.inventories
-    local quantities = nil
-    if type(inventories) == "table" then
-      local stock = (inventories --[[@as table<string, unknown>]])[inventoryId]
-      if type(stock) == "table" then
-        quantities = (stock --[[@as table<string, unknown>]]).quantities
-      end
-    end
-    local units = 0
-    if type(quantities) == "table" then
-      units = (quantities --[[@as table<string, integer>]])[ball] or 0
-    end
-    if type(units) ~= "number" or units < 1 then
-      error(failure("empty", "the shared stack has no ball left", { code = "empty", ball = ball }))
-    end
-  end
+  local targetId, combatant, mon = resolveTarget(attempt, battle)
+  local policy = resolvePolicy(attempt, battle, combatant, targetId)
+  local context = CaptureContext.forBall(ball, targetFactsFor(combatant, mon), envFactsFor(attempt, battle, policy))
+  requireBall(attempt, battle, policy)
   return context, policy, targetId, combatant
 end
 
