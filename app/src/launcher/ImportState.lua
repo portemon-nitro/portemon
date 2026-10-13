@@ -48,7 +48,7 @@ function ImportState.renderContinuation(facts, preparationStatus, failure)
   lg.setColor(1, 1, 1)
   lg.print("portemon — HeartGold / SoulSilver ROM import", x, y)
   lg.setColor(0.7, 0.7, 0.75)
-  lg.print("Drop a .nds file onto this window to import it.", x, y + 28)
+  lg.print("Drop a matching .nds or .zip file onto this window to import it.", x, y + 28)
   if facts.saveDir ~= nil then
     lg.print("Private cache is written under:", x, y + 52)
     lg.print(tostring(facts.saveDir), x, y + 72)
@@ -100,7 +100,7 @@ function ImportState.render(status, saveDir)
   lg.setColor(1, 1, 1)
   lg.print("portemon — HeartGold / SoulSilver ROM import", x, y)
   lg.setColor(0.7, 0.7, 0.75)
-  lg.print("Drop a .nds file onto this window to import it.", x, y + 28)
+  lg.print("Drop a matching .nds or .zip file onto this window to import it.", x, y + 28)
   if saveDir then
     lg.print("Private cache is written under:", x, y + 52)
     lg.print(saveDir, x, y + 72)
@@ -136,7 +136,7 @@ function ImportState.render(status, saveDir)
     lg.print("Import failed [" .. tostring(status.errorCode or "ERROR") .. "]:", x, y + 120)
     lg.print(Errors.format(status.error), x, y + 140)
     lg.setColor(0.7, 0.7, 0.75)
-    lg.print("Drop a valid .nds ROM to retry.", x, y + 168)
+    lg.print("Drop a valid matching .nds or .zip ROM to retry.", x, y + 168)
   end
 end
 

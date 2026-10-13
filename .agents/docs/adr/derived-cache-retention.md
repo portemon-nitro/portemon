@@ -32,7 +32,9 @@ derived data belongs.
   storage keeps only a small per-version binding (location, canonical
   identity, selected archive member) plus validated identity, never source
   bytes. Sources that cannot be reopened later are usable in memory for the
-  current session and ask for reselection only on a later compilation miss.
+  current session and block the next incomplete-cache boot until the
+  matching ROM is supplied again; a current complete cache boots offline
+  without the file.
 - A matching completion receipt authorizes reuse of derived assets without
   revalidation, ROM access, or decompression of anything but the requested
   payload. Superseded outputs are retired only with proof: owned roots move
@@ -61,10 +63,10 @@ derived data belongs.
   bounded staging; peak runtime memory stays within the mobile budget by
   sharing one immutable source buffer across compiler workers only while
   source-dependent work remains, then releasing it.
-- Installations predating this layout migrate derived bytes in place and
-  drop the extracted tree only when the remaining cache stays playable or
-  a matching source is verified; otherwise the old tree is retained and
-  the user is asked for the ROM when compilation actually needs it.
+- Installations predating this layout are not migrated or deleted by the
+  project: the developer removes old pre-release cache roots by hand once.
+  Existing saves and mods are never deleted, and no legacy extracted tree
+  is converted or retired automatically.
 - Jobs compiled before per-job shared proofs existed stay playable but
   hold their orphaned shared files until a natural full rebuild proves
   the references; no forced redigestion manufactures proofs.

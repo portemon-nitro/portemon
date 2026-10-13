@@ -98,6 +98,9 @@ local function fresh()
   App.service = nil
   App.pendingQuiesce = nil
   App.epoch = 0
+  App.selectedVersionId = nil
+  App._rebindVersionId = nil
+  App._bootBlockedVersionId = nil
   App.drawableWidth = nil
   App.drawableHeight = nil
   App.pixelRatio = nil
@@ -176,6 +179,17 @@ local function withAppHarness(opts, ready, fn)
   end
   function service:enableSweep(_)
     result.warmups = result.warmups + 1
+  end
+  function service:offerSource(_, _, _)
+    result.offers = (result.offers or 0) + 1
+    return true
+  end
+  function service:requestBootSource(_)
+    result.bootGates = (result.bootGates or 0) + 1
+    return true
+  end
+  function service:bootSourceStatus(_)
+    return result.bootStatus or "ready", result.bootDetail
   end
   function service:update() end
   function service:retire(_)
@@ -606,6 +620,8 @@ function T.boot_existing_with_one_ready_version_enters_the_main_menu()
     -- Only heartgold is installed and current; the sibling stays out.
     currentOnlyFor("heartgold")
     App._bootExisting()
+    -- The boot gate answers first: readiness continues into the menu.
+    App.update(0.016)
     Assert.equal(#result.launches, 0, "selecting a version installs the product menu without starting retail")
     Assert.equal(App.state, result.menus[1])
     Assert.equal(result.provisionerDisposals, 0, "launch must not dispose its new provisioner")
@@ -638,6 +654,8 @@ function T.cancelled_retail_entries_restore_the_product_menu_on_the_same_selecti
 
     local ok, err = pcall(function()
       App._bootExisting()
+      -- The boot gate answers first: readiness continues into the menu.
+      App.update(0.016)
       local provisioner = App.provisioner
       local epoch = App.epoch
       local activeState = App.state
@@ -692,6 +710,8 @@ function T.boot_existing_with_two_ready_versions_offers_the_selector_over_the_re
     Assert.equal(getmetatable(selector).__index, VersionSelectState)
     Assert.deepEqual(selector.ready, { "heartgold", "soulsilver" })
     selector.onPick("soulsilver")
+    -- The boot gate answers first: readiness continues into the menu.
+    App.update(0.016)
     Assert.equal(#result.launches, 0, "selecting a version installs the product menu")
     Assert.equal(result.menus[1].options.versionId, "soulsilver")
     Assert.equal(App.state, result.menus[1])
@@ -714,6 +734,8 @@ function T.completed_import_launches_the_imported_version_through_the_hgss_entry
     end
     local ok, err = pcall(function()
       App._onImported("heartgold")
+      -- The boot gate answers first, then the ready closure installs the menu.
+      App.update(0.016)
       App.update(0.016)
       Assert.equal(#result.launches, 0, "import completion installs the product menu only")
       Assert.equal(result.menus[1].options.versionId, "heartgold")
@@ -731,6 +753,8 @@ function T.shell_exit_mapping_quits_only_for_a_hgss_quit_result()
     return id == "heartgold"
   end, function(result)
     App._bootMainMenu({ "heartgold" })
+    -- The boot gate answers first: readiness continues into the menu.
+    App.update(0.016)
     result.menus[1].options.onResult({ kind = "new_game" })
     local launch = assert(result.launches[1])
     launch.onExit({ kind = "continue" })
@@ -763,6 +787,8 @@ function T.release_startup_passes_the_release_counter_without_reading_producer_s
       -- Only heartgold is installed and current; the sibling stays out.
       currentOnlyFor("heartgold")
       App._bootExisting()
+      -- The boot gate answers first: readiness continues into the menu.
+      App.update(0.016)
       local options = assert(result.selectOptions[1])
       Assert.keySet(options, "development,versionId")
       Assert.equal(options.versionId, "heartgold")
@@ -793,6 +819,8 @@ function T.release_startup_selects_the_per_game_release_counter()
       -- Only soulsilver is installed and current; the sibling stays out.
       currentOnlyFor("soulsilver")
       App._bootExisting()
+      -- The boot gate answers first: readiness continues into the menu.
+      App.update(0.016)
       local options = assert(result.selectOptions[1])
       Assert.keySet(options, "development,versionId")
       Assert.equal(options.versionId, "soulsilver")
@@ -836,6 +864,8 @@ function T.development_startup_passes_frozen_checkout_selectors_without_scanning
         -- Only heartgold is installed and current; the sibling stays out.
         currentOnlyFor("heartgold")
         App._bootExisting()
+        -- The boot gate answers first: readiness continues into the menu.
+        App.update(0.016)
         local first = assert(result.selectOptions[1])
         Assert.equal(first.versionId, "heartgold")
         Assert.isTrue(first.development)
@@ -845,6 +875,8 @@ function T.development_startup_passes_frozen_checkout_selectors_without_scanning
           "development selection passes the checkout root instead of a digest"
         )
         App._bootMainMenu({ "heartgold" })
+        -- The boot gate answers first: readiness continues into the menu.
+        App.update(0.016)
         local second = assert(result.selectOptions[2])
         Assert.equal(checkoutCalls, 0, "no checkout scan happens on the game thread")
         Assert.equal(appBackendCalls, 0)
@@ -972,6 +1004,8 @@ function T.existing_selection_after_restart_without_a_completion_enters_preparat
     local original = installFirstPlayFactory(script)
     local ok, err = pcall(function()
       App._bootExisting()
+      -- The boot gate answers first: readiness continues into preparation.
+      App.update(0.016)
     end)
     HgssGame.newFirstPlayCachePreparation = original
     if not ok then
@@ -1000,6 +1034,8 @@ function T.existing_selection_with_a_stale_completion_prepares_again()
     local original = installFirstPlayFactory(script)
     local ok, err = pcall(function()
       App._bootExisting()
+      -- The boot gate answers first: readiness continues into preparation.
+      App.update(0.016)
     end)
     HgssGame.newFirstPlayCachePreparation = original
     if not ok then
@@ -1028,6 +1064,8 @@ function T.existing_selection_with_a_current_completion_keeps_the_bootstrap_path
     end
     local ok, err = pcall(function()
       App._bootExisting()
+      -- The boot gate answers first: readiness continues into the menu.
+      App.update(0.016)
     end)
     HgssGame.newFirstPlayCachePreparation = original
     if not ok then
@@ -1185,6 +1223,8 @@ function T.fresh_import_hands_the_same_provisioner_epoch_to_the_game()
       local epoch = assert(App.epoch, "fresh import borrows a controller epoch")
       local selections = #result.selectOptions
       script.ready = true
+      -- The boot gate answers first, then the ready closure installs the menu.
+      App.update(0.016)
       App.update(0.016)
       Assert.equal(#result.launches, 0, "preparation readiness installs the app menu")
       Assert.equal(#result.menus, 1)
@@ -1258,8 +1298,10 @@ function T.fresh_import_first_play_stays_on_the_import_surface_until_the_menu()
     local original = installFirstPlayFactory(script)
     local ok, err = pcall(function()
       -- Ordinary stale-cache first-play first: no importer identity exists,
-      -- so the wait must keep the generic preparation surface.
+      -- so the wait must keep the generic preparation surface. The boot
+      -- gate answers first: readiness continues into preparation.
       App._selectVersion("heartgold")
+      App.update(0.016)
       Assert.equal(
         getmetatable(App.state).__index,
         CachePreparationState,
@@ -1280,6 +1322,8 @@ function T.fresh_import_first_play_stays_on_the_import_surface_until_the_menu()
       }
       App._onImported("heartgold")
       Assert.isTrue(App.importer == nil, "the completed importer is released at the handoff")
+      -- The boot gate answers first: readiness continues into preparation.
+      App.update(0.016)
       Assert.equal(
         getmetatable(App.state).__index,
         CachePreparationState,
@@ -1337,6 +1381,8 @@ function T.menu_installation_requests_intro_and_field_closures_at_near_urgency()
     currentOnlyFor("heartgold")
     local requests = recordServiceRequests(result)
     App._bootExisting()
+    -- The boot gate answers first: readiness continues into the menu.
+    App.update(0.016)
     Assert.equal(#result.menus, 1, "selection installs the product menu")
     local names, urgencies = requestedMilestones(requests)
     Assert.deepEqual(
@@ -1380,6 +1426,8 @@ function T.boot_existing_with_a_current_cache_and_no_source_skips_the_import()
       -- and boot selects exactly one version without source work.
       currentOnlyFor("heartgold")
       App._bootExisting()
+      -- The boot gate answers first: readiness continues into the menu.
+      App.update(0.016)
       Assert.isNil(App.importer, "a current derived cache never prompts for its ROM")
       Assert.equal(App.state, result.menus[1], "boot enters the installed menu without source work")
       Assert.equal(result.warmups, 1, "menu installation still authorizes background completion once")

@@ -121,6 +121,15 @@ T.tests["the selected game receives only the semantic provisioning host"] = func
     function service:observe(_, _)
       return true, nil
     end
+    function service:offerSource(_, _, _)
+      return true
+    end
+    function service:requestBootSource(_)
+      return true
+    end
+    function service:bootSourceStatus(_)
+      return "ready", nil
+    end
     function service:enableSweep(_)
       result.warmups = (result.warmups or 0) + 1
     end
@@ -128,6 +137,7 @@ T.tests["the selected game receives only the semantic provisioning host"] = func
     function service:retire(_) end
     App.service = service
     App._bootMainMenu({ "heartgold" })
+    App.update(1 / 30)
     Assert.equal(#result.launches, 0, "selection installs the product menu before launching retail")
     local menuOptions = assert(result.menuOptions)
     menuOptions.onResult({ kind = "new_game" })

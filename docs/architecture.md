@@ -91,8 +91,15 @@ and architecture gates live under `tests/`.
 
 ## Runtime and data lifecycle
 
-The app records a small binding to the user's own ROM file and enters its
-product Main Menu. The menu routes an explicit New Game or Continue selection
+The app records a small binding to the user's own ROM file, then every
+selection waits for source readiness before entering its product Main
+Menu. A current complete derived cache boots and plays without touching
+the ROM; an incomplete cache stays on a boot-only source prompt until
+its exact ROM is verified, even when its bounded opening closure is
+ready. Once admitted, gameplay never asks for the ROM again: background
+warmup continues in the retained session, and unexpected runtime damage
+is a cache failure, not a mid-game source request. The menu routes an
+explicit New Game or Continue selection
 to `HgssGame`, which creates the generic `Game` host and installs the
 corresponding HGSS retail flow. The ROM itself is never copied into managed
 storage; compilers read it directly on a genuine cache miss over one shared

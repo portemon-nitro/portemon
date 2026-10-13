@@ -21,6 +21,9 @@ local VersionSelectState = require("app.src.launcher.VersionSelectState")
 ---@field service CacheService|nil process-owned cache controller service shared by every selection
 ---@field epoch integer latest borrowed controller epoch, monotonically increasing
 ---@field pendingQuiesce table<string, integer>|nil unacknowledged source-close barrier for import
+---@field selectedVersionId string? currently selected game version
+---@field _rebindVersionId string? version a pending raw drop is expected to supply back
+---@field _bootBlockedVersionId string? version a blocked boot refuses to switch away from
 ---@field drawableWidth number?
 ---@field drawableHeight number?
 ---@field pixelRatio number?
@@ -30,10 +33,12 @@ local App = {}
 ---@field test boolean?
 ---@field dev boolean?
 
--- Installed versions need no ROM on the startup path: a strict persisted
--- source binding suffices for first-play preparation (bytes load lazily on
--- a real miss), and a current first-play attestation boots the menu
--- without any source at all. Neither check opens or hashes the ROM.
+-- Version registration only lists candidates for the boot gate: every
+-- selection waits for source readiness before the menu, first play, or
+-- retail. A current complete derived cache keeps its offline fast path
+-- without any source access; an incomplete cache stays blocked until its
+-- exact ROM is verified, even when its bounded opening closure is ready.
+-- Neither check opens or hashes the ROM on the fast path.
 local function readyVersions()
   local out = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
@@ -173,6 +178,7 @@ end
 
 function App._showVersionSelector()
   App._rebindVersionId = nil
+  App._bootBlockedVersionId = nil
   App._retireSelection()
   local ready = readyVersions()
   if #ready == 0 then
@@ -188,7 +194,7 @@ end
 -- wait: no new session writes shared version roots before the controller
 -- acknowledges that every source reader closed successfully.
 ---@param versionId string newly selected game version
----@param options { freshImport: boolean?, importContinuation: table<string, unknown>? }? private selection mode
+---@param options { freshImport: boolean?, importContinuation: table<string, unknown>?, sourceOffer: userdata?, bootMismatch: string? }? private selection mode
 ---@return boolean
 function App._waitForQuiescence(versionId, options)
   local pending = App.pendingQuiesce
@@ -283,15 +289,13 @@ function App._publishFirstPlay(versionId)
 end
 
 -- Selects a game version: borrows a controller epoch through its
--- provisioner, then launches the menu immediately when bootstrap is
--- already ready or waits through a visible preparation state otherwise.
--- A ready bootstrap never recompiles; broader warming starts only after
--- the menu is installed. A registered source with first-play
--- attestation missing or stale routes through the same bounded
--- first-play preparation a fresh import uses; only a current
--- generation-scoped attestation keeps the fast bootstrap/menu path.
+-- provisioner, hands any verified offered source to the controller, queues
+-- the boot readiness gate behind it on the same control stream, and waits
+-- through a visible boot-source state. Nothing downstream (menu, retail,
+-- first-play preparation, background sweep) runs before the gate answers
+-- ready for this exact epoch.
 ---@param versionId string newly selected game version
----@param options { freshImport: boolean?, importContinuation: table<string, unknown>? }? private selection mode, default ordinary
+---@param options { freshImport: boolean?, importContinuation: table<string, unknown>?, sourceOffer: userdata?, bootMismatch: string? }? private selection mode, default ordinary
 function App._selectVersion(versionId, options)
   if App._waitForQuiescence(versionId, options) then
     return
@@ -302,6 +306,46 @@ function App._selectVersion(versionId, options)
   App.provisioner = provisioner
   App.epoch = assert(provisioner.epoch, "selection borrowed no epoch")
   local epoch = App.epoch
+  local service = assert(App.service, "process cache service is unavailable")
+  -- A newly imported verified source crosses on the same control stream
+  -- behind selection and ahead of the gate, by reference; the controller
+  -- validates and pins it. An ordinary selection carries no offer.
+  local offer = options ~= nil and options.sourceOffer or nil
+  if type(offer) == "userdata" then
+    local info = GameVersion.info(versionId)
+    service:offerSource(epoch, offer, { versionId = versionId, romSha1 = info.sha1 })
+  end
+  service:requestBootSource(epoch)
+  local mismatch = options ~= nil and options.bootMismatch or nil
+  App.setState(CachePreparationState.new({
+    kind = "boot-source",
+    epoch = epoch,
+    service = service,
+    versionId = versionId,
+    mismatch = mismatch,
+    isCurrent = function(selected)
+      return App.epoch == selected
+    end,
+    onReady = function()
+      App._continueSelectedVersion(versionId, options)
+    end,
+    onCancel = function()
+      App._showVersionSelector()
+    end,
+  }))
+end
+
+-- Continues the selected version once its boot gate answered ready for the
+-- exact selected epoch. Runs the original downstream choice unchanged:
+-- the menu immediately when bootstrap is already ready, otherwise a
+-- visible bootstrap wait; a registered source with first-play attestation
+-- missing or stale routes through the same bounded first-play preparation
+-- a fresh import uses. Never reselects and never mints another epoch.
+---@param versionId string newly selected game version
+---@param options { freshImport: boolean?, importContinuation: table<string, unknown>?, sourceOffer: userdata?, bootMismatch: string? }? private selection mode, default ordinary
+function App._continueSelectedVersion(versionId, options)
+  local epoch = App.epoch
+  local provisioner = assert(App.provisioner, "boot continuation needs the selected provisioner")
   local host = provisioner:gameHost()
   local freshImport = options ~= nil and options.freshImport == true
   if not freshImport and FirstPlayCompletion.isCurrent(versionId, App._firstPlayGeneration(versionId)) then
@@ -380,6 +424,7 @@ function App.load(opts)
   App.pendingQuiesce = nil
   App.selectedVersionId = nil
   App._rebindVersionId = nil
+  App._bootBlockedVersionId = nil
   App.setState(nil)
   love.graphics.setBackgroundColor(unpack(WindowConfig.BACKGROUND_COLOR))
   App.saveDir = love.filesystem.getSaveDirectory()
@@ -404,6 +449,16 @@ function App._startImport()
   end
   App.importer = RomImporter.new({ onComplete = onComplete })
   App.setState(ImportState.new(App.importer, App.saveDir))
+end
+
+---@param versionId string
+---@return string display label for the selected game version
+local function selectedVersionLabel(versionId)
+  local infoOk, info = pcall(GameVersion.info, versionId)
+  if infoOk and type(info) == "table" and type(info.label) == "string" then
+    return info.label
+  end
+  return tostring(versionId)
 end
 
 function App._onImported(versionId)
@@ -434,8 +489,11 @@ function App._onImported(versionId)
   end
   -- Take the one verified source handoff before the importer is released.
   -- A dropped or freshly imported ROM carries no reopenable path yet, so
-  -- this buffer is what lets first-play preparation and the whole sweep
-  -- run for the session; the controller owns it once offered.
+  -- this buffer is what lets the controller admit the selection; the
+  -- buffer crosses by reference as a selection option so the offer is
+  -- enqueued before the boot gate, including when quiescence defers the
+  -- selection behind a pending barrier. Releasing the wrapper never drops
+  -- the buffer: the options own the reference until admitted.
   local verifiedSource = nil
   if importer ~= nil and type(importer.takeVerifiedSource) == "function" then
     local takeOk, taken = pcall(importer.takeVerifiedSource, importer)
@@ -444,6 +502,48 @@ function App._onImported(versionId)
     end
   end
   App.importer = nil
+  local offeredBytes = nil
+  if verifiedSource ~= nil then
+    local bytesOk, byteData = pcall(verifiedSource.byteData, verifiedSource)
+    if bytesOk and type(byteData) == "userdata" then
+      offeredBytes = byteData
+    end
+    if type(verifiedSource.release) == "function" then
+      pcall(verifiedSource.release, verifiedSource)
+    end
+  end
+  -- A blocked boot rebind stays on its expected version: a wrong ROM never
+  -- switches the selection, launches another game, or clears current
+  -- files. The expected version reselects with the mismatch diagnostic so
+  -- the boot wait stays actionable on a fresh epoch.
+  local blockedExpected = App._bootBlockedVersionId
+  if blockedExpected == nil then
+    local current = App.state
+    if
+      current ~= nil
+      and getmetatable(current) == CachePreparationState
+      and current.kind == "boot-source"
+      and App.selectedVersionId ~= nil
+    then
+      blockedExpected = App.selectedVersionId
+    end
+  end
+  if blockedExpected ~= nil and versionId ~= blockedExpected then
+    App._bootBlockedVersionId = nil
+    App._rebindVersionId = nil
+    local expectedLabel = selectedVersionLabel(blockedExpected)
+    local wrongLabel = selectedVersionLabel(versionId)
+    App._selectVersion(blockedExpected, {
+      bootMismatch = string.format(
+        "Dropped %s does not match the expected %s version (mismatch). Drop the matching .nds or .zip for %s to finish preparing.",
+        wrongLabel,
+        expectedLabel,
+        expectedLabel
+      ),
+    })
+    return
+  end
+  App._bootBlockedVersionId = nil
   -- A rebind that supplies the same ROM resumes the waiting version on
   -- the ordinary path: its receipts, assets, and saves survive instead of
   -- restarting as a fresh import. Only a genuinely new version takes the
@@ -451,21 +551,17 @@ function App._onImported(versionId)
   local rebindId = App._rebindVersionId
   App._rebindVersionId = nil
   if rebindId ~= nil and versionId == rebindId then
-    App._selectVersion(versionId)
+    if offeredBytes ~= nil then
+      App._selectVersion(versionId, { sourceOffer = offeredBytes })
+    else
+      App._selectVersion(versionId)
+    end
   else
-    App._selectVersion(versionId, { freshImport = true, importContinuation = continuation })
-  end
-  if verifiedSource ~= nil and App.service ~= nil and type(App.service.offerSource) == "function" then
-    local infoOk, info = pcall(GameVersion.info, versionId)
-    if infoOk and type(info) == "table" and type(info.sha1) == "string" then
-      local bytesOk, byteData = pcall(verifiedSource.byteData, verifiedSource)
-      if bytesOk and type(byteData) == "userdata" then
-        App.service:offerSource(App.epoch, byteData, { versionId = versionId, romSha1 = info.sha1 })
-      end
+    local selectOptions = { freshImport = true, importContinuation = continuation }
+    if offeredBytes ~= nil then
+      selectOptions.sourceOffer = offeredBytes
     end
-    if type(verifiedSource.release) == "function" then
-      pcall(verifiedSource.release, verifiedSource)
-    end
+    App._selectVersion(versionId, selectOptions)
   end
 end
 
@@ -569,6 +665,15 @@ function App.filedropped(file)
     -- attached provisioner. Progress and input keep pumping while the
     -- readers drain. The retired version is remembered so supplying the
     -- same ROM back resumes it instead of restarting it as a fresh import.
+    -- A drop out of a blocked boot additionally remembers the expected
+    -- version, so a wrong ROM cannot switch the selection away from it.
+    local wasBootBlocked = currentState ~= nil
+      and getmetatable(currentState) == CachePreparationState
+      and currentState.kind == "boot-source"
+    App._bootBlockedVersionId = nil
+    if wasBootBlocked then
+      App._bootBlockedVersionId = App.selectedVersionId
+    end
     App._rebindVersionId = App.selectedVersionId
     App._retireSelection()
     local epoch = App.epoch or 0
@@ -716,6 +821,7 @@ function App.quit()
   App.pendingQuiesce = nil
   App.selectedVersionId = nil
   App._rebindVersionId = nil
+  App._bootBlockedVersionId = nil
   if service then
     service:shutdown()
   end
