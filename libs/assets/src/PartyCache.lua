@@ -45,7 +45,6 @@ end
 ---@param manifest table<string, unknown>
 ---@return string[]
 function PartyCache.referencedPaths(manifest)
-  PartyAssetSchema.assertManifest(manifest)
   local paths = {}
   local function addVisual(visual)
     assert(type(visual) == "table", "party manifest visual is malformed")
@@ -125,7 +124,7 @@ function PartyCache.isReady(cacheFs, expectedMarker)
     return false
   end
   local manifest = cacheFs:loadLua(PartyCache.manifestPath())
-  if not PartyAssetSchema.isValidManifest(manifest) then
+  if type(manifest) ~= "table" or manifest.schema ~= PartyCache.SCHEMA then
     return false
   end
   local provenance = cacheFs:loadLua(PartyCache.provenancePath())

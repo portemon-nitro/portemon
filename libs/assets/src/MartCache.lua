@@ -6,7 +6,6 @@
 local MartCache = {}
 
 local Contract = require("libs.assets.src.DerivedAssetContract")
-local MartAssetSchema = require("libs.assets.src.MartAssetSchema")
 local Validate = require("libs.assets.src.Validate")
 
 MartCache.FORMAT = Contract.mart.cacheFormat
@@ -117,11 +116,11 @@ function MartCache.isReady(cacheFs, expectedMarker)
     return false
   end
   local catalog = cacheFs:loadLua(MartCache.catalogPath())
-  if not MartAssetSchema.isValidCatalog(catalog) then
+  if type(catalog) ~= "table" or catalog.schema ~= MartCache.CATALOG_SCHEMA then
     return false
   end
   local manifest = cacheFs:loadLua(MartCache.manifestPath())
-  if not MartAssetSchema.isValidManifest(manifest) then
+  if type(manifest) ~= "table" or manifest.schema ~= MartCache.SCHEMA then
     return false
   end
   local provenance = cacheFs:loadLua(MartCache.provenancePath())

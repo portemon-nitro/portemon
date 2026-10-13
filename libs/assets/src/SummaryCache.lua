@@ -50,7 +50,6 @@ end
 ---@param manifest table<string, unknown>
 ---@return string[]
 function SummaryCache.referencedPaths(manifest)
-  SummaryAssetSchema.assertManifest(manifest)
   local seen = {}
   local function add(path)
     if seen[path] == nil then
@@ -90,7 +89,7 @@ function SummaryCache.isReady(cacheFs, expectedMarker)
     return false
   end
   local manifest = cacheFs:loadLua(SummaryCache.manifestPath())
-  if not SummaryAssetSchema.isValidManifest(manifest) then
+  if type(manifest) ~= "table" or manifest.schema ~= SummaryCache.SCHEMA then
     return false
   end
   local provenance = cacheFs:loadLua(SummaryCache.provenancePath())
@@ -119,7 +118,7 @@ end
 
 function SummaryCache.loadManifest(cacheFs)
   local manifest = cacheFs:loadLua(SummaryCache.manifestPath())
-  SummaryAssetSchema.assertManifest(manifest)
+  assert(type(manifest) == "table" and manifest.schema == SummaryCache.SCHEMA, "summary manifest is unavailable")
   return manifest
 end
 

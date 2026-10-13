@@ -41,7 +41,6 @@ end
 ---@param manifest table<string, unknown>
 ---@return string[]
 function PcCache.referencedPaths(manifest)
-  PcAssetSchema.assertManifest(manifest)
   local paths, seen = {}, {}
   local function collect(value)
     if type(value) ~= "table" then
@@ -120,7 +119,7 @@ function PcCache.isReady(cacheFs, expectedMarker)
     return false
   end
   local manifest = cacheFs:loadLua(PcCache.manifestPath())
-  if not PcAssetSchema.isValidManifest(manifest) then
+  if type(manifest) ~= "table" or manifest.schema ~= PcCache.SCHEMA then
     return false
   end
   local provenance = cacheFs:loadLua(PcCache.provenancePath())

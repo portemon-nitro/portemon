@@ -19,7 +19,6 @@
 -- A stale demand key can never be adopted as the selected picture.
 
 local MonCache = require("libs.assets.src.MonCache")
-local SummaryAssetSchema = require("libs.assets.src.SummaryAssetSchema")
 local SummaryCache = require("libs.assets.src.SummaryCache")
 
 local SHADER_PATH = "libs/hgss/src/ui/shaders/summary_picture.glsl"
@@ -101,7 +100,6 @@ function SummaryPresentationResources.new(opts)
   local derivedAssets = assert(opts.derivedAssets, "summary preparation needs its compilation seam")
   assert(type(derivedAssets) == "table", "summary preparation demands portrait pages through the provisioner")
   local manifest = assert(opts.manifest, "summary preparation needs the summary family")
-  SummaryAssetSchema.assertManifest(manifest)
   local portraitManifest =
     assert(cacheFs:loadLua(MonCache.portraitManifestPath()), "summary preparation needs the portrait manifest")
   assert(type(portraitManifest.entries) == "table", "the portrait manifest carries entries")

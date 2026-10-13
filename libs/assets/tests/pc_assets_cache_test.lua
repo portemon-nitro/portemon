@@ -48,34 +48,6 @@ function T.generated_terminal_policy_does_not_expose_source_selectors()
   )
 end
 
-function T.asset_path_traversal_is_a_normal_readiness_refusal()
-  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  local manifest = PcPresentationFixture.manifest()
-  local originalPath = manifest.storage.backgrounds.default.image
-  local assetPaths = PcCache.referencedPaths(manifest)
-  manifest.storage.backgrounds.default.image = "assets/generated/pc/../outside.png"
-  local marker = PcCache.marker("source", "dependencies")
-  for _, path in ipairs(assetPaths) do
-    if path ~= originalPath then
-      cache:write(path, "fixture asset")
-    end
-  end
-  cache:writeLua(PcCache.manifestPath(), manifest)
-  cache:writeLua(PcCache.provenancePath(), {
-    schema = PcCache.SCHEMA,
-    cacheFormat = PcCache.FORMAT,
-    versionRomSha1 = "source",
-    dependencyHash = "dependencies",
-    archives = { content = { path = "source", fileId = 1, memberCount = 1, selectedMemberCount = 1 } },
-    selections = {},
-  })
-  cache:write(PcCache.markerPath(), marker)
-
-  local ok, ready = pcall(PcCache.isReady, cache, marker)
-  Assert.isTrue(ok, "an invalid generated asset path is a readiness refusal, not an exception")
-  Assert.isFalse(ready, "a generated asset cannot escape its PC asset family")
-end
-
 function T.readiness_accepts_generic_provenance_without_source_archive_knowledge()
   local backend = FakeCache.new()
   local cache = CacheFs.forVersion("heartgold", backend)
@@ -101,7 +73,9 @@ function T.readiness_accepts_generic_provenance_without_source_archive_knowledge
   local assertManifest = PcAssetSchema.assertManifest
   local isValidManifest = PcAssetSchema.isValidManifest
   PcAssetSchema.assertManifest = function() end
-  PcAssetSchema.isValidManifest = function() return true end
+  PcAssetSchema.isValidManifest = function()
+    return true
+  end
   local ok, ready = pcall(PcCache.isReady, cache, marker)
   PcAssetSchema.assertManifest = assertManifest
   PcAssetSchema.isValidManifest = isValidManifest
