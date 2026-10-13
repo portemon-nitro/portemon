@@ -257,7 +257,17 @@ local function checkCatalogRefs(refs)
     if type(location) ~= "table" or type(location.key) ~= "string" or location.key == "" then
       fail("pokegear location references must carry semantic keys", {})
     end
-    locations[location.key] = true
+  end
+  -- Markings are keyed by the region-map location's source map symbol; a
+  -- catalog without the region map accepts no marking.
+  local regionMap = catalog.regionMap
+  if type(regionMap) == "table" and type(regionMap.locations) == "table" then
+    for _, location in ipairs(regionMap.locations) do
+      if type(location) ~= "table" or type(location.mapSymbol) ~= "string" or location.mapSymbol == "" then
+        fail("pokegear region-map locations must carry their map symbol", {})
+      end
+      locations[location.mapSymbol] = true
+    end
   end
   return contacts, locations
 end
@@ -1483,7 +1493,8 @@ function PokegearState:queryRematch(key)
   return record == nil and nil or detach(record) --[[@as { stage: integer, wins: integer }?]]
 end
 
--- Stores the four icon and four word slots for a catalog location, using
+-- Stores the four icon and four word slots for a region-map location keyed
+-- by its source map symbol, using
 -- explicit false for empty slots. A nil marking clears the location.
 -- Writing identical slots never moves the revision.
 ---@param locationKey string

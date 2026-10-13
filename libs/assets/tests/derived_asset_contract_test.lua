@@ -171,7 +171,7 @@ function T.contract_pins_the_current_asset_identities()
     },
     pokegear = {
       cacheFormat = "pokegear-cache-v1",
-      schema = "g4-pokegear-assets-v1",
+      schema = "g4-pokegear-assets-v2",
     },
     summary = {
       cacheFormat = "g4-summary-cache-v2",
@@ -368,16 +368,8 @@ function T.battle_runtime_loads_skip_full_schema_validation()
     return originals.assertEncounterCatalog(compiled)
   end
   local ok, err = pcall(function()
-    Assert.deepEqual(
-      BattleDataCache.loadBattleData(c),
-      payloads.battleData,
-      "the published move facts load exactly"
-    )
-    Assert.deepEqual(
-      BattleDataCache.loadTrainers(c),
-      payloads.trainers,
-      "the published trainer catalog loads exactly"
-    )
+    Assert.deepEqual(BattleDataCache.loadBattleData(c), payloads.battleData, "the published move facts load exactly")
+    Assert.deepEqual(BattleDataCache.loadTrainers(c), payloads.trainers, "the published trainer catalog loads exactly")
     Assert.deepEqual(
       BattleDataCache.loadEncounters(c),
       payloads.encounters,

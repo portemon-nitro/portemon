@@ -122,12 +122,8 @@ function T.six_skins_keep_source_palette_slots_and_anchored_animation_frames(sco
   if #versions == 0 then
     context:skip("the pokegear skin proof needs a ready user-owned ROM")
   end
-  local loaded, PokegearAssetCompiler =
-    pcall(require, "romdump.src.digest.ui.PokegearAssetCompiler")
-  Assert.isTrue(
-    loaded,
-    "the pokegear family compiler must be published before skin fidelity can be proven"
-  )
+  local loaded, PokegearAssetCompiler = pcall(require, "romdump.src.digest.ui.PokegearAssetCompiler")
+  Assert.isTrue(loaded, "the pokegear family compiler must be published before skin fidelity can be proven")
   for _, versionId in ipairs(versions) do
     local romFs, openErr = RomFs.open(versionId)
     Assert.notNil(romFs, "the " .. versionId .. " dump must open: " .. tostring(openErr))
@@ -135,10 +131,7 @@ function T.six_skins_keep_source_palette_slots_and_anchored_animation_frames(sco
     local bundle = PokegearAssetCompiler.compile(romFs, versionId)
     local compiled = assert(bundle, versionId .. " must compile the pokegear family")
     local manifest = assert(compiled.manifest, versionId .. " must publish its pokegear manifest")
-    local assets = assert(
-      compiled.assets or compiled.files,
-      versionId .. " must publish its compiled pokegear assets"
-    )
+    local assets = assert(compiled.assets or compiled.files, versionId .. " must publish its compiled pokegear assets")
     -- Six skins, each with a distinct shell foreground realization.
     local foregroundHashes = {}
     for skin = 0, 5 do
@@ -152,10 +145,7 @@ function T.six_skins_keep_source_palette_slots_and_anchored_animation_frames(sco
         (visual.anchorX or 0) == (visual.anchorX or 0) and visual.anchorX ~= nil,
         versionId .. " skin " .. skin .. " carries its source-local horizontal anchor"
       )
-      Assert.isTrue(
-        visual.anchorY ~= nil,
-        versionId .. " skin " .. skin .. " carries its source-local vertical anchor"
-      )
+      Assert.isTrue(visual.anchorY ~= nil, versionId .. " skin " .. skin .. " carries its source-local vertical anchor")
       local expected = independentForegroundPixels(romFs, skin)
       Assert.equal(width, expected.width, versionId .. " skin " .. skin .. " keeps the source plane width")
       Assert.equal(height, expected.height, versionId .. " skin " .. skin .. " keeps the source plane height")
@@ -177,7 +167,8 @@ function T.six_skins_keep_source_palette_slots_and_anchored_animation_frames(sco
     local phoneArchive = assert(Narc.open(phoneBytes, "a/1/4/6"), "the phone archive must open")
     for skin = 0, 5 do
       local source = decodeMember(phoneArchive, "decodePalette", 10 + skin, "phone list palette")
-      local published = assert(manifest.phone.listPalette[skin], versionId .. " publishes the list palette for skin " .. skin)
+      local published =
+        assert(manifest.phone.listPalette[skin], versionId .. " publishes the list palette for skin " .. skin)
       Assert.equal(#published, 16, versionId .. " list palette carries one bank of sixteen colors")
       for index = 1, 16 do
         local expected = source.colors[32 + index]
@@ -236,10 +227,7 @@ function T.six_skins_keep_source_palette_slots_and_anchored_animation_frames(sco
     local first = assert(skinForegroundVisual(manifest, 0), versionId .. " republishes skin 0 for the draw proof")
     local fileData = love.filesystem.newFileData(assert(assets[first.image]), "pokegear-skin-0.png")
     local image = scope:own(love.graphics.newImage(fileData))
-    local canvas = scope:own(love.graphics.newCanvas(
-      math.min(first.width, 256),
-      math.min(first.height, 192)
-    ))
+    local canvas = scope:own(love.graphics.newCanvas(math.min(first.width, 256), math.min(first.height, 192)))
     love.graphics.setCanvas(canvas)
     love.graphics.setColor(1, 1, 1, 1)
     love.graphics.draw(image)
@@ -255,6 +243,62 @@ function T.six_skins_keep_source_palette_slots_and_anchored_animation_frames(sco
       end
     end
     Assert.isTrue(opaque > 0, versionId .. " the compiled skin foreground draws opaque source content")
+
+    -- The map OBJ sprite sets keep every source sequence with its frame
+    -- count, durations, play mode, and loop start, decoded independently of
+    -- the compiler. Sequence 6 of the object set draws with palette bank 2,
+    -- so its pixels equal an independent render with that bank.
+    local mapBytes = assert(romFs:readSourcePath("a/1/4/4"), "the dump must expose the map archive")
+    local mapArchive = assert(Narc.open(mapBytes, "a/1/4/4"), "the map archive must open")
+    local spriteMembers = {
+      markers = { char = 4, cell = 5, anim = 6 },
+      mapObjects = { char = 1, cell = 2, anim = 3 },
+      wordPlate = { char = 7, cell = 8, anim = 9 },
+    }
+    for setName, members in pairs(spriteMembers) do
+      local source = decodeMember(mapArchive, "decodeAnimation", members.anim, "map sprite animation " .. setName)
+      local published = assert(manifest.map.sprites[setName], versionId .. " publishes the " .. setName .. " set")
+      Assert.equal(#published, #source.anims, versionId .. " " .. setName .. " keeps every source sequence")
+      for sequenceIndex, sourceSequence in ipairs(source.anims) do
+        local record = published[sequenceIndex]
+        Assert.equal(#record.frames, #sourceSequence.frames, versionId .. " " .. setName .. " sequence frame count")
+        Assert.equal(record.playMode, sourceSequence.playMode, versionId .. " " .. setName .. " play mode")
+        Assert.equal(record.loopStartFrameIdx, sourceSequence.loopStartFrameIdx, versionId .. " " .. setName .. " loop")
+        for frameIndex, frame in ipairs(record.frames) do
+          Assert.equal(
+            frame.duration,
+            sourceSequence.frames[frameIndex].duration,
+            versionId .. " " .. setName .. " sequence " .. sequenceIndex .. " frame " .. frameIndex .. " duration"
+          )
+        end
+      end
+    end
+    local objects = spriteMembers.mapObjects
+    local objectCellBytes = assert(mapArchive:readMember(objects.cell))
+    local expectedFrame = G2dRasterizer.renderAnimationFrame(
+      decodeMember(mapArchive, "decodeChar", objects.char, "map object character"),
+      decodeMember(mapArchive, "decodePalette", 0, "map object palette"),
+      decodeMember(mapArchive, "decodeCell", objects.cell, "map object cell"),
+      decodeMember(mapArchive, "decodeAnimation", objects.anim, "map object animation").anims[6],
+      2,
+      { role = "independent map sprite" },
+      2,
+      assert(G2dDecoder.decodeCellMapping(objectCellBytes, { label = "map object cell" }))
+    )
+    local publishedFrame = manifest.map.sprites.mapObjects[6].frames[2]
+    local publishedWidth, publishedHeight, publishedPixels = PngReader.rgba(assert(assets[publishedFrame.image]))
+    Assert.equal(publishedWidth, expectedFrame.width, versionId .. " map sprite frame width")
+    Assert.equal(publishedHeight, expectedFrame.height, versionId .. " map sprite frame height")
+    Assert.equal(publishedFrame.anchorX, expectedFrame.offset.x, versionId .. " map sprite frame anchor")
+    Assert.equal(publishedPixels, expectedFrame.pixels, versionId .. " map sprite pixels draw with the source bank")
+    local opaqueSprite = false
+    for offset = 4, #publishedPixels, 4 do
+      if publishedPixels:byte(offset) > 0 then
+        opaqueSprite = true
+        break
+      end
+    end
+    Assert.isTrue(opaqueSprite, versionId .. " map sprite frames carry opaque source content")
     romFs:close()
   end
 end

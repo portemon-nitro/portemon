@@ -10,6 +10,8 @@ local Errors = require("libs.errors.src.Errors")
 local Hashing = require("romdump.src.digest.Hashing")
 local PokegearSources = require("romdump.src.config.PokegearSources")
 local PokegearPhoneScriptSources = require("romdump.src.config.PokegearPhoneScriptSources")
+local MapReference = require("romdump.src.reference.hgss.maps")
+local PokegearMapReference = require("romdump.src.reference.hgss.pokegear_map")
 
 local PokegearCatalogCompiler = {}
 
@@ -71,6 +73,57 @@ local function compilePhoneDefinitions()
     }
   end
   return out
+end
+
+local function copyOverlay(overlay, keys)
+  local out = {}
+  for _, key in ipairs(keys) do
+    out[key] = overlay[key]
+  end
+  return out
+end
+
+-- The landmark-name message entry of a map header: its map section.
+---@param mapId integer
+---@return integer
+local function sectionEntry(mapId)
+  local header = assert(MapReference.byId[mapId], "the region map names a known map header: " .. tostring(mapId))
+  return assert(header.mapSectionNativeId, "map headers carry their section identity")
+end
+
+local function compileRegionMap()
+  local locations = {}
+  for index, source in ipairs(PokegearMapReference.locations) do
+    locations[index] = {
+      mapId = source.mapId,
+      mapSymbol = source.mapSymbol,
+      x = source.x,
+      y = source.y,
+      width = source.width,
+      height = source.height,
+      objXOffset = source.objXOffset,
+      objYOffset = source.objYOffset,
+      flavorEntry = source.flavorEntry,
+      previewBlock = source.previewBlock,
+      sectionEntry = sectionEntry(source.mapId),
+      overlay = copyOverlay(source.overlay, { "srcX", "srcY", "width", "height" }),
+    }
+  end
+  local flypoints = {}
+  for index, source in ipairs(PokegearMapReference.flypoints) do
+    flypoints[index] = {
+      nameMapId = source.nameMapId,
+      nameSectionEntry = sectionEntry(source.nameMapId),
+      warpMapId = source.warpMapId,
+      flypoint = source.flypoint,
+      x = source.x,
+      y = source.y,
+      width = source.width,
+      height = source.height,
+      overlay = copyOverlay(source.overlay, { "srcX", "srcY", "destX", "destY", "width", "height" }),
+    }
+  end
+  return { locations = locations, flypoints = flypoints }
 end
 
 local function readU32Field(reader, offset, label)
@@ -416,6 +469,7 @@ function PokegearCatalogCompiler.compile(romFs, versionId)
     momPurchases = PokegearSources.momPurchaseRecords(versionId),
     locations = PokegearSources.mapLocationRecords(versionId),
     flypoints = PokegearSources.mapFlypointRecords(versionId),
+    regionMap = compileRegionMap(),
     reception = PokegearSources.radioReceptionRecords(versionId),
     shows = PokegearSources.broadcastShowRecords(versionId),
     radioEffects = {},

@@ -46,6 +46,7 @@ local CATALOG_FIELDS = {
   shows = true,
   radioEffects = true,
   landmarkLabels = true,
+  regionMap = true,
 }
 
 local PLAY_MODES = {
@@ -311,6 +312,100 @@ local function checkNamespacedKey(key, label)
   return nil
 end
 
+local LOCATION_FIELDS = {
+  mapId = 65535,
+  mapSymbol = false,
+  x = 255,
+  y = 255,
+  width = 15,
+  height = 15,
+  objXOffset = 15,
+  objYOffset = 15,
+  flavorEntry = 255,
+  previewBlock = 255,
+  sectionEntry = 65535,
+  overlay = false,
+}
+local LOCATION_OVERLAY_FIELDS = { srcX = 255, srcY = 255, width = 255, height = 255 }
+local FLYPOINT_FIELDS = {
+  nameMapId = 65535,
+  nameSectionEntry = 65535,
+  warpMapId = 65535,
+  flypoint = 255,
+  x = 255,
+  y = 255,
+  width = 15,
+  height = 15,
+  overlay = false,
+}
+local FLYPOINT_OVERLAY_FIELDS = { srcX = 255, srcY = 255, destX = 15, destY = 15, width = 15, height = 15 }
+
+-- Exact-key record whose integer fields are bounded to [0, max]; a false max
+-- marks a field the caller validates itself.
+local function checkBoundedRecord(record, fields, label)
+  if type(record) ~= "table" then
+    return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, label .. " must be a record", {})
+  end
+  for key in pairs(record) do
+    if fields[key] == nil then
+      return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, label .. " has unexpected key " .. tostring(key), {})
+    end
+  end
+  for key, max in pairs(fields) do
+    local field = record[key]
+    if field == nil then
+      return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, label .. " is missing " .. key, {})
+    end
+    if max and (not isInteger(field) or field < 0 or field > max) then
+      return fail(
+        PokegearAssetSchema.ERROR.SHAPE_INVALID,
+        label .. "." .. key .. " must be an integer in [0, " .. max .. "]",
+        {}
+      )
+    end
+  end
+  return nil
+end
+
+local function checkRegionMapList(list, fields, overlayFields, label)
+  if type(list) ~= "table" or #list == 0 then
+    return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, label .. " must be a non-empty record list", {})
+  end
+  for key in pairs(list) do
+    if not isInteger(key) or key < 1 or key > #list then
+      return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, label .. " must be a dense list", {})
+    end
+  end
+  for index, record in ipairs(list) do
+    local recordLabel = label .. "[" .. index .. "]"
+    local recordError = checkBoundedRecord(record, fields, recordLabel)
+    if recordError then
+      return recordError
+    end
+    if fields.mapSymbol == false and (type(record.mapSymbol) ~= "string" or record.mapSymbol == "") then
+      return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, recordLabel .. ".mapSymbol must be a string", {})
+    end
+    local overlayError = checkBoundedRecord(record.overlay, overlayFields, recordLabel .. ".overlay")
+    if overlayError then
+      return overlayError
+    end
+  end
+  return nil
+end
+
+local function checkRegionMap(value)
+  if type(value) ~= "table" then
+    return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "catalog.regionMap must be a record", {})
+  end
+  for key in pairs(value) do
+    if key ~= "locations" and key ~= "flypoints" then
+      return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "catalog.regionMap has unexpected key " .. tostring(key), {})
+    end
+  end
+  return checkRegionMapList(value.locations, LOCATION_FIELDS, LOCATION_OVERLAY_FIELDS, "catalog.regionMap.locations")
+    or checkRegionMapList(value.flypoints, FLYPOINT_FIELDS, FLYPOINT_OVERLAY_FIELDS, "catalog.regionMap.flypoints")
+end
+
 local function checkCatalog(value)
   if type(value) ~= "table" then
     return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "catalog must be a record", {})
@@ -338,6 +433,10 @@ local function checkCatalog(value)
     then
       return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "catalog.landmarkLabels must carry message references", {})
     end
+  end
+  local regionMapError = checkRegionMap(value.regionMap)
+  if regionMapError then
+    return regionMapError
   end
   if type(value.contacts) ~= "table" then
     return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "catalog.contacts must be a record list", {})

@@ -50,8 +50,7 @@ local NATIVE_SHOW_COUNT = 12
 local SPECIAL_LOCATION_FRAGMENTS = { "mount-silver", "indigo-plateau", "sinjoh-ruins", "ss-aqua" }
 
 ---@param _ unknown
-local function void(_)
-end
+local function void(_) end
 
 ---@param romFs table<string, unknown>
 ---@param path string
@@ -143,6 +142,68 @@ function T.heartgold_catalog_carries_the_native_program_and_place_closure(romFs,
     Assert.isTrue(found, versionId .. " keeps its special location " .. fragment)
   end
   Assert.isTrue(#catalog.contacts > 0, versionId .. " carries its native contact table")
+end
+
+-- The region-map tables compile whole and keep hand-copied source rows:
+-- the first location, an overlay-bearing location, and two flypoints
+-- (including one whose warp map differs from its name map).
+function T.heartgold_region_map_carries_the_source_location_and_flypoint_tables(romFs, versionId, context)
+  requireHeartGold(context, versionId)
+  local PokegearAssetCompiler = require("romdump.src.digest.ui.PokegearAssetCompiler")
+  local compiled = assert(PokegearAssetCompiler.compile(romFs, versionId), versionId .. " must compile the family")
+  local regionMap = assert(compiled.manifest.catalog.regionMap, versionId .. " publishes its region map")
+  Assert.equal(#regionMap.locations, 100, versionId .. " carries all one hundred region-map locations")
+  Assert.equal(#regionMap.flypoints, 27, versionId .. " carries all twenty-seven region-map flypoints")
+  Assert.deepEqual(regionMap.locations[1], {
+    mapId = 521,
+    mapSymbol = "MAP_SINJOH_RUINS_EXTERIOR",
+    x = 19,
+    y = 2,
+    width = 3,
+    height = 3,
+    objXOffset = 0,
+    objYOffset = 12,
+    flavorEntry = 65,
+    previewBlock = 0,
+    sectionEntry = 231,
+    overlay = { srcX = 0, srcY = 0, width = 0, height = 0 },
+  }, versionId .. " keeps the first source location")
+  Assert.deepEqual(regionMap.locations[3], {
+    mapId = 120,
+    mapSymbol = "MAP_ICE_PATH_1F",
+    x = 21,
+    y = 6,
+    width = 1,
+    height = 1,
+    objXOffset = 0,
+    objYOffset = 0,
+    flavorEntry = 55,
+    previewBlock = 0,
+    sectionEntry = 217,
+    overlay = { srcX = 5, srcY = 40, width = 1, height = 1 },
+  }, versionId .. " keeps a location with an overlay copy")
+  Assert.deepEqual(regionMap.flypoints[1], {
+    nameMapId = 49,
+    nameSectionEntry = 138,
+    warpMapId = 49,
+    flypoint = 0,
+    x = 32,
+    y = 11,
+    width = 1,
+    height = 1,
+    overlay = { srcX = 0, srcY = 20, destX = 1, destY = 1, width = 3, height = 3 },
+  }, versionId .. " keeps the first source flypoint")
+  Assert.deepEqual(regionMap.flypoints[26], {
+    nameMapId = 96,
+    nameSectionEntry = 207,
+    warpMapId = 280,
+    flypoint = 35,
+    x = 10,
+    y = 6,
+    width = 2,
+    height = 2,
+    overlay = { srcX = 0, srcY = 0, destX = 0, destY = 0, width = 0, height = 0 },
+  }, versionId .. " keeps a flypoint whose warp map differs from its name map")
 end
 
 -- SoulSilver parity waits on owned SoulSilver bytes: reported as an

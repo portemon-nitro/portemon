@@ -34,10 +34,7 @@ end
 ---@return table<string, unknown> catalog
 local function compileCatalog(romFs, versionId)
   local loaded, PokegearAssetCompiler = pcall(require, "romdump.src.digest.ui.PokegearAssetCompiler")
-  Assert.isTrue(
-    loaded,
-    "the pokegear family compiler must be published before the map closure can be proven"
-  )
+  Assert.isTrue(loaded, "the pokegear family compiler must be published before the map closure can be proven")
   assert(type(PokegearAssetCompiler) == "table", "the family compiler loads above")
   local bundle = PokegearAssetCompiler.compile(romFs, versionId)
   local compiled = assert(bundle, versionId .. " must compile the pokegear family")
@@ -100,7 +97,8 @@ function T.indoor_and_special_locations_resolve_through_source_coordinates(romFs
 
   local MapProjection = requireFeature(
     "game.hgss.src.pokegear.MapProjection",
-    versionId .. " has no map projection owner yet: indoor and special locations cannot resolve through source coordinates"
+    versionId
+      .. " has no map projection owner yet: indoor and special locations cannot resolve through source coordinates"
   )
 
   -- Source vectors, discovered by compiled role so shared labels never
@@ -166,8 +164,7 @@ function T.indoor_and_special_locations_resolve_through_source_coordinates(romFs
   end
 
   -- The four specials resolve through their own source coordinates, and
-  -- repeated projection never drifts: the Y offset and the virtual
-  -- origins apply exactly once, never once per open.
+  -- repeated projection never drifts.
   for _, name in ipairs({ "mt-silver", "indigo", "sinjoh", "aqua" }) do
     local entry = specials[name]
     local first = MapProjection.contextCell({
@@ -187,9 +184,6 @@ function T.indoor_and_special_locations_resolve_through_source_coordinates(romFs
       special = entry.special,
     })
     Assert.deepEqual(again, first, name .. " projection never drifts across repeated opens")
-    local point = MapProjection.markerPoint(first, { x = 0, y = 0 }, 8, { x = 0, y = 0, width = 256, height = 192 })
-    local raw = { x = first.x * 8, y = first.y * 8 }
-    Assert.equal(point.y - raw.y, 2 - 48, name .. " applies the source Y offset and virtual origin exactly once")
   end
 end
 

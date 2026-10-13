@@ -21,7 +21,7 @@ end
 -- section is present so validation exercises references, not missing keys.
 local function syntheticManifest()
   return {
-    schema = "g4-pokegear-assets-v1",
+    schema = "g4-pokegear-assets-v2",
     skins = { 0, 1, 2, 3, 4, 5 },
     shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png") },
     configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png") },
@@ -42,6 +42,7 @@ local function syntheticManifest()
       momPurchases = {},
       locations = {},
       flypoints = {},
+      regionMap = require("tests.support.PokegearRegionMapFixture").build(),
       reception = {},
       shows = {
         { key = "custom.morning-show", title = "Custom Morning" },
@@ -158,7 +159,7 @@ function T.failed_rebuild_preserves_the_prior_ready_family_and_warm_reads_avoid_
   local warmFs = CacheFs.forVersion("heartgold", backend)
   Assert.isTrue(PokegearCache.isReady(warmFs, newMarker), "the warm read must trust the current receipt")
   local warm = PokegearCache.loadManifest(warmFs)
-  Assert.equal(warm.schema, "g4-pokegear-assets-v1", "the warm read must return the published manifest")
+  Assert.equal(warm.schema, "g4-pokegear-assets-v2", "the warm read must return the published manifest")
 end
 
 local function walkKeys(node, seen)

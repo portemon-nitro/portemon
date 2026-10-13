@@ -4,6 +4,7 @@
 -- and animations are rejected, and unknown top-level sections never pass.
 
 local Assert = require("tests.support.Assert")
+local PokegearRegionMapFixture = require("tests.support.PokegearRegionMapFixture")
 
 local T = {}
 
@@ -13,7 +14,7 @@ end
 
 local function customManifest()
   return {
-    schema = "g4-pokegear-assets-v1",
+    schema = "g4-pokegear-assets-v2",
     skins = { 0, 1, 2, 3, 4, 5 },
     shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png") },
     configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png") },
@@ -39,6 +40,7 @@ local function customManifest()
         { key = "custom.morning-show", title = "Custom Morning" },
       },
       radioEffects = {},
+      regionMap = PokegearRegionMapFixture.build(),
     },
     text = {},
     sequences = {},
@@ -49,7 +51,36 @@ function T.valid_custom_records_validate_without_source_identities()
   local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
   local record, err = PokegearAssetSchema.validate(customManifest())
   Assert.notNil(record, "valid custom records must validate: " .. tostring(err and err.message or err))
-  Assert.equal(record.schema, "g4-pokegear-assets-v1", "validation preserves the schema identity")
+  Assert.equal(record.schema, "g4-pokegear-assets-v2", "validation preserves the schema identity")
+end
+
+function T.region_map_is_required_and_strict()
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local function rejects(mutate, message)
+    local manifest = customManifest()
+    mutate(manifest.catalog.regionMap, manifest.catalog)
+    local record, err = PokegearAssetSchema.validate(manifest)
+    Assert.isNil(record, message)
+    Assert.equal(err.code, PokegearAssetSchema.ERROR.SHAPE_INVALID, message)
+  end
+  rejects(function(_, catalog)
+    catalog.regionMap = nil
+  end, "a missing regionMap must not validate")
+  rejects(function(regionMap)
+    regionMap.locations = {}
+  end, "an empty location list must not validate")
+  rejects(function(regionMap)
+    regionMap.flypoints[1].overlay.destX = 16
+  end, "a bitfield-sized overlay value above 15 must not validate")
+  rejects(function(regionMap)
+    regionMap.locations[1].x = 1.5
+  end, "a fractional coordinate must not validate")
+  rejects(function(regionMap)
+    regionMap.locations[1].extra = 1
+  end, "an unexpected location key must not validate")
+  rejects(function(regionMap)
+    regionMap.flypoints[1].overlay.srcX = nil
+  end, "a missing overlay key must not validate")
 end
 
 function T.duplicate_contact_keys_fail_naming_the_offender()
@@ -116,8 +147,22 @@ function T.animations_keep_loop_behavior_as_play_mode_plus_loop_start()
   manifest.sequences = {
     cursor = {
       frames = {
-        { image = "assets/generated/pokegear/cursor-0.png", width = 16, height = 16, anchorX = 0, anchorY = 0, duration = 8 },
-        { image = "assets/generated/pokegear/cursor-1.png", width = 16, height = 16, anchorX = 1, anchorY = 0, duration = 8 },
+        {
+          image = "assets/generated/pokegear/cursor-0.png",
+          width = 16,
+          height = 16,
+          anchorX = 0,
+          anchorY = 0,
+          duration = 8,
+        },
+        {
+          image = "assets/generated/pokegear/cursor-1.png",
+          width = 16,
+          height = 16,
+          anchorX = 1,
+          anchorY = 0,
+          duration = 8,
+        },
       },
       playMode = "forward_loop",
       loopStart = 0,
@@ -130,7 +175,14 @@ function T.animations_keep_loop_behavior_as_play_mode_plus_loop_start()
   booleanLoop.sequences = {
     cursor = {
       frames = {
-        { image = "assets/generated/pokegear/cursor-0.png", width = 16, height = 16, anchorX = 0, anchorY = 0, duration = 8 },
+        {
+          image = "assets/generated/pokegear/cursor-0.png",
+          width = 16,
+          height = 16,
+          anchorX = 0,
+          anchorY = 0,
+          duration = 8,
+        },
       },
       playMode = "forward_loop",
       loopStart = 0,
@@ -143,7 +195,14 @@ function T.animations_keep_loop_behavior_as_play_mode_plus_loop_start()
   frameRate.sequences = {
     cursor = {
       frames = {
-        { image = "assets/generated/pokegear/cursor-0.png", width = 16, height = 16, anchorX = 0, anchorY = 0, duration = 8 },
+        {
+          image = "assets/generated/pokegear/cursor-0.png",
+          width = 16,
+          height = 16,
+          anchorX = 0,
+          anchorY = 0,
+          duration = 8,
+        },
       },
       playMode = "forward",
       loopStart = 0,
@@ -156,7 +215,14 @@ function T.animations_keep_loop_behavior_as_play_mode_plus_loop_start()
   zeroDuration.sequences = {
     cursor = {
       frames = {
-        { image = "assets/generated/pokegear/cursor-0.png", width = 16, height = 16, anchorX = 0, anchorY = 0, duration = 0 },
+        {
+          image = "assets/generated/pokegear/cursor-0.png",
+          width = 16,
+          height = 16,
+          anchorX = 0,
+          anchorY = 0,
+          duration = 0,
+        },
       },
       playMode = "forward",
       loopStart = 0,
@@ -233,17 +299,11 @@ function T.word_entry_sections_keep_eleven_ordered_groups_and_cursor_frames()
 
   local flat = wordEntrySection()
   flat.groups = { { group = 0, bank = 237, count = 1495, firstWordId = 0 } }
-  Assert.isNil(
-    PokegearAssetSchema.validateWordEntry(flat),
-    "a flattened single-group section must not validate"
-  )
+  Assert.isNil(PokegearAssetSchema.validateWordEntry(flat), "a flattened single-group section must not validate")
 
   local unordered = wordEntrySection()
   unordered.groups[2].group = 5
-  Assert.isNil(
-    PokegearAssetSchema.validateWordEntry(unordered),
-    "an out-of-order group index must not validate"
-  )
+  Assert.isNil(PokegearAssetSchema.validateWordEntry(unordered), "an out-of-order group index must not validate")
 
   local empty = wordEntrySection()
   empty.groups[3].count = 0

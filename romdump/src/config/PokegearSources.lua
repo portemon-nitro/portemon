@@ -141,42 +141,82 @@ function PokegearSources.radioUpper(skin)
   return { char = 34 + skin, screen = 40 + skin, palette = 4 + skin }
 end
 
--- Map foreground, upper, and patch planes share the skin foreground
--- tileset: foreground pairs tiles 26+s with the first skin-varying
--- screen run, upper pairs tiles 50+s with the shared screen 13, and each
--- patch pairs the same skin tileset with its source patch screen.
+-- Map planes follow the source background layers. The lower screen holds
+-- the chrome (26+s tiles, screen 32+s), the 512x512 world (shared world
+-- tiles, screen 11) on the main palette 20+s, and the marking-mode panel
+-- (screen 38+s) and backdrop (screen 44+s) which draw from the chrome
+-- tiles. The upper screen holds the information chrome (50+s tiles, screen
+-- 56+s) and the 7x7 location-preview atlas (shared tiles 12, screen 13),
+-- both on the sub palette 14+s.
 function PokegearSources.mapForeground(skin)
   return { char = 26 + skin, screen = 32 + skin, palette = 20 + skin }
 end
 
+function PokegearSources.mapWorld(skin)
+  return { char = 10, screen = 11, palette = 20 + skin }
+end
+
+function PokegearSources.mapMarkingPanel(skin)
+  return { char = 26 + skin, screen = 38 + skin, palette = 20 + skin }
+end
+
+function PokegearSources.mapMarkingBackdrop(skin)
+  return { char = 26 + skin, screen = 44 + skin, palette = 20 + skin }
+end
+
 function PokegearSources.mapUpper(skin)
-  return { chars = { 50 + skin, 12 }, screen = 13, palette = 14 + skin }
+  return { char = 50 + skin, screen = 56 + skin, palette = 14 + skin }
 end
 
-PokegearSources.mapUpperBase = { char = 12, screen = 13, palette = 14 }
-
-PokegearSources.mapPatchBases = { 32, 38, 44, 56 }
-
-function PokegearSources.mapPatchScreen(skin, patchIndex)
-  return PokegearSources.mapPatchBases[patchIndex] + skin
+function PokegearSources.mapPreviews(skin)
+  return { char = 12, screen = 13, palette = 14 + skin }
 end
 
-function PokegearSources.mapPatch(skin, patchIndex)
-  return { screen = PokegearSources.mapPatchScreen(skin, patchIndex) }
+-- The message bank behind the region map's panel strings, location flavor
+-- text, and Fly prompts (landmark names read from the phone landmark bank).
+PokegearSources.regionMapMessageBank = 273
+
+-- Text colors of the map windows: the upper windows print with sub palette
+-- bank 1 (member 14+s), the marking-mode landmark name with main palette
+-- bank 10 (member 20+s), and the marking word text objects with object
+-- palette member 0 bank 3. Fly uses members 62 (upper) and 63 (lower).
+PokegearSources.mapTextBanks = { upper = 1, lower = 10, word = 3, wordMember = 0 }
+
+function PokegearSources.mapTextMembers(skin)
+  return { upper = 14 + skin, lower = 20 + skin }
 end
 
-PokegearSources.mapWorld = { char = 10, screen = 11 }
+PokegearSources.flyTextMembers = { upper = 62, lower = 63 }
 
-function PokegearSources.mapWorldPalette(skin)
-  return 14 + skin
-end
+-- The touchscreen list menu graphics the Fly context menu draws with: the
+-- shared sbox_gra archive's palette (member 0) and character tiles (member 1).
+PokegearSources.listMenu = { path = "a/1/6/5", palette = 0, char = 1 }
 
-PokegearSources.flyPairs = {
-  { char = 64, screen = 65 },
-  { char = 66, screen = 67 },
-  { char = 68, screen = 69 },
+-- The Fly entry loads its own skin-independent planes: main palette 63 for
+-- the chrome and world, sub palette 62 for the upper screen.
+PokegearSources.fly = {
+  world = { char = 10, screen = 11, palette = 63 },
+  foreground = { char = 66, screen = 67, palette = 63 },
+  top = { char = 64, screen = 65, palette = 62 },
+  upper = { char = 68, screen = 69, palette = 62 },
+  previews = { char = 12, screen = 13, palette = 62 },
 }
-PokegearSources.flyPalette = 62
+
+-- Map-app OBJ sprite sets of a/1/4/4, every set drawn with the shared OBJ
+-- palette member 0 (11 banks). The set names follow the retail object
+-- resource lists (sprite resource sets 0, 1, and 2 are members 4-6, 1-3,
+-- and 7-9). `banks` gives the zero-based NCLR bank each source sequence
+-- (one-based, as compiled) draws with; unlisted sequences use bank 0. The
+-- map app overrides the OBJ palette number to 4 + bank and the Fly entry to
+-- the bank itself. The word plate is the OBJ footprint of the marking word
+-- text, which the app draws with OBJ palette 7 (bank 3).
+PokegearSources.mapSpritePalette = 0
+
+PokegearSources.mapSprites = {
+  markers = { char = 4, cell = 5, anim = 6, banks = {} },
+  mapObjects = { char = 1, cell = 2, anim = 3, banks = { [6] = 2, [7] = 2, [8] = 2, [9] = 2 } },
+  wordPlate = { char = 7, cell = 8, anim = 9, banks = { [1] = 3 } },
+}
 
 -- Native radio broadcast programs in source program order with the
 -- executable station schedule and the version-qualified daily and text

@@ -474,11 +474,11 @@ DerivedAssetContract.pc = {
 
 -- The Pokegear family carries the source-independent shell, Configure,
 -- Phone, map, standalone Fly, and Radio presentation records plus the
--- immutable contact/map/radio semantic catalogs as one independently
--- published family.
+-- immutable contact/map/radio semantic catalogs (including the region-map
+-- location and flypoint tables) as one independently published family.
 DerivedAssetContract.pokegear = {
   cacheFormat = "pokegear-cache-v1",
-  schema = "g4-pokegear-assets-v1",
+  schema = "g4-pokegear-assets-v2",
 }
 
 -- The summary class carries the source-independent native summary

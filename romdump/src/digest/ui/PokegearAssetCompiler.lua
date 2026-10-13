@@ -166,6 +166,66 @@ local function compileCursorAnimation(archive, assets)
   return sequences
 end
 
+-- One-based animation sequences of a map-app OBJ set, each frame drawn with
+-- the set's per-sequence palette bank and the cell bank's OBJ mapping mode.
+local function compileMapSpriteSet(archive, assets, setName, selection)
+  local role = "map.sprites." .. setName
+  local character =
+    decode("decodeChar", unpackMember(archive, selection.char, role .. ".character"), role .. ".character")
+  local palette = decode(
+    "decodePalette",
+    unpackMember(archive, PokegearSources.mapSpritePalette, role .. ".palette"),
+    role .. ".palette"
+  )
+  local cellBytes = unpackMember(archive, selection.cell, role .. ".cell")
+  local cells = decode("decodeCell", cellBytes, role .. ".cell")
+  local mapping, mappingErr = G2dDecoder.decodeCellMapping(cellBytes, { label = "pokegear:" .. role .. ".cell" })
+  if mapping == nil then
+    error(mappingErr, 0)
+  end
+  local animation =
+    decode("decodeAnimation", unpackMember(archive, selection.anim, role .. ".animation"), role .. ".animation")
+  local sequences = {}
+  for sequenceIndex, sourceSequence in ipairs(animation.anims) do
+    local frames = {}
+    for frameIndex, frame in ipairs(sourceSequence.frames) do
+      local rendered = G2dRasterizer.renderAnimationFrame(
+        character,
+        palette,
+        cells,
+        sourceSequence,
+        frameIndex,
+        { role = role .. "." .. sequenceIndex, frame = frameIndex - 1 },
+        selection.banks[sequenceIndex] or 0,
+        mapping
+      )
+      local path = PokegearCache.assetDir()
+        .. "/map-sprite-"
+        .. setName
+        .. "-"
+        .. sequenceIndex
+        .. "-"
+        .. frameIndex
+        .. ".png"
+      assets[path] = PngWriter.encode(rendered.width, rendered.height, rendered.pixels)
+      frames[frameIndex] = {
+        image = path,
+        width = rendered.width,
+        height = rendered.height,
+        anchorX = rendered.offset.x,
+        anchorY = rendered.offset.y,
+        duration = frame.duration,
+      }
+    end
+    sequences[sequenceIndex] = {
+      frames = frames,
+      playMode = sourceSequence.playMode,
+      loopStartFrameIdx = sourceSequence.loopStartFrameIdx,
+    }
+  end
+  return sequences
+end
+
 local function _compile(romFs, versionId)
   assert(romFs and romFs.readSourcePath and romFs.metadata, "compile requires a RomFs-shaped object")
   assert(type(versionId) == "string" and versionId ~= "", "compile requires a version")
@@ -185,7 +245,8 @@ local function _compile(romFs, versionId)
   local configureForeground, configurePatch = {}, {}
   local phoneForeground, phoneUpper, phoneListPalette = {}, {}, {}
   local radioMain, radioSecond, radioUpper = {}, {}, {}
-  local mapForeground, mapUpper, mapPatches = {}, {}, {}
+  local mapForeground, mapWorld, mapMarkingPanel, mapMarkingBackdrop, mapUpper, mapPreviews = {}, {}, {}, {}, {}, {}
+  local mapTextPalette = {}
   for _, skin in ipairs(PokegearSources.skins) do
     local shellFg = PokegearSources.shellForeground(skin)
     selections["shell.foreground.skin" .. skin] = { path = PokegearSources.archives.shell.path, members = shellFg }
@@ -245,42 +306,106 @@ local function _compile(romFs, versionId)
     selections["map.foreground.skin" .. skin] = { path = PokegearSources.archives.map.path, members = mapFg }
     mapForeground[skin] =
       renderTriple(mapArchive, mapFg, "map.foreground.skin" .. skin, assets, "map-foreground-skin-" .. skin)
-    local mapUp = PokegearSources.mapUpper(skin)
-    selections["map.upper.skin" .. skin] = { path = PokegearSources.archives.map.path, members = mapUp }
-    mapUpper[skin] = renderTriple(mapArchive, mapUp, "map.upper.skin" .. skin, assets, "map-upper-skin-" .. skin)
-    mapPatches[skin] = {}
-    for patchIndex, patchBase in ipairs(PokegearSources.mapPatchBases) do
-      local patchScreen = patchBase + skin
-      local patchSelection = { char = mapFg.char, screen = patchScreen, palette = mapFg.palette }
-      selections["map.patch." .. patchIndex .. ".skin" .. skin] =
-        { path = PokegearSources.archives.map.path, members = patchSelection }
-      mapPatches[skin][patchIndex] = renderTriple(
+    for _, plane in ipairs({
+      { target = mapWorld, role = "world", name = "map-world", selector = PokegearSources.mapWorld },
+      {
+        target = mapMarkingPanel,
+        role = "markingPanel",
+        name = "map-marking-panel",
+        selector = PokegearSources.mapMarkingPanel,
+      },
+      {
+        target = mapMarkingBackdrop,
+        role = "markingBackdrop",
+        name = "map-marking-backdrop",
+        selector = PokegearSources.mapMarkingBackdrop,
+      },
+      { target = mapUpper, role = "upper", name = "map-upper", selector = PokegearSources.mapUpper },
+      { target = mapPreviews, role = "previews", name = "map-previews", selector = PokegearSources.mapPreviews },
+    }) do
+      local selection = plane.selector(skin)
+      selections["map." .. plane.role .. ".skin" .. skin] =
+        { path = PokegearSources.archives.map.path, members = selection }
+      plane.target[skin] = renderTriple(
         mapArchive,
-        patchSelection,
-        "map.patch." .. patchIndex .. ".skin" .. skin,
+        selection,
+        "map." .. plane.role .. ".skin" .. skin,
         assets,
-        "map-patch-" .. patchIndex .. "-skin-" .. skin
+        plane.name .. "-skin-" .. skin
       )
     end
+    local textMembers = PokegearSources.mapTextMembers(skin)
+    mapTextPalette[skin] = {
+      upper = paletteBank(
+        mapArchive,
+        textMembers.upper,
+        PokegearSources.mapTextBanks.upper,
+        "map.textPalette.upper.skin" .. skin
+      ),
+      lower = paletteBank(
+        mapArchive,
+        textMembers.lower,
+        PokegearSources.mapTextBanks.lower,
+        "map.textPalette.lower.skin" .. skin
+      ),
+    }
   end
 
-  local mapWorld = renderTriple(mapArchive, {
-    char = PokegearSources.mapWorld.char,
-    screen = PokegearSources.mapWorld.screen,
-    palette = PokegearSources.mapWorldPalette(0),
-  }, "map.world", assets, "map-world")
-  selections["map.world"] = {
-    path = PokegearSources.archives.map.path,
-    members = { char = PokegearSources.mapWorld.char, screen = PokegearSources.mapWorld.screen },
-  }
-  local mapUpperBase = renderTriple(mapArchive, PokegearSources.mapUpperBase, "map.upperBase", assets, "map-upper-base")
-  selections["map.upperBase"] = { path = PokegearSources.archives.map.path, members = PokegearSources.mapUpperBase }
-
   local fly = {}
-  for pairIndex, pair in ipairs(PokegearSources.flyPairs) do
-    local selection = { char = pair.char, screen = pair.screen, palette = PokegearSources.flyPalette }
-    selections["fly.pair." .. pairIndex] = { path = PokegearSources.archives.map.path, members = selection }
-    fly[pairIndex] = renderTriple(mapArchive, selection, "fly.pair." .. pairIndex, assets, "fly-pair-" .. pairIndex)
+  local textBanks = PokegearSources.mapTextBanks
+  local flyText = PokegearSources.flyTextMembers
+  fly.textPalette = {
+    upper = paletteBank(mapArchive, flyText.upper, textBanks.upper, "fly.textPalette.upper"),
+    lower = paletteBank(mapArchive, flyText.lower, textBanks.lower, "fly.textPalette.lower"),
+  }
+  do
+    local listMenu = PokegearSources.listMenu
+    local menuBytes, menuErr = romFs:readSourcePath(listMenu.path)
+    if menuBytes == nil then
+      error(menuErr or ("pokegear list menu archive is unavailable: " .. listMenu.path), 0)
+    end
+    local menuArchive, menuNarcErr = require("libs.nds.src.nitro.Narc").open(menuBytes, listMenu.path)
+    if menuArchive == nil then
+      error(menuNarcErr, 0)
+    end
+    local menuChar =
+      decode("decodeChar", unpackMember(menuArchive, listMenu.char, "fly.menu.character"), "fly.menu.character")
+    local menuPalette =
+      decode("decodePalette", unpackMember(menuArchive, listMenu.palette, "fly.menu.palette"), "fly.menu.palette")
+    local tileIndices = {}
+    for index = 0, math.floor(#menuChar.tiles / 32) - 1 do
+      tileIndices[#tileIndices + 1] = index
+    end
+    selections["fly.menu"] = { path = listMenu.path, members = { char = listMenu.char, palette = listMenu.palette } }
+    fly.menuTiles = stageVisual(
+      assets,
+      "fly-menu-tiles",
+      G2dRasterizer.renderTiles(menuChar, menuPalette, tileIndices, { role = "fly.menu" })
+    )
+    fly.menuPalette = {}
+    for index = 1, 16 do
+      local color = assert(menuPalette.colors[index], "the list menu palette carries its first bank")
+      fly.menuPalette[index] = { r = color.r, g = color.g, b = color.b }
+    end
+  end
+  for role, selection in pairs(PokegearSources.fly) do
+    selections["fly." .. role] = { path = PokegearSources.archives.map.path, members = selection }
+    fly[role] = renderTriple(mapArchive, selection, "fly." .. role, assets, "fly-" .. role)
+  end
+
+  local mapSprites = {}
+  for setName, selection in pairs(PokegearSources.mapSprites) do
+    selections["map.sprites." .. setName] = {
+      path = PokegearSources.archives.map.path,
+      members = {
+        char = selection.char,
+        cell = selection.cell,
+        anim = selection.anim,
+        palette = PokegearSources.mapSpritePalette,
+        banks = selection.banks,
+      },
+    }
+    mapSprites[setName] = compileMapSpriteSet(mapArchive, assets, setName, selection)
   end
 
   local sequences = compileCursorAnimation(shellArchive, assets)
@@ -327,12 +452,21 @@ local function _compile(romFs, versionId)
     phone = { foreground = phoneForeground, upper = phoneUpper, listPalette = phoneListPalette },
     map = {
       foreground = mapForeground,
-      upper = mapUpper,
-      patches = mapPatches,
       world = mapWorld,
-      upperBase = mapUpperBase,
+      markingPanel = mapMarkingPanel,
+      markingBackdrop = mapMarkingBackdrop,
+      upper = mapUpper,
+      previews = mapPreviews,
+      sprites = mapSprites,
+      textPalette = mapTextPalette,
+      wordPalette = paletteBank(
+        mapArchive,
+        PokegearSources.mapTextBanks.wordMember,
+        PokegearSources.mapTextBanks.word,
+        "map.wordPalette"
+      ),
     },
-    fly = { pairs = fly },
+    fly = fly,
     radio = { main = radioMain, second = radioSecond, upper = radioUpper },
     catalog = catalogBundle.catalog,
     text = catalogBundle.text,

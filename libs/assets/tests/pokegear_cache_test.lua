@@ -14,7 +14,7 @@ end
 
 local function fixtureManifest()
   return {
-    schema = "g4-pokegear-assets-v1",
+    schema = "g4-pokegear-assets-v2",
     skins = { 0, 1, 2, 3, 4, 5 },
     shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png") },
     configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png") },
@@ -32,6 +32,7 @@ local function fixtureManifest()
       momPurchases = {},
       locations = {},
       flypoints = {},
+      regionMap = require("tests.support.PokegearRegionMapFixture").build(),
       reception = {},
       shows = {},
       radioEffects = {},
@@ -60,7 +61,7 @@ function T.complete_publication_reads_ready_and_loads_its_manifest()
   local cache = stagedCache(nil, marker)
   Assert.isTrue(PokegearCache.isReady(cache, marker), "a complete publication must read ready")
   local manifest = PokegearCache.loadManifest(cache)
-  Assert.equal(manifest.schema, "g4-pokegear-assets-v1", "the loaded manifest keeps its schema identity")
+  Assert.equal(manifest.schema, "g4-pokegear-assets-v2", "the loaded manifest keeps its schema identity")
 end
 
 function T.stale_markers_and_missing_assets_refuse_without_raising()
@@ -83,7 +84,7 @@ end
 function T.incomplete_manifests_never_read_ready()
   local PokegearCache = require("libs.assets.src.PokegearCache")
   local marker = PokegearCache.marker("rom-sha", "deps-sha")
-  local cache = stagedCache({ schema = "g4-pokegear-assets-v1" }, marker, fixtureManifest())
+  local cache = stagedCache({ schema = "g4-pokegear-assets-v2" }, marker, fixtureManifest())
   local ok, ready = pcall(PokegearCache.isReady, cache, marker)
   Assert.isTrue(ok, "an incomplete manifest is a readiness refusal, not an exception")
   Assert.isFalse(ready, "a marker cannot make an incomplete family ready")
@@ -172,16 +173,10 @@ function T.word_entry_readiness_is_tracked_separately_from_core()
     "the word-entry marker stages outside the core marker"
   )
   local marker = PokegearCache.wordEntryMarker("rom-sha", "deps-sha")
-  Assert.isTrue(
-    marker:find("rom-sha", 1, true) ~= nil,
-    "the word-entry marker binds the source identity"
-  )
+  Assert.isTrue(marker:find("rom-sha", 1, true) ~= nil, "the word-entry marker binds the source identity")
   local section = wordEntrySection()
   local cache = stagedWordEntry(section, marker)
-  Assert.isTrue(
-    PokegearCache.isWordEntryReady(cache, marker),
-    "a complete word-entry publication must read ready"
-  )
+  Assert.isTrue(PokegearCache.isWordEntryReady(cache, marker), "a complete word-entry publication must read ready")
   local stale = PokegearCache.wordEntryMarker("rom-sha", "other-deps")
   local staleOk, staleReady = pcall(PokegearCache.isWordEntryReady, cache, stale)
   Assert.isTrue(staleOk, "a stale word-entry marker is a readiness refusal, not an exception")
@@ -190,10 +185,7 @@ function T.word_entry_readiness_is_tracked_separately_from_core()
   local coreMarker = PokegearCache.marker("rom-sha", "deps-sha")
   local coreReady = pcall(PokegearCache.isReady, cache, coreMarker)
   Assert.isTrue(coreReady, "word-entry staging alone never raises core readiness")
-  Assert.isFalse(
-    PokegearCache.isReady(cache, coreMarker),
-    "word-entry staging alone never completes the core family"
-  )
+  Assert.isFalse(PokegearCache.isReady(cache, coreMarker), "word-entry staging alone never completes the core family")
 end
 
 return { tests = T }
