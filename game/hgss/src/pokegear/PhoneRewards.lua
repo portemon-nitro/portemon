@@ -26,8 +26,19 @@ PhoneRewards.BERRY_QUANTITY = 5
 PhoneRewards.BERRY_COST = 100
 PhoneRewards.BERRY_CHOICES = 17
 PhoneRewards.BERRY_DRAW_LABEL = "mom-berry"
-PhoneRewards.BERRY_ITEM_PREFIX = "custom.berry-"
-PhoneRewards.MOM_GIFT_TRIGGER = "mom.gift"
+PhoneRewards.MOM_GIFT_TRIGGER = "gear.trigger.12"
+
+local LEGACY_PURCHASE_FLAGS = {
+  [0] = "custom.super-potion-900",
+  [1] = "custom.repel-4000",
+  [2] = "custom.super-potion-7000",
+  [3] = "custom.silk-scarf-10000",
+  [4] = "custom.moon-stone-15000",
+  [5] = "custom.hyper-potion-19000",
+  [6] = "custom.choice-scarf-30000",
+  [7] = "custom.muscle-band-40000",
+  [8] = "custom.focus-sash-50000",
+}
 
 PhoneRewards.STALE_CODE = "POKEGEAR_STALE_CANDIDATE"
 
@@ -35,23 +46,15 @@ PhoneRewards.STALE_CODE = "POKEGEAR_STALE_CANDIDATE"
 -- gain and none in these excluded source contexts.
 PhoneRewards.EXCLUDED_BATTLE_KINDS = { link = true }
 
--- Normal purchases in source process order: balance threshold and exact
--- cost per entry. Item keys follow the companion catalog namespace; an
--- explicit override table may replace this default without changing the
--- order, thresholds, or costs.
----@return table<integer, { item: string, threshold: integer, cost: integer }>
-function PhoneRewards.normalPurchases()
-  return {
-    { item = "custom.super-potion", threshold = 900, cost = 600 },
-    { item = "custom.repel", threshold = 4000, cost = 270 },
-    { item = "custom.super-potion", threshold = 7000, cost = 600 },
-    { item = "custom.silk-scarf", threshold = 10000, cost = 100 },
-    { item = "custom.moon-stone", threshold = 15000, cost = 3000 },
-    { item = "custom.hyper-potion", threshold = 19000, cost = 900 },
-    { item = "custom.choice-scarf", threshold = 30000, cost = 200 },
-    { item = "custom.muscle-band", threshold = 40000, cost = 200 },
-    { item = "custom.focus-sash", threshold = 50000, cost = 200 },
-  }
+-- Resolve only source-provided native items into runtime semantic keys.
+---@param itemCatalog table<string, unknown>
+---@param nativeItemId integer
+---@return string the validated semantic item key
+local function resolveItem(itemCatalog, nativeItemId)
+  assert(type(itemCatalog) == "table", "native Mom gifts resolve through the generated item catalog")
+  local byNative = itemCatalog.itemKeyByNativeId --[[@as fun(self: table<string, unknown>, nativeId: integer): string]]
+  assert(type(byNative) == "function", "native Mom gifts use item identity lookup")
+  return byNative(itemCatalog, nativeItemId)
 end
 
 ---@param value unknown
@@ -171,13 +174,15 @@ local function copyGift(value)
   return out
 end
 
+local copyQueue, copyClaimed, purchaseEffects
+
 -- Stages the battle-winnings split as a revisioned candidate. The staged
 -- record carries the transfer, the player's kept money, and the new
 -- savings balance as data; publication writes the savings side once and
 -- advances the revision once. A stale candidate publishes nothing. The
 -- draw stream is never drawn: settlement needs no draw, so an optional
 -- stream may be supplied for forward compatibility and is left untouched.
----@param opts { state: table<string, unknown>, beforePlayer: integer, afterPlayer: integer, momBalance: integer, battleKind: string, outcomeId: string, random: table<string, unknown>? }
+---@param opts { state: table<string, unknown>, beforePlayer: integer, afterPlayer: integer, momBalance: integer, battleKind: string, outcomeId: string, random: table<string, unknown>?, itemCatalog: table<string, unknown>?, momPurchases: table<integer, table<string, unknown>>? }
 ---@param expectedRevision integer
 ---@return { isCurrent: fun(): boolean, publish: fun(): table<string, unknown>, transfer: integer, playerMoney: integer, momBalance: integer, outcomeId: string }
 function PhoneRewards.prepareBattle(opts, expectedRevision)
@@ -188,6 +193,32 @@ function PhoneRewards.prepareBattle(opts, expectedRevision)
   assert(type(opts.battleKind) == "string" and opts.battleKind ~= "", "savings settlement names its battle context")
   local transfer, playerMoney, momBalance =
     PhoneRewards.settlementFor(opts.beforePlayer, opts.afterPlayer, opts.momBalance, opts.battleKind)
+  local live = liveMom(owner)
+  local stagedMom = {
+    balance = momBalance,
+    purchases = copyClaimed(live.purchases),
+    gifts = copyQueue(live.gifts),
+  }
+  local queued, berryPending, berryKeys = false, false, {}
+  if transfer > 0 then
+    assert(type(opts.itemCatalog) == "table", "battle savings resolve source item identities")
+    local sourceRecords = assert(opts.momPurchases, "battle savings use the compiled source gift table")
+    local purchases = {}
+    for _, entry in ipairs(sourceRecords) do
+      if entry.kind == "purchase" then
+        purchases[#purchases + 1] = entry
+      elseif entry.kind == "berry" then
+        berryKeys[#berryKeys + 1] = resolveItem(opts.itemCatalog, entry.nativeItemId)
+      else
+        assert(false, "compiled Mom gifts carry a purchase or berry identity")
+      end
+    end
+    assert(#purchases == 9 and #berryKeys == PhoneRewards.BERRY_CHOICES, "the compiled Mom gift vectors are complete")
+    stagedMom, queued, berryPending = purchaseEffects(live, momBalance, purchases, berryKeys, opts.itemCatalog)
+    if berryPending then
+      assert(type(opts.random) == "table", "the berry fallback stages its existing draw stream")
+    end
+  end
   local box = { published = false }
   local function isCurrent()
     local revisionOf = owner.revision --[[@as fun(self: table<string, unknown>): integer]]
@@ -199,27 +230,33 @@ function PhoneRewards.prepareBattle(opts, expectedRevision)
     end
     box.published = true
     checkCurrent(owner, expectedRevision)
-    local live = liveMom(owner)
-    publishSavings(owner, expectedRevision, {
-      balance = momBalance,
-      purchases = live.purchases,
-      gifts = live.gifts,
-    })
-    return { transfer = transfer, playerMoney = playerMoney, momBalance = momBalance }
+    if berryPending then
+      local random = opts.random --[[@as { lc: fun(self: table<string, unknown>, label: string): integer }]]
+      assert(type(random) == "table", "the staged berry purchase draws through its existing stream")
+      local index = random:lc(PhoneRewards.BERRY_DRAW_LABEL) % PhoneRewards.BERRY_CHOICES
+      local berryKey = assert(berryKeys[index + 1], "the source berry vector covers each draw")
+      stagedMom.gifts[#stagedMom.gifts + 1] = {
+        item = berryKey,
+        quantity = PhoneRewards.BERRY_QUANTITY,
+      }
+      stagedMom.balance = stagedMom.balance - PhoneRewards.BERRY_COST
+    end
+    publishSavings(owner, expectedRevision, stagedMom, queued and PhoneRewards.MOM_GIFT_TRIGGER or nil)
+    return { transfer = transfer, playerMoney = playerMoney, momBalance = stagedMom.balance }
   end
   return {
     isCurrent = isCurrent,
     publish = publish,
     transfer = transfer,
     playerMoney = playerMoney,
-    momBalance = momBalance,
+    momBalance = stagedMom.balance,
     outcomeId = opts.outcomeId,
   }
 end
 
 ---@param queue unknown
 ---@return table<integer, table<string, unknown>> detached working copy of the gift queue
-local function copyQueue(queue)
+function copyQueue(queue)
   assert(type(queue) == "table", "savings staging reads the gift queue")
   local out = {}
   for index, entry in
@@ -232,7 +269,7 @@ end
 
 ---@param claimed unknown
 ---@return table<string, boolean> working copy of the claimed purchase flags
-local function copyClaimed(claimed)
+function copyClaimed(claimed)
   local out = {}
   if claimed ~= nil then
     assert(type(claimed) == "table", "savings staging reads claimed purchase flags")
@@ -246,14 +283,58 @@ local function copyClaimed(claimed)
   return out
 end
 
--- Stages one balance-change pass over the source purchase table as a
--- revisioned candidate. Unclaimed thresholds crossed since the previous
--- balance buy in source order until the five-entry queue fills; when no
--- normal purchase fires and the updated balance reaches a fresh
--- floor(balance/3000) tier above the recorded one, the berry fallback
--- draws at publication. A full queue stages nothing and draws nothing.
+function purchaseEffects(recorded, balance, purchases, berryKeys, itemCatalog)
+  local queue = copyQueue(recorded.gifts)
+  local claimed = copyClaimed(recorded.purchases)
+  local oldBalance = recorded.balance --[[@as integer]]
+  local boughtAny = false
+  for _, entry in ipairs(purchases) do
+    assert(
+      type(entry) == "table"
+        and type(entry.sourceIndex) == "number"
+        and entry.sourceIndex % 1 == 0
+        and entry.sourceIndex >= 0
+        and type(entry.nativeItemId) == "number"
+        and entry.nativeItemId % 1 == 0
+        and type(entry.threshold) == "number"
+        and entry.threshold % 1 == 0
+        and type(entry.cost) == "number"
+        and entry.cost % 1 == 0,
+      "native Mom purchase rows carry their source identity and exact costs"
+    )
+    if #queue >= PhoneRewards.GIFT_FIFO_MAX then
+      break
+    end
+    local sourceIndex = entry.sourceIndex --[[@as integer]]
+    local flag = "item-" .. tostring(sourceIndex)
+    local itemKey = resolveItem(itemCatalog, entry.nativeItemId --[[@as integer]])
+    local legacyFlag = itemKey .. "-" .. tostring(entry.threshold)
+    local priorFlag = LEGACY_PURCHASE_FLAGS[sourceIndex]
+    if claimed[flag] ~= true and claimed[legacyFlag] ~= true and claimed[priorFlag] ~= true then
+      if balance < entry.threshold then
+        break
+      end
+      queue[#queue + 1] = { item = itemKey, quantity = 1 }
+      balance = balance - entry.cost --[[@as integer]]
+      claimed[flag] = true
+      boughtAny = true
+    end
+  end
+  local berryPending = false
+  if not boughtAny and #queue < PhoneRewards.GIFT_FIFO_MAX then
+    berryPending = math.floor(balance / PhoneRewards.BERRY_TIER) > math.floor(oldBalance / PhoneRewards.BERRY_TIER)
+  end
+  assert(
+    not berryPending or #berryKeys == PhoneRewards.BERRY_CHOICES,
+    "the source berry table contains all resistance berries"
+  )
+  return { balance = balance, purchases = claimed, gifts = queue }, boughtAny or berryPending, berryPending
+end
+
+-- Stages the source purchase walk for focused callers. BattleRuntime uses
+-- this same walk inside prepareBattle so payout and purchase publish once.
 ---@param expectedRevision integer
----@param opts { state: table<string, unknown>, balance: integer, previousBalance: integer, random: table<string, unknown>?, queuedGifts: table<integer, table<string, unknown>>?, claimed: table<string, boolean>?, purchases: table<integer, { item: string, threshold: integer, cost: integer }>? }
+---@param opts { state: table<string, unknown>, balance: integer, previousBalance: integer, random: table<string, unknown>?, itemCatalog: table<string, unknown>, momPurchases: table<integer, table<string, unknown>> }
 ---@return { isCurrent: fun(): boolean, publish: fun(): table<string, unknown> }
 function PhoneRewards.preparePurchases(expectedRevision, opts)
   assert(type(opts) == "table", "savings purchases stage their balance facts")
@@ -262,57 +343,24 @@ function PhoneRewards.preparePurchases(expectedRevision, opts)
   checkMoney(opts.balance, "updated balance")
   checkMoney(opts.previousBalance, "previous balance")
   assert(opts.balance >= opts.previousBalance, "savings purchases apply positive balance changes")
-  local table_ = opts.purchases or PhoneRewards.normalPurchases()
-  assert(type(table_) == "table", "savings purchases read the source purchase table")
   local recorded = liveMom(owner)
   assert(type(recorded.balance) == "number", "savings staging reads the recorded balance")
-  local recordedBalance = recorded.balance --[[@as integer]]
-  local recordedGifts = recorded.gifts
-  local recordedFlags = recorded.purchases
-  local queue = opts.queuedGifts ~= nil and copyQueue(opts.queuedGifts) or copyQueue(recordedGifts)
-  local claimed = copyClaimed(opts.claimed)
-  if recordedFlags ~= nil then
-    assert(type(recordedFlags) == "table", "recorded purchase flags stay a flag set")
-    for key, value in
-      pairs(recordedFlags --[[@as table<string, boolean>]])
-    do
-      if value == true then
-        claimed[key] = true
-      end
+  assert(type(opts.itemCatalog) == "table", "savings purchases resolve source items")
+  local purchases, berryKeys = {}, {}
+  for _, entry in ipairs(opts.momPurchases) do
+    if entry.kind == "purchase" then
+      purchases[#purchases + 1] = entry
+    elseif entry.kind == "berry" then
+      berryKeys[#berryKeys + 1] = resolveItem(opts.itemCatalog, entry.nativeItemId)
+    else
+      assert(false, "compiled Mom gifts carry a purchase or berry identity")
     end
   end
-  local balance = opts.balance --[[@as integer]]
-  local previousBalance = opts.previousBalance --[[@as integer]]
-  local costs = 0
-  local boughtAny = false
-  for _, entry in ipairs(table_) do
-    assert(
-      type(entry) == "table"
-        and type(entry.item) == "string"
-        and type(entry.threshold) == "number"
-        and type(entry.cost) == "number",
-      "source purchases carry item, threshold, and cost"
-    )
-    if #queue >= PhoneRewards.GIFT_FIFO_MAX then
-      break
-    end
-    local flag = entry.item .. "-" .. tostring(entry.threshold)
-    if claimed[flag] ~= true and entry.threshold > previousBalance and entry.threshold <= balance then
-      queue[#queue + 1] = { item = entry.item, quantity = 1 }
-      costs = costs + entry.cost
-      claimed[flag] = true
-      boughtAny = true
-    end
-  end
-  local berryPending = false
-  if not boughtAny and #queue < PhoneRewards.GIFT_FIFO_MAX then
-    if math.floor(balance / PhoneRewards.BERRY_TIER) > math.floor(recordedBalance / PhoneRewards.BERRY_TIER) then
-      berryPending = true
-    end
-  end
-  local random = opts.random
+  assert(#purchases == 9 and #berryKeys == PhoneRewards.BERRY_CHOICES, "the compiled Mom gift vectors are complete")
+  local stagedMom, queued, berryPending =
+    purchaseEffects(recorded, opts.balance, purchases, berryKeys, opts.itemCatalog)
   if berryPending then
-    assert(type(random) == "table", "the berry fallback stages its draw stream")
+    assert(type(opts.random) == "table", "the berry fallback stages its existing draw stream")
   end
   local box = { published = false }
   local function isCurrent()
@@ -325,52 +373,27 @@ function PhoneRewards.preparePurchases(expectedRevision, opts)
     end
     box.published = true
     checkCurrent(owner, expectedRevision)
-    local finalCosts = costs
     if berryPending then
-      assert(type(random) == "table", "the berry fallback draws at publication")
-      local draw = random --[[@as { lc: fun(self: table<string, unknown>, label: string): integer }]]
-      local berryIndex = draw:lc(PhoneRewards.BERRY_DRAW_LABEL) % PhoneRewards.BERRY_CHOICES
-      queue[#queue + 1] =
-        { item = PhoneRewards.BERRY_ITEM_PREFIX .. berryIndex, quantity = PhoneRewards.BERRY_QUANTITY }
-      finalCosts = finalCosts + PhoneRewards.BERRY_COST
+      local random = opts.random --[[@as { lc: fun(self: table<string, unknown>, label: string): integer }]]
+      local index = random:lc(PhoneRewards.BERRY_DRAW_LABEL) % PhoneRewards.BERRY_CHOICES
+      local berryKey = assert(berryKeys[index + 1], "the source berry vector covers each draw")
+      stagedMom.gifts[#stagedMom.gifts + 1] = {
+        item = berryKey,
+        quantity = PhoneRewards.BERRY_QUANTITY,
+      }
+      stagedMom.balance = stagedMom.balance - PhoneRewards.BERRY_COST
     end
-    local settledBalance = balance - finalCosts
-    local trigger = nil
-    if boughtAny or berryPending then
-      trigger = PhoneRewards.MOM_GIFT_TRIGGER
-    end
-    publishSavings(owner, expectedRevision, {
-      balance = settledBalance,
-      purchases = claimed,
-      gifts = queue,
-    }, trigger)
-    return { balance = settledBalance, gifts = copyQueue(queue) }
+    publishSavings(owner, expectedRevision, stagedMom, queued and PhoneRewards.MOM_GIFT_TRIGGER or nil)
+    return { balance = stagedMom.balance, gifts = copyQueue(stagedMom.gifts) }
   end
   return { isCurrent = isCurrent, publish = publish }
 end
 
----@param pending table<integer, table<string, unknown>>
----@param gift { item: string, quantity: integer }
----@return integer? matching queue position
-local function findPending(pending, gift)
-  for index, entry in ipairs(pending) do
-    if entry.item == gift.item and entry.quantity == gift.quantity then
-      return index
-    end
-  end
-  return nil
-end
-
--- Stages collection of one pending gift as a revisioned candidate. The
--- gift must already be pending: preparation fails when nothing matching
--- waits, so a repeated collection can never duplicate inventory.
--- Publication grants through the live Bag preparation when a Bag owner
--- is supplied, otherwise through the explicit synthetic free slot count;
--- a full Bag fails before clearing, keeping the same reward pending
--- without a reroll. Clearing and granting happen in one non-yielding
--- publication.
+-- Stages the queue-only half of the source gift delivery. The source script
+-- has already completed the standard Bag give before opcode 812 reaches this
+-- owner; this candidate never changes Bag inventory.
 ---@param expectedRevision integer
----@param opts { state: table<string, unknown>, gift: { item: string, quantity: integer }, bagFreeSlots: integer?, bag: table<string, unknown>?, bagRevision: integer? }
+---@param opts { state: table<string, unknown>, gift: { item: string, quantity: integer } }
 ---@return { isCurrent: fun(): boolean, publish: fun(): table<string, unknown> }
 function PhoneRewards.prepareCollection(expectedRevision, opts)
   assert(type(opts) == "table", "gift collection stages its pending gift")
@@ -385,19 +408,8 @@ function PhoneRewards.prepareCollection(expectedRevision, opts)
   )
   local recorded = liveMom(owner)
   local pending = copyQueue(recorded.gifts)
-  if findPending(pending, gift) == nil then
+  if pending[1] == nil or pending[1].item ~= gift.item or pending[1].quantity ~= gift.quantity then
     Errors.raise(PhoneRewards.STALE_CODE, "no matching gift waits for collection", {})
-  end
-  local bag = opts.bag
-  local bagRevision = opts.bagRevision
-  local bagFreeSlots = opts.bagFreeSlots
-  if bag ~= nil then
-    assert(type(bag) == "table", "gift collection grants through the live Bag owner")
-  else
-    assert(
-      type(bagFreeSlots) == "number" and bagFreeSlots % 1 == 0,
-      "gift collection without a Bag owner names the synthetic free slot count"
-    )
   end
   local box = { published = false }
   local function isCurrent()
@@ -411,31 +423,10 @@ function PhoneRewards.prepareCollection(expectedRevision, opts)
     box.published = true
     checkCurrent(owner, expectedRevision)
     local fresh = copyQueue(liveMom(owner).gifts)
-    local position = findPending(fresh, gift)
-    if position == nil then
+    if fresh[1] == nil or fresh[1].item ~= gift.item or fresh[1].quantity ~= gift.quantity then
       Errors.raise(PhoneRewards.STALE_CODE, "no matching gift waits for collection", {})
     end
-    if bag ~= nil then
-      local live = bag --[[@as table<string, unknown>]]
-      local stage = live.prepareInventoryChanges --[[@as fun(self: table<string, unknown>, revision: integer, deltas: table<integer, table<string, unknown>>): table<string, unknown>?]]
-      local revisionOf = live.revision --[[@as fun(self: table<string, unknown>): integer]]
-      local expected = bagRevision or revisionOf(live)
-      local item = gift.item
-      assert(type(item) == "string", "live Bag grants name their item")
-      local staged = stage(live, expected, { { op = "add", item = item, quantity = gift.quantity } })
-      if staged == nil then
-        Errors.raise(PhoneRewards.STALE_CODE, "the full Bag keeps the gift pending", {})
-      end
-      local commit = staged --[[@as { publish: fun() }]]
-      assert(type(commit.publish) == "function", "Bag grants publish through their preparation")
-      commit.publish()
-    else
-      assert(type(bagFreeSlots) == "number", "synthetic collection names its free slot count")
-      if bagFreeSlots <= 0 then
-        Errors.raise(PhoneRewards.STALE_CODE, "the full Bag keeps the gift pending", {})
-      end
-    end
-    table.remove(fresh, position --[[@as integer]])
+    table.remove(fresh, 1)
     local live = liveMom(owner)
     publishSavings(owner, expectedRevision, {
       balance = live.balance,

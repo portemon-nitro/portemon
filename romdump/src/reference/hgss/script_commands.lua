@@ -6037,6 +6037,8 @@ return {
       widths = {},
     },
     [811] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_811",
       widths = {
         [1] = 2,
@@ -6044,6 +6046,8 @@ return {
       },
     },
     [812] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_812",
       widths = {},
     },

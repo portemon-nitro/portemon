@@ -57,7 +57,7 @@ local function fixtureManifest()
     radio = { dial = visualRef("assets/generated/pokegear/radio-dial.png") },
     catalog = {
       contacts = {
-        { key = "test.caller.falkner", family = "gym", sortWeight = 10 },
+        { key = "test.caller.falkner", family = "gym", sortWeight = 10, rematchWeekday = 6, rematchTime = 0 },
         { key = "test.caller.mom", family = "mother", sortWeight = 20 },
       },
       contactOrder = { "test.caller.falkner", "test.caller.mom" },
@@ -116,6 +116,7 @@ end
 -- owner. Only the host audio boundary is stubbed.
 ---@return table world
 local function phoneWorld()
+  local rematches = {}
   return {
     storyTier = 2,
     weekday = "saturday",
@@ -124,6 +125,12 @@ local function phoneWorld()
       [2] = { tier = 2, members = { { species = "test.pidgeotto", level = 13 } } },
     },
     rematchReady = {},
+    queryRematch = function(_, contact)
+      return rematches[contact]
+    end,
+    setRematch = function(_, contact, record)
+      rematches[contact] = record
+    end,
   }
 end
 
@@ -145,20 +152,6 @@ local function openCall(state, catalog, world)
     },
     random = PokegearRandom.new(90210),
   })
-end
-
--- Stages a rematch invitation through the real conversation owner: the
--- accepted invitation reports readiness at its source step.
----@param call table
----@param contact string
-local function stageRematch(call, contact)
-  local handle = call:begin({ id = "rematch-" .. contact, contact = contact, direction = "outgoing", kind = "rematch" })
-  call:step(handle, {})
-  call:step(handle, {})
-  local invitation = call:result(handle)
-  Assert.notNil(invitation, "the accepted invitation reports a result")
-  Assert.equal(invitation.ready, true, "the invitation stages readiness")
-  call:release(handle)
 end
 
 -- Builds the detached roamer snapshot the map samples once at creation:
@@ -239,8 +232,16 @@ function T.tests.live_owner_markers_stay_read_only_across_battle_and_reopen()
   state:registerContact("test.caller.falkner")
   state:registerContact("test.caller.mom")
   local world = phoneWorld()
+  world.weekday = 6
+  world.timeOfDay = 0
+  world.queryRematch = function(_, contact)
+    return state:queryRematch(contact)
+  end
+  world.setRematch = function(_, contact, record)
+    return state:setRematch(contact, record)
+  end
   local call = openCall(state, catalog, world)
-  stageRematch(call, "test.caller.falkner")
+  state:setRematch("test.caller.falkner", { stage = 1, wins = 0 })
   state:setContactReward("test.caller.mom", { item = "test.potion", quantity = 1 })
 
   local contactPlaces = {
@@ -264,9 +265,14 @@ function T.tests.live_owner_markers_stay_read_only_across_battle_and_reopen()
       mapContext = mapContext,
       phoneProjection = phonePolicy(call, state, contactPlaces),
       roamerProjection = snapshotRoamers(roamers),
-      wordEntry = { open = function(_) end, step = function() end, result = function()
-        return nil
-      end, cancel = function() end },
+      wordEntry = {
+        open = function(_) end,
+        step = function() end,
+        result = function()
+          return nil
+        end,
+        cancel = function() end,
+      },
     })
   end
 

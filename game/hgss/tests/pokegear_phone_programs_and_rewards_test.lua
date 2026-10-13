@@ -18,6 +18,109 @@ local T = {
   tests = {},
 }
 
+local SOURCE_PURCHASES = {
+  { sourceIndex = 0, nativeItemId = 26, threshold = 900, cost = 600 },
+  { sourceIndex = 1, nativeItemId = 79, threshold = 4000, cost = 270 },
+  { sourceIndex = 2, nativeItemId = 26, threshold = 7000, cost = 600 },
+  { sourceIndex = 3, nativeItemId = 251, threshold = 10000, cost = 100 },
+  { sourceIndex = 4, nativeItemId = 81, threshold = 15000, cost = 3000 },
+  { sourceIndex = 5, nativeItemId = 25, threshold = 19000, cost = 900 },
+  { sourceIndex = 6, nativeItemId = 287, threshold = 30000, cost = 200 },
+  { sourceIndex = 7, nativeItemId = 266, threshold = 40000, cost = 200 },
+  { sourceIndex = 8, nativeItemId = 275, threshold = 50000, cost = 200 },
+}
+local SOURCE_BERRIES = {
+  "CHERI_BERRY",
+  "CHESTO_BERRY",
+  "PECHA_BERRY",
+  "RAWST_BERRY",
+  "ASPEAR_BERRY",
+  "LEPPA_BERRY",
+  "ORAN_BERRY",
+  "PERSIM_BERRY",
+  "LUM_BERRY",
+  "SITRUS_BERRY",
+  "FIGY_BERRY",
+  "WIKI_BERRY",
+  "MAGO_BERRY",
+  "AGUAV_BERRY",
+  "IAPAPA_BERRY",
+  "RAZZ_BERRY",
+  "BLUK_BERRY",
+}
+local SOURCE_ITEM_KEYS = {
+  [25] = "HYPER_POTION",
+  [26] = "SUPER_POTION",
+  [79] = "REPEL",
+  [81] = "MOON_STONE",
+  [251] = "SILK_SCARF",
+  [266] = "MUSCLE_BAND",
+  [275] = "FOCUS_SASH",
+  [287] = "CHOICE_SCARF",
+}
+for index, key in ipairs(SOURCE_BERRIES) do
+  SOURCE_ITEM_KEYS[148 + index] = key
+end
+
+local function sourceMomPurchases()
+  local records = {}
+  for _, entry in ipairs(SOURCE_PURCHASES) do
+    records[#records + 1] = {
+      kind = "purchase",
+      sourceIndex = entry.sourceIndex,
+      nativeItemId = entry.nativeItemId,
+      threshold = entry.threshold,
+      cost = entry.cost,
+    }
+  end
+  for index, key in ipairs(SOURCE_BERRIES) do
+    records[#records + 1] = {
+      kind = "berry",
+      sourceIndex = index - 1,
+      nativeItemId = 148 + index,
+      threshold = 0,
+      cost = 100,
+      key = key,
+    }
+  end
+  return records
+end
+
+local TEST_ITEM_CATALOG = {
+  itemKeyByNativeId = function(_, nativeId)
+    local key = SOURCE_ITEM_KEYS[nativeId]
+    assert(key ~= nil, "test catalog contains each native Mom item")
+    return key
+  end,
+  item = function(_, key)
+    for nativeId, itemKey in pairs(SOURCE_ITEM_KEYS) do
+      if itemKey == key then
+        return { nativeId = nativeId }
+      end
+    end
+    error("test catalog has no native item " .. key, 0)
+  end,
+}
+
+local function prepareBattle(opts, expectedRevision)
+  opts.momPurchases = sourceMomPurchases()
+  opts.itemCatalog = opts.itemCatalog or TEST_ITEM_CATALOG
+  return require("game.hgss.src.pokegear.PhoneRewards").prepareBattle(opts, expectedRevision)
+end
+
+local function preparePurchases(expectedRevision, opts)
+  opts.momPurchases = sourceMomPurchases()
+  opts.itemCatalog = opts.itemCatalog or TEST_ITEM_CATALOG
+  local current = opts.state:readPhone().mom
+  opts.state:setMom({
+    balance = opts.previousBalance,
+    purchases = opts.claimed or current.purchases,
+    gifts = opts.queuedGifts or current.gifts,
+  })
+  expectedRevision = opts.state:revision()
+  return require("game.hgss.src.pokegear.PhoneRewards").preparePurchases(expectedRevision, opts)
+end
+
 -- Loads a phone module that does not exist yet at this baseline. The
 -- failure names the missing behaviour instead of surfacing as a suite load
 -- error, so the pre-implementation red stays attributable.
@@ -285,8 +388,15 @@ function T.tests.battle_winnings_split_into_savings_from_the_capped_actual_gain(
   ---@return integer momKeeps
   local function settle(beforePlayer, afterPlayer, momBalance, outcomeId, battleKind)
     local state = PokegearState.new({ seed = 99 }, catalogRefs(record))
+    local claimed = {}
+    if momBalance >= 50000 then
+      for _, entry in ipairs(SOURCE_PURCHASES) do
+        claimed["item-" .. tostring(entry.sourceIndex)] = true
+      end
+    end
+    state:setMom({ balance = momBalance, purchases = claimed, gifts = {} })
     local revision = state:revision()
-    local staged = PhoneRewards.prepareBattle({
+    local staged = prepareBattle({
       state = state,
       beforePlayer = beforePlayer,
       afterPlayer = afterPlayer,
@@ -357,7 +467,7 @@ function T.tests.battle_winnings_split_into_savings_from_the_capped_actual_gain(
   do
     local state = PokegearState.new({ seed = 99 }, catalogRefs(record))
     local revision = state:revision()
-    local staged = PhoneRewards.prepareBattle({
+    local staged = prepareBattle({
       state = state,
       beforePlayer = 1000,
       afterPlayer = 1500,
@@ -367,7 +477,7 @@ function T.tests.battle_winnings_split_into_savings_from_the_capped_actual_gain(
     }, revision)
     staged.publish()
     local once = state:readPhone().mom --[[@as table]]
-    local replay = PhoneRewards.prepareBattle({
+    local replay = prepareBattle({
       state = state,
       beforePlayer = 1000,
       afterPlayer = 1500,
@@ -382,7 +492,7 @@ function T.tests.battle_winnings_split_into_savings_from_the_capped_actual_gain(
     Assert.deepEqual(state:readPhone().mom, once, "the replay leaves savings exactly as settled")
 
     local fresh = state:revision()
-    local candidate = PhoneRewards.prepareBattle({
+    local candidate = prepareBattle({
       state = state,
       beforePlayer = 1000,
       afterPlayer = 1500,
@@ -405,17 +515,7 @@ end
 -- floor(balance/3000) tier is crossed without a normal purchase.
 ---@return table[]
 local function sourcePurchaseTable()
-  return {
-    { item = "custom.super-potion", threshold = 900, cost = 600 },
-    { item = "custom.repel", threshold = 4000, cost = 270 },
-    { item = "custom.super-potion", threshold = 7000, cost = 600 },
-    { item = "custom.silk-scarf", threshold = 10000, cost = 100 },
-    { item = "custom.moon-stone", threshold = 15000, cost = 3000 },
-    { item = "custom.hyper-potion", threshold = 19000, cost = 900 },
-    { item = "custom.choice-scarf", threshold = 30000, cost = 200 },
-    { item = "custom.muscle-band", threshold = 40000, cost = 200 },
-    { item = "custom.focus-sash", threshold = 50000, cost = 200 },
-  }
+  return SOURCE_PURCHASES
 end
 
 -- Savings purchases follow source order with FIFO boundaries: thresholds
@@ -445,7 +545,7 @@ function T.tests.savings_purchases_follow_source_order_with_fifo_boundaries()
   do
     local state = PokegearState.new({ seed = 11 }, catalogRefs(record))
     local random = PokegearRandom.new(11)
-    local candidate = PhoneRewards.preparePurchases(state:revision(), {
+    local candidate = preparePurchases(state:revision(), {
       state = state,
       balance = 950,
       previousBalance = 800,
@@ -454,9 +554,9 @@ function T.tests.savings_purchases_follow_source_order_with_fifo_boundaries()
     candidate.publish()
     local mom = state:readPhone().mom --[[@as table]]
     Assert.equal(#mom.gifts, 1, "one threshold crossing enqueues one gift")
-    Assert.equal(mom.gifts[1].item, "custom.super-potion", "the first purchase is the super potion")
+    Assert.equal(mom.gifts[1].item, "SUPER_POTION", "the first purchase is the super potion")
     Assert.equal(mom.balance, 950 - 600, "the purchase spends exactly its source cost")
-    Assert.isTrue(mom.purchases["custom.super-potion-900"] == true, "the one-time purchase is marked claimed")
+    Assert.isTrue(mom.purchases["item-0"] == true, "the native source slot is marked claimed")
   end
 
   -- A full five-entry queue draws nothing and buys nothing.
@@ -471,7 +571,7 @@ function T.tests.savings_purchases_follow_source_order_with_fifo_boundaries()
       { item = "custom.e", quantity = 1 },
     }
     local before = random:capture()
-    local candidate = PhoneRewards.preparePurchases(state:revision(), {
+    local candidate = preparePurchases(state:revision(), {
       state = state,
       balance = 60000,
       previousBalance = 100,
@@ -490,11 +590,21 @@ function T.tests.savings_purchases_follow_source_order_with_fifo_boundaries()
   do
     local state = PokegearState.new({ seed = 13 }, catalogRefs(record))
     local random = PokegearRandom.new(13)
-    local candidate = PhoneRewards.preparePurchases(state:revision(), {
+    local candidate = preparePurchases(state:revision(), {
       state = state,
-      balance = 6500,
-      previousBalance = 6200,
-      claimed = { ["custom.super-potion-900"] = true },
+      balance = 3000,
+      previousBalance = 2900,
+      claimed = {
+        ["item-0"] = true,
+        ["item-1"] = true,
+        ["item-2"] = true,
+        ["item-3"] = true,
+        ["item-4"] = true,
+        ["item-5"] = true,
+        ["item-6"] = true,
+        ["item-7"] = true,
+        ["item-8"] = true,
+      },
       random = random,
     })
     candidate.publish()
@@ -502,16 +612,114 @@ function T.tests.savings_purchases_follow_source_order_with_fifo_boundaries()
     Assert.equal(#mom.gifts, 1, "only the berry fallback enqueues when normals are claimed")
     local berry = mom.gifts[1]
     Assert.equal(berry.quantity, 5, "the fallback berry comes in quantity five")
-    Assert.equal(mom.balance, 6500 - 100, "the fallback berry costs 100")
+    Assert.equal(mom.balance, 3000 - 100, "the fallback berry costs 100")
     local expectedIndex = PokegearRandom.new(13):lc("mom-berry") % 17
-    Assert.equal(berry.item, "custom.berry-" .. expectedIndex, "the berry is the labelled draw modulo seventeen")
+    Assert.equal(berry.item, SOURCE_BERRIES[expectedIndex + 1], "the berry is the labelled native choice")
   end
 
-  -- Collecting with a full Bag keeps the same gift pending: the retry
-  -- grants the identical item instead of rerolling a replacement.
+  -- A valid pre-native v9 save may contain the old item-threshold claim.
+  -- It still suppresses the corresponding native purchase after migration.
+  do
+    local state = PokegearState.new({ seed = 130 }, catalogRefs(record))
+    local candidate = preparePurchases(state:revision(), {
+      state = state,
+      balance = 1000,
+      previousBalance = 800,
+      claimed = { ["custom.super-potion-900"] = true },
+    })
+    candidate.publish()
+    local mom = state:readPhone().mom --[[@as table]]
+    Assert.equal(#mom.gifts, 0, "a prior v9 claim is not earned a second time")
+    Assert.equal(mom.balance, 1000, "a prior v9 claim does not spend savings again")
+  end
+
+  -- The complete source berry vector resolves before publication can draw;
+  -- a bad catalog leaves the deterministic stream untouched.
+  do
+    local state = PokegearState.new({ seed = 131 }, catalogRefs(record))
+    local random = PokegearRandom.new(131)
+    local claimed = {}
+    for index = 0, 8 do
+      claimed["item-" .. tostring(index)] = true
+    end
+    local itemCatalog = {
+      itemKeyByNativeId = function(_, nativeId)
+        assert(nativeId ~= 165, "the catalog omits the last source berry")
+        return TEST_ITEM_CATALOG:itemKeyByNativeId(nativeId)
+      end,
+    }
+    local before = random:capture()
+    local ok = pcall(function()
+      preparePurchases(state:revision(), {
+        state = state,
+        balance = 3000,
+        previousBalance = 2900,
+        claimed = claimed,
+        random = random,
+        itemCatalog = itemCatalog,
+      })
+    end)
+    Assert.isFalse(ok, "an invalid source berry rejects candidate preparation")
+    Assert.deepEqual(random:capture(), before, "invalid item identity consumes no random draw")
+  end
+
+  -- The production battle candidate validates the complete berry vector
+  -- before any eventual publication draw and rejects stale draws first.
+  do
+    local claimed = {}
+    for index = 0, 8 do
+      claimed["item-" .. tostring(index)] = true
+    end
+    local state = PokegearState.new({ seed = 132 }, catalogRefs(record))
+    state:setMom({ balance = 0, purchases = claimed, gifts = {} })
+    local random = PokegearRandom.new(132)
+    local invalidCatalog = {
+      itemKeyByNativeId = function(_, nativeId)
+        assert(nativeId ~= 165, "the catalog omits the final battle berry")
+        return TEST_ITEM_CATALOG:itemKeyByNativeId(nativeId)
+      end,
+    }
+    local before = random:capture()
+    local ok = pcall(function()
+      prepareBattle({
+        state = state,
+        beforePlayer = 0,
+        afterPlayer = 12000,
+        momBalance = 0,
+        battleKind = "trainer",
+        outcomeId = "invalid-battle-berry",
+        random = random,
+        itemCatalog = invalidCatalog,
+      }, state:revision())
+    end)
+    Assert.isFalse(ok, "invalid battle berry identity rejects preparation")
+    Assert.deepEqual(random:capture(), before, "invalid battle berry identity consumes no random draw")
+
+    local staleState = PokegearState.new({ seed = 133 }, catalogRefs(record))
+    staleState:setMom({ balance = 0, purchases = claimed, gifts = {} })
+    local staleRandom = PokegearRandom.new(133)
+    local candidate = prepareBattle({
+      state = staleState,
+      beforePlayer = 0,
+      afterPlayer = 12000,
+      momBalance = 0,
+      battleKind = "trainer",
+      outcomeId = "stale-battle-berry",
+      random = staleRandom,
+    }, staleState:revision())
+    local staleBefore = staleRandom:capture()
+    staleState:setTrigger("gear.trigger.test", true)
+    Assert.throws(function()
+      candidate.publish()
+    end, "stale battle berry candidate is rejected")
+    Assert.deepEqual(staleRandom:capture(), staleBefore, "stale battle candidate consumes no random draw")
+  end
+
+  -- The dequeue candidate only advances the FIFO; the source Bag give is
+  -- owned by the interpreted script between peek and take.
   do
     local state = PokegearState.new({ seed = 14 }, catalogRefs(record))
-    local stock = PhoneRewards.preparePurchases(state:revision(), {
+    local stock = preparePurchases(state:revision(), {
       state = state,
       balance = 950,
       previousBalance = 800,
@@ -520,27 +728,22 @@ function T.tests.savings_purchases_follow_source_order_with_fifo_boundaries()
     stock.publish()
     Assert.equal(
       (state:readPhone().mom --[[@as table]]).gifts[1].item,
-      "custom.super-potion",
+      "SUPER_POTION",
       "the source purchase stages the pending gift through the real queue"
     )
     local collect = PhoneRewards.prepareCollection(state:revision(), {
       state = state,
-      gift = { item = "custom.super-potion", quantity = 1 },
-      bagFreeSlots = 0,
+      gift = { item = "SUPER_POTION", quantity = 1 },
     })
-    Assert.throws(function()
-      collect.publish()
-    end, "collecting into a full Bag must fail")
-    local pending = state:readPhone().mom --[[@as table]]
-    Assert.equal(pending.gifts[1].item, "custom.super-potion", "the failed collection preserves the pending gift")
-    local retry = PhoneRewards.prepareCollection(state:revision(), {
-      state = state,
-      gift = { item = "custom.super-potion", quantity = 1 },
-      bagFreeSlots = 3,
-    })
-    retry.publish()
+    collect.publish()
     local cleared = state:readPhone().mom --[[@as table]]
-    Assert.equal(#cleared.gifts, 0, "the successful retry clears the pending gift")
+    Assert.equal(#cleared.gifts, 0, "the source dequeue clears the pending gift once")
+    Assert.throws(function()
+      PhoneRewards.prepareCollection(
+        state:revision(),
+        { state = state, gift = { item = "SUPER_POTION", quantity = 1 } }
+      )
+    end, "a duplicate source dequeue finds no matching head")
   end
 end
 
@@ -745,13 +948,13 @@ function T.tests.savings_candidates_reject_stale_and_replayed_publication()
   -- any write: balances, queues, and flags stay exactly as recorded.
   do
     local state = PokegearState.new({ seed = 41 }, catalogRefs(record))
-    local before = state:readPhone().mom --[[@as table]]
-    local candidate = PhoneRewards.preparePurchases(state:revision(), {
+    local candidate = preparePurchases(state:revision(), {
       state = state,
       balance = 950,
       previousBalance = 800,
       random = PokegearRandom.new(41),
     })
+    local before = state:readPhone().mom --[[@as table]]
     state:registerContact("custom.mom")
     Assert.throws(function()
       candidate.publish()
@@ -759,11 +962,35 @@ function T.tests.savings_candidates_reject_stale_and_replayed_publication()
     Assert.deepEqual(state:readPhone().mom, before, "the stale purchase leaves savings exactly as recorded")
   end
 
+  -- Staging a berry draw never advances it; a stale revision is rejected
+  -- before publication can consume that draw.
+  do
+    local state = PokegearState.new({ seed = 410 }, catalogRefs(record))
+    local random = PokegearRandom.new(410)
+    local claimed = {}
+    for index = 0, 8 do
+      claimed["item-" .. tostring(index)] = true
+    end
+    local candidate = preparePurchases(state:revision(), {
+      state = state,
+      balance = 3000,
+      previousBalance = 2900,
+      claimed = claimed,
+      random = random,
+    })
+    local before = random:capture()
+    state:registerContact("custom.mom")
+    Assert.throws(function()
+      candidate.publish()
+    end, "a stale berry candidate publishes nothing")
+    Assert.deepEqual(random:capture(), before, "a stale berry candidate consumes no random draw")
+  end
+
   -- A collected gift cannot be collected twice: the retry finds no
   -- matching pending entry at preparation, so no inventory duplicates.
   do
     local state = PokegearState.new({ seed = 42 }, catalogRefs(record))
-    local stock = PhoneRewards.preparePurchases(state:revision(), {
+    local stock = preparePurchases(state:revision(), {
       state = state,
       balance = 950,
       previousBalance = 800,
@@ -772,15 +999,13 @@ function T.tests.savings_candidates_reject_stale_and_replayed_publication()
     stock.publish()
     local collect = PhoneRewards.prepareCollection(state:revision(), {
       state = state,
-      gift = { item = "custom.super-potion", quantity = 1 },
-      bagFreeSlots = 3,
+      gift = { item = "SUPER_POTION", quantity = 1 },
     })
     collect.publish()
     Assert.throws(function()
       PhoneRewards.prepareCollection(state:revision(), {
         state = state,
-        gift = { item = "custom.super-potion", quantity = 1 },
-        bagFreeSlots = 3,
+        gift = { item = "SUPER_POTION", quantity = 1 },
       })
     end, "a repeated collection finds nothing pending")
     Assert.equal(#(state:readPhone().mom --[[@as table]]).gifts, 0, "the collected queue stays empty")
@@ -790,14 +1015,14 @@ function T.tests.savings_candidates_reject_stale_and_replayed_publication()
   -- survive in the companion record and never rebuy.
   do
     local state = PokegearState.new({ seed = 43 }, catalogRefs(record))
-    local first = PhoneRewards.preparePurchases(state:revision(), {
+    local first = preparePurchases(state:revision(), {
       state = state,
       balance = 950,
       previousBalance = 800,
       random = PokegearRandom.new(43),
     })
     first.publish()
-    local chained = PhoneRewards.preparePurchases(state:revision(), {
+    local chained = preparePurchases(state:revision(), {
       state = state,
       balance = 4500,
       previousBalance = 950,
@@ -806,11 +1031,11 @@ function T.tests.savings_candidates_reject_stale_and_replayed_publication()
     chained.publish()
     local mom = state:readPhone().mom --[[@as table]]
     Assert.equal(#mom.gifts, 2, "the chained pass enqueues only the new threshold")
-    Assert.equal(mom.gifts[1].item, "custom.super-potion", "the first purchase stays first")
-    Assert.equal(mom.gifts[2].item, "custom.repel", "the chained pass buys the repel")
+    Assert.equal(mom.gifts[1].item, "SUPER_POTION", "the first purchase stays first")
+    Assert.equal(mom.gifts[2].item, "REPEL", "the chained pass buys the repel")
     Assert.equal(mom.balance, 4500 - 270, "the chained pass spends only its own cost")
-    Assert.isTrue(mom.purchases["custom.super-potion-900"] == true, "the first flag survives")
-    Assert.isTrue(mom.purchases["custom.repel-4000"] == true, "the chained flag records")
+    Assert.isTrue(mom.purchases["item-0"] == true, "the first source slot flag survives")
+    Assert.isTrue(mom.purchases["item-1"] == true, "the next source slot flag records")
   end
 end
 
@@ -833,10 +1058,17 @@ function T.tests.purchase_thresholds_and_berry_tiers_hold_on_both_sides()
   ---@return table mom record after publication
   local function apply(seed, balance, previousBalance)
     local state = PokegearState.new({ seed = seed }, catalogRefs(record))
-    local candidate = PhoneRewards.preparePurchases(state:revision(), {
+    local claimed = {}
+    for _, entry in ipairs(SOURCE_PURCHASES) do
+      if entry.threshold <= previousBalance then
+        claimed["item-" .. tostring(entry.sourceIndex)] = true
+      end
+    end
+    local candidate = preparePurchases(state:revision(), {
       state = state,
       balance = balance,
       previousBalance = previousBalance,
+      claimed = claimed,
       random = PokegearRandom.new(seed),
     })
     candidate.publish()
@@ -845,7 +1077,7 @@ function T.tests.purchase_thresholds_and_berry_tiers_hold_on_both_sides()
 
   local edge = apply(51, 900, 899)
   Assert.equal(#edge.gifts, 1, "landing exactly on the threshold buys")
-  Assert.equal(edge.gifts[1].item, "custom.super-potion", "the edge purchase is the super potion")
+  Assert.equal(edge.gifts[1].item, "SUPER_POTION", "the edge purchase is the super potion")
 
   local recross = apply(52, 950, 900)
   Assert.equal(#recross.gifts, 0, "an already crossed threshold never rebuys")
@@ -859,14 +1091,14 @@ function T.tests.purchase_thresholds_and_berry_tiers_hold_on_both_sides()
   local expectedIndex = PokegearRandom.new(54):lc("mom-berry") % 17
   Assert.equal(
     crossTier.gifts[1].item,
-    "custom.berry-" .. expectedIndex,
-    "the tier berry is the labelled draw modulo seventeen"
+    SOURCE_BERRIES[expectedIndex + 1],
+    "the tier berry is selected from the native source vector"
   )
   Assert.equal(crossTier.gifts[1].quantity, 5, "the tier berry comes in quantity five")
   Assert.equal(crossTier.balance, 3000 - 100, "the tier berry costs 100")
 
   local state = PokegearState.new({ seed = 55 }, catalogRefs(record))
-  local candidate = PhoneRewards.preparePurchases(state:revision(), {
+  local candidate = preparePurchases(state:revision(), {
     state = state,
     balance = 950,
     previousBalance = 800,
@@ -874,7 +1106,7 @@ function T.tests.purchase_thresholds_and_berry_tiers_hold_on_both_sides()
   })
   candidate.publish()
   Assert.equal(
-    (state:readPhone().triggers --[[@as table]])["mom.gift"],
+    (state:readPhone().triggers --[[@as table]])["gear.trigger.12"],
     true,
     "an enqueued purchase sets the gift call trigger"
   )
@@ -1019,7 +1251,7 @@ function T.tests.battle_publication_settles_companion_savings_exactly_once()
   local PokegearState = require("libs.hgss.src.save.PokegearState")
 
   local state = PokegearState.new({ seed = 81 }, catalogRefs(record))
-  local candidate = PhoneRewards.prepareBattle({
+  local candidate = prepareBattle({
     state = state,
     beforePlayer = 1000,
     afterPlayer = 1500,
@@ -1039,7 +1271,7 @@ function T.tests.battle_publication_settles_companion_savings_exactly_once()
   Assert.isTrue(replay == receipt, "a repeated commit reuses the recorded receipt")
   Assert.equal((state:readPhone().mom --[[@as table]]).balance, 125, "the replay banks nothing twice")
 
-  local stale = PhoneRewards.prepareBattle({
+  local stale = prepareBattle({
     state = state,
     beforePlayer = 1000,
     afterPlayer = 1500,
@@ -1132,7 +1364,12 @@ function T.tests.trainer_win_commits_mom_savings_with_the_prize()
     scenario = scenario,
     party = owner,
     player = { record = playerRecord, context = playerContext },
-    pokegear = { state = pokegearState },
+    pokegear = {
+      state = pokegearState,
+      random = require("game.hgss.src.pokegear.PokegearRandom").new(82),
+      itemCatalog = TEST_ITEM_CATALOG,
+      momPurchases = sourceMomPurchases(),
+    },
   })
   local claimed = {} ---@type table<integer, boolean>
   local ticks = 0
@@ -1209,7 +1446,7 @@ function T.tests.staged_savings_states_restore_through_the_companion_owner()
   local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
 
   local state = PokegearState.new({ seed = 91 }, catalogRefs(record))
-  local settlement = PhoneRewards.prepareBattle({
+  local settlement = prepareBattle({
     state = state,
     beforePlayer = 1000,
     afterPlayer = 1500,
@@ -1218,7 +1455,7 @@ function T.tests.staged_savings_states_restore_through_the_companion_owner()
     outcomeId = "win-restore",
   }, state:revision())
   settlement.publish()
-  local stock = PhoneRewards.preparePurchases(state:revision(), {
+  local stock = preparePurchases(state:revision(), {
     state = state,
     balance = 950,
     previousBalance = 800,
@@ -1227,16 +1464,15 @@ function T.tests.staged_savings_states_restore_through_the_companion_owner()
   stock.publish()
   local collect = PhoneRewards.prepareCollection(state:revision(), {
     state = state,
-    gift = { item = "custom.super-potion", quantity = 1 },
-    bagFreeSlots = 3,
+    gift = { item = "SUPER_POTION", quantity = 1 },
   })
   collect.publish()
   local revived = PokegearState.restore(state:capture(), catalogRefs(record))
   local mom = revived:readPhone().mom --[[@as table]]
   Assert.equal(mom.balance, 350, "the restored balance keeps the settled purchase cost")
   Assert.deepEqual(mom.gifts, {}, "the restored queue keeps the collection")
-  Assert.isTrue(mom.purchases["custom.super-potion-900"] == true, "the restored flags keep the claim")
-  Assert.equal(revived:readPhone().triggers["mom.gift"], true, "the restored triggers keep the gift call")
+  Assert.isTrue(mom.purchases["item-0"] == true, "the restored flags keep the source claim")
+  Assert.equal(revived:readPhone().triggers["gear.trigger.12"], true, "the restored triggers keep the gift call")
 end
 
 -- Native-shaped contact keys dispatch through their generated family:

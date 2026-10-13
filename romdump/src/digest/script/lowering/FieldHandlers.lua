@@ -1691,6 +1691,18 @@ function GearLowering.momGiftCheck(ins)
   return { op = "mom_gift_check", result = Operands.varRef(ins.operands[1]) }
 end
 
+function GearLowering.momGiftHead(ins)
+  return {
+    op = "mom_gift_head",
+    item = Operands.varRef(ins.operands[1]),
+    quantity = Operands.varRef(ins.operands[2]),
+  }
+end
+
+function GearLowering.momGiftTake()
+  return { op = "mom_gift_take" }
+end
+
 function GearLowering.getBuenasPassword(ins)
   return {
     op = "buena_password",
@@ -1911,6 +1923,8 @@ local FieldHandlers = {
   [613] = GearLowering.phoneContactGiftBerry,
   [614] = GearLowering.phoneContactGiftItem,
   [779] = GearLowering.radioMusicIsPlaying,
+  [811] = GearLowering.momGiftHead,
+  [812] = GearLowering.momGiftTake,
   [813] = GearLowering.momGiftCheck,
   [821] = GearLowering.getBuenasPassword,
   [437] = FieldServiceHandlers.discardValue,

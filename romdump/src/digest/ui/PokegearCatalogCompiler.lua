@@ -413,7 +413,7 @@ function PokegearCatalogCompiler.compile(romFs, versionId)
     callTriggers = PokegearSources.phoneTriggerRecords(versionId),
     rematches = {},
     gifts = {},
-    momPurchases = {},
+    momPurchases = PokegearSources.momPurchaseRecords(versionId),
     locations = PokegearSources.mapLocationRecords(versionId),
     flypoints = PokegearSources.mapFlypointRecords(versionId),
     reception = PokegearSources.radioReceptionRecords(versionId),

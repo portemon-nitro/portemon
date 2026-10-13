@@ -6,6 +6,7 @@ local Assert = require("tests.support.Assert")
 local Fixture = require("tests.support.PokegearJourneyFixture")
 local LocalClock = require("game.src.LocalClock")
 local PokegearSources = require("romdump.src.config.PokegearSources")
+local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 
 local DERIVED_ASSETS = {}
 for _, key in ipairs(Fixture.JOURNEY_ASSETS) do
@@ -179,7 +180,7 @@ function T.tests.phone_call_publishes_selected_rom_dialogue_through_the_field_te
   end)
 end
 
-function T.tests.native_phone_dialogue_rejects_a_definition_from_another_caller_bank()
+function T.tests.native_phone_menu_releases_a_wrong_bank_definition()
   Fixture.withGame(Fixture.TOWN, function(game)
     local catalog = assert(game.runtime.pokegearCatalog, "the field runtime owns the ROM-derived phone catalog")
     local mom = contactByFamily(catalog, "mother")
@@ -200,6 +201,8 @@ function T.tests.native_phone_dialogue_rejects_a_definition_from_another_caller_
     end
 
     game:setWorldState({ flag = Fixture.FLAGS.FLAG_GOT_POKEGEAR })
+    game.runtime.eventState:clearFlag(FieldScriptSymbols.flagsByName.FLAG_GAVE_RIVAL_NAME_TO_OFFICER)
+    game.runtime.eventState:clearFlag(FieldScriptSymbols.flagsByName.FLAG_TALKED_TO_MOM_AFTER_NAMING_RIVAL)
     Fixture.openGearThroughMenu(game)
     game:advanceUntil("the opening Phone transition completes", function()
       local status = game.runtime.applicationHost:status().application
@@ -208,9 +211,20 @@ function T.tests.native_phone_dialogue_rejects_a_definition_from_another_caller_
     actionEdge(game)
     actionEdge(game)
     actionEdge(game)
-    local call = assert(phoneView(game).call, "the rejected native call publishes its detached result")
-    Assert.equal(call.stage, "completed", "a wrong-bank source definition ends as an unavailable call")
-    Assert.equal(call.result.error.code, "FEATURE_UNAVAILABLE", "bank mismatch remains an attributed feature failure")
+    local call
+    for _ = 1, 240 do
+      call = phoneView(game).call
+      if call ~= nil and call.stage == "completed" then
+        break
+      end
+      if call == nil or call.stage == "connecting" or call.stage == "hangingUp" then
+        game:step()
+      else
+        actionEdge(game)
+      end
+    end
+    Assert.isNil(call, "the menu releases the unavailable call instead of retaining a detached script-host result")
+    Assert.isNil(phoneView(game).call, "the failed menu call returns to the Phone list")
   end)
 end
 

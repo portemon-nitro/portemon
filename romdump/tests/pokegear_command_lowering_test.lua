@@ -33,6 +33,8 @@ local CONTINUATION = {
   [613] = "continue_same_tick",
   [614] = "continue_same_tick",
   [779] = "continue_same_tick",
+  [811] = "continue_same_tick",
+  [812] = "continue_same_tick",
   [813] = "continue_same_tick",
   [821] = "continue_same_tick",
 }
@@ -52,6 +54,8 @@ local WIDTHS = {
   [613] = 1,
   [614] = 1,
   [779] = 2,
+  [811] = 2,
+  [812] = 0,
   [813] = 1,
   [821] = 2,
 }
@@ -77,11 +81,7 @@ end
 function T.tests.every_inventoried_row_is_supported_with_exact_widths_and_timing()
   for opcode, expected in pairs(CONTINUATION) do
     Assert.equal(CommandCatalog.disposition(opcode), "supported", "opcode " .. opcode .. " is executable")
-    Assert.equal(
-      CommandCatalog.classification(opcode),
-      expected,
-      "opcode " .. opcode .. " keeps its timing"
-    )
+    Assert.equal(CommandCatalog.classification(opcode), expected, "opcode " .. opcode .. " keeps its timing")
     Assert.equal(#(CommandCatalog.widths(opcode) or {}), WIDTHS[opcode], "opcode " .. opcode .. " keeps its width")
   end
 end
@@ -180,6 +180,17 @@ function T.tests.radio_parent_and_password_rows_lower_to_typed_nodes()
   Assert.equal(password.op, "buena_password")
   Assert.deepEqual(password.firstWord, { value = "var", id = "VAR_SPECIAL_x8000" })
   Assert.deepEqual(password.correct, { value = "var", id = "VAR_SPECIAL_x8001" })
+end
+
+function T.tests.mom_gift_rows_lower_to_ordered_queue_operations()
+  local head = lowerSingle(811, { "VAR_TEMP_x4001", "VAR_TEMP_x4002" })
+  Assert.equal(head.op, "mom_gift_head")
+  Assert.deepEqual(head.item, { value = "var", id = "VAR_TEMP_x4001" })
+  Assert.deepEqual(head.quantity, { value = "var", id = "VAR_TEMP_x4002" })
+  Assert.equal(lowerSingle(812, {}).op, "mom_gift_take")
+  local check = lowerSingle(813, { "VAR_SPECIAL_RESULT" })
+  Assert.equal(check.op, "mom_gift_check")
+  Assert.deepEqual(check.result, { value = "var", id = "VAR_SPECIAL_RESULT" })
 end
 
 return T

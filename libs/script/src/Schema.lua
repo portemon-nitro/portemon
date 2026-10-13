@@ -455,6 +455,13 @@ Schema.OPERATIONS = {
       result = { type = "writable_value", required = true },
     },
   },
+  mom_gift_head = {
+    fields = {
+      item = { type = "writable_value", required = true },
+      quantity = { type = "writable_value", required = true },
+    },
+  },
+  mom_gift_take = { fields = {} },
   -- Broadcast password service: writes the first of three consecutive
   -- password-word message entries and the winning choice index.
   buena_password = {
@@ -1743,6 +1750,16 @@ Schema.CONSTRUCTORS = {
         signature = "S.momGiftCheck(spec)",
         canonical = "op=mom_gift_check",
         notes = "spec={result}; writes the waiting parent gift key or numeric zero.",
+      },
+      {
+        signature = "S.momGiftHead(spec)",
+        canonical = "op=mom_gift_head",
+        notes = "spec={item,quantity}; writes the native FIFO head item and quantity, or zero values.",
+      },
+      {
+        signature = "S.momGiftTake()",
+        canonical = "op=mom_gift_take",
+        notes = "Pops the gift already granted by the source Bag command.",
       },
       {
         signature = "S.buenaPassword(spec)",

@@ -63,6 +63,25 @@ local function contactCatalog()
     },
     contactOrder = { MOM_KEY, NEIGHBOR_KEY, TRAINER_KEY },
     callTriggers = {},
+    momPurchases = {
+      { kind = "berry", nativeItemId = 149 },
+      { kind = "berry", nativeItemId = 150 },
+      { kind = "berry", nativeItemId = 151 },
+      { kind = "berry", nativeItemId = 152 },
+      { kind = "berry", nativeItemId = 153 },
+      { kind = "berry", nativeItemId = 154 },
+      { kind = "berry", nativeItemId = 155 },
+      { kind = "berry", nativeItemId = 156 },
+      { kind = "berry", nativeItemId = 157 },
+      { kind = "berry", nativeItemId = 158 },
+      { kind = "berry", nativeItemId = 159 },
+      { kind = "berry", nativeItemId = 160 },
+      { kind = "berry", nativeItemId = 161 },
+      { kind = "berry", nativeItemId = 162 },
+      { kind = "berry", nativeItemId = 163 },
+      { kind = "berry", nativeItemId = 164 },
+      { kind = "berry", nativeItemId = 165 },
+    },
     locations = {
       { key = TRIGGER_PLACE, mapRef = 8 },
     },
@@ -87,6 +106,12 @@ local function composeGear(friends, latch)
     pokegearRandom = friends.random,
     pokegearCalendar = friends.calendar,
     pokegearCatalog = friends.catalog,
+    session = { currentMap = { mapSymbol = "test.map", mapSectionNativeId = 8 } },
+    eventState = {
+      isFlagSet = function()
+        return false
+      end,
+    },
     presentationDisplay = {
       width = 256,
       height = 192,
@@ -107,6 +132,18 @@ local function composeGear(friends, latch)
     radioMusicIs = function(_, effect)
       return latch == effect
     end,
+    itemCatalog = {
+      itemKeyByNativeId = function(_, nativeId)
+        return "custom.item-" .. tostring(nativeId)
+      end,
+      item = function(_, itemKey)
+        local nativeId = tonumber(itemKey:match("custom.item%-(%d+)"))
+        if itemKey == "POTION" then
+          nativeId = 34
+        end
+        return { nativeId = nativeId }
+      end,
+    },
   }
   local bundle = PokegearComposition.compose(runtime, {
     state = friends.state,
@@ -125,6 +162,13 @@ local function stubItemCatalog()
   return {
     itemKeyByNativeId = function(_, nativeId)
       return "custom.item-" .. tostring(nativeId)
+    end,
+    item = function(_, itemKey)
+      local nativeId = tonumber(itemKey:match("custom.item%-(%d+)"))
+      if itemKey == "POTION" then
+        nativeId = 34
+      end
+      return { nativeId = nativeId }
     end,
   }
 end
@@ -546,8 +590,8 @@ function T.tests.gift_queries_answer_waiting_gifts_or_zero()
     "berry queries resolve same-tick"
   )
   Assert.isTrue(
-    type(vars.berry) == "string" and vars.berry:find("custom.berry-", 1, true) == 1,
-    "fresh berries draw their labelled key"
+    type(vars.berry) == "number" and vars.berry >= 149 and vars.berry <= 165,
+    "fresh berries return a native item ID"
   )
   Assert.equal(
     Runtime.executeNode({
@@ -559,7 +603,7 @@ function T.tests.gift_queries_answer_waiting_gifts_or_zero()
     Runtime.OUTCOME_CONTINUE,
     "staged rewards report instead of stacking"
   )
-  Assert.equal(vars.gift, "POTION", "the waiting gift reports its own key")
+  Assert.equal(vars.gift, 34, "the waiting gift reports its native item ID")
   Assert.equal(
     Runtime.executeNode({
       op = "phone_contact_gift",
@@ -570,7 +614,7 @@ function T.tests.gift_queries_answer_waiting_gifts_or_zero()
     Runtime.OUTCOME_CONTINUE,
     "staged rewards cover every kind"
   )
-  Assert.equal(vars.berry2, "POTION", "pending rewards answer before any draw")
+  Assert.equal(vars.berry2, 34, "pending rewards answer with their native item ID before any draw")
   local run2, vars2 = handlerRun(scriptServices(bundle, friends))
   Assert.equal(
     Runtime.executeNode({ op = "mom_gift_check", result = { value = "var", id = "mom" } }, run2),

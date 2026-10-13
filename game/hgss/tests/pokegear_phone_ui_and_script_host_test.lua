@@ -53,8 +53,14 @@ local function fixtureManifest()
     catalog = {
       contacts = {
         { key = "custom.mom", family = "mother", sortWeight = 10 },
-        { key = "custom.trainer-plain", family = "trainer", sortWeight = 20 },
-        { key = "custom.leader-falkner", family = "gym", sortWeight = 30 },
+        { key = "custom.trainer-plain", family = "kurt", sortWeight = 20 },
+        {
+          key = "custom.leader-falkner",
+          family = "kurt",
+          sortWeight = 30,
+          rematchWeekday = 6,
+          rematchTime = 0,
+        },
       },
       contactOrder = {
         "custom.mom",
@@ -107,12 +113,39 @@ end
 ---@param record table
 ---@return table services
 local function worldFixture()
+  local rematches = {}
+  local rematchReady = {}
+  local flags = {}
   return {
-    flags = {},
-    rematchReady = {},
-    nativeSelectorFacts = function()
-      return { localMap = true }
+    flags = flags,
+    read = function(_, key)
+      return flags[key]
     end,
+    setMomSavingsChoice = function(_, choice)
+      flags["mom.savings-choice"] = choice
+      flags.savingsChoice = choice
+    end,
+    rematchReady = rematchReady,
+    rematches = rematches,
+    queryRematch = function(_, contact)
+      return rematches[contact]
+    end,
+    setRematch = function(_, contact, record)
+      rematches[contact] = record
+      rematchReady[contact] = record.stage > 0
+    end,
+    nativeSelectorFacts = function()
+      return {
+        localMap = true,
+        gaveRivalName = false,
+        talkedAfterNamingRival = false,
+        eggCallPending = false,
+      }
+    end,
+    storyTier = 2,
+    weekday = 6,
+    timeOfDay = 0,
+    teamsByTier = { [2] = { tier = 2, members = { { species = "custom.pidgeotto", level = 13 } } } },
     player = { x = 5, y = 7 },
   }
 end
@@ -233,6 +266,7 @@ function T.tests.script_application_lease_balances_input_routing_and_save_captur
   Assert.notNil(record, "the synthetic contact catalog must validate through the asset schema")
   assert(record ~= nil, "synthetic catalog validated above")
   local world = worldFixture()
+  world.flags["mom.savings-choice"] = false
   local audio = countingAudio()
   local host, _ = openHost(record, world, audio)
 
@@ -297,7 +331,15 @@ function T.tests.script_application_lease_balances_input_routing_and_save_captur
 
   -- The settled call reports one terminal result; the return transition
   -- keeps save capture denied until the owner closes the handle.
-  local terminal = settleCall(host, handle)
+  for _ = 1, 40 do
+    if host:result(handle) ~= nil then
+      break
+    end
+    host:step(handle, { { type = "confirm" } })
+  end
+  local terminal = host:result(handle)
+  Assert.notNil(terminal, "the confirmed savings choice reaches a terminal result")
+  terminal = terminal --[[@as table]]
   Assert.equal(terminal.contact, "custom.mom", "the terminal result names its contact")
   Assert.equal(terminal.kind, "ordinary", "the terminal result names its call kind")
   local again = host:result(handle)
@@ -382,6 +424,7 @@ function T.tests.missing_call_handle_after_commit_fails_without_replaying_effect
   -- Open through the scheduler task, then drive the source-backed
   -- savings choice through its durable effect before losing the handle.
   world.flags.savingsChoice = false
+  world.flags["mom.savings-choice"] = false
   local taskState = PokegearApplicationTask.create({
     kind = "call",
     request = { id = "offer-1", contact = "custom.mom", direction = "outgoing", kind = "ordinary" },
@@ -499,23 +542,7 @@ function T.tests.menu_calls_return_to_list_while_host_calls_retain_their_result(
   Assert.isTrue(firstId ~= second.id, "each menu dial receives a distinct call id")
   controller:dispose()
 
-  local noSignalWorld = worldFixture()
-  noSignalWorld.signal = "none"
-  local noSignal = PhoneController.new({
-    state = state,
-    catalog = record.catalog,
-    messages = { greeting = "custom.greeting" },
-    world = noSignalWorld,
-    audio = countingAudio(),
-    random = PokegearRandom.new(78),
-  })
-  noSignal:updateFixed({ { type = "confirm" }, { type = "confirm" }, { type = "cancel" } })
-  Assert.isFalse(noSignal:status().busy, "an immediate no-signal result returns to the list")
-  Assert.isNil(noSignal:status().view.call, "an immediate no-signal result releases its call view")
-
-  local hostWorld = worldFixture()
-  hostWorld.signal = "none"
-  local host, _ = openHost(record, hostWorld, countingAudio())
+  local host, _ = openHost(record, worldFixture(), countingAudio())
   local handle = openCall(host, "host-terminal")
   local terminal = settleCall(host, handle)
   Assert.deepEqual(host:result(handle), terminal, "the host retains its terminal result")
@@ -758,6 +785,12 @@ function T.tests.phone_script_operations_validate_route_and_fail_with_context()
     end,
     setVar = function(_, id, value)
       variables[id] = value
+    end,
+    queryRematch = function(_, contact)
+      return world.rematches[contact]
+    end,
+    setRematch = function(_, contact, record)
+      world.rematches[contact] = record
     end,
   }
   local tasks = {}

@@ -1607,6 +1607,9 @@ function BattleRuntime:_prepareMomCandidate(result, delta)
     momBalance = mom.balance --[[@as integer]],
     battleKind = self._request.kind,
     outcomeId = "pokegear:" .. self._request.id,
+    random = pokegear.random,
+    itemCatalog = pokegear.itemCatalog,
+    momPurchases = pokegear.momPurchases,
   }, revisionOf(state))
   local staged = candidate --[[@as { transfer: integer }]]
   if staged.transfer <= 0 then

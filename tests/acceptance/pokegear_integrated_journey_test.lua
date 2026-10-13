@@ -25,6 +25,8 @@ end
 for _, bankId in ipairs(PokegearSources.phoneMessageBankIds()) do
   DERIVED_ASSETS[#DERIVED_ASSETS + 1] = "message-bank:" .. tostring(bankId)
 end
+DERIVED_ASSETS[#DERIVED_ASSETS + 1] = "map:68"
+DERIVED_ASSETS[#DERIVED_ASSETS + 1] = "map-data:68"
 
 local T = {
   metadata = {
@@ -72,6 +74,41 @@ local function contactByFamily(catalog, family)
     end
   end
   error("the native phone catalog contains a " .. family .. " contact", 0)
+end
+
+local function deterministicBattlePort()
+  return {
+    enter = function()
+      return true
+    end,
+    present = function() end,
+    ready = function()
+      return true
+    end,
+    leave = function()
+      return true
+    end,
+    dispose = function() end,
+  }
+end
+
+local function settleTrainerBattle(game, battle)
+  local SessionFixture = require("libs.battle.tests.session_fixture")
+  local ticks = 0
+  while battle:status().phase ~= "complete" and battle:status().phase ~= "failed" and ticks < 1200 do
+    game:step()
+    battle:update()
+    local current = battle:status()
+    if current.phase == "running" and current.request ~= nil then
+      local choices = {}
+      for _, actor in ipairs(current.request.actors) do
+        choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(2))
+      end
+      local accepted, replyErr = battle:submit(SessionFixture.replyFor(current.request, choices))
+      Assert.isTrue(accepted, "the trainer win accepts a legal battle decision: " .. tostring(replyErr))
+    end
+    ticks = ticks + 1
+  end
 end
 
 -- The fully acquired shell keeps one owner across every card: the gear
@@ -396,6 +433,168 @@ function T.tests.completed_menu_dial_returns_to_contacts_and_gear_exits()
     Assert.equal(Fixture.scriptFaults(game), 0, "the completed call journey runs without script faults")
     Assert.equal(game:renderAttempts(), 0, "the call ownership acceptance stops before GPU rendering")
   end)
+end
+
+-- A winning trainer battle launched by the composed FieldRuntime commits
+-- its source savings transfer and native purchase queue through the same
+-- live save owners. The deterministic staged trainer keeps the acceptance
+-- focused on the production battle consequence boundary.
+function T.tests.trainer_win_saves_moms_purchase_from_the_field_battle()
+  Fixture.withGame(Fixture.TOWN, function(game)
+    Fixture.playOpeningToLabFrontier(game)
+    local state = assert(game.runtime.pokegearState, "the battle borrows the live Pokegear save owner")
+    local events = assert(game.runtime.eventState, "the battle reads the live native story flags")
+    local savingsFlag = Fixture.FLAGS.FLAG_SYS_MOMS_SAVINGS
+    events:setFlag(savingsFlag)
+    state:setMom({ balance = 800, purchases = {}, gifts = {} })
+
+    local party = assert(game.runtime.monService, "the battle uses the composed party owner")
+    Assert.isTrue(
+      party:giveMon({ species = "CHIKORITA", level = 50, heldItem = "NONE", form = 0 }),
+      "the staged trainer fight has a live player lead"
+    )
+    party:setMove(0, 0, "SWIFT")
+
+    local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+    local factory = CatalogFixture.makeFactory(0xD0501, game.runtime.monService:catalog())
+    local opponent = factory:createNormal(CatalogFixture.normalRequest({ species = "TOTODILE", level = 5 }))
+    opponent.condition.currentHp = 1
+    opponent.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+    local ScenarioFactory = require("libs.hgss.src.battle.HgssBattleScenarioFactory")
+    local request = {
+      id = "field-mom-savings-trainer-win",
+      kind = "trainer",
+      payload = { trainer = "acceptance-native-trainer" },
+    }
+    local scenario = ScenarioFactory.fromTrainer({
+      id = request.id,
+      trainers = {
+        {
+          id = request.payload.trainer,
+          class = 1,
+          name = "TRAINER",
+          party = { opponent },
+          partyLevels = { 5 },
+          prizeMoney = { trainerClass = 1, classRate = 1000 },
+          program = { key = "acceptance_opening", revision = "native-1", instructions = {}, entryPoints = {} },
+          aiPasses = {},
+        },
+      },
+    }, {
+      party = game.runtime.monService,
+      player = { trainerId = 1, trainerName = "GOLD", language = "english" },
+    })
+    local beforeMoney = game.runtime.playerData.profile.money
+    local beforeMom = state:readPhone().mom
+    local battle = game.runtime:startBattle({
+      request = request,
+      scenario = scenario,
+      presentation = deterministicBattlePort(),
+    })
+    settleTrainerBattle(game, battle)
+    Assert.equal(battle:status().phase, "complete", "the production field battle reaches its committed result")
+    Assert.equal(battle:status().result, "win", "the staged trainer opponent loses to the live party")
+    local receipt = assert(battle:status().outcomeReceipt, "the trainer result publishes its battle receipt")
+    Assert.isTrue(receipt.committed, "the field caller commits the trainer result")
+
+    local payout = assert(receipt.rewards.amount, "the winning trainer receipt names its prize")
+    local deposit = math.floor(payout / 4)
+    Assert.equal(
+      receipt.player.profile.money,
+      beforeMoney + payout - deposit,
+      "the live player record receives the prize less the quarter transferred after caps"
+    )
+    local mom = state:readPhone().mom
+    Assert.isTrue(mom.balance < beforeMom.balance + deposit, "the same battle buys from Mom's increased balance")
+    Assert.isTrue(#mom.gifts > 0, "the same battle queues a native purchase instead of publishing only a deposit")
+    Assert.isTrue(next(state:readPhone().triggers) ~= nil, "a queued purchase raises its compiled Mom delivery trigger")
+
+    game.runtime:updateBattle()
+    Fixture.saveAndReload(game)
+    state = assert(game.runtime.pokegearState, "the reloaded journey restores Pokegear state")
+    Assert.deepEqual(state:readPhone().mom, mom, "the battle purchase survives the production save and reload")
+  end)
+end
+
+local MOM_DELIVERY_SCRIPT = "common.moms_gift_deliveryman"
+
+local function runMomDeliveryScript(game)
+  Assert.notNil(
+    game.runtime.scripts.composition:effective(MOM_DELIVERY_SCRIPT),
+    "the map runtime loads the compiled Mom deliveryman script"
+  )
+  local startsBefore = #game:recordsForScript(MOM_DELIVERY_SCRIPT, "script.started")
+  local actorIds = {}
+  for actorId in pairs(game:snapshot().actors) do
+    if actorId:match(":object:%d+$") ~= nil then
+      actorIds[#actorIds + 1] = actorId
+    end
+  end
+  table.sort(actorIds)
+  for _, actorId in ipairs(actorIds) do
+    if #game:recordsForScript(MOM_DELIVERY_SCRIPT, "script.started") > startsBefore then
+      break
+    end
+    if Fixture.sweepReachable(game, actorId) then
+      Fixture.talkTo(game, actorId)
+    end
+  end
+  Assert.isTrue(
+    #game:recordsForScript(MOM_DELIVERY_SCRIPT, "script.started") > startsBefore,
+    "a reachable source deliveryman starts the compiled Mom gift script"
+  )
+end
+
+function T.tests.deliveryman_gives_one_queued_gift_and_preserves_it_when_bag_is_full()
+  local PhoneRewards = require("game.hgss.src.pokegear.PhoneRewards")
+  local deliveredQuantity = nil
+  local deliveredQueue = nil
+  local deliveredTrigger = nil
+  Fixture.withGame("MAP_CHERRYGROVE_POKEMART", function(game)
+    local state = assert(game.runtime.pokegearState, "the deliveryman reads the live Pokegear save owner")
+    state:setMom({ balance = 0, purchases = {}, gifts = { { item = "POTION", quantity = 1 } } })
+    state:setTrigger(PhoneRewards.MOM_GIFT_TRIGGER, true)
+    runMomDeliveryScript(game)
+    deliveredQuantity = game.runtime.bagService:quantity("POTION")
+    deliveredQueue = state:readPhone().mom.gifts
+    deliveredTrigger = state:readPhone().triggers[PhoneRewards.MOM_GIFT_TRIGGER] == true
+  end)
+
+  local fullBagQuantity = nil
+  local fullBagSlotsBefore = nil
+  local fullBagSlotsAfter = nil
+  local fullBagQueue = nil
+  local fullBagTrigger = nil
+  Fixture.withGame("MAP_CHERRYGROVE_POKEMART", function(game)
+    local state = assert(game.runtime.pokegearState, "the full-Bag deliveryman reads the live save owner")
+    local bag = assert(game.runtime.bagService, "the full-Bag path uses the composed Bag service")
+    local pocket = bag:pocketOf("REPEL")
+    for _, key in ipairs(bag:catalog():itemKeys()) do
+      if key ~= "REPEL" and bag:pocketOf(key) == pocket and not bag:hasSpace("REPEL", 1) then
+        break
+      end
+      if key ~= "REPEL" and bag:pocketOf(key) == pocket then
+        bag:add(key, 1)
+      end
+    end
+    Assert.isFalse(bag:hasSpace("REPEL", 1), "setup fills the real Bag pocket before delivery")
+    local beforeSlots = #bag:pocketItems(pocket)
+    fullBagSlotsBefore = beforeSlots
+    state:setMom({ balance = 0, purchases = {}, gifts = { { item = "REPEL", quantity = 1 } } })
+    state:setTrigger(PhoneRewards.MOM_GIFT_TRIGGER, true)
+    runMomDeliveryScript(game)
+    fullBagQuantity = bag:quantity("REPEL")
+    fullBagSlotsAfter = #bag:pocketItems(pocket)
+    fullBagQueue = state:readPhone().mom.gifts
+    fullBagTrigger = state:readPhone().triggers[PhoneRewards.MOM_GIFT_TRIGGER] == true
+  end)
+  Assert.equal(deliveredQuantity, 1, "the source give path adds the queued item once")
+  Assert.deepEqual(deliveredQueue, {}, "the source dequeue follows a successful item give")
+  Assert.isFalse(deliveredTrigger, "successful pickup clears the Mom trigger")
+  Assert.equal(fullBagQuantity, 0, "a full Bag pocket refuses the item")
+  Assert.equal(fullBagSlotsAfter, fullBagSlotsBefore, "a refused give leaves every Bag slot intact")
+  Assert.deepEqual(fullBagQueue, { { item = "REPEL", quantity = 1 } }, "a refused give retains the FIFO head")
+  Assert.isTrue(fullBagTrigger, "a refused give leaves the Mom delivery trigger active")
 end
 
 return T

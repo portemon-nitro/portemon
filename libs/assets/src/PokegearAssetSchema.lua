@@ -451,6 +451,55 @@ local function checkCatalog(value)
       return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "catalog." .. key .. " must be a record list", {})
     end
   end
+  local triggerSlots = {}
+  for index, trigger in ipairs(value.callTriggers) do
+    local label = "catalog.callTriggers[" .. index .. "]"
+    if
+      type(trigger) ~= "table"
+      or not isInteger(trigger.slot)
+      or trigger.slot < 0
+      or type(trigger.key) ~= "string"
+      or type(trigger.contact) ~= "string"
+      or (trigger.kind ~= 0 and trigger.kind ~= 3)
+      or type(trigger.clearOnPickup) ~= "boolean"
+    then
+      return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, label .. " must carry a source trigger record", {})
+    end
+    if triggerSlots[trigger.slot] then
+      return fail(PokegearAssetSchema.ERROR.DUPLICATE_KEY, label .. " repeats a trigger slot", {})
+    end
+    if not contactKeys[trigger.contact] then
+      return fail(PokegearAssetSchema.ERROR.DANGLING_REFERENCE, label .. " references a missing contact", {})
+    end
+    triggerSlots[trigger.slot] = true
+  end
+  if #value.momPurchases > 0 and #value.momPurchases ~= 26 then
+    return fail(
+      PokegearAssetSchema.ERROR.SHAPE_INVALID,
+      "catalog.momPurchases must contain nine purchases and seventeen berries",
+      {}
+    )
+  end
+  for index, purchase in ipairs(value.momPurchases) do
+    local expectedKind = index <= 9 and "purchase" or "berry"
+    if
+      type(purchase) ~= "table"
+      or purchase.kind ~= expectedKind
+      or purchase.sourceIndex ~= (index <= 9 and index - 1 or index - 10)
+      or not isInteger(purchase.nativeItemId)
+      or purchase.nativeItemId <= 0
+      or not isInteger(purchase.threshold)
+      or (index <= 9 and purchase.threshold <= 0 or index > 9 and purchase.threshold ~= 0)
+      or not isInteger(purchase.cost)
+      or (index <= 9 and purchase.cost < 0 or index > 9 and purchase.cost ~= 100)
+    then
+      return fail(
+        PokegearAssetSchema.ERROR.SHAPE_INVALID,
+        "catalog.momPurchases must preserve native source order and item identities",
+        {}
+      )
+    end
+  end
   if #value.callDefinitions > 0 then
     local definitions = value.callDefinitions
     if #definitions ~= 455 then

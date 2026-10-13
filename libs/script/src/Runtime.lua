@@ -2281,6 +2281,20 @@ do
     semanticsFor(run).writeRef(node.result, gifts:momGift(), run)
     return Runtime.OUTCOME_CONTINUE
   end
+  function GearEval.handleMomGiftHead(node, run)
+    local gifts = requireService(run, "phoneGifts")
+    assert(gifts ~= nil, "companion service is available after the missing-service error")
+    local nativeItemId, quantity = gifts:peekMom()
+    semanticsFor(run).writeRef(node.item, nativeItemId, run)
+    semanticsFor(run).writeRef(node.quantity, quantity, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+  function GearEval.handleMomGiftTake(_, run)
+    local gifts = requireService(run, "phoneGifts")
+    assert(gifts ~= nil, "companion service is available after the missing-service error")
+    gifts:takeMomAfterGive()
+    return Runtime.OUTCOME_CONTINUE
+  end
   function GearEval.handleBuenaPassword(node, run)
     local password = semanticsFor(run).evaluateValue(node.password, run)
     if type(password) ~= "number" or password % 1 ~= 0 or password < 0 then
@@ -2307,6 +2321,8 @@ do
   HANDLERS.phone_contact_gift = GearEval.handlePhoneContactGift
   HANDLERS.radio_music_query = GearEval.handleRadioMusicQuery
   HANDLERS.mom_gift_check = GearEval.handleMomGiftCheck
+  HANDLERS.mom_gift_head = GearEval.handleMomGiftHead
+  HANDLERS.mom_gift_take = GearEval.handleMomGiftTake
   HANDLERS.buena_password = GearEval.handleBuenaPassword
 end
 

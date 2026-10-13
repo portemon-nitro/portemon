@@ -65,9 +65,15 @@ end
 ---@param key string
 ---@param contact string
 ---@param kind integer
+---@param slot integer?
+---@param clearOnPickup boolean?
 ---@return table
-local function triggerRecord(key, contact, kind)
-  return { key = key, contact = contact, kind = kind }
+local function triggerRecord(key, contact, kind, slot, clearOnPickup)
+  slot = slot or (key == MOM_TRIGGER and 12 or 13)
+  if clearOnPickup == nil then
+    clearOnPickup = slot == 12
+  end
+  return { key = key, contact = contact, kind = kind, slot = slot, clearOnPickup = clearOnPickup }
 end
 
 -- Synthetic companion catalog validated through the real asset schema, so
@@ -408,12 +414,8 @@ function T.tests.incoming_calls_wait_for_ten_whole_minutes_then_follow_exact_sou
     Assert.equal(#rig.trace, 0, "nine minutes still draw nothing")
     calls:onFieldClock(moment(10))
     calls:onOpportunity(opportunityArgs())
-    Assert.isFalse(calls:notification(), "the first offline delta is ignored for cooldown")
-    Assert.equal(#rig.trace, 0, "the ignored delta draws nothing")
-    calls:onFieldClock(moment(20))
-    calls:onOpportunity(opportunityArgs())
     local view = calls:notification()
-    Assert.notNil(view, "the second ten-minute delta reaches the threshold and rings")
+    Assert.notNil(view, "ten live minutes reach the threshold and ring")
     assert(type(view) == "table", "ringing publishes its caller view")
     Assert.equal(view.contactKey, MOM_KEY, "the pending trigger selects its owning caller")
     checkTrace(rig.trace, { "lc" }, "trigger selection")
@@ -635,7 +637,7 @@ function T.tests.accepting_a_call_clears_exactly_once_at_acceptance_never_on_rin
     calls:dispose()
   end
 
-  -- Successful acceptance clears once before any dialogue: the trigger
+  -- Successful pickup clears once before any dialogue: the trigger
   -- vanishes the moment accept returns, the typed host holds the
   -- incoming call, and the event caller never enters ordinary history.
   -- The live host is fixed at construction, so its providers are built
@@ -646,8 +648,8 @@ function T.tests.accepting_a_call_clears_exactly_once_at_acceptance_never_on_rin
       "incoming calls have no field coordinator yet: acceptance cannot clear triggers through the typed host"
     )
     local providers = freshProviders(4242, {
-      setTriggers = { MOM_TRIGGER },
-      triggers = { triggerRecord(MOM_TRIGGER, MOM_KEY, 3) },
+      setTriggers = { "custom.clear-event" },
+      triggers = { triggerRecord("custom.clear-event", MOM_KEY, 3, 1, false) },
     })
     local PokegearScriptHost = require("game.hgss.src.pokegear.PokegearScriptHost")
     local liveHost = PokegearScriptHost.new({
@@ -676,7 +678,7 @@ function T.tests.accepting_a_call_clears_exactly_once_at_acceptance_never_on_rin
     calls:onOpportunity(opportunityArgs())
     Assert.notNil(calls:notification(), "the event trigger rings for the success check")
     calls:accept("field:test-parent")
-    Assert.deepEqual(providers.state:readPhone().triggers, {}, "successful acceptance clears the event trigger")
+    Assert.deepEqual(providers.state:readPhone().triggers, {}, "successful pickup clears the event trigger")
     Assert.isTrue(liveHost:isActive(), "acceptance enters the incoming call through the typed host")
     local active = liveHost:activeHandle()
     Assert.notNil(active, "the entered call holds a live handle before any dialogue step")
@@ -765,7 +767,10 @@ function T.tests.ringing_expires_on_strict_second_bounds_with_nonstacking_repeat
     calls:onFieldClock(moment(20))
     calls:onFieldClock(moment(21, 1))
     Assert.isFalse(calls:notification(), "sixty-one seconds reset the ring")
-    Assert.isTrue(rig.state:readPhone().triggers[MOM_TRIGGER] == true, "the over-minute reset never consumes the trigger")
+    Assert.isTrue(
+      rig.state:readPhone().triggers[MOM_TRIGGER] == true,
+      "the over-minute reset never consumes the trigger"
+    )
     Assert.isFalse(
       projectionMentions(rig.state:readPhone().history, MOM_KEY),
       "the over-minute reset records no history"

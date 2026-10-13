@@ -2,6 +2,7 @@
 
 local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 local TimeOfDayProps = require("libs.hgss.src.presentation.TimeOfDayProps")
+local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 
 ---@class FieldBattleCoordinator
 ---@field runtime FieldRuntime? borrowed field composition while live
@@ -240,6 +241,25 @@ function FieldBattleCoordinator:startBattle(args)
   if fieldRuntime(self).playerData ~= nil and fieldRuntime(self).playerDataContext ~= nil then
     playerFacts = { record = fieldRuntime(self).playerData, context = fieldRuntime(self).playerDataContext }
   end
+  local runtime = fieldRuntime(self)
+  local pokegear = nil
+  if
+    runtime.pokegearState ~= nil
+    and runtime.pokegearRandom ~= nil
+    and runtime.pokegearCatalog ~= nil
+    and runtime.itemCatalog ~= nil
+    and runtime.eventState ~= nil
+  then
+    local eventState = runtime.eventState --[[@as table<string, unknown>]]
+    local isFlagSet = eventState.isFlagSet --[[@as fun(self: table<string, unknown>, flag: integer): boolean]]
+    pokegear = {
+      state = runtime.pokegearState,
+      savingsEnabled = isFlagSet(eventState, FieldScriptSymbols.flagsByName.FLAG_SYS_MOMS_SAVINGS),
+      random = runtime.pokegearRandom,
+      itemCatalog = runtime.itemCatalog,
+      momPurchases = runtime.pokegearCatalog.momPurchases,
+    }
+  end
   -- The presentation port resolves per launch: an explicit caller port
   -- wins, then the bound per-launch factory's fresh port for its admitted
   -- launch, then the stored port. A presented field without its bound
@@ -261,6 +281,7 @@ function FieldBattleCoordinator:startBattle(args)
     bag = fieldRuntime(self).bagService,
     dex = fieldRuntime(self).dexKnowledge,
     player = playerFacts,
+    pokegear = pokegear,
     seed = args.seed,
   })
   self.battleRuntime = battle

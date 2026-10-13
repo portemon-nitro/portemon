@@ -184,11 +184,13 @@ end
 ---@param contactKey string
 ---@param kind integer
 ---@param triggerKey string?
-function IncomingCalls:_startRing(contactKey, kind, triggerKey)
+---@param clearOnPickup boolean?
+function IncomingCalls:_startRing(contactKey, kind, triggerKey, clearOnPickup)
   self._ring = {
     contactKey = contactKey,
     kind = kind,
     triggerKey = triggerKey,
+    clearOnPickup = clearOnPickup == true,
     startEpoch = nil,
     counter = 0,
   }
@@ -196,7 +198,7 @@ function IncomingCalls:_startRing(contactKey, kind, triggerKey)
 end
 
 ---@param record unknown
----@return string contactKey, integer kind
+---@return string triggerKey, integer kind, boolean clearOnPickup
 local function checkTriggerRecord(record)
   if type(record) ~= "table" then
     fail("incoming call triggers carry key, contact, and kind", {})
@@ -212,8 +214,12 @@ local function checkTriggerRecord(record)
   if entry.kind ~= IncomingCalls.KIND_EVENT and entry.kind ~= IncomingCalls.KIND_ORDINARY then
     fail("incoming call triggers carry a known source call kind", { key = entry.key, kind = entry.kind })
   end
+  if type(entry.clearOnPickup) ~= "boolean" then
+    fail("incoming call triggers carry their clear policy", { key = entry.key })
+  end
   return entry.key, --[[@as string]]
-    entry.kind --[[@as integer]]
+    entry.kind, --[[@as integer]]
+    entry.clearOnPickup
 end
 
 ---@param self IncomingCalls
@@ -305,7 +311,7 @@ end
 -- of selecting a plausible caller.
 ---@param self IncomingCalls
 ---@param args { mapKey: unknown?, mapId: unknown? }
----@return table<integer, { key: string, contactKey: string, kind: integer }>
+---@return table<integer, { key: string, contactKey: string, kind: integer, clearOnPickup: boolean }>
 function IncomingCalls:_eligibleTriggers(args)
   local readPhone = self._state.readPhone --[[@as fun(self: table<string, unknown>): table<string, unknown>]]
   local phone = readPhone(self._state)
@@ -322,7 +328,7 @@ function IncomingCalls:_eligibleTriggers(args)
     then
       local key = (record --[[@as table<string, unknown>]]).key --[[@as string]]
       if set[key] == true then
-        local triggerKey, kind = checkTriggerRecord(record)
+        local triggerKey, kind, clearOnPickup = checkTriggerRecord(record)
         local contact = (record --[[@as table<string, unknown>]]).contact --[[@as string]]
         if self:_contactRecord(contact) == nil then
           fail("incoming call triggers reference a catalogued contact", { key = triggerKey, contact = contact })
@@ -331,7 +337,7 @@ function IncomingCalls:_eligibleTriggers(args)
         if (registered[contact] == nil and not daycare) or (self:_isSameMap(contact, args) and not daycare) then
           -- The caller is not reachable on this map through this trigger.
         else
-          out[#out + 1] = { key = triggerKey, contactKey = contact, kind = kind }
+          out[#out + 1] = { key = triggerKey, contactKey = contact, kind = kind, clearOnPickup = clearOnPickup }
         end
       end
     end
@@ -466,7 +472,7 @@ function IncomingCalls:onOpportunity(args)
     local draw = self._random.lc --[[@as fun(self: table<string, unknown>, label: string): integer]]
     local pick = draw(self._random, "incoming-trigger-pick") % #triggers
     local selected = triggers[pick + 1]
-    self:_startRing(selected.contactKey, selected.kind, selected.key)
+    self:_startRing(selected.contactKey, selected.kind, selected.key, selected.clearOnPickup)
     return
   end
   local drawMt = self._random.mt --[[@as fun(self: table<string, unknown>, label: string): integer]]
@@ -550,7 +556,7 @@ function IncomingCalls:accept(parentOwner)
   if not ok then
     error(handle, 0)
   end
-  if ring.kind == IncomingCalls.KIND_EVENT and ring.triggerKey ~= nil then
+  if ring.kind == IncomingCalls.KIND_EVENT and ring.triggerKey ~= nil and ring.clearOnPickup ~= true then
     local setTrigger = self._state.setTrigger --[[@as fun(self: table<string, unknown>, key: string, active: boolean)]]
     setTrigger(self._state, ring.triggerKey, false)
   elseif ring.kind == IncomingCalls.KIND_ORDINARY then

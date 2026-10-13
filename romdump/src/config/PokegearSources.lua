@@ -12,6 +12,9 @@ PokegearSources.provenance = {
     "src/application/pokegear/main/overlay_100_021E6914.c",
     "src/phonebook_dat.c",
     "src/application/pokegear/phone/phone_script_defs.c",
+    "src/mom_gift.c",
+    "include/constants/phone_contacts.h",
+    "include/constants/items.h",
     "src/application/pokegear/radio/overlay_101_021F57B8.c",
     "src/application/pokegear/radio/pokegear_radio.c",
     "src/map_header.c",
@@ -746,6 +749,41 @@ end
 -- switches.
 PokegearSources.phoneTriggers = {
   { slot = 1, key = "gear.trigger.1", contact = "hg.trainer.201.map.0.contact.1", kind = 0 },
+  { slot = 12, key = "gear.trigger.12", contact = "hg.trainer.200.map.0.contact.0", kind = 3, clearOnPickup = true },
+}
+
+-- Native Mom purchases and resistance-berry choices from mom_gift.c.
+-- Item IDs are resolved through ItemCatalog before entering saved state.
+PokegearSources.momPurchases = {
+  { sourceIndex = 0, nativeItemId = 26, threshold = 900, cost = 600 },
+  { sourceIndex = 1, nativeItemId = 79, threshold = 4000, cost = 270 },
+  { sourceIndex = 2, nativeItemId = 26, threshold = 7000, cost = 600 },
+  { sourceIndex = 3, nativeItemId = 251, threshold = 10000, cost = 100 },
+  { sourceIndex = 4, nativeItemId = 81, threshold = 15000, cost = 3000 },
+  { sourceIndex = 5, nativeItemId = 25, threshold = 19000, cost = 900 },
+  { sourceIndex = 6, nativeItemId = 287, threshold = 30000, cost = 200 },
+  { sourceIndex = 7, nativeItemId = 266, threshold = 40000, cost = 200 },
+  { sourceIndex = 8, nativeItemId = 275, threshold = 50000, cost = 200 },
+}
+
+PokegearSources.momBerryItemIds = {
+  149,
+  150,
+  151,
+  152,
+  153,
+  154,
+  155,
+  156,
+  157,
+  158,
+  159,
+  160,
+  161,
+  162,
+  163,
+  164,
+  165,
 }
 
 -- Version-qualified catalog phone-trigger records for one game version.
@@ -762,12 +800,55 @@ function PokegearSources.phoneTriggerRecords(versionId)
     "phone trigger records name a supported game version, got " .. versionId
   )
   local records = {}
+  local seenSlots = {}
   for _, entry in ipairs(PokegearSources.phoneTriggers) do
+    assert(not seenSlots[entry.slot], "phone trigger slots are unique")
+    seenSlots[entry.slot] = true
     assert(type(entry.key) == "string" and entry.key ~= "", "phone triggers carry semantic keys")
     assert(type(entry.contact) == "string" and entry.contact ~= "", "phone triggers carry their owning contact")
-    records[#records + 1] = { key = entry.key, contact = entry.contact, kind = entry.kind }
+    records[#records + 1] = {
+      slot = entry.slot,
+      key = entry.key,
+      contact = entry.contact,
+      kind = entry.kind,
+      clearOnPickup = entry.clearOnPickup == true,
+    }
   end
   assert(#records > 0, "phone trigger records cover the observed trigger set for " .. versionId)
+  return records
+end
+
+---@param versionId string
+---@return table<string, table<integer, table<string, integer>>> source purchase and berry vectors
+function PokegearSources.momPurchaseRecords(versionId)
+  assert(
+    type(versionId) == "string" and PokegearSources.mapVersions[versionId] == true,
+    "Mom purchases need a supported version"
+  )
+  local records = {}
+  for index, entry in ipairs(PokegearSources.momPurchases) do
+    assert(entry.sourceIndex == index - 1, "Mom purchase indices preserve source order")
+    records[#records + 1] = {
+      kind = "purchase",
+      sourceIndex = entry.sourceIndex,
+      nativeItemId = entry.nativeItemId,
+      threshold = entry.threshold,
+      cost = entry.cost,
+    }
+  end
+  for index, nativeItemId in ipairs(PokegearSources.momBerryItemIds) do
+    records[#records + 1] = {
+      kind = "berry",
+      sourceIndex = index - 1,
+      nativeItemId = nativeItemId,
+      threshold = 0,
+      cost = 100,
+    }
+  end
+  assert(
+    #PokegearSources.momPurchases == 9 and #PokegearSources.momBerryItemIds == 17,
+    "Mom gift source vectors stay complete"
+  )
   return records
 end
 

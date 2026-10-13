@@ -118,6 +118,11 @@ function FieldScriptComposition.phoneGiftQueries(state, catalog, random, itemCat
   end
   local PhoneRewards = require("game.hgss.src.pokegear.PhoneRewards")
   local adapter = {}
+  local function nativeId(itemKey)
+    local item = itemCatalog:item(itemKey)
+    assert(type(item.nativeId) == "number", "phone gifts resolve to a native item identity")
+    return item.nativeId
+  end
   local function stagedReward(contactKey)
     local phone = state:readPhone()
     assert(type(phone) == "table" and type(phone.contacts) == "table", "gift queries read registered contacts")
@@ -138,7 +143,7 @@ function FieldScriptComposition.phoneGiftQueries(state, catalog, random, itemCat
   function adapter:berry(contactKey)
     local waiting, registered = stagedReward(contactKey)
     if waiting ~= nil then
-      return waiting
+      return nativeId(waiting)
     end
     if not registered then
       return 0
@@ -146,26 +151,41 @@ function FieldScriptComposition.phoneGiftQueries(state, catalog, random, itemCat
     local draw = random.lc --[[@as fun(self: table<string, unknown>, label: string): integer]]
     local pick = draw(random, "contact-berry") % PhoneRewards.BERRY_CHOICES
     assert(pick >= 0 and pick < PhoneRewards.BERRY_CHOICES, "berry draws stay inside their choices")
-    return PhoneRewards.BERRY_ITEM_PREFIX .. tostring(pick)
+    local berries = catalog.momPurchases --[[@as table<integer, table<string, unknown>>]]
+    local berryIndex = 0
+    for _, entry in ipairs(berries) do
+      if entry.kind == "berry" then
+        if berryIndex == pick then
+          return entry.nativeItemId --[[@as integer]]
+        end
+        berryIndex = berryIndex + 1
+      end
+    end
+    error("the compiled Mom berry table does not cover its source selector", 0)
   end
   ---@param contactKey string
   ---@return string|integer the waiting item key, or numeric zero
   function adapter:giftItem(contactKey)
     local waiting, registered = stagedReward(contactKey)
     if waiting ~= nil then
-      return waiting
+      return nativeId(waiting)
     end
     if not registered then
       return 0
     end
     local record = contactsByKey[contactKey]
     assert(type(record) == "table", "gift queries read catalogued contacts")
-    local nativeId = (record --[[@as table<string, unknown>]]).gift
-    assert(type(nativeId) == "number", "contact gifts carry their native item")
-    return itemCatalog:itemKeyByNativeId(nativeId)
+    local nativeItemId = (record --[[@as table<string, unknown>]]).gift
+    assert(type(nativeItemId) == "number", "contact gifts carry their native item")
+    return nativeItemId
   end
-  ---@return string|integer the waiting parent gift key, or numeric zero
+  ---@return string|integer the waiting parent gift item ID, or numeric zero
   function adapter:momGift()
+    local itemId = self:peekMom()
+    return itemId
+  end
+  ---@return integer, integer native item ID and quantity, or zero values
+  function adapter:peekMom()
     local phone = state:readPhone()
     assert(type(phone) == "table", "parent gift queries read phone facts")
     local mom = (phone --[[@as table<string, unknown>]]).mom
@@ -174,13 +194,22 @@ function FieldScriptComposition.phoneGiftQueries(state, catalog, random, itemCat
     assert(type(queue) == "table", "parent gift queries read the gift queue")
     local head = (queue --[[@as table<integer, unknown>]])[1]
     if type(head) ~= "table" then
-      return 0
+      return 0, 0
     end
     local item = (head --[[@as table<string, unknown>]]).item
     if type(item) ~= "string" or item == "" then
-      return 0
+      return 0, 0
     end
-    return item
+    local quantity = (head --[[@as table<string, unknown>]]).quantity
+    assert(type(quantity) == "number" and quantity % 1 == 0 and quantity > 0, "queued gifts carry a source quantity")
+    return nativeId(item), quantity
+  end
+  function adapter:takeMomAfterGive()
+    local queue = state:readPhone().mom.gifts
+    local head = queue[1]
+    assert(type(head) == "table", "the source dequeue follows a pending Mom gift")
+    local candidate = PhoneRewards.prepareCollection(state:revision(), { state = state, gift = head }) --[[@as { publish: fun(): table<string, unknown> }]]
+    candidate.publish()
   end
   return adapter
 end

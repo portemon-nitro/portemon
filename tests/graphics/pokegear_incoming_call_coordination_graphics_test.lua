@@ -84,8 +84,8 @@ local function fixtureManifest()
       contactOrder = { MOM_KEY, LONG_KEY },
       callDefinitions = {},
       callTriggers = {
-        { key = MOM_TRIGGER, contact = MOM_KEY, kind = 3 },
-        { key = LONG_TRIGGER, contact = LONG_KEY, kind = 3 },
+        { key = MOM_TRIGGER, contact = MOM_KEY, kind = 3, slot = 12, clearOnPickup = true },
+        { key = LONG_TRIGGER, contact = LONG_KEY, kind = 3, slot = 13, clearOnPickup = false },
       },
       rematches = {},
       gifts = {},
@@ -207,7 +207,12 @@ local function assertPixelsEqual(expected, actual, label)
     for x = 0, expected:getWidth() - 1 do
       local er, eg, eb, ea = expected:getPixel(x, y)
       local ar, ag, ab, aa = actual:getPixel(x, y)
-      if quantize(er) ~= quantize(ar) or quantize(eg) ~= quantize(ag) or quantize(eb) ~= quantize(ab) or quantize(ea) ~= quantize(aa) then
+      if
+        quantize(er) ~= quantize(ar)
+        or quantize(eg) ~= quantize(ag)
+        or quantize(eb) ~= quantize(ab)
+        or quantize(ea) ~= quantize(aa)
+      then
         error(
           string.format(
             "%s: pixel mismatch at (%d,%d): expected (%d,%d,%d,%d) got (%d,%d,%d,%d)",
@@ -245,7 +250,11 @@ local function assertGearIconDrawn(rendered, manifest, scale, label)
   for y = anchor.y * scale, (anchor.y + 40) * scale - 1 do
     for x = anchor.x * scale, (anchor.x + 32) * scale - 1 do
       local r, g, b = rendered:getPixel(x, y)
-      if math.floor(r * 255 + 0.5) == SELECTED_R and math.floor(g * 255 + 0.5) == SELECTED_G and math.floor(b * 255 + 0.5) == SELECTED_B then
+      if
+        math.floor(r * 255 + 0.5) == SELECTED_R
+        and math.floor(g * 255 + 0.5) == SELECTED_G
+        and math.floor(b * 255 + 0.5) == SELECTED_B
+      then
         found = true
         break
       end
@@ -380,11 +389,7 @@ function T.the_field_banner_reuses_start_menu_art_with_a_capped_caller_window(sc
   Assert.isTrue(math.floor(longWidth / 8) + 2 > 9, "the long name genuinely overflows the uncapped window")
   checkWindow(longView, expectedWindow(longWidth), "long window")
   Assert.equal(longView.sourceWindow.width, 9, "the long window caps at nine tiles")
-  Assert.equal(
-    longView.sourceWindow.tileLeft,
-    momView.sourceWindow.tileLeft,
-    "both windows share the source tile"
-  )
+  Assert.equal(longView.sourceWindow.tileLeft, momView.sourceWindow.tileLeft, "both windows share the source tile")
   Assert.equal(longView.sourceWindow.top, momView.sourceWindow.top, "both windows share the source row")
 
   -- The banner clears on stop: expiry quiets the view while the menu

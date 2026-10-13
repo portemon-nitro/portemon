@@ -58,6 +58,7 @@ local function contactCatalog()
     },
     contactOrder = { MOM_KEY, NEIGHBOR_KEY, TRAINER_KEY },
     callTriggers = {},
+    momPurchases = {},
     locations = {
       { key = TRIGGER_PLACE, mapRef = 8 },
     },
@@ -77,6 +78,12 @@ end
 ---@return table bundle, table runtime the composed bundle and its fake owner
 local function composeGear(friends)
   local runtime = {
+    session = { currentMap = { mapSectionNativeId = 8 } },
+    eventState = {
+      isFlagSet = function()
+        return false
+      end,
+    },
     pokegearState = friends.state,
     pokegearRandom = friends.random,
     pokegearCalendar = friends.calendar,

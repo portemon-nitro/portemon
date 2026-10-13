@@ -22,6 +22,7 @@ local PokegearState = require("libs.hgss.src.save.PokegearState")
 local PhoneRewards = require("game.hgss.src.pokegear.PhoneRewards")
 local PhoneWorldContext = require("game.hgss.src.pokegear.PhoneWorldContext")
 local FieldSession = require("libs.hgss.src.field.FieldSession")
+local PokegearSources = require("romdump.src.config.PokegearSources")
 
 local T = {
   metadata = {
@@ -52,6 +53,26 @@ local OAK_KEY = "custom.oak"
 local MOM_TRIGGER = PhoneRewards.MOM_GIFT_TRIGGER
 local BILL_TRIGGER = "custom.bill-pc-full"
 local OAK_TRIGGER = "custom.oak-dex-threshold"
+local MOM_PURCHASES = PokegearSources.momPurchaseRecords("heartgold")
+local ITEM_KEYS = {}
+for _, purchase in ipairs(MOM_PURCHASES) do
+  ITEM_KEYS[purchase.nativeItemId] = "test.native-item-" .. tostring(purchase.nativeItemId)
+end
+local ITEM_CATALOG = {
+  itemKeyByNativeId = function(_, nativeId)
+    local key = ITEM_KEYS[nativeId]
+    assert(key ~= nil, "test catalog contains each compiled Mom item")
+    return key
+  end,
+  item = function(_, key)
+    for nativeId, itemKey in pairs(ITEM_KEYS) do
+      if itemKey == key then
+        return { nativeId = nativeId }
+      end
+    end
+    error("test catalog has no item " .. key, 0)
+  end,
+}
 
 ---@param path string
 ---@return table
@@ -77,7 +98,8 @@ end
 ---@param kind integer
 ---@return table
 local function triggerRecord(key, contact, kind)
-  return { key = key, contact = contact, kind = kind }
+  local slot = key == MOM_TRIGGER and 12 or key == BILL_TRIGGER and 13 or 14
+  return { key = key, contact = contact, kind = kind, slot = slot, clearOnPickup = slot == 12 }
 end
 
 ---@param contacts table[]
@@ -104,7 +126,7 @@ local function fixtureManifest(contacts, triggers)
       callTriggers = triggers,
       rematches = {},
       gifts = {},
-      momPurchases = {},
+      momPurchases = MOM_PURCHASES,
       locations = {
         { key = "custom.new-bark" },
       },
@@ -485,10 +507,7 @@ function T.tests.a_competing_field_claim_owns_the_tick_and_ringing_never_opens_a
   controls.menuModal = true
   session:updateFixed({})
   Assert.isFalse(calls:notification(), "a higher-priority event quiets the active ring")
-  Assert.isTrue(
-    rig.state:readPhone().triggers[MOM_TRIGGER] == true,
-    "preemption preserves the pending event trigger"
-  )
+  Assert.isTrue(rig.state:readPhone().triggers[MOM_TRIGGER] == true, "preemption preserves the pending event trigger")
   Assert.equal(#rig.host.opens, 0, "preemption opens no companion modal")
   controls.menuModal = false
   session:updateFixed({})
@@ -520,6 +539,27 @@ end
 -- raises nothing, below-threshold and absent dex facts stay silent, and
 -- absent daycare, safari, and kurt systems never fabricate a call across
 -- a long silence sweep.
+---@param seenCount integer
+---@param caughtCount integer
+---@return table live Dex owner fixture
+local function dexOwner(seenCount, caughtCount)
+  local seen, caught = {}, {}
+  for index = 1, seenCount do
+    seen[index] = index
+  end
+  for index = 1, caughtCount do
+    caught[index] = index
+  end
+  return {
+    bucket = function()
+      return { seen = seen, caught = caught }
+    end,
+    isNationalDexComplete = function()
+      return false
+    end,
+  }
+end
+
 function T.tests.only_genuine_producer_facts_raise_triggers_and_absent_owners_stay_silent()
   local contacts = {
     contactRecord(MOM_KEY, "MOM", 10, "mother"),
@@ -535,7 +575,7 @@ function T.tests.only_genuine_producer_facts_raise_triggers_and_absent_owners_st
 
   -- An earned savings purchase is a genuine producer fact: the real
   -- reward path sets the gift trigger, the coordinator rings its owner,
-  -- acceptance clears it, and the next eligible tick stays silent.
+  -- and answering preserves Mom's pending gift until source pickup.
   do
     local rig = freshCoordinator(seed, contacts, triggers, {})
     local candidate = PhoneRewards.preparePurchases(rig.state:revision(), {
@@ -543,6 +583,8 @@ function T.tests.only_genuine_producer_facts_raise_triggers_and_absent_owners_st
       balance = 950,
       previousBalance = 800,
       random = PokegearRandom.new(seed),
+      itemCatalog = ITEM_CATALOG,
+      momPurchases = rig.record.catalog.momPurchases,
     })
     candidate.publish()
     Assert.isTrue(
@@ -557,11 +599,10 @@ function T.tests.only_genuine_producer_facts_raise_triggers_and_absent_owners_st
     Assert.equal(ringing.contactKey, MOM_KEY, "the purchase trigger rings its owner")
     Assert.equal(#rig.host.opens, 0, "the genuine ring opens no modal before acceptance")
     rig.calls:accept("field:test-parent")
-    Assert.deepEqual(rig.state:readPhone().triggers, {}, "the fired trigger clears at acceptance")
-    rig.calls:onFieldClock(moment(30))
-    rig.calls:onOpportunity(opportunityArgs())
-    Assert.isFalse(rig.calls:notification(), "the fired trigger never rings twice")
-    Assert.equal(#rig.trace, 2, "the single re-evaluation draws only its failing gate")
+    Assert.isTrue(
+      rig.state:readPhone().triggers[MOM_TRIGGER] == true,
+      "answering Mom preserves her gift trigger until pickup"
+    )
     rig.calls:dispose()
   end
 
@@ -599,7 +640,7 @@ function T.tests.only_genuine_producer_facts_raise_triggers_and_absent_owners_st
   -- attribution and raises nothing.
   do
     local rig = freshCoordinator(seed, contacts, triggers, {})
-    local low = PhoneWorldContext.new({ state = rig.state, flags = {}, dex = { seen = 5, caught = 2 } })
+    local low = PhoneWorldContext.new({ state = rig.state, flags = {}, dex = dexOwner(5, 2) })
     Assert.equal(low:read("dex.seen"), 5, "below-threshold dex knowledge reads through")
     driveEligible(rig.calls)
     rig.calls:onOpportunity(opportunityArgs())
@@ -610,7 +651,7 @@ function T.tests.only_genuine_producer_facts_raise_triggers_and_absent_owners_st
       missing:read("dex.seen")
     end, "absent dex knowledge must fail instead of inventing a threshold")
     Assert.equal((failure --[[@as table]]).domain, "dex", "the absent dex failure attributes the dex domain")
-    local high = PhoneWorldContext.new({ state = rig.state, flags = {}, dex = { seen = 200, caught = 100 } })
+    local high = PhoneWorldContext.new({ state = rig.state, flags = {}, dex = dexOwner(200, 100) })
     Assert.equal(high:read("dex.seen"), 200, "at-threshold dex knowledge reads through")
     rig.state:setTrigger(OAK_TRIGGER, true)
     rig.calls:onFieldClock(moment(30))
@@ -648,10 +689,7 @@ function T.tests.only_genuine_producer_facts_raise_triggers_and_absent_owners_st
       Assert.isFalse(rig.calls:notification(), "minute " .. minute .. " with no producers stays silent")
     end
     Assert.deepEqual(rig.state:readPhone().triggers, {}, "the sweep raises no trigger")
-    Assert.isFalse(
-      rig.calls:notification(),
-      "polling after the sweep stays silent"
-    )
+    Assert.isFalse(rig.calls:notification(), "polling after the sweep stays silent")
     for _, entry in ipairs(rig.trace) do
       Assert.equal(entry.stream, "mt", "the sweep draws only random gates")
       assert(type(entry.value) == "number", "gate draw recorded above")

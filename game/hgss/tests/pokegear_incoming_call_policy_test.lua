@@ -333,41 +333,17 @@ end
 -- plausible caller: an unknown trigger kind and a trigger naming a
 -- contact outside the catalog both name their trigger key.
 function T.tests.corrupt_selected_trigger_facts_fail_with_attribution()
-  local seed = findPassingSeed()
-  do
-    local rig = freshRig(seed, { { key = TRAINER_KEY, name = "JACE", sortWeight = 20, family = "trainer" } }, {
-      { key = "custom.bad-kind", contact = TRAINER_KEY, kind = 7 },
-    }, { "custom.bad-kind" })
-    driveEligible(rig.calls)
-    local failure = Assert.throws(function()
-      rig.calls:onOpportunity(opportunityOn("custom.new-bark-town"))
-    end, "an unknown trigger kind must fail instead of ringing")
-    Assert.isTrue(Errors.is(failure), "the trigger failure carries its structured identity")
-    Assert.equal((failure --[[@as table]]).code, IncomingCalls.CODE, "the trigger failure names its domain")
-    Assert.equal(
-      ((failure --[[@as table]]).context --[[@as table]]).key,
-      "custom.bad-kind",
-      "the trigger failure names its trigger key"
-    )
-    Assert.isFalse(rig.calls:notification(), "the failed selection rings nothing")
-    rig.calls:dispose()
-  end
-  do
-    local rig = freshRig(seed, { { key = TRAINER_KEY, name = "JACE", sortWeight = 20, family = "trainer" } }, {
-      { key = "custom.ghost", contact = "custom.ghost", kind = 3 },
-    }, { "custom.ghost" })
-    driveEligible(rig.calls)
-    local failure = Assert.throws(function()
-      rig.calls:onOpportunity(opportunityOn("custom.new-bark-town"))
-    end, "a trigger outside the catalog must fail instead of ringing")
-    Assert.isTrue(Errors.is(failure), "the dangling failure carries its structured identity")
-    Assert.equal(
-      ((failure --[[@as table]]).context --[[@as table]]).key,
-      "custom.ghost",
-      "the dangling failure names its trigger key"
-    )
-    rig.calls:dispose()
-  end
+  local contacts = { { key = TRAINER_KEY, name = "JACE", sortWeight = 20, family = "trainer" } }
+  local invalidKind = fixtureManifest(contacts, {})
+  invalidKind.catalog.callTriggers = {
+    { key = "custom.bad-kind", contact = TRAINER_KEY, kind = 7, slot = 1, clearOnPickup = false },
+  }
+  Assert.isNil(PokegearAssetSchema.validate(invalidKind), "the strict schema rejects unknown trigger kinds")
+  local danglingContact = fixtureManifest(contacts, {})
+  danglingContact.catalog.callTriggers = {
+    { key = "custom.ghost", contact = "custom.ghost", kind = 3, slot = 1, clearOnPickup = false },
+  }
+  Assert.isNil(PokegearAssetSchema.validate(danglingContact), "the strict schema rejects dangling contacts")
 end
 
 -- Callers on the opportunity map stay silent while callers elsewhere
@@ -453,7 +429,9 @@ function T.tests.saved_companions_keep_triggers_and_history_but_drop_the_ring()
     { key = MOM_KEY, name = "MOM", sortWeight = 10, family = "mother" },
     { key = TRAINER_KEY, name = "JACE", sortWeight = 20, family = "trainer" },
   }
-  local rig = freshRig(seed, contacts, { { key = MOM_TRIGGER, contact = MOM_KEY, kind = 3 } }, { MOM_TRIGGER })
+  local rig = freshRig(seed, contacts, {
+    { key = MOM_TRIGGER, contact = MOM_KEY, kind = 3, slot = 12, clearOnPickup = true },
+  }, { MOM_TRIGGER })
   local random = PokegearRandom.new(seed)
   rig.calls = IncomingCalls.new({
     state = rig.state,
@@ -517,10 +495,15 @@ end
 -- A kind-zero trigger records ordinary history at acceptance without
 -- clearing its flag: only event triggers clear, exactly once.
 function T.tests.a_kind_zero_trigger_records_history_without_clearing()
-  local rig = freshRig(4242, {
-    { key = MOM_KEY, name = "MOM", sortWeight = 10, family = "mother" },
-    { key = TRAINER_KEY, name = "JACE", sortWeight = 20, family = "trainer" },
-  }, { { key = "custom.callback", contact = TRAINER_KEY, kind = 0 } }, { "custom.callback" })
+  local rig = freshRig(
+    4242,
+    {
+      { key = MOM_KEY, name = "MOM", sortWeight = 10, family = "mother" },
+      { key = TRAINER_KEY, name = "JACE", sortWeight = 20, family = "trainer" },
+    },
+    { { key = "custom.callback", contact = TRAINER_KEY, kind = 0, slot = 1, clearOnPickup = false } },
+    { "custom.callback" }
+  )
   driveEligible(rig.calls)
   rig.calls:onOpportunity(opportunityOn("custom.new-bark-town"))
   local ringing = rig.calls:notification()

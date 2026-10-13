@@ -575,6 +575,29 @@ local function checkMomGift(ins, step)
   return nil
 end
 
+local function checkMomGiftHead(ins, step)
+  if step.op ~= "mom_gift_head" then
+    return "opcode 811 Mom gift head changed by translation"
+  end
+  if #ins.operands ~= 2 then
+    return "opcode 811 must preserve its two writable results"
+  end
+  if not operandMatches(ins.operands[1].raw, step.item) or not operandMatches(ins.operands[2].raw, step.quantity) then
+    return "opcode 811 item or quantity result changed by translation"
+  end
+  return nil
+end
+
+local function checkMomGiftTake(ins, step)
+  if step.op ~= "mom_gift_take" then
+    return "opcode 812 Mom gift dequeue changed by translation"
+  end
+  if #ins.operands ~= 0 then
+    return "opcode 812 must remain a zero-operand dequeue"
+  end
+  return nil
+end
+
 local function checkBuenasPassword(ins, step)
   if step.op ~= "buena_password" then
     return "opcode 821 password service changed by translation"
@@ -644,6 +667,8 @@ local CHECKERS = {
   [613] = checkPhoneContactGift(613, "berry"),
   [614] = checkPhoneContactGift(614, "item"),
   [779] = checkRadioMusic,
+  [811] = checkMomGiftHead,
+  [812] = checkMomGiftTake,
   [813] = checkMomGift,
   [821] = checkBuenasPassword,
 }

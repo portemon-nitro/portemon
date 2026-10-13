@@ -54,10 +54,16 @@ local function fixtureManifest()
     radio = { dial = visualRef("assets/generated/pokegear/radio-dial.png") },
     catalog = {
       contacts = {
-        { key = "custom.leader-falkner", family = "gym", sortWeight = 10 },
-        { key = "custom.trainer-plain", family = "trainer", sortWeight = 20 },
+        {
+          key = "custom.mom",
+          family = "mother",
+          sortWeight = 10,
+          rematchWeekday = 6,
+          rematchTime = 0,
+        },
+        { key = "custom.trainer-plain", family = "kurt", sortWeight = 20 },
       },
-      contactOrder = { "custom.leader-falkner", "custom.trainer-plain" },
+      contactOrder = { "custom.mom", "custom.trainer-plain" },
       callDefinitions = {},
       callTriggers = {},
       rematches = {},
@@ -96,12 +102,37 @@ end
 
 ---@return table world fixture shared by both entry paths
 local function worldFixture()
+  local rematches = {}
+  local rematchReady = {}
+  local flags = {}
   return {
-    flags = {},
-    rematchReady = {},
+    flags = flags,
+    read = function(_, key)
+      return flags[key]
+    end,
+    setMomSavingsChoice = function(_, choice)
+      flags["mom.savings-choice"] = choice
+      flags.savingsChoice = choice
+    end,
+    rematchReady = rematchReady,
+    nativeSelectorFacts = function()
+      return {
+        localMap = true,
+        gaveRivalName = false,
+        talkedAfterNamingRival = false,
+        eggCallPending = false,
+      }
+    end,
+    queryRematch = function(_, contact)
+      return rematches[contact]
+    end,
+    setRematch = function(_, contact, record)
+      rematches[contact] = record
+      rematchReady[contact] = record.stage > 0
+    end,
     storyTier = 2,
-    weekday = "saturday",
-    morning = true,
+    weekday = 6,
+    timeOfDay = 0,
     teamsByTier = {
       [2] = { tier = 2, members = { { species = "custom.pidgeotto", level = 13 } } },
     },
@@ -223,12 +254,18 @@ function T.tests.scripted_and_menu_phone_calls_share_one_conversation_engine()
   -- Menu entry: the real card controller opens the invitation on its
   -- registered contact and drives it through semantic advance input.
   local menuState = PokegearState.new({ seed = 2024 }, { catalog = record.catalog })
-  menuState:registerContact("custom.leader-falkner")
+  menuState:registerContact("custom.mom")
   local menuWorld = worldFixture()
   local menuController = PhoneController.new({
     state = menuState,
     catalog = record.catalog,
-    messages = messageRefs(),
+    messages = {
+      invitation = "custom.invitation",
+      accept = "custom.accept",
+      resolveLine = function()
+        return { tokens = { { kind = "glyph", code = 1, text = "X", raw = { 1 } } } }
+      end,
+    },
     world = menuWorld,
     audio = instantAudio(),
     random = PokegearRandom.new(2024),
@@ -247,11 +284,20 @@ function T.tests.scripted_and_menu_phone_calls_share_one_conversation_engine()
   )
   menuController:updateFixed({ { type = "confirm" } })
   local menuTexts = {}
+  local menuResult
+  local menuProgram
   for _ = 1, 40 do
+    menuResult = menuController:takeResult()
+    if menuResult ~= nil then
+      break
+    end
     local view = menuController:status().view
     Assert.notNil(view, "the menu call keeps publishing its detached view while live")
     local callView = (view --[[@as table]]).call
-    Assert.notNil(callView, "the menu view carries its live call projection")
+    if callView == nil then
+      break
+    end
+    menuProgram = callView.program
     menuTexts[#menuTexts + 1] = tostring(callView.program)
       .. ":"
       .. tostring(callView.position)
@@ -259,30 +305,31 @@ function T.tests.scripted_and_menu_phone_calls_share_one_conversation_engine()
       .. tostring(callView.greeting)
     -- Call input never navigates the contact list behind the call.
     Assert.equal((view --[[@as table]]).list.selected, 0, "call input never moves the contact list selection")
-    if menuController:takeResult() ~= nil then
+    menuResult = menuController:takeResult()
+    if menuResult ~= nil then
       break
     end
     menuController:updateFixed({ { type = "advance" } })
   end
-  local menuResult = menuController:takeResult()
-  Assert.notNil(menuResult, "the menu invitation reports its terminal result to its shell owner")
-  Assert.equal(menuResult.contact, "custom.leader-falkner", "the menu result names its contact")
-  Assert.equal(menuResult.kind, "rematch", "the menu result names its call kind")
-  Assert.isTrue(
-    menuWorld.rematchReady["custom.leader-falkner"] == true,
-    "the menu invitation stages its readiness through the shared engine"
-  )
+  Assert.isNil(menuResult, "menu calls return to their list without a script-host result")
+  Assert.isNil(menuController:status().view.call, "the menu releases its completed call projection")
   menuController:dispose()
 
   -- Scripted entry: the same invitation through staged setup/run nodes
   -- on the real scheduler lane with the real script host underneath.
   local scriptWorld = worldFixture()
   local scriptState = PokegearState.new({ seed = 2024 }, { catalog = record.catalog })
-  scriptState:registerContact("custom.leader-falkner")
+  scriptState:registerContact("custom.mom")
   local host = PokegearScriptHost.new({
     state = scriptState,
     catalog = record.catalog,
-    messages = messageRefs(),
+    messages = {
+      invitation = "custom.invitation",
+      accept = "custom.accept",
+      resolveLine = function()
+        return { tokens = { { kind = "glyph", code = 1, text = "X", raw = { 1 } } } }
+      end,
+    },
     world = scriptWorld,
     audio = instantAudio(),
     random = PokegearRandom.new(2024),
@@ -292,7 +339,7 @@ function T.tests.scripted_and_menu_phone_calls_share_one_conversation_engine()
     api = 1,
     id = "test.phone_shared_engine",
     steps = {
-      S.phoneSetCall({ contact = "custom.leader-falkner", direction = "outgoing", kind = "rematch" }),
+      S.phoneSetCall({ contact = "custom.mom", direction = "outgoing", kind = "ordinary" }),
       S.phoneRunCall(),
       S.stop(),
     },
@@ -308,24 +355,15 @@ function T.tests.scripted_and_menu_phone_calls_share_one_conversation_engine()
   Assert.isTrue(host:isActive(), "the run operation consumes the staged request and takes the lease")
   Assert.notNil(h.scheduler:instance(instanceId), "the parent script stays blocked while its call is live")
 
-  -- Both paths ran the identical invitation program with identical
-  -- staged effects: the scripted readiness matches the menu readiness
-  -- exactly.
+  -- Both paths ran the same source-supported caller program without
+  -- synthesizing trainer-family script behavior.
   local scriptHandle = host:activeHandle()
   Assert.notNil(scriptHandle, "the scripted call exposes its active handle")
   local scriptResult = settleCall(host, scriptHandle --[[@as table]])
-  Assert.isTrue(
-    scriptWorld.rematchReady["custom.leader-falkner"] == true,
-    "the scripted invitation stages its readiness through the shared engine"
-  )
-  Assert.deepEqual(
-    scriptWorld.rematchReady,
-    menuWorld.rematchReady,
-    "both entry paths stage identical effects through one engine"
-  )
-  Assert.equal(scriptResult.contact, menuResult.contact, "both paths report the same contact")
-  Assert.equal(scriptResult.kind, menuResult.kind, "both paths report the same call kind")
-  Assert.equal(scriptResult.program, menuResult.program, "both paths resolve the same source program")
+  Assert.deepEqual(scriptWorld.rematchReady, {}, "ordinary calls do not stage rematch readiness")
+  Assert.equal(scriptResult.contact, "custom.mom", "the scripted result names the same source caller")
+  Assert.equal(scriptResult.kind, "ordinary", "the scripted result names the same call kind")
+  Assert.equal(scriptResult.program, menuProgram, "both paths resolve the same source program")
   Assert.isTrue(#menuTexts >= 2, "the menu path observed real conversation progress to compare")
   host:close(scriptHandle --[[@as table]])
 
@@ -343,7 +381,7 @@ function T.tests.scripted_and_menu_phone_calls_share_one_conversation_engine()
   -- request fails carrying its script context.
   local world2 = worldFixture()
   local state2 = PokegearState.new({ seed = 77 }, { catalog = record.catalog })
-  state2:registerContact("custom.leader-falkner")
+  state2:registerContact("custom.mom")
   state2:registerContact("custom.trainer-plain")
   local host2 = PokegearScriptHost.new({
     state = state2,
@@ -366,7 +404,7 @@ function T.tests.scripted_and_menu_phone_calls_share_one_conversation_engine()
     api = 1,
     id = "test.phone_staging",
     steps = {
-      S.setVar({ variable = "caller", value = "custom.leader-falkner" }),
+      S.setVar({ variable = "caller", value = "custom.mom" }),
       S.phoneSetCall({ contact = S.var("caller"), direction = "outgoing", kind = "rematch" }),
       S.setVar({ variable = "caller", value = "custom.trainer-plain" }),
       S.phoneRunCall(),
@@ -385,7 +423,7 @@ function T.tests.scripted_and_menu_phone_calls_share_one_conversation_engine()
   local stagedResult = settleCall(host2, staged --[[@as table]])
   Assert.equal(
     stagedResult.contact,
-    "custom.leader-falkner",
+    "custom.mom",
     "the run consumed the request evaluated at setup time, not the reassigned variable"
   )
   host2:close(staged --[[@as table]])
