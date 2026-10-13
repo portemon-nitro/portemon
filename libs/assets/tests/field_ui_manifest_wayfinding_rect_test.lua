@@ -158,7 +158,13 @@ local function baseManifest()
     },
     startMenu = {
       background = { x = 0, y = 0, width = 256, height = 192 },
-      cursor = { frames = { { x = 0, y = 0, width = 32, height = 32, duration = 3 } } },
+      cursor = {
+        playMode = "forward_loop",
+        loopStartFrameIdx = 0,
+        frames = {
+          { x = 0, y = 0, width = 32, height = 32, offset = { x = -16, y = -16 }, duration = 3 },
+        },
+      },
       interactive = FieldUiFixture.startMenuInteractive(),
       runningShoes = FieldUiFixture.startMenuRunningShoes(),
       iconTable = (function()

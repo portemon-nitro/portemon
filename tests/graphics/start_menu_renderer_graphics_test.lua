@@ -1,8 +1,7 @@
 -- Graphics smoke tests for the Start Menu renderer: the canonical 256x192
 -- surface renders pixel-exact against an independently composed reference
--- (the fixture's own slot art with the cursor frame centered over the
--- presented slot, and the real generated assets from the shared derived
--- cache when a UI class is present), the surface also renders pixel-exact
+-- (the fixture's own slot art and the real generated assets from the shared
+-- derived cache when a UI class is present), the surface also renders pixel-exact
 -- through a non-canonical placement record from the real layout module (the
 -- record transform drives the draw, not a second set of scaled rectangles),
 -- every graphics state the draw touched is proven restored against the real
@@ -138,8 +137,9 @@ end
 ---@param width integer
 ---@param height integer
 ---@param shoesState { locked: boolean, focused: boolean }?
+---@param cursor { position: integer, frameIndex: integer }?
 ---@return love.ImageData
-local function selectorRenderInto(scope, cacheFs, manifest, selectedPosition, placement, width, height, shoesState)
+local function selectorRenderInto(scope, cacheFs, manifest, selectedPosition, placement, width, height, shoesState, cursor)
   local lg = love.graphics
   local renderer = scope:own(StartMenuRenderer.new({ cacheFs = cacheFs, manifest = manifest, text = recordingText() }))
   local canvas = scope:own(lg.newCanvas(width, height))
@@ -153,9 +153,45 @@ local function selectorRenderInto(scope, cacheFs, manifest, selectedPosition, pl
       { id = "vanilla.pokemon", position = 1, icon = 1, label = "POKEMON" },
     },
     runningShoes = shoesState,
+    cursor = cursor,
   }, placement)
   lg.setCanvas()
   return scope:own(canvas:newImageData())
+end
+
+function T.cursor_frames_render_at_their_source_offsets(scope)
+  local cache, manifest = selectorCacheAndManifest()
+  local first = selectorRenderInto(
+    scope,
+    cache,
+    manifest,
+    1,
+    canonicalPlacement(),
+    CANONICAL_WIDTH,
+    CANONICAL_HEIGHT,
+    nil,
+    { position = 0, frameIndex = 1 }
+  )
+  local second = selectorRenderInto(
+    scope,
+    cache,
+    manifest,
+    1,
+    canonicalPlacement(),
+    CANONICAL_WIDTH,
+    CANONICAL_HEIGHT,
+    nil,
+    { position = 5, frameIndex = 2 }
+  )
+  local function colorAt(image, x, y)
+    local r, g, b, a = image:getPixel(x, y)
+    local function quantize(value)
+      return math.floor(value * 255 + 0.5)
+    end
+    return { quantize(r), quantize(g), quantize(b), quantize(a) }
+  end
+  Assert.deepEqual(colorAt(first, 21, 20), { 255, 0, 255, 255 }, "frame one uses its source offset")
+  Assert.deepEqual(colorAt(second, 106, 63), { 0, 255, 255, 255 }, "frame two uses its translated source offset")
 end
 
 function T.running_shoes_focus_outline_is_visible_in_both_lock_states(scope)
@@ -401,14 +437,12 @@ function T.real_generated_start_menu_icons_match_the_retail_source_contract(scop
   end
 end
 
--- The canonical selector surface uses the retail sub-side composition: the
--- sub chrome is the interactive background and no movable main-side cursor
--- sprite travels with the selection. The sub image below is a solid color
--- found nowhere else in the fixture art, and the fixture magenta/cyan cursor
--- frames stay in the legacy surface art, so a main-background pixel or a
--- single cursor pixel anywhere is a surface-ownership mismatch. Selection
--- still has a visible effect (the selected action visual swaps) while the
--- background stays put.
+-- The canonical selector surface uses the retail sub-side composition. The
+-- sub image below is a solid color found nowhere else in the fixture art;
+-- without a cursor presentation, no cursor pixel should be baked into the
+-- background or drawn independently of focus state. Selection still has a
+-- visible effect (the selected action visual swaps) while the background
+-- stays put.
 ---@param scope GraphicsScope
 ---@param cache CacheFs
 ---@param manifest table

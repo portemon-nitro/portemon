@@ -1,30 +1,17 @@
--- Renders the Start Menu SUB selector through a resolved placement record. Entry art is OBJ icon sprites, never baked background
--- rects: the generated field-UI manifest's `startMenu` section carries the
--- retail icon table (per-row art kind with source-composed normal/selected
--- visual records, label-bank data, the conditional female variant), the
--- shared icon atlas, and the SUB chrome behind the entry windows. Each draw
--- composes the SUB background at the canonical origin, then every presented
--- action's icon at its source anchor plus the visual's source-relative
--- offset (the selected action draws its selected visual, the Bag icon
--- follows the presentation's trainer gender), then caller-resolved labels in
--- their source label windows through the shared text collaborator. There is
--- no movable cursor: selection is the selected icon visual itself. Runtime
--- code addresses icons and windows by the manifest's own records and never
--- repeats source coordinates. An open menu always has a selection, so the
--- presentation requires the selected source position; the nil presentation
--- is the closed-menu no-op. Drawing and hit testing consume the same
--- resolved placement record: the surface draws inside its logical
--- coordinate space through the shared surface scope, so rendering and hit
--- testing share one record with no second set of scaled rectangles. The surface is not a generic
--- list menu: only the generated images are drawn, at identity tint, with no
--- theme colors or styled primitives. Construction is failure-safe: a missing
--- asset is a typed error, a later acquisition/quad failure releases every
--- image acquired so far before rethrowing, and draw() restores every
--- graphics state it touches. The runtime-validated manifest is injected
--- explicitly; this renderer never reloads it from the cache.
+-- Renders the Start Menu SUB selector through a resolved placement record.
+-- The generated field-UI manifest carries the retail icon table, shared icon
+-- atlas, animated source cursor, and SUB chrome. The renderer composes the
+-- background, action art, and labels, then places the cursor's current source
+-- frame over the focused action. Cursor frames retain their source cell
+-- origin and NANR translation, while the fixed-tick state owner advances the
+-- source durations and play mode. All other geometry comes from the manifest
+-- as well; source coordinates are never repeated here. Drawing and input use
+-- the same resolved placement record. Construction is failure-safe and
+-- drawing restores every graphics state it touches.
 
 local Errors = require("libs.errors.src.Errors")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
+local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 
 ---@class StartMenuRenderer
@@ -38,6 +25,8 @@ local LogicalSurface = require("libs.ui.src.LogicalSurface")
 ---@field _subQuad love.Quad?
 ---@field _pokeImage love.Image?
 ---@field _pokeQuad love.Quad?
+---@field _cursorImage love.Image
+---@field _cursorQuads love.Quad[]
 ---@field menu StartMenuRenderer.Menu the resolved manifest surface geometry
 local StartMenuRenderer = {}
 StartMenuRenderer.__index = StartMenuRenderer
@@ -105,9 +94,12 @@ function StartMenuRenderer.new(opts)
     _subQuad = nil,
     _pokeImage = nil,
     _pokeQuad = nil,
+    _cursorImage = nil,
+    _cursorQuads = {},
     menu = {
       interactive = interactive,
       iconTable = iconTable,
+      cursor = assert(startMenu.cursor, "the field-UI manifest must carry the cursor animation"),
       runningShoes = assert(startMenu.runningShoes, "the field-UI manifest must carry the Running Shoes toggle"),
     },
   }, StartMenuRenderer)
@@ -181,6 +173,21 @@ function StartMenuRenderer:_acquire(cacheFs, manifest, startMenu, chromeAsset)
       quadFor(assert(state.asset, "a Running Shoes visual must name its atlas"), assert(state.rect))
     end
   end
+  self._cursorImage = acquire(
+    FieldUiAssetCache.ASSET.START_MENU_CURSOR,
+    FieldErrors.FIELD_UI_START_MENU_CURSOR_MISSING,
+    "the start menu cursor"
+  )
+  for index, frame in ipairs(assert(self.menu.cursor.frames, "the cursor must carry animation frames")) do
+    self._cursorQuads[index] = graphics.newQuad(
+      frame.x,
+      frame.y,
+      frame.width,
+      frame.height,
+      self._cursorImage:getWidth(),
+      self._cursorImage:getHeight()
+    )
+  end
   if startMenu.pokeIcons ~= nil and startMenu.pokeIcons.asset ~= nil then
     local pokeAsset = startMenu.pokeIcons.asset
     if manifest.assets[pokeAsset] ~= nil then
@@ -191,6 +198,26 @@ function StartMenuRenderer:_acquire(cacheFs, manifest, startMenu, chromeAsset)
         graphics.newQuad(0, 0, pokeImage:getWidth(), pokeImage:getHeight(), pokeImage:getWidth(), pokeImage:getHeight())
     end
   end
+end
+
+---@param cursor { position: integer, frameIndex: integer }?
+function StartMenuRenderer:_drawCursor(cursor)
+  if cursor == nil then
+    return
+  end
+  local frame = assert(self.menu.cursor.frames[cursor.frameIndex], "the cursor frame is outside its sequence")
+  local anchor = assert(
+    self.menu.interactive.positions[cursor.position] and self.menu.interactive.positions[cursor.position].anchor,
+    "the cursor position has a generated action anchor"
+  )
+  assert(type(frame.offset) == "table", "the source cursor frame must carry its position offset")
+  assert(self._cursorImage ~= nil, "the cursor image is acquired with the other Start Menu art")
+  self._graphics.draw(
+    self._cursorImage,
+    assert(self._cursorQuads[cursor.frameIndex]),
+    anchor.x + frame.offset.x,
+    anchor.y + frame.offset.y
+  )
 end
 
 ---@param assetId string
@@ -313,7 +340,7 @@ end
 -- canvas, shader, scissor, blend, depth, wireframe, cull, and color
 -- afterwards so the HUD and host overlays draw normally.
 
----@param presentation { selectedPosition: integer, trainerGender?: string, actions?: table[], runningShoes?: { locked: boolean, focused: boolean } }?
+---@param presentation { selectedPosition: integer, trainerGender?: string, actions?: table[], runningShoes?: { locked: boolean, focused: boolean }, cursor?: { position: integer, frameIndex: integer } }?
 ---@param placement LayoutGeometry.Placement the resolved content placement (frame, origin, scale, clip)
 function StartMenuRenderer:draw(presentation, placement)
   if not presentation or not self._subImage then
@@ -335,7 +362,7 @@ end
 -- draw draws nothing), then the SUB chrome at the canonical origin plus
 -- per-action icons and labels. The manifest rects are canonical, so
 -- nothing is scaled twice.
----@param presentation { selectedPosition: integer, trainerGender?: string, actions?: table[], runningShoes?: { locked: boolean, focused: boolean } }
+---@param presentation { selectedPosition: integer, trainerGender?: string, actions?: table[], runningShoes?: { locked: boolean, focused: boolean }, cursor?: { position: integer, frameIndex: integer } }
 function StartMenuRenderer:_drawSurface(presentation)
   local lg = assert(self._graphics)
   lg.setColor(1, 1, 1, 1)
@@ -382,6 +409,19 @@ function StartMenuRenderer:_drawSurface(presentation)
       "the Running Shoes focus outline requires its generated hit rectangle"
     )
   end
+  local cursor = presentation.cursor
+  if cursor ~= nil then
+    assert(
+      type(cursor.position) == "number" and positions[cursor.position] ~= nil,
+      "the cursor position is outside the generated action positions"
+    )
+    assert(
+      type(cursor.frameIndex) == "number"
+        and cursor.frameIndex % 1 == 0
+        and self.menu.cursor.frames[cursor.frameIndex] ~= nil,
+      "the cursor frame index is outside its sequence"
+    )
+  end
   ---@type integer?
   local selectedPosition = presentation.selectedPosition
   if shoes ~= nil and shoes.focused then
@@ -400,6 +440,9 @@ function StartMenuRenderer:_drawSurface(presentation)
       self:_drawRunningShoesFocus(self.menu.runningShoes.hitRect)
     end
   end
+  if cursor ~= nil then
+    self:_drawCursor(cursor)
+  end
 end
 
 function StartMenuRenderer:release()
@@ -412,6 +455,8 @@ function StartMenuRenderer:release()
   self._imageByAsset = {}
   self._quads = {}
   self._subImage, self._subQuad, self._pokeImage, self._pokeQuad = nil, nil, nil, nil
+  self._cursorImage = nil
+  self._cursorQuads = {}
 end
 
 -- The resolved manifest surface: the SUB chrome asset, the icon table with
@@ -432,6 +477,7 @@ end
 ---@class StartMenuRenderer.Menu
 ---@field interactive StartMenuRenderer.Interactive the generated interactive record (cancel bound plus positions 0..6)
 ---@field iconTable table<integer, table<string, unknown>>
+---@field cursor { frames: { x: integer, y: integer, width: integer, height: integer, offset: { x: integer, y: integer }, duration: integer }[] }
 ---@field runningShoes table<string, unknown> the generated Running Shoes toggle record (button and indicator visuals)
 
 return StartMenuRenderer

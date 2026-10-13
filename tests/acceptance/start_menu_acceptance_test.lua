@@ -87,6 +87,7 @@ function T.tests.production_start_menu_follows_the_ordered_candidate_topology()
       -- retail slots on the right column while the early slots stay holes.
       local status = openMenu(game)
       Assert.equal(status.selectedPosition, 4, "fresh field selection starts at the first present fixed slot")
+      Assert.equal(status.cursor.position, 4, "the animated retail cursor starts on the selected action")
 
       local byPosition = {}
       for _, action in ipairs(status.actions) do
@@ -109,7 +110,9 @@ function T.tests.production_start_menu_follows_the_ordered_candidate_topology()
       Assert.equal(menuStatus(game).selectedPosition, 4, "a disabled visible action is not activated")
 
       Assert.equal(navigate(game, "east").selectedPosition, 4, "right stays on the first visible candidate")
-      Assert.equal(navigate(game, "south").selectedPosition, 5, "down selects the next visible candidate")
+      status = navigate(game, "south")
+      Assert.equal(status.selectedPosition, 5, "down selects the next visible candidate")
+      Assert.equal(status.cursor.position, 5, "the retail cursor follows focus to the next action")
       Assert.equal(navigate(game, "west").selectedPosition, 5, "left stays when no candidate is visible")
       Assert.equal(navigate(game, "north").selectedPosition, 4, "up selects the previous visible candidate")
       Assert.equal(navigate(game, "south").selectedPosition, 5, "down selects the next visible candidate again")

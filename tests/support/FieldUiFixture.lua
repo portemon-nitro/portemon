@@ -320,8 +320,8 @@ FieldUiFixture.START_MENU_SLOTS = {
 -- y=16) with distinct durations, so the fixed-tick cadence is pixel-visible
 -- in the goldens and the durations are observable in unit tests.
 FieldUiFixture.START_MENU_CURSOR_FRAMES = {
-  { x = 0, y = 0, width = 16, height = 16, duration = 22 },
-  { x = 0, y = 16, width = 16, height = 16, duration = 11 },
+  { x = 0, y = 0, width = 16, height = 16, offset = { x = -3, y = -2 }, duration = 22 },
+  { x = 0, y = 16, width = 16, height = 16, offset = { x = 2, y = 1 }, duration = 11 },
 }
 
 -- The solid color of one Start Menu slot region; every slot is a distinct
@@ -703,7 +703,11 @@ function FieldUiFixture.manifest()
     },
     startMenu = {
       background = { x = 0, y = 0, width = 256, height = 192 },
-      cursor = { frames = FieldUiFixture.START_MENU_CURSOR_FRAMES },
+      cursor = {
+        playMode = "forward_loop",
+        loopStartFrameIdx = 0,
+        frames = FieldUiFixture.START_MENU_CURSOR_FRAMES,
+      },
       slots = FieldUiFixture.START_MENU_SLOTS,
     },
     trainerCard = {
@@ -895,6 +899,7 @@ function FieldUiFixture.writeStartMenuSelectorPngs(cache)
     "assets/generated/field/ui/start-menu-icon-palette.png",
     PngWriter.encode(16, 2, string.rep(string.char(10, 10, 10, 255), 16 * 2))
   )
+  cache:write(FieldUiFixture.START_MENU_CURSOR_PATH, FieldUiFixture.startMenuCursorBytes())
 end
 
 -- The Running Shoes toggle record: the touch rectangle plus the button body

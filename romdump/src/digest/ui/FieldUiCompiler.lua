@@ -736,6 +736,7 @@ local function compileStartMenu(romFs, sha1hex, deps, assets, manifestAssets)
       y = row.y,
       width = row.width,
       height = row.height,
+      offset = { x = row.minX + frame.translateX, y = row.minY + frame.translateY },
       duration = frame.duration,
     }
   end
@@ -806,7 +807,11 @@ local function compileStartMenu(romFs, sha1hex, deps, assets, manifestAssets)
 
   return {
     background = background,
-    cursor = { frames = cursorFrames },
+    cursor = {
+      playMode = anim.playMode,
+      loopStartFrameIdx = anim.loopStartFrameIdx,
+      frames = cursorFrames,
+    },
     interactive = {
       cancelHitRect = {
         x = cfg.cancelTouchRegion.x,

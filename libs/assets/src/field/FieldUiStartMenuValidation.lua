@@ -12,14 +12,45 @@ local VALID_ICON_LABEL_KINDS = { static = true, player_name = true }
 local ICON_STATES = { "normal", "selected" }
 local NAV_DIRECTIONS = { "up", "down", "left", "right" }
 local RGB_CHANNELS = { "r", "g", "b" }
+local CURSOR_PLAY_MODES = { forward = true, forward_loop = true, reverse = true, reverse_loop = true }
 
 local function checkStartMenuCursor(cursor, atlases, asset)
   if type(cursor) ~= "table" or type(cursor.frames) ~= "table" or #cursor.frames < 1 then
     reject("startMenu.cursor must carry at least one frame", {})
   end
+  if CURSOR_PLAY_MODES[cursor.playMode] ~= true then
+    reject("startMenu.cursor playMode is invalid", {})
+  end
+  checkInteger(cursor.loopStartFrameIdx, 0, #cursor.frames - 1, "startMenu.cursor loop start is outside its frames", {})
+  local cycleDuration = 0
   for _, frameEntry in ipairs(cursor.frames) do
     checkAtlasRect(frameEntry, atlases, asset.START_MENU_CURSOR, "start menu cursor frame")
-    checkInteger(frameEntry.duration, 1, nil, "cursor frame duration must be a positive integer", {})
+    checkInteger(frameEntry.duration, 0, nil, "cursor frame duration must be a non-negative integer", {})
+    cycleDuration = cycleDuration + frameEntry.duration
+    local offset = frameEntry.offset
+    if type(offset) ~= "table" then
+      reject("start menu cursor frame offset must be a record", {})
+    end
+    checkInteger(offset.x, nil, nil, "start menu cursor frame x offset must be an integer", {})
+    checkInteger(offset.y, nil, nil, "start menu cursor frame y offset must be an integer", {})
+  end
+  if cycleDuration == 0 then
+    reject("start menu cursor animation must advance", {})
+  end
+  if cursor.playMode == "forward_loop" or cursor.playMode == "reverse_loop" then
+    local loopDuration = 0
+    if cursor.playMode == "forward_loop" then
+      for index = cursor.loopStartFrameIdx + 1, #cursor.frames do
+        loopDuration = loopDuration + cursor.frames[index].duration
+      end
+    else
+      for index = 1, cursor.loopStartFrameIdx + 1 do
+        loopDuration = loopDuration + cursor.frames[index].duration
+      end
+    end
+    if loopDuration == 0 then
+      reject("start menu cursor loop must advance", {})
+    end
   end
 end
 

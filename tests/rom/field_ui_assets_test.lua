@@ -103,9 +103,26 @@ function T.cursor_source_geometry_is_a_single_square_32x32_obj(romFs, _)
   Assert.equal(#anim.anims, 1, "the cursor animation bank carries one animation")
   Assert.equal(#anim.anims[1].frames, 2, "the cursor animation drives two frames")
   local bundle = assert(FieldUiCompiler.compile(romFs))
-  Assert.equal(#bundle.manifest.startMenu.cursor.frames, 2, "the compiled cursor carries one frame per animation frame")
+  Assert.equal(bundle.manifest.startMenu.cursor.playMode, anim.anims[1].playMode, "the source play mode is preserved")
   Assert.equal(
-    bundle.manifest.startMenu.cursor.frames[1].width,
+    bundle.manifest.startMenu.cursor.loopStartFrameIdx,
+    anim.anims[1].loopStartFrameIdx,
+    "the source loop start is preserved"
+  )
+  Assert.equal(#bundle.manifest.startMenu.cursor.frames, 2, "the compiled cursor carries one frame per animation frame")
+  local compiledFrames = bundle.manifest.startMenu.cursor.frames
+  for index, sourceFrame in ipairs(anim.anims[1].frames) do
+    local sourceObj = assert(cell.cells[sourceFrame.cell + 1]).objs[1]
+    local compiledFrame = compiledFrames[index]
+    Assert.equal(compiledFrame.duration, sourceFrame.duration, "the cursor preserves source frame timing")
+    Assert.deepEqual(
+      compiledFrame.offset,
+      { x = sourceObj.x + sourceFrame.translateX, y = sourceObj.y + sourceFrame.translateY },
+      "the cursor preserves source cell placement and per-frame translation"
+    )
+  end
+  Assert.equal(
+    compiledFrames[1].width,
     32,
     "the compiled cursor frame covers the full 32x32 square"
   )

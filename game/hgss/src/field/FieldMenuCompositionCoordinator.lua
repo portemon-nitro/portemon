@@ -292,6 +292,7 @@ function FieldMenuCompositionCoordinator:composeStartMenu(rememberedActionId)
   return StartMenuState.new({
     entries = entries,
     interactive = startMenuInteractive,
+    cursorAnimation = assert(startMenuSection.cursor, "the field UI manifest must carry the start menu cursor"),
     rememberedActionId = rememberedActionId,
     effect = playMenuSequence,
     runningShoes = runningShoes,

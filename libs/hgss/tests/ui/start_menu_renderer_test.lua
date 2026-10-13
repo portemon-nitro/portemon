@@ -149,6 +149,18 @@ function T.missing_icons_asset_is_a_typed_error_and_releases_the_chrome()
   Assert.equal(lg.images[1].released, true, "the acquired chrome was released")
 end
 
+function T.missing_cursor_asset_is_a_typed_error_and_releases_acquired_menu_art()
+  local cache = iconCache(ICON_MANIFEST)
+  cache:remove(FieldUiFixture.START_MENU_CURSOR_PATH)
+  local lg = fakeGraphics({ imageSizes = { { 256, 256 }, { 352, 80 }, { 16, 32 } } })
+  local err = Assert.throws(function()
+    StartMenuRenderer.new({ cacheFs = cache, manifest = ICON_MANIFEST, text = recordingText(), graphics = lg })
+  end)
+  Assert.isTrue(Errors.is(err) and err.code == "FIELD_UI_START_MENU_CURSOR_MISSING")
+  Assert.equal(#lg.images, 2, "the two menu images were acquired before cursor lookup")
+  Assert.isTrue(lg.images[1].released and lg.images[2].released, "all partial menu art is released")
+end
+
 -- A quad failure after both images were created must release both before
 -- the constructor rethrows.
 function T.constructor_quad_failure_releases_every_acquired_image()
@@ -385,9 +397,8 @@ function T.female_bag_variant_draws_the_conditional_icon_art()
   Assert.deepEqual({ bagDraw.x, bagDraw.y }, { 24, 102 }, "the female bag lands at the position anchor")
 end
 
--- Selection is a visual swap, not cursor placement: the selected action's
--- icon draws its selected visual while unselected icons draw their normal
--- visuals, all from the shared atlas.
+-- Selection still swaps icon palette visuals independently of the animated
+-- cursor overlay: selected art comes from the selected atlas band.
 function T.selected_entry_draws_its_selected_visual()
   local manifest = iconManifest()
   local lg = fakeGraphics({ imageSizes = { { 256, 256 }, { 352, 80 } } })
@@ -415,6 +426,31 @@ function T.selected_entry_draws_its_selected_visual()
     "the unselected pokemon icon samples its normal visual"
   )
   Assert.equal(iconDraws[1].image, iconDraws[2].image, "both visuals share the icon atlas")
+end
+
+function T.focused_entry_draws_the_source_cursor_frame_at_its_wobbling_offset()
+  local lg = fakeGraphics({ imageSizes = { { 256, 256 }, { 352, 80 }, { 16, 32 } } })
+  local renderer = StartMenuRenderer.new({
+    cacheFs = iconCache(ICON_MANIFEST),
+    manifest = ICON_MANIFEST,
+    text = recordingText(),
+    graphics = lg,
+  })
+  renderer:draw({
+    selectedPosition = 5,
+    actions = { { id = "vanilla.save", position = 5, icon = 5, label = "SAVE" } },
+    cursor = { position = 5, frameIndex = 2 },
+  }, canonicalPlacement())
+
+  local cursorDraw = lg.draws[#lg.draws]
+  Assert.equal(cursorDraw.image, lg.images[3], "the cursor uses its source atlas")
+  Assert.deepEqual(
+    { cursorDraw.quad.x, cursorDraw.quad.y, cursorDraw.quad.w, cursorDraw.quad.h },
+    { 0, 16, 16, 16 },
+    "the elapsed source duration selects cursor frame two"
+  )
+  Assert.deepEqual({ cursorDraw.x, cursorDraw.y }, { 106, 63 }, "the frame translation wobbles at the selected anchor")
+  renderer:release()
 end
 
 -- Text-only icon-table rows carry no art: their actions draw labels without

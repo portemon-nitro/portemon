@@ -172,7 +172,13 @@ local function validManifest()
     },
     startMenu = {
       background = { x = 0, y = 0, width = 256, height = 192 },
-      cursor = { frames = { { x = 0, y = 0, width = 32, height = 32, duration = 3 } } },
+      cursor = {
+        playMode = "forward_loop",
+        loopStartFrameIdx = 0,
+        frames = {
+          { x = 0, y = 0, width = 32, height = 32, offset = { x = -16, y = -16 }, duration = 3 },
+        },
+      },
       interactive = FieldUiFixture.startMenuInteractive(),
       runningShoes = FieldUiFixture.startMenuRunningShoes(),
       iconTable = (function()
@@ -436,8 +442,8 @@ function T.dialogue_frame_palettes_are_required_and_strict()
 end
 
 -- The start menu chrome and auxiliary records stay strict: the background
--- rect inside its atlas, at least one cursor frame with a positive integral
--- duration, and both chrome sets referencing indexed assets with the main
+-- rect inside its atlas, an advancing source cursor sequence with signed
+-- position offsets, and both chrome sets referencing indexed assets with the main
 -- transparency boundary.
 function T.start_menu_chrome_and_auxiliary_records_are_strict()
   reject(function(m)
@@ -447,7 +453,12 @@ function T.start_menu_chrome_and_auxiliary_records_are_strict()
     m.startMenu.cursor.frames = {}
   end, "FIELD_UI_MANIFEST_INVALID")
   reject(function(m)
-    m.startMenu.cursor.frames[1].duration = 0
+    m.startMenu.cursor.frames[1].offset = nil
+  end, "FIELD_UI_MANIFEST_INVALID")
+  reject(function(m)
+    for _, frame in ipairs(m.startMenu.cursor.frames) do
+      frame.duration = 0
+    end
   end, "FIELD_UI_MANIFEST_INVALID")
   reject(function(m)
     m.startMenu.chrome.sub.asset = "hgss.start_menu.missing"
