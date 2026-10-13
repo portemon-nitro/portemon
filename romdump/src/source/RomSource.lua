@@ -1,5 +1,5 @@
 -- Owns the original ROM bytes and hides how they were obtained. Only this
--- module, NdsRom, and RomExtractor may hold the full ROM string. The canonical
+-- module, NdsRom, and the compiler pool may hold the full ROM string. The canonical
 -- ROM is 128 MiB and kept as one Lua string in v1 (not a byte table); a
 -- streaming backend can replace this later without changing callers.
 --

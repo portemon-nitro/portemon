@@ -436,7 +436,7 @@ end
 -- against is exposed as a RomImporter.STATES constant, and every transition
 -- lands on one of those named states.
 function T.importer_states_are_named_constants()
-  for _, name in ipairs({ "IDLE", "READING", "VERIFYING", "EXTRACTING", "COMPLETE", "ERROR" }) do
+  for _, name in ipairs({ "IDLE", "READING", "VERIFYING", "REGISTERING", "COMPLETE", "ERROR" }) do
     Assert.equal("string", type(RomImporter.STATES[name]), "RomImporter.STATES." .. name .. " must be a named state")
   end
   local fresh = RomImporter.new({

@@ -454,4 +454,142 @@ function T.shared_reconciliation_compares_decoded_logical_bytes()
   Assert.equal(cache:read("maps/82/complete"), "ready")
 end
 
+-- Every successful job stages a durable shared-reference sidecar alongside
+-- its family output: the sidecar carries exactly the staged shared set,
+-- travels as an owned root committed before the receipt, and the receipt
+-- stays last, so a replacement can only supersede the previous generation
+-- atomically and a crash before commit always leaves the prior generation
+-- readable.
+function T.replacement_roots_commit_with_their_shared_proof_and_drop_the_previous_generation()
+  local receipts = requireReceipts()
+  local stages = requireStages()
+  local generation = generationIdFor(Sha256.hex("sidecar proof producer"))
+  local backend = FakeCache.new()
+  local cache = CacheFs.forVersion("heartgold", backend)
+  cache:recoverPublication()
+  local meshPath = "assets/generated/maps/geometry/" .. string.rep("c", 40) .. ".g4mesh"
+  local meshLogical = string.rep("mesh-block;", 200)
+  local receiptPath = receipts.path("map", "83")
+  local sidecarPath = "data/generated/jobs-shared/map/83.lua"
+
+  local bare = stages.new(stageOptions("map", "84", generation, 1, "sidecar-empty", cache))
+  bare:stageFs():write("maps/84/complete", "ready")
+  bare:addOwnedRoot("maps/84")
+  bare:finishSuccess({ marker = "complete" })
+  Assert.deepEqual(bare:stageFs():loadLua(sidecarPath:gsub("83", "84")), {
+    schema = 1,
+    generationId = generation,
+    kind = "map",
+    key = "84",
+    paths = {},
+  }, "a job without shared files still stages an empty proof")
+  local bareRoots = bare:manifest().ownedRoots
+  Assert.equal(bareRoots[#bareRoots], receipts.path("map", "84"))
+  bare:publish(expectedOf("map", "84", generation, 1))
+
+  local first = stages.new(stageOptions("map", "83", generation, 1, "sidecar-first", cache))
+  first:stageFs():write(meshPath, meshLogical)
+  first:addSharedFile(meshPath)
+  first:stageFs():write("maps/83/complete", "first")
+  first:addOwnedRoot("maps/83")
+  first:finishSuccess({ marker = "round-a" })
+  Assert.deepEqual(first:stageFs():loadLua(sidecarPath), {
+    schema = 1,
+    generationId = generation,
+    kind = "map",
+    key = "83",
+    paths = { meshPath },
+  }, "the sidecar carries exactly the staged shared set")
+  local ownedRoots = first:manifest().ownedRoots
+  Assert.equal(ownedRoots[#ownedRoots], receiptPath, "the receipt still commits last")
+  local sidecarPosition
+  for position, root in ipairs(ownedRoots) do
+    if root == sidecarPath then
+      sidecarPosition = position
+    end
+  end
+  Assert.notNil(sidecarPosition, "the sidecar travels as a committed owned root")
+  assert(sidecarPosition, "the staged sidecar is an owned root")
+  Assert.isTrue(sidecarPosition < #ownedRoots, "the sidecar commits before the receipt")
+  first:publish(expectedOf("map", "83", generation, 1))
+  Assert.deepEqual(cache:loadLua(sidecarPath), {
+    schema = 1,
+    generationId = generation,
+    kind = "map",
+    key = "83",
+    paths = { meshPath },
+  })
+  Assert.equal(cache:read(meshPath), meshLogical)
+
+  local replacement = stages.new(stageOptions("map", "83", generation, 1, "sidecar-replacement", cache))
+  replacement:stageFs():write(meshPath, meshLogical)
+  replacement:addSharedFile(meshPath)
+  replacement:stageFs():write("maps/83/complete", "second")
+  replacement:addOwnedRoot("maps/83")
+  replacement:finishSuccess({ marker = "round-b" })
+  Assert.equal(
+    cache:read("maps/83/complete"),
+    "first",
+    "the previous generation stays live until the replacement commits"
+  )
+  local originalReplace = backend.replace
+  backend.replace = function(self, sourcePath, destinationPath)
+    if destinationPath:find(".__g4next", 1, true) then
+      return false, "injected replacement publication failure"
+    end
+    return originalReplace(self, sourcePath, destinationPath)
+  end
+  Assert.throws(function()
+    replacement:publish(expectedOf("map", "83", generation, 1))
+  end)
+  backend.replace = originalReplace
+  cache:recoverPublication()
+  Assert.equal(cache:read("maps/83/complete"), "first", "a failed commit rolls back to the prior generation")
+  local rolledBack = receipts.read(cache, generation, "map", "83")
+  Assert.notNil(rolledBack)
+  assert(rolledBack, "the prior receipt survives a failed replacement")
+  Assert.equal(rolledBack.marker, "round-a")
+  replacement:publish(expectedOf("map", "83", generation, 1))
+  Assert.equal(cache:read("maps/83/complete"), "second")
+  local receipt = receipts.read(cache, generation, "map", "83")
+  Assert.notNil(receipt)
+  assert(receipt, "the replacement receipt is a record")
+  Assert.equal(receipt.marker, "round-b")
+  Assert.deepEqual(cache:loadLua(sidecarPath), {
+    schema = 1,
+    generationId = generation,
+    kind = "map",
+    key = "83",
+    paths = { meshPath },
+  })
+  for path in pairs(backend.files) do
+    Assert.isFalse(path:find(".__g4old", 1, true) ~= nil, "committed old roots leave no backup behind: " .. path)
+    Assert.isFalse(
+      path:find("staging/heartgold/sidecar-replacement", 1, true) ~= nil,
+      "the consumed replacement stage leaves no residue: " .. path
+    )
+  end
+end
+
+-- Failed jobs carry no shared proof: the sidecar exists only on the success
+-- path, so an aborted stage leaves no durable reference behind.
+function T.failed_jobs_stage_no_shared_proof()
+  local stages = requireStages()
+  local generation = generationIdFor(Sha256.hex("failed sidecar producer"))
+  local cache = newCache()
+  cache:recoverPublication()
+  local artifact = stages.new(stageOptions("map", "85", generation, 1, "failed-sidecar", cache))
+  artifact:stageFs():write("maps/85/complete", "ready")
+  artifact:addOwnedRoot("maps/85")
+  artifact:finishFailure({ message = "worker failed" })
+  Assert.isFalse(
+    artifact:stageFs():exists("data/generated/jobs-shared/map/85.lua"),
+    "a failed job stages no shared proof"
+  )
+  Assert.throws(function()
+    artifact:publish(expectedOf("map", "85", generation, 1))
+  end, "a failed job cannot publish")
+  artifact:abort()
+end
+
 return { tests = T }

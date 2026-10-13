@@ -279,9 +279,8 @@ function T.failed_publication_keeps_recovery_material_and_reports_not_ready()
   Assert.notNil(receipt, "the prior successful receipt must survive the failed replacement")
   assert(receipt, "a surviving receipt is a record")
   Assert.equal(receipt.marker, "complete")
-  Assert.throws(function()
-    second:abort()
-  end, "a stage that began publishing is recovery material, not disposable worker scratch")
+  Assert.isTrue(second:abort(), "after journal recovery the failed stage is disposable worker scratch again")
+  Assert.equal(cache:read("maps/64/complete"), "first", "aborting a recovered stage must not touch the live artifact")
 end
 
 function T.conflicting_shared_bytes_are_reported()

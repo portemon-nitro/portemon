@@ -48,7 +48,6 @@ local function newEnv()
     pools = {},
     shutdowns = 0,
     retires = 0,
-    dumpMarkers = {},
     stateStored = nil,
     stateMatches = false,
     auditAvailable = false,
@@ -363,10 +362,7 @@ local function makeFakes()
     forVersion = function(versionId)
       return {
         versionId = versionId,
-        read = function(_, path)
-          if path == "rom-dump.complete" then
-            return env.dumpMarkers[versionId] or ("g4-rom-dump-v1:" .. versionId .. ":deadbeef")
-          end
+        read = function(_, _)
           return nil
         end,
         loadLua = function()

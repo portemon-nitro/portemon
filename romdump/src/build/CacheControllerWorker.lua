@@ -116,6 +116,8 @@ function Worker.new(control, reply)
     deferredSelect = nil,
     pendingQuiesce = nil,
     exiting = false,
+    collectedSharedFor = nil,
+    maintenanceNote = nil,
   }, Worker)
 end
 
@@ -673,6 +675,75 @@ function Worker:_applyRetire(command)
   self:_emitBarrierResult(command.epoch, command.barrierId, "retire")
 end
 
+-- One post-quiescence retirement pass for the settled version: convert legacy
+-- derived bytes and reclaim proven-orphan shared files. The pool is quiet and
+-- the barrier result is already emitted, so no demand waits on this step;
+-- urgent work arriving afterwards preempts normally on the next step. The
+-- cache is usable for dump removal only after an independently provable
+-- full-generation completion: an explicitly completed build, or an
+-- authorized background sweep that exhausted the canonical roster with no
+-- failure. Every destructive step stays gated inside the maintenance owner
+-- (uncertain proof skips with zero deletes). The outcome is recorded locally
+-- for inspection and never pushed to the game thread, so a maintenance
+-- diagnostic cannot falsify readiness. Shared collection runs at most once
+-- per selected generation; migration re-runs while its completion marker is
+-- absent and skips on one read once marked.
+function Worker:_runPostQuiesceMaintenance()
+  local versionId = self.selectedVersionId
+  local session = self.session
+  if type(versionId) ~= "string" or type(session) ~= "table" then
+    return
+  end
+  local completion = session.completion
+  local cacheFs = session.cacheFs
+  if type(completion) ~= "table" or type(cacheFs) ~= "table" then
+    return
+  end
+  if cacheFs.versionId ~= versionId then
+    return
+  end
+  if type(session.generationId) ~= "string" or type(session.producerId) ~= "string" then
+    return
+  end
+  local generationId = session.generationId
+  local ok, note = pcall(function()
+    local CacheMaintenance = require("romdump.src.build.CacheMaintenance")
+    if not CacheMaintenance.canMaintain(cacheFs) then
+      return nil
+    end
+    local answerOk, complete = pcall(function()
+      return completion:answer()
+    end)
+    local sweepComplete = completion.sweepExhausted == true and completion.sweepFailure == nil
+    local migrated = CacheMaintenance.migrateLegacy(versionId, cacheFs, {
+      completeCacheUsable = (answerOk and complete == true) or sweepComplete,
+      verifiedReopenableSource = false,
+    })
+    local collected = nil
+    local memoKey = versionId .. "\0" .. generationId
+    if self.collectedSharedFor ~= memoKey then
+      local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
+      local plansOk, plans = pcall(ArtifactJobs.publishedPlans, cacheFs, {
+        versionId = versionId,
+        generationId = generationId,
+        producerId = session.producerId,
+      })
+      if plansOk and type(plans) == "table" then
+        collected = CacheMaintenance.collectShared(cacheFs, { generationId = generationId }, plans, true)
+        if collected.status == "collected" then
+          self.collectedSharedFor = memoKey
+        end
+      end
+    end
+    return { migrated = migrated, collected = collected }
+  end)
+  if ok then
+    self.maintenanceNote = note
+  else
+    self.maintenanceNote = { fault = tostring(note) }
+  end
+end
+
 ---@return boolean
 function Worker:_pumpQuiesce()
   local pending = self.pendingQuiesce
@@ -684,6 +755,7 @@ function Worker:_pumpQuiesce()
     self:_emitBarrierResult(pending.epoch, pending.barrierId, "quiesce")
     self.lifecycle = "quiescent"
     self.pendingQuiesce = nil
+    self:_runPostQuiesceMaintenance()
     return true
   end
   local ok, failure = pcall(function()
@@ -704,6 +776,7 @@ function Worker:_pumpQuiesce()
     self:_emitBarrierResult(pending.epoch, pending.barrierId, "quiesce")
     self.lifecycle = "quiescent"
     self.pendingQuiesce = nil
+    self:_runPostQuiesceMaintenance()
     local deferred = self.deferredSelect
     self.deferredSelect = nil
     if deferred ~= nil then

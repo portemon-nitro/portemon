@@ -5,7 +5,10 @@
 -- after the stage identity matches the current expectation. Owned roots may
 -- be exact files or directories, but they may never overlap each other or
 -- swallow a shared file. A staged shared file that contradicts live bytes is
--- a conflict, never a silent reuse.
+-- a conflict, never a silent reuse. Every success also stages a durable
+-- shared-reference sidecar ahead of the receipt so a later complete pass can
+-- prove which shared files are still referenced; the receipt stays last and
+-- remains the only readiness proof.
 
 local ArtifactState = require("romdump.src.build.ArtifactState")
 local Errors = require("libs.errors.src.Errors")
@@ -47,6 +50,118 @@ PreparedArtifact.__index = PreparedArtifact
 
 local MANIFEST_PATH = "_prepared/result.lua"
 local MANIFEST_SCHEMA = "g4-prepared-artifact-v3"
+
+-- Durable per-job shared-reference proofs live beside the receipts they
+-- accompany. The schema and path below are the single producer-side owner
+-- shared with the version-scoped retirement pass; nothing else may mint or
+-- reinterpret these records.
+PreparedArtifact.SIDECAR_SCHEMA = 1
+PreparedArtifact.SIDECAR_ROOT = "data/generated/jobs-shared"
+
+local SIDECAR_FIELDS = {
+  schema = true,
+  generationId = true,
+  kind = true,
+  key = true,
+  paths = true,
+}
+
+---@param kind string
+---@param key string
+---@return string
+function PreparedArtifact.sidecarPath(kind, key)
+  ArtifactState.path(kind, key)
+  return PreparedArtifact.SIDECAR_ROOT .. "/" .. kind .. "/" .. key .. ".lua"
+end
+
+---@param generationId string
+---@param kind string
+---@param key string
+---@param sharedFiles string[] staged shared set, sorted unique
+---@return { schema: integer, generationId: string, kind: string, key: string, paths: string[] }
+function PreparedArtifact.sidecarRecord(generationId, kind, key, sharedFiles)
+  assert(type(generationId) == "string" and generationId ~= "", "shared proof requires a generation")
+  ArtifactState.path(kind, key)
+  assert(type(sharedFiles) == "table", "shared proof requires the staged shared set")
+  local paths = {}
+  for _, path in ipairs(sharedFiles) do
+    assert(type(path) == "string" and path ~= "", "shared proof paths must be non-empty strings")
+    paths[#paths + 1] = path
+  end
+  table.sort(paths)
+  return {
+    schema = PreparedArtifact.SIDECAR_SCHEMA,
+    generationId = generationId,
+    kind = kind,
+    key = key,
+    paths = paths,
+  }
+end
+
+---@param record unknown
+---@param expected { generationId: string, kind: string, key: string }
+---@return true|nil
+---@return string|nil
+function PreparedArtifact.validateSidecarRecord(record, expected)
+  assert(type(expected) == "table", "shared proof validation requires its expected identity")
+  if type(record) ~= "table" then
+    return nil, "shared proof is not a table"
+  end
+  ---@cast record table<string, unknown>
+  for field in pairs(record) do
+    if not SIDECAR_FIELDS[field] then
+      return nil, "shared proof has an unexpected field: " .. tostring(field)
+    end
+  end
+  for field in pairs(SIDECAR_FIELDS) do
+    if record[field] == nil then
+      return nil, "shared proof is missing " .. field
+    end
+  end
+  if record.schema ~= PreparedArtifact.SIDECAR_SCHEMA then
+    return nil, "shared proof schema mismatch"
+  end
+  if record.generationId ~= expected.generationId then
+    return nil, "shared proof generation is not current"
+  end
+  if record.kind ~= expected.kind then
+    return nil, "shared proof kind mismatch"
+  end
+  if record.key ~= expected.key then
+    return nil, "shared proof key mismatch"
+  end
+  local paths = record.paths
+  if type(paths) ~= "table" then
+    return nil, "shared proof paths are missing"
+  end
+  ---@cast paths table<unknown, unknown>
+  local count = 0
+  for index in pairs(paths) do
+    if type(index) ~= "number" or index % 1 ~= 0 or index < 1 then
+      return nil, "shared proof paths must be an ordered array"
+    end
+    count = count + 1
+  end
+  if count ~= #paths then
+    return nil, "shared proof paths must be contiguous"
+  end
+  local seen = {}
+  local previous = nil
+  for _, path in ipairs(paths) do
+    if type(path) ~= "string" or path == "" then
+      return nil, "shared proof path is not a string"
+    end
+    if seen[path] then
+      return nil, "shared proof paths must be unique"
+    end
+    seen[path] = true
+    if previous ~= nil and previous >= path then
+      return nil, "shared proof paths must be sorted"
+    end
+    previous = path
+  end
+  return true
+end
 
 local function assertSafePath(cacheFs, path, label)
   assert(type(path) == "string" and path ~= "", label .. " must be a non-empty path")
@@ -309,7 +424,15 @@ function PreparedArtifact:_finish(status, result, failure)
       key = self._key,
       marker = result.marker,
     })
-    self._ownedRoots[receiptPath] = true
+    local sidecarPath = PreparedArtifact.sidecarPath(self._kind, self._key)
+    for existing in pairs(self._ownedRoots) do
+      assert(not pathsOverlap(existing, sidecarPath), "prepared artifact family root swallows its shared proof")
+    end
+    self._stageFs:writeLua(
+      sidecarPath,
+      PreparedArtifact.sidecarRecord(self._generationId, self._kind, self._key, sortedKeys(self._sharedFiles))
+    )
+    self._ownedRoots[sidecarPath] = true
     local familyRoots = sortedKeys(self._ownedRoots)
     local orderedRoots = {}
     for _, root in ipairs(familyRoots) do
@@ -409,10 +532,20 @@ function PreparedArtifact:publish(expected)
       self._stageFs:createDirectory(parent)
     end
   end
+  -- A failed publication leaves the live tree on its last known good and
+  -- the stage intact for external journal recovery, so the artifact returns
+  -- to a finished, retryable or abortable result instead of stranding the
+  -- stage in a publishing state no later call can leave.
   self._status = "publishing"
-  local result = self._cacheFs:publishStaged(self._stageFs, manifest.ownedRoots, function()
-    self._stageFs:removeTree("")
+  local ok, result = pcall(function()
+    return self._cacheFs:publishStaged(self._stageFs, manifest.ownedRoots, function()
+      self._stageFs:removeTree("")
+    end)
   end)
+  if not ok then
+    self._status = "finished"
+    error(result, 0)
+  end
   self._status = "published"
   return result
 end

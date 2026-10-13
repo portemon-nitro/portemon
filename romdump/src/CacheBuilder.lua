@@ -624,6 +624,67 @@ local function logRecordOutcomes(record, log)
   end
 end
 
+-- One post-complete retirement pass for a settled version: convert legacy
+-- derived bytes without recompiling them and reclaim proven-orphan shared
+-- files. The maintenance owner gates every destructive step on full proof
+-- and skips with zero deletes on any uncertainty; this caller only guards
+-- the boundary (genuinely complete, settled) and keeps the diagnostic from
+-- falsifying the build outcome. Logs only real conversions, removals, or
+-- faults, so clean runs stay exactly as quiet as before.
+---@param cacheFs table<string, unknown>
+---@param identity table<string, unknown>
+---@param log fun(line: string)
+local function runPostCompleteMaintenance(cacheFs, identity, log)
+  local CacheMaintenance = require("romdump.src.build.CacheMaintenance")
+  if not CacheMaintenance.canMaintain(cacheFs) then
+    return
+  end
+  if type(identity) ~= "table" or type(identity.generationId) ~= "string" or type(identity.producerId) ~= "string" then
+    return
+  end
+  local versionId = cacheFs.versionId --[[@as string]]
+  local ok, fault = pcall(function()
+    local migrated = CacheMaintenance.migrateLegacy(versionId, cacheFs, {
+      completeCacheUsable = true,
+      verifiedReopenableSource = false,
+    })
+    if migrated.changedCount > 0 or migrated.rawRemoved then
+      log(
+        string.format(
+          "maintenance: %s converted %d derived files (%d to %d bytes, source dump %s)",
+          versionId,
+          migrated.changedCount,
+          migrated.bytesBefore,
+          migrated.bytesAfter,
+          migrated.rawRemoved and "removed" or "retained"
+        )
+      )
+    end
+    local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
+    local plansOk, plans = pcall(ArtifactJobs.publishedPlans, cacheFs, {
+      versionId = versionId,
+      generationId = identity.generationId,
+      producerId = identity.producerId,
+    })
+    if plansOk and type(plans) == "table" then
+      local collected = CacheMaintenance.collectShared(cacheFs, { generationId = identity.generationId }, plans, true)
+      if collected.status == "collected" and (collected.removedCount or 0) > 0 then
+        log(
+          string.format(
+            "maintenance: %s reclaimed %d unreferenced shared files (%d bytes)",
+            versionId,
+            collected.removedCount,
+            collected.reclaimedBytes or 0
+          )
+        )
+      end
+    end
+  end)
+  if not ok then
+    log("maintenance: " .. versionId .. " deferred: " .. tostring(fault))
+  end
+end
+
 local function interpretTargetedOutcome(record, attestationPublished, publishError)
   if record.isCurrent then
     return { complete = true }
@@ -738,6 +799,9 @@ function CacheBuilder.prepareVersion(versionId, options)
     )
   else
     log(string.format("build-cache: %s prepared (%d jobs)", versionId, record.counts.successful))
+  end
+  if outcome.complete then
+    runPostCompleteMaintenance(cacheFs, identity, log)
   end
   return report
 end
@@ -886,6 +950,12 @@ function CacheBuilder.buildVersions(versionIds, options)
     return nil, "cache preparation failed"
   end
   local complete = exclusionCount == 0
+  if complete then
+    for _, record in ipairs(records) do
+      local cacheFs = record.cacheFs or CacheFs.forVersion(record.versionId)
+      runPostCompleteMaintenance(cacheFs, record.identity, log)
+    end
+  end
   return { published = true, complete = complete, exclusionCount = exclusionCount }
 end
 

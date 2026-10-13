@@ -91,23 +91,27 @@ and architecture gates live under `tests/`.
 
 ## Runtime and data lifecycle
 
-The app provisions a private raw dump and enters its product Main Menu. The menu routes an
-explicit New Game or Continue selection to `HgssGame`, which creates the generic `Game` host
-and installs the corresponding HGSS retail flow. Once the derived cache is ready, runtime
-does not need the ROM:
+The app records a small binding to the user's own ROM file and enters its
+product Main Menu. The menu routes an explicit New Game or Continue selection
+to `HgssGame`, which creates the generic `Game` host and installs the
+corresponding HGSS retail flow. The ROM itself is never copied into managed
+storage; compilers read it directly on a genuine cache miss over one shared
+in-memory source, and a complete cache boots and plays without touching it:
 
 ```text
-ROM → app/romdump provisioning → immutable raw dump
-                                  ↓
-                         rebuildable derived assets
-                                  ↓
+user-owned ROM → per-version source binding → direct source reads
+                                                       ↓
+                         permanently retained compact derived assets
+                                                       ↓
                          app Main Menu → HgssGame → game/hgss runtime
 ```
 
-Import verifies the ROM before touching the live dump. Extraction and derived
-builds stage, validate, and publish complete trees; markers are written last.
-A failed replacement leaves the last ready artifact usable. Generated cache
-data and persistent saves use separate namespaces.
+Import verifies the ROM before recording its binding. Derived builds stage,
+validate, and publish complete trees; markers are written last. A failed
+replacement leaves the last ready artifact usable. Generated cache data and
+persistent saves use separate namespaces. The full warmed corpus is kept
+indefinitely with no eviction; superseded outputs are retired only with
+proof, never by quota.
 
 `game/hgss` owns retail application composition. Its `FieldRuntime` owns the
 non-rendering field session, maps, actors, scripts, input, transitions, saves,
@@ -124,11 +128,14 @@ source offsets. The runtime renders and formats that contract. Physical IDs,
 paths, offsets, packing, and decompilation catalogs remain producer-side unless
 a product feature gives one semantic meaning.
 
-The raw dump is lossless and versioned independently from derived assets. A
-coarse logical cache generation — the development producer-byte digest or the
-explicit per-game release counter — together with the asset-contract identity
-determines whether a full rebuild is needed; per-artifact completion markers
-repair missing derived classes without invalidating the raw dump.
+Derived assets are stored compactly but read back byte-identical, versioned
+independently from the user's ROM. A coarse logical cache generation — the
+development producer-byte digest or the explicit per-game release counter —
+together with the asset-contract identity determines whether a full rebuild
+is needed; per-artifact completion markers repair missing derived classes
+without touching the source. The user-supplied ROM stays the user's file:
+it is never modified, moved, or redistributed, and no derived artifact may
+stand in for it where provenance matters.
 
 ## ID namespaces
 

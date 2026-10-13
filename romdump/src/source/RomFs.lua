@@ -13,7 +13,13 @@ local Narc = require("libs.nds.src.nitro.Narc")
 local NdsRom = require("romdump.src.source.NdsRom")
 local OverlayCompression = require("libs.nds.src.rom.OverlayCompression")
 local HgssArchives = require("romdump.src.config.HgssArchives")
-local RawDumpContract = require("romdump.src.source.RawDumpContract")
+
+-- Direct-reader identity shapes for the metadata, file index, and overlay
+-- index derived from the cartridge at open. These version the reader's own
+-- in-memory tables, not any persisted dump.
+local METADATA_SCHEMA = 1
+local ROMFS_INDEX_SCHEMA = 1
+local OVERLAY_INDEX_SCHEMA = 1
 
 ---@class RomFs
 ---@field private _version string
@@ -107,7 +113,7 @@ local function openDirect(versionId, romSource)
     _version = versionId,
     _rom = rom,
     _metadata = {
-      schema = RawDumpContract.METADATA_SCHEMA,
+      schema = METADATA_SCHEMA,
       version = versionInfo.id,
       displayName = versionInfo.displayName,
       sha1 = versionInfo.sha1,
@@ -137,7 +143,7 @@ local function openDirect(versionId, romSource)
       arm7Overlays = { offset = header.arm7Overlays.offset, size = header.arm7Overlays.size },
     },
     _index = {
-      schema = RawDumpContract.ROMFS_INDEX_SCHEMA,
+      schema = ROMFS_INDEX_SCHEMA,
       version = versionInfo.id,
       romSha1 = versionInfo.sha1,
       fileCount = fileCount,
@@ -148,7 +154,7 @@ local function openDirect(versionId, romSource)
       files = files,
     },
     _overlayIndex = {
-      schema = RawDumpContract.OVERLAY_INDEX_SCHEMA,
+      schema = OVERLAY_INDEX_SCHEMA,
       arm9 = overlayTable(arm9Overlays),
       arm7 = overlayTable(arm7Overlays),
     },

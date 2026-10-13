@@ -4,11 +4,13 @@
 
 Portémon Nitro is an unofficial way to play your Pokémon HeartGold/SoulSilver
 copy on PC, mobile, and potentially many other devices. It's a port of the game
-engine build with LÖVE that extracts the ROM data, then uses it to run the game.
+engine build with LÖVE that reads your ROM directly, then uses it to run the game.
 
 This project is not an emulator and does not ship copyrighted ROM data,
 dialogue, graphics, models, or audio. You must provide your own compatible ROM;
-the importer recognizes only the supported canonical US dumps.
+the importer recognizes only the supported canonical US dumps. Your ROM file
+stays where you keep it: the app records only a small pointer to it, never a
+copy, and derived game data is compiled straight from the original.
 
 ## Requirements
 

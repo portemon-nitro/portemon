@@ -42,7 +42,7 @@ RomImporter.STATES = {
   IDLE = "idle",
   READING = "reading",
   VERIFYING = "verifying",
-  EXTRACTING = "extracting",
+  REGISTERING = "registering",
   COMPLETE = "complete",
   ERROR = "error",
 }
@@ -121,7 +121,7 @@ end
 
 function RomImporter:isBusy()
   local s = RomImporter.STATES
-  return self.state == s.READING or self.state == s.VERIFYING or self.state == s.EXTRACTING
+  return self.state == s.READING or self.state == s.VERIFYING or self.state == s.REGISTERING
 end
 
 -- The importer owns its state-machine invariant: the start APIs accept every
@@ -209,7 +209,7 @@ function RomImporter:_beginWork()
     self._sourceName = source:displayName()
     local cache = (self._cacheFactory --[[@as fun(versionId: string): table]])(info.id)
 
-    self.state = RomImporter.STATES.EXTRACTING
+    self.state = RomImporter.STATES.REGISTERING
     self:_onProgress({ stage = "registering", stageLabel = "Registering source", overall = 0.6 })
     local origin = source:origin()
     local recorded, recordErr = RomBinding.record(cache, rom, {

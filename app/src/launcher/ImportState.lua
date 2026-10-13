@@ -117,7 +117,7 @@ function ImportState.render(status, saveDir)
   end
 
   local s = RomImporter.STATES
-  if status.state == s.EXTRACTING or status.state == s.COMPLETE then
+  if status.state == s.REGISTERING or status.state == s.COMPLETE then
     lg.print((status.stageLabel or "Working") .. (status.detail and ("  " .. status.detail) or ""), x, y + 68)
     local w, h = 360, 14
     lg.setColor(0.2, 0.22, 0.28)
