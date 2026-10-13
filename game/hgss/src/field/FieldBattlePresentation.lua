@@ -32,6 +32,7 @@ local PngWriter = require("libs.assets.src.PngWriter")
 ---@field _descriptor table<string, unknown>? active launch descriptor from the runtime
 ---@field _pendingFailed boolean true once a pending launch reported its terminal build failure
 ---@field _pendingBuild boolean true while a scheduled launch still awaits its deferred screen
+---@field _portDisposed boolean true once the live five-operation port released its screen
 ---@field _recoveryPointerId string|number|nil pending recovery press identity awaiting its release
 ---@field _screen table<string, unknown>? live per-launch battle screen
 ---@field _port table<string, unknown>? live five-operation port behind the owned battle
@@ -226,6 +227,7 @@ function FieldBattlePresentation.new(opts)
     _descriptor = nil,
     _pendingFailed = false,
     _pendingBuild = false,
+    _portDisposed = false,
     _recoveryPointerId = nil,
     _screen = nil,
     _port = nil,
@@ -786,6 +788,7 @@ function FieldBattlePresentation:_admitLaunch(descriptor)
   self._descriptor = descriptor
   self._pendingFailed = false
   self._pendingBuild = false
+  self._portDisposed = false
   self._screen = nil
   self._innerPort = nil
   self._lastStatus = nil
@@ -805,12 +808,37 @@ function FieldBattlePresentation:_admitLaunch(descriptor)
   end
   self._pendingBuild = true
   local launchId = descriptor.launchId --[[@as string]]
+  -- The scheduled port moves pending -> live -> disposed, with build
+  -- failure latched separately in _pendingFailed. Disposal releases only
+  -- screen-owned resources: the descriptor, cover, and host stay with
+  -- the envelope until the host settles or tears down, so the return
+  -- driver survives terminal disposal. Stale or disposed ports forward
+  -- nothing and schedule nothing.
   local facade = {}
+  local notified = false
   local function owned()
+    if self._portDisposed then
+      return nil
+    end
     if self._launchId ~= launchId or self._descriptor == nil then
       return nil
     end
     return self._innerPort
+  end
+  -- Reports one port-operation failure with its launch and operation
+  -- context instead of silently degrading to not-ready. The first
+  -- report wins; the coordinator collapses any later screen report for
+  -- the same launch the same way, so the original cause survives.
+  local function reportOpFailure(op, err)
+    if notified then
+      return
+    end
+    notified = true
+    local cause = op .. " failed for launch " .. tostring(launchId) .. ": " .. tostring(err)
+    local host = descriptor.host --[[@as table<string, unknown>]]
+    if host ~= nil and type(host.notify) == "function" then
+      local _, _ = pcall(host.notify, "screen-failed", cause)
+    end
   end
   function facade.enter(plan)
     local inner = owned()
@@ -818,14 +846,21 @@ function FieldBattlePresentation:_admitLaunch(descriptor)
       return false
     end
     local ok, acknowledged = pcall(inner.enter, plan)
-    return ok and acknowledged == true
+    if not ok then
+      reportOpFailure("enter", acknowledged)
+      return false
+    end
+    return acknowledged == true
   end
   function facade.present(packet)
     local inner = owned()
     if inner == nil then
       return
     end
-    local _, _ = pcall(inner.present, packet)
+    local ok, err = pcall(inner.present, packet)
+    if not ok then
+      reportOpFailure("present", err)
+    end
   end
   function facade.ready()
     local inner = owned()
@@ -833,7 +868,11 @@ function FieldBattlePresentation:_admitLaunch(descriptor)
       return false
     end
     local ok, interactive = pcall(inner.ready)
-    return ok and interactive == true
+    if not ok then
+      reportOpFailure("ready", interactive)
+      return false
+    end
+    return interactive == true
   end
   function facade.leave(plan)
     local inner = owned()
@@ -841,14 +880,28 @@ function FieldBattlePresentation:_admitLaunch(descriptor)
       return false
     end
     local ok, acknowledged = pcall(inner.leave, plan)
-    return ok and acknowledged == true
+    if not ok then
+      reportOpFailure("leave", acknowledged)
+      return false
+    end
+    return acknowledged == true
   end
   function facade.dispose()
     if self._launchId ~= launchId then
       return
     end
+    if self._portDisposed then
+      return
+    end
+    -- A pending disposal cancels its screen build while a live disposal
+    -- releases the live screen once; both retain the outer descriptor,
+    -- cover, and host for the continuing return. The outer launch is
+    -- forgotten only when the host settles or the envelope tears down.
+    self._portDisposed = true
+    self._pendingBuild = false
     local screen = self._screen
-    self:_dropLaunch()
+    self._screen = nil
+    self._innerPort = nil
     if screen ~= nil then
       local _, _ = pcall(function()
         return screen:dispose()
@@ -875,6 +928,12 @@ function FieldBattlePresentation:_pollPendingScreen()
   end
   local descriptor = self._descriptor
   if self._launchId == nil or type(descriptor) ~= "table" then
+    return
+  end
+  -- A disposed or settled port never publishes: disposal cancels the
+  -- pending build and terminal teardown already released the screen, so
+  -- a late worker answer builds nothing for either.
+  if self._portDisposed then
     return
   end
   if self._screen ~= nil or self._innerPort ~= nil then
@@ -1408,20 +1467,30 @@ function FieldBattlePresentation:_observeScreenFailure()
   end)
   if ok and type(status) == "table" and status.mode == "failed" then
     host.notify("screen-failed", status.error)
-    local _, _ = pcall(function()
-      return screen:dispose()
-    end)
-    self._screen = nil
+    -- The report runs synchronously: the owner may have disposed the
+    -- battle (and this screen with it) from inside the notification, so
+    -- only the screen still owned here is released, exactly once. The
+    -- inner forwarding reference clears either way so no later delivery
+    -- reaches the failed screen.
+    if self._screen == screen then
+      local _, _ = pcall(function()
+        return screen:dispose()
+      end)
+      self._screen = nil
+    end
+    self._innerPort = nil
   end
 end
 
--- Forgets a cleared launch: the runtime disposed the battle port (and its
--- screen) before clearing, so only envelope bookkeeping remains.
+-- Forgets a cleared launch: the host settled or the envelope tore down,
+-- so only envelope bookkeeping remains. Runs only from settlement
+-- observation or full disposal, never from port disposal.
 function FieldBattlePresentation:_dropLaunch()
   self._launchId = nil
   self._descriptor = nil
   self._pendingFailed = false
   self._pendingBuild = false
+  self._portDisposed = false
   self._recoveryPointerId = nil
   self._screen = nil
   self._port = nil

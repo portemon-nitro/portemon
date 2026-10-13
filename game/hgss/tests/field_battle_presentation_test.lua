@@ -2752,6 +2752,1093 @@ function T.scripted_transfer_holds_cover_until_its_authored_release()
   checkReleased(restored, restoredRuntime, "scripted-transfer-restored#1")
 end
 
+-- A deferred production envelope behind a scene-demand host: graphics
+-- presence selects the pending facade, while the demand answers through
+-- the real staged inventory. Construction still proves the staged scene,
+-- yet entry stays observably pending until a fixed tick builds the live
+-- screen behind the same port.
+---@param runtime FieldRuntime
+---@param versionId string
+---@param measurement table
+---@param graphicsOverride table? failing graphics namespace under fault driving
+---@return table envelope
+---@return integer binding
+---@return table doubles
+local function bindScheduledEnvelope(runtime, versionId, measurement, graphicsOverride)
+  local doubles = { audio = recordingAudio(), windows = recordingWindows(), text = recordingText() }
+  local worker = { ready = true, failure = nil }
+  local derivedAssets = {}
+  function derivedAssets.requestBattleScene(_, _)
+    return worker.ready, worker.failure
+  end
+  local envelope = FieldBattlePresentation.new({
+    cacheFs = CacheFs.forVersion(versionId),
+    windows = doubles.windows,
+    text = doubles.text,
+    audio = doubles.audio,
+    measureDisplay = function()
+      return measurement
+    end,
+    graphics = graphicsOverride or uploadCapableGraphics(),
+    derivedAssets = derivedAssets,
+  })
+  local ports = {}
+  local factory = envelope:factory()
+  local binding = runtime:bindBattlePresentation(function(descriptor)
+    local port = factory(descriptor)
+    ports[#ports + 1] = port
+    return port
+  end)
+  doubles.ports = ports
+  doubles.worker = worker
+  return envelope, binding, doubles
+end
+
+-- Proves the admission selected the deferred production port without
+-- reading implementation text: while the scene builds the admitted port
+-- acknowledges nothing and owns no screen; once staged the same port
+-- enters and owns its live screen.
+---@param envelope table live deferred envelope under test driving
+---@param port table admitted facade under test driving
+---@param launchId string admitted launch identity under test driving
+---@param kind string admitted launch kind under test driving
+local function requirePendingAdmission(envelope, port, launchId, kind)
+  Assert.isFalse(
+    port.enter({ launchId = launchId, kind = kind }),
+    "the admitted launch stays unacknowledged while its scene builds"
+  )
+  Assert.isFalse(port.ready(), "the admitted launch never reads interactive while its scene builds")
+  Assert.isNil(envelope:liveScreen(), "the admitted launch holds no screen while its scene builds")
+end
+
+---@param request table<string, unknown> pending player decision under inspection
+---@param wanted string choice kind under search
+---@return boolean true when the request admits the kind
+local function admitsKind(request, wanted)
+  local legal = request.legalChoices
+  if type(legal) ~= "table" or type(legal.kinds) ~= "table" then
+    return false
+  end
+  for _, kind in ipairs(legal.kinds) do
+    if kind == wanted then
+      return true
+    end
+  end
+  return false
+end
+
+-- Projects one executable thrown ball through the battle's own decision
+-- options and copies its prepared fragment: availability follows real
+-- stock instead of driver guesses. Nil when the ball is not executable
+-- on this request.
+---@param runtime FieldRuntime
+---@param request table<string, unknown> pending player decision under test driving
+---@param item string battle item key under projection
+---@return table? prepared native choice fragment when the ball is executable now
+local function ballFragment(runtime, request, item)
+  local battle = runtime.battleCoordinator:activeBattle()
+  if battle == nil or type(battle.decisionOptions) ~= "function" then
+    return nil
+  end
+  local options = battle:decisionOptions(request.requestId)
+  if type(options) ~= "table" or type(options.actors) ~= "table" then
+    return nil
+  end
+  for _, entry in ipairs(options.actors) do
+    for _, choice in ipairs(entry.choices or {}) do
+      if
+        choice.enabled == true
+        and type(choice.choice) == "table"
+        and type(choice.choice.payload) == "table"
+        and choice.choice.payload.item == item
+      then
+        return choice.choice
+      end
+    end
+  end
+  return nil
+end
+
+-- Answers open kernel decisions and acknowledges narration pages until
+-- the owned launch leaves the coordinator, whether through a committed
+-- return or a settled abort. Fails loudly with the stranding phase when
+-- the return driver is lost instead of settling.
+---@param runtime FieldRuntime live production runtime under test driving
+---@param envelope table live deferred envelope under test driving
+---@param choose fun(request: table): table decision choice for the open request
+---@param budget integer tick bound before a stranded launch fails loudly
+local function driveToSettled(runtime, envelope, choose, budget)
+  local ticks = 0
+  while ticks < budget do
+    local launch = runtime.battleCoordinator._battleLaunch
+    if launch == nil then
+      return
+    end
+    local battle = runtime.battleCoordinator.battleRuntime
+    if battle ~= nil then
+      local current = battle:status()
+      if current.phase == "running" and current.request ~= nil then
+        local answer = choose(current.request)
+        local choices = answer
+        if type(answer) == "table" and answer.kind ~= nil then
+          choices = { answer }
+        end
+        local accepted, replyErr = battle:submit(SessionFixture.replyFor(current.request, choices))
+        Assert.isTrue(accepted, "a legal deferred decision is accepted: " .. tostring(replyErr))
+      end
+    end
+    local screen = envelope:liveScreen()
+    if screen ~= nil then
+      local shown = screen:status()
+      if shown.mode == "intro" or shown.mode == "narration" or shown.mode == "outcome" then
+        envelope:input({ { type = "confirm" } })
+      end
+    end
+    runtime:update(1 / 30)
+    envelope:updateFixed(TICK)
+    ticks = ticks + 1
+  end
+  local stranded = runtime.battleCoordinator._battleLaunch
+  Assert.isNil(
+    stranded,
+    "the deferred return settles instead of stranding in "
+      .. (stranded ~= nil and tostring(stranded.phase) or "no phase")
+  )
+end
+
+-- A deferred win returns through cover and receipt: the admitted facade
+-- stays pending until its staged scene builds, then the same port plays
+-- the win to its committed words and the return restores the present
+-- field, releases holds and input, publishes one receipt, and opens the
+-- save gate. Disposing the facade under terminal cover must not strand
+-- the envelope that still owns restoration and reveal.
+function T.scheduled_win_returns_through_cover_and_receipt()
+  for _, versionId in ipairs(readyVersions()) do
+    local runtime = bootRuntime(versionId)
+    local envelope, binding, doubles =
+      bindScheduledEnvelope(runtime, versionId, dualMeasurement("deferred-win:dual"))
+    local ok, failure = xpcall(function()
+      local launchId = runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
+      local port = assert(doubles.ports[#doubles.ports], "the admission owns its port")
+      requirePendingAdmission(envelope, port, launchId, "wild")
+      waitConstructed(runtime, envelope)
+      Assert.notNil(envelope:liveScreen(), "the staged launch builds its live screen")
+      Assert.isTrue(
+        port.enter({ launchId = launchId, kind = "wild" }),
+        "the staged launch acknowledges its entry"
+      )
+      local experienceBefore = assert(runtime.monService:partyMon(0), "the live lead is readable").experience
+      local turns = settle(runtime, envelope, function(request)
+        return sparringChoose(runtime, request)
+      end, 6000)
+      Assert.isTrue(turns > 0, "the deferred battle answers decisions to its committed words")
+      pump(runtime, envelope, 60)
+      Assert.equal(runtime:lastBattleResult().result, "win", "the win reports its exact word")
+      Assert.equal(runtime:lastBattleResult().sourceResult, 1, "the win reads back won")
+      local receipt = assert(runtime:battleStatus(launchId), "the settled launch leaves a readable receipt")
+      Assert.equal(receipt.result, "win", "the receipt carries the win")
+      Assert.isTrue(receipt.committed, "the receipt commits only at the safe field")
+      Assert.isTrue(
+        runtime.monService:partyMon(0).experience > experienceBefore,
+        "the win publishes experience once"
+      )
+      local settledExperience = runtime.monService:partyMon(0).experience
+      pump(runtime, envelope, 30)
+      Assert.equal(
+        runtime.monService:partyMon(0).experience,
+        settledExperience,
+        "settling publishes no second effect"
+      )
+      Assert.equal(runtime.overworld:phase(), "present", "the continuing return restores presence")
+      Assert.isNil(runtime.battleCoordinator._battleLaunch, "the return clears the launch")
+      Assert.isNil(envelope:liveScreen(), "the return releases the live screen")
+      Assert.isFalse(runtime.session:isForegroundHoldActive(), "the return releases the foreground hold")
+      Assert.isFalse(envelope:ownsInput(), "the return releases envelope input")
+      local _, reason = runtime.saveCoordinator:capture(false)
+      Assert.isNil(reason, "the save gate opens at the safe field")
+    end, debug.traceback)
+    local unbound = pcall(function()
+      runtime:unbindBattlePresentation(binding)
+    end)
+    local closed = pcall(function()
+      runtime:dispose()
+    end)
+    if not ok then
+      error(failure, 0)
+    end
+    Assert.isTrue(unbound, "the lifetime releases its factory binding")
+    Assert.isTrue(closed, "teardown releases the presented lifetime")
+  end
+end
+
+-- Deferred flight and capture complete after the first return: one owned
+-- fixture plays a win, a flight, and a thrown-ball capture to their
+-- receipts; every launch receives a new identity behind a fresh port
+-- disposed exactly once; the first demand waits cold until its scene
+-- stages; and stale callbacks from a settled launch never touch the
+-- next one.
+function T.scheduled_escape_and_capture_complete_with_fresh_identities()
+  for _, versionId in ipairs(readyVersions()) do
+    local runtime = bootRuntime(versionId)
+    local envelope, binding, doubles =
+      bindScheduledEnvelope(runtime, versionId, dualMeasurement("deferred-alternatives:dual"))
+    Assert.isTrue(runtime.bagService:add("MASTER_BALL", 1), "the capture leg stocks its thrown ball")
+    local disposed = {}
+    local ok, failure = xpcall(function()
+      doubles.worker.ready = nil
+      local firstId = runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
+      local firstPort = assert(doubles.ports[#doubles.ports], "the first launch owns its port")
+      pump(runtime, envelope, 5)
+      Assert.isFalse(
+        firstPort.enter({ launchId = firstId, kind = "wild" }),
+        "the cold demand stays unacknowledged"
+      )
+      Assert.isNil(envelope:liveScreen(), "the cold demand builds no screen before its scene stages")
+      doubles.worker.ready = true
+      waitConstructed(runtime, envelope)
+      Assert.notNil(envelope:liveScreen(), "the staged demand builds its live screen")
+      local function watchDispose(round, port)
+        local firstDispose = port.dispose
+        port.dispose = function()
+          disposed[#disposed + 1] = round
+          return firstDispose()
+        end
+      end
+      watchDispose(1, firstPort)
+      settle(runtime, envelope, function(request)
+        return sparringChoose(runtime, request)
+      end, 6000)
+      pump(runtime, envelope, 60)
+      Assert.equal(runtime:lastBattleResult().result, "win", "the first leg reports its own win")
+      Assert.isFalse(firstPort.ready(), "the settled port never reads interactive again")
+      Assert.isFalse(
+        firstPort.enter({ launchId = firstId, kind = "wild" }),
+        "the settled port never reacknowledges"
+      )
+      local secondId = runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
+      Assert.isTrue(secondId ~= firstId, "the next launch receives a new identity")
+      local secondPort = assert(doubles.ports[#doubles.ports], "the second launch owns its port")
+      Assert.isTrue(secondPort ~= firstPort, "each launch owns its port")
+      requirePendingAdmission(envelope, secondPort, secondId, "wild")
+      watchDispose(2, secondPort)
+      waitConstructed(runtime, envelope)
+      settle(runtime, envelope, function(request)
+        local actor = assert(request.actors[1], "every player decision addresses its combatant")
+        if admitsKind(request, "run") then
+          return { actor = actor, kind = "run", payload = {} }
+        end
+        return strike(actor)
+      end, 6000)
+      pump(runtime, envelope, 60)
+      Assert.equal(runtime:lastBattleResult().result, "flee", "flight reports its exact word")
+      Assert.equal(runtime:battleStatus(secondId).result, "flee", "the flight receipt carries the flight")
+      local presentOk = pcall(firstPort.present, { launchId = firstId, packetId = 1 })
+      Assert.isTrue(presentOk, "a stale delivery never raises")
+      Assert.isTrue(
+        runtime:battleStatus(secondId).result == "flee",
+        "a stale delivery never rewrites the live receipt"
+      )
+      local ballsBefore = runtime.bagService:quantity("MASTER_BALL")
+      local partyBefore = runtime.monService:partyCount()
+      local thirdId = runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
+      Assert.isTrue(thirdId ~= secondId, "the capture launch receives a new identity")
+      local thirdPort = assert(doubles.ports[#doubles.ports], "the capture launch owns its port")
+      watchDispose(3, thirdPort)
+      waitConstructed(runtime, envelope)
+      settle(runtime, envelope, function(request)
+        local actor = assert(request.actors[1], "every player decision addresses its combatant")
+        if admitsKind(request, "item") then
+          local fragment = ballFragment(runtime, request, "MASTER_BALL")
+          if fragment ~= nil then
+            return fragment
+          end
+        end
+        return strike(actor)
+      end, 6000)
+      pump(runtime, envelope, 60)
+      Assert.equal(runtime:lastBattleResult().result, "capture", "capture reports its exact word")
+      Assert.equal(
+        runtime.bagService:quantity("MASTER_BALL"),
+        ballsBefore - 1,
+        "the capture spends one ball"
+      )
+      Assert.equal(runtime.monService:partyCount(), partyBefore + 1, "the capture publishes one mon")
+      Assert.deepEqual(disposed, { 1, 2, 3 }, "each port disposes exactly once in launch order")
+      Assert.equal(runtime.overworld:phase(), "present", "the third return restores presence")
+      local _, reason = runtime.saveCoordinator:capture(false)
+      Assert.isNil(reason, "the save gate opens at the safe field")
+    end, debug.traceback)
+    local unbound = pcall(function()
+      runtime:unbindBattlePresentation(binding)
+    end)
+    local closed = pcall(function()
+      runtime:dispose()
+    end)
+    if not ok then
+      error(failure, 0)
+    end
+    Assert.isTrue(unbound, "the lifetime releases its factory binding")
+    Assert.isTrue(closed, "teardown releases the presented lifetime")
+  end
+end
+
+-- Deferred pre-commit faults abort safely with their original cause: a
+-- construction failure, an asset-upload failure, a port-present
+-- exception, and a draw failure each settle exactly one safe abort
+-- restoration and publish one uncommitted failed receipt carrying the
+-- original failure, never an invented outcome. The abort is observed
+-- through the restored present field and its receipt, never through a
+-- bare flag while the world stays absent.
+function T.scheduled_precommit_faults_abort_with_their_original_cause()
+  local points = { "construction", "upload", "present", "draw" }
+  for _, versionId in ipairs(readyVersions()) do
+    for _, point in ipairs(points) do
+      local runtime = bootRuntime(versionId)
+      local graphics = uploadCapableGraphics()
+      if point == "upload" then
+        graphics = {}
+        function graphics.newImage(_)
+          error("probe upload failure at active", 0)
+        end
+      end
+      local envelope, binding, _ =
+        bindScheduledEnvelope(runtime, versionId, dualMeasurement("deferred-precommit:" .. point), graphics)
+      local ScreenState = require("game.hgss.src.battle.BattleScreenState")
+      local realNew = ScreenState.new
+      if point == "construction" then
+        local failed = false
+        ScreenState.new = function(opts)
+          if not failed then
+            failed = true
+            error("probe construction failure at covering", 0)
+          end
+          return realNew(opts)
+        end
+      end
+      local ok, failure = xpcall(function()
+        local launchId = runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
+        local overworld = runtime.overworld
+        local realRestore = overworld.requestRestore
+        local restores = 0
+        overworld.requestRestore = function(self)
+          restores = restores + 1
+          return realRestore(self)
+        end
+        if point == "construction" then
+          pump(runtime, envelope, 5)
+          Assert.isNil(envelope:liveScreen(), "the failed build owns no screen")
+          Assert.equal(runtime.overworld:phase(), "present", "the build fault lands before the world leaves")
+        elseif point == "upload" then
+          -- The genuine upload failure latches on the first screen tick,
+          -- deterministically before cover completes, so the abort runs
+          -- while the world never left.
+          pump(runtime, envelope, 5)
+          Assert.equal(runtime.overworld:phase(), "present", "the upload fault lands before the world leaves")
+        else
+          waitConstructed(runtime, envelope)
+          Assert.equal(runtime.overworld:phase(), "absent", "the fault lands while the world is absent")
+          if point == "present" then
+            local inner = assert(envelope._innerPort, "the live launch owns its inner port before the fault")
+            local realPresent = assert(inner.present, "the inner port presents")
+            local sent = 0
+            inner.present = function(packet)
+              sent = sent + 1
+              if sent == 1 then
+                error("probe present failure at active", 0)
+              end
+              return realPresent(packet)
+            end
+            -- The exception must enter recovery instead of playing on:
+            -- drive turns until the abort shows, naming a swallowed
+            -- delivery by the phase it strands in instead.
+            local abortedAt = nil
+            for _ = 1, 400 do
+              local live = runtime.battleCoordinator._battleLaunch
+              if live == nil then
+                abortedAt = "failed"
+                break
+              end
+              if live.phase == "aborting" or live.phase == "abort-revealing" or live.phase == "failed" then
+                abortedAt = live.phase
+                break
+              end
+              local battle = runtime.battleCoordinator.battleRuntime
+              if battle ~= nil then
+                local current = battle:status()
+                if current.phase == "running" and current.request ~= nil then
+                  local answer = sparringChoose(runtime, current.request)
+                  local choices = answer
+                  if type(answer) == "table" and answer.kind ~= nil then
+                    choices = { answer }
+                  end
+                  battle:submit(SessionFixture.replyFor(current.request, choices))
+                end
+              end
+              local screen = envelope:liveScreen()
+              if screen ~= nil then
+                local shown = screen:status()
+                if shown.mode == "intro" or shown.mode == "narration" or shown.mode == "outcome" then
+                  envelope:input({ { type = "confirm" } })
+                end
+              end
+              runtime:update(1 / 30)
+              envelope:updateFixed(TICK)
+            end
+            local stuck = runtime.battleCoordinator._battleLaunch
+            Assert.isTrue(
+              abortedAt ~= nil,
+              "the port-present exception enters recovery instead of playing on to "
+                .. (stuck ~= nil and tostring(stuck.phase) or "settlement")
+            )
+          elseif point == "draw" then
+            failLiveScreen(envelope, "probe draw failure at active")
+          end
+        end
+        driveToSettled(runtime, envelope, function(request)
+          return sparringChoose(runtime, request)
+        end, 1200)
+        Assert.isNil(runtime.battleCoordinator._battleLaunch, "the abort settles at " .. point)
+        local status = assert(runtime:battleStatus(launchId), "the failed launch leaves a receipt at " .. point)
+        Assert.equal(status.phase, "failed", "the abort publishes a failed receipt at " .. point)
+        Assert.isFalse(status.committed, "the abort commits nothing at " .. point)
+        Assert.isNil(status.result, "the abort invents no outcome at " .. point)
+        Assert.isTrue(
+          type(status.error) == "string" and status.error:find("probe", 1, true) ~= nil,
+          "the abort keeps the original error at " .. point .. ": " .. tostring(status.error)
+        )
+        Assert.isNil(runtime:lastBattleResult(), "the abort publishes no battle result at " .. point)
+        Assert.equal(runtime.overworld:phase(), "present", "the abort restores presence at " .. point)
+        Assert.equal(envelope:cover().coefficient, 0, "the abort reveals before publishing at " .. point)
+        Assert.isNil(runtime.battleCoordinator.battleRuntime, "the abort releases the battle at " .. point)
+        Assert.isNil(envelope:liveScreen(), "the abort releases the screen at " .. point)
+        if point == "construction" or point == "upload" then
+          Assert.equal(restores, 0, "a fault before departure restores nothing")
+        else
+          Assert.equal(restores, 1, "the abort restores exactly once at " .. point)
+        end
+        local settled = 0
+        while settled < 300 do
+          local _, reason = runtime.saveCoordinator:capture(false)
+          if reason == nil then
+            break
+          end
+          runtime:update(1 / 30)
+          envelope:updateFixed(TICK)
+          settled = settled + 1
+        end
+        local _, openReason = runtime.saveCoordinator:capture(false)
+        Assert.isNil(openReason, "the save gate opens at the restored field at " .. point)
+        runtime.battleCoordinator:_presentedNotify(launchId, "screen-failed", "second probe failure")
+        local again = assert(runtime:battleStatus(launchId), "the receipt survives a duplicate fault")
+        Assert.equal(again.phase, "failed", "a duplicate fault keeps the single failed receipt")
+        Assert.isTrue(
+          type(again.error) == "string" and again.error:find("probe", 1, true) ~= nil,
+          "a duplicate fault keeps the original error"
+        )
+        overworld.requestRestore = realRestore
+      end, debug.traceback)
+      ScreenState.new = realNew
+      local unbound = pcall(function()
+        runtime:unbindBattlePresentation(binding)
+      end)
+      local closed = pcall(function()
+        runtime:dispose()
+      end)
+      if not ok then
+        error(failure, 0)
+      end
+      Assert.isTrue(unbound, "the lifetime releases its factory binding")
+      Assert.isTrue(closed, "teardown releases the presented lifetime")
+    end
+  end
+end
+
+-- Deferred committed faults keep the committed return: a lost renderer
+-- after mechanics commit but before terminal cover, and one after
+-- terminal cover while the inner screen is disposed, both preserve the
+-- same committed words with exactly-once wallet and party effects
+-- through the normal covered return. The return never waits on the
+-- lost screen and never reruns mechanics.
+function T.scheduled_committed_faults_keep_the_committed_return()
+  for _, versionId in ipairs(readyVersions()) do
+    for _, timing in ipairs({ "terminal", "restoring" }) do
+      local runtime = bootRuntime(versionId)
+      local envelope, binding, _ =
+        bindScheduledEnvelope(runtime, versionId, dualMeasurement("deferred-committed:" .. timing))
+      local ok, failure = xpcall(function()
+        local launchId = runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
+        waitConstructed(runtime, envelope)
+        local overworld = runtime.overworld
+        local realRestore = overworld.requestRestore
+        local restores = 0
+        overworld.requestRestore = function(self)
+          restores = restores + 1
+          return realRestore(self)
+        end
+        local experienceBefore = assert(runtime.monService:partyMon(0), "the live lead is readable").experience
+        driveLaunchToPhase(runtime, envelope, timing, 8000)
+        local battleUpdates = 0
+        local battle = runtime.battleCoordinator.battleRuntime
+        if battle ~= nil then
+          local realUpdate = battle.update
+          battle.update = function(self)
+            battleUpdates = battleUpdates + 1
+            return realUpdate(self)
+          end
+        end
+        local notifications = 0
+        local coordinator = runtime.battleCoordinator
+        local realNotify = coordinator._presentedNotify
+        coordinator._presentedNotify = function(self, id, event, detail)
+          if event == "screen-failed" then
+            notifications = notifications + 1
+          end
+          return realNotify(self, id, event, detail)
+        end
+        if timing == "terminal" then
+          failLiveScreen(envelope, "probe render failure at terminal")
+        else
+          Assert.isNil(envelope:liveScreen(), "the terminal teardown released the screen before restoring")
+          coordinator:_presentedNotify(launchId, "screen-failed", "probe render failure at restoring")
+        end
+        driveToSettled(runtime, envelope, function(request)
+          return sparringChoose(runtime, request)
+        end, 1200)
+        Assert.isNil(runtime.battleCoordinator._battleLaunch, "the committed return settles at " .. timing)
+        Assert.isNil(
+          runtime.battleCoordinator.battleRuntime,
+          "the committed return releases the battle at " .. timing
+        )
+        local status = assert(runtime:battleStatus(launchId), "the committed launch leaves a receipt")
+        Assert.isTrue(status.committed, "the committed receipt stays committed at " .. timing)
+        Assert.equal(status.result, "win", "the committed win keeps its word at " .. timing)
+        Assert.equal(runtime:lastBattleResult().result, "win", "the win reports its word at " .. timing)
+        Assert.isTrue(
+          runtime.monService:partyMon(0).experience > experienceBefore,
+          "the win publishes experience at " .. timing
+        )
+        local settledExperience = runtime.monService:partyMon(0).experience
+        local settledMoney = runtime.playerData.profile.money
+        pump(runtime, envelope, 30)
+        Assert.equal(
+          runtime.monService:partyMon(0).experience,
+          settledExperience,
+          "experience publishes once at " .. timing
+        )
+        Assert.equal(runtime.playerData.profile.money, settledMoney, "settling publishes no second effect")
+        Assert.equal(restores, 1, "the committed return restores exactly once at " .. timing)
+        Assert.equal(notifications, 1, "the lost renderer notifies exactly once at " .. timing)
+        Assert.equal(battleUpdates, 0, "the committed battle never reruns at " .. timing)
+        Assert.equal(runtime.overworld:phase(), "present", "the return restores presence at " .. timing)
+        Assert.equal(envelope:cover().coefficient, 0, "the return reveals at " .. timing)
+        local _, openReason = runtime.saveCoordinator:capture(false)
+        Assert.isNil(openReason, "the save gate opens at the safe field at " .. timing)
+        coordinator:_presentedNotify(launchId, "screen-failed", "second probe failure")
+        local again = assert(runtime:battleStatus(launchId), "the receipt survives a duplicate fault")
+        Assert.equal(again.result, "win", "a duplicate fault keeps the win at " .. timing)
+        Assert.isTrue(again.committed, "a duplicate fault keeps the commit at " .. timing)
+        overworld.requestRestore = realRestore
+        coordinator._presentedNotify = realNotify
+      end, debug.traceback)
+      local unbound = pcall(function()
+        runtime:unbindBattlePresentation(binding)
+      end)
+      local closed = pcall(function()
+        runtime:dispose()
+      end)
+      if not ok then
+        error(failure, 0)
+      end
+      Assert.isTrue(unbound, "the lifetime releases its factory binding")
+      Assert.isTrue(closed, "teardown releases the presented lifetime")
+    end
+  end
+end
+
+-- Deferred losses keep their authored and automatic returns: a scripted
+-- loss holds cover while absent for its authored continuation with no
+-- automatic recovery, then releases through the continuation's restore;
+-- a random loss runs the existing recovery exactly once through one
+-- genuine message edge. Both retain an advance path after the battle
+-- screen is disposed.
+function T.scheduled_losses_keep_their_authored_and_automatic_returns()
+  for _, versionId in ipairs(readyVersions()) do
+    do
+      local runtime = bootRuntime(versionId)
+      local envelope, binding, doubles =
+        bindScheduledEnvelope(runtime, versionId, dualMeasurement("deferred-scripted-loss:dual"))
+      local ok, failure = xpcall(function()
+        local blackout = assert(runtime.blackoutFlow, "the runtime composes its recovery flow")
+        local recoveries = 0
+        local realStart = blackout.start
+        blackout.start = function(self, spawnKey)
+          recoveries = recoveries + 1
+          return realStart(self, spawnKey)
+        end
+        local launchId
+        local done, launchErr = pcall(function()
+          launchId = runtime._battleHost:launchBattle({ kind = "wild", details = { species = "EEVEE", level = 30 } })
+        end)
+        Assert.isTrue(done, "the script host launches: " .. tostring(launchErr))
+        local port = assert(doubles.ports[#doubles.ports], "the scripted launch owns its port")
+        requirePendingAdmission(envelope, port, launchId, "wild")
+        waitConstructed(runtime, envelope)
+        driveLaunchToPhase(runtime, envelope, "terminal", 15000)
+        Assert.equal(
+          runtime.battleCoordinator._battleLaunch.result,
+          "loss",
+          "the defeat reaches terminal as a loss"
+        )
+        pump(runtime, envelope, 90)
+        blackout.start = realStart
+        Assert.equal(recoveries, 0, "scripted defeat starts no automatic recovery")
+        local held = runtime.battleCoordinator._battleLaunch
+        Assert.notNil(held, "scripted defeat keeps its launch for the authored continuation")
+        Assert.equal(held.phase, "transfer", "scripted defeat transfers while absent")
+        Assert.equal(runtime.overworld:phase(), "absent", "scripted defeat holds cover while absent")
+        local published = runtime:battleStatus(launchId)
+        Assert.isTrue(published ~= nil and published.committed, "the receipt reaches the launching task")
+        Assert.equal(published.result, "loss", "the scripted loss keeps its word")
+        runtime.overworld:requestRestore()
+        driveToSettled(runtime, envelope, function(request)
+          return sparringChoose(runtime, request)
+        end, 1200)
+        Assert.isNil(runtime.battleCoordinator._battleLaunch, "the authored release clears the launch")
+        local kept = assert(runtime:battleStatus(launchId), "the release keeps the receipt readable")
+        Assert.equal(kept.result, "loss", "the release keeps the loss")
+        Assert.isTrue(kept.committed, "the release keeps the commit")
+        Assert.isFalse(runtime.session:isForegroundHoldActive(), "the release clears the foreground hold")
+        Assert.equal(runtime.overworld:phase(), "present", "the release restores presence")
+      end, debug.traceback)
+      local unbound = pcall(function()
+        runtime:unbindBattlePresentation(binding)
+      end)
+      local closed = pcall(function()
+        runtime:dispose()
+      end)
+      if not ok then
+        error(failure, 0)
+      end
+      Assert.isTrue(unbound, "the lifetime releases its factory binding")
+      Assert.isTrue(closed, "teardown releases the presented lifetime")
+    end
+    do
+      local runtime = bootRuntime(versionId)
+      local envelope, binding, doubles =
+        bindScheduledEnvelope(runtime, versionId, dualMeasurement("deferred-automatic-loss:dual"))
+      local ok, failure = xpcall(function()
+        local blackout = assert(runtime.blackoutFlow, "the runtime composes its recovery flow")
+        local recoveries = 0
+        local realStart = blackout.start
+        blackout.start = function(self, spawnKey)
+          recoveries = recoveries + 1
+          return realStart(self, spawnKey)
+        end
+        local moneyAtLoss = runtime.playerData.profile.money
+        local launchId = runtime:launchBattle({ kind = "wild", details = { species = "EEVEE", level = 30 } })
+        local port = assert(doubles.ports[#doubles.ports], "the random loss owns its port")
+        requirePendingAdmission(envelope, port, launchId, "wild")
+        waitConstructed(runtime, envelope)
+        local turns = driveDefeatToRecovery(runtime, envelope, function(request)
+          return sparringChoose(runtime, request)
+        end, 15000)
+        Assert.isTrue(turns > 0, "the defeat answers decisions before its recovery")
+        Assert.isTrue(
+          reachBlackoutPhase(runtime, envelope, "message_wait", 1500),
+          "the defeat reaches its recovery message wait"
+        )
+        pump(runtime, envelope, 600)
+        local waiting = blackout:status()
+        Assert.equal(waiting.phase, "message_wait", "the recovery waits for a real edge")
+        Assert.isTrue(waiting.waitingInput, "the wait keeps asking for input")
+        envelope:input({ { type = "confirm" } })
+        local ticks = 0
+        while runtime.overworld:phase() ~= "present" and ticks < 1500 do
+          runtime:update(1 / 30)
+          envelope:updateFixed(TICK)
+          ticks = ticks + 1
+        end
+        blackout.start = realStart
+        Assert.equal(recoveries, 1, "automatic defeat runs the existing recovery exactly once")
+        Assert.equal(runtime.overworld:phase(), "present", "the recovery returns to the live field")
+        Assert.equal(runtime:lastBattleResult().result, "loss", "the automatic loss reports its exact word")
+        Assert.isTrue(runtime.playerData.profile.money < moneyAtLoss, "the defeat debits once")
+        local healed = assert(runtime.monService:partyMon(0), "the recovered lead is readable")
+        Assert.isTrue(healed.hp == nil or healed.hp > 0, "the recovery heals the party")
+        local _, reason = runtime.saveCoordinator:capture(false)
+        Assert.isNil(reason, "the save gate opens at the safe field")
+      end, debug.traceback)
+      local unbound = pcall(function()
+        runtime:unbindBattlePresentation(binding)
+      end)
+      local closed = pcall(function()
+        runtime:dispose()
+      end)
+      if not ok then
+        error(failure, 0)
+      end
+      Assert.isTrue(unbound, "the lifetime releases its factory binding")
+      Assert.isTrue(closed, "teardown releases the presented lifetime")
+    end
+  end
+end
+
+-- A deferred unrecoverable restore stays explicitly terminal and a quit
+-- during a pending build publishes nothing late: forcing the world to
+-- fail under an abort keeps the failed receipt, the held launch, and a
+-- closed save gate with no invented outcome; quitting before the scene
+-- stages builds no screen afterwards and disposes the pending port
+-- safely.
+function T.scheduled_unrecoverable_restore_and_pending_quit_fail_explicitly()
+  for _, versionId in ipairs(readyVersions()) do
+    do
+      local runtime = bootRuntime(versionId)
+      local envelope, binding, doubles =
+        bindScheduledEnvelope(runtime, versionId, dualMeasurement("deferred-pending-quit:dual"))
+      doubles.worker.ready = nil
+      local ScreenState = require("game.hgss.src.battle.BattleScreenState")
+      local realNew = ScreenState.new
+      local constructions = 0
+      ScreenState.new = function(opts)
+        constructions = constructions + 1
+        return realNew(opts)
+      end
+      local ok, failure = xpcall(function()
+        runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
+        local port = assert(doubles.ports[#doubles.ports], "the pending launch owns its port")
+        pump(runtime, envelope, 5)
+        Assert.isNil(envelope:liveScreen(), "the pending launch holds no screen before the quit")
+        runtime:dispose()
+        Assert.isNil(runtime.battleCoordinator, "quitting releases the battle owner")
+        Assert.isNil(envelope:liveScreen(), "quitting releases the pending screen")
+        doubles.worker.ready = true
+        for _ = 1, 30 do
+          envelope:updateFixed(TICK)
+        end
+        Assert.equal(constructions, 0, "a late answer builds no screen for the quit launch")
+        Assert.isNil(envelope:liveScreen(), "the quit launch stays screenless")
+        local disposedOk = pcall(port.dispose)
+        Assert.isTrue(disposedOk, "disposing the pending port after quit stays safe")
+      end, debug.traceback)
+      ScreenState.new = realNew
+      local unbound = pcall(function()
+        runtime:unbindBattlePresentation(binding)
+      end)
+      if not ok then
+        error(failure, 0)
+      end
+      Assert.isTrue(unbound, "the lifetime releases its factory binding")
+    end
+    do
+      local runtime = bootRuntime(versionId)
+      local envelope, binding, _ =
+        bindScheduledEnvelope(runtime, versionId, dualMeasurement("deferred-world-loss:dual"))
+      local ok, failure = xpcall(function()
+        local launchId = runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
+        waitConstructed(runtime, envelope)
+        failLiveScreen(envelope, "probe render failure before world collapse")
+        pump(runtime, envelope, 5)
+        Assert.notNil(
+          runtime.battleCoordinator._battleLaunch,
+          "the abort keeps its launch while restoring"
+        )
+        runtime.overworld:fail("probe world collapse")
+        pump(runtime, envelope, 30)
+        local status = assert(runtime:battleStatus(launchId), "the failed world leaves a receipt")
+        Assert.equal(status.phase, "failed", "the unrecoverable world stays explicitly terminal")
+        Assert.notNil(runtime.battleCoordinator._battleLaunch, "the unrecoverable world keeps the launch held")
+        Assert.equal(runtime.overworld:phase(), "failed", "the world reports its failure")
+        local _, busyReason = runtime.saveCoordinator:capture(false)
+        Assert.notNil(busyReason, "the unrecoverable world stays unsaveable")
+        Assert.isNil(runtime:lastBattleResult(), "the collapse invents no battle result")
+        pump(runtime, envelope, 30)
+        local again = assert(runtime:battleStatus(launchId), "the terminal receipt stays readable")
+        Assert.equal(again.phase, "failed", "later ticks publish nothing further")
+        Assert.isNil(runtime:lastBattleResult(), "later ticks invent no battle result")
+      end, debug.traceback)
+      local unbound = pcall(function()
+        runtime:unbindBattlePresentation(binding)
+      end)
+      local closed = pcall(function()
+        runtime:dispose()
+      end)
+      if not ok then
+        error(failure, 0)
+      end
+      Assert.isTrue(unbound, "the lifetime releases its factory binding")
+      Assert.isTrue(closed, "teardown releases the presented lifetime")
+    end
+  end
+end
+
+-- A live deferred port reports each operation failure once with its own
+-- context: the first failing operation notifies carrying its operation,
+-- launch, and original cause, while every later failing operation and
+-- every stale callback collapses without a second report or a raise.
+function T.scheduled_port_operation_failures_report_once_with_their_context()
+  for _, versionId in ipairs(readyVersions()) do
+    local cacheFs = CacheFs.forVersion(versionId)
+    local worker = { ready = nil, failure = nil }
+    local derivedAssets = {}
+    function derivedAssets.requestBattleScene(_, _)
+      return worker.ready, worker.failure
+    end
+    local host = { phase = "active", notifies = {} }
+    function host.status()
+      return { phase = host.phase }
+    end
+    function host.advance() end
+    function host.submit(_)
+      return true
+    end
+    function host.notify(event, reason)
+      host.notifies[#host.notifies + 1] = { event = event, reason = reason }
+    end
+    local envelope = FieldBattlePresentation.new({
+      cacheFs = cacheFs,
+      windows = recordingWindows(),
+      text = recordingText(),
+      audio = recordingAudio(),
+      measureDisplay = function()
+        return dualMeasurement("deferred-operation-failure:dual")
+      end,
+      graphics = uploadCapableGraphics(),
+      derivedAssets = derivedAssets,
+    })
+    local launchId = "operation-failure-probe"
+    local port = envelope:factory()({
+      launchId = launchId,
+      kind = "wild",
+      environment = { sceneKey = "general/grass/day" },
+      host = host,
+    })
+    local ok, failure = xpcall(function()
+      Assert.isFalse(
+        port.enter({ launchId = launchId, kind = "wild" }),
+        "the pending operation stays unacknowledged"
+      )
+      Assert.isFalse(port.ready(), "the pending operation never reads interactive")
+      Assert.isFalse(port.leave({ launchId = launchId }), "the pending return stays unacknowledged")
+      worker.ready = true
+      local entered = false
+      for _ = 1, 120 do
+        envelope:updateFixed(TICK)
+        if port.enter({ launchId = launchId, kind = "wild" }) then
+          entered = true
+          break
+        end
+      end
+      Assert.isTrue(entered, "the staged operation acknowledges its entry")
+      local inner = assert(envelope._innerPort, "the live launch owns its inner operation target")
+      local realEnter, realPresent, realReady, realLeave = inner.enter, inner.present, inner.ready, inner.leave
+      inner.enter = function(_)
+        error("probe enter failure at active", 0)
+      end
+      Assert.isFalse(port.enter({ launchId = launchId, kind = "wild" }), "a failing entry never acknowledges")
+      Assert.equal(#host.notifies, 1, "the failing entry reports exactly once")
+      Assert.equal(host.notifies[1].event, "screen-failed", "the entry report carries its handoff")
+      Assert.isTrue(
+        type(host.notifies[1].reason) == "string"
+          and host.notifies[1].reason:find("enter", 1, true) ~= nil
+          and host.notifies[1].reason:find(launchId, 1, true) ~= nil
+          and host.notifies[1].reason:find("probe enter failure at active", 1, true) ~= nil,
+        "the entry report names its operation, launch, and cause: " .. tostring(host.notifies[1].reason)
+      )
+      inner.present = function(_)
+        error("probe present failure at active", 0)
+      end
+      local presentOk = pcall(port.present, { launchId = launchId, packetId = 1 })
+      Assert.isTrue(presentOk, "a failing delivery never raises")
+      Assert.equal(#host.notifies, 1, "a later delivery keeps the first report")
+      inner.ready = function()
+        error("probe ready failure at active", 0)
+      end
+      Assert.isFalse(port.ready(), "a failing readiness never reads interactive")
+      Assert.equal(#host.notifies, 1, "a later readiness keeps the first report")
+      inner.leave = function(_)
+        error("probe leave failure at active", 0)
+      end
+      Assert.isFalse(port.leave({ launchId = launchId }), "a failing return never acknowledges")
+      Assert.equal(#host.notifies, 1, "a later return keeps the first report")
+      inner.enter, inner.present, inner.ready, inner.leave = realEnter, realPresent, realReady, realLeave
+      port.dispose()
+      port.dispose()
+      Assert.isNil(envelope:liveScreen(), "the disposed operation owns no screen")
+      Assert.isFalse(port.enter({ launchId = launchId, kind = "wild" }), "the disposed entry never reacknowledges")
+      Assert.isFalse(port.ready(), "the disposed operation never reads interactive")
+      local staleOk = pcall(port.present, { launchId = launchId, packetId = 2 })
+      Assert.isTrue(staleOk, "a stale delivery never raises")
+      Assert.equal(#host.notifies, 1, "disposal and stale calls report nothing further")
+    end, debug.traceback)
+    local released = pcall(function()
+      envelope:dispose()
+    end)
+    if not ok then
+      error(failure, 0)
+    end
+    Assert.isTrue(released, "teardown releases the envelope")
+  end
+end
+
+-- Disposing a live deferred port releases its screen exactly once while
+-- the envelope keeps its descriptor and launch until the host settles:
+-- later polls build nothing, later operations stay inert, and only the
+-- observed settlement forgets the launch.
+function T.scheduled_live_port_dispose_releases_the_screen_once_and_keeps_the_envelope()
+  for _, versionId in ipairs(readyVersions()) do
+    local cacheFs = CacheFs.forVersion(versionId)
+    local worker = { ready = true, failure = nil }
+    local derivedAssets = {}
+    function derivedAssets.requestBattleScene(_, _)
+      return worker.ready, worker.failure
+    end
+    local host = { phase = "active", notifies = {} }
+    function host.status()
+      return { phase = host.phase }
+    end
+    function host.advance() end
+    function host.submit(_)
+      return true
+    end
+    function host.notify(event, reason)
+      host.notifies[#host.notifies + 1] = { event = event, reason = reason }
+    end
+    local envelope = FieldBattlePresentation.new({
+      cacheFs = cacheFs,
+      windows = recordingWindows(),
+      text = recordingText(),
+      audio = recordingAudio(),
+      measureDisplay = function()
+        return dualMeasurement("deferred-live-dispose:dual")
+      end,
+      graphics = uploadCapableGraphics(),
+      derivedAssets = derivedAssets,
+    })
+    local launchId = "live-dispose-probe"
+    local port = envelope:factory()({
+      launchId = launchId,
+      kind = "wild",
+      environment = { sceneKey = "general/grass/day" },
+      host = host,
+    })
+    local ok, failure = xpcall(function()
+      local entered = false
+      for _ = 1, 120 do
+        envelope:updateFixed(TICK)
+        if port.enter({ launchId = launchId, kind = "wild" }) then
+          entered = true
+          break
+        end
+      end
+      Assert.isTrue(entered, "the staged launch acknowledges its entry")
+      local screen = assert(envelope:liveScreen(), "the live launch owns its screen")
+      local disposals = 0
+      local realDispose = screen.dispose
+      screen.dispose = function(self)
+        disposals = disposals + 1
+        return realDispose(self)
+      end
+      port.dispose()
+      Assert.equal(disposals, 1, "the live disposal releases the screen exactly once")
+      Assert.isNil(envelope:liveScreen(), "the disposal releases the live screen")
+      Assert.notNil(envelope._descriptor, "the disposal keeps the envelope descriptor")
+      Assert.equal(envelope._launchId, launchId, "the disposal keeps the launch identity")
+      Assert.isFalse(port.enter({ launchId = launchId, kind = "wild" }), "the disposed entry never reacknowledges")
+      Assert.isFalse(port.ready(), "the disposed operation never reads interactive")
+      Assert.isFalse(port.leave({ launchId = launchId }), "the disposed return never reacknowledges")
+      port.dispose()
+      Assert.equal(disposals, 1, "a second disposal releases nothing further")
+      Assert.equal(#host.notifies, 0, "a clean disposal reports no failure")
+      for _ = 1, 30 do
+        envelope:updateFixed(TICK)
+      end
+      Assert.isNil(envelope:liveScreen(), "later polls build no screen for the disposed launch")
+      Assert.notNil(envelope._descriptor, "later polls keep the unsettled descriptor")
+      host.phase = "complete"
+      for _ = 1, 5 do
+        envelope:updateFixed(TICK)
+      end
+      Assert.isNil(envelope._launchId, "the settled host forgets the launch")
+      Assert.isNil(envelope._descriptor, "the settled host drops the descriptor")
+      local settledOk = pcall(port.dispose)
+      Assert.isTrue(settledOk, "disposing after settlement stays safe")
+    end, debug.traceback)
+    local released = pcall(function()
+      envelope:dispose()
+    end)
+    if not ok then
+      error(failure, 0)
+    end
+    Assert.isTrue(released, "teardown releases the envelope")
+  end
+end
+
+-- A deferred pre-commit abort publishes no live effect: party experience,
+-- wallet, and stocked balls read back unchanged, the receipt stays
+-- uncommitted with its original cause and no battle result appears, and a
+-- duplicate fault keeps the first cause.
+function T.scheduled_precommit_abort_publishes_no_live_effect()
+  for _, versionId in ipairs(readyVersions()) do
+    local runtime = bootRuntime(versionId)
+    local envelope, binding, _ =
+      bindScheduledEnvelope(runtime, versionId, dualMeasurement("deferred-clean-abort:dual"))
+    Assert.isTrue(runtime.bagService:add("MASTER_BALL", 1), "the abort leg stocks its ball")
+    local ok, failure = xpcall(function()
+      local experienceBefore = assert(runtime.monService:partyMon(0), "the live lead is readable").experience
+      local moneyBefore = runtime.playerData.profile.money
+      local ballsBefore = runtime.bagService:quantity("MASTER_BALL")
+      local launchId = runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
+      waitConstructed(runtime, envelope)
+      Assert.equal(runtime.overworld:phase(), "absent", "the fault lands while the world is absent")
+      failLiveScreen(envelope, "probe clean abort failure at active")
+      driveToSettled(runtime, envelope, function(request)
+        return sparringChoose(runtime, request)
+      end, 1200)
+      Assert.isNil(runtime.battleCoordinator._battleLaunch, "the abort settles its launch")
+      local status = assert(runtime:battleStatus(launchId), "the aborted launch leaves a receipt")
+      Assert.equal(status.phase, "failed", "the abort publishes a failed receipt")
+      Assert.isFalse(status.committed, "the abort commits nothing")
+      Assert.isNil(status.result, "the abort invents no outcome")
+      Assert.isTrue(
+        type(status.error) == "string" and status.error:find("probe clean abort failure", 1, true) ~= nil,
+        "the abort keeps the original error: " .. tostring(status.error)
+      )
+      Assert.isNil(runtime:lastBattleResult(), "the abort publishes no battle result")
+      Assert.equal(
+        assert(runtime.monService:partyMon(0), "the settled lead is readable").experience,
+        experienceBefore,
+        "the abort publishes no party effect"
+      )
+      Assert.equal(runtime.playerData.profile.money, moneyBefore, "the abort publishes no wallet effect")
+      Assert.equal(runtime.bagService:quantity("MASTER_BALL"), ballsBefore, "the abort spends no ball")
+      Assert.equal(runtime.overworld:phase(), "present", "the abort restores presence")
+      runtime.battleCoordinator:_presentedNotify(launchId, "screen-failed", "second probe failure")
+      local again = assert(runtime:battleStatus(launchId), "the receipt survives a duplicate fault")
+      Assert.equal(again.phase, "failed", "a duplicate fault keeps the single failed receipt")
+      Assert.isTrue(
+        type(again.error) == "string" and again.error:find("probe clean abort failure", 1, true) ~= nil,
+        "a duplicate fault keeps the original error"
+      )
+      Assert.equal(
+        assert(runtime.monService:partyMon(0), "the settled lead stays readable").experience,
+        experienceBefore,
+        "a duplicate fault publishes no later party effect"
+      )
+    end, debug.traceback)
+    local unbound = pcall(function()
+      runtime:unbindBattlePresentation(binding)
+    end)
+    local closed = pcall(function()
+      runtime:dispose()
+    end)
+    if not ok then
+      error(failure, 0)
+    end
+    Assert.isTrue(unbound, "the lifetime releases its factory binding")
+    Assert.isTrue(closed, "teardown releases the presented lifetime")
+  end
+end
+
 return {
   tests = T,
   metadata = {
@@ -2765,6 +3852,9 @@ return {
       "trainers:global",
       "encounters:global",
       "battle-presentation:global",
+      "battle-scene:building_1/building/day",
+      "battle-scene:general/grass/day",
+      "battle-scene:general/plain/day",
     },
   },
 }

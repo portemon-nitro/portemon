@@ -1032,6 +1032,11 @@ function BattleRuntime:_updateRunning()
       self._outcome = frame.outcome
     end
     self:_publishFrame(frame, exposed --[[@as table<string, unknown>?]])
+    if self._disposed then
+      -- A synchronous screen report can dispose this lifetime from inside
+      -- its own delivery: stop instead of advancing a disposed session.
+      return
+    end
     if frame.status == "ended" then
       self._openRequest = nil
       self._phase = "resolving"
