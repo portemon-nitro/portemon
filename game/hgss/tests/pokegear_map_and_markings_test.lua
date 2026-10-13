@@ -8,6 +8,7 @@
 local Assert = require("tests.support.Assert")
 local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
 local PokegearState = require("libs.hgss.src.save.PokegearState")
+local FieldWorldSwapCoordinator = require("game.hgss.src.field.FieldWorldSwapCoordinator")
 
 local T = {
   metadata = {
@@ -48,7 +49,14 @@ end
 local function fixtureManifest()
   local locations = {}
   for index = 1, 102 do
-    locations[#locations + 1] = { key = string.format("test.place.%03d", index) }
+    local location = { key = string.format("test.place.%03d", index) }
+    if index == 1 then
+      location.fieldMap = "test.field.new-bark"
+      location.location = "test.place.001"
+      location.matrix = { x = 96, y = 64 }
+      location.region = "johto"
+    end
+    locations[#locations + 1] = location
   end
   local mapForeground, mapUpper = {}, {}
   for skin = 0, 5 do
@@ -121,8 +129,7 @@ local function stubWordEntry()
     assert(type(request) == "table", "the word request carries its typed fields")
     self.opened[#self.opened + 1] = request
   end
-  function selector:step()
-  end
+  function selector:step() end
   function selector:result()
     if self.cancelled then
       return { cancelled = true }
@@ -616,11 +623,7 @@ function T.tests.locked_tiers_refuse_selection_until_reopen()
   local cursorBefore = controller:status().view.cursor
   controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = 240, y = 40 } })
   controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = 240, y = 40 } })
-  Assert.deepEqual(
-    controller:status().view.cursor,
-    cursorBefore,
-    "a tap on the hidden region selects nothing"
-  )
+  Assert.deepEqual(controller:status().view.cursor, cursorBefore, "a tap on the hidden region selects nothing")
   local masks = controller:status().view.maskRects
   Assert.equal(#masks, 2, "the locked map masks both hidden tiers")
   controller:dispose()
@@ -630,11 +633,7 @@ function T.tests.locked_tiers_refuse_selection_until_reopen()
   Assert.deepEqual(open.controller:status().view.maskRects, {}, "the unlocked map masks nothing")
   open.controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = 240, y = 40 } })
   open.controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = 240, y = 40 } })
-  Assert.deepEqual(
-    open.controller:status().view.cursor,
-    { x = 30, y = 5 },
-    "the unlocked map selects its tapped cell"
-  )
+  Assert.deepEqual(open.controller:status().view.cursor, { x = 30, y = 5 }, "the unlocked map selects its tapped cell")
   open.controller:dispose()
 end
 
@@ -737,23 +736,84 @@ function T.tests.map_context_and_markers_come_from_shared_owners()
     playerX = 497,
     playerY = 0,
     playerZ = 272,
+    isOutdoor = true,
     playerGender = "girl",
   }, catalog)
   Assert.equal(context.location, "test.place.violet", "the field map resolves its displayed location")
   Assert.equal(context.region, "johto", "the field map resolves its region")
   Assert.equal(context.unlockLevel, 1, "an unset tier starts in Johto")
   Assert.equal(context.playerGender, "girl", "the field read carries its gender")
+  Assert.equal(context.matrixX, 497, "outdoor maps use the live global field coordinate")
+  Assert.equal(context.matrixY, 272, "outdoor maps use the live global field coordinate")
   Assert.throws(function()
-    worlds:mapInit({ mapSymbol = "test.field.nowhere", playerX = 0, playerZ = 0, playerGender = "boy" }, catalog)
+    worlds:mapInit({
+      mapSymbol = "test.field.nowhere",
+      playerX = 0,
+      playerZ = 0,
+      isOutdoor = true,
+      playerGender = "boy",
+    }, catalog)
   end, "a field map without compiled coverage fails loudly")
   state:setPreference("mapUnlockLevel", 2)
   local reopened = worlds:mapInit({
     mapSymbol = "test.field.violet",
     playerX = 497,
     playerZ = 272,
+    isOutdoor = true,
     playerGender = "girl",
   }, catalog)
   Assert.equal(reopened.unlockLevel, 2, "saved progression facts survive initialization")
+  local indoorCatalog = {
+    locations = {
+      {
+        key = "test.place.house",
+        fieldMap = "test.field.house",
+        location = "test.place.house",
+        matrix = { x = 352, y = 160 },
+        explicitX = 11,
+        explicitY = 5,
+        region = "johto",
+      },
+      {
+        key = "test.place.spawn",
+        fieldMap = "test.field.spawn",
+        location = "test.place.spawn",
+        matrix = { x = 224, y = 256 },
+        explicitX = 7,
+        explicitY = 8,
+        region = "johto",
+      },
+    },
+  }
+  local exterior = { x = 21, y = 12 }
+  local indoorWorld = PhoneWorldContext.new({
+    state = state,
+    runtime = {
+      worldSwapCoordinator = { pokegearLastExterior = exterior },
+      fieldTravel = {
+        specialSpawn = function()
+          return { map = "test.field.spawn", fieldX = 224, fieldZ = 256 }
+        end,
+      },
+    },
+  })
+  local indoor = indoorWorld:mapInit({
+    mapSymbol = "test.field.house",
+    playerX = 4,
+    playerZ = 7,
+    isOutdoor = false,
+    playerGender = "girl",
+  }, indoorCatalog)
+  Assert.equal(indoor.matrixX, 352, "indoor tile coordinates never replace the source matrix anchor")
+  Assert.equal(indoor.matrixY, 160, "indoor tile coordinates never replace the source matrix anchor")
+  Assert.equal(indoor.explicitX, 11, "indoor maps keep the source header column")
+  Assert.equal(indoor.explicitY, 5, "indoor maps keep the source header row")
+  Assert.deepEqual(indoor.lastExterior, exterior, "the map context borrows committed exterior evidence")
+  Assert.deepEqual(
+    indoor.specialSpawn,
+    { x = 7, y = 8 },
+    "a special spawn resolves its own map through a compiled header cell"
+  )
   local markers = worlds:locationMarkers("test.place.violet", {
     rematchMarker = function(_, contact)
       if contact == "test.caller.ready" then
@@ -764,9 +824,22 @@ function T.tests.map_context_and_markers_come_from_shared_owners()
   }, { ["test.caller.ready"] = "test.place.violet", ["test.caller.quiet"] = "test.place.violet" })
   Assert.equal(#markers, 1, "only staged contacts project")
   Assert.equal(markers[1].contact, "test.caller.ready", "the ready contact projects")
+  local mapAssets = {
+    catalog = {
+      locations = {
+        {
+          fieldMap = "test.field.violet",
+          location = "test.place.violet",
+          matrix = { x = 497, y = 272 },
+          region = "johto",
+        },
+      },
+    },
+    map = record.map,
+  }
   local placed = MapController.new({
     state = state,
-    assets = record,
+    assets = mapAssets,
     mapContext = {
       fieldMap = "test.field.violet",
       location = "test.place.violet",
@@ -863,19 +936,12 @@ function T.tests.renderer_paints_independent_layers_per_skin()
     Assert.isTrue(#graphics.rectangles > 0, "skin " .. skin .. " paints its layers")
     local first = graphics.draws[1]
     Assert.equal(first.image, images[content.world], "skin " .. skin .. " draws its resolved world plane first")
-    Assert.deepEqual(
-      first.color,
-      { 1, 1, 1, 1 },
-      "skin " .. skin .. " paints the world plane unmodulated"
-    )
+    Assert.deepEqual(first.color, { 1, 1, 1, 1 }, "skin " .. skin .. " paints the world plane unmodulated")
     local drawn = {}
     for _, draw in ipairs(graphics.draws) do
       drawn[draw.image] = true
     end
-    Assert.isTrue(
-      drawn[images[content.foreground]],
-      "skin " .. skin .. " draws its own prepared foreground chrome"
-    )
+    Assert.isTrue(drawn[images[content.foreground]], "skin " .. skin .. " draws its own prepared foreground chrome")
     Assert.isTrue(drawn[images[content.upper]], "skin " .. skin .. " draws its own prepared upper chrome")
     local digest = content.foreground .. "|" .. content.upper
     Assert.isNil(seen[digest], "skin " .. skin .. " selects its own prepared chrome")
@@ -905,6 +971,47 @@ function T.tests.renderer_paints_independent_layers_per_skin()
     PokegearMapRenderer.draw({ graphics = FakeGraphics({}), images = images }, missing, 0)
   end, "a companion without a world plane raises instead of inventing geography")
   controller:dispose()
+end
+
+function T.tests.exterior_cells_are_published_only_by_a_committed_source_map_swap()
+  local sourceMap = {
+    mapSymbol = "MAP_ROUTE_46",
+    fieldData = { transitionEnvironment = "outdoors" },
+  }
+  local destinationMap = {
+    mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_1F",
+    fieldData = { transitionEnvironment = "indoors" },
+  }
+  local runtime = {
+    runtimeMap = sourceMap,
+    player = { fieldX = 100, fieldZ = 200, facing = "north" },
+    pokegearCatalog = {
+      locations = {
+        { fieldMap = sourceMap.mapSymbol, matrix = { x = 695, y = 397 } },
+      },
+    },
+    transition = {},
+    session = { beginMapEntry = function() end },
+    zoneController = {},
+    fieldTerrainEffectController = { clear = function() end },
+    scripts = { onMapSwap = function() end },
+    residency = { commitTransition = function() end },
+  }
+  local coordinator = FieldWorldSwapCoordinator.new(runtime)
+  coordinator:abort({ destinationMap = destinationMap }, {})
+  Assert.isNil(coordinator.pokegearLastExterior, "an aborted swap cannot publish exterior evidence")
+
+  coordinator:commit({ destinationMap = destinationMap }, "north", {
+    residency = {},
+    player = { fieldX = 100, fieldZ = 200 },
+    playerVisual = {},
+    camera = {},
+  })
+  Assert.deepEqual(
+    coordinator.pokegearLastExterior,
+    { x = 3, y = 6 },
+    "the committed outdoor player's global field cell is retained for the indoor map"
+  )
 end
 
 return T

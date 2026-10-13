@@ -10,6 +10,7 @@ local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
 local PokegearState = require("libs.hgss.src.save.PokegearState")
 local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
 local PokegearCalendar = require("game.hgss.src.pokegear.PokegearCalendar")
+local PokegearSources = require("romdump.src.config.PokegearSources")
 local PokegearComposition = require("game.hgss.src.pokegear.PokegearComposition")
 local FieldMenuCompositionCoordinator = require("game.hgss.src.field.FieldMenuCompositionCoordinator")
 local FieldSaveCoordinator = require("game.hgss.src.field.FieldSaveCoordinator")
@@ -82,9 +83,7 @@ local function contactCatalog()
       { kind = "berry", nativeItemId = 164 },
       { kind = "berry", nativeItemId = 165 },
     },
-    locations = {
-      { key = TRIGGER_PLACE, mapRef = 8 },
-    },
+    locations = PokegearSources.mapLocationRecords("heartgold"),
   }
 end
 
@@ -106,7 +105,13 @@ local function composeGear(friends, latch)
     pokegearRandom = friends.random,
     pokegearCalendar = friends.calendar,
     pokegearCatalog = friends.catalog,
-    session = { currentMap = { mapSymbol = "test.map", mapSectionNativeId = 8 } },
+    session = {
+      currentMap = {
+        mapSymbol = "MAP_NEW_BARK",
+        mapSectionNativeId = 60,
+        fieldData = { transitionEnvironment = "outdoors" },
+      },
+    },
     eventState = {
       isFlagSet = function()
         return false
@@ -278,8 +283,14 @@ function T.tests.composed_map_tab_samples_live_roamers_without_moving_them()
     maps = { [11] = true, [12] = true },
   })
   local bundle, runtime = composeGear(friends)
-  runtime.session = { currentMap = { mapSymbol = "test.map" } }
-  runtime.player = { fieldX = 3, fieldZ = 4 }
+  runtime.session = {
+    currentMap = {
+      mapSymbol = "MAP_NEW_BARK",
+      mapSectionNativeId = 60,
+      fieldData = { transitionEnvironment = "outdoors" },
+    },
+  }
+  runtime.player = { fieldX = 695, fieldZ = 397 }
   runtime.playerData = { profile = { gender = 0 } }
   runtime.roamerState = roamers
   local screen = bundle.screenFactory({ kind = "browse" })

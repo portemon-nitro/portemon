@@ -8,6 +8,8 @@
 -- editor snapshots stay transient. Pure module: no love, no I/O.
 
 local MapProjection = require("game.hgss.src.pokegear.MapProjection")
+local Errors = require("libs.errors.src.Errors")
+local ScriptErrors = require("libs.script.src.errors")
 
 ---@class MapController
 ---@field _state table<string, unknown> the borrowed durable companion owner
@@ -187,6 +189,10 @@ function MapController.new(opts)
       location = context.location,
       matrixX = context.matrixX,
       matrixY = context.matrixY,
+      explicitX = context.explicitX,
+      explicitY = context.explicitY,
+      lastExterior = context.lastExterior,
+      specialSpawn = context.specialSpawn,
       region = context.region,
       unlockLevel = context.unlockLevel,
       specialMode = context.specialMode,
@@ -248,31 +254,48 @@ end
 function MapController:_contextCell()
   local context = self._mapContext
   local record = self:_locationRecord(context.fieldMap)
-  local explicitX, explicitY, special = nil, nil, context.specialMode
+  if record == nil then
+    Errors.raise(
+      ScriptErrors.FEATURE_UNAVAILABLE,
+      "the region map has no source location for " .. context.fieldMap,
+      { map = context.fieldMap }
+    )
+  end
+  assert(type(record) == "table", "the region map resolves its compiled location")
+  local explicitX, explicitY = context.explicitX, context.explicitY
+  if explicitX == nil and explicitY == nil then
+    explicitX, explicitY = record.explicitX, record.explicitY
+  end
+  local special = context.specialMode
   if type(record) == "table" then
-    if type(record.explicitX) == "number" and type(record.explicitY) == "number" then
-      explicitX, explicitY = record.explicitX, record.explicitY
-    end
     if special == nil and type(record.special) == "string" then
       special = record.special
     end
   end
-  local ok, cell = pcall(MapProjection.contextCell, {
+  if explicitX == 0 and explicitY == 0 and context.lastExterior == nil and context.specialSpawn == nil then
+    Errors.raise(
+      ScriptErrors.FEATURE_UNAVAILABLE,
+      "the region map has no proven exterior position for " .. context.fieldMap,
+      { map = context.fieldMap }
+    )
+  end
+  if explicitX == nil and explicitY == nil and (context.matrixX == nil or context.matrixY == nil) then
+    Errors.raise(
+      ScriptErrors.FEATURE_UNAVAILABLE,
+      "the region map has no source matrix position for " .. context.fieldMap,
+      { map = context.fieldMap }
+    )
+  end
+  local cell = MapProjection.contextCell({
     matrixX = context.matrixX,
     matrixY = context.matrixY,
     explicitX = explicitX,
     explicitY = explicitY,
-    lastExterior = nil,
-    specialSpawn = nil,
+    lastExterior = context.lastExterior,
+    specialSpawn = context.specialSpawn,
     special = special,
   })
-  if ok and type(cell) == "table" then
-    return { x = cell.x, y = cell.y }
-  end
-  return {
-    x = math.floor(context.matrixX / 32),
-    y = math.floor(context.matrixY / 32),
-  }
+  return { x = cell.x, y = cell.y }
 end
 
 -- Samples roamer and contact markers once at refresh: only roamers active
@@ -333,18 +356,27 @@ end
 ---@param entry table<string, unknown> the compiled location record
 ---@return table<string, number>? the pane point, or nil when unresolvable
 function MapController:_locationPoint(entry)
-  local ok, cell = pcall(MapProjection.contextCell, {
-    matrixX = type(entry.matrix) == "table" and entry.matrix.x or nil,
-    matrixY = type(entry.matrix) == "table" and entry.matrix.y or nil,
-    explicitX = type(entry.explicitX) == "number" and entry.explicitX or nil,
-    explicitY = type(entry.explicitY) == "number" and entry.explicitY or nil,
+  local matrix = entry.matrix
+  local explicitX, explicitY = entry.explicitX, entry.explicitY
+  if explicitX == 0 and explicitY == 0 then
+    return nil
+  end
+  if
+    explicitX == nil
+    and explicitY == nil
+    and (type(matrix) ~= "table" or type(matrix.x) ~= "number" or type(matrix.y) ~= "number")
+  then
+    return nil
+  end
+  local cell = MapProjection.contextCell({
+    matrixX = type(matrix) == "table" and matrix.x or nil,
+    matrixY = type(matrix) == "table" and matrix.y or nil,
+    explicitX = explicitX,
+    explicitY = explicitY,
     lastExterior = nil,
     specialSpawn = nil,
     special = type(entry.special) == "string" and entry.special or nil,
   })
-  if not ok or type(cell) ~= "table" then
-    return nil
-  end
   return MapProjection.markerPoint(cell, self._pan, self._zoomCells, LOCAL_PANE)
 end
 

@@ -7,14 +7,28 @@
 -- stubbed. No ROM data is required.
 
 local Assert = require("tests.support.Assert")
+local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
+local OpeningLifecycle = require("tests.acceptance.support.OpeningLifecycle")
 local EncounterSave = require("libs.hgss.src.save.EncounterSave")
 local HgssRoamerState = require("libs.hgss.src.encounters.HgssRoamerState")
 local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
 local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
 local PokegearState = require("libs.hgss.src.save.PokegearState")
+local PokegearJourneyFixture = require("tests.support.PokegearJourneyFixture")
+local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 
 local T = {
   metadata = {
+    capabilities = { "rom_dump" },
+    derivedAssets = {
+      "field-runtime",
+      "map:33",
+      "map:63",
+      "map:539",
+      "map-data:33",
+      "map-data:63",
+      "map-data:539",
+    },
     tags = { "pokegear" },
   },
   tests = {},
@@ -258,10 +272,34 @@ function T.tests.live_owner_markers_stay_read_only_across_battle_and_reopen()
     specialMode = nil,
     playerGender = "boy",
   }
+  local mapAssets = {
+    catalog = {
+      locations = {
+        {
+          key = "test.place.violet",
+          fieldMap = "test.field.violet",
+          mapRef = 11,
+          matrix = { x = 64, y = 32 },
+          location = "test.place.violet",
+          region = "johto",
+        },
+        {
+          key = "test.place.new-bark",
+          fieldMap = "test.field.new-bark",
+          matrix = { x = 672, y = 384 },
+          explicitX = 21,
+          explicitY = 12,
+          location = "test.place.new-bark",
+          region = "johto",
+        },
+      },
+    },
+    map = validated.map,
+  }
   local function openMap()
     return MapController.new({
       state = state,
-      assets = validated,
+      assets = mapAssets,
       mapContext = mapContext,
       phoneProjection = phonePolicy(call, state, contactPlaces),
       roamerProjection = snapshotRoamers(roamers),
@@ -337,6 +375,98 @@ function T.tests.live_owner_markers_stay_read_only_across_battle_and_reopen()
   Assert.notNil(contactsAgain["test.caller.mom"], "the pending gift still waits after reopen")
   first:dispose()
   second:dispose()
+end
+
+local NEW_BARK = "MAP_NEW_BARK"
+local NEW_BARK_HOUSE = "MAP_NEW_BARK_PLAYER_HOUSE_1F"
+local LEAGUE_WIFI_ROOM = "MAP_POKEMON_LEAGUE_ENTRANCE_WIFI_ROOM"
+
+---@param game table
+local function prepareMapCard(game)
+  local state = assert(game.runtime.pokegearState, "the composed field owns Pokegear state")
+  state:registerCard("map")
+  state:setPreference("lastApp", "map")
+  game:setWorldState({ flag = FieldScriptSymbols.flagsByName.FLAG_GOT_POKEGEAR })
+end
+
+---@param game table
+---@return table view
+local function openProductionMap(game)
+  PokegearJourneyFixture.openGearThroughMenu(game)
+  local gear =
+    assert(game.runtime.applicationHost:status().application, "the Start Menu owns the open gear application")
+  Assert.equal(gear.tab, "map", "the saved card selection opens the Map card")
+  local child = assert(gear.child, "the gear shell publishes its active card")
+  Assert.equal(child.tab, "map", "the production Map card owns the child")
+  return assert(child.view, "the production Map card publishes its map view")
+end
+
+-- A source-known indoor header stays at the New Bark world cell through
+-- the actual town door and the production Start Menu application path.
+function T.tests.new_bark_house_uses_its_source_header_after_the_door_transition()
+  PokegearJourneyFixture.withGame(NEW_BARK, function(game)
+    prepareMapCard(game)
+    local outside = openProductionMap(game)
+    Assert.deepEqual(outside.playerCell, { x = 21, y = 12 }, "New Bark's outdoor map resolves to its source world cell")
+    Assert.deepEqual(outside.cursor, outside.playerCell, "the selected cell begins on the player marker")
+    PokegearJourneyFixture.closeGearThroughMenu(game)
+
+    game:moveTo(PokegearJourneyFixture.TOWN_HOUSE_DOOR_APPROACH)
+    game:step({ direction = "north" })
+    local transition = game:waitForTransition()
+    Assert.equal(transition.destination.mapSymbol, NEW_BARK_HOUSE, "the production door enters the player's house")
+    OpeningLifecycle.completeOpeningHouseScene(game)
+    Assert.isTrue(PokegearJourneyFixture.settleField(game), "the house scene must release the production field")
+    local inside = openProductionMap(game)
+    Assert.deepEqual(inside.playerCell, { x = 21, y = 12 }, "the house header keeps the player in New Bark")
+    Assert.deepEqual(inside.cursor, inside.playerCell, "the house selection stays aligned with the player marker")
+    Assert.equal(game:renderAttempts(), 0, "the location journey stops before GPU rendering")
+    PokegearJourneyFixture.closeGearThroughMenu(game)
+  end)
+end
+
+-- The League entrance is a source-anchored exterior cell. A direct load
+-- into the zero-header Wi-Fi room has no exterior evidence and the Map card
+-- must refuse a guessed cell. The source disables saving in this room.
+function T.tests.zero_header_direct_resume_refuses_an_unproven_world_cell()
+  local defaultGameFactory = AcceptanceHarness.new().gameFactory
+  local harness = AcceptanceHarness.new({
+    gameFactory = function(versionId, map)
+      local save = defaultGameFactory(versionId, map)
+      -- The map's source init script starts its first-visit scene only
+      -- while this scene variable is zero. This represents a valid save
+      -- after that scene, with no recorded exterior position.
+      save.worldState:setVar(FieldScriptSymbols.variablesByName.VAR_SCENE_POKECENTER_WIFI_BASEMENT, 1)
+      return save
+    end,
+  })
+  local game = harness:boot({
+    versionId = AcceptanceHarness.defaultVersion(),
+    map = LEAGUE_WIFI_ROOM,
+    save = "fresh",
+    fieldOptions = { recordingScriptHosts = true },
+  })
+  local ok, err = xpcall(function()
+    game:waitForFieldEntry()
+    Assert.isTrue(PokegearJourneyFixture.settleField(game), "the post-intro room scene must settle")
+    prepareMapCard(game)
+    local opened, openErr = pcall(openProductionMap, game)
+    local errorText = tostring(openErr)
+    Assert.isFalse(opened, "a direct resume into the zero-header room has no exterior fallback")
+    Assert.isTrue(
+      errorText:find("FEATURE_UNAVAILABLE", 1, true) ~= nil,
+      "an unprovable zero-header position reports FEATURE_UNAVAILABLE: " .. errorText
+    )
+    Assert.isTrue(
+      errorText:find(LEAGUE_WIFI_ROOM, 1, true) ~= nil,
+      "the unavailable error names the current source map"
+    )
+    Assert.equal(game:renderAttempts(), 0, "the unavailable location is reported before GPU rendering")
+  end, debug.traceback)
+  game:close()
+  if not ok then
+    error(err, 0)
+  end
 end
 
 return T

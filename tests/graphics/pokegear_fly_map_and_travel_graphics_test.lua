@@ -12,6 +12,7 @@ local Assert = require("tests.support.Assert")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
 local PokegearState = require("libs.hgss.src.save.PokegearState")
+local PokegearSources = require("romdump.src.config.PokegearSources")
 
 local T = {}
 
@@ -72,10 +73,7 @@ local function fixtureManifest()
       rematches = {},
       gifts = {},
       momPurchases = {},
-      locations = {
-        { key = "test.place.violet" },
-        { key = "test.place.new-bark" },
-      },
+      locations = PokegearSources.mapLocationRecords("heartgold"),
       flypoints = {
         { key = "test.fly.violet" },
         { key = "test.fly.new-bark" },
@@ -108,10 +106,10 @@ end
 ---@return table
 local function outdoorContext()
   return {
-    fieldMap = "test.field.new-bark",
-    location = "test.place.new-bark",
-    matrixX = 96,
-    matrixY = 64,
+    fieldMap = "MAP_NEW_BARK",
+    location = "hg.place.new-bark",
+    matrixX = 695,
+    matrixY = 397,
     region = "johto",
     unlockLevel = 1,
     specialMode = nil,
@@ -240,9 +238,14 @@ function T.standalone_fly_chrome_shares_data_but_never_adds_a_tab(scope)
         return {}
       end,
       roamerProjection = {},
-      wordEntry = { open = function(_) end, step = function() end, result = function()
-        return nil
-      end, cancel = function() end },
+      wordEntry = {
+        open = function(_) end,
+        step = function() end,
+        result = function()
+          return nil
+        end,
+        cancel = function() end,
+      },
     })
   end
 
@@ -274,10 +277,7 @@ function T.standalone_fly_chrome_shares_data_but_never_adds_a_tab(scope)
       PokegearMapRenderer.draw(resources, map:status(), 0)
     end)
     Assert.isTrue(flySignature ~= blank, paneName .. " paints opaque fly content")
-    Assert.isTrue(
-      flySignature ~= mapSignature,
-      paneName .. " renders fly chrome distinct from the map tab"
-    )
+    Assert.isTrue(flySignature ~= mapSignature, paneName .. " renders fly chrome distinct from the map tab")
     paneFly:dispose()
   end
 
@@ -375,10 +375,7 @@ function T.view_only_town_chrome_paints_without_confirmation(scope)
       PokegearFlyMapRenderer.draw(resources, fly:status(), 0)
     end)
     Assert.isTrue(townSignature ~= blank, paneName .. " paints opaque town content")
-    Assert.isTrue(
-      townSignature ~= flySignature,
-      paneName .. " renders town chrome distinct from the fly composition"
-    )
+    Assert.isTrue(townSignature ~= flySignature, paneName .. " renders town chrome distinct from the fly composition")
     local townView = assert(town:status().view, "the town view is published")
     Assert.isNil(townView.confirmButton, "the view-only town map offers no confirmation control")
     Assert.isNil(town:takeResult(), "the unconfirmed town map publishes no result")

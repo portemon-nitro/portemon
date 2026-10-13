@@ -70,7 +70,13 @@ local function fixtureManifest()
       gifts = {},
       momPurchases = {},
       locations = {
-        { key = "test.place.johto" },
+        {
+          key = "test.place.johto",
+          fieldMap = "test.field.johto",
+          matrix = { x = 96, y = 64 },
+          location = "test.place.johto",
+          region = "johto",
+        },
         { key = "test.place.kanto" },
       },
       flypoints = {},
@@ -174,11 +180,7 @@ function T.forward_and_inverse_geometry_agree_over_every_selectable_cell()
       16,
       pane
     )
-    Assert.deepEqual(
-      pastEdge,
-      { x = 17, y = 13 },
-      paneName .. " maps past-edge pointers to their valid surface cell"
-    )
+    Assert.deepEqual(pastEdge, { x = 17, y = 13 }, paneName .. " maps past-edge pointers to their valid surface cell")
   end
 end
 
@@ -277,9 +279,14 @@ function T.map_layers_and_panel_slides_match_source_order_with_gated_input(scope
       return {}
     end,
     roamerProjection = {},
-    wordEntry = { open = function(_) end, step = function() end, result = function()
-      return nil
-    end, cancel = function() end },
+    wordEntry = {
+      open = function(_) end,
+      step = function() end,
+      result = function()
+        return nil
+      end,
+      cancel = function() end,
+    },
   })
   local resources = renderResources(scope, manifest)
 
@@ -323,9 +330,14 @@ function T.map_layers_and_panel_slides_match_source_order_with_gated_input(scope
         return {}
       end,
       roamerProjection = {},
-      wordEntry = { open = function(_) end, step = function() end, result = function()
-        return nil
-      end, cancel = function() end },
+      wordEntry = {
+        open = function(_) end,
+        step = function() end,
+        result = function()
+          return nil
+        end,
+        cancel = function() end,
+      },
     })
     local canvas = scope:own(love.graphics.newCanvas(256, 192))
     love.graphics.setCanvas(canvas)

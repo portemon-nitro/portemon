@@ -148,23 +148,15 @@ local function splitKey(key)
     fact --[[@as string]]
 end
 
--- Builds the source-normalized map context for the region map from the
--- actual field map and player reads plus the compiled location table:
--- the field map symbol resolves its displayed location, region, and
--- special mode through the catalog, never through display labels or
--- cached menu views. Matrix coordinates are the live world player
--- position. Header-derived coordinates travel inside the compiled
--- location record, which the projection owner reads; live
--- last-exterior and special-spawn travel facts have no room in the
--- normalized context and stay with their travel owner. The unlocked
--- tier reuses the saved map progression fact, starting at Johto when
--- unset. Feature-local: existing world owners stay authoritative and no
--- long-lived caches are kept.
----@param field { mapSymbol: string, playerX: number, playerZ: number, playerGender: string }
+-- Builds the source-normalized map context from the current field map,
+-- its compiled location record, and live global player coordinates only
+-- on outdoor maps. Indoor headers remain authoritative; zero headers may
+-- use only the exterior captured by a committed world swap.
+---@param field { mapSymbol: string, playerX: number, playerZ: number, isOutdoor: boolean, playerGender: string }
 ---@param catalog table<string, unknown> the borrowed compiled map catalog
----@return { fieldMap: string, location: string, matrixX: number, matrixY: number, region: string, unlockLevel: integer, specialMode: string?, playerGender: string }
+---@return { fieldMap: string, location: string, matrixX: number, matrixY: number, explicitX: integer?, explicitY: integer?, lastExterior: { x: integer, y: integer }?, specialSpawn: { x: integer, y: integer }?, region: string, unlockLevel: integer, specialMode: string?, playerGender: string }
 function PhoneWorldContext:mapInit(field, catalog)
-  assert(type(field) == "table", "map initialization reads the field map, header, and travel facts")
+  assert(type(field) == "table", "map initialization reads the field map and player facts")
   assert(type(field.mapSymbol) == "string" and field.mapSymbol ~= "", "map initialization names the actual field map")
   assert(
     type(field.playerX) == "number" and type(field.playerZ) == "number",
@@ -174,6 +166,7 @@ function PhoneWorldContext:mapInit(field, catalog)
     type(field.playerGender) == "string" and field.playerGender ~= "",
     "map initialization names the player gender"
   )
+  assert(type(field.isOutdoor) == "boolean", "map initialization distinguishes global outdoor coordinates")
   assert(
     type(catalog) == "table" and type(catalog.locations) == "table",
     "map initialization borrows its location table"
@@ -191,6 +184,11 @@ function PhoneWorldContext:mapInit(field, catalog)
   assert(type(record) == "table", "map initialization resolves its compiled location")
   assert(type(record.location) == "string", "compiled locations carry their displayed location")
   assert(type(record.region) == "string", "compiled locations carry their region")
+  local matrix = record.matrix
+  assert(
+    type(matrix) == "table" and type(matrix.x) == "number" and type(matrix.y) == "number",
+    "compiled locations carry a source matrix anchor"
+  )
   local state = self._owners.state
   assert(type(state) == "table", "phone world reads borrow the companion state")
   local preferences = state:readPreferences()
@@ -199,11 +197,52 @@ function PhoneWorldContext:mapInit(field, catalog)
   if type(unlockLevel) ~= "number" or unlockLevel < 1 then
     unlockLevel = 1
   end
+  local matrixX, matrixY = matrix.x, matrix.y
+  if field.isOutdoor then
+    matrixX, matrixY = field.playerX, field.playerZ
+  end
+  local runtime = self._owners.runtime
+  local worldSwapCoordinator = type(runtime) == "table" and runtime.worldSwapCoordinator or nil
+  local lastExterior = nil
+  if type(worldSwapCoordinator) == "table" then
+    local cell = worldSwapCoordinator.pokegearLastExterior
+    if cell ~= nil then
+      assert(
+        type(cell) == "table"
+          and type(cell.x) == "number"
+          and cell.x % 1 == 0
+          and type(cell.y) == "number"
+          and cell.y % 1 == 0,
+        "the committed exterior carries an integral world cell"
+      )
+      lastExterior = { x = cell.x, y = cell.y }
+    end
+  end
+  local specialSpawn
+  local travel = type(runtime) == "table" and runtime.fieldTravel or nil
+  if type(travel) == "table" and type(travel.specialSpawn) == "function" then
+    local spawn = travel:specialSpawn()
+    if type(spawn) == "table" and type(spawn.map) == "string" then
+      for _, entry in ipairs(catalog.locations) do
+        if type(entry) == "table" and entry.fieldMap == spawn.map then
+          local x, y = entry.explicitX, entry.explicitY
+          if type(x) == "number" and x % 1 == 0 and type(y) == "number" and y % 1 == 0 and (x ~= 0 or y ~= 0) then
+            specialSpawn = { x = x, y = y }
+          end
+          break
+        end
+      end
+    end
+  end
   return {
     fieldMap = field.mapSymbol,
     location = record.location,
-    matrixX = field.playerX,
-    matrixY = field.playerZ,
+    matrixX = matrixX,
+    matrixY = matrixY,
+    explicitX = record.explicitX,
+    explicitY = record.explicitY,
+    lastExterior = lastExterior,
+    specialSpawn = specialSpawn,
     region = record.region,
     unlockLevel = unlockLevel,
     specialMode = record.special,

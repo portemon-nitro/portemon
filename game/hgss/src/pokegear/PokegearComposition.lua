@@ -78,8 +78,8 @@ local function ringAudioFor(audio)
 end
 
 -- Resolves the live normalized map context for the region map tab: the
--- current field map, player position, and profile gender through the
--- shared phone projection, never through display labels.
+-- current field map, global outdoor position, and profile gender through
+-- the shared phone projection, never through display labels.
 ---@param runtime table<string, unknown>
 ---@param world table<string, unknown>
 ---@param catalog table<string, unknown>
@@ -93,6 +93,7 @@ local function liveMapContext(runtime, world, catalog)
   end
   local player = checkOwner(runtime.player, "the live player")
   local playerData = checkOwner(runtime.playerData, "the live player data")
+  local fieldData = checkOwner(currentMap.fieldData, "the live field map data")
   local profile = playerData.profile
   assert(type(profile) == "table", "the region map reads the live profile")
   local playerGender = ({ [0] = "male", [1] = "female" })[profile.gender]
@@ -105,6 +106,7 @@ local function liveMapContext(runtime, world, catalog)
     mapSymbol = mapSymbol,
     playerX = assert(player.fieldX, "the region map reads the live player column"),
     playerZ = assert(player.fieldZ, "the region map reads the live player row"),
+    isOutdoor = fieldData.transitionEnvironment == "outdoors",
     playerGender = playerGender,
   }, catalog)
 end

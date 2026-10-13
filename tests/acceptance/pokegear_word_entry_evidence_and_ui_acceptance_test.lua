@@ -10,6 +10,7 @@
 local Assert = require("tests.support.Assert")
 local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
 local PokegearState = require("libs.hgss.src.save.PokegearState")
+local PokegearSources = require("romdump.src.config.PokegearSources")
 
 local T = {
   metadata = {
@@ -61,9 +62,7 @@ local function fixtureManifest()
       rematches = {},
       gifts = {},
       momPurchases = {},
-      locations = {
-        { key = "test.place.violet" },
-      },
+      locations = PokegearSources.mapLocationRecords("heartgold"),
       flypoints = {},
       reception = {},
       shows = {},
@@ -91,10 +90,10 @@ end
 ---@return table context
 local function mapContext()
   return {
-    fieldMap = "test.field.violet",
-    location = "test.place.violet",
-    matrixX = 64,
-    matrixY = 32,
+    fieldMap = "MAP_VIOLET",
+    location = "hg.place.violet",
+    matrixX = 497,
+    matrixY = 272,
     region = "johto",
     unlockLevel = 1,
     specialMode = nil,
@@ -115,9 +114,14 @@ local function openMap(state, validated)
       return {}
     end,
     roamerProjection = {},
-    wordEntry = { open = function(_) end, step = function() end, result = function()
-      return nil
-    end, cancel = function() end },
+    wordEntry = {
+      open = function(_) end,
+      step = function() end,
+      result = function()
+        return nil
+      end,
+      cancel = function() end,
+    },
   })
 end
 
@@ -179,7 +183,7 @@ function T.tests.annotation_word_choice_commits_once_and_restores_the_map()
 
   local request = tapWordSlot(map, 2)
   Assert.equal(request.slot, 2, "the request names its word slot")
-  Assert.equal(request.locationKey, "test.place.violet", "the request names its location")
+  Assert.equal(request.locationKey, "hg.place.violet", "the request names its source location")
   local session = assert(request.session, "the request carries the recorded map session")
   Assert.isTrue(map:status().busy, "the map reports busy while the word edit pends")
 
@@ -245,11 +249,7 @@ function T.tests.annotation_word_choice_commits_once_and_restores_the_map()
     result = { word = "9" },
   })
   Assert.isFalse(replayOk, "a replayed word result fails")
-  Assert.deepEqual(
-    map:status().view.marking,
-    marked,
-    "failed word results leave marking state untouched"
-  )
+  Assert.deepEqual(map:status().view.marking, marked, "failed word results leave marking state untouched")
   map:dispose()
 end
 
@@ -259,13 +259,11 @@ end
 function T.tests.single_word_selector_renders_its_own_mode_and_rejects_substitutes()
   local WordEntryScreenState = requireFeature(
     "game.hgss.src.pokegear.WordEntryScreenState",
-    "the map annotation has no word selector yet: "
-      .. "the single-word mode cannot render or answer host input"
+    "the map annotation has no word selector yet: " .. "the single-word mode cannot render or answer host input"
   )
   local Renderer = requireFeature(
     "libs.hgss.src.presentation.PokegearWordEntryRenderer",
-    "the map annotation has no word renderer yet: "
-      .. "the single-word mode cannot project its source layout"
+    "the map annotation has no word renderer yet: " .. "the single-word mode cannot project its source layout"
   )
   local validated = PokegearAssetSchema.validate(fixtureManifest())
   Assert.notNil(validated, "the synthetic companion catalog must validate through the asset schema")

@@ -49,6 +49,7 @@ local function outdoorMap(coverage)
     mapId = 60,
     scene = { type = "outdoor" },
     coverage = coverage,
+    fieldData = { transitionEnvironment = "outdoors" },
   }
 end
 
@@ -320,6 +321,7 @@ local function destinationMap(coverage)
     mapId = 60,
     coverage = coverage,
     scene = { type = "outdoor" },
+    fieldData = { transitionEnvironment = "outdoors" },
   }
 end
 
