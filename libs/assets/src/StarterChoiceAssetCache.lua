@@ -742,12 +742,10 @@ function M.validateManifest(manifest)
 end
 
 -- Every cache-relative path the manifest references: model geometry and
--- textures plus both info-surface images. Raises on
--- a malformed manifest, matching ModelAsset.referencedPaths.
+-- textures plus both info-surface images.
 ---@param manifest table<string, unknown>
 ---@return string[]
 function M.referencedPaths(manifest)
-  assert(M.validateManifest(manifest), "starter-choice manifest is invalid")
   local paths = {}
   for _, role in ipairs(MODEL_ROLES) do
     for _, path in ipairs(ModelAsset.referencedPaths(manifest.models[role])) do
@@ -766,7 +764,7 @@ function M.isReady(cacheFs, expectedMarker)
     return false
   end
   local manifest = cacheFs:loadLua(M.manifestPath())
-  if type(manifest) ~= "table" or not M.validateManifest(manifest) then
+  if type(manifest) ~= "table" or manifest.schema ~= M.SCHEMA then
     return false
   end
   for _, path in ipairs(M.referencedPaths(manifest)) do

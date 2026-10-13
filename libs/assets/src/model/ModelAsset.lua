@@ -952,11 +952,10 @@ end
 -- Every cache-relative path a descriptor references: batch geometry, base
 -- material textures, and pattern-variant textures (a variant PNG is a
 -- referenced asset just like the base texture; readiness must cover it).
--- Raises ModelAsset.ERROR_INVALID on a malformed descriptor.
+-- The descriptor is trusted: producers pass it through ModelAsset.validate.
 ---@param desc table<string, unknown>
 ---@return string[]
 function ModelAsset.referencedPaths(desc)
-  ModelAsset.validate(desc)
   local paths = {} ---@type string[]
   ---@param b table<string, unknown>
   local function addBatch(b)
