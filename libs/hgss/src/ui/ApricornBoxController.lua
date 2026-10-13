@@ -108,22 +108,23 @@ local function adjustQuantity(self, delta)
   end
 end
 
+local function startRowReturn(self, destination)
+  self._phase = "row_return_delay"
+  self._returnPhase = destination
+  self._cursorReturnTicks = 4
+  self._cursorOffsetY = 6
+end
+
 local function activateAction(self)
   if self._mode == "browse" and self._action ~= 3 then
     return
   end
   if self._mode == "browse" then
-    self._phase = "row_return_delay"
-    self._returnPhase = "browse"
-    self._cursorReturnTicks = 4
-    self._cursorOffsetY = 6
+    startRowReturn(self, "browse")
   elseif self._action == 1 then
     self._phase = "quantity"
   else
-    self._phase = "row_return_delay"
-    self._returnPhase = "rows"
-    self._cursorReturnTicks = 4
-    self._cursorOffsetY = 6
+    startRowReturn(self, "rows")
   end
 end
 
@@ -132,9 +133,104 @@ function ApricornBoxController:_openPrompt()
   self._prompt:open(self._promptPlacement)
 end
 
+local QUANTITY_STEP = { left = -1, right = 1, up = 10, down = -10 }
+local QUANTITY_CONTROL_STEP = { [3] = 1, [4] = -1, [5] = 10, [6] = -10 }
+
+local function cycle(index, count, direction)
+  if direction == "up" then
+    return index == 1 and count or index - 1
+  end
+  return index == count and 1 or index + 1
+end
+
+local function playAndActivate(self)
+  self:_play(SOURCE_SOUND.select)
+  activateAction(self)
+end
+
+local function ignoreEvent() end
+
+local function onTouchRow(self, event)
+  self:_selectRow(event.index, true)
+end
+
+local function onNavigate(self, event)
+  local direction = event.direction
+  if self._phase == "actions" then
+    local previous = self._action
+    self._action = self._mode == "browse" and 3 or cycle(previous, 2, direction)
+    if previous ~= self._action then
+      self:_play(SOURCE_SOUND.select)
+    end
+  elseif self._phase == "quantity" then
+    adjustQuantity(self, QUANTITY_STEP[direction])
+  elseif direction == "up" or direction == "down" then
+    local previous = self._selected
+    self._selected = cycle(previous, #self._keys, direction)
+    if self._selected ~= previous then
+      self:_play(SOURCE_SOUND.select)
+    end
+  end
+end
+
+local function onQuantityControl(self, event)
+  if self._phase ~= "quantity" then
+    return
+  end
+  if event.index == 1 then
+    self:_openPrompt()
+    self:_play(SOURCE_SOUND.select)
+  elseif event.index == 2 then
+    self:_play(SOURCE_SOUND.cancel)
+  else
+    adjustQuantity(self, QUANTITY_CONTROL_STEP[event.index])
+  end
+end
+
+-- Source USE and TASTE labels remain visible until their effects exist.
+local function onActionControl(self, event)
+  if self._phase == "actions" and (self._mode ~= "browse" or event.index == 3) then
+    self._action = event.index
+    playAndActivate(self)
+  end
+end
+
+local function onConfirm(self)
+  if self._phase == "browse" or self._phase == "rows" then
+    self:_selectRow(self._selected, false)
+  elseif self._phase == "quantity" then
+    self:_openPrompt()
+    self:_play(SOURCE_SOUND.select)
+  elseif self._phase == "actions" then
+    playAndActivate(self)
+  end
+end
+
+local function onCancel(self, event)
+  self:_play(event.source == "touch" and SOURCE_SOUND.touchCancel or SOURCE_SOUND.cancel)
+  if self._phase == "actions" then
+    startRowReturn(self, self._mode == "browse" and "browse" or "rows")
+  else
+    self._result = { kind = "closed" }
+    self._closed = true
+  end
+end
+
+-- The presentation session drops a captured pointer before stale up events.
+local EVENT_HANDLERS = {
+  pointer_cancel = ignoreEvent,
+  pointer_down = ignoreEvent,
+  touch_row = onTouchRow,
+  navigate = onNavigate,
+  quantity_control = onQuantityControl,
+  action_control = onActionControl,
+  confirm = onConfirm,
+  cancel = onCancel,
+  dismiss = onCancel,
+}
+
 ---@param uiInput table[] semantic input events from the owning application
 function ApricornBoxController:updateFixed(uiInput)
-  assert(type(uiInput) == "table", "Box input is an ordered event list")
   if self._closed then
     return
   end
@@ -172,104 +268,10 @@ function ApricornBoxController:updateFixed(uiInput)
     end
   end
   for _, event in ipairs(uiInput) do
-    assert(type(event) == "table" and type(event.type) == "string", "Box input events are records")
-    if event.type == "pointer_cancel" then
-      -- The presentation session drops a captured pointer before stale up events.
-    elseif event.type == "cancel" or event.type == "dismiss" then
-      self:_play(event.source == "touch" and SOURCE_SOUND.touchCancel or SOURCE_SOUND.cancel)
-      if self._phase == "actions" then
-        self._phase = "row_return_delay"
-        self._returnPhase = self._mode == "browse" and "browse" or "rows"
-        self._cursorReturnTicks = 4
-        self._cursorOffsetY = 6
-      else
-        self._result = { kind = "closed" }
-        self._closed = true
-        return
-      end
-    elseif event.type == "touch_row" then
-      assert(integer(event.index, 1, #self._keys), "Box touch selection names a canonical row")
-      self:_selectRow(event.index, true)
-    elseif event.type == "navigate" then
-      assert(
-        event.direction == "up" or event.direction == "down" or event.direction == "left" or event.direction == "right",
-        "Box navigation uses a cardinal direction"
-      )
-      if self._phase == "actions" then
-        local count = self._mode == "browse" and 3 or 2
-        local previous = self._action
-        if self._mode == "browse" then
-          self._action = 3
-        else
-          self._action = event.direction == "up" and (previous == 1 and count or previous - 1)
-            or (previous == count and 1 or previous + 1)
-        end
-        if previous ~= self._action then
-          self:_play(SOURCE_SOUND.select)
-        end
-      elseif self._phase == "quantity" then
-        if event.direction == "left" then
-          adjustQuantity(self, -1)
-        elseif event.direction == "right" then
-          adjustQuantity(self, 1)
-        elseif event.direction == "up" then
-          adjustQuantity(self, 10)
-        else
-          adjustQuantity(self, -10)
-        end
-      elseif event.direction == "up" or event.direction == "down" then
-        local previous = self._selected
-        self._selected = event.direction == "up" and (previous == 1 and #self._keys or previous - 1)
-          or (previous == #self._keys and 1 or previous + 1)
-        if self._selected ~= previous then
-          self:_play(SOURCE_SOUND.select)
-        end
-      end
-    elseif event.type == "quantity_control" then
-      assert(integer(event.index, 1, 6), "quantity controls use the six source controls")
-      if self._phase == "quantity" then
-        if event.index == 1 then
-          self:_openPrompt()
-          self:_play(SOURCE_SOUND.select)
-        elseif event.index == 2 then
-          self._phase = "quantity"
-          self:_play(SOURCE_SOUND.cancel)
-        else
-          adjustQuantity(self, ({ [3] = 1, [4] = -1, [5] = 10, [6] = -10 })[event.index])
-        end
-      end
-    elseif event.type == "action_control" then
-      local count = self._mode == "browse" and 3 or 2
-      assert(integer(event.index, 1, count), "Box action selection names a source menu row")
-      if self._phase == "actions" then
-        if self._mode == "browse" and event.index ~= 3 then
-          -- Source USE and TASTE labels remain visible until their effects exist.
-        else
-          self._action = event.index
-          self:_play(SOURCE_SOUND.select)
-          activateAction(self)
-          if self._closed then
-            return
-          end
-        end
-      end
-    elseif event.type == "confirm" then
-      if self._phase == "browse" then
-        self:_selectRow(self._selected, false)
-      elseif self._phase == "rows" then
-        self:_selectRow(self._selected, false)
-      elseif self._phase == "quantity" then
-        self:_openPrompt()
-        self:_play(SOURCE_SOUND.select)
-      elseif self._phase == "actions" then
-        self:_play(SOURCE_SOUND.select)
-        activateAction(self)
-        if self._closed then
-          return
-        end
-      end
-    else
-      assert(event.type == "pointer_down", "Box input supports source actions and application pointer events")
+    local handler = assert(EVENT_HANDLERS[event.type], "Box input supports source actions and pointer events")
+    handler(self, event)
+    if self._closed then
+      return
     end
   end
 end
