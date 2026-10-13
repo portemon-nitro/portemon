@@ -828,4 +828,358 @@ function T.exact_member_rejects_directories_embedded_nul_and_malformed_archives(
   end)
 end
 
+-- The shared test-only ROM adapter resolves an explicit --rom-source flag
+-- when present and otherwise reopens the previously registered exact
+-- original path/member, always checking the requested canonical identity
+-- before handing out a reader. The adapter owns the opened source until it
+-- returns; every failure releases it exactly once and never consults a
+-- second source after an explicit choice failed.
+local CacheFs = require("libs.storage.src.CacheFs")
+local FakeCache = require("tests.support.FakeCache")
+local GameVersion = require("romdump.src.source.GameVersion")
+local RomBinding = require("romdump.src.source.RomBinding")
+local RomFs = require("romdump.src.source.RomFs")
+local RomSourcePath = require("tests.rom.support.RomSourcePath")
+
+-- Run fn with _G.arg replaced, restoring it even when fn fails.
+local function withArgValue(argValue, fn)
+  local saved = _G.arg
+  _G.arg = argValue
+  local ok, err = pcall(fn)
+  _G.arg = saved
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- Catalogue one synthetic cartridge under versionId for the duration of fn.
+local function withTestVersion(versionId, info, fn)
+  local saved = GameVersion.VERSIONS[versionId]
+  GameVersion.VERSIONS[versionId] = {
+    id = versionId,
+    label = "Synthetic",
+    displayName = "Synthetic Cartridge",
+    sha1 = info.sha1,
+    gameCode = info.gameCode,
+    expectedSize = info.expectedSize,
+  }
+  local ok, err = pcall(fn)
+  GameVersion.VERSIONS[versionId] = saved
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- Route CacheFs.forVersion(versionId) at the fake backend for fn.
+local function withRoutedVersionCache(versionId, backend, fn)
+  local realForVersion = CacheFs.forVersion
+  CacheFs.forVersion = function(id, backendOverride)
+    if id == versionId then
+      return realForVersion(id, backend)
+    end
+    return realForVersion(id, backendOverride)
+  end
+  local ok, err = pcall(fn)
+  CacheFs.forVersion = realForVersion
+  if not ok then
+    error(err, 0)
+  end
+end
+
+local function synthCartridgeBytes(gameCode, overlayPayload)
+  return NdsBuilder.build({
+    gameCode = gameCode,
+    title = "SYNTH",
+    overlays9 = { overlayPayload },
+    unmapped = { "UNMAPPED-DATA" },
+    tree = { files = { { name = "root.bin", content = "ROOT" } }, dirs = {} },
+  })
+end
+
+local function writeHostFile(path, bytes)
+  local writer = assert(io.open(path, "wb"))
+  writer:write(bytes)
+  assert(writer:close())
+end
+
+local function recordTestBinding(versionId, backend, data, descriptor)
+  local cache = CacheFs.forVersion(versionId, backend)
+  local rom = assert(NdsRom.open(RomSource.fromString(data)))
+  local recorded, recordErr = RomBinding.record(cache, rom, descriptor)
+  Assert.isTrue(recorded, "setup registration failed: " .. tostring(recordErr))
+end
+
+local function mentionsVersion(err, versionId)
+  return tostring(err):find(versionId, 1, true) ~= nil
+end
+
+-- A previously registered bare cartridge reopens with no explicit flag and
+-- validates against the requested canonical identity.
+function T.implicit_registered_bare_cartridge_reopens_without_an_explicit_flag()
+  withOwnedRoot(function(root)
+    local versionId = "synthseeded01"
+    local gameCode = "IXD1"
+    local data = synthCartridgeBytes(gameCode, "OVERLAY0-DATAA")
+    local sha1 = RomSource.fromString(data):sha1()
+    withTestVersion(versionId, { sha1 = sha1, gameCode = gameCode, expectedSize = #data }, function()
+      local backend = FakeCache.new()
+      local romPath = root .. "/game.nds"
+      writeHostFile(romPath, data)
+      recordTestBinding(versionId, backend, data, {
+        kind = "nds",
+        path = romPath,
+        displayName = "game.nds",
+        zipEntry = false,
+      })
+      withRoutedVersionCache(versionId, backend, function()
+        withArgValue({}, function()
+          local romFs, source = RomSourcePath.openReader(versionId)
+          Assert.notNil(romFs, "the registered cartridge must reopen: " .. tostring(source))
+          assert(romFs)
+          assert(source)
+          local ok, err = pcall(function()
+            Assert.equal(romFs:version(), versionId)
+            Assert.equal(source:sha1(), sha1)
+          end)
+          romFs:close()
+          source:release()
+          if not ok then
+            error(err, 0)
+          end
+        end)
+      end)
+    end)
+  end)
+end
+
+-- A registered archive member wins over archive order, including after the
+-- archive is rewritten with its members in the opposite order.
+function T.implicit_registered_archive_serves_the_recorded_member_regardless_of_order()
+  withOwnedRoot(function(root)
+    local versionId = "synthseeded02"
+    local gameCode = "IXD2"
+    local bytesA = synthCartridgeBytes(gameCode, "OVERLAY0-DATAA")
+    local bytesB = synthCartridgeBytes(gameCode, "OVERLAY0-DATAB")
+    Assert.isTrue(bytesA ~= bytesB, "the members must differ")
+    Assert.equal(#bytesA, #bytesB, "the members must share a size")
+    local shaB = RomSource.fromString(bytesB):sha1()
+    withTestVersion(versionId, { sha1 = shaB, gameCode = gameCode, expectedSize = #bytesB }, function()
+      local backend = FakeCache.new()
+      local zipPath = root .. "/game.zip"
+      writeHostFile(zipPath, ZipBuilder.build({
+        { name = "a_first.nds", data = bytesA },
+        { name = "z_second.nds", data = bytesB },
+      }))
+      recordTestBinding(versionId, backend, bytesB, {
+        kind = "zip",
+        path = zipPath,
+        displayName = "game.zip",
+        zipEntry = "z_second.nds",
+      })
+      withRoutedVersionCache(versionId, backend, function()
+        withArgValue({}, function()
+          local romFs, source = RomSourcePath.openReader(versionId)
+          Assert.notNil(romFs, "the recorded member must open: " .. tostring(source))
+          assert(romFs)
+          assert(source)
+          Assert.equal(source:sha1(), shaB, "the recorded member must win over archive order")
+          romFs:close()
+          source:release()
+          writeHostFile(zipPath, ZipBuilder.build({
+            { name = "z_second.nds", data = bytesB },
+            { name = "a_first.nds", data = bytesA },
+          }))
+          local reorderedFs, reorderedSource = RomSourcePath.openReader(versionId)
+          Assert.notNil(reorderedFs, "reordering must not change the member: " .. tostring(reorderedSource))
+          assert(reorderedFs)
+          assert(reorderedSource)
+          local ok, err = pcall(function()
+            Assert.equal(reorderedSource:sha1(), shaB, "the recorded member must survive reordering")
+          end)
+          reorderedFs:close()
+          reorderedSource:release()
+          if not ok then
+            error(err, 0)
+          end
+        end)
+      end)
+    end)
+  end)
+end
+
+-- An explicit wrong cartridge fails before the reader opens, releases once,
+-- and leaves the good registration untouched: no fallback may rescue it.
+function T.explicit_wrong_cartridge_fails_before_the_reader_opens_without_fallback()
+  withOwnedRoot(function(root)
+    local versionId = "synthseeded03"
+    local gameCode = "IXD3"
+    local good = synthCartridgeBytes(gameCode, "OVERLAY0-DATAA")
+    local wrong = synthCartridgeBytes(gameCode, "OVERLAY0-DATAW")
+    Assert.equal(#good, #wrong, "the variants must share a size")
+    local shaGood = RomSource.fromString(good):sha1()
+    withTestVersion(versionId, { sha1 = shaGood, gameCode = gameCode, expectedSize = #good }, function()
+      local backend = FakeCache.new()
+      local goodPath = root .. "/good.nds"
+      local wrongPath = root .. "/wrong.nds"
+      writeHostFile(goodPath, good)
+      writeHostFile(wrongPath, wrong)
+      recordTestBinding(versionId, backend, good, {
+        kind = "nds",
+        path = goodPath,
+        displayName = "good.nds",
+        zipEntry = false,
+      })
+      withRoutedVersionCache(versionId, backend, function()
+        local readerOpens = 0
+        withPatched(RomFs, "open", function(original)
+          return function(...)
+            readerOpens = readerOpens + 1
+            return original(...)
+          end
+        end, function()
+          local releases = 0
+          withPatched(RomSource, "fromPath", function(original)
+            return function(...)
+              local source, sourceErr = original(...)
+              if source then
+                local realRelease = source.release
+                source.release = function(self)
+                  releases = releases + 1
+                  return realRelease(self)
+                end
+              end
+              return source, sourceErr
+            end
+          end, function()
+            withArgValue({ "--rom-source", wrongPath }, function()
+              local romFs, cause = RomSourcePath.openReader(versionId)
+              Assert.isNil(romFs, "an explicit wrong cartridge must not open")
+              Assert.notNil(cause, "an explicit wrong cartridge must report its cause")
+              Assert.equal(readerOpens, 0, "an identity mismatch must fail before the reader opens")
+              Assert.equal(releases, 1, "the rejected explicit source must be released once")
+            end)
+          end)
+        end)
+        local binding = assert(RomBinding.read(CacheFs.forVersion(versionId, backend), versionId))
+        Assert.equal(binding.path, goodPath, "the good registration must survive an explicit mismatch")
+      end)
+    end)
+  end)
+end
+
+-- Once the recorded member is gone, reopening fails instead of serving a
+-- different entry, and no archive mount leaks.
+function T.removed_bound_member_fails_without_serving_a_different_entry()
+  withOwnedRoot(function(root)
+    local versionId = "synthseeded04"
+    local gameCode = "IXD4"
+    local bytesA = synthCartridgeBytes(gameCode, "OVERLAY0-DATAA")
+    local bytesB = synthCartridgeBytes(gameCode, "OVERLAY0-DATAB")
+    local shaB = RomSource.fromString(bytesB):sha1()
+    withTestVersion(versionId, { sha1 = shaB, gameCode = gameCode, expectedSize = #bytesB }, function()
+      local backend = FakeCache.new()
+      local zipPath = root .. "/game.zip"
+      writeHostFile(zipPath, ZipBuilder.build({
+        { name = "a_first.nds", data = bytesA },
+        { name = "z_second.nds", data = bytesB },
+      }))
+      recordTestBinding(versionId, backend, bytesB, {
+        kind = "zip",
+        path = zipPath,
+        displayName = "game.zip",
+        zipEntry = "z_second.nds",
+      })
+      withRoutedVersionCache(versionId, backend, function()
+        withArgValue({}, function()
+          local romFs, source = RomSourcePath.openReader(versionId)
+          Assert.notNil(romFs, "the recorded member must open before removal: " .. tostring(source))
+          assert(romFs)
+          assert(source)
+          romFs:close()
+          source:release()
+          writeHostFile(zipPath, ZipBuilder.build({
+            { name = "a_first.nds", data = bytesA },
+          }))
+          local goneFs, goneErr = RomSourcePath.openReader(versionId)
+          Assert.isNil(goneFs, "a removed member must not fall back to another entry")
+          Assert.notNil(goneErr, "a removed member must report its cause")
+          Assert.isNil(
+            love.filesystem.getInfo(MOUNT_POINT),
+            "no archive mount may leak after a removed member"
+          )
+        end)
+      end)
+    end)
+  end)
+end
+
+-- An unreopenable drop and a missing registration both fail with the
+-- requested version in the cause instead of opening anything.
+function T.unreopenable_and_missing_registrations_fail_with_version_context()
+  local ephemeralId = "synthseeded05"
+  local ephemeralCode = "IXD5"
+  local ephemeralData = synthCartridgeBytes(ephemeralCode, "OVERLAY0-DATAA")
+  local ephemeralSha = RomSource.fromString(ephemeralData):sha1()
+  withTestVersion(ephemeralId, { sha1 = ephemeralSha, gameCode = ephemeralCode, expectedSize = #ephemeralData }, function()
+    local backend = FakeCache.new()
+    recordTestBinding(ephemeralId, backend, ephemeralData, {
+      kind = "nds",
+      path = false,
+      displayName = "dropped.nds",
+      zipEntry = false,
+    })
+    withRoutedVersionCache(ephemeralId, backend, function()
+      withArgValue({}, function()
+        local romFs, cause = RomSourcePath.openReader(ephemeralId)
+        Assert.isNil(romFs, "an unreopenable drop must not open after restart")
+        Assert.notNil(cause, "an unreopenable drop must report its cause")
+        Assert.isTrue(
+          mentionsVersion(cause, ephemeralId),
+          "the cause must name the requested version, got: " .. tostring(cause)
+        )
+      end)
+    end)
+  end)
+  local missingId = "synthseeded06"
+  local missingCode = "IXD6"
+  local missingData = synthCartridgeBytes(missingCode, "OVERLAY0-DATAA")
+  local missingSha = RomSource.fromString(missingData):sha1()
+  withTestVersion(missingId, { sha1 = missingSha, gameCode = missingCode, expectedSize = #missingData }, function()
+    withRoutedVersionCache(missingId, FakeCache.new(), function()
+      withArgValue({}, function()
+        local romFs, cause = RomSourcePath.openReader(missingId)
+        Assert.isNil(romFs, "a missing registration must not open")
+        Assert.notNil(cause, "a missing registration must report its cause")
+        Assert.isTrue(
+          mentionsVersion(cause, missingId),
+          "the cause must name the requested version, got: " .. tostring(cause)
+        )
+      end)
+    end)
+  end)
+end
+
+-- The flag lookup stays a pure explicit-argument scan: registrations never
+-- answer it.
+function T.flag_lookup_reports_only_the_explicit_argument()
+  withArgValue({ "--rom-source", "/tmp/explicit.nds" }, function()
+    Assert.equal(RomSourcePath.find(), "/tmp/explicit.nds")
+  end)
+  withArgValue({}, function()
+    Assert.isNil(RomSourcePath.find())
+  end)
+  withArgValue({ "--filter", "rom_source" }, function()
+    Assert.isNil(RomSourcePath.find())
+  end)
+  local saved = _G.arg
+  _G.arg = nil
+  local ok, err = pcall(function()
+    Assert.isNil(RomSourcePath.find())
+  end)
+  _G.arg = saved
+  if not ok then
+    error(err, 0)
+  end
+end
+
 return { tests = T }
