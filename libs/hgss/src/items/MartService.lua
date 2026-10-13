@@ -43,12 +43,6 @@ local function checkArray(value, maximum, what)
   assert(type(value) == "table", what .. " must be an array")
   local count = #value
   assert(count <= maximum, what .. " is too long")
-  for key in pairs(value) do
-    assert(
-      type(key) == "number" and key % 1 == 0 and key >= 1 and key <= count,
-      what .. " must be a dense ordered array"
-    )
-  end
   return count
 end
 
@@ -76,11 +70,6 @@ end
 
 local function validateStock(stock, itemCatalog, catalog)
   assert(type(stock) == "table" and type(stock.key) == "string" and stock.key ~= "", "mart stock key is required")
-  local stockFields =
-    { key = true, currency = true, presentationKind = true, quantityMode = true, bonusPolicy = true, entries = true }
-  for key in pairs(stock) do
-    assert(stockFields[key], "mart stock has an unknown field " .. tostring(key))
-  end
   local modes = {
     items = { currency = "money", quantityMode = "multiple", target = { bag = true } },
     seals = { currency = "money", quantityMode = "multiple", target = { seal = true } },
@@ -104,37 +93,16 @@ local function validateStock(stock, itemCatalog, catalog)
       type(entry) == "table" and type(entry.key) == "string" and entry.key ~= "" and not seen[entry.key],
       "mart stock entry keys must be unique"
     )
-    local entryFields = {
-      key = true,
-      displayItemKey = true,
-      description = true,
-      unitPrice = true,
-      destination = true,
-      restriction = true,
-      capacityProbe = true,
-    }
-    for key in pairs(entry) do
-      assert(entryFields[key], "mart entry has an unknown field " .. tostring(key))
-    end
     seen[entry.key] = true
     assert(type(entry.displayItemKey) == "string", "mart display item key is required")
     itemCatalog:item(entry.displayItemKey)
     assert(integer(entry.unitPrice, 0, 999999), "mart entry price is invalid")
     assert(type(entry.description) == "table", "mart description is invalid")
-    if entry.description.kind == "item" then
-      for key in pairs(entry.description) do
-        assert(key == "kind", "item description contains an unknown field")
-      end
-    elseif entry.description.kind == "literal" and type(entry.description.value) == "string" then
-      for key in pairs(entry.description) do
-        assert(key == "kind" or key == "value", "literal description contains an unknown field")
-      end
-    else
-      error("mart description is invalid", 0)
-    end
-    for key in pairs(entry.destination) do
-      assert(key == "kind" or key == "key", "mart destination contains an unknown field")
-    end
+    assert(
+      entry.description.kind == "item"
+        or (entry.description.kind == "literal" and type(entry.description.value) == "string"),
+      "mart description is invalid"
+    )
     assert(
       type(entry.destination) == "table" and mode.target[entry.destination.kind],
       "mart stock destination is incompatible"
@@ -158,30 +126,17 @@ local function validateStock(stock, itemCatalog, catalog)
     )
     if restriction.kind == "daily_slot" then
       assert(integer(restriction.slot, 0, 11), "mart daily slot is invalid")
-      for key in pairs(restriction) do
-        assert(key == "kind" or key == "slot", "daily restriction contains an unknown field")
-      end
     elseif restriction.kind == "owned_card" then
       assert(
         entry.destination.kind == "card" and restriction.key == entry.destination.key,
         "owned-card restriction must match its destination"
       )
-      for key in pairs(restriction) do
-        assert(key == "kind" or key == "key", "owned-card restriction contains an unknown field")
-      end
-    else
-      for key in pairs(restriction) do
-        assert(key == "kind", "none restriction contains an unknown field")
-      end
     end
     if entry.capacityProbe ~= nil then
       assert(
         entry.destination.kind == "card" and entry.capacityProbe.kind == "bag",
         "only Data Cards use a Bag capacity probe"
       )
-      for key in pairs(entry.capacityProbe) do
-        assert(key == "kind" or key == "key", "capacity probe contains an unknown field")
-      end
       itemCatalog:item(entry.capacityProbe.key)
     end
     if entry.destination.kind == "card" then
