@@ -73,29 +73,13 @@ local function validateSnapshot(snapshot, context)
   if type(snapshot) ~= "table" or snapshot.schema ~= "g4-boxes-v1" then
     fail("boxes snapshot schema is invalid")
   end
-  local allowed = { schema = true, boxCount = true, activeBox = true, bonusUnlocks = true, boxes = true }
-  for key in pairs(snapshot) do
-    if not allowed[key] then
-      fail("boxes snapshot has an unknown field " .. tostring(key))
-    end
-  end
   if not integer(snapshot.boxCount, 1) or type(snapshot.boxes) ~= "table" then
     fail("boxes snapshot count is invalid")
-  end
-  for key in pairs(snapshot.boxes) do
-    if type(key) ~= "number" or key % 1 ~= 0 or key < 1 or key > snapshot.boxCount then
-      fail("boxes must be dense")
-    end
   end
   for index = 1, snapshot.boxCount do
     local box = snapshot.boxes[index]
     if type(box) ~= "table" then
       fail("box record is invalid", { box = index - 1 })
-    end
-    for key in pairs(box) do
-      if key ~= "name" and key ~= "wallpaperId" and key ~= "slots" then
-        fail("box has an unknown field", { box = index - 1, field = key })
-      end
     end
     if box.name ~= nil then
       if type(box.name) ~= "string" then
@@ -121,11 +105,6 @@ local function validateSnapshot(snapshot, context)
     if type(box.slots) ~= "table" then
       fail("box slots are required", { box = index - 1 })
     end
-    for key in pairs(box.slots) do
-      if type(key) ~= "number" or key % 1 ~= 0 or key < 1 or key > Boxes.SLOTS_PER_BOX then
-        fail("box slots must be dense", { box = index - 1 })
-      end
-    end
     for slot = 1, Boxes.SLOTS_PER_BOX do
       if box.slots[slot] == nil or (box.slots[slot] ~= false and type(box.slots[slot]) ~= "table") then
         fail("box must contain exactly thirty slots", { box = index - 1, slot = slot - 1 })
@@ -137,11 +116,6 @@ local function validateSnapshot(snapshot, context)
   end
   if type(snapshot.bonusUnlocks) ~= "table" then
     fail("bonus wallpaper unlocks are required")
-  end
-  for key in pairs(snapshot.bonusUnlocks) do
-    if type(key) ~= "number" or key % 1 ~= 0 or key < 1 or key > 8 then
-      fail("bonus wallpaper unlocks must have eight entries")
-    end
   end
   for index = 1, 8 do
     if type(snapshot.bonusUnlocks[index]) ~= "boolean" then
@@ -171,6 +145,9 @@ function Boxes.new(snapshot, options)
     validateSnapshot(snapshot)
     local copied = copy(snapshot)
     boxes, activeBox, unlocks = copied.boxes, copied.activeBox, copied.bonusUnlocks
+    for index = #boxes, copied.boxCount + 1, -1 do
+      boxes[index] = nil
+    end
   end
   local count = math.max(configuredCount, #boxes)
   for index = #boxes + 1, count do
@@ -207,11 +184,6 @@ local function checkArray(value, what)
     fail(what .. " must be an array")
   end
   local count = #value
-  for key in pairs(value) do
-    if type(key) ~= "number" or key % 1 ~= 0 or key < 1 or key > count then
-      fail(what .. " must be dense")
-    end
-  end
   return count
 end
 
@@ -257,11 +229,6 @@ end
 ---@return BoxesPreparation|nil, string|nil
 function Boxes:prepareChanges(expectedRevision, changes)
   assert(type(changes) == "table", "box changes must be a record")
-  for key in pairs(changes) do
-    if key ~= "updates" and key ~= "metadata" and key ~= "activeBox" and key ~= "bonusUnlocks" then
-      fail("box changes have an unknown field " .. tostring(key))
-    end
-  end
   if expectedRevision ~= self._revision then
     return nil, "stale"
   end
@@ -296,11 +263,6 @@ function Boxes:prepareChanges(expectedRevision, changes)
     if type(update) ~= "table" then
       fail("box update must be a record")
     end
-    for key in pairs(update) do
-      if key ~= "box" and key ~= "slot" and key ~= "mon" then
-        fail("box update has an unknown field")
-      end
-    end
     local box, slot = update.box, update.slot
     boxAt(self, box)
     if not integer(slot, 0) or slot >= Boxes.SLOTS_PER_BOX then
@@ -326,11 +288,6 @@ function Boxes:prepareChanges(expectedRevision, changes)
     local update = metadata[index]
     if type(update) ~= "table" then
       fail("box metadata update must be a record")
-    end
-    for key in pairs(update) do
-      if key ~= "box" and key ~= "name" and key ~= "clearName" and key ~= "wallpaperId" then
-        fail("box metadata update has an unknown field")
-      end
     end
     if update.clearName ~= nil and type(update.clearName) ~= "boolean" then
       fail("box clear-name flag must be a boolean")
@@ -381,11 +338,6 @@ function Boxes:prepareChanges(expectedRevision, changes)
     local unlocks = changes.bonusUnlocks
     if type(unlocks) ~= "table" then
       fail("bonus unlocks must be an array")
-    end
-    for key in pairs(unlocks) do
-      if type(key) ~= "number" or key % 1 ~= 0 or key < 1 or key > 8 then
-        fail("bonus unlocks must contain eight booleans")
-      end
     end
     for index = 1, 8 do
       if type(unlocks[index]) ~= "boolean" then
