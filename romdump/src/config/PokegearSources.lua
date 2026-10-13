@@ -121,6 +121,10 @@ function PokegearSources.phoneForeground(skin)
   return { char = 28 + skin, screen = 34 + skin, palette = 10 + skin }
 end
 
+-- The contact list window prints with background palette bank 2 of the
+-- phone foreground palette, sixteen colors per skin.
+PokegearSources.phoneListPaletteBank = 2
+
 function PokegearSources.phoneUpper(skin)
   return { char = 16 + skin, screen = 22 + skin, palette = 4 + skin }
 end

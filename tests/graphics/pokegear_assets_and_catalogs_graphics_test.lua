@@ -171,6 +171,24 @@ function T.six_skins_keep_source_palette_slots_and_anchored_animation_frames(sco
     end
     Assert.equal(distinctCount, 6, versionId .. " must realize six distinct shell foreground variants")
 
+    -- The phone contact list palette is source bank 2 of each skin's phone
+    -- foreground palette, decoded independently of the compiler.
+    local phoneBytes = assert(romFs:readSourcePath("a/1/4/6"), "the dump must expose the phone archive")
+    local phoneArchive = assert(Narc.open(phoneBytes, "a/1/4/6"), "the phone archive must open")
+    for skin = 0, 5 do
+      local source = decodeMember(phoneArchive, "decodePalette", 10 + skin, "phone list palette")
+      local published = assert(manifest.phone.listPalette[skin], versionId .. " publishes the list palette for skin " .. skin)
+      Assert.equal(#published, 16, versionId .. " list palette carries one bank of sixteen colors")
+      for index = 1, 16 do
+        local expected = source.colors[32 + index]
+        Assert.deepEqual(
+          published[index],
+          { r = expected.r, g = expected.g, b = expected.b },
+          versionId .. " skin " .. skin .. " list palette color " .. index
+        )
+      end
+    end
+
     -- The compiled cursor animation keeps the source frame/duration
     -- behavior: independently decoded durations match, loop behavior stays
     -- a play mode plus loop start, and no frame rate shorthand survives.

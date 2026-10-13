@@ -77,6 +77,21 @@ local function stageVisual(assets, name, image)
   return { image = path, width = image.width, height = image.height, anchorX = 0, anchorY = 0 }
 end
 
+-- The sixteen colors of one palette bank as zero-based-index 0..255 RGB
+-- records, in source color order.
+local function paletteBank(archive, memberId, bank, role)
+  local palette = decode("decodePalette", unpackMember(archive, memberId, role), role)
+  local colors = {}
+  for index = 1, 16 do
+    local color = palette.colors[bank * 16 + index]
+    if color == nil then
+      error("pokegear palette bank is out of range: " .. role, 0)
+    end
+    colors[index] = { r = color.r, g = color.g, b = color.b }
+  end
+  return colors
+end
+
 local function renderTriple(archive, selection, role, assets, assetName)
   local charMembers = selection.chars ~= nil and selection.chars or { selection.char }
   local tiles, depth = {}, nil
@@ -168,7 +183,7 @@ local function _compile(romFs, versionId)
 
   local shellForeground, shellInformation = {}, {}
   local configureForeground, configurePatch = {}, {}
-  local phoneForeground, phoneUpper = {}, {}
+  local phoneForeground, phoneUpper, phoneListPalette = {}, {}, {}
   local radioMain, radioSecond, radioUpper = {}, {}, {}
   local mapForeground, mapUpper, mapPatches = {}, {}, {}
   for _, skin in ipairs(PokegearSources.skins) do
@@ -206,6 +221,8 @@ local function _compile(romFs, versionId)
     selections["phone.foreground.skin" .. skin] = { path = PokegearSources.archives.phone.path, members = phoneFg }
     phoneForeground[skin] =
       renderTriple(phoneArchive, phoneFg, "phone.foreground.skin" .. skin, assets, "phone-foreground-skin-" .. skin)
+    phoneListPalette[skin] =
+      paletteBank(phoneArchive, phoneFg.palette, PokegearSources.phoneListPaletteBank, "phone.listPalette.skin" .. skin)
     local phoneUp = PokegearSources.phoneUpper(skin)
     selections["phone.upper.skin" .. skin] = { path = PokegearSources.archives.phone.path, members = phoneUp }
     phoneUpper[skin] =
@@ -307,7 +324,7 @@ local function _compile(romFs, versionId)
     skins = skins,
     shell = { foreground = shellForeground, information = shellInformation },
     configure = { foreground = configureForeground, patch = configurePatch },
-    phone = { foreground = phoneForeground, upper = phoneUpper },
+    phone = { foreground = phoneForeground, upper = phoneUpper, listPalette = phoneListPalette },
     map = {
       foreground = mapForeground,
       upper = mapUpper,
