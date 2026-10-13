@@ -179,10 +179,10 @@ function FieldScriptComposition.phoneGiftQueries(state, catalog, random, itemCat
     assert(type(nativeItemId) == "number", "contact gifts carry their native item")
     return nativeItemId
   end
-  ---@return string|integer the waiting parent gift item ID, or numeric zero
+  ---@return integer strict BOOL indicating whether a parent gift is queued
   function adapter:momGift()
-    local itemId = self:peekMom()
-    return itemId
+    local _, quantity = self:peekMom()
+    return quantity > 0 and 1 or 0
   end
   ---@return integer, integer native item ID and quantity, or zero values
   function adapter:peekMom()

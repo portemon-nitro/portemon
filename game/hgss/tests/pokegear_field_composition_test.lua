@@ -647,6 +647,70 @@ function T.tests.gift_queries_answer_waiting_gifts_or_zero()
   Assert.equal(vars2.mom, 0, "an empty queue answers numeric zero")
 end
 
+function T.tests.parent_gift_check_returns_boolean_for_a_non_one_item_id()
+  local friends = companion()
+  local bundle = composeGear(friends)
+  local run, vars = handlerRun(scriptServices(bundle, friends))
+  Runtime.executeNode({ op = "mom_gift_check", result = { value = "var", id = "empty" } }, run)
+  Assert.equal(vars.empty, 0, "an empty queue returns BOOL zero")
+
+  friends.state:setMom({
+    balance = 0,
+    purchases = {},
+    gifts = { { item = "custom.item-42", quantity = 2 } },
+  })
+
+  local revision = friends.state:revision()
+  Assert.equal(
+    Runtime.executeNode({ op = "mom_gift_check", result = { value = "var", id = "hasGift" } }, run),
+    Runtime.OUTCOME_CONTINUE,
+    "the source gift check completes synchronously"
+  )
+  Assert.equal(vars.hasGift, 1, "the gift check returns BOOL instead of native item ID 42")
+  Runtime.executeNode({ op = "mom_gift_check", result = { value = "var", id = "hasGiftAgain" } }, run)
+  Assert.equal(vars.hasGiftAgain, 1, "repeated gift checks preserve the boolean result")
+  Assert.equal(friends.state:revision(), revision, "gift checks never mutate the saved queue")
+end
+
+function T.tests.parent_gift_head_and_take_preserve_fifo_across_boolean_checks()
+  local friends = companion()
+  local bundle = composeGear(friends)
+  friends.state:setMom({
+    balance = 0,
+    purchases = {},
+    gifts = {
+      { item = "custom.item-42", quantity = 2 },
+      { item = "custom.item-73", quantity = 3 },
+    },
+  })
+  local run, vars = handlerRun(scriptServices(bundle, friends))
+
+  Runtime.executeNode({
+    op = "mom_gift_head",
+    item = { value = "var", id = "item" },
+    quantity = { value = "var", id = "quantity" },
+  }, run)
+  Assert.equal(vars.item, 42, "the head query keeps the first native item ID")
+  Assert.equal(vars.quantity, 2, "the head query keeps the first quantity")
+
+  Runtime.executeNode({ op = "mom_gift_take" }, run)
+  Assert.equal(friends.state:readPhone().mom.gifts[1].item, "custom.item-73", "take advances the FIFO once")
+  Runtime.executeNode({
+    op = "mom_gift_head",
+    item = { value = "var", id = "nextItem" },
+    quantity = { value = "var", id = "nextQuantity" },
+  }, run)
+  Assert.equal(vars.nextItem, 73, "the next head keeps its native item ID")
+  Assert.equal(vars.nextQuantity, 3, "the next head keeps its native quantity")
+  Runtime.executeNode({ op = "mom_gift_check", result = { value = "var", id = "nextHasGift" } }, run)
+  Assert.equal(vars.nextHasGift, 1, "the second gift also returns strict BOOL instead of native item ID 73")
+
+  Runtime.executeNode({ op = "mom_gift_take" }, run)
+  Assert.deepEqual(friends.state:readPhone().mom.gifts, {}, "the second take empties the FIFO")
+  Runtime.executeNode({ op = "mom_gift_check", result = { value = "var", id = "empty" } }, run)
+  Assert.equal(vars.empty, 0, "an empty queue returns strict BOOL zero")
+end
+
 function T.tests.radio_queries_compare_the_audio_latch()
   local friends = companion()
   local bundle = composeGear(friends, "pokeflute")
