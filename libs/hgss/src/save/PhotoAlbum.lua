@@ -26,147 +26,75 @@ local function integer(value, low, high)
   return type(value) == "number" and value % 1 == 0 and value >= low and value <= high
 end
 
+local function nonEmptyString(value)
+  return type(value) == "string" and value ~= ""
+end
+
+local function checkMon(mon, context)
+  if
+    type(mon) ~= "table"
+    or not nonEmptyString(mon.species)
+    or not integer(mon.form, 0, 31)
+    or not integer(mon.gender, 0, 2)
+    or type(mon.shiny) ~= "boolean"
+  then
+    invalid("photo party subject is invalid")
+  end
+  if context and context.monCatalog then
+    context.monCatalog:form(mon.species, mon.form)
+  end
+end
+
 local function checkRecord(photo, context)
   if type(photo) ~= "table" or photo.schema ~= "g4-photo-v1" then
     invalid("photo schema is invalid")
   end
-  local allowed = {
-    schema = true,
-    icon = true,
-    playerName = true,
-    playerGender = true,
-    leadNickname = true,
-    avatarState = true,
-    mapSymbol = true,
-    fieldX = true,
-    fieldZ = true,
-    date = true,
-    hour = true,
-    minute = true,
-    subjectSprite = true,
-    party = true,
-    sourcePartyCount = true,
-    hiddenPropModels = true,
-  }
-  for key in pairs(photo) do
-    if not allowed[key] then
-      invalid("photo has an unknown field")
-    end
-  end
-  if not integer(photo.icon, 0, 255) or type(photo.playerName) ~= "string" or type(photo.leadNickname) ~= "string" then
-    invalid("photo identity is invalid")
-  end
-  if
-    not integer(photo.playerGender, 0, 1)
-    or type(photo.avatarState) ~= "string"
-    or type(photo.mapSymbol) ~= "string"
-    or photo.mapSymbol == ""
-  then
-    invalid("photo actor or map identity is invalid")
-  end
-  if not integer(photo.fieldX, 0, 65535) or not integer(photo.fieldZ, 0, 65535) then
-    invalid("photo coordinates are invalid")
-  end
   local date = photo.date
   if
-    type(date) ~= "table"
+    not integer(photo.icon, 0, 255)
+    or type(photo.playerName) ~= "string"
+    or type(photo.leadNickname) ~= "string"
+    or not integer(photo.playerGender, 0, 1)
+    or type(photo.avatarState) ~= "string"
+    or not nonEmptyString(photo.mapSymbol)
+    or not integer(photo.fieldX, 0, 65535)
+    or not integer(photo.fieldZ, 0, 65535)
+    or type(date) ~= "table"
     or not integer(date.year, 2000, 2255)
     or not integer(date.month, 1, 12)
     or not integer(date.day, 1, 31)
     or not integer(date.weekday, 0, 6)
+    or not integer(photo.hour, 0, 23)
+    or not integer(photo.minute, 0, 59)
+    or (photo.subjectSprite ~= nil and not nonEmptyString(photo.subjectSprite))
+    or not integer(photo.sourcePartyCount, 0, 6)
   then
-    invalid("photo date is invalid")
+    invalid("photo identity, location, or time is invalid")
   end
-  for key in pairs(date) do
-    if key ~= "year" and key ~= "month" and key ~= "day" and key ~= "weekday" then
-      invalid("photo date has an unknown field")
-    end
-  end
-  if not integer(photo.hour, 0, 23) or not integer(photo.minute, 0, 59) then
-    invalid("photo time is invalid")
-  end
-  if photo.subjectSprite ~= nil and (type(photo.subjectSprite) ~= "string" or photo.subjectSprite == "") then
-    invalid("photo subject sprite is invalid")
-  end
-  if
-    not integer(photo.sourcePartyCount, 0, 6)
-    or type(photo.party) ~= "table"
-    or type(photo.hiddenPropModels) ~= "table"
-  then
+  if type(photo.party) ~= "table" or type(photo.hiddenPropModels) ~= "table" then
     invalid("photo party snapshot is invalid")
   end
   for index = 1, 6 do
     local mon = photo.party[index]
-    if mon == nil then
-      invalid("photo party must contain six entries")
-    end
     if mon ~= false then
-      if
-        type(mon) ~= "table"
-        or type(mon.species) ~= "string"
-        or mon.species == ""
-        or not integer(mon.form, 0, 31)
-        or not integer(mon.gender, 0, 2)
-        or type(mon.shiny) ~= "boolean"
-      then
-        invalid("photo party subject is invalid")
-      end
-      for key in pairs(mon) do
-        if key ~= "species" and key ~= "form" and key ~= "gender" and key ~= "shiny" then
-          invalid("photo party subject has an unknown field")
-        end
-      end
-      if context and context.monCatalog then
-        context.monCatalog:form(mon.species, mon.form)
-      end
+      checkMon(mon, context)
     end
-  end
-  for key in pairs(photo.party) do
-    if type(key) ~= "number" or key % 1 ~= 0 or key < 1 or key > 6 then
-      invalid("photo party must contain six entries")
-    end
-  end
-  if #photo.hiddenPropModels ~= 2 then
-    invalid("photo prop models must contain two entries")
   end
   for index = 1, 2 do
-    if
-      photo.hiddenPropModels[index] == nil
-      or (photo.hiddenPropModels[index] ~= false and type(photo.hiddenPropModels[index]) ~= "string")
-    then
+    local model = photo.hiddenPropModels[index]
+    if model ~= false and type(model) ~= "string" then
       invalid("photo prop model is invalid")
-    end
-  end
-  for key in pairs(photo.hiddenPropModels) do
-    if key ~= 1 and key ~= 2 then
-      invalid("photo prop models must contain two entries")
     end
   end
 end
 
 local function validate(snapshot, context)
-  if type(snapshot) ~= "table" or snapshot.schema ~= PhotoAlbum.SCHEMA then
+  if type(snapshot) ~= "table" or snapshot.schema ~= PhotoAlbum.SCHEMA or type(snapshot.slots) ~= "table" then
     invalid("photo album schema is invalid")
-  end
-  for key in pairs(snapshot) do
-    if key ~= "schema" and key ~= "slots" then
-      invalid("photo album has an unknown field")
-    end
-  end
-  if type(snapshot.slots) ~= "table" then
-    invalid("photo album slots are required")
-  end
-  for key in pairs(snapshot.slots) do
-    if type(key) ~= "number" or key % 1 ~= 0 or key < 1 or key > PhotoAlbum.CAPACITY then
-      invalid("photo album slots must be dense")
-    end
   end
   local result = {}
   for index = 1, PhotoAlbum.CAPACITY do
     local photo = snapshot.slots[index]
-    if photo == nil then
-      invalid("photo album must contain exactly thirty-six slots")
-    end
     if photo ~= false then
       checkRecord(photo, context)
       result[index] = copy(photo)
