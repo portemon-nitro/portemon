@@ -246,7 +246,27 @@ function PhoneController:_readCatalog()
     local record = entry --[[@as table<string, unknown>]]
     assert(isNonEmptyString(record.key), "catalog contacts carry semantic keys")
     local key = record.key --[[@as string]]
+    assert(byKey[key] == nil, "catalog contacts carry unique semantic keys")
     byKey[key] = record
+  end
+  local order, seen = {}, {}
+  for _, key in ipairs(saved) do
+    assert(isNonEmptyString(key), "saved phone order entries carry contact keys")
+    assert(registered[key] ~= nil, "saved phone order entries are registered")
+    assert(byKey[key] ~= nil, "saved phone order entries resolve through the catalog")
+    assert(not seen[key], "saved phone order contains each contact once")
+    seen[key] = true
+    order[#order + 1] = key
+  end
+  local registeredCount = 0
+  for _ in pairs(registered) do
+    registeredCount = registeredCount + 1
+  end
+  assert(#order == registeredCount, "saved phone order contains every registered contact")
+
+  for _, key in ipairs(order) do
+    local record = byKey[key]
+    assert(record ~= nil, "registered phone contacts resolve through the catalog")
     local weights = record.sortWeights
     if type(weights) == "table" then
       local list = {}
@@ -282,20 +302,6 @@ function PhoneController:_readCatalog()
     assert(type(class) == "string", "contact rows carry their class token")
     self._classes[key] = class --[[@as string]]
   end
-  local order, seen = {}, {}
-  for _, key in ipairs(saved) do
-    assert(isNonEmptyString(key), "saved phone order entries carry contact keys")
-    assert(registered[key] ~= nil, "saved phone order entries are registered")
-    assert(byKey[key] ~= nil, "saved phone order entries resolve through the catalog")
-    assert(not seen[key], "saved phone order contains each contact once")
-    seen[key] = true
-    order[#order + 1] = key
-  end
-  local registeredCount = 0
-  for _ in pairs(registered) do
-    registeredCount = registeredCount + 1
-  end
-  assert(#order == registeredCount, "saved phone order contains every registered contact")
   self._order = order
   self._selected = 0
   self._scroll = 0

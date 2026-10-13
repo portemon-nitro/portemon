@@ -86,6 +86,56 @@ local function fixtureManifest()
   }
 end
 
+-- A full synthetic native catalog whose display text is available only
+-- through the same callbacks the field message provider supplies.
+---@return table
+local function labelCatalogFixture()
+  local manifest = fixtureManifest()
+  local contacts = {
+    {
+      key = "hgss.mom",
+      family = "mother",
+      name = { bank = 1, entry = 0 },
+      classNameRef = { bank = 1, entry = 1 },
+      sortWeights = { 75, 1 },
+    },
+    {
+      key = "hgss.joey",
+      family = "trainer",
+      name = { bank = 2, entry = 0 },
+      classNameRef = { bank = 2, entry = 1 },
+      sortWeights = { 74, 2 },
+    },
+  }
+  for index = 3, 75 do
+    contacts[#contacts + 1] = {
+      key = string.format("hgss.contact-%02d", index),
+      family = "trainer",
+      name = { bank = index, entry = 0 },
+      classNameRef = index == 3 and "" or { bank = index, entry = 1 },
+      sortWeights = { 76 - index, index },
+    }
+  end
+  manifest.catalog.contacts = contacts
+  manifest.catalog.contactOrder = {}
+  for _, contact in ipairs(contacts) do
+    manifest.catalog.contactOrder[#manifest.catalog.contactOrder + 1] = contact.key
+  end
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local record, err = PokegearAssetSchema.validate(manifest)
+  assert(record ~= nil, tostring(err))
+  return record
+end
+
+---@param record table
+---@return table
+local function labelState(record)
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local state = PokegearState.new({ seed = 101 }, { catalog = record.catalog })
+  state:registerContact("hgss.mom")
+  return state
+end
+
 -- A deterministic audio boundary that counts its tones: every effect
 -- wait completes on the next poll, so the conversation advances through
 -- completion state rather than wall-clock waits, and every dial and
@@ -666,6 +716,148 @@ function T.tests.call_cancellation_is_terminal_at_each_stage_and_disposal_releas
       parentOwner = "script:dispose-parent",
     })
   end, "a disposed host opens nothing")
+end
+
+function T.tests.phone_resolves_display_text_only_for_registered_contacts()
+  local PhoneController = requireFeature(
+    "game.hgss.src.pokegear.PhoneController",
+    "the phone card has no controller yet: registered contacts cannot be projected"
+  )
+  local record = labelCatalogFixture()
+  local state = labelState(record)
+  local requests = { names = {}, classes = {} }
+  local messages = {
+    greeting = "custom.greeting",
+    resolveName = function(_, key)
+      requests.names[key] = (requests.names[key] or 0) + 1
+      if key ~= "hgss.mom" then
+        error("unregistered contact name was requested: " .. key, 0)
+      end
+      return "Mom"
+    end,
+    resolveClass = function(_, key)
+      requests.classes[key] = (requests.classes[key] or 0) + 1
+      if key ~= "hgss.mom" then
+        error("unregistered contact class was requested: " .. key, 0)
+      end
+      return "Mom"
+    end,
+  }
+  local ok, controller = pcall(function()
+    return PhoneController.new({
+      state = state,
+      catalog = record.catalog,
+      messages = messages,
+      world = worldFixture(),
+      random = require("game.hgss.src.pokegear.PokegearRandom").new(101),
+    })
+  end)
+  Assert.isTrue(ok, "a valid one-contact phone open does not resolve unregistered banks")
+  assert(ok, "the controller opened above")
+  local rows = controller:status().view.list.rows
+  Assert.equal(#rows, 1, "the phone displays only its acquired contact")
+  Assert.equal(rows[1].contact, "hgss.mom", "the acquired row keeps its contact identity")
+  Assert.equal(rows[1].label, "Mom", "the acquired row keeps its native name")
+  Assert.equal(rows[1].class, "Mom", "the acquired row keeps its native class")
+  Assert.deepEqual(requests.names, { ["hgss.mom"] = 1 }, "only Mom's name is requested once")
+  Assert.deepEqual(requests.classes, { ["hgss.mom"] = 1 }, "only Mom's nonblank class is requested once")
+  controller:dispose()
+end
+
+function T.tests.phone_reopen_resolves_new_contacts_and_validates_order_before_text()
+  local PhoneController = requireFeature(
+    "game.hgss.src.pokegear.PhoneController",
+    "the phone card has no controller yet: registered contacts cannot be projected"
+  )
+  local record = labelCatalogFixture()
+  local state = labelState(record)
+  local function callbacks(requests, brokenKey)
+    return {
+      greeting = "custom.greeting",
+      resolveName = function(_, key)
+        requests.names[key] = (requests.names[key] or 0) + 1
+        if key == brokenKey then
+          error("registered contact name is unavailable: " .. key, 0)
+        end
+        assert(key == "hgss.mom" or key == "hgss.joey", "an unregistered name was requested")
+        return key == "hgss.mom" and "Mom" or "Joey"
+      end,
+      resolveClass = function(_, key)
+        requests.classes[key] = (requests.classes[key] or 0) + 1
+        assert(key == "hgss.mom" or key == "hgss.joey", "an unregistered class was requested")
+        return key == "hgss.mom" and "Mom" or "Youngster"
+      end,
+    }
+  end
+  local firstRequests = { names = {}, classes = {} }
+  local first = PhoneController.new({
+    state = state,
+    catalog = record.catalog,
+    messages = callbacks(firstRequests),
+    world = worldFixture(),
+  })
+  first:dispose()
+
+  state:registerContact("hgss.joey")
+  local secondRequests = { names = {}, classes = {} }
+  local second = PhoneController.new({
+    state = state,
+    catalog = record.catalog,
+    messages = callbacks(secondRequests),
+    world = worldFixture(),
+  })
+  local rows = second:status().view.list.rows
+  Assert.deepEqual(
+    { rows[1].contact, rows[2].contact },
+    { "hgss.mom", "hgss.joey" },
+    "a fresh open shows contacts in saved registration order"
+  )
+  Assert.deepEqual(
+    { rows[1].label, rows[1].class, rows[2].label, rows[2].class },
+    { "Mom", "Mom", "Joey", "Youngster" },
+    "the fresh open retains acquired native display fields"
+  )
+  Assert.deepEqual(secondRequests.names, { ["hgss.mom"] = 1, ["hgss.joey"] = 1 }, "only acquired names resolve once")
+  Assert.deepEqual(
+    secondRequests.classes,
+    { ["hgss.mom"] = 1, ["hgss.joey"] = 1 },
+    "only acquired nonblank classes resolve once"
+  )
+  second:dispose()
+
+  local invalidOrderState = {
+    setContactOrder = function() end,
+    readPhone = function()
+      return { contacts = { ["hgss.missing"] = {} }, contactOrder = { "hgss.missing" } }
+    end,
+  }
+  local invalidRequests = { names = {}, classes = {} }
+  local invalidOk = pcall(function()
+    PhoneController.new({
+      state = invalidOrderState,
+      catalog = record.catalog,
+      messages = callbacks(invalidRequests),
+      world = worldFixture(),
+    })
+  end)
+  Assert.isFalse(invalidOk, "a saved order with an unknown contact is rejected")
+  Assert.deepEqual(invalidRequests, { names = {}, classes = {} }, "invalid saved order fails before text resolution")
+
+  local brokenRequests = { names = {}, classes = {} }
+  local brokenOk = pcall(function()
+    PhoneController.new({
+      state = state,
+      catalog = record.catalog,
+      messages = callbacks(brokenRequests, "hgss.joey"),
+      world = worldFixture(),
+    })
+  end)
+  Assert.isFalse(brokenOk, "unavailable registered text remains an error")
+  Assert.deepEqual(
+    brokenRequests.names,
+    { ["hgss.mom"] = 1, ["hgss.joey"] = 1 },
+    "registered text failures retain their contact attribution"
+  )
 end
 
 function T.tests.phone_uses_saved_contact_order_and_keeps_automatic_sort_temporary()
