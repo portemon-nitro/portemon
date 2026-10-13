@@ -758,6 +758,9 @@ def _render_summary(
         ("Lizard functions", "reports/lizard/functions.csv"),
         ("jscpd report", "reports/jscpd/jscpd-report.json"),
         ("Graphify graph", "reports/graphify/graph.json"),
+        ("Advisory code signals (JSON)", "signals/summary.json"),
+        ("Advisory findings (JSONL)", "signals/findings.jsonl"),
+        ("Annotated clone pairs (JSONL)", "signals/clones.jsonl"),
     )
     human_markup = "\n".join(
         f'          <li><a href="{html.escape(link, quote=True)}">{html.escape(title)}</a></li>'

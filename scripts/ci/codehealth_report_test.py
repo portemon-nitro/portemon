@@ -721,6 +721,87 @@ class CodeHealthReportTest(unittest.TestCase):
         self.assertNotIn("policy", html.lower())
         self.assertIn("INFERRED", html)
 
+    def test_rendered_summary_links_machine_signals_without_changing_stable_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory) / "repo"
+            repository.mkdir()
+            (repository / "game").mkdir(parents=True)
+            (repository / "game" / "a.lua").write_text(
+                "local value = {}\nfunction value.compute()\nreturn 1\nend\nreturn value\n",
+                encoding="utf-8",
+            )
+            subprocess.run(["git", "init", "--quiet"], cwd=repository, check=True)
+            subprocess.run(["git", "add", "."], cwd=repository, check=True)
+            site_root = Path(directory) / "site"
+            reports_root = site_root / "codehealth" / "reports"
+            (reports_root / "lizard").mkdir(parents=True)
+            (reports_root / "jscpd").mkdir(parents=True)
+            (reports_root / "graphify").mkdir(parents=True)
+            with (reports_root / "lizard" / "functions.csv").open("w", newline="", encoding="utf-8") as report_file:
+                writer = csv.DictWriter(report_file, fieldnames=["NLOC", "CCN", "file", "function"])
+                writer.writeheader()
+                writer.writerow({"NLOC": "10", "CCN": "3", "file": "game/a.lua", "function": "compute"})
+            (reports_root / "jscpd" / "jscpd-report.json").write_text(
+                json.dumps(
+                    {"statistics": {"total": {"sources": 1, "clones": 0, "duplicatedLines": 0, "percentage": 0}}}
+                ),
+                encoding="utf-8",
+            )
+            (reports_root / "graphify" / "graph.json").write_text(
+                json.dumps(
+                    {
+                        "directed": True,
+                        "nodes": [{"id": "a", "source_file": "game/a.lua"}],
+                        "links": [
+                            {
+                                "source": "a",
+                                "target": "a",
+                                "relation": "imports",
+                                "confidence": "EXTRACTED",
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with mock.patch.object(REPORT, "_git_commit", return_value="b" * 40), mock.patch.object(
+                REPORT, "_git_committed_at", return_value="2026-03-01T00:00:00Z"
+            ), mock.patch.object(REPORT, "_version", return_value="test"):
+                manifest = Path(directory) / "structural-manifest.txt"
+                manifest.write_text("game/a.lua\n", encoding="utf-8")
+                self.assertEqual(
+                    REPORT.main(
+                        [
+                            "--site-root",
+                            str(site_root),
+                            "--repository-root",
+                            str(repository),
+                            "--structural-manifest",
+                            str(manifest),
+                        ]
+                    ),
+                    0,
+                )
+            rendered = (site_root / "codehealth" / "index.html").read_text(encoding="utf-8")
+            self.assertIn('href="signals/summary.json"', rendered)
+            self.assertIn('href="signals/findings.jsonl"', rendered)
+            self.assertIn('href="signals/clones.jsonl"', rendered)
+            self.assertIn('href="quality-report.json"', rendered)
+            self.assertIn('href="history.json"', rendered)
+            self.assertIn('href="reports/lizard/functions.csv"', rendered)
+            self.assertIn('href="reports/jscpd/jscpd-report.json"', rendered)
+            self.assertIn('href="reports/graphify/graph.json"', rendered)
+            model = json.loads((site_root / "codehealth" / "quality-report.json").read_text(encoding="utf-8"))
+            self.assertEqual(model["schemaVersion"], 7)
+            history = json.loads((site_root / "codehealth" / "history.json").read_text(encoding="utf-8"))
+            self.assertEqual(history["measurementVersion"], 1)
+            nested = sorted(
+                path.relative_to(reports_root).parts[0]
+                for path in reports_root.rglob("*")
+                if path.is_dir()
+            )
+            self.assertEqual(sorted(set(nested)), ["graphify", "jscpd", "lizard"])
+
     def test_site_scope_matches_scope_owner_and_schema(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             site_root, manifest = _write_minimal_site_fixture(Path(directory))

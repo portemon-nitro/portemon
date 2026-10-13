@@ -71,7 +71,7 @@ if [ ! -s "$TOOL_ROOT/site/styles.css" ]; then
   exit 1
 fi
 
-for tool_file in scripts/ci/codehealth_scope.py scripts/ci/codehealth_history.py scripts/ci/codehealth_report.py scripts/ci/codehealth_graphify.py; do
+for tool_file in scripts/ci/codehealth_scope.py scripts/ci/codehealth_history.py scripts/ci/codehealth_report.py scripts/ci/codehealth_graphify.py scripts/ci/codehealth_signals_lua.py scripts/ci/codehealth_signals_report.py; do
   if [ ! -s "$TOOL_ROOT/$tool_file" ]; then
     echo "codehealth: required tool is missing or empty: $TOOL_ROOT/$tool_file" >&2
     exit 1
@@ -137,6 +137,18 @@ done < "$FINAL_MANIFEST"
     --output "$REPORT_ROOT/jscpd"
 )
 
+mkdir -p "$WORK_ROOT/signals-source"
+python3 "$TOOL_ROOT/scripts/ci/codehealth_signals_lua.py" \
+  --repository-root "$TARGET_ROOT" \
+  --manifest "$FINAL_MANIFEST" \
+  --output-dir "$WORK_ROOT/signals-source"
+python3 "$TOOL_ROOT/scripts/ci/codehealth_signals_report.py" \
+  --repository-root "$TARGET_ROOT" \
+  --manifest "$FINAL_MANIFEST" \
+  --source-dir "$WORK_ROOT/signals-source" \
+  --jscpd-json "$REPORT_ROOT/jscpd/jscpd-report.json" \
+  --output-dir "$SITE_ROOT/codehealth/signals"
+
 GRAPHIFY_REPORT_ROOT="$REPORT_ROOT/graphify"
 GRAPH_JSON="$GRAPHIFY_REPORT_ROOT/graph.json"
 python3 "$TOOL_ROOT/scripts/ci/codehealth_graphify.py" \
@@ -182,6 +194,20 @@ for required_file in \
   codehealth/reports/graphify/graph.json; do
   if [ ! -s "$SITE_ROOT/$required_file" ]; then
     echo "codehealth: required published report is missing or empty: $SITE_ROOT/$required_file" >&2
+    exit 1
+  fi
+done
+
+if [ ! -s "$SITE_ROOT/codehealth/signals/summary.json" ]; then
+  echo "codehealth: required published report is missing or empty: $SITE_ROOT/codehealth/signals/summary.json" >&2
+  exit 1
+fi
+
+for signals_file in \
+  codehealth/signals/findings.jsonl \
+  codehealth/signals/clones.jsonl; do
+  if [ ! -f "$SITE_ROOT/$signals_file" ]; then
+    echo "codehealth: required published report is missing: $SITE_ROOT/$signals_file" >&2
     exit 1
   fi
 done

@@ -65,6 +65,8 @@ jobs:
           python3 scripts/ci/codehealth_scope_test.py
           python3 scripts/ci/codehealth_history_test.py
           python3 scripts/ci/codehealth_report_test.py
+          python3 scripts/ci/codehealth_signals_lua_test.py
+          python3 scripts/ci/codehealth_signals_report_test.py
 
       - name: Fetch previous code-health state
         id: previous
