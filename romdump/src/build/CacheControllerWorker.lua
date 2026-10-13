@@ -754,9 +754,9 @@ end
 -- selected entry terminal, no failure, nothing queued or running, and the
 -- opening closure ready. Failed, partial, or merely first-play-complete
 -- states publish nothing. Publication is atomic and once per generation;
--- only after it succeeds is the boot hold released. A failed write is
--- non-destructive: no marker, no release, assets untouched, retried on a
--- later pump.
+-- the boot hold releases once terminal work no longer needs it. A failed
+-- write is non-destructive: no marker, assets untouched, the boot hold
+-- still releases, retried on a later pump.
 function Worker:_maybeAttestCompletedGeneration()
   local epoch = self.liveEpoch
   local session = self.session
@@ -805,6 +805,11 @@ function Worker:_maybeAttestCompletedGeneration()
   end)
   if not publishOk then
     self.attestationNote = { generationId = generationId, error = tostring(publishErr) }
+    if type(pool.releaseBootSourceHold) == "function" then
+      pcall(function()
+        pool:releaseBootSourceHold(epoch)
+      end)
+    end
     return
   end
   self.attestedFor = generationId

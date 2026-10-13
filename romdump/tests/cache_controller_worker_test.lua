@@ -1109,10 +1109,11 @@ function T.stale_boot_check_earns_no_reply()
   Assert.equal(#replies, 0, "a foreign boot check earns no reply")
 end
 
--- A failed full-marker write is non-destructive: the marker stays
--- absent, current assets survive, the boot hold stays pinned, and the
--- controller records its diagnostic instead of failing.
-function T.failed_marker_write_keeps_hold_and_assets()
+-- A failed full-marker write is non-destructive but never pins its boot
+-- source: the marker stays absent, current assets survive, the boot hold
+-- clears, the borrower-free buffer unpins at once, and the controller
+-- records its diagnostic instead of failing.
+function T.failed_completion_marker_write_releases_boot_source_and_keeps_assets()
   local CacheService = require("app.src.CacheService")
   local DerivedCacheState = require("romdump.src.DerivedCacheState")
   local GameVersion = require("romdump.src.source.GameVersion")
@@ -1157,12 +1158,6 @@ function T.failed_marker_write_keeps_hold_and_assets()
   faultFs.writeLua = function()
     error("synthetic marker fault", 0)
   end
-  local releases = 0
-  local realRelease = pool.releaseBootSourceHold
-  pool.releaseBootSourceHold = function(self, releaseEpoch)
-    releases = releases + 1
-    return realRelease(self, releaseEpoch)
-  end
   local generationId = assert(worker.selectedIdentity, "the selection owns its identity").generationId
   worker.session = {
     generationId = generationId,
@@ -1193,13 +1188,19 @@ function T.failed_marker_write_keeps_hold_and_assets()
     "current bytes",
     "a failed write never deletes current assets"
   )
-  Assert.equal(releases, 0, "a failed write never releases the boot hold")
-  local stillHeld = pool.sharedSource
-  Assert.isTrue(
-    (type(stillHeld) == "table" and stillHeld.byteData or stillHeld) == buffer,
-    "the buffer stays pinned across the failed write"
-  )
+  Assert.isNil(pool.bootSourceHold, "a failed write clears its boot hold")
+  Assert.isNil(pool.sharedSource, "the borrower-free buffer unpins at once")
+  Assert.isNil(worker.attestedFor, "a failed write never records a trusted marker")
   Assert.notNil(worker.attestationNote, "the failed write records its diagnostic")
+  Assert.equal(
+    worker.attestationNote.generationId,
+    generationId,
+    "the diagnostic names the completed generation"
+  )
+  Assert.isTrue(
+    type(worker.attestationNote.error) == "string" and worker.attestationNote.error ~= "",
+    "the diagnostic keeps its failure text"
+  )
   service:shutdown()
   pcall(function()
     pool:shutdown()
@@ -1745,6 +1746,315 @@ function T.shutdown_with_unproven_worker_closure_deletes_nothing()
   Assert.isTrue(setup.cache:exists(setup.shared.meshOrphan), "an unproven join deletes no shared file")
   Assert.isTrue(setup.cache:exists(setup.shared.metaOrphan), "an unproven join deletes no shared file")
   Assert.isNil(setup.cache:loadLua(CLEANUP_MEMO_PATH), "an unproven join leaves no cleanup memo")
+end
+
+-- A failed marker write frees its source yet still blocks the next
+-- offline boot: the hold clears, the buffer unpins, the marker stays
+-- absent, and a fresh boot check without a source reports that its source
+-- is required instead of inventing readiness.
+function T.failed_marker_write_still_requires_source_on_next_boot()
+  local CacheService = require("app.src.CacheService")
+  local DerivedCacheState = require("romdump.src.DerivedCacheState")
+  local GameVersion = require("romdump.src.source.GameVersion")
+  local hostLove = assert(rawget(_G, "love"), "the suite runs under the host runtime")
+  local backend = FakeCache.new()
+  local service = assert(CacheService.new({ thread = bootServiceHost() }))
+  local worker = CacheControllerWorker.Worker.new(service._command, service._reply)
+  local epoch = assert(service:select({ versionId = "heartgold" }))
+  local buffer = hostLove.data.newByteData("synthetic-offer-bytes")
+  local info = GameVersion.info("heartgold")
+  service:offerSource(epoch, buffer, { versionId = "heartgold", romSha1 = info.sha1 })
+  Assert.isTrue(service:requestBootSource(epoch), "the live epoch queues its boot gate")
+  service:update()
+  local cacheFs = CacheFs.forVersion("heartgold", backend)
+  local realForVersion = CacheFs.forVersion
+  CacheFs.forVersion = function(selected)
+    assert(selected == "heartgold", "the boot drive stays on its version")
+    return cacheFs
+  end
+  local realThread = hostLove.thread
+  hostLove.thread = bootPoolThreadApi()
+  local stepOk, stepErr = pcall(function()
+    worker:step()
+  end)
+  hostLove.thread = realThread
+  CacheFs.forVersion = realForVersion
+  assert(stepOk, stepErr)
+  service:update()
+  local status, _ = service:bootSourceStatus(epoch)
+  Assert.equal(status, "ready", "the offered buffer satisfies the boot gate")
+  local pool = assert(worker.pool, "the selection owns its compiler pool")
+  local identity = assert(worker.selectedIdentity, "the selection owns its identity")
+  local generationId = assert(identity.generationId, "the selection owns its generation")
+  local pinned = pool.sharedSource
+  Assert.isTrue(
+    (type(pinned) == "table" and pinned.byteData or pinned) == buffer,
+    "the preflight pins the identical offered buffer"
+  )
+  local faultBackend = FakeCache.new()
+  local faultFs = CacheFs.forVersion("heartgold", faultBackend)
+  faultFs:write("data/generated/maps/61.lua", "current bytes")
+  faultFs.writeLua = function()
+    error("synthetic marker fault", 0)
+  end
+  worker.session = {
+    generationId = generationId,
+    cacheFs = faultFs,
+  }
+  function worker.session:update() end
+  function worker.session:status()
+    return {
+      sweepState = "exhausted",
+      sweepFailure = nil,
+      bootstrap = "ready",
+      failed = 0,
+      queued = 0,
+      running = 0,
+      complete = false,
+    }
+  end
+  local attestOk, attestErr = pcall(function()
+    worker:step()
+  end)
+  assert(attestOk, attestErr)
+  Assert.isNil(pool.bootSourceHold, "a failed write clears its boot hold")
+  Assert.isNil(pool.sharedSource, "the borrower-free buffer unpins at once")
+  Assert.isNil(worker.attestedFor, "a failed write never records a trusted marker")
+  Assert.isNil(
+    CacheFs.forVersion("heartgold", faultBackend):loadLua(DerivedCacheState.path),
+    "a failed write leaves no full-generation marker"
+  )
+  Assert.equal(
+    faultBackend:read("heartgold/data/generated/maps/61.lua"),
+    "current bytes",
+    "a failed write never deletes current assets"
+  )
+  Assert.notNil(worker.attestationNote, "the failed write records its diagnostic")
+  service:shutdown()
+  pcall(function()
+    pool:shutdown()
+  end)
+  local freshCache = CacheFs.forVersion("heartgold", faultBackend)
+  local answer = driveBootCheck(freshCache, identity, sourcelessPool())
+  Assert.equal(answer.state, "source-required", "the missing marker still requires its source")
+  Assert.isTrue(
+    type(answer.detail) == "table" and answer.detail.code == "ROM_SOURCE_REQUIRED",
+    "the missing source names its cause"
+  )
+  Assert.isNil(
+    freshCache:loadLua(DerivedCacheState.path),
+    "the next boot still finds no full-generation marker"
+  )
+  Assert.equal(
+    faultBackend:read("heartgold/data/generated/maps/61.lua"),
+    "current bytes",
+    "the next boot leaves current assets alone"
+  )
+end
+
+-- A completed marker failure settles back to its idle wait without a new
+-- timer and never invalidates a borrowed source view early: the
+-- borrower-free path releases at once and blocks for its next command,
+-- while a borrowed view stays valid through its close handshake and only
+-- then unpins.
+function T.completed_marker_failure_idles_without_polling_and_honors_borrowed_views()
+  local CacheService = require("app.src.CacheService")
+  local DerivedCacheState = require("romdump.src.DerivedCacheState")
+  local GameVersion = require("romdump.src.source.GameVersion")
+  local hostLove = assert(rawget(_G, "love"), "the suite runs under the host runtime")
+  do
+    local backend = FakeCache.new()
+    local service = assert(CacheService.new({ thread = bootServiceHost() }))
+    local worker = CacheControllerWorker.Worker.new(service._command, service._reply)
+    local epoch = assert(service:select({ versionId = "heartgold" }))
+    local buffer = hostLove.data.newByteData("synthetic-offer-bytes")
+    local info = GameVersion.info("heartgold")
+    service:offerSource(epoch, buffer, { versionId = "heartgold", romSha1 = info.sha1 })
+    Assert.isTrue(service:requestBootSource(epoch), "the live epoch queues its boot gate")
+    service:update()
+    local cacheFs = CacheFs.forVersion("heartgold", backend)
+    local realForVersion = CacheFs.forVersion
+    CacheFs.forVersion = function(selected)
+      assert(selected == "heartgold", "the boot drive stays on its version")
+      return cacheFs
+    end
+    local realThread = hostLove.thread
+    hostLove.thread = bootPoolThreadApi()
+    local stepOk, stepErr = pcall(function()
+      worker:step()
+    end)
+    hostLove.thread = realThread
+    CacheFs.forVersion = realForVersion
+    assert(stepOk, stepErr)
+    service:update()
+    local pool = assert(worker.pool, "the selection owns its compiler pool")
+    local generationId = assert(worker.selectedIdentity, "the selection owns its identity").generationId
+    local faultBackend = FakeCache.new()
+    local faultFs = CacheFs.forVersion("heartgold", faultBackend)
+    faultFs:write("data/generated/maps/61.lua", "current bytes")
+    faultFs.writeLua = function()
+      error("synthetic marker fault", 0)
+    end
+    worker.session = {
+      generationId = generationId,
+      cacheFs = faultFs,
+    }
+    function worker.session:update() end
+    function worker.session:status()
+      return {
+        sweepState = "exhausted",
+        sweepFailure = nil,
+        bootstrap = "ready",
+        failed = 0,
+        queued = 0,
+        running = 0,
+        complete = false,
+      }
+    end
+    function worker.session:hasRunnablePlanning()
+      return false
+    end
+    function worker.session:nextPlanningWakeDelay()
+      return nil
+    end
+    local attestOk, attestErr = pcall(function()
+      worker:step()
+    end)
+    assert(attestOk, attestErr)
+    Assert.isNil(pool.bootSourceHold, "a failed write clears its boot hold")
+    Assert.isNil(pool.sharedSource, "the borrower-free buffer unpins at once")
+    local log = { demands = 0 }
+    local fakeControl = {}
+    function fakeControl.pop()
+      return nil
+    end
+    function fakeControl.demand()
+      log.demands = log.demands + 1
+      return { op = "unknown-drive-probe" }
+    end
+    worker.control = fakeControl
+    local timer = recordingTimer()
+    worker:driveOnce(timer)
+    Assert.equal(log.demands, 1, "the settled controller blocks for its next command")
+    Assert.equal(#timer.sleeps, 0, "the settled controller performs no timed sleep")
+    Assert.isNil(pool.bootSourceHold, "the idle wait keeps no boot hold")
+    Assert.isNil(pool.sharedSource, "the idle wait reacquires no buffer")
+    service:shutdown()
+    pcall(function()
+      pool:shutdown()
+    end)
+  end
+  do
+    local backend = FakeCache.new()
+    local service = assert(CacheService.new({ thread = bootServiceHost() }))
+    local worker = CacheControllerWorker.Worker.new(service._command, service._reply)
+    local epoch = assert(service:select({ versionId = "heartgold" }))
+    local buffer = hostLove.data.newByteData("synthetic-offer-bytes")
+    local info = GameVersion.info("heartgold")
+    service:offerSource(epoch, buffer, { versionId = "heartgold", romSha1 = info.sha1 })
+    Assert.isTrue(service:requestBootSource(epoch), "the live epoch queues its boot gate")
+    service:update()
+    local cacheFs = CacheFs.forVersion("heartgold", backend)
+    local realForVersion = CacheFs.forVersion
+    CacheFs.forVersion = function(selected)
+      assert(selected == "heartgold", "the boot drive stays on its version")
+      return cacheFs
+    end
+    local realThread = hostLove.thread
+    hostLove.thread = bootPoolThreadApi()
+    local stepOk, stepErr = pcall(function()
+      worker:step()
+    end)
+    hostLove.thread = realThread
+    CacheFs.forVersion = realForVersion
+    assert(stepOk, stepErr)
+    service:update()
+    local pool = assert(worker.pool, "the selection owns its compiler pool")
+    local generationId = assert(worker.selectedIdentity, "the selection owns its identity").generationId
+    local borrowerId = assert(pool.workers[1], "the pool owns its worker").id
+    pool.sourceBorrowers[borrowerId] = true
+    local faultBackend = FakeCache.new()
+    local faultFs = CacheFs.forVersion("heartgold", faultBackend)
+    faultFs:write("data/generated/maps/61.lua", "current bytes")
+    faultFs.writeLua = function()
+      error("synthetic marker fault", 0)
+    end
+    worker.session = {
+      generationId = generationId,
+      cacheFs = faultFs,
+    }
+    function worker.session:update() end
+    function worker.session:status()
+      return {
+        sweepState = "exhausted",
+        sweepFailure = nil,
+        bootstrap = "ready",
+        failed = 0,
+        queued = 0,
+        running = 0,
+        complete = false,
+      }
+    end
+    function worker.session:hasRunnablePlanning()
+      return false
+    end
+    function worker.session:nextPlanningWakeDelay()
+      return nil
+    end
+    local attestOk, attestErr = pcall(function()
+      worker:step()
+    end)
+    assert(attestOk, attestErr)
+    Assert.isNil(pool.bootSourceHold, "the hold clears even with a borrowed view")
+    local retained = pool.sharedSource
+    Assert.notNil(retained, "the borrowed buffer stays valid through its close handshake")
+    Assert.isTrue(
+      (type(retained) == "table" and retained.byteData or retained) == buffer,
+      "the borrowed view still pins the identical buffer"
+    )
+    Assert.isNil(worker.attestedFor, "a failed write never records a trusted marker")
+    Assert.notNil(worker.attestationNote, "the failed write records its diagnostic")
+    local closeMessage = pool.workers[1].input:pop()
+    Assert.notNil(closeMessage, "the release asks its borrower to close")
+    Assert.equal(closeMessage.kind, "close-context", "the borrower closes through its exact protocol")
+    local closeToken = assert(closeMessage.closeToken, "the close carries its token")
+    Assert.equal(pool:activityState(), "waiting", "an outstanding close keeps the pool waiting")
+    local log = { demands = 0 }
+    local fakeControl = {}
+    function fakeControl.pop()
+      return nil
+    end
+    function fakeControl.demand()
+      log.demands = log.demands + 1
+      return { op = "unknown-drive-probe" }
+    end
+    worker.control = fakeControl
+    local timer = recordingTimer()
+    worker:driveOnce(timer)
+    Assert.equal(#timer.sleeps, 1, "a close wait sleeps exactly once before polling")
+    Assert.equal(timer.sleeps[1], LIVE_CADENCE_SECONDS, "the close wait keeps the live poll cadence")
+    Assert.equal(log.demands, 0, "a close wait never blocks on the control channel")
+    Assert.notNil(pool.sharedSource, "the buffer stays valid across the poll")
+    pool.resultChannel:push({ status = "context-closed", workerId = borrowerId, closeToken = closeToken })
+    local updateOk, updateErr = pcall(function()
+      pool:update()
+    end)
+    assert(updateOk, updateErr)
+    Assert.isNil(pool.sharedSource, "the last acknowledgement unpins the buffer")
+    Assert.isNil(
+      CacheFs.forVersion("heartgold", faultBackend):loadLua(DerivedCacheState.path),
+      "the marker stays absent through the handshake"
+    )
+    Assert.equal(
+      faultBackend:read("heartgold/data/generated/maps/61.lua"),
+      "current bytes",
+      "the handshake never deletes current assets"
+    )
+    service:shutdown()
+    pcall(function()
+      pool:shutdown()
+    end)
+  end
 end
 
 return { metadata = { capabilities = {} }, tests = T }
