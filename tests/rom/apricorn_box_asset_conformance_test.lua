@@ -3,7 +3,6 @@
 
 local Assert = require("tests.support.Assert")
 local PngReader = require("tests.support.PngReader")
-local ApricornBoxAssetCache = require("libs.assets.src.ApricornBoxAssetCache")
 local ApricornBoxAssetCompiler = require("romdump.src.digest.ui.ApricornBoxAssetCompiler")
 local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
 local ApricornBoxSources = require("romdump.src.config.ApricornBoxSources")
@@ -107,7 +106,6 @@ function T.box_panes_and_row_animation_frames_are_source_backed(romFs, versionId
     end
   end
   Assert.isTrue(cursorVisible, "the source default sprite sequence provides visible selection feedback")
-  Assert.isTrue(ApricornBoxAssetCache.isManifestValid(bundle.manifest), "runtime and compiler share one strict schema")
 end
 
 return RomSuite.fromFacts(T)

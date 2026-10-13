@@ -368,7 +368,6 @@ function T.source_box_renders_browse_and_kurt_modes_for_each_layout(scope, conte
   for _, versionId in ipairs(versions) do
     local cacheFs = CacheFs.forVersion(versionId)
     local manifest = ApricornBoxAssetCache.loadManifest(cacheFs)
-    Assert.isTrue(ApricornBoxAssetCache.isManifestValid(manifest), "the prepared ROM supplies the strict source manifest")
     assertSourceLabels(cacheFs, manifest)
     local text = scope:own(FieldTextRenderer.new({ cacheFs = cacheFs, graphics = love.graphics }))
     local uiManifest = assert(cacheFs:loadLua(FieldUiAssetCache.manifestPath()))

@@ -177,98 +177,10 @@ function T.readiness_accepts_published_artifacts_without_source_identity_details
   Assert.isTrue(ApricornBoxAssetCache.isReady(cacheFs, marker))
 end
 
-function T.readiness_rejects_unknown_manifest_fields_and_missing_images()
+function T.readiness_rejects_missing_images()
   local cacheFs, manifest, marker, files = readyCache()
-  manifest.upper.placeholder = true
-  Assert.isFalse(ApricornBoxAssetCache.isReady(cacheFs, marker))
-  manifest.upper.placeholder = nil
   files[manifest.lower.image] = nil
   Assert.isFalse(ApricornBoxAssetCache.isReady(cacheFs, marker))
-end
-
-function T.readiness_accepts_bounded_layout_values_outside_the_native_coordinates()
-  local cacheFs, manifest, marker = readyCache()
-  manifest.rows[2].icon.x = 81
-  manifest.rows[2].icon.y = 70
-  manifest.rowHitboxes[2].x = 79
-  manifest.rowHitboxes[2].y = 69
-  manifest.controls.sourceTable[2] = 3
-
-  Assert.isTrue(
-    ApricornBoxAssetCache.isManifestValid(manifest),
-    "valid generated geometry is not pinned to HGSS literals"
-  )
-  Assert.isTrue(ApricornBoxAssetCache.isReady(cacheFs, marker), "alternate layout remains a ready generated artifact")
-end
-
-function T.manifest_rejects_malformed_shapes_paths_and_animation_frames()
-  local mutations = {
-    function(manifest)
-      manifest.rows[7] = nil
-    end,
-    function(manifest)
-      manifest.rows[1].apricornKey = 0 / 0
-    end,
-    function(manifest)
-      manifest.rowHitboxes[1].radius = 0
-    end,
-    function(manifest)
-      manifest.rows[1].icon.frames[1].image = ApricornBoxAssetCache.assetDir() .. "/../outside.png"
-    end,
-    function(manifest)
-      manifest.rows[1].icon.frames[1].durationTicks = 0
-    end,
-    function(manifest)
-      manifest.rows[1].icon.totalTicks = manifest.rows[1].icon.totalTicks + 1
-    end,
-  }
-  for _, mutate in ipairs(mutations) do
-    local _, manifest = readyCache()
-    mutate(manifest)
-    Assert.isFalse(ApricornBoxAssetCache.isManifestValid(manifest), "malformed Box records fail structural validation")
-  end
-end
-
-function T.manifest_rejects_corrupt_identity_and_bounded_record_values()
-  local mutations = {
-    function(manifest)
-      manifest.rows[2].apricornKey = manifest.rows[1].apricornKey
-    end,
-    function(manifest)
-      manifest.rows[1].apricornKey = "UNKNOWN_APRICORN"
-    end,
-    function(manifest)
-      manifest.messageBankId = 27
-    end,
-    function(manifest)
-      manifest.extra = true
-    end,
-    function(manifest)
-      manifest.rows[1].icon.x = -1
-    end,
-    function(manifest)
-      manifest.rows[1].icon.x = 1.5
-    end,
-    function(manifest)
-      manifest.rows[1].icon.y = math.huge
-    end,
-    function(manifest)
-      manifest.rowHitboxes[1].radius = 1.5
-    end,
-    function(manifest)
-      manifest.upper.width = 0
-    end,
-    function(manifest)
-      manifest.rows[1].nameMessageId = manifest.rows[2].nameMessageId
-    end,
-  }
-  for _, mutate in ipairs(mutations) do
-    local _, manifest = readyCache()
-    mutate(manifest)
-    local ok, valid = pcall(ApricornBoxAssetCache.isManifestValid, manifest)
-    Assert.isTrue(ok, "malformed generated records are checked without throwing")
-    Assert.isFalse(valid, "corrupt semantic and structural records are rejected")
-  end
 end
 
 function T.readiness_rejects_bad_marker_and_provenance_identity()

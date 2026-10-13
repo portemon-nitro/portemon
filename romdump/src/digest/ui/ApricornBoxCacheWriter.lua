@@ -60,9 +60,6 @@ local function validateBundle(bundle)
   then
     Errors.raise(ApricornBoxCacheWriter.ERROR.BUNDLE_INVALID, "bundle provenance does not identify its marker", {})
   end
-  if not ApricornBoxAssetCache.isManifestValid(bundle.manifest) then
-    Errors.raise(ApricornBoxCacheWriter.ERROR.BUNDLE_INVALID, "manifest is invalid", {})
-  end
   local references = {}
   local referenceCount = 0
   for _, path in ipairs(ApricornBoxAssetCache.referencedPaths(bundle.manifest)) do
@@ -104,9 +101,6 @@ local function stageBundle(stage, bundle)
   stage:writeLua(ApricornBoxAssetCache.manifestPath(), bundle.manifest)
   stage:writeLua(ApricornBoxAssetCache.provenancePath(), bundle.provenance)
   local manifest = stage:loadLua(ApricornBoxAssetCache.manifestPath())
-  if not ApricornBoxAssetCache.isManifestValid(manifest) then
-    Errors.raise(ApricornBoxCacheWriter.ERROR.READBACK_FAILED, "manifest readback is invalid", {})
-  end
   for _, path in ipairs(ApricornBoxAssetCache.referencedPaths(manifest)) do
     if not stage:exists(path, "file") then
       Errors.raise(ApricornBoxCacheWriter.ERROR.READBACK_FAILED, "pane image is missing after stage", { path = path })

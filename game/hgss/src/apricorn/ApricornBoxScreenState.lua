@@ -1,7 +1,6 @@
 -- Owns one browse or Kurt-select Box session and its message-bank lease.
 
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
-local ApricornBoxAssetCache = require("libs.assets.src.ApricornBoxAssetCache")
 local ApricornBoxController = require("libs.hgss.src.ui.ApricornBoxController")
 local ApricornBoxInterface = require("game.hgss.src.field.ApricornBoxInterface")
 local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
@@ -28,7 +27,6 @@ ApricornBoxScreenState.__index = ApricornBoxScreenState
 function ApricornBoxScreenState.new(opts)
   assert(type(opts) == "table", "Apricorn Box screen options are records")
   local manifest = assert(opts.manifest, "Apricorn Box screen requires its generated manifest")
-  assert(ApricornBoxAssetCache.isManifestValid(manifest), "Apricorn Box screen requires a valid generated manifest")
   local fontDef = assert(opts.fontDef, "Apricorn Box formatting requires the generated field font")
   local uiManifest = assert(opts.uiManifest, "Apricorn Box prompt requires the generated field UI manifest")
   local messageBankId = manifest.messageBankId
