@@ -9,6 +9,7 @@
 
 ---@class AssetPreparationQueue
 ---@field _cacheFs table<string, unknown>
+---@field _versionId string
 ---@field _request table<string, unknown>
 ---@field _reply table<string, unknown>
 ---@field _worker table<string, unknown>
@@ -60,6 +61,10 @@ local WAIT_HEALTH_PROBE_SECONDS = 0.05
 ---@return AssetPreparationQueue
 function AssetPreparationQueue.new(cacheFs, options)
   assert(cacheFs and cacheFs.resolve, "AssetPreparationQueue requires a CacheFs-shaped object")
+  assert(
+    type(cacheFs.versionId) == "string" and cacheFs.versionId ~= "",
+    "AssetPreparationQueue requires a versioned CacheFs"
+  )
   options = options or {}
   local threadHost = options.thread or (love and love.thread)
   assert(threadHost and threadHost.newChannel and threadHost.newThread, "AssetPreparationQueue requires love.thread")
@@ -72,6 +77,7 @@ function AssetPreparationQueue.new(cacheFs, options)
   local worker = threadHost.newThread(workerSource)
   local self = setmetatable({
     _cacheFs = cacheFs,
+    _versionId = cacheFs.versionId,
     _request = requestChannel,
     _reply = replyChannel,
     _worker = worker,
@@ -117,7 +123,14 @@ function AssetPreparationQueue:_dispatch()
   local record = assert(self._tokens[token], "dispatched an unknown preparation token")
   record.state = "running"
   self._workerBusyToken = token
-  self._request:push({ op = "prepare", token = token, kind = record.kind, path = record.path })
+  self._request:push({
+    op = "prepare",
+    token = token,
+    kind = record.kind,
+    path = record.path,
+    versionId = self._versionId,
+    logicalPath = record.logicalPath,
+  })
 end
 
 -- Record an unexpected worker exit exactly once: every still-live queued or

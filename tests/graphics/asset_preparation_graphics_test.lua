@@ -14,12 +14,14 @@ local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local MeshWriter = require("libs.assets.src.model.MeshWriter")
 local PngWriter = require("libs.assets.src.PngWriter")
+local SceneMesh = require("libs.hgss.src.presentation.SceneMesh")
 
 local T = {}
 
 local VERSION_ID = "asset-preparation-worker-test"
 local MESH_PATH = "geometry/prepared.g4mesh"
 local TEXTURE_PATH = "textures/prepared.png"
+local COMPRESSED_MESH_PATH = "geometry/compressed.g4mesh"
 
 local function requireQueue()
   local ok, AssetPreparationQueue = pcall(require, "libs.hgss.src.presentation.AssetPreparationQueue")
@@ -169,6 +171,85 @@ function T.invalid_image_bytes_fail_preparation_without_hanging_the_worker()
     error(runErr, 0)
   end
   Assert.isTrue(meshAfterFailure, "a later mesh request still prepares after the image failure")
+  Assert.equal(statsAfter.images, statsBefore.images, "preparation alone creates no GPU Image")
+end
+
+-- A wrapped mesh still prepares to identical upload payloads: the stored
+-- bytes carry the envelope, the worker decodes them off the main thread
+-- through the versioned cache, and the prepared geometry matches a direct
+-- decode of the logical bytes. The test itself never reads cache bytes on
+-- the main thread, so matching geometry proves the decode happened in the
+-- worker.
+function T.compressed_mesh_prepares_off_main_thread_through_the_versioned_cache()
+  local AssetPreparationQueue = requireQueue()
+  local cache = CacheFs.forVersion(VERSION_ID)
+  local vertices, indices = {}, {}
+  for i = 0, 159 do
+    local base = i * 3
+    local corners = { { 0, 0 }, { 2, 0 }, { 0, 2 } }
+    for _, corner in ipairs(corners) do
+      vertices[#vertices + 1] = {
+        x = corner[1],
+        y = 0,
+        z = corner[2],
+        u = 0,
+        v = 0,
+        nx = 0,
+        ny = 1,
+        nz = 0,
+        r = 255,
+        g = 255,
+        b = 255,
+        a = 255,
+        colorSource = 0,
+      }
+    end
+    indices[#indices + 1] = base
+    indices[#indices + 1] = base + 1
+    indices[#indices + 1] = base + 2
+  end
+  local logical = MeshWriter.encode({ vertices = vertices, indices = indices })
+  Assert.isTrue(#logical >= 1024, "the mesh fixture must clear the wrap threshold")
+  cache:write(COMPRESSED_MESH_PATH, logical)
+  local physical = love.filesystem.read(cache:resolve(COMPRESSED_MESH_PATH))
+  Assert.notNil(physical, "the stored mesh must be readable")
+  assert(type(physical) == "string", "stored mesh bytes must be a string")
+  Assert.equal(physical:sub(1, 4), "PDC1", "the stored mesh is wrapped")
+  Assert.isTrue(#physical < #logical, "the wrapped mesh saves space")
+  local baseline = SceneMesh.prepareUpload(logical, COMPRESSED_MESH_PATH)
+  local statsBefore = love.graphics.getStats()
+
+  local runOk, runErr = pcall(function()
+    local queue = AssetPreparationQueue.new(cache)
+    local meshToken = queue:request("mesh", COMPRESSED_MESH_PATH, "demand")
+    local prepared = queue:wait(meshToken)
+    Assert.isNil(prepared.mesh, "the worker never realizes a love Mesh")
+    Assert.equal(prepared.vertexCount, baseline.vertexCount)
+    Assert.equal(prepared.indexCount, baseline.indexCount)
+    Assert.equal(prepared.indexType, baseline.indexType)
+    Assert.notNil(prepared.vertexData, "the worker replies with packed vertex Data")
+    Assert.notNil(prepared.indexData, "the worker replies with packed index Data")
+    Assert.equal(prepared.vertexData:getSize(), baseline.vertexData:getSize())
+    Assert.equal(prepared.indexData:getSize(), baseline.indexData:getSize())
+    Assert.equal(
+      love.data.hash("sha256", prepared.vertexData:getString()),
+      love.data.hash("sha256", baseline.vertexData:getString()),
+      "the worker decoded the same vertex bytes"
+    )
+    Assert.equal(
+      love.data.hash("sha256", prepared.indexData:getString()),
+      love.data.hash("sha256", baseline.indexData:getString()),
+      "the worker decoded the same index bytes"
+    )
+    queue:release()
+  end)
+
+  local statsAfter = love.graphics.getStats()
+  cache:removeTree("")
+
+  if not runOk then
+    error(runErr, 0)
+  end
   Assert.equal(statsAfter.images, statsBefore.images, "preparation alone creates no GPU Image")
 end
 

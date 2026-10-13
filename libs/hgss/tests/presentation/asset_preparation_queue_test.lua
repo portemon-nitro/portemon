@@ -17,6 +17,9 @@ end
 
 local function fakeCacheFs()
   return {
+    -- The version identity the queue hands to its worker so the worker can
+    -- rebuild the same versioned cache off the main thread.
+    versionId = "heartgold",
     resolve = function(_, relativePath)
       return "confined/" .. relativePath
     end,
@@ -755,6 +758,43 @@ function T.queued_wait_reobserves_worker_death_through_bounded_demands()
       "the running token reports the same terminal cause: " .. tostring(runningFailure)
     )
 
+    queue:release()
+  end)
+end
+
+function T.dispatched_requests_carry_version_identity_and_the_logical_path()
+  local AssetPreparationQueue = requireQueue()
+  local host = fakeThreadHost()
+  withLove(host.love, function()
+    local queue = AssetPreparationQueue.new(fakeCacheFs())
+    local token = queue:request("mesh", "geometry/a.g4mesh", "demand")
+
+    local record = nil
+    for _, entry in ipairs(host.allPushes) do
+      local value = entry.value
+      if type(value) == "table" and value.token == token then
+        record = value
+        break
+      end
+    end
+    Assert.notNil(record, "the request must reach the worker input channel")
+    assert(record, "the pushed request record must be available")
+    Assert.equal(
+      record.versionId,
+      "heartgold",
+      "the worker rebuilds its versioned cache from this identity"
+    )
+    Assert.equal(
+      record.logicalPath,
+      "geometry/a.g4mesh",
+      "the worker reads decoded bytes through the logical path"
+    )
+    Assert.equal(
+      record.path,
+      "confined/geometry/a.g4mesh",
+      "the confined physical path still travels alongside"
+    )
+    Assert.equal(queue:poll(token), "pending", "no reply was faked, so the token stays pending")
     queue:release()
   end)
 end

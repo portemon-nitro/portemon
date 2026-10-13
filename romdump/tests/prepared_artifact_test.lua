@@ -5,6 +5,7 @@
 -- shared file that contradicts live bytes instead of silently reusing it.
 
 local Assert = require("tests.support.Assert")
+local CacheEnvelope = require("tests.support.CacheEnvelope")
 local CacheFs = require("libs.storage.src.CacheFs")
 local DerivedAssetContract = require("libs.assets.src.DerivedAssetContract")
 local DerivedCacheState = require("romdump.src.DerivedCacheState")
@@ -413,6 +414,44 @@ function T.reopened_stage_publishes_through_the_controller_path()
   Assert.notNil(receipt, "a controller publication must leave the current receipt")
   assert(receipt, "a controller-published receipt is a record")
   Assert.equal(receipt.marker, "complete")
+end
+
+-- Shared reconciliation compares decoded logical bytes: a restaged copy
+-- carrying the same logical content in wrapped physical form reuses the
+-- live file instead of conflicting with it.
+function T.shared_reconciliation_compares_decoded_logical_bytes()
+  local stages = requireStages()
+  local generation = generationIdFor(Sha256.hex("shared-envelope producer"))
+  local backend = FakeCache.new()
+  CacheEnvelope.attachHostCodecs(backend)
+  local cache = newCache(backend)
+  cache:recoverPublication()
+  local logical = string.rep("shared-mesh-block;", 200)
+  Assert.isTrue(#logical >= 1024, "the shared fixture must clear the wrap threshold")
+
+  local first = stages.new(stageOptions("map", "81", generation, 1, "shared-raw", cache))
+  first:stageFs():write("geometry/shared-mesh.g4mesh", logical)
+  first:addSharedFile("geometry/shared-mesh.g4mesh")
+  first:stageFs():write("maps/81/complete", "ready")
+  first:addOwnedRoot("maps/81")
+  first:finishSuccess({ marker = "complete" })
+  first:publish(expectedOf("map", "81", generation, 1))
+  Assert.equal(cache:read("geometry/shared-mesh.g4mesh"), logical)
+
+  local second = stages.new(stageOptions("map", "82", generation, 1, "shared-wrapped", cache))
+  second:stageFs():write("geometry/shared-mesh.g4mesh", logical)
+  backend:write(
+    second:stageFs():resolve("geometry/shared-mesh.g4mesh"),
+    CacheEnvelope.build(CacheEnvelope.CODEC_LZ4, logical)
+  )
+  second:addSharedFile("geometry/shared-mesh.g4mesh")
+  second:stageFs():write("maps/82/complete", "ready")
+  second:addOwnedRoot("maps/82")
+  second:finishSuccess({ marker = "complete" })
+  Assert.deepEqual(second:manifest().sharedReused, { "geometry/shared-mesh.g4mesh" })
+  second:publish(expectedOf("map", "82", generation, 1))
+  Assert.equal(cache:read("geometry/shared-mesh.g4mesh"), logical)
+  Assert.equal(cache:read("maps/82/complete"), "ready")
 end
 
 return { tests = T }

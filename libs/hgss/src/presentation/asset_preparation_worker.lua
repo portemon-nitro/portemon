@@ -26,10 +26,29 @@ function Worker.run(requestChannel, replyChannel)
     replyChannel:push({ token = token, ok = false, kind = kind, path = path, error = text })
   end
 
-  local function prepareMesh(token, path)
-    local bytes, readError = love.filesystem.read(path)
+  -- Mesh bytes enter through the versioned cache so wrapped physical files
+  -- decode off the main thread. The confined path travels with the request
+  -- for channel compatibility, but the logical path is authoritative: it
+  -- must resolve to exactly the confined path before any byte is read.
+  local function readMeshBytes(versionId, logicalPath, path)
+    assert(type(versionId) == "string" and versionId ~= "", "mesh preparation requires a version identity")
+    assert(type(logicalPath) == "string" and logicalPath ~= "", "mesh preparation requires a logical path")
+    local CacheFs = require("libs.storage.src.CacheFs")
+    local cache = CacheFs.forVersion(versionId)
+    if cache:resolve(logicalPath) ~= path then
+      error("mesh preparation path escapes its confined cache entry", 0)
+    end
+    local bytes = cache:read(logicalPath)
     if bytes == nil then
-      fail(token, "mesh", path, "unreadable cache file: " .. tostring(readError))
+      error("unreadable cache file: " .. tostring(path), 0)
+    end
+    return bytes
+  end
+
+  local function prepareMesh(token, versionId, logicalPath, path)
+    local readOk, bytes = pcall(readMeshBytes, versionId, logicalPath, path)
+    if not readOk then
+      fail(token, "mesh", path, bytes)
       return
     end
     local ok, prepared = pcall(SceneMesh.prepareUpload, bytes, path)
@@ -84,7 +103,7 @@ function Worker.run(requestChannel, replyChannel)
       break
     end
     if job.op == "prepare" and job.kind == "mesh" then
-      local ok, err = pcall(prepareMesh, job.token, job.path)
+      local ok, err = pcall(prepareMesh, job.token, job.versionId, job.logicalPath, job.path)
       if not ok then
         fail(job.token, job.kind, job.path, err)
       end

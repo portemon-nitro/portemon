@@ -611,8 +611,9 @@ local function withRealPresenters(versionId, graphics, callback)
   local runtime = fprRuntime(versionId)
   -- The fake swaps the graphics device only: cache/filesystem reads
   -- stay real so presenter construction can acquire its artifacts
-  -- while every draw records through the fake.
-  rawset(_G, "love", { graphics = graphics, filesystem = savedLove.filesystem })
+  -- while every draw records through the fake. Compressed derived files
+  -- decode through the host data module, so it stays real as well.
+  rawset(_G, "love", { graphics = graphics, filesystem = savedLove.filesystem, data = savedLove.data })
   local ok, err = pcall(function()
     local FieldPresentationResources = require(FPR_MODULE)
     local resources = FieldPresentationResources.new(runtime)
