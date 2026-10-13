@@ -187,7 +187,10 @@ function Fixture.drainField(game, budget)
     local snapshot = game:snapshot()
     local scheduler = game.runtime.scripts.scheduler
     local foreground = scheduler and scheduler:foregroundEnvironmentId()
-    if game.runtime.scripts.dialogueHost:yesNoPresentation() ~= nil then
+    local pokegearHost = game.runtime.pokegear and game.runtime.pokegear.scriptHost
+    if pokegearHost ~= nil and pokegearHost:isActive() then
+      Fixture.pressActionEdge(game)
+    elseif game.runtime.scripts.dialogueHost:yesNoPresentation() ~= nil then
       Fixture.pressActionEdge(game)
     elseif snapshot.dialogue.modal then
       Fixture.pressActionEdge(game)
@@ -292,7 +295,7 @@ function Fixture.scriptFaults(game)
   return count
 end
 
--- Accepts a ringing gear call through the real composed host when one is
+-- Answers a ringing gear call through field Action input when one is
 -- waiting. Returns whether a call was accepted and completed.
 ---@param game table
 ---@return boolean accepted
@@ -305,9 +308,12 @@ function Fixture.acceptRingingCall(game)
   if not note then
     return false
   end
-  calls:accept("field:test-parent")
+  local host = assert(game.runtime.pokegear.scriptHost, "the incoming call uses the composed phone host")
+  Fixture.pressActionEdge(game)
+  Assert.isTrue(host:isActive(), "field Action must acquire the ringing caller")
   Assert.isTrue(Fixture.drainField(game, 480), "an accepted call must complete its dialogue and return the field")
-  Assert.isFalse(calls:notification(), "acceptance must end the ring")
+  Assert.isFalse(host:isActive(), "a completed incoming call releases its host handle")
+  Assert.isFalse(calls:notification(), "field Action must answer and clear the ring")
   return true
 end
 

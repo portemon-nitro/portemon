@@ -170,7 +170,10 @@ local function drainField(game, budget)
     local snapshot = game:snapshot()
     local scheduler = game.runtime.scripts.scheduler
     local foreground = scheduler and scheduler:foregroundEnvironmentId()
-    if game.runtime.scripts.dialogueHost:yesNoPresentation() ~= nil then
+    local phoneHost = game.runtime.pokegear and game.runtime.pokegear.scriptHost
+    if phoneHost ~= nil and phoneHost:isActive() then
+      pressActionEdge(game)
+    elseif game.runtime.scripts.dialogueHost:yesNoPresentation() ~= nil then
       pressActionEdge(game)
     elseif snapshot.dialogue.modal then
       pressActionEdge(game)
@@ -271,8 +274,8 @@ local function settleScripting(game, budget)
   return false
 end
 
--- Accepts a ringing gear call through the real composed host when one is
--- waiting. Returns whether a call was accepted and completed. The
+-- Answers a ringing gear call through field Action when one is waiting.
+-- Returns whether a call was accepted and completed. The
 -- acceptance is the end-to-end incoming-call proof: the pending trigger
 -- must clear and the field must return to its owner afterwards.
 ---@param game table
@@ -286,9 +289,12 @@ local function acceptRingingCall(game)
   if not note then
     return false
   end
-  calls:accept("field:test-parent")
+  local host = assert(game.runtime.pokegear.scriptHost, "incoming calls use the composed field host")
+  pressActionEdge(game)
+  Assert.isTrue(host:isActive(), "field Action must acquire the ringing call")
   Assert.isTrue(drainField(game, 480), "an accepted call must complete its dialogue and return the field")
-  Assert.isFalse(calls:notification(), "acceptance must end the ring")
+  Assert.isFalse(host:isActive(), "completed field Action releases its phone host handle")
+  Assert.isFalse(calls:notification(), "field Action must end the ring")
   return true
 end
 

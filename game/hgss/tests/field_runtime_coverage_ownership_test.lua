@@ -67,7 +67,7 @@ local function runtimeForSwap(sourceCoverage)
       prepare = function() end,
       commit = function() end,
     }),
-    session = { beginMapEntry = function() end },
+    session = { beginMapEntry = function() end, dispose = function() end },
     menuComposer = { releaseModalHosts = function() end },
     zoneController = { currentMap = sourceRuntimeMap },
     fieldTerrainEffectController = { clear = function() end },

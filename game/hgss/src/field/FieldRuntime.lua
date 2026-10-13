@@ -3379,6 +3379,9 @@ end
 -- dialogue -- and the field clearing means reset never leaves a hand-picked
 -- subset behind for its re-boot.
 function FieldRuntime:_releaseAll()
+  if self.session then
+    self.session:dispose()
+  end
   if self.battleCoordinator then
     self.battleCoordinator:dispose()
     self.battleCoordinator = nil

@@ -196,16 +196,49 @@ end
 
 ---@return table
 local function recordingHost()
-  local host = { opens = {} }
+  local host = {
+    opens = {},
+    active = false,
+    steps = 0,
+    closes = 0,
+    cancels = 0,
+    finishOnStep = false,
+  }
   ---@param args table<string, unknown>
   ---@return table
   function host:open(args)
     assert(type(args) == "table", "companion opens carry their request record")
+    if self.failOpen then
+      error("companion host acquisition failed: test-injected busy lease", 0)
+    end
     self.opens[#self.opens + 1] = args
-    return { id = #self.opens }
+    self.handle = { id = #self.opens }
+    self.active = true
+    return self.handle
   end
   function host:isActive()
-    return false
+    return self.active
+  end
+  function host:activeHandle()
+    return self.handle
+  end
+  function host:step(handle)
+    assert(handle == self.handle, "the field steps only its acquired handle")
+    self.steps = self.steps + 1
+  end
+  function host:result(handle)
+    assert(handle == self.handle, "the field reads only its acquired handle")
+    return self.finishOnStep and self.steps > 0 and { status = "complete" } or nil
+  end
+  function host:close(handle)
+    assert(handle == self.handle, "the field closes only its acquired handle")
+    self.closes = self.closes + 1
+    self.active = false
+  end
+  function host:cancel(reason)
+    assert(type(reason) == "string", "field cancellation identifies its reason")
+    self.cancels = self.cancels + 1
+    self.active = false
   end
   return host
 end
@@ -293,6 +326,12 @@ local function makeFieldSession(opts)
   local controls = {
     scriptOwnsInput = false,
     menuModal = false,
+    dialogueModal = false,
+    applicationActive = false,
+    menuRequests = 0,
+    uiBegins = 0,
+    uiClears = 0,
+    interactions = 0,
   }
   local player = {
     fieldX = 4,
@@ -339,6 +378,16 @@ local function makeFieldSession(opts)
       return out
     end,
   }
+  controls.player = player
+  local transition = {
+    phase = "idle",
+    locked = false,
+    updateFixed = function() end,
+    start = function()
+      error("no warp", 0)
+    end,
+  }
+  controls.transition = transition
   local scheduler = {
     step = function() end,
     playerInputLocked = function()
@@ -371,14 +420,7 @@ local function makeFieldSession(opts)
     currentMap = { mapId = 61, fieldData = { events = { warps = {} } }, updateAnimated = function() end },
     player = player,
     camera = { updateFixed = function() end },
-    transition = {
-      phase = "idle",
-      locked = false,
-      updateFixed = function() end,
-      start = function()
-        error("no warp", 0)
-      end,
-    },
+    transition = transition,
     actors = {
       beginFixedStep = function() end,
       step = function() end,
@@ -391,10 +433,19 @@ local function makeFieldSession(opts)
         return {}
       end,
       clearEdges = function() end,
+      beginUi = function()
+        controls.uiBegins = controls.uiBegins + 1
+      end,
+      clearUi = function()
+        controls.uiClears = controls.uiClears + 1
+      end,
     },
     dialogue = {
       isModal = function()
-        return false
+        return controls.dialogueModal
+      end,
+      step = function()
+        controls.dialogueSteps = (controls.dialogueSteps or 0) + 1
       end,
     },
     scriptScheduler = scheduler,
@@ -419,10 +470,14 @@ local function makeFieldSession(opts)
     },
     applicationHost = {
       isActive = function()
-        return false
+        return controls.applicationActive
+      end,
+      phase = function()
+        return "menu"
       end,
       updateFixed = function() end,
       requestOpen = function()
+        controls.menuRequests = controls.menuRequests + 1
         return false
       end,
       takeReopen = function()
@@ -437,6 +492,7 @@ local function makeFieldSession(opts)
     },
     interactions = {
       resolve = function()
+        controls.interactions = controls.interactions + 1
         return nil
       end,
     },
@@ -453,8 +509,19 @@ local function makeFieldSession(opts)
       getVar = function() end,
     },
     incomingCalls = opts.incomingCalls,
+    pokegearApplications = opts.pokegearApplications,
   })
   return session, controls
+end
+
+local function answerThroughFieldInput(rig)
+  local session = makeFieldSession({ incomingCalls = rig.calls, pokegearApplications = rig.host })
+  session:updateFixed({ actionPressed = true })
+  Assert.equal(#rig.host.opens, 1, "one field Action edge acquires one incoming call")
+  Assert.isTrue(rig.host:isActive(), "the field owns the accepted host handle")
+  Assert.equal(rig.host.opens[1].parentOwner, "field:incoming", "ambient calls use the stable field owner")
+  Assert.equal(rig.host.steps, 0, "the answer edge does not step the newly acquired conversation")
+  session:dispose()
 end
 
 -- A competing field claim owns the tick while an eligible call waits:
@@ -468,7 +535,7 @@ function T.tests.a_competing_field_claim_owns_the_tick_and_ringing_never_opens_a
   }, { triggerRecord(MOM_TRIGGER, MOM_KEY, 3) }, { MOM_TRIGGER })
   local calls = rig.calls
   driveEligible(calls)
-  local session, controls = makeFieldSession({ incomingCalls = calls })
+  local session, controls = makeFieldSession({ incomingCalls = calls, pokegearApplications = rig.host })
 
   -- A foreground script owns the tick: no ring starts and the companion
   -- lease stays untouched.
@@ -527,10 +594,157 @@ function T.tests.a_competing_field_claim_owns_the_tick_and_ringing_never_opens_a
   )
   session:updateFixed({})
   Assert.notNil(calls:notification(), "the trigger re-rings after the transient clear")
-  calls:accept("field:test-parent")
+  session:updateFixed({ actionPressed = true })
   Assert.equal(#rig.host.opens, 1, "only acceptance opens the companion modal, exactly once")
   Assert.isFalse(calls:notification(), "acceptance ends the ring")
+  session:dispose()
   calls:dispose()
+end
+
+function T.tests.field_session_cancels_only_its_ambient_host_handle_once()
+  local rig = freshCoordinator(4242, {
+    contactRecord(MOM_KEY, "MOM", 10, "mother"),
+  }, { triggerRecord(MOM_TRIGGER, MOM_KEY, 3) }, { MOM_TRIGGER })
+  driveEligible(rig.calls)
+  rig.calls:onOpportunity(opportunityArgs())
+  local session = makeFieldSession({ incomingCalls = rig.calls, pokegearApplications = rig.host })
+  session:updateFixed({ actionPressed = true })
+  Assert.equal(#rig.host.opens, 1, "field input acquires the ambient handle")
+
+  local foreignHandle = { id = 99 }
+  rig.host.handle = foreignHandle
+  session:dispose()
+  Assert.equal(rig.host.cancels, 0, "session teardown leaves another host owner's handle alone")
+  Assert.isTrue(rig.host.active, "the unrelated host lease remains active")
+  Assert.equal(rig.host.handle, foreignHandle, "the unrelated handle remains the host owner")
+  rig.calls:dispose()
+
+  local ownedRig = freshCoordinator(4242, {
+    contactRecord(MOM_KEY, "MOM", 10, "mother"),
+  }, { triggerRecord(MOM_TRIGGER, MOM_KEY, 3) }, { MOM_TRIGGER })
+  driveEligible(ownedRig.calls)
+  ownedRig.calls:onOpportunity(opportunityArgs())
+  local ownedSession = makeFieldSession({
+    incomingCalls = ownedRig.calls,
+    pokegearApplications = ownedRig.host,
+  })
+  ownedSession:updateFixed({ actionPressed = true })
+  ownedSession:dispose()
+  ownedSession:dispose()
+  Assert.equal(ownedRig.host.cancels, 1, "repeated teardown cancels the owned handle exactly once")
+  Assert.isFalse(ownedRig.host.active, "owned teardown releases the accepted host lease")
+  ownedRig.calls:dispose()
+end
+
+function T.tests.ambient_call_steps_once_per_tick_and_closes_once_on_terminal_result()
+  local rig = freshCoordinator(4242, {
+    contactRecord(MOM_KEY, "MOM", 10, "mother"),
+  }, { triggerRecord(MOM_TRIGGER, MOM_KEY, 3) }, { MOM_TRIGGER })
+  driveEligible(rig.calls)
+  rig.calls:onOpportunity(opportunityArgs())
+  local session, controls = makeFieldSession({ incomingCalls = rig.calls, pokegearApplications = rig.host })
+  session:updateFixed({ actionPressed = true })
+  Assert.equal(rig.host.steps, 0, "the initiating action is not replayed into the phone UI")
+
+  rig.host.finishOnStep = true
+  session:updateFixed({})
+  Assert.equal(rig.host.steps, 1, "the ambient handle advances once on its owned fixed tick")
+  Assert.equal(rig.host.closes, 1, "the terminal result closes the accepted handle exactly once")
+  Assert.equal(rig.host.cancels, 0, "terminal completion does not route through cancellation")
+  Assert.isFalse(rig.host:isActive(), "terminal completion releases the host lease")
+  Assert.equal(controls.uiClears, 1, "terminal completion restores field input capture")
+
+  session:updateFixed({})
+  session:dispose()
+  Assert.equal(rig.host.steps, 1, "the closed handle never steps again")
+  Assert.equal(rig.host.closes, 1, "the closed handle never closes again")
+  rig.calls:dispose()
+end
+
+function T.tests.failed_host_acquisition_keeps_the_ring_and_does_not_dispatch_the_action()
+  local rig = freshCoordinator(4242, {
+    contactRecord(MOM_KEY, "MOM", 10, "mother"),
+  }, { triggerRecord(MOM_TRIGGER, MOM_KEY, 3) }, { MOM_TRIGGER })
+  driveEligible(rig.calls)
+  rig.calls:onOpportunity(opportunityArgs())
+  rig.host.failOpen = true
+  local session, controls = makeFieldSession({ incomingCalls = rig.calls, pokegearApplications = rig.host })
+
+  Assert.throws(function()
+    session:updateFixed({ actionPressed = true })
+  end, "a field answer propagates the attributed host acquisition failure")
+  Assert.isTrue(type(rig.calls:notification()) == "table", "failed acquisition preserves the ringing view")
+  Assert.isTrue(rig.state:readPhone().triggers[MOM_TRIGGER] == true, "failed acquisition preserves Mom's trigger")
+  Assert.isFalse(rig.host:isActive(), "failed acquisition leaves no host lease active")
+  Assert.equal(controls.interactions, 0, "the failed answer edge never dispatches ordinary interaction")
+  Assert.equal(controls.uiBegins, 0, "failed acquisition never transfers field input capture")
+  rig.calls:dispose()
+end
+
+function T.tests.ambient_answer_action_yields_to_higher_priority_field_claims()
+  local cases = {
+    {
+      name = "script lock",
+      claim = function(_, controls)
+        controls.scriptOwnsInput = true
+      end,
+    },
+    {
+      name = "battle",
+      claim = function(session)
+        session:setBattleActive(true)
+      end,
+    },
+    {
+      name = "modal dialogue",
+      claim = function(_, controls)
+        controls.dialogueModal = true
+      end,
+    },
+    {
+      name = "transition",
+      claim = function(_, controls)
+        controls.transition.phase = "locked"
+      end,
+    },
+    {
+      name = "mid-step movement",
+      claim = function(_, controls)
+        controls.player.motion = "walking"
+      end,
+    },
+    {
+      name = "Start Menu edge",
+      menuPressed = true,
+      claim = function() end,
+    },
+    {
+      name = "active application",
+      claim = function(_, controls)
+        controls.applicationActive = true
+      end,
+    },
+  }
+
+  for _, case in ipairs(cases) do
+    local rig = freshCoordinator(4242, {
+      contactRecord(MOM_KEY, "MOM", 10, "mother"),
+    }, { triggerRecord(MOM_TRIGGER, MOM_KEY, 3) }, { MOM_TRIGGER })
+    driveEligible(rig.calls)
+    rig.calls:onOpportunity(opportunityArgs())
+    local session, controls = makeFieldSession({ incomingCalls = rig.calls, pokegearApplications = rig.host })
+    case.claim(session, controls)
+    session:updateFixed({ actionPressed = true, menuPressed = case.menuPressed == true })
+    Assert.equal(#rig.host.opens, 0, case.name .. " keeps ambient acceptance from acquiring a host")
+    Assert.isTrue(rig.state:readPhone().triggers[MOM_TRIGGER] == true, case.name .. " preserves Mom's trigger")
+    if case.name == "Start Menu edge" then
+      Assert.equal(controls.menuRequests, 1, "the simultaneous menu edge gets its existing arbitration turn")
+    end
+    if case.name == "modal dialogue" then
+      Assert.equal(controls.dialogueSteps, 1, "the modal dialogue keeps its own input tick")
+    end
+    rig.calls:dispose()
+  end
 end
 
 -- Only genuine producer facts raise triggers and each fires once: an
@@ -598,7 +812,7 @@ function T.tests.only_genuine_producer_facts_raise_triggers_and_absent_owners_st
     assert(type(ringing) == "table", "ringing publishes its caller view")
     Assert.equal(ringing.contactKey, MOM_KEY, "the purchase trigger rings its owner")
     Assert.equal(#rig.host.opens, 0, "the genuine ring opens no modal before acceptance")
-    rig.calls:accept("field:test-parent")
+    answerThroughFieldInput(rig)
     Assert.isTrue(
       rig.state:readPhone().triggers[MOM_TRIGGER] == true,
       "answering Mom preserves her gift trigger until pickup"
@@ -627,7 +841,7 @@ function T.tests.only_genuine_producer_facts_raise_triggers_and_absent_owners_st
     Assert.notNil(ringing, "the genuine full-box trigger rings")
     assert(type(ringing) == "table", "ringing publishes its caller view")
     Assert.equal(ringing.contactKey, BILL_KEY, "the full-box trigger rings its owner")
-    rig.calls:accept("field:test-parent")
+    answerThroughFieldInput(rig)
     Assert.deepEqual(rig.state:readPhone().triggers, {}, "the fired trigger clears at acceptance")
     rig.calls:onFieldClock(moment(30))
     rig.calls:onOpportunity(opportunityArgs())
@@ -660,7 +874,7 @@ function T.tests.only_genuine_producer_facts_raise_triggers_and_absent_owners_st
     Assert.notNil(ringing, "the genuine threshold trigger rings")
     assert(type(ringing) == "table", "ringing publishes its caller view")
     Assert.equal(ringing.contactKey, OAK_KEY, "the threshold trigger rings its owner")
-    rig.calls:accept("field:test-parent")
+    answerThroughFieldInput(rig)
     Assert.deepEqual(rig.state:readPhone().triggers, {}, "the fired trigger clears at acceptance")
     rig.calls:onFieldClock(moment(40))
     rig.calls:onOpportunity(opportunityArgs())

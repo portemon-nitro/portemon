@@ -14,6 +14,8 @@ local CacheFs = require("libs.storage.src.CacheFs")
 local PokegearCache = require("libs.assets.src.PokegearCache")
 local Fixture = require("tests.support.PokegearJourneyFixture")
 local PokegearSources = require("romdump.src.config.PokegearSources")
+local PhoneRewards = require("game.hgss.src.pokegear.PhoneRewards")
+local LocalClock = require("game.src.LocalClock")
 
 local DERIVED_ASSETS = {}
 for _, key in ipairs(Fixture.JOURNEY_ASSETS) do
@@ -76,6 +78,76 @@ local function contactByFamily(catalog, family)
   error("the native phone catalog contains a " .. family .. " contact", 0)
 end
 
+local function armMotherGiftCall(game, sample)
+  game:step()
+  Assert.isTrue(Fixture.settleField(game), "the call setup begins at an unclaimed field boundary")
+  local catalog = assert(game.runtime.pokegearCatalog, "the field runtime owns its compiled phone catalog")
+  local mom = contactByFamily(catalog, "mother")
+  local state = assert(game.runtime.pokegearState, "the incoming call uses the composed Pokegear save owner")
+  state:registerContact(mom.key)
+  state:setMom({ balance = 0, purchases = {}, gifts = { { item = "POTION", quantity = 1 } } })
+  local calls = assert(game.runtime.incomingCalls, "the field runtime owns its incoming call coordinator")
+  calls:setTrigger(PhoneRewards.MOM_GIFT_TRIGGER, true)
+  sample.minute = sample.minute + 1
+  game:advanceUntil("the source Mom trigger rings at an idle field opportunity", function()
+    return calls:notification() ~= false
+  end, 120)
+  local ring = calls:notification()
+  local triggerRecord = nil
+  for _, candidate in ipairs(catalog.callTriggers) do
+    if candidate.key == PhoneRewards.MOM_GIFT_TRIGGER then
+      triggerRecord = candidate
+      break
+    end
+  end
+  Assert.isTrue(triggerRecord ~= nil, "the compiled source catalog includes Mom's delivery trigger")
+  Assert.isTrue(ring ~= false, "the eligible source Mom trigger rings after a live minute")
+  assert(type(ring) == "table", "the ringing caller publishes its source contact")
+  Assert.equal(ring.contactKey, mom.key, "the pending native Mom delivery trigger selects its caller")
+  return mom, calls
+end
+
+local function stageTalkableObject(game)
+  local FieldMovement = require("tests.acceptance.support.FieldMovement")
+  local actorIds = {}
+  for actorId in pairs(game:snapshot().actors) do
+    if actorId:match(":object:%d+$") ~= nil then
+      actorIds[#actorIds + 1] = actorId
+    end
+  end
+  table.sort(actorIds)
+  for _, actorId in ipairs(actorIds) do
+    local actor = assert(game.runtime.actors:getById(actorId), "the selected object remains live")
+    local position = actor:getFieldPosition()
+    local candidates = {
+      { fieldX = position.fieldX, fieldZ = position.fieldZ + 1, facing = "north" },
+      { fieldX = position.fieldX, fieldZ = position.fieldZ - 1, facing = "south" },
+      { fieldX = position.fieldX + 1, fieldZ = position.fieldZ, facing = "west" },
+      { fieldX = position.fieldX - 1, fieldZ = position.fieldZ, facing = "east" },
+    }
+    for _, tile in ipairs(candidates) do
+      if FieldMovement.route(game, tile) ~= nil then
+        game:moveTo(tile)
+        game:face(tile.facing)
+        local player = game.runtime.player
+        local intent = game.runtime.interactionResolver:resolve({
+          runtimeMap = game.runtime.runtimeMap,
+          fieldX = player.fieldX,
+          fieldZ = player.fieldZ,
+          surfaceId = player.surfaceId,
+          worldY = player.worldY,
+          facing = player.facing,
+          tick = game.runtime.session.tick + 1,
+        })
+        if intent ~= nil then
+          return actorId
+        end
+      end
+    end
+  end
+  error("the live map exposes an adjacent talkable object through production movement", 0)
+end
+
 local function deterministicBattlePort()
   return {
     enter = function()
@@ -109,6 +181,70 @@ local function settleTrainerBattle(game, battle)
     end
     ticks = ticks + 1
   end
+end
+
+function T.tests.field_action_answers_moms_call_before_npc_and_returns_cleanly()
+  local sample = { year = 2024, month = 1, day = 8, hour = 10, minute = 0, second = 0 }
+  Fixture.withGame(Fixture.POKECENTER, function(game)
+    Fixture.compositionGates(game)
+    local actorId = stageTalkableObject(game)
+    local _, calls = armMotherGiftCall(game, sample)
+    local host = assert(game.runtime.pokegear.scriptHost, "the field uses its composed phone host")
+    local beforeInteraction = game:interaction()
+
+    game.runtime:pressAction()
+    game:step()
+    game.runtime:releaseAction()
+
+    Assert.isTrue(host:isActive(), "field Action must acquire the ringing caller before ordinary interaction")
+    Assert.equal(game:interaction().actorId, beforeInteraction.actorId, "the answer edge must not start the NPC")
+    Assert.isFalse(calls:notification(), "the accepted call no longer publishes its ring")
+    Assert.isTrue(
+      game.runtime.pokegearState:readPhone().triggers[PhoneRewards.MOM_GIFT_TRIGGER],
+      "Mom's trigger remains until pickup"
+    )
+    Assert.isTrue(Fixture.drainField(game, 480), "source Mom dialogue must finish and release its field owner")
+    Assert.isFalse(host:isActive(), "a terminal call releases its host handle")
+    Assert.isTrue(Fixture.settleField(game), "terminal call cleanup restores ordinary field ownership")
+
+    game:pressAction()
+    Assert.equal(game:interaction().actorId, actorId, "a fresh Action edge interacts with the same NPC")
+    local scriptId = assert(game:interaction().scriptId, "the fresh NPC interaction publishes its source script")
+    Assert.isTrue(#game:recordsForScript(scriptId, "script.started") > 0, "the fresh edge starts the NPC script")
+    Assert.isTrue(Fixture.drainField(game, 480), "the NPC interaction releases its script owner")
+
+    game:setWorldState({ flag = Fixture.FLAGS.FLAG_GOT_SAVE_BUTTON })
+    game:setWorldState({ flag = Fixture.FLAGS.FLAG_GOT_POKEGEAR })
+    Fixture.saveAndReload(game)
+    Assert.isFalse(game.runtime.pokegear.scriptHost:isActive(), "save reload starts without a stale phone owner")
+    Assert.isTrue(Fixture.settleField(game), "save reload returns to ordinary field play")
+  end, {
+    localClock = LocalClock.new(function()
+      return sample
+    end),
+  })
+end
+
+function T.tests.tearing_down_an_answered_call_releases_the_composed_host()
+  local sample = { year = 2024, month = 1, day = 8, hour = 10, minute = 0, second = 0 }
+  Fixture.withGame(Fixture.POKECENTER, function(game)
+    Fixture.compositionGates(game)
+    local _, calls = armMotherGiftCall(game, sample)
+    local host = assert(game.runtime.pokegear.scriptHost, "the field uses its composed phone host")
+    Fixture.pressActionEdge(game)
+    Assert.isTrue(host:isActive(), "real field Action opens the ambient caller before teardown")
+    Assert.isFalse(host:isStableForSave(), "the accepted conversation keeps saves behind its live lease")
+
+    game.runtime:dispose()
+
+    Assert.isFalse(host:isActive(), "field teardown cancels the accepted host handle")
+    Assert.isTrue(host:isStableForSave(), "teardown releases the phone lease exactly once")
+    Assert.isFalse(calls:notification(), "teardown leaves no transient ring")
+  end, {
+    localClock = LocalClock.new(function()
+      return sample
+    end),
+  })
 end
 
 -- The fully acquired shell keeps one owner across every card: the gear
