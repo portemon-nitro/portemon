@@ -1,9 +1,12 @@
 local Assert = require("tests.support.Assert")
+local CacheEnvelope = require("tests.support.CacheEnvelope")
 local CacheFs = require("libs.storage.src.CacheFs")
 local LuaWriter = require("libs.codec.src.LuaWriter")
 local Errors = require("libs.errors.src.Errors")
 local StorageErrors = require("libs.storage.src.errors")
 local FakeCache = require("tests.support.FakeCache")
+local PngWriter = require("libs.assets.src.PngWriter")
+local Schema = require("libs.script.src.Schema")
 local ConstrainedCache = require("tests.support.ConstrainedCache")
 local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
 
@@ -1544,6 +1547,351 @@ function T.contradictory_root_metadata_fails_before_live_mutation()
   Assert.equal(assert(err).code, StorageErrors.CACHE_PUBLISH_ROLLBACK_INCOMPLETE)
   Assert.equal(c:read(root .. "/value"), "live")
   Assert.equal(backend.files[siblingRoot(root, ".__g4old") .. "/value"], "old")
+end
+
+-- Compressed derived storage: a fake backend carrying faithful host
+-- codecs, so the suites pin logical behavior without depending on how
+-- production threads the seam.
+local function codecCache(versionId)
+  local backend = FakeCache.new()
+  CacheEnvelope.attachHostCodecs(backend)
+  return CacheFs.forVersion(versionId or "heartgold", backend), backend
+end
+
+local function backendBytes(backend, versionId, relativePath)
+  local physical = backend.files[versionId .. "/" .. relativePath]
+  Assert.equal(type(physical), "string", "expected stored bytes at " .. relativePath)
+  assert(type(physical) == "string", "stored bytes must be a string")
+  return physical
+end
+
+-- Representative compressible payloads stay byte-identical through the
+-- logical API while landing physically smaller inside the envelope; tiny
+-- payloads and files that would not shrink stay raw.
+function T.compressible_generated_families_store_smaller_but_read_exactly()
+  local c, backend = codecCache()
+  local cases = {
+    {
+      path = "geometry/chunk.g4mesh",
+      codec = CacheEnvelope.CODEC_LZ4,
+      payload = string.rep("vertex-block-0123456789;", 300),
+    },
+    {
+      path = "geometry/level.g4collision",
+      codec = CacheEnvelope.CODEC_LZ4,
+      payload = string.rep("collision-cell-0123456789;", 300),
+    },
+    {
+      path = "audio/sample.pcm16le",
+      codec = CacheEnvelope.CODEC_ZLIB,
+      payload = string.rep("\0\1\2\3sample;", 512),
+    },
+    {
+      path = "data/generated/big.lua",
+      codec = CacheEnvelope.CODEC_ZLIB,
+      payload = "--" .. string.rep("padding;", 300) .. "\nreturn { answer = 42 }\n",
+    },
+  }
+  for _, case in ipairs(cases) do
+    Assert.isTrue(#case.payload >= 1024, "the fixture must clear the wrap threshold: " .. case.path)
+    c:write(case.path, case.payload)
+    local physical = backendBytes(backend, "heartgold", case.path)
+    Assert.isTrue(#physical < #case.payload, "wrapped bytes must save space: " .. case.path)
+    Assert.isTrue(CacheEnvelope.isWrapped(physical), "wrapped bytes carry the envelope tag: " .. case.path)
+    local header = CacheEnvelope.parse(physical)
+    assert(header, "wrapped bytes must parse")
+    Assert.equal(header.codec, case.codec, "the codec follows the path family: " .. case.path)
+    Assert.equal(header.length, #case.payload, "the header records the logical length: " .. case.path)
+    Assert.equal(c:read(case.path), case.payload, "the logical read is exact: " .. case.path)
+  end
+  Assert.deepEqual(c:loadLua("data/generated/big.lua"), { answer = 42 })
+
+  -- A payload too small to benefit from wrapping stays byte-for-byte raw.
+  local tiny = "return { tiny = true }\n"
+  c:write("data/generated/small.lua", tiny)
+  Assert.equal(backendBytes(backend, "heartgold", "data/generated/small.lua"), tiny)
+  Assert.equal(c:read("data/generated/small.lua"), tiny)
+
+  -- A small file that happens to start with the reserved tag must still
+  -- round-trip exactly instead of being misread as an envelope.
+  local tricky = "PDC1" .. string.rep("q", 64)
+  c:write("data/generated/tricky.lua", tricky)
+  Assert.equal(c:read("data/generated/tricky.lua"), tricky)
+end
+
+-- A damaged envelope is a loud structured decode failure, never a silent
+-- raw passthrough and never a missing file.
+function T.damaged_envelopes_fail_as_decode_errors_not_absences()
+  local c, backend = codecCache()
+  local logical = string.rep("audio-sample-block;", 200)
+  local good = CacheEnvelope.build(CacheEnvelope.CODEC_ZLIB, logical)
+  local function plant(path, physical)
+    backend:write("heartgold/" .. path, physical)
+  end
+  plant("audio/bad-codec.pcm16le", "PDC1" .. string.char(9) .. good:sub(6))
+  plant("audio/short.pcm16le", "PDC1" .. string.char(2))
+  plant(
+    "audio/damaged.pcm16le",
+    good:sub(1, -2) .. (good:sub(-1, -1) == "A" and "B" or "A")
+  )
+  plant("audio/bad-hash.pcm16le", good:sub(1, 9) .. string.rep("\0", 20) .. good:sub(30))
+  plant("audio/huge.pcm16le", "PDC1" .. string.char(2) .. "\255\255\255\255" .. string.rep("\0", 20) .. "x")
+  plant("data/generated/broken.lua", good:sub(1, -2) .. (good:sub(-1, -1) == "A" and "B" or "A"))
+  local damaged = {
+    "audio/bad-codec.pcm16le",
+    "audio/short.pcm16le",
+    "audio/damaged.pcm16le",
+    "audio/bad-hash.pcm16le",
+    "audio/huge.pcm16le",
+  }
+  for _, path in ipairs(damaged) do
+    local ok, err = pcall(function()
+      return c:read(path)
+    end)
+    Assert.isFalse(ok, "a damaged envelope must raise: " .. path)
+    Assert.isTrue(Errors.is(err), "the failure must be structured: " .. tostring(err))
+    Assert.equal(err.code, CacheEnvelope.DECODE_FAILED, "the failure names decoding: " .. path)
+  end
+  local value, loadErr = c:loadLua("data/generated/broken.lua")
+  Assert.isNil(value, "a damaged Lua envelope must not evaluate")
+  Assert.isTrue(Errors.is(loadErr), "the load failure must be structured")
+  Assert.equal(loadErr.code, CacheEnvelope.DECODE_FAILED)
+
+  -- Genuine absence keeps its existing meaning alongside the new failure.
+  Assert.isNil(c:read("audio/never-written.pcm16le"))
+  local missing, missingErr = c:loadLua("data/generated/absent.lua")
+  Assert.isNil(missing)
+  Assert.equal(missingErr.code, StorageErrors.CACHE_FILE_MISSING)
+end
+
+-- Portable image bytes are never wrapped, and generated script modules keep
+-- their restricted require sandbox whether stored raw or wrapped.
+function T.png_bytes_stay_native_and_wrapped_modules_keep_the_require_allowlist()
+  local c, backend = codecCache()
+  local pixels = {}
+  for y = 0, 127 do
+    for x = 0, 127 do
+      pixels[#pixels + 1] = string.char(x % 256, y % 256, (x + y) % 256, 255)
+    end
+  end
+  local png = PngWriter.encode(128, 128, table.concat(pixels))
+  Assert.isTrue(#png >= 1024, "the png fixture must clear the wrap threshold")
+  c:write("textures/atlas.png", png)
+  local physical = backendBytes(backend, "heartgold", "textures/atlas.png")
+  Assert.equal(physical, png, "png bytes stay byte-for-byte native")
+  Assert.equal(physical:sub(1, 8), "\137PNG\r\n\26\n", "the stored file keeps its png signature")
+  Assert.equal(c:read("textures/atlas.png"), png)
+
+  local padding = "--" .. string.rep("padding;", 200) .. "\n"
+  local allowedSource = padding .. 'local S = require("gen4.script")\nreturn { api = S.apiVersion, id = "a.b" }\n'
+  Assert.isTrue(#allowedSource >= 1024, "the module fixture must clear the wrap threshold")
+  c:write("data/generated/script/a.b.lua", allowedSource)
+  local wrapped = backendBytes(backend, "heartgold", "data/generated/script/a.b.lua")
+  Assert.isTrue(CacheEnvelope.isWrapped(wrapped), "a profitable module is wrapped")
+  Assert.isTrue(#wrapped < #allowedSource, "the wrapped module saves space")
+  Assert.deepEqual(
+    c:loadModule("data/generated/script/a.b.lua"),
+    { api = Schema.API_VERSION, id = "a.b" },
+    "a wrapped allowlisted module evaluates identically"
+  )
+
+  local deniedSource = padding .. 'local X = require("libs.errors.src.Errors")\nreturn X\n'
+  c:write("data/generated/script/evil.lua", deniedSource)
+  local deniedPhysical = backendBytes(backend, "heartgold", "data/generated/script/evil.lua")
+  Assert.isTrue(CacheEnvelope.isWrapped(deniedPhysical), "a profitable denied module is still wrapped")
+  local denied, deniedErr = c:loadModule("data/generated/script/evil.lua")
+  Assert.isNil(denied, "a module reaching outside the allowlist must fail wrapped or not")
+  Assert.isTrue(Errors.is(deniedErr), "the rejection must stay structured")
+  Assert.isFalse(
+    deniedErr.code == CacheEnvelope.DECODE_FAILED,
+    "the rejection is sandbox policy, not a decode failure"
+  )
+end
+
+-- Deterministic pseudorandom bytes that no codec can shrink: large but
+-- incompressible payloads, unknown extensions, and recovery metadata all
+-- stay byte-for-byte raw while remaining exactly readable.
+function T.unprofitable_inputs_and_foreign_paths_stay_raw()
+  local c, backend = codecCache()
+  local blocks, prev = {}, "incompressible-seed"
+  for _ = 1, 220 do
+    prev = love.data.hash("sha1", prev)
+    assert(type(prev) == "string" and #prev == 20, "host sha1 must be a 20-byte binary digest")
+    blocks[#blocks + 1] = prev
+  end
+  local noise = table.concat(blocks):sub(1, 4096)
+  c:write("geometry/noise.g4mesh", noise)
+  Assert.equal(backendBytes(backend, "heartgold", "geometry/noise.g4mesh"), noise)
+  Assert.isFalse(CacheEnvelope.isWrapped(backend.files["heartgold/geometry/noise.g4mesh"]))
+  Assert.equal(c:read("geometry/noise.g4mesh"), noise)
+
+  local repetitive = string.rep("compressible-block;", 200)
+  c:write("data/generated/blob.bin", repetitive)
+  Assert.equal(backendBytes(backend, "heartgold", "data/generated/blob.bin"), repetitive)
+  Assert.equal(c:read("data/generated/blob.bin"), repetitive)
+
+  local journalish = "--" .. string.rep("journal-padding;", 200) .. "\nreturn { journal = true }\n"
+  c:write("data/generated/x.__g4publish.lua", journalish)
+  Assert.equal(backendBytes(backend, "heartgold", "data/generated/x.__g4publish.lua"), journalish)
+  Assert.equal(c:read("data/generated/x.__g4publish.lua"), journalish)
+
+  c:write("_prepared/result.lua", journalish)
+  Assert.equal(backendBytes(backend, "heartgold", "_prepared/result.lua"), journalish)
+  Assert.equal(c:read("_prepared/result.lua"), journalish)
+end
+
+-- A well-formed envelope under the wrong path family, a header that lies
+-- about the decoded length, and a header with no payload all fail as
+-- structured decode errors rather than returning damaged bytes.
+function T.wrong_family_and_lying_headers_fail_as_decode_errors()
+  local c, backend = codecCache()
+  local logical = string.rep("family-fixture-block;", 200)
+  backend:write("heartgold/audio/family.pcm16le", CacheEnvelope.build(CacheEnvelope.CODEC_LZ4, logical))
+  local familyOk, familyErr = pcall(function()
+    return c:read("audio/family.pcm16le")
+  end)
+  Assert.isFalse(familyOk, "an lz4 envelope under a zlib path must raise")
+  Assert.isTrue(Errors.is(familyErr))
+  Assert.equal(familyErr.code, CacheEnvelope.DECODE_FAILED)
+
+  backend:write("heartgold/geometry/family.g4mesh", CacheEnvelope.build(CacheEnvelope.CODEC_ZLIB, logical))
+  local meshOk, meshErr = pcall(function()
+    return c:read("geometry/family.g4mesh")
+  end)
+  Assert.isFalse(meshOk, "a zlib envelope under an lz4 path must raise")
+  Assert.isTrue(Errors.is(meshErr))
+  Assert.equal(meshErr.code, CacheEnvelope.DECODE_FAILED)
+
+  local compressed = love.data.compress("string", "zlib", logical)
+  assert(type(compressed) == "string", "host compression must return a string")
+  local digest = love.data.hash("sha1", logical)
+  assert(type(digest) == "string" and #digest == 20, "host sha1 must be a 20-byte binary digest")
+  local function u32le(value)
+    local bytes = {}
+    for _ = 1, 4 do
+      bytes[#bytes + 1] = string.char(value % 256)
+      value = math.floor(value / 256)
+    end
+    return table.concat(bytes)
+  end
+  local lying = "PDC1" .. string.char(CacheEnvelope.CODEC_ZLIB) .. u32le(#logical + 7) .. digest .. compressed
+  backend:write("heartgold/audio/lying.pcm16le", lying)
+  local lyingOk, lyingErr = pcall(function()
+    return c:read("audio/lying.pcm16le")
+  end)
+  Assert.isFalse(lyingOk, "a header lying about the decoded length must raise")
+  Assert.isTrue(Errors.is(lyingErr))
+  Assert.equal(lyingErr.code, CacheEnvelope.DECODE_FAILED)
+
+  local good = CacheEnvelope.build(CacheEnvelope.CODEC_ZLIB, logical)
+  backend:write("heartgold/audio/header-only.pcm16le", good:sub(1, CacheEnvelope.HEADER_SIZE))
+  local headerOk, headerErr = pcall(function()
+    return c:read("audio/header-only.pcm16le")
+  end)
+  Assert.isFalse(headerOk, "a header with no payload must raise")
+  Assert.isTrue(Errors.is(headerErr))
+  Assert.equal(headerErr.code, CacheEnvelope.DECODE_FAILED)
+end
+
+-- The restricted require sandbox behaves identically for small unwrapped
+-- modules: the physical bytes stay raw and the allowlist still decides.
+function T.unwrapped_modules_keep_the_require_allowlist()
+  local c, backend = codecCache()
+  local allowedSource = 'local S = require("gen4.script")\nreturn { api = S.apiVersion, id = "raw.a" }\n'
+  c:write("data/generated/script/raw.lua", allowedSource)
+  Assert.equal(backendBytes(backend, "heartgold", "data/generated/script/raw.lua"), allowedSource)
+  Assert.deepEqual(
+    c:loadModule("data/generated/script/raw.lua"),
+    { api = Schema.API_VERSION, id = "raw.a" },
+    "an unwrapped allowlisted module evaluates identically"
+  )
+end
+
+-- A backend without codec callbacks still writes and reads raw generated
+-- bytes exactly, but a wrapped physical file is a typed decode failure
+-- rather than a misread; tag-colliding raw writes are rejected at write.
+function T.backend_without_codecs_keeps_raw_but_refuses_wrapped_reads()
+  local backend = FakeCache.new()
+  local c = CacheFs.forVersion("heartgold", backend)
+  local logical = "--" .. string.rep("codec-less-padding;", 200) .. "\nreturn { plain = true }\n"
+  Assert.isTrue(#logical >= 1024, "the fixture must clear the wrap threshold")
+  c:write("data/generated/plain.lua", logical)
+  Assert.equal(backend.files["heartgold/data/generated/plain.lua"], logical)
+  Assert.equal(c:read("data/generated/plain.lua"), logical)
+  Assert.deepEqual(c:loadLua("data/generated/plain.lua"), { plain = true })
+
+  local wrappedLogical = string.rep("wrapped-without-codec;", 200)
+  backend:write("heartgold/audio/planted.pcm16le", CacheEnvelope.build(CacheEnvelope.CODEC_ZLIB, wrappedLogical))
+  local readOk, readErr = pcall(function()
+    return c:read("audio/planted.pcm16le")
+  end)
+  Assert.isFalse(readOk, "a wrapped read without a codec must raise")
+  Assert.isTrue(Errors.is(readErr))
+  Assert.equal(readErr.code, CacheEnvelope.DECODE_FAILED)
+
+  backend:write("heartgold/data/generated/planted.lua", CacheEnvelope.build(CacheEnvelope.CODEC_ZLIB, logical))
+  local value, loadErr = c:loadLua("data/generated/planted.lua")
+  Assert.isNil(value, "a wrapped load without a codec must not evaluate")
+  Assert.isTrue(Errors.is(loadErr))
+  Assert.equal(loadErr.code, CacheEnvelope.DECODE_FAILED)
+
+  local colliding = "PDC1" .. string.rep("q", 64)
+  local writeErr = Assert.throws(function()
+    c:write("data/generated/colliding.lua", colliding)
+  end)
+  Assert.isTrue(Errors.is(writeErr))
+  Assert.equal(writeErr.code, StorageErrors.CACHE_WRITE_FAILED)
+end
+
+-- The physical envelope never exceeds what the decoder can represent: a
+-- compressible payload above the decoded-length ceiling is stored raw and
+-- reads back byte-identically, while an oversized payload colliding with
+-- the envelope tag is refused before any file appears. A planted header
+-- lying about its decoded length stays a loud decode failure.
+function T.physical_envelopes_stay_within_the_decoder_length_limit()
+  local c, backend = codecCache()
+  local limit = 64 * 1024 * 1024
+  local huge = string.rep("a", limit + 1)
+  c:write("audio/huge.pcm16le", huge)
+  local physical = backendBytes(backend, "heartgold", "audio/huge.pcm16le")
+  Assert.isFalse(
+    CacheEnvelope.isWrapped(physical),
+    "an oversized payload must stay raw so its own reader accepts it"
+  )
+  Assert.equal(c:read("audio/huge.pcm16le"), huge, "an oversized raw payload round-trips exactly")
+  huge = nil
+  physical = nil
+  collectgarbage("collect")
+
+  local exact = string.rep("b", limit)
+  c:write("audio/exact.pcm16le", exact)
+  Assert.equal(c:read("audio/exact.pcm16le"), exact, "a payload exactly at the ceiling stays readable")
+  exact = nil
+  collectgarbage("collect")
+
+  local colliding = "PDC1" .. string.rep("a", limit - 3)
+  local writeErr = Assert.throws(function()
+    c:write("audio/colliding.pcm16le", colliding)
+  end)
+  Assert.isTrue(Errors.is(writeErr))
+  Assert.equal(writeErr.code, StorageErrors.CACHE_WRITE_FAILED)
+  Assert.isNil(
+    c:read("audio/colliding.pcm16le"),
+    "a refused oversized write leaves no file behind"
+  )
+  colliding = nil
+  collectgarbage("collect")
+
+  backend:write(
+    "heartgold/audio/planted-huge.pcm16le",
+    "PDC1" .. string.char(2) .. "\255\255\255\255" .. string.rep("\0", 20) .. "x"
+  )
+  local readOk, readErr = pcall(function()
+    return c:read("audio/planted-huge.pcm16le")
+  end)
+  Assert.isFalse(readOk, "a planted oversized header must raise")
+  Assert.isTrue(Errors.is(readErr))
+  Assert.equal(readErr.code, CacheEnvelope.DECODE_FAILED)
 end
 
 return { tests = T }

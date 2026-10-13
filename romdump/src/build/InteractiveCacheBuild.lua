@@ -326,6 +326,19 @@ function InteractiveCacheBuild.new(options)
     followerChecked = false,
   }, InteractiveCacheBuild)
   session.completion = InteractiveCacheCompletion.new(session)
+  -- The pool cannot see sweep/enrollment state, so it consults the
+  -- completion owner's settled oracle before opening a source release
+  -- round: an idle pool then holds the buffer across sweep gaps instead
+  -- of releasing and reacquiring it. A retired session settles
+  -- vacuously through the same oracle.
+  local function sourceWorkSettled()
+    local completion = session.completion
+    if completion == nil then
+      return true
+    end
+    return completion:sourceWorkSettled()
+  end
+  pool.sourceSettledQuery = sourceWorkSettled
   return session
 end
 

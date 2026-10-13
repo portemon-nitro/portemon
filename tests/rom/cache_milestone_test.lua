@@ -27,7 +27,6 @@ local MenuProtocol = require("libs.assets.src.MenuProtocol")
 local MonCatalogCompiler = require("romdump.src.digest.mons.MonCatalogCompiler")
 local MonPresentationCompiler = require("romdump.src.digest.mons.MonPresentationCompiler")
 local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
-local RawDumpContract = require("romdump.src.source.RawDumpContract")
 local Schema = require("libs.script.src.Schema")
 local ScriptCache = require("libs.assets.src.ScriptCache")
 local ScriptCompiler = require("romdump.src.digest.script.ScriptCompiler")
@@ -412,15 +411,13 @@ local function completeThroughWorker(context, pool, jobKey, stageName)
 end
 
 function T.common_session_drives_bootstrap_complete_and_background_storm(romFs, versionId)
-  -- Writer isolation: the census borrows the real dump read-only while every
-  -- receipt, milestone, and publication lands in the owned backend the suite
-  -- hooks installed, so the shared prepared fixture never changes under
+  -- Writer isolation: the census borrows the prepared fixture read-only while
+  -- every receipt, milestone, and publication lands in the owned backend the
+  -- suite hooks installed, so the shared prepared fixture never changes under
   -- parallel readers.
   assert(activeBackend ~= nil, "the census owns its backend for the run")
   local cache = CacheFs.forVersion(versionId, activeBackend)
-  local liveCache = CacheFs.forVersion(versionId)
-  local rawBefore = liveCache:read(RawDumpContract.MARKER_PATH)
-  local romSha1 = assert(romFs:metadata().sha1, "dump has no SHA-1 identity")
+  local romSha1 = assert(romFs:metadata().sha1, "source has no SHA-1 identity")
   local identity = identityFor(versionId, romSha1)
   local generationId = assert(identity.generationId, "generation identity is required")
   local pool = FakePool()
@@ -943,11 +940,6 @@ function T.common_session_drives_bootstrap_complete_and_background_storm(romFs, 
       local receipt = ArtifactState.read(cache, generationId, "script-member", tostring(memberId))
       Assert.notNil(receipt, "completed script members stay published across restart")
     end
-    Assert.equal(
-      liveCache:read(RawDumpContract.MARKER_PATH),
-      rawBefore,
-      "resume never re-imports or deletes the borrowed raw source"
-    )
     Assert.notNil(
       cache:read("data/generated/bootstrap.lua"),
       "the menu-font milestone is recorded while audio banks are cold"

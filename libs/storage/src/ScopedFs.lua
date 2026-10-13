@@ -19,6 +19,9 @@ local Errors = require("libs.errors.src.Errors")
 ---@field remove fun(self: ScopedFs.Backend, path: string): boolean, string?
 ---@field replace fun(self: ScopedFs.Backend, sourcePath: string, destinationPath: string): boolean?, string?
 ---@field getDirectoryItems fun(self: ScopedFs.Backend, path: string): string[], string?
+---@field compress (fun(self: ScopedFs.Backend, format: string, bytes: string): string)?
+---@field decompress (fun(self: ScopedFs.Backend, format: string, bytes: string): string)?
+---@field hashSha1 (fun(self: ScopedFs.Backend, bytes: string): string)?
 ---@field _filesystem table<string, unknown>
 
 ---@alias ScopedFs.ErrorCodes table<string, string>
@@ -94,6 +97,38 @@ local function loveGetDirectoryItems(backend, path)
   return backend._filesystem.getDirectoryItems(path)
 end
 
+-- Host compression through LÖVE 11.5's data module. The signatures mirror
+-- the existing backend methods (self first, colon-called); test fakes may
+-- accept both call shapes, but production always calls with the backend.
+---@param format string
+---@param bytes string
+---@return string
+local function loveCompress(_, format, bytes)
+  assert(type(format) == "string" and type(bytes) == "string", "host compress takes a format and bytes")
+  local compressed = love.data.compress("string", format, bytes)
+  assert(type(compressed) == "string", "host compression must return a string")
+  return compressed
+end
+
+---@param format string
+---@param bytes string
+---@return string
+local function loveDecompress(_, format, bytes)
+  assert(type(format) == "string" and type(bytes) == "string", "host decompress takes a format and bytes")
+  local decompressed = love.data.decompress("string", format, bytes)
+  assert(type(decompressed) == "string", "host decompression must return a string")
+  return decompressed
+end
+
+---@param bytes string
+---@return string
+local function loveHashSha1(_, bytes)
+  assert(type(bytes) == "string", "host hashing takes bytes")
+  local digest = love.data.hash("sha1", bytes)
+  assert(type(digest) == "string" and #digest == 20, "host sha1 must be a 20-byte binary digest")
+  return digest
+end
+
 ---@return ScopedFs.Backend
 function ScopedFs.loveBackend()
   local fs = love.filesystem
@@ -106,6 +141,9 @@ function ScopedFs.loveBackend()
     remove = loveRemove,
     replace = loveReplace,
     getDirectoryItems = loveGetDirectoryItems,
+    compress = loveCompress,
+    decompress = loveDecompress,
+    hashSha1 = loveHashSha1,
   }
 end
 
@@ -218,8 +256,9 @@ end
 ---@param relativePath string
 ---@param codes ScopedFs.ErrorCodes
 ---@param env table<string, function>?
+---@param decode (fun(physical: string): string)?
 ---@return table<string, unknown>?, Errors.Error?
-function ScopedFs.loadChunk(backend, fullPath, relativePath, codes, env)
+function ScopedFs.loadChunk(backend, fullPath, relativePath, codes, env, decode)
   if not backend:getInfo(fullPath) then
     return nil, Errors.new(codes.FILE_MISSING, "no such file", { path = relativePath })
   end
@@ -227,6 +266,9 @@ function ScopedFs.loadChunk(backend, fullPath, relativePath, codes, env)
   if data == nil then
     local message = type(readErr) == "string" and readErr or "read failed"
     return nil, Errors.new(codes.READ_FAILED, message, { path = relativePath })
+  end
+  if decode ~= nil then
+    data = decode(data)
   end
   local chunk, loadErr = loadstring(data, "@" .. relativePath)
   if not chunk then

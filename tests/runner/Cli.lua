@@ -17,7 +17,7 @@ Cli.EXIT_USAGE = 2
 
 Cli.LAYERS = { "unit", "component", "graphics", "rom", "acceptance" }
 
--- Layers whose data comes from a user-owned dump: selecting one makes the
+-- Layers whose data comes from a user-owned ROM: selecting one makes the
 -- selected ROM capabilities mandatory instead of optional, and cache
 -- preparation follows the selected suites' declared capabilities.
 local ROM_GATED = { rom = true, acceptance = true }
@@ -336,7 +336,7 @@ local function warningBanner(run)
   return table.concat({
     RULE,
     "WARNING: ROM-GATED TESTS WERE NOT RUN",
-    "No ready HeartGold/SoulSilver dump was found.",
+    "No ready HeartGold/SoulSilver ROM source was found.",
     string.format(
       "Skipped: %d ROM-conformance tests and %d acceptance tests.",
       skippedIn(run, "rom"),
@@ -350,7 +350,7 @@ end
 
 -- The ROM capabilities a selection makes mandatory. An explicit ROM-gated
 -- layer or strict mode requires ROM evidence, but only for the ROM
--- capabilities the selection actually uses: a raw-dump-only focus must not
+-- capabilities the selection actually uses: a source-only focus must not
 -- fail for an unselected derived cache.
 ---@param plan TestPlan
 ---@param run RunnerRun
@@ -402,7 +402,7 @@ function Cli.outcome(plan, capabilities, run)
       exitCode = 1,
       failure = table.concat({
         "required capability unavailable: " .. table.concat(missing, ", "),
-        "Prepare a dump with: " .. BUILD_COMMAND,
+        "Prepare one with: " .. BUILD_COMMAND,
       }, "\n"),
     }
   end
@@ -426,9 +426,9 @@ function Cli.outcome(plan, capabilities, run)
     end
   end
 
-  -- Only when a ROM-gated layer actually skipped for the absent dump: a
+  -- Only when a ROM-gated layer actually skipped for the absent source: a
   -- selection that never reached those layers has nothing to warn about, and a
-  -- skip under a ready dump has some other cause than the one named here.
+  -- skip under a ready source has some other cause than the one named here.
   local warning = nil
   if capabilities[CapabilityNames.ROM_DUMP] ~= true and skippedIn(run, "rom") + skippedIn(run, "acceptance") > 0 then
     warning = warningBanner(run)

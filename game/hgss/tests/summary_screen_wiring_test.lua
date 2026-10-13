@@ -982,8 +982,9 @@ local function withRealPresenters(versionId, graphics, callback)
   package.loaded[FPR_MODULE] = nil
   local savedLove = rawget(_G, "love")
   -- Presentation construction reads manifests through the real filesystem
-  -- backend; only graphics stay doubled.
-  rawset(_G, "love", { graphics = graphics, filesystem = savedLove.filesystem })
+  -- backend; only graphics stay doubled. Compressed derived files decode
+  -- through the host data module, so it stays real as well.
+  rawset(_G, "love", { graphics = graphics, filesystem = savedLove.filesystem, data = savedLove.data })
   local ok, err = pcall(function()
     local FieldPresentationResources = require(FPR_MODULE)
     local resources = FieldPresentationResources.new(fprRuntime(versionId))

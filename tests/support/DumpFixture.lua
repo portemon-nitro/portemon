@@ -1,7 +1,7 @@
--- Test helper: a synthetic HGSS-shaped NDS and a full extraction of it into an
--- in-memory cache. The tree carries the required NARC paths plus the readiness sound file, one arm9
--- overlay (fileId 0), and one unmapped file (fileId 1), so both the extractor
--- and RomFs can be exercised end to end without a real ROM.
+-- Test helper: a synthetic HGSS-shaped NDS opened directly without a real
+-- ROM. The tree carries the required NARC paths plus the readiness sound
+-- file, one arm9 overlay (fileId 0), and one unmapped file (fileId 1), so
+-- direct source readers can be exercised end to end without a real ROM.
 --
 -- Resulting FAT layout: 0 overlay9, 1 unmapped, 2 a/0/0/2, 3 a/0/1/1,
 -- map/event archives, generated source-family archives, and the readiness sound.
@@ -10,11 +10,6 @@ local NdsBuilder = require("tests.support.NdsBuilder")
 local NarcBuilder = require("tests.support.NarcBuilder")
 local NdsRom = require("romdump.src.source.NdsRom")
 local RomSource = require("romdump.src.source.RomSource")
-local CacheFs = require("libs.storage.src.CacheFs")
-local FakeCache = require("tests.support.FakeCache")
-local GameVersion = require("romdump.src.source.GameVersion")
-local RomExtractor = require("romdump.src.source.RomExtractor")
-local HgssArchives = require("romdump.src.config.HgssArchives")
 
 local DumpFixture = {}
 
@@ -117,22 +112,6 @@ function DumpFixture.openRom(spec)
     end,
   }
   return NdsRom.open(RomSource.fromString(data), versions)
-end
-
--- Run a full extraction into a fresh (or supplied) FakeCache-backed cache. The
--- marker uses the real canonical sha1 (via GameVersion.info) so RomImporter and
--- RomFs accept the dump, exactly as production would after SHA-1 validation.
--- opts = { spec=, versionId=, backend=, progress= }.
-function DumpFixture.extract(opts)
-  opts = opts or {}
-  local versionId = opts.versionId or "heartgold"
-  local backend = opts.backend or FakeCache.new()
-  local rom, romErr = DumpFixture.openRom(opts.spec)
-  assert(rom, "fixture ROM failed to open: " .. tostring(romErr))
-  local cache = CacheFs.forVersion(versionId, backend)
-  local extractor = RomExtractor.new(rom, GameVersion.info(versionId), cache, HgssArchives, opts.progress)
-  local report, err = extractor:run()
-  return { cache = cache, backend = backend, report = report, err = err, rom = rom, versionId = versionId }
 end
 
 return DumpFixture

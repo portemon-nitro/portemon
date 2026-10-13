@@ -51,7 +51,7 @@ local function starter_portraits_follow_source_row_layout(_, context)
   local MonCache = require("libs.assets.src.MonCache")
   local MonSources = require("romdump.src.config.MonSources")
   local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
-  local RomFs = require("romdump.src.source.RomFs")
+  local RomSourcePath = require("tests.rom.support.RomSourcePath")
   local bit = require("bit")
 
   local function unscanSource(scanned, label)
@@ -88,7 +88,7 @@ local function starter_portraits_follow_source_row_layout(_, context)
       local cache = CacheFs.forVersion(versionId)
       local portraits =
         assert(cache:loadLua(MonCache.portraitManifestPath()), versionId .. " portrait manifest must load")
-      local romFs = assert(RomFs.open(versionId))
+      local romFs, romSource = assert(RomSourcePath.openReader(versionId))
       for _, key in ipairs({ "CHIKORITA", "CYNDAQUIL", "TOTODILE" }) do
         local speciesId = assert(MonSources.speciesId(key), key .. " must be a known species")
         local ids = MonSources.portraitIds(speciesId, "male", 2, false, 0)
@@ -151,6 +151,7 @@ local function starter_portraits_follow_source_row_layout(_, context)
         data:release()
       end
       romFs:close()
+      romSource:release()
     end
   end
   context = context -- capability is asserted by the runner

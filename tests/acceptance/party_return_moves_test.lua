@@ -12,7 +12,7 @@
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
-local RomFs = require("romdump.src.source.RomFs")
+local RomSourcePath = require("tests.rom.support.RomSourcePath")
 local NavigationFacts = require("tests.rom.support.NavigationFacts")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local OpeningLifecycle = require("tests.acceptance.support.OpeningLifecycle")
@@ -68,10 +68,11 @@ end
 local function withGame(fn, map)
   local harness = AcceptanceHarness.new()
   local versionId = AcceptanceHarness.defaultVersion()
-  local romFs, err = RomFs.open(versionId)
-  assert(romFs, tostring(err))
+  local romFs, romSource = RomSourcePath.openReader(versionId)
+  assert(romFs, tostring(romSource))
   local facts = NavigationFacts.discover(CacheFs.forVersion(versionId), romFs)
   romFs:close()
+  romSource:release()
   -- Route 46 boots fresh at its own default spawn a short walk from the
   -- Dark Cave mouth. A New Bark start would trek through north Route 29,
   -- whose wandering NPC faults on missing seam surface data (an autonomy

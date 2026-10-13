@@ -30,14 +30,14 @@ function ImportState:draw()
   ImportState.render(self.importer:status(), self.saveDir)
 end
 
--- Stateless continuation renderer for a fresh import whose raw extraction
--- finished but whose mandatory first-play preparation is still pending.
--- `facts` is the immutable handoff record captured at import completion
--- (`{ status = <importer status snapshot>, saveDir = <save root> });
+-- Stateless continuation renderer for a fresh import whose source
+-- registration finished but whose mandatory first-play preparation is still
+-- pending. `facts` is the immutable handoff record captured at import
+-- completion (`{ status = <importer status snapshot>, saveDir = <save root> });
 -- `preparationStatus` is the live provisioner count snapshot or nil;
 -- `failure` is the latched preparation error or nil. It keeps the import
 -- shell (title, file/target identity, save root) while the stage text
--- reports first-play preparation instead of extraction progress.
+-- reports first-play preparation instead of registration progress.
 ---@param facts { status: table<string, unknown>, saveDir: string? }
 ---@param preparationStatus table<string, unknown>?
 ---@param failure unknown?
@@ -48,7 +48,7 @@ function ImportState.renderContinuation(facts, preparationStatus, failure)
   lg.setColor(1, 1, 1)
   lg.print("portemon — HeartGold / SoulSilver ROM import", x, y)
   lg.setColor(0.7, 0.7, 0.75)
-  lg.print("Drop a .nds file onto this window to import it.", x, y + 28)
+  lg.print("Drop a matching .nds or .zip file onto this window to import it.", x, y + 28)
   if facts.saveDir ~= nil then
     lg.print("Private cache is written under:", x, y + 52)
     lg.print(tostring(facts.saveDir), x, y + 72)
@@ -100,7 +100,7 @@ function ImportState.render(status, saveDir)
   lg.setColor(1, 1, 1)
   lg.print("portemon — HeartGold / SoulSilver ROM import", x, y)
   lg.setColor(0.7, 0.7, 0.75)
-  lg.print("Drop a .nds file onto this window to import it.", x, y + 28)
+  lg.print("Drop a matching .nds or .zip file onto this window to import it.", x, y + 28)
   if saveDir then
     lg.print("Private cache is written under:", x, y + 52)
     lg.print(saveDir, x, y + 72)
@@ -117,7 +117,7 @@ function ImportState.render(status, saveDir)
   end
 
   local s = RomImporter.STATES
-  if status.state == s.EXTRACTING or status.state == s.COMPLETE then
+  if status.state == s.REGISTERING or status.state == s.COMPLETE then
     lg.print((status.stageLabel or "Working") .. (status.detail and ("  " .. status.detail) or ""), x, y + 68)
     local w, h = 360, 14
     lg.setColor(0.2, 0.22, 0.28)
@@ -136,7 +136,7 @@ function ImportState.render(status, saveDir)
     lg.print("Import failed [" .. tostring(status.errorCode or "ERROR") .. "]:", x, y + 120)
     lg.print(Errors.format(status.error), x, y + 140)
     lg.setColor(0.7, 0.7, 0.75)
-    lg.print("Drop a valid .nds ROM to retry.", x, y + 168)
+    lg.print("Drop a valid matching .nds or .zip ROM to retry.", x, y + 168)
   end
 end
 

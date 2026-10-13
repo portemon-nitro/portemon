@@ -300,6 +300,17 @@ local function withAppStubs(fn)
   function service:enableSweep(_)
     context.warmups = context.warmups + 1
   end
+  function service:offerSource(_, _, _)
+    context.offers = (context.offers or 0) + 1
+    return true
+  end
+  function service:requestBootSource(_)
+    context.bootGates = (context.bootGates or 0) + 1
+    return true
+  end
+  function service:bootSourceStatus(_)
+    return context.bootStatus or "ready", context.bootDetail
+  end
   function service:update()
     context.updates = context.updates + 1
   end
@@ -403,7 +414,9 @@ function T.menu_reselection_retires_the_old_epoch_on_the_shared_process_service(
   withAppStubs(function(App, context)
     local service = assert(App.service, "the application owns one process cache service")
     App._bootMainMenu({ VERSION })
+    App.update(1 / 60)
     App._bootMainMenu({ VERSION })
+    App.update(1 / 60)
     Assert.equal(App.service, service, "a switch reuses the service instead of spawning a second")
     Assert.deepEqual(context.epochs, { 1, 2 }, "returning to a game mints a new epoch even when the generation matches")
     Assert.deepEqual(context.retires, { 1 }, "the old epoch retires exactly once without joining workers")
@@ -1490,7 +1503,9 @@ function T.selection_switch_to_another_version_reuses_the_service_with_a_fresh_e
   withAppStubs(function(App, context)
     local service = assert(App.service, "the application owns one process cache service")
     App._selectVersion(VERSION)
+    App.update(1 / 60)
     App._selectVersion("soulsilver")
+    App.update(1 / 60)
     Assert.equal(App.service, service, "a switch reuses the service instead of spawning a second")
     Assert.deepEqual(context.epochs, { 1, 2 }, "switching versions mints a new epoch on the shared service")
     Assert.deepEqual(context.retires, { 1 }, "the old interest retires exactly once without joining workers")
@@ -1670,6 +1685,9 @@ function T.selection_waits_behind_source_closure_then_selects_once()
     )
     Assert.equal(selected, App.provisioner, "no further selection replaces the survivor")
     Assert.equal(#context.imports, 0, "the cancelled dropped file is never imported")
+    -- The surviving selection still passes its boot gate before waiting on
+    -- bootstrap: the barrier acknowledgement alone must not launch.
+    App.update(1 / 60)
     local survivorState = assert(App.state, "a cold surviving selection still waits visibly")
     Assert.equal(
       getmetatable(survivorState).__index,
@@ -1874,6 +1892,19 @@ function T.import_continuation_is_rejected_outside_first_play()
     importContinuation = continuation,
   })
   Assert.isTrue(bootstrapOk == false, "bootstrap preparation rejects the import continuation")
+  local bootOk = pcall(CachePreparationState.new, {
+    kind = "boot-source",
+    epoch = 7,
+    service = {},
+    versionId = "heartgold",
+    isCurrent = function()
+      return true
+    end,
+    onReady = function() end,
+    onCancel = function() end,
+    importContinuation = continuation,
+  })
+  Assert.isTrue(bootOk == false, "boot-source preparation rejects the import continuation")
   local quiescenceOk = pcall(CachePreparationState.new, {
     kind = "quiescence",
     epoch = 7,
@@ -1888,5 +1919,682 @@ function T.import_continuation_is_rejected_outside_first_play()
   })
   Assert.isTrue(quiescenceOk == false, "quiescence preparation rejects the import continuation")
 end
+
+-- Boot-only source gate composition through the real service protocol: a
+-- fake thread host carries FIFO channels, the real CacheService owns
+-- epochs and boot observations, and scripted controller replies stand in
+-- for the off-main worker. Synthetic first-play answers model the durable
+-- attestation currency; no ROM bytes are opened or hashed here. These
+-- scenarios prove the app refuses gameplay without source readiness while
+-- a complete cache keeps its offline fast path; they stay red until the
+-- launcher gates every selection on the boot check.
+local function newBootGateChannelHost()
+  local channels = {}
+  local function newChannel()
+    local queue = {}
+    local channel = { log = {} }
+    function channel:push(value)
+      queue[#queue + 1] = value
+      channel.log[#channel.log + 1] = value
+      return true
+    end
+    function channel:pop()
+      if #queue == 0 then
+        return nil
+      end
+      return table.remove(queue, 1)
+    end
+    function channel:demand(_)
+      if #queue == 0 then
+        return nil
+      end
+      return table.remove(queue, 1)
+    end
+    function channel:getCount()
+      return #queue
+    end
+    function channel:count()
+      return #queue
+    end
+    channels[#channels + 1] = channel
+    return channel
+  end
+  local threads = {}
+  local function newThread(_)
+    local thread = { starts = 0, waits = 0, alive = true }
+    function thread:start(...)
+      self.starts = self.starts + 1
+      return true
+    end
+    function thread:wait()
+      self.waits = self.waits + 1
+      self.alive = false
+      return true
+    end
+    function thread:isRunning()
+      return self.alive
+    end
+    function thread:getError()
+      return nil
+    end
+    threads[#threads + 1] = thread
+    return thread
+  end
+  return { newChannel = newChannel, newThread = newThread, channels = channels, threads = threads }
+end
+
+---@param options table|nil { firstPlayCurrent: boolean?, firstPlayStored: boolean?, readyVersions: string[]? }
+---@param fn fun(App: table, context: table)
+local function withBootGateApp(options, fn)
+  options = options or {}
+  local App = require("app.src.App")
+  local HgssGame = require("game.hgss.src.HgssGame")
+  local MainMenuComposition = require("app.src.mainmenu.MainMenuComposition")
+  local RomImporter = require("romdump.src.source.RomImporter")
+  local CacheService = require("app.src.CacheService")
+  local graphics = love.graphics
+  local original = {
+    state = App.state,
+    importer = App.importer,
+    provisioner = App.provisioner,
+    service = App.service,
+    epoch = App.epoch,
+    pendingQuiesce = App.pendingQuiesce,
+    opts = App.opts,
+    saveDir = App.saveDir,
+    selectedVersionId = App.selectedVersionId,
+    rebindVersionId = App._rebindVersionId,
+    drawableWidth = App.drawableWidth,
+    drawableHeight = App.drawableHeight,
+    pixelRatio = App.pixelRatio,
+    gameNew = HgssGame.new,
+    preparationNew = HgssGame.newFirstPlayCachePreparation,
+    menuNew = MainMenuComposition.new,
+    isReady = RomImporter.isReady,
+    getDimensions = graphics.getDimensions,
+    getDPIScale = graphics.getDPIScale,
+    getWidth = graphics.getWidth,
+    setColor = graphics.setColor,
+    print = graphics.print,
+    printf = graphics.printf,
+  }
+  local readySet = {}
+  for _, versionId in ipairs(options.readyVersions or { VERSION }) do
+    readySet[versionId] = true
+  end
+  local host = newBootGateChannelHost()
+  local service = CacheService.new({ thread = host })
+  local context = {
+    host = host,
+    service = service,
+    menus = {},
+    games = {},
+    preparations = 0,
+    prepScript = { ready = false, failure = nil, polls = 0, disposals = 0 },
+    prints = {},
+    sweeps = 0,
+    firstPlayPublished = {},
+  }
+  local completionOriginals = stubFirstPlayCompletion(context)
+  context.firstPlayCurrent = options.firstPlayCurrent
+  if context.firstPlayCurrent == nil then
+    context.firstPlayCurrent = true
+  end
+  context.firstPlayStored = options.firstPlayStored
+  if context.firstPlayStored == nil then
+    context.firstPlayStored = true
+  end
+  App.opts = { dev = false }
+  App.state = nil
+  App.importer = nil
+  App.provisioner = nil
+  App.service = service
+  App.epoch = 0
+  App.pendingQuiesce = nil
+  App.saveDir = "test-save-dir"
+  App.selectedVersionId = nil
+  App._rebindVersionId = nil
+  App.drawableWidth, App.drawableHeight = 640, 480
+  App.pixelRatio = 1
+  RomImporter.isReady = function(versionId)
+    return readySet[versionId] == true
+  end
+  HgssGame.newFirstPlayCachePreparation = function(_)
+    context.preparations = context.preparations + 1
+    local preparation = {}
+    function preparation:poll()
+      context.prepScript.polls = context.prepScript.polls + 1
+      if context.prepScript.failure ~= nil then
+        return nil, context.prepScript.failure
+      end
+      if context.prepScript.ready then
+        return true, nil
+      end
+      return nil, nil
+    end
+    function preparation:dispose()
+      context.prepScript.disposals = context.prepScript.disposals + 1
+    end
+    return preparation
+  end
+  HgssGame.new = function(launchOptions)
+    local game = { disposed = 0, launchOptions = launchOptions }
+    function game:dispose()
+      self.disposed = self.disposed + 1
+    end
+    context.games[#context.games + 1] = game
+    return game
+  end
+  MainMenuComposition.new = function(menuOptions)
+    local menu = { disposed = 0, options = menuOptions }
+    function menu:dispose()
+      self.disposed = self.disposed + 1
+    end
+    context.menus[#context.menus + 1] = menu
+    return menu
+  end
+  local baseEnableSweep = service.enableSweep
+  service.enableSweep = function(self, epoch)
+    context.sweeps = context.sweeps + 1
+    return baseEnableSweep(self, epoch)
+  end
+  graphics.getDimensions = function()
+    return 640, 480
+  end
+  graphics.getDPIScale = function()
+    return 1
+  end
+  graphics.getWidth = function()
+    return 640
+  end
+  graphics.setColor = function() end
+  graphics.print = function(text, _, _)
+    context.prints[#context.prints + 1] = tostring(text)
+  end
+  graphics.printf = function(text, _, _, _)
+    context.prints[#context.prints + 1] = tostring(text)
+  end
+  local ok, err = pcall(fn, App, context)
+  HgssGame.new = original.gameNew
+  HgssGame.newFirstPlayCachePreparation = original.preparationNew
+  MainMenuComposition.new = original.menuNew
+  RomImporter.isReady = original.isReady
+  restoreFirstPlayCompletion(completionOriginals)
+  graphics.getDimensions = original.getDimensions
+  graphics.getDPIScale = original.getDPIScale
+  graphics.getWidth = original.getWidth
+  graphics.setColor = original.setColor
+  graphics.print = original.print
+  graphics.printf = original.printf
+  pcall(function()
+    service:shutdown()
+  end)
+  App.state = original.state
+  App.importer = original.importer
+  App.provisioner = original.provisioner
+  App.service = original.service
+  App.epoch = original.epoch
+  App.pendingQuiesce = original.pendingQuiesce
+  App.opts = original.opts
+  App.saveDir = original.saveDir
+  App.selectedVersionId = original.selectedVersionId
+  App._rebindVersionId = original.rebindVersionId
+  App.drawableWidth = original.drawableWidth
+  App.drawableHeight = original.drawableHeight
+  App.pixelRatio = original.pixelRatio
+  if not ok then
+    error(err, 0)
+  end
+end
+
+---@param App table application singleton under test
+---@param rounds integer
+local function pumpBootGate(App, rounds)
+  for _ = 1, rounds do
+    App.update(1 / 60)
+  end
+end
+
+---@param context table boot-gate harness holding the fake channel host
+---@return integer current length of the command-channel log
+local function logMark(context)
+  return #context.host.channels[1].log
+end
+
+---@param context table boot-gate harness holding the fake channel host
+---@param mark integer log position to start after
+---@return string[] control op names emitted after the mark
+local function emittedOpsSince(context, mark)
+  local ops = {}
+  local log = context.host.channels[1].log
+  for index = mark + 1, #log do
+    local packet = log[index]
+    if type(packet) == "table" and type(packet.op) == "string" then
+      ops[#ops + 1] = packet.op
+    end
+  end
+  return ops
+end
+
+---@param context table boot-gate harness holding the fake channel host
+---@param mark integer log position to start after
+---@param epoch integer selecting epoch the control must belong to
+---@return string[] control op names emitted after the mark for the epoch
+local function emittedOpsForEpochSince(context, mark, epoch)
+  local ops = {}
+  local log = context.host.channels[1].log
+  for index = mark + 1, #log do
+    local packet = log[index]
+    if type(packet) == "table" and type(packet.op) == "string" and packet.epoch == epoch then
+      ops[#ops + 1] = packet.op
+    end
+  end
+  return ops
+end
+
+---@param context table boot-gate harness holding the fake channel host
+---@param mark integer log position to start after
+---@return integer number of ordinary cache demands emitted after the mark
+local function emittedRequestsSince(context, mark)
+  local count = 0
+  local log = context.host.channels[1].log
+  for index = mark + 1, #log do
+    local packet = log[index]
+    if type(packet) == "table" and packet.op == "request" then
+      count = count + 1
+    end
+  end
+  return count
+end
+
+---@param context table boot-gate harness holding the fake channel host
+---@param epoch integer selecting epoch the demand must belong to
+---@param name string milestone name
+---@return integer? latest request identity for the milestone on the epoch
+local function milestoneRequestId(context, epoch, name)
+  local found = nil
+  local log = context.host.channels[1].log
+  for _, packet in ipairs(log) do
+    if
+      type(packet) == "table"
+      and packet.op == "request"
+      and packet.epoch == epoch
+      and packet.requestKind == "milestone"
+      and packet.name == name
+    then
+      found = packet.requestId
+    end
+  end
+  return found
+end
+
+---@param context table boot-gate harness holding the fake channel host
+---@param op string control op to find
+---@return table? latest control packet with the op
+local function latestControlPacket(context, op)
+  local found = nil
+  local log = context.host.channels[1].log
+  for _, packet in ipairs(log) do
+    if type(packet) == "table" and packet.op == op then
+      found = packet
+    end
+  end
+  return found
+end
+
+---@param context table boot-gate harness holding the fake channel host
+---@return string lowercased concatenation of every drawn line
+local function drawnText(context)
+  return table.concat(context.prints, "\n"):lower()
+end
+
+-- A stored bounded-opening attestation with no full-corpus marker must not
+-- enter the fast menu: the selection waits on its source gate, a missing
+-- file keeps the blocked wait alive with an actionable instruction and
+-- destroys nothing, and a current full-corpus marker with the same missing
+-- file reaches the menu with zero ROM file activity.
+function T.incomplete_cache_with_a_ready_first_play_closure_stays_in_the_boot_wait()
+  withBootGateApp({ firstPlayCurrent = true, firstPlayStored = true }, function(App, context)
+    local RomFs = require("romdump.src.source.RomFs")
+    local RomSource = require("romdump.src.source.RomSource")
+    local realOpen = RomFs.open
+    local realFromPath = RomSource.fromPath
+    local romOpens, pathOpens = 0, 0
+    RomFs.open = function(...)
+      romOpens = romOpens + 1
+      return realOpen(...)
+    end
+    RomSource.fromPath = function(...)
+      pathOpens = pathOpens + 1
+      return realFromPath(...)
+    end
+    local ok, err = pcall(function()
+      local mark = logMark(context)
+      App._selectVersion(VERSION)
+      local epoch = assert(App.epoch, "selection must borrow a controller epoch")
+      pumpBootGate(App, 1)
+      Assert.deepEqual(
+        emittedOpsSince(context, mark),
+        { "select", "check-boot-source" },
+        "selection queues its source gate on the control stream before any cache demand"
+      )
+      Assert.equal(emittedRequestsSince(context, mark), 0, "no bounded-closure demand issues before the gate answers")
+      local waiting = assert(App.state, "selection must wait visibly")
+      Assert.equal(
+        getmetatable(waiting).__index,
+        CachePreparationState,
+        "selection waits through preparation"
+      )
+      Assert.equal(
+        waiting.kind,
+        "boot-source",
+        "an incomplete cache waits on its source gate even when first play is ready"
+      )
+      Assert.equal(#context.menus, 0, "a missing source never installs the menu")
+      Assert.equal(#context.games, 0, "a missing source never starts retail")
+      Assert.equal(context.preparations, 0, "no first-play preparation starts before source readiness")
+      context.service:injectReply({
+        op = "boot-source-result",
+        epoch = epoch,
+        state = "source-required",
+        detail = { code = "ROM_SOURCE_REQUIRED", message = "the original file is missing" },
+      })
+      pumpBootGate(App, 2)
+      local blocked = assert(App.state, "the source wait stays installed")
+      Assert.equal(blocked.kind, "boot-source", "the missing source keeps the boot wait alive")
+      Assert.equal(#context.menus, 0, "the blocked boot never installs the menu")
+      Assert.equal(#context.games, 0, "the blocked boot never starts retail")
+      Assert.deepEqual(context.firstPlayPublished, {}, "the blocked boot fabricates no attestation")
+      Assert.isNil(App.importer, "the blocked boot starts no import by itself")
+      context.prints = {}
+      blocked:draw()
+      local shown = drawnText(context)
+      Assert.isTrue(shown:find("gold", 1, true) ~= nil, "the blocked boot names the selected game")
+      Assert.isTrue(
+        shown:find(".nds", 1, true) ~= nil
+          or shown:find(".zip", 1, true) ~= nil
+          or shown:find("drop", 1, true) ~= nil
+          or shown:find("import", 1, true) ~= nil,
+        "the blocked boot tells the player how to supply the file"
+      )
+      blocked:keypressed("escape", nil, nil)
+      App._selectVersion(VERSION)
+      local second = assert(App.epoch, "reselection must borrow a fresh epoch")
+      Assert.isTrue(second > epoch, "reselection mints a fresh epoch")
+      context.service:injectReply({ op = "boot-source-result", epoch = second, state = "ready" })
+      pumpBootGate(App, 2)
+      local bootstrapId = assert(
+        milestoneRequestId(context, second, "bootstrap"),
+        "readiness continues into the ordinary bootstrap check"
+      )
+      context.service:injectReply({ op = "request-result", epoch = second, requestId = bootstrapId, state = "ready" })
+      pumpBootGate(App, 2)
+      Assert.equal(#context.menus, 1, "a complete cache reaches its menu without its original file")
+      Assert.equal(romOpens, 0, "the offline boot opens no ROM source")
+      Assert.equal(pathOpens, 0, "the offline boot reads no ROM file")
+    end)
+    RomFs.open = realOpen
+    RomSource.fromPath = realFromPath
+    if not ok then
+      error(err, 0)
+    end
+  end)
+end
+
+-- A fresh ephemeral import admits first play exactly once through one
+-- epoch: the validated offer waits behind selection and ahead of the gate,
+-- readiness continues into the bounded closure and the menu authorizes the
+-- sweep once, gameplay never raises a source prompt, a restart without the
+-- file blocks again, and a current attestation boots clean without the ROM.
+function T.fresh_import_offer_reaches_the_controller_before_the_boot_check_on_one_epoch()
+  withBootGateApp({ firstPlayCurrent = false, firstPlayStored = false }, function(App, context)
+    local GameVersion = require("romdump.src.source.GameVersion")
+    local RomFs = require("romdump.src.source.RomFs")
+    local RomSource = require("romdump.src.source.RomSource")
+    local realOpen = RomFs.open
+    local realFromPath = RomSource.fromPath
+    local romOpens, pathOpens = 0, 0
+    RomFs.open = function(...)
+      romOpens = romOpens + 1
+      return realOpen(...)
+    end
+    RomSource.fromPath = function(...)
+      pathOpens = pathOpens + 1
+      return realFromPath(...)
+    end
+    local ok, err = pcall(function()
+      local info = GameVersion.info(VERSION)
+      local buffer = love.data.newByteData("synthetic-fresh-import-bytes")
+      local released = 0
+      App.importer = {
+        status = function()
+          return {
+            state = "complete",
+            versionId = VERSION,
+            displayName = "HeartGold",
+            sourceName = "fresh.nds",
+            progress = 1,
+          }
+        end,
+        takeVerifiedSource = function()
+          return {
+            byteData = function()
+              return buffer
+            end,
+            release = function()
+              released = released + 1
+            end,
+          }
+        end,
+      }
+      local mark = logMark(context)
+      App._onImported(VERSION)
+      local epoch = assert(App.epoch, "the import must borrow a controller epoch")
+      Assert.isNil(App.importer, "the completed importer is released at the handoff")
+      Assert.equal(released, 1, "the handoff releases the importer wrapper exactly once")
+      pumpBootGate(App, 1)
+      Assert.deepEqual(
+        emittedOpsSince(context, mark),
+        { "select", "offer-source", "check-boot-source" },
+        "the fresh offer waits behind selection and ahead of the gate on one control stream"
+      )
+      local offer = assert(latestControlPacket(context, "offer-source"), "the fresh offer crosses to the controller")
+      Assert.isTrue(offer.byteData == buffer, "the offer hands the identical buffer by reference")
+      Assert.equal(offer.romSha1, info.sha1, "the offer carries the canonical ROM identity")
+      local waiting = assert(App.state, "the fresh import waits visibly")
+      Assert.equal(waiting.kind, "boot-source", "a fresh import waits on its source gate before first play")
+      Assert.equal(context.preparations, 0, "first-play preparation never starts before the gate answers")
+      context.service:injectReply({ op = "boot-source-result", epoch = epoch, state = "ready" })
+      pumpBootGate(App, 2)
+      Assert.equal(App.epoch, epoch, "readiness reuses the selected epoch")
+      Assert.equal(context.preparations, 1, "readiness constructs first-play preparation exactly once")
+      local closure = assert(App.state, "readiness continues visibly")
+      Assert.equal(closure.kind, "first-play", "readiness continues into the bounded closure")
+      context.prepScript.ready = true
+      pumpBootGate(App, 2)
+      Assert.equal(#context.menus, 1, "the admitted closure installs the menu")
+      Assert.equal(#context.firstPlayPublished, 1, "the admitted closure publishes its completion once")
+      context.menus[1].options.onResult({ kind = "new_game" })
+      local game = assert(App.state, "New Game enters retail")
+      Assert.equal(#context.games, 1, "the menu routes New Game to exactly one retail entry")
+      Assert.equal(context.sweeps, 1, "menu installation authorizes background completion exactly once")
+      local status = context.service:bootSourceStatus(epoch)
+      Assert.equal(status, "ready", "gameplay keeps the admitted readiness without re-prompting")
+      pumpBootGate(App, 3)
+      Assert.equal(App.state, game, "gameplay never raises a source prompt")
+      Assert.equal(App.epoch, epoch, "gameplay keeps the admitted epoch")
+      Assert.equal(context.sweeps, 1, "gameplay never reauthorizes the sweep")
+      App._selectVersion(VERSION)
+      local second = assert(App.epoch, "restart must borrow a fresh epoch")
+      Assert.isTrue(second > epoch, "restart mints a fresh epoch")
+      pumpBootGate(App, 1)
+      local restarted = assert(App.state, "restart waits visibly")
+      Assert.equal(restarted.kind, "boot-source", "an incomplete cache without its file blocks again")
+      context.service:injectReply({
+        op = "boot-source-result",
+        epoch = second,
+        state = "source-required",
+        detail = { code = "ROM_SOURCE_REQUIRED", message = "the ephemeral file is gone" },
+      })
+      pumpBootGate(App, 2)
+      Assert.equal(#context.menus, 1, "the restart never installs a second menu")
+      Assert.equal(#context.games, 1, "the restart never starts retail")
+      restarted:keypressed("escape", nil, nil)
+      context.firstPlayCurrent = true
+      context.firstPlayStored = true
+      App._selectVersion(VERSION)
+      local third = assert(App.epoch, "the attested boot must borrow a fresh epoch")
+      context.service:injectReply({ op = "boot-source-result", epoch = third, state = "ready" })
+      pumpBootGate(App, 2)
+      local bootstrapId = assert(
+        milestoneRequestId(context, third, "bootstrap"),
+        "attested readiness continues into the ordinary bootstrap check"
+      )
+      context.service:injectReply({ op = "request-result", epoch = third, requestId = bootstrapId, state = "ready" })
+      pumpBootGate(App, 2)
+      Assert.equal(#context.menus, 2, "a current attestation reaches its menu without the ROM")
+      Assert.equal(romOpens, 0, "the attested boot opens no ROM source")
+      Assert.equal(pathOpens, 0, "the attested boot reads no ROM file")
+    end)
+    RomFs.open = realOpen
+    RomSource.fromPath = realFromPath
+    if not ok then
+      error(err, 0)
+    end
+  end)
+end
+
+-- Recovery from a blocked boot never switches the game, deletes progress,
+-- or lets a stale epoch launch: a wrong ROM keeps the original selection
+-- blocked, cancel returns to the selector without gameplay, a late reply
+-- for the retired epoch is ignored, and the matching source resumes into
+-- the menu without a destructive import.
+function T.blocked_boot_refuses_a_wrong_version_and_ignores_stale_replies()
+  withBootGateApp(
+    { firstPlayCurrent = false, firstPlayStored = false, readyVersions = { "heartgold", "soulsilver" } },
+    function(App, context)
+      local GameVersion = require("romdump.src.source.GameVersion")
+      App._selectVersion(VERSION)
+      local first = assert(App.epoch, "selection must borrow a controller epoch")
+      pumpBootGate(App, 1)
+      local waiting = assert(App.state, "selection must wait visibly")
+      Assert.equal(waiting.kind, "boot-source", "the incomplete selection waits on its source gate")
+      context.service:injectReply({
+        op = "boot-source-result",
+        epoch = first,
+        state = "source-required",
+        detail = { code = "ROM_SOURCE_REQUIRED", message = "synthetic heartgold missing" },
+      })
+      pumpBootGate(App, 2)
+      local blocked = assert(App.state, "the missing source keeps the wait alive")
+      Assert.equal(blocked.kind, "boot-source", "the original game stays blocked")
+      local wrongInfo = GameVersion.info("soulsilver")
+      local wrongBuffer = love.data.newByteData("synthetic-wrong-version-bytes")
+      App.importer = {
+        status = function()
+          return {
+            state = "complete",
+            versionId = "soulsilver",
+            displayName = "SoulSilver",
+            sourceName = "wrong.nds",
+            progress = 1,
+          }
+        end,
+        takeVerifiedSource = function()
+          return {
+            byteData = function()
+              return wrongBuffer
+            end,
+            release = function() end,
+          }
+        end,
+      }
+      App._onImported("soulsilver")
+      pumpBootGate(App, 1)
+      Assert.equal(App.selectedVersionId, VERSION, "a wrong ROM never switches the blocked selection")
+      Assert.equal(#context.menus, 0, "a wrong ROM never installs a menu")
+      Assert.equal(#context.games, 0, "a wrong ROM never starts retail")
+      local stillBlocked = assert(App.state, "the original game stays waiting")
+      Assert.equal(stillBlocked.kind, "boot-source", "the wrong ROM keeps the original boot blocked")
+      Assert.deepEqual(context.firstPlayPublished, {}, "the wrong ROM fabricates no attestation")
+      Assert.equal(wrongInfo.sha1, GameVersion.info("soulsilver").sha1, "the wrong offer keeps its own identity")
+      context.prints = {}
+      stillBlocked:draw()
+      local shown = drawnText(context)
+      Assert.isTrue(
+        shown:find("silver", 1, true) ~= nil
+          or shown:find("mismatch", 1, true) ~= nil
+          or shown:find("wrong", 1, true) ~= nil
+          or shown:find("match", 1, true) ~= nil,
+        "the blocked boot surfaces the version mismatch"
+      )
+      stillBlocked:keypressed("escape", nil, nil)
+      Assert.equal(
+        getmetatable(App.state).__index,
+        VersionSelectState,
+        "cancel returns to the version selector"
+      )
+      Assert.equal(#context.menus, 0, "cancel never installs a menu")
+      Assert.equal(#context.games, 0, "cancel never starts retail")
+      local mark = logMark(context)
+      App._selectVersion(VERSION)
+      local second = assert(App.epoch, "reselection must borrow a fresh epoch")
+      Assert.isTrue(second > first, "reselection mints a fresh epoch")
+      context.service:injectReply({ op = "boot-source-result", epoch = first, state = "ready" })
+      pumpBootGate(App, 2)
+      Assert.equal(
+        context.service:bootSourceStatus(second),
+        "pending",
+        "a stale ready reply never satisfies the new gate"
+      )
+      Assert.equal(#context.menus, 0, "the stale reply never installs a menu")
+      Assert.deepEqual(
+        emittedOpsForEpochSince(context, mark, second),
+        { "select", "check-boot-source" },
+        "reselection queues a fresh gate without a late offer"
+      )
+      local info = GameVersion.info(VERSION)
+      local buffer = love.data.newByteData("synthetic-heartgold-bytes")
+      App.importer = {
+        status = function()
+          return {
+            state = "complete",
+            versionId = VERSION,
+            displayName = "HeartGold",
+            sourceName = "hg.nds",
+            progress = 1,
+          }
+        end,
+        takeVerifiedSource = function()
+          return {
+            byteData = function()
+              return buffer
+            end,
+            release = function() end,
+          }
+        end,
+      }
+      local repairMark = logMark(context)
+      App._onImported(VERSION)
+      local third = assert(App.epoch, "the matching source must borrow a fresh epoch")
+      Assert.isTrue(third > second, "the matching source mints a fresh epoch")
+      pumpBootGate(App, 1)
+      Assert.deepEqual(
+        emittedOpsForEpochSince(context, repairMark, third),
+        { "select", "offer-source", "check-boot-source" },
+        "the matching source offer waits behind selection and ahead of the fresh gate"
+      )
+      local offer = assert(latestControlPacket(context, "offer-source"), "the matching offer crosses to the controller")
+      Assert.isTrue(offer.byteData == buffer, "the matching offer hands the identical buffer by reference")
+      Assert.equal(offer.romSha1, info.sha1, "the matching offer carries the canonical ROM identity")
+      context.service:injectReply({ op = "boot-source-result", epoch = third, state = "ready" })
+      context.prepScript.ready = true
+      pumpBootGate(App, 3)
+      Assert.equal(#context.menus, 1, "the matching source resumes preparation into the menu")
+      Assert.equal(#context.games, 0, "recovery installs the menu without launching retail by itself")
+    end
+  )
+end
+
 
 return { tests = T }

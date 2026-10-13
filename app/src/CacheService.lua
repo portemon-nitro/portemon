@@ -42,6 +42,8 @@ local URGENCY_ORDER = { required = 0, near = 10, sweep = 100 }
 ---@field _failure string? terminal controller failure, never restarted
 ---@field _generations table<integer, string> controller-derived generation token by epoch
 ---@field _sweepSent table<integer, boolean> epochs with queued warmup authorization
+---@field _boot table<integer, table<string, unknown>> epoch-scoped boot-source observation
+---@field _bootRequested table<integer, boolean> epochs with a queued boot gate
 local CacheService = {}
 CacheService.__index = CacheService
 
@@ -80,6 +82,8 @@ function CacheService.new(options)
     _generations = {},
     _failure = nil,
     _sweepSent = {},
+    _boot = {},
+    _bootRequested = {},
   }, CacheService)
 end
 
@@ -172,6 +176,8 @@ function CacheService:select(options)
     command.repositoryRoot = options.repositoryRoot
   end
   self._controls[#self._controls + 1] = command
+  self._boot[epoch] = { state = "pending" }
+  self._bootRequested[epoch] = nil
   return epoch
 end
 
@@ -318,6 +324,8 @@ function CacheService:retire(epoch)
   end
   self._retiring = true
   self._generations[epoch] = nil
+  self._boot[epoch] = nil
+  self._bootRequested[epoch] = nil
   for position = #self._ordinary, 1, -1 do
     if self._ordinary[position].epoch == epoch then
       table.remove(self._ordinary, position)
@@ -328,6 +336,83 @@ function CacheService:retire(epoch)
   self._barriers[tostring(epoch) .. ":" .. tostring(barrier)] = { epoch = epoch, barrier = barrier, state = "pending" }
   self._controls[#self._controls + 1] = { op = "retire", epoch = epoch, barrierId = barrier }
   return barrier
+end
+
+-- Hand one validated immutable source buffer to the controller for the live
+-- epoch. The game thread never opens the ROM itself: the import path
+-- validated the bytes and the controller pins them to its selection. The
+-- offer crosses by reference exactly once; stale, retired, or failed epochs
+-- queue nothing, and a second offer for the same epoch is a programming
+-- error only the caller can prevent.
+---@param epoch integer selecting epoch, must be live
+---@param byteData userdata the shared immutable buffer, passed by reference
+---@param descriptor table<string, unknown> { versionId, romSha1 }
+---@return boolean? true when the offer was queued, nil for a stale epoch
+function CacheService:offerSource(epoch, byteData, descriptor)
+  if type(epoch) ~= "number" or epoch ~= self._liveEpoch or self._retiring then
+    return nil
+  end
+  if self._failure ~= nil then
+    return nil
+  end
+  assert(type(byteData) == "userdata", "source handoff requires the shared buffer")
+  assert(type(descriptor) == "table", "source handoff requires its version descriptor")
+  assert(type(descriptor.versionId) == "string" and descriptor.versionId ~= "", "source handoff requires its version")
+  assert(
+    type(descriptor.romSha1) == "string" and #descriptor.romSha1 == 40,
+    "source handoff requires its canonical identity"
+  )
+  self._controls[#self._controls + 1] = {
+    op = "offer-source",
+    epoch = epoch,
+    byteData = byteData,
+    versionId = descriptor.versionId,
+    romSha1 = descriptor.romSha1,
+  }
+  return true
+end
+
+-- Queue the one boot-source gate behind selection and any source offer on
+-- the same control FIFO. Idempotent for the live epoch: a duplicate call
+-- registers nothing twice. Stale, retiring, or failed epochs queue nothing.
+---@param epoch integer selecting epoch, must be live
+---@return boolean? true when the gate is (or already was) queued, nil for a stale epoch
+function CacheService:requestBootSource(epoch)
+  if type(epoch) ~= "number" or epoch ~= self._liveEpoch or self._retiring then
+    return nil
+  end
+  if self._failure ~= nil then
+    return nil
+  end
+  if self._bootRequested[epoch] then
+    return true
+  end
+  self._bootRequested[epoch] = true
+  if self._boot[epoch] == nil then
+    self._boot[epoch] = { state = "pending" }
+  end
+  self._controls[#self._controls + 1] = { op = "check-boot-source", epoch = epoch }
+  return true
+end
+
+-- Cached boot-source observation only: never drains, sends, scans, or waits.
+-- A retiring or stale epoch grants no observation rights; a terminal
+-- controller failure reports its cause instead of readiness.
+---@param epoch integer
+---@return string? status "pending", "ready", "source-required", or "failed", nil for a stale epoch
+---@return table<string, unknown>? detail typed { code, message, context? } cause on failure
+function CacheService:bootSourceStatus(epoch)
+  if type(epoch) ~= "number" or epoch ~= self._liveEpoch or self._retiring then
+    return nil
+  end
+  if self._failure ~= nil then
+    return "failed", { code = "CONTROLLER_FAILED", message = self._failure }
+  end
+  local record = self._boot[epoch]
+  if record == nil then
+    return nil
+  end
+  return record.state, record.detail
 end
 
 -- Ask the controller to close every worker source context so a later source
@@ -452,6 +537,10 @@ function CacheService:_absorb(packet)
     self:_absorbRequestResult(packet)
   elseif op == "barrier-result" then
     self:_absorbBarrierResult(packet)
+  elseif op == "boot-source-result" then
+    self:_absorbBootSourceResult(packet)
+  elseif op == "offer-source-result" then
+    self:_absorbOfferSourceResult(packet)
   elseif op == "controller-failure" then
     self:_enterTerminalFailure(packet.errorMessage)
   end
@@ -460,6 +549,55 @@ end
 -- A pushed terminal request fact lands only in its exact record: the
 -- packet epoch must be live and the request identity must belong to it.
 -- Stale or unknown results are ignored.
+-- A pushed boot-gate fact lands only in its exact live record: the packet
+-- epoch must be live and the boot observation still pending. A rejected
+-- source offer already failed the epoch, so no later success can overwrite
+-- it; duplicates and stale replies are ignored.
+---@param packet table<string, unknown>
+function CacheService:_absorbBootSourceResult(packet)
+  if packet.epoch ~= self._liveEpoch or self._retiring then
+    return
+  end
+  local record = self._boot[packet.epoch]
+  if record == nil or record.state ~= "pending" then
+    return
+  end
+  if packet.state == "ready" then
+    record.state = "ready"
+    record.detail = nil
+  elseif packet.state == "source-required" or packet.state == "failed" then
+    record.state = packet.state
+    if type(packet.detail) == "table" then
+      record.detail = packet.detail
+    else
+      record.detail = { code = "SOURCE_UNAVAILABLE", message = tostring(packet.detail) }
+    end
+  end
+end
+
+-- A pushed source-offer acknowledgement lands only in its exact live
+-- record. Acceptance leaves the pending gate alone; a rejection fails the
+-- epoch with its observable cause and no later gate answer can clear it.
+---@param packet table<string, unknown>
+function CacheService:_absorbOfferSourceResult(packet)
+  if packet.epoch ~= self._liveEpoch or self._retiring then
+    return
+  end
+  if packet.ok == true then
+    return
+  end
+  local record = self._boot[packet.epoch]
+  if record == nil or record.state ~= "pending" then
+    return
+  end
+  local cause = packet.errorMessage
+  if cause == nil or cause == "" then
+    cause = "the controller refused the source offer"
+  end
+  record.state = "failed"
+  record.detail = { code = "SOURCE_OFFER_REJECTED", message = tostring(cause) }
+end
+
 ---@param packet table<string, unknown>
 function CacheService:_absorbRequestResult(packet)
   if packet.epoch ~= self._liveEpoch or self._retiring then

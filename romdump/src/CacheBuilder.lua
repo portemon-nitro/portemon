@@ -9,12 +9,10 @@
 -- remains an explicit manual diagnostic and never runs here.
 
 local CacheFs = require("libs.storage.src.CacheFs")
-local RomFs = require("romdump.src.source.RomFs")
 local Errors = require("libs.errors.src.Errors")
 local DerivedCacheState = require("romdump.src.DerivedCacheState")
 local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
 local DerivedAssetContract = require("libs.assets.src.DerivedAssetContract")
-local RawDumpContract = require("romdump.src.source.RawDumpContract")
 local GameVersion = require("romdump.src.source.GameVersion")
 local DerivedCacheVersions = require("romdump.src.config.DerivedCacheVersions")
 local ArtifactState = require("romdump.src.build.ArtifactState")
@@ -487,13 +485,19 @@ local function collectVersionFacts(
   end
   -- One owned teardown for this acquisition lifecycle: every path
   -- captures its facts first, then closes session and pool exactly once.
+  -- The pool join is observed: a failed shutdown surfaces so the caller
+  -- cannot attest or clean from an unproved worker closure.
   local function teardown()
     if session ~= nil then
       pcall(session.retire, session)
     end
     if pool ~= nil then
-      pcall(pool.shutdown, pool)
+      local shutOk, shutErr = pcall(pool.shutdown, pool)
+      if not shutOk then
+        return shutErr
+      end
     end
+    return nil
   end
   local drainOk, drainResult = pcall(function()
     pool = CompilerPool.new({ mode = "batch", developmentRepositoryRoot = developmentRepositoryRoot })
@@ -573,13 +577,22 @@ local function collectVersionFacts(
     "the generation session owns its completion facts"
   )
   local counts, failures, exclusions = classifyExactOutcomes(snapshot.outcomes, pool, allowCompileExclusions)
-  teardown()
+  local shutdownError = teardown()
   local scopeError = verifyOriginalRequirements(snapshot.answers, versionId)
   local requestedReady = counts.failed == 0 and counts.cancelled == 0 and counts.excluded == 0
   if scopeError ~= nil then
     requestedReady = false
   end
   local needsAttestation = exhaustive and counts.failed == 0 and counts.cancelled == 0 and counts.excluded == 0
+  -- An unproved pool closure fails the build before attestation: no new
+  -- full marker is published and no cleanup runs from this run.
+  if shutdownError ~= nil then
+    requestedReady = false
+    needsAttestation = false
+    if scopeError == nil then
+      scopeError = shutdownError
+    end
+  end
   -- A strictly successful exhaustive session publishes its attestation
   -- directly: successful publication is the proof, so no second
   -- exhaustive audit runs on the ordinary path.
@@ -623,6 +636,39 @@ local function logRecordOutcomes(record, log)
   end
   for _, message in ipairs(record.failures) do
     log(string.format("build-cache: %s failed: %s", record.versionId, message))
+  end
+end
+
+-- One post-complete collection pass for a settled version through the
+-- single current-generation cleanup owner: both the shared orphan proof
+-- and the independent active-script proof run under the drained batch, and
+-- the per-generation memo suppresses repeat work. The maintenance owner
+-- gates every destructive step on full proof; this caller only keeps the
+-- diagnostic from falsifying the build outcome. Logs only real removals or
+-- faults, so clean runs stay exactly as quiet as before.
+---@param cacheFs table<string, unknown>
+---@param identity table<string, unknown>
+---@param log fun(line: string)
+local function runPostCompleteMaintenance(cacheFs, identity, log)
+  local CacheMaintenance = require("romdump.src.build.CacheMaintenance")
+  if type(identity) ~= "table" or type(identity.generationId) ~= "string" or type(identity.producerId) ~= "string" then
+    return
+  end
+  local versionId = cacheFs.versionId --[[@as string]]
+  local ok, outcome = pcall(CacheMaintenance.collectCurrentGeneration, cacheFs, identity, true)
+  if ok then
+    if type(outcome) == "table" and outcome.status == "collected" and (outcome.removedCount or 0) > 0 then
+      log(
+        string.format(
+          "maintenance: %s reclaimed %d unreferenced shared files (%d bytes)",
+          versionId,
+          outcome.removedCount,
+          outcome.reclaimedBytes or 0
+        )
+      )
+    end
+  else
+    log("maintenance: " .. versionId .. " deferred: " .. tostring(outcome))
   end
 end
 
@@ -741,21 +787,25 @@ function CacheBuilder.prepareVersion(versionId, options)
   else
     log(string.format("build-cache: %s prepared (%d jobs)", versionId, record.counts.successful))
   end
+  if outcome.complete then
+    runPostCompleteMaintenance(cacheFs, identity, log)
+  end
   return report
 end
 
+-- Batch generation identity without touching the source: the canonical
+-- per-version SHA-1 from the version catalog selects the generation, and
+-- the actual ROM bytes load lazily through the pool only on a genuine
+-- compilation miss. A complete current cache therefore builds nothing and
+-- opens nothing.
 local function versionIdentity(versionId, dev, producerFingerprint)
-  local romFs, openErr = RomFs.open(versionId)
-  if romFs == nil then
-    assert(Errors.is(openErr), "source-data stage failure must be a structured error")
-    return nil, openErr --[[@as Errors.Error]]
-  end
-  local metadata = romFs:metadata()
-  romFs:close()
-  local sha1 = metadata ~= nil and metadata.sha1 or nil
+  local info = GameVersion.VERSIONS[versionId]
+  local sha1 = type(info) == "table" and info.sha1 or nil
   if type(sha1) ~= "string" or #sha1 ~= 40 or sha1:find("[^0-9a-f]") ~= nil then
     return nil,
-      Errors.new("INVALID_ROM_IDENTITY", "the published dump carries no validated ROM hash", { versionId = versionId })
+      Errors.new("INVALID_ROM_IDENTITY", "no validated ROM identity for version " .. tostring(versionId), {
+        versionId = versionId,
+      })
   end
   local mode = dev == true and "development" or "release"
   local producerId
@@ -803,8 +853,6 @@ function CacheBuilder.buildVersions(versionIds, options)
   for _, version in ipairs(versionIds) do
     local ok, result, failureErr = pcall(function()
       local cacheFs = CacheFs.forVersion(version)
-      local dumpMarker = cacheFs:read(RawDumpContract.MARKER_PATH)
-      assert(type(dumpMarker) == "string", "a ready version must have a published dump marker")
       local identity, identityErr = versionIdentity(version, options.dev, producerFingerprint)
       if identity == nil then
         assert(Errors.is(identityErr), "source-data stage failure must be a structured error")
@@ -889,6 +937,12 @@ function CacheBuilder.buildVersions(versionIds, options)
     return nil, "cache preparation failed"
   end
   local complete = exclusionCount == 0
+  if complete then
+    for _, record in ipairs(records) do
+      local cacheFs = record.cacheFs or CacheFs.forVersion(record.versionId)
+      runPostCompleteMaintenance(cacheFs, record.identity, log)
+    end
+  end
   return { published = true, complete = complete, exclusionCount = exclusionCount }
 end
 

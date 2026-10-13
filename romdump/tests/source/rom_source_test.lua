@@ -1,5 +1,7 @@
 local Assert = require("tests.support.Assert")
+local Errors = require("libs.errors.src.Errors")
 local RomSource = require("romdump.src.source.RomSource")
+local NdsRom = require("romdump.src.source.NdsRom")
 local ZipBuilder = require("tests.support.ZipBuilder")
 local NdsBuilder = require("tests.support.NdsBuilder")
 local DumpFixture = require("tests.support.DumpFixture")
@@ -465,7 +467,201 @@ function T.zip_scan_releases_replaced_candidates_and_keeps_one_fallback()
   Assert.equal(s:read(0, 3), "one", "the first .nds is the retained fallback")
 end
 
--- The fallback itself is released when a later supported candidate wins, so
+-- A view over one immutable shared buffer must present exactly the same
+-- identity, size, and slice bytes as a string view over identical bytes, and
+-- must hand back the borrowed buffer itself instead of a copy.
+local function requireSharedBufferView()
+  Assert.isTrue(
+    type(RomSource.fromByteData) == "function",
+    "expected a shared-buffer source view that presents the same bytes without copying the ROM"
+  )
+end
+
+local function sharedTestBytes()
+  return NdsBuilder.build(DumpFixture.spec())
+end
+
+function T.byte_data_view_matches_the_string_view_for_identity_and_slices()
+  requireSharedBufferView()
+  local data = sharedTestBytes()
+  local bytes = love.data.newByteData(data)
+  local fromData = RomSource.fromByteData(bytes, "rom.nds")
+  local fromString = RomSource.fromString(data, "rom.nds")
+  Assert.isTrue(type(fromData.byteData) == "function", "expected the view to hand back its borrowed buffer")
+  Assert.equal(fromData:size(), #data)
+  Assert.equal(fromData:sha1(), fromString:sha1())
+  Assert.equal(fromData:read(0, 4), fromString:read(0, 4))
+  Assert.equal(fromData:read(0, #data), data)
+  Assert.equal(fromData:read(#data - 3, 3), data:sub(-3))
+  Assert.isTrue(fromData:byteData() == bytes, "the view must borrow the shared buffer instead of copying it")
+end
+
+function T.byte_data_read_rejects_out_of_range_like_the_string_view()
+  requireSharedBufferView()
+  local data = sharedTestBytes()
+  local fromData = RomSource.fromByteData(love.data.newByteData(data), "rom.nds")
+  local fromString = RomSource.fromString(data, "rom.nds")
+  local invalid = {
+    { -1, 1 },
+    { 0, -1 },
+    { 0, #data + 1 },
+    { #data, 1 },
+    { 0.5, 1 },
+    { 0, 0.5 },
+  }
+  for _, bad in ipairs(invalid) do
+    local label = string.format("offset %s length %s", tostring(bad[1]), tostring(bad[2]))
+    local viewData, viewErr = fromData:read(bad[1], bad[2])
+    local stringData, stringErr = fromString:read(bad[1], bad[2])
+    Assert.isNil(viewData, label .. " must not return data")
+    Assert.isNil(stringData, label .. " must not return data")
+    Assert.equal(assert(viewErr).code, "ROM_READ_OUT_OF_BOUNDS", label)
+    Assert.equal(assert(stringErr).code, assert(viewErr).code, label)
+  end
+end
+
+-- Releasing one borrowed view must never release the shared buffer: a peer
+-- view over the same buffer keeps reading, while the released view reports
+-- the release and no longer hands out the buffer.
+function T.releasing_one_borrowed_view_keeps_peer_views_on_the_same_buffer()
+  requireSharedBufferView()
+  local data = sharedTestBytes()
+  local shared = love.data.newByteData(data)
+  local first = RomSource.fromByteData(shared, "first.nds")
+  local second = RomSource.fromByteData(shared, "second.nds")
+  Assert.isTrue(
+    type(first.byteData) == "function" and type(second.byteData) == "function",
+    "expected both views to hand back their borrowed buffer"
+  )
+  first:release()
+  Assert.equal(second:read(0, 4), data:sub(1, 4))
+  Assert.isTrue(second:byteData() == shared, "a peer view must keep the shared buffer after a release")
+  local releasedData, releasedErr = first:read(0, 1)
+  Assert.isNil(releasedData)
+  Assert.equal(assert(releasedErr).code, "ROM_RELEASED")
+  local ok = pcall(function()
+    return first:byteData()
+  end)
+  Assert.isFalse(ok, "a released view must no longer hand out the shared buffer")
+end
+
+local function requireOrigin()
+  local probe = RomSource.fromString("x")
+  Assert.isTrue(
+    type(probe.origin) == "function",
+    "expected every source to describe its container without inventing a location"
+  )
+end
+
+function T.origin_describes_memory_views_without_inventing_a_location()
+  requireSharedBufferView()
+  requireOrigin()
+  local data = sharedTestBytes()
+  local view = RomSource.fromByteData(love.data.newByteData(data), "rom.nds")
+  local origin = view:origin()
+  Assert.equal(origin.kind, "nds")
+  Assert.isTrue(origin.path == false, "a view with no durable location must report an explicit false")
+  Assert.isTrue(origin.zipEntry == false, "a bare view has no archive member")
+  Assert.equal(origin.displayName, "rom.nds")
+  local stringOrigin = RomSource.fromString(data, "label.nds"):origin()
+  Assert.equal(stringOrigin.kind, "nds")
+  Assert.isTrue(stringOrigin.path == false, "a string view has no durable location")
+  Assert.isTrue(stringOrigin.zipEntry == false, "a string view has no archive member")
+  Assert.equal(stringOrigin.displayName, "label.nds")
+end
+
+function T.origin_reports_filesystem_and_dropped_containers()
+  requireOrigin()
+  withOwnedRoot(function(root)
+    local romPath = root .. "/game.nds"
+    local writer = assert(io.open(romPath, "wb"))
+    writer:write("abc")
+    assert(writer:close())
+    local fromPath = assert(RomSource.fromPath(romPath))
+    local pathOrigin = fromPath:origin()
+    Assert.equal(pathOrigin.kind, "nds")
+    Assert.equal(pathOrigin.path, romPath)
+    Assert.isTrue(pathOrigin.zipEntry == false, "a bare file has no archive member")
+    Assert.equal(pathOrigin.displayName, "game.nds")
+
+    local zipPath = root .. "/game.zip"
+    local zipBytes = ZipBuilder.build({ { name = "only.nds", data = "unsupported bytes" } })
+    local zipWriter = assert(io.open(zipPath, "wb"))
+    zipWriter:write(zipBytes)
+    assert(zipWriter:close())
+    local fromZip = assert(RomSource.fromPath(zipPath))
+    local zipOrigin = fromZip:origin()
+    Assert.equal(zipOrigin.kind, "zip")
+    Assert.equal(zipOrigin.path, zipPath)
+    Assert.isTrue(
+      type(zipOrigin.zipEntry) == "string" and zipOrigin.zipEntry:match("%.nds$") ~= nil,
+      "a zip source must name its selected member"
+    )
+    Assert.equal(zipOrigin.displayName, "game.zip")
+  end)
+
+  local stub = {
+    open = function()
+      return true
+    end,
+    read = function()
+      return "abc"
+    end,
+    close = function()
+      return true
+    end,
+    getFilename = function()
+      return "dropped.nds"
+    end,
+  }
+  local dropped = assert(RomSource.fromDroppedFile(stub))
+  local droppedOrigin = dropped:origin()
+  Assert.equal(droppedOrigin.kind, "nds")
+  Assert.isTrue(droppedOrigin.path == false, "a dropped file has no durable location")
+  Assert.isTrue(droppedOrigin.zipEntry == false, "a dropped bare file has no archive member")
+  Assert.equal(droppedOrigin.displayName, "dropped.nds")
+end
+
+function T.byte_data_size_and_identity_survive_release_when_cached()
+  requireSharedBufferView()
+  local data = sharedTestBytes()
+  local view = RomSource.fromByteData(love.data.newByteData(data), "rom.nds")
+  local sha1 = view:sha1()
+  view:release()
+  view:release()
+  Assert.equal(view:size(), #data, "a released view keeps its size")
+  Assert.equal(view:sha1(), sha1, "a released view keeps its cached identity")
+  local _, err = view:read(0, 1)
+  Assert.equal(assert(err).code, "ROM_RELEASED")
+end
+
+function T.byte_data_zero_length_slice_is_empty()
+  requireSharedBufferView()
+  local data = sharedTestBytes()
+  local view = RomSource.fromByteData(love.data.newByteData(data), "rom.nds")
+  Assert.equal(view:read(0, 0), "")
+  Assert.equal(view:read(#data, 0), "")
+end
+
+function T.string_view_has_no_shared_buffer()
+  local view = RomSource.fromString("abcdef", "rom.nds")
+  local err = Assert.throws(function()
+    view:byteData()
+  end)
+  Assert.equal(assert(err).code, "ROM_NOT_SHARED")
+end
+
+function T.zip_origin_names_a_relative_member()
+  requireOrigin()
+  local zip = ZipBuilder.build({ { name = "roms/good.nds", data = "unsupported bytes" } })
+  local view = assert(RomSource.fromZipData(zip, "rom.zip", versionsFor("none")))
+  local origin = view:origin()
+  Assert.equal(origin.kind, "zip")
+  Assert.isTrue(origin.path == false, "an in-memory archive has no durable location")
+  Assert.isTrue(origin.zipEntry:sub(1, 1) ~= "/", "the member must stay a relative path")
+  Assert.isTrue(origin.zipEntry:match("%.nds$") ~= nil, "the member must name the selected ROM")
+  Assert.equal(origin.displayName, "rom.zip")
+end
 -- only the winning source survives the scan. ("a1.nds" lists before
 -- "good.nds" for these names, so the unsupported candidate becomes the
 -- fallback before the match.)
@@ -497,6 +693,493 @@ function T.zip_scan_releases_the_fallback_when_a_supported_candidate_wins()
   Assert.equal(created, 2)
   Assert.equal(released, 1, "the fallback must be released when a supported candidate wins")
   Assert.equal(s:sha1(), goodSha)
+end
+
+-- A saved archive location always reopens its recorded member: the bound
+-- entry is served regardless of archive order, a removed entry fails instead
+-- of substituting another game, unsafe names never reach the reader, and an
+-- exact-member option on a bare cartridge is rejected. Failures leave no
+-- mount behind, and the option-less scan keeps its current behavior.
+function T.bound_zip_member_reopens_exactly_without_fallback_or_leak()
+  withOwnedRoot(function(root)
+    local specA = DumpFixture.spec()
+    local specB = DumpFixture.spec()
+    specB.overlays9 = { "OVERLAY0-DATB" }
+    local bytesA = NdsBuilder.build(specA)
+    local bytesB = NdsBuilder.build(specB)
+    Assert.equal(#bytesA, #bytesB, "the variants must share a size")
+    Assert.isTrue(bytesA ~= bytesB, "the variants must differ")
+    local shaA = RomSource.fromString(bytesA):sha1()
+    local shaB = RomSource.fromString(bytesB):sha1()
+    local infoA = { id = "variant-a", sha1 = shaA, gameCode = "IPKE" }
+    local infoB = { id = "variant-b", sha1 = shaB, gameCode = "IPKE" }
+    local versions = {
+      forSha1 = function(hash)
+        if hash == shaA then
+          return infoA
+        end
+        if hash == shaB then
+          return infoB
+        end
+        return nil
+      end,
+      forGameCode = function()
+        return nil
+      end,
+    }
+    local zipBytes = ZipBuilder.build({
+      { name = "a_first.nds", data = bytesA },
+      { name = "z_second.nds", data = bytesB },
+    })
+    local zipPath = root .. "/game.zip"
+    local writer = assert(io.open(zipPath, "wb"))
+    writer:write(zipBytes)
+    assert(writer:close())
+
+    local exactB, exactErr = RomSource.fromPath(zipPath, { zipEntry = "z_second.nds" })
+    Assert.notNil(exactB, "the bound member must open: " .. tostring(exactErr))
+    assert(exactB, "the bound member must open")
+    local ok, err = pcall(function()
+      Assert.equal(exactB:sha1(), shaB, "the bound member must serve its own bytes, not archive order")
+      local origin = exactB:origin()
+      Assert.equal(origin.kind, "zip")
+      Assert.equal(origin.path, zipPath)
+      Assert.equal(origin.zipEntry, "z_second.nds")
+      local rom, romErr = NdsRom.open(exactB, versions)
+      Assert.notNil(rom, romErr and tostring(romErr))
+      assert(rom, "the bound member must validate")
+      Assert.equal(rom:versionInfo().sha1, shaB)
+    end)
+    exactB:release()
+    if not ok then
+      error(err, 0)
+    end
+
+    local exactA = assert(RomSource.fromPath(zipPath, { zipEntry = "a_first.nds" }))
+    local okA, errA = pcall(function()
+      Assert.equal(exactA:sha1(), shaA, "each bound member must serve its own bytes")
+    end)
+    exactA:release()
+    if not okA then
+      error(errA, 0)
+    end
+
+    local missing, missingErr = RomSource.fromPath(zipPath, { zipEntry = "gone.nds" })
+    Assert.isNil(missing, "a removed member must not fall back to another entry")
+    Assert.isTrue(Errors.is(missingErr), "a removed member must report a typed error")
+    Assert.isNil(love.filesystem.getInfo(MOUNT_POINT), "no mount may leak after member-not-found")
+
+    local unsafe = { "../evil.nds", "a/../b.nds", "a/./b.nds", "/abs/member.nds", "C:/win.nds", "a\\b.nds" }
+    for _, member in ipairs(unsafe) do
+      local rejected, rejectErr = RomSource.fromPath(zipPath, { zipEntry = member })
+      Assert.isNil(rejected, "an unsafe member must never open: " .. member)
+      Assert.isTrue(Errors.is(rejectErr), "an unsafe member must report a typed error: " .. member)
+    end
+    Assert.isNil(love.filesystem.getInfo(MOUNT_POINT), "no mount may leak after unsafe members")
+
+    local barePath = root .. "/bare.nds"
+    local bareWriter = assert(io.open(barePath, "wb"))
+    bareWriter:write(bytesA)
+    assert(bareWriter:close())
+    local badBare, badBareErr = RomSource.fromPath(barePath, { zipEntry = "x.nds" })
+    Assert.isNil(badBare, "an exact member on a bare cartridge must be rejected")
+    Assert.isTrue(Errors.is(badBareErr), "a bare-cartridge member option must report a typed error")
+
+    local legacy = assert(RomSource.fromPath(zipPath), "the option-less scan must keep working")
+    local legacySha = legacy:sha1()
+    legacy:release()
+    Assert.isTrue(legacySha == shaA or legacySha == shaB, "the option-less scan still returns a member")
+  end)
+end
+
+-- An exact member that names a directory or carries an embedded NUL never
+-- opens, and a malformed archive fails the same way with or without the
+-- option. Every failure leaves no mount behind.
+function T.exact_member_rejects_directories_embedded_nul_and_malformed_archives()
+  withOwnedRoot(function(root)
+    local zipBytes = ZipBuilder.build({ { name = "roms/game.nds", data = "unsupported bytes" } })
+    local zipPath = root .. "/game.zip"
+    local writer = assert(io.open(zipPath, "wb"))
+    writer:write(zipBytes)
+    assert(writer:close())
+
+    local asDir, dirErr = RomSource.fromPath(zipPath, { zipEntry = "roms" })
+    Assert.isNil(asDir, "an exact member naming a directory must not open")
+    Assert.isTrue(Errors.is(dirErr), "a directory member must report a typed error")
+    Assert.isNil(love.filesystem.getInfo(MOUNT_POINT), "no mount may leak after a directory member")
+
+    local nul, nulErr = RomSource.fromPath(zipPath, { zipEntry = "a\0b.nds" })
+    Assert.isNil(nul, "an exact member with an embedded NUL must not open")
+    Assert.isTrue(Errors.is(nulErr), "an embedded NUL must report a typed error")
+    Assert.isNil(love.filesystem.getInfo(MOUNT_POINT), "no mount may leak after an embedded NUL")
+
+    local badPath = root .. "/bad.zip"
+    local badWriter = assert(io.open(badPath, "wb"))
+    badWriter:write("not a zip at all")
+    assert(badWriter:close())
+    local badExact, badExactErr = RomSource.fromPath(badPath, { zipEntry = "game.nds" })
+    Assert.isNil(badExact, "a malformed archive must not open with an exact member")
+    Assert.isTrue(Errors.is(badExactErr), "a malformed archive must report a typed error")
+    Assert.isNil(love.filesystem.getInfo(MOUNT_POINT), "no mount may leak after a malformed archive")
+    local badScan, badScanErr = RomSource.fromPath(badPath)
+    Assert.isNil(badScan, "a malformed archive must not open on the option-less scan either")
+    Assert.isTrue(Errors.is(badScanErr), "a malformed archive scan must report a typed error")
+    Assert.isNil(love.filesystem.getInfo(MOUNT_POINT), "no mount may leak after a malformed scan")
+  end)
+end
+
+-- The shared test-only ROM adapter resolves an explicit --rom-source flag
+-- when present and otherwise reopens the previously registered exact
+-- original path/member, always checking the requested canonical identity
+-- before handing out a reader. The adapter owns the opened source until it
+-- returns; every failure releases it exactly once and never consults a
+-- second source after an explicit choice failed.
+local CacheFs = require("libs.storage.src.CacheFs")
+local FakeCache = require("tests.support.FakeCache")
+local GameVersion = require("romdump.src.source.GameVersion")
+local RomBinding = require("romdump.src.source.RomBinding")
+local RomFs = require("romdump.src.source.RomFs")
+local RomSourcePath = require("tests.rom.support.RomSourcePath")
+
+-- Run fn with _G.arg replaced, restoring it even when fn fails.
+local function withArgValue(argValue, fn)
+  local saved = _G.arg
+  _G.arg = argValue
+  local ok, err = pcall(fn)
+  _G.arg = saved
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- Catalogue one synthetic cartridge under versionId for the duration of fn.
+local function withTestVersion(versionId, info, fn)
+  local saved = GameVersion.VERSIONS[versionId]
+  GameVersion.VERSIONS[versionId] = {
+    id = versionId,
+    label = "Synthetic",
+    displayName = "Synthetic Cartridge",
+    sha1 = info.sha1,
+    gameCode = info.gameCode,
+    expectedSize = info.expectedSize,
+  }
+  local ok, err = pcall(fn)
+  GameVersion.VERSIONS[versionId] = saved
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- Route CacheFs.forVersion(versionId) at the fake backend for fn.
+local function withRoutedVersionCache(versionId, backend, fn)
+  local realForVersion = CacheFs.forVersion
+  CacheFs.forVersion = function(id, backendOverride)
+    if id == versionId then
+      return realForVersion(id, backend)
+    end
+    return realForVersion(id, backendOverride)
+  end
+  local ok, err = pcall(fn)
+  CacheFs.forVersion = realForVersion
+  if not ok then
+    error(err, 0)
+  end
+end
+
+local function synthCartridgeBytes(gameCode, overlayPayload)
+  return NdsBuilder.build({
+    gameCode = gameCode,
+    title = "SYNTH",
+    overlays9 = { overlayPayload },
+    unmapped = { "UNMAPPED-DATA" },
+    tree = { files = { { name = "root.bin", content = "ROOT" } }, dirs = {} },
+  })
+end
+
+local function writeHostFile(path, bytes)
+  local writer = assert(io.open(path, "wb"))
+  writer:write(bytes)
+  assert(writer:close())
+end
+
+local function recordTestBinding(versionId, backend, data, descriptor)
+  local cache = CacheFs.forVersion(versionId, backend)
+  local rom = assert(NdsRom.open(RomSource.fromString(data)))
+  local recorded, recordErr = RomBinding.record(cache, rom, descriptor)
+  Assert.isTrue(recorded, "setup registration failed: " .. tostring(recordErr))
+end
+
+local function mentionsVersion(err, versionId)
+  return tostring(err):find(versionId, 1, true) ~= nil
+end
+
+-- A previously registered bare cartridge reopens with no explicit flag and
+-- validates against the requested canonical identity.
+function T.implicit_registered_bare_cartridge_reopens_without_an_explicit_flag()
+  withOwnedRoot(function(root)
+    local versionId = "synthseeded01"
+    local gameCode = "IXD1"
+    local data = synthCartridgeBytes(gameCode, "OVERLAY0-DATAA")
+    local sha1 = RomSource.fromString(data):sha1()
+    withTestVersion(versionId, { sha1 = sha1, gameCode = gameCode, expectedSize = #data }, function()
+      local backend = FakeCache.new()
+      local romPath = root .. "/game.nds"
+      writeHostFile(romPath, data)
+      recordTestBinding(versionId, backend, data, {
+        kind = "nds",
+        path = romPath,
+        displayName = "game.nds",
+        zipEntry = false,
+      })
+      withRoutedVersionCache(versionId, backend, function()
+        withArgValue({}, function()
+          local romFs, source = RomSourcePath.openReader(versionId)
+          Assert.notNil(romFs, "the registered cartridge must reopen: " .. tostring(source))
+          assert(romFs)
+          assert(source)
+          local ok, err = pcall(function()
+            Assert.equal(romFs:version(), versionId)
+            Assert.equal(source:sha1(), sha1)
+          end)
+          romFs:close()
+          source:release()
+          if not ok then
+            error(err, 0)
+          end
+        end)
+      end)
+    end)
+  end)
+end
+
+-- A registered archive member wins over archive order, including after the
+-- archive is rewritten with its members in the opposite order.
+function T.implicit_registered_archive_serves_the_recorded_member_regardless_of_order()
+  withOwnedRoot(function(root)
+    local versionId = "synthseeded02"
+    local gameCode = "IXD2"
+    local bytesA = synthCartridgeBytes(gameCode, "OVERLAY0-DATAA")
+    local bytesB = synthCartridgeBytes(gameCode, "OVERLAY0-DATAB")
+    Assert.isTrue(bytesA ~= bytesB, "the members must differ")
+    Assert.equal(#bytesA, #bytesB, "the members must share a size")
+    local shaB = RomSource.fromString(bytesB):sha1()
+    withTestVersion(versionId, { sha1 = shaB, gameCode = gameCode, expectedSize = #bytesB }, function()
+      local backend = FakeCache.new()
+      local zipPath = root .. "/game.zip"
+      writeHostFile(zipPath, ZipBuilder.build({
+        { name = "a_first.nds", data = bytesA },
+        { name = "z_second.nds", data = bytesB },
+      }))
+      recordTestBinding(versionId, backend, bytesB, {
+        kind = "zip",
+        path = zipPath,
+        displayName = "game.zip",
+        zipEntry = "z_second.nds",
+      })
+      withRoutedVersionCache(versionId, backend, function()
+        withArgValue({}, function()
+          local romFs, source = RomSourcePath.openReader(versionId)
+          Assert.notNil(romFs, "the recorded member must open: " .. tostring(source))
+          assert(romFs)
+          assert(source)
+          Assert.equal(source:sha1(), shaB, "the recorded member must win over archive order")
+          romFs:close()
+          source:release()
+          writeHostFile(zipPath, ZipBuilder.build({
+            { name = "z_second.nds", data = bytesB },
+            { name = "a_first.nds", data = bytesA },
+          }))
+          local reorderedFs, reorderedSource = RomSourcePath.openReader(versionId)
+          Assert.notNil(reorderedFs, "reordering must not change the member: " .. tostring(reorderedSource))
+          assert(reorderedFs)
+          assert(reorderedSource)
+          local ok, err = pcall(function()
+            Assert.equal(reorderedSource:sha1(), shaB, "the recorded member must survive reordering")
+          end)
+          reorderedFs:close()
+          reorderedSource:release()
+          if not ok then
+            error(err, 0)
+          end
+        end)
+      end)
+    end)
+  end)
+end
+
+-- An explicit wrong cartridge fails before the reader opens, releases once,
+-- and leaves the good registration untouched: no fallback may rescue it.
+function T.explicit_wrong_cartridge_fails_before_the_reader_opens_without_fallback()
+  withOwnedRoot(function(root)
+    local versionId = "synthseeded03"
+    local gameCode = "IXD3"
+    local good = synthCartridgeBytes(gameCode, "OVERLAY0-DATAA")
+    local wrong = synthCartridgeBytes(gameCode, "OVERLAY0-DATAW")
+    Assert.equal(#good, #wrong, "the variants must share a size")
+    local shaGood = RomSource.fromString(good):sha1()
+    withTestVersion(versionId, { sha1 = shaGood, gameCode = gameCode, expectedSize = #good }, function()
+      local backend = FakeCache.new()
+      local goodPath = root .. "/good.nds"
+      local wrongPath = root .. "/wrong.nds"
+      writeHostFile(goodPath, good)
+      writeHostFile(wrongPath, wrong)
+      recordTestBinding(versionId, backend, good, {
+        kind = "nds",
+        path = goodPath,
+        displayName = "good.nds",
+        zipEntry = false,
+      })
+      withRoutedVersionCache(versionId, backend, function()
+        local readerOpens = 0
+        withPatched(RomFs, "open", function(original)
+          return function(...)
+            readerOpens = readerOpens + 1
+            return original(...)
+          end
+        end, function()
+          local releases = 0
+          withPatched(RomSource, "fromPath", function(original)
+            return function(...)
+              local source, sourceErr = original(...)
+              if source then
+                local realRelease = source.release
+                source.release = function(self)
+                  releases = releases + 1
+                  return realRelease(self)
+                end
+              end
+              return source, sourceErr
+            end
+          end, function()
+            withArgValue({ "--rom-source", wrongPath }, function()
+              local romFs, cause = RomSourcePath.openReader(versionId)
+              Assert.isNil(romFs, "an explicit wrong cartridge must not open")
+              Assert.notNil(cause, "an explicit wrong cartridge must report its cause")
+              Assert.equal(readerOpens, 0, "an identity mismatch must fail before the reader opens")
+              Assert.equal(releases, 1, "the rejected explicit source must be released once")
+            end)
+          end)
+        end)
+        local binding = assert(RomBinding.read(CacheFs.forVersion(versionId, backend), versionId))
+        Assert.equal(binding.path, goodPath, "the good registration must survive an explicit mismatch")
+      end)
+    end)
+  end)
+end
+
+-- Once the recorded member is gone, reopening fails instead of serving a
+-- different entry, and no archive mount leaks.
+function T.removed_bound_member_fails_without_serving_a_different_entry()
+  withOwnedRoot(function(root)
+    local versionId = "synthseeded04"
+    local gameCode = "IXD4"
+    local bytesA = synthCartridgeBytes(gameCode, "OVERLAY0-DATAA")
+    local bytesB = synthCartridgeBytes(gameCode, "OVERLAY0-DATAB")
+    local shaB = RomSource.fromString(bytesB):sha1()
+    withTestVersion(versionId, { sha1 = shaB, gameCode = gameCode, expectedSize = #bytesB }, function()
+      local backend = FakeCache.new()
+      local zipPath = root .. "/game.zip"
+      writeHostFile(zipPath, ZipBuilder.build({
+        { name = "a_first.nds", data = bytesA },
+        { name = "z_second.nds", data = bytesB },
+      }))
+      recordTestBinding(versionId, backend, bytesB, {
+        kind = "zip",
+        path = zipPath,
+        displayName = "game.zip",
+        zipEntry = "z_second.nds",
+      })
+      withRoutedVersionCache(versionId, backend, function()
+        withArgValue({}, function()
+          local romFs, source = RomSourcePath.openReader(versionId)
+          Assert.notNil(romFs, "the recorded member must open before removal: " .. tostring(source))
+          assert(romFs)
+          assert(source)
+          romFs:close()
+          source:release()
+          writeHostFile(zipPath, ZipBuilder.build({
+            { name = "a_first.nds", data = bytesA },
+          }))
+          local goneFs, goneErr = RomSourcePath.openReader(versionId)
+          Assert.isNil(goneFs, "a removed member must not fall back to another entry")
+          Assert.notNil(goneErr, "a removed member must report its cause")
+          Assert.isNil(
+            love.filesystem.getInfo(MOUNT_POINT),
+            "no archive mount may leak after a removed member"
+          )
+        end)
+      end)
+    end)
+  end)
+end
+
+-- An unreopenable drop and a missing registration both fail with the
+-- requested version in the cause instead of opening anything.
+function T.unreopenable_and_missing_registrations_fail_with_version_context()
+  local ephemeralId = "synthseeded05"
+  local ephemeralCode = "IXD5"
+  local ephemeralData = synthCartridgeBytes(ephemeralCode, "OVERLAY0-DATAA")
+  local ephemeralSha = RomSource.fromString(ephemeralData):sha1()
+  withTestVersion(ephemeralId, { sha1 = ephemeralSha, gameCode = ephemeralCode, expectedSize = #ephemeralData }, function()
+    local backend = FakeCache.new()
+    recordTestBinding(ephemeralId, backend, ephemeralData, {
+      kind = "nds",
+      path = false,
+      displayName = "dropped.nds",
+      zipEntry = false,
+    })
+    withRoutedVersionCache(ephemeralId, backend, function()
+      withArgValue({}, function()
+        local romFs, cause = RomSourcePath.openReader(ephemeralId)
+        Assert.isNil(romFs, "an unreopenable drop must not open after restart")
+        Assert.notNil(cause, "an unreopenable drop must report its cause")
+        Assert.isTrue(
+          mentionsVersion(cause, ephemeralId),
+          "the cause must name the requested version, got: " .. tostring(cause)
+        )
+      end)
+    end)
+  end)
+  local missingId = "synthseeded06"
+  local missingCode = "IXD6"
+  local missingData = synthCartridgeBytes(missingCode, "OVERLAY0-DATAA")
+  local missingSha = RomSource.fromString(missingData):sha1()
+  withTestVersion(missingId, { sha1 = missingSha, gameCode = missingCode, expectedSize = #missingData }, function()
+    withRoutedVersionCache(missingId, FakeCache.new(), function()
+      withArgValue({}, function()
+        local romFs, cause = RomSourcePath.openReader(missingId)
+        Assert.isNil(romFs, "a missing registration must not open")
+        Assert.notNil(cause, "a missing registration must report its cause")
+        Assert.isTrue(
+          mentionsVersion(cause, missingId),
+          "the cause must name the requested version, got: " .. tostring(cause)
+        )
+      end)
+    end)
+  end)
+end
+
+-- The flag lookup stays a pure explicit-argument scan: registrations never
+-- answer it.
+function T.flag_lookup_reports_only_the_explicit_argument()
+  withArgValue({ "--rom-source", "/tmp/explicit.nds" }, function()
+    Assert.equal(RomSourcePath.find(), "/tmp/explicit.nds")
+  end)
+  withArgValue({}, function()
+    Assert.isNil(RomSourcePath.find())
+  end)
+  withArgValue({ "--filter", "rom_source" }, function()
+    Assert.isNil(RomSourcePath.find())
+  end)
+  local saved = _G.arg
+  _G.arg = nil
+  local ok, err = pcall(function()
+    Assert.isNil(RomSourcePath.find())
+  end)
+  _G.arg = saved
+  if not ok then
+    error(err, 0)
+  end
 end
 
 return { tests = T }

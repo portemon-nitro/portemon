@@ -12,6 +12,9 @@ local Cli = require("romdump.src.cli.Cli")
 
 local Runner = {}
 
+-- Versions with a strict persisted source binding. The binding is metadata
+-- only: no ROM is opened here, and a complete current cache builds nothing
+-- on the batch path without touching its source.
 local function readyVersions()
   local out = {}
   for _, id in ipairs(GameVersion.ORDER) do
@@ -36,9 +39,6 @@ function Runner.load(opts)
   if command == "build-cache" then
     return Runner._runBuildCache()
   end
-  if command == "check-dump" then
-    return Runner._runCheckDump()
-  end
   if command == "check-derived-cache" then
     return Runner._runCheckDerivedCache()
   end
@@ -52,7 +52,7 @@ function Runner.load(opts)
     return Runner._runPrepareCache()
   end
   print(
-    "romdump: no command given (expected --import-rom, --check-dump, --check-derived-cache, --build-cache,"
+    "romdump: no command given (expected --import-rom, --check-derived-cache, --build-cache,"
       .. " --discover-app, --probe-rom, or --prepare-cache)"
   )
   love.event.quit(Cli.EXIT_USAGE)
@@ -108,42 +108,35 @@ function Runner._runDiscoverApp()
   love.event.quit(0)
 end
 
--- Build the derived cache from every ready dump; with --forcedump (or an
--- explicit ROM path) the ROM is imported first and the build runs when the
--- import completes.
+-- Build the derived cache from every registered source; with an explicit
+-- ROM path the source is registered first and the build runs when the
+-- registration completes.
 function Runner._runBuildCache()
   local opts = Runner.opts
-  if opts.forceDump then
-    assert(opts.romPath, "forcedump requires a ROM path")
+  if opts.romPath then
     return Runner._startImport(opts.romPath)
   end
   local targets = readyVersions()
   if #targets > 0 then
     return Runner._runBuild({ allowCompileExclusions = opts.allowCompileExclusions, dev = opts.dev })
   end
-  if opts.romPath then
-    return Runner._startImport(opts.romPath)
-  end
-  print("build-cache: no ready dump; pass a ROM path")
+  print("build-cache: no registered source; pass a ROM path")
   return love.event.quit(Cli.EXIT_USAGE)
 end
 
 -- Resolve the expected generation for a version through the same
--- development/release policy the prepare command uses: the validated ROM
--- hash from the published dump plus the working-tree digest in development
--- mode or the explicit per-game counter otherwise. Read-only apart from
--- closing the source handle it opens.
+-- development/release policy the prepare command uses: the canonical ROM
+-- hash from the version catalog plus the working-tree digest in development
+-- mode or the explicit per-game counter otherwise. Pure and read-only: the
+-- source is never opened here, only on a genuine compilation miss.
 ---@param version string
 ---@return table<string, unknown>|nil identity
 ---@return Errors.Error|string|nil err
 local function selectionIdentity(version)
-  local RomFs = require("romdump.src.source.RomFs")
-  local opened, openErr = RomFs.open(version)
-  if opened == nil then
-    return nil, openErr --[[@as Errors.Error]]
+  local info = GameVersion.info(version)
+  if type(info) ~= "table" or type(info.sha1) ~= "string" then
+    return nil, Errors.new("UNSUPPORTED_VERSION", "unsupported version: " .. tostring(version), { versionId = version })
   end
-  local sha1 = opened:metadata().sha1
-  opened:close()
   local DerivedCacheState = require("romdump.src.DerivedCacheState")
   local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
   local DerivedCacheVersions = require("romdump.src.config.DerivedCacheVersions")
@@ -162,7 +155,7 @@ local function selectionIdentity(version)
   end
   return DerivedCacheState.currentForSelection({
     versionId = version,
-    romSha1 = sha1,
+    romSha1 = info.sha1,
     producerId = producerId,
     developmentRepositoryRoot = dev and sourceBase or nil,
   })
@@ -181,7 +174,7 @@ function Runner._runCheckDerivedCache()
   local CacheFs = require("libs.storage.src.CacheFs")
   local targets = readyVersions()
   if #targets == 0 then
-    print("check-derived-cache: no ready dump")
+    print("check-derived-cache: no registered source")
     return love.event.quit(1)
   end
   local allOk = true
@@ -203,28 +196,6 @@ function Runner._runCheckDerivedCache()
     if not ok then
       allOk = false
       print("  " .. tostring(reason))
-    end
-  end
-  love.event.quit(allOk and 0 or 1)
-end
-
--- Audit every ready version and exit 0 only if all pass. Runtime boot is
--- verified by the game/application tests, not by this ROM-source command.
-function Runner._runCheckDump()
-  local DumpAudit = require("romdump.src.source.DumpAudit")
-  local targets = readyVersions()
-  if #targets == 0 then
-    print("check-dump: no ready version to audit")
-    return love.event.quit(1)
-  end
-  local allOk = true
-  for _, version in ipairs(targets) do
-    local report = DumpAudit.run(version)
-    for _, line in ipairs(DumpAudit.lines(report)) do
-      print(line)
-    end
-    if not report.ok then
-      allOk = false
     end
   end
   love.event.quit(allOk and 0 or 1)
@@ -342,7 +313,7 @@ function Runner._runPrepareCache()
     end
   end
   if not RomImporter.isReady(version) then
-    print("prepare-cache: no ready dump for " .. version .. "; import a ROM first")
+    print("prepare-cache: no registered source for " .. version .. "; import a ROM first")
     return love.event.quit(Cli.EXIT_USAGE)
   end
   local identity, identityErr = selectionIdentity(version)
@@ -417,14 +388,19 @@ function Runner._startImport(path)
   Runner.importer:startPath(path)
 end
 
--- Print a compact summary of a finished import for scripted consumers.
+-- Print a compact summary of a finished registration for scripted
+-- consumers. Registration records only the source binding; derived caches
+-- compile from the user-owned ROM on demand afterwards.
 local function printImportResult(status)
-  local r = status.report
+  local r = status.report or {}
   print("import complete: " .. status.versionId)
-  print("  sha1:   " .. r.sha1)
-  print("  files:  " .. r.fatEntryCount .. " FAT entries, " .. r.totalBytesWritten .. " bytes")
-  if r.matrix then
-    print(string.format("  matrix: %q %dx%d", r.matrix.name, r.matrix.width, r.matrix.height))
+  print("  sha1:   " .. tostring(r.sha1))
+  if r.kind == "zip" then
+    print("  source: zip " .. tostring(r.path) .. " member " .. tostring(r.zipEntry))
+  elseif r.path then
+    print("  source: " .. tostring(r.path))
+  else
+    print("  source: ephemeral (not reopenable; reselection will be requested on a later miss)")
   end
 end
 
@@ -449,24 +425,16 @@ function Runner._maybeExit()
   end
 end
 
--- Complete a finished build-cache import: audit the imported dump, build the
--- derived cache, and use an already-loaded runtime verifier when the host
--- supplies one. The optional lookup keeps this source-only app independent of
--- the game runtime while preserving the completion seam used by integration
--- hosts.
+-- Complete a finished build-cache registration: build the derived cache
+-- for the registered version, and use an already-loaded runtime verifier
+-- when the host supplies one. The optional lookup keeps this source-only
+-- app independent of the game runtime while preserving the completion seam
+-- used by integration hosts.
 ---@param status table<string, unknown>
 ---@return nil
 function Runner._finishImport(status)
-  local DumpAudit = require("romdump.src.source.DumpAudit")
   local versionId = status.versionId
   assert(type(versionId) == "string", "import must report versionId")
-  local audit = DumpAudit.run(versionId)
-  if not audit.ok then
-    for _, line in ipairs(DumpAudit.lines(audit)) do
-      print(line)
-    end
-    return love.event.quit(1)
-  end
   local report, err = Runner._runBuild({
     versionIds = { versionId },
     allowCompileExclusions = Runner.opts.allowCompileExclusions,

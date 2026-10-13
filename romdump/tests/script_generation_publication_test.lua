@@ -494,9 +494,12 @@ function T.interrupted_summary_publication_recovers_the_previous_selection()
     ScriptCache.isReady(cache, MARKER_A),
     "a rolled-back selection is not live until journal recovery runs"
   )
-  Assert.throws(function()
-    artifact:abort()
-  end, "an interrupted summary stage is recovery material, not disposable scratch")
+  Assert.isTrue(artifact:abort(), "discarding the interrupted stage must not destroy journal recovery material")
+  cache:recoverPublication()
+  Assert.isTrue(
+    ScriptCache.isReady(cache, MARKER_A),
+    "journal recovery still restores the previous selection after the interrupted stage is discarded"
+  )
 
   cache:recoverPublication()
   Assert.isTrue(ScriptCache.isReady(cache, MARKER_A), "recovery must preserve the previous selection")

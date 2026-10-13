@@ -1,20 +1,25 @@
--- The only runtime entry point for the raw ROM dump. It loads the
--- generated metadata through CacheFs, validates schemas, and serves file bytes
+-- The only runtime entry point for raw ROM content. Opened over a verified
+-- cartridge it derives its file and overlay maps from the cartridge itself
+-- and serves bytes straight from the source buffer. It serves file bytes
 -- and NARC members lazily by FAT fileId, exact NitroFS source path, or curated
--- alias/symbol. It never re-reads the original ROM and never caches large
--- payloads globally.
+-- alias/symbol, and never caches large payloads globally.
 --
 -- Transient maps (source path -> fileId, alias/symbol -> resolved NARC) are
--- built once at open() from the on-disk index; the generated files deliberately
--- do not duplicate them. Decoders should prefer explicit readSourcePath.
+-- built once at open() from the cartridge tables. Decoders should prefer
+-- explicit readSourcePath.
 
 local Errors = require("libs.errors.src.Errors")
-local CacheFs = require("libs.storage.src.CacheFs")
 local Narc = require("libs.nds.src.nitro.Narc")
-local RomImporter = require("romdump.src.source.RomImporter")
+local NdsRom = require("romdump.src.source.NdsRom")
 local OverlayCompression = require("libs.nds.src.rom.OverlayCompression")
 local HgssArchives = require("romdump.src.config.HgssArchives")
-local RawDumpContract = require("romdump.src.source.RawDumpContract")
+
+-- Direct-reader identity shapes for the metadata, file index, and overlay
+-- index derived from the cartridge at open. These version the reader's own
+-- in-memory tables, not any persisted dump.
+local METADATA_SCHEMA = 1
+local ROMFS_INDEX_SCHEMA = 1
+local OVERLAY_INDEX_SCHEMA = 1
 
 ---@class RomFs
 ---@field private _version string
@@ -34,71 +39,135 @@ RomFs.__index = RomFs
 ---@field path string
 ---@field fileId integer
 
-local function loadRequired(cache, path)
-  local value, err = cache:loadLua(path)
-  if not value then
-    Errors.raise("ROMFS_LOAD_FAILED", "could not load " .. path .. ": " .. Errors.format(err), { path = path })
-  end
-  return value
-end
-
-local function requireSchema(value, expected, name)
-  if value.schema ~= expected then
+-- Open over one verified cartridge: the file and overlay maps are derived
+-- from the cartridge's own FAT/FNT/overlay tables, and every byte comes
+-- straight from the source buffer. The returned reader owns only its maps
+-- and a borrowed view of the source, never the shared buffer itself.
+local function openDirect(versionId, romSource)
+  if type(romSource) ~= "table" or type(romSource.read) ~= "function" or type(romSource.sha1) ~= "function" then
     Errors.raise(
-      "ROMFS_SCHEMA_MISMATCH",
-      name .. " schema " .. tostring(value.schema) .. " ~= expected " .. expected,
-      { name = name, schema = value.schema, expected = expected }
+      "ROMFS_BAD_SOURCE",
+      "direct open requires a ROM source for version " .. tostring(versionId),
+      { version = versionId }
     )
   end
-end
-
-local function _open(versionId, cache)
-  cache = cache or CacheFs.forVersion(versionId)
-  if not RomImporter.isReady(versionId, cache) then
-    Errors.raise("ROMFS_NOT_READY", "no ready dump for version " .. tostring(versionId), { version = versionId })
+  local rom, romErr = NdsRom.open(romSource)
+  if not rom then
+    error(romErr, 0)
   end
-
-  local metadata = loadRequired(cache, RawDumpContract.METADATA_PATH)
-  local index = loadRequired(cache, RawDumpContract.ROMFS_INDEX_PATH)
-  local overlayIndex = loadRequired(cache, RawDumpContract.OVERLAY_INDEX_PATH)
-  requireSchema(metadata, RawDumpContract.METADATA_SCHEMA, "rom_metadata")
-  requireSchema(index, RawDumpContract.ROMFS_INDEX_SCHEMA, "romfs_index")
-  if
-    overlayIndex.schema ~= RawDumpContract.OVERLAY_INDEX_SCHEMA
-    or type(overlayIndex.arm9) ~= "table"
-    or type(overlayIndex.arm7) ~= "table"
-  then
+  assert(rom)
+  local versionInfo = rom:versionInfo()
+  if versionInfo.id ~= versionId then
     Errors.raise(
-      "ROMFS_OVERLAY_INDEX_SCHEMA",
-      "overlay_index must use schema " .. RawDumpContract.OVERLAY_INDEX_SCHEMA .. " with arm9 and arm7 tables",
-      { schema = overlayIndex.schema }
+      "ROMFS_VERSION_MISMATCH",
+      "cartridge " .. versionInfo.id .. " does not match requested version " .. tostring(versionId),
+      { version = versionId, cartridgeVersion = versionInfo.id }
     )
   end
 
-  -- Build the source-path -> fileId lookup once from the FNT index. NARC alias
-  -- resolution is derived on demand from the checked-in manifest plus this
-  -- lookup, so there is no baked alias table to persist or keep in sync.
-  local byPath = {}
-  for fileId = 0, index.fileCount - 1 do
-    local entry = index.files[fileId]
-    assert(entry, "romfs_index missing fileId " .. fileId)
-    if entry.sourcePath then
-      byPath[entry.sourcePath] = fileId
+  local header = rom:header()
+  local map = rom:fileMap()
+  local fileCount = rom:fatCount()
+  local arm9Overlays, arm7Overlays = rom:arm9Overlays(), rom:arm7Overlays()
+  local unmappedCount, totalBytes = 0, 0
+  local files, byPath = {}, {}
+  for fileId = 0, fileCount - 1 do
+    local dest = map[fileId]
+    assert(dest, "cartridge map missing fileId " .. fileId)
+    files[fileId] = {
+      fileId = fileId,
+      path = dest.path,
+      sourcePath = dest.sourcePath,
+      offset = dest.offset,
+      size = dest.size,
+      kind = dest.kind,
+      overlayId = dest.overlayId,
+    }
+    if dest.sourcePath then
+      byPath[dest.sourcePath] = fileId
     end
+    if dest.kind == "unmapped" then
+      unmappedCount = unmappedCount + 1
+    end
+    totalBytes = totalBytes + dest.size
+  end
+
+  local function overlayTable(list)
+    local out = {}
+    for _, entry in ipairs(list) do
+      out[entry.overlayId] = {
+        overlayId = entry.overlayId,
+        fileId = entry.fileId,
+        ramAddress = entry.ramAddress,
+        ramSize = entry.ramSize,
+        bssSize = entry.bssSize,
+        staticInitStart = entry.staticInitStart,
+        staticInitEnd = entry.staticInitEnd,
+        flags = entry.flags,
+      }
+    end
+    return out
   end
 
   return setmetatable({
     _version = versionId,
-    _cache = cache,
-    _metadata = metadata,
-    _index = index,
-    _overlayIndex = overlayIndex,
+    _rom = rom,
+    _metadata = {
+      schema = METADATA_SCHEMA,
+      version = versionInfo.id,
+      displayName = versionInfo.displayName,
+      sha1 = versionInfo.sha1,
+      size = rom:size(),
+      title = header.title,
+      gameCode = header.gameCode,
+      makerCode = header.makerCode,
+      unitCode = header.unitCode,
+      romVersion = header.romVersion,
+      headerSize = header.headerSize,
+      usedRomSize = header.usedRomSize,
+      arm9 = {
+        offset = header.arm9.offset,
+        size = header.arm9.size,
+        entryAddress = header.arm9.entryAddress,
+        ramAddress = header.arm9.ramAddress,
+      },
+      arm7 = {
+        offset = header.arm7.offset,
+        size = header.arm7.size,
+        entryAddress = header.arm7.entryAddress,
+        ramAddress = header.arm7.ramAddress,
+      },
+      fnt = { offset = header.fnt.offset, size = header.fnt.size },
+      fat = { offset = header.fat.offset, size = header.fat.size },
+      arm9Overlays = { offset = header.arm9Overlays.offset, size = header.arm9Overlays.size },
+      arm7Overlays = { offset = header.arm7Overlays.offset, size = header.arm7Overlays.size },
+    },
+    _index = {
+      schema = ROMFS_INDEX_SCHEMA,
+      version = versionInfo.id,
+      romSha1 = versionInfo.sha1,
+      fileCount = fileCount,
+      namedFileCount = rom:nitroFs().namedFileCount,
+      overlayFileCount = #arm9Overlays + #arm7Overlays,
+      unmappedFileCount = unmappedCount,
+      totalFileBytes = totalBytes,
+      files = files,
+    },
+    _overlayIndex = {
+      schema = OVERLAY_INDEX_SCHEMA,
+      arm9 = overlayTable(arm9Overlays),
+      arm7 = overlayTable(arm7Overlays),
+    },
     _byPath = byPath,
   }, RomFs)
 end
 
-function RomFs.open(versionId, cache)
-  local ok, result = pcall(_open, versionId, cache)
+-- Open over a verified cartridge is the only supported path: compilers
+-- receive their borrowed source view from the pool after a genuine receipt
+-- miss, never a cache handle. Anything without a readable source view is a
+-- typed bad-source failure, never a fallback to historical extracted files.
+function RomFs.open(versionId, romSource)
+  local ok, result = pcall(openDirect, versionId, romSource)
   if ok then
     return result
   end
@@ -118,7 +187,7 @@ function RomFs:fileCount()
   return self._index.fileCount
 end
 
--- Count curated aliases that resolve against this dump's FNT (i.e. whose path
+-- Count curated aliases that resolve against this cartridge's FNT (i.e. whose path
 -- is present). Derived, not stored, so it always reflects the current manifest.
 function RomFs:_resolvedNarcCount()
   local count = 0
@@ -168,17 +237,24 @@ function RomFs:fileIdForPath(sourcePath)
   return self._byPath[sourcePath]
 end
 
--- Read a FAT-backed file by fileId or by exact source path.
+-- Read a FAT-backed file by fileId or by exact source path, slicing the
+-- recorded FAT range straight out of the cartridge buffer.
 function RomFs:read(pathOrFileId)
   local entry, err = self:info(pathOrFileId)
   if not entry then
     return nil, err
   end
-  local data = self._cache:read(entry.path)
-  if data == nil then
-    return nil, Errors.new("ROMFS_FILE_MISSING", "dump file missing: " .. entry.path, { path = entry.path })
+  local rom = assert(self._rom, "direct ROM reader owns its cartridge view")
+  local ok, data = pcall(function()
+    return rom:readFatFile(entry.fileId)
+  end)
+  if ok then
+    return data
   end
-  return data
+  if Errors.is(data) then
+    return nil, data
+  end
+  error(data, 0)
 end
 
 function RomFs:readSourcePath(sourcePath)
@@ -235,7 +311,7 @@ function RomFs:readOverlay(cpu, overlayId)
     return nil,
       Errors.new(
         "ROMFS_OVERLAY_FILE_MISSING",
-        "dumped overlay file is missing: " .. info.path,
+        "cartridge overlay bytes are missing for fileId " .. info.fileId,
         { cpu = cpu, overlayId = overlayId, fileId = info.fileId, path = info.path, cause = readErr and readErr.code }
       )
   end
@@ -250,7 +326,7 @@ function RomFs:readOverlay(cpu, overlayId)
 end
 
 -- Resolve a curated alias, version-neutral alias, or raw NARC symbol to a fileId
--- entry, using the checked-in manifest plus this dump's FNT path index. Returns
+-- entry, using the checked-in manifest plus this cartridge's FNT path index. Returns
 -- nil if the manifest does not know the name or its path is absent from the FNT.
 -- No memberCount is included (that requires opening the NARC); openNarc does
 -- not need it.
@@ -286,7 +362,9 @@ function RomFs:openNarc(symbolOrAlias)
 end
 
 function RomFs:close()
-  self._cache = nil
+  -- Drop only per-view state. The cartridge holds a borrowed source view,
+  -- so closing never releases the shared buffer its peers may still read.
+  self._rom = nil
   self._metadata = nil
   self._index = nil
   self._overlayIndex = nil

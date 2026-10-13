@@ -164,11 +164,12 @@ end
 ---@param versionId string booted game version behind the journey
 ---@return table trainer template from the native compiled catalog with its class, final member, and prize facts
 local function nativeTrainer(versionId)
-  local RomFs = require("romdump.src.source.RomFs")
-  local romFs = assert(RomFs.open(versionId), "the prize leg needs its ready dump")
+  local RomSourcePath = require("tests.rom.support.RomSourcePath")
+  local romFs, romSource = assert(RomSourcePath.openReader(versionId))
   local Compiler = require("romdump.src.digest.battle.TrainerCatalogCompiler")
   local compiled = assert(Compiler.compileFromDump(romFs, { versionId = versionId }))
   romFs:close()
+  romSource:release()
   local Catalog = require("libs.hgss.src.battle.HgssTrainerCatalog")
   local catalog = Catalog.new(compiled)
   local keys = {}

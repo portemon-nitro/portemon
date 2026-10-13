@@ -2,7 +2,8 @@
 --
 --   graphics                a preflight really built and released a Shader, Canvas, Mesh,
 --                           and Image against the host's graphics namespace
---   rom_dump                at least one GameVersion is ready through RomImporter.isReady
+--   rom_dump                at least one GameVersion has a registered source through
+--                           RomImporter.isReady
 --   derived_assets          the shell prepared a non-empty requirement closure
 --   complete_derived_cache  the shell prepared the complete corpus
 --

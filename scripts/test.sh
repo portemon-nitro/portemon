@@ -33,7 +33,7 @@
 # Readiness comes from the common scoped builder (`love romdump/
 # --prepare-cache --dev`). The shell hands its successful requirement union to
 # test children for this invocation only.
-# PORTEMON_REQUIRE_ROM_TESTS=1 makes a missing dump fatal.
+# PORTEMON_REQUIRE_ROM_TESTS=1 makes a missing source fatal.
 # Exit status: 0 green, 1 failures or a missing required capability, 2 usage.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -75,7 +75,7 @@ if [ "$corpus_requested" = true ]; then
   way to verify everyday work: a plain scripts/test.sh plus
   scripts/lint.sh is the regular gate.
   It uses significant resources: over 14 GiB of RAM has been observed,
-  and it prepares the complete derived cache from a user-owned ROM dump.
+  and it prepares the complete derived cache from a user-owned ROM.
   Do not run this in CI, in the background of other work, or on a machine
   that cannot spare the memory.
 ================================================================================
@@ -303,10 +303,10 @@ take_lock() {
 }
 
 if [ "$fresh" = 1 ]; then
-  # An explicit cold rerun: a new empty temporary data home, a real import,
-  # and the declared closure only. Persistent artifacts and the private
-  # default selection are neither read nor written; only the owned temporary
-  # directory is removed after all children exit.
+  # An explicit cold rerun: a new empty temporary data home, a register-only
+  # source binding, and the declared closure only. Persistent artifacts and
+  # the private default selection are neither read nor written; only the
+  # owned temporary directory is removed after all children exit.
   fresh_root="$(mktemp -d)"
   temp_dirs+=("$fresh_root")
   export XDG_DATA_HOME="$fresh_root"
@@ -321,7 +321,7 @@ if [ "$fresh" = 1 ]; then
 elif [ -n "$rom_source" ]; then
   # An explicit source: resolve its canonical identity through the source
   # owner before selecting a root, then reuse the private root for that
-  # content hash, importing raw data only when absent and preparing exactly
+  # content hash, registering the source only when absent and preparing exactly
   # the selected scope.
   probe_source "$rom_source"
   version="$probe_version"
@@ -351,15 +351,15 @@ elif [ -n "$rom_source" ]; then
     export PORTEMON_TEST_PREPARED_REQUIREMENTS="${requires[*]}"
   fi
   # Publish the successful selection only after this invocation's required
-  # import and scoped preparation succeeded; a failed scope leaves the
-  # previous selection in place while its valid raw import stays reusable.
+  # registration and scoped preparation succeeded; a failed scope leaves the
+  # previous selection in place while its valid source binding stays reusable.
   write_selection "$version" "$sha"
   echo "== private ROM test cache: $version $sha in $data_home =="
 elif [ "$prepare" != "none" ]; then
   # A plain run: reuse the last successfully selected private cache when it
-  # names a supported hash whose raw dump validates, otherwise run the
-  # ROM-independent suites with explicit unavailable-ROM skips. The product
-  # cache is never prepared here.
+  # names a supported hash whose registered source validates, otherwise run
+  # the ROM-independent suites with explicit unavailable-ROM skips. The
+  # product cache is never prepared here.
   read_selection
   if [ -n "$select_sha" ] && [ -f "$test_root/$select_sha/rom-ready" ]; then
     rom_dir="$test_root/$select_sha"

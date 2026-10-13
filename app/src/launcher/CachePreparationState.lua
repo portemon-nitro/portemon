@@ -7,13 +7,15 @@
 local ImportState = require("app.src.launcher.ImportState")
 
 ---@class CachePreparationOptions
----@field kind "bootstrap"|"quiescence"|"first-play"
+---@field kind "bootstrap"|"quiescence"|"first-play"|"boot-source"
 ---@field epoch integer selected source epoch guarded against stale completion
 ---@field provisioner? table<string, function> bootstrap/first-play: the borrowed selected session host
 ---@field preparation? table<string, function> first-play only: the opaque HGSS demand object
 ---@field importContinuation? table<string, unknown> first-play fresh-import only: immutable captured import display facts
----@field service table<string, function>? quiescence only: the process cache service, required
+---@field service table<string, function>? quiescence/boot-source: the process cache service, required
 ---@field barrier integer? quiescence only: the exact source-close barrier token
+---@field versionId string? boot-source only: the selected game version shown in the blocked instruction
+---@field mismatch string? boot-source only: wrong-version diagnostic shown while staying blocked
 ---@field isCurrent fun(epoch: integer): boolean owner liveness: the epoch is still selected
 ---@field onReady fun() exactly-once transfer on readiness
 ---@field onCancel fun() return to the owning selection
@@ -26,6 +28,9 @@ local ImportState = require("app.src.launcher.ImportState")
 ---@field importContinuation table<string, unknown>?
 ---@field service table<string, function>?
 ---@field barrier integer?
+---@field versionId string?
+---@field mismatch string?
+---@field sourceDetail unknown? boot-source only: last typed source-required detail
 ---@field isCurrent fun(epoch: integer): boolean
 ---@field onReady fun()
 ---@field onCancel fun()
@@ -36,12 +41,50 @@ local ImportState = require("app.src.launcher.ImportState")
 local CachePreparationState = {}
 CachePreparationState.__index = CachePreparationState
 
+local BOOT_VERSION_LABELS = {
+  heartgold = "HeartGold",
+  soulsilver = "SoulSilver",
+}
+
+---@param versionId string?
+---@return string display label for the blocked boot instruction
+local function bootVersionLabel(versionId)
+  if type(versionId) == "string" and BOOT_VERSION_LABELS[versionId] ~= nil then
+    return BOOT_VERSION_LABELS[versionId]
+  end
+  if type(versionId) == "string" and versionId ~= "" then
+    return versionId
+  end
+  return "the selected game"
+end
+
+---@param detail unknown
+---@return string? reason line for the blocked boot instruction
+local function bootReasonText(detail)
+  if type(detail) == "table" then
+    if type(detail.message) == "string" and detail.message ~= "" then
+      return "Reason: " .. detail.message
+    end
+    if type(detail.code) == "string" and detail.code ~= "" then
+      return "Reason: " .. detail.code
+    end
+    return nil
+  end
+  if type(detail) == "string" and detail ~= "" then
+    return "Reason: " .. detail
+  end
+  return nil
+end
+
 ---@param options CachePreparationOptions
 ---@return CachePreparationState
 function CachePreparationState.new(options)
   assert(type(options) == "table", "cache preparation requires its composition")
   assert(
-    options.kind == "bootstrap" or options.kind == "quiescence" or options.kind == "first-play",
+    options.kind == "bootstrap"
+      or options.kind == "quiescence"
+      or options.kind == "first-play"
+      or options.kind == "boot-source",
     "cache preparation kind is required"
   )
   assert(
@@ -65,11 +108,22 @@ function CachePreparationState.new(options)
         and type(options.preparation.dispose) == "function",
       "first-play preparation requires its demand object"
     )
-  else
+  elseif options.kind == "quiescence" then
     assert(type(options.service) == "table", "quiescence preparation requires the process cache service")
     assert(
       type(options.barrier) == "number" and options.barrier % 1 == 0 and options.barrier >= 1,
       "quiescence preparation requires its exact barrier token"
+    )
+  end
+  if options.kind == "boot-source" then
+    assert(type(options.service) == "table", "boot-source preparation requires the process cache service")
+    assert(
+      options.versionId == nil or type(options.versionId) == "string",
+      "boot-source preparation version must be a string"
+    )
+    assert(
+      options.mismatch == nil or type(options.mismatch) == "string",
+      "boot-source preparation mismatch must be a string"
     )
   end
   return setmetatable({
@@ -80,6 +134,9 @@ function CachePreparationState.new(options)
     importContinuation = options.importContinuation,
     service = options.service,
     barrier = options.barrier,
+    versionId = options.versionId,
+    mismatch = options.mismatch,
+    sourceDetail = nil,
     isCurrent = options.isCurrent,
     onReady = options.onReady,
     onCancel = options.onCancel,
@@ -140,6 +197,33 @@ function CachePreparationState:_pollFirstPlay()
   end
 end
 
+function CachePreparationState:_pollBootSource()
+  -- The boot gate owns no compilation policy: readiness means the full
+  -- corpus already attests current or its exact source is pinned below
+  -- the controller. Source-required stays blocked with its typed detail,
+  -- a genuine controller failure latches as a boot error, and a stale
+  -- epoch resolves through the liveness guard without firing.
+  local service = assert(self.service, "boot-source preparation requires the process cache service")
+  local statusOk, status, detail = pcall(service.bootSourceStatus, service, self.epoch)
+  if not statusOk then
+    self.error = status
+    return
+  end
+  if status == "ready" then
+    self:_fire()
+  elseif status == "source-required" then
+    self.sourceDetail = detail
+  elseif status == "failed" then
+    if type(detail) == "table" then
+      self.error = detail.message or detail.code or "cache boot failed"
+    elseif detail ~= nil then
+      self.error = detail
+    else
+      self.error = "cache boot failed"
+    end
+  end
+end
+
 function CachePreparationState:_pollQuiescence()
   local service = assert(self.service, "quiescence preparation requires the process cache service")
   local barrier = assert(self.barrier, "quiescence preparation requires its exact barrier token")
@@ -174,6 +258,8 @@ function CachePreparationState:update(_)
     self:_pollBootstrap()
   elseif self.kind == "first-play" then
     self:_pollFirstPlay()
+  elseif self.kind == "boot-source" then
+    self:_pollBootSource()
   else
     self:_pollQuiescence()
   end
@@ -204,6 +290,27 @@ function CachePreparationState:draw()
     return
   end
   lg.setColor(1, 1, 1)
+  if self.kind == "boot-source" then
+    -- Blocked boot instruction: names the selected game, tells the player
+    -- how to supply its matching file, and carries the typed reason and
+    -- any wrong-version diagnostic. This prompt exists only here, never
+    -- during gameplay.
+    lg.print("Preparing " .. bootVersionLabel(self.versionId) .. "...", 24, 24)
+    lg.setColor(0.7, 0.7, 0.75)
+    lg.print("Drop your matching .nds or .zip file onto this window to finish preparing.", 24, 48)
+    local line = 72
+    if self.mismatch ~= nil then
+      lg.print(tostring(self.mismatch), 24, line)
+      line = line + 24
+    end
+    local reason = bootReasonText(self.sourceDetail)
+    if reason ~= nil then
+      lg.print(reason, 24, line)
+      line = line + 24
+    end
+    lg.print("Press escape to cancel.", 24, line)
+    return
+  end
   if self.kind == "first-play" then
     lg.print("Preparing imported ROM for first play...", 24, 24)
     local host = assert(self.provisioner, "first-play preparation requires the selected session host")

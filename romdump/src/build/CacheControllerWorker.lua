@@ -102,6 +102,8 @@ function Worker.new(control, reply)
     pool = nil,
     poolRoot = false,
     session = nil,
+    selectedVersionId = nil,
+    selectedRomSha1 = nil,
     liveEpoch = nil,
     lastRetiredEpoch = nil,
     lifecycle = "starting",
@@ -114,6 +116,11 @@ function Worker.new(control, reply)
     deferredSelect = nil,
     pendingQuiesce = nil,
     exiting = false,
+    maintenanceNote = nil,
+    selectedIdentity = nil,
+    offerError = nil,
+    attestedFor = nil,
+    attestationNote = nil,
   }, Worker)
 end
 
@@ -473,6 +480,12 @@ function Worker:_applySelect(command)
     self:_answerSelect({ epoch = epoch, ok = false, errorMessage = "controller generation selection failed" })
     return
   end
+  self.selectedVersionId = versionId
+  self.selectedRomSha1 = info.sha1
+  self.selectedIdentity = identity
+  self.offerError = nil
+  self.attestedFor = nil
+  self.attestationNote = nil
   self.liveEpoch = epoch
   self.lastRetiredEpoch = nil
   self.lifecycle = "active"
@@ -590,6 +603,225 @@ function Worker:_applyEnableSweep(command)
 end
 
 ---@param command table<string, unknown>
+function Worker:_applyOfferSource(command)
+  -- A validated import hands its one immutable buffer to the pool exactly
+  -- once for the live epoch. The epoch must be live; version identity is
+  -- enforced when the selection recorded it. Acceptance is acknowledged,
+  -- never silent: the exact acknowledgement shape stays ours, and a stale
+  -- or foreign offer is refused visibly without touching the pool.
+  local epoch = command.epoch
+  local function reject(cause)
+    -- A live-epoch refusal is retained as the epoch's boot error: the
+    -- gate below replays it instead of admitting gameplay on other
+    -- grounds. Foreign-epoch refusals stay visible but touch no live state.
+    if epoch == self.liveEpoch then
+      self.offerError = cause
+    end
+    self.reply:push({ op = "offer-source-result", epoch = epoch, ok = false, errorMessage = cause })
+  end
+  if type(epoch) ~= "number" or epoch ~= self.liveEpoch or self.lifecycle == "failed" then
+    reject("source offer does not match the live epoch")
+    return
+  end
+  if type(command.byteData) ~= "userdata" then
+    reject("source offer carries no shared buffer")
+    return
+  end
+  if self.selectedVersionId ~= nil and command.versionId ~= self.selectedVersionId then
+    reject("source offer names another version")
+    return
+  end
+  if self.selectedRomSha1 ~= nil and command.romSha1 ~= self.selectedRomSha1 then
+    reject("source offer identity does not match the selection")
+    return
+  end
+  local pool = self.pool
+  if pool == nil then
+    reject("the controller has no compiler pool")
+    return
+  end
+  local ok, accepted = pcall(function()
+    return pool:offerSource(epoch, command.byteData, {
+      versionId = command.versionId,
+      romSha1 = command.romSha1,
+    })
+  end)
+  if not ok then
+    reject("the compiler pool refused the source offer")
+    return
+  end
+  self.reply:push({ op = "offer-source-result", epoch = epoch, ok = accepted ~= false })
+end
+
+-- Typed source failures carry their ROM cause; every other failure is
+-- controller, storage, or host infrastructure. Classification reads only
+-- the stable error code, never message text.
+---@param failure unknown plain typed error or message
+---@return boolean sourceRequired
+local function isSourceFailure(failure)
+  if type(failure) ~= "table" or type(failure.code) ~= "string" then
+    return false
+  end
+  local code = failure.code
+  return code == "ROM_SOURCE_REQUIRED"
+    or code == "ROM_OPEN_FAILED"
+    or code == "ROM_READ_FAILED"
+    or code == "ROM_SOURCE_MISMATCH"
+    or code:sub(1, 4) == "ROM_"
+    or code:sub(1, 4) == "ZIP_"
+    or code:sub(1, 4) == "NDS_"
+end
+
+---@param detail unknown
+---@return table<string, unknown> plain channel-safe typed detail
+local function bootDetail(detail)
+  if type(detail) == "table" and type(detail.code) == "string" then
+    return {
+      code = detail.code,
+      message = type(detail.message) == "string" and detail.message or tostring(detail.message),
+      context = type(detail.context) == "table" and detail.context or {},
+    }
+  end
+  return { code = "SOURCE_UNAVAILABLE", message = tostring(detail) }
+end
+
+-- Boot-source gate for the live epoch: a strictly matching full-generation
+-- attestation answers ready with zero ROM IO (dropping any unused offer),
+-- otherwise the pool verifies and pins the one shared buffer before
+-- gameplay is admitted. A refused offer fails the gate outright; missing,
+-- unreadable, or mismatched sources report source-required while
+-- infrastructure failures report failed. Exactly one reply per live check;
+-- foreign epochs earn no reply and affect no state.
+---@param command table<string, unknown>
+function Worker:_applyCheckBootSource(command)
+  local epoch = command.epoch
+  if type(epoch) ~= "number" or epoch ~= self.liveEpoch or self.lifecycle == "failed" then
+    return
+  end
+  local session = self.session
+  local pool = self.pool
+  local identity = self.selectedIdentity
+  local function answer(state, detail)
+    local packet = { op = "boot-source-result", epoch = epoch, state = state }
+    if state ~= "ready" then
+      packet.detail = bootDetail(detail)
+    end
+    self.reply:push(packet)
+  end
+  if session == nil or pool == nil or identity == nil then
+    answer("failed", { code = "NO_SELECTION", message = "the controller has no live selection" })
+    return
+  end
+  if self.offerError ~= nil then
+    answer("failed", { code = "SOURCE_OFFER_REJECTED", message = self.offerError })
+    return
+  end
+  local loadOk, stored = pcall(function()
+    return session.cacheFs:loadLua(DerivedCacheState.path)
+  end)
+  if not loadOk then
+    answer("failed", { code = "CACHE_BACKEND_FAILED", message = tostring(stored) })
+    return
+  end
+  local current = DerivedCacheState.matches(stored, identity)
+  if current then
+    pcall(function()
+      pool:prepareBootSource(epoch, false)
+    end)
+    answer("ready")
+    return
+  end
+  local callOk, held, failure = pcall(function()
+    return pool:prepareBootSource(epoch, true)
+  end)
+  if not callOk then
+    answer("failed", { code = "POOL_PREFLIGHT_FAILED", message = tostring(held) })
+    return
+  end
+  if held ~= true then
+    if isSourceFailure(failure) then
+      answer("source-required", failure)
+    else
+      answer("failed", failure)
+    end
+    return
+  end
+  answer("ready")
+end
+
+-- Durable full-generation attestation after a genuinely exhaustive
+-- successful sweep or an explicitly requested complete build: every
+-- selected entry terminal, no failure, nothing queued or running, and the
+-- opening closure ready. Failed, partial, or merely first-play-complete
+-- states publish nothing. Publication is atomic and once per generation;
+-- the boot hold releases once terminal work no longer needs it. A failed
+-- write is non-destructive: no marker, assets untouched, the boot hold
+-- still releases, retried on a later pump.
+function Worker:_maybeAttestCompletedGeneration()
+  local epoch = self.liveEpoch
+  local session = self.session
+  local pool = self.pool
+  local identity = self.selectedIdentity
+  if epoch == nil or session == nil or pool == nil or identity == nil then
+    return
+  end
+  if type(session.status) ~= "function" or type(session.cacheFs) ~= "table" then
+    return
+  end
+  local statusOk, status = pcall(function()
+    return session:status()
+  end)
+  if not statusOk or type(status) ~= "table" then
+    return
+  end
+  local exhausted = status.sweepState == "exhausted" and status.sweepFailure == nil
+  local settled = (status.failed or 0) == 0 and (status.queued or 0) == 0 and (status.running or 0) == 0
+  local opened = status.bootstrap == "ready"
+  local success = status.complete == true or (exhausted and settled and opened)
+  if not success then
+    return
+  end
+  local generationId = session.generationId
+  if type(generationId) ~= "string" or generationId ~= identity.generationId then
+    return
+  end
+  if self.attestedFor == generationId then
+    return
+  end
+  local storedOk, stored = pcall(function()
+    return session.cacheFs:loadLua(DerivedCacheState.path)
+  end)
+  if storedOk and DerivedCacheState.matches(stored, identity) then
+    self.attestedFor = generationId
+    if type(pool.releaseBootSourceHold) == "function" then
+      pcall(function()
+        pool:releaseBootSourceHold(epoch)
+      end)
+    end
+    return
+  end
+  local publishOk, publishErr = pcall(function()
+    DerivedCacheState.publish(session.cacheFs, identity)
+  end)
+  if not publishOk then
+    self.attestationNote = { generationId = generationId, error = tostring(publishErr) }
+    if type(pool.releaseBootSourceHold) == "function" then
+      pcall(function()
+        pool:releaseBootSourceHold(epoch)
+      end)
+    end
+    return
+  end
+  self.attestedFor = generationId
+  self.attestationNote = nil
+  if type(pool.releaseBootSourceHold) == "function" then
+    pcall(function()
+      pool:releaseBootSourceHold(epoch)
+    end)
+  end
+end
+
+---@param command table<string, unknown>
 function Worker:_applyRetire(command)
   if command.epoch ~= self.liveEpoch then
     return
@@ -617,6 +849,8 @@ function Worker:_applyRetire(command)
   end
   self.lastRetiredEpoch = command.epoch
   self.liveEpoch = nil
+  self.selectedIdentity = nil
+  self.offerError = nil
   self.requests = {}
   self.pendingRequestIds = {}
   self.pendingRequestCursor = 1
@@ -732,6 +966,30 @@ function Worker:_handle(command)
     end
   elseif op == "enableSweep" then
     self:_applyEnableSweep(command)
+  elseif op == "offer-source" then
+    local ok, failure = pcall(function()
+      self:_applyOfferSource(command)
+    end)
+    if not ok then
+      self.reply:push({
+        op = "offer-source-result",
+        epoch = type(command) == "table" and command.epoch or nil,
+        ok = false,
+        errorMessage = formatError(failure),
+      })
+    end
+  elseif op == "check-boot-source" then
+    local ok, failure = pcall(function()
+      self:_applyCheckBootSource(command)
+    end)
+    if not ok then
+      self.reply:push({
+        op = "boot-source-result",
+        epoch = type(command) == "table" and command.epoch or nil,
+        state = "failed",
+        detail = bootDetail({ code = "BOOT_GATE_FAILED", message = formatError(failure) }),
+      })
+    end
   elseif op == "retire" then
     local ok, failure = pcall(function()
       self:_applyRetire(command)
@@ -749,14 +1007,46 @@ function Worker:_handle(command)
   end
 end
 
+-- Terminal shutdown owns the one interactive cleanup window: it snapshots
+-- the active version cache and identity, joins every compiler worker, and
+-- only after a positively proved join runs the single proof-gated sweep
+-- as a best-effort diagnostic. A retired or failed selection, a version
+-- mismatch, or an unproved join skips deletion; no reply is emitted.
 function Worker:_shutdown()
+  local session = self.session
+  local identity = self.selectedIdentity
+  local cacheFs = type(session) == "table" and session.cacheFs or nil
+  local candidate = type(cacheFs) == "table"
+    and type(identity) == "table"
+    and self.lifecycle ~= "failed"
+    and type(identity.versionId) == "string"
+    and type(identity.generationId) == "string"
+    and identity.generationId ~= ""
+    and cacheFs.versionId == identity.versionId
+    and (self.selectedVersionId == nil or self.selectedVersionId == identity.versionId)
+    and (type(session.generationId) ~= "string" or session.generationId == identity.generationId)
+  local pool = self.pool
   self.exiting = true
+  local joinOk, joinResult = true, true
+  if pool ~= nil then
+    joinOk, joinResult = pcall(pool.shutdown, pool)
+  end
   self.session = nil
-  if self.pool ~= nil then
-    pcall(function()
-      self.pool:shutdown()
-    end)
-    self.pool = nil
+  self.pool = nil
+  local proved = pool ~= nil and joinOk and joinResult == true
+  if not candidate or not proved then
+    return
+  end
+  assert(type(cacheFs) == "table", "terminal cleanup keeps its snapshotted version cache")
+  assert(type(identity) == "table", "terminal cleanup keeps its snapshotted identity")
+  local collected, outcome = pcall(function()
+    local CacheMaintenance = require("romdump.src.build.CacheMaintenance")
+    return CacheMaintenance.collectCurrentGeneration(cacheFs, identity, true)
+  end)
+  if collected then
+    self.maintenanceNote = { result = outcome }
+  else
+    self.maintenanceNote = { fault = tostring(outcome) }
   end
 end
 
@@ -788,6 +1078,11 @@ function Worker:step()
       self:_fail("controller session pump failed: " .. formatError(failure))
     else
       self:_flushTerminalRequests()
+      -- Sweep attestation never fails the controller: a backend fault
+      -- only records its diagnostic and retries on a later pump.
+      pcall(function()
+        self:_maybeAttestCompletedGeneration()
+      end)
     end
     return
   end

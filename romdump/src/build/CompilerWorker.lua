@@ -8,6 +8,7 @@
 
 local CacheFs = require("libs.storage.src.CacheFs")
 local RomFs = require("romdump.src.source.RomFs")
+local RomSource = require("romdump.src.source.RomSource")
 local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
 local ArtifactState = require("romdump.src.build.ArtifactState")
 local GxDisplayList = require("libs.nds.src.gx.GxDisplayList")
@@ -72,21 +73,60 @@ local function switchCacheContext(job, context)
   assert(context.cacheFs, "worker context is incomplete")
 end
 
--- Open the ROM source lazily for compilation only. The receipt check
--- above never reaches this, so trusted published output reuses without
--- source work.
----@param job table<string, unknown>
+-- Ask the pool for the shared source buffer after a genuine receipt miss
+-- and suspend only this job until the matching reply arrives. The request
+-- names the exact worker and job waiting; a supply carries the one
+-- immutable buffer by reference and an unavailable reply carries the typed
+-- failure. Stale, duplicate, or mismatched replies are rejected without
+-- effect and the wait continues; a close barrier is honored mid-wait and a
+-- stop ends the worker loop. A borrowed view established for the selected
+-- generation is reused by later jobs without asking again; it closes on the
+-- exact close barrier, so the pool can prove every borrower released.
+---@param job table<string, unknown> dispatched job carrying the controller identity
 ---@param context table<string, unknown>
-local function ensureRomSource(job, context)
-  if context.romFs == nil then
-    local versionId = assert(job.versionId, "worker job version is required")
-    local romFs, openError = RomFs.open(versionId)
-    if not romFs then
-      error(openError, 0)
+---@param workerId integer
+---@param inputChannel table<string, function>
+---@param resultChannel table<string, function>
+---@return string "supplied", "unavailable", or "stop"
+---@return table<string, unknown>|nil borrowed buffer on supplied, plain typed error on unavailable
+local function awaitPooledSource(job, context, workerId, inputChannel, resultChannel)
+  local jobKey = assert(job.jobKey or job.key, "worker job identity is required")
+  resultChannel:push({
+    status = "source-needed",
+    workerId = workerId,
+    jobKey = jobKey,
+    versionId = job.versionId,
+    generationId = job.generationId,
+    epoch = job.epoch,
+  })
+  while true do
+    local message = inputChannel:demand()
+    assert(type(message) == "table", "worker received an invalid control message")
+    local matches = message.workerId == workerId
+      and message.jobKey == jobKey
+      and message.versionId == job.versionId
+      and message.generationId == job.generationId
+      and message.epoch == job.epoch
+    if message.kind == "source-supplied" and matches then
+      if type(message.romByteData) ~= "userdata" then
+        error("compiler protocol failure: pooled source must travel by reference", 0)
+      end
+      return "supplied", message.romByteData
+    elseif message.kind == "source-unavailable" and matches then
+      local failure = message.error
+      if type(failure) == "table" and type(failure.code) == "string" then
+        return "unavailable", { code = failure.code, message = failure.message, context = failure.context }
+      end
+      return "unavailable", { code = "SOURCE_UNAVAILABLE", message = tostring(failure) }
+    elseif message.kind == "close-context" then
+      closeContext(context)
+      resultChannel:push({ workerId = workerId, status = "context-closed", closeToken = message.closeToken })
+    elseif message.kind == "stop" then
+      return "stop"
     end
-    context.romFs = romFs
+    -- Anything else (a mismatched supply, a duplicate, a stray control) is
+    -- rejected without effect; only the matching reply settles this job.
   end
-  assert(context.romFs and context.cacheFs, "worker context is incomplete")
 end
 
 ---@param context table<string, unknown>
@@ -137,7 +177,18 @@ end
 ---@param status string reused, prepared, or failed
 ---@param timingReason string reused or interleaved
 ---@param workSeconds number wall time spent on validation and compilation
-local function pushCompletion(resultChannel, workerId, job, executeJob, stageName, status, timingReason, workSeconds)
+---@param failure table<string, unknown>|nil plain typed error, present only when the pool reports source-unavailable
+local function pushCompletion(
+  resultChannel,
+  workerId,
+  job,
+  executeJob,
+  stageName,
+  status,
+  timingReason,
+  workSeconds,
+  failure
+)
   resultChannel:push({
     workerId = workerId,
     epoch = job.epoch,
@@ -152,6 +203,7 @@ local function pushCompletion(resultChannel, workerId, job, executeJob, stageNam
     workSeconds = workSeconds,
     stagedBytes = nil,
     timingReason = timingReason,
+    error = failure,
   })
 end
 
@@ -219,28 +271,30 @@ function CompilerWorker.run(workerId, inputChannel, resultChannel)
         )
       else
         if receiptOk then
-          ensureRomSource(job, context)
-          local ok, result = xpcall(function()
-            return CompilerWorker.execute(executeJob, context)
-          end, function(failure)
-            return failure
-          end)
-          local workSeconds = wallSeconds() - startedAt
-          if isGeometryJob(executeJob) then
-            releaseGeometryScratch(context)
+          -- A genuine miss compiles from the pool-owned shared buffer. A
+          -- borrowed view already established for this generation is reused
+          -- without asking again; otherwise this job suspends behind one
+          -- typed pool request. A pool-reported source failure settles the
+          -- job as failed with the typed cause instead of compiling.
+          local sourceOutcome, sourceDetail = "supplied", nil
+          if context.romFs == nil then
+            sourceOutcome, sourceDetail = awaitPooledSource(job, context, workerId, inputChannel, resultChannel)
+            if sourceOutcome == "stop" then
+              break
+            end
+            if sourceOutcome == "supplied" then
+              local versionId = assert(job.versionId, "worker job version is required")
+              local romFs, openError = RomFs.open(versionId, RomSource.fromByteData(assert(sourceDetail)))
+              if not romFs then
+                error(openError, 0)
+              end
+              context.romFs = romFs
+            end
           end
-          if ok then
-            pushCompletion(
-              resultChannel,
-              workerId,
-              job,
-              executeJob,
-              result.stageName,
-              "prepared",
-              "interleaved",
-              workSeconds
-            )
-          else
+          if sourceOutcome == "unavailable" then
+            if isGeometryJob(executeJob) then
+              releaseGeometryScratch(context)
+            end
             pushCompletion(
               resultChannel,
               workerId,
@@ -249,8 +303,44 @@ function CompilerWorker.run(workerId, inputChannel, resultChannel)
               job.stageName,
               "failed",
               "interleaved",
-              workSeconds
+              wallSeconds() - startedAt,
+              sourceDetail
             )
+            -- Fall through to the next control message without compiling.
+          else
+            assert(context.romFs and context.cacheFs, "worker context is incomplete")
+            local ok, result = xpcall(function()
+              return CompilerWorker.execute(executeJob, context)
+            end, function(failure)
+              return failure
+            end)
+            local workSeconds = wallSeconds() - startedAt
+            if isGeometryJob(executeJob) then
+              releaseGeometryScratch(context)
+            end
+            if ok then
+              pushCompletion(
+                resultChannel,
+                workerId,
+                job,
+                executeJob,
+                result.stageName,
+                "prepared",
+                "interleaved",
+                workSeconds
+              )
+            else
+              pushCompletion(
+                resultChannel,
+                workerId,
+                job,
+                executeJob,
+                job.stageName,
+                "failed",
+                "interleaved",
+                workSeconds
+              )
+            end
           end
         else
           if isGeometryJob(executeJob) then

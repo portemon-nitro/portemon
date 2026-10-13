@@ -18,7 +18,7 @@ local GameSave = require("libs.hgss.src.save.GameSave")
 local PartyActions = require("libs.hgss.src.field.PartyActions")
 local PlayerProgression = require("libs.hgss.src.save.PlayerProgression")
 local GameSave = require("libs.hgss.src.save.GameSave")
-local RomFs = require("romdump.src.source.RomFs")
+local RomSourcePath = require("tests.rom.support.RomSourcePath")
 
 local T = {
   metadata = { capabilities = { "rom_dump" },
@@ -44,10 +44,11 @@ end
 local function withGame(fn, map)
   local harness = AcceptanceHarness.new()
   local versionId = AcceptanceHarness.defaultVersion()
-  local romFs, err = RomFs.open(versionId)
-  assert(romFs, tostring(err))
+  local romFs, romSource = RomSourcePath.openReader(versionId)
+  assert(romFs, tostring(romSource))
   local facts = NavigationFacts.discover(CacheFs.forVersion(versionId), romFs)
   romFs:close()
+  romSource:release()
   local game = harness:boot({ versionId = versionId, map = map or "MAP_NEW_BARK", save = "fresh" })
   game:waitForFieldEntry()
   -- Headless composition binds the explicit no-image preparation fake:

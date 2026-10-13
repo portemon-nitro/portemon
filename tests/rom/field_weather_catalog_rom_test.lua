@@ -58,15 +58,15 @@ function T.scene_base_fog_corresponds_to_catalog_preset_for_its_weatherId()
   -- when available; a missing map 0 does not fail the suite.
   for _, mapId in ipairs({ 60, 61, 62, 0 }) do
     local isOptionalMap0 = mapId == 0
-    local romFsOk, RomFs = pcall(require, "romdump.src.source.RomFs")
-    if not romFsOk then
-      error("RomFs is absent: cannot sample scene base fog", 0)
+    local readerOk, RomSourcePath = pcall(require, "tests.rom.support.RomSourcePath")
+    if not readerOk then
+      error("RomSourcePath is absent: cannot sample scene base fog", 0)
     end
     local versions = { "heartgold", "soulsilver" }
     local any = false
     for _, versionId in ipairs(versions) do
-      local ok, romFs = pcall(function()
-        return RomFs.open(versionId)
+      local ok, romFs, source = pcall(function()
+        return RomSourcePath.openReader(versionId)
       end)
       if ok and romFs then
         local ok2, bundle = pcall(MapAssetCompiler.compile, romFs, mapId)
@@ -83,6 +83,11 @@ function T.scene_base_fog_corresponds_to_catalog_preset_for_its_weatherId()
         pcall(function()
           romFs:close()
         end)
+        if source ~= nil then
+          pcall(function()
+            source:release()
+          end)
+        end
       end
     end
     if not any and not isOptionalMap0 then
