@@ -327,11 +327,8 @@ local function checkPhoneNotification(notification, atlases)
   if type(ringing.frames) ~= "table" then
     reject("startMenu.phoneNotification.ringing must carry animation frames", {})
   end
-  local frameCount = demandDenseSequence(
-    ringing.frames,
-    "startMenu.phoneNotification.ringing frames must be a dense sequence",
-    {}
-  )
+  local frameCount =
+    demandDenseSequence(ringing.frames, "startMenu.phoneNotification.ringing frames must be a dense sequence", {})
   checkInteger(ringing.loopStartFrameIdx, 0, frameCount - 1, "ringing loop start is outside its frames", {})
   for index = 1, frameCount do
     local frame = ringing.frames[index]

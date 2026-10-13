@@ -954,15 +954,6 @@ local function compileStartMenu(romFs, sha1hex, deps, assets, manifestAssets)
       },
       ringing = ringingVisual,
     },
-    phoneNotification = {
-      window = {
-        tileLeft = cfg.phoneNotification.tileLeft,
-        top = cfg.phoneNotification.top,
-        height = cfg.phoneNotification.height,
-        maxWidth = cfg.phoneNotification.maxWidthTiles,
-      },
-      ringing = ringingVisual,
-    },
   }
 end
 

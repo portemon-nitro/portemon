@@ -98,10 +98,6 @@ local function paletteColor(definition, slot)
   return { r = r * 255, g = g * 255, b = b * 255 }
 end
 
-local function defaultImageLoader(path)
-  return love.graphics.newImage(path, { linear = false, mipmaps = false })
-end
-
 local function releaseAll(resources)
   for index = #resources, 1, -1 do
     if resources[index].release then
@@ -211,7 +207,7 @@ function OakIntroRenderer.new(options)
   assert(type(text.drawText) == "function", "Oak renderer requires FieldTextRenderer.drawText")
   assert(type(text.textWidth) == "function", "Oak renderer requires FieldTextRenderer.textWidth")
   assert(type(choiceText.drawTextWithPalette) == "function", "Oak renderer requires palette text rendering")
-  local imageLoader = options.imageLoader or defaultImageLoader
+  local imageLoader = assert(options.imageLoader, "Oak renderer requires its generated-image loader")
   assert(type(imageLoader) == "function", "Oak renderer image loader must be callable")
   local uiManifest = assert(
     type(options.uiManifest) == "table" and options.uiManifest,

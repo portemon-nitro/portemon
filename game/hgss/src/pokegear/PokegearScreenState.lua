@@ -46,8 +46,8 @@ local KNOWN_TABS = {
 -- the semantic card identity.
 local WALK_ORDER = { "configure", "radio", "map", "phone" }
 
-local SWITCH_SOUND = "pokegear.switch"
-local RESELECT_SOUND = "pokegear.reselect"
+local SWITCH_SOUND = "SEQ_SE_DP_SELECT"
+local RESELECT_SOUND = "SEQ_SE_DP_DECIDE"
 
 ---@param child unknown
 ---@param tab string

@@ -976,9 +976,9 @@ local function snapshotModalStatus(self)
   )
   assert(
     not (
-      status.pokegear
-      and (status.starterChoice or status.naming or status.party or status.mart or status.kurt or status.pc)
-    ),
+        status.pokegear
+        and (status.starterChoice or status.naming or status.party or status.mart or status.kurt or status.pc)
+      ),
     "script-owned field modals are mutually exclusive"
   )
   return status

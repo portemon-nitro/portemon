@@ -678,7 +678,8 @@ function FieldState:_drawPokegearApplication(resources, appStatus)
         realize(value)
       end
     elseif type(node) == "string" and node:sub(-4) == ".png" and images[node] == nil then
-      images[node] = graphics.newImage(node)
+      local bytes = assert(self.runtime.cacheFs:read(node), "missing generated Pokegear image " .. node)
+      images[node] = graphics.newImage(love.filesystem.newFileData(bytes, node))
     end
   end
   realize(plan.content)
