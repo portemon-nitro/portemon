@@ -15,6 +15,7 @@ local FakeCache = require("tests.support.FakeCache")
 local GameVersion = require("romdump.src.source.GameVersion")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local Schema = require("libs.script.src.Schema")
+local ScriptCache = require("libs.assets.src.ScriptCache")
 local Sha256 = require("libs.script.src.Sha256")
 
 local T = {}
@@ -312,6 +313,312 @@ function T.collection_delete_fault_fails_without_harming_referenced_files()
   local result = maintenance.collectShared(setup.cache, { generationId = generation }, setup.plans, true)
   Assert.equal(result.status, "collected", "the retry converges after the fault clears")
   Assert.equal(result.removedCount, 2, "the retry still reclaims exactly the proven orphans")
+end
+
+-- Current-generation orchestration: one proven shared-plus-script pass with
+-- a disposable per-generation memo. The memo never proves completeness and
+-- never authorizes deletion by itself; every destructive step stays gated on
+-- its own full proof, and faults surface without a memo for a later retry.
+
+local SCRIPT_GENERATION = string.rep("a", 40)
+local SCRIPT_OBSOLETE = string.rep("b", 40)
+local SCRIPT_MARKER = "script-format:marker-current"
+
+local function requireCollector()
+  local maintenance = requireMaintenance()
+  Assert.isTrue(
+    type(maintenance.collectCurrentGeneration) == "function",
+    "the current-generation cleanup orchestration is missing: "
+      .. "no single helper proves and memoizes the shared-plus-script pass"
+  )
+  Assert.equal(
+    maintenance.RETENTION_MARKER,
+    "data/generated/retention.lua",
+    "the cleanup memo lives at its disposable generated path"
+  )
+  Assert.equal(maintenance.RETENTION_SCHEMA, 1, "the cleanup memo carries its exact schema")
+  return maintenance
+end
+
+local function selectionIdentity(producerId)
+  return DerivedCacheState.currentForSelection({
+    versionId = "heartgold",
+    romSha1 = HEARTGOLD_SHA1,
+    producerId = producerId,
+  })
+end
+
+local function publishScriptSelection(cache)
+  cache:write(ScriptCache.markerPath(), SCRIPT_MARKER)
+  cache:writeLua(ScriptCache.activeIndexPath(), {
+    schema = ScriptCache.INDEX_SCHEMA,
+    generation = SCRIPT_GENERATION,
+    marker = SCRIPT_MARKER,
+  })
+  cache:writeLua(ScriptCache.generationIndexPath(SCRIPT_GENERATION), {
+    schema = ScriptCache.INDEX_SCHEMA,
+    generation = SCRIPT_GENERATION,
+    marker = SCRIPT_MARKER,
+  })
+  cache:write(ScriptCache.generationMarkerPath(SCRIPT_GENERATION), SCRIPT_MARKER)
+  cache:write(ScriptCache.generationDir(SCRIPT_GENERATION) .. "/sentinel", "active payload")
+  cache:write(ScriptCache.generationDir(SCRIPT_OBSOLETE) .. "/stale", "superseded payload")
+end
+
+local function setupProvenGeneration(producerId)
+  local identity = selectionIdentity(producerId)
+  local generation = assert(identity.generationId, "selection carries its generation token")
+  local setup = setupCompleteSharedCache(generation)
+  DerivedCacheState.publish(setup.cache, identity)
+  publishScriptSelection(setup.cache)
+  setup.identity = identity
+  setup.generation = generation
+  return setup
+end
+
+-- The inventoried source membership is synthetic here, mirroring the
+-- controller acceptance coverage: the roster owner answers the fixed
+-- synthetic plans while every receipt, sidecar, and deleted byte stays on
+-- the real versioned filesystem.
+local function withRoster(plans, fn)
+  local jobs = requireJobs()
+  local real = jobs.publishedPlans
+  jobs.publishedPlans = function()
+    return plans
+  end
+  local ok, result = pcall(fn)
+  jobs.publishedPlans = real
+  if not ok then
+    error(result, 0)
+  end
+  return result
+end
+
+local function collectProven(maintenance, setup, quiescent)
+  return withRoster(setup.plans, function()
+    return maintenance.collectCurrentGeneration(setup.cache, setup.identity, quiescent)
+  end)
+end
+
+function T.current_generation_cleanup_collects_both_passes_and_memoizes()
+  local maintenance = requireCollector()
+  local setup = setupProvenGeneration("r5")
+
+  local result = collectProven(maintenance, setup, true)
+
+  Assert.equal(result.status, "collected", "a proven quiet generation cleans: " .. tostring(result.reason))
+  Assert.equal(result.removedCount, 2, "exactly the unreferenced shared files are removed")
+  Assert.isFalse(setup.cache:exists(setup.meshOrphan), "the orphan mesh is reclaimed")
+  Assert.isFalse(setup.cache:exists(setup.metaOrphan), "the orphan sample metadata is reclaimed")
+  Assert.equal(setup.cache:read(setup.meshRef), string.rep("mesh-block;", 200))
+  Assert.isFalse(
+    setup.cache:exists(ScriptCache.generationDir(SCRIPT_OBSOLETE) .. "/stale"),
+    "the obsolete script tree retires"
+  )
+  Assert.equal(
+    setup.cache:read(ScriptCache.generationDir(SCRIPT_GENERATION) .. "/sentinel"),
+    "active payload",
+    "the active script tree stays readable"
+  )
+  Assert.deepEqual(
+    setup.cache:loadLua(maintenance.RETENTION_MARKER),
+    { schema = 1, generationId = setup.generation },
+    "success persists the exact memo shape"
+  )
+
+  local listings = 0
+  local realItems = setup.backend.getDirectoryItems
+  setup.backend.getDirectoryItems = function(self, path)
+    listings = listings + 1
+    return realItems(self, path)
+  end
+  local second = collectProven(maintenance, setup, true)
+  setup.backend.getDirectoryItems = realItems
+  Assert.equal(second.status, "already-collected", "the memo suppresses repeat proof work")
+  Assert.equal(listings, 0, "a memoized pass performs no directory scans")
+end
+
+function T.current_generation_cleanup_memo_never_proves_an_incomplete_cache()
+  local maintenance = requireCollector()
+  local setup = setupProvenGeneration("r5")
+  setup.cache:remove(DerivedCacheState.path)
+  setup.cache:writeLua(maintenance.RETENTION_MARKER, { schema = 1, generationId = setup.generation })
+
+  local missing = collectProven(maintenance, setup, true)
+
+  Assert.equal(missing.status, "skipped", "the exact memo alone authorizes no deletion")
+  Assert.notNil(missing.reason, "the skip must name the missing attestation")
+  Assert.isTrue(setup.cache:exists(setup.meshOrphan), "no deletion runs on memo alone")
+  Assert.isTrue(
+    setup.cache:exists(ScriptCache.generationDir(SCRIPT_OBSOLETE) .. "/stale"),
+    "no script retirement runs on memo alone"
+  )
+
+  local foreign = setupProvenGeneration("r5")
+  DerivedCacheState.publish(foreign.cache, selectionIdentity("r7"))
+  foreign.cache:writeLua(maintenance.RETENTION_MARKER, { schema = 1, generationId = foreign.generation })
+
+  local stale = withRoster(foreign.plans, function()
+    return maintenance.collectCurrentGeneration(foreign.cache, foreign.identity, true)
+  end)
+
+  Assert.equal(stale.status, "skipped", "a foreign attestation with a matching memo still proves nothing")
+  Assert.isTrue(foreign.cache:exists(foreign.meshOrphan), "no deletion runs under a foreign attestation")
+  Assert.isTrue(
+    foreign.cache:exists(ScriptCache.generationDir(SCRIPT_OBSOLETE) .. "/stale"),
+    "no script retirement runs under a foreign attestation"
+  )
+end
+
+function T.current_generation_cleanup_malformed_memo_authorizes_a_new_attempt()
+  local maintenance = requireCollector()
+  for _, shape in ipairs({ "missing-field", "wrong-schema", "padded", "wrong-type", "foreign" }) do
+    local setup = setupProvenGeneration("r5")
+    if shape == "missing-field" then
+      setup.cache:writeLua(maintenance.RETENTION_MARKER, { schema = 1 })
+    elseif shape == "wrong-schema" then
+      setup.cache:writeLua(maintenance.RETENTION_MARKER, { schema = 2, generationId = setup.generation })
+    elseif shape == "padded" then
+      setup.cache:writeLua(
+        maintenance.RETENTION_MARKER,
+        { schema = 1, generationId = setup.generation, extra = "unowned" }
+      )
+    elseif shape == "wrong-type" then
+      setup.cache:writeLua(maintenance.RETENTION_MARKER, { schema = 1, generationId = 7 })
+    else
+      setup.cache:writeLua(
+        maintenance.RETENTION_MARKER,
+        { schema = 1, generationId = "g4:heartgold:previous-producer" }
+      )
+    end
+
+    local result = collectProven(maintenance, setup, true)
+
+    Assert.equal(
+      result.status,
+      "collected",
+      "a malformed memo authorizes a new attempt, never deletion by itself: " .. shape
+    )
+    Assert.isFalse(setup.cache:exists(setup.meshOrphan), "the fresh attempt still proves its deletions: " .. shape)
+    Assert.deepEqual(
+      setup.cache:loadLua(maintenance.RETENTION_MARKER),
+      { schema = 1, generationId = setup.generation },
+      "the retry persists the exact memo shape: " .. shape
+    )
+  end
+end
+
+function T.current_generation_cleanup_write_fault_leaves_no_memo()
+  local maintenance = requireCollector()
+  local setup = setupProvenGeneration("r5")
+  local realWriteLua = setup.cache.writeLua
+  setup.cache.writeLua = function()
+    error("injected memo write failure", 0)
+  end
+  local fault = Assert.throws(function()
+    collectProven(maintenance, setup, true)
+  end, "a memo write fault must surface instead of reporting a done pass")
+  Assert.notNil(fault, "the fault must be observable")
+  setup.cache.writeLua = realWriteLua
+  Assert.isNil(setup.cache:loadLua(maintenance.RETENTION_MARKER), "a failed memo write leaves no memo")
+
+  local result = collectProven(maintenance, setup, true)
+  Assert.equal(result.status, "collected", "the retry converges once the fault clears")
+  Assert.deepEqual(
+    setup.cache:loadLua(maintenance.RETENTION_MARKER),
+    { schema = 1, generationId = setup.generation }
+  )
+end
+
+function T.current_generation_cleanup_requires_quiescence_identity_and_capability()
+  local maintenance = requireCollector()
+  local setup = setupProvenGeneration("r5")
+
+  local busy = collectProven(maintenance, setup, false)
+  Assert.equal(busy.status, "skipped", "an active generation never loses files under its readers")
+  Assert.notNil(busy.reason, "the skip must name the busy condition")
+  Assert.isTrue(setup.cache:exists(setup.meshOrphan), "a busy pass deletes nothing")
+  Assert.isNil(setup.cache:loadLua(maintenance.RETENTION_MARKER), "a busy pass leaves no memo")
+
+  local foreign = selectionIdentity("r5")
+  foreign.versionId = "soulsilver"
+  local mismatch = maintenance.collectCurrentGeneration(setup.cache, foreign, true)
+  Assert.equal(mismatch.status, "skipped", "another version's identity proves nothing here")
+  Assert.isTrue(setup.cache:exists(setup.meshOrphan), "a version mismatch deletes nothing")
+
+  local bare = maintenance.collectCurrentGeneration(setup.cache, {}, true)
+  Assert.equal(bare.status, "skipped", "an incomplete identity proves nothing")
+  Assert.isTrue(setup.cache:exists(setup.meshOrphan), "an incomplete identity deletes nothing")
+
+  local narrow = maintenance.collectCurrentGeneration({ versionId = "heartgold" }, setup.identity, true)
+  Assert.equal(narrow.status, "skipped", "a backend without the maintenance capability skips")
+end
+
+function T.current_generation_cleanup_stale_script_proof_skips_scripts_without_memo()
+  local maintenance = requireCollector()
+  local setup = setupProvenGeneration("r5")
+  setup.cache:writeLua(ScriptCache.activeIndexPath(), {
+    schema = ScriptCache.INDEX_SCHEMA,
+    generation = SCRIPT_GENERATION,
+    marker = "script-format:stale-marker",
+  })
+
+  local result = collectProven(maintenance, setup, true)
+
+  Assert.equal(result.status, "skipped", "a stale active selector forbids overall success")
+  Assert.notNil(result.reason, "the skip must name the failed script proof")
+  Assert.isFalse(setup.cache:exists(setup.meshOrphan), "the proved shared pass still collects")
+  Assert.isTrue(
+    setup.cache:exists(ScriptCache.generationDir(SCRIPT_OBSOLETE) .. "/stale"),
+    "a stale active selector retires no tree"
+  )
+  Assert.isNil(setup.cache:loadLua(maintenance.RETENTION_MARKER), "uncertain script proof leaves no memo")
+
+  local unstamped = setupProvenGeneration("r5")
+  publishReceipt(unstamped.cache, "g4:heartgold:previous-producer", "script-summary", "global")
+
+  local stale = collectProven(maintenance, unstamped, true)
+
+  Assert.equal(stale.status, "skipped", "a stale script-summary receipt forbids overall success")
+  Assert.notNil(stale.reason, "the skip must name the failed proof")
+  Assert.isTrue(unstamped.cache:exists(unstamped.meshOrphan), "a stale summary receipt deletes no shared file")
+  Assert.isTrue(
+    unstamped.cache:exists(ScriptCache.generationDir(SCRIPT_OBSOLETE) .. "/stale"),
+    "a stale summary receipt retires no tree"
+  )
+  Assert.isNil(unstamped.cache:loadLua(maintenance.RETENTION_MARKER), "a stale summary leaves no memo")
+end
+
+function T.current_generation_cleanup_partial_roster_skips_shared_but_retires_scripts()
+  local maintenance = requireCollector()
+  local setup = setupProvenGeneration("r5")
+  setup.cache:remove(requireReceipts().path("audio-bank", "3"))
+
+  local result = collectProven(maintenance, setup, true)
+
+  Assert.equal(result.status, "skipped", "a partial roster forbids overall success")
+  Assert.notNil(result.reason, "the skip must name the failed shared proof")
+  Assert.isTrue(setup.cache:exists(setup.meshOrphan), "missing shared proof deletes no shared file")
+  Assert.isTrue(setup.cache:exists(setup.metaOrphan), "missing shared proof deletes no shared file")
+  Assert.isFalse(
+    setup.cache:exists(ScriptCache.generationDir(SCRIPT_OBSOLETE) .. "/stale"),
+    "independent script proof still retires the obsolete tree"
+  )
+  Assert.isNil(setup.cache:loadLua(maintenance.RETENTION_MARKER), "a partial pass leaves no memo")
+end
+
+function T.current_generation_cleanup_unknown_sidecar_root_skips_shared_pass()
+  local maintenance = requireCollector()
+  local setup = setupProvenGeneration("r5")
+  publishSidecar(setup.cache, setup.generation, "map", "3", { "data/generated/elsewhere/mystery.g4mesh" })
+
+  local result = collectProven(maintenance, setup, true)
+
+  Assert.equal(result.status, "skipped", "an unexpected shared root forbids overall success")
+  Assert.notNil(result.reason, "the skip must name the failed shared proof")
+  Assert.isTrue(setup.cache:exists(setup.meshOrphan), "no partial collection runs on an unexpected root")
+  Assert.isTrue(setup.cache:exists(setup.metaOrphan), "no partial collection runs on an unexpected root")
+  Assert.isNil(setup.cache:loadLua(maintenance.RETENTION_MARKER), "an unproved pass leaves no memo")
 end
 
 return { tests = T }

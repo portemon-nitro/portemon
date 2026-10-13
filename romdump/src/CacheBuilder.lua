@@ -624,47 +624,36 @@ local function logRecordOutcomes(record, log)
   end
 end
 
--- One post-complete collection pass for a settled version: reclaim proven-orphan shared
--- files. The maintenance owner gates every destructive step on full proof
--- and skips with zero deletes on any uncertainty; this caller only guards
--- the boundary (genuinely complete, settled) and keeps the diagnostic from
--- falsifying the build outcome. Logs only real removals or
+-- One post-complete collection pass for a settled version through the
+-- single current-generation cleanup owner: both the shared orphan proof
+-- and the independent active-script proof run under the drained batch, and
+-- the per-generation memo suppresses repeat work. The maintenance owner
+-- gates every destructive step on full proof; this caller only keeps the
+-- diagnostic from falsifying the build outcome. Logs only real removals or
 -- faults, so clean runs stay exactly as quiet as before.
 ---@param cacheFs table<string, unknown>
 ---@param identity table<string, unknown>
 ---@param log fun(line: string)
 local function runPostCompleteMaintenance(cacheFs, identity, log)
   local CacheMaintenance = require("romdump.src.build.CacheMaintenance")
-  if not CacheMaintenance.canMaintain(cacheFs) then
-    return
-  end
   if type(identity) ~= "table" or type(identity.generationId) ~= "string" or type(identity.producerId) ~= "string" then
     return
   end
   local versionId = cacheFs.versionId --[[@as string]]
-  local ok, fault = pcall(function()
-    local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
-    local plansOk, plans = pcall(ArtifactJobs.publishedPlans, cacheFs, {
-      versionId = versionId,
-      generationId = identity.generationId,
-      producerId = identity.producerId,
-    })
-    if plansOk and type(plans) == "table" then
-      local collected = CacheMaintenance.collectShared(cacheFs, { generationId = identity.generationId }, plans, true)
-      if collected.status == "collected" and (collected.removedCount or 0) > 0 then
-        log(
-          string.format(
-            "maintenance: %s reclaimed %d unreferenced shared files (%d bytes)",
-            versionId,
-            collected.removedCount,
-            collected.reclaimedBytes or 0
-          )
+  local ok, outcome = pcall(CacheMaintenance.collectCurrentGeneration, cacheFs, identity, true)
+  if ok then
+    if type(outcome) == "table" and outcome.status == "collected" and (outcome.removedCount or 0) > 0 then
+      log(
+        string.format(
+          "maintenance: %s reclaimed %d unreferenced shared files (%d bytes)",
+          versionId,
+          outcome.removedCount,
+          outcome.reclaimedBytes or 0
         )
-      end
+      )
     end
-  end)
-  if not ok then
-    log("maintenance: " .. versionId .. " deferred: " .. tostring(fault))
+  else
+    log("maintenance: " .. versionId .. " deferred: " .. tostring(outcome))
   end
 end
 

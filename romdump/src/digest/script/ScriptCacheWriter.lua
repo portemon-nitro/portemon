@@ -797,6 +797,17 @@ function ScriptCacheWriter.writeSummary(cacheFs, plan)
   return result
 end
 
+-- Retire superseded script generation directories. Only exact lowercase
+-- hexadecimal generation directory names that are verified directories are
+-- eligible; the protected active generation, unknown names, plain files,
+-- and anything outside the generations root survive. A failed listing
+-- propagates instead of reading as an empty directory.
+---@param name string
+---@return boolean
+local function isRetirableGenerationName(name)
+  return type(name) == "string" and #name == 40 and name:match("^[0-9a-f]+$") ~= nil
+end
+
 function ScriptCacheWriter.cleanupGenerations(cacheFs, keepSet)
   local protected = {}
   for generation in pairs(keepSet or {}) do
@@ -808,8 +819,11 @@ function ScriptCacheWriter.cleanupGenerations(cacheFs, keepSet)
   end
   local names = cacheFs:getDirectoryItems(ScriptCache.generationsDir())
   for _, generation in ipairs(names) do
-    if not protected[generation] then
-      cacheFs:removeTree(ScriptCache.generationDir(generation))
+    if not protected[generation] and isRetirableGenerationName(generation) then
+      local info = cacheFs:getInfo(ScriptCache.generationDir(generation))
+      if info ~= nil and info.type == "directory" then
+        cacheFs:removeTree(ScriptCache.generationDir(generation))
+      end
     end
   end
   return true

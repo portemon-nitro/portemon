@@ -533,4 +533,29 @@ function T.cleanup_propagates_generation_listing_failure()
   end, "cleanup must not treat a failed generation listing as an empty directory")
 end
 
+function T.cleanup_removes_only_verified_hex_generation_directories()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  writeGeneration(cache, GENERATION_A, "marker-a", "initial", "outer-a")
+  local obsoleteSentinel = ScriptCache.generationDir(GENERATION_B) .. "/members/0000/complete"
+  cache:write(obsoleteSentinel, "superseded")
+  local hexFile = ScriptCache.generationsDir() .. "/" .. string.rep("c", 40)
+  cache:write(hexFile, "a file is not a generation tree")
+  local upperDir = ScriptCache.generationsDir() .. "/" .. string.rep("D", 40)
+  cache:createDirectory(upperDir)
+  cache:write(upperDir .. "/keep.txt", "mixed case is not canonical")
+  local shortDir = ScriptCache.generationsDir() .. "/abc123"
+  cache:createDirectory(shortDir)
+  cache:write(shortDir .. "/keep.txt", "short names are not generations")
+  cache:write(ScriptCache.generationsDir() .. "/README.txt", "operator note")
+
+  Assert.isTrue(ScriptCacheWriter.cleanupGenerations(cache, {}))
+
+  Assert.isFalse(cache:exists(obsoleteSentinel), "the obsolete proven tree retires")
+  Assert.isTrue(ScriptCache.isReady(cache, "marker-a"), "the active generation stays complete and readable")
+  Assert.equal(cache:read(hexFile), "a file is not a generation tree", "a hex-named file is never removed")
+  Assert.equal(cache:read(upperDir .. "/keep.txt"), "mixed case is not canonical")
+  Assert.equal(cache:read(shortDir .. "/keep.txt"), "short names are not generations")
+  Assert.equal(cache:read(ScriptCache.generationsDir() .. "/README.txt"), "operator note")
+end
+
 return { tests = T }

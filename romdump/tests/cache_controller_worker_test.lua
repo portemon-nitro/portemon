@@ -1206,4 +1206,380 @@ function T.failed_marker_write_keeps_hold_and_assets()
   end)
 end
 
+-- Composed boot-cleanup coverage: the two scenarios below drive the real
+-- boot-source gate against a real versioned filesystem backed by FakeCache,
+-- with synthetic roster plans standing in for the inventoried source
+-- membership. They pin the ordinary-lifecycle cleanup contract: a clean
+-- complete boot reclaims only proven orphans and memoizes the pass, while
+-- uncertain proof deletes nothing and leaves no memo.
+
+local CLEANUP_MEMO_PATH = "data/generated/retention.lua"
+local CLEANUP_PRODUCER = "r5"
+local ACTIVE_SCRIPT_GENERATION = string.rep("a", 40)
+local OBSOLETE_SCRIPT_GENERATION = string.rep("b", 40)
+local ACTIVE_SCRIPT_MARKER = "script-format:marker-current"
+
+local function cleanupIdentity()
+  local GameVersion = require("romdump.src.source.GameVersion")
+  local DerivedCacheState = require("romdump.src.DerivedCacheState")
+  local info = GameVersion.info("heartgold")
+  return DerivedCacheState.currentForSelection({
+    versionId = "heartgold",
+    romSha1 = info.sha1,
+    producerId = CLEANUP_PRODUCER,
+  })
+end
+
+local function syntheticRosterPlans()
+  return {
+    messageBankIds = { 7 },
+    audioBankIds = { 3 },
+    scriptMemberIds = { 11 },
+    iconPageIds = { 1 },
+    portraitPageIds = { 1 },
+    mapDataIds = { 9 },
+    mapIds = { 3 },
+    indexBundle = { index = { matrices = { { cells = { { matrixMemberId = 5, index = 2 } } } } } },
+  }
+end
+
+local function publishSharedReceipt(cache, generation, kind, key)
+  local ArtifactState = require("romdump.src.build.ArtifactState")
+  cache:writeLua(ArtifactState.path(kind, key), {
+    schema = ArtifactState.RECEIPT_SCHEMA,
+    generationId = generation,
+    kind = kind,
+    key = key,
+    marker = "complete",
+  })
+end
+
+local function sharedSidecarPath(kind, key)
+  return "data/generated/jobs-shared/" .. kind .. "/" .. key .. ".lua"
+end
+
+local function publishSharedSidecar(cache, generation, kind, key, paths)
+  local sorted = {}
+  for _, path in ipairs(paths or {}) do
+    sorted[#sorted + 1] = path
+  end
+  table.sort(sorted)
+  cache:writeLua(sharedSidecarPath(kind, key), {
+    schema = 1,
+    generationId = generation,
+    kind = kind,
+    key = key,
+    paths = sorted,
+  })
+end
+
+local function setupProvenSharedFiles(cache, generation, plans)
+  local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
+  local MapAssetCache = require("libs.assets.src.MapAssetCache")
+  local AudioCache = require("libs.assets.src.audio.AudioCache")
+  local roster = {}
+  local iterate = ArtifactJobs.completeIterator(plans)
+  while true do
+    local job = iterate()
+    if job == nil then
+      break
+    end
+    roster[#roster + 1] = job
+  end
+  Assert.isTrue(#roster > 10, "the synthetic roster must span several job families")
+  local meshRef = MapAssetCache.geometryPath(string.rep("a", 40))
+  local sampleRef = AudioCache.samplePath("bank003_kick")
+  local meshOrphan = MapAssetCache.geometryPath(string.rep("b", 40))
+  local metaOrphan = AudioCache.sampleMetadataPath("bank009_stale")
+  for _, job in ipairs(roster) do
+    publishSharedReceipt(cache, generation, job.kind, job.key)
+    publishSharedSidecar(cache, generation, job.kind, job.key, {})
+  end
+  publishSharedSidecar(cache, generation, "map", "3", { meshRef })
+  publishSharedSidecar(cache, generation, "map-data", "9", { meshRef })
+  publishSharedSidecar(cache, generation, "audio-bank", "3", { sampleRef })
+  cache:write(meshRef, string.rep("mesh-block;", 200))
+  cache:write(sampleRef, string.rep("pcm-frame;", 200))
+  cache:write(meshOrphan, string.rep("orphan-mesh;", 200))
+  cache:write(metaOrphan, "return { stale = true }\n")
+  return {
+    meshRef = meshRef,
+    sampleRef = sampleRef,
+    meshOrphan = meshOrphan,
+    metaOrphan = metaOrphan,
+  }
+end
+
+local function setupScriptGenerations(cache, generation)
+  local ScriptCache = require("libs.assets.src.ScriptCache")
+  local ArtifactState = require("romdump.src.build.ArtifactState")
+  cache:write(ScriptCache.markerPath(), ACTIVE_SCRIPT_MARKER)
+  cache:writeLua(ScriptCache.activeIndexPath(), {
+    schema = ScriptCache.INDEX_SCHEMA,
+    generation = ACTIVE_SCRIPT_GENERATION,
+    marker = ACTIVE_SCRIPT_MARKER,
+  })
+  cache:writeLua(ScriptCache.generationIndexPath(ACTIVE_SCRIPT_GENERATION), {
+    schema = ScriptCache.INDEX_SCHEMA,
+    generation = ACTIVE_SCRIPT_GENERATION,
+    marker = ACTIVE_SCRIPT_MARKER,
+  })
+  cache:write(ScriptCache.generationMarkerPath(ACTIVE_SCRIPT_GENERATION), ACTIVE_SCRIPT_MARKER)
+  cache:write(ScriptCache.generationDir(ACTIVE_SCRIPT_GENERATION) .. "/sentinel", "active payload")
+  cache:write(ScriptCache.generationDir(OBSOLETE_SCRIPT_GENERATION) .. "/stale", "superseded payload")
+  cache:write(ScriptCache.generationsDir() .. "/README.txt", "operator note")
+  cache:createDirectory(ScriptCache.generationsDir() .. "/Stray-Notes")
+  cache:write(ScriptCache.generationsDir() .. "/Stray-Notes/keep.txt", "operator note")
+  cache:write("mods/mymod/info.lua", "return { name = 'kept' }\n")
+  cache:writeLua(ArtifactState.path("script-summary", "global"), {
+    schema = ArtifactState.RECEIPT_SCHEMA,
+    generationId = generation,
+    kind = "script-summary",
+    key = "global",
+    marker = "complete",
+  })
+end
+
+local function setupCompleteBootCache()
+  local DerivedCacheState = require("romdump.src.DerivedCacheState")
+  local backend = FakeCache.new()
+  local cache = CacheFs.forVersion("heartgold", backend)
+  cache:recoverPublication()
+  local identity = cleanupIdentity()
+  DerivedCacheState.publish(cache, identity)
+  local plans = syntheticRosterPlans()
+  local shared = setupProvenSharedFiles(cache, identity.generationId, plans)
+  setupScriptGenerations(cache, identity.generationId)
+  return { backend = backend, cache = cache, identity = identity, plans = plans, shared = shared }
+end
+
+-- One composed boot drive: a fresh controller with a stub source pool
+-- answers exactly one boot-source check against the given version cache.
+local function driveBootCheck(cache, identity, pool)
+  local queued = {}
+  local control = {}
+  function control.pop()
+    if #queued == 0 then
+      return nil
+    end
+    return table.remove(queued, 1)
+  end
+  local replies = {}
+  local reply = {}
+  function reply:push(message)
+    replies[#replies + 1] = message
+  end
+  local worker = CacheControllerWorker.Worker.new(control, reply)
+  local session = { cacheFs = cache }
+  function session:update() end
+  worker.session = session
+  worker.pool = pool
+  worker.selectedIdentity = identity
+  worker.liveEpoch = 7
+  worker.lifecycle = "active"
+  queued[#queued + 1] = { op = "check-boot-source", epoch = 7 }
+  worker:step()
+  for _, packet in ipairs(replies) do
+    if type(packet) == "table" and packet.op == "boot-source-result" then
+      return packet
+    end
+  end
+  error("the boot gate answered nothing", 0)
+end
+
+-- A source pool with no registered source: anything but the complete
+-- fast path reports its typed cause instead of admitting the boot.
+local function sourcelessPool()
+  local pool = { calls = {} }
+  function pool:prepareBootSource(epoch, needsSource)
+    pool.calls[#pool.calls + 1] = needsSource
+    if needsSource then
+      return false,
+        { code = "ROM_SOURCE_REQUIRED", message = "the original source is unavailable", context = {} }
+    end
+    return true
+  end
+  return pool
+end
+
+-- The inventoried source membership is synthetic here: the roster owner
+-- answers the fixed synthetic plans while the receipts, sidecars, and
+-- every deleted byte stay on the real versioned filesystem.
+local function withSyntheticRoster(plans, fn)
+  local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
+  local real = ArtifactJobs.publishedPlans
+  ArtifactJobs.publishedPlans = function()
+    return plans
+  end
+  local ok, err = pcall(fn)
+  ArtifactJobs.publishedPlans = real
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- A clean complete boot needs no second import and no source access to
+-- reclaim proven orphans: the first boot deletes only the unreferenced
+-- shared files, keeps every referenced output and user path, and leaves
+-- a per-generation memo so the next clean boot answers without any
+-- roster or directory scan. A first-play-only generation instead holds
+-- its source gate and deletes nothing.
+function T.clean_complete_boot_reclaims_only_proven_shared_orphans_and_memoizes_the_pass()
+  local setup = setupCompleteBootCache()
+  local pool = sourcelessPool()
+  local answer
+  withSyntheticRoster(setup.plans, function()
+    answer = driveBootCheck(setup.cache, setup.identity, pool)
+  end)
+  Assert.equal(answer.state, "ready", "a complete cache boots without its source")
+  Assert.isFalse(
+    setup.cache:exists(setup.shared.meshOrphan),
+    "a clean complete boot must reclaim proven orphans, but the boot fast path performs no cleanup"
+  )
+  Assert.isFalse(setup.cache:exists(setup.shared.metaOrphan), "a clean complete boot reclaims every proven orphan")
+  Assert.equal(setup.cache:read(setup.shared.meshRef), string.rep("mesh-block;", 200))
+  Assert.equal(setup.cache:read(setup.shared.sampleRef), string.rep("pcm-frame;", 200))
+  Assert.deepEqual(
+    setup.cache:loadLua(CLEANUP_MEMO_PATH),
+    { schema = 1, generationId = setup.identity.generationId }
+  )
+
+  local listings = 0
+  local realItems = setup.backend.getDirectoryItems
+  setup.backend.getDirectoryItems = function(self, path)
+    listings = listings + 1
+    return realItems(self, path)
+  end
+  local second
+  withSyntheticRoster(setup.plans, function()
+    second = driveBootCheck(setup.cache, setup.identity, sourcelessPool())
+  end)
+  setup.backend.getDirectoryItems = realItems
+  Assert.equal(second.state, "ready", "the memoized generation still boots without its source")
+  Assert.equal(listings, 0, "a memoized pass performs no roster or directory scans")
+
+  local FirstPlayCompletion = require("romdump.src.FirstPlayCompletion")
+  local incomplete = CacheFs.forVersion("heartgold", FakeCache.new())
+  incomplete:recoverPublication()
+  local identity = cleanupIdentity()
+  FirstPlayCompletion.publish("heartgold", identity.generationId, incomplete)
+  local plans = syntheticRosterPlans()
+  local shared = setupProvenSharedFiles(incomplete, identity.generationId, plans)
+  local scarce = sourcelessPool()
+  local blocked
+  withSyntheticRoster(plans, function()
+    blocked = driveBootCheck(incomplete, identity, scarce)
+  end)
+  Assert.equal(blocked.state, "source-required", "a first-play-only cache still requires its source")
+  Assert.equal(#scarce.calls, 1, "the incomplete boot consults the source exactly once")
+  Assert.isTrue(scarce.calls[1], "the incomplete boot asks the pool to pin its source")
+  Assert.isTrue(incomplete:exists(shared.meshOrphan), "an incomplete boot deletes no shared file")
+  Assert.isTrue(incomplete:exists(shared.metaOrphan), "an incomplete boot deletes no shared file")
+  Assert.isNil(incomplete:loadLua(CLEANUP_MEMO_PATH), "an incomplete boot leaves no cleanup memo")
+end
+
+-- Old script generations retire only under independent current proof:
+-- the active tree stays valid while the obsolete proven tree goes, and
+-- unknown or user paths survive. Missing script proof retires nothing
+-- and leaves no memo; missing shared proof still deletes no shared file
+-- and leaves no memo even while the proven script tree retires; and an
+-- interrupted pass converges on retry without touching live data.
+function T.obsolete_script_generations_retire_only_with_independent_current_proof()
+  local ScriptCache = require("libs.assets.src.ScriptCache")
+  local ArtifactState = require("romdump.src.build.ArtifactState")
+  local obsoleteSentinel = ScriptCache.generationDir(OBSOLETE_SCRIPT_GENERATION) .. "/stale"
+  local activeSentinel = ScriptCache.generationDir(ACTIVE_SCRIPT_GENERATION) .. "/sentinel"
+
+  local setup = setupCompleteBootCache()
+  local answer
+  withSyntheticRoster(setup.plans, function()
+    answer = driveBootCheck(setup.cache, setup.identity, sourcelessPool())
+  end)
+  Assert.equal(answer.state, "ready", "a complete cache boots without its source")
+  Assert.isFalse(
+    setup.cache:exists(obsoleteSentinel),
+    "a complete boot must retire the obsolete script generation, but no script retirement runs"
+  )
+  Assert.equal(setup.cache:read(activeSentinel), "active payload", "the active script tree stays readable")
+  local active, activeErr = ScriptCache.loadActive(setup.cache)
+  Assert.notNil(active, "the active script selection stays valid: " .. tostring(activeErr))
+  Assert.equal(active.generation, ACTIVE_SCRIPT_GENERATION, "the active script selection still names its generation")
+  Assert.equal(
+    setup.cache:read(ScriptCache.generationsDir() .. "/README.txt"),
+    "operator note",
+    "unknown names are preserved, not scavenged"
+  )
+  Assert.isTrue(
+    setup.cache:exists(ScriptCache.generationsDir() .. "/Stray-Notes/keep.txt"),
+    "unknown directories survive"
+  )
+  Assert.equal(setup.cache:read("mods/mymod/info.lua"), "return { name = 'kept' }\n", "user mods stay byte-identical")
+  Assert.deepEqual(
+    setup.cache:loadLua(CLEANUP_MEMO_PATH),
+    { schema = 1, generationId = setup.identity.generationId }
+  )
+
+  local unstamped = setupCompleteBootCache()
+  unstamped.cache:remove(ArtifactState.path("script-summary", "global"))
+  local refused
+  withSyntheticRoster(unstamped.plans, function()
+    refused = driveBootCheck(unstamped.cache, unstamped.identity, sourcelessPool())
+  end)
+  Assert.equal(refused.state, "ready", "uncertain script proof never blocks a playable cache")
+  Assert.isTrue(
+    unstamped.cache:exists(ScriptCache.generationDir(OBSOLETE_SCRIPT_GENERATION) .. "/stale"),
+    "missing script proof retires no script tree"
+  )
+  Assert.isNil(unstamped.cache:loadLua(CLEANUP_MEMO_PATH), "missing script proof leaves no cleanup memo")
+
+  local unproven = setupCompleteBootCache()
+  unproven.cache:remove(sharedSidecarPath("map", "3"))
+  local partial
+  withSyntheticRoster(unproven.plans, function()
+    partial = driveBootCheck(unproven.cache, unproven.identity, sourcelessPool())
+  end)
+  Assert.equal(partial.state, "ready", "uncertain shared proof never blocks a playable cache")
+  Assert.isTrue(unproven.cache:exists(unproven.shared.meshOrphan), "missing shared proof deletes no shared file")
+  Assert.isTrue(unproven.cache:exists(unproven.shared.metaOrphan), "missing shared proof deletes no shared file")
+  Assert.isFalse(
+    unproven.cache:exists(ScriptCache.generationDir(OBSOLETE_SCRIPT_GENERATION) .. "/stale"),
+    "independent script proof still retires the obsolete generation"
+  )
+  Assert.isNil(unproven.cache:loadLua(CLEANUP_MEMO_PATH), "a partial pass leaves no cleanup memo")
+
+  local flaky = setupCompleteBootCache()
+  local fullOrphan = "heartgold/" .. flaky.shared.meshOrphan
+  local realRemove = flaky.backend.remove
+  flaky.backend.remove = function(self, path)
+    if path == fullOrphan then
+      return false, "injected cleanup delete failure"
+    end
+    return realRemove(self, path)
+  end
+  local survived
+  withSyntheticRoster(flaky.plans, function()
+    survived = driveBootCheck(flaky.cache, flaky.identity, sourcelessPool())
+  end)
+  flaky.backend.remove = realRemove
+  Assert.equal(survived.state, "ready", "a cleanup fault never blocks a playable cache")
+  Assert.isNil(flaky.cache:loadLua(CLEANUP_MEMO_PATH), "an interrupted pass leaves no cleanup memo")
+  Assert.equal(flaky.cache:read(flaky.shared.meshRef), string.rep("mesh-block;", 200))
+  Assert.equal(flaky.cache:read(activeSentinel), "active payload")
+  local retry
+  withSyntheticRoster(flaky.plans, function()
+    retry = driveBootCheck(flaky.cache, flaky.identity, sourcelessPool())
+  end)
+  Assert.equal(retry.state, "ready", "the retry still boots without its source")
+  Assert.isFalse(flaky.cache:exists(flaky.shared.meshOrphan), "the retry converges once the fault clears")
+  Assert.isFalse(flaky.cache:exists(flaky.shared.metaOrphan), "the retry converges once the fault clears")
+  Assert.isFalse(
+    flaky.cache:exists(ScriptCache.generationDir(OBSOLETE_SCRIPT_GENERATION) .. "/stale"),
+    "the retry converges on script retirement"
+  )
+  Assert.deepEqual(
+    flaky.cache:loadLua(CLEANUP_MEMO_PATH),
+    { schema = 1, generationId = flaky.identity.generationId }
+  )
+end
+
 return { metadata = { capabilities = {} }, tests = T }

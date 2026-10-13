@@ -8,7 +8,10 @@
 
 local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
 local ArtifactState = require("romdump.src.build.ArtifactState")
+local DerivedCacheState = require("romdump.src.DerivedCacheState")
 local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
+local ScriptCache = require("libs.assets.src.ScriptCache")
+local ScriptCacheWriter = require("romdump.src.digest.script.ScriptCacheWriter")
 local StorageErrors = require("libs.storage.src.errors")
 
 local CacheMaintenance = {}
@@ -251,6 +254,150 @@ function CacheMaintenance.collectShared(cacheFs, identity, publishedPlans, quies
     end
   end
   return { status = "collected", removedCount = removedCount, reclaimedBytes = reclaimedBytes }
+end
+
+-- Disposable per-generation cleanup memo: records only that one proven
+-- shared-plus-script pass already succeeded for a generation. It never
+-- proves the cache complete and never authorizes deletion by itself; the
+-- full-generation attestation is re-validated before the memo is trusted.
+CacheMaintenance.RETENTION_MARKER = "data/generated/retention.lua"
+CacheMaintenance.RETENTION_SCHEMA = 1
+
+local RETENTION_STAGED = CacheMaintenance.RETENTION_MARKER .. ".new"
+
+-- The exact persisted memo shape: precisely the two fields, no aliases or
+-- padding. Anything else is malformed and authorizes a fresh attempt, never
+-- deletion by itself.
+---@param record unknown
+---@param generationId string
+---@return boolean
+local function isCurrentRetentionMemo(record, generationId)
+  if type(record) ~= "table" then
+    return false
+  end
+  ---@cast record table<string, unknown>
+  local count = 0
+  for key in pairs(record) do
+    if key ~= "schema" and key ~= "generationId" then
+      return false
+    end
+    count = count + 1
+  end
+  if count ~= 2 then
+    return false
+  end
+  return record.schema == CacheMaintenance.RETENTION_SCHEMA and record.generationId == generationId
+end
+
+local GENERATION_IDENTITY_FIELDS = {
+  "schema",
+  "versionId",
+  "romSha1",
+  "mode",
+  "producerId",
+  "assetRevision",
+  "scriptApi",
+  "generationId",
+}
+
+---@param identity unknown
+---@param cacheFs CacheFs
+---@return boolean
+local function isCurrentGenerationIdentity(identity, cacheFs)
+  if type(identity) ~= "table" then
+    return false
+  end
+  ---@cast identity table<string, unknown>
+  for _, field in ipairs(GENERATION_IDENTITY_FIELDS) do
+    if identity[field] == nil then
+      return false
+    end
+  end
+  if identity.schema ~= DerivedCacheState.schema then
+    return false
+  end
+  if type(identity.versionId) ~= "string" or type(identity.generationId) ~= "string" or identity.generationId == "" then
+    return false
+  end
+  return cacheFs.versionId == identity.versionId
+end
+
+-- The script pass is proved independently of the shared pass: the current
+-- script-summary receipt plus the validated active selector name the one
+-- protected generation. A missing proof names its cause and deletes
+-- nothing; a backend fault propagates to the best-effort caller.
+---@param cacheFs CacheFs
+---@param generationId string
+---@return string? active script generation when independently proved
+---@return string? skip reason when the script set is not provable
+local function proveActiveScriptGeneration(cacheFs, generationId)
+  local receipt = ArtifactState.read(cacheFs, generationId, "script-summary", "global")
+  if receipt == nil then
+    return nil, "script summary has no current receipt"
+  end
+  local active, activeReason = ScriptCache.loadActive(cacheFs)
+  if active == nil then
+    return nil, "active script selection is not provable: " .. tostring(activeReason)
+  end
+  return active.generation, nil
+end
+
+-- One proven current-generation cleanup pass for a genuinely reader-free
+-- window (a clean boot before any menu/game reader, or a drained batch).
+-- The shared orphan proof and the independent active-script proof each
+-- govern their own deletions; the disposable per-generation memo lands only
+-- after both succeed. A skipped pass deletes nothing it cannot prove and
+-- leaves no memo, so a later safe boot retries. Deletion or backend faults
+-- propagate to the best-effort caller without a memo. This helper never
+-- proves completeness and never reads the source.
+---@param cacheFs CacheFs
+---@param identity table<string, unknown>
+---@param quiescent boolean
+---@return { status: string, reason?: string, removedCount?: integer, reclaimedBytes?: integer }
+function CacheMaintenance.collectCurrentGeneration(cacheFs, identity, quiescent)
+  if quiescent ~= true then
+    return skipped("current-generation cleanup requires a quiescent cache: readers or workers are active")
+  end
+  if not isCurrentGenerationIdentity(identity, cacheFs) then
+    return skipped("current-generation cleanup requires its current generation identity")
+  end
+  ---@cast identity table<string, unknown>
+  if not CacheMaintenance.canMaintain(cacheFs) then
+    return skipped("current-generation cleanup requires its version cache capability")
+  end
+  local generationId = assert(identity.generationId, "proven identity carries its generation") --[[@as string]]
+  local stored = cacheFs:loadLua(DerivedCacheState.path)
+  if not DerivedCacheState.matches(stored, identity) then
+    return skipped("current-generation cleanup requires its matching full attestation")
+  end
+  if isCurrentRetentionMemo(cacheFs:loadLua(CacheMaintenance.RETENTION_MARKER), generationId) then
+    return { status = "already-collected" }
+  end
+  local plansOk, plans = pcall(ArtifactJobs.publishedPlans, cacheFs, identity)
+  if not plansOk or type(plans) ~= "table" then
+    return skipped("complete job roster is not provable")
+  end
+  local shared = CacheMaintenance.collectShared(cacheFs, identity, plans, true)
+  local sharedOk = shared.status == "collected"
+  local activeGeneration, scriptReason = proveActiveScriptGeneration(cacheFs, generationId)
+  local scriptsOk = false
+  if activeGeneration ~= nil then
+    ScriptCacheWriter.cleanupGenerations(cacheFs, { [activeGeneration] = true })
+    scriptsOk = true
+  end
+  if sharedOk and scriptsOk then
+    cacheFs:writeLua(RETENTION_STAGED, { schema = CacheMaintenance.RETENTION_SCHEMA, generationId = generationId })
+    cacheFs:replace(RETENTION_STAGED, CacheMaintenance.RETENTION_MARKER)
+    return {
+      status = "collected",
+      removedCount = shared.removedCount or 0,
+      reclaimedBytes = shared.reclaimedBytes or 0,
+    }
+  end
+  if not sharedOk then
+    return skipped(assert(shared.reason, "shared skip must name its reason"))
+  end
+  return skipped(assert(scriptReason, "script skip must name its reason"))
 end
 
 return CacheMaintenance

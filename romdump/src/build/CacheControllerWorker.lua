@@ -729,6 +729,19 @@ function Worker:_applyCheckBootSource(command)
     pcall(function()
       pool:prepareBootSource(epoch, false)
     end)
+    -- Best-effort proven cleanup for the current generation only: no game,
+    -- menu, or runtime reader exists before this ready reply, so the window
+    -- is reader-free. A skip or fault is recorded diagnostically and never
+    -- changes the ready answer; the incomplete path below never cleans.
+    local maintained, outcome = pcall(function()
+      local CacheMaintenance = require("romdump.src.build.CacheMaintenance")
+      return CacheMaintenance.collectCurrentGeneration(session.cacheFs, identity, true)
+    end)
+    if maintained then
+      self.maintenanceNote = { result = outcome }
+    else
+      self.maintenanceNote = { fault = tostring(outcome) }
+    end
     answer("ready")
     return
   end
