@@ -749,6 +749,9 @@ function T.validated_source_offer_reaches_the_controller_once_for_the_live_epoch
   local buffer = hostLove.data.newByteData("synthetic-offer-bytes")
   local descriptor = { versionId = "heartgold", romSha1 = string.rep("0", 40) }
   service:offerSource(epoch, buffer, descriptor)
+  -- Lifecycle controls flush FIFO on update: the offer waits behind
+  -- selection instead of overtaking it, then crosses exactly once.
+  service:update()
   local offers = {}
   local command = service._command:pop()
   while command ~= nil do
@@ -763,6 +766,7 @@ function T.validated_source_offer_reaches_the_controller_once_for_the_live_epoch
   pcall(function()
     service:offerSource(epoch + 100, buffer, descriptor)
   end)
+  service:update()
   local stale = service._command:pop()
   while stale ~= nil do
     Assert.isFalse(
@@ -775,6 +779,7 @@ function T.validated_source_offer_reaches_the_controller_once_for_the_live_epoch
   pcall(function()
     service:offerSource(epoch, buffer, descriptor)
   end)
+  service:update()
   local retired = service._command:pop()
   while retired ~= nil do
     Assert.isFalse(
@@ -783,6 +788,184 @@ function T.validated_source_offer_reaches_the_controller_once_for_the_live_epoch
     )
     retired = service._command:pop()
   end
+  service:shutdown()
+end
+
+-- An imported source and its boot gate travel the same ordered control
+-- stream as selection: one service update flushes select, the validated
+-- offer, and the boot check FIFO before ordinary demand, the live
+-- controller observes them in that order, the identical offered buffer is
+-- pinned, and a retired epoch can never satisfy a newer selection.
+function T.ordered_import_offer_and_boot_gate_share_one_control_stream()
+  local Service = requireService()
+  local Worker = require("romdump.src.build.CacheControllerWorker")
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local FakeCache = require("tests.support.FakeCache")
+  local GameVersion = require("romdump.src.source.GameVersion")
+  local hostLove = assert(rawget(_G, "love"), "the suite runs under the host runtime")
+  local host = newChannelHost()
+  local service = assert(Service.new({ thread = host }))
+  local worker = Worker.Worker.new(service._command, service._reply)
+  local epoch = assert(service:select({ versionId = "heartgold" }))
+  local buffer = hostLove.data.newByteData("synthetic-offer-bytes")
+  local info = GameVersion.info("heartgold")
+  service:offerSource(epoch, buffer, { versionId = "heartgold", romSha1 = info.sha1 })
+  Assert.equal(
+    service._command:count(),
+    0,
+    "selection and its source offer wait for one ordered flush instead of overtaking it"
+  )
+  Assert.isTrue(
+    type(service.requestBootSource) == "function",
+    "the boot gate queues behind selection and any source offer on the same control stream"
+  )
+  Assert.isTrue(
+    type(service.bootSourceStatus) == "function",
+    "the boot gate reports its epoch-scoped readiness without filesystem work"
+  )
+  Assert.isTrue(service:requestBootSource(epoch), "the live epoch queues its boot gate")
+  Assert.isTrue(service:requestBootSource(epoch), "a duplicate gate for the live epoch stays idempotent")
+  service:request(epoch, { requestKind = "milestone", name = "bootstrap", urgency = "required" })
+  local emitted = service:update()
+  Assert.isTrue(emitted.ordinary >= 1, "the milestone demand leaves on the same update")
+  local seen = {}
+  local realHandle = worker._handle
+  worker._handle = function(self, command)
+    if type(command) == "table" and type(command.op) == "string" then
+      seen[#seen + 1] = command.op
+    end
+    return realHandle(self, command)
+  end
+  local backend = FakeCache.new()
+  local realForVersion = CacheFs.forVersion
+  CacheFs.forVersion = function(_)
+    return realForVersion("heartgold", backend)
+  end
+  local realThread = hostLove.thread
+  hostLove.thread = {
+    newChannel = function()
+      local values = {}
+      local channel = {}
+      function channel:push(value)
+        values[#values + 1] = value
+        return true
+      end
+      function channel:pop()
+        if #values == 0 then
+          return nil
+        end
+        return table.remove(values, 1)
+      end
+      function channel:demand()
+        return channel:pop()
+      end
+      function channel:getCount()
+        return #values
+      end
+      return channel
+    end,
+    newThread = function()
+      local thread = {}
+      function thread:start()
+        return true
+      end
+      function thread:wait()
+        return true
+      end
+      function thread:getError()
+        return nil
+      end
+      function thread:isRunning()
+        return true
+      end
+      return thread
+    end,
+  }
+  local stepOk, stepErr = pcall(function()
+    worker:step()
+  end)
+  hostLove.thread = realThread
+  CacheFs.forVersion = realForVersion
+  assert(stepOk, stepErr)
+  service:update()
+  Assert.equal(#seen, 4, "the controller observes select, offer, gate, then demand")
+  Assert.equal(seen[1], "select", "selection reaches the controller first")
+  Assert.equal(seen[2], "offer-source", "the validated offer never overtakes its selection")
+  Assert.equal(seen[3], "check-boot-source", "the boot gate never overtakes its offer")
+  Assert.equal(seen[4], "request", "ordinary demand follows the lifecycle controls")
+  local pool = assert(worker.pool, "the selection owns its compiler pool")
+  local held = pool.sharedSource
+  local heldBuffer = type(held) == "table" and held.byteData or held
+  Assert.isTrue(heldBuffer == buffer, "the gate pins the identical offered buffer by reference")
+  local status, _ = service:bootSourceStatus(epoch)
+  Assert.equal(status, "ready", "the offered buffer satisfies the boot gate")
+  service:retire(epoch)
+  Assert.isNil(service:bootSourceStatus(epoch), "a retiring epoch reports no boot observation")
+  local nextEpoch = assert(service:select({ versionId = "heartgold" }))
+  service:injectReply({ op = "boot-source-result", epoch = epoch, state = "ready" })
+  service:update()
+  Assert.equal(
+    service:bootSourceStatus(nextEpoch),
+    "pending",
+    "a late retired answer never satisfies a new selection"
+  )
+  service:shutdown()
+  pcall(function()
+    if worker.pool ~= nil then
+      worker.pool:shutdown()
+    end
+  end)
+end
+
+-- A duplicate boot gate for the live epoch queues nothing twice, while
+-- stale and retired epochs queue nothing at all: one update carries
+-- exactly one boot check behind selection.
+function T.duplicate_boot_gate_queues_once_and_stale_epochs_queue_nothing()
+  local Service = requireService()
+  local host = newChannelHost()
+  local service = assert(Service.new({ thread = host }))
+  local epoch = assert(service:select({ versionId = "heartgold" }))
+  Assert.isTrue(service:requestBootSource(epoch), "the live epoch queues its boot gate")
+  Assert.isTrue(service:requestBootSource(epoch), "a duplicate gate stays idempotent")
+  Assert.isNil(service:requestBootSource(epoch + 100), "an unknown epoch queues no gate")
+  service:update()
+  local gates = 0
+  local command = service._command:pop()
+  while command ~= nil do
+    if type(command) == "table" and command.op == "check-boot-source" then
+      gates = gates + 1
+      Assert.equal(command.epoch, epoch, "the gate carries its selecting epoch")
+    end
+    command = service._command:pop()
+  end
+  Assert.equal(gates, 1, "one update carries exactly one boot check")
+  service:retire(epoch)
+  Assert.isNil(service:requestBootSource(epoch), "a retiring epoch queues no gate")
+  service:shutdown()
+end
+
+-- A refused source offer fails the epoch boot observation with its cause,
+-- and no later gate answer can clear it: a failure never masquerades as
+-- ready, while a foreign-epoch answer touches no live state.
+function T.rejected_offer_fails_the_boot_gate_permanently()
+  local Service = requireService()
+  local host = newChannelHost()
+  local service = assert(Service.new({ thread = host }))
+  local epoch = assert(service:select({ versionId = "heartgold" }))
+  Assert.isTrue(service:requestBootSource(epoch), "the live epoch queues its boot gate")
+  service:injectReply({ op = "offer-source-result", epoch = epoch, ok = false, errorMessage = "stale bytes" })
+  service:update()
+  local status, detail = service:bootSourceStatus(epoch)
+  Assert.equal(status, "failed", "a refused offer fails the boot gate")
+  Assert.equal(detail.code, "SOURCE_OFFER_REJECTED", "the refusal carries its typed cause")
+  service:injectReply({ op = "boot-source-result", epoch = epoch, state = "ready" })
+  service:update()
+  local later, _ = service:bootSourceStatus(epoch)
+  Assert.equal(later, "failed", "a later success never clears a refused offer")
+  service:injectReply({ op = "boot-source-result", epoch = epoch + 100, state = "ready" })
+  service:update()
+  local foreign, __ = service:bootSourceStatus(epoch)
+  Assert.equal(foreign, "failed", "a foreign-epoch answer touches no live state")
   service:shutdown()
 end
 

@@ -727,4 +727,483 @@ function T.quiesce_preserves_source_trees_and_user_data()
   Assert.equal(cache:read("data/generated/maps/61.lua"), generated)
 end
 
+-- Deterministic process-local thread host for the boot-gate drive: FIFO
+-- channels plus a killable worker, mirroring the service suite shape. No
+-- real OS thread starts here.
+local function bootServiceHost()
+  local host = {}
+  function host.newChannel()
+    local values = {}
+    local channel = {}
+    function channel:push(value)
+      values[#values + 1] = value
+      return true
+    end
+    function channel:pop()
+      if #values == 0 then
+        return nil
+      end
+      return table.remove(values, 1)
+    end
+    function channel:demand()
+      return channel:pop()
+    end
+    function channel:getCount()
+      return #values
+    end
+    function channel:count()
+      return #values
+    end
+    return channel
+  end
+  function host.newThread()
+    local thread = { starts = 0, waits = 0 }
+    function thread:start()
+      self.starts = self.starts + 1
+      return true
+    end
+    function thread:wait()
+      self.waits = self.waits + 1
+      return true
+    end
+    function thread:getError()
+      return nil
+    end
+    function thread:isRunning()
+      return self.starts > 0
+    end
+    return thread
+  end
+  return host
+end
+
+local function bootPoolThreadApi()
+  return {
+    newChannel = function()
+      local values = {}
+      local channel = {}
+      function channel:push(value)
+        values[#values + 1] = value
+        return true
+      end
+      function channel:pop()
+        if #values == 0 then
+          return nil
+        end
+        return table.remove(values, 1)
+      end
+      function channel:demand()
+        return channel:pop()
+      end
+      function channel:getCount()
+        return #values
+      end
+      return channel
+    end,
+    newThread = function()
+      local thread = {}
+      function thread:start()
+        return true
+      end
+      function thread:wait()
+        return true
+      end
+      function thread:getError()
+        return nil
+      end
+      function thread:isRunning()
+        return true
+      end
+      return thread
+    end,
+  }
+end
+
+-- One composed boot drive through the real service and the real
+-- controller: selection plus boot gate flush FIFO, the controller answers
+-- exactly once, and the service absorbs the answer. Reports the observed
+-- status, its detail, the number of external source opens, and whether a
+-- source buffer stayed retained.
+---@param backend table<string, unknown> isolated version-cache backend
+---@return string? status
+---@return table<string, unknown>? detail
+---@return integer opens
+---@return boolean held
+local function driveBootGate(backend)
+  local CacheService = require("app.src.CacheService")
+  local RomSource = require("romdump.src.source.RomSource")
+  local hostLove = assert(rawget(_G, "love"), "the suite runs under the host runtime")
+  local service = assert(CacheService.new({ thread = bootServiceHost() }))
+  local worker = CacheControllerWorker.Worker.new(service._command, service._reply)
+  local epoch = assert(service:select({ versionId = "heartgold" }))
+  Assert.isTrue(
+    type(service.requestBootSource) == "function",
+    "the boot gate queues behind selection on the same control stream"
+  )
+  Assert.isTrue(
+    type(service.bootSourceStatus) == "function",
+    "the boot gate reports its epoch-scoped readiness without filesystem work"
+  )
+  Assert.isTrue(service:requestBootSource(epoch), "the live epoch queues its boot gate")
+  service:update()
+  local cacheFs = CacheFs.forVersion("heartgold", backend)
+  local realForVersion = CacheFs.forVersion
+  CacheFs.forVersion = function(selected)
+    assert(selected == "heartgold", "the boot drive stays on its version")
+    return cacheFs
+  end
+  local opens = 0
+  local realFromPath = RomSource.fromPath
+  RomSource.fromPath = function(path, options)
+    opens = opens + 1
+    return realFromPath(path, options)
+  end
+  local realThread = hostLove.thread
+  hostLove.thread = bootPoolThreadApi()
+  local stepOk, stepErr = pcall(function()
+    worker:step()
+  end)
+  hostLove.thread = realThread
+  CacheFs.forVersion = realForVersion
+  RomSource.fromPath = realFromPath
+  assert(stepOk, stepErr)
+  service:update()
+  local status, detail = service:bootSourceStatus(epoch)
+  local held = worker.pool ~= nil and worker.pool.sharedSource ~= nil
+  service:shutdown()
+  pcall(function()
+    if worker.pool ~= nil then
+      worker.pool:shutdown()
+    end
+  end)
+  return status, detail, opens, held
+end
+
+-- A strictly current full-generation attestation boots with no source
+-- work at all: no offer, no registered path, zero opens, zero retained
+-- buffers. A stale-producer or malformed record instead reports that its
+-- source is required without destroying anything.
+function T.current_full_marker_boots_without_source_io()
+  local DerivedCacheState = require("romdump.src.DerivedCacheState")
+  local GameVersion = require("romdump.src.source.GameVersion")
+  local info = GameVersion.info("heartgold")
+  local identity =
+    DerivedCacheState.currentForSelection({ versionId = "heartgold", romSha1 = info.sha1, producerId = "r5" })
+  local backend = FakeCache.new()
+  DerivedCacheState.publish(CacheFs.forVersion("heartgold", backend), identity)
+  local status, detail, opens, held = driveBootGate(backend)
+  Assert.equal(status, "ready", "a strictly current full marker boots with no source")
+  Assert.isNil(detail, "a fast boot carries no failure detail")
+  Assert.equal(opens, 0, "a current full marker performs zero source opens")
+  Assert.isFalse(held, "a fast boot retains no source buffer")
+  local staleBackend = FakeCache.new()
+  local stale = DerivedCacheState.currentForSelection(
+    { versionId = "heartgold", romSha1 = info.sha1, producerId = "r6" }
+  )
+  DerivedCacheState.publish(CacheFs.forVersion("heartgold", staleBackend), stale)
+  local staleStatus, staleDetail, staleOpens, _ = driveBootGate(staleBackend)
+  Assert.equal(staleStatus, "source-required", "a stale full marker cannot skip the source")
+  Assert.isTrue(type(staleDetail) == "table", "the missing source carries a typed cause")
+  Assert.equal(staleDetail.code, "ROM_SOURCE_REQUIRED", "an unregistered source names its cause")
+  Assert.equal(staleOpens, 0, "an unavailable source opens nothing")
+  local damagedBackend = FakeCache.new()
+  CacheFs.forVersion("heartgold", damagedBackend):write(DerivedCacheState.path, "this is not lua{{{")
+  local damagedStatus, _, damagedOpens, __ = driveBootGate(damagedBackend)
+  Assert.equal(damagedStatus, "source-required", "a malformed full marker cannot skip the source")
+  Assert.equal(damagedOpens, 0, "a malformed marker opens nothing")
+end
+
+-- One composed boot drive with a mismatched source offer: selection
+-- plus a wrong-identity offer flush FIFO, the controller visibly refuses
+-- the offer, and the boot gate fails with its typed cause instead of
+-- admitting gameplay on other grounds.
+function T.rejected_offer_fails_the_boot_gate()
+  local CacheService = require("app.src.CacheService")
+  local GameVersion = require("romdump.src.source.GameVersion")
+  local hostLove = assert(rawget(_G, "love"), "the suite runs under the host runtime")
+  local backend = FakeCache.new()
+  local service = assert(CacheService.new({ thread = bootServiceHost() }))
+  local worker = CacheControllerWorker.Worker.new(service._command, service._reply)
+  local epoch = assert(service:select({ versionId = "heartgold" }))
+  local buffer = hostLove.data.newByteData("synthetic-offer-bytes")
+  service:offerSource(epoch, buffer, { versionId = "heartgold", romSha1 = string.rep("1", 40) })
+  Assert.isTrue(service:requestBootSource(epoch), "the live epoch queues its boot gate")
+  service:update()
+  local cacheFs = CacheFs.forVersion("heartgold", backend)
+  local realForVersion = CacheFs.forVersion
+  CacheFs.forVersion = function(selected)
+    assert(selected == "heartgold", "the boot drive stays on its version")
+    return cacheFs
+  end
+  local realThread = hostLove.thread
+  hostLove.thread = bootPoolThreadApi()
+  local stepOk, stepErr = pcall(function()
+    worker:step()
+  end)
+  hostLove.thread = realThread
+  CacheFs.forVersion = realForVersion
+  assert(stepOk, stepErr)
+  service:update()
+  local status, detail = service:bootSourceStatus(epoch)
+  Assert.equal(status, "failed", "a refused offer fails the boot gate")
+  Assert.equal(detail.code, "SOURCE_OFFER_REJECTED", "the refusal carries its typed cause")
+  service:shutdown()
+  pcall(function()
+    if worker.pool ~= nil then
+      worker.pool:shutdown()
+    end
+  end)
+end
+
+-- Seed one fabricated source registration and drive the boot gate against
+-- it, reporting the observed status and typed detail code.
+---@param binding table<string, unknown> fabricated seven-field registration
+---@return string? status
+---@return table<string, unknown>? detail
+local function driveBootGateWithBinding(binding)
+  local CacheService = require("app.src.CacheService")
+  local hostLove = assert(rawget(_G, "love"), "the suite runs under the host runtime")
+  local backend = FakeCache.new()
+  CacheFs.forVersion("heartgold", backend):writeLua(require("romdump.src.source.RomBinding").PATH, binding)
+  local service = assert(CacheService.new({ thread = bootServiceHost() }))
+  local worker = CacheControllerWorker.Worker.new(service._command, service._reply)
+  local epoch = assert(service:select({ versionId = "heartgold" }))
+  Assert.isTrue(service:requestBootSource(epoch), "the live epoch queues its boot gate")
+  service:update()
+  local cacheFs = CacheFs.forVersion("heartgold", backend)
+  local realForVersion = CacheFs.forVersion
+  CacheFs.forVersion = function(selected)
+    assert(selected == "heartgold", "the boot drive stays on its version")
+    return cacheFs
+  end
+  local realThread = hostLove.thread
+  hostLove.thread = bootPoolThreadApi()
+  local stepOk, stepErr = pcall(function()
+    worker:step()
+  end)
+  hostLove.thread = realThread
+  CacheFs.forVersion = realForVersion
+  assert(stepOk, stepErr)
+  service:update()
+  local status, detail = service:bootSourceStatus(epoch)
+  service:shutdown()
+  pcall(function()
+    if worker.pool ~= nil then
+      worker.pool:shutdown()
+    end
+  end)
+  return status, detail
+end
+
+-- Unusable registered sources are source problems, not infrastructure
+-- failures: a missing file, a wrong-identity registration, and a missing
+-- exact archive member each report source-required with their typed code.
+function T.unusable_registered_sources_report_source_required()
+  local GameVersion = require("romdump.src.source.GameVersion")
+  local info = GameVersion.info("heartgold")
+  local missingStatus, missingDetail = driveBootGateWithBinding({
+    schema = 1,
+    versionId = "heartgold",
+    romSha1 = info.sha1,
+    kind = "nds",
+    path = (os.getenv("TMPDIR") or "/tmp") .. "/portemon-never-present.nds",
+    displayName = "missing.nds",
+    zipEntry = false,
+  })
+  Assert.equal(missingStatus, "source-required", "a missing source file requires its source")
+  Assert.equal(missingDetail.code, "ROM_OPEN_FAILED", "a missing file names its cause")
+  local wrongStatus, wrongDetail = driveBootGateWithBinding({
+    schema = 1,
+    versionId = "heartgold",
+    romSha1 = string.rep("2", 40),
+    kind = "nds",
+    path = (os.getenv("TMPDIR") or "/tmp") .. "/portemon-wrong-identity.nds",
+    displayName = "wrong.nds",
+    zipEntry = false,
+  })
+  Assert.equal(wrongStatus, "source-required", "a wrong-identity registration requires its source")
+  Assert.equal(wrongDetail.code, "ROM_BINDING_MISMATCH", "a wrong identity names its cause")
+  local ZipBuilder = require("tests.support.ZipBuilder")
+  local zipBytes = ZipBuilder.build({ { name = "other.txt", data = "not a rom" } })
+  local zipPath = (os.getenv("TMPDIR") or "/tmp") .. "/portemon-missing-member.zip"
+  local zipFile = assert(io.open(zipPath, "wb"), "the zip fixture must be writable")
+  zipFile:write(zipBytes)
+  zipFile:close()
+  local zipStatus, zipDetail = driveBootGateWithBinding({
+    schema = 1,
+    versionId = "heartgold",
+    romSha1 = info.sha1,
+    kind = "zip",
+    path = zipPath,
+    displayName = "archive.zip",
+    zipEntry = "absent/game.nds",
+  })
+  os.remove(zipPath)
+  Assert.equal(zipStatus, "source-required", "a missing exact member requires its source")
+  Assert.equal(zipDetail.code, "ZIP_ENTRY_MISSING", "a missing member names its cause")
+end
+
+-- A storage backend that explodes while the gate reads its attestation is
+-- an infrastructure failure, never a source request.
+function T.storage_backend_failure_reports_failed()
+  local CacheService = require("app.src.CacheService")
+  local DerivedCacheState = require("romdump.src.DerivedCacheState")
+  local hostLove = assert(rawget(_G, "love"), "the suite runs under the host runtime")
+  local backend = FakeCache.new()
+  local cacheFs = CacheFs.forVersion("heartgold", backend)
+  local realLoadLua = CacheFs.loadLua
+  cacheFs.loadLua = function(self, path)
+    if path == DerivedCacheState.path then
+      error("synthetic backend explosion", 0)
+    end
+    return realLoadLua(self, path)
+  end
+  local service = assert(CacheService.new({ thread = bootServiceHost() }))
+  local worker = CacheControllerWorker.Worker.new(service._command, service._reply)
+  local epoch = assert(service:select({ versionId = "heartgold" }))
+  Assert.isTrue(service:requestBootSource(epoch), "the live epoch queues its boot gate")
+  service:update()
+  local realForVersion = CacheFs.forVersion
+  CacheFs.forVersion = function(selected)
+    assert(selected == "heartgold", "the boot drive stays on its version")
+    return cacheFs
+  end
+  local realThread = hostLove.thread
+  hostLove.thread = bootPoolThreadApi()
+  local stepOk, stepErr = pcall(function()
+    worker:step()
+  end)
+  hostLove.thread = realThread
+  CacheFs.forVersion = realForVersion
+  assert(stepOk, stepErr)
+  service:update()
+  local status, _ = service:bootSourceStatus(epoch)
+  Assert.equal(status, "failed", "a backend failure is infrastructure failure, not source-required")
+  service:shutdown()
+  pcall(function()
+    if worker.pool ~= nil then
+      worker.pool:shutdown()
+    end
+  end)
+end
+
+-- A boot check for a foreign epoch earns no reply and affects no state:
+-- the gate answers its exact epoch only.
+function T.stale_boot_check_earns_no_reply()
+  local values = {}
+  local control = {}
+  function control.pop()
+    if #values == 0 then
+      return nil
+    end
+    return table.remove(values, 1)
+  end
+  local replies = {}
+  local reply = {}
+  function reply:push(message)
+    replies[#replies + 1] = message
+  end
+  local worker = CacheControllerWorker.Worker.new(control, reply)
+  values[#values + 1] = { op = "check-boot-source", epoch = 99 }
+  worker:step()
+  Assert.equal(#replies, 0, "a foreign boot check earns no reply")
+end
+
+-- A failed full-marker write is non-destructive: the marker stays
+-- absent, current assets survive, the boot hold stays pinned, and the
+-- controller records its diagnostic instead of failing.
+function T.failed_marker_write_keeps_hold_and_assets()
+  local CacheService = require("app.src.CacheService")
+  local DerivedCacheState = require("romdump.src.DerivedCacheState")
+  local GameVersion = require("romdump.src.source.GameVersion")
+  local hostLove = assert(rawget(_G, "love"), "the suite runs under the host runtime")
+  local backend = FakeCache.new()
+  local service = assert(CacheService.new({ thread = bootServiceHost() }))
+  local worker = CacheControllerWorker.Worker.new(service._command, service._reply)
+  local epoch = assert(service:select({ versionId = "heartgold" }))
+  local buffer = hostLove.data.newByteData("synthetic-offer-bytes")
+  local info = GameVersion.info("heartgold")
+  service:offerSource(epoch, buffer, { versionId = "heartgold", romSha1 = info.sha1 })
+  Assert.isTrue(service:requestBootSource(epoch), "the live epoch queues its boot gate")
+  service:update()
+  local cacheFs = CacheFs.forVersion("heartgold", backend)
+  local realForVersion = CacheFs.forVersion
+  CacheFs.forVersion = function(selected)
+    assert(selected == "heartgold", "the boot drive stays on its version")
+    return cacheFs
+  end
+  local realThread = hostLove.thread
+  hostLove.thread = bootPoolThreadApi()
+  local stepOk, stepErr = pcall(function()
+    worker:step()
+  end)
+  hostLove.thread = realThread
+  CacheFs.forVersion = realForVersion
+  assert(stepOk, stepErr)
+  service:update()
+  local status, _ = service:bootSourceStatus(epoch)
+  Assert.equal(status, "ready", "the offered buffer satisfies the boot gate")
+  local pool = assert(worker.pool, "the selection owns its compiler pool")
+  local held = pool.sharedSource
+  Assert.isTrue(
+    (type(held) == "table" and held.byteData or held) == buffer,
+    "the preflight pins the identical offered buffer"
+  )
+  -- Swap in a terminally successful sweep observation over a cache whose
+  -- marker writes explode, keeping one pre-existing asset beside it.
+  local faultBackend = FakeCache.new()
+  local faultFs = CacheFs.forVersion("heartgold", faultBackend)
+  faultFs:write("data/generated/maps/61.lua", "current bytes")
+  faultFs.writeLua = function()
+    error("synthetic marker fault", 0)
+  end
+  local releases = 0
+  local realRelease = pool.releaseBootSourceHold
+  pool.releaseBootSourceHold = function(self, releaseEpoch)
+    releases = releases + 1
+    return realRelease(self, releaseEpoch)
+  end
+  local generationId = assert(worker.selectedIdentity, "the selection owns its identity").generationId
+  worker.session = {
+    generationId = generationId,
+    cacheFs = faultFs,
+  }
+  function worker.session:update() end
+  function worker.session:status()
+    return {
+      sweepState = "exhausted",
+      sweepFailure = nil,
+      bootstrap = "ready",
+      failed = 0,
+      queued = 0,
+      running = 0,
+      complete = false,
+    }
+  end
+  local attestOk, attestErr = pcall(function()
+    worker:step()
+  end)
+  assert(attestOk, attestErr)
+  Assert.isNil(
+    CacheFs.forVersion("heartgold", faultBackend):loadLua(DerivedCacheState.path),
+    "a failed write leaves no full-generation marker"
+  )
+  Assert.equal(
+    faultBackend:read("heartgold/data/generated/maps/61.lua"),
+    "current bytes",
+    "a failed write never deletes current assets"
+  )
+  Assert.equal(releases, 0, "a failed write never releases the boot hold")
+  local stillHeld = pool.sharedSource
+  Assert.isTrue(
+    (type(stillHeld) == "table" and stillHeld.byteData or stillHeld) == buffer,
+    "the buffer stays pinned across the failed write"
+  )
+  Assert.notNil(worker.attestationNote, "the failed write records its diagnostic")
+  service:shutdown()
+  pcall(function()
+    pool:shutdown()
+  end)
+end
+
 return { metadata = { capabilities = {} }, tests = T }

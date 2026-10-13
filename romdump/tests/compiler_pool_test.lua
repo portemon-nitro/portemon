@@ -2263,4 +2263,189 @@ function T.source_release_waits_for_settled_sweep_work_before_closing_borrowers(
   end)
 end
 
+-- One boot-held source survives the gap before warming: a composed
+-- selection plus boot gate opens the registered synthetic cartridge
+-- exactly once, idle pool updates across the pre-sweep gap reopen nothing
+-- and keep the identical buffer, and retirement releases it through the
+-- exact barrier. No offer is involved; the file binding alone suffices.
+function T.boot_held_source_survives_idle_until_retirement()
+  local RomSource = require("romdump.src.source.RomSource")
+  local RomBinding = require("romdump.src.source.RomBinding")
+  local hostLove = assert(rawget(_G, "love"), "the suite runs under the host runtime")
+  withDirectSourceSelection("heartgold", "IPKE", function(selection)
+    local host = newThreadHost(4)
+    host.love.data = hostLove.data
+    local realFromPath = RomSource.fromPath
+    local fromPathCalls = 0
+    RomSource.fromPath = function(path, options)
+      fromPathCalls = fromPathCalls + 1
+      return realFromPath(path, options)
+    end
+    local bodyOk, bodyErr = pcall(function()
+      local cache = CacheFs.forVersion("heartgold")
+      local recorded, recordErr = RomBinding.record(cache, selection.rom, {
+        kind = "nds",
+        path = selection.romPath,
+        displayName = "synthetic.nds",
+        zipEntry = false,
+      })
+      Assert.notNil(recorded, "the binding registers the synthetic ROM: " .. tostring(recordErr))
+      local CacheService = require("app.src.CacheService")
+      local Worker = require("romdump.src.build.CacheControllerWorker").Worker
+      local service = assert(CacheService.new({ thread = host.love.thread }))
+      local worker = Worker.new(service._command, service._reply)
+      local epoch = assert(service:select({ versionId = "heartgold" }))
+      Assert.isTrue(
+        type(service.requestBootSource) == "function",
+        "the boot gate queues behind selection on the same control stream"
+      )
+      Assert.isTrue(
+        type(service.bootSourceStatus) == "function",
+        "the boot gate reports its epoch-scoped readiness without filesystem work"
+      )
+      Assert.isTrue(service:requestBootSource(epoch), "the live epoch queues its boot gate")
+      service:update()
+      withLove(host.love, function()
+        worker:step()
+      end)
+      service:update()
+      local status, _ = service:bootSourceStatus(epoch)
+      Assert.equal(status, "ready", "the registered synthetic source satisfies the boot gate")
+      Assert.equal(fromPathCalls, 1, "the boot preflight opens the registered source exactly once")
+      local pool = assert(worker.pool, "the selection owns its compiler pool")
+      local held = pool.sharedSource
+      local heldBuffer = type(held) == "table" and held.byteData or held
+      Assert.isTrue(heldBuffer ~= nil, "the preflight pins one shared buffer")
+      withLove(host.love, function()
+        for _ = 1, 5 do
+          pool:update()
+        end
+      end)
+      Assert.equal(fromPathCalls, 1, "idle pre-sweep updates reopen nothing")
+      local idleHeld = pool.sharedSource
+      local idleBuffer = type(idleHeld) == "table" and idleHeld.byteData or idleHeld
+      Assert.isTrue(idleBuffer == heldBuffer, "the idle gap keeps the identical buffer")
+      local barrier = assert(service:retire(epoch), "retirement returns its barrier identity")
+      service:update()
+      withLove(host.love, function()
+        worker:step()
+      end)
+      service:update()
+      Assert.equal(service:barrierStatus(epoch, barrier), "ready", "the retirement acknowledgement lands")
+      Assert.isNil(pool.sharedSource, "retirement releases the boot-held buffer")
+      service:shutdown()
+      withLove(host.love, function()
+        pool:shutdown()
+      end)
+    end)
+    RomSource.fromPath = realFromPath
+    if not bodyOk then
+      error(bodyErr, 0)
+    end
+  end)
+end
+
+-- A boot-held buffer survives borrower-free idle updates across the
+-- pre-sweep gap, while quiescence overrides the hold: the next idle
+-- update drops the buffer through the ordinary borrower-free path.
+function T.boot_hold_survives_borrower_free_idle_and_quiesce_overrides_it()
+  local CompilerPool = requirePool()
+  local GameVersion = require("romdump.src.source.GameVersion")
+  local hostLove = assert(rawget(_G, "love"), "the suite runs under the host runtime")
+  local host = newThreadHost(4)
+  host.love.data = hostLove.data
+  withLove(host.love, function()
+    local pool = CompilerPool.new({ mode = "interactive", developmentRepositoryRoot = "/checkout" })
+    pool:selectGeneration({ versionId = "heartgold", generationId = "hold-generation" }, 1)
+    local info = GameVersion.info("heartgold")
+    local buffer = hostLove.data.newByteData("synthetic-boot-bytes")
+    Assert.isTrue(
+      pool:offerSource(1, buffer, { versionId = "heartgold", romSha1 = info.sha1 }),
+      "the live offer is accepted"
+    )
+    Assert.isTrue(pool:prepareBootSource(1, true), "the preflight pins the offered buffer")
+    Assert.isTrue(pool.sharedSource.byteData == buffer, "the preflight pins the identical buffer")
+    for _ = 1, 5 do
+      pool:update()
+    end
+    Assert.isTrue(
+      pool.sharedSource ~= nil and pool.sharedSource.byteData == buffer,
+      "borrower-free idle updates keep the boot-held buffer"
+    )
+    pool:quiesce()
+    pool:update()
+    Assert.isNil(pool.sharedSource, "quiescence overrides the hold and the idle buffer drops")
+    pool:shutdown()
+  end)
+end
+
+-- A no-source preflight discards a queued offer with zero file IO and
+-- retains nothing: a later source preflight must open the registration
+-- instead of resurrecting the discarded bytes.
+function T.boot_preflight_without_source_discards_offer_with_zero_io()
+  local CompilerPool = requirePool()
+  local RomSource = require("romdump.src.source.RomSource")
+  local GameVersion = require("romdump.src.source.GameVersion")
+  local hostLove = assert(rawget(_G, "love"), "the suite runs under the host runtime")
+  local host = newThreadHost(4)
+  host.love.data = hostLove.data
+  local realFromPath = RomSource.fromPath
+  local fromPathCalls = 0
+  RomSource.fromPath = function(path, options)
+    fromPathCalls = fromPathCalls + 1
+    return realFromPath(path, options)
+  end
+  local bodyOk, bodyErr = pcall(function()
+    withLove(host.love, function()
+      local pool = CompilerPool.new({ mode = "interactive", developmentRepositoryRoot = "/checkout" })
+      pool:selectGeneration({ versionId = "heartgold", generationId = "complete-generation" }, 1)
+      local info = GameVersion.info("heartgold")
+      local buffer = hostLove.data.newByteData("synthetic-boot-bytes")
+      Assert.isTrue(
+        pool:offerSource(1, buffer, { versionId = "heartgold", romSha1 = info.sha1 }),
+        "the live offer is accepted"
+      )
+      Assert.isTrue(pool:prepareBootSource(1, false), "the no-source preflight succeeds")
+      Assert.equal(fromPathCalls, 0, "the fast path performs zero source opens")
+      Assert.isNil(pool.sharedSource, "the fast path retains no buffer")
+      local held, failure = pool:prepareBootSource(1, true)
+      Assert.isNil(held, "no discarded offer resurrects a later preflight")
+      Assert.equal(failure.code, "ROM_SOURCE_REQUIRED", "the later preflight reads its registration")
+      pool:shutdown()
+    end)
+  end)
+  RomSource.fromPath = realFromPath
+  if not bodyOk then
+    error(bodyErr, 0)
+  end
+end
+
+-- Hold release and preflight both refuse foreign epochs without effect;
+-- releasing the live hold drops the idle buffer at once.
+function T.boot_hold_release_refuses_stale_epoch()
+  local CompilerPool = requirePool()
+  local GameVersion = require("romdump.src.source.GameVersion")
+  local hostLove = assert(rawget(_G, "love"), "the suite runs under the host runtime")
+  local host = newThreadHost(4)
+  host.love.data = hostLove.data
+  withLove(host.love, function()
+    local pool = CompilerPool.new({ mode = "interactive", developmentRepositoryRoot = "/checkout" })
+    pool:selectGeneration({ versionId = "heartgold", generationId = "release-generation" }, 1)
+    local info = GameVersion.info("heartgold")
+    local buffer = hostLove.data.newByteData("synthetic-boot-bytes")
+    Assert.isTrue(
+      pool:offerSource(1, buffer, { versionId = "heartgold", romSha1 = info.sha1 }),
+      "the live offer is accepted"
+    )
+    Assert.isTrue(pool:prepareBootSource(1, true), "the preflight pins the offered buffer")
+    Assert.isNil(pool:prepareBootSource(99, true), "a foreign preflight pins nothing")
+    Assert.isFalse(pool:releaseBootSourceHold(99), "a foreign epoch releases no hold")
+    Assert.isTrue(pool.sharedSource.byteData == buffer, "a foreign release keeps the held buffer")
+    Assert.isTrue(pool:releaseBootSourceHold(1), "the live epoch releases its hold")
+    Assert.isNil(pool.sharedSource, "the released idle buffer drops at once")
+    Assert.isFalse(pool:releaseBootSourceHold(1), "a second release is a no-op")
+    pool:shutdown()
+  end)
+end
+
 return { tests = T }

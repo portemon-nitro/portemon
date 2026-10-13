@@ -3079,4 +3079,226 @@ function T.completion_reports_source_settled_only_when_no_source_work_remains()
   )
 end
 
+-- Release selection identity for the composed sweep drive: the version,
+-- accepted ROM identity, and release producer counter resolve to the same
+-- strict generation the controller derives on selection.
+local function sweepReleaseIdentity()
+  local DerivedCacheState = require("romdump.src.DerivedCacheState")
+  local GameVersion = require("romdump.src.source.GameVersion")
+  local info = GameVersion.info("heartgold")
+  return DerivedCacheState.currentForSelection({ versionId = "heartgold", romSha1 = info.sha1, producerId = "r5" })
+end
+
+-- A session on the sweep generation with a scripted deterministic pool:
+-- every submitted job stays queued until the drive answers it ready or
+-- failed, so the full sweep can settle without a ROM.
+local function sweepReleaseSession(backend, pool, identity, clock)
+  local realForVersion = CacheFs.forVersion
+  local cacheFs = realForVersion("heartgold", backend)
+  CacheFs.forVersion = function(versionId)
+    assert(versionId == "heartgold", "the sweep drive stays on heartgold")
+    return cacheFs
+  end
+  local session = nil
+  local ok, err = pcall(function()
+    session = InteractiveCacheBuild.new({
+      identity = {
+        versionId = "heartgold",
+        generationId = identity.generationId,
+        producerId = identity.producerId,
+      },
+      epoch = 1,
+      pool = pool,
+      clock = clock,
+    })
+  end)
+  CacheFs.forVersion = realForVersion
+  assert(ok, err)
+  return session, cacheFs
+end
+
+-- One composed sweep drive through the real service and the real
+-- controller: selection and demand flush FIFO, the controller owns the
+-- terminal sweep observation, and the scripted pool answers every
+-- candidate deterministically. With failFirstSweep the first background
+-- candidate fails; with seedFirstPlay the bounded first-play record is
+-- present throughout. Reports the terminal sweep facts and the durable
+-- full-generation record, if any.
+local function driveComposedSweep(options)
+  local backend = FakeCache.new()
+  local pool = retryCapablePool()
+  pool.bootHoldReleased = 0
+  function pool:releaseBootSourceHold(_)
+    self.bootHoldReleased = self.bootHoldReleased + 1
+    return true
+  end
+  local tick, clock = newFakeClock()
+  local identity = sweepReleaseIdentity()
+  local session, cacheFs = sweepReleaseSession(backend, pool, identity, clock)
+  local adopted = warmingAdopted()
+  adopted.audioPlan = {
+    index = {
+      version = "heartgold",
+      sequences = {
+        [100] = { id = 100, symbol = "SEQ_SE_DP_SELECT", bankId = 3 },
+        [101] = { id = 101, symbol = "SEQ_SE_GS_GEARCANCEL", bankId = 3 },
+        [102] = { id = 102, symbol = "SEQ_SE_DP_BAG_004", bankId = 3 },
+        [1603] = { id = 1603, bankId = 3 },
+      },
+      sequenceBySymbol = {
+        SEQ_SE_DP_SELECT = 100,
+        SEQ_SE_GS_GEARCANCEL = 101,
+        SEQ_SE_DP_BAG_004 = 102,
+      },
+    },
+    bankPlans = { { bankId = 3 } },
+  }
+  session:_adoptPublished(adopted)
+  for _, kind in ipairs({ "source-plan", "mon-layout" }) do
+    local owner = readyOwnerEntry(kind)
+    session.byKey[owner.jobKey] = owner
+    session.interest[#session.interest + 1] = owner
+  end
+  if options.seedFirstPlay then
+    local FirstPlayCompletion = require("romdump.src.FirstPlayCompletion")
+    cacheFs:writeLua(
+      FirstPlayCompletion.path,
+      { schema = FirstPlayCompletion.schema, generationId = identity.generationId }
+    )
+  end
+  local CacheService = require("app.src.CacheService")
+  local Worker = require("romdump.src.build.CacheControllerWorker").Worker
+  local realLove = assert(rawget(_G, "love"), "the suite runs under the host runtime")
+  local ctrl = newControlledHost(1, {})
+  ctrl.love.filesystem = realLove.filesystem
+  local service = assert(CacheService.new({ thread = ctrl.love.thread }))
+  local worker = Worker.new(service._command, service._reply)
+  local epoch = assert(service:select({ versionId = "heartgold" }))
+  service:request(epoch, { requestKind = "milestone", name = "bootstrap", urgency = "required" })
+  service:update()
+  local realForVersion = CacheFs.forVersion
+  CacheFs.forVersion = function(_)
+    return cacheFs
+  end
+  local pumpOk, pumpErr = pcall(function()
+    withHost(ctrl, function()
+      worker:step()
+    end)
+  end)
+  CacheFs.forVersion = realForVersion
+  assert(pumpOk, pumpErr)
+  worker.pool = pool
+  worker.session = session
+  service:update()
+  pool.states["field-font:global"] = "ready"
+  local bootstrapped = false
+  for _ = 1, 60 do
+    withHost(ctrl, function()
+      worker:step()
+    end)
+    service:update()
+    local ready, _ = service:observe(epoch, { requestKind = "milestone", name = "bootstrap" })
+    if ready then
+      bootstrapped = true
+      break
+    end
+  end
+  Assert.isTrue(bootstrapped, "the foreground bootstrap settles before background authorization")
+  service:enableSweep(epoch)
+  service:update()
+  -- Authorization stamps the foreground-quiet clock when the controller
+  -- applies it, so the drive first lets that apply step land and only
+  -- then moves past the background settle window.
+  withHost(ctrl, function()
+    worker:step()
+  end)
+  service:update()
+  tick.now = 10.0
+  local handled = {}
+  local failedOne = false
+  local terminal = nil
+  for _ = 1, 400 do
+    withHost(ctrl, function()
+      worker:step()
+    end)
+    service:update()
+    for _, jobKey in ipairs(pool.submitted) do
+      if not handled[jobKey] and pool.states[jobKey] == nil then
+        handled[jobKey] = true
+        if options.failFirstSweep and not failedOne then
+          failedOne = true
+          pool.states[jobKey] = { state = "failed", details = { error = "synthetic sweep failure" } }
+        else
+          pool.states[jobKey] = "ready"
+        end
+      end
+    end
+    local sweepState = session:status().sweepState
+    if sweepState == "exhausted" or sweepState == "incomplete" then
+      terminal = sweepState
+      break
+    end
+  end
+  local DerivedCacheState = require("romdump.src.DerivedCacheState")
+  local stored = cacheFs:loadLua(DerivedCacheState.path)
+  local status = session:status()
+  local failureKeys = {}
+  if type(status.failures) == "table" then
+    for _, failure in ipairs(status.failures) do
+      if type(failure) == "table" then
+        failureKeys[#failureKeys + 1] = tostring(failure.jobKey) .. ":" .. tostring(failure.failure)
+      else
+        failureKeys[#failureKeys + 1] = tostring(failure)
+      end
+    end
+  end
+  return {
+    terminal = terminal,
+    failureKeys = table.concat(failureKeys, " | "),
+    sweepFailure = status.sweepFailure,
+    sweepState = status.sweepState,
+    enumerated = status.enumerated,
+    ready = status.ready,
+    queued = status.queued,
+    running = status.running,
+    failed = status.failed,
+    submitted = #pool.submitted,
+    stored = stored,
+    identity = identity,
+    failedOne = failedOne,
+  }
+end
+
+-- An exhaustive successful background sweep durably attests its exact
+-- selected generation, while a failed sweep with only the bounded
+-- first-play record present leaves no full attestation behind.
+function T.exhausted_successful_sweep_attests_its_exact_generation()
+  local DerivedCacheState = require("romdump.src.DerivedCacheState")
+  local success = driveComposedSweep({})
+  Assert.equal(
+    success.terminal,
+    "exhausted",
+    "the successful sweep runs to exhaustion: state=" .. tostring(success.sweepState) .. " enumerated="
+      .. tostring(success.enumerated)
+      .. " ready=" .. tostring(success.ready)
+      .. " queued=" .. tostring(success.queued)
+      .. " running=" .. tostring(success.running)
+      .. " failed=" .. tostring(success.failed)
+      .. " submitted=" .. tostring(success.submitted)
+      .. " failures=" .. tostring(success.failureKeys)
+  )
+  Assert.isNil(success.sweepFailure, "the successful sweep records no failure")
+  Assert.isTrue(
+    DerivedCacheState.matches(success.stored, success.identity),
+    "an exhaustive successful sweep durably attests its exact selected generation"
+  )
+  local failure = driveComposedSweep({ failFirstSweep = true, seedFirstPlay = true })
+  Assert.isTrue(failure.failedOne, "the negative drive failed a background candidate")
+  Assert.notNil(failure.sweepFailure, "the failed candidate failure is recorded")
+  Assert.isFalse(
+    DerivedCacheState.matches(failure.stored, failure.identity),
+    "a failed sweep leaves no full-generation attestation even beside its first-play record"
+  )
+end
+
 return { metadata = { capabilities = {} }, tests = T }

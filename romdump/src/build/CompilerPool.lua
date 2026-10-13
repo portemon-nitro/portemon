@@ -79,6 +79,7 @@ local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 ---@field fatalError string|Errors.Error?
 ---@field recentTimings table<string, unknown>[]
 ---@field sourceSettledQuery (fun(): boolean)? read-only sweep-settlement oracle installed by the owning session; nil keeps idleness-only release timing
+---@field bootSourceHold boolean? preflight retention: the pinned buffer survives borrower-free idle until attestation release or retirement
 local CompilerPool = {}
 CompilerPool.__index = CompilerPool
 
@@ -450,6 +451,7 @@ local function newPool(options)
     sourceReleaseOpen = false,
     sourceSettledQuery = nil,
     offeredSource = nil,
+    bootSourceHold = nil,
     retired = false,
     fatalError = nil,
     recentTimings = {},
@@ -524,6 +526,7 @@ function CompilerPool:selectGeneration(identity, epoch)
   self:_dropSharedSource()
   self.sourceReleaseWait = {}
   self.sourceReleaseOpen = false
+  self.bootSourceHold = nil
   self.sourceSettledQuery = nil
   self.selected = { versionId = identity.versionId, generationId = identity.generationId, epoch = epoch }
   self.selectedCacheFs = CacheFs.forVersion(identity.versionId)
@@ -574,6 +577,7 @@ function CompilerPool:retireSelection(epoch)
   self:_dropSharedSource()
   self.sourceReleaseWait = {}
   self.sourceReleaseOpen = false
+  self.bootSourceHold = nil
   for _, worker in ipairs(self.workers) do
     worker.srcCloseToken = nil
   end
@@ -870,6 +874,72 @@ function CompilerPool:offerSource(epoch, byteData, descriptor)
   return true
 end
 
+-- Boot preflight: verify and pin the one immutable selected buffer before
+-- the app is admitted, then hold it across the idle pre-sweep gap even
+-- with zero worker borrowers. With needsSource=false the cache already
+-- proved itself, so a queued offer is discarded with no file IO. With
+-- needsSource=true a verified offer is consumed first, otherwise the exact
+-- registered source (including its bound archive member) is opened once
+-- and pinned. Idempotent for the live epoch: a held buffer is never
+-- duplicated. Returns true, or nil plus a plain typed error; a failure
+-- stores nothing and leaves prior receipts untouched.
+---@param epoch integer
+---@param needsSource boolean
+---@return boolean? held
+---@return table<string, unknown>? failure
+function CompilerPool:prepareBootSource(epoch, needsSource)
+  local selected = self.selected
+  if self.closed or selected == nil or self.retired or self.quiescing then
+    return nil,
+      sourceErrorTable(Errors.new("SOURCE_EPOCH_RETIRED", "the compiler pool has no live selection to preflight", {}))
+  end
+  if type(epoch) ~= "number" or epoch ~= selected.epoch then
+    return nil,
+      sourceErrorTable(Errors.new("SOURCE_EPOCH_RETIRED", "boot preflight does not match the live selection", {}))
+  end
+  if needsSource ~= true then
+    self.offeredSource = nil
+    return true
+  end
+  local held = self.sharedSource
+  if held ~= nil and held.epoch == selected.epoch then
+    self.bootSourceHold = true
+    return true
+  end
+  local byteData, acqErr = self:_acquireSharedSource(selected.versionId)
+  if byteData == nil then
+    assert(acqErr, "a failed acquisition names its cause")
+    return nil, acqErr
+  end
+  self.sharedSource = {
+    byteData = byteData,
+    versionId = selected.versionId,
+    generationId = selected.generationId,
+    epoch = selected.epoch,
+  }
+  self.bootSourceHold = true
+  return true
+end
+
+-- Release the deliberate pre-sweep retention after the full-generation
+-- attestation is durable, delegating actual borrower closure to the
+-- existing release protocol. A stale epoch is refused without effect;
+-- quiescence and retirement clear the hold through their own barriers.
+---@param epoch integer
+---@return boolean released
+function CompilerPool:releaseBootSourceHold(epoch)
+  local selected = self.selected
+  if self.bootSourceHold ~= true or selected == nil then
+    return false
+  end
+  if type(epoch) ~= "number" or epoch ~= selected.epoch then
+    return false
+  end
+  self.bootSourceHold = nil
+  self:_maybeReleaseSource()
+  return true
+end
+
 -- Reply source-unavailable to every worker currently waiting on a buffer
 -- and forget them. Their suspended jobs settle as failed with the typed
 -- cause through the ordinary completion path, which frees their slots; no
@@ -932,7 +1002,10 @@ function CompilerPool:_acquireSharedSource(versionId)
         )
       )
   end
-  local source, srcErr = RomSource.fromPath(binding.path)
+  local source, srcErr = RomSource.fromPath(
+    binding.path,
+    binding.kind == "zip" and type(binding.zipEntry) == "string" and { zipEntry = binding.zipEntry } or nil
+  )
   if source == nil then
     return nil, sourceErrorTable(srcErr)
   end
@@ -1619,6 +1692,14 @@ function CompilerPool:_maybeReleaseSource()
     self:_completeSourceRelease()
     return
   end
+  -- A boot-held buffer survives the pre-sweep gap even with zero
+  -- borrowers: only attestation release, retirement, quiescence, or
+  -- shutdown may drop it. This check precedes the borrower-free shortcut
+  -- below, which otherwise releases an idle buffer before future sweep
+  -- work the pool cannot see.
+  if self.bootSourceHold == true then
+    return
+  end
   if next(self.sourceBorrowers) == nil then
     -- Nobody left to ask: every closure was already proven through another
     -- barrier, so the idle reference drops at once.
@@ -1923,6 +2004,9 @@ function CompilerPool:quiesce()
   self:_failSourceWaiters(
     sourceErrorTable(Errors.new("SOURCE_EPOCH_RETIRED", "the compiler pool quiesced while source was awaited", {}))
   )
+  -- Quiescence overrides the boot hold: retirement barriers govern the
+  -- remaining lifetime from here.
+  self.bootSourceHold = nil
   self.quiescing = true
   self.closeToken = (self.closeToken or 0) + 1
   for _, record in pairs(self.jobs) do
@@ -2049,6 +2133,7 @@ function CompilerPool:shutdown()
   self:_dropSharedSource()
   self.sourceReleaseWait = {}
   self.sourceReleaseOpen = false
+  self.bootSourceHold = nil
   for _, record in pairs(self.jobs) do
     if record.state == "queued" then
       record.state = "cancelled"
