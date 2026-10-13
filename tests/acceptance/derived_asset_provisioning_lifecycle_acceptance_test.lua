@@ -197,10 +197,16 @@ T.tests["game disposal precedes producer disposal"] = function()
       end,
     }
     App.provisioner = provisioner
+    App.service = {
+      shutdown = function()
+        events[#events + 1] = "service:shutdown"
+      end,
+    }
     App.quit()
-    Assert.deepEqual(events, { "game:dispose", "provisioner:dispose" })
+    Assert.deepEqual(events, { "game:dispose", "provisioner:dispose", "service:shutdown" })
     Assert.isNil(App.state)
     Assert.isNil(App.provisioner)
+    Assert.isNil(App.service)
   end)
 end
 

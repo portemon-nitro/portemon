@@ -540,6 +540,39 @@ function T.shutdown_is_idempotent_and_joins_workers()
   end
 end
 
+-- A worker whose thread never provably joins forbids a successful
+-- shutdown: the failure surfaces, the failed worker stays unjoined,
+-- every other worker is still joined, and no later call can claim
+-- success until the join genuinely completes.
+function T.failed_worker_join_forbids_successful_shutdown()
+  local CompilerPool = requirePool()
+  local host = newThreadHost(4)
+  local pool = assert(withLove(host.love, function()
+    return CompilerPool.new({ versionId = "heartgold", mode = "batch", developmentRepositoryRoot = "/checkout" })
+  end))
+  Assert.isTrue(#host.threads >= 2, "the pool starts at least two workers to join")
+  local failing = assert(host.threads[1], "a first worker owns the injected failure")
+  local realWait = failing.wait
+  failing.wait = function(_)
+    error("injected worker join failure", 0)
+  end
+  local firstOk, firstResult = pcall(function()
+    return pool:shutdown()
+  end)
+  Assert.isFalse(
+    firstOk and firstResult == true,
+    "an unproved join never reports successful shutdown"
+  )
+  Assert.isFalse(pool.workers[1].joined, "a failed wait never marks its worker joined")
+  Assert.equal(host.threads[2].waits, 1, "shutdown still joins every other worker")
+  failing.wait = realWait
+  Assert.isTrue(pool:shutdown(), "a genuinely completed join reports success")
+  Assert.isTrue(pool:shutdown(), "a proved shutdown stays idempotent")
+  for _, thread in ipairs(host.threads) do
+    Assert.equal(thread.waits, 1, "a proved shutdown joins every worker exactly once")
+  end
+end
+
 function T.worker_dispatcher_rejects_unknown_job_kinds()
   local CompilerWorker = require("romdump.src.build.CompilerWorker")
   Assert.throws(function()

@@ -485,13 +485,19 @@ local function collectVersionFacts(
   end
   -- One owned teardown for this acquisition lifecycle: every path
   -- captures its facts first, then closes session and pool exactly once.
+  -- The pool join is observed: a failed shutdown surfaces so the caller
+  -- cannot attest or clean from an unproved worker closure.
   local function teardown()
     if session ~= nil then
       pcall(session.retire, session)
     end
     if pool ~= nil then
-      pcall(pool.shutdown, pool)
+      local shutOk, shutErr = pcall(pool.shutdown, pool)
+      if not shutOk then
+        return shutErr
+      end
     end
+    return nil
   end
   local drainOk, drainResult = pcall(function()
     pool = CompilerPool.new({ mode = "batch", developmentRepositoryRoot = developmentRepositoryRoot })
@@ -571,13 +577,22 @@ local function collectVersionFacts(
     "the generation session owns its completion facts"
   )
   local counts, failures, exclusions = classifyExactOutcomes(snapshot.outcomes, pool, allowCompileExclusions)
-  teardown()
+  local shutdownError = teardown()
   local scopeError = verifyOriginalRequirements(snapshot.answers, versionId)
   local requestedReady = counts.failed == 0 and counts.cancelled == 0 and counts.excluded == 0
   if scopeError ~= nil then
     requestedReady = false
   end
   local needsAttestation = exhaustive and counts.failed == 0 and counts.cancelled == 0 and counts.excluded == 0
+  -- An unproved pool closure fails the build before attestation: no new
+  -- full marker is published and no cleanup runs from this run.
+  if shutdownError ~= nil then
+    requestedReady = false
+    needsAttestation = false
+    if scopeError == nil then
+      scopeError = shutdownError
+    end
+  end
   -- A strictly successful exhaustive session publishes its attestation
   -- directly: successful publication is the proof, so no second
   -- exhaustive audit runs on the ordinary path.

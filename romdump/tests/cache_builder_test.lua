@@ -48,6 +48,7 @@ local function newEnv()
     sessions = {},
     pools = {},
     shutdowns = 0,
+    shutdownError = nil,
     retires = 0,
     stateStored = nil,
     stateMatches = false,
@@ -440,6 +441,9 @@ local function makeFakes()
       end
       function pool:shutdown()
         env.shutdowns = env.shutdowns + 1
+        if env.shutdownError ~= nil then
+          error(env.shutdownError, 0)
+        end
       end
       env.pools[#env.pools + 1] = pool
       return pool
@@ -772,6 +776,27 @@ function T.targeted_prepare_skips_cleanup_while_complete_prepare_runs_it()
   Assert.isTrue(complete.complete, "a strict complete build attests completeness")
   Assert.equal(#env.maintenanceCalls, 1, "a strict complete build runs one proven cleanup pass")
   Assert.isTrue(env.maintenanceCalls[1].quiescent, "batch cleanup runs only drained")
+end
+
+-- An unproved pool closure fails the build before attestation: no new
+-- full marker is published and no cleanup runs from that run.
+function T.unproved_pool_closure_blocks_attestation_and_cleanup()
+  env = newEnv()
+  env.shutdownError = "injected worker join failure"
+  local identity = {
+    versionId = "heartgold",
+    generationId = "test-generation",
+    producerId = "d" .. string.rep("1", 64),
+  }
+  local complete, completeErr = CacheBuilder.prepareVersion("heartgold", {
+    identity = identity,
+    requirements = { "complete" },
+    log = testLog(),
+  })
+  Assert.isNil(complete, "an unproved join never reports a successful build")
+  Assert.notNil(completeErr, "an unproved join carries its failure")
+  Assert.equal(#env.publishes, 0, "an unproved join publishes no attestation")
+  Assert.equal(#env.maintenanceCalls, 0, "an unproved join runs no cleanup")
 end
 
 -- An exclusion-accepting partial batch runs no cleanup, and a cleanup fault

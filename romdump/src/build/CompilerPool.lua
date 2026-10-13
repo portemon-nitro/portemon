@@ -2146,11 +2146,23 @@ function CompilerPool:shutdown()
       pcall(worker.input.push, worker.input, { kind = "stop" })
     end
   end
+  -- A proved shutdown joins every started worker: a failed wait leaves
+  -- its worker unjoined and fails the shutdown without hiding the other
+  -- joins, so no later call can claim success until the join genuinely
+  -- completes. Staging teardown below runs only after every join proved.
+  local joinError = nil
   for _, worker in ipairs(self.workers) do
     if worker.started and not worker.joined then
-      pcall(worker.thread.wait, worker.thread)
-      worker.joined = true
+      local waited, failure = pcall(worker.thread.wait, worker.thread)
+      if waited then
+        worker.joined = true
+      elseif joinError == nil then
+        joinError = failure
+      end
     end
+  end
+  if joinError ~= nil then
+    error(joinError, 0)
   end
   pcall(function()
     self:_collectResults()

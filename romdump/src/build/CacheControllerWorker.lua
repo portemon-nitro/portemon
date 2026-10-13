@@ -116,7 +116,6 @@ function Worker.new(control, reply)
     deferredSelect = nil,
     pendingQuiesce = nil,
     exiting = false,
-    collectedSharedFor = nil,
     maintenanceNote = nil,
     selectedIdentity = nil,
     offerError = nil,
@@ -729,19 +728,6 @@ function Worker:_applyCheckBootSource(command)
     pcall(function()
       pool:prepareBootSource(epoch, false)
     end)
-    -- Best-effort proven cleanup for the current generation only: no game,
-    -- menu, or runtime reader exists before this ready reply, so the window
-    -- is reader-free. A skip or fault is recorded diagnostically and never
-    -- changes the ready answer; the incomplete path below never cleans.
-    local maintained, outcome = pcall(function()
-      local CacheMaintenance = require("romdump.src.build.CacheMaintenance")
-      return CacheMaintenance.collectCurrentGeneration(session.cacheFs, identity, true)
-    end)
-    if maintained then
-      self.maintenanceNote = { result = outcome }
-    else
-      self.maintenanceNote = { fault = tostring(outcome) }
-    end
     answer("ready")
     return
   end
@@ -867,66 +853,6 @@ function Worker:_applyRetire(command)
   self:_emitBarrierResult(command.epoch, command.barrierId, "retire")
 end
 
--- One post-quiescence collection pass for the settled version: reclaim
--- proven-orphan shared files. The pool is quiet and
--- the barrier result is already emitted, so no demand waits on this step;
--- urgent work arriving afterwards preempts normally on the next step. The
--- cache is usable for dump removal only after an independently provable
--- full-generation completion: an explicitly completed build, or an
--- authorized background sweep that exhausted the canonical roster with no
--- failure. Every destructive step stays gated inside the maintenance owner
--- (uncertain proof skips with zero deletes). The outcome is recorded locally
--- for inspection and never pushed to the game thread, so a maintenance
--- diagnostic cannot falsify readiness. Shared collection runs at most once
--- per selected generation.
-function Worker:_runPostQuiesceMaintenance()
-  local versionId = self.selectedVersionId
-  local session = self.session
-  if type(versionId) ~= "string" or type(session) ~= "table" then
-    return
-  end
-  local completion = session.completion
-  local cacheFs = session.cacheFs
-  if type(completion) ~= "table" or type(cacheFs) ~= "table" then
-    return
-  end
-  if cacheFs.versionId ~= versionId then
-    return
-  end
-  if type(session.generationId) ~= "string" or type(session.producerId) ~= "string" then
-    return
-  end
-  local generationId = session.generationId
-  local ok, note = pcall(function()
-    local CacheMaintenance = require("romdump.src.build.CacheMaintenance")
-    if not CacheMaintenance.canMaintain(cacheFs) then
-      return nil
-    end
-    local collected = nil
-    local memoKey = versionId .. "\0" .. generationId
-    if self.collectedSharedFor ~= memoKey then
-      local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
-      local plansOk, plans = pcall(ArtifactJobs.publishedPlans, cacheFs, {
-        versionId = versionId,
-        generationId = generationId,
-        producerId = session.producerId,
-      })
-      if plansOk and type(plans) == "table" then
-        collected = CacheMaintenance.collectShared(cacheFs, { generationId = generationId }, plans, true)
-        if collected.status == "collected" then
-          self.collectedSharedFor = memoKey
-        end
-      end
-    end
-    return { collected = collected }
-  end)
-  if ok then
-    self.maintenanceNote = note
-  else
-    self.maintenanceNote = { fault = tostring(note) }
-  end
-end
-
 ---@return boolean
 function Worker:_pumpQuiesce()
   local pending = self.pendingQuiesce
@@ -938,7 +864,6 @@ function Worker:_pumpQuiesce()
     self:_emitBarrierResult(pending.epoch, pending.barrierId, "quiesce")
     self.lifecycle = "quiescent"
     self.pendingQuiesce = nil
-    self:_runPostQuiesceMaintenance()
     return true
   end
   local ok, failure = pcall(function()
@@ -959,7 +884,6 @@ function Worker:_pumpQuiesce()
     self:_emitBarrierResult(pending.epoch, pending.barrierId, "quiesce")
     self.lifecycle = "quiescent"
     self.pendingQuiesce = nil
-    self:_runPostQuiesceMaintenance()
     local deferred = self.deferredSelect
     self.deferredSelect = nil
     if deferred ~= nil then
@@ -1078,14 +1002,46 @@ function Worker:_handle(command)
   end
 end
 
+-- Terminal shutdown owns the one interactive cleanup window: it snapshots
+-- the active version cache and identity, joins every compiler worker, and
+-- only after a positively proved join runs the single proof-gated sweep
+-- as a best-effort diagnostic. A retired or failed selection, a version
+-- mismatch, or an unproved join skips deletion; no reply is emitted.
 function Worker:_shutdown()
+  local session = self.session
+  local identity = self.selectedIdentity
+  local cacheFs = type(session) == "table" and session.cacheFs or nil
+  local candidate = type(cacheFs) == "table"
+    and type(identity) == "table"
+    and self.lifecycle ~= "failed"
+    and type(identity.versionId) == "string"
+    and type(identity.generationId) == "string"
+    and identity.generationId ~= ""
+    and cacheFs.versionId == identity.versionId
+    and (self.selectedVersionId == nil or self.selectedVersionId == identity.versionId)
+    and (type(session.generationId) ~= "string" or session.generationId == identity.generationId)
+  local pool = self.pool
   self.exiting = true
+  local joinOk, joinResult = true, true
+  if pool ~= nil then
+    joinOk, joinResult = pcall(pool.shutdown, pool)
+  end
   self.session = nil
-  if self.pool ~= nil then
-    pcall(function()
-      self.pool:shutdown()
-    end)
-    self.pool = nil
+  self.pool = nil
+  local proved = pool ~= nil and joinOk and joinResult == true
+  if not candidate or not proved then
+    return
+  end
+  assert(type(cacheFs) == "table", "terminal cleanup keeps its snapshotted version cache")
+  assert(type(identity) == "table", "terminal cleanup keeps its snapshotted identity")
+  local collected, outcome = pcall(function()
+    local CacheMaintenance = require("romdump.src.build.CacheMaintenance")
+    return CacheMaintenance.collectCurrentGeneration(cacheFs, identity, true)
+  end)
+  if collected then
+    self.maintenanceNote = { result = outcome }
+  else
+    self.maintenanceNote = { fault = tostring(outcome) }
   end
 end
 
