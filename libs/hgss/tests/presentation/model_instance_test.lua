@@ -579,8 +579,7 @@ function T.construction_admits_mesh_backend_records_and_centers()
   noRecord.backend.meshes["draw0.seg0"] = nil
   local instanceNoRecord = ModelInstance.new(noRecord)
   instanceNoRecord:evaluatePose()
-  local okRecord, errRecord =
-    pcall(instanceNoRecord.drawItems, instanceNoRecord, rendersFor(noRecord))
+  local okRecord, errRecord = pcall(instanceNoRecord.drawItems, instanceNoRecord, rendersFor(noRecord))
   Assert.isFalse(okRecord, "a drawn mesh without backend coverage fails on first draw")
   Assert.isTrue(
     string.find(tostring(errRecord), "backend mesh record missing", 1, true) ~= nil,
@@ -591,8 +590,7 @@ function T.construction_admits_mesh_backend_records_and_centers()
   noCenter.meshes[1].center = nil
   local instanceNoCenter = ModelInstance.new(noCenter)
   instanceNoCenter:evaluatePose()
-  local okCenter, errCenter =
-    pcall(instanceNoCenter.drawItems, instanceNoCenter, rendersFor(noCenter))
+  local okCenter, errCenter = pcall(instanceNoCenter.drawItems, instanceNoCenter, rendersFor(noCenter))
   Assert.isFalse(okCenter, "a drawn mesh without a stamped center fails on first draw")
   Assert.isTrue(
     string.find(tostring(errCenter), "no stamped model-space center", 1, true) ~= nil,

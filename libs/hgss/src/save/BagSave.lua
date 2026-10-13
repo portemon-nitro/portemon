@@ -27,9 +27,6 @@ BagSave.POCKET_ORDER = {
   "key_items",
 }
 
-local TOP_LEVEL_FIELDS = { schema = true, pockets = true, registered = true, customPockets = true }
-local SLOT_FIELDS = { item = true, quantity = true }
-
 local NATIVE_POCKET_SET = {}
 for _, pocketKey in ipairs(BagSave.POCKET_ORDER) do
   NATIVE_POCKET_SET[pocketKey] = true
@@ -88,11 +85,6 @@ local function validateSlots(slots, pocketKey, pocket, itemCatalog, seen)
     if type(slot) ~= "table" then
       fail("bag pocket " .. pocketKey .. " slot " .. index .. " must be a record", { pocket = pocketKey })
     end
-    for key in pairs(slot) do
-      if not SLOT_FIELDS[key] then
-        fail("bag slot contains an unknown field", { pocket = pocketKey, field = key })
-      end
-    end
     local ok, definition = pcall(itemCatalog.item, itemCatalog, slot.item)
     if not ok or type(definition) ~= "table" then
       fail("bag slot names an unknown item", { pocket = pocketKey, item = slot.item })
@@ -146,11 +138,6 @@ local function validateRecord(value, itemCatalog)
   assert(type(value) == "table", "bag bucket carries its record")
   if value.schema ~= BagSave.SCHEMA then
     fail("bag schema must be " .. BagSave.SCHEMA, { schema = value.schema })
-  end
-  for key in pairs(value) do
-    if not TOP_LEVEL_FIELDS[key] then
-      fail("bag bucket contains an unknown field", { field = key })
-    end
   end
   if type(value.pockets) ~= "table" then
     fail("bag pockets must be a record")

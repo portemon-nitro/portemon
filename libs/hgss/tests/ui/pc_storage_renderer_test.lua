@@ -13,7 +13,19 @@ local T = {}
 
 local function visuals(manifest)
   local storage = manifest.storage
-  local all = { storage.backgrounds.default, storage.ui.boxPane, storage.ui.infoPane, storage.ui.partyTray, storage.ui.markingPanel, storage.ui.wallpaperBar, storage.ui.arrows.left, storage.ui.arrows.right, storage.ui.cursors.browse, storage.ui.cursors.menu, storage.ui.cursors.carry }
+  local all = {
+    storage.backgrounds.default,
+    storage.ui.boxPane,
+    storage.ui.infoPane,
+    storage.ui.partyTray,
+    storage.ui.markingPanel,
+    storage.ui.wallpaperBar,
+    storage.ui.arrows.left,
+    storage.ui.arrows.right,
+    storage.ui.cursors.browse,
+    storage.ui.cursors.menu,
+    storage.ui.cursors.carry,
+  }
   for _, visual in pairs(storage.wallpapers) do
     all[#all + 1] = visual
   end
@@ -210,7 +222,11 @@ function T.message_line_draws_in_the_player_frame_with_yes_no_and_the_bottom_but
     party = {},
     message = { id = 11, window = "W37", yesNo = true },
   }, resources, "lower", placement())
-  Assert.deepEqual(windows[1], { "player", { x = 16, y = 168, width = 216, height = 16 }, 3 }, "the line uses the player's frame")
+  Assert.deepEqual(
+    windows[1],
+    { "player", { x = 16, y = 168, width = 216, height = 16 }, 3 },
+    "the line uses the player's frame"
+  )
   Assert.equal(windows[2][1], "standard", "Yes is a standard window")
   Assert.equal(windows[3][1], "standard", "No is a standard window")
   local function drew(value, x, y)

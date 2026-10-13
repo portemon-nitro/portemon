@@ -84,7 +84,10 @@ T["context choice task restores its selected value into a fresh provider"] = fun
   Assert.equal(state.selected, 1)
 
   local restoredProvider = ContextChoiceProvider.new()
-  local restored = ContextChoiceTask.poll(state, { services = { contextChoice = restoredProvider, dialogue = finishedDialogue }, input = {} })
+  local restored = ContextChoiceTask.poll(
+    state,
+    { services = { contextChoice = restoredProvider, dialogue = finishedDialogue }, input = {} }
+  )
   Assert.isFalse(restored.complete)
   Assert.deepEqual(restoredProvider:status(), { state = "active", selected = 1 })
 end
@@ -93,7 +96,11 @@ T["context choice task cancellation tolerates an unmaterialized restored provide
   local state = { active = true, phase = "waiting", selected = 1 }
   local provider = ContextChoiceProvider.new()
 
-  ContextChoiceTask.cancel(state, "script cancelled", { services = { contextChoice = provider, dialogue = finishedDialogue } })
+  ContextChoiceTask.cancel(
+    state,
+    "script cancelled",
+    { services = { contextChoice = provider, dialogue = finishedDialogue } }
+  )
 
   Assert.isFalse(state.active)
   Assert.equal(provider:status(), nil)

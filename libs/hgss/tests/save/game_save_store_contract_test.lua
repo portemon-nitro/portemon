@@ -915,11 +915,7 @@ function T.custom_pocket_save_round_trips_and_missing_catalog_blocks_restore()
   local canonical, err = BagSave.validate(loaded.bag, vanilla)
   Assert.isNil(canonical)
   Assert.notNil(err)
-  Assert.equal(
-    backend.files[gamePath(saveId)],
-    bytesBefore,
-    "a blocked restore replaces nothing durable"
-  )
+  Assert.equal(backend.files[gamePath(saveId)], bytesBefore, "a blocked restore replaces nothing durable")
   Assert.deepEqual(assert(store:load(saveId)), value, "the last valid save stays authoritative")
 end
 

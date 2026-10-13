@@ -207,14 +207,6 @@ function T.save_validation_names_missing_selected_references()
     ))
   end, "ENCOUNTER_SAVE_INVALID")
   rejectionCode(function()
-    assert(Save.validate(
-      invalidBucket(function(bucket)
-        bucket.unknownField = {}
-      end),
-      refs
-    ))
-  end, "ENCOUNTER_SAVE_INVALID")
-  rejectionCode(function()
     assert(Save.validate("not-a-bucket", refs))
   end, "ENCOUNTER_SAVE_INVALID")
 end

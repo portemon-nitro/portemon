@@ -81,7 +81,11 @@ function T.compiled_timelines_pin_boundaries_wrap_and_final_hold_without_mutatin
     },
   }
   Assert.equal(FieldActorPose.gestureFrameIndex(visual, "give", 0), 7, "the gesture clip wins over the facing pose")
-  Assert.equal(FieldActorPose.gestureFrameIndex(visual, "give", 100), 9, "the gesture one-shot clamps at its last frame")
+  Assert.equal(
+    FieldActorPose.gestureFrameIndex(visual, "give", 100),
+    9,
+    "the gesture one-shot clamps at its last frame"
+  )
   Assert.equal(FieldActorPose.frameIndex(visual, "south", "walk", 0), 2, "cardinal facing ticks are unchanged")
   Assert.deepEqual(pose, unevenPose(true), "sampling leaves the compiled pose untouched")
   Assert.throws(function()

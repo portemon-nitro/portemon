@@ -18,7 +18,9 @@ local function ctxWithChoice()
   return {
     services = { contextChoice = provider, dialogue = dialogue },
     input = { uiEvents = {} },
-  }, provider, printing
+  },
+    provider,
+    printing
 end
 
 function T.choice_opens_only_after_the_message_finishes_printing()

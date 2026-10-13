@@ -27,19 +27,9 @@ local function validate(snapshot, context)
   if type(snapshot) ~= "table" or snapshot.schema ~= Mailbox.SCHEMA then
     invalid("mailbox schema is invalid")
   end
-  for key in pairs(snapshot) do
-    if key ~= "schema" and key ~= "slots" then
-      invalid("mailbox has an unknown field")
-    end
-  end
   local slots = snapshot.slots
   if type(slots) ~= "table" then
     invalid("mailbox slots are required")
-  end
-  for key in pairs(slots) do
-    if type(key) ~= "number" or key % 1 ~= 0 or key < 1 or key > Mailbox.CAPACITY then
-      invalid("mailbox slots must be dense")
-    end
   end
   local result = {}
   for index = 1, Mailbox.CAPACITY do

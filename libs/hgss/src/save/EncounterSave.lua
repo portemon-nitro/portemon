@@ -14,25 +14,6 @@ local EncounterSave = {}
 EncounterSave.SCHEMA = "hgss-encounter-v1"
 EncounterSave.STATE_VERSION = 1
 
-local TOP_FIELDS = {
-  schema = true,
-  stateVersion = true,
-  steps = true,
-  repelSteps = true,
-  swarm = true,
-  radio = true,
-  roamers = true,
-}
-
-local RECORD_FIELDS = {
-  key = true,
-  stateVersion = true,
-  mon = true,
-  location = true,
-  lifecycle = true,
-  revision = true,
-}
-
 local LIFECYCLES = {
   inactive = true,
   roaming = true,
@@ -87,11 +68,6 @@ local function checkShape(bucket)
     fail("encounter bucket must be a table", {})
   end
   assert(type(bucket) == "table", "shape validation reads the bucket record")
-  for key in pairs(bucket) do
-    if TOP_FIELDS[key] ~= true then
-      fail("encounter bucket contains an unknown field", { field = key })
-    end
-  end
   if bucket.schema ~= EncounterSave.SCHEMA then
     fail("encounter schema must be " .. EncounterSave.SCHEMA, { schema = bucket.schema })
   end
@@ -118,11 +94,6 @@ local function checkShape(bucket)
       fail("encounter roamer " .. key .. " must be a record", { roamer = key })
     end
     assert(type(record) == "table", "shape validation reads roamer records")
-    for field in pairs(record) do
-      if RECORD_FIELDS[field] ~= true then
-        fail("encounter roamer " .. key .. " contains an unknown field", { roamer = key, field = field })
-      end
-    end
     if record.key ~= key then
       fail("encounter roamer key must match its record", { roamer = key })
     end

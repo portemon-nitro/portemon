@@ -2633,10 +2633,7 @@ function T.outdoor_loads_across_two_maps_share_one_trusted_cell_index()
   local secondMap = loader:load(1)
   Assert.equal(secondMap.mapId, 1)
   Assert.equal(indexReads, 1, "two outdoor loads share one published index read")
-  Assert.isTrue(
-    loader.fieldCellIndex == published,
-    "the published index stays cached on the loader without rescanning"
-  )
+  Assert.isTrue(loader.fieldCellIndex == published, "the published index stays cached on the loader without rescanning")
   Assert.isNil(firstMap.collision, "outdoor logical maps carry no representative collision")
   loader:release()
 end

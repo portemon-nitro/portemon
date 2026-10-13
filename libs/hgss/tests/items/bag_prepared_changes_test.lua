@@ -226,9 +226,8 @@ function T.custom_pocket_entries_survive_clone_prepare_capture_and_restore()
   Assert.equal(ordered[2].item, "alchemy:ELIXIR")
 
   local revision = bag:revision()
-  local preparation = assert(
-    bag:prepareInventoryChanges(revision, { { op = "take", item = "alchemy:ELIXIR", quantity = 1 } })
-  )
+  local preparation =
+    assert(bag:prepareInventoryChanges(revision, { { op = "take", item = "alchemy:ELIXIR", quantity = 1 } }))
   Assert.equal(bag:quantity("alchemy:ELIXIR"), 2, "preparation leaves the live inventory alone")
   preparation.publish()
   Assert.equal(bag:quantity("alchemy:ELIXIR"), 1)
@@ -249,10 +248,7 @@ function T.custom_pocket_entries_survive_clone_prepare_capture_and_restore()
   Assert.isTrue(plain:add("POTION", 1))
   local plainCapture = plain:capture()
   Assert.isNil(plainCapture.customPockets)
-  Assert.keySet(
-    plainCapture.pockets,
-    "balls,battle_items,berries,items,key_items,mail,medicine,tmhm"
-  )
+  Assert.keySet(plainCapture.pockets, "balls,battle_items,berries,items,key_items,mail,medicine,tmhm")
 end
 
 function T.custom_pocket_records_require_a_declaring_catalog()

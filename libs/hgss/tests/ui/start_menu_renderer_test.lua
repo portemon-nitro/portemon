@@ -304,11 +304,17 @@ function T.running_shoes_toggle_draws_button_and_indicator_in_the_lock_state()
     text = recordingText(),
     graphics = lg,
   })
-  renderer:draw({ selectedPosition = 0, actions = {}, runningShoes = { locked = false, focused = false } }, canonicalPlacement())
+  renderer:draw(
+    { selectedPosition = 0, actions = {}, runningShoes = { locked = false, focused = false } },
+    canonicalPlacement()
+  )
   Assert.equal(#lg.draws, 3, "chrome plus the button body and the lock indicator")
   Assert.deepEqual({ lg.draws[2].quad.x, lg.draws[2].x, lg.draws[2].y }, { 0, 184, 86 }, "the off button")
   Assert.deepEqual({ lg.draws[3].quad.x, lg.draws[3].x, lg.draws[3].y }, { 144, 210, 94 }, "the off indicator")
-  renderer:draw({ selectedPosition = 0, actions = {}, runningShoes = { locked = true, focused = false } }, canonicalPlacement())
+  renderer:draw(
+    { selectedPosition = 0, actions = {}, runningShoes = { locked = true, focused = false } },
+    canonicalPlacement()
+  )
   Assert.equal(#lg.draws, 6)
   Assert.equal(lg.draws[5].quad.x, 72, "the on button")
   Assert.equal(lg.draws[6].quad.x, 176, "the on indicator")

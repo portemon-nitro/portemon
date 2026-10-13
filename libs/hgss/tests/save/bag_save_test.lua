@@ -78,10 +78,6 @@ function T.validation_rejects_structural_defects()
   local noRegistered = record()
   noRegistered.registered = nil
   Assert.equal(rejectionCode(noRegistered, catalog), "GAME_SAVE_BUCKET_INVALID")
-  Assert.equal(
-    rejectionCode(record({ pockets = emptyPockets(), registered = {}, extra = {} }), catalog),
-    "GAME_SAVE_BUCKET_INVALID"
-  )
   local pockets = emptyPockets()
   pockets.medicine = { { item = "BOGUS_ITEM", quantity = 1 } }
   Assert.equal(rejectionCode(record({ pockets = pockets }), catalog), "GAME_SAVE_BUCKET_INVALID")

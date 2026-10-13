@@ -72,14 +72,6 @@ function T.explicit_mailbox_validation_still_rejects_malformed_snapshots()
     end),
     "GAME_SAVE_BUCKET_INVALID"
   )
-  local foreign = populatedSnapshot()
-  foreign.extra = true
-  Assert.equal(
-    codeOf(function()
-      Mailbox.validate(foreign)
-    end),
-    "GAME_SAVE_BUCKET_INVALID"
-  )
   Assert.isTrue(Mailbox.validate(snapshot), "explicit validation still accepts the authored snapshot")
 end
 
