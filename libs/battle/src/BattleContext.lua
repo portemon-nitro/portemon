@@ -7,11 +7,13 @@ local BattleErrors = require("libs.battle.src.errors")
 local BattleProtocol = require("libs.battle.src.BattleProtocol")
 local BattleState = require("libs.battle.src.BattleState")
 local BattleView = require("libs.battle.src.BattleView")
+local PresentationFacts = require("libs.battle.src.gen4.PresentationFacts")
 local StatStages = require("libs.battle.src.gen4.StatStages")
 local Status = require("libs.battle.src.gen4.Status")
 
 ---@class BattleContext
 ---@field private _state table<string, unknown>
+---@field private _moveScope table<string, unknown>?
 local BattleContext = {}
 BattleContext.__index = BattleContext
 
@@ -33,7 +35,22 @@ end
 ---@return BattleContext
 function BattleContext.wrap(state)
   assert(type(state) == "table", "mechanics execution requires its battle state")
-  return setmetatable({ _state = state }, BattleContext)
+  return setmetatable({ _state = state, _moveScope = nil }, BattleContext)
+end
+
+-- Pins the executing strike whose emissions follow on this context: the
+-- authoritative user, sampled recipients, and requested and executed
+-- move identities behind one move step. Presentation only; mechanics
+-- never reads it. A nil scope clears the pin.
+---@param scope table<string, unknown>? executing strike scope, nil to clear
+function BattleContext:setMoveScope(scope)
+  assert(scope == nil or type(scope) == "table", "strike scopes stay records or clear")
+  self._moveScope = scope
+end
+
+---@return table<string, unknown>? the pinned executing strike scope, nil when no strike owns this context
+function BattleContext:moveScope()
+  return self._moveScope
 end
 
 ---@param kind string
@@ -59,6 +76,10 @@ function BattleContext:emit(kind, cause, payload, audience)
     -- following emission already observes the new health.
     observation = BattleView.checkpoint(self._state),
   }
+  -- Playback facts ride beside the authoritative payload without
+  -- touching it: decoration only adds detached identities, so the
+  -- mutation order, draws, and transcripts stay exactly as emitted.
+  PresentationFacts.decorate(self._state, event, self._moveScope)
   BattleProtocol.validateEvent(event)
   local outbox = self._state.outbox --[[@as table<integer, table<string, unknown>>]]
   outbox[#outbox + 1] = event

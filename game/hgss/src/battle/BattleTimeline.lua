@@ -22,6 +22,7 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 ---@field _messageId integer stable identity of the displayed narration
 ---@field _messageSeq integer narration counter
 ---@field _lastPacketId integer highest accepted per-launch packet identity
+---@field _seen table<string, boolean> played event identities by launch and sequence
 ---@field _latest table<string, unknown>? newest after view for name and move facts
 ---@field _names table<integer, string> visible names by combatant identity across packets
 ---@field _ownMoves table<string, string> own move display names by combatant and move identity
@@ -108,6 +109,7 @@ function BattleTimeline.new(opts)
     _messageId = 0,
     _messageSeq = 0,
     _lastPacketId = 0,
+    _seen = {},
     _latest = nil,
     _accum = 0,
     _diagnostics = {},
@@ -373,23 +375,80 @@ local function enqueueHealth(self, target, to)
   enqueue(self, { kind = "hp", combatant = target, to = to, from = nil, duration = ticks, requiresImage = false })
 end
 
+-- Forward declaration: explicit playback readers below fall back to the
+-- cause identity owned further down beside the intent translators.
+local causeMoveKey
+
+---@param event table<string, unknown> sanitized kernel event carrying its explicit playback facts
+---@return integer? combatant identity of the first named actor, nil for legacy emissions
+local function explicitActor(event)
+  local actors = event.actors --[[@as table<integer, unknown>?]]
+  if type(actors) ~= "table" then
+    return nil
+  end
+  local first = actors[1] --[[@as table<string, unknown>?]]
+  if type(first) ~= "table" then
+    return nil
+  end
+  local id = (first --[[@as table<string, unknown>]]).combatant
+  if type(id) == "number" and id % 1 == 0 and id >= 1 then
+    return id --[[@as integer]]
+  end
+  return nil
+end
+
+---@param event table<string, unknown> sanitized kernel event carrying its explicit playback facts
+---@return integer? combatant identity of the first named target, nil for legacy emissions
+local function explicitTarget(event)
+  local targets = event.targets --[[@as table<integer, unknown>?]]
+  if type(targets) ~= "table" then
+    return nil
+  end
+  local first = targets[1] --[[@as table<string, unknown>?]]
+  if type(first) ~= "table" then
+    return nil
+  end
+  local id = (first --[[@as table<string, unknown>]]).combatant
+  if type(id) == "number" and id % 1 == 0 and id >= 1 then
+    return id --[[@as integer]]
+  end
+  return nil
+end
+
+---@param event table<string, unknown> sanitized kernel event carrying its explicit playback facts
+---@return string executed move identity: explicit facts first, cause identity next
+local function explicitMove(event)
+  local move = event.move --[[@as table<string, unknown>?]]
+  if type(move) == "table" and type(move.executed) == "string" then
+    return move.executed --[[@as string]]
+  end
+  return causeMoveKey(event)
+end
+
 ---@param self BattleTimeline
 ---@param event table<string, unknown> sanitized kernel event under translation
 local function translateStruck(self, event)
   local payload = event.payload --[[@as table<string, unknown>]]
-  local target = payload.target --[[@as integer]]
-  local attacker = nil
-  for _, id in ipairs(self._order) do
-    if id ~= target then
-      local shown = self:_shown(id)
-      if shown ~= nil and shown.visible ~= false then
-        attacker = id
-        break
+  -- Explicit playback facts name the true attacker and recipient;
+  -- only legacy emissions without them fall back to display order.
+  local target = explicitTarget(event)
+  if target == nil and type(payload.target) == "number" then
+    target = payload.target --[[@as integer]]
+  end
+  assert(type(target) == "number", "strikes name their recipient")
+  local attacker = explicitActor(event)
+  if attacker == nil then
+    for _, id in ipairs(self._order) do
+      if id ~= target then
+        local shown = self:_shown(id)
+        if shown ~= nil and shown.visible ~= false then
+          attacker = id
+          break
+        end
       end
     end
   end
-  local cause = event.cause --[[@as table<string, unknown>]]
-  local moveKey = type(cause.key) == "string" and cause.key or "strike"
+  local moveKey = explicitMove(event)
   local attackerName = attacker ~= nil and combatName(self, attacker) or "The foe"
   enqueueMessage(self, attackerName .. " used " .. moveName(self, attacker or -1, moveKey) .. "!", false)
   enqueue(self, {
@@ -550,10 +609,12 @@ end
 ---@param event table<string, unknown> sanitized kernel event under translation
 local function translateMoveUsed(self, event)
   local payload = event.payload --[[@as table<string, unknown>]]
-  local cause = event.cause --[[@as table<string, unknown>]]
-  local moveKey = type(cause.key) == "string" and cause.key or "strike"
-  local user = payload.user
-  if type(user) ~= "number" then
+  local moveKey = explicitMove(event)
+  local user = explicitActor(event)
+  if user == nil and type(payload.user) == "number" then
+    user = payload.user --[[@as integer]]
+  end
+  if user == nil then
     user = moveOwner(self, moveKey)
   end
   local userName = type(user) == "number" and combatName(self, user --[[@as integer]]) or "The foe"
@@ -569,7 +630,7 @@ end
 
 ---@param event table<string, unknown> sanitized kernel event
 ---@return string
-local function causeMoveKey(event)
+function causeMoveKey(event)
   local cause = event.cause --[[@as table<string, unknown>]]
   return type(cause.key) == "string" and cause.key or "strike"
 end
@@ -817,6 +878,79 @@ local function translateDelayed(self, event)
   enqueueMessage(self, "An attack was foretold for " .. nameOrBattler(self, target) .. ".", false)
 end
 
+---@param self BattleTimeline
+---@param event table<string, unknown> capture throw event under translation
+local function translateThrow(self, event)
+  local payload = event.payload --[[@as table<string, unknown>]]
+  local user = explicitActor(event)
+  if user == nil and type(payload.user) == "number" then
+    user = payload.user --[[@as integer]]
+  end
+  local ball = type(payload.ball) == "string" and payload.ball or "a ball"
+  local who = user ~= nil and combatName(self, user --[[@as integer]]) or "The battler"
+  enqueueMessage(self, who .. " threw a " .. ball .. ".", false)
+  enqueue(self, { kind = "wait", duration = BattleTimeline.HIT_TICKS })
+end
+
+---@param self BattleTimeline
+---@param event table<string, unknown> capture shake event under translation
+local function translateShake(self, event)
+  local payload = event.payload --[[@as table<string, unknown>]]
+  local index = payload.index
+  if type(index) == "number" then
+    local times = index --[[@as integer]] == 1 and " time." or " times."
+    enqueueMessage(self, "The ball shook " .. tostring(index) .. times, false)
+  else
+    enqueueMessage(self, "The ball is shaking.", false)
+  end
+  enqueue(self, { kind = "wait", duration = BattleTimeline.HIT_TICKS })
+end
+
+---@param self BattleTimeline
+---@return string visible name of the single wild foe under capture narration
+local function captureFoeName(self)
+  -- Captures only run in single wild encounters, so the one visible
+  -- foe is structural, never a display-order guess among several.
+  if self._latest ~= nil then
+    local foes = (self._latest --[[@as table<string, unknown>]]).foes
+    if type(foes) == "table" and type(foes[1]) == "table" then
+      local foe = (foes --[[@as table<integer, table<string, unknown>>]])[1]
+      if type(foe.name) == "string" then
+        return foe.name --[[@as string]]
+      end
+    end
+  end
+  return "The foe"
+end
+
+---@param self BattleTimeline
+local function translateCaught(self)
+  enqueueMessage(self, "Gotcha! " .. captureFoeName(self) .. " was caught!", false)
+  enqueue(self, { kind = "wait", duration = BattleTimeline.MESSAGE_HOLD_TICKS })
+end
+
+---@param self BattleTimeline
+local function translateBrokeFree(self)
+  enqueueMessage(self, captureFoeName(self) .. " broke free!", false)
+  enqueue(self, { kind = "wait", duration = BattleTimeline.HIT_TICKS })
+end
+
+---@param self BattleTimeline
+---@param event table<string, unknown> generic scripted-kernel strike under translation
+local function translateStrike(self, event)
+  local payload = event.payload --[[@as table<string, unknown>]]
+  local user = explicitActor(event)
+  local who = user ~= nil and combatName(self, user --[[@as integer]]) or "The battler"
+  enqueueMessage(self, who .. " struck with " .. explicitMove(event) .. ".", false)
+  local target = explicitTarget(event)
+  if target == nil and type(payload.resolved) == "number" then
+    target = payload.resolved --[[@as integer]]
+  end
+  if target ~= nil then
+    enqueueCheckpointHealth(self, target --[[@as integer]], event)
+  end
+end
+
 -- Every remaining kernel event kind the native session actually emits
 -- receives its intentional treatment here. Accounting-only events stay
 -- silent; everything else narrates, moves health, or changes visibility.
@@ -851,6 +985,11 @@ local OTHER_TRANSLATORS = {
   ["substitute-broke"] = translateSubstituteBroke,
   acknowledge = translateSilent,
   join = translateJoin,
+  throw = translateThrow,
+  shake = translateShake,
+  caught = translateCaught,
+  broke_free = translateBrokeFree,
+  strike = translateStrike,
 }
 
 ---@param self BattleTimeline
@@ -868,7 +1007,8 @@ end
 
 -- Accepts one delivery packet in order: unseen identities translate
 -- their events into cues behind the retained final facts; a repeated
--- identity is rejected without touching state.
+-- identity is rejected without touching state. A completion naming an
+-- entry token without actor identity is stale and never unblocks.
 ---@param packet table<string, unknown> detached delivery packet
 ---@return boolean accepted
 function BattleTimeline:present(packet)
@@ -878,27 +1018,70 @@ function BattleTimeline:present(packet)
   if id <= self._lastPacketId then
     return false
   end
+  local launch = type(packet.launchId) == "string" and packet.launchId or ""
+  local events = {} ---@type table<integer, table<string, unknown>>
+  if type(packet.events) == "table" then
+    for _, event in
+      ipairs(packet.events --[[@as table<integer, unknown>]])
+    do
+      if type(event) == "table" then
+        events[#events + 1] = event --[[@as table<string, unknown>]]
+      end
+    end
+  end
+  for _, event in ipairs(events) do
+    if event.kind == "acknowledge" then
+      local payload = event.payload --[[@as table<string, unknown>?]]
+      if type(payload) == "table" and type(payload.activation) == "number" and explicitActor(event) == nil then
+        return false
+      end
+    end
+  end
+  -- Exactly-once across deliveries: an event already played under its
+  -- launch identity never queues again, and a delivery carrying
+  -- nothing new changes nothing. Emissions without a sequence predate
+  -- identities and always play.
+  local fresh = {} ---@type table<integer, table<string, unknown>>
+  for _, event in ipairs(events) do
+    local key = nil
+    if type(event.sequence) == "number" and type(event.kind) == "string" then
+      key = launch .. "\0" .. tostring(event.sequence) .. "\0" .. event.kind
+    end
+    if
+      key == nil or self._seen[
+        key --[[@as string]]
+      ] ~= true
+    then
+      fresh[#fresh + 1] = event
+    end
+  end
+  if #events > 0 and #fresh == 0 then
+    return false
+  end
   self._lastPacketId = id
+  for _, event in ipairs(fresh) do
+    if type(event.sequence) == "number" and type(event.kind) == "string" then
+      self._seen[launch .. "\0" .. tostring(event.sequence) .. "\0" .. event.kind] = true
+    end
+  end
   indexFacts(self, packet.before)
   if type(packet.after) == "table" then
     self._latest = packet.after
   end
   indexFacts(self, packet.after)
-  if type(packet.events) == "table" then
-    for _, event in ipairs(packet.events) do
-      if type(event) == "table" and type(event.kind) == "string" then
-        local kind = event.kind --[[@as string]]
-        if kind == "struck" then
-          translateStruck(self, event --[[@as table<string, unknown>]])
-        elseif kind == "faint" then
-          translateFaint(self, event --[[@as table<string, unknown>]])
-        elseif kind == "exp" then
-          translateExp(self, event --[[@as table<string, unknown>]], packet)
-        elseif kind == "stats" then
-          translateStats(self, event --[[@as table<string, unknown>]], packet)
-        else
-          translateOther(self, event --[[@as table<string, unknown>]])
-        end
+  for _, event in ipairs(fresh) do
+    if type(event.kind) == "string" then
+      local kind = event.kind --[[@as string]]
+      if kind == "struck" then
+        translateStruck(self, event)
+      elseif kind == "faint" then
+        translateFaint(self, event)
+      elseif kind == "exp" then
+        translateExp(self, event, packet)
+      elseif kind == "stats" then
+        translateStats(self, event, packet)
+      else
+        translateOther(self, event)
       end
     end
   end
