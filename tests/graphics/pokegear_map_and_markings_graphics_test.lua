@@ -1,402 +1,237 @@
--- Region map geometry and presentation: forward and inverse cell
--- transforms stay exact inverses over every selectable cell at both
--- discrete scales and all four host panes, negative offsets truncate the
--- source way, out-of-surface pointers select nothing, all six skins paint
--- distinctly with live region masking, and the marking entrance gates
--- input until both its fade and slide completions finish.
+-- The gear region-map presentation in pixels: the world layer shows through
+-- the chrome opening under its scroll and zoom, objects draw under the
+-- chrome, the information pane composes the frame, preview and panel
+-- sprites, marking mode swaps in its backdrop and panel with the source
+-- slide, and every skin paints its own prepared planes. Every plane is a
+-- solid host-boundary fake hung on a genuine validated manifest path, so
+-- pixel comparisons never copy commercial bytes and a wrong plane is a
+-- colour mismatch.
 
 local Assert = require("tests.support.Assert")
+local Fixture = require("tests.support.PokegearMapFixture")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
-local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
-local PokegearState = require("libs.hgss.src.save.PokegearState")
 
 local T = {}
 
--- Loads a map module that does not exist yet at this baseline. The failure
--- names the missing behaviour instead of surfacing as a suite load error,
--- so the pre-implementation red stays attributable.
----@param moduleName string
----@param missingMessage string
----@return table
-local function requireFeature(moduleName, missingMessage)
-  local ok, mod = pcall(require, moduleName)
-  if not ok then
-    error(missingMessage, 0)
+---@param node table
+---@param out table<string, table>
+local function collectVisuals(node, out)
+  if type(node) ~= "table" then
+    return
   end
-  assert(type(mod) == "table", missingMessage)
-  return mod --[[@as table]]
+  if type(node.image) == "string" then
+    out[node.image] = node
+    return
+  end
+  for _, child in pairs(node) do
+    collectVisuals(child, out)
+  end
 end
 
+-- The deterministic colour of a path, so a test can name the plane it
+-- expects at a pixel.
 ---@param path string
----@param width integer
----@param height integer
----@return table
-local function visualRef(path, width, height)
-  return { image = path, width = width, height = height, anchorX = 0, anchorY = 0 }
+---@return number red
+---@return number green
+---@return number blue
+local function colorOf(path)
+  local hash = 7
+  for index = 1, #path do
+    hash = (hash * 31 + path:byte(index)) % 9973
+  end
+  return (hash % 13) / 14 + 0.05, (math.floor(hash / 13) % 13) / 14 + 0.05, (math.floor(hash / 169) % 13) / 14 + 0.05
 end
 
--- Synthetic companion family mirroring the published manifest shape: map
--- planes plus one location per region tier, validated through the real
--- asset schema so the scenarios borrow only genuine references. The map
--- foreground and upper chrome carry one prepared plane per source skin
--- while the world plane stays shared, exactly like the compiled family.
----@return table
-local function fixtureManifest()
-  local mapForeground, mapUpper = {}, {}
-  for skin = 0, 5 do
-    mapForeground[skin] = visualRef("assets/generated/pokegear/map-foreground-skin-" .. skin .. ".png", 256, 192)
-    mapUpper[skin] = visualRef("assets/generated/pokegear/map-upper-skin-" .. skin .. ".png", 256, 192)
-  end
-  return {
-    schema = "g4-pokegear-assets-v1",
-    skins = { 0, 1, 2, 3, 4, 5 },
-    shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png", 256, 192) },
-    configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png", 256, 192) },
-    phone = { panel = visualRef("assets/generated/pokegear/phone-panel.png", 256, 192) },
-    map = {
-      foreground = mapForeground,
-      upper = mapUpper,
-      world = visualRef("assets/generated/pokegear/map-world.png", 512, 512),
-      upperBase = visualRef("assets/generated/pokegear/map-upper-base.png", 256, 192),
-    },
-    fly = { pairs = { visualRef("assets/generated/pokegear/fly-pair-1.png", 256, 192) } },
-    radio = { dial = visualRef("assets/generated/pokegear/radio-dial.png", 256, 192) },
-    catalog = {
-      contacts = {},
-      contactOrder = {},
-      callDefinitions = {},
-      callTriggers = {},
-      rematches = {},
-      gifts = {},
-      momPurchases = {},
-      locations = {
-        {
-          key = "test.place.johto",
-          fieldMap = "test.field.johto",
-          matrix = { x = 96, y = 64 },
-          location = "test.place.johto",
-          region = "johto",
-        },
-        { key = "test.place.kanto" },
-      },
-      flypoints = {},
-      reception = {},
-      shows = {},
-      radioEffects = {},
-    },
-    text = {},
-    sequences = {},
-  }
-end
-
--- The four host panes from the locked layout contract, expressed as
--- viewport rectangles over the shared source surfaces: wide keeps
--- information left of controls, tall stacks it above, the physical pair
--- splits screens, and the near-native frame centers the source geometry.
----@return table<string, table> name to viewport rect
-local function hostPanes()
-  return {
-    wide = { x = 0, y = 0, width = 256, height = 192 },
-    tall = { x = 0, y = 192, width = 256, height = 192 },
-    dual = { x = 0, y = 0, width = 256, height = 192 },
-    nativeLike = { x = 128, y = 96, width = 256, height = 192 },
-  }
-end
-
--- Forward and inverse geometry agree over every selectable source cell:
--- each cell center projects and pointer-maps back to its own cell at
--- both discrete scales, extreme pans, and all four host panes, with no
--- unreachable unlocked cell and no selection outside the world surface.
-function T.forward_and_inverse_geometry_agree_over_every_selectable_cell()
-  local MapProjection = requireFeature(
-    "game.hgss.src.pokegear.MapProjection",
-    "the region map has no projection owner yet: cell drawing and pointer selection cannot agree"
-  )
-  local pans = {
-    { x = 0, y = 0 },
-    { x = -40, y = -24 },
-    { x = 248, y = 248 },
-  }
-  for paneName, pane in pairs(hostPanes()) do
-    for _, cells in ipairs({ 8, 16 }) do
-      local span = math.floor(512 / cells)
-      for _, pan in ipairs(pans) do
-        for cy = 0, span - 1 do
-          for cx = 0, span - 1 do
-            local point = MapProjection.forward({ x = cx, y = cy }, pan, cells, pane)
-            Assert.notNil(point, paneName .. " projects cell " .. cx .. "," .. cy .. " at " .. cells .. "px")
-            local back = MapProjection.inverse(point, pan, cells, pane)
-            Assert.notNil(back, paneName .. " pointer-maps its own drawing at " .. cells .. "px")
-            Assert.equal(back.x, cx, paneName .. " inverse keeps the column at " .. cells .. "px")
-            Assert.equal(back.y, cy, paneName .. " inverse keeps the row at " .. cells .. "px")
-          end
-        end
-      end
-    end
-  end
-
-  -- Discrete doubling, not continuous zoom: adjacent cell centers sit
-  -- exactly twice as far apart at sixteen pixels as at eight.
-  do
-    local pane = hostPanes().wide
-    local pan = { x = 0, y = 0 }
-    local a8 = MapProjection.forward({ x = 4, y = 4 }, pan, 8, pane)
-    local b8 = MapProjection.forward({ x = 5, y = 4 }, pan, 8, pane)
-    local a16 = MapProjection.forward({ x = 4, y = 4 }, pan, 16, pane)
-    local b16 = MapProjection.forward({ x = 5, y = 4 }, pan, 16, pane)
-    Assert.near((b16.x - a16.x), 2 * (b8.x - a8.x), 1e-6, "sixteen-pixel cells double the eight-pixel step")
-  end
-
-  -- Cell order never mirrors: increasing columns project rightward in
-  -- every pane.
-  for paneName, pane in pairs(hostPanes()) do
-    local left = MapProjection.forward({ x = 2, y = 9 }, { x = 0, y = 0 }, 8, pane)
-    local right = MapProjection.forward({ x = 6, y = 9 }, { x = 0, y = 0 }, 8, pane)
-    Assert.isTrue(right.x > left.x, paneName .. " keeps column order")
-  end
-
-  -- Negative offsets truncate toward zero the source way: with a three
-  -- pixel pan the surface origin still belongs to cell zero, where floor
-  -- division would blame cell minus one.
-  do
-    local pane = hostPanes().wide
-    local back = MapProjection.inverse({ x = pane.x, y = pane.y }, { x = 3, y = 3 }, 8, pane)
-    Assert.notNil(back, "the truncated origin still selects a cell")
-    Assert.equal(back.x, 0, "negative remainders truncate toward zero, never floor")
-    Assert.equal(back.y, 0, "negative remainders truncate toward zero, never floor")
-  end
-
-  -- Pointers above and left of the world surface select nothing, so no
-  -- hidden region answers through an invisible hitbox; pointers past the
-  -- far edge still resolve to their valid surface cell.
-  for paneName, pane in pairs(hostPanes()) do
-    Assert.isNil(
-      MapProjection.inverse({ x = pane.x - 20, y = pane.y - 20 }, { x = 0, y = 0 }, 8, pane),
-      paneName .. " rejects pointers above and left of the surface"
-    )
-    local pastEdge = MapProjection.inverse(
-      { x = pane.x + pane.width + 20, y = pane.y + pane.height + 20 },
-      { x = 0, y = 0 },
-      16,
-      pane
-    )
-    Assert.deepEqual(pastEdge, { x = 17, y = 13 }, paneName .. " maps past-edge pointers to their valid surface cell")
-  end
-end
-
----@param manifest table
----@return table<string, table> image path to visual
-local function collectVisuals(manifest)
-  local out = {}
-  local function walk(node)
-    if type(node) ~= "table" then
-      return
-    end
-    if type(node.image) == "string" then
-      out[node.image] = node
-      return
-    end
-    for _, child in pairs(node) do
-      walk(child)
-    end
-  end
-  walk(manifest)
-  return out
-end
-
--- One solid in-memory image per manifest path. Host-boundary handles
--- only; the manifest itself stays the borrowed immutable record.
+-- Solid fakes with two structured exceptions: the world planes encode their
+-- own layer coordinates in red and green so a pixel names the world point it
+-- shows, and the chrome planes keep the source's transparent map opening.
 ---@param scope table
 ---@param manifest table
 ---@return table resources
 local function renderResources(scope, manifest)
+  local visuals = {}
+  collectVisuals(manifest, visuals)
   local images = {}
-  local seed = 0
-  for path, visual in pairs(collectVisuals(manifest)) do
-    seed = seed + 1
-    local canvas = scope:own(love.graphics.newCanvas(visual.width, visual.height))
-    love.graphics.setCanvas(canvas)
-    love.graphics.setColor((seed * 0.37) % 1, (seed * 0.61) % 1, (seed * 0.83) % 1, 1)
-    love.graphics.rectangle("fill", 0, 0, visual.width, visual.height)
-    love.graphics.setCanvas()
-    images[path] = scope:own(love.graphics.newImage(scope:own(canvas:newImageData())))
+  for path, visual in pairs(visuals) do
+    local data = scope:own(love.image.newImageData(visual.width, visual.height))
+    local red, green, blue = colorOf(path)
+    local isWorld = path:find("map%-world") ~= nil
+    local isChrome = path:find("map%-foreground") ~= nil
+    data:mapPixel(function(x, y)
+      if isWorld then
+        return (x % 256) / 255, (y % 256) / 255, 0.5, 1
+      elseif isChrome and x >= 8 and x < 200 and y >= 8 and y < 152 then
+        return 0, 0, 0, 0
+      end
+      return red, green, blue, 1
+    end)
+    images[path] = scope:own(love.graphics.newImage(data))
   end
   return { graphics = love.graphics, images = images }
 end
 
--- Samples a cross of the canvas so a repaint anywhere changes the
--- signature.
+---@param scope table
+---@param resources table
+---@param controller table
+---@param pane string "controls" or "information"
+---@param shell table?
+---@return table imageData
+local function draw(scope, resources, controller, pane, shell)
+  local status = controller:status()
+  local plan = status.presentation
+  local canvas = scope:own(love.graphics.newCanvas(256, 192))
+  love.graphics.setCanvas(canvas)
+  love.graphics.clear(0, 0, 0, 0)
+  love.graphics.setColor(1, 1, 1, 1)
+  if pane == "controls" then
+    plan.render(resources, status, plan, shell or { entered = true })
+  else
+    plan.renderInformation(resources, status, plan)
+  end
+  love.graphics.setCanvas()
+  return scope:own(canvas:newImageData())
+end
+
 ---@param data table
+---@param x integer
+---@param y integer
+---@return string key a coarse colour identity
+local function pixelKey(data, x, y)
+  local red, green, blue, alpha = data:getPixel(x, y)
+  return string.format("%.2f/%.2f/%.2f/%.0f", red, green, blue, alpha)
+end
+
+---@param path string
 ---@return string
-local function paintSignature(data)
-  local parts = {}
-  for _, point in ipairs({ { 10, 10 }, { 200, 60 }, { 60, 140 }, { 180, 150 }, { 128, 96 } }) do
-    local red, green, blue, alpha = data:getPixel(point[1], point[2])
-    parts[#parts + 1] = string.format(
-      "%d:%d:%d:%d",
-      math.floor(red * 255 + 0.5),
-      math.floor(green * 255 + 0.5),
-      math.floor(blue * 255 + 0.5),
-      math.floor(alpha * 255 + 0.5)
+local function keyOf(path)
+  local red, green, blue = colorOf(path)
+  return string.format("%.2f/%.2f/%.2f/1", red, green, blue)
+end
+
+local function skinPath(section, skin)
+  return "assets/generated/pokegear/" .. section .. "-skin-" .. skin .. ".png"
+end
+
+---@param data table
+---@param view table
+---@param x number screen x
+---@param y number screen y
+---@return number worldX
+---@return number worldY
+local function worldPoint(view, x, y)
+  local world = view.world
+  local r = world.ratio
+  return (x + world.scrollX + world.xOffset + (r - 1) * world.affineX) / r,
+    (y + world.scrollY + (r - 1) * world.affineY) / r
+end
+
+function T.the_world_shows_through_the_chrome_opening_at_its_transform(scope)
+  local manifest = Fixture.manifest()
+  local resources = renderResources(scope, manifest)
+  local box = Fixture.openMap({ record = Fixture.record(manifest) })
+  for _, zoom in ipairs({ false, true }) do
+    if zoom then
+      box.controller:updateFixed({ { type = "menu" } })
+      Fixture.tick(box.controller, 4)
+    end
+    local view = box.controller:status().view
+    local data = draw(scope, resources, box.controller, "controls")
+    Assert.equal(pixelKey(data, 4, 4), keyOf(skinPath("map-foreground", 0)), "the chrome frame draws over the world")
+    -- A pixel inside the opening names the world point under the transform.
+    local x, y = 60, 40
+    local worldX, worldY = worldPoint(view, x, y)
+    local red, green = data:getPixel(x, y)
+    Assert.isTrue(
+      math.abs(red - (math.floor(worldX) % 256) / 255) < 0.02
+        and math.abs(green - (math.floor(worldY) % 256) / 255) < 0.02,
+      (zoom and "zoomed" or "unzoomed") .. " opening shows the world point under the layer transform"
     )
   end
-  return table.concat(parts, "|")
 end
 
--- Map layers and panel slides match source order with gated input: every
--- skin paints distinctly through its own prepared chrome, region masking
--- repaints across unlock levels, and marking-mode input stays gated until
--- both the fade and the slide completions finish.
-function T.map_layers_and_panel_slides_match_source_order_with_gated_input(scope)
-  local MapController = requireFeature(
-    "game.hgss.src.pokegear.MapController",
-    "the region map has no controller yet: layer painting and slide gating cannot be captured"
-  )
-  local PokegearMapRenderer = requireFeature(
-    "libs.hgss.src.presentation.PokegearMapRenderer",
-    "the region map has no renderer yet: world, panel, and sprite layers cannot be captured"
-  )
-  local manifest = fixtureManifest()
-  local record = PokegearAssetSchema.validate(manifest)
-  Assert.notNil(record, "the synthetic companion catalog must validate through the asset schema")
-  assert(record ~= nil, "synthetic catalog validated above")
-  local state = PokegearState.new({ seed = 1207 }, { catalog = record.catalog })
-  local mapContext = {
-    fieldMap = "test.field.johto",
-    location = "test.place.johto",
-    matrixX = 96,
-    matrixY = 64,
-    region = "johto",
-    unlockLevel = 1,
-    specialMode = nil,
-    playerGender = "boy",
-  }
-  local controller = MapController.new({
-    state = state,
-    assets = record,
-    mapContext = mapContext,
-    phoneProjection = function(_)
-      return {}
-    end,
-    roamerProjection = {},
-    wordEntry = {
-      open = function(_) end,
-      step = function() end,
-      result = function()
-        return nil
-      end,
-      cancel = function() end,
-    },
-  })
+function T.the_cursor_sprite_draws_under_the_chrome_on_its_cell(scope)
+  local manifest = Fixture.manifest()
   local resources = renderResources(scope, manifest)
+  local box = Fixture.openMap({ record = Fixture.record(manifest) })
+  local view = box.controller:status().view
+  local cursor = view.sprites.cursor
+  local data = draw(scope, resources, box.controller, "controls")
+  local frame = box.controller:status().presentation.content.sprites.mapObjects[1].frames[1].image
+  Assert.equal(
+    pixelKey(data, math.floor(cursor.x), math.floor(cursor.y)),
+    keyOf(frame),
+    "the cursor sprite draws on its selected cell"
+  )
+  local hidden = draw(scope, resources, box.controller, "controls", { entered = false })
+  Assert.isTrue(
+    pixelKey(hidden, math.floor(cursor.x), math.floor(cursor.y)) ~= keyOf(frame),
+    "the cursor sprite hides while focus is on the tab strip"
+  )
+end
 
-  -- Every skin paints distinctly through its own prepared chrome: six
-  -- commits through one painting path yield six signatures with no
-  -- asset rebuild between draws. The skin preference behind each status
-  -- resolves that skin's foreground and upper planes, so distinct
-  -- signatures prove distinct prepared art, never tint modulation.
-  local seen = {}
-  for skin = 0, 5 do
-    state:setPreference("skin", skin)
-    local status = controller:status()
-    local canvas = scope:own(love.graphics.newCanvas(256, 192))
-    love.graphics.setCanvas(canvas)
-    love.graphics.clear(0, 0, 0, 0)
-    PokegearMapRenderer.draw(resources, status, skin)
-    love.graphics.setCanvas()
-    local signature = paintSignature(scope:own(canvas:newImageData()))
-    Assert.isNil(seen[signature], "skin " .. skin .. " paints distinctly through its prepared chrome")
-    seen[signature] = skin
-  end
+function T.the_information_pane_composes_frame_preview_and_markers(scope)
+  local manifest = Fixture.manifest()
+  local resources = renderResources(scope, manifest)
+  local box = Fixture.openMap({ record = Fixture.record(manifest) })
+  box.state:setMarking("MAP_A", { icons = { 2, false, false, false }, words = { false, false, false, false } })
+  local data = draw(scope, resources, box.controller, "information")
+  -- The frame plane covers the panel rows; the preview block sits behind its frame
+  -- hole, so only the frame plane's colour shows in the solid fake.
+  Assert.equal(pixelKey(data, 4, 120), keyOf(skinPath("map-upper", 0)), "the info frame draws its rows")
+  -- The first marker sprite lands at its rest position under the frame.
+  local marker = box.controller:status().presentation.content.sprites.markers[1].frames[2].image
+  Assert.equal(pixelKey(data, 32, 155), keyOf(marker), "the saved icon draws at its panel marker position")
+end
 
-  -- Region masking repaints across unlock levels: the locked Johto view
-  -- and the fully unlocked view differ over a material area while both
-  -- keep opaque world and panel content.
-  local function drawUnlocked(level)
-    local unlocked = MapController.new({
-      state = state,
-      assets = record,
-      mapContext = {
-        fieldMap = mapContext.fieldMap,
-        location = mapContext.location,
-        matrixX = mapContext.matrixX,
-        matrixY = mapContext.matrixY,
-        region = mapContext.region,
-        unlockLevel = level,
-        specialMode = nil,
-        playerGender = mapContext.playerGender,
-      },
-      phoneProjection = function(_)
-        return {}
-      end,
-      roamerProjection = {},
-      wordEntry = {
-        open = function(_) end,
-        step = function() end,
-        result = function()
-          return nil
-        end,
-        cancel = function() end,
-      },
-    })
-    local canvas = scope:own(love.graphics.newCanvas(256, 192))
-    love.graphics.setCanvas(canvas)
-    love.graphics.clear(0, 0, 0, 0)
-    PokegearMapRenderer.draw(resources, unlocked:status(), 0)
-    love.graphics.setCanvas()
-    local data = scope:own(canvas:newImageData())
-    unlocked:dispose()
-    return data
-  end
-  local locked = drawUnlocked(1)
-  local open = drawUnlocked(3)
-  local changed, opaque = 0, 0
-  for y = 0, 191 do
-    for x = 0, 255 do
-      local r1, g1, b1, a1 = locked:getPixel(x, y)
-      local r2, g2, b2, _ = open:getPixel(x, y)
-      if
-        math.floor(r1 * 255 + 0.5) ~= math.floor(r2 * 255 + 0.5)
-        or math.floor(g1 * 255 + 0.5) ~= math.floor(g2 * 255 + 0.5)
-        or math.floor(b1 * 255 + 0.5) ~= math.floor(b2 * 255 + 0.5)
-      then
-        changed = changed + 1
-      end
-      if a1 > 0.5 then
-        opaque = opaque + 1
+function T.marking_mode_swaps_in_its_backdrop_and_slides_its_panel(scope)
+  local manifest = Fixture.manifest()
+  local resources = renderResources(scope, manifest)
+  local box = Fixture.openMap({ record = Fixture.record(manifest) })
+  box.controller:updateFixed({ { type = "confirm" } })
+  local sawHidden, sawShown = false, false
+  for _ = 1, 40 do
+    Fixture.tick(box.controller)
+    local view = box.controller:status().view
+    if view.mode == "marking" then
+      local data = draw(scope, resources, box.controller, "controls")
+      if view.bottomSlide >= 112 then
+        sawHidden = true
+        Assert.equal(
+          pixelKey(data, 10, 50),
+          keyOf(skinPath("map-marking-backdrop", 0)),
+          "the hidden panel leaves only the backdrop"
+        )
+      elseif view.bottomSlide == 0 then
+        sawShown = true
+        Assert.equal(
+          pixelKey(data, 10, 50),
+          keyOf(skinPath("map-marking-panel", 0)),
+          "the settled panel covers the top of the screen"
+        )
       end
     end
-  end
-  Assert.isTrue(changed > 500, "unlocking the hidden region repaints its masked patches")
-  Assert.isTrue(opaque > 1000, "the masked map keeps opaque world and panel content")
-
-  -- The marking entrance gates input until both completions: taps during
-  -- the fade/slide change nothing and publish nothing, while the same
-  -- tap after both completions enters the panel.
-  local view = assert(controller:status().view, "the map view is published")
-  local button = assert(view.markingsButton, "the map view publishes its markings entry")
-  local bx, by = button.x + button.width / 2, button.y + button.height / 2
-  controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = bx, y = by } })
-  controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = bx, y = by } })
-  local entering = controller:status()
-  Assert.notNil(entering.transition, "the marking entrance runs a transition")
-  local gated = controller:status()
-  controller:updateFixed({ { type = "pointer_down", pointerId = "touch:2", x = 8, y = 8 } })
-  controller:updateFixed({ { type = "pointer_up", pointerId = "touch:2", x = 8, y = 8 } })
-  Assert.deepEqual(controller:status().view, gated.view, "entrance input changes no view state")
-  Assert.isNil(controller:takeResult(), "gated input publishes no result")
-  for _ = 1, 120 do
-    local transition = controller:status().transition
-    if transition == nil or transition.completed == true then
+    if not box.controller:status().busy then
       break
     end
-    controller:updateFixed({})
   end
-  local settled = controller:status()
-  local transition = settled.transition
-  Assert.isTrue(transition == nil or transition.completed == true, "both entrance completions finish")
-  Assert.notNil(settled.view.markingPanel, "the settled entrance publishes the marking panel")
-  controller:dispose()
+  Assert.isTrue(sawHidden and sawShown, "the panel slides from hidden to shown")
 end
 
-return GraphicsSmoke.suite(T, { tags = { "pokegear" } })
+function T.every_skin_paints_its_own_prepared_planes(scope)
+  local manifest = Fixture.manifest()
+  local resources = renderResources(scope, manifest)
+  local seen = {}
+  for skin = 0, 5 do
+    local record = Fixture.record(manifest)
+    local box = Fixture.openMap({ record = record })
+    box.state:setPreference("skin", skin)
+    local data = draw(scope, resources, box.controller, "controls")
+    local key = pixelKey(data, 4, 4)
+    Assert.equal(key, keyOf(skinPath("map-foreground", skin)), "skin " .. skin .. " draws its own chrome")
+    Assert.isNil(seen[key], "skin " .. skin .. " paints distinctly from the others")
+    seen[key] = true
+  end
+end
+
+local suite = GraphicsSmoke.suite(T, { tags = { "pokegear" } })
+return suite

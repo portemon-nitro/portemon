@@ -56,7 +56,8 @@ local function fixtureManifest(contacts, order)
   for skin = 0, 5 do
     phoneListPalette[skin] = {}
     for index = 1, 16 do
-      phoneListPalette[skin][index] = { r = (index * 15 + skin * 30) % 256, g = (index * 40) % 256, b = (skin * 45 + 20) % 256 }
+      phoneListPalette[skin][index] =
+        { r = (index * 15 + skin * 30) % 256, g = (index * 40) % 256, b = (skin * 45 + 20) % 256 }
     end
   end
   for skin = 0, 5 do
@@ -68,7 +69,7 @@ local function fixtureManifest(contacts, order)
     open = visualRef("assets/generated/pokegear/phone-panel-open.png", 240, 48),
   }
   return {
-    schema = "g4-pokegear-assets-v1",
+    schema = "g4-pokegear-assets-v2",
     skins = { 0, 1, 2, 3, 4, 5 },
     shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png", 256, 192) },
     configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png", 32, 32) },
@@ -88,6 +89,7 @@ local function fixtureManifest(contacts, order)
         { key = "custom.new-bark" },
       },
       flypoints = {},
+      regionMap = require("tests.support.PokegearRegionMapFixture").build(),
       reception = {},
       shows = {},
       radioEffects = {},

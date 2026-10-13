@@ -88,7 +88,7 @@ function Fixture.fixtureManifest()
     shows[#shows + 1] = { key = key }
   end
   return {
-    schema = "g4-pokegear-assets-v1",
+    schema = "g4-pokegear-assets-v2",
     skins = { 0, 1, 2, 3, 4, 5 },
     shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png") },
     configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png") },
@@ -116,6 +116,7 @@ function Fixture.fixtureManifest()
         { key = "custom.route-37" },
       },
       flypoints = {},
+      regionMap = require("tests.support.PokegearRegionMapFixture").build(),
       reception = {},
       shows = shows,
       radioEffects = {},

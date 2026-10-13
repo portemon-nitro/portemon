@@ -21,6 +21,8 @@ local PhoneController = require("game.hgss.src.pokegear.PhoneController")
 ---@field _catalog table<string, unknown> the borrowed contact catalog
 ---@field _messages table<string, unknown> the borrowed message references
 ---@field _world table<string, unknown> the borrowed world fixture
+---@field _assets table<string, unknown>? the borrowed compiled family behind the map entries
+---@field _regionMapOwners (fun(): table<string, unknown>, table<string, unknown>)? the region map text and flag owners
 ---@field _audio table<string, unknown>? the borrowed audio boundary
 ---@field _random table<string, unknown>? the borrowed companion streams
 ---@field _active table<string, unknown>? the live application record
@@ -49,7 +51,17 @@ function PokegearScriptHost.new(opts)
   assert(type(opts.world) == "table", "the companion host borrows its world")
   assert(opts.audio == nil or type(opts.audio) == "table", "the companion host uses the audio boundary as a record")
   assert(opts.random == nil or type(opts.random) == "table", "the companion host draws through the companion streams")
+  assert(
+    opts.assets == nil or type(opts.assets) == "table",
+    "the companion host borrows the compiled family as a record"
+  )
+  assert(
+    opts.regionMapOwners == nil or type(opts.regionMapOwners) == "function",
+    "the companion host reads the region map owners through a function"
+  )
   return setmetatable({
+    _assets = opts.assets,
+    _regionMapOwners = opts.regionMapOwners,
     _state = opts.state,
     _catalog = opts.catalog,
     _messages = opts.messages,
@@ -263,14 +275,24 @@ function PokegearScriptHost:_openMap(args)
     )
   end
   local FlyMapController = require("game.hgss.src.pokegear.FlyMapController")
+  local regionMapOwners = self._regionMapOwners --[[@as (fun(): table<string, unknown>, table<string, unknown>)?]]
+  if regionMapOwners == nil or self._assets == nil then
+    Errors.raise(
+      ScriptErrors.SCRIPT_SERVICE_MISSING,
+      "companion maps need the compiled family and the region map owners",
+      { mode = mode }
+    )
+  end
+  local messages, facts = (regionMapOwners --[[@as fun(): table<string, unknown>, table<string, unknown>]])()
   local identity = mode .. "-" .. tostring(self._nextId + 1)
   local ok, controller = pcall(FlyMapController.new, {
     mode = mode,
     operationId = identity,
     context = selection ~= nil and (selection --[[@as table<string, unknown>]]).mapContext or nil,
     destinations = selection ~= nil and (selection --[[@as table<string, unknown>]]).destinations or nil,
-    assets = { catalog = self._catalog },
-    presentation = {},
+    assets = self._assets,
+    messages = messages,
+    facts = facts,
   })
   if not ok then
     if Errors.is(controller) then

@@ -46,7 +46,7 @@ local function assetFamily(catalog)
     shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png") },
     configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png") },
     phone = { panel = visualRef("assets/generated/pokegear/phone-panel.png") },
-    map = { base = visualRef("assets/generated/pokegear/map-base.png") },
+    map = require("tests.support.PokegearMapFixture").manifest().map,
     fly = { base = visualRef("assets/generated/pokegear/fly-base.png") },
     radio = { dial = visualRef("assets/generated/pokegear/radio-dial.png") },
     text = {},
@@ -258,8 +258,12 @@ end
 -- nothing. Production never substitutes an empty snapshot.
 function T.tests.composed_map_tab_samples_live_roamers_without_moving_them()
   local friends = companion()
-  friends.catalog.locations[#friends.catalog.locations + 1] =
-    { key = "test.live", fieldMap = "test.map", location = "test.live", region = "test.johto" }
+  -- The region map carries New Bark's source map so the live roamer sits on a visible location.
+  local regionMap = require("tests.support.PokegearRegionMapFixture").build()
+  regionMap.locations[1].mapId = 60
+  regionMap.locations[1].mapSymbol = "MAP_NEW_BARK"
+  regionMap.locations[1].x, regionMap.locations[1].y = 21, 14
+  friends.catalog.regionMap = regionMap
   friends.state:registerCard("map")
   friends.state:setPreference("lastApp", "map")
   local HgssRoamerState = require("libs.hgss.src.encounters.HgssRoamerState")
@@ -276,11 +280,11 @@ function T.tests.composed_map_tab_samples_live_roamers_without_moving_them()
   end
   local roamers = HgssRoamerState.new({
     records = {
-      record("test.roamer.raikou", "test.raikou", 11, "roaming"),
-      record("test.roamer.entei", "test.entei", 12, "caught"),
+      record("test.roamer.raikou", "RAIKOU", 60, "roaming"),
+      record("test.roamer.entei", "ENTEI", 61, "caught"),
     },
-    species = { ["test.raikou"] = true, ["test.entei"] = true },
-    maps = { [11] = true, [12] = true },
+    species = { RAIKOU = true, ENTEI = true },
+    maps = { [60] = true, [61] = true },
   })
   local bundle, runtime = composeGear(friends)
   runtime.session = {
@@ -293,24 +297,32 @@ function T.tests.composed_map_tab_samples_live_roamers_without_moving_them()
   runtime.player = { fieldX = 695, fieldZ = 397 }
   runtime.playerData = { profile = { gender = 0 } }
   runtime.roamerState = roamers
+  runtime.messageProvider = {
+    acquireBank = function()
+      return {}
+    end,
+    releaseBank = function() end,
+    get = function(_, bank, entry)
+      return { text = "text " .. bank .. ":" .. entry }
+    end,
+  }
+  runtime.scripts = {
+    worldState = {
+      isFlagSet = function()
+        return false
+      end,
+    },
+  }
   local screen = bundle.screenFactory({ kind = "browse" })
   Assert.equal(screen:status().tab, "map", "the remembered map tab opens through the factory")
   local child = (screen:status().child --[[@as table]]).view --[[@as table]]
   Assert.notNil(child, "the composed map publishes its view")
-  local markers = child.markers --[[@as table]]
-  Assert.notNil(markers, "the composed map publishes its markers")
-  local found = {}
-  for _, marker in ipairs(markers) do
-    if
-      (marker --[[@as table]]).kind == "roamer"
-    then
-      found[#found + 1] = (marker --[[@as table]]).key
-    end
-  end
-  Assert.deepEqual(found, { "test.roamer.raikou" }, "only the roaming record projects from live owners")
+  local drawn = (child.sprites --[[@as table]]).roamers --[[@as table]]
+  Assert.equal(#drawn, 1, "only the roaming record projects from live owners")
+  Assert.equal((drawn[1] --[[@as table]]).frame, 1, "the roaming record is Raikou")
   Assert.equal(
     (roamers:capture().roamers --[[@as table]])["test.roamer.raikou"].location,
-    11,
+    60,
     "sampling moves no roamer"
   )
   screen:dispose()

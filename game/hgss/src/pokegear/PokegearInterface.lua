@@ -248,6 +248,13 @@ local function mapControlsInput(event, view, plan)
   if type(event.x) ~= "number" or type(event.y) ~= "number" then
     return event
   end
+  local child = view.child
+  if
+    type(child) == "table" and (child --[[@as table<string, unknown>]]).stripHidden == true
+  then
+    -- A card that hides the strip owns every point of the controls pane.
+    return event
+  end
   local content = assert(plan.content, "the companion plan carries its slot geometry")
   assert(type(content) == "table" and type(content.slots) == "table", "the companion plan carries its slots")
   local slots = content.slots --[[@as table]]

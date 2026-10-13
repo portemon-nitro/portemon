@@ -413,4 +413,17 @@ function PokegearPhoneRenderer.draw(resources, view, content)
   (graphics --[[@as love.graphics]]).setColor(1, 1, 1, 1)
 end
 
+-- Draws the phone's upper plane into the information pane.
+---@param resources table<string, unknown> borrowed host collaborators
+---@param content table<string, unknown> the plan payload with resolved paths
+function PokegearPhoneRenderer.drawInformation(resources, content)
+  local graphics = assert(resources.graphics, "the phone render borrows its host graphics") --[[@as love.graphics]]
+  local images = assert(resources.images, "the phone render borrows its prepared images") --[[@as table<string, unknown>]]
+  if type(content.upper) == "string" then
+    local image = assert(images[content.upper], "the phone render needs its prepared upper image")
+    graphics.setColor(1, 1, 1, 1)
+    graphics.draw(image, 0, 0)
+  end
+end
+
 return PokegearPhoneRenderer

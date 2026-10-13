@@ -135,11 +135,19 @@ end
 -- The published-plan render entry: draws the detached phone view over the
 -- resolved plan payload. Named so the presentation table carries an alias.
 ---@param resources table<string, unknown> borrowed host collaborators
----@param snapshot table<string, unknown> the shell snapshot carrying the detached view
+---@param snapshot table<string, unknown> the card status carrying the detached view
 ---@param plan table<string, unknown> the published plan carrying the payload
 local function renderPhonePresentation(resources, snapshot, plan)
   local PokegearPhoneRenderer = require("libs.hgss.src.presentation.PokegearPhoneRenderer")
   PokegearPhoneRenderer.draw(resources, snapshot.view, plan.content)
+end
+
+-- The information-pane half: the phone's upper plane.
+---@param resources table<string, unknown> borrowed host collaborators
+---@param plan table<string, unknown> the published plan carrying the payload
+local function renderPhoneInformation(resources, _, plan)
+  local PokegearPhoneRenderer = require("libs.hgss.src.presentation.PokegearPhoneRenderer")
+  PokegearPhoneRenderer.drawInformation(resources, plan.content)
 end
 
 ---@class PhoneController.Options
@@ -947,6 +955,7 @@ function PhoneController:status()
     height = 192,
     content = content,
     render = renderPhonePresentation,
+    renderInformation = renderPhoneInformation,
   }
   return {
     open = true,

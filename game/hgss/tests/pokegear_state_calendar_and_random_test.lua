@@ -44,7 +44,7 @@ end
 ---@return table
 local function fixtureManifest()
   return {
-    schema = "g4-pokegear-assets-v1",
+    schema = "g4-pokegear-assets-v2",
     skins = { 0, 1, 2, 3, 4, 5 },
     shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png") },
     configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png") },
@@ -68,6 +68,7 @@ local function fixtureManifest()
         { key = "custom.new-bark" },
       },
       flypoints = {},
+      regionMap = require("tests.support.PokegearRegionMapFixture").build(),
       reception = {},
       shows = {},
       radioEffects = {},
@@ -190,7 +191,7 @@ function T.tests.contact_registration_round_trips_through_capture_and_stays_idem
   Assert.equal(state:revision(), revision + 2, "only first-time registrations advance the revision")
 
   state:setContactReward("custom.elm", { item = "custom.potion", quantity = 1 })
-  state:setMarking("custom.new-bark", {
+  state:setMarking("MAP_FIXTURE", {
     icons = { 1, 2, false, false },
     words = { "custom.word-a", false, false, false },
   })
@@ -220,7 +221,7 @@ function T.tests.contact_registration_round_trips_through_capture_and_stays_idem
     "registered order survives capture and restore"
   )
   Assert.deepEqual(
-    revived:capture().markings["custom.new-bark"],
+    revived:capture().markings["MAP_FIXTURE"],
     { icons = { 1, 2, false, false }, words = { "custom.word-a", false, false, false } },
     "four-slot markings survive capture and restore with explicit empty slots"
   )
@@ -616,19 +617,19 @@ function T.tests.malformed_markings_and_rewards_are_rejected_without_moving_revi
   end
 
   rejects(function()
-    state:setMarking("custom.new-bark", { icons = { 1, 2, 3 }, words = { false, false, false, false } })
+    state:setMarking("MAP_FIXTURE", { icons = { 1, 2, 3 }, words = { false, false, false, false } })
   end)
   rejects(function()
-    state:setMarking("custom.new-bark", { icons = { 10, false, false, false }, words = { false, false, false, false } })
+    state:setMarking("MAP_FIXTURE", { icons = { 10, false, false, false }, words = { false, false, false, false } })
   end)
   rejects(function()
-    state:setMarking("custom.new-bark", { icons = { 0, false, false, false }, words = { false, false, false, false } })
+    state:setMarking("MAP_FIXTURE", { icons = { 0, false, false, false }, words = { false, false, false, false } })
   end)
   rejects(function()
-    state:setMarking("custom.new-bark", { icons = { 1, false, false, false }, words = { "", false, false, false } })
+    state:setMarking("MAP_FIXTURE", { icons = { 1, false, false, false }, words = { "", false, false, false } })
   end)
   rejects(function()
-    state:setMarking("custom.new-bark", { icons = { 1, false, false, false }, words = { 7, false, false, false } })
+    state:setMarking("MAP_FIXTURE", { icons = { 1, false, false, false }, words = { 7, false, false, false } })
   end)
   rejects(function()
     state:setContactReward("custom.elm", { item = "custom.potion", quantity = 0 })
@@ -646,7 +647,7 @@ function T.tests.malformed_markings_and_rewards_are_rejected_without_moving_revi
     state:setContactReward("custom.elm", { item = "custom.potion", quantity = 1, ribbon = true })
   end)
   Assert.equal(state:revision(), base, "rejected slots and rewards leave the revision alone")
-  Assert.isNil(state:capture().markings["custom.new-bark"], "rejected markings store nothing")
+  Assert.isNil(state:capture().markings["MAP_FIXTURE"], "rejected markings store nothing")
 end
 
 function T.tests.stale_and_replayed_candidates_cannot_publish()

@@ -60,8 +60,7 @@ local function fixtureManifest()
   for skin = 0, 5 do
     skins[skin] = visualRef("assets/generated/pokegear/shell-foreground-skin-" .. skin .. ".png", 256, 192)
     shellForeground[skin] = visualRef("assets/generated/pokegear/shell-foreground-skin-" .. skin .. ".png", 256, 192)
-    shellInformation[skin] =
-      visualRef("assets/generated/pokegear/shell-information-skin-" .. skin .. ".png", 256, 192)
+    shellInformation[skin] = visualRef("assets/generated/pokegear/shell-information-skin-" .. skin .. ".png", 256, 192)
     configureForeground[skin] =
       visualRef("assets/generated/pokegear/configure-foreground-skin-" .. skin .. ".png", 256, 192)
     configurePatch[skin] = visualRef("assets/generated/pokegear/configure-patch-skin-" .. skin .. ".png", 48, 40)
@@ -74,7 +73,7 @@ local function fixtureManifest()
     mapUpper[skin] = visualRef("assets/generated/pokegear/map-upper-skin-" .. skin .. ".png", 256, 192)
   end
   return {
-    schema = "g4-pokegear-assets-v1",
+    schema = "g4-pokegear-assets-v2",
     skins = skins,
     shell = { foreground = shellForeground, information = shellInformation },
     configure = { foreground = configureForeground, patch = configurePatch },
@@ -102,6 +101,7 @@ local function fixtureManifest()
         { key = "matrix.place.new-bark" },
       },
       flypoints = {},
+      regionMap = require("tests.support.PokegearRegionMapFixture").build(),
       reception = {},
       shows = {},
       radioEffects = {},
@@ -228,8 +228,7 @@ local function openShell(params)
     end),
     children = stubSiblings(log),
     presentation = PokegearInterface.defaults(),
-    effect = function(_)
-    end,
+    effect = function(_) end,
     entry = { kind = "browse" },
     measureDisplay = function()
       return box.facts
@@ -344,10 +343,7 @@ function T.every_host_keeps_information_and_controls_in_their_source_roles(scope
         infoFrame.y + infoFrame.height <= 192 + 1e-6,
         "the physical pair keeps information on the upper screen"
       )
-      Assert.isTrue(
-        controlsFrame.y >= 192 - 1e-6,
-        "the physical pair keeps controls on the lower screen"
-      )
+      Assert.isTrue(controlsFrame.y >= 192 - 1e-6, "the physical pair keeps controls on the lower screen")
     end
   end
   checkRoles(singleDisplay(1280, 720), "wide")
@@ -449,10 +445,7 @@ function T.every_skin_resolves_distinct_compiled_paths(scope)
         own = own + 1
       end
     end
-    Assert.isTrue(
-      own > 0,
-      "skin " .. skin .. " must serve its own compiled paths on " .. configuration
-    )
+    Assert.isTrue(own > 0, "skin " .. skin .. " must serve its own compiled paths on " .. configuration)
     return table.concat(paths, "\n")
   end
   for _, configuration in ipairs({ "wide", "tall" }) do

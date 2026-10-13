@@ -30,6 +30,21 @@ local function requireFeature(moduleName, missingMessage)
   return mod --[[@as table]]
 end
 
+-- The region-map locations markings attach to, keyed by source map symbol.
+---@return table
+local function markingRegionMap()
+  local regionMap = require("tests.support.PokegearRegionMapFixture").build()
+  local bark = regionMap.locations[1]
+  bark.mapSymbol = "MAP_NEW_BARK"
+  local violet = {}
+  for key, value in pairs(bark) do
+    violet[key] = value
+  end
+  violet.mapSymbol = "MAP_VIOLET"
+  regionMap.locations[2] = violet
+  return regionMap
+end
+
 ---@return table catalog references in the exact shape state validation reads
 local function gearRefs()
   return {
@@ -42,6 +57,7 @@ local function gearRefs()
         { key = "test.place.new-bark" },
         { key = "test.place.violet" },
       },
+      regionMap = markingRegionMap(),
     },
   }
 end
@@ -51,8 +67,12 @@ end
 local function contactKeysPresent(refs)
   local catalog = refs.catalog --[[@as table<string, unknown>]]
   local seen = {}
-  for _, contact in ipairs(catalog.contacts --[[@as table<integer, unknown>]]) do
-    seen[(contact --[[@as table<string, unknown>]]).key] = true
+  for _, contact in
+    ipairs(catalog.contacts --[[@as table<integer, unknown>]])
+  do
+    seen[
+      (contact --[[@as table<string, unknown>]]).key
+    ] = true
   end
   return seen["test.caller.mom"] == true and seen["test.caller.elm"] == true
 end
@@ -64,7 +84,7 @@ local function gearBucket()
   gear:registerContact("test.caller.mom")
   gear:registerContact("test.caller.elm")
   gear:setContactReward("test.caller.elm", { item = "POTION", quantity = 1 })
-  gear:setMarking("test.place.new-bark", {
+  gear:setMarking("MAP_NEW_BARK", {
     icons = { 2, false, false, false },
     words = { "test.word.seed", false, false, false },
   })
@@ -139,8 +159,7 @@ function T.tests.gear_draft_rejects_invalid_references_and_failed_writes_keep_re
   Assert.isNil(sameError, "an unchanged draft applies without error")
   Assert.deepEqual(same.pokegear, before.pokegear, "an unchanged draft applies no silent repair")
 
-  local storedGear =
-    PokegearState.restore(assert(fixture.store:load(fixture.saveId)).pokegear, refs):capture()
+  local storedGear = PokegearState.restore(assert(fixture.store:load(fixture.saveId)).pokegear, refs):capture()
 
   local staged = session:setMoney(session:snapshot().money + 1)
   Assert.isTrue(staged.ok, "an ordinary edit stages through the existing session")
@@ -334,10 +353,7 @@ function T.tests.gear_companion_staging_flows_through_the_session_transaction()
   second:change("setMomBalance", 600)
   Assert.isTrue(session:applyPokegearDraft(second).ok, "a second companion edit stages cleanly")
   Assert.isTrue(session:discardSection("Companion"), "the Companion section resets on its own")
-  Assert.isFalse(
-    session:snapshot().dirtySections.pokegear,
-    "the Companion reset clears only its dirty section"
-  )
+  Assert.isFalse(session:snapshot().dirtySections.pokegear, "the Companion reset clears only its dirty section")
   local kept = assert(fixture.store:load(fixture.saveId))
   Assert.equal(kept.pokegear.phone.mom.balance, 500, "the reset keeps the last published companion state")
 end
@@ -351,6 +367,7 @@ function T.tests.gear_scenarios_refuse_missing_assets_at_preview_and_apply()
     catalog = {
       contacts = { { key = "test.caller.mom", sortWeight = 10 } },
       locations = { { key = "test.place.new-bark" } },
+      regionMap = markingRegionMap(),
     },
   }
   local previewed, previewError = Presets.preview("pending-gift", prunedRefs)
@@ -429,11 +446,7 @@ function T.tests.gear_scenarios_preview_and_apply_bounded_changes_for_every_name
     else
       local previewed, previewError = Presets.preview(name, refs)
       Assert.isNil(previewError, "scenario " .. name .. " previews against its full catalog")
-      Assert.equal(
-        #previewed,
-        #description.changes,
-        "scenario " .. name .. " previews exactly its declared change set"
-      )
+      Assert.equal(#previewed, #description.changes, "scenario " .. name .. " previews exactly its declared change set")
       local updated, applyError = Presets.applyToRecord(name, fixture.copy(initial), refs)
       Assert.isNil(applyError, "scenario " .. name .. " applies to a compatible fixture")
       Assert.notNil(updated, "scenario " .. name .. " returns its updated record")

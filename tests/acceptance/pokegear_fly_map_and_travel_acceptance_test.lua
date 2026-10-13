@@ -10,6 +10,7 @@
 -- required.
 
 local Assert = require("tests.support.Assert")
+local Fixture = require("tests.support.PokegearMapFixture")
 local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
 
 local T = {
@@ -19,65 +20,31 @@ local T = {
   tests = {},
 }
 
----@param path string
----@return table
-local function visualRef(path)
-  return { image = path, width = 32, height = 32, anchorX = 0, anchorY = 0 }
-end
-
--- Synthetic companion catalog with two semantic fly destinations,
--- validated through the real asset schema so the journeys borrow only
--- genuine semantic references.
+-- Synthetic companion catalog with two semantic fly destinations over the
+-- synthetic region map, validated through the real asset schema so the
+-- journeys borrow only genuine semantic references.
 ---@return table
 local function fixtureManifest()
-  return {
-    schema = "g4-pokegear-assets-v1",
-    skins = { 0, 1, 2, 3, 4, 5 },
-    shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png") },
-    configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png") },
-    phone = { panel = visualRef("assets/generated/pokegear/phone-panel.png") },
-    map = { base = visualRef("assets/generated/pokegear/map-base.png") },
-    fly = { base = visualRef("assets/generated/pokegear/fly-base.png") },
-    radio = { dial = visualRef("assets/generated/pokegear/radio-dial.png") },
-    catalog = {
-      contacts = {},
-      contactOrder = {},
-      callDefinitions = {},
-      callTriggers = {},
-      rematches = {},
-      gifts = {},
-      momPurchases = {},
-      locations = {
-        { key = "test.place.violet" },
-        { key = "test.place.new-bark" },
-      },
-      flypoints = {
-        { key = "test.fly.violet" },
-        { key = "test.fly.new-bark" },
-      },
-      reception = {},
-      shows = {},
-      radioEffects = {},
-    },
-    text = {},
-    sequences = {},
+  local manifest = Fixture.manifest()
+  manifest.catalog.locations[1].flypoint = "test.fly.violet"
+  manifest.catalog.locations[2] = {
+    key = "test.place.nb",
+    fieldMap = "MAP_NB",
+    mapRef = 75,
+    matrix = { x = 5 * 32 + 8, y = 8 * 32 + 8 },
+    location = "test.location.nb",
+    section = "test.section.nb",
+    region = "johto",
+    flypoint = "test.fly.new-bark",
   }
+  manifest.catalog.flypoints = { { key = "test.fly.violet" }, { key = "test.fly.new-bark" } }
+  return manifest
 end
 
--- Source-normalized map context for an outdoor main-matrix cell. Field
--- values stay synthetic; only the record shape follows the map contract.
+-- Source-normalized map context standing on the first flypoint's cell.
 ---@return table
 local function outdoorContext()
-  return {
-    fieldMap = "test.field.new-bark",
-    location = "test.place.new-bark",
-    matrixX = 96,
-    matrixY = 64,
-    region = "johto",
-    unlockLevel = 1,
-    specialMode = nil,
-    playerGender = "boy",
-  }
+  return Fixture.context()
 end
 
 -- Eligibility context satisfying the real badge, map-policy, and escort
@@ -122,6 +89,10 @@ local function openHost(record, world)
     world = world,
     audio = stubAudio(),
     random = PokegearRandom.new(9177),
+    assets = record,
+    regionMapOwners = function()
+      return Fixture.messages(), Fixture.facts()
+    end,
   })
   return host, state
 end
@@ -230,7 +201,7 @@ function T.tests.confirmed_fly_selection_arrives_through_the_field_move_owner()
       destinations = { "test.fly.violet", "test.fly.new-bark" },
     },
   })
-  host:step(handle, { { type = "confirm", flypoint = "test.fly.violet" } })
+  host:step(handle, { { type = "confirm" }, { type = "confirm" } })
   local terminal = settleHost(host, handle)
   Assert.keySet(
     terminal,
@@ -286,7 +257,7 @@ function T.tests.failed_destination_acquisition_preserves_the_source_field()
       destinations = { "test.fly.violet", "test.fly.new-bark" },
     },
   })
-  host:step(handle, { { type = "confirm", flypoint = "test.fly.violet" } })
+  host:step(handle, { { type = "confirm" }, { type = "confirm" } })
   local terminal = settleHost(host, handle)
   Assert.equal(terminal.flypointKey, "test.fly.violet", "selection still resolves before acquisition runs")
 

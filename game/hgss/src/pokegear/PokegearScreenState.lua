@@ -180,6 +180,7 @@ function PokegearScreenState:_buildChild(tab)
     clock = self._clock,
     effect = self._effect,
     tab = tab,
+    switched = self._child ~= nil and self._tab ~= tab,
   }
   local child = factory(context)
   assertChild(child, tab)
@@ -334,6 +335,12 @@ function PokegearScreenState:_handle(mapped, view)
           self._focus = self._tab
         else
           self:_close()
+        end
+      elseif eventType == "menu" then
+        -- The X button: cards that bind it (the region map's zoom) get it
+        -- while focus is inside the card.
+        if self._entered then
+          self:_forwardToChild(event)
         end
       elseif eventType == "pointer_cancel" then
         -- A cancelled capture owns nothing: the stale release never fires.

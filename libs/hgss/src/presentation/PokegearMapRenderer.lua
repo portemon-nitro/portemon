@@ -1,339 +1,249 @@
--- The gear region-map presentation: world, mask, sprite, panel, and text
--- layers drawn as independent passes from the controller snapshot only.
--- The required world plane paints first at its snapshot pan and discrete
--- zoom, then the per-skin foreground and upper chrome from their resolved
--- content paths, then masked region patches, then marker, player, and
--- cursor sprites at their snapshot points, then the information windows
--- and the marking panel. Every plane paints unmodulated exactly as its
--- compiled palette authored it; a companion without a world plane raises
--- the established attributed error instead of inventing geography.
--- Consumes borrowed prepared images and draws with no allocation. Pure
--- presentation: no love globals, the host graphics namespace arrives
--- through resources.
+-- The gear region-map presentation drawn from the compiled source planes:
+-- the lower pane composes the scrolling, zoomed world layer with its tile
+-- patches and selection highlight, the object sprites under the chrome
+-- frame and its two button states; the information pane composes the
+-- location preview, the info frame with its text windows and the panel
+-- sprites. Marking mode swaps the lower pane for the slot panel and
+-- backdrop with their slide, and hides the upper panel. Layer and sprite
+-- order follow the source (pret/pokeheartgold pokegear map): world layer,
+-- then objects, then the chrome frame. Consumes the card's detached view
+-- and the plan's resolved image paths; borrows prepared images and allocates
+-- none while drawing. Pure presentation: no love globals, the host graphics
+-- namespace arrives through resources.
+
+local PokegearAtlas = require("libs.hgss.src.presentation.PokegearAtlas")
+local PokegearMapLayers = require("libs.hgss.src.presentation.PokegearMapLayers")
+
+local imageAt = PokegearMapLayers.imageAt
+local drawSprite = PokegearMapLayers.drawSprite
+local printText = PokegearMapLayers.printText
+local drawWorld = PokegearMapLayers.drawWorld
 
 ---@class PokegearMapRenderer
 local PokegearMapRenderer = {}
 
-local MASK_COLOR = { 0.05, 0.06, 0.12, 1 }
-local WINDOW_FILL = { 0.94, 0.94, 0.88, 1 }
-local WINDOW_LINE = { 0.1, 0.1, 0.12, 1 }
+-- Object sets of the compiled map sprites.
+local MARKERS = "markers"
+local OBJECTS = "mapObjects"
 
--- Information-panel windows from the compiled tile geometry: region and
--- location across the upper row, flavor, rematch, and marking windows
--- across the lower row.
-local INFO_WINDOWS = {
-  region = { x = 8, y = 148, width = 72, height = 16 },
-  location = { x = 88, y = 148, width = 152, height = 16 },
-  flavor = { x = 8, y = 168, width = 112, height = 16 },
-  rematch = { x = 128, y = 168, width = 64, height = 16 },
-  marking = { x = 200, y = 168, width = 40, height = 16 },
-}
-
--- Native icon hues behind pool positions one through nine.
-local ICON_TINTS = {
-  { 0.95, 0.25, 0.25 },
-  { 0.95, 0.85, 0.25 },
-  { 0.25, 0.5, 0.95 },
-  { 0.35, 0.85, 0.35 },
-  { 0.95, 0.55, 0.25 },
-  { 0.7, 0.4, 0.95 },
-  { 0.95, 0.45, 0.65 },
-  { 0.45, 0.85, 0.9 },
-  { 0.6, 0.6, 0.65 },
-}
-
----@param images table<string, unknown>
----@param path string?
----@return table<string, unknown>? image
-local function preparedImage(images, path)
-  if type(path) ~= "string" then
-    return nil
-  end
-  local image = images[path]
-  assert(image ~= nil, "the map render needs its prepared plane image")
-  return image
-end
-
--- The world surface at its snapshot pan and discrete zoom: the required
--- prepared plane painted exactly as its compiled palette authored it. A
--- companion without a world plane raises the established attributed error
--- instead of inventing geography.
+-- The world-attached object sprites in source draw order, back to front:
+-- marking dots, roamers, the player, then the cursor.
 ---@param graphics love.graphics
 ---@param images table<string, unknown>
+---@param sprites table<string, unknown>
 ---@param view table<string, unknown>
----@param content table<string, unknown>
-local function drawWorld(graphics, images, view, content)
-  local pan = view.pan
-  assert(type(pan) == "table", "the map view carries its pan")
-  local zoom = view.zoomCells
-  assert(zoom == 8 or zoom == 16, "the map view carries its discrete zoom")
-  local world = preparedImage(images, content.world --[[@as string?]])
-  assert(world ~= nil, "the map render needs its prepared plane image")
-  local scale = zoom / 8
+---@param showCursor boolean
+local function drawObjects(graphics, images, sprites, view, showCursor)
+  local objects = view.sprites --[[@as table<string, unknown>]]
   graphics.setColor(1, 1, 1, 1)
-  graphics.draw(world, -pan.x, -pan.y, 0, scale, scale)
+  for _, dot in
+    ipairs(objects.hasMarkings --[[@as table[] ]])
+  do
+    drawSprite(graphics, images, sprites, OBJECTS, 5, 1, dot.x, dot.y)
+  end
+  for _, roamer in
+    ipairs(objects.roamers --[[@as table[] ]])
+  do
+    drawSprite(graphics, images, sprites, OBJECTS, 3, roamer.frame, roamer.x, roamer.y)
+  end
+  local player = objects.player --[[@as table<string, number>]]
+  drawSprite(graphics, images, sprites, OBJECTS, 2, player.frame, player.x, player.y)
+  if showCursor then
+    local cursor = objects.cursor --[[@as table<string, number>]]
+    drawSprite(graphics, images, sprites, OBJECTS, 1, 1, cursor.x, cursor.y, cursor.scale)
+  end
 end
 
--- The per-skin surface chrome over the world plane: the skin foreground
--- and upper planes exactly as their compiled palettes authored them,
--- resolved through the existing content paths behind the snapshot skin.
--- Sections without prepared chrome paint nothing rather than tinting the
--- world, so single-plane companions keep their geography unmodulated.
+-- The chrome frame (the first twenty tile rows of the foreground plane) and
+-- the two button states over it.
 ---@param graphics love.graphics
 ---@param images table<string, unknown>
 ---@param content table<string, unknown>
-local function drawChrome(graphics, images, content)
-  local foreground = preparedImage(images, content.foreground --[[@as string?]])
-  if foreground ~= nil then
-    graphics.setColor(1, 1, 1, 1)
-    graphics.draw(foreground, 0, 0)
-  end
-  local upper = preparedImage(images, content.upper --[[@as string?]])
-  if upper ~= nil then
-    graphics.setColor(1, 1, 1, 1)
-    graphics.draw(upper, 0, 0)
-  end
-end
-
--- The locked-region patches: opaque masked panels over every snapshot
--- mask rect, so unlocking repaints the hidden geography.
----@param graphics love.graphics
 ---@param view table<string, unknown>
-local function drawMasks(graphics, view)
-  local rects = view.maskRects
-  assert(type(rects) == "table", "the map view carries its mask rects")
-  graphics.setColor(MASK_COLOR[1], MASK_COLOR[2], MASK_COLOR[3], MASK_COLOR[4])
-  for _, rect in ipairs(rects) do
-    assert(type(rect) == "table", "mask rects are rectangles")
-    graphics.rectangle("fill", rect.x, rect.y, rect.width, rect.height)
-  end
+local function drawChrome(graphics, images, content, view)
+  local image = imageAt(images, content.foreground)
+  local buttons = view.buttons --[[@as table<string, string>]]
+  local markings = ({ normal = 0, pressed = 1, disabled = 2 })[buttons.markings]
+  local zoomed = buttons.zoom == "zoomed" and 1 or 0
+  graphics.setColor(1, 1, 1, 1)
+  PokegearAtlas.draw(graphics, image, 0, 0, 256, 160, 0, 0)
+  PokegearAtlas.draw(graphics, image, 48 * markings, 168, 48, 56, 208, 16)
+  PokegearAtlas.draw(graphics, image, 144 + 48 * zoomed, 168, 48, 72, 208, 88)
 end
 
+-- The marking-mode lower screen: the static backdrop, then the slot panel
+-- sliding down into its window, the slot sprites, word text, the pool,
+-- the key cursor, and the drag ghost.
 ---@param graphics love.graphics
----@param point table<string, number>
----@param size number
-local function drawDiamond(graphics, point, size)
-  graphics.polygon("fill", {
-    point.x,
-    point.y - size,
-    point.x + size,
-    point.y,
-    point.x,
-    point.y + size,
-    point.x - size,
-    point.y,
-  })
-end
-
--- One marker sprite at its snapshot point: roamers as diamonds, ready
--- contacts with their tier badge, pending gifts with a parcel dot.
--- Markers without a resolvable pane point stay out of the world layer.
----@param graphics love.graphics
----@param marker table<string, unknown>
-local function drawMarker(graphics, marker)
-  local point = marker.point
-  if type(point) ~= "table" then
+---@param images table<string, unknown>
+---@param text table<string, unknown>?
+---@param content table<string, unknown>
+---@param view table<string, unknown>
+local function drawMarking(graphics, images, text, content, view)
+  local marking = view.marking --[[@as table<string, unknown>?]]
+  local sprites = content.sprites --[[@as table<string, table>]]
+  local slide = view.bottomSlide --[[@as number]]
+  local backdrop = imageAt(images, content.markingBackdrop)
+  local panel = imageAt(images, content.markingPanel)
+  graphics.setColor(1, 1, 1, 1)
+  graphics.draw(backdrop, 0, 0)
+  if marking == nil then
     return
   end
-  assert(type(point.x) == "number" and type(point.y) == "number", "marker points carry coordinates")
-  if marker.kind == "roamer" then
-    graphics.setColor(0.85, 0.3, 0.85, 1)
-    drawDiamond(graphics, point --[[@as table<string, number>]], 6)
-  elseif marker.kind == "contact" then
-    if marker.ready == true then
-      graphics.setColor(0.95, 0.3, 0.25, 1)
-      graphics.rectangle("fill", point.x - 4, point.y - 4, 8, 8)
+  local colors = content.textColors --[[@as table<string, unknown>]]
+  -- The slot panel and its window text only show inside the top 112 pixels.
+  if slide < 112 then
+    PokegearAtlas.draw(graphics, panel, 0, slide, 256, 112 - slide, 0, 0)
+    if marking.trashOpen == true then
+      PokegearAtlas.clipped(graphics, 0, 0, 256, 112, function()
+        PokegearAtlas.draw(graphics, panel, 112 + 64, 128, 64, 40, 40, 64 - slide)
+      end)
     end
-    if marker.gift ~= nil then
-      graphics.setColor(0.95, 0.85, 0.3, 1)
-      graphics.rectangle("fill", point.x + 3, point.y + 3, 5, 5)
+    if marking.backPressed == true then
+      PokegearAtlas.clipped(graphics, 0, 0, 256, 112, function()
+        PokegearAtlas.draw(graphics, panel, 56, 128, 48, 40, 184, 64 - slide)
+      end)
     end
-    if marker.ready ~= true and marker.gift == nil then
-      graphics.setColor(0.6, 0.6, 0.65, 1)
-      graphics.rectangle("line", point.x - 3.5, point.y - 3.5, 7, 7)
-    end
+    PokegearAtlas.clipped(graphics, 0, 0, 256, 112, function()
+      if type(marking.landmark) == "string" then
+        printText(text, marking.landmark --[[@as string]], 24, 5 - slide, colors.lower)
+      end
+    end)
   end
-end
-
--- The player icon at its snapshot point with its source gender frame:
--- distinct silhouettes per gender behind one shared anchor.
----@param graphics love.graphics
----@param view table<string, unknown>
-local function drawPlayer(graphics, view)
-  local point = view.playerPoint
-  assert(type(point) == "table", "the map view carries its player point")
-  if view.playerGender == "girl" then
-    graphics.setColor(0.95, 0.55, 0.65, 1)
-    graphics.polygon("fill", { point.x, point.y - 6, point.x + 5, point.y, point.x, point.y + 5, point.x - 5, point.y })
-  else
-    graphics.setColor(0.3, 0.55, 0.95, 1)
-    graphics.polygon("fill", { point.x, point.y - 6, point.x + 5, point.y + 4, point.x - 5, point.y + 4 })
-  end
-end
-
--- The double-size affine cursor over the selection cell: the compiled
--- animation frame at its anchors under the source zoom-affine transform,
--- or a double-size outline when the companion carries no cursor frames.
----@param graphics love.graphics
----@param images table<string, unknown>
----@param view table<string, unknown>
-local function drawCursor(graphics, images, view)
-  local point = view.cursorPoint
-  assert(type(point) == "table", "the map view carries its cursor point")
-  local zoom = view.zoomCells
-  assert(zoom == 8 or zoom == 16, "the map view carries its discrete zoom")
-  local frame = view.cursorFrame
-  if type(frame) == "table" and type(frame.image) == "string" then
-    local image = images[frame.image]
-    if image ~= nil then
-      local scale = 2 * zoom / 8
-      local anchorX = type(frame.anchorX) == "number" and frame.anchorX or 0
-      local anchorY = type(frame.anchorY) == "number" and frame.anchorY or 0
-      graphics.setColor(1, 1, 1, 1)
-      graphics.draw(image, point.x - anchorX * scale, point.y - anchorY * scale, 0, scale, scale)
-      return
-    end
-  end
-  local size = zoom * 2
-  graphics.setColor(1, 1, 1, 1)
-  graphics.rectangle("line", point.x - 0.5, point.y - 0.5, size, size)
-  graphics.rectangle("fill", point.x + 2, point.y + 2, 5, 5)
-end
-
--- The information windows with their token text: window frames from tile
--- geometry always, text lines through the borrowed text primitives when
--- the host supplies them. The prepared upper chrome behind the band
--- carries the per-skin artwork, so the windows paint no invented fills.
----@param graphics love.graphics
----@param text table<string, unknown>?
----@param view table<string, unknown>
-local function drawInformation(graphics, text, view)
-  local lines = view.infoLines
-  assert(type(lines) == "table", "the map view carries its information lines")
-  local byWindow = {}
-  for _, line in ipairs(lines) do
-    if type(line) == "table" and type(line.window) == "string" then
-      if byWindow[line.window] == nil then
-        byWindow[line.window] = line.text
+  local ghost = marking.drag --[[@as table<string, number>?]]
+  for _, slotRecord in
+    ipairs(marking.slots --[[@as table[] ]])
+  do
+    local dragged = ghost ~= nil
+      and (
+        (slotRecord.kind == "icon" and ghost.type == "set" and ghost.icon == slotRecord.index - 1)
+        or (slotRecord.kind == "word" and ghost.type == "set" and ghost.icon == slotRecord.index + 3)
+      )
+    if not dragged then
+      if slotRecord.kind == "icon" and slotRecord.icon ~= false then
+        drawSprite(graphics, images, sprites, MARKERS, 1, slotRecord.icon, slotRecord.x, slotRecord.y - slide)
+      elseif slotRecord.kind == "word" and slotRecord.word ~= false then
+        printText(text, slotRecord.text or "", slotRecord.x + 4, slotRecord.y - 6 - slide, colors.word)
       end
     end
   end
-  for name, rect in pairs(INFO_WINDOWS) do
-    graphics.setColor(WINDOW_FILL[1], WINDOW_FILL[2], WINDOW_FILL[3], WINDOW_FILL[4])
-    graphics.rectangle("fill", rect.x, rect.y, rect.width, rect.height)
-    graphics.setColor(WINDOW_LINE[1], WINDOW_LINE[2], WINDOW_LINE[3], WINDOW_LINE[4])
-    graphics.rectangle("line", rect.x + 0.5, rect.y + 0.5, rect.width - 1, rect.height - 1)
-    local line = byWindow[name]
-    if line ~= nil and text ~= nil and type(text.drawText) == "function" then
-      graphics.setColor(0.08, 0.08, 0.1, 1)
-      text:drawText(tostring(line), rect.x + 3, rect.y + 2)
+  for _, poolRecord in
+    ipairs(marking.pool --[[@as table[] ]])
+  do
+    local dragged = ghost ~= nil and ghost.type == "pool" and ghost.icon == poolRecord.icon - 1
+    if not dragged then
+      drawSprite(graphics, images, sprites, MARKERS, 1, poolRecord.icon, poolRecord.x, poolRecord.y)
     end
   end
-end
-
----@param graphics love.graphics
----@param icon integer|false
----@param rect table<string, number>
-local function drawIconGlyph(graphics, icon, rect)
-  if icon == false then
-    graphics.setColor(0.2, 0.2, 0.24, 1)
-    graphics.rectangle("line", rect.x + 0.5, rect.y + 0.5, rect.width - 1, rect.height - 1)
-    return
-  end
-  assert(type(icon) == "number", "icon glyphs carry native icon identities")
-  local tint = ICON_TINTS[icon] or ICON_TINTS[1]
-  graphics.setColor(tint[1], tint[2], tint[3], 1)
-  graphics.rectangle("fill", rect.x + 2, rect.y + 2, rect.width - 4, rect.height - 4)
-end
-
--- The marking panel with its icon pool, occupied and empty slots, word
--- tabs, and trash action. Pool order is the native icon vocabulary.
----@param graphics love.graphics
----@param text table<string, unknown>?
----@param view table<string, unknown>
----@param marking table<string, unknown>?
-local function drawMarkingPanel(graphics, text, view, marking)
-  local panel = view.markingPanel
-  if type(panel) ~= "table" then
-    return
-  end
-  local frame = panel.panel
-  assert(type(frame) == "table", "the marking panel carries its frame")
-  graphics.setColor(0.1, 0.11, 0.16, 0.92)
-  graphics.rectangle("fill", frame.x, frame.y, frame.width, frame.height)
-  graphics.setColor(1, 1, 1, 1)
-  graphics.rectangle("line", frame.x + 0.5, frame.y + 0.5, frame.width - 1, frame.height - 1)
-  assert(type(panel.pool) == "table", "the marking panel carries its icon pool")
-  for index, rect in ipairs(panel.pool) do
-    drawIconGlyph(graphics, index, rect --[[@as table<string, number>]])
-  end
-  local icons = marking ~= nil and marking.icons or nil
-  assert(type(panel.icons) == "table", "the marking panel carries its icon slots")
-  for index, rect in ipairs(panel.icons) do
-    local value = false
-    if type(icons) == "table" and icons[index] ~= nil then
-      value = icons[index]
-    end
-    drawIconGlyph(graphics, value, rect --[[@as table<string, number>]])
-  end
-  assert(type(panel.words) == "table", "the marking panel carries its word slots")
-  local words = marking ~= nil and marking.words or nil
-  for index, rect in ipairs(panel.words) do
-    local cell = rect --[[@as table<string, number>]]
-    local value = type(words) == "table" and words[index] or false
-    if value == false or value == nil then
-      graphics.setColor(0.2, 0.2, 0.24, 1)
-      graphics.rectangle("line", cell.x + 0.5, cell.y + 0.5, cell.width - 1, cell.height - 1)
+  if ghost ~= nil then
+    if ghost.type == "pool" then
+      drawSprite(graphics, images, sprites, MARKERS, 1, ghost.icon + 1, ghost.x, ghost.y)
+    elseif ghost.icon < 4 then
+      local icon = (marking.slots --[[@as table[] ]])[ghost.icon * 2 + 1].icon
+      if icon ~= false then
+        drawSprite(graphics, images, sprites, MARKERS, 1, icon, ghost.x, ghost.y)
+      end
     else
-      graphics.setColor(0.85, 0.85, 0.9, 1)
-      graphics.rectangle("fill", cell.x + 1, cell.y + 1, cell.width - 2, cell.height - 2)
-      if text ~= nil and type(text.drawText) == "function" then
-        graphics.setColor(0.08, 0.08, 0.1, 1)
-        text:drawText(tostring(value), cell.x + 4, cell.y + 4)
-      end
+      local slotRecord = (marking.slots --[[@as table[] ]])[(ghost.icon - 4) * 2 + 2]
+      printText(text, slotRecord.text or "", ghost.x + 4, ghost.y - 6, colors.word)
     end
   end
-  local trash = panel.trash
-  assert(type(trash) == "table", "the marking panel carries its trash action")
-  graphics.setColor(0.7, 0.25, 0.25, 1)
-  graphics.rectangle("line", trash.x + 0.5, trash.y + 0.5, trash.width - 1, trash.height - 1)
+  local cursor = marking.cursor --[[@as table<string, unknown>?]]
+  if cursor ~= nil then
+    local corners = cursor.corners --[[@as table<string, number>]]
+    local x, y =
+      cursor.x, --[[@as number]]
+      cursor.y --[[@as number]]
+    local points = {
+      { x + corners.left, y + corners.top },
+      { x + corners.left, y + corners.bottom },
+      { x + corners.right, y + corners.top },
+      { x + corners.right, y + corners.bottom },
+    }
+    for index, point in ipairs(points) do
+      drawSprite(graphics, images, sprites, OBJECTS, 5 + index, 1, point[1], point[2])
+    end
+  end
+  if slide == 0 and view.mode == "marking" then
+    drawSprite(graphics, images, sprites, OBJECTS, 4, 1, 128, 108)
+  end
 end
 
--- Draws the independent world, mask, sprite, information, and marking
--- layers from the controller snapshot and the skin identity. The skin
--- selects the resolved per-skin content paths the controller publishes;
--- every plane paints unmodulated. Fresh reads only; draw performs no
--- mutation or source parsing.
+-- Draws the lower pane: the world, objects and chrome in map mode, the
+-- marking panel in marking mode.
 ---@param resources table<string, unknown> borrowed host collaborators
----@param status table<string, unknown> the controller snapshot
----@param skin integer
-function PokegearMapRenderer.draw(resources, status, skin)
-  assert(resources ~= nil, "the map render borrows its host resources")
-  local graphics = resources.graphics
-  assert(graphics ~= nil, "the map render borrows its host graphics")
-  assert(type(resources.images) == "table", "the map render borrows its prepared images")
-  local images = resources.images --[[@as table<string, unknown>]]
-  assert(type(skin) == "number" and skin % 1 == 0 and skin >= 0 and skin <= 5, "the map render needs its skin")
-  local view = status.view
-  assert(type(view) == "table", "the map render reads the controller view")
-  local content = view.content
-  assert(type(content) == "table", "the map view carries its resolved content")
-  local text = resources.textRenderer or resources.text
-  if text ~= nil then
-    assert(type(text) == "table", "the map text boundary arrives as a record")
+---@param child table<string, unknown> the card status
+---@param plan table<string, unknown> the published plan
+---@param shell table<string, unknown> the shell snapshot
+function PokegearMapRenderer.render(resources, child, plan, shell)
+  local graphics = assert(resources.graphics, "the map render borrows its host graphics") --[[@as love.graphics]]
+  local images = assert(resources.images, "the map render borrows its prepared images") --[[@as table<string, unknown>]]
+  local text = resources.textRenderer --[[@as table<string, unknown>?]]
+  local view = assert(child.view, "the map render reads the card view") --[[@as table<string, unknown>]]
+  local content = assert(plan.content, "the map plan carries its payload") --[[@as table<string, unknown>]]
+  if view.mode == "marking" then
+    drawMarking(graphics, images, text, content, view)
+    graphics.setColor(1, 1, 1, 1)
+    return
   end
-  drawWorld(graphics, images, view, content --[[@as table<string, unknown>]])
-  drawChrome(graphics, images, content --[[@as table<string, unknown>]])
-  drawMasks(graphics, view)
-  local markers = view.markers
-  assert(type(markers) == "table", "the map view carries its markers")
-  for _, marker in ipairs(markers) do
-    drawMarker(graphics, marker)
+  drawWorld(graphics, images, content, view)
+  drawObjects(graphics, images, content.sprites --[[@as table]], view, shell.entered == true)
+  drawChrome(graphics, images, content, view)
+  graphics.setColor(1, 1, 1, 1)
+end
+
+-- Draws the information pane in map mode: preview, frame, text and panel
+-- sprites, sliding up from below the screen on entry.
+---@param resources table<string, unknown> borrowed host collaborators
+---@param child table<string, unknown> the card status
+---@param plan table<string, unknown> the published plan
+function PokegearMapRenderer.renderInformation(resources, child, plan)
+  local graphics = assert(resources.graphics, "the map render borrows its host graphics") --[[@as love.graphics]]
+  local images = assert(resources.images, "the map render borrows its prepared images") --[[@as table<string, unknown>]]
+  local text = resources.textRenderer --[[@as table<string, unknown>?]]
+  local view = assert(child.view, "the map render reads the card view") --[[@as table<string, unknown>]]
+  local content = assert(plan.content, "the map plan carries its payload") --[[@as table<string, unknown>]]
+  if view.mode ~= "map" then
+    return
   end
-  drawPlayer(graphics, view)
-  drawCursor(graphics, images, view)
-  drawInformation(graphics, text --[[@as table<string, unknown>?]], view)
-  drawMarkingPanel(graphics, text --[[@as table<string, unknown>?]], view, status.marking)
+  local panel = view.panel --[[@as table<string, unknown>]]
+  local slide = view.topSlide --[[@as number]]
+  local sprites = content.sprites --[[@as table<string, table>]]
+  local colors = content.textColors --[[@as table<string, unknown>]]
+  local upper = imageAt(images, content.upper)
+  local previews = imageAt(images, content.previews)
+  PokegearAtlas.clipped(graphics, 0, 64, 256, 128, function()
+    graphics.setColor(1, 1, 1, 1)
+    if panel.previewBlock ~= nil then
+      local block = panel.previewBlock --[[@as integer]]
+      PokegearAtlas.draw(graphics, previews, (block % 4) * 56, math.floor(block / 4) * 56, 56, 56, 192, 88 + slide)
+    end
+    PokegearAtlas.draw(graphics, upper, 0, 56, 256, 136, 0, 56 + slide)
+    PokegearAtlas.draw(graphics, upper, panel.previewFrame == true and 64 or 0, 0, 64, 56, 184, 88 + slide)
+    printText(text, panel.region --[[@as string]], 10, 68 + slide, colors.upper)
+    if panel.landmark ~= nil then
+      printText(text, panel.landmark --[[@as string]], 24, 96 + slide, colors.upper)
+      printText(text, panel.flavor --[[@as string]], 8, 112 + slide, colors.upper)
+    end
+    local words = panel.words --[[@as table<integer, string>]]
+    for index = 1, 4 do
+      if words[index] ~= nil then
+        local column, row = (index - 1) % 2, math.floor((index - 1) / 2)
+        printText(text, words[index], 44 + column * 104, 146 + row * 21 + slide, colors.upperWord)
+      end
+    end
+  end)
+  -- The panel sprites travel with the slide but are never clipped.
+  local markers = panel.markers --[[@as table<integer, integer>]]
+  for index = 1, 4 do
+    if markers[index] ~= nil then
+      local column, row = (index - 1) % 2, math.floor((index - 1) / 2)
+      drawSprite(graphics, images, sprites, MARKERS, 1, markers[index], 32 + column * 104, 155 + row * 21 + slide)
+    end
+  end
+  if panel.battleIcon == true then
+    drawSprite(graphics, images, sprites, MARKERS, 2, 1, 16, 104 + slide)
+  end
   graphics.setColor(1, 1, 1, 1)
 end
 

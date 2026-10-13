@@ -42,7 +42,7 @@ end
 ---@return table
 local function fixtureManifest()
   return {
-    schema = "g4-pokegear-assets-v1",
+    schema = "g4-pokegear-assets-v2",
     skins = { 0, 1, 2, 3, 4, 5 },
     shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png") },
     configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png") },
@@ -76,6 +76,7 @@ local function fixtureManifest()
         { key = "custom.new-bark" },
       },
       flypoints = {},
+      regionMap = require("tests.support.PokegearRegionMapFixture").build(),
       reception = {},
       shows = {},
       radioEffects = {},
@@ -178,6 +179,11 @@ local function openHost(record, world, audio)
     world = world,
     audio = audio,
     random = PokegearRandom.new(4242),
+    assets = record,
+    regionMapOwners = function()
+      local MapFixture = require("tests.support.PokegearMapFixture")
+      return MapFixture.messages(), MapFixture.facts()
+    end,
   }),
     state
 end

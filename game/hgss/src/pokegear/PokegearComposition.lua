@@ -353,6 +353,70 @@ function PokegearComposition.radioFacts(runtime, catalog)
   }
 end
 
+-- The region map's text and flag facts over the live owners: region names,
+-- landmark names, and flavor text read through the field message provider,
+-- and the flypoint visited flags through the field event store. Word text
+-- stays the stored word identity until the word family resolves strings.
+---@param runtime table<string, unknown>
+---@return table<string, unknown> messages
+---@return table<string, unknown> facts
+local function regionMapOwners(runtime)
+  local provider = checkOwner(runtime.messageProvider, "the live message provider")
+  local acquire = provider.acquireBank --[[@as fun(self: table<string, unknown>, bank: integer): table<string, unknown>?, Errors.Error?]]
+  local release = provider.releaseBank --[[@as fun(self: table<string, unknown>, bank: integer)]]
+  local get = provider.get --[[@as fun(self: table<string, unknown>, bank: integer, entry: integer): table<string, unknown>?]]
+  local function read(bank, entry)
+    assert(acquire(provider, bank), "the region map text bank is available")
+    local template = get(provider, bank, entry)
+    release(provider, bank)
+    assert(type(template) == "table", "the region map text entry is available")
+    return (template --[[@as table<string, unknown>]]).text --[[@as string]]
+  end
+  local function regionName(name)
+    return read(273, name == "johto" and 1 or 0)
+  end
+  local function landmarkName(entry)
+    return read(279, entry)
+  end
+  local function flavorText(entry)
+    return read(273, entry)
+  end
+  local function flyPrompt(landmark)
+    if landmark == nil then
+      return read(273, 4)
+    end
+    return (read(273, 5):gsub("{STRVAR_1[^}]*}", landmark))
+  end
+  local function closeLabel()
+    return read(273, 6)
+  end
+  local function menuLabel(index)
+    return read(273, 7 + index)
+  end
+  local function wordText(key)
+    return key
+  end
+  local messages = {
+    region = regionName,
+    landmark = landmarkName,
+    flavor = flavorText,
+    flyPrompt = flyPrompt,
+    close = closeLabel,
+    menuLabel = menuLabel,
+    word = wordText,
+  }
+  local scripts = checkOwner(runtime.scripts, "the live field scripts")
+  local events = checkOwner(scripts.worldState, "the live world event store")
+  local isFlagSet = events.isFlagSet --[[@as fun(self: table<string, unknown>, flag: integer): boolean]]
+  assert(type(isFlagSet) == "function", "flypoint flags read through the field event store")
+  local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
+  local firstFlypointFlag = assert(FieldScriptSymbols.flagsByName.FLAG_SYS_FLYPOINT_PALLET, "flypoint flags are named")
+  local function flypointVisited(index)
+    return isFlagSet(events, firstFlypointFlag + index) == true
+  end
+  return messages, { flypointVisited = flypointVisited }
+end
+
 -- Builds the closed card-factory set over the shared owners. Factories
 -- stay lazy: controllers construct at open, never at composition, so an
 -- unopened tab costs nothing. Bodies assert their live owners at open
@@ -381,7 +445,7 @@ local function cardFactories(runtime, shared)
       assets = assets,
     })
   end
-  local function map(_)
+  local function map(context)
     local MapController = require("game.hgss.src.pokegear.MapController")
     local PhoneCall = require("game.hgss.src.pokegear.PhoneCall")
     local phoneEngine = PhoneCall.new({
@@ -398,10 +462,14 @@ local function cardFactories(runtime, shared)
     local function phoneProjection(location)
       return markers(world, location, phoneEngine, places)
     end
+    local mapMessages, mapFacts = regionMapOwners(runtime)
     return MapController.new({
       state = state,
       assets = assets,
       mapContext = liveMapContext(runtime, world, catalog),
+      messages = mapMessages,
+      facts = mapFacts,
+      switched = context.switched,
       phoneProjection = phoneProjection,
       roamerProjection = roamerSnapshot(runtime),
       wordEntry = PokegearComposition.wordEntryHandoff(runtime, assets),
@@ -496,6 +564,9 @@ function PokegearComposition.compose(runtime, owners)
     or PhoneWorldContext.new({ state = state, runtime = runtime, flags = runtime.eventState, catalog = catalog })
   assert(type(world) == "table", "world reads stay a record")
 
+  local function hostMapOwners()
+    return regionMapOwners(runtime)
+  end
   local PokegearScriptHost = require("game.hgss.src.pokegear.PokegearScriptHost")
   local host = PokegearScriptHost.new({
     state = state,
@@ -504,6 +575,8 @@ function PokegearComposition.compose(runtime, owners)
     world = world,
     audio = audio,
     random = random,
+    assets = assets,
+    regionMapOwners = hostMapOwners,
   })
 
   local IncomingCalls = require("game.hgss.src.pokegear.IncomingCalls")

@@ -7,6 +7,7 @@
 -- no love globals, the host graphics namespace arrives through resources.
 
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
+local PokegearAtlas = require("libs.hgss.src.presentation.PokegearAtlas")
 local PokegearConfigureRenderer = require("libs.hgss.src.presentation.PokegearConfigureRenderer")
 
 ---@class PokegearRenderer
@@ -101,33 +102,6 @@ local SLOT_CENTER_Y = 176
 -- top-left, bottom-left, top-right, bottom-right.
 local CORNER_OFFSETS = { { -16, -10 }, { -16, 10 }, { 16, -10 }, { 16, 10 } }
 
--- Quads over the borrowed atlas, created on first use per image so steady
--- drawing allocates nothing.
-local quadsByImage = setmetatable({}, { __mode = "k" })
-
----@param graphics love.graphics
----@param image love.Image
----@param x number atlas source x
----@param y number atlas source y
----@param width number
----@param height number
----@return love.Quad
-local function atlasQuad(graphics, image, x, y, width, height)
-  local quads = quadsByImage[image]
-  if quads == nil then
-    quads = {}
-    quadsByImage[image] = quads
-  end
-  local key = x * 1000000 + y * 1000 + width
-  local quad = quads[key]
-  if quad == nil then
-    local atlasWidth, atlasHeight = image:getDimensions()
-    quad = graphics.newQuad(x, y, width, height, atlasWidth, atlasHeight)
-    quads[key] = quad
-  end
-  return quad
-end
-
 -- The fixed card strip over the lower controls band, drawn from the source
 -- picker atlas: the full picker, the pressed cell of the card being
 -- switched to, the blank block over locked radio/map cards, and the focus
@@ -142,12 +116,12 @@ local function drawStrip(graphics, images, content, view)
   local atlas = images[atlasPath] --[[@as love.Image]]
   assert(atlas ~= nil, "the companion render needs its prepared shell image")
   graphics.setColor(1, 1, 1, 1)
-  graphics.draw(atlas, atlasQuad(graphics, atlas, 0, ATLAS_PICKER_Y, 256, STRIP_HEIGHT), 0, STRIP_Y)
+  PokegearAtlas.draw(graphics, atlas, 0, ATLAS_PICKER_Y, 256, STRIP_HEIGHT, 0, STRIP_Y)
   local cards = view.cards --[[@as table<string, boolean>]]
   assert(type(cards) == "table", "the companion view carries its card availability")
   for _, tab in ipairs({ "radio", "map" }) do
     if cards[tab] ~= true then
-      graphics.draw(atlas, atlasQuad(graphics, atlas, 0, ATLAS_BLANK_Y, CELL_WIDTH, STRIP_HEIGHT), SLOT_X[tab], STRIP_Y)
+      PokegearAtlas.draw(graphics, atlas, 0, ATLAS_BLANK_Y, CELL_WIDTH, STRIP_HEIGHT, SLOT_X[tab], STRIP_Y)
     end
   end
   local transition = view.transition --[[@as table<string, unknown>?]]
@@ -155,12 +129,7 @@ local function drawStrip(graphics, images, content, view)
     view.tab --[[@as string]]
   ]
   if transition ~= nil and transition.kind == "switch" and pressedX ~= nil then
-    graphics.draw(
-      atlas,
-      atlasQuad(graphics, atlas, pressedX, ATLAS_PRESSED_Y, CELL_WIDTH, STRIP_HEIGHT),
-      pressedX,
-      STRIP_Y
-    )
+    PokegearAtlas.draw(graphics, atlas, pressedX, ATLAS_PRESSED_Y, CELL_WIDTH, STRIP_HEIGHT, pressedX, STRIP_Y)
   end
   local corners = content.cursorCorners --[[@as string[]?]]
   local centerX = SLOT_CENTER_X[
@@ -198,13 +167,16 @@ local function drawChild(graphics, images, text, content, view)
     return
   end
   local presentation = child ~= nil and type(child) == "table" and child.presentation or nil
-  if tab == "phone" and type(presentation) == "table" then
+  if
+    type(presentation) == "table" and type((presentation --[[@as table<string, unknown>]]).render) == "function"
+  then
     local published = presentation --[[@as table<string, unknown>]]
-    local render = published.render --[[@as fun(resources: table, view: table, plan: table)]]
+    local render = published.render --[[@as fun(resources: table, child: table, plan: table, shell: table)]]
     render(
       { graphics = graphics, images = images, textRenderer = text },
       child --[[@as table<string, unknown>]],
-      published
+      published,
+      view
     )
     return
   end
@@ -248,13 +220,16 @@ function PokegearRenderer.draw(resources, view, plan)
       drawPrepared(graphics, images --[[@as table<string, unknown>]], content.shellInformation, "shell information")
       local child = view.child
       local published = type(child) == "table" and (child --[[@as table<string, unknown>]]).presentation or nil
-      local upper = type(published) == "table" and (published --[[@as table<string, unknown>]]).content or nil
-      local upperPath = type(upper) == "table" and (upper --[[@as table<string, unknown>]]).upper or nil
-      if type(upperPath) == "string" then
-        local image = (images --[[@as table<string, unknown>]])[upperPath]
-        assert(image ~= nil, "the companion render needs its prepared upper image")
-        graphics.setColor(1, 1, 1, 1)
-        graphics.draw(image, 0, 0)
+      local renderInformation = type(published) == "table"
+          and (published --[[@as table<string, unknown>]]).renderInformation
+        or nil
+      if type(renderInformation) == "function" then
+        (renderInformation --[[@as fun(resources: table, child: table, plan: table, shell: table)]])(
+          { graphics = graphics, images = images, textRenderer = text },
+          child --[[@as table<string, unknown>]],
+          published --[[@as table<string, unknown>]],
+          view
+        )
       end
       local clock = view.clock
       local sprites = content.clockSprites
@@ -278,7 +253,22 @@ function PokegearRenderer.draw(resources, view, plan)
         content --[[@as table<string, unknown>]],
         view
       )
-      drawStrip(graphics, images --[[@as table<string, unknown>]], content --[[@as table<string, unknown>]], view)
+      local child = view.child
+      local childView = type(child) == "table" and (child --[[@as table<string, unknown>]]).view or nil
+      if
+        not (
+          type(child) == "table" and (child --[[@as table<string, unknown>]]).stripHidden == true
+        )
+      then
+        drawStrip(graphics, images --[[@as table<string, unknown>]], content --[[@as table<string, unknown>]], view)
+      end
+      -- A card fade covers the whole lower screen, strip included.
+      local fade = type(childView) == "table" and (childView --[[@as table<string, unknown>]]).fade or nil
+      if type(fade) == "number" and fade > 0 then
+        graphics.setColor(0, 0, 0, fade)
+        graphics.rectangle("fill", 0, 0, 256, 192)
+        graphics.setColor(1, 1, 1, 1)
+      end
     end)
   end
   graphics.setColor(1, 1, 1, 1)

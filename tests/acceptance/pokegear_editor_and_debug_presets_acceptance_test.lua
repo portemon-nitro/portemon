@@ -48,6 +48,14 @@ local function copy(value)
   return result
 end
 
+-- The region-map locations markings attach to, keyed by source map symbol.
+---@return table
+local function markingRegionMap()
+  local regionMap = require("tests.support.PokegearRegionMapFixture").build()
+  regionMap.locations[1].mapSymbol = "MAP_NEW_BARK"
+  return regionMap
+end
+
 ---@return table catalog references in the exact shape state validation reads
 local function gearRefs()
   return {
@@ -60,6 +68,7 @@ local function gearRefs()
         { key = "test.place.new-bark" },
         { key = "test.place.violet" },
       },
+      regionMap = markingRegionMap(),
     },
   }
 end
@@ -91,7 +100,7 @@ end
 local function stagedGearEdits(draft)
   draft:change("registerCard", "map")
   draft:change("setContactReward", "test.caller.elm", { item = "POTION", quantity = 1 })
-  draft:change("setMarking", "test.place.new-bark", {
+  draft:change("setMarking", "MAP_NEW_BARK", {
     icons = { 2, false, false, false },
     words = { "test.word.seed", false, false, false },
   })
@@ -139,7 +148,7 @@ function T.tests.gear_editor_cancel_restores_the_source_record_and_save_changes_
   expected.world.flags[FLAG_GOT_POKEGEAR] = true
   expected.pokegear.registeredCards.map = true
   expected.pokegear.phone.contacts["test.caller.elm"] = { reward = { item = "POTION", quantity = 1 } }
-  expected.pokegear.markings["test.place.new-bark"] = {
+  expected.pokegear.markings["MAP_NEW_BARK"] = {
     icons = { 2, false, false, false },
     words = { "test.word.seed", false, false, false },
   }
@@ -217,6 +226,7 @@ function T.tests.gear_scenarios_preview_bounded_changes_and_refuse_incompatible_
     catalog = {
       contacts = { { key = "test.caller.mom", sortWeight = 10 } },
       locations = { { key = "test.place.new-bark" } },
+      regionMap = markingRegionMap(),
     },
   }
   local previewedMissing, previewError = Presets.preview("pending-gift", prunedRefs)
@@ -227,7 +237,10 @@ function T.tests.gear_scenarios_preview_bounded_changes_and_refuse_incompatible_
   for _, name in ipairs(names) do
     local description = Presets.describe(name)
     if description.available == false then
-      Assert.isTrue(type(description.reason) == "string" and description.reason ~= "", "an unavailable scenario explains why")
+      Assert.isTrue(
+        type(description.reason) == "string" and description.reason ~= "",
+        "an unavailable scenario explains why"
+      )
       unavailable[#unavailable + 1] = name
     end
   end

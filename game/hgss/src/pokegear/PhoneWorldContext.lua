@@ -194,9 +194,7 @@ function PhoneWorldContext:mapInit(field, catalog)
   local preferences = state:readPreferences()
   assert(type(preferences) == "table", "map initialization reads the saved progression facts")
   local unlockLevel = preferences.mapUnlockLevel
-  if type(unlockLevel) ~= "number" or unlockLevel < 1 then
-    unlockLevel = 1
-  end
+  assert(type(unlockLevel) == "number", "the saved map unlock level is a number")
   local matrixX, matrixY = matrix.x, matrix.y
   if field.isOutdoor then
     matrixX, matrixY = field.playerX, field.playerZ

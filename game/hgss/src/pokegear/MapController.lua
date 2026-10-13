@@ -1,148 +1,96 @@
--- The gear region-map card: source navigation and marking modes with
--- detached owner snapshots. The controller owns pan, discrete zoom, the
--- selection cursor, the icon drag state machine, and the typed word-entry
--- handoff; live roamer, contact, and catalog inputs are sampled only at
--- refresh boundaries and never moved. Pointer and keyboard keep separate
--- interaction state. One state write per successful swap or delete;
--- cancelled drags publish nothing. Zoom preference persists; drag and
--- editor snapshots stay transient. Pure module: no love, no I/O.
+-- The gear region-map card: map mode with the source's scrolling, zoom,
+-- touch drag, location selection and information panel, and the marking
+-- mode with its timed fade and panel slides. Follows the Pokegear map
+-- application of pret/pokeheartgold (src/application/pokegear/map). World
+-- motion lives in MapWorld, location queries in MapLocations, and the
+-- slot editor in MarkingMode; this controller sequences them, persists
+-- committed markings, and publishes the detached view the renderer draws.
+-- Live roamer and contact inputs are sampled once at creation. Pure
+-- module: no love, no I/O.
 
-local MapProjection = require("game.hgss.src.pokegear.MapProjection")
 local Errors = require("libs.errors.src.Errors")
+local MapLocations = require("game.hgss.src.pokegear.map.MapLocations")
+local MapProjection = require("game.hgss.src.pokegear.MapProjection")
+local MapWorld = require("game.hgss.src.pokegear.map.MapWorld")
+local MarkingMode = require("game.hgss.src.pokegear.map.MarkingMode")
 local ScriptErrors = require("libs.script.src.errors")
 
 ---@class MapController
 ---@field _state table<string, unknown> the borrowed durable companion owner
 ---@field _assets table<string, unknown> the borrowed compiled asset family
----@field _catalog table<string, unknown> the borrowed compiled map catalog
----@field _mapContext table<string, unknown> the source-normalized map context
----@field _phoneProjection fun(location: string): table<integer, table<string, unknown>> the shared contact availability query
----@field _roamers table<integer, table<string, unknown>> the creation-time roamer snapshot
----@field _wordEntry table<string, unknown> the narrow word-selector handoff
----@field _pan table<string, number> the current viewport pan in pixels
----@field _zoomCells integer the discrete cell size, eight or sixteen pixels
----@field _cursor table<string, integer> the selected world cell
----@field _playerCell table<string, integer> the player world cell at refresh
----@field _mode string the marking mode: map or marking
----@field _transition table<string, unknown>? the active entrance transition
----@field _drag table<string, unknown>? the active pointer capture
----@field _press table<string, unknown>? the active button or word press
----@field _markers table<integer, table<string, unknown>> the refresh-time marker snapshot
----@field _wordOutbox table<string, unknown>? the untaken word request
----@field _wordPending table<string, unknown>? the unresolved word request
----@field _consumed table<string, boolean> consumed word operation identities
----@field _operations integer word operation counter
----@field _ticks integer source ticks since open
+---@field _catalog table<string, unknown> the borrowed compiled catalog
+---@field _context table<string, unknown> the source-normalized map context
+---@field _messages table<string, unknown> resolves region, landmark, flavor, and word text
+---@field _facts table<string, unknown> flypoint flags and contact facts
+---@field _locations MapLocations
+---@field _world MapWorld
+---@field _selection table<string, unknown>? the selected location
+---@field _mode string "map" or "marking"
+---@field _marking MarkingMode? the open marking editor
+---@field _session MapWorld.Snapshot? the world saved while marking
+---@field _transition table<string, unknown>? the running mode transition
+---@field _touch { held: boolean, x: number, y: number }
+---@field _markingsPressed boolean
+---@field _wordEntry table<string, unknown>
+---@field _wordOutbox table<string, unknown>?
+---@field _wordPending table<string, unknown>?
+---@field _consumed table<string, boolean>
+---@field _operations integer
+---@field _unlock integer
+---@field _rematch table<integer, boolean> rematch and gift facts sampled per map
+---@field _phoneProjection fun(location: string): table<integer, table<string, unknown>>
+---@field _touchNew boolean
+---@field _patches table<integer, table<string, integer>>
+---@field _roamers table<integer, table<string, unknown>>
+---@field _ticks integer
 ---@field _disposed boolean
 local MapController = {}
 MapController.__index = MapController
 
--- Pane-local layout in source pixels: entry and zoom buttons above the
--- world, the marking panel across the lower band with its icon pool,
--- four icon slots, four word slots, and the trash action.
-local LOCAL_PANE = { x = 0, y = 0, width = 256, height = 192 }
-local MARKINGS_BUTTON = { x = 200, y = 8, width = 48, height = 24 }
-local ZOOM_BUTTON = { x = 8, y = 8, width = 48, height = 24 }
-local PANEL = { x = 8, y = 96, width = 240, height = 88 }
-local POOL_TOP = 100
-local POOL_LEFT = 16
-local POOL_STEP = 24
-local POOL_SIZE = 20
-local SLOT_TOP = 128
-local SLOT_LEFT = 16
-local SLOT_STEP = 28
-local SLOT_SIZE = 24
-local WORD_WIDTH = 44
-local TRASH_RECT = { x = 216, y = 128, width = 24, height = 48 }
+-- Hit rects as {top, bottom, left, right}, half open (source
+-- ov101_021EBA44): the two buttons beside the map and the map opening.
+local MARKINGS_RECT = { 16, 64, 216, 248 }
+local ZOOM_RECT = { 88, 152, 216, 248 }
+local MAP_RECT = { 8, 152, 8, 200 }
 
-local ICON_SLOTS = 4
-local WORD_SLOTS = 4
-local NATIVE_ICONS = 9
-local NATIVE_NULL_ICON = 15
-local TAP_RADIUS = 4
+-- Mode transition lengths in ticks (source substates; the brightness fade
+-- runs six steps of one tick).
+local FADE_TICKS = 6
+local PANEL_STEPS = 4
+local TOP_STEP = 32
+local BOTTOM_STEP = 28
+local BOTTOM_OFFSET = 112
+local TOP_OFFSET = 128
 
--- Source marking entrance: the ordered fade and panel slide both finish
--- before the panel accepts input.
-local FADE_TICKS = 8
-local SLIDE_TICKS = 12
+-- Source roamer slots by species key (Raikou, Entei, Latias, Latios).
+local ROAMER_SPECIES = { RAIKOU = 0, ENTEI = 1, LATIAS = 2, LATIOS = 3 }
 
--- Native icon vocabulary behind pool positions one through nine.
-local POOL_ICONS = { 1, 2, 3, 4, 5, 6, 7, 8, 9 }
-
----@param rect table<string, number>
----@return table<string, number>
-local function copyRect(rect)
-  return { x = rect.x, y = rect.y, width = rect.width, height = rect.height }
-end
-
----@param point table<string, unknown>
----@param rect table<string, number>
+---@param rect integer[]
+---@param x number
+---@param y number
 ---@return boolean
-local function inRect(point, rect)
-  return type(point.x) == "number"
-    and type(point.y) == "number"
-    and point.x >= rect.x
-    and point.x < rect.x + rect.width
-    and point.y >= rect.y
-    and point.y < rect.y + rect.height
+local function inRect(rect, x, y)
+  return x >= rect[3] and x < rect[4] and y >= rect[1] and y < rect[2]
 end
 
----@param value table<string, unknown>
----@return table<string, unknown>
-local function copyCell(value)
-  return { x = value.x, y = value.y }
-end
-
----@param icon unknown
----@return integer|false the semantic slot value
-local function semanticIcon(icon)
-  if icon == false or icon == nil then
-    return false
-  end
-  assert(type(icon) == "number" and icon % 1 == 0, "icon slots carry native icon identities")
-  if icon == NATIVE_NULL_ICON then
-    return false
-  end
-  assert(icon >= 1 and icon <= NATIVE_ICONS, "icon slots carry the nine native icon identities")
-  return icon
-end
-
----@return table<integer, table<string, number>> pool rects in pool order
-local function buildPool()
-  local pool = {}
-  for index = 1, NATIVE_ICONS do
-    pool[index] = { x = POOL_LEFT + (index - 1) * POOL_STEP, y = POOL_TOP, width = POOL_SIZE, height = POOL_SIZE }
-  end
-  return pool
-end
-
----@param top integer
----@param left integer
----@param step integer
----@param size integer
----@param width integer?
----@param count integer
----@return table<integer, table<string, number>>
-local function buildRow(top, left, step, size, width, count)
-  local row = {}
-  for index = 1, count do
-    row[index] = { x = left + (index - 1) * step, y = top, width = width or size, height = size }
-  end
-  return row
-end
-
----@param word unknown
-local function checkWord(word)
-  assert(type(word) == "string" and word:match("^[0-9]+$") ~= nil, "word slots carry decimal word identities")
+---@param value number
+---@param low number
+---@param high number
+---@return number
+local function clamp(value, low, high)
+  return math.max(low, math.min(high, value))
 end
 
 ---@class MapController.Options
 ---@field state table<string, unknown> the durable companion owner
 ---@field assets table<string, unknown> the borrowed compiled asset family
 ---@field mapContext table<string, unknown> the source-normalized map context
+---@field messages table<string, unknown> text resolvers: region(name), landmark(mapId), flavor(entry), word(key)
+---@field facts table<string, unknown> flypointVisited(index) and the contact facts
 ---@field phoneProjection fun(location: string): table<integer, table<string, unknown>> the shared contact availability query
 ---@field roamerProjection table<integer, table<string, unknown>> the creation-time roamer snapshot
 ---@field wordEntry table<string, unknown> the narrow word-selector handoff
+---@field switched boolean? true when the card opens from another tab
 
 ---@param opts MapController.Options
 ---@return MapController
@@ -153,107 +101,83 @@ function MapController.new(opts)
       and type(opts.state.capture) == "function"
       and type(opts.state.setMarking) == "function"
       and type(opts.state.setPreference) == "function"
-      and type(opts.state.readPreferences) == "function"
-      and type(opts.state.revision) == "function",
+      and type(opts.state.readPreferences) == "function",
     "the region map requires the durable companion owner"
   )
   assert(type(opts.assets) == "table", "the region map requires its compiled asset family")
   local context = assert(opts.mapContext, "the region map requires its normalized map context")
-  assert(type(context) == "table", "the region map context is a record")
   assert(
     type(context.fieldMap) == "string"
-      and type(context.location) == "string"
       and type(context.matrixX) == "number"
       and type(context.matrixY) == "number"
-      and type(context.region) == "string"
       and type(context.unlockLevel) == "number"
-      and (context.specialMode == nil or type(context.specialMode) == "string")
       and type(context.playerGender) == "string",
-    "the region map context carries field, location, matrix, region, tier, and gender facts"
+    "the region map context carries field, matrix, tier, and gender facts"
+  )
+  assert(type(opts.messages) == "table", "the region map resolves its text through the message resolvers")
+  assert(
+    type(opts.facts) == "table" and type(opts.facts.flypointVisited) == "function",
+    "the region map reads its flags"
   )
   assert(type(opts.phoneProjection) == "function", "the region map reads contacts through the shared phone query")
   assert(type(opts.roamerProjection) == "table", "the region map samples roamers once at creation")
-  assert(type(opts.wordEntry) == "table", "the region map requires its word-entry handoff")
-  local wordEntry = opts.wordEntry --[[@as table<string, unknown>]]
+  local wordEntry = opts.wordEntry
+  assert(type(wordEntry) == "table", "the region map requires its word-entry handoff")
   for _, method in ipairs({ "open", "step", "result", "cancel" }) do
     assert(type(wordEntry[method]) == "function", "the word-entry handoff needs " .. method)
   end
   local catalog = opts.assets.catalog
-  assert(type(catalog) == "table" and type(catalog.locations) == "table", "the region map borrows its location table")
+  assert(type(catalog) == "table" and type(catalog.regionMap) == "table", "the region map borrows its source tables")
+  local unlock = math.floor(clamp(context.unlockLevel, 0, 2))
+  local locations = MapLocations.new({ regionMap = catalog.regionMap, unlock = unlock, fieldMap = context.fieldMap })
   local self = setmetatable({
     _state = opts.state,
     _assets = opts.assets,
     _catalog = catalog,
-    _mapContext = {
-      fieldMap = context.fieldMap,
-      location = context.location,
-      matrixX = context.matrixX,
-      matrixY = context.matrixY,
-      explicitX = context.explicitX,
-      explicitY = context.explicitY,
-      lastExterior = context.lastExterior,
-      specialSpawn = context.specialSpawn,
-      region = context.region,
-      unlockLevel = context.unlockLevel,
-      specialMode = context.specialMode,
-      playerGender = context.playerGender,
-    },
+    _context = context,
+    _messages = opts.messages,
+    _facts = opts.facts,
     _phoneProjection = opts.phoneProjection,
-    _roamers = {},
-    _wordEntry = wordEntry,
-    _pan = { x = 0, y = 0 },
-    _zoomCells = MapProjection.ZOOM_OUT,
-    _cursor = { x = 0, y = 0 },
-    _playerCell = { x = 0, y = 0 },
+    _locations = locations,
     _mode = "map",
-    _transition = nil,
-    _drag = nil,
-    _press = nil,
-    _wordOutbox = nil,
-    _wordPending = nil,
+    _touch = { held = false, x = 0, y = 0 },
+    _markingsPressed = false,
+    _wordEntry = wordEntry,
     _consumed = {},
     _operations = 0,
     _ticks = 0,
     _disposed = false,
+    _unlock = unlock,
+    _rematch = {},
   }, MapController)
-  for _, roamer in ipairs(opts.roamerProjection) do
-    assert(type(roamer) == "table", "the roamer snapshot carries records")
-    self._roamers[#self._roamers + 1] = {
-      key = roamer.key,
-      species = roamer.species,
-      location = roamer.location,
-      lifecycle = roamer.lifecycle,
-    }
-  end
-  local preferences = self._state:readPreferences()
+  local cell = self:_playerCell()
+  local preferences = opts.state:readPreferences()
   assert(type(preferences) == "table", "the region map reads its saved preferences")
-  if preferences.mapZoomed == true then
-    self._zoomCells = MapProjection.ZOOM_IN
+  self._world = MapWorld.new({
+    kind = "gear",
+    unlock = unlock,
+    matrix = cell,
+    zoomed = preferences.mapZoomed == true,
+  })
+  self._roamers = self:_sampleRoamers(opts.roamerProjection)
+  self._patches = locations:worldPatches(opts.facts.flypointVisited)
+  self._selection = locations:select(self._world.cell.x, self._world.cell.y)
+  if opts.switched == true then
+    self._transition = { kind = "arrive", t = 0 }
   end
-  local playerCell = self:_contextCell()
-  self._playerCell = playerCell
-  self._cursor = copyCell(playerCell)
-  self._markers = self:_sampleMarkers()
   return self
 end
 
----@param fieldMap string
----@return table<string, unknown>? the compiled location record
-function MapController:_locationRecord(fieldMap)
-  local locations = self._catalog.locations
-  assert(type(locations) == "table", "the region map borrows its location table")
-  for _, entry in ipairs(locations) do
-    if type(entry) == "table" and (entry.fieldMap == fieldMap or entry.location == fieldMap) then
-      return entry
+---@return { x: integer, y: integer } the player matrix cell, without the source row offset
+function MapController:_playerCell()
+  local context = self._context
+  local record = nil
+  for _, entry in ipairs(self._catalog.locations) do
+    if type(entry) == "table" and (entry.fieldMap == context.fieldMap or entry.location == context.fieldMap) then
+      record = entry
+      break
     end
   end
-  return nil
-end
-
----@return { x: integer, y: integer } the player world cell at refresh
-function MapController:_contextCell()
-  local context = self._mapContext
-  local record = self:_locationRecord(context.fieldMap)
   if record == nil then
     Errors.raise(
       ScriptErrors.FEATURE_UNAVAILABLE,
@@ -267,10 +191,8 @@ function MapController:_contextCell()
     explicitX, explicitY = record.explicitX, record.explicitY
   end
   local special = context.specialMode
-  if type(record) == "table" then
-    if special == nil and type(record.special) == "string" then
-      special = record.special
-    end
+  if special == nil and type(record.special) == "string" then
+    special = record.special
   end
   if explicitX == 0 and explicitY == 0 and context.lastExterior == nil and context.specialSpawn == nil then
     Errors.raise(
@@ -279,14 +201,7 @@ function MapController:_contextCell()
       { map = context.fieldMap }
     )
   end
-  if explicitX == nil and explicitY == nil and (context.matrixX == nil or context.matrixY == nil) then
-    Errors.raise(
-      ScriptErrors.FEATURE_UNAVAILABLE,
-      "the region map has no source matrix position for " .. context.fieldMap,
-      { map = context.fieldMap }
-    )
-  end
-  local cell = MapProjection.contextCell({
+  return MapProjection.contextCell({
     matrixX = context.matrixX,
     matrixY = context.matrixY,
     explicitX = explicitX,
@@ -295,442 +210,278 @@ function MapController:_contextCell()
     specialSpawn = context.specialSpawn,
     special = special,
   })
-  return { x = cell.x, y = cell.y }
 end
 
--- Samples roamer and contact markers once at refresh: only roamers active
--- at creation appear, and contact markers follow the shared phone query
--- per catalog location. The snapshot never touches the live owners again.
+-- Keeps the roamers that are roaming and sit on a visible location, with the
+-- source roamer slot of their species.
+---@param projection table<integer, table<string, unknown>>
 ---@return table<integer, table<string, unknown>>
-function MapController:_sampleMarkers()
-  local markers = {}
-  for _, roamer in ipairs(self._roamers) do
-    if roamer.lifecycle == "roaming" then
-      markers[#markers + 1] = {
-        kind = "roamer",
-        key = roamer.key,
-        species = roamer.species,
-        location = roamer.location,
-        point = self:_roamerPoint(roamer.location),
-      }
+function MapController:_sampleRoamers(projection)
+  local roamers = {}
+  for _, roamer in ipairs(projection) do
+    assert(type(roamer) == "table", "the roamer snapshot carries records")
+    local slot = ROAMER_SPECIES[
+      roamer.species --[[@as integer]]
+    ]
+    if roamer.lifecycle == "roaming" and slot ~= nil then
+      local mapId = nil
+      for _, entry in ipairs(self._catalog.locations) do
+        if type(entry) == "table" and (entry.key == roamer.location or entry.mapRef == roamer.location) then
+          mapId = entry.mapRef
+          break
+        end
+      end
+      local location = mapId ~= nil and self._locations:byMapId(mapId) or nil
+      if location ~= nil then
+        roamers[#roamers + 1] = { slot = slot, location = location }
+      end
     end
   end
-  local locations = self._catalog.locations
-  assert(type(locations) == "table", "the region map borrows its location table")
-  for _, entry in ipairs(locations) do
-    if type(entry) == "table" and type(entry.key) == "string" then
+  table.sort(roamers, function(a, b)
+    return a.slot < b.slot
+  end)
+  return roamers
+end
+
+---@return boolean true when the selected location may open markings
+function MapController:_mayMark()
+  local selection = self._selection
+  return selection ~= nil
+    and selection.mapSymbol ~= "MAP_SINJOH_RUINS_EXTERIOR"
+    and selection.mapSymbol ~= "MAP_SS_AQUA_1F"
+end
+
+---@param symbol string
+---@return MarkingMode.Marking? the saved marking
+function MapController:_savedMarking(symbol)
+  local bucket = self._state:capture()
+  assert(type(bucket) == "table" and type(bucket.markings) == "table", "the region map reads its markings")
+  local stored = bucket.markings[symbol]
+  if type(stored) ~= "table" then
+    return nil
+  end
+  return stored --[[@as MarkingMode.Marking]]
+end
+
+-- Commits one marking mutation, removing emptied records.
+---@param symbol string
+---@param marking MarkingMode.Marking
+function MapController:_commitMarking(symbol, marking)
+  local empty = true
+  for index = 1, 4 do
+    if marking.icons[index] ~= false or marking.words[index] ~= false then
+      empty = false
+      break
+    end
+  end
+  self._state:setMarking(symbol, (not empty) and marking or nil)
+end
+
+---@param mapId integer
+---@return boolean whether a contact on that map has a rematch or a gift waiting
+function MapController:_hasRematchOrGift(mapId)
+  local known = self._rematch[mapId]
+  if known ~= nil then
+    return known
+  end
+  known = self:_findRematchOrGift(mapId)
+  self._rematch[mapId] = known
+  return known
+end
+
+---@param mapId integer
+---@return boolean
+function MapController:_findRematchOrGift(mapId)
+  for _, entry in ipairs(self._catalog.locations) do
+    if type(entry) == "table" and entry.mapRef == mapId and type(entry.key) == "string" then
       local ok, found = pcall(self._phoneProjection, entry.key)
       assert(ok, "contact markers follow the shared phone query")
       if type(found) == "table" then
         for _, marker in ipairs(found) do
-          assert(type(marker) == "table", "the phone query carries marker records")
-          markers[#markers + 1] = {
-            kind = "contact",
-            contact = marker.contact,
-            tier = marker.tier,
-            ready = marker.ready,
-            gift = marker.gift,
-            location = entry.key,
-            point = self:_locationPoint(entry),
-          }
+          if marker.ready == true or marker.gift ~= nil then
+            return true
+          end
         end
       end
     end
   end
-  return markers
+  return false
 end
 
----@param location unknown the encounter map fact from the roamer snapshot
----@return table<string, number>? the pane point, or nil when unresolvable
-function MapController:_roamerPoint(location)
-  local locations = self._catalog.locations
-  assert(type(locations) == "table", "the region map borrows its location table")
-  for _, entry in ipairs(locations) do
-    if type(entry) == "table" and (entry.key == location or entry.location == location or entry.mapRef == location) then
-      return self:_locationPoint(entry)
-    end
-  end
-  return nil
-end
-
----@param entry table<string, unknown> the compiled location record
----@return table<string, number>? the pane point, or nil when unresolvable
-function MapController:_locationPoint(entry)
-  local matrix = entry.matrix
-  local explicitX, explicitY = entry.explicitX, entry.explicitY
-  if explicitX == 0 and explicitY == 0 then
-    return nil
-  end
-  if
-    explicitX == nil
-    and explicitY == nil
-    and (type(matrix) ~= "table" or type(matrix.x) ~= "number" or type(matrix.y) ~= "number")
-  then
-    return nil
-  end
-  local cell = MapProjection.contextCell({
-    matrixX = type(matrix) == "table" and matrix.x or nil,
-    matrixY = type(matrix) == "table" and matrix.y or nil,
-    explicitX = explicitX,
-    explicitY = explicitY,
-    lastExterior = nil,
-    specialSpawn = nil,
-    special = type(entry.special) == "string" and entry.special or nil,
-  })
-  return MapProjection.markerPoint(cell, self._pan, self._zoomCells, LOCAL_PANE)
-end
-
----@return table<string, unknown> the current marking record with explicit empty slots
-function MapController:_currentMarking()
-  local bucket = self._state:capture()
-  assert(type(bucket) == "table" and type(bucket.markings) == "table", "the region map reads its markings")
-  local stored = (bucket --[[@as table<string, unknown>]]).markings[self._mapContext.location]
-  if type(stored) == "table" then
-    local icons, words = {}, {}
-    for index = 1, ICON_SLOTS do
-      icons[index] = stored.icons[index] ~= nil and stored.icons[index] or false
-    end
-    for index = 1, WORD_SLOTS do
-      words[index] = stored.words[index] ~= nil and stored.words[index] or false
-    end
-    return { icons = icons, words = words }
-  end
-  return { icons = { false, false, false, false }, words = { false, false, false, false } }
-end
-
--- Commits one marking mutation exactly once, removing records emptied by
--- the source empty-record rules instead of storing blank residue.
----@param marking table<string, unknown>
-function MapController:_commitMarking(marking)
-  local empty = true
-  for _, slot in ipairs({ "icons", "words" }) do
-    for index = 1, ICON_SLOTS do
-      if marking[slot][index] ~= false then
-        empty = false
-        break
-      end
-    end
-  end
-  if empty then
-    self._state:setMarking(self._mapContext.location, nil)
+function MapController:_beginMarking()
+  if not self:_mayMark() or self._world:busy() then
     return
   end
-  self._state:setMarking(self._mapContext.location, marking)
-end
-
--- Starts the ordered marking entrance: fade and slide run together and
--- both completions gate input.
-function MapController:_beginMarkingEntrance()
-  self._transition = { kind = "marking-enter", fade = 0, slide = 0 }
-end
-
----@param event table<string, unknown>
-function MapController:_handleNavigate(event)
-  if self._mode ~= "map" then
-    return
-  end
-  local direction = event.direction
-  if type(direction) ~= "string" then
-    return
-  end
-  local cursor = copyCell(self._cursor)
-  if direction == "left" then
-    cursor.x = cursor.x - 1
-  elseif direction == "right" then
-    cursor.x = cursor.x + 1
-  elseif direction == "up" then
-    cursor.y = cursor.y - 1
-  elseif direction == "down" then
-    cursor.y = cursor.y + 1
-  else
-    return
-  end
-  self._cursor = MapProjection.clampCursor(cursor, self._zoomCells, self._mapContext.unlockLevel)
-end
-
-function MapController:_handleConfirm()
-  if self._mode == "map" and self._transition == nil and self._wordPending == nil then
-    self:_beginMarkingEntrance()
-  end
-end
-
----@param event table<string, unknown>
-function MapController:_handlePointerDown(event)
-  if type(event.x) ~= "number" or type(event.y) ~= "number" then
-    return
-  end
-  local point = { x = event.x, y = event.y }
-  local pointerId = event.pointerId
-  if self._mode == "marking" then
-    local panel = self:_panelRects()
-    for index, rect in ipairs(panel.pool) do
-      if inRect(point, rect) then
-        self._drag = { pointerId = pointerId, kind = "pool", icon = POOL_ICONS[index], x = point.x, y = point.y }
-        return
-      end
-    end
-    for index, rect in ipairs(panel.icons) do
-      if inRect(point, rect) then
-        local marking = self:_currentMarking()
-        if marking.icons[index] ~= false then
-          self._drag = {
-            pointerId = pointerId,
-            kind = "slot",
-            from = index,
-            icon = marking.icons[index],
-            x = point.x,
-            y = point.y,
-          }
-        else
-          self._press = { pointerId = pointerId, kind = "panel", x = point.x, y = point.y }
-        end
-        return
-      end
-    end
-    for index, rect in ipairs(panel.words) do
-      if inRect(point, rect) then
-        self._press = { pointerId = pointerId, kind = "word", slot = index, x = point.x, y = point.y }
-        return
-      end
-    end
-    self._press = { pointerId = pointerId, kind = "panel", x = point.x, y = point.y }
-    return
-  end
-  if inRect(point, MARKINGS_BUTTON) then
-    self._press = { pointerId = pointerId, kind = "markings", x = point.x, y = point.y }
-  elseif inRect(point, ZOOM_BUTTON) then
-    self._press = { pointerId = pointerId, kind = "zoom", x = point.x, y = point.y }
-  else
-    self._drag = { pointerId = pointerId, kind = "pan", startX = point.x, startY = point.y, x = point.x, y = point.y }
-  end
-end
-
----@param event table<string, unknown>
-function MapController:_handlePointerMove(event)
-  local drag = self._drag
-  if drag == nil or drag.pointerId ~= event.pointerId then
-    return
-  end
-  if type(event.x) ~= "number" or type(event.y) ~= "number" then
-    return
-  end
-  if drag.kind == "pan" then
-    local pan = {
-      x = self._pan.x + (event.x - drag.x),
-      y = self._pan.y + (event.y - drag.y),
-    }
-    self._pan = MapProjection.clampPan(pan, self._zoomCells, LOCAL_PANE)
-  end
-  drag.x, drag.y = event.x, event.y
-end
-
----@param point table<string, unknown>
----@param panel table<string, unknown>
----@return string kind, integer? slot
-local function dropTarget(point, panel)
-  for index, rect in ipairs(panel.icons) do
-    if inRect(point, rect) then
-      return "slot", index
-    end
-  end
-  if inRect(point, panel.trash) then
-    return "trash", nil
-  end
-  return "void", nil
-end
-
----@param event table<string, unknown>
-function MapController:_handlePointerUp(event)
-  if type(event.x) ~= "number" or type(event.y) ~= "number" then
-    self._drag, self._press = nil, nil
-    return
-  end
-  local point = { x = event.x, y = event.y }
-  local drag = self._drag
-  if drag ~= nil and drag.pointerId == event.pointerId then
-    self._drag, self._press = nil, nil
-    if drag.kind == "pool" or drag.kind == "slot" then
-      local panel = self:_panelRects()
-      local target, slot = dropTarget(point, panel)
-      if target == "slot" and slot ~= nil then
-        self:_dropIcon(drag, slot)
-      elseif target == "trash" and drag.kind == "slot" and drag.from ~= nil then
-        self:_deleteIcon(drag.from)
-      end
-    elseif drag.kind == "pan" then
-      local moved = math.abs(point.x - drag.startX) + math.abs(point.y - drag.startY)
-      if moved <= TAP_RADIUS and self._mode == "map" then
-        local cell = MapProjection.inverse(point, self._pan, self._zoomCells, LOCAL_PANE)
-        if cell ~= nil and MapProjection.tierOfColumn(cell.x) <= self._mapContext.unlockLevel then
-          self._cursor = MapProjection.clampCursor(cell, self._zoomCells, self._mapContext.unlockLevel)
-        end
-      end
-    end
-    return
-  end
-  local press = self._press
-  if press ~= nil and press.pointerId == event.pointerId then
-    self._press = nil
-    if press.kind == "markings" and inRect(point, MARKINGS_BUTTON) then
-      self:_beginMarkingEntrance()
-    elseif press.kind == "zoom" and inRect(point, ZOOM_BUTTON) then
-      self:_toggleZoom()
-    elseif press.kind == "word" and press.slot ~= nil then
-      local panel = self:_panelRects()
-      local rect = panel.words[press.slot]
-      if rect ~= nil and inRect(point, rect) then
-        self:_requestWord(press.slot)
-      end
-    end
-  end
-end
-
--- Drops a dragged icon into its target slot: pool icons land, occupied
--- slots swap. Exactly one state write.
----@param drag table<string, unknown>
----@param slot integer
-function MapController:_dropIcon(drag, slot)
-  assert(slot >= 1 and slot <= ICON_SLOTS, "icon drops name their slot")
-  local marking = self:_currentMarking()
-  if drag.kind == "pool" then
-    marking.icons[slot] = semanticIcon(drag.icon)
-  elseif drag.kind == "slot" and drag.from ~= nil then
-    local from = drag.from --[[@as integer]]
-    assert(from >= 1 and from <= ICON_SLOTS, "icon drags start in their slot")
-    if from == slot then
-      return
-    end
-    marking.icons[from], marking.icons[slot] = semanticIcon(marking.icons[slot]), semanticIcon(marking.icons[from])
-  else
-    return
-  end
-  self:_commitMarking(marking)
-end
-
--- Deletes one icon slot. Exactly one state write.
----@param slot integer
-function MapController:_deleteIcon(slot)
-  assert(slot >= 1 and slot <= ICON_SLOTS, "icon deletes name their slot")
-  local marking = self:_currentMarking()
-  marking.icons[slot] = false
-  self:_commitMarking(marking)
+  self._markingsPressed = true
+  self._session = self._world:snapshot()
+  self._transition = { kind = "enter", t = 0 }
 end
 
 function MapController:_toggleZoom()
-  if self._zoomCells == MapProjection.ZOOM_OUT then
-    self._zoomCells = MapProjection.ZOOM_IN
-    self._state:setPreference("mapZoomed", true)
-  else
-    self._zoomCells = MapProjection.ZOOM_OUT
-    self._state:setPreference("mapZoomed", false)
-  end
-  self._pan = MapProjection.clampPan(self._pan, self._zoomCells, LOCAL_PANE)
-  self._cursor = MapProjection.clampCursor(self._cursor, self._zoomCells, self._mapContext.unlockLevel)
-end
-
--- Pends one typed word request for the current location and slot. The
--- external selector answers through acceptWordResult; a pending edit
--- ignores further taps until it resolves.
----@param slot integer
-function MapController:_requestWord(slot)
-  assert(slot >= 1 and slot <= WORD_SLOTS, "word edits name their slot")
-  if self._wordPending ~= nil then
+  if self._world:busy() then
     return
   end
-  local marking = self:_currentMarking()
-  local oldWord = marking.words[slot]
-  if oldWord == nil then
-    oldWord = false
-  end
-  self._operations = self._operations + 1
-  local request = {
-    locationKey = self._mapContext.location,
-    slot = slot,
-    oldWord = oldWord,
-    operationId = "map-word-" .. tostring(self._operations),
-    session = {
-      pan = { x = self._pan.x, y = self._pan.y },
-      zoomCells = self._zoomCells,
-      cursor = copyCell(self._cursor),
-      markingMode = self._mode,
-    },
-  }
-  self._wordPending = request
-  self._wordOutbox = request
-end
-
--- One fixed tick: entrance transitions advance, gated input changes
--- nothing, and the marking state machine consumes its semantic events.
----@param uiInput table[]
-function MapController:updateFixed(uiInput)
-  assert(not self._disposed, "a disposed region map steps nothing")
-  assert(type(uiInput) == "table", "the region map input must be an event list")
-  self._ticks = self._ticks + 1
-  if self._transition ~= nil then
-    local transition = self._transition --[[@as table<string, unknown>]]
-    transition.fade = transition.fade --[[@as integer]] + 1
-    transition.slide = transition.slide --[[@as integer]] + 1
-    if transition.fade >= FADE_TICKS and transition.slide >= SLIDE_TICKS then
-      self._transition = nil
-      self._mode = "marking"
-      self._markers = self:_sampleMarkers()
-    end
-    return
-  end
-  for _, event in ipairs(uiInput) do
-    if type(event) == "table" and type(event.type) == "string" then
-      self:_handle(event)
-    end
-  end
+  self._world:toggleZoom()
+  self._state:setPreference("mapZoomed", self._world.zoomed)
 end
 
 ---@param event table<string, unknown>
-function MapController:_handle(event)
-  if event.type == "cancel" then
-    if self._drag ~= nil then
-      self._drag, self._press = nil, nil
-      return
-    end
-    if self._wordPending ~= nil then
-      self._wordPending, self._wordOutbox = nil, nil
-      return
-    end
-    if self._mode == "marking" then
-      self._mode = "map"
-    end
-    self._press = nil
-  elseif event.type == "pointer_down" then
-    if self._wordPending == nil then
-      self:_handlePointerDown(event)
-    end
+function MapController:_pointer(event)
+  local touch = self._touch
+  if event.type == "pointer_down" then
+    touch.held, touch.x, touch.y = true, event.x, event.y
+    self._touchNew = true
   elseif event.type == "pointer_move" then
-    if self._wordPending == nil then
-      self:_handlePointerMove(event)
+    if touch.held then
+      touch.x, touch.y = event.x, event.y
     end
-  elseif event.type == "pointer_up" then
-    if self._wordPending == nil then
-      self:_handlePointerUp(event)
-    end
-  elseif event.type == "navigate" then
-    if self._wordPending == nil then
-      self:_handleNavigate(event)
-    end
-  elseif event.type == "confirm" then
-    if self._wordPending == nil then
-      self:_handleConfirm()
+  elseif event.type == "pointer_up" or event.type == "pointer_cancel" then
+    touch.held = false
+    if type(event.x) == "number" then
+      touch.x, touch.y = event.x, event.y
     end
   end
 end
 
----@return table<string, unknown> the marking panel hit regions
-function MapController:_panelRects()
+-- A fresh touch: the markings or zoom button, or a map selection that
+-- begins a drag (source ov101_021EBA44).
+function MapController:_touchDown()
+  local world = self._world
+  local touch = self._touch
+  if world:zooming() then
+    return
+  end
+  if inRect(MARKINGS_RECT, touch.x, touch.y) then
+    world:placeCursor()
+    self:_beginMarking()
+  elseif inRect(ZOOM_RECT, touch.x, touch.y) then
+    world:placeCursor()
+    self:_toggleZoom()
+  elseif inRect(MAP_RECT, touch.x, touch.y) then
+    local x, y = world:cellFromTouch(touch.x, touch.y)
+    world:selectCell(x, y)
+    self._selection = self._locations:select(x, y)
+    world:beginDrag(touch.x, touch.y)
+  end
+end
+
+-- Mode transition keyframes: the lower-screen fade, the upper panel slide
+-- offset, and the lower panel slide offset at a transition tick.
+---@param transition table<string, unknown>
+---@return table<string, unknown> frame
+local function transitionFrame(transition)
+  local t = transition.t --[[@as integer]]
+  local kind = transition.kind
+  if kind == "arrive" then
+    return {
+      content = "map",
+      fade = 0,
+      top = clamp(TOP_OFFSET - TOP_STEP * t, 0, TOP_OFFSET),
+      bottom = 0,
+      done = t >= PANEL_STEPS,
+    }
+  elseif kind == "enter" then
+    if t <= 1 + FADE_TICKS then
+      return {
+        content = "map",
+        fade = clamp((t - 1) / FADE_TICKS, 0, 1),
+        top = TOP_STEP * clamp(t - 1, 0, PANEL_STEPS),
+        bottom = 0,
+      }
+    end
+    local base = 1 + FADE_TICKS + 1
+    if t <= base + FADE_TICKS then
+      return {
+        content = "marking",
+        fade = clamp(1 - (t - base) / FADE_TICKS, 0, 1),
+        top = TOP_OFFSET,
+        bottom = BOTTOM_OFFSET,
+      }
+    end
+    local slideStart = base + FADE_TICKS + 1
+    local step = clamp(t - slideStart, 0, PANEL_STEPS)
+    return {
+      content = "marking",
+      fade = 0,
+      top = TOP_OFFSET,
+      bottom = BOTTOM_OFFSET - BOTTOM_STEP * step,
+      done = t >= slideStart + PANEL_STEPS,
+    }
+  end
+  -- exit
+  if t <= PANEL_STEPS then
+    return { content = "marking", fade = 0, top = TOP_OFFSET, bottom = BOTTOM_STEP * t }
+  end
+  if t <= PANEL_STEPS + FADE_TICKS then
+    return {
+      content = "marking",
+      fade = clamp((t - PANEL_STEPS) / FADE_TICKS, 0, 1),
+      top = TOP_OFFSET,
+      bottom = BOTTOM_OFFSET,
+    }
+  end
+  local base = PANEL_STEPS + FADE_TICKS + 1
+  local step = clamp(t - base, 0, PANEL_STEPS)
   return {
-    panel = copyRect(PANEL),
-    pool = buildPool(),
-    icons = buildRow(SLOT_TOP, SLOT_LEFT, SLOT_STEP, SLOT_SIZE, nil, ICON_SLOTS),
-    words = buildRow(SLOT_TOP + 32, SLOT_LEFT, SLOT_STEP + 24, SLOT_SIZE, WORD_WIDTH, WORD_SLOTS),
-    trash = copyRect(TRASH_RECT),
+    content = "map",
+    fade = clamp(1 - (t - base) / FADE_TICKS, 0, 1),
+    top = TOP_OFFSET - TOP_STEP * step,
+    bottom = 0,
+    done = t >= base + FADE_TICKS,
   }
+end
+
+function MapController:_advanceTransition()
+  local transition = self._transition --[[@as table<string, unknown>]]
+  transition.t = transition.t + 1
+  local frame = transitionFrame(transition)
+  if transition.kind == "enter" and frame.content == "marking" and self._marking == nil then
+    self._marking = MarkingMode.new({
+      marking = self:_savedMarking(self._selection.mapSymbol --[[@as string]]),
+      wordSlot = transition.wordSlot,
+    })
+    self._mode = "marking"
+  elseif transition.kind == "exit" and frame.content == "map" and self._mode == "marking" then
+    self._mode = "map"
+    self._marking = nil
+    self._markingsPressed = false
+    if self._session ~= nil then
+      self._world:restore(self._session)
+      self._session = nil
+    end
+  end
+  if frame.done == true then
+    self._transition = nil
+  end
+end
+
+---@param result string
+---@param slot integer?
+function MapController:_markingResult(result, slot)
+  if result == "exit" then
+    self._transition = { kind = "exit", t = 0 }
+  elseif result == "word" then
+    self:_requestWord(slot --[[@as integer]])
+  end
+end
+
+-- Pends one typed word request for the open location; the external selector
+-- answers through acceptWordResult and the card returns to marking mode.
+---@param slot integer zero-based word slot
+function MapController:_requestWord(slot)
+  if self._wordPending ~= nil then
+    return
+  end
+  self._operations = self._operations + 1
+  local request = {
+    mapSymbol = (self._selection --[[@as table<string, unknown>]]).mapSymbol,
+    slot = slot + 1,
+    oldWord = false,
+    operationId = "map-word-" .. tostring(self._operations),
+    session = self._world:snapshot(),
+  }
+  self._wordPending = request
+  self._wordOutbox = request
 end
 
 -- Takes the pending word request for the external selector, exactly once.
@@ -741,14 +492,13 @@ function MapController:takeWordRequest()
   return request
 end
 
--- Applies the external selector result to its original edit: a selected
--- word writes once, a cancellation preserves the old word, and every
--- return restores the map session exactly. Unknown or already-consumed
--- operation identities fail without touching marking state.
+-- Applies the external selector result to its edit: a selected word writes
+-- once, a cancellation keeps the old word, and either way the card returns to
+-- its marking mode. Unknown or consumed operation identities fail without
+-- touching the markings.
 ---@param answer { operationId: string, result: table<string, unknown> }
 function MapController:acceptWordResult(answer)
-  assert(type(answer) == "table", "word answers carry their operation identity")
-  assert(type(answer.operationId) == "string", "word answers name their operation")
+  assert(type(answer) == "table" and type(answer.operationId) == "string", "word answers name their operation")
   assert(type(answer.result) == "table", "word answers carry the selector result")
   if self._consumed[answer.operationId] == true then
     error("a replayed word result edits nothing: " .. answer.operationId, 0)
@@ -757,215 +507,299 @@ function MapController:acceptWordResult(answer)
   if pending == nil or pending.operationId ~= answer.operationId then
     error("a stale word result edits nothing: " .. tostring(answer.operationId), 0)
   end
-  local result = answer.result --[[@as table<string, unknown>]]
-  local session = pending.session --[[@as table<string, unknown>]]
-  if result.cancelled == true then
-    self._wordPending, self._wordOutbox = nil, nil
-    self._consumed[answer.operationId] = true
-    self:_restoreSession(session)
-    return
+  local result = answer.result
+  if result.cancelled ~= true then
+    assert(
+      type(result.word) == "string" and result.word:match("^[0-9]+$") ~= nil,
+      "selected words carry decimal identities"
+    )
+    local marking = self._marking --[[@as MarkingMode]]
+    marking:applyWord(pending.slot - 1, result.word --[[@as string]])
+    marking:takeEdited()
+    self:_commitMarking(pending.mapSymbol, marking:marking())
   end
-  assert(type(result.word) == "string", "selected words carry their word identity")
-  checkWord(result.word)
-  local marking = self:_currentMarking()
-  marking.words[pending.slot] = result.word
-  self:_commitMarking(marking)
   self._wordPending, self._wordOutbox = nil, nil
   self._consumed[answer.operationId] = true
-  self:_restoreSession(session)
 end
 
----@param session table<string, unknown>
-function MapController:_restoreSession(session)
-  local pan = session.pan --[[@as table<string, number>]]
-  local cursor = session.cursor --[[@as table<string, integer>]]
-  self._pan = { x = pan.x, y = pan.y }
-  self._zoomCells = session.zoomCells --[[@as integer]]
-  self._cursor = { x = cursor.x, y = cursor.y }
-  self._mode = session.markingMode --[[@as string]]
-end
-
--- The detached information lines behind the info-panel windows: region
--- and location always, plus one rematch line per ready contact marker.
----@return table<integer, table<string, string>>
-function MapController:_infoLines()
-  local lines = {
-    { window = "region", text = self._mapContext.region },
-    { window = "location", text = self._mapContext.location },
-  }
-  for _, marker in ipairs(self._markers) do
-    if marker.kind == "contact" and marker.ready == true then
-      lines[#lines + 1] = { window = "rematch", text = marker.contact }
-    end
-  end
-  return lines
-end
-
----@param node unknown
----@param skin integer
----@return string? path
-local function pickPath(node, skin)
-  if type(node) ~= "table" then
-    return nil
-  end
-  local record = node --[[@as table<string, unknown>]]
-  if type(record.image) == "string" then
-    return record.image
-  end
-  local skinned = record[skin]
-  if type(skinned) == "table" and type(skinned.image) == "string" then
-    return skinned.image
-  end
-  local keys = {}
-  for key in pairs(record) do
-    keys[#keys + 1] = key
-  end
-  table.sort(keys, function(a, b)
-    return tostring(a) < tostring(b)
-  end)
-  for _, key in ipairs(keys) do
-    local child = record[key]
-    if type(child) == "table" then
-      local found = pickPath(child, skin)
-      if found ~= nil then
-        return found
-      end
-    end
-  end
-  return nil
-end
-
--- Resolves the content image paths behind the current skin, tolerating
--- companion fixtures that carry one shared plane per section.
----@return table<string, unknown>
-function MapController:_contentPaths()
-  local preferences = self._state:readPreferences()
-  local skin = 0
-  if type(preferences) == "table" and type(preferences.skin) == "number" then
-    skin = preferences.skin --[[@as integer]]
-  end
-  local map = self._assets.map
-  assert(type(map) == "table", "the region map borrows its visuals")
-  local section = map --[[@as table<string, unknown>]]
-  local foreground = pickPath(section.foreground, skin)
-  if foreground == nil then
-    foreground = pickPath(section, skin)
-  end
-  return {
-    world = pickPath(section.world, skin) or pickPath(section, skin),
-    foreground = foreground,
-    upper = pickPath(section.upper, skin) or pickPath(section.upperBase, skin),
-    patch = pickPath(section.patches, skin),
-  }
-end
-
--- The presentation snapshot: lifetime flags the shell routes on, the
--- marking mode, the active transition, and the detached map view with
--- its hit regions, marker snapshot, and renderer content. Fresh tables
--- per call; status performs no mutation.
----@return table<string, unknown>
-function MapController:status()
-  local cursorPoint = MapProjection.forward(self._cursor, self._pan, self._zoomCells, LOCAL_PANE)
-  local playerPoint = MapProjection.markerPoint(self._playerCell, self._pan, self._zoomCells, LOCAL_PANE)
-  local markers = {}
-  for _, marker in ipairs(self._markers) do
-    local copy = {}
-    for key, value in pairs(marker) do
-      if key == "point" and type(value) == "table" then
-        copy.point = { x = value.x, y = value.y }
-      else
-        copy[key] = value
-      end
-    end
-    markers[#markers + 1] = copy
-  end
-  local transition = nil
+-- One fixed tick: a running transition gates input, marking mode consumes
+-- its events, and map mode routes keys, buttons, and touch to the world.
+---@param events table<integer, table<string, unknown>>
+function MapController:updateFixed(events)
+  assert(not self._disposed, "a disposed region map steps nothing")
+  assert(type(events) == "table", "the region map input must be an event list")
+  self._ticks = self._ticks + 1
   if self._transition ~= nil then
-    transition = { kind = self._transition.kind, completed = false }
+    self:_advanceTransition()
+    return
   end
-  local panel = nil
+  if self._wordPending ~= nil then
+    for _, event in ipairs(events) do
+      if event.type == "cancel" then
+        self._wordPending, self._wordOutbox = nil, nil
+      end
+    end
+    return
+  end
   if self._mode == "marking" then
-    panel = self:_panelRects()
+    local marking = self._marking --[[@as MarkingMode]]
+    local result, slot = marking:updateFixed(events)
+    if marking:takeEdited() then
+      self:_commitMarking(
+        (self._selection --[[@as table<string, unknown>]]).mapSymbol --[[@as string]],
+        marking:marking()
+      )
+    end
+    if result ~= nil then
+      self:_markingResult(result, slot)
+    end
+    return
   end
+  local up, down, left, right, confirm, zoom = false, false, false, false, false, false
+  self._touchNew = false
+  for _, event in ipairs(events) do
+    local kind = event.type
+    if kind == "navigate" then
+      local direction = event.direction
+      up = up or direction == "up"
+      down = down or direction == "down"
+      left = left or direction == "left"
+      right = right or direction == "right"
+    elseif kind == "confirm" then
+      confirm = true
+    elseif kind == "menu" then
+      zoom = true
+    elseif kind == "pointer_down" or kind == "pointer_move" or kind == "pointer_up" or kind == "pointer_cancel" then
+      self:_pointer(event)
+    end
+  end
+  local world = self._world
+  if zoom then
+    self:_toggleZoom()
+  end
+  if confirm then
+    self:_beginMarking()
+    if self._transition ~= nil then
+      return
+    end
+  end
+  if self._touchNew then
+    self:_touchDown()
+    if self._transition ~= nil then
+      return
+    end
+  end
+  if world:dragging() then
+    world:stepDrag(self._touch.held, self._touch.x, self._touch.y)
+  end
+  if (up or down or left or right) and not world:busy() then
+    local moved = world:moveSelection(up, down, left, right)
+    if moved ~= nil then
+      world:beginMove(moved)
+      self._selection = self._locations:select(world.cell.x, world.cell.y)
+    end
+  end
+  world:tick()
+end
+
+---@return integer skin the saved skin
+function MapController:_skin()
+  local preferences = self._state:readPreferences()
+  local skin = type(preferences) == "table" and preferences.skin or 0
+  return type(skin) == "number" and math.floor(skin) or 0
+end
+
+-- The world-attached sprites at their screen positions: the cursor, the
+-- player, the roamers, and a dot on every location with a marking.
+---@return table<string, unknown>
+function MapController:_sprites()
+  local world = self._world
+  local scale = world.ratio
+  local sprites = { hasMarkings = {}, roamers = {} }
+  local gender = self._context.playerGender
+  local px, py = world:cellCentre(world.player.x, world.player.y)
+  sprites.player = { x = px, y = py, frame = gender == "female" and 2 or 1 }
+  sprites.cursor = { x = world.cursorX, y = world.cursorY, scale = scale }
+  for _, roamer in ipairs(self._roamers) do
+    local location = roamer.location
+    local x, y = world:cellCentre(location.x, location.y, location.objXOffset, location.objYOffset)
+    sprites.roamers[#sprites.roamers + 1] = { x = x, y = y, frame = roamer.slot + 1 }
+  end
+  local bucket = self._state:capture()
+  local markings = type(bucket) == "table" and bucket.markings or {}
+  for _, location in ipairs(self._locations:all()) do
+    if markings[location.mapSymbol] ~= nil then
+      local x, y = world:cellCentre(location.x, location.y, location.objXOffset, location.objYOffset)
+      sprites.hasMarkings[#sprites.hasMarkings + 1] = { x = x, y = y }
+    end
+  end
+  return sprites
+end
+
+-- The highlight tile copies for every location sharing the selected map.
+---@return table<integer, table<string, integer>>
+function MapController:_highlight()
+  local highlight = {}
+  local selection = self._selection
+  if selection == nil or self._mode ~= "map" then
+    return highlight
+  end
+  for _, location in ipairs(self._locations:all()) do
+    if location.mapId == selection.mapId then
+      local overlay = location.overlay
+      if overlay.width * overlay.height > 0 then
+        local destX, destY = location.x, location.y
+        if overlay.width * overlay.height >= 9 then
+          destX, destY = destX - 1, destY - 1
+        end
+        highlight[#highlight + 1] = {
+          srcX = overlay.srcX,
+          srcY = overlay.srcY,
+          destX = destX,
+          destY = destY,
+          width = overlay.width,
+          height = overlay.height,
+        }
+      end
+    end
+  end
+  return highlight
+end
+
+-- The information panel for the selection: region, landmark, flavor text,
+-- preview block, the rematch icon, and the saved marking.
+---@return table<string, unknown>
+function MapController:_panel()
+  local world = self._world
+  local selection = self._selection
+  local key = table.concat({
+    selection ~= nil and selection.mapSymbol or "-",
+    MapLocations.regionName(world.cell.x, world.cell.y),
+    tostring(self._state:revision()),
+  }, "|")
+  if self._panelCache ~= nil and self._panelCache.key == key then
+    return self._panelCache.panel
+  end
+  local messages = self._messages
+  local panel = {
+    region = messages.region(MapLocations.regionName(world.cell.x, world.cell.y)),
+    markers = {},
+    words = {},
+    previewFrame = false,
+  }
+  if selection ~= nil then
+    panel.landmark = messages.landmark(selection.sectionEntry)
+    panel.flavor = messages.flavor(selection.flavorEntry)
+    panel.previewFrame = selection.previewBlock ~= 0
+    panel.previewBlock = selection.previewBlock ~= 0 and selection.previewBlock - 1 or 0
+    panel.battleIcon = self:_hasRematchOrGift(selection.mapId)
+    local saved = self:_savedMarking(selection.mapSymbol)
+    if saved ~= nil then
+      for index = 1, 4 do
+        panel.markers[index] = saved.icons[index] ~= false and saved.icons[index] or nil
+        panel.words[index] = saved.words[index] ~= false and messages.word(saved.words[index]) or nil
+      end
+    end
+  end
+  self._panelCache = { key = key, panel = panel }
+  return panel
+end
+
+-- The resolved image paths behind the saved skin, plus the sprite sets.
+---@return table<string, unknown>
+function MapController:_planContent()
+  local skin = self:_skin()
+  local map = assert(self._assets.map, "the region map borrows its visuals")
+  local function path(section)
+    local node = section
+    if type(node) ~= "table" then
+      return nil
+    end
+    local entry = node[skin]
+    return type(entry) == "table" and entry.image or nil
+  end
+  local function pair(colors, foreground, shadow)
+    return {
+      foreground = assert(colors[foreground + 1], "the map text palette carries its colors"),
+      shadow = assert(colors[shadow + 1], "the map text palette carries its colors"),
+      -- Palette index zero is the transparent key of the window bitmap.
+      background = { r = 0, g = 0, b = 0, a = 0 },
+    }
+  end
+  local text = assert(map.textPalette[skin], "the map carries its skin text palette")
+  return {
+    skin = skin,
+    textColors = {
+      upper = pair(text.upper, 1, 2),
+      upperWord = pair(text.upper, 3, 4),
+      lower = pair(text.lower, 1, 2),
+      word = pair(map.wordPalette, 3, 4),
+    },
+    foreground = path(map.foreground),
+    world = path(map.world),
+    markingPanel = path(map.markingPanel),
+    markingBackdrop = path(map.markingBackdrop),
+    upper = path(map.upper),
+    previews = path(map.previews),
+    sprites = map.sprites,
+    patches = self._patches,
+  }
+end
+
+---@return table<string, unknown> the presentation snapshot the shell routes on
+function MapController:status()
+  local world = self._world
+  local frame = self._transition ~= nil and transitionFrame(self._transition) or nil
+  local mode = frame ~= nil and frame.content or self._mode
+  local view = {
+    mode = mode,
+    cell = { x = world.cell.x, y = world.cell.y },
+    playerCell = { x = world.player.x, y = world.player.y },
+    world = {
+      ratio = world.ratio,
+      scrollX = world.scrollX,
+      scrollY = world.scrollY,
+      affineX = world.affineX,
+      affineY = world.affineY,
+      xOffset = world.frame.xOffset,
+    },
+    patches = self._patches,
+    highlight = self:_highlight(),
+    sprites = self:_sprites(),
+    buttons = {
+      markings = self._markingsPressed and "pressed" or (self:_mayMark() and "normal" or "disabled"),
+      zoom = world.zoomed and "zoomed" or "unzoomed",
+    },
+    panel = self:_panel(),
+    topSlide = frame ~= nil and frame.top or 0,
+    bottomSlide = frame ~= nil and frame.bottom or 0,
+    fade = frame ~= nil and frame.fade or 0,
+  }
+  if mode == "marking" and self._marking ~= nil then
+    local marking = self._marking:view()
+    marking.landmark = self._selection ~= nil and self._messages.landmark(self._selection.sectionEntry) or nil
+    for _, slot in ipairs(marking.slots) do
+      if slot.kind == "word" and slot.word ~= false then
+        slot.text = self._messages.word(slot.word)
+      end
+    end
+    view.marking = marking
+  end
+  local presentation = {
+    content = self:_planContent(),
+  }
+  local Renderer = require("libs.hgss.src.presentation.PokegearMapRenderer")
+  presentation.render = Renderer.render
+  presentation.renderInformation = Renderer.renderInformation
   return {
     open = true,
     tab = "map",
-    busy = self._wordPending ~= nil,
-    dismissible = true,
-    nestedCancel = self._mode == "marking" or self._drag ~= nil or self._wordPending ~= nil,
-    markingMode = self._mode,
-    transition = transition,
-    view = {
-      cursor = copyCell(self._cursor),
-      cursorPoint = { x = cursorPoint.x, y = cursorPoint.y },
-      playerCell = copyCell(self._playerCell),
-      playerPoint = { x = playerPoint.x, y = playerPoint.y },
-      pan = { x = self._pan.x, y = self._pan.y },
-      zoomCells = self._zoomCells,
-      markers = markers,
-      markingsButton = copyRect(MARKINGS_BUTTON),
-      zoomButton = copyRect(ZOOM_BUTTON),
-      markingPanel = panel,
-      maskRects = self:_maskRects(),
-      unlockLevel = self._mapContext.unlockLevel,
-      region = self._mapContext.region,
-      locationKey = self._mapContext.location,
-      playerGender = self._mapContext.playerGender,
-      infoLines = self:_infoLines(),
-      content = self:_contentPaths(),
-      cursorFrame = self:_cursorFrame(),
-      marking = self:_currentMarking(),
-    },
-  }
-end
-
--- The locked-tier mask rects in pane space: every column band above the
--- unlocked progression tier.
----@return table<integer, table<string, number>>
-function MapController:_maskRects()
-  local bands = {
-    { fromX = 28, toX = 31, tier = 2 },
-    { fromX = 32, toX = 63, tier = 3 },
-  }
-  local rects = {}
-  for _, band in ipairs(bands) do
-    if band.tier > self._mapContext.unlockLevel then
-      local topLeft = MapProjection.forward({ x = band.fromX, y = 0 }, self._pan, self._zoomCells, LOCAL_PANE)
-      local bottomRight = MapProjection.forward({ x = band.toX + 1, y = 0 }, self._pan, self._zoomCells, LOCAL_PANE)
-      rects[#rects + 1] = {
-        x = topLeft.x,
-        y = LOCAL_PANE.y,
-        width = bottomRight.x - topLeft.x,
-        height = LOCAL_PANE.height,
-      }
-    end
-  end
-  return rects
-end
-
--- The current cursor animation frame behind the double-size affine
--- cursor, resolved from the compiled cursor sequences when present.
----@return table<string, unknown>? frame
-function MapController:_cursorFrame()
-  local sequences = self._assets.sequences
-  if type(sequences) ~= "table" then
-    return nil
-  end
-  local clip = sequences["shell.cursor.1"]
-  if type(clip) ~= "table" or type(clip.frames) ~= "table" or #clip.frames == 0 then
-    return nil
-  end
-  local frames = clip.frames --[[@as table]]
-  local frame = frames[(math.floor(self._ticks / 8) % #frames) + 1]
-  if type(frame) ~= "table" then
-    return nil
-  end
-  return {
-    image = frame.image,
-    width = frame.width,
-    height = frame.height,
-    anchorX = frame.anchorX or 0,
-    anchorY = frame.anchorY or 0,
+    busy = self._wordPending ~= nil or self._transition ~= nil,
+    dismissible = self._transition == nil,
+    nestedCancel = mode == "marking" or self._wordPending ~= nil or self._transition ~= nil,
+    stripHidden = mode == "marking",
+    view = view,
+    presentation = presentation,
   }
 end
 
@@ -975,13 +809,11 @@ function MapController:takeResult()
   return nil
 end
 
--- Idempotent release of the logical lifetime: drops transient edit state
--- and reports nothing further. Committed markings already live in the
--- borrowed state owner.
+-- Idempotent release of the logical lifetime. Committed markings already
+-- live in the borrowed state owner.
 function MapController:dispose()
-  self._drag, self._press = nil, nil
-  self._transition = nil
   self._wordOutbox, self._wordPending = nil, nil
+  self._transition = nil
   self._disposed = true
 end
 

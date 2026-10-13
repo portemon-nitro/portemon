@@ -155,17 +155,23 @@ local function contactKeys(refs)
 end
 
 ---@param refs table<string, unknown>
----@return table<string, boolean> known location keys
-local function locationKeys(refs)
+---@return table<integer, table<string, unknown>> the region-map locations markings attach to
+local function markingLocations(refs)
   local catalog = refs.catalog --[[@as table<string, unknown>]]
-  assert(type(catalog) == "table" and type(catalog.locations) == "table", "scenario presets read catalog locations")
+  assert(type(catalog) == "table" and type(catalog.regionMap) == "table", "scenario presets read the region map")
+  local regionMap = catalog.regionMap --[[@as table<string, unknown>]]
+  assert(type(regionMap.locations) == "table", "scenario presets read region-map locations")
+  return regionMap.locations --[[@as table<integer, table<string, unknown>>]]
+end
+
+-- Marking identities are the region-map locations' source map symbols.
+---@param refs table<string, unknown>
+---@return table<string, boolean> known marking location keys
+local function locationKeys(refs)
   local keys = {}
-  for _, location in
-    ipairs(catalog.locations --[[@as table<integer, unknown>]])
-  do
-    local entry = location --[[@as table<string, unknown>]]
-    if type(entry.key) == "string" and entry.key ~= "" then
-      keys[entry.key] = true
+  for _, entry in ipairs(markingLocations(refs)) do
+    if type(entry.mapSymbol) == "string" and entry.mapSymbol ~= "" then
+      keys[entry.mapSymbol] = true
     end
   end
   return keys
@@ -220,22 +226,17 @@ local function rematchContact(refs)
 end
 
 ---@param refs table<string, unknown>
----@return string? the marking location: a bark-town location when catalogued, else the first location
+---@return string? the marking location: a bark-town location when mapped, else the first location
 local function markLocation(refs)
-  local catalog = refs.catalog --[[@as table<string, unknown>]]
-  assert(type(catalog) == "table" and type(catalog.locations) == "table", "scenario presets read catalog locations")
-  local locations = catalog.locations --[[@as table<integer, unknown>]]
-  for _, location in ipairs(locations) do
-    local entry = location --[[@as table<string, unknown>]]
-    if type(entry.key) == "string" and entry.key:lower():find("bark", 1, true) ~= nil then
-      return entry.key
+  local locations = markingLocations(refs)
+  for _, entry in ipairs(locations) do
+    if type(entry.mapSymbol) == "string" and entry.mapSymbol:lower():find("bark", 1, true) ~= nil then
+      return entry.mapSymbol
     end
   end
-  if #locations >= 1 then
-    local first = locations[1] --[[@as table<string, unknown>]]
-    if type(first.key) == "string" then
-      return first.key
-    end
+  local first = locations[1]
+  if first ~= nil and type(first.mapSymbol) == "string" then
+    return first.mapSymbol
   end
   return nil
 end

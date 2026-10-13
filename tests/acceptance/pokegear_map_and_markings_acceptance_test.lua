@@ -11,6 +11,7 @@ local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local OpeningLifecycle = require("tests.acceptance.support.OpeningLifecycle")
 local EncounterSave = require("libs.hgss.src.save.EncounterSave")
 local HgssRoamerState = require("libs.hgss.src.encounters.HgssRoamerState")
+local Fixture = require("tests.support.PokegearMapFixture")
 local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
 local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
 local PokegearState = require("libs.hgss.src.save.PokegearState")
@@ -28,6 +29,8 @@ local T = {
       "map-data:33",
       "map-data:63",
       "map-data:539",
+      "message-bank:273",
+      "message-bank:279",
     },
     tags = { "pokegear" },
   },
@@ -49,49 +52,47 @@ local function requireFeature(moduleName, missingMessage)
   return mod --[[@as table]]
 end
 
----@param path string
----@return table
-local function visualRef(path)
-  return { image = path, width = 32, height = 32, anchorX = 0, anchorY = 0 }
-end
-
--- Synthetic companion catalog with two registered callers and their map
--- locations, validated through the real asset schema so the journey
--- borrows only genuine semantic references.
+-- Synthetic companion family with two registered callers and their map
+-- locations over the synthetic region map, validated through the real
+-- asset schema so the journey borrows only genuine semantic references.
 ---@return table
 local function fixtureManifest()
-  return {
-    schema = "g4-pokegear-assets-v1",
-    skins = { 0, 1, 2, 3, 4, 5 },
-    shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png") },
-    configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png") },
-    phone = { panel = visualRef("assets/generated/pokegear/phone-panel.png") },
-    map = { base = visualRef("assets/generated/pokegear/map-base.png") },
-    fly = { base = visualRef("assets/generated/pokegear/fly-base.png") },
-    radio = { dial = visualRef("assets/generated/pokegear/radio-dial.png") },
-    catalog = {
-      contacts = {
-        { key = "test.caller.falkner", family = "gym", sortWeight = 10, rematchWeekday = 6, rematchTime = 0 },
-        { key = "test.caller.mom", family = "mother", sortWeight = 20 },
-      },
-      contactOrder = { "test.caller.falkner", "test.caller.mom" },
-      callDefinitions = {},
-      callTriggers = {},
-      rematches = {},
-      gifts = {},
-      momPurchases = {},
-      locations = {
-        { key = "test.place.violet" },
-        { key = "test.place.new-bark" },
-      },
-      flypoints = {},
-      reception = {},
-      shows = {},
-      radioEffects = {},
-    },
-    text = {},
-    sequences = {},
+  local manifest = Fixture.manifest()
+  manifest.catalog.contacts = {
+    { key = "test.caller.falkner", family = "gym", sortWeight = 10, rematchWeekday = 6, rematchTime = 0 },
+    { key = "test.caller.mom", family = "mother", sortWeight = 20 },
   }
+  manifest.catalog.contactOrder = { "test.caller.falkner", "test.caller.mom" }
+  manifest.catalog.locations = {
+    {
+      key = "test.place.violet",
+      fieldMap = "MAP_A",
+      mapRef = 10,
+      matrix = { x = 12 * 32 + 8, y = 8 * 32 + 8 },
+      location = "test.location.a",
+      section = "test.section.a",
+      region = "johto",
+    },
+    {
+      key = "test.place.new-bark",
+      fieldMap = "MAP_B",
+      mapRef = 11,
+      matrix = { x = 14 * 32 + 8, y = 8 * 32 + 8 },
+      location = "test.location.b",
+      section = "test.section.b",
+      region = "johto",
+    },
+    {
+      key = "test.place.far",
+      fieldMap = "MAP_KANTO",
+      mapRef = 12,
+      matrix = { x = 30 * 32 + 8, y = 10 * 32 + 8 },
+      location = "test.location.far",
+      section = "test.section.far",
+      region = "kanto",
+    },
+  }
+  return manifest
 end
 
 -- Three roamer records across lifecycles: one roaming, one never
@@ -100,7 +101,7 @@ end
 ---@return table state, table refs
 local function roamerOwners()
   local refs = {
-    species = { ["test.raikou"] = true, ["test.entei"] = true, ["test.suicune"] = true },
+    species = { RAIKOU = true, ENTEI = true, SUICUNE = true },
     maps = { [11] = true, [12] = true, [22] = true },
   }
   local function record(key, species, location, lifecycle)
@@ -115,9 +116,9 @@ local function roamerOwners()
   end
   local state = HgssRoamerState.new({
     records = {
-      record("test.roamer.raikou", "test.raikou", 11, "roaming"),
-      record("test.roamer.entei", "test.entei", 12, "inactive"),
-      record("test.roamer.suicune", "test.suicune", 22, "caught"),
+      record("test.roamer.raikou", "RAIKOU", 11, "roaming"),
+      record("test.roamer.entei", "ENTEI", 12, "inactive"),
+      record("test.roamer.suicune", "SUICUNE", 22, "caught"),
     },
     species = refs.species,
     maps = refs.maps,
@@ -215,19 +216,6 @@ local function phonePolicy(call, state, contactPlaces)
   end
 end
 
----@param view table
----@param kind string
----@return table markers of that kind
-local function markersOf(view, kind)
-  local found = {}
-  for _, marker in ipairs(assert(view.markers, "the map view publishes its markers")) do
-    if marker.kind == kind then
-      found[#found + 1] = marker
-    end
-  end
-  return found
-end
-
 -- Opening, reading, and reopening the map moves no roamer, draws no
 -- random stream, and mutates no gear state; markers match the refresh
 -- snapshot, and a field battle only appears after a reopen.
@@ -262,55 +250,16 @@ function T.tests.live_owner_markers_stay_read_only_across_battle_and_reopen()
     ["test.caller.falkner"] = "test.place.violet",
     ["test.caller.mom"] = "test.place.new-bark",
   }
-  local mapContext = {
-    fieldMap = "test.field.violet",
-    location = "test.place.violet",
-    matrixX = 64,
-    matrixY = 32,
-    region = "johto",
-    unlockLevel = 1,
-    specialMode = nil,
-    playerGender = "boy",
-  }
-  local mapAssets = {
-    catalog = {
-      locations = {
-        {
-          key = "test.place.violet",
-          fieldMap = "test.field.violet",
-          mapRef = 11,
-          matrix = { x = 64, y = 32 },
-          location = "test.place.violet",
-          region = "johto",
-        },
-        {
-          key = "test.place.new-bark",
-          fieldMap = "test.field.new-bark",
-          matrix = { x = 672, y = 384 },
-          explicitX = 21,
-          explicitY = 12,
-          location = "test.place.new-bark",
-          region = "johto",
-        },
-      },
-    },
-    map = validated.map,
-  }
   local function openMap()
     return MapController.new({
       state = state,
-      assets = mapAssets,
-      mapContext = mapContext,
+      assets = validated,
+      mapContext = Fixture.context(),
+      messages = Fixture.messages(),
+      facts = Fixture.facts(),
       phoneProjection = phonePolicy(call, state, contactPlaces),
       roamerProjection = snapshotRoamers(roamers),
-      wordEntry = {
-        open = function(_) end,
-        step = function() end,
-        result = function()
-          return nil
-        end,
-        cancel = function() end,
-      },
+      wordEntry = Fixture.wordEntry(),
     })
   end
 
@@ -332,24 +281,14 @@ function T.tests.live_owner_markers_stay_read_only_across_battle_and_reopen()
 
   -- Only the roamer active at creation appears, at its sampled location;
   -- the inactive and caught records never project.
-  local roamerMarkers = markersOf(once.view, "roamer")
-  Assert.equal(#roamerMarkers, 1, "exactly the active roamer projects")
-  Assert.equal(roamerMarkers[1].key, "test.roamer.raikou", "the active roamer projects")
-  Assert.equal(roamerMarkers[1].location, 11, "the marker carries the creation snapshot location")
+  local roamerSprites = once.view.sprites.roamers
+  Assert.equal(#roamerSprites, 1, "exactly the active roamer projects")
+  Assert.equal(roamerSprites[1].frame, 1, "the active roamer is Raikou")
+  local sampledAt = { x = roamerSprites[1].x, y = roamerSprites[1].y }
 
-  -- Contact markers follow the shared policy: the staged rematch shows
-  -- ready at its tier, the pending gift shows without readiness, and an
-  -- unstaged contact shows nothing.
-  local contactMarkers = markersOf(once.view, "contact")
-  local byContact = {}
-  for _, marker in ipairs(contactMarkers) do
-    byContact[marker.contact] = marker
-  end
-  Assert.notNil(byContact["test.caller.falkner"], "the staged rematch projects a marker")
-  Assert.equal(byContact["test.caller.falkner"].ready, true, "the rematch marker reports readiness")
-  Assert.equal(byContact["test.caller.falkner"].tier, 2, "the rematch marker projects the queried tier")
-  Assert.notNil(byContact["test.caller.mom"], "the pending gift projects a marker")
-  Assert.notNil(byContact["test.caller.mom"].gift, "the gift marker carries the pending reward")
+  -- The staged rematch shows the battle icon for the selected location:
+  -- the shared policy reports it ready on the player's map.
+  Assert.isTrue(once.view.panel.battleIcon, "the staged rematch shows the panel battle icon")
 
   -- A field battle settles through the real owners: the roamer flees to
   -- a new map while the rematch resolves as a win. The already-open map
@@ -361,18 +300,16 @@ function T.tests.live_owner_markers_stay_read_only_across_battle_and_reopen()
   end
 
   -- Reopening samples fresh owners: the fled roamer appears at its new
-  -- map, the won rematch marker clears, and the pending gift still waits.
+  -- map and the won rematch clears its icon.
   local second = openMap()
   local reopened = second:status()
-  local roamerAgain = markersOf(reopened.view, "roamer")
+  local roamerAgain = reopened.view.sprites.roamers
   Assert.equal(#roamerAgain, 1, "exactly one roamer projects after the battle")
-  Assert.equal(roamerAgain[1].location, 12, "the reopened map samples the post-battle location")
-  local contactsAgain = {}
-  for _, marker in ipairs(markersOf(reopened.view, "contact")) do
-    contactsAgain[marker.contact] = marker
-  end
-  Assert.isNil(contactsAgain["test.caller.falkner"], "the won rematch clears on reopen")
-  Assert.notNil(contactsAgain["test.caller.mom"], "the pending gift still waits after reopen")
+  Assert.isTrue(
+    roamerAgain[1].x ~= sampledAt.x or roamerAgain[1].y ~= sampledAt.y,
+    "the reopened map samples the post-battle location"
+  )
+  Assert.isFalse(reopened.view.panel.battleIcon, "the won rematch clears its icon on reopen")
   first:dispose()
   second:dispose()
 end
@@ -407,8 +344,9 @@ function T.tests.new_bark_house_uses_its_source_header_after_the_door_transition
   PokegearJourneyFixture.withGame(NEW_BARK, function(game)
     prepareMapCard(game)
     local outside = openProductionMap(game)
-    Assert.deepEqual(outside.playerCell, { x = 21, y = 12 }, "New Bark's outdoor map resolves to its source world cell")
-    Assert.deepEqual(outside.cursor, outside.playerCell, "the selected cell begins on the player marker")
+    -- Source rows carry the map's two-row offset: world cell (21, 12) is row 14.
+    Assert.deepEqual(outside.playerCell, { x = 21, y = 14 }, "New Bark's outdoor map resolves to its source world cell")
+    Assert.deepEqual(outside.cell, outside.playerCell, "the selected cell begins on the player marker")
     PokegearJourneyFixture.closeGearThroughMenu(game)
 
     game:moveTo(PokegearJourneyFixture.TOWN_HOUSE_DOOR_APPROACH)
@@ -418,8 +356,8 @@ function T.tests.new_bark_house_uses_its_source_header_after_the_door_transition
     OpeningLifecycle.completeOpeningHouseScene(game)
     Assert.isTrue(PokegearJourneyFixture.settleField(game), "the house scene must release the production field")
     local inside = openProductionMap(game)
-    Assert.deepEqual(inside.playerCell, { x = 21, y = 12 }, "the house header keeps the player in New Bark")
-    Assert.deepEqual(inside.cursor, inside.playerCell, "the house selection stays aligned with the player marker")
+    Assert.deepEqual(inside.playerCell, { x = 21, y = 14 }, "the house header keeps the player in New Bark")
+    Assert.deepEqual(inside.cell, inside.playerCell, "the house selection stays aligned with the player marker")
     Assert.equal(game:renderAttempts(), 0, "the location journey stops before GPU rendering")
     PokegearJourneyFixture.closeGearThroughMenu(game)
   end)

@@ -70,7 +70,7 @@ local function fixtureManifest()
     mapUpper[skin] = visualRef("assets/generated/pokegear/map-upper-skin-" .. skin .. ".png", 256, 192)
   end
   return {
-    schema = "g4-pokegear-assets-v1",
+    schema = "g4-pokegear-assets-v2",
     skins = skins,
     shell = { foreground = shellForeground, information = shellInformation },
     configure = { foreground = configureForeground, patch = configurePatch },
@@ -98,6 +98,7 @@ local function fixtureManifest()
         { key = "custom.new-bark" },
       },
       flypoints = {},
+      regionMap = require("tests.support.PokegearRegionMapFixture").build(),
       reception = {},
       shows = {},
       radioEffects = {},

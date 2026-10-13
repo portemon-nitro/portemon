@@ -1,1017 +1,306 @@
--- Region map annotation slots: icon drag operations keep source slot order,
--- capacity, and cleanup while word edits round-trip through the typed
--- selector handoff with session restore. A cancelled drag never publishes,
--- a successful swap or delete writes exactly once, blank records leave no
--- residue, the hundredth location fills the collection while the next one
--- fails, and markings survive a save round trip with explicit empty slots.
+-- The gear region map card: location selection and its information panel,
+-- keyboard and touch motion, zoom with its persisted preference, the
+-- marking mode's timed transitions and slot editing with exactly-once
+-- persistence, and the typed word hand-off. Expectations come from the
+-- source map application's rules (first covering location in table order,
+-- the +2 row offset, two-tick cell moves, four-tick zooms, the marking
+-- entrance timeline) over a small synthetic region map; no ROM data is read.
 
 local Assert = require("tests.support.Assert")
-local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
-local PokegearState = require("libs.hgss.src.save.PokegearState")
-local FieldWorldSwapCoordinator = require("game.hgss.src.field.FieldWorldSwapCoordinator")
+local Fixture = require("tests.support.PokegearMapFixture")
+local MapLocations = require("game.hgss.src.pokegear.map.MapLocations")
+local MarkingMode = require("game.hgss.src.pokegear.map.MarkingMode")
 
 local T = {
-  metadata = {
-    tags = { "pokegear" },
-  },
+  metadata = { tags = { "pokegear" } },
   tests = {},
 }
 
--- Loads a map module that does not exist yet at this baseline. The failure
--- names the missing behaviour instead of surfacing as a suite load error,
--- so the pre-implementation red stays attributable.
----@param moduleName string
----@param missingMessage string
----@return table
-local function requireFeature(moduleName, missingMessage)
-  local ok, mod = pcall(require, moduleName)
-  if not ok then
-    error(missingMessage, 0)
-  end
-  assert(type(mod) == "table", missingMessage)
-  return mod --[[@as table]]
-end
-
----@param path string
----@return table
-local function visualRef(path)
-  return { image = path, width = 32, height = 32, anchorX = 0, anchorY = 0 }
-end
-
--- Synthetic companion catalog with two contacts and a 102-location region:
--- enough catalogued locations to fill the hundred-record collection and
--- prove the next write fails, validated through the real asset schema so
--- the scenarios borrow only genuine semantic references. The map section
--- carries one prepared foreground and upper plane per source skin behind
--- a shared world plane, like the compiled family, so the renderer suite
--- can prove per-skin chrome selection.
----@return table
-local function fixtureManifest()
-  local locations = {}
-  for index = 1, 102 do
-    local location = { key = string.format("test.place.%03d", index) }
-    if index == 1 then
-      location.fieldMap = "test.field.new-bark"
-      location.location = "test.place.001"
-      location.matrix = { x = 96, y = 64 }
-      location.region = "johto"
-    end
-    locations[#locations + 1] = location
-  end
-  local mapForeground, mapUpper = {}, {}
-  for skin = 0, 5 do
-    mapForeground[skin] = visualRef("assets/generated/pokegear/map-foreground-skin-" .. skin .. ".png")
-    mapUpper[skin] = visualRef("assets/generated/pokegear/map-upper-skin-" .. skin .. ".png")
-  end
-  return {
-    schema = "g4-pokegear-assets-v1",
-    skins = { 0, 1, 2, 3, 4, 5 },
-    shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png") },
-    configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png") },
-    phone = { panel = visualRef("assets/generated/pokegear/phone-panel.png") },
-    map = {
-      base = visualRef("assets/generated/pokegear/map-base.png"),
-      foreground = mapForeground,
-      upper = mapUpper,
-    },
-    fly = { base = visualRef("assets/generated/pokegear/fly-base.png") },
-    radio = { dial = visualRef("assets/generated/pokegear/radio-dial.png") },
-    catalog = {
-      contacts = {
-        { key = "test.caller.falkner", sortWeight = 10 },
-        { key = "test.caller.mom", sortWeight = 20 },
-      },
-      contactOrder = { "test.caller.falkner", "test.caller.mom" },
-      callDefinitions = {},
-      callTriggers = {},
-      rematches = {},
-      gifts = {},
-      momPurchases = {},
-      locations = locations,
-      flypoints = {},
-      reception = {},
-      shows = {},
-      radioEffects = {},
-    },
-    text = {},
-    sequences = {},
-  }
-end
-
----@param record table
----@return table
-local function catalogRefs(record)
-  return { catalog = record.catalog }
-end
-
--- Source-normalized map context for an outdoor main-matrix cell. Field
--- values stay synthetic; only the record shape follows the map contract.
----@return table
-local function outdoorContext()
-  return {
-    fieldMap = "test.field.new-bark",
-    location = "test.place.001",
-    matrixX = 96,
-    matrixY = 64,
-    region = "johto",
-    unlockLevel = 1,
-    specialMode = nil,
-    playerGender = "boy",
-  }
-end
-
--- Closed stub word selector through the typed handoff: the test drives
--- each outcome explicitly, so no real selector is required.
----@return table selector with scripted outcomes
-local function stubWordEntry()
-  local selector = { opened = {}, choice = nil, cancelled = false }
-  function selector:open(request)
-    assert(type(request) == "table", "the word request carries its typed fields")
-    self.opened[#self.opened + 1] = request
-  end
-  function selector:step() end
-  function selector:result()
-    if self.cancelled then
-      return { cancelled = true }
-    end
-    return self.choice
-  end
-  function selector:cancel()
-    self.cancelled = true
-  end
-  function selector:choose(word)
-    self.choice = { word = word }
-    self.cancelled = false
-  end
-  function selector:reset()
-    self.choice = nil
-    self.cancelled = false
-  end
-  return selector
-end
-
----@param params table
----@return table box { controller: table, state: table, record: table, wordEntry: table }
-local function openMap(params)
-  local MapController = requireFeature(
-    "game.hgss.src.pokegear.MapController",
-    "the region map has no controller yet: icon annotation slots, capacity, cleanup, and word handoff cannot persist"
-  )
-  local record = PokegearAssetSchema.validate(params.manifest or fixtureManifest())
-  Assert.notNil(record, "the synthetic companion catalog must validate through the asset schema")
-  assert(record ~= nil, "synthetic catalog validated above")
-  local state = params.state or PokegearState.new({ seed = 4177 }, catalogRefs(record))
-  local wordEntry = params.wordEntry or stubWordEntry()
-  local controller = MapController.new({
-    state = state,
-    assets = record,
-    mapContext = params.mapContext or outdoorContext(),
-    phoneProjection = params.phoneProjection or function(_)
-      return {}
-    end,
-    roamerProjection = params.roamerProjection or {},
-    wordEntry = wordEntry,
-  })
-  return { controller = controller, state = state, record = record, wordEntry = wordEntry }
-end
-
----@param rect table
----@return number x
----@return number y
-local function center(rect)
-  assert(type(rect) == "table", "the published view carries hit rectangles")
-  return rect.x + rect.width / 2, rect.y + rect.height / 2
-end
-
--- Drags from one published rectangle to another through the shared
--- semantic pointer vocabulary.
----@param controller table
----@param from table
----@param to table
-local function drag(controller, from, to)
-  local x0, y0 = center(from)
-  local x1, y1 = center(to)
-  controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = x0, y = y0 } })
-  controller:updateFixed({ { type = "pointer_move", pointerId = "touch:1", x = x1, y = y1 } })
-  controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = x1, y = y1 } })
-end
+local tick = Fixture.tick
 
 ---@param controller table
----@param rect table
-local function tap(controller, rect)
-  local x, y = center(rect)
-  controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = x, y = y } })
-  controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = x, y = y } })
+---@return table view
+local function view(controller)
+  return assert(controller:status().view, "the map controller exports its detached view")
 end
 
--- Enters the marking panel and returns its published hit regions. Both
--- required entrance completions must finish before the panel accepts a
--- drag; the test waits on the published transition, never on a count.
+-- Ticks until the card is out of its mode transition, bounded.
 ---@param controller table
----@return table panel
-local function enterMarkings(controller)
-  local view = assert(controller:status().view, "the map controller exports its detached view")
-  local button = assert(view.markingsButton, "the map view publishes its markings entry")
-  tap(controller, button)
-  for _ = 1, 120 do
-    local status = controller:status()
-    local transition = status.transition
-    if transition == nil or transition.completed == true then
-      break
+local function settle(controller)
+  for _ = 1, 60 do
+    if not controller:status().busy then
+      return
     end
     controller:updateFixed({})
   end
-  local transition = controller:status().transition
-  Assert.isTrue(transition == nil or transition.completed == true, "the marking entrance settles")
-  local panel = assert(controller:status().view.markingPanel, "the entrance publishes the marking panel")
-  assert(type(panel.pool) == "table", "the panel publishes its icon pool")
-  assert(type(panel.icons) == "table", "the panel publishes its icon slots")
-  assert(type(panel.words) == "table", "the panel publishes its word slots")
-  assert(type(panel.trash) == "table", "the panel publishes its trash action")
-  return panel
+  error("the map transition never settled", 0)
 end
 
--- Icon drags keep source order, write exactly once, and clean up blank
--- records; the hundredth location fills the collection while the next
--- write fails; and markings survive a save round trip.
-function T.tests.native_annotation_operations_persist_in_source_slot_order()
-  local manifest = fixtureManifest()
-  local box = openMap({ manifest = manifest })
-  local controller, state = box.controller, box.state
-
-  local panel = enterMarkings(controller)
-  local revisionAtOpen = state:revision()
-
-  -- A cancelled drag changes nothing: down on a pool icon, partway move,
-  -- release on empty surface. No revision, no record.
-  do
-    local x0, y0 = center(panel.pool[1])
-    controller:updateFixed({ { type = "pointer_down", pointerId = "touch:2", x = x0, y = y0 } })
-    controller:updateFixed({ { type = "pointer_move", pointerId = "touch:2", x = x0 + 3, y = y0 + 3 } })
-    controller:updateFixed({ { type = "cancel" } })
-    Assert.equal(state:revision(), revisionAtOpen, "a cancelled drag publishes nothing")
-    Assert.isNil(state:capture().markings["test.place.001"], "a cancelled drag stores no record")
-  end
-
-  -- Adding two pool icons lands them in slot order with one write each.
-  drag(controller, panel.pool[3], panel.icons[2])
-  Assert.equal(state:revision(), revisionAtOpen + 1, "one icon drop advances exactly one revision")
-  drag(controller, panel.pool[1], panel.icons[1])
-  Assert.equal(state:revision(), revisionAtOpen + 2, "a second icon drop advances one more revision")
-  Assert.deepEqual(
-    state:capture().markings["test.place.001"].icons,
-    { 1, 3, false, false },
-    "dropped icons keep source slot order"
+function T.tests.locations_resolve_in_table_order_with_hidden_ones_ending_the_search()
+  local record = Fixture.record()
+  local locations = MapLocations.new({ regionMap = record.catalog.regionMap, unlock = 2, fieldMap = "MAP_A" })
+  Assert.equal(locations:locationAt(12, 10).mapSymbol, "MAP_A", "a cell inside a 2x2 location selects it")
+  Assert.equal(locations:locationAt(13, 11).mapSymbol, "MAP_A", "its far corner selects it too")
+  Assert.isNil(locations:locationAt(13, 12), "a cell just outside selects nothing")
+  Assert.equal(locations:locationAt(14, 10).mapSymbol, "MAP_B", "the neighbouring map owns its own cell")
+  -- Sinjoh Ruins sits first in the table and stays hidden away from its maps,
+  -- so its covered cells select nothing rather than falling through.
+  Assert.isNil(locations:locationAt(19, 2), "the hidden Sinjoh Ruins entry selects nothing")
+  local at = MapLocations.new({
+    regionMap = record.catalog.regionMap,
+    unlock = 2,
+    fieldMap = "MAP_SINJOH_RUINS_EXTERIOR",
+  })
+  Assert.equal(at:locationAt(19, 2).mapSymbol, "MAP_SINJOH_RUINS_EXTERIOR", "standing on the ruins reveals them")
+  local johtoOnly = MapLocations.new({ regionMap = record.catalog.regionMap, unlock = 0, fieldMap = "MAP_A" })
+  Assert.isNil(johtoOnly:select(30, 12), "Johto-only maps refuse every cell east of column twenty-one")
+  Assert.equal(johtoOnly:select(12, 10).mapSymbol, "MAP_A", "Johto cells still select")
+  Assert.equal(MapLocations.regionName(25, 10), "johto", "Mt. Silver's cell reads as Johto")
+  Assert.equal(MapLocations.regionName(22, 10), "kanto", "columns past twenty-one read as Kanto")
+  Assert.equal(MapLocations.regionOf(28, 6), MapLocations.REGION.INDIGO, "the Indigo Plateau cell is Indigo")
+  Assert.isTrue(
+    MapLocations.regionAllowed(30, 30, 5, MapLocations.REGION.KANTO),
+    "Route 26 is always an allowed destination"
   )
-
-  -- Swapping two occupied slots exchanges exactly those values in one write.
-  drag(controller, panel.icons[1], panel.icons[2])
-  Assert.equal(state:revision(), revisionAtOpen + 3, "one swap advances exactly one revision")
-  Assert.deepEqual(
-    state:capture().markings["test.place.001"].icons,
-    { 3, 1, false, false },
-    "a swap exchanges exactly the dragged slots"
+  Assert.isFalse(
+    MapLocations.regionAllowed(75, 5, 8, MapLocations.REGION.KANTO),
+    "a Johto destination is refused from Kanto"
   )
+end
 
-  -- Deleting one slot clears only that slot in one write.
-  drag(controller, panel.icons[1], panel.trash)
-  Assert.equal(state:revision(), revisionAtOpen + 4, "one delete advances exactly one revision")
+function T.tests.the_card_opens_on_the_player_with_the_selection_panel()
+  local box = Fixture.openMap()
+  local v = view(box.controller)
+  Assert.equal(v.mode, "map", "the card opens in map mode")
+  Assert.equal(v.panel.region, "Johto", "the region follows the selected cell")
+  Assert.equal(v.panel.landmark, "Landmark 41", "the landmark name resolves through its section entry")
+  Assert.equal(v.panel.flavor, "Flavor 6\nsecond line", "the flavor text resolves through the location entry")
+  Assert.isTrue(v.panel.previewFrame, "a location with a preview block shows the preview frame")
+  Assert.equal(v.panel.previewBlock, 2, "the preview block is the source block minus one")
+  Assert.equal(v.buttons.markings, "normal", "a selected location enables the markings button")
+  Assert.equal(v.buttons.zoom, "unzoomed", "the card opens unzoomed")
+  Assert.equal(#v.highlight, 1, "the selected map highlights its tiles")
   Assert.deepEqual(
-    state:capture().markings["test.place.001"].icons,
-    { false, 1, false, false },
-    "a delete clears exactly the dragged slot"
+    v.highlight[1],
+    { srcX = 10, srcY = 30, destX = 11, destY = 9, width = 3, height = 3 },
+    "a nine-tile overlay copies one cell up and left of the location"
   )
+  Assert.deepEqual(
+    v.sprites.player,
+    { x = v.sprites.cursor.x, y = v.sprites.cursor.y, frame = 1 },
+    "the player sits under the opening cursor"
+  )
+end
 
-  -- Emptying the last occupied slot removes the blank record entirely.
-  drag(controller, panel.icons[2], panel.trash)
-  Assert.isNil(state:capture().markings["test.place.001"], "an emptied record leaves no blank residue")
+function T.tests.a_keyboard_move_selects_the_next_location_after_two_ticks()
+  local box = Fixture.openMap()
+  local before = view(box.controller).sprites.cursor.x
+  box.controller:updateFixed({ { type = "navigate", direction = "right" } })
+  box.controller:updateFixed({ { type = "navigate", direction = "right" } })
+  Assert.equal(view(box.controller).panel.landmark, "Landmark 41", "a held direction mid-tween waits for the tween")
+  tick(box.controller)
+  local v = view(box.controller)
+  Assert.equal(v.panel.landmark, "Landmark 41", "one cell east is still the two-by-two map")
+  box.controller:updateFixed({ { type = "navigate", direction = "right" } })
+  tick(box.controller, 2)
+  Assert.equal(view(box.controller).panel.landmark, "Landmark 42", "two cells east selects the neighbouring map")
+  Assert.isTrue(view(box.controller).sprites.cursor.x > before, "the cursor sprite moved east")
+end
 
-  -- Filling the collection through the real state owner holds exactly one
-  -- hundred locations; the next write fails without moving the revision.
-  local filled = 0
-  for index = 1, 101 do
-    local key = string.format("test.place.%03d", index)
-    local ok = pcall(function()
-      state:setMarking(key, { icons = { 2, false, false, false }, words = { false, false, false, false } })
-    end)
-    if ok then
-      filled = filled + 1
-    else
-      Assert.equal(index, 101, "the hundred-and-first location is the first rejection")
+function T.tests.zoom_runs_four_ticks_and_persists_its_preference()
+  local box = Fixture.openMap()
+  box.controller:updateFixed({ { type = "menu" } })
+  Assert.isTrue(box.controller:status().busy == false, "zoom is an animation, not a mode")
+  local ratio = view(box.controller).world.ratio
+  Assert.equal(ratio, 1.25, "the first tick scales a quarter")
+  tick(box.controller, 3)
+  Assert.equal(view(box.controller).world.ratio, 2, "four ticks finish the zoom")
+  Assert.equal(view(box.controller).buttons.zoom, "zoomed", "the zoom button shows its zoomed art")
+  Assert.isTrue(box.state:readPreferences().mapZoomed, "the zoom preference persists")
+  local reopened = Fixture.openMap({ state = box.state, record = box.record })
+  Assert.equal(view(reopened.controller).world.ratio, 2, "the card reopens zoomed")
+end
+
+function T.tests.touch_selects_a_cell_and_drags_the_map_without_moving_the_selection()
+  local context = Fixture.context()
+  context.matrixX = 20 * 32 + 8
+  local box = Fixture.openMap({ mapContext = context })
+  local v = view(box.controller)
+  local cursor = v.sprites.cursor
+  box.controller:updateFixed({ { type = "pointer_down", pointerId = "t", x = cursor.x + 16, y = cursor.y } })
+  local selected = view(box.controller).sprites.cursor
+  Assert.equal(selected.x, cursor.x + 16, "a touch moves the cursor to the touched cell centre")
+  box.controller:updateFixed({ { type = "pointer_move", pointerId = "t", x = cursor.x + 16 + 12, y = cursor.y } })
+  box.controller:updateFixed({ { type = "pointer_up", pointerId = "t", x = cursor.x + 16 + 12, y = cursor.y } })
+  tick(box.controller, 3)
+  Assert.isTrue(view(box.controller).world.scrollX < v.world.scrollX, "dragging right scrolls the world west")
+  Assert.isTrue(
+    view(box.controller).sprites.cursor.x > selected.x,
+    "the cursor sprite travels with the world while the map drags"
+  )
+end
+
+function T.tests.the_markings_button_is_disabled_without_a_location_and_for_the_ruins()
+  local box = Fixture.openMap({
+    mapContext = (function()
+      local context = Fixture.context()
+      context.matrixX, context.matrixY = 18 * 32, 8 * 32
+      context.fieldMap = "MAP_A"
+      return context
+    end)(),
+  })
+  Assert.equal(view(box.controller).buttons.markings, "disabled", "an empty cell disables the markings button")
+  box.controller:updateFixed({ { type = "confirm" } })
+  Assert.isFalse(box.controller:status().busy, "entering markings does nothing without a location")
+end
+
+function T.tests.marking_mode_runs_its_timeline_and_edits_persist_exactly_once()
+  local box = Fixture.openMap()
+  local revision = box.state:revision()
+  box.controller:updateFixed({ { type = "confirm" } })
+  Assert.isTrue(box.controller:status().busy, "entering markings starts a transition")
+  Assert.equal(view(box.controller).mode, "map", "the map stays until the swap tick")
+  local sawFadeOut, sawMarking, slideStarted = false, false, false
+  for _ = 1, 40 do
+    tick(box.controller)
+    local v = view(box.controller)
+    if v.fade >= 1 then
+      sawFadeOut = true
     end
-  end
-  Assert.equal(filled, 100, "the collection holds exactly one hundred location records")
-  local revisionAtFull = state:revision()
-  local fullOk = pcall(function()
-    state:setMarking("test.place.102", { icons = { 2, false, false, false }, words = { false, false, false, false } })
-  end)
-  Assert.isFalse(fullOk, "a write past capacity fails")
-  Assert.equal(state:revision(), revisionAtFull, "a rejected write moves no revision")
-
-  -- Save and reload preserve every record with explicit empty slots.
-  local bucket = state:capture()
-  local record = PokegearAssetSchema.validate(manifest)
-  assert(record ~= nil, "synthetic catalog validated above")
-  local revived = PokegearState.restore(bucket, catalogRefs(record))
-  Assert.deepEqual(revived:capture().markings, bucket.markings, "all one hundred records survive the round trip")
-  Assert.deepEqual(
-    revived:capture().markings["test.place.001"].icons,
-    { 2, false, false, false },
-    "the reopened record keeps its icon slots with explicit empties"
-  )
-  Assert.deepEqual(
-    revived:capture().markings["test.place.001"].words,
-    { false, false, false, false },
-    "the reopened record keeps its word slots with explicit empties"
-  )
-  controller:dispose()
-end
-
--- Word edits round-trip through the typed selector handoff: a selection
--- applies once, a cancellation preserves the old word, a stale result
--- edits nothing, and pan, zoom, cursor, and mode restore on return.
-function T.tests.word_editor_return_restores_the_map_session()
-  local box = openMap({})
-  local controller, state, wordEntry = box.controller, box.state, box.wordEntry
-
-  state:setMarking("test.place.001", { icons = { 1, false, false, false }, words = { "7", false, false, false } })
-  local panel = enterMarkings(controller)
-
-  -- Panning the map and noting the session: cursor, zoom cells, pan, and
-  -- marking mode all restore after the selector returns.
-  local view = assert(controller:status().view, "the map view is published")
-  local sessionBefore = {
-    cursor = view.cursor,
-    zoomCells = view.zoomCells,
-    pan = view.pan ~= nil and { x = view.pan.x, y = view.pan.y } or nil,
-    markingMode = controller:status().markingMode,
-  }
-
-  -- Selecting a new word applies exactly once through the typed handoff.
-  tap(controller, panel.words[1])
-  local request = controller:takeWordRequest()
-  Assert.equal(request.locationKey, "test.place.001", "the word request names its location")
-  Assert.equal(request.slot, 1, "the word request names its slot")
-  Assert.equal(request.oldWord, "7", "the word request carries the current word")
-  Assert.notNil(request.operationId, "the word request carries its operation identity")
-  Assert.notNil(request.session, "the word request snapshots the map session")
-  wordEntry:choose("23")
-  controller:acceptWordResult({ operationId = request.operationId, result = wordEntry:result() })
-  Assert.deepEqual(
-    state:capture().markings["test.place.001"].words,
-    { "23", false, false, false },
-    "the selected word applies to its slot"
-  )
-
-  -- Cancelling a second edit preserves the old word and restores the map.
-  tap(controller, panel.words[2])
-  local second = controller:takeWordRequest()
-  Assert.equal(second.oldWord, false, "an empty slot requests with the empty sentinel")
-  wordEntry:reset()
-  wordEntry:cancel()
-  controller:acceptWordResult({ operationId = second.operationId, result = wordEntry:result() })
-  Assert.deepEqual(
-    state:capture().markings["test.place.001"].words,
-    { "23", false, false, false },
-    "a cancelled edit preserves the stored words"
-  )
-
-  -- A stale result edits nothing: neither an unknown operation nor an
-  -- already-consumed one may touch a new location.
-  local revisionBeforeStale = state:revision()
-  Assert.throws(function()
-    controller:acceptWordResult({ operationId = "stale-operation", result = { word = "41" } })
-  end, "a stale word result fails")
-  Assert.throws(function()
-    controller:acceptWordResult({ operationId = request.operationId, result = { word = "41" } })
-  end, "a replayed word result fails")
-  Assert.equal(state:revision(), revisionBeforeStale, "stale results move no revision")
-  Assert.isNil(state:capture().markings["test.place.002"], "a stale result edits no new location")
-
-  -- The map session restores exactly after every return.
-  local returned = assert(controller:status().view, "the map view returns with the selector")
-  Assert.deepEqual(returned.cursor, sessionBefore.cursor, "the return restores the cursor")
-  Assert.equal(returned.zoomCells, sessionBefore.zoomCells, "the return restores the zoom cells")
-  Assert.deepEqual(
-    returned.pan ~= nil and { x = returned.pan.x, y = returned.pan.y } or nil,
-    sessionBefore.pan,
-    "the return restores the pan"
-  )
-  Assert.equal(controller:status().markingMode, sessionBefore.markingMode, "the return restores the marking mode")
-  controller:dispose()
-end
-
--- Context cells resolve through the source coordinate roles: outdoor
--- main-matrix maps divide world coordinates by thirty-two, indoor maps
--- keep explicit header coordinates, zero-coordinate maps take the
--- last-exterior or special-spawn fallback, and special locations keep
--- their tabled coordinates. Missing fallbacks and scales fail loudly.
-function T.tests.context_cells_follow_the_source_coordinate_roles()
-  local MapProjection = requireFeature(
-    "game.hgss.src.pokegear.MapProjection",
-    "the region map has no projection owner yet: context cells cannot resolve"
-  )
-  local outdoor = MapProjection.contextCell({ matrixX = 695, matrixY = 397 })
-  Assert.deepEqual(outdoor, { x = 21, y = 12 }, "outdoor columns divide world x by thirty-two")
-  local indoor = MapProjection.contextCell({ matrixX = 0, matrixY = 0, explicitX = 11, explicitY = 5 })
-  Assert.deepEqual(indoor, { x = 11, y = 5 }, "indoor cells keep their header coordinates")
-  local fallback = MapProjection.contextCell({
-    matrixX = 0,
-    matrixY = 0,
-    explicitX = 0,
-    explicitY = 0,
-    lastExterior = { x = 9, y = 21 },
-  })
-  Assert.deepEqual(fallback, { x = 9, y = 21 }, "zero-coordinate maps fall back to the last exterior")
-  local spawn = MapProjection.contextCell({
-    matrixX = 0,
-    matrixY = 0,
-    explicitX = 0,
-    explicitY = 0,
-    specialSpawn = { x = 4, y = 6 },
-  })
-  Assert.deepEqual(spawn, { x = 4, y = 6 }, "the special spawn backs up a missing exterior")
-  Assert.throws(function()
-    MapProjection.contextCell({ matrixX = 0, matrixY = 0, explicitX = 0, explicitY = 0 })
-  end, "a zero-coordinate map without a fallback never invents a position")
-  local special = MapProjection.contextCell({
-    matrixX = 820,
-    matrixY = 266,
-    explicitX = 25,
-    explicitY = 8,
-    lastExterior = { x = 9, y = 21 },
-    special = "mt-silver",
-  })
-  Assert.deepEqual(special, { x = 25, y = 8 }, "special locations keep their tabled coordinates")
-  Assert.throws(function()
-    MapProjection.contextCell({ matrixX = 0, matrixY = 0, special = "aqua" })
-  end, "a special location without tabled coordinates fails")
-  Assert.throws(function()
-    MapProjection.forward({ x = 0, y = 0 }, { x = 0, y = 0 }, 15, { x = 0, y = 0, width = 256, height = 192 })
-  end, "map scale stays a discrete eight or sixteen-pixel projection")
-end
-
--- Forward and inverse transforms stay exact inverses over every
--- selectable cell at both discrete scales, extreme pans, and all host
--- panes, with source truncation on negative remainders, no selection
--- outside the world surface, and clamped pan and cursor bounds.
-function T.tests.cell_transforms_agree_with_source_arithmetic()
-  local MapProjection = requireFeature(
-    "game.hgss.src.pokegear.MapProjection",
-    "the region map has no projection owner yet: cell transforms cannot agree"
-  )
-  local panes = {
-    { x = 0, y = 0, width = 256, height = 192 },
-    { x = 0, y = 192, width = 256, height = 192 },
-    { x = 0, y = 0, width = 256, height = 192 },
-    { x = 128, y = 96, width = 256, height = 192 },
-  }
-  local pans = { { x = 0, y = 0 }, { x = -40, y = -24 }, { x = 248, y = 248 } }
-  for _, pane in ipairs(panes) do
-    for _, zoom in ipairs({ 8, 16 }) do
-      local span = math.floor(512 / zoom)
-      for _, pan in ipairs(pans) do
-        for cy = 0, span - 1 do
-          for cx = 0, span - 1 do
-            local point = MapProjection.forward({ x = cx, y = cy }, pan, zoom, pane)
-            local back = MapProjection.inverse(point, pan, zoom, pane)
-            Assert.notNil(back, "every projected cell pointer-maps back")
-            Assert.equal(back.x, cx, "the inverse keeps the column")
-            Assert.equal(back.y, cy, "the inverse keeps the row")
-          end
-        end
+    if v.mode == "marking" then
+      sawMarking = true
+      if v.bottomSlide == 112 then
+        slideStarted = true
       end
     end
-  end
-  local pane = panes[1]
-  local back = MapProjection.inverse({ x = pane.x, y = pane.y }, { x = 3, y = 3 }, 8, pane)
-  Assert.deepEqual(back, { x = 0, y = 0 }, "negative remainders truncate toward zero")
-  Assert.isNil(
-    MapProjection.inverse({ x = pane.x - 20, y = pane.y - 20 }, { x = 0, y = 0 }, 8, pane),
-    "pointers above and left of the surface select nothing"
-  )
-  local clamped = MapProjection.clampPan({ x = 9000, y = -9000 }, 8, pane)
-  Assert.equal(clamped.x, 256, "panning clamps to the surface edge")
-  Assert.equal(clamped.y, -320, "panning clamps the negative edge symmetrically")
-  local cursor = MapProjection.clampCursor({ x = 60, y = 70 }, 8, 1)
-  Assert.equal(cursor.x, 27, "a stale pre-unlock cursor never selects the hidden region")
-  Assert.equal(cursor.y, 63, "cursor rows clamp to the surface")
-  local open = MapProjection.clampCursor({ x = 40, y = 10 }, 8, 3)
-  Assert.deepEqual(open, { x = 40, y = 10 }, "the unlocked map keeps its selection")
-  Assert.equal(MapProjection.tierOfColumn(27), 1, "Johto columns open first")
-  Assert.equal(MapProjection.tierOfColumn(28), 2, "the Indigo approaches open next")
-  Assert.equal(MapProjection.tierOfColumn(32), 3, "the rest of Kanto opens last")
-end
-
--- Marker placement applies the source map Y offset and the
--- sprite-manager virtual-origin normalization exactly once, stably
--- across repeated opens.
-function T.tests.marker_placement_applies_its_offsets_once()
-  local MapProjection = requireFeature(
-    "game.hgss.src.pokegear.MapProjection",
-    "the region map has no projection owner yet: markers cannot place"
-  )
-  local pane = { x = 0, y = 0, width = 256, height = 192 }
-  local first = MapProjection.markerPoint({ x = 25, y = 8 }, { x = 0, y = 0 }, 8, pane)
-  local again = MapProjection.markerPoint({ x = 25, y = 8 }, { x = 0, y = 0 }, 8, pane)
-  Assert.deepEqual(again, first, "repeated marker placement never drifts")
-  Assert.equal(first.x - 25 * 8, -48, "marker columns normalize the virtual origin once")
-  Assert.equal(first.y - 8 * 8, 2 - 48, "marker rows apply the Y offset and virtual origin once")
-end
-
--- The zoom preference persists through the durable owner while drag and
--- editor snapshots stay transient.
-function T.tests.zoom_preference_persists_while_edits_stay_transient()
-  local box = openMap({})
-  local controller, state = box.controller, box.state
-  Assert.equal(controller:status().view.zoomCells, 8, "the map opens at eight-pixel cells")
-  local view = assert(controller:status().view, "the map view is published")
-  tap(controller, view.zoomButton)
-  Assert.equal(controller:status().view.zoomCells, 16, "the zoom control doubles the cell size")
-  Assert.equal(state:readPreferences().mapZoomed, true, "zoom persists as a preference")
-  local revived = openMap({ manifest = box.record, state = state })
-  Assert.equal(revived.controller:status().view.zoomCells, 16, "a reopened map keeps its zoom")
-  revived.controller:dispose()
-  tap(controller, controller:status().view.zoomButton)
-  Assert.equal(controller:status().view.zoomCells, 8, "zooming back restores eight-pixel cells")
-  controller:dispose()
-end
-
--- Icon drops with identical content publish nothing: only a real slot
--- change advances the revision.
-function T.tests.identical_icon_drops_publish_nothing()
-  local box = openMap({})
-  local controller, state = box.controller, box.state
-  local panel = enterMarkings(controller)
-  local revisionAtOpen = state:revision()
-  drag(controller, panel.pool[2], panel.icons[1])
-  Assert.equal(state:revision(), revisionAtOpen + 1, "one icon drop advances one revision")
-  drag(controller, panel.pool[2], panel.icons[1])
-  Assert.equal(state:revision(), revisionAtOpen + 1, "an identical drop publishes nothing")
-  drag(controller, panel.icons[1], panel.icons[1])
-  Assert.equal(state:revision(), revisionAtOpen + 1, "dropping a slot onto itself publishes nothing")
-  controller:dispose()
-end
-
--- Invalid selector results fail without touching marking state, and the
--- pending edit stays open for a valid answer or a cancellation.
-function T.tests.invalid_word_results_fail_without_touching_state()
-  local box = openMap({})
-  local controller, state = box.controller, box.state
-  state:setMarking("test.place.001", { icons = { 1, false, false, false }, words = { "7", false, false, false } })
-  local panel = enterMarkings(controller)
-  tap(controller, panel.words[1])
-  local request = controller:takeWordRequest()
-  Assert.notNil(request, "the word tap pends its request")
-  local revisionBefore = state:revision()
-  for _, bad in ipairs({ { word = "abc" }, { word = "" }, { word = 41 }, {} }) do
-    Assert.throws(function()
-      controller:acceptWordResult({ operationId = request.operationId, result = bad })
-    end, "an invalid word result fails")
-  end
-  Assert.equal(state:revision(), revisionBefore, "invalid results move no revision")
-  Assert.deepEqual(
-    state:capture().markings["test.place.001"].words,
-    { "7", false, false, false },
-    "invalid results keep the old word"
-  )
-  Assert.isNil(controller:takeWordRequest(), "the failed edit stays pending without a second outbox")
-  controller:acceptWordResult({ operationId = request.operationId, result = { cancelled = true } })
-  Assert.deepEqual(
-    state:capture().markings["test.place.001"].words,
-    { "7", false, false, false },
-    "cancelling after invalid answers preserves the word"
-  )
-  controller:dispose()
-end
-
--- Keyboard and pointer keep separate interaction state: directional keys
--- walk the selection cursor while pointer drags pan without moving it,
--- and a pending word edit blocks map input until it resolves.
-function T.tests.keyboard_and_pointer_keep_separate_state()
-  local box = openMap({})
-  local controller = box.controller
-  local before = controller:status().view.cursor
-  controller:updateFixed({ { type = "navigate", direction = "right" } })
-  controller:updateFixed({ { type = "navigate", direction = "down" } })
-  local walked = controller:status().view.cursor
-  Assert.deepEqual(walked, { x = before.x + 1, y = before.y + 1 }, "directional keys walk the cursor")
-  local panBefore = controller:status().view.pan
-  controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = 100, y = 60 } })
-  controller:updateFixed({ { type = "pointer_move", pointerId = "touch:1", x = 120, y = 70 } })
-  controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = 120, y = 70 } })
-  local afterPan = controller:status().view.pan
-  Assert.deepEqual(afterPan, { x = panBefore.x + 20, y = panBefore.y + 10 }, "a pointer drag pans the map")
-  Assert.deepEqual(controller:status().view.cursor, walked, "panning never moves the cursor")
-  controller:updateFixed({ { type = "confirm" } })
-  for _ = 1, 120 do
-    if controller:status().transition == nil then
+    if not box.controller:status().busy then
       break
     end
-    controller:updateFixed({})
   end
-  Assert.equal(controller:status().markingMode, "marking", "confirming enters the marking panel")
-  controller:dispose()
+  Assert.isTrue(sawFadeOut, "the lower screen fades fully out between the two modes")
+  Assert.isTrue(sawMarking and slideStarted, "the panel starts hidden above its window and then slides in")
+  Assert.equal(view(box.controller).bottomSlide, 0, "the slide ends fully shown")
+  Assert.isTrue(box.controller:status().stripHidden, "marking mode hides the tab strip")
+  Assert.equal(box.state:revision(), revision, "entering markings commits nothing")
+  -- A first key press after touching only reveals the cursor; keys then walk
+  -- the graph: A on the empty icon slot opens the pool, A again places icon 1.
+  box.controller:updateFixed({ { type = "navigate", direction = "right" } })
+  box.controller:updateFixed({ { type = "confirm" } })
+  box.controller:updateFixed({ { type = "confirm" } })
+  local marking = box.state:capture().markings.MAP_A
+  Assert.notNil(marking, "placing an icon writes the location's marking")
+  Assert.deepEqual(marking.icons, { 1, false, false, false }, "the first pool icon fills the first slot")
+  local writes = box.state:revision()
+  box.controller:updateFixed({ { type = "confirm" } })
+  Assert.equal(box.state:revision(), writes, "placing the identical icon again publishes nothing")
+  box.controller:updateFixed({ { type = "cancel" } })
+  box.controller:updateFixed({ { type = "cancel" } })
+  settle(box.controller)
+  Assert.equal(view(box.controller).mode, "map", "Back returns to map mode")
+  Assert.equal(view(box.controller).panel.markers[1], 1, "the panel shows the saved icon")
+  Assert.equal(#view(box.controller).sprites.hasMarkings, 1, "the marked location carries a marking dot")
 end
 
--- Locked tiers refuse selection while the unlocked map keeps it, and
--- reopening at a new tier re-masks without moving committed markings.
-function T.tests.locked_tiers_refuse_selection_until_reopen()
-  local manifest = fixtureManifest()
-  local locked = openMap({ manifest = manifest })
-  local controller = locked.controller
-  local cursorBefore = controller:status().view.cursor
-  controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = 240, y = 40 } })
-  controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = 240, y = 40 } })
-  Assert.deepEqual(controller:status().view.cursor, cursorBefore, "a tap on the hidden region selects nothing")
-  local masks = controller:status().view.maskRects
-  Assert.equal(#masks, 2, "the locked map masks both hidden tiers")
-  controller:dispose()
-  local context = outdoorContext()
-  context.unlockLevel = 3
-  local open = openMap({ manifest = manifest, mapContext = context })
-  Assert.deepEqual(open.controller:status().view.maskRects, {}, "the unlocked map masks nothing")
-  open.controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = 240, y = 40 } })
-  open.controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = 240, y = 40 } })
-  Assert.deepEqual(open.controller:status().view.cursor, { x = 30, y = 5 }, "the unlocked map selects its tapped cell")
-  open.controller:dispose()
-end
-
--- Drags survive status reads and empty ticks, the panel stays open
--- across an app-switch-shaped pause, and committed markings outlive the
--- controller that wrote them.
-function T.tests.drags_and_panels_survive_reads_and_reopen()
-  local manifest = fixtureManifest()
-  local box = openMap({ manifest = manifest })
-  local controller, state, record = box.controller, box.state, box.record
-  local panel = enterMarkings(controller)
-  local revisionAtOpen = state:revision()
-  local x0, y0 = center(panel.pool[4])
-  controller:updateFixed({ { type = "pointer_down", pointerId = "touch:9", x = x0, y = y0 } })
-  for _ = 1, 10 do
-    controller:updateFixed({})
-    controller:status()
-  end
-  local x1, y1 = center(panel.icons[3])
-  controller:updateFixed({ { type = "pointer_move", pointerId = "touch:9", x = x1, y = y1 } })
-  controller:updateFixed({ { type = "pointer_up", pointerId = "touch:9", x = x1, y = y1 } })
-  Assert.equal(state:revision(), revisionAtOpen + 1, "a drag across reads still writes exactly once")
-  Assert.deepEqual(
-    state:capture().markings["test.place.001"].icons,
-    { false, false, 4, false },
-    "the drag lands in its slot"
-  )
-  for _ = 1, 50 do
-    controller:updateFixed({})
-  end
-  Assert.notNil(controller:status().view.markingPanel, "the panel survives an app-switch pause")
-  local bucket = state:capture()
-  controller:dispose()
-  local again = openMap({ manifest = manifest, state = PokegearState.restore(bucket, catalogRefs(record)) })
-  local reopened = enterMarkings(again.controller)
-  Assert.notNil(reopened, "the reopened map restores its panel")
-  Assert.deepEqual(
-    again.state:capture().markings["test.place.001"].icons,
-    { false, false, 4, false },
-    "committed markings outlive their controller"
-  )
-  again.controller:dispose()
-end
-
--- Cancelling a pending word edit preserves the stored word and clears
--- the handoff without publishing.
-function T.tests.cancelling_a_word_edit_preserves_state()
-  local box = openMap({})
-  local controller, state = box.controller, box.state
-  state:setMarking("test.place.001", { icons = { 1, false, false, false }, words = { "7", false, false, false } })
-  local panel = enterMarkings(controller)
-  tap(controller, panel.words[1])
-  local request = controller:takeWordRequest()
-  Assert.notNil(request, "the word tap pends its request")
-  Assert.equal(controller:status().busy, true, "a pending edit holds the card busy")
-  local revisionBefore = state:revision()
-  controller:updateFixed({ { type = "cancel" } })
-  Assert.isNil(controller:takeWordRequest(), "cancelling clears the handoff")
-  Assert.equal(state:revision(), revisionBefore, "cancelling a word edit publishes nothing")
-  Assert.deepEqual(
-    state:capture().markings["test.place.001"].words,
-    { "7", false, false, false },
-    "cancelling preserves the stored word"
-  )
-  Assert.equal(controller:status().busy, false, "the card releases its busy flag")
-  controller:dispose()
-end
-
--- Map initialization and contact markers come from their shared owners:
--- the field map resolves its compiled location, unknown maps fail
--- loudly, roamer cells resolve through their header reference, and the
--- contact query reports readiness and gifts without caching.
-function T.tests.map_context_and_markers_come_from_shared_owners()
-  local MapController = requireFeature(
-    "game.hgss.src.pokegear.MapController",
-    "the region map has no controller yet: shared-owner markers cannot project"
-  )
-  local PhoneWorldContext = require("game.hgss.src.pokegear.PhoneWorldContext")
-  local record = PokegearAssetSchema.validate(fixtureManifest())
-  Assert.notNil(record, "the synthetic companion catalog must validate through the asset schema")
-  assert(record ~= nil, "synthetic catalog validated above")
-  local state = PokegearState.new({ seed = 5150 }, catalogRefs(record))
-  local worlds = PhoneWorldContext.new({ state = state })
-  local catalog = {
-    locations = {
-      {
-        key = "test.place.violet",
-        fieldMap = "test.field.violet",
-        mapRef = 11,
-        matrix = { x = 497, y = 272 },
-        location = "test.place.violet",
-        section = "test.section.violet",
-        region = "johto",
-        flypoint = false,
-      },
-    },
-  }
-  local context = worlds:mapInit({
-    mapSymbol = "test.field.violet",
-    playerX = 497,
-    playerY = 0,
-    playerZ = 272,
-    isOutdoor = true,
-    playerGender = "girl",
-  }, catalog)
-  Assert.equal(context.location, "test.place.violet", "the field map resolves its displayed location")
-  Assert.equal(context.region, "johto", "the field map resolves its region")
-  Assert.equal(context.unlockLevel, 1, "an unset tier starts in Johto")
-  Assert.equal(context.playerGender, "girl", "the field read carries its gender")
-  Assert.equal(context.matrixX, 497, "outdoor maps use the live global field coordinate")
-  Assert.equal(context.matrixY, 272, "outdoor maps use the live global field coordinate")
-  Assert.throws(function()
-    worlds:mapInit({
-      mapSymbol = "test.field.nowhere",
-      playerX = 0,
-      playerZ = 0,
-      isOutdoor = true,
-      playerGender = "boy",
-    }, catalog)
-  end, "a field map without compiled coverage fails loudly")
-  state:setPreference("mapUnlockLevel", 2)
-  local reopened = worlds:mapInit({
-    mapSymbol = "test.field.violet",
-    playerX = 497,
-    playerZ = 272,
-    isOutdoor = true,
-    playerGender = "girl",
-  }, catalog)
-  Assert.equal(reopened.unlockLevel, 2, "saved progression facts survive initialization")
-  local indoorCatalog = {
-    locations = {
-      {
-        key = "test.place.house",
-        fieldMap = "test.field.house",
-        location = "test.place.house",
-        matrix = { x = 352, y = 160 },
-        explicitX = 11,
-        explicitY = 5,
-        region = "johto",
-      },
-      {
-        key = "test.place.spawn",
-        fieldMap = "test.field.spawn",
-        location = "test.place.spawn",
-        matrix = { x = 224, y = 256 },
-        explicitX = 7,
-        explicitY = 8,
-        region = "johto",
-      },
-    },
-  }
-  local exterior = { x = 21, y = 12 }
-  local indoorWorld = PhoneWorldContext.new({
-    state = state,
-    runtime = {
-      worldSwapCoordinator = { pokegearLastExterior = exterior },
-      fieldTravel = {
-        specialSpawn = function()
-          return { map = "test.field.spawn", fieldX = 224, fieldZ = 256 }
-        end,
-      },
-    },
+function T.tests.marking_slots_follow_the_key_graph_and_touch_drops()
+  local mode = MarkingMode.new({
+    marking = { icons = { 2, false, false, false }, words = { false, false, false, false } },
   })
-  local indoor = indoorWorld:mapInit({
-    mapSymbol = "test.field.house",
-    playerX = 4,
-    playerZ = 7,
-    isOutdoor = false,
-    playerGender = "girl",
-  }, indoorCatalog)
-  Assert.equal(indoor.matrixX, 352, "indoor tile coordinates never replace the source matrix anchor")
-  Assert.equal(indoor.matrixY, 160, "indoor tile coordinates never replace the source matrix anchor")
-  Assert.equal(indoor.explicitX, 11, "indoor maps keep the source header column")
-  Assert.equal(indoor.explicitY, 5, "indoor maps keep the source header row")
-  Assert.deepEqual(indoor.lastExterior, exterior, "the map context borrows committed exterior evidence")
+  Assert.isNil(mode:view().cursor, "the key cursor stays hidden until a key is pressed")
+  mode:updateFixed({ { type = "navigate", direction = "down" } })
   Assert.deepEqual(
-    indoor.specialSpawn,
-    { x = 7, y = 8 },
-    "a special spawn resolves its own map through a compiled header cell"
+    { mode:view().cursor.x, mode:view().cursor.y },
+    { 32, 32 },
+    "the first key only reveals the cursor on the first slot"
   )
-  local markers = worlds:locationMarkers("test.place.violet", {
-    rematchMarker = function(_, contact)
-      if contact == "test.caller.ready" then
-        return { tier = 2, ready = true }
-      end
-      return { tier = 2, ready = false }
-    end,
-  }, { ["test.caller.ready"] = "test.place.violet", ["test.caller.quiet"] = "test.place.violet" })
-  Assert.equal(#markers, 1, "only staged contacts project")
-  Assert.equal(markers[1].contact, "test.caller.ready", "the ready contact projects")
-  local mapAssets = {
-    catalog = {
-      locations = {
-        {
-          fieldMap = "test.field.violet",
-          location = "test.place.violet",
-          matrix = { x = 497, y = 272 },
-          region = "johto",
-        },
-      },
-    },
-    map = record.map,
-  }
-  local placed = MapController.new({
-    state = state,
-    assets = mapAssets,
-    mapContext = {
-      fieldMap = "test.field.violet",
-      location = "test.place.violet",
-      matrixX = 497,
-      matrixY = 272,
-      region = "johto",
-      unlockLevel = 1,
-      specialMode = nil,
-      playerGender = "girl",
-    },
-    phoneProjection = function(_)
-      return {}
-    end,
+  mode:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.deepEqual(
+    { mode:view().cursor.x, mode:view().cursor.y },
+    { 32, 53 },
+    "down from the first icon slot reaches the third slot's cursor spec"
+  )
+  -- Touch: drag the set icon from slot one to slot two; the icons swap with the empty target.
+  mode:updateFixed({ { type = "pointer_down", x = 30, y = 30 } })
+  Assert.equal(mode:view().drag.type, "set", "touching a set slot starts a slot drag")
+  mode:updateFixed({ { type = "pointer_move", x = 135, y = 30 } })
+  mode:updateFixed({ { type = "pointer_up", x = 135, y = 30 } })
+  Assert.deepEqual(mode:marking().icons, { false, 2, false, false }, "dropping on another icon slot moves the icon")
+  Assert.isTrue(mode:takeEdited(), "the swap reports one edit")
+  -- Drop on the trash removes it.
+  mode:updateFixed({ { type = "pointer_down", x = 135, y = 30 } })
+  mode:updateFixed({ { type = "pointer_move", x = 70, y = 80 } })
+  Assert.isTrue(mode:view().trashOpen, "hovering the trash opens its lid")
+  mode:updateFixed({ { type = "pointer_up", x = 70, y = 80 } })
+  Assert.deepEqual(mode:marking().icons, { false, false, false, false }, "dropping on the trash empties the slot")
+  Assert.isTrue(mode:isEmpty(), "an emptied marking reports empty")
+  -- Pool drag onto icon slot four.
+  mode:updateFixed({ { type = "pointer_down", x = 60, y = 130 } })
+  Assert.equal(mode:view().drag.type, "pool", "touching a pool icon starts a pool drag")
+  mode:updateFixed({ { type = "pointer_up", x = 135, y = 55 } })
+  Assert.deepEqual(mode:marking().icons, { false, false, false, 2 }, "dropping a pool icon fills the target slot")
+end
+
+function T.tests.a_word_edit_round_trips_through_the_typed_request()
+  local box = Fixture.openMap()
+  box.controller:updateFixed({ { type = "confirm" } })
+  for _ = 1, 40 do
+    tick(box.controller)
+    if not box.controller:status().busy then
+      break
+    end
+  end
+  -- Reveal the cursor, move to word slot one, and ask for a word.
+  box.controller:updateFixed({ { type = "navigate", direction = "right" } })
+  box.controller:updateFixed({ { type = "navigate", direction = "right" } })
+  box.controller:updateFixed({ { type = "confirm" } })
+  local request = box.controller:takeWordRequest()
+  Assert.notNil(request, "an empty word slot pends a typed request")
+  assert(request ~= nil, "request checked above")
+  Assert.equal(request.slot, 1, "the request names the one-based word slot")
+  Assert.equal(request.mapSymbol, "MAP_A", "the request names the marked location")
+  Assert.isNil(box.controller:takeWordRequest(), "a request is taken exactly once")
+  Assert.isTrue(box.controller:status().busy, "the card waits for the selector")
+  box.controller:acceptWordResult({ operationId = request.operationId, result = { word = "7" } })
+  Assert.deepEqual(box.state:capture().markings.MAP_A.words, { "7", false, false, false }, "the chosen word persists")
+  local ok = pcall(
+    box.controller.acceptWordResult,
+    box.controller,
+    { operationId = request.operationId, result = { word = "8" } }
+  )
+  Assert.isFalse(ok, "a replayed result fails without editing")
+  Assert.equal(box.state:capture().markings.MAP_A.words[1], "7", "the replay changed nothing")
+end
+
+function T.tests.live_roamers_appear_only_on_visible_locations()
+  local box = Fixture.openMap({
     roamerProjection = {
-      { key = "test.roamer.known", species = "test.raikou", location = 11, lifecycle = "roaming" },
-      { key = "test.roamer.lost", species = "test.entei", location = 999, lifecycle = "roaming" },
+      { key = "raikou", species = "RAIKOU", location = "test.place.a", lifecycle = "roaming" },
+      { key = "entei", species = "ENTEI", location = "test.place.far", lifecycle = "roaming" },
+      { key = "latias", species = "LATIAS", location = "test.place.a", lifecycle = "caught" },
     },
-    wordEntry = stubWordEntry(),
   })
-  local roamerMarkers = {}
-  for _, marker in ipairs(placed:status().view.markers) do
-    if marker.kind == "roamer" then
-      roamerMarkers[#roamerMarkers + 1] = marker
-    end
-  end
-  Assert.equal(#roamerMarkers, 2, "both active roamers project through the snapshot")
-  for _, marker in ipairs(roamerMarkers) do
-    Assert.isNil(marker.point, "fixture locations without header references place no roamer points")
-  end
-  placed:dispose()
+  local roamers = view(box.controller).sprites.roamers
+  Assert.equal(#roamers, 1, "only roaming roamers on a visible location draw")
+  Assert.equal(roamers[1].frame, 1, "Raikou uses the first roamer frame")
 end
 
--- The marking entrance gates input until both its fade and slide
--- completions finish.
-function T.tests.marking_entrance_gates_until_both_completions()
-  local box = openMap({})
-  local controller = box.controller
-  local view = assert(controller:status().view, "the map view is published")
-  tap(controller, view.markingsButton)
-  Assert.notNil(controller:status().transition, "the marking entrance runs a transition")
-  local gated = controller:status()
-  controller:updateFixed({ { type = "pointer_down", pointerId = "touch:2", x = 8, y = 8 } })
-  controller:updateFixed({ { type = "pointer_up", pointerId = "touch:2", x = 8, y = 8 } })
-  Assert.deepEqual(controller:status().view, gated.view, "entrance input changes no view state")
-  Assert.isNil(controller:takeResult(), "gated input publishes no result")
-  Assert.isNil(controller:status().view.markingPanel, "the panel stays hidden until both completions")
-  for _ = 1, 120 do
-    if controller:status().transition == nil then
-      break
-    end
-    controller:updateFixed({})
-  end
-  Assert.isNil(controller:status().transition, "both entrance completions finish")
-  Assert.notNil(controller:status().view.markingPanel, "the settled entrance publishes the marking panel")
-  controller:dispose()
-end
-
--- The renderer paints independent world, mask, sprite, information, and
--- marking layers from the snapshot, selecting each skin's own prepared
--- foreground and upper chrome unmodulated, with no host text boundary
--- required.
-function T.tests.renderer_paints_independent_layers_per_skin()
-  local PokegearMapRenderer = requireFeature(
-    "libs.hgss.src.presentation.PokegearMapRenderer",
-    "the region map has no renderer yet: layers cannot paint"
-  )
-  local FakeGraphics = require("tests.support.FakeGraphics").new
-  local box = openMap({})
-  local controller = box.controller
-  local manifest = fixtureManifest()
-  local images = {}
-  local function collect(node)
-    if type(node) ~= "table" then
-      return
-    end
-    if type(node.image) == "string" then
-      images[node.image] = {}
-      return
-    end
-    for _, child in pairs(node) do
-      collect(child)
-    end
-  end
-  collect(manifest)
-  local seen = {}
-  for skin = 0, 5 do
-    box.state:setPreference("skin", skin)
-    local status = controller:status()
-    local view = assert(status.view, "the map view is published")
-    local content = assert(view.content, "the map view carries its resolved content")
-    local graphics = FakeGraphics({})
-    PokegearMapRenderer.draw({ graphics = graphics, images = images }, status, skin)
-    Assert.isTrue(#graphics.draws > 0, "skin " .. skin .. " draws its world plane")
-    Assert.isTrue(#graphics.rectangles > 0, "skin " .. skin .. " paints its layers")
-    local first = graphics.draws[1]
-    Assert.equal(first.image, images[content.world], "skin " .. skin .. " draws its resolved world plane first")
-    Assert.deepEqual(first.color, { 1, 1, 1, 1 }, "skin " .. skin .. " paints the world plane unmodulated")
-    local drawn = {}
-    for _, draw in ipairs(graphics.draws) do
-      drawn[draw.image] = true
-    end
-    Assert.isTrue(drawn[images[content.foreground]], "skin " .. skin .. " draws its own prepared foreground chrome")
-    Assert.isTrue(drawn[images[content.upper]], "skin " .. skin .. " draws its own prepared upper chrome")
-    local digest = content.foreground .. "|" .. content.upper
-    Assert.isNil(seen[digest], "skin " .. skin .. " selects its own prepared chrome")
-    seen[digest] = skin
-  end
-  local open = FakeGraphics({})
-  PokegearMapRenderer.draw({ graphics = open, images = images }, controller:status(), 0)
-  local closedRects = #open.rectangles
-  local panel = enterMarkings(controller)
-  Assert.notNil(panel, "the marking panel opens")
-  local painted = FakeGraphics({})
-  PokegearMapRenderer.draw({ graphics = painted, images = images }, controller:status(), 0)
-  Assert.isTrue(#painted.rectangles > closedRects, "the open panel paints its pool, slots, and trash")
-  local textCalls = {}
-  local text = {
-    drawText = function(_, line, _, _)
-      textCalls[#textCalls + 1] = line
+function T.tests.a_contact_with_a_rematch_shows_the_panel_battle_icon()
+  local box = Fixture.openMap({
+    phoneProjection = function(location)
+      if location == "test.place.a" then
+        return { { contact = "test.caller.falkner", ready = true } }
+      end
+      return {}
     end,
-  }
-  local withText = FakeGraphics({})
-  PokegearMapRenderer.draw({ graphics = withText, images = images, text = text }, controller:status(), 0)
-  Assert.isTrue(#textCalls > 0, "the information windows draw their token text")
-  local missing = controller:status()
-  local missingView = assert(missing.view, "the map view is published")
-  missingView.content = {}
-  Assert.throws(function()
-    PokegearMapRenderer.draw({ graphics = FakeGraphics({}), images = images }, missing, 0)
-  end, "a companion without a world plane raises instead of inventing geography")
-  controller:dispose()
+  })
+  Assert.isTrue(view(box.controller).panel.battleIcon, "a ready contact on the selected map shows the battle icon")
 end
 
-function T.tests.exterior_cells_are_published_only_by_a_committed_source_map_swap()
-  local sourceMap = {
-    mapSymbol = "MAP_ROUTE_46",
-    fieldData = { transitionEnvironment = "outdoors" },
-  }
-  local destinationMap = {
-    mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_1F",
-    fieldData = { transitionEnvironment = "indoors" },
-  }
-  local runtime = {
-    runtimeMap = sourceMap,
-    player = { fieldX = 100, fieldZ = 200, facing = "north" },
-    pokegearCatalog = {
-      locations = {
-        { fieldMap = sourceMap.mapSymbol, matrix = { x = 695, y = 397 } },
-      },
-    },
-    transition = {},
-    session = { beginMapEntry = function() end },
-    zoneController = {},
-    fieldTerrainEffectController = { clear = function() end },
-    scripts = { onMapSwap = function() end },
-    residency = { commitTransition = function() end },
-  }
-  local coordinator = FieldWorldSwapCoordinator.new(runtime)
-  coordinator:abort({ destinationMap = destinationMap }, {})
-  Assert.isNil(coordinator.pokegearLastExterior, "an aborted swap cannot publish exterior evidence")
-
-  coordinator:commit({ destinationMap = destinationMap }, "north", {
-    residency = {},
-    player = { fieldX = 100, fieldZ = 200 },
-    playerVisual = {},
-    camera = {},
-  })
-  Assert.deepEqual(
-    coordinator.pokegearLastExterior,
-    { x = 3, y = 6 },
-    "the committed outdoor player's global field cell is retained for the indoor map"
-  )
+function T.tests.arriving_from_another_card_slides_the_panel_in()
+  local box = Fixture.openMap({ switched = true })
+  Assert.equal(view(box.controller).topSlide, 128, "the panel starts below the screen")
+  tick(box.controller, 4)
+  Assert.equal(view(box.controller).topSlide, 0, "four ticks bring it fully in")
+  Assert.isFalse(box.controller:status().busy, "the arrival transition ends")
 end
 
 return T

@@ -15,6 +15,7 @@
 -- a ROM on synthetic catalogs; only host audio/time boundaries are stubbed.
 
 local Assert = require("tests.support.Assert")
+local Fixture = require("tests.support.PokegearMapFixture")
 local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
 
 local T = {
@@ -39,66 +40,50 @@ local function requireFeature(moduleName, missingMessage)
   return mod --[[@as table]]
 end
 
----@param path string
----@return table
-local function visualRef(path)
-  return { image = path, width = 32, height = 32, anchorX = 0, anchorY = 0 }
-end
-
--- Synthetic companion catalog with two semantic fly destinations,
--- validated through the real asset schema so the scenarios borrow only
--- genuine semantic references. Keys stay symbolic; no coordinates enter
--- any record the selector publishes.
+-- Synthetic companion catalog with two semantic fly destinations over the
+-- synthetic region map: location A (flypoint 3) and a second map (flypoint
+-- 15), validated through the real asset schema so the scenarios borrow only
+-- genuine semantic references. Keys stay symbolic; no coordinates enter any
+-- record the selector publishes.
 ---@return table
 local function fixtureManifest()
-  return {
-    schema = "g4-pokegear-assets-v1",
-    skins = { 0, 1, 2, 3, 4, 5 },
-    shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png") },
-    configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png") },
-    phone = { panel = visualRef("assets/generated/pokegear/phone-panel.png") },
-    map = { base = visualRef("assets/generated/pokegear/map-base.png") },
-    fly = { base = visualRef("assets/generated/pokegear/fly-base.png") },
-    radio = { dial = visualRef("assets/generated/pokegear/radio-dial.png") },
-    catalog = {
-      contacts = {},
-      contactOrder = {},
-      callDefinitions = {},
-      callTriggers = {},
-      rematches = {},
-      gifts = {},
-      momPurchases = {},
-      locations = {
-        { key = "test.place.violet" },
-        { key = "test.place.new-bark" },
-      },
-      flypoints = {
-        { key = "test.fly.violet" },
-        { key = "test.fly.new-bark" },
-      },
-      reception = {},
-      shows = {},
-      radioEffects = {},
-    },
-    text = {},
-    sequences = {},
+  local manifest = Fixture.manifest()
+  manifest.catalog.locations[1].flypoint = "test.fly.violet"
+  manifest.catalog.locations[2] = {
+    key = "test.place.nb",
+    fieldMap = "MAP_NB",
+    mapRef = 75,
+    matrix = { x = 5 * 32 + 8, y = 8 * 32 + 8 },
+    location = "test.location.nb",
+    section = "test.section.nb",
+    region = "johto",
+    flypoint = "test.fly.new-bark",
   }
+  manifest.catalog.flypoints = { { key = "test.fly.violet" }, { key = "test.fly.new-bark" } }
+  return manifest
 end
 
--- Source-normalized map context for an outdoor main-matrix cell. Field
--- values stay synthetic; only the record shape follows the map contract.
+-- Source-normalized map context standing on the first flypoint's cell.
 ---@return table
 local function outdoorContext()
-  return {
-    fieldMap = "test.field.new-bark",
-    location = "test.place.new-bark",
-    matrixX = 96,
-    matrixY = 64,
-    region = "johto",
-    unlockLevel = 1,
-    specialMode = nil,
-    playerGender = "boy",
-  }
+  return Fixture.context()
+end
+
+-- Source-normalized map context standing on the second flypoint's cell.
+---@return table
+local function secondContext()
+  local context = Fixture.context()
+  context.matrixX, context.matrixY = 5 * 32 + 8, 8 * 32 + 8
+  context.fieldMap = "MAP_NB"
+  return context
+end
+
+-- Confirms the destination under the cursor: A opens the Fly/Quit menu and
+-- A on "Fly" settles it.
+---@param selector table
+local function confirmFly(selector)
+  selector:updateFixed({ { type = "confirm" } })
+  selector:updateFixed({ { type = "confirm" } })
 end
 
 -- The real field-move runtime with a permissive eligibility stub and a
@@ -124,15 +109,18 @@ end
 ---@param controllerClass table
 ---@param record table
 ---@param operationId string
+---@param context table?
+---@param destinations string[]?
 ---@return table
-local function openSelector(controllerClass, record, operationId)
+local function openSelector(controllerClass, record, operationId, context, destinations)
   return controllerClass.new({
     mode = "fly",
     operationId = operationId,
-    context = outdoorContext(),
-    destinations = { "test.fly.violet", "test.fly.new-bark" },
+    context = context or outdoorContext(),
+    destinations = destinations or { "test.fly.violet", "test.fly.new-bark" },
     assets = record,
-    presentation = {},
+    facts = Fixture.facts(),
+    messages = Fixture.messages(),
   })
 end
 
@@ -183,7 +171,7 @@ function T.tests.cancelled_and_stale_fly_selections_never_warp()
   Assert.equal(cancelled.operationId, "fly-op-1", "the cancelled terminal names its own operation")
   local reread = first:takeResult()
   Assert.deepEqual(reread, cancelled, "the cancelled terminal reads back identically until closed")
-  first:updateFixed({ { type = "confirm", flypoint = "test.fly.violet" } })
+  confirmFly(first)
   Assert.deepEqual(
     first:takeResult(),
     cancelled,
@@ -193,7 +181,7 @@ function T.tests.cancelled_and_stale_fly_selections_never_warp()
 
   -- A repeated confirmation publishes the same single destination once.
   local second = openSelector(FlyMapController, record, "fly-op-2")
-  second:updateFixed({ { type = "confirm", flypoint = "test.fly.violet" } })
+  confirmFly(second)
   local destination = second:takeResult()
   Assert.notNil(destination, "a confirmed selection reports its destination")
   assert(type(destination) == "table", "destination terminal validated above")
@@ -205,16 +193,18 @@ function T.tests.cancelled_and_stale_fly_selections_never_warp()
   Assert.equal(destination.kind, "destination", "confirmation reports a destination")
   Assert.equal(destination.flypointKey, "test.fly.violet", "the destination names its semantic flypoint")
   Assert.equal(destination.operationId, "fly-op-2", "the destination names its own operation")
-  second:updateFixed({ { type = "confirm", flypoint = "test.fly.violet" } })
+  confirmFly(second)
   Assert.deepEqual(second:takeResult(), destination, "repeating confirmation never publishes a second operation")
   second:dispose()
 
   -- An unknown destination publishes nothing and leaves the pending
   -- selection usable for a genuine choice afterwards.
-  local third = openSelector(FlyMapController, record, "fly-op-3")
-  third:updateFixed({ { type = "confirm", flypoint = "test.fly.nowhere" } })
-  Assert.isNil(third:takeResult(), "an unknown destination publishes no terminal result")
-  third:updateFixed({ { type = "confirm", flypoint = "test.fly.new-bark" } })
+  local third = openSelector(FlyMapController, record, "fly-op-3", nil, { "test.fly.nowhere" })
+  confirmFly(third)
+  Assert.isNil(third:takeResult(), "an unpermitted destination publishes no terminal result")
+  third:dispose()
+  third = openSelector(FlyMapController, record, "fly-op-3", secondContext())
+  confirmFly(third)
   local recovered = third:takeResult()
   Assert.notNil(recovered, "a genuine choice still settles after a rejected one")
   assert(type(recovered) == "table", "recovered terminal validated above")
@@ -262,7 +252,7 @@ function T.tests.malformed_fly_selector_options_fail_before_any_effect()
       context = outdoorContext(),
       destinations = { "test.fly.violet", "test.fly.new-bark" },
       assets = record,
-      presentation = {},
+      facts = Fixture.facts(),
     }
   end
   local unknown = validOptions()
@@ -293,10 +283,16 @@ function T.tests.view_only_town_selector_never_reports_a_destination()
   local record = PokegearAssetSchema.validate(fixtureManifest())
   Assert.notNil(record, "the synthetic companion catalog must validate through the asset schema")
   assert(record ~= nil, "synthetic catalog validated above")
-  local town = FlyMapController.new({ mode = "townMap", operationId = "town-view-1", assets = record })
+  local town = FlyMapController.new({
+    mode = "townMap",
+    operationId = "town-view-1",
+    assets = record,
+    facts = Fixture.facts(),
+    context = outdoorContext(),
+  })
   town:updateFixed({ { type = "confirm" } })
   Assert.isNil(town:takeResult(), "a view-only confirmation settles nothing")
-  town:updateFixed({ { type = "confirm", flypoint = "test.fly.violet" } })
+  town:updateFixed({ { type = "confirm" }, { type = "confirm" } })
   Assert.isNil(town:takeResult(), "a keyed confirmation never emits a destination from a view-only map")
   town:updateFixed({ { type = "cancel" } })
   local closed = town:takeResult()
@@ -304,7 +300,7 @@ function T.tests.view_only_town_selector_never_reports_a_destination()
   assert(type(closed) == "table", "close terminal validated above")
   Assert.keySet(closed, "kind,operationId", "the view-only close carries only its kind and operation identity")
   Assert.equal(closed.kind, "cancelled", "the view-only close reports cancellation")
-  town:updateFixed({ { type = "confirm", flypoint = "test.fly.violet" } })
+  town:updateFixed({ { type = "confirm" }, { type = "confirm" } })
   Assert.deepEqual(town:takeResult(), closed, "confirming after close never replaces the terminal")
   town:dispose()
 end
@@ -560,6 +556,10 @@ local function choiceHost()
     catalog = record.catalog,
     messages = {},
     world = { player = { x = 1, y = 2 } },
+    assets = record,
+    regionMapOwners = function()
+      return Fixture.messages(), Fixture.facts()
+    end,
   })
 end
 
@@ -628,7 +628,7 @@ function T.tests.fly_task_routes_its_choice_through_the_companion_host()
   Assert.isTrue(host:isActive(), "the choice opens the companion selector")
   Assert.isTrue(runtime:isBusy(), "the runtime holds its gate across the choice")
   local confirmed =
-    FieldMoveTask.poll(state, choiceTaskContext(runtime, host, { { type = "confirm", flypoint = "test.fly.violet" } }, 7))
+    FieldMoveTask.poll(state, choiceTaskContext(runtime, host, { { type = "confirm" }, { type = "confirm" } }, 7))
   Assert.isFalse(confirmed.complete, "a confirmed choice continues into travel")
   Assert.isFalse(host:isActive(), "the consumed choice closes its selector exactly once")
   world.done = true

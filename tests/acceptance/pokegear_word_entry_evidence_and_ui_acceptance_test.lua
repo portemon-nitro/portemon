@@ -8,9 +8,9 @@
 -- handoff plus synthetic gate-derived fixtures until the selector lands.
 
 local Assert = require("tests.support.Assert")
+local Fixture = require("tests.support.PokegearMapFixture")
 local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
 local PokegearState = require("libs.hgss.src.save.PokegearState")
-local PokegearSources = require("romdump.src.config.PokegearSources")
 
 local T = {
   metadata = {
@@ -34,43 +34,12 @@ local function requireFeature(moduleName, missingMessage)
   return mod --[[@as table]]
 end
 
----@param path string
----@return table
-local function visualRef(path)
-  return { image = path, width = 32, height = 32, anchorX = 0, anchorY = 0 }
-end
-
--- Synthetic companion catalog with one annotation location, validated
+-- Synthetic companion family with one annotation location, validated
 -- through the real asset schema so the journey borrows only genuine
 -- semantic references.
 ---@return table
 local function fixtureManifest()
-  return {
-    schema = "g4-pokegear-assets-v1",
-    skins = { 0, 1, 2, 3, 4, 5 },
-    shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png") },
-    configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png") },
-    phone = { panel = visualRef("assets/generated/pokegear/phone-panel.png") },
-    map = { base = visualRef("assets/generated/pokegear/map-base.png") },
-    fly = { base = visualRef("assets/generated/pokegear/fly-base.png") },
-    radio = { dial = visualRef("assets/generated/pokegear/radio-dial.png") },
-    catalog = {
-      contacts = {},
-      contactOrder = {},
-      callDefinitions = {},
-      callTriggers = {},
-      rematches = {},
-      gifts = {},
-      momPurchases = {},
-      locations = PokegearSources.mapLocationRecords("heartgold"),
-      flypoints = {},
-      reception = {},
-      shows = {},
-      radioEffects = {},
-    },
-    text = {},
-    sequences = {},
-  }
+  return Fixture.manifest()
 end
 
 -- Gate-derived word catalog: eleven groups in source order with source
@@ -87,65 +56,39 @@ local function gateWordCatalog()
   return catalog
 end
 
----@return table context
-local function mapContext()
-  return {
-    fieldMap = "MAP_VIOLET",
-    location = "hg.place.violet",
-    matrixX = 497,
-    matrixY = 272,
-    region = "johto",
-    unlockLevel = 1,
-    specialMode = nil,
-    playerGender = "boy",
-  }
-end
-
 ---@param state table
 ---@param validated table
 ---@return table map
 local function openMap(state, validated)
-  local MapController = require("game.hgss.src.pokegear.MapController")
-  return MapController.new({
-    state = state,
-    assets = validated,
-    mapContext = mapContext(),
-    phoneProjection = function(_)
-      return {}
-    end,
-    roamerProjection = {},
-    wordEntry = {
-      open = function(_) end,
-      step = function() end,
-      result = function()
-        return nil
-      end,
-      cancel = function() end,
-    },
-  })
+  return Fixture.openMap({ state = state, record = validated }).controller
 end
 
--- Enters marking mode through the real entrance transition, then taps a
--- word slot: input is gated while the transition runs, exactly like the
--- retail flow.
+-- Enters marking mode through the real entrance transition and walks the
+-- key cursor to a word slot, then asks for its word: input is gated while
+-- the transition runs, exactly like the retail flow.
 ---@param map table
----@param slot integer
+---@param moves string[] navigation directions to the word slot
+---@param fresh boolean? whether the mode still has to be entered
 ---@return table request
-local function tapWordSlot(map, slot)
-  map:updateFixed({ { type = "confirm" } })
-  for _ = 1, 12 do
-    map:updateFixed({})
+local function requestWord(map, moves, fresh)
+  if fresh then
+    map:updateFixed({ { type = "confirm" } })
+    for _ = 1, 60 do
+      if not map:status().busy then
+        break
+      end
+      map:updateFixed({})
+    end
+    Assert.equal(map:status().view.mode, "marking", "the entrance transition reaches marking mode")
+    -- The first key press after touching only reveals the key cursor.
+    map:updateFixed({ { type = "navigate", direction = "left" } })
   end
-  local status = map:status()
-  local view = assert(status.view, "the open map publishes its view")
-  Assert.equal(status.markingMode, "marking", "the entrance transition reaches marking mode")
-  local panel = assert(view.markingPanel, "marking mode publishes its panel")
-  local rect = assert(panel.words[slot], "word slot " .. slot .. " publishes its hit region")
-  local point = { x = rect.x + rect.width / 2, y = rect.y + rect.height / 2 }
-  map:updateFixed({ { type = "pointer_down", pointerId = 1, x = point.x, y = point.y } })
-  map:updateFixed({ { type = "pointer_up", pointerId = 1, x = point.x, y = point.y } })
+  for _, direction in ipairs(moves) do
+    map:updateFixed({ { type = "navigate", direction = direction } })
+  end
+  map:updateFixed({ { type = "confirm" } })
   local request = map:takeWordRequest()
-  Assert.notNil(request, "tapping a word slot pends one typed request")
+  Assert.notNil(request, "confirming an empty word slot pends one typed request")
   return assert(request)
 end
 
@@ -181,10 +124,12 @@ function T.tests.annotation_word_choice_commits_once_and_restores_the_map()
   local map = openMap(state, validated)
   local words = gateWordCatalog()
 
-  local request = tapWordSlot(map, 2)
+  local before = map:status().view.world
+  -- Word slot two is the third step right of the first icon slot.
+  local request = requestWord(map, { "right", "right", "right" }, true)
   Assert.equal(request.slot, 2, "the request names its word slot")
-  Assert.equal(request.locationKey, "hg.place.violet", "the request names its source location")
-  local session = assert(request.session, "the request carries the recorded map session")
+  Assert.equal(request.mapSymbol, "MAP_A", "the request names its source location")
+  Assert.notNil(request.session, "the request carries the recorded map session")
   Assert.isTrue(map:status().busy, "the map reports busy while the word edit pends")
 
   local selector = WordEntryScreenState.new({
@@ -208,17 +153,16 @@ function T.tests.annotation_word_choice_commits_once_and_restores_the_map()
 
   local after = map:status()
   Assert.isFalse(after.busy, "the map leaves busy once the word resolves")
-  Assert.equal(after.view.marking.words[2], "42", "exactly the tapped slot commits the chosen word")
-  Assert.equal(after.view.marking.words[1], false, "untouched slots keep their empty state")
-  Assert.deepEqual(after.view.pan, session.pan, "the word return restores the recorded pan")
-  Assert.equal(after.view.zoomCells, session.zoomCells, "the word return restores the recorded zoom")
-  Assert.deepEqual(after.view.cursor, session.cursor, "the word return restores the recorded cursor")
-  Assert.equal(after.markingMode, session.markingMode, "the word return restores marking mode")
+  local saved = state:capture().markings.MAP_A
+  Assert.equal(saved.words[2], "42", "exactly the requested slot commits the chosen word")
+  Assert.equal(saved.words[1], false, "untouched slots keep their empty state")
+  Assert.deepEqual(after.view.world, before, "the word return leaves the recorded world view")
+  Assert.equal(after.view.mode, "marking", "the word return stays in marking mode")
 
-  -- Cancelling at the nested selector level preserves the committed word
-  -- and restores the same session snapshot shape.
-  local cancelRequest = tapWordSlot(map, 2)
-  Assert.equal(cancelRequest.oldWord, "42", "reopening a filled slot carries the committed word")
+  -- Cancelling at the nested selector level preserves the committed word:
+  -- asking again on the first empty word slot and cancelling writes nothing.
+  local cancelRequest = requestWord(map, { "left", "left" }, false)
+  Assert.equal(cancelRequest.slot, 1, "the second request names the first word slot")
   local cancelSelector = WordEntryScreenState.new({
     operationId = cancelRequest.operationId,
     selectedWord = cancelRequest.oldWord,
@@ -232,13 +176,13 @@ function T.tests.annotation_word_choice_commits_once_and_restores_the_map()
   Assert.notNil(cancelAnswer, "cancelling reports one terminal result")
   map:acceptWordResult(toMapAnswer(assert(cancelAnswer)))
   cancelSelector:dispose()
-  local kept = map:status()
-  Assert.equal(kept.view.marking.words[2], "42", "a cancelled edit preserves the committed word")
-  Assert.deepEqual(kept.view.pan, cancelRequest.session.pan, "a cancel restores the recorded pan")
+  local kept = state:capture().markings.MAP_A
+  Assert.equal(kept.words[2], "42", "a cancelled edit preserves the committed word")
+  Assert.equal(kept.words[1], false, "a cancelled edit writes no word")
 
   -- A stale identity and a replayed identity both fail, and neither moves
   -- marking state.
-  local marked = map:status().view.marking
+  local revision = state:revision()
   local staleOk = pcall(map.acceptWordResult, map, {
     operationId = "map-word-404",
     result = { word = "9" },
@@ -249,7 +193,7 @@ function T.tests.annotation_word_choice_commits_once_and_restores_the_map()
     result = { word = "9" },
   })
   Assert.isFalse(replayOk, "a replayed word result fails")
-  Assert.deepEqual(map:status().view.marking, marked, "failed word results leave marking state untouched")
+  Assert.equal(state:revision(), revision, "failed word results leave marking state untouched")
   map:dispose()
 end
 
