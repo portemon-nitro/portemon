@@ -156,12 +156,22 @@ function T.rejects_non_nds_drop()
   Assert.equal(importer:status().errorCode, "IMPORT_NOT_NDS")
 end
 
-function T.releases_rom_on_completion()
+-- The completion keeps the validated bytes for exactly one controller
+-- handoff: a running import offers nothing, the first take after completion
+-- receives the shared buffer, and later takes answer nil. The original
+-- string source is released on the terminal path.
+function T.take_transfers_the_verified_source_exactly_once()
   local h = harness()
   local source = RomSource.fromString(h.data)
   h.importer:startSource(source)
+  Assert.isNil(h.importer:takeVerifiedSource(), "a running import offers no handoff yet")
   runToTerminal(h.importer)
-  -- Source is released: further reads fail predictably.
+  Assert.equal(h.importer.state, "complete")
+  local handed = h.importer:takeVerifiedSource()
+  Assert.notNil(handed, "completion offers its verified bytes once")
+  Assert.equal(handed:sha1(), h.info.sha1, "the handed source keeps its verified identity")
+  Assert.isNil(h.importer:takeVerifiedSource(), "the handoff is one-shot")
+  -- The original string source is released: further reads fail predictably.
   local bytes, err = source:read(0, 4)
   Assert.isNil(bytes)
   Assert.equal(assert(err).code, "ROM_RELEASED")
@@ -185,13 +195,16 @@ function T.progress_is_monotonic()
   Assert.equal(last, 1)
 end
 
--- An explicitly supplied ROM is always dumped fresh: re-importing a ready
--- version re-extracts rather than skipping.
-function T.reimport_always_extracts()
+-- An explicitly supplied ROM always re-registers: re-importing a bound
+-- version validates and records its binding again instead of skipping, and
+-- the re-registration touches only the binding.
+function T.reimport_reregisters_the_source_binding()
   local h = harness()
   h.importer:startSource(RomSource.fromString(h.data))
   runToTerminal(h.importer)
   Assert.notNil(h.importer:status().report)
+  local cache = CacheFs.forVersion("heartgold", h.backend)
+  local first = assert(cache:loadLua("rom-source.lua"), "the first import records its binding")
 
   local again = RomImporter.new({
     versions = h.versions,
@@ -205,7 +218,18 @@ function T.reimport_always_extracts()
   again:startSource(RomSource.fromString(h.data))
   runToTerminal(again)
   Assert.equal(again.state, "complete")
-  Assert.notNil(again:status().report, "a fresh extraction is always performed")
+  Assert.notNil(again:status().report, "a fresh registration always completes")
+  Assert.deepEqual(
+    cache:loadLua("rom-source.lua"),
+    first,
+    "re-registering the same ROM keeps its binding"
+  )
+  for path in pairs(h.backend.files) do
+    Assert.isFalse(
+      path:find(HG .. "romfs/", 1, true) == 1 or path:find(HG .. "system/", 1, true) == 1,
+      "re-registration writes no extracted tree: " .. path
+    )
+  end
 end
 
 -- The extraction rebuild wipes the version cache root; a persisted save in the
@@ -224,26 +248,29 @@ function T.reimport_preserves_saves()
   Assert.isTrue(RomImporter.isReady("heartgold", CacheFs.forVersion("heartgold", h.backend), h.versions))
 end
 
--- A re-import that fails mid-extraction must leave the previous ready dump
--- byte-for-byte intact and ready, with the save untouched.
-function T.failed_reimport_preserves_previous_dump_and_saves()
+-- A re-import that fails validation must leave the previous binding,
+-- derived receipts, and saves untouched, and the version stays ready.
+function T.failed_reimport_preserves_prior_binding_and_saves()
+  local ArtifactState = require("romdump.src.build.ArtifactState")
   local h = harness()
+  local cache = CacheFs.forVersion("heartgold", h.backend)
+  local generation = "failed-rebind-generation"
+  cache:writeLua(ArtifactState.path("field-font", "global"), {
+    schema = ArtifactState.RECEIPT_SCHEMA,
+    generationId = generation,
+    kind = "field-font",
+    key = "global",
+    marker = "prior-receipt",
+  })
   SaveFs.forVersion("heartgold", h.backend):write("field-session.lua", "SAVE-DATA")
   h.importer:startSource(RomSource.fromString(h.data))
   runToTerminal(h.importer)
   Assert.equal(h.importer.state, "complete")
-  local snapshot = {}
-  for k, v in pairs(h.backend.files) do
-    snapshot[k] = v
-  end
+  local binding = assert(cache:loadLua("rom-source.lua"), "the first import records its binding")
 
-  local originalWrite = h.backend.write
-  h.backend.write = function(self, path, data)
-    if path:find("romfs/data/sound", 1, true) then
-      error("injected write failure")
-    end
-    return originalWrite(self, path, data)
-  end
+  -- A well-formed cartridge no catalog recognizes fails closed.
+  local other = DumpFixture.spec()
+  other.gameCode = "XXXX"
   local again = RomImporter.new({
     versions = h.versions,
     now = function()
@@ -253,21 +280,29 @@ function T.failed_reimport_preserves_previous_dump_and_saves()
       return CacheFs.forVersion(id, h.backend)
     end,
   })
-  again:startSource(RomSource.fromString(h.data))
+  again:startSource(RomSource.fromString(NdsBuilder.build(other)))
   runToTerminal(again)
-  h.backend.write = originalWrite
 
-  Assert.equal(again.state, "error", "injected failure must fail the import")
-  for k, v in pairs(snapshot) do
-    Assert.equal(h.backend.files[k], v, "live state changed: " .. k)
-  end
-  Assert.equal(h.backend.files["saves/heartgold/field-session.lua"], "SAVE-DATA")
-  Assert.isTrue(RomImporter.isReady("heartgold", CacheFs.forVersion("heartgold", h.backend), h.versions))
-  Assert.isNil(h.backend.dirs["staging/heartgold"], "a failed re-import must remove its staging tree immediately")
-  Assert.isNil(
-    h.backend.files["staging/heartgold/romfs/a/0/0/2"],
-    "a failed re-import must leave no partial staging files"
+  Assert.equal(again.state, "error", "an unrecognized ROM must fail the import")
+  Assert.equal(again:status().errorCode, "NDS_UNKNOWN_ROM", "the failure names its cause")
+  Assert.isNil(again:takeVerifiedSource(), "a failed import offers no handoff")
+  Assert.deepEqual(cache:loadLua("rom-source.lua"), binding, "a failed re-import keeps its prior binding")
+  Assert.notNil(
+    cache:loadLua(ArtifactState.path("field-font", "global")),
+    "a failed re-import keeps its prior receipts"
   )
+  Assert.equal(
+    SaveFs.forVersion("heartgold", h.backend):read("field-session.lua"),
+    "SAVE-DATA",
+    "a failed re-import keeps its saves"
+  )
+  Assert.isTrue(RomImporter.isReady("heartgold", cache, h.versions), "the version stays ready")
+  for path in pairs(h.backend.files) do
+    Assert.isFalse(
+      path:find(HG .. "romfs/", 1, true) == 1 or path:find(HG .. "system/", 1, true) == 1,
+      "a failed re-import writes no extracted tree: " .. path
+    )
+  end
 end
 
 -- A successful import leaves no staging residue: the staged tree is moved into
@@ -420,6 +455,70 @@ function T.importer_states_are_named_constants()
   h.importer:startSource(RomSource.fromString(h.data))
   runToTerminal(h.importer)
   Assert.equal(h.importer.state, RomImporter.STATES.COMPLETE)
+end
+
+-- A validated import registers its source and nothing else: the strict
+-- binding lands, no extracted tree is written, and the verified bytes are
+-- available exactly once for the controller handoff instead of being
+-- released unreadably or copied into the cache.
+function T.validated_import_records_only_the_source_binding()
+  local h = harness()
+  h.importer:startSource(RomSource.fromString(h.data, "hg.nds"))
+  runToTerminal(h.importer)
+  Assert.equal(h.importer.state, "complete")
+  local cache = CacheFs.forVersion("heartgold", h.backend)
+  local binding = cache:loadLua("rom-source.lua")
+  Assert.notNil(binding, "a validated import records its source binding")
+  assert(binding, "a validated import records its source binding")
+  Assert.equal(binding.versionId, "heartgold")
+  Assert.equal(binding.romSha1, h.info.sha1)
+  Assert.equal(binding.kind, "nds")
+  for path in pairs(h.backend.files) do
+    Assert.isFalse(
+      path:find(HG .. "romfs/", 1, true) == 1 or path:find(HG .. "system/", 1, true) == 1,
+      "validation writes no extracted tree: " .. path
+    )
+  end
+  Assert.isNil(h.backend.files[HG .. "rom-dump.complete"], "validation publishes no dump marker")
+  Assert.equal(
+    type(h.importer.takeVerifiedSource),
+    "function",
+    "the importer offers its verified bytes once for the controller handoff"
+  )
+  local handed = h.importer:takeVerifiedSource()
+  Assert.notNil(handed, "the first take receives the verified source")
+  Assert.equal(handed:sha1(), h.info.sha1, "the handed source keeps its verified identity")
+  Assert.isNil(h.importer:takeVerifiedSource(), "the handoff is one-shot")
+end
+
+-- Re-importing the same canonical ROM re-registers without touching
+-- prior derived work: receipts, owned assets and saves survive the
+-- rebind instead of being wiped with a replaced version root.
+function T.same_rom_reimport_keeps_prior_derived_work()
+  local h = harness()
+  local cache = CacheFs.forVersion("heartgold", h.backend)
+  local ArtifactState = require("romdump.src.build.ArtifactState")
+  local generation = "rebind-generation"
+  cache:writeLua(ArtifactState.path("field-font", "global"), {
+    schema = ArtifactState.RECEIPT_SCHEMA,
+    generationId = generation,
+    kind = "field-font",
+    key = "global",
+    marker = "prior-receipt",
+  })
+  cache:write("maps/60/complete", "ready")
+  SaveFs.forVersion("heartgold", h.backend):write("field-session.lua", "SAVE-DATA")
+  h.importer:startSource(RomSource.fromString(h.data, "hg.nds"))
+  runToTerminal(h.importer)
+  Assert.equal(h.importer.state, "complete")
+  local receipt = cache:loadLua(ArtifactState.path("field-font", "global"))
+  Assert.notNil(receipt, "the same-ROM rebind keeps its prior receipts")
+  Assert.equal(cache:read("maps/60/complete"), "ready", "the same-ROM rebind keeps its owned assets")
+  Assert.equal(
+    SaveFs.forVersion("heartgold", h.backend):read("field-session.lua"),
+    "SAVE-DATA",
+    "the same-ROM rebind keeps its saves"
+  )
 end
 
 return { tests = T }

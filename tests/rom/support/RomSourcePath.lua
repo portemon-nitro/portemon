@@ -7,6 +7,32 @@
 
 local RomSourcePath = {}
 
+-- Open a direct reader over the canonical --rom-source ROM for one version.
+-- Returns the reader plus its owning source on success, or nil plus the
+-- typed cause: close the reader and release the source when done. The
+-- source must outlive the reader; the reader never owns the shared bytes.
+---@param versionId string
+---@return table? romFs
+---@return table|string? sourceOrError owning source on success, cause otherwise
+function RomSourcePath.openReader(versionId)
+  local path = RomSourcePath.find()
+  if path == nil then
+    return nil, "this suite needs --rom-source <path>"
+  end
+  local RomSource = require("romdump.src.source.RomSource")
+  local source, sourceErr = RomSource.fromPath(path)
+  if source == nil then
+    return nil, sourceErr
+  end
+  local RomFs = require("romdump.src.source.RomFs")
+  local fs, fsErr = RomFs.open(versionId, source)
+  if fs == nil then
+    source:release()
+    return nil, fsErr
+  end
+  return fs, source
+end
+
 ---@return string|nil
 function RomSourcePath.find()
   local raw = _G.arg

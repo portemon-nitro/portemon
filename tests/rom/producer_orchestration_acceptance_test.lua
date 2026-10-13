@@ -28,22 +28,20 @@ end
 
 function T.cache_builder_failure_preserves_publication_state(romFs, versionId)
   local log = function() end
-  local closed = false
+  local mainStateOpens = 0
   local statePublished = false
   local originalOpen = RomFs.open
   local originalMatches = DerivedCacheState.matches
   local originalPublish = DerivedCacheState.publish
   local originalSessionNew = InteractiveCacheBuild.new
+  -- The generation identity resolves without source bytes, so a
+  -- main-state borrow must never exist on this path: the injected failure
+  -- lands on session update before any pool dispatch, so no worker view
+  -- exists either. Count main-state opens instead of tracking a close:
+  -- zero opens means nothing was borrowed and nothing can leak.
   RomFs.open = function(...)
-    local openedRomFs, openErr = originalOpen(...)
-    if openedRomFs ~= nil then
-      local originalClose = openedRomFs.close
-      openedRomFs.close = function(self)
-        closed = true
-        return originalClose(self)
-      end
-    end
-    return openedRomFs, openErr
+    mainStateOpens = mainStateOpens + 1
+    return originalOpen(...)
   end
   local function forceMismatch()
     return false
@@ -57,8 +55,8 @@ function T.cache_builder_failure_preserves_publication_state(romFs, versionId)
   -- Compiler work runs in worker threads that never observe main-state
   -- module patching, and the session constructor performs no ROM work, so
   -- the failure is injected where the main-state pipeline actually pumps
-  -- the session: the generation session cannot borrow the ROM while the
-  -- identity probe already closed its own handle.
+  -- the session: the generation identity resolves without source bytes and
+  -- the failure lands on session update instead.
   rawset(InteractiveCacheBuild, "new", function(options)
     ---@cast options table<string, unknown>
     local session = originalSessionNew(options)
@@ -78,7 +76,7 @@ function T.cache_builder_failure_preserves_publication_state(romFs, versionId)
   Assert.isTrue(ok, tostring(report))
   Assert.isNil(report)
   Assert.equal(err, "cache preparation failed")
-  Assert.isTrue(closed, "an expected source failure must close the borrowed RomFs")
+  Assert.equal(mainStateOpens, 0, "an expected source failure must borrow no main-state RomFs")
   Assert.isFalse(statePublished, "a failed version must not publish its attestation")
   Assert.isTrue(romFs ~= nil, "RomSuite must keep the source handle available for later scenarios")
 end

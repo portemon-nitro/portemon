@@ -17,7 +17,6 @@ local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local NavigationFacts = require("tests.rom.support.NavigationFacts")
 local OpeningLifecycle = require("tests.acceptance.support.OpeningLifecycle")
-local RomFs = require("romdump.src.source.RomFs")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local BattleTask = require("libs.hgss.src.script.tasks.BattleTask")
@@ -534,10 +533,12 @@ end
 ---@param versionId string ready game version under test driving
 ---@return table route facts carrying the grass pacing tiles
 local function routeFacts(versionId)
-  local romFs, err = RomFs.open(versionId)
-  assert(romFs, tostring(err))
+  local RomSourcePath = require("tests.rom.support.RomSourcePath")
+  local romFs, romSource = RomSourcePath.openReader(versionId)
+  assert(romFs, tostring(romSource))
   local ok, facts = pcall(NavigationFacts.discover, CacheFs.forVersion(versionId), romFs)
   romFs:close()
+  romSource:release()
   if not ok then
     error(facts, 0)
   end

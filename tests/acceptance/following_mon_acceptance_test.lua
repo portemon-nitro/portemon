@@ -9,7 +9,7 @@
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
-local RomFs = require("romdump.src.source.RomFs")
+local RomSourcePath = require("tests.rom.support.RomSourcePath")
 local NavigationFacts = require("tests.rom.support.NavigationFacts")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local OpeningLifecycle = require("tests.acceptance.support.OpeningLifecycle")
@@ -399,10 +399,11 @@ end
 
 function T.tests.partner_crosses_new_bark_route_29_seam_without_stale_map_permission()
   local versionId = AcceptanceHarness.defaultVersion()
-  local romFs, err = RomFs.open(versionId)
-  assert(romFs, tostring(err))
+  local romFs, romSource = RomSourcePath.openReader(versionId)
+  assert(romFs, tostring(romSource))
   local facts = NavigationFacts.discover(CacheFs.forVersion(versionId), romFs)
   romFs:close()
+  romSource:release()
 
   local game = AcceptanceHarness.new():boot({
     versionId = versionId,
@@ -473,10 +474,11 @@ end
 
 function T.tests.partner_trails_through_a_route_29_physical_frontier()
   local versionId = AcceptanceHarness.defaultVersion()
-  local romFs, err = RomFs.open(versionId)
-  assert(romFs, tostring(err))
+  local romFs, romSource = RomSourcePath.openReader(versionId)
+  assert(romFs, tostring(romSource))
   local facts = NavigationFacts.discover(CacheFs.forVersion(versionId), romFs)
   romFs:close()
+  romSource:release()
 
   local game = AcceptanceHarness.new():boot({
     versionId = versionId,

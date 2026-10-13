@@ -11,7 +11,6 @@ local T = {}
 local COMMANDS = {
   { flag = "--import-rom", argv = { "--import-rom", "/tmp/hg.nds" }, command = "import" },
   { flag = "--build-cache", argv = { "--build-cache" }, command = "build-cache" },
-  { flag = "--check-dump", argv = { "--check-dump" }, command = "check-dump" },
   { flag = "--check-derived-cache", argv = { "--check-derived-cache" }, command = "check-derived-cache" },
 }
 
@@ -23,7 +22,6 @@ function T.defaults_are_all_off()
   Assert.isNil(o.command)
   Assert.isNil(o.romPath)
   Assert.isNil(o.importRom --[[@as any]])
-  Assert.isFalse(o.forceDump)
   Assert.isFalse(o.allowCompileExclusions)
   Assert.isFalse(o.dev)
   Assert.isNil(o.overlayId)
@@ -46,16 +44,8 @@ function T.import_rom_maps_to_the_import_command()
   Assert.equal(o.command, "import")
   Assert.equal(o.romPath, "/tmp/hg.nds")
   Assert.isNil(o.importRom --[[@as any]], "the multiplexed importRom field must be gone")
-  Assert.isFalse(o.forceDump)
   Assert.isNil(o.overlayId, "legacy commands must not gain a discovery overlay id")
   Assert.isNil(o.outputPath, "legacy commands must not gain a discovery output path")
-end
-
-function T.forcedump_alone_maps_to_the_import_command()
-  local o = Cli.parse({ "--forcedump", "/tmp/hg.nds" })
-  Assert.equal(o.command, "import")
-  Assert.equal(o.romPath, "/tmp/hg.nds")
-  Assert.isTrue(o.forceDump)
 end
 
 function T.parses_build_cache_with_optional_rom()
@@ -76,13 +66,6 @@ function T.parses_build_cache_with_optional_rom()
   Assert.equal(flagOnly.command, "build-cache")
   Assert.isTrue(flagOnly.allowCompileExclusions)
   Assert.isNil(flagOnly.romPath, "a flag after --build-cache must not be taken as a path")
-end
-
-function T.parses_forcedump_with_required_rom()
-  local o = Cli.parse({ "--build-cache", "--forcedump", "/tmp/hg.nds" })
-  Assert.equal(o.command, "build-cache")
-  Assert.isTrue(o.forceDump)
-  Assert.equal(o.romPath, "/tmp/hg.nds")
 end
 
 function T.dev_flag_selects_the_development_identity_with_release_default()
@@ -121,10 +104,10 @@ end
 
 function T.conflicting_commands_are_rejected()
   Assert.throws(function()
-    Cli.parse({ "--check-dump", "--import-rom", "/tmp/hg.nds" })
+    Cli.parse({ "--probe-rom", "/tmp/hg.nds", "--import-rom", "/tmp/ss.nds" })
   end)
   Assert.throws(function()
-    Cli.parse({ "--check-dump", "--build-cache" })
+    Cli.parse({ "--build-cache", "--probe-rom", "/tmp/hg.nds" })
   end)
   Assert.throws(function()
     Cli.parse({ "--import-rom", "/tmp/hg.nds", "--import-rom", "/tmp/ss.nds" })
@@ -143,24 +126,6 @@ function T.missing_value_for_import_rom_errors()
   end)
 end
 
-function T.forcedump_requires_rom()
-  Assert.throws(function()
-    Cli.parse({ "--build-cache", "--forcedump" })
-  end)
-  Assert.throws(function()
-    Cli.parse({ "--forcedump", "--build-cache" })
-  end)
-end
-
-function T.forcedump_only_applies_to_import_or_build_cache()
-  Assert.throws(function()
-    Cli.parse({ "--check-dump", "--forcedump", "/tmp/hg.nds" })
-  end)
-  Assert.throws(function()
-    Cli.parse({ "--forcedump", "/tmp/hg.nds", "--check-dump" })
-  end)
-end
-
 --------------------------------------------------------------------------
 -- --discover-app: strict parsing, argument order, conflicts, and backward
 -- compatibility with every existing command/modifier.
@@ -173,7 +138,6 @@ function T.discover_app_parses_overlay_id_and_rom_source_in_either_order()
   Assert.equal(o.romPath, "/tmp/hg.nds")
   Assert.isNil(o.outputPath)
   Assert.isNil(o.overlayId, "the bare overlay id field must be gone")
-  Assert.isFalse(o.forceDump)
   Assert.isFalse(o.allowCompileExclusions)
 
   local reordered = Cli.parse({ "--rom-source", "/tmp/hg.nds", "--discover-app", "15" })
@@ -318,7 +282,6 @@ function T.resource_detail_rejects_ambiguous_ids_duplicates_and_sibling_commands
   Assert.deepEqual(zero.resourceDetails, { { fileId = 0, memberId = 0 } })
 
   for _, command in ipairs({
-    { "--check-dump" },
     { "--build-cache" },
     { "--import-rom", "/tmp/hg.nds" },
   }) do
@@ -334,10 +297,7 @@ function T.resource_detail_rejects_ambiguous_ids_duplicates_and_sibling_commands
   end
 end
 
-function T.discover_app_rejects_forcedump_and_allow_compile_exclusions()
-  Assert.throws(function()
-    Cli.parse({ "--discover-app", "15", "--rom-source", "/tmp/hg.nds", "--forcedump", "/tmp/hg.nds" })
-  end)
+function T.discover_app_rejects_allow_compile_exclusions()
   Assert.throws(function()
     Cli.parse({ "--discover-app", "15", "--rom-source", "/tmp/hg.nds", "--allow-compile-exclusions" })
   end)
@@ -421,7 +381,7 @@ function T.discovery_only_flags_are_usage_errors_without_discover_app()
     Cli.parse({ "--build-cache", "--output", "/tmp/out.zip" })
   end)
   Assert.throws(function()
-    Cli.parse({ "--check-dump", "--rom-source", "/tmp/hg.nds" })
+    Cli.parse({ "--prepare-cache", "--version", "heartgold", "--require", "bootstrap", "--rom-source", "/tmp/hg.nds" })
   end)
 end
 
@@ -485,7 +445,15 @@ function T.probe_and_prepare_conflict_with_other_commands()
     Cli.parse({ "--probe-rom", "/tmp/hg.nds", "--prepare-cache", "--version", "heartgold", "--require", "bootstrap" })
   end)
   Assert.throws(function()
-    Cli.parse({ "--check-dump", "--prepare-cache", "--version", "heartgold", "--require", "bootstrap" })
+    Cli.parse({
+      "--probe-rom",
+      "/tmp/hg.nds",
+      "--prepare-cache",
+      "--version",
+      "heartgold",
+      "--require",
+      "bootstrap",
+    })
   end)
 end
 
@@ -504,27 +472,14 @@ function T.prepare_cache_rejects_malformed_requirements_and_paths()
 end
 
 --------------------------------------------------------------------------
--- Grammar and exceptional path combinations: forcedump ordering, duplicate
--- ROM paths, and absent required values keep their exact options and failure
--- attribution.
+-- Grammar and exceptional path combinations: duplicate ROM paths and
+-- absent required values keep their exact options and failure attribution.
 --------------------------------------------------------------------------
-
-function T.forcedump_with_build_cache_parses_in_either_flag_order()
-  local leading = Cli.parse({ "--build-cache", "--forcedump", "/tmp/hg.nds" })
-  Assert.equal(leading.command, "build-cache")
-  Assert.isTrue(leading.forceDump)
-  Assert.equal(leading.romPath, "/tmp/hg.nds")
-
-  local trailing = Cli.parse({ "--forcedump", "/tmp/hg.nds", "--build-cache" })
-  Assert.equal(trailing.command, "build-cache")
-  Assert.isTrue(trailing.forceDump)
-  Assert.equal(trailing.romPath, "/tmp/hg.nds")
-end
 
 function T.duplicate_rom_paths_are_rejected_with_path_attribution()
   for _, argv in ipairs({
-    { "--import-rom", "/tmp/hg.nds", "--forcedump", "/tmp/ss.nds" },
-    { "--build-cache", "/tmp/hg.nds", "--forcedump", "/tmp/ss.nds" },
+    { "--discover-app", "15", "--rom-source", "/tmp/hg.nds", "--rom-source", "/tmp/ss.nds" },
+    { "--rom-source", "/tmp/hg.nds", "--discover-app", "15", "--rom-source", "/tmp/ss.nds" },
   }) do
     local err = Assert.throws(function()
       Cli.parse(argv)
@@ -534,16 +489,6 @@ function T.duplicate_rom_paths_are_rejected_with_path_attribution()
       "duplicate paths must name the ROM path, got: " .. tostring(err)
     )
   end
-end
-
-function T.forcedump_followed_by_a_flag_has_no_rom_path()
-  local err = Assert.throws(function()
-    Cli.parse({ "--build-cache", "--forcedump", "--dev" })
-  end)
-  Assert.isTrue(
-    string.find(err, "--forcedump requires a ROM path", 1, true) ~= nil,
-    "a flag after --forcedump is not a path, got: " .. tostring(err)
-  )
 end
 
 --------------------------------------------------------------------------
@@ -752,6 +697,20 @@ function T.discover_app_rejects_ambiguous_or_malformed_template_address_combinat
     "/tmp/hg.nds",
   })
   Assert.deepEqual(upper.discoveryTarget, { kind = "arm9-main", templateAddress = 0x02104000 })
+end
+
+-- Batch registration uses the source binding, never a raw dump: the
+-- dump-only commands are gone, and no import or build flag may smuggle
+-- the old dump workflow back in.
+function T.dump_only_commands_are_rejected_without_a_dump_workflow()
+  for _, argv in ipairs({
+    { "--check-dump" },
+    { "--forcedump", "/tmp/hg.nds" },
+    { "--build-cache", "--forcedump", "/tmp/hg.nds" },
+  }) do
+    local ok = pcall(Cli.parse, argv)
+    Assert.isFalse(ok, "dump-only workflows must be gone: " .. table.concat(argv, " "))
+  end
 end
 
 return { tests = T }

@@ -575,4 +575,95 @@ function T.scene_selector_dispatches_the_registered_scene_job()
   Assert.isTrue(worker.lifecycle ~= "failed", "a malformed selector never kills the controller")
 end
 
+-- A source offer for the live epoch is never silently dropped: the
+-- controller acknowledges it, forwards it to its pool, or rejects it
+-- visibly. The exact acknowledgement shape stays the implementation's
+-- choice; this scenario only proves the offer reaches an owner.
+function T.live_epoch_source_offer_is_never_silently_dropped()
+  local hostLove = assert(rawget(_G, "love"), "the suite runs under the host runtime")
+  local worker, replies, queued = pushWorker(terminalSession(), 7)
+  local forwarded = {}
+  local pool = { state = "idle", updates = 0 }
+  function pool.activityState()
+    return pool.state
+  end
+  function pool.update()
+    pool.updates = pool.updates + 1
+  end
+  setmetatable(pool, {
+    __index = function(_, key)
+      return function(_, ...)
+        forwarded[#forwarded + 1] = { method = key }
+      end
+    end,
+  })
+  worker.pool = pool
+  local buffer = hostLove.data.newByteData("synthetic-offer-bytes")
+  queued[#queued + 1] = {
+    op = "offer-source",
+    epoch = 7,
+    byteData = buffer,
+    versionId = "heartgold",
+    romSha1 = string.rep("0", 40),
+  }
+  worker:step()
+  Assert.isTrue(
+    #replies >= 1 or #forwarded >= 1,
+    "a live-epoch source offer must be acknowledged or forwarded, never silently dropped"
+  )
+  Assert.isTrue(worker.lifecycle ~= "failed", "handling the offer never fails the controller")
+end
+
+-- A stale epoch or a non-buffer offer is refused visibly: the controller
+-- answers ok=false on its reply channel and forwards nothing to its pool.
+-- Rejection is explicit, never a silent drop and never a lifecycle failure.
+function T.stale_epoch_source_offer_is_refused_visibly()
+  local hostLove = assert(rawget(_G, "love"), "the suite runs under the host runtime")
+  local worker, replies, queued = pushWorker(terminalSession(), 7)
+  local forwarded = {}
+  local pool = { state = "idle", updates = 0 }
+  function pool.activityState()
+    return pool.state
+  end
+  function pool.update()
+    pool.updates = pool.updates + 1
+  end
+  setmetatable(pool, {
+    __index = function(_, key)
+      return function(_, ...)
+        forwarded[#forwarded + 1] = { method = key }
+      end
+    end,
+  })
+  worker.pool = pool
+  local buffer = hostLove.data.newByteData("synthetic-offer-bytes")
+  queued[#queued + 1] = {
+    op = "offer-source",
+    epoch = 8,
+    byteData = buffer,
+    versionId = "heartgold",
+    romSha1 = string.rep("0", 40),
+  }
+  queued[#queued + 1] = {
+    op = "offer-source",
+    epoch = 7,
+    byteData = "not-a-shared-buffer",
+    versionId = "heartgold",
+    romSha1 = string.rep("0", 40),
+  }
+  worker:step()
+  local refusals = {}
+  for _, packet in ipairs(replies) do
+    if type(packet) == "table" and packet.op == "offer-source-result" then
+      refusals[#refusals + 1] = packet
+    end
+  end
+  Assert.equal(#refusals, 2, "every foreign offer earns a visible refusal")
+  for _, refusal in ipairs(refusals) do
+    Assert.isFalse(refusal.ok == true, "a foreign offer is never accepted")
+  end
+  Assert.equal(#forwarded, 0, "a refused offer never reaches the pool")
+  Assert.isTrue(worker.lifecycle ~= "failed", "refusing an offer never fails the controller")
+end
+
 return { metadata = { capabilities = {} }, tests = T }

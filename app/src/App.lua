@@ -30,11 +30,20 @@ local App = {}
 ---@field test boolean?
 ---@field dev boolean?
 
+-- Installed versions need no ROM on the startup path: a strict persisted
+-- source binding suffices for first-play preparation (bytes load lazily on
+-- a real miss), and a current first-play attestation boots the menu
+-- without any source at all. Neither check opens or hashes the ROM.
 local function readyVersions()
   local out = {}
   for _, versionId in ipairs(GameVersion.ORDER) do
     if RomImporter.isReady(versionId) then
       out[#out + 1] = versionId
+    else
+      local ok, generation = pcall(FirstPlayCompletion.releaseGenerationId, versionId)
+      if ok and FirstPlayCompletion.isCurrent(versionId, generation) then
+        out[#out + 1] = versionId
+      end
     end
   end
   return out
@@ -163,6 +172,7 @@ function App._launchGameWithProvisioner(versionId, entry)
 end
 
 function App._showVersionSelector()
+  App._rebindVersionId = nil
   App._retireSelection()
   local ready = readyVersions()
   if #ready == 0 then
@@ -276,7 +286,7 @@ end
 -- provisioner, then launches the menu immediately when bootstrap is
 -- already ready or waits through a visible preparation state otherwise.
 -- A ready bootstrap never recompiles; broader warming starts only after
--- the menu is installed. Raw extraction complete but first-play
+-- the menu is installed. A registered source with first-play
 -- attestation missing or stale routes through the same bounded
 -- first-play preparation a fresh import uses; only a current
 -- generation-scoped attestation keeps the fast bootstrap/menu path.
@@ -286,6 +296,7 @@ function App._selectVersion(versionId, options)
   if App._waitForQuiescence(versionId, options) then
     return
   end
+  App.selectedVersionId = versionId
   App._retireSelection()
   local provisioner = DerivedAssetProvisioner.new(provisionerOptions(versionId))
   App.provisioner = provisioner
@@ -319,9 +330,9 @@ function App._selectVersion(versionId, options)
   end
   -- One provisioner epoch owns the mandatory preparation and the
   -- launched game: no retirement or reselection happens between them.
-  -- The fresh-import path always compiles the closure (raw extraction
-  -- replaced the version tree, so no attestation survives it) and
-  -- carries no gateway; the ordinary path carries the durable gateway so
+  -- The fresh-import path always compiles the closure (a new version has
+  -- no attestation yet) and carries no gateway; the ordinary path carries
+  -- the durable gateway so
   -- preparation fast-transfers once the controller-derived generation
   -- validates a stored attestation instead of recompiling the closure.
   local gateway = nil
@@ -367,6 +378,8 @@ function App.load(opts)
   App.service = nil
   App.epoch = 0
   App.pendingQuiesce = nil
+  App.selectedVersionId = nil
+  App._rebindVersionId = nil
   App.setState(nil)
   love.graphics.setBackgroundColor(unpack(WindowConfig.BACKGROUND_COLOR))
   App.saveDir = love.filesystem.getSaveDirectory()
@@ -419,8 +432,41 @@ function App._onImported(versionId)
       continuation = { status = snapshot, saveDir = App.saveDir }
     end
   end
+  -- Take the one verified source handoff before the importer is released.
+  -- A dropped or freshly imported ROM carries no reopenable path yet, so
+  -- this buffer is what lets first-play preparation and the whole sweep
+  -- run for the session; the controller owns it once offered.
+  local verifiedSource = nil
+  if importer ~= nil and type(importer.takeVerifiedSource) == "function" then
+    local takeOk, taken = pcall(importer.takeVerifiedSource, importer)
+    if takeOk and taken ~= nil then
+      verifiedSource = taken
+    end
+  end
   App.importer = nil
-  App._selectVersion(versionId, { freshImport = true, importContinuation = continuation })
+  -- A rebind that supplies the same ROM resumes the waiting version on
+  -- the ordinary path: its receipts, assets, and saves survive instead of
+  -- restarting as a fresh import. Only a genuinely new version takes the
+  -- fresh-import first-play path with the import continuation.
+  local rebindId = App._rebindVersionId
+  App._rebindVersionId = nil
+  if rebindId ~= nil and versionId == rebindId then
+    App._selectVersion(versionId)
+  else
+    App._selectVersion(versionId, { freshImport = true, importContinuation = continuation })
+  end
+  if verifiedSource ~= nil and App.service ~= nil and type(App.service.offerSource) == "function" then
+    local infoOk, info = pcall(GameVersion.info, versionId)
+    if infoOk and type(info) == "table" and type(info.sha1) == "string" then
+      local bytesOk, byteData = pcall(verifiedSource.byteData, verifiedSource)
+      if bytesOk and type(byteData) == "userdata" then
+        App.service:offerSource(App.epoch, byteData, { versionId = versionId, romSha1 = info.sha1 })
+      end
+    end
+    if type(verifiedSource.release) == "function" then
+      pcall(verifiedSource.release, verifiedSource)
+    end
+  end
 end
 
 function App._bootMainMenu(versions)
@@ -521,7 +567,9 @@ function App.filedropped(file)
     -- closure. The import starts exactly once from successful barrier
     -- completion, on every raw path including the selector with no
     -- attached provisioner. Progress and input keep pumping while the
-    -- readers drain.
+    -- readers drain. The retired version is remembered so supplying the
+    -- same ROM back resumes it instead of restarting it as a fresh import.
+    App._rebindVersionId = App.selectedVersionId
     App._retireSelection()
     local epoch = App.epoch or 0
     local barrier = App.service:quiesce(epoch)
@@ -666,6 +714,8 @@ function App.quit()
   local service = App.service
   App.service = nil
   App.pendingQuiesce = nil
+  App.selectedVersionId = nil
+  App._rebindVersionId = nil
   if service then
     service:shutdown()
   end

@@ -46,10 +46,16 @@ local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 ---@field closeAcked boolean
 ---@field closeAfter boolean
 ---@field closeToken integer?
+---@field srcCloseToken string? outstanding source-release close barrier, nil when none
 ---@class CompilerPool.Completion
 ---@field record CompilerPool.Job
 ---@field workerId integer
 ---@class CompilerPool.Selected
+---@field versionId string
+---@field generationId string
+---@field epoch integer
+---@class CompilerPool.SharedSource
+---@field byteData userdata the one immutable selected ROM buffer, shared by reference
 ---@field versionId string
 ---@field generationId string
 ---@field epoch integer
@@ -72,6 +78,7 @@ local PreparedArtifact = require("romdump.src.build.PreparedArtifact")
 ---@field retired boolean
 ---@field fatalError string|Errors.Error?
 ---@field recentTimings table<string, unknown>[]
+---@field sourceSettledQuery (fun(): boolean)? read-only sweep-settlement oracle installed by the owning session; nil keeps idleness-only release timing
 local CompilerPool = {}
 CompilerPool.__index = CompilerPool
 
@@ -334,10 +341,70 @@ local function startWorker(resultChannel, workerId, developmentRepositoryRoot)
     closeAcked = false,
     closeAfter = false,
     closeToken = nil,
+    srcCloseToken = nil,
   }
   thread:start(developmentRepositoryRoot, workerId, input, resultChannel)
   worker.started = true
   return worker
+end
+
+-- Private source-transport helpers: typed channel-safe error tables and
+-- the pool-to-worker supply/unavailable packets. Declared before the pool
+-- constructor because selection changes reference them.
+---@param failure string|Errors.Error|nil
+---@return table<string, unknown> plain channel-safe typed error
+local function sourceErrorTable(failure)
+  if type(failure) == "table" and type(failure.code) == "string" then
+    return {
+      code = failure.code,
+      message = type(failure.message) == "string" and failure.message or tostring(failure.message),
+      context = type(failure.context) == "table" and failure.context or {},
+    }
+  end
+  if failure == nil then
+    return { code = "SOURCE_UNAVAILABLE", message = "the selected ROM source is unavailable" }
+  end
+  return { code = "SOURCE_UNAVAILABLE", message = tostring(failure) }
+end
+
+---@param self CompilerPool
+---@param worker CompilerPool.Worker
+---@param record CompilerPool.Job
+---@param byteData userdata
+local function pushSourceSupply(self, worker, record, byteData)
+  local ok, pushError = pcall(worker.input.push, worker.input, {
+    kind = "source-supplied",
+    workerId = worker.id,
+    jobKey = record.jobKey,
+    versionId = record.versionId,
+    generationId = record.generationId,
+    epoch = record.epoch,
+    romByteData = byteData,
+  })
+  if not ok then
+    self.fatalError = pushError
+    error(pushError, 0)
+  end
+end
+
+---@param self CompilerPool
+---@param worker CompilerPool.Worker
+---@param record CompilerPool.Job
+---@param failure table<string, unknown> plain typed error
+local function pushSourceUnavailable(self, worker, record, failure)
+  local ok, pushError = pcall(worker.input.push, worker.input, {
+    kind = "source-unavailable",
+    workerId = worker.id,
+    jobKey = record.jobKey,
+    versionId = record.versionId,
+    generationId = record.generationId,
+    epoch = record.epoch,
+    error = failure,
+  })
+  if not ok then
+    self.fatalError = pushError
+    error(pushError, 0)
+  end
 end
 
 ---@param options table<string, unknown>
@@ -375,6 +442,14 @@ local function newPool(options)
     closed = false,
     quiescing = false,
     closeToken = nil,
+    sourceCloseSeq = 0,
+    sharedSource = nil,
+    sourceWaiters = {},
+    sourceBorrowers = {},
+    sourceReleaseWait = {},
+    sourceReleaseOpen = false,
+    sourceSettledQuery = nil,
+    offeredSource = nil,
     retired = false,
     fatalError = nil,
     recentTimings = {},
@@ -441,6 +516,15 @@ function CompilerPool:selectGeneration(identity, epoch)
   -- selected lookup, so an equal kind:key requested for the new epoch is new
   -- interest rather than a promotion of the retired record.
   self.jobs = {}
+  -- A new selection never inherits the old buffer, its borrowers, or its
+  -- waiters: suspended old-epoch workers are released with a typed cause.
+  self:_failSourceWaiters(
+    sourceErrorTable(Errors.new("SOURCE_EPOCH_RETIRED", "the compiler pool reselected while source was awaited", {}))
+  )
+  self:_dropSharedSource()
+  self.sourceReleaseWait = {}
+  self.sourceReleaseOpen = false
+  self.sourceSettledQuery = nil
   self.selected = { versionId = identity.versionId, generationId = identity.generationId, epoch = epoch }
   self.selectedCacheFs = CacheFs.forVersion(identity.versionId)
   self.quiescing = false
@@ -450,6 +534,7 @@ function CompilerPool:selectGeneration(identity, epoch)
     worker.closeAcked = false
     worker.closeAfter = false
     worker.closeToken = nil
+    worker.srcCloseToken = nil
   end
   -- A completed barrier may have joined exiting workers without restarting
   -- them; recreate that capacity for the new owner.
@@ -476,6 +561,21 @@ function CompilerPool:retireSelection(epoch)
   assert(type(epoch) == "number" and epoch % 1 == 0, "compiler pool epoch must be an integer")
   if epoch ~= selected.epoch then
     return false
+  end
+  -- Suspended source waiters belong to the retired epoch: release them
+  -- with a typed cause so no worker waits forever, then forget the buffer.
+  -- Running borrowers keep their own borrowed views until the existing
+  -- close barriers prove closure.
+  self:_failSourceWaiters(
+    sourceErrorTable(
+      Errors.new("SOURCE_EPOCH_RETIRED", "the selected generation was retired while source was awaited", {})
+    )
+  )
+  self:_dropSharedSource()
+  self.sourceReleaseWait = {}
+  self.sourceReleaseOpen = false
+  for _, worker in ipairs(self.workers) do
+    worker.srcCloseToken = nil
   end
   -- Logical interest is cancelled; executing physical slots stay charged
   -- under their old identity until their terminal reply or joined exit.
@@ -733,6 +833,231 @@ function CompilerPool:_cacheFsFor(versionId)
   return CacheFs.forVersion(versionId)
 end
 
+-- Accept one verified ephemeral buffer for the live selection. The
+-- controller validated the offer against its epoch and version identity;
+-- the pool stores it only when it matches the current selection and no
+-- buffer is held yet, and consumes it before any filesystem acquisition.
+-- Stale or foreign offers are refused without effect.
+---@param epoch integer
+---@param byteData userdata
+---@param descriptor table<string, unknown> { versionId, romSha1 }
+---@return boolean accepted
+function CompilerPool:offerSource(epoch, byteData, descriptor)
+  local selected = self.selected
+  if selected == nil or self.closed or type(epoch) ~= "number" or epoch ~= selected.epoch then
+    return false
+  end
+  if type(descriptor) ~= "table" or descriptor.versionId ~= selected.versionId then
+    return false
+  end
+  if type(byteData) ~= "userdata" then
+    return false
+  end
+  local GameVersion = require("romdump.src.source.GameVersion")
+  local info = GameVersion.VERSIONS[descriptor.versionId]
+  if type(info) ~= "table" or info.sha1 ~= descriptor.romSha1 then
+    return false
+  end
+  if self.sharedSource ~= nil then
+    return true
+  end
+  self.offeredSource = {
+    byteData = byteData,
+    versionId = descriptor.versionId,
+    romSha1 = descriptor.romSha1,
+    epoch = epoch,
+  }
+  return true
+end
+
+-- Reply source-unavailable to every worker currently waiting on a buffer
+-- and forget them. Their suspended jobs settle as failed with the typed
+-- cause through the ordinary completion path, which frees their slots; no
+-- waiter is left behind on quiescence, retirement, or reselection.
+---@param failure table<string, unknown> plain typed error
+function CompilerPool:_failSourceWaiters(failure)
+  for workerId in pairs(self.sourceWaiters) do
+    local worker = self.workers[workerId]
+    local slot = worker ~= nil and worker.slot or nil
+    if worker ~= nil and slot ~= nil then
+      pcall(pushSourceUnavailable, self, worker, slot, failure)
+    end
+  end
+  self.sourceWaiters = {}
+end
+
+-- Forget the selected buffer and every borrower without notifying: the
+-- pool drops only its own reference while borrowed views stay readable
+-- through their owners. Callers first fail or drain the waiters.
+function CompilerPool:_dropSharedSource()
+  self.sharedSource = nil
+  self.sourceBorrowers = {}
+  self.offeredSource = nil
+end
+
+-- Acquire the one immutable selected buffer: consume a verified ephemeral
+-- offer first, otherwise load the registered external ROM through the
+-- binding, verify it, convert it once to shared Data, and drop every
+-- temporary byte string. Returns the buffer or nil plus a plain typed
+-- error; a failure stores nothing and leaves prior receipts untouched.
+---@param versionId string
+---@return userdata? byteData
+---@return table<string, unknown>? failure
+function CompilerPool:_acquireSharedSource(versionId)
+  local selected = assert(self.selected, "source acquisition requires its selection")
+  local offered = self.offeredSource
+  self.offeredSource = nil
+  if
+    offered ~= nil
+    and offered.epoch == selected.epoch
+    and offered.versionId == versionId
+    and type(offered.byteData) == "userdata"
+  then
+    return offered.byteData
+  end
+  local RomBinding = require("romdump.src.source.RomBinding")
+  local RomSource = require("romdump.src.source.RomSource")
+  local NdsRom = require("romdump.src.source.NdsRom")
+  local binding, bindErr = RomBinding.read(self:_cacheFsFor(versionId), versionId)
+  if binding == nil then
+    return nil, sourceErrorTable(bindErr)
+  end
+  if binding.path == false then
+    return nil,
+      sourceErrorTable(
+        Errors.new(
+          "ROM_SOURCE_REQUIRED",
+          "no reopenable source is registered for version " .. versionId,
+          { versionId = versionId }
+        )
+      )
+  end
+  local source, srcErr = RomSource.fromPath(binding.path)
+  if source == nil then
+    return nil, sourceErrorTable(srcErr)
+  end
+  local rom, romErr = NdsRom.open(source)
+  if rom == nil then
+    source:release()
+    return nil, sourceErrorTable(romErr)
+  end
+  local info = rom:versionInfo()
+  if info.id ~= versionId or info.sha1:lower() ~= binding.romSha1:lower() then
+    rom:release()
+    return nil,
+      sourceErrorTable(
+        Errors.new(
+          "ROM_SOURCE_MISMATCH",
+          "the file at the registered source path does not match version " .. versionId,
+          { versionId = versionId, path = binding.path }
+        )
+      )
+  end
+  local host = rawget(_G, "love")
+  local dataApi = host and host.data
+  if type(dataApi) ~= "table" or type(dataApi.newByteData) ~= "function" then
+    rom:release()
+    error("unsupported compiler pool capability: love.data.newByteData is required", 0)
+  end
+  local bytes, readErr = source:read(0, source:size())
+  if bytes == nil then
+    rom:release()
+    return nil, sourceErrorTable(readErr)
+  end
+  local byteData = dataApi.newByteData(bytes)
+  -- The pool retains only the shared buffer; every temporary Lua/ZIP byte
+  -- string is dropped here so one selection never holds two copies.
+  bytes = nil
+  rom:release()
+  return byteData
+end
+
+-- Handle one worker source request against its live physical slot. The slot
+-- stays occupied through the wait: a request is a protocol transition, not
+-- a completion. The first miss acquires once and every concurrent waiter
+-- borrows the identical buffer; acquisition failures fan out as typed
+-- source-unavailable to every waiter exactly once. A request that names no
+-- live slot of the current selection is stale: it earns no buffer and no
+-- new acquisition, and an unblocked stale waiter is released with a typed
+-- unavailable instead of waiting forever.
+---@param message table<string, unknown>
+function CompilerPool:_acceptSourceNeeded(message)
+  if type(message.workerId) ~= "number" then
+    self:_stopWithProtocolFailure(message, "source request without a worker")
+  end
+  local worker = self.workers[message.workerId]
+  local selected = self.selected
+  local slot = worker ~= nil and worker.slot or nil
+  local live = worker ~= nil
+    and slot ~= nil
+    and slot.jobKey == message.jobKey
+    and slot.epoch == message.epoch
+    and slot.generationId == message.generationId
+    and (message.versionId == nil or slot.versionId == message.versionId)
+    and selected ~= nil
+    and not self.retired
+    and slot.versionId == selected.versionId
+    and slot.generationId == selected.generationId
+    and slot.epoch == selected.epoch
+  if not live then
+    if worker ~= nil and type(message.epoch) == "number" and (slot == nil or slot.epoch == message.epoch) then
+      local stale = slot
+        or {
+          jobKey = message.jobKey,
+          versionId = selected ~= nil and selected.versionId or message.versionId,
+          generationId = message.generationId,
+          epoch = message.epoch,
+        }
+      pcall(
+        pushSourceUnavailable,
+        self,
+        worker,
+        stale --[[@as CompilerPool.Job]],
+        sourceErrorTable(Errors.new("SOURCE_EPOCH_RETIRED", "source request does not match the live selection", {}))
+      )
+    end
+    return
+  end
+  assert(worker, "live source request owns its worker")
+  assert(slot, "live source request owns its slot")
+  local held = self.sharedSource
+  if held ~= nil then
+    self.sourceBorrowers[worker.id] = true
+    pushSourceSupply(self, worker, slot, held.byteData)
+    return
+  end
+  self.sourceWaiters[worker.id] = true
+  local byteData, acqErr = self:_acquireSharedSource(slot.versionId)
+  if byteData ~= nil then
+    self.sharedSource = {
+      byteData = byteData,
+      versionId = slot.versionId,
+      generationId = slot.generationId,
+      epoch = slot.epoch,
+    }
+    for waiterId in pairs(self.sourceWaiters) do
+      local waiter = self.workers[waiterId]
+      local waiterSlot = waiter ~= nil and waiter.slot or nil
+      if waiter ~= nil and waiterSlot ~= nil then
+        self.sourceBorrowers[waiterId] = true
+        pushSourceSupply(self, waiter, waiterSlot, byteData)
+      end
+    end
+    self.sourceWaiters = {}
+    return
+  end
+  assert(acqErr, "a failed acquisition names its cause")
+  local waiters = self.sourceWaiters
+  self.sourceWaiters = {}
+  for waiterId in pairs(waiters) do
+    local waiter = self.workers[waiterId]
+    local waiterSlot = waiter ~= nil and waiter.slot or nil
+    if waiter ~= nil and waiterSlot ~= nil then
+      pushSourceUnavailable(self, waiter, waiterSlot, acqErr)
+    end
+  end
+end
+
 ---@param record CompilerPool.Job
 function CompilerPool:_abortStage(record)
   if type(record.stageName) ~= "string" or record.stageName == "" then
@@ -848,6 +1173,14 @@ function CompilerPool:activityState()
   end
   for _, worker in ipairs(self.workers) do
     if worker.slot ~= nil then
+      return "waiting"
+    end
+  end
+  -- An unacknowledged source-release close resolves on the pool-private
+  -- result channel, so the controller must keep polling instead of
+  -- blocking on its control channel while one is outstanding.
+  for _, worker in ipairs(self.workers) do
+    if worker.srcCloseToken ~= nil and not worker.joined then
       return "waiting"
     end
   end
@@ -973,6 +1306,15 @@ end
 ---@param record CompilerPool.Job
 ---@param message table<string, unknown>
 function CompilerPool:_readFailure(record, message)
+  -- A pool-reported source failure carries its typed cause on the
+  -- completion itself: there is no stage to open, and the coded cause must
+  -- reach the session textually instead of collapsing to a generic fault.
+  if type(message.error) == "table" and type(message.error.code) == "string" then
+    local restored = sourceErrorTable(message.error)
+    local failure = restored.code .. ": " .. tostring(restored.message)
+    self:_settleFailure(record, message.workerId, failure)
+    return
+  end
   local failure = "worker failed" ---@type string|Errors.Error
   local stageName = message.stageName
   local opened = false
@@ -1021,10 +1363,22 @@ function CompilerPool:_acceptMessage(message)
     local worker = self.workers[message.workerId]
     -- Only a matching barrier token proves source closure. Stale tokens
     -- from an earlier barrier and unknown senders are ignored, never
-    -- mistaken for closure of the current barrier.
+    -- mistaken for closure of the current barrier. A quiescence ack also
+    -- proves the worker's borrowed source view closed, so it releases the
+    -- borrower alongside the barrier.
     if worker ~= nil and worker.closeSent and message.closeToken == worker.closeToken then
       worker.closeAcked = true
+      self.sourceBorrowers[worker.id] = nil
+      self.sourceReleaseWait[worker.id] = nil
     end
+    if worker ~= nil and worker.srcCloseToken ~= nil and message.closeToken == worker.srcCloseToken then
+      worker.srcCloseToken = nil
+      self.sourceBorrowers[worker.id] = nil
+      self.sourceReleaseWait[worker.id] = nil
+    end
+    self:_completeSourceRelease()
+  elseif type(message) == "table" and message.status == "source-needed" then
+    self:_acceptSourceNeeded(message)
   elseif
     type(message) == "table"
     and (message.status == "prepared" or message.status == "failed" or message.status == "reused")
@@ -1188,6 +1542,122 @@ function CompilerPool:_sendCloseContext(worker)
   end
   worker.closeSent = true
   worker.closeToken = token
+end
+
+---@param worker CompilerPool.Worker
+function CompilerPool:_sendSourceClose(worker)
+  if worker.srcCloseToken ~= nil or not worker.started or worker.joined then
+    return
+  end
+  -- String tokens never collide with the numeric quiescence barrier, so a
+  -- source-release acknowledgement is never mistaken for barrier closure.
+  self.sourceCloseSeq = self.sourceCloseSeq + 1
+  local token = "src-" .. tostring(self.sourceCloseSeq)
+  local ok, sendError = pcall(worker.input.push, worker.input, { kind = "close-context", closeToken = token })
+  if not ok then
+    self.fatalError = sendError
+    error(sendError, 0)
+  end
+  worker.srcCloseToken = token
+end
+
+-- Complete a started release round once every member acknowledged: workers
+-- that borrowed again after the decision get a courtesy close so no view
+-- outlives the pool reference unnoticed, then the pool reference drops. A
+-- later miss reacquires once. Borrowed views stay readable through their
+-- owners throughout; only the pool stops pinning the buffer.
+function CompilerPool:_completeSourceRelease()
+  if self.sharedSource == nil or not self.sourceReleaseOpen then
+    return
+  end
+  if next(self.sourceReleaseWait) ~= nil then
+    return
+  end
+  self.sourceReleaseOpen = false
+  for waiterId in pairs(self.sourceBorrowers) do
+    local worker = self.workers[waiterId]
+    if worker ~= nil and not worker.joined and not worker.closeSent then
+      self.sourceCloseSeq = self.sourceCloseSeq + 1
+      pcall(
+        worker.input.push,
+        worker.input,
+        { kind = "close-context", closeToken = "src-drop-" .. tostring(self.sourceCloseSeq) }
+      )
+    end
+  end
+  self:_dropSharedSource()
+  for _, worker in ipairs(self.workers) do
+    worker.srcCloseToken = nil
+  end
+end
+
+-- Release the selected buffer once no pool work can still need it: no
+-- queued interest, no running or prepared record, no occupied slot, and no
+-- pending publication. The borrowers at the decision form one release
+-- round; later re-borrows do not join it. The pool-held reference drops
+-- when the round fully acknowledges (or joined exits prove closure), even
+-- if new interest arrived meanwhile: correctness of the close barrier
+-- matters, not holding the buffer across quiet moments.
+function CompilerPool:_maybeReleaseSource()
+  if self.sharedSource == nil then
+    return
+  end
+  -- A joined exit proves closure without an acknowledgement.
+  for waiterId in pairs(self.sourceBorrowers) do
+    local worker = self.workers[waiterId]
+    if worker == nil or worker.joined then
+      self.sourceBorrowers[waiterId] = nil
+    end
+  end
+  for waiterId in pairs(self.sourceReleaseWait) do
+    local worker = self.workers[waiterId]
+    if worker == nil or worker.joined then
+      self.sourceReleaseWait[waiterId] = nil
+    end
+  end
+  if self.sourceReleaseOpen then
+    self:_completeSourceRelease()
+    return
+  end
+  if next(self.sourceBorrowers) == nil then
+    -- Nobody left to ask: every closure was already proven through another
+    -- barrier, so the idle reference drops at once.
+    self:_dropSharedSource()
+    for _, worker in ipairs(self.workers) do
+      worker.srcCloseToken = nil
+    end
+    return
+  end
+  if self.queuedCount > 0 or #self.completions > 0 then
+    return
+  end
+  for _, record in pairs(self.jobs) do
+    if record.state == "running" or record.state == "prepared" or record.state == "queued" then
+      return
+    end
+  end
+  for _, worker in ipairs(self.workers) do
+    if worker.slot ~= nil then
+      return
+    end
+  end
+  -- The sweep owns future source work the pool cannot see: when a
+  -- generation session installed its settled oracle, an idle pool holds
+  -- the buffer across sweep gaps instead of releasing and reacquiring
+  -- it. Without an oracle (standalone pool use) idleness alone decides.
+  -- An already-open release round and the borrower-free fast path above
+  -- stay ungated: barrier completion must never stall on future work.
+  if type(self.sourceSettledQuery) == "function" and not self.sourceSettledQuery() then
+    return
+  end
+  self.sourceReleaseOpen = true
+  for waiterId in pairs(self.sourceBorrowers) do
+    self.sourceReleaseWait[waiterId] = true
+    local worker = self.workers[waiterId]
+    if worker ~= nil and not worker.joined and worker.srcCloseToken == nil and not worker.closeSent then
+      self:_sendSourceClose(worker)
+    end
+  end
 end
 
 function CompilerPool:_pollWorkerFailures()
@@ -1355,6 +1825,7 @@ function CompilerPool:update(budget)
     remaining = remaining - 1
   end
   self:_dispatch()
+  self:_maybeReleaseSource()
   if self.fatalError then
     error(self.fatalError, 0)
   end
@@ -1447,6 +1918,11 @@ function CompilerPool:quiesce()
   if self.quiescing and self:isQuiescent() then
     return
   end
+  -- A quiescing pool takes no new source interest: suspended waiters
+  -- settle as failed with a typed cause so the barrier can complete.
+  self:_failSourceWaiters(
+    sourceErrorTable(Errors.new("SOURCE_EPOCH_RETIRED", "the compiler pool quiesced while source was awaited", {}))
+  )
   self.quiescing = true
   self.closeToken = (self.closeToken or 0) + 1
   for _, record in pairs(self.jobs) do
@@ -1569,6 +2045,10 @@ function CompilerPool:shutdown()
   if self.closed then
     return true
   end
+  self.sourceWaiters = {}
+  self:_dropSharedSource()
+  self.sourceReleaseWait = {}
+  self.sourceReleaseOpen = false
   for _, record in pairs(self.jobs) do
     if record.state == "queued" then
       record.state = "cancelled"

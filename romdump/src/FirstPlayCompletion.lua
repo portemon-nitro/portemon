@@ -1,5 +1,5 @@
 -- Durable attestation that the bounded first-play closure for one immutable
--- cache generation reached ready successfully. After raw ROM extraction the
+-- cache generation reached ready successfully. After source registration the
 -- app routes every selection through FirstPlayCachePreparation until this
 -- attestation is current; once published, ordinary boots keep the fast
 -- bootstrap/menu path without revalidating the closure.

@@ -150,20 +150,15 @@ function T.prepare_delegates_scope_and_reports_requested_readiness()
       Assert.equal(version, "heartgold")
       return true
     end
-    local closed = false
-    package.loaded["romdump.src.source.RomFs"] = {
-      open = function(version)
-        Assert.equal(version, "heartgold")
-        return {
-          metadata = function()
-            return { sha1 = string.rep("b", 40) }
-          end,
-          close = function()
-            closed = true
-          end,
-        }
-      end,
-    }
+    -- The prepare path resolves identity from the canonical version
+    -- catalog and must never open the ROM: zero source opens means zero
+    -- handles to leak, so any open is a loud failure here.
+    local function noSourceOpen()
+      error("the source-free prepare path must not open the ROM", 0)
+    end
+    package.loaded["romdump.src.source.RomFs"] = { open = noSourceOpen }
+    package.loaded["romdump.src.source.RomSource"] = { fromPath = noSourceOpen }
+    package.loaded["romdump.src.source.NdsRom"] = { open = noSourceOpen }
     package.loaded["romdump.src.ProducerFingerprint"] = {
       checkoutBackend = function()
         return {}
@@ -197,7 +192,8 @@ function T.prepare_delegates_scope_and_reports_requested_readiness()
       dev = true,
     })
     Assert.equal(quitCode(), 0, "a prepared targeted scope succeeds without attesting completeness")
-    Assert.isTrue(closed, "the identity probe closes its source handle")
+    -- No source handle was opened above, so there is none to close: the
+    -- absence of any probe open is the leak discipline on this path.
     Assert.equal(received.version, "heartgold")
     Assert.deepEqual(received.options.requirements, { "map:7" })
     Assert.isTrue(received.options.dev, "the development flag reaches preparation")

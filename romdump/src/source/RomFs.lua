@@ -1,20 +1,16 @@
 -- The only runtime entry point for raw ROM content. Opened over a verified
 -- cartridge it derives its file and overlay maps from the cartridge itself
--- and serves bytes straight from the source buffer; opened over a version
--- cache it loads the generated metadata through CacheFs (interim path kept
--- only until every caller passes a source). Either way it serves file bytes
+-- and serves bytes straight from the source buffer. It serves file bytes
 -- and NARC members lazily by FAT fileId, exact NitroFS source path, or curated
 -- alias/symbol, and never caches large payloads globally.
 --
 -- Transient maps (source path -> fileId, alias/symbol -> resolved NARC) are
--- built once at open() from the on-disk index; the generated files deliberately
--- do not duplicate them. Decoders should prefer explicit readSourcePath.
+-- built once at open() from the cartridge tables. Decoders should prefer
+-- explicit readSourcePath.
 
 local Errors = require("libs.errors.src.Errors")
-local CacheFs = require("libs.storage.src.CacheFs")
 local Narc = require("libs.nds.src.nitro.Narc")
 local NdsRom = require("romdump.src.source.NdsRom")
-local RomImporter = require("romdump.src.source.RomImporter")
 local OverlayCompression = require("libs.nds.src.rom.OverlayCompression")
 local HgssArchives = require("romdump.src.config.HgssArchives")
 local RawDumpContract = require("romdump.src.source.RawDumpContract")
@@ -37,30 +33,10 @@ RomFs.__index = RomFs
 ---@field path string
 ---@field fileId integer
 
-local function loadRequired(cache, path)
-  local value, err = cache:loadLua(path)
-  if not value then
-    Errors.raise("ROMFS_LOAD_FAILED", "could not load " .. path .. ": " .. Errors.format(err), { path = path })
-  end
-  return value
-end
-
-local function requireSchema(value, expected, name)
-  if value.schema ~= expected then
-    Errors.raise(
-      "ROMFS_SCHEMA_MISMATCH",
-      name .. " schema " .. tostring(value.schema) .. " ~= expected " .. expected,
-      { name = name, schema = value.schema, expected = expected }
-    )
-  end
-end
-
--- Open over one verified cartridge instead of an extracted dump: the file
--- and overlay maps are derived from the cartridge's own FAT/FNT/overlay
--- tables, and every byte comes straight from the source buffer. The
--- returned reader keeps the same method semantics and metadata shape as the
--- dump-backed open below; it owns only its maps and a borrowed view of the
--- source, never the shared buffer itself.
+-- Open over one verified cartridge: the file and overlay maps are derived
+-- from the cartridge's own FAT/FNT/overlay tables, and every byte comes
+-- straight from the source buffer. The returned reader owns only its maps
+-- and a borrowed view of the source, never the shared buffer itself.
 local function openDirect(versionId, romSource)
   if type(romSource) ~= "table" or type(romSource.read) ~= "function" or type(romSource.sha1) ~= "function" then
     Errors.raise(
@@ -180,67 +156,12 @@ local function openDirect(versionId, romSource)
   }, RomFs)
 end
 
-local function _open(versionId, cache)
-  cache = cache or CacheFs.forVersion(versionId)
-  if not RomImporter.isReady(versionId, cache) then
-    Errors.raise("ROMFS_NOT_READY", "no ready dump for version " .. tostring(versionId), { version = versionId })
-  end
-
-  local metadata = loadRequired(cache, RawDumpContract.METADATA_PATH)
-  local index = loadRequired(cache, RawDumpContract.ROMFS_INDEX_PATH)
-  local overlayIndex = loadRequired(cache, RawDumpContract.OVERLAY_INDEX_PATH)
-  requireSchema(metadata, RawDumpContract.METADATA_SCHEMA, "rom_metadata")
-  requireSchema(index, RawDumpContract.ROMFS_INDEX_SCHEMA, "romfs_index")
-  if
-    overlayIndex.schema ~= RawDumpContract.OVERLAY_INDEX_SCHEMA
-    or type(overlayIndex.arm9) ~= "table"
-    or type(overlayIndex.arm7) ~= "table"
-  then
-    Errors.raise(
-      "ROMFS_OVERLAY_INDEX_SCHEMA",
-      "overlay_index must use schema " .. RawDumpContract.OVERLAY_INDEX_SCHEMA .. " with arm9 and arm7 tables",
-      { schema = overlayIndex.schema }
-    )
-  end
-
-  -- Build the source-path -> fileId lookup once from the FNT index. NARC alias
-  -- resolution is derived on demand from the checked-in manifest plus this
-  -- lookup, so there is no baked alias table to persist or keep in sync.
-  local byPath = {}
-  for fileId = 0, index.fileCount - 1 do
-    local entry = index.files[fileId]
-    assert(entry, "romfs_index missing fileId " .. fileId)
-    if entry.sourcePath then
-      byPath[entry.sourcePath] = fileId
-    end
-  end
-
-  return setmetatable({
-    _version = versionId,
-    _cache = cache,
-    _metadata = metadata,
-    _index = index,
-    _overlayIndex = overlayIndex,
-    _byPath = byPath,
-  }, RomFs)
-end
-
-function RomFs.open(versionId, cacheOrSource)
-  -- A version cache (or nothing) keeps the interim dump-backed open below;
-  -- a ROM source opens directly from the verified cartridge instead. The
-  -- dump-backed branch is temporary and goes away once every caller passes
-  -- a source.
-  if cacheOrSource ~= nil and type(cacheOrSource.loadLua) ~= "function" then
-    local ok, result = pcall(openDirect, versionId, cacheOrSource)
-    if ok then
-      return result
-    end
-    if Errors.is(result) then
-      return nil, result
-    end
-    error(result)
-  end
-  local ok, result = pcall(_open, versionId, cacheOrSource)
+-- Open over a verified cartridge is the only supported path: compilers
+-- receive their borrowed source view from the pool after a genuine receipt
+-- miss, never a cache handle. Anything without a readable source view is a
+-- typed bad-source failure, never a fallback to historical extracted files.
+function RomFs.open(versionId, romSource)
+  local ok, result = pcall(openDirect, versionId, romSource)
   if ok then
     return result
   end
@@ -310,31 +231,24 @@ function RomFs:fileIdForPath(sourcePath)
   return self._byPath[sourcePath]
 end
 
--- Read a FAT-backed file by fileId or by exact source path. Dump-backed
--- readers serve the extracted file; direct readers slice the same FAT range
--- out of the cartridge buffer.
+-- Read a FAT-backed file by fileId or by exact source path, slicing the
+-- recorded FAT range straight out of the cartridge buffer.
 function RomFs:read(pathOrFileId)
   local entry, err = self:info(pathOrFileId)
   if not entry then
     return nil, err
   end
-  if self._rom then
-    local ok, data = pcall(function()
-      return self._rom:readFatFile(entry.fileId)
-    end)
-    if ok then
-      return data
-    end
-    if Errors.is(data) then
-      return nil, data
-    end
-    error(data, 0)
+  local rom = assert(self._rom, "direct ROM reader owns its cartridge view")
+  local ok, data = pcall(function()
+    return rom:readFatFile(entry.fileId)
+  end)
+  if ok then
+    return data
   end
-  local data = self._cache:read(entry.path)
-  if data == nil then
-    return nil, Errors.new("ROMFS_FILE_MISSING", "dump file missing: " .. entry.path, { path = entry.path })
+  if Errors.is(data) then
+    return nil, data
   end
-  return data
+  error(data, 0)
 end
 
 function RomFs:readSourcePath(sourcePath)
@@ -388,18 +302,10 @@ function RomFs:readOverlay(cpu, overlayId)
   end
   local bytes, readErr = self:read(info.fileId)
   if not bytes then
-    if self._rom then
-      return nil,
-        Errors.new(
-          "ROMFS_OVERLAY_FILE_MISSING",
-          "cartridge overlay bytes are missing for fileId " .. info.fileId,
-          { cpu = cpu, overlayId = overlayId, fileId = info.fileId, path = info.path, cause = readErr and readErr.code }
-        )
-    end
     return nil,
       Errors.new(
         "ROMFS_OVERLAY_FILE_MISSING",
-        "dumped overlay file is missing: " .. info.path,
+        "cartridge overlay bytes are missing for fileId " .. info.fileId,
         { cpu = cpu, overlayId = overlayId, fileId = info.fileId, path = info.path, cause = readErr and readErr.code }
       )
   end
@@ -450,10 +356,8 @@ function RomFs:openNarc(symbolOrAlias)
 end
 
 function RomFs:close()
-  -- Drop only per-view state. A direct reader's cartridge holds a borrowed
-  -- source view, so closing never releases the shared buffer its peers may
-  -- still read.
-  self._cache = nil
+  -- Drop only per-view state. The cartridge holds a borrowed source view,
+  -- so closing never releases the shared buffer its peers may still read.
   self._rom = nil
   self._metadata = nil
   self._index = nil

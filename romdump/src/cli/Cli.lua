@@ -18,8 +18,8 @@ local Cli = {}
 -- command, so scripts agree on "bad invocation".
 Cli.EXIT_USAGE = 2
 
-Cli.USAGE = "usage: love romdump/ [--import-rom <path>] [--forcedump <path>] [--build-cache [path]]"
-  .. " [--check-dump] [--check-derived-cache] [--probe-rom <path>]"
+Cli.USAGE = "usage: love romdump/ [--import-rom <path>] [--build-cache [path]]"
+  .. " [--check-derived-cache] [--probe-rom <path>]"
   .. " [--prepare-cache --version <version> --require <request> [--require <request> ...] [--dev] [--rebuild <job> ...]]"
   .. " [--allow-compile-exclusions] [--dev]"
   .. " [--discover-app <overlay-id|arm9-main> [--template-address <hex-address>] --rom-source <path> [--output <path>]"
@@ -27,14 +27,13 @@ Cli.USAGE = "usage: love romdump/ [--import-rom <path>] [--forcedump <path>] [--
 
 -- Every command flag maps to the command it selects. --import-rom and
 -- --probe-rom share one loop branch through PATH_COMMANDS because both
--- consume exactly one ROM path; --build-cache and --forcedump keep their
--- own branches (optional positional path and dual-role modifier). Bare
--- command flags (--prepare-cache/--check-dump/--check-derived-cache) share
--- the trailing COMMAND_FLAGS branch because they take no inline operand.
+-- consume exactly one ROM path; --build-cache keeps its own branch for its
+-- optional positional path. Bare command flags (--prepare-cache and
+-- --check-derived-cache) share the trailing COMMAND_FLAGS branch because
+-- they take no inline operand.
 local COMMAND_FLAGS = {
   ["--import-rom"] = "import",
   ["--build-cache"] = "build-cache",
-  ["--check-dump"] = "check-dump",
   ["--check-derived-cache"] = "check-derived-cache",
   ["--discover-app"] = "discover-app",
   ["--probe-rom"] = "probe-rom",
@@ -161,14 +160,13 @@ end
 ---@field overlayId integer?
 ---@field templateAddress integer?
 ---@param argv string[]|nil
----@return { command: string|nil, romPath: string|nil, forceDump: boolean, allowCompileExclusions: boolean, dev: boolean, discoveryTarget: Cli.DiscoveryTarget|nil, outputPath: string|nil, resourceDetails: { fileId: integer, memberId: integer }[], version: string|nil, requirements: string[], rebuild: string[] }
+---@return { command: string|nil, romPath: string|nil, allowCompileExclusions: boolean, dev: boolean, discoveryTarget: Cli.DiscoveryTarget|nil, outputPath: string|nil, resourceDetails: { fileId: integer, memberId: integer }[], version: string|nil, requirements: string[], rebuild: string[] }
 function Cli.parse(argv)
   argv = argv or {}
 
   local opts = {
     command = nil,
     romPath = nil,
-    forceDump = false,
     allowCompileExclusions = false,
     dev = false,
     discoveryTarget = nil,
@@ -207,10 +205,6 @@ function Cli.parse(argv)
     local token = argv[i]
     if PATH_COMMANDS[token] then
       setCommand(token)
-      setPath(takePath(argv, i, token))
-      i = i + 1
-    elseif token == "--forcedump" then
-      opts.forceDump = true
       setPath(takePath(argv, i, token))
       i = i + 1
     elseif token == "--build-cache" then
@@ -281,13 +275,6 @@ function Cli.parse(argv)
       error("unexpected argument '" .. token .. "'\n" .. Cli.USAGE)
     end
     i = i + 1
-  end
-
-  if opts.command == nil and opts.forceDump then
-    opts.command = "import"
-  end
-  if opts.forceDump and opts.command ~= "import" and opts.command ~= "build-cache" then
-    error("--forcedump only applies to --import-rom or --build-cache\n" .. Cli.USAGE)
   end
 
   if opts.command == "discover-app" then

@@ -1889,4 +1889,135 @@ function T.import_continuation_is_rejected_outside_first_play()
   Assert.isTrue(quiescenceOk == false, "quiescence preparation rejects the import continuation")
 end
 
+-- An uncached asset waits for its source without disturbing anything
+-- else: the missing file prompts a rebind, the waiting selection stays
+-- attached with no retirement, and supplying the same ROM resumes the
+-- pending selection instead of restarting it as a fresh import that would
+-- discard its receipts. Cancelling the wait or completing a different
+-- version leaves the existing saves and attestations alone.
+function T.uncached_demand_waits_for_a_source_rebind_without_losing_ready_work()
+  withAppStubs(function(App, context)
+    local RomImporter = require("romdump.src.source.RomImporter")
+    local HgssGame = require("game.hgss.src.HgssGame")
+    local originalNew = RomImporter.new
+    local originalSelect = App._selectVersion
+    local originalPreparation = HgssGame.newFirstPlayCachePreparation
+    local ok, err = pcall(function()
+      -- The bootstrap stays pending until the scripted observations below
+      -- answer it, so the selection waits visibly instead of launching.
+      context.observations["milestone:bootstrap:nil:nil"] = {}
+      App._selectVersion(VERSION)
+      local provisioner = assert(App.provisioner, "selection must attach a provisioner")
+      local epoch = App.epoch
+      local host = provisioner:gameHost()
+      local waiting = assert(App.state, "a cold selection waits visibly")
+      Assert.equal(
+        getmetatable(waiting).__index,
+        CachePreparationState,
+        "a cold selection waits through preparation"
+      )
+      -- Only the uncached asset names its missing source: the bootstrap
+      -- answers from its current receipt while the field demand waits.
+      context.observations["milestone:bootstrap:nil:nil"] = { ready = true }
+      context.observations["field:60:nil:nil"] = {
+        failure = Errors.new("ROM_SOURCE_REQUIRED", "the uncached asset needs its ROM", { versionId = VERSION }),
+      }
+      local ready, failure = host.requestField(60, "required")
+      Assert.isNil(ready, "the uncached asset reports no readiness without its source")
+      Assert.isTrue(Errors.is(failure), "the wait carries a structured cause")
+      local code = Errors.is(failure) and failure.code or nil
+      Assert.equal(code, "ROM_SOURCE_REQUIRED", "the wait names its missing source")
+      Assert.equal(App.provisioner, provisioner, "the wait never detaches its selection")
+      Assert.equal(App.epoch, epoch, "the wait never mints a new epoch")
+      Assert.deepEqual(context.retires, {}, "the wait retires no interest")
+      Assert.deepEqual(context.firstPlayPublished, {}, "the wait fabricates no attestation")
+      -- First-play preparation behind the stubbed game stays scripted so
+      -- the rebind below exercises selection routing, not retail content.
+      HgssGame.newFirstPlayCachePreparation = function(_)
+        return {
+          poll = function()
+            return nil, nil
+          end,
+          dispose = function() end,
+        }
+      end
+      local completions = {}
+      rawset(RomImporter, "new", function(options)
+        local importer = { updates = 0 }
+        if type(options) == "table" then
+          importer.onComplete = options.onComplete
+        end
+        function importer:isBusy()
+          return false
+        end
+        function importer:update()
+          self.updates = self.updates + 1
+        end
+        function importer:filedropped(_)
+        end
+        function importer:status()
+          return {
+            state = "complete",
+            versionId = VERSION,
+            displayName = "HeartGold",
+            sourceName = "hg.nds",
+            progress = 1,
+          }
+        end
+        completions[#completions + 1] = importer
+        return importer
+      end)
+      local selections = {}
+      App._selectVersion = function(versionId, options)
+        selections[#selections + 1] = { versionId = versionId, options = options }
+        return originalSelect(versionId, options)
+      end
+      -- Cancelling the rebind wait first proves the wait itself is safe:
+      -- no importer starts, nothing shuts down, nothing publishes.
+      App.filedropped({ name = "hg.nds" })
+      Assert.isNil(App.importer, "the rebind waits for source closure instead of replacing the cache")
+      Assert.equal(context.quiesces, 1, "the rebind stops admission behind one barrier")
+      assert(context.barriers[1] ~= nil, "the rebind holds its quiescence barrier")
+      assert(App.state, "the rebind waits visibly"):keypressed("escape", nil, nil)
+      Assert.isNil(App.importer, "cancelling the wait starts no import")
+      Assert.equal(#completions, 0, "cancelling the wait constructs no importer")
+      Assert.isNil(context.shutdown, "cancelling the wait never shuts down the process service")
+      Assert.deepEqual(context.firstPlayPublished, {}, "cancelling the wait publishes nothing")
+      -- Dropping again rebinds behind a fresh barrier and resumes the
+      -- waiting version once the same ROM completes.
+      App.filedropped({ name = "hg.nds" })
+      assert(context.barriers[2] ~= nil, "the second rebind holds a fresh barrier")
+      context.barriers[2].status = "ready"
+      App.update(1 / 60)
+      Assert.equal(#completions, 1, "the importer starts once the source is closed")
+      local complete = assert(completions[1].onComplete, "the import reports its completion")
+      complete(VERSION)
+      Assert.isTrue(#selections >= 1, "the rebind reselects its version")
+      local resumed = selections[#selections]
+      Assert.equal(resumed.versionId, VERSION, "the rebind resumes the waiting version")
+      Assert.isTrue(
+        resumed.options == nil or resumed.options.freshImport ~= true,
+        "supplying the same ROM resumes instead of restarting as a fresh import"
+      )
+      -- A different version completes separately: it mints its own
+      -- selection while the shared process state stays intact.
+      complete("soulsilver")
+      local switched = selections[#selections]
+      Assert.equal(switched.versionId, "soulsilver", "another version selects separately")
+      Assert.isNil(context.shutdown, "the rebind never shuts down the process service")
+      Assert.deepEqual(context.firstPlayPublished, {}, "the rebind fabricates no attestation")
+    end)
+    rawset(RomImporter, "new", originalNew)
+    App._selectVersion = originalSelect
+    HgssGame.newFirstPlayCachePreparation = originalPreparation
+    App.state = nil
+    App.importer = nil
+    App.provisioner = nil
+    App.pendingQuiesce = nil
+    if not ok then
+      error(err, 0)
+    end
+  end)
+end
+
 return { tests = T }

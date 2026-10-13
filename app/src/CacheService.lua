@@ -330,6 +330,40 @@ function CacheService:retire(epoch)
   return barrier
 end
 
+-- Hand one validated immutable source buffer to the controller for the live
+-- epoch. The game thread never opens the ROM itself: the import path
+-- validated the bytes and the controller pins them to its selection. The
+-- offer crosses by reference exactly once; stale, retired, or failed epochs
+-- queue nothing, and a second offer for the same epoch is a programming
+-- error only the caller can prevent.
+---@param epoch integer selecting epoch, must be live
+---@param byteData userdata the shared immutable buffer, passed by reference
+---@param descriptor table<string, unknown> { versionId, romSha1 }
+---@return boolean? true when the offer was queued, nil for a stale epoch
+function CacheService:offerSource(epoch, byteData, descriptor)
+  if type(epoch) ~= "number" or epoch ~= self._liveEpoch or self._retiring then
+    return nil
+  end
+  if self._failure ~= nil then
+    return nil
+  end
+  assert(type(byteData) == "userdata", "source handoff requires the shared buffer")
+  assert(type(descriptor) == "table", "source handoff requires its version descriptor")
+  assert(type(descriptor.versionId) == "string" and descriptor.versionId ~= "", "source handoff requires its version")
+  assert(
+    type(descriptor.romSha1) == "string" and #descriptor.romSha1 == 40,
+    "source handoff requires its canonical identity"
+  )
+  self._command:push({
+    op = "offer-source",
+    epoch = epoch,
+    byteData = byteData,
+    versionId = descriptor.versionId,
+    romSha1 = descriptor.romSha1,
+  })
+  return true
+end
+
 -- Ask the controller to close every worker source context so a later source
 -- replacement cannot race a live reader. Import waits for the exact
 -- acknowledgement, never for an empty queue or a timeout.

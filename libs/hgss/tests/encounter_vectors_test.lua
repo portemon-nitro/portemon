@@ -6,7 +6,7 @@
 -- (per-method interval ladders, replacement targets, and the four-draw
 -- mon identity order); they are never produced by the modules under test.
 -- The final case integrates the real compiled encounter catalog as
--- native-source evidence and runs wherever a dump is ready.
+-- native-source evidence and runs wherever a source ROM is registered.
 
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
@@ -411,18 +411,19 @@ function T.compiled_catalog_lookup_preserves_native_order(context)
   end
   if #ready == 0 then
     if context ~= nil and type(context.skip) == "function" then
-      context:skip("requires a ready dump")
+      context:skip("requires a registered source ROM")
     end
-    error("the native catalog integration needs a ready dump", 0)
+    error("the native catalog integration needs a registered source ROM", 0)
   end
   local Catalog = Fixture.requirePresent(CATALOG_MODULE, "validated encounter-table lookup owns ordered slots")
   local EncounterCatalogCompiler = require("romdump.src.digest.encounters.EncounterCatalogCompiler")
   local BattleSources = require("romdump.src.config.BattleSources")
-  local RomFs = require("romdump.src.source.RomFs")
+  local RomSourcePath = require("tests.rom.support.RomSourcePath")
   for _, versionId in ipairs(ready) do
-    local romFs = assert(RomFs.open(versionId))
+    local romFs, romSource = assert(RomSourcePath.openReader(versionId))
     local compiled = assert(EncounterCatalogCompiler.compileFromDump(romFs, { versionId = versionId }))
     romFs:close()
+    romSource:release()
     local catalog = Catalog.new(compiled)
     local memberId = nil
     for key in pairs(compiled.tables) do

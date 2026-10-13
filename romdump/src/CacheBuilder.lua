@@ -9,12 +9,10 @@
 -- remains an explicit manual diagnostic and never runs here.
 
 local CacheFs = require("libs.storage.src.CacheFs")
-local RomFs = require("romdump.src.source.RomFs")
 local Errors = require("libs.errors.src.Errors")
 local DerivedCacheState = require("romdump.src.DerivedCacheState")
 local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
 local DerivedAssetContract = require("libs.assets.src.DerivedAssetContract")
-local RawDumpContract = require("romdump.src.source.RawDumpContract")
 local GameVersion = require("romdump.src.source.GameVersion")
 local DerivedCacheVersions = require("romdump.src.config.DerivedCacheVersions")
 local ArtifactState = require("romdump.src.build.ArtifactState")
@@ -744,18 +742,19 @@ function CacheBuilder.prepareVersion(versionId, options)
   return report
 end
 
+-- Batch generation identity without touching the source: the canonical
+-- per-version SHA-1 from the version catalog selects the generation, and
+-- the actual ROM bytes load lazily through the pool only on a genuine
+-- compilation miss. A complete current cache therefore builds nothing and
+-- opens nothing.
 local function versionIdentity(versionId, dev, producerFingerprint)
-  local romFs, openErr = RomFs.open(versionId)
-  if romFs == nil then
-    assert(Errors.is(openErr), "source-data stage failure must be a structured error")
-    return nil, openErr --[[@as Errors.Error]]
-  end
-  local metadata = romFs:metadata()
-  romFs:close()
-  local sha1 = metadata ~= nil and metadata.sha1 or nil
+  local info = GameVersion.VERSIONS[versionId]
+  local sha1 = type(info) == "table" and info.sha1 or nil
   if type(sha1) ~= "string" or #sha1 ~= 40 or sha1:find("[^0-9a-f]") ~= nil then
     return nil,
-      Errors.new("INVALID_ROM_IDENTITY", "the published dump carries no validated ROM hash", { versionId = versionId })
+      Errors.new("INVALID_ROM_IDENTITY", "no validated ROM identity for version " .. tostring(versionId), {
+        versionId = versionId,
+      })
   end
   local mode = dev == true and "development" or "release"
   local producerId
@@ -803,8 +802,6 @@ function CacheBuilder.buildVersions(versionIds, options)
   for _, version in ipairs(versionIds) do
     local ok, result, failureErr = pcall(function()
       local cacheFs = CacheFs.forVersion(version)
-      local dumpMarker = cacheFs:read(RawDumpContract.MARKER_PATH)
-      assert(type(dumpMarker) == "string", "a ready version must have a published dump marker")
       local identity, identityErr = versionIdentity(version, options.dev, producerFingerprint)
       if identity == nil then
         assert(Errors.is(identityErr), "source-data stage failure must be a structured error")

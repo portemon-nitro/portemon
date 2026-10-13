@@ -30,14 +30,14 @@ function ImportState:draw()
   ImportState.render(self.importer:status(), self.saveDir)
 end
 
--- Stateless continuation renderer for a fresh import whose raw extraction
--- finished but whose mandatory first-play preparation is still pending.
--- `facts` is the immutable handoff record captured at import completion
--- (`{ status = <importer status snapshot>, saveDir = <save root> });
+-- Stateless continuation renderer for a fresh import whose source
+-- registration finished but whose mandatory first-play preparation is still
+-- pending. `facts` is the immutable handoff record captured at import
+-- completion (`{ status = <importer status snapshot>, saveDir = <save root> });
 -- `preparationStatus` is the live provisioner count snapshot or nil;
 -- `failure` is the latched preparation error or nil. It keeps the import
 -- shell (title, file/target identity, save root) while the stage text
--- reports first-play preparation instead of extraction progress.
+-- reports first-play preparation instead of registration progress.
 ---@param facts { status: table<string, unknown>, saveDir: string? }
 ---@param preparationStatus table<string, unknown>?
 ---@param failure unknown?

@@ -93,18 +93,23 @@ local function asError(e)
   return e
 end
 
+-- Direct-only reader over the standard fixture cartridge: no extracted
+-- tree is produced or consulted. The synthetic cartridge is catalogued
+-- under a temporary version only for the duration of the open; the
+-- returned reader keeps its built maps and borrowed view afterwards.
 local function openFs()
-  local r = DumpFixture.extract()
-  Assert.notNil(r.report, "fixture extraction failed: " .. tostring(r.err))
-  local fs, err = RomFs.open(r.versionId, r.cache)
-  Assert.notNil(fs, "RomFs.open failed: " .. tostring(err))
-  return assert(fs), r
+  local cartridge = openDirectCartridge(directSpec())
+  local fs = nil
+  withDirectVersion(cartridge.info, function()
+    fs = openDirectFs(cartridge)
+  end)
+  return assert(fs), cartridge
 end
 
 function T.loads_index_and_builds_path_map()
-  local fs, r = openFs()
-  Assert.equal(fs:version(), "heartgold")
-  Assert.equal(fs:fileCount(), r.rom:fatCount())
+  local fs, cartridge = openFs()
+  Assert.equal(fs:version(), DIRECT_VERSION_ID)
+  Assert.equal(fs:fileCount(), cartridge.rom:fatCount())
   Assert.equal(fs:fileIdForPath("a/0/0/2"), 2)
   Assert.equal(fs:fileIdForPath("a/0/4/1"), 5)
   Assert.equal(fs:info("data/sound/gs_sound_data.sdat").path, "romfs/data/sound/gs_sound_data.sdat")
@@ -149,13 +154,20 @@ function T.overlay_lookup_returns_typed_errors()
   Assert.equal(assert(idErr).code, "ROMFS_OVERLAY_UNKNOWN_ID")
 end
 
-function T.missing_overlay_file_returns_overlay_error()
-  local fs, fixture = openFs()
-  fixture.cache:remove("system/overlay9/overlay_0.bin")
-  local bytes, err = fs:readOverlay("arm9", 0)
-  Assert.isNil(bytes)
-  Assert.equal(assert(err).code, "ROMFS_OVERLAY_FILE_MISSING")
-  Assert.equal(assert(err).context.fileId, 0)
+-- Overlay bytes come straight from the cartridge: with no extracted tree
+-- under the cache, the read still serves cartridge bytes and records
+-- nothing on disk.
+function T.overlay_bytes_come_from_the_cartridge_without_a_cache()
+  local cartridge = openDirectCartridge(directSpec())
+  local backend = FakeCache.new()
+  withDirectVersion(cartridge.info, function()
+    local fs = openDirectFs(cartridge, backend)
+    local bytes, err = fs:readOverlay("arm9", 0)
+    Assert.notNil(bytes, "cartridge overlay read failed: " .. tostring(err))
+    Assert.equal(bytes, "OVERLAY0-DATA")
+    Assert.isNil(next(backend.files), "direct reads must not stage bytes under the cache")
+    fs:close()
+  end)
 end
 
 function T.resolves_alias_and_symbol_to_path_and_file_id()
@@ -180,24 +192,25 @@ function T.opens_narc_and_decodes_matrix()
 end
 
 -- NARC aliases resolve purely from the checked-in manifest plus the FNT path
--- index; no baked resolved_narcs table is produced or required. This means an
--- alias added after a dump was imported works without re-importing the ROM.
+-- index; no baked resolved_narcs table is produced or required, and no
+-- cache write happens while resolving.
 function T.resolves_without_a_baked_narc_table()
-  local r = DumpFixture.extract()
-  Assert.isNil(
-    r.backend.files[r.versionId .. "/data/generated/resolved_narcs.lua"],
-    "resolved_narcs.lua should no longer be produced"
-  )
-  local fs = assert(RomFs.open(r.versionId, r.cache))
-  local entry = assert(fs:resolvedNarc("map_matrices"))
-  Assert.notNil(entry, "alias must resolve from manifest + FNT index")
-  Assert.equal(entry.path, "a/0/4/1")
-  Assert.equal(entry.fileId, 5)
-  Assert.isNil(entry.memberCount, "member count is not precomputed; open the NARC for it")
-  local narc, err = fs:openNarc("map_matrices")
-  Assert.notNil(narc, "openNarc failed: " .. tostring(err))
-  assert(narc)
-  Assert.equal(narc:memberCount(), 1)
+  local cartridge = openDirectCartridge(directSpec())
+  local backend = FakeCache.new()
+  withDirectVersion(cartridge.info, function()
+    local fs = openDirectFs(cartridge, backend)
+    local entry = assert(fs:resolvedNarc("map_matrices"))
+    Assert.notNil(entry, "alias must resolve from manifest + FNT index")
+    Assert.equal(entry.path, "a/0/4/1")
+    Assert.equal(entry.fileId, 5)
+    Assert.isNil(entry.memberCount, "member count is not precomputed; open the NARC for it")
+    local narc, err = fs:openNarc("map_matrices")
+    Assert.notNil(narc, "openNarc failed: " .. tostring(err))
+    assert(narc)
+    Assert.equal(narc:memberCount(), 1)
+    Assert.isNil(next(backend.files), "resolution must not stage bytes under the cache")
+    fs:close()
+  end)
 end
 
 function T.unknown_source_path_returns_error()
@@ -207,29 +220,13 @@ function T.unknown_source_path_returns_error()
   Assert.equal(assert(err).code, "ROMFS_PATH_UNKNOWN")
 end
 
-function T.open_fails_when_not_ready()
-  local FakeCache = require("tests.support.FakeCache")
-  local CacheFs = require("libs.storage.src.CacheFs")
-  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
-  local fs, err = RomFs.open("heartgold", cache)
+-- Opening without a source is a typed failure, never a fallback to
+-- historical extracted files: compilers receive their source view from the
+-- pool after a genuine receipt miss.
+function T.open_rejects_a_missing_source()
+  local fs, err = RomFs.open(DIRECT_VERSION_ID)
   Assert.isNil(fs)
-  Assert.equal(asError(err).code, "ROMFS_NOT_READY")
-end
-
-function T.open_rejects_schema_mismatch()
-  local r = DumpFixture.extract()
-  r.cache:writeLua("data/generated/romfs_index.lua", { schema = 2 })
-  local fs, err = RomFs.open(r.versionId, r.cache)
-  Assert.isNil(fs)
-  Assert.equal(asError(err).code, "ROMFS_SCHEMA_MISMATCH")
-end
-
-function T.open_rejects_overlay_schema_mismatch()
-  local r = DumpFixture.extract()
-  r.cache:writeLua("data/generated/overlay_index.lua", { schema = 2 })
-  local fs, err = RomFs.open(r.versionId, r.cache)
-  Assert.isNil(fs)
-  Assert.equal(asError(err).code, "ROMFS_OVERLAY_INDEX_SCHEMA")
+  Assert.equal(asError(err).code, "ROMFS_BAD_SOURCE")
 end
 
 function T.reads_named_unmapped_and_overlay_entries_directly_from_the_cartridge()
@@ -277,32 +274,41 @@ function T.direct_index_matches_the_canonical_cartridge_map()
   end)
 end
 
-function T.direct_metadata_keeps_the_extracted_record_shape_with_data_derived_identity()
+-- The direct metadata record keeps its strict shape with data-derived
+-- identity: the key set is pinned literally (an independent anchor, not a
+-- self-comparison), and identity/size come from the cartridge itself.
+function T.direct_metadata_keeps_its_record_shape_with_data_derived_identity()
   local cartridge = openDirectCartridge(directSpec())
   withDirectVersion(cartridge.info, function()
     local fs = openDirectFs(cartridge)
     local metadata = fs:metadata()
-    local anchor = DumpFixture.extract()
-    local anchorFs, anchorErr = RomFs.open(anchor.versionId, anchor.cache)
-    Assert.notNil(anchorFs, "extracted anchor failed to open: " .. tostring(anchorErr))
-    local anchorMetadata = assert(anchorFs):metadata()
-    Assert.equal(sortedKeyString(metadata), sortedKeyString(anchorMetadata))
+    Assert.equal(
+      sortedKeyString(metadata),
+      "arm7,arm7Overlays,arm9,arm9Overlays,displayName,fat,fnt,gameCode,"
+        .. "headerSize,makerCode,romVersion,schema,sha1,size,title,unitCode,usedRomSize,version"
+    )
+    Assert.equal(metadata.schema, 1)
     Assert.equal(metadata.sha1, cartridge.info.sha1)
     Assert.equal(metadata.version, DIRECT_VERSION_ID)
     Assert.equal(metadata.size, #cartridge.data)
-    Assert.equal(metadata.title, anchorMetadata.title)
-    Assert.equal(metadata.headerSize, anchorMetadata.headerSize)
-    Assert.deepEqual(metadata.fnt, anchorMetadata.fnt)
-    Assert.deepEqual(metadata.fat, anchorMetadata.fat)
-    Assert.deepEqual(metadata.arm9, anchorMetadata.arm9)
-    Assert.deepEqual(metadata.arm7, anchorMetadata.arm7)
-    Assert.deepEqual(metadata.arm9Overlays, anchorMetadata.arm9Overlays)
-    Assert.deepEqual(metadata.arm7Overlays, anchorMetadata.arm7Overlays)
+    Assert.equal(metadata.gameCode, DIRECT_GAME_CODE)
+    local header = cartridge.rom:header()
+    Assert.equal(metadata.title, header.title)
+    Assert.equal(metadata.headerSize, header.headerSize)
+    Assert.equal(metadata.usedRomSize, header.usedRomSize)
+    Assert.deepEqual(
+      metadata.arm9,
+      { offset = header.arm9.offset, size = header.arm9.size, entryAddress = header.arm9.entryAddress, ramAddress = header.arm9.ramAddress }
+    )
+    Assert.deepEqual(
+      metadata.arm7,
+      { offset = header.arm7.offset, size = header.arm7.size, entryAddress = header.arm7.entryAddress, ramAddress = header.arm7.ramAddress }
+    )
     fs:close()
   end)
 end
 
-function T.direct_narc_aliases_decode_the_same_members()
+function T.direct_narc_aliases_decode_members()
   local cartridge = openDirectCartridge(directSpec())
   withDirectVersion(cartridge.info, function()
     local fs = openDirectFs(cartridge)
@@ -327,14 +333,33 @@ function T.direct_narc_aliases_decode_the_same_members()
   end)
 end
 
-function T.direct_stats_match_the_extracted_index_counts()
+-- Aggregate counts are drawn straight from the cartridge tables: file and
+-- overlay totals plus the manifest-resolved NARC count.
+function T.direct_stats_match_the_cartridge_index_counts()
   local cartridge = openDirectCartridge(directSpec())
   withDirectVersion(cartridge.info, function()
     local fs = openDirectFs(cartridge)
-    local anchor = DumpFixture.extract()
-    local anchorFs, anchorErr = RomFs.open(anchor.versionId, anchor.cache)
-    Assert.notNil(anchorFs, "extracted anchor failed to open: " .. tostring(anchorErr))
-    Assert.deepEqual(fs:stats(), assert(anchorFs):stats())
+    local stats = fs:stats()
+    Assert.equal(stats.fileCount, cartridge.rom:fatCount())
+    Assert.equal(stats.namedFileCount, cartridge.rom:nitroFs().namedFileCount)
+    Assert.equal(stats.overlayFileCount, #cartridge.rom:arm9Overlays() + #cartridge.rom:arm7Overlays())
+    local unmapped, totalBytes = 0, 0
+    for fileId = 0, cartridge.rom:fatCount() - 1 do
+      local dest = cartridge.rom:fileMap()[fileId]
+      if dest.kind == "unmapped" then
+        unmapped = unmapped + 1
+      end
+      totalBytes = totalBytes + dest.size
+    end
+    Assert.equal(stats.unmappedFileCount, unmapped)
+    Assert.equal(stats.totalFileBytes, totalBytes)
+    local resolved = 0
+    for _, entry in ipairs(require("romdump.src.config.HgssArchives").aliasList()) do
+      if fs:fileIdForPath(entry.path) then
+        resolved = resolved + 1
+      end
+    end
+    Assert.equal(stats.resolvedNarcCount, resolved)
     fs:close()
   end)
 end

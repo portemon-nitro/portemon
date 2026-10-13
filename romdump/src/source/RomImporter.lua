@@ -1,35 +1,38 @@
 -- First-run import orchestration and state machine. Two roles:
 --
---   * RomImporter.isReady(versionId) -- the cheap marker-plus-required-files
---     readiness contract RomFs and the boot flow depend on. It never
---     loads the full index or reads large resources.
+--   * RomImporter.isReady(versionId) -- the cheap source-binding readiness
+--     contract the boot flow depends on. It never opens the ROM or reads
+--     large resources: a strict persisted binding suffices, and the actual
+--     source bytes are opened lazily on the first genuine cache miss.
 --
---   * An interactive/headless importer driving RomExtractor inside a coroutine:
---     validate the ROM fully (NdsRom.open: size, SHA-1, header, game code) BEFORE
---     any cache mutation, then extract, yielding periodically so the UI stays
---     responsive. The source ROM is released on every terminal state
---     and a single GC is run.
+--   * An interactive/headless importer driving validation inside a
+--     coroutine: validate the ROM fully (NdsRom.open: size, SHA-1, header,
+--     game code) BEFORE any cache mutation, then atomically record the
+--     source binding, yielding periodically so the UI stays responsive.
+--     Nothing is extracted: derived caches compile directly from the
+--     user-owned ROM on demand. The validated bytes stay available exactly
+--     once through takeVerifiedSource for the controller handoff; every
+--     other terminal path releases the source and a single GC is run.
 --
--- Progress is monotonic by construction (RomExtractor's stage fractions). All
--- love coupling is confined to the default `now` clock and the lazy draw helper.
+-- Progress is monotonic by construction (ordered phase fractions). All
+-- love coupling is confined to the default `now` clock, the shared-buffer
+-- conversion, and the lazy draw helper.
 
 local GameVersion = require("romdump.src.source.GameVersion")
 local CacheFs = require("libs.storage.src.CacheFs")
-local RomExtractor = require("romdump.src.source.RomExtractor")
+local RomBinding = require("romdump.src.source.RomBinding")
 local RomSource = require("romdump.src.source.RomSource")
 local NdsRom = require("romdump.src.source.NdsRom")
 local Errors = require("libs.errors.src.Errors")
-local HgssArchives = require("romdump.src.config.HgssArchives")
-local RawDumpContract = require("romdump.src.source.RawDumpContract")
 
 ---@class RomImporter
 ---@field state string
 ---@field progress number?
 ---@field private _onComplete (fun(versionId: string, report: table<string, unknown>?): nil)?
 ---@field private _versions table<string, unknown>?
----@field private _manifest table<string, unknown>?
 ---@field private _cacheFactory (fun(versionId: string): table<string, unknown>)?
 ---@field private _now (fun(): number)?
+---@field private _verified table<string, unknown>? one-shot validated buffer for the controller handoff
 local RomImporter = {}
 RomImporter.__index = RomImporter
 
@@ -49,35 +52,31 @@ local IMPORT_ERROR_CODES = {
   NOT_NDS = "IMPORT_NOT_NDS",
 }
 
-local REQUIRED_FILES = {
-  RawDumpContract.METADATA_PATH,
-  RawDumpContract.ROMFS_INDEX_PATH,
-  RawDumpContract.OVERLAY_INDEX_PATH,
-  "romfs/a/0/0/2",
-  "romfs/a/0/4/1",
-  "romfs/data/sound/gs_sound_data.sdat",
-}
-
 -- `versions` lets the importer verify readiness against an injected catalog in
--- tests; production callers (RomFs, boot flow) use the default GameVersion.
+-- tests; production callers (boot flow, batch CLI, test runner) use the
+-- default GameVersion. Readiness is the strict persisted source binding
+-- only: the registered file is never opened here, so a moved ROM never
+-- blocks an installed cache and actual bytes load lazily on a real miss.
 function RomImporter.isReady(versionId, cache, versions)
-  local info = (versions or GameVersion).info(versionId)
+  local catalog = versions or GameVersion
+  local info
+  if type(catalog.info) == "function" then
+    local ok, result = pcall(catalog.info, versionId)
+    if ok and type(result) == "table" then
+      info = result
+    end
+  elseif type(catalog.VERSIONS) == "table" then
+    info = catalog.VERSIONS[versionId]
+  end
   if not info then
     return false
   end
   cache = cache or CacheFs.forVersion(versionId)
-  if cache:read(RawDumpContract.MARKER_PATH) ~= RomExtractor.markerContent(versionId, info.sha1) then
-    return false
-  end
-  for _, path in ipairs(REQUIRED_FILES) do
-    if not cache:exists(path, "file") then
-      return false
-    end
-  end
-  return true
+  local binding = RomBinding.read(cache, versionId, versions)
+  return binding ~= nil
 end
 
--- Yield roughly every 8ms of work during extraction.
+-- Yield roughly every 8ms of work during validation and registration.
 local YIELD_INTERVAL = 0.008
 
 local function defaultNow()
@@ -87,7 +86,7 @@ local function defaultNow()
   return 0
 end
 
--- opts: { onComplete=, versions=, manifest=, cacheFactory=, now= }. All optional;
+-- opts: { onComplete=, versions=, cacheFactory=, now= }. All optional;
 -- tests inject a synthetic version catalog, a FakeCache-backed cacheFactory, and
 -- a static `now` (which disables yielding, so one update() runs to completion).
 function RomImporter.new(opts)
@@ -95,7 +94,6 @@ function RomImporter.new(opts)
   return setmetatable({
     _onComplete = opts.onComplete,
     _versions = opts.versions or GameVersion,
-    _manifest = opts.manifest or HgssArchives,
     _cacheFactory = opts.cacheFactory or function(id)
       return CacheFs.forVersion(id)
     end,
@@ -140,7 +138,7 @@ function RomImporter:_fail(err)
   if self._source then
     self._source:release()
   end
-  self._source, self._co = nil, nil
+  self._source, self._co, self._verified = nil, nil, nil
   self._error = err
   self._errorCode = Errors.is(err) and err.code or nil
   self.state = RomImporter.STATES.ERROR
@@ -148,6 +146,11 @@ function RomImporter:_fail(err)
 end
 
 function RomImporter:_complete(report)
+  -- The string source is released, but the validated bytes stay available
+  -- exactly once through takeVerifiedSource for the controller handoff.
+  if self._source then
+    self._source:release()
+  end
   self._source, self._co = nil, nil
   self._report = report
   self.progress = 1
@@ -168,14 +171,33 @@ function RomImporter:_onProgress(p)
   end
 end
 
--- Build the coroutine that verifies then extracts. Kept off the frame thread so
--- update() can spread the work; validation completes before any cache write. An
--- explicitly supplied ROM is always dumped fresh -- boot-time reuse of a ready
--- cache is handled elsewhere (RomImporter.isReady), not here.
+-- Hand the validated buffer to the controller exactly once. The import
+-- already converted the retained string into the one immutable shared
+-- buffer before completion; the first take wraps it in a borrowed view,
+-- and later takes (or takes before completion and takes after a failure)
+-- answer nil. The bytes never enter the generated cache: only the binding
+-- is persisted.
+---@return table<string, unknown>? borrowed-source view over the shared buffer
+function RomImporter:takeVerifiedSource()
+  local verified = self._verified
+  if type(verified) ~= "table" or type(verified.byteData) ~= "userdata" then
+    return nil
+  end
+  self._verified = nil
+  return RomSource.fromByteData(verified.byteData, verified.displayName)
+end
+
+-- Build the coroutine that validates then registers. Kept off the frame
+-- thread so update() can spread the work; validation completes before any
+-- cache write, and re-registering the same canonical ROM preserves every
+-- receipt, asset, and save. A failed validation or registration leaves the
+-- previous binding and all derived data untouched.
 function RomImporter:_beginWork()
   local source = self._source
   self._co = coroutine.create(function()
     self.state = RomImporter.STATES.VERIFYING
+    self._lastYield = (self._now --[[@as fun(): number]])()
+    self:_onProgress({ stage = "verifying", stageLabel = "Verifying ROM", overall = 0.25 })
     local rom, err = NdsRom.open(source, self._versions --[[@as table]])
     if not rom then
       return self:_fail(err)
@@ -184,21 +206,38 @@ function RomImporter:_beginWork()
     local info = rom:versionInfo()
     self._versionId = info.id
     self._displayName = info.displayName
+    self._sourceName = source:displayName()
     local cache = (self._cacheFactory --[[@as fun(versionId: string): table]])(info.id)
 
     self.state = RomImporter.STATES.EXTRACTING
-    self._lastYield = (self._now --[[@as fun(): number]])()
-    ---@async
-    local function onProgress(p)
-      self:_onProgress(p)
+    self:_onProgress({ stage = "registering", stageLabel = "Registering source", overall = 0.6 })
+    local origin = source:origin()
+    local recorded, recordErr = RomBinding.record(cache, rom, {
+      kind = origin.kind,
+      path = origin.path,
+      displayName = origin.displayName,
+      zipEntry = origin.zipEntry,
+    }, self._versions)
+    if not recorded then
+      return self:_fail(recordErr)
     end
-    local extractor = RomExtractor.new(rom, info, cache, self._manifest --[[@as table]], onProgress)
-    local report, exErr = extractor:run()
-    rom:release()
-    if not report then
-      return self:_fail(exErr)
+    self:_onProgress({ stage = "registering", stageLabel = "Registering source", overall = 0.9 })
+    local bytes, readErr = source:read(0, source:size())
+    if bytes == nil then
+      return self:_fail(readErr)
     end
-    return self:_complete(report)
+    local byteData = love.data.newByteData(bytes)
+    bytes = nil
+    -- The validated cartridge wrapper is discarded here; the single
+    -- terminal release below owns the string exactly once.
+    self._verified = { byteData = byteData, displayName = origin.displayName }
+    return self:_complete({
+      sha1 = info.sha1,
+      kind = origin.kind,
+      path = origin.path,
+      displayName = origin.displayName,
+      zipEntry = origin.zipEntry,
+    })
   end)
 end
 
@@ -208,6 +247,7 @@ function RomImporter:startSource(source)
   assert(source, "startSource requires a RomSource")
   self._source = source
   self._sourceName = source:displayName()
+  self._verified = nil
   self._versionId, self._displayName = nil, nil
   self._report, self._error, self._errorCode = nil, nil, nil
   self._stage, self._stageLabel, self._detail = nil, nil, nil

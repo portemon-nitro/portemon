@@ -29,7 +29,7 @@ local MapCatalog = require("romdump.src.digest.map.MapCatalog")
 local Errors = require("libs.errors.src.Errors")
 local GameVersion = require("romdump.src.source.GameVersion")
 local RomImporter = require("romdump.src.source.RomImporter")
-local RomFs = require("romdump.src.source.RomFs")
+local RomSourcePath = require("tests.rom.support.RomSourcePath")
 
 local SDAT_PATH = "data/sound/gs_sound_data.sdat"
 
@@ -116,7 +116,8 @@ function T.beforeAll()
     end
   end
   for _, versionId in ipairs(readyVersions) do
-    local entry = { versionId = versionId, romFs = assert(RomFs.open(versionId)) }
+    local romFs, source = assert(RomSourcePath.openReader(versionId))
+    local entry = { versionId = versionId, romFs = romFs, source = source }
     opened[#opened + 1] = entry
     local ok, err = pcall(function()
       entry.sdatBytes = assert(entry.romFs:readSourcePath(SDAT_PATH), "cannot read " .. SDAT_PATH)
@@ -138,6 +139,9 @@ function T.afterAll()
   if opened ~= nil then
     for _, entry in ipairs(opened) do
       entry.romFs:close()
+      if entry.source ~= nil then
+        entry.source:release()
+      end
     end
   end
 end

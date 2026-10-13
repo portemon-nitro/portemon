@@ -105,8 +105,25 @@ local function checkDescriptor(descriptor)
   return nil
 end
 
-local function checkIdentity(versionId, romSha1)
-  local canonical = GameVersion.VERSIONS[versionId]
+-- The version catalog is injectable so validation and registration agree on
+-- exactly the catalog the cartridge was verified against; production passes
+-- the shared GameVersion table by default.
+local function catalogEntry(versions, versionId)
+  if type(versions) == "table" and type(versions.VERSIONS) == "table" then
+    return versions.VERSIONS[versionId]
+  end
+  if type(versions) == "table" and type(versions.info) == "function" then
+    local ok, info = pcall(versions.info, versionId)
+    if ok and type(info) == "table" then
+      return info
+    end
+    return nil
+  end
+  return nil
+end
+
+local function checkIdentity(versionId, romSha1, versions)
+  local canonical = catalogEntry(versions or GameVersion, versionId)
   if not canonical then
     return mismatch("no known version for source registration", { versionId = versionId })
   end
@@ -119,9 +136,11 @@ end
 -- Validate and atomically persist the location of an already-verified
 -- cartridge. descriptor is {kind, path, displayName, zipEntry} as reported by
 -- the accepted source; path is false for bytes that cannot be reopened.
+-- versions optionally names the catalog the cartridge was verified against
+-- (it must expose either VERSIONS or info); it defaults to GameVersion.
 -- Returns true; on any validation or persistence failure returns nil plus a
 -- typed error without touching the previous registration.
-function RomBinding.record(cache, validatedRom, descriptor)
+function RomBinding.record(cache, validatedRom, descriptor, versions)
   assert(cache and validatedRom, "record requires a version cache and a verified cartridge")
   local versionInfo = validatedRom.versionInfo and validatedRom:versionInfo() or nil
   if type(versionInfo) ~= "table" or type(versionInfo.id) ~= "string" or type(versionInfo.sha1) ~= "string" then
@@ -139,7 +158,7 @@ function RomBinding.record(cache, validatedRom, descriptor)
     return nil, descriptorErr
   end
   local romSha1 = versionInfo.sha1:lower()
-  local identityErr = checkIdentity(versionInfo.id, romSha1)
+  local identityErr = checkIdentity(versionInfo.id, romSha1, versions)
   if identityErr then
     return nil, identityErr
   end
@@ -175,7 +194,9 @@ end
 -- unreadable records are source-required (the caller must ask for a source);
 -- truncated or misshapen records are corruption; an identity the catalog no
 -- longer recognizes is a mismatch. All three are typed and distinct.
-function RomBinding.read(cache, versionId)
+-- versions optionally names the catalog the registration is checked against;
+-- it defaults to GameVersion.
+function RomBinding.read(cache, versionId, versions)
   assert(cache and type(versionId) == "string", "read requires a version cache and a version id")
   local binding, err = cache:loadLua(RomBinding.PATH)
   if binding == nil then
@@ -202,7 +223,7 @@ function RomBinding.read(cache, versionId)
         recordVersion = binding.versionId,
       })
   end
-  local identityErr = checkIdentity(versionId, binding.romSha1)
+  local identityErr = checkIdentity(versionId, binding.romSha1, versions)
   if identityErr then
     return nil, identityErr
   end

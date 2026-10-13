@@ -307,7 +307,7 @@ function T.app_discovery_is_lazy_required_and_untouched_by_other_commands()
   love.event.quit = function() end
 
   local ok, err = xpcall(function()
-    Runner.load({ command = "check-dump" })
+    Runner.load({ command = "check-derived-cache" })
   end, debug.traceback)
 
   local stillUnloaded = package.loaded[APP_DISCOVERY_MODULE] == nil

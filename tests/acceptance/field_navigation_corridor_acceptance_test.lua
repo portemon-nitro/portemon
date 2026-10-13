@@ -4,7 +4,7 @@
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
-local RomFs = require("romdump.src.source.RomFs")
+local RomSourcePath = require("tests.rom.support.RomSourcePath")
 local NavigationFacts = require("tests.rom.support.NavigationFacts")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local OpeningLifecycle = require("tests.acceptance.support.OpeningLifecycle")
@@ -48,10 +48,11 @@ end
 local function withVersion(fn)
   local harness = AcceptanceHarness.new()
   local versionId = AcceptanceHarness.defaultVersion()
-  local romFs, err = RomFs.open(versionId)
-  assert(romFs, tostring(err))
+  local romFs, romSource = RomSourcePath.openReader(versionId)
+  assert(romFs, tostring(romSource))
   local facts = NavigationFacts.discover(CacheFs.forVersion(versionId), romFs)
   romFs:close()
+  romSource:release()
   local game = harness:boot({ versionId = versionId, map = "MAP_NEW_BARK", save = "fresh" })
   OpeningLifecycle.seedNewBarkWestExitScene(game)
   OpeningLifecycle.settleNewBarkFriendScene(game)
@@ -273,10 +274,11 @@ end
 
 function T.tests.route_29_physical_frontier_traversal_keeps_autonomous_actors_coherent()
   local versionId = AcceptanceHarness.defaultVersion()
-  local romFs, err = RomFs.open(versionId)
-  assert(romFs, tostring(err))
+  local romFs, romSource = RomSourcePath.openReader(versionId)
+  assert(romFs, tostring(romSource))
   local facts = NavigationFacts.discover(CacheFs.forVersion(versionId), romFs)
   romFs:close()
+  romSource:release()
   local game = AcceptanceHarness.new():boot({
     versionId = versionId,
     map = "MAP_NEW_BARK",

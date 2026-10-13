@@ -5,6 +5,10 @@ local RomImporter = require("romdump.src.source.RomImporter")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local DumpFixture = require("tests.support.DumpFixture")
+local NdsBuilder = require("tests.support.NdsBuilder")
+local RomSource = require("romdump.src.source.RomSource")
+local NdsRom = require("romdump.src.source.NdsRom")
+local RomBinding = require("romdump.src.source.RomBinding")
 local HgssArchives = require("romdump.src.config.HgssArchives")
 
 local T = {}
@@ -157,13 +161,46 @@ local function assertLiveUnchanged(backend, files, dirs)
   end
 end
 
+-- Readiness follows the strict source binding, never dump bytes: seed a
+-- registration for a synthetic fixture ROM so preservation tests can pin
+-- prior readiness in binding terms. The injected catalog accepts exactly
+-- the built fixture bytes under heartgold; production passes GameVersion.
+local function seedBinding(cache)
+  local data = NdsBuilder.build(DumpFixture.spec())
+  local sha1 = RomSource.fromString(data):sha1()
+  local info = { id = "heartgold", sha1 = sha1, gameCode = "IPKE", expectedSize = #data }
+  local versions = {
+    info = function(id)
+      return id == "heartgold" and info or nil
+    end,
+    forSha1 = function(h)
+      return h == sha1 and info or nil
+    end,
+    forGameCode = function(c)
+      return c == "IPKE" and info or nil
+    end,
+  }
+  local rom = assert(NdsRom.open(RomSource.fromString(data), versions))
+  Assert.isTrue(
+    RomBinding.record(cache, rom, {
+      kind = "nds",
+      path = false,
+      displayName = "synthetic.nds",
+      zipEntry = false,
+    }, versions),
+    "the prior registration must record"
+  )
+  return versions
+end
+
 -- A failed extraction must leave a previously ready dump untouched and ready:
 -- nothing is written to the live root until the staged dump is published, and
 -- the failed staging tree is removed immediately rather than lingering until
 -- the next import.
 function T.failed_extraction_preserves_ready_dump()
   local backend = FakeCache.new()
-  extractOk({ backend = backend })
+  local seeded = extractOk({ backend = backend })
+  local versions = seedBinding(seeded.cache)
   local files, dirs = snapshotLive(backend)
 
   local spec = DumpFixture.spec()
@@ -175,7 +212,10 @@ function T.failed_extraction_preserves_ready_dump()
   Assert.equal(r.err.code, "EXTRACT_REQUIRED_NARC_MISSING")
   assertLiveUnchanged(backend, files, dirs)
   local cache = CacheFs.forVersion("heartgold", backend)
-  Assert.isTrue(RomImporter.isReady("heartgold", cache), "previous dump must remain ready after a failed extraction")
+  Assert.isTrue(
+    RomImporter.isReady("heartgold", cache, versions),
+    "the prior registration must survive a failed extraction"
+  )
   Assert.isNil(
     backend.files["heartgold.__g4next/rom-dump.complete"],
     "a partial staged dump must never expose its marker"
@@ -188,10 +228,13 @@ function T.failed_extraction_preserves_ready_dump()
 end
 
 -- A successful extraction replaces the previous dump: the old tree is dropped
--- only after the staged tree lands, and no staging residue survives.
+-- only after the staged tree lands, and no staging residue survives. The
+-- replacement carries no registration with it, so the fresh tree is not
+-- ready until a source is bound: dump bytes never imply readiness.
 function T.successful_extraction_replaces_dump_and_cleans_staging()
   local backend = FakeCache.new()
-  extractOk({ backend = backend })
+  local seeded = extractOk({ backend = backend })
+  local versions = seedBinding(seeded.cache)
   backend.files[HG .. "stray.txt"] = "OLD-STRAY"
 
   local spec = DumpFixture.spec()
@@ -200,7 +243,10 @@ function T.successful_extraction_replaces_dump_and_cleans_staging()
 
   Assert.equal(backend.files[HG .. "romfs/data/sound/gs_sound_data.sdat"], "SDAT-STUB-2")
   Assert.isNil(backend.files[HG .. "stray.txt"], "previous dump contents must be gone")
-  Assert.isTrue(RomImporter.isReady("heartgold", CacheFs.forVersion("heartgold", backend)))
+  Assert.isFalse(
+    RomImporter.isReady("heartgold", CacheFs.forVersion("heartgold", backend), versions),
+    "a replaced dump is not ready until its source is bound"
+  )
   Assert.isNil(backend.files["heartgold.__g4next/rom-dump.complete"], "no staging residue")
   Assert.isNil(backend.dirs["heartgold.__g4next"], "no staging residue")
   Assert.isNil(backend.files["heartgold.__g4old/romfs/a/0/0/2"], "no orphaned old root")
@@ -225,7 +271,8 @@ end
 -- recovery material: run() must not remove it, and the next import discards it.
 function T.failed_publish_restores_previous_dump()
   local backend = FakeCache.new()
-  extractOk({ backend = backend })
+  local seeded = extractOk({ backend = backend })
+  local versions = seedBinding(seeded.cache)
   local files, dirs = snapshotLive(backend)
 
   local originalReplace = backend.replace
@@ -240,7 +287,10 @@ function T.failed_publish_restores_previous_dump()
   Assert.isNil(r.report, "expected extraction to fail")
   Assert.equal(r.err.code, "CACHE_REPLACE_FAILED")
   assertLiveUnchanged(backend, files, dirs)
-  Assert.isTrue(RomImporter.isReady("heartgold", CacheFs.forVersion("heartgold", backend)))
+  Assert.isTrue(
+    RomImporter.isReady("heartgold", CacheFs.forVersion("heartgold", backend), versions),
+    "the prior registration must survive a failed publish"
+  )
   Assert.isNil(backend.files["heartgold.__g4old/romfs/a/0/0/2"], "no orphaned old root after rollback")
   Assert.notNil(
     backend.files["heartgold.__g4next/rom-dump.complete"],

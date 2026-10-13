@@ -14,7 +14,6 @@ local Assert = require("tests.support.Assert")
 -- contracts) stay real so requirement parsing and identity shape are proved.
 local FAKE_PATHS = {
   "libs.storage.src.CacheFs",
-  "romdump.src.source.RomFs",
   "romdump.src.DerivedCacheState",
   "romdump.src.ProducerFingerprint",
   "romdump.src.DerivedCacheAudit",
@@ -49,9 +48,6 @@ local function newEnv()
     pools = {},
     shutdowns = 0,
     retires = 0,
-    opens = {},
-    closes = {},
-    openFailures = {},
     dumpMarkers = {},
     stateStored = nil,
     stateMatches = false,
@@ -382,23 +378,6 @@ local function makeFakes()
       }
     end,
   }
-  fakes.RomFs = {
-    open = function(versionId)
-      if env.openFailures[versionId] ~= nil then
-        return nil, env.openFailures[versionId]
-      end
-      env.opens[#env.opens + 1] = versionId
-      return {
-        version = versionId,
-        metadata = function()
-          return { sha1 = string.rep("a", 40) }
-        end,
-        close = function()
-          env.closes[#env.closes + 1] = versionId
-        end,
-      }
-    end,
-  }
   fakes.DerivedCacheState = {
     path = "data/generated/build.lua",
     matches = function(stored)
@@ -556,10 +535,15 @@ function T.batch_reports_success_and_preserves_partial_publication_failure()
   Assert.isTrue(requested["mon-summary:global"], "the mon summary is requested")
   Assert.equal(#env.publishes, 1, "a strict success publishes its attestation")
   local identity = env.publishes[1]
+  local GameVersion = require("romdump.src.source.GameVersion")
   Assert.equal(identity.versionId, "heartgold")
   Assert.equal(identity.mode, "development")
   Assert.equal(identity.producerId, "d" .. string.rep("1", 64))
-  Assert.equal(identity.romSha1, string.rep("a", 40))
+  Assert.equal(
+    identity.romSha1,
+    GameVersion.VERSIONS.heartgold.sha1,
+    "batch identity carries the canonical catalog hash, never a dump read"
+  )
   Assert.deepEqual(env.auditCalls, {}, "a strict success publishes without a second audit")
   Assert.equal(env.shutdowns, 1, "the command shuts its pool down")
   Assert.equal(env.retires, 1, "the command retires its session")
@@ -661,22 +645,18 @@ function T.non_map_family_failure_is_never_hidden_by_map_exclusions()
   Assert.equal(#env.publishes, 0, "a hidden family failure must never pass as partial success")
 end
 
--- One version whose source fails to open is reported while the remaining
+-- One version whose identity cannot resolve is reported while the remaining
 -- versions still run; the batch fails and no new attestation is published
 -- for any version, while previously valid attestations are untouched.
 function T.a_failed_version_continues_without_publishing_new_attestations()
-  local Errors = require("libs.errors.src.Errors")
   env = newEnv()
-  env.openFailures.heartgold = Errors.new("ROMFS_LOAD_FAILED", "injected open failure", {})
   env.auditAvailable = true
   local report, err = CacheBuilder.buildVersions(
-    { "heartgold", "soulsilver" },
+    { "bogus-version", "soulsilver" },
     { dev = true, developmentRepositoryRoot = "/checkout", log = testLog() }
   )
   Assert.isNil(report)
   Assert.equal(err, "cache preparation failed")
-  Assert.deepEqual(env.opens, { "soulsilver" })
-  Assert.deepEqual(env.closes, { "soulsilver" })
   Assert.equal(#env.sessions, 1, "the remaining version still prepares through its session")
   Assert.equal(#env.publishes, 0, "a failed batch defers every new attestation")
 end
@@ -684,14 +664,12 @@ end
 -- A previously valid attestation for an unaffected version is preserved when
 -- another version fails: the fast path never invalidates.
 function T.valid_attestations_for_unaffected_versions_are_preserved()
-  local Errors = require("libs.errors.src.Errors")
   env = newEnv()
   env.stateStored = { schema = 2, generationId = "test-generation" }
   env.stateMatches = true
   env.auditAvailable = true
-  env.openFailures.soulsilver = Errors.new("ROMFS_LOAD_FAILED", "injected open failure", {})
   local report, err = CacheBuilder.buildVersions(
-    { "heartgold", "soulsilver" },
+    { "heartgold", "bogus-version" },
     { dev = true, developmentRepositoryRoot = "/checkout", log = testLog() }
   )
   Assert.isNil(report)

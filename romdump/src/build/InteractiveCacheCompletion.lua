@@ -330,6 +330,38 @@ function InteractiveCacheCompletion:completeAttested()
   return self.completeUrgency ~= nil and self.completeExhausted
 end
 
+-- Read-only source-lifetime oracle for the compiler pool: true only when
+-- no source-dependent work can still arrive from this owner. Pending
+-- required/near interest, an open complete intent, an unsettled sweep
+-- candidate, and an unexhausted authorized sweep each keep the shared
+-- buffer alive; terminal failure still settles, since failed work is
+-- accounted, not pending. A retired owner settles vacuously: retirement
+-- already drops the buffer through its own barrier. The pool keeps its
+-- own dispatch/publication/close checks; this answers only the sweep
+-- side the pool cannot see.
+---@return boolean no future source work can arrive from this owner
+function InteractiveCacheCompletion:sourceWorkSettled()
+  local session = self.session
+  if session == nil or session.retired then
+    return true
+  end
+  if session.foregroundPendingCount > 0 then
+    return false
+  end
+  if self.sweepCandidate ~= nil then
+    return false
+  end
+  if self.completeUrgency ~= nil then
+    if not self.completeExhausted or self.completeScope.remaining > 0 then
+      return false
+    end
+  end
+  if self.sweepAuthorized and not self.sweepExhausted then
+    return false
+  end
+  return true
+end
+
 ---@return { completeDone: boolean, completeAttested: boolean, completeExhausted: boolean, sweepState: string, sweepFailure: string|nil } completion status projection
 function InteractiveCacheCompletion:status()
   local sweepState = "warming"

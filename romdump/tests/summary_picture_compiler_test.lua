@@ -357,7 +357,7 @@ function T.malformed_motion_streams_fail_without_default_operands()
   end
 end
 
--- Representative compiled pictures need a ready user-owned dump: without
+-- Representative compiled pictures need a ready user-owned ROM: without
 -- one this gate stays explicitly unverified instead of passing on
 -- synthetic data alone.
 function T.representative_pictures_compile_from_the_ready_dump(context)
@@ -367,7 +367,7 @@ function T.representative_pictures_compile_from_the_ready_dump(context)
   end
   local GameVersion = require("romdump.src.source.GameVersion")
   local RomImporter = require("romdump.src.source.RomImporter")
-  local RomFs = require("romdump.src.source.RomFs")
+  local RomSourcePath = require("tests.rom.support.RomSourcePath")
   local compiler = requirePictureCompiler()
   local selections = {
     { key = "bulbasaur", species = 1 },
@@ -382,9 +382,9 @@ function T.representative_pictures_compile_from_the_ready_dump(context)
   for _, versionId in ipairs(GameVersion.ORDER) do
     if RomImporter.isReady(versionId) then
       exercised = true
-      local romFs, openErr = RomFs.open(versionId)
-      Assert.isTrue(romFs ~= nil, "the ready dump opens: " .. tostring(openErr))
-      assert(romFs ~= nil, "unopenable dumps fail above")
+      local romFs, romSource = RomSourcePath.openReader(versionId)
+      Assert.isTrue(romFs ~= nil, "the registered source opens: " .. tostring(romSource))
+      assert(romFs ~= nil, "unopenable sources fail above")
       local bundle, err = compiler.compile(romFs, selections)
       Assert.isTrue(bundle ~= nil, "representative pictures compile: " .. tostring(err and err.code))
       assert(bundle ~= nil, "failed pictures fail above")
@@ -415,9 +415,10 @@ function T.representative_pictures_compile_from_the_ready_dump(context)
         end
       end
       romFs:close()
+      romSource:release()
     end
   end
-  Assert.isTrue(exercised, "a ready dump backs the representative check")
+  Assert.isTrue(exercised, "a registered source backs the representative check")
 end
 
 local function requireSchema()

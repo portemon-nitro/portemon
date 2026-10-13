@@ -102,6 +102,8 @@ function Worker.new(control, reply)
     pool = nil,
     poolRoot = false,
     session = nil,
+    selectedVersionId = nil,
+    selectedRomSha1 = nil,
     liveEpoch = nil,
     lastRetiredEpoch = nil,
     lifecycle = "starting",
@@ -473,6 +475,8 @@ function Worker:_applySelect(command)
     self:_answerSelect({ epoch = epoch, ok = false, errorMessage = "controller generation selection failed" })
     return
   end
+  self.selectedVersionId = versionId
+  self.selectedRomSha1 = info.sha1
   self.liveEpoch = epoch
   self.lastRetiredEpoch = nil
   self.lifecycle = "active"
@@ -587,6 +591,51 @@ function Worker:_applyEnableSweep(command)
   if not ok then
     self:_fail("controller background authorization failed: " .. formatError(failure))
   end
+end
+
+---@param command table<string, unknown>
+function Worker:_applyOfferSource(command)
+  -- A validated import hands its one immutable buffer to the pool exactly
+  -- once for the live epoch. The epoch must be live; version identity is
+  -- enforced when the selection recorded it. Acceptance is acknowledged,
+  -- never silent: the exact acknowledgement shape stays ours, and a stale
+  -- or foreign offer is refused visibly without touching the pool.
+  local epoch = command.epoch
+  local function reject(cause)
+    self.reply:push({ op = "offer-source-result", epoch = epoch, ok = false, errorMessage = cause })
+  end
+  if type(epoch) ~= "number" or epoch ~= self.liveEpoch or self.lifecycle == "failed" then
+    reject("source offer does not match the live epoch")
+    return
+  end
+  if type(command.byteData) ~= "userdata" then
+    reject("source offer carries no shared buffer")
+    return
+  end
+  if self.selectedVersionId ~= nil and command.versionId ~= self.selectedVersionId then
+    reject("source offer names another version")
+    return
+  end
+  if self.selectedRomSha1 ~= nil and command.romSha1 ~= self.selectedRomSha1 then
+    reject("source offer identity does not match the selection")
+    return
+  end
+  local pool = self.pool
+  if pool == nil then
+    reject("the controller has no compiler pool")
+    return
+  end
+  local ok, accepted = pcall(function()
+    return pool:offerSource(epoch, command.byteData, {
+      versionId = command.versionId,
+      romSha1 = command.romSha1,
+    })
+  end)
+  if not ok then
+    reject("the compiler pool refused the source offer")
+    return
+  end
+  self.reply:push({ op = "offer-source-result", epoch = epoch, ok = accepted ~= false })
 end
 
 ---@param command table<string, unknown>
@@ -732,6 +781,18 @@ function Worker:_handle(command)
     end
   elseif op == "enableSweep" then
     self:_applyEnableSweep(command)
+  elseif op == "offer-source" then
+    local ok, failure = pcall(function()
+      self:_applyOfferSource(command)
+    end)
+    if not ok then
+      self.reply:push({
+        op = "offer-source-result",
+        epoch = type(command) == "table" and command.epoch or nil,
+        ok = false,
+        errorMessage = formatError(failure),
+      })
+    end
   elseif op == "retire" then
     local ok, failure = pcall(function()
       self:_applyRetire(command)

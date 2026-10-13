@@ -3033,4 +3033,50 @@ function T.follower_backend_throw_leaves_no_stale_memo_for_retry()
   Assert.isTrue(calls > callsBefore, "the retry performs fresh cache reads")
 end
 
+-- The completion owner reports whether any source-dependent work can
+-- still arrive: pending required/near interest, an open complete intent,
+-- an unsettled sweep candidate, or an unexhausted authorized sweep all
+-- keep the shared source alive. A session with no demand and no
+-- authorized background work holds no future source work.
+function T.completion_reports_source_settled_only_when_no_source_work_remains()
+  local function freshCompletion(generation)
+    local backend = FakeCache.new()
+    local pool = selectableRecordingPool()
+    local session, _ = isolatedSession(generation, pool, backend)
+    return session, assert(session.completion, "the session owns its completion")
+  end
+  local idle, idleCompletion = freshCompletion("settled-idle-generation")
+  Assert.isTrue(
+    idleCompletion:sourceWorkSettled(),
+    "a session with no demand holds no future source work"
+  )
+  local _, sweepCompletion = freshCompletion("settled-sweep-generation")
+  Assert.isTrue(
+    sweepCompletion:sourceWorkSettled(),
+    "an unauthorized sweep holds no future source work"
+  )
+  idle:enableSweep()
+  Assert.isFalse(
+    idleCompletion:sourceWorkSettled(),
+    "an authorized sweep can still enroll source work"
+  )
+  local demanded, demandCompletion = freshCompletion("settled-demand-generation")
+  demanded:requestJob("map", "7", "required")
+  Assert.isFalse(
+    demandCompletion:sourceWorkSettled(),
+    "pending required work keeps the source alive"
+  )
+  local complete, completeCompletion = freshCompletion("settled-complete-generation")
+  complete:requestComplete("required")
+  Assert.isFalse(
+    completeCompletion:sourceWorkSettled(),
+    "an open complete intent keeps the source alive"
+  )
+  demanded:retire()
+  Assert.isTrue(
+    demandCompletion:sourceWorkSettled(),
+    "a retired session owns no future source work"
+  )
+end
+
 return { metadata = { capabilities = {} }, tests = T }

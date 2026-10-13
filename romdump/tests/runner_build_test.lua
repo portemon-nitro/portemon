@@ -141,7 +141,7 @@ function T.completed_import_status_is_queried_once()
       statusCalls = statusCalls + 1
       return {
         versionId = "heartgold",
-        report = { sha1 = "abc", fatEntryCount = 2, totalBytesWritten = 3 },
+        report = { sha1 = "abc", kind = "nds", path = "provided.nds", displayName = "provided.nds", zipEntry = false },
       }
     end,
   }
@@ -160,28 +160,18 @@ function T.completed_import_status_is_queried_once()
   Assert.equal(statusCalls, 1, "status must not be queried twice per completion")
 end
 
--- The import-completion build path keeps the runSource ordering contract: the
--- imported version is audited, the derived cache is built from it with the
--- CLI's compile-exclusion flag, the runtime boots from that cache, and is
--- disposed before the process exits with success.
-function T.completed_import_with_build_cache_runs_audit_build_then_boot_and_dispose()
+-- The import-completion build path keeps the registration ordering contract:
+-- the derived cache is built from the registered version with the CLI's
+-- compile-exclusion flag, the runtime boots from that cache, and is disposed
+-- before the process exits with success.
+function T.completed_import_with_build_cache_runs_build_then_boot_and_dispose()
   local realQuit = love.event.quit
   local realOpts, realImporter = Runner.opts, Runner.importer
   local saved = {
-    dumpAudit = package.loaded["romdump.src.source.DumpAudit"],
     builder = package.loaded["romdump.src.CacheBuilder"],
     runtime = package.loaded["game.hgss.src.field.FieldRuntime"],
   }
   local calls, exitCode, buildOptions
-  package.loaded["romdump.src.source.DumpAudit"] = {
-    run = function(versionId)
-      calls[#calls + 1] = "audit:" .. versionId
-      return { ok = true }
-    end,
-    lines = function()
-      return {}
-    end,
-  }
   package.loaded["romdump.src.CacheBuilder"] = {
     buildVersions = function(versionIds, options)
       calls[#calls + 1] = "build:" .. table.concat(versionIds, ",")
@@ -212,7 +202,7 @@ function T.completed_import_with_build_cache_runs_audit_build_then_boot_and_disp
     status = function()
       return {
         versionId = "heartgold",
-        report = { sha1 = "abc", fatEntryCount = 2, totalBytesWritten = 3 },
+        report = { sha1 = "abc", kind = "nds", path = "provided.nds", displayName = "provided.nds", zipEntry = false },
       }
     end,
   }
@@ -224,7 +214,6 @@ function T.completed_import_with_build_cache_runs_audit_build_then_boot_and_disp
   end, debug.traceback)
   love.event.quit = realQuit
   Runner.opts, Runner.importer = realOpts, realImporter
-  package.loaded["romdump.src.source.DumpAudit"] = saved.dumpAudit
   package.loaded["romdump.src.CacheBuilder"] = saved.builder
   package.loaded["game.hgss.src.field.FieldRuntime"] = saved.runtime
   if not ok then
@@ -232,64 +221,9 @@ function T.completed_import_with_build_cache_runs_audit_build_then_boot_and_disp
   end
 
   Assert.equal(exitCode, 0)
-  Assert.deepEqual(calls, { "audit:heartgold", "build:heartgold", "boot:heartgold", "dispose" })
+  Assert.deepEqual(calls, { "build:heartgold", "boot:heartgold", "dispose" })
   Assert.deepEqual(buildOptions.versionIds, { "heartgold" })
   Assert.isTrue(buildOptions.options.allowCompileExclusions, "the completion path passes the CLI flag through")
-end
-
--- A failed dump audit on the completion path exits nonzero and never builds
--- or boots: a bad import must not be reported as a completed build-cache.
-function T.completed_import_audit_failure_exits_nonzero_without_building()
-  local realQuit = love.event.quit
-  local realOpts, realImporter = Runner.opts, Runner.importer
-  local saved = {
-    dumpAudit = package.loaded["romdump.src.source.DumpAudit"],
-    builder = package.loaded["romdump.src.CacheBuilder"],
-  }
-  local calls, exitCode
-  package.loaded["romdump.src.source.DumpAudit"] = {
-    run = function()
-      calls[#calls + 1] = "audit"
-      return { version = "heartgold", ok = false, checks = {} }
-    end,
-    lines = function()
-      return {}
-    end,
-  }
-  package.loaded["romdump.src.CacheBuilder"] = {
-    buildVersions = function()
-      calls[#calls + 1] = "build"
-      return { published = true, complete = true, exclusionCount = 0 }
-    end,
-  }
-  love.event.quit = function(code)
-    exitCode = code
-  end
-  Runner.importer = {
-    state = "complete",
-    status = function()
-      return {
-        versionId = "heartgold",
-        report = { sha1 = "abc", fatEntryCount = 2, totalBytesWritten = 3 },
-      }
-    end,
-  }
-  Runner.opts = { command = "build-cache", romPath = "provided.nds" }
-  calls = {}
-
-  local ok, err = xpcall(function()
-    Runner._maybeExit()
-  end, debug.traceback)
-  love.event.quit = realQuit
-  Runner.opts, Runner.importer = realOpts, realImporter
-  package.loaded["romdump.src.source.DumpAudit"] = saved.dumpAudit
-  package.loaded["romdump.src.CacheBuilder"] = saved.builder
-  if not ok then
-    error(err, 0)
-  end
-
-  Assert.equal(exitCode, 1, "a failed completion-path audit must exit nonzero")
-  Assert.deepEqual(calls, { "audit" }, "a failed audit must never build or boot")
 end
 
 -- A failed cache build on the completion path exits nonzero and never boots
@@ -298,20 +232,10 @@ function T.completed_import_build_failure_exits_nonzero_without_booting()
   local realQuit = love.event.quit
   local realOpts, realImporter = Runner.opts, Runner.importer
   local saved = {
-    dumpAudit = package.loaded["romdump.src.source.DumpAudit"],
     builder = package.loaded["romdump.src.CacheBuilder"],
     runtime = package.loaded["game.hgss.src.field.FieldRuntime"],
   }
   local calls, exitCode
-  package.loaded["romdump.src.source.DumpAudit"] = {
-    run = function(versionId)
-      calls[#calls + 1] = "audit:" .. versionId
-      return { ok = true }
-    end,
-    lines = function()
-      return {}
-    end,
-  }
   package.loaded["romdump.src.CacheBuilder"] = {
     buildVersions = function()
       calls[#calls + 1] = "build"
@@ -332,7 +256,7 @@ function T.completed_import_build_failure_exits_nonzero_without_booting()
     status = function()
       return {
         versionId = "heartgold",
-        report = { sha1 = "abc", fatEntryCount = 2, totalBytesWritten = 3 },
+        report = { sha1 = "abc", kind = "nds", path = "provided.nds", displayName = "provided.nds", zipEntry = false },
       }
     end,
   }
@@ -344,7 +268,6 @@ function T.completed_import_build_failure_exits_nonzero_without_booting()
   end, debug.traceback)
   love.event.quit = realQuit
   Runner.opts, Runner.importer = realOpts, realImporter
-  package.loaded["romdump.src.source.DumpAudit"] = saved.dumpAudit
   package.loaded["romdump.src.CacheBuilder"] = saved.builder
   package.loaded["game.hgss.src.field.FieldRuntime"] = saved.runtime
   if not ok then
@@ -352,7 +275,7 @@ function T.completed_import_build_failure_exits_nonzero_without_booting()
   end
 
   Assert.equal(exitCode, 1, "a failed completion-path build must exit nonzero")
-  Assert.deepEqual(calls, { "audit:heartgold", "build" }, "a failed build must never boot the runtime")
+  Assert.deepEqual(calls, { "build" }, "a failed build must never boot the runtime")
 end
 
 -- A raising runtime constructor is the production failure shape after binary
@@ -362,20 +285,10 @@ function T.completed_import_constructor_raise_exits_nonzero()
   local realQuit = love.event.quit
   local realOpts, realImporter = Runner.opts, Runner.importer
   local saved = {
-    dumpAudit = package.loaded["romdump.src.source.DumpAudit"],
     builder = package.loaded["romdump.src.CacheBuilder"],
     runtime = package.loaded["game.hgss.src.field.FieldRuntime"],
   }
   local calls, exitCode
-  package.loaded["romdump.src.source.DumpAudit"] = {
-    run = function(versionId)
-      calls[#calls + 1] = "audit:" .. versionId
-      return { ok = true }
-    end,
-    lines = function()
-      return {}
-    end,
-  }
   package.loaded["romdump.src.CacheBuilder"] = {
     buildVersions = function(versionIds)
       calls[#calls + 1] = "build:" .. table.concat(versionIds, ",")
@@ -396,7 +309,7 @@ function T.completed_import_constructor_raise_exits_nonzero()
     status = function()
       return {
         versionId = "heartgold",
-        report = { sha1 = "abc", fatEntryCount = 2, totalBytesWritten = 3 },
+        report = { sha1 = "abc", kind = "nds", path = "provided.nds", displayName = "provided.nds", zipEntry = false },
       }
     end,
   }
@@ -408,7 +321,6 @@ function T.completed_import_constructor_raise_exits_nonzero()
   end, debug.traceback)
   love.event.quit = realQuit
   Runner.opts, Runner.importer = realOpts, realImporter
-  package.loaded["romdump.src.source.DumpAudit"] = saved.dumpAudit
   package.loaded["romdump.src.CacheBuilder"] = saved.builder
   package.loaded["game.hgss.src.field.FieldRuntime"] = saved.runtime
   if not ok then
@@ -416,7 +328,7 @@ function T.completed_import_constructor_raise_exits_nonzero()
   end
 
   Assert.equal(exitCode, 1, "a raising runtime constructor must exit nonzero")
-  Assert.deepEqual(calls, { "audit:heartgold", "build:heartgold", "boot:heartgold" }, "a failed boot is not disposed")
+  Assert.deepEqual(calls, { "build:heartgold", "boot:heartgold" }, "a failed boot is not disposed")
 end
 
 -- A failed import exits nonzero on the error state and never touches the
@@ -523,18 +435,7 @@ end
 function T.conflicting_cli_commands_are_rejected_before_dispatch()
   local realIsReady, realQuit = RomImporter.isReady, love.event.quit
   local realOpts, realImporter = Runner.opts, Runner.importer
-  local saved = package.loaded["romdump.src.source.DumpAudit"]
-  local dumpAuditCalls = 0
   local exitCode
-  package.loaded["romdump.src.source.DumpAudit"] = {
-    run = function()
-      dumpAuditCalls = dumpAuditCalls + 1
-      return { ok = true }
-    end,
-    lines = function()
-      return {}
-    end,
-  }
   RomImporter.isReady = function()
     return true
   end
@@ -543,58 +444,12 @@ function T.conflicting_cli_commands_are_rejected_before_dispatch()
   end
 
   local ok, err = xpcall(function()
-    Runner.load(Cli.parse({ "--check-dump", "--import-rom", "/tmp/hg.nds" }))
+    Runner.load(Cli.parse({ "--probe-rom", "/tmp/hg.nds", "--import-rom", "/tmp/ss.nds" }))
   end, debug.traceback)
   RomImporter.isReady, love.event.quit = realIsReady, realQuit
   Runner.opts, Runner.importer = realOpts, realImporter
-  package.loaded["romdump.src.source.DumpAudit"] = saved
 
-  Assert.equal(dumpAuditCalls, 0, "conflicting commands must never dispatch an action")
   Assert.isTrue(not ok or exitCode == 2, "conflicting commands must raise or usage-quit, never run: " .. tostring(err))
-end
-
--- check-dump audits every ready version exactly once and its exit code
--- reflects every report verdict.
-function T.check_dump_audits_every_ready_version_once()
-  local realIsReady, realQuit = RomImporter.isReady, love.event.quit
-  local realOpts, realImporter = Runner.opts, Runner.importer
-  local saved = package.loaded["romdump.src.source.DumpAudit"]
-  local calls, exitCodes = {}, {}
-  local verdicts = {
-    heartgold = { ok = true },
-    soulsilver = { ok = false },
-  }
-  package.loaded["romdump.src.source.DumpAudit"] = {
-    run = function(version)
-      calls[#calls + 1] = "audit:" .. version
-      return verdicts[version]
-    end,
-    lines = function()
-      return {}
-    end,
-  }
-  RomImporter.isReady = function()
-    return true
-  end
-  love.event.quit = function(code)
-    exitCodes[#exitCodes + 1] = code
-  end
-
-  local ok1, err1 = xpcall(Runner._runCheckDump, debug.traceback)
-  verdicts = { heartgold = { ok = true }, soulsilver = { ok = true } }
-  local ok2, err2 = xpcall(Runner._runCheckDump, debug.traceback)
-  RomImporter.isReady, love.event.quit = realIsReady, realQuit
-  Runner.opts, Runner.importer = realOpts, realImporter
-  package.loaded["romdump.src.source.DumpAudit"] = saved
-  if not ok1 then
-    error(err1, 0)
-  end
-  if not ok2 then
-    error(err2, 0)
-  end
-
-  Assert.deepEqual(calls, { "audit:heartgold", "audit:soulsilver", "audit:heartgold", "audit:soulsilver" })
-  Assert.deepEqual(exitCodes, { 1, 0 }, "any failing report must fail the exit code")
 end
 
 -- Through the production seam (main.lua runs Runner.load(Cli.parse(argv))),
@@ -604,7 +459,6 @@ function T.parsed_prepare_command_reaches_preparation_with_its_values()
   local realIsReady, realQuit = RomImporter.isReady, love.event.quit
   local realOpts, realImporter = Runner.opts, Runner.importer
   local saved = {
-    RomFs = package.loaded["romdump.src.source.RomFs"],
     ProducerFingerprint = package.loaded["romdump.src.ProducerFingerprint"],
     CacheBuilder = package.loaded["romdump.src.CacheBuilder"],
   }
@@ -613,17 +467,6 @@ function T.parsed_prepare_command_reaches_preparation_with_its_values()
   RomImporter.isReady = function()
     return true
   end
-  package.loaded["romdump.src.source.RomFs"] = {
-    open = function(version)
-      Assert.equal(version, "heartgold")
-      return {
-        metadata = function()
-          return { sha1 = string.rep("b", 40) }
-        end,
-        close = function() end,
-      }
-    end,
-  }
   package.loaded["romdump.src.ProducerFingerprint"] = {
     checkoutBackend = function()
       return {}
@@ -667,7 +510,6 @@ function T.parsed_prepare_command_reaches_preparation_with_its_values()
   end, debug.traceback)
   RomImporter.isReady, love.event.quit = realIsReady, realQuit
   Runner.opts, Runner.importer = realOpts, realImporter
-  package.loaded["romdump.src.source.RomFs"] = saved.RomFs
   package.loaded["romdump.src.ProducerFingerprint"] = saved.ProducerFingerprint
   package.loaded["romdump.src.CacheBuilder"] = saved.CacheBuilder
   if not ok then

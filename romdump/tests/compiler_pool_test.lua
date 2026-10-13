@@ -1562,4 +1562,705 @@ function T.required_work_beside_running_background_reports_runnable()
   pool:shutdown()
 end
 
+-- Synthetic direct-source selection for the source-lifetime scenarios: a
+-- valid cartridge under a temporary catalog identity, persisted to a
+-- temporary file so the pool can acquire it exactly like a user-owned ROM.
+-- The catalog entry and the temporary file are removed even when the body
+-- fails; every acquisition runs through the isolated test cache.
+local function withDirectSourceSelection(versionId, gameCode, fn)
+  local RomSource = require("romdump.src.source.RomSource")
+  local NdsBuilder = require("tests.support.NdsBuilder")
+  local DumpFixture = require("tests.support.DumpFixture")
+  local GameVersion = require("romdump.src.source.GameVersion")
+  local NdsRom = require("romdump.src.source.NdsRom")
+  local spec = DumpFixture.spec()
+  spec.gameCode = gameCode
+  local data = NdsBuilder.build(spec)
+  local sha1 = RomSource.fromString(data):sha1()
+  local unique = tostring(os.time()) .. "-" .. tostring({}):match("0x(%x+)")
+  local romPath = (os.getenv("TMPDIR") or "/tmp") .. "/portemon-source-" .. versionId .. "-" .. unique .. ".nds"
+  local file = assert(io.open(romPath, "wb"), "the isolated source fixture must be writable")
+  file:write(data)
+  file:close()
+  local saved = GameVersion.VERSIONS[versionId]
+  GameVersion.VERSIONS[versionId] = {
+    id = versionId,
+    label = "Synthetic",
+    displayName = "Synthetic Cartridge",
+    sha1 = sha1,
+    gameCode = gameCode,
+    expectedSize = #data,
+  }
+  local rom, romErr = NdsRom.open(RomSource.fromString(data))
+  if rom == nil then
+    GameVersion.VERSIONS[versionId] = saved
+    os.remove(romPath)
+    error("synthetic cartridge failed to open: " .. tostring(romErr), 0)
+  end
+  -- The pool resolves its version cache through the love backend, so point
+  -- that seam at an isolated in-memory backend for the selection: binding
+  -- registration and staged publication (both rename-based) then run
+  -- hermetically, exactly as they would against the real save root.
+  local ScopedFs = require("libs.storage.src.ScopedFs")
+  local realLoveBackend = ScopedFs.loveBackend
+  local backend = FakeCache.new()
+  ScopedFs.loveBackend = function()
+    return backend
+  end
+  local bodyOk, bodyErr = pcall(fn, { data = data, sha1 = sha1, romPath = romPath, rom = rom, backend = backend })
+  ScopedFs.loveBackend = realLoveBackend
+  GameVersion.VERSIONS[versionId] = saved
+  os.remove(romPath)
+  if not bodyOk then
+    error(bodyErr, 0)
+  end
+end
+
+local function sourceMapJob(versionId, generation, epoch, key, mapId, priority)
+  return {
+    generationId = generation,
+    epoch = epoch,
+    versionId = versionId,
+    kind = "map",
+    key = key,
+    jobKey = "map:" .. key,
+    priority = priority,
+    sizeClass = "normal",
+    payload = { mapId = mapId },
+  }
+end
+
+local function dispatchedJob(host, workerId)
+  local channel = assert(host.channels[1 + workerId], "missing input channel for worker " .. tostring(workerId))
+  local message = channel:pop()
+  assert(type(message) == "table" and message.jobKey ~= nil, "worker " .. workerId .. " received no job")
+  return message
+end
+
+local function drainMessages(host, workerId)
+  local channel = assert(host.channels[1 + workerId], "missing input channel for worker " .. tostring(workerId))
+  local messages = {}
+  while true do
+    local message = channel:pop()
+    if message == nil then
+      return messages
+    end
+    messages[#messages + 1] = message
+  end
+end
+
+local function reportSourceNeeded(host, workerId, dispatched, epoch, generation)
+  host.channels[1]:push({
+    status = "source-needed",
+    workerId = workerId,
+    epoch = epoch,
+    generationId = generation,
+    kind = dispatched.kind,
+    key = dispatched.key,
+    jobKey = dispatched.jobKey,
+    stageName = dispatched.stageName,
+  })
+end
+
+local function findSupply(messages)
+  for _, message in ipairs(messages) do
+    if type(message) == "table" and message.kind == "source-supplied" then
+      return message
+    end
+  end
+  return nil
+end
+
+local function closeMessage(messages)
+  for _, message in ipairs(messages) do
+    if type(message) == "table" and message.kind == "close-context" then
+      return message
+    end
+  end
+  return nil
+end
+
+-- The shared handle must travel by reference: the reply carries a real
+-- buffer userdata, never a whole-buffer string copy of the ROM bytes.
+local function assertSharedSupply(supply, data, owner)
+  Assert.notNil(supply, "the pool answers " .. owner .. " with a source supply")
+  local answered = assert(supply, "the pool answers " .. owner .. " with a source supply")
+  Assert.equal(type(answered.romByteData), "userdata", "the supply carries the shared buffer by reference")
+  for key, value in pairs(answered) do
+    Assert.isFalse(
+      type(value) == "string" and #value == #data and value == data,
+      "the supply never copies the whole buffer into a string field: " .. tostring(key)
+    )
+  end
+  return answered
+end
+
+local function stageOwnedMap(versionId, generation, epoch, key, stageName)
+  local prepared = requirePreparedArtifact()
+  local cache = CacheFs.forVersion(versionId)
+  local artifact = prepared.new({
+    cacheFs = cache,
+    generationId = generation,
+    epoch = epoch,
+    kind = "map",
+    key = key,
+    jobKey = "map:" .. key,
+    stageName = stageName,
+  })
+  artifact:stageFs():write("maps/" .. key .. "/complete", "ready")
+  artifact:addOwnedRoot("maps/" .. key)
+  artifact:finishSuccess({ mapId = tonumber(key), marker = "sweep-marker" })
+end
+
+local function pushPrepared(host, workerId, epoch, generation, key, stageName)
+  host.channels[1]:push({
+    workerId = workerId,
+    epoch = epoch,
+    generationId = generation,
+    kind = "map",
+    key = key,
+    jobKey = "map:" .. key,
+    stageName = stageName,
+    status = "prepared",
+  })
+end
+
+local function pushReused(host, workerId, epoch, generation, key, stageName)
+  host.channels[1]:push({
+    workerId = workerId,
+    epoch = epoch,
+    generationId = generation,
+    kind = "map",
+    key = key,
+    jobKey = "map:" .. key,
+    stageName = stageName,
+    status = "reused",
+  })
+end
+
+-- Two concurrent misses open the registered ROM exactly once and lend both
+-- workers the identical buffer: no per-worker file open, no second 128 MiB
+-- allocation, no whole-buffer string copy through the channels.
+function T.concurrent_source_misses_share_one_buffer_by_reference()
+  local CompilerPool = requirePool()
+  local RomSource = require("romdump.src.source.RomSource")
+  local RomBinding = require("romdump.src.source.RomBinding")
+  local hostLove = assert(rawget(_G, "love"), "the suite runs under the host runtime")
+  withDirectSourceSelection("synthshared", "IXS2", function(selection)
+    local host = newThreadHost(4)
+    host.love.data = hostLove.data
+    local realFromPath = RomSource.fromPath
+    local fromPathCalls = 0
+    RomSource.fromPath = function(path)
+      fromPathCalls = fromPathCalls + 1
+      return realFromPath(path)
+    end
+    local bodyOk, bodyErr = pcall(function()
+      local outcome = withLove(host.love, function()
+        local pool = CompilerPool.new({ mode = "batch", developmentRepositoryRoot = "/checkout" })
+        local cache = CacheFs.forVersion("synthshared")
+        local recorded, recordErr = RomBinding.record(cache, selection.rom, {
+          kind = "nds",
+          path = selection.romPath,
+          displayName = "synthetic.nds",
+          zipEntry = false,
+        })
+        Assert.notNil(recorded, "the binding registers the synthetic ROM: " .. tostring(recordErr))
+        pool:selectGeneration({ versionId = "synthshared", generationId = "shared-generation" }, 1)
+        pool:request(sourceMapJob("synthshared", "shared-generation", 1, "60", 60, 0))
+        pool:request(sourceMapJob("synthshared", "shared-generation", 1, "61", 61, 0))
+        pool:update()
+        Assert.equal(pool:status("map:60"), "running", "the first miss dispatches")
+        Assert.equal(pool:status("map:61"), "running", "the concurrent miss dispatches")
+        local first = dispatchedJob(host, 1)
+        local second = dispatchedJob(host, 2)
+        reportSourceNeeded(host, 1, first, 1, "shared-generation")
+        reportSourceNeeded(host, 2, second, 1, "shared-generation")
+        local driveOk, driveErr = pcall(function()
+          pool:update()
+        end)
+        local replies1 = drainMessages(host, 1)
+        local replies2 = drainMessages(host, 2)
+        pcall(function()
+          pool:shutdown()
+        end)
+        return { driveOk = driveOk, driveErr = driveErr, replies1 = replies1, replies2 = replies2 }
+      end)
+      Assert.isTrue(
+        outcome.driveOk,
+        "the pool acquires one shared buffer for concurrent misses: " .. tostring(outcome.driveErr)
+      )
+      Assert.equal(fromPathCalls, 1, "two concurrent misses cause exactly one external acquisition")
+      local firstSupply = assertSharedSupply(findSupply(outcome.replies1), selection.data, "the first worker")
+      local secondSupply = assertSharedSupply(findSupply(outcome.replies2), selection.data, "the second worker")
+      Assert.isTrue(
+        firstSupply.romByteData == secondSupply.romByteData,
+        "both workers borrow the identical buffer object"
+      )
+    end)
+    RomSource.fromPath = realFromPath
+    if not bodyOk then
+      error(bodyErr, 0)
+    end
+  end)
+end
+
+-- The complete sweep keeps its scheduling from a direct source: the
+-- required job overtakes background admission, every planned member
+-- settles with its receipt on disk, and settling ready work evicts
+-- nothing. The required miss compiles through the one shared buffer;
+-- background hits reuse without source traffic.
+function T.background_sweep_compiles_from_shared_source_without_evicting_ready_work()
+  local CompilerPool = requirePool()
+  local RomSource = require("romdump.src.source.RomSource")
+  local RomBinding = require("romdump.src.source.RomBinding")
+  local ArtifactState = require("romdump.src.build.ArtifactState")
+  local hostLove = assert(rawget(_G, "love"), "the suite runs under the host runtime")
+  withDirectSourceSelection("synthsweep", "IXS3", function(selection)
+    local host = newThreadHost(4)
+    host.love.data = hostLove.data
+    local realFromPath = RomSource.fromPath
+    local fromPathCalls = 0
+    RomSource.fromPath = function(path)
+      fromPathCalls = fromPathCalls + 1
+      return realFromPath(path)
+    end
+    local bodyOk, bodyErr = pcall(function()
+      local outcome = withLove(host.love, function()
+        local pool = CompilerPool.new({ mode = "batch", developmentRepositoryRoot = "/checkout" })
+        local cache = CacheFs.forVersion("synthsweep")
+        local recorded, recordErr = RomBinding.record(cache, selection.rom, {
+          kind = "nds",
+          path = selection.romPath,
+          displayName = "synthetic.nds",
+          zipEntry = false,
+        })
+        Assert.notNil(recorded, "the binding registers the synthetic ROM: " .. tostring(recordErr))
+        for _, key in ipairs({ "61", "62" }) do
+          cache:writeLua(ArtifactState.path("map", key), {
+            schema = ArtifactState.RECEIPT_SCHEMA,
+            generationId = "sweep-generation",
+            kind = "map",
+            key = key,
+            marker = "sweep-seed",
+          })
+        end
+        pool:selectGeneration({ versionId = "synthsweep", generationId = "sweep-generation" }, 1)
+        pool:request(sourceMapJob("synthsweep", "sweep-generation", 1, "60", 60, 0))
+        pool:request(sourceMapJob("synthsweep", "sweep-generation", 1, "61", 61, 100))
+        pool:request(sourceMapJob("synthsweep", "sweep-generation", 1, "62", 62, 100))
+        pool:update()
+        local required = dispatchedJob(host, 1)
+        Assert.equal(required.jobKey, "map:60", "the required job overtakes background admission")
+        local background = dispatchedJob(host, 2)
+        Assert.equal(background.jobKey, "map:61", "background work still admits beside the required job")
+        pushReused(host, 2, 1, "sweep-generation", "61", background.stageName)
+        pool:update()
+        Assert.equal(pool:status("map:61"), "ready", "the background hit reuses without source traffic")
+        reportSourceNeeded(host, 1, required, 1, "sweep-generation")
+        local driveOk, driveErr = pcall(function()
+          pool:update()
+        end)
+        if not driveOk then
+          pcall(function()
+            pool:shutdown()
+          end)
+          return { driveOk = driveOk, driveErr = driveErr }
+        end
+        local supply = findSupply(drainMessages(host, 1))
+        assertSharedSupply(supply, selection.data, "the required miss")
+        stageOwnedMap("synthsweep", "sweep-generation", 1, "60", required.stageName)
+        pushPrepared(host, 1, 1, "sweep-generation", "60", required.stageName)
+        pool:update()
+        Assert.equal(pool:status("map:60"), "ready", "the required miss compiles and publishes")
+        local last = dispatchedJob(host, 2)
+        Assert.equal(last.jobKey, "map:62", "the sweep continues through every planned member")
+        pushReused(host, 2, 1, "sweep-generation", "62", last.stageName)
+        pool:update()
+        local diagnostics = pool:diagnostics()
+        pcall(function()
+          pool:shutdown()
+        end)
+        return {
+          driveOk = true,
+          status60 = pool:status("map:60"),
+          status61 = pool:status("map:61"),
+          status62 = pool:status("map:62"),
+          ready = diagnostics.counts.ready,
+          cancelled = diagnostics.counts.cancelled,
+        }
+      end)
+      Assert.isTrue(
+        outcome.driveOk,
+        "the sweep hands its required miss to the shared source: " .. tostring(outcome.driveErr)
+      )
+      Assert.equal(fromPathCalls, 1, "the sweep acquires its source exactly once")
+      Assert.equal(outcome.status60, "ready", "the required member settles")
+      Assert.equal(outcome.status61, "ready", "the first background member settles")
+      Assert.equal(outcome.status62, "ready", "the trailing background member settles")
+      Assert.equal(outcome.ready, 3, "every planned member is ready")
+      Assert.equal(outcome.cancelled, 0, "settling ready work cancels nothing")
+    end)
+    RomSource.fromPath = realFromPath
+    if not bodyOk then
+      error(bodyErr, 0)
+    end
+  end)
+end
+
+-- The pool-owned buffer outlives any single job but never a borrower: the
+-- pool closes borrowers only after the sweep settles, keeps the buffer
+-- while one close is still outstanding, drops it after the last
+-- acknowledgement, reacquires exactly once on the next miss, and never
+-- lets a stale epoch touch the new selection.
+function T.source_release_waits_for_every_borrower_close_then_reacquires_on_demand()
+  local CompilerPool = requirePool()
+  local RomSource = require("romdump.src.source.RomSource")
+  local RomBinding = require("romdump.src.source.RomBinding")
+  local hostLove = assert(rawget(_G, "love"), "the suite runs under the host runtime")
+  withDirectSourceSelection("synthrelease", "IXS4", function(selection)
+    local host = newThreadHost(4)
+    host.love.data = hostLove.data
+    local realFromPath = RomSource.fromPath
+    local fromPathCalls = 0
+    RomSource.fromPath = function(path)
+      fromPathCalls = fromPathCalls + 1
+      return realFromPath(path)
+    end
+    local bodyOk, bodyErr = pcall(function()
+      local outcome = withLove(host.love, function()
+        local pool = CompilerPool.new({ mode = "batch", developmentRepositoryRoot = "/checkout" })
+        local cache = CacheFs.forVersion("synthrelease")
+        local recorded, recordErr = RomBinding.record(cache, selection.rom, {
+          kind = "nds",
+          path = selection.romPath,
+          displayName = "synthetic.nds",
+          zipEntry = false,
+        })
+        Assert.notNil(recorded, "the binding registers the synthetic ROM: " .. tostring(recordErr))
+        pool:selectGeneration({ versionId = "synthrelease", generationId = "release-generation" }, 1)
+        pool:request(sourceMapJob("synthrelease", "release-generation", 1, "60", 60, 0))
+        pool:request(sourceMapJob("synthrelease", "release-generation", 1, "61", 61, 0))
+        pool:update()
+        local first = dispatchedJob(host, 1)
+        local second = dispatchedJob(host, 2)
+        reportSourceNeeded(host, 1, first, 1, "release-generation")
+        reportSourceNeeded(host, 2, second, 1, "release-generation")
+        local driveOk, driveErr = pcall(function()
+          pool:update()
+        end)
+        if not driveOk then
+          pcall(function()
+            pool:shutdown()
+          end)
+          return { driveOk = driveOk, driveErr = driveErr }
+        end
+        local firstSupply = assertSharedSupply(findSupply(drainMessages(host, 1)), selection.data, "the first borrower")
+        local secondSupply = assertSharedSupply(findSupply(drainMessages(host, 2)), selection.data, "the second borrower")
+        Assert.isTrue(
+          firstSupply.romByteData == secondSupply.romByteData,
+          "both borrowers share one backing"
+        )
+        local sharedBuffer = firstSupply.romByteData
+        -- Both jobs settle with the sweep exhausted and no further
+        -- interest: the pool must now ask every borrower to close.
+        stageOwnedMap("synthrelease", "release-generation", 1, "60", first.stageName)
+        stageOwnedMap("synthrelease", "release-generation", 1, "61", second.stageName)
+        pushPrepared(host, 1, 1, "release-generation", "60", first.stageName)
+        pushPrepared(host, 2, 1, "release-generation", "61", second.stageName)
+        pool:update(math.huge)
+        Assert.equal(pool:status("map:60"), "ready", "the first job settles")
+        Assert.equal(pool:status("map:61"), "ready", "the second job settles")
+        local firstClose = closeMessage(drainMessages(host, 1))
+        local secondClose = closeMessage(drainMessages(host, 2))
+        Assert.notNil(firstClose, "the settled sweep closes the first borrower")
+        Assert.notNil(secondClose, "the settled sweep closes the second borrower")
+        -- One acknowledgement is not enough: a later miss must still find
+        -- the retained buffer instead of acquiring again.
+        host.channels[1]:push({ status = "context-closed", workerId = 1, closeToken = firstClose.closeToken })
+        pool:update()
+        pool:request(sourceMapJob("synthrelease", "release-generation", 1, "62", 62, 0))
+        pool:update()
+        local third = dispatchedJob(host, 1)
+        reportSourceNeeded(host, 1, third, 1, "release-generation")
+        local retainOk, retainErr = pcall(function()
+          pool:update()
+        end)
+        local retainedSupply = findSupply(drainMessages(host, 1))
+        -- The last acknowledgement releases the buffer: the next miss
+        -- acquires exactly once more.
+        host.channels[1]:push({ status = "context-closed", workerId = 2, closeToken = secondClose.closeToken })
+        pool:update()
+        pool:request(sourceMapJob("synthrelease", "release-generation", 1, "63", 63, 0))
+        pool:update()
+        local fourth = dispatchedJob(host, 2)
+        reportSourceNeeded(host, 2, fourth, 1, "release-generation")
+        local reacquireOk, reacquireErr = pcall(function()
+          pool:update()
+        end)
+        local reacquiredSupply = findSupply(drainMessages(host, 2))
+        -- A stale first-epoch request against the reselected generation
+        -- acquires nothing and disturbs nothing.
+        pool:selectGeneration({ versionId = "synthrelease", generationId = "release-generation" }, 2)
+        pool:request(sourceMapJob("synthrelease", "release-generation", 2, "64", 64, 0))
+        host.channels[1]:push({
+          status = "source-needed",
+          workerId = 1,
+          epoch = 1,
+          generationId = "release-generation",
+          kind = "map",
+          key = "60",
+          jobKey = "map:60",
+          stageName = first.stageName,
+        })
+        local staleOk, staleErr = pcall(function()
+          pool:update()
+        end)
+        local staleReplies = drainMessages(host, 1)
+        local newStatus = pool:status("map:64")
+        pcall(function()
+          pool:shutdown()
+        end)
+        return {
+          driveOk = true,
+          sharedBuffer = sharedBuffer,
+          retainOk = retainOk,
+          retainErr = retainErr,
+          retainedSupply = retainedSupply,
+          reacquireOk = reacquireOk,
+          reacquireErr = reacquireErr,
+          reacquiredSupply = reacquiredSupply,
+          staleOk = staleOk,
+          staleErr = staleErr,
+          staleReplies = staleReplies,
+          newStatus = newStatus,
+        }
+      end)
+      Assert.isTrue(
+        outcome.driveOk,
+        "the pool lends one buffer to both borrowers: " .. tostring(outcome.driveErr)
+      )
+      Assert.isTrue(
+        outcome.retainOk,
+        "one outstanding close keeps the buffer without a new acquisition: " .. tostring(outcome.retainErr)
+      )
+      local retained = assertSharedSupply(
+        outcome.retainedSupply,
+        selection.data,
+        "the retained buffer"
+      )
+      Assert.isTrue(
+        retained.romByteData == outcome.sharedBuffer,
+        "the later miss reuses the retained buffer instead of acquiring again"
+      )
+      Assert.isTrue(
+        outcome.reacquireOk,
+        "the miss after the last close reacquires: " .. tostring(outcome.reacquireErr)
+      )
+      assertSharedSupply(outcome.reacquiredSupply, selection.data, "the post-release miss")
+      Assert.equal(fromPathCalls, 2, "exactly one acquisition before release and one after")
+      Assert.isTrue(
+        outcome.staleOk,
+        "a stale epoch request never breaks the pool: " .. tostring(outcome.staleErr)
+      )
+      Assert.isNil(findSupply(outcome.staleReplies), "a stale request earns no supply")
+      Assert.isTrue(
+        outcome.newStatus == "queued" or outcome.newStatus == "running",
+        "the reselected generation keeps its own interest: " .. tostring(outcome.newStatus)
+      )
+    end)
+    RomSource.fromPath = realFromPath
+    if not bodyOk then
+      error(bodyErr, 0)
+    end
+  end)
+end
+
+-- A repeated request for the same live slot and a request from an unknown
+-- worker fabricate nothing: the duplicate is answered idempotently from
+-- the retained buffer, the stranger earns no supply, and neither triggers
+-- a second acquisition nor disturbs the live selection.
+function T.duplicate_and_unknown_source_requests_acquire_nothing_extra()
+  local CompilerPool = requirePool()
+  local RomSource = require("romdump.src.source.RomSource")
+  local RomBinding = require("romdump.src.source.RomBinding")
+  local hostLove = assert(rawget(_G, "love"), "the suite runs under the host runtime")
+  withDirectSourceSelection("synthduplicate", "IXDP", function(selection)
+    local host = newThreadHost(4)
+    host.love.data = hostLove.data
+    local realFromPath = RomSource.fromPath
+    local fromPathCalls = 0
+    RomSource.fromPath = function(path)
+      fromPathCalls = fromPathCalls + 1
+      return realFromPath(path)
+    end
+    local bodyOk, bodyErr = pcall(function()
+      local outcome = withLove(host.love, function()
+        local pool = CompilerPool.new({ mode = "batch", developmentRepositoryRoot = "/checkout" })
+        local cache = CacheFs.forVersion("synthduplicate")
+        local recorded, recordErr = RomBinding.record(cache, selection.rom, {
+          kind = "nds",
+          path = selection.romPath,
+          displayName = "synthetic.nds",
+          zipEntry = false,
+        })
+        Assert.notNil(recorded, "the binding registers the synthetic ROM: " .. tostring(recordErr))
+        pool:selectGeneration({ versionId = "synthduplicate", generationId = "dup-generation" }, 1)
+        pool:request(sourceMapJob("synthduplicate", "dup-generation", 1, "60", 60, 0))
+        pool:update()
+        local first = dispatchedJob(host, 1)
+        reportSourceNeeded(host, 1, first, 1, "dup-generation")
+        local driveOk, driveErr = pcall(function()
+          pool:update()
+        end)
+        if not driveOk then
+          pcall(function()
+            pool:shutdown()
+          end)
+          return { driveOk = driveOk, driveErr = driveErr }
+        end
+        local firstSupply = assertSharedSupply(findSupply(drainMessages(host, 1)), selection.data, "the first answer")
+        -- The same live slot asks again: the retained buffer answers
+        -- without a second acquisition.
+        reportSourceNeeded(host, 1, first, 1, "dup-generation")
+        local duplicateOk, duplicateErr = pcall(function()
+          pool:update()
+        end)
+        local secondSupply = findSupply(drainMessages(host, 1))
+        -- A stranger names no live slot: it earns no supply and no
+        -- acquisition, and the pool keeps serving its selection.
+        host.channels[1]:push({
+          status = "source-needed",
+          workerId = 99,
+          epoch = 1,
+          generationId = "dup-generation",
+          kind = "map",
+          key = "60",
+          jobKey = "map:60",
+          stageName = first.stageName,
+        })
+        local strangerOk, strangerErr = pcall(function()
+          pool:update()
+        end)
+        local strangerSupplies = {}
+        for _, workerId in ipairs({ 1, 2 }) do
+          for _, message in ipairs(drainMessages(host, workerId)) do
+            if type(message) == "table" and message.kind == "source-supplied" then
+              strangerSupplies[#strangerSupplies + 1] = message
+            end
+          end
+        end
+        pool:request(sourceMapJob("synthduplicate", "dup-generation", 1, "61", 61, 0))
+        pool:update()
+        local followup = pool:status("map:61")
+        pcall(function()
+          pool:shutdown()
+        end)
+        return {
+          driveOk = true,
+          firstSupply = firstSupply,
+          duplicateOk = duplicateOk,
+          duplicateErr = duplicateErr,
+          secondSupply = secondSupply,
+          strangerOk = strangerOk,
+          strangerErr = strangerErr,
+          strangerSupplies = strangerSupplies,
+          followup = followup,
+        }
+      end)
+      Assert.isTrue(
+        outcome.driveOk,
+        "the first miss acquires its buffer: " .. tostring(outcome.driveErr)
+      )
+      Assert.isTrue(
+        outcome.duplicateOk,
+        "a duplicate live request never breaks the pool: " .. tostring(outcome.duplicateErr)
+      )
+      local second = assertSharedSupply(outcome.secondSupply, selection.data, "the duplicate answer")
+      Assert.isTrue(
+        second.romByteData == outcome.firstSupply.romByteData,
+        "the duplicate borrows the identical retained buffer"
+      )
+      Assert.isTrue(
+        outcome.strangerOk,
+        "an unknown worker never breaks the pool: " .. tostring(outcome.strangerErr)
+      )
+      Assert.equal(#outcome.strangerSupplies, 0, "an unknown worker earns no supply")
+      Assert.equal(fromPathCalls, 1, "duplicates and strangers acquire nothing extra")
+      Assert.isTrue(
+        outcome.followup == "queued" or outcome.followup == "running",
+        "the live selection keeps serving: " .. tostring(outcome.followup)
+      )
+    end)
+    RomSource.fromPath = realFromPath
+    if not bodyOk then
+      error(bodyErr, 0)
+    end
+  end)
+end
+
+-- Release timing follows the sweep, not pool idleness: while the
+-- completion owner still has unsettled source work, an idle pool keeps
+-- its buffer instead of opening a release round; once the sweep settles,
+-- the same idle pool closes borrowers as usual.
+function T.source_release_waits_for_settled_sweep_work_before_closing_borrowers()
+  local CompilerPool = requirePool()
+  local RomSource = require("romdump.src.source.RomSource")
+  local RomBinding = require("romdump.src.source.RomBinding")
+  local hostLove = assert(rawget(_G, "love"), "the suite runs under the host runtime")
+  withDirectSourceSelection("synthhold", "IXS5", function(selection)
+    local host = newThreadHost(4)
+    host.love.data = hostLove.data
+    local bodyOk, bodyErr = pcall(function()
+      local outcome = withLove(host.love, function()
+        local pool = CompilerPool.new({ mode = "batch", developmentRepositoryRoot = "/checkout" })
+        local cache = CacheFs.forVersion("synthhold")
+        local recorded, recordErr = RomBinding.record(cache, selection.rom, {
+          kind = "nds",
+          path = selection.romPath,
+          displayName = "synthetic.nds",
+          zipEntry = false,
+        })
+        Assert.notNil(recorded, "the binding registers the synthetic ROM: " .. tostring(recordErr))
+        pool:selectGeneration({ versionId = "synthhold", generationId = "hold-generation" }, 1)
+        -- The sweep still owns future source work: the pool must not
+        -- open a release round even once its own queues drain.
+        local settled = false
+        pool.sourceSettledQuery = function()
+          return settled
+        end
+        pool:request(sourceMapJob("synthhold", "hold-generation", 1, "60", 60, 0))
+        pool:update()
+        local first = dispatchedJob(host, 1)
+        reportSourceNeeded(host, 1, first, 1, "hold-generation")
+        pool:update()
+        assertSharedSupply(findSupply(drainMessages(host, 1)), selection.data, "the borrower")
+        stageOwnedMap("synthhold", "hold-generation", 1, "60", first.stageName)
+        pushPrepared(host, 1, 1, "hold-generation", "60", first.stageName)
+        pool:update(math.huge)
+        Assert.equal(pool:status("map:60"), "ready", "the job settles")
+        Assert.isNil(
+          closeMessage(drainMessages(host, 1)),
+          "an unsettled sweep keeps the idle buffer without closing borrowers"
+        )
+        -- The same idle pool closes borrowers once the sweep settles.
+        settled = true
+        pool:update()
+        local close = closeMessage(drainMessages(host, 1))
+        Assert.notNil(close, "a settled sweep closes the borrower")
+        host.channels[1]:push({ status = "context-closed", workerId = 1, closeToken = close.closeToken })
+        pool:update()
+        pcall(function()
+          pool:shutdown()
+        end)
+        return { closeToken = close.closeToken }
+      end)
+      Assert.notNil(outcome.closeToken, "the settled close carries its barrier token")
+    end)
+    if not bodyOk then
+      error(bodyErr, 0)
+    end
+  end)
+end
+
 return { tests = T }

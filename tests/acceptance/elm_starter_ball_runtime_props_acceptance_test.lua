@@ -15,7 +15,7 @@ local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local MapResolver = require("romdump.src.digest.map.MapResolver")
 local MapUnits = require("romdump.src.digest.map.MapUnits")
 local FieldGrid = require("libs.hgss.src.world.FieldGrid")
-local RomFs = require("romdump.src.source.RomFs")
+local RomSourcePath = require("tests.rom.support.RomSourcePath")
 local StarterLab = require("romdump.src.reference.hgss.starter_lab")
 
 local T = {
@@ -62,9 +62,10 @@ end
 -- cell corner (source tile (0,0)) sits at worldOrigin - half a cell; the balls
 -- must ride the same origin term as the room and its machines.
 local function expectedTranslations(versionId)
-  local romFs = assert(RomFs.open(versionId), "the lab scene origin resolves from a ready dump")
+  local romFs, romSource = assert(RomSourcePath.openReader(versionId))
   local resolved, resolveErr = MapResolver.resolve(romFs, MAP)
   romFs:close()
+  romSource:release()
   assert(resolved, resolveErr and resolveErr.message or "Elm's Lab resolves to a matrix cell")
   local halfCell = FieldGrid.CELL_TILES / 2
   local origin = { x = resolved.worldOriginX - halfCell, y = 0, z = resolved.worldOriginZ - halfCell }

@@ -731,4 +731,59 @@ function T.scene_failure_and_stale_epoch_never_read_ready()
   service:shutdown()
 end
 
+-- A validated import hands its one immutable source buffer to the
+-- controller exactly once for the live epoch: the game thread never
+-- opens the ROM itself, the same userdata crosses the channel by
+-- reference, and stale or retired epochs queue nothing.
+function T.validated_source_offer_reaches_the_controller_once_for_the_live_epoch()
+  local Service = requireService()
+  local hostLove = assert(rawget(_G, "love"), "the suite runs under the host runtime")
+  local host = newChannelHost()
+  local service = assert(Service.new({ thread = host }))
+  local epoch = assert(service:select({ versionId = "heartgold", development = true }))
+  Assert.equal(
+    type(service.offerSource),
+    "function",
+    "the process service accepts a validated source handoff for the live epoch"
+  )
+  local buffer = hostLove.data.newByteData("synthetic-offer-bytes")
+  local descriptor = { versionId = "heartgold", romSha1 = string.rep("0", 40) }
+  service:offerSource(epoch, buffer, descriptor)
+  local offers = {}
+  local command = service._command:pop()
+  while command ~= nil do
+    if type(command) == "table" and command.byteData == buffer then
+      offers[#offers + 1] = command
+    end
+    command = service._command:pop()
+  end
+  Assert.equal(#offers, 1, "the live-epoch offer crosses to the controller exactly once")
+  Assert.equal(offers[1].epoch, epoch, "the offer carries its selecting epoch")
+  Assert.isTrue(offers[1].byteData == buffer, "the offer hands off the identical buffer by reference")
+  pcall(function()
+    service:offerSource(epoch + 100, buffer, descriptor)
+  end)
+  local stale = service._command:pop()
+  while stale ~= nil do
+    Assert.isFalse(
+      type(stale) == "table" and stale.byteData == buffer,
+      "an offer for an unknown epoch never reaches the controller"
+    )
+    stale = service._command:pop()
+  end
+  service:retire(epoch)
+  pcall(function()
+    service:offerSource(epoch, buffer, descriptor)
+  end)
+  local retired = service._command:pop()
+  while retired ~= nil do
+    Assert.isFalse(
+      type(retired) == "table" and retired.byteData == buffer,
+      "no source offer queues after retirement"
+    )
+    retired = service._command:pop()
+  end
+  service:shutdown()
+end
+
 return { tests = T }

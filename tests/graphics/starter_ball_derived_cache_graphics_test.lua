@@ -19,7 +19,7 @@ local MapSceneLoader = require("libs.hgss.src.presentation.MapSceneLoader")
 local MapResolver = require("romdump.src.digest.map.MapResolver")
 local MapUnits = require("romdump.src.digest.map.MapUnits")
 local FieldGrid = require("libs.hgss.src.world.FieldGrid")
-local RomFs = require("romdump.src.source.RomFs")
+local RomSourcePath = require("tests.rom.support.RomSourcePath")
 local StarterLab = require("romdump.src.reference.hgss.starter_lab")
 local Matrix4 = require("libs.math.src.Matrix4")
 local RomImporter = require("romdump.src.source.RomImporter")
@@ -40,9 +40,10 @@ local REGISTRATION_TILES = 1.5
 -- normalized once, composed with the lab cell origin from generic map
 -- primitives. Never the starter production transform.
 local function expectedBallCentres(versionId)
-  local romFs = assert(RomFs.open(versionId), "the lab scene origin resolves from a ready dump")
+  local romFs, romSource = assert(RomSourcePath.openReader(versionId))
   local resolved, resolveErr = MapResolver.resolve(romFs, MAP_SYMBOL)
   romFs:close()
+  romSource:release()
   assert(resolved, resolveErr and resolveErr.message or "Elm's Lab resolves to a matrix cell")
   local halfCell = FieldGrid.CELL_TILES / 2
   local originX, originZ = resolved.worldOriginX - halfCell, resolved.worldOriginZ - halfCell
