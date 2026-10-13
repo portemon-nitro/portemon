@@ -675,8 +675,8 @@ function Worker:_applyRetire(command)
   self:_emitBarrierResult(command.epoch, command.barrierId, "retire")
 end
 
--- One post-quiescence retirement pass for the settled version: convert legacy
--- derived bytes and reclaim proven-orphan shared files. The pool is quiet and
+-- One post-quiescence collection pass for the settled version: reclaim
+-- proven-orphan shared files. The pool is quiet and
 -- the barrier result is already emitted, so no demand waits on this step;
 -- urgent work arriving afterwards preempts normally on the next step. The
 -- cache is usable for dump removal only after an independently provable
@@ -686,8 +686,7 @@ end
 -- (uncertain proof skips with zero deletes). The outcome is recorded locally
 -- for inspection and never pushed to the game thread, so a maintenance
 -- diagnostic cannot falsify readiness. Shared collection runs at most once
--- per selected generation; migration re-runs while its completion marker is
--- absent and skips on one read once marked.
+-- per selected generation.
 function Worker:_runPostQuiesceMaintenance()
   local versionId = self.selectedVersionId
   local session = self.session
@@ -711,14 +710,6 @@ function Worker:_runPostQuiesceMaintenance()
     if not CacheMaintenance.canMaintain(cacheFs) then
       return nil
     end
-    local answerOk, complete = pcall(function()
-      return completion:answer()
-    end)
-    local sweepComplete = completion.sweepExhausted == true and completion.sweepFailure == nil
-    local migrated = CacheMaintenance.migrateLegacy(versionId, cacheFs, {
-      completeCacheUsable = (answerOk and complete == true) or sweepComplete,
-      verifiedReopenableSource = false,
-    })
     local collected = nil
     local memoKey = versionId .. "\0" .. generationId
     if self.collectedSharedFor ~= memoKey then
@@ -735,7 +726,7 @@ function Worker:_runPostQuiesceMaintenance()
         end
       end
     end
-    return { migrated = migrated, collected = collected }
+    return { collected = collected }
   end)
   if ok then
     self.maintenanceNote = note

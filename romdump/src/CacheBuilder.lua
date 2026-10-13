@@ -624,12 +624,11 @@ local function logRecordOutcomes(record, log)
   end
 end
 
--- One post-complete retirement pass for a settled version: convert legacy
--- derived bytes without recompiling them and reclaim proven-orphan shared
+-- One post-complete collection pass for a settled version: reclaim proven-orphan shared
 -- files. The maintenance owner gates every destructive step on full proof
 -- and skips with zero deletes on any uncertainty; this caller only guards
 -- the boundary (genuinely complete, settled) and keeps the diagnostic from
--- falsifying the build outcome. Logs only real conversions, removals, or
+-- falsifying the build outcome. Logs only real removals or
 -- faults, so clean runs stay exactly as quiet as before.
 ---@param cacheFs table<string, unknown>
 ---@param identity table<string, unknown>
@@ -644,22 +643,6 @@ local function runPostCompleteMaintenance(cacheFs, identity, log)
   end
   local versionId = cacheFs.versionId --[[@as string]]
   local ok, fault = pcall(function()
-    local migrated = CacheMaintenance.migrateLegacy(versionId, cacheFs, {
-      completeCacheUsable = true,
-      verifiedReopenableSource = false,
-    })
-    if migrated.changedCount > 0 or migrated.rawRemoved then
-      log(
-        string.format(
-          "maintenance: %s converted %d derived files (%d to %d bytes, source dump %s)",
-          versionId,
-          migrated.changedCount,
-          migrated.bytesBefore,
-          migrated.bytesAfter,
-          migrated.rawRemoved and "removed" or "retained"
-        )
-      )
-    end
     local ArtifactJobs = require("romdump.src.build.ArtifactJobs")
     local plansOk, plans = pcall(ArtifactJobs.publishedPlans, cacheFs, {
       versionId = versionId,

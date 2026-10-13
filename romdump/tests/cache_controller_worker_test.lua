@@ -5,6 +5,9 @@
 
 local Assert = require("tests.support.Assert")
 local CacheControllerWorker = require("romdump.src.build.CacheControllerWorker")
+local CacheEnvelope = require("tests.support.CacheEnvelope")
+local CacheFs = require("libs.storage.src.CacheFs")
+local FakeCache = require("tests.support.FakeCache")
 
 local T = {}
 
@@ -664,6 +667,64 @@ function T.stale_epoch_source_offer_is_refused_visibly()
   end
   Assert.equal(#forwarded, 0, "a refused offer never reaches the pool")
   Assert.isTrue(worker.lifecycle ~= "failed", "refusing an offer never fails the controller")
+end
+
+-- Post-quiesce maintenance never owns the raw source trees or user data: a
+-- settled sweep leaves them byte-identical and writes no marker of its own.
+-- The proven-shared collector keeps its own proof-gated contract, covered
+-- by its dedicated suite; this seam pins only that quiescence preserves
+-- what the cache does not own.
+function T.quiesce_preserves_source_trees_and_user_data()
+  local backend = FakeCache.new()
+  CacheEnvelope.attachHostCodecs(backend)
+  local cache = CacheFs.forVersion("heartgold", backend)
+  cache:recoverPublication()
+  local sibling = CacheFs.forVersion("soulsilver", backend)
+  local generated = "return { map = 61 }\n"
+  cache:write("data/generated/maps/61.lua", generated)
+  cache:write("romfs/old", "raw extracted bytes")
+  cache:write("system/old", "raw system bytes")
+  cache:write("data/generated/rom_metadata.lua", "return { raw = true }\n")
+  cache:write("rom-dump.complete", "raw")
+  local modLogical = "return { name = 'kept' }\n"
+  cache:write("mods/mymod/info.lua", modLogical)
+  local stageLogical = string.rep("staged-block;", 120)
+  cache:write("staging/leftover/scratch.lua", stageLogical)
+  local siblingLogical = string.rep("sibling-block;", 120)
+  sibling:write("data/generated/maps/61.lua", siblingLogical)
+
+  local session = terminalSession()
+  session.completion = { sweepExhausted = true }
+  session.cacheFs = cache
+  session.generationId = "test-generation"
+  session.producerId = "test-producer"
+  local worker, replies, queued = pushWorker(session, 9)
+  worker.selectedVersionId = "heartgold"
+  queued[#queued + 1] = { op = "quiesce", epoch = 9, barrierId = 5 }
+  worker:step()
+
+  local settled = packetsOf(replies, "barrier-result")
+  Assert.equal(#settled, 1, "quiescence still pushes its barrier event")
+  Assert.equal(cache:read("romfs/old"), "raw extracted bytes", "the raw source tree survives quiescence")
+  Assert.equal(cache:read("system/old"), "raw system bytes", "the raw system tree survives quiescence")
+  Assert.equal(
+    cache:read("data/generated/rom_metadata.lua"),
+    "return { raw = true }\n",
+    "superseded source metadata survives quiescence"
+  )
+  Assert.equal(cache:read("rom-dump.complete"), "raw", "the source marker survives quiescence")
+  Assert.isFalse(
+    cache:exists("data/generated/storage-migrated.lua"),
+    "quiescence writes no marker of its own"
+  )
+  Assert.equal(cache:read("mods/mymod/info.lua"), modLogical, "user mods stay byte-identical")
+  Assert.equal(
+    cache:read("staging/leftover/scratch.lua"),
+    stageLogical,
+    "staging debris is never entered"
+  )
+  Assert.equal(sibling:read("data/generated/maps/61.lua"), siblingLogical, "a sibling version is never entered")
+  Assert.equal(cache:read("data/generated/maps/61.lua"), generated)
 end
 
 return { metadata = { capabilities = {} }, tests = T }

@@ -1708,51 +1708,6 @@ function T.png_bytes_stay_native_and_wrapped_modules_keep_the_require_allowlist(
   )
 end
 
--- Migrating one legacy raw file compacts its physical bytes through the
--- existing staged publication while its logical bytes stay identical, and
--- repeating the migration leaves the canonical file alone.
-function T.single_file_transcode_reaches_canonical_bytes_and_repeats_cleanly()
-  local c, backend = codecCache()
-  local path = "data/generated/legacy.lua"
-  local logical = "--" .. string.rep("legacy-padding;", 200) .. "\nreturn { legacy = true }\n"
-  backend:write("heartgold/" .. path, logical)
-  Assert.equal(c:read(path), logical, "legacy raw bytes stay readable before migration")
-  Assert.equal(c:transcode(path), "changed")
-  local physical = backendBytes(backend, "heartgold", path)
-  Assert.isTrue(CacheEnvelope.isWrapped(physical), "migration wraps the physical bytes")
-  Assert.isTrue(#physical < #logical, "migration saves space")
-  Assert.equal(c:read(path), logical, "the logical bytes are unchanged by migration")
-  Assert.deepEqual(c:loadLua(path), { legacy = true })
-  Assert.equal(c:transcode(path), "unchanged", "a canonical file is left alone")
-
-  c:write("data/generated/fresh.lua", logical)
-  Assert.equal(c:transcode("data/generated/fresh.lua"), "unchanged", "a wrapped write needs no migration")
-end
-
--- A transcode interrupted by a publication failure keeps the previous
--- logical bytes readable and succeeds on retry after recovery.
-function T.failed_transcode_keeps_the_previous_logical_bytes()
-  local c, backend = codecCache()
-  local path = "data/generated/fragile.lua"
-  local logical = "--" .. string.rep("fragile-padding;", 200) .. "\nreturn { fragile = true }\n"
-  backend:write("heartgold/" .. path, logical)
-  local originalReplace = backend.replace
-  backend.replace = function(_self, _sourcePath, _destinationPath)
-    return false, "injected rename failure"
-  end
-  local ok, err = pcall(function()
-    return c:transcode(path)
-  end)
-  backend.replace = originalReplace
-  Assert.isFalse(ok, "a failed transcode must raise")
-  Assert.isTrue(Errors.is(err), "the transcode failure must be structured")
-  Assert.equal(c:read(path), logical, "the previous logical bytes survive a failed transcode")
-  c:recoverPublication()
-  Assert.equal(c:read(path), logical, "recovery keeps the previous logical bytes")
-  Assert.equal(c:transcode(path), "changed", "migration succeeds on retry")
-  Assert.equal(c:read(path), logical)
-end
-
 -- Deterministic pseudorandom bytes that no codec can shrink: large but
 -- incompressible payloads, unknown extensions, and recovery metadata all
 -- stay byte-for-byte raw while remaining exactly readable.
@@ -1888,35 +1843,55 @@ function T.backend_without_codecs_keeps_raw_but_refuses_wrapped_reads()
   Assert.equal(writeErr.code, StorageErrors.CACHE_WRITE_FAILED)
 end
 
--- Migration leaves no journal residue, leaves unprofitable files alone, and
--- reports a typed missing-file failure for paths that were never written.
-function T.transcode_leaves_no_residue_and_skips_canonical_files()
+-- The physical envelope never exceeds what the decoder can represent: a
+-- compressible payload above the decoded-length ceiling is stored raw and
+-- reads back byte-identically, while an oversized payload colliding with
+-- the envelope tag is refused before any file appears. A planted header
+-- lying about its decoded length stays a loud decode failure.
+function T.physical_envelopes_stay_within_the_decoder_length_limit()
   local c, backend = codecCache()
-  local logical = "--" .. string.rep("residue-padding;", 200) .. "\nreturn { tidy = true }\n"
-  backend:write("heartgold/data/generated/tidy.lua", logical)
-  Assert.equal(c:transcode("data/generated/tidy.lua"), "changed")
-  Assert.equal(c:read("data/generated/tidy.lua"), logical)
-  for path in pairs(backend.files) do
-    Assert.isFalse(path:find(".__g4publish", 1, true) ~= nil, "no journal residue: " .. path)
-    Assert.isFalse(path:find(".__g4next", 1, true) ~= nil, "no candidate residue: " .. path)
-    Assert.isFalse(path:find(".__g4old", 1, true) ~= nil, "no backup residue: " .. path)
-  end
-  for path in pairs(backend.dirs) do
-    Assert.isFalse(path:find(".__g4publish", 1, true) ~= nil, "no journal residue: " .. path)
-    Assert.isFalse(path:find(".__g4next", 1, true) ~= nil, "no candidate residue: " .. path)
-    Assert.isFalse(path:find(".__g4old", 1, true) ~= nil, "no backup residue: " .. path)
-  end
+  local limit = 64 * 1024 * 1024
+  local huge = string.rep("a", limit + 1)
+  c:write("audio/huge.pcm16le", huge)
+  local physical = backendBytes(backend, "heartgold", "audio/huge.pcm16le")
+  Assert.isFalse(
+    CacheEnvelope.isWrapped(physical),
+    "an oversized payload must stay raw so its own reader accepts it"
+  )
+  Assert.equal(c:read("audio/huge.pcm16le"), huge, "an oversized raw payload round-trips exactly")
+  huge = nil
+  physical = nil
+  collectgarbage("collect")
 
-  local tiny = "return { tiny = true }\n"
-  c:write("data/generated/tiny.lua", tiny)
-  Assert.equal(c:transcode("data/generated/tiny.lua"), "unchanged", "an unprofitable file needs no migration")
-  Assert.equal(backend.files["heartgold/data/generated/tiny.lua"], tiny)
+  local exact = string.rep("b", limit)
+  c:write("audio/exact.pcm16le", exact)
+  Assert.equal(c:read("audio/exact.pcm16le"), exact, "a payload exactly at the ceiling stays readable")
+  exact = nil
+  collectgarbage("collect")
 
-  local missingErr = Assert.throws(function()
-    c:transcode("data/generated/never-written.lua")
+  local colliding = "PDC1" .. string.rep("a", limit - 3)
+  local writeErr = Assert.throws(function()
+    c:write("audio/colliding.pcm16le", colliding)
   end)
-  Assert.isTrue(Errors.is(missingErr))
-  Assert.equal(missingErr.code, StorageErrors.CACHE_FILE_MISSING)
+  Assert.isTrue(Errors.is(writeErr))
+  Assert.equal(writeErr.code, StorageErrors.CACHE_WRITE_FAILED)
+  Assert.isNil(
+    c:read("audio/colliding.pcm16le"),
+    "a refused oversized write leaves no file behind"
+  )
+  colliding = nil
+  collectgarbage("collect")
+
+  backend:write(
+    "heartgold/audio/planted-huge.pcm16le",
+    "PDC1" .. string.char(2) .. "\255\255\255\255" .. string.rep("\0", 20) .. "x"
+  )
+  local readOk, readErr = pcall(function()
+    return c:read("audio/planted-huge.pcm16le")
+  end)
+  Assert.isFalse(readOk, "a planted oversized header must raise")
+  Assert.isTrue(Errors.is(readErr))
+  Assert.equal(readErr.code, CacheEnvelope.DECODE_FAILED)
 end
 
 return { tests = T }

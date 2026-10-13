@@ -1,10 +1,6 @@
 -- Version-scoped retirement of superseded derived-cache data. One narrow
--- producer-side owner for two one-time operations: converting already-digested
--- generated files to their canonical compact physical form without recompiling
--- them and removing the superseded extracted source dump only when the
--- remaining cache stays usable or a matching original source is verified, and
--- reclaiming unreachable content-addressed shared files only after every
--- canonical job proves its current receipt plus its matching shared-reference
+-- producer-side owner for reclaiming unreachable content-addressed shared
+-- files only after every canonical job proves its current receipt plus its matching shared-reference
 -- sidecar while no reader or worker is active. Saves, mods, other versions,
 -- staging areas, and unknown files are never traversed. Every destructive
 -- step is gated on full proof; any uncertainty skips the destructive pass and
@@ -24,7 +20,6 @@ local MAINTENANCE_METHODS = {
   "recoverPublication",
   "getDirectoryItems",
   "getInfo",
-  "transcode",
   "remove",
   "removeTree",
   "writeLua",
@@ -52,32 +47,6 @@ function CacheMaintenance.canMaintain(cacheFs)
   return true
 end
 
-CacheMaintenance.MIGRATION_MARKER = "data/generated/storage-migrated.lua"
-CacheMaintenance.MIGRATION_SCHEMA = 1
-CacheMaintenance.PHYSICAL_FORMAT = 1
-
-local MARKER_WRITING_PATH = "data/generated/storage-migrated.next.lua"
-
--- Exact historical source-only paths removed after a safe migration. The
--- generated parents stay: they carry real digested outputs.
-local LEGACY_TREES = { "romfs", "system" }
-local LEGACY_FILES = {
-  "data/generated/rom_metadata.lua",
-  "data/generated/romfs_index.lua",
-  "data/generated/overlay_index.lua",
-  "rom-dump.complete",
-}
-
--- Version-root entries migration never walks into. The source binding stays
--- readable so a later miss can ask for its ROM; saves and mods are user data.
-local EXCLUDED_TOP_DIRS = {
-  romfs = true,
-  system = true,
-  mods = true,
-  saves = true,
-  staging = true,
-}
-
 -- The only shared roots collection may delete from: every exact root current
 -- producers register through shared-file publication. Map geometry, map
 -- textures, model descriptors, audio samples, and sample metadata each carry
@@ -89,127 +58,6 @@ local KNOWN_SHARED_ROOTS = {
   "data/generated/audio/samples",
   "data/generated/audio/sample-metadata",
 }
-
----@param marker unknown
----@return boolean
-local function isMigrationComplete(marker)
-  if type(marker) ~= "table" then
-    return false
-  end
-  ---@cast marker table<string, unknown>
-  local count = 0
-  for _ in pairs(marker) do
-    count = count + 1
-  end
-  return count == 2
-    and marker.schema == CacheMaintenance.MIGRATION_SCHEMA
-    and marker.physicalFormat == CacheMaintenance.PHYSICAL_FORMAT
-end
-
----@param name string
----@return boolean
-local function isScratchName(name)
-  return name:find(".__g4", 1, true) ~= nil
-end
-
----@param cacheFs CacheFs
----@param directory string
----@param out string[]
-local function walkGenerated(cacheFs, directory, out)
-  local items = cacheFs:getDirectoryItems(directory)
-  assert(type(items) == "table", "migration walk requires its directory listing")
-  for _, name in ipairs(items) do
-    if not isScratchName(name) then
-      local path = directory == "" and name or directory .. "/" .. name
-      if directory == "" and (EXCLUDED_TOP_DIRS[name] or name == "rom-dump.complete") then
-        -- Never traversed here: raw dump trees, user data, staging, and the
-        -- legacy marker, which is removed only through the gate below.
-      else
-        local info = cacheFs:getInfo(path)
-        assert(info ~= nil, "migration walk lost a listed path: " .. path)
-        if info.type == "directory" then
-          walkGenerated(cacheFs, path, out)
-        elseif path ~= CacheMaintenance.MIGRATION_MARKER and path ~= MARKER_WRITING_PATH then
-          out[#out + 1] = path
-        end
-      end
-    end
-  end
-end
-
----@param cacheFs CacheFs
----@param files string[]
----@return integer
-local function physicalBytes(cacheFs, files)
-  local total = 0
-  for _, path in ipairs(files) do
-    local info = cacheFs:getInfo(path)
-    if info ~= nil and type(info.size) == "number" then
-      total = total + info.size
-    end
-  end
-  return total
-end
-
--- Convert every eligible generated file to its canonical physical form and,
--- once conversion and the usability gate both pass, remove the superseded
--- source dump and record completion last. Any conversion fault surfaces with
--- the dump retained and no marker; a blocked gate retains the dump, reports
--- why, and writes no marker. A run that finds a valid marker converts
--- nothing.
----@param versionId string
----@param cacheFs CacheFs
----@param eligibility { completeCacheUsable: boolean, verifiedReopenableSource: boolean }
----@return { changedCount: integer, bytesBefore: integer, bytesAfter: integer, rawRemoved: boolean, blockedReason?: string }
-function CacheMaintenance.migrateLegacy(versionId, cacheFs, eligibility)
-  assert(type(versionId) == "string" and versionId ~= "", "migration requires a version")
-  assert(cacheFs ~= nil and cacheFs.versionId == versionId, "migration requires the matching version cache")
-  assert(type(eligibility) == "table", "migration requires its source eligibility")
-  cacheFs:recoverPublication()
-  cacheFs:remove(MARKER_WRITING_PATH)
-  if isMigrationComplete(cacheFs:loadLua(CacheMaintenance.MIGRATION_MARKER)) then
-    return { changedCount = 0, bytesBefore = 0, bytesAfter = 0, rawRemoved = false }
-  end
-  local files = {}
-  if cacheFs:getInfo("") ~= nil then
-    walkGenerated(cacheFs, "", files)
-  end
-  table.sort(files)
-  local bytesBefore = physicalBytes(cacheFs, files)
-  local changedCount = 0
-  for _, path in ipairs(files) do
-    if cacheFs:transcode(path) == "changed" then
-      changedCount = changedCount + 1
-    end
-  end
-  local bytesAfter = physicalBytes(cacheFs, files)
-  if eligibility.completeCacheUsable ~= true and eligibility.verifiedReopenableSource ~= true then
-    return {
-      changedCount = changedCount,
-      bytesBefore = bytesBefore,
-      bytesAfter = bytesAfter,
-      rawRemoved = false,
-      blockedReason = "legacy source dump retained: no complete usable cache and no verified reopenable source",
-    }
-  end
-  for _, tree in ipairs(LEGACY_TREES) do
-    cacheFs:removeTree(tree)
-  end
-  for _, path in ipairs(LEGACY_FILES) do
-    cacheFs:remove(path)
-  end
-  cacheFs:writeLua(MARKER_WRITING_PATH, {
-    schema = CacheMaintenance.MIGRATION_SCHEMA,
-    physicalFormat = CacheMaintenance.PHYSICAL_FORMAT,
-  })
-  cacheFs:replace(MARKER_WRITING_PATH, CacheMaintenance.MIGRATION_MARKER)
-  return {
-    changedCount = changedCount,
-    bytesBefore = bytesBefore,
-    bytesAfter = bytesAfter,
-    rawRemoved = true,
-  }
-end
 
 ---@param path string
 ---@return string? shared root the path lives strictly inside
