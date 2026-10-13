@@ -49,11 +49,16 @@ local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
 ---@field _notice string? transient refusal banner
 ---@field _signature string? measurement signature behind the published plan
 ---@field _arrowTick integer selection arrow clock in presentation ticks
+---@field _sourceAccum number accepted seconds banked toward the next arrow tick
 ---@field _outcomeAcked boolean terminal narration acknowledged once
 ---@field _error string? failure context
 ---@field _disposed boolean
 local BattleScreenState = {}
 BattleScreenState.__index = BattleScreenState
+
+-- One accepted source tick in seconds: the nominal 30 Hz presentation
+-- cadence shared with the field session and the battle envelope.
+BattleScreenState.SOURCE_FRAME = 1 / 30
 
 -- Native command navigation follows the source touch topology, not a
 -- compact grid order.
@@ -75,6 +80,10 @@ local MOVE_NAV = {
 -- Six-cell arrow cycle: the zero-time entry never displays, the rest
 -- hold their authored counts. A bounded scan skips the empty entry.
 local ARROW_DURATIONS = { 0, 4, 4, 4, 16, 6 }
+
+-- Float slack so an accepted-time sum landing exactly on a source-tick
+-- boundary never strands a stale full tick in the arrow accumulator.
+local SOURCE_TICK_EPSILON = 1e-12
 
 -- Collects the staged battle-music and interface role symbols behind the
 -- launch demand: every staged wild, trainer, rival, and select symbol the
@@ -191,6 +200,7 @@ function BattleScreenState.new(opts)
     _notice = nil,
     _signature = nil,
     _arrowTick = 0,
+    _sourceAccum = 0,
     _outcomeAcked = false,
     _error = nil,
     _disposed = false,
@@ -1837,8 +1847,18 @@ function BattleScreenState:updateFixed(dt)
     self._subflows:tick()
     self:_pollChild()
   end
+  -- The selection arrow consumes accepted source ticks, never host calls:
+  -- whole ticks advance the cycle while a frame carrying less than one
+  -- tick banks its fraction, and the frame mapping already skips
+  -- zero-duration cells.
+  self._sourceAccum = self._sourceAccum + dt
+  local arrowTicks = 0
+  while self._sourceAccum + SOURCE_TICK_EPSILON >= BattleScreenState.SOURCE_FRAME do
+    self._sourceAccum = self._sourceAccum - BattleScreenState.SOURCE_FRAME
+    arrowTicks = arrowTicks + 1
+  end
   if self._mode == "command" or self._mode == "moves" then
-    self._arrowTick = self._arrowTick + 1
+    self._arrowTick = self._arrowTick + arrowTicks
   else
     self._arrowTick = 0
   end
@@ -1862,8 +1882,36 @@ function BattleScreenState:draw(resources)
   if not ok or plan == nil then
     return
   end
+  -- Scope-counting forwarder over the borrowed namespace: every push and
+  -- pop on the battle render path runs through the injected graphics, so
+  -- this boundary drains exactly the scopes a failing render leaves
+  -- behind. Shared scopes intentionally leak theirs for the host to observe
+  -- (see LogicalSurface), and this host drains them; text and window
+  -- services hold the real namespace directly but never push, so the count
+  -- stays exact. All battle rendering calls graphics dot-style, which the
+  -- forwarder preserves.
+  local hostGraphics = resources.graphics
+  local outstanding = 0
+  local function scopedPush(...)
+    outstanding = outstanding + 1
+    return hostGraphics.push(...)
+  end
+  local function scopedPop(...)
+    outstanding = outstanding - 1
+    return hostGraphics.pop(...)
+  end
+  local function scopedIndex(_, key)
+    if key == "push" then
+      return scopedPush
+    end
+    if key == "pop" then
+      return scopedPop
+    end
+    return hostGraphics[key]
+  end
+  local scoped = setmetatable({}, { __index = scopedIndex })
   local owned = {
-    graphics = resources.graphics,
+    graphics = scoped,
     text = self._text,
     windows = self._windows,
     assets = self._assets,
@@ -1872,15 +1920,41 @@ function BattleScreenState:draw(resources)
     sceneImageKey = self._assets:sceneImage(),
   }
   -- The render runs under a bounded guard with the pushed scope owned
-  -- here: a production-data render failure becomes failed with context
-  -- instead of an unhandled host error, and the scope always pops so the
-  -- host observes no graphics leak. Draws never substitute, never paint
-  -- a blank success, and never raise.
+  -- here: the boundary selects the neutral image state (white tint, default
+  -- shader and blend, unclipped viewport and depth) so hostile incoming
+  -- state never reaches battle pixels, while the caller canvas stays put.
+  -- A production-data render failure becomes failed with context instead of
+  -- an unhandled host error. Depth rides outside the native stack and is
+  -- saved here; restoration runs on success and failure alike, then every
+  -- outstanding scope drains, so no nested leak survives. Draws never
+  -- substitute, never paint a blank success, and never raise.
   local snapshot = self:_snapshot()
-  local graphics = resources.graphics
-  graphics.push("all")
-  local renderOk, renderErr = pcall(plan.render, owned, snapshot, plan)
-  graphics.pop()
+  local graphics = scoped
+  local depthMode, depthWrite = graphics.getDepthMode()
+  local pushed, pushErr = pcall(graphics.push, "all")
+  if not pushed then
+    self._mode = "failed"
+    self._error = "battle render failed for launch " .. self._launchId .. ": " .. tostring(pushErr)
+    return
+  end
+  local renderOk, renderErr = pcall(function()
+    graphics.setColor(1, 1, 1, 1)
+    graphics.setShader()
+    graphics.setBlendMode("alpha")
+    graphics.setScissor()
+    graphics.setDepthMode()
+    return plan.render(owned, snapshot, plan)
+  end)
+  local _, _ = pcall(function()
+    if depthMode then
+      graphics.setDepthMode(depthMode, depthWrite)
+    else
+      graphics.setDepthMode()
+    end
+    while outstanding > 0 do
+      graphics.pop()
+    end
+  end)
   if not renderOk then
     self._mode = "failed"
     self._error = "battle render failed for launch " .. self._launchId .. ": " .. tostring(renderErr)

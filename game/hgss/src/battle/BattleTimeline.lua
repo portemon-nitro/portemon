@@ -3,7 +3,7 @@
 -- of small typed cues (messages, health interpolation, hit recoil,
 -- fainting, withdrawal, reveal, experience, waits, one-shot sounds) over
 -- a displayed-state model, advanced only by accepted presentation time
--- at sixty ticks per second. The screen feeds packets in, ticks the
+-- at thirty ticks per second. The screen feeds packets in, ticks the
 -- clock, and reads the displayed facts; drawing and input never advance
 -- it. Unknown required effects play an explicit diagnostic cue instead
 -- of vanishing. Message wording here is product-owned interim narration,
@@ -33,7 +33,7 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 local BattleTimeline = {}
 BattleTimeline.__index = BattleTimeline
 
-BattleTimeline.TICKS_PER_SECOND = 60
+BattleTimeline.TICKS_PER_SECOND = 30
 BattleTimeline.MESSAGE_HOLD_TICKS = 12
 BattleTimeline.HIT_TICKS = 6
 BattleTimeline.HIT_DISPLACEMENT = 2

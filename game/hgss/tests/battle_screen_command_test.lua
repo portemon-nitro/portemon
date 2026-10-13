@@ -19,7 +19,7 @@ local Party = require("libs.mons.src.Party")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = {}
-local TICK = 1 / 60
+local TICK = 1 / 30
 
 -- Portrait drawables pair their stub image with a stub cell quad,
 -- matching the production image-plus-quad handle behind draws while
@@ -1855,7 +1855,8 @@ function T.launches_keep_their_own_narration_pace_and_edges()
   Assert.isTrue(finishedFinally, "a second deliberate edge acknowledges the revealed final page")
   local single = BattleTimeline.new({ sound = function(_) end, textSpeed = "slow" })
   single:announce("ABCDEFGHIJKLMNOPQRST", false)
-  single:update(4 / 60, function(_)
+  -- Equal accepted source time either way: one whole update carries four source ticks.
+  single:update(4 / 30, function(_)
     return true
   end)
   local batched = BattleTimeline.new({ sound = function(_) end, textSpeed = "slow" })

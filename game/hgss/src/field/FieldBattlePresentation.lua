@@ -942,6 +942,26 @@ function FieldBattlePresentation:_pollPendingScreen()
   if self._pendingFailed or not self._pendingBuild then
     return
   end
+  -- The host settlement is observed before any build, exactly as the
+  -- cover step observes it before any advance: a worker answer that
+  -- arrives after the host settled or tore down builds no screen for
+  -- the dead launch, and the launch drains here instead of lingering
+  -- until the next accepted tick.
+  local host = descriptor.host
+  if host == nil then
+    self:_dropLaunch()
+    return
+  end
+  if type(host.status) == "function" then
+    local okStatus, status = pcall(function()
+      return host.status()
+    end)
+    local phase = type(status) == "table" and status.phase or nil
+    if not okStatus or status == nil or phase == "failed" or phase == "complete" then
+      self:_dropLaunch()
+      return
+    end
+  end
   local environment = descriptor.environment --[[@as table<string, unknown>]]
   local sceneKey = type(environment) == "table" and environment.sceneKey or nil
   if type(sceneKey) ~= "string" or sceneKey == "" then
@@ -1251,14 +1271,24 @@ function FieldBattlePresentation:musicNote()
   return self._musicNote
 end
 
--- Advances the envelope one accepted fixed quantum: the cover machine
--- follows the observed launch phase while the live screen and its cue
--- accumulator advance on the accepted time only. Draw, resize, and status
--- polling never advance these clocks.
+-- Advances the envelope on the accepted source clock: the scheduled scene
+-- behind a pending launch is observed outside time, then every accepted
+-- tick runs encounter cover work, the coordinator advance exactly once, and
+-- the active battle tasks in source order. A frame carrying less than one
+-- tick performs no semantic advance; a long frame obeys the same catch-up
+-- cap with discarded time advancing no subsystem. The failed-screen report
+-- stays reachable with a disposed inner screen because the coordinator
+-- advance never depends on it. Draw, resize, and status polling never
+-- advance these clocks.
 ---@param dt number accepted presentation seconds
 function FieldBattlePresentation:updateFixed(dt)
   assert(type(dt) == "number" and dt == dt and dt >= 0, "presentation updates take accepted seconds")
   assert(not self._disposed, "the presented battle envelope is disposed")
+  -- The scheduled scene behind a pending launch resolves here: the
+  -- worker is observed before any accepted tick runs, so the battle runtime
+  -- cannot publish a packet before its screen exists and a terminal
+  -- build failure reaches the host before any further advance.
+  self:_pollPendingScreen()
   self._accumulator = self._accumulator + dt
   local steps = 0
   while
@@ -1268,30 +1298,24 @@ function FieldBattlePresentation:updateFixed(dt)
     self._accumulator = self._accumulator - FieldBattlePresentation.SOURCE_FRAME
     steps = steps + 1
     self:_stepCover()
+    -- The presented launch advances only here: the runtime phase machine
+    -- and the owned battle clock run once per accepted tick, never through
+    -- the host-update pump as well.
+    local descriptor = self._descriptor
+    local host = descriptor ~= nil and descriptor.host or nil
+    if self._launchId ~= nil and host ~= nil then
+      host.advance()
+    end
+    local screen = self._screen
+    if screen ~= nil then
+      screen:updateFixed(FieldBattlePresentation.SOURCE_FRAME)
+      self:_observeScreenFailure()
+    end
   end
   if self._accumulator + FieldBattlePresentation.SOURCE_EPSILON >= FieldBattlePresentation.SOURCE_FRAME then
     local discarded =
       math.floor((self._accumulator + FieldBattlePresentation.SOURCE_EPSILON) / FieldBattlePresentation.SOURCE_FRAME)
     self._accumulator = self._accumulator - discarded * FieldBattlePresentation.SOURCE_FRAME
-  end
-  -- The scheduled scene behind a pending launch resolves here: the
-  -- worker is observed before the host advances, so the battle runtime
-  -- cannot publish a packet before its screen exists and a terminal
-  -- build failure reaches the host before any further advance.
-  self:_pollPendingScreen()
-  -- The presented launch advances only here: the runtime phase machine
-  -- and the owned battle clock run once per envelope tick, never through
-  -- the host-update pump as well.
-  local descriptor = self._descriptor
-  local host = descriptor ~= nil and descriptor.host or nil
-  if self._launchId ~= nil and host ~= nil then
-    host.advance()
-  end
-  -- After fixed cover and host advance, update semantic battle state only.
-  local screen = self._screen
-  if screen ~= nil then
-    screen:updateFixed(steps * FieldBattlePresentation.SOURCE_FRAME)
-    self:_observeScreenFailure()
   end
   -- No screen:draw call here; the field's draw callback owns painting.
 end

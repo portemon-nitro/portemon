@@ -23,7 +23,7 @@ local PlayTime = require("libs.hgss.src.save.PlayTime")
 
 local T = {}
 
-local TICK = 1 / 60
+local TICK = 1 / 30
 
 local function dualMeasurement(signature)
   return {
@@ -414,7 +414,10 @@ function T.presented_win_returns_through_cover_and_receipt()
       Assert.notNil(leftAt, "semantic leave follows cover")
       Assert.isTrue(coveredAt <= leftAt, "leave never precedes full cover")
       Assert.equal(coverAtLeave, 16, "semantic leave happens under full cover")
-      Assert.equal(envelope:cover().coefficient, 16, "the battle starts under full cover")
+      -- Construction follows the full-cover leave by one accepted tick, and that
+      -- tick performs the reveal's single cover step first, so the battle starts
+      -- one step into the reveal beside its intro instead of under full cover.
+      Assert.equal(envelope:cover().coefficient, 14, "the battle starts one reveal step after full cover")
       local experienceBefore = assert(runtime.monService:partyMon(0), "the live lead is readable").experience
       local turns = settle(runtime, envelope, function(request)
         return sparringChoose(runtime, request)
@@ -2477,6 +2480,21 @@ local function paintCountingGraphics()
     paint()
   end
   function graphics.pop()
+    paint()
+  end
+  function graphics.getDepthMode()
+    return nil
+  end
+  function graphics.setDepthMode(_, _)
+    paint()
+  end
+  function graphics.setShader(_)
+    paint()
+  end
+  function graphics.setBlendMode(_, _)
+    paint()
+  end
+  function graphics.setScissor(_, _, _, _)
     paint()
   end
   function graphics.origin()

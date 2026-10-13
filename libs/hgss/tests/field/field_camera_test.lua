@@ -557,4 +557,35 @@ function T.raw_perspective_steps_reject_fractional_and_nonfinite_deltas()
   )
 end
 
+-- Collapsing render interpolation is history-quiet and idempotent: a freeze
+-- edge settles the previous/current pair without recording a new history
+-- entry, every alpha then samples the same view, and repeating the collapse
+-- changes nothing further.
+function T.collapse_leaves_history_and_view_untouched()
+  local camera = FieldCamera.new(profile({ targetOffsetTiles = { x = 0, y = 0, z = 0 } }), {
+    initialTarget = { x = 0, y = 0, z = 0 },
+  })
+  for tick = 1, 10 do
+    camera:updateFixed({ x = tick, y = tick, z = tick * 2 })
+  end
+  local writes = camera.history.writes
+  Assert.isTrue(writes > 0, "priming movement records history")
+  local function snapshot(view)
+    local copy = {}
+    for i = 1, #view do
+      copy[i] = view[i]
+    end
+    return copy
+  end
+  camera:collapseRenderInterpolation()
+  Assert.equal(camera.history.writes, writes, "settling pushes no history entry")
+  local settled = snapshot(camera:view(1))
+  Assert.deepEqual(snapshot(camera:view(0)), settled, "alpha zero matches after settling")
+  Assert.deepEqual(snapshot(camera:view(0.5)), settled, "half alpha matches after settling")
+  camera:collapseRenderInterpolation()
+  Assert.equal(camera.history.writes, writes, "repeating the collapse stays quiet")
+  Assert.deepEqual(snapshot(camera:view(0.25)), settled, "the settled view survives a repeat")
+  Assert.deepEqual(snapshot(camera:view(0.75)), settled, "every alpha keeps the settled view")
+end
+
 return { tests = T }

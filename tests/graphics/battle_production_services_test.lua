@@ -830,6 +830,11 @@ function T.missing_scene_image_fails_closed_with_context(scope, context)
       return 1, 1, 1, 1
     end
     function recording.setColor(_, _, _, _) end
+    function recording.getDepthMode() end
+    function recording.setDepthMode(_, _) end
+    function recording.setShader(_) end
+    function recording.setBlendMode(_, _) end
+    function recording.setScissor(_, _, _, _) end
     function recording.rectangle(_, _, _, _, _) end
     function recording.draw(drawable, x, y)
       recording.draws[#recording.draws + 1] = { drawable = drawable, x = x, y = y }
@@ -852,6 +857,611 @@ function T.missing_scene_image_fails_closed_with_context(scope, context)
     Assert.isNil(envelope:liveScreen(), versionId .. " drops its failed launch")
     Assert.isFalse(envelope:ownsInput(), versionId .. " releases input with its failed launch")
     envelope:dispose()
+  end
+end
+
+-- The battle draw boundary owns every pixel it paints: the same staged
+-- command view rendered into the same offscreen target must match the
+-- neutral control exactly after an incoming black tint, a partial-alpha
+-- tint, and a foreign shader with a nondefault blend and scissor, and
+-- must keep every fully opaque control color over a leftover black cover
+-- fill (where the battle legitimately leaves transparency over the
+-- previous fill). Every leg runs so one failure names all contaminated
+-- legs instead of stopping at the first.
+function T.hostile_incoming_graphics_state_never_reaches_battle_pixels(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the hostile-state coverage needs a ready user-owned ROM with a derived cache")
+  end
+  for _, versionId in ipairs(versions) do
+    local cacheFs = CacheFs.forVersion(versionId)
+    local manifest = BattlePresentationCache.load(cacheFs)
+    Assert.isTrue(manifest.verified == true, versionId .. " stages the verified battle manifest")
+    local text, windows = productionDrawServices(scope, cacheFs, versionId)
+    local envelope = FieldBattlePresentation.new({
+      cacheFs = cacheFs,
+      graphics = love.graphics,
+      windows = windows,
+      text = text,
+      audio = recordingAudio(),
+      measureDisplay = compactMeasurement,
+    })
+    local launchId = "battle-hostile-pixels"
+    local host = stubHost()
+    local port = buildPort(envelope, {
+      launchId = launchId,
+      kind = "wild",
+      environment = { sceneKey = SCENE_KEY },
+      host = host,
+    })
+    local canvas = scope:own(love.graphics.newCanvas(256, 192, { format = "rgba8", readable = true }))
+    love.graphics.setCanvas(canvas)
+    driveToEnter(envelope, port, launchId, versionId)
+    local portraits = {
+      leadBack = stagedPortraitSelector(cacheFs, LEAD_SPECIES, "back"),
+      foeFront = stagedPortraitSelector(cacheFs, FOE_SPECIES, "front"),
+    }
+    driveToCommand(envelope, port, launchId, versionId, portraits)
+    local function renderCleared()
+      love.graphics.setCanvas(canvas)
+      love.graphics.clear(0, 0, 0, 0)
+      Assert.isTrue(
+        envelope:drawBattle({ graphics = love.graphics, text = text, windows = windows }),
+        versionId .. " draws its live battle"
+      )
+      love.graphics.setCanvas()
+      return scope:own(canvas:newImageData())
+    end
+    local function neutralize()
+      love.graphics.setShader()
+      love.graphics.setBlendMode("alpha")
+      love.graphics.setScissor()
+      love.graphics.setColor(1, 1, 1, 1)
+    end
+    local failures = {}
+    neutralize()
+    local controlPixels = renderCleared()
+    local controlDigest = imageDataDigest(controlPixels)
+    local function checkDigest(pixels, label)
+      if imageDataDigest(pixels) ~= controlDigest then
+        failures[#failures + 1] = label
+      end
+    end
+    neutralize()
+    love.graphics.setColor(0, 0, 0, 1)
+    checkDigest(renderCleared(), "black incoming tint")
+    neutralize()
+    love.graphics.setColor(1, 1, 1, 0.45)
+    checkDigest(renderCleared(), "partial-alpha incoming tint")
+    local shaderOk, foreign = pcall(love.graphics.newShader, [[
+      vec4 effect(vec4 color, Image texture, vec2 texture_coords, vec2 screen_coords) {
+        vec4 px = Texel(texture, texture_coords);
+        return vec4(1.0 - px.rgb, px.a) * color;
+      }
+    ]])
+    if not shaderOk or foreign == nil then
+      context:skip(versionId .. " cannot compile a foreign test shader")
+    end
+    ---@cast foreign -nil
+    if type(foreign.release) == "function" then
+      scope:own(foreign)
+    end
+    neutralize()
+    love.graphics.setShader(foreign)
+    love.graphics.setBlendMode("add")
+    love.graphics.setScissor(32, 32, 64, 64)
+    love.graphics.setColor(0.2, 0.5, 0.9, 1)
+    checkDigest(renderCleared(), "foreign shader with nondefault blend and scissor")
+    neutralize()
+    love.graphics.setCanvas(canvas)
+    love.graphics.setColor(0, 0, 0, 1)
+    love.graphics.rectangle("fill", 0, 0, 256, 192)
+    Assert.isTrue(
+      envelope:drawBattle({ graphics = love.graphics, text = text, windows = windows }),
+      versionId .. " draws over the leftover black cover"
+    )
+    love.graphics.setCanvas()
+    local coveredPixels = scope:own(canvas:newImageData())
+    local opaque, matched = 0, 0
+    for y = 0, coveredPixels:getHeight() - 1 do
+      for x = 0, coveredPixels:getWidth() - 1 do
+        local cr, cg, cb, ca = controlPixels:getPixel(x, y)
+        if quantize(ca) == 255 then
+          opaque = opaque + 1
+          local r, g, b, a = coveredPixels:getPixel(x, y)
+          if
+            quantize(r) == quantize(cr)
+            and quantize(g) == quantize(cg)
+            and quantize(b) == quantize(cb)
+            and quantize(a) == 255
+          then
+            matched = matched + 1
+          end
+        end
+      end
+    end
+    Assert.isTrue(opaque > 20000, versionId .. " stages an opaque control to compare against")
+    if matched ~= opaque then
+      failures[#failures + 1] = "leftover black cover (" .. tostring(opaque - matched) .. " opaque pixels tinted)"
+    end
+    Assert.equal(#failures, 0, versionId .. " contaminated legs: " .. table.concat(failures, "; "))
+    love.graphics.setCanvas()
+    envelope:dispose()
+  end
+end
+
+-- Drawing never borrows caller state: color, shader, blend, scissor, and
+-- canvas read back identical around the battle draw on a neutral leg and
+-- on every hostile leg.
+function T.battle_draw_preserves_caller_graphics_state(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the state-preservation coverage needs a ready user-owned ROM with a derived cache")
+  end
+  for _, versionId in ipairs(versions) do
+    local cacheFs = CacheFs.forVersion(versionId)
+    local manifest = BattlePresentationCache.load(cacheFs)
+    Assert.isTrue(manifest.verified == true, versionId .. " stages the verified battle manifest")
+    local text, windows = productionDrawServices(scope, cacheFs, versionId)
+    local envelope = FieldBattlePresentation.new({
+      cacheFs = cacheFs,
+      graphics = love.graphics,
+      windows = windows,
+      text = text,
+      audio = recordingAudio(),
+      measureDisplay = compactMeasurement,
+    })
+    local launchId = "battle-caller-state"
+    local host = stubHost()
+    local port = buildPort(envelope, {
+      launchId = launchId,
+      kind = "wild",
+      environment = { sceneKey = SCENE_KEY },
+      host = host,
+    })
+    local canvas = scope:own(love.graphics.newCanvas(256, 192, { format = "rgba8", readable = true }))
+    love.graphics.setCanvas(canvas)
+    driveToEnter(envelope, port, launchId, versionId)
+    local portraits = {
+      leadBack = stagedPortraitSelector(cacheFs, LEAD_SPECIES, "back"),
+      foeFront = stagedPortraitSelector(cacheFs, FOE_SPECIES, "front"),
+    }
+    driveToCommand(envelope, port, launchId, versionId, portraits)
+    local function captureState()
+      local red, green, blue, alpha = love.graphics.getColor()
+      local blendMode, blendAlpha = love.graphics.getBlendMode()
+      return {
+        color = { red, green, blue, alpha },
+        shader = love.graphics.getShader(),
+        blend = { blendMode, blendAlpha },
+        scissor = { love.graphics.getScissor() },
+        canvas = love.graphics.getCanvas(),
+      }
+    end
+    local function drawAndCheck(label)
+      love.graphics.setCanvas(canvas)
+      love.graphics.clear(0, 0, 0, 0)
+      local before = captureState()
+      Assert.isTrue(
+        envelope:drawBattle({ graphics = love.graphics, text = text, windows = windows }),
+        versionId .. " draws its live battle " .. label
+      )
+      local after = captureState()
+      love.graphics.setCanvas()
+      Assert.deepEqual(after.color, before.color, versionId .. " restores the caller tint " .. label)
+      Assert.isTrue(after.shader == before.shader, versionId .. " restores the caller shader " .. label)
+      Assert.deepEqual(after.blend, before.blend, versionId .. " restores the caller blend " .. label)
+      Assert.deepEqual(after.scissor, before.scissor, versionId .. " restores the caller scissor " .. label)
+      Assert.isTrue(after.canvas == before.canvas, versionId .. " keeps the caller canvas " .. label)
+    end
+    love.graphics.setShader()
+    love.graphics.setBlendMode("alpha")
+    love.graphics.setScissor()
+    love.graphics.setColor(1, 1, 1, 1)
+    drawAndCheck("on the neutral leg")
+    love.graphics.setColor(0, 0, 0, 1)
+    drawAndCheck("under a black incoming tint")
+    local shaderOk, foreign = pcall(love.graphics.newShader, [[
+      vec4 effect(vec4 color, Image texture, vec2 texture_coords, vec2 screen_coords) {
+        vec4 px = Texel(texture, texture_coords);
+        return vec4(1.0 - px.rgb, px.a) * color;
+      }
+    ]])
+    if not shaderOk or foreign == nil then
+      context:skip(versionId .. " cannot compile a foreign test shader")
+    end
+    ---@cast foreign -nil
+    if type(foreign.release) == "function" then
+      scope:own(foreign)
+    end
+    love.graphics.setShader(foreign)
+    love.graphics.setBlendMode("add")
+    love.graphics.setScissor(32, 32, 64, 64)
+    love.graphics.setColor(0.2, 0.5, 0.9, 1)
+    drawAndCheck("under a foreign shader and blend")
+    love.graphics.setCanvas()
+    envelope:dispose()
+  end
+end
+
+-- A nested draw failure still classifies through the launch failure path:
+-- the failure raises on the first nested primitive, so the doomed canvas
+-- carries a deterministic painted prefix. Every painted pixel of that
+-- prefix must already match the neutral control exactly; the failed
+-- screen reports with launch context, the envelope notifies exactly once,
+-- the caller state is identical to before the draw, and an unrelated
+-- surface painted next matches its failure-free control pixel for pixel.
+function T.failed_battle_draw_reports_and_leaves_no_graphics_behind(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the draw-failure coverage needs a ready user-owned ROM with a derived cache")
+  end
+  for _, versionId in ipairs(versions) do
+    local cacheFs = CacheFs.forVersion(versionId)
+    local manifest = BattlePresentationCache.load(cacheFs)
+    Assert.isTrue(manifest.verified == true, versionId .. " stages the verified battle manifest")
+    local text, windows = productionDrawServices(scope, cacheFs, versionId)
+    local envelope = FieldBattlePresentation.new({
+      cacheFs = cacheFs,
+      graphics = love.graphics,
+      windows = windows,
+      text = text,
+      audio = recordingAudio(),
+      measureDisplay = compactMeasurement,
+    })
+    local launchId = "battle-nested-draw-failure"
+    local host = stubHost()
+    local port = buildPort(envelope, {
+      launchId = launchId,
+      kind = "wild",
+      environment = { sceneKey = SCENE_KEY },
+      host = host,
+    })
+    local canvas = scope:own(love.graphics.newCanvas(256, 192, { format = "rgba8", readable = true }))
+    love.graphics.setCanvas(canvas)
+    driveToEnter(envelope, port, launchId, versionId)
+    local portraits = {
+      leadBack = stagedPortraitSelector(cacheFs, LEAD_SPECIES, "back"),
+      foeFront = stagedPortraitSelector(cacheFs, FOE_SPECIES, "front"),
+    }
+    driveToCommand(envelope, port, launchId, versionId, portraits)
+    local shaderOk, foreign = pcall(love.graphics.newShader, [[
+      vec4 effect(vec4 color, Image texture, vec2 texture_coords, vec2 screen_coords) {
+        vec4 px = Texel(texture, texture_coords);
+        return vec4(1.0 - px.rgb, px.a) * color;
+      }
+    ]])
+    if not shaderOk or foreign == nil then
+      context:skip(versionId .. " cannot compile a foreign test shader")
+    end
+    ---@cast foreign -nil
+    if type(foreign.release) == "function" then
+      scope:own(foreign)
+    end
+    local function neutralize()
+      love.graphics.setShader()
+      love.graphics.setBlendMode("alpha")
+      love.graphics.setScissor()
+      love.graphics.setColor(1, 1, 1, 1)
+    end
+    local function renderCleared()
+      love.graphics.setCanvas(canvas)
+      love.graphics.clear(0, 0, 0, 0)
+      Assert.isTrue(
+        envelope:drawBattle({ graphics = love.graphics, text = text, windows = windows }),
+        versionId .. " draws its live battle"
+      )
+      love.graphics.setCanvas()
+      return scope:own(canvas:newImageData())
+    end
+    neutralize()
+    local controlPixels = renderCleared()
+    -- A second settled command view fails under neutral incoming state: its
+    -- doomed canvas carries exactly the background prefix the composition
+    -- later overpaints, so the poisoned comparison below can exclude
+    -- compositional overpaint without excusing leaked tint.
+    local baseText, baseWindows = productionDrawServices(scope, cacheFs, versionId)
+    local baseEnvelope = FieldBattlePresentation.new({
+      cacheFs = cacheFs,
+      graphics = love.graphics,
+      windows = baseWindows,
+      text = baseText,
+      audio = recordingAudio(),
+      measureDisplay = compactMeasurement,
+    })
+    local baseLaunchId = "battle-nested-draw-baseline"
+    local baseHost = stubHost()
+    local basePort = buildPort(baseEnvelope, {
+      launchId = baseLaunchId,
+      kind = "wild",
+      environment = { sceneKey = SCENE_KEY },
+      host = baseHost,
+    })
+    local baseCanvas = scope:own(love.graphics.newCanvas(256, 192, { format = "rgba8", readable = true }))
+    love.graphics.setCanvas(baseCanvas)
+    driveToEnter(baseEnvelope, basePort, baseLaunchId, versionId)
+    driveToCommand(baseEnvelope, basePort, baseLaunchId, versionId, portraits)
+    local baseRaised = false
+    local baseProxy = setmetatable({}, {
+      __index = love.graphics,
+    })
+    function baseProxy.draw(...)
+      local results = { love.graphics.draw(...) }
+      baseRaised = true
+      error("injected nested draw failure", 0)
+      return unpack(results)
+    end
+    neutralize()
+    love.graphics.setCanvas(baseCanvas)
+    love.graphics.clear(0, 0, 0, 0)
+    Assert.isTrue(
+      baseEnvelope:drawBattle({ graphics = baseProxy, text = baseText, windows = baseWindows }),
+      versionId .. " converts the neutral nested draw failure instead of raising"
+    )
+    love.graphics.setCanvas()
+    Assert.isTrue(baseRaised, versionId .. " fails the neutral run inside the nested render")
+    local baselinePrefix = scope:own(baseCanvas:newImageData())
+    baseEnvelope:dispose()
+    local reference = scope:own(love.graphics.newCanvas(128, 64, { format = "rgba8", readable = true }))
+    local function paintReference()
+      love.graphics.setCanvas(reference)
+      love.graphics.rectangle("fill", 0, 0, 128, 64)
+      love.graphics.setCanvas()
+      return scope:own(reference:newImageData())
+    end
+    love.graphics.setShader(foreign)
+    love.graphics.setBlendMode("add")
+    love.graphics.setScissor(8, 8, 112, 48)
+    love.graphics.setColor(0.15, 0.35, 0.85, 1)
+    local controlDigest = imageDataDigest(paintReference())
+    love.graphics.setShader(foreign)
+    love.graphics.setBlendMode("add")
+    love.graphics.setScissor(8, 8, 112, 48)
+    love.graphics.setColor(0.15, 0.35, 0.85, 1)
+    local raised = false
+    local proxy = setmetatable({}, {
+      __index = love.graphics,
+    })
+    function proxy.draw(...)
+      local results = { love.graphics.draw(...) }
+      raised = true
+      error("injected nested draw failure", 0)
+      return unpack(results)
+    end
+    local red, green, blue, alpha = love.graphics.getColor()
+    local blendMode, blendAlpha = love.graphics.getBlendMode()
+    love.graphics.setCanvas(canvas)
+    love.graphics.clear(0, 0, 0, 0)
+    local beforeState = {
+      color = { red, green, blue, alpha },
+      shader = love.graphics.getShader(),
+      blend = { blendMode, blendAlpha },
+      scissor = { love.graphics.getScissor() },
+      canvas = love.graphics.getCanvas(),
+    }
+    Assert.isTrue(
+      envelope:drawBattle({ graphics = proxy, text = text, windows = windows }),
+      versionId .. " converts the nested draw failure instead of raising"
+    )
+    local ar, ag, ab, aa = love.graphics.getColor()
+    local bmode, balpha = love.graphics.getBlendMode()
+    local afterState = {
+      color = { ar, ag, ab, aa },
+      shader = love.graphics.getShader(),
+      blend = { bmode, balpha },
+      scissor = { love.graphics.getScissor() },
+      canvas = love.graphics.getCanvas(),
+    }
+    love.graphics.setCanvas()
+    Assert.isTrue(raised, versionId .. " fails inside the nested render, not before it")
+    local doomedPixels = scope:own(canvas:newImageData())
+    local painted, matched, compared = 0, 0, 0
+    for y = 0, doomedPixels:getHeight() - 1 do
+      for x = 0, doomedPixels:getWidth() - 1 do
+        local _, _, _, fa = doomedPixels:getPixel(x, y)
+        if quantize(fa) > 0 then
+          painted = painted + 1
+          local r, g, b, a = doomedPixels:getPixel(x, y)
+          local cr, cg, cb, ca = controlPixels:getPixel(x, y)
+          local br, bg, bb, ba = baselinePrefix:getPixel(x, y)
+          -- Mask compositional overpaint: where the full control differs
+          -- from the neutral background prefix, later interface layers
+          -- cover the background, so only unmasked pixels must match.
+          if
+            quantize(br) == quantize(cr)
+            and quantize(bg) == quantize(cg)
+            and quantize(bb) == quantize(cb)
+            and quantize(ba) == quantize(ca)
+          then
+            compared = compared + 1
+            if
+              quantize(r) == quantize(cr)
+              and quantize(g) == quantize(cg)
+              and quantize(b) == quantize(cb)
+              and quantize(a) == quantize(ca)
+            then
+              matched = matched + 1
+            end
+          end
+        end
+      end
+    end
+    Assert.isTrue(painted > 0, versionId .. " paints a deterministic prefix before failing")
+    Assert.isTrue(compared > 0, versionId .. " keeps unmasked background to compare")
+    Assert.equal(
+      matched,
+      compared,
+      versionId .. " paints its unmasked doomed prefix exactly as the neutral control (" .. tostring(compared - matched) .. " poisoned)"
+    )
+    Assert.deepEqual(afterState.color, beforeState.color, versionId .. " restores the caller tint after a draw failure")
+    Assert.isTrue(afterState.shader == beforeState.shader, versionId .. " restores the caller shader after a draw failure")
+    Assert.deepEqual(afterState.blend, beforeState.blend, versionId .. " restores the caller blend after a draw failure")
+    Assert.deepEqual(
+      afterState.scissor,
+      beforeState.scissor,
+      versionId .. " restores the caller scissor after a draw failure"
+    )
+    Assert.isTrue(afterState.canvas == beforeState.canvas, versionId .. " keeps the caller canvas after a draw failure")
+    Assert.equal(
+      imageDataDigest(paintReference()),
+      controlDigest,
+      versionId .. " paints the next unrelated surface exactly as without the failure"
+    )
+    local screen = assert(envelope:liveScreen(), versionId .. " keeps its failed screen for inspection")
+    local status = screen:status()
+    Assert.equal(status.mode, "failed", versionId .. " classifies the nested draw failure")
+    Assert.isTrue(
+      tostring(status.error):find(launchId, 1, true) ~= nil,
+      versionId .. " keeps the launch identity in its failure context"
+    )
+    for _ = 1, 3 do
+      envelope:updateFixed(TICK)
+    end
+    local failed = 0
+    for _, event in ipairs(host.notifies) do
+      if event == "screen-failed" then
+        failed = failed + 1
+      end
+    end
+    Assert.equal(failed, 1, versionId .. " notifies its draw failure exactly once")
+    Assert.isNil(envelope:liveScreen(), versionId .. " drops its failed launch")
+    Assert.isFalse(envelope:ownsInput(), versionId .. " releases input with its failed launch")
+    love.graphics.setCanvas()
+    envelope:dispose()
+  end
+end
+
+-- The selection arrow is a source-timed control, not a host-call counter:
+-- from the same settled paired command view, equal accepted source time
+-- must paint the same arrow cell on 30 Hz, on 60 Hz with zero-step calls,
+-- and on irregular schedules. A shorter schedule first proves the comparison
+-- is sensitive by painting a different cell seventeen source ticks later.
+function T.equal_source_time_paints_the_same_arrow_cell_on_every_schedule(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the arrow-schedule coverage needs a ready user-owned ROM with a derived cache")
+  end
+  local function dualMeasurement()
+    return {
+      width = 256,
+      height = 384,
+      topology = ScreenTopology.dualDisplay(
+        { id = "main", rect = { x = 0, y = 0, width = 256, height = 192 }, touch = false, role = "world" },
+        { id = "lower", rect = { x = 0, y = 192, width = 256, height = 192 }, touch = true, role = "auxiliary" }
+      ),
+      pixelRatio = 1,
+      signature = "battle-production-services:dual-partition",
+    }
+  end
+  local function bootToCommand(cacheFs, text, windows, launchId)
+    local envelope = FieldBattlePresentation.new({
+      cacheFs = cacheFs,
+      graphics = love.graphics,
+      windows = windows,
+      text = text,
+      audio = recordingAudio(),
+      measureDisplay = dualMeasurement,
+    })
+    local host = stubHost()
+    local port = buildPort(envelope, {
+      launchId = launchId,
+      kind = "wild",
+      environment = { sceneKey = SCENE_KEY },
+      host = host,
+    })
+    driveToEnter(envelope, port, launchId, "paired boot")
+    local portraits = {
+      leadBack = stagedPortraitSelector(cacheFs, LEAD_SPECIES, "back"),
+      foeFront = stagedPortraitSelector(cacheFs, FOE_SPECIES, "front"),
+    }
+    port.present(openingPacket(launchId, portraits))
+    local ticks = 0
+    while ticks < DRIVE_BUDGET do
+      envelope:updateFixed(TICK)
+      ticks = ticks + 1
+      local screen = envelope:liveScreen()
+      local status = screen ~= nil and screen:status() or nil
+      if status ~= nil and status.mode == "command" and status.request ~= nil then
+        return envelope
+      end
+      Assert.isTrue(
+        status == nil or status.mode ~= "failed",
+        "paired boot never fails: " .. tostring(status ~= nil and status.error)
+      )
+    end
+    error("paired boot exposes its command request", 0)
+    return envelope
+  end
+  for _, versionId in ipairs(versions) do
+    local cacheFs = CacheFs.forVersion(versionId)
+    local manifest = BattlePresentationCache.load(cacheFs)
+    Assert.isTrue(manifest.verified == true, versionId .. " stages the verified battle manifest")
+    local function renderOver(envelope, text, windows, schedule)
+      for _, dt in ipairs(schedule) do
+        envelope:updateFixed(dt)
+      end
+      local screen = assert(envelope:liveScreen(), versionId .. " keeps its live screen")
+      local plan = livePlan(screen, versionId)
+      local width, height = canvasSize(plan, versionId)
+      local canvas = scope:own(love.graphics.newCanvas(width, height, { format = "rgba8", readable = true }))
+      love.graphics.setCanvas(canvas)
+      love.graphics.clear(0, 0, 0, 0)
+      Assert.isTrue(
+        envelope:drawBattle({ graphics = love.graphics, text = text, windows = windows }),
+        versionId .. " draws its live battle"
+      )
+      love.graphics.setCanvas()
+      return scope:own(canvas:newImageData())
+    end
+    local at30 = {}
+    for _ = 1, 90 do
+      at30[#at30 + 1] = 1 / 30
+    end
+    local at60zero = {}
+    for _ = 1, 90 do
+      at60zero[#at60zero + 1] = 1 / 60
+      at60zero[#at60zero + 1] = 1 / 60
+      at60zero[#at60zero + 1] = 0
+    end
+    local irregular = {}
+    for _ = 1, 45 do
+      irregular[#irregular + 1] = 1 / 30
+      irregular[#irregular + 1] = 0
+      irregular[#irregular + 1] = 1 / 60
+      irregular[#irregular + 1] = 1 / 60
+    end
+    local later = {}
+    for _ = 1, 17 do
+      later[#later + 1] = 1 / 30
+    end
+    local textA, windowsA = productionDrawServices(scope, cacheFs, versionId)
+    local envelopeA = bootToCommand(cacheFs, textA, windowsA, "battle-arrow-30")
+    local digestA = imageDataDigest(renderOver(envelopeA, textA, windowsA, at30))
+    local digestLater = imageDataDigest(renderOver(envelopeA, textA, windowsA, later))
+    envelopeA:dispose()
+    Assert.isTrue(
+      digestLater ~= digestA,
+      versionId .. " animates its command arrow across seventeen source ticks"
+    )
+    local textB, windowsB = productionDrawServices(scope, cacheFs, versionId)
+    local envelopeB = bootToCommand(cacheFs, textB, windowsB, "battle-arrow-60")
+    local digestB = imageDataDigest(renderOver(envelopeB, textB, windowsB, at60zero))
+    envelopeB:dispose()
+    local textC, windowsC = productionDrawServices(scope, cacheFs, versionId)
+    local envelopeC = bootToCommand(cacheFs, textC, windowsC, "battle-arrow-irregular")
+    local digestC = imageDataDigest(renderOver(envelopeC, textC, windowsC, irregular))
+    envelopeC:dispose()
+    Assert.equal(
+      digestB,
+      digestA,
+      versionId .. " paints the same arrow cell on 60 Hz with zero-step calls as on 30 Hz"
+    )
+    Assert.equal(
+      digestC,
+      digestA,
+      versionId .. " paints the same arrow cell on irregular frames as on 30 Hz"
+    )
+    love.graphics.setCanvas()
   end
 end
 

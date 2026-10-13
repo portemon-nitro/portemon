@@ -1055,6 +1055,37 @@ function FieldState:_dialoguePresentation(bounds, fieldScale)
   return presentation
 end
 
+-- The presented battle draws through its live screen owner with the
+-- borrowed field services, then the envelope cover blacks the full
+-- surface: dimensions read fresh every frame so a mid-cover layout
+-- change never exposes a stale strip or the hidden field. A fully
+-- opaque cover skips the hidden screen; a disposed port never draws.
+-- The cover fill owns its own color scope so black never leaks into the
+-- next surface.
+---@param width number
+---@param height number
+function FieldState:_drawBattleEnvelopeIfNeeded(width, height)
+  local envelope = self.battleEnvelope
+  if envelope == nil or (not envelope:ownsInput() and envelope:cover().coefficient <= 0) then
+    return
+  end
+  if envelope:cover().coefficient < FieldBattlePresentation.COVER_MAX then
+    envelope:drawBattle({
+      graphics = love.graphics,
+      text = assert(self._battleText, "battle draw needs its text services"),
+      windows = assert(self._battleWindows, "battle draw needs its window services"),
+    })
+  end
+  local coefficient = envelope:cover().coefficient
+  if coefficient > 0 then
+    local lg = love.graphics
+    local prevR, prevG, prevB, prevA = lg.getColor()
+    lg.setColor(0, 0, 0, coefficient / FieldBattlePresentation.COVER_MAX)
+    lg.rectangle("fill", 0, 0, width, height)
+    lg.setColor(prevR, prevG, prevB, prevA)
+  end
+end
+
 function FieldState:draw()
   local lg = love.graphics
   local resources = assert(self.presentationResources, "field presentation resources are unavailable")
@@ -1107,6 +1138,10 @@ function FieldState:draw()
       self:_drawFieldAttachedUi(resources, nil, self.runtime.session:renderAlpha())
     end
     self:_drawScriptScreenFadeIfNeeded()
+    -- An active battle or recovery surface is owned by its envelope, not
+    -- by the field world, so a field-only readiness gate never suppresses
+    -- it; the unready field itself stays hidden.
+    self:_drawBattleEnvelopeIfNeeded(width, height)
     return
   end
   -- Runtimes without a lifecycle owner predate the overworld gate and
@@ -1311,26 +1346,7 @@ function FieldState:draw()
     lg.setColor(color, color, color, blackoutStatus.coverAlpha)
     lg.rectangle("fill", 0, 0, width, height)
   end
-  -- The presented battle draws through its live screen owner with the
-  -- borrowed field services, then the envelope cover blacks the full
-  -- surface: dimensions read fresh every frame so a mid-cover layout
-  -- change never exposes a stale strip or the hidden field. A fully
-  -- opaque cover skips the hidden screen; a disposed port never draws.
-  local envelope = self.battleEnvelope
-  if envelope ~= nil and (envelope:ownsInput() or envelope:cover().coefficient > 0) then
-    if envelope:cover().coefficient < FieldBattlePresentation.COVER_MAX then
-      envelope:drawBattle({
-        graphics = lg,
-        text = assert(self._battleText, "battle draw needs its text services"),
-        windows = assert(self._battleWindows, "battle draw needs its window services"),
-      })
-    end
-    local coefficient = envelope:cover().coefficient
-    if coefficient > 0 then
-      lg.setColor(0, 0, 0, coefficient / FieldBattlePresentation.COVER_MAX)
-      lg.rectangle("fill", 0, 0, width, height)
-    end
-  end
+  self:_drawBattleEnvelopeIfNeeded(width, height)
   if self.development and self._developmentOverlayVisible then
     self._fpsFrames = self._fpsFrames + 1
     self:_drawHud()

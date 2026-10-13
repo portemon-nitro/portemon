@@ -28,7 +28,7 @@ local Party = require("libs.mons.src.Party")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = {}
-local TICK = 1 / 60
+local TICK = 1 / 30
 
 local STATE_MODULE = "game.hgss.src.battle.BattleScreenState"
 local MODEL_MODULE = "game.hgss.src.battle.BattlePresentationModel"

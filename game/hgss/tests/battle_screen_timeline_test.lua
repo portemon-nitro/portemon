@@ -11,7 +11,7 @@ local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
 local MonCache = require("libs.assets.src.MonCache")
 
 local T = {}
-local TICK = 1 / 60
+local TICK = 1 / 30
 
 ---@param sounds table<string, boolean>? names the sink must refuse (muted)
 ---@return table recording sound-intent sink
@@ -931,6 +931,173 @@ function T.knockout_reveal_keeps_vacated_slot_and_leaves_partner_alone()
   Assert.equal(final[3].position, 3, "the surviving partner keeps its slot")
   Assert.isTrue(final[3].visible, "the surviving partner stays visible")
   Assert.isTrue(revealedAt --[[@as integer]] >= faintAt --[[@as integer]], "the reveal never precedes the faint")
+end
+
+-- Shared source time reads the same on every host schedule: one accepted
+-- source tick is nominally 1/30 second however the host slices its frames.
+-- Narration pacing, waits, completion boundaries, drained sounds, and the
+-- displayed transcript must agree in source ticks while host frame counts
+-- are free to differ.
+function T.shared_source_time_agrees_across_host_partitions()
+  local text = "ABCDEFGHIJKLMNOPQRST"
+  local function announced()
+    local played = BattleTimeline.new({ sound = function(_) end })
+    played:announce(text, false)
+    return played
+  end
+  -- Cadence ownership at the middle pace: one glyph on the first source
+  -- tick, the next after its pause, and the page complete on its boundary.
+  local paced = announced()
+  for _ = 1, 5 do
+    advance(paced, 1 / 30)
+  end
+  Assert.equal(paced:message(), "AB", "five source ticks reveal two glyphs at the middle pace")
+  local bounded = announced()
+  for _ = 1, 44 do
+    advance(bounded, 1 / 30)
+  end
+  Assert.isFalse(bounded:settled(), "a paced page never finishes in half its source time")
+  for _ = 45, 88 do
+    advance(bounded, 1 / 30)
+  end
+  Assert.isTrue(bounded:settled(), "the paced page settles on its source-tick boundary")
+  Assert.equal(bounded:message(), text, "the settled page shows its full wording")
+  -- Partition equivalence over six accepted seconds: 30 Hz, 60 Hz,
+  -- 144 Hz, and an irregular schedule with zero-step calls all land the
+  -- same strike transcript.
+  local function struckOver(schedule)
+    local sounds = sink()
+    local played = BattleTimeline.new({ sound = function(name)
+      sounds.sound(name)
+    end })
+    played:reset(openingView())
+    local after = openingView()
+    after.foes[1].hp = 43
+    played:present(
+      packet(1, { event("struck", { target = 3, damage = 14, hitIndex = 1 }, { [1] = 52, [3] = 43 }) }, after)
+    )
+    for _, dt in ipairs(schedule) do
+      advance(played, dt)
+    end
+    return played, sounds
+  end
+  local at30, at60, at144, irregular = {}, {}, {}, {}
+  for _ = 1, 180 do
+    at30[#at30 + 1] = 1 / 30
+  end
+  for _ = 1, 360 do
+    at60[#at60 + 1] = 1 / 60
+  end
+  for _ = 1, 864 do
+    at144[#at144 + 1] = 1 / 144
+  end
+  for _ = 1, 60 do
+    irregular[#irregular + 1] = 0.05
+    irregular[#irregular + 1] = 0
+    irregular[#irregular + 1] = 0.03
+    irregular[#irregular + 1] = 0.02
+  end
+  local first, firstSounds = struckOver(at30)
+  local second, secondSounds = struckOver(at60)
+  local third, thirdSounds = struckOver(at144)
+  local fourth, fourthSounds = struckOver(irregular)
+  for index, other in ipairs({ second, third, fourth }) do
+    Assert.isTrue(other:settled(), "partition " .. tostring(index) .. " settles the strike")
+    Assert.equal(other:message(), first:message(), "partition " .. tostring(index) .. " reveals the same text")
+    Assert.equal(
+      battler(other:battlers(), 3).hp,
+      battler(first:battlers(), 3).hp,
+      "partition " .. tostring(index) .. " lands the same checkpoint"
+    )
+  end
+  Assert.isTrue(first:settled(), "the strike settles")
+  Assert.equal(battler(first:battlers(), 3).hp, 43, "the strike checkpoint lands")
+  Assert.deepEqual(secondSounds.played, firstSounds.played, "60 Hz drains the same sounds")
+  Assert.deepEqual(thirdSounds.played, firstSounds.played, "144 Hz drains the same sounds")
+  Assert.deepEqual(fourthSounds.played, firstSounds.played, "irregular frames drain the same sounds")
+  -- The opening cry drains exactly once on every schedule as well.
+  local function openedOver(schedule)
+    local sounds = sink()
+    local played = BattleTimeline.new({ sound = function(name)
+      sounds.sound(name)
+    end })
+    played:intro(openingView(), true)
+    for _, dt in ipairs(schedule) do
+      advance(played, dt)
+    end
+    return played, sounds
+  end
+  local _, cry30 = openedOver(at30)
+  local _, cry60 = openedOver(at60)
+  local _, cryIrregular = openedOver(irregular)
+  Assert.deepEqual(cry30.played, { "cry:EEVEE" }, "the opening cries its lead once")
+  Assert.deepEqual(cry60.played, cry30.played, "60 Hz keeps the same audio ticks")
+  Assert.deepEqual(cryIrregular.played, cry30.played, "irregular frames keep the same audio ticks")
+end
+
+-- Source waits and zero-duration cues terminate on native control flow:
+-- a pure wait lasts exactly its ticks with no extra host-frame delay and
+-- no infinite loop, and a cue held on a missing image consumes no source
+-- time until its image arrives.
+function T.waits_terminate_on_their_own_ticks_without_holding_time()
+  local function fled()
+    local played = BattleTimeline.new({ sound = function(_) end })
+    played:reset(openingView())
+    played:present(packet(1, { event("flee", { escaped = true }, { [1] = 52, [3] = 57 }) }, openingView()))
+    return played
+  end
+  local bounded = fled()
+  for _ = 1, 5 do
+    advance(bounded, 1 / 30)
+  end
+  Assert.isFalse(bounded:settled(), "a six-tick wait never finishes after five source ticks")
+  advance(bounded, 1 / 30)
+  Assert.isTrue(bounded:settled(), "the wait terminates exactly on its sixth source tick")
+  local immediate = fled()
+  advance(immediate, 6 / 30)
+  Assert.isTrue(immediate:settled(), "one frame carrying the whole wait settles without another frame")
+  local long = fled()
+  advance(long, 3600)
+  Assert.isTrue(long:settled(), "a huge frame still terminates instead of looping")
+  -- A strike held on its missing portrait freezes: many updates, even
+  -- large ones, change neither the revealed text nor the displayed
+  -- health, and releasing the image resumes to the exact checkpoint.
+  local sounds = sink()
+  local held = BattleTimeline.new({ sound = function(name)
+    sounds.sound(name)
+  end })
+  held:reset(openingView())
+  local after = openingView()
+  after.foes[1].hp = 43
+  held:present(
+    packet(1, { event("struck", { target = 3, damage = 14, hitIndex = 1 }, { [1] = 52, [3] = 43 }) }, after)
+  )
+  local foeKey = "mon:" .. MonCache.portraitSelector("EEVEE", 0, "male", false)
+  local ready = { [foeKey] = false }
+  local function available(key)
+    return ready[key] ~= false
+  end
+  for _ = 1, 60 do
+    held:update(1 / 30, available)
+  end
+  held:update(5, available)
+  local frozenText = held:message()
+  local frozenHp = battler(held:battlers(), 3).hp
+  for _ = 1, 20 do
+    held:update(1 / 30, available)
+  end
+  Assert.equal(held:message(), frozenText, "waiting changes readiness, never the revealed text")
+  Assert.equal(battler(held:battlers(), 3).hp, frozenHp, "waiting consumes no health ticks")
+  Assert.equal(frozenHp, 57, "the held checkpoint never leaks early")
+  Assert.isFalse(held:settled(), "the held cue reports unready instead of skipping")
+  ready[foeKey] = true
+  local remaining = 0
+  while not held:settled() and remaining < 2000 do
+    held:update(1 / 30, available)
+    remaining = remaining + 1
+  end
+  Assert.isTrue(held:settled(), "releasing the image resumes to completion")
+  Assert.equal(battler(held:battlers(), 3).hp, 43, "the exact checkpoint applies after release")
 end
 
 return { tests = T }

@@ -147,6 +147,13 @@ local function recordingGraphics()
   local graphics = { draws = {} }
   function graphics.push(_) end
   function graphics.pop() end
+  function graphics.getDepthMode()
+    return nil
+  end
+  function graphics.setDepthMode(_, _) end
+  function graphics.setShader(_) end
+  function graphics.setBlendMode(_, _) end
+  function graphics.setScissor(_, _, _, _) end
   function graphics.origin() end
   function graphics.intersectScissor(_, _, _, _) end
   function graphics.translate(_, _) end
@@ -839,7 +846,10 @@ function T.tests.covered_entry_waits_for_readiness_and_holds_music()
       Assert.notNil(runtime.battleCoordinator:activeBattle(), "the covered launch constructs its battle")
       Assert.equal(starts, 1, "one launch constructs one battle lifetime")
       local cover = envelope:cover()
-      Assert.isTrue(type(cover) == "table" and cover.coefficient == 16, "the battle starts under full cover")
+      -- Construction follows the full-cover leave by one accepted tick, and that
+      -- tick performs the reveal's single cover step first, so the battle starts
+      -- one step into the reveal beside its intro instead of under full cover.
+      Assert.isTrue(type(cover) == "table" and cover.coefficient == 14, "the battle starts one reveal step after full cover")
       -- The wild role starts once and survives presentation pumping and
       -- a layout change without restarting.
       local function wildPlays()
