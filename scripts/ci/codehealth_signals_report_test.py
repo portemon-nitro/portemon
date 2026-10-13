@@ -900,7 +900,7 @@ class MachineIndexTest(unittest.TestCase):
             published_findings = _read_jsonl(out / "findings.jsonl")
             clones = _read_jsonl(out / "clones.jsonl")
             self.assertEqual(summary["schemaVersion"], 1)
-            self.assertEqual(summary["methodVersion"], 1)
+            self.assertEqual(summary["methodVersion"], 2)
             self.assertEqual(summary["repository"], REPOSITORY_NAME)
             # Artifact digests and counts are recomputed from published bytes.
             for key, name in (("findings", "findings.jsonl"), ("clones", "clones.jsonl")):
@@ -1472,6 +1472,22 @@ class InputRejectionTest(unittest.TestCase):
             (stage / "source.jsonl").write_text(
                 "".join(_dump(row) + "\n" for row in rows), encoding="utf-8"
             )
+            self._rejects(repository, manifest, stage, detector, work_path)
+
+    def test_rejects_source_changed_after_stage(self) -> None:
+        with tempfile.TemporaryDirectory() as work:
+            work_path = Path(work)
+            repository, manifest, stage, _ = self._world(work_path)
+            self.addCleanup(
+                lambda: subprocess.run(["rm", "-rf", str(repository)], check=False)
+            )
+            detector = work_path / "detector.json"
+            _write_detector_json(
+                detector, [_duplicate(self.FILE, 1, 3, self.OTHER, 1, 3, 40)]
+            )
+            target = repository / self.FILE
+            with target.open("a", encoding="utf-8") as handle:
+                handle.write("local late = 1\n")
             self._rejects(repository, manifest, stage, detector, work_path)
 
     def test_rejects_manifest_digest_mismatch(self) -> None:

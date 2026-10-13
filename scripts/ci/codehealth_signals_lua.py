@@ -271,19 +271,9 @@ def _classify_source_lines(nodes, raw: bytes):
         if node.type in _FUNCTION_NODE_TYPES or node.type in _DYNAMIC_NODE_TYPES
     ]
 
-    multiline_string_content = []
-    for node in nodes:
-        if node.type == "string" and node.start_point.row != node.end_point.row:
-            for child in node.children:
-                if child.type == "string_content":
-                    multiline_string_content.append(
-                        (child.start_byte, child.end_byte)
-                    )
-
     comments = _comment_ranges(nodes)
     static_cover = _span_cover(static_spans)
     behavior_cover = _span_cover(behavior_spans)
-    soft_cover = _span_cover(multiline_string_content)
     comment_cover = _span_cover(comments)
 
     line_leaves: dict[int, list] = {}
@@ -301,10 +291,18 @@ def _classify_source_lines(nodes, raw: bytes):
         "pureData": [],
         "unknown": [],
     }
-    text = raw.decode("utf-8")
+    # A line counts only when noncomment bytes remain: blank the exact
+    # parser-identified comment spans while keeping every line break, so
+    # comment-only lines vanish but code beside comments and `--` text
+    # inside long strings survive with positions intact.
+    uncommented = bytearray(raw)
+    for start_byte, end_byte in comments:
+        uncommented[start_byte:end_byte] = re.sub(
+            rb"[^\r\n]", b" ", raw[start_byte:end_byte]
+        )
+    text = bytes(uncommented).decode("utf-8")
     for number, content in enumerate(text.split("\n"), start=1):
-        stripped = content.strip()
-        if not stripped or stripped.startswith("--"):
+        if not content.strip():
             continue
         leaves = line_leaves.get(number, [])
         static_hit = any(_covered(static_cover, leaf.start_byte) for leaf in leaves)
@@ -552,9 +550,11 @@ def _is_unknown_type(text: str) -> bool:
 def _type_region_end(text: str, start: int) -> int:
     """End of one type expression: spaces are allowed inside brackets and
     around union bars, but a bare word after a top-level space starts
-    trailing prose and ends the type."""
+    trailing prose and ends the type. A top-level `|` opens another
+    operand, so spaces after it are consumed until that operand starts."""
     angle = paren = brace = bracket = 0
     quote: str | None = None
+    need_operand = False
     i = start
     while i < len(text):
         c = text[i]
@@ -565,9 +565,11 @@ def _type_region_end(text: str, start: int) -> int:
             continue
         if c in "\"'":
             quote = c
+            need_operand = False
             i += 1
             continue
         if text[i : i + 2] == "->":
+            need_operand = False
             i += 2
             continue
         if c in "<([{":
@@ -575,6 +577,7 @@ def _type_region_end(text: str, start: int) -> int:
             paren += c == "("
             brace += c == "{"
             bracket += c == "["
+            need_operand = False
             i += 1
             continue
         if c in ">)}]":
@@ -582,10 +585,18 @@ def _type_region_end(text: str, start: int) -> int:
             paren = max(0, paren - (c == ")"))
             brace = max(0, brace - (c == "}"))
             bracket = max(0, bracket - (c == "]"))
+            need_operand = False
+            i += 1
+            continue
+        if c == "|" and not (angle or paren or brace or bracket):
+            need_operand = True
             i += 1
             continue
         if c in " \t":
             if angle or paren or brace or bracket:
+                i += 1
+                continue
+            if need_operand:
                 i += 1
                 continue
             ahead = i
@@ -595,6 +606,7 @@ def _type_region_end(text: str, start: int) -> int:
                 i = ahead
                 continue
             return i
+        need_operand = False
         i += 1
     return i
 
@@ -704,17 +716,28 @@ def _inline_as_findings(comment_text: str, start: int, path: str, raw: bytes):
     return findings
 
 
+def _is_whole_line_comment(raw: bytes, start: int) -> bool:
+    """Whether only horizontal whitespace precedes a comment on its line."""
+    line_start = raw.rfind(b"\n", 0, start) + 1
+    return not raw[line_start:start].strip()
+
+
 def _annotation_findings(comments, path: str, raw: bytes) -> list[dict]:
     """Cast and unknown-table observations from real annotation comments
-    only: directive comments, aligned continuation lines, and inline
-    `@as` forms. Ordinary prose, strings, and the words after a complete
-    type never produce observations."""
+    only: directive comments, valid alias/parameter continuation chains,
+    and inline `@as` forms. Ordinary prose, strings, orphan continuations,
+    and the words after a complete type never produce observations."""
     findings: list[dict] = []
-    for comment in comments:
+    anchor_context: str | None = None
+    anchor_row: int | None = None
+    ordered = sorted(comments, key=lambda node: (node.start_byte, node.end_byte))
+    for comment in ordered:
         start = comment.start_byte
         text = raw[start : comment.end_byte].decode("utf-8")
         if text.startswith("--["):
             findings.extend(_inline_as_findings(text, start, path, raw))
+            anchor_context = None
+            anchor_row = None
             continue
         content = text[2:]
         content_start = start + 2
@@ -722,8 +745,12 @@ def _annotation_findings(comments, path: str, raw: bytes) -> list[dict]:
         if directive is not None:
             word, remainder = directive.group(1), directive.group(2)
             if word not in _DIRECTIVE_NAMES:
+                anchor_context = None
+                anchor_row = None
                 continue
             if word == "cast":
+                anchor_context = None
+                anchor_row = None
                 cast = _CAST_RE.match(content)
                 if cast is None:
                     continue
@@ -785,22 +812,52 @@ def _annotation_findings(comments, path: str, raw: bytes) -> list[dict]:
                     visibility,
                 )
             )
+            if (
+                word in ("alias", "param")
+                and remainder.strip() != ""
+                and _is_whole_line_comment(raw, start)
+            ):
+                # A named whole-line alias/parameter directive opens a
+                # continuation chain for the immediately following line.
+                anchor_context = _CONTEXT_BY_DIRECTIVE[word]
+                anchor_row = comment.end_point.row
+            else:
+                anchor_context = None
+                anchor_row = None
             continue
-        if content.startswith("-"):
-            # An aligned continuation line for a neighboring annotation.
-            findings.extend(
-                _unknown_findings_for_type(
-                    content,
-                    0,
-                    content,
-                    content_start,
-                    path,
-                    raw,
-                    "continuation",
-                    "other",
-                    "unknown_visibility",
+        if content.startswith("-|"):
+            # A `---|` continuation belongs to a neighboring alias or
+            # parameter anchor only: same chain, adjacent physical line,
+            # whole-line comment. Anything else is prose, not a type.
+            if (
+                anchor_context is not None
+                and anchor_row is not None
+                and comment.start_point.row == anchor_row + 1
+                and _is_whole_line_comment(raw, start)
+            ):
+                offset = 2
+                while offset < len(content) and content[offset] in " \t":
+                    offset += 1
+                findings.extend(
+                    _unknown_findings_for_type(
+                        content[offset:],
+                        offset,
+                        content,
+                        content_start,
+                        path,
+                        raw,
+                        "continuation",
+                        anchor_context,
+                        "unknown_visibility",
+                    )
                 )
-            )
+                anchor_row = comment.end_point.row
+            else:
+                anchor_context = None
+                anchor_row = None
+            continue
+        anchor_context = None
+        anchor_row = None
     return findings
 
 
@@ -981,6 +1038,68 @@ def scan_sources(
     commit = completed.stdout.strip()
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ScanError(f"invalid source commit {commit!r}")
+    if manifest_paths:
+        # Reject staged edits to exactly the manifest paths before any
+        # source URL is built; unrelated working-tree or index changes
+        # outside the manifest never block the scan.
+        def _staged_difference(relative: str) -> bool:
+            try:
+                probe = subprocess.run(
+                    [
+                        "git",
+                        "-C",
+                        str(root),
+                        "diff",
+                        "--cached",
+                        "--quiet",
+                        commit,
+                        "--",
+                        f":(literal){relative}",
+                    ],
+                    check=False,
+                    capture_output=True,
+                )
+            except OSError as error:
+                raise ScanError(
+                    f"cannot check staged sources: {error}"
+                ) from error
+            if probe.returncode == 1:
+                return True
+            if probe.returncode != 0:
+                raise ScanError(
+                    f"cannot check staged sources: {probe.stderr.decode('utf-8', 'replace').strip()}"
+                )
+            return False
+
+        try:
+            staged = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(root),
+                    "diff",
+                    "--cached",
+                    "--quiet",
+                    commit,
+                    "--",
+                    *(f":(literal){relative}" for relative in manifest_paths),
+                ],
+                check=False,
+                capture_output=True,
+            )
+        except OSError as error:
+            raise ScanError(f"cannot check staged sources: {error}") from error
+        if staged.returncode == 1:
+            # Name the offending manifest source for the diagnosis.
+            culprit = next(
+                (relative for relative in manifest_paths if _staged_difference(relative)),
+                manifest_paths[0],
+            )
+            raise ScanError(f"staged changes to scanned source: {culprit!r}")
+        if staged.returncode != 0:
+            raise ScanError(
+                f"cannot check staged sources: {staged.stderr.decode('utf-8', 'replace').strip()}"
+            )
     lang = _language()
     rows: list[dict] = []
     findings: list[dict] = []
@@ -1001,9 +1120,22 @@ def scan_sources(
             raise ScanError(f"cannot read source {relative!r}: {error}") from error
         if not resolved.is_file():
             raise ScanError(f"source is not a file: {relative!r}")
+        # The emitted commit-pinned URL is only honest when these exact
+        # bytes equal the committed blob; compare the same buffer that is
+        # scanned so a concurrent edit cannot swap it underneath us.
+        try:
+            shown = subprocess.run(
+                ["git", "-C", str(root), "show", f"{commit}:{relative}"],
+                check=False,
+                capture_output=True,
+            )
+        except OSError as error:
+            raise ScanError(
+                f"cannot read HEAD source {relative!r}: {error}"
+            ) from error
+        if shown.returncode != 0 or shown.stdout != data:
+            raise ScanError(f"source does not match HEAD: {relative}")
         row, file_findings = scan_file(relative, data, lang)
-        if row["sourceSha256"] != hashlib.sha256(data).hexdigest():
-            raise ScanError(f"hash mismatch for {relative!r}")
         prefix = f"{REPOSITORY_URL_PREFIX}{commit}/{relative}#L"
         for finding in file_findings:
             if finding["startLine"] == finding["endLine"]:

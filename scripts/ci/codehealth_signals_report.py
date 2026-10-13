@@ -39,7 +39,7 @@ import codehealth_scope
 REPOSITORY = "portemon-nitro/portemon"
 SOURCE_URL_PREFIX = "https://github.com/portemon-nitro/portemon/blob/"
 SCHEMA_VERSION = 1
-METHOD_VERSION = 1
+METHOD_VERSION = 2
 SCOPE_NAME = "codehealth-structural"
 
 SOURCE_RULES = (

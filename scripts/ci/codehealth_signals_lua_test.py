@@ -172,7 +172,11 @@ def _sloc_buckets(row: dict) -> dict[str, list[int]]:
 
 
 def _assert_exclusive_partition(
-    case: unittest.TestCase, row: dict, raw: bytes, path: str
+    case: unittest.TestCase,
+    row: dict,
+    raw: bytes,
+    path: str,
+    expected: set[int],
 ) -> None:
     buckets = _sloc_buckets(row)
     case.assertEqual(
@@ -186,13 +190,9 @@ def _assert_exclusive_partition(
                 line_number, seen, f"line {line_number} classified twice"
             )
             seen[line_number] = bucket
-    expected: set[int] = set()
-    for number, text in enumerate(raw.decode("utf-8").splitlines(), start=1):
-        stripped = text.strip()
-        if not stripped or stripped.startswith("--"):
-            continue
-        expected.add(number)
-    case.assertEqual(set(seen.keys()), expected)
+    case.assertEqual(
+        set(seen.keys()), set(expected), f"unexpected source lines in {path}"
+    )
 
 
 class SourceLineTaxonomyTest(unittest.TestCase):
@@ -231,8 +231,106 @@ class SourceLineTaxonomyTest(unittest.TestCase):
         self.assertIn(14, buckets["mixed"])
         self.assertIn(19, buckets["unknown"])
         _assert_exclusive_partition(
-            self, row, self.FIXTURE.encode("utf-8"), "game/src/fixture.lua"
+            self,
+            row,
+            self.FIXTURE.encode("utf-8"),
+            "game/src/fixture.lua",
+            {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18, 19},
         )
+
+    def test_long_bracket_comments_do_not_count_as_source(self) -> None:
+        module = load_scanner_module()
+        source = (
+            "local first = 1\n"
+            "--[[\n"
+            "interior words here\n"
+            "more interior words\n"
+            "]]\n"
+            "local second = 2\n"
+            "--[=[\n"
+            "equal interior words\n"
+            "]=]\n"
+            "local third = 3\n"
+            "-- short comment\n"
+            "local fourth = 4\n"
+        )
+        row, _ = _scan_source(module, source)
+        buckets = _sloc_buckets(row)
+        for line_number in (1, 6, 10, 12):
+            self.assertIn(line_number, buckets["unknown"])
+        for line_number in (2, 3, 4, 5, 7, 8, 9, 11):
+            for lines in buckets.values():
+                self.assertNotIn(line_number, lines)
+        _assert_exclusive_partition(
+            self,
+            row,
+            source.encode("utf-8"),
+            "game/src/fixture.lua",
+            {1, 6, 10, 12},
+        )
+
+    MIXED_AND_STRING = (
+        "local left = 1 --[[\n"
+        "block interior words\n"
+        "]] local right = 2\n"
+        "print(left, right) -- trailing note\n"
+        "local text = [[\n"
+        "-- inside a long string\n"
+        "]]\n"
+        "print(text)\n"
+    )
+
+    def test_code_beside_comments_and_string_dashes_stays_source(self) -> None:
+        module = load_scanner_module()
+        row, _ = _scan_source(module, self.MIXED_AND_STRING)
+        buckets = _sloc_buckets(row)
+        self.assertIn(4, buckets["behavior"])
+        self.assertIn(8, buckets["behavior"])
+        for line_number in (1, 3, 5, 6, 7):
+            self.assertIn(line_number, buckets["unknown"])
+        for lines in buckets.values():
+            self.assertNotIn(2, lines)
+        _assert_exclusive_partition(
+            self,
+            row,
+            self.MIXED_AND_STRING.encode("utf-8"),
+            "game/src/fixture.lua",
+            {1, 3, 4, 5, 6, 7, 8},
+        )
+
+    def test_mixed_comment_and_string_fixture_survives_cli_scan(self) -> None:
+        module = load_scanner_module()
+        del module
+        with tempfile.TemporaryDirectory() as work:
+            work_path = Path(work)
+            repository = _init_repository(
+                {"game/src/mixed.lua": self.MIXED_AND_STRING}
+            )
+            self.addCleanup(
+                lambda: subprocess.run(["rm", "-rf", str(repository)], check=False)
+            )
+            manifest = _write_manifest(work_path, ["game/src/mixed.lua"])
+            output_dir = work_path / "out"
+            result = _run_scanner(repository, manifest, output_dir)
+            self.assertEqual(
+                result.returncode,
+                0,
+                f"stdout={result.stdout!r} stderr={result.stderr!r}",
+            )
+            rows = _read_jsonl(output_dir / "source.jsonl")
+            self.assertEqual(len(rows), 1)
+            buckets = _sloc_buckets(rows[0])
+            self.assertIn(4, buckets["behavior"])
+            self.assertIn(6, buckets["unknown"])
+            for lines in buckets.values():
+                self.assertNotIn(2, lines)
+            _assert_exclusive_partition(
+                self,
+                rows[0],
+                self.MIXED_AND_STRING.encode("utf-8"),
+                "game/src/mixed.lua",
+                {1, 3, 4, 5, 6, 7, 8},
+            )
 
     def test_comment_lines_are_not_source_lines(self) -> None:
         module = load_scanner_module()
@@ -276,8 +374,41 @@ class SourceLineTaxonomyTest(unittest.TestCase):
             self.assertIn(14, buckets["mixed"])
             self.assertIn(19, buckets["unknown"])
             _assert_exclusive_partition(
-                self, rows[0], self.FIXTURE.encode("utf-8"), "game/src/mixed.lua"
+                self,
+                rows[0],
+                self.FIXTURE.encode("utf-8"),
+                "game/src/mixed.lua",
+                {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18, 19},
             )
+
+
+def _assert_no_stage_artifacts(case: unittest.TestCase, output_dir: Path) -> None:
+    for name in ("source.jsonl", "findings.jsonl", "rules.json"):
+        case.assertFalse(
+            (output_dir / name).is_file(),
+            f"{name} must be absent after a failed scan",
+        )
+
+
+def _recorded_working_state(repository: Path) -> tuple[dict[str, bytes], str, str]:
+    blobs = {
+        str(path.relative_to(repository)): path.read_bytes()
+        for path in sorted(repository.rglob("*"))
+        if path.is_file() and ".git" not in path.parts
+    }
+    status = subprocess.run(
+        ["git", "-C", str(repository), "status", "--porcelain"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    staged = subprocess.run(
+        ["git", "-C", str(repository), "diff", "--cached", "--name-only"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    return blobs, status, staged
 
 
 class ManifestScopeTest(unittest.TestCase):
@@ -403,6 +534,176 @@ class ManifestScopeTest(unittest.TestCase):
                 text=True,
             )
             self.assertNotEqual(positional.returncode, 0)
+
+    def _fresh_repository(self, files: dict[str, str]) -> Path:
+        repository = _init_repository(files)
+        self.addCleanup(
+            lambda: subprocess.run(["rm", "-rf", str(repository)], check=False)
+        )
+        return repository
+
+    def _assert_rejected_without_stage_files(
+        self,
+        repository: Path,
+        manifest: Path,
+        output_dir: Path,
+        relative: str,
+    ) -> None:
+        before = _recorded_working_state(repository)
+        result = _run_scanner(repository, manifest, output_dir)
+        self.assertNotEqual(
+            result.returncode, 0, f"dirty source must fail: {relative!r}"
+        )
+        self.assertIn(relative, result.stderr)
+        _assert_no_stage_artifacts(self, output_dir)
+        self.assertEqual(_recorded_working_state(repository), before)
+
+    def test_unstaged_edit_to_scanned_source_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as work:
+            work_path = Path(work)
+            repository = self._fresh_repository({"game/src/kept.lua": self.KEPT})
+            manifest = _write_manifest(work_path, ["game/src/kept.lua"])
+            (repository / "game/src/kept.lua").write_text(
+                "local n = 7\nreturn n\n", encoding="utf-8"
+            )
+            self._assert_rejected_without_stage_files(
+                repository, manifest, work_path / "out", "game/src/kept.lua"
+            )
+
+    def test_staged_edit_to_scanned_source_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as work:
+            work_path = Path(work)
+            repository = self._fresh_repository({"game/src/kept.lua": self.KEPT})
+            manifest = _write_manifest(work_path, ["game/src/kept.lua"])
+            (repository / "game/src/kept.lua").write_text(
+                "local n = 7\nreturn n\n", encoding="utf-8"
+            )
+            subprocess.run(
+                ["git", "-C", str(repository), "add", "game/src/kept.lua"],
+                check=True,
+            )
+            self._assert_rejected_without_stage_files(
+                repository, manifest, work_path / "out", "game/src/kept.lua"
+            )
+
+    def test_index_only_edit_fails_even_when_working_tree_matches_head(self) -> None:
+        with tempfile.TemporaryDirectory() as work:
+            work_path = Path(work)
+            repository = self._fresh_repository({"game/src/kept.lua": self.KEPT})
+            manifest = _write_manifest(work_path, ["game/src/kept.lua"])
+            (repository / "game/src/kept.lua").write_text(
+                "local n = 7\nreturn n\n", encoding="utf-8"
+            )
+            subprocess.run(
+                ["git", "-C", str(repository), "add", "game/src/kept.lua"],
+                check=True,
+            )
+            (repository / "game/src/kept.lua").write_text(
+                self.KEPT, encoding="utf-8"
+            )
+            staged = subprocess.run(
+                ["git", "-C", str(repository), "diff", "--cached", "--name-only"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+            self.assertIn("game/src/kept.lua", staged)
+            self._assert_rejected_without_stage_files(
+                repository, manifest, work_path / "out", "game/src/kept.lua"
+            )
+
+    def test_line_ending_byte_change_to_scanned_source_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as work:
+            work_path = Path(work)
+            repository = self._fresh_repository({"game/src/kept.lua": self.KEPT})
+            manifest = _write_manifest(work_path, ["game/src/kept.lua"])
+            target = repository / "game/src/kept.lua"
+            target.write_bytes(self.KEPT.encode("utf-8").replace(b"\n", b"\r\n"))
+            self._assert_rejected_without_stage_files(
+                repository, manifest, work_path / "out", "game/src/kept.lua"
+            )
+
+    def test_unrelated_dirty_sibling_does_not_block_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as work:
+            work_path = Path(work)
+            repository = self._fresh_repository(
+                {
+                    "game/src/kept.lua": self.KEPT,
+                    "game/src/skipped.lua": self.SKIPPED,
+                },
+            )
+            manifest = _write_manifest(work_path, ["game/src/kept.lua"])
+            sibling = repository / "game/src/skipped.lua"
+            sibling.write_text(
+                self.SKIPPED + "-- local edit\n", encoding="utf-8"
+            )
+            output_dir = work_path / "out"
+            before = _recorded_working_state(repository)
+            result = _run_scanner(repository, manifest, output_dir)
+            self.assertEqual(
+                result.returncode,
+                0,
+                f"stdout={result.stdout!r} stderr={result.stderr!r}",
+            )
+            rows = _read_jsonl(output_dir / "source.jsonl")
+            self.assertEqual([row["path"] for row in rows], ["game/src/kept.lua"])
+            head = _head_sha(repository)
+            findings = _read_jsonl(output_dir / "findings.jsonl")
+            self.assertTrue(findings)
+            for finding in findings:
+                self.assertTrue(
+                    finding["sourceUrl"].startswith(
+                        f"{SOURCE_URL_PREFIX}{head}/game/src/kept.lua#L"
+                    )
+                )
+            state = _recorded_working_state(repository)
+            self.assertEqual(state[0], before[0])
+            self.assertEqual(state[1], before[1])
+
+    def test_untracked_manifest_source_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as work:
+            work_path = Path(work)
+            repository = self._fresh_repository({"game/src/kept.lua": self.KEPT})
+            fresh = repository / "game/src/fresh.lua"
+            fresh.write_text("local n = nil\nreturn n\n", encoding="utf-8")
+            manifest = _write_manifest(work_path, ["game/src/fresh.lua"])
+            self._assert_rejected_without_stage_files(
+                repository, manifest, work_path / "out", "game/src/fresh.lua"
+            )
+
+    def test_staged_new_manifest_source_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as work:
+            work_path = Path(work)
+            repository = self._fresh_repository({"game/src/kept.lua": self.KEPT})
+            fresh = repository / "game/src/fresh.lua"
+            fresh.write_text("local n = nil\nreturn n\n", encoding="utf-8")
+            subprocess.run(
+                ["git", "-C", str(repository), "add", "game/src/fresh.lua"],
+                check=True,
+            )
+            manifest = _write_manifest(work_path, ["game/src/fresh.lua"])
+            self._assert_rejected_without_stage_files(
+                repository, manifest, work_path / "out", "game/src/fresh.lua"
+            )
+
+    def test_clean_scan_still_emits_per_file_source_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as work:
+            work_path = Path(work)
+            repository = self._fresh_repository({"game/src/kept.lua": self.KEPT})
+            manifest = _write_manifest(work_path, ["game/src/kept.lua"])
+            output_dir = work_path / "out"
+            result = _run_scanner(repository, manifest, output_dir)
+            self.assertEqual(
+                result.returncode,
+                0,
+                f"stdout={result.stdout!r} stderr={result.stderr!r}",
+            )
+            rows = _read_jsonl(output_dir / "source.jsonl")
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(
+                rows[0]["sourceSha256"],
+                hashlib.sha256(self.KEPT.encode("utf-8")).hexdigest(),
+            )
 
 
 class NilInitializerTest(unittest.TestCase):
@@ -612,6 +913,133 @@ class UnknownTableTest(unittest.TestCase):
         if identifiers:
             self.assertEqual(len(identifiers), len(set(identifiers)))
 
+    def _single_type_source(self, annotation: str) -> str:
+        return f"{annotation}\nlocal x = 1\nreturn x\n"
+
+    def test_spaced_union_right_hand_generic_matches(self) -> None:
+        module = load_scanner_module()
+        valued_sources = [
+            "---@type string | table<string, unknown> note",
+            "---@type table<string, unknown> | nil note",
+            "---@type string|table<string, unknown>",
+            "---@type table<string, unknown> story about table<string, unknown>",
+        ]
+        for annotation in valued_sources:
+            with self.subTest(annotation=annotation):
+                source = self._single_type_source(annotation)
+                raw = source.encode("utf-8")
+                _, findings = _scan_source(module, source)
+                valued = _findings_for(findings, UNKNOWN_VALUED)
+                self.assertEqual(len(valued), 1)
+                match = valued[0]
+                self.assertEqual(match["startLine"], 1)
+                self.assertEqual(
+                    raw[match["startByte"] : match["endByte"]],
+                    b"table<string, unknown>",
+                )
+                self.assertEqual(match["details"]["annotationKind"], "type")
+                self.assertEqual(match["details"]["declarationContext"], "local")
+                self.assertEqual(match["reviewState"], "unreviewed")
+                self.assertFalse(match["scoreEligible"])
+
+    def test_spaced_union_nested_right_hand_generic_matches(self) -> None:
+        module = load_scanner_module()
+        source = self._single_type_source(
+            "---@type string | table<string, table<unknown, number>> note"
+        )
+        raw = source.encode("utf-8")
+        _, findings = _scan_source(module, source)
+        keyed = _findings_for(findings, UNKNOWN_KEYED)
+        valued = _findings_for(findings, UNKNOWN_VALUED)
+        self.assertEqual(len(keyed), 1)
+        self.assertEqual(valued, [])
+        match = keyed[0]
+        self.assertEqual(match["startLine"], 1)
+        self.assertEqual(
+            raw[match["startByte"] : match["endByte"]],
+            b"table<unknown, number>",
+        )
+
+    def test_quoted_pipe_and_trailing_prose_stay_silent(self) -> None:
+        module = load_scanner_module()
+        for annotation in ('---@type "a|b" note', "---@type string note"):
+            with self.subTest(annotation=annotation):
+                _, findings = _scan_source(module, self._single_type_source(annotation))
+                self.assertEqual(_findings_for(findings, UNKNOWN_VALUED), [])
+                self.assertEqual(_findings_for(findings, UNKNOWN_KEYED), [])
+
+    ALIAS_CHAIN = (
+        "---@alias Example\n"
+        "---| table<unknown, number> # see table<string, unknown> notes\n"
+        "---| table<string, unknown> # another branch\n"
+        "local box = {}\n"
+        "return box\n"
+    )
+
+    PARAM_CHAIN = (
+        "---@param chart table<string, string>\n"
+        "---| table<unknown, number>\n"
+        "local function f(chart)\n"
+        "  return chart\n"
+        "end\n"
+        "return f\n"
+    )
+
+    def test_alias_continuation_chain_matches_with_alias_context(self) -> None:
+        module = load_scanner_module()
+        raw = self.ALIAS_CHAIN.encode("utf-8")
+        _, findings = _scan_source(module, self.ALIAS_CHAIN)
+        keyed = _findings_for(findings, UNKNOWN_KEYED)
+        valued = _findings_for(findings, UNKNOWN_VALUED)
+        self.assertEqual([match["startLine"] for match in keyed], [2])
+        self.assertEqual([match["startLine"] for match in valued], [3])
+        for match in keyed + valued:
+            self.assertEqual(match["details"]["annotationKind"], "continuation")
+            self.assertEqual(match["details"]["declarationContext"], "alias")
+            span = raw[match["startByte"] : match["endByte"]]
+            self.assertTrue(span.startswith(b"table"), span)
+            self.assertEqual(match["reviewState"], "unreviewed")
+            self.assertFalse(match["scoreEligible"])
+        identifiers = [match["id"] for match in keyed + valued]
+        self.assertEqual(len(identifiers), len(set(identifiers)))
+
+    def test_param_continuation_matches_with_parameter_context(self) -> None:
+        module = load_scanner_module()
+        raw = self.PARAM_CHAIN.encode("utf-8")
+        _, findings = _scan_source(module, self.PARAM_CHAIN)
+        keyed = _findings_for(findings, UNKNOWN_KEYED)
+        valued = _findings_for(findings, UNKNOWN_VALUED)
+        self.assertEqual([match["startLine"] for match in keyed], [2])
+        self.assertEqual(valued, [])
+        match = keyed[0]
+        self.assertEqual(match["details"]["annotationKind"], "continuation")
+        self.assertEqual(match["details"]["declarationContext"], "parameter")
+        self.assertEqual(
+            raw[match["startByte"] : match["endByte"]],
+            b"table<unknown, number>",
+        )
+
+    def test_orphan_and_detached_continuations_stay_silent(self) -> None:
+        module = load_scanner_module()
+        detached = [
+            "---| table<string, unknown>\nlocal x = 1\nreturn x\n",
+            "---@alias Example\n\n---| table<string, unknown>\n"
+            "local x = 1\nreturn x\n",
+            "---@alias Example\n-- a note\n---| table<string, unknown>\n"
+            "local x = 1\nreturn x\n",
+            "---@alias Example\nlocal x = 1\n---| table<string, unknown>\n"
+            "return x\n",
+            "---@return table<string, string>\n---| table<string, unknown>\n"
+            "local x = 1\nreturn x\n",
+            "-- a story about table<string, unknown> shapes\n"
+            "local x = 1\nreturn x\n",
+        ]
+        for source in detached:
+            with self.subTest(first=source.splitlines()[0]):
+                _, findings = _scan_source(module, source)
+                self.assertEqual(_findings_for(findings, UNKNOWN_VALUED), [])
+                self.assertEqual(_findings_for(findings, UNKNOWN_KEYED), [])
+
 
 class OutputHandoffTest(unittest.TestCase):
     """Repeated runs publish byte-identical, fully reconciled output files."""
@@ -681,7 +1109,11 @@ class OutputHandoffTest(unittest.TestCase):
             self.assertEqual(len(source_rows), 1)
             self.assertEqual(source_rows[0]["path"], "game/src/signals.lua")
             _assert_exclusive_partition(
-                self, source_rows[0], raw, "game/src/signals.lua"
+                self,
+                source_rows[0],
+                raw,
+                "game/src/signals.lua",
+                set(range(2, 16)),
             )
             findings = _read_jsonl(first / "findings.jsonl")
             self.assertTrue(findings)
