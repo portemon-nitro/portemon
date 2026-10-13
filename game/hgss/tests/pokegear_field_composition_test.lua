@@ -11,6 +11,7 @@ local PokegearState = require("libs.hgss.src.save.PokegearState")
 local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
 local PokegearCalendar = require("game.hgss.src.pokegear.PokegearCalendar")
 local PokegearSources = require("romdump.src.config.PokegearSources")
+local MapReference = require("romdump.src.reference.hgss.maps")
 local PokegearComposition = require("game.hgss.src.pokegear.PokegearComposition")
 local FieldMenuCompositionCoordinator = require("game.hgss.src.field.FieldMenuCompositionCoordinator")
 local FieldSaveCoordinator = require("game.hgss.src.field.FieldSaveCoordinator")
@@ -100,6 +101,13 @@ end
 ---@param latch string? the latched radio sequence behind queries
 ---@return table bundle, table runtime the composed bundle and its fake owner
 local function composeGear(friends, latch)
+  local newBark = assert(MapReference.byId[60], "the field fixture uses the native New Bark map header")
+  friends.catalog.callPermissions = {
+    [newBark.id] = {
+      incoming = newBark.incomingCalls,
+      outgoing = newBark.outgoingCalls,
+    },
+  }
   local runtime = {
     pokegearState = friends.state,
     pokegearRandom = friends.random,
@@ -107,6 +115,7 @@ local function composeGear(friends, latch)
     pokegearCatalog = friends.catalog,
     session = {
       currentMap = {
+        mapId = newBark.id,
         mapSymbol = "MAP_NEW_BARK",
         mapSectionNativeId = 60,
         fieldData = { transitionEnvironment = "outdoors" },

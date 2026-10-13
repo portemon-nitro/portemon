@@ -285,6 +285,9 @@ local function openHost(catalog, messages)
     world = {
       flags = {},
       rematchReady = {},
+      canCall = function()
+        return true
+      end,
       player = { x = 5, y = 7 },
       nativeSelectorFacts = function()
         return { localMap = true }

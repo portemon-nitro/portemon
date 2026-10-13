@@ -112,6 +112,9 @@ function T.native_script_dispatch_uses_exact_supported_family_routes()
     world = {
       signal = "strong",
       reception = "good",
+      canCall = function()
+        return true
+      end,
       nativeSelectorFacts = function()
         return { localMap = true }
       end,

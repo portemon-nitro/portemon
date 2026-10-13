@@ -13,6 +13,7 @@ local Narc = require("libs.nds.src.nitro.Narc")
 local RomImporter = require("romdump.src.source.RomImporter")
 local RomSuite = require("tests.rom.support.RomSuite")
 local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+local MapReference = require("romdump.src.reference.hgss.maps")
 
 local T = {}
 
@@ -124,6 +125,14 @@ function T.heartgold_catalog_carries_the_native_program_and_place_closure(romFs,
   local manifest = assert(compiled.manifest, versionId .. " must publish its manifest")
   Assert.notNil(PokegearAssetSchema.validate(manifest), versionId .. " publishes a schema-valid catalog")
   local catalog = assert(manifest.catalog, versionId .. " publishes its catalog")
+  local permissions = assert(catalog.callPermissions, versionId .. " publishes native phone permissions")
+  Assert.equal(MapReference.count, 540, versionId .. " keeps the native map-header reference complete")
+  for mapId = 0, MapReference.count - 1 do
+    local source = assert(MapReference.byId[mapId], versionId .. " has native source map " .. mapId)
+    local permission = assert(permissions[mapId], versionId .. " publishes phone permissions for map " .. mapId)
+    Assert.equal(permission.incoming, source.incomingCalls, "map " .. mapId .. " preserves its incoming source flag")
+    Assert.equal(permission.outgoing, source.outgoingCalls, "map " .. mapId .. " preserves its outgoing source flag")
+  end
   Assert.equal(#catalog.shows, NATIVE_SHOW_COUNT, versionId .. " carries all twelve native broadcast programs")
   local locations = assert(catalog.locations, versionId .. " publishes its location table")
   Assert.isTrue(#locations > 0, versionId .. " compiles a non-empty location table")

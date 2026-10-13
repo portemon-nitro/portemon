@@ -45,6 +45,36 @@ function PhoneWorldContext.new(owners)
   return setmetatable({ _owners = checkOwners(owners) }, PhoneWorldContext)
 end
 
+-- Reads the current native map header's directional phone permission.
+---@param direction "incoming"|"outgoing"
+---@return boolean
+function PhoneWorldContext:canCall(direction)
+  if direction ~= "incoming" and direction ~= "outgoing" then
+    missingOwner("phone", "call admission received an unknown direction")
+  end
+  local runtime = self._owners.runtime
+  if type(runtime) ~= "table" or type(runtime.session) ~= "table" then
+    missingOwner("phone", "call admission needs the live field session")
+  end
+  local currentMap = runtime.session.currentMap
+  if type(currentMap) ~= "table" or type(currentMap.mapId) ~= "number" or currentMap.mapId % 1 ~= 0 then
+    missingOwner("phone", "call admission needs the current native map ID")
+  end
+  local catalog = self._owners.catalog
+  if type(catalog) ~= "table" or type(catalog.callPermissions) ~= "table" then
+    missingOwner("phone", "the native phone permission catalog is unavailable")
+  end
+  local permissions = catalog.callPermissions[currentMap.mapId]
+  if type(permissions) ~= "table" then
+    missingOwner("phone", "the current native map has no phone permission record")
+  end
+  local permitted = permissions[direction]
+  if type(permitted) ~= "boolean" then
+    missingOwner("phone", "the current native map has an invalid " .. direction .. " permission")
+  end
+  return permitted --[[@as boolean]]
+end
+
 -- Reads the native Mom selector facts from the live map-section and
 -- event owners. The pinned selector compares PhoneBookEntry.mapId with
 -- the player's map section and checks these two save flags in order.

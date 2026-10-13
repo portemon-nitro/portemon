@@ -57,6 +57,9 @@ local function contactCatalog()
       { key = TRAINER_KEY, family = "trainer", id = 30, trainer = 108, gift = 398, map = 259, sortWeight = 30 },
     },
     contactOrder = { MOM_KEY, NEIGHBOR_KEY, TRAINER_KEY },
+    callPermissions = {
+      [9000] = { incoming = true, outgoing = true },
+    },
     callTriggers = {},
     momPurchases = {},
     locations = {
@@ -78,7 +81,7 @@ end
 ---@return table bundle, table runtime the composed bundle and its fake owner
 local function composeGear(friends)
   local runtime = {
-    session = { currentMap = { mapSectionNativeId = 8 } },
+    session = { currentMap = { mapId = 9000, mapSectionNativeId = 8 } },
     eventState = {
       isFlagSet = function()
         return false

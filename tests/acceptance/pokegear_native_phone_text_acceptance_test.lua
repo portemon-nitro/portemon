@@ -12,6 +12,9 @@ local DERIVED_ASSETS = {}
 for _, key in ipairs(Fixture.JOURNEY_ASSETS) do
   DERIVED_ASSETS[#DERIVED_ASSETS + 1] = key
 end
+for _, key in ipairs({ "map:80", "map-data:80" }) do
+  DERIVED_ASSETS[#DERIVED_ASSETS + 1] = key
+end
 for _, bankId in ipairs({ 271, 279, 280, 664, 675, 716, 730 }) do
   DERIVED_ASSETS[#DERIVED_ASSETS + 1] = "message-bank:" .. tostring(bankId)
 end
@@ -178,6 +181,47 @@ function T.tests.phone_call_publishes_selected_rom_dialogue_through_the_field_te
       Assert.isFalse(page.text:find("PHONE_SCRIPT", 1, true) ~= nil, "a dialogue page never prints a script label")
     end
   end)
+end
+
+-- Ecruteak Gym's native header permits outgoing calls and denies incoming
+-- calls. Exercise the composed script host on that real map, then ensure a
+-- denied request does not prevent a later permitted request.
+function T.tests.native_gym_header_denies_incoming_call_before_dialing()
+  Fixture.withGame("MAP_ECRUTEAK_GYM", function(game)
+    local runtime = game.runtime
+    local catalog = assert(runtime.pokegearCatalog, "the field runtime owns its ROM-derived phone catalog")
+    local state = assert(runtime.pokegearState, "the field runtime owns its phonebook state")
+    local mom = contactByFamily(catalog, "mother")
+    state:registerContact(mom.key)
+    game:setWorldState({ flag = Fixture.FLAGS.FLAG_GOT_POKEGEAR })
+
+    local currentMap = assert(runtime.session.currentMap, "the production field session owns the active map")
+    Assert.equal(currentMap.mapId, 80, "the booted map retains Ecruteak Gym's native map identity")
+
+    local host = assert(runtime.pokegear.scriptHost, "the production composition owns its phone script host")
+    local beforeEffects = #game:hostEffects()
+    local beforePhone = state:readPhone()
+    local blocked = host:open({
+      mode = "call",
+      request = { id = "gym-incoming", contact = mom.key, direction = "incoming", kind = "ordinary" },
+      parentOwner = "acceptance-field-script",
+    })
+    local result = host:result(blocked)
+    Assert.notNil(result, "the source-denied incoming call returns a terminal result immediately")
+    Assert.equal(result.signal, false, "Ecruteak Gym denies incoming calls by its map-header permission")
+    Assert.equal(result.ready, false, "a denied incoming call is not reported as completed")
+    Assert.equal(#game:hostEffects(), beforeEffects, "a denied call produces no dialing or caller effect")
+    Assert.deepEqual(state:readPhone(), beforePhone, "a denied call leaves the durable phone bucket untouched")
+    host:close(blocked)
+
+    local allowed = host:open({
+      mode = "call",
+      request = { id = "gym-outgoing", contact = mom.key, direction = "outgoing", kind = "ordinary" },
+      parentOwner = "acceptance-field-script",
+    })
+    Assert.isNil(host:result(allowed), "the same map permits an outgoing call after the denial is released")
+    host:close(allowed)
+  end, { recordingScriptHosts = true })
 end
 
 function T.tests.native_phone_menu_releases_a_wrong_bank_definition()

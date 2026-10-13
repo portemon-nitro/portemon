@@ -17,6 +17,7 @@ PokegearAssetSchema.ERROR = {
 }
 
 local ASSET_PREFIX = "assets/generated/pokegear/"
+local NATIVE_MAP_COUNT = 540
 
 local ROOT_FIELDS = {
   schema = true,
@@ -36,6 +37,7 @@ local CATALOG_FIELDS = {
   contacts = true,
   contactOrder = true,
   callDefinitions = true,
+  callPermissions = true,
   callTriggers = true,
   rematches = true,
   gifts = true,
@@ -406,6 +408,59 @@ local function checkRegionMap(value)
     or checkRegionMapList(value.flypoints, FLYPOINT_FIELDS, FLYPOINT_OVERLAY_FIELDS, "catalog.regionMap.flypoints")
 end
 
+local function checkCallPermissions(value, requireNativeCoverage)
+  if type(value) ~= "table" then
+    return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "catalog.callPermissions must be a map record", {})
+  end
+  local count = 0
+  local maxMapId = -1
+  for mapId, permissions in pairs(value) do
+    if not isInteger(mapId) or mapId < 0 then
+      return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "catalog.callPermissions keys must be map IDs", {})
+    end
+    count = count + 1
+    maxMapId = math.max(maxMapId, mapId)
+    if type(permissions) ~= "table" then
+      return fail(
+        PokegearAssetSchema.ERROR.SHAPE_INVALID,
+        "catalog.callPermissions entries must be records",
+        { mapId = mapId }
+      )
+    end
+    for key in pairs(permissions) do
+      if key ~= "incoming" and key ~= "outgoing" then
+        return fail(
+          PokegearAssetSchema.ERROR.SHAPE_INVALID,
+          "catalog.callPermissions entries have unexpected direction " .. tostring(key),
+          { mapId = mapId }
+        )
+      end
+    end
+    if type(permissions.incoming) ~= "boolean" or type(permissions.outgoing) ~= "boolean" then
+      return fail(
+        PokegearAssetSchema.ERROR.SHAPE_INVALID,
+        "catalog.callPermissions entries require incoming and outgoing booleans",
+        { mapId = mapId }
+      )
+    end
+  end
+  if requireNativeCoverage and (count ~= NATIVE_MAP_COUNT or maxMapId ~= NATIVE_MAP_COUNT - 1) then
+    return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "native catalog.callPermissions must cover every map ID", {})
+  end
+  if requireNativeCoverage then
+    for mapId = 0, NATIVE_MAP_COUNT - 1 do
+      if value[mapId] == nil then
+        return fail(
+          PokegearAssetSchema.ERROR.SHAPE_INVALID,
+          "native catalog.callPermissions is missing map " .. mapId,
+          { mapId = mapId }
+        )
+      end
+    end
+  end
+  return nil
+end
+
 local function checkCatalog(value)
   if type(value) ~= "table" then
     return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "catalog must be a record", {})
@@ -416,8 +471,18 @@ local function checkCatalog(value)
     end
   end
   for key in pairs(CATALOG_FIELDS) do
-    if value[key] == nil and key ~= "landmarkLabels" then
+    if value[key] == nil and key ~= "landmarkLabels" and key ~= "callPermissions" then
       return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "catalog is missing " .. key, {})
+    end
+  end
+  local fullNativeCatalog = type(value.callDefinitions) == "table" and #value.callDefinitions == 455
+  if value.callPermissions == nil and fullNativeCatalog then
+    return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "native catalog is missing callPermissions", {})
+  end
+  if value.callPermissions ~= nil then
+    local permissionsError = checkCallPermissions(value.callPermissions, fullNativeCatalog)
+    if permissionsError then
+      return permissionsError
     end
   end
   if type(value.callDefinitions) == "table" and #value.callDefinitions > 0 then

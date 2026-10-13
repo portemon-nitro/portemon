@@ -294,9 +294,6 @@ function PhoneCall:begin(args)
   assert(type(args.contact) == "string" and args.contact ~= "", "phone calls name their contact")
   assert(PhoneCall.DIRECTIONS[args.direction] == true, "phone calls name an incoming or outgoing direction")
   assert(PhoneCall.KINDS[args.kind] == true, "phone calls name a known source call kind")
-  if self._active ~= nil then
-    error("a foreground phone call already owns the line", 0)
-  end
   if self._calls[args.id] ~= nil then
     error("a phone call id opens once", 0)
   end
@@ -304,9 +301,29 @@ function PhoneCall:begin(args)
   if registeredContacts(self._state)[args.contact] ~= true then
     unacquiredContact(args.contact)
   end
+  local canCall = self._world.canCall
+  assert(type(canCall) == "function", "phone call admission reads the native map permission")
+  local permitted = canCall(self._world, args.direction)
+  assert(type(permitted) == "boolean", "phone call admission returns a strict permission boolean")
+  if not permitted then
+    local handle = { id = args.id }
+    self._calls[args.id] = {
+      id = args.id,
+      handle = handle,
+      stage = "noSignal",
+      terminal = true,
+      result = { signal = false, ready = false },
+    }
+    return handle
+  end
+  if self._active ~= nil then
+    error("a foreground phone call already owns the line", 0)
+  end
   local greeting = frozenGreeting(self._messages)
+  local handle = { id = args.id }
   local session = {
     id = args.id,
+    handle = handle,
     contact = args.contact,
     direction = args.direction,
     kind = args.kind,
@@ -345,7 +362,7 @@ function PhoneCall:begin(args)
     dial(audio)
     dial(audio)
   end
-  return { id = args.id }
+  return handle
 end
 
 ---@param handle unknown
@@ -357,7 +374,7 @@ local function checkHandle(self, handle)
   )
   local id = (handle --[[@as table<string, unknown>]]).id --[[@as string]]
   local session = self._calls[id]
-  if session == nil then
+  if session == nil or session.handle ~= handle then
     error("a stale phone handle never acts on a new call", 0)
   end
   return session

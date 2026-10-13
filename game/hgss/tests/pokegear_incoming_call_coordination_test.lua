@@ -224,6 +224,9 @@ local function freshProviders(seed, opts)
   local record = PokegearAssetSchema.validate(fixtureManifest(contacts, setup.triggers or {}))
   Assert.notNil(record, "the synthetic contact catalog must validate through the asset schema")
   assert(record ~= nil, "synthetic catalog validated above")
+  record.catalog.callPermissions = {
+    [9000] = { incoming = true, outgoing = true },
+  }
   local state = PokegearState.new({ seed = seed }, { catalog = record.catalog })
   for _, contact in ipairs(contacts) do
     state:registerContact(contact.key)
@@ -243,7 +246,12 @@ local function freshProviders(seed, opts)
     record = record,
     host = host,
     audio = audio,
-    world = PhoneWorldContext.new({ state = state, flags = {} }),
+    world = PhoneWorldContext.new({
+      state = state,
+      catalog = record.catalog,
+      runtime = { session = { currentMap = { mapId = 9000 } } },
+      flags = {},
+    }),
   }
 end
 
@@ -657,7 +665,14 @@ function T.tests.accepting_a_call_clears_exactly_once_at_acceptance_never_on_rin
       state = providers.state,
       catalog = providers.record.catalog,
       messages = { greeting = "custom.greeting", program = "custom.program" },
-      world = { flags = {}, rematchReady = {}, player = { x = 5, y = 7 } },
+      world = {
+        flags = {},
+        rematchReady = {},
+        player = { x = 5, y = 7 },
+        canCall = function()
+          return true
+        end,
+      },
       audio = {
         playDialing = function() end,
         isEffectWaitComplete = function()

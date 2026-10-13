@@ -93,6 +93,9 @@ function T.tests.saved_rematch_window_is_shared_by_query_and_marker_without_fake
 
   state:setRematch("custom.leader-falkner", { stage = 1, wins = 2 })
   local world = {
+    canCall = function()
+      return true
+    end,
     nativeSelectorFacts = function()
       return { localMap = false }
     end,
@@ -202,6 +205,9 @@ function T.tests.unsourced_phone_call_does_not_stage_a_rematch()
   local state = PokegearState.new({ seed = 3032 }, { catalog = record.catalog })
   state:registerContact("custom.leader-falkner")
   local world = {
+    canCall = function()
+      return true
+    end,
     nativeSelectorFacts = function()
       return { localMap = false }
     end,

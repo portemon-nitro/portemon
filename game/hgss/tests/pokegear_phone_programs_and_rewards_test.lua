@@ -228,6 +228,121 @@ local function localPhoneSelectorFacts()
   end
 end
 
+-- A compiled synthetic permission pair covers both directional outcomes
+-- without claiming that HGSS has a native incoming-only map.
+function T.tests.phone_admission_uses_synthetic_directional_map_permissions()
+  local PhoneCall = require("game.hgss.src.pokegear.PhoneCall")
+  local PhoneWorldContext = require("game.hgss.src.pokegear.PhoneWorldContext")
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local record = PokegearAssetSchema.validate(fixtureManifest())
+  Assert.notNil(record, "the synthetic phone catalog validates before adding its compiled policy record")
+  assert(record ~= nil, "synthetic phone catalog validated above")
+  record.catalog.callPermissions = {
+    [9000] = { outgoing = false, incoming = true },
+  }
+
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local state = PokegearState.new({ seed = 9210 }, catalogRefs(record))
+  state:registerContact("custom.kurt")
+  local contact = nil
+  for _, candidate in ipairs(record.catalog.contacts) do
+    if candidate.key == "custom.kurt" then
+      contact = candidate
+      candidate.map = 0
+      break
+    end
+  end
+  assert(contact ~= nil, "the synthetic service contact exists")
+
+  local currentMap = { mapId = 9000, mapSectionNativeId = 0 }
+  local flags = { isFlagSet = function()
+    return false
+  end }
+  local world = PhoneWorldContext.new({
+    state = state,
+    catalog = record.catalog,
+    runtime = { session = { currentMap = currentMap }, eventState = flags },
+    flags = flags,
+  })
+  local audio = { dials = 0 }
+  function audio:playDialing()
+    self.dials = self.dials + 1
+  end
+  function audio:isEffectWaitComplete()
+    return true
+  end
+  local call = PhoneCall.new({
+    state = state,
+    catalog = record.catalog,
+    messages = phoneMessages(),
+    world = world,
+    audio = audio,
+  })
+
+  local blocked = call:begin({
+    id = "synthetic-outgoing-denied",
+    contact = "custom.kurt",
+    direction = "outgoing",
+    kind = "ordinary",
+  })
+  local denied = call:result(blocked)
+  Assert.notNil(denied, "synthetic outgoing denial is terminal before dialing")
+  Assert.equal(denied.signal, false, "the compiled synthetic pair denies outgoing calls")
+  Assert.equal(denied.ready, false, "the denied call is not reported as completed")
+  Assert.equal((call:view(blocked) --[[@as table]]).stage, "noSignal", "the rejected handle retains its no-signal view")
+  Assert.equal(audio.dials, 0, "the denied direction takes no audio effect")
+  call:release(blocked)
+
+  local allowed = call:begin({
+    id = "synthetic-incoming-allowed",
+    contact = "custom.kurt",
+    direction = "incoming",
+    kind = "ordinary",
+  })
+  Assert.isNil(call:result(allowed), "the same synthetic pair allows incoming calls")
+  Assert.equal(audio.dials, 2, "the allowed direction acquires its normal dialing effect")
+  call:cancel(allowed, "test cleanup")
+  call:release(allowed)
+end
+
+function T.tests.phone_world_context_samples_the_live_native_map_and_rejects_missing_source()
+  local PhoneWorldContext = require("game.hgss.src.pokegear.PhoneWorldContext")
+  local ScriptErrors = require("libs.script.src.errors")
+  local currentMap = { mapId = 9000 }
+  local context = PhoneWorldContext.new({
+    state = {},
+    catalog = {
+      callPermissions = {
+        [9000] = { incoming = false, outgoing = false },
+        [9001] = { incoming = true, outgoing = true },
+      },
+    },
+    runtime = { session = { currentMap = currentMap } },
+  })
+
+  Assert.isFalse(context:canCall("incoming"), "the first live map denies incoming calls")
+  Assert.isFalse(context:canCall("outgoing"), "the first live map denies outgoing calls")
+  currentMap.mapId = 9001
+  Assert.isTrue(context:canCall("incoming"), "a map change is sampled for incoming calls")
+  Assert.isTrue(context:canCall("outgoing"), "a map change is sampled for outgoing calls")
+  Assert.equal(
+    (Assert.throws(function()
+      context:canCall("sideways")
+    end, "call permissions reject unknown directions") --[[@as table]]).code,
+    ScriptErrors.FEATURE_UNAVAILABLE,
+    "invalid directions retain feature attribution"
+  )
+
+  currentMap.mapId = 9002
+  Assert.equal(
+    (Assert.throws(function()
+      context:canCall("incoming")
+    end, "unknown native maps cannot imply permission") --[[@as table]]).code,
+    ScriptErrors.FEATURE_UNAVAILABLE,
+    "missing source map records retain feature attribution"
+  )
+end
+
 -- Native dialogue waits for text completion before entering the program
 -- stage. Repeated polls do not advance that stage.
 function T.tests.phone_text_wait_precedes_the_program_stage()
@@ -244,7 +359,14 @@ function T.tests.phone_text_wait_precedes_the_program_stage()
 
   local state = PokegearState.new({ seed = 4242 }, catalogRefs(record))
   state:registerContact("custom.kurt")
-  local world = { flags = {}, rematchReady = {}, nativeSelectorFacts = localPhoneSelectorFacts() }
+  local world = {
+    flags = {},
+    rematchReady = {},
+    canCall = function()
+      return true
+    end,
+    nativeSelectorFacts = localPhoneSelectorFacts(),
+  }
   local random = PokegearRandom.new(4242)
   local call = PhoneCall.new({
     state = state,
@@ -763,7 +885,13 @@ function T.tests.phone_call_rejects_malformed_requests_without_taking_the_lease(
 
   local state = PokegearState.new({ seed = 21 }, catalogRefs(record))
   state:registerContact("custom.trainer-plain")
-  local world = { flags = {}, rematchReady = {} }
+  local world = {
+    flags = {},
+    rematchReady = {},
+    canCall = function()
+      return true
+    end,
+  }
   local call = PhoneCall.new({
     state = state,
     catalog = record.catalog,
@@ -1192,6 +1320,9 @@ function T.tests.service_stage_without_its_owner_fails_before_any_effect()
   local world = {
     flags = {},
     rematchReady = {},
+    canCall = function()
+      return true
+    end,
     aboutProduction = true,
     nativeSelectorFacts = localPhoneSelectorFacts(),
   }
@@ -1505,7 +1636,13 @@ function T.tests.native_shaped_contact_keys_dispatch_through_their_generated_fam
   for _, contact in ipairs(catalog.contacts) do
     state:registerContact((contact --[[@as table]]).key)
   end
-  local world = { flags = {}, rematchReady = {} }
+  local world = {
+    flags = {},
+    rematchReady = {},
+    canCall = function()
+      return true
+    end,
+  }
   local call = PhoneCall.new({
     state = state,
     catalog = catalog,

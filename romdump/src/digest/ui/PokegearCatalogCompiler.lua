@@ -75,6 +75,27 @@ local function compilePhoneDefinitions()
   return out
 end
 
+local function compileCallPermissions()
+  assert(
+    type(MapReference.count) == "number" and MapReference.count % 1 == 0 and MapReference.count > 0,
+    "the native map reference has a finite map count"
+  )
+  local permissions = {}
+  for mapId = 0, MapReference.count - 1 do
+    local header = MapReference.byId[mapId]
+    assert(type(header) == "table" and header.id == mapId, "native map headers are indexed by their map ID")
+    assert(
+      type(header.incomingCalls) == "boolean" and type(header.outgoingCalls) == "boolean",
+      "native map headers carry strict phone permission flags"
+    )
+    permissions[mapId] = {
+      incoming = header.incomingCalls,
+      outgoing = header.outgoingCalls,
+    }
+  end
+  return permissions
+end
+
 local function copyOverlay(overlay, keys)
   local out = {}
   for _, key in ipairs(keys) do
@@ -463,6 +484,7 @@ function PokegearCatalogCompiler.compile(romFs, versionId)
     contacts = decoded.contacts,
     contactOrder = decoded.contactOrder,
     callDefinitions = compilePhoneDefinitions(),
+    callPermissions = compileCallPermissions(),
     callTriggers = PokegearSources.phoneTriggerRecords(versionId),
     rematches = {},
     gifts = {},

@@ -233,7 +233,13 @@ local function openPhone(manifest, skin)
     catalog = record.catalog,
     assets = record,
     messages = { greeting = "custom.greeting", program = "custom.program" },
-    world = { flags = {}, rematchReady = {} },
+    world = {
+      flags = {},
+      rematchReady = {},
+      canCall = function()
+        return true
+      end,
+    },
     audio = instantAudio(),
     random = PokegearRandom.new(2024),
   })

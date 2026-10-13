@@ -240,8 +240,49 @@ function T.native_phone_labels_and_contact_classes_use_semantic_shapes()
     }
   end
   catalog.landmarkLabels = { bank = 279, fallbackBank = 280, fallbackEntry = 2 }
+  catalog.callPermissions = {}
+  for mapId = 0, 539 do
+    catalog.callPermissions[mapId] = {
+      incoming = mapId % 3 == 0,
+      outgoing = mapId % 2 == 0,
+    }
+  end
   local record, err = PokegearAssetSchema.validate(manifest)
-  Assert.notNil(record, "native labels and class references validate: " .. tostring(err and err.message or err))
+  Assert.notNil(record, "native phone labels and all map permissions validate: " .. tostring(err and err.message or err))
+
+  catalog.callPermissions[0].radio = true
+  local extraDirection, extraDirectionErr = PokegearAssetSchema.validate(manifest)
+  Assert.isNil(extraDirection, "native map permissions reject unrelated direction fields")
+  Assert.equal(
+    extraDirectionErr.code,
+    PokegearAssetSchema.ERROR.SHAPE_INVALID,
+    "extra permission fields have a shape error"
+  )
+  catalog.callPermissions[0].radio = nil
+
+  catalog.callPermissions[0].incoming = nil
+  local malformed, malformedErr = PokegearAssetSchema.validate(manifest)
+  Assert.isNil(malformed, "native map permissions require both strict booleans")
+  Assert.equal(malformedErr.code, PokegearAssetSchema.ERROR.SHAPE_INVALID, "malformed permissions have a shape error")
+  catalog.callPermissions[0].incoming = true
+
+  catalog.callPermissions[539] = nil
+  local missing, missingErr = PokegearAssetSchema.validate(manifest)
+  Assert.isNil(missing, "native map permissions cover the final map ID")
+  Assert.equal(missingErr.code, PokegearAssetSchema.ERROR.SHAPE_INVALID, "missing map permissions have a shape error")
+  catalog.callPermissions[539] = { incoming = true, outgoing = false }
+
+  catalog.callPermissions = nil
+  local absent, absentErr = PokegearAssetSchema.validate(manifest)
+  Assert.isNil(absent, "full native catalogs require the permission table")
+  Assert.equal(absentErr.code, PokegearAssetSchema.ERROR.SHAPE_INVALID, "a missing permission table has a shape error")
+  catalog.callPermissions = {}
+  for mapId = 0, 539 do
+    catalog.callPermissions[mapId] = {
+      incoming = mapId % 3 == 0,
+      outgoing = mapId % 2 == 0,
+    }
+  end
 
   catalog.landmarkLabels = nil
   local rejected, missingLabels = PokegearAssetSchema.validate(manifest)

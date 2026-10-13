@@ -169,6 +169,9 @@ local function worldFixture()
   local flags = {}
   return {
     flags = flags,
+    canCall = function()
+      return true
+    end,
     read = function(_, key)
       return flags[key]
     end,
