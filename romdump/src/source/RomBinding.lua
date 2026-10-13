@@ -31,6 +31,36 @@ local function isNonEmptyString(value)
   return type(value) == "string" and #value > 0
 end
 
+-- Archive members stay inside the archive: a relative path without
+-- absolute/drive prefixes, dot escapes, backslashes, or NULs. Ordinary
+-- nesting and case are kept as-is.
+local function isSafeZipEntry(value)
+  if type(value) ~= "string" or #value == 0 then
+    return false
+  end
+  if value:find("\0", 1, true) then
+    return false
+  end
+  if value:find("\\", 1, true) then
+    return false
+  end
+  if value:sub(1, 1) == "/" then
+    return false
+  end
+  if value:match("^[A-Za-z]:") then
+    return false
+  end
+  if value:sub(-1) == "/" or value:find("//", 1, true) then
+    return false
+  end
+  for part in value:gmatch("[^/]+") do
+    if part == "." or part == ".." then
+      return false
+    end
+  end
+  return true
+end
+
 local function mismatch(message, context)
   return Errors.new("ROM_BINDING_MISMATCH", message, context)
 end
@@ -82,6 +112,9 @@ local function checkShape(binding)
   end
   if binding.kind == "zip" and type(binding.zipEntry) ~= "string" then
     return corrupt("an archive registration must name its selected member", {})
+  end
+  if binding.kind == "zip" and not isSafeZipEntry(binding.zipEntry) then
+    return corrupt("source registration archive member must be a safe relative path", { zipEntry = binding.zipEntry })
   end
   return nil
 end

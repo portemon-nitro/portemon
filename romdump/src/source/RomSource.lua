@@ -67,7 +67,96 @@ end
 -- the test suite references it to observe leaked mounts.
 RomSource.MOUNT_POINT = "g4-romzip"
 
-local function findNdsCandidate(zipBytes, zipName, versions)
+-- A requested or persisted archive member must stay inside the archive: a
+-- relative path without absolute/drive prefixes, dot escapes, backslashes,
+-- or NULs. Ordinary nesting and case are kept as-is.
+local function isSafeZipMember(member)
+  if type(member) ~= "string" or #member == 0 then
+    return false
+  end
+  if member:find("\0", 1, true) then
+    return false
+  end
+  if member:find("\\", 1, true) then
+    return false
+  end
+  if member:sub(1, 1) == "/" then
+    return false
+  end
+  if member:match("^[A-Za-z]:") then
+    return false
+  end
+  if member:sub(-1) == "/" or member:find("//", 1, true) then
+    return false
+  end
+  for part in member:gmatch("[^/]+") do
+    if part == "." or part == ".." then
+      return false
+    end
+  end
+  return true
+end
+
+-- Read exactly one member from an in-memory zip. Missing, non-file, or
+-- unreadable members fail without scanning for a replacement, and the mount
+-- is always released, including when lookup raises.
+local function findExactMember(zipBytes, zipName, exactMember)
+  local fd = love.filesystem.newFileData(zipBytes, "romzip.zip")
+  love.filesystem.unmount(fd:getFilename()) -- clear any stale mount from a prior import
+  if not love.filesystem.mount(fd, RomSource.MOUNT_POINT) then
+    return nil, Errors.new("ZIP_MOUNT_FAILED", "could not read zip: " .. zipName, { name = zipName })
+  end
+  local full = RomSource.MOUNT_POINT .. "/" .. exactMember
+  local found
+  local failure
+  local ok, lookupErr = pcall(function()
+    local info = love.filesystem.getInfo(full)
+    if not info then
+      failure =
+        Errors.new("ZIP_ENTRY_MISSING", "archive member not found: " .. full, { name = zipName, entry = exactMember })
+      return
+    end
+    if info.type ~= "file" then
+      failure = Errors.new(
+        "ZIP_ENTRY_MISSING",
+        "archive member is not a file: " .. full,
+        { name = zipName, entry = exactMember }
+      )
+      return
+    end
+    local bytes = love.filesystem.read(full)
+    if not bytes then
+      failure = Errors.new("ZIP_READ_FAILED", "could not read .nds entry: " .. full, { name = zipName, entry = full })
+      return
+    end
+    found = RomSource.fromString(bytes, zipName .. ":" .. exactMember)
+    found._origin = { kind = "zip", path = false, zipEntry = exactMember, displayName = zipName }
+  end)
+  love.filesystem.unmount(fd:getFilename())
+  if not ok then
+    if Errors.is(lookupErr) then
+      return nil, lookupErr
+    end
+    error(lookupErr, 0)
+  end
+  if failure then
+    return nil, failure
+  end
+  return found
+end
+
+local function findNdsCandidate(zipBytes, zipName, versions, exactMember)
+  if exactMember ~= nil then
+    if not isSafeZipMember(exactMember) then
+      return nil,
+        Errors.new(
+          "ZIP_ENTRY_UNSAFE",
+          "unsafe archive member: " .. zipName .. ":" .. tostring(exactMember),
+          { name = zipName, entry = tostring(exactMember) }
+        )
+    end
+    return findExactMember(zipBytes, zipName, exactMember)
+  end
   local fd = love.filesystem.newFileData(zipBytes, "romzip.zip")
   love.filesystem.unmount(fd:getFilename()) -- clear any stale mount from a prior import
   if not love.filesystem.mount(fd, RomSource.MOUNT_POINT) then
@@ -122,10 +211,11 @@ end
 
 -- Pick a usable .nds from a zip: prefer one whose SHA-1 matches a supported
 -- version; otherwise fall back to the first .nds so NdsRom.open still reports a
--- precise unknown-ROM error (with the computed hash) for diagnosis.
-function RomSource.fromZipData(zipBytes, displayName, versions)
+-- precise unknown-ROM error (with the computed hash) for diagnosis. With an
+-- exact member, open precisely that entry and never substitute another one.
+function RomSource.fromZipData(zipBytes, displayName, versions, exactMember)
   versions = versions or GameVersion
-  local source, err = findNdsCandidate(zipBytes, displayName, versions)
+  local source, err = findNdsCandidate(zipBytes, displayName, versions, exactMember)
   if not source then
     if err then
       return nil, err
@@ -135,7 +225,18 @@ function RomSource.fromZipData(zipBytes, displayName, versions)
   return source
 end
 
-function RomSource.fromPath(path)
+--- Open a ROM from an arbitrary host path. With `{ zipEntry = member }` on a
+--- `.zip` path, open exactly that member; the option is invalid elsewhere.
+function RomSource.fromPath(path, options)
+  local exactMember = options and options.zipEntry or nil
+  if exactMember ~= nil and not isZip(path) then
+    return nil,
+      Errors.new(
+        "ROM_INVALID_OPTION",
+        "archive member selection needs a .zip path: " .. tostring(path),
+        { path = tostring(path) }
+      )
+  end
   local file, ioErr = io.open(path, "rb")
   if not file then
     return nil, Errors.new("ROM_OPEN_FAILED", ioErr or "could not open file", { path = path })
@@ -146,7 +247,7 @@ function RomSource.fromPath(path)
     return nil, Errors.new("ROM_READ_FAILED", "could not read file", { path = path })
   end
   if isZip(path) then
-    local zipped, zipErr = RomSource.fromZipData(data, basename(path))
+    local zipped, zipErr = RomSource.fromZipData(data, basename(path), nil, exactMember)
     if zipped then
       zipped._origin.path = path
     end
@@ -169,10 +270,28 @@ function RomSource.fromDroppedFile(droppedFile)
     return nil, Errors.new("ROM_READ_FAILED", "could not read dropped file", { name = droppedFile:getFilename() })
   end
   local name = droppedFile:getFilename()
+  local source, zipErr
   if isZip(name) then
-    return RomSource.fromZipData(data, basename(name))
+    source, zipErr = RomSource.fromZipData(data, basename(name))
+  else
+    source = RomSource.fromString(data, basename(name))
   end
-  return RomSource.fromString(data, basename(name))
+  if source then
+    -- The reported filename is only a candidate reopen location: it stays
+    -- private until the importer proves the same canonical bytes there.
+    source._candidatePath = name
+  end
+  return source, zipErr
+end
+
+-- The dropped filename as a candidate reopen location, or nil when this
+-- source was not dropped. Never a durable location on its own: only a
+-- verified candidate may be persisted.
+function RomSource:reopenCandidatePath()
+  if type(self._candidatePath) == "string" and #self._candidatePath > 0 then
+    return self._candidatePath
+  end
+  return nil
 end
 
 local function isNonNegativeInteger(value)

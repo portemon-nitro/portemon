@@ -505,4 +505,69 @@ function T.non_table_record_is_corruption()
   Assert.isTrue(valueErr.code ~= absenceErr.code, "a decoded non-table must not report as absence")
 end
 
+-- Archive members are confined to safe relative paths: parent escapes,
+-- absolute/drive prefixes, dot components, embedded NULs, and backslashes
+-- never persist and never read back, while ordinary nested members keep
+-- round-tripping exactly (including case).
+function T.archive_member_names_are_confined_to_relative_paths()
+  local owner = requireLocationOwner()
+  local backend = FakeCache.new()
+  local _, rom, info = openCartridge(cartridgeSpec())
+  withCataloguedVersion(info, function()
+    local cache = freshCache(backend)
+    local replaced, recordErr = tryRecord(owner, cache, rom, {
+      kind = "zip",
+      path = "/reopenable/game.zip",
+      displayName = "game.zip",
+      zipEntry = "roms/game.nds",
+    })
+    Assert.isTrue(replaced, "setup registration failed: " .. tostring(recordErr))
+    local before = cache:read("rom-source.lua")
+    local unsafe = {
+      "../evil.nds",
+      "a/../b.nds",
+      "a/./b.nds",
+      "/abs/member.nds",
+      "C:/win.nds",
+      "a\\b.nds",
+      "a\0b.nds",
+    }
+    for _, member in ipairs(unsafe) do
+      local kept, rejErr = tryRecord(owner, cache, rom, {
+        kind = "zip",
+        path = "/reopenable/game.zip",
+        displayName = "game.zip",
+        zipEntry = member,
+      })
+      Assert.isFalse(kept, "an unsafe member must never persist: " .. tostring(member))
+      Assert.isTrue(Errors.is(rejErr), "an unsafe member rejection must be typed: " .. tostring(member))
+      Assert.equal(cache:read("rom-source.lua"), before)
+    end
+
+    cache:write(
+      "rom-source.lua",
+      'return { schema = 1, versionId = "'
+        .. VERSION_ID
+        .. '", romSha1 = "'
+        .. info.sha1
+        .. '", kind = "zip", path = "/reopenable/game.zip", '
+        .. 'displayName = "game.zip", zipEntry = "../evil.nds" }'
+    )
+    local bad, badErr = tryRead(owner, cache, VERSION_ID)
+    Assert.isNil(bad, "an unsafe persisted member must not read as a registration")
+    Assert.isTrue(Errors.is(badErr), "an unsafe persisted member must be typed")
+
+    local nested, nestedErr = tryRecord(owner, cache, rom, {
+      kind = "zip",
+      path = "/reopenable/game.zip",
+      displayName = "game.zip",
+      zipEntry = "Roms/Nested/Game.NDS",
+    })
+    Assert.isTrue(nested, "an ordinary nested member must persist: " .. tostring(nestedErr))
+    local binding = tryRead(owner, cache, VERSION_ID)
+    Assert.notNil(binding, "the nested registration must stay readable")
+    Assert.equal(assert(binding).zipEntry, "Roms/Nested/Game.NDS", "member case must be preserved exactly")
+  end)
+end
+
 return { tests = T }

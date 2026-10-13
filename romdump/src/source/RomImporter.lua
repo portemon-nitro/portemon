@@ -212,6 +212,41 @@ function RomImporter:_beginWork()
     self.state = RomImporter.STATES.REGISTERING
     self:_onProgress({ stage = "registering", stageLabel = "Registering source", overall = 0.6 })
     local origin = source:origin()
+    -- A dropped filename is only a candidate location: reopen that exact
+    -- path (and member) and keep it solely when the same canonical bytes
+    -- answer. Any failure degrades to an ephemeral registration; the
+    -- dropped bytes themselves already validated above. The short-lived
+    -- verification source is released before the session buffer exists.
+    local candidate
+    if type(source.reopenCandidatePath) == "function" then
+      candidate = source:reopenCandidatePath()
+    end
+    if type(candidate) == "string" and candidate ~= "" then
+      local reopenOptions
+      if origin.kind == "zip" and type(origin.zipEntry) == "string" then
+        reopenOptions = { zipEntry = origin.zipEntry }
+      end
+      local ok, durable = pcall(function()
+        local reopened = RomSource.fromPath(candidate, reopenOptions)
+        if not reopened then
+          return false
+        end
+        local check = NdsRom.open(reopened, self._versions --[[@as table]])
+        local same = check ~= nil
+          and reopened:origin().kind == origin.kind
+          and check:versionInfo().id == info.id
+          and check:versionInfo().sha1 == info.sha1
+        if check then
+          check:release()
+        else
+          reopened:release()
+        end
+        return same
+      end)
+      if ok and durable then
+        origin.path = candidate
+      end
+    end
     local recorded, recordErr = RomBinding.record(cache, rom, {
       kind = origin.kind,
       path = origin.path,

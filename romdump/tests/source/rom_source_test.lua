@@ -1,5 +1,7 @@
 local Assert = require("tests.support.Assert")
+local Errors = require("libs.errors.src.Errors")
 local RomSource = require("romdump.src.source.RomSource")
+local NdsRom = require("romdump.src.source.NdsRom")
 local ZipBuilder = require("tests.support.ZipBuilder")
 local NdsBuilder = require("tests.support.NdsBuilder")
 local DumpFixture = require("tests.support.DumpFixture")
@@ -691,6 +693,139 @@ function T.zip_scan_releases_the_fallback_when_a_supported_candidate_wins()
   Assert.equal(created, 2)
   Assert.equal(released, 1, "the fallback must be released when a supported candidate wins")
   Assert.equal(s:sha1(), goodSha)
+end
+
+-- A saved archive location always reopens its recorded member: the bound
+-- entry is served regardless of archive order, a removed entry fails instead
+-- of substituting another game, unsafe names never reach the reader, and an
+-- exact-member option on a bare cartridge is rejected. Failures leave no
+-- mount behind, and the option-less scan keeps its current behavior.
+function T.bound_zip_member_reopens_exactly_without_fallback_or_leak()
+  withOwnedRoot(function(root)
+    local specA = DumpFixture.spec()
+    local specB = DumpFixture.spec()
+    specB.overlays9 = { "OVERLAY0-DATB" }
+    local bytesA = NdsBuilder.build(specA)
+    local bytesB = NdsBuilder.build(specB)
+    Assert.equal(#bytesA, #bytesB, "the variants must share a size")
+    Assert.isTrue(bytesA ~= bytesB, "the variants must differ")
+    local shaA = RomSource.fromString(bytesA):sha1()
+    local shaB = RomSource.fromString(bytesB):sha1()
+    local infoA = { id = "variant-a", sha1 = shaA, gameCode = "IPKE" }
+    local infoB = { id = "variant-b", sha1 = shaB, gameCode = "IPKE" }
+    local versions = {
+      forSha1 = function(hash)
+        if hash == shaA then
+          return infoA
+        end
+        if hash == shaB then
+          return infoB
+        end
+        return nil
+      end,
+      forGameCode = function()
+        return nil
+      end,
+    }
+    local zipBytes = ZipBuilder.build({
+      { name = "a_first.nds", data = bytesA },
+      { name = "z_second.nds", data = bytesB },
+    })
+    local zipPath = root .. "/game.zip"
+    local writer = assert(io.open(zipPath, "wb"))
+    writer:write(zipBytes)
+    assert(writer:close())
+
+    local exactB, exactErr = RomSource.fromPath(zipPath, { zipEntry = "z_second.nds" })
+    Assert.notNil(exactB, "the bound member must open: " .. tostring(exactErr))
+    assert(exactB, "the bound member must open")
+    local ok, err = pcall(function()
+      Assert.equal(exactB:sha1(), shaB, "the bound member must serve its own bytes, not archive order")
+      local origin = exactB:origin()
+      Assert.equal(origin.kind, "zip")
+      Assert.equal(origin.path, zipPath)
+      Assert.equal(origin.zipEntry, "z_second.nds")
+      local rom, romErr = NdsRom.open(exactB, versions)
+      Assert.notNil(rom, romErr and tostring(romErr))
+      assert(rom, "the bound member must validate")
+      Assert.equal(rom:versionInfo().sha1, shaB)
+    end)
+    exactB:release()
+    if not ok then
+      error(err, 0)
+    end
+
+    local exactA = assert(RomSource.fromPath(zipPath, { zipEntry = "a_first.nds" }))
+    local okA, errA = pcall(function()
+      Assert.equal(exactA:sha1(), shaA, "each bound member must serve its own bytes")
+    end)
+    exactA:release()
+    if not okA then
+      error(errA, 0)
+    end
+
+    local missing, missingErr = RomSource.fromPath(zipPath, { zipEntry = "gone.nds" })
+    Assert.isNil(missing, "a removed member must not fall back to another entry")
+    Assert.isTrue(Errors.is(missingErr), "a removed member must report a typed error")
+    Assert.isNil(love.filesystem.getInfo(MOUNT_POINT), "no mount may leak after member-not-found")
+
+    local unsafe = { "../evil.nds", "a/../b.nds", "a/./b.nds", "/abs/member.nds", "C:/win.nds", "a\\b.nds" }
+    for _, member in ipairs(unsafe) do
+      local rejected, rejectErr = RomSource.fromPath(zipPath, { zipEntry = member })
+      Assert.isNil(rejected, "an unsafe member must never open: " .. member)
+      Assert.isTrue(Errors.is(rejectErr), "an unsafe member must report a typed error: " .. member)
+    end
+    Assert.isNil(love.filesystem.getInfo(MOUNT_POINT), "no mount may leak after unsafe members")
+
+    local barePath = root .. "/bare.nds"
+    local bareWriter = assert(io.open(barePath, "wb"))
+    bareWriter:write(bytesA)
+    assert(bareWriter:close())
+    local badBare, badBareErr = RomSource.fromPath(barePath, { zipEntry = "x.nds" })
+    Assert.isNil(badBare, "an exact member on a bare cartridge must be rejected")
+    Assert.isTrue(Errors.is(badBareErr), "a bare-cartridge member option must report a typed error")
+
+    local legacy = assert(RomSource.fromPath(zipPath), "the option-less scan must keep working")
+    local legacySha = legacy:sha1()
+    legacy:release()
+    Assert.isTrue(legacySha == shaA or legacySha == shaB, "the option-less scan still returns a member")
+  end)
+end
+
+-- An exact member that names a directory or carries an embedded NUL never
+-- opens, and a malformed archive fails the same way with or without the
+-- option. Every failure leaves no mount behind.
+function T.exact_member_rejects_directories_embedded_nul_and_malformed_archives()
+  withOwnedRoot(function(root)
+    local zipBytes = ZipBuilder.build({ { name = "roms/game.nds", data = "unsupported bytes" } })
+    local zipPath = root .. "/game.zip"
+    local writer = assert(io.open(zipPath, "wb"))
+    writer:write(zipBytes)
+    assert(writer:close())
+
+    local asDir, dirErr = RomSource.fromPath(zipPath, { zipEntry = "roms" })
+    Assert.isNil(asDir, "an exact member naming a directory must not open")
+    Assert.isTrue(Errors.is(dirErr), "a directory member must report a typed error")
+    Assert.isNil(love.filesystem.getInfo(MOUNT_POINT), "no mount may leak after a directory member")
+
+    local nul, nulErr = RomSource.fromPath(zipPath, { zipEntry = "a\0b.nds" })
+    Assert.isNil(nul, "an exact member with an embedded NUL must not open")
+    Assert.isTrue(Errors.is(nulErr), "an embedded NUL must report a typed error")
+    Assert.isNil(love.filesystem.getInfo(MOUNT_POINT), "no mount may leak after an embedded NUL")
+
+    local badPath = root .. "/bad.zip"
+    local badWriter = assert(io.open(badPath, "wb"))
+    badWriter:write("not a zip at all")
+    assert(badWriter:close())
+    local badExact, badExactErr = RomSource.fromPath(badPath, { zipEntry = "game.nds" })
+    Assert.isNil(badExact, "a malformed archive must not open with an exact member")
+    Assert.isTrue(Errors.is(badExactErr), "a malformed archive must report a typed error")
+    Assert.isNil(love.filesystem.getInfo(MOUNT_POINT), "no mount may leak after a malformed archive")
+    local badScan, badScanErr = RomSource.fromPath(badPath)
+    Assert.isNil(badScan, "a malformed archive must not open on the option-less scan either")
+    Assert.isTrue(Errors.is(badScanErr), "a malformed archive scan must report a typed error")
+    Assert.isNil(love.filesystem.getInfo(MOUNT_POINT), "no mount may leak after a malformed scan")
+  end)
 end
 
 return { tests = T }

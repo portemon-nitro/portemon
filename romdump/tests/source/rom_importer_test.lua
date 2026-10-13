@@ -521,4 +521,269 @@ function T.same_rom_reimport_keeps_prior_derived_work()
   )
 end
 
+-- One atomically acquired scratch directory per invocation holds this case's
+-- reopenable fixture file. Only the acquired root is ever removed.
+local function shellQuote(value)
+  return "'" .. value:gsub("'", "'\\''") .. "'"
+end
+
+local function commandSucceeded(status)
+  return status == 0 or status == true
+end
+
+local function withOwnedRoot(fn)
+  local handle = assert(io.popen("mktemp -d"), "mktemp -d could not start")
+  local root = (handle:read("*l") or ""):gsub("^%s+", ""):gsub("%s+$", "")
+  local closed = handle:close()
+  assert(commandSucceeded(closed), "mktemp -d did not exit successfully")
+  assert(root ~= "", "mktemp -d produced no path")
+  local ok, err = pcall(fn, root)
+  if ok then
+    local status = os.execute("rm -rf -- " .. shellQuote(root))
+    assert(commandSucceeded(status), "owned scratch cleanup failed: " .. root)
+    return
+  end
+  pcall(os.execute, "rm -rf -- " .. shellQuote(root))
+  error(err, 0)
+end
+
+-- A desktop drop whose reported filename can be reopened keeps that location:
+-- the import registers the verified user path, copies no ROM bytes into the
+-- cache, and a later process can reopen the same bytes from the binding.
+function T.dropped_file_with_reopenable_path_persists_verified_location()
+  withOwnedRoot(function(root)
+    local h = harness()
+    local romPath = root .. "/dropped.nds"
+    local writer = assert(io.open(romPath, "wb"))
+    writer:write(h.data)
+    assert(writer:close())
+    local stub = {
+      open = function()
+        return true
+      end,
+      read = function()
+        return h.data
+      end,
+      close = function()
+        return true
+      end,
+      getFilename = function()
+        return romPath
+      end,
+    }
+    h.importer:startDroppedFile(stub)
+    runToTerminal(h.importer)
+    Assert.equal(h.importer.state, "complete")
+    local cache = CacheFs.forVersion("heartgold", h.backend)
+    local binding = cache:loadLua("rom-source.lua")
+    Assert.notNil(binding, "a reopenable desktop drop must persist its location")
+    assert(binding, "a reopenable desktop drop must persist its location")
+    Assert.equal(binding.path, romPath, "the binding must keep the verified user path")
+    Assert.equal(binding.kind, "nds")
+    Assert.equal(binding.romSha1, h.info.sha1)
+    for _, value in pairs(h.backend.files) do
+      if type(value) == "string" then
+        Assert.isTrue(value:find("OVERLAY0-DATA", 1, true) == nil, "no ROM payload may be copied into the cache")
+      end
+    end
+    local reopened, openErr = RomSource.fromPath(binding.path)
+    Assert.notNil(reopened, openErr and tostring(openErr))
+    assert(reopened, "the persisted path must reopen")
+    local ok, err = pcall(function()
+      Assert.equal(reopened:sha1(), h.info.sha1, "the reopened bytes must keep their identity")
+      local NdsRom = require("romdump.src.source.NdsRom")
+      local rom, romErr = NdsRom.open(reopened, h.versions)
+      Assert.notNil(rom, romErr and tostring(romErr))
+      assert(rom, "the reopened bytes must validate")
+      Assert.equal(rom:versionInfo().id, "heartgold")
+      Assert.equal(rom:versionInfo().sha1, h.info.sha1)
+    end)
+    reopened:release()
+    if not ok then
+      error(err, 0)
+    end
+  end)
+end
+
+-- A drop the platform will not let the app reopen (a missing file, a mediated
+-- URI) still imports its verified bytes for the current session: the binding
+-- stays explicitly ephemeral while the one-shot handoff serves the session.
+function T.unreopenable_drop_stays_ephemeral_but_usable()
+  local h = harness()
+  local stub = {
+    open = function()
+      return true
+    end,
+    read = function()
+      return h.data
+    end,
+    close = function()
+      return true
+    end,
+    getFilename = function()
+      return "/no/such/place/missing.nds"
+    end,
+  }
+  h.importer:startDroppedFile(stub)
+  runToTerminal(h.importer)
+  Assert.equal(h.importer.state, "complete")
+  local binding = CacheFs.forVersion("heartgold", h.backend):loadLua("rom-source.lua")
+  Assert.notNil(binding, "an unreopenable drop must still register its identity")
+  assert(binding, "an unreopenable drop must still register its identity")
+  Assert.isTrue(binding.path == false, "an inaccessible drop must stay explicitly ephemeral")
+  Assert.equal(binding.kind, "nds")
+  Assert.equal(binding.romSha1, h.info.sha1)
+  local handed = h.importer:takeVerifiedSource()
+  Assert.notNil(handed, "the valid drop still hands its bytes to the current session")
+  assert(handed, "the valid drop still hands its bytes to the current session")
+  Assert.equal(handed:sha1(), h.info.sha1)
+  Assert.isNil(h.importer:takeVerifiedSource(), "the session handoff is one-shot")
+  for _, value in pairs(h.backend.files) do
+    if type(value) == "string" then
+      Assert.isTrue(value:find("OVERLAY0-DATA", 1, true) == nil, "no ROM payload may be copied into the cache")
+    end
+  end
+
+  local ZipBuilder = require("tests.support.ZipBuilder")
+  local z = harness()
+  local zipBytes = ZipBuilder.build({ { name = "game.nds", data = z.data } })
+  local zipStub = {
+    open = function()
+      return true
+    end,
+    read = function()
+      return zipBytes
+    end,
+    close = function()
+      return true
+    end,
+    getFilename = function()
+      return "content://media/document/9.zip"
+    end,
+  }
+  z.importer:startDroppedFile(zipStub)
+  runToTerminal(z.importer)
+  Assert.equal(z.importer.state, "complete")
+  local zipBinding = CacheFs.forVersion("heartgold", z.backend):loadLua("rom-source.lua")
+  Assert.notNil(zipBinding, "an unreopenable archive drop must still register")
+  assert(zipBinding, "an unreopenable archive drop must still register")
+  Assert.isTrue(zipBinding.path == false, "a mediated archive drop must stay explicitly ephemeral")
+  Assert.equal(zipBinding.kind, "zip")
+  Assert.isTrue(
+    type(zipBinding.zipEntry) == "string" and zipBinding.zipEntry:match("%.nds$") ~= nil,
+    "the archive drop keeps its selected member"
+  )
+  local zipHanded = z.importer:takeVerifiedSource()
+  Assert.notNil(zipHanded, "the valid archive drop still hands its bytes over")
+  assert(zipHanded, "the valid archive drop still hands its bytes over")
+  Assert.equal(zipHanded:sha1(), z.info.sha1)
+  Assert.isNil(z.importer:takeVerifiedSource(), "the archive handoff is one-shot")
+end
+
+-- A drop whose reported filename holds a different valid ROM must not lend
+-- its location to the import: the candidate's own bytes validate under
+-- another identity, so the binding stays explicitly ephemeral while the
+-- dropped bytes still complete the current session.
+function T.dropped_candidate_holding_another_rom_stays_ephemeral_but_usable()
+  withOwnedRoot(function(root)
+    local specA = DumpFixture.spec()
+    local dataA = NdsBuilder.build(specA)
+    local shaA = RomSource.fromString(dataA):sha1()
+    local specB = DumpFixture.spec()
+    specB.overlays9 = { "OVERLAY0-DATB" }
+    local dataB = NdsBuilder.build(specB)
+    Assert.isTrue(dataA ~= dataB, "the candidate must hold different bytes")
+    local shaB = RomSource.fromString(dataB):sha1()
+    local infoA = {
+      id = "heartgold",
+      label = "HeartGold",
+      displayName = "Pokemon HeartGold",
+      sha1 = shaA,
+      gameCode = "IPKE",
+      expectedSize = #dataA,
+      cachePrefix = "heartgold/",
+    }
+    local infoB = {
+      id = "soulsilver",
+      label = "SoulSilver",
+      displayName = "Pokemon SoulSilver",
+      sha1 = shaB,
+      gameCode = "IPKE",
+      expectedSize = #dataB,
+      cachePrefix = "soulsilver/",
+    }
+    local versions = {
+      info = function(id)
+        if id == "heartgold" then
+          return infoA
+        end
+        if id == "soulsilver" then
+          return infoB
+        end
+        return nil
+      end,
+      forSha1 = function(h)
+        if h == shaA then
+          return infoA
+        end
+        if h == shaB then
+          return infoB
+        end
+        return nil
+      end,
+      forGameCode = function()
+        return nil
+      end,
+    }
+    local candidatePath = root .. "/other.nds"
+    local writer = assert(io.open(candidatePath, "wb"))
+    writer:write(dataB)
+    assert(writer:close())
+    local backend = FakeCache.new()
+    local importer = RomImporter.new({
+      versions = versions,
+      now = function()
+        return 0
+      end,
+      cacheFactory = function(id)
+        return CacheFs.forVersion(id, backend)
+      end,
+    })
+    importer:startDroppedFile({
+      open = function()
+        return true
+      end,
+      read = function()
+        return dataA
+      end,
+      close = function()
+        return true
+      end,
+      getFilename = function()
+        return candidatePath
+      end,
+    })
+    runToTerminal(importer)
+    Assert.equal(importer.state, "complete")
+    Assert.equal(importer:status().versionId, "heartgold")
+    local binding = CacheFs.forVersion("heartgold", backend):loadLua("rom-source.lua")
+    Assert.notNil(binding, "the mismatched drop must still register its identity")
+    assert(binding, "the mismatched drop must still register its identity")
+    Assert.isTrue(binding.path == false, "a candidate holding another ROM must stay explicitly ephemeral")
+    Assert.equal(binding.kind, "nds")
+    Assert.equal(binding.romSha1, shaA)
+    local handed = importer:takeVerifiedSource()
+    Assert.notNil(handed, "the valid drop still hands its bytes to the current session")
+    assert(handed, "the valid drop still hands its bytes to the current session")
+    Assert.equal(handed:sha1(), shaA)
+    Assert.isNil(importer:takeVerifiedSource(), "the session handoff is one-shot")
+    for _, value in pairs(backend.files) do
+      if type(value) == "string" then
+        Assert.isTrue(value:find("OVERLAY0-DATA", 1, true) == nil, "no ROM payload may be copied into the cache")
+        Assert.isTrue(value:find("OVERLAY0-DATB", 1, true) == nil, "no candidate payload may be copied either")
+      end
+    end
+  end)
+end
+
 return { tests = T }
