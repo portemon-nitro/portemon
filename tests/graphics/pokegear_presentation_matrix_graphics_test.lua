@@ -20,9 +20,9 @@ local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local T = {}
 
 -- Fixed strip slots in source order, kept outside the shell under test:
--- phone, setup, radio, map, map with the touch centers the source pairs
+-- setup, radio, map, phone, cancel with the touch centers the source pairs
 -- with its nonzero-pixel mask.
-local SLOT_TABS = { "phone", "configure", "radio", "map", "map" }
+local SLOT_TABS = { "configure", "radio", "map", "phone", "cancel" }
 local SLOT_CENTERS_X = { 32, 80, 128, 176, 230 }
 local SLOT_CENTER_Y = 176
 
@@ -378,11 +378,15 @@ function T.slot_taps_reach_the_drawn_card_on_every_host(scope)
       local x, y = slotCenter(host.shell, slot)
       tap(host.shell, x, y)
       settle(host.shell)
-      Assert.equal(
-        host.shell:status().tab,
-        SLOT_TABS[slot],
-        named.kind .. " tap on slot " .. slot .. " must reach " .. SLOT_TABS[slot]
-      )
+      if SLOT_TABS[slot] == "cancel" then
+        Assert.isFalse(host.shell:status().open, named.kind .. " tap on the cancel slot closes the gear")
+      else
+        Assert.equal(
+          host.shell:status().tab,
+          SLOT_TABS[slot],
+          named.kind .. " tap on slot " .. slot .. " must reach " .. SLOT_TABS[slot]
+        )
+      end
     end
   end
 end

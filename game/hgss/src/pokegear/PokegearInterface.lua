@@ -18,12 +18,11 @@ PokegearInterface.PANE_HEIGHT = 192
 local INFORMATION_NATIVE = { id = "information", width = 256, height = 192 }
 local CONTROLS_NATIVE = { id = "controls", width = 256, height = 192 }
 
--- Five fixed strip slots: centers x32/80/128/176/230 at y176 with touch
--- bands y160..192. Five positions select four cards: the opening position
--- holds the phone card and the trailing positions repeat the final card, so
--- every position stays live and masked cards stay blank in place without
--- ever repacking the strip.
-local SLOT_TABS = { "phone", "configure", "radio", "map", "map" }
+-- Five fixed strip slots in source order: centers x32/80/128/176/230 at
+-- y176 with touch bands y160..192. Four positions select the setup, radio,
+-- map, and phone cards; the last cancels the gear. Masked cards stay blank
+-- in place without ever repacking the strip.
+local SLOT_TABS = { "configure", "radio", "map", "phone", "cancel" }
 local SLOT_BANDS = {
   { x0 = 8, x1 = 56 },
   { x0 = 56, x1 = 104 },
@@ -158,6 +157,48 @@ local function optionalPath(section)
   return firstImage(section)
 end
 
+-- The four focus-corner frames of the strip cursor, or nil when the
+-- compiled family carries no cursor sequences.
+---@param assets table<string, unknown>
+---@return string[]? paths top-left, bottom-left, top-right, bottom-right
+local function cursorCorners(assets)
+  local sequences = assets.sequences
+  if type(sequences) ~= "table" then
+    return nil
+  end
+  local paths = {}
+  for corner = 1, 4 do
+    local clip = (sequences --[[@as table<string, unknown>]])["shell.cursor." .. (corner + 4)]
+    local frame = type(clip) == "table" and type(clip.frames) == "table" and clip.frames[1] or nil
+    if type(frame) ~= "table" or type(frame.image) ~= "string" then
+      return nil
+    end
+    paths[corner] = frame.image
+  end
+  return paths
+end
+
+-- The compiled clock sprite strips of the shell object set: digit frames
+-- 0-9, the colon, the weekday strip (Sunday first), and the reception
+-- indicator, or nil when the compiled family carries no sequences.
+---@param assets table<string, unknown>
+---@return table<string, table[]>?
+local function clockSprites(assets)
+  local sequences = assets.sequences
+  if type(sequences) ~= "table" then
+    return nil
+  end
+  local sprites = {}
+  for name, sequenceId in pairs({ digits = 1, colon = 2, weekday = 3, signal = 4 }) do
+    local clip = (sequences --[[@as table<string, unknown>]])["shell.cursor." .. sequenceId]
+    if type(clip) ~= "table" or type(clip.frames) ~= "table" then
+      return nil
+    end
+    sprites[name] = clip.frames
+  end
+  return sprites
+end
+
 -- The shared plan payload: fixed strip slots plus the resolved compiled
 -- image paths behind the current skin, so pane-local drawing and hit
 -- testing consume the same record.
@@ -181,6 +222,8 @@ local function shellContent(assets, skin)
     shellForeground = skinPath(shell.foreground or shell, skin, "shell"),
     shellInformation = skinPath(shell.information or shell, skin, "shell information"),
     childVisuals = childVisuals,
+    cursorCorners = cursorCorners(assets),
+    clockSprites = clockSprites(assets),
     configureForeground = optionalPath(configure.foreground or configure.panel) or childVisuals.configure,
     configurePatch = optionalPath(configure.patch),
   }
@@ -213,6 +256,9 @@ local function mapControlsInput(event, view, plan)
     return event
   end
   if event.type == "pointer_up" then
+    if tab == "cancel" then
+      return { type = "dismiss" }
+    end
     return { type = "select_tab", tab = tab, x = event.x, y = event.y }
   end
   return nil

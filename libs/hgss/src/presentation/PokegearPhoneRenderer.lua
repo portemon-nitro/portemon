@@ -19,20 +19,54 @@ local SURFACE_HEIGHT = 192
 PokegearPhoneRenderer.SURFACE_WIDTH = SURFACE_WIDTH
 PokegearPhoneRenderer.SURFACE_HEIGHT = SURFACE_HEIGHT
 
--- List window origin in surface coordinates; row text sits at the source
--- window-local offsets x16 and x94, y24*slot+2 over the (8, 8) origin.
-local NAME_TEXT_X = 24
-local CLASS_TEXT_X = 102
+-- The list window sits at surface (8, 16); each of its rows is a 216x24
+-- band of the window bitmap, printed at the source window-local offsets
+-- x16 (name) and x94 (class) with y24*slot+2.
+local LIST_X = 8
+local LIST_Y = 16
 local ROW_WIDTH = 216
 local ROW_HEIGHT = 24
 local VISIBLE_ROWS = 6
+local NAME_TEXT_X = 16
+local CLASS_TEXT_X = 94
+local NAME_CELL_X, NAME_CELL_WIDTH = 8, 82
+local CLASS_CELL_X, CLASS_CELL_WIDTH = 90, 126
+local CELL_HEIGHT = 20
 
--- Surface row bands behind the clipped viewport: six 24-pixel rows at
--- y16..160 with the scroll strip alongside at x224..248.
-local ROW_BAND_X = 8
-local FIRST_BAND_Y = 16
-local SCROLL_X = 224
-local SCROLL_WIDTH = 24
+-- Source palette indices of the two alternating row color sets (zero-based
+-- into the sixteen-color list bank): band fill, name and class cell
+-- backgrounds, corner fill, and the foreground/shadow pairs of the
+-- deselected and selected name and class text.
+local ROW_COLORS = {
+  {
+    fill1 = 11,
+    fill2 = 10,
+    bg1 = 9,
+    bg2 = 10,
+    nameFg = 1,
+    nameSh = 2,
+    classFg = 5,
+    classSh = 6,
+    nameSelectedFg = 3,
+    nameSelectedSh = 4,
+    classSelectedFg = 7,
+    classSelectedSh = 8,
+  },
+  {
+    fill1 = 14,
+    fill2 = 13,
+    bg1 = 12,
+    bg2 = 13,
+    nameFg = 1,
+    nameSh = 2,
+    classFg = 5,
+    classSh = 6,
+    nameSelectedFg = 3,
+    nameSelectedSh = 4,
+    classSelectedFg = 7,
+    classSelectedSh = 8,
+  },
+}
 
 local PANEL_RECT = { x = 8, y = 0, width = 240, height = 48 }
 local PANEL_CLOSED_CELL = 10
@@ -43,13 +77,11 @@ local MENU_ROW_HEIGHT = 14
 
 local NAME_WINDOW = { x = 32, y = 128, width = 72, height = 16 }
 local SPEECH_WINDOW = { x = 16, y = 152, width = 216, height = 32 }
-local TOOLTIP_RECT = { x = 0, y = 168, width = 256, height = 16 }
 
 -- Procedural fallback fills behind the resolved planes: one hue per skin
--- so a skin swap repaints from the plan content alone, plus the
--- alternating name/class palette combinations and the selected-state
--- colors. Real planes arrive as prepared images whenever the plan
--- resolves them.
+-- so a skin swap repaints from the plan content alone, plus the call and
+-- panel window colors. Real planes arrive as prepared images whenever the
+-- plan resolves them.
 local SKIN_FILLS = {
   { 0.16, 0.16, 0.20 },
   { 0.14, 0.22, 0.16 },
@@ -58,16 +90,7 @@ local SKIN_FILLS = {
   { 0.24, 0.14, 0.24 },
   { 0.12, 0.24, 0.26 },
 }
-local NAME_FILLS = {
-  { 0.92, 0.92, 0.94 },
-  { 0.78, 0.80, 0.86 },
-}
-local CLASS_FILLS = {
-  { 0.70, 0.72, 0.78 },
-  { 0.82, 0.84, 0.88 },
-}
 local SELECTED_NAME_FILL = { 0.12, 0.28, 0.62 }
-local SELECTED_CLASS_FILL = { 0.16, 0.34, 0.70 }
 local PANEL_CLOSED_FILL = { 0.30, 0.30, 0.34 }
 local PANEL_OPEN_FILL = { 0.88, 0.88, 0.92 }
 
@@ -112,19 +135,57 @@ local function drawLine(text, line, x, y)
   end
 end
 
----@param slot integer zero-based visible slot
----@return integer band top in surface coordinates
-local function bandY(slot)
-  return FIRST_BAND_Y + slot * ROW_HEIGHT
+---@param palette table<integer, table<string, number>> sixteen list colors, one-based
+---@param index integer zero-based source palette index
+---@return table<string, number>
+local function paletteColor(palette, index)
+  return assert(palette[index + 1], "the list palette carries all sixteen source colors")
 end
 
--- Draws the six-row clipped viewport: alternating name/class palette
--- cells with the selected-state colors on the selected band, the scroll
--- thumb alongside, and the manual-move arrows while a move is armed.
+---@param graphics love.graphics
+---@param palette table<integer, table<string, number>>
+---@param index integer zero-based source palette index
+---@param x number
+---@param y number
+---@param width number
+---@param height number
+local function fillPalette(graphics, palette, index, x, y, width, height)
+  local color = paletteColor(palette, index)
+  graphics.setColor(color.r / 255, color.g / 255, color.b / 255, 1)
+  graphics.rectangle("fill", x, y, width, height)
+end
+
+---@param text table<string, unknown>?
+---@param palette table<integer, table<string, number>>
+---@param line string
+---@param x number
+---@param y number
+---@param foreground integer zero-based source palette index
+---@param shadow integer zero-based source palette index
+---@param background integer zero-based source palette index
+local function drawPaletteText(text, palette, line, x, y, foreground, shadow, background)
+  if
+    text == nil or type((text --[[@as table<string, unknown>]]).drawTextWithPalette) ~= "function"
+  then
+    return
+  end
+  local drawText = (text --[[@as table<string, unknown>]]).drawTextWithPalette --[[@as fun(self: table, line: string, x: number, y: number, palette: table)]]
+  drawText(text, line, x, y, {
+    foreground = paletteColor(palette, foreground),
+    shadow = paletteColor(palette, shadow),
+    background = paletteColor(palette, background),
+  })
+end
+
+-- Draws the six-row viewport the way the source prints its window bitmap:
+-- per row the band fill, the name and class cells, the marker dots, then
+-- the name and class text in the selected or deselected palette colors.
+-- The manual-move arrows replace the left marker while a move is armed.
 ---@param graphics love.graphics
 ---@param text table<string, unknown>?
 ---@param list table<string, unknown>
-local function drawList(graphics, text, list)
+---@param palette table<integer, table<string, number>>
+local function drawList(graphics, text, list, palette)
   local rows = list.rows --[[@as table[] ]]
   local selected = list.selected --[[@as integer]]
   local scrollOffset = list.scrollOffset --[[@as integer]]
@@ -132,47 +193,54 @@ local function drawList(graphics, text, list)
   assert(type(rows) == "table", "the list projection carries its rows")
   assert(type(selected) == "number", "the list projection carries its selection")
   assert(type(scrollOffset) == "number", "the list projection carries its scroll offset")
-  local count = #rows
   for slot = 0, VISIBLE_ROWS - 1 do
     local row = rows[slot + 1]
-    local y = bandY(slot)
-    if row == nil then
-      fillRect(graphics, { 0.10, 0.10, 0.12 }, ROW_BAND_X, y, ROW_WIDTH, ROW_HEIGHT)
-    else
+    local absolute = scrollOffset + slot
+    local colors = ROW_COLORS[(absolute % 2) + 1]
+    local top = LIST_Y + slot * ROW_HEIGHT
+    fillPalette(graphics, palette, colors.fill1, LIST_X, top, ROW_WIDTH, ROW_HEIGHT)
+    fillPalette(graphics, palette, colors.bg1, LIST_X + NAME_CELL_X, top, NAME_CELL_WIDTH, CELL_HEIGHT)
+    fillPalette(graphics, palette, colors.bg2, LIST_X + CLASS_CELL_X, top, CLASS_CELL_WIDTH, CELL_HEIGHT)
+    fillPalette(graphics, palette, colors.fill2, LIST_X + 1, top + 1, 2, 2)
+    fillPalette(graphics, palette, colors.fill1, LIST_X + 8, top, 2, 7)
+    for _, dotY in ipairs({ 9, 13, 17 }) do
+      fillPalette(graphics, palette, colors.fill1, LIST_X + 9, top + dotY, 2, 2)
+    end
+    if row ~= nil then
       local entry = row --[[@as table<string, unknown>]]
-      local absolute = scrollOffset + slot
       local isSelected = absolute == selected
-      local parity = (absolute % 2) + 1
-      local nameFill = isSelected and SELECTED_NAME_FILL or NAME_FILLS[parity]
-      local classFill = isSelected and SELECTED_CLASS_FILL or CLASS_FILLS[parity]
-      assert(nameFill ~= nil and classFill ~= nil, "alternating row palettes cover both parities")
-      fillRect(graphics, nameFill, ROW_BAND_X, y, CLASS_TEXT_X - ROW_BAND_X, ROW_HEIGHT)
-      fillRect(graphics, classFill, CLASS_TEXT_X, y, ROW_BAND_X + ROW_WIDTH - CLASS_TEXT_X, ROW_HEIGHT)
-      graphics.setColor(1, 1, 1, 1)
-      drawLine(text, tostring(entry.label or entry.contact), NAME_TEXT_X, y + 2)
+      drawPaletteText(
+        text,
+        palette,
+        tostring(entry.label or entry.contact),
+        LIST_X + NAME_TEXT_X,
+        top + 2,
+        isSelected and colors.nameSelectedFg or colors.nameFg,
+        isSelected and colors.nameSelectedSh or colors.nameSh,
+        colors.bg1
+      )
       local class = entry.class
       if type(class) == "string" and class ~= "" then
-        drawLine(text, class, CLASS_TEXT_X, y + 2)
+        drawPaletteText(
+          text,
+          palette,
+          class,
+          LIST_X + CLASS_TEXT_X,
+          top + 2,
+          isSelected and colors.classSelectedFg or colors.classFg,
+          isSelected and colors.classSelectedSh or colors.classSh,
+          colors.bg2
+        )
       end
       if manual then
         if isSelected then
-          fillRect(graphics, { 0.95, 0.80, 0.20 }, 0, y + 8, 8, 8)
+          graphics.setColor(0.95, 0.80, 0.20, 1)
         else
-          fillRect(graphics, { 0.45, 0.45, 0.50 }, 0, y + 8, 8, 8)
+          graphics.setColor(0.45, 0.45, 0.50, 1)
         end
+        graphics.rectangle("fill", 0, top + 8, 8, 8)
       end
     end
-  end
-  fillRect(graphics, { 0.08, 0.08, 0.10 }, SCROLL_X, FIRST_BAND_Y, SCROLL_WIDTH, VISIBLE_ROWS * ROW_HEIGHT)
-  if count > 0 then
-    local span = VISIBLE_ROWS * ROW_HEIGHT
-    local thumbHeight = math.max(12, math.floor(span * math.min(1, VISIBLE_ROWS / count)))
-    local maxOffset = math.max(0, count - VISIBLE_ROWS)
-    local thumbY = FIRST_BAND_Y
-    if maxOffset > 0 then
-      thumbY = FIRST_BAND_Y + math.floor((span - thumbHeight) * (math.min(scrollOffset, maxOffset) / maxOffset))
-    end
-    fillRect(graphics, { 0.75, 0.75, 0.80 }, SCROLL_X + 6, thumbY, SCROLL_WIDTH - 12, thumbHeight)
   end
   graphics.setColor(1, 1, 1, 1)
 end
@@ -314,17 +382,9 @@ function PokegearPhoneRenderer.draw(resources, view, content)
     drawList(
       graphics --[[@as love.graphics]],
       text --[[@as table<string, unknown>?]],
-      list --[[@as table<string, unknown>]]
+      list --[[@as table<string, unknown>]],
+      assert(content.listPalette, "the phone plan resolves its list palette") --[[@as table]]
     )
-    fillRect(
-      graphics --[[@as love.graphics]],
-      { 0.10, 0.10, 0.14 },
-      TOOLTIP_RECT.x,
-      TOOLTIP_RECT.y,
-      TOOLTIP_RECT.width,
-      TOOLTIP_RECT.height
-    )
-    graphics.setColor(1, 1, 1, 1)
   end
   local panel = view.panel
   if type(panel) == "table" then

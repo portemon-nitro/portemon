@@ -50,20 +50,29 @@ end
 ---@return table
 local function fixtureManifest(contacts, order)
   local phoneForeground, phoneUpper, phonePanel = {}, {}, {}
+  -- Sixteen distinct synthetic colors per skin: the renderer indexes them
+  -- by source palette slot, so every slot and skin paints differently.
+  local phoneListPalette = {}
+  for skin = 0, 5 do
+    phoneListPalette[skin] = {}
+    for index = 1, 16 do
+      phoneListPalette[skin][index] = { r = (index * 15 + skin * 30) % 256, g = (index * 40) % 256, b = (skin * 45 + 20) % 256 }
+    end
+  end
   for skin = 0, 5 do
     phoneForeground[skin] = visualRef("assets/generated/pokegear/phone-foreground-skin-" .. skin .. ".png", 256, 192)
     phoneUpper[skin] = visualRef("assets/generated/pokegear/phone-upper-skin-" .. skin .. ".png", 256, 192)
-    phonePanel[skin] = {
-      closed = visualRef("assets/generated/pokegear/phone-panel-closed-skin-" .. skin .. ".png", 240, 48),
-      open = visualRef("assets/generated/pokegear/phone-panel-open-skin-" .. skin .. ".png", 240, 48),
-    }
   end
+  phonePanel = {
+    closed = visualRef("assets/generated/pokegear/phone-panel-closed.png", 240, 48),
+    open = visualRef("assets/generated/pokegear/phone-panel-open.png", 240, 48),
+  }
   return {
     schema = "g4-pokegear-assets-v1",
     skins = { 0, 1, 2, 3, 4, 5 },
     shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png", 256, 192) },
     configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png", 32, 32) },
-    phone = { foreground = phoneForeground, upper = phoneUpper, panel = phonePanel },
+    phone = { foreground = phoneForeground, upper = phoneUpper, panel = phonePanel, listPalette = phoneListPalette },
     map = { base = visualRef("assets/generated/pokegear/map-base.png", 32, 32) },
     fly = { base = visualRef("assets/generated/pokegear/fly-base.png", 32, 32) },
     radio = { dial = visualRef("assets/generated/pokegear/radio-dial.png", 32, 32) },
@@ -220,6 +229,7 @@ local function openPhone(manifest, skin)
   local controller = PhoneController.new({
     state = state,
     catalog = record.catalog,
+    assets = record,
     messages = { greeting = "custom.greeting", program = "custom.program" },
     world = { flags = {}, rematchReady = {} },
     audio = instantAudio(),

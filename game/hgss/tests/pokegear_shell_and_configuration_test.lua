@@ -345,7 +345,7 @@ end
 ---@return table outcomes { tab: string, switched: boolean }[5]
 local function learnSlots(shell)
   local outcomes = {}
-  for slot = 1, 5 do
+  for slot = 1, 4 do
     local x, y = slotCenter(shell, slot)
     local before = shell:status().tab
     local effectsBefore = 0
@@ -449,7 +449,7 @@ function T.tests.fixed_strip_slots_focus_and_remembered_cards()
   do
     local locked = openShell({ state = baseCardState(record), manifest = fixtureManifest() })
     settle(locked.shell)
-    for slot = 1, 5 do
+    for slot = 1, 4 do
       local x, y = slotCenter(locked.shell, slot)
       local beforeTap = locked.shell:status().tab
       tap(locked.shell, x, y)
@@ -741,8 +741,18 @@ function T.tests.shell_lifecycle_failure_and_non_rendering_clock()
     for _, tab in ipairs(fresh.log.disposals) do
       disposals[tab] = (disposals[tab] or 0) + 1
     end
-    for tab, count in pairs(disposals) do
-      Assert.equal(count, 1, "replaced child " .. tab .. " disposes exactly once")
+    local built = {}
+    for _, build in ipairs(fresh.log.builds) do
+      local tab = build:match("^(%a+)#")
+      built[tab] = (built[tab] or 0) + 1
+    end
+    local active = fresh.shell:status().tab
+    for tab, count in pairs(built) do
+      Assert.equal(
+        disposals[tab] or 0,
+        count - (tab == active and 1 or 0),
+        "every replaced " .. tab .. " child disposes exactly once"
+      )
     end
     fresh.shell:dispose()
   end
@@ -946,13 +956,13 @@ function T.tests.strip_edges_and_masked_slots_reject_selection()
   Assert.equal(host.shell:status().tab, "phone", "the full shell opens on the phone card")
   local effectsBefore = #host.log.effects
   -- The shared band edge at x56 belongs to the second slot: tapping it
-  -- enters the setup card with sound.
+  -- enters the radio card with sound.
   do
     local placement = assert(controlsPane(host.shell:status()).placement, "the controls pane is published")
     local edgeX, edgeY = toHost(placement, 56, 176)
     tap(host.shell, edgeX, edgeY)
     settle(host.shell)
-    Assert.equal(host.shell:status().tab, "configure", "the shared band edge selects the right-hand slot")
+    Assert.equal(host.shell:status().tab, "radio", "the shared band edge selects the right-hand slot")
     Assert.isTrue(#host.log.effects > effectsBefore, "the edge selection plays a sound")
   end
   -- The top strip row is live: tapping the current card's top edge keeps
@@ -962,11 +972,11 @@ function T.tests.strip_edges_and_masked_slots_reject_selection()
     local topX, topY = toHost(placement, 80, 160)
     local before = #host.log.effects
     tap(host.shell, topX, topY)
-    Assert.equal(host.shell:status().tab, "configure", "the top strip row keeps the card")
+    Assert.equal(host.shell:status().tab, "radio", "the top strip row keeps the card")
     Assert.equal(#host.log.effects, before, "the top strip row plays no sound")
     local cornerX, cornerY = toHost(placement, 55, 161)
     tap(host.shell, cornerX, cornerY)
-    Assert.equal(host.shell:status().tab, "configure", "the transparent band corner keeps the card")
+    Assert.equal(host.shell:status().tab, "radio", "the transparent band corner keeps the card")
     Assert.equal(#host.log.effects, before, "the transparent band corner plays no sound")
     Assert.isNil(host.shell:takeResult(), "rejected taps publish no result")
   end
@@ -980,7 +990,7 @@ function T.tests.strip_edges_and_masked_slots_reject_selection()
     local locked = openShell({ state = baseCardState(record), manifest = fixtureManifest() })
     settle(locked.shell)
     local placement = assert(controlsPane(locked.shell:status()).placement, "the controls pane is published")
-    local mapX, mapY = toHost(placement, 176, 176)
+    local mapX, mapY = toHost(placement, 128, 176)
     local before = #locked.log.effects
     tap(locked.shell, mapX, mapY)
     Assert.equal(locked.shell:status().tab, "phone", "a masked slot never enters its locked card")
@@ -1006,7 +1016,7 @@ function T.tests.single_card_masks_keep_fixed_positions()
     state:setPreference("unlockedSkins", { 0, 1, 2, 3, 4, 5 })
     local masked = openShell({ state = state, manifest = fixtureManifest() })
     settle(masked.shell)
-    for slot = 1, 5 do
+    for slot = 1, 4 do
       local x, y = slotCenter(masked.shell, slot)
       local beforeTap = masked.shell:status().tab
       tap(masked.shell, x, y)

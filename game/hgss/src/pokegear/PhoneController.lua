@@ -893,6 +893,11 @@ function PhoneController:_planContent(skin)
   end
   local section = phone --[[@as table<string, unknown>]]
   content.foreground = skinImage(section.foreground, skin)
+  content.upper = skinImage(section.upper, skin)
+  local palettes = section.listPalette
+  if type(palettes) == "table" then
+    content.listPalette = (palettes --[[@as table<integer, table>]])[skin]
+  end
   local panel = section.panel
   if type(panel) == "table" then
     local cells = panel --[[@as table<string, unknown>]]

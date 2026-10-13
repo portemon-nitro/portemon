@@ -666,7 +666,7 @@ function T.display_plan_keeps_roles_and_pointer_targets(scope)
   })
   settle(wide.shell)
   local mapping = {}
-  for slot = 1, 5 do
+  for slot = 1, 4 do
     local x, y = slotCenter(wide.shell, slot)
     local before = wide.shell:status().tab
     tap(wide.shell, x, y)
@@ -764,7 +764,7 @@ function T.display_plan_keeps_roles_and_pointer_targets(scope)
     { host = tiny, kind = "wide-tiny" },
     { host = dual, kind = "dual" },
   }) do
-    for slot = 1, 5 do
+    for slot = 1, 4 do
       local x, y = slotCenter(named.host.shell, slot)
       tap(named.host.shell, x, y)
       settle(named.host.shell)
@@ -782,7 +782,7 @@ function T.display_plan_keeps_roles_and_pointer_targets(scope)
     local held = wide
     local before = held.shell:status().tab
     local targetSlot = nil
-    for slot = 1, 5 do
+    for slot = 1, 4 do
       if mapping[slot] ~= before then
         targetSlot = slot
         break

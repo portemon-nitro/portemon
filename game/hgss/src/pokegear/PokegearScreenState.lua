@@ -406,6 +406,7 @@ function PokegearScreenState:status()
     entered = self._entered,
     skin = prefs.skin,
     unlockedSkins = prefs.unlockedSkins,
+    cards = { radio = isAvailable(self._state, "radio"), map = isAvailable(self._state, "map") },
     clock = {
       hour = now.hour,
       minute = now.minute,
