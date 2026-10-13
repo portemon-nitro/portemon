@@ -1842,6 +1842,17 @@ function T.cold_scene_demand_waits_then_enters_once_staged()
   local sceneKey = "general/plain/day"
   local recordPath = BattlePresentationCache.scenePath(sceneKey)
   local imagePath = BattlePresentationCache.sceneImagePath(sceneKey)
+  local charactersPath = BattlePresentationCache.sceneCharactersPath(sceneKey)
+  local mapPath = BattlePresentationCache.sceneMapPath(sceneKey)
+  local palettePath = BattlePresentationCache.scenePalettePath(sceneKey)
+  local mapEntries = {}
+  for index = 1, 2048 do
+    mapEntries[index] = { tile = 0, flipH = false, flipV = false, palette = 0 }
+  end
+  local paletteColors = {}
+  for index = 1, 256 do
+    paletteColors[index] = { r = 0, g = 0, b = 0 }
+  end
   for _, versionId in ipairs(readyVersions()) do
     local cacheFs = CacheFs.forVersion(versionId)
     local stagedRecord = {
@@ -1850,23 +1861,55 @@ function T.cold_scene_demand_waits_then_enters_once_staged()
       background = "general",
       terrain = "plain",
       time = "day",
-      canvasWidth = 256,
-      canvasHeight = 192,
+      canvasWidth = 512,
+      canvasHeight = 256,
       viewport = { x = 0, y = 0, width = 256, height = 192 },
+      layers = {
+        {
+          key = "background",
+          backing = { width = 512, height = 256, mapWidth = 64, mapHeight = 32 },
+          viewport = { x = 0, y = 0, width = 256, height = 192 },
+          scroll = { x = 0, y = 0 },
+          characters = {
+            key = "battle-scene/general-plain-day/background/characters",
+            path = charactersPath,
+            format = "indexed4",
+          },
+          map = {
+            key = "battle-scene/general-plain-day/background/map",
+            path = mapPath,
+            format = "tilemap",
+          },
+          palette = {
+            key = "battle-scene/general-plain-day/background/palette",
+            path = palettePath,
+            format = "rgb888",
+          },
+        },
+      },
       imagePath = imagePath,
     }
-    local stagedBytes = string.rep("s", PngWriter.encodedSize(256, 192))
+    local stagedBytes = string.rep("s", PngWriter.encodedSize(512, 256))
     local revealed = false
     local view = { versionId = cacheFs.versionId }
     function view.loadLua(_, path)
       if path == recordPath then
         return revealed and stagedRecord or nil
       end
+      if path == mapPath then
+        return revealed and { width = 512, height = 256, entries = mapEntries } or nil
+      end
+      if path == palettePath then
+        return revealed and { colors = paletteColors } or nil
+      end
       return cacheFs:loadLua(path)
     end
     function view.read(_, path)
       if path == imagePath then
         return revealed and stagedBytes or nil
+      end
+      if path == charactersPath then
+        return revealed and string.rep("c", 65536) or nil
       end
       return cacheFs:read(path)
     end

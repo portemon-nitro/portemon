@@ -139,8 +139,9 @@ function T.contract_pins_the_current_asset_identities()
     },
     battlePresentation = {
       cacheFormat = "battle-presentation-cache-v1",
-      schema = "g4-battle-presentation-v1",
-      sceneSchema = "g4-battle-scene-v1",
+      schema = "g4-battle-presentation-v2",
+      sceneSchema = "g4-battle-scene-v2",
+      effectSchema = "g4-battle-effect-v1",
     },
     encounterCatalog = {
       cacheFormat = "encounter-catalog-cache-v1",

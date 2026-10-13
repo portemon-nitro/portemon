@@ -1680,6 +1680,12 @@ DESCRIPTORS = {
     execute = ArtifactBattleJobs.executeScene,
     validate = ArtifactBattleJobs.validateScene,
   },
+  ["battle-effect"] = {
+    size = "normal",
+    dependencies = ArtifactBattleJobs.dependenciesEffect,
+    execute = ArtifactBattleJobs.executeEffect,
+    validate = ArtifactBattleJobs.validateEffect,
+  },
   bag = {
     size = "normal",
     execute = executeBag,

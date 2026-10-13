@@ -7,10 +7,10 @@ return {
   provenance = {
     repo = "retail ROM",
   },
-  -- The current field-font consumers use font 0 for dialogue and font 4 for
-  -- Oak choice labels.
-  fontIds = { 0, 4 },
-  fontGlyphMembers = { [0] = 0, [4] = 4 },
+  -- Battle text uses FontIDs 0, 1, and 4. Each ID maps directly to the
+  -- same `NARC_graphic_font` glyph member.
+  fontIds = { 0, 1, 4 },
+  fontGlyphMembers = { [0] = 0, [1] = 1, [4] = 4 },
   -- Member 6 is the screen-focus indicator set the text printer blits next
   -- to YESNO prompts.
   fontFocusIndicatorMember = 6,

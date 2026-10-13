@@ -33,7 +33,7 @@ local FOCUS_LAYER_COUNT = 4
 
 FieldFontCache.FORMAT = Contract.font.cacheFormat
 FieldFontCache.SCHEMA = Contract.font.schema
-FieldFontCache.REQUIRED_FONT_IDS = { 0, 4 }
+FieldFontCache.REQUIRED_FONT_IDS = { 0, 1, 4 }
 
 -- The source focus-indicator frames are 24x32 (the text printer's YESNO
 -- screen-focus graphic); the compiled definition's frame rects must match.

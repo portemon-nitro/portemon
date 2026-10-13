@@ -462,7 +462,7 @@ function T.switch_and_foe_reveal_rebind_the_exact_image_key()
     packetId = 3,
     events = {
       {
-        sequence = 1,
+        sequence = 2,
         kind = "switch",
         cause = { key = "TACKLE" },
         audience = "public",
@@ -709,6 +709,7 @@ end
 -- index, nothing asks for the full mon summary, and no blank sprite
 -- paints while a page is still building.
 
+local ManifestFixture = require("tests.support.BattlePresentationManifestFixture")
 local PORTRAIT_SCENE_KEY = "general/grass/day"
 local PORTRAIT_MENU_IMAGE = "assets/generated/battle/menu-command-1.png"
 local PORTRAIT_FONT_PATH = "font-0"
@@ -727,106 +728,19 @@ local function solidPortraitPng(width, height)
   return PngWriter.encode(width, height, table.concat(pixels))
 end
 
--- The staged battle manifest the demand envelope loads: one scene, the
--- shared menu artwork, and the published wild/trainer/rival/select
--- audio roles. Shape mirrors the proven production-audio fixture so the
--- staged menu, HUD, font, and audio checks pass without a ROM dump.
+-- The staged battle manifest the demand envelope loads is the same valid
+-- current v2 manifest used by the schema and cache suites.
 ---@return table schema-valid staged battle manifest
 local function stagedPortraitBattleManifest()
   local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
-  local images = {
-    [PORTRAIT_MENU_IMAGE] = { width = 8, height = 8 },
-    [BattlePresentationCache.sceneImagePath(PORTRAIT_SCENE_KEY)] = { width = 64, height = 64 },
-  }
-  local function sprite(image)
-    return {
-      image = image,
-      cells = {
-        {
-          objs = {
-            {
-              x = 0,
-              y = 0,
-              tile = 0,
-              flipH = false,
-              flipV = false,
-              palette = 0,
-              shape = 0,
-              size = 0,
-              width = 8,
-              height = 8,
-              affine = false,
-              disabled = false,
-              objMode = "normal",
-              mosaic = false,
-              colorMode = "16-color",
-              priority = 0,
-            },
-          },
-        },
-      },
-      animation = { playMode = "forward", loopStartFrameIdx = 0, frames = { { cell = 0, duration = 4 } } },
-      palette = { colors = { { r = 1, g = 2, b = 3 } } },
-    }
-  end
-  local function menu(image)
-    return {
-      image = image,
-      screens = { { image = image, width = 8, height = 8 } },
-    }
-  end
-  local command = menu(PORTRAIT_MENU_IMAGE)
-  return {
-    schema = "g4-battle-presentation-v1",
-    version = { id = "heartgold", language = "en" },
-    verified = true,
-    scenes = { { key = PORTRAIT_SCENE_KEY, background = "general", terrain = "grass", time = "day" } },
-    images = images,
-    command = command,
-    moves = command,
-    target = command,
-    twoOption = command,
-    lower = {
-      image = PORTRAIT_MENU_IMAGE,
-      palette = { colors = { { r = 1, g = 2, b = 3 } } },
-      variants = {
-        general = {
-          base = { colors = { { r = 1, g = 2, b = 3 } } },
-          touch = { colors = { { r = 1, g = 2, b = 3 } } },
-        },
-      },
-    },
-    playerHud = sprite(PORTRAIT_MENU_IMAGE),
-    enemyHud = sprite(PORTRAIT_MENU_IMAGE),
-    doublesHud = {
-      playerLeft = sprite(PORTRAIT_MENU_IMAGE),
-      playerRight = sprite(PORTRAIT_MENU_IMAGE),
-      enemyLeft = sprite(PORTRAIT_MENU_IMAGE),
-      enemyRight = sprite(PORTRAIT_MENU_IMAGE),
-    },
-    arrow = sprite(PORTRAIT_MENU_IMAGE),
-    partyGauges = {
-      sprite(PORTRAIT_MENU_IMAGE),
-      sprite(PORTRAIT_MENU_IMAGE),
-    },
-    terrain = {
-      type0 = { cells = sprite(PORTRAIT_MENU_IMAGE).cells, animation = sprite(PORTRAIT_MENU_IMAGE).animation },
-      type1 = { cells = sprite(PORTRAIT_MENU_IMAGE).cells, animation = sprite(PORTRAIT_MENU_IMAGE).animation },
-    },
-    textRoles = {
-      narration = { font = PORTRAIT_FONT_PATH, sourceFontId = 1 },
-      menu = { font = PORTRAIT_FONT_PATH },
-      hud = { font = PORTRAIT_FONT_PATH },
-    },
-    audioRoles = {
-      wild = "SEQ_GS_VS_NORAPOKE",
-      trainer = "SEQ_GS_VS_TRAINER",
-      rival = "SEQ_GS_VS_RIVAL",
-      select = PORTRAIT_SELECT_SYMBOL,
-      narrationBank = 197,
-      cries = "species",
-    },
-  }
+  local manifest = ManifestFixture.manifest()
+  manifest.menus.images[PORTRAIT_MENU_IMAGE] = { width = 8, height = 8 }
+  manifest.menus.images[BattlePresentationCache.sceneImagePath(PORTRAIT_SCENE_KEY)] = { width = 512, height = 256 }
+  manifest.messages.roles.narration.font = PORTRAIT_FONT_PATH
+  manifest.messages.roles.menu.font = PORTRAIT_FONT_PATH
+  manifest.messages.roles.hud.font = PORTRAIT_FONT_PATH
+  manifest.audioRoles.select = PORTRAIT_SELECT_SYMBOL
+  return manifest
 end
 
 -- An isolated layout-only versioned cache: the portrait selector manifest
@@ -839,20 +753,57 @@ local function layoutOnlyCache(portraitEntries)
   local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
   local MonCache = require("libs.assets.src.MonCache")
   local sceneImage = BattlePresentationCache.sceneImagePath(PORTRAIT_SCENE_KEY)
+  local charactersPath = BattlePresentationCache.sceneCharactersPath(PORTRAIT_SCENE_KEY)
+  local mapPath = BattlePresentationCache.sceneMapPath(PORTRAIT_SCENE_KEY)
+  local palettePath = BattlePresentationCache.scenePalettePath(PORTRAIT_SCENE_KEY)
   local cache = { versionId = "portrait-demand-probe", files = {}, lua = {}, loadedPaths = {} }
   cache.files[PORTRAIT_MENU_IMAGE] = solidPortraitPng(8, 8)
   cache.files[PORTRAIT_FONT_PATH] = "staged-font"
-  cache.files[sceneImage] = solidPortraitPng(64, 64)
+  cache.files[sceneImage] = solidPortraitPng(512, 256)
+  cache.files[charactersPath] = string.rep("\0", 65536)
+  local mapEntries = {}
+  for index = 1, 2048 do
+    mapEntries[index] = { tile = 0, flipH = false, flipV = false, palette = 0 }
+  end
+  local paletteColors = {}
+  for index = 1, 256 do
+    paletteColors[index] = { r = 0, g = 0, b = 0 }
+  end
   cache.lua[BattlePresentationCache.manifestPath()] = stagedPortraitBattleManifest()
+  cache.lua[mapPath] = { width = 512, height = 256, entries = mapEntries }
+  cache.lua[palettePath] = { colors = paletteColors }
   cache.lua[BattlePresentationCache.scenePath(PORTRAIT_SCENE_KEY)] = {
-    schema = "g4-battle-scene-v1",
+    schema = "g4-battle-scene-v2",
     key = PORTRAIT_SCENE_KEY,
     background = "general",
     terrain = "grass",
     time = "day",
-    canvasWidth = 64,
-    canvasHeight = 64,
-    viewport = { x = 0, y = 0, width = 64, height = 64 },
+    canvasWidth = 512,
+    canvasHeight = 256,
+    viewport = { x = 0, y = 0, width = 256, height = 192 },
+    layers = {
+      {
+        key = "background",
+        backing = { width = 512, height = 256, mapWidth = 64, mapHeight = 32 },
+        viewport = { x = 0, y = 0, width = 256, height = 192 },
+        scroll = { x = 0, y = 0 },
+        characters = {
+          key = "battle-scene/general-grass-day/background/characters",
+          path = charactersPath,
+          format = "indexed4",
+        },
+        map = {
+          key = "battle-scene/general-grass-day/background/map",
+          path = mapPath,
+          format = "tilemap",
+        },
+        palette = {
+          key = "battle-scene/general-grass-day/background/palette",
+          path = palettePath,
+          format = "rgb888",
+        },
+      },
+    },
     imagePath = sceneImage,
   }
   cache.lua[MonCache.portraitManifestPath()] = { entries = portraitEntries }

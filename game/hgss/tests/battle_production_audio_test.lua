@@ -11,6 +11,7 @@
 local AssetNeedsRegistry = require("libs.hgss.src.field.AssetNeedsRegistry")
 local Assert = require("tests.support.Assert")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
+local BattlePresentationManifestFixture = require("tests.support.BattlePresentationManifestFixture")
 local BattleRuntime = require("game.hgss.src.battle.BattleRuntime")
 local CacheFs = require("libs.storage.src.CacheFs")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
@@ -134,99 +135,11 @@ end
 ---@param sceneImage string cache-relative staged scene image path
 ---@return table schema-valid staged battle manifest
 local function stagedManifest(sceneImage)
-  local images = {
-    [MENU_IMAGE] = { width = 8, height = 8 },
-    [sceneImage] = { width = 64, height = 64 },
-  }
-  local function sprite(image)
-    return {
-      image = image,
-      cells = {
-        {
-          objs = {
-            {
-              x = 0,
-              y = 0,
-              tile = 0,
-              flipH = false,
-              flipV = false,
-              palette = 0,
-              shape = 0,
-              size = 0,
-              width = 8,
-              height = 8,
-              affine = false,
-              disabled = false,
-              objMode = "normal",
-              mosaic = false,
-              colorMode = "16-color",
-              priority = 0,
-            },
-          },
-        },
-      },
-      animation = { playMode = "forward", loopStartFrameIdx = 0, frames = { { cell = 0, duration = 4 } } },
-      palette = { colors = { { r = 1, g = 2, b = 3 } } },
-    }
-  end
-  local function menu(image)
-    return {
-      image = image,
-      screens = { { image = image, width = 8, height = 8 } },
-    }
-  end
-  local command = menu(MENU_IMAGE)
-  return {
-    schema = "g4-battle-presentation-v1",
-    version = { id = "heartgold", language = "en" },
-    verified = true,
-    scenes = { { key = SCENE_KEY, background = "general", terrain = "grass", time = "day" } },
-    images = images,
-    command = command,
-    moves = command,
-    target = command,
-    twoOption = command,
-    lower = {
-      image = MENU_IMAGE,
-      palette = { colors = { { r = 1, g = 2, b = 3 } } },
-      variants = {
-        general = {
-          base = { colors = { { r = 1, g = 2, b = 3 } } },
-          touch = { colors = { { r = 1, g = 2, b = 3 } } },
-        },
-      },
-    },
-    playerHud = sprite(MENU_IMAGE),
-    enemyHud = sprite(MENU_IMAGE),
-    doublesHud = {
-      playerLeft = sprite(MENU_IMAGE),
-      playerRight = sprite(MENU_IMAGE),
-      enemyLeft = sprite(MENU_IMAGE),
-      enemyRight = sprite(MENU_IMAGE),
-    },
-    arrow = sprite(MENU_IMAGE),
-    partyGauges = {
-      sprite(MENU_IMAGE),
-      sprite(MENU_IMAGE),
-    },
-    terrain = {
-      type0 = { cells = sprite(MENU_IMAGE).cells, animation = sprite(MENU_IMAGE).animation },
-      type1 = { cells = sprite(MENU_IMAGE).cells, animation = sprite(MENU_IMAGE).animation },
-    },
-    textRoles = {
-      narration = { font = "font-0", sourceFontId = 1 },
-      menu = { font = "font-0" },
-      hud = { font = "font-0" },
-    },
-    audioRoles = {
-      wild = "SEQ_GS_VS_NORAPOKE",
-      trainer = "SEQ_GS_VS_TRAINER",
-      rival = "SEQ_GS_VS_RIVAL",
-      select = SELECT_SYMBOL,
-      narrationBank = 197,
-      cries = "species",
-    },
-  }
+  local manifest = BattlePresentationManifestFixture.manifest()
+  manifest.menus.images[MENU_IMAGE] = { width = 8, height = 8 }
+  manifest.menus.images[sceneImage] = { width = 512, height = 256 }
+  manifest.audioRoles.select = SELECT_SYMBOL
+  return manifest
 end
 
 -- Stages the battle manifest, one scene record with exactly-sized pixels,
@@ -241,18 +154,55 @@ local function stageBattlePresentation(cache)
   for _, font in ipairs({ "font-0" }) do
     cache:write(font, "staged-font")
   end
+  local charactersPath = BattlePresentationCache.sceneCharactersPath(SCENE_KEY)
+  local mapPath = BattlePresentationCache.sceneMapPath(SCENE_KEY)
+  local palettePath = BattlePresentationCache.scenePalettePath(SCENE_KEY)
+  local mapEntries = {}
+  for index = 1, 2048 do
+    mapEntries[index] = { tile = 0, flipH = false, flipV = false, palette = 0 }
+  end
+  local paletteColors = {}
+  for index = 1, 256 do
+    paletteColors[index] = { r = 0, g = 0, b = 0 }
+  end
   cache:writeLua(BattlePresentationCache.scenePath(SCENE_KEY), {
-    schema = "g4-battle-scene-v1",
+    schema = "g4-battle-scene-v2",
     key = SCENE_KEY,
     background = "general",
     terrain = "grass",
     time = "day",
-    canvasWidth = 64,
-    canvasHeight = 64,
-    viewport = { x = 0, y = 0, width = 64, height = 64 },
+    canvasWidth = 512,
+    canvasHeight = 256,
+    viewport = { x = 0, y = 0, width = 256, height = 192 },
+    layers = {
+      {
+        key = "background",
+        backing = { width = 512, height = 256, mapWidth = 64, mapHeight = 32 },
+        viewport = { x = 0, y = 0, width = 256, height = 192 },
+        scroll = { x = 0, y = 0 },
+        characters = {
+          key = "battle-scene/general-grass-day/background/characters",
+          path = charactersPath,
+          format = "indexed4",
+        },
+        map = {
+          key = "battle-scene/general-grass-day/background/map",
+          path = mapPath,
+          format = "tilemap",
+        },
+        palette = {
+          key = "battle-scene/general-grass-day/background/palette",
+          path = palettePath,
+          format = "rgb888",
+        },
+      },
+    },
     imagePath = BattlePresentationCache.sceneImagePath(SCENE_KEY),
   })
-  cache:write(BattlePresentationCache.sceneImagePath(SCENE_KEY), solidPng(64, 64))
+  cache:write(BattlePresentationCache.sceneImagePath(SCENE_KEY), solidPng(512, 256))
+  cache:write(charactersPath, string.rep("\0", 65536))
+  cache:writeLua(mapPath, { width = 512, height = 256, entries = mapEntries })
+  cache:writeLua(palettePath, { colors = paletteColors })
   local entries = {}
   for _, selector in ipairs({
     LEAD_SPECIES .. "/f0/male/plain/back",

@@ -8,6 +8,7 @@ local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
 local BattlePresentationSchema = require("libs.assets.src.battle.BattlePresentationSchema")
+local ManifestFixture = require("tests.support.BattlePresentationManifestFixture")
 local MonCache = require("libs.assets.src.MonCache")
 local PngWriter = require("libs.assets.src.PngWriter")
 
@@ -106,107 +107,7 @@ function T.single_battle_demands_stay_exact_deterministic_and_deduplicated()
   Assert.notNil(err, "the rejected context explains itself")
 end
 
-local function validManifest()
-  local images = {
-    ["assets/generated/battle/menu-command-1.png"] = { width = 8, height = 8 },
-    ["assets/generated/battle/scene-test.png"] = { width = 8, height = 8 },
-  }
-  local function sprite(image)
-    return {
-      image = image,
-      cells = {
-        {
-          objs = {
-            {
-              x = 0,
-              y = 0,
-              tile = 0,
-              flipH = false,
-              flipV = false,
-              palette = 0,
-              shape = 0,
-              size = 0,
-              width = 8,
-              height = 8,
-              affine = false,
-              disabled = false,
-              objMode = "normal",
-              mosaic = false,
-              colorMode = "16-color",
-              priority = 0,
-            },
-          },
-        },
-      },
-      animation = { playMode = "forward", loopStartFrameIdx = 0, frames = { { cell = 0, duration = 4 } } },
-      palette = { colors = { { r = 1, g = 2, b = 3 } } },
-    }
-  end
-  local function menu(image)
-    return {
-      image = image,
-      screens = { { image = image, width = 8, height = 8 } },
-    }
-  end
-  local command = menu("assets/generated/battle/menu-command-1.png")
-  return {
-    schema = "g4-battle-presentation-v1",
-    version = { id = "heartgold", language = "en" },
-    verified = true,
-    scenes = { { key = "general/grass/day", background = "general", terrain = "grass", time = "day" } },
-    images = images,
-    command = command,
-    moves = command,
-    target = command,
-    twoOption = command,
-    lower = {
-      image = "assets/generated/battle/menu-command-1.png",
-      palette = { colors = { { r = 1, g = 2, b = 3 } } },
-      variants = {
-        general = {
-          base = { colors = { { r = 1, g = 2, b = 3 } } },
-          touch = { colors = { { r = 1, g = 2, b = 3 } } },
-        },
-      },
-    },
-    playerHud = sprite("assets/generated/battle/menu-command-1.png"),
-    enemyHud = sprite("assets/generated/battle/menu-command-1.png"),
-    doublesHud = {
-      playerLeft = sprite("assets/generated/battle/menu-command-1.png"),
-      playerRight = sprite("assets/generated/battle/menu-command-1.png"),
-      enemyLeft = sprite("assets/generated/battle/menu-command-1.png"),
-      enemyRight = sprite("assets/generated/battle/menu-command-1.png"),
-    },
-    arrow = sprite("assets/generated/battle/menu-command-1.png"),
-    partyGauges = {
-      sprite("assets/generated/battle/menu-command-1.png"),
-      sprite("assets/generated/battle/menu-command-1.png"),
-    },
-    terrain = {
-      type0 = {
-        cells = sprite("assets/generated/battle/menu-command-1.png").cells,
-        animation = sprite("assets/generated/battle/menu-command-1.png").animation,
-      },
-      type1 = {
-        cells = sprite("assets/generated/battle/menu-command-1.png").cells,
-        animation = sprite("assets/generated/battle/menu-command-1.png").animation,
-      },
-    },
-    textRoles = {
-      narration = { font = "font-0", sourceFontId = 1 },
-      menu = { font = "font-0" },
-      hud = { font = "font-0" },
-    },
-    audioRoles = {
-      wild = "SEQ_GS_VS_NORAPOKE",
-      trainer = "SEQ_GS_VS_TRAINER",
-      rival = "SEQ_GS_VS_RIVAL",
-      select = "SEQ_SE_DP_SELECT",
-      narrationBank = 197,
-      cries = "species",
-    },
-  }
-end
+local validManifest = ManifestFixture.manifest
 
 local function stagePng(cache, path, width, height)
   local pixels = string.rep("\1\2\3\255", width * height)
@@ -271,29 +172,64 @@ end
 local function stageBattle(cache, manifest, sceneKey)
   cache:writeLua(BattlePresentationCache.manifestPath(), manifest)
   cache:write(BattlePresentationCache.markerPath(), "marker")
-  for path, geometry in pairs(manifest.images) do
+  for path, geometry in pairs(manifest.menus.images) do
     stagePng(cache, path, geometry.width, geometry.height)
   end
   local record = {
-    schema = "g4-battle-scene-v1",
+    schema = "g4-battle-scene-v2",
     key = sceneKey,
     background = "general",
     terrain = "grass",
     time = "day",
-    canvasWidth = 8,
-    canvasHeight = 8,
-    viewport = { x = 0, y = 0, width = 8, height = 8 },
+    canvasWidth = 512,
+    canvasHeight = 256,
+    viewport = { x = 0, y = 0, width = 256, height = 192 },
+    layers = {
+      {
+        key = "background",
+        backing = { width = 512, height = 256, mapWidth = 64, mapHeight = 32 },
+        viewport = { x = 0, y = 0, width = 256, height = 192 },
+        scroll = { x = 0, y = 0 },
+        characters = {
+          key = "battle-scene/general-grass-day/background/characters",
+          path = "data/generated/battle/scenes/general-grass-day.bg3.chars",
+          format = "indexed4",
+        },
+        map = {
+          key = "battle-scene/general-grass-day/background/map",
+          path = "data/generated/battle/scenes/general-grass-day.bg3.map.lua",
+          format = "tilemap",
+        },
+        palette = {
+          key = "battle-scene/general-grass-day/background/palette",
+          path = "data/generated/battle/scenes/general-grass-day.bg3.palette.lua",
+          format = "rgb888",
+        },
+      },
+    },
     imagePath = BattlePresentationCache.sceneImagePath(sceneKey),
   }
   cache:writeLua(BattlePresentationCache.scenePath(sceneKey), record)
   cache:write(BattlePresentationCache.sceneMarkerPath(sceneKey), "marker")
-  stagePng(cache, BattlePresentationCache.sceneImagePath(sceneKey), 8, 8)
+  cache:write(BattlePresentationCache.sceneCharactersPath(sceneKey), string.rep("\0", 65536))
+  local entries = {}
+  for index = 1, 2048 do
+    entries[index] = { tile = 0, flipH = false, flipV = false, palette = 0 }
+  end
+  cache:writeLua(BattlePresentationCache.sceneMapPath(sceneKey), { width = 512, height = 256, entries = entries })
+  local colors = {}
+  for index = 1, 256 do
+    colors[index] = { r = 0, g = 0, b = 0 }
+  end
+  cache:writeLua(BattlePresentationCache.scenePalettePath(sceneKey), { colors = colors })
+  stagePng(cache, BattlePresentationCache.sceneImagePath(sceneKey), 512, 256)
 end
 
 function T.fully_staged_demands_read_ready_and_breakages_do_not()
   local selector = MonCache.portraitSelector("CHIKORITA", 0, "male", false, "back")
   local manifest = validManifest()
-  Assert.isTrue(BattlePresentationSchema.isValidManifest(manifest), "the staged manifest is schema-valid")
+  local valid, validationErr = BattlePresentationSchema.isValidManifest(manifest)
+  Assert.isTrue(valid, "the staged manifest is schema-valid: " .. tostring(validationErr))
   local cache = staging()
   stageBattle(cache, manifest, "general/grass/day")
   stageMonPage(cache, selector)
@@ -308,6 +244,16 @@ function T.fully_staged_demands_read_ready_and_breakages_do_not()
   Assert.isTrue(BattlePresentationCache.isReady(cache, demand), "a fully staged demand reads ready")
   cache:write(BattlePresentationCache.sceneImagePath("general/grass/day"), "truncated")
   Assert.isFalse(BattlePresentationCache.isReady(cache, demand), "a corrupted scene image never reads as ready")
+  stageBattle(cache, manifest, "general/grass/day")
+  cache:writeLua(BattlePresentationCache.sceneMapPath("general/grass/day"), {
+    width = 512,
+    height = 256,
+    entries = {},
+  })
+  Assert.isFalse(
+    BattlePresentationCache.isReady(cache, demand),
+    "a scene with its native BG3 map missing never reads as ready"
+  )
 end
 
 function T.delayed_pages_keep_readiness_pending()
