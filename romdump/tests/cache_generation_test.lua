@@ -361,6 +361,18 @@ function T.identity_matching_is_strict_about_schema_and_extra_fields()
   Assert.isFalse(DerivedCacheState.matches(widened, identity), "extra identity fields must not compare equal")
 end
 
+function T.release_attestation_tracks_asset_contract_revision()
+  local previous = releaseIdentity({ assetRevision = 12 })
+  local current = releaseIdentity()
+
+  Assert.equal(previous.producerId, current.producerId, "the release producer counter stays unchanged")
+  Assert.isFalse(
+    DerivedCacheState.matches(previous, current),
+    "a prior asset contract revision must not authenticate the current release generation"
+  )
+  Assert.isTrue(DerivedCacheState.matches(current, current), "the current generation must match itself")
+end
+
 -- Drive the real headless preparation command the way production invokes it:
 -- stub only the host boundaries (ready dump, ROM identity, build session,
 -- process exit), while producer selection stays real. Every stub is restored

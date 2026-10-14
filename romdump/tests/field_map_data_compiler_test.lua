@@ -78,7 +78,7 @@ function T.compiles_catalog_identity_source_and_events()
   local romFs, sha1, hashLua = fixture()
   local bundle = assert(FieldMapDataCompiler.compile(romFs, 60, sha1, hashLua))
   Assert.equal(bundle.mapId, 60)
-  Assert.equal(bundle.field.schema, "g4-field-map-v14")
+  Assert.equal(bundle.field.schema, "g4-field-map-v15")
   Assert.equal(bundle.field.mapSymbol, "MAP_NEW_BARK")
   Assert.equal(bundle.field.cameraType, 0)
   -- Source identity lives only in the dependency record; the runtime asset
@@ -111,7 +111,7 @@ end
 function T.emits_strict_init_script_array_for_every_map()
   local romFs, sha1, hashLua = fixture()
   local bundle = assert(FieldMapDataCompiler.compile(romFs, 60, sha1, hashLua))
-  Assert.equal(bundle.field.schema, "g4-field-map-v14")
+  Assert.equal(bundle.field.schema, "g4-field-map-v15")
   Assert.deepEqual(bundle.field.initScripts, {})
 end
 
@@ -122,7 +122,7 @@ end
 function T.emits_normalized_render_environment_without_a_visual_scene()
   local romFs, sha1, hashLua = fixture()
   local bundle = assert(FieldMapDataCompiler.compile(romFs, 60, sha1, hashLua))
-  Assert.equal(bundle.field.schema, "g4-field-map-v14")
+  Assert.equal(bundle.field.schema, "g4-field-map-v15")
   local environment = bundle.field.renderEnvironment
   Assert.notNil(environment, "the field record carries its render environment")
   environment = assert(environment)
@@ -427,6 +427,7 @@ function T.preserves_native_trainer_pair_identity_and_candidate_eligibility()
   end))
   local objects = bundle.field.events.objects
 
+  Assert.equal(bundle.field.schema, "g4-field-map-v15")
   Assert.equal(objects[1].scriptId, "vanilla.hgss.scr_seq.0953.script_007")
   Assert.equal(objects[2].scriptId, "vanilla.hgss.scr_seq.0953.script_007")
   Assert.deepEqual(objects[1].trainerReaction, { trainerId = 8, variant = "first", pairEligible = true })
@@ -440,6 +441,13 @@ function T.preserves_native_trainer_pair_identity_and_candidate_eligibility()
   Assert.equal(objects[1].x, 553)
   Assert.equal(bundle.field.events.background[1].scriptId, "common.apricorn_tree")
   Assert.isTrue(FieldMapDataCache.hasRequiredEvents(bundle.field.events), "compiled generated events validate")
+
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  FieldMapDataCacheWriter.write(cache, bundle)
+  Assert.isTrue(
+    FieldMapDataCache.isReady(cache, bundle.mapId, bundle.marker),
+    "the written trainer map satisfies current readiness"
+  )
 end
 
 function T.rejects_malformed_native_trainer_reaction_metadata()

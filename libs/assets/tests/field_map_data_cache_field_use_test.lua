@@ -29,7 +29,7 @@ end
 
 function T.current_policy_passes_readiness()
   local bundle = compile(60)
-  Assert.equal(bundle.field.schema, "g4-field-map-v14")
+  Assert.equal(bundle.field.schema, "g4-field-map-v15")
   Assert.isTrue(FieldMapDataCache.hasFieldUsePolicy(bundle.field.fieldUse))
   Assert.isTrue(FieldMapDataCache.hasEncounterMember(bundle.field.wildEncounterMemberId))
   Assert.isTrue(FieldMapDataCache.isReady(publishedCache(bundle), 60, bundle.marker))
@@ -64,7 +64,7 @@ end
 
 function T.old_schema_fails_readiness()
   local bundle = compile(60)
-  bundle.field.schema = "g4-field-map-v10"
+  bundle.field.schema = "g4-field-map-v14"
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   cache:write(FieldMapDataCache.fieldPath(60), LuaWriter.encode(bundle.field))
   cache:write(FieldMapDataCache.dependenciesPath(60), LuaWriter.encode(bundle.dependencies))

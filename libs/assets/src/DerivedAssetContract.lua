@@ -156,6 +156,8 @@
 -- full audio completion. The audio catalog owns the index and its catalog
 -- completion; the family summary owns only exhaustive provenance and
 -- completion.
+-- revision 13: field-map object events carry semantic trainer-reaction
+-- metadata, so prior generated-asset attestations are stale.
 --
 -- world schema 1: the world manifest is a structural catalog derived from
 -- source analysis alone. Membership means the source map is structurally
@@ -164,7 +166,7 @@
 
 local DerivedAssetContract = {}
 
-DerivedAssetContract.revision = 12
+DerivedAssetContract.revision = 13
 
 DerivedAssetContract.map = {
   cacheFormat = "map-cache-v7",
@@ -237,7 +239,8 @@ DerivedAssetContract.fieldMapData = {
   -- table member backing committed-step encounter selection so the runtime
   -- resolves the map's own table.
   -- v14 carries semantic Apricorn tree identity and normalized ripe sprites.
-  fieldSchema = "g4-field-map-v14",
+  -- v15 adds semantic trainer-reaction metadata to object events.
+  fieldSchema = "g4-field-map-v15",
   -- The teleport landing index is a separate family-level record carrying
   -- cited spawn-keyed outdoor arrival destinations (never source numeric
   -- identities); the runtime return planner reads it, never producer data.
