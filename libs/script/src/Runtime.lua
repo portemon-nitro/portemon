@@ -1405,6 +1405,15 @@ local function handleApplyMovement(node, run)
 end
 
 function HANDLERS.trainer_reaction_movement(node, run)
+  local trigger = run.instance.trigger
+  if
+    type(node.actor) == "table"
+    and node.actor.ref == "actor"
+    and node.actor.special == "last_talked"
+    and (type(trigger) ~= "table" or trigger.selfActor == nil)
+  then
+    return Runtime.OUTCOME_CONTINUE
+  end
   local actorId = semanticsFor(run).resolveActor(node.actor, run)
   local actor = run.services.actors:snapshot(actorId)
   if actor == nil then
@@ -1428,6 +1437,17 @@ function HANDLERS.trainer_reaction_movement(node, run)
     [16] = { { action = "walk", direction = "north", speed = "fast" } },
     [17] = { { action = "walk", direction = "south", speed = "fast" } },
   }
+  local selection = run.services.trainerReaction
+  if type(selection) ~= "table" or type(selection.partnerFor) ~= "function" then
+    Errors.raise(ScriptErrors.SCRIPT_SERVICE_MISSING, "trainer reaction service is unavailable", {
+      scriptId = run.instance.scriptId,
+      op = "trainer_reaction_movement",
+    })
+  end
+  local partnerId = selection:partnerFor(actorId)
+  if partnerId ~= nil then
+    startMovement(run, { actor = partnerId, movement = movementByCode[nativeCode] }, false)
+  end
   return startMovement(run, { actor = actorId, movement = movementByCode[nativeCode] }, false)
 end
 

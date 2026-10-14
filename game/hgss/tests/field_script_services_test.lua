@@ -63,11 +63,24 @@ local function overrideFs(files)
   }
 end
 
-local function stubActors()
+local function stubActors(actorList)
   local function noop() end
+  local actorsById = {}
+  for _, actor in ipairs(actorList or {}) do
+    actorsById[actor.actorId] = actor
+  end
   return {
-    getActor = function()
-      return nil
+    getActor = function(_, actorId)
+      return actorsById[actorId]
+    end,
+    actorsOf = function(_, mapId)
+      local current = {}
+      for _, actor in ipairs(actorList or {}) do
+        if actor.mapId == mapId then
+          current[#current + 1] = actor
+        end
+      end
+      return current
     end,
     show = noop,
     hide = noop,
@@ -75,11 +88,13 @@ local function stubActors()
     setFacing = noop,
     setMovementType = noop,
     setAnimationPaused = noop,
-    getPosition = function()
-      return { fieldX = 0, fieldZ = 0, worldY = 0 }
+    getPosition = function(_, actorId)
+      local actor = actorsById[actorId]
+      return actor and actor.position or { fieldX = 0, fieldZ = 0, worldY = 0 }
     end,
-    getFacing = function()
-      return "south"
+    getFacing = function(_, actorId)
+      local actor = actorsById[actorId]
+      return actor and actor.facing or "south"
     end,
     numericId = function()
       return nil
@@ -121,8 +136,10 @@ local function sliceChunk(id, steps)
       lines[#lines + 1] = '    { op = "battle_launch", kind = "wild", details = { species = "TOTODILE", level = 4 }, result = { value = "var", id = "VAR_TEMP_x4001" } },'
     elseif step.op == "battle_result" then
       lines[#lines + 1] = '    { op = "battle_result", result = { value = "var", id = "VAR_TEMP_x4002" } },'
+    elseif step.op == "trainer_reaction_movement" then
+      lines[#lines + 1] = '    { op = "trainer_reaction_movement", actor = { ref = "actor", special = "last_talked" } },'
     else
-      error("services harness covers set_spawn, set_special_spawn, pending field_move, and battle ops only", 0)
+      error("services harness covers set_spawn, set_special_spawn, pending field_move, battle ops, and trainer reactions only", 0)
     end
   end
   lines[#lines + 1] = "  },"
@@ -136,7 +153,7 @@ local function driveSlice(services, id, steps)
     cacheFs = testCache(),
     overrideFs = overrideFs({ [id] = sliceChunk(id, steps) }),
     eventState = FieldEventState.new(),
-    actors = stubActors(),
+    actors = services.actors or stubActors(),
     player = { fieldX = 1, fieldZ = 2, worldY = 0, facing = "south" },
     profile = { gender = 0, name = "Gold", badges = 0 },
     dialogue = { isModal = noop },
@@ -160,12 +177,136 @@ local function driveSlice(services, id, steps)
     travel = services.travel,
     fieldMoves = services.fieldMoves,
     battle = services.battle,
+    trainerCatalog = services.trainerCatalog,
   }
   local platform = FieldScripts.new(args --[[@as FieldScriptsOptions]])
   local composed = assert(platform.composition:effective(id), "the slice must compose")
-  platform.scheduler:createForeground(composed, nil, 100)
+  platform.scheduler:createForeground(composed, services.trigger, 100)
   platform.scheduler:step(100, nil)
   return platform
+end
+
+function T.tests.native_trainer_reaction_uses_the_live_matching_pair_in_manager_order()
+  local actors = stubActors({
+    {
+      actorId = "primary",
+      mapId = 7,
+      facing = "north",
+      position = { fieldX = 5, fieldZ = 8, worldY = 0 },
+      sourceEvent = {
+        scriptId = "vanilla.hgss.scr_seq.0953.script_007",
+        trainerReaction = {
+          trainerId = 8,
+          variant = "first",
+          pairEligible = true,
+        },
+      },
+    },
+    {
+      actorId = "partner",
+      mapId = 7,
+      facing = "east",
+      position = { fieldX = 6, fieldZ = 8, worldY = 0 },
+      sourceEvent = {
+        scriptId = "vanilla.hgss.scr_seq.0953.script_007",
+        trainerReaction = {
+          trainerId = 8,
+          variant = "second",
+          pairEligible = true,
+        },
+      },
+    },
+    {
+      actorId = "unrelated",
+      mapId = 7,
+      facing = "south",
+      position = { fieldX = 7, fieldZ = 8, worldY = 0 },
+      sourceEvent = {
+        scriptId = "vanilla.hgss.scr_seq.0953.script_008",
+        trainerReaction = {
+          trainerId = 9,
+          variant = "second",
+          pairEligible = true,
+        },
+      },
+    },
+    {
+      actorId = "later_partner",
+      mapId = 7,
+      facing = "west",
+      position = { fieldX = 8, fieldZ = 8, worldY = 0 },
+      sourceEvent = {
+        scriptId = "vanilla.hgss.scr_seq.0953.script_007",
+        trainerReaction = {
+          trainerId = 8,
+          variant = "second",
+          pairEligible = true,
+        },
+      },
+    },
+  })
+  local catalog = require("libs.hgss.src.battle.HgssTrainerCatalog").new({
+    trainers = {
+      [8] = { trainerClass = 1, nameReference = {}, party = {}, doubleBattle = true, messageIds = {} },
+      [10] = { trainerClass = 1, nameReference = {}, party = {}, doubleBattle = false, messageIds = {} },
+    },
+  })
+  local platform = driveSlice({
+    travel = nil,
+    fieldMoves = nil,
+    actors = actors,
+    trainerCatalog = catalog,
+    trigger = { selfActor = "primary" },
+  }, "test.trainer_reaction_slice", {})
+  local service = platform.scheduler._services.trainerReaction
+  Assert.equal(service:partnerFor("primary"), "partner", "the composed service selects a C01-eligible opposite variant")
+
+  local partner = actors:getActor("partner")
+  local laterPartner = actors:getActor("later_partner")
+  local metadata = { partner.sourceEvent.trainerReaction, laterPartner.sourceEvent.trainerReaction }
+  for _, reaction in ipairs(metadata) do
+    reaction.pairEligible = false
+  end
+  Assert.isNil(service:partnerFor("primary"), "type-0 partner metadata is excluded")
+  for _, reaction in ipairs(metadata) do
+    reaction.pairEligible = true
+    reaction.trainerId = 9
+  end
+  Assert.isNil(service:partnerFor("primary"), "a different trainer identity is excluded")
+  for _, reaction in ipairs(metadata) do
+    reaction.trainerId = 8
+    reaction.variant = "first"
+  end
+  Assert.isNil(service:partnerFor("primary"), "the same role is excluded")
+  for _, reaction in ipairs(metadata) do
+    reaction.variant = "second"
+  end
+  partner.mapId = 8
+  laterPartner.mapId = 8
+  Assert.isNil(service:partnerFor("primary"), "actors outside the current map are excluded")
+  partner.mapId = 7
+  laterPartner.mapId = 7
+  local getActor = actors.getActor
+  actors.getActor = function(self, actorId)
+    if actorId == "partner" or actorId == "later_partner" then
+      return nil
+    end
+    return getActor(self, actorId)
+  end
+  Assert.isNil(service:partnerFor("primary"), "actors absent from the live manager are excluded")
+  actors.getActor = getActor
+  Assert.equal(service:partnerFor("primary"), "partner", "the service reads current actor state on each lookup")
+
+  local primary = actors:getActor("primary")
+  primary.sourceEvent.trainerReaction.trainerId = 10
+  Assert.isNil(service:partnerFor("primary"), "a single trainer never selects a partner")
+  primary.sourceEvent.trainerReaction.trainerId = 8
+  primary.sourceEvent.trainerReaction.trainerId = 404
+  Assert.throws(function()
+    service:partnerFor("primary")
+  end, "declared native trainers require a catalog entry")
+  primary.sourceEvent.trainerReaction = nil
+  Assert.isNil(service:partnerFor("primary"), "non-trainer actors need no trainer template")
 end
 
 function T.tests.set_spawn_updates_the_injected_travel_service()

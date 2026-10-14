@@ -23,6 +23,7 @@ local HgssScript = require("libs.hgss.src.script.Composition")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local MapInitScriptController = require("libs.hgss.src.field.MapInitScriptController")
 local FollowerInteractionEngine = require("libs.hgss.src.field.FollowerInteractionEngine")
+local HgssTrainerCatalog = require("libs.hgss.src.battle.HgssTrainerCatalog")
 
 -- The player facade the script services consume: position/facing/gender/name
 -- plus the mutation hooks the movement tasks use (the player can be a
@@ -307,6 +308,56 @@ local function trustedRequire(name)
   return require(name)
 end
 
+---@param manager table<string, unknown>
+---@param trainerCatalog table<string, unknown>|nil
+---@return table<string, unknown>
+local function trainerReactionService(manager, trainerCatalog)
+  local function partnerFor(_, primaryActorId)
+    local primary = manager:getActor(primaryActorId)
+    local primaryReaction = primary and primary.sourceEvent and primary.sourceEvent.trainerReaction
+    if primaryReaction == nil then
+      return nil
+    end
+
+    if trainerCatalog == nil then
+      Errors.raise("TRAINER_CATALOG_INVALID", "trainer reaction has no trainer catalog", {
+        trainerId = primaryReaction.trainerId,
+      })
+    end
+    local catalog = assert(trainerCatalog)
+    local template = HgssTrainerCatalog.trainer(catalog, primaryReaction.trainerId)
+    if template == nil or type(template.doubleBattle) ~= "boolean" then
+      Errors.raise("TRAINER_CATALOG_INVALID", "trainer reaction has no valid trainer template", {
+        trainerId = primaryReaction.trainerId,
+      })
+    end
+    template = assert(template)
+    if not template.doubleBattle then
+      return nil
+    end
+
+    local oppositeVariant = primaryReaction.variant == "first" and "second" or "first"
+    for _, candidate in ipairs(manager:actorsOf(primary.mapId)) do
+      local candidateReaction = candidate.sourceEvent and candidate.sourceEvent.trainerReaction
+      if
+        candidate.actorId ~= primaryActorId
+        and candidate.mapId == primary.mapId
+        and candidateReaction ~= nil
+        and candidateReaction.trainerId == primaryReaction.trainerId
+        and candidateReaction.variant == oppositeVariant
+        and candidateReaction.pairEligible == true
+        and manager:getActor(candidate.actorId) ~= nil
+      then
+        return candidate.actorId
+      end
+    end
+    return nil
+  end
+  return {
+    partnerFor = partnerFor,
+  }
+end
+
 -- opts.overrideFs: love.filesystem-shaped read access for the repo
 -- `data/scripts/overrides` tree (the game mounts `data` before calling).
 ---@param opts FieldScriptsOptions
@@ -491,6 +542,7 @@ function FieldScripts.new(opts)
   local function resolveComposition(id)
     return composition:effective(id)
   end
+  local reactionService = trainerReactionService(opts.actors, opts.trainerCatalog)
   scheduler = Scheduler.new({
     services = {
       world = worldState,
@@ -550,6 +602,7 @@ function FieldScripts.new(opts)
       radioMusic = opts.radioMusic,
       battle = opts.battle,
       trainerCatalog = opts.trainerCatalog,
+      trainerReaction = reactionService,
       advanceAsync = advanceAsync,
     },
     taskRegistry = liveTaskRegistry,

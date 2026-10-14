@@ -173,9 +173,12 @@ function T.trainer_reaction_uses_the_native_facing_movement_through_the_field_ta
   for facing, action in pairs(expected) do
     local fixture = runWith({
       actors = { snapshot = function(_, actorId)
+        return { facing = actorId == "joey" and facing or "north" }
+      end, exists = function(_, actorId) return actorId == "joey" or actorId == "partner" end },
+      trainerReaction = { partnerFor = function(_, actorId)
         Assert.equal(actorId, "joey")
-        return { facing = facing }
-      end, exists = function(_, actorId) return actorId == "joey" end },
+        return "partner"
+      end },
     })
     fixture.run.instance.trigger = { selfActor = "joey" }
     Assert.equal(
@@ -185,10 +188,51 @@ function T.trainer_reaction_uses_the_native_facing_movement_through_the_field_ta
       }, fixture.run),
       Runtime.OUTCOME_CONTINUE
     )
+    Assert.equal(#fixture.created, 2)
     Assert.equal(fixture.created[1].taskType, "movement")
+    Assert.equal(fixture.created[1].spec.actor, "partner", "partner movement is queued first")
     Assert.deepEqual(fixture.created[1].spec.sequence, { action })
     Assert.isFalse(fixture.created[1].spec.blocking, "the native cue queues movement without blocking")
+    Assert.equal(fixture.created[2].spec.actor, "joey")
+    Assert.deepEqual(fixture.created[2].spec.sequence, { action }, "the primary facing controls both cues")
+    Assert.isFalse(fixture.created[2].spec.blocking)
   end
+end
+
+function T.trainer_reaction_without_a_last_talked_actor_is_a_native_noop()
+  local fixture = runWith({ actors = {} })
+  local outcome = Runtime.executeNode({
+    op = "trainer_reaction_movement",
+    actor = { ref = "actor", special = "last_talked" },
+  }, fixture.run)
+  Assert.equal(outcome, Runtime.OUTCOME_CONTINUE)
+  Assert.equal(#fixture.created, 0)
+end
+
+function T.trainer_reaction_requires_its_service_for_a_live_actor()
+  local fixture = runWith({ actors = {
+    snapshot = function() return { facing = "north" } end,
+    exists = function(_, actorId) return actorId == "joey" end,
+  } })
+  fixture.run.instance.trigger = { selfActor = "joey" }
+  local err = Assert.throws(function()
+    Runtime.executeNode({
+      op = "trainer_reaction_movement",
+      actor = { ref = "actor", special = "last_talked" },
+    }, fixture.run)
+  end)
+  Assert.isTrue(Errors.is(err))
+  Assert.equal(err.code, "SCRIPT_SERVICE_MISSING")
+  Assert.equal(#fixture.created, 0)
+end
+
+function T.trainer_reaction_preserves_invalid_actor_reference_errors()
+  local fixture = runWith({ actors = { exists = function() return false end } })
+  local err = Assert.throws(function()
+    Runtime.executeNode({ op = "trainer_reaction_movement", actor = { ref = "not_actor" } }, fixture.run)
+  end)
+  Assert.isTrue(Errors.is(err))
+  Assert.equal(err.code, "SCRIPT_INVALID_REFERENCE")
 end
 
 function T.trainer_flag_write_resolves_native_or_variable_identity_through_world_state()
