@@ -324,14 +324,19 @@ end
 
 function T.trainer_message_rows_project_source_pairs_to_bank_ordinals()
   local TrainerCatalogCompiler = require("romdump.src.digest.battle.TrainerCatalogCompiler")
+  local BinaryReader = require("libs.codec.src.BinaryReader")
   local trainerHeaders = {}
-  for trainerIndex = 0, 8 do
-    trainerHeaders[trainerIndex + 1] = trainerIndex == 8
+  for trainerIndex = 0, 10 do
+    trainerHeaders[trainerIndex + 1] = trainerIndex >= 7
         and trdata(TRTYPE_MON, CLASS_YOUNGSTER, 1, {}, 0, 0)
       or trdata(TRTYPE_MON, CLASS_YOUNGSTER, 0, {}, 0, 0)
   end
-  local rows = u16(8) .. u16(0) .. u16(8) .. u16(2) .. u16(9) .. u16(0)
-  local offsets = string.rep(u16(#rows), 8) .. u16(0)
+  local rows = table.concat({
+    u16(8), u16(0), u16(8), u16(2),
+    u16(9), u16(3),
+    u16(10), u16(0), u16(10), u16(5), u16(10), u16(2),
+  })
+  local offsets = string.rep(u16(#rows), 7) .. u16(#rows) .. u16(0) .. u16(8) .. u16(12)
   local function archive(members)
     return {
       memberCount = function()
@@ -344,7 +349,12 @@ function T.trainer_message_rows_project_source_pairs_to_bank_ordinals()
   end
   local sources = {
     trainer_data = archive(trainerHeaders),
-    trainer_parties = archive({ [9] = plainMember(30, 5, 19) }),
+    trainer_parties = archive({
+      [8] = plainMember(30, 5, 19),
+      [9] = plainMember(30, 5, 19),
+      [10] = plainMember(30, 5, 19),
+      [11] = plainMember(30, 5, 19),
+    }),
     trainer_message_rows = archive({ rows }),
     trainer_message_offsets = archive({ offsets }),
     NARC_poketool_trmsg_trtbl = archive({ rows }),
@@ -358,9 +368,27 @@ function T.trainer_message_rows_project_source_pairs_to_bank_ordinals()
       return assert(sources[alias], "source archive " .. alias .. " is available")
     end,
   }
-  local compiled = assert(TrainerCatalogCompiler.compileFromDump(romFs))
-  Assert.deepEqual(compiled.trainers[8].messageIds, { [0] = 0, [2] = 1 })
-  Assert.isNil(compiled.trainers[8].messageIds[1], "absent source pairs stay absent")
+  local originalU16le = BinaryReader.u16le
+  local messageRowReads = 0
+  BinaryReader.u16le = function(reader, offset)
+    if reader.label == "trainer message rows" then
+      messageRowReads = messageRowReads + 1
+    end
+    return originalU16le(reader, offset)
+  end
+  local ok, result = pcall(function()
+    local compiled = assert(TrainerCatalogCompiler.compileFromDump(romFs))
+    Assert.deepEqual(compiled.trainers[8].messageIds, { [0] = 0, [2] = 1 })
+    Assert.deepEqual(compiled.trainers[9].messageIds, { [3] = 2 })
+    Assert.deepEqual(compiled.trainers[10].messageIds, { [0] = 3, [5] = 4, [2] = 5 })
+    Assert.deepEqual(compiled.trainers[7].messageIds, {}, "an EOF offset has no fabricated selectors")
+    Assert.isNil(compiled.trainers[8].messageIds[1], "absent source pairs stay absent")
+    Assert.isTrue(messageRowReads <= 14, "indexed scans read only owned rows and boundary probes")
+  end)
+  BinaryReader.u16le = originalU16le
+  if not ok then
+    error(result, 0)
+  end
 end
 
 function T.trainer_class_rates_cover_every_native_class_without_fallback()

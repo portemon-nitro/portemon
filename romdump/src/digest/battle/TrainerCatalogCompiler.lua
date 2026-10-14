@@ -364,11 +364,12 @@ function TrainerCatalogCompiler.compileFromDump(romFs, opts)
       assert(rowOffset <= #rows and rowOffset % 4 == 0, "trainer message row offset is aligned and in range")
       while rowOffset < #rows do
         local rowTrainer = rowReader:u16le(rowOffset)
-        if rowTrainer == trainerIndex then
-          local selector = rowReader:u16le(rowOffset + 2)
-          messageMap[trainerIndex] = messageMap[trainerIndex] or {}
-          messageMap[trainerIndex][selector] = rowOffset / SOURCES.messageRows.entrySize
+        if rowTrainer ~= trainerIndex then
+          break
         end
+        local selector = rowReader:u16le(rowOffset + 2)
+        messageMap[trainerIndex] = messageMap[trainerIndex] or {}
+        messageMap[trainerIndex][selector] = rowOffset / SOURCES.messageRows.entrySize
         rowOffset = rowOffset + SOURCES.messageRows.entrySize
       end
     end
