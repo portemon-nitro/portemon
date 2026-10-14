@@ -13,6 +13,7 @@ local Errors = require("libs.errors.src.Errors")
 local ScriptErrors = require("libs.script.src.errors")
 
 local PhoneCall = require("game.hgss.src.pokegear.PhoneCall")
+local PhoneValueSnapshot = require("game.hgss.src.pokegear.PhoneValueSnapshot")
 local TrainerPhonePrograms = require("game.hgss.src.pokegear.phone.TrainerPhonePrograms")
 
 ---@class PhoneController
@@ -988,13 +989,7 @@ function PhoneController:status()
   local inCall = self._callHandle ~= nil and self._result == nil
   local inMenu = self._mode == "menu" or self._mode == "sort" or self._mode == "manual"
   local view = self:view()
-  local callError = nil
-  if type(self._callError) == "table" then
-    callError = {}
-    for key, value in pairs(self._callError) do
-      callError[key] = value
-    end
-  end
+  local callError = self._callError ~= nil and PhoneValueSnapshot.detach(self._callError) or nil
   local content = self:_planContent(skin --[[@as integer]])
   local presentation = {
     width = 256,
@@ -1025,11 +1020,7 @@ function PhoneController:takeResult()
   if result == nil then
     return nil
   end
-  local detached = {}
-  for key, value in pairs(result) do
-    detached[key] = value
-  end
-  return detached
+  return PhoneValueSnapshot.detach(result)
 end
 
 -- Idempotent release of the logical lifetime: drops pointer capture,

@@ -204,8 +204,9 @@ end
 ---@param record table
 ---@param world table
 ---@param audio table
+---@param resolveLine function?
 ---@return table host
-local function openHost(record, world, audio)
+local function openHost(record, world, audio, resolveLine)
   local PokegearScriptHost = requireFeature(
     "game.hgss.src.pokegear.PokegearScriptHost",
     "the phone feature has no script host yet: menu and script entry cannot share one application lease"
@@ -222,7 +223,7 @@ local function openHost(record, world, audio)
     messages = {
       greeting = "custom.greeting",
       program = "custom.program",
-      resolveLine = function()
+      resolveLine = resolveLine or function()
         return { tokens = { { kind = "glyph", code = 1, text = "X", raw = { 1 } } } }
       end,
       resolveContactEntry = function()
@@ -745,7 +746,11 @@ function T.tests.menu_owned_native_text_failure_remains_visible_after_the_call_r
   local messages = {
     greeting = "custom.greeting",
     resolveLine = function()
-      error({ code = "MESSAGE_MISSING", message = "native caller text is unavailable" }, 0)
+      error({
+        code = "MESSAGE_MISSING",
+        message = "native caller text is unavailable",
+        context = { source = { members = { 7, 9 } } },
+      }, 0)
     end,
   }
   local controller = PhoneController.new({
@@ -768,9 +773,166 @@ function T.tests.menu_owned_native_text_failure_remains_visible_after_the_call_r
   local status = controller:status()
   Assert.isNil(status.view.call, "a terminal menu failure returns to the contact list")
   Assert.notNil(status.callError, "the menu keeps the native text failure visible")
+  Assert.isFalse(require("libs.errors.src.Errors").is(status.callError), "a plain coded table stays untyped")
   Assert.equal(status.callError.code, "MESSAGE_MISSING", "the retained error preserves its source failure code")
+  status.callError.context.source.members[1] = 99
+  Assert.equal(
+    7,
+    controller:status().callError.context.source.members[1],
+    "plain coded table context is detached across status reads"
+  )
   Assert.isNil(controller:takeResult(), "menu failure does not escape through the script-host result channel")
   controller:dispose()
+end
+
+function T.tests.host_controller_terminal_errors_are_independent_typed_snapshots()
+  local Errors = require("libs.errors.src.Errors")
+  local PhoneController = require("game.hgss.src.pokegear.PhoneController")
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local record = assert(PokegearAssetSchema.validate(fixtureManifest()), "phone catalog validates")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local state = PokegearState.new({ seed = 102 }, { catalog = record.catalog })
+  state:registerContact("custom.trainer-plain")
+  local audio = countingAudio()
+  local controller = PhoneController.new({
+    state = state,
+    catalog = record.catalog,
+    messages = {
+      greeting = "custom.greeting",
+      resolveLine = function()
+        error(Errors.new("MESSAGE_MISSING", "native message absent", {
+          source = { members = { 12, 18 }, extra = { value = "original" } },
+        }), 0)
+      end,
+    },
+    world = worldFixture(),
+    audio = audio,
+    random = require("game.hgss.src.pokegear.PokegearRandom").new(102),
+    request = {
+      id = "typed-terminal-result",
+      contact = "custom.trainer-plain",
+      direction = "outgoing",
+      kind = "ordinary",
+    },
+  })
+
+  for _ = 1, 16 do
+    if controller:takeResult() ~= nil then
+      break
+    end
+    controller:updateFixed({ { type = "confirm" } })
+  end
+  local dialsBeforeReads = audio.dials
+  local hangupsBeforeReads = audio.hangups
+  local first = controller:takeResult()
+  local second = controller:takeResult()
+  Assert.notNil(first, "a host-owned controller publishes its terminal failure")
+  assert(first ~= nil, "terminal result checked above")
+  Assert.isTrue(Errors.is(first.error), "terminal result keeps its structured error type")
+  Assert.isTrue(Errors.is(second.error), "each terminal read keeps its structured error type")
+  Assert.deepEqual(second, first, "repeated reads begin with equal terminal values")
+  first.error.code = "CHANGED"
+  first.error.context.source.members[1] = 99
+  first.error.context.source.extra.value = "changed"
+  Assert.equal("MESSAGE_MISSING", second.error.code, "a second read does not share the first error")
+  Assert.equal(12, second.error.context.source.members[1], "nested attribution is copied")
+  Assert.equal("original", second.error.context.source.extra.value, "additional nested tables are copied")
+  local later = controller:takeResult()
+  Assert.equal("MESSAGE_MISSING", later.error.code, "later controller reads preserve the original code")
+  Assert.equal(12, later.error.context.source.members[1], "later controller reads preserve original attribution")
+  Assert.equal(dialsBeforeReads, audio.dials, "reading terminal results does not replay source dial tones")
+  Assert.equal(hangupsBeforeReads, audio.hangups, "reading terminal results does not replay hangup")
+  controller:dispose()
+end
+
+function T.tests.menu_status_preserves_typed_error_with_independent_attribution()
+  local Errors = require("libs.errors.src.Errors")
+  local PhoneController = require("game.hgss.src.pokegear.PhoneController")
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local manifest = fixtureManifest()
+  manifest.catalog.contacts = { { key = "custom.trainer-plain", family = "kurt", sortWeight = 10 } }
+  manifest.catalog.contactOrder = { "custom.trainer-plain" }
+  local record = assert(PokegearAssetSchema.validate(manifest), "single-contact menu catalog validates")
+  record.catalog.callDefinitions[83] = {
+    id = 83,
+    kind = "none",
+    male = { bank = 641, entry = 83 },
+    female = { bank = 641, entry = 83 },
+  }
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local state = PokegearState.new({ seed = 103 }, { catalog = record.catalog })
+  state:registerContact("custom.trainer-plain")
+  local controller = PhoneController.new({
+    state = state,
+    catalog = record.catalog,
+    messages = {
+      greeting = "custom.greeting",
+      resolveLine = function()
+        error(Errors.new("MESSAGE_MISSING", "native caller text is unavailable", {
+          source = { members = { 27, 31 } },
+        }), 0)
+      end,
+    },
+    world = worldFixture(),
+    audio = countingAudio(),
+  })
+  controller:updateFixed({ { type = "confirm" } })
+  controller:updateFixed({ { type = "confirm" } })
+  for _ = 1, 12 do
+    if controller:status().view.call == nil then
+      break
+    end
+    controller:updateFixed({ { type = "confirm" } })
+  end
+
+  local first = controller:status()
+  Assert.isNil(first.view.call, "the menu returns to its contact list after failure")
+  Assert.isTrue(Errors.is(first.callError), "menu status retains the structured error type")
+  first.callError.code = "CHANGED"
+  first.callError.context.source.members[1] = 99
+  local later = controller:status()
+  Assert.isTrue(Errors.is(later.callError), "later status retains the structured error type")
+  Assert.equal("MESSAGE_MISSING", later.callError.code, "status errors are detached from earlier reads")
+  Assert.equal(27, later.callError.context.source.members[1], "nested status attribution is detached")
+  Assert.isNil(controller:takeResult(), "menu failures remain outside the host result channel")
+  controller:dispose()
+end
+
+function T.tests.retained_host_error_result_is_detached_until_close()
+  local Errors = require("libs.errors.src.Errors")
+  local record = assert(
+    require("libs.assets.src.PokegearAssetSchema").validate(fixtureManifest()),
+    "phone catalog validates"
+  )
+  local audio = countingAudio()
+  local host, _ = openHost(record, worldFixture(), audio, function()
+    error(Errors.new("MESSAGE_MISSING", "native message absent", {
+      source = { members = { 44, 49 } },
+    }), 0)
+  end)
+  local handle = openCall(host, "retained-typed-error")
+  local activeResult = settleCall(host, handle)
+  Assert.isTrue(Errors.is(activeResult.error), "active host result preserves its structured error")
+  host:cancel("retain terminal error")
+  Assert.isFalse(host:isActive(), "cancellation releases the active host lease")
+  local dialsBeforeReads = audio.dials
+  local hangupsBeforeReads = audio.hangups
+  local first = host:result(handle)
+  local second = host:result(handle)
+  Assert.isTrue(Errors.is(first.error), "retained result preserves its structured error")
+  Assert.deepEqual(second, first, "retained reads start with equal terminal values")
+  first.error.code = "CHANGED"
+  first.error.context.source.members[1] = 99
+  local later = host:result(handle)
+  Assert.isTrue(Errors.is(later.error), "later retained result remains a structured error")
+  Assert.equal("MESSAGE_MISSING", later.error.code, "retained result code is isolated from consumers")
+  Assert.equal(44, later.error.context.source.members[1], "retained nested attribution is isolated")
+  Assert.equal(dialsBeforeReads, audio.dials, "retained result reads do not replay source dial tones")
+  Assert.equal(hangupsBeforeReads, audio.hangups, "retained result reads do not replay hangup")
+  host:close(handle)
+  Assert.throws(function()
+    host:result(handle)
+  end, "closing clears the retained result and invalidates its handle")
 end
 
 -- Cancellation at each foreground stage stays terminal and exactly-once:

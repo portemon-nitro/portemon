@@ -18,6 +18,7 @@ local MotherPhoneProgram = require("game.hgss.src.pokegear.phone.MotherPhoneProg
 local ProfessorPhonePrograms = require("game.hgss.src.pokegear.phone.ProfessorPhonePrograms")
 local ServicePhonePrograms = require("game.hgss.src.pokegear.phone.ServicePhonePrograms")
 local TrainerPhonePrograms = require("game.hgss.src.pokegear.phone.TrainerPhonePrograms")
+local PhoneValueSnapshot = require("game.hgss.src.pokegear.PhoneValueSnapshot")
 
 ---@class PhoneCall
 ---@field private _state table<string, unknown>
@@ -1327,25 +1328,6 @@ local function publicStage(stage)
   return "completed"
 end
 
----@param value unknown
----@return unknown
-local function detachValue(value)
-  if type(value) ~= "table" then
-    return value
-  end
-  if Errors.is(value) then
-    ---@cast value Errors.Error
-    return Errors.new(value.code, value.message, detachValue(value.context))
-  end
-  local detached = {}
-  for key, nested in
-    pairs(value --[[@as table<unknown, unknown>]])
-  do
-    detached[detachValue(key)] = detachValue(nested)
-  end
-  return detached
-end
-
 -- Borrows the detached call view: the closed stage union with the frozen
 -- greeting, the selected program, the program position, and any owed
 -- choice. Reads never mutate and never duplicate an effect.
@@ -1361,7 +1343,7 @@ function PhoneCall:view(handle)
     position = session.position,
     greeting = session.greeting,
     program = session.program,
-    lines = detachValue(session.lines),
+    lines = PhoneValueSnapshot.detach(session.lines),
     page = session.textPage,
   }
   if stage == "choice" then
@@ -1371,13 +1353,13 @@ function PhoneCall:view(handle)
     elseif session.owner == "trainer" and programSession.program == "gym-invitation" then
       shown.choices = { "yes", "no" }
     elseif session.owner == "professor" and programSession.program == "oak-special" then
-      shown.choices = detachValue(programSession.choices)
+      shown.choices = PhoneValueSnapshot.detach(programSession.choices)
     else
       error("phone choice stages have a family-owned choice list", 0)
     end
   end
   if session.result ~= nil then
-    shown.result = detachValue(session.result)
+    shown.result = PhoneValueSnapshot.detach(session.result)
   end
   return shown
 end
@@ -1391,7 +1373,7 @@ function PhoneCall:result(handle)
   if session.result == nil then
     return nil
   end
-  return detachValue(session.result)
+  return PhoneValueSnapshot.detach(session.result)
 end
 
 -- Hangs the call up. A live call plays the hangup tone and completes

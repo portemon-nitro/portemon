@@ -15,6 +15,7 @@ local Errors = require("libs.errors.src.Errors")
 local ScriptErrors = require("libs.script.src.errors")
 
 local PhoneController = require("game.hgss.src.pokegear.PhoneController")
+local PhoneValueSnapshot = require("game.hgss.src.pokegear.PhoneValueSnapshot")
 
 ---@class PokegearScriptHost
 ---@field _state table<string, unknown> the borrowed durable companion owner
@@ -410,12 +411,7 @@ function PokegearScriptHost:result(handle)
   if retained ~= nil then
     local entry = retained --[[@as table<string, unknown>]]
     if handle == entry.handle then
-      local result = entry.result --[[@as table<string, unknown>]]
-      local detached = {}
-      for key, value in pairs(result) do
-        detached[key] = value
-      end
-      return detached
+      return PhoneValueSnapshot.detach(entry.result)
     end
   end
   Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "companion application handle is stale or foreign", {})
