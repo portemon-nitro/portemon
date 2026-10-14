@@ -1327,6 +1327,21 @@ local function publicStage(stage)
   return "completed"
 end
 
+---@param value unknown
+---@return unknown
+local function detachValue(value)
+  if type(value) ~= "table" then
+    return value
+  end
+  local detached = {}
+  for key, nested in
+    pairs(value --[[@as table<unknown, unknown>]])
+  do
+    detached[detachValue(key)] = detachValue(nested)
+  end
+  return detached
+end
+
 -- Borrows the detached call view: the closed stage union with the frozen
 -- greeting, the selected program, the program position, and any owed
 -- choice. Reads never mutate and never duplicate an effect.
@@ -1342,7 +1357,7 @@ function PhoneCall:view(handle)
     position = session.position,
     greeting = session.greeting,
     program = session.program,
-    lines = session.lines,
+    lines = detachValue(session.lines),
     page = session.textPage,
   }
   if stage == "choice" then

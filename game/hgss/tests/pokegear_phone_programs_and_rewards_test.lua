@@ -563,6 +563,139 @@ function T.tests.phone_text_wait_precedes_the_program_stage()
   Assert.notNil(terminal, "a closed call still reports its terminal result")
 end
 
+function T.tests.phone_call_views_detach_native_pages_and_token_operands()
+  local PhoneCall = require("game.hgss.src.pokegear.PhoneCall")
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
+  local record = PokegearAssetSchema.validate(fixtureManifest())
+  Assert.notNil(record, "the synthetic phone catalog validates before opening a call")
+  assert(record ~= nil, "synthetic phone catalog validated above")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
+  local state = PokegearState.new({ seed = 4243 }, catalogRefs(record))
+  state:registerContact("custom.kurt")
+  local resolves = 0
+  local messages = {
+    greeting = "custom.greeting",
+    program = "custom.program",
+    resolveLine = function()
+      resolves = resolves + 1
+      return {
+        tokens = {
+          { kind = "glyph", code = 1, text = "A", raw = { 1 }, metadata = { values = { 4 } } },
+          {
+            kind = "style",
+            control = FieldMessageText.COLOR,
+            args = { 2 },
+            raw = { FieldMessageText.EXT_CTRL_CODE_BEGIN, 0x00, 0xFF },
+          },
+          { kind = "page_break" },
+          { kind = "glyph", code = 2, text = "B", raw = { 2 } },
+        },
+      }
+    end,
+  }
+  local world = {
+    canCall = function()
+      return true
+    end,
+    nativeSelectorFacts = localPhoneSelectorFacts(),
+  }
+  local random = PokegearRandom.new(4243)
+  local call = PhoneCall.new({
+    state = state,
+    catalog = record.catalog,
+    messages = messages,
+    world = world,
+    audio = instantAudio(),
+    random = random,
+  })
+  local handle = call:begin({
+    id = "detached-pages",
+    contact = "custom.kurt",
+    direction = "outgoing",
+    kind = "ordinary",
+  })
+  call:step(handle, {})
+  call:step(handle, {})
+  local first = call:view(handle)
+  local second = call:view(handle)
+  local firstLines = first.lines --[[@as table[] ]]
+  local secondLines = second.lines --[[@as table[] ]]
+  local expectedLines = {
+    {
+      text = "A{COLOR 2}",
+      tokens = {
+        { kind = "glyph", code = 1, text = "A", raw = { 1 }, metadata = { values = { 4 } } },
+        {
+          kind = "style",
+          control = FieldMessageText.COLOR,
+          args = { 2 },
+          raw = { FieldMessageText.EXT_CTRL_CODE_BEGIN, 0x00, 0xFF },
+        },
+      },
+    },
+    { text = "B", tokens = { { kind = "glyph", code = 2, text = "B", raw = { 2 } } } },
+  }
+  Assert.deepEqual(firstLines, expectedLines, "the source token stream creates the expected native pages")
+  Assert.deepEqual(firstLines, secondLines, "same-tick views preserve the complete source page value")
+  Assert.isFalse(firstLines == secondLines, "each read allocates an independent page list")
+  Assert.isFalse(firstLines[1] == secondLines[1], "each page record is independent")
+  Assert.isFalse(firstLines[1].tokens == secondLines[1].tokens, "each token list is independent")
+  Assert.isFalse(firstLines[1].tokens[1] == secondLines[1].tokens[1], "each token record is independent")
+  Assert.isFalse(
+    firstLines[1].tokens[1].metadata.values == secondLines[1].tokens[1].metadata.values,
+    "unknown nested token metadata is independent"
+  )
+  Assert.isFalse(firstLines[1].tokens[2].args == secondLines[1].tokens[2].args, "control operands are independent")
+  Assert.isFalse(firstLines[1].tokens[2].raw == secondLines[1].tokens[2].raw, "control source bytes are independent")
+  local randomBeforeReads = random:capture()
+  firstLines[1].text = "changed"
+  firstLines[1].tokens[1].text = "changed"
+  firstLines[1].tokens[1].raw[1] = 99
+  firstLines[1].tokens[1].metadata.values[1] = 99
+  firstLines[1].tokens[2].args[1] = 99
+  firstLines[1].tokens[2].raw[1] = 99
+  table.remove(firstLines, 1)
+  local third = call:view(handle)
+  local thirdLines = third.lines --[[@as table[] ]]
+  Assert.deepEqual(thirdLines, expectedLines, "later views retain original pages, metadata and operands")
+  Assert.equal(first.page, 1, "a view read does not advance the active page")
+  Assert.equal(third.page, 1, "later reads retain the active page cursor")
+  Assert.equal(#thirdLines, 2, "mutating one page list cannot remove an authoritative page")
+  Assert.equal(thirdLines[1].text, "A{COLOR 2}", "the first source page retains its rendered text")
+  Assert.equal(thirdLines[2].text, "B", "the second source page retains its order and text")
+  Assert.deepEqual(random:capture(), randomBeforeReads, "view reads consume no random state")
+  Assert.equal(resolves, 1, "view reads do not resolve source messages again")
+
+  call:step(handle, { confirm = true })
+  local advanced = call:view(handle)
+  Assert.equal(advanced.page, 2, "confirm advances the original page cursor")
+  Assert.deepEqual(advanced.lines, expectedLines, "page advancement preserves source page order")
+  call:cancel(handle, "test cleanup")
+  local result = call:result(handle)
+  Assert.notNil(result, "the call reports its terminal result before release")
+  call:release(handle)
+  Assert.deepEqual(second.lines, expectedLines, "an issued snapshot remains valid after release")
+  Assert.throws(function()
+    call:view(handle)
+  end, "a released call still rejects a stale view handle")
+  local nextHandle = call:begin({
+    id = "detached-pages-next-call",
+    contact = "custom.kurt",
+    direction = "outgoing",
+    kind = "ordinary",
+  })
+  call:step(nextHandle, {})
+  call:step(nextHandle, {})
+  local nextView = call:view(nextHandle)
+  Assert.deepEqual(nextView.lines, expectedLines, "a subsequent call resolves its own original message pages")
+  Assert.isFalse(nextView.lines == secondLines, "a later call does not reuse a prior snapshot")
+  Assert.deepEqual(second.lines, expectedLines, "a later call cannot mutate an earlier released snapshot")
+  call:cancel(nextHandle, "test cleanup")
+  call:release(nextHandle)
+end
+
 -- A missing world owner is an attributed dependency failure, never an
 -- invented empty-world answer: a branch that reads Kurt production state
 -- names its missing owner before any effect, while a branch that needs no

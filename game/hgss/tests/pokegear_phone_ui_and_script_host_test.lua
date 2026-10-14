@@ -569,6 +569,100 @@ function T.tests.missing_call_handle_after_commit_fails_without_replaying_effect
   Assert.isTrue(host:isStableForSave(), "the faulted host still settles fresh calls cleanly")
 end
 
+function T.tests.phone_controller_views_detach_active_page_snapshots()
+  local PhoneController = require("game.hgss.src.pokegear.PhoneController")
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
+  local record = PokegearAssetSchema.validate(fixtureManifest())
+  Assert.notNil(record, "the synthetic phone catalog validates before opening a controller call")
+  assert(record ~= nil, "synthetic phone catalog validated above")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local state = PokegearState.new({ seed = 4244 }, { catalog = record.catalog })
+  state:registerContact("custom.trainer-plain")
+  local controller = PhoneController.new({
+    state = state,
+    catalog = record.catalog,
+    messages = {
+      greeting = "custom.greeting",
+      program = "custom.program",
+      resolveLine = function()
+        return {
+          tokens = {
+            { kind = "glyph", code = 1, text = "C", raw = { 3 } },
+            {
+              kind = "style",
+              control = FieldMessageText.COLOR,
+              args = { 2 },
+              raw = { FieldMessageText.EXT_CTRL_CODE_BEGIN, 0x00, 0xFF },
+            },
+            { kind = "page_break" },
+            { kind = "glyph", code = 2, text = "D", raw = { 4 } },
+          },
+        }
+      end,
+    },
+    world = worldFixture(),
+    audio = countingAudio(),
+    random = require("game.hgss.src.pokegear.PokegearRandom").new(4244),
+    request = {
+      id = "controller-detached-pages",
+      contact = "custom.trainer-plain",
+      direction = "outgoing",
+      kind = "ordinary",
+    },
+  })
+
+  controller:updateFixed({ { type = "confirm" } })
+  local direct = controller:view().call
+  local status = controller:status().view.call
+  Assert.notNil(direct, "the controller exposes its active call through view")
+  Assert.notNil(status, "status exposes the same active call projection")
+  local originalLines = status.lines --[[@as table[] ]]
+  local expectedLines = {
+    {
+      text = "C{COLOR 2}",
+      tokens = {
+        { kind = "glyph", code = 1, text = "C", raw = { 3 } },
+        {
+          kind = "style",
+          control = FieldMessageText.COLOR,
+          args = { 2 },
+          raw = { FieldMessageText.EXT_CTRL_CODE_BEGIN, 0x00, 0xFF },
+        },
+      },
+    },
+    { text = "D", tokens = { { kind = "glyph", code = 2, text = "D", raw = { 4 } } } },
+  }
+  Assert.deepEqual(originalLines, expectedLines, "the source token stream creates the expected controller pages")
+  Assert.deepEqual(direct.lines, originalLines, "view and status agree on the source pages")
+  direct.lines[1].text = "changed"
+  direct.lines[1].tokens[1].text = "changed"
+  direct.lines[1].tokens[1].raw[1] = 99
+  direct.lines[1].tokens[2].args[1] = 99
+  direct.lines[1].tokens[2].raw[1] = 99
+  table.remove(direct.lines, 1)
+
+  local laterStatus = controller:status().view.call
+  local laterView = controller:view().call
+  Assert.deepEqual(laterStatus.lines, expectedLines, "status rereads cannot inherit presenter mutations")
+  Assert.deepEqual(laterView.lines, expectedLines, "controller view rereads preserve original tokens and pages")
+  Assert.isFalse(laterStatus.lines == originalLines, "status returns a fresh page list")
+  Assert.equal(laterStatus.page, 1, "status reads do not advance the active page")
+  Assert.equal(#laterStatus.lines, 2, "removing an outward page cannot remove a source page")
+  Assert.equal(laterStatus.lines[1].text, "C{COLOR 2}", "the source-rendered first page remains intact")
+  Assert.equal(laterStatus.lines[2].text, "D", "the source-rendered second page remains intact")
+
+  controller:updateFixed({ { type = "confirm" } })
+  local advanced = controller:status().view.call
+  Assert.equal(advanced.page, 2, "controller input advances the original second page")
+  Assert.deepEqual(advanced.lines, expectedLines, "page advancement retains the source page order")
+  controller:updateFixed({ { type = "cancel" } })
+  local result = controller:takeResult()
+  Assert.notNil(result, "the live controller call publishes its terminal result")
+  Assert.isNil(result.error, "view mutation does not turn a successful call into an error")
+  controller:dispose()
+end
+
 function T.tests.menu_calls_return_to_list_while_host_calls_retain_their_result()
   local PhoneController = requireFeature(
     "game.hgss.src.pokegear.PhoneController",
