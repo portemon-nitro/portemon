@@ -154,7 +154,10 @@ end
 
 -- The cry bank for a species and form: Sky Forme Shaymin has its own bank
 -- (sub_02006A0C); every other form shares its species bank.
-local function cryBank(species, form)
+---@param species integer
+---@param form integer|nil
+---@return integer the audio bank id the cry plays from
+function CryPlayer.bankFor(species, form)
   if species == SHAYMIN and form == 1 then
     return SHAYMIN_SKY_BANK
   end
@@ -178,7 +181,7 @@ function CryPlayer:play(species, pattern, form)
   assert(descriptor ~= nil, "cry pattern descriptor must be available")
 
   -- Resolve every asset before replacing the currently valid request.
-  local bank = self._provider:bank(cryBank(species, form))
+  local bank = self._provider:bank(CryPlayer.bankFor(species, form))
   local sequence
   local sample
   if descriptor.primary ~= nil or descriptor.secondary ~= nil then

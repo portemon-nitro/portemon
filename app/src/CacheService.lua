@@ -18,6 +18,7 @@ local VALID_KINDS = {
   portrait = true,
   ["icon-page"] = true,
   ["battle-scene"] = true,
+  ["audio-bank"] = true,
 }
 local VALID_URGENCIES = { required = true, near = true, sweep = true }
 local URGENCY_ORDER = { required = 0, near = 10, sweep = 100 }
@@ -129,6 +130,12 @@ local function selectorKey(selector)
       "battle-scene request requires its background/terrain/time sceneKey"
     )
     return "battle-scene:" .. selector.sceneKey
+  elseif kind == "audio-bank" then
+    assert(
+      type(selector.bankId) == "number" and selector.bankId % 1 == 0 and selector.bankId >= 0,
+      "audio-bank request requires a non-negative integer bankId"
+    )
+    return "audio-bank:" .. tostring(selector.bankId)
   else
     assert(
       type(selector.pageId) == "number" and selector.pageId % 1 == 0 and selector.pageId >= 0,
@@ -234,6 +241,8 @@ function CacheService:request(epoch, selector)
     command.index = selector.index
   elseif selector.requestKind == "battle-scene" then
     command.sceneKey = selector.sceneKey
+  elseif selector.requestKind == "audio-bank" then
+    command.bankId = selector.bankId
   else
     command.pageId = selector.pageId
   end

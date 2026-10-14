@@ -21,8 +21,27 @@ local GameSave = require("libs.hgss.src.save.GameSave")
 local RomSourcePath = require("tests.rom.support.RomSourcePath")
 
 local T = {
-  metadata = { capabilities = { "rom_dump" },
-    derivedAssets = { "field-runtime", "audio-bank:700", "audio-bank:702", "audio-bank:709", "audio-bank:758", "audio-bank:759", "map-data:31", "map-data:33", "map-data:47", "map-data:48", "map-data:60", "map:33", "map:60", "summary:global" }, tags = { "menu", "production" } },
+  metadata = {
+    capabilities = { "rom_dump" },
+    derivedAssets = {
+      "field-runtime",
+      "audio-bank:158",
+      "audio-bank:700",
+      "audio-bank:702",
+      "audio-bank:709",
+      "audio-bank:758",
+      "audio-bank:759",
+      "map-data:31",
+      "map-data:33",
+      "map-data:47",
+      "map-data:48",
+      "map-data:60",
+      "map:33",
+      "map:60",
+      "summary:global",
+    },
+    tags = { "menu", "production" },
+  },
   tests = {},
 }
 
@@ -66,8 +85,7 @@ local function withGame(fn, map)
     function lease:prepare(demand)
       return { kind = "ready", key = demand.key, assets = { manifest = summaryManifest } }
     end
-    function lease:release()
-    end
+    function lease:release() end
     return lease
   end)
   OpeningLifecycle.seedNewBarkWestExitScene(game)
@@ -434,6 +452,11 @@ function T.tests.flow_behaviors_persist_through_production_composition(context)
       return row.kind == "summary"
     end, "summary")
     Assert.equal(flow:status().page, "summary", "summary opens for the focused member")
+    for _ = 1, 30 do
+      flow:updateFixed({})
+    end
+    Assert.equal(flow:status().page, "summary", "the summary stays open once prepared")
+    Assert.equal(childView(flow).wrapperPhase, "active", "the summary turns interactive")
     flow:updateFixed({ { type = "cancel" } })
     local returned = nil
     for _ = 1, 30 do

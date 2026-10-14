@@ -1093,8 +1093,17 @@ function SummaryAssetSchema.assertManifest(manifest)
       fail("manifest.ribbons.entries must be an array", {})
     end
   end
-  if ribbons.initialSpecialDescriptions ~= nil and type(ribbons.initialSpecialDescriptions) ~= "table" then
-    fail("manifest.ribbons.initialSpecialDescriptions must be a record", {})
+  if ribbons.initialSpecialDescriptions ~= nil then
+    local initials = ribbons.initialSpecialDescriptions
+    if type(initials) ~= "table" then
+      fail("manifest.ribbons.initialSpecialDescriptions must be a record", {})
+    end
+    for slot = 1, 14 do
+      local description = initials[slot]
+      if type(description) ~= "string" or description == "" then
+        fail("manifest.ribbons.initialSpecialDescriptions[" .. slot .. "] must be display text", {})
+      end
+    end
   end
   if ribbons.descriptionChoices ~= nil then
     if type(ribbons.descriptionChoices) ~= "table" then

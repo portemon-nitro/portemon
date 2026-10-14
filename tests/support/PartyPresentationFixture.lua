@@ -225,6 +225,7 @@ function PartyPresentationFixture.manifest()
       iconAnchor = { x = 30, y = 200 },
       statusAnchor = { x = 50, y = 220 },
       nicknameTextOrigin = { x = 56, y = 192 },
+      heldItemLabelOrigin = { x = 138, y = 192 },
       heldItemTextOrigin = { x = 138, y = 212 },
     },
     windows = {
@@ -247,11 +248,13 @@ function PartyPresentationFixture.manifest()
           sequence("assets/generated/party/button-selected.png", 56, 32),
         },
       },
-      held = { sequences = {
-        sequence("assets/generated/party/held.png", 8, 8),
-        sequence("assets/generated/party/mail.png", 8, 8),
-        sequence("assets/generated/party/capsule.png", 8, 8),
-      } },
+      held = {
+        sequences = {
+          sequence("assets/generated/party/held.png", 8, 8),
+          sequence("assets/generated/party/mail.png", 8, 8),
+          sequence("assets/generated/party/capsule.png", 8, 8),
+        },
+      },
       status = {
         paralysis = image("assets/generated/party/status-paralysis.png", 24, 8),
         freeze = image("assets/generated/party/status-freeze.png", 24, 8),
@@ -336,6 +339,7 @@ function PartyPresentationFixture.manifest()
         cancel = "CANCEL",
         male = "M",
         female = "F",
+        item = "ITEM",
         summary = "SUMMARY",
         quit = "QUIT",
       },

@@ -1144,6 +1144,35 @@ function T.bag_flow_party_target_wait_renders_without_icon_getters()
   end)
 end
 
+function T.summary_wait_draws_no_text_while_pending_and_names_its_failure()
+  local sink, calls = {}, {}
+  withProductionComposition(sink, calls, compositionRuntime(), function(resources)
+    local frame = { x = 0, y = 0, width = 256, height = 192 }
+    local plan = { inputKey = "summary", panes = {} }
+    resources:drawApplication(FieldApplicationIds.POKEMON, {
+      open = true,
+      root = "party",
+      page = "summary",
+      child = { preparationState = "pending", layout = { frame = frame }, presentation = plan },
+    }, drawRuntime())
+    Assert.equal(#sink, 0, "a pending summary draws only the host cover, never a wait message")
+    resources:drawApplication(FieldApplicationIds.POKEMON, {
+      open = true,
+      root = "party",
+      page = "summary",
+      child = {
+        preparationState = "failed",
+        preparationError = "boom",
+        layout = { frame = frame },
+        presentation = plan,
+      },
+    }, drawRuntime())
+    Assert.equal(#sink, 1, "a failed summary renders its cause")
+    Assert.isTrue(tostring(sink[1][2]):find("boom", 1, true) ~= nil, "the failure message carries the cause")
+    resources:dispose()
+  end)
+end
+
 function T.bag_flow_party_target_routes_to_the_party_presenter()
   local sink, calls = {}, {}
   local savedLove = rawget(_G, "love")

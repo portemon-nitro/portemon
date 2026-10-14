@@ -244,6 +244,7 @@ local function manifest()
       iconAnchor = { x = 30, y = 200 },
       statusAnchor = { x = 50, y = 220 },
       nicknameTextOrigin = { x = 56, y = 192 },
+      heldItemLabelOrigin = { x = 138, y = 192 },
       heldItemTextOrigin = { x = 138, y = 212 },
     },
     iconAnimations = { sequences = sequences },
@@ -256,7 +257,7 @@ local function manifest()
       },
     },
     text = {
-      labels = { cancel = "Cancel", male = "M", female = "F" },
+      labels = { cancel = "Cancel", male = "M", female = "F", item = "ITEM" },
       templates = {
         switchPrompt = { segments = { { kind = "text", value = "Switch?" } } },
         chooseMon = { segments = { { kind = "text", value = "Choose a POKEMON." } } },
@@ -376,6 +377,7 @@ local function v6manifest()
   data.text.messageRole = role()
   data.text.labels.male = "M"
   data.text.labels.female = "F"
+  data.text.labels.item = "ITEM"
   data.numberGlyphs.placement = {
     level = { x = 5, y = 2 },
     current = { x = 0, y = 2 },

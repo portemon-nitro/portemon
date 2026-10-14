@@ -8,6 +8,7 @@ local Assert = require("tests.support.Assert")
 local SummaryAcceptanceFixture = require("tests.support.SummaryAcceptanceFixture")
 local SummaryModel = require("libs.hgss.src.ui.SummaryModel")
 local MonCache = require("libs.assets.src.MonCache")
+local SummaryCache = require("libs.assets.src.SummaryCache")
 
 local T = {}
 
@@ -58,10 +59,12 @@ local function demandFor(service, context, manifest, key, epoch)
   local facts = SummaryModel.build(service, 0, context, manifest)
   local selectors = {}
   local iconKeys = {}
+  local cryBanks = {}
   for _, row in ipairs(assert(facts.roster, "facts carry the party roster")) do
     iconKeys[#iconKeys + 1] = assert(row.iconKey, "roster rows carry their icon key")
     if row.isEgg ~= true then
       selectors[#selectors + 1] = assert(row.portraitSelector, "non-egg rows carry their portrait identity")
+      cryBanks[#cryBanks + 1] = manifest.dexNumbers[row.species].national
     end
   end
   return {
@@ -70,6 +73,7 @@ local function demandFor(service, context, manifest, key, epoch)
     pictureEpoch = epoch,
     portraitSelectors = selectors,
     iconKeys = iconKeys,
+    cryBanks = cryBanks,
   }
 end
 
@@ -144,12 +148,25 @@ function T.preparation_leases_bound_portrait_demand_and_release_exactly_once()
     second:release()
     second:release()
     local graphics = setup.helper.graphics
+    local resident = 0
     for _, image in ipairs(graphics.images) do
-      Assert.equal(image.releaseCount, 1, versionId .. " releases each owned image exactly once")
+      if image.releaseCount == 0 then
+        resident = resident + 1
+      else
+        Assert.equal(image.releaseCount, 1, versionId .. " releases each leased portrait page exactly once")
+      end
     end
+    Assert.equal(
+      resident,
+      #SummaryCache.referencedPaths(manifest),
+      versionId .. " keeps the family visuals resident across leases"
+    )
     Assert.equal(setup.helper.calls.iconReleases, 0, versionId .. " never releases the borrowed icon provider")
     Assert.equal(setup.helper.calls.queueReleases, 0, versionId .. " never releases the borrowed image queue")
     owner:release()
+    for _, image in ipairs(graphics.images) do
+      Assert.equal(image.releaseCount, 1, versionId .. " releases each owned image exactly once")
+    end
   end
 end
 
@@ -229,7 +246,7 @@ local function syntheticComposition(failures, versionId)
     helper = helper,
     newOptions = function()
       return {
-        cacheFs = CacheFs.forVersion(versionId),
+        cacheFs = SummaryAcceptanceFixture.withSyntheticVisuals(CacheFs.forVersion(versionId)),
         graphics = helper.graphics,
         text = helper.text,
         icons = helper.icons,
@@ -252,6 +269,7 @@ local function syntheticDemand(key, epoch)
       MonCache.portraitSelector("TOTODILE", 0, "male", false),
     },
     iconKeys = { "CHIKORITA/f0", "TOTODILE/f0" },
+    cryBanks = { 152, 158 },
   }
 end
 
@@ -324,7 +342,7 @@ function T.constructor_and_demand_shapes_fail_loudly()
     local owner = Resources.new(setup.newOptions())
     local lease = owner:acquire()
     Assert.isFalse(
-      pcall(lease.prepare, lease, { key = "", revision = 1, pictureEpoch = 0, portraitSelectors = {}, iconKeys = {} }),
+      pcall(lease.prepare, lease, { key = "", revision = 1, pictureEpoch = 0, portraitSelectors = {}, iconKeys = {}, cryBanks = {} }),
       versionId .. " demands carry a non-empty key"
     )
     local many = { "A", "B", "C", "D", "E", "F", "G" }
@@ -335,6 +353,7 @@ function T.constructor_and_demand_shapes_fail_loudly()
         pictureEpoch = 0,
         portraitSelectors = many,
         iconKeys = {},
+        cryBanks = {},
       }),
       versionId .. " keeps portrait demand within the current party"
     )
@@ -345,6 +364,7 @@ function T.constructor_and_demand_shapes_fail_loudly()
         pictureEpoch = 0,
         portraitSelectors = { "MISSINGNO" },
         iconKeys = {},
+        cryBanks = {},
       }),
       versionId .. " fails unknown selectors instead of demanding blindly"
     )
@@ -467,8 +487,8 @@ function T.dynamic_frame_visuals_prepare_through_the_existing_owner()
     end
   end
     Assert.isTrue(#frameImages > 0, versionId .. " references frame images in its synthetic chrome")
-    local counts = countQueueRequests(setup.helper)
     local owner = Resources.new(setup.newOptions())
+    local counts = countQueueRequests(setup.helper)
     local lease = owner:acquire()
     local outcome = nil
     for _ = 1, 12 do
@@ -481,7 +501,7 @@ function T.dynamic_frame_visuals_prepare_through_the_existing_owner()
     local assets = assert(outcome.assets, versionId .. " carries its bundle on readiness")
     for _, image in ipairs(frameImages) do
       Assert.notNil(assets.imageForPath(image), versionId .. " resolves frame " .. image)
-      Assert.equal(counts[image], 1, versionId .. " decodes frame " .. image .. " once through its canonical path")
+      Assert.isNil(counts[image], versionId .. " loads frame " .. image .. " at construction, not through the queue")
     end
     lease:release()
     lease:release()
@@ -513,6 +533,9 @@ local function portraitCache(entries)
   function cache:loadLua(path)
     Assert.equal(path, MonCache.portraitManifestPath(), "portrait reads name the portrait manifest")
     return { entries = entries }
+  end
+  function cache:read(path)
+    return "synthetic visual " .. path
   end
   return cache
 end
@@ -553,6 +576,7 @@ local function exactDemand(key, selectors)
     pictureEpoch = 1,
     portraitSelectors = selectors,
     iconKeys = icons,
+    cryBanks = {},
   }
 end
 
@@ -624,6 +648,37 @@ function T.exact_selectors_resolve_their_own_pages_and_absent_selectors_never_fa
   probeSetup.owner:release()
 end
 
+function T.cry_banks_compile_before_the_lease_turns_ready_and_failures_surface()
+  local Resources = requireResources()
+  local versions = SummaryAcceptanceFixture.readySummaryVersions()
+  for _, versionId in ipairs(versions) do
+    local setup = syntheticComposition({}, versionId)
+    local owner = Resources.new(setup.newOptions())
+    local lease = owner:acquire()
+    local settled = prepareToTerminal(lease, syntheticDemand("syn-cry", 1))
+    Assert.equal(settled.kind, "ready", versionId .. " prepares once its cry banks are ready")
+    Assert.deepEqual(uniquePages(setup.helper.calls.cryBanks), { 152, 158 }, versionId .. " requests exactly the demanded cry banks")
+    lease:release()
+    owner:release()
+
+    local failing = syntheticComposition({}, versionId)
+    local options = failing.newOptions()
+    options.derivedAssets = {
+      requestMonPortraitPage = failing.helper.derivedAssets.requestMonPortraitPage,
+      requestAudioBank = function()
+        return nil, "test cry compilation is unavailable"
+      end,
+    }
+    local failingOwner = Resources.new(options)
+    local failingLease = failingOwner:acquire()
+    local failed = prepareToTerminal(failingLease, syntheticDemand("syn-cry-fail", 1))
+    Assert.equal(failed.kind, "failed", versionId .. " surfaces a cry bank failure")
+    Assert.isTrue(tostring(failed.error):find("cry compilation", 1, true) ~= nil, versionId .. " names the cause")
+    failingLease:release()
+    failingOwner:release()
+  end
+end
+
 function T.shared_paths_resolve_one_canonical_image()
   local selector = MonCache.portraitSelector("CHIKORITA", 0, "male", false)
   local family = SummaryPresentationFixture.manifest()
@@ -632,6 +687,11 @@ function T.shared_paths_resolve_one_canonical_image()
   family.visuals.namedPanel = { image = shared, width = 8, height = 8 }
   local setup = exactComposition({ [selector] = portraitEntry(3) }, family)
   local counts = countQueueRequests(setup.helper)
+  Assert.equal(
+    #setup.helper.graphics.images,
+    #SummaryCache.referencedPaths(family),
+    "one path loads one image no matter how many records name it"
+  )
   local lease = setup.owner:acquire()
   local ready = prepareToTerminal(lease, exactDemand("shared-path", { selector }))
   Assert.equal(ready.kind, "ready", "the shared-path demand prepares")
@@ -656,52 +716,51 @@ function T.shared_paths_resolve_one_canonical_image()
     pcall(assets.imageForPath, "assets/generated/summary/absent.png"),
     "an unprepared path asserts instead of returning nil"
   )
-  Assert.equal(counts[shared], 1, "one path decodes once no matter how many records name it")
+  Assert.isNil(counts[shared], "family visuals never ride the preparation queue")
   lease:release()
   setup.owner:release()
 end
 
-function T.last_lease_release_frees_and_reacquire_rebuilds()
+function T.last_lease_release_frees_pages_while_family_visuals_stay_resident()
   local selector = MonCache.portraitSelector("CHIKORITA", 0, "male", false)
   local setup = exactComposition({ [selector] = portraitEntry(3) })
   local owner = setup.owner
   local graphics = setup.helper.graphics
+  local visualCount = #graphics.images
+  Assert.equal(visualCount, #SummaryCache.referencedPaths(setup.manifest), "construction loads every family visual")
   local first = owner:acquire()
   local second = owner:acquire()
   local demand = exactDemand("shared-lifetime", { selector })
   local ready = prepareToTerminal(first, demand)
   Assert.equal(ready.kind, "ready", "the first lease prepares")
-  local firstShader = assert(ready.assets.shader, "ready preparation carries its picture shader")
+  local shader = assert(ready.assets.shader, "ready preparation carries its picture shader")
   local shared = prepareToTerminal(second, demand)
   Assert.equal(shared.kind, "ready", "the second lease shares the demand")
   first:release()
   local surviving = prepareToTerminal(second, demand)
   Assert.equal(surviving.kind, "ready", "the surviving lease stays usable after the old release")
-  Assert.notNil(
-    surviving.assets.portraits:image(selector),
-    "the surviving lease keeps its portrait page"
-  )
-  Assert.isTrue(#graphics.images >= 1, "preparation realizes owned images")
-  local realized = #graphics.images
+  Assert.notNil(surviving.assets.portraits:image(selector), "the surviving lease keeps its portrait page")
+  Assert.equal(#graphics.images, visualCount + 1, "preparation realizes only the portrait page")
+  local page = graphics.images[visualCount + 1]
   second:release()
-  for index = 1, realized do
-    Assert.equal(graphics.images[index].releaseCount, 1, "the last release frees each owned image exactly once")
+  Assert.equal(page.releaseCount, 1, "the last release frees the portrait page exactly once")
+  for index = 1, visualCount do
+    Assert.equal(graphics.images[index].releaseCount, 0, "the family visuals outlive their leases")
   end
-  Assert.isTrue(firstShader.released == true, "the last release frees the owned picture shader")
-  local shaderCount = #graphics.shaders
+  Assert.isTrue(shader.released ~= true, "the picture shader outlives its leases")
   local third = owner:acquire()
   local rebuilt = prepareToTerminal(third, exactDemand("shared-lifetime", { selector }))
   Assert.equal(rebuilt.kind, "ready", "a later lease reacquires after the last release")
-  Assert.isTrue(rebuilt.assets.shader ~= firstShader, "reacquisition rebuilds the picture shader")
-  Assert.equal(#graphics.shaders, shaderCount + 1, "reacquisition compiles its shader again")
-  Assert.isTrue(#graphics.images > realized, "reacquisition realizes fresh images")
-  for index = 1, realized do
-    Assert.equal(graphics.images[index].releaseCount, 1, "reacquisition never touches released handles")
-  end
+  Assert.equal(rebuilt.assets.shader, shader, "reacquisition reuses the resident picture shader")
+  Assert.equal(#graphics.images, visualCount + 2, "reacquisition realizes a fresh portrait page only")
+  Assert.equal(page.releaseCount, 1, "reacquisition never touches released handles")
   Assert.equal(setup.helper.calls.iconReleases, 0, "reacquisition never releases the borrowed icon provider")
   Assert.equal(setup.helper.calls.queueReleases, 0, "reacquisition never releases the borrowed image queue")
   third:release()
   owner:release()
+  for _, image in ipairs(graphics.images) do
+    Assert.equal(image.releaseCount, 1, "the owner release frees every remaining image exactly once")
+  end
 end
 
 function T.egg_only_demand_requests_no_portrait_page()

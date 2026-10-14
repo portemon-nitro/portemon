@@ -1,21 +1,23 @@
--- Field-owned Summary preparation lifetimes: one resource owner hands
--- out per-open demand leases over bounded portrait demand, isolates
--- overlapping leases by demand key and picture epoch, surfaces failures
--- instead of hanging, and releases every owned GPU object exactly once
--- while borrowed icon, queue, and text collaborators stay alive. Demand
--- per lease is the Summary-owned referenced visuals plus the shader, the
--- current roster icon keys, and at most the six unique portrait pages
--- behind the current party portrait identities; eggs resolve to small
+-- Field-owned Summary preparation lifetimes: one resource owner loads the
+-- Summary-owned referenced visuals and the picture shader once at
+-- construction, like the Party and Bag renderers, and keeps them for the
+-- field lifetime. It then hands out per-open demand leases over bounded
+-- per-mon demand, isolates overlapping leases by demand key and picture
+-- epoch, surfaces failures instead of hanging, and releases every owned
+-- GPU object exactly once while borrowed icon, queue, and text
+-- collaborators stay alive. Demand per lease is the current roster icon
+-- keys, the cry banks, and at most the six unique portrait pages behind
+-- the current party portrait identities; eggs resolve to small
 -- Summary-owned visuals and demand no portrait page. Shared pages are
 -- coalesced across leases; releasing one lease never cancels a
 -- replacement lease's work. Portrait pages realize at most one new page
 -- per prepare call while the borrowed icon provider keeps its own
 -- independent bound. Every realized image is owned once under its
 -- canonical cache-relative path; semantic names and page ids resolve to
--- that path instead of storing a second image. Realized art stays cached
--- at the owner while a live lease watches it; the last release of shared
--- demand frees each owned object exactly once, including quads and the
--- picture shader, so a later lease re-decodes with fresh identities.
+-- that path instead of storing a second image. Realized portrait art stays
+-- cached at the owner while a live lease watches it; the last release of
+-- shared demand frees each owned page and quad exactly once, so a later
+-- lease re-decodes with fresh identities.
 -- A stale demand key can never be adopted as the selected picture.
 
 local MonCache = require("libs.assets.src.MonCache")
@@ -54,14 +56,14 @@ end
 ---@field _manifest table<string, unknown>
 ---@field _portraitEntries table<string, table<string, unknown>>
 ---@field _visualPaths string[]
----@field _imagesByPath table<string, table<string, unknown>> realized images by canonical path
+---@field _visualImages table<string, table<string, unknown>> field-lifetime family visuals by canonical path
+---@field _imagesByPath table<string, table<string, unknown>> realized portrait pages by canonical path
 ---@field _tokensByPath table<string, unknown> decode tokens by canonical path
 ---@field _payloadsByPath table<string, table<string, unknown>> decoded payloads awaiting realization by path
 ---@field _quads table<string, unknown> realized quads by selector and frame
 ---@field _quadPaths table<string, string> owning page path per cached quad
 ---@field _shader table<string, unknown>? the one owned picture-palette shader
 ---@field _shaderFailed string? visible shader failure
----@field _shaderSource string?
 ---@field _released boolean
 ---@field _leases table<string, unknown>[] per-open leases in acquisition order
 local SummaryPresentationResources = {}
@@ -104,7 +106,7 @@ function SummaryPresentationResources.new(opts)
   local portraitManifest =
     assert(cacheFs:loadLua(MonCache.portraitManifestPath()), "summary preparation needs the portrait manifest")
   assert(type(portraitManifest.entries) == "table", "the portrait manifest carries entries")
-  return setmetatable({
+  local self = setmetatable({
     _cacheFs = cacheFs,
     _graphics = graphics,
     _text = text,
@@ -114,6 +116,7 @@ function SummaryPresentationResources.new(opts)
     _manifest = manifest,
     _portraitEntries = portraitManifest.entries,
     _visualPaths = SummaryCache.referencedPaths(manifest),
+    _visualImages = {},
     _imagesByPath = {},
     _tokensByPath = {},
     _payloadsByPath = {},
@@ -121,9 +124,42 @@ function SummaryPresentationResources.new(opts)
     _quadPaths = {},
     _shader = nil,
     _shaderFailed = nil,
-    _shaderSource = nil,
     _released = false,
   }, SummaryPresentationResources)
+  local loaded, loadErr = pcall(function()
+    self:_loadVisuals()
+  end)
+  if not loaded then
+    self:release()
+    error(loadErr, 0)
+  end
+  return self
+end
+
+-- Loads every family-owned visual and the picture shader once: the
+-- fixed Summary art is small and decodes in milliseconds, so opening a
+-- Summary never waits on it. A shader that fails to compile stays a
+-- visible per-open failure instead of failing the field.
+function SummaryPresentationResources:_loadVisuals()
+  for _, path in ipairs(self._visualPaths) do
+    local bytes = assert(self._cacheFs:read(path), "the summary family is missing " .. path)
+    local image = self._graphics.newImage(love.filesystem.newFileData(bytes, path))
+    if type(image.setFilter) == "function" then
+      image:setFilter("nearest", "nearest")
+    end
+    self._visualImages[path] = image
+  end
+  local ok, source = pcall(readShaderSource, SHADER_PATH)
+  if not ok then
+    self._shaderFailed = tostring(source)
+    return
+  end
+  local compiled, shader = pcall(self._graphics.newShader, source)
+  if not compiled then
+    self._shaderFailed = tostring(shader)
+    return
+  end
+  self._shader = shader
 end
 
 ---@param self SummaryPresentationResources
@@ -156,6 +192,10 @@ local function checkDemand(demand)
       type(selector) == "string" and selector:find("/", 1, true) ~= nil,
       "roster portrait selectors arrive as full identities"
     )
+  end
+  assert(type(demand.cryBanks) == "table", "demands carry the displayed cry banks")
+  for _, bank in ipairs(demand.cryBanks) do
+    assert(type(bank) == "number" and bank % 1 == 0 and bank >= 0, "cry banks arrive as bank ids")
   end
   assert(type(demand.iconKeys) == "table", "demands carry roster icon keys")
   for _, key in ipairs(demand.iconKeys) do
@@ -332,10 +372,6 @@ local function dropUnwatchedArt(self, watched)
       self._quads[cacheKey] = nil
       self._quadPaths[cacheKey] = nil
     end
-    local shader = self._shader
-    self._shader = nil
-    releaseOwned(shader)
-    self._shaderFailed = nil
   end
 end
 -- Releases the demand interest the lease no longer owns: paths no other
@@ -397,13 +433,13 @@ local function readyBundle(self)
     local visuals = assert(manifest.visuals, "the summary family carries its visuals")
     local record = assert(visuals[name], "the summary family carries visual " .. name)
     local path = assert(record.image, "visual " .. name .. " carries its image")
-    local image = owner._imagesByPath[path]
-    assert(image ~= nil, "visual " .. name .. " is not prepared at " .. path)
+    local image = owner._visualImages[path]
+    assert(image ~= nil, "visual " .. name .. " is not loaded at " .. path)
     return image
   end
   function bundle.imageForPath(path)
     assert(type(path) == "string" and path ~= "", "path reads name their cache-relative path")
-    local image = owner._imagesByPath[path]
+    local image = owner._visualImages[path] or owner._imagesByPath[path]
     assert(image ~= nil, "no prepared image for path " .. path)
     return image
   end
@@ -424,9 +460,6 @@ local function prepareLease(self, lease, demand)
     return { kind = "failed", error = tostring(pageCause) }
   end
   local watched = {}
-  for _, path in ipairs(self._visualPaths) do
-    watched[#watched + 1] = path
-  end
   local pagePaths = {}
   for _, pageId in ipairs(pages) do
     local path = MonCache.portraitPagePath(pageId)
@@ -463,7 +496,7 @@ local function prepareLease(self, lease, demand)
   for _, pageId in ipairs(pages) do
     local path = MonCache.portraitPagePath(pageId)
     if self._imagesByPath[path] == nil and self._payloadsByPath[path] == nil then
-      local ok, ready, failure = pcall(requestPage, self._derivedAssets, pageId, "required")
+      local ok, ready, failure = pcall(requestPage, pageId, "required")
       if not ok then
         return { kind = "failed", error = tostring(ready) }
       end
@@ -473,6 +506,24 @@ local function prepareLease(self, lease, demand)
       if not ready then
         return { kind = "pending" }
       end
+    end
+  end
+  -- Cry banks compile through the same provisioner seam so the summary
+  -- never plays a cry whose bank is not in the generated cache.
+  local requestBank = self._derivedAssets.requestAudioBank
+  if type(requestBank) ~= "function" then
+    return { kind = "failed", error = "audio bank compilation is unavailable" }
+  end
+  for _, bankId in ipairs(demand.cryBanks) do
+    local ok, ready, failure = pcall(requestBank, bankId, "required")
+    if not ok then
+      return { kind = "failed", error = tostring(ready) }
+    end
+    if failure ~= nil then
+      return { kind = "failed", error = tostring(failure) }
+    end
+    if not ready then
+      return { kind = "pending" }
     end
   end
   local pending = false
@@ -486,35 +537,14 @@ local function prepareLease(self, lease, demand)
     end
     return nil
   end
-  for _, path in ipairs(self._visualPaths) do
-    local failure = decodePath(path)
-    if failure ~= nil then
-      return { kind = "failed", error = failure }
-    end
-  end
   for _, path in ipairs(pagePaths) do
     local failure = decodePath(path)
     if failure ~= nil then
       return { kind = "failed", error = failure }
     end
   end
-  -- Realize decoded visuals as they arrive; portrait pages realize at
-  -- most one new page per call so a cold open never uploads the party at
-  -- once. Realization failures name their path.
-  for _, path in ipairs(self._visualPaths) do
-    local payload = self._payloadsByPath[path]
-    if payload ~= nil and self._imagesByPath[path] == nil then
-      local ok, image = pcall(realizeImage, self, payload)
-      if not ok then
-        return { kind = "failed", error = tostring(image) }
-      end
-      self._imagesByPath[path] = image
-      self._payloadsByPath[path] = nil
-    end
-    if self._imagesByPath[path] == nil then
-      pending = true
-    end
-  end
+  -- Portrait pages realize at most one new page per call so a cold open
+  -- never uploads the party at once. Realization failures name their path.
   local realizedPage = false
   for _, path in ipairs(pagePaths) do
     if self._imagesByPath[path] == nil and self._payloadsByPath[path] ~= nil and not realizedPage then
@@ -532,22 +562,6 @@ local function prepareLease(self, lease, demand)
   end
   if pending then
     return { kind = "pending" }
-  end
-  if self._shader == nil and self._shaderFailed == nil then
-    if self._shaderSource == nil then
-      local ok, source = pcall(readShaderSource, SHADER_PATH)
-      if not ok then
-        self._shaderFailed = tostring(source)
-        return { kind = "failed", error = self._shaderFailed }
-      end
-      self._shaderSource = source
-    end
-    local ok, shader = pcall(self._graphics.newShader, self._shaderSource)
-    if not ok then
-      self._shaderFailed = tostring(shader)
-      return { kind = "failed", error = self._shaderFailed }
-    end
-    self._shader = shader
   end
   if self._shaderFailed ~= nil then
     return { kind = "failed", error = self._shaderFailed }
@@ -618,6 +632,10 @@ function SummaryPresentationResources:release()
     releaseOwned(quad)
     self._quads[cacheKey] = nil
     self._quadPaths[cacheKey] = nil
+  end
+  for path, image in pairs(self._visualImages) do
+    releaseOwned(image)
+    self._visualImages[path] = nil
   end
   local shader = self._shader
   self._shader = nil

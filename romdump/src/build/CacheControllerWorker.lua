@@ -76,6 +76,7 @@ local VALID_KINDS = {
   portrait = true,
   ["icon-page"] = true,
   ["battle-scene"] = true,
+  ["audio-bank"] = true,
 }
 local VALID_URGENCIES = { required = true, near = true, sweep = true }
 
@@ -317,6 +318,10 @@ local function validateSelectors(params)
     if type(params.pageId) ~= "number" or params.pageId % 1 ~= 0 or params.pageId < 0 then
       return "icon request needs a non-negative integer pageId"
     end
+  elseif kind == "audio-bank" then
+    if type(params.bankId) ~= "number" or params.bankId % 1 ~= 0 or params.bankId < 0 then
+      return "audio-bank request needs a non-negative integer bankId"
+    end
   elseif kind == "battle-scene" then
     local Sources = require("romdump.src.config.BattlePresentationSources")
     if not Sources.validateSceneKey(params.sceneKey) then
@@ -342,6 +347,8 @@ function Worker:_invoke(params)
     return session:requestCell({ matrixMemberId = params.matrixMemberId, index = params.index }, urgency)
   elseif kind == "portrait" then
     return session:requestMonPortraitPage(params.pageId, urgency)
+  elseif kind == "audio-bank" then
+    return session:requestJob("audio-bank", tostring(params.bankId), urgency)
   elseif kind == "icon-page" then
     return session:requestIconPage(params.pageId, urgency)
   elseif kind == "battle-scene" then
@@ -546,6 +553,7 @@ function Worker:_applyRequest(command)
     index = command.index,
     pageId = command.pageId,
     sceneKey = command.sceneKey,
+    bankId = command.bankId,
   }
   local selectorError = validateSelectors(params)
   if selectorError ~= nil then

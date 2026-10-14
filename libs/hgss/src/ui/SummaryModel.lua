@@ -676,7 +676,14 @@ local function buildRich(reader, slot0, context, manifest, catalog, derive)
       )
       portraitSelector = portraitSelectorFor(catalog, member)
     end
-    roster[#roster + 1] = { slot = slot, isEgg = memberIsEgg, iconKey = iconKey, portraitSelector = portraitSelector }
+    roster[#roster + 1] = {
+      slot = slot,
+      isEgg = memberIsEgg,
+      iconKey = iconKey,
+      portraitSelector = portraitSelector,
+      species = member.species,
+      form = member.form,
+    }
   end
 
   local snapshot = nil

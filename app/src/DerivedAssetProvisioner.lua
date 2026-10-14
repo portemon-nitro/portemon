@@ -121,6 +121,10 @@ function DerivedAssetProvisioner.new(options)
       assert(type(pageId) == "number" and pageId % 1 == 0 and pageId >= 0, "portrait request requires its page")
       return ask("portrait", urgency, { pageId = pageId })
     end,
+    requestAudioBank = function(bankId, urgency)
+      assert(type(bankId) == "number" and bankId % 1 == 0 and bankId >= 0, "audio bank request requires its bank")
+      return ask("audio-bank", urgency, { bankId = bankId })
+    end,
     requestIconPage = function(pageId, urgency)
       assert(type(pageId) == "number" and pageId % 1 == 0 and pageId >= 0, "icon request requires its page")
       return ask("icon-page", urgency, { pageId = pageId })

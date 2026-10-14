@@ -185,10 +185,10 @@ local function buildPresenters(owner)
       text = assert(owner.textRenderer, "party text renderer is unavailable"),
     }, status, plan)
   end
-  -- The summary wait screen mirrors the party wait contract over the
-  -- wrapper-owned preparation state: pending shows the host preparation
-  -- cover, failure shows the explicit cause with cancellation. Drawing
-  -- never invokes bundle getters, so no draw ever acquires resources.
+  -- The summary wait screen covers the wrapper-owned preparation state:
+  -- pending draws only the host preparation cover, failure shows the
+  -- explicit cause with cancellation. Drawing never invokes bundle
+  -- getters, so no draw ever acquires resources.
   ---@param presentation table<string, unknown>?
   ---@return boolean handled
   local function drawSummaryWait(presentation)
@@ -196,10 +196,13 @@ local function buildPresenters(owner)
     if state ~= "pending" and state ~= "failed" then
       return false
     end
-    local text = assert(owner.textRenderer, "summary text renderer is unavailable")
-    if state == "pending" then
-      text:drawText("Preparing summary...", 8, 8)
-    else
+    local plan = presentation and presentation.presentation
+    local inputKey = type(plan) == "table" and plan.inputKey or nil
+    if inputKey ~= "summary" and inputKey ~= "summary-inactive" then
+      return false
+    end
+    if state == "failed" then
+      local text = assert(owner.textRenderer, "summary text renderer is unavailable")
       local status = assert(presentation, "the summary application presents its status")
       text:drawText("Summary unavailable: " .. tostring(status.preparationError), 8, 8)
     end

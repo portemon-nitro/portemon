@@ -365,6 +365,7 @@ local function matrixPartyManifest()
       iconAnchor = { x = 30, y = 200 },
       statusAnchor = { x = 50, y = 220 },
       nicknameTextOrigin = { x = 56, y = 192 },
+      heldItemLabelOrigin = { x = 138, y = 192 },
       heldItemTextOrigin = { x = 138, y = 212 },
     },
     text = PartyPresentationFixture.manifest().text,

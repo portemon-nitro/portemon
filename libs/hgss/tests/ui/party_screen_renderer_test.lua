@@ -144,6 +144,7 @@ local function sourceManifest()
       iconAnchor = { x = 30, y = 200 },
       statusAnchor = { x = 50, y = 220 },
       nicknameTextOrigin = { x = 56, y = 192 },
+      heldItemLabelOrigin = { x = 138, y = 192 },
       heldItemTextOrigin = { x = 138, y = 212 },
     },
     iconAnimations = v3.iconAnimations,
@@ -1010,6 +1011,18 @@ function T.itemless_detail_draws_name_at_generated_origin_without_held_obj()
     end
   end
   Assert.isTrue(found, "itemless display name uses the generated detail origin and slide")
+
+  local labelFound = false
+  for _, call in ipairs(texts) do
+    if
+      call.value == manifest.text.labels.item
+      and call.x == detail.heldItemLabelOrigin.x
+      and call.y == detail.heldItemLabelOrigin.y - 40
+    then
+      labelFound = true
+    end
+  end
+  Assert.isTrue(labelFound, "the detail panel labels the held item above its name at the source window")
 
   local heldImages = {}
   for sequenceIndex = 1, 2 do

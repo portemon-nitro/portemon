@@ -92,6 +92,7 @@ function T.compiled_geometry_publishes_source_independent_runtime_anchors()
     iconAnchor = { x = 30, y = 200 },
     statusAnchor = { x = 50, y = 220 },
     nicknameTextOrigin = { x = 56, y = 192 },
+    heldItemLabelOrigin = { x = 138, y = 192 },
     heldItemTextOrigin = { x = 138, y = 212 },
   })
 end
@@ -171,10 +172,7 @@ function T.window_inventory_names_each_native_message_placement()
   for _, name in ipairs({ "browse", "context", "action" }) do
     local record = windows[name]
     Assert.notNil(record, "the producer transcribes the " .. name .. " message window")
-    Assert.isTrue(
-      record.width > 0 and record.height > 0,
-      "the " .. name .. " message window has a realized size"
-    )
+    Assert.isTrue(record.width > 0 and record.height > 0, "the " .. name .. " message window has a realized size")
     Assert.isTrue(
       record.x >= 0 and record.y >= 0 and record.x + record.width <= 256 and record.y + record.height <= 192,
       "the " .. name .. " message window fits the native pane"
@@ -203,14 +201,8 @@ function T.lowered_menus_cover_every_supported_entry_count()
     Assert.notNil(layout, "the subcontext menu covers " .. count .. " entries")
     Assert.equal(#layout, count, "the " .. count .. "-entry subcontext layout carries one record per entry")
   end
-  Assert.isTrue(
-    (menu.topLevel[1] or menu.topLevel["1"]) == nil,
-    "unsupported top-level counts have no fallback layout"
-  )
-  Assert.isTrue(
-    (menu.topLevel[9] or menu.topLevel["9"]) == nil,
-    "unsupported top-level counts have no fallback layout"
-  )
+  Assert.isTrue((menu.topLevel[1] or menu.topLevel["1"]) == nil, "unsupported top-level counts have no fallback layout")
+  Assert.isTrue((menu.topLevel[9] or menu.topLevel["9"]) == nil, "unsupported top-level counts have no fallback layout")
   Assert.isTrue(
     (menu.subcontext[1] or menu.subcontext["1"]) == nil,
     "unsupported subcontext counts have no fallback layout"

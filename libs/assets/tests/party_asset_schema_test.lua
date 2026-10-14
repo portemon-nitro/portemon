@@ -135,6 +135,7 @@ local function manifest()
       iconAnchor = { x = 30, y = 200 },
       statusAnchor = { x = 50, y = 220 },
       nicknameTextOrigin = { x = 56, y = 192 },
+      heldItemLabelOrigin = { x = 138, y = 192 },
       heldItemTextOrigin = { x = 138, y = 212 },
     },
     iconAnimations = {
@@ -259,6 +260,7 @@ local function v3manifest()
   }
   data.text.labels.male = "M"
   data.text.labels.female = "F"
+  data.text.labels.item = "ITEM"
   data.numberGlyphs.placement = {
     level = { x = 5, y = 2 },
     current = { x = 0, y = 2 },
@@ -302,7 +304,6 @@ local function v3manifest()
   data.controls.cancel.align = "center"
   return data
 end
-
 
 -- The next presentation contract: semantic context text roles replace the
 -- flat button palettes, every panel carries switch-selection chrome, and
@@ -373,7 +374,10 @@ function T.runtime_required_sequence_prefixes_are_mandatory()
     if ok then
       accepted[#accepted + 1] = case.name .. "=" .. case.count
     else
-      Assert.notNil(tostring(err):find("PARTY_MANIFEST_INVALID"), case.name .. " rejection uses the manifest error family")
+      Assert.notNil(
+        tostring(err):find("PARTY_MANIFEST_INVALID"),
+        case.name .. " rejection uses the manifest error family"
+      )
     end
   end
   Assert.isTrue(#accepted == 0, "incomplete runtime prefixes passed: " .. table.concat(accepted, ", "))
@@ -421,7 +425,10 @@ function T.producer_tail_sequences_remain_validated()
   Assert.isTrue(PartyAssetSchema.isValidManifest(currentProducer), "the producer's four-button output is valid")
 
   currentProducer.visuals.buttons.sequences[4].frames[1].image = "assets/generated/bag/other.png"
-  Assert.isFalse(PartyAssetSchema.isValidManifest(currentProducer), "producer-tail sequences still receive structural validation")
+  Assert.isFalse(
+    PartyAssetSchema.isValidManifest(currentProducer),
+    "producer-tail sequences still receive structural validation"
+  )
 end
 
 function T.schema_rejects_malformed_references()
@@ -709,19 +716,13 @@ function T.runtime_messages_are_required_at_the_schema_boundary()
       local err = Assert.throws(function()
         PartyAssetSchema.assertManifest(bad)
       end)
-      Assert.notNil(
-        tostring(err):find("PARTY_MANIFEST_INVALID"),
-        name .. " rejection uses the manifest error family"
-      )
+      Assert.notNil(tostring(err):find("PARTY_MANIFEST_INVALID"), name .. " rejection uses the manifest error family")
     end
   end
   Assert.isTrue(#accepted == 0, "incomplete families passed: " .. table.concat(accepted, ", "))
   local hollow = v6manifest()
   hollow.text.templates.takeNoItem = { segments = {} }
-  Assert.isFalse(
-    PartyAssetSchema.isValidManifest(hollow),
-    "a required template without segments stays invalid"
-  )
+  Assert.isFalse(PartyAssetSchema.isValidManifest(hollow), "a required template without segments stays invalid")
 end
 
 function T.unlisted_message_templates_remain_valid()

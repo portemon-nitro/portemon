@@ -578,6 +578,40 @@ function T.scene_selector_dispatches_the_registered_scene_job()
   Assert.isTrue(worker.lifecycle ~= "failed", "a malformed selector never kills the controller")
 end
 
+-- One cry bank demand dispatches the generic audio-bank job keyed by its
+-- numeric bank; a malformed bank fails its own request.
+function T.audio_bank_selector_dispatches_the_bank_job()
+  local calls = {}
+  local session = { pumps = 0 }
+  function session.update()
+    session.pumps = session.pumps + 1
+  end
+  function session.requestJob(_, kind, key, urgency)
+    calls[#calls + 1] = { kind = kind, key = key, urgency = urgency }
+    return true, nil
+  end
+  function session.hasRunnablePlanning()
+    return false
+  end
+  function session.nextPlanningWakeDelay()
+    return nil
+  end
+  local worker, replies, queued = pushWorker(session, 7)
+  queued[#queued + 1] =
+    { op = "request", epoch = 7, requestId = 51, requestKind = "audio-bank", bankId = 158, urgency = "required" }
+  queued[#queued + 1] =
+    { op = "request", epoch = 7, requestId = 52, requestKind = "audio-bank", bankId = -1, urgency = "required" }
+  worker:step()
+  worker:step()
+  Assert.equal(calls[1].kind, "audio-bank", "the dispatched job keeps its kind")
+  Assert.equal(calls[1].key, "158", "the dispatched job keys the bank id")
+  local results = packetsOf(replies, "request-result")
+  Assert.equal(#results, 2, "both requests settle")
+  Assert.equal(results[1].state, "ready", "a ready bank completes through its terminal event")
+  Assert.equal(results[2].state, "failed", "a malformed bank fails its own request")
+  Assert.isTrue(worker.lifecycle ~= "failed", "a malformed selector never kills the controller")
+end
+
 -- A source offer for the live epoch is never silently dropped: the
 -- controller acknowledges it, forwards it to its pool, or rejects it
 -- visibly. The exact acknowledgement shape stays the implementation's

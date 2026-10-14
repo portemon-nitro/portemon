@@ -1490,7 +1490,7 @@ local function compilePictures(romFs, catalog, portraitManifest, dependencies, a
   return pictures, compiled.programs
 end
 
-local function compileRibbons(ribbonVisuals)
+local function compileRibbons(ribbonVisuals, ribbonLabels)
   local entries = {}
   for index, entry in ipairs(SummarySources.ribbons) do
     local visual = ribbonVisuals[entry.key]
@@ -1518,9 +1518,20 @@ local function compileRibbons(ribbonVisuals)
     end
     entries[index] = record
   end
+  -- The source's zero-initialized caller context selects the special base
+  -- message for every slot, which compileRibbonText already lowered as the
+  -- description of each special ribbon.
+  local baseDescription = nil
+  for _, entry in ipairs(SummarySources.ribbons) do
+    if entry.special ~= nil then
+      baseDescription = ribbonLabels["ribbonDescription_" .. entry.key]
+      break
+    end
+  end
+  assert(baseDescription ~= nil, "the ribbon table carries a special ribbon")
   local initial = {}
   for _ = 1, 14 do
-    initial[#initial + 1] = 0
+    initial[#initial + 1] = baseDescription
   end
   return {
     entries = entries,
@@ -1947,7 +1958,7 @@ local function _compile(romFs, catalog, portraitManifest)
     palettes.banks["bg" .. bank] = colors
   end
   local pictures, usedPrograms = compilePictures(romFs, catalog, portraitManifest, dependencies, assets)
-  local ribbons = compileRibbons(ribbonVisuals)
+  local ribbons = compileRibbons(ribbonVisuals, ribbonLabels)
   local performance = compilePerformance(performanceArchive, catalog, dependencies)
   local dexNumbers = compileDexNumbers(dexArchive, catalog, dependencies)
   local memo = compileMemo(summaryText, months, landmarks)

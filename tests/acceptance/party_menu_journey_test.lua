@@ -17,7 +17,20 @@ local FieldState = require("game.hgss.src.field.FieldState")
 local GameSave = require("libs.hgss.src.save.GameSave")
 
 local T = {
-  metadata = { capabilities = { "rom_dump" }, derivedAssets = { "field-runtime", "audio-bank:700", "audio-bank:730", "audio-bank:759", "map-data:7", "map:7", "summary:global" }, tags = { "party", "bag", "journey" } },
+  metadata = {
+    capabilities = { "rom_dump" },
+    derivedAssets = {
+      "field-runtime",
+      "audio-bank:158",
+      "audio-bank:700",
+      "audio-bank:730",
+      "audio-bank:759",
+      "map-data:7",
+      "map:7",
+      "summary:global",
+    },
+    tags = { "party", "bag", "journey" },
+  },
   tests = {},
 }
 
@@ -51,8 +64,7 @@ local function bindSummaryLease(game)
     function lease:prepare(demand)
       return { kind = "ready", key = demand.key, assets = { manifest = manifest } }
     end
-    function lease:release()
-    end
+    function lease:release() end
     return lease
   end)
 end
@@ -547,6 +559,11 @@ function T.tests.production_swap_summary_save_reload_persists(context)
       return current.page == "summary"
     end)
     Assert.isTrue(status.open, "summary opens for the focused member")
+    for _ = 1, 30 do
+      status = drive(party, {})
+    end
+    Assert.equal(status.page, "summary", "the summary stays open instead of cancelling during its refresh")
+    Assert.isTrue(flowChild(status).wrapperPhase ~= "failed", "the summary prepares its display context")
     drive(party, { { type = "cancel" } })
     local returned = nil
     for _ = 1, 30 do
@@ -780,11 +797,7 @@ function T.tests.production_held_take_keeps_its_transfer(context)
       flow:updateFixed({})
     end
     Assert.equal(mons:partyMon(0).heldItem, "NONE", "taking must clear the held slot")
-    Assert.equal(
-      bag:quantity("POTION"),
-      bagQuantity + 1,
-      "the taken potion returns to the bag exactly once"
-    )
+    Assert.equal(bag:quantity("POTION"), bagQuantity + 1, "the taken potion returns to the bag exactly once")
     Assert.isTrue(mons:partyRevision() == partyRevision + 1, "taking publishes exactly one mon revision")
     Assert.isTrue(bag:revision() == bagRevision + 1, "taking publishes exactly one bag revision")
     local status = flowStatus(flow)

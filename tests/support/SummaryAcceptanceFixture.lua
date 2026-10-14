@@ -49,10 +49,8 @@ function SummaryAcceptanceFixture.displayContext(manifest, slotCount, profile)
   assert(type(zero) == "table", "zero modifiers are a record")
   local ribbons = assert(manifest.ribbons, "the summary family carries ribbon definitions")
   assert(type(ribbons) == "table", "ribbon definitions are a record")
-  local initials = assert(
-    ribbons.initialSpecialDescriptions,
-    "ribbon definitions carry the source-initial special descriptions"
-  )
+  local initials =
+    assert(ribbons.initialSpecialDescriptions, "ribbon definitions carry the source-initial special descriptions")
   assert(type(initials) == "table", "initial special descriptions are a record")
   -- Special-ribbon display text is a runtime resolution (the family
   -- carries source message selections, production reads the bank): tests
@@ -131,12 +129,18 @@ function SummaryAcceptanceFixture.preparationDoubles(failures)
     queueReleases = 0,
   }
   local derivedAssets = {
-    requestMonPortraitPage = function(_, pageId, _)
+    requestMonPortraitPage = function(pageId, _)
       Assert.equal(type(pageId), "number", "portrait demand names its page")
       if failures.portrait == true then
         return nil, "test portrait compilation is unavailable"
       end
       calls.portraitPages[#calls.portraitPages + 1] = { pageId = pageId }
+      return true, nil
+    end,
+    requestAudioBank = function(bankId, _)
+      Assert.equal(type(bankId), "number", "cry demand names its bank")
+      calls.cryBanks = calls.cryBanks or {}
+      calls.cryBanks[#calls.cryBanks + 1] = { pageId = bankId }
       return true, nil
     end,
   }
@@ -193,10 +197,8 @@ function SummaryAcceptanceFixture.preparationDoubles(failures)
   }
   local graphics = FakeGraphics.new(failures.image == true and { failOnImageCall = 1 } or {})
   local text = {
-    drawLineWithPalette = function(_, _, _, _, _)
-    end,
-    drawLineWithColorVariants = function(_, _, _, _, _, _)
-    end,
+    drawLineWithPalette = function(_, _, _, _, _) end,
+    drawLineWithColorVariants = function(_, _, _, _, _, _) end,
     textWidth = function(_, _)
       return 0
     end,
@@ -209,6 +211,30 @@ function SummaryAcceptanceFixture.preparationDoubles(failures)
     graphics = graphics,
     text = text,
   }
+end
+
+-- Serves stand-in bytes for family visuals a synthetic manifest names but
+-- no generated cache carries; every other read reaches the real cache. The
+-- owner loads its visuals at construction, so a synthetic family needs a
+-- readable byte string for each referenced path.
+---@param cacheFs table<string, unknown>
+---@return table<string, unknown> cache reader with synthetic visual bytes
+function SummaryAcceptanceFixture.withSyntheticVisuals(cacheFs)
+  local proxy = {}
+  function proxy:read(path)
+    return cacheFs:read(path) or ("synthetic visual " .. path)
+  end
+  return setmetatable(proxy, {
+    __index = function(_, key)
+      local value = cacheFs[key]
+      if type(value) == "function" then
+        return function(_, ...)
+          return value(cacheFs, ...)
+        end
+      end
+      return value
+    end,
+  })
 end
 
 ---@param versionId string

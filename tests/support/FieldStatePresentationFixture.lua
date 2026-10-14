@@ -206,6 +206,7 @@ local function partyManifest()
       iconAnchor = { x = 30, y = 200 },
       statusAnchor = { x = 50, y = 220 },
       nicknameTextOrigin = { x = 56, y = 192 },
+      heldItemLabelOrigin = { x = 138, y = 192 },
       heldItemTextOrigin = { x = 138, y = 212 },
     },
     iconAnimations = {
@@ -248,7 +249,7 @@ local function partyManifest()
       },
     },
     text = {
-      labels = { cancel = "Cancel", male = "M", female = "F" },
+      labels = { cancel = "Cancel", male = "M", female = "F", item = "ITEM" },
       templates = {
         switchPrompt = { segments = { { kind = "text", value = "Switch?" } } },
         chooseMon = { segments = { { kind = "text", value = "Choose a POKEMON." } } },
@@ -379,11 +380,14 @@ function FieldStatePresentationFixture.cache()
   for _, path in ipairs(PartyCache.referencedPaths(partyData)) do
     cache:write(path, solidPng(32, 32))
   end
-  -- Minimal schema-valid summary family and portrait entries so the
-  -- required summary preparation owner validates during FieldState
-  -- construction. No image realizes here: these boots never open the
-  -- summary, so no lease ever demands visuals from the family.
-  cache:writeLua(SummaryCache.manifestPath(), SummaryPresentationFixture.manifest())
+  -- Minimal schema-valid summary family, every image it references, and
+  -- portrait entries so the required summary preparation owner loads its
+  -- visuals during FieldState construction.
+  local summaryData = SummaryPresentationFixture.manifest()
+  cache:writeLua(SummaryCache.manifestPath(), summaryData)
+  for _, path in ipairs(SummaryCache.referencedPaths(summaryData)) do
+    cache:write(path, solidPng(32, 32))
+  end
   cache:writeLua(MonCache.portraitManifestPath(), { entries = {} })
   cache:write(
     FieldActorCache.indexPath(),
@@ -539,6 +543,11 @@ function FieldStatePresentationFixture.iconHost()
     end,
     requestMonPortraitPage = function(pageId, _)
       note("portrait", pageId)
+      return true
+    end,
+    requestAudioBank = function(bankId, _)
+      assert(type(bankId) == "number", "audio bank demand carries its bank")
+      note("audio-bank", bankId)
       return true
     end,
     requestIconPage = function(pageId, urgency)

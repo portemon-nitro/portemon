@@ -340,10 +340,6 @@ local function summaryContextProvider(innerRuntime, manifest)
   local initials =
     assert(ribbons.initialSpecialDescriptions, "ribbon definitions carry the source-initial special descriptions")
   assert(type(initials) == "table", "initial special descriptions are a record")
-  local choices = assert(ribbons.descriptionChoices, "ribbon definitions carry description choices")
-  assert(type(choices) == "table", "description choices are a record")
-  local bank = assert(choices.base, "description choices carry their message bank")
-  assert(type(bank) == "number", "description message banks are numeric")
   local function provide()
     local playerData = assert(innerRuntime.playerData, "the menu composition requires the player data")
     local profile = assert(playerData.profile, "the menu composition requires the player profile")
@@ -363,20 +359,11 @@ local function summaryContextProvider(innerRuntime, manifest)
         speed = zero.speed,
       }
     end
-    local provider = assert(innerRuntime.messageProvider, "special descriptions resolve through messages")
     local specials = {}
     for slot = 1, 14 do
-      local initial = initials[slot]
-      if type(initial) == "string" and initial ~= "" then
-        specials[slot] = initial
-      else
-        assert(type(initial) == "number", "source-initial special selections stay numeric")
-        local template, messageErr = provider:get(bank, initial)
-        assert(template ~= nil, "special-ribbon message unavailable: " .. tostring(messageErr))
-        local text = assert(template.text, "special-ribbon messages carry text")
-        assert(type(text) == "string" and text ~= "", "special-ribbon messages carry display text")
-        specials[slot] = text
-      end
+      local text = initials[slot]
+      assert(type(text) == "string" and text ~= "", "source-initial special descriptions carry display text")
+      specials[slot] = text
     end
     return {
       profile = { trainerId = profile.trainerId, name = profile.name, gender = profile.gender },

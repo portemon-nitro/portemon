@@ -13,6 +13,7 @@
 -- or resolve releases the lease and whatever the open acquired.
 
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
+local CryPlayer = require("libs.hgss.src.audio.CryPlayer")
 local StandardFade = require("libs.hgss.src.presentation.StandardFade")
 local SummaryController = require("libs.hgss.src.ui.SummaryController")
 local SummaryModel = require("libs.hgss.src.ui.SummaryModel")
@@ -455,6 +456,30 @@ function SummaryScreenState:refreshPresentation(view)
   return self._session:resolve(self:_measured(), view or self:_view())
 end
 
+-- Resolves one displayed species and form to the audio bank its cry plays
+-- from, through the family's national dex numbers.
+---@param self SummaryScreenState
+---@param speciesKey string
+---@param form integer
+---@return integer
+local function cryBankFor(self, speciesKey, form)
+  local dexNumbers = assert(self._manifest.dexNumbers, "the summary family carries dex numbers")
+  local numbers = assert(dexNumbers[speciesKey], "dex numbers cover the displayed species")
+  local national = assert(numbers.national, "dex numbers carry the national entry")
+  return CryPlayer.bankFor(national, form)
+end
+
+---@param banks table<integer, boolean>
+---@return integer[] sorted unique bank ids
+local function sortedBanks(banks)
+  local list = {}
+  for bank in pairs(banks) do
+    list[#list + 1] = bank
+  end
+  table.sort(list)
+  return list
+end
+
 -- Builds the bounded demand behind the current selection from the
 -- already-reconciled controller facts. Party demand carries one full
 -- portrait identity per non-egg roster member in slot order with the
@@ -495,20 +520,38 @@ local function currentDemand(self)
     end
     local iconKey = assert(facts.iconKey, "subjects carry their icon key")
     local key = string.format("%d:%d:%d", revision, selected, pictureEpoch)
+    local cryBanks = {}
+    if facts.isEgg ~= true then
+      local identity = assert(facts.identity, "facts carry their identity")
+      cryBanks[cryBankFor(
+        self,
+        assert(identity.species, "identities carry their species"),
+        assert(identity.form, "identities carry their form")
+      )] =
+        true
+    end
     return {
       key = key,
       revision = revision,
       pictureEpoch = pictureEpoch,
       portraitSelectors = selectors,
       iconKeys = { iconKey },
+      cryBanks = sortedBanks(cryBanks),
     }
   end
   local selectors = {}
   local iconKeys = {}
+  local cryBanks = {}
   for _, row in ipairs(assert(facts.roster, "facts carry the party roster")) do
     iconKeys[#iconKeys + 1] = assert(row.iconKey, "roster rows carry their icon key")
     if row.isEgg ~= true then
       selectors[#selectors + 1] = assert(row.portraitSelector, "non-egg roster rows carry their portrait identity")
+      cryBanks[cryBankFor(
+        self,
+        assert(row.species, "roster rows carry their species"),
+        assert(row.form, "roster rows carry their form")
+      )] =
+        true
     end
   end
   local key = string.format("%d:%d", revision, pictureEpoch)
@@ -518,6 +561,7 @@ local function currentDemand(self)
     pictureEpoch = pictureEpoch,
     portraitSelectors = selectors,
     iconKeys = iconKeys,
+    cryBanks = sortedBanks(cryBanks),
   }
 end
 
@@ -642,10 +686,10 @@ local function dispatchEffect(self, effect, status)
     end
     local identity = assert(facts.identity, "facts carry their identity")
     local speciesKey = assert(identity.species, "identities carry their species")
-    local dexNumbers = assert(self._manifest.dexNumbers, "the summary family carries dex numbers")
-    assert(type(dexNumbers) == "table", "dex numbers arrive as a record")
-    local numbers = assert(dexNumbers[speciesKey], "dex numbers cover the displayed species")
-    assert(type(numbers) == "table", "dex numbers carry per-species entries")
+    local numbers = assert(
+      assert(self._manifest.dexNumbers, "the summary family carries dex numbers")[speciesKey],
+      "dex numbers cover the displayed species"
+    )
     local national = assert(numbers.national, "dex numbers carry the national entry")
     assert(type(national) == "number" and national % 1 == 0, "cry species stay numeric")
     self._playCry(national, 0, assert(identity.form, "identities carry their form"))

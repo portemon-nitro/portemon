@@ -555,11 +555,13 @@ function PartyAssetSchema.assertManifest(manifest)
     iconAnchor = true,
     statusAnchor = true,
     nicknameTextOrigin = true,
+    heldItemLabelOrigin = true,
     heldItemTextOrigin = true,
   }, {}, "manifest.detail")
   checkDetailPoint(detail.iconAnchor, {}, "manifest.detail.iconAnchor")
   checkDetailPoint(detail.statusAnchor, {}, "manifest.detail.statusAnchor")
   checkDetailPoint(detail.nicknameTextOrigin, {}, "manifest.detail.nicknameTextOrigin")
+  checkDetailPoint(detail.heldItemLabelOrigin, {}, "manifest.detail.heldItemLabelOrigin")
   checkDetailPoint(detail.heldItemTextOrigin, {}, "manifest.detail.heldItemTextOrigin")
   if type(root.windows) ~= "table" then
     fail("manifest.windows must be a record", {})
@@ -762,6 +764,9 @@ function PartyAssetSchema.assertManifest(manifest)
   end
   if type(labels.female) ~= "string" or labels.female == "" then
     fail("manifest.text.labels.female must be display text", {})
+  end
+  if type(labels.item) ~= "string" or labels.item == "" then
+    fail("manifest.text.labels.item must be display text", {})
   end
   if type(text.roles) ~= "table" then
     fail("manifest.text.roles must be a record", {})
