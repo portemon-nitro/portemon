@@ -143,6 +143,7 @@ function ScriptActorWorld:snapshot(actorId)
     mapId = actor.mapId,
     position = position,
     facing = facing,
+    movementSelector = actor.sourceEvent.movementSelector,
     -- Scripted hide_object is transient visibility on the live actor: the
     -- snapshot reports the same state collision sees (hidden actors remain
     -- solid), so the two views never contradict.

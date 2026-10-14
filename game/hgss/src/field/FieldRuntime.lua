@@ -206,6 +206,7 @@ end
 ---@field pokegearManifest table<string, unknown>? the compiled companion family (nil after teardown)
 ---@field pokegearCatalog table<string, unknown>? the borrowed compiled contact catalog (nil after teardown)
 ---@field pokegear table<string, unknown>? the composed companion feature bundle (nil after teardown)
+---@field phoneMessages table<string, unknown>? the provider-backed phone contact message resolver
 ---@field incomingCalls table<string, unknown>? the owned ambient incoming-call coordinator (nil after teardown)
 ---@field playerDataContext table<string, unknown>? the generated charmap and frame-index context behind player validation
 ---@field bagCursor BagCursor the runtime-only field bag cursor
@@ -2482,6 +2483,7 @@ function FieldRuntime:_composePokegearFeature(boot)
   local catalog = assert(self.pokegearCatalog, "companion feature needs its contact catalog")
   local summaryManifest =
     SummaryCache.loadManifest(assert(self.cacheFs, "companion feature needs the cache filesystem"))
+  local phoneMessages = phoneGreetingRefs(catalog, self.messageProvider, self.playerData.profile, self.fontDef, self)
   local bundle = PokegearComposition.compose(self, {
     state = assert(self.pokegearState, "companion feature needs its durable state"),
     catalog = catalog,
@@ -2489,8 +2491,9 @@ function FieldRuntime:_composePokegearFeature(boot)
     summaryDexNumbers = summaryManifest.dexNumbers,
     clock = assert(self.localClock, "companion feature needs its civil clock"),
     audio = self.audio or boot.audioService,
-    messages = phoneGreetingRefs(catalog, self.messageProvider, self.playerData.profile, self.fontDef, self),
+    messages = phoneMessages,
   })
+  self.phoneMessages = phoneMessages
   self.pokegear = bundle
   self.incomingCalls = assert(bundle.incoming, "companion feature carries its incoming owner")
 end
@@ -2950,6 +2953,13 @@ function FieldRuntime:composeTrainers(compiled)
     game = self.versionId,
     language = assert(self.monLanguage, "trainer composition requires the mon language"),
   })
+end
+
+-- Field scripts read trainer attributes from the same immutable catalog
+-- used by trainer battle materialization.
+---@return table<string, unknown>
+function FieldRuntime:trainerCatalog()
+  return assert(self._trainerCatalog, "trainer catalog is composed before field scripts")
 end
 
 -- Runs one encounter attempt over the composed service. Without a service
@@ -3647,6 +3657,7 @@ function FieldRuntime:_releaseAll()
     self.pokegear:dispose()
   end
   self.pokegear = nil
+  self.phoneMessages = nil
   self.incomingCalls = nil
   self.pokegearManifest, self.pokegearCatalog = nil, nil
   self.pokegearState, self.pokegearRandom, self.pokegearCalendar = nil, nil, nil

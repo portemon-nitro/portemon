@@ -188,9 +188,12 @@ function Fixture.drainField(game, budget)
     local scheduler = game.runtime.scripts.scheduler
     local foreground = scheduler and scheduler:foregroundEnvironmentId()
     local pokegearHost = game.runtime.pokegear and game.runtime.pokegear.scriptHost
+    local blackout = game.runtime.blackoutFlow and game.runtime.blackoutFlow:status()
     if pokegearHost ~= nil and pokegearHost:isActive() then
       Fixture.pressActionEdge(game)
     elseif game.runtime.scripts.dialogueHost:yesNoPresentation() ~= nil then
+      Fixture.pressActionEdge(game)
+    elseif blackout ~= nil and blackout.waitingInput then
       Fixture.pressActionEdge(game)
     elseif snapshot.dialogue.modal then
       Fixture.pressActionEdge(game)
@@ -537,32 +540,11 @@ function Fixture.takeWarpTo(game, targetSymbol)
       break
     end
     local destination = game:warpDestination(index)
-    if stepInto(destination) then
+    if destination.mapSymbol == targetSymbol and stepInto(destination) then
       local arrived = game:snapshot().mapSymbol
       if arrived == targetSymbol then
         Fixture.settleArrival(game, arrived)
         return
-      end
-      if arrived ~= origin then
-        local back = game.runtime.runtimeMap.fieldData.events.warps
-        assert(back ~= nil, "the arrival map must publish its return warps")
-        local returned = false
-        for inner = 0, #back - 1 do
-          if game:snapshot().mapSymbol == origin then
-            returned = true
-            break
-          end
-          if game:snapshot().mapSymbol ~= arrived then
-            break
-          end
-          local dest = game:warpDestination(inner)
-          if stepInto(dest) and game:snapshot().mapSymbol == origin then
-            returned = true
-            break
-          end
-        end
-        Assert.isTrue(returned, "a wrong door on " .. origin .. " must lead back before the next attempt")
-        Fixture.settleArrival(game, origin)
       end
     end
   end

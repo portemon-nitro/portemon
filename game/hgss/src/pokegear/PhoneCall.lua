@@ -1441,24 +1441,25 @@ function PhoneCall:release(handle)
 end
 
 -- The single field readiness query for a contact, projected from durable
--- state through the native contact window.
+-- seeking through the native trainer selection.
 ---@param contact string
----@return { ready: boolean, tier: integer? }
+---@return { ready: boolean, trainerId: integer }
 function PhoneCall:queryRematch(contact)
   return TrainerPhonePrograms.query(contact, self._world, self._catalog)
 end
 
--- Projects the map marker from the same durable record and native window.
+-- Projects the map marker from the same native trainer selection.
 ---@param contact string
----@return { tier: integer?, ready: boolean }
+---@return { ready: boolean, trainerId: integer }
 function PhoneCall:rematchMarker(contact)
   return TrainerPhonePrograms.marker(contact, self._world, self._catalog)
 end
 
--- Launches the accepted rematch at the queried tier.
+-- Returns the source trainer identity for legacy callers; retail scripts
+-- launch battles through their existing TrainerBattle opcode.
 ---@param contact string
 ---@param world table<string, unknown>? the already composed world, when explicitly supplied
----@return { tier: integer, team: table<string, unknown> }
+---@return integer native trainer ID
 function PhoneCall:launchRematch(contact, world)
   assert(world == nil or world == self._world, "rematch launches cannot override the composed world")
   return TrainerPhonePrograms.launch(contact, self._world, self._catalog)

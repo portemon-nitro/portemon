@@ -297,6 +297,13 @@ local function checkMessage(context, v, path, field)
     checkFields(context, "external_message", EXTERNAL_MESSAGE_FIELDS, v, path, { message = true })
     return
   end
+  if v.message == "trainer" then
+    checkFields(context, "trainer_message", {
+      trainer = { type = "scalar_or_value", required = true },
+      selector = { type = "scalar_or_value", required = true },
+    }, v, path, { message = true })
+    return
+  end
   if v.text == "gendered_message" then
     checkTextValue(context, v, path, field)
     return

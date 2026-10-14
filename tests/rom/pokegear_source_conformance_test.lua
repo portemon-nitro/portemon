@@ -163,6 +163,15 @@ function T.heartgold_catalog_carries_the_native_program_and_place_closure(romFs,
     Assert.equal(permission.outgoing, source.outgoingCalls, "map " .. mapId .. " preserves its outgoing source flag")
   end
   Assert.equal(#catalog.shows, NATIVE_SHOW_COUNT, versionId .. " carries all twelve native broadcast programs")
+  local rematchSets = assert(catalog.rematchSets, versionId .. " publishes native trainer progression groups")
+  local rematchCount = 0
+  for _ in pairs(rematchSets) do
+    rematchCount = rematchCount + 1
+  end
+  Assert.equal(rematchCount, 63, versionId .. " compiles every native rematch group")
+  local joey = assert(rematchSets[8], versionId .. " includes Joey's native trainer group")
+  Assert.equal(joey.group, 6, "Joey retains the native group index")
+  Assert.deepEqual(joey.trainers, { 8, 8, 279, 280, 510, 0 }, "Joey's ordered trainer identities preserve TRAINER_NONE")
   local locations = assert(catalog.locations, versionId .. " publishes its location table")
   Assert.isTrue(#locations > 0, versionId .. " compiles a non-empty location table")
   for _, entry in ipairs(locations) do

@@ -22,11 +22,13 @@ BattleSources.provenance = {
     "include/move.h",
     "include/constants/move_effects.h",
     "include/trainer_data.h",
+    "include/filesystem_files_def.h",
     "include/constants/trainers.h",
     "include/constants/trainer_class.h",
     "include/wild_encounter.h",
     "src/move.c",
     "src/trainer_data.c",
+    "src/scrcmd_c.c",
     "src/field/encounter_check.c",
     "src/battle/battle_command.c",
   },
@@ -166,6 +168,7 @@ BattleSources.trainerSources = {
   -- never indexes. Plain/custom-move parties (8/16-byte members) are
   -- always aligned and carry no padding.
   memberAlignment = 4,
+  messageRows = { entrySize = 4, offsetEntrySize = 2, bankId = 728 },
 }
 
 -- Pinned trainer-class payout rates from

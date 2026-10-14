@@ -286,6 +286,7 @@ local function fixture(versionId)
     symbol = scene.mapSymbol,
     mapSection = "TEST_SECTION",
     mapSectionNativeId = 7,
+    regionNo = 0,
     followMode = "ALLOW",
     worldOriginX = 96,
     worldOriginZ = 192,

@@ -122,6 +122,20 @@ function WorldState:isFlagSet(id)
   return self._events:isFlagSet(resolveId(id, "flags", self._catalogs, "flag")) == true
 end
 
+-- TrainerFlagCheck stores the defeat bit at TRAINER_FLAG_BASE + trainer.
+---@param trainerId integer
+---@return boolean
+function WorldState:isTrainerDefeated(trainerId)
+  assert(type(trainerId) == "number" and trainerId % 1 == 0 and trainerId > 0, "trainer IDs are positive integers")
+  return self:isFlagSet(0x550 + trainerId)
+end
+
+---@param trainerId integer
+function WorldState:setTrainerDefeated(trainerId)
+  assert(type(trainerId) == "number" and trainerId % 1 == 0 and trainerId > 0, "trainer IDs are positive integers")
+  self:setFlag(0x550 + trainerId)
+end
+
 function WorldState:setFlag(id)
   self._events:setFlag(resolveId(id, "flags", self._catalogs, "flag"))
 end

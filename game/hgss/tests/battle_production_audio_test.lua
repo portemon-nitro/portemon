@@ -174,9 +174,10 @@ local function stagedManifest(sceneImage)
   end
   local command = menu(MENU_IMAGE)
   return {
-    schema = "g4-battle-presentation-v1",
+    schema = "g4-battle-presentation-v2",
     version = { id = "heartgold", language = "en" },
     verified = true,
+    trainerEncounterMusic = { default = "SEQ_GS_VS_TRAINER", byTrainerClass = {} },
     scenes = { { key = SCENE_KEY, background = "general", terrain = "grass", time = "day" } },
     images = images,
     command = command,

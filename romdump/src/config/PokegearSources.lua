@@ -25,6 +25,81 @@ PokegearSources.provenance = {
 
 PokegearSources.genericPhoneHeaders = GenericPhoneHeaders
 
+-- Native table from src/overlay_26_022598C0.c and trainer enum IDs from
+-- include/constants/trainers.h. Transcribed from the local source checkout
+-- revision recorded below; it is not evidence for the separately pinned phone sources.
+PokegearSources.rematchTrainerSetsProvenance = {
+  repo = "pret/pokeheartgold",
+  commit = "0985e8718df4f25e64d6507d89c0c97c0d288981",
+  symbols = { "src/overlay_26_022598C0.c", "include/constants/trainers.h" },
+}
+
+PokegearSources.rematchTrainerSets = {
+  { group = 0, trainers = { 414, 414, 303, 446, 602, 0 } },
+  { group = 1, trainers = { 151, 151, 335, 453, 603, 0 } },
+  { group = 2, trainers = { 27, 27, 276, 277, 518, 0 } },
+  { group = 3, trainers = { 397, 397, 434, 435, 507, 0 } },
+  { group = 4, trainers = { 211, 211, 440, 441, 509, 0 } },
+  { group = 5, trainers = { 4, 4, 461, 460, 512, 0 } },
+  { group = 6, trainers = { 8, 8, 279, 280, 510, 0 } },
+  { group = 7, trainers = { 178, 178, 430, 431, 503, 0 } },
+  { group = 8, trainers = { 102, 102, 456, 457, 604, 0 } },
+  { group = 9, trainers = { 17, 17, 250, 278, 605, 0 } },
+  { group = 10, trainers = { 145, 145, 451, 452, 606, 0 } },
+  { group = 11, trainers = { 402, 402, 466, 467, 522, 0 } },
+  { group = 12, trainers = { 61, 61, 100, 155, 523, 0 } },
+  { group = 13, trainers = { 114, 114, 444, 445, 607, 0 } },
+  { group = 14, trainers = { 124, 124, 325, 450, 608, 0 } },
+  { group = 15, trainers = { 113, 113, 458, 459, 609, 0 } },
+  { group = 16, trainers = { 7, 7, 454, 455, 527, 0 } },
+  { group = 17, trainers = { 131, 131, 172, 173, 530, 0 } },
+  { group = 18, trainers = { 24, 24, 432, 433, 505, 0 } },
+  { group = 19, trainers = { 44, 44, 438, 439, 610, 0 } },
+  { group = 20, trainers = { 65, 65, 142, 334, 520, 0 } },
+  { group = 21, trainers = { 123, 123, 323, 324, 517, 0 } },
+  { group = 22, trainers = { 182, 182, 436, 437, 611, 0 } },
+  { group = 23, trainers = { 137, 137, 447, 448, 612, 0 } },
+  { group = 24, trainers = { 57, 57, 462, 463, 515, 0 } },
+  { group = 25, trainers = { 66, 66, 274, 275, 525, 0 } },
+  { group = 26, trainers = { 78, 78, 360, 449, 513, 0 } },
+  { group = 27, trainers = { 400, 400, 464, 465, 528, 0 } },
+  { group = 28, trainers = { 184, 184, 613, 614, 615, 0 } },
+  { group = 29, trainers = { 64, 64, 616, 617, 618, 0 } },
+  { group = 30, trainers = { 388, 388, 619, 620, 621, 0 } },
+  { group = 31, trainers = { 140, 140, 622, 623, 624, 0 } },
+  { group = 32, trainers = { 48, 48, 625, 626, 627, 0 } },
+  { group = 33, trainers = { 313, 313, 628, 629, 630, 0 } },
+  { group = 34, trainers = { 574, 574, 631, 632, 633, 0 } },
+  { group = 35, trainers = { 579, 579, 634, 635, 636, 0 } },
+  { group = 36, trainers = { 382, 382, 637, 638, 639, 0 } },
+  { group = 37, trainers = { 331, 331, 640, 641, 642, 0 } },
+  { group = 38, trainers = { 569, 569, 643, 644, 645, 0 } },
+  { group = 39, trainers = { 565, 565, 646, 647, 648, 0 } },
+  { group = 40, trainers = { 567, 567, 649, 650, 651, 0 } },
+  { group = 41, trainers = { 559, 559, 652, 653, 654, 0 } },
+  { group = 42, trainers = { 358, 358, 655, 656, 657, 0 } },
+  { group = 43, trainers = { 561, 561, 658, 659, 660, 0 } },
+  { group = 44, trainers = { 59, 59, 661, 662, 663, 0 } },
+  { group = 45, trainers = { 558, 558, 664, 665, 666, 0 } },
+  { group = 46, trainers = { 401, 401, 672, 673, 674, 0 } },
+  { group = 47, trainers = { 20, 20, 712, 0, 0, 0 } },
+  { group = 48, trainers = { 21, 21, 713, 0, 0, 0 } },
+  { group = 49, trainers = { 30, 30, 714, 0, 0, 0 } },
+  { group = 50, trainers = { 31, 31, 715, 0, 0, 0 } },
+  { group = 51, trainers = { 33, 33, 717, 0, 0, 0 } },
+  { group = 52, trainers = { 34, 34, 718, 0, 0, 0 } },
+  { group = 53, trainers = { 32, 32, 716, 0, 0, 0 } },
+  { group = 54, trainers = { 35, 35, 719, 0, 0, 0 } },
+  { group = 55, trainers = { 253, 253, 720, 0, 0, 0 } },
+  { group = 56, trainers = { 254, 254, 721, 0, 0, 0 } },
+  { group = 57, trainers = { 255, 255, 722, 0, 0, 0 } },
+  { group = 58, trainers = { 256, 256, 723, 0, 0, 0 } },
+  { group = 59, trainers = { 257, 257, 724, 0, 0, 0 } },
+  { group = 60, trainers = { 258, 258, 725, 0, 0, 0 } },
+  { group = 61, trainers = { 259, 259, 726, 0, 0, 0 } },
+  { group = 62, trainers = { 261, 261, 727, 0, 0, 0 } },
+}
+
 -- Childhood-friend map phrases and unlock groups from the native 73-row tables.
 -- Phone scripts are unpinned clone corroboration; unlock group 3 remains
 -- conservatively ineligible because the source selector leaves sp0[3] unset.

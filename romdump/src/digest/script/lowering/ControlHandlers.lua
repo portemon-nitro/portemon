@@ -212,6 +212,7 @@ return {
   [30] = setFlag,
   [31] = clearFlag,
   [32] = checkFlag,
+  [38] = checkFlag,
   [33] = setFlagVar,
   [34] = clearFlagVar,
   [35] = setVarFromFlag,

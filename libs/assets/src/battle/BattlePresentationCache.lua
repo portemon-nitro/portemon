@@ -226,7 +226,7 @@ end
 -- roles never fall back to planning data silently: the verified flag tells
 -- them apart.
 ---@param cacheFs CacheFs
----@return { schema: string, version: { id: string, language: string }, verified: boolean, scenes: { key: string, background: string, terrain: string, time: string }[], audioRoles?: { wild: string, trainer: string, rival: string, select: string, narrationBank: integer, cries: string } } global or planning manifest
+---@return { schema: string, version: { id: string, language: string }, verified: boolean, scenes: { key: string, background: string, terrain: string, time: string }[], audioRoles?: { wild: string, trainer: string, rival: string, select: string, narrationBank: integer, cries: string }, trainerEncounterMusic?: { default: string, byTrainerClass: table<integer, { johto: string, kanto: string }> } } global or planning manifest
 function BattlePresentationCache.load(cacheFs)
   assert(cacheFs ~= nil, "presentation loading requires a cache filesystem")
   local staged = cacheFs:loadLua(BattlePresentationCache.manifestPath())

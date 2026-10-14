@@ -1404,6 +1404,33 @@ local function handleApplyMovement(node, run)
   return startMovement(run, node, false)
 end
 
+function HANDLERS.trainer_reaction_movement(node, run)
+  local actorId = semanticsFor(run).resolveActor(node.actor, run)
+  local actor = run.services.actors:snapshot(actorId)
+  if actor == nil then
+    return Runtime.OUTCOME_CONTINUE
+  end
+  local facing = actor.facing
+  local nativeCode = ({ north = 14, south = 15, west = 16, east = 17 })[facing]
+  if nativeCode == nil then
+    Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "trainer reaction actor has invalid facing", {
+      scriptId = run.instance.scriptId,
+      actor = actorId,
+      facing = tostring(facing),
+    })
+  end
+  -- ScrCmd_454 in src/scrcmd_c.c selects MOVEMENT_STEP_LEFT/RIGHT or
+  -- MOVEMENT_RUN_UP/DOWN in overlay_26_022599D0.c. Reuse the field movement
+  -- task for that one native movement command.
+  local movementByCode = {
+    [14] = { { action = "walk", direction = "west", speed = "normal" } },
+    [15] = { { action = "walk", direction = "east", speed = "normal" } },
+    [16] = { { action = "walk", direction = "north", speed = "fast" } },
+    [17] = { { action = "walk", direction = "south", speed = "fast" } },
+  }
+  return startMovement(run, { actor = actorId, movement = movementByCode[nativeCode] }, false)
+end
+
 -- Generic blocking ops: dispatch through the task registry. The task types
 -- and their implementations land with their owning task modules (dialogue,
 -- movement, audio, fade, warp); an unregistered type is an attributed fault.
@@ -1563,6 +1590,10 @@ local function handleStopSound(node, run)
   return Runtime.OUTCOME_CONTINUE
 end
 local function handlePlayMusic(node, run)
+  if node.op == "trainer_encounter_music" then
+    requireService(run, "trainerEncounterMusic"):play(semanticsFor(run).evaluateValue(node.trainer, run))
+    return Runtime.OUTCOME_YIELD_TICK
+  end
   requireService(run, "audio"):playMusic(node.music)
   return Runtime.OUTCOME_CONTINUE
 end
@@ -2124,6 +2155,27 @@ do
     return Runtime.OUTCOME_CONTINUE
   end
 
+  function GearEval.handlePhoneRematchTrainer(node, run)
+    local contact = GearEval.evalContact(node, run, "contact", "phone_rematch_trainer")
+    local trainerId = phoneService(run):nativeRematchTrainer(contact)
+    if type(trainerId) ~= "number" or trainerId % 1 ~= 0 or trainerId < 0 then
+      Errors.raise(
+        ScriptErrors.SCRIPT_INVALID_REFERENCE,
+        "native rematch lookup returned an invalid trainer identity",
+        { scriptId = run.instance.scriptId, contact = contact }
+      )
+    end
+    semanticsFor(run).writeRef(node.result, trainerId, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  function GearEval.handlePhoneRematchClear(node, run)
+    requireForeground(run, "phone_rematch_clear")
+    local contact = GearEval.evalContact(node, run, "contact", "phone_rematch_clear")
+    phoneService(run):clearRematch(contact)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
   local function handlePokegearUpdate(node, run)
     requireForeground(run, "pokegear_update")
     local host = phoneService(run)
@@ -2207,6 +2259,8 @@ do
   HANDLERS.phone_set_call = handlePhoneSetCall
   HANDLERS.phone_run_call = handlePhoneRunCall
   HANDLERS.pokegear_query = handlePokegearQuery
+  HANDLERS.phone_rematch_trainer = GearEval.handlePhoneRematchTrainer
+  HANDLERS.phone_rematch_clear = GearEval.handlePhoneRematchClear
   HANDLERS.pokegear_update = handlePokegearUpdate
   HANDLERS.pokegear_open = GearEval.handlePokegearOpen
   function GearEval.handlePokegearRegisterCard(node, run)
@@ -2245,8 +2299,15 @@ do
     return Runtime.OUTCOME_CONTINUE
   end
   function GearEval.handlePhoneContactMessage(node, run)
-    local contact = GearEval.evalContact(node, run, "contact", "phone_contact_message")
+    local contactNumber = semanticsFor(run).evaluateValue(node.contact, run)
     local kind = semanticsFor(run).evaluateValue(node.kind, run)
+    if type(contactNumber) ~= "number" or contactNumber % 1 ~= 0 or contactNumber < 0 then
+      Errors.raise(
+        ScriptErrors.SCRIPT_INVALID_REFERENCE,
+        "contact messages read a source phonebook number",
+        { scriptId = run.instance.scriptId, op = "phone_contact_message", contact = contactNumber }
+      )
+    end
     if type(kind) ~= "number" or kind % 1 ~= 0 or kind < 0 or kind > 4 then
       Errors.raise(
         ScriptErrors.SCRIPT_INVALID_REFERENCE,
@@ -2254,14 +2315,17 @@ do
         { scriptId = run.instance.scriptId, op = "phone_contact_message", kind = kind }
       )
     end
-    -- The per-kind bank/entry pairs live in phone script data the runtime
-    -- never serves; answering a plausible pair would be a fabricated
-    -- message. Fail with attribution before any effect instead.
-    Errors.raise(
-      ScriptErrors.FEATURE_UNAVAILABLE,
-      "contact message data is unavailable to the script runtime",
-      { scriptId = run.instance.scriptId, op = "phone_contact_message", contact = contact, kind = kind }
-    )
+    local bank, entry = 0, 0
+    if contactNumber ~= 255 then
+      local contact = GearEval.resolveContactKey(contactNumber, run, "phone_contact_message")
+      local messages = requireService(run, "phoneContactMessages")
+      assert(messages ~= nil, "phone contact messages are available after the missing-service error")
+      local resolve = messages.resolve
+      assert(type(resolve) == "function", "phone contact messages expose their source resolver")
+      bank, entry = resolve(messages, contact, kind)
+    end
+    semanticsFor(run).writeRef(node.bank, bank, run)
+    semanticsFor(run).writeRef(node.entry, entry, run)
     return Runtime.OUTCOME_CONTINUE
   end
   function GearEval.handlePhoneContactGift(node, run)
@@ -2380,6 +2444,13 @@ HANDLERS.next = handleNext
 HANDLERS.signal_caller = handleSignalCaller
 HANDLERS.call_common = handleCallCommon
 HANDLERS.set_flag = handleSetFlag
+function HANDLERS.set_trainer_flag(node, run)
+  local trainerId = semanticsFor(run).evaluateValue(node.trainer, run)
+  local setTrainerDefeated = run.services.world.setTrainerDefeated
+  assert(type(setTrainerDefeated) == "function", "trainer defeat flags belong to the world history owner")
+  setTrainerDefeated(run.services.world, trainerId)
+  return Runtime.OUTCOME_CONTINUE
+end
 HANDLERS.clear_flag = handleClearFlag
 HANDLERS.change_weather = handleChangeWeather
 HANDLERS.set_var = handleSetVar
@@ -2464,6 +2535,24 @@ HANDLERS.set_object_facing = handleSetObjectFacing
 HANDLERS.set_object_movement_type = handleSetObjectMovementType
 HANDLERS.get_player_coords = handleGetPlayerCoords
 HANDLERS.get_object_coords = handleGetObjectCoords
+function HANDLERS.actor_movement_selector(node, run)
+  local semantics = semanticsFor(run)
+  local actorId = semantics.resolveActor(node.actor, run)
+  local actor = run.services.actors:snapshot(actorId)
+  local selector = 0
+  if actor ~= nil then
+    selector = actor.movementSelector
+    if type(selector) ~= "number" or selector % 1 ~= 0 or selector < 0 or selector > 0xFF then
+      Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "actor has an invalid source movement selector", {
+        scriptId = run.instance.scriptId,
+        actor = actorId,
+        selector = tostring(selector),
+      })
+    end
+  end
+  semantics.writeRef(node.result, selector, run)
+  return Runtime.OUTCOME_CONTINUE
+end
 HANDLERS.get_player_facing = handleGetPlayerFacing
 HANDLERS.queue_avatar_transition = handleQueueAvatarTransition
 HANDLERS.apply_avatar_transitions = handleApplyAvatarTransitions
@@ -2599,6 +2688,7 @@ HANDLERS.unsupported = handleUnsupported
 HANDLERS.play_sound = handlePlaySound
 HANDLERS.stop_sound = handleStopSound
 HANDLERS.play_music = handlePlayMusic
+HANDLERS.trainer_encounter_music = handlePlayMusic
 HANDLERS.stop_music = handleStopMusic
 HANDLERS.reset_music = handleResetMusic
 HANDLERS.temporary_music = handleTemporaryMusic

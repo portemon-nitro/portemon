@@ -433,11 +433,13 @@ function Game:warpDestination(warpIndex)
   assert(type(warpIndex) == "number", "acceptance warp index required")
   local warps = assert(self.runtime.runtimeMap.fieldData.events.warps, "production warp data is required")
   local warp = assert(warps[warpIndex + 1], "acceptance warp index is unavailable")
+  local destination = warp.destinationMapId ~= nil and self.runtime.mapLoader:load(warp.destinationMapId) or nil
   return {
     fieldX = warp.x or warp.fieldX,
     fieldZ = warp.z or warp.fieldZ,
     mapId = warp.destinationMapId,
     warpId = warp.destinationWarpId,
+    mapSymbol = destination and destination.mapSymbol or nil,
   }
 end
 

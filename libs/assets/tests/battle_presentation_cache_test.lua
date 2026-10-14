@@ -154,7 +154,7 @@ local function validManifest()
   end
   local command = menu("assets/generated/battle/menu-command-1.png")
   return {
-    schema = "g4-battle-presentation-v1",
+    schema = "g4-battle-presentation-v2",
     version = { id = "heartgold", language = "en" },
     verified = true,
     scenes = { { key = "general/grass/day", background = "general", terrain = "grass", time = "day" } },
@@ -203,6 +203,9 @@ local function validManifest()
       narrationBank = 197,
       cries = "species",
     },
+    trainerEncounterMusic = { default = "SEQ_GS_EYE_J_SHOUNEN", byTrainerClass = {
+      [2] = { johto = "SEQ_GS_EYE_J_SHOUNEN", kanto = "SEQ_GS_EYE_J_SHOUNEN" },
+    } },
   }
 end
 

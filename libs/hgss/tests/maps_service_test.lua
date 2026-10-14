@@ -74,6 +74,7 @@ function T.covered_scripted_warps_can_be_reused_after_success()
   Assert.equal(calls[2], replacementSourceMap, "the next covered warp uses the rebound source map")
 end
 
+
 function T.covered_scripted_warp_failure_is_exposed_and_does_not_poison_reuse()
   local calls = 0
   local transition = {

@@ -2079,6 +2079,7 @@ function T.typed_location_failure_from_service_renders_with_map_identity_and_con
           symbol = "MAP_A_VERY_LONG_SOURCE_MAP_NAME_WITH_A_VISIBLE_POLICY_REASON",
           mapSection = "TEST_SECTION",
           mapSectionNativeId = 1,
+          regionNo = 0,
           followMode = "ALLOW",
           worldOriginX = 16,
           worldOriginZ = 16,

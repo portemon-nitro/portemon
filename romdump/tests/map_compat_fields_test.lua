@@ -17,6 +17,7 @@ local function manifestEntries()
       mapSection = "NEW_BARK_TOWN",
       mapSectionNativeId = 126,
       followMode = "HEIGHT_RESTRICT",
+      regionNo = 0,
     },
     {
       id = 60,
@@ -24,6 +25,7 @@ local function manifestEntries()
       mapSection = "NEW_BARK_TOWN",
       mapSectionNativeId = 126,
       followMode = "ALLOW",
+      regionNo = 0,
     },
   }
 end
@@ -35,9 +37,18 @@ function T.manifest_preserves_compat_fields_on_build()
   Assert.equal(lab.mapSection, "NEW_BARK_TOWN")
   Assert.equal(lab.mapSectionNativeId, 126, "the manifest must preserve the native section identity")
   Assert.equal(lab.followMode, "HEIGHT_RESTRICT", "the manifest must preserve the source follow mode")
+  Assert.equal(lab.regionNo, 0, "the manifest must preserve the native Johto region")
   local town = manifest.maps[manifest.byId[60]]
   Assert.equal(town.mapSectionNativeId, 126)
   Assert.equal(town.followMode, "ALLOW")
+end
+
+function T.manifest_requires_a_native_region_number()
+  local entries = manifestEntries()
+  entries[1].regionNo = nil
+  Assert.throws(function()
+    WorldManifest.build(entries)
+  end, "a map without native region identity must fail the manifest")
 end
 
 function T.manifest_rejects_a_missing_native_section_identity()

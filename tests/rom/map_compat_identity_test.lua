@@ -59,6 +59,7 @@ function T.elm_lab_world_record_carries_source_exact_section_identity(romFs, ver
 
   local cacheFs, world, entry = worldEntry(versionId, 61)
   Assert.equal(entry.symbol, "MAP_NEW_BARK_ELMS_LAB_1F")
+  Assert.equal(entry.regionNo, 0, "the current Johto world record carries its source region selector")
   assertElmLabTriple(entry.mapSection, entry.mapSectionNativeId, entry.followMode, "the generated world entry")
 
   local loader = FieldMapLoader.new(cacheFs, world)
@@ -108,6 +109,7 @@ function T.section_identity_is_never_the_header_id(romFs, versionId)
       FOLLOW_MODES[entry.followMode] == true,
       "map " .. tostring(entry.id) .. " must carry a source follow mode"
     )
+    Assert.isTrue(entry.regionNo == 0 or entry.regionNo == 1, "every map carries its native region number")
     seenModes[entry.followMode] = true
     if entry.mapSectionNativeId ~= entry.id then
       aliased = aliased + 1

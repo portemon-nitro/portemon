@@ -397,19 +397,6 @@ function TrainerPhonePrograms.step(session, input)
   return "done"
 end
 
--- Reports a story tier only when the runtime has source facts for it.
----@param world table<string, unknown> borrowed world table
----@return integer? story tier
-function TrainerPhonePrograms.tierFor(world)
-  assert(type(world) == "table", "rematch tiers read the borrowed world")
-  local tier = world.storyTier
-  if tier == nil then
-    return nil
-  end
-  assert(type(tier) == "number" and tier % 1 == 0 and tier >= 1, "the story tier stays a positive integer")
-  return tier --[[@as integer]]
-end
-
 ---@param contact string
 ---@param catalog table<string, unknown>?
 ---@return { weekday: number, timeOfDay: number }? native contact window
@@ -475,37 +462,101 @@ local function rematchRecord(world, contact)
   return query(world, contact)
 end
 
--- Readiness projects one saved record through the native contact window.
+-- Resolves the first undefeated, story-unlocked trainer from the compiled
+-- native group. Seeking is durable phone state; trainer progression remains
+-- in field flags and does not depend on saved win counts.
+---@param contact string semantic phone contact key
+---@param world table<string, unknown> borrowed world table
+---@param catalog table<string, unknown> compiled source catalog
+---@return integer native trainer ID, or zero when unavailable
+function TrainerPhonePrograms.nativeRematchTrainer(contact, world, catalog)
+  assert(type(contact) == "string" and contact ~= "", "native rematch queries name their contact")
+  assert(type(world) == "table", "native rematch queries read the borrowed world")
+  assert(type(catalog) == "table", "native rematch queries read the compiled catalog")
+  local record = nil
+  for _, entry in
+    ipairs(catalog.contacts --[[@as table<integer, unknown>]])
+  do
+    local candidate = entry --[[@as table<string, unknown>]]
+    if candidate.key == contact then
+      record = candidate
+      break
+    end
+  end
+  assert(type(record) == "table", "native rematch queries resolve registered source contacts")
+  local seeking = rematchRecord(world, contact)
+  if type(seeking) ~= "table" or seeking.stage <= 0 then
+    return 0
+  end
+  if record.id == 16 then
+    local readTime = world.timeOfDayWild
+    assert(type(readTime) == "function", "Kenji rematches read the native time of day")
+    local timeOfDayWild = readTime(world)
+    assert(type(timeOfDayWild) == "number", "Kenji time is a numeric source value")
+    if timeOfDayWild ~= 1 then
+      return 0
+    end
+  end
+  local sets = catalog.rematchSets
+  if type(sets) ~= "table" then
+    return 0
+  end
+  local set = sets[record.trainerId]
+  if set == nil then
+    return 0
+  end
+  assert(type(set) == "table" and type(set.trainers) == "table", "native rematch group is validated")
+  local defeated = world.trainerDefeated
+  local unlocked = world.rematchGroupUnlocked
+  assert(type(defeated) == "function" and type(unlocked) == "function", "native rematches read field progression")
+  local trainerIndex = 0
+  for candidateIndex = 1, 5 do
+    local trainerId = set.trainers[candidateIndex + 1]
+    if trainerId == 0 then
+      trainerIndex = candidateIndex - 1
+      break
+    end
+    if not defeated(world, trainerId) then
+      trainerIndex = candidateIndex
+      break
+    end
+    trainerIndex = candidateIndex
+  end
+  if trainerIndex > 0 and not unlocked(world, trainerIndex) then
+    repeat
+      trainerIndex = trainerIndex - 1
+    until trainerIndex == 0 or set.trainers[trainerIndex + 1] ~= 0
+  end
+  return set.trainers[trainerIndex + 1]
+end
+
+-- Readiness is native team availability, not the invitation weekday.
 ---@param contact string
 ---@param world table<string, unknown> borrowed world table
----@param catalog table<string, unknown>? borrowed contact catalog
----@return { ready: boolean, tier: integer? }
+---@param catalog table<string, unknown> compiled source catalog
+---@return { ready: boolean, trainerId: integer }
 function TrainerPhonePrograms.query(contact, world, catalog)
   assert(type(contact) == "string" and contact ~= "", "rematch queries name their contact")
-  assert(type(world) == "table", "rematch queries read the borrowed world")
-  local tier = TrainerPhonePrograms.tierFor(world)
-  local record = rematchRecord(world, contact)
-  local staged = type(record) == "table" and record.stage > 0
-  return { ready = staged == true and TrainerPhonePrograms.eligible(contact, world, catalog), tier = tier }
+  local trainerId = TrainerPhonePrograms.nativeRematchTrainer(contact, world, catalog)
+  return { ready = trainerId ~= 0, trainerId = trainerId }
 end
 
 -- Projects the map marker for a contact: the same tier the query
 -- reports, with its current readiness.
 ---@param contact string
 ---@param world table<string, unknown> borrowed world table
----@param catalog table<string, unknown>? borrowed contact catalog
----@return { tier: integer?, ready: boolean }
+---@param catalog table<string, unknown> compiled source catalog
+---@return { ready: boolean, trainerId: integer }
 function TrainerPhonePrograms.marker(contact, world, catalog)
-  local status = TrainerPhonePrograms.query(contact, world, catalog)
-  return { tier = status.tier, ready = status.ready }
+  return TrainerPhonePrograms.query(contact, world, catalog)
 end
 
 -- Launches only through a runtime resolver backed by a generated source
 -- mapping. The present catalog has no such mapping.
 ---@param contact string
 ---@param world table<string, unknown> borrowed world table
----@param catalog table<string, unknown>? borrowed contact catalog
----@return { tier: integer, team: table<string, unknown> }
+---@param catalog table<string, unknown> compiled source catalog
+---@return integer native trainer ID
 function TrainerPhonePrograms.launch(contact, world, catalog)
   local status = TrainerPhonePrograms.query(contact, world, catalog)
   if status.ready ~= true then
@@ -516,25 +567,7 @@ function TrainerPhonePrograms.launch(contact, world, catalog)
     )
     error({ code = failure.code, message = failure.message, context = failure.context, domain = "trainer" })
   end
-  local resolve = world.resolveRematchTeam
-  if type(resolve) ~= "function" or status.tier == nil then
-    local failure = Errors.new(
-      ScriptErrors.FEATURE_UNAVAILABLE,
-      "no source-backed rematch team is available for contact " .. contact,
-      { contact = contact }
-    )
-    error({ code = failure.code, message = failure.message, context = failure.context, domain = "trainer" })
-  end
-  local team = resolve(world, contact, status.tier)
-  if type(team) ~= "table" then
-    local failure = Errors.new(
-      ScriptErrors.FEATURE_UNAVAILABLE,
-      "no source-backed rematch team is available for contact " .. contact,
-      { contact = contact, tier = status.tier }
-    )
-    error({ code = failure.code, message = failure.message, context = failure.context, domain = "trainer" })
-  end
-  return { tier = status.tier, team = team }
+  return status.trainerId
 end
 
 -- Resolves a rematch win once. Settling to stage zero makes repeated

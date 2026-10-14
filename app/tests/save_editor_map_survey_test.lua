@@ -13,6 +13,7 @@ local function world()
     symbol = "MAP_SURVEY",
     mapSection = "SURVEY",
     mapSectionNativeId = 1,
+    regionNo = 0,
     followMode = "ALLOW",
     worldOriginX = 0,
     worldOriginZ = 0,

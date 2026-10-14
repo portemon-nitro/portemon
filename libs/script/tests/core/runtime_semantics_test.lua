@@ -202,6 +202,55 @@ function T.tests.core_runtime_uses_injected_semantics()
   Assert.equal(frame.nodeId, "matched")
 end
 
+function T.tests.native_movement_selector_reads_the_source_actor_and_defaults_missing_objects_to_zero()
+  local result = {}
+  local liveActor = { sourceEvent = { movementSelector = 3 } }
+  local run = {
+    instance = { scriptId = "test.trainer", instanceId = "trainer-1", mode = "foreground", locals = {} },
+    node = { nodeId = "movement" },
+    services = {
+      actors = { snapshot = function(_, actorId)
+        return actorId == "trainer" and { movementSelector = liveActor.sourceEvent.movementSelector } or nil
+      end },
+    },
+    semantics = {
+      resolveActor = function(_, _) return "trainer" end,
+      writeRef = function(_, value) result.value = value end,
+    },
+  }
+  local node = {
+    op = "actor_movement_selector",
+    actor = { ref = "actor", special = "last_talked" },
+    result = { value = "var", id = "VAR_SPECIAL_RESULT" },
+  }
+  Assert.equal(Runtime.executeNode(node, run), Runtime.OUTCOME_CONTINUE)
+  Assert.equal(result.value, 3, "the native selector is retained at the actor boundary")
+  run.services.actors.snapshot = function() return nil end
+  Assert.equal(Runtime.executeNode(node, run), Runtime.OUTCOME_CONTINUE)
+  Assert.equal(result.value, 0, "a missing object returns the native zero value")
+end
+
+function T.tests.native_trainer_encounter_music_uses_the_injected_audio_policy_and_yields()
+  local played = {}
+  local run = {
+    instance = { scriptId = "vanilla.hgss.scr_seq.0953.script_007" },
+    services = {
+      trainerEncounterMusic = {
+        play = function(_, trainerId)
+          played[#played + 1] = trainerId
+        end,
+      },
+    },
+    semantics = { evaluateValue = function(value) return value end },
+  }
+  local outcome = Runtime.executeNode({
+    op = "trainer_encounter_music",
+    trainer = { value = "var", id = 8 },
+  }, run)
+  Assert.deepEqual(played, { { value = "var", id = 8 } })
+  Assert.equal(outcome, Runtime.OUTCOME_YIELD_TICK, "the native music command yields to the next field tick")
+end
+
 function T.tests.signal_caller_clears_signal_and_continues()
   local environment = ScriptEnvironment.new({
     environmentId = "environment-1",

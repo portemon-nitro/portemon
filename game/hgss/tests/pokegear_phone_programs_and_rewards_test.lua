@@ -3730,4 +3730,34 @@ function T.tests.native_shaped_contact_keys_dispatch_through_their_generated_fam
   Assert.equal((unmapped --[[@as table]]).domain, "phone", "the unstamped family names the phone domain")
 end
 
+function T.tests.native_rematch_identity_uses_source_flags_and_unlocked_group_fallback()
+  local Programs = require("game.hgss.src.pokegear.phone.TrainerPhonePrograms")
+  local contact = { key = "trainer.joey", id = 10, trainerId = 100 }
+  local catalog = {
+    contacts = { contact },
+    rematchSets = {
+      [100] = { group = 4, trainers = { 100, 101, 102, 103, 0, 0 } },
+    },
+  }
+  local defeated = { [101] = true, [102] = false }
+  local world = {
+    queryRematch = function()
+      return { stage = 1, wins = 0 }
+    end,
+    trainerDefeated = function(_, trainerId)
+      return defeated[trainerId] == true
+    end,
+    rematchGroupUnlocked = function(_, group)
+      return group == 2
+    end,
+    timeOfDayWild = function()
+      return 1
+    end,
+  }
+
+  Assert.equal(Programs.nativeRematchTrainer(contact.key, world, catalog), 102,
+    "the first undefeated native trainer is selected from the source row")
+  Assert.equal(defeated[103], nil, "selection does not require later trainer flags")
+end
+
 return T

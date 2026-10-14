@@ -222,6 +222,9 @@ function FieldMapDataCache.beginRequiredEventsValidation(events)
             and FieldObjectMovement.isType(value.movementType)
             and isMovementRange(value.xRange)
             and isMovementRange(value.yRange)
+          if self._valid and value.movementSelector ~= nil then
+            self._valid = Validate.isNonNegativeInteger(value.movementSelector) and value.movementSelector <= 0xFF
+          end
           if self._valid and value.apricorn ~= nil then
             local apricorn = value.apricorn
             self._valid = value.scriptId == "common.apricorn_tree"

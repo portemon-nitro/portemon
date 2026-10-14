@@ -522,11 +522,11 @@ function PokegearScriptHost:takeStagedCall(ownerKey)
   return pending
 end
 
--- Answers the field rematch readiness query through a transient
+-- Answers the field rematch trainer identity through a transient
 -- conversation engine over the borrowed owners. Pure read: no lease, no
 -- mutation.
 ---@param contact string
----@return { ready: boolean, tier: integer? }
+---@return { ready: boolean, trainerId: integer }
 function PokegearScriptHost:queryRematch(contact)
   assert(isNonEmptyString(contact), "rematch queries name their contact")
   local PhoneCall = require("game.hgss.src.pokegear.PhoneCall")
@@ -539,6 +539,27 @@ function PokegearScriptHost:queryRematch(contact)
     random = self._random,
   })
   return engine:queryRematch(contact)
+end
+
+-- Returns the native trainer ID selected by source flags and invitation
+-- state. Native field scripts pass it to their existing TrainerBattle.
+---@param contact string semantic phone contact key
+---@return integer
+function PokegearScriptHost:nativeRematchTrainer(contact)
+  return self:queryRematch(contact).trainerId
+end
+
+-- Settles seeking when the authored native win branch executes opcode 462.
+-- Repeated clears do not advance saved rematch history.
+---@param contact string semantic phone contact key
+function PokegearScriptHost:clearRematch(contact)
+  assert(isNonEmptyString(contact), "rematch clear names a registered source contact")
+  local state = self._state
+  local previous = state:queryRematch(contact)
+  if previous == nil or previous.stage == 0 then
+    return
+  end
+  state:setRematch(contact, { stage = 0, wins = previous.wins })
 end
 
 -- Whether the named contact is acquired. Pure read through the durable

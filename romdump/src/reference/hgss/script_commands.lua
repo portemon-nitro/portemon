@@ -251,11 +251,10 @@ return {
       },
     },
     [36] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_SetTrainerFlag",
       feature = "battle",
-      disposition = "deferred",
-      deferredReason = "battle",
-      deferredNote = "trainer defeat flags need the trainer flag owner",
+      disposition = "supported",
       widths = {
         [1] = 2,
       },
@@ -271,11 +270,8 @@ return {
       },
     },
     [38] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_CheckTrainerFlag",
-      feature = "battle",
-      disposition = "deferred",
-      deferredReason = "battle",
-      deferredNote = "trainer defeat checks need the trainer flag owner",
       widths = {
         [1] = 2,
       },
@@ -1576,20 +1572,18 @@ return {
     [214] = {
       name = "ScrCmd_TrainerMessage",
       feature = "battle",
-      disposition = "deferred",
-      deferredReason = "battle",
-      deferredNote = "trainer battle messages need the battle presentation application",
+      disposition = "supported",
+      classification = "native_wait",
       widths = {
         [1] = 2,
         [2] = 2,
       },
     },
     [215] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_GetTrainerMsgParams",
       feature = "battle",
-      disposition = "deferred",
-      deferredReason = "battle",
-      deferredNote = "trainer battle messages need the battle presentation application",
+      disposition = "supported",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -1597,11 +1591,10 @@ return {
       },
     },
     [216] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_GetRematchMsgParams",
       feature = "battle",
-      disposition = "deferred",
-      deferredReason = "battle",
-      deferredNote = "trainer battle messages need the battle presentation application",
+      disposition = "supported",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -1609,21 +1602,16 @@ return {
       },
     },
     [217] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_TrainerIsDoubleBattle",
-      feature = "battle",
-      disposition = "deferred",
-      deferredReason = "battle",
-      deferredNote = "double-battle trainer checks need the battle application",
       widths = {
         [1] = 2,
       },
     },
     [218] = {
+      classification = "native_wait",
       name = "ScrCmd_EncounterMusic",
-      feature = "battle",
-      disposition = "deferred",
-      deferredReason = "battle",
-      deferredNote = "encounter music needs the battle music application",
+      disposition = "supported",
       widths = {
         [1] = 2,
       },
@@ -3373,6 +3361,9 @@ return {
     },
     [454] = {
       name = "ScrCmd_454",
+      feature = "battle",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {},
     },
     [455] = {

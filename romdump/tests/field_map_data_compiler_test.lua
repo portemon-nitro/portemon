@@ -253,6 +253,23 @@ function T.canonicalizes_std_script_sentinels_to_their_global_identity_regardles
         z = 0,
         y = 0,
       },
+      {
+        objectEventId = 9,
+        spriteId = 317,
+        movement = 16,
+        type = 1,
+        eventFlag = 0x199,
+        scriptId = 3007, -- std_trainer(TRAINER_YOUNGSTER_JOEY)
+        facingDirection = 2,
+        param0 = 4,
+        param1 = 0,
+        param2 = 0,
+        xRange = 0,
+        yRange = 0,
+        x = 553,
+        z = 332,
+        y = 0,
+      },
     },
   })
   local romFs = FieldMapDataFixture.build({ zoneEventsMember = member })
@@ -265,6 +282,7 @@ function T.canonicalizes_std_script_sentinels_to_their_global_identity_regardles
   -- sentinel addresses a different, global scr_seq member than the map's own.
   Assert.equal(bundle.field.events.background[1].scriptId, "common.apricorn_tree")
   Assert.equal(bundle.field.events.objects[1].scriptId, "common.itemball_r29_potion")
+  Assert.equal(bundle.field.events.objects[2].scriptId, "vanilla.hgss.scr_seq.0953.script_007")
 end
 
 function T.annotates_only_verified_source_apricorn_tree_objects()
@@ -334,7 +352,7 @@ function T.rejects_a_source_apricorn_tree_with_an_unexpected_sprite()
   Assert.equal(err.code, "FIELD_MAP_APRICORN_SOURCE_INVALID")
 end
 
-function T.publishes_semantic_object_movement_without_raw_source_movement()
+function T.publishes_semantic_movement_and_the_native_selector_read_by_field_scripts()
   local member = Builder.build({
     objectEvents = {
       {
@@ -364,12 +382,14 @@ function T.publishes_semantic_object_movement_without_raw_source_movement()
   end))
   local object = bundle.field.events.objects[1]
   Assert.equal(object.movementType, "wander_around")
+  Assert.equal(object.movementSelector, 3, "native opcode 574 reads the original movement selector")
   Assert.isNil(object.movement)
   Assert.deepEqual(object, {
     index = 0,
     objectEventId = 21,
     spriteId = 22,
     movementType = "wander_around",
+    movementSelector = 3,
     type = 24,
     eventFlag = 25,
     scriptId = 26,

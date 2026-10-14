@@ -461,6 +461,29 @@ local function checkGearContactQuery(opcode, kind)
   return check
 end
 
+local function checkGetPhoneBookRematch(ins, step)
+  if step.op ~= "phone_rematch_trainer" then
+    return "opcode 142 must resolve a native trainer identity"
+  end
+  if not operandMatches(ins.operands[1].raw, step.contact) then
+    return "opcode 142 phonebook entry changed by translation"
+  end
+  if not operandMatches(ins.operands[2].raw, step.result) then
+    return "opcode 142 trainer result variable changed by translation"
+  end
+  return nil
+end
+
+local function checkClearPhoneBookRematch(ins, step)
+  if step.op ~= "phone_rematch_clear" then
+    return "opcode 462 must clear the addressed phonebook entry"
+  end
+  if not operandMatches(ins.operands[1].raw, step.contact) then
+    return "opcode 462 phonebook entry changed by translation"
+  end
+  return nil
+end
+
 local function checkRegisterGearNumber(ins, step)
   if step.op ~= "pokegear_update" or step.kind ~= "register_contact" then
     return "opcode 146 contact registration changed by translation"
@@ -653,7 +676,8 @@ local CHECKERS = {
   [502] = checkPcTerminalEffect,
   [308] = checkPcTerminalEffect,
   [309] = checkPcTerminalEffect,
-  [142] = checkGearContactQuery(142, "rematch_ready"),
+  [142] = checkGetPhoneBookRematch,
+  [462] = checkClearPhoneBookRematch,
   [145] = checkGearCard,
   [146] = checkRegisterGearNumber,
   [147] = checkGearContactQuery(147, "contact_registered"),

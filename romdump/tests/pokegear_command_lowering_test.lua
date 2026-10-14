@@ -88,12 +88,14 @@ end
 
 function T.tests.rematches_register_and_queries_lower_to_typed_nodes()
   local rematch = lowerSingle(142, { 34, "VAR_TEMP_x4001" })
-  Assert.equal(rematch.op, "pokegear_query")
-  Assert.equal(rematch.kind, "rematch_ready")
+  Assert.equal(rematch.op, "phone_rematch_trainer")
   Assert.equal(rematch.contact, 34, "immediate contacts ride their phonebook number")
   Assert.deepEqual(rematch.result, { value = "var", id = "VAR_TEMP_x4001" })
   local rematchVar = lowerSingle(142, { "VAR_TEMP_x4010", "VAR_SPECIAL_RESULT" })
   Assert.deepEqual(rematchVar.contact, { value = "var", id = "VAR_TEMP_x4010" }, "variable contacts stay references")
+  local clear = lowerSingle(462, { "VAR_TEMP_x4010" })
+  Assert.equal(clear.op, "phone_rematch_clear")
+  Assert.deepEqual(clear.contact, { value = "var", id = "VAR_TEMP_x4010" })
   local register = lowerSingle(146, { 1 })
   Assert.equal(register.op, "pokegear_update")
   Assert.equal(register.kind, "register_contact")
@@ -103,6 +105,28 @@ function T.tests.rematches_register_and_queries_lower_to_typed_nodes()
   Assert.equal(check.kind, "contact_registered")
   Assert.equal(check.contact, 34)
   Assert.deepEqual(check.result, { value = "var", id = "VAR_TEMP_x4001" })
+end
+
+function T.tests.native_trainer_script_identity_lowers_get_trainer_num_from_its_std_index()
+  local command = CommandCatalog.widths(212)
+  Assert.equal(#command, 1, "GetTrainerNum carries only its result variable")
+  local raw = { raw = "VAR_SPECIAL_x8004", width = command[1] }
+  local lowered = SemanticLowering.lowerScript(
+    { index = 7, instructions = { { opcode = 212, operands = { raw }, offset = 0 } } },
+    { member = 953, scripts = {}, movements = {} },
+    { stdCatalog = SourceCatalog.catalog() }
+  )
+  Assert.equal(#lowered.items, 1)
+  Assert.equal(lowered.items[1].op, "set_var")
+  Assert.deepEqual(lowered.items[1].variable, { value = "var", id = "VAR_SPECIAL_x8004" })
+  Assert.equal(lowered.items[1].value, 8, "source script index 7 identifies native trainer 8")
+end
+
+function T.tests.native_trainer_movement_query_keeps_last_talked_actor_reference()
+  local movement = lowerSingle(574, { "VAR_SPECIAL_x8001", "VAR_SPECIAL_LAST_TALKED" })
+  Assert.equal(movement.op, "actor_movement_selector")
+  Assert.deepEqual(movement.result, { value = "var", id = "VAR_SPECIAL_x8001" })
+  Assert.deepEqual(movement.actor, { ref = "actor", special = "last_talked" })
 end
 
 function T.tests.card_registration_names_its_closed_card()

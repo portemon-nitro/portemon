@@ -616,7 +616,9 @@ local function decodeScriptPass(state)
     local terminatedBy = nil
     while cursor + 1 < state.bytes:length() do
       local owner = state.scriptStarts[cursor]
-      if owner ~= nil and owner >= 0 and owner ~= scriptIndex - 1 then
+      -- Multiple entry-table rows may alias the same body start. They each
+      -- own that body through the next distinct script start.
+      if owner ~= nil and owner >= 0 and owner ~= scriptIndex - 1 and cursor ~= entry.label then
         break
       end
       local nextCursor, nextTerminated, nextTailRun, nextTerminatedBy =

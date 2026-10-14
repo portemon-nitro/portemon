@@ -143,4 +143,31 @@ function T.every_supported_role_has_a_complete_recipe()
   Assert.isTrue(Sources.validate(), "the source tables validate")
 end
 
+function T.trainer_encounter_music_uses_the_native_class_and_region_selectors()
+  local Sources = sources()
+  Assert.equal(
+    Sources.trainerEncounterMusic(2, 0),
+    "SEQ_GS_EYE_J_SHOUNEN",
+    "a Johto Youngster uses the source Youngster encounter sequence"
+  )
+  Assert.equal(
+    Sources.trainerEncounterMusic(113, 0),
+    "SEQ_GS_EYE_ROCKET",
+    "Johto Scientists use the source Rocket sequence"
+  )
+  Assert.equal(
+    Sources.trainerEncounterMusic(113, 1),
+    "SEQ_GS_EYE_J_AYASHII",
+    "Kanto Scientists use the distinct source cue"
+  )
+  Assert.equal(
+    Sources.trainerEncounterMusic(0xFFFF, 0),
+    "SEQ_GS_EYE_J_SHOUNEN",
+    "an unlisted native class follows the source default"
+  )
+  Assert.throws(function()
+    Sources.trainerEncounterMusic(2, 2)
+  end, "regions outside the two source columns are invalid")
+end
+
 return { tests = T }

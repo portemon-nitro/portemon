@@ -229,7 +229,15 @@ end
 -- read-only records; mutation operations reach the manager.
 T["actor world adapter"] = function()
   local actors = {}
-  actors.elm = { id = "elm", fieldX = 4, fieldZ = 5, facing = "north", visible = true, mapId = 61 }
+  actors.elm = {
+    id = "elm",
+    fieldX = 4,
+    fieldZ = 5,
+    facing = "north",
+    visible = true,
+    mapId = 61,
+    sourceEvent = { movementSelector = 0 },
+  }
   local manager = {
     getActor = function(_, id)
       return actors[id]

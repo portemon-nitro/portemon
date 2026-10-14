@@ -56,6 +56,18 @@ T["entry table and sentinel"] = function()
   Assert.isNil(garbage)
 end
 
+T["shared entry offsets decode the same aliased script body"] = function()
+  local bytes = ScriptFixture.member({
+    scripts = {
+      { offset = 0x20, instructions = { { op = 2, args = {} } } },
+      { offset = 0x20, instructions = { { op = 2, args = {} } } },
+    },
+  })
+  local member = decode(bytes, 5)
+  Assert.equal(member.scripts[0].instructions[1].opcode, 2)
+  Assert.equal(member.scripts[1].instructions[1].opcode, 2)
+end
+
 -- 2. Relative branch targets resolve to `_XXXX` labels (forward and
 -- backward, signed).
 T["relative targets resolve to labels"] = function()

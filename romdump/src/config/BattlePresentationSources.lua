@@ -17,6 +17,9 @@ BattlePresentationSources.provenance = {
   sources = {
     "src/battle/battle_system.c",
     "src/battle/battle_setup.c",
+    "src/field_bgm.c",
+    "include/constants/trainer_class.h",
+    "include/constants/sndseq.h",
   },
 }
 
@@ -129,6 +132,80 @@ BattlePresentationSources.AUDIO_ROLES = {
   rival = "SEQ_GS_VS_RIVAL",
   select = "SEQ_SE_DP_SELECT",
 }
+
+-- Native eyes-meet cue selection from src/field_bgm.c. Region columns are
+-- Johto then Kanto, and trainerClass values are native TRAINERCLASS_* IDs.
+BattlePresentationSources.TRAINER_ENCOUNTER_MUSIC = {
+  [2] = { "SEQ_GS_EYE_J_SHOUNEN", "SEQ_GS_EYE_J_SHOUNEN" },
+  [3] = { "SEQ_GS_EYE_K_SHOUJO", "SEQ_GS_EYE_K_SHOUJO" },
+  [4] = { "SEQ_GS_EYE_J_SHOUNEN", "SEQ_GS_EYE_J_SHOUNEN" },
+  [5] = { "SEQ_GS_EYE_K_SHOUJO", "SEQ_GS_EYE_K_SHOUJO" },
+  [6] = { "SEQ_GS_EYE_J_SHOUNEN", "SEQ_GS_EYE_J_SHOUNEN" },
+  [8] = { "SEQ_GS_EYE_K_SHOUJO", "SEQ_GS_EYE_K_SHOUJO" },
+  [9] = { "SEQ_GS_EYE_K_AYASHII", "SEQ_GS_EYE_K_AYASHII" },
+  [11] = { "SEQ_GS_EYE_K_AYASHII", "SEQ_GS_EYE_K_AYASHII" },
+  [14] = { "SEQ_GS_EYE_K_AYASHII", "SEQ_GS_EYE_K_AYASHII" },
+  [20] = { "SEQ_GS_EYE_K_AYASHII", "SEQ_GS_EYE_K_AYASHII" },
+  [21] = { "SEQ_GS_EYE_J_SHOUJO", "SEQ_GS_EYE_J_SHOUJO" },
+  [24] = { "SEQ_GS_EYE_K_AYASHII", "SEQ_GS_EYE_K_AYASHII" },
+  [25] = { "SEQ_GS_EYE_J_SHOUJO", "SEQ_GS_EYE_J_SHOUJO" },
+  [69] = { "SEQ_GS_EYE_J_SHOUNEN", "SEQ_GS_EYE_J_SHOUNEN" },
+  [31] = { "SEQ_GS_EYE_J_AYASHII", "SEQ_GS_EYE_J_AYASHII" },
+  [34] = { "SEQ_GS_EYE_K_AYASHII", "SEQ_GS_EYE_K_AYASHII" },
+  [36] = { "SEQ_GS_EYE_J_SHOUJO", "SEQ_GS_EYE_J_SHOUJO" },
+  [38] = { "SEQ_GS_EYE_K_SHOUNEN", "SEQ_GS_EYE_K_SHOUNEN" },
+  [42] = { "SEQ_GS_EYE_K_AYASHII", "SEQ_GS_EYE_K_AYASHII" },
+  [43] = { "SEQ_GS_EYE_J_SHOUJO", "SEQ_GS_EYE_J_SHOUJO" },
+  [46] = { "SEQ_GS_EYE_K_AYASHII", "SEQ_GS_EYE_K_AYASHII" },
+  [47] = { "SEQ_GS_EYE_MAIKO", "SEQ_GS_EYE_MAIKO" },
+  [49] = { "SEQ_GS_EYE_J_SHOUNEN", "SEQ_GS_EYE_J_SHOUNEN" },
+  [52] = { "SEQ_GS_EYE_K_AYASHII", "SEQ_GS_EYE_K_AYASHII" },
+  [55] = { "SEQ_GS_EYE_ROCKET", "SEQ_GS_EYE_ROCKET" },
+  [56] = { "SEQ_GS_EYE_J_SHOUJO", "SEQ_GS_EYE_J_SHOUJO" },
+  [60] = { "SEQ_GS_EYE_J_SHOUNEN", "SEQ_GS_EYE_J_SHOUNEN" },
+  [62] = { "SEQ_GS_EYE_ROCKET", "SEQ_GS_EYE_ROCKET" },
+  [63] = { "SEQ_GS_EYE_J_AYASHII", "SEQ_GS_EYE_J_AYASHII" },
+  [64] = { "SEQ_GS_EYE_K_AYASHII", "SEQ_GS_EYE_K_AYASHII" },
+  [65] = { "SEQ_GS_EYE_K_AYASHII", "SEQ_GS_EYE_K_AYASHII" },
+  [68] = { "SEQ_GS_EYE_J_AYASHII", "SEQ_GS_EYE_J_AYASHII" },
+  [77] = { "SEQ_GS_EYE_J_SHOUJO", "SEQ_GS_EYE_J_SHOUJO" },
+  [78] = { "SEQ_GS_EYE_J_AYASHII", "SEQ_GS_EYE_J_AYASHII" },
+  [79] = { "SEQ_GS_EYE_BOUZU", "SEQ_GS_EYE_BOUZU" },
+  [82] = { "SEQ_GS_EYE_BOUZU", "SEQ_GS_EYE_BOUZU" },
+  [113] = { "SEQ_GS_EYE_ROCKET", "SEQ_GS_EYE_J_AYASHII" },
+  [115] = { "SEQ_GS_EYE_K_AYASHII", "SEQ_GS_EYE_K_AYASHII" },
+  [121] = { "SEQ_GS_EYE_K_SHOUNEN", "SEQ_GS_EYE_K_SHOUNEN" },
+  [122] = { "SEQ_GS_EYE_J_SHOUJO", "SEQ_GS_EYE_J_SHOUJO" },
+  [116] = { "SEQ_GS_EYE_ROCKET", "SEQ_GS_EYE_ROCKET" },
+  [114] = { "SEQ_GS_EYE_ROCKET", "SEQ_GS_EYE_ROCKET" },
+  [117] = { "SEQ_GS_EYE_ROCKET", "SEQ_GS_EYE_ROCKET" },
+  [118] = { "SEQ_GS_EYE_ROCKET", "SEQ_GS_EYE_ROCKET" },
+}
+BattlePresentationSources.DEFAULT_TRAINER_ENCOUNTER_MUSIC = "SEQ_GS_EYE_J_SHOUNEN"
+
+---@param trainerClass integer native TRAINERCLASS_* identity
+---@param regionNo integer 0 Johto, 1 Kanto
+---@return string sequence symbol selected by FieldBGM_GetEyesMeetForTrainer
+function BattlePresentationSources.trainerEncounterMusic(trainerClass, regionNo)
+  assert(type(trainerClass) == "number" and trainerClass % 1 == 0 and trainerClass >= 0)
+  assert(regionNo == 0 or regionNo == 1, "native trainer encounter music has two region columns")
+  local regionSequences = BattlePresentationSources.TRAINER_ENCOUNTER_MUSIC[trainerClass]
+  return regionSequences and regionSequences[regionNo + 1] or BattlePresentationSources.DEFAULT_TRAINER_ENCOUNTER_MUSIC
+end
+
+function BattlePresentationSources.trainerEncounterMusicSymbols()
+  local symbols = { [BattlePresentationSources.DEFAULT_TRAINER_ENCOUNTER_MUSIC] = true }
+  for _, regionSequences in pairs(BattlePresentationSources.TRAINER_ENCOUNTER_MUSIC) do
+    symbols[regionSequences[1]] = true
+    symbols[regionSequences[2]] = true
+  end
+  local ordered = {}
+  for symbol in pairs(symbols) do
+    ordered[#ordered + 1] = symbol
+  end
+  table.sort(ordered)
+  return ordered
+end
 
 -- The retail lower load keeps the first 0x6000 bytes of the shared
 -- 1024-tile lower characters: 384 tiles of 64 bytes in 8bpp terms, read

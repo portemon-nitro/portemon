@@ -49,7 +49,7 @@ function T.contract_pins_the_current_asset_identities()
       collisionVersion = 1,
     },
     world = {
-      schema = "g4-world-v1",
+      schema = "g4-world-v2",
     },
     fieldCells = {
       cacheFormat = "field-cell-cache-v3",
@@ -130,12 +130,12 @@ function T.contract_pins_the_current_asset_identities()
       schema = "g4-battle-data-v1",
     },
     trainerCatalog = {
-      cacheFormat = "trainer-catalog-cache-v2",
-      schema = "g4-trainer-catalog-v2",
+      cacheFormat = "trainer-catalog-cache-v3",
+      schema = "g4-trainer-catalog-v3",
     },
     battlePresentation = {
-      cacheFormat = "battle-presentation-cache-v1",
-      schema = "g4-battle-presentation-v1",
+      cacheFormat = "battle-presentation-cache-v2",
+      schema = "g4-battle-presentation-v2",
       sceneSchema = "g4-battle-scene-v1",
     },
     encounterCatalog = {

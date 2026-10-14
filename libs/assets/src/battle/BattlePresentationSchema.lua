@@ -10,7 +10,7 @@ local Validate = require("libs.assets.src.Validate")
 ---@class BattlePresentationSchema
 local BattlePresentationSchema = {}
 
-BattlePresentationSchema.MANIFEST_SCHEMA = "g4-battle-presentation-v1"
+BattlePresentationSchema.MANIFEST_SCHEMA = "g4-battle-presentation-v2"
 BattlePresentationSchema.SCENE_SCHEMA = "g4-battle-scene-v1"
 
 local fail = SchemaCheck.fail
@@ -295,6 +295,26 @@ local function checkAudioRoles(roles, context, code, field)
   checkString(roles.cries, context, code, field .. ".cries")
 end
 
+local function checkTrainerEncounterMusic(value, context, code, field)
+  SchemaCheck.checkRecord(value, { default = true, byTrainerClass = true }, context, code, field)
+  checkString(value.default, context, code, field .. ".default")
+  if type(value.byTrainerClass) ~= "table" then
+    fail(code, field .. ".byTrainerClass must be a record", context)
+  end
+  for trainerClass, regions in pairs(value.byTrainerClass) do
+    checkInt(trainerClass, 0, 0xFFFF, context, code, field .. ".byTrainerClass key")
+    SchemaCheck.checkRecord(
+      regions,
+      { johto = true, kanto = true },
+      context,
+      code,
+      field .. ".byTrainerClass[" .. trainerClass .. "]"
+    )
+    checkString(regions.johto, context, code, field .. ".byTrainerClass[" .. trainerClass .. "].johto")
+    checkString(regions.kanto, context, code, field .. ".byTrainerClass[" .. trainerClass .. "].kanto")
+  end
+end
+
 -- The staged global manifest: semantic menu/HUD definitions, frame and
 -- animation metadata, the supported scene inventory, staged image
 -- references, and text/audio roles. Every sprite descriptor preserves its
@@ -323,6 +343,7 @@ function BattlePresentationSchema.assertManifest(manifest)
     terrain = true,
     textRoles = true,
     audioRoles = true,
+    trainerEncounterMusic = true,
   }, context, CODE_MANIFEST, "manifest")
   if manifest.schema ~= BattlePresentationSchema.MANIFEST_SCHEMA then
     fail(CODE_MANIFEST, "manifest schema must be " .. BattlePresentationSchema.MANIFEST_SCHEMA, context)
@@ -435,6 +456,7 @@ function BattlePresentationSchema.assertManifest(manifest)
   end
   checkTextRoles(manifest.textRoles, context, CODE_MANIFEST, "manifest textRoles")
   checkAudioRoles(manifest.audioRoles, context, CODE_MANIFEST, "manifest audioRoles")
+  checkTrainerEncounterMusic(manifest.trainerEncounterMusic, context, CODE_MANIFEST, "manifest trainerEncounterMusic")
   checkNoNativeKeys(manifest, context, CODE_MANIFEST, "manifest")
   return true
 end

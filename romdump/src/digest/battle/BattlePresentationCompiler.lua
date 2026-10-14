@@ -676,7 +676,17 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
         narrationBank = Sources.NARRATION_BANK,
         cries = "species",
       },
+      trainerEncounterMusic = {
+        default = Sources.DEFAULT_TRAINER_ENCOUNTER_MUSIC,
+        byTrainerClass = {},
+      },
     }
+    for trainerClass, sequences in pairs(Sources.TRAINER_ENCOUNTER_MUSIC) do
+      manifest.trainerEncounterMusic.byTrainerClass[trainerClass] = {
+        johto = sequences[1],
+        kanto = sequences[2],
+      }
+    end
     for name, image in pairs(images) do
       manifest.images[BattlePresentationCache.globalImagePath(name)] = { width = image.width, height = image.height }
     end

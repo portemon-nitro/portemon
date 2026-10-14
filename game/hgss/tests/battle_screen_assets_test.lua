@@ -769,9 +769,10 @@ local function stagedPortraitBattleManifest()
   end
   local command = menu(PORTRAIT_MENU_IMAGE)
   return {
-    schema = "g4-battle-presentation-v1",
+    schema = "g4-battle-presentation-v2",
     version = { id = "heartgold", language = "en" },
     verified = true,
+    trainerEncounterMusic = { default = "SEQ_GS_VS_TRAINER", byTrainerClass = {} },
     scenes = { { key = PORTRAIT_SCENE_KEY, background = "general", terrain = "grass", time = "day" } },
     images = images,
     command = command,

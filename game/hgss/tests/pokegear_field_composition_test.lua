@@ -60,11 +60,12 @@ end
 local function contactCatalog()
   return {
     contacts = {
-      { key = MOM_KEY, family = "mother", id = 1, trainer = 201, gift = 61, map = 0, sortWeight = 10 },
-      { key = NEIGHBOR_KEY, family = "friend", id = 10, trainer = 2, gift = 34, map = 8, sortWeight = 20 },
-      { key = TRAINER_KEY, family = "trainer", id = 30, trainer = 108, gift = 398, map = 259, sortWeight = 30 },
+      { key = MOM_KEY, family = "mother", id = 1, trainer = 201, trainerId = 4201, gift = 61, map = 0, sortWeight = 10 },
+      { key = NEIGHBOR_KEY, family = "friend", id = 10, trainer = 2, trainerId = 4242, gift = 34, map = 8, messageBank = 675, sortWeight = 20 },
+      { key = TRAINER_KEY, family = "trainer", id = 30, trainer = 108, trainerId = 9876, gift = 398, map = 259, sortWeight = 30 },
     },
     contactOrder = { MOM_KEY, NEIGHBOR_KEY, TRAINER_KEY },
+    friendMapPhrases = { { mapId = 60, sourceIndex = 0, unlockGroup = 0 } },
     callTriggers = {},
     momPurchases = {
       { kind = "berry", nativeItemId = 149 },
@@ -166,7 +167,15 @@ local function composeGear(friends, latch)
     assets = assetFamily(friends.catalog),
     clock = runtime.localClock,
     audio = nil,
-    messages = { greeting = "test.greeting.ref" },
+    messages = {
+      greeting = "test.greeting.ref",
+      resolveContactEntry = function(_, contactKey, entryId)
+        return {
+          text = contactKey .. "." .. tostring(entryId),
+          tokens = { { kind = "glyph", code = entryId, text = tostring(entryId), raw = { entryId } } },
+        }
+      end,
+    },
   })
   runtime.pokegear = bundle
   return bundle, runtime
@@ -197,6 +206,17 @@ local function scriptServices(bundle, friends)
     phoneContactIndex = assert(
       FieldScriptComposition.phoneContactIndex(friends.catalog),
       "contact index builds over the synthetic catalog"
+    ),
+    phoneContactMessages = assert(
+      FieldScriptComposition.phoneContactMessages(friends.catalog, {
+        resolveContactEntry = function(_, contactKey, entryId)
+          return {
+            text = contactKey .. "." .. tostring(entryId),
+            tokens = { { kind = "glyph", code = entryId, text = tostring(entryId), raw = { entryId } } },
+          }
+        end,
+      }),
+      "contact message resolver builds over the synthetic catalog"
     ),
     pokegearState = friends.state,
     phoneGifts = assert(
@@ -579,39 +599,58 @@ function T.tests.phonebook_resolution_uses_the_source_none_sentinel()
   Assert.equal(
     Runtime.executeNode({
       op = "phone_resolve_contact",
-      trainer = 2,
+      trainer = 4242,
       result = { value = "var", id = "entry" },
     }, run2),
     Runtime.OUTCOME_CONTINUE,
     "trainer numbers resolve same-tick"
   )
-  Assert.equal(vars2.entry, 10, "trainer 2 answers phonebook entry 10")
+  Assert.equal(vars2.entry, 10, "native trainer ID 4242 answers phonebook entry 10")
   local run3, vars3 = handlerRun(scriptServices(bundle, friends))
   Assert.equal(
     Runtime.executeNode({
       op = "phone_resolve_contact",
-      trainer = 4242,
+      trainer = 1234,
       result = { value = "var", id = "entry" },
     }, run3),
     Runtime.OUTCOME_CONTINUE,
     "unknown trainers answer same-tick"
   )
   Assert.equal(vars3.entry, 255, "unknown trainers answer the none sentinel")
+  local classRun, classVars = handlerRun(scriptServices(bundle, friends))
+  Runtime.executeNode({
+    op = "phone_resolve_contact",
+    trainer = 2,
+    result = { value = "var", id = "entry" },
+  }, classRun)
+  Assert.equal(classVars.entry, 255, "trainer class 2 does not masquerade as a native trainer ID")
 end
 
-function T.tests.contact_messages_fail_honestly_without_phone_data()
+function T.tests.contact_messages_resolve_source_bank_entries()
   local friends = companion()
   local bundle = composeGear(friends)
-  local run = handlerRun(scriptServices(bundle, friends))
-  local ok, err = pcall(Runtime.executeNode, {
+  local run, vars = handlerRun(scriptServices(bundle, friends))
+  Assert.equal(
+    Runtime.executeNode({
     op = "phone_contact_message",
-    contact = NEIGHBOR_KEY,
+    contact = 10,
     kind = 2,
     bank = { value = "var", id = "bank" },
     entry = { value = "var", id = "entry" },
-  }, run)
-  Assert.isFalse(ok, "unserved message pairs never fabricate")
-  Assert.equal(err.code, "FEATURE_UNAVAILABLE", "the failure names its absent data")
+    }, run),
+    Runtime.OUTCOME_CONTINUE,
+    "source phone message pairs resolve synchronously"
+  )
+  local contact
+  for _, candidate in ipairs(friends.catalog.contacts) do
+    if candidate.id == 10 then
+      contact = candidate
+      break
+    end
+  end
+  Assert.notNil(contact, "native contact ten exists in the catalog")
+  Assert.equal(vars.bank, contact.messageBank, "the source phonebook identity selects its message bank")
+  Assert.equal(vars.entry, 3, "message kind two selects native entry three")
 end
 
 function T.tests.gift_queries_answer_waiting_gifts_or_zero()

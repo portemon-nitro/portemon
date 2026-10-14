@@ -254,9 +254,9 @@ T["retained compiler uses injected hashing and counts coverage once"] = function
   Assert.equal(bundle.memberCoverage[1].totals.members, 1)
 end
 
--- 3. An unsupported instruction (e.g. SetTrainerFlag) makes the script
--- partial with an explicit unsupported node.
-T["unsupported instructions stay explicit"] = function()
+-- SetTrainerFlag lowers to the explicit semantic operation instead of an
+-- unsupported diagnostic node.
+T["set trainer flag lowers to its semantic operation"] = function()
   local bytes = ScriptFixture.member({
     scripts = {
       {
@@ -270,12 +270,11 @@ T["unsupported instructions stay explicit"] = function()
   })
   local ir = assert(ScriptBinaryDecoder.parseMember(bytes, 5, "synthetic", { msgBank = 543, catalog = CATALOG }))
   local lowered = SemanticLowering.lowerScript(ir.scripts[0], ir, { stdCatalog = SourceCatalog.catalog() })
-  Assert.equal(#lowered.unsupported, 1)
-  Assert.equal(lowered.unsupported[1].command, 36)
-  Assert.equal(lowered.unsupported[1].originalName, "ScrCmd_SetTrainerFlag")
+  Assert.equal(#lowered.unsupported, 0)
+  Assert.equal(lowered.items[1].op, "set_trainer_flag")
   local report = Verifier.verifyScript(Structurer.structure(lowered, 0), ir.scripts[0], ir, lowered.omissions)
-  Assert.isFalse(report.complete)
-  Assert.equal(report.unsupportedCount, 1)
+  Assert.isTrue(report.complete)
+  Assert.equal(report.unsupportedCount, 0)
 end
 
 -- 4. The coverage record aggregates occurrence counts with the pinned names.
@@ -1734,7 +1733,7 @@ end
 -- Nop/Dummy instructions keep omission records when they sit beside a
 -- fold: every source offset stays accounted and the script verifies as
 -- explicitly partial.
-T["unsupported and omitted instructions stay accounted beside folds"] = function()
+T["set trainer flag and omitted instructions stay accounted beside folds"] = function()
   local instructions = {
     { opcode = 17, operands = { { raw = 1 }, { raw = 2 } }, offset = 0x20 },
     { opcode = 28, operands = { { raw = 1 }, { raw = "_END" } }, offset = 0x26 },
@@ -1750,19 +1749,16 @@ T["unsupported and omitted instructions stay accounted beside folds"] = function
   for _, item in ipairs(lowered.items) do
     ops[#ops + 1] = item.op
   end
-  Assert.deepEqual(ops, { "if_cond", "unsupported", "label", "stop" })
+  Assert.deepEqual(ops, { "if_cond", "set_trainer_flag", "label", "stop" })
   Assert.deepEqual(lowered.omissions, {
     { offset = 0x2D, opcode = 0 },
     { offset = 0x2E, opcode = 1 },
   })
-  Assert.equal(#lowered.unsupported, 1)
-  Assert.equal(lowered.unsupported[1].command, 36)
-  Assert.equal(lowered.unsupported[1].originalName, "ScrCmd_SetTrainerFlag")
-  Assert.isTrue(lowered.unsupported[1] == lowered.items[2], "the diagnostic node is the emitted item")
+  Assert.equal(#lowered.unsupported, 0)
   Assert.deepEqual(
     lowered.items[2].provenance,
     { offsets = { 0x2F }, opcodes = { 36 } },
-    "the unsupported node keeps its source provenance"
+    "the semantic operation keeps its source provenance"
   )
   local seen = {}
   for _, item in ipairs(lowered.items) do
@@ -1780,9 +1776,9 @@ T["unsupported and omitted instructions stay accounted beside folds"] = function
   end
   local steps = Structurer.structure(lowered, 0)
   local report = Verifier.verifyScript(steps, script, memberIr, lowered.omissions)
-  Assert.isTrue(report.ok, report.problems[1] and report.problems[1].message or "partial script must verify")
-  Assert.isFalse(report.complete)
-  Assert.equal(report.unsupportedCount, 1)
+  Assert.isTrue(report.ok, report.problems[1] and report.problems[1].message or "script must verify")
+  Assert.isTrue(report.complete)
+  Assert.equal(report.unsupportedCount, 0)
 end
 
 return { tests = T }

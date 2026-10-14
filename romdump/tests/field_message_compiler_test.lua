@@ -45,6 +45,7 @@ local function sourceReferenceBankIds()
   -- Retail blackout.c reads this global recovery message bank outside script
   -- bytecode; see FieldMessageCompiler's runtime-protocol bank set.
   ids[203] = true
+  ids[728] = true
   -- Per-caller phone greeting banks ride the demandable pipeline through
   -- the compiled pokegear catalog; see FieldMessageCompiler's explicit
   -- phone bank set.
@@ -213,6 +214,7 @@ function T.source_references_form_one_sorted_bank_set()
   -- Retail blackout.c reads this global recovery message bank outside script
   -- bytecode; see FieldMessageCompiler's runtime-protocol bank set.
   expected[203] = true
+  expected[728] = true
   -- Per-caller phone greeting banks ride the demandable pipeline through
   -- the compiled pokegear catalog; see FieldMessageCompiler's explicit
   -- phone bank set.
@@ -294,6 +296,16 @@ function T.start_menu_label_bank_is_a_required_generated_bank()
     end
   end
   Assert.equal(occurrences, 1, "the start menu label bank must be required exactly once")
+end
+
+function T.native_trainer_message_bank_is_required_once()
+  local occurrences = 0
+  for _, bankId in ipairs(FieldMessageCompiler.requiredBankIds()) do
+    if bankId == 728 then
+      occurrences = occurrences + 1
+    end
+  end
+  Assert.equal(occurrences, 1, "the trainer message bank is generated once")
 end
 
 function T.compilation_is_deterministic()

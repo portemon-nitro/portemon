@@ -98,6 +98,20 @@ local function foldConditional(ins, branch)
       left = Operands.varRef(ins.operands[1]),
       right = Operands.varRef(ins.operands[2]),
     }
+  elseif ins.opcode == 38 then
+    local expected
+    if conditionCode == 1 then
+      expected = true
+    elseif conditionCode == 0 or conditionCode == 5 then
+      expected = false
+    else
+      return nil
+    end
+    condition = {
+      condition = "trainer_defeated",
+      trainer = Operands.varRef(ins.operands[1]),
+      expected = expected,
+    }
   elseif ins.opcode == 32 then
     local expected
     if conditionCode == 1 then
@@ -218,6 +232,7 @@ function SemanticLowering.lowerScript(script, memberIr, opts)
 
   local ctx = {
     stdCatalog = opts.stdCatalog,
+    scriptIndex = script.index,
   }
 
   -- Script-local labels: branch and call targets must resolve inside the
@@ -431,7 +446,7 @@ function SemanticLowering.lowerScript(script, memberIr, opts)
       handler ~= nil
       and nextIns ~= nil
       and (nextIns.opcode == 28 or nextIns.opcode == 29)
-      and (ins.opcode == 17 or ins.opcode == 18 or ins.opcode == 32)
+      and (ins.opcode == 17 or ins.opcode == 18 or ins.opcode == 32 or ins.opcode == 38)
       and nextIns.label == nil
     then
       local folded = foldConditional(ins, nextIns)

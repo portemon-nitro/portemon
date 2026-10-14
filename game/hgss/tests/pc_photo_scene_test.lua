@@ -42,6 +42,7 @@ local function world()
     symbol = "MAP_PHOTO_TEST",
     mapSection = "TEST",
     mapSectionNativeId = 1,
+    regionNo = 0,
     followMode = "ALLOW",
     worldOriginX = 100,
     worldOriginZ = 200,

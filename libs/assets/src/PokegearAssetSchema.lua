@@ -43,6 +43,7 @@ local CATALOG_FIELDS = {
   callTriggers = true,
   friendMapPhrases = true,
   rematches = true,
+  rematchSets = true,
   gifts = true,
   momPurchases = true,
   locations = true,
@@ -480,6 +481,7 @@ local function checkCatalog(value)
       and key ~= "callPermissions"
       and key ~= "momCallIntroParameters"
       and key ~= "friendMapPhrases"
+      and key ~= "rematchSets"
       and key ~= "safariAreaMessageBank"
     then
       return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "catalog is missing " .. key, {})
@@ -498,6 +500,54 @@ local function checkCatalog(value)
   end
   if fullNativeCatalog and value.safariAreaMessageBank == nil then
     return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "native catalog is missing safariAreaMessageBank", {})
+  end
+  if fullNativeCatalog and type(value.rematchSets) ~= "table" then
+    return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "native catalog is missing rematchSets", {})
+  end
+  if value.rematchSets ~= nil then
+    local groups = {}
+    local count = 0
+    for baseTrainerId, record in pairs(value.rematchSets) do
+      count = count + 1
+      if
+        not isInteger(baseTrainerId)
+        or baseTrainerId <= 0
+        or baseTrainerId > 0xFFFF
+        or type(record) ~= "table"
+        or not isInteger(record.group)
+        or record.group < 0
+        or record.group >= 63
+        or groups[record.group]
+        or type(record.trainers) ~= "table"
+        or #record.trainers ~= 6
+        or record.trainers[1] ~= baseTrainerId
+      then
+        return fail(
+          PokegearAssetSchema.ERROR.SHAPE_INVALID,
+          "catalog.rematchSets must key native six-trainer groups",
+          {}
+        )
+      end
+      groups[record.group] = true
+      local sentinel = false
+      for _, trainerId in ipairs(record.trainers) do
+        if not isInteger(trainerId) or trainerId < 0 or trainerId > 0xFFFF then
+          return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "catalog.rematchSets contains an invalid trainer ID", {})
+        end
+        if trainerId == 0 then
+          sentinel = true
+        elseif sentinel then
+          return fail(
+            PokegearAssetSchema.ERROR.SHAPE_INVALID,
+            "catalog.rematchSets has a trainer after its sentinel",
+            {}
+          )
+        end
+      end
+    end
+    if fullNativeCatalog and count ~= 63 then
+      return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "native catalog must contain all 63 rematch groups", {})
+    end
   end
   if fullNativeCatalog or value.friendMapPhrases ~= nil then
     local rows = value.friendMapPhrases

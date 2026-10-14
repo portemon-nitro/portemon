@@ -36,6 +36,10 @@ local function playMusic(ins)
   return { op = "play_music", music = Operands.operandValue(ins.operands[1]) }
 end
 
+local function trainerEncounterMusic(ins)
+  return { op = "trainer_encounter_music", trainer = Operands.varRef(ins.operands[1]) }
+end
+
 local function stopMusic()
   -- The pinned ScrCmd_StopBGM ignores its operand entirely (it stops the
   -- currently playing BGM), so the operand is a documented erasure.
@@ -103,6 +107,7 @@ return {
   [78] = playFanfare,
   [79] = waitFanfare,
   [80] = playMusic,
+  [218] = trainerEncounterMusic,
   [81] = stopMusic,
   [82] = resetMusic,
   [84] = fadeMusicOut,

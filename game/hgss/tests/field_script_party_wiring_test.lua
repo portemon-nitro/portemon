@@ -26,6 +26,9 @@ local function stubRuntime()
     playerAvatar = nil,
     playerData = { profile = {}, options = { textFrame = 0 } },
     versionId = "heartgold",
+    trainerCatalog = function()
+      return { trainers = {} }
+    end,
     runtimeMap = { mapId = 61 },
     actorConfig = {
       apricorn = {

@@ -367,6 +367,7 @@ local function cannedWorld()
         symbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F",
         mapSection = "TEST_SECTION",
         mapSectionNativeId = 7,
+        regionNo = 0,
         followMode = "ALLOW",
         worldOriginX = 0,
         worldOriginZ = 0,

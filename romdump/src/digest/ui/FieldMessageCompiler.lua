@@ -198,6 +198,9 @@ function FieldMessageCompiler.requiredBankIds()
   set[40] = true
   set[265] = true
   set[BLACKOUT_MESSAGE_BANK] = true
+  -- Native trainer dialogue resolves selectors through the trainer message
+  -- table into this shared message bank.
+  set[728] = true
   -- Apricorn Box labels are addressed directly by the generated source manifest.
   set[APRICORN_BOX_MESSAGE_BANK] = true
   -- Per-caller phone greeting banks ride the same demandable pipeline as

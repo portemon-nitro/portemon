@@ -1,6 +1,5 @@
--- Durable phone rematches use PokegearState and native contact windows.
--- The current generated catalog has no contact-to-team mapping, so launch
--- stays attributed and leaves saved progress unchanged.
+-- Durable phone rematches use PokegearState, native trainer groups and
+-- field progression facts.
 
 local Assert = require("tests.support.Assert")
 
@@ -46,17 +45,21 @@ local function fixtureManifest()
     catalog = {
       contacts = {
         {
-          key = "custom.leader-falkner",
-          family = "gym",
+          key = "custom.native-rematch",
+          family = "trainer",
+          trainerId = 20,
           sortWeight = 10,
           rematchWeekday = 6,
           rematchTime = 1,
         },
       },
-      contactOrder = { "custom.leader-falkner" },
+      contactOrder = { "custom.native-rematch" },
       callDefinitions = {},
       callTriggers = {},
       rematches = {},
+      rematchSets = {
+        [20] = { group = 47, trainers = { 20, 20, 712, 0, 0, 0 } },
+      },
       gifts = {},
       momPurchases = {},
       locations = {
@@ -73,10 +76,9 @@ local function fixtureManifest()
   }
 end
 
--- An existing save record and the native contact window drive one query
--- and marker. Launch is refused before any battle or record mutation when
--- source data cannot resolve the trainer team.
-function T.tests.saved_rematch_window_is_shared_by_query_and_marker_without_fake_team()
+-- An existing seeking record and native trainer progression drive one
+-- query, marker and trainer identity, regardless of the offer window.
+function T.tests.saved_rematch_readiness_uses_native_trainer_availability()
   local PhoneCall = requireFeature(
     "game.hgss.src.pokegear.PhoneCall",
     "phone calls have no foreground session owner yet: invitations, readiness queries, and launched trainer tiers cannot agree"
@@ -89,9 +91,9 @@ function T.tests.saved_rematch_window_is_shared_by_query_and_marker_without_fake
   local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
 
   local state = PokegearState.new({ seed = 2024 }, { catalog = record.catalog })
-  state:registerContact("custom.leader-falkner")
+  state:registerContact("custom.native-rematch")
 
-  state:setRematch("custom.leader-falkner", { stage = 1, wins = 2 })
+  state:setRematch("custom.native-rematch", { stage = 1, wins = 2 })
   local world = {
     canCall = function()
       return true
@@ -100,7 +102,13 @@ function T.tests.saved_rematch_window_is_shared_by_query_and_marker_without_fake
       return { localMap = false }
     end,
     rematchFacts = function()
-      return { weekday = 6, timeOfDay = 1 }
+      return { weekday = 0, timeOfDay = 0 }
+    end,
+    trainerDefeated = function(_, trainerId)
+      return trainerId == 20
+    end,
+    rematchGroupUnlocked = function(_, tier)
+      return tier == 2
     end,
     queryRematch = function(_, contact)
       return state:queryRematch(contact)
@@ -125,17 +133,18 @@ function T.tests.saved_rematch_window_is_shared_by_query_and_marker_without_fake
   })
 
   -- The field query and map marker read one saved record and live window.
-  local query = call:queryRematch("custom.leader-falkner")
-  Assert.equal(query.ready, true, "the field query reports ready inside the eligibility window")
-  Assert.isNil(query.tier, "the query does not guess a story tier")
-  local marker = call:rematchMarker("custom.leader-falkner")
-  Assert.equal(marker.ready, query.ready, "the map marker reads the same durable readiness")
-  local before = state:queryRematch("custom.leader-falkner")
-  local failure = Assert.throws(function()
-    call:launchRematch("custom.leader-falkner")
-  end, "launching without a source-backed mapping fails")
-  Assert.equal(failure.code, require("libs.script.src.errors").FEATURE_UNAVAILABLE, "the missing team is attributed")
-  Assert.deepEqual(state:queryRematch("custom.leader-falkner"), before, "unsupported launch preserves saved progress")
+  local query = call:queryRematch("custom.native-rematch")
+  Assert.equal(query.ready, true, "the first undefeated unlocked native trainer is ready outside the offer window")
+  Assert.equal(query.trainerId, 712, "the field query returns the source trainer identity")
+  local marker = call:rematchMarker("custom.native-rematch")
+  Assert.equal(marker.ready, query.ready, "the map marker reads the same native readiness")
+  Assert.equal(marker.trainerId, query.trainerId, "the map marker preserves native trainer identity")
+  Assert.equal(call:launchRematch("custom.native-rematch"), 712, "launch resolves only the native trainer identity")
+  Assert.deepEqual(
+    state:queryRematch("custom.native-rematch"),
+    { stage = 1, wins = 2 },
+    "a readiness query and trainer resolution preserve saved seeking"
+  )
 end
 
 -- A registered trainer without an invitation is never ready: neither
@@ -155,7 +164,7 @@ function T.tests.registered_trainer_without_an_invitation_is_never_ready()
   local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
 
   local state = PokegearState.new({ seed = 3031 }, { catalog = record.catalog })
-  state:registerContact("custom.leader-falkner")
+  state:registerContact("custom.native-rematch")
   local world = {
     queryRematch = function(_, contact)
       return state:queryRematch(contact)
@@ -177,19 +186,19 @@ function T.tests.registered_trainer_without_an_invitation_is_never_ready()
     random = PokegearRandom.new(3031),
   })
 
-  local query = call:queryRematch("custom.leader-falkner")
+  local query = call:queryRematch("custom.native-rematch")
   Assert.equal(query.ready, false, "registration without an invitation never reports ready")
   Assert.isNil(query.tier, "the query never guesses a story tier")
-  local marker = call:rematchMarker("custom.leader-falkner")
+  local marker = call:rematchMarker("custom.native-rematch")
   Assert.equal(marker.ready, false, "the marker agrees that no invitation waits")
   Assert.isNil(marker.tier, "the marker carries no invented tier")
   Assert.throws(function()
-    call:launchRematch("custom.leader-falkner")
+    call:launchRematch("custom.native-rematch")
   end, "launching without readiness never invents a team")
 end
 
--- Calling a rematch-shaped contact does not invent readiness when no
--- generated source stage authorizes an invitation.
+-- Passing rematch as call intent does not stage seeking by itself; only
+-- an executed source program can publish an invitation.
 function T.tests.unsourced_phone_call_does_not_stage_a_rematch()
   local PhoneCall = requireFeature(
     "game.hgss.src.pokegear.PhoneCall",
@@ -203,7 +212,7 @@ function T.tests.unsourced_phone_call_does_not_stage_a_rematch()
   local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
 
   local state = PokegearState.new({ seed = 3032 }, { catalog = record.catalog })
-  state:registerContact("custom.leader-falkner")
+  state:registerContact("custom.native-rematch")
   local world = {
     canCall = function()
       return true
@@ -244,22 +253,22 @@ function T.tests.unsourced_phone_call_does_not_stage_a_rematch()
   })
   local handle = call:begin({
     id = "rematch-full-party",
-    contact = "custom.leader-falkner",
+    contact = "custom.native-rematch",
     direction = "outgoing",
     kind = "rematch",
   })
-  call:step(handle, {})
-  call:step(handle, {})
-  Assert.isNil(state:queryRematch("custom.leader-falkner"), "the phone program does not fabricate an invitation")
-  Assert.isFalse(call:queryRematch("custom.leader-falkner").ready, "an unsourced contact is not ready")
+  Assert.isNil(call:result(handle), "the unadvanced call has not completed or published an invitation")
+  Assert.isNil(state:queryRematch("custom.native-rematch"), "the phone program does not fabricate an invitation")
+  Assert.isFalse(call:queryRematch("custom.native-rematch").ready, "an unsourced contact is not ready")
   local failure = Assert.throws(function()
-    call:launchRematch("custom.leader-falkner")
+    call:launchRematch("custom.native-rematch")
   end, "an unsourced challenge cannot launch")
   Assert.equal(
     failure.code,
     require("libs.script.src.errors").FEATURE_UNAVAILABLE,
     "the unsupported launch is attributed"
   )
+  call:release(handle)
 end
 
 return T

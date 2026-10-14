@@ -246,10 +246,20 @@ end
 local function fixtureManifest()
   local manifest = Fixture.manifest()
   manifest.catalog.contacts = {
-    { key = "test.caller.falkner", family = "gym", sortWeight = 10, rematchWeekday = 6, rematchTime = 0 },
+    {
+      key = "test.caller.native-rematch",
+      family = "trainer",
+      trainerId = 20,
+      sortWeight = 10,
+      rematchWeekday = 6,
+      rematchTime = 0,
+    },
     { key = "test.caller.mom", family = "mother", sortWeight = 20 },
   }
-  manifest.catalog.contactOrder = { "test.caller.falkner", "test.caller.mom" }
+  manifest.catalog.contactOrder = { "test.caller.native-rematch", "test.caller.mom" }
+  manifest.catalog.rematchSets = {
+    [20] = { group = 47, trainers = { 20, 20, 712, 0, 0, 0 } },
+  }
   manifest.catalog.locations = {
     {
       key = "test.place.violet",
@@ -318,19 +328,17 @@ end
 -- owner. Only the host audio boundary is stubbed.
 ---@return table world
 local function phoneWorld()
-  local rematches = {}
   return {
-    storyTier = 2,
     weekday = "saturday",
     morning = true,
     teamsByTier = {
       [2] = { tier = 2, members = { { species = "test.pidgeotto", level = 13 } } },
     },
-    queryRematch = function(_, contact)
-      return rematches[contact]
+    trainerDefeated = function(_, trainerId)
+      return trainerId == 20
     end,
-    setRematch = function(_, contact, record)
-      rematches[contact] = record
+    rematchGroupUnlocked = function(_, tier)
+      return tier == 2
     end,
   }
 end
@@ -417,7 +425,7 @@ function T.tests.live_owner_markers_stay_read_only_across_battle_and_reopen()
 
   local roamers = roamerOwners()
   local state = PokegearState.new({ seed = 90210 }, { catalog = catalog })
-  state:registerContact("test.caller.falkner")
+  state:registerContact("test.caller.native-rematch")
   state:registerContact("test.caller.mom")
   local world = phoneWorld()
   world.weekday = 6
@@ -429,11 +437,11 @@ function T.tests.live_owner_markers_stay_read_only_across_battle_and_reopen()
     return state:setRematch(contact, record)
   end
   local call = openCall(state, catalog, world)
-  state:setRematch("test.caller.falkner", { stage = 1, wins = 0 })
+  state:setRematch("test.caller.native-rematch", { stage = 1, wins = 0 })
   state:setContactReward("test.caller.mom", { item = "test.potion", quantity = 1 })
 
   local contactPlaces = {
-    ["test.caller.falkner"] = "test.place.violet",
+    ["test.caller.native-rematch"] = "test.place.violet",
     ["test.caller.mom"] = "test.place.new-bark",
   }
   local function openMap()
@@ -480,7 +488,7 @@ function T.tests.live_owner_markers_stay_read_only_across_battle_and_reopen()
   -- a new map while the rematch resolves as a win. The already-open map
   -- keeps its refresh snapshot; nothing live-updates under it.
   roamers:prepareResult("test.roamer.raikou", "fled", 0, { location = 12 })
-  call:resolveRematch("test.caller.falkner", "win")
+  call:resolveRematch("test.caller.native-rematch", "win")
   for _ = 1, 3 do
     Assert.deepEqual(first:status(), once, "settled battles never leak into the open map")
   end

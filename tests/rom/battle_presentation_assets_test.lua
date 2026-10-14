@@ -68,6 +68,7 @@ local REQUIRED_SECTIONS = {
   "partyGauges",
   "textRoles",
   "audioRoles",
+  "trainerEncounterMusic",
 }
 
 function T.shared_menu_and_hud_definitions_compile_from_the_dump(romFs, versionId)
@@ -75,8 +76,10 @@ function T.shared_menu_and_hud_definitions_compile_from_the_dump(romFs, versionI
   local bundle = compileGlobal(compiler, romFs, versionId)
   Assert.isTrue(type(bundle.manifest) == "table", versionId .. ": the global compile yields a manifest")
   for _, section in ipairs(REQUIRED_SECTIONS) do
-    Assert.notNil(bundle.manifest[section], versionId .. ": the manifest carries its " .. section .. " section")
+  Assert.notNil(bundle.manifest[section], versionId .. ": the manifest carries its " .. section .. " section")
   end
+  local encounterMusic = assert(bundle.manifest.trainerEncounterMusic)
+  Assert.equal(encounterMusic.byTrainerClass[2].johto, "SEQ_GS_EYE_J_SHOUNEN", versionId .. ": Youngster uses the source Johto eyes-meet cue")
   Assert.isTrue(
     type(bundle.manifest.command) == "table" and bundle.manifest.command.image ~= nil,
     versionId .. ": the command menu resolves a staged image, not a bare recipe"

@@ -547,6 +547,54 @@ function PhoneWorldContext:rematchFacts(contact)
   error("unreachable", 0)
 end
 
+-- Reads whether the native trainer history flag is set. HGSS derives each
+-- trainer flag from TRAINER_FLAG_BASE plus the native trainer ID.
+---@param trainerId integer
+---@return boolean
+function PhoneWorldContext:trainerDefeated(trainerId)
+  assert(type(trainerId) == "number" and trainerId % 1 == 0 and trainerId > 0, "native trainer flags use valid IDs")
+  local events = self._owners.flags
+  if type(events) ~= "table" or type(events.isFlagSet) ~= "function" then
+    missingOwner("flags", "native rematches read trainer history")
+  end
+  local isFlagSet = events.isFlagSet --[[@as fun(self: table<string, unknown>, flag: integer): boolean]]
+  return isFlagSet(events, 0x550 + trainerId)
+end
+
+-- Reads the native story unlock flag for one rematch group index.
+---@param rematchIndex integer
+---@return boolean
+function PhoneWorldContext:rematchGroupUnlocked(rematchIndex)
+  assert(
+    type(rematchIndex) == "number" and rematchIndex % 1 == 0 and rematchIndex > 0,
+    "native rematch indices are positive"
+  )
+  local events = self._owners.flags
+  if type(events) ~= "table" or type(events.isFlagSet) ~= "function" then
+    missingOwner("flags", "native rematches read story unlocks")
+  end
+  local baseFlag = require("libs.assets.src.field.FieldScriptSymbols").flagsByName.FLAG_UNK_97B
+  assert(type(baseFlag) == "number", "native rematch unlock base flag is registered")
+  local isFlagSet = events.isFlagSet --[[@as fun(self: table<string, unknown>, flag: integer): boolean]]
+  return isFlagSet(events, baseFlag + rematchIndex --[[@as integer]])
+end
+
+-- Reads the retail wild time-of-day value used by Kenji's phonebook entry.
+---@return integer 0 morning, 1 day, 2 night
+function PhoneWorldContext:timeOfDayWild()
+  local runtime = self._owners.runtime
+  local clock = type(runtime) == "table" and runtime.localClock or nil
+  if type(clock) ~= "table" or type(clock.nowLocal) ~= "function" then
+    missingOwner("clock", "Kenji rematches read the local time of day")
+  end
+  local validClock = clock --[[@as { nowLocal: fun(self: table): table }]]
+  local sample = validClock:nowLocal()
+  assert(type(sample) == "table" and type(sample.hour) == "number", "native rematches read a civil hour")
+  local hour = math.floor(sample.hour)
+  assert(hour >= 0 and hour <= 23, "native rematch hour stays within one day")
+  return hour >= 4 and hour < 10 and 0 or (hour >= 20 or hour < 4) and 2 or 1
+end
+
 ---@param key unknown
 ---@return string domain, string fact
 local function splitKey(key)

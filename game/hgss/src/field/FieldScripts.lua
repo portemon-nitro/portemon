@@ -226,6 +226,7 @@ end
 ---@field sourceMap RuntimeFieldMap
 ---@field seedText string|nil
 ---@field audio table<string, unknown>|nil optional audio backend (absent -> SCRIPT_SERVICE_MISSING on use)
+---@field trainerEncounterMusic table<string, unknown> source-selected trainer encounter music service
 ---@field weather table<string, unknown>|nil optional live-weather backend
 ---@field camera table<string, unknown>|nil optional camera backend
 ---@field screen table<string, unknown>|nil optional screen backend
@@ -260,10 +261,12 @@ end
 ---@field pcTerminal table<string, unknown> source PC terminal effects
 ---@field pokegearApplications table<string, unknown>|nil the script-owned companion host behind calls and town-map opens (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field phoneContactIndex table<string, unknown>|nil the compiled phonebook index { byId, byTrainer } for number resolution (absent -> SCRIPT_SERVICE_MISSING on use)
+---@field phoneContactMessages table<string, unknown>|nil provider-backed source phone contact message lookup (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field pokegearState table<string, unknown>|nil the durable companion state behind card and trigger writes (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field phoneGifts table<string, unknown>|nil the contact and parent gift query adapter (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field radioMusic table<string, unknown>|nil the audio-derived radio music query (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field battle table<string, unknown>|nil the battle host for script battle tasks (absent -> SCRIPT_SERVICE_MISSING on use)
+---@field trainerCatalog table<string, unknown> immutable generated trainer data
 ---@field timeOfDay table<string, unknown> RTC-derived time-of-day service
 ---@field trainerCardStars table<string, unknown> source-derived Trainer Card star query
 ---@field apricorn table<string, unknown> source tree and Apricorn inventory adapter
@@ -502,6 +505,7 @@ function FieldScripts.new(opts)
       -- The production game wires real audio/camera/screen/events here when
       -- those subsystems land; tests inject deterministic fakes.
       audio = opts.audio,
+      trainerEncounterMusic = opts.trainerEncounterMusic,
       weather = opts.weather,
       camera = opts.camera,
       screen = opts.screen,
@@ -540,10 +544,12 @@ function FieldScripts.new(opts)
       pcTerminal = opts.pcTerminal,
       pokegearApplications = opts.pokegearApplications,
       phoneContactIndex = opts.phoneContactIndex,
+      phoneContactMessages = opts.phoneContactMessages,
       pokegearState = opts.pokegearState,
       phoneGifts = opts.phoneGifts,
       radioMusic = opts.radioMusic,
       battle = opts.battle,
+      trainerCatalog = opts.trainerCatalog,
       advanceAsync = advanceAsync,
     },
     taskRegistry = liveTaskRegistry,

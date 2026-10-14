@@ -237,6 +237,7 @@ function T.native_trainer_generation_maps_difficulty_applies_overrides_and_names
         key = "falkner",
         trainerClass = "YOUNGSTER",
         nameReference = { trainerIndex = 8 },
+        messageIds = { [0] = 14, [2] = 19 },
         party = { plainMember(), plainMember({ species = "PIDGEY", level = 6 }) },
         aiPasses = {},
         doubleBattle = false,
@@ -246,6 +247,7 @@ function T.native_trainer_generation_maps_difficulty_applies_overrides_and_names
         key = "overridden",
         trainerClass = "YOUNGSTER",
         nameReference = { trainerIndex = 8 },
+        messageIds = { [0] = 14, [2] = 19 },
         party = {
           plainMember({
             species = "EEVEE",
@@ -261,6 +263,7 @@ function T.native_trainer_generation_maps_difficulty_applies_overrides_and_names
         key = "rival",
         trainerClass = "RIVAL",
         nameReference = { rival = true },
+        messageIds = { [0] = 14, [2] = 19 },
         party = { plainMember({ species = "CHIKORITA", level = 5 }) },
         aiPasses = {},
         doubleBattle = false,

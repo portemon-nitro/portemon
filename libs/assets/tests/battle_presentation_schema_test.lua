@@ -66,7 +66,7 @@ end
 ---@return table valid staged global manifest
 local function manifest()
   return {
-    schema = "g4-battle-presentation-v1",
+    schema = "g4-battle-presentation-v2",
     version = { id = "soulsilver", language = "en" },
     verified = true,
     scenes = {
@@ -129,11 +129,15 @@ local function manifest()
       narrationBank = 197,
       cries = "species",
     },
+    trainerEncounterMusic = { default = "SEQ_GS_EYE_J_SHOUNEN", byTrainerClass = {
+      [2] = { johto = "SEQ_GS_EYE_J_SHOUNEN", kanto = "SEQ_GS_EYE_J_SHOUNEN" },
+    } },
   }
 end
 
 function T.staged_manifests_validate()
-  Assert.isTrue(Schema.isValidManifest(manifest()), "a complete staged manifest validates")
+  local valid, err = Schema.isValidManifest(manifest())
+  Assert.isTrue(valid, "a complete staged manifest validates: " .. tostring(err))
 end
 
 function T.manifests_reject_missing_roles_and_bad_geometry()
@@ -158,6 +162,9 @@ function T.manifests_reject_missing_roles_and_bad_geometry()
   local foreign = manifest()
   foreign.extraNative = { memberId = 3 }
   Assert.isFalse(Schema.isValidManifest(foreign), "native-shaped extension data never validates")
+  local missingEncounterMusic = manifest()
+  missingEncounterMusic.trainerEncounterMusic = nil
+  Assert.isFalse(Schema.isValidManifest(missingEncounterMusic), "eyes-meet music selectors are required")
 end
 
 ---@return table valid composed scene record

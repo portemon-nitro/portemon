@@ -10,6 +10,8 @@ local Assert = require("tests.support.Assert")
 local BattleRng = require("libs.battle.src.gen4.BattleRng")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local ItemFixture = require("libs.items.tests.item_fixture")
+local HgssTrainerCatalog = require("libs.hgss.src.battle.HgssTrainerCatalog")
+local RuntimeValues = require("libs.hgss.src.script.RuntimeValues")
 
 local CATALOG_MODULE = "libs.hgss.src.battle.HgssTrainerCatalog"
 local FACTORY_MODULE = "libs.hgss.src.battle.HgssTrainerFactory"
@@ -91,11 +93,47 @@ local function trainerRecord(key, party, extra)
     aiPasses = {},
     doubleBattle = false,
     items = {},
+    messageIds = {},
   }
   for field, value in pairs(extra or {}) do
     record[field] = value
   end
   return record
+end
+
+function T.native_double_battle_value_reads_the_composed_trainer_catalog()
+  local catalog = HgssTrainerCatalog.new(compiledInput({
+    [8] = trainerRecord(8, {}, { doubleBattle = true }),
+    [9] = trainerRecord(9, {}, { doubleBattle = false }),
+  }))
+  local run = { services = { trainerCatalog = catalog } }
+  Assert.equal(RuntimeValues.evaluateValue({ value = "trainer_double_battle", trainer = 8 }, run), 1)
+  Assert.equal(RuntimeValues.evaluateValue({ value = "trainer_double_battle", trainer = 9 }, run), 0)
+end
+
+function T.trainer_message_selector_resolves_to_bank_728_or_source_empty_text()
+  local catalog = HgssTrainerCatalog.new(compiledInput({
+    [8] = trainerRecord(8, {}, { messageIds = { [0] = 14, [2] = 19 } }),
+  }))
+  local run = {
+    services = {
+      trainerCatalog = catalog,
+      world = { getVar = function(_, id) return id == 0x8007 and 8 or 2 end },
+    },
+    instance = {},
+  }
+  local message = RuntimeValues.evaluateMessage({
+    message = "trainer",
+    trainer = { value = "var", id = 0x8007 },
+    selector = { value = "var", id = 0x8008 },
+  }, run)
+  Assert.deepEqual(message, { message = "external", bank = 728, id = 19 })
+  run.services.world.getVar = function(_, id) return id == 0x8007 and 8 or 1 end
+  Assert.deepEqual(RuntimeValues.evaluateMessage({
+    message = "trainer",
+    trainer = { value = "var", id = 0x8007 },
+    selector = { value = "var", id = 0x8008 },
+  }, run), { message = "empty" })
 end
 
 ---@param catalog table immutable trainer catalog under test
@@ -475,6 +513,7 @@ local function numericTrainerRecord(party, extra)
     aiPasses = {},
     doubleBattle = false,
     items = {},
+    messageIds = {},
   }
   for field, value in pairs(extra or {}) do
     record[field] = value

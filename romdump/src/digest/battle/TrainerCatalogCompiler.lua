@@ -193,7 +193,7 @@ end
 -- one header plus its concatenated party members per trainer index with its
 -- supported game. Malformed headers, truncated members, and unknown
 -- references fail before anything is published.
----@param nativeInput { versionId: string, trainers: table<integer, { data: string, members: string }> }
+---@param nativeInput { versionId: string, trainers: table<integer, { data: string, members: string }>, trainerMessages: table<integer, integer[]> }
 ---@return table<string, unknown>|nil, Errors.Error|nil
 function TrainerCatalogCompiler.compile(nativeInput)
   local versionId = nativeInput.versionId
@@ -281,6 +281,15 @@ function TrainerCatalogCompiler.compile(nativeInput)
           0
         )
       end
+      local messageIds = nativeInput.trainerMessages and nativeInput.trainerMessages[trainerIndex]
+      if type(messageIds) ~= "table" then
+        error(
+          Errors.new("TRAINER_INPUT_INVALID", "trainer " .. trainerIndex .. " has no source message selector map", {
+            trainer = trainerIndex,
+          }),
+          0
+        )
+      end
       trainers[trainerIndex] = {
         trainerClass = header.trainerClass,
         nameReference = nameReference,
@@ -290,6 +299,7 @@ function TrainerCatalogCompiler.compile(nativeInput)
         items = items,
         prizeMoney = { trainerClass = header.trainerClass, classRate = classRate },
         messageSelectors = { intro = 0, lose = 1, after = 2 },
+        messageIds = messageIds,
       }
     end
     local compiled = {
@@ -332,8 +342,36 @@ function TrainerCatalogCompiler.compileFromDump(romFs, opts)
   if parties == nil then
     return nil, partiesErr
   end
+  local messageRows, messageRowsErr = romFs:openNarc("trainer_message_rows")
+  if messageRows == nil then
+    return nil, messageRowsErr
+  end
+  local messageOffsets, messageOffsetsErr = romFs:openNarc("trainer_message_offsets")
+  if messageOffsets == nil then
+    return nil, messageOffsetsErr
+  end
   local ok, result = pcall(function()
     local records = {}
+    local messageMap = {}
+    local rows = must(messageRows:readMember(0))
+    local offsets = must(messageOffsets:readMember(0))
+    assert(#rows % 4 == 0, "trainer message table has four-byte rows")
+    assert(#offsets % 2 == 0, "trainer message offsets have two-byte entries")
+    local offsetReader = BinaryReader.new(offsets, "trainer message offsets")
+    local rowReader = BinaryReader.new(rows, "trainer message rows")
+    for trainerIndex = 0, math.floor(#offsets / 2) - 1 do
+      local rowOffset = offsetReader:u16le(trainerIndex * SOURCES.messageRows.offsetEntrySize)
+      assert(rowOffset <= #rows and rowOffset % 4 == 0, "trainer message row offset is aligned and in range")
+      while rowOffset < #rows do
+        local rowTrainer = rowReader:u16le(rowOffset)
+        if rowTrainer == trainerIndex then
+          local selector = rowReader:u16le(rowOffset + 2)
+          messageMap[trainerIndex] = messageMap[trainerIndex] or {}
+          messageMap[trainerIndex][selector] = rowOffset / SOURCES.messageRows.entrySize
+        end
+        rowOffset = rowOffset + SOURCES.messageRows.entrySize
+      end
+    end
     local count = headers:memberCount()
     for trainerIndex = 0, count - 1 do
       local data = must(headers:readMember(trainerIndex))
@@ -343,7 +381,14 @@ function TrainerCatalogCompiler.compileFromDump(romFs, opts)
         records[trainerIndex] = { data = data, members = members }
       end
     end
-    return must(TrainerCatalogCompiler.compile({ versionId = versionId, trainers = records }))
+    for trainerIndex in pairs(records) do
+      messageMap[trainerIndex] = messageMap[trainerIndex] or {}
+    end
+    return must(TrainerCatalogCompiler.compile({
+      versionId = versionId,
+      trainers = records,
+      trainerMessages = messageMap,
+    }))
   end)
   if not ok then
     if Errors.is(result) then

@@ -109,6 +109,54 @@ function RuntimeValues.evaluateValue(v, run)
   elseif kind == "flag_value" then
     local flagId = RuntimeValues.resolveIdOperand(v.flag, run)
     return run.services.world:isFlagSet(flagId) and 1 or 0
+  elseif kind == "trainer_double_battle" then
+    local trainerId = RuntimeValues.evaluateValue(v.trainer, run)
+    local catalog = run.services.trainerCatalog
+    assert(type(catalog) == "table", "trainer metadata comes from the composed trainer catalog")
+    local trainer = require("libs.hgss.src.battle.HgssTrainerCatalog").trainer(catalog, trainerId)
+    assert(type(trainer) == "table", "the active native trainer has a catalog record")
+    assert(type(trainer.doubleBattle) == "boolean", "trainer catalog carries the native double-battle attribute")
+    return trainer.doubleBattle and 1 or 0
+  elseif kind == "trainer_message_param" then
+    local trainerId = RuntimeValues.evaluateValue(v.trainer, run)
+    local catalog = run.services.trainerCatalog
+    assert(type(catalog) == "table", "trainer message selectors read the generated trainer catalog")
+    local trainer = require("libs.hgss.src.battle.HgssTrainerCatalog").trainer(catalog, trainerId)
+    assert(
+      type(trainer) == "table" and type(trainer.doubleBattle) == "boolean",
+      "message trainer has source battle metadata"
+    )
+    local selector = v.selector
+    assert(selector == 1 or selector == 2 or selector == 3, "trainer message selector index is one-based")
+    local params
+    if not trainer.doubleBattle then
+      params = { 0, 2, 0 }
+    elseif v.partner == true then
+      params = { 7, 9, 10 }
+    else
+      params = { 3, 5, 6 }
+    end
+    return params[selector]
+  elseif kind == "trainer_rematch_message_param" then
+    local trainerId = RuntimeValues.evaluateValue(v.trainer, run)
+    local catalog = run.services.trainerCatalog
+    assert(type(catalog) == "table", "rematch message selectors read the generated trainer catalog")
+    local trainer = require("libs.hgss.src.battle.HgssTrainerCatalog").trainer(catalog, trainerId)
+    assert(
+      type(trainer) == "table" and type(trainer.doubleBattle) == "boolean",
+      "rematch message trainer has source battle metadata"
+    )
+    local selector = v.selector
+    assert(selector == 1 or selector == 2 or selector == 3, "rematch message selector index is one-based")
+    local params
+    if not trainer.doubleBattle then
+      params = { 17, 0, 0 }
+    elseif v.partner == true then
+      params = { 19, 0, 10 }
+    else
+      params = { 18, 0, 6 }
+    end
+    return params[selector]
   elseif kind == "player_gender_value" then
     return run.services.player:gender()
   elseif kind == "friend_sprite_value" then
@@ -270,6 +318,19 @@ function RuntimeValues.evaluateMessage(message, run)
       id = RuntimeValues.evaluateValue(message.id, run),
     }
   end
+  if message.message == "trainer" then
+    local trainerId = RuntimeValues.evaluateValue(message.trainer, run)
+    local selector = RuntimeValues.evaluateValue(message.selector, run)
+    local catalog = run.services.trainerCatalog
+    assert(type(catalog) == "table", "trainer dialogue reads the generated trainer catalog")
+    local trainer = require("libs.hgss.src.battle.HgssTrainerCatalog").trainer(catalog, trainerId)
+    assert(type(trainer) == "table" and type(trainer.messageIds) == "table", "trainer carries source message selectors")
+    local messageId = trainer.messageIds[selector]
+    if messageId == nil then
+      return { message = "empty" }
+    end
+    return { message = "external", bank = 728, id = messageId }
+  end
   if message.text == "gendered_message" then
     local gender = run.services.player:gender()
     return RuntimeValues.evaluateMessage(gender == 0 and message.male or message.female, run)
@@ -324,6 +385,11 @@ function RuntimeValues.evaluateCondition(condition, run)
   elseif kind == "flag" then
     local flagId = RuntimeValues.resolveIdOperand(condition.id, run)
     return run.services.world:isFlagSet(flagId) == condition.expected
+  elseif kind == "trainer_defeated" then
+    local trainerId = RuntimeValues.evaluateValue(condition.trainer, run)
+    local isTrainerDefeated = run.services.world.isTrainerDefeated
+    assert(type(isTrainerDefeated) == "function", "trainer history belongs to the live world owner")
+    return isTrainerDefeated(run.services.world, trainerId) == condition.expected
   elseif kind == "not" then
     return not RuntimeValues.evaluateCondition(condition.operand, run)
   elseif kind == "all" then

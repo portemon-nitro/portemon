@@ -9,6 +9,8 @@ local Errors = require("libs.errors.src.Errors")
 local ScriptErrors = require("libs.script.src.errors")
 local ApricornTreePresentation = require("game.hgss.src.apricorn.ApricornTreePresentation")
 local KurtConversions = require("game.hgss.src.apricorn.KurtConversions")
+local HgssTrainerCatalog = require("libs.hgss.src.battle.HgssTrainerCatalog")
+local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
 
 ---@class FieldScriptCompositionResult
 ---@field scripts FieldScripts
@@ -73,12 +75,47 @@ function FieldScriptComposition.phoneContactIndex(catalog)
     local entry = record --[[@as table<string, unknown>]]
     if type(entry.key) == "string" and type(entry.id) == "number" then
       byId[entry.id] = entry.key
-      if type(entry.trainer) == "number" then
-        byTrainer[entry.trainer] = entry.id
+      if type(entry.trainerId) == "number" then
+        byTrainer[entry.trainerId] = entry.id
       end
     end
   end
   return { byId = byId, byTrainer = byTrainer }
+end
+
+-- Resolves the source message bank and per-kind entry for a registered
+-- phonebook contact, validating the compiled text through its existing
+-- provider resolver before a script publishes either reference.
+---@param catalog table<string, unknown>?
+---@param messages table<string, unknown>?
+---@return table<string, unknown>? contact message resolver
+function FieldScriptComposition.phoneContactMessages(catalog, messages)
+  if type(catalog) ~= "table" or type(catalog.contacts) ~= "table" then
+    return nil
+  end
+  assert(type(messages) == "table", "contact messages use the field phone text owner")
+  local contactsByKey = {}
+  for _, entry in
+    ipairs(catalog.contacts --[[@as table<integer, unknown>]])
+  do
+    local contact = entry --[[@as table<string, unknown>]]
+    assert(type(contact.key) == "string", "phone message records carry a contact key")
+    contactsByKey[contact.key] = contact
+  end
+  local resolveContactEntry = messages.resolveContactEntry
+  assert(type(resolveContactEntry) == "function", "phone messages resolve through the existing field text owner")
+  local service = {}
+  function service:resolve(contactKey, kind)
+    assert(type(contactKey) == "string" and contactKey ~= "", "phone message resolution has a contact key")
+    assert(type(kind) == "number" and kind % 1 == 0 and kind >= 0 and kind <= 4, "phone message kind is source-bounded")
+    local contact = assert(contactsByKey[contactKey], "phone message contact exists in the compiled catalog")
+    local bank = contact.messageBank
+    assert(type(bank) == "number" and bank % 1 == 0 and bank >= 0, "phone contact carries its source message bank")
+    local entry = kind + 1
+    resolveContactEntry(messages, contactKey, entry)
+    return bank, entry
+  end
+  return service
 end
 
 -- Builds the contact and parent gift query adapter over the real owners:
@@ -227,6 +264,32 @@ local function timeOfDayService(runtime)
     return day
   end
   return { currentCode = currentCode, weekday = weekday }
+end
+
+local function trainerEncounterMusicService(runtime, audioService, trainerCatalog, cacheFs)
+  local manifest = nil
+  local service = {}
+  function service:play(trainerId)
+    assert(type(trainerId) == "number" and trainerId % 1 == 0, "trainer encounter music uses a native trainer ID")
+    local trainer =
+      assert(HgssTrainerCatalog.trainer(trainerCatalog, trainerId), "encounter trainer exists in the generated catalog")
+    local map = assert(runtime.runtimeMap, "trainer encounter music reads the live field map")
+    local world = runtime.mapLoader.world
+    local mapIndex = assert(world.byId[map.mapId], "live map has a generated world record")
+    local mapRecord = assert(world.maps[mapIndex], "live map world record exists")
+    local regionNo = assert(mapRecord.regionNo, "live map world record carries its source region")
+    assert(regionNo == 0 or regionNo == 1, "trainer encounter music uses a native region")
+    if manifest == nil then
+      manifest = BattlePresentationCache.load(cacheFs)
+      assert(manifest.verified == true, "trainer encounter music requires verified generated source cues")
+    end
+    local selector = assert(manifest.trainerEncounterMusic, "battle presentation carries the source encounter selector")
+    local regions = selector.byTrainerClass[trainer.trainerClass]
+    local sequence = regions == nil and selector.default or regions[regionNo == 0 and "johto" or "kanto"]
+    assert(type(sequence) == "string" and sequence ~= "", "source encounter selector resolves a sequence")
+    audioService:temporaryMusic(sequence)
+  end
+  return service
 end
 
 -- No Frontier gameplay owns a writer yet, so the current production
@@ -467,6 +530,13 @@ function FieldScriptComposition.compose(runtime, options)
     pcApplications = runtime.pcApplicationHost,
     pcTerminal = runtime.pcTerminal,
     battle = options.battle,
+    trainerCatalog = runtime:trainerCatalog(),
+    trainerEncounterMusic = trainerEncounterMusicService(
+      runtime,
+      options.audioService,
+      runtime:trainerCatalog(),
+      options.cacheFs
+    ),
     overworld = runtime.overworld,
     propAnimations = runtime.propAnimations,
     pokemonCenterHeal = runtime.pokemonCenterHeal,
@@ -481,6 +551,7 @@ function FieldScriptComposition.compose(runtime, options)
     kurtBoxHost = assert(runtime.kurtBoxHost, "Kurt Box host is composed before field scripts"),
     pokegearApplications = gearHost,
     phoneContactIndex = FieldScriptComposition.phoneContactIndex(gearCatalog),
+    phoneContactMessages = FieldScriptComposition.phoneContactMessages(gearCatalog, runtime.phoneMessages),
     pokegearState = runtime.pokegearState,
     phoneGifts = FieldScriptComposition.phoneGiftQueries(
       runtime.pokegearState,

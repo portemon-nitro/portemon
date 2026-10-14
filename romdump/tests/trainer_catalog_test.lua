@@ -90,8 +90,12 @@ local function itemMovesMember(difficulty, level, speciesId, itemId, moves)
   return memberHead(difficulty, 0, level, speciesId, 0) .. u16(itemId) .. moveList(moves) .. u16(0)
 end
 
-local function nativeInput(records)
-  return { versionId = "heartgold", trainers = records }
+local function nativeInput(records, trainerMessages)
+  local messageIds = {}
+  for trainerIndex in pairs(records) do
+    messageIds[trainerIndex] = trainerMessages and trainerMessages[trainerIndex] or {}
+  end
+  return { versionId = "heartgold", trainers = records, trainerMessages = messageIds }
 end
 
 local function assertTemplateShape(template, label)
@@ -256,6 +260,7 @@ function T.trainer_catalogs_carry_only_compact_real_item_lists()
           items = items,
           prizeMoney = { trainerClass = CLASS_YOUNGSTER, classRate = 4 },
           messageSelectors = { intro = 0, lose = 1, after = 2 },
+          messageIds = {},
         },
       },
     }
@@ -315,6 +320,47 @@ function T.trainer_prize_and_message_selectors_survive_projection()
     { "POTION" },
     "held trainer items resolve to item keys in source order without gaps"
   )
+end
+
+function T.trainer_message_rows_project_source_pairs_to_bank_ordinals()
+  local TrainerCatalogCompiler = require("romdump.src.digest.battle.TrainerCatalogCompiler")
+  local trainerHeaders = {}
+  for trainerIndex = 0, 8 do
+    trainerHeaders[trainerIndex + 1] = trainerIndex == 8
+        and trdata(TRTYPE_MON, CLASS_YOUNGSTER, 1, {}, 0, 0)
+      or trdata(TRTYPE_MON, CLASS_YOUNGSTER, 0, {}, 0, 0)
+  end
+  local rows = u16(8) .. u16(0) .. u16(8) .. u16(2) .. u16(9) .. u16(0)
+  local offsets = string.rep(u16(#rows), 8) .. u16(0)
+  local function archive(members)
+    return {
+      memberCount = function()
+        return #members
+      end,
+      readMember = function(_, memberId)
+        return members[memberId + 1]
+      end,
+    }
+  end
+  local sources = {
+    trainer_data = archive(trainerHeaders),
+    trainer_parties = archive({ [9] = plainMember(30, 5, 19) }),
+    trainer_message_rows = archive({ rows }),
+    trainer_message_offsets = archive({ offsets }),
+    NARC_poketool_trmsg_trtbl = archive({ rows }),
+    NARC_poketool_trmsg_trtblofs = archive({ offsets }),
+  }
+  local romFs = {
+    version = function()
+      return "heartgold"
+    end,
+    openNarc = function(_, alias)
+      return assert(sources[alias], "source archive " .. alias .. " is available")
+    end,
+  }
+  local compiled = assert(TrainerCatalogCompiler.compileFromDump(romFs))
+  Assert.deepEqual(compiled.trainers[8].messageIds, { [0] = 0, [2] = 1 })
+  Assert.isNil(compiled.trainers[8].messageIds[1], "absent source pairs stay absent")
 end
 
 function T.trainer_class_rates_cover_every_native_class_without_fallback()
@@ -565,6 +611,9 @@ function T.successful_trainer_job_stages_publishes_and_reads_ready()
       if alias == "trainer_parties" then
         return narcFor(members, 9)
       end
+      if alias == "trainer_message_rows" or alias == "trainer_message_offsets" then
+        return narcFor("", 1)
+      end
       return nil, "unknown archive " .. tostring(alias)
     end,
   }
@@ -620,12 +669,12 @@ function T.stale_trainer_family_markers_never_read_ready()
   local FakeCache = require("tests.support.FakeCache")
   Assert.equal(
     DerivedAssetContract.trainerCatalog.cacheFormat,
-    "trainer-catalog-cache-v2",
+    "trainer-catalog-cache-v3",
     "the trainer cache family carries its current marker"
   )
   Assert.equal(
     DerivedAssetContract.trainerCatalog.schema,
-    "g4-trainer-catalog-v2",
+    "g4-trainer-catalog-v3",
     "the trainer schema family carries its current marker"
   )
   local sha = string.rep("b", 40)

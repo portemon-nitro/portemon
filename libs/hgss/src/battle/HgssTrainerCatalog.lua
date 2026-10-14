@@ -46,6 +46,7 @@ local function assertTrainerRecord(record, key)
   assert(type(record) == "table", "trainer templates are records")
   local template = record --[[@as table<string, unknown>]]
   assert(template.trainerClass ~= nil, "trainer " .. tostring(key) .. " names its trainer class")
+  assert(type(template.messageIds) == "table", "trainer " .. tostring(key) .. " carries source message selectors")
   assert(type(template.nameReference) == "table", "trainer " .. tostring(key) .. " carries its name reference")
   assert(type(template.party) == "table", "trainer " .. tostring(key) .. " carries its ordered party")
   local party = template.party --[[@as table<integer, unknown>]]

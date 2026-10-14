@@ -65,6 +65,7 @@ local function runtimeMap(opts)
       objectEventId = 0,
       spriteId = 99,
       movementType = "stationary",
+      movementSelector = opts.movementSelector or 0,
       type = 0,
       eventFlag = 500,
       scriptId = 1,
@@ -184,7 +185,7 @@ local function harness(opts)
       return composition:effective(id)
     end,
   })
-  return { mgr = mgr, registry = registry, composition = composition, scheduler = scheduler }
+  return { mgr = mgr, world = world, registry = registry, composition = composition, scheduler = scheduler }
 end
 
 local function startForeground(h, resource, tick)
@@ -289,6 +290,13 @@ function T.ordinary_actor_settles_to_static_idle_after_locomotion()
     Assert.equal(record.world.y, worldY, "static idle keeps draw worldY at its logical anchor")
     Assert.equal(record.world.z, worldZ, "static idle keeps draw worldZ at its logical anchor")
   end
+end
+
+function T.script_actor_snapshot_preserves_the_native_movement_selector()
+  local h = harness({ movementSelector = 3 })
+  local actorId = assert(h.mgr:actorIdForMapIndex(0))
+  local actor = assert(h.world:snapshot(actorId))
+  Assert.equal(actor.movementSelector, 3)
 end
 
 function T.scripted_walk_retains_a_fractional_render_midpoint_after_scheduler_mutation()

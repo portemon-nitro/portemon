@@ -99,6 +99,12 @@ function WorldManifest.build(entries, excluded, compileExcluded)
         { id = e.id, followMode = e.followMode }
       )
     end
+    if e.regionNo ~= 0 and e.regionNo ~= 1 then
+      Errors.raise("WORLD_MANIFEST_REGION_INVALID", "map region must be Johto or Kanto", {
+        id = e.id,
+        regionNo = e.regionNo,
+      })
+    end
   end
 
   local bySymbol, byId = {}, {}
@@ -192,6 +198,7 @@ function WorldManifest.compileCatalog(romFs)
         mapSection = result.mapSection,
         mapSectionNativeId = result.mapSectionNativeId,
         followMode = result.followMode,
+        regionNo = result.regionNo,
         width = resolved.matrix.width,
         height = resolved.matrix.height,
         matrix = {

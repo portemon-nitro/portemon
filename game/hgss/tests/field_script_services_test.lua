@@ -284,6 +284,9 @@ function T.tests.production_trainer_card_service_counts_no_frontier_star()
       playerAvatar = nil,
       playerData = { profile = {}, options = { textFrame = 0 } },
       versionId = "heartgold",
+      trainerCatalog = function()
+        return { trainers = {} }
+      end,
       runtimeMap = { mapId = 61 },
       actorConfig = {
         apricorn = {

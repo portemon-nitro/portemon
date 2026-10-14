@@ -123,4 +123,84 @@ function T.result_without_a_host_is_an_attributed_fault()
   Assert.equal(err.code, "SCRIPT_SERVICE_MISSING")
 end
 
+function T.trainer_message_parameters_follow_single_and_double_source_selectors()
+  local world = worldWith({})
+  local catalog = require("libs.hgss.src.battle.HgssTrainerCatalog").new({ trainers = {
+    [8] = { trainerClass = 2, nameReference = {}, party = {}, doubleBattle = false, messageIds = {} },
+    [9] = { trainerClass = 3, nameReference = {}, party = {}, doubleBattle = true, messageIds = {} },
+  } })
+  local fixture = runWith({ world = world, trainerCatalog = catalog })
+  local value = function(trainer, partner, selector)
+    return RuntimeValues.evaluateValue({
+      value = "trainer_message_param",
+      trainer = trainer,
+      partner = partner,
+      selector = selector,
+    }, fixture.run)
+  end
+  Assert.deepEqual({ value(8, false, 1), value(8, false, 2), value(8, false, 3) }, { 0, 2, 0 })
+  Assert.deepEqual({ value(9, false, 1), value(9, false, 2), value(9, false, 3) }, { 3, 5, 6 })
+  Assert.deepEqual({ value(9, true, 1), value(9, true, 2), value(9, true, 3) }, { 7, 9, 10 })
+end
+
+function T.phone_rematch_message_parameters_follow_native_single_and_double_selectors()
+  local world = worldWith({})
+  local catalog = require("libs.hgss.src.battle.HgssTrainerCatalog").new({ trainers = {
+    [8] = { trainerClass = 2, nameReference = {}, party = {}, doubleBattle = false, messageIds = {} },
+    [9] = { trainerClass = 3, nameReference = {}, party = {}, doubleBattle = true, messageIds = {} },
+  } })
+  local fixture = runWith({ world = world, trainerCatalog = catalog })
+  local value = function(trainer, partner, selector)
+    return RuntimeValues.evaluateValue({
+      value = "trainer_rematch_message_param",
+      trainer = trainer,
+      partner = partner,
+      selector = selector,
+    }, fixture.run)
+  end
+  Assert.deepEqual({ value(8, false, 1), value(8, false, 2), value(8, false, 3) }, { 17, 0, 0 })
+  Assert.deepEqual({ value(9, false, 1), value(9, false, 2), value(9, false, 3) }, { 18, 0, 6 })
+  Assert.deepEqual({ value(9, true, 1), value(9, true, 2), value(9, true, 3) }, { 19, 0, 10 })
+end
+
+function T.trainer_reaction_uses_the_native_facing_movement_through_the_field_task()
+  local expected = {
+    north = { action = "walk", direction = "west", speed = "normal" },
+    south = { action = "walk", direction = "east", speed = "normal" },
+    west = { action = "walk", direction = "north", speed = "fast" },
+    east = { action = "walk", direction = "south", speed = "fast" },
+  }
+  for facing, action in pairs(expected) do
+    local fixture = runWith({
+      actors = { snapshot = function(_, actorId)
+        Assert.equal(actorId, "joey")
+        return { facing = facing }
+      end, exists = function(_, actorId) return actorId == "joey" end },
+    })
+    fixture.run.instance.trigger = { selfActor = "joey" }
+    Assert.equal(
+      Runtime.executeNode({
+        op = "trainer_reaction_movement",
+        actor = { ref = "actor", special = "last_talked" },
+      }, fixture.run),
+      Runtime.OUTCOME_CONTINUE
+    )
+    Assert.equal(fixture.created[1].taskType, "movement")
+    Assert.deepEqual(fixture.created[1].spec.sequence, { action })
+    Assert.isFalse(fixture.created[1].spec.blocking, "the native cue queues movement without blocking")
+  end
+end
+
+function T.trainer_flag_write_resolves_native_or_variable_identity_through_world_state()
+  local defeated = {}
+  local world = worldWith({ [7] = 8 })
+  world.setTrainerDefeated = function(_, trainerId)
+    defeated[#defeated + 1] = trainerId
+  end
+  local fixture = runWith({ world = world })
+  Runtime.executeNode({ op = "set_trainer_flag", trainer = var(7) }, fixture.run)
+  Runtime.executeNode({ op = "set_trainer_flag", trainer = 9 }, fixture.run)
+  Assert.deepEqual(defeated, { 8, 9 }, "variable selectors dereference before the HGSS history owner")
+end
+
 return { tests = T }

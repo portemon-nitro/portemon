@@ -25,6 +25,46 @@ PokegearCatalogCompiler.ERROR = {
 local SENTINEL_U32 = 4294967294
 local PHONE_SCRIPT_COUNT = 455
 
+local function compileRematchSets(romFs)
+  local sources = PokegearSources.rematchTrainerSets
+  assert(type(sources) == "table" and #sources == 63, "native rematch source has 63 groups")
+  local trainerData, trainerErr = romFs:openNarc("trainer_data")
+  if trainerData == nil then
+    error(trainerErr, 0)
+  end
+  local TrainerCatalogCompiler = require("romdump.src.digest.battle.TrainerCatalogCompiler")
+  local compiled = {}
+  for index, source in ipairs(sources) do
+    assert(source.group == index - 1, "native rematch groups preserve their source index")
+    assert(type(source.trainers) == "table" and #source.trainers == 6, "native rematch groups have six source columns")
+    local baseTrainerId = source.trainers[1]
+    assert(type(baseTrainerId) == "number" and baseTrainerId > 0, "native rematch group has a base trainer")
+    assert(compiled[baseTrainerId] == nil, "native rematch base trainers are unique")
+    local trainers = {}
+    local sentinel = false
+    for column, trainerId in ipairs(source.trainers) do
+      assert(type(trainerId) == "number" and trainerId % 1 == 0 and trainerId >= 0 and trainerId <= 0xFFFF)
+      if trainerId == 0 then
+        sentinel = true
+      else
+        assert(not sentinel, "native rematch entries end at the first sentinel")
+        local bytes, readErr = trainerData:readMember(trainerId)
+        if bytes == nil then
+          error(readErr, 0)
+        end
+        local header, headerErr = TrainerCatalogCompiler.decodeHeader(trainerId --[[@as integer]], bytes)
+        if header == nil then
+          error(headerErr, 0)
+        end
+        assert(header.memberCount > 0, "native rematch identities have compiled trainer parties")
+      end
+      trainers[column] = trainerId
+    end
+    compiled[baseTrainerId] = { group = source.group, trainers = trainers }
+  end
+  return compiled
+end
+
 function PokegearCatalogCompiler.compileFriendMapPhrases()
   local sources = PokegearSources.friendMapPhraseSources
   assert(#sources == 73, "Friend source map phrases have 73 rows")
@@ -567,6 +607,7 @@ function PokegearCatalogCompiler.compile(romFs, versionId)
     callTriggers = compilePhoneTriggers(versionId, decoded.contacts),
     friendMapPhrases = PokegearCatalogCompiler.compileFriendMapPhrases(),
     rematches = {},
+    rematchSets = compileRematchSets(romFs),
     gifts = {},
     momPurchases = PokegearSources.momPurchaseRecords(versionId),
     locations = PokegearSources.mapLocationRecords(versionId),

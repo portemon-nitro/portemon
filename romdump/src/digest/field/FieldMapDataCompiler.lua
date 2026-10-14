@@ -21,6 +21,7 @@ local Hashing = require("romdump.src.digest.Hashing")
 local fieldAudio = require("romdump.src.reference.hgss.field_audio")
 local ScriptHeader = require("romdump.src.digest.script.ScriptHeader")
 local SourceCatalog = require("romdump.src.digest.script.SourceCatalog")
+local ScriptIdentity = require("libs.assets.src.ScriptIdentity")
 local HgssObjectMovement = require("romdump.src.digest.field.HgssObjectMovement")
 local FieldMoveSources = require("romdump.src.config.FieldMoveSources")
 local ApricornSources = require("romdump.src.config.ApricornSources")
@@ -50,6 +51,11 @@ local function normalizeUnboundScripts(decoded)
         event.scriptId = 0
       elseif STANDARD_SCRIPTS.namesById[event.scriptId] ~= nil then
         event.scriptId = SourceCatalog.commonPublicId(STANDARD_SCRIPTS, event.scriptId)
+      else
+        local standard = STANDARD_SCRIPTS.locate(event.scriptId)
+        if standard ~= nil then
+          event.scriptId = ScriptIdentity.formatVanilla(standard.member, standard.scriptIndex)
+        end
       end
     end
   end
@@ -77,6 +83,7 @@ local function semanticObjectEvent(event, map, index)
     end
   end
   object.movementType = movementType
+  object.movementSelector = event.movement
   if event.scriptId == "common.apricorn_tree" then
     local treeIndex = event.param0
     local apricornKey = type(treeIndex) == "number" and ApricornSources.treeByIndex[treeIndex] or nil

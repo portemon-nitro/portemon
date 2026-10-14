@@ -452,6 +452,9 @@ end
 ---@return FieldMessageProvider.FormattedMessage formatted { tokens, ... }
 function ScriptDialogueHost:resolveMessage(message, bindings, textArgs)
   local bankId, messageId
+  if type(message) == "table" and message.message == "empty" then
+    return { text = "", tokens = {}, hadUnresolvedSubstitutions = false }
+  end
   if type(message) == "string" then
     bankId, messageId = message:match("^msg%.hgss%.(%d+)%.(%d+)$")
     if bankId == nil then

@@ -81,6 +81,14 @@ function T.nested_branches_contribute_audio_and_exclude_local_labels()
   Assert.deepEqual(deps.scriptTargets, { "common.other" })
 end
 
+function T.native_trainer_encounter_music_declares_every_source_cue()
+  local BattlePresentationSources = require("romdump.src.config.BattlePresentationSources")
+  local deps = Session.directDependencies({
+    { op = "trainer_encounter_music", trainer = { value = "var", id = "x8000" } },
+  }, {}, context(953, "vanilla.trainer"))
+  Assert.deepEqual(deps.audioSequences, BattlePresentationSources.trainerEncounterMusicSymbols())
+end
+
 function T.numeric_sequence_references_normalize_through_the_sound_catalog()
   local sounds = { [1014] = "SEQ_SE_GS_N_SESERAGI" }
   local deps = Session.directDependencies({

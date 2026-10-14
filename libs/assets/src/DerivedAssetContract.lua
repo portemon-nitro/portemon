@@ -182,7 +182,7 @@ DerivedAssetContract.map = {
 }
 
 DerivedAssetContract.world = {
-  schema = "g4-world-v1",
+  schema = "g4-world-v2",
 }
 
 DerivedAssetContract.fieldCells = {
@@ -374,8 +374,8 @@ DerivedAssetContract.battleData = {
 }
 
 DerivedAssetContract.trainerCatalog = {
-  cacheFormat = "trainer-catalog-cache-v2",
-  schema = "g4-trainer-catalog-v2",
+  cacheFormat = "trainer-catalog-cache-v3",
+  schema = "g4-trainer-catalog-v3",
 }
 
 -- The battle presentation class carries the source-backed ordinary battle
@@ -384,8 +384,8 @@ DerivedAssetContract.trainerCatalog = {
 -- (portrait pages resolve through the mon class). The global manifest
 -- stages apart from scenes; one scene stages per demanded key.
 DerivedAssetContract.battlePresentation = {
-  cacheFormat = "battle-presentation-cache-v1",
-  schema = "g4-battle-presentation-v1",
+  cacheFormat = "battle-presentation-cache-v2",
+  schema = "g4-battle-presentation-v2",
   sceneSchema = "g4-battle-scene-v1",
 }
 

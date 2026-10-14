@@ -219,6 +219,17 @@ T["world state round trip"] = function()
   Assert.equal(restored.rng:nextInt(50), world.rng:nextInt(50), "the serialized RNG continues from the captured state")
 end
 
+T["trainer history checks the native trainer flag"] = function()
+  local world = WorldState.new({ catalogs = CATALOGS, seed = 7 })
+  Assert.isFalse(world:isTrainerDefeated(8), "an unrecorded trainer has no defeat flag")
+  world:setTrainerDefeated(8)
+  Assert.isTrue(world:isTrainerDefeated(8), "a completed trainer battle sets the native base-plus-ID flag")
+  world:clearFlag(0x550 + 8)
+  Assert.isFalse(world:isTrainerDefeated(8), "trainer history remains backed by the save event flag")
+  world:setFlag(0x550 + 8)
+  Assert.isTrue(world:isTrainerDefeated(8), "trainer history reads the native base plus trainer ID")
+end
+
 T["world validation is strict and matches capture"] = function()
   local world = WorldState.new({ catalogs = CATALOGS, seed = 7 })
   local record = world:capture()

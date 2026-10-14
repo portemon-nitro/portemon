@@ -147,6 +147,12 @@ local function normalizeMessage(v)
     out.id = normalizeByType(out.id, "scalar_or_value")
     return out
   end
+  if v.message == "trainer" then
+    local out = deepCopy(v)
+    out.trainer = normalizeByType(out.trainer, "scalar_or_value")
+    out.selector = normalizeByType(out.selector, "scalar_or_value")
+    return out
+  end
   if v.text == "gendered_message" then
     local out = normalizeText(v)
     out.male = normalizeMessage(out.male)

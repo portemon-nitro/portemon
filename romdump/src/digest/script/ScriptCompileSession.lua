@@ -8,6 +8,7 @@ local Coverage = require("romdump.src.digest.script.Coverage")
 local SourceCatalog = require("romdump.src.digest.script.SourceCatalog")
 local ScriptMembers = require("romdump.src.reference.hgss.script_members")
 local ScriptAudioFacts = require("romdump.src.reference.hgss.script_audio")
+local BattlePresentationSources = require("romdump.src.config.BattlePresentationSources")
 local Errors = require("libs.errors.src.Errors")
 
 local Session = {}
@@ -87,6 +88,12 @@ local function canonicalSequence(sounds, operand, context, op)
 end
 
 local function collectAudio(step, sounds, audioSet, audioList, context)
+  if step.op == "trainer_encounter_music" then
+    for _, symbol in ipairs(BattlePresentationSources.trainerEncounterMusicSymbols()) do
+      addSequence(audioSet, audioList, symbol)
+    end
+    return
+  end
   local field = MUSIC_OPS[step.op]
   if field ~= nil then
     addSequence(audioSet, audioList, canonicalSequence(sounds, step[field], context, step.op))

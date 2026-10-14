@@ -1561,10 +1561,16 @@ end
 
 function GearLowering.getPhoneBookRematch(ins)
   return {
-    op = "pokegear_query",
-    kind = "rematch_ready",
+    op = "phone_rematch_trainer",
     contact = Operands.varRef(ins.operands[1]),
     result = Operands.varRef(ins.operands[2]),
+  }
+end
+
+function GearLowering.clearPhoneBookRematch(ins)
+  return {
+    op = "phone_rematch_clear",
+    contact = Operands.varRef(ins.operands[1]),
   }
 end
 
@@ -1882,6 +1888,14 @@ local FieldHandlers = {
   [292] = checkRunningShoes,
   [293] = awardRunningShoes,
   [213] = BattleHandlers.trainerBattle,
+  [36] = BattleHandlers.setTrainerFlag,
+  [212] = BattleHandlers.trainerNumber,
+  [214] = BattleHandlers.trainerMessage,
+  [454] = BattleHandlers.trainerReactionMovement,
+  [215] = BattleHandlers.trainerMessageParams,
+  [216] = BattleHandlers.trainerRematchMessageParams,
+  [217] = BattleHandlers.trainerDoubleBattle,
+  [574] = BattleHandlers.actorMovementSelector,
   [220] = BattleHandlers.checkBattleWon,
   [589] = BattleHandlers.wildBattle,
   [219] = FieldServiceHandlers.whiteout,
@@ -1910,6 +1924,7 @@ local FieldHandlers = {
   [484] = FieldServiceHandlers.weekday,
   [436] = FieldServiceHandlers.overworldLeave,
   [142] = GearLowering.getPhoneBookRematch,
+  [462] = GearLowering.clearPhoneBookRematch,
   [145] = GearLowering.registerPokegearCard,
   [146] = GearLowering.registerGearNumber,
   [147] = GearLowering.checkRegisteredPhoneNumber,

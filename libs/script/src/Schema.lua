@@ -125,6 +125,21 @@ Schema.VALUES = {
   ["local"] = { fields = { name = { type = "string", required = true } } },
   arg = { fields = { name = { type = "string", required = true } } },
   flag_value = { fields = { flag = { type = "id_or_var", required = true } } },
+  trainer_double_battle = { fields = { trainer = { type = "scalar_or_value", required = true } } },
+  trainer_message_param = {
+    fields = {
+      trainer = { type = "scalar_or_value", required = true },
+      partner = { type = "boolean", required = true },
+      selector = { type = "integer", required = true },
+    },
+  },
+  trainer_rematch_message_param = {
+    fields = {
+      trainer = { type = "scalar_or_value", required = true },
+      partner = { type = "boolean", required = true },
+      selector = { type = "integer", required = true },
+    },
+  },
   player_gender_value = { fields = {} },
   friend_sprite_value = { fields = {} },
   object_id = { fields = { ref = { type = "actor", required = true } } },
@@ -197,6 +212,12 @@ Schema.CONDITIONS = {
   flag = {
     fields = {
       id = { type = "id_or_var", required = true },
+      expected = { type = "boolean", default = true },
+    },
+  },
+  trainer_defeated = {
+    fields = {
+      trainer = { type = "scalar_or_value", required = true },
       expected = { type = "boolean", default = true },
     },
   },
@@ -375,6 +396,15 @@ Schema.OPERATIONS = {
       contact = { type = "scalar_or_value" },
       result = { type = "writable_value", required = true },
     },
+  },
+  phone_rematch_trainer = {
+    fields = {
+      contact = { type = "scalar_or_value", required = true },
+      result = { type = "writable_value", required = true },
+    },
+  },
+  phone_rematch_clear = {
+    fields = { contact = { type = "scalar_or_value", required = true } },
   },
   -- Synchronous companion updates: single validated mutations committed
   -- through the injected companion service in the same tick.
@@ -826,6 +856,13 @@ Schema.OPERATIONS = {
       z = { type = "value", required = true },
     },
   },
+  actor_movement_selector = {
+    fields = {
+      actor = { type = "actor", required = true },
+      result = { type = "writable_value", required = true },
+    },
+  },
+  trainer_reaction_movement = { fields = { actor = { type = "actor", required = true } } },
   get_player_facing = { fields = { result = { type = "value", required = true } } },
   apply_movement = {
     fields = {
@@ -860,6 +897,7 @@ Schema.OPERATIONS = {
   play_fanfare = { fields = { fanfare = { type = "scalar_or_value", required = true } } },
   wait_fanfare = { fields = {} },
   play_music = { fields = { music = { type = "string", required = true } } },
+  trainer_encounter_music = { fields = { trainer = { type = "scalar_or_value", required = true } } },
   -- The StopBGM operand is an erasure at lowering (ScrCmd_StopBGM ignores
   -- it and stops the currently playing BGM), so the semantic operation
   -- takes no fields: an optional music field would be advertised and
@@ -1347,6 +1385,7 @@ Schema.OPERATIONS = {
       context = { type = "enum:battle_result_context", default = "battle_won" },
     },
   },
+  set_trainer_flag = { fields = { trainer = { type = "scalar_or_value", required = true } } },
   -- Follower operations. Every node routes to the one field following
   -- controller through the injected collaborator; boolean results write 1
   -- or 0, and the movement mode carries one semantic mode string.
@@ -1707,6 +1746,16 @@ Schema.CONSTRUCTORS = {
         signature = "S.pokegearQuery(spec)",
         canonical = "op=pokegear_query",
         notes = "spec={kind,result,contact=nil}; kind is rematch_ready or contact_registered. Contact-scoped kinds require contact; the source result convention writes 1 or 0.",
+      },
+      {
+        signature = "S.nativeRematchTrainer(spec)",
+        canonical = "op=phone_rematch_trainer",
+        notes = "The native GetPhoneBookRematch opcode writes a native trainer ID or zero.",
+      },
+      {
+        signature = "S.clearRematch(spec)",
+        canonical = "op=phone_rematch_clear",
+        notes = "The native win continuation clears only the addressed phone contact's seeking state.",
       },
       {
         signature = "S.pokegearUpdate(spec)",

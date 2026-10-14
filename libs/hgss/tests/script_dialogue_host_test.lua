@@ -166,6 +166,15 @@ local function host(opts)
     provider
 end
 
+function T.native_missing_trainer_message_resolves_to_an_empty_print_buffer()
+  local h = host({})
+  Assert.deepEqual(h:resolveMessage({ message = "empty" }, {}, {}), {
+    text = "",
+    tokens = {},
+    hadUnresolvedSubstitutions = false,
+  })
+end
+
 function T.yes_no_choice_leaves_ordinary_dialogue_open()
   local hostObject = host()
   local node = { message = "msg.hgss.0542.00000" }

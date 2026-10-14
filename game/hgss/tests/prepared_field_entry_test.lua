@@ -88,6 +88,7 @@ local function bedroomFixture()
     symbol = symbol,
     mapSection = "NEW_BARK_TOWN",
     mapSectionNativeId = 126,
+    regionNo = 0,
     followMode = "ALLOW",
     worldOriginX = 96,
     worldOriginZ = 192,

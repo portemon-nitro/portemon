@@ -115,6 +115,7 @@ function MapAssetCache.isStructuralWorld(value)
       or type(record.mapSection) ~= "string"
       or #record.mapSection == 0
       or not isU16(record.mapSectionNativeId)
+      or (record.regionNo ~= 0 and record.regionNo ~= 1)
       or WORLD_FOLLOW_MODES[record.followMode] ~= true
       or not isFiniteNumberValue(record.worldOriginX)
       or not isFiniteNumberValue(record.worldOriginZ)

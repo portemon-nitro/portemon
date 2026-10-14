@@ -32,6 +32,7 @@ local function structuralWorld()
     symbol = "MAP_NEW_BARK",
     mapSection = "NEW BARK TOWN",
     mapSectionNativeId = 1,
+    regionNo = 0,
     followMode = "ALLOW",
     worldOriginX = 0,
     worldOriginZ = 0,

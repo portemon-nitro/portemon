@@ -259,6 +259,7 @@ local function assertTrainerRecord(trainerIndex, record)
     items = true,
     prizeMoney = true,
     messageSelectors = true,
+    messageIds = true,
   }, context, "BATTLE_DATA_INVALID", "trainer " .. tostring(trainerIndex))
   checkInt(record.trainerClass, 0, nil, context, "BATTLE_DATA_INVALID", "trainer class")
   assertNameReference(record.nameReference, context)
@@ -291,6 +292,11 @@ local function assertTrainerRecord(trainerIndex, record)
   end
   checkRecord(record.prizeMoney, nil, context, "BATTLE_DATA_INVALID", "trainer prizeMoney")
   checkRecord(record.messageSelectors, nil, context, "BATTLE_DATA_INVALID", "trainer messageSelectors")
+  checkRecord(record.messageIds, nil, context, "BATTLE_DATA_INVALID", "trainer messageIds")
+  for selector, messageId in pairs(record.messageIds) do
+    checkInt(selector, 0, 65535, context, "BATTLE_DATA_INVALID", "trainer message selector")
+    checkInt(messageId, 0, nil, context, "BATTLE_DATA_INVALID", "trainer message bank index")
+  end
 end
 
 -- Projected trainer catalog: one version plus every trainer record keyed by

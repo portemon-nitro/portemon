@@ -56,6 +56,9 @@ function MapAnalysis.analyze(romFs)
     )
     result.followMode =
       assert(record.followMode, "HGSS map reference record " .. record.id .. " carries no source follow mode")
+    result.regionNo = record.region == "JOHTO" and 0
+      or record.region == "KANTO" and 1
+      or error("HGSS map reference record " .. record.id .. " carries an unknown region")
     result.matrixMemberId = record.matrixMemberId
     results[#results + 1] = result
   end
