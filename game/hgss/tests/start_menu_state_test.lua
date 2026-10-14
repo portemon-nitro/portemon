@@ -57,7 +57,6 @@ local function options(overrides)
   return {
     entries = overrides.entries or entries(),
     interactive = interactive(),
-    cursorAnimation = overrides.cursorAnimation or assert(manifest().startMenu.cursor),
     rememberedActionId = nil,
     runningShoes = {
       hitRect = FieldUiFixture.startMenuRunningShoes().hitRect,
@@ -73,45 +72,47 @@ local function options(overrides)
   }
 end
 
-function T.tests.cursor_tracks_the_selected_action_through_keyboard_focus_changes()
+-- No bouncing arrow marks focus: the wrapper publishes the controller
+-- snapshot with no cursor record, and the controller's focus shake flows
+-- through to the presentation untouched.
+function T.tests.status_carries_no_cursor_and_forwards_the_controller_focus_shake()
   local state = startMenuState().new(options({
     entries = {
       { id = "vanilla.trainer_card", targetApplication = "trainer_card", displayPosition = 4 },
       { id = "vanilla.save", targetApplication = "save", actionKind = "field_action", displayPosition = 5 },
     },
   }))
-  Assert.equal(state:status().cursor.position, 4, "the source cursor starts at the selected action")
+  Assert.isNil(state:status().cursor, "the wrapper publishes no cursor record")
+  Assert.isNil(state:status().focusShake, "the freshly opened menu shakes no icon")
   state:updateFixed({ { type = "navigate", direction = "down" } })
   local status = state:status()
   Assert.equal(status.selectedPosition, 5, "navigation changes the selected action")
-  Assert.equal(status.cursor.position, 5, "the source cursor follows the selected action")
-  Assert.equal(status.cursor.frameIndex, 1, "the first source frame is initially active")
-  for _ = 1, 22 do
-    state:updateFixed({})
-  end
-  Assert.equal(state:status().cursor.frameIndex, 2, "the next source frame begins at its recorded duration")
+  Assert.deepEqual(
+    status.focusShake,
+    { position = 5, axis = "vertical", age = 0 },
+    "the controller focus shake reaches the presentation"
+  )
+  Assert.isNil(status.cursor, "navigation publishes no cursor record either")
   state:dispose()
 end
 
-function T.tests.cursor_finishes_its_first_pass_before_looping_the_source_segment()
-  local cursor = assert(manifest().startMenu.cursor)
-  cursor.loopStartFrameIdx = 1
-  cursor.frames = {
-    { x = 0, y = 0, width = 16, height = 16, offset = { x = 0, y = 0 }, duration = 2 },
-    { x = 0, y = 16, width = 16, height = 16, offset = { x = 0, y = 0 }, duration = 3 },
-    { x = 0, y = 32, width = 16, height = 16, offset = { x = 0, y = 0 }, duration = 4 },
-  }
-  local state = startMenuState().new(options({ cursorAnimation = cursor }))
-  for _ = 1, 8 do
-    state:updateFixed({})
-  end
-  Assert.equal(state:status().cursor.frameIndex, 3, "the terminal source frame completes the first pass")
-  state:updateFixed({})
-  Assert.equal(state:status().cursor.frameIndex, 2, "the configured loop begins after that first pass")
-  for _ = 1, 3 do
-    state:updateFixed({})
-  end
-  Assert.equal(state:status().cursor.frameIndex, 3, "looping preserves the source segment durations")
+-- A launch keeps the menu presentable behind the child application, so the
+-- confirm hop the activation armed stays observable in the presentation.
+function T.tests.confirmation_forwards_the_controller_confirm_hop()
+  local state = startMenuState().new(options({
+    entries = {
+      { id = "vanilla.trainer_card", targetApplication = "trainer_card", actionKind = "application", displayPosition = 4 },
+    },
+  }))
+  Assert.isNil(state:status().confirmHop, "the freshly opened menu hops no icon")
+  state:updateFixed({ { type = "confirm" } })
+  local status = state:status()
+  Assert.notNil(state:takeResult(), "confirming an application entry launches")
+  Assert.deepEqual(
+    status.confirmHop,
+    { position = 4, age = 0 },
+    "the controller confirm hop reaches the presentation"
+  )
   state:dispose()
 end
 

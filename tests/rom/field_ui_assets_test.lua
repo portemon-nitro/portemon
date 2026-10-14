@@ -6,7 +6,6 @@
 -- LoadUserFrameGfx1 at commit 9d8b7591f09b65804da2fb2dfd56f320633e0d36.
 
 local Assert = require("tests.support.Assert")
-local BinaryReader = require("libs.codec.src.BinaryReader")
 local CacheFs = require("libs.storage.src.CacheFs")
 local PngReader = require("tests.support.PngReader")
 local FieldUiCompiler = require("romdump.src.digest.ui.FieldUiCompiler")
@@ -57,81 +56,12 @@ function T.source_geometry_matches_the_strict_validation_rules(romFs, _)
   assertScreen(startMenu.alias, startMenu.backgroundScreenMember, "start menu background screen")
   assertScreen(trainerCard.alias, trainerCard.frontScreenMember, "trainer card front screen")
   assertChar(startMenu.alias, startMenu.backgroundCharMember, "start menu background char", 3, 128)
-  assertChar(startMenu.alias, startMenu.cursorCharMember, "start menu cursor char", 3, 16)
   assertChar(trainerCard.alias, trainerCard.frontCharMember, "trainer card front char", 4, 416)
   assertChar(frames.alias, frames.firstFrameMember, "dialogue frame char", 3, 18)
   assertChar(signposts.alias, signposts.frameMember, "signpost frame char", 3, 18)
   assertChar(signposts.alias, signposts.wayfinding[0].memberBase, "signpost wayfinding char", 3, 24)
 end
 
--- The real start-menu cursor cell is a single square OBJ whose OAM attrs
--- declare the 32x32 square geometry (shape 0, size 2) with a 16-tile char,
--- and the real animation drives exactly two frames over that one cell. The
--- cursor compile must keep accepting this real geometry rather than assuming
--- every OBJ is 8x8.
-function T.cursor_source_geometry_is_a_single_square_32x32_obj(romFs, _)
-  local startMenu = manifestConfig.startMenu
-  local cell, err = G2dDecoder.decodeCell(memberBytes(romFs, startMenu.alias, startMenu.cursorCellMember))
-  assert(cell, err and err.message)
-  Assert.equal(#cell.cells, 1, "the cursor cell bank carries one cell")
-  Assert.equal(#cell.cells[1].objs, 1, "the cursor cell carries one OBJ")
-
-  local reader = BinaryReader.new(memberBytes(romFs, startMenu.alias, startMenu.cursorCellMember), "cursor cell")
-  local headerSize = reader:u16le(12)
-  local blockCount = reader:u16le(14)
-  local chunk
-  for block = 0, blockCount - 1 do
-    if reader:ascii(headerSize + block * 8, 4) == "KBEC" then
-      chunk = headerSize + block * 8
-      break
-    end
-  end
-  assert(chunk, "the cursor cell resource has no KBEC chunk")
-  local numCells = reader:u16le(chunk + 8)
-  local tableOffset = reader:u32le(chunk + 12)
-  local attrTable = chunk + 8 + tableOffset + numCells * 8
-  local attr0 = reader:u16le(attrTable)
-  local attr1 = reader:u16le(attrTable + 2)
-  local attr2 = reader:u16le(attrTable + 4)
-  Assert.equal(math.floor(attr0 / 16384), 0, "the cursor OBJ is square (attr0 shape bits)")
-  Assert.equal(math.floor(attr1 / 16384), 2, "the cursor OBJ is the 32x32 square size (attr1 size bits)")
-  Assert.equal(attr2 % 1024, 0, "the cursor OBJ starts at tile 0")
-  Assert.equal(math.floor(attr2 / 4096), 0, "the cursor OBJ uses palette bank 0")
-
-  local anim, animErr = G2dDecoder.decodeAnimation(memberBytes(romFs, startMenu.alias, startMenu.cursorAnimMember))
-  assert(anim, animErr and animErr.message)
-  Assert.equal(#anim.anims, 1, "the cursor animation bank carries one animation")
-  Assert.equal(#anim.anims[1].frames, 2, "the cursor animation drives two frames")
-  local bundle = assert(FieldUiCompiler.compile(romFs))
-  Assert.equal(bundle.manifest.startMenu.cursor.playMode, anim.anims[1].playMode, "the source play mode is preserved")
-  Assert.equal(
-    bundle.manifest.startMenu.cursor.loopStartFrameIdx,
-    anim.anims[1].loopStartFrameIdx,
-    "the source loop start is preserved"
-  )
-  Assert.equal(#bundle.manifest.startMenu.cursor.frames, 2, "the compiled cursor carries one frame per animation frame")
-  local compiledFrames = bundle.manifest.startMenu.cursor.frames
-  for index, sourceFrame in ipairs(anim.anims[1].frames) do
-    local sourceObj = assert(cell.cells[sourceFrame.cell + 1]).objs[1]
-    local compiledFrame = compiledFrames[index]
-    Assert.equal(compiledFrame.duration, sourceFrame.duration, "the cursor preserves source frame timing")
-    Assert.deepEqual(
-      compiledFrame.offset,
-      { x = sourceObj.x + sourceFrame.translateX, y = sourceObj.y + sourceFrame.translateY },
-      "the cursor preserves source cell placement and per-frame translation"
-    )
-  end
-  Assert.equal(
-    compiledFrames[1].width,
-    32,
-    "the compiled cursor frame covers the full 32x32 square"
-  )
-  Assert.equal(
-    bundle.manifest.startMenu.cursor.frames[1].height,
-    32,
-    "the compiled cursor frame covers the full 32x32 square"
-  )
-end
 
 function T.compiled_ui_assets_are_ready_and_stable(romFs, version)
   local cache = CacheFs.forVersion(version)

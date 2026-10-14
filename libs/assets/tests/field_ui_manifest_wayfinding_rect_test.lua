@@ -42,11 +42,6 @@ local function baseManifest()
         height = 64,
       },
       ["hgss.start_menu.background"] = { image = "assets/generated/field/ui/start-menu.png", width = 256, height = 192 },
-      ["hgss.start_menu.cursor"] = {
-        image = "assets/generated/field/ui/start-menu-cursor.png",
-        width = 32,
-        height = 32,
-      },
       ["hgss.start_menu.icons"] = {
         image = "assets/generated/field/ui/start-menu-icons.png",
         width = 352,
@@ -158,11 +153,27 @@ local function baseManifest()
     },
     startMenu = {
       background = { x = 0, y = 0, width = 256, height = 192 },
-      cursor = {
-        playMode = "forward_loop",
-        loopStartFrameIdx = 0,
+      focusShake = {
+        horizontal = {
+          frames = {
+            { dx = -2, dy = 0, duration = 2 },
+            { dx = 3, dy = 0, duration = 2 },
+            { dx = 0, dy = 0, duration = 2 },
+          },
+        },
+        vertical = {
+          frames = {
+            { dx = 0, dy = -2, duration = 3 },
+            { dx = 0, dy = 2, duration = 3 },
+            { dx = 0, dy = 0, duration = 3 },
+          },
+        },
+      },
+      confirmHop = {
         frames = {
-          { x = 0, y = 0, width = 32, height = 32, offset = { x = -16, y = -16 }, duration = 3 },
+          { dx = 0, dy = -6, duration = 1 },
+          { dx = 0, dy = -9, duration = 2 },
+          { dx = 0, dy = 0, duration = 1 },
         },
       },
       interactive = FieldUiFixture.startMenuInteractive(),

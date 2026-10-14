@@ -149,18 +149,6 @@ function T.missing_icons_asset_is_a_typed_error_and_releases_the_chrome()
   Assert.equal(lg.images[1].released, true, "the acquired chrome was released")
 end
 
-function T.missing_cursor_asset_is_a_typed_error_and_releases_acquired_menu_art()
-  local cache = iconCache(ICON_MANIFEST)
-  cache:remove(FieldUiFixture.START_MENU_CURSOR_PATH)
-  local lg = fakeGraphics({ imageSizes = { { 256, 256 }, { 352, 80 }, { 16, 32 } } })
-  local err = Assert.throws(function()
-    StartMenuRenderer.new({ cacheFs = cache, manifest = ICON_MANIFEST, text = recordingText(), graphics = lg })
-  end)
-  Assert.isTrue(Errors.is(err) and err.code == "FIELD_UI_START_MENU_CURSOR_MISSING")
-  Assert.equal(#lg.images, 2, "the two menu images were acquired before cursor lookup")
-  Assert.isTrue(lg.images[1].released and lg.images[2].released, "all partial menu art is released")
-end
-
 -- A quad failure after both images were created must release both before
 -- the constructor rethrows.
 function T.constructor_quad_failure_releases_every_acquired_image()
@@ -428,8 +416,48 @@ function T.selected_entry_draws_its_selected_visual()
   Assert.equal(iconDraws[1].image, iconDraws[2].image, "both visuals share the icon atlas")
 end
 
-function T.focused_entry_draws_the_source_cursor_frame_at_its_wobbling_offset()
-  local lg = fakeGraphics({ imageSizes = { { 256, 256 }, { 352, 80 }, { 16, 32 } } })
+-- Retail shakes the newly focused icon along the movement axis: the
+-- fixture horizontal track is {{-2,0}x2,{3,0}x2,{0,0}x2} and the vertical
+-- track is {{0,-2}x3,{0,2}x3,{0,0}x3}, so the icon draw rides the track
+-- with the shake age and rests at its anchor once the track ends.
+-- Position 1 anchors at (24,62) with a zero visual offset.
+function T.focused_entry_shakes_along_the_manifest_track_then_rests()
+  local lg = fakeGraphics({ imageSizes = { { 256, 256 }, { 352, 80 } } })
+  local renderer = StartMenuRenderer.new({
+    cacheFs = iconCache(ICON_MANIFEST),
+    manifest = ICON_MANIFEST,
+    text = recordingText(),
+    graphics = lg,
+  })
+  local function iconPosition(axis, age)
+    renderer:draw({
+      selectedPosition = 1,
+      actions = { { id = "vanilla.pokemon", position = 1, icon = 1, label = "POKEMON" } },
+      focusShake = { position = 1, axis = axis, age = age },
+    }, canonicalPlacement())
+    return lg.draws[#lg.draws].x, lg.draws[#lg.draws].y
+  end
+  local x, y = iconPosition("horizontal", 0)
+  Assert.deepEqual({ x, y }, { 24 - 2, 62 }, "the horizontal shake starts two pixels left")
+  x, y = iconPosition("horizontal", 2)
+  Assert.deepEqual({ x, y }, { 24 + 3, 62 }, "the horizontal shake swings three pixels right")
+  x, y = iconPosition("horizontal", 4)
+  Assert.deepEqual({ x, y }, { 24, 62 }, "the horizontal shake rests at the anchor")
+  x, y = iconPosition("horizontal", 60)
+  Assert.deepEqual({ x, y }, { 24, 62 }, "an aged-out shake stays at the anchor")
+  x, y = iconPosition("vertical", 0)
+  Assert.deepEqual({ x, y }, { 24, 62 - 2 }, "the vertical shake starts two pixels up")
+  x, y = iconPosition("vertical", 3)
+  Assert.deepEqual({ x, y }, { 24, 62 + 2 }, "the vertical shake swings two pixels down")
+  x, y = iconPosition("vertical", 9)
+  Assert.deepEqual({ x, y }, { 24, 62 }, "the vertical shake rests at the anchor")
+  renderer:release()
+end
+
+-- The shake rides only the shaken icon: the focused icon's track never
+-- moves its siblings.
+function T.focus_shake_leaves_unshaken_icons_at_their_anchors()
+  local lg = fakeGraphics({ imageSizes = { { 256, 256 }, { 352, 80 } } })
   local renderer = StartMenuRenderer.new({
     cacheFs = iconCache(ICON_MANIFEST),
     manifest = ICON_MANIFEST,
@@ -437,20 +465,157 @@ function T.focused_entry_draws_the_source_cursor_frame_at_its_wobbling_offset()
     graphics = lg,
   })
   renderer:draw({
-    selectedPosition = 5,
-    actions = { { id = "vanilla.save", position = 5, icon = 5, label = "SAVE" } },
-    cursor = { position = 5, frameIndex = 2 },
+    selectedPosition = 1,
+    actions = {
+      { id = "vanilla.pokedex", position = 0, icon = 0, label = "POKEDEX" },
+      { id = "vanilla.pokemon", position = 1, icon = 1, label = "POKEMON" },
+    },
+    focusShake = { position = 1, axis = "horizontal", age = 0 },
   }, canonicalPlacement())
-
-  local cursorDraw = lg.draws[#lg.draws]
-  Assert.equal(cursorDraw.image, lg.images[3], "the cursor uses its source atlas")
-  Assert.deepEqual(
-    { cursorDraw.quad.x, cursorDraw.quad.y, cursorDraw.quad.w, cursorDraw.quad.h },
-    { 0, 16, 16, 16 },
-    "the elapsed source duration selects cursor frame two"
-  )
-  Assert.deepEqual({ cursorDraw.x, cursorDraw.y }, { 106, 63 }, "the frame translation wobbles at the selected anchor")
   renderer:release()
+  Assert.deepEqual({ lg.draws[2].x, lg.draws[2].y }, { 24, 22 }, "the unshaken icon stays at its anchor")
+  Assert.deepEqual({ lg.draws[3].x, lg.draws[3].y }, { 24 - 2, 62 }, "only the shaken icon rides the track")
+end
+
+-- Retail hops the activated icon upward on successful activation: the
+-- fixture hop track is {{0,-4}x2,{0,5}x3,{0,0}x2}, so the icon draw rides
+-- the track with the hop age and rests at its anchor once the track ends.
+-- Position 1 anchors at (24,62) with a zero visual offset.
+function T.activated_entry_hops_along_the_manifest_track_then_rests()
+  local lg = fakeGraphics({ imageSizes = { { 256, 256 }, { 352, 80 } } })
+  local renderer = StartMenuRenderer.new({
+    cacheFs = iconCache(ICON_MANIFEST),
+    manifest = ICON_MANIFEST,
+    text = recordingText(),
+    graphics = lg,
+  })
+  local function iconPosition(age)
+    renderer:draw({
+      selectedPosition = 1,
+      actions = { { id = "vanilla.pokemon", position = 1, icon = 1, label = "POKEMON" } },
+      confirmHop = { position = 1, age = age },
+    }, canonicalPlacement())
+    return lg.draws[#lg.draws].x, lg.draws[#lg.draws].y
+  end
+  local x, y = iconPosition(0)
+  Assert.deepEqual({ x, y }, { 24, 62 - 4 }, "the hop starts four pixels up")
+  x, y = iconPosition(2)
+  Assert.deepEqual({ x, y }, { 24, 62 + 5 }, "the hop swings five pixels down")
+  x, y = iconPosition(5)
+  Assert.deepEqual({ x, y }, { 24, 62 }, "the hop rests at the anchor")
+  x, y = iconPosition(60)
+  Assert.deepEqual({ x, y }, { 24, 62 }, "an aged-out hop stays at the anchor")
+  renderer:release()
+end
+
+-- The hop replaces the shake on the retail sprite, so a live hop wins over
+-- a live shake on the same icon; the shake still rides its own icon.
+function T.live_hop_wins_over_live_shake_on_the_same_icon()
+  local lg = fakeGraphics({ imageSizes = { { 256, 256 }, { 352, 80 } } })
+  local renderer = StartMenuRenderer.new({
+    cacheFs = iconCache(ICON_MANIFEST),
+    manifest = ICON_MANIFEST,
+    text = recordingText(),
+    graphics = lg,
+  })
+  renderer:draw({
+    selectedPosition = 1,
+    actions = {
+      { id = "vanilla.pokedex", position = 0, icon = 0, label = "POKEDEX" },
+      { id = "vanilla.pokemon", position = 1, icon = 1, label = "POKEMON" },
+    },
+    focusShake = { position = 1, axis = "horizontal", age = 0 },
+    confirmHop = { position = 1, age = 0 },
+  }, canonicalPlacement())
+  renderer:release()
+  Assert.deepEqual({ lg.draws[2].x, lg.draws[2].y }, { 24, 22 }, "the sibling without a hop stays put")
+  Assert.deepEqual(
+    { lg.draws[3].x, lg.draws[3].y },
+    { 24, 62 - 4 },
+    "the hopping icon rides the hop track, not its shake track"
+  )
+end
+
+-- A malformed shake is a programming fault, never a silent static draw: a
+-- rejected draw draws nothing.
+function T.rejects_a_malformed_focus_shake()
+  local lg = fakeGraphics({ imageSizes = { { 256, 256 }, { 352, 80 } } })
+  local renderer = StartMenuRenderer.new({
+    cacheFs = iconCache(ICON_MANIFEST),
+    manifest = ICON_MANIFEST,
+    text = recordingText(),
+    graphics = lg,
+  })
+  local function drawShake(shake)
+    renderer:draw({
+      selectedPosition = 1,
+      actions = { { id = "vanilla.pokemon", position = 1, icon = 1, label = "POKEMON" } },
+      focusShake = shake,
+    }, canonicalPlacement())
+  end
+  Assert.throws(function()
+    drawShake({ position = 7, axis = "horizontal", age = 0 })
+  end, "a shake outside the generated positions must be rejected")
+  Assert.throws(function()
+    drawShake({ position = 1, axis = "diagonal", age = 0 })
+  end, "a shake off the retail axes must be rejected")
+  Assert.throws(function()
+    drawShake({ position = 1, axis = "horizontal", age = -1 })
+  end, "a negative shake age must be rejected")
+  renderer:release()
+  Assert.equal(#lg.draws, 0, "no rejected draw reaches the graphics namespace")
+end
+
+-- A malformed hop is rejected the same way: a rejected draw draws nothing.
+function T.rejects_a_malformed_confirm_hop()
+  local lg = fakeGraphics({ imageSizes = { { 256, 256 }, { 352, 80 } } })
+  local renderer = StartMenuRenderer.new({
+    cacheFs = iconCache(ICON_MANIFEST),
+    manifest = ICON_MANIFEST,
+    text = recordingText(),
+    graphics = lg,
+  })
+  local function drawHop(hop)
+    renderer:draw({
+      selectedPosition = 1,
+      actions = { { id = "vanilla.pokemon", position = 1, icon = 1, label = "POKEMON" } },
+      confirmHop = hop,
+    }, canonicalPlacement())
+  end
+  Assert.throws(function()
+    drawHop({ position = 7, age = 0 })
+  end, "a hop outside the generated positions must be rejected")
+  Assert.throws(function()
+    drawHop({ position = 1, age = -1 })
+  end, "a negative hop age must be rejected")
+  renderer:release()
+  Assert.equal(#lg.draws, 0, "no rejected draw reaches the graphics namespace")
+end
+
+-- The bouncing arrow is gone: a presentation still carrying the retired
+-- cursor record draws exactly the chrome, icons, and labels, with no extra
+-- cursor image.
+function T.a_retired_cursor_presentation_draws_no_cursor()
+  local lg = fakeGraphics({ imageSizes = { { 256, 256 }, { 352, 80 } } })
+  local renderer = StartMenuRenderer.new({
+    cacheFs = iconCache(ICON_MANIFEST),
+    manifest = ICON_MANIFEST,
+    text = recordingText(),
+    graphics = lg,
+  })
+  renderer:draw({
+    selectedPosition = 1,
+    actions = {
+      { id = "vanilla.pokedex", position = 0, icon = 0, label = "POKEDEX" },
+      { id = "vanilla.pokemon", position = 1, icon = 1, label = "POKEMON" },
+    },
+    cursor = { position = 1, frameIndex = 1 },
+  }, canonicalPlacement())
+  renderer:release()
+  Assert.equal(#lg.draws, 3, "chrome plus two icons: the retired cursor draws nothing")
+  for _, draw in ipairs(lg.draws) do
+    Assert.isTrue(draw.image == lg.images[1] or draw.image == lg.images[2], "only menu art is drawn")
+  end
 end
 
 -- Text-only icon-table rows carry no art: their actions draw labels without

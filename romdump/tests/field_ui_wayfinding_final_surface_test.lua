@@ -271,8 +271,44 @@ local function fixture(opts)
     startMenuMembers[memberId + 1] = lz10Wrap(charData(20, memberId % 16))
   end
   startMenuMembers[15] = lz10Wrap(palette16())
-  startMenuMembers[17] = lz10Wrap(cellData({ { x = 0, y = 0, tile = 0, pal = 0 } }))
-  startMenuMembers[18] = lz10Wrap(animData({ { duration = 3, cell = 0 }, { duration = 3, cell = 0 } }))
+  -- The shared icon cell/anim banks carry the static cell plus the focus
+  -- shake and confirm hop displacements and tracks the producer publishes;
+  -- a single-cell bank cannot compile anymore.
+  startMenuMembers[17] = lz10Wrap(G2dBankFixture.cellBank({
+    { { x = 0, y = 0, tile = 0, pal = 0 } },
+    { { x = -2, y = 0, tile = 0, pal = 0 } },
+    { { x = 3, y = 0, tile = 0, pal = 0 } },
+    { { x = 0, y = -6, tile = 0, pal = 0 } },
+    { { x = 0, y = -9, tile = 0, pal = 0 } },
+    { { x = 0, y = -11, tile = 0, pal = 0 } },
+    { { x = 0, y = 0, tile = 0, pal = 0 } },
+    { { x = 0, y = -2, tile = 0, pal = 0 } },
+    { { x = 0, y = 2, tile = 0, pal = 0 } },
+  }))
+  startMenuMembers[18] = lz10Wrap(G2dBankFixture.animBank({
+    0,
+    {
+      { cell = 1, duration = 2 },
+      { cell = 2, duration = 2 },
+      { cell = 1, duration = 2 },
+      { cell = 2, duration = 2 },
+      { cell = 0, duration = 2 },
+    },
+    {
+      { cell = 3, duration = 1 },
+      { cell = 4, duration = 2 },
+      { cell = 5, duration = 3 },
+      { cell = 4, duration = 2 },
+      { cell = 0, duration = 1 },
+    },
+    {
+      { cell = 7, duration = 2 },
+      { cell = 8, duration = 2 },
+      { cell = 7, duration = 2 },
+      { cell = 8, duration = 2 },
+      { cell = 0, duration = 2 },
+    },
+  }))
   startMenuMembers[8] = lz10Wrap(subPaletteData())
   startMenuMembers[9] = lz10Wrap(charData(192))
   -- The Running Shoes toggle's own cell/anim/char triple (members 68..70).

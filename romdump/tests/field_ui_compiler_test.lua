@@ -307,8 +307,7 @@ end
 -- the audited HGSS geometry: 20 dialogue frames of 18 tiles, the signpost
 -- frame of 18 tiles, the wayfinding members (2..0x35, the type-0 0x21+map
 -- and type-1 2+map ranges the producer selects) of 24 tiles, the start menu
--- main triple (char 12, screen 13, palette 15) and cursor (palette 61, cell
--- 62, anim 63, char 64), the start menu icon bank (eleven 20-tile sprite
+-- main triple (char 12, screen 13, palette 15), the start menu icon bank (eleven 20-tile sprite
 -- chars 18/21/24/27/30/33/36/39/42/45/48, shared cell 16, anim 17, and OBJ
 -- palette image 14), the start menu SUB set (palette 7, char 8 of 192 tiles,
 -- 256x256 screen 9), and the card front. The naming archive carries palette
@@ -317,8 +316,8 @@ end
 -- Palettes carry enough colors for test
 -- source types (4 types * 16 colors = 64 colors) so every tile value and
 -- palette bank the fixture chars emit is covered. `opts` allows per-test
--- source tampering: cursor OBJ geometry, the background screen entry, the
--- background palette colors, and a whole-member tamper hook.
+-- source tampering: the background screen entry, the background palette
+-- colors, and a whole-member tamper hook.
 --
 -- Nine distinct 16-color OBJ palette banks: bank b slot s decodes word
 -- b + s*32, so no two (bank, slot) pairs share a color and a bank mix-up is
@@ -366,6 +365,64 @@ local function namingObjMembers(members)
   return members
 end
 
+-- The shared start-menu icon cell/anim banks around one static cell: nine
+-- cells (the static cell plus its horizontal/vertical shake and confirm hop
+-- displacements) and five animations (the static opening plus the
+-- horizontal/vertical one-shot shake tracks and the confirm hop track the
+-- producer publishes). Member numbers are the producer-side selection (this
+-- is the romdump-side test).
+local function withShakeIconBank(members, staticObjs)
+  staticObjs = staticObjs or { { x = 0, y = 0, tile = 0, pal = 0 } }
+  local function shifted(dx, dy)
+    local objs = {}
+    for _, obj in ipairs(staticObjs) do
+      local copy = {}
+      for key, value in pairs(obj) do
+        copy[key] = value
+      end
+      copy.x, copy.y = obj.x + dx, obj.y + dy
+      objs[#objs + 1] = copy
+    end
+    return objs
+  end
+  members[17] = lz10Wrap(cellBank({
+    staticObjs,
+    shifted(-2, 0),
+    shifted(3, 0),
+    shifted(0, -6),
+    shifted(0, -9),
+    shifted(0, -11),
+    staticObjs,
+    shifted(0, -2),
+    shifted(0, 2),
+  }))
+  members[18] = lz10Wrap(animBank({
+    0,
+    {
+      { cell = 1, duration = 2 },
+      { cell = 2, duration = 2 },
+      { cell = 1, duration = 2 },
+      { cell = 2, duration = 2 },
+      { cell = 0, duration = 2 },
+    },
+    {
+      { cell = 3, duration = 1 },
+      { cell = 4, duration = 2 },
+      { cell = 5, duration = 3 },
+      { cell = 4, duration = 2 },
+      { cell = 0, duration = 1 },
+    },
+    {
+      { cell = 7, duration = 2 },
+      { cell = 8, duration = 2 },
+      { cell = 7, duration = 2 },
+      { cell = 8, duration = 2 },
+      { cell = 0, duration = 2 },
+    },
+  }))
+  return members
+end
+
 -- v5 schema: compile uses a test-specific config with only types 0..3 instead
 -- of the production config's 25 types, to keep palette sizes within G2D limits.
 local function fixture(opts)
@@ -374,16 +431,11 @@ local function fixture(opts)
   startMenuMembers[13] = lz10Wrap(charData(128))
   startMenuMembers[14] = lz10Wrap(fullScreen(opts.screenEntry or 0))
   startMenuMembers[16] = lz10Wrap(paletteOr16(opts.bgPalette))
-  startMenuMembers[62] = lz10Wrap(palette16())
-  startMenuMembers[63] = lz10Wrap(cellData(opts.cursor or { { x = 0, y = 0, tile = 0, pal = 0 } }))
-  startMenuMembers[64] = lz10Wrap(animData({ { duration = 3, cell = 0 }, { duration = 3, cell = 0 } }))
-  startMenuMembers[65] = lz10Wrap(charData(17))
   for _, memberId in ipairs({ 18, 21, 24, 27, 30, 33, 36, 39, 42, 45, 48 }) do
     startMenuMembers[memberId + 1] = lz10Wrap(charData(20, memberId % 16))
   end
   startMenuMembers[15] = lz10Wrap(palette16())
-  startMenuMembers[17] = lz10Wrap(cellData({ { x = 0, y = 0, tile = 0, pal = 0 } }))
-  startMenuMembers[18] = lz10Wrap(animData({ { duration = 3, cell = 0 }, { duration = 3, cell = 0 } }))
+  withShakeIconBank(startMenuMembers)
   startMenuMembers[8] = lz10Wrap(subPaletteData())
   startMenuMembers[9] = lz10Wrap(charData(192))
   -- The Running Shoes toggle's own cell/anim/char triple (members 68..70):
@@ -806,8 +858,7 @@ local function withIconBank(members)
   -- so no two banks share a color): the OAM bank proves per-object palette
   -- selection while the selection bank proves the selected-state render.
   members[15] = lz10Wrap(paletteData(distinctSignpostPalette(4)))
-  members[17] = lz10Wrap(cellData({ { x = 0, y = 0, tile = 0, pal = 0 } }))
-  members[18] = lz10Wrap(animData({ { duration = 3, cell = 0 }, { duration = 3, cell = 0 } }))
+  withShakeIconBank(members)
   return members
 end
 
@@ -1104,90 +1155,103 @@ function T.source_member_ids_do_not_leak_into_the_runtime_manifest()
   scan(bundle.manifest.namingScreen, "namingScreen")
 end
 
--- cellBounds must span the actual objects: with strictly positive object
--- coordinates the zero-origin initialization would widen every extent.
-function T.cell_bounds_cover_all_positive_object_coordinates()
-  local romFs, sha1, hashLua = fixture({
-    cursor = { { x = 8, y = 8, tile = 0, pal = 0 }, { x = 16, y = 16, tile = 1, pal = 0 } },
-  })
+-- The focus-change wobble compiles from the shared icon cell/anim banks:
+-- the horizontal track shakes x by -2/+3 and the vertical track shakes y by
+-- -2/+2 over two-tick frames, settling back on the static cell.
+function T.focus_shake_compiles_translation_tracks_from_the_shared_banks()
+  local romFs, sha1, hashLua = fixture()
   local bundle = assert(compileWithTestConfig(romFs, sha1, hashLua))
-  local frame = bundle.manifest.startMenu.cursor.frames[1]
-  Assert.deepEqual({ frame.width, frame.height }, { 16, 16 }, "bounds span exactly x 8..24, y 8..24")
+  local shake = assert(
+    bundle.manifest.startMenu.focusShake,
+    "the manifest must carry the focus shake record"
+  )
+  Assert.deepEqual(shake, {
+    horizontal = {
+      frames = {
+        { dx = -2, dy = 0, duration = 2 },
+        { dx = 3, dy = 0, duration = 2 },
+        { dx = -2, dy = 0, duration = 2 },
+        { dx = 3, dy = 0, duration = 2 },
+        { dx = 0, dy = 0, duration = 2 },
+      },
+    },
+    vertical = {
+      frames = {
+        { dx = 0, dy = -2, duration = 2 },
+        { dx = 0, dy = 2, duration = 2 },
+        { dx = 0, dy = -2, duration = 2 },
+        { dx = 0, dy = 2, duration = 2 },
+        { dx = 0, dy = 0, duration = 2 },
+      },
+    },
+  })
 end
 
--- Same for negative-origin objects: with every extent below zero the
--- zero-origin initialization would inflate the bounds to the origin.
-function T.cell_bounds_cover_negative_origin_object_coordinates()
-  local romFs, sha1, hashLua = fixture({
-    cursor = { { x = -16, y = -16, tile = 0, pal = 0 }, { x = -24, y = -24, tile = 1, pal = 0 } },
-  })
+-- The confirm hop compiles from the same shared banks: an upward track
+-- rising 6/9/11 pixels over 1/2/3/2/1-tick frames, settling on the static
+-- cell.
+function T.confirm_hop_compiles_the_upward_hop_track_from_the_shared_banks()
+  local romFs, sha1, hashLua = fixture()
   local bundle = assert(compileWithTestConfig(romFs, sha1, hashLua))
-  local frame = bundle.manifest.startMenu.cursor.frames[1]
-  Assert.deepEqual({ frame.width, frame.height }, { 16, 16 }, "bounds span exactly x -24..-8, y -24..-8")
+  local hop =
+    assert(bundle.manifest.startMenu.confirmHop, "the manifest must carry the confirm hop record")
+  Assert.deepEqual(hop, {
+    frames = {
+      { dx = 0, dy = -6, duration = 1 },
+      { dx = 0, dy = -9, duration = 2 },
+      { dx = 0, dy = -11, duration = 3 },
+      { dx = 0, dy = -9, duration = 2 },
+      { dx = 0, dy = 0, duration = 1 },
+    },
+  })
 end
 
--- The real start-menu cursor is a 32x32 square OBJ (attr0 shape 0, attr1
--- size 2): all sixteen tiles must render into the compiled frame, not just
--- the first tile as an 8x8 fragment.
-function T.square_32x32_cursor_objs_compile_all_sixteen_tiles()
+-- A shake cell that shifts its objects unevenly is malformed source, never
+-- a blended track: the second object below stays put while its sibling
+-- shifts left.
+function T.focus_shake_rejects_uneven_cell_shifts()
+  local staticObjs = {
+    { x = 0, y = 0, tile = 0, pal = 0 },
+    { x = 8, y = 0, tile = 1, pal = 0 },
+  }
   local romFs, sha1, hashLua = fixture({
-    cursor = { { x = 8, y = 8, tile = 0, pal = 0, size = 2 } },
-  })
-  local bundle = assert(compileWithTestConfig(romFs, sha1, hashLua))
-  local frame = bundle.manifest.startMenu.cursor.frames[1]
-  Assert.equal(frame.width, 32)
-  Assert.equal(frame.height, 32)
-  local path = bundle.manifest.assets[FieldUiAssetCache.ASSET.START_MENU_CURSOR].image
-  local width, height, rgba = PngReader.rgba(bundle.assets[path])
-  Assert.equal(width, 32)
-  Assert.equal(height, 32)
-  -- Tile 14 (row 3, col 2 of the 4x4 layout) carries value 15 -> colors[16]
-  -- (entry 0 is the reserved transparent slot, so pixel value v selects the
-  -- decoded array's colors[v+1]).
-  local r, g, b, a = PngReader.pixel(rgba, width, 2 * 8 + 4, 3 * 8 + 4)
-  -- value 15 -> colors[16] = 16*0x39B = 0x39B0 -> RGB555(r5=16, g5=13, b5=14)
-  Assert.equal(a, 255)
-  Assert.deepEqual({ r, g, b }, { 132, 107, 115 })
-end
-
--- A flipped OBJ mirrors the whole object per the OAM layout: the tile grid
--- order must mirror as well as each tile. With flipH, tile 14 (value 15)
--- moves from grid (row 3, col 2) to (row 3, col 1), and tile 13 (value 14)
--- takes its place.
-function T.flipped_cursor_objs_mirror_the_tile_grid()
-  local romFs, sha1, hashLua = fixture({
-    cursor = { { x = 8, y = 8, tile = 0, pal = 0, size = 2, flipH = true } },
-  })
-  local bundle = assert(compileWithTestConfig(romFs, sha1, hashLua))
-  local path = bundle.manifest.assets[FieldUiAssetCache.ASSET.START_MENU_CURSOR].image
-  local width, _, rgba = PngReader.rgba(bundle.assets[path])
-  local r, g, b, a = PngReader.pixel(rgba, width, 1 * 8 + 4, 3 * 8 + 4)
-  Assert.equal(a, 255)
-  -- Tile 14 value 15 -> colors[16] = 16*0x39B = 0x39B0 -> RGB555(r5=16, g5=13, b5=14)
-  Assert.deepEqual({ r, g, b }, { 132, 107, 115 }, "tile 14 renders mirrored at grid column 1")
-  local r2, g2, b2, a2 = PngReader.pixel(rgba, width, 2 * 8 + 4, 3 * 8 + 4)
-  Assert.equal(a2, 255)
-  -- Tile 13 value 14 -> colors[15] = 15*0x39B = 0x3615 -> RGB555(r5=21, g5=16, b5=13)
-  Assert.deepEqual({ r2, g2, b2 }, { 173, 132, 107 }, "tile 13 renders at the mirrored tile 14 position")
-end
-
--- A wide or tall OBJ is a geometry this compiler does not support: the
--- cursor must reject it with the typed source error and enough context to
--- name the asset, member, cell, object, and decoded dimensions.
-function T.unsupported_cursor_obj_geometry_is_a_typed_source_error()
-  local romFs, sha1, hashLua = fixture({
-    cursor = { { x = 0, y = 0, tile = 0, pal = 0, shape = 1 } },
+    tamper = function(alias, members)
+      if alias == "start_menu" then
+        members[17] = lz10Wrap(cellBank({
+          staticObjs,
+          {
+            { x = -2, y = 0, tile = 0, pal = 0 },
+            { x = 8, y = 0, tile = 1, pal = 0 },
+          },
+        }))
+      end
+      return members
+    end,
   })
   local bundle, err = compileWithTestConfig(romFs, sha1, hashLua)
   Assert.isNil(bundle)
   local typed = assert(err)
   Assert.equal(typed.code, FieldUiCompiler.ERROR.SOURCE_INVALID)
-  Assert.equal(typed.context.width, 16)
-  Assert.equal(typed.context.height, 8)
-  local source = typed.context.source --[[@as table]]
-  Assert.equal(source.member, 62)
-  Assert.equal(source.cell, 0)
-  Assert.equal(source.obj, 0)
+  Assert.equal(typed.context.cell, 1)
+  Assert.equal(typed.context.object, 1)
+end
+
+-- A missing shake sequence is malformed source, never an empty track: the
+-- tampered animation bank below carries only the static opening.
+function T.focus_shake_rejects_a_missing_shake_sequence()
+  local romFs, sha1, hashLua = fixture({
+    tamper = function(alias, members)
+      if alias == "start_menu" then
+        members[18] = lz10Wrap(animBank({ 0 }))
+      end
+      return members
+    end,
+  })
+  local bundle, err = compileWithTestConfig(romFs, sha1, hashLua)
+  Assert.isNil(bundle)
+  local typed = assert(err)
+  Assert.equal(typed.code, FieldUiCompiler.ERROR.SOURCE_INVALID)
+  Assert.equal(typed.context.anim, 1)
 end
 
 -- A screen entry referencing a tile beyond the decoded char data is
@@ -1920,7 +1984,7 @@ local function iconComposedFixture()
     tamper = function(alias, members)
       if alias == "start_menu" then
         withIconBank(members)
-        members[17] = lz10Wrap(cellData(TAMPERED_ICON_CELL))
+        withShakeIconBank(members, TAMPERED_ICON_CELL)
       end
       return members
     end,

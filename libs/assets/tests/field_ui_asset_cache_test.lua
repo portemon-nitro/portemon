@@ -56,11 +56,6 @@ local function validManifest()
         height = 64,
       },
       ["hgss.start_menu.background"] = { image = "assets/generated/field/ui/start-menu.png", width = 256, height = 192 },
-      ["hgss.start_menu.cursor"] = {
-        image = "assets/generated/field/ui/start-menu-cursor.png",
-        width = 32,
-        height = 32,
-      },
       ["hgss.start_menu.icons"] = {
         image = "assets/generated/field/ui/start-menu-icons.png",
         width = 352,
@@ -172,11 +167,27 @@ local function validManifest()
     },
     startMenu = {
       background = { x = 0, y = 0, width = 256, height = 192 },
-      cursor = {
-        playMode = "forward_loop",
-        loopStartFrameIdx = 0,
+      focusShake = {
+        horizontal = {
+          frames = {
+            { dx = -2, dy = 0, duration = 2 },
+            { dx = 3, dy = 0, duration = 2 },
+            { dx = 0, dy = 0, duration = 2 },
+          },
+        },
+        vertical = {
+          frames = {
+            { dx = 0, dy = -2, duration = 3 },
+            { dx = 0, dy = 2, duration = 3 },
+            { dx = 0, dy = 0, duration = 3 },
+          },
+        },
+      },
+      confirmHop = {
         frames = {
-          { x = 0, y = 0, width = 32, height = 32, offset = { x = -16, y = -16 }, duration = 3 },
+          { dx = 0, dy = -6, duration = 1 },
+          { dx = 0, dy = -9, duration = 2 },
+          { dx = 0, dy = 0, duration = 1 },
         },
       },
       interactive = FieldUiFixture.startMenuInteractive(),
@@ -442,22 +453,33 @@ function T.dialogue_frame_palettes_are_required_and_strict()
 end
 
 -- The start menu chrome and auxiliary records stay strict: the background
--- rect inside its atlas, an advancing source cursor sequence with signed
--- position offsets, and both chrome sets referencing indexed assets with the main
--- transparency boundary.
+-- rect inside its atlas, advancing focus shake tracks with integral
+-- canonical offsets on both retail axes, and both chrome sets referencing
+-- indexed assets with the main transparency boundary.
 function T.start_menu_chrome_and_auxiliary_records_are_strict()
   reject(function(m)
     m.startMenu.background = { x = 0, y = 0, width = 257, height = 192 }
   end, "FIELD_UI_MANIFEST_INVALID")
   reject(function(m)
-    m.startMenu.cursor.frames = {}
+    m.startMenu.focusShake = nil
   end, "FIELD_UI_MANIFEST_INVALID")
   reject(function(m)
-    m.startMenu.cursor.frames[1].offset = nil
+    m.startMenu.focusShake.horizontal.frames = {}
   end, "FIELD_UI_MANIFEST_INVALID")
   reject(function(m)
-    for _, frame in ipairs(m.startMenu.cursor.frames) do
-      frame.duration = 0
+    m.startMenu.focusShake.vertical.frames[1].dx = 1.5
+  end, "FIELD_UI_MANIFEST_INVALID")
+  reject(function(m)
+    m.startMenu.confirmHop = nil
+  end, "FIELD_UI_MANIFEST_INVALID")
+  reject(function(m)
+    m.startMenu.confirmHop.frames = {}
+  end, "FIELD_UI_MANIFEST_INVALID")
+  reject(function(m)
+    for _, track in pairs(m.startMenu.focusShake) do
+      for _, frame in ipairs(track.frames) do
+        frame.duration = 0
+      end
     end
   end, "FIELD_UI_MANIFEST_INVALID")
   reject(function(m)

@@ -137,9 +137,10 @@ end
 ---@param width integer
 ---@param height integer
 ---@param shoesState { locked: boolean, focused: boolean }?
----@param cursor { position: integer, frameIndex: integer }?
+---@param focusShake { position: integer, axis: string, age: integer }?
+---@param confirmHop { position: integer, age: integer }?
 ---@return love.ImageData
-local function selectorRenderInto(scope, cacheFs, manifest, selectedPosition, placement, width, height, shoesState, cursor)
+local function selectorRenderInto(scope, cacheFs, manifest, selectedPosition, placement, width, height, shoesState, focusShake, confirmHop)
   local lg = love.graphics
   local renderer = scope:own(StartMenuRenderer.new({ cacheFs = cacheFs, manifest = manifest, text = recordingText() }))
   local canvas = scope:own(lg.newCanvas(width, height))
@@ -153,45 +154,11 @@ local function selectorRenderInto(scope, cacheFs, manifest, selectedPosition, pl
       { id = "vanilla.pokemon", position = 1, icon = 1, label = "POKEMON" },
     },
     runningShoes = shoesState,
-    cursor = cursor,
+    focusShake = focusShake,
+    confirmHop = confirmHop,
   }, placement)
   lg.setCanvas()
   return scope:own(canvas:newImageData())
-end
-
-function T.cursor_frames_render_at_their_source_offsets(scope)
-  local cache, manifest = selectorCacheAndManifest()
-  local first = selectorRenderInto(
-    scope,
-    cache,
-    manifest,
-    1,
-    canonicalPlacement(),
-    CANONICAL_WIDTH,
-    CANONICAL_HEIGHT,
-    nil,
-    { position = 0, frameIndex = 1 }
-  )
-  local second = selectorRenderInto(
-    scope,
-    cache,
-    manifest,
-    1,
-    canonicalPlacement(),
-    CANONICAL_WIDTH,
-    CANONICAL_HEIGHT,
-    nil,
-    { position = 5, frameIndex = 2 }
-  )
-  local function colorAt(image, x, y)
-    local r, g, b, a = image:getPixel(x, y)
-    local function quantize(value)
-      return math.floor(value * 255 + 0.5)
-    end
-    return { quantize(r), quantize(g), quantize(b), quantize(a) }
-  end
-  Assert.deepEqual(colorAt(first, 21, 20), { 255, 0, 255, 255 }, "frame one uses its source offset")
-  Assert.deepEqual(colorAt(second, 106, 63), { 0, 255, 255, 255 }, "frame two uses its translated source offset")
 end
 
 function T.running_shoes_focus_outline_is_visible_in_both_lock_states(scope)
@@ -233,13 +200,16 @@ end
 
 -- The independent selector reference: the SUB chrome color everywhere, with
 -- each presented action's visual band color pasted at its source anchor plus
--- the visual offset. Built without the renderer, so a wrong background, a
--- wrong visual state, or a wrong draw position is a mismatch. Normal visuals
--- sample the top atlas band, selected visuals the bottom band.
+-- the visual offset, plus the focus shake track offset on the shaken icon.
+-- Built without the renderer, so a wrong background, a wrong visual state,
+-- or a wrong draw position is a mismatch. Normal visuals sample the top
+-- atlas band, selected visuals the bottom band.
 ---@param manifest table
 ---@param selectedPosition integer
+---@param focusShake { position: integer, axis: string, age: integer }?
+---@param confirmHop { position: integer, age: integer }?
 ---@return love.ImageData
-local function selectorReference(manifest, selectedPosition)
+local function selectorReference(manifest, selectedPosition, focusShake, confirmHop)
   local reference = love.image.newImageData(CANONICAL_WIDTH, CANONICAL_HEIGHT)
   for y = 0, CANONICAL_HEIGHT - 1 do
     for x = 0, CANONICAL_WIDTH - 1 do
@@ -248,6 +218,18 @@ local function selectorReference(manifest, selectedPosition)
   end
   local interactive = assert(manifest.startMenu.interactive, "the fixture manifest must carry positions")
   local iconTable = assert(manifest.startMenu.iconTable, "the fixture manifest must carry the icon table")
+  local shakeTracks = assert(manifest.startMenu.focusShake, "the fixture manifest must carry the shake tracks")
+  local hopTrack = assert(manifest.startMenu.confirmHop, "the fixture manifest must carry the hop track")
+  local function trackShift(track, age)
+    local remaining = age
+    for _, frame in ipairs(assert(track.frames, "a wobble track must carry frames")) do
+      if remaining < frame.duration then
+        return frame.dx, frame.dy, true
+      end
+      remaining = remaining - frame.duration
+    end
+    return 0, 0, false
+  end
   local presented = {
     { position = 0, icon = 0 },
     { position = 1, icon = 1 },
@@ -259,6 +241,17 @@ local function selectorReference(manifest, selectedPosition)
     local state = action.position == selectedPosition and visual.selected or visual.normal
     local rect = assert(state.rect)
     local offset = assert(state.offset)
+    local shakeX, shakeY = 0, 0
+    if focusShake ~= nil and focusShake.position == action.position then
+      local track = assert(shakeTracks[focusShake.axis], "the reference resolves the shaken axis")
+      shakeX, shakeY = trackShift(track, focusShake.age)
+    end
+    if confirmHop ~= nil and confirmHop.position == action.position then
+      local hopX, hopY, hopLive = trackShift(hopTrack, confirmHop.age)
+      if hopLive then
+        shakeX, shakeY = hopX, hopY
+      end
+    end
     local selected = action.position == selectedPosition
     local r, g, b = NORMAL_R, NORMAL_G, NORMAL_B
     if selected then
@@ -266,7 +259,14 @@ local function selectorReference(manifest, selectedPosition)
     end
     for y = 0, rect.height - 1 do
       for x = 0, rect.width - 1 do
-        reference:setPixel(record.anchor.x + offset.x + x, record.anchor.y + offset.y + y, r / 255, g / 255, b / 255, 1)
+        reference:setPixel(
+          record.anchor.x + offset.x + shakeX + x,
+          record.anchor.y + offset.y + shakeY + y,
+          r / 255,
+          g / 255,
+          b / 255,
+          1
+        )
       end
     end
   end
@@ -297,6 +297,35 @@ local function scaledSelectorReference(manifest, selectedPosition, scale)
     end
   end
   return reference
+end
+
+-- Shake golden: the shaken icon renders pixel-exact at its track offset
+-- while its sibling stays at its anchor.
+function T.focus_shake_offsets_the_shaken_icon_pixel_exact(scope)
+  local cache, manifest = selectorCacheAndManifest()
+  local shake = { position = 1, axis = "horizontal", age = 0 }
+  local rendered =
+    selectorRenderInto(scope, cache, manifest, 1, canonicalPlacement(), CANONICAL_WIDTH, CANONICAL_HEIGHT, nil, shake)
+  assertPixelsEqual(selectorReference(manifest, 1, shake), rendered, "shaken selector golden")
+end
+
+-- Hop golden: the activated icon renders pixel-exact at its hop offset.
+function T.confirm_hop_offsets_the_activated_icon_pixel_exact(scope)
+  local cache, manifest = selectorCacheAndManifest()
+  local hop = { position = 1, age = 0 }
+  local rendered = selectorRenderInto(
+    scope,
+    cache,
+    manifest,
+    1,
+    canonicalPlacement(),
+    CANONICAL_WIDTH,
+    CANONICAL_HEIGHT,
+    nil,
+    nil,
+    hop
+  )
+  assertPixelsEqual(selectorReference(manifest, 1, nil, hop), rendered, "hopping selector golden")
 end
 
 -- Canonical golden: the SUB selector surface from the fixture assets matches
@@ -349,14 +378,12 @@ function T.scaled_selector_matches_through_the_record_transform(scope)
   assertPixelsEqual(scaledSelectorReference(manifest, 0, 2), rendered, "scaled selector golden")
 end
 
--- The real generated surface is checked before it reaches the renderer so a
--- cursor-only production result cannot be mistaken for a renderer golden.
--- Source conformance for the replacement icon contract (the single
--- intentionally-paused assertion for this phase): the generated class must
--- carry the 13-row retail icon table (sprite rows with art, text-only rows
--- 9-10, poke-icon row 11), non-blank icon art, main chrome transparent
--- above the panel band, and a non-blank cursor. This fails until the
--- producer emits the retail icon contract; it must not be weakened to pass.
+-- The real generated surface is checked before it reaches the renderer so
+-- an icon-less production result cannot be mistaken for a renderer golden.
+-- Source conformance for the replacement icon contract: the generated class
+-- must carry the 13-row retail icon table (sprite rows with art, text-only
+-- rows 9-10, poke-icon row 11), non-blank icon art, main chrome transparent
+-- above the panel band, and the focus shake record without any cursor asset.
 function T.real_generated_start_menu_icons_match_the_retail_source_contract(scope)
   for _, versionId in ipairs(GameVersion.ORDER) do
     local cache = CacheFs.forVersion(versionId)
@@ -413,105 +440,14 @@ function T.real_generated_start_menu_icons_match_the_retail_source_contract(scop
       end
       Assert.isTrue(panelOpaque > 0, versionId .. " main chrome panel band must contain art")
 
-      local cursor = assert(
-        manifest.assets[FieldUiAssetCache.ASSET.START_MENU_CURSOR],
-        "the generated class indexes the start menu cursor"
+      Assert.isNil(
+        manifest.assets["hgss.start_menu.cursor"],
+        versionId .. " retired cursor asset stays out of the generated class"
       )
-      local cursorPixels =
-        scope:own(love.image.newImageData(love.filesystem.newFileData(assert(cache:read(cursor.image)), cursor.image)))
-      local cursorOpaque = false
-      for y = 0, cursorPixels:getHeight() - 1 do
-        for x = 0, cursorPixels:getWidth() - 1 do
-          local _, _, _, alpha = cursorPixels:getPixel(x, y)
-          if alpha > 0 then
-            cursorOpaque = true
-            break
-          end
-        end
-        if cursorOpaque then
-          break
-        end
-      end
-      Assert.isTrue(cursorOpaque, versionId .. " cursor must contain art")
+      Assert.isNil(startMenu.cursor, versionId .. " retired cursor record stays out of the manifest")
+      Assert.notNil(startMenu.focusShake, versionId .. " focus shake record is published")
     end
   end
-end
-
--- The canonical selector surface uses the retail sub-side composition. The
--- sub image below is a solid color found nowhere else in the fixture art;
--- without a cursor presentation, no cursor pixel should be baked into the
--- background or drawn independently of focus state. Selection still has a
--- visible effect (the selected action visual swaps) while the background
--- stays put.
----@param scope GraphicsScope
----@param cache CacheFs
----@param manifest table
----@param selectedPosition integer
----@return love.ImageData
-local function selectorRender(scope, cache, manifest, selectedPosition)
-  local lg = love.graphics
-  local renderer = scope:own(StartMenuRenderer.new({ cacheFs = cache, manifest = manifest, text = recordingText() }))
-  local canvas = scope:own(lg.newCanvas(CANONICAL_WIDTH, CANONICAL_HEIGHT))
-  lg.setCanvas(canvas)
-  lg.clear(0, 0, 0, 0)
-  renderer:draw({
-    selectedPosition = selectedPosition,
-    trainerGender = "male",
-    actions = {
-      { id = "vanilla.pokedex", position = 0, icon = 0, label = "POKEDEX" },
-      { id = "vanilla.pokemon", position = 1, icon = 1, label = "POKEMON" },
-    },
-  }, canonicalPlacement())
-  lg.setCanvas()
-  return scope:own(canvas:newImageData())
-end
-
-function T.selector_draws_the_sub_background_with_no_movable_main_cursor(scope)
-  local cache, manifest = selectorCacheAndManifest()
-  local function quantize(v)
-    return math.floor(v * 255 + 0.5)
-  end
-  local renders = {}
-  for _, selectedPosition in ipairs({ 0, 1 }) do
-    local rendered = selectorRender(scope, cache, manifest, selectedPosition)
-    renders[#renders + 1] = rendered
-    local r, g, b, a = rendered:getPixel(250, 180)
-    Assert.deepEqual(
-      { quantize(r), quantize(g), quantize(b), quantize(a) },
-      { SUB_R, SUB_G, SUB_B, 255 },
-      "the selector background is the sub chrome with selection at position " .. selectedPosition
-    )
-    local cursorPixels = 0
-    for y = 0, CANONICAL_HEIGHT - 1 do
-      for x = 0, CANONICAL_WIDTH - 1 do
-        local pr, pg, pb = rendered:getPixel(x, y)
-        local qr, qg, qb = quantize(pr), quantize(pg), quantize(pb)
-        if (qr == 255 and qg == 0 and qb == 255) or (qr == 0 and qg == 255 and qb == 255) then
-          cursorPixels = cursorPixels + 1
-        end
-      end
-    end
-    Assert.equal(
-      cursorPixels,
-      0,
-      "no movable main cursor pixel travels with selection at position " .. selectedPosition
-    )
-  end
-  local different = false
-  for y = 0, CANONICAL_HEIGHT - 1 do
-    for x = 0, CANONICAL_WIDTH - 1 do
-      local r0, g0, b0, a0 = renders[1]:getPixel(x, y)
-      local r1, g1, b1, a1 = renders[2]:getPixel(x, y)
-      if r0 ~= r1 or g0 ~= g1 or b0 ~= b1 or a0 ~= a1 then
-        different = true
-        break
-      end
-    end
-    if different then
-      break
-    end
-  end
-  Assert.isTrue(different, "changing selection swaps the selected action visual")
 end
 
 function T.restores_graphics_state_after_draw(scope)

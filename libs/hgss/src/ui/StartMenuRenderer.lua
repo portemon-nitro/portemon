@@ -1,17 +1,16 @@
 -- Renders the Start Menu SUB selector through a resolved placement record.
 -- The generated field-UI manifest carries the retail icon table, shared icon
--- atlas, animated source cursor, and SUB chrome. The renderer composes the
--- background, action art, and labels, then places the cursor's current source
--- frame over the focused action. Cursor frames retain their source cell
--- origin and NANR translation, while the fixed-tick state owner advances the
--- source durations and play mode. All other geometry comes from the manifest
--- as well; source coordinates are never repeated here. Drawing and input use
--- the same resolved placement record. Construction is failure-safe and
--- drawing restores every graphics state it touches.
+-- atlas, focus-shake translation tracks, and SUB chrome. The renderer
+-- composes the background, action art, and labels; the selected action draws
+-- its selected visual (the retail palette-bank highlight), and a focus shake
+-- in the presentation rides the shaken icon along the manifest track for the
+-- track's duration. All geometry comes from the manifest as well; source
+-- coordinates are never repeated here. Drawing and input use the same
+-- resolved placement record. Construction is failure-safe and drawing
+-- restores every graphics state it touches.
 
 local Errors = require("libs.errors.src.Errors")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
-local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 
 ---@class StartMenuRenderer
@@ -25,8 +24,6 @@ local LogicalSurface = require("libs.ui.src.LogicalSurface")
 ---@field _subQuad love.Quad?
 ---@field _pokeImage love.Image?
 ---@field _pokeQuad love.Quad?
----@field _cursorImage love.Image
----@field _cursorQuads love.Quad[]
 ---@field menu StartMenuRenderer.Menu the resolved manifest surface geometry
 local StartMenuRenderer = {}
 StartMenuRenderer.__index = StartMenuRenderer
@@ -94,12 +91,11 @@ function StartMenuRenderer.new(opts)
     _subQuad = nil,
     _pokeImage = nil,
     _pokeQuad = nil,
-    _cursorImage = nil,
-    _cursorQuads = {},
     menu = {
       interactive = interactive,
       iconTable = iconTable,
-      cursor = assert(startMenu.cursor, "the field-UI manifest must carry the cursor animation"),
+      focusShake = assert(startMenu.focusShake, "the field-UI manifest must carry the focus shake record"),
+      confirmHop = assert(startMenu.confirmHop, "the field-UI manifest must carry the confirm hop record"),
       runningShoes = assert(startMenu.runningShoes, "the field-UI manifest must carry the Running Shoes toggle"),
     },
   }, StartMenuRenderer)
@@ -173,21 +169,6 @@ function StartMenuRenderer:_acquire(cacheFs, manifest, startMenu, chromeAsset)
       quadFor(assert(state.asset, "a Running Shoes visual must name its atlas"), assert(state.rect))
     end
   end
-  self._cursorImage = acquire(
-    FieldUiAssetCache.ASSET.START_MENU_CURSOR,
-    FieldErrors.FIELD_UI_START_MENU_CURSOR_MISSING,
-    "the start menu cursor"
-  )
-  for index, frame in ipairs(assert(self.menu.cursor.frames, "the cursor must carry animation frames")) do
-    self._cursorQuads[index] = graphics.newQuad(
-      frame.x,
-      frame.y,
-      frame.width,
-      frame.height,
-      self._cursorImage:getWidth(),
-      self._cursorImage:getHeight()
-    )
-  end
   if startMenu.pokeIcons ~= nil and startMenu.pokeIcons.asset ~= nil then
     local pokeAsset = startMenu.pokeIcons.asset
     if manifest.assets[pokeAsset] ~= nil then
@@ -200,24 +181,50 @@ function StartMenuRenderer:_acquire(cacheFs, manifest, startMenu, chromeAsset)
   end
 end
 
----@param cursor { position: integer, frameIndex: integer }?
-function StartMenuRenderer:_drawCursor(cursor)
-  if cursor == nil then
-    return
+-- One retail icon wobble track at a fixed-tick age: the covering frame's
+-- translation and whether the track is still playing. Expired tracks rest
+-- at zero, so a played-out wobble draws its icon back at the anchor.
+---@param track StartMenuRenderer.ShakeTrack
+---@param age integer
+---@return integer, integer, boolean the translation plus the track liveness
+local function trackOffset(track, age)
+  local remaining = age
+  for _, frame in ipairs(assert(track.frames, "a wobble track must carry frames")) do
+    if remaining < frame.duration then
+      return frame.dx, frame.dy, true
+    end
+    remaining = remaining - frame.duration
   end
-  local frame = assert(self.menu.cursor.frames[cursor.frameIndex], "the cursor frame is outside its sequence")
-  local anchor = assert(
-    self.menu.interactive.positions[cursor.position] and self.menu.interactive.positions[cursor.position].anchor,
-    "the cursor position has a generated action anchor"
-  )
-  assert(type(frame.offset) == "table", "the source cursor frame must carry its position offset")
-  assert(self._cursorImage ~= nil, "the cursor image is acquired with the other Start Menu art")
-  self._graphics.draw(
-    self._cursorImage,
-    assert(self._cursorQuads[cursor.frameIndex]),
-    anchor.x + frame.offset.x,
-    anchor.y + frame.offset.y
-  )
+  return 0, 0, false
+end
+
+-- The retail focus-change wobble for one icon: the manifest track frame
+-- covering the shake age, or zero when the track has played out. The
+-- controller arms the shake with the newly focused icon, axis, and age in
+-- fixed ticks; the track durations are the source animation frame lengths.
+---@param shake { position: integer, axis: string, age: integer }?
+---@param actionPosition integer
+---@return integer, integer, boolean the translation plus the track liveness
+function StartMenuRenderer:_shakeOffset(shake, actionPosition)
+  if shake == nil or shake.position ~= actionPosition then
+    return 0, 0, false
+  end
+  local track = assert(self.menu.focusShake[shake.axis], "the focus shake axis is outside the generated tracks")
+  return trackOffset(track, shake.age)
+end
+
+-- The retail confirm hop for one icon: the manifest hop frame covering the
+-- hop age, or zero when the hop has played out. The hop replaces the shake
+-- on the retail sprite, so a live hop wins over a live shake on the same
+-- icon.
+---@param hop { position: integer, age: integer }?
+---@param actionPosition integer
+---@return integer, integer, boolean the translation plus the track liveness
+function StartMenuRenderer:_hopOffset(hop, actionPosition)
+  if hop == nil or hop.position ~= actionPosition then
+    return 0, 0, false
+  end
+  return trackOffset(assert(self.menu.confirmHop, "the confirm hop requires its generated track"), hop.age)
 end
 
 ---@param assetId string
@@ -237,7 +244,9 @@ end
 ---@param action table<string, unknown>
 ---@param selectedPosition integer?
 ---@param gender string?
-function StartMenuRenderer:_drawActionIcon(action, selectedPosition, gender)
+---@param focusShake { position: integer, axis: string, age: integer }?
+---@param confirmHop { position: integer, age: integer }?
+function StartMenuRenderer:_drawActionIcon(action, selectedPosition, gender, focusShake, confirmHop)
   local lg = assert(self._graphics)
   local menu = self.menu
   local iconTable = assert(menu.iconTable, "the icon presentation requires the icon contract")
@@ -250,9 +259,14 @@ function StartMenuRenderer:_drawActionIcon(action, selectedPosition, gender)
   end
   local record =
     assert(positions[action.position], "position " .. tostring(action.position) .. " is outside the position set")
+  local shakeX, shakeY = self:_shakeOffset(focusShake, action.position)
+  local hopX, hopY, hopActive = self:_hopOffset(confirmHop, action.position)
+  if hopActive then
+    shakeX, shakeY = hopX, hopY
+  end
   if row.art == "poke_icon" then
     if self._pokeImage ~= nil then
-      lg.draw(self._pokeImage, assert(self._pokeQuad), record.anchor.x, record.anchor.y)
+      lg.draw(self._pokeImage, assert(self._pokeQuad), record.anchor.x + shakeX, record.anchor.y + shakeY)
     end
     return
   end
@@ -267,8 +281,8 @@ function StartMenuRenderer:_drawActionIcon(action, selectedPosition, gender)
   lg.draw(
     assert(self._imageByAsset[asset]),
     self:_quadFor(asset, rect),
-    record.anchor.x + offset.x,
-    record.anchor.y + offset.y
+    record.anchor.x + offset.x + shakeX,
+    record.anchor.y + offset.y + shakeY
   )
 end
 
@@ -340,7 +354,7 @@ end
 -- canvas, shader, scissor, blend, depth, wireframe, cull, and color
 -- afterwards so the HUD and host overlays draw normally.
 
----@param presentation { selectedPosition: integer, trainerGender?: string, actions?: table[], runningShoes?: { locked: boolean, focused: boolean }, cursor?: { position: integer, frameIndex: integer } }?
+---@param presentation { selectedPosition: integer, trainerGender?: string, actions?: table[], runningShoes?: { locked: boolean, focused: boolean }, focusShake?: { position: integer, axis: string, age: integer }, confirmHop?: { position: integer, age: integer } }?
 ---@param placement LayoutGeometry.Placement the resolved content placement (frame, origin, scale, clip)
 function StartMenuRenderer:draw(presentation, placement)
   if not presentation or not self._subImage then
@@ -362,7 +376,7 @@ end
 -- draw draws nothing), then the SUB chrome at the canonical origin plus
 -- per-action icons and labels. The manifest rects are canonical, so
 -- nothing is scaled twice.
----@param presentation { selectedPosition: integer, trainerGender?: string, actions?: table[], runningShoes?: { locked: boolean, focused: boolean }, cursor?: { position: integer, frameIndex: integer } }
+---@param presentation { selectedPosition: integer, trainerGender?: string, actions?: table[], runningShoes?: { locked: boolean, focused: boolean }, focusShake?: { position: integer, axis: string, age: integer }, confirmHop?: { position: integer, age: integer } }
 function StartMenuRenderer:_drawSurface(presentation)
   local lg = assert(self._graphics)
   lg.setColor(1, 1, 1, 1)
@@ -409,17 +423,32 @@ function StartMenuRenderer:_drawSurface(presentation)
       "the Running Shoes focus outline requires its generated hit rectangle"
     )
   end
-  local cursor = presentation.cursor
-  if cursor ~= nil then
+  -- The retired cursor record is ignored when a stale presentation still
+  -- carries it: no bouncing arrow marks focus anymore.
+  local focusShake = presentation.focusShake
+  if focusShake ~= nil then
     assert(
-      type(cursor.position) == "number" and positions[cursor.position] ~= nil,
-      "the cursor position is outside the generated action positions"
+      type(focusShake.position) == "number" and positions[focusShake.position] ~= nil,
+      "the focus shake position is outside the generated action positions"
     )
     assert(
-      type(cursor.frameIndex) == "number"
-        and cursor.frameIndex % 1 == 0
-        and self.menu.cursor.frames[cursor.frameIndex] ~= nil,
-      "the cursor frame index is outside its sequence"
+      focusShake.axis == "horizontal" or focusShake.axis == "vertical",
+      "the focus shake axis is outside the generated tracks"
+    )
+    assert(
+      type(focusShake.age) == "number" and focusShake.age % 1 == 0 and focusShake.age >= 0,
+      "the focus shake age must be a non-negative integer"
+    )
+  end
+  local confirmHop = presentation.confirmHop
+  if confirmHop ~= nil then
+    assert(
+      type(confirmHop.position) == "number" and positions[confirmHop.position] ~= nil,
+      "the confirm hop position is outside the generated action positions"
+    )
+    assert(
+      type(confirmHop.age) == "number" and confirmHop.age % 1 == 0 and confirmHop.age >= 0,
+      "the confirm hop age must be a non-negative integer"
     )
   end
   ---@type integer?
@@ -430,7 +459,7 @@ function StartMenuRenderer:_drawSurface(presentation)
   lg.draw(assert(self._subImage), assert(self._subQuad), 0, 0)
   if actions ~= nil then
     for _, action in ipairs(actions) do
-      self:_drawActionIcon(action, selectedPosition, presentation.trainerGender)
+      self:_drawActionIcon(action, selectedPosition, presentation.trainerGender, focusShake, confirmHop)
       self:_drawActionLabel(action)
     end
   end
@@ -439,9 +468,6 @@ function StartMenuRenderer:_drawSurface(presentation)
     if shoes.focused then
       self:_drawRunningShoesFocus(self.menu.runningShoes.hitRect)
     end
-  end
-  if cursor ~= nil then
-    self:_drawCursor(cursor)
   end
 end
 
@@ -455,8 +481,6 @@ function StartMenuRenderer:release()
   self._imageByAsset = {}
   self._quads = {}
   self._subImage, self._subQuad, self._pokeImage, self._pokeQuad = nil, nil, nil, nil
-  self._cursorImage = nil
-  self._cursorQuads = {}
 end
 
 -- The resolved manifest surface: the SUB chrome asset, the icon table with
@@ -477,7 +501,11 @@ end
 ---@class StartMenuRenderer.Menu
 ---@field interactive StartMenuRenderer.Interactive the generated interactive record (cancel bound plus positions 0..6)
 ---@field iconTable table<integer, table<string, unknown>>
----@field cursor { frames: { x: integer, y: integer, width: integer, height: integer, offset: { x: integer, y: integer }, duration: integer }[] }
+---@field focusShake { horizontal: StartMenuRenderer.ShakeTrack, vertical: StartMenuRenderer.ShakeTrack } the generated focus-change wobble tracks
+---@field confirmHop StartMenuRenderer.ShakeTrack the generated confirm hop track
 ---@field runningShoes table<string, unknown> the generated Running Shoes toggle record (button and indicator visuals)
+
+---@class StartMenuRenderer.ShakeTrack
+---@field frames { dx: integer, dy: integer, duration: integer }[]
 
 return StartMenuRenderer

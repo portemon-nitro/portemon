@@ -317,6 +317,168 @@ function T.directional_navigation_walks_the_full_normal_menu()
   Assert.equal(controller:status().selectedPosition, 1, "down from 0 selects the first visible candidate")
 end
 
+-- Retail shakes the newly focused icon along the movement axis
+-- (ov27_0225B404: up/down restart animation 3, left/right animation 1),
+-- only when focus actually changes; touch selection never shakes.
+function T.directional_focus_change_shakes_the_new_icon_along_the_movement_axis()
+  local controller = newController()
+  Assert.isNil(controller:status().focusShake, "the freshly opened menu shakes no icon")
+  controller:updateFixed({ { type = "navigate", direction = "right" } })
+  Assert.deepEqual(
+    controller:status().focusShake,
+    { position = 4, axis = "horizontal", age = 0 },
+    "a right move shakes the new icon horizontally from its first tick"
+  )
+  controller:updateFixed({})
+  controller:updateFixed({})
+  Assert.deepEqual(
+    controller:status().focusShake,
+    { position = 4, axis = "horizontal", age = 2 },
+    "the shake ages one tick per fixed update"
+  )
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.deepEqual(
+    controller:status().focusShake,
+    { position = 5, axis = "vertical", age = 0 },
+    "a down move restarts the shake vertically on the new icon"
+  )
+end
+
+function T.navigation_without_a_focus_change_shakes_nothing()
+  local single = newController({
+    entries = {
+      { id = "vanilla.solo", targetApplication = "solo", actionKind = "application", displayPosition = 0 },
+    },
+  })
+  for _, direction in ipairs({ "up", "down", "left", "right" }) do
+    single:updateFixed({ { type = "navigate", direction = direction } })
+    Assert.equal(single:status().selectedPosition, 0, direction .. " on a solo menu moves nowhere")
+    Assert.isNil(single:status().focusShake, "a move that changes nothing shakes nothing")
+  end
+  local controller = newController()
+  controller:updateFixed({ { type = "navigate", direction = "right" } })
+  Assert.deepEqual(
+    controller:status().focusShake,
+    { position = 4, axis = "horizontal", age = 0 },
+    "a real move shakes"
+  )
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(controller:status().selectedPosition, 5, "down from 4 moves to 5")
+  controller:updateFixed({ { type = "navigate", direction = "left" } })
+  Assert.equal(controller:status().selectedPosition, 1, "left from 5 moves to 1")
+  Assert.deepEqual(
+    controller:status().focusShake,
+    { position = 1, axis = "horizontal", age = 0 },
+    "a left move shakes horizontally"
+  )
+  controller:updateFixed({ { type = "navigate", direction = "up" } })
+  Assert.equal(controller:status().selectedPosition, 0, "up from 1 moves to 0")
+  Assert.deepEqual(
+    controller:status().focusShake,
+    { position = 0, axis = "vertical", age = 0 },
+    "an up move shakes vertically"
+  )
+end
+
+function T.pointer_selection_never_shakes()
+  local controller = newController()
+  local x, y = rectCenter(POSITIONS.positions[4].hitRect)
+  controller:updateFixed({ { type = "pointer_move", pointerId = "mouse:1", x = x, y = y } })
+  Assert.equal(controller:status().selectedPosition, 4, "hover selects the hovered position")
+  Assert.isNil(controller:status().focusShake, "hovering never shakes")
+  local zeroX, zeroY = rectCenter(POSITIONS.positions[0].hitRect)
+  controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = zeroX, y = zeroY } })
+  controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = zeroX, y = zeroY } })
+  Assert.isNil(controller:status().focusShake, "touch selection never shakes")
+end
+
+-- Retail hops the activated icon upward on successful activation
+-- (ov27_0225A2CC arms it; the A320 loop restarts sequence 2 on the
+-- selected icon): confirm-key and tap activation hop; disabled, cancel,
+-- and shoes-toggle activation never hop.
+function T.successful_activation_hops_the_activated_icon()
+  local controller = newController()
+  Assert.isNil(controller:status().confirmHop, "the freshly opened menu hops no icon")
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.deepEqual(
+    controller:status().confirmHop,
+    { position = 0, age = 0 },
+    "confirming the selected application hops it from its first tick"
+  )
+  controller:updateFixed({})
+  controller:updateFixed({})
+  Assert.deepEqual(
+    controller:status().confirmHop,
+    { position = 0, age = 2 },
+    "the hop ages one tick per fixed update"
+  )
+  Assert.notNil(controller:takeResult(), "the host drains the launch before further input")
+  controller:updateFixed({ { type = "navigate", direction = "right" } })
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.deepEqual(
+    controller:status().confirmHop,
+    { position = 4, age = 0 },
+    "a later activation restarts the hop on the newly activated icon"
+  )
+end
+
+function T.tap_activation_hops_the_tapped_icon()
+  local controller = newController()
+  local x, y = rectCenter(POSITIONS.positions[4].hitRect)
+  controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = x, y = y } })
+  Assert.isNil(controller:status().confirmHop, "pressing an icon hops nothing yet")
+  controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = x, y = y } })
+  Assert.deepEqual(
+    controller:status().confirmHop,
+    { position = 4, age = 0 },
+    "releasing on the pressed icon hops the activated icon"
+  )
+end
+
+function T.disabled_cancel_and_shoes_activation_never_hop()
+  local controller = newController({
+    entries = {
+      { id = "vanilla.save", targetApplication = "save", displayPosition = 5, enabled = false },
+    },
+  })
+  controller:updateFixed({ { type = "confirm" } })
+  Assert.isNil(controller:takeResult(), "a disabled entry never activates")
+  Assert.isNil(controller:status().confirmHop, "a disabled no-op hops nothing")
+  controller:updateFixed({ { type = "cancel" } })
+  Assert.deepEqual(controller:takeResult(), { kind = "close" }, "cancel closes")
+  Assert.isNil(controller:status().confirmHop, "cancel hops nothing")
+end
+
+function T.shoes_toggle_activation_never_hops()
+  local port = shoesPort(true)
+  local controller = newController({ runningShoes = port })
+  local x, y = rectCenter(SHOES_RECT)
+  controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = x, y = y } })
+  Assert.equal(port.toggles, 1, "the fresh touch toggles")
+  Assert.isNil(controller:status().confirmHop, "toggling the shoes hops nothing")
+end
+
+function T.leaving_shoes_focus_shakes_the_reentered_icon_horizontally()
+  local controller = newController({ runningShoes = shoesPort(true) })
+  for _, direction in ipairs({ "right", "down", "down" }) do
+    controller:updateFixed({ { type = "navigate", direction = direction } })
+  end
+  controller:updateFixed({ { type = "navigate", direction = "right" } })
+  Assert.isTrue(controller:status().runningShoes.focused, "right enters shoes focus")
+  Assert.deepEqual(
+    controller:status().focusShake,
+    { position = 6, axis = "vertical", age = 1 },
+    "entering shoes focus lets the in-flight icon shake play out"
+  )
+  controller:updateFixed({ { type = "navigate", direction = "left" } })
+  Assert.isFalse(controller:status().runningShoes.focused, "left leaves shoes focus")
+  Assert.deepEqual(
+    controller:status().focusShake,
+    { position = 6, axis = "horizontal", age = 0 },
+    "returning to the icon shakes it along the horizontal axis"
+  )
+end
+
 function T.confirm_launches_the_selected_application()
   local controller = newController()
   controller:updateFixed({ { type = "confirm" } })

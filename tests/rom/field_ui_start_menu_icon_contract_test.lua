@@ -4,7 +4,7 @@
 -- icon chars sharing one cell bank, one animation bank, and one palette
 -- image, plus main chrome transparent above its panel boundary with art in
 -- the band, the invariant SUB background set, one label window per
--- destination slot, and a non-blank cursor. Asserts only structural facts
+-- destination slot, and the focus-change wobble tracks. Asserts only structural facts
 -- and pixel alpha behavior, never copied source bytes or text. Member
 -- selection stays producer-side: every archive member below is read through
 -- the producer config, never as a literal.
@@ -170,10 +170,6 @@ function T.icon_sprites_share_one_cell_anim_and_palette_bank(romFs, version)
     startMenu.iconCellMember,
     startMenu.iconAnimMember,
     startMenu.iconPaletteMember,
-    startMenu.cursorCharMember,
-    startMenu.cursorPaletteMember,
-    startMenu.cursorCellMember,
-    startMenu.cursorAnimMember,
   }
   for _, memberId in ipairs(startMenu.iconCharMembers) do
     required[#required + 1] = memberId
@@ -203,7 +199,7 @@ end
 
 -- Main chrome is transparent above the panel boundary with art in the band;
 -- the SUB set behind the entry windows is context-invariant; every
--- destination slot carries its own label window; the cursor is real art.
+-- destination slot carries its own label window.
 function T.chrome_carries_the_panel_boundary_and_the_sub_window_set(romFs, version)
   local bundle, compiled = compiledStartMenu(romFs)
   local chrome = assert(compiled.chrome, "the start menu section must carry its chrome")
@@ -264,9 +260,8 @@ function T.chrome_carries_the_panel_boundary_and_the_sub_window_set(romFs, versi
     )
   end
 
-  local _, cursorBytes = assetBytes(bundle, FieldUiAssetCache.ASSET.START_MENU_CURSOR)
-  local cursorOpaque = opaqueCount(cursorBytes)
-  Assert.isTrue(cursorOpaque > 0, version .. " cursor must contain art")
+  Assert.isNil(bundle.manifest.assets["hgss.start_menu.cursor"], version .. " cursor asset is retired")
+  Assert.isNil(compiled.cursor, version .. " cursor record is retired")
 end
 
 -- The normal selector contract on the real dump: the seven source-position
@@ -370,6 +365,95 @@ function T.running_shoes_toggle_carries_distinct_non_blank_off_and_on_visuals(ro
   end
   local hit = shoes.hitRect
   Assert.isTrue(hit.x >= 0 and hit.y >= 0 and hit.x + hit.width <= 256 and hit.y + hit.height <= 192)
+end
+
+-- The focus-change wobble decodes from the shared icon animation bank
+-- (ov27_0225B404: up/down restart sequence 3, left/right sequence 1): the
+-- horizontal track shakes x by -2/+3 and the vertical track shakes y by
+-- -2/+2, each frame lasting two ticks and settling back on the static cell.
+-- Sequence selection stays producer-side through the producer config; the
+-- compiled values below are the independent retail anchor.
+function T.focus_change_shake_decodes_the_retail_wobble_tracks(romFs, version)
+  local startMenu = selection()
+  local anim, animErr = G2dDecoder.decodeAnimation(
+    memberBytes(romFs, startMenu.alias, startMenu.iconAnimMember),
+    { label = "icon animation" }
+  )
+  assert(anim, animErr and animErr.message)
+  local seqs = assert(startMenu.focusShakeSeqs, "the producer must select the focus shake sequences")
+  local function frameCells(sequence)
+    local frames = assert(anim.anims[sequence + 1], "the icon bank must carry sequence " .. sequence).frames
+    local cells = {}
+    for _, frame in ipairs(frames) do
+      cells[#cells + 1] = frame.cell
+    end
+    return cells, frames
+  end
+  local horizontalCells, horizontalFrames = frameCells(seqs.horizontal)
+  Assert.deepEqual(horizontalCells, { 1, 2, 1, 2, 0 }, version .. " the horizontal shake walks cells 1/2 to rest")
+  local verticalCells, verticalFrames = frameCells(seqs.vertical)
+  Assert.deepEqual(verticalCells, { 7, 8, 7, 8, 0 }, version .. " the vertical shake walks cells 7/8 to rest")
+  for _, frames in ipairs({ horizontalFrames, verticalFrames }) do
+    for _, frame in ipairs(frames) do
+      Assert.equal(frame.duration, 2, version .. " every shake frame lasts two ticks")
+    end
+  end
+
+  local _, compiled = compiledStartMenu(romFs)
+  local shake = assert(compiled.focusShake, version .. " start menu section must publish the focus shake record")
+  Assert.deepEqual(shake.horizontal, {
+    frames = {
+      { dx = -2, dy = 0, duration = 2 },
+      { dx = 3, dy = 0, duration = 2 },
+      { dx = -2, dy = 0, duration = 2 },
+      { dx = 3, dy = 0, duration = 2 },
+      { dx = 0, dy = 0, duration = 2 },
+    },
+  }, version .. " the horizontal track shakes x by -2/+3")
+  Assert.deepEqual(shake.vertical, {
+    frames = {
+      { dx = 0, dy = -2, duration = 2 },
+      { dx = 0, dy = 2, duration = 2 },
+      { dx = 0, dy = -2, duration = 2 },
+      { dx = 0, dy = 2, duration = 2 },
+      { dx = 0, dy = 0, duration = 2 },
+    },
+  }, version .. " the vertical track shakes y by -2/+2")
+end
+
+-- The confirm hop decodes from the same shared icon animation bank
+-- (ov27_0225A2CC arms it on successful activation; the A320 loop restarts
+-- sequence 2 on the selected icon): an upward hop through cells 3/4/5 and
+-- back, settling on the static cell. Sequence selection stays producer-side;
+-- the compiled values below are the independent retail anchor.
+function T.confirm_hop_decodes_the_retail_hop_track(romFs, version)
+  local startMenu = selection()
+  local anim, animErr = G2dDecoder.decodeAnimation(
+    memberBytes(romFs, startMenu.alias, startMenu.iconAnimMember),
+    { label = "icon animation" }
+  )
+  assert(anim, animErr and animErr.message)
+  local sequence = assert(startMenu.confirmHopSeq, "the producer must select the confirm hop sequence")
+  local frames = assert(anim.anims[sequence + 1], "the icon bank must carry sequence " .. sequence).frames
+  local cells, durations = {}, {}
+  for _, frame in ipairs(frames) do
+    cells[#cells + 1] = frame.cell
+    durations[#durations + 1] = frame.duration
+  end
+  Assert.deepEqual(cells, { 3, 4, 5, 4, 0 }, version .. " the hop walks cells 3/4/5 to rest")
+  Assert.deepEqual(durations, { 1, 2, 3, 2, 1 }, version .. " the hop frames last 1/2/3/2/1 ticks")
+
+  local _, compiled = compiledStartMenu(romFs)
+  local hop = assert(compiled.confirmHop, version .. " start menu section must publish the confirm hop record")
+  Assert.deepEqual(hop, {
+    frames = {
+      { dx = 0, dy = -6, duration = 1 },
+      { dx = 0, dy = -9, duration = 2 },
+      { dx = 0, dy = -11, duration = 3 },
+      { dx = 0, dy = -9, duration = 2 },
+      { dx = 0, dy = 0, duration = 1 },
+    },
+  }, version .. " the hop rises 6/9/11 pixels and settles")
 end
 
 function T.labels_resolve_through_the_sub_palette_bank(romFs, version)

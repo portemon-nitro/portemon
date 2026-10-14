@@ -18,8 +18,10 @@
 -- screen 13, palette 15) carries only the bottom-panel chrome, the SUB set
 -- (char 8, screen 9, palette 7) sits behind the entry windows, the eleven
 -- 20-tile icon chars with the shared cell/anim banks (16/17) and OBJ palette
--- image (14) supply the entry sprites, and cursor char/palette/cell/anim are
--- 64/61/62/63. The icon rows, context rows, action-to-icon map, sprite
+-- image (14) supply the entry sprites; the focus-change wobble reuses the
+-- shared cell/anim banks (horizontal sequence 1, vertical sequence 3). The
+-- start_menu.c cursor sprite (members 64/61/62/63) never tracks focus and is
+-- not selected. The icon rows, context rows, action-to-icon map, sprite
 -- bases, and label windows below transcribe the overlay-27 icon/context
 -- mapping and sprite-base/window tables; the per-icon cell/anim members
 -- (19/20...) have no traced consumer and are not selected. Dialogue frames follow
@@ -89,10 +91,15 @@ return {
     -- decoded banks.
     iconAnim = 0,
     iconSelectedPalette = 1,
-    cursorCharMember = 64,
-    cursorPaletteMember = 61,
-    cursorCellMember = 62,
-    cursorAnimMember = 63,
+    -- The focus-change wobble (ov27_0225B404 restarts one of these one-shot
+    -- sequences on the newly focused icon): the horizontal sequence for
+    -- left/right moves, the vertical sequence for up/down moves. Zero-based
+    -- into the decoded animation bank.
+    focusShakeSeqs = { horizontal = 1, vertical = 3 },
+    -- The confirm hop (ov27_0225A2CC arms it on successful activation; the
+    -- A320 loop restarts this one-shot sequence on the selected icon).
+    -- Zero-based into the decoded animation bank.
+    confirmHopSeq = 2,
     -- The 13 retail icon rows (Lua index = retail icon index + 1) from the
     -- ov27_0225CF94 table: the sprite char member per icon row, the
     -- bank-196 label id, and the label kind. Rows 9-10 are text-only (no

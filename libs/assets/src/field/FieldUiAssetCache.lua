@@ -85,7 +85,6 @@ FieldUiAssetCache.ASSET = {
   SIGNPOST_TILES = "hgss.signpost.tiles",
   SIGNPOST_WAYFINDING = "hgss.signpost.wayfinding",
   START_MENU_BACKGROUND = "hgss.start_menu.background",
-  START_MENU_CURSOR = "hgss.start_menu.cursor",
   START_MENU_ICONS = "hgss.start_menu.icons",
   START_MENU_ICON_PALETTE = "hgss.start_menu.icon_palette",
   START_MENU_POKE_ICONS = "hgss.start_menu.poke_icons",

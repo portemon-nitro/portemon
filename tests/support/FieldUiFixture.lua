@@ -32,7 +32,6 @@ FieldUiFixture.SIGNPOST_TILES_PATH = "assets/generated/field/ui/signpost-tiles.p
 FieldUiFixture.WAYFINDING_PATH = "assets/generated/field/ui/wayfinding-tiles.png"
 
 FieldUiFixture.START_MENU_BACKGROUND_PATH = "assets/generated/field/ui/start-menu.png"
-FieldUiFixture.START_MENU_CURSOR_PATH = "assets/generated/field/ui/start-menu-cursor.png"
 FieldUiFixture.TRAINER_CARD_PATH = "assets/generated/field/ui/trainer-card.png"
 
 ---@param cache CacheFs
@@ -316,14 +315,6 @@ FieldUiFixture.START_MENU_SLOTS = {
   [10] = { x = 128, y = 152, width = 128, height = 38 },
 }
 
--- Two distinct cursor frames in a 16x32 atlas (frame 1 row y=0, frame 2 row
--- y=16) with distinct durations, so the fixed-tick cadence is pixel-visible
--- in the goldens and the durations are observable in unit tests.
-FieldUiFixture.START_MENU_CURSOR_FRAMES = {
-  { x = 0, y = 0, width = 16, height = 16, offset = { x = -3, y = -2 }, duration = 22 },
-  { x = 0, y = 16, width = 16, height = 16, offset = { x = 2, y = 1 }, duration = 11 },
-}
-
 -- The solid color of one Start Menu slot region; every slot is a distinct
 -- color so a wrong placement is a pixel mismatch in the goldens.
 ---@param slotId integer
@@ -363,28 +354,6 @@ function FieldUiFixture.startMenuBackgroundBytes()
     end
   end
   return PngWriter.encode(256, 192, table.concat(bytes))
-end
-
--- The solid color of one cursor frame; the two frames are distinct colors.
----@param frame integer 1-based
----@return integer, integer, integer
-function FieldUiFixture.startMenuCursorColor(frame)
-  if frame == 1 then
-    return 255, 0, 255
-  end
-  return 0, 255, 255
-end
-
--- The cursor atlas: two distinct 16x16 frames stacked (frame 1 at y=0,
--- frame 2 at y=16), so a wrong frame index is a pixel mismatch.
----@return string png
-function FieldUiFixture.startMenuCursorBytes()
-  local bytes = {}
-  for y = 0, 31 do
-    local r, g, b = FieldUiFixture.startMenuCursorColor(y < 16 and 1 or 2)
-    bytes[#bytes + 1] = string.rep(string.char(r, g, b, 255), 16)
-  end
-  return PngWriter.encode(16, 32, table.concat(bytes))
 end
 
 -- The trainer card front art: a per-tile tinted surface (every 8x8 tile a
@@ -622,11 +591,6 @@ function FieldUiFixture.manifest()
         width = 256,
         height = 192,
       },
-      [FieldUiAssetCache.ASSET.START_MENU_CURSOR] = {
-        image = FieldUiFixture.START_MENU_CURSOR_PATH,
-        width = 16,
-        height = 32,
-      },
       [FieldUiAssetCache.ASSET.TRAINER_CARD_FRONT] = {
         image = FieldUiFixture.TRAINER_CARD_PATH,
         width = 256,
@@ -703,11 +667,6 @@ function FieldUiFixture.manifest()
     },
     startMenu = {
       background = { x = 0, y = 0, width = 256, height = 192 },
-      cursor = {
-        playMode = "forward_loop",
-        loopStartFrameIdx = 0,
-        frames = FieldUiFixture.START_MENU_CURSOR_FRAMES,
-      },
       slots = FieldUiFixture.START_MENU_SLOTS,
     },
     trainerCard = {
@@ -727,7 +686,6 @@ function FieldUiFixture.cacheWithFontAndFrames()
   cache:write(FieldUiFixture.SIGNPOST_TILES_PATH, FieldUiFixture.signpostTilesBytes())
   cache:write(FieldUiFixture.WAYFINDING_PATH, FieldUiFixture.wayfindingBytes())
   cache:write(FieldUiFixture.START_MENU_BACKGROUND_PATH, FieldUiFixture.startMenuBackgroundBytes())
-  cache:write(FieldUiFixture.START_MENU_CURSOR_PATH, FieldUiFixture.startMenuCursorBytes())
   cache:write(FieldUiFixture.PROMPT_YES_NORMAL_PATH, FieldUiFixture.promptButtonBytes("yes_normal"))
   cache:write(FieldUiFixture.PROMPT_YES_SELECTED_PATH, FieldUiFixture.promptButtonBytes("yes_selected"))
   cache:write(FieldUiFixture.PROMPT_NO_NORMAL_PATH, FieldUiFixture.promptButtonBytes("no_normal"))
@@ -766,7 +724,6 @@ function FieldUiFixture.startMenuCache()
   cache:writeLua(FieldUiAssetCache.manifestPath(), FieldUiFixture.manifest())
   cache:write(FieldUiFixture.STRIP_PATH, FieldUiFixture.stripBytes())
   cache:write(FieldUiFixture.START_MENU_BACKGROUND_PATH, FieldUiFixture.startMenuBackgroundBytes())
-  cache:write(FieldUiFixture.START_MENU_CURSOR_PATH, FieldUiFixture.startMenuCursorBytes())
   cache:write(FieldUiFixture.PROMPT_YES_NORMAL_PATH, FieldUiFixture.promptButtonBytes("yes_normal"))
   cache:write(FieldUiFixture.PROMPT_YES_SELECTED_PATH, FieldUiFixture.promptButtonBytes("yes_selected"))
   cache:write(FieldUiFixture.PROMPT_NO_NORMAL_PATH, FieldUiFixture.promptButtonBytes("no_normal"))
@@ -853,6 +810,34 @@ function FieldUiFixture.addStartMenuIconContract(manifest)
   }
   startMenu.iconTable = iconTable
   startMenu.iconPalette = { asset = "hgss.start_menu.icon_palette", banks = 2, selectionBank = 2 }
+  -- The retail focus-change wobble (ov27 icon animation sequences 1 and
+  -- 3): per-axis translation tracks over the selected icon, in fixed ticks.
+  -- Fresh table per call so tests never share mutable manifest state.
+  startMenu.focusShake = {
+    horizontal = {
+      frames = {
+        { dx = -2, dy = 0, duration = 2 },
+        { dx = 3, dy = 0, duration = 2 },
+        { dx = 0, dy = 0, duration = 2 },
+      },
+    },
+    vertical = {
+      frames = {
+        { dx = 0, dy = -2, duration = 3 },
+        { dx = 0, dy = 2, duration = 3 },
+        { dx = 0, dy = 0, duration = 3 },
+      },
+    },
+  }
+  -- The retail confirm hop: an upward track with its own cadence, so hop
+  -- offsets stay distinguishable from either shake axis in tests.
+  startMenu.confirmHop = {
+    frames = {
+      { dx = 0, dy = -4, duration = 2 },
+      { dx = 0, dy = 5, duration = 3 },
+      { dx = 0, dy = 0, duration = 2 },
+    },
+  }
   startMenu.contexts = {
     { 0, 1, 2, 3, 4, 5, 6 },
     { 7, 0, 1, 2, 3, 4, 6 },
@@ -899,7 +884,6 @@ function FieldUiFixture.writeStartMenuSelectorPngs(cache)
     "assets/generated/field/ui/start-menu-icon-palette.png",
     PngWriter.encode(16, 2, string.rep(string.char(10, 10, 10, 255), 16 * 2))
   )
-  cache:write(FieldUiFixture.START_MENU_CURSOR_PATH, FieldUiFixture.startMenuCursorBytes())
 end
 
 -- The Running Shoes toggle record: the touch rectangle plus the button body

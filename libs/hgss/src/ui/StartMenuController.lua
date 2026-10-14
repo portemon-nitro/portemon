@@ -27,6 +27,8 @@ local FocusGraph = require("libs.ui.src.FocusGraph")
 ---@class StartMenuController
 ---@field _visibleActions table<integer, StartMenuController.Action> visible actions keyed by display position
 ---@field _selectedPosition integer the selected display position
+---@field _focusShake { position: integer, axis: "horizontal"|"vertical", age: integer }? the retail focus-change wobble: the newly focused icon, the movement axis, and elapsed fixed ticks since the change
+---@field _confirmHop { position: integer, age: integer }? the retail confirm hop: the activated icon and elapsed fixed ticks since activation
 ---@field _shoesFocused boolean whether the separate shoes control has semantic focus
 ---@field _shoesAnchor integer? normal action used to enter and leave shoes focus
 ---@field _result table<string, unknown>?
@@ -157,6 +159,8 @@ function StartMenuController.new(opts)
   local self = setmetatable({
     _visibleActions = display,
     _selectedPosition = initialPosition(ordered, opts.rememberedActionId),
+    _focusShake = nil,
+    _confirmHop = nil,
     _shoesFocused = false,
     _shoesAnchor = nil,
     _result = nil,
@@ -281,29 +285,41 @@ function StartMenuController:_moveSelection(direction)
     direction == "up" or direction == "down" or direction == "left" or direction == "right",
     "unknown UI direction"
   )
+  -- Retail restarts the newly focused icon's one-shot wobble on every
+  -- directional focus change (ov27_0225B404): up/down play the vertical
+  -- shake, left/right the horizontal one. Touch selection never shakes.
+  local wasShoesFocused = self._shoesFocused
+  local beforePosition = self._selectedPosition
   if self._shoesFocused then
     if direction == "left" then
       self._shoesFocused = false
       self._selectedPosition = assert(self._shoesAnchor, "shoe focus needs its normal ingress anchor")
       self._shoesAnchor = nil
     end
-    return
-  end
-  local graph = self:_normalGraph()
-  local shoes = self._runningShoes
-  local shoesState = self:_shoesState()
-  if direction == "right" and shoes ~= nil and shoesState ~= nil and shoesState.visible then
-    local anchor = self:_shoesIngress(shoes, graph)
-    if self._selectedPosition == anchor then
-      self._shoesFocused = true
-      self._shoesAnchor = anchor
-      return
+  else
+    local graph = self:_normalGraph()
+    local shoes = self._runningShoes
+    local shoesState = self:_shoesState()
+    if direction == "right" and shoes ~= nil and shoesState ~= nil and shoesState.visible then
+      local anchor = self:_shoesIngress(shoes, graph)
+      if self._selectedPosition == anchor then
+        self._shoesFocused = true
+        self._shoesAnchor = anchor
+        return
+      end
     end
+    local resolved = FocusGraph.move(graph, self._selectedPosition, direction)
+    assert(type(resolved) == "number" and resolved % 1 == 0, "start menu focus resolves to a source position")
+    ---@cast resolved integer
+    self._selectedPosition = resolved
   end
-  local resolved = FocusGraph.move(graph, self._selectedPosition, direction)
-  assert(type(resolved) == "number" and resolved % 1 == 0, "start menu focus resolves to a source position")
-  ---@cast resolved integer
-  self._selectedPosition = resolved
+  if not self._shoesFocused and (wasShoesFocused or self._selectedPosition ~= beforePosition) then
+    self._focusShake = {
+      position = self._selectedPosition,
+      axis = (direction == "left" or direction == "right") and "horizontal" or "vertical",
+      age = 0,
+    }
+  end
 end
 
 -- Activation of the selected action. Disabled entries (enabled=false) are
@@ -331,9 +347,14 @@ function StartMenuController:_activate(position)
   if self._effect then
     self._effect("SEQ_SE_DP_SELECT")
   end
+  -- Retail hops the activated icon upward on successful activation
+  -- (ov27_0225A2CC arms it; the A320 loop restarts sequence 2 on the
+  -- selected icon). Disabled, cancel, and shoes-toggle activation return
+  -- before any result is recorded, so they never hop.
   if action.actionKind == "field_action" then
     self._result = { kind = "field_action", actionId = action.id }
     self._closed = true
+    self._confirmHop = { position = position, age = 0 }
     return
   end
   if action.actionKind ~= "application" then
@@ -344,6 +365,7 @@ function StartMenuController:_activate(position)
     applicationId = action.targetApplication,
     actionId = action.id,
   }
+  self._confirmHop = { position = position, age = 0 }
   -- A launch is not terminal to this snapshot: the field host retains
   -- the menu as its drawable background while the child owns input, so
   -- the menu stays open and presentable until the host disposes it.
@@ -373,6 +395,12 @@ function StartMenuController:updateFixed(uiInput)
   assert(type(uiInput) == "table", "the start menu input must be an event list")
   if self._closed then
     return
+  end
+  if self._focusShake ~= nil then
+    self._focusShake.age = self._focusShake.age + 1
+  end
+  if self._confirmHop ~= nil then
+    self._confirmHop.age = self._confirmHop.age + 1
   end
   self:_reconcileShoesFocus()
   local positions = self._positions
@@ -480,10 +508,21 @@ function StartMenuController:status()
     end
   end
   local shoesState = self:_shoesState()
+  local focusShake = self._focusShake
+  local confirmHop = self._confirmHop
   return {
     open = true,
     actions = actions,
     selectedPosition = self._selectedPosition,
+    focusShake = focusShake ~= nil and {
+      position = focusShake.position,
+      axis = focusShake.axis,
+      age = focusShake.age,
+    } or nil,
+    confirmHop = confirmHop ~= nil and {
+      position = confirmHop.position,
+      age = confirmHop.age,
+    } or nil,
     runningShoes = shoesState ~= nil and shoesState.visible and {
       locked = shoesState.locked,
       focused = self._shoesFocused,
@@ -526,6 +565,8 @@ end
 ---@field open true
 ---@field actions StartMenuController.Action[]
 ---@field selectedPosition integer
+---@field focusShake { position: integer, axis: "horizontal"|"vertical", age: integer }? the retail focus-change wobble while one is armed
+---@field confirmHop { position: integer, age: integer }? the retail confirm hop while one is armed
 ---@field runningShoes { locked: boolean, focused: boolean }? present only while the toggle is shown
 
 ---@class StartMenuController.RunningShoesState

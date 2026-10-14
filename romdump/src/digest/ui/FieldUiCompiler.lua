@@ -306,64 +306,6 @@ local function composeNamingPageWindow(image, window, role, colors, pageKey)
   return PngWriter.encode(image.width, image.height, concatChars(bytes))
 end
 
-local function cellBounds(cell)
-  local first = assert(cell.objs[1], "cell bounds require at least one object")
-  local minX, minY, maxX, maxY = first.x, first.y, first.x + first.width, first.y + first.height
-  for i = 2, #cell.objs do
-    local obj = cell.objs[i]
-    if obj.x < minX then
-      minX = obj.x
-    end
-    if obj.y < minY then
-      minY = obj.y
-    end
-    if obj.x + obj.width > maxX then
-      maxX = obj.x + obj.width
-    end
-    if obj.y + obj.height > maxY then
-      maxY = obj.y + obj.height
-    end
-  end
-  return { x = minX, y = minY, width = maxX - minX, height = maxY - minY }
-end
-
--- Blit one cell OBJ into the cursor atlas. The compiler supports the two
--- square geometries the cursor sources actually use (8x8 and the real
--- 32x32); any other shape/size is malformed source. Square OBJs lay their
--- tiles out row-major from the base tile. A flipped OBJ mirrors the whole
--- object per the OAM layout: the tile grid order is mirrored as well, and
--- each tile is flipped in place by blitTile.
-local function blitObj(rgba, atlasWidth, row, obj, charData, palette, source)
-  if obj.shape ~= 0 or (obj.size ~= 0 and obj.size ~= 2) then
-    Errors.raise(
-      FieldUiCompiler.ERROR.SOURCE_INVALID,
-      "unsupported OBJ geometry in the start menu cursor",
-      { width = obj.width, height = obj.height, shape = obj.shape, size = obj.size, source = source }
-    )
-  end
-  local tilesPerRow = obj.width / 8
-  local rowsPerObj = obj.height / 8
-  for tileRow = 0, rowsPerObj - 1 do
-    for tileCol = 0, tilesPerRow - 1 do
-      local destCol = obj.flipH and (tilesPerRow - 1 - tileCol) or tileCol
-      local destRow = obj.flipV and (rowsPerObj - 1 - tileRow) or tileRow
-      blitTile(
-        rgba,
-        atlasWidth,
-        obj.x - row.minX + destCol * 8,
-        obj.y - row.minY + row.y + destRow * 8,
-        charData,
-        obj.tile + tileRow * tilesPerRow + tileCol,
-        obj.palette,
-        palette,
-        obj.flipH,
-        obj.flipV,
-        source
-      )
-    end
-  end
-end
-
 ---@param romFs RomFs
 ---@param alias string
 ---@return Narc, string
@@ -433,6 +375,83 @@ local function compileStartMenuSub(sha1hex, deps, assets, manifestAssets, archiv
       { name = manifestConfig.startMenu.alias .. ":member:" .. memberId, sha1 = sha1hex(memberBytes[memberId]) }
   end
   return pal
+end
+
+-- The retail icon wobble as source-independent translation tracks: the
+-- configured one-shot sequences (ov27_0225B404 restarts the horizontal
+-- sequence on left/right moves, the vertical one on up/down moves, and the
+-- confirm sequence on successful activation) carry per-frame cells whose OBJ
+-- layouts shift the whole icon; each frame publishes its uniform shift
+-- relative to the static opening frame plus the source frame duration in
+-- fixed ticks. A cell whose objects disagree on the shift is malformed
+-- source, never a blended track. Returns the focus shake pair plus the
+-- confirm hop track.
+---@param iconCell FieldUiCompiler.CellData
+---@param iconAnim FieldUiCompiler.AnimationData
+---@return { horizontal: { frames: { dx: integer, dy: integer, duration: integer }[] }, vertical: { frames: { dx: integer, dy: integer, duration: integer }[] } }, { frames: { dx: integer, dy: integer, duration: integer }[] }
+local function compileStartMenuFocusShake(iconCell, iconAnim)
+  local cfg = manifestConfig.startMenu
+  local staticAnim = iconAnim.anims[cfg.iconAnim + 1]
+  if staticAnim == nil or staticAnim.frames[1] == nil then
+    Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "start menu icon animation carries no stable frame", {
+      anim = cfg.iconAnim,
+    })
+  end
+  assert(staticAnim ~= nil and staticAnim.frames[1] ~= nil, "a missing stable frame fails above")
+  local baseCell = iconCell.cells[staticAnim.frames[1].cell + 1]
+  if baseCell == nil or #baseCell.objs == 0 then
+    Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "start menu icon static cell carries no objects", {
+      cell = staticAnim.frames[1].cell,
+    })
+  end
+  assert(baseCell ~= nil, "a missing static cell fails above")
+  local function cellShift(cellIndex)
+    local cell = iconCell.cells[cellIndex + 1]
+    if cell == nil then
+      Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "start menu shake animation references a missing cell", {
+        cell = cellIndex,
+      })
+    end
+    assert(cell ~= nil, "a missing shake cell fails above")
+    if #cell.objs ~= #baseCell.objs then
+      Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "start menu shake cell disagrees with the static cell", {
+        cell = cellIndex,
+        objects = #cell.objs,
+        staticObjects = #baseCell.objs,
+      })
+    end
+    local first = assert(cell.objs[1], "a shake cell carries objects")
+    local baseFirst = assert(baseCell.objs[1], "the static cell carries objects")
+    local dx, dy = first.x - baseFirst.x, first.y - baseFirst.y
+    for index, obj in ipairs(cell.objs) do
+      local baseObj = assert(baseCell.objs[index], "the static cell covers every shake object")
+      if obj.x - baseObj.x ~= dx or obj.y - baseObj.y ~= dy then
+        Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "start menu shake cell shifts its objects unevenly", {
+          cell = cellIndex,
+          object = index - 1,
+        })
+      end
+    end
+    return dx, dy
+  end
+  local function track(sequence)
+    local animation = iconAnim.anims[sequence + 1]
+    if animation == nil or #animation.frames == 0 then
+      Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "start menu shake animation carries no frames", {
+        anim = sequence,
+      })
+    end
+    assert(animation ~= nil, "a missing shake animation fails above")
+    local frames = {}
+    for _, frame in ipairs(animation.frames) do
+      local dx, dy = cellShift(frame.cell)
+      frames[#frames + 1] = { dx = dx, dy = dy, duration = frame.duration }
+    end
+    return { frames = frames }
+  end
+  local seqs = assert(cfg.focusShakeSeqs, "the start menu config must select the focus shake sequences")
+  local confirmSeq = assert(cfg.confirmHopSeq, "the start menu config must select the confirm hop sequence")
+  return { horizontal = track(seqs.horizontal), vertical = track(seqs.vertical) }, track(confirmSeq)
 end
 
 -- The shared icon atlas: every sprite char the icon rows (and the Bag
@@ -640,22 +659,18 @@ local function compileStartMenuIcons(sha1hex, deps, assets, manifestAssets, arch
     deps[#deps + 1] =
       { name = manifestConfig.startMenu.alias .. ":member:" .. memberId, sha1 = sha1hex(memberBytes[memberId]) }
   end
-  return visuals, shoesVisuals
+  local focusShake, confirmHop = compileStartMenuFocusShake(iconCell, iconAnim)
+  return visuals, shoesVisuals, focusShake, confirmHop
 end
 
 local function compileStartMenu(romFs, sha1hex, deps, assets, manifestAssets)
   local archive, archiveBytes = loadArchive(romFs, manifestConfig.startMenu.alias)
   local cfg = manifestConfig.startMenu
   local memberBytes = {}
-  local function g2d(kind, memberId, label)
-    memberBytes[memberId] = decodeMember(archive, memberId, label)
-    local decoded, err =
-      G2dDecoder[kind](memberBytes[memberId], { label = manifestConfig.startMenu.alias .. ":" .. memberId })
-    return must(decoded, err)
-  end
   local background = compileStartMenuMain(sha1hex, deps, assets, manifestAssets, archive, memberBytes)
   local subPalette = compileStartMenuSub(sha1hex, deps, assets, manifestAssets, archive, memberBytes)
-  local iconVisuals, shoesVisuals = compileStartMenuIcons(sha1hex, deps, assets, manifestAssets, archive, memberBytes)
+  local iconVisuals, shoesVisuals, focusShake, confirmHop =
+    compileStartMenuIcons(sha1hex, deps, assets, manifestAssets, archive, memberBytes)
 
   -- The label roles are source palette slots, not font colors: the label
   -- windows live on the SUB background's palette bank 4, so foreground 14,
@@ -704,68 +719,6 @@ local function compileStartMenu(romFs, sha1hex, deps, assets, manifestAssets)
     iconTable[index] = entry
   end
 
-  local cursorChar = g2d("decodeChar", cfg.cursorCharMember, "start menu cursor char") --[[@as FieldUiCompiler.CharData]]
-  local cursorPal = g2d("decodePalette", cfg.cursorPaletteMember, "start menu cursor palette") --[[@as FieldUiCompiler.PaletteData]]
-  local cursorCell = g2d("decodeCell", cfg.cursorCellMember, "start menu cursor cell") --[[@as FieldUiCompiler.CellData]]
-  local cursorAnim = g2d("decodeAnimation", cfg.cursorAnimMember, "start menu cursor animation") --[[@as FieldUiCompiler.AnimationData]]
-  local anim = cursorAnim.anims[1]
-  -- Stack every distinct cell the animation references; each frame points at
-  -- its cell's row so a multi-cell cursor animates rather than repeating the
-  -- first cell's sprite.
-  local cellRows = {}
-  local cursorFrames = {}
-  local atlasWidth = 0
-  local atlasHeight = 0
-  for i, frame in ipairs(anim.frames) do
-    local cell = cursorCell.cells[frame.cell + 1]
-    if not cell then
-      Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "start menu cursor animation references a missing cell", {
-        cell = frame.cell,
-      })
-    end
-    local row = cellRows[frame.cell]
-    if not row then
-      local bounds = cellBounds(cell)
-      row = { minX = bounds.x, minY = bounds.y, y = atlasHeight, width = bounds.width, height = bounds.height }
-      atlasHeight = atlasHeight + row.height
-      atlasWidth = math.max(atlasWidth, row.width)
-      cellRows[frame.cell] = row
-    end
-    cursorFrames[i] = {
-      x = 0,
-      y = row.y,
-      width = row.width,
-      height = row.height,
-      offset = { x = row.minX + frame.translateX, y = row.minY + frame.translateY },
-      duration = frame.duration,
-    }
-  end
-  local cursorPath = FieldUiAssetCache.assetDir() .. "/start-menu-cursor.png"
-  local rgba = newRgba(atlasWidth, atlasHeight)
-  for cellIndex, row in pairs(cellRows) do
-    local objs = cursorCell.cells[cellIndex + 1].objs
-    for objIndex, obj in ipairs(objs) do
-      blitObj(rgba, atlasWidth, row, obj, cursorChar, cursorPal.colors, {
-        asset = "start menu cursor",
-        member = cfg.cursorCellMember,
-        cell = cellIndex,
-        obj = objIndex - 1,
-      })
-    end
-  end
-  assets[cursorPath] = PngWriter.encode(atlasWidth, atlasHeight, concatChars(rgba))
-  manifestAssets[FieldUiAssetCache.ASSET.START_MENU_CURSOR] =
-    { image = cursorPath, width = atlasWidth, height = atlasHeight }
-
-  for _, memberId in ipairs({
-    cfg.cursorPaletteMember,
-    cfg.cursorCellMember,
-    cfg.cursorAnimMember,
-    cfg.cursorCharMember,
-  }) do
-    deps[#deps + 1] =
-      { name = manifestConfig.startMenu.alias .. ":member:" .. memberId, sha1 = sha1hex(memberBytes[memberId]) }
-  end
   deps[#deps + 1] = { name = manifestConfig.startMenu.alias .. ":narc", sha1 = sha1hex(archiveBytes) }
 
   local contexts = {}
@@ -807,11 +760,8 @@ local function compileStartMenu(romFs, sha1hex, deps, assets, manifestAssets)
 
   return {
     background = background,
-    cursor = {
-      playMode = anim.playMode,
-      loopStartFrameIdx = anim.loopStartFrameIdx,
-      frames = cursorFrames,
-    },
+    focusShake = focusShake,
+    confirmHop = confirmHop,
     interactive = {
       cancelHitRect = {
         x = cfg.cancelTouchRegion.x,
