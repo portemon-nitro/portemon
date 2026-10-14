@@ -274,7 +274,14 @@ function T.native_phone_labels_and_contact_classes_use_semantic_shapes()
   for _, source in ipairs(PokegearSources.rematchTrainerSets) do
     catalog.rematchSets[source.trainers[1]] = {
       group = source.group,
-      trainers = { table.unpack(source.trainers) },
+      trainers = {
+        source.trainers[1],
+        source.trainers[2],
+        source.trainers[3],
+        source.trainers[4],
+        source.trainers[5],
+        source.trainers[6],
+      },
     }
   end
   local mapIdsBySymbol = {}
