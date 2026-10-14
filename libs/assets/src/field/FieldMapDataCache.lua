@@ -225,6 +225,16 @@ function FieldMapDataCache.beginRequiredEventsValidation(events)
           if self._valid and value.movementSelector ~= nil then
             self._valid = Validate.isNonNegativeInteger(value.movementSelector) and value.movementSelector <= 0xFF
           end
+          if self._valid and value.trainerReaction ~= nil then
+            local trainerReaction = value.trainerReaction
+            self._valid = type(trainerReaction) == "table"
+              and hasOnlyKeys(trainerReaction, { trainerId = true, variant = true, pairEligible = true })
+              and Validate.isNonNegativeInteger(trainerReaction.trainerId)
+              and trainerReaction.trainerId > 0
+              and trainerReaction.trainerId <= 2000
+              and (trainerReaction.variant == "first" or trainerReaction.variant == "second")
+              and type(trainerReaction.pairEligible) == "boolean"
+          end
           if self._valid and value.apricorn ~= nil then
             local apricorn = value.apricorn
             self._valid = value.scriptId == "common.apricorn_tree"

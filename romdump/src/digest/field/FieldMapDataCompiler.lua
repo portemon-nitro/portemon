@@ -42,9 +42,33 @@ local STANDARD_SCRIPTS = SourceCatalog.catalog()
 -- never derives a script identity from a raw source number for these events,
 -- and never needs the decomp-derived std-script catalog to resolve one.
 local NO_SCRIPT_ID = 0xFFFF
+local TRAINER_PAIR_ELIGIBLE_TYPES = {
+  [1] = true,
+  [2] = true,
+  [4] = true,
+  [5] = true,
+  [6] = true,
+  [7] = true,
+  [8] = true,
+}
 
 ---@param decoded table<string, unknown> decoded zone-event member
 local function normalizeUnboundScripts(decoded)
+  for _, event in ipairs(decoded.objectEvents) do
+    local raw = event.scriptId
+    if type(raw) == "number" and raw % 1 == 0 and raw >= 3000 and raw < 7000 then
+      local standard = STANDARD_SCRIPTS.locate(raw)
+      if standard ~= nil and standard.member == 953 then
+        local second = raw >= 5000
+        local firstOfGroup = second and 5000 or 3000
+        event.trainerReaction = {
+          trainerId = raw - firstOfGroup + 1,
+          variant = second and "second" or "first",
+          pairEligible = TRAINER_PAIR_ELIGIBLE_TYPES[event.type] == true,
+        }
+      end
+    end
+  end
   for _, events in ipairs({ decoded.backgroundEvents, decoded.objectEvents, decoded.coordinateEvents }) do
     for _, event in ipairs(events) do
       if event.scriptId == NO_SCRIPT_ID then

@@ -285,6 +285,222 @@ function T.canonicalizes_std_script_sentinels_to_their_global_identity_regardles
   Assert.equal(bundle.field.events.objects[2].scriptId, "vanilla.hgss.scr_seq.0953.script_007")
 end
 
+function T.preserves_native_trainer_pair_identity_and_candidate_eligibility()
+  local member = Builder.build({
+    backgroundEvents = {
+      {
+        scriptId = 2800,
+        type = 1,
+        x = 0,
+        z = 0,
+        y = 0,
+        direction = 4,
+      },
+    },
+    objectEvents = {
+      {
+        objectEventId = 9,
+        spriteId = 317,
+        movement = 16,
+        type = 1,
+        eventFlag = 0x199,
+        scriptId = 3007,
+        facingDirection = 2,
+        param0 = 4,
+        param1 = 0,
+        param2 = 0,
+        xRange = 0,
+        yRange = 0,
+        x = 553,
+        z = 332,
+        y = 0,
+      },
+      {
+        objectEventId = 10,
+        spriteId = 317,
+        movement = 16,
+        type = 8,
+        eventFlag = 0x199,
+        scriptId = 5007,
+        facingDirection = 2,
+        param0 = 4,
+        param1 = 0,
+        param2 = 0,
+        xRange = 0,
+        yRange = 0,
+        x = 554,
+        z = 332,
+        y = 0,
+      },
+      {
+        objectEventId = 11,
+        spriteId = 317,
+        movement = 16,
+        type = 0,
+        eventFlag = 0x199,
+        scriptId = 3008,
+        facingDirection = 2,
+        param0 = 4,
+        param1 = 0,
+        param2 = 0,
+        xRange = 0,
+        yRange = 0,
+        x = 555,
+        z = 332,
+        y = 0,
+      },
+      {
+        objectEventId = 12,
+        spriteId = 317,
+        movement = 16,
+        type = 3,
+        eventFlag = 0x199,
+        scriptId = 5009,
+        facingDirection = 2,
+        param0 = 4,
+        param1 = 0,
+        param2 = 0,
+        xRange = 0,
+        yRange = 0,
+        x = 556,
+        z = 332,
+        y = 0,
+      },
+      {
+        objectEventId = 13,
+        spriteId = 262,
+        movement = 0,
+        type = 0,
+        eventFlag = 1081,
+        scriptId = 2800,
+        facingDirection = 0,
+        param0 = 6,
+        param1 = 0,
+        param2 = 0,
+        xRange = 0,
+        yRange = 0,
+        x = 557,
+        z = 332,
+        y = 0,
+      },
+      {
+        objectEventId = 14,
+        spriteId = 87,
+        movement = 0,
+        type = 0,
+        eventFlag = 1081,
+        scriptId = 7000,
+        facingDirection = 0,
+        param0 = 0,
+        param1 = 0,
+        param2 = 0,
+        xRange = 0,
+        yRange = 0,
+        x = 558,
+        z = 332,
+        y = 0,
+      },
+      {
+        objectEventId = 15,
+        spriteId = 1,
+        movement = 0,
+        type = 0,
+        eventFlag = 0,
+        scriptId = 100,
+        facingDirection = 0,
+        param0 = 0,
+        param1 = 0,
+        param2 = 0,
+        xRange = 0,
+        yRange = 0,
+        x = 559,
+        z = 332,
+        y = 0,
+      },
+    },
+  })
+  local romFs = FieldMapDataFixture.build({ zoneEventsMember = member })
+  local bundle = assert(FieldMapDataCompiler.compile(romFs, 60, function()
+    return "hash"
+  end, function()
+    return "dependency"
+  end))
+  local objects = bundle.field.events.objects
+
+  Assert.equal(objects[1].scriptId, "vanilla.hgss.scr_seq.0953.script_007")
+  Assert.equal(objects[2].scriptId, "vanilla.hgss.scr_seq.0953.script_007")
+  Assert.deepEqual(objects[1].trainerReaction, { trainerId = 8, variant = "first", pairEligible = true })
+  Assert.deepEqual(objects[2].trainerReaction, { trainerId = 8, variant = "second", pairEligible = true })
+  Assert.deepEqual(objects[3].trainerReaction, { trainerId = 9, variant = "first", pairEligible = false })
+  Assert.deepEqual(objects[4].trainerReaction, { trainerId = 10, variant = "second", pairEligible = false })
+  Assert.isNil(objects[5].trainerReaction, "Apricorn standard script is not a trainer event")
+  Assert.isNil(objects[6].trainerReaction, "item standard script is not a trainer event")
+  Assert.isNil(objects[7].trainerReaction, "ordinary map script is not a trainer event")
+  Assert.equal(objects[1].objectEventId, 9)
+  Assert.equal(objects[1].x, 553)
+  Assert.equal(bundle.field.events.background[1].scriptId, "common.apricorn_tree")
+  Assert.isTrue(FieldMapDataCache.hasRequiredEvents(bundle.field.events), "compiled generated events validate")
+end
+
+function T.rejects_malformed_native_trainer_reaction_metadata()
+  local member = Builder.build({
+    objectEvents = {
+      {
+        objectEventId = 9,
+        spriteId = 317,
+        movement = 16,
+        type = 1,
+        eventFlag = 0x199,
+        scriptId = 3007,
+        facingDirection = 2,
+        param0 = 4,
+        param1 = 0,
+        param2 = 0,
+        xRange = 0,
+        yRange = 0,
+        x = 553,
+        z = 332,
+        y = 0,
+      },
+    },
+  })
+  local romFs = FieldMapDataFixture.build({ zoneEventsMember = member })
+  local bundle = assert(FieldMapDataCompiler.compile(romFs, 60, function()
+    return "hash"
+  end, function()
+    return "dependency"
+  end))
+  local validEvents = bundle.field.events
+  Assert.isTrue(FieldMapDataCache.hasRequiredEvents(validEvents), "a valid trainer reaction is accepted")
+
+  local malformed = {
+    {},
+    { trainerId = 0, variant = "first", pairEligible = true },
+    { trainerId = -1, variant = "first", pairEligible = true },
+    { trainerId = 1.5, variant = "first", pairEligible = true },
+    { trainerId = 1, variant = "third", pairEligible = true },
+    { trainerId = 1, variant = "first", pairEligible = 1 },
+    { trainerId = 2001, variant = "first", pairEligible = true },
+    { trainerId = 1, variant = "first", pairEligible = true, extra = false },
+  }
+  for _, trainerReaction in ipairs(malformed) do
+    local events = {}
+    for collection, values in pairs(validEvents) do
+      events[collection] = values
+    end
+    events.objects = {}
+    for index, object in ipairs(validEvents.objects) do
+      local copy = {}
+      for key, value in pairs(object) do
+        copy[key] = value
+      end
+      events.objects[index] = copy
+    end
+    events.objects[1].trainerReaction = trainerReaction
+    Assert.isFalse(FieldMapDataCache.hasRequiredEvents(events), "malformed trainer reaction must be rejected")
+  end
+end
+
 function T.annotates_only_verified_source_apricorn_tree_objects()
   local member = Builder.build({
     objectEvents = {
