@@ -202,8 +202,13 @@ function T.tests.native_generic_phone_phrases_resolve_the_source_entry_stride()
     end
     local get = provider.get
     local requested = nil
+    local syntheticGenderedDefinition = false
+    local syntheticLookupEntry = nil
     provider.get = function(self, bankId, entryId)
       requested = { bankId = bankId, entryId = entryId }
+      if syntheticGenderedDefinition then
+        return get(self, bankId, syntheticLookupEntry)
+      end
       return get(self, bankId, entryId)
     end
 
@@ -270,6 +275,12 @@ function T.tests.native_generic_phone_phrases_resolve_the_source_entry_stride()
 
     local originalFemaleEntry = definition.female.entry
     definition.female.entry = originalFemaleEntry + 3
+    syntheticGenderedDefinition = true
+    syntheticLookupEntry = definition.male.entry
+    local genderedOffsets = {
+      [0] = { [0] = 0, [1] = 2, [10] = 20 },
+      [1] = { [0] = 1, [1] = 3, [10] = 21 },
+    }
     for _, gender in ipairs({ 0, 1 }) do
       runtime.playerData.profile.gender = gender
       local message = gender == 0 and definition.male or definition.female
@@ -279,12 +290,18 @@ function T.tests.native_generic_phone_phrases_resolve_the_source_entry_stride()
         local gendered = assert(requested, "a distinct gender phrase resolves through the production provider")
         Assert.equal(
           gendered.entryId,
-          message.entry + variation * 2,
-          "distinct gender references retain the two-entry native stride"
+          message.entry + genderedOffsets[gender][variation],
+          "gender "
+            .. tostring(gender)
+            .. " variation "
+            .. tostring(variation)
+            .. " must use the source-exact offset"
         )
       end
     end
+    syntheticGenderedDefinition = false
     definition.female.entry = originalFemaleEntry
+    provider.get = get
   end)
 end
 
