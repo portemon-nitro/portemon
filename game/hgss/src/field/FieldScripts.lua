@@ -346,7 +346,7 @@ local function trainerReactionService(manager, trainerCatalog)
         and candidateReaction.trainerId == primaryReaction.trainerId
         and candidateReaction.variant == oppositeVariant
         and candidateReaction.pairEligible == true
-        and manager:getActor(candidate.actorId) ~= nil
+        and candidate:isResident()
       then
         return candidate.actorId
       end

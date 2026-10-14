@@ -67,6 +67,9 @@ local function stubActors(actorList)
   local function noop() end
   local actorsById = {}
   for _, actor in ipairs(actorList or {}) do
+    actor.isResident = actor.isResident or function(self)
+      return self.resident ~= false
+    end
     actorsById[actor.actorId] = actor
   end
   return {
@@ -138,8 +141,10 @@ local function sliceChunk(id, steps)
       lines[#lines + 1] = '    { op = "battle_result", result = { value = "var", id = "VAR_TEMP_x4002" } },'
     elseif step.op == "trainer_reaction_movement" then
       lines[#lines + 1] = '    { op = "trainer_reaction_movement", actor = { ref = "actor", special = "last_talked" } },'
+    elseif step.op == "wait_movement" then
+      lines[#lines + 1] = '    { op = "wait_movement" },'
     else
-      error("services harness covers set_spawn, set_special_spawn, pending field_move, battle ops, and trainer reactions only", 0)
+      error("services harness covers set_spawn, set_special_spawn, pending field_move, battle ops, trainer reactions, and movement waits only", 0)
     end
   end
   lines[#lines + 1] = "  },"
@@ -178,6 +183,7 @@ local function driveSlice(services, id, steps)
     fieldMoves = services.fieldMoves,
     battle = services.battle,
     trainerCatalog = services.trainerCatalog,
+    events = services.events,
   }
   local platform = FieldScripts.new(args --[[@as FieldScriptsOptions]])
   local composed = assert(platform.composition:effective(id), "the slice must compose")
@@ -205,6 +211,7 @@ function T.tests.native_trainer_reaction_uses_the_live_matching_pair_in_manager_
     {
       actorId = "partner",
       mapId = 7,
+      resident = false,
       facing = "east",
       position = { fieldX = 6, fieldZ = 8, worldY = 0 },
       sourceEvent = {
@@ -233,6 +240,7 @@ function T.tests.native_trainer_reaction_uses_the_live_matching_pair_in_manager_
     {
       actorId = "later_partner",
       mapId = 7,
+      resident = true,
       facing = "west",
       position = { fieldX = 8, fieldZ = 8, worldY = 0 },
       sourceEvent = {
@@ -259,7 +267,7 @@ function T.tests.native_trainer_reaction_uses_the_live_matching_pair_in_manager_
     trigger = { selfActor = "primary" },
   }, "test.trainer_reaction_slice", {})
   local service = platform.scheduler._services.trainerReaction
-  Assert.equal(service:partnerFor("primary"), "partner", "the composed service selects a C01-eligible opposite variant")
+  Assert.equal(service:partnerFor("primary"), "later_partner", "the service skips the earlier nonresident actor")
 
   local partner = actors:getActor("partner")
   local laterPartner = actors:getActor("later_partner")
@@ -286,16 +294,11 @@ function T.tests.native_trainer_reaction_uses_the_live_matching_pair_in_manager_
   Assert.isNil(service:partnerFor("primary"), "actors outside the current map are excluded")
   partner.mapId = 7
   laterPartner.mapId = 7
-  local getActor = actors.getActor
-  actors.getActor = function(self, actorId)
-    if actorId == "partner" or actorId == "later_partner" then
-      return nil
-    end
-    return getActor(self, actorId)
-  end
-  Assert.isNil(service:partnerFor("primary"), "actors absent from the live manager are excluded")
-  actors.getActor = getActor
-  Assert.equal(service:partnerFor("primary"), "partner", "the service reads current actor state on each lookup")
+  partner.resident = false
+  laterPartner.resident = false
+  Assert.isNil(service:partnerFor("primary"), "all matching but nonresident actors are excluded")
+  partner.resident = true
+  Assert.equal(service:partnerFor("primary"), "partner", "the first matching resident actor remains manager-order eligible")
 
   local primary = actors:getActor("primary")
   primary.sourceEvent.trainerReaction.trainerId = 10
@@ -307,6 +310,153 @@ function T.tests.native_trainer_reaction_uses_the_live_matching_pair_in_manager_
   end, "declared native trainers require a catalog entry")
   primary.sourceEvent.trainerReaction = nil
   Assert.isNil(service:partnerFor("primary"), "non-trainer actors need no trainer template")
+end
+
+function T.tests.native_trainer_reaction_schedules_the_resident_pair_in_native_order()
+  local taskStartEvents = {}
+  local events = {
+    emit = function(_, name, payload)
+      if name == "script.task_started" then
+        taskStartEvents[#taskStartEvents + 1] = payload
+      end
+    end,
+  }
+  local actors = stubActors({
+    {
+      actorId = "primary",
+      mapId = 7,
+      facing = "north",
+      position = { fieldX = 5, fieldZ = 8, worldY = 0 },
+      sourceEvent = {
+        trainerReaction = { trainerId = 8, variant = "first", pairEligible = true },
+      },
+    },
+    {
+      actorId = "nonresident_partner",
+      mapId = 7,
+      resident = false,
+      facing = "east",
+      position = { fieldX = 6, fieldZ = 8, worldY = 0 },
+      sourceEvent = {
+        trainerReaction = { trainerId = 8, variant = "second", pairEligible = true },
+      },
+    },
+    {
+      actorId = "resident_partner",
+      mapId = 7,
+      resident = true,
+      facing = "east",
+      position = { fieldX = 7, fieldZ = 8, worldY = 0 },
+      sourceEvent = {
+        trainerReaction = { trainerId = 8, variant = "second", pairEligible = true },
+      },
+    },
+  })
+  local catalog = require("libs.hgss.src.battle.HgssTrainerCatalog").new({
+    trainers = {
+      [8] = { trainerClass = 1, nameReference = {}, party = {}, doubleBattle = true, messageIds = {} },
+    },
+  })
+  local platform = driveSlice({
+    travel = nil,
+    fieldMoves = nil,
+    actors = actors,
+    trainerCatalog = catalog,
+    events = events,
+    trigger = { selfActor = "primary" },
+  }, "test.trainer_reaction_movement_slice", {
+    { op = "trainer_reaction_movement" },
+    { op = "wait_movement" },
+  })
+  local environmentId = assert(platform.scheduler:foregroundEnvironmentId(), "the movement wait owns the foreground environment")
+  assert(
+    platform.scheduler:activeMovementForActor(environmentId, "resident_partner"),
+    "the resident partner receives the first scheduled movement"
+  )
+  local nonresidentTaskId = platform.scheduler:activeMovementForActor(environmentId, "nonresident_partner")
+  Assert.isNil(nonresidentTaskId, "the earlier nonresident candidate receives no movement task")
+  assert(
+    platform.scheduler:activeMovementForActor(environmentId, "primary"),
+    "the primary receives its native movement task"
+  )
+  local movementStartActors = {}
+  for _, event in ipairs(taskStartEvents) do
+    local task = assert(platform.scheduler:taskById(event.taskId), "started task remains observable")
+    if task.taskType == "movement" and task.environmentId == environmentId then
+      movementStartActors[#movementStartActors + 1] = task.state.actor
+    end
+  end
+  Assert.deepEqual(
+    movementStartActors,
+    { "resident_partner", "primary" },
+    "the partner task starts before the primary task"
+  )
+  for _, actorId in ipairs({ "resident_partner", "primary" }) do
+    local taskId = assert(platform.scheduler:activeMovementForActor(environmentId, actorId))
+    local task = assert(platform.scheduler:taskById(taskId), "the active movement task remains observable")
+    Assert.equal(task.state.actor, actorId, "the scheduler task belongs to the expected source actor")
+    Assert.equal(task.state.sequence[1].action, "walk", "the native reaction uses a walk step")
+    Assert.equal(task.state.sequence[1].direction, "west", "both tasks use the north-facing primary's west step")
+  end
+
+  local nonresidentActors = stubActors({
+    {
+      actorId = "primary",
+      mapId = 7,
+      facing = "north",
+      position = { fieldX = 5, fieldZ = 8, worldY = 0 },
+      sourceEvent = {
+        trainerReaction = { trainerId = 8, variant = "first", pairEligible = true },
+      },
+    },
+    {
+      actorId = "first_nonresident",
+      mapId = 7,
+      resident = false,
+      facing = "east",
+      position = { fieldX = 6, fieldZ = 8, worldY = 0 },
+      sourceEvent = {
+        trainerReaction = { trainerId = 8, variant = "second", pairEligible = true },
+      },
+    },
+    {
+      actorId = "second_nonresident",
+      mapId = 7,
+      resident = false,
+      facing = "east",
+      position = { fieldX = 7, fieldZ = 8, worldY = 0 },
+      sourceEvent = {
+        trainerReaction = { trainerId = 8, variant = "second", pairEligible = true },
+      },
+    },
+  })
+  local singlePlatform = driveSlice({
+    travel = nil,
+    fieldMoves = nil,
+    actors = nonresidentActors,
+    trainerCatalog = catalog,
+    trigger = { selfActor = "primary" },
+  }, "test.trainer_reaction_single_movement_slice", {
+    { op = "trainer_reaction_movement" },
+    { op = "wait_movement" },
+  })
+  local singleEnvironmentId = assert(
+    singlePlatform.scheduler:foregroundEnvironmentId(),
+    "the primary movement wait owns the foreground environment"
+  )
+  local primaryTaskId = assert(
+    singlePlatform.scheduler:activeMovementForActor(singleEnvironmentId, "primary"),
+    "the primary still receives the native movement task"
+  )
+  Assert.isNil(
+    singlePlatform.scheduler:activeMovementForActor(singleEnvironmentId, "first_nonresident"),
+    "a logically stored nonresident partner receives no movement task"
+  )
+  Assert.isNil(
+    singlePlatform.scheduler:activeMovementForActor(singleEnvironmentId, "second_nonresident"),
+    "a later nonresident partner also receives no movement task"
+  )
+  Assert.notNil(singlePlatform.scheduler:taskById(primaryTaskId), "the primary movement task remains observable")
 end
 
 function T.tests.set_spawn_updates_the_injected_travel_service()
