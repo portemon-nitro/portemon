@@ -1333,6 +1333,10 @@ local function detachValue(value)
   if type(value) ~= "table" then
     return value
   end
+  if Errors.is(value) then
+    ---@cast value Errors.Error
+    return Errors.new(value.code, value.message, detachValue(value.context))
+  end
   local detached = {}
   for key, nested in
     pairs(value --[[@as table<unknown, unknown>]])
@@ -1367,18 +1371,13 @@ function PhoneCall:view(handle)
     elseif session.owner == "trainer" and programSession.program == "gym-invitation" then
       shown.choices = { "yes", "no" }
     elseif session.owner == "professor" and programSession.program == "oak-special" then
-      shown.choices = programSession.choices
+      shown.choices = detachValue(programSession.choices)
     else
       error("phone choice stages have a family-owned choice list", 0)
     end
   end
   if session.result ~= nil then
-    local result = session.result --[[@as table<string, unknown>]]
-    local detached = {}
-    for key, value in pairs(result) do
-      detached[key] = value
-    end
-    shown.result = detached
+    shown.result = detachValue(session.result)
   end
   return shown
 end
@@ -1392,12 +1391,7 @@ function PhoneCall:result(handle)
   if session.result == nil then
     return nil
   end
-  local result = session.result --[[@as table<string, unknown>]]
-  local detached = {}
-  for key, value in pairs(result) do
-    detached[key] = value
-  end
-  return detached
+  return detachValue(session.result)
 end
 
 -- Hangs the call up. A live call plays the hangup tone and completes

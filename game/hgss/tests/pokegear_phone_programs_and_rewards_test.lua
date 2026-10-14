@@ -2889,6 +2889,7 @@ function T.tests.phone_call_executes_oak_special_bank_pages_choice_and_effect()
   assert(record ~= nil, "synthetic Oak catalog validated above")
   local state = PokegearState.new({ seed = 82 }, catalogRefs(record))
   state:registerContact("custom.oak")
+  local random = PokegearRandom.new(82)
   local resolvedEntries = {}
   local writes = {}
   local messages = phoneMessages()
@@ -2926,7 +2927,7 @@ function T.tests.phone_call_executes_oak_special_bank_pages_choice_and_effect()
     messages = messages,
     world = world,
     audio = instantAudio(),
-    random = PokegearRandom.new(82),
+    random = random,
   })
   local handle = call:begin({
     id = "oak-special-1",
@@ -2944,6 +2945,25 @@ function T.tests.phone_call_executes_oak_special_bank_pages_choice_and_effect()
   Assert.equal(choiceView.stage, "choice", "Oak reaches its native Dex menu after its opening pages")
   Assert.deepEqual(resolvedEntries, { 13, 15 }, "Oak resolves its source bank entries in order")
   Assert.deepEqual(choiceView.choices, { "johto", "national" }, "the current source flags select the two-Dex menu")
+  local otherChoiceView = call:view(handle)
+  local randomBeforeReads = random:capture()
+  local choices = choiceView.choices --[[@as string[] ]]
+  choices[1] = "changed"
+  table.insert(choices, "inserted")
+  table.remove(choices, 2)
+  Assert.deepEqual(
+    otherChoiceView.choices,
+    { "johto", "national" },
+    "mutating one menu snapshot cannot alter another same-tick view"
+  )
+  local laterChoiceView = call:view(handle)
+  Assert.deepEqual(
+    laterChoiceView.choices,
+    { "johto", "national" },
+    "mutating a menu snapshot cannot alter the source-selected choices"
+  )
+  Assert.deepEqual(random:capture(), randomBeforeReads, "polling the menu consumes no random state")
+  Assert.deepEqual(writes, {}, "polling the menu does not commit Oak's acknowledgment")
   call:step(handle, { choice = "johto" })
   Assert.equal(call:view(handle).lines[1].text, "20", "Oak's selected evaluation resolves its native counts entry")
   call:step(handle, { confirm = true })
@@ -2971,6 +2991,7 @@ function T.tests.phone_call_does_not_acknowledge_oak_when_rating_text_is_invalid
   local PhoneCall = require("game.hgss.src.pokegear.PhoneCall")
   local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
   local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local Errors = require("libs.errors.src.Errors")
   local manifest = fixtureManifest()
   manifest.catalog.contacts[#manifest.catalog.contacts + 1] = {
     key = "custom.oak",
@@ -2987,7 +3008,9 @@ function T.tests.phone_call_does_not_acknowledge_oak_when_rating_text_is_invalid
   local messages = phoneMessages()
   messages.resolveContactEntry = function(_, _, entry)
     if entry == 18 then
-      error({ code = "MESSAGE_MISSING", message = "Oak rating is absent" }, 0)
+      error(Errors.new("MESSAGE_MISSING", "Oak rating is absent", {
+        source = { members = { 12, 18 } },
+      }), 0)
     end
     return { tokens = { { kind = "glyph", code = entry, text = tostring(entry), raw = { entry } } } }
   end
@@ -3033,10 +3056,40 @@ function T.tests.phone_call_does_not_acknowledge_oak_when_rating_text_is_invalid
   call:step(handle, { choice = "johto" })
   call:step(handle, { confirm = true })
 
-  local result = call:result(handle)
+  local failedView = call:view(handle)
+  local viewResult = failedView.result --[[@as table<string, unknown> ]]
+  local viewError = viewResult.error --[[@as Errors.Error ]]
+  local result = call:result(handle) --[[@as table<string, unknown> ]]
+  local resultError = result.error --[[@as Errors.Error ]]
   Assert.notNil(result, "a missing rating produces a terminal call error")
-  Assert.equal(result.error.code, "MESSAGE_MISSING", "the terminal preserves Oak's message failure")
+  Assert.isTrue(Errors.is(viewError), "view preserves the structured error type")
+  Assert.isTrue(Errors.is(resultError), "result preserves the structured error type")
+  Assert.isFalse(viewError == resultError, "view and result return distinct structured errors")
+  Assert.isFalse(viewError.context == resultError.context, "each error snapshot owns its context")
+  Assert.equal(viewError.code, "MESSAGE_MISSING", "the terminal preserves Oak's message failure")
+  Assert.deepEqual(viewError.context, { source = { members = { 12, 18 } } }, "the error retains nested context")
+  viewError.context.source.members[1] = 99
+  resultError.code = "CORRUPTED"
+  local laterViewError = call:view(handle).result.error --[[@as Errors.Error ]]
+  local laterResultError = call:result(handle).error --[[@as Errors.Error ]]
+  Assert.equal(laterViewError.code, "MESSAGE_MISSING", "view mutation cannot change the owner error")
+  Assert.equal(laterResultError.code, "MESSAGE_MISSING", "result mutation cannot change the owner error")
+  Assert.deepEqual(
+    laterViewError.context,
+    { source = { members = { 12, 18 } } },
+    "nested error context remains unchanged in later views"
+  )
+  Assert.deepEqual(
+    laterResultError.context,
+    { source = { members = { 12, 18 } } },
+    "nested error context remains unchanged in later results"
+  )
   Assert.equal(#acknowledged, 0, "an invalid rating does not publish Oak's acknowledgment")
+  call:release(handle)
+  Assert.equal(viewError.code, "MESSAGE_MISSING", "a retained error snapshot remains valid after release")
+  Assert.throws(function()
+    call:result(handle)
+  end, "a released call rejects stale result reads")
 end
 
 function T.tests.phone_call_does_not_publish_mom_savings_choice_when_response_text_is_invalid()
