@@ -19,7 +19,7 @@ local PokegearState = {}
 PokegearState.__index = PokegearState
 
 PokegearState.SCHEMA = "hgss-pokegear-v1"
-PokegearState.STATE_VERSION = 1
+PokegearState.STATE_VERSION = 3
 
 local CODE = "POKEGEAR_STATE_INVALID"
 local STALE_CODE = "POKEGEAR_STALE_CANDIDATE"
@@ -58,6 +58,7 @@ local TOP_FIELDS = {
   radioCursor = true,
   contactOrder = true,
   markings = true,
+  safariAreas = true,
   phone = true,
   calendar = true,
   random = true,
@@ -83,6 +84,8 @@ local MAX_MARKING_LOCATIONS = 100
 local MARKING_SLOTS = 4
 local MAX_ICON = 9
 local MAX_MOM_GIFTS = 5
+local MAX_SAFARI_AREAS = 6
+local MAX_SAFARI_AREA_ID = 11
 
 local MT_N = 624
 local MT_INIT_MULTIPLIER = 1812433253
@@ -410,6 +413,34 @@ local function checkRadioCursor(value)
   return { x = value.x, y = value.y }
 end
 
+---@param value unknown
+---@return table<integer, integer> the canonical Safari arrangement
+local function checkSafariAreas(value)
+  if type(value) ~= "table" then
+    fail("pokegear Safari areas must be a list", {})
+  end
+  assert(type(value) == "table", "Safari validation reads the area list")
+  local count = 0
+  for key in pairs(value) do
+    count = count + 1
+    if type(key) ~= "number" or key % 1 ~= 0 or key < 1 or key > MAX_SAFARI_AREAS then
+      fail("pokegear Safari areas must be a dense list of at most six entries", {})
+    end
+  end
+  if count > MAX_SAFARI_AREAS then
+    fail("pokegear Safari arrangement holds at most six areas", { count = count })
+  end
+  local clean = {}
+  for index = 1, count do
+    local areaId = value[index]
+    if type(areaId) ~= "number" or areaId % 1 ~= 0 or areaId < 0 or areaId > MAX_SAFARI_AREA_ID then
+      fail("pokegear Safari areas carry source area IDs from zero through six", { index = index })
+    end
+    clean[index] = areaId
+  end
+  return clean
+end
+
 ---@param moment unknown
 ---@return table<string, integer>?
 local function checkCivil(moment)
@@ -554,6 +585,7 @@ local function checkRestorable(data, contacts, locations)
     fail("pokegear map zoom must be a boolean", {})
   end
   data.radioCursor = checkRadioCursor(data.radioCursor)
+  data.safariAreas = checkSafariAreas(data.safariAreas)
   if type(data.contactOrder) ~= "table" then
     fail("pokegear contact order must be a list", {})
   end
@@ -684,12 +716,20 @@ local function checkRestorable(data, contacts, locations)
   end
   assert(type(phone.kenji) == "table", "restoration reads caller counters")
   for key in pairs(phone.kenji) do
-    if key ~= "calls" then
-      fail("pokegear caller counters contain an unknown field", { field = key })
+    if key ~= "calls" and key ~= "waitDays" and key ~= "active" then
+      fail("pokegear Kenji state contains an unknown field", { field = key })
     end
   end
-  if type(phone.kenji.calls) ~= "number" or phone.kenji.calls % 1 ~= 0 or phone.kenji.calls < 0 then
-    fail("pokegear caller counters must be non-negative integers", {})
+  if
+    type(phone.kenji.calls) ~= "number"
+    or phone.kenji.calls % 1 ~= 0
+    or phone.kenji.calls < 0
+    or type(phone.kenji.waitDays) ~= "number"
+    or phone.kenji.waitDays % 1 ~= 0
+    or phone.kenji.waitDays < 0
+    or type(phone.kenji.active) ~= "boolean"
+  then
+    fail("pokegear Kenji state carries a call count, wait days, and active flag", {})
   end
   if type(data.calendar) ~= "table" then
     fail("pokegear calendar state must be a record", {})
@@ -803,6 +843,7 @@ local function defaults(seed)
     mapUnlockLevel = 0,
     mapZoomed = false,
     radioCursor = { x = 128, y = 128 },
+    safariAreas = {},
     contactOrder = {},
     markings = {},
     phone = {
@@ -811,7 +852,7 @@ local function defaults(seed)
       history = {},
       rematches = {},
       mom = { balance = 0, purchases = {}, gifts = {} },
-      kenji = { calls = 0 },
+      kenji = { calls = 0, waitDays = 0, active = false },
     },
     calendar = defaultCalendar(seed),
     random = PokegearState.freshRandom(seed),
@@ -885,6 +926,34 @@ function PokegearState.restore(bucket, refs)
   local contacts, locations = checkCatalogRefs(refs)
   local data = detach(bucket)
   assert(type(data) == "table", "restoration validates a detached copy")
+  if data.schema == PokegearState.SCHEMA and data.stateVersion == 1 then
+    local phone = data.phone
+    local kenji = type(phone) == "table" and phone.kenji or nil
+    if type(kenji) ~= "table" then
+      fail("previous Pokegear state requires its Kenji caller record", {})
+    end
+    assert(type(kenji) == "table", "migration reads a detached Kenji record")
+    local kenjiRecord = kenji --[[@as table<string, unknown>]]
+    for key in pairs(kenjiRecord) do
+      if key ~= "calls" then
+        fail("previous Pokegear Kenji state contains an unknown field", { field = key })
+      end
+    end
+    local calls = kenjiRecord.calls
+    if type(calls) ~= "number" or calls % 1 ~= 0 or calls < 0 then
+      fail("previous Pokegear Kenji call count is invalid", {})
+    end
+    kenjiRecord.waitDays = 0
+    kenjiRecord.active = false
+    data.stateVersion = 2
+  end
+  if data.schema == PokegearState.SCHEMA and data.stateVersion == 2 then
+    if data.safariAreas ~= nil then
+      fail("previous Pokegear state contains an unknown Safari arrangement", {})
+    end
+    data.safariAreas = {}
+    data.stateVersion = PokegearState.STATE_VERSION
+  end
   checkRestorable(data, contacts, locations)
   return build(data, contacts, locations)
 end
@@ -933,6 +1002,14 @@ function PokegearState:readPreferences()
     mapZoomed = data.mapZoomed,
     radioCursor = detach(data.radioCursor),
   }
+end
+
+-- The detached native Safari Zone arrangement in source order.
+---@return integer[]
+function PokegearState:readSafariAreas()
+  local data = self._data
+  assert(type(data) == "table", "Safari reads require restored state")
+  return detach(data.safariAreas) --[[@as integer[] ]]
 end
 
 -- The detached calendar record: checkpoint, last processed day, and both
@@ -1224,6 +1301,36 @@ local function applySetMom(data, savings)
 end
 
 ---@param data table<string, unknown>
+---@param update unknown
+---@return boolean changed
+local function applySetKenji(data, update)
+  if type(update) ~= "table" then
+    fail("pokegear Kenji updates carry wait days and an active flag", {})
+  end
+  assert(type(update) == "table", "Kenji writes read their update record")
+  for key in pairs(update) do
+    if key ~= "waitDays" and key ~= "active" then
+      fail("pokegear Kenji update contains an unknown field", { field = key })
+    end
+  end
+  local waitDays = update.waitDays
+  local active = update.active
+  if type(waitDays) ~= "number" or waitDays % 1 ~= 0 or waitDays < 0 or type(active) ~= "boolean" then
+    fail("pokegear Kenji updates carry non-negative wait days and an active flag", {})
+  end
+  assert(type(data) == "table" and type(data.phone) == "table", "Kenji writes read phone state")
+  local phone = data.phone
+  assert(type(phone) == "table" and type(phone.kenji) == "table", "Kenji writes edit caller state")
+  local current = phone.kenji
+  assert(type(current) == "table", "Kenji writes compare caller state")
+  if current.waitDays == waitDays and current.active == active then
+    return false
+  end
+  phone.kenji = { calls = current.calls, waitDays = waitDays, active = active }
+  return true
+end
+
+---@param data table<string, unknown>
 ---@param key unknown
 ---@param active unknown
 ---@return boolean changed
@@ -1393,6 +1500,28 @@ local function applySetMarking(data, locations, locationKey, marking)
   return true
 end
 
+---@param data table<string, unknown>
+---@param areas unknown
+---@return boolean changed
+local function applySetSafariAreas(data, areas)
+  local clean = checkSafariAreas(areas)
+  local current = data.safariAreas
+  assert(type(current) == "table", "Safari writes read the saved arrangement")
+  local changed = #current ~= #clean
+  if not changed then
+    for index = 1, #clean do
+      if current[index] ~= clean[index] then
+        changed = true
+        break
+      end
+    end
+  end
+  if changed then
+    data.safariAreas = clean
+  end
+  return changed
+end
+
 ---@param changed boolean
 ---@return table<string, unknown> the detached state after the mutation
 function PokegearState:_commit(changed)
@@ -1437,6 +1566,14 @@ end
 ---@return table<string, unknown>
 function PokegearState:setMom(savings)
   return self:_commit(applySetMom(self._data, savings))
+end
+
+-- Replaces Kenji's native wait and active facts without changing his call
+-- count. Repeating the source values preserves the current revision.
+---@param update { waitDays: integer, active: boolean }
+---@return table<string, unknown>
+function PokegearState:setKenji(update)
+  return self:_commit(applySetKenji(self._data, update))
 end
 
 -- Switches one call trigger. Repeating the current switch never moves the
@@ -1504,6 +1641,14 @@ function PokegearState:setMarking(locationKey, marking)
   return self:_commit(applySetMarking(self._data, self._locations, locationKey, marking))
 end
 
+-- Replaces the ordered native Safari area IDs. Identical arrangements do
+-- not advance the state revision.
+---@param areas integer[]
+---@return table<string, unknown>
+function PokegearState:setSafariAreas(areas)
+  return self:_commit(applySetSafariAreas(self._data, areas))
+end
+
 -- Replaces the saved contact order with a validated permutation. Every
 -- registered contact stays listed exactly once and unknown or repeated
 -- keys fail naming their key; writing the current order never moves the
@@ -1545,6 +1690,9 @@ function PokegearState:prepare(expectedRevision, mutate)
   local function editSetMom(_, savings)
     applySetMom(draft, savings)
   end
+  local function editSetKenji(_, update)
+    applySetKenji(draft, update)
+  end
   local function editSetTrigger(_, key, active)
     applySetTrigger(draft, key, active)
   end
@@ -1557,15 +1705,20 @@ function PokegearState:prepare(expectedRevision, mutate)
   local function editSetMarking(_, locationKey, marking)
     applySetMarking(draft, locations, locationKey, marking)
   end
+  local function editSetSafariAreas(_, areas)
+    applySetSafariAreas(draft, areas)
+  end
   local edit = {
     registerCard = editRegisterCard,
     registerContact = editRegisterContact,
     setPreference = editSetPreference,
     setMom = editSetMom,
+    setKenji = editSetKenji,
     setTrigger = editSetTrigger,
     setContactReward = editSetContactReward,
     setRematch = editSetRematch,
     setMarking = editSetMarking,
+    setSafariAreas = editSetSafariAreas,
   }
   mutate(edit)
   checkRestorable(draft, contacts, locations)

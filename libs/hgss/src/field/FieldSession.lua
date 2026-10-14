@@ -88,6 +88,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field onOpportunity fun(self: FieldSession.IncomingCalls, args: table<string, unknown>)
 ---@field notification fun(self: FieldSession.IncomingCalls): false|table<string, unknown>
 ---@field accept fun(self: FieldSession.IncomingCalls, parentOwner: string): table<string, unknown>
+---@field onAcceptedCallResult fun(self: FieldSession.IncomingCalls, handle: table<string, unknown>, terminal: table<string, unknown>)
 
 ---@class FieldSession.PokegearHost
 ---@field isActive fun(self: FieldSession.PokegearHost): boolean
@@ -391,8 +392,9 @@ function FieldSession.new(options)
       type(options.incomingCalls) == "table"
         and type(options.incomingCalls.onOpportunity) == "function"
         and type(options.incomingCalls.notification) == "function"
-        and type(options.incomingCalls.accept) == "function",
-      "field session incoming-call collaborator needs its opportunity, notification, and acceptance operations"
+        and type(options.incomingCalls.accept) == "function"
+        and type(options.incomingCalls.onAcceptedCallResult) == "function",
+      "field session incoming-call collaborator needs its opportunity, notification, acceptance, and result operations"
     )
   end
   if options.pokegearApplications ~= nil then
@@ -489,6 +491,9 @@ function FieldSession:_cancelAmbientCall(reason)
   local activeHandle = host:activeHandle()
   if activeHandle == handle then
     host:cancel(reason)
+    local terminal = host:result(handle)
+    assert(type(terminal) == "table", "canceled ambient calls publish an unsuccessful terminal result")
+    self.incomingCalls:onAcceptedCallResult(handle, terminal)
   elseif activeHandle == nil then
     host:close(handle)
   end
@@ -1175,7 +1180,10 @@ function FieldSession:updateFixed(inputSnapshot)
       if activeHostHandle == ambientCallHandle then
         host:step(ambientCallHandle, self.input:uiSnapshot(self.tick + 1))
       end
-      if host:result(ambientCallHandle) ~= nil then
+      local terminal = host:result(ambientCallHandle)
+      if terminal ~= nil then
+        local incomingCalls = assert(self.incomingCalls, "accepted ambient calls retain their result owner")
+        incomingCalls:onAcceptedCallResult(ambientCallHandle, terminal)
         host:close(ambientCallHandle)
         self.acceptedAmbientCallHandle = nil
         self.input:clearUi()

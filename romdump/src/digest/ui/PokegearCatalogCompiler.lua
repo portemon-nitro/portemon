@@ -25,6 +25,24 @@ PokegearCatalogCompiler.ERROR = {
 local SENTINEL_U32 = 4294967294
 local PHONE_SCRIPT_COUNT = 455
 
+function PokegearCatalogCompiler.compileFriendMapPhrases()
+  local sources = PokegearSources.friendMapPhraseSources
+  assert(#sources == 73, "Friend source map phrases have 73 rows")
+  local mapIdsBySymbol = {}
+  for mapId, header in pairs(MapReference.byId) do
+    assert(mapIdsBySymbol[header.symbol] == nil, "native map symbols are unique")
+    mapIdsBySymbol[header.symbol] = mapId
+  end
+  local rows = {}
+  for index, source in ipairs(sources) do
+    local symbol, unlockGroup = source[1], source[2]
+    local mapId = assert(mapIdsBySymbol[symbol], "Friend phrase map resolves: " .. symbol)
+    assert(type(unlockGroup) == "number" and unlockGroup % 1 == 0 and unlockGroup >= 0 and unlockGroup <= 3)
+    rows[index] = { mapId = mapId, sourceIndex = index - 1, unlockGroup = unlockGroup }
+  end
+  return rows
+end
+
 local function phoneClassReference(trainerClass)
   local source = PokegearSources.phoneClassLabels
   if trainerClass == source.motherClass then
@@ -96,6 +114,33 @@ local function compileCallPermissions()
   return permissions
 end
 
+local function compileMomCallIntroParameters()
+  local parameters = {}
+  for mapId = 0, MapReference.count - 1 do
+    local header = assert(MapReference.byId[mapId], "native map headers are indexed by their map ID")
+    local parameter = assert(header.momCallIntroParam, "native map headers carry the Mom call introduction parameter")
+    assert(type(parameter) == "number" and parameter % 1 == 0 and parameter >= 0)
+    parameters[mapId] = parameter
+  end
+  return parameters
+end
+
+local function compileGenericCallHeaders(contactId)
+  local source =
+    assert(PokegearSources.genericPhoneHeaders[contactId], "trainer contacts have source generic-call header rows")
+  local headers = {}
+  for _, direction in ipairs({ "outgoing", "incoming" }) do
+    local rows = assert(source[direction], "generic-call source rows carry both directions")
+    local compiled = {}
+    for index, row in ipairs(rows) do
+      assert(type(row) == "table" and #row == 4, "generic-call header rows carry four native fields")
+      compiled[index] = { type = row[1], chance = row[2], scriptType = row[3], scriptId = row[4] }
+    end
+    headers[direction] = compiled
+  end
+  return headers
+end
+
 local function copyOverlay(overlay, keys)
   local out = {}
   for _, key in ipairs(keys) do
@@ -147,6 +192,29 @@ local function compileRegionMap()
   return { locations = locations, flypoints = flypoints }
 end
 
+local function compilePhoneTriggers(versionId, contacts)
+  local contactsById = {}
+  for _, contact in ipairs(contacts) do
+    assert(type(contact.id) == "number", "compiled phonebook contacts carry their source ID")
+    assert(contactsById[contact.id] == nil, "phonebook contact IDs uniquely own native triggers")
+    contactsById[contact.id] = contact.key
+  end
+  local triggers = PokegearSources.phoneTriggerRecords(versionId)
+  for _, trigger in ipairs(triggers) do
+    local contactKey = contactsById[trigger.contactId]
+    if type(contactKey) ~= "string" then
+      Errors.raise(
+        PokegearCatalogCompiler.ERROR.PHONEBOOK_INVALID,
+        "native phone trigger references a missing phonebook contact ID",
+        { slot = trigger.slot, contactId = trigger.contactId }
+      )
+    end
+    trigger.contact = contactKey
+    trigger.contactId = nil
+  end
+  return triggers
+end
+
 local function readU32Field(reader, offset, label)
   local ok, value = pcall(reader.u32le, reader, offset)
   if not ok then
@@ -184,20 +252,21 @@ function PokegearCatalogCompiler.decodePhonebook(bytes)
     local base = 4 + index * PokegearSources.phonebook.recordBytes
     local id = reader:u8(base)
     local entryType = reader:u8(base + 1)
-    local contactClass = reader:u8(base + 2)
-    local trainer = reader:u8(base + 3)
-    local map = reader:u16le(base + 4)
-    local gift = reader:u16le(base + 6)
-    local localScript = reader:u16le(base + 8)
-    local greeting = reader:u16le(base + 10)
-    local rematchWeekday = reader:u8(base + 12)
-    local rematchTime = reader:u8(base + 13)
-    local category = reader:u8(base + 14)
+    local unknown2 = reader:u8(base + 2)
+    local trainerClass = reader:u8(base + 3)
+    local trainerId = reader:u16le(base + 4)
+    local mapId = reader:u16le(base + 6)
+    local gift = reader:u16le(base + 8)
+    local localScript = reader:u16le(base + 10)
+    local unknown12 = reader:u8(base + 12)
+    local rematchWeekday = reader:u8(base + 13)
+    local rematchTime = reader:u8(base + 14)
+    local unknown15 = reader:u8(base + 15)
     local weights = {
-      reader:u8(base + 15),
       reader:u8(base + 16),
       reader:u8(base + 17),
       reader:u8(base + 18),
+      reader:u8(base + 19),
     }
     -- Native contact identity is the record's own trainer/map/contact
     -- triple; array position is retained only as the producer
@@ -208,7 +277,7 @@ function PokegearCatalogCompiler.decodePhonebook(bytes)
     -- phone-script selector (PhoneBookEntry.phoneScriptIfLocal), resolved
     -- onto bank messages by the phone script table. An id outside the
     -- bank index is corrupt phonebook data, never an empty bank.
-    local key = string.format("hg.trainer.%d.map.%d.contact.%d", trainer, map, id)
+    local key = string.format("hg.trainer.%d.map.%d.contact.%d", trainerId, mapId, id)
     local family = PokegearSources.phoneContactFamilies[id + 1]
     if type(family) ~= "string" or family == "" then
       return nil,
@@ -236,27 +305,35 @@ function PokegearCatalogCompiler.decodePhonebook(bytes)
         )
     end
     seen[key] = true
-    contacts[#contacts + 1] = {
+    local contact = {
       key = key,
       sourceIndex = index,
       id = id,
       family = family,
       entryType = entryType,
-      contactClass = contactClass,
-      trainer = trainer,
-      map = map,
+      unknown2 = unknown2,
+      trainerClass = trainerClass,
+      trainer = trainerClass,
+      trainerId = trainerId,
+      mapId = mapId,
+      map = mapId,
       gift = gift,
       localScript = localScript,
-      greeting = greeting,
+      greeting = localScript,
       messageBank = messageBank,
       name = { bank = messageBank, entry = 0 },
-      class = phoneClassReference(trainer),
+      class = phoneClassReference(trainerClass),
       rematchWeekday = rematchWeekday,
       rematchTime = rematchTime,
-      category = category,
+      unknown12 = unknown12,
+      unknown15 = unknown15,
       sortWeights = weights,
       sortWeight = weights[1],
     }
+    if family == "trainer" then
+      contact.genericCallHeaders = compileGenericCallHeaders(id)
+    end
+    contacts[#contacts + 1] = contact
     contactOrder[#contactOrder + 1] = key
   end
   return { count = count, contacts = contacts, contactOrder = contactOrder }
@@ -484,8 +561,11 @@ function PokegearCatalogCompiler.compile(romFs, versionId)
     contacts = decoded.contacts,
     contactOrder = decoded.contactOrder,
     callDefinitions = compilePhoneDefinitions(),
+    safariAreaMessageBank = PokegearSources.safariAreaMessageBank,
     callPermissions = compileCallPermissions(),
-    callTriggers = PokegearSources.phoneTriggerRecords(versionId),
+    momCallIntroParameters = compileMomCallIntroParameters(),
+    callTriggers = compilePhoneTriggers(versionId, decoded.contacts),
+    friendMapPhrases = PokegearCatalogCompiler.compileFriendMapPhrases(),
     rematches = {},
     gifts = {},
     momPurchases = PokegearSources.momPurchaseRecords(versionId),

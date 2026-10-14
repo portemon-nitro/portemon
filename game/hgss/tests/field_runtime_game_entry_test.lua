@@ -214,6 +214,7 @@ local function captureRuntime(overrides)
     },
     mailbox = require("libs.hgss.src.save.Mailbox").new(),
     photoAlbum = require("libs.hgss.src.save.PhotoAlbum").new(),
+    daycareState = require("libs.hgss.src.save.DaycareState").empty(),
     bagService = {
       capture = function()
         return require("libs.hgss.src.save.BagSave").empty()

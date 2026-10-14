@@ -14,7 +14,7 @@ end
 
 local function fixtureManifest()
   return {
-    schema = "g4-pokegear-assets-v2",
+    schema = "g4-pokegear-assets-v3",
     skins = { 0, 1, 2, 3, 4, 5 },
     shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png") },
     configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png") },
@@ -61,7 +61,7 @@ function T.complete_publication_reads_ready_and_loads_its_manifest()
   local cache = stagedCache(nil, marker)
   Assert.isTrue(PokegearCache.isReady(cache, marker), "a complete publication must read ready")
   local manifest = PokegearCache.loadManifest(cache)
-  Assert.equal(manifest.schema, "g4-pokegear-assets-v2", "the loaded manifest keeps its schema identity")
+  Assert.equal(manifest.schema, "g4-pokegear-assets-v3", "the loaded manifest keeps its schema identity")
 end
 
 function T.stale_markers_and_missing_assets_refuse_without_raising()
@@ -84,7 +84,7 @@ end
 function T.incomplete_manifests_never_read_ready()
   local PokegearCache = require("libs.assets.src.PokegearCache")
   local marker = PokegearCache.marker("rom-sha", "deps-sha")
-  local cache = stagedCache({ schema = "g4-pokegear-assets-v2" }, marker, fixtureManifest())
+  local cache = stagedCache({ schema = "g4-pokegear-assets-v3" }, marker, fixtureManifest())
   local ok, ready = pcall(PokegearCache.isReady, cache, marker)
   Assert.isTrue(ok, "an incomplete manifest is a readiness refusal, not an exception")
   Assert.isFalse(ready, "a marker cannot make an incomplete family ready")

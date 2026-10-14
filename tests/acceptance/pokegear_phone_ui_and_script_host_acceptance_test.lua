@@ -44,7 +44,7 @@ end
 ---@return table
 local function fixtureManifest()
   return {
-    schema = "g4-pokegear-assets-v2",
+    schema = "g4-pokegear-assets-v3",
     skins = { 0, 1, 2, 3, 4, 5 },
     shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png") },
     configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png") },
@@ -104,7 +104,6 @@ end
 ---@return table world fixture shared by both entry paths
 local function worldFixture()
   local rematches = {}
-  local rematchReady = {}
   local flags = {}
   return {
     flags = flags,
@@ -118,7 +117,6 @@ local function worldFixture()
       flags["mom.savings-choice"] = choice
       flags.savingsChoice = choice
     end,
-    rematchReady = rematchReady,
     nativeSelectorFacts = function()
       return {
         localMap = true,
@@ -132,7 +130,6 @@ local function worldFixture()
     end,
     setRematch = function(_, contact, record)
       rematches[contact] = record
-      rematchReady[contact] = record.stage > 0
     end,
     storyTier = 2,
     weekday = 6,
@@ -145,7 +142,16 @@ end
 
 ---@return table messages frozen before either entry path runs
 local function messageRefs()
-  return { invitation = "custom.invitation", accept = "custom.accept" }
+  return {
+    invitation = "custom.invitation",
+    accept = "custom.accept",
+    resolveLine = function()
+      return { tokens = { { kind = "glyph", code = 1, text = "X", raw = { 1 } } } }
+    end,
+    resolveContactEntry = function()
+      return { tokens = { { kind = "glyph", code = 1, text = "X", raw = { 1 } } } }
+    end,
+  }
 end
 
 -- Steps a foreground handle until its terminal result appears. The
@@ -364,7 +370,6 @@ function T.tests.scripted_and_menu_phone_calls_share_one_conversation_engine()
   local scriptHandle = host:activeHandle()
   Assert.notNil(scriptHandle, "the scripted call exposes its active handle")
   local scriptResult = settleCall(host, scriptHandle --[[@as table]])
-  Assert.deepEqual(scriptWorld.rematchReady, {}, "ordinary calls do not stage rematch readiness")
   Assert.equal(scriptResult.contact, "custom.mom", "the scripted result names the same source caller")
   Assert.equal(scriptResult.kind, "ordinary", "the scripted result names the same call kind")
   Assert.equal(scriptResult.program, menuProgram, "both paths resolve the same source program")

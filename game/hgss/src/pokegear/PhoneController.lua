@@ -39,6 +39,7 @@ local TrainerPhonePrograms = require("game.hgss.src.pokegear.phone.TrainerPhoneP
 ---@field _callId integer conversation counter for stable runtime ids
 ---@field _panelTicks integer? ticks since the menu call started
 ---@field _result table<string, unknown>? the peekable terminal result
+---@field _callError table<string, unknown>? the last menu-owned terminal failure
 ---@field _choiceCursor integer zero-based call choice cursor
 ---@field _held table<string, unknown>? the captured pointer press, when present
 ---@field _disposed boolean
@@ -158,7 +159,7 @@ end
 ---@field audio table<string, unknown>? the audio boundary
 ---@field random table<string, unknown>? the companion streams
 ---@field assets table<string, unknown>? the compiled asset family
----@field request { id: string, contact: string, direction: string, kind: string }? direct call entry
+---@field request { id: string, contact: string, direction: string, kind: string, triggerKey: string?, scriptedCallType: integer?, predefinedScriptId: integer? }? direct call entry
 
 ---@param opts PhoneController.Options
 ---@return PhoneController
@@ -212,6 +213,7 @@ function PhoneController.new(opts)
     _callId = 0,
     _panelTicks = nil,
     _result = nil,
+    _callError = nil,
     _choiceCursor = 0,
     _held = nil,
     _disposed = false,
@@ -225,7 +227,16 @@ function PhoneController.new(opts)
         Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "direct phone entry names its " .. name, { field = name })
       end
     end
-    self:_beginCall(request.contact, request.direction, request.kind, request.id, false)
+    self:_beginCall(
+      request.contact,
+      request.direction,
+      request.kind,
+      request.id,
+      false,
+      request.triggerKey,
+      request.scriptedCallType,
+      request.predefinedScriptId
+    )
   end
   return self
 end
@@ -358,13 +369,33 @@ end
 ---@param kind string
 ---@param id string stable runtime id
 ---@param panel boolean whether the menu panel timeline runs over the start
-function PhoneController:_beginCall(contact, direction, kind, id, panel)
+---@param triggerKey string? source incoming trigger, when present
+---@param scriptedCallType integer? source phone-call entry type
+---@param predefinedScriptId integer? native script selected by the incoming trigger
+function PhoneController:_beginCall(
+  contact,
+  direction,
+  kind,
+  id,
+  panel,
+  triggerKey,
+  scriptedCallType,
+  predefinedScriptId
+)
   assert(self._callHandle == nil, "one foreground call owns the phone line")
   local ok, handle = pcall(function()
-    return self._call:begin({ id = id, contact = contact, direction = direction, kind = kind })
+    return self._call:begin({
+      id = id,
+      contact = contact,
+      direction = direction,
+      kind = kind,
+      triggerKey = triggerKey,
+      scriptedCallType = scriptedCallType,
+      predefinedScriptId = predefinedScriptId,
+    })
   end)
   if not ok then
-    if Errors.is(handle) then
+    if Errors.is(handle) or (type(handle) == "table" and type(handle.code) == "string") then
       error(handle, 0)
     end
     Errors.raise(
@@ -378,6 +409,7 @@ function PhoneController:_beginCall(contact, direction, kind, id, panel)
   self._mode = "call"
   self._choiceCursor = 0
   self._result = nil
+  self._callError = nil
   self._held = nil
   if panel then
     self._panelTicks = 0
@@ -401,6 +433,7 @@ function PhoneController:_finishCall()
   if self._entryOwner == "host" then
     self._result = result
   else
+    self._callError = type(result.error) == "table" and result.error or nil
     self._call:release(handle)
     self._callHandle = nil
     self._mode = "list"
@@ -955,6 +988,13 @@ function PhoneController:status()
   local inCall = self._callHandle ~= nil and self._result == nil
   local inMenu = self._mode == "menu" or self._mode == "sort" or self._mode == "manual"
   local view = self:view()
+  local callError = nil
+  if type(self._callError) == "table" then
+    callError = {}
+    for key, value in pairs(self._callError) do
+      callError[key] = value
+    end
+  end
   local content = self:_planContent(skin --[[@as integer]])
   local presentation = {
     width = 256,
@@ -970,6 +1010,7 @@ function PhoneController:status()
     dismissible = not inCall,
     nestedCancel = inMenu or inCall,
     skin = skin,
+    callError = callError,
     view = view,
     presentation = presentation,
   }
@@ -1009,6 +1050,7 @@ function PhoneController:dispose()
     end)
   end
   self._result = nil
+  self._callError = nil
 end
 
 return PhoneController

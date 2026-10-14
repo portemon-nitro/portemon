@@ -358,6 +358,8 @@ Schema.OPERATIONS = {
       contact = { type = "scalar_or_value", required = true },
       direction = { type = "scalar_or_value", required = true },
       kind = { type = "scalar_or_value", required = true },
+      scriptedCallType = { type = "scalar_or_value" },
+      predefinedScriptId = { type = "scalar_or_value" },
     },
   },
   -- Blocking foreground phone call run: consumes the pending request

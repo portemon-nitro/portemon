@@ -195,10 +195,12 @@ end
 ---@field pendingEncounter table<string, unknown>? prepared unconsumed encounter
 ---@field _trainerCatalog table<string, unknown>? composed immutable trainer template catalog (nil before composition)
 ---@field _trainerFactory table<string, unknown>? composed native trainer party materializer (nil before composition)
+---@field _encounterCatalog table<string, unknown>? composed immutable wild encounter catalog
 ---@field _battleHost table<string, unknown>? narrow battle host for script battle tasks
 ---@field roamerState table<string, unknown>? the owned roamer and encounter persistence
 ---@field dexKnowledge table<string, unknown>? the owned dex knowledge
 ---@field pokegearState table<string, unknown> the owned companion state, calendar checkpoint, and persisted draw seeds
+---@field daycareState table<string, unknown> the owned Day Care save facts read by phone programs
 ---@field pokegearRandom table<string, unknown>? the live companion draw pair (nil after teardown)
 ---@field pokegearCalendar table<string, unknown>? the companion-local civil calendar adapter (nil after teardown)
 ---@field pokegearManifest table<string, unknown>? the compiled companion family (nil after teardown)
@@ -1047,6 +1049,14 @@ function FieldRuntime:_composeFieldServices(boot)
   })
   self.mailbox = Mailbox.new(boot.loadedGame and boot.loadedGame.mailbox or nil)
   self.photoAlbum = PhotoAlbum.new(boot.loadedGame and boot.loadedGame.photoAlbum or nil)
+  local DaycareState = require("libs.hgss.src.save.DaycareState")
+  local daycareBucket = boot.loadedGame ~= nil and boot.loadedGame.daycare or nil
+  if boot.loadedGame ~= nil then
+    assert(daycareBucket ~= nil, "a loaded game carries its required Day Care save owner")
+  else
+    daycareBucket = DaycareState.empty():capture()
+  end
+  self.daycareState = DaycareState.restore(daycareBucket, self.monCatalog)
   self:_composePokegear(boot.loadedGame, boot.cacheFs)
   self:_composePokegearFeature(boot)
   self:_composeBag(boot.activeGame, boot.loadedGame)
@@ -2246,7 +2256,7 @@ local function phoneGreetingRefs(catalog, provider, profile, fontDef, runtime)
   end
   assert(firstRef ~= nil, "companion greeting references need at least one compiled contact")
   messages.greeting = firstRef
-  local function resolve(bankId, messageId, contactKey)
+  local function resolve(bankId, messageId, contactKey, nativeSubstitutions)
     local acquire = provider.acquireBank --[[@as fun(self: table<string, unknown>, bankId: integer): table<string, unknown>? , Errors.Error?]]
     local release = provider.releaseBank --[[@as fun(self: table<string, unknown>, bankId: integer)]]
     local get = provider.get --[[@as fun(self: table<string, unknown>, bankId: integer, messageId: integer): table<string, unknown>? , Errors.Error?]]
@@ -2277,7 +2287,7 @@ local function phoneGreetingRefs(catalog, provider, profile, fontDef, runtime)
         elseif
           token.kind == "substitution"
           and token.control >= FieldMessageText.STRVAR_1
-          and token.control <= FieldMessageText.STRVAR_1 + 3
+          and token.control <= FieldMessageText.STRVAR_1 + 4
         then
           assert(type(contactKey) == "string", "phone substitutions identify their caller")
           local slot = token.control - FieldMessageText.STRVAR_1
@@ -2288,7 +2298,7 @@ local function phoneGreetingRefs(catalog, provider, profile, fontDef, runtime)
             elseif slot == 1 then
               local contact = assert(contactsByKey[contactKey], "caller-name substitution resolves a catalog contact")
               text = resolve(contact.messageBank, 0).text
-            elseif slot == 2 or slot == 3 then
+            elseif slot == 2 or slot == 3 or slot == 4 then
               local mapSection = nil
               if slot == 2 then
                 local session = runtime.session
@@ -2320,6 +2330,36 @@ local function phoneGreetingRefs(catalog, provider, profile, fontDef, runtime)
             return assert(FieldMessageProvider.asciiGlyphTokens(text, fontDef))
           end
           resolvers[token.control] = resolveSourceSubstitution
+        end
+      end
+      if nativeSubstitutions ~= nil then
+        assert(type(nativeSubstitutions) == "table", "native phone substitutions are variable records")
+        for _, token in ipairs(templateTokens) do
+          local variable = token.kind == "substitution"
+              and token.control >= FieldMessageText.STRVAR_1
+              and token.control < FieldMessageText.STRVAR_1 + 256
+              and token.control - FieldMessageText.STRVAR_1
+            or nil
+          local value = variable ~= nil and nativeSubstitutions[variable] or nil
+          if token.kind == "substitution" and value ~= nil then
+            assert(type(variable) == "number" and variable % 1 == 0 and variable >= 0)
+            local function resolveNativeSubstitution(_, substitutionArgs)
+              local selected = nativeSubstitutions[variable]
+              if type(selected) == "table" then
+                local slot = type(substitutionArgs) == "table" and substitutionArgs[1] or nil
+                selected = type(slot) == "number" and selected[slot] or nil
+              end
+              if selected == nil then
+                return nil
+              end
+              assert(
+                type(selected) == "string" or (type(selected) == "number" and selected % 1 == 0),
+                "native phone substitutions carry text or whole numbers"
+              )
+              return assert(FieldMessageProvider.asciiGlyphTokens(tostring(selected), fontDef))
+            end
+            resolvers[token.control] = resolveNativeSubstitution
+          end
         end
       end
       return format(provider, template, {}, resolvers)
@@ -2360,8 +2400,11 @@ local function phoneGreetingRefs(catalog, provider, profile, fontDef, runtime)
   ---@param _ table<string, unknown>
   ---@param contactKey string
   ---@param scriptId integer native script index
+  ---@param scriptType integer?
+  ---@param variation integer?
+  ---@param nativeSubstitutions table<string, unknown>?
   ---@return table<string, unknown> formatted message text
-  local function resolveLine(_, contactKey, scriptId)
+  local function resolveLine(_, contactKey, scriptId, scriptType, variation, nativeSubstitutions)
     local contact = assert(contactsByKey[contactKey], "phone dialogue resolves a catalog contact")
     local definitions = catalog.callDefinitions
     assert(type(definitions) == "table", "phone dialogue reads the compiled native script table")
@@ -2369,6 +2412,14 @@ local function phoneGreetingRefs(catalog, provider, profile, fontDef, runtime)
     local gender = profile.gender == 0 and "male" or profile.gender == 1 and "female" or nil
     assert(gender ~= nil, "phone dialogue has a native player gender")
     local message = definition[gender]
+    assert(type(message) == "table", "phone definitions contain both player-gender messages")
+    if scriptType == 2 then
+      assert(
+        type(variation) == "number" and variation >= 0 and variation < 11,
+        "generic type-two text carries one phrase choice"
+      )
+      message = { bank = message.bank, entry = message.entry + variation * 2 }
+    end
     if type(message) ~= "table" or message.bank ~= contact.messageBank then
       local failure = Errors.new(
         ScriptErrors.FEATURE_UNAVAILABLE,
@@ -2377,21 +2428,65 @@ local function phoneGreetingRefs(catalog, provider, profile, fontDef, runtime)
       )
       error({ code = failure.code, message = failure.message, context = failure.context, domain = "phone" })
     end
-    return resolve(message.bank, message.entry, contactKey)
+    local substitutions = {}
+    if type(nativeSubstitutions) == "table" then
+      for key, value in pairs(nativeSubstitutions) do
+        substitutions[key] = value
+      end
+    end
+    local wordEntry = substitutions.wordEntry
+    substitutions.wordEntry = nil
+    if wordEntry ~= nil then
+      assert(type(wordEntry) == "number" and wordEntry % 1 == 0, "phone word effects select one source message entry")
+      substitutions[4] = resolve(message.bank, wordEntry, contactKey).text
+    end
+    return resolve(message.bank, message.entry, contactKey, substitutions)
   end
   messages.resolveLine = resolveLine
+  ---@param _ table<string, unknown>
+  ---@param contactKey string
+  ---@param entryId integer direct native entry in the caller's message bank
+  ---@param nativeSubstitutions table<integer|string, unknown>? source substitutions by variable and slot
+  ---@return table<string, unknown> formatted message text
+  local function resolveContactEntry(_, contactKey, entryId, nativeSubstitutions)
+    assert(type(entryId) == "number" and entryId % 1 == 0 and entryId >= 0, "phone entries use non-negative indices")
+    local contact = assert(contactsByKey[contactKey], "phone dialogue resolves a catalog contact")
+    if nativeSubstitutions == nil or nativeSubstitutions.safariAreaIds == nil then
+      return resolve(contact.messageBank --[[@as integer]], entryId, contactKey, nativeSubstitutions)
+    end
+    local areaIds = nativeSubstitutions.safariAreaIds
+    assert(type(areaIds) == "table" and #areaIds <= 5, "Baoba's source page carries its ordered area names")
+    local substitutions = { [4] = {} }
+    for key, value in pairs(nativeSubstitutions) do
+      if key ~= "safariAreaIds" then
+        substitutions[key] = value
+      end
+    end
+    for index, areaId in ipairs(areaIds) do
+      assert(type(areaId) == "number" and areaId % 1 == 0 and areaId >= 0 and areaId <= 11)
+      local safariAreaMessageBank =
+        assert(catalog.safariAreaMessageBank, "Baoba's area-name reference comes from the compiled phone catalog")
+      substitutions[4][9 + index] = resolve(safariAreaMessageBank, areaId, contactKey).text
+    end
+    return resolve(contact.messageBank --[[@as integer]], entryId, contactKey, substitutions)
+  end
+  messages.resolveContactEntry = resolveContactEntry
   return messages
 end
 
 ---@param boot table<string, unknown>
 function FieldRuntime:_composePokegearFeature(boot)
   local PokegearComposition = require("game.hgss.src.pokegear.PokegearComposition")
+  local SummaryCache = require("libs.assets.src.SummaryCache")
   local manifest = assert(self.pokegearManifest, "companion feature needs its compiled manifest")
   local catalog = assert(self.pokegearCatalog, "companion feature needs its contact catalog")
+  local summaryManifest =
+    SummaryCache.loadManifest(assert(self.cacheFs, "companion feature needs the cache filesystem"))
   local bundle = PokegearComposition.compose(self, {
     state = assert(self.pokegearState, "companion feature needs its durable state"),
     catalog = catalog,
     assets = manifest,
+    summaryDexNumbers = summaryManifest.dexNumbers,
     clock = assert(self.localClock, "companion feature needs its civil clock"),
     audio = self.audio or boot.audioService,
     messages = phoneGreetingRefs(catalog, self.messageProvider, self.playerData.profile, self.fontDef, self),
@@ -2762,6 +2857,7 @@ function FieldRuntime:composeEncounters(compiled)
   local WildMonFactory = require("libs.hgss.src.encounters.WildMonFactory")
   local HgssEncounterService = require("libs.hgss.src.encounters.HgssEncounterService")
   local catalog = HgssEncounterCatalog.new(compiled)
+  self._encounterCatalog = catalog
   local encounterCacheFs = assert(self.cacheFs, "encounter composition requires its cache")
   local fontDef = FieldFontLoader.load(encounterCacheFs)
   local factory = WildMonFactory.new({
@@ -2779,6 +2875,58 @@ function FieldRuntime:composeEncounters(compiled)
     roamers = assert(self.roamerState, "encounter composition requires its roamer state"),
     game = self.versionId,
   })
+end
+
+-- Selects the two species names buffered by a native generic trainer call.
+-- The map loader supplies the phonebook caller's wild-encounter member, and
+-- the existing immutable catalogs provide ordered trainer and encounter data.
+---@param contact table<string, unknown>
+---@param timeOfDay integer native 0 morning, 1 day, 2 night
+---@param random table<string, unknown> Pokegear random owner
+---@return table<integer, string> native string variables 10 and 11
+function FieldRuntime:genericTrainerPhoneSpecies(contact, timeOfDay, random)
+  assert(type(contact) == "table", "generic trainer calls use their phonebook record")
+  assert(timeOfDay == 0 or timeOfDay == 1 or timeOfDay == 2, "generic trainer calls use native time of day")
+  assert(type(random) == "table" and type(random.lc) == "function", "generic trainer calls draw from LC random")
+  local trainerId = contact.trainerId
+  local trainerClass = contact.trainerClass
+  local mapId = contact.mapId
+  assert(type(trainerId) == "number" and type(trainerClass) == "number", "phonebook carries trainer identity")
+  assert(type(mapId) == "number", "phonebook carries caller map identity")
+  local trainerCatalog = assert(self._trainerCatalog, "generic trainer calls need the composed trainer catalog")
+  local HgssTrainerCatalog = require("libs.hgss.src.battle.HgssTrainerCatalog")
+  local trainer = assert(HgssTrainerCatalog.trainer(trainerCatalog, trainerId), "phonebook trainer exists")
+  local party = assert(trainer.party, "trainer template carries its source party")
+  assert(#party > 0, "generic trainer buffer selects from a nonempty source party")
+  local draw = random.lc --[[@as fun(self: table<string, unknown>, label: string): integer]]
+  local trainerSpecies = party[draw(random, "generic-trainer-mon") % #party + 1].species
+
+  local map = self.mapLoader:load(mapId)
+  local fieldData = map.fieldData
+  local memberId = type(fieldData) == "table" and fieldData.wildEncounterMemberId or nil
+  local encounterSpecies = "RATTATA"
+  if type(memberId) == "number" and memberId ~= 255 then
+    local encounterCatalog = assert(self._encounterCatalog, "generic trainer calls need the composed encounter catalog")
+    local timeNames = { [0] = "morning", [1] = "day", [2] = "night" }
+    local isFisherman = trainerClass == 11
+    local rod = isFisherman and "good_rod" or nil
+    local encounters = encounterCatalog:tableFor(memberId, {
+      timeOfDay = timeNames[timeOfDay],
+      radio = "none",
+      game = self.versionId,
+      rod = rod,
+    })
+    local slots = isFisherman and encounters.goodRod or encounters.land[timeNames[timeOfDay]]
+    assert(type(slots) == "table" and #slots == (isFisherman and 5 or 12), "native caller encounter slots are complete")
+    local slotIndex = draw(random, "generic-wild-encounter-slot") % #slots + 1
+    encounterSpecies = slots[slotIndex].species
+  end
+  local monCatalog = assert(self.monCatalog, "generic trainer calls need the live mon catalog")
+  local function displayName(species)
+    local definition = monCatalog:species(species)
+    return assert(definition.name, "native species carries its localized name")
+  end
+  return { [10] = displayName(trainerSpecies), [11] = displayName(encounterSpecies) }
 end
 
 -- Composes the concrete trainer materializer over a compiled trainer
@@ -3502,6 +3650,7 @@ function FieldRuntime:_releaseAll()
   self.incomingCalls = nil
   self.pokegearManifest, self.pokegearCatalog = nil, nil
   self.pokegearState, self.pokegearRandom, self.pokegearCalendar = nil, nil, nil
+  self.daycareState = nil
   self.martStockResolver = nil
   self.itemCatalog = nil
   self.followerInteractionCatalog = nil

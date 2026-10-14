@@ -428,6 +428,8 @@ function T.tests.mother_call_reads_and_writes_the_live_savings_flag()
     local events = assert(game.runtime.eventState, "the live field owns the native story flags")
     events:clearFlag(flag)
     Assert.isFalse(events:isFlagSet(flag), "the initial phone choice starts with savings disabled")
+    events:setFlag(Fixture.FLAGS.FLAG_GAVE_RIVAL_NAME_TO_OFFICER)
+    events:setFlag(Fixture.FLAGS.FLAG_TALKED_TO_MOM_AFTER_NAMING_RIVAL)
 
     local host = assert(game.runtime.pokegear.scriptHost, "the real composition owns the script phone host")
     local handle = host:open({
@@ -443,7 +445,7 @@ function T.tests.mother_call_reads_and_writes_the_live_savings_flag()
     end
     local result = host:result(handle)
     Assert.notNil(result, "the composed source call completes after its choice is accepted")
-    Assert.equal(result.program, "mother-offer", "the current native savings flag selects the offer branch")
+    Assert.equal(result.program, "mother-4", "the native post-rival type-four script reaches the savings choice")
     Assert.isTrue(events:isFlagSet(flag), "accepting save updates FieldEventState's native flag")
     host:close(handle)
     Assert.equal(Fixture.scriptFaults(game), 0, "the live flag call must not fault its field script")

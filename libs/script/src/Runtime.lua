@@ -2049,7 +2049,27 @@ do
     local contact = GearEval.evalContact(node, run, "contact", "phone_set_call")
     local direction = GearEval.evalDirection(node, run, "direction", "phone_set_call")
     local kind = GearEval.evalKind(node, run, "kind", "phone_set_call")
-    host:stageCall(run.instance.instanceId, { contact = contact, direction = direction, kind = kind })
+    local function optionalScriptInteger(name)
+      if node[name] == nil then
+        return nil
+      end
+      local value = semanticsFor(run).evaluateValue(node[name], run)
+      if type(value) ~= "number" or value % 1 ~= 0 or value < 0 then
+        Errors.raise(
+          ScriptErrors.SCRIPT_INVALID_REFERENCE,
+          "phone setup carries a non-negative scripted-call integer",
+          { scriptId = run.instance.scriptId, op = "phone_set_call", field = name }
+        )
+      end
+      return value
+    end
+    host:stageCall(run.instance.instanceId, {
+      contact = contact,
+      direction = direction,
+      kind = kind,
+      scriptedCallType = optionalScriptInteger("scriptedCallType"),
+      predefinedScriptId = optionalScriptInteger("predefinedScriptId"),
+    })
     return Runtime.OUTCOME_CONTINUE
   end
 
@@ -2065,7 +2085,7 @@ do
       )
     end
     assert(type(pending) == "table", "staged phone requests stay records")
-    local staged = pending --[[@as table<string, string>]]
+    local staged = pending --[[@as table<string, unknown>]]
     local scriptId = run.instance.scriptId
     assert(type(scriptId) == "string", "staged phone runs carry their script context")
     local request = {
@@ -2073,6 +2093,8 @@ do
       contact = staged.contact,
       direction = staged.direction,
       kind = staged.kind,
+      scriptedCallType = staged.scriptedCallType,
+      predefinedScriptId = staged.predefinedScriptId,
     }
     return blockOnTask(run, "pokegear_application", {
       kind = "call",

@@ -162,6 +162,7 @@ function FieldSaveCoordinator:capture(allowMenu)
     mart = assert(runtime.martService, "field runtime has no mart service"):capture(),
     mailbox = assert(runtime.mailbox, "field runtime has no mailbox"):capture(),
     photoAlbum = assert(runtime.photoAlbum, "field runtime has no photo album"):capture(),
+    daycare = assert(runtime.daycareState, "field runtime has no Day Care state"):capture(),
     encounters = EncounterSave.capture(assert(runtime.roamerState, "field runtime has no roamer state")),
     pokedex = assert(runtime.dexKnowledge, "field runtime has no dex knowledge"):bucket(),
   }

@@ -12,8 +12,8 @@
 
 local Errors = require("libs.errors.src.Errors")
 local ScriptErrors = require("libs.script.src.errors")
+local bit = require("bit")
 
-local GenericPhoneProgram = require("game.hgss.src.pokegear.phone.GenericPhoneProgram")
 local MotherPhoneProgram = require("game.hgss.src.pokegear.phone.MotherPhoneProgram")
 local ProfessorPhonePrograms = require("game.hgss.src.pokegear.phone.ProfessorPhonePrograms")
 local ServicePhonePrograms = require("game.hgss.src.pokegear.phone.ServicePhonePrograms")
@@ -106,33 +106,6 @@ function PhoneCall.new(deps)
   }, PhoneCall)
 end
 
--- Resolves one caller program identity from its family and labelled
--- facts. Closed dispatch over the concrete family modules: no predicate
--- language, no default conversation.
----@param family string caller family
----@param facts table<string, unknown> labelled source facts
----@return string program identity
-function PhoneCall.selectProgram(family, facts)
-  assert(type(family) == "string" and family ~= "", "program dispatch names its caller family")
-  assert(type(facts) == "table", "program dispatch reads labelled facts")
-  if family == "elm" or family == "elm-predefined" then
-    return ProfessorPhonePrograms.selectElm(facts)
-  end
-  if family == "oak" then
-    return ProfessorPhonePrograms.selectOak(facts)
-  end
-  if family == "mother" then
-    return MotherPhoneProgram.selectName(facts)
-  end
-  if family == "generic" then
-    return GenericPhoneProgram.selectName(facts)
-  end
-  if family == "gym" or family == "rematch" or family == "kenji" or family == "irwin" or family == "trainer" then
-    return TrainerPhonePrograms.selectName(family, facts)
-  end
-  return ServicePhonePrograms.selectName(family, facts)
-end
-
 ---@param owner table<string, unknown>
 ---@return table<string, boolean> registered contact set
 local function registeredContacts(owner)
@@ -165,6 +138,7 @@ local function snapshotFacts(world, kind, direction, record)
   if direction == "incoming" then
     facts.incomingCall = true
   end
+  facts.scriptedCallType = kind == "predefined" and 2 or 0
   if kind == "rematch" then
     facts.invitation = true
   end
@@ -215,6 +189,28 @@ local function unacquiredContact(contact)
     ScriptErrors.FEATURE_UNAVAILABLE,
     "phone calls open only acquired contacts, got " .. contact,
     { contact = contact }
+  )
+  error({ code = failure.code, message = failure.message, context = failure.context, domain = "phone" })
+end
+
+---@param session table<string, unknown>
+---@param decision table<string, unknown>
+local function unsupportedNativeProgram(session, decision)
+  local failure = Errors.new(
+    ScriptErrors.FEATURE_UNAVAILABLE,
+    "native phone conversation has no verified family handler",
+    { contact = session.contact, family = session.family, mode = decision.mode, scriptType = decision.scriptType }
+  )
+  error({ code = failure.code, message = failure.message, context = failure.context, domain = "phone" })
+end
+
+---@param session table<string, unknown>
+---@param fact string
+local function missingSelectorFact(session, fact)
+  local failure = Errors.new(
+    ScriptErrors.FEATURE_UNAVAILABLE,
+    "native phone selector is missing the " .. fact .. " source fact",
+    { contact = session.contact, family = session.family, fact = fact }
   )
   error({ code = failure.code, message = failure.message, context = failure.context, domain = "phone" })
 end
@@ -286,7 +282,7 @@ end
 -- kind, message references, and signal before taking the single call
 -- lease; branch-required facts are preflighted at their stage, not
 -- here. An invalid signal takes no lease and selects no program.
----@param args { id: string, contact: string, direction: string, kind: string }
+---@param args { id: string, contact: string, direction: string, kind: string, triggerKey: string?, scriptedCallType: integer?, predefinedScriptId: integer? }
 ---@return { id: string } typed call handle
 function PhoneCall:begin(args)
   assert(type(args) == "table", "phone calls open through a request record")
@@ -294,6 +290,17 @@ function PhoneCall:begin(args)
   assert(type(args.contact) == "string" and args.contact ~= "", "phone calls name their contact")
   assert(PhoneCall.DIRECTIONS[args.direction] == true, "phone calls name an incoming or outgoing direction")
   assert(PhoneCall.KINDS[args.kind] == true, "phone calls name a known source call kind")
+  assert(
+    (args.scriptedCallType == nil and args.predefinedScriptId == nil)
+      or (
+        (args.scriptedCallType == 2 or args.scriptedCallType == 3)
+        and type(args.predefinedScriptId) == "number"
+        and args.predefinedScriptId % 1 == 0
+        and args.predefinedScriptId >= 0
+        and (args.scriptedCallType ~= 2 or args.predefinedScriptId <= 4)
+      ),
+    "scripted incoming calls carry their source predefined script identity"
+  )
   if self._calls[args.id] ~= nil then
     error("a phone call id opens once", 0)
   end
@@ -321,16 +328,30 @@ function PhoneCall:begin(args)
   end
   local greeting = frozenGreeting(self._messages)
   local handle = { id = args.id }
+  local facts = snapshotFacts(self._world, args.kind, args.direction, record)
+  if args.scriptedCallType ~= nil then
+    facts.scriptedCallType = args.scriptedCallType
+    facts.predefinedScript = args.predefinedScriptId
+  end
+  if record.family == "mother" and args.direction == "incoming" then
+    local phone = self._state.readPhone(self._state)
+    local mom = phone.mom
+    assert(type(mom) == "table" and type(mom.gifts) == "table", "incoming Mom calls inspect the gift queue")
+    facts.giftPending = #mom.gifts > 0
+  end
   local session = {
     id = args.id,
     handle = handle,
     contact = args.contact,
     direction = args.direction,
     kind = args.kind,
+    triggerKey = args.triggerKey,
     world = self._world,
+    catalog = self._catalog,
+    random = self._random,
     record = record,
     greeting = greeting,
-    facts = snapshotFacts(self._world, args.kind, args.direction, record),
+    facts = facts,
     owner = nil,
     family = nil,
     program = nil,
@@ -346,12 +367,7 @@ function PhoneCall:begin(args)
     result = nil,
     hangupDone = false,
   }
-  -- A rematch kind always takes the trainer invitation path; every
-  -- other kind follows the contact's generated family.
-  local owner, family = "trainer", "trainer"
-  if args.kind ~= "rematch" then
-    owner, family = resolveFamily(record)
-  end
+  local owner, family = resolveFamily(record)
   session.owner = owner
   session.family = family
   self._calls[args.id] = session
@@ -383,7 +399,11 @@ end
 ---@return boolean waiting true while the effect player has not completed
 function PhoneCall:_audioWait()
   local audio = self._audio
-  if type(audio) ~= "table" or audio.isEffectWaitComplete == nil then
+  if
+    type(audio) ~= "table"
+    or type(audio.playDialing) ~= "function"
+    or type(audio.isEffectWaitComplete) ~= "function"
+  then
     return false
   end
   local done = audio.isEffectWaitComplete --[[@as fun(self: table<string, unknown>): boolean]]
@@ -396,79 +416,344 @@ local function enterStage(session)
 end
 
 ---@param session table<string, unknown>
-function PhoneCall:_selectProgramAtGreeting(session)
-  local owner = session.owner --[[@as string]]
-  local facts = session.facts --[[@as table<string, unknown>]]
-  if owner == "mother" then
-    session.program = MotherPhoneProgram.selectName(facts)
-  elseif owner == "professor" then
-    if session.family == "oak" then
-      session.program = ProfessorPhonePrograms.selectOak(facts)
-    else
-      session.program = ProfessorPhonePrograms.selectElm(facts)
-    end
-  elseif owner == "service" then
-    session.program = ServicePhonePrograms.selectName(session.family --[[@as string]], facts)
-  elseif owner == "trainer" then
-    session.program = TrainerPhonePrograms.selectName(session.family --[[@as string]], facts)
-  else
-    session.program = GenericPhoneProgram.selectName(facts)
-  end
-end
-
----@param session table<string, unknown>
 ---@param record table<string, unknown>
-local function selectNativeScript(session, record)
-  local facts = session.facts --[[@as table<string, unknown>]]
+local function selectNativeDecision(session, record)
   local world = session.world --[[@as table<string, unknown>]]
   local readFacts = world.nativeSelectorFacts
   assert(type(readFacts) == "function", "native script selection reads source selector facts")
   local nativeFacts = readFacts(world, record)
   assert(type(nativeFacts) == "table", "native selector returns a fact record")
-  if session.family == "mother" then
-    if session.direction == "incoming" then
-      session.scriptId = facts.predefinedScript
-    elseif nativeFacts.localMap then
-      session.scriptId = 23
-    elseif not nativeFacts.gaveRivalName then
-      session.scriptId = 25
-    elseif not nativeFacts.talkedAfterNamingRival then
-      session.scriptId = 26
-    end
-  elseif session.family == "bill" then
-    if session.direction == "incoming" then
-      session.scriptId = 93
-    elseif nativeFacts.localMap then
-      session.scriptId = 92
-    end
-  elseif session.family == "bike" then
-    session.scriptId = nativeFacts.localMap and 84 or 85
-  elseif session.family == "kurt" then
-    if nativeFacts.localMap then
-      session.scriptId = 83
-    end
-  elseif session.family == "daycare" then
-    if record.id == 6 and session.direction == "incoming" then
-      session.scriptId = nativeFacts.eggCallPending and 96 or 95
-    elseif record.id == 7 and nativeFacts.localMap then
-      session.scriptId = 97
-    end
-  elseif session.family == "elm" then
-    if session.direction == "incoming" then
-      session.scriptId = facts.predefinedScript
-    elseif nativeFacts.localMap then
-      session.scriptId = 1
-    elseif facts.panicCall == true then
-      session.scriptId = 8
-    elseif nativeFacts.gaveRivalName == false then
-      session.scriptId = 9
-    elseif facts.eggEvent == true then
-      session.scriptId = 10
-    elseif facts.eggGift == true then
-      session.scriptId = 11
-    end
+  local selectorFacts = {}
+  for key, value in pairs(nativeFacts) do
+    selectorFacts[key] = value
   end
-  if type(session.scriptId) ~= "number" then
+  for key, value in
+    pairs(session.facts --[[@as table<string, unknown>]])
+  do
+    selectorFacts[key] = value
+  end
+  local family = session.family --[[@as string]]
+  local direction = session.direction --[[@as string]]
+  if family == "mother" then
+    local decision = MotherPhoneProgram.selectNative(direction, record, selectorFacts)
+    session.decision = decision
+    session.scriptId = decision.scriptId
+    return
+  elseif family == "oak" then
+    local decision = ProfessorPhonePrograms.selectOakNative(direction, record, selectorFacts)
+    session.decision = decision
+    session.scriptId = decision.scriptId
+    return
+  elseif family == "elm" then
+    local decision = ProfessorPhonePrograms.selectElmNative(
+      direction --[[@as "incoming"|"outgoing"]],
+      session.contact --[[@as string]],
+      selectorFacts,
+      session.random
+    )
+    session.decision = decision
+    session.scriptId = decision.scriptId
+    return
+  elseif family == "gym" then
+    session.decision = { mode = "special", scriptType = direction == "incoming" and 14 or 13, family = "gym" }
+    return
+  elseif family == "kurt" then
+    if nativeFacts.localMap == true then
+      session.decision = { mode = "numeric", scriptId = 83, family = "kurt" }
+      session.scriptId = 83
+    else
+      session.decision = { mode = "special", scriptType = 12, family = "kurt" }
+    end
+    return
+  elseif family == "bike" then
+    if type(nativeFacts.localMap) ~= "boolean" then
+      missingSelectorFact(session, "map locality")
+    end
+    session.decision = { mode = "numeric", scriptId = nativeFacts.localMap and 84 or 85, family = family }
+    session.scriptId = session.decision.scriptId
+    return
+  elseif family == "bill" then
+    if direction == "incoming" then
+      session.decision = { mode = "numeric", scriptId = 93, family = family }
+    elseif type(nativeFacts.localMap) ~= "boolean" then
+      missingSelectorFact(session, "map locality")
+    elseif nativeFacts.localMap then
+      session.decision = { mode = "numeric", scriptId = 92, family = family }
+    else
+      session.decision = { mode = "special", scriptType = 3, family = family }
+    end
+    session.scriptId = session.decision.scriptId
+    return
+  elseif family == "friend" then
+    if direction == "incoming" then
+      session.decision = { mode = "special", scriptType = 11, family = family }
+    elseif type(nativeFacts.localMap) ~= "boolean" then
+      missingSelectorFact(session, "map locality")
+    elseif nativeFacts.localMap then
+      local gender = nativeFacts.playerGender
+      if gender ~= 0 and gender ~= 1 then
+        missingSelectorFact(session, "player gender")
+      end
+      session.decision = { mode = "numeric", scriptId = gender == 0 and 101 or 102, family = family }
+      session.scriptId = session.decision.scriptId
+    else
+      session.decision = { mode = "special", scriptType = 10, family = family }
+    end
+    return
+  elseif family == "daycare" then
+    local callerId = record.id
+    if callerId == 6 then
+      if direction == "incoming" then
+        if type(selectorFacts.eggCallPending) ~= "boolean" then
+          missingSelectorFact(session, "pending Egg call flag")
+        end
+        session.decision = {
+          mode = "numeric",
+          scriptId = selectorFacts.eggCallPending and 96 or 95,
+          family = family,
+        }
+        session.scriptId = session.decision.scriptId
+      else
+        session.decision = { mode = "special", scriptType = 7, family = family }
+      end
+      return
+    elseif callerId == 7 then
+      if type(selectorFacts.localMap) ~= "boolean" then
+        missingSelectorFact(session, "map locality")
+      end
+      if selectorFacts.localMap then
+        session.decision = { mode = "numeric", scriptId = 97, family = family }
+        session.scriptId = 97
+      else
+        session.decision = { mode = "special", scriptType = 6, family = family }
+      end
+      return
+    end
+    unsupportedNativeProgram(session, { mode = "daycare-contact", contactId = callerId })
+  elseif family == "buena" then
+    if type(selectorFacts.rocketTakeoverActive) ~= "boolean" then
+      missingSelectorFact(session, "Rocket takeover state")
+    end
+    if selectorFacts.rocketTakeoverActive then
+      session.decision = { mode = "numeric", scriptId = 99, family = family }
+    elseif direction == "incoming" then
+      session.decision = { mode = "special", scriptType = 9, family = family }
+    elseif type(selectorFacts.hour) ~= "number" then
+      missingSelectorFact(session, "civil hour")
+    elseif selectorFacts.hour % 3 == 2 then
+      session.decision = { mode = "numeric", scriptId = 100, family = family }
+    elseif selectorFacts.localMap == true then
+      session.decision = { mode = "numeric", scriptId = 98, family = family }
+    else
+      session.decision = { mode = "special", scriptType = 8, family = family }
+    end
+    session.scriptId = session.decision.scriptId
+    return
+  elseif family == "baoba" then
+    if selectorFacts.scriptedCallType == 2 then
+      session.decision = { mode = "numeric", scriptId = 141, family = family }
+    elseif direction == "incoming" then
+      if selectorFacts.predefinedScript ~= nil then
+        local scriptId = selectorFacts.predefinedScript
+        if type(scriptId) ~= "number" or scriptId % 1 ~= 0 then
+          missingSelectorFact(session, "incoming predefined Safari script")
+        end
+        session.decision = { mode = "numeric", scriptId = scriptId, family = family }
+      else
+        session.decision = { mode = "special", scriptType = 15, family = family }
+      end
+    elseif selectorFacts.localMap == true then
+      session.decision = { mode = "numeric", scriptId = 140, family = family }
+    elseif type(selectorFacts.baobaProgress) == "number" then
+      session.decision = { mode = "numeric", scriptId = selectorFacts.baobaProgress + 147, family = family }
+    else
+      missingSelectorFact(session, "Safari Zone progression variable")
+    end
+    session.scriptId = session.decision.scriptId
+    return
+  elseif family == "kenji" then
+    local selected = TrainerPhonePrograms.selectKenjiNative(selectorFacts)
+    if selected.activate then
+      local applyEffect = world.applyKenjiActiveEffect
+      assert(type(applyEffect) == "function", "Kenji selection commits active and seeking facts through the save owner")
+      local deferredEffects = session.deferredEffects or {}
+      session.deferredEffects = deferredEffects
+      local function commitKenjiSelection()
+        applyEffect(world, session.contact)
+      end
+      deferredEffects[#deferredEffects + 1] = commitKenjiSelection
+    end
+    session.decision = { mode = "numeric", scriptId = selected.scriptId, family = family }
+    session.scriptId = session.decision.scriptId
+    return
+  elseif family == "irwin" then
+    if direction == "outgoing" then
+      if type(selectorFacts.rocketTakeoverActive) ~= "boolean" then
+        missingSelectorFact(session, "Rocket takeover state")
+      end
+      local scriptId = 156
+      if not selectorFacts.rocketTakeoverActive then
+        local random = session.random --[[@as table<string, unknown>?]]
+        local draw = type(random) == "table" and random.lc or nil
+        if type(draw) ~= "function" then
+          missingSelectorFact(session, "Irwin's native random stream")
+        end
+        local drawRandom = draw --[[@as fun(self: table<string, unknown>, label: string): integer]]
+        scriptId = 172 + drawRandom(random --[[@as table<string, unknown>]], "irwin-call-random") % 3
+      end
+      session.decision = { mode = "numeric", scriptId = scriptId, family = family }
+      session.scriptId = scriptId
+      return
+    end
+    local effect = TrainerPhonePrograms.selectIrwinIncoming(selectorFacts)
+    local applyEffect = world.applyIrwinIncomingEffect
+    assert(type(applyEffect) == "function", "Irwin selection commits its source flag effects through the world owner")
+    local deferredEffects = session.deferredEffects or {}
+    session.deferredEffects = deferredEffects
+    local function commitIrwinSelection()
+      applyEffect(world, effect)
+    end
+    deferredEffects[#deferredEffects + 1] = commitIrwinSelection
+    session.decision = { mode = "numeric", scriptId = effect.scriptId, family = family }
+    session.scriptId = effect.scriptId
+    return
+  elseif family == "trainer" then
+    if direction == "outgoing" and nativeFacts.localMap == true then
+      local localScript = record.localScript
+      if type(localScript) ~= "number" or localScript < 1 then
+        missingSelectorFact(session, "local contact script")
+      end
+      session.decision = { mode = "numeric", scriptId = localScript, scriptType = 0, family = family }
+      session.scriptId = localScript
+      return
+    end
+    local headers = record.genericCallHeaders --[[@as table<string, unknown>]]
+    assert(type(headers) == "table", "native generic callers have compiled source headers")
+    local rows = headers[direction] --[[@as table<integer, table<string, unknown>>]]
+    assert(type(rows) == "table" and #rows == 8, "native generic calls inspect eight ordered source slots")
+    local last = nil
+    local random = session.random --[[@as table<string, unknown>?]]
+    local draw = type(random) == "table" and random.mt or nil
+    local function chance(percent)
+      if type(draw) ~= "function" then
+        missingSelectorFact(session, "native generic-call random stream")
+      end
+      local drawRandom = draw --[[@as fun(self: table<string, unknown>, label: string): integer]]
+      local first = drawRandom(random --[[@as table<string, unknown>]], "generic-call-header-chance")
+      local second = drawRandom(random --[[@as table<string, unknown>]], "generic-call-header-chance")
+      local combined = bit.bxor(first, second)
+      local folded = bit.band(bit.bxor(bit.band(combined, 0xffff), bit.rshift(combined, 8)), 0xffff) % 100
+      return folded <= percent
+    end
+    for _, header in ipairs(rows) do
+      local headerType = header.type --[[@as integer]]
+      if headerType == 0 or headerType == 255 then
+        break
+      end
+      last = header
+      local eligible = false
+      if headerType == 1 or headerType == 6 then
+        eligible = chance(header.chance --[[@as integer]])
+      elseif headerType == 2 then
+        if type(selectorFacts.seeking) ~= "boolean" then
+          missingSelectorFact(session, "rematch-seeking state")
+        end
+        if not selectorFacts.seeking then
+          if type(selectorFacts.pendingGenericGift) ~= "boolean" then
+            missingSelectorFact(session, "pending generic gift state")
+          end
+          if not selectorFacts.pendingGenericGift then
+            local catalog = session.catalog --[[@as table<string, unknown>]]
+            local definitions = catalog.callDefinitions --[[@as table<integer, table<string, unknown>>]]
+            local definition = definitions[
+              header.scriptId --[[@as integer]]
+            ]
+            assert(type(definition) == "table", "generic headers refer to native script definitions")
+            eligible = (
+              selectorFacts.radioTowerBeaten == true
+              or header.scriptType ~= 0
+              or definition.kind ~= "rematch"
+            ) and chance(header.chance --[[@as integer]])
+          end
+        end
+      elseif headerType == 3 then
+        if type(selectorFacts.radioTowerBeaten) ~= "boolean" then
+          missingSelectorFact(session, "Radio Tower story flag")
+        end
+        if selectorFacts.radioTowerBeaten then
+          if type(selectorFacts.weekday) ~= "number" or type(selectorFacts.timeOfDay) ~= "number" then
+            missingSelectorFact(session, "rematch weekday and time")
+          end
+          eligible = selectorFacts.weekday == record.rematchWeekday
+            and selectorFacts.timeOfDay == record.rematchTime
+            and chance(header.chance --[[@as integer]])
+        end
+      elseif headerType == 4 then
+        if type(selectorFacts.weekday) ~= "number" then
+          missingSelectorFact(session, "weekday")
+        end
+        eligible = (selectorFacts.weekday == 2 or selectorFacts.weekday == 4 or selectorFacts.weekday == 6)
+          and chance(header.chance --[[@as integer]])
+      elseif headerType == 5 then
+        if type(selectorFacts.rocketTakeoverActive) ~= "boolean" then
+          missingSelectorFact(session, "Rocket takeover state")
+        end
+        eligible = selectorFacts.rocketTakeoverActive and chance(header.chance --[[@as integer]])
+      elseif headerType == 7 then
+        if type(selectorFacts.radioTowerBeaten) ~= "boolean" then
+          missingSelectorFact(session, "Radio Tower story flag")
+        end
+        if selectorFacts.radioTowerBeaten then
+          if
+            type(selectorFacts.nationalParkCaller) ~= "boolean" or type(selectorFacts.bugContestActive) ~= "boolean"
+          then
+            missingSelectorFact(session, "National Park Bug Contest state")
+          end
+          if not (selectorFacts.nationalParkCaller and selectorFacts.bugContestActive) then
+            if type(selectorFacts.seeking) ~= "boolean" then
+              missingSelectorFact(session, "rematch-seeking state")
+            end
+            eligible = selectorFacts.seeking and chance(header.chance --[[@as integer]])
+          end
+        end
+      elseif headerType == 8 then
+        if type(selectorFacts.nationalParkCaller) ~= "boolean" or type(selectorFacts.bugContestActive) ~= "boolean" then
+          missingSelectorFact(session, "National Park Bug Contest state")
+        end
+        if not (selectorFacts.nationalParkCaller and selectorFacts.bugContestActive) then
+          if type(selectorFacts.pendingGenericGift) ~= "boolean" then
+            missingSelectorFact(session, "pending generic gift state")
+          end
+          eligible = selectorFacts.pendingGenericGift and chance(header.chance --[[@as integer]])
+        end
+      else
+        unsupportedNativeProgram(session, { mode = "generic", headerType = headerType })
+      end
+      if eligible then
+        session.decision = {
+          mode = "numeric",
+          scriptId = header.scriptId,
+          scriptType = header.scriptType,
+          family = family,
+        }
+        session.scriptId = header.scriptId
+        return
+      end
+    end
+    if last ~= nil then
+      session.decision = {
+        mode = "numeric",
+        scriptId = last.scriptId,
+        scriptType = last.scriptType,
+        family = family,
+      }
+      session.scriptId = last.scriptId
+      return
+    end
+    unsupportedNativeProgram(session, { mode = "generic-empty" })
+    return
+  end
+  do
     local failure = Errors.new(
       ScriptErrors.FEATURE_UNAVAILABLE,
       "native phone selector needs an unmodeled source branch for " .. tostring(session.family),
@@ -479,58 +764,300 @@ local function selectNativeScript(session, record)
 end
 
 ---@param session table<string, unknown>
+function PhoneCall:_selectProgramAtGreeting(session)
+  selectNativeDecision(session, session.record --[[@as table<string, unknown>]])
+  local decision = session.decision --[[@as table<string, unknown>]]
+  session.program = session.family
+    .. "-"
+    .. (decision.mode == "numeric" and tostring(decision.scriptId) or tostring(decision.scriptType))
+end
+
+---@param session table<string, unknown>
 function PhoneCall:_openProgramSession(session)
-  local programOwner = session.owner --[[@as string]]
+  if session.decision.mode == "numeric" then
+    return
+  end
   local request = {
     contact = session.contact,
     family = session.family,
     professor = session.family,
     facts = session.facts,
   }
-  if programOwner == "mother" then
-    session.programSession = MotherPhoneProgram.select(self._world, request)
-  elseif programOwner == "professor" then
-    session.programSession = ProfessorPhonePrograms.select(self._world, request)
-  elseif programOwner == "service" then
-    session.programSession = ServicePhonePrograms.select(self._world, request)
-  elseif programOwner == "trainer" then
-    session.programSession = TrainerPhonePrograms.select(self._world, request)
-  else
-    session.programSession = GenericPhoneProgram.select(self._world, request)
+  if session.family == "gym" then
+    local draw = self._random ~= nil and self._random.lc or nil
+    request.direction = session.direction
+    request.decision = session.decision
+    request.record = session.record
+    request.nativeFacts = session.facts
+    if type(draw) == "function" then
+      local function drawGymMessage()
+        return draw(self._random --[[@as table<string, unknown>]], "gym-incoming-message")
+      end
+      request.draw = drawGymMessage
+    end
+    session.programSession = TrainerPhonePrograms.selectNative(self._world, request)
+    return
   end
+  if session.family == "oak" then
+    request.direction = session.direction
+    request.decision = session.decision
+    request.nativeFacts = session.facts
+    session.programSession = ProfessorPhonePrograms.selectOakNativeSession(self._world, request)
+    return
+  end
+  if session.family == "mother" and session.decision.mode == "special" then
+    request.decision = session.decision
+    request.nativeFacts = session.facts
+    session.programSession = MotherPhoneProgram.selectNativeSession(self._world, request)
+    local deferredEffect = session.programSession.deferredEffect
+    if type(deferredEffect) == "function" then
+      local deferredEffects = session.deferredEffects or {}
+      session.deferredEffects = deferredEffects
+      deferredEffects[#deferredEffects + 1] = deferredEffect
+    end
+    return
+  end
+  if session.family == "kurt" and session.decision.mode == "special" then
+    request.decision = session.decision
+    request.nativeFacts = session.facts
+    session.programSession = ServicePhonePrograms.selectNativeKurt(self._world, request)
+    return
+  end
+  if
+    (
+      session.family == "bill"
+      or session.family == "friend"
+      or session.family == "daycare"
+      or session.family == "buena"
+      or session.family == "baoba"
+    ) and session.decision.mode == "special"
+  then
+    request.decision = session.decision
+    request.nativeFacts = session.facts
+    if
+      session.family == "bill"
+      or session.family == "friend"
+      or session.family == "baoba"
+      or session.family == "buena"
+    then
+      local draw = self._random ~= nil and self._random.lc or nil
+      if type(draw) == "function" then
+        local drawLabel = session.family == "baoba" and "baoba-incoming-message"
+          or session.family == "bill" and "bill-response-message"
+          or session.family == "friend" and "friend-response-message"
+          or "buena-response-message"
+        local function drawServiceMessage()
+          return draw(self._random --[[@as table<string, unknown>]], drawLabel)
+        end
+        request.draw = drawServiceMessage
+      end
+    end
+    session.programSession = ServicePhonePrograms.selectNativePage(request)
+    return
+  end
+  unsupportedNativeProgram(session, session.decision --[[@as table<string, unknown>]])
+  error("unreachable", 0)
 end
 
 ---@param session table<string, unknown>
 ---@param input table<string, unknown>
 ---@return string program step result
 local function stepProgram(session, input)
-  local owner = session.owner --[[@as string]]
-  local programSession = session.programSession --[[@as table<string, unknown>]]
-  if owner == "mother" then
-    return MotherPhoneProgram.step(programSession, input)
+  if session.programSession == nil then
+    assert(session.decision.mode == "numeric", "only numeric calls skip a family session")
+    return "done"
   end
-  if owner == "professor" then
+  local programSession = session.programSession --[[@as table<string, unknown>]]
+  if session.family == "oak" then
     return ProfessorPhonePrograms.step(programSession, input)
   end
-  if owner == "service" then
-    return ServicePhonePrograms.step(programSession, input)
+  if session.family == "mother" then
+    return MotherPhoneProgram.stepNative(programSession, input)
   end
-  if owner == "trainer" then
+  if session.family == "gym" then
     return TrainerPhonePrograms.step(programSession, input)
   end
-  return GenericPhoneProgram.step(programSession, input)
+  if session.family == "kurt" then
+    if programSession.program == "kurt-native" then
+      return ServicePhonePrograms.stepNativeKurt(programSession, input)
+    end
+    return ServicePhonePrograms.step(programSession, input)
+  end
+  if
+    session.family == "bill"
+    or session.family == "friend"
+    or session.family == "daycare"
+    or session.family == "buena"
+    or session.family == "baoba"
+  then
+    return ServicePhonePrograms.stepNativePage(programSession, input)
+  end
+  unsupportedNativeProgram(session, session.decision --[[@as table<string, unknown>]])
+  error("unreachable", 0)
 end
 
 ---@param messages table<string, unknown>
 ---@param session table<string, unknown>
 ---@return table<string, unknown> resolved native dialogue
 local function resolveNativeDialogue(messages, session)
-  selectNativeScript(session, session.record --[[@as table<string, unknown>]])
-  local scriptId = session.scriptId
-  local resolveLine = messages.resolveLine
-  assert(type(scriptId) == "number", "the selected caller carries its native script identity")
-  assert(type(resolveLine) == "function", "phone dialogue resolves through the field message provider")
-  return resolveLine(messages, session.contact, scriptId)
+  local decision = session.decision
+  if type(decision) ~= "table" then
+    selectNativeDecision(session, session.record --[[@as table<string, unknown>]])
+    decision = session.decision
+  end
+  assert(type(decision) == "table", "a call freezes one native program decision")
+  if decision.mode == "numeric" then
+    local scriptId = decision.scriptId
+    local scriptType = decision.scriptType
+    local resolveLine = messages.resolveLine
+    assert(type(scriptId) == "number", "numeric calls carry a source script identity")
+    assert(type(resolveLine) == "function", "phone dialogue resolves through the field message provider")
+    local variation = nil
+    if scriptType == 2 then
+      local random = session.random --[[@as table<string, unknown>?]]
+      local draw = type(random) == "table" and random.lc or nil
+      if type(draw) ~= "function" then
+        missingSelectorFact(session, "generic type-two random stream")
+      end
+      local drawRandom = draw --[[@as fun(self: table<string, unknown>, label: string): integer]]
+      variation = drawRandom(random --[[@as table<string, unknown>]], "generic-type-two-phrase") % 11
+    end
+    local substitutions = session.definitionSubstitutions --[[@as table<integer, unknown>?]]
+    if scriptType == 1 then
+      local timeOfDay = session.facts.timeOfDay
+      if type(timeOfDay) ~= "number" then
+        missingSelectorFact(session, "generic type-one time of day")
+      end
+      local world = session.world --[[@as table<string, unknown>]]
+      local selectBuffers = world.genericTrainerSubstitutions
+      if type(selectBuffers) ~= "function" then
+        missingSelectorFact(session, "generic type-one trainer and encounter catalogs")
+      end
+      local buildBuffers = selectBuffers
+      --[[@as fun(self: table<string, unknown>, contact: table<string, unknown>, random: table<string, unknown>, timeOfDay: integer): table<integer, string>]]
+      local buffers = buildBuffers(world, session.record, session.random, timeOfDay --[[@as integer]])
+      local merged = {}
+      if type(substitutions) == "table" then
+        for key, value in pairs(substitutions) do
+          merged[key] = value
+        end
+      end
+      for key, value in pairs(buffers) do
+        merged[key] = value
+      end
+      substitutions = merged
+    end
+    return resolveLine(messages, session.contact, scriptId, scriptType, variation, substitutions)
+  end
+  assert(decision.mode == "special", "phone decisions distinguish numeric and special programs")
+  local resolveEntry = messages.resolveContactEntry
+  assert(type(resolveEntry) == "function", "special dialogue resolves direct caller-bank entries")
+  -- Every native special program starts in its caller's phone message bank.
+  -- The family state machine owns subsequent pages and choices.
+  if
+    session.family == "gym"
+    or session.family == "oak"
+    or session.family == "mother"
+    or session.family == "kurt"
+    or session.family == "bill"
+    or session.family == "friend"
+    or session.family == "daycare"
+    or session.family == "buena"
+    or session.family == "baoba"
+  then
+    local programSession = session.programSession --[[@as table<string, unknown>]]
+    local entries = programSession.entries --[[@as table<integer, unknown>]]
+    local tokens = {}
+    for index, entry in ipairs(entries) do
+      assert(type(entry) == "number" and entry % 1 == 0, "gym special entries use native bank indices")
+      if index > 1 then
+        tokens[#tokens + 1] = { kind = "page_break" }
+      end
+      local substitutionsByEntry = programSession.substitutionsByEntry
+      local substitutions = type(substitutionsByEntry) == "table" and substitutionsByEntry[entry] or nil
+      local formatted = resolveEntry(messages, session.contact, entry, substitutions)
+      assert(
+        type(formatted) == "table" and type(formatted.tokens) == "table",
+        "native bank entries return formatted tokens"
+      )
+      for _, token in
+        ipairs(formatted.tokens --[[@as table<integer, unknown>]])
+      do
+        tokens[#tokens + 1] = token
+      end
+    end
+    return { tokens = tokens }
+  end
+  local failure = Errors.new(
+    ScriptErrors.FEATURE_UNAVAILABLE,
+    "native special phone script has no implemented family program",
+    { family = session.family, scriptType = decision.scriptType, contact = session.contact }
+  )
+  error({ code = failure.code, message = failure.message, context = failure.context, domain = "phone" })
+end
+
+---@param messages table<string, unknown>
+---@param session table<string, unknown>
+---@param entry integer direct contact-bank entry
+---@return table<string, unknown> formatted native text
+local function resolveNativeEntry(messages, session, entry)
+  local resolveEntry = messages.resolveContactEntry
+  assert(type(resolveEntry) == "function", "special dialogue resolves direct caller-bank entries")
+  local programSession = session.programSession --[[@as table<string, unknown>]]
+  local substitutionsByEntry = programSession.substitutionsByEntry
+  local substitutions = programSession.responseSubstitutions
+    or (type(substitutionsByEntry) == "table" and substitutionsByEntry[entry] or nil)
+  local formatted = resolveEntry(messages, session.contact, entry, substitutions)
+  assert(
+    type(formatted) == "table" and type(formatted.tokens) == "table",
+    "native bank entries return formatted tokens"
+  )
+  return formatted --[[@as table<string, unknown>]]
+end
+
+---@param formatted table<string, unknown>
+---@return table<integer, table<string, unknown>> native page lines
+local function nativeLines(formatted)
+  assert(type(formatted) == "table" and type(formatted.tokens) == "table", "native dialogue returns formatted tokens")
+  local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
+  local lines = {}
+  local pageTokens = {}
+  local function finishPage()
+    if #pageTokens > 0 then
+      lines[#lines + 1] = { text = FieldMessageText.tokensToText(pageTokens), tokens = pageTokens }
+      pageTokens = {}
+    end
+  end
+  for _, token in
+    ipairs(formatted.tokens --[[@as table<integer, unknown>]])
+  do
+    local item = token --[[@as table<string, unknown>]]
+    if item.kind == "page_break" or item.kind == "prompt_break" then
+      finishPage()
+    elseif item.kind ~= "eos" then
+      pageTokens[#pageTokens + 1] = item
+    end
+  end
+  finishPage()
+  assert(#lines > 0, "phone scripts produce at least one printable text page")
+  return lines
+end
+
+---@param messages table<string, unknown>
+---@param session table<string, unknown>
+---@param entry integer
+---@return table<integer, table<string, unknown>> validated native response pages
+local function resolveNativeResponseLines(messages, session, entry)
+  return nativeLines(resolveNativeEntry(messages, session, entry))
+end
+
+---@param programSession table<string, unknown>
+local function commitNativeResponseEffect(programSession)
+  local effect = programSession.responseEffect
+  if type(effect) == "function" then
+    effect()
+    programSession.responseEffect = nil
+  end
 end
 
 ---@param session table<string, unknown>
@@ -543,7 +1070,7 @@ function PhoneCall:_failCall(session, failure)
   if self._active == session.id then
     self._active = nil
   end
-  if type(failure) == "table" and failure.code == ScriptErrors.FEATURE_UNAVAILABLE then
+  if Errors.is(failure) or (type(failure) == "table" and type(failure.code) == "string") then
     session.result = {
       id = session.id,
       contact = session.contact,
@@ -556,7 +1083,8 @@ function PhoneCall:_failCall(session, failure)
 end
 
 ---@param session table<string, unknown>
-function PhoneCall:_finishHangup(session)
+---@param successful boolean?
+function PhoneCall:_finishHangup(session, successful)
   if session.hangupDone ~= true then
     session.hangupDone = true
     local audio = self._audio
@@ -571,13 +1099,24 @@ function PhoneCall:_finishHangup(session)
     local query = self._world.queryRematch
     local rematch = type(query) == "function" and query(self._world, session.contact --[[@as string]]) or nil
     local staged = type(rematch) == "table" and rematch.stage > 0
-    session.result = {
-      id = session.id,
-      contact = session.contact,
-      kind = session.kind,
-      program = session.program,
-      ready = staged,
-    }
+    if successful == false then
+      session.result = {
+        id = session.id,
+        contact = session.contact,
+        kind = session.kind,
+        program = session.program,
+        signal = false,
+        ready = false,
+      }
+    else
+      session.result = {
+        id = session.id,
+        contact = session.contact,
+        kind = session.kind,
+        program = session.program,
+        ready = staged,
+      }
+    end
   end
   session.stage = "done"
   session.terminal = true
@@ -602,7 +1141,7 @@ function PhoneCall:step(handle, input)
   end
   if edges.cancel == true then
     enterStage(session)
-    self:_finishHangup(session)
+    self:_finishHangup(session, false)
     return
   end
   local forced = edges.confirm == true or edges.advance == true
@@ -616,37 +1155,66 @@ function PhoneCall:step(handle, input)
       session.stage = "greeting"
       enterStage(session)
     elseif stage == "greeting" then
-      if session.program == nil then
-        self:_selectProgramAtGreeting(session)
-        self:_openProgramSession(session)
+      local random = session.random
+      local checkpoint = nil
+      if type(random) == "table" then
+        local makeCheckpoint = random.checkpoint
+        if type(makeCheckpoint) == "function" then
+          checkpoint = makeCheckpoint(random)
+        end
       end
-      local ok, formatted = pcall(resolveNativeDialogue, self._messages, session)
+      local function resolveCurrentNativeDialogue()
+        if session.program == nil then
+          self:_selectProgramAtGreeting(session)
+          self:_openProgramSession(session)
+        end
+        local decision = session.decision --[[@as table<string, unknown>]]
+        if decision.mode == "numeric" then
+          local definitions = session.catalog.callDefinitions
+          if type(definitions) == "table" and next(definitions) ~= nil then
+            local definition = definitions[
+              decision.scriptId --[[@as integer]]
+            ]
+            assert(type(definition) == "table", "native catalogs provide each selected call definition")
+            if definition.kind ~= "none" then
+              local prepareEffect = session.world.prepareCallDefinitionEffect
+              assert(type(prepareEffect) == "function", "numeric call effects use the field world owner")
+              local prepared = prepareEffect(session.world, session.contact, definition, session.random)
+              assert(
+                type(prepared) == "table"
+                  and type(prepared.substitutions) == "table"
+                  and type(prepared.commit) == "function",
+                "numeric call effects prepare substitutions and one deferred commit"
+              )
+              session.definitionSubstitutions = prepared.substitutions
+              session.preparedDefinitionEffect = prepared
+            end
+          end
+        end
+        return nativeLines(resolveNativeDialogue(self._messages, session))
+      end
+      local ok, lines = pcall(resolveCurrentNativeDialogue)
       if not ok then
-        self:_failCall(session, formatted)
+        if checkpoint ~= nil then
+          local restoreCheckpoint = random.restoreCheckpoint --[[@as fun(self: table<string, unknown>, checkpoint: table<string, unknown>)]]
+          restoreCheckpoint(random --[[@as table<string, unknown>]], checkpoint)
+        end
+        self:_failCall(session, lines)
         return
       end
-      assert(
-        type(formatted) == "table" and type(formatted.tokens) == "table",
-        "phone dialogue returns formatted source tokens"
-      )
-      local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
-      local lines = {}
-      local pageTokens = {}
-      local function finishPage()
-        if #pageTokens > 0 then
-          lines[#lines + 1] = { text = FieldMessageText.tokensToText(pageTokens), tokens = pageTokens }
-          pageTokens = {}
-        end
+      local preparedEffect = session.preparedDefinitionEffect
+      if type(preparedEffect) == "table" then
+        local commit = preparedEffect.commit --[[@as fun()]]
+        commit()
+        session.preparedDefinitionEffect = nil
       end
-      for _, token in ipairs(formatted.tokens) do
-        if token.kind == "page_break" or token.kind == "prompt_break" then
-          finishPage()
-        else
-          pageTokens[#pageTokens + 1] = token
+      local deferredEffects = session.deferredEffects --[[@as table<integer, fun()>?]]
+      if type(deferredEffects) == "table" then
+        for _, commit in ipairs(deferredEffects) do
+          commit()
         end
+        session.deferredEffects = nil
       end
-      finishPage()
-      assert(#lines > 0, "phone scripts produce at least one printable text page")
       session.lines = lines
       session.stage = "message"
       enterStage(session)
@@ -666,13 +1234,33 @@ function PhoneCall:step(handle, input)
       session.stage = "program"
       enterStage(session)
     elseif stage == "program" then
-      local ok, outcome = pcall(stepProgram, session, edges)
+      local responseInput = session.responsePending == true and { responseResolved = true } or edges
+      local ok, outcome = pcall(stepProgram, session, responseInput)
       if not ok then
         self:_failCall(session, outcome)
         return
       end
+      if session.responsePending == true then
+        session.responsePending = false
+      end
       if outcome == "waiting" then
         session.stage = "choice"
+        enterStage(session)
+        return
+      elseif outcome == "continue" then
+        local programSession = session.programSession --[[@as table<string, unknown>]]
+        local entry = programSession.responseEntry
+        assert(type(entry) == "number", "native family continuations carry a bank entry")
+        local resolvedOk, lines = pcall(resolveNativeResponseLines, self._messages, session, entry)
+        if not resolvedOk then
+          self:_failCall(session, lines)
+          return
+        end
+        commitNativeResponseEffect(programSession)
+        session.lines = lines --[[@as table<integer, table<string, unknown>>]]
+        session.textPage = 1
+        session.responsePending = true
+        session.stage = "message"
         enterStage(session)
         return
       end
@@ -688,6 +1276,23 @@ function PhoneCall:step(handle, input)
         return
       end
       if outcome == "waiting" then
+        return
+      end
+      if outcome == "continue" then
+        local programSession = session.programSession --[[@as table<string, unknown>]]
+        local entry = programSession.responseEntry
+        assert(type(entry) == "number", "native family choices carry a bank response")
+        local resolvedOk, lines = pcall(resolveNativeResponseLines, self._messages, session, entry)
+        if not resolvedOk then
+          self:_failCall(session, lines)
+          return
+        end
+        commitNativeResponseEffect(programSession)
+        session.lines = lines --[[@as table<integer, table<string, unknown>>]]
+        session.textPage = 1
+        session.responsePending = true
+        session.stage = "message"
+        enterStage(session)
         return
       end
       session.stage = "hangingUp"
@@ -741,11 +1346,16 @@ function PhoneCall:view(handle)
     page = session.textPage,
   }
   if stage == "choice" then
-    -- Only the savings choice waits for input today; the owed choice
-    -- ids stay with the program that defines them so a new waiting
-    -- program cannot silently inherit these.
-    assert(session.owner == "mother", "only the savings choice waits for input")
-    shown.choices = { MotherPhoneProgram.CHOICES[1], MotherPhoneProgram.CHOICES[2] }
+    local programSession = session.programSession --[[@as table<string, unknown>]]
+    if session.owner == "mother" then
+      shown.choices = { MotherPhoneProgram.CHOICES[1], MotherPhoneProgram.CHOICES[2] }
+    elseif session.owner == "trainer" and programSession.program == "gym-invitation" then
+      shown.choices = { "yes", "no" }
+    elseif session.owner == "professor" and programSession.program == "oak-special" then
+      shown.choices = programSession.choices
+    else
+      error("phone choice stages have a family-owned choice list", 0)
+    end
   end
   if session.result ~= nil then
     local result = session.result --[[@as table<string, unknown>]]
@@ -797,7 +1407,7 @@ function PhoneCall:cancel(handle, reason)
     return
   end
   enterStage(session)
-  self:_finishHangup(session)
+  self:_finishHangup(session, false)
 end
 
 -- Releases a call handle. Terminal handles leave their effects in
@@ -808,7 +1418,7 @@ function PhoneCall:release(handle)
   local session = checkHandle(self, handle)
   if session.terminal ~= true then
     enterStage(session)
-    self:_finishHangup(session)
+    self:_finishHangup(session, false)
   end
   self._calls[
     session.id --[[@as string]]

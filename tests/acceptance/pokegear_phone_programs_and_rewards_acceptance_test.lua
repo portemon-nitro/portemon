@@ -35,7 +35,7 @@ end
 ---@return table
 local function fixtureManifest()
   return {
-    schema = "g4-pokegear-assets-v2",
+    schema = "g4-pokegear-assets-v3",
     skins = { 0, 1, 2, 3, 4, 5 },
     shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png") },
     configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png") },
@@ -224,7 +224,16 @@ function T.tests.unsourced_phone_call_does_not_stage_a_rematch()
   local call = PhoneCall.new({
     state = state,
     catalog = record.catalog,
-    messages = { invitation = "custom.invitation", accept = "custom.accept" },
+    messages = {
+      invitation = "custom.invitation",
+      accept = "custom.accept",
+      resolveLine = function()
+        return { tokens = { { kind = "glyph", code = 1, text = "X", raw = { 1 } } } }
+      end,
+      resolveContactEntry = function()
+        return { tokens = { { kind = "glyph", code = 1, text = "X", raw = { 1 } } } }
+      end,
+    },
     world = world,
     audio = {
       isEffectWaitComplete = function()

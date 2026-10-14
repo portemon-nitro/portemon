@@ -14,7 +14,7 @@ end
 
 local function customManifest()
   return {
-    schema = "g4-pokegear-assets-v2",
+    schema = "g4-pokegear-assets-v3",
     skins = { 0, 1, 2, 3, 4, 5 },
     shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png") },
     configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png") },
@@ -51,7 +51,7 @@ function T.valid_custom_records_validate_without_source_identities()
   local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
   local record, err = PokegearAssetSchema.validate(customManifest())
   Assert.notNil(record, "valid custom records must validate: " .. tostring(err and err.message or err))
-  Assert.equal(record.schema, "g4-pokegear-assets-v2", "validation preserves the schema identity")
+  Assert.equal(record.schema, "g4-pokegear-assets-v3", "validation preserves the schema identity")
 end
 
 function T.region_map_is_required_and_strict()
@@ -81,6 +81,26 @@ function T.region_map_is_required_and_strict()
   rejects(function(regionMap)
     regionMap.flypoints[1].overlay.srcX = nil
   end, "a missing overlay key must not validate")
+end
+
+function T.friend_map_phrase_rows_preserve_a_strict_source_order_contract()
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local manifest = customManifest()
+  manifest.catalog.friendMapPhrases = {}
+  for index = 1, 73 do
+    manifest.catalog.friendMapPhrases[index] = {
+      mapId = index - 1,
+      sourceIndex = index - 1,
+      unlockGroup = index % 4,
+    }
+  end
+  local valid, validErr = PokegearAssetSchema.validate(manifest)
+  Assert.notNil(valid, "73 ordered Friend map records validate: " .. tostring(validErr and validErr.message or validErr))
+
+  manifest.catalog.friendMapPhrases[4].extra = true
+  local invalid, err = PokegearAssetSchema.validate(manifest)
+  Assert.isNil(invalid, "Friend map records reject unknown nested fields")
+  Assert.equal(err.code, PokegearAssetSchema.ERROR.SHAPE_INVALID, "unknown Friend fields return a schema error")
 end
 
 function T.duplicate_contact_keys_fail_naming_the_offender()

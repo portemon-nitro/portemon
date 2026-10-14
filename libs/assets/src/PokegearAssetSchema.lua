@@ -37,8 +37,11 @@ local CATALOG_FIELDS = {
   contacts = true,
   contactOrder = true,
   callDefinitions = true,
+  safariAreaMessageBank = true,
   callPermissions = true,
+  momCallIntroParameters = true,
   callTriggers = true,
+  friendMapPhrases = true,
   rematches = true,
   gifts = true,
   momPurchases = true,
@@ -471,11 +474,93 @@ local function checkCatalog(value)
     end
   end
   for key in pairs(CATALOG_FIELDS) do
-    if value[key] == nil and key ~= "landmarkLabels" and key ~= "callPermissions" then
+    if
+      value[key] == nil
+      and key ~= "landmarkLabels"
+      and key ~= "callPermissions"
+      and key ~= "momCallIntroParameters"
+      and key ~= "friendMapPhrases"
+      and key ~= "safariAreaMessageBank"
+    then
       return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "catalog is missing " .. key, {})
     end
   end
   local fullNativeCatalog = type(value.callDefinitions) == "table" and #value.callDefinitions == 455
+  if
+    value.safariAreaMessageBank ~= nil
+    and (not isInteger(value.safariAreaMessageBank) or value.safariAreaMessageBank < 0)
+  then
+    return fail(
+      PokegearAssetSchema.ERROR.SHAPE_INVALID,
+      "catalog.safariAreaMessageBank must be a non-negative message bank ID",
+      {}
+    )
+  end
+  if fullNativeCatalog and value.safariAreaMessageBank == nil then
+    return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "native catalog is missing safariAreaMessageBank", {})
+  end
+  if fullNativeCatalog or value.friendMapPhrases ~= nil then
+    local rows = value.friendMapPhrases
+    if type(rows) ~= "table" or #rows ~= 73 then
+      return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "catalog.friendMapPhrases must preserve 73 native rows", {})
+    end
+    local seenMaps = {}
+    for index, row in ipairs(rows) do
+      if type(row) ~= "table" then
+        return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "catalog.friendMapPhrases rows must be records", {})
+      end
+      for key in pairs(row) do
+        if key ~= "mapId" and key ~= "sourceIndex" and key ~= "unlockGroup" then
+          return fail(
+            PokegearAssetSchema.ERROR.SHAPE_INVALID,
+            "catalog.friendMapPhrases has unexpected row key " .. tostring(key),
+            { index = index }
+          )
+        end
+      end
+      if
+        not isInteger(row.mapId)
+        or row.mapId < 0
+        or row.mapId >= NATIVE_MAP_COUNT
+        or seenMaps[row.mapId]
+        or row.sourceIndex ~= index - 1
+        or not isInteger(row.unlockGroup)
+        or row.unlockGroup < 0
+        or row.unlockGroup > 3
+      then
+        return fail(
+          PokegearAssetSchema.ERROR.SHAPE_INVALID,
+          "catalog.friendMapPhrases rows must retain unique maps, source order, and unlock groups",
+          { index = index }
+        )
+      end
+      seenMaps[row.mapId] = true
+    end
+  end
+  if fullNativeCatalog or value.momCallIntroParameters ~= nil then
+    if type(value.momCallIntroParameters) ~= "table" then
+      return fail(
+        PokegearAssetSchema.ERROR.SHAPE_INVALID,
+        "native catalog is missing Mom call introduction parameters",
+        {}
+      )
+    end
+    for mapId = 0, NATIVE_MAP_COUNT - 1 do
+      local parameter = value.momCallIntroParameters[mapId]
+      if not isInteger(parameter) or parameter < 0 then
+        return fail(
+          PokegearAssetSchema.ERROR.SHAPE_INVALID,
+          "catalog.momCallIntroParameters must cover native map IDs with non-negative parameters",
+          { mapId = mapId }
+        )
+      end
+    end
+    for mapId in pairs(value.momCallIntroParameters) do
+      if not isInteger(mapId) or mapId < 0 or mapId >= NATIVE_MAP_COUNT then
+        return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "catalog.momCallIntroParameters has an unknown map ID", {})
+      end
+    end
+  end
   if value.callPermissions == nil and fullNativeCatalog then
     return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, "native catalog is missing callPermissions", {})
   end
@@ -552,6 +637,93 @@ local function checkCatalog(value)
       else
         return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, label .. ".class has an unknown rule", {})
       end
+      if contact.family == "trainer" then
+        for _, field in ipairs({ "trainerClass", "trainerId", "mapId" }) do
+          if not isInteger(contact[field]) or contact[field] < 0 or contact[field] > 65535 then
+            return fail(
+              PokegearAssetSchema.ERROR.SHAPE_INVALID,
+              label .. "." .. field .. " must preserve its native phonebook value",
+              {}
+            )
+          end
+        end
+      end
+      if contact.family == "trainer" and (fullNativeCatalog or contact.genericCallHeaders ~= nil) then
+        local headers = contact.genericCallHeaders
+        if type(headers) ~= "table" then
+          return fail(
+            PokegearAssetSchema.ERROR.SHAPE_INVALID,
+            label .. ".genericCallHeaders must carry native source rows",
+            {}
+          )
+        end
+        for _, direction in ipairs({ "outgoing", "incoming" }) do
+          local rows = headers[direction]
+          if type(rows) ~= "table" or #rows ~= 8 then
+            return fail(
+              PokegearAssetSchema.ERROR.SHAPE_INVALID,
+              label .. ".genericCallHeaders." .. direction .. " must preserve eight native slots",
+              {}
+            )
+          end
+          for rowIndex, row in ipairs(rows) do
+            local rowKeys = { type = true, chance = true, scriptType = true, scriptId = true }
+            if type(row) == "table" then
+              for key in pairs(row) do
+                if not rowKeys[key] then
+                  return fail(
+                    PokegearAssetSchema.ERROR.SHAPE_INVALID,
+                    label
+                      .. ".genericCallHeaders."
+                      .. direction
+                      .. "["
+                      .. rowIndex
+                      .. "] has unexpected key "
+                      .. tostring(key),
+                    {}
+                  )
+                end
+              end
+            end
+            if
+              type(row) ~= "table"
+              or not isInteger(row.type)
+              or (row.type ~= 0 and row.type ~= 255 and (row.type < 1 or row.type > 8))
+              or not isInteger(row.chance)
+              or row.chance < 0
+              or row.chance > 100
+              or (row.scriptType ~= 0 and row.scriptType ~= 1 and row.scriptType ~= 2)
+              or not isInteger(row.scriptId)
+              or (
+                row.type == 0 and (row.chance ~= 100 or row.scriptType ~= 0 or row.scriptId ~= 65535)
+                or row.type == 255 and (row.chance ~= 0 or row.scriptType ~= 0 or row.scriptId ~= 65535)
+                or row.type ~= 0 and row.type ~= 255 and (row.scriptId < 1 or row.scriptId > 455)
+              )
+            then
+              return fail(
+                PokegearAssetSchema.ERROR.SHAPE_INVALID,
+                label .. ".genericCallHeaders." .. direction .. "[" .. rowIndex .. "] is invalid",
+                {}
+              )
+            end
+          end
+        end
+        for key in pairs(headers) do
+          if key ~= "outgoing" and key ~= "incoming" then
+            return fail(
+              PokegearAssetSchema.ERROR.SHAPE_INVALID,
+              label .. ".genericCallHeaders has unexpected key " .. tostring(key),
+              {}
+            )
+          end
+        end
+      elseif contact.genericCallHeaders ~= nil then
+        return fail(
+          PokegearAssetSchema.ERROR.SHAPE_INVALID,
+          label .. ".genericCallHeaders is only valid for trainer contacts",
+          {}
+        )
+      end
     end
     if contact.sortWeights ~= nil then
       if type(contact.sortWeights) ~= "table" or #contact.sortWeights == 0 then
@@ -626,6 +798,10 @@ local function checkCatalog(value)
       or type(trigger.contact) ~= "string"
       or (trigger.kind ~= 0 and trigger.kind ~= 3)
       or type(trigger.clearOnPickup) ~= "boolean"
+      or (trigger.scriptedCallType ~= nil and (trigger.scriptedCallType ~= 3 or not isInteger(
+        trigger.predefinedScriptId
+      ) or trigger.predefinedScriptId < 0 or trigger.predefinedScriptId > 455))
+      or (trigger.scriptedCallType == nil and trigger.predefinedScriptId ~= nil)
     then
       return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, label .. " must carry a source trigger record", {})
     end
@@ -636,6 +812,19 @@ local function checkCatalog(value)
       return fail(PokegearAssetSchema.ERROR.DANGLING_REFERENCE, label .. " references a missing contact", {})
     end
     triggerSlots[trigger.slot] = true
+    for key in pairs(trigger) do
+      if
+        key ~= "slot"
+        and key ~= "key"
+        and key ~= "contact"
+        and key ~= "kind"
+        and key ~= "clearOnPickup"
+        and key ~= "scriptedCallType"
+        and key ~= "predefinedScriptId"
+      then
+        return fail(PokegearAssetSchema.ERROR.SHAPE_INVALID, label .. " has unexpected key " .. tostring(key), {})
+      end
+    end
   end
   if #value.momPurchases > 0 and #value.momPurchases ~= 26 then
     return fail(

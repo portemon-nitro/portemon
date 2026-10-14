@@ -540,7 +540,7 @@ end
 -- silent locator: a missing owner fails the composition with its name
 -- attached.
 ---@param runtime table<string, unknown> the owning field runtime
----@param owners { state: table<string, unknown>, catalog: table<string, unknown>, assets: table<string, unknown>, clock: table<string, unknown>, audio: table<string, unknown>?, messages: table<string, unknown>, world: table<string, unknown>? }
+---@param owners { state: table<string, unknown>, catalog: table<string, unknown>, assets: table<string, unknown>, clock: table<string, unknown>, audio: table<string, unknown>?, messages: table<string, unknown>, world: table<string, unknown>?, summaryDexNumbers: table<string, unknown>? }
 ---@return PokegearCompositionBundle
 function PokegearComposition.compose(runtime, owners)
   assert(type(runtime) == "table", "companion composition needs its owning runtime")
@@ -562,7 +562,13 @@ function PokegearComposition.compose(runtime, owners)
   )
   local PhoneWorldContext = require("game.hgss.src.pokegear.PhoneWorldContext")
   local world = owners.world
-    or PhoneWorldContext.new({ state = state, runtime = runtime, flags = runtime.eventState, catalog = catalog })
+    or PhoneWorldContext.new({
+      state = state,
+      runtime = runtime,
+      flags = runtime.eventState,
+      catalog = catalog,
+      summaryDexNumbers = owners.summaryDexNumbers,
+    })
   assert(type(world) == "table", "world reads stay a record")
 
   local function hostMapOwners()

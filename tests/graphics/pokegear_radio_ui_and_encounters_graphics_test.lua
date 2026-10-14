@@ -61,7 +61,7 @@ local function fixtureManifest()
     radioPanel[skin] = visualRef("assets/generated/pokegear/radio-panel-skin-" .. skin .. ".png", 240, 64)
   end
   return {
-    schema = "g4-pokegear-assets-v2",
+    schema = "g4-pokegear-assets-v3",
     skins = skins,
     shell = { foreground = shellForeground, information = shellInformation },
     configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png", 256, 192) },

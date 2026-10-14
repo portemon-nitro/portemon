@@ -51,7 +51,7 @@ local function fixtureManifest(contacts, triggers)
     order[#order + 1] = contact.key
   end
   return assertManifest({
-    schema = "g4-pokegear-assets-v2",
+    schema = "g4-pokegear-assets-v3",
     skins = { 0, 1, 2, 3, 4, 5 },
     shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png") },
     configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png") },
@@ -121,6 +121,10 @@ local function recordingHost()
   end
   function host:isActive()
     return false
+  end
+  function host:result(handle)
+    assert(type(handle) == "table", "the fake host reads a live accepted-call handle")
+    return { ready = true }
   end
   return host
 end
@@ -493,8 +497,8 @@ function T.tests.quiet_disposal_and_no_acceptance_without_a_ring()
   end, "a disposed coordinator takes no opportunity")
 end
 
--- A kind-zero trigger records ordinary history at acceptance without
--- clearing its flag: only event triggers clear, exactly once.
+-- A kind-zero trigger records ordinary history after the accepted host
+-- reports success without clearing its flag: only event triggers clear.
 function T.tests.a_kind_zero_trigger_records_history_without_clearing()
   local rig = freshRig(
     4242,
@@ -513,7 +517,10 @@ function T.tests.a_kind_zero_trigger_records_history_without_clearing()
   Assert.equal(ringing.contactKey, TRAINER_KEY, "the ordinary trigger names its caller")
   rig.calls:accept("field:test-parent")
   Assert.equal(#rig.host.opens, 1, "acceptance enters the companion host exactly once")
-  Assert.isTrue(rig.state:readPhone().history[TRAINER_KEY] == true, "accepting the ordinary trigger records its caller")
+  Assert.isTrue(
+    rig.state:readPhone().history[TRAINER_KEY] == true,
+    "successful completion of the ordinary trigger records its caller"
+  )
   Assert.isTrue(
     rig.state:readPhone().triggers["custom.callback"] == true,
     "accepting the ordinary trigger never clears its flag"

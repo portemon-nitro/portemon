@@ -204,7 +204,11 @@ function HgssEncounterCatalog:tableFor(memberId, opts)
   end
   local rodKey = type(rod) == "string" and ROD_KEYS[rod] or nil
   if rodKey ~= nil then
-    if (rod == "good_rod" or rod == "super_rod") and replacementIsActive(replacements.nightFish, game) then
+    if
+      timeOfDay == "night"
+      and (rod == "good_rod" or rod == "super_rod")
+      and replacementIsActive(replacements.nightFish, game)
+    then
       local nightFish = replacements.nightFish
       assert(type(nightFish) == "table", "the active night record carries its slot")
       assert(type(nightFish.slot) == "number", "the night record carries its native slot")

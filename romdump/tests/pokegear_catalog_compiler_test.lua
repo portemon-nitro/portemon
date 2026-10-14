@@ -21,14 +21,14 @@ local function packU16(value)
   return string.char(value % 256, math.floor(value / 256) % 256)
 end
 
--- One synthetic phonebook record in the source little-endian layout: four
--- bytes, four halfwords, eight bytes.
+-- One synthetic phonebook record in the native twenty-byte layout.
 local function phonebookRecord(trainer, map, weights)
   weights = weights or { 1, 2, 3, 4 }
   local head = string.char(7, 1, 2, trainer % 256)
-  local halves = packU16(map % 65536) .. packU16(11) .. packU16(12) .. packU16(13)
-  local tail = string.char(3, 4, 5, weights[1] % 256, weights[2] % 256, weights[3] % 256, weights[4] % 256, 0)
-  return head .. halves .. tail
+  local ids = packU16(1000 + trainer) .. packU16(map % 65536)
+  local scripts = packU16(11) .. packU16(12)
+  local tail = string.char(5, 3, 4, 6, weights[1] % 256, weights[2] % 256, weights[3] % 256, weights[4] % 256)
+  return head .. ids .. scripts .. tail
 end
 
 local function phonebookBytes(records)
@@ -50,6 +50,23 @@ function T.phone_catalog_records_native_name_and_class_sources()
   Assert.equal(contact.class.entry, contact.trainer, "ordinary class entry follows the native trainer-class byte")
   local mother = assert(PokegearCatalogCompiler.decodePhonebook(phonebookBytes({ phonebookRecord(200, 11) })))
   Assert.equal(mother.contacts[1].class.kind, "blank", "the native Mom trainer class has no class label")
+end
+
+function T.phonebook_fields_follow_the_native_twenty_byte_record_layout()
+  local PokegearCatalogCompiler = require("romdump.src.digest.ui.PokegearCatalogCompiler")
+  local bytes = string.char(7, 1, 2, 5) .. packU16(0x1234) .. packU16(0x5678)
+    .. packU16(9) .. packU16(10) .. string.char(99, 3, 4, 5, 11, 12, 13, 14)
+  local decoded = assert(PokegearCatalogCompiler.decodePhonebook(phonebookBytes({ bytes })))
+  local contact = decoded.contacts[1]
+  Assert.equal(contact.trainerClass, 5, "the class byte is at offset 3")
+  Assert.equal(contact.trainerId, 0x1234, "trainer ID is the halfword at offset 4")
+  Assert.equal(contact.mapId, 0x5678, "map ID is the halfword at offset 6")
+  Assert.equal(contact.gift, 9, "gift is the halfword at offset 8")
+  Assert.equal(contact.localScript, 10, "local script is the halfword at offset 10")
+  Assert.equal(contact.rematchWeekday, 3, "weekday is the byte at offset 12")
+  Assert.equal(contact.rematchTime, 4, "time of day is the byte at offset 13")
+  Assert.equal(contact.sortWeights[1], 11, "sort weights begin at offset 16")
+  Assert.equal(contact.sortWeights[4], 14, "all four sort weights are preserved")
 end
 
 function T.native_phone_script_definitions_cover_all_numbered_slots()
@@ -224,6 +241,28 @@ function T.map_location_and_flypoint_records_cover_their_roles()
   first[1].matrix.x = -1
   local second = PokegearSources.mapLocationRecords("heartgold")
   Assert.isTrue(second[1].matrix.x ~= -1, "location records detach from the producer table")
+end
+
+function T.friend_map_phrase_rows_compile_in_source_order()
+  local PokegearCatalogCompiler = require("romdump.src.digest.ui.PokegearCatalogCompiler")
+  local PokegearSources = require("romdump.src.config.PokegearSources")
+  local MapReference = require("romdump.src.reference.hgss.maps")
+  local rows = PokegearCatalogCompiler.compileFriendMapPhrases()
+  Assert.equal(#rows, 73, "Friend's source phrase table compiles all 73 rows")
+  for index, source in ipairs(PokegearSources.friendMapPhraseSources) do
+    local symbol, unlockGroup = source[1], source[2]
+    local sourceMap = nil
+    for mapId, header in pairs(MapReference.byId) do
+      if header.symbol == symbol then
+        sourceMap = mapId
+        break
+      end
+    end
+    Assert.notNil(sourceMap, symbol .. " resolves through the generated map reference")
+    Assert.equal(rows[index].sourceIndex, index - 1, "the phrase row preserves zero-based source order")
+    Assert.equal(rows[index].mapId, sourceMap, symbol .. " compiles to its generated native map ID")
+    Assert.equal(rows[index].unlockGroup, unlockGroup, symbol .. " retains its unlock group")
+  end
 end
 
 -- Radio reception sets transcribe the native channel-selection source:

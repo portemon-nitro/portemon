@@ -92,6 +92,28 @@ local function checkCallRequest(request)
       )
     end
   end
+  if record.triggerKey ~= nil and not isNonEmptyString(record.triggerKey) then
+    Errors.raise(ScriptErrors.SCRIPT_INVALID_REFERENCE, "companion call trigger keys are non-empty strings", {})
+  end
+  local scriptedCallType = record.scriptedCallType
+  local predefinedScriptId = record.predefinedScriptId
+  if scriptedCallType == nil and predefinedScriptId == nil then
+    return
+  end
+  if
+    type(scriptedCallType) ~= "number"
+    or scriptedCallType % 1 ~= 0
+    or type(predefinedScriptId) ~= "number"
+    or predefinedScriptId % 1 ~= 0
+    or predefinedScriptId < 0
+    or not ((scriptedCallType == 2 and predefinedScriptId <= 4) or scriptedCallType == 3)
+  then
+    Errors.raise(
+      ScriptErrors.SCRIPT_INVALID_REFERENCE,
+      "companion scripted calls carry a supported source type and index",
+      {}
+    )
+  end
 end
 
 ---@param self PokegearScriptHost
@@ -211,7 +233,7 @@ function PokegearScriptHost:open(args)
     return self:_openMap(args --[[@as table<string, unknown>]])
   end
   checkCallRequest(args.request)
-  local request = args.request --[[@as table<string, string>]]
+  local request = args.request --[[@as table<string, unknown>]]
   local ok, controller = pcall(PhoneController.new, {
     state = self._state,
     catalog = self._catalog,
@@ -219,10 +241,23 @@ function PokegearScriptHost:open(args)
     world = self._world,
     audio = self._audio,
     random = self._random,
-    request = { id = request.id, contact = request.contact, direction = request.direction, kind = request.kind },
+    request = {
+      id = request.id,
+      contact = request.contact,
+      direction = request.direction,
+      kind = request.kind,
+      triggerKey = request.triggerKey,
+      scriptedCallType = request.scriptedCallType,
+      predefinedScriptId = request.predefinedScriptId,
+    },
   })
   if not ok then
-    if Errors.is(controller) then
+    if
+      Errors.is(controller)
+      or (
+        type(controller) == "table" and type((controller --[[@as table<string, unknown>]]).code) == "string"
+      )
+    then
       error(controller, 0)
     end
     Errors.raise(
@@ -239,7 +274,13 @@ function PokegearScriptHost:open(args)
     handle = handle,
     mode = args.mode,
     controller = controller,
-    request = { id = request.id, contact = request.contact, direction = request.direction, kind = request.kind },
+    request = {
+      id = request.id,
+      contact = request.contact,
+      direction = request.direction,
+      kind = request.kind,
+      triggerKey = request.triggerKey,
+    },
     parentOwner = args.parentOwner,
   }
   return handle
@@ -440,7 +481,7 @@ end
 -- session key. Staging never blocks and never touches the lease; a later
 -- setup from the same session replaces its own pending request.
 ---@param ownerKey string
----@param request { contact: string, direction: string, kind: string }
+---@param request { contact: string, direction: string, kind: string, scriptedCallType: integer?, predefinedScriptId: integer? }
 function PokegearScriptHost:stageCall(ownerKey, request)
   if self._disposed then
     Errors.raise(ScriptErrors.FEATURE_UNAVAILABLE, "a disposed companion host stages nothing", {})
@@ -452,10 +493,20 @@ function PokegearScriptHost:stageCall(ownerKey, request)
     isNonEmptyString(record.contact) and isNonEmptyString(record.direction) and isNonEmptyString(record.kind),
     "staged phone requests carry their evaluated call identity"
   )
+  checkCallRequest({
+    id = ownerKey,
+    contact = record.contact,
+    direction = record.direction,
+    kind = record.kind,
+    scriptedCallType = record.scriptedCallType,
+    predefinedScriptId = record.predefinedScriptId,
+  })
   self._staged[ownerKey] = {
     contact = record.contact --[[@as string]],
     direction = record.direction --[[@as string]],
     kind = record.kind --[[@as string]],
+    scriptedCallType = record.scriptedCallType,
+    predefinedScriptId = record.predefinedScriptId,
   }
 end
 
@@ -463,7 +514,7 @@ end
 -- session staged nothing. Consumption is exactly-once: a second take
 -- finds nothing.
 ---@param ownerKey string
----@return table<string, string>?
+---@return table<string, unknown>?
 function PokegearScriptHost:takeStagedCall(ownerKey)
   assert(isNonEmptyString(ownerKey), "staged phone requests carry their session key")
   local pending = self._staged[ownerKey]

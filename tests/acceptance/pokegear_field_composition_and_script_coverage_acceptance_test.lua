@@ -1531,7 +1531,7 @@ end
 function T.tests.dependency_bound_contacts_and_shows_stay_honest()
   withGame(TOWN, function(game)
     compositionGates(game)
-    local PhoneCall = requireFeature(
+    requireFeature(
       "game.hgss.src.pokegear.PhoneCall",
       "contact coverage has no conversation policy yet: no caller can resolve its source program"
     )
@@ -1556,18 +1556,6 @@ function T.tests.dependency_bound_contacts_and_shows_stay_honest()
     end
     local shows = assert(catalog.shows, "the catalog must carry its broadcast programs")
     Assert.equal(#shows, 12, "the compiled family must carry all twelve broadcast programs")
-
-    -- Every native caller resolves through the real policy; an unknown
-    -- family is an attributed failure, never a default conversation.
-    Assert.notNil(PhoneCall.selectProgram, "the policy must publish its program selection")
-    local selectionFailure = nil
-    local ok = pcall(function()
-      PhoneCall.selectProgram("no-such-family", {})
-    end)
-    if ok then
-      selectionFailure = "an unknown caller family selected a program instead of failing"
-    end
-    Assert.isNil(selectionFailure, "unknown caller families must never resolve to a fabricated program")
 
     -- Only contacts registered through played scripts count as
     -- end-to-end, and the journey stops at the Elm-registration leg: this
@@ -1616,11 +1604,12 @@ function T.tests.dependency_bound_contacts_and_shows_stay_honest()
     -- Route-34 Day-Care lobby, and Kurt registers in Kurt's house. No
     -- Safari script anywhere in the corpus registers a number, so Safari
     -- stays a domain-case exclusion below rather than a contact key.
-    local excluded = {
-      ["hg.trainer.202.map.0.contact.3"] = true,
-      ["hg.trainer.202.map.0.contact.4"] = true,
-      ["hg.trainer.203.map.0.contact.5"] = true,
-    }
+    local excluded = {}
+    for _, contact in ipairs(nativeContacts) do
+      if contact.family == "daycare" or contact.family == "kurt" then
+        excluded[contact.key] = true
+      end
+    end
     for key in pairs(excluded) do
       Assert.isTrue(seen[key] == true, "every excluded contact is a compiled native caller: " .. key)
     end

@@ -57,6 +57,9 @@ local function contactCatalog()
       { key = TRAINER_KEY, family = "trainer", id = 30, trainer = 108, gift = 398, map = 259, sortWeight = 30 },
     },
     contactOrder = { MOM_KEY, NEIGHBOR_KEY, TRAINER_KEY },
+    friendMapPhrases = {
+      { mapId = 9000, sourceIndex = 0, unlockGroup = 0 },
+    },
     callPermissions = {
       [9000] = { incoming = true, outgoing = true },
     },

@@ -1,8 +1,8 @@
 -- Incoming calls while the companion stays closed: whole-minute
 -- eligibility with the opening offline jump ignored, source trigger
 -- selection ahead of the random gate, exact inclusive random boundaries,
--- strict ring expiry with backward-time protection, and acceptance as the
--- single clearing boundary. One field-runtime-owned policy machine
+-- strict ring expiry with backward-time protection, and successful call
+-- completion as the single clearing boundary. One field-runtime-owned policy machine
 -- borrowing the companion state, calendar, draw streams, world facts,
 -- application host, and ring tone owner. The notification view is detached
 -- and draws no randomness. Pure policy: no love dependency.
@@ -25,6 +25,7 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 ---@field private _openingSamplePending boolean whether the first field clock sample is pending
 ---@field private _openingCheckpointRestored boolean whether construction found a saved calendar checkpoint
 ---@field private _ring table<string, unknown>? the active ring record
+---@field private _accepted table<string, unknown>? the call awaiting terminal acknowledgment
 ---@field private _disposed boolean
 local IncomingCalls = {}
 IncomingCalls.__index = IncomingCalls
@@ -123,7 +124,12 @@ function IncomingCalls.new(opts)
   assert(type(opts.world) == "table", "incoming calls borrow their world facts")
   assert(
     opts.host == nil
-      or (type(opts.host) == "table" and type(opts.host.open) == "function" and type(opts.host.isActive) == "function"),
+      or (
+        type(opts.host) == "table"
+        and type(opts.host.open) == "function"
+        and type(opts.host.isActive) == "function"
+        and type(opts.host.result) == "function"
+      ),
     "incoming calls enter accepted calls through the companion host"
   )
   assert(
@@ -151,6 +157,7 @@ function IncomingCalls.new(opts)
     _openingSamplePending = true,
     _openingCheckpointRestored = calendarState.checkpoint ~= nil,
     _ring = nil,
+    _accepted = nil,
     _disposed = false,
   }, IncomingCalls)
 end
@@ -158,6 +165,64 @@ end
 -- Asserts the runtime lifetime is still owned.
 function IncomingCalls:_checkLive()
   assert(not self._disposed, "incoming calls are disposed")
+end
+
+-- Publishes ring history or clears a trigger only after the accepted native
+-- conversation has a successful terminal result. A failed call restores the
+-- same ring so its source opportunity can be retried.
+function IncomingCalls:_settleAccepted(completedResult)
+  local accepted = self._accepted
+  if accepted == nil then
+    return
+  end
+  local terminal = completedResult
+  if terminal == nil then
+    local host = assert(self._host, "accepted incoming calls retain their companion host")
+    local result = host.result
+    assert(type(result) == "function", "incoming acknowledgments read the composed call result")
+    terminal = result(host, accepted.handle --[[@as table<string, unknown>]])
+  end
+  if terminal == nil then
+    return
+  end
+  local ring = accepted.ring --[[@as table<string, unknown>]]
+  self._accepted = nil
+  if terminal.error ~= nil or terminal.signal == false then
+    self._ring = ring
+    return
+  end
+  if ring.kind == IncomingCalls.KIND_EVENT and ring.triggerKey ~= nil and ring.clearOnPickup ~= true then
+    local setTrigger = self._state.setTrigger
+    setTrigger(self._state, ring.triggerKey --[[@as string]], false)
+  elseif ring.kind == IncomingCalls.KIND_ORDINARY then
+    local readPhone = self._state.readPhone
+    local history = readPhone(self._state).history
+    assert(type(history) == "table", "successful acceptance reads the call journal")
+    local recorded = {}
+    for contactKey, value in pairs(history) do
+      recorded[contactKey] = value
+    end
+    recorded[
+      ring.contactKey --[[@as string]]
+    ] = true
+    local setHistory = self._state.setCallHistory
+    setHistory(self._state, recorded)
+  end
+end
+
+-- Receives a terminal result while the field still owns the host handle.
+-- FieldSession closes that handle immediately after this acknowledgment,
+-- so trigger and history effects cannot depend on reading a stale handle
+-- on a later field opportunity.
+---@param handle table<string, unknown>
+---@param terminal table<string, unknown>
+function IncomingCalls:onAcceptedCallResult(handle, terminal)
+  self:_checkLive()
+  local accepted = self._accepted
+  if accepted == nil or accepted.handle ~= handle or type(terminal) ~= "table" then
+    fail("accepted call results belong to the pending native conversation", { handle = handle })
+  end
+  self:_settleAccepted(terminal)
 end
 
 -- Attempts the source ring tone without stacking: a sequence that is
@@ -185,12 +250,16 @@ end
 ---@param kind integer
 ---@param triggerKey string?
 ---@param clearOnPickup boolean?
-function IncomingCalls:_startRing(contactKey, kind, triggerKey, clearOnPickup)
+---@param scriptedCallType integer?
+---@param predefinedScriptId integer?
+function IncomingCalls:_startRing(contactKey, kind, triggerKey, clearOnPickup, scriptedCallType, predefinedScriptId)
   self._ring = {
     contactKey = contactKey,
     kind = kind,
     triggerKey = triggerKey,
     clearOnPickup = clearOnPickup == true,
+    scriptedCallType = scriptedCallType,
+    predefinedScriptId = predefinedScriptId,
     startEpoch = nil,
     counter = 0,
   }
@@ -198,7 +267,7 @@ function IncomingCalls:_startRing(contactKey, kind, triggerKey, clearOnPickup)
 end
 
 ---@param record unknown
----@return string triggerKey, integer kind, boolean clearOnPickup
+---@return string triggerKey, integer kind, boolean clearOnPickup, integer? scriptedCallType, integer? predefinedScriptId
 local function checkTriggerRecord(record)
   if type(record) ~= "table" then
     fail("incoming call triggers carry key, contact, and kind", {})
@@ -217,9 +286,17 @@ local function checkTriggerRecord(record)
   if type(entry.clearOnPickup) ~= "boolean" then
     fail("incoming call triggers carry their clear policy", { key = entry.key })
   end
+  if entry.scriptedCallType ~= nil and (entry.scriptedCallType ~= 3 or type(entry.predefinedScriptId) ~= "number") then
+    fail("scripted incoming calls carry a predefined script ID", { key = entry.key })
+  end
+  if entry.scriptedCallType == nil and entry.predefinedScriptId ~= nil then
+    fail("predefined script IDs require a scripted call type", { key = entry.key })
+  end
   return entry.key, --[[@as string]]
     entry.kind, --[[@as integer]]
-    entry.clearOnPickup
+    entry.clearOnPickup,
+    entry.scriptedCallType, --[[@as integer?]]
+    entry.predefinedScriptId --[[@as integer?]]
 end
 
 ---@param self IncomingCalls
@@ -311,7 +388,7 @@ end
 -- of selecting a plausible caller.
 ---@param self IncomingCalls
 ---@param args { mapKey: unknown?, mapId: unknown? }
----@return table<integer, { key: string, contactKey: string, kind: integer, clearOnPickup: boolean }>
+---@return { key: string, contactKey: string, kind: integer, clearOnPickup: boolean, scriptedCallType: integer?, predefinedScriptId: integer? }[]
 function IncomingCalls:_eligibleTriggers(args)
   local readPhone = self._state.readPhone --[[@as fun(self: table<string, unknown>): table<string, unknown>]]
   local phone = readPhone(self._state)
@@ -321,6 +398,7 @@ function IncomingCalls:_eligibleTriggers(args)
   local registered = phone.contacts
   assert(type(registered) == "table", "trigger selection reads the acquired contacts")
   local triggers = self._catalog.callTriggers --[[@as table<integer, unknown>]]
+  ---@type table<integer, { key: string, contactKey: string, kind: integer, clearOnPickup: boolean, scriptedCallType: integer?, predefinedScriptId: integer? }>
   local out = {}
   for _, record in ipairs(triggers) do
     if
@@ -328,7 +406,7 @@ function IncomingCalls:_eligibleTriggers(args)
     then
       local key = (record --[[@as table<string, unknown>]]).key --[[@as string]]
       if set[key] == true then
-        local triggerKey, kind, clearOnPickup = checkTriggerRecord(record)
+        local triggerKey, kind, clearOnPickup, scriptedCallType, predefinedScriptId = checkTriggerRecord(record)
         local contact = (record --[[@as table<string, unknown>]]).contact --[[@as string]]
         if self:_contactRecord(contact) == nil then
           fail("incoming call triggers reference a catalogued contact", { key = triggerKey, contact = contact })
@@ -337,7 +415,14 @@ function IncomingCalls:_eligibleTriggers(args)
         if (registered[contact] == nil and not daycare) or (self:_isSameMap(contact, args) and not daycare) then
           -- The caller is not reachable on this map through this trigger.
         else
-          out[#out + 1] = { key = triggerKey, contactKey = contact, kind = kind, clearOnPickup = clearOnPickup }
+          out[#out + 1] = {
+            key = triggerKey,
+            contactKey = contact,
+            kind = kind,
+            clearOnPickup = clearOnPickup,
+            scriptedCallType = scriptedCallType,
+            predefinedScriptId = predefinedScriptId,
+          }
         end
       end
     end
@@ -443,6 +528,10 @@ end
 ---@param args { mapKey: unknown?, mapId: unknown?, movementState: string, higherPriorityClaimed: boolean? }
 function IncomingCalls:onOpportunity(args)
   self:_checkLive()
+  self:_settleAccepted()
+  if self._accepted ~= nil then
+    return
+  end
   assert(type(args) == "table", "field opportunities carry their stable-tick record")
   assert(
     type(args.movementState) == "string" and args.movementState ~= "",
@@ -472,7 +561,14 @@ function IncomingCalls:onOpportunity(args)
     local draw = self._random.lc --[[@as fun(self: table<string, unknown>, label: string): integer]]
     local pick = draw(self._random, "incoming-trigger-pick") % #triggers
     local selected = triggers[pick + 1]
-    self:_startRing(selected.contactKey, selected.kind, selected.key, selected.clearOnPickup)
+    self:_startRing(
+      selected.contactKey,
+      selected.kind,
+      selected.key,
+      selected.clearOnPickup,
+      selected.scriptedCallType,
+      selected.predefinedScriptId
+    )
     return
   end
   local drawMt = self._random.mt --[[@as fun(self: table<string, unknown>, label: string): integer]]
@@ -528,11 +624,8 @@ function IncomingCalls:setTrigger(key, accelerate)
   end
 end
 
--- Accepts the active ring through the companion host: acquires first so a
--- failed acquisition consumes nothing, then clears the event trigger for
--- kind-three calls or records ordinary history for kind-zero calls,
--- resets ringing, and enters the incoming call. Clearing happens at
--- acceptance, never at ring start, expiry, or hangup.
+-- Accepts the active ring through the companion host. The ring, trigger,
+-- and history stay retryable until the conversation reports success.
 ---@param parentOwner string
 ---@return table<string, unknown>? the entered host handle
 function IncomingCalls:accept(parentOwner)
@@ -545,6 +638,9 @@ function IncomingCalls:accept(parentOwner)
     contact = ring.contactKey,
     direction = "incoming",
     kind = "incoming",
+    triggerKey = ring.triggerKey,
+    scriptedCallType = ring.scriptedCallType,
+    predefinedScriptId = ring.predefinedScriptId,
   }
   if self._host == nil then
     fail("no companion host is composed for the incoming call", { contact = ring.contactKey })
@@ -556,22 +652,10 @@ function IncomingCalls:accept(parentOwner)
   if not ok then
     error(handle, 0)
   end
-  if ring.kind == IncomingCalls.KIND_EVENT and ring.triggerKey ~= nil and ring.clearOnPickup ~= true then
-    local setTrigger = self._state.setTrigger --[[@as fun(self: table<string, unknown>, key: string, active: boolean)]]
-    setTrigger(self._state, ring.triggerKey, false)
-  elseif ring.kind == IncomingCalls.KIND_ORDINARY then
-    local readPhone = self._state.readPhone --[[@as fun(self: table<string, unknown>): table<string, unknown>]]
-    local history = readPhone(self._state).history
-    assert(type(history) == "table", "acceptance reads the call journal")
-    local recorded = {}
-    for contactKey, value in pairs(history) do
-      recorded[contactKey] = value
-    end
-    recorded[ring.contactKey] = true
-    local setHistory = self._state.setCallHistory --[[@as fun(self: table<string, unknown>, history: table<string, boolean>)]]
-    setHistory(self._state, recorded)
-  end
+  assert(type(handle) == "table", "the companion host returns its accepted-call handle")
+  self._accepted = { handle = handle, ring = ring }
   self._ring = nil
+  self:_settleAccepted()
   return handle
 end
 
@@ -584,6 +668,7 @@ function IncomingCalls:notification()
   if self._disposed then
     return false
   end
+  self:_settleAccepted()
   local ring = self._ring
   if ring == nil then
     return false

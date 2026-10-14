@@ -326,7 +326,6 @@ local function phoneWorld()
     teamsByTier = {
       [2] = { tier = 2, members = { { species = "test.pidgeotto", level = 13 } } },
     },
-    rematchReady = {},
     queryRematch = function(_, contact)
       return rematches[contact]
     end,

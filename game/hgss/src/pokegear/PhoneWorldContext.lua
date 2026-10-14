@@ -118,9 +118,218 @@ function PhoneWorldContext:callFacts(contact)
   local runtime = self._owners.runtime
   assert(type(runtime) == "table", "phone calls read the live field runtime")
   local facts = self:nativeSelectorFacts(contact) --[[@as table<string, unknown>]]
+  if contact.family == "trainer" then
+    local events = self._owners.flags
+    assert(type(events) == "table" and type(events.isFlagSet) == "function", "generic selectors read live event flags")
+    local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
+    local flags = FieldScriptSymbols.flagsByName
+    assert(type(flags) == "table", "generic selectors use native story flag identities")
+    local isFlagSet = events.isFlagSet --[[@as fun(self: table<string, unknown>, flag: integer): boolean]]
+    facts.radioTowerBeaten = isFlagSet(events, flags.FLAG_BEAT_RADIO_TOWER_ROCKETS) == true
+    facts.rocketTakeoverActive = isFlagSet(events, flags.FLAG_ROCKET_TAKEOVER_ACTIVE) == true
+    facts.nationalParkCaller = contact.map == 96
+    facts.bugContestActive = isFlagSet(events, flags.FLAG_BUG_CONTEST_ACTIVE) == true
+    local queryRematch = self._owners.state.queryRematch
+    assert(type(queryRematch) == "function", "generic selectors read persisted rematch state")
+    local rematch = queryRematch(self._owners.state, contact.key --[[@as string]])
+    facts.seeking = type(rematch) == "table" and rematch.stage > 0
+    local readPhone = self._owners.state.readPhone
+    assert(type(readPhone) == "function", "generic selectors read persisted contact rewards")
+    local phone = readPhone(self._owners.state)
+    assert(type(phone) == "table" and type(phone.contacts) == "table", "generic selectors read phone contacts")
+    local savedContact = phone.contacts[
+      contact.key --[[@as string]]
+    ]
+    facts.pendingGenericGift = type(savedContact) == "table" and savedContact.reward ~= nil
+  end
+  if contact.family == "friend" then
+    local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
+    local events = assert(self._owners.flags, "Friend calls read flypoint event flags")
+    local isFlagSet = events.isFlagSet
+    assert(type(isFlagSet) == "function", "Friend calls use the field event reader")
+    local currentMap = runtime.session and runtime.session.currentMap or runtime.runtimeMap
+    assert(
+      type(currentMap) == "table" and type(currentMap.mapId) == "number",
+      "Friend calls read the live native map ID"
+    )
+    local catalog = assert(self._owners.catalog, "Friend calls use the compiled catalog")
+    local phrases = assert(catalog.friendMapPhrases, "Friend calls use compiled source phrase rows")
+    local locationIndex = nil
+    for _, phrase in ipairs(phrases) do
+      if phrase.mapId == currentMap.mapId then
+        locationIndex = phrase.sourceIndex
+        break
+      end
+    end
+    facts.friendMapIndex = locationIndex
+    local preferences = self._owners.state:readPreferences()
+    assert(
+      type(preferences) == "table" and type(preferences.mapUnlockLevel) == "number",
+      "Friend calls read saved map progression"
+    )
+    local firstFlypointFlag = FieldScriptSymbols.flagsByName.FLAG_SYS_FLYPOINT_PALLET
+    local flypoint25Unlocked = isFlagSet(events, firstFlypointFlag + 25)
+    local mapUnlocked = preferences.mapUnlockLevel > 0
+    local eligiblePhrases = {}
+    for _, phrase in ipairs(phrases) do
+      local eligible = phrase.unlockGroup == 0
+        or phrase.unlockGroup == 1 and flypoint25Unlocked
+        or phrase.unlockGroup == 2 and mapUnlocked
+      if eligible then
+        eligiblePhrases[#eligiblePhrases + 1] = phrase.sourceIndex
+      end
+    end
+    facts.friendEligiblePhraseIndices = eligiblePhrases
+  end
+  if contact.family == "elm" then
+    local events = self._owners.flags
+    if type(events) ~= "table" or type(events.isFlagSet) ~= "function" then
+      missingOwner("flags", "Elm calls need their ordered story flags")
+    end
+    local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
+    local flags = FieldScriptSymbols.flagsByName
+    local isFlagSet = events.isFlagSet --[[@as fun(self: table<string, unknown>, flag: integer): boolean]]
+    facts.elmPanicCallReceived = isFlagSet(events, flags.FLAG_GOT_ELMS_PANIC_CALL) == true
+    facts.elmEggCallReceived = isFlagSet(events, flags.FLAG_GOT_PICK_UP_EGG_CALL_FROM_ELM) == true
+    facts.elmEggReceived = isFlagSet(events, flags.FLAG_GOT_EGG_FROM_ELMS_ASSISTANT) == true
+    facts.togePiEggHatched = isFlagSet(events, flags.FLAG_SYS_HATCHED_TOGEPI_EGG) == true
+    facts.elmEverstoneReceived = isFlagSet(events, flags.FLAG_GOT_EVERSTONE_FROM_ELM) == true
+    facts.elmSsTicketReceived = isFlagSet(events, flags.FLAG_GOT_SS_TICKET_FROM_ELM) == true
+    facts.toldAboutPokerus = isFlagSet(events, flags.FLAG_WAS_TOLD_ABOUT_POKERUS) == true
+    facts.gameClear = isFlagSet(events, flags.FLAG_GAME_CLEAR) == true
+    facts.rocketTakeoverActive = isFlagSet(events, flags.FLAG_ROCKET_TAKEOVER_ACTIVE) == true
+  end
+  if contact.family == "kenji" then
+    local readPhone = self._owners.state.readPhone
+    assert(type(readPhone) == "function", "Kenji's native selector reads persisted caller facts")
+    local phone = readPhone(self._owners.state)
+    assert(type(phone) == "table" and type(phone.kenji) == "table", "Kenji's selector reads his saved record")
+    local kenji = phone.kenji
+    facts.kenjiWaitDays = kenji.waitDays
+    facts.kenjiActive = kenji.active
+    local queryRematch = self._owners.state.queryRematch
+    assert(type(queryRematch) == "function", "Kenji's native selector reads rematch seeking state")
+    local rematch = queryRematch(self._owners.state, contact.key --[[@as string]])
+    facts.seeking = type(rematch) == "table" and rematch.stage > 0
+  end
+  if contact.family == "irwin" or contact.family == "buena" then
+    local events = self._owners.flags
+    if type(events) ~= "table" or type(events.isFlagSet) ~= "function" then
+      missingOwner("flags", "this caller needs the live Rocket takeover flag")
+    end
+    assert(type(events) == "table", "native special callers read the live event owner")
+    local flags = require("libs.assets.src.field.FieldScriptSymbols").flagsByName
+    local isFlagSet = events.isFlagSet --[[@as fun(self: table<string, unknown>, flag: integer): boolean]]
+    facts.rocketTakeoverActive = isFlagSet(events, flags.FLAG_ROCKET_TAKEOVER_ACTIVE) == true
+    if contact.family == "irwin" then
+      local playerData = runtime.playerData
+      local profile = type(playerData) == "table" and playerData.profile or nil
+      if type(profile) ~= "table" or type(profile.badges) ~= "number" then
+        missingOwner("player", "Irwin's incoming selector needs the badge profile")
+      end
+      local PlayerProgression = require("libs.hgss.src.save.PlayerProgression")
+      local progression = PlayerProgression.new(profile --[[@as table<string, unknown>]])
+      facts.badges = progression:badgeCount()
+      facts.plainBadge = progression:hasBadge("plain")
+      facts.fogBadge = progression:hasBadge("fog")
+      facts.marshBadge = progression:hasBadge("marsh")
+      facts.risingBadge = progression:hasBadge("rising")
+      facts.irwinInitialTrigger = isFlagSet(events, flags.FLAG_UNK_998) == true
+      facts.irwinNationalBadgeMessageSeen = isFlagSet(events, flags.FLAG_UNK_9A4) == true
+      facts.irwinMarshBadgeMessageSeen = isFlagSet(events, flags.FLAG_UNK_9A3) == true
+      facts.irwinSnorlaxMessageSeen = isFlagSet(events, flags.FLAG_UNK_9A2) == true
+      facts.irwinVermilionMessageSeen = isFlagSet(events, flags.FLAG_UNK_9A1) == true
+      facts.irwinVermilionEvent = isFlagSet(events, flags.FLAG_UNK_087) == true
+      facts.vermilionFlypoint = isFlagSet(events, flags.FLAG_SYS_FLYPOINT_VERMILION) == true
+      facts.gameClear = isFlagSet(events, flags.FLAG_GAME_CLEAR) == true
+      facts.irwinGameClearMessageSeen = isFlagSet(events, flags.FLAG_UNK_9A5) == true
+      facts.radioTowerBeaten = isFlagSet(events, flags.FLAG_BEAT_RADIO_TOWER_ROCKETS) == true
+      facts.rocketHideoutCleared = isFlagSet(events, flags.FLAG_ROCKET_HIDEOUT_CLEARED) == true
+      facts.irwinHideoutMessageSeen = isFlagSet(events, flags.FLAG_UNK_9A0) == true
+      facts.irwinUnknownProgress = isFlagSet(events, flags.FLAG_UNK_96A) == true
+      facts.irwinUnknownProgressMessageSeen = isFlagSet(events, flags.FLAG_UNK_99F) == true
+      facts.snorlaxMet = isFlagSet(events, flags.FLAG_SNORLAX_MEET) == true
+    end
+  end
+  if contact.family == "kurt" and facts.localMap == false then
+    local events = self._owners.flags
+    local mart = runtime.martService
+    local items = runtime.itemCatalog
+    if type(events) ~= "table" or type(events.isFlagSet) ~= "function" then
+      missingOwner("flags", "Kurt's call needs the caller and daily-work flags")
+    end
+    if type(mart) ~= "table" or type(mart.pendingKurt) ~= "function" then
+      missingOwner("mart", "Kurt's call needs the pending Apricorn order")
+    end
+    if type(items) ~= "table" or type(items.item) ~= "function" then
+      missingOwner("items", "Kurt's call needs the ordered Ball's item name")
+    end
+    local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
+    local flags = FieldScriptSymbols.flagsByName
+    local isFlagSet = events.isFlagSet --[[@as fun(self: table<string, unknown>, flag: integer): boolean]]
+    local pendingKurt = mart.pendingKurt --[[@as fun(self: table<string, unknown>): table<string, unknown>?]]
+    local order = pendingKurt(mart)
+    facts.kurtRepeatCaller = isFlagSet(events, flags.FLAG_UNK_127) == true
+    facts.kurtDailyWork = isFlagSet(events, flags.FLAG_DAILY_KURT_MAKING_BALLS) == true
+    facts.kurtQuantity = type(order) == "table" and order.quantity or 0
+    if type(order) == "table" and not facts.kurtDailyWork then
+      local KurtConversions = require("game.hgss.src.apricorn.KurtConversions")
+      local itemCatalog = items --[[@as table<string, unknown>]]
+      local item = itemCatalog.item --[[@as fun(self: table<string, unknown>, key: string): table<string, unknown>]]
+      local ballKey = KurtConversions.ballItemKey(order.apricornKey --[[@as string]])
+      facts.kurtBallName = item(itemCatalog, ballKey).name
+    end
+  end
+  if contact.family == "mother" then
+    local readPhone = self._owners.state.readPhone
+    assert(type(readPhone) == "function", "Mom's native call reads her persisted savings queue")
+    local phone = readPhone(self._owners.state)
+    assert(type(phone) == "table" and type(phone.mom) == "table", "Mom's native call reads her saved record")
+    local mom = phone.mom
+    assert(
+      type(mom.balance) == "number" and type(mom.gifts) == "table",
+      "Mom's native call reads the balance and pending gifts"
+    )
+    local events = self._owners.flags
+    assert(type(events) == "table" and type(events.isFlagSet) == "function", "Mom's native call reads story flags")
+    local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
+    local savingsFlag = FieldScriptSymbols.flagsByName.FLAG_SYS_MOMS_SAVINGS
+    assert(type(savingsFlag) == "number", "Mom's native call uses its source savings flag")
+    facts.momSavingsBalance = mom.balance
+    facts.momSavingsActive = events.isFlagSet(events, savingsFlag) == true
+    facts.momGiftQueueFull = #mom.gifts >= 5
+    local session = runtime.session
+    local currentMap = type(session) == "table" and session.currentMap or runtime.runtimeMap
+    local catalog = self._owners.catalog
+    if
+      type(currentMap) ~= "table"
+      or type(currentMap.mapId) ~= "number"
+      or type(catalog) ~= "table"
+      or type(catalog.momCallIntroParameters) ~= "table"
+    then
+      missingOwner("phone", "Mom's scripted intro needs the current map and compiled map parameters")
+    end
+    local parameter = catalog.momCallIntroParameters[currentMap.mapId]
+    if type(parameter) ~= "number" then
+      missingOwner("phone", "Mom's current map has no compiled intro parameter")
+    end
+    facts.momIntroParameter = parameter
+  end
   local playerData = runtime.playerData
   if type(playerData) == "table" and type(playerData.profile) == "table" then
-    facts.money = playerData.profile.money
+    local profile = playerData.profile
+    facts.money = profile.money
+    facts.playerGender = profile.gender
+    facts.nationalDexUnlocked = profile.nationalDex
+    local badgeMask = profile.badges
+    if type(badgeMask) == "number" and badgeMask % 1 == 0 and badgeMask >= 0 then
+      local badges = 0
+      while badgeMask > 0 do
+        badges = badges + badgeMask % 2
+        badgeMask = math.floor(badgeMask / 2)
+      end
+      facts.badges = badges
+    end
   end
   local clock = runtime.localClock
   if type(clock) == "table" and type(clock.nowLocal) == "function" then
@@ -137,6 +346,47 @@ function PhoneWorldContext:callFacts(contact)
       facts.weekday = weekday
       local hour = math.floor(sample.hour)
       facts.timeOfDay = hour >= 4 and hour < 10 and 0 or (hour >= 20 or hour < 4) and 2 or 1
+      facts.hour = hour
+    end
+  end
+  if contact.family == "baoba" then
+    local events = self._owners.flags
+    if type(events) ~= "table" or type(events.getVar) ~= "function" then
+      missingOwner("flags", "Baoba calls need the Safari progression variable")
+    end
+    local symbols = require("libs.assets.src.field.FieldScriptSymbols")
+    local variable = symbols.variablesByName.VAR_UNK_4057
+    local getVar = events.getVar --[[@as fun(self: table<string, unknown>, variableId: integer): integer]]
+    facts.baobaProgress = getVar(events, variable)
+    local state = self._owners.state
+    local readAreas = state.readSafariAreas
+    assert(type(readAreas) == "function", "Baoba calls read the saved ordered Safari areas")
+    facts.safariArrangementAreas = readAreas(state)
+  end
+  if contact.family == "daycare" then
+    local daycare = self:_domainOwner("daycare")
+    local readFacts = daycare.phoneFacts
+    if type(readFacts) ~= "function" then
+      missingOwner("daycare", "the saved Day Care facts cannot serve phone dialogue")
+    end
+    local factsForPhone = readFacts(daycare, assert(runtime.monCatalog, "Day Care reads the composed mon catalog"))
+    facts.daycareMons = factsForPhone.mons
+    facts.daycareEggPid = factsForPhone.eggPid
+    facts.daycareCompatibility = factsForPhone.compatibility
+  end
+  if contact.family == "bill" then
+    facts.pcFreeSlots = self:read("bill.pc-free")
+    if type(facts.pcFreeSlots) == "number" and facts.pcFreeSlots > 0 then
+      facts.pcBoxName = self:read("bill.pc-box-name")
+    end
+  end
+  if contact.family == "buena" then
+    local events = self._owners.flags
+    assert(type(events) == "table" and type(events.isFlagSet) == "function", "Buena calls read the game-clear flag")
+    local flags = require("libs.assets.src.field.FieldScriptSymbols").flagsByName
+    facts.gameClear = events.isFlagSet(events, flags.FLAG_GAME_CLEAR) == true
+    if type(facts.hour) == "number" then
+      facts.passwordOnAir = facts.hour % 3 == 2
     end
   end
   local party = runtime.monService
@@ -150,8 +400,137 @@ function PhoneWorldContext:callFacts(contact)
     facts.dexSeen = #bucket.seen
     facts.dexCaught = #bucket.caught
     facts.nationalDex = dex:isNationalDexComplete()
+    if contact.family == "oak" then
+      local dexNumbers = self._owners.summaryDexNumbers
+      if type(dexNumbers) ~= "table" then
+        missingOwner("dex", "Oak's calls need the compiled regional and National Dex numbers")
+      end
+      assert(type(dexNumbers) == "table", "Oak Dex counts use the compiled species number table")
+      local counts = {
+        nationalDexSeen = 0,
+        nationalDexOwned = 0,
+        johtoDexSeen = 0,
+        johtoDexOwned = 0,
+      }
+      local function countSpecies(dexName, numberKey, field)
+        for _, key in ipairs(bucket[field]) do
+          local numbers = dexNumbers[key]
+          assert(type(numbers) == "table", "the summary manifest numbers every known Dex species")
+          local number = numbers[numberKey]
+          if number ~= nil then
+            assert(type(number) == "number" and number % 1 == 0 and number >= 0)
+            if number > 0 then
+              local suffix = field == "seen" and "Seen" or "Owned"
+              local countKey = dexName .. "Dex" .. suffix
+              counts[countKey] = counts[countKey] + 1
+            end
+          end
+        end
+      end
+      countSpecies("national", "national", "seen")
+      countSpecies("national", "national", "caught")
+      countSpecies("johto", "regional", "seen")
+      countSpecies("johto", "regional", "caught")
+      facts.nationalDexSeen = counts.nationalDexSeen
+      facts.nationalDexOwned = counts.nationalDexOwned
+      facts.johtoDexSeen = counts.johtoDexSeen
+      facts.johtoDexOwned = counts.johtoDexOwned
+      facts.nationalSeen = counts.nationalDexSeen
+      facts.nationalOwned = counts.nationalDexOwned
+      facts.nationalComplete = dex:isNationalDexComplete()
+      facts.johtoSeen = counts.johtoDexSeen
+      facts.johtoOwned = counts.johtoDexOwned
+      facts.johtoComplete = counts.johtoDexOwned > 253
+    end
+  end
+  local eventState = self._owners.flags or runtime.eventState
+  if type(eventState) == "table" and type(eventState.isFlagSet) == "function" then
+    local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
+    local isFlagSet = eventState.isFlagSet --[[@as fun(self: table<string, unknown>, flag: integer): boolean]]
+    facts.acknowledgedJohto =
+      isFlagSet(eventState, FieldScriptSymbols.flagsByName.FLAG_SYS_OAK_ACKNOWLEDGED_JOHTO_DEX_COMPLETION)
+    facts.acknowledgedNational =
+      isFlagSet(eventState, FieldScriptSymbols.flagsByName.FLAG_SYS_OAK_ACKNOWLEDGED_NATIONAL_DEX_COMPLETION)
+  end
+  if contact.family == "gym" then
+    local state = self._owners.state
+    local queryRematch = state.queryRematch
+    if type(queryRematch) ~= "function" then
+      missingOwner("phone", "gym calls need the durable rematch state")
+    end
+    assert(type(queryRematch) == "function", "gym calls read durable rematches")
+    assert(type(contact.key) == "string", "gym calls retain their registered contact key")
+    local rematch = queryRematch(state, contact.key)
+    if rematch ~= nil then
+      assert(
+        type(rematch) == "table" and type(rematch.stage) == "number" and rematch.stage % 1 == 0,
+        "gym rematches carry their staged progression"
+      )
+    end
+    facts.seeking = type(rematch) == "table" and rematch.stage > 0
+    -- The retail capacity routine examines one leader and compares the
+    -- resulting count with five, so its native invitation path has room.
+    facts.dojoHasRoom = true
   end
   return facts
+end
+
+-- Delegates the source type-one buffer selection to the field runtime,
+-- which owns the composed trainer and encounter catalogs.
+---@param contact table<string, unknown>
+---@param random table<string, unknown>
+---@param timeOfDay integer
+---@return table<integer, string>
+function PhoneWorldContext:genericTrainerSubstitutions(contact, random, timeOfDay)
+  local runtime = self._owners.runtime
+  if type(runtime) ~= "table" or type(runtime.genericTrainerPhoneSpecies) ~= "function" then
+    missingOwner("trainers and encounters", "generic trainer dialogue needs the composed species selectors")
+  end
+  local selectSpecies = runtime.genericTrainerPhoneSpecies
+  --[[@as fun(self: table<string, unknown>, contact: table<string, unknown>, timeOfDay: integer, random: table<string, unknown>): table<integer, string>]]
+  return selectSpecies(runtime, contact, timeOfDay, random)
+end
+
+-- Writes Oak's completion acknowledgment through the field event owner.
+---@param dex "johto"|"national"
+function PhoneWorldContext:setOakAcknowledged(dex)
+  assert(dex == "johto" or dex == "national", "Oak acknowledges one native Dex")
+  local runtime = self._owners.runtime
+  local flags = self._owners.flags or (type(runtime) == "table" and runtime.eventState or nil)
+  if type(flags) ~= "table" then
+    missingOwner("flags", "no live world flag owner is available")
+  end
+  assert(type(flags) == "table", "Oak acknowledgments write through a live event state")
+  local setFlag = flags.setFlag
+  assert(type(setFlag) == "function", "Oak acknowledgments write through FieldEventState")
+  local symbols = require("libs.assets.src.field.FieldScriptSymbols")
+  local flag = dex == "johto" and symbols.flagsByName.FLAG_SYS_OAK_ACKNOWLEDGED_JOHTO_DEX_COMPLETION
+    or symbols.flagsByName.FLAG_SYS_OAK_ACKNOWLEDGED_NATIONAL_DEX_COMPLETION
+  assert(type(flag) == "number", "Oak acknowledgment names a native event flag")
+  setFlag(flags, flag --[[@as integer]])
+end
+
+-- Commits the one-shot story flags selected by Irwin's incoming native
+-- script. These flags are consumed before the selected page is shown.
+---@param effect { clearInitialTrigger: boolean, setOneShotFlag: string? }
+function PhoneWorldContext:applyIrwinIncomingEffect(effect)
+  assert(type(effect) == "table", "Irwin effects are a source-selected record")
+  local events = self._owners.flags
+  if type(events) ~= "table" or type(events.setFlag) ~= "function" or type(events.clearFlag) ~= "function" then
+    missingOwner("flags", "Irwin's incoming selector needs the story flag writer")
+  end
+  assert(type(events) == "table", "Irwin effects write through the live event owner")
+  local symbols = require("libs.assets.src.field.FieldScriptSymbols").flagsByName
+  local setFlag = events.setFlag --[[@as fun(self: table<string, unknown>, flag: integer)]]
+  local clearFlag = events.clearFlag --[[@as fun(self: table<string, unknown>, flag: integer)]]
+  if effect.clearInitialTrigger then
+    clearFlag(events, assert(symbols.FLAG_UNK_998) --[[@as integer]])
+  end
+  if effect.setOneShotFlag ~= nil then
+    local flag = symbols[effect.setOneShotFlag]
+    assert(type(flag) == "number", "Irwin one-shot effects name native flags")
+    setFlag(events, flag --[[@as integer]])
+  end
 end
 
 ---@param contact string
@@ -316,8 +695,9 @@ function PhoneWorldContext:_domainOwner(domain)
         party = "monService",
         dex = "dexKnowledge",
         bag = "bagService",
-        pc = "pcService",
+        pc = "monService",
         trainer = "_trainerFactory",
+        daycare = "daycareState",
       }
       local field = runtimeFields[domain]
       if field ~= nil then
@@ -355,13 +735,48 @@ function PhoneWorldContext:read(key)
   end
   if domain == "bill" then
     local pc = self._owners.pc
-    if type(pc) ~= "table" then
-      missingOwner("pc", "no live box capacity owner is available")
+    if type(pc) == "table" and pc.freeSlots ~= nil and fact == "pc-free" then
+      return pc.freeSlots
     end
-    assert(type(pc) == "table", "phone box reads borrow the live capacity owner")
-    local capacity = pc --[[@as table<string, unknown>]]
+    local capacity = self:_domainOwner("pc")
     if fact == "pc-free" then
-      return capacity.freeSlots
+      local boxCount = capacity.boxCount --[[@as fun(self: table<string, unknown>): integer]]
+      local boxMon = capacity.boxMon --[[@as fun(self: table<string, unknown>, box: integer, slot: integer): table<string, unknown>?]]
+      assert(type(boxCount) == "function" and type(boxMon) == "function", "Bill capacity reads all saved PC boxes")
+      local count = boxCount(capacity)
+      local Boxes = require("libs.mons.src.Boxes")
+      local freeSlots = 0
+      for box = 0, count - 1 do
+        for slot = 0, Boxes.SLOTS_PER_BOX - 1 do
+          if boxMon(capacity, box, slot) == nil then
+            freeSlots = freeSlots + 1
+          end
+        end
+      end
+      return freeSlots
+    elseif fact == "pc-box-name" then
+      local activeBox = capacity.activeBox --[[@as fun(self: table<string, unknown>): integer]]
+      local metadata = capacity.boxMetadata --[[@as fun(self: table<string, unknown>, box: integer): table<string, unknown>]]
+      assert(type(activeBox) == "function" and type(metadata) == "function", "Bill's box label reads the active PC box")
+      local box = activeBox(capacity)
+      local details = metadata(capacity, box)
+      if type(details.name) == "string" and details.name ~= "" then
+        return details.name
+      end
+      local runtime = self._owners.runtime
+      local menu = type(runtime) == "table" and runtime.pokemonMenu or nil
+      local manifest = type(menu) == "table" and menu.pcManifest or nil
+      local storage = type(manifest) == "table" and manifest.storage or nil
+      local boxNames = type(storage) == "table" and storage.boxNames or nil
+      if type(boxNames) == "table" and box < #boxNames then
+        return boxNames[box + 1]
+      end
+      local format = type(storage) == "table" and storage.expansionNameFormat or nil
+      if type(format) == "table" then
+        local expansion = format --[[@as { prefix: string, firstNumber: integer, suffix: string }]]
+        return expansion.prefix .. tostring(expansion.firstNumber + box) .. expansion.suffix
+      end
+      missingOwner("pc", "the active box has no saved or compiled name")
     end
     assert(false, "phone box reads name a known bill fact")
   end
@@ -449,6 +864,129 @@ function PhoneWorldContext:setRematch(contact, record)
   state:setRematch(contact, record)
 end
 
+-- Prepares the source side effect attached to one selected numeric phone
+-- definition. The returned commit publishes it only after native text
+-- resolves; word definitions carry their selected caller-bank entry.
+---@param contact string
+---@param definition table<string, unknown>
+---@param random table<string, unknown>
+---@return { substitutions: table<string, integer>, commit: fun() } prepared native effect
+function PhoneWorldContext:prepareCallDefinitionEffect(contact, definition, random)
+  assert(type(contact) == "string" and contact ~= "", "phone definition effects identify their caller")
+  assert(type(definition) == "table", "phone definition effects read a compiled source record")
+  assert(type(random) == "table", "phone definition effects use the companion random streams")
+  local kind = definition.kind
+  local parameter0 = definition.param0
+  local parameter1 = definition.param1
+  if kind == "none" then
+    local function commitNoEffect() end
+    return { substitutions = {}, commit = commitNoEffect }
+  elseif kind == "rematch" then
+    local state = self._owners.state
+    assert(type(state) == "table", "phone rematch effects use the save owner")
+    local previous = state:queryRematch(contact)
+    local wins = type(previous) == "table" and previous.wins or 0
+    local function commitRematch()
+      state:setRematch(contact, { stage = 1, wins = wins })
+    end
+    return {
+      substitutions = {},
+      commit = commitRematch,
+    }
+  elseif kind == "item" then
+    assert(type(parameter1) == "number" and parameter1 % 1 == 0, "phone item effects carry a native item ID")
+    local nativeItemId = parameter1
+    local draw = random.mt --[[@as fun(self: table<string, unknown>, label: string): integer]]
+    if nativeItemId == 149 then
+      nativeItemId = 149 + draw(random, "phone-item-berry") % 10
+    elseif nativeItemId == 1 then
+      nativeItemId = 2 + draw(random, "phone-item-pokeball") % 3
+    end
+    local runtime = self._owners.runtime
+    assert(type(runtime) == "table", "phone item effects read the live item catalog")
+    local items = runtime.itemCatalog
+    assert(
+      type(items) == "table" and type(items.itemKeyByNativeId) == "function",
+      "phone item effects resolve generated item identities"
+    )
+    local itemKey = items.itemKeyByNativeId --[[@as fun(self: table<string, unknown>, nativeId: integer): string]]
+    local state = self._owners.state
+    assert(
+      type(state) == "table" and type(state.setContactReward) == "function",
+      "phone gifts use the persisted contact reward owner"
+    )
+    local reward = { item = itemKey(items, nativeItemId), quantity = 1 }
+    local function commitReward()
+      state:setContactReward(contact, reward)
+    end
+    return {
+      substitutions = {},
+      commit = commitReward,
+    }
+  elseif kind == "flag" or kind == "flag-unknown" then
+    assert(type(parameter0) == "number", "phone flag effects carry a native operation")
+    local events = self._owners.flags
+    assert(type(events) == "table", "phone flag effects use the event-state owner")
+    local flag = parameter1
+    if type(flag) == "string" then
+      local symbols = require("libs.assets.src.field.FieldScriptSymbols").flagsByName
+      flag = symbols[flag]
+    end
+    assert(type(flag) == "number", "phone flag effects resolve a native flag identity")
+    local function commitFlag()
+      if parameter0 ~= 0 then
+        events:setFlag(flag)
+      else
+        events:clearFlag(flag)
+      end
+    end
+    return {
+      substitutions = {},
+      commit = commitFlag,
+    }
+  elseif kind == "word" then
+    assert(
+      type(parameter0) == "number"
+        and parameter0 % 1 == 0
+        and parameter0 > 0
+        and type(parameter1) == "number"
+        and parameter1 % 1 == 0,
+      "phone word effects carry a positive span and first native entry"
+    )
+    local draw = random.lc --[[@as fun(self: table<string, unknown>, label: string): integer]]
+    local entry = parameter1 + draw(random, "phone-word-entry") % parameter0
+    local function commitWord() end
+    return { substitutions = { wordEntry = entry }, commit = commitWord }
+  end
+  error("phone definition effect has an unsupported source kind", 0)
+end
+
+-- Kenji's eligible daytime call atomically marks his native active flag
+-- and the existing per-contact rematch seeking record.
+---@param contact string
+function PhoneWorldContext:applyKenjiActiveEffect(contact)
+  local state = self._owners.state
+  assert(
+    type(state) == "table"
+      and type(state.readPhone) == "function"
+      and type(state.queryRematch) == "function"
+      and type(state.prepare) == "function"
+      and type(state.revision) == "function",
+    "Kenji's native selector writes through the Pokegear save owner"
+  )
+  local phone = state:readPhone()
+  assert(type(phone) == "table" and type(phone.kenji) == "table", "Kenji's write reads his saved facts")
+  local kenji = phone.kenji
+  local previous = state:queryRematch(contact)
+  local wins = type(previous) == "table" and previous.wins or 0
+  local candidate = state:prepare(state:revision(), function(edit)
+    edit.setKenji(edit, { waitDays = kenji.waitDays, active = true })
+    edit.setRematch(edit, contact, { stage = 1, wins = wins })
+  end)
+  assert(candidate.isCurrent, "Kenji's source effect publishes against the facts it selected")
+  candidate.publish()
+end
+
 -- Writes Mother's source flag through the event-state owner. The save
 -- choice has one authoritative representation; no phone-local shadow is
 -- published.
@@ -471,6 +1009,23 @@ function PhoneWorldContext:setMomSavingsChoice(saving)
   else
     clearFlag(flags, flag --[[@as integer]])
   end
+end
+
+-- Commits the source one-time post-rival conversation flag when the
+-- scripted Mom call is selected.
+function PhoneWorldContext:setMomTalkedAfterNamingRival()
+  local runtime = self._owners.runtime
+  local flags = self._owners.flags or (type(runtime) == "table" and runtime.eventState or nil)
+  if type(flags) ~= "table" then
+    missingOwner("flags", "no live world flag owner is available")
+  end
+  assert(type(flags) == "table", "Mom's scripted call writes through a live event state")
+  local symbols = require("libs.assets.src.field.FieldScriptSymbols")
+  local flag = symbols.flagsByName.FLAG_TALKED_TO_MOM_AFTER_NAMING_RIVAL
+  assert(type(flag) == "number", "Mom's scripted call writes the native follow-up flag")
+  local setFlag = flags.setFlag
+  assert(type(setFlag) == "function", "Mom's scripted call writes through FieldEventState")
+  setFlag(flags, flag --[[@as integer]])
 end
 
 return PhoneWorldContext

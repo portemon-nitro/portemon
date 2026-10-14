@@ -13,7 +13,117 @@ local ScriptErrors = require("libs.script.src.errors")
 ---@class TrainerPhonePrograms
 local TrainerPhonePrograms = {}
 
+---@param contact string
+---@param fact string
+local function missingNativeFact(contact, fact)
+  local failure = Errors.new(
+    ScriptErrors.FEATURE_UNAVAILABLE,
+    "native trainer conversation needs the " .. fact .. " source fact",
+    { contact = contact, fact = fact }
+  )
+  error({ code = failure.code, message = failure.message, context = failure.context, domain = "phone" })
+end
+
 TrainerPhonePrograms.DEFAULT_GYM_WEEKDAY = "saturday"
+
+local IRWIN_ONE_SHOT_FLAGS = {
+  [168] = "FLAG_UNK_9A4",
+  [167] = "FLAG_UNK_9A3",
+  [166] = "FLAG_UNK_9A2",
+  [165] = "FLAG_UNK_9A1",
+  [163] = "FLAG_UNK_9A5",
+  [160] = "FLAG_UNK_9A0",
+  [159] = "FLAG_UNK_99F",
+}
+
+-- Chooses Irwin's incoming numeric script in source predicate order. The
+-- returned event mutation payload is committed by PhoneCall after its
+-- selected first page resolves.
+---@param facts table<string, unknown> source flag and profile facts
+---@return { scriptId: integer, clearInitialTrigger: boolean, setOneShotFlag: string? }
+function TrainerPhonePrograms.selectIrwinIncoming(facts)
+  assert(type(facts) == "table", "Irwin reads frozen native call facts")
+  assert(type(facts.irwinInitialTrigger) == "boolean", "Irwin carries the native incoming trigger")
+  assert(type(facts.badges) == "number" and facts.badges >= 0, "Irwin carries the badge count")
+  for _, name in ipairs({
+    "plainBadge",
+    "fogBadge",
+    "marshBadge",
+    "risingBadge",
+    "irwinNationalBadgeMessageSeen",
+    "irwinMarshBadgeMessageSeen",
+    "irwinSnorlaxMessageSeen",
+    "irwinVermilionMessageSeen",
+    "irwinVermilionEvent",
+    "vermilionFlypoint",
+    "gameClear",
+    "irwinGameClearMessageSeen",
+    "radioTowerBeaten",
+    "rocketHideoutCleared",
+    "irwinHideoutMessageSeen",
+    "irwinUnknownProgress",
+    "irwinUnknownProgressMessageSeen",
+    "snorlaxMet",
+  }) do
+    assert(type(facts[name]) == "boolean", "Irwin selector facts include " .. name)
+  end
+  if facts.irwinInitialTrigger == true then
+    local scriptId
+    if facts.badges >= 16 then
+      if not facts.irwinNationalBadgeMessageSeen then
+        scriptId = 168
+      end
+    elseif facts.marshBadge then
+      if not facts.irwinMarshBadgeMessageSeen then
+        scriptId = 167
+      end
+    elseif facts.snorlaxMet then
+      if not facts.irwinSnorlaxMessageSeen then
+        scriptId = 166
+      end
+    elseif facts.irwinVermilionEvent then
+      if not facts.irwinVermilionMessageSeen then
+        scriptId = 165
+      end
+    elseif facts.vermilionFlypoint then
+      scriptId = 164
+    elseif facts.gameClear then
+      if not facts.irwinGameClearMessageSeen then
+        scriptId = 163
+      end
+    elseif facts.risingBadge then
+      scriptId = 162
+    elseif facts.radioTowerBeaten then
+      scriptId = 161
+    elseif facts.rocketHideoutCleared then
+      if not facts.irwinHideoutMessageSeen then
+        scriptId = 160
+      end
+    elseif facts.irwinUnknownProgress then
+      if not facts.irwinUnknownProgressMessageSeen then
+        scriptId = 159
+      end
+    elseif facts.fogBadge then
+      scriptId = 158
+    elseif facts.plainBadge then
+      scriptId = 157
+    end
+    if scriptId ~= nil then
+      return {
+        scriptId = scriptId,
+        clearInitialTrigger = true,
+        setOneShotFlag = IRWIN_ONE_SHOT_FLAGS[scriptId],
+      }
+    end
+  end
+  if not facts.plainBadge then
+    return { scriptId = 169, clearInitialTrigger = facts.irwinInitialTrigger == true }
+  end
+  if facts.badges < 16 then
+    return { scriptId = 170, clearInitialTrigger = facts.irwinInitialTrigger == true }
+  end
+  return { scriptId = 171, clearInitialTrigger = facts.irwinInitialTrigger == true }
+end
 
 -- Rematch resolution outcomes that preserve the staged invitation: only
 -- a qualified win clears readiness, so a full party, a blackout, a
@@ -34,6 +144,9 @@ function TrainerPhonePrograms.selectName(family, facts)
   assert(type(family) == "string" and family ~= "", "trainer selection names its contact family")
   assert(type(facts) == "table", "trainer selection reads labelled facts")
   if family == "gym" or family == "rematch" then
+    if facts.invitation == true then
+      return "gym-invitation"
+    end
     local window = facts.window --[[@as table<string, unknown>?]]
     local weekday = TrainerPhonePrograms.DEFAULT_GYM_WEEKDAY
     local morning = true
@@ -73,6 +186,48 @@ function TrainerPhonePrograms.selectName(family, facts)
   return "trainer-ordinary"
 end
 
+-- Chooses Kenji's exact native numeric caller and returns the source
+-- active-flag write for the eligible morning/day branch.
+---@param facts table<string, unknown> frozen Kenji caller facts
+---@return { scriptId: integer, activate: boolean }
+function TrainerPhonePrograms.selectKenjiNative(facts)
+  assert(type(facts) == "table", "Kenji selection reads frozen native facts")
+  if type(facts.localMap) ~= "boolean" then
+    missingNativeFact("kenji", "map locality")
+  end
+  if facts.localMap then
+    return { scriptId = 86, activate = false }
+  end
+  local waitDays = facts.kenjiWaitDays
+  if type(waitDays) ~= "number" or waitDays % 1 ~= 0 or waitDays < 0 then
+    missingNativeFact("kenji", "wait days")
+  end
+  if waitDays > 1 then
+    return { scriptId = 87, activate = false }
+  end
+  if waitDays == 1 then
+    return { scriptId = 88, activate = false }
+  end
+  if type(facts.kenjiActive) ~= "boolean" then
+    missingNativeFact("kenji", "active flag")
+  end
+  if facts.kenjiActive then
+    if type(facts.seeking) ~= "boolean" then
+      missingNativeFact("kenji", "rematch seeking state")
+    end
+    if not facts.seeking then
+      return { scriptId = 87, activate = false }
+    end
+  end
+  if type(facts.timeOfDay) ~= "number" or facts.timeOfDay % 1 ~= 0 or facts.timeOfDay < 0 or facts.timeOfDay > 2 then
+    missingNativeFact("kenji", "time of day")
+  end
+  if facts.timeOfDay == 2 then
+    return { scriptId = 91, activate = false }
+  end
+  return { scriptId = facts.timeOfDay == 1 and 90 or 89, activate = not facts.kenjiActive }
+end
+
 -- Opens a trainer program session over the borrowed world. Selection
 -- itself never mutates; invitation readiness stages once at the
 -- program stage through step.
@@ -93,9 +248,91 @@ function TrainerPhonePrograms.select(world, request)
   }
 end
 
--- Advances one program step. Invitation and ordinary trainer programs
--- never create an invitation: no generated source record identifies a
--- native invitation stage yet. Returns done once the branch resolves.
+-- Selects the pinned gym leader special script from one frozen native
+-- decision and its call-entry facts. Script type 13 is outgoing; type 14
+-- is incoming. Direct entry numbers and the invitation response follow
+-- phone_scripts_gym_leader.c.
+---@param world table<string, unknown> borrowed world table
+---@param request table<string, unknown> native contact, decision, record, and facts
+---@return table<string, unknown> native gym program session
+function TrainerPhonePrograms.selectNative(world, request)
+  assert(type(world) == "table", "native gym programs borrow their effect owner")
+  assert(type(request) == "table", "native gym programs read a call request")
+  assert(request.family == "gym", "native gym programs require the gym contact family")
+  local decision = request.decision --[[@as table<string, unknown>]]
+  assert(
+    type(decision) == "table"
+      and decision.mode == "special"
+      and (decision.scriptType == 13 or decision.scriptType == 14),
+    "native gym programs follow the frozen incoming or outgoing special script"
+  )
+  local facts = request.nativeFacts --[[@as table<string, unknown>]]
+  assert(type(facts) == "table", "native gym programs use frozen source facts")
+  local contact = request.contact --[[@as string]]
+  assert(type(contact) == "string" and contact ~= "", "native gym programs preserve contact identity")
+
+  local session = {
+    program = decision.scriptType == 13 and "gym-outgoing" or "gym-incoming",
+    contact = contact,
+    world = world,
+    nativeFacts = facts,
+    draw = request.draw,
+    effectDone = false,
+    entries = {},
+  }
+  if decision.scriptType == 14 then
+    if type(facts.seeking) ~= "boolean" then
+      missingNativeFact(contact, "rematch seeking")
+    end
+    session.entries = { 10 }
+    return session
+  end
+
+  if type(facts.localMap) ~= "boolean" then
+    missingNativeFact(contact, "map locality")
+  end
+  if facts.localMap then
+    session.entries = { 1 }
+    return session
+  end
+  if type(facts.badges) ~= "number" then
+    missingNativeFact(contact, "badge count")
+  end
+  if facts.badges < 16 then
+    session.entries = { 2, 3 }
+    return session
+  end
+  if type(facts.seeking) ~= "boolean" then
+    missingNativeFact(contact, "rematch seeking")
+  end
+  if facts.seeking then
+    session.entries = { 2, 9 }
+    return session
+  end
+  local record = request.record --[[@as table<string, unknown>]]
+  assert(type(record) == "table", "gym calls read their compiled phonebook record")
+  assert(
+    type(record.rematchWeekday) == "number" and type(record.rematchTime) == "number",
+    "gym calls use their native weekday and time window"
+  )
+  if type(facts.weekday) ~= "number" or type(facts.timeOfDay) ~= "number" then
+    missingNativeFact(contact, "weekday and time")
+  end
+  if facts.weekday ~= record.rematchWeekday or facts.timeOfDay ~= record.rematchTime then
+    session.entries = { 2, 4 }
+    return session
+  end
+  if type(facts.dojoHasRoom) ~= "boolean" then
+    missingNativeFact(contact, "dojo availability")
+  end
+  session.entries = { 2, 5 }
+  session.program = "gym-invitation"
+  session.invitationAvailable = facts.dojoHasRoom
+  return session
+end
+
+-- Advances the selected native gym program through its message and choice
+-- stages. Returns done once the branch resolves.
 ---@param session table<string, unknown>
 ---@param input table<string, unknown>
 ---@return string "done"
@@ -104,8 +341,57 @@ function TrainerPhonePrograms.step(session, input)
   assert(type(input) == "table", "trainer programs read their input")
   assert(type(session.program) == "string", "trainer sessions carry their program")
   assert(type(session.contact) == "string", "trainer sessions carry their contact")
+  if session.program == "gym-incoming" then
+    if session.effectDone == true then
+      return "done"
+    end
+    local facts = session.nativeFacts --[[@as table<string, unknown>]]
+    assert(type(facts.seeking) == "boolean", "incoming gym calls retain their frozen seeking value")
+    if facts.seeking then
+      session.responseEntry = 11
+    else
+      local draw = session.draw --[[@as fun(): integer]]
+      assert(type(draw) == "function", "incoming gym calls draw their source response after the opening page")
+      session.responseEntry = 12 + draw() % 3
+    end
+    session.effectDone = true
+    return "continue"
+  end
+  if session.program == "gym-outgoing" then
+    session.effectDone = true
+    return "done"
+  end
   if session.effectDone == true then
     return "done"
+  end
+  if session.program == "gym-invitation" then
+    local choice = input.choice
+    if session.responseEntry ~= nil then
+      if input.responseResolved ~= true then
+        return "waiting"
+      end
+      if session.responseEntry == 6 then
+        local world = session.world --[[@as table<string, unknown>]]
+        local query = world.queryRematch
+        local write = world.setRematch
+        assert(type(query) == "function" and type(write) == "function", "gym invitations use durable rematch state")
+        local previous = query(world, session.contact --[[@as string]])
+        local wins = type(previous) == "table" and previous.wins or 0
+        write(world, session.contact --[[@as string]], { stage = 1, wins = wins })
+      end
+      session.effectDone = true
+      return "done"
+    end
+    if choice == nil then
+      return "waiting"
+    end
+    assert(choice == "yes" or choice == "no", "gym invitations accept the source yes or no choice")
+    if choice == "yes" then
+      session.responseEntry = session.invitationAvailable and 6 or 8
+    else
+      session.responseEntry = 7
+    end
+    return "continue"
   end
   session.effectDone = true
   return "done"

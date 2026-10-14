@@ -171,7 +171,7 @@ function T.contract_pins_the_current_asset_identities()
     },
     pokegear = {
       cacheFormat = "pokegear-cache-v1",
-      schema = "g4-pokegear-assets-v2",
+      schema = "g4-pokegear-assets-v3",
     },
     summary = {
       cacheFormat = "g4-summary-cache-v2",

@@ -1,8 +1,7 @@
 -- Phone greeting references against the owned dump: every native contact
--- carries its source message bank beside its greeting number, every
+-- carries its source message bank beside its phone-script selector, every
 -- referenced bank is demandable through the existing bank pipeline, every
--- greeting number reports its resolution standing with bank/entry
--- evidence, and one real outgoing call plus one real scripted 430/431
+-- selected native script resolves both gendered lines, and one real outgoing call plus one real scripted 430/431
 -- call complete end-to-end with those references. Structural facts and
 -- bank/entry/token identities only; no retail message text is asserted
 -- or printed. A missing dump reports a skip, never a pass, through the
@@ -13,11 +12,12 @@ local RomSuite = require("tests.rom.support.RomSuite")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
 local PokegearSources = require("romdump.src.config.PokegearSources")
+local BinaryReader = require("libs.codec.src.BinaryReader")
 
 local T = {}
 
-local MOM_KEY = "hg.trainer.200.map.0.contact.0"
-local ELM_KEY = "hg.trainer.201.map.0.contact.1"
+local MOM_FAMILY = "mother"
+local ELM_FAMILY = "elm"
 
 ---@param romFs table<string, unknown>
 ---@param versionId string
@@ -29,6 +29,21 @@ local function compileCatalog(romFs, versionId)
   local bundle = PokegearAssetCompiler.compile(romFs, versionId)
   local compiled = assert(bundle, versionId .. " must compile the pokegear family")
   return assert(compiled.manifest.catalog, versionId .. " must publish its contact catalog")
+end
+
+---@param catalog table<string, unknown>
+---@param family string
+---@return table<string, unknown> the unique compiled contact in the requested family
+local function contactInFamily(catalog, family)
+  local found = nil
+  for _, record in ipairs(assert(catalog.contacts, "the phone catalog carries native contacts")) do
+    local contact = record --[[@as table<string, unknown>]]
+    if contact.family == family then
+      assert(found == nil, "the source phone catalog has one " .. family .. " contact")
+      found = contact
+    end
+  end
+  return assert(found, "the source phone catalog has a " .. family .. " contact")
 end
 
 -- Builds the shared greeting references exactly the way the field runtime
@@ -114,7 +129,7 @@ end
 function T.contacts_carry_their_source_message_bank(romFs, versionId)
   local catalog = compileCatalog(romFs, versionId)
   Assert.equal(#catalog.contacts, 75, "the compiled phonebook must carry all seventy-five native contacts")
-  local byKey = {}
+  local byId = {}
   for _, record in ipairs(catalog.contacts) do
     local contact = record --[[@as table<string, unknown>]]
     Assert.equal(
@@ -124,19 +139,25 @@ function T.contacts_carry_their_source_message_bank(romFs, versionId)
       ],
       "contact " .. tostring(contact.id) .. " reads its source bank"
     )
-    byKey[
-      contact.key --[[@as string]]
+    byId[
+      contact.id --[[@as integer]]
     ] = contact
   end
-  Assert.equal(byKey[MOM_KEY].messageBank, 664, "the mother greeting reads bank 664")
-  Assert.equal(byKey[ELM_KEY].messageBank, 716, "the elm greeting reads bank 716")
-  Assert.equal(byKey[MOM_KEY].greeting, 23, "the mother greeting reads number 23")
-  Assert.equal(byKey[ELM_KEY].greeting, 1, "the elm greeting reads number 1")
-  Assert.equal(byKey[MOM_KEY].class.kind, "blank", "Mom's trainer class has no label")
-  Assert.equal(byKey[ELM_KEY].class.bank, 271, "the professor phone-only class uses bank 271")
+  local mom = contactInFamily(catalog, MOM_FAMILY)
+  local elm = contactInFamily(catalog, ELM_FAMILY)
+  Assert.equal(mom, byId[0], "the first native phonebook ID is Mom")
+  Assert.equal(elm, byId[1], "the second native phonebook ID is Elm")
+  Assert.equal(mom.messageBank, PokegearSources.phoneMessageBanks[mom.id + 1], "Mom reads her source message bank")
+  Assert.equal(elm.messageBank, PokegearSources.phoneMessageBanks[elm.id + 1], "Elm reads his source message bank")
+  Assert.equal(mom.messageBank, 664, "the mother greeting reads bank 664")
+  Assert.equal(elm.messageBank, 716, "the Elm greeting reads bank 716")
+  Assert.equal(mom.class.kind, "blank", "Mom's trainer class has no label")
+  Assert.equal(elm.class.bank, 271, "the professor phone-only class uses bank 271")
   Assert.equal(
-    byKey[ELM_KEY].class.entry,
-    byKey[ELM_KEY].trainer - 201 + 38,
+    elm.class.entry,
+    elm.trainerClass
+      - PokegearSources.phoneClassLabels.professorClass
+      + PokegearSources.phoneClassLabels.specialFirstEntry,
     "the professor class entry follows the native class code"
   )
   Assert.deepEqual(
@@ -144,6 +165,118 @@ function T.contacts_carry_their_source_message_bank(romFs, versionId)
     { bank = 279, fallbackBank = 280, fallbackEntry = 2 },
     "landmark resolver references come from the generated source catalog"
   )
+end
+
+-- One pass over the supplied phonebook checks every compiled contact's
+-- source order, native selector fields, and (for trainer contacts) both
+-- complete eight-slot generic header arrays. Header rows are compiled from
+-- the available decomp table, whose checkout is not the declared pin; this
+-- proves preservation and linkage, not exact-pin provenance. No caller home
+-- is booted here; production journeys remain separate representative cases.
+function T.all_contacts_preserve_source_selectors_and_ordered_headers(romFs, versionId)
+  local catalog = compileCatalog(romFs, versionId)
+  local bytes = assert(romFs:readSourcePath(PokegearSources.phonebook.path))
+  local source = BinaryReader.new(bytes, "phonebook-contact-matrix")
+  local count = source:u32le(0)
+  Assert.equal(count, 75, "the supplied phonebook has seventy-five native records")
+  Assert.equal(#catalog.contacts, count, "the compiled catalog preserves every source contact")
+  local headerTypeSeen = {}
+  for sourceIndex = 0, count - 1 do
+    local contact = catalog.contacts[sourceIndex + 1]
+    local base = 4 + sourceIndex * PokegearSources.phonebook.recordBytes
+    local contactId = source:u8(base)
+    Assert.equal(contact.sourceIndex, sourceIndex, "contact order preserves phonebook row " .. sourceIndex)
+    Assert.equal(contact.id, contactId, "row " .. sourceIndex .. " preserves its source contact ID")
+    Assert.equal(contact.entryType, source:u8(base + 1), "contact type preserves phonebook byte 1")
+    Assert.equal(contact.unknown2, source:u8(base + 2), "contact byte 2 remains source-derived")
+    Assert.equal(
+      contact.family,
+      PokegearSources.phoneContactFamilies[contactId + 1],
+      "contact family follows its native ID"
+    )
+    Assert.equal(
+      contact.messageBank,
+      PokegearSources.phoneMessageBanks[contactId + 1],
+      "contact bank follows its native ID"
+    )
+    Assert.equal(contact.trainerClass, source:u8(base + 3), "contact class preserves phonebook byte 3")
+    Assert.equal(contact.trainerId, source:u16le(base + 4), "contact trainer ID preserves phonebook halfword 4")
+    Assert.equal(contact.mapId, source:u16le(base + 6), "contact map preserves phonebook halfword 6")
+    Assert.equal(contact.gift, source:u16le(base + 8), "contact gift preserves phonebook halfword 8")
+    local localScript = source:u16le(base + 10)
+    Assert.equal(contact.localScript, localScript, "contact local selector preserves phonebook halfword 10")
+    Assert.equal(contact.greeting, localScript, "native call selector preserves its phonebook value")
+    Assert.equal(contact.rematchWeekday, source:u8(base + 13), "contact weekday preserves phonebook byte 13")
+    Assert.equal(contact.rematchTime, source:u8(base + 14), "contact time preserves phonebook byte 14")
+    Assert.equal(contact.unknown12, source:u8(base + 12), "contact byte 12 remains source-derived")
+    Assert.equal(contact.unknown15, source:u8(base + 15), "contact byte 15 remains source-derived")
+    for weightIndex = 1, 4 do
+      Assert.equal(
+        contact.sortWeights[weightIndex],
+        source:u8(base + 15 + weightIndex),
+        "contact sorting weight " .. weightIndex .. " preserves its phonebook byte"
+      )
+    end
+    local definition =
+      assert(catalog.callDefinitions[contact.greeting], "contact " .. contactId .. " has a selected native definition")
+    Assert.equal(definition.male.bank, contact.messageBank, "male definition stays in the selected caller bank")
+    Assert.equal(definition.female.bank, contact.messageBank, "female definition stays in the selected caller bank")
+    if contact.family == "trainer" then
+      local sourceHeaders = assert(
+        PokegearSources.genericPhoneHeaders[contactId],
+        "trainer contact " .. contactId .. " has source header rows"
+      )
+      for _, direction in ipairs({ "incoming", "outgoing" }) do
+        local rows = assert(contact.genericCallHeaders[direction], "trainer headers preserve each call direction")
+        Assert.equal(#rows, 8, "trainer " .. contactId .. " preserves all eight " .. direction .. " slots")
+        local sourceRows = assert(sourceHeaders[direction], "source headers preserve both directions")
+        for slot = 1, 8 do
+          local row = rows[slot]
+          local sourceRow = sourceRows[slot]
+          Assert.equal(
+            row.type,
+            sourceRow[1],
+            "trainer " .. contactId .. " " .. direction .. " slot " .. slot .. " type"
+          )
+          Assert.equal(
+            row.chance,
+            sourceRow[2],
+            "trainer " .. contactId .. " " .. direction .. " slot " .. slot .. " chance"
+          )
+          Assert.equal(
+            row.scriptType,
+            sourceRow[3],
+            "trainer " .. contactId .. " " .. direction .. " slot " .. slot .. " script type"
+          )
+          Assert.equal(
+            row.scriptId,
+            sourceRow[4],
+            "trainer " .. contactId .. " " .. direction .. " slot " .. slot .. " selector"
+          )
+          if row.type ~= 0 and row.type ~= 255 then
+            headerTypeSeen[row.scriptType] = true
+            local headerDefinition = assert(
+              catalog.callDefinitions[row.scriptId],
+              "active trainer header selector " .. row.scriptId .. " maps to a compiled definition"
+            )
+            Assert.equal(
+              headerDefinition.male.bank,
+              contact.messageBank,
+              "header definition male line uses caller bank"
+            )
+            Assert.equal(
+              headerDefinition.female.bank,
+              contact.messageBank,
+              "header definition female line uses caller bank"
+            )
+          end
+        end
+      end
+    end
+  end
+  for _, scriptType in ipairs({ 0, 1, 2 }) do
+    Assert.isTrue(headerTypeSeen[scriptType] == true, "the full trainer matrix carries script type " .. scriptType)
+  end
 end
 
 -- Every referenced greeting bank is demandable through the existing bank
@@ -187,7 +320,11 @@ function T.greeting_entries_report_their_standing(romFs, versionId)
   for _, record in ipairs(catalog.contacts) do
     local contact = record --[[@as table<string, unknown>]]
     local bank = contact.messageBank --[[@as integer]]
-    local entry = contact.greeting --[[@as integer]]
+    local scriptId = contact.greeting --[[@as integer]]
+    local definition =
+      assert(catalog.callDefinitions[scriptId], "every phonebook script selector maps to a native phone definition")
+    Assert.equal(definition.male.bank, bank, "the selected caller script uses its message bank")
+    Assert.equal(definition.female.bank, bank, "the selected caller script keeps its gendered text in that bank")
     local acquired, acquireErr = provider:acquireBank(bank)
     Assert.notNil(
       acquired,
@@ -197,47 +334,53 @@ function T.greeting_entries_report_their_standing(romFs, versionId)
     local where = "bank "
       .. bank
       .. " number "
-      .. entry
+      .. scriptId
       .. " ("
       .. tostring(contact.key)
       .. ", bank holds "
       .. bankCount
       .. ")"
-    local template, templateErr = provider:get(bank, entry)
-    if template == nil then
-      unmapped[#unmapped + 1] = where .. ": " .. tostring(templateErr and templateErr.code or templateErr)
-    else
-      local ok, formatted = pcall(provider.format, provider, template, { playerName = "GOLD" }, resolvers)
-      if ok then
-        if
-          (formatted --[[@as table<string, unknown>]]).hadUnresolvedSubstitutions == true
-        then
-          unresolved[#unresolved + 1] = "bank " .. bank .. " entry " .. entry .. " (" .. tostring(contact.key) .. ")"
-        else
-          clean = clean + 1
-          print("phone greeting clean: " .. where)
-        end
+    for _, gender in ipairs({ "male", "female" }) do
+      local entry = definition[gender].entry
+      local template, templateErr = provider:get(bank, entry)
+      if template == nil then
+        unmapped[#unmapped + 1] = where
+          .. " "
+          .. gender
+          .. ": "
+          .. tostring(templateErr and templateErr.code or templateErr)
       else
-        faulted[#faulted + 1] = "bank "
-          .. bank
-          .. " entry "
-          .. entry
-          .. " ("
-          .. tostring(contact.key)
-          .. "): "
-          .. tostring(formatted)
+        local ok, formatted = pcall(provider.format, provider, template, { playerName = "GOLD" }, resolvers)
+        if ok then
+          if
+            (formatted --[[@as table<string, unknown>]]).hadUnresolvedSubstitutions == true
+          then
+            unresolved[#unresolved + 1] = "bank " .. bank .. " entry " .. entry .. " (" .. tostring(contact.key) .. ")"
+          else
+            clean = clean + 1
+          end
+        else
+          faulted[#faulted + 1] = "bank "
+            .. bank
+            .. " entry "
+            .. entry
+            .. " ("
+            .. tostring(contact.key)
+            .. "): "
+            .. tostring(formatted)
+        end
       end
     end
     provider:releaseBank(bank)
   end
   print(
-    "phone greetings: "
+    "phone script dialogue: "
       .. clean
       .. " clean, "
       .. #unresolved
-      .. " with unresolved substitutions, "
+      .. " unresolved, "
       .. #unmapped
-      .. " script-routed, "
+      .. " missing, "
       .. #faulted
       .. " faulted"
   )
@@ -250,23 +393,9 @@ function T.greeting_entries_report_their_standing(romFs, versionId)
   for _, line in ipairs(faulted) do
     print("phone greeting fault: " .. line)
   end
-  Assert.equal(clean + #unresolved + #unmapped + #faulted, 75, "every native greeting reports its standing")
-  Assert.equal(#faulted, 0, "no greeting may fail its token preparation")
-  local byKey = {}
-  for _, record in ipairs(catalog.contacts) do
-    local contact = record --[[@as table<string, unknown>]]
-    byKey[
-      contact.key --[[@as string]]
-    ] = contact
-  end
-  for _, key in ipairs({ ELM_KEY }) do
-    local contact = byKey[key]
-    local template =
-      assert(provider:acquireBank(contact.messageBank) and provider:get(contact.messageBank, contact.greeting))
-    local formatted = provider:format(template, { playerName = "GOLD" }, resolvers)
-    Assert.isFalse(formatted.hadUnresolvedSubstitutions, key .. " formats cleanly through the token machinery")
-    provider:releaseBank(contact.messageBank)
-  end
+  Assert.equal(clean + #unresolved + #unmapped + #faulted, 150, "every native caller script line reports its standing")
+  Assert.equal(#unmapped, 0, "every caller script definition resolves to a compiled message")
+  Assert.equal(#faulted, 0, "no caller script line may fail token preparation")
   provider:dispose()
 end
 
@@ -284,7 +413,6 @@ local function openHost(catalog, messages)
     messages = messages,
     world = {
       flags = {},
-      rematchReady = {},
       canCall = function()
         return true
       end,
@@ -320,37 +448,37 @@ end
 function T.outgoing_call_completes_with_real_greeting_refs(romFs, versionId)
   local catalog = compileCatalog(romFs, versionId)
   local messages = greetingMessages(catalog, versionId)
-  Assert.equal(messages[ELM_KEY], "msg.hgss.716.1", "the elm reference names its bank and entry")
-  Assert.equal(messages[MOM_KEY], "msg.hgss.664.23", "the mother reference names its bank and entry")
+  local mom = contactInFamily(catalog, MOM_FAMILY)
+  local elm = contactInFamily(catalog, ELM_FAMILY)
+  Assert.equal(
+    messages[mom.key],
+    "msg.hgss." .. mom.messageBank .. "." .. mom.greeting,
+    "the Mom reference names her source bank and selector"
+  )
+  Assert.equal(
+    messages[elm.key],
+    "msg.hgss." .. elm.messageBank .. "." .. elm.greeting,
+    "the Elm reference names his source bank and selector"
+  )
   local host, state = openHost(catalog, messages)
-  state:registerContact(MOM_KEY)
+  state:registerContact(mom.key)
   local handle = host:open({
     mode = "call",
-    request = { id = "greeting-outgoing-1", contact = MOM_KEY, direction = "outgoing", kind = "ordinary" },
+    request = { id = "greeting-outgoing-1", contact = mom.key, direction = "outgoing", kind = "ordinary" },
     parentOwner = "script:greeting-proof",
   })
   local result = settleCall(host, handle)
-  Assert.equal(result.contact, MOM_KEY, "the outgoing call completes for its contact")
+  Assert.equal(result.contact, mom.key, "the outgoing call completes for its contact")
   host:close(handle)
   messages.dispose(messages)
-  -- The frozen lease token resolves through the same bank pipeline: the
-  -- provider serves the referenced bank and entry with real tokens.
-  local provider = assert(FieldMessageProvider.new(CacheFs.forVersion(versionId)))
-  local bank, entry = messages.greeting:match("^msg%.hgss%.(%d+)%.(%d+)$")
-  Assert.notNil(bank, "the lease token stays a bank reference")
-  Assert.notNil(provider:acquireBank(tonumber(bank)))
-  local template = assert(provider:get(tonumber(bank), tonumber(entry)))
-  Assert.isTrue(type(template.text) == "string" and template.text ~= "", "the token text is real bank copy")
-  Assert.isTrue(type(template.tokens) == "table" and #template.tokens > 0, "the token stream is real")
-  provider:releaseBank(tonumber(bank))
-  provider:dispose()
 end
 
 function T.scripted_call_completes_through_the_real_task_and_host(romFs, versionId)
   local catalog = compileCatalog(romFs, versionId)
   local messages = greetingMessages(catalog, versionId)
   local host, state = openHost(catalog, messages)
-  state:registerContact(MOM_KEY)
+  local mom = contactInFamily(catalog, MOM_FAMILY)
+  state:registerContact(mom.key)
   local FieldScriptComposition = require("game.hgss.src.field.FieldScriptComposition")
   local Runtime = require("libs.script.src.Runtime")
   local RuntimeValues = require("libs.hgss.src.script.RuntimeValues")
@@ -372,14 +500,6 @@ function T.scripted_call_completes_through_the_real_task_and_host(romFs, version
     },
     tick = 9,
   }
-  local mom = nil
-  for _, contact in ipairs(catalog.contacts) do
-    if contact.key == MOM_KEY then
-      mom = contact
-      break
-    end
-  end
-  mom = assert(mom, "the compiled phonebook carries Mom")
   -- The phonebook number is source-derived; the current map facts select Mom's local reply.
   Assert.equal(
     Runtime.executeNode({ op = "phone_set_call", contact = mom.id, direction = "outgoing", kind = 0 }, run),
@@ -399,7 +519,7 @@ function T.scripted_call_completes_through_the_real_task_and_host(romFs, version
     "the run consumes and blocks"
   )
   Assert.equal(#staged, 1, "the run blocks on exactly one application task")
-  Assert.equal(staged[1].spec.request.contact, MOM_KEY, "the source phonebook number stages Mom")
+  Assert.equal(staged[1].spec.request.contact, mom.key, "the source phonebook number stages Mom")
   Assert.equal(staged[1].spec.request.direction, "outgoing", "the native local selector takes the outgoing path")
   local PokegearApplicationTask = require("libs.hgss.src.script.tasks.PokegearApplicationTask")
   local taskCtx = { services = { pokegearApplications = host }, input = { uiEvents = {} } }
@@ -420,12 +540,15 @@ function T.scripted_call_completes_through_the_real_task_and_host(romFs, version
   Assert.isTrue(done, "the scripted local call completes through its task and host")
   Assert.isFalse(host:isActive(), "completion releases the feature lease")
   messages.dispose(messages)
+  local elm = contactInFamily(catalog, ELM_FAMILY)
+  local definition = assert(catalog.callDefinitions[elm.greeting])
+  Assert.equal(definition.male.bank, elm.messageBank, "the compiled Elm call script uses Elm's message bank")
   local provider = assert(FieldMessageProvider.new(CacheFs.forVersion(versionId)))
-  local elmBank = assert(provider:acquireBank(716))
-  Assert.equal(elmBank.messageCount, 45, "the elm bank holds entries 0..44")
-  local template = assert(provider:get(716, 1))
-  Assert.isTrue(type(template.tokens) == "table" and #template.tokens > 0, "the elm entry carries real tokens")
-  provider:releaseBank(716)
+  local elmBank = assert(provider:acquireBank(definition.male.bank))
+  Assert.isTrue(definition.male.entry < elmBank.messageCount, "the Elm call script entry exists in its message bank")
+  local template = assert(provider:get(definition.male.bank, definition.male.entry))
+  Assert.isTrue(type(template.tokens) == "table" and #template.tokens > 0, "the Elm script line carries real tokens")
+  provider:releaseBank(definition.male.bank)
   provider:dispose()
 end
 

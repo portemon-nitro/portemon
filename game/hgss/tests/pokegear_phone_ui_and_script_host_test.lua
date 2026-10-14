@@ -42,7 +42,7 @@ end
 ---@return table
 local function fixtureManifest()
   return {
-    schema = "g4-pokegear-assets-v2",
+    schema = "g4-pokegear-assets-v3",
     skins = { 0, 1, 2, 3, 4, 5 },
     shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png") },
     configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png") },
@@ -165,7 +165,6 @@ end
 ---@return table services
 local function worldFixture()
   local rematches = {}
-  local rematchReady = {}
   local flags = {}
   return {
     flags = flags,
@@ -179,14 +178,12 @@ local function worldFixture()
       flags["mom.savings-choice"] = choice
       flags.savingsChoice = choice
     end,
-    rematchReady = rematchReady,
     rematches = rematches,
     queryRematch = function(_, contact)
       return rematches[contact]
     end,
     setRematch = function(_, contact, record)
       rematches[contact] = record
-      rematchReady[contact] = record.stage > 0
     end,
     nativeSelectorFacts = function()
       return {
@@ -226,6 +223,9 @@ local function openHost(record, world, audio)
       greeting = "custom.greeting",
       program = "custom.program",
       resolveLine = function()
+        return { tokens = { { kind = "glyph", code = 1, text = "X", raw = { 1 } } } }
+      end,
+      resolveContactEntry = function()
         return { tokens = { { kind = "glyph", code = 1, text = "X", raw = { 1 } } } }
       end,
     },
@@ -476,6 +476,22 @@ function T.tests.missing_call_handle_after_commit_fails_without_replaying_effect
   Assert.notNil(record, "the synthetic contact catalog must validate through the asset schema")
   assert(record ~= nil, "synthetic catalog validated above")
   local world = worldFixture()
+  world.nativeSelectorFacts = function()
+    return {
+      localMap = false,
+      gaveRivalName = true,
+      talkedAfterNamingRival = true,
+      eggCallPending = false,
+    }
+  end
+  world.callFacts = function()
+    return {
+      momSavingsBalance = 0,
+      momSavingsActive = false,
+      momGiftQueueFull = false,
+      momIntroParameter = 0,
+    }
+  end
   local audio = countingAudio()
   local host, _ = openHost(record, world, audio)
   local taskCtx = { services = { pokegearApplications = host }, input = { uiEvents = {} } }
@@ -611,6 +627,56 @@ function T.tests.menu_calls_return_to_list_while_host_calls_retain_their_result(
   Assert.throws(function()
     host:result(handle)
   end, "a closed host call rejects its stale handle")
+end
+
+function T.tests.menu_owned_native_text_failure_remains_visible_after_the_call_returns_to_list()
+  local PhoneController = requireFeature(
+    "game.hgss.src.pokegear.PhoneController",
+    "the phone card must expose terminal failures after a menu call releases its child"
+  )
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local manifest = fixtureManifest()
+  manifest.catalog.contacts = { { key = "custom.trainer-plain", family = "kurt", sortWeight = 10 } }
+  manifest.catalog.contactOrder = { "custom.trainer-plain" }
+  local record = assert(PokegearAssetSchema.validate(manifest), "single-contact menu catalog validates")
+  record.catalog.callDefinitions[83] = {
+    id = 83,
+    kind = "none",
+    male = { bank = 641, entry = 83 },
+    female = { bank = 641, entry = 83 },
+  }
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local state = PokegearState.new({ seed = 101 }, { catalog = record.catalog })
+  state:registerContact("custom.trainer-plain")
+  local messages = {
+    greeting = "custom.greeting",
+    resolveLine = function()
+      error({ code = "MESSAGE_MISSING", message = "native caller text is unavailable" }, 0)
+    end,
+  }
+  local controller = PhoneController.new({
+    state = state,
+    catalog = record.catalog,
+    messages = messages,
+    world = worldFixture(),
+    audio = countingAudio(),
+  })
+
+  controller:updateFixed({ { type = "confirm" } })
+  controller:updateFixed({ { type = "confirm" } })
+  for _ = 1, 8 do
+    if controller:status().view.call == nil then
+      break
+    end
+    controller:updateFixed({ { type = "confirm" } })
+  end
+
+  local status = controller:status()
+  Assert.isNil(status.view.call, "a terminal menu failure returns to the contact list")
+  Assert.notNil(status.callError, "the menu keeps the native text failure visible")
+  Assert.equal(status.callError.code, "MESSAGE_MISSING", "the retained error preserves its source failure code")
+  Assert.isNil(controller:takeResult(), "menu failure does not escape through the script-host result channel")
+  controller:dispose()
 end
 
 -- Cancellation at each foreground stage stays terminal and exactly-once:
@@ -935,6 +1001,24 @@ function T.tests.phone_script_operations_validate_route_and_fail_with_context()
     { op = "phone_set_call", contact = "custom.trainer-plain", direction = "outgoing", kind = "ordinary" },
     "setup builds its ordinary op record"
   )
+  Assert.deepEqual(
+    S.phoneSetCall({
+      contact = "custom.elm",
+      direction = "incoming",
+      kind = "predefined",
+      scriptedCallType = 2,
+      predefinedScriptId = 0,
+    }),
+    {
+      op = "phone_set_call",
+      contact = "custom.elm",
+      direction = "incoming",
+      kind = "predefined",
+      scriptedCallType = 2,
+      predefinedScriptId = 0,
+    },
+    "setup carries Elm's source intro index"
+  )
   Assert.deepEqual(S.phoneRunCall(), { op = "phone_run_call" }, "run builds its operand-free record")
   Assert.deepEqual(S.pokegearQuery({ kind = "contact_registered", contact = "custom.mom", result = S.var("seen") }), {
     op = "pokegear_query",
@@ -949,6 +1033,13 @@ function T.tests.phone_script_operations_validate_route_and_fail_with_context()
       id = "test.phone_shapes",
       steps = {
         S.phoneSetCall({ contact = S.var("caller"), direction = "outgoing", kind = "rematch" }),
+        S.phoneSetCall({
+          contact = "custom.elm",
+          direction = "outgoing",
+          kind = "predefined",
+          scriptedCallType = 2,
+          predefinedScriptId = 0,
+        }),
         S.phoneRunCall(),
         S.pokegearQuery({ kind = "rematch_ready", contact = "custom.leader-falkner", result = S.var("ready") }),
         S.pokegearUpdate({ kind = "register_contact", contact = "custom.mom" }),
@@ -1082,6 +1173,25 @@ function T.tests.phone_script_operations_validate_route_and_fail_with_context()
     { contact = "custom.leader-falkner", direction = "outgoing", kind = "rematch" },
     "the staged request carries its evaluated contact"
   )
+  Assert.equal(
+    Runtime.executeNode({
+      op = "phone_set_call",
+      contact = "custom.elm",
+      direction = "outgoing",
+      kind = "predefined",
+      scriptedCallType = 2,
+      predefinedScriptId = 0,
+    }, run),
+    Runtime.OUTCOME_CONTINUE,
+    "Elm's source call identity stages through the script runtime"
+  )
+  Assert.deepEqual(host:takeStagedCall("ops-1"), {
+    contact = "custom.elm",
+    direction = "outgoing",
+    kind = "predefined",
+    scriptedCallType = 2,
+    predefinedScriptId = 0,
+  }, "the staged call preserves Elm's scripted type and intro index")
   local lonelyOk, lonelyErr = pcall(Runtime.executeNode, { op = "phone_run_call" }, run)
   Assert.isFalse(lonelyOk, "running without a staged request never blocks")
   local lonelyText = tostring(lonelyErr.message or lonelyErr.code):lower()
@@ -1127,6 +1237,53 @@ function T.tests.phone_script_operations_validate_route_and_fail_with_context()
   }, { services = { pokegearApplications = host } })
   Assert.isFalse(flyOk, "fly task construction waits for its field-move selection")
   Assert.equal(flyErr.code, "FEATURE_UNAVAILABLE", "the failure names its missing selection")
+end
+
+function T.tests.scripted_companion_call_preserves_its_source_predefined_identity()
+  local record = fixtureManifest()
+  record.catalog.contacts[#record.catalog.contacts + 1] = { key = "custom.elm", family = "elm" }
+  record.catalog.contactOrder[#record.catalog.contactOrder + 1] = "custom.elm"
+  local PokegearScriptHost = requireFeature("game.hgss.src.pokegear.PokegearScriptHost", "phone host is required")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
+  local state = PokegearState.new({ seed = 4242 }, { catalog = record.catalog })
+  state:registerContact("custom.elm")
+  local selectedScript = nil
+  local host = PokegearScriptHost.new({
+    state = state,
+    catalog = record.catalog,
+    messages = {
+      greeting = "custom.greeting",
+      resolveLine = function(_, _, scriptId)
+        selectedScript = scriptId
+        return { tokens = { { kind = "glyph", code = 1, text = "X", raw = { 1 } } } }
+      end,
+    },
+    world = worldFixture(),
+    audio = countingAudio(),
+    random = PokegearRandom.new(4242),
+    assets = record,
+    regionMapOwners = function()
+      local MapFixture = require("tests.support.PokegearMapFixture")
+      return MapFixture.messages(), MapFixture.facts()
+    end,
+  })
+  local handle = host:open({
+    mode = "call",
+    request = {
+      id = "test-elm-predefined",
+      contact = "custom.elm",
+      direction = "incoming",
+      kind = "predefined",
+      scriptedCallType = 2,
+      predefinedScriptId = 0,
+    },
+    parentOwner = "script:test-elm",
+  })
+  local result = settleCall(host, handle)
+  Assert.isNil(result.error, "Elm's predefined index resolves through the host call path")
+  Assert.equal(selectedScript, 2, "Elm's source index zero maps through the predefined table to script two")
+  host:close(handle)
 end
 
 return T

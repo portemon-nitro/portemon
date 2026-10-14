@@ -478,7 +478,7 @@ DerivedAssetContract.pc = {
 -- location and flypoint tables) as one independently published family.
 DerivedAssetContract.pokegear = {
   cacheFormat = "pokegear-cache-v1",
-  schema = "g4-pokegear-assets-v2",
+  schema = "g4-pokegear-assets-v3",
 }
 
 -- The summary class carries the source-independent native summary

@@ -69,7 +69,7 @@ local function fixtureManifest(contacts, order)
     open = visualRef("assets/generated/pokegear/phone-panel-open.png", 240, 48),
   }
   return {
-    schema = "g4-pokegear-assets-v2",
+    schema = "g4-pokegear-assets-v3",
     skins = { 0, 1, 2, 3, 4, 5 },
     shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png", 256, 192) },
     configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png", 32, 32) },
@@ -235,7 +235,6 @@ local function openPhone(manifest, skin)
     messages = { greeting = "custom.greeting", program = "custom.program" },
     world = {
       flags = {},
-      rematchReady = {},
       canCall = function()
         return true
       end,

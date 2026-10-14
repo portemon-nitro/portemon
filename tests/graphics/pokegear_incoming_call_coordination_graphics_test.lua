@@ -71,7 +71,7 @@ local function fixtureManifest()
     { key = LONG_KEY, name = LONG_NAME, sortWeight = 20, family = "trainer" },
   }
   return {
-    schema = "g4-pokegear-assets-v2",
+    schema = "g4-pokegear-assets-v3",
     skins = { 0, 1, 2, 3, 4, 5 },
     shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png") },
     configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png") },
@@ -308,6 +308,9 @@ local function startRing(triggerKey)
       end,
       isActive = function()
         return false
+      end,
+      result = function()
+        return nil
       end,
     },
     audio = {

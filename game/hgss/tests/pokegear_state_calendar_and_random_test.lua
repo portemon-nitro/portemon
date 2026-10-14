@@ -44,7 +44,7 @@ end
 ---@return table
 local function fixtureManifest()
   return {
-    schema = "g4-pokegear-assets-v2",
+    schema = "g4-pokegear-assets-v3",
     skins = { 0, 1, 2, 3, 4, 5 },
     shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png") },
     configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png") },
@@ -245,8 +245,8 @@ end
 function T.tests.old_saves_keep_their_domains_and_gain_no_invented_contact_history()
   Assert.equal(
     GameSave.SCHEMA,
-    "g4-game-save-v9",
-    "the durable envelope must advance to v9 once the companion bucket migrates"
+    "g4-game-save-v10",
+    "the durable envelope carries the current companion and Day Care owners"
   )
   Assert.isTrue(type(GameSave.migrateV8) == "function", "v8 saves need an explicit migration into the companion bucket")
   local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
@@ -279,7 +279,7 @@ function T.tests.old_saves_keep_their_domains_and_gain_no_invented_contact_histo
     encounters = encounters,
   }
   local migrated = GameSave.migrateV8(v8)
-  Assert.equal(migrated.schema, "g4-game-save-v9", "migration advances the envelope to v9")
+  Assert.equal(migrated.schema, "g4-game-save-v9", "migrateV8 advances only to the next durable envelope")
   Assert.deepEqual(migrated.playerData, v8.playerData, "migration preserves the player bucket exactly")
   Assert.deepEqual(migrated.world, world, "migration preserves world flags and variables exactly")
   Assert.deepEqual(migrated.party, party, "migration preserves the party exactly")
@@ -471,6 +471,99 @@ function T.tests.field_time_advances_in_whole_minutes_with_local_weekdays()
     Assert.equal(after.dailyGroupSeed, expected, "the daily seed steps once through the source recurrence per day")
     Assert.equal(after.outbreakSeed, after.dailyGroupSeed, "the outbreak seed follows the selected group seed")
   end
+end
+
+function T.tests.kenji_wait_and_active_facts_survive_save_restore()
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local record = PokegearAssetSchema.validate(fixtureManifest())
+  Assert.notNil(record, "the synthetic phone catalog validates")
+  assert(record ~= nil)
+  local state = PokegearState.new(nil, catalogRefs(record))
+  local initial = state:readPhone().kenji
+  Assert.equal(initial.waitDays, 0, "Kenji starts with the source's zero wait days")
+  Assert.isFalse(initial.active, "Kenji starts with the source's inactive flag")
+  state:setKenji({ waitDays = 2, active = true })
+  local restored = PokegearState.restore(state:capture(), catalogRefs(record))
+  Assert.deepEqual(
+    restored:readPhone().kenji,
+    { calls = 0, waitDays = 2, active = true },
+    "Kenji's source wait and active fields survive capture and restore"
+  )
+  local revision = state:revision()
+  local invalidWait = pcall(function()
+    state:setKenji({ waitDays = -1, active = true })
+  end)
+  Assert.isFalse(invalidWait, "Kenji wait days reject negative values")
+  local unknownFact = pcall(function()
+    state:setKenji({ waitDays = 0, active = false, weekday = 2 })
+  end)
+  Assert.isFalse(unknownFact, "Kenji updates reject unknown fields")
+  Assert.equal(state:revision(), revision, "invalid Kenji updates preserve the live state revision")
+
+  local previous = state:capture()
+  previous.stateVersion = 1
+  previous.phone.kenji.waitDays = nil
+  previous.phone.kenji.active = nil
+  previous.safariAreas = nil
+  local migrated = PokegearState.restore(previous, catalogRefs(record))
+  Assert.deepEqual(
+    migrated:readPhone().kenji,
+    { calls = 0, waitDays = 0, active = false },
+    "a prior Pokegear bucket receives only the source's initial Kenji values"
+  )
+  Assert.deepEqual(migrated:readSafariAreas(), {}, "v1 migration composes through the empty Safari arrangement")
+  Assert.equal(migrated:capture().stateVersion, 3, "v1 migration reaches the latest Pokegear version")
+end
+
+function T.tests.safari_area_order_survives_capture_and_v2_migration()
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local record = PokegearAssetSchema.validate(fixtureManifest())
+  Assert.notNil(record, "the synthetic phone catalog validates")
+  assert(record ~= nil)
+  local refs = catalogRefs(record)
+  local state = PokegearState.new(nil, refs)
+
+  Assert.deepEqual(state:readSafariAreas(), {}, "a fresh save has no arranged Safari areas")
+  local areas = { 0, 11, 4 }
+  state:setSafariAreas(areas)
+  local revision = state:revision()
+  state:setSafariAreas({ 0, 11, 4 })
+  Assert.equal(state:revision(), revision, "writing the same arrangement does not advance the revision")
+  areas[1] = 3
+  Assert.deepEqual(state:readSafariAreas(), { 0, 11, 4 }, "the owner detaches written area IDs")
+  local captured = state:capture()
+  Assert.deepEqual(captured.safariAreas, { 0, 11, 4 }, "the save preserves native Safari area order")
+
+  local restored = PokegearState.restore(captured, refs)
+  Assert.deepEqual(restored:readSafariAreas(), { 0, 11, 4 }, "Safari area order survives capture and restore")
+  local borrowed = restored:readSafariAreas()
+  borrowed[1] = 3
+  Assert.deepEqual(restored:readSafariAreas(), { 0, 11, 4 }, "the owner detaches read area IDs")
+
+  local candidate = restored:prepare(restored:revision(), function(edit)
+    edit:setSafariAreas({ 1, 5 })
+  end)
+  candidate.publish()
+  Assert.deepEqual(restored:readSafariAreas(), { 1, 5 }, "staged state edits preserve the Safari owner contract")
+
+  local previous = state:capture()
+  previous.stateVersion = 2
+  previous.safariAreas = nil
+  local migrated = PokegearState.restore(previous, refs)
+  Assert.deepEqual(migrated:readSafariAreas(), {}, "v2 saves migrate with the native empty arrangement")
+  Assert.equal(migrated:capture().stateVersion, 3, "Safari state migration advances the bucket version")
+
+  for _, invalid in ipairs({ { 12 }, { -1 }, { 1.5 }, { 0, 1, 2, 3, 4, 5, 6 } }) do
+    local ok = pcall(function()
+      state:setSafariAreas(invalid)
+    end)
+    Assert.isFalse(ok, "area IDs must be valid and an arrangement holds at most six areas")
+  end
+  local malformed = state:capture()
+  malformed.safariAreas = { 12 }
+  Assert.isFalse(pcall(PokegearState.restore, malformed, refs), "restoration rejects source area IDs outside the native range")
 end
 
 function T.tests.labelled_draws_keep_source_widths_and_resume_after_capture()

@@ -87,7 +87,7 @@ local function fixtureManifest(contacts, triggers)
     order[#order + 1] = contact.key
   end
   return {
-    schema = "g4-pokegear-assets-v2",
+    schema = "g4-pokegear-assets-v3",
     skins = { 0, 1, 2, 3, 4, 5 },
     shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png") },
     configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png") },
@@ -177,13 +177,16 @@ end
 -- acceptance effects stay separable from host entry.
 ---@return table
 local function recordingHost()
-  local host = { opens = {} }
+  local host = { opens = {}, results = {} }
   ---@param args table<string, unknown>
   ---@return table
   function host:open(args)
     assert(type(args) == "table", "companion opens carry their request record")
     self.opens[#self.opens + 1] = args
     return { id = #self.opens }
+  end
+  function host:result(handle)
+    return self.results[handle.id]
   end
   function host:isActive()
     return false
@@ -199,6 +202,7 @@ local function failingHost()
     open = function()
       error("companion host acquisition failed: test-injected busy lease", 0)
     end,
+    result = function() return nil end,
     isActive = function()
       return false
     end,
@@ -530,7 +534,7 @@ end
 -- records history without touching triggers, an event trigger survives
 -- expiry and failed acquisition, and success clears the trigger before
 -- any dialogue runs.
-function T.tests.accepting_a_call_clears_exactly_once_at_acceptance_never_on_ring_expire_or_failure()
+function T.tests.accepting_a_call_acknowledges_only_a_successful_terminal_result()
   requireFeature(
     "game.hgss.src.pokegear.IncomingCalls",
     "incoming calls have no field coordinator yet: acceptance cannot clear triggers or record ordinary history"
@@ -551,14 +555,20 @@ function T.tests.accepting_a_call_clears_exactly_once_at_acceptance_never_on_rin
     Assert.equal(ordinary.contactKey, TRAINER_KEY, "the ordinary ring names the plain caller")
     Assert.deepEqual(calls:notification(), ordinary, "polling holds the ordinary view still")
     Assert.deepEqual(calls:notification(), ordinary, "a third poll still holds the ordinary view still")
-    calls:accept("field:test-parent")
+    local handle = calls:accept("field:test-parent")
     Assert.equal(#rig.host.opens, 1, "acceptance enters the companion host exactly once")
-    Assert.isTrue(
-      projectionMentions(rig.state:readPhone().history, TRAINER_KEY),
-      "accepting the ordinary call records its caller in history"
-    )
+    Assert.isFalse(projectionMentions(rig.state:readPhone().history, TRAINER_KEY), "live calls do not consume history")
     Assert.deepEqual(rig.state:readPhone().triggers, {}, "the ordinary acceptance sets no trigger")
     Assert.isFalse(calls:notification(), "acceptance ends the ordinary ring")
+    rig.host.results[handle.id] = { contact = TRAINER_KEY, error = "native page failed" }
+    local retry = calls:notification()
+    Assert.notNil(retry, "a failed call restores its ordinary opportunity")
+    Assert.isFalse(projectionMentions(rig.state:readPhone().history, TRAINER_KEY), "a failed call stays out of history")
+    calls:accept("field:test-parent")
+    local retryHandle = { id = 2 }
+    rig.host.results[retryHandle.id] = { contact = TRAINER_KEY }
+    Assert.isFalse(calls:notification(), "a successful terminal call clears the retry ring")
+    Assert.isTrue(projectionMentions(rig.state:readPhone().history, TRAINER_KEY), "success records ordinary history")
     calls:dispose()
   end
 
@@ -646,64 +656,28 @@ function T.tests.accepting_a_call_clears_exactly_once_at_acceptance_never_on_rin
     calls:dispose()
   end
 
-  -- Successful pickup clears once before any dialogue: the trigger
-  -- vanishes the moment accept returns, the typed host holds the
-  -- incoming call, and the event caller never enters ordinary history.
-  -- The live host is fixed at construction, so its providers are built
-  -- first and the coordinator is composed around it.
+  -- Event triggers with an external clear policy are cleared only after
+  -- the host reports a successful terminal conversation.
   do
-    local IncomingCalls = requireFeature(
-      "game.hgss.src.pokegear.IncomingCalls",
-      "incoming calls have no field coordinator yet: acceptance cannot clear triggers through the typed host"
-    )
-    local providers = freshProviders(4242, {
+    local rig = freshCoordinator(4242, {
       setTriggers = { "custom.clear-event" },
       triggers = { triggerRecord("custom.clear-event", MOM_KEY, 3, 1, false) },
     })
-    local PokegearScriptHost = require("game.hgss.src.pokegear.PokegearScriptHost")
-    local liveHost = PokegearScriptHost.new({
-      state = providers.state,
-      catalog = providers.record.catalog,
-      messages = { greeting = "custom.greeting", program = "custom.program" },
-      world = {
-        flags = {},
-        rematchReady = {},
-        player = { x = 5, y = 7 },
-        canCall = function()
-          return true
-        end,
-      },
-      audio = {
-        playDialing = function() end,
-        isEffectWaitComplete = function()
-          return true
-        end,
-      },
-      random = PokegearRandom.new(777),
-    })
-    local calls = IncomingCalls.new({
-      state = providers.state,
-      catalog = providers.record.catalog,
-      calendar = providers.calendar,
-      random = providers.random,
-      world = providers.world,
-      host = liveHost,
-      audio = providers.audio,
-    })
+    local calls = rig.calls
     driveEligible(calls)
     calls:onOpportunity(opportunityArgs())
     Assert.notNil(calls:notification(), "the event trigger rings for the success check")
-    calls:accept("field:test-parent")
-    Assert.deepEqual(providers.state:readPhone().triggers, {}, "successful pickup clears the event trigger")
-    Assert.isTrue(liveHost:isActive(), "acceptance enters the incoming call through the typed host")
-    local active = liveHost:activeHandle()
-    Assert.notNil(active, "the entered call holds a live handle before any dialogue step")
-    Assert.isFalse(
-      projectionMentions(providers.state:readPhone().history, MOM_KEY),
-      "clearing an event trigger records no ordinary history"
+    local handle = calls:accept("field:test-parent")
+    Assert.isTrue(
+      rig.state:readPhone().triggers["custom.clear-event"] == true,
+      "acceptance leaves event trigger state untouched until success"
     )
-    Assert.isFalse(calls:notification(), "acceptance ends the event ring")
-    liveHost:dispose()
+    rig.host.results[handle.id] = { contact = MOM_KEY }
+    Assert.isFalse(calls:notification(), "successful terminal dialogue ends the event ring")
+    Assert.isFalse(
+      rig.state:readPhone().triggers["custom.clear-event"] == true,
+      "successful event dialogue clears the trigger at result acknowledgement"
+    )
     calls:dispose()
   end
 end

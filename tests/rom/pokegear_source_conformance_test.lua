@@ -14,6 +14,8 @@ local RomImporter = require("romdump.src.source.RomImporter")
 local RomSuite = require("tests.rom.support.RomSuite")
 local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
 local MapReference = require("romdump.src.reference.hgss.maps")
+local BinaryReader = require("libs.codec.src.BinaryReader")
+local PokegearCatalogCompiler = require("romdump.src.digest.ui.PokegearCatalogCompiler")
 
 local T = {}
 
@@ -112,6 +114,33 @@ function T.heartgold_phonebook_keeps_its_published_length(romFs, versionId, cont
   Assert.equal(#assert(bytes), PHONEBOOK_HG_BYTES, versionId .. " keeps the published phonebook length")
 end
 
+-- Phonebook semantics retain their native byte positions when the supplied
+-- HeartGold record is compiled. The field layout is corroborated by the
+-- available decomp checkout, whose revision is not the declared source pin.
+function T.heartgold_phonebook_fields_match_their_native_record_offsets(romFs, versionId, context)
+  requireHeartGold(context, versionId)
+  local reader = romFs --[[@as { readSourcePath: fun(self: table, path: string): string? }]]
+  local bytes = assert(reader:readSourcePath(PHONEBOOK_PATH))
+  local source = BinaryReader.new(bytes, "heartgold-phonebook-conformance")
+  local catalog = assert(PokegearCatalogCompiler.decodePhonebook(bytes))
+  local record = assert(catalog.contacts[1], "the phonebook begins with one native contact record")
+  local base = 4
+  Assert.equal(record.trainerClass, source:u8(base + 3), "trainer class comes from byte 3")
+  Assert.equal(record.trainerId, source:u16le(base + 4), "trainer ID comes from halfword 4")
+  Assert.equal(record.mapId, source:u16le(base + 6), "map ID comes from halfword 6")
+  Assert.equal(record.gift, source:u16le(base + 8), "gift comes from halfword 8")
+  Assert.equal(record.localScript, source:u16le(base + 10), "local script comes from halfword 10")
+  Assert.equal(record.rematchWeekday, source:u8(base + 13), "rematch weekday comes from byte 13")
+  Assert.equal(record.rematchTime, source:u8(base + 14), "rematch time comes from byte 14")
+  for weightIndex = 0, 3 do
+    Assert.equal(
+      record.sortWeights[weightIndex + 1],
+      source:u8(base + 16 + weightIndex),
+      "sort weight " .. weightIndex .. " comes from its native byte"
+    )
+  end
+end
+
 -- The compiled catalog carries the native program and place closure:
 -- schema-valid, all twelve broadcast programs, all one hundred map
 -- locations, and a non-empty contact table.
@@ -151,6 +180,61 @@ function T.heartgold_catalog_carries_the_native_program_and_place_closure(romFs,
     Assert.isTrue(found, versionId .. " keeps its special location " .. fragment)
   end
   Assert.isTrue(#catalog.contacts > 0, versionId .. " carries its native contact table")
+end
+
+function T.heartgold_phone_catalog_carries_native_headers_and_mom_intro_parameters(romFs, versionId, context)
+  requireHeartGold(context, versionId)
+  local PokegearAssetCompiler = require("romdump.src.digest.ui.PokegearAssetCompiler")
+  local compiled = assert(PokegearAssetCompiler.compile(romFs, versionId))
+  local catalog = assert(compiled.manifest.catalog)
+  local joey = nil
+  for _, contact in ipairs(catalog.contacts) do
+    if contact.family == "trainer" and contact.id == 10 then
+      joey = contact
+      break
+    end
+  end
+  Assert.notNil(joey, "the native catalog resolves Joey's generic caller row")
+  local headers = assert(joey.genericCallHeaders)
+  Assert.deepEqual(headers.outgoing, {
+    { type = 7, chance = 100, scriptType = 0, scriptId = 34 },
+    { type = 3, chance = 100, scriptType = 0, scriptId = 33 },
+    { type = 1, chance = 100, scriptType = 1, scriptId = 35 },
+    { type = 255, chance = 0, scriptType = 0, scriptId = 65535 },
+    { type = 255, chance = 0, scriptType = 0, scriptId = 65535 },
+    { type = 255, chance = 0, scriptType = 0, scriptId = 65535 },
+    { type = 255, chance = 0, scriptType = 0, scriptId = 65535 },
+    { type = 255, chance = 0, scriptType = 0, scriptId = 65535 },
+  }, "Joey's outgoing source rows retain order while both terminators normalize to the no-call sentinel")
+  Assert.deepEqual(headers.incoming, {
+    { type = 2, chance = 60, scriptType = 0, scriptId = 33 },
+    { type = 1, chance = 40, scriptType = 1, scriptId = 30 },
+    { type = 1, chance = 40, scriptType = 1, scriptId = 31 },
+    { type = 1, chance = 100, scriptType = 1, scriptId = 32 },
+    { type = 255, chance = 0, scriptType = 0, scriptId = 65535 },
+    { type = 255, chance = 0, scriptType = 0, scriptId = 65535 },
+    { type = 255, chance = 0, scriptType = 0, scriptId = 65535 },
+    { type = 255, chance = 0, scriptType = 0, scriptId = 65535 },
+  }, "Joey's incoming source header order and decisions are preserved")
+
+  local introParameters = assert(catalog.momCallIntroParameters)
+  for mapId = 0, MapReference.count - 1 do
+    Assert.equal(
+      introParameters[mapId],
+      MapReference.byId[mapId].momCallIntroParam,
+      "map " .. mapId .. " preserves the native Mom introduction parameter"
+    )
+  end
+  local momTrigger = nil
+  for _, trigger in ipairs(catalog.callTriggers) do
+    if trigger.slot == 12 then
+      momTrigger = trigger
+      break
+    end
+  end
+  Assert.notNil(momTrigger, "the native Mom gift trigger is present")
+  Assert.equal(momTrigger.scriptedCallType, 3, "the Mom trigger keeps its native scripted-call type")
+  Assert.equal(momTrigger.predefinedScriptId, 27, "the Mom trigger keeps PHONE_SCRIPT_027")
 end
 
 -- The region-map tables compile whole and keep hand-copied source rows:

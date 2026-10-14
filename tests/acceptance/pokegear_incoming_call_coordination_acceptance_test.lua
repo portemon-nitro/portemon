@@ -111,7 +111,7 @@ local function fixtureManifest(contacts, triggers)
     order[#order + 1] = contact.key
   end
   return {
-    schema = "g4-pokegear-assets-v2",
+    schema = "g4-pokegear-assets-v3",
     skins = { 0, 1, 2, 3, 4, 5 },
     shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png") },
     configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png") },
@@ -201,9 +201,11 @@ local function recordingHost()
     opens = {},
     active = false,
     steps = 0,
+    resultReads = 0,
     closes = 0,
     cancels = 0,
     finishOnStep = false,
+    terminalResult = nil,
   }
   ---@param args table<string, unknown>
   ---@return table
@@ -229,7 +231,11 @@ local function recordingHost()
   end
   function host:result(handle)
     assert(handle == self.handle, "the field reads only its acquired handle")
-    return self.finishOnStep and self.steps > 0 and { status = "complete" } or nil
+    self.resultReads = self.resultReads + 1
+    if self.finishOnStep and self.steps > 0 then
+      return { status = "complete" }
+    end
+    return self.terminalResult
   end
   function host:close(handle)
     assert(handle == self.handle, "the field closes only its acquired handle")
@@ -239,6 +245,7 @@ local function recordingHost()
   function host:cancel(reason)
     assert(type(reason) == "string", "field cancellation identifies its reason")
     self.cancels = self.cancels + 1
+    self.terminalResult = { signal = false, ready = false }
     self.active = false
   end
   return host
@@ -515,14 +522,17 @@ local function makeFieldSession(opts)
   return session, controls
 end
 
-local function answerThroughFieldInput(rig)
+local function answerThroughFieldInput(rig, keepOpen)
   local session = makeFieldSession({ incomingCalls = rig.calls, pokegearApplications = rig.host })
   session:updateFixed({ actionPressed = true })
   Assert.equal(#rig.host.opens, 1, "one field Action edge acquires one incoming call")
   Assert.isTrue(rig.host:isActive(), "the field owns the accepted host handle")
   Assert.equal(rig.host.opens[1].parentOwner, "field:incoming", "ambient calls use the stable field owner")
   Assert.equal(rig.host.steps, 0, "the answer edge does not step the newly acquired conversation")
-  session:dispose()
+  if keepOpen ~= true then
+    session:dispose()
+  end
+  return session
 end
 
 -- A competing field claim owns the tick while an eligible call waits:
@@ -659,6 +669,32 @@ function T.tests.ambient_call_steps_once_per_tick_and_closes_once_on_terminal_re
   session:dispose()
   Assert.equal(rig.host.steps, 1, "the closed handle never steps again")
   Assert.equal(rig.host.closes, 1, "the closed handle never closes again")
+  rig.calls:dispose()
+end
+
+function T.tests.cancelled_ambient_call_restores_the_retryable_ring_without_consuming_its_trigger()
+  local rig = freshCoordinator(4242, {
+    contactRecord(BILL_KEY, "BILL", 30, "bill"),
+  }, { triggerRecord(BILL_TRIGGER, BILL_KEY, 3) }, { BILL_TRIGGER })
+  driveEligible(rig.calls)
+  rig.calls:onOpportunity(opportunityArgs())
+  local session = makeFieldSession({ incomingCalls = rig.calls, pokegearApplications = rig.host })
+  session:updateFixed({ actionPressed = true })
+  Assert.isTrue(rig.host.active, "the accepted call owns a live host lease before cancellation")
+  local readsBeforeCancellation = rig.host.resultReads
+
+  session:dispose()
+
+  Assert.isTrue(
+    rig.host.resultReads > readsBeforeCancellation,
+    "field cancellation hands its unsuccessful terminal to the coordinator"
+  )
+  Assert.isTrue(rig.state:readPhone().triggers[BILL_TRIGGER] == true, "cancellation preserves the durable trigger")
+  local notification = rig.calls:notification()
+  Assert.notNil(notification, "cancellation restores the same retryable ring")
+  assert(type(notification) == "table", "the restored ring exposes its caller")
+  Assert.equal(notification.contactKey, BILL_KEY, "the retry still names Bill")
+  Assert.equal(#rig.host.opens, 1, "cancellation itself does not open a duplicate modal")
   rig.calls:dispose()
 end
 
@@ -842,11 +878,23 @@ function T.tests.only_genuine_producer_facts_raise_triggers_and_absent_owners_st
     Assert.notNil(ringing, "the genuine full-box trigger rings")
     assert(type(ringing) == "table", "ringing publishes its caller view")
     Assert.equal(ringing.contactKey, BILL_KEY, "the full-box trigger rings its owner")
-    answerThroughFieldInput(rig)
-    Assert.deepEqual(rig.state:readPhone().triggers, {}, "the fired trigger clears at acceptance")
+    local session = answerThroughFieldInput(rig, true)
+    Assert.deepEqual(
+      rig.state:readPhone().triggers,
+      { [BILL_TRIGGER] = true },
+      "the Bill trigger remains durable until the accepted call succeeds"
+    )
+    rig.host.finishOnStep = true
+    session:updateFixed({})
+    Assert.deepEqual(rig.state:readPhone().triggers, {}, "successful Bill call completion clears its trigger")
     rig.calls:onFieldClock(moment(30))
     rig.calls:onOpportunity(opportunityArgs())
-    Assert.isFalse(rig.calls:notification(), "the fired trigger never rings twice")
+    Assert.deepEqual(
+      rig.state:readPhone().triggers,
+      {},
+      "the fired Bill trigger stays cleared after the next incoming opportunity"
+    )
+    session:dispose()
     rig.calls:dispose()
   end
 
@@ -876,10 +924,17 @@ function T.tests.only_genuine_producer_facts_raise_triggers_and_absent_owners_st
     assert(type(ringing) == "table", "ringing publishes its caller view")
     Assert.equal(ringing.contactKey, OAK_KEY, "the threshold trigger rings its owner")
     answerThroughFieldInput(rig)
-    Assert.deepEqual(rig.state:readPhone().triggers, {}, "the fired trigger clears at acceptance")
+    Assert.deepEqual(
+      rig.state:readPhone().triggers,
+      { [OAK_TRIGGER] = true },
+      "the Oak trigger remains durable while its accepted call has no terminal result"
+    )
     rig.calls:onFieldClock(moment(40))
     rig.calls:onOpportunity(opportunityArgs())
-    Assert.isFalse(rig.calls:notification(), "the fired trigger never rings twice")
+    local retried = rig.calls:notification()
+    Assert.notNil(retried, "disposing the unanswered call restores its retryable trigger ring")
+    assert(type(retried) == "table", "the restored trigger publishes its caller view")
+    Assert.equal(retried.contactKey, OAK_KEY, "the retry still belongs to the unanswered Oak trigger")
     rig.calls:dispose()
   end
 

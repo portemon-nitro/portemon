@@ -146,7 +146,7 @@ end
 ---@return table
 local function fixtureManifest()
   return {
-    schema = "g4-pokegear-assets-v2",
+    schema = "g4-pokegear-assets-v3",
     skins = { 0, 1, 2, 3, 4, 5 },
     shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png") },
     configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png") },
@@ -159,6 +159,8 @@ local function fixtureManifest()
         { key = "custom.mom", family = "mother", sortWeight = 10 },
         { key = "custom.trainer-plain", family = "trainer", sortWeight = 20 },
         { key = "custom.kurt", family = "kurt", sortWeight = 30 },
+        { key = "custom.friend", family = "friend", sortWeight = 35 },
+        { key = "custom.bill", family = "bill", sortWeight = 37 },
         { key = "custom.daycare-lady", family = "daycare", sortWeight = 40 },
         { key = "custom.leader-falkner", family = "gym", sortWeight = 50 },
       },
@@ -166,6 +168,8 @@ local function fixtureManifest()
         "custom.mom",
         "custom.trainer-plain",
         "custom.kurt",
+        "custom.friend",
+        "custom.bill",
         "custom.daycare-lady",
         "custom.leader-falkner",
       },
@@ -255,9 +259,11 @@ function T.tests.phone_admission_uses_synthetic_directional_map_permissions()
   assert(contact ~= nil, "the synthetic service contact exists")
 
   local currentMap = { mapId = 9000, mapSectionNativeId = 0 }
-  local flags = { isFlagSet = function()
-    return false
-  end }
+  local flags = {
+    isFlagSet = function()
+      return false
+    end,
+  }
   local world = PhoneWorldContext.new({
     state = state,
     catalog = record.catalog,
@@ -343,6 +349,160 @@ function T.tests.phone_world_context_samples_the_live_native_map_and_rejects_mis
   )
 end
 
+function T.tests.phone_world_context_reads_native_gym_and_oak_call_entry_facts()
+  local PhoneWorldContext = require("game.hgss.src.pokegear.PhoneWorldContext")
+  local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
+  local values = {
+    [FieldScriptSymbols.flagsByName.FLAG_SYS_OAK_ACKNOWLEDGED_JOHTO_DEX_COMPLETION] = true,
+    [FieldScriptSymbols.flagsByName.FLAG_SYS_OAK_ACKNOWLEDGED_NATIONAL_DEX_COMPLETION] = false,
+  }
+  local flags = {
+    isFlagSet = function(_, flag)
+      return values[flag] == true
+    end,
+    setFlag = function(_, flag)
+      values[flag] = true
+    end,
+  }
+  local runtime = {
+    session = { currentMap = { mapSectionNativeId = 12 } },
+    playerData = { profile = { gender = 1, badges = 65535, nationalDex = true } },
+    dexKnowledge = {
+      bucket = function()
+        return { seen = { "A", "B" }, caught = { "A" } }
+      end,
+      isNationalDexComplete = function()
+        return false
+      end,
+    },
+    localClock = {
+      nowLocal = function()
+        return { year = 2026, month = 10, day = 13, hour = 12 }
+      end,
+    },
+  }
+  local context = PhoneWorldContext.new({
+    state = {
+      queryRematch = function(_, key)
+        Assert.equal(key, "gym.falkner", "gym seeking reads its registered contact")
+        return { stage = 1, wins = 0 }
+      end,
+    },
+    runtime = runtime,
+    flags = flags,
+    summaryDexNumbers = {
+      A = { national = 1, regional = 1 },
+      B = { national = 2, regional = 2 },
+    },
+  })
+  local facts = context:callFacts({ map = 12, family = "oak" })
+
+  Assert.equal(facts.badges, 16, "gym calls read the live badge count")
+  Assert.equal(facts.playerGender, 1, "Oak calls read the live player gender")
+  Assert.isTrue(facts.nationalDexUnlocked, "Oak calls read the National Dex unlock")
+  Assert.equal(facts.nationalDexOwned, 1, "Oak calls read National Dex ownership")
+  Assert.equal(facts.nationalDexSeen, 2, "Oak calls read National Dex seen count")
+  Assert.equal(facts.johtoDexOwned, 1, "Oak calls read Johto Dex ownership")
+  Assert.equal(facts.johtoDexSeen, 2, "Oak calls read Johto Dex seen count")
+  Assert.isTrue(facts.acknowledgedJohto, "Oak calls read the Johto acknowledgment")
+  Assert.isFalse(facts.acknowledgedNational, "Oak calls read the National acknowledgment")
+
+  local gymFacts = context:callFacts({ key = "gym.falkner", family = "gym", map = 7 })
+  Assert.isTrue(gymFacts.seeking, "gym calls read the durable active rematch stage")
+  Assert.isTrue(gymFacts.dojoHasRoom, "the retail capacity loop permits the source invitation")
+
+  context:setOakAcknowledged("national")
+  Assert.isTrue(values[FieldScriptSymbols.flagsByName.FLAG_SYS_OAK_ACKNOWLEDGED_NATIONAL_DEX_COMPLETION])
+end
+
+function T.tests.phone_world_context_exposes_native_generic_pending_gift()
+  local PhoneWorldContext = require("game.hgss.src.pokegear.PhoneWorldContext")
+  local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
+  local state = {
+    readPhone = function()
+      return { contacts = { ["trainer.joey"] = { reward = { item = "POTION", quantity = 1 } } } }
+    end,
+    queryRematch = function()
+      return nil
+    end,
+  }
+  local flags = {
+    isFlagSet = function()
+      return false
+    end,
+  }
+  local context = PhoneWorldContext.new({
+    state = state,
+    flags = flags,
+    runtime = { session = { currentMap = { mapSectionNativeId = 1 } } },
+  })
+
+  local facts = context:callFacts({ key = "trainer.joey", family = "trainer", map = 2 })
+
+  Assert.isTrue(facts.pendingGenericGift, "generic native gift headers read the pending contact reward")
+  Assert.equal(facts.radioTowerBeaten, false, "generic call facts retain the independent Rocket story state")
+end
+
+function T.tests.phone_world_context_applies_numeric_definition_effects_through_existing_owners()
+  local PhoneWorldContext = require("game.hgss.src.pokegear.PhoneWorldContext")
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local FieldEventState = require("libs.hgss.src.field.FieldEventState")
+  local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
+  local record = PokegearAssetSchema.validate(fixtureManifest())
+  Assert.notNil(record, "numeric-effect contact fixture validates")
+  assert(record ~= nil, "numeric-effect contact fixture validated above")
+  local state = PokegearState.new({ seed = 42 }, catalogRefs(record))
+  state:registerContact("custom.trainer-plain")
+  local events = FieldEventState.new()
+  local context = PhoneWorldContext.new({
+    state = state,
+    flags = events,
+    runtime = {
+      itemCatalog = {
+        itemKeyByNativeId = function(_, nativeId)
+          return "NATIVE_ITEM_" .. nativeId
+        end,
+      },
+    },
+  })
+  local random = {
+    mt = function(_, _)
+      return 3
+    end,
+    lc = function(_, _)
+      return 1
+    end,
+  }
+
+  local rematch = context:prepareCallDefinitionEffect("custom.trainer-plain", { kind = "rematch" }, random)
+  Assert.isNil(state:queryRematch("custom.trainer-plain"), "preparing a numeric call leaves rematch state untouched")
+  rematch.commit()
+  local seeking = state:queryRematch("custom.trainer-plain")
+  Assert.equal(seeking.stage, 1, "rematch definitions use persisted rematch state")
+  local item = context:prepareCallDefinitionEffect("custom.trainer-plain", { kind = "item", param1 = 149 }, random)
+  Assert.isNil(state:readPhone().contacts["custom.trainer-plain"].reward, "preparing a gift publishes no reward")
+  item.commit()
+  local reward = state:readPhone().contacts["custom.trainer-plain"].reward
+  Assert.deepEqual(
+    reward,
+    { item = "NATIVE_ITEM_152", quantity = 1 },
+    "item definitions map their source gift through the item catalog"
+  )
+  local flag = context:prepareCallDefinitionEffect(
+    "custom.trainer-plain",
+    { kind = "flag", param0 = 1, param1 = "FLAG_UNK_127" },
+    random
+  )
+  Assert.isFalse(events:isFlagSet(FieldScriptSymbols.flagsByName.FLAG_UNK_127), "preparing a flag publishes no event")
+  flag.commit()
+  Assert.isTrue(events:isFlagSet(FieldScriptSymbols.flagsByName.FLAG_UNK_127), "flag definitions use the event owner")
+  local word =
+    context:prepareCallDefinitionEffect("custom.trainer-plain", { kind = "word", param0 = 4, param1 = 70 }, random)
+  local substitutions = word.substitutions
+  Assert.equal(substitutions.wordEntry, 71, "word definitions select one source entry through the LC stream")
+end
+
 -- Native dialogue waits for text completion before entering the program
 -- stage. Repeated polls do not advance that stage.
 function T.tests.phone_text_wait_precedes_the_program_stage()
@@ -361,7 +521,6 @@ function T.tests.phone_text_wait_precedes_the_program_stage()
   state:registerContact("custom.kurt")
   local world = {
     flags = {},
-    rematchReady = {},
     canCall = function()
       return true
     end,
@@ -887,7 +1046,6 @@ function T.tests.phone_call_rejects_malformed_requests_without_taking_the_lease(
   state:registerContact("custom.trainer-plain")
   local world = {
     flags = {},
-    rematchReady = {},
     canCall = function()
       return true
     end,
@@ -955,109 +1113,1868 @@ end
 -- Every selector early return resolves in source order: each decisive
 -- fact selects its own program, flipping it falls through, and higher
 -- branches win over lower ones. Pure dispatch with no draws.
-function T.tests.selectors_resolve_every_family_branch_in_source_order()
-  local PhoneCall = require("game.hgss.src.pokegear.PhoneCall")
-
-  ---@param family string
-  ---@param facts table<string, unknown>
-  ---@param program string
-  ---@param why string
-  local function check(family, facts, program, why)
-    Assert.equal(PhoneCall.selectProgram(family, facts), program, why)
-  end
-
-  local elmCases = {
-    { { predefinedScript = "elm-intro" }, "elm-predefined" },
-    { { incomingCall = true }, "elm-incoming" },
-    { { localMap = true }, "elm-local-map" },
-    { { panicCall = true }, "elm-panic" },
-    { { rivalUnnamed = true }, "elm-rival" },
-    { { eggEvent = true }, "elm-egg" },
-    { { eggGift = true }, "elm-gift" },
-    { { eggHatched = true }, "elm-hatch" },
-    { { everstone = true }, "elm-everstone" },
-    { { rockets = true }, "elm-rockets" },
-    { { badges = 8, rockets = false }, "elm-early" },
-    { { gameClear = true }, "elm-clear" },
-    { { ssTicket = true }, "elm-ticket" },
-    { { pokerus = true }, "elm-pokerus" },
-    { {}, "elm-early" },
+function T.tests.gym_native_program_uses_special_entries_and_stages_only_an_accepted_available_invitation()
+  local TrainerPhonePrograms = require("game.hgss.src.pokegear.phone.TrainerPhonePrograms")
+  local worldWrites = {}
+  local world = {
+    queryRematch = function()
+      return nil
+    end,
+    setRematch = function(_, contact, value)
+      worldWrites[#worldWrites + 1] = { contact = contact, value = value }
+    end,
   }
-  for _, case in ipairs(elmCases) do
-    check("elm", case[1], case[2], "elm resolves " .. case[2])
+  local request = {
+    contact = "hg.gym.falkner",
+    family = "gym",
+    direction = "outgoing",
+    decision = { mode = "special", scriptType = 13, family = "gym" },
+    record = { map = 10, rematchWeekday = 5, rematchTime = 0 },
+    nativeFacts = {
+      localMap = false,
+      badges = 16,
+      seeking = false,
+      weekday = 5,
+      timeOfDay = 0,
+      dojoHasRoom = true,
+    },
+  }
+  local session = TrainerPhonePrograms.selectNative(world, request)
+  Assert.deepEqual(session.entries, { 2, 5 }, "the source prints its opening and invitation prompt entries")
+  Assert.equal(session.program, "gym-invitation", "the source invitation choice follows the frozen gym special type")
+  Assert.equal(TrainerPhonePrograms.step(session, {}), "waiting", "the invitation waits for a native yes/no choice")
+  Assert.equal(TrainerPhonePrograms.step(session, { choice = "no" }), "continue", "declining selects its response page")
+  Assert.equal(session.responseEntry, 7, "declining prints the native no response")
+  Assert.equal(#worldWrites, 0, "declining does not stage rematch readiness")
+
+  local accepted = TrainerPhonePrograms.selectNative(world, request)
+  Assert.equal(
+    TrainerPhonePrograms.step(accepted, { choice = "yes" }),
+    "continue",
+    "accepting selects its source response"
+  )
+  Assert.equal(accepted.responseEntry, 6, "an available dojo selects the native accepted response")
+  Assert.equal(#worldWrites, 0, "the effect waits until its response page resolves")
+  Assert.equal(
+    TrainerPhonePrograms.step(accepted, { responseResolved = true }),
+    "done",
+    "the accepted response completes the program"
+  )
+  Assert.equal(#worldWrites, 1, "the accepted invitation stages exactly once")
+  Assert.equal(worldWrites[1].contact, request.contact, "the effect preserves native contact identity")
+  Assert.deepEqual(worldWrites[1].value, { stage = 1, wins = 0 }, "the durable owner receives the staged invitation")
+
+  local localRequest = {
+    contact = request.contact,
+    family = "gym",
+    direction = "outgoing",
+    decision = request.decision,
+    record = request.record,
+    nativeFacts = { localMap = true },
+  }
+  Assert.deepEqual(
+    TrainerPhonePrograms.selectNative(world, localRequest).entries,
+    { 1 },
+    "a local outgoing caller terminates with the source local-map entry"
+  )
+  local waitingRequest = {
+    contact = request.contact,
+    family = "gym",
+    direction = "outgoing",
+    decision = request.decision,
+    record = request.record,
+    nativeFacts = {
+      localMap = false,
+      badges = 15,
+      seeking = false,
+    },
+  }
+  Assert.deepEqual(
+    TrainerPhonePrograms.selectNative(world, waitingRequest).entries,
+    { 2, 3 },
+    "a remote caller without all badges receives the native wait response"
+  )
+  waitingRequest.nativeFacts.badges = 16
+  waitingRequest.nativeFacts.seeking = true
+  Assert.deepEqual(
+    TrainerPhonePrograms.selectNative(world, waitingRequest).entries,
+    { 2, 9 },
+    "an existing invitation takes precedence over the call window"
+  )
+  waitingRequest.nativeFacts.seeking = false
+  waitingRequest.nativeFacts.weekday = 4
+  waitingRequest.nativeFacts.timeOfDay = 0
+  Assert.deepEqual(
+    TrainerPhonePrograms.selectNative(world, waitingRequest).entries,
+    { 2, 4 },
+    "a closed native weekday window declines the invitation"
+  )
+
+  local incomingRequest = {
+    contact = request.contact,
+    family = "gym",
+    direction = "incoming",
+    decision = { mode = "special", scriptType = 14, family = "gym" },
+    nativeFacts = { seeking = false },
+    draw = function()
+      return 1
+    end,
+  }
+  local incoming = TrainerPhonePrograms.selectNative(world, incomingRequest)
+  Assert.deepEqual(incoming.entries, { 10 }, "incoming calls show the opening before selecting a response")
+  Assert.equal(TrainerPhonePrograms.step(incoming, {}), "continue", "incoming response follows the opening page")
+  Assert.equal(incoming.responseEntry, 13, "the source random response uses its three-entry range")
+  incomingRequest.nativeFacts.seeking = true
+  incomingRequest.draw = function()
+    error("seeking calls do not draw the random response")
   end
-  check(
-    "elm-predefined",
-    { predefinedScript = "elm-intro" },
-    "elm-predefined",
-    "the predefined family keeps its script"
+  local seeking = TrainerPhonePrograms.selectNative(world, incomingRequest)
+  Assert.equal(TrainerPhonePrograms.step(seeking, {}), "continue", "seeking calls advance after the opening page")
+  Assert.equal(seeking.responseEntry, 11, "seeking calls use the fixed native response")
+end
+
+function T.tests.generic_header_selector_skips_closed_radio_rematch_before_weekday_facts()
+  local PhoneCall = require("game.hgss.src.pokegear.PhoneCall")
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local headers = {
+    { type = 3, chance = 100, scriptType = 0, scriptId = 44 },
+    { type = 1, chance = 100, scriptType = 0, scriptId = 34 },
+  }
+  for _ = 3, 8 do
+    headers[#headers + 1] = { type = 0, chance = 100, scriptType = 0, scriptId = 65535 }
+  end
+  local manifest = fixtureManifest()
+  local contact = manifest.catalog.contacts[2]
+  contact.genericCallHeaders = { outgoing = headers, incoming = headers }
+  local record = PokegearAssetSchema.validate(manifest)
+  Assert.notNil(record, "the generic trainer header fixture validates through the real schema")
+  assert(record ~= nil, "the generic trainer header fixture validated above")
+  local state = PokegearState.new({ seed = 73 }, catalogRefs(record))
+  state:registerContact("custom.trainer-plain")
+  local selectedScript = nil
+  local world = {
+    canCall = function()
+      return true
+    end,
+    nativeSelectorFacts = function()
+      return { localMap = false }
+    end,
+    callFacts = function()
+      return { radioTowerBeaten = false, seeking = false, pendingGenericGift = false }
+    end,
+  }
+  local messages = phoneMessages()
+  messages.resolveLine = function(_, _, scriptId)
+    selectedScript = scriptId
+    return { tokens = { { kind = "glyph", code = 1, text = "X", raw = { 1 } } } }
+  end
+  local call = PhoneCall.new({
+    state = state,
+    catalog = record.catalog,
+    messages = messages,
+    world = world,
+    audio = {
+      isEffectWaitComplete = function()
+        return false
+      end,
+    },
+    random = {
+      mt = function()
+        return 0
+      end,
+    },
+  })
+  local handle = call:begin({
+    id = "generic-short-circuit",
+    contact = "custom.trainer-plain",
+    direction = "outgoing",
+    kind = "ordinary",
+  })
+  call:step(handle, {})
+  Assert.equal(selectedScript, 34, "the closed rematch header skips its unused weekday and time facts")
+  Assert.equal(call:view(handle).stage, "message", "the following ordinary header produces a printable page")
+end
+
+function T.tests.generic_header_selector_skips_national_park_gifts_during_bug_contest()
+  local PhoneCall = require("game.hgss.src.pokegear.PhoneCall")
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local headers = {
+    { type = 7, chance = 100, scriptType = 0, scriptId = 44 },
+    { type = 8, chance = 100, scriptType = 0, scriptId = 45 },
+    { type = 1, chance = 100, scriptType = 0, scriptId = 34 },
+  }
+  for _ = 4, 8 do
+    headers[#headers + 1] = { type = 0, chance = 100, scriptType = 0, scriptId = 65535 }
+  end
+  local manifest = fixtureManifest()
+  manifest.catalog.contacts[2].genericCallHeaders = { outgoing = headers, incoming = headers }
+  local record = PokegearAssetSchema.validate(manifest)
+  Assert.notNil(record, "the contest-gated generic caller validates through the real schema")
+  assert(record ~= nil, "the generic caller fixture validated above")
+  local state = PokegearState.new({ seed = 74 }, catalogRefs(record))
+  state:registerContact("custom.trainer-plain")
+  local selectedScript = nil
+  local messages = phoneMessages()
+  messages.resolveLine = function(_, _, scriptId)
+    selectedScript = scriptId
+    return { tokens = { { kind = "glyph", code = 1, text = "X", raw = { 1 } } } }
+  end
+  local call = PhoneCall.new({
+    state = state,
+    catalog = record.catalog,
+    messages = messages,
+    world = {
+      canCall = function()
+        return true
+      end,
+      nativeSelectorFacts = function()
+        return { localMap = false }
+      end,
+      callFacts = function()
+        return {
+          radioTowerBeaten = true,
+          seeking = true,
+          pendingGenericGift = true,
+          nationalParkCaller = true,
+          bugContestActive = true,
+        }
+      end,
+    },
+    audio = instantAudio(),
+    random = {
+      mt = function()
+        return 0
+      end,
+    },
+  })
+  local handle = call:begin({
+    id = "generic-national-park-contest",
+    contact = "custom.trainer-plain",
+    direction = "outgoing",
+    kind = "ordinary",
+  })
+  call:step(handle, { confirm = true })
+  Assert.equal(selectedScript, 34, "types seven and eight fall through during the National Park Bug Contest")
+end
+
+function T.tests.native_service_specials_follow_their_source_page_sequences()
+  local ServicePhonePrograms = require("game.hgss.src.pokegear.phone.ServicePhonePrograms")
+  local function finish(session, expected)
+    local index = 1
+    for _, entry in ipairs(expected) do
+      Assert.equal(session.responseEntry, entry, "the next native response entry follows source order")
+      local result = ServicePhonePrograms.stepNativePage(session, { responseResolved = true })
+      index = index + 1
+      if index <= #expected then
+        Assert.equal(result, "continue", "the source program waits for each following response")
+      else
+        Assert.equal(result, "done", "the last source response completes the native program")
+      end
+    end
+  end
+
+  local bill = ServicePhonePrograms.selectNativePage({
+    contact = "hg.bill",
+    decision = { family = "bill", scriptType = 3 },
+    nativeFacts = { playerGender = 0, pcFreeSlots = 0 },
+  })
+  Assert.deepEqual(bill.entries, { 3 }, "Bill begins with the gender-specific intro")
+  Assert.equal(ServicePhonePrograms.stepNativePage(bill, {}), "continue", "Bill advances after the intro")
+  finish(bill, { 9, 8 })
+
+  local stockedBill = ServicePhonePrograms.selectNativePage({
+    contact = "hg.bill",
+    decision = { family = "bill", scriptType = 3 },
+    nativeFacts = { playerGender = 1, pcFreeSlots = 5, pcBoxName = "BOX 2" },
+    draw = function()
+      return 1
+    end,
+  })
+  Assert.equal(ServicePhonePrograms.stepNativePage(stockedBill, {}), "continue", "Bill advances to active-box advice")
+  Assert.equal(stockedBill.responseEntry, 6, "Bill selects the source random advice entry")
+  Assert.deepEqual(
+    stockedBill.substitutionsByEntry[6],
+    { [11] = { [10] = "BOX 2" }, [52] = { [11] = 5 } },
+    "Bill's advice receives the active box name and free-slot count"
   )
-  -- Higher branches win: each pair proves the order, not just the hit.
-  check("elm", { localMap = true, panicCall = true }, "elm-local-map", "the local map precedes the panic call")
-  check("elm", { localMap = false, panicCall = true }, "elm-panic", "a false local map falls through to panic")
-  check("elm", { eggEvent = true, eggGift = true }, "elm-egg", "the egg call precedes its gift state")
-  check("elm", { badges = 3, rockets = true }, "elm-rockets", "rockets precede the badge default")
-  check("elm", { gameClear = true, pokerus = true }, "elm-clear", "the clear state precedes pokerus")
-  check("elm", { ssTicket = true, pokerus = true }, "elm-ticket", "the ticket precedes pokerus")
-
-  check("oak", { excluded = true, dexSeen = 100 }, "oak-deferred", "oak exclusions defer first")
-  check(
-    "oak",
-    { nationalDex = true, dexSeen = 5 },
-    "oak-national-evaluation",
-    "the national choice precedes the seen count"
+  Assert.equal(
+    ServicePhonePrograms.stepNativePage(stockedBill, { responseResolved = true }),
+    "continue",
+    "Bill prints the closing page after advice"
   )
-  check("oak", { dexSeen = 10, dexCaught = 5 }, "oak-evaluation", "the seen count evaluates")
-  check("oak", {}, "oak-intro", "no dex knowledge introduces")
+  Assert.equal(stockedBill.responseEntry, 8, "Bill's advice is followed by the native closing")
 
-  check("mother", { giftPending = true, savingsChoice = true }, "mother-gift", "the pending gift announces first")
-  check("mother", { savingsChoice = true }, "mother-savings", "the savings choice banks")
-  check("mother", { savingsChoice = false }, "mother-offer", "an unset choice offers")
-  check("mother", {}, "mother-greeting", "no facts greet")
+  local mappedFriend = ServicePhonePrograms.selectNativePage({
+    contact = "hg.friend",
+    decision = { family = "friend", scriptType = 10 },
+    nativeFacts = { timeOfDay = 2, friendMapIndex = 48 },
+    draw = function()
+      error("mapped Friend phrase does not draw")
+    end,
+  })
+  Assert.deepEqual(mappedFriend.entries, { 6 }, "Friend's type-ten opening follows the time of day")
+  Assert.equal(ServicePhonePrograms.stepNativePage(mappedFriend, {}), "continue", "Friend advances after its opening")
+  Assert.equal(mappedFriend.responseEntry, 61, "Friend maps the current native map to the source phrase index")
 
-  check("generic", { storyCall = "x", weekday = "monday" }, "generic-story", "the story call precedes weekday gates")
-  check("generic", { contest = true, weekday = "monday" }, "generic-contest", "the contest gate precedes weekday gates")
-  check("generic", { weekday = "monday", hour = 9 }, "generic-weekday", "the weekday gate resolves")
-  check("generic", { repeatCall = true }, "generic-repeat", "repeat history resolves")
-  check("generic", {}, "generic-greeting", "no gates greet")
+  local randomFriend = ServicePhonePrograms.selectNativePage({
+    contact = "hg.friend",
+    decision = { family = "friend", scriptType = 10 },
+    nativeFacts = { timeOfDay = 0 },
+    draw = function()
+      return 2
+    end,
+  })
+  Assert.equal(
+    ServicePhonePrograms.stepNativePage(randomFriend, {}),
+    "continue",
+    "unmapped Friend calls select a topic"
+  )
+  Assert.equal(randomFriend.responseEntry, 12, "an unmapped type-ten location selects one of three random phrases")
 
-  check("gym", { weekday = "saturday", morning = true }, "gym-rematch", "the source window invites")
-  check("gym", { weekday = "sunday", morning = true }, "gym-waiting", "a wrong weekday waits")
-  check("gym", { weekday = "saturday", morning = false }, "gym-waiting", "a wrong half waits")
-  check(
-    "gym",
-    { window = { weekday = "friday", morning = false }, weekday = "friday", morning = false },
-    "gym-rematch",
-    "a recorded window invites on its own terms"
+  local unlockedFriendDraws = { 500, 1 }
+  local unlockedFriend = ServicePhonePrograms.selectNativePage({
+    contact = "hg.friend",
+    decision = { family = "friend", scriptType = 11 },
+    nativeFacts = { timeOfDay = 1, friendEligiblePhraseIndices = { 1, 7, 19 } },
+    draw = function()
+      return table.remove(unlockedFriendDraws, 1)
+    end,
+  })
+  Assert.deepEqual(unlockedFriend.entries, { 8 }, "Friend's type-eleven opening follows the time of day")
+  Assert.equal(
+    ServicePhonePrograms.stepNativePage(unlockedFriend, {}),
+    "continue",
+    "Friend advances after its incoming opening"
+  )
+  Assert.equal(unlockedFriend.responseEntry, 93, "the unlocked branch maps its draw to a source phrase row")
+  Assert.equal(#unlockedFriendDraws, 0, "the unlocked branch consumes exactly two native draws")
+
+  local buena = ServicePhonePrograms.selectNativePage({
+    contact = "hg.buena",
+    decision = { family = "buena", scriptType = 8 },
+    nativeFacts = { playerGender = 0, timeOfDay = 1 },
+    draw = function()
+      return 2
+    end,
+  })
+  Assert.deepEqual(buena.entries, { 5 }, "Buena's type-eight opening uses time and gender")
+  Assert.equal(ServicePhonePrograms.stepNativePage(buena, {}), "continue", "Buena waits for her random follow-up")
+  finish(buena, { 12 })
+
+  local passwordOnAir = ServicePhonePrograms.selectNativePage({
+    contact = "hg.buena",
+    decision = { family = "buena", scriptType = 9 },
+    nativeFacts = { playerGender = 1, timeOfDay = 0, passwordOnAir = true },
+    draw = function()
+      error("the password page does not consume a random draw")
+    end,
+  })
+  Assert.deepEqual(passwordOnAir.entries, { 16 }, "Buena's type-nine opener is gendered")
+  Assert.equal(ServicePhonePrograms.stepNativePage(passwordOnAir, {}), "continue", "password-on-air adds its follow-up")
+  finish(passwordOnAir, { 36 })
+
+  local gameClear = ServicePhonePrograms.selectNativePage({
+    contact = "hg.buena",
+    decision = { family = "buena", scriptType = 9 },
+    nativeFacts = { playerGender = 1, timeOfDay = 2, passwordOnAir = false, gameClear = true },
+    draw = function()
+      return 13
+    end,
+  })
+  Assert.deepEqual(gameClear.entries, { 20 }, "Buena's type-nine opener follows the time of day")
+  Assert.equal(ServicePhonePrograms.stepNativePage(gameClear, {}), "continue", "Buena waits for the game-clear branch")
+  finish(gameClear, { 35 })
+
+  local baoba = ServicePhonePrograms.selectNativePage({
+    contact = "hg.baoba",
+    decision = { family = "baoba", scriptType = 15 },
+    nativeFacts = { playerGender = 0, safariArrangementAreas = { 0, 11, 4 } },
+  })
+  Assert.deepEqual(baoba.entries, { 18 }, "Baoba selects the message for the live Safari arrangement count")
+  Assert.deepEqual(baoba.substitutionsByEntry[18], { safariAreaIds = { 0, 11, 4 } })
+  Assert.equal(ServicePhonePrograms.stepNativePage(baoba, {}), "done", "Baoba's single source page completes")
+end
+
+function T.tests.daycare_native_pages_follow_slot_growth_egg_and_compatibility_facts()
+  local ServicePhonePrograms = require("game.hgss.src.pokegear.phone.ServicePhonePrograms")
+  local noMons = ServicePhonePrograms.selectNativePage({
+    contact = "hg.daycare-lady",
+    decision = { family = "daycare", scriptType = 6 },
+    nativeFacts = { playerGender = 0, daycareMons = {} },
+  })
+  Assert.deepEqual(noMons.entries, { 3 }, "the remote Day Care opener is gendered")
+  Assert.equal(ServicePhonePrograms.stepNativePage(noMons, {}), "continue")
+  Assert.equal(noMons.responseEntry, 10, "an empty Day Care closes with its empty response")
+  Assert.equal(ServicePhonePrograms.stepNativePage(noMons, { responseResolved = true }), "done")
+
+  local oneMon = ServicePhonePrograms.selectNativePage({
+    contact = "hg.daycare-lady",
+    decision = { family = "daycare", scriptType = 6 },
+    nativeFacts = {
+      playerGender = 1,
+      daycareMons = { { nickname = "SPROUT", growth = 2 } },
+    },
+  })
+  Assert.deepEqual(oneMon.entries, { 4 })
+  Assert.equal(ServicePhonePrograms.stepNativePage(oneMon, {}), "continue")
+  Assert.equal(oneMon.responseEntry, 5, "an occupied Day Care begins its mon report")
+  Assert.deepEqual(oneMon.responseSubstitutionsByIndex[2], { [0] = { [10] = "SPROUT" }, [52] = { [11] = 2 } })
+  Assert.equal(ServicePhonePrograms.stepNativePage(oneMon, { responseResolved = true }), "continue")
+  Assert.equal(oneMon.responseEntry, 6, "the report names the mon and level growth")
+  Assert.deepEqual(oneMon.responseSubstitutions, { [0] = { [10] = "SPROUT" }, [52] = { [11] = 2 } })
+  Assert.equal(ServicePhonePrograms.stepNativePage(oneMon, { responseResolved = true }), "continue")
+  Assert.equal(oneMon.responseEntry, 8, "one deposited mon uses the singular closing")
+  Assert.equal(ServicePhonePrograms.stepNativePage(oneMon, { responseResolved = true }), "done")
+
+  local egg = ServicePhonePrograms.selectNativePage({
+    contact = "hg.daycare-man",
+    decision = { family = "daycare", scriptType = 7 },
+    nativeFacts = { daycareEggPid = 123, daycareMons = {} },
+  })
+  Assert.deepEqual(egg.entries, { 2 })
+  Assert.equal(ServicePhonePrograms.stepNativePage(egg, {}), "continue")
+  Assert.equal(egg.responseEntry, 3, "an available egg selects its source page")
+  Assert.equal(ServicePhonePrograms.stepNativePage(egg, { responseResolved = true }), "done")
+
+  local pair = ServicePhonePrograms.selectNativePage({
+    contact = "hg.daycare-man",
+    decision = { family = "daycare", scriptType = 7 },
+    nativeFacts = {
+      daycareEggPid = 0,
+      daycareCompatibility = 1,
+      daycareMons = { { nickname = "A", growth = 0 }, { nickname = "B", growth = 0 } },
+    },
+  })
+  Assert.equal(ServicePhonePrograms.stepNativePage(pair, {}), "continue")
+  Assert.equal(pair.responseEntry, 6, "two deposited mons select the pair page")
+  Assert.deepEqual(pair.substitutionsByEntry[6], { [0] = { [10] = "A", [11] = "B" } })
+  Assert.equal(ServicePhonePrograms.stepNativePage(pair, { responseResolved = true }), "continue")
+  Assert.equal(pair.responseEntry, 8, "medium compatibility selects its source page")
+  Assert.equal(ServicePhonePrograms.stepNativePage(pair, { responseResolved = true }), "continue")
+  Assert.equal(pair.responseEntry, 11, "the pair report has the native closing")
+  Assert.equal(ServicePhonePrograms.stepNativePage(pair, { responseResolved = true }), "done")
+end
+
+function T.tests.phone_call_prints_the_native_gym_pages_before_staging_an_invitation()
+  local PhoneCall = require("game.hgss.src.pokegear.PhoneCall")
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
+  local record = PokegearAssetSchema.validate(fixtureManifest())
+  Assert.notNil(record, "the synthetic contact catalog must validate through the asset schema")
+  assert(record ~= nil, "synthetic catalog validated above")
+  local catalog = record.catalog --[[@as table<string, unknown>]]
+  local contacts = catalog.contacts --[[@as table<integer, table<string, unknown>>]]
+  local leader = assert(
+    (function()
+      for _, contact in ipairs(contacts) do
+        if contact.key == "custom.leader-falkner" then
+          return contact
+        end
+      end
+    end)(),
+    "the synthetic catalog has its Gym caller"
+  )
+  leader.rematchWeekday = 5
+  leader.rematchTime = 0
+  local state = PokegearState.new({ seed = 18 }, catalogRefs(record))
+  state:registerContact("custom.leader-falkner")
+  local trace = {}
+  local rematches = {}
+  local facts = {
+    localMap = false,
+    badges = 16,
+    seeking = false,
+    weekday = 5,
+    timeOfDay = 0,
+    dojoHasRoom = true,
+  }
+  local messages = phoneMessages()
+  messages.resolveContactEntry = function(_, _, entry)
+    trace[#trace + 1] = entry
+    return { tokens = { { kind = "glyph", code = entry, text = tostring(entry), raw = { entry } } } }
+  end
+  local world = {
+    canCall = function()
+      return true
+    end,
+    nativeSelectorFacts = function()
+      return { localMap = false }
+    end,
+    callFacts = function()
+      return facts
+    end,
+    queryRematch = function()
+      return nil
+    end,
+    setRematch = function(_, contact, value)
+      rematches[#rematches + 1] = { contact = contact, value = value }
+    end,
+  }
+  local call = PhoneCall.new({
+    state = state,
+    catalog = catalog,
+    messages = messages,
+    world = world,
+    audio = instantAudio(),
+    random = PokegearRandom.new(18),
+  })
+  local handle = call:begin({
+    id = "gym-native-1",
+    contact = "custom.leader-falkner",
+    direction = "outgoing",
+    kind = "ordinary",
+  })
+  call:step(handle, { confirm = true })
+  Assert.deepEqual(trace, { 2, 5 }, "the conversation resolves its native introduction and choice prompt entries")
+  local foundChoice = false
+  for _ = 1, 6 do
+    if call:view(handle).stage == "choice" then
+      foundChoice = true
+      break
+    end
+    call:step(handle, { confirm = true })
+  end
+  Assert.isTrue(foundChoice, "the native invitation reaches its yes/no menu after the prompt")
+  Assert.deepEqual(call:view(handle).choices, { "yes", "no" }, "the call exposes the native invitation choices")
+  call:step(handle, { choice = "yes" })
+  Assert.equal(trace[#trace], 6, "acceptance resolves the native accepted response entry")
+  Assert.equal(#rematches, 0, "the rematch stays unstaged while its response page is visible")
+  for _ = 1, 6 do
+    if call:result(handle) ~= nil then
+      break
+    end
+    call:step(handle, { confirm = true })
+  end
+  local result = call:result(handle)
+  Assert.notNil(result, "the native gym conversation reaches a terminal outcome")
+  Assert.isNil(result.error, "the native gym conversation succeeds")
+  Assert.equal(#rematches, 1, "the invitation stages once after its response completes")
+  Assert.deepEqual(rematches[1].value, { stage = 1, wins = 0 }, "the phone writes the durable invitation shape")
+end
+
+function T.tests.oak_native_selector_preserves_scripted_incoming_local_and_acknowledgment_order()
+  local ProfessorPhonePrograms = require("game.hgss.src.pokegear.phone.ProfessorPhonePrograms")
+  local record = { map = 10 }
+  local scripted = ProfessorPhonePrograms.selectOakNative("outgoing", record, { scriptedCallType = 2 })
+  Assert.deepEqual(
+    scripted,
+    { mode = "numeric", scriptId = 82, family = "oak" },
+    "scripted Oak calls precede every other selector branch"
   )
 
-  check("bill", { acknowledged = true, pcFreeSlots = 5 }, "bill-greeting", "an acknowledgement needs no capacity read")
-  check("bill", { pcFreeSlots = 0 }, "bill-full", "a full box reports full")
-  check("bill", { pcFreeSlots = 5 }, "bill-advice", "free slots advise")
-  check("bill", {}, "bill-greeting", "no box facts greet")
-  check("buena", { takeover = true, passwordKnown = true }, "buena-closed", "the takeover closes first")
-  check("buena", { passwordKnown = true }, "buena-reward", "the known password rewards")
-  check("buena", { blueCard = true }, "buena-password", "the blue card asks for the password")
-  check("buena", {}, "buena-greeting", "no card facts greet")
+  local incoming = ProfessorPhonePrograms.selectOakNative("incoming", record, { nationalDexOwned = 101 })
+  Assert.deepEqual(
+    incoming,
+    { mode = "numeric", scriptId = 70, family = "oak" },
+    "incoming calls scale and floor the National Dex count"
+  )
+  incoming = ProfessorPhonePrograms.selectOakNative("incoming", record, { nationalDexOwned = 9999, localMap = true })
+  Assert.deepEqual(
+    incoming,
+    { mode = "numeric", scriptId = 77, family = "oak" },
+    "incoming calls clamp their script range before checking locality"
+  )
 
-  check("trainer", { invitation = true }, "trainer-rematch", "the invitation program invites")
-  check("trainer", {}, "trainer-ordinary", "no invitation stays ordinary")
-  check("kenji", { kenjiActive = true }, "kenji-active", "the active errand reports active")
-  check("kenji", { waitExpired = true }, "kenji-ready", "the expired wait reports ready")
-  check("kenji", {}, "kenji-waiting", "no wait keeps waiting")
-  check("irwin", { storyEvent = true }, "irwin-story", "the story event reacts")
-  check("irwin", {}, "irwin-greeting", "no event greets")
-  check("kurt", { aboutProduction = true }, "kurt-production", "the production question produces")
-  check("kurt", {}, "kurt-greeting", "no question greets locally")
-  check("daycare", { aboutEgg = true }, "daycare-egg", "the egg question answers")
-  check("daycare", {}, "daycare-greeting", "no question greets locally")
-  check("bike", { acknowledged = true }, "bike-greeting", "an acknowledgement greets")
-  check("bike", { hasBicycle = true }, "bike-owned", "an owned bicycle reports owned")
-  check("bike", {}, "bike-offer", "no bicycle offers")
-  check("friend", { subject = "swarm" }, "friend-topic", "a subject discusses")
-  check("friend", {}, "friend-greeting", "no subject greets")
-  check("baoba", { safariTest = true }, "baoba-test", "the safari test reports")
-  check("baoba", {}, "baoba-greeting", "no test greets locally")
+  local localCall =
+    ProfessorPhonePrograms.selectOakNative("outgoing", record, { localMap = true, acknowledgedNational = true })
+  Assert.deepEqual(
+    localCall,
+    { mode = "numeric", scriptId = 68, family = "oak" },
+    "a local call precedes completion acknowledgments"
+  )
+  local nationalAck =
+    ProfessorPhonePrograms.selectOakNative("outgoing", record, { localMap = false, acknowledgedNational = true })
+  Assert.deepEqual(
+    nationalAck,
+    { mode = "numeric", scriptId = 81, family = "oak" },
+    "National Dex acknowledgment selects its native numeric script"
+  )
+  local johtoAck = ProfessorPhonePrograms.selectOakNative("outgoing", record, {
+    localMap = false,
+    acknowledgedNational = false,
+    nationalDexUnlocked = false,
+    acknowledgedJohto = true,
+  })
+  Assert.deepEqual(
+    johtoAck,
+    { mode = "numeric", scriptId = 80, family = "oak" },
+    "Johto acknowledgment selects its native numeric script"
+  )
+  local special = ProfessorPhonePrograms.selectOakNative("outgoing", record, {
+    localMap = false,
+    acknowledgedNational = false,
+    nationalDexUnlocked = true,
+    acknowledgedJohto = false,
+  })
+  Assert.deepEqual(
+    special,
+    { mode = "special", scriptType = 5, family = "oak" },
+    "ordinary Oak calls select special type five"
+  )
+end
+
+function T.tests.kenji_native_selector_preserves_source_wait_active_and_time_order()
+  local TrainerPhonePrograms = require("game.hgss.src.pokegear.phone.TrainerPhonePrograms")
+  local function select(facts)
+    return TrainerPhonePrograms.selectKenjiNative(facts)
+  end
+
+  Assert.deepEqual(
+    select({ localMap = true, kenjiWaitDays = 3, kenjiActive = true, seeking = false }),
+    { scriptId = 86, activate = false },
+    "same-map calls select the local script before remote wait facts"
+  )
+  Assert.deepEqual(
+    select({ localMap = false, kenjiWaitDays = 2, kenjiActive = false, seeking = false, timeOfDay = 1 }),
+    { scriptId = 87, activate = false },
+    "more than one wait day selects the waiting script"
+  )
+  Assert.deepEqual(
+    select({ localMap = false, kenjiWaitDays = 1, kenjiActive = false, seeking = false, timeOfDay = 1 }),
+    { scriptId = 88, activate = false },
+    "one wait day precedes the active-without-seeking branch"
+  )
+  Assert.deepEqual(
+    select({ localMap = false, kenjiWaitDays = 0, kenjiActive = true, seeking = false, timeOfDay = 1 }),
+    { scriptId = 87, activate = false },
+    "an active caller without its seeking rematch remains waiting"
+  )
+  Assert.deepEqual(
+    select({ localMap = false, kenjiWaitDays = 0, kenjiActive = false, seeking = false, timeOfDay = 2 }),
+    { scriptId = 91, activate = false },
+    "evening and night return before the active and seeking side effect"
+  )
+  Assert.deepEqual(
+    select({ localMap = false, kenjiWaitDays = 0, kenjiActive = false, seeking = false, timeOfDay = 0 }),
+    { scriptId = 89, activate = true },
+    "an eligible morning call activates Kenji and selects the morning script"
+  )
+  Assert.deepEqual(
+    select({ localMap = false, kenjiWaitDays = 0, kenjiActive = true, seeking = true, timeOfDay = 1 }),
+    { scriptId = 90, activate = false },
+    "an eligible daytime repeat preserves seeking and selects the day script"
+  )
+end
+
+function T.tests.mother_native_selector_preserves_scripted_local_incoming_and_rival_order()
+  local MotherPhoneProgram = require("game.hgss.src.pokegear.phone.MotherPhoneProgram")
+  local record = { key = "custom.mom" }
+  local scripted = MotherPhoneProgram.selectNative("outgoing", record, { scriptedCallType = 2 })
+  Assert.deepEqual(
+    scripted,
+    { mode = "special", scriptType = 4, family = "mother" },
+    "scripted Mom calls select special type four first"
+  )
+  local localCall = MotherPhoneProgram.selectNative("incoming", record, {
+    scriptedCallType = 0,
+    localMap = true,
+  })
+  Assert.deepEqual(
+    localCall,
+    { mode = "numeric", scriptId = 23, family = "mother" },
+    "locality precedes incoming trigger selection"
+  )
+  local incoming = MotherPhoneProgram.selectNative("incoming", record, {
+    scriptedCallType = 0,
+    localMap = false,
+    predefinedScript = 37,
+  })
+  Assert.deepEqual(
+    incoming,
+    { mode = "numeric", scriptId = 37, family = "mother" },
+    "incoming Mom uses its provided native script ID"
+  )
+  local early = MotherPhoneProgram.selectNative("outgoing", record, {
+    scriptedCallType = 0,
+    localMap = false,
+    gaveRivalName = false,
+  })
+  Assert.deepEqual(
+    early,
+    { mode = "numeric", scriptId = 25, family = "mother" },
+    "the rival-name branch selects its source numeric script"
+  )
+  local followup = MotherPhoneProgram.selectNative("outgoing", record, {
+    scriptedCallType = 0,
+    localMap = false,
+    gaveRivalName = true,
+    talkedAfterNamingRival = false,
+  })
+  Assert.deepEqual(
+    followup,
+    { mode = "numeric", scriptId = 26, family = "mother" },
+    "the one-time follow-up precedes the savings special"
+  )
+  local savings = MotherPhoneProgram.selectNative("outgoing", record, {
+    scriptedCallType = 0,
+    localMap = false,
+    gaveRivalName = true,
+    talkedAfterNamingRival = true,
+  })
+  Assert.deepEqual(
+    savings,
+    { mode = "special", scriptType = 4, family = "mother" },
+    "the completed rival branches select Mom's native savings special"
+  )
+end
+
+function T.tests.mother_native_savings_program_resolves_source_pages_and_writes_once()
+  local MotherPhoneProgram = require("game.hgss.src.pokegear.phone.MotherPhoneProgram")
+  local writes = {}
+  local world = {
+    setMomSavingsChoice = function(_, saving)
+      writes[#writes + 1] = saving
+    end,
+  }
+  local session = MotherPhoneProgram.selectNativeSession(world, {
+    contact = "custom.mom",
+    decision = { mode = "special", scriptType = 4, family = "mother" },
+    nativeFacts = {
+      scriptedCallType = 0,
+      momIntroParameter = 3,
+      momSavingsBalance = 500,
+      momSavingsActive = false,
+      momGiftQueueFull = false,
+    },
+  })
+  Assert.deepEqual(session.entries, { 10 }, "Mom selects the map intro entry from the source location parameter")
+  Assert.equal(MotherPhoneProgram.stepNative(session, {}), "continue", "Mom shows the balance-dependent source prompt")
+  Assert.equal(session.responseEntry, 24, "the native prompt uses the savings flag and current balance")
+  Assert.equal(
+    MotherPhoneProgram.stepNative(session, { responseResolved = true }),
+    "waiting",
+    "Mom waits for an explicit savings choice"
+  )
+  Assert.equal(
+    MotherPhoneProgram.stepNative(session, { choice = "save" }),
+    "continue",
+    "the choice selects its matching response entry"
+  )
+  Assert.equal(session.responseEntry, 25, "saving resolves the native response page")
+  Assert.deepEqual(writes, {}, "Mom defers the selected savings flag until the response text resolves")
+  session.responseEffect()
+  session.responseEffect = nil
+  Assert.deepEqual(writes, { true }, "Mom publishes the selected savings flag after response validation")
+  Assert.equal(
+    MotherPhoneProgram.stepNative(session, { responseResolved = true }),
+    "done",
+    "Mom finishes after the response page"
+  )
+  Assert.deepEqual(writes, { true }, "repeated completion cannot write the savings choice twice")
+end
+
+function T.tests.mother_scripted_intro_defers_rival_conversation_flag_until_text_is_ready()
+  local MotherPhoneProgram = require("game.hgss.src.pokegear.phone.MotherPhoneProgram")
+  local writes = 0
+  local world = {
+    setMomTalkedAfterNamingRival = function()
+      writes = writes + 1
+    end,
+  }
+
+  local session = MotherPhoneProgram.selectNativeSession(world, {
+    contact = "custom.mom",
+    decision = { mode = "special", scriptType = 4, family = "mother" },
+    nativeFacts = {
+      scriptedCallType = 2,
+      momSavingsBalance = 0,
+      momSavingsActive = false,
+      momGiftQueueFull = false,
+    },
+  })
+
+  Assert.equal(writes, 0, "selecting the scripted intro does not publish its follow-up flag")
+  Assert.deepEqual(session.entries, { 22 }, "scripted intro enters the source-specific Mom prompt")
+  Assert.isTrue(type(session.deferredEffect) == "function", "the scripted intro carries a deferred source flag write")
+  session.deferredEffect()
+  Assert.equal(writes, 1, "the source follow-up flag publishes after the selected text is ready")
+  Assert.deepEqual(
+    session.substitutionsByEntry[22],
+    { [55] = { [10] = 0 } },
+    "Mom's savings balance uses its source variable and argument slot"
+  )
+end
+
+function T.tests.phone_call_opens_native_remote_kurt_program()
+  local PhoneCall = require("game.hgss.src.pokegear.PhoneCall")
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local record = PokegearAssetSchema.validate(fixtureManifest())
+  Assert.notNil(record, "Kurt caller fixture validates through the asset schema")
+  assert(record ~= nil, "Kurt caller fixture validated above")
+  local state = PokegearState.new({ seed = 76 }, catalogRefs(record))
+  state:registerContact("custom.kurt")
+  local selectedEntry = nil
+  local selectedSubstitutions = nil
+  local messages = phoneMessages()
+  messages.resolveContactEntry = function(_, _, entry, substitutions)
+    selectedEntry = entry
+    selectedSubstitutions = substitutions
+    return { tokens = { { kind = "glyph", code = 1, text = "K", raw = { 1 } } } }
+  end
+  local call = PhoneCall.new({
+    state = state,
+    catalog = record.catalog,
+    messages = messages,
+    world = {
+      canCall = function()
+        return true
+      end,
+      nativeSelectorFacts = function()
+        return { localMap = false }
+      end,
+      callFacts = function()
+        return {
+          kurtRepeatCaller = true,
+          kurtQuantity = 2,
+          kurtBallName = "GREAT BALL",
+          kurtDailyWork = false,
+        }
+      end,
+    },
+    audio = instantAudio(),
+  })
+
+  local handle = call:begin({ id = "kurt-native", contact = "custom.kurt", direction = "outgoing", kind = "ordinary" })
+  call:step(handle, { confirm = true })
+
+  Assert.equal(selectedEntry, 6, "Kurt's repeat-caller flag selects the native second opening entry")
+  Assert.equal(call:view(handle).stage, "message", "remote Kurt produces a printable native conversation page")
+  call:step(handle, { advance = true })
+  Assert.equal(selectedEntry, 3, "Kurt's completed Apricorn batch advances to its source quantity page")
+  Assert.deepEqual(
+    selectedSubstitutions,
+    { [51] = { [11] = "GREAT BALL" }, [8] = { [10] = 2 } },
+    "Kurt's item and quantity follow the source variable selectors"
+  )
+end
+
+function T.tests.phone_call_opens_native_remote_bill_and_friend_pages()
+  local PhoneCall = require("game.hgss.src.pokegear.PhoneCall")
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local record = PokegearAssetSchema.validate(fixtureManifest())
+  Assert.notNil(record, "service caller fixture validates through the asset schema")
+  assert(record ~= nil, "service caller fixture validated above")
+  local state = PokegearState.new({ seed = 77 }, catalogRefs(record))
+  state:registerContact("custom.bill")
+  state:registerContact("custom.friend")
+  local resolved = {}
+  local randomLabels = {}
+  local messages = phoneMessages()
+  messages.resolveContactEntry = function(_, contact, entry)
+    local entries = resolved[contact] or {}
+    resolved[contact] = entries
+    entries[#entries + 1] = entry
+    return { tokens = { { kind = "glyph", code = 1, text = "S", raw = { 1 } } } }
+  end
+  local call = PhoneCall.new({
+    state = state,
+    catalog = record.catalog,
+    messages = messages,
+    world = {
+      canCall = function()
+        return true
+      end,
+      nativeSelectorFacts = function()
+        return { localMap = false, playerGender = 1 }
+      end,
+      callFacts = function()
+        return {
+          playerGender = 1,
+          timeOfDay = 2,
+          pcFreeSlots = 0,
+          friendMapIndex = 4,
+          friendEligiblePhraseIndices = { 2 },
+        }
+      end,
+    },
+    audio = instantAudio(),
+    random = {
+      lc = function(_, label)
+        randomLabels[#randomLabels + 1] = label
+        return 1
+      end,
+    },
+  })
+
+  for _, contact in ipairs({ "custom.bill", "custom.friend" }) do
+    local handle =
+      call:begin({ id = "special-" .. contact, contact = contact, direction = "outgoing", kind = "ordinary" })
+    call:step(handle, { confirm = true })
+    Assert.equal(call:view(handle).stage, "message", contact .. " special dispatch resolves a printable native page")
+    for _ = 1, 8 do
+      if call:result(handle) ~= nil then
+        break
+      end
+      call:step(handle, { advance = true })
+    end
+    Assert.notNil(call:result(handle), contact .. " special call completes after its native opening page")
+  end
+
+  local incoming = call:begin({
+    id = "special-friend-incoming",
+    contact = "custom.friend",
+    direction = "incoming",
+    kind = "incoming",
+  })
+  call:step(incoming, { confirm = true })
+  for _ = 1, 8 do
+    if call:result(incoming) ~= nil then
+      break
+    end
+    call:step(incoming, { advance = true })
+  end
+  Assert.notNil(call:result(incoming), "Friend's incoming follow-up page reaches a terminal result")
+
+  Assert.deepEqual(
+    resolved["custom.bill"],
+    { 4, 9, 8 },
+    "Bill resolves the opening, empty-box branch, and closing pages"
+  )
+  Assert.deepEqual(
+    resolved["custom.friend"],
+    { 6, 17, 9, 10 },
+    "Friend resolves each direction's opener and source follow-up"
+  )
+  Assert.deepEqual(
+    randomLabels,
+    { "friend-response-message", "friend-response-message" },
+    "Friend's random-message branch consumes its source condition and selection draws"
+  )
+end
+
+function T.tests.phone_call_opens_and_resolves_the_dynamic_baoba_incoming_page()
+  local PhoneCall = require("game.hgss.src.pokegear.PhoneCall")
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local manifest = fixtureManifest()
+  manifest.catalog.contacts[#manifest.catalog.contacts + 1] = {
+    key = "custom.baoba",
+    family = "baoba",
+    sortWeight = 45,
+  }
+  manifest.catalog.contactOrder[#manifest.catalog.contactOrder + 1] = "custom.baoba"
+  local record = PokegearAssetSchema.validate(manifest)
+  Assert.notNil(record, "Baoba fixture validates through the asset schema")
+  assert(record ~= nil, "Baoba fixture validated above")
+  local baobaFamily = nil
+  for _, contact in ipairs(record.catalog.contacts) do
+    if contact.key == "custom.baoba" then
+      baobaFamily = contact.family
+    end
+  end
+  Assert.equal(baobaFamily, "baoba", "Baoba remains the selected catalog family")
+  local state = PokegearState.new({ seed = 77 }, catalogRefs(record))
+  state:registerContact("custom.baoba")
+  local resolvedEntry = nil
+  local messages = phoneMessages()
+  messages.resolveContactEntry = function(_, _, entry)
+    resolvedEntry = entry
+    return { tokens = { { kind = "glyph", code = 1, text = "B", raw = { 1 } } } }
+  end
+  local call = PhoneCall.new({
+    state = state,
+    catalog = record.catalog,
+    messages = messages,
+    world = {
+      canCall = function()
+        return true
+      end,
+      nativeSelectorFacts = function()
+        return { localMap = false, playerGender = 1 }
+      end,
+      callFacts = function()
+        return { playerGender = 1, safariArrangementAreas = {} }
+      end,
+    },
+    audio = instantAudio(),
+  })
+  local handle =
+    call:begin({ id = "baoba-incoming", contact = "custom.baoba", direction = "incoming", kind = "incoming" })
+  call:step(handle, { confirm = true })
+  local outcome = call:result(handle)
+  Assert.isNil(
+    outcome,
+    "Baoba native dispatch should not fail: " .. tostring(outcome and outcome.error and outcome.error.message)
+  )
+  Assert.equal(call:view(handle).stage, "message", "Baoba opens a native message page")
+  Assert.equal(resolvedEntry, 39, "zero Safari arrangements select the source female page")
+  call:step(handle, { advance = true })
+  Assert.notNil(call:result(handle), "Baoba resolves and completes the incoming page")
+end
+
+function T.tests.phone_call_resolves_oak_incoming_script_from_its_frozen_native_facts()
+  local PhoneCall = require("game.hgss.src.pokegear.PhoneCall")
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
+  local manifest = fixtureManifest()
+  manifest.catalog.contacts[#manifest.catalog.contacts + 1] = {
+    key = "custom.oak",
+    family = "oak",
+    sortWeight = 60,
+  }
+  manifest.catalog.contactOrder[#manifest.catalog.contactOrder + 1] = "custom.oak"
+  local record = PokegearAssetSchema.validate(manifest)
+  Assert.notNil(record, "the synthetic Oak contact validates through the real asset schema")
+  assert(record ~= nil, "synthetic Oak catalog validated above")
+  record.catalog.callDefinitions[70] = {
+    id = 70,
+    kind = "item",
+    param0 = 0,
+    param1 = 26,
+    male = { bank = 641, entry = 70 },
+    female = { bank = 641, entry = 70 },
+  }
+  local state = PokegearState.new({ seed = 82 }, catalogRefs(record))
+  state:registerContact("custom.oak")
+  local resolvedScript = nil
+  local effects = {}
+  local messages = phoneMessages()
+  messages.resolveLine = function(_, _, scriptId)
+    resolvedScript = scriptId
+    return { tokens = { { kind = "glyph", code = scriptId, text = tostring(scriptId), raw = { scriptId } } } }
+  end
+  local world = {
+    canCall = function()
+      return true
+    end,
+    nativeSelectorFacts = function()
+      return { localMap = false }
+    end,
+    callFacts = function()
+      return { nationalDexOwned = 101 }
+    end,
+    prepareCallDefinitionEffect = function(_, contact, definition)
+      return {
+        substitutions = {},
+        commit = function()
+          effects[#effects + 1] = { contact = contact, definition = definition }
+        end,
+      }
+    end,
+  }
+  local call = PhoneCall.new({
+    state = state,
+    catalog = record.catalog,
+    messages = messages,
+    world = world,
+    audio = instantAudio(),
+    random = PokegearRandom.new(82),
+  })
+  local handle = call:begin({
+    id = "oak-incoming-1",
+    contact = "custom.oak",
+    direction = "incoming",
+    kind = "incoming",
+  })
+  for _ = 1, 12 do
+    if call:result(handle) ~= nil then
+      break
+    end
+    call:step(handle, { confirm = true })
+  end
+  local result = call:result(handle)
+  Assert.notNil(result, "the source numeric Oak call reaches a terminal result")
+  Assert.isNil(result.error, "the source numeric Oak call succeeds")
+  Assert.equal(resolvedScript, 70, "the caller's frozen owned count selects the native incoming definition")
+  Assert.equal(#effects, 1, "the numeric definition effect runs once at the source greeting stage")
+  Assert.equal(effects[1].definition.param1, 26, "the numeric effect receives its compiled native parameter")
+end
+
+function T.tests.numeric_call_effect_is_not_published_when_its_selected_native_text_is_malformed()
+  local PhoneCall = require("game.hgss.src.pokegear.PhoneCall")
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
+  local manifest = fixtureManifest()
+  manifest.catalog.contacts[#manifest.catalog.contacts + 1] = {
+    key = "custom.oak",
+    family = "oak",
+    sortWeight = 60,
+  }
+  manifest.catalog.contactOrder[#manifest.catalog.contactOrder + 1] = "custom.oak"
+  local record = assert(PokegearAssetSchema.validate(manifest), "Oak fixture validates")
+  record.catalog.callDefinitions[70] = {
+    id = 70,
+    kind = "word",
+    param0 = 4,
+    param1 = 70,
+    male = { bank = 641, entry = 70 },
+    female = { bank = 641, entry = 70 },
+  }
+  local state = PokegearState.new({ seed = 82 }, catalogRefs(record))
+  state:registerContact("custom.oak")
+  local published = 0
+  local trace = {}
+  local random = PokegearRandom.new(82, { trace = trace })
+  local randomBefore = random:capture()
+  local messages = phoneMessages()
+  messages.resolveLine = function()
+    error({ code = "MESSAGE_MISSING", message = "native caller text is unavailable" }, 0)
+  end
+  local call = PhoneCall.new({
+    state = state,
+    catalog = record.catalog,
+    messages = messages,
+    world = {
+      canCall = function()
+        return true
+      end,
+      nativeSelectorFacts = function()
+        return { localMap = false }
+      end,
+      callFacts = function()
+        return { nationalDexOwned = 101 }
+      end,
+      prepareCallDefinitionEffect = function(_, _, _, effectRandom)
+        local entry = 70 + effectRandom:lc("phone-word-entry") % 4
+        return {
+          substitutions = { wordEntry = entry },
+          commit = function()
+            published = published + 1
+          end,
+        }
+      end,
+    },
+    audio = instantAudio(),
+    random = random,
+  })
+  local handle = call:begin({
+    id = "oak-malformed-text",
+    contact = "custom.oak",
+    direction = "incoming",
+    kind = "incoming",
+  })
+  call:step(handle, { confirm = true })
+
+  Assert.equal(published, 0, "an invalid native page publishes no numeric definition effect")
+  Assert.deepEqual(random:capture(), randomBefore, "a failed native page restores both source random streams")
+  Assert.deepEqual(trace, {}, "a failed native page removes its uncommitted draw trace")
+  local result = call:result(handle)
+  Assert.notNil(result, "malformed selected text fails the native call")
+  Assert.notNil(result.error, "malformed selected text remains a terminal failure")
+end
+
+function T.tests.cancelling_a_live_phone_call_returns_an_unsuccessful_terminal_result()
+  local PhoneCall = require("game.hgss.src.pokegear.PhoneCall")
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local record = assert(PokegearAssetSchema.validate(fixtureManifest()), "phone fixture validates")
+  local state = PokegearState.new({ seed = 23 }, catalogRefs(record))
+  state:registerContact("custom.trainer-plain")
+  local call = PhoneCall.new({
+    state = state,
+    catalog = record.catalog,
+    messages = phoneMessages(),
+    world = {
+      canCall = function()
+        return true
+      end,
+      nativeSelectorFacts = function()
+        return { localMap = false }
+      end,
+    },
+    audio = instantAudio(),
+  })
+  local handle = call:begin({
+    id = "cancel-live-call",
+    contact = "custom.trainer-plain",
+    direction = "outgoing",
+    kind = "ordinary",
+  })
+  call:cancel(handle, "field-session-disposed")
+  local result = call:result(handle)
+  Assert.notNil(result, "cancelling a live call reports a terminal result")
+  Assert.isFalse(result.signal ~= false, "cancellation is an unsuccessful terminal, not a completed call")
+end
+
+function T.tests.selector_owned_phone_effects_and_draws_roll_back_when_native_text_is_missing()
+  local PhoneCall = require("game.hgss.src.pokegear.PhoneCall")
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
+  local manifest = fixtureManifest()
+  local cases = {
+    {
+      key = "custom.kenji",
+      family = "kenji",
+      direction = "outgoing",
+      scriptId = 89,
+      facts = { kenjiWaitDays = 0, kenjiActive = false, seeking = false, timeOfDay = 0 },
+      effectMethod = "applyKenjiActiveEffect",
+    },
+    {
+      key = "custom.irwin",
+      family = "irwin",
+      direction = "incoming",
+      scriptId = 168,
+      facts = {
+        irwinInitialTrigger = true,
+        badges = 16,
+        plainBadge = false,
+        fogBadge = false,
+        marshBadge = false,
+        risingBadge = false,
+        irwinNationalBadgeMessageSeen = false,
+        irwinMarshBadgeMessageSeen = false,
+        irwinSnorlaxMessageSeen = false,
+        irwinVermilionMessageSeen = false,
+        irwinVermilionEvent = false,
+        vermilionFlypoint = false,
+        gameClear = false,
+        irwinGameClearMessageSeen = false,
+        radioTowerBeaten = false,
+        rocketHideoutCleared = false,
+        irwinHideoutMessageSeen = false,
+        irwinUnknownProgress = false,
+        irwinUnknownProgressMessageSeen = false,
+        snorlaxMet = false,
+      },
+      effectMethod = "applyIrwinIncomingEffect",
+    },
+  }
+  for _, case in ipairs(cases) do
+    manifest.catalog.contacts[#manifest.catalog.contacts + 1] = {
+      key = case.key,
+      family = case.family,
+      sortWeight = 60 + #manifest.catalog.contacts,
+    }
+    manifest.catalog.contactOrder[#manifest.catalog.contactOrder + 1] = case.key
+  end
+  local record = assert(PokegearAssetSchema.validate(manifest), "selector effect contacts validate")
+  for _, case in ipairs(cases) do
+    record.catalog.callDefinitions[case.scriptId] = {
+      id = case.scriptId,
+      kind = "none",
+      male = { bank = 641, entry = case.scriptId },
+      female = { bank = 641, entry = case.scriptId },
+    }
+    local state = PokegearState.new({ seed = 82 }, catalogRefs(record))
+    state:registerContact(case.key)
+    local effects = 0
+    local messages = phoneMessages()
+    messages.resolveLine = function()
+      error({ code = "MESSAGE_MISSING", message = "native caller text is unavailable" }, 0)
+    end
+    local world = {
+      canCall = function()
+        return true
+      end,
+      nativeSelectorFacts = function()
+        return { localMap = false }
+      end,
+      callFacts = function()
+        return case.facts
+      end,
+    }
+    world[case.effectMethod] = function()
+      effects = effects + 1
+    end
+    local call = PhoneCall.new({
+      state = state,
+      catalog = record.catalog,
+      messages = messages,
+      world = world,
+      audio = instantAudio(),
+      random = PokegearRandom.new(82),
+    })
+    local handle = call:begin({
+      id = "missing-text-" .. case.key,
+      contact = case.key,
+      direction = case.direction,
+      kind = case.direction == "incoming" and "incoming" or "ordinary",
+    })
+    call:step(handle, { confirm = true })
+    Assert.equal(effects, 0, case.family .. " selection publishes no source effect before valid text")
+    local result = call:result(handle)
+    Assert.notNil(result and result.error, case.family .. " missing text remains a failed terminal")
+  end
+
+  local irwin = cases[2]
+  irwin.direction = "outgoing"
+  irwin.facts = { rocketTakeoverActive = false }
+  local outgoingManifest = fixtureManifest()
+  outgoingManifest.catalog.contacts[#outgoingManifest.catalog.contacts + 1] = {
+    key = irwin.key,
+    family = irwin.family,
+    sortWeight = 70,
+  }
+  outgoingManifest.catalog.contactOrder[#outgoingManifest.catalog.contactOrder + 1] = irwin.key
+  local outgoingCatalog = assert(PokegearAssetSchema.validate(outgoingManifest), "Irwin outgoing catalog validates")
+  for scriptId = 172, 174 do
+    outgoingCatalog.catalog.callDefinitions[scriptId] = {
+      id = scriptId,
+      kind = "none",
+      male = { bank = 641, entry = scriptId },
+      female = { bank = 641, entry = scriptId },
+    }
+  end
+  local state = PokegearState.new({ seed = 82 }, catalogRefs(outgoingCatalog))
+  state:registerContact(irwin.key)
+  local trace = {}
+  local random = PokegearRandom.new(82, { trace = trace })
+  local randomBefore = random:capture()
+  local messages = phoneMessages()
+  messages.resolveLine = function()
+    error({ code = "MESSAGE_MISSING", message = "native caller text is unavailable" }, 0)
+  end
+  local call = PhoneCall.new({
+    state = state,
+    catalog = outgoingCatalog.catalog,
+    messages = messages,
+    world = {
+      canCall = function()
+        return true
+      end,
+      nativeSelectorFacts = function()
+        return { localMap = false }
+      end,
+      callFacts = function()
+        return { rocketTakeoverActive = false }
+      end,
+    },
+    audio = instantAudio(),
+    random = random,
+  })
+  local handle = call:begin({
+    id = "missing-text-irwin-outgoing",
+    contact = irwin.key,
+    direction = "outgoing",
+    kind = "ordinary",
+  })
+  call:step(handle, { confirm = true })
+  Assert.deepEqual(random:capture(), randomBefore, "failed Irwin text restores its selector draw")
+  Assert.deepEqual(trace, {}, "failed Irwin text removes its uncommitted selector trace")
+end
+
+function T.tests.generic_type_two_uses_its_definition_and_one_phrase_draw()
+  local PhoneCall = require("game.hgss.src.pokegear.PhoneCall")
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
+  local record = PokegearAssetSchema.validate(fixtureManifest())
+  Assert.notNil(record, "generic caller fixture validates through the asset schema")
+  assert(record ~= nil, "generic caller fixture validated above")
+  local trainer = nil
+  for _, contact in ipairs(record.catalog.contacts) do
+    if contact.key == "custom.trainer-plain" then
+      trainer = contact
+    end
+  end
+  trainer = assert(trainer, "generic trainer contact exists")
+  local rows = { { type = 1, chance = 100, scriptId = 10, scriptType = 2 } }
+  for _ = 2, 8 do
+    rows[#rows + 1] = { type = 0, chance = 100, scriptId = 0, scriptType = 0 }
+  end
+  trainer.genericCallHeaders = { incoming = rows, outgoing = rows }
+  record.catalog.callDefinitions[10] = {
+    id = 10,
+    kind = "none",
+    male = { bank = 641, entry = 10 },
+    female = { bank = 641, entry = 10 },
+  }
+  local state = PokegearState.new({ seed = 21 }, catalogRefs(record))
+  state:registerContact("custom.trainer-plain")
+  local randomTrace = {}
+  local random = PokegearRandom.new(21, { trace = randomTrace })
+  local chosenScriptType = nil
+  local chosenVariation = nil
+  local messages = phoneMessages()
+  messages.resolveLine = function(_, _, _, scriptType, variation)
+    chosenScriptType = scriptType
+    chosenVariation = variation
+    return { tokens = { { kind = "glyph", code = 1, text = "G", raw = { 1 } } } }
+  end
+  local call = PhoneCall.new({
+    state = state,
+    catalog = record.catalog,
+    messages = messages,
+    world = {
+      canCall = function()
+        return true
+      end,
+      nativeSelectorFacts = function()
+        return { localMap = false }
+      end,
+    },
+    audio = instantAudio(),
+    random = random,
+  })
+  local handle =
+    call:begin({ id = "generic-type-two", contact = "custom.trainer-plain", direction = "outgoing", kind = "ordinary" })
+  call:step(handle, { confirm = true })
+  Assert.equal(call:view(handle).stage, "message", "generic type two resolves a native phrase page")
+  Assert.equal(chosenScriptType, 2, "the frozen header script type reaches native rendering")
+  Assert.equal(
+    chosenVariation,
+    randomTrace[#randomTrace].value % 11,
+    "generic type two selects one phrase with its source draw"
+  )
+end
+
+function T.tests.generic_type_one_resolves_native_species_buffers_before_its_definition_page()
+  local PhoneCall = require("game.hgss.src.pokegear.PhoneCall")
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
+  local record = PokegearAssetSchema.validate(fixtureManifest())
+  Assert.notNil(record, "generic caller fixture validates through the asset schema")
+  assert(record ~= nil, "generic caller fixture validated above")
+  local trainer = nil
+  for _, contact in ipairs(record.catalog.contacts) do
+    if contact.key == "custom.trainer-plain" then
+      trainer = contact
+    end
+  end
+  trainer = assert(trainer, "generic trainer contact exists")
+  local rows = { { type = 1, chance = 100, scriptId = 10, scriptType = 1 } }
+  for _ = 2, 8 do
+    rows[#rows + 1] = { type = 0, chance = 100, scriptId = 0, scriptType = 0 }
+  end
+  trainer.genericCallHeaders = { incoming = rows, outgoing = rows }
+  record.catalog.callDefinitions[10] = {
+    id = 10,
+    kind = "none",
+    male = { bank = 641, entry = 10 },
+    female = { bank = 641, entry = 10 },
+  }
+  local state = PokegearState.new({ seed = 22 }, catalogRefs(record))
+  state:registerContact("custom.trainer-plain")
+  local order = {}
+  local nativeNames = nil
+  local messages = phoneMessages()
+  messages.resolveLine = function(_, _, _, scriptType, _, substitutions)
+    order[#order + 1] = "page"
+    nativeNames = substitutions
+    Assert.equal(scriptType, 1, "generic type one reaches its source text handler")
+    return { tokens = { { kind = "glyph", code = 1, text = "G", raw = { 1 } } } }
+  end
+  local world = {
+    canCall = function()
+      return true
+    end,
+    nativeSelectorFacts = function()
+      return { localMap = false }
+    end,
+    genericTrainerSubstitutions = function(_, _, random, timeOfDay)
+      Assert.equal(timeOfDay, 1, "generic trainer rendering uses the call's frozen time of day")
+      random:lc("generic-trainer-mon")
+      random:lc("generic-wild-encounter-slot")
+      order[#order + 1] = "buffers"
+      return { [10] = "PIKACHU", [11] = "RATTATA" }
+    end,
+    callFacts = function()
+      return { timeOfDay = 1 }
+    end,
+  }
+  local call = PhoneCall.new({
+    state = state,
+    catalog = record.catalog,
+    messages = messages,
+    world = world,
+    audio = instantAudio(),
+    random = PokegearRandom.new(22),
+  })
+  local handle =
+    call:begin({ id = "generic-type-one", contact = "custom.trainer-plain", direction = "outgoing", kind = "ordinary" })
+  for _ = 1, 8 do
+    call:step(handle, { confirm = true })
+    if call:view(handle).stage == "message" then
+      break
+    end
+  end
+  Assert.deepEqual(order, { "buffers", "page" }, "species buffers are selected before resolving the native page")
+  Assert.deepEqual(
+    nativeNames,
+    { [10] = "PIKACHU", [11] = "RATTATA" },
+    "both native species variables reach formatting"
+  )
+end
+
+function T.tests.field_runtime_selects_generic_type_one_species_with_native_slots_and_draws()
+  local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
+  local draws = {}
+  local lookup = nil
+  local land = {}
+  for slot = 1, 12 do
+    land[slot] = { species = "LAND_" .. slot }
+  end
+  local goodRod = {}
+  for slot = 1, 5 do
+    goodRod[slot] = { species = "FISH_" .. slot }
+  end
+  local runtime = setmetatable({
+    _trainerCatalog = {
+      _trainers = {
+        [41] = { party = { { species = "PIKACHU" }, { species = "EEVEE" } } },
+      },
+    },
+    mapLoader = {
+      load = function(_, mapId)
+        return { fieldData = { wildEncounterMemberId = mapId + 100 } }
+      end,
+    },
+    _encounterCatalog = {
+      tableFor = function(_, memberId, options)
+        lookup = { memberId = memberId, options = options }
+        return { land = { morning = land, day = land, night = land }, goodRod = goodRod }
+      end,
+    },
+    monCatalog = {
+      species = function(_, species)
+        return { name = "NAME_" .. species }
+      end,
+    },
+    versionId = "heartgold",
+  }, FieldRuntime)
+  local random = {
+    lc = function(_, label)
+      draws[#draws + 1] = label
+      return #draws == 1 and 1 or 11
+    end,
+  }
+  local contact = { trainerId = 41, trainerClass = 10, mapId = 6 }
+  local substitutions = runtime:genericTrainerPhoneSpecies(contact, 1, random)
+  Assert.deepEqual(
+    substitutions,
+    { [10] = "NAME_EEVEE", [11] = "NAME_LAND_12" },
+    "type one buffers selected trainer and daytime land species"
+  )
+  Assert.deepEqual(
+    draws,
+    { "generic-trainer-mon", "generic-wild-encounter-slot" },
+    "native type one consumes trainer then encounter draws"
+  )
+  Assert.equal(lookup.memberId, 106, "the caller's native map chooses its encounter member")
+  Assert.equal(lookup.options.timeOfDay, "day", "the native time selector reaches encounter data")
+  Assert.equal(lookup.options.rod, nil, "ordinary trainers use the land encounter slots")
+  Assert.equal(#land, 12, "ordinary type-one calls keep twelve native land slots")
+
+  draws = {}
+  local fisherman = { trainerId = 41, trainerClass = 11, mapId = 9 }
+  random.lc = function(_, label)
+    draws[#draws + 1] = label
+    return #draws == 1 and 0 or 2
+  end
+  substitutions = runtime:genericTrainerPhoneSpecies(fisherman, 2, random)
+  Assert.equal(substitutions[11], "NAME_FISH_3", "night Fisherman call selects its third good-rod slot")
+  Assert.equal(lookup.options.rod, "good_rod", "Fisherman calls request the native good-rod table")
+  Assert.equal(lookup.options.timeOfDay, "night", "Fisherman lookup carries native night context")
+  Assert.equal(#goodRod, 5, "the good-rod table retains five source slots")
+  Assert.deepEqual(
+    draws,
+    { "generic-trainer-mon", "generic-wild-encounter-slot" },
+    "Fisherman calls keep the two source draws"
+  )
+
+  runtime.mapLoader.load = function(_, mapId)
+    return { fieldData = { wildEncounterMemberId = 255 } }
+  end
+  runtime._encounterCatalog.tableFor = function()
+    error("the absent native encounter member uses only the source Rattata fallback")
+  end
+  draws = {}
+  random.lc = function(_, label)
+    draws[#draws + 1] = label
+    return 1
+  end
+  substitutions = runtime:genericTrainerPhoneSpecies(contact, 0, random)
+  Assert.equal(substitutions[11], "NAME_RATTATA", "missing encounter member resolves the source fallback species")
+  Assert.deepEqual(draws, { "generic-trainer-mon" }, "the Rattata fallback consumes no encounter slot draw")
+end
+
+function T.tests.oak_special_program_runs_native_choice_counts_rating_and_acknowledgment_once()
+  local ProfessorPhonePrograms = require("game.hgss.src.pokegear.phone.ProfessorPhonePrograms")
+  local writes = {}
+  local world = {
+    setOakAcknowledged = function(_, dex)
+      writes[#writes + 1] = dex
+    end,
+  }
+  local nativeFacts = {
+    nationalDexUnlocked = true,
+    acknowledgedJohto = false,
+    johtoComplete = true,
+    nationalComplete = false,
+    johtoSeen = 114,
+    johtoOwned = 251,
+    johtoRatingEntry = 18,
+    playerGender = 0,
+  }
+  local session = ProfessorPhonePrograms.selectOakNativeSession(world, {
+    contact = "custom.oak",
+    decision = { mode = "special", scriptType = 5, family = "oak" },
+    nativeFacts = nativeFacts,
+  })
+  Assert.deepEqual(session.entries, { 13, 15 }, "Oak opens with the native gendered page and second page")
+  Assert.deepEqual(session.choices, { "johto", "national" }, "Oak presents its source-selected dex menu")
+  Assert.equal(ProfessorPhonePrograms.step(session, {}), "waiting", "Oak waits for a menu selection")
+  Assert.equal(
+    ProfessorPhonePrograms.step(session, { choice = "johto" }),
+    "continue",
+    "the selected dex opens its count page"
+  )
+  Assert.equal(session.responseEntry, 20, "Oak prints the native count entry before its rating")
+  Assert.equal(#writes, 0, "Oak does not acknowledge a completion before the count page is read")
+  Assert.equal(
+    ProfessorPhonePrograms.step(session, { responseResolved = true }),
+    "continue",
+    "the count page leads to its native rating"
+  )
+  Assert.equal(session.responseEntry, 18, "the frozen source rating resolves to its message entry")
+  Assert.deepEqual(writes, {}, "Oak defers acknowledgment until its rating text resolves")
+  session.responseEffect()
+  session.responseEffect = nil
+  Assert.deepEqual(writes, { "johto" }, "Oak acknowledges the completed selected dex after rating validation")
+  Assert.equal(
+    ProfessorPhonePrograms.step(session, { responseResolved = true }),
+    "done",
+    "Oak finishes after the rating page"
+  )
+  Assert.deepEqual(writes, { "johto" }, "repeated completion does not repeat Oak's acknowledgment effect")
+end
+
+function T.tests.phone_call_executes_oak_special_bank_pages_choice_and_effect()
+  local PhoneCall = require("game.hgss.src.pokegear.PhoneCall")
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
+  local manifest = fixtureManifest()
+  manifest.catalog.contacts[#manifest.catalog.contacts + 1] = {
+    key = "custom.oak",
+    family = "oak",
+    sortWeight = 60,
+  }
+  manifest.catalog.contactOrder[#manifest.catalog.contactOrder + 1] = "custom.oak"
+  local record = PokegearAssetSchema.validate(manifest)
+  Assert.notNil(record, "the synthetic Oak contact validates through the real asset schema")
+  assert(record ~= nil, "synthetic Oak catalog validated above")
+  local state = PokegearState.new({ seed = 82 }, catalogRefs(record))
+  state:registerContact("custom.oak")
+  local resolvedEntries = {}
+  local writes = {}
+  local messages = phoneMessages()
+  messages.resolveContactEntry = function(_, _, entry)
+    resolvedEntries[#resolvedEntries + 1] = entry
+    return { tokens = { { kind = "glyph", code = entry, text = tostring(entry), raw = { entry } } } }
+  end
+  local world = {
+    canCall = function()
+      return true
+    end,
+    nativeSelectorFacts = function()
+      return { localMap = false }
+    end,
+    callFacts = function()
+      return {
+        nationalDexOwned = 101,
+        nationalDexUnlocked = true,
+        acknowledgedNational = false,
+        acknowledgedJohto = false,
+        playerGender = 0,
+        johtoSeen = 114,
+        johtoOwned = 251,
+        johtoComplete = true,
+        johtoRatingEntry = 18,
+      }
+    end,
+    setOakAcknowledged = function(_, dex)
+      writes[#writes + 1] = dex
+    end,
+  }
+  local call = PhoneCall.new({
+    state = state,
+    catalog = record.catalog,
+    messages = messages,
+    world = world,
+    audio = instantAudio(),
+    random = PokegearRandom.new(82),
+  })
+  local handle = call:begin({
+    id = "oak-special-1",
+    contact = "custom.oak",
+    direction = "outgoing",
+    kind = "ordinary",
+  })
+  for _ = 1, 12 do
+    if call:view(handle).stage == "choice" then
+      break
+    end
+    call:step(handle, { confirm = true })
+  end
+  local choiceView = call:view(handle)
+  Assert.equal(choiceView.stage, "choice", "Oak reaches its native Dex menu after its opening pages")
+  Assert.deepEqual(resolvedEntries, { 13, 15 }, "Oak resolves its source bank entries in order")
+  Assert.deepEqual(choiceView.choices, { "johto", "national" }, "the current source flags select the two-Dex menu")
+  call:step(handle, { choice = "johto" })
+  Assert.equal(call:view(handle).lines[1].text, "20", "Oak's selected evaluation resolves its native counts entry")
+  call:step(handle, { confirm = true })
+  call:step(handle, { confirm = true })
+  Assert.deepEqual(writes, { "johto" }, "Oak acknowledges completion after its counts page")
+  Assert.equal(call:view(handle).lines[1].text, "18", "Oak resolves the frozen rating message")
+  for _ = 1, 8 do
+    if call:result(handle) ~= nil then
+      break
+    end
+    call:step(handle, { confirm = true })
+  end
+  local result = call:result(handle)
+  Assert.notNil(result, "Oak's native special call reaches a terminal result")
+  Assert.isNil(result.error, "Oak's completed evaluation succeeds")
+  Assert.deepEqual(
+    resolvedEntries,
+    { 13, 15, 20, 18 },
+    "Oak's complete native conversation uses only its selected entries"
+  )
+  Assert.deepEqual(writes, { "johto" }, "repeated phone steps do not repeat the completion effect")
+end
+
+function T.tests.phone_call_does_not_acknowledge_oak_when_rating_text_is_invalid()
+  local PhoneCall = require("game.hgss.src.pokegear.PhoneCall")
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local manifest = fixtureManifest()
+  manifest.catalog.contacts[#manifest.catalog.contacts + 1] = {
+    key = "custom.oak",
+    family = "oak",
+    sortWeight = 60,
+  }
+  manifest.catalog.contactOrder[#manifest.catalog.contactOrder + 1] = "custom.oak"
+  local record = PokegearAssetSchema.validate(manifest)
+  Assert.notNil(record, "the synthetic Oak contact validates through the real asset schema")
+  assert(record ~= nil, "synthetic Oak catalog validated above")
+  local state = PokegearState.new({ seed = 83 }, catalogRefs(record))
+  state:registerContact("custom.oak")
+  local acknowledged = {}
+  local messages = phoneMessages()
+  messages.resolveContactEntry = function(_, _, entry)
+    if entry == 18 then
+      error({ code = "MESSAGE_MISSING", message = "Oak rating is absent" }, 0)
+    end
+    return { tokens = { { kind = "glyph", code = entry, text = tostring(entry), raw = { entry } } } }
+  end
+  local call = PhoneCall.new({
+    state = state,
+    catalog = record.catalog,
+    messages = messages,
+    world = {
+      canCall = function()
+        return true
+      end,
+      nativeSelectorFacts = function()
+        return { localMap = false }
+      end,
+      callFacts = function()
+        return {
+          nationalDexOwned = 101,
+          nationalDexUnlocked = true,
+          acknowledgedNational = false,
+          acknowledgedJohto = false,
+          playerGender = 0,
+          johtoSeen = 114,
+          johtoOwned = 251,
+          johtoComplete = true,
+          johtoRatingEntry = 18,
+        }
+      end,
+      setOakAcknowledged = function(_, dex)
+        acknowledged[#acknowledged + 1] = dex
+      end,
+    },
+    audio = instantAudio(),
+  })
+  local handle =
+    call:begin({ id = "oak-invalid-rating", contact = "custom.oak", direction = "outgoing", kind = "ordinary" })
+  for _ = 1, 12 do
+    if call:view(handle).stage == "choice" then
+      break
+    end
+    call:step(handle, { confirm = true })
+  end
+  Assert.equal(call:view(handle).stage, "choice", "Oak opens its source Dex choice")
+  call:step(handle, { choice = "johto" })
+  call:step(handle, { confirm = true })
+
+  local result = call:result(handle)
+  Assert.notNil(result, "a missing rating produces a terminal call error")
+  Assert.equal(result.error.code, "MESSAGE_MISSING", "the terminal preserves Oak's message failure")
+  Assert.equal(#acknowledged, 0, "an invalid rating does not publish Oak's acknowledgment")
+end
+
+function T.tests.phone_call_does_not_publish_mom_savings_choice_when_response_text_is_invalid()
+  local PhoneCall = require("game.hgss.src.pokegear.PhoneCall")
+  local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local record = PokegearAssetSchema.validate(fixtureManifest())
+  Assert.notNil(record, "the synthetic Mom contact validates through the real asset schema")
+  assert(record ~= nil, "synthetic Mom catalog validated above")
+  local state = PokegearState.new({ seed = 84 }, catalogRefs(record))
+  state:registerContact("custom.mom")
+  local savingsChoice = false
+  local messages = phoneMessages()
+  messages.resolveContactEntry = function(_, _, entry)
+    if entry == 25 then
+      error({ code = "MESSAGE_MISSING", message = "Mom's savings response is absent" }, 0)
+    end
+    return { tokens = { { kind = "glyph", code = entry, text = tostring(entry), raw = { entry } } } }
+  end
+  local call = PhoneCall.new({
+    state = state,
+    catalog = record.catalog,
+    messages = messages,
+    world = {
+      canCall = function()
+        return true
+      end,
+      nativeSelectorFacts = function()
+        return {
+          localMap = false,
+          gaveRivalName = true,
+          talkedAfterNamingRival = true,
+        }
+      end,
+      callFacts = function()
+        return {
+          momIntroParameter = 3,
+          momSavingsBalance = 500,
+          momSavingsActive = false,
+          momGiftQueueFull = false,
+        }
+      end,
+      setMomSavingsChoice = function(_, saving)
+        savingsChoice = saving
+      end,
+    },
+    audio = instantAudio(),
+  })
+  local handle =
+    call:begin({ id = "mom-invalid-response", contact = "custom.mom", direction = "outgoing", kind = "ordinary" })
+  for _ = 1, 24 do
+    if call:view(handle).stage == "choice" then
+      break
+    end
+    if call:result(handle) ~= nil then
+      break
+    end
+    call:step(handle, { confirm = true })
+  end
+  Assert.equal(
+    call:view(handle).stage,
+    "choice",
+    "Mom reaches the explicit savings choice before a terminal result "
+      .. tostring((call:result(handle) or {}).error and (call:result(handle) or {}).error.message)
+  )
+  call:step(handle, { choice = "save" })
+
+  local result = call:result(handle)
+  Assert.notNil(result, "a missing savings response produces a terminal call error")
+  Assert.equal(result.error.code, "MESSAGE_MISSING", "the terminal preserves Mom's message failure")
+  Assert.isFalse(savingsChoice, "an invalid response does not publish Mom's savings flag")
 end
 
 -- Stale and replayed candidates change no owner: a revision move
@@ -1319,12 +3236,12 @@ function T.tests.service_stage_without_its_owner_fails_before_any_effect()
   state:registerContact("custom.kurt")
   local world = {
     flags = {},
-    rematchReady = {},
     canCall = function()
       return true
     end,
-    aboutProduction = true,
-    nativeSelectorFacts = localPhoneSelectorFacts(),
+    nativeSelectorFacts = function()
+      return { localMap = false }
+    end,
   }
   local call = PhoneCall.new({
     state = state,
@@ -1347,13 +3264,13 @@ function T.tests.service_stage_without_its_owner_fails_before_any_effect()
   Assert.notNil(failed, "the unavailable source owner returns a terminal result")
   local failure = (failed --[[@as table]]).error --[[@as table]]
   Assert.equal(failure.code, "FEATURE_UNAVAILABLE", "only typed feature failures become terminal results")
-  Assert.equal(failure.domain, "kurt", "the failure names the missing kurt domain")
-  Assert.isNil(world.rematchReady["custom.kurt"], "the failed stage stages no readiness")
+  Assert.equal(failure.domain, "phone", "the failure names the unsupported native phone handler")
+  Assert.isNil(state:queryRematch("custom.kurt"), "the failed stage stages no persisted readiness")
   Assert.deepEqual(state:readPhone().triggers, {}, "the failed stage sets no trigger")
 
-  -- The failed call released the line: a local branch on the same
-  -- contact completes without any production owner.
-  world.aboutProduction = nil
+  -- The failed call released the line: the local numeric branch on the
+  -- same contact completes without a service owner.
+  world.nativeSelectorFacts = localPhoneSelectorFacts()
   local localHandle = call:begin({
     id = "kurt-2",
     contact = "custom.kurt",
@@ -1638,7 +3555,6 @@ function T.tests.native_shaped_contact_keys_dispatch_through_their_generated_fam
   end
   local world = {
     flags = {},
-    rematchReady = {},
     canCall = function()
       return true
     end,
@@ -1653,8 +3569,8 @@ function T.tests.native_shaped_contact_keys_dispatch_through_their_generated_fam
   })
   world.nativeSelectorFacts = localPhoneSelectorFacts()
   local expected = {
-    ["hg.trainer.200.map.0.contact.0"] = "mother-greeting",
-    ["hg.trainer.201.map.0.contact.1"] = "elm-early",
+    ["hg.trainer.200.map.0.contact.0"] = "mother-23",
+    ["hg.trainer.201.map.0.contact.1"] = "elm-1",
   }
   local id = 0
   for contactKey, program in pairs(expected) do

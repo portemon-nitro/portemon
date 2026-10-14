@@ -21,7 +21,7 @@ end
 -- section is present so validation exercises references, not missing keys.
 local function syntheticManifest()
   return {
-    schema = "g4-pokegear-assets-v2",
+    schema = "g4-pokegear-assets-v3",
     skins = { 0, 1, 2, 3, 4, 5 },
     shell = { foreground = visualRef("assets/generated/pokegear/shell-foreground-skin-0.png") },
     configure = { panel = visualRef("assets/generated/pokegear/configure-panel.png") },
@@ -159,7 +159,7 @@ function T.failed_rebuild_preserves_the_prior_ready_family_and_warm_reads_avoid_
   local warmFs = CacheFs.forVersion("heartgold", backend)
   Assert.isTrue(PokegearCache.isReady(warmFs, newMarker), "the warm read must trust the current receipt")
   local warm = PokegearCache.loadManifest(warmFs)
-  Assert.equal(warm.schema, "g4-pokegear-assets-v2", "the warm read must return the published manifest")
+  Assert.equal(warm.schema, "g4-pokegear-assets-v3", "the warm read must return the published manifest")
 end
 
 local function walkKeys(node, seen)
@@ -213,6 +213,8 @@ end
 
 function T.native_phone_labels_and_contact_classes_use_semantic_shapes()
   local PokegearAssetSchema = require("libs.assets.src.PokegearAssetSchema")
+  local PokegearSources = require("romdump.src.config.PokegearSources")
+  local MapReference = require("romdump.src.reference.hgss.maps")
   local manifest = syntheticManifest()
   local catalog = manifest.catalog
   catalog.contacts[1] = {
@@ -220,12 +222,39 @@ function T.native_phone_labels_and_contact_classes_use_semantic_shapes()
     messageBank = 641,
     name = { bank = 641, entry = 0 },
     class = { kind = "blank" },
+    family = "mother",
   }
   catalog.contacts[2] = {
     key = "hg.trainer.201.map.0.contact.1",
     messageBank = 641,
     name = { bank = 641, entry = 0 },
     class = { kind = "message", bank = 730, entry = 38 },
+    family = "trainer",
+    trainerClass = 201,
+    trainerId = 1,
+    mapId = 0,
+    genericCallHeaders = {
+      outgoing = {
+        { type = 1, chance = 100, scriptType = 1, scriptId = 1 },
+        { type = 0, chance = 100, scriptType = 0, scriptId = 65535 },
+        { type = 255, chance = 0, scriptType = 0, scriptId = 65535 },
+        { type = 255, chance = 0, scriptType = 0, scriptId = 65535 },
+        { type = 255, chance = 0, scriptType = 0, scriptId = 65535 },
+        { type = 255, chance = 0, scriptType = 0, scriptId = 65535 },
+        { type = 255, chance = 0, scriptType = 0, scriptId = 65535 },
+        { type = 255, chance = 0, scriptType = 0, scriptId = 65535 },
+      },
+      incoming = {
+        { type = 1, chance = 100, scriptType = 1, scriptId = 1 },
+        { type = 0, chance = 100, scriptType = 0, scriptId = 65535 },
+        { type = 255, chance = 0, scriptType = 0, scriptId = 65535 },
+        { type = 255, chance = 0, scriptType = 0, scriptId = 65535 },
+        { type = 255, chance = 0, scriptType = 0, scriptId = 65535 },
+        { type = 255, chance = 0, scriptType = 0, scriptId = 65535 },
+        { type = 255, chance = 0, scriptType = 0, scriptId = 65535 },
+        { type = 255, chance = 0, scriptType = 0, scriptId = 65535 },
+      },
+    },
   }
   catalog.contactOrder = { catalog.contacts[1].key, catalog.contacts[2].key }
   catalog.callDefinitions = {}
@@ -240,8 +269,30 @@ function T.native_phone_labels_and_contact_classes_use_semantic_shapes()
     }
   end
   catalog.landmarkLabels = { bank = 279, fallbackBank = 280, fallbackEntry = 2 }
+  catalog.safariAreaMessageBank = 428
+  catalog.rematchSets = {}
+  for _, source in ipairs(PokegearSources.rematchTrainerSets) do
+    catalog.rematchSets[source.trainers[1]] = {
+      group = source.group,
+      trainers = { table.unpack(source.trainers) },
+    }
+  end
+  local mapIdsBySymbol = {}
+  for mapId, header in pairs(MapReference.byId) do
+    mapIdsBySymbol[header.symbol] = mapId
+  end
+  catalog.friendMapPhrases = {}
+  for sourceIndex, source in ipairs(PokegearSources.friendMapPhraseSources) do
+    catalog.friendMapPhrases[sourceIndex] = {
+      mapId = assert(mapIdsBySymbol[source[1]]),
+      sourceIndex = sourceIndex - 1,
+      unlockGroup = source[2],
+    }
+  end
   catalog.callPermissions = {}
+  catalog.momCallIntroParameters = {}
   for mapId = 0, 539 do
+    catalog.momCallIntroParameters[mapId] = 10
     catalog.callPermissions[mapId] = {
       incoming = mapId % 3 == 0,
       outgoing = mapId % 2 == 0,
@@ -249,6 +300,22 @@ function T.native_phone_labels_and_contact_classes_use_semantic_shapes()
   end
   local record, err = PokegearAssetSchema.validate(manifest)
   Assert.notNil(record, "native phone labels and all map permissions validate: " .. tostring(err and err.message or err))
+
+  local trainer = catalog.contacts[2]
+  trainer.trainerId = nil
+  local missingTrainerId = PokegearAssetSchema.validate(manifest)
+  Assert.isNil(missingTrainerId, "full native trainer contacts preserve their phonebook trainer ID")
+  trainer.trainerId = 1
+
+  local headers = trainer.genericCallHeaders
+  table.remove(headers.outgoing)
+  local shortHeaders = PokegearAssetSchema.validate(manifest)
+  Assert.isNil(shortHeaders, "native trainer headers preserve all eight source slots")
+  table.insert(headers.outgoing, { type = 255, chance = 0, scriptType = 0, scriptId = 65535 })
+  headers.incoming[1].unexpected = true
+  local extraHeaderField = PokegearAssetSchema.validate(manifest)
+  Assert.isNil(extraHeaderField, "native generic header rows reject unexpected fields")
+  headers.incoming[1].unexpected = nil
 
   catalog.callPermissions[0].radio = true
   local extraDirection, extraDirectionErr = PokegearAssetSchema.validate(manifest)

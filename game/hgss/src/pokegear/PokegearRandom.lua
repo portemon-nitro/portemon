@@ -209,4 +209,44 @@ function PokegearRandom:capture()
   }
 end
 
+-- Captures both streams and the bounded diagnostic trace position for one
+-- native call's text transaction. A failed message lookup restores this
+-- point so retries consume the same source draws.
+---@return { state: table<string, unknown>, traceLength: integer? }
+function PokegearRandom:checkpoint()
+  return {
+    state = self:capture(),
+    traceLength = self._trace ~= nil and #self._trace or nil,
+  }
+end
+
+-- Restores one same-owner checkpoint in place. In-place restore preserves
+-- the stream object shared by the phone menu, field host, and world owners.
+---@param checkpoint { state: table<string, unknown>, traceLength: integer? }
+function PokegearRandom:restoreCheckpoint(checkpoint)
+  assert(type(checkpoint) == "table", "random rollback needs its captured checkpoint")
+  for key in pairs(checkpoint) do
+    assert(key == "state" or key == "traceLength", "random checkpoints carry only stream state and trace length")
+  end
+  local state = checkpoint.state
+  assert(type(state) == "table", "random rollback restores its saved stream state")
+  local restored = PokegearRandom.restore(state)
+  self._lc = restored._lc
+  self._mt = restored._mt
+  self._mti = restored._mti
+  local trace = self._trace
+  if trace ~= nil then
+    local traceLength = checkpoint.traceLength
+    assert(
+      type(traceLength) == "number" and traceLength % 1 == 0 and traceLength >= 0,
+      "traced random checkpoints preserve their trace position"
+    )
+    while #trace > traceLength do
+      trace[#trace] = nil
+    end
+  else
+    assert(checkpoint.traceLength == nil, "untraced streams do not restore a trace position")
+  end
+end
+
 return PokegearRandom

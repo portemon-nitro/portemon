@@ -4,6 +4,7 @@
 -- beside the producer; runtime records never carry them.
 
 local PokegearSources = {}
+local GenericPhoneHeaders = require("romdump.src.config.PokegearGenericPhoneHeaders")
 
 PokegearSources.provenance = {
   decompRevision = "pret/pokeheartgold@9d8b7591f09b65804da2fb2dfd56f320633e0d36",
@@ -12,6 +13,7 @@ PokegearSources.provenance = {
     "src/application/pokegear/main/overlay_100_021E6914.c",
     "src/phonebook_dat.c",
     "src/application/pokegear/phone/phone_script_defs.c",
+    "src/application/pokegear/phone/phone_generic_headers.c",
     "src/mom_gift.c",
     "include/constants/phone_contacts.h",
     "include/constants/items.h",
@@ -19,6 +21,87 @@ PokegearSources.provenance = {
     "src/application/pokegear/radio/pokegear_radio.c",
     "src/map_header.c",
   },
+}
+
+PokegearSources.genericPhoneHeaders = GenericPhoneHeaders
+
+-- Childhood-friend map phrases and unlock groups from the native 73-row tables.
+-- Phone scripts are unpinned clone corroboration; unlock group 3 remains
+-- conservatively ineligible because the source selector leaves sp0[3] unset.
+PokegearSources.friendMapPhraseSources = {
+  { "MAP_ROUTE_1", 3 },
+  { "MAP_ROUTE_2", 3 },
+  { "MAP_ROUTE_3", 3 },
+  { "MAP_ROUTE_4", 3 },
+  { "MAP_ROUTE_5", 3 },
+  { "MAP_ROUTE_6", 3 },
+  { "MAP_ROUTE_7", 3 },
+  { "MAP_ROUTE_8", 3 },
+  { "MAP_ROUTE_9", 3 },
+  { "MAP_ROUTE_10", 3 },
+  { "MAP_ROUTE_11", 3 },
+  { "MAP_ROUTE_12", 3 },
+  { "MAP_ROUTE_13", 3 },
+  { "MAP_ROUTE_14", 3 },
+  { "MAP_ROUTE_15", 3 },
+  { "MAP_ROUTE_16", 3 },
+  { "MAP_ROUTE_17", 3 },
+  { "MAP_ROUTE_18", 3 },
+  { "MAP_ROUTE_19", 3 },
+  { "MAP_ROUTE_20", 3 },
+  { "MAP_ROUTE_21", 3 },
+  { "MAP_ROUTE_22", 3 },
+  { "MAP_ROUTE_24", 3 },
+  { "MAP_ROUTE_25", 3 },
+  { "MAP_ROUTE_26", 2 },
+  { "MAP_ROUTE_27", 2 },
+  { "MAP_ROUTE_28", 3 },
+  { "MAP_ROUTE_29", 0 },
+  { "MAP_ROUTE_30", 0 },
+  { "MAP_ROUTE_31", 0 },
+  { "MAP_ROUTE_32", 0 },
+  { "MAP_ROUTE_33", 0 },
+  { "MAP_ROUTE_34", 0 },
+  { "MAP_ROUTE_35", 0 },
+  { "MAP_ROUTE_36", 0 },
+  { "MAP_ROUTE_37", 0 },
+  { "MAP_ROUTE_38", 0 },
+  { "MAP_ROUTE_39", 0 },
+  { "MAP_ROUTE_40", 0 },
+  { "MAP_ROUTE_41", 0 },
+  { "MAP_ROUTE_42", 0 },
+  { "MAP_ROUTE_43", 0 },
+  { "MAP_ROUTE_44", 0 },
+  { "MAP_ROUTE_45", 0 },
+  { "MAP_ROUTE_46", 0 },
+  { "MAP_ROUTE_47", 1 },
+  { "MAP_ROUTE_48", 1 },
+  { "MAP_PALLET", 3 },
+  { "MAP_VIRIDIAN", 3 },
+  { "MAP_PEWTER", 3 },
+  { "MAP_CERULEAN", 3 },
+  { "MAP_LAVENDER", 3 },
+  { "MAP_VERMILION", 3 },
+  { "MAP_CELADON", 3 },
+  { "MAP_FUCHSIA", 3 },
+  { "MAP_CINNABAR_ISLAND", 3 },
+  { "MAP_INDIGO_PLATEAU", 2 },
+  { "MAP_SAFFRON", 3 },
+  { "MAP_NEW_BARK", 0 },
+  { "MAP_CHERRYGROVE", 0 },
+  { "MAP_VIOLET", 0 },
+  { "MAP_AZALEA", 0 },
+  { "MAP_CIANWOOD", 0 },
+  { "MAP_GOLDENROD", 0 },
+  { "MAP_OLIVINE", 0 },
+  { "MAP_ECRUTEAK", 0 },
+  { "MAP_MAHOGANY", 0 },
+  { "MAP_LAKE_OF_RAGE", 0 },
+  { "MAP_BLACKTHORN", 0 },
+  { "MAP_MOUNT_SILVER", 0 },
+  { "MAP_NATIONAL_PARK", 0 },
+  { "MAP_RUINS_OF_ALPH", 0 },
+  { "MAP_SAFARI_ZONE_GATE", 1 },
 }
 
 -- The five core graphics archives with their closed selected member sets.
@@ -58,27 +141,26 @@ PokegearSources.phoneClassLabels = {
   landmarkFallbackEntry = 2,
 }
 
--- The phonebook record is little-endian four bytes, four halfwords, eight
--- bytes: contact id, entry type, contact class, trainer class; map, gift, local
--- script, greeting; rematch weekday, rematch time, category, four source
--- sort weights, and one spare byte.
+-- The native 20-byte phonebook record stores contact/type/unknown/class,
+-- trainer and map IDs, gift and local-script halfwords, four source control
+-- bytes, and four sort weights.
 PokegearSources.phonebookFields = {
   "id",
   "entryType",
-  "contactClass",
-  "trainer",
-  "map",
+  "unknown2",
+  "trainerClass",
+  "trainerId",
+  "mapId",
   "gift",
   "localScript",
-  "greeting",
+  "unknown12",
   "rematchWeekday",
   "rematchTime",
-  "category",
+  "unknown15",
   "sortWeight0",
   "sortWeight1",
   "sortWeight2",
   "sortWeight3",
-  "spare",
 }
 
 -- Resource-list descriptors hold a u32 resource type, six-u32 records, and
@@ -175,6 +257,8 @@ end
 -- The message bank behind the region map's panel strings, location flavor
 -- text, and Fly prompts (landmark names read from the phone landmark bank).
 PokegearSources.regionMapMessageBank = 273
+-- Safari area names are addressed directly by BufferSafariZoneAreaName.
+PokegearSources.safariAreaMessageBank = 428
 
 -- Text colors of the map windows: the upper windows print with sub palette
 -- bank 1 (member 14+s), the marking-mode landmark name with main palette
@@ -792,8 +876,16 @@ end
 -- listed: an unobserved slot would invent a caller the source never
 -- switches.
 PokegearSources.phoneTriggers = {
-  { slot = 1, key = "gear.trigger.1", contact = "hg.trainer.201.map.0.contact.1", kind = 0 },
-  { slot = 12, key = "gear.trigger.12", contact = "hg.trainer.200.map.0.contact.0", kind = 3, clearOnPickup = true },
+  { slot = 1, key = "gear.trigger.1", contactId = 1, kind = 0 },
+  {
+    slot = 12,
+    key = "gear.trigger.12",
+    contactId = 0,
+    kind = 3,
+    clearOnPickup = true,
+    scriptedCallType = 3,
+    predefinedScriptId = 27,
+  },
 }
 
 -- Native Mom purchases and resistance-berry choices from mom_gift.c.
@@ -849,13 +941,18 @@ function PokegearSources.phoneTriggerRecords(versionId)
     assert(not seenSlots[entry.slot], "phone trigger slots are unique")
     seenSlots[entry.slot] = true
     assert(type(entry.key) == "string" and entry.key ~= "", "phone triggers carry semantic keys")
-    assert(type(entry.contact) == "string" and entry.contact ~= "", "phone triggers carry their owning contact")
+    assert(
+      type(entry.contactId) == "number" and entry.contactId % 1 == 0 and entry.contactId >= 0,
+      "phone triggers carry their source contact ID"
+    )
     records[#records + 1] = {
       slot = entry.slot,
       key = entry.key,
-      contact = entry.contact,
+      contactId = entry.contactId,
       kind = entry.kind,
       clearOnPickup = entry.clearOnPickup == true,
+      scriptedCallType = entry.scriptedCallType,
+      predefinedScriptId = entry.predefinedScriptId,
     }
   end
   assert(#records > 0, "phone trigger records cover the observed trigger set for " .. versionId)

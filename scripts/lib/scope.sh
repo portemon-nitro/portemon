@@ -80,7 +80,8 @@ TOPLEVEL_CANONICAL="$(cd -- "$TOPLEVEL" && pwd -P)"
 WORK_LIST="$(mktemp)"
 TRACKED_LIST="$(mktemp)"
 UNTRACKED_LIST="$(mktemp)"
-trap 'rm -f -- "$WORK_LIST" "$TRACKED_LIST" "$UNTRACKED_LIST"' EXIT
+DELETED_LIST="$(mktemp)"
+trap 'rm -f -- "$WORK_LIST" "$TRACKED_LIST" "$UNTRACKED_LIST" "$DELETED_LIST"' EXIT
 
 # A repo-relative Lua path with no absolute, parent, empty, drive-letter,
 # or non-Lua form. Anything else is rejected rather than classified.
@@ -154,10 +155,17 @@ git -C "$CANONICAL" ls-files -- '*.lua' >"$TRACKED_LIST" 2>/dev/null || {
   echo "scope: cannot enumerate tracked Lua paths" >&2
   exit 1
 }
+git -C "$CANONICAL" ls-files --deleted -- '*.lua' >"$DELETED_LIST" 2>/dev/null || {
+  echo "scope: cannot enumerate deleted Lua paths" >&2
+  exit 1
+}
 : >"$WORK_LIST"
 
 path=""
 while IFS= read -r path || [ -n "$path" ]; do
+  if grep -Fxq -- "$path" "$DELETED_LIST"; then
+    continue
+  fi
   portable_lua_path "$path" || {
     echo "scope: non-portable Lua path: '$path'" >&2
     exit 1

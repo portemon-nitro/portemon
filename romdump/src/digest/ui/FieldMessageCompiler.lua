@@ -216,6 +216,7 @@ function FieldMessageCompiler.requiredBankIds()
   set[PokegearSources.phoneClassLabels.landmarkFallbackBank] = true
   -- The region map prints its panel text and Fly prompts from this bank.
   set[PokegearSources.regionMapMessageBank] = true
+  set[PokegearSources.safariAreaMessageBank] = true
   local out = {}
   for bankId in pairs(set) do
     out[#out + 1] = bankId

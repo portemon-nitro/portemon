@@ -157,6 +157,33 @@ function T.fishing_distinguishes_bite_and_no_bite()
   Assert.equal(rodless:calls(), before, "rod fishing without a rod consumes no draws")
 end
 
+function T.shared_fishing_consumer_uses_night_only_replacement()
+  local Catalog = Fixture.requirePresent(CATALOG_MODULE, "validated encounter-table lookup owns ordered slots")
+  local compiled = Fixture.vectorCatalog()
+  compiled.tables[14].replacements.nightFish.species = "SHEDINJA"
+  compiled.tables[14].rates.goodRod = 100
+  local function streamForFourthSlot()
+    local draws = { 0, 90 }
+    local index = 0
+    return {
+      nextU16 = function()
+        index = index + 1
+        return draws[index] or 0
+      end,
+    }
+  end
+  local function fishAt(timeOfDay)
+    local context = Fixture.context({ method = "fish", movement = "fish", mapId = 14, timeOfDay = timeOfDay })
+    context.modifiers = Fixture.modifiers({ rod = "good_rod" })
+    local result = attemptResult(service({ catalog = Catalog.new(compiled) }), context, streamForFourthSlot())
+    Assert.equal(result.kind, "prepared")
+    return result.encounter.mons[1].mon.species
+  end
+
+  Assert.equal(fishAt("day"), "EEVEE")
+  Assert.equal(fishAt("night"), "SHEDINJA", "the shared service uses the night replacement")
+end
+
 function T.repel_blocks_low_wilds_without_resampling()
   local host = service()
   local lead = leadTotodile()
