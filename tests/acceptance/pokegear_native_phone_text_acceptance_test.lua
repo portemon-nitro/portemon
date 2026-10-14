@@ -183,6 +183,111 @@ function T.tests.phone_call_publishes_selected_rom_dialogue_through_the_field_te
   end)
 end
 
+function T.tests.native_generic_phone_phrases_resolve_the_source_entry_stride()
+  Fixture.withGame(Fixture.TOWN, function(game)
+    local runtime = game.runtime
+    local catalog = assert(runtime.pokegearCatalog, "the field runtime owns the ROM-derived phone catalog")
+    local messages = assert(runtime.phoneMessages, "the field runtime composes the provider-backed phone resolver")
+    local provider = assert(runtime.messageProvider, "the field runtime owns the source message provider")
+    local genericHeaders = require("romdump.src.config.PokegearGenericPhoneHeaders")
+    local reachable = {}
+    for _, directions in pairs(genericHeaders) do
+      for _, rows in pairs(directions) do
+        for _, row in ipairs(rows) do
+          if row[1] == 1 and row[3] == 2 then
+            reachable[row[4]] = true
+          end
+        end
+      end
+    end
+    local get = provider.get
+    local requested = nil
+    provider.get = function(self, bankId, entryId)
+      requested = { bankId = bankId, entryId = entryId }
+      return get(self, bankId, entryId)
+    end
+
+    for _, scriptId in ipairs({ 59, 108, 117, 124, 417 }) do
+      Assert.isTrue(reachable[scriptId] == true, "the native generic header reaches this type-two definition")
+      local definition = assert(catalog.callDefinitions[scriptId], "the native header references a compiled definition")
+      Assert.equal(
+        definition.male.entry,
+        definition.female.entry,
+        "these native generic type-two definitions share their gender entry"
+      )
+      local contactKey = nil
+      for _, contact in ipairs(catalog.contacts) do
+        if contact.messageBank == definition.male.bank then
+          contactKey = contact.key
+          break
+        end
+      end
+      contactKey = assert(contactKey, "a native caller owns the definition's message bank")
+      for _, gender in ipairs({ 0, 1 }) do
+        runtime.playerData.profile.gender = gender
+        local message = gender == 0 and definition.male or definition.female
+        for _, variation in ipairs({ 0, 1, 10 }) do
+          requested = nil
+          messages.resolveLine(messages, contactKey, scriptId, 2, variation, nil)
+          local address = assert(requested, "the production resolver reads one source message entry")
+          Assert.equal(address.bankId, message.bank, "the selected phrase stays in its native message bank")
+          Assert.equal(
+            address.entryId,
+            message.entry + variation,
+            "shared reference script "
+              .. tostring(scriptId)
+              .. " variation "
+              .. tostring(variation)
+              .. " must address entry "
+              .. tostring(message.entry + variation)
+              .. ", got "
+              .. tostring(address.entryId)
+          )
+        end
+      end
+    end
+
+    runtime.playerData.profile.gender = 0
+    local definition = assert(catalog.callDefinitions[59], "a native type-two definition is available")
+    local contactKey = nil
+    for _, contact in ipairs(catalog.contacts) do
+      if contact.messageBank == definition.male.bank then
+        contactKey = contact.key
+        break
+      end
+    end
+    contactKey = assert(contactKey, "a native caller owns the shared phrase bank")
+    for _, scriptType in ipairs({ 0, 1 }) do
+      requested = nil
+      messages.resolveLine(messages, contactKey, 59, scriptType, 10, nil)
+      local address = assert(requested, "non-type-two phone text reads its source entry")
+      Assert.equal(address.entryId, definition.male.entry, "non-type-two text does not apply phrase offsets")
+    end
+    requested = nil
+    local ok = pcall(messages.resolveLine, messages, contactKey, 59, 2, 11, nil)
+    Assert.isFalse(ok, "type-two variations outside the native range still fail")
+    Assert.isNil(requested, "invalid type-two variation fails before message-provider access")
+
+    local originalFemaleEntry = definition.female.entry
+    definition.female.entry = originalFemaleEntry + 3
+    for _, gender in ipairs({ 0, 1 }) do
+      runtime.playerData.profile.gender = gender
+      local message = gender == 0 and definition.male or definition.female
+      for _, variation in ipairs({ 0, 1, 10 }) do
+        requested = nil
+        messages.resolveLine(messages, contactKey, 59, 2, variation, nil)
+        local gendered = assert(requested, "a distinct gender phrase resolves through the production provider")
+        Assert.equal(
+          gendered.entryId,
+          message.entry + variation * 2,
+          "distinct gender references retain the two-entry native stride"
+        )
+      end
+    end
+    definition.female.entry = originalFemaleEntry
+  end)
+end
+
 -- Ecruteak Gym's native header permits outgoing calls and denies incoming
 -- calls. Exercise the composed script host on that real map, then ensure a
 -- denied request does not prevent a later permitted request.

@@ -2419,7 +2419,8 @@ local function phoneGreetingRefs(catalog, provider, profile, fontDef, runtime)
         type(variation) == "number" and variation >= 0 and variation < 11,
         "generic type-two text carries one phrase choice"
       )
-      message = { bank = message.bank, entry = message.entry + variation * 2 }
+      local stride = definition.male.entry == definition.female.entry and 1 or 2
+      message = { bank = message.bank, entry = message.entry + variation * stride }
     end
     if type(message) ~= "table" or message.bank ~= contact.messageBank then
       local failure = Errors.new(
