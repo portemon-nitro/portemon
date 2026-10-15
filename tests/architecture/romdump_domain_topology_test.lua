@@ -117,6 +117,8 @@ local DOMAINS = {
     "FieldFontCacheWriter",
     "FieldFontCompiler",
     "FieldFontDecoder",
+    "FieldEntryAssetCompiler",
+    "FieldEntryCacheWriter",
     "FieldMessageBank",
     "FieldMessageCacheWriter",
     "FieldMessageCompiler",

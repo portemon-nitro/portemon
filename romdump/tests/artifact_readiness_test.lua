@@ -564,6 +564,39 @@ local function publishFontFamily(cache, marker)
   writeReceipt(cache, "field-font", "global", marker)
 end
 
+local function publishFieldEntryFamily(cache, marker)
+  local FieldEntry = require("libs.assets.src.field.FieldEntryAssetCache")
+  local assets = {}
+  for style = 0, FieldEntry.BANNER_STYLE_COUNT - 1 do
+    local key = "banner/" .. style
+    assets[key] = { image = "assets/generated/field/entry/banner/" .. style .. ".png", width = 136, height = 32 }
+  end
+  assets["preview/0"] = { image = "assets/generated/field/entry/preview/0.png", width = 256, height = 192 }
+  local bannerStyles, palettes = {}, {}
+  for style = 0, FieldEntry.BANNER_STYLE_COUNT - 1 do
+    bannerStyles[style] = "banner/" .. style
+    palettes[style] = {
+      foreground = { r = 255, g = 255, b = 255 },
+      shadow = { r = 0, g = 0, b = 0 },
+      background = { r = 0, g = 0, b = 0 },
+    }
+  end
+  cache:writeLua(FieldEntry.manifestPath(), {
+    schema = FieldEntry.SCHEMA,
+    reference = { width = 256, height = 192 },
+    assets = assets,
+    bannerStyles = bannerStyles,
+    bannerTextPalettes = palettes,
+    bannerStyleByMapId = {},
+    previewByMapId = { [1] = { [0] = "preview/0", [1] = "preview/0", [2] = "preview/0", [3] = "preview/0" } },
+  })
+  for _, entry in pairs(assets) do
+    cache:write(entry.image, "bytes")
+  end
+  cache:write(FieldEntry.markerPath(), marker)
+  writeReceipt(cache, "field-entry", "global", marker)
+end
+
 local function publishActorFamily(cache)
   local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
   local Writer = require("romdump.src.digest.actor.FieldActorCacheWriter")
@@ -1270,6 +1303,8 @@ function T.audit_covers_inventory_map_data_missing_from_the_world()
   publishCameraFamily(cache, cameraMarker)
   local fontMarker = require("libs.assets.src.field.FieldFontCache").marker("test-rom", "test-dep")
   publishFontFamily(cache, fontMarker)
+  local fieldEntryMarker = require("libs.assets.src.field.FieldEntryAssetCache").marker("test-rom", "test-dep")
+  publishFieldEntryFamily(cache, fieldEntryMarker)
   publishActorFamily(cache)
   publishItemFamily(cache)
   publishEmoteFamily(cache)

@@ -37,6 +37,7 @@ local DOMAINS = {
     "FieldCellCache",
     "FieldEffectAssetCache",
     "FieldEmoteAssetCache",
+    "FieldEntryAssetCache",
     "FieldFontCache",
     "FieldLightProfile",
     "FieldMapDataCache",

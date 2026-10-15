@@ -1802,8 +1802,9 @@ function T.runtime_milestone_carries_bounded_static_services()
         key == tostring(MenuProtocol.STANDARD_MESSAGE_BANK)
           or key == tostring(MenuProtocol.START_MENU_MESSAGE_BANK)
           or key == "40"
-          or key == "265",
-        "runtime carries the protocol and follower interaction message banks: " .. identityKey
+          or key == "265"
+          or key == "279",
+        "runtime carries the protocol, menu and section-name message banks: " .. identityKey
       )
     end
   end

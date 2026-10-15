@@ -32,6 +32,7 @@ local CANONICAL_KEYS = {
   ["field-effects"] = "global",
   ["field-emotes"] = "global",
   ["field-ui"] = "global",
+  ["field-entry"] = "global",
   ["field-font"] = "global",
   ["intro"] = "global",
   ["new-game-init"] = "global",
@@ -675,6 +676,8 @@ function T.field_runtime_covers_both_menu_protocol_banks_without_family_summarie
   Assert.isTrue(set["message-bank:40"] == true, "field runtime carries follower reaction messages")
   Assert.isTrue(set["message-bank:265"] == true, "field runtime carries follower reaction messages")
   Assert.isTrue(set["follower-interactions:global"] == true, "field runtime carries the interaction catalog")
+  Assert.isTrue(set["field-entry:global"] == true, "field runtime carries the generated field-entry class")
+  Assert.isTrue(set["message-bank:279"] == true, "field runtime carries the region-map bank")
   Assert.isNil(set["message-summary:global"], "field runtime enrolls no message summary")
   Assert.isNil(set["audio-summary:global"], "field runtime enrolls no audio summary")
   for key in pairs(set) do
@@ -684,7 +687,8 @@ function T.field_runtime_covers_both_menu_protocol_banks_without_family_summarie
         bank == tostring(MenuProtocol.STANDARD_MESSAGE_BANK)
           or bank == tostring(MenuProtocol.START_MENU_MESSAGE_BANK)
           or bank == "40"
-          or bank == "265",
+          or bank == "265"
+          or bank == "279",
         "field runtime carries only synchronously addressed message banks: " .. key
       )
     end
