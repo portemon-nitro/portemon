@@ -328,11 +328,12 @@ function T.tests.live_broadcast_music_changes_land_encounters_until_stopped(cont
     "validated encounter-table lookup owns ordered slots"
   )
   local EncounterCatalogCompiler = require("romdump.src.digest.encounters.EncounterCatalogCompiler")
-  local RomFs = require("romdump.src.source.RomFs")
+  local RomSourcePath = require("tests.rom.support.RomSourcePath")
   for _, versionId in ipairs(ready) do
-    local romFs = assert(RomFs.open(versionId))
+    local romFs, romSource = assert(RomSourcePath.openReader(versionId))
     local compiled = assert(EncounterCatalogCompiler.compileFromDump(romFs, { versionId = versionId }))
     romFs:close()
+    romSource:release()
     local catalog = Catalog.new(compiled)
     local memberId = nil
     local hoennSpecies, sinnohSpecies, walkingRate = nil, nil, nil

@@ -16,7 +16,7 @@ local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local Hashing = require("romdump.src.digest.Hashing")
 local Narc = require("libs.nds.src.nitro.Narc")
 local PngReader = require("tests.support.PngReader")
-local RomFs = require("romdump.src.source.RomFs")
+local RomSourcePath = require("tests.rom.support.RomSourcePath")
 local RomImporter = require("romdump.src.source.RomImporter")
 
 local T = {}
@@ -125,9 +125,10 @@ function T.six_skins_keep_source_palette_slots_and_anchored_animation_frames(sco
   local loaded, PokegearAssetCompiler = pcall(require, "romdump.src.digest.ui.PokegearAssetCompiler")
   Assert.isTrue(loaded, "the pokegear family compiler must be published before skin fidelity can be proven")
   for _, versionId in ipairs(versions) do
-    local romFs, openErr = RomFs.open(versionId)
-    Assert.notNil(romFs, "the " .. versionId .. " dump must open: " .. tostring(openErr))
-    romFs = assert(romFs, "the dump handle exists above")
+    local romFs, romSource = RomSourcePath.openReader(versionId)
+    Assert.notNil(romFs, "the " .. versionId .. " ROM must open: " .. tostring(romSource))
+    romFs = assert(romFs, "the ROM reader exists above")
+    romSource = assert(romSource, "the owning ROM source exists above")
     local bundle = PokegearAssetCompiler.compile(romFs, versionId)
     local compiled = assert(bundle, versionId .. " must compile the pokegear family")
     local manifest = assert(compiled.manifest, versionId .. " must publish its pokegear manifest")
@@ -300,6 +301,7 @@ function T.six_skins_keep_source_palette_slots_and_anchored_animation_frames(sco
     end
     Assert.isTrue(opaqueSprite, versionId .. " map sprite frames carry opaque source content")
     romFs:close()
+    romSource:release()
   end
 end
 
