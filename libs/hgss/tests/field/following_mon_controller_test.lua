@@ -10,6 +10,7 @@ local FieldActorManager = require("libs.hgss.src.actors.FieldActorManager")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldPlayer = require("libs.hgss.src.actors.FieldPlayer")
+local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 local MovementCalibration = require("libs.hgss.src.script.tasks.MovementCalibration")
 local TerrainSurface = require("libs.hgss.src.world.TerrainSurface")
 local FieldActorFixture = require("tests.support.FieldActorFixture")
@@ -2389,6 +2390,113 @@ function T.recall_scale_stays_presentation_only_and_reaches_draw_records()
   Assert.equal(drawRecordFor(w.mgr, partnerId).presentationScale, 0.25, "the draw record carries the recall scale")
   w.controller:clearRecallPresentationScale()
   Assert.equal(drawRecordFor(w.mgr, partnerId).presentationScale, 1, "clearing restores the identity scale")
+  w.mgr:dispose()
+end
+
+-- A world whose tile (ledgeX, ledgeZ) is a ledge of the given behavior.
+local function ledgeWorld(options, behavior, ledgeX, ledgeZ)
+  local w = world(options)
+  w.map.collision.getLocal = function(_, x, z)
+    if x == ledgeX and z == ledgeZ then
+      return { blocked = false, behavior = behavior }
+    end
+    return { blocked = false, behavior = 0 }
+  end
+  w.svc:setLead(0, mon())
+  tick(w, 2)
+  return w
+end
+
+local function jumpLedge(w, direction)
+  Assert.isTrue(w.player:tryStep(direction), "the ledge jump starts")
+  Assert.equal(w.player.motion, "jumping", "the player is jumping")
+  w.controller:update()
+  for _ = 1, FieldPlayer.LEDGE_JUMP_TICKS do
+    w.player:updateFixed({})
+    w.controller:update()
+  end
+  tick(w, 40)
+end
+
+-- A ledge jump is a trail step, never a discontinuity: the follower walks
+-- (never jumps) toward the tile the player left as soon as the jump starts,
+-- keeps its stable actor, and rests there until the player moves again.
+function T.ledge_jump_trails_by_walking_and_rests_on_the_vacated_tile()
+  local w = ledgeWorld(nil, MetatileBehavior.BEHAVIOR.JUMP_SOUTH, 4, 6)
+  local partnerId = assert(w.mgr:partnerId(), "setup installs the partner")
+
+  Assert.isTrue(w.player:tryStep("south"), "the ledge jump starts")
+  w.controller:update()
+  local actor = assert(w.mgr:getById(partnerId), "the partner survives the jump start")
+  local motion = assert(actor:scriptedMotionState(), "the follower starts trailing with the jump")
+  Assert.equal(motion.action, "walk", "the follower walks toward the vacated tile, never jumps")
+  Assert.equal(motion.speed, "slow", "the follower trails the jump at the slow walk pace")
+  for _ = 1, FieldPlayer.LEDGE_JUMP_TICKS do
+    w.player:updateFixed({})
+    w.controller:update()
+  end
+  tick(w, 40)
+
+  Assert.equal(w.player.fieldZ, 7, "the player lands two tiles south")
+  Assert.equal(w.mgr:partnerId(), partnerId, "the jump keeps the stable actor instead of snapping")
+  actor = assert(w.mgr:getById(partnerId), "the partner survives the jump")
+  Assert.equal(actor:getFieldPosition().fieldX, 4, "the follower trails in the player's column")
+  Assert.equal(actor:getFieldPosition().fieldZ, 5, "the follower rests on the tile the player jumped from")
+  Assert.isTrue(w.controller:isMovementSettled(), "the trail settles")
+  w.mgr:dispose()
+end
+
+-- The player's next step closes the two-tile gap: the first step crosses the
+-- ledge tile one speed notch faster than the player, the second reaches the
+-- player's previous tile at the player's pace.
+function T.step_after_a_southward_ledge_jump_catches_up_with_a_faster_first_step()
+  local w = ledgeWorld(nil, MetatileBehavior.BEHAVIOR.JUMP_SOUTH, 4, 6)
+  local partnerId = assert(w.mgr:partnerId(), "setup installs the partner")
+  jumpLedge(w, "south")
+
+  Assert.isTrue(w.player:tryStep("south"), "the follow-up step starts")
+  w.controller:update()
+  local actor = assert(w.mgr:getById(partnerId), "the partner survives the follow-up step start")
+  local motion = assert(actor:scriptedMotionState(), "the follower starts the catch-up")
+  Assert.equal(motion.action, "walk", "the catch-up walks")
+  Assert.equal(motion.speed, "fast", "the first catch-up step is one notch faster than the player's walk")
+  for _ = 1, 16 do
+    w.player:updateFixed({})
+    w.controller:update()
+  end
+  tick(w, 40)
+
+  Assert.equal(w.mgr:partnerId(), partnerId, "the catch-up keeps the stable actor")
+  actor = assert(w.mgr:getById(partnerId), "the partner survives the catch-up")
+  Assert.equal(actor:getFieldPosition().fieldX, 4, "the follower stays in the player's column")
+  Assert.equal(actor:getFieldPosition().fieldZ, 7, "the follower reaches the tile the player left")
+  Assert.isTrue(w.controller:isMovementSettled(), "the catch-up settles")
+  w.mgr:dispose()
+end
+
+-- A northward jump records no speed hint, so the same two-tile catch-up runs
+-- at the player's own pace.
+function T.step_after_a_northward_ledge_jump_catches_up_at_the_player_pace()
+  local w = ledgeWorld({ fieldZ = 8, facing = "north" }, MetatileBehavior.BEHAVIOR.JUMP_NORTH, 4, 7)
+  local partnerId = assert(w.mgr:partnerId(), "setup installs the partner")
+  jumpLedge(w, "north")
+  Assert.equal(w.player.fieldZ, 6, "the player lands two tiles north")
+
+  Assert.isTrue(w.player:tryStep("north"), "the follow-up step starts")
+  w.controller:update()
+  local actor = assert(w.mgr:getById(partnerId), "the partner survives the follow-up step start")
+  local motion = assert(actor:scriptedMotionState(), "the follower starts the catch-up")
+  Assert.equal(motion.speed, "normal", "a northward jump leaves the first catch-up step at the player's pace")
+  for _ = 1, 16 do
+    w.player:updateFixed({})
+    w.controller:update()
+  end
+  tick(w, 40)
+
+  Assert.equal(w.mgr:partnerId(), partnerId, "the catch-up keeps the stable actor")
+  actor = assert(w.mgr:getById(partnerId), "the partner survives the catch-up")
+  Assert.equal(actor:getFieldPosition().fieldZ, 6, "the follower reaches the tile the player left")
+  Assert.isTrue(w.controller:isMovementSettled(), "the catch-up settles")
   w.mgr:dispose()
 end
 

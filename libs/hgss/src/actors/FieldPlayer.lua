@@ -430,7 +430,7 @@ function FieldPlayer:_beginStep(direction, destination, speed)
   self.motion = "walking"
   self.progressTicks = 0
   self.durationTicks = durationTicks
-  self:_publishMovementStart(direction, speed)
+  self:_publishMovementStart(direction, speed, "walk")
 end
 
 -- Publish the resolved translation before the first in-flight tick: source
@@ -439,7 +439,8 @@ end
 -- never reach this path, so they publish nothing.
 ---@param direction FieldDirection
 ---@param speed string
-function FieldPlayer:_publishMovementStart(direction, speed)
+---@param traversalKind "walk"|"ledge_jump"
+function FieldPlayer:_publishMovementStart(direction, speed, traversalKind)
   assert(type(speed) == "string", "movement speed required")
   local MovementCalibration = require("libs.hgss.src.script.tasks.MovementCalibration")
   assert(
@@ -453,7 +454,7 @@ function FieldPlayer:_publishMovementStart(direction, speed)
     from = copyAnchor(assert(self.from, "movement source required")),
     to = copyAnchor(assert(self.to, "movement destination required")),
     direction = direction,
-    traversalKind = "walk",
+    traversalKind = traversalKind,
     speed = speed,
     durationTicks = self.durationTicks,
   }
@@ -482,6 +483,7 @@ function FieldPlayer:_beginJump(direction, destination)
   self.motion = "jumping"
   self.progressTicks = 0
   self.durationTicks = FieldPlayer.LEDGE_JUMP_TICKS
+  self:_publishMovementStart(direction, "slow", "ledge_jump")
 end
 
 function FieldPlayer:_advanceTurn()
@@ -1131,7 +1133,8 @@ function FieldPlayer:beginScriptedAction(action)
   if kind == "walk" then
     self:_publishMovementStart(
       assert(action.direction, "direction required for walk"),
-      assert(action.speed, "speed required for walk")
+      assert(action.speed, "speed required for walk"),
+      "walk"
     )
   end
 end

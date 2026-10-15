@@ -40,6 +40,7 @@ FollowingMonController.__index = FollowingMonController
 ---@field _lastAnchor table<string, unknown>?
 ---@field _lastMovementTransactionRevision integer?
 ---@field _consumedStep table<string, unknown>?
+---@field _ledgeLanding { mapId: integer, fieldX: integer, fieldZ: integer, direction: string }? where the follower owes a two-tile catch-up after a ledge jump
 ---@field _queue table<string, unknown>[]
 ---@field _paused boolean
 ---@field _transition table<string, unknown> required follower-transition collaborator { start }
@@ -89,7 +90,9 @@ FollowingMonController.__index = FollowingMonController
 ---@field _observePlayer fun(self: FollowingMonController, mapId: integer)
 ---@field _commitMatchesLiveStart fun(self: FollowingMonController, previous: table<string, unknown>?, anchor: table<string, unknown>, mapId: integer): boolean
 ---@field _observeMovementStart fun(self: FollowingMonController, mapId: integer)
----@field _beginOrdinaryFollow fun(self: FollowingMonController, mapId: integer, tx: FieldPlayer.MovementTransaction)
+---@field _beginOrdinaryFollow fun(self: FollowingMonController, mapId: integer, tx: FieldPlayer.MovementTransaction): boolean
+---@field _enqueueLedgeCatchUp fun(self: FollowingMonController, mapId: integer, tx: FieldPlayer.MovementTransaction, speed: string): boolean
+---@field _beginLedgeFollow fun(self: FollowingMonController, mapId: integer, tx: FieldPlayer.MovementTransaction)
 ---@field _beginVacatedSteer fun(self: FollowingMonController, mapId: integer, tx: FieldPlayer.MovementTransaction)
 ---@field _beginReplayLastWalk fun(self: FollowingMonController, mapId: integer, tx: FieldPlayer.MovementTransaction)
 ---@field _beginActorWalk fun(self: FollowingMonController, mapId: integer, direction: string, speed: string): boolean
@@ -221,6 +224,7 @@ function FollowingMonController.new(opts)
     _lastAnchor = nil,
     _lastMovementTransactionRevision = nil,
     _consumedStep = nil,
+    _ledgeLanding = nil,
     _queue = {},
     _paused = false,
     _transition = opts.transition,
@@ -294,6 +298,9 @@ local function followerSpeed(speed)
   assert(MovementCalibration.SPEED_TICKS[speed] ~= nil, "unknown follower walk speed " .. tostring(speed))
   return speed
 end
+
+-- One speed notch faster, as the retail catch-up step after a ledge jump.
+local FASTER_NOTCH = { slow = "normal", normal = "fast", fast = "faster" }
 
 ---@param self FollowingMonController
 ---@param snapshot table<string, unknown>
@@ -615,6 +622,7 @@ function FollowingMonController:_discontinuity(mapId)
   end
   self._action = nil
   self._queue = {}
+  self._ledgeLanding = nil
   self._actors:clearPartner()
   self._published = nil
   self._pendingHiddenLead = nil
@@ -654,6 +662,7 @@ function FollowingMonController:_handleMapChange(mapId, coveredRebuild)
   self._lastAnchor = nil
   self._lastMovementTransactionRevision = nil
   self._consumedStep = nil
+  self._ledgeLanding = nil
   self._paused = false
 end
 
@@ -686,7 +695,9 @@ function FollowingMonController:_observeMovementStart(mapId)
   if tx.revision == self._lastMovementTransactionRevision then
     return
   end
-  if tx.traversalKind ~= "walk" or tx.mapId ~= mapId then
+  local followsTrail = tx.traversalKind == "walk"
+    or (tx.traversalKind == "ledge_jump" and self._movementType == "follow_player")
+  if not followsTrail or tx.mapId ~= mapId then
     self._lastMovementTransactionRevision = tx.revision
     return
   end
@@ -694,7 +705,9 @@ function FollowingMonController:_observeMovementStart(mapId)
     return
   end
   self._lastMovementTransactionRevision = tx.revision
-  if self._movementType == "follow_player" then
+  if tx.traversalKind == "ledge_jump" then
+    self:_beginLedgeFollow(mapId, tx)
+  elseif self._movementType == "follow_player" then
     self:_beginOrdinaryFollow(mapId, tx)
   elseif self._movementType == "follow_transition_a" then
     self:_beginVacatedSteer(mapId, tx)
@@ -791,6 +804,7 @@ end
 ---@param self FollowingMonController
 ---@param mapId integer
 ---@param tx FieldPlayer.MovementTransaction
+---@return boolean accepted false when the follower was reconciled through the discontinuity path
 function FollowingMonController:_beginOrdinaryFollow(mapId, tx)
   local speed = followerSpeed(tx.speed)
   self._consumedStep = {
@@ -802,29 +816,94 @@ function FollowingMonController:_beginOrdinaryFollow(mapId, tx)
   }
   local partnerId = assert(self._actors:partnerId(), "ordinary follow requires the partner actor")
   local position = assert(self._actors:getPosition(partnerId), "partner position is required")
+  if self:_enqueueLedgeCatchUp(mapId, tx, speed) then
+    self:_driveQueue(mapId)
+    return true
+  end
   if self._action ~= nil or #self._queue > 0 then
     -- Standing on the vacated tile proves nothing while older work can
     -- still move the follower away, so retain the new target behind it.
     self:_enqueueVacatedTarget(tx, speed)
-    return
+    return true
   end
   if position.fieldX == tx.from.fieldX and position.fieldZ == tx.from.fieldZ then
     -- With no older work pending, the follower already stands on the
     -- vacated tile, so the obligation is satisfied with no walk,
     -- no queue entry, and no repair.
-    return
+    return true
   end
   if self._paused then
     self:_enqueueVacatedTarget(tx, speed)
-    return
+    return true
   end
   local target = { fieldX = tx.from.fieldX, fieldZ = tx.from.fieldZ }
   if not isAdjacent(position, target) then
     self:_discontinuity(mapId)
-    return
+    return false
   end
   local direction = directionFromTo(position, target)
-  self:_beginActorWalk(mapId, direction, speed)
+  return self:_beginActorWalk(mapId, direction, speed)
+end
+
+-- A ledge jump trails by walking: the follower heads for the vacated tile at
+-- the jump's slow pace the moment the jump starts and rests there. The
+-- player's next step owes the two-tile catch-up (see _enqueueLedgeCatchUp);
+-- the jump's own two-tile commit is already accounted for by the consumed
+-- step.
+---@param self FollowingMonController
+---@param mapId integer
+---@param tx FieldPlayer.MovementTransaction
+function FollowingMonController:_beginLedgeFollow(mapId, tx)
+  if not self:_beginOrdinaryFollow(mapId, tx) then
+    return
+  end
+  self._ledgeLanding = {
+    mapId = tx.mapId,
+    fieldX = tx.to.fieldX,
+    fieldZ = tx.to.fieldZ,
+    direction = tx.direction,
+  }
+end
+
+-- The first step after a ledge jump from the landing tile: the follower rests
+-- two tiles behind, so it crosses the ledge tile first and then reaches the
+-- tile the player vacated. A jump in any direction but north also bumps the
+-- first step one speed notch. The obligation is consumed by the next step
+-- whether or not it applies.
+---@param self FollowingMonController
+---@param mapId integer
+---@param tx FieldPlayer.MovementTransaction
+---@param speed string
+---@return boolean enqueued
+function FollowingMonController:_enqueueLedgeCatchUp(mapId, tx, speed)
+  local landing = self._ledgeLanding
+  self._ledgeLanding = nil
+  if
+    landing == nil
+    or landing.mapId ~= mapId
+    or landing.fieldX ~= tx.from.fieldX
+    or landing.fieldZ ~= tx.from.fieldZ
+  then
+    return false
+  end
+  local delta = assert(DELTAS[landing.direction], "ledge jump direction is required")
+  local first = speed
+  if landing.direction ~= "north" then
+    first = assert(FASTER_NOTCH[speed], "no faster notch for follower speed " .. speed)
+  end
+  if #self._queue >= FollowingMonController.MAX_QUEUED_ANCHORS then
+    table.remove(self._queue, 1)
+  end
+  self._queue[#self._queue + 1] = {
+    mapId = mapId,
+    fieldX = landing.fieldX - delta.x,
+    fieldZ = landing.fieldZ - delta.z,
+    facing = landing.direction,
+    worldY = tx.from.worldY,
+    speed = first,
+  }
+  self:_enqueueVacatedTarget(tx, speed)
+  return true
 end
 
 -- Steer toward the transaction's source anchor: the tile the player
@@ -1173,6 +1252,7 @@ function FollowingMonController:setMovementType(movementType)
   self._action = nil
   self._queue = {}
   self._consumedStep = nil
+  self._ledgeLanding = nil
   local player = self._playerOf()
   if type(player.movementTransaction) == "function" then
     local tx = player:movementTransaction()
