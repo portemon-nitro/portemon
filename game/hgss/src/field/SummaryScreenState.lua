@@ -331,8 +331,8 @@ end
 -- drives plus the native group the box belongs to: move rows answer on
 -- the skills group and ribbon cells on the performance group because both
 -- states share the same pane region, while tabs, members, and exits stay
--- live everywhere. Boxes without a native target kind (page arrows,
--- panel rows, restricted selector pairs) stay inert: those gestures
+-- live everywhere. Boxes without a native target kind (panel
+-- rows, restricted selector pairs) stay inert: those gestures
 -- travel through directional input instead. Blank rows and cells stay
 -- separate boxes so the controller qualifies them against its facts;
 -- edges are half-open with a zero right edge reading 256.
@@ -356,6 +356,10 @@ local function classifyTouchBox(key)
   local move = lower:match("moverow(%d+)$")
   if move ~= nil then
     return { kind = "move", index = tonumber(move) }, "skills"
+  end
+  local turn = lower:match("ribbonpage(%a+)$")
+  if turn == "prev" or turn == "next" then
+    return { kind = "ribbonPage", direction = turn == "prev" and -1 or 1 }, "performance"
   end
   local cell = lower:match("ribboncell(%d+)$")
   if cell ~= nil then

@@ -179,6 +179,9 @@ function T.reorder_publishes_whole_entries_and_preserves_the_rest()
   end
   Assert.equal(state:status().phase, "move_detail", "the detail settles after its transition")
   state:updateFixed({ { type = "confirm" } })
+  for _ = 1, 6 do
+    state:updateFixed({})
+  end
   state:updateFixed({ { type = "navigate", direction = "down" } })
   state:updateFixed({ { type = "confirm" } })
   Assert.equal(service:partyRevision(), before + 1, "one swap advances one revision")
@@ -1219,6 +1222,9 @@ function T.fact_reads_leave_picture_and_cry_clocks_untouched()
     end
     Assert.equal(state:status().phase, "move_detail", "the detail settles after its transition")
     state:updateFixed({ { type = "confirm" } })
+    for _ = 1, 6 do
+      state:updateFixed({})
+    end
     Assert.equal(state:status().phase, "move_reorder", "confirmation arms the source row")
     service:setMove(0, 0, "SCRATCH")
     local drifted = service:partyRevision()
@@ -1238,7 +1244,7 @@ end
 return {
   metadata = {
     capabilities = { "rom_dump", "derived_assets" },
-    derivedAssets = { "summary:global", "party:global", "mart:global" },
+    derivedAssets = { "move-icons:global", "summary:global", "party:global", "mart:global" },
   },
   tests = T,
 }

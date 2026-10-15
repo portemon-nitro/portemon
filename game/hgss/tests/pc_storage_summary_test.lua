@@ -248,6 +248,9 @@ function T.summary_reorders_whole_entries_at_the_box_subject_address()
   end
   Assert.equal(state:status().phase, "move_detail", "the detail settles after its transition")
   state:updateFixed({ { type = "confirm" } })
+  for _ = 1, 6 do
+    state:updateFixed({})
+  end
   state:updateFixed({ { type = "navigate", direction = "down" } })
   state:updateFixed({ { type = "confirm" } })
 

@@ -47,6 +47,7 @@ local SummaryPicturePlayer = require("libs.hgss.src.ui.SummaryPicturePlayer")
 ---@field _playerFresh boolean?
 ---@field _pressId string?
 ---@field _transition table<string, unknown>?
+---@field _arming integer? ticks the Switch tab has been pressed before the reorder arms
 ---@field _spriteTick integer
 ---@field _navTick integer?
 ---@field _repeatStart integer?
@@ -57,7 +58,27 @@ SummaryController.__index = SummaryController
 SummaryController.GROUPS = { "info", "skills", "performance" }
 SummaryController.REPEAT_START_TICKS = 8
 SummaryController.REPEAT_INTERVAL_TICKS = 4
+
+-- Retail sound vocabulary of the Summary application: focus moves, the
+-- decide cue, tab changes, the move-list entry and every cancel.
+local EFFECT = {
+  cursor = "SEQ_SE_DP_SELECT",
+  decide = "SEQ_SE_DP_DECIDE",
+  tab = "SEQ_SE_DP_SELECT5",
+  moves = "SEQ_SE_DP_SYU01",
+  cancel = "SEQ_SE_GS_GEARCANCEL",
+}
+
+---@param self SummaryController
+---@param sequence string
+local function play(self, sequence)
+  self._effects[#self._effects + 1] = { kind = "sound", role = sequence }
+end
 SummaryController.ENTRY_CRY_WINDOW_TICKS = 3
+-- The Switch tab holds its pressed palette for four ticks, then its
+-- normal palette for two, before the reorder arms.
+SummaryController.SWITCH_PRESS_TICKS = 4
+SummaryController.SWITCH_PRESS_TOTAL_TICKS = 6
 -- Delay-zero cries drain within a bounded post-entry window instead of on the
 -- entry tick: silent while the entry settles, then exactly once.
 
@@ -176,6 +197,7 @@ function SummaryController.new(opts)
     _player = nil,
     _pressId = nil,
     _transition = nil,
+    _arming = nil,
     _spriteTick = 0,
     _navTick = nil,
     _repeatStart = nil,
@@ -321,8 +343,9 @@ local function reconcile(self)
     self._reorderSource = nil
     self._sourceRevision = nil
     self._sourceIdentity = nil
-    if self._phase == "move_reorder" then
+    if self._phase == "move_reorder" or self._phase == "move_arming" then
       self._phase = "move_detail"
+      self._arming = nil
     end
   end
   self._observedRevision = revision
@@ -339,8 +362,9 @@ local function reconcile(self)
     self._reorderSource = nil
     self._sourceRevision = nil
     self._sourceIdentity = nil
-    if self._phase == "move_reorder" then
+    if self._phase == "move_reorder" or self._phase == "move_arming" then
       self._phase = "move_detail"
+      self._arming = nil
     end
     self._pictureIdentity = epochKey
     self._pictureEpoch = self._pictureEpoch + 1
@@ -429,6 +453,7 @@ local function cycleGroup(self, direction)
   self._moveSlot = nil
   self._ribbonIndex = nil
   self._notice = nil
+  play(self, EFFECT.tab)
 end
 
 ---@param self SummaryController
@@ -533,6 +558,7 @@ end
 ---@param self SummaryController
 ---@param row integer?
 local function openMoveDetail(self, row)
+  play(self, EFFECT.moves)
   beginTransition(self, "moveDetail", "open", "move_opening")
   self._detailEntry = row
   self._moveSlot = row
@@ -543,6 +569,7 @@ end
 ---@param self SummaryController
 ---@param index integer
 local function openRibbonDetail(self, index)
+  play(self, EFFECT.decide)
   beginTransition(self, "ribbonDetail", "open", "ribbon_opening")
   self._ribbonIndex = index
   self._moveSlot = nil
@@ -558,6 +585,7 @@ local function closeToRoot(self)
   self._reorderSource = nil
   self._sourceRevision = nil
   self._sourceIdentity = nil
+  self._arming = nil
   self._ribbonIndex = nil
   self._notice = nil
 end
@@ -624,6 +652,7 @@ local function cancel(self)
   if not self._cancellable then
     return
   end
+  play(self, EFFECT.cancel)
   if self._phase == "move_detail" then
     self._group = "skills"
     beginTransition(self, "moveDetail", "close", "move_closing")
@@ -648,6 +677,20 @@ local function cancel(self)
   terminate(self, { kind = "return", slot = self._slot })
 end
 
+-- Ends the Switch tab press: the held detail row becomes the reorder
+-- source and the cursor starts from it.
+---@param self SummaryController
+local function armReorder(self)
+  local entry = assert(self._detailEntry, "arming needs its detail row")
+  self._arming = nil
+  self._reorderSource = entry
+  self._sourceRevision = self._observedRevision
+  local view = assert(self._view, "arming needs current facts")
+  self._sourceIdentity = identityKey(view)
+  self._phase = "move_reorder"
+  self._moveSlot = entry
+end
+
 ---@param self SummaryController
 local function armOrCompleteReorder(self)
   if self._notice ~= nil then
@@ -663,21 +706,18 @@ local function armOrCompleteReorder(self)
   end
   cursor = math.floor(cursor)
   if self._reorderSource == nil then
-    local entry = self._detailEntry
-    if entry == nil then
+    if self._detailEntry == nil then
       return
     end
-    self._reorderSource = entry
-    self._sourceRevision = self._observedRevision
-    local view = assert(self._view, "arming needs current facts")
-    self._sourceIdentity = identityKey(view)
-    self._phase = "move_reorder"
-    self._moveSlot = entry
+    play(self, EFFECT.decide)
+    self._phase = "move_arming"
+    self._arming = 0
     return
   end
   local source = self._reorderSource
   self._reorderSource = nil
   source = math.floor(assert(source, "completion needs its source"))
+  play(self, source == cursor and EFFECT.cursor or EFFECT.decide)
   if source == cursor then
     self._sourceRevision = nil
     self._sourceIdentity = nil
@@ -753,6 +793,7 @@ local function confirmPickerRow(self)
   local cursor = assert(self._moveSlot, "the picker carries its cursor")
   local request = assert(self._request, "move_pick mode carries its request")
   if request.context == "replace_machine" and request.prospectiveMove ~= nil and cursor == 4 then
+    play(self, EFFECT.cancel)
     terminate(self, { kind = "cancelled" })
     return
   end
@@ -770,6 +811,7 @@ local function confirmPickerRow(self)
       return
     end
   end
+  play(self, EFFECT.decide)
   terminate(self, {
     kind = "move_selected",
     slot = self._slot,
@@ -790,6 +832,10 @@ local function confirm(self)
   end
   if self._phase == "move_detail" or self._phase == "move_reorder" then
     armOrCompleteReorder(self)
+    return
+  end
+  if self._phase == "ribbon_detail" then
+    cancel(self)
   end
 end
 
@@ -830,33 +876,71 @@ local function navigateMoveDetail(self, direction)
     self._moveSlot = firstExisting(moves)
     return
   end
-  self._moveSlot = nextExisting(moves, cursor, step)
+  local next = nextExisting(moves, cursor, step)
+  self._moveSlot = next
+  if next ~= cursor then
+    play(self, EFFECT.cursor)
+  end
 end
 
+-- Moves the ribbon cursor to a flat earned-ribbon index, sounding only
+-- when it actually moved.
+---@param self SummaryController
+---@param index integer
+local function moveRibbonCursor(self, index)
+  if index ~= self._ribbonIndex then
+    self._ribbonIndex = index
+    play(self, EFFECT.cursor)
+  end
+end
+
+-- The grid is three cells wide and three rows per page: left and right
+-- stop at the row edges, up and down cross pages from the outer rows.
 ---@param self SummaryController
 ---@param direction string
 local function navigateRibbonDetail(self, direction)
   local ribbons = viewRibbons(assert(self._view, "ribbon detail needs current facts"))
-  if #ribbons == 0 then
+  local count = #ribbons
+  if count == 0 then
     return
   end
   local cursor = self._ribbonIndex or 0
-  local step = 1
+  local cell = cursor % 9
+  local page = math.floor(cursor / 9)
+  local next = cursor
   if direction == "left" then
-    step = -1
+    if cursor % 3 > 0 then
+      next = cursor - 1
+    end
+  elseif direction == "right" then
+    if cursor % 3 < 2 and cursor + 1 < count then
+      next = cursor + 1
+    end
   elseif direction == "up" then
-    step = -3
-  elseif direction == "down" then
-    step = 3
+    if cell >= 3 then
+      next = cursor - 3
+    elseif page > 0 then
+      next = (page - 1) * 9 + 6 + cursor % 3
+    end
+  elseif cell < 6 then
+    next = math.min(cursor + 3, count - 1)
+  elseif (page + 1) * 9 < count then
+    next = math.min((page + 1) * 9 + cursor % 3, count - 1)
   end
-  local next = cursor + step
-  if next < 0 then
-    next = 0
+  moveRibbonCursor(self, next)
+end
+
+-- Page arrows keep the page-local cell and clamp to the last earned one.
+---@param self SummaryController
+---@param direction integer -1 for the previous page, 1 for the next
+local function turnRibbonPage(self, direction)
+  local count = #viewRibbons(assert(self._view, "ribbon detail needs current facts"))
+  local cursor = self._ribbonIndex or 0
+  local page = math.floor(cursor / 9) + direction
+  if page < 0 or page * 9 >= count then
+    return
   end
-  if next > #ribbons - 1 then
-    next = #ribbons - 1
-  end
-  self._ribbonIndex = next
+  moveRibbonCursor(self, math.min(page * 9 + cursor % 9, count - 1))
 end
 
 ---@param self SummaryController
@@ -867,11 +951,11 @@ local function navigatePicker(self, direction)
   end
   local cursor = assert(self._moveSlot, "the picker carries its cursor")
   local maxRow = pickerMaxRow(self)
-  if direction == "down" then
-    self._moveSlot = math.min(cursor + 1, maxRow)
-    return
+  local next = direction == "down" and math.min(cursor + 1, maxRow) or math.max(cursor - 1, 0)
+  self._moveSlot = next
+  if next ~= cursor then
+    play(self, EFFECT.cursor)
   end
-  self._moveSlot = math.max(cursor - 1, 0)
 end
 
 ---@param self SummaryController
@@ -919,6 +1003,7 @@ local function activateRoot(self, target)
     if not allowed then
       return
     end
+    play(self, EFFECT.tab)
     if group ~= self._group then
       self._group = group
       self._moveSlot = nil
@@ -1002,7 +1087,8 @@ local function pointerDown(self, event)
   if event.pointerId == nil then
     return
   end
-  if self._phase ~= "root" then
+  local phase = self._phase
+  if phase ~= "root" and phase ~= "move_detail" and phase ~= "move_reorder" and phase ~= "ribbon_detail" then
     return
   end
   local layout = assert(self._resolveLayout(), "the summary layout is required for pointer input")
@@ -1013,6 +1099,24 @@ local function pointerDown(self, event)
     return
   end
   self._pressId = event.pointerId
+  if self._phase ~= "root" then
+    -- Nested states answer their Cancel box and, in ribbon detail, the
+    -- grid cells and page arrows; other gestures travel through
+    -- directional input.
+    if target.kind == "return" then
+      cancel(self)
+    elseif self._phase == "ribbon_detail" then
+      if target.kind == "ribbon" then
+        local index = self._ribbonIndex ~= nil and math.floor(self._ribbonIndex / 9) * 9 + target.index or nil
+        if index ~= nil and index < #viewRibbons(assert(self._view, "ribbon touches need current facts")) then
+          moveRibbonCursor(self, index)
+        end
+      elseif target.kind == "ribbonPage" then
+        turnRibbonPage(self, target.direction)
+      end
+    end
+    return
+  end
   activateRoot(self, target)
 end
 
@@ -1121,6 +1225,13 @@ function SummaryController:updateFixed(uiInput, gates)
   local transitional = self._transition ~= nil
   if transitional then
     advanceTransition(self)
+  end
+  if self._phase == "move_arming" then
+    transitional = true
+    self._arming = assert(self._arming, "a pressed tab counts its ticks") + 1
+    if self._arming >= SummaryController.SWITCH_PRESS_TOTAL_TICKS then
+      armReorder(self)
+    end
   end
   local player = self._player
   if playback and player ~= nil then
@@ -1257,7 +1368,7 @@ function SummaryController:status()
       paletteBlend = blend,
     }
   end
-  local transition = nil
+  local slide = nil
   local active = self._transition
   if active ~= nil then
     local kind = assert(active.kind, "transitions name their generated positions")
@@ -1270,7 +1381,7 @@ function SummaryController:status()
       type(index) == "number" and index % 1 == 0 and index >= 1 and index <= #positions,
       "transitions stay on their generated positions"
     )
-    transition = {
+    slide = {
       kind = kind,
       direction = active.direction,
       axis = assert(track.axis, "nested positions carry their axis"),
@@ -1296,7 +1407,8 @@ function SummaryController:status()
     pictureEpoch = self._pictureEpoch,
     picture = picture,
     spriteTick = self._spriteTick,
-    transition = transition,
+    slide = slide,
+    tabPressed = self._arming ~= nil and self._arming < SummaryController.SWITCH_PRESS_TICKS,
     allowCancel = self._cancellable,
     allowReorder = self._allowReorder,
     showMemberCursor = self._showMemberCursor,

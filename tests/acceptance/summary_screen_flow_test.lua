@@ -17,7 +17,7 @@ local FLOW_MODULE = "game.hgss.src.field.PokemonMenuFlow"
 local T = {
   metadata = {
     capabilities = { "rom_dump" },
-    derivedAssets = { "field-runtime", "audio-bank:730", "map-data:7", "map:7", "summary:global" },
+    derivedAssets = { "field-runtime", "audio-bank:730", "map-data:7", "map:7", "move-icons:global", "summary:global" },
     tags = { "summary", "party", "bag", "flow" },
   },
   tests = {},
@@ -126,7 +126,8 @@ local function acquireSummaryLease(game)
     function lease:prepare(demand)
       return { kind = "ready", key = demand.key, assets = { manifest = manifest } }
     end
-    function lease:release() end
+    function lease:release()
+    end
     return lease
   end
 end
@@ -225,12 +226,8 @@ local function driveUntil(flow, label, maxSteps, predicate)
   end
   local status = flow:status()
   error(
-    "the flow never reaches "
-      .. label
-      .. "; page="
-      .. tostring(status.page)
-      .. "; child state="
-      .. tostring(status.child and status.child.state),
+    "the flow never reaches " .. label .. "; page=" .. tostring(status.page)
+      .. "; child state=" .. tostring(status.child and status.child.state),
     0
   )
 end
@@ -260,9 +257,7 @@ end
 local function settleSummary(flow)
   return driveUntil(flow, "the active summary child", 30, function(current)
     local child = current.child
-    return (current.page == "summary" or current.page == "move_pick")
-      and child ~= nil
-      and child.wrapperPhase == "active"
+    return (current.page == "summary" or current.page == "move_pick") and child ~= nil and child.wrapperPhase == "active"
   end)
 end
 
@@ -580,7 +575,9 @@ function T.tests.move_reorder_swaps_whole_entries_and_rejects_stale_gestures()
     Assert.equal(liveChild(status).moveSlot, 0, "the detail opens on the first occupied row")
 
     status = drive(flow, { { type = "confirm" } })
-    Assert.equal(summaryPhase(flow), "move_reorder", "confirming the detail arms the reorder")
+    Assert.equal(summaryPhase(flow), "move_arming", "confirming the detail presses the Switch tab")
+    status = settleChild(flow, 6)
+    Assert.equal(summaryPhase(flow), "move_reorder", "the pressed tab arms the reorder")
     Assert.notNil(liveChild(status).reorderSource, "the armed reorder names its source row")
     status = drive(flow, { { type = "confirm" } })
     Assert.equal(summaryPhase(flow), "move_detail", "confirming the armed row disarms without swapping")
@@ -588,6 +585,7 @@ function T.tests.move_reorder_swaps_whole_entries_and_rejects_stale_gestures()
     Assert.equal(service:partyRevision(), revisionBefore, "disarming publishes no revision")
 
     status = drive(flow, { { type = "confirm" } })
+    status = settleChild(flow, 6)
     Assert.equal(summaryPhase(flow), "move_reorder", "confirming the detail arms again")
     status = drive(flow, { { type = "navigate", direction = "down" } })
     Assert.equal(liveChild(status).moveSlot, 1, "the armed cursor reaches the second row")
@@ -602,6 +600,7 @@ function T.tests.move_reorder_swaps_whole_entries_and_rejects_stale_gestures()
     Assert.equal(after.moves[2].pp, 20, "the other entry keeps its power points")
 
     status = drive(flow, { { type = "confirm" } })
+    status = settleChild(flow, 6)
     Assert.equal(summaryPhase(flow), "move_reorder", "the swapped detail arms a third gesture")
     service:setMove(0, 0, "SCRATCH")
     local drifted = service:partyRevision()
@@ -663,10 +662,8 @@ function T.tests.pp_restore_selects_a_move_and_consumes_once()
       Assert.equal(
         status.page,
         "move_pick",
-        "a power-point use must open the move picker; got page="
-          .. tostring(status.page)
-          .. "; childState="
-          .. tostring(child and child.state)
+        "a power-point use must open the move picker; got page=" .. tostring(status.page)
+          .. "; childState=" .. tostring(child and child.state)
       )
     end
     status = settleSummary(flow)

@@ -32,7 +32,7 @@ local COMPOSITION_MODULE = "game.hgss.src.field.PokemonMenuComposition"
 local T = {
   metadata = {
     capabilities = { "rom_dump", "derived_assets" },
-    derivedAssets = { "bag:global", "party:global", "pc:global", "summary:global" },
+    derivedAssets = { "move-icons:global", "bag:global", "party:global", "pc:global", "summary:global" },
     tags = { "menu", "composition" },
   },
   tests = {},
@@ -516,6 +516,12 @@ function T.tests.box_summary_moves_publish_to_the_selected_box(context)
     {},
     {},
     { { type = "confirm" } },
+    {},
+    {},
+    {},
+    {},
+    {},
+    {},
     { { type = "navigate", direction = "down" } },
     { { type = "confirm" } },
   }) do
