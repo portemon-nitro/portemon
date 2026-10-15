@@ -119,11 +119,7 @@ local function assertPreserved(actual, expected, where)
   end
   local condition = assert(actual.condition) --[[@as table<string, unknown>]]
   Assert.equal(condition.currentHp, 20, where .. " keeps current health")
-  Assert.equal(
-    #condition.effects --[[@as table[] ]],
-    1,
-    where .. " keeps the frozen condition"
-  )
+  Assert.equal(#condition.effects --[[@as table[] ]], 1, where .. " keeps the frozen condition")
 end
 
 function T.legacy_buckets_restore_under_unrelated_catalog_edits()

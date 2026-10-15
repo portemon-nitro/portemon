@@ -188,14 +188,7 @@ local function runCondition(moveKey, facts, seed, extra)
   end
   if woundUser then
     local wounded = ctx:entryOf(1)
-    ctx:damage(
-      1,
-      math.floor(
-        wounded.maxHp --[[@as integer]]
-          / 2
-      ),
-      { kind = "probe" }
-    )
+    ctx:damage(1, math.floor(wounded.maxHp --[[@as integer]] / 2), { kind = "probe" })
   end
   local node = Execution.start(inputs)
   for _ = 1, 8 do

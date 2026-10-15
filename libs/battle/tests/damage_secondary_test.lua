@@ -176,11 +176,7 @@ function T.ordinary_strikes_deal_staged_damage()
   local probe = runStrike("SCRATCH", moveFacts("SCRATCH", { power = 40 }), FIXED_SEED)
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the ordinary strike connects")
-  Assert.isTrue(
-    probe.dealt --[[@as integer]]
-      > 0,
-    "the ordinary strike deals staged damage"
-  )
+  Assert.isTrue(probe.dealt --[[@as integer]] > 0, "the ordinary strike deals staged damage")
 end
 
 -- High-critical strikes roll the raised native stage: with a stream draw
@@ -208,8 +204,7 @@ function T.high_critical_strikes_roll_the_raised_stage()
   local tackleOutcome = tackle.outcome --[[@as table<string, unknown>]]
   Assert.equal(tackleOutcome.result, "hit", "the ordinary strike connects on the same stream")
   Assert.isTrue(
-    slash.dealt --[[@as integer]]
-      > tackle.dealt --[[@as integer]],
+    slash.dealt --[[@as integer]] > tackle.dealt --[[@as integer]],
     "the raised stage crits where the base stage does not"
   )
 end
@@ -422,8 +417,7 @@ function T.fixed_two_hit_strikes_land_twice()
     { combat = probeCombat(5, 16, 16) }
   )
   Assert.isTrue(
-    probe.dealt --[[@as integer]]
-      >= single.dealt --[[@as integer]],
+    probe.dealt --[[@as integer]] >= single.dealt --[[@as integer]],
     "two hits deal at least the single-hit damage"
   )
 end
@@ -799,11 +793,7 @@ function T.sport_markers_halve_the_weakened_type_power()
     FIXED_SEED,
     { combat = probeCombat(5, 16, 16) }
   )
-  Assert.isTrue(
-    plain.dealt --[[@as integer]]
-      > dealt,
-    "the sport halves the weakened power"
-  )
+  Assert.isTrue(plain.dealt --[[@as integer]] > dealt, "the sport halves the weakened power")
 end
 
 -- Focus energy raises later strikes by two stages: with a draw in the
@@ -950,11 +940,7 @@ function T.lucky_chant_shields_its_side_from_critical_strikes()
     seed --[[@as integer]],
     { combat = probeCombat(5, 16, 16) }
   )
-  Assert.isTrue(
-    plain.dealt --[[@as integer]]
-      > shielded,
-    "the chant shields the raised critical"
-  )
+  Assert.isTrue(plain.dealt --[[@as integer]] > shielded, "the chant shields the raised critical")
 end
 
 -- Flame Wheel thaws its frozen user while landing its burn chance.

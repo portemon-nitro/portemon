@@ -224,25 +224,9 @@ function T.prevention_gates_reject_without_rng_or_pp_side_effects()
     local inputs = selectionInputs(moves, record.prevention --[[@as table<string, unknown>]])
     inputs.choice = record.choice
     local verdict = Selection.choices(inputs)
-    Assert.isFalse(
-      verdict.usable,
-      "the "
-        .. record.name --[[@as string]]
-        .. " gate rejects the choice"
-    )
-    Assert.notNil(
-      verdict.reason,
-      "the "
-        .. record.name --[[@as string]]
-        .. " gate names its reason"
-    )
-    Assert.deepEqual(
-      stream:capture(),
-      snapshot,
-      "the "
-        .. record.name --[[@as string]]
-        .. " gate draws nothing"
-    )
+    Assert.isFalse(verdict.usable, "the " .. record.name --[[@as string]] .. " gate rejects the choice")
+    Assert.notNil(verdict.reason, "the " .. record.name --[[@as string]] .. " gate names its reason")
+    Assert.deepEqual(stream:capture(), snapshot, "the " .. record.name --[[@as string]] .. " gate draws nothing")
     Assert.equal((moves[1] --[[@as table<string, unknown>]]).pp, 35, "rejected choices spend no points")
     Assert.equal((moves[2] --[[@as table<string, unknown>]]).pp, 10, "rejected choices spend no points")
     Assert.isNil(reasons[verdict.reason], "prevention reasons stay distinct, duplicated: " .. tostring(verdict.reason))
@@ -380,8 +364,7 @@ function T.namespaced_custom_moves_execute_through_the_same_frame_contract()
     step = function(ctx, frame)
       assert(ctx ~= nil, "custom moves step through the battle context")
       local pending = frame --[[@as table<string, unknown>]]
-      pending.hits = pending.hits --[[@as integer]]
-        + 1
+      pending.hits = pending.hits --[[@as integer]] + 1
       ctx:damage(2, 6, { key = "test:echo-strike" })
       return { kind = "complete", result = "hit" }
     end,
@@ -452,8 +435,7 @@ function T.damage_uses_actual_combatant_facts()
     Assert.equal(outcome.kind, "complete", "the tackle execution runs to completion")
     local defender = state.combatants --[[@as table<integer, table<string, unknown>>]]
     local record = defender[2] --[[@as table<string, unknown>]]
-    return record.entryHp --[[@as integer]]
-      - record.hp --[[@as integer]]
+    return record.entryHp --[[@as integer]] - record.hp --[[@as integer]]
   end
 
   local hard = strike({
@@ -713,8 +695,7 @@ function T.sequence_strikes_read_power_from_compiled_move_facts()
     Assert.equal(outcome.kind, "complete", "the charge strike runs to completion")
     local defender = state.combatants --[[@as table<integer, table<string, unknown>>]]
     local record = defender[2] --[[@as table<string, unknown>]]
-    return record.entryHp --[[@as integer]]
-      - record.hp --[[@as integer]]
+    return record.entryHp --[[@as integer]] - record.hp --[[@as integer]]
   end
 
   local hard = strike(150)
@@ -777,8 +758,7 @@ function T.delayed_strikes_read_power_from_compiled_move_facts()
     Assert.equal(landed.kind, "complete", "the delayed landing runs to completion")
     local defender = state.combatants --[[@as table<integer, table<string, unknown>>]]
     local record = defender[2] --[[@as table<string, unknown>]]
-    return record.entryHp --[[@as integer]]
-      - record.hp --[[@as integer]]
+    return record.entryHp --[[@as integer]] - record.hp --[[@as integer]]
   end
 
   local hard = land(140)
@@ -881,8 +861,7 @@ function T.sequence_strikes_resolve_exact_stab_and_effectiveness()
     Assert.equal(outcome.kind, "complete", "the sequence strike runs to completion")
     local defenders = state.combatants --[[@as table<integer, table<string, unknown>>]]
     local record = defenders[2] --[[@as table<string, unknown>]]
-    return record.entryHp --[[@as integer]]
-      - record.hp --[[@as integer]]
+    return record.entryHp --[[@as integer]] - record.hp --[[@as integer]]
   end
 
   local stabbed = strike("FLY", "fire", "fire", { "normal" })
@@ -1089,8 +1068,7 @@ function T.delayed_impacts_land_typeless_without_stab_or_relation()
     Assert.equal(landed.kind, "complete", "the delayed landing runs to completion")
     local defenders = state.combatants --[[@as table<integer, table<string, unknown>>]]
     local record = defenders[2] --[[@as table<string, unknown>]]
-    return record.entryHp --[[@as integer]]
-      - record.hp --[[@as integer]]
+    return record.entryHp --[[@as integer]] - record.hp --[[@as integer]]
   end
 
   local fromPsychic = land("psychic", { "fire" })

@@ -150,9 +150,7 @@ function T.transform_then_switch_discards_only_transient_copies()
   local monBefore = user.mon --[[@as table<string, unknown>]]
   local movesBefore = {}
   for index, entry in
-    ipairs(
-      monBefore.moves --[[@as table<integer, unknown>]]
-    )
+    ipairs(monBefore.moves --[[@as table<integer, unknown>]])
   do
     movesBefore[index] = (entry --[[@as table<string, unknown>]]).move
   end
@@ -165,9 +163,7 @@ function T.transform_then_switch_discards_only_transient_copies()
   local monAfter = combatantOf(state, 1).mon --[[@as table<string, unknown>]]
   local movesAfter = {}
   for index, entry in
-    ipairs(
-      monAfter.moves --[[@as table<integer, unknown>]]
-    )
+    ipairs(monAfter.moves --[[@as table<integer, unknown>]])
   do
     movesAfter[index] = (entry --[[@as table<string, unknown>]]).move
   end
@@ -257,8 +253,7 @@ function T.delayed_damage_survives_attacker_exit()
   local landed = Execution.step(ctx, scheduled.frame or scheduled)
   Assert.isTrue(landed.kind ~= nil, "the delayed hit still resolves after the attacker leaves")
   Assert.isTrue(
-    combatantOf(state, 2).hp --[[@as integer]]
-      < combatantOf(state, 2).entryHp --[[@as integer]],
+    combatantOf(state, 2).hp --[[@as integer]] < combatantOf(state, 2).entryHp --[[@as integer]],
     "the delayed hit lands on the bound defender slot"
   )
 end
@@ -329,8 +324,7 @@ function T.self_destruct_and_recoil_follow_the_source_sequence()
   Assert.equal(outcome.kind, "complete", "the self-destructing execution runs to completion")
   Assert.equal(combatantOf(state, 1).hp, 0, "the user faints after its own strike lands")
   Assert.isTrue(
-    combatantOf(state, 2).hp --[[@as integer]]
-      < combatantOf(state, 2).entryHp --[[@as integer]],
+    combatantOf(state, 2).hp --[[@as integer]] < combatantOf(state, 2).entryHp --[[@as integer]],
     "the blast reaches the target before the user faints"
   )
   local kinds = {}
