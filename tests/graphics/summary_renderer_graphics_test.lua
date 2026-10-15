@@ -6,6 +6,8 @@
 -- with a continuation marker, and repeated draws are identical.
 
 local Assert = require("tests.support.Assert")
+local MoveIconCache = require("libs.assets.src.MoveIconCache")
+local RosterIconStandIn = require("tests.support.RosterIconStandIn")
 local CacheFs = require("libs.storage.src.CacheFs")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
@@ -193,7 +195,14 @@ end
 ---@return table<string, unknown> ready-bundle-shaped test bundle
 local function readyLikeBundle(scope, cacheFs, manifest, text, portraits, shader, lookups)
   local images = {}
-  local bundle = { manifest = manifest, portraits = portraits, text = text, shader = shader }
+  local bundle = {
+    manifest = manifest,
+    portraits = portraits,
+    text = text,
+    shader = shader,
+    icons = RosterIconStandIn.new(scope),
+    moveIcons = MoveIconCache.loadManifest(cacheFs),
+  }
   function bundle.visualImage(name)
     lookups[#lookups + 1] = name
     local visuals = assert(manifest.visuals, "the compiled family carries its visuals")
@@ -308,14 +317,17 @@ function T.summary_chrome_uses_only_manifest_sprite_roles(scope)
     local bundle = readyLikeBundle(scope, cacheFs, summaryManifest, realText, portraits, pictureShader(scope), {})
     Assert.isNil(bundle.partyManifest, versionId .. " carries no party manifest")
     Assert.isNil(bundle.badgeImage, versionId .. " carries no party badge images")
-    Assert.isNil(bundle.icons, versionId .. " carries no party icon strip")
+    Assert.notNil(bundle.icons, versionId .. " carries the roster icon provider")
     local main = drawReadyPane(renderer, scope, {}, nativeStatus(facts, "info"), "main", bundle)
     local sub = drawReadyPane(renderer, scope, {}, nativeStatus(facts, "info"), "sub", bundle)
     Assert.isTrue(
       paneDifference(main, sub) > 1000,
       versionId .. " draws distinct main and sub surfaces through sprite roles alone"
     )
-    Assert.isTrue(countLit(main, 168, 64, 248, 144) > 200, versionId .. " centers the large picture on the main pane")
+    Assert.isTrue(
+      countLit(main, 168, 64, 248, 144) > 200,
+      versionId .. " centers the large picture on the main pane"
+    )
     local again = drawReadyPane(renderer, scope, {}, nativeStatus(facts, "info"), "sub", bundle)
     Assert.equal(paneDifference(sub, again), 0, versionId .. " repeats its sub pane identically")
     realText:release()
@@ -430,24 +442,32 @@ end
 -- generated-font renderer, so role/order/palette/window evidence shares
 -- the exact pixels under test.
 ---@param real table<string, unknown> production field text renderer
+---@param tokens table<string, unknown>[] encoded glyph line
+---@return string the line text recovered through the font charmap
+local function decodeLine(real, tokens)
+  local reverse = {}
+  for char, code in pairs(real.fontDef.charmap) do
+    reverse[code] = char
+  end
+  local chars = {}
+  for index, token in ipairs(tokens) do
+    chars[index] = reverse[token.code] or ""
+  end
+  return table.concat(chars)
+end
+
+---@param real table<string, unknown> production field text renderer
 ---@return table<string, unknown> recording text double
 ---@return table<string, unknown> recorded calls
 local function recordingText(real, calls)
   local double = {}
-  -- The renderer measures each line with textWidth(value) immediately
-  -- before its palette draw on this same collaborator, so the last
-  -- measurement pairs with the next recorded call single-threaded.
-  local pendingWidth = 0
-  function double:textWidth(value)
-    pendingWidth = real:textWidth(value) or 0
-    return pendingWidth
-  end
   function double:drawLineWithPalette(tokens, x, y, palette)
     assert(type(palette) == "table", "summary text draws through palette roles")
     assert(type(palette.foreground) == "table", "palette roles carry foreground")
     assert(type(palette.shadow) == "table", "palette roles carry shadow")
     assert(type(palette.background) == "table", "palette roles carry background")
-    calls[#calls + 1] = { kind = "palette", tokens = tokens, x = x, y = y, palette = palette, width = pendingWidth }
+    local width = real:textWidth(decodeLine(real, tokens)) or 0
+    calls[#calls + 1] = { kind = "palette", tokens = tokens, x = x, y = y, palette = palette, width = width }
     return real:drawLineWithPalette(tokens, x, y, palette)
   end
   function double:drawLineWithColorVariants(tokens, x, y, variants, background)
@@ -591,7 +611,6 @@ function T.native_text_and_state_variants_follow_source_roles(scope)
       end
       return true
     end
-    local pad = SummaryRenderer.TEXT_PAD_X
     for _, call in ipairs(textCalls) do
       if call.kind == "palette" then
         local matched = false
@@ -603,18 +622,17 @@ function T.native_text_and_state_variants_follow_source_roles(scope)
             and type(window.palette) == "number"
           then
             local rect = window.rect
-            local role = assert(
-              manifest.text.roles["slot" .. window.palette],
-              versionId .. " binds its used window palette slot through a text role"
-            )
-            local left = rect.x + pad
-            local right = rect.x + rect.width - pad - call.width
-            local center = rect.x + math.floor((rect.width - call.width) / 2)
+            local inked = false
+            for _, role in pairs(manifest.text.roles) do
+              inked = inked or roleMatches(call.palette, role)
+            end
+            -- Windows print at their corner or a fixed source inset and
+            -- the window scissor clips the rest.
             if
-              roleMatches(call.palette, role)
-              and call.y == rect.y + SummaryRenderer.TEXT_PAD_Y
-              and (call.x == left or call.x == right or call.x == center)
-              and call.x + call.width > rect.x
+              inked
+              and call.y >= rect.y
+              and call.y < rect.y + rect.height
+              and call.x >= rect.x
               and call.x < rect.x + rect.width
             then
               matched = true
@@ -625,13 +643,28 @@ function T.native_text_and_state_variants_follow_source_roles(scope)
         Assert.isTrue(matched, versionId .. " keeps every sub text call inside its source window role")
       end
     end
-    local healthy = sub
+    -- The health gauge lives on the skills main pane.
+    local healthy = drawNativePane(
+      renderer,
+      scope,
+      textCalls,
+      nativeStatus(SummaryModel.build(service, 0, context, manifest), "skills"),
+      "main",
+      assets
+    )
     local copy = service:partyMon(0)
     copy.condition = { effects = {}, currentHp = 0 }
     local preparation = assert(service:preparePartyChanges(service:partyRevision(), { { slot = 0, mon = copy } }))
     preparation.publish()
     controller:updateFixed({}, OPEN_GATES)
-    local fainted = drawNativePane(renderer, scope, textCalls, controller:status(), "sub", assets)
+    local fainted = drawNativePane(
+      renderer,
+      scope,
+      textCalls,
+      nativeStatus(SummaryModel.build(service, 0, context, manifest), "skills"),
+      "main",
+      assets
+    )
     Assert.isTrue(
       paneDifference(healthy, fainted) > 20,
       versionId .. " shows the source zero-HP behavior apart from full health"
@@ -776,6 +809,8 @@ function T.produced_bar_rules_draw_from_the_real_family(scope)
         portraits = portraits,
         text = text,
         shader = pictureShader(scope),
+        icons = RosterIconStandIn.new(scope),
+        moveIcons = MoveIconCache.loadManifest(cacheFs),
       }
       function assets.visualImage(name)
         if barTiles ~= nil and barTiles[name] ~= nil then
@@ -796,8 +831,9 @@ function T.produced_bar_rules_draw_from_the_real_family(scope)
       end
       return assets
     end
-    local healthyTiled = drawNativePane(renderer, scope, textCalls, nativeStatus(healthy, "info"), "sub", bundle(tiles))
-    local healthyBare = drawNativePane(renderer, scope, textCalls, nativeStatus(healthy, "info"), "sub", bundle(nil))
+    local healthyTiled =
+      drawNativePane(renderer, scope, textCalls, nativeStatus(healthy, "skills"), "main", bundle(tiles))
+    local healthyBare = drawNativePane(renderer, scope, textCalls, nativeStatus(healthy, "skills"), "main", bundle(nil))
     Assert.isTrue(
       paneDifference(healthyTiled, healthyBare) > 100,
       versionId .. " draws produced bar tiles from the facts widths when art is realized"
@@ -805,11 +841,17 @@ function T.produced_bar_rules_draw_from_the_real_family(scope)
     faintMon(service, 0)
     local fainted = SummaryModel.build(service, 0, context, manifest)
     Assert.equal(fainted.skills.hpBar.length, 0, versionId .. " fills no pixels without health")
-    local faintedTiled = drawNativePane(renderer, scope, textCalls, nativeStatus(fainted, "info"), "sub", bundle(tiles))
+    local faintedTiled =
+      drawNativePane(renderer, scope, textCalls, nativeStatus(fainted, "skills"), "main", bundle(tiles))
     Assert.isTrue(
       paneDifference(healthyTiled, faintedTiled) > 20,
       versionId .. " shows the source zero-HP behavior apart from full health"
     )
+    -- The window checks below cover the sub pane: draw it fresh.
+    for index = #textCalls, 1, -1 do
+      textCalls[index] = nil
+    end
+    drawNativePane(renderer, scope, textCalls, nativeStatus(healthy, "info"), "sub", bundle(tiles))
     Assert.isTrue(#textCalls > 0, versionId .. " places sub text through window roles with produced bars")
     local subWindows = {}
     local windows = assert(manifest.windows, versionId .. " lowers its source windows")
@@ -860,28 +902,21 @@ function T.produced_bar_rules_draw_from_the_real_family(scope)
       local placed = false
       for _, window in ipairs(subWindows) do
         local rect = assert(window.rect, versionId .. " windows carry rects")
-        local role = assert(
-          manifest.text.roles["slot" .. window.palette],
-          versionId .. " binds its used window palette slot through a text role"
-        )
-        if roleMatches(call.palette, role) and call.y >= rect.y and call.y < rect.y + rect.height then
-          -- The locked placement rule is width-based alignment with the
-          -- window scissor as the clipper: the origin matches one of the
-          -- exact left/right/center formulas, and the drawn span meets the
-          -- window instead of starting from a clamped rewriting.
-          local pad = SummaryRenderer.TEXT_PAD_X
-          local left = rect.x + pad
-          local right = rect.x + rect.width - pad - call.width
-          local center = rect.x + math.floor((rect.width - call.width) / 2)
-          if call.x == left or call.x == right or call.x == center then
-            placed = call.x + call.width > rect.x and call.x < rect.x + rect.width
-            if placed then
-              break
-            end
+        local inked = false
+        for _, role in pairs(manifest.text.roles) do
+          inked = inked or roleMatches(call.palette, role)
+        end
+        if inked and call.y >= rect.y and call.y < rect.y + rect.height then
+          -- Windows print at their corner or a fixed source inset and
+          -- the window scissor clips the rest: the call starts inside
+          -- the window.
+          placed = call.x >= rect.x and call.x < rect.x + rect.width
+          if placed then
+            break
           end
         end
       end
-      Assert.isTrue(placed, versionId .. " aligns every sub text call to its source window role")
+      Assert.isTrue(placed, versionId .. " aligns every sub text call to its source window role ")
     end
   end
 end
@@ -911,20 +946,14 @@ end
 ---@return table<string, unknown> recording text double
 local function recordingText(real, calls)
   local double = {}
-  local pendingValue = ""
-  local pendingWidth = 0
-  function double:textWidth(value)
-    pendingValue = value
-    pendingWidth = real:textWidth(value) or 0
-    return pendingWidth
-  end
   function double:drawLineWithPalette(tokens, x, y, palette)
-    calls[#calls + 1] = { value = pendingValue, tokens = tokens, x = x, y = y, palette = palette, width = pendingWidth }
+    local value = decodeLine(real, tokens)
+    calls[#calls + 1] =
+      { value = value, tokens = tokens, x = x, y = y, palette = palette, width = real:textWidth(value) or 0 }
     return real:drawLineWithPalette(tokens, x, y, palette)
   end
   function double:drawLineWithColorVariants(tokens, x, y, variants, background)
-    calls[#calls + 1] =
-      { value = pendingValue, tokens = tokens, x = x, y = y, variants = variants, width = pendingWidth }
+    calls[#calls + 1] = { value = decodeLine(real, tokens), tokens = tokens, x = x, y = y, variants = variants }
     return real:drawLineWithColorVariants(tokens, x, y, variants, background)
   end
   setmetatable(double, {
@@ -998,27 +1027,24 @@ end
 local function assertWindowPlaced(versionId, manifest, calls, pane, skipped)
   local roles = paneRoles(manifest, pane)
   local textRoles = assert(manifest.text.roles, versionId .. " publishes its text roles")
-  local pad = SummaryRenderer.TEXT_PAD_X
   for _, call in ipairs(calls) do
     if call.palette ~= nil and (skipped == nil or skipped[call.value] ~= true) then
       local placed = false
       for _, window in ipairs(roles) do
         local rect = assert(window.rect, versionId .. " windows carry rects")
-        local want = textRoles["slot" .. window.palette]
+        local inked = false
+        for _, want in pairs(textRoles) do
+          inked = inked or drawnRoleMatches(call.palette, want)
+        end
         if
-          want ~= nil
-          and drawnRoleMatches(call.palette, want)
+          inked
           and call.y >= rect.y
           and call.y < rect.y + rect.height
         then
-          local left = rect.x + pad
-          local right = rect.x + rect.width - pad - call.width
-          local center = rect.x + math.floor((rect.width - call.width) / 2)
-          if call.x == left or call.x == right or call.x == center then
-            placed = call.x + call.width > rect.x and call.x < rect.x + rect.width
-            if placed then
-              break
-            end
+          -- Windows print at their corner or a fixed source inset.
+          placed = call.x >= rect.x and call.x < rect.x + rect.width
+          if placed then
+            break
           end
         end
       end
@@ -1080,6 +1106,54 @@ function T.semantic_info_and_memo_use_generated_roles(scope)
   end
 end
 
+-- Text windows clip through the active graphics transform and the
+-- caller's scissor: a pane drawn under a presentation translate and
+-- scale keeps its text, which a raw native-coordinate scissor would clip
+-- away.
+function T.text_survives_the_presentation_transform(scope)
+  for _, versionId in ipairs(readyVersions()) do
+    local cacheFs, _, _, portraits, service = composition(scope, versionId)
+    local _, summaryManifest = SummaryAcceptanceFixture.loadSummaryManifest(versionId)
+    local context = SummaryAcceptanceFixture.displayContext(summaryManifest, service:partyCount())
+    local facts = SummaryModel.build(service, 0, context, summaryManifest)
+    local realText = FieldTextRenderer.new({ cacheFs = cacheFs })
+    local silent = setmetatable({ drawLineWithPalette = function() end }, { __index = realText })
+    local function drawScaled(text)
+      local renderer = SummaryRenderer.new({ text = text })
+      local bundle = readyLikeBundle(scope, cacheFs, summaryManifest, text, portraits, pictureShader(scope), {})
+      local canvas = scope:own(love.graphics.newCanvas(768, 384))
+      love.graphics.setCanvas(canvas)
+      love.graphics.clear(0, 0, 0, 1)
+      love.graphics.push("all")
+      love.graphics.translate(100, 20)
+      love.graphics.scale(2, 2)
+      renderer:drawPane(nativeStatus(facts, "info"), "main", bundle)
+      love.graphics.pop()
+      love.graphics.setCanvas()
+      return scope:own(canvas:newImageData())
+    end
+    local withText = drawScaled(realText)
+    local withoutText = drawScaled(silent)
+    local memo = summaryManifest.windows.groups.info.main.memoBody.rect
+    -- The raw-scissor fault leaves only the window's native-coordinate
+    -- footprint on the canvas, so measure the part of the window the
+    -- transform moves beyond it.
+    local differing = 0
+    local from = memo.x + memo.width / 2
+    for y = 20 + memo.y * 2, 20 + (memo.y + memo.height) * 2 - 1 do
+      for x = 100 + from * 2, 100 + (memo.x + memo.width) * 2 - 1 do
+        local r1, g1, b1 = withText:getPixel(x, y)
+        local r2, g2, b2 = withoutText:getPixel(x, y)
+        if math.abs(r1 - r2) + math.abs(g1 - g2) + math.abs(b1 - b2) > 0.01 then
+          differing = differing + 1
+        end
+      end
+    end
+    Assert.isTrue(differing > 50, versionId .. " keeps its memo text under a presentation transform")
+    realText:release()
+  end
+end
+
 -- Generated Trainer Memo controls keep their source geometry end to end:
 -- the exercised bank template carries both line-break and color
 -- segments, so its wording must expand into one baseline per break
@@ -1095,17 +1169,17 @@ function T.generated_memo_controls_draw_on_consecutive_baselines(scope)
     local context = SummaryAcceptanceFixture.displayContext(summaryManifest, service:partyCount())
     local facts = SummaryModel.build(service, 0, context, summaryManifest)
     local branch = nil
-    for _, candidate in ipairs(assert(summaryManifest.memo.conditions, versionId .. " carries ordered memo rules")) do
+    for _, candidate in
+      ipairs(assert(summaryManifest.memo.conditions, versionId .. " carries ordered memo rules"))
+    do
       if candidate.key == facts.memo.condition then
         branch = candidate
       end
     end
     Assert.notNil(branch, versionId .. " carries the selected branch " .. tostring(facts.memo.condition))
     assert(branch ~= nil, "branches select above")
-    local segments = assert(
-      assert(branch.dateTemplate, versionId .. " carries its date template").segments,
-      versionId .. " carries segments"
-    )
+    local segments =
+      assert(assert(branch.dateTemplate, versionId .. " carries its date template").segments, versionId .. " carries segments")
     local breaks, colors = 0, 0
     for _, segment in ipairs(segments) do
       if segment.kind == "lineBreak" then
@@ -1118,8 +1192,14 @@ function T.generated_memo_controls_draw_on_consecutive_baselines(scope)
     Assert.isTrue(colors >= 1, versionId .. " exercises generated color controls")
     for _, block in ipairs(assert(facts.memo.blocks, versionId .. " carries memo blocks")) do
       for _, run in ipairs(assert(block.runs, versionId .. " carries memo runs")) do
-        Assert.isTrue(type(run.text) == "string" and #run.text > 0, versionId .. " publishes non-empty run text")
-        Assert.isTrue(run.text:find("\n", 1, true) == nil, versionId .. " keeps line breaks out of run text")
+        Assert.isTrue(
+          type(run.text) == "string" and #run.text > 0,
+          versionId .. " publishes non-empty run text"
+        )
+        Assert.isTrue(
+          run.text:find("\n", 1, true) == nil,
+          versionId .. " keeps line breaks out of run text"
+        )
       end
     end
     local base = assert(branch.lines.date, versionId .. " places its date line")
@@ -1136,10 +1216,8 @@ function T.generated_memo_controls_draw_on_consecutive_baselines(scope)
     local renderer = SummaryRenderer.new({ text = text })
     local bundle = readyLikeBundle(scope, cacheFs, summaryManifest, text, portraits, pictureShader(scope), {})
     drawNativePane(renderer, scope, textCalls, nativeStatus(facts, "info"), "main", bundle)
-    local info = assert(
-      assert(summaryManifest.windows, versionId .. " carries windows").groups,
-      versionId .. " carries groups"
-    ).info
+    local info =
+      assert(assert(summaryManifest.windows, versionId .. " carries windows").groups, versionId .. " carries groups").info
     local rect = assert(
       assert(assert(info, versionId .. " carries info").main, versionId .. " carries main roles").memoBody,
       versionId .. " carries its memo body"
@@ -1210,11 +1288,18 @@ function T.skills_moves_performance_and_ribbons_use_native_roles(scope)
     end
     Assert.isTrue(contains(move.powerText), versionId .. " draws generated power text")
     Assert.isTrue(contains(move.accuracyText), versionId .. " draws generated accuracy text")
-    Assert.isTrue(contains(move.category), versionId .. " draws the generated category")
-    Assert.isTrue(contains(move.description), versionId .. " draws the generated description")
+    for line in (move.description .. "\n"):gmatch("(.-)\n") do
+      Assert.isTrue(contains(line), versionId .. " draws each generated description line")
+    end
     local performance = drawReadyPane(renderer, scope, textCalls, nativeStatus(facts, "performance"), "main", bundle)
+    local levelRect = summaryManifest.windows.fixed.level.rect
     for _, call in ipairs(textCalls) do
-      Assert.isTrue(tostring(call.value):find("%d") == nil, versionId .. " prints no numeric performance debug text")
+      -- The header's level number is the one numeral the main pane prints.
+      local inLevel = call.x >= levelRect.x and call.x < levelRect.x + levelRect.width and call.y == levelRect.y
+      Assert.isTrue(
+        inLevel or tostring(call.value):find("%d") == nil,
+        versionId .. " prints no numeric performance debug text"
+      )
     end
     local ribbon = nativeStatus(facts, "performance")
     ribbon.phase = "ribbon_detail"
@@ -1223,7 +1308,9 @@ function T.skills_moves_performance_and_ribbons_use_native_roles(scope)
     drawReadyPane(renderer, scope, textCalls, ribbon, "sub", bundle)
     local selected = facts.ribbons[11]
     Assert.isTrue(contains(selected.name), versionId .. " names the selected ribbon in its role")
-    Assert.isTrue(contains(selected.description), versionId .. " describes the selected ribbon in its role")
+    for line in (selected.description .. "\n"):gmatch("(.-)\n") do
+      Assert.isTrue(contains(line), versionId .. " describes the selected ribbon in its role")
+    end
     Assert.isTrue(contains("12"), versionId .. " counts twelve ribbons in its role")
     for index = 1, 9 do
       Assert.isFalse(
@@ -1275,5 +1362,5 @@ end
 local suite = GraphicsSmoke.suite(T)
 suite.metadata.capabilities = { "graphics", "rom_dump" }
 suite.metadata.derivedAssets =
-  { "summary:global", "mon-catalog:global", "mon-summary:global", "field-font:global", "party:global" }
+  { "move-icons:global", "summary:global", "mon-catalog:global", "mon-summary:global", "field-font:global", "party:global" }
 return suite

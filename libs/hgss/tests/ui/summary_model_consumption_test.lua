@@ -18,7 +18,10 @@ local SummaryModel = require("libs.hgss.src.ui.SummaryModel")
 local SummaryPresentationFixture = require("tests.support.SummaryPresentationFixture")
 
 local T = {
-  metadata = { capabilities = { "rom_dump", "derived_assets" }, derivedAssets = { "summary:global" } },
+  metadata = {
+    capabilities = { "rom_dump", "derived_assets" },
+    derivedAssets = { "move-icons:global", "summary:global" },
+  },
   tests = {},
 }
 

@@ -5,6 +5,7 @@
 -- commercial payloads appear.
 
 local Assert = require("tests.support.Assert")
+local SummaryPresentationFixture = require("tests.support.SummaryPresentationFixture")
 local Errors = require("libs.errors.src.Errors")
 local DerivedAssetContract = require("libs.assets.src.DerivedAssetContract")
 
@@ -113,8 +114,8 @@ end
 
 -- The group/background selection values of the native application survive
 -- transcription: every map in the info/skills/performance selection,
--- including the restricted, locked-performance, and excluded-group
--- alternatives, is present in the producer catalog.
+-- including the restricted and locked-performance alternatives, is
+-- present in the producer catalog.
 function T.source_catalog_keeps_the_group_map_selection()
   local sources = requireSources()
   local numbers = {}
@@ -123,7 +124,7 @@ function T.source_catalog_keeps_the_group_map_selection()
   for _, leaf in ipairs(numbers) do
     seen[leaf] = true
   end
-  for _, map in ipairs({ 9, 10, 11, 12, 13, 14, 17, 18, 19, 77, 78 }) do
+  for _, map in ipairs({ 9, 10, 11, 12, 13, 14, 17, 18, 19 }) do
     Assert.isTrue(seen[map] == true, "the source catalog omits the native group map " .. map)
   end
 end
@@ -221,6 +222,7 @@ end
 local function validBar(length)
   return {
     length = length,
+    origin = { x = 0, y = 0 },
     colors = {
       high = { r = 0, g = 255, b = 0 },
       low = { r = 255, g = 255, b = 0 },
@@ -256,8 +258,7 @@ end
 -- and 3. Role geometry is synthetic but pane-correct; structural detail
 -- beyond the closed record shapes belongs to the compiled-output
 -- conformance coverage.
-local GROUP_ROLE_CENSUS =
-  { info = { main = 2, sub = 6 }, skills = { main = 8, sub = 10 }, performance = { main = 5, sub = 3 } }
+local GROUP_ROLE_CENSUS = { info = { main = 2, sub = 6 }, skills = { main = 8, sub = 10 }, performance = { main = 5, sub = 3 } }
 
 local function semanticRole(pane, seed)
   return {
@@ -307,104 +308,6 @@ local function semanticMemo()
   }
 end
 
--- Minimal valid dynamic-chrome section for schema rejection tests. Role
--- geometry is synthetic but shape-correct; structural detail beyond the
--- closed record shapes belongs to the compiled-output conformance
--- coverage. The animation names mirror the generated semantic roles so
--- reference resolution is exercised.
-local CHROME_ANIMATIONS = {
-  "rootFocus",
-  "moveRowFocus",
-  "restrictedCancel",
-  "moveCancel",
-  "moveFollow",
-  "starBase",
-  "starAbove",
-  "starBelow",
-  "starEmpty",
-  "modifierPositive",
-  "modifierNegative",
-  "leaf",
-  "crown",
-  "ribbonCursor",
-  "ribbonPagePrev",
-  "ribbonPageNext",
-}
-
-local function chromeVisuals()
-  local visuals =
-    { detailBacking = { image = "assets/generated/summary/syn-detail-backing.png", width = 8, height = 8 } }
-  for _, name in ipairs(CHROME_ANIMATIONS) do
-    visuals["syn-" .. name] = { image = "assets/generated/summary/syn-" .. name .. ".png", width = 16, height = 16 }
-  end
-  return visuals
-end
-
-local function chromeSprites()
-  local animations = {}
-  for _, name in ipairs(CHROME_ANIMATIONS) do
-    animations[name] =
-      { frames = { { visual = "syn-" .. name, durationTicks = 2 } }, loopFrom = 1, playback = "static" }
-  end
-  local primaryAnchors = {}
-  for index = 1, 6 do
-    primaryAnchors[index] = { x = 8 * index, y = 8 }
-  end
-  local leafAnchors = {}
-  for index = 1, 5 do
-    leafAnchors[index] = { x = 8 * index, y = 16 }
-  end
-  local rows = {}
-  for index = 1, 5 do
-    local stars = {}
-    for star = 1, 5 do
-      stars[star] = { x = 8 * star, y = 8 * index }
-    end
-    rows[index] = {
-      stat = "synStat" .. index,
-      stars = stars,
-      modifier = { x = 8, y = 8 * index },
-      starBase = "starBase",
-      starAbove = "starAbove",
-      starBelow = "starBelow",
-      starEmpty = "starEmpty",
-      modifierPositive = "modifierPositive",
-      modifierNegative = "modifierNegative",
-    }
-  end
-  return {
-    animations = animations,
-    primaryCursor = {
-      anchors = primaryAnchors,
-      rootFocus = "rootFocus",
-      moveRowFocus = "moveRowFocus",
-      restrictedCancel = "restrictedCancel",
-    },
-    secondaryMoveCursor = {
-      x = 68,
-      rowBaseY = 24,
-      rowStep = 32,
-      cancelY = 152,
-      restrictedCancelY = 168,
-      cancelAnchor = { x = 68, y = 168 },
-      restrictedSpecialAnchor = { x = 220, y = 176 },
-      moveCancel = "moveCancel",
-      moveFollow = "moveFollow",
-    },
-    performance = { rows = rows },
-    leaves = { anchors = leafAnchors, crownAnchor = { x = 8, y = 16 }, leaf = "leaf", crown = "crown" },
-    ribbons = {
-      origin = { x = 32, y = 24 },
-      columns = 3,
-      columnStep = 32,
-      rowStep = 40,
-      cursor = "ribbonCursor",
-      pagePrev = { anchor = { x = 128, y = 32 }, animation = "ribbonPagePrev" },
-      pageNext = { anchor = { x = 128, y = 96 }, animation = "ribbonPageNext" },
-    },
-  }
-end
-
 local function chromeTransitions()
   return {
     moveDetail = { pane = "sub", axis = "x", positions = { 0, 64, 128 } },
@@ -418,8 +321,8 @@ local function skeletonManifest()
     paneSize = { width = 256, height = 192 },
     groups = { info = groupShell(), skills = groupShell(), performance = groupShell() },
     windows = semanticWindows(),
-    visuals = chromeVisuals(),
-    sprites = chromeSprites(),
+    visuals = SummaryPresentationFixture.chromeVisuals(),
+    sprites = SummaryPresentationFixture.chromeSprites(),
     hitboxes = {},
     text = {},
     palettes = {},
@@ -516,10 +419,7 @@ function T.schema_requires_complete_bar_rules()
   Assert.isTrue(pcall(schema.assertManifest, missing) == false, "a family without bar rules must not validate")
   local partial = skeletonManifest()
   partial.bars = { hp = validBar(48) }
-  Assert.isTrue(
-    pcall(schema.assertManifest, partial) == false,
-    "a family without the experience rule must not validate"
-  )
+  Assert.isTrue(pcall(schema.assertManifest, partial) == false, "a family without the experience rule must not validate")
 end
 
 -- Touch targets are required content: an empty touch set must not
@@ -719,8 +619,10 @@ function T.synthetic_presentation_data_mirrors_the_generated_envelope()
   local manifest = Fixture.manifest()
   Assert.notNil(manifest, "the synthetic data builds a manifest")
   Assert.equal(manifest.schema, Fixture.SCHEMA, "the synthetic manifest carries the tracked schema")
-  local conditions =
-    assert(manifest.memo and manifest.memo.conditions, "the synthetic memo carries its ordered branches")
+  local conditions = assert(
+    manifest.memo and manifest.memo.conditions,
+    "the synthetic memo carries its ordered branches"
+  )
   Assert.isTrue(conditions[1] ~= nil, "the synthetic memo branches keep first-match order")
   local firstTemplate = assert(conditions[1].dateTemplate, "the first synthetic branch carries its date template")
   Assert.isTrue(
@@ -739,11 +641,16 @@ end
 function T.synthetic_memo_branches_carry_no_label_only_template_references()
   local Fixture = require("tests.support.SummaryPresentationFixture")
   local manifest = Fixture.manifest()
-  local conditions =
-    assert(manifest.memo and manifest.memo.conditions, "the synthetic memo carries its ordered branches")
+  local conditions = assert(
+    manifest.memo and manifest.memo.conditions,
+    "the synthetic memo carries its ordered branches"
+  )
   Assert.isTrue(conditions[1] ~= nil, "the synthetic memo branches keep first-match order")
   for index, branch in ipairs(conditions) do
-    Assert.isNil(branch.template, "synthetic branch " .. index .. " carries no label-only template reference")
+    Assert.isNil(
+      branch.template,
+      "synthetic branch " .. index .. " carries no label-only template reference"
+    )
     local template = assert(branch.dateTemplate, "synthetic branch " .. index .. " carries its date template")
     Assert.isTrue(
       type(template.segments) == "table" and #template.segments > 0,

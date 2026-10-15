@@ -10,13 +10,15 @@
 -- ROM-derived expectations live in the graphics suite.
 
 local Assert = require("tests.support.Assert")
+local MoveIconCache = require("libs.assets.src.MoveIconCache")
+local MoveIconFixture = require("tests.support.MoveIconFixture")
 local FakeGraphics = require("tests.support.FakeGraphics")
 local SummaryPresentationFixture = require("tests.support.SummaryPresentationFixture")
 local SummaryRenderer = require("libs.hgss.src.ui.SummaryRenderer")
 
 local T = {}
 
-local PAD_X = SummaryRenderer.TEXT_PAD_X
+local PAD_X = SummaryRenderer.MEMO_PAD_X
 local PAD_Y = SummaryRenderer.TEXT_PAD_Y
 local LINE_STEP = SummaryRenderer.LINE_STEP
 
@@ -65,13 +67,44 @@ end
 ---@param seed integer distinct vertical slot so roles never overlap
 ---@return table<string, unknown> the semantic fixed roles this coverage names
 local function fixedWindows(seed)
-  return {
-    infoTab = role("main", 2, 165 + seed, 43, 26),
-    skillsTab = role("main", 48, 165 + seed, 48, 26),
-    performanceTab = role("main", 99, 165 + seed, 41, 26),
-    cancelButton = role("sub", 189, 165 + seed, 61, 26),
-    exitLabel = role("sub", 8, 165 + seed, 60, 16),
-  }
+  local y = 165 + seed
+  local windows = {}
+  for index, name in ipairs({
+    "infoTab",
+    "trainerMemoTitle",
+    "skillsTitle",
+    "movesTab",
+    "performanceTitle",
+    "itemLabel",
+    "dexNoLabel",
+    "nameLabel",
+    "typeLabel",
+    "otLabel",
+    "idNoLabel",
+    "expPointsLabel",
+    "toNextLabel",
+    "hpLabel",
+    "attackLabel",
+    "defenseLabel",
+    "spAttackLabel",
+    "spDefenseLabel",
+    "speedLabel",
+    "abilityLabel",
+    "exitLabel",
+    "categoryLabel",
+    "level",
+    "powerLabel",
+    "accuracyLabel",
+    "ribbonsCountLabel",
+    "ribbonsTab",
+    "itemName",
+    "nickname",
+  }) do
+    local pane = (name == "infoTab" or name == "movesTab" or name == "exitLabel" or name == "ribbonsTab") and "sub"
+      or "main"
+    windows[name] = role(pane, 2 + index * 4, y, 61, 16)
+  end
+  return windows
 end
 
 ---@return table<string, unknown> per-group semantic pane roles with the produced census
@@ -83,7 +116,7 @@ local function groupWindows()
         memoAuxLine = role("main", 8, 112, 240, 16),
       },
       sub = {
-        dexNumber = role("sub", 8, 8, 60, 16),
+        dexNumber = role("sub", 8, 8, 72, 16),
         speciesName = role("sub", 72, 8, 100, 16, "ordinary", "center"),
         otName = role("sub", 176, 8, 72, 16),
         idNumber = role("sub", 176, 28, 72, 16, "ordinary", "right"),
@@ -103,7 +136,7 @@ local function groupWindows()
         abilityDescription = role("main", 8, 116, 232, 32),
       },
       sub = {
-        moveRow0 = role("sub", 8, 8, 120, 16),
+        moveRow0 = role("sub", 8, 8, 120, 32),
         moveRow1 = role("sub", 8, 28, 120, 16),
         moveRow2 = role("sub", 8, 48, 120, 16),
         moveRow3 = role("sub", 8, 68, 120, 16),
@@ -112,7 +145,7 @@ local function groupWindows()
         detailAccuracy = role("sub", 136, 28, 112, 16),
         detailDescription = role("sub", 136, 48, 112, 48),
         moveFooter = role("sub", 8, 120, 240, 16),
-        detailCategory = role("sub", 136, 100, 112, 16),
+        switchLabel = role("sub", 8, 136, 80, 16),
       },
     },
     performance = {
@@ -135,6 +168,22 @@ end
 ---@return table<string, string> generated labels with synthetic wording
 local function generatedLabels()
   return {
+    info = "SYN-INFO",
+    trainerMemo = "SYN-MEMO",
+    skills = "SYN-SKILLS",
+    battleMoves = "SYN-MOVES",
+    performance = "SYN-PERFORMANCE",
+    ribbons = "SYN-RIBBONS-TAB",
+    itemLabel = "SYN-ITEM",
+    noItem = "SYN-NO-ITEM",
+    genderMale = "SYN-MALE",
+    genderFemale = "SYN-FEMALE",
+    dexNoLabel = "SYN-DEX",
+    typeLabel = "SYN-TYPE",
+    idNoLabel = "SYN-ID",
+    expPointsLabel = "SYN-EXP",
+    toNextLabel = "SYN-NEXT",
+    ribbonsCountLabel = "SYN-RIBBONS",
     hpLabel = "SYN-HP",
     attackLabel = "SYN-ATTACK",
     defenseLabel = "SYN-DEFENSE",
@@ -143,22 +192,21 @@ local function generatedLabels()
     speedLabel = "SYN-SPEED",
     abilityLabel = "SYN-ABILITY",
     ppLabel = "SYN-PP",
+    slashSeparator = "/",
+    dashes = "SYN-DASHES",
+    dashesLong = "SYN-LONG-DASHES",
     powerLabel = "SYN-POWER",
     accuracyLabel = "SYN-ACCURACY",
     categoryLabel = "SYN-CATEGORY",
     switchLabel = "SYN-SWITCH",
+    switchMoveButton = "SYN-SWITCH",
     cancelLabel = "SYN-CANCEL",
     forgetLabel = "SYN-FORGET",
     hmWarning = "SYN-HM-WARNING",
     staleNotice = "SYN-STALE-NOTICE",
     emptyNotice = "SYN-EMPTY-NOTICE",
-    ribbonCountLabel = "SYN-RIBBONS",
-    dexLabel = "SYN-DEX",
     nameLabel = "SYN-NAME",
     otLabel = "SYN-OT",
-    idLabel = "SYN-ID",
-    expLabel = "SYN-EXP",
-    nextLabel = "SYN-NEXT",
     speedName = "SYN-SPEED",
     powerName = "SYN-POWER",
     skillName = "SYN-SKILL",
@@ -173,7 +221,13 @@ local function generatedText()
   for name, ink in pairs(INKS) do
     roles[name] = ink
   end
-  return { labels = generatedLabels(), templates = {}, roles = roles }
+  local templates = {
+    nickname = { segments = { { kind = "nickname", field = 0 } } },
+    itemName = { segments = { { kind = "item", field = 0 } } },
+    levelNumber = { segments = { { kind = "number", field = 0 } } },
+    cancelButton = { alignment = "center", segments = { { kind = "text", value = "SYN-CANCEL" } } },
+  }
+  return { labels = generatedLabels(), templates = templates, roles = roles }
 end
 
 ---@return table<string, unknown> the semantic test family in produced shape
@@ -184,7 +238,7 @@ local function manifest()
     groups = {
       info = { main = { map = 1 }, sub = { normal = 2, restricted = 3 } },
       skills = { main = { map = 4 }, sub = { normal = 5, restricted = 6 } },
-      performance = { main = { map = 7, locked = 8 }, sub = { normal = 9, noPerformance = 10 } },
+      performance = { main = { map = 7, locked = 8 }, sub = { normal = 9 } },
     },
     windows = { fixed = fixedWindows(0), groups = groupWindows() },
     visuals = {
@@ -194,12 +248,13 @@ local function manifest()
       ["backdrop5"] = { image = "syn/backdrop5.png", width = 256, height = 192 },
       ["backdrop7"] = { image = "syn/backdrop7.png", width = 256, height = 192 },
       ["backdrop9"] = { image = "syn/backdrop9.png", width = 256, height = 192 },
+      levelPrefix = { image = "syn/level-prefix.png", width = 16, height = 8 },
       ["hp-empty"] = { image = "syn/hp-empty.png", width = 8, height = 8 },
       ["hp-full"] = { image = "syn/hp-full.png", width = 8, height = 8 },
       ["exp-empty"] = { image = "syn/exp-empty.png", width = 8, height = 8 },
       ["exp-full"] = { image = "syn/exp-full.png", width = 8, height = 8 },
     },
-    sprites = {},
+    sprites = { ballIcons = { center = { x = 0, y = 0 }, icons = {} }, markings = {} },
     hitboxes = {
       touch = {
         memberTouch0 = { top = 38, bottom = 66, left = 165, right = 203 },
@@ -211,6 +266,7 @@ local function manifest()
     bars = {
       hp = {
         length = 48,
+        origin = { x = 80, y = 40 },
         colors = {
           high = { r = 0, g = 255, b = 0 },
           low = { r = 255, g = 255, b = 0 },
@@ -221,6 +277,7 @@ local function manifest()
       },
       exp = {
         length = 56,
+        origin = { x = 72, y = 152 },
         colors = {
           high = { r = 0, g = 0, b = 255 },
           low = { r = 0, g = 0, b = 255 },
@@ -312,8 +369,8 @@ local function moves()
       moveSlot = 0,
       key = "SYN-TACKLE",
       name = "SYN-TACKLE",
-      type = "SYN-NORMAL",
-      category = "SYN-PHYSICAL",
+      type = "normal",
+      category = "physical",
       powerText = "35",
       accuracyText = "95",
       description = "SYN-CHARGE-DESC",
@@ -326,8 +383,8 @@ local function moves()
       moveSlot = 1,
       key = "SYN-GROWL",
       name = "SYN-GROWL",
-      type = "SYN-NORMAL",
-      category = "SYN-OTHER",
+      type = "normal",
+      category = "status",
       powerText = "—",
       accuracyText = "100",
       description = "SYN-GROWL-DESC",
@@ -356,8 +413,9 @@ local function facts(overrides)
       nickname = "SYNM",
       displayName = "SYNM",
       speciesName = "SYN-SPECIES",
-      types = { "SYN-GRASS" },
+      types = { "grass" },
       otName = "SYN-OT",
+      otGender = "female",
       gender = "male",
       shiny = false,
     },
@@ -477,7 +535,7 @@ local function openStatus(record, group, extra)
       rotationTurns = 0,
       visible = true,
     },
-    transition = nil,
+    slide = nil,
     -- Party selections address the root member cursor anchors; detached
     -- selections override this capability explicitly.
     showMemberCursor = true,
@@ -494,24 +552,53 @@ end
 ---@return table<string, unknown> recording generated-font collaborator
 local function textDouble(calls)
   local text = {}
-  local pending = { value = "", width = 0 }
+  -- Glyph codes are the character bytes, so recorded lines decode back
+  -- to their text.
+  local function decode(tokens)
+    local chars = {}
+    for index, token in ipairs(tokens) do
+      chars[index] = string.char(token.code)
+    end
+    return table.concat(chars)
+  end
   function text:textWidth(value)
-    pending = { value = value, width = #value * 6 }
-    return pending.width
+    return #value * 6
   end
   function text:drawLineWithPalette(tokens, x, y, palette)
     assert(type(palette) == "table", "summary text draws through palette roles")
     assert(type(palette.foreground) == "table", "palette roles carry foreground")
     assert(type(palette.shadow) == "table", "palette roles carry shadow")
     assert(type(palette.background) == "table", "palette roles carry background")
-    calls[#calls + 1] =
-      { value = pending.value, tokens = tokens, x = x, y = y, palette = palette, width = pending.width }
+    local value = decode(tokens)
+    calls[#calls + 1] = { value = value, tokens = tokens, x = x, y = y, palette = palette, width = #value * 6 }
   end
   function text:drawLineWithColorVariants(tokens, x, y, variants, background)
-    calls[#calls + 1] = { value = pending.value, tokens = tokens, x = x, y = y, variants = variants }
+    calls[#calls + 1] = { value = decode(tokens), tokens = tokens, x = x, y = y, variants = variants }
   end
-  text.fontDef = { charmap = {} }
+  text.fontDef = {
+    charmap = setmetatable({}, {
+      __index = function(_, char)
+        return char:byte()
+      end,
+    }),
+  }
   return text
+end
+
+---@return table<string, unknown> roster icon provider over one dummy image
+local function iconDouble()
+  local image = { id = "icon-image" }
+  local icons = {}
+  function icons:image(_)
+    return image
+  end
+  function icons:quadFor(key)
+    return { key = key }
+  end
+  function icons:dimensions(_)
+    return { width = 32, height = 32 }
+  end
+  return icons
 end
 
 ---@param calls table<string, unknown> recorded portrait reads
@@ -566,7 +653,14 @@ end
 ---@param lookups table<string, unknown>[]
 ---@return table<string, unknown> ready-bundle-shaped test bundle
 local function readyBundle(family, text, portraits, shader, realized, lookups)
-  local assets = { manifest = family, portraits = portraits, text = text, shader = shader }
+  local assets = {
+    manifest = family,
+    portraits = portraits,
+    text = text,
+    shader = shader,
+    icons = iconDouble(),
+    moveIcons = MoveIconFixture.manifest(),
+  }
   function assets.visualImage(name)
     lookups[#lookups + 1] = { kind = "visual", name = name }
     local visuals = assert(family.visuals, "the test family carries visuals")
@@ -579,6 +673,9 @@ local function readyBundle(family, text, portraits, shader, realized, lookups)
   end
   function assets.imageForPath(path)
     lookups[#lookups + 1] = { kind = "path", name = path }
+    if realized[path] == nil and path:sub(1, #MoveIconCache.assetDir()) == MoveIconCache.assetDir() then
+      realized[path] = { id = "move-icon:" .. path }
+    end
     local image = realized[path]
     assert(image ~= nil, "no prepared image for path " .. tostring(path))
     return image
@@ -766,7 +863,7 @@ function T.info_and_memo_draw_through_named_roles_with_generated_copy()
   Assert.isTrue(roleMatches(blockLines[2].palette, textRoles.dark), "the second run keeps its ink")
   assertRoleValue(textCalls, sub.dexNumber, "SYN-DEX-025", family)
   assertRoleValue(textCalls, sub.speciesName, "SYN-SPECIES", family)
-  assertRoleValue(textCalls, sub.otName, "SYN-OT", family)
+  assertRoleValue(textCalls, sub.otName, "SYN-OT", family, family.text.roles.female)
   assertRoleValue(textCalls, sub.idNumber, "SYN-ID-12345", family)
   assertRoleValue(textCalls, sub.expPoints, "1000", family)
   assertRoleValue(textCalls, sub.expToNext, "20", family)
@@ -775,6 +872,46 @@ function T.info_and_memo_draw_through_named_roles_with_generated_copy()
       assertGenerated(call.value, corpus, "info panes")
     end
   end
+end
+
+-- Each group prints its static titles and labels through the fixed
+-- window roles; the header and the exit label stay on every group, and
+-- eggs hide the identity labels.
+function T.static_labels_draw_through_fixed_roles()
+  local family = manifest()
+  local fixed = family.windows.fixed
+  local function drawn(record, group, pane)
+    local _, textCalls, _, portraits, shader, renderer = composition()
+    local bundle = readyBundle(family, textDouble(textCalls), portraits, shader, realizeVisuals(family), {})
+    renderer:drawPane(openStatus(record, group), pane, bundle)
+    return textCalls
+  end
+  local record = facts()
+  local main = drawn(record, "info", "main")
+  assertRoleValue(main, fixed.trainerMemoTitle, "SYN-MEMO", family)
+  assertRoleValue(main, fixed.itemLabel, "SYN-ITEM", family)
+  assertRoleValue(main, fixed.itemName, "SYN-NONE", family, family.text.roles.dark)
+  assertRoleValue(main, fixed.nickname, "SYNM", family)
+  local level = assertRoleValue(main, fixed.level, "5", family, family.text.roles.dark)
+  Assert.equal(level.x, fixed.level.rect.x + 16, "the level number follows its prefix glyph")
+  assertRoleValue(main, fixed.nickname, "SYN-MALE", family, family.text.roles.male)
+  local sub = drawn(record, "info", "sub")
+  assertRoleValue(sub, fixed.infoTab, "SYN-INFO", family)
+  assertRoleValue(sub, fixed.dexNoLabel, "SYN-DEX", family)
+  assertRoleValue(sub, fixed.exitLabel, "SYN-CANCEL", family)
+  local skills = drawn(record, "skills", "main")
+  assertRoleValue(skills, fixed.skillsTitle, "SYN-SKILLS", family)
+  assertRoleValue(skills, fixed.abilityLabel, "SYN-ABILITY", family)
+  assertRoleValue(drawn(record, "skills", "sub"), fixed.movesTab, "SYN-MOVES", family)
+  local ribbons = drawn(record, "performance", "sub")
+  assertRoleValue(ribbons, fixed.ribbonsTab, "SYN-RIBBONS-TAB", family)
+  assertRoleValue(ribbons, fixed.ribbonsCountLabel, "SYN-RIBBONS", family, family.text.roles.dark)
+  local egg = facts({ isEgg = true })
+  local eggSub = drawn(egg, "info", "sub")
+  for _, call in ipairs(eggSub) do
+    Assert.isTrue(call.value ~= "SYN-DEX" and call.value ~= "SYN-INFO", "eggs hide the identity labels")
+  end
+  assertRoleValue(eggSub, fixed.exitLabel, "SYN-CANCEL", family)
 end
 
 function T.unrelated_entries_never_move_placed_content()
@@ -840,24 +977,34 @@ function T.skills_values_nature_inks_and_move_rows_use_native_roles()
   local skills = assert(groups.skills, "groups carry skills")
   local main = assert(skills.main, "skills carries main roles")
   local textRoles = assert(assert(family.text, "the family carries text").roles, "text carries roles")
-  local raised = assertRoleValue(textCalls, main.attackValue, "11", family, textRoles.statRaised)
-  Assert.isTrue(roleMatches(raised.palette, textRoles.statRaised), "raised values use the raised role")
-  local lowered = assertRoleValue(textCalls, main.defenseValue, "10", family, textRoles.statLowered)
-  Assert.isTrue(roleMatches(lowered.palette, textRoles.statLowered), "lowered values use the lowered role")
-  local neutral = assertRoleValue(textCalls, main.speedValue, "9", family)
-  Assert.isTrue(roleMatches(neutral.palette, textRoles.ordinary), "neutral values use the ordinary role")
-  assertRoleValue(textCalls, main.hpValue, "20", family)
+  local fixed = family.windows.fixed
+  assertRoleValue(textCalls, fixed.attackLabel, "SYN-ATTACK", family, textRoles.statRaised)
+  assertRoleValue(textCalls, fixed.defenseLabel, "SYN-DEFENSE", family, textRoles.statLowered)
+  assertRoleValue(textCalls, fixed.speedLabel, "SYN-SPEED", family)
+  local attack = assertRoleValue(textCalls, main.attackValue, "11", family)
+  Assert.equal(attack.x + attack.width, main.attackValue.rect.x + main.attackValue.rect.width, "stats align right")
+  assertRoleValue(textCalls, main.speedValue, "9", family)
+  local health = callsInWindow(textCalls, main.hpValue)
+  Assert.equal(#health, 3, "health prints its current value, separator, and maximum")
+  Assert.equal(health[1].value, "/", "the separator centers first")
+  Assert.equal(health[2].value, "20", "the current value ends at the separator")
+  Assert.equal(health[2].x + health[2].width, health[1].x, "the current value ends where the separator starts")
+  Assert.equal(health[3].x, health[1].x + health[1].width, "the maximum starts where the separator ends")
   assertRoleValue(textCalls, main.abilityName, "SYN-OVERGROW", family)
   assertRoleValue(textCalls, main.abilityDescription, "SYN-BOOSTS-GRASS", family)
   local detail = openStatus(record, "skills", { phase = "move_detail", moveSlot = 0 })
   renderer:drawPane(detail, "sub", bundle)
   local sub = assert(skills.sub, "skills carries sub roles")
   local firstRow = assertRoleValue(textCalls, sub.moveRow0, "SYN-TACKLE", family)
-  Assert.isTrue(tostring(firstRow.value):find("35", 1, true) ~= nil, "move rows carry their power points")
+  Assert.equal(firstRow.x, sub.moveRow0.rect.x + 1, "move names keep their source inset")
+  assertRoleValue(textCalls, sub.moveRow0, "SYN-PP", family)
+  assertRoleValue(textCalls, sub.moveRow0, "35", family)
   assertRoleValue(textCalls, sub.moveRow1, "SYN-GROWL", family)
   assertRoleValue(textCalls, sub.detailPower, "35", family)
   assertRoleValue(textCalls, sub.detailAccuracy, "95", family)
-  assertRoleValue(textCalls, sub.detailCategory, "SYN-PHYSICAL", family)
+  assertRoleValue(textCalls, fixed.categoryLabel, "SYN-CATEGORY", family)
+  assertRoleValue(textCalls, fixed.powerLabel, "SYN-POWER", family)
+  assertRoleValue(textCalls, fixed.accuracyLabel, "SYN-ACCURACY", family)
   assertRoleValue(textCalls, sub.detailDescription, "SYN-CHARGE-DESC", family)
   for _, call in ipairs(textCalls) do
     if call.value ~= nil then
@@ -885,8 +1032,7 @@ function T.move_reorder_picker_and_footer_keep_native_roles()
   )
   assertRoleValue(textCalls, sub.moveRow0, "SYN-TACKLE", family)
   assertRoleValue(textCalls, sub.moveRow1, "SYN-GROWL", family)
-  local footer = callsInWindow(textCalls, sub.moveFooter)
-  Assert.isTrue(#footer >= 1, "reordering keeps its footer role")
+  Assert.equal(#callsInWindow(textCalls, sub.moveFooter), 0, "the source prints no move footer")
   local picker = openStatus(record, "skills", { mode = "move_pick", moveSlot = 1 })
   renderer:drawPane(picker, "sub", bundle)
   local preview = callsInWindow(textCalls, sub.prospectiveRow)
@@ -963,8 +1109,11 @@ function T.performance_and_ribbons_render_paged_source_state()
     local window = assert(main[stat], "performance carries its " .. stat .. " role")
     assertRoleValue(textCalls, window, labels[stat .. "Name"], family)
   end
+  local levelRect = family.windows.fixed.level.rect
   for _, call in ipairs(textCalls) do
-    if call.value ~= nil then
+    -- The header's level number is the one numeral the main pane prints.
+    local inLevel = call.x >= levelRect.x and call.x < levelRect.x + levelRect.width and call.y == levelRect.y
+    if call.value ~= nil and not inLevel then
       Assert.isTrue(tostring(call.value):find("%d") == nil, "performance prints no numeric debug text")
       assertGenerated(call.value, corpus, "performance panes")
     end
@@ -1010,7 +1159,7 @@ function T.portrait_draw_uses_the_exact_supplied_selector()
       nickname = "SHEDINJA",
       displayName = "SHEDINJA",
       speciesName = "SYN-SHEDINJA",
-      types = { "SYN-GHOST" },
+      types = { "ghost" },
       otName = "SYN-OT",
       gender = "genderless",
       shiny = false,
@@ -1030,7 +1179,7 @@ function T.portrait_draw_uses_the_exact_supplied_selector()
       nickname = "SYNM",
       displayName = "SYNM",
       speciesName = "SYN-SPECIES",
-      types = { "SYN-GRASS" },
+      types = { "grass" },
       otName = "SYN-OT",
       gender = "female",
       shiny = true,
@@ -1105,7 +1254,14 @@ function T.required_resource_failures_restore_graphics_state()
   local graphics, textCalls, _, portraits, shader, renderer = composition()
   graphics.setColor(0.2, 0.3, 0.4, 1)
   local family = manifest()
-  local strict = { manifest = family, portraits = portraits, text = textDouble(textCalls), shader = shader }
+  local strict = {
+    manifest = family,
+    portraits = portraits,
+    text = textDouble(textCalls),
+    shader = shader,
+    icons = iconDouble(),
+    moveIcons = MoveIconFixture.manifest(),
+  }
   function strict.visualImage(name)
     error("visual " .. tostring(name) .. " is not prepared", 0)
   end
@@ -1153,7 +1309,7 @@ function T.hp_bar_tiles_follow_compiled_lengths_and_zero()
   local family = manifest()
   local realized = realizeVisuals(family)
   local bundle = readyBundle(family, textDouble(textCalls), portraits, shader, realized, {})
-  renderer:drawPane(openStatus(facts(), "info"), "sub", bundle)
+  renderer:drawPane(openStatus(facts(), "skills"), "main", bundle)
   local full, empty = 0, 0
   for _, draw in ipairs(graphics.draws) do
     if draw.image == realized["hp-full"] then
@@ -1184,7 +1340,11 @@ function T.hp_bar_tiles_follow_compiled_lengths_and_zero()
   local graphics2 = FakeGraphics.new({})
   local secondText = textDouble({})
   local renderer2 = SummaryRenderer.new({ graphics = graphics2, text = secondText })
-  renderer2:drawPane(openStatus(faint, "info"), "sub", readyBundle(family, secondText, portraits, shader, realized, {}))
+  renderer2:drawPane(
+    openStatus(faint, "skills"),
+    "main",
+    readyBundle(family, secondText, portraits, shader, realized, {})
+  )
   local full2, empty2 = 0, 0
   for _, draw in ipairs(graphics2.draws) do
     if draw.image == realized["hp-full"] then
@@ -1195,6 +1355,32 @@ function T.hp_bar_tiles_follow_compiled_lengths_and_zero()
   end
   Assert.equal(full2, 0, "fainted health fills no tile")
   Assert.equal(empty2, 6, "fainted health empties every tile")
+end
+
+-- Each gauge belongs to one page: health on the skills main pane and
+-- experience on the info sub pane, both at their compiled origins.
+function T.gauges_draw_on_their_own_page_at_their_compiled_origins()
+  local function draws(group, pane, name)
+    local graphics, textCalls, _, portraits, shader, renderer = composition()
+    local family = manifest()
+    local realized = realizeVisuals(family)
+    local bundle = readyBundle(family, textDouble(textCalls), portraits, shader, realized, {})
+    renderer:drawPane(openStatus(facts(), group), pane, bundle)
+    local found = {}
+    for _, draw in ipairs(graphics.draws) do
+      if draw.image == realized[name .. "-full"] or draw.image == realized[name .. "-empty"] then
+        found[#found + 1] = draw
+      end
+    end
+    return found, family.bars[name].origin
+  end
+  local hp, hpOrigin = draws("skills", "main", "hp")
+  Assert.equal(hp[1].x, hpOrigin.x, "health starts at its compiled origin x")
+  Assert.equal(hp[1].y, hpOrigin.y, "health starts at its compiled origin y")
+  local exp, expOrigin = draws("info", "sub", "exp")
+  Assert.equal(exp[1].x, expOrigin.x, "experience starts at its compiled origin x")
+  Assert.equal(exp[1].y, expOrigin.y, "experience starts at its compiled origin y")
+  Assert.equal(#draws("info", "sub", "hp"), 0, "the info page draws no health gauge")
 end
 
 function T.hp_bar_tints_follow_filled_pixels_not_tiles()
@@ -1220,7 +1406,7 @@ function T.hp_bar_tints_follow_filled_pixels_not_tiles()
     local family = manifest()
     local realized = realizeVisuals(family)
     local bundle = readyBundle(family, textDouble(textCalls), portraits, shader, realized, {})
-    renderer:drawPane(openStatus(facts({ skills = barSkills(pixels) }), "info"), "sub", bundle)
+    renderer:drawPane(openStatus(facts({ skills = barSkills(pixels) }), "skills"), "main", bundle)
     local tints = {}
     for _, draw in ipairs(graphics.draws) do
       if draw.image == realized["hp-full"] then
@@ -1484,6 +1670,194 @@ local function drawWithChrome(family, record, group, pane, extra, extraRealized)
   return graphics, realized
 end
 
+-- Type and category icons are sprites drawn at their pinned centers: the
+-- mon's types on INFO (one centered, two side by side), one per learned
+-- move row, and the selected move's category while its detail is open.
+function T.type_and_category_icons_draw_at_their_pinned_centers()
+  local family = sourcedFamily()
+  local placement = family.sprites.moveIcons
+  local icons = MoveIconFixture.manifest()
+  local function drawsOf(record, group, extra, visual)
+    local graphics = drawWithChrome(family, record, group, "sub", extra)
+    local found = {}
+    for _, draw in ipairs(graphics.draws) do
+      if type(draw.image) == "table" and draw.image.id == "move-icon:" .. visual.image then
+        found[#found + 1] = draw
+      end
+    end
+    return found
+  end
+  local single = drawsOf(facts(), "info", nil, icons.types.grass)
+  Assert.equal(#single, 1, "one type draws one icon")
+  Assert.equal(single[1].x, placement.infoSingle.x, "a single type centers on its anchor")
+  Assert.equal(single[1].y, placement.infoSingle.y, "a single type centers on its anchor")
+  local dual = facts()
+  dual.identity.types = { "grass", "ghost" }
+  local first = drawsOf(dual, "info", nil, icons.types.grass)
+  local second = drawsOf(dual, "info", nil, icons.types.ghost)
+  Assert.equal(first[1].x, placement.infoPair[1].x, "the first of two types takes the left anchor")
+  Assert.equal(second[1].x, placement.infoPair[2].x, "the second of two types takes the right anchor")
+  local rows = drawsOf(facts(), "skills", nil, icons.types.normal)
+  Assert.equal(#rows, 2, "each learned move draws its type icon")
+  Assert.equal(rows[2].y, placement.moveRowBaseY + placement.moveRowStep, "move rows step down their pinned spacing")
+  Assert.equal(#drawsOf(facts(), "skills", nil, icons.categories.physical), 0, "category icons wait for the detail")
+  local detail = drawsOf(facts(), "skills", { phase = "move_detail", moveSlot = 0 }, icons.categories.physical)
+  Assert.equal(detail[1].x, placement.category.x, "the selected move's category draws at its anchor")
+  local egg = facts({ isEgg = true })
+  Assert.equal(#drawsOf(egg, "info", nil, icons.types.grass), 0, "eggs draw no type icon")
+end
+
+-- The open move detail rests with the mon's icon and types and, where
+-- reordering is allowed, the Switch tab and its label; sliding shows
+-- only the scrolling backing.
+function T.open_move_detail_shows_its_mon_tab_and_types()
+  local family = sourcedFamily()
+  local placement = family.sprites
+  local tab = placement.moveDetail.switchTab
+  local icons = MoveIconFixture.manifest()
+  local dual = facts()
+  dual.identity.types = { "grass", "ghost" }
+  local function draws(record, extra)
+    local status = { phase = "move_detail", moveSlot = 0, allowReorder = true, showMemberCursor = false }
+    for key, value in pairs(extra or {}) do
+      status[key] = value
+    end
+    local graphics, realized = drawWithChrome(family, record, "skills", "sub", status)
+    local found = { tab = {}, mon = {}, grass = {}, ghost = {}, pressed = {} }
+    for _, draw in ipairs(graphics.draws) do
+      if draw.image == realized[tab.pressedVisual] then
+        found.pressed[#found.pressed + 1] = draw
+      elseif draw.image == realized[tab.visual] then
+        found.tab[#found.tab + 1] = draw
+      elseif type(draw.image) == "table" and draw.image.id == "icon-image" then
+        found.mon[#found.mon + 1] = draw
+      elseif type(draw.image) == "table" and draw.image.id == "move-icon:" .. icons.types.grass.image then
+        found.grass[#found.grass + 1] = draw
+      elseif type(draw.image) == "table" and draw.image.id == "move-icon:" .. icons.types.ghost.image then
+        found.ghost[#found.ghost + 1] = draw
+      end
+    end
+    return found
+  end
+  local open = draws(dual)
+  Assert.equal(#open.tab, 1, "the Switch tab stamps once")
+  Assert.equal(open.tab[1].x, tab.origin.x, "the Switch tab stamps at its origin")
+  Assert.equal(open.tab[1].y, tab.origin.y, "the Switch tab stamps at its origin")
+  Assert.equal(#open.mon, 1, "the mon's icon draws once")
+  Assert.equal(open.mon[1].x, placement.moveDetail.monIcon.x + 16, "the mirrored mon icon centers on its anchor")
+  Assert.equal(open.mon[1].sx, -1, "the mon icon faces right")
+  Assert.equal(open.grass[1].x, placement.moveIcons.detailTypes[1].x, "the first type takes the first anchor")
+  Assert.equal(open.ghost[1].x, placement.moveIcons.detailTypes[2].x, "a second type takes the second anchor")
+  local pressedTab = draws(dual, { phase = "move_arming", tabPressed = true })
+  Assert.equal(#pressedTab.pressed, 1, "a pressed tab draws its recolored stamp")
+  Assert.equal(#pressedTab.tab, 0, "a pressed tab does not also draw the plain stamp")
+  Assert.equal(#draws(facts(), { allowReorder = false }).tab, 0, "the tab waits for reordering to be allowed")
+  local single = draws(facts())
+  Assert.equal(#single.grass, 1, "one type draws one detail icon")
+  Assert.equal(#single.ghost, 0, "a single type draws no second icon")
+  local reordering = draws(dual, { phase = "move_reorder", reorderSource = 0 })
+  Assert.equal(#reordering.tab, 0, "the tab vanishes while a move is held")
+  Assert.equal(#reordering.mon, 1, "the mon icon stays while a move is held")
+  local sliding = draws(dual, { phase = "move_opening", slide = { kind = "moveDetail", offset = 64 } })
+  Assert.equal(#sliding.tab + #sliding.mon, 0, "the tab and icon wait for the panel to rest")
+end
+
+-- The ribbons tab stays on the sub backdrops even while the mon has no
+-- performance rows, because the page behind it is still reachable.
+function T.sub_backdrops_keep_the_ribbons_tab_without_performance()
+  local family = sourcedFamily()
+  for group, map in pairs({ info = 2, skills = 5 }) do
+    local graphics, realized = drawWithChrome(family, facts(), group, "sub")
+    local hits = 0
+    for _, draw in ipairs(graphics.draws) do
+      if draw.image == realized["backdrop" .. map] then
+        hits = hits + 1
+      end
+    end
+    Assert.equal(hits, 1, "the " .. group .. " sub pane draws its normal backdrop")
+  end
+end
+
+-- The mon's ball draws centered on its pinned anchor on the main pane;
+-- a ball without a source sprite draws nothing.
+function T.ball_icon_draws_at_its_pinned_center()
+  local family = sourcedFamily()
+  local placement = family.sprites.ballIcons
+  local visual = family.visuals[placement.icons["SYN-BALL"]]
+  local function ballDraws(record)
+    local graphics = drawWithChrome(family, record, "info", "main")
+    local found = {}
+    for _, draw in ipairs(graphics.draws) do
+      if type(draw.image) == "table" and draw.image.id == "visual:" .. placement.icons["SYN-BALL"] then
+        found[#found + 1] = draw
+      end
+    end
+    return found
+  end
+  local draws = ballDraws(facts())
+  Assert.equal(#draws, 1, "the mon's ball draws once")
+  Assert.equal(draws[1].x, placement.center.x + visual.offset.x, "the ball centers horizontally on its anchor")
+  Assert.equal(draws[1].y, placement.center.y + visual.offset.y, "the ball centers vertically on its anchor")
+  local park = facts()
+  park.info.ball = "SYN-PARK"
+  Assert.equal(#ballDraws(park), 0, "a ball without a source sprite draws nothing")
+end
+
+-- Each marking draws its set shape when the mon carries it and its unset
+-- shape otherwise, centered on its pinned anchor.
+function T.markings_draw_their_set_or_unset_shape()
+  local family = sourcedFamily()
+  local placement = family.sprites.markings
+  local record = facts()
+  record.indicators.markings = { true, false, false, false, false, true }
+  local graphics = drawWithChrome(family, record, "info", "main")
+  local function drawOf(name)
+    for _, draw in ipairs(graphics.draws) do
+      if type(draw.image) == "table" and draw.image.id == "visual:" .. name then
+        return draw
+      end
+    end
+  end
+  for index, marking in ipairs(placement) do
+    local want = (index == 1 or index == 6) and marking.set or marking.unset
+    local other = (index == 1 or index == 6) and marking.unset or marking.set
+    local draw = drawOf(want)
+    Assert.notNil(draw, "marking " .. index .. " draws its " .. want .. " shape")
+    Assert.equal(draw.x, marking.center.x - 4, "marking " .. index .. " centers horizontally")
+    Assert.equal(draw.y, marking.center.y - 4, "marking " .. index .. " centers vertically")
+    Assert.isNil(drawOf(other), "marking " .. index .. " draws only one state")
+  end
+end
+
+-- The roster's icons fill their member boxes, centered on the pinned
+-- anchors, on every group; detached subjects show no roster.
+function T.roster_icons_center_on_their_member_anchors()
+  local family = sourcedFamily()
+  local anchors = family.sprites.primaryCursor.iconAnchors
+  local roster = {}
+  for slot = 0, 1 do
+    roster[#roster + 1] = { slot = slot, isEgg = false, iconKey = "SYNM/f0", portraitSelector = "SYNM/f0/male/plain" }
+  end
+  local record = facts({ roster = roster, slotCount = 2, slot = 0 })
+  local function icons(group, extra)
+    local graphics = drawWithChrome(family, record, group, "sub", extra)
+    local found = {}
+    for _, draw in ipairs(graphics.draws) do
+      if type(draw.image) == "table" and draw.image.id == "icon-image" then
+        found[#found + 1] = draw
+      end
+    end
+    return found
+  end
+  for _, group in ipairs({ "info", "skills", "performance" }) do
+    local drawn = icons(group)
+    Assert.equal(#drawn, 2, "the " .. group .. " group draws one icon per roster member")
+    Assert.equal(drawn[2].x, anchors[2].x - 16, "icons center horizontally on their anchor")
+    Assert.equal(drawn[2].y, anchors[2].y - 16, "icons center vertically on their anchor")
+  end
+  Assert.equal(#icons("info", { showMemberCursor = false }), 0, "detached subjects show no roster icons")
+end
+
 function T.member_focus_follows_the_generated_party_anchors()
   local family, sourced = sourcedFamily()
   local cursors =
@@ -1500,10 +1874,10 @@ function T.member_focus_follows_the_generated_party_anchors()
     }
   end
   local record = facts({ roster = roster, slotCount = 2, slot = 0 })
-  local function cursorAt(slot, mode)
+  local function cursorAt(slot, mode, group)
     record.slot = slot
     local graphics, realized =
-      drawWithChrome(family, record, "info", "sub", { slot = slot, spriteTick = 5, mode = mode or "summary" })
+      drawWithChrome(family, record, group or "info", "sub", { slot = slot, spriteTick = 5, mode = mode or "summary" })
     local cursorImage = frameImage(sourced, realized, focusAnimation)
     local found = {}
     for _, draw in ipairs(graphics.draws) do
@@ -1522,6 +1896,11 @@ function T.member_focus_follows_the_generated_party_anchors()
   Assert.equal(second[1].x, anchors[2].x, "the cursor follows the displayed member")
   Assert.equal(second[1].y, anchors[2].y, "the cursor follows the displayed member")
   Assert.equal(#cursorAt(0, "move_pick"), 0, "the restricted picker hides the member cursor")
+  for _, group in ipairs({ "skills", "performance" }) do
+    local other = cursorAt(1, nil, group)
+    Assert.equal(#other, 1, "the root member cursor stays on the " .. group .. " group")
+    Assert.equal(other[1].x, anchors[2].x, "the " .. group .. " cursor keeps its generated anchor")
+  end
 end
 
 function T.selections_past_party_range_draw_no_member_cursor()
@@ -1789,18 +2168,18 @@ function T.move_detail_backing_follows_the_generated_x_offsets()
   local cases = {
     {
       phase = "move_opening",
-      transition = { kind = "moveDetail", direction = "open", axis = "x", offset = positions[1] },
+      slide = { kind = "moveDetail", direction = "open", axis = "x", offset = positions[1] },
       x = positions[1],
     },
     {
       phase = "move_opening",
-      transition = { kind = "moveDetail", direction = "open", axis = "x", offset = positions[2] },
+      slide = { kind = "moveDetail", direction = "open", axis = "x", offset = positions[2] },
       x = positions[2],
     },
-    { phase = "move_detail", transition = nil, x = terminal },
+    { phase = "move_detail", slide = nil, x = terminal },
     {
       phase = "move_closing",
-      transition = { kind = "moveDetail", direction = "close", axis = "x", offset = positions[2] },
+      slide = { kind = "moveDetail", direction = "close", axis = "x", offset = positions[2] },
       x = positions[2],
     },
   }
@@ -1809,14 +2188,14 @@ function T.move_detail_backing_follows_the_generated_x_offsets()
       phase = case.phase,
       moveSlot = 0,
       spriteTick = 5,
-      transition = case.transition,
+      slide = case.slide,
     })
     local backing = assert(realized["detailBacking"], "the detail backing is prepared")
     local hits = 0
     for _, draw in ipairs(graphics.draws) do
       if draw.image == backing then
         hits = hits + 1
-        Assert.equal(draw.x, case.x, "the detail backing translates along x by the generated offset")
+        Assert.equal(draw.x, -case.x, "the detail backing scrolls along x by the generated offset")
       end
     end
     Assert.equal(hits, 1, "the detail backing draws exactly once")
@@ -1842,18 +2221,18 @@ function T.ribbon_detail_backing_follows_the_generated_y_offsets()
   local cases = {
     {
       phase = "ribbon_opening",
-      transition = { kind = "ribbonDetail", direction = "open", axis = "y", offset = positions[1] },
+      slide = { kind = "ribbonDetail", direction = "open", axis = "y", offset = positions[1] },
       y = positions[1],
     },
     {
       phase = "ribbon_opening",
-      transition = { kind = "ribbonDetail", direction = "open", axis = "y", offset = positions[2] },
+      slide = { kind = "ribbonDetail", direction = "open", axis = "y", offset = positions[2] },
       y = positions[2],
     },
-    { phase = "ribbon_detail", transition = nil, y = terminal },
+    { phase = "ribbon_detail", slide = nil, y = terminal },
     {
       phase = "ribbon_closing",
-      transition = { kind = "ribbonDetail", direction = "close", axis = "y", offset = positions[2] },
+      slide = { kind = "ribbonDetail", direction = "close", axis = "y", offset = positions[2] },
       y = positions[2],
     },
   }
@@ -1863,14 +2242,14 @@ function T.ribbon_detail_backing_follows_the_generated_y_offsets()
       ribbonIndex = 0,
       ribbonPage = 0,
       spriteTick = 5,
-      transition = case.transition,
+      slide = case.slide,
     }, ribbonArt)
     local backing = assert(realized["detailBacking"], "the detail backing is prepared")
     local hits = 0
     for _, draw in ipairs(graphics.draws) do
       if draw.image == backing then
         hits = hits + 1
-        Assert.equal(draw.y, case.y, "the detail backing translates along y by the generated offset")
+        Assert.equal(draw.y, -case.y, "the detail backing scrolls along y by the generated offset")
       end
     end
     Assert.equal(hits, 1, "the detail backing draws exactly once")

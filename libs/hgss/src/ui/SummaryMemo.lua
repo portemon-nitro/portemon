@@ -429,7 +429,7 @@ local function expandSegments(mon, manifest, segments)
   local lines = {}
   local current = {}
   local pieces = {}
-  local ink = "ordinary"
+  local ink = inkForColor(manifest, 0)
   local function flush()
     if #pieces > 0 then
       current[#current + 1] = { text = table.concat(pieces), ink = ink }
@@ -509,7 +509,7 @@ local function textRuns(manifest, mon, key, what)
     assert(type(segments) == "table" and #segments >= 1, what .. " carries segments")
     return expandSegments(mon, manifest, segments)
   end
-  return { { { text = labelText(memoLabels(manifest), key, what), ink = "ordinary" } } }
+  return { { { text = labelText(memoLabels(manifest), key, what), ink = inkForColor(manifest, 0) } } }
 end
 
 -- Names the characteristic individual-value position: the highest value

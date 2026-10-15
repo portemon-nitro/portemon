@@ -20,10 +20,12 @@ local PngWriter = require("libs.assets.src.PngWriter")
 local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
 local G2dRasterizer = require("romdump.src.digest.ui.G2dRasterizer")
 local HgssArchives = require("romdump.src.config.HgssArchives")
+local ItemSources = require("romdump.src.config.ItemSources")
 local SummaryAssetSchema = require("libs.assets.src.SummaryAssetSchema")
 local SummaryCache = require("libs.assets.src.SummaryCache")
 local SummarySources = require("romdump.src.config.SummarySources")
 local SummaryPictureCompiler = require("romdump.src.digest.ui.SummaryPictureCompiler")
+local Lz10 = require("romdump.src.digest.Lz10")
 local MonSources = require("romdump.src.config.MonSources")
 local MonPresentationCompiler = require("romdump.src.digest.mons.MonPresentationCompiler")
 local UiMessageBank = require("romdump.src.digest.ui.UiMessageBank")
@@ -348,7 +350,6 @@ local function compileChrome(resdatArchive, archives, dependencies, assets, visu
     end
   end
   compileRole("primaryCursor", "primary cursor")
-  compileRole("secondaryMoveCursor", "secondary move cursor")
   compileRole("performance", "performance")
   compileRole("leaves", "leaves")
   compileRole("ribbonControls", "ribbon controls")
@@ -362,6 +363,10 @@ local function compileChrome(resdatArchive, archives, dependencies, assets, visu
   local primaryAnchors = {}
   for _, point in ipairs(assert(geometry.primaryCursor, "the chrome inventory carries primary anchors").anchors) do
     primaryAnchors[#primaryAnchors + 1] = anchor(point, "primary cursor")
+  end
+  local iconAnchors = {}
+  for _, point in ipairs(assert(geometry.primaryCursor.iconAnchors, "the chrome inventory carries icon anchors")) do
+    iconAnchors[#iconAnchors + 1] = anchor(point, "member icons")
   end
   local move = assert(geometry.moveDetail, "the chrome inventory carries move geometry")
   local leafAnchors = {}
@@ -391,6 +396,7 @@ local function compileChrome(resdatArchive, archives, dependencies, assets, visu
     animations = animations,
     primaryCursor = {
       anchors = primaryAnchors,
+      iconAnchors = iconAnchors,
       rootFocus = "rootFocus",
       moveRowFocus = "moveRowFocus",
       restrictedCancel = "restrictedCancel",
@@ -403,8 +409,6 @@ local function compileChrome(resdatArchive, archives, dependencies, assets, visu
       restrictedCancelY = move.restrictedCancelY,
       cancelAnchor = anchor(move.cancelAnchor, "secondary move cursor"),
       restrictedSpecialAnchor = anchor(move.restrictedSpecialAnchor, "secondary move cursor"),
-      moveCancel = "moveCancel",
-      moveFollow = "moveFollow",
     },
     performance = { rows = performanceRows },
     leaves = {
@@ -460,6 +464,27 @@ local function compileTransitions()
     transitions[name] = { pane = source.pane, axis = source.axis, positions = positions }
   end
   return transitions
+end
+
+-- Text backgrounds larger than 256 pixels store their map as consecutive
+-- 32x32-tile screen blocks, the order the hardware reads VRAM in. Returns
+-- the screen with its entries rearranged into row-major order.
+local function arrangeScreenBlocks(screen)
+  local columns = screen.width / 8
+  local rows = screen.height / 8
+  local entries = {}
+  local index = 0
+  for blockRow = 0, math.ceil(rows / 32) - 1 do
+    for blockColumn = 0, math.ceil(columns / 32) - 1 do
+      for row = 0, 31 do
+        for column = 0, 31 do
+          entries[(blockRow * 32 + row) * columns + blockColumn * 32 + column + 1] = screen.entries[index + 1]
+          index = index + 1
+        end
+      end
+    end
+  end
+  return { width = screen.width, height = screen.height, entries = entries }
 end
 
 local function rasterizeScreen(charData, paletteColors, screen, role)
@@ -757,7 +782,7 @@ local function lowerMessage(tokens, bankId, index)
   if #segments == 0 then
     return nil, nil
   end
-  if #segments == 1 and segments[1].kind == "text" and alignment == nil then
+  if #segments == 1 and segments[1].kind == "text" and (alignment == nil or alignment == "center") then
     return { label = segments[1].value }, nil
   end
   return { template = { segments = segments, alignment = alignment } }, alignment
@@ -955,7 +980,6 @@ local function compileGroups()
         sub = {
           normal = selection.sub,
           restricted = selection.restricted,
-          noPerformance = selection.performanceExcludedSub,
         },
       }
     end
@@ -965,10 +989,10 @@ end
 
 -- Lowers one source window row to its runtime semantic record: the
 -- native pane, the pixel rectangle, the window palette slot, and the
--- default text ink. Tile units become pixels; the background engine
+-- caller-chosen default text ink. Tile units become pixels; the background engine
 -- becomes the pane; the source base-tile allocator never reaches
 -- runtime.
-local function lowerWindowRow(row, name)
+local function lowerWindowRow(row, name, ink)
   local pane = nil
   if row.bg == "bg4" then
     pane = "sub"
@@ -985,7 +1009,7 @@ local function lowerWindowRow(row, name)
     pane = pane,
     rect = { x = row.x * 8, y = row.y * 8, width = row.width * 8, height = row.height * 8 },
     palette = row.palette,
-    ink = "ordinary",
+    ink = ink,
   }
 end
 
@@ -1008,7 +1032,7 @@ local function compileFixedWindows()
     if fixed[name] ~= nil then
       sourceError("the fixed role inventory carries a duplicate role", { role = name })
     end
-    fixed[name] = lowerWindowRow(row, name)
+    fixed[name] = lowerWindowRow(row, name, "ordinary")
   end
   return fixed
 end
@@ -1036,7 +1060,8 @@ local function compileGroupWindows()
           sourceError("the group role inventory drifts from its source rows", { group = name, pane = "sub" })
         end
         assert(role ~= nil, "drifting group roles fail above")
-        sub[role] = lowerWindowRow(row, name .. ".sub." .. role)
+        -- The Switch tab prints light ink over its dark stamp.
+        sub[role] = lowerWindowRow(row, name .. ".sub." .. role, role == "switchLabel" and "ordinary" or "dark")
         subPosition = subPosition + 1
       elseif row.bg == "bg1" then
         local role = roles.main[mainPosition]
@@ -1044,7 +1069,7 @@ local function compileGroupWindows()
           sourceError("the group role inventory drifts from its source rows", { group = name, pane = "main" })
         end
         assert(role ~= nil, "drifting group roles fail above")
-        main[role] = lowerWindowRow(row, name .. ".main." .. role)
+        main[role] = lowerWindowRow(row, name .. ".main." .. role, "dark")
         mainPosition = mainPosition + 1
       else
         sourceError("the window template names no background engine", { bg = row.bg, group = name })
@@ -1093,6 +1118,9 @@ local function compileTextRoles(palette, windows)
   local roles = {}
   for name, slots in pairs(config.inks) do
     roles[name] = role(slots, name)
+  end
+  for color = 0, config.messageColors - 1 do
+    roles["slot" .. color] = role({ 2 * color + 1, 2 * color + 2, 0 }, "message color " .. color)
   end
   for slot, ink in pairs(config.windowSlots) do
     if roles[ink] == nil then
@@ -1153,9 +1181,6 @@ local function compileBackgrounds(archive, dependencies, assets)
     if selection.lockedMain ~= nil then
       maps[#maps + 1] = selection.lockedMain
     end
-    if selection.performanceExcludedSub ~= nil then
-      maps[#maps + 1] = selection.performanceExcludedSub
-    end
     for _, map in ipairs(maps) do
       if seen[map] == nil then
         seen[map] = true
@@ -1177,7 +1202,7 @@ local function compileBackgrounds(archive, dependencies, assets)
     readMember(archive, SummarySources.backgrounds.detailBacking, "detail-backing", dependencies),
     "detail-backing"
   )
-  local backingImage = rasterizeScreen(charMove, palette.colors, backing, "detail-backing")
+  local backingImage = rasterizeScreen(charMove, palette.colors, arrangeScreenBlocks(backing), "detail-backing")
   visuals.detailBacking = writePng(backingImage, SummaryCache.assetDir() .. "/detail-backing.png", assets)
   return visuals, palette, charMain, charSub
 end
@@ -1204,6 +1229,19 @@ local function compileStamps(archive, charSub, paletteColors, dependencies, asse
     local image = rasterizeScreen(charSub, paletteColors, cropped, "stamp-" .. stamp.member)
     visuals["stamp" .. stamp.member] =
       writePng(image, SummaryCache.assetDir() .. "/stamp-" .. stamp.member .. ".png", assets)
+    if stamp.pressed ~= nil then
+      local pressedEntries = {}
+      for index, entry in ipairs(entries) do
+        local row = math.floor((index - 1) / columns)
+        local recolored = row >= stamp.pressed.row and row < stamp.pressed.row + stamp.pressed.rows
+        pressedEntries[index] = recolored and setmetatable({ palette = stamp.pressed.palette }, { __index = entry })
+          or entry
+      end
+      local pressed = { width = stamp.width, height = stamp.height, entries = pressedEntries }
+      local pressedImage = rasterizeScreen(charSub, paletteColors, pressed, "stamp-" .. stamp.member .. "-pressed")
+      visuals["stamp" .. stamp.member .. "Pressed"] =
+        writePng(pressedImage, SummaryCache.assetDir() .. "/stamp-" .. stamp.member .. "-pressed.png", assets)
+    end
   end
   return visuals
 end
@@ -1331,6 +1369,7 @@ local function compileBars(charMain, charSub, palette, assets)
     end
     bars[name] = {
       length = spec.length,
+      origin = { x = spec.origin.x, y = spec.origin.y },
       colors = colors,
       empty = writePng(emptyImage, dir .. "/" .. tileName .. "-track-empty.png", assets),
       full = writePng(fullImage, dir .. "/" .. tileName .. "-track-full.png", assets),
@@ -1868,6 +1907,174 @@ local function compileMemo(summaryText, months, landmarks)
   }
 end
 
+-- Lowers the pinned type and category icon placement: the icons themselves
+-- are the shared move-icons family, so the summary only owns where they sit.
+local function compileMoveIconPlacement()
+  local geometry = assert(SummarySources.chromeGeometry.moveIcons, "the chrome inventory carries move icon placement")
+  local function anchor(point)
+    return { x = point.x, y = point.y }
+  end
+  return {
+    infoSingle = anchor(geometry.infoSingle),
+    infoPair = { anchor(geometry.infoPair[1]), anchor(geometry.infoPair[2]) },
+    moveRowX = geometry.moveRowX,
+    moveRowBaseY = geometry.moveRowBaseY,
+    moveRowStep = geometry.moveRowStep,
+    prospective = anchor(geometry.prospective),
+    category = anchor(geometry.category),
+    detailTypes = { anchor(geometry.detailTypes[1]), anchor(geometry.detailTypes[2]) },
+  }
+end
+
+-- Places the open move detail's mon icon and Switch tab stamp. The tab
+-- names the stamp visual the compiler already published.
+local function compileMoveDetailPanel(visuals)
+  local geometry =
+    assert(SummarySources.chromeGeometry.moveDetailPanel, "the chrome inventory carries the move detail panel")
+  local visual = "stamp" .. geometry.switchTab.stamp
+  local pressed = visual .. "Pressed"
+  if visuals[visual] == nil or visuals[pressed] == nil then
+    sourceError("the Switch tab names an unpublished stamp", { stamp = geometry.switchTab.stamp })
+  end
+  return {
+    monIcon = { x = geometry.monIcon.x, y = geometry.monIcon.y },
+    switchTab = {
+      visual = visual,
+      pressedVisual = pressed,
+      origin = { x = geometry.switchTab.origin.x, y = geometry.switchTab.origin.y },
+    },
+  }
+end
+
+-- Rasterizes one Poké Ball sprite per ball item: the shared cell and
+-- animation draw each ball's own character and palette member. The
+-- visuals land in `visuals` keyed by ball item; the placement records the
+-- sprite center and which visual each item key draws.
+local function compileBallIcons(archive, sharedArchive, dependencies, assets, visuals)
+  local facts = SummarySources.ballIcons
+  local cell =
+    decode("decodeCell", readMember(sharedArchive, facts.cellMember, "ball-cell", dependencies, "shared"), "ball-cell")
+  local animation = decode(
+    "decodeAnimation",
+    readMember(sharedArchive, facts.animationMember, "ball-animation", dependencies, "shared"),
+    "ball-animation"
+  )
+  local sequence = animation.anims[facts.sequence + 1]
+  if sequence == nil then
+    sourceError("the ball sprite selects a missing animation sequence", { sequence = facts.sequence })
+  end
+  local icons = {}
+  for ballId = 1, #facts.paletteSlots do
+    -- BallToItemId (src/item.c): balls 1..16 map to items 1..16, 17..24 to 492..499.
+    local nativeId = ballId <= 16 and ballId or ballId - 17 + 492
+    local itemKey = assert(ItemSources.itemKeys[nativeId], "ball items carry semantic keys")
+    local role = "ball-" .. itemKey
+    local charBytes = readMember(archive, facts.charBase + ballId, role .. "-char", dependencies, "summary")
+    local paletteBytes =
+      readMember(archive, facts.paletteBase + facts.paletteSlots[ballId], role .. "-palette", dependencies, "summary")
+    local rendered = renderChromeFrame(
+      decode("decodeChar", charBytes, role .. "-char"),
+      decode("decodePalette", paletteBytes, role .. "-palette").colors,
+      cell,
+      sequence,
+      1,
+      role
+    )
+    local name = "ballIcon_" .. itemKey
+    local path = SummaryCache.assetDir() .. "/ball-" .. (itemKey:lower():gsub("_", "-")) .. ".png"
+    assets[path] = PngWriter.encode(rendered.width, rendered.height, rendered.pixels)
+    local visual = { image = path, width = rendered.width, height = rendered.height }
+    if rendered.offset.x ~= 0 or rendered.offset.y ~= 0 then
+      visual.offset = { x = rendered.offset.x, y = rendered.offset.y }
+    end
+    visuals[name] = visual
+    icons[itemKey] = name
+  end
+  return { center = { x = facts.center.x, y = facts.center.y }, icons = icons }
+end
+
+-- Rasterizes the six marking shapes in their unset and set states. Visuals
+-- land in `visuals`; the placement lists each marking's center and the two
+-- visuals it chooses between.
+local function compileMarkings(archive, sharedArchive, dependencies, assets, visuals)
+  local facts = SummarySources.markings
+  local function member(id, role)
+    return readMember(sharedArchive, id, role, dependencies, "shared")
+  end
+  local palette = decode(
+    "decodePalette",
+    readMember(archive, facts.paletteMember, "marking-palette", dependencies, "summary"),
+    "marking-palette"
+  )
+  local cell = decode("decodeCell", member(facts.cellMember, "marking-cell"), "marking-cell")
+  local animation = decode("decodeAnimation", member(facts.animationMember, "marking-animation"), "marking-animation")
+  local function render(char, sequenceNo, role, name)
+    local sequence = animation.anims[sequenceNo + 1]
+    if sequence == nil then
+      sourceError(role .. " selects a missing animation sequence", { sequence = sequenceNo })
+    end
+    local rendered = renderChromeFrame(char, palette.colors, cell, sequence, 1, role)
+    local path = SummaryCache.assetDir() .. "/" .. kebabName(name) .. ".png"
+    assets[path] = PngWriter.encode(rendered.width, rendered.height, rendered.pixels)
+    local visual = { image = path, width = rendered.width, height = rendered.height }
+    if rendered.offset.x ~= 0 or rendered.offset.y ~= 0 then
+      visual.offset = { x = rendered.offset.x, y = rendered.offset.y }
+    end
+    visuals[name] = visual
+    return name
+  end
+  local icons = {}
+  for index, charMember in ipairs(facts.charMembers) do
+    local role = "marking-" .. index
+    local char = decode("decodeChar", member(charMember, role .. "-char"), role .. "-char")
+    local center = facts.centers[index]
+    icons[index] = {
+      center = { x = center.x, y = center.y },
+      unset = render(char, facts.unsetSequence, role, "marking" .. index .. "Unset"),
+      set = render(char, facts.setSequence, role, "marking" .. index .. "Set"),
+    }
+  end
+  return icons
+end
+
+-- Recolors the "Lv." prefix glyph through the dark text ink: the glyph
+-- tiles carry foreground and shadow cells over transparency.
+local function compileLevelPrefix(fontArchive, ink, dependencies, assets)
+  local facts = SummarySources.levelPrefix
+  -- The font member may be LZ10-packed; the packed marker is the first byte.
+  local bytes = readMember(fontArchive, facts.fontMember, "level-prefix", dependencies, "font")
+  if string.byte(bytes, 1) == 0x10 then
+    local plain, lzErr = Lz10.decode(bytes)
+    if not plain then
+      sourceError("the level prefix font does not unpack: " .. Errors.format(lzErr), {})
+    end
+    bytes = plain
+  end
+  local font = decode("decodeChar", bytes, "level-prefix")
+  if #font.tiles < (facts.tile + facts.tiles) * 32 then
+    sourceError("the numeric font carries too few cells for the level prefix", { bytes = #font.tiles })
+  end
+  local out = {}
+  for y = 0, 7 do
+    for tile = 0, facts.tiles - 1 do
+      for x = 0, 7 do
+        local byte = string.byte(font.tiles, (facts.tile + tile) * 32 + y * 4 + math.floor(x / 2) + 1)
+        local value = x % 2 == 0 and byte % 16 or math.floor(byte / 16)
+        local color = value == 1 and ink.foreground or (value == 2 and ink.shadow or nil)
+        if color ~= nil then
+          out[#out + 1] = string.char(color.r, color.g, color.b, 255)
+        else
+          out[#out + 1] = string.char(0, 0, 0, 0)
+        end
+      end
+    end
+  end
+  local path = SummaryCache.assetDir() .. "/level-prefix.png"
+  local width = facts.tiles * 8
+  assets[path] = PngWriter.encode(width, 8, table.concat(out))
+  return { image = path, width = width, height = 8 }
+end
+
 local function _compile(romFs, catalog, portraitManifest)
   if
     romFs == nil
@@ -1927,6 +2134,10 @@ local function _compile(romFs, catalog, portraitManifest)
     },
   }
   local sprites = compileChrome(resdatArchive, chromeArchives, dependencies, assets, visuals)
+  sprites.moveIcons = compileMoveIconPlacement()
+  sprites.moveDetail = compileMoveDetailPanel(visuals)
+  sprites.ballIcons = compileBallIcons(archive, sharedArchive, dependencies, assets, visuals)
+  sprites.markings = compileMarkings(archive, sharedArchive, dependencies, assets, visuals)
   local summaryText = compileSummaryText(messageArchive, dependencies)
   local ribbonLabels = compileRibbonText(messageArchive, dependencies)
   local months = compileMonthText(messageArchive, dependencies)
@@ -1948,6 +2159,8 @@ local function _compile(romFs, catalog, portraitManifest)
     end
   end
   local text = { labels = labels, templates = summaryText.templates, roles = compileTextRoles(palette, windows) }
+  local fontArchive = openArchive(romFs, SummarySources.archives.font.symbol, "font")
+  visuals.levelPrefix = compileLevelPrefix(fontArchive, text.roles.dark, dependencies, assets)
   local palettes = { banks = {} }
   for bank = 0, 15 do
     local colors = {}

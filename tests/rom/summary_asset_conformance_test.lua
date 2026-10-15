@@ -132,12 +132,9 @@ function T.compiled_family_matches_the_closed_envelope(romFs, versionId)
   Assert.equal(manifest.schema, SUMMARY_SCHEMA, "the compiled manifest carries the family schema")
   Assert.equal(manifest.paneSize.width, 256, "the native pane is 256 wide")
   Assert.equal(manifest.paneSize.height, 192, "the native pane is 192 tall")
-  Assert.keySet(
-    manifest,
-    "bars,dexNumbers,groups,hitboxes,memo,palettes,paneSize,performance,pictures,"
-      .. "ribbons,schema,sounds,sprites,text,transitions,visuals,windows",
-    "the manifest carries exactly the closed field set"
-  )
+  Assert.keySet(manifest, "bars,dexNumbers,groups,hitboxes,memo,palettes,paneSize,performance,pictures,"
+    .. "ribbons,schema,sounds,sprites,text,transitions,visuals,windows",
+    "the manifest carries exactly the closed field set")
 end
 
 -- The three native groups keep their physical assignment: every group
@@ -234,7 +231,9 @@ end
 local function checkSample(sample, entryKey, index)
   local what = "picture " .. tostring(entryKey) .. " sample " .. index
   Assert.isTrue(
-    type(sample.durationTicks) == "number" and sample.durationTicks % 1 == 0 and sample.durationTicks > 0,
+    type(sample.durationTicks) == "number"
+      and sample.durationTicks % 1 == 0
+      and sample.durationTicks > 0,
     what .. " carries a positive integral duration"
   )
   Assert.isTrue(
@@ -251,10 +250,7 @@ local function checkSample(sample, entryKey, index)
     local target = assert(blend.target, what .. " blend carries its 5-bit target")
     for _, channel in ipairs({ "r", "g", "b" }) do
       Assert.isTrue(
-        type(target[channel]) == "number"
-          and target[channel] % 1 == 0
-          and target[channel] >= 0
-          and target[channel] <= 31,
+        type(target[channel]) == "number" and target[channel] % 1 == 0 and target[channel] >= 0 and target[channel] <= 31,
         what .. " blend target " .. channel .. " is a 5-bit component"
       )
     end
@@ -295,7 +291,9 @@ function T.picture_tracks_join_frames_and_motion_with_exact_termination(romFs, v
       )
     end
     Assert.isTrue(
-      type(entry.cryDelayTicks) == "number" and entry.cryDelayTicks % 1 == 0 and entry.cryDelayTicks >= 0,
+      type(entry.cryDelayTicks) == "number"
+        and entry.cryDelayTicks % 1 == 0
+        and entry.cryDelayTicks >= 0,
       "picture " .. tostring(key) .. " carries its cry delay"
     )
   end
@@ -367,7 +365,8 @@ local function romFsWithoutArchivePath(romFs, blockedPath)
   function proxy:openNarc(symbol)
     local entry = self:resolvedNarc(symbol)
     if entry == nil then
-      return nil, Errors.new("ROMFS_NARC_UNRESOLVED", "blocked native archive " .. tostring(symbol), { name = symbol })
+      return nil,
+        Errors.new("ROMFS_NARC_UNRESOLVED", "blocked native archive " .. tostring(symbol), { name = symbol })
     end
     return romFs:openNarc(symbol)
   end
@@ -409,7 +408,10 @@ function T.window_palette_slots_resolve_through_text_roles(romFs, versionId)
   local windows = assert(manifest.windows, "the compiled manifest carries its windows")
   local slots = {}
   local function checkRole(name, window)
-    Assert.isTrue(type(window.palette) == "number", "role " .. tostring(name) .. " carries its numeric palette slot")
+    Assert.isTrue(
+      type(window.palette) == "number",
+      "role " .. tostring(name) .. " carries its numeric palette slot"
+    )
     slots[window.palette] = true
   end
   for name, window in pairs(assert(windows.fixed, "the fixed roles compile")) do
@@ -441,18 +443,28 @@ function T.window_palette_slots_resolve_through_text_roles(romFs, versionId)
     statLowered = { 14, 8, 0 },
     statRaised = { 14, 7, 0 },
     movePanel = { 1, 2, 15 },
+    -- Message colors 0..6 select slots 2n+1 and 2n+2.
+    slot0 = { 1, 2, 0 },
+    slot1 = { 3, 4, 0 },
+    slot2 = { 5, 6, 0 },
+    slot3 = { 7, 8, 0 },
+    slot4 = { 9, 10, 0 },
+    slot5 = { 11, 12, 0 },
+    slot6 = { 13, 14, 0 },
   }
   Assert.keySet(
     roles,
-    "dark,female,male,movePanel,ordinary,slot13,statLowered,statRaised",
+    "dark,female,male,movePanel,ordinary,slot0,slot1,slot13,slot2,slot3,slot4,slot5,slot6,statLowered,statRaised",
     "the text roles carry exactly the transcribed printer roles"
   )
   for name, triple in pairs(expected) do
     local role = assert(roles[name], "the text roles carry " .. name)
     local classes = { "foreground", "shadow", "background" }
     for position, class in ipairs(classes) do
-      local entry =
-        assert(bank[triple[position] + 1], "the window bank carries slot " .. triple[position] .. " for role " .. name)
+      local entry = assert(
+        bank[triple[position] + 1],
+        "the window bank carries slot " .. triple[position] .. " for role " .. name
+      )
       local color = assert(role[class], "role " .. name .. " carries " .. class)
       Assert.equal(color.r, entry.r, "role " .. name .. "." .. class .. " resolves red")
       Assert.equal(color.g, entry.g, "role " .. name .. "." .. class .. " resolves green")
@@ -465,8 +477,41 @@ function T.window_palette_slots_resolve_through_text_roles(romFs, versionId)
     end
   end
   for slot in pairs(slots) do
-    Assert.notNil(roles["slot" .. slot], "window palette slot " .. slot .. " resolves through the text roles")
+    Assert.notNil(
+      roles["slot" .. slot],
+      "window palette slot " .. slot .. " resolves through the text roles"
+    )
   end
+end
+
+-- The six markings each realize an unset and a set 8x8 shape that differ.
+function T.every_marking_realizes_unset_and_set_shapes(romFs, versionId)
+  local bundle = bundleFor(romFs, versionId)
+  local markings = assert(bundle.manifest.sprites.markings, "the compiled manifest carries its markings")
+  Assert.equal(#markings, 6, "six markings compile")
+  for index, marking in ipairs(markings) do
+    local unset = assert(bundle.manifest.visuals[marking.unset], "marking " .. index .. " carries its unset shape")
+    local set = assert(bundle.manifest.visuals[marking.set], "marking " .. index .. " carries its set shape")
+    Assert.equal(unset.width, 8, "marking " .. index .. " is eight pixels wide")
+    Assert.equal(set.height, 8, "marking " .. index .. " is eight pixels tall")
+    Assert.isTrue(unset.image ~= set.image, "marking " .. index .. " keeps two states")
+  end
+end
+
+-- Every ball item the catalog classifies as a ball, except the Park Ball
+-- the source never draws, realizes one 16x16 sprite.
+function T.every_ball_item_realizes_one_sprite(romFs, versionId)
+  local bundle = bundleFor(romFs, versionId)
+  local balls = assert(bundle.manifest.sprites.ballIcons, "the compiled manifest carries its ball sprites")
+  local count = 0
+  for key, name in pairs(balls.icons) do
+    local visual = assert(bundle.manifest.visuals[name], key .. " names a compiled visual")
+    Assert.equal(visual.width, 16, key .. " is one 16 pixel sprite")
+    Assert.equal(visual.height, 16, key .. " is one 16 pixel sprite")
+    count = count + 1
+  end
+  Assert.equal(count, 24, "balls 1 through 24 realize a sprite")
+  Assert.notNil(balls.icons.POKE_BALL, "the Poke Ball realizes a sprite")
 end
 
 -- Bar content carries the source gauge rules with provenance: the health
@@ -531,10 +576,7 @@ function T.bar_rules_lengths_colors_and_visuals_carry_source_provenance(romFs, v
         end
       end
       Assert.isTrue(opaque > 0, "the " .. strip.name .. " " .. state .. " strip carries visible pixels")
-      Assert.notNil(
-        visuals[strip.name == "health" and (state == "empty" and "hp-empty" or "hp-full") or (state == "empty" and "exp-empty" or "exp-full")],
-        "the " .. strip.name .. " " .. state .. " tile resolves"
-      )
+      Assert.notNil(visuals[strip.name == "health" and (state == "empty" and "hp-empty" or "hp-full") or (state == "empty" and "exp-empty" or "exp-full")], "the " .. strip.name .. " " .. state .. " tile resolves")
     end
   end
 end
@@ -752,7 +794,9 @@ function T.compiled_memo_branches_keep_the_source_evaluation_order(romFs, versio
     end
     Assert.isTrue(type(entry.match) == "table", "branch " .. key .. " carries its match predicates")
     Assert.isTrue(type(entry.lines) == "table", "branch " .. key .. " carries its line placement")
-    Assert.isTrue(type(entry.dateTemplate) == "table", "branch " .. key .. " carries its date template")
+    Assert.isTrue(
+      type(entry.dateTemplate) == "table", "branch " .. key .. " carries its date template"
+    )
   end
   local selectable = {}
   for _, key in ipairs(keys) do
@@ -855,7 +899,11 @@ function T.compiled_memo_templates_bind_semantic_substitutions(romFs, versionId)
     { "eggYear", "eggMonth", "eggDay", "eggLocation", "metYear", "metMonth", "metDay", "metLocation" },
     "hatched"
   )
-  checkSemanticTemplate(conditionByKey(conditions, "egg"), { "eggYear", "eggMonth", "eggDay", "eggLocation" }, "egg")
+  checkSemanticTemplate(
+    conditionByKey(conditions, "egg"),
+    { "eggYear", "eggMonth", "eggDay", "eggLocation" },
+    "egg"
+  )
   checkSemanticTemplate(conditionByKey(conditions, "migrated"), { "migrationRegion" }, "migrated")
   local textSeen, breakSeen = false, false
   for _, entry in ipairs(conditions) do
@@ -903,7 +951,11 @@ function T.migrated_memo_wording_covers_every_canonical_origin_game(romFs, versi
   Assert.equal(regions.leafgreen, regions.firered, "leafgreen shares the Kanto wording")
   Assert.equal(regions.heartgold, giftByLocation[sourceLocations.johto], "heartgold resolves the Johto wording")
   Assert.equal(regions.soulsilver, regions.heartgold, "soulsilver shares the Johto wording")
-  Assert.equal(regions.diamond, giftByLocation[sourceLocations.dashes], "diamond resolves the source dashes wording")
+  Assert.equal(
+    regions.diamond,
+    giftByLocation[sourceLocations.dashes],
+    "diamond resolves the source dashes wording"
+  )
   Assert.equal(regions.pearl, regions.diamond, "pearl shares the dashes wording")
   Assert.equal(regions.platinum, regions.diamond, "platinum shares the dashes wording")
   Assert.isTrue(
@@ -1041,7 +1093,11 @@ function T.dynamic_chrome_roles_carry_source_rasterized_animation_visuals(romFs,
       local visualName = assert(frame.visual, label .. " names its visual")
       local visual = assert(visuals[visualName], label .. " resolves to a family visual")
       local image = assert(visual.image, label .. " visual carries its image path")
-      Assert.equal(image:sub(1, #SUMMARY_ASSET_DIR), SUMMARY_ASSET_DIR, label .. " art stays family-owned: " .. image)
+      Assert.equal(
+        image:sub(1, #SUMMARY_ASSET_DIR),
+        SUMMARY_ASSET_DIR,
+        label .. " art stays family-owned: " .. image
+      )
       Assert.isTrue(image:find("party", 1, true) == nil, label .. " art never reuses party pixels")
       local width, height = PngReader.rgba(spriteFrameBytes(bundle, image, label))
       Assert.isTrue(width > 0 and height > 0, label .. " rasterizes to a real surface")
@@ -1093,9 +1149,52 @@ function T.nested_detail_tracks_use_native_bg_positions_over_the_common_backing(
   local visuals = assert(manifest.visuals, "the compiled manifest carries its visuals")
   local backing = assert(visuals.detailBacking, "the common detail backing visual compiles")
   local image = assert(backing.image, "the detail backing carries its image path")
-  Assert.equal(image:sub(1, #SUMMARY_ASSET_DIR), SUMMARY_ASSET_DIR, "the detail backing stays family-owned")
+  Assert.equal(
+    image:sub(1, #SUMMARY_ASSET_DIR),
+    SUMMARY_ASSET_DIR,
+    "the detail backing stays family-owned"
+  )
   Assert.notNil(bundle.assets[image], "the detail backing has compiled bytes")
   Assert.isNil(visuals.moveBacking, "the move-only backing name does not survive the rename")
+end
+
+-- The 512x512 backing is stored as 32x32-tile screen blocks. At its
+-- resting scroll (x = 128) the panel block lands on the right half of the
+-- pane and the left half stays clear, so the move rows show through.
+function T.detail_backing_arranges_its_screen_blocks(romFs, versionId)
+  local bundle = bundleFor(romFs, versionId)
+  local manifest = bundle.manifest
+  local resting = manifest.transitions.moveDetail.positions[3]
+  local backing = assert(manifest.visuals.detailBacking, "the backing visual compiles")
+  local bytes = assert(bundle.assets[backing.image], "the backing has compiled bytes")
+  if type(bytes) ~= "string" then
+    bytes = bytes:getString()
+  end
+  local width, _, rgba = PngReader.rgba(bytes)
+  local function opaque(x, y)
+    local _, _, _, alpha = PngReader.pixel(rgba, width, resting + x, y)
+    return alpha == 255
+  end
+  Assert.isFalse(opaque(40, 40), "the left half of the resting pane stays clear")
+  Assert.isTrue(opaque(190, 40), "the panel's label rows sit in the right half")
+  Assert.isTrue(opaque(190, 150), "the panel's description box reaches near the footer")
+end
+
+-- The open move detail names the Switch tab stamp it draws and the mon
+-- icon and type anchors it places.
+function T.move_detail_panel_names_its_tab_and_placements(romFs, versionId)
+  local bundle = bundleFor(romFs, versionId)
+  local sprites = bundle.manifest.sprites
+  local tab = assert(sprites.moveDetail.switchTab, "the panel carries its Switch tab")
+  local visual = assert(bundle.manifest.visuals[tab.visual], "the Switch tab names a compiled stamp")
+  Assert.equal(visual.width, 80, "the Switch tab stamp is ten tiles wide")
+  Assert.equal(visual.height, 32, "the Switch tab stamp is four tiles tall")
+  Assert.deepEqual(tab.origin, { x = 8, y = 128 }, "the Switch tab stamps at tile (1, 16)")
+  Assert.deepEqual(sprites.moveDetail.monIcon, { x = 160, y = 16 }, "the mon icon keeps its anchor")
+  Assert.deepEqual(sprites.moveIcons.detailTypes, { { x = 200, y = 24 }, { x = 234, y = 24 } })
+  local labels = bundle.manifest.text.labels
+  assert(labels.forgetButton, "the footer carries its Forget wording")
+  assert(labels.switchMoveButton, "the Switch tab carries its label wording")
 end
 
 -- A reader that forwards every source call to the wrapped dump except
@@ -1134,10 +1233,9 @@ local function corruptArchive(realArchive, corrupt)
     if corrupt[memberId] ~= nil then
       local replacement = corrupt[memberId]
       if replacement == false then
-        return nil,
-          Errors.new("ROMFS_MEMBER_MISSING", "test archive drops member " .. memberId, {
-            member = memberId,
-          })
+        return nil, Errors.new("ROMFS_MEMBER_MISSING", "test archive drops member " .. memberId, {
+          member = memberId,
+        })
       end
       return replacement
     end
@@ -1255,8 +1353,7 @@ function T.chrome_set_missing_its_table_entry_fails_compilation(romFs, versionId
   local set = assert(SummarySources.chromeResources.primaryCursor.resourceSet, "the inventory selects its set")
   local charObject = u32le(header, set * 32)
   local table54 = assert(realResdat:readMember(SummarySources.resdat.charTable))
-  local resdat =
-    corruptArchive(realResdat, { [SummarySources.resdat.charTable] = dropTableRecord(table54, charObject) })
+  local resdat = corruptArchive(realResdat, { [SummarySources.resdat.charTable] = dropTableRecord(table54, charObject) })
   local bundle, err =
     compiler.compile(corruptFs(romFs, { [SummarySources.archives.resdat.symbol] = resdat }), catalog, portraits)
   Assert.isNil(bundle, "a chrome set without its table entry publishes nothing")
@@ -1360,17 +1457,17 @@ end
 -- The primary member cursor keeps one visual per presentation state, and
 -- each state is bound to its own native animation sequence and palette
 -- override: the ordinary root/member state restores sequence 2 with
--- palette override 2, entering the move-detail-style state selects
--- sequence 0 with override 0, and the restricted/cancel path selects
--- sequence 1 with override 0. The selections below are pinned
+-- palette override 2, and the move-detail-style and restricted/cancel
+-- states select sequences 0 and 1 without changing that override. The
+-- selections below are pinned
 -- independently of the producer inventory: the resource set, sequences,
 -- and palette overrides are transcribed here, never read from the
 -- producer selection or the compiler output under test.
 local PINNED_CURSOR_SET = 2
 local PINNED_CURSOR_STATES = {
   { semantic = "rootFocus", sequence = 2, paletteBank = 2 },
-  { semantic = "moveRowFocus", sequence = 0, paletteBank = 0 },
-  { semantic = "restrictedCancel", sequence = 1, paletteBank = 0 },
+  { semantic = "moveRowFocus", sequence = 0, paletteBank = 2 },
+  { semantic = "restrictedCancel", sequence = 1, paletteBank = 2 },
 }
 
 -- The pinned resdat layout the cursor resource set resolves through:
@@ -1419,7 +1516,10 @@ local function pinnedCursorResources(romFs)
   end
   local members = {}
   for kind, objectId in pairs(objects) do
-    local entry = assert(tables[kind][objectId], "the pinned cursor " .. kind .. " object resolves through its table")
+    local entry = assert(
+      tables[kind][objectId],
+      "the pinned cursor " .. kind .. " object resolves through its table"
+    )
     local archive = handles[entry.narcId]
     Assert.isTrue(archive ~= nil, "the pinned cursor " .. kind .. " lives in a supported archive")
     members[kind] = assert(archive:readMember(entry.fileId))
@@ -1463,7 +1563,8 @@ function T.primary_cursor_states_match_their_native_sequence_and_palette(romFs, 
   local decoded = pinnedCursorResources(romFs)
   for _, state in ipairs(PINNED_CURSOR_STATES) do
     local what = "the " .. state.semantic .. " cursor"
-    local animationName = assert(cursor[state.semantic], what .. " keeps its semantic animation reference")
+    local animationName =
+      assert(cursor[state.semantic], what .. " keeps its semantic animation reference")
     local descriptor = assert(animations[animationName], what .. " resolves to a generated descriptor")
     local sequence = decoded.animation.anims[state.sequence + 1]
     Assert.notNil(sequence, what .. " selects native sequence " .. state.sequence)
@@ -1498,7 +1599,11 @@ function T.primary_cursor_states_match_their_native_sequence_and_palette(romFs, 
         Assert.deepEqual(visual.offset, { x = offset.x, y = offset.y }, label .. " keeps its raster offset")
       end
     end
-    Assert.equal(descriptor.loopFrom, sequence.loopStartFrameIdx + 1, what .. " keeps its native loop origin")
+    Assert.equal(
+      descriptor.loopFrom,
+      sequence.loopStartFrameIdx + 1,
+      what .. " keeps its native loop origin"
+    )
     Assert.isTrue(
       descriptor.playback == "static" or descriptor.playback == "once" or descriptor.playback == "loop",
       what .. " carries source playback"

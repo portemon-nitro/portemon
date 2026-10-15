@@ -21,6 +21,7 @@
 -- A stale demand key can never be adopted as the selected picture.
 
 local MonCache = require("libs.assets.src.MonCache")
+local MoveIconCache = require("libs.assets.src.MoveIconCache")
 local SummaryCache = require("libs.assets.src.SummaryCache")
 
 local SHADER_PATH = "libs/hgss/src/ui/shaders/summary_picture.glsl"
@@ -54,6 +55,7 @@ end
 ---@field _queue table<string, unknown>
 ---@field _derivedAssets table<string, unknown>
 ---@field _manifest table<string, unknown>
+---@field _moveIcons table<string, unknown> the shared move-icons manifest
 ---@field _portraitEntries table<string, table<string, unknown>>
 ---@field _visualPaths string[]
 ---@field _visualImages table<string, table<string, unknown>> field-lifetime family visuals by canonical path
@@ -103,6 +105,11 @@ function SummaryPresentationResources.new(opts)
   assert(type(derivedAssets) == "table", "summary preparation demands portrait pages through the provisioner")
   local manifest = assert(opts.manifest, "summary preparation needs the summary family")
   SummaryCache.validateManifest(manifest)
+  local moveIcons = MoveIconCache.loadManifest(cacheFs)
+  local visualPaths = SummaryCache.referencedPaths(manifest)
+  for _, path in ipairs(MoveIconCache.referencedPaths(moveIcons)) do
+    visualPaths[#visualPaths + 1] = path
+  end
   local portraitManifest =
     assert(cacheFs:loadLua(MonCache.portraitManifestPath()), "summary preparation needs the portrait manifest")
   assert(type(portraitManifest.entries) == "table", "the portrait manifest carries entries")
@@ -115,7 +122,8 @@ function SummaryPresentationResources.new(opts)
     _derivedAssets = derivedAssets,
     _manifest = manifest,
     _portraitEntries = portraitManifest.entries,
-    _visualPaths = SummaryCache.referencedPaths(manifest),
+    _moveIcons = moveIcons,
+    _visualPaths = visualPaths,
     _visualImages = {},
     _imagesByPath = {},
     _tokensByPath = {},
@@ -425,6 +433,7 @@ local function readyBundle(self)
     manifest = manifest,
     portraits = portraits,
     icons = owner._icons,
+    moveIcons = owner._moveIcons,
     text = owner._text,
     shader = assert(owner._shader, "ready preparation carries its picture shader"),
   }

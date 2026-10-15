@@ -48,12 +48,14 @@ SummarySources.archives = {
 
 -- Native group background selection, transcribed from the summary
 -- application map tables. Main content renders on the main engine, touch
--- content on the sub engine. The locked and excluded alternatives cover
--- the hidden-performance, absent-group, and move-picker conditions; they
--- are distinct selections, never synonyms.
+-- content on the sub engine. The locked and restricted alternatives cover
+-- the hidden-performance and egg conditions; they are distinct selections,
+-- never synonyms. Members 77 and 78 are the info and skills sub maps
+-- without the ribbons tab that the source selects while the Pokéathlon
+-- flag is clear; the port keeps the tab visible and never selects them.
 SummarySources.groupMaps = {
-  info = { main = 13, sub = 12, restricted = 14, performanceExcludedSub = 77 },
-  skills = { main = 19, sub = 17, restricted = 18, performanceExcludedSub = 78 },
+  info = { main = 13, sub = 12, restricted = 14 },
+  skills = { main = 19, sub = 17, restricted = 18 },
   performance = { main = 10, sub = 9, lockedMain = 11 },
 }
 
@@ -152,22 +154,21 @@ SummarySources.groupWindows = {
   },
 }
 
--- Producer-only semantic role bindings for the fixed window inventory,
--- aligned positionally with SummarySources.fixedWindows. Names follow
--- the static label/header setup: group tabs and titles, the trainer-memo
--- header, the move-panel footer, the persistent info stat labels, the
--- skills stat and ability labels, the move-detail and power-point labels,
--- and the exit, ribbon-count, contest-mark, and move-warning labels.
--- These names never reach runtime directly; the compiler resolves them
--- to pane geometry records.
+-- Semantic role bindings for the fixed window inventory, aligned
+-- positionally with SummarySources.fixedWindows. Each name follows the
+-- window's static print in the summary application: the group tabs and
+-- titles, the identity, stat, ability, and ribbon labels, the item and
+-- nickname header, and the exit label. Windows the application never
+-- prints a label into carry a neutral name. The compiler resolves the
+-- names to pane geometry records the renderer addresses by role.
 SummarySources.fixedRoles = {
   "infoTab",
-  "infoTitle",
+  "trainerMemoTitle",
   "skillsTitle",
-  "trainerMemo",
-  "skillsTab",
+  "unprintedHeader",
+  "movesTab",
   "performanceTitle",
-  "cancelButton",
+  "itemLabel",
   "dexNoLabel",
   "nameLabel",
   "typeLabel",
@@ -185,16 +186,16 @@ SummarySources.fixedRoles = {
   "abilityLabel",
   "switchButton",
   "exitLabel",
-  "movePpHeader",
-  "movePpCurrent",
-  "movePpMax",
-  "moveDetailHeader",
-  "moveDetailNote",
-  "battleMoves",
-  "performanceTab",
+  "categoryLabel",
+  "powerLabel",
+  "accuracyLabel",
+  "unprintedCenterA",
+  "unprintedCenterB",
   "ribbonsCountLabel",
-  "performanceStarLabel",
-  "hmWarning",
+  "ribbonsTab",
+  "itemName",
+  "level",
+  "nickname",
 }
 
 -- Producer-only semantic role bindings for the normal-group window
@@ -234,7 +235,7 @@ SummarySources.groupRoles = {
       "detailAccuracy",
       "detailDescription",
       "moveFooter",
-      "detailCategory",
+      "switchLabel",
     },
   },
   performance = {
@@ -244,12 +245,13 @@ SummarySources.groupRoles = {
 }
 
 -- NSCR stamp fragments: archive members with their native pixel
--- dimensions. These are stamp compositions, never object frames; the
+-- dimensions. A `pressed` record names the tile rows the Switch tab's
+-- press effect recolors (sub_0208B08C: tile rect (1, 17), 10x2, palette 1). These are stamp compositions, never object frames; the
 -- compiler crops each screen to its fragment size before stamping.
 SummarySources.stamps = {
   { member = 69, width = 136, height = 48 },
   { member = 70, width = 136, height = 48 },
-  { member = 71, width = 80, height = 32 },
+  { member = 71, width = 80, height = 32, pressed = { row = 1, rows = 2, palette = 1 } },
   { member = 72, width = 80, height = 32 },
   { member = 73, width = 88, height = 112 },
   { member = 74, width = 48, height = 24 },
@@ -302,6 +304,8 @@ SummarySources.backgrounds = {
 SummarySources.bars = {
   hp = {
     length = 48,
+    -- Tile (10, 5) of the main pane, shown on the skills page only.
+    origin = { x = 80, y = 40 },
     columns = 6,
     charBlock = "mainChar",
     paletteBank = 15,
@@ -316,6 +320,8 @@ SummarySources.bars = {
   },
   exp = {
     length = 56,
+    -- Tile (9, 19) of the sub pane, shown on the info page only.
+    origin = { x = 72, y = 152 },
     columns = 7,
     charBlock = "subChar",
     paletteBank = 14,
@@ -470,6 +476,10 @@ SummarySources.substitutions = {
 SummarySources.textRoles = {
   bank = 13,
   windowSlots = { [13] = "ordinary" },
+  -- Message color n selects the foreground/shadow pair at bank slots
+  -- 2n+1 and 2n+2 over the transparent background, the same rule the
+  -- field font applies; the bank holds seven such pairs.
+  messageColors = 7,
   inks = {
     ordinary = { 14, 15, 0 },
     dark = { 1, 2, 0 },
@@ -2169,6 +2179,52 @@ SummarySources.resdat = {
   animationTable = 52,
 }
 
+-- The "Lv." prefix glyph of the level window: the two-tile glyph at tile 11
+-- of the shared numeric font member, printed at (0, 5) in the level window
+-- (sub_0200CDAC glyph 1).
+SummarySources.levelPrefix = { fontMember = 5, tile = 11, tiles = 2 }
+
+-- The Poké Ball sprite beside the nickname: resource set 0 of the
+-- header-85 inventory supplies the cell and animation (shared archive
+-- members 48 and 47, one 16x16 sequence), while sub_0208B48C replaces its
+-- character with summary-archive member `charBase + ball` and its palette
+-- with member `paletteBase + paletteSlots[ball]` (sprite template 8 of
+-- asm/unk_0208B1AC.s, same pin, supplies the center). Ball ids follow include/constants/balls.h;
+-- ball 25 has no source sprite.
+SummarySources.ballIcons = {
+  cellMember = 48,
+  animationMember = 47,
+  sequence = 0,
+  charBase = 0x18,
+  paletteBase = 0x31,
+  -- _02104C68, indexed by ball id 0..24.
+  paletteSlots = { [0] = 2, 0, 2, 2, 0, 1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 2, 0, 4, 5, 6, 7, 8, 9, 10, 11 },
+  center = { x = 168, y = 39 },
+}
+
+-- The six marking sprites under the picture: sprite templates 23..28 of
+-- asm/unk_0208B1AC.s (same pin) use resource sets 17..22 of the header-85
+-- inventory, which share one palette (summary archive member 61), cell, and
+-- animation (shared archive members 51 and 50) and differ in character member. Sequence 0 is the
+-- unset gray shape and sequence 1 the set shape. Order follows the marking
+-- bits: circle, triangle, square, heart, star, diamond.
+SummarySources.markings = {
+  paletteMember = 61,
+  cellMember = 51,
+  animationMember = 50,
+  unsetSequence = 0,
+  setSequence = 1,
+  charMembers = { 52, 56, 55, 57, 53, 54 },
+  centers = {
+    { x = 200, y = 150 },
+    { x = 208, y = 150 },
+    { x = 216, y = 150 },
+    { x = 224, y = 150 },
+    { x = 232, y = 150 },
+    { x = 240, y = 150 },
+  },
+}
+
 -- Dynamic-role resource selection: the header-85 resource set and the
 -- animation sequences each semantic role rasterizes. Sequence keys are
 -- the semantic animation names the manifest publishes. A bare number is
@@ -2192,14 +2248,9 @@ SummarySources.chromeResources = {
     resourceSet = 2,
     sequences = {
       rootFocus = { sequence = 2, paletteBank = 2 },
-      moveRowFocus = { sequence = 0, paletteBank = 0 },
-      restrictedCancel = { sequence = 1, paletteBank = 0 },
+      moveRowFocus = { sequence = 0, paletteBank = 2 },
+      restrictedCancel = { sequence = 1, paletteBank = 2 },
     },
-  },
-  secondaryMoveCursor = {
-    resourceSet = 14,
-    paletteBank = 0,
-    sequences = { moveCancel = 0, moveFollow = 1 },
   },
   performance = {
     resourceSet = 44,
@@ -2246,6 +2297,40 @@ SummarySources.chromeGeometry = {
       { x = 183, y = 119 },
       { x = 223, y = 127 },
     },
+    -- The six party icon sprites sit inside the same member boxes,
+    -- from the sprite resource header table of asm/unk_0208B1AC.s.
+    iconAnchors = {
+      { x = 184, y = 50 },
+      { x = 224, y = 58 },
+      { x = 184, y = 82 },
+      { x = 224, y = 90 },
+      { x = 184, y = 114 },
+      { x = 224, y = 122 },
+    },
+  },
+  -- Type and category icons (the shared move-icons family) are sprites
+  -- positioned by their center:
+  -- the displayed mon's types on the INFO sub pane (one icon centered,
+  -- two icons side by side), one type icon per move row and for the
+  -- picker's prospective row, and the selected move's category icon.
+  moveIcons = {
+    infoSingle = { x = 108, y = 48 },
+    infoPair = { { x = 91, y = 48 }, { x = 125, y = 48 } },
+    moveRowX = 24,
+    moveRowBaseY = 16,
+    moveRowStep = 32,
+    prospective = { x = 24, y = 160 },
+    category = { x = 232, y = 40 },
+    -- The displayed mon's one or two types atop the open move detail
+    -- (sub_0208B5A8): the second shows only when it differs.
+    detailTypes = { { x = 200, y = 24 }, { x = 234, y = 24 } },
+  },
+  -- The rest of the open move detail panel: the mon's party icon beside
+  -- its types (sub_0208C068, skills page) and the 80x32 stamp that gives
+  -- the move rows their Switch tab (sub_0208AFA0, stamp 2 at tile (1, 16)).
+  moveDetailPanel = {
+    monIcon = { x = 160, y = 16 },
+    switchTab = { stamp = 71, origin = { x = 8, y = 128 } },
   },
   moveDetail = {
     x = 68,

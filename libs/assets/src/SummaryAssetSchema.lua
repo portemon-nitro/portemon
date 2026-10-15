@@ -734,6 +734,10 @@ function SummaryAssetSchema.assertManifest(manifest)
     performance = true,
     leaves = true,
     ribbons = true,
+    moveIcons = true,
+    moveDetail = true,
+    ballIcons = true,
+    markings = true,
   }, {}, "manifest.sprites")
   if type(sprites.animations) ~= "table" then
     fail("manifest.sprites.animations must be a record", {})
@@ -759,7 +763,7 @@ function SummaryAssetSchema.assertManifest(manifest)
   local primaryCursor = sprites.primaryCursor --[[@as table<string, unknown>]]
   checkKeys(
     primaryCursor,
-    { anchors = true, rootFocus = true, moveRowFocus = true, restrictedCancel = true },
+    { anchors = true, iconAnchors = true, rootFocus = true, moveRowFocus = true, restrictedCancel = true },
     {},
     "manifest.sprites.primaryCursor"
   )
@@ -774,6 +778,18 @@ function SummaryAssetSchema.assertManifest(manifest)
     ipairs(primaryCursor.anchors --[[@as table[] ]])
   do
     checkAnchor(anchor, {}, "manifest.sprites.primaryCursor.anchors[" .. index .. "]")
+  end
+  if
+    type(primaryCursor.iconAnchors) ~= "table"
+    or not Validate.isArray(primaryCursor.iconAnchors --[[@as table[] ]])
+    or #primaryCursor.iconAnchors ~= 6
+  then
+    fail("manifest.sprites.primaryCursor.iconAnchors must carry six member icon anchors", {})
+  end
+  for index, anchor in
+    ipairs(primaryCursor.iconAnchors --[[@as table[] ]])
+  do
+    checkAnchor(anchor, {}, "manifest.sprites.primaryCursor.iconAnchors[" .. index .. "]")
   end
   for _, field in ipairs({ "rootFocus", "moveRowFocus", "restrictedCancel" }) do
     animationRef(primaryCursor[field], "manifest.sprites.primaryCursor." .. field)
@@ -790,8 +806,6 @@ function SummaryAssetSchema.assertManifest(manifest)
     restrictedCancelY = true,
     cancelAnchor = true,
     restrictedSpecialAnchor = true,
-    moveCancel = true,
-    moveFollow = true,
   }, {}, "manifest.sprites.secondaryMoveCursor")
   for _, field in ipairs({ "x", "rowBaseY", "rowStep", "cancelY", "restrictedCancelY" }) do
     checkInt(secondaryMoveCursor[field], {}, "manifest.sprites.secondaryMoveCursor." .. field)
@@ -802,9 +816,6 @@ function SummaryAssetSchema.assertManifest(manifest)
     {},
     "manifest.sprites.secondaryMoveCursor.restrictedSpecialAnchor"
   )
-  for _, field in ipairs({ "moveCancel", "moveFollow" }) do
-    animationRef(secondaryMoveCursor[field], "manifest.sprites.secondaryMoveCursor." .. field)
-  end
   if type(sprites.performance) ~= "table" then
     fail("manifest.sprites.performance must be a record", {})
   end
@@ -876,6 +887,115 @@ function SummaryAssetSchema.assertManifest(manifest)
   checkAnchor(leaves.crownAnchor, {}, "manifest.sprites.leaves.crownAnchor")
   animationRef(leaves.leaf, "manifest.sprites.leaves.leaf")
   animationRef(leaves.crown, "manifest.sprites.leaves.crown")
+  if type(sprites.moveIcons) ~= "table" then
+    fail("manifest.sprites.moveIcons must be a record", {})
+  end
+  local moveIcons = sprites.moveIcons --[[@as table<string, unknown>]]
+  checkKeys(moveIcons, {
+    infoSingle = true,
+    infoPair = true,
+    moveRowX = true,
+    moveRowBaseY = true,
+    moveRowStep = true,
+    prospective = true,
+    category = true,
+    detailTypes = true,
+  }, {}, "manifest.sprites.moveIcons")
+  checkAnchor(moveIcons.infoSingle, {}, "manifest.sprites.moveIcons.infoSingle")
+  if
+    type(moveIcons.infoPair) ~= "table"
+    or not Validate.isArray(moveIcons.infoPair --[[@as table[] ]])
+    or #moveIcons.infoPair ~= 2
+  then
+    fail("manifest.sprites.moveIcons.infoPair must carry two anchors", {})
+  end
+  for index, anchor in
+    ipairs(moveIcons.infoPair --[[@as table[] ]])
+  do
+    checkAnchor(anchor, {}, "manifest.sprites.moveIcons.infoPair[" .. index .. "]")
+  end
+  for _, field in ipairs({ "moveRowX", "moveRowBaseY", "moveRowStep" }) do
+    checkInt(moveIcons[field], {}, "manifest.sprites.moveIcons." .. field)
+  end
+  checkAnchor(moveIcons.prospective, {}, "manifest.sprites.moveIcons.prospective")
+  checkAnchor(moveIcons.category, {}, "manifest.sprites.moveIcons.category")
+  if
+    type(moveIcons.detailTypes) ~= "table"
+    or not Validate.isArray(moveIcons.detailTypes --[[@as table[] ]])
+    or #moveIcons.detailTypes ~= 2
+  then
+    fail("manifest.sprites.moveIcons.detailTypes must carry two anchors", {})
+  end
+  for index, anchor in
+    ipairs(moveIcons.detailTypes --[[@as table[] ]])
+  do
+    checkAnchor(anchor, {}, "manifest.sprites.moveIcons.detailTypes[" .. index .. "]")
+  end
+  if type(sprites.moveDetail) ~= "table" then
+    fail("manifest.sprites.moveDetail must be a record", {})
+  end
+  local moveDetail = sprites.moveDetail --[[@as table<string, unknown>]]
+  checkKeys(moveDetail, { monIcon = true, switchTab = true }, {}, "manifest.sprites.moveDetail")
+  checkAnchor(moveDetail.monIcon, {}, "manifest.sprites.moveDetail.monIcon")
+  local switchTab = moveDetail.switchTab
+  if type(switchTab) ~= "table" then
+    fail("manifest.sprites.moveDetail.switchTab must be a record", {})
+  end
+  checkKeys(
+    switchTab --[[@as table<string, unknown>]],
+    { visual = true, pressedVisual = true, origin = true },
+    {},
+    "manifest.sprites.moveDetail.switchTab"
+  )
+  checkAnchor(switchTab.origin, {}, "manifest.sprites.moveDetail.switchTab.origin")
+  for _, field in ipairs({ "visual", "pressedVisual" }) do
+    local name = switchTab[field]
+    if
+      type(name) ~= "string" or (root.visuals --[[@as table<string, unknown>]])[name] == nil
+    then
+      fail("manifest.sprites.moveDetail.switchTab names an unknown visual", { field = field })
+    end
+  end
+  if type(sprites.ballIcons) ~= "table" then
+    fail("manifest.sprites.ballIcons must be a record", {})
+  end
+  local ballIcons = sprites.ballIcons --[[@as table<string, unknown>]]
+  checkKeys(ballIcons, { center = true, icons = true }, {}, "manifest.sprites.ballIcons")
+  checkAnchor(ballIcons.center, {}, "manifest.sprites.ballIcons.center")
+  if type(ballIcons.icons) ~= "table" or next(ballIcons.icons) == nil then
+    fail("manifest.sprites.ballIcons.icons must name at least one ball visual", {})
+  end
+  for itemKey, name in
+    pairs(ballIcons.icons --[[@as table<string, unknown>]])
+  do
+    if
+      type(name) ~= "string" or (root.visuals --[[@as table<string, unknown>]])[name] == nil
+    then
+      fail("manifest.sprites.ballIcons.icons names an unknown visual", { item = itemKey })
+    end
+  end
+  if
+    type(sprites.markings) ~= "table"
+    or #sprites.markings --[[@as table[] ]]
+      ~= 6
+  then
+    fail("manifest.sprites.markings must carry six marking sprites", {})
+  end
+  for index, marking in
+    ipairs(sprites.markings --[[@as table[] ]])
+  do
+    local what = "manifest.sprites.markings[" .. index .. "]"
+    checkKeys(marking, { center = true, unset = true, set = true }, {}, what)
+    checkAnchor(marking.center, {}, what .. ".center")
+    for _, state in ipairs({ "unset", "set" }) do
+      local name = marking[state]
+      if
+        type(name) ~= "string" or (root.visuals --[[@as table<string, unknown>]])[name] == nil
+      then
+        fail(what .. "." .. state .. " names an unknown visual", {})
+      end
+    end
+  end
   if type(sprites.ribbons) ~= "table" then
     fail("manifest.sprites.ribbons must be a record", {})
   end
@@ -1040,7 +1160,7 @@ function SummaryAssetSchema.assertManifest(manifest)
       fail(what .. " must be a record", {})
     end
     local typed = bar --[[@as table<string, unknown>]]
-    checkKeys(typed, { length = true, colors = true, empty = true, full = true }, {}, what)
+    checkKeys(typed, { length = true, origin = true, colors = true, empty = true, full = true }, {}, what)
     checkInt(typed.length, {}, what .. ".length")
     if
       typed.length --[[@as integer]]
@@ -1048,6 +1168,7 @@ function SummaryAssetSchema.assertManifest(manifest)
     then
       fail(what .. ".length must be positive", {})
     end
+    checkAnchor(typed.origin, {}, what .. ".origin")
     if type(typed.colors) ~= "table" then
       fail(what .. ".colors must be a record", {})
     end

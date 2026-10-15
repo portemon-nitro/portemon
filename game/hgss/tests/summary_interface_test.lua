@@ -6,6 +6,7 @@
 -- without touching native state.
 
 local Assert = require("tests.support.Assert")
+local MoveIconFixture = require("tests.support.MoveIconFixture")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local FakeGraphics = require("tests.support.FakeGraphics")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
@@ -128,10 +129,21 @@ local function openSummary(service, class)
   function portraits:dimensions(_)
     return { width = 80, height = 80 }
   end
+  local iconImage = { id = "icon-image" }
+  local icons = {}
+  function icons:image(_)
+    return iconImage
+  end
+  function icons:quadFor(key)
+    return { key = key }
+  end
+  function icons:dimensions(_)
+    return { width = 32, height = 32 }
+  end
   local lease = {}
   local images = {}
   function lease:prepare(demand)
-    local assets = { manifest = family, portraits = portraits }
+    local assets = { manifest = family, portraits = portraits, icons = icons, moveIcons = MoveIconFixture.manifest() }
     -- The ready bundle resolves every mapped visual through the
     -- production lookup shape: callers below draw real chrome, so the
     -- double hands out one stub image per compiled visual and path.

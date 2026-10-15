@@ -689,7 +689,7 @@ end
 return {
   metadata = {
     capabilities = { "rom_dump", "derived_assets" },
-    derivedAssets = { "summary:global", "party:global" },
+    derivedAssets = { "move-icons:global", "summary:global", "party:global" },
   },
   tests = T,
 }

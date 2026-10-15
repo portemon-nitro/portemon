@@ -377,8 +377,9 @@ end
 
 ---@param catalog MonCatalog
 ---@param moves table[]
+---@param dashes string generated wording for a move value the move lacks
 ---@return table[]
-local function projectMoves(catalog, moves)
+local function projectMoves(catalog, moves, dashes)
   local rows = {}
   for moveSlot = 0, 3 do
     local entry = moves[moveSlot + 1]
@@ -399,11 +400,11 @@ local function projectMoves(catalog, moves)
       local accuracy = assert(definition.accuracy, "catalog moves carry accuracy")
       local powerText = tostring(power)
       if power == 0 or power == 1 then
-        powerText = "—"
+        powerText = dashes
       end
       local accuracyText = tostring(accuracy)
       if accuracy == 0 then
-        accuracyText = "—"
+        accuracyText = dashes
       end
       rows[#rows + 1] = {
         kind = "move",
@@ -715,6 +716,7 @@ local function buildRich(reader, slot0, context, manifest, catalog, derive)
         nickname = nil,
         displayName = "EGG",
         otName = eggOtName,
+        otGender = origin.trainerGender == 0 and "male" or "female",
         gender = "genderless",
         shiny = false,
       },
@@ -808,7 +810,7 @@ local function buildRich(reader, slot0, context, manifest, catalog, derive)
       dexNumber = assert(numbers.national, "dex numbers carry a national entry")
     end
     assert(type(dexNumber) == "number", "dex numbers are numeric")
-    local dexText = tostring(dexNumber)
+    local dexText = string.format("%03d", dexNumber)
     if dexMode == "regional" and dexNumber == 0 then
       local unknownText = labels["synUnknownDex"]
       if type(unknownText) == "string" and unknownText ~= "" then
@@ -842,6 +844,7 @@ local function buildRich(reader, slot0, context, manifest, catalog, derive)
         speciesName = speciesName,
         types = types,
         otName = otName,
+        otGender = origin.trainerGender == 0 and "male" or "female",
         gender = gender,
         shiny = shiny,
       },
@@ -882,7 +885,11 @@ local function buildRich(reader, slot0, context, manifest, catalog, derive)
         nature = { up = up, down = down },
         hpBar = { length = barLength, color = hpColor },
       },
-      moves = projectMoves(catalog, assert(mon.moves, "stored mons carry their moves")),
+      moves = projectMoves(
+        catalog,
+        assert(mon.moves, "stored mons carry their moves"),
+        assert(labels.dashesLong, "the summary family carries the dashed value label")
+      ),
       ribbons = projectRibbons(mon, context, manifest),
       performance = projectPerformance(mon, selectedModifier(context, slot0, manifest), context, manifest),
       indicators = nil,

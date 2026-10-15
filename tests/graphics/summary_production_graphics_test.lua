@@ -6,6 +6,8 @@
 -- renderer, and real caches throughout; sibling dispatch is preserved.
 
 local Assert = require("tests.support.Assert")
+local MoveIconCache = require("libs.assets.src.MoveIconCache")
+local RosterIconStandIn = require("tests.support.RosterIconStandIn")
 local CacheFs = require("libs.storage.src.CacheFs")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
@@ -442,7 +444,14 @@ end
 ---@return table<string, unknown> ready-bundle-shaped test bundle
 local function readyLikeBundle(scope, cacheFs, manifest, text, portraits, shader)
   local images = {}
-  local bundle = { manifest = manifest, portraits = portraits, text = text, shader = shader }
+  local bundle = {
+    manifest = manifest,
+    portraits = portraits,
+    text = text,
+    shader = shader,
+    icons = RosterIconStandIn.new(scope),
+    moveIcons = MoveIconCache.loadManifest(cacheFs),
+  }
   function bundle.visualImage(name)
     local visuals = assert(manifest.visuals, "the compiled family carries its visuals")
     local record = visuals[name]
@@ -1076,7 +1085,7 @@ function T.production_summary_draws_through_the_ready_bundle_without_party_graft
     readyLikeBundle(scope, cacheFs, summaryManifest, text, portraitProvider(scope, cacheFs), pictureShader(scope))
   Assert.isNil(bundle.partyManifest, "the ready bundle carries no party manifest")
   Assert.isNil(bundle.badgeImage, "the ready bundle carries no party badge images")
-  Assert.isNil(bundle.icons, "the ready bundle carries no party icon strip")
+  Assert.notNil(bundle.icons, "the ready bundle carries the roster icon provider")
   local main = drawNativePane(scope, renderer, active, "main", bundle)
   local sub = drawNativePane(scope, renderer, active, "sub", bundle)
   Assert.isTrue(
@@ -1120,12 +1129,18 @@ function T.production_summary_moves_member_chrome_through_its_ready_bundle(scope
     readyLikeBundle(scope, cacheFs, summaryManifest, text, portraitProvider(scope, cacheFs), pictureShader(scope))
   local main = drawNativePane(scope, renderer, active, "main", assets)
   local first = drawNativePane(scope, renderer, active, "sub", assets)
-  Assert.isTrue(paneDifference(main, first) > 1000, "the production child draws distinct main and sub surfaces")
+  Assert.isTrue(
+    paneDifference(main, first) > 1000,
+    "the production child draws distinct main and sub surfaces"
+  )
   rig.flow:updateFixed({ { type = "navigate", direction = "down" } })
   active = flowChild(rig)
   Assert.equal(active.slot, 1, "vertical input reaches the second member")
   local second = drawNativePane(scope, renderer, active, "sub", assets)
-  Assert.isTrue(paneDifference(first, second) > 20, "switching members moves the member focus chrome")
+  Assert.isTrue(
+    paneDifference(first, second) > 20,
+    "switching members moves the member focus chrome"
+  )
   text:release()
   rig.flow:updateFixed({ { type = "cancel" } })
   for _ = 1, 24 do
@@ -1143,5 +1158,5 @@ end
 local suite = GraphicsSmoke.suite(T)
 suite.metadata.capabilities = { "graphics", "rom_dump" }
 suite.metadata.derivedAssets =
-  { "summary:global", "mon-catalog:global", "mon-summary:global", "field-font:global", "party:global" }
+  { "move-icons:global", "summary:global", "mon-catalog:global", "mon-summary:global", "field-font:global", "party:global" }
 return suite

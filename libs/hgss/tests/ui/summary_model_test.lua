@@ -218,7 +218,7 @@ function T.native_identity_and_skills_project_through_the_manifest_context()
     "the visible trainer id keeps five digits"
   )
   Assert.equal(facts.info.dexNumber, 1, "the regional map selects the regional dex number")
-  Assert.isTrue(facts.info.dexText:find("1", 1, true) ~= nil, "the dex text shows the selected number")
+  Assert.equal(facts.info.dexText, "001", "the dex text zero-pads the selected number to three digits")
   local national = buildFacts(service, 0, SummaryPresentationFixture.context(1, { dexMode = "national" }), manifest)
   Assert.equal(national.info.dexNumber, 152, "the national mode selects the national dex number")
   Assert.equal(facts.skills.level, derived.level, "skills keep the derived level")

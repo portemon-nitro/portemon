@@ -5,6 +5,9 @@
 -- icon, queue, and text collaborators stay alive.
 
 local Assert = require("tests.support.Assert")
+local CacheFs = require("libs.storage.src.CacheFs")
+local MoveIconCache = require("libs.assets.src.MoveIconCache")
+local MoveIconFixture = require("tests.support.MoveIconFixture")
 local SummaryAcceptanceFixture = require("tests.support.SummaryAcceptanceFixture")
 local SummaryModel = require("libs.hgss.src.ui.SummaryModel")
 local MonCache = require("libs.assets.src.MonCache")
@@ -158,7 +161,8 @@ function T.preparation_leases_bound_portrait_demand_and_release_exactly_once()
     end
     Assert.equal(
       resident,
-      #SummaryCache.referencedPaths(manifest),
+      #SummaryCache.referencedPaths(manifest)
+        + #MoveIconCache.referencedPaths(MoveIconCache.loadManifest(CacheFs.forVersion(versionId))),
       versionId .. " keeps the family visuals resident across leases"
     )
     Assert.equal(setup.helper.calls.iconReleases, 0, versionId .. " never releases the borrowed icon provider")
@@ -533,6 +537,9 @@ end
 local function portraitCache(entries)
   local cache = {}
   function cache:loadLua(path)
+    if path == MoveIconCache.manifestPath() then
+      return MoveIconFixture.manifest()
+    end
     Assert.equal(path, MonCache.portraitManifestPath(), "portrait reads name the portrait manifest")
     return { entries = entries }
   end
@@ -691,7 +698,7 @@ function T.shared_paths_resolve_one_canonical_image()
   local counts = countQueueRequests(setup.helper)
   Assert.equal(
     #setup.helper.graphics.images,
-    #SummaryCache.referencedPaths(family),
+    #SummaryCache.referencedPaths(family) + #MoveIconCache.referencedPaths(MoveIconFixture.manifest()),
     "one path loads one image no matter how many records name it"
   )
   local lease = setup.owner:acquire()
@@ -729,7 +736,11 @@ function T.last_lease_release_frees_pages_while_family_visuals_stay_resident()
   local owner = setup.owner
   local graphics = setup.helper.graphics
   local visualCount = #graphics.images
-  Assert.equal(visualCount, #SummaryCache.referencedPaths(setup.manifest), "construction loads every family visual")
+  Assert.equal(
+    visualCount,
+    #SummaryCache.referencedPaths(setup.manifest) + #MoveIconCache.referencedPaths(MoveIconFixture.manifest()),
+    "construction loads every family and shared move icon visual"
+  )
   local first = owner:acquire()
   local second = owner:acquire()
   local demand = exactDemand("shared-lifetime", { selector })
@@ -851,7 +862,7 @@ end
 return {
   metadata = {
     capabilities = { "rom_dump", "derived_assets" },
-    derivedAssets = { "summary:global" },
+    derivedAssets = { "move-icons:global", "summary:global" },
   },
   tests = T,
 }

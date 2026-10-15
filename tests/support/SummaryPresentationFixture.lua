@@ -65,8 +65,6 @@ local CHROME_ANIMATIONS = {
   "rootFocus",
   "moveRowFocus",
   "restrictedCancel",
-  "moveCancel",
-  "moveFollow",
   "starBase",
   "starAbove",
   "starBelow",
@@ -80,25 +78,48 @@ local CHROME_ANIMATIONS = {
   "ribbonPageNext",
 }
 
-local function chromeVisuals()
+function SummaryPresentationFixture.chromeVisuals()
   local visuals = {
     detailBacking = { image = "assets/generated/summary/syn-detail-backing.png", width = 8, height = 8 },
+    stamp71 = { image = "assets/generated/summary/syn-stamp-71.png", width = 80, height = 32 },
+    stamp71Pressed = { image = "assets/generated/summary/syn-stamp-71-pressed.png", width = 80, height = 32 },
+    levelPrefix = { image = "assets/generated/summary/syn-level-prefix.png", width = 16, height = 8 },
+    marking1Unset = { image = "assets/generated/summary/syn-marking-1-unset.png", width = 8, height = 8, offset = { x = -4, y = -4 } },
+    marking1Set = { image = "assets/generated/summary/syn-marking-1-set.png", width = 8, height = 8, offset = { x = -4, y = -4 } },
+    marking2Unset = { image = "assets/generated/summary/syn-marking-2-unset.png", width = 8, height = 8, offset = { x = -4, y = -4 } },
+    marking2Set = { image = "assets/generated/summary/syn-marking-2-set.png", width = 8, height = 8, offset = { x = -4, y = -4 } },
+    marking3Unset = { image = "assets/generated/summary/syn-marking-3-unset.png", width = 8, height = 8, offset = { x = -4, y = -4 } },
+    marking3Set = { image = "assets/generated/summary/syn-marking-3-set.png", width = 8, height = 8, offset = { x = -4, y = -4 } },
+    marking4Unset = { image = "assets/generated/summary/syn-marking-4-unset.png", width = 8, height = 8, offset = { x = -4, y = -4 } },
+    marking4Set = { image = "assets/generated/summary/syn-marking-4-set.png", width = 8, height = 8, offset = { x = -4, y = -4 } },
+    marking5Unset = { image = "assets/generated/summary/syn-marking-5-unset.png", width = 8, height = 8, offset = { x = -4, y = -4 } },
+    marking5Set = { image = "assets/generated/summary/syn-marking-5-set.png", width = 8, height = 8, offset = { x = -4, y = -4 } },
+    marking6Unset = { image = "assets/generated/summary/syn-marking-6-unset.png", width = 8, height = 8, offset = { x = -4, y = -4 } },
+    marking6Set = { image = "assets/generated/summary/syn-marking-6-set.png", width = 8, height = 8, offset = { x = -4, y = -4 } },
+    ["ballIcon_SYN-BALL"] = {
+      image = "assets/generated/summary/syn-ball.png",
+      width = 16,
+      height = 16,
+      offset = { x = -8, y = -8 },
+    },
   }
   for _, name in ipairs(CHROME_ANIMATIONS) do
-    visuals["syn-" .. name] = { image = "assets/generated/summary/syn-" .. name .. ".png", width = 16, height = 16 }
+    visuals["syn-" .. name] =
+      { image = "assets/generated/summary/syn-" .. name .. ".png", width = 16, height = 16 }
   end
   return visuals
 end
 
-local function chromeSprites()
+function SummaryPresentationFixture.chromeSprites()
   local animations = {}
   for _, name in ipairs(CHROME_ANIMATIONS) do
-    animations[name] =
-      { frames = { { visual = "syn-" .. name, durationTicks = 2 } }, loopFrom = 1, playback = "static" }
+    animations[name] = { frames = { { visual = "syn-" .. name, durationTicks = 2 } }, loopFrom = 1, playback = "static" }
   end
-  local primaryAnchors = {}
+
+  local primaryAnchors, iconAnchors = {}, {}
   for index = 1, 6 do
     primaryAnchors[index] = { x = 8 * index, y = 8 }
+    iconAnchors[index] = { x = 8 * index, y = 24 }
   end
   local leafAnchors = {}
   for index = 1, 5 do
@@ -126,6 +147,7 @@ local function chromeSprites()
     animations = animations,
     primaryCursor = {
       anchors = primaryAnchors,
+      iconAnchors = iconAnchors,
       rootFocus = "rootFocus",
       moveRowFocus = "moveRowFocus",
       restrictedCancel = "restrictedCancel",
@@ -138,10 +160,28 @@ local function chromeSprites()
       restrictedCancelY = 168,
       cancelAnchor = { x = 68, y = 168 },
       restrictedSpecialAnchor = { x = 220, y = 176 },
-      moveCancel = "moveCancel",
-      moveFollow = "moveFollow",
     },
     performance = { rows = rows },
+    markings = {
+      { center = { x = 200, y = 150 }, unset = "marking1Unset", set = "marking1Set" },
+      { center = { x = 208, y = 150 }, unset = "marking2Unset", set = "marking2Set" },
+      { center = { x = 216, y = 150 }, unset = "marking3Unset", set = "marking3Set" },
+      { center = { x = 224, y = 150 }, unset = "marking4Unset", set = "marking4Set" },
+      { center = { x = 232, y = 150 }, unset = "marking5Unset", set = "marking5Set" },
+      { center = { x = 240, y = 150 }, unset = "marking6Unset", set = "marking6Set" },
+    },
+    ballIcons = { center = { x = 168, y = 39 }, icons = { ["SYN-BALL"] = "ballIcon_SYN-BALL" } },
+    moveIcons = {
+      infoSingle = { x = 108, y = 48 },
+      infoPair = { { x = 91, y = 48 }, { x = 125, y = 48 } },
+      moveRowX = 24,
+      moveRowBaseY = 16,
+      moveRowStep = 32,
+      prospective = { x = 24, y = 160 },
+      category = { x = 232, y = 40 },
+      detailTypes = { { x = 200, y = 24 }, { x = 234, y = 24 } },
+    },
+    moveDetail = { monIcon = { x = 160, y = 16 }, switchTab = { visual = "stamp71", pressedVisual = "stamp71Pressed", origin = { x = 8, y = 128 } } },
     leaves = { anchors = leafAnchors, crownAnchor = { x = 8, y = 16 }, leaf = "leaf", crown = "crown" },
     ribbons = {
       origin = { x = 32, y = 24 },
@@ -275,6 +315,40 @@ local function memoLabels(labels)
   labels["synEggWatchDistant"] = "SYN HATCH DISTANT"
   labels["synEggWatchFar"] = "SYN HATCH FAR"
   labels["synUnknownDex"] = "???"
+  for key, text in pairs({
+    info = "SYN INFO",
+    trainerMemo = "SYN MEMO",
+    skills = "SYN SKILLS",
+    battleMoves = "SYN MOVES",
+    performance = "SYN PERFORMANCE",
+    ribbons = "SYN RIBBONS",
+    itemLabel = "SYN ITEM",
+    noItem = "SYN NONE",
+    genderMale = "SYN M",
+    genderFemale = "SYN F",
+    dexNoLabel = "SYN DEX",
+    nameLabel = "SYN NAME",
+    typeLabel = "SYN TYPE",
+    otLabel = "SYN OT",
+    idNoLabel = "SYN ID",
+    expPointsLabel = "SYN EXP",
+    toNextLabel = "SYN NEXT",
+    hpLabel = "SYN HP",
+    attackLabel = "SYN ATK",
+    defenseLabel = "SYN DEF",
+    spAttackLabel = "SYN SPA",
+    spDefenseLabel = "SYN SPD",
+    speedLabel = "SYN SPE",
+    abilityLabel = "SYN ABILITY",
+    ribbonsCountLabel = "SYN RIBBON COUNT",
+    slashSeparator = "/",
+    dashes = "SYN DASHES",
+    dashesLong = "SYN LONG DASHES",
+    ppLabel = "SYN PP",
+    switchMoveButton = "SYN SWITCH",
+  }) do
+    labels[key] = text
+  end
   return labels
 end
 
@@ -404,141 +478,30 @@ end
 -- gift-location closure entry travels with the rules but never
 -- selects, exactly like its generated counterpart.
 local MEMO_BRANCHES = {
-  {
-    key = "migrated",
-    match = { isEgg = false, fateful = false, eggLocation = "none", metLocation = "palPark" },
-    lines = { 1, 2, 6, 7, 0 },
-    template = migratedSegments,
-  },
-  {
-    key = "fatefulEncounter",
-    match = { isEgg = false, fateful = true, mine = true, eggLocation = "none", metLocation = "notPalPark" },
-    lines = { 1, 2, 7, 8, 0 },
-    template = metSegments,
-  },
-  {
-    key = "fatefulEncounterTraded",
-    match = { isEgg = false, fateful = true, mine = false, eggLocation = "none", metLocation = "notPalPark" },
-    lines = { 1, 2, 7, 8, 0 },
-    template = metSegments,
-  },
-  {
-    key = "wildGift",
-    match = { isEgg = false, fateful = false, eggLocation = "none", metLocation = "linkTrade" },
-    lines = { 1, 2, 6, 7, 0 },
-    template = metSegments,
-  },
-  {
-    key = "wildGiftTraded",
-    selectable = false,
-    match = { isEgg = false, fateful = false, mine = false, eggLocation = "none", metLocation = "linkTrade" },
-    lines = { 1, 2, 6, 7, 0 },
-    template = metSegments,
-  },
-  {
-    key = "wildEncounter",
-    match = { isEgg = false, fateful = false, mine = true, eggLocation = "none", metLocation = "wild" },
-    lines = { 1, 2, 6, 7, 0 },
-    template = metSegments,
-  },
-  {
-    key = "wildEncounterTraded",
-    match = { isEgg = false, fateful = false, mine = false, eggLocation = "none", metLocation = "wild" },
-    lines = { 1, 2, 6, 7, 0 },
-    template = function()
-      return metSegments("SYN traded ")
-    end,
-  },
-  {
-    key = "fatefulEggHatchedGift",
-    match = { isEgg = false, fateful = true, mine = true, eggLocation = "linkTrade2" },
-    lines = { 1, 2, 9, 0, 0 },
-    template = hatchedSegments,
-  },
-  {
-    key = "fatefulEggHatchedGiftTraded",
-    match = { isEgg = false, fateful = true, mine = false, eggLocation = "linkTrade2" },
-    lines = { 1, 2, 9, 0, 0 },
-    template = hatchedSegments,
-  },
-  {
-    key = "fatefulEggHatchedArrived",
-    match = { isEgg = false, fateful = true, mine = true, eggLocation = "ranger" },
-    lines = { 1, 2, 9, 0, 0 },
-    template = hatchedSegments,
-  },
-  {
-    key = "fatefulEggHatchedArrivedTraded",
-    match = { isEgg = false, fateful = true, mine = false, eggLocation = "ranger" },
-    lines = { 1, 2, 9, 0, 0 },
-    template = hatchedSegments,
-  },
-  {
-    key = "fatefulEggHatched",
-    match = { isEgg = false, fateful = true, mine = true, eggLocation = "hatched" },
-    lines = { 1, 2, 9, 0, 0 },
-    template = hatchedSegments,
-  },
-  {
-    key = "fatefulEggHatchedTraded",
-    match = { isEgg = false, fateful = true, mine = false, eggLocation = "hatched" },
-    lines = { 1, 2, 9, 0, 0 },
-    template = hatchedSegments,
-  },
-  {
-    key = "eggHatchedGift",
-    match = { isEgg = false, fateful = false, mine = true, eggLocation = "giftSet" },
-    lines = { 1, 2, 8, 9, 0 },
-    template = hatchedSegments,
-  },
-  {
-    key = "eggHatchedGiftTraded",
-    match = { isEgg = false, fateful = false, mine = false, eggLocation = "giftSet" },
-    lines = { 1, 2, 8, 9, 0 },
-    template = hatchedSegments,
-  },
-  {
-    key = "eggHatched",
-    match = { isEgg = false, fateful = false, mine = true, eggLocation = "hatched" },
-    lines = { 1, 2, 8, 9, 0 },
-    template = hatchedSegments,
-  },
-  {
-    key = "eggHatchedTraded",
-    match = { isEgg = false, fateful = false, mine = false, eggLocation = "hatched" },
-    lines = { 1, 2, 8, 9, 0 },
-    template = hatchedSegments,
-  },
-  {
-    key = "fatefulEggArrived",
-    match = { isEgg = true, fateful = true, mine = true, eggLocation = "ranger" },
-    lines = { 0, 1, 0, 0, 6 },
-    template = eggSegments,
-  },
-  {
-    key = "fatefulEgg",
-    match = { isEgg = true, fateful = true, mine = true, eggLocation = "egg" },
-    lines = { 0, 1, 0, 0, 6 },
-    template = eggSegments,
-  },
-  {
-    key = "fatefulEggTraded",
-    match = { isEgg = true, fateful = true, mine = false, eggLocation = "egg" },
-    lines = { 0, 1, 0, 0, 6 },
-    template = eggSegments,
-  },
-  {
-    key = "egg",
-    match = { isEgg = true, fateful = false, mine = true, eggLocation = "egg" },
-    lines = { 0, 1, 0, 0, 6 },
-    template = eggSegments,
-  },
-  {
-    key = "eggTraded",
-    match = { isEgg = true, fateful = false, mine = false, eggLocation = "egg" },
-    lines = { 0, 1, 0, 0, 6 },
-    template = eggSegments,
-  },
+  { key = "migrated", match = { isEgg = false, fateful = false, eggLocation = "none", metLocation = "palPark" }, lines = { 1, 2, 6, 7, 0 }, template = migratedSegments },
+  { key = "fatefulEncounter", match = { isEgg = false, fateful = true, mine = true, eggLocation = "none", metLocation = "notPalPark" }, lines = { 1, 2, 7, 8, 0 }, template = metSegments },
+  { key = "fatefulEncounterTraded", match = { isEgg = false, fateful = true, mine = false, eggLocation = "none", metLocation = "notPalPark" }, lines = { 1, 2, 7, 8, 0 }, template = metSegments },
+  { key = "wildGift", match = { isEgg = false, fateful = false, eggLocation = "none", metLocation = "linkTrade" }, lines = { 1, 2, 6, 7, 0 }, template = metSegments },
+  { key = "wildGiftTraded", selectable = false, match = { isEgg = false, fateful = false, mine = false, eggLocation = "none", metLocation = "linkTrade" }, lines = { 1, 2, 6, 7, 0 }, template = metSegments },
+  { key = "wildEncounter", match = { isEgg = false, fateful = false, mine = true, eggLocation = "none", metLocation = "wild" }, lines = { 1, 2, 6, 7, 0 }, template = metSegments },
+  { key = "wildEncounterTraded", match = { isEgg = false, fateful = false, mine = false, eggLocation = "none", metLocation = "wild" }, lines = { 1, 2, 6, 7, 0 }, template = function()
+    return metSegments("SYN traded ")
+  end },
+  { key = "fatefulEggHatchedGift", match = { isEgg = false, fateful = true, mine = true, eggLocation = "linkTrade2" }, lines = { 1, 2, 9, 0, 0 }, template = hatchedSegments },
+  { key = "fatefulEggHatchedGiftTraded", match = { isEgg = false, fateful = true, mine = false, eggLocation = "linkTrade2" }, lines = { 1, 2, 9, 0, 0 }, template = hatchedSegments },
+  { key = "fatefulEggHatchedArrived", match = { isEgg = false, fateful = true, mine = true, eggLocation = "ranger" }, lines = { 1, 2, 9, 0, 0 }, template = hatchedSegments },
+  { key = "fatefulEggHatchedArrivedTraded", match = { isEgg = false, fateful = true, mine = false, eggLocation = "ranger" }, lines = { 1, 2, 9, 0, 0 }, template = hatchedSegments },
+  { key = "fatefulEggHatched", match = { isEgg = false, fateful = true, mine = true, eggLocation = "hatched" }, lines = { 1, 2, 9, 0, 0 }, template = hatchedSegments },
+  { key = "fatefulEggHatchedTraded", match = { isEgg = false, fateful = true, mine = false, eggLocation = "hatched" }, lines = { 1, 2, 9, 0, 0 }, template = hatchedSegments },
+  { key = "eggHatchedGift", match = { isEgg = false, fateful = false, mine = true, eggLocation = "giftSet" }, lines = { 1, 2, 8, 9, 0 }, template = hatchedSegments },
+  { key = "eggHatchedGiftTraded", match = { isEgg = false, fateful = false, mine = false, eggLocation = "giftSet" }, lines = { 1, 2, 8, 9, 0 }, template = hatchedSegments },
+  { key = "eggHatched", match = { isEgg = false, fateful = false, mine = true, eggLocation = "hatched" }, lines = { 1, 2, 8, 9, 0 }, template = hatchedSegments },
+  { key = "eggHatchedTraded", match = { isEgg = false, fateful = false, mine = false, eggLocation = "hatched" }, lines = { 1, 2, 8, 9, 0 }, template = hatchedSegments },
+  { key = "fatefulEggArrived", match = { isEgg = true, fateful = true, mine = true, eggLocation = "ranger" }, lines = { 0, 1, 0, 0, 6 }, template = eggSegments },
+  { key = "fatefulEgg", match = { isEgg = true, fateful = true, mine = true, eggLocation = "egg" }, lines = { 0, 1, 0, 0, 6 }, template = eggSegments },
+  { key = "fatefulEggTraded", match = { isEgg = true, fateful = true, mine = false, eggLocation = "egg" }, lines = { 0, 1, 0, 0, 6 }, template = eggSegments },
+  { key = "egg", match = { isEgg = true, fateful = false, mine = true, eggLocation = "egg" }, lines = { 0, 1, 0, 0, 6 }, template = eggSegments },
+  { key = "eggTraded", match = { isEgg = true, fateful = false, mine = false, eggLocation = "egg" }, lines = { 0, 1, 0, 0, 6 }, template = eggSegments },
 }
 
 local function memoSection()
@@ -604,12 +567,12 @@ end
 -- contract.
 local FIXED_ROLE_NAMES = {
   "infoTab",
-  "infoTitle",
+  "trainerMemoTitle",
   "skillsTitle",
-  "trainerMemo",
-  "skillsTab",
+  "unprintedHeader",
+  "movesTab",
   "performanceTitle",
-  "cancelButton",
+  "itemLabel",
   "dexNoLabel",
   "nameLabel",
   "typeLabel",
@@ -627,16 +590,16 @@ local FIXED_ROLE_NAMES = {
   "abilityLabel",
   "switchButton",
   "exitLabel",
-  "movePpHeader",
-  "movePpCurrent",
-  "movePpMax",
-  "moveDetailHeader",
-  "moveDetailNote",
-  "battleMoves",
-  "performanceTab",
+  "categoryLabel",
+  "powerLabel",
+  "accuracyLabel",
+  "unprintedCenterA",
+  "unprintedCenterB",
   "ribbonsCountLabel",
-  "performanceStarLabel",
-  "hmWarning",
+  "ribbonsTab",
+  "itemName",
+  "level",
+  "nickname",
 }
 
 local GROUP_ROLE_NAMES = {
@@ -665,7 +628,7 @@ local GROUP_ROLE_NAMES = {
       "detailAccuracy",
       "detailDescription",
       "moveFooter",
-      "detailCategory",
+      "switchLabel",
     },
   },
   performance = {
@@ -702,6 +665,41 @@ local function syntheticWindows()
   return { fixed = fixed, groups = groups }
 end
 
+local function staticTemplates()
+  local templates = natureTemplates()
+  templates.nickname = { segments = { { kind = "nickname", field = 0 } } }
+  templates.itemName = { segments = { { kind = "item", field = 0 } } }
+  templates.levelNumber = { segments = { { kind = "number", field = 0 } } }
+  templates.cancelButton = { alignment = "center", segments = { { kind = "text", value = "SYN CANCEL" } } }
+  return templates
+end
+
+local function textRoles()
+  local function ink(foreground, shadow)
+    return {
+      foreground = { r = foreground, g = foreground, b = foreground, a = 255 },
+      shadow = { r = shadow, g = shadow, b = shadow, a = 255 },
+      background = { r = 0, g = 0, b = 0, a = 0 },
+    }
+  end
+  local roles = {
+    slot13 = ink(255, 107),
+    ordinary = ink(255, 107),
+    dark = ink(66, 181),
+    male = ink(80, 160),
+    female = ink(120, 200),
+    statRaised = ink(250, 107),
+    statLowered = ink(150, 107),
+    movePanel = ink(60, 190),
+  }
+  -- Message colors select the same pairs the generated family compiles:
+  -- 0 the dark ink, 1 the male ink, 2 the female ink.
+  roles.slot0 = roles.dark
+  roles.slot1 = roles.male
+  roles.slot2 = roles.female
+  return roles
+end
+
 function SummaryPresentationFixture.manifest()
   local labels = {}
   memoLabels(labels)
@@ -719,11 +717,11 @@ function SummaryPresentationFixture.manifest()
     groups = {
       info = { main = { map = 1 }, sub = { normal = 2, restricted = 3 } },
       skills = { main = { map = 4 }, sub = { normal = 5, restricted = 6 } },
-      performance = { main = { map = 7, locked = 8 }, sub = { normal = 9, noPerformance = 10 } },
+      performance = { main = { map = 7, locked = 8 }, sub = { normal = 9 } },
     },
     windows = syntheticWindows(),
-    visuals = chromeVisuals(),
-    sprites = chromeSprites(),
+    visuals = SummaryPresentationFixture.chromeVisuals(),
+    sprites = SummaryPresentationFixture.chromeSprites(),
     hitboxes = {
       -- Mirroring touch entries: one box per transcribed target class
       -- (tabs, exit, member, move row, ribbon cell) with synthetic
@@ -745,19 +743,14 @@ function SummaryPresentationFixture.manifest()
     },
     text = {
       labels = labels,
-      templates = natureTemplates(),
-      roles = {
-        slot13 = {
-          foreground = { r = 255, g = 255, b = 255, a = 255 },
-          shadow = { r = 107, g = 107, b = 107, a = 255 },
-          background = { r = 0, g = 0, b = 0, a = 0 },
-        },
-      },
+      templates = staticTemplates(),
+      roles = textRoles(),
     },
     palettes = {},
     bars = {
       hp = {
         length = 48,
+        origin = { x = 80, y = 40 },
         colors = {
           high = { r = 0, g = 255, b = 0 },
           low = { r = 255, g = 255, b = 0 },
@@ -768,6 +761,7 @@ function SummaryPresentationFixture.manifest()
       },
       exp = {
         length = 56,
+        origin = { x = 72, y = 152 },
         colors = {
           high = { r = 0, g = 0, b = 255 },
           low = { r = 0, g = 0, b = 255 },

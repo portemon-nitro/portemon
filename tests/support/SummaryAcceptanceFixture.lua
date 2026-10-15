@@ -156,6 +156,15 @@ function SummaryAcceptanceFixture.preparationDoubles(failures)
       end
       return true, nil
     end,
+    image = function(_, _)
+      return { id = "roster-icon-image" }
+    end,
+    quadFor = function(_, key)
+      return { key = key }
+    end,
+    dimensions = function(_, _)
+      return { width = 32, height = 32 }
+    end,
     cancelPreparation = function(_)
       calls.iconCancels = calls.iconCancels + 1
     end,

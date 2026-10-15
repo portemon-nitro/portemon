@@ -1132,7 +1132,7 @@ function T.a_color_change_alone_creates_no_empty_run()
   for _, run in ipairs(first.runs) do
     Assert.isTrue(type(run.text) == "string" and #run.text > 0, "no empty run appears at the ink boundary")
   end
-  Assert.equal(first.runs[1].ink, "ordinary", "the text before the change keeps its ink")
+  Assert.equal(first.runs[1].ink, "dark", "the text before the change keeps its ink")
   Assert.equal(first.runs[2].ink, "slot7", "the text after the change takes the new ink")
 end
 
@@ -1154,7 +1154,7 @@ function T.one_line_templates_keep_their_single_block_shape()
   Assert.notNil(dated, "the one-line template produces its block")
   Assert.equal(#dated.runs, 1, "adjacent same-ink text coalesces into one run")
   Assert.equal(dated.runs[1].text, "SYN 5.", "the one-line template keeps its wording")
-  Assert.equal(dated.runs[1].ink, "ordinary", "the one-line template keeps its ink")
+  Assert.equal(dated.runs[1].ink, "dark", "the one-line template keeps its ink")
 end
 
 -- Encounter dates render the stored year as a two-character
@@ -1204,7 +1204,7 @@ function T.encounter_years_render_as_two_digit_values_while_the_stored_date_keep
     local dated = blockByLine(facts.memo.blocks, branch.lines.date)
     Assert.notNil(dated, "the date line keeps its authored position")
     for _, run in ipairs(dated.runs) do
-      Assert.equal(run.ink, "ordinary", "the date line keeps its ink")
+      Assert.equal(run.ink, "dark", "the date line keeps its ink")
     end
     Assert.isTrue(
       memoText(facts.memo.blocks):find("SYN met at Lv. 5.", 1, true) ~= nil,
