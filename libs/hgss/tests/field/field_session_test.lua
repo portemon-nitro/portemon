@@ -4051,6 +4051,8 @@ function T.warp_gestures_remain_idle_while_vertical_offset_progresses_through_co
       end,
       setPresentationOffset = function() end,
       clearPresentationOffset = function() end,
+      removePresence = function() end,
+      materializeObject = function() end,
     }
     local facade = {
       position = function()

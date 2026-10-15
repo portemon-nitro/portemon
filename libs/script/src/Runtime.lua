@@ -1272,14 +1272,14 @@ local function handleFace(node, run)
 end
 
 local function handleShowObject(node, run)
-  local actorId = semanticsFor(run).requireActor(node.actor, run)
+  local actorId = semanticsFor(run).materializeActor(node.actor, run)
   run.services.actors:show(actorId)
   return Runtime.OUTCOME_CONTINUE
 end
 
 local function handleHideObject(node, run)
   local actorId = semanticsFor(run).requireActor(node.actor, run)
-  run.services.actors:hide(actorId)
+  run.services.actors:remove(actorId)
   return Runtime.OUTCOME_CONTINUE
 end
 

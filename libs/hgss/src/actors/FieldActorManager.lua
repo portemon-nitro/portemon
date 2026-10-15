@@ -131,6 +131,7 @@ local AUTONOMOUS_STEP_TICKS = assert(MovementCalibration.SPEED_TICKS.normal)
 ---@field _destroy fun(self: FieldActorManager, entry: FieldActorManager.Entry, actor: FieldActorManager.Actor)
 ---@field leaveMap fun(self: FieldActorManager, mapId: integer)
 ---@field removePresence fun(self: FieldActorManager, actorId: string, recordRemoval: boolean)
+---@field materializeObject fun(self: FieldActorManager, objectEventId: integer): string
 ---@field enterMap fun(self: FieldActorManager, runtimeMap: RuntimeFieldMap, eventState: FieldEventState, restoredObjects: table<string, unknown>?)
 ---@field dispose fun(self: FieldActorManager)
 ---@field visualRevision fun(self: FieldActorManager): integer
@@ -1259,6 +1260,41 @@ function FieldActorManager:removePresence(actorId, recordRemoval)
     local sourceEvent = assert(actor.sourceEvent, "removed actors require a source event")
     self.removedOverrides[actor.mapId .. ":" .. assert(sourceEvent.objectEventId)] = true
   end
+end
+
+-- Scripted ShowPerson: make the current map's object exist and be visible,
+-- creating it from its source event when it is absent (regardless of its
+-- removal flag, as the retail command does). Returns the actor id.
+---@param objectEventId integer
+---@return string actorId
+---@param self FieldActorManager
+function FieldActorManager:materializeObject(objectEventId)
+  local entry = self.currentMapId ~= nil and self.maps[self.currentMapId] or nil
+  if entry == nil then
+    Errors.raise(
+      ScriptErrors.SCRIPT_ACTOR_NOT_FOUND,
+      "no current map to create an object in",
+      { mapIndex = objectEventId }
+    )
+  end
+  assert(entry ~= nil)
+  local actorId = entry.store:getActorByIndex(objectEventId)
+  if actorId ~= nil then
+    requireActor(self, actorId):setVisible(true)
+    return actorId
+  end
+  local fieldData = entry.runtimeMap.fieldData --[[@as FieldActorFieldData]]
+  for _, event in ipairs(fieldData.events.objects) do
+    if event.objectEventId == objectEventId then
+      return self:_instantiate(entry, event, self.eventState).actorId
+    end
+  end
+  Errors.raise(
+    ScriptErrors.SCRIPT_ACTOR_NOT_FOUND,
+    "map object index " .. tostring(objectEventId) .. " is not declared by the current map",
+    { mapIndex = objectEventId }
+  )
+  error("unreachable: object lookup failure was raised")
 end
 
 ---@param mapId integer

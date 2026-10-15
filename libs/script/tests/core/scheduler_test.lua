@@ -1041,7 +1041,6 @@ T["actor operations"] = function()
         S.facePlayer({ actor = "self" }),
         S.setObjectFacing({ actor = "obj_T20R0101_doctor", direction = "east" }),
         S.setObjectPosition({ actor = "obj_T20R0101_doctor", fieldX = 9, fieldZ = 8 }),
-        S.hideObject({ actor = "obj_T20R0101_doctor" }),
         S.showObject({ actor = "obj_T20R0101_doctor" }),
         S.getPlayerCoords({ x = S.local_("px"), z = S.local_("pz") }),
         S.getObjectCoords({ actor = "obj_T20R0101_doctor", x = S.local_("ex"), z = S.local_("ez") }),

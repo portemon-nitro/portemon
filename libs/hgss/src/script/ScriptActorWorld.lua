@@ -11,6 +11,8 @@
 ---@field getActor fun(self: ScriptActorManager, actorId: string): table<string, unknown>|nil
 ---@field show fun(self: ScriptActorManager, actorId: string)
 ---@field hide fun(self: ScriptActorManager, actorId: string)
+---@field removePresence fun(self: ScriptActorManager, actorId: string, recordRemoval: boolean)
+---@field materializeObject fun(self: ScriptActorManager, objectEventId: integer): string
 ---@field setPosition fun(self: ScriptActorManager, actorId: string, position: table<string, unknown>, options: { scripted: boolean }?)
 ---@field setFacing fun(self: ScriptActorManager, actorId: string, direction: string)
 ---@field setMovementType fun(self: ScriptActorManager, actorId: string, movementType: string)
@@ -40,6 +42,8 @@ local REQUIRED_MANAGER_METHODS = {
   "getActor",
   "show",
   "hide",
+  "removePresence",
+  "materializeObject",
   "setPosition",
   "setFacing",
   "setMovementType",
@@ -143,9 +147,8 @@ function ScriptActorWorld:snapshot(actorId)
     mapId = actor.mapId,
     position = position,
     facing = facing,
-    -- Scripted hide_object is transient visibility on the live actor: the
-    -- snapshot reports the same state collision sees (hidden actors remain
-    -- solid), so the two views never contradict.
+    -- Transient scripted visibility (movement set_visible) leaves the actor
+    -- solid; the snapshot reports the same state collision sees.
     visible = self:isVisible(actorId),
   }
 end
@@ -162,6 +165,24 @@ function ScriptActorWorld:hide(actorId)
     return
   end
   self._manager:hide(actorId)
+end
+
+-- Scripted `hide_object` (retail HidePerson) deletes the object: presence,
+-- collision and presentation go together. The deletion is transient, so the
+-- map rebuilds the actor from its source event on re-entry.
+---@param actorId string
+function ScriptActorWorld:remove(actorId)
+  assert(actorId ~= "player", "the player cannot be removed")
+  self._manager:removePresence(actorId, false)
+end
+
+-- Scripted `show_object` of a numeric map-object index (retail ShowPerson):
+-- the object exists and is visible afterwards, created from its source event
+-- when absent. Returns the actor id.
+---@param mapIndex integer
+---@return string
+function ScriptActorWorld:materialize(mapIndex)
+  return self._manager:materializeObject(mapIndex)
 end
 
 -- Every position set reaching the manager through this adapter is

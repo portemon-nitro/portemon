@@ -1878,6 +1878,34 @@ function T.hidden_actors_report_hidden_snapshots_and_stay_solid()
   Assert.equal(world:snapshot("map:61:object:0").visible, true, "show_object restores snapshot visibility")
 end
 
+-- Retail ShowPerson creates the object from its source event; HidePerson
+-- deletes it. A flagged event is created regardless of its flag, and showing
+-- a live object is idempotent.
+function T.materialize_object_recreates_a_removed_actor_from_its_source_event()
+  local mgr = manager(
+    { object({ objectEventId = 0, x = 2, z = 3 }), object({ objectEventId = 1, x = 4, eventFlag = 401 }) },
+    { eventState = FieldEventState.new({ flags = { [401] = true } }) }
+  )
+  local actorId = "map:61:object:0"
+  Assert.isNil(mgr:getById("map:61:object:1"), "the flagged object starts absent")
+  mgr:removePresence(actorId, false)
+  Assert.isNil(mgr:getById(actorId), "the removed actor is gone")
+  Assert.isNil(mgr:actorIdForMapIndex(0), "the removed object no longer resolves by index")
+  Assert.equal(mgr:materializeObject(0), actorId, "materialize reports the object's actor id")
+  local actor = assert(mgr:getById(actorId), "the actor is recreated")
+  Assert.isTrue(actor:isVisible())
+  Assert.equal(actor:getFieldPosition().fieldX, 2, "the actor returns to its source tile")
+  Assert.notNil(getAt(mgr, 61, 2, 3, 0), "the recreated actor is solid again")
+  Assert.equal(mgr:materializeObject(0), actorId, "materializing a live object is idempotent")
+  Assert.equal(mgr:getById(actorId), actor, "idempotent materialize keeps the live actor")
+  mgr:hide(actorId)
+  mgr:materializeObject(0)
+  Assert.isTrue(mgr:getById(actorId):isVisible(), "materialize reveals a hidden live actor")
+  Assert.equal(mgr:materializeObject(1), "map:61:object:1", "an object whose flag is set can still be created")
+  Assert.isFalse(pcall(mgr.materializeObject, mgr, 99), "an undeclared object index faults")
+  mgr:dispose()
+end
+
 function T.script_hidden_actors_stay_in_the_save_snapshot()
   -- Scripted visibility is transient: the save record carries no visibility
   -- field, and spawn state recomputes from event flags on load. A hidden

@@ -920,9 +920,8 @@ function FieldObjectActor:setFacing(direction)
   assignFacing(self, requireFacing(direction, { actorId = self.actorId }))
 end
 
--- Scripted visibility toggle (`show_object`/`hide_object`). The flag-driven
--- existence rule stays authoritative at map entry; these are transient
--- scripted states on the live actor.
+-- Transient visibility toggle on the live actor (movement `set_visible`). The
+-- flag-driven existence rule stays authoritative at map entry.
 ---@param visible boolean
 function FieldObjectActor:setVisible(visible)
   self:_numeric().visible = visible ~= false and 1 or 0

@@ -354,6 +354,26 @@ function RuntimeValues.evaluateCondition(condition, run)
   return false
 end
 
+-- Evaluate a numeric local map-object index reference (the pinned
+-- MapObjectManager_GetFirstActiveObjectByID path).
+---@param ref table<string, unknown>
+---@param run table<string, unknown>
+---@return integer
+function RuntimeValues.evaluateMapIndex(ref, run)
+  local mapIndex = ref.mapIndex
+  if type(mapIndex) == "table" then
+    mapIndex = RuntimeValues.evaluateValue(mapIndex, run)
+  end
+  if type(mapIndex) ~= "number" or mapIndex < 0 or mapIndex ~= math.floor(mapIndex) then
+    Errors.raise(
+      ScriptErrors.SCRIPT_INVALID_REFERENCE,
+      "map object index must evaluate to a nonnegative integer",
+      { scriptId = run.instance.scriptId, mapIndex = tostring(mapIndex) }
+    )
+  end
+  return mapIndex
+end
+
 -- Resolve an actor reference to a concrete actor id. Special references
 -- resolve through the trigger context and the actor world adapter.
 ---@param ref unknown
@@ -371,21 +391,7 @@ function RuntimeValues.resolveActor(ref, run)
     )
   end
   if ref.mapIndex ~= nil then
-    -- A numeric local map-object index: resolve against the current map
-    -- through the actor adapter (the pinned
-    -- MapObjectManager_GetFirstActiveObjectByID path). The actor world
-    -- contract requires actorIdForMapIndex.
-    local mapIndex = ref.mapIndex
-    if type(mapIndex) == "table" then
-      mapIndex = RuntimeValues.evaluateValue(mapIndex, run)
-    end
-    if type(mapIndex) ~= "number" or mapIndex < 0 or mapIndex ~= math.floor(mapIndex) then
-      Errors.raise(
-        ScriptErrors.SCRIPT_INVALID_REFERENCE,
-        "map object index must evaluate to a nonnegative integer",
-        { scriptId = run.instance.scriptId, mapIndex = tostring(mapIndex) }
-      )
-    end
+    local mapIndex = RuntimeValues.evaluateMapIndex(ref, run)
     local actorId = run.services.actors:actorIdForMapIndex(mapIndex)
     if actorId == nil then
       Errors.raise(
@@ -436,6 +442,18 @@ function RuntimeValues.requireActor(ref, run)
     )
   end
   return actorId
+end
+
+-- ShowPerson target: a numeric map-object index names an object that may be
+-- absent and is created on demand; every other reference must be live.
+---@param ref unknown
+---@param run table<string, unknown>
+---@return string actorId
+function RuntimeValues.materializeActor(ref, run)
+  if type(ref) == "table" and ref.ref == "actor" and ref.mapIndex ~= nil then
+    return run.services.actors:materialize(RuntimeValues.evaluateMapIndex(ref, run))
+  end
+  return RuntimeValues.requireActor(ref, run)
 end
 
 ---@param ref unknown

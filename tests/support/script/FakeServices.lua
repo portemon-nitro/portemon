@@ -178,6 +178,22 @@ function FakeActors:hide(actorId)
   actor.visible = false
 end
 
+-- Mirrors ShowPerson on a numeric map-object index: the object must be
+-- declared by the fixture's index map.
+function FakeActors:materialize(mapIndex)
+  local actorId = assert(self.mapIndexes and self.mapIndexes[mapIndex], "fake map index undeclared")
+  if self.actors[actorId] == nil then
+    self:add(actorId, { fieldX = 0, fieldZ = 0, facing = "south" })
+  end
+  self.actors[actorId].visible = true
+  return actorId
+end
+
+function FakeActors:remove(actorId)
+  assert(self.actors[actorId], "fake actor missing: " .. actorId)
+  self.actors[actorId] = nil
+end
+
 function FakeActors:isVisible(actorId)
   local actor = assert(self.actors[actorId], "fake actor missing: " .. actorId)
   return actor.visible ~= false

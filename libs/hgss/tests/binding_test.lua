@@ -229,6 +229,7 @@ end
 -- read-only records; mutation operations reach the manager.
 T["actor world adapter"] = function()
   local actors = {}
+  local removals = {}
   actors.elm = { id = "elm", fieldX = 4, fieldZ = 5, facing = "north", visible = true, mapId = 61 }
   local manager = {
     getActor = function(_, id)
@@ -280,6 +281,13 @@ T["actor world adapter"] = function()
     clearPresentationOffset = function(_, id)
       actors[id].presentationOffset = { x = 0, y = 0, z = 0 }
     end,
+    materializeObject = function(_, index)
+      return "elm_" .. index
+    end,
+    removePresence = function(_, id, recordRemoval)
+      removals[#removals + 1] = { id = id, recordRemoval = recordRemoval }
+      actors[id] = nil
+    end,
   }
   local player = {
     position = function()
@@ -312,6 +320,10 @@ T["actor world adapter"] = function()
   Assert.equal(actors.elm.facing, "east")
   Assert.isFalse(actors.elm.visible)
   Assert.equal(world:getPosition("player").fieldX, 10)
+  Assert.equal(world:materialize(3), "elm_3", "materialize delegates to the manager")
+  world:remove("elm")
+  Assert.deepEqual(removals, { { id = "elm", recordRemoval = false } }, "remove deletes the actor transiently")
+  Assert.isFalse(world:exists("elm"))
 end
 
 -- Actor visibility and presentation offsets are public delegated capabilities:
@@ -388,6 +400,8 @@ T["actor visibility and presentation offsets delegate through the required contr
         actors[id].presentationOffset = { x = 0, y = 0, z = 0 }
         lastOffset = { x = 0, y = 0, z = 0 }
       end,
+      removePresence = function() end,
+      materializeObject = function() end,
     }
   end
   local player = {
@@ -467,6 +481,8 @@ T["missing actor fault through binding path"] = function()
     end,
     setPresentationOffset = function() end,
     clearPresentationOffset = function() end,
+    removePresence = function() end,
+    materializeObject = function() end,
   }
   p.services.actors = ScriptActorWorld.new(manager --[[@as ScriptActorManager]], p.services.player) --[[@as FakeActors]]
   local resource = script("elms_lab.elm", {

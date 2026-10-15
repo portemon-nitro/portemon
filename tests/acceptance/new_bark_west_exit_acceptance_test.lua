@@ -1,6 +1,7 @@
 -- Production-composed New Bark west-exit scene: Elm leaves the lab through its
 -- outdoor door prop, stops the player, and the prop slot is released so the
--- scene can run again after crossing the border.
+-- scene can run again after crossing the border. Elm is then removed from
+-- the field, not merely hidden.
 
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
@@ -33,6 +34,7 @@ local function harness()
 end
 
 local DOOR_SLOT = 77
+local ELM_ACTOR = "map:60:object:5"
 
 -- Elm's door opens, he walks out, and the door closes: the open and close
 -- waits resolve against the lab door prop, and the slot is released so the
@@ -64,12 +66,19 @@ function T.tests.west_exit_scene_plays_elm_door_and_releases_slot()
     end
     Assert.isTrue(loaded, "the scene loads the lab door slot")
     Assert.isTrue(released, "the scene releases the lab door slot after the door closes")
-    for _, record in ipairs(game:recordsNamed("script.error")) do
-      Assert.isFalse(
-        record.payload.message:find("PC terminal", 1, true) ~= nil,
-        "a map prop wait must not poll the PC terminal"
-      )
+    for _ = 1, 600 do
+      if game:snapshot().fieldLocked == false then
+        break
+      end
+      if game:snapshot().dialogue.modal then
+        game.runtime:pressAction()
+        game:step()
+        game.runtime:releaseAction()
+      end
+      game:step()
     end
+    Assert.isNil(game:actor(ELM_ACTOR), "Elm is removed from the field once he enters the lab")
+    Assert.isNil(game.runtime.actors:getById(ELM_ACTOR), "the removed Elm no longer occupies his door tile")
   end, debug.traceback)
   game:close()
   if not ok then
