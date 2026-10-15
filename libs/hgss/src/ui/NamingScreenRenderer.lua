@@ -44,6 +44,8 @@ NamingScreenRenderer.__index = NamingScreenRenderer
 local PAGE_KEYS = { "upper", "lower", "symbols" }
 local CONTROL_KEYS = { "upper", "lower", "symbols", "back", "ok", "backing" }
 local HOME_KEYS = { "upper", "lower", "symbols", "back", "ok" }
+local PAGE_CONTROL_KEYS = { "upper", "lower", "symbols" }
+local PRESS_KEYS = { "back", "ok" }
 
 local function imagePath(manifest, entry, what)
   assert(type(entry) == "table", "naming chrome " .. what .. " is missing")
@@ -65,6 +67,9 @@ local function acquireOrder(naming)
   local order = { "base", "upper", "lower", "symbols" }
   for _, key in ipairs(CONTROL_KEYS) do
     order[#order + 1] = "control:" .. key
+  end
+  for _, key in ipairs(PAGE_CONTROL_KEYS) do
+    order[#order + 1] = "selected:" .. key
   end
   order[#order + 1] = "slot:normal"
   local seen = {}
@@ -89,6 +94,7 @@ local function acquireOrder(naming)
     naming.pokemonGenderMarkers.male,
     naming.pokemonGenderMarkers.female,
   })
+  animationAssets({ naming.pressed.back, naming.pressed.ok })
   animationAssets({ naming.cursor.keyboard })
   local homeRecords = {}
   for _, key in ipairs(HOME_KEYS) do
@@ -242,7 +248,12 @@ function NamingScreenRenderer.new(options)
     requireSprite(naming.controls, key, key .. " control")
   end
   requireSprite(naming.entrySlots, "normal", "normal slot")
+  for _, key in ipairs(PAGE_CONTROL_KEYS) do
+    requireSprite(naming.pageSelected, key, key .. " selected control")
+  end
   local animatedRecords = {
+    naming.pressed.back,
+    naming.pressed.ok,
     naming.entrySlots.selected,
     naming.playerSubjects.male,
     naming.playerSubjects.female,
@@ -313,6 +324,9 @@ function NamingScreenRenderer.new(options)
   end
   for _, key in ipairs(CONTROL_KEYS) do
     paths["control:" .. key] = imagePath(options.manifest, naming.controls[key], key .. " control")
+  end
+  for _, key in ipairs(PAGE_CONTROL_KEYS) do
+    paths["selected:" .. key] = imagePath(options.manifest, naming.pageSelected[key], key .. " selected control")
   end
   paths["slot:normal"] = imagePath(options.manifest, naming.entrySlots.normal, "normal slot")
   local function animationPath(assetId, what)
@@ -442,16 +456,33 @@ function NamingScreenRenderer:draw(view, layout)
     local backing = naming.controls.backing
     drawVisual("control:backing", backing.anchor.x + backing.offset.x, backing.anchor.y + backing.offset.y)
   end
-  for _, key in ipairs(HOME_KEYS) do
-    local record = naming.controls[key]
-    drawVisual("control:" .. key, record.anchor.x + record.offset.x, record.anchor.y + record.offset.y)
+  local presentation = assert(view.presentation, "naming draw requires snapshot presentation clocks")
+  assert(type(presentation.pressTicks) == "table", "naming draw requires the control press clocks")
+  for _, key in ipairs(PAGE_CONTROL_KEYS) do
+    local selected = view.page == key
+    local record = selected and naming.pageSelected[key] or naming.controls[key]
+    drawVisual(
+      (selected and "selected:" or "control:") .. key,
+      record.anchor.x + record.offset.x,
+      record.anchor.y + record.offset.y
+    )
+  end
+  for _, key in ipairs(PRESS_KEYS) do
+    local pressTick = presentation.pressTicks[key]
+    if pressTick == nil then
+      local record = naming.controls[key]
+      drawVisual("control:" .. key, record.anchor.x + record.offset.x, record.anchor.y + record.offset.y)
+    else
+      local record = naming.pressed[key]
+      local frame = record.frames[resolveFrameIndex(record, pressTick)]
+      self:_drawAnimatedFrame(record, frame, record.anchor.x, record.anchor.y, nil)
+    end
   end
   local slots = naming.entrySlots
   local entered = 0
   for _ in Utf8Glyphs.iter(view.text or "") do
     entered = entered + 1
   end
-  local presentation = assert(view.presentation, "naming draw requires snapshot presentation clocks")
   assert(
     type(presentation.subjectTick) == "number"
       and type(presentation.cursorTick) == "number"

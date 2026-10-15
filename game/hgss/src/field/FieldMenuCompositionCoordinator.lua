@@ -901,10 +901,14 @@ local function composeStarterHosts(runtime, boot)
     overrides = starterOverrides,
   })
   local namingOverrides = runtime.presentationOverrides ~= nil and runtime.presentationOverrides.naming_screen or nil
+  local function playNamingEffect(sequence)
+    boot.audioService:play(sequence)
+  end
   runtime.pokemonNaming = require("game.hgss.src.field.PokemonNamingState").new({
     charmap = boot.fontDef.charmap,
     measureDisplay = starterMeasureDisplay,
     overrides = namingOverrides,
+    effect = playNamingEffect,
   })
 end
 

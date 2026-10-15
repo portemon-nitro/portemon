@@ -137,6 +137,8 @@ end
 local function submitName(state)
   state:textinput("GOLD")
   state:gamepadpressed(nil, "start")
+  Assert.equal(state:view().phase, "name_edit", "the naming screen stays up while the OK press plays out")
+  state:tick(8)
 end
 
 local function clickGenderCard(state, gender)
@@ -271,13 +273,13 @@ T.tests.production_oak_name_confirmation_stays_inside_the_safe_frame = function(
   end
 end
 
-T.tests.production_oak_name_confirmation_is_final_on_the_first_post_submit_frame = function()
+T.tests.production_oak_name_confirmation_is_final_once_the_ok_press_settles = function()
   withComposed(AcceptanceHarness.defaultVersion(), 640, 480, function(state)
     driveToNameEdit(state)
     submitName(state)
 
     local first = state:view()
-    Assert.equal(first.phase, "name_confirm", "name submission must enter confirmation immediately")
+    Assert.equal(first.phase, "name_confirm", "a settled name submission enters confirmation")
     Assert.equal(first.messageKey, "profile.name_confirm.male")
     Assert.equal(first.nameCompositionProgress, 1)
     local firstSubject = assert(first.layout.subject)

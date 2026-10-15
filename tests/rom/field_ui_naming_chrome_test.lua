@@ -62,6 +62,21 @@ local function transparentCount(bytes)
   return transparent, total
 end
 
+function T.compiled_top_bar_publishes_selected_pages_and_one_shot_presses(romFs, _)
+  local _, naming = compiledNaming(romFs)
+  for _, id in ipairs({ "upper", "lower", "symbols" }) do
+    Assert.deepEqual(naming.pageSelected[id].anchor, naming.controls[id].anchor, id .. " selected keeps its anchor")
+    Assert.isTrue(naming.pageSelected[id].asset ~= naming.controls[id].asset, id .. " selected is its own visual")
+  end
+  for _, id in ipairs({ "back", "ok" }) do
+    local pressed = naming.pressed[id]
+    Assert.deepEqual(pressed.anchor, naming.controls[id].anchor, id .. " pressed keeps its anchor")
+    Assert.equal(pressed.playMode, "forward", id .. " pressed plays once and holds its resting frame")
+    Assert.equal(#pressed.frames, 2, id .. " pressed is the press frame followed by the resting frame")
+    Assert.isTrue(pressed.frames[1].duration < pressed.frames[2].duration, id .. " press is a brief flash")
+  end
+end
+
 function T.compiled_naming_chrome_has_the_normal_base_and_pages(romFs, _)
   local bundle, naming = compiledNaming(romFs)
   Assert.deepEqual(naming.placement, { x = 11, y = 80, width = 256, height = 112 })

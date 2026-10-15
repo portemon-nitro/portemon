@@ -71,7 +71,7 @@ local function snapshot(cursor)
     maxLength = 7,
     grid = grid,
     subject = { kind = "player", gender = 0 },
-    presentation = { subjectTick = 0, cursorTick = 0, entrySlotTick = 0, glowAngle = 180 },
+    presentation = { subjectTick = 0, cursorTick = 0, entrySlotTick = 0, glowAngle = 180, pressTicks = {} },
   }
 end
 
@@ -241,7 +241,8 @@ local function animatedSnapshot(overrides)
     maxLength = 7,
     grid = grid,
     subject = overrides.subject or { kind = "player", gender = 0 },
-    presentation = overrides.presentation or { subjectTick = 0, cursorTick = 0, entrySlotTick = 0, glowAngle = 180 },
+    presentation = overrides.presentation
+      or { subjectTick = 0, cursorTick = 0, entrySlotTick = 0, glowAngle = 180, pressTicks = {} },
   }
 end
 
@@ -279,7 +280,9 @@ function T.tests.player_subject_advances_through_generated_frames_by_presentatio
   local function subjectPathsAt(tick)
     calls.draws = {}
     renderer:draw(
-      animatedSnapshot({ presentation = { subjectTick = tick, cursorTick = 0, entrySlotTick = 0, glowAngle = 180 } }),
+      animatedSnapshot({
+        presentation = { subjectTick = tick, cursorTick = 0, entrySlotTick = 0, glowAngle = 180, pressTicks = {} },
+      }),
       layout
     )
     return drawnPaths(calls)
@@ -293,7 +296,7 @@ function T.tests.player_subject_advances_through_generated_frames_by_presentatio
   renderer:draw(
     animatedSnapshot({
       subject = { kind = "player", gender = 1 },
-      presentation = { subjectTick = 2, cursorTick = 0, entrySlotTick = 0, glowAngle = 180 },
+      presentation = { subjectTick = 2, cursorTick = 0, entrySlotTick = 0, glowAngle = 180, pressTicks = {} },
     }),
     layout
   )
@@ -319,7 +322,9 @@ function T.tests.reverse_subject_animation_traverses_generated_frames_backwards(
   local function subjectPathsAt(tick)
     calls.draws = {}
     renderer:draw(
-      animatedSnapshot({ presentation = { subjectTick = tick, cursorTick = 0, entrySlotTick = 0, glowAngle = 180 } }),
+      animatedSnapshot({
+        presentation = { subjectTick = tick, cursorTick = 0, entrySlotTick = 0, glowAngle = 180, pressTicks = {} },
+      }),
       layout
     )
     return drawnPaths(calls)
@@ -352,7 +357,9 @@ function T.tests.focus_cursor_tints_only_its_pulse_mask_and_follows_the_glow_ang
     calls.draws = {}
     calls.colors = {}
     renderer:draw(
-      animatedSnapshot({ presentation = { subjectTick = 0, cursorTick = tick, entrySlotTick = 0, glowAngle = angle } }),
+      animatedSnapshot({
+        presentation = { subjectTick = 0, cursorTick = tick, entrySlotTick = 0, glowAngle = angle, pressTicks = {} },
+      }),
       layout
     )
     return drawnPaths(calls)
@@ -479,13 +486,15 @@ function T.tests.support_backing_draws_before_home_controls_and_focus_draws_last
   end
   local backing = assert(order[naming.controls.backing.image], "the support backing draws")
   for _, id in ipairs({ "upper", "lower", "symbols", "back", "ok" }) do
-    local control = assert(order[naming.controls[id].image], "the " .. id .. " control draws")
+    local record = id == "upper" and naming.pageSelected.upper or naming.controls[id]
+    local control = assert(order[record.image], "the " .. id .. " control draws")
     Assert.isTrue(backing < control, "the support backing draws before the " .. id .. " control")
   end
   local cursorAsset = naming.cursor.home.back.frames[1].asset
   local cursor = assert(order[manifest.assets[cursorAsset].image], "the home focus cursor draws")
   for _, id in ipairs({ "upper", "lower", "symbols", "back", "ok" }) do
-    Assert.isTrue(order[naming.controls[id].image] < cursor, "the focus cursor draws after the " .. id .. " control")
+    local record = id == "upper" and naming.pageSelected.upper or naming.controls[id]
+    Assert.isTrue(order[record.image] < cursor, "the focus cursor draws after the " .. id .. " control")
   end
 end
 

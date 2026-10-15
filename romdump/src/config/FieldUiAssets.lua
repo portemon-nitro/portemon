@@ -283,9 +283,16 @@ return {
     objCellMember = 12,
     objAnimMember = 14,
     -- Source animation identities (zero-based) per semantic visual. Only the
-    -- normal-path roles are selected; the special-path fourth page slot and
-    -- the selected-control page-switch frames stay outside this contract.
+    -- normal-path roles are selected; the special-path fourth page slot
+    -- stays outside this contract. A page control rests on its selected
+    -- sequence while its page is active; Back and OK play their pressed
+    -- sequence once per accepted press.
     objAnims = {
+      upperSelected = 0,
+      lowerSelected = 5,
+      symbolsSelected = 10,
+      backPressed = 24,
+      okPressed = 26,
       upper = 3,
       lower = 8,
       symbols = 13,

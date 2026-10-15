@@ -124,6 +124,9 @@ function T.tests.real_nickname_script_preserves_subject_and_result_semantics()
     -- Submitting the initial empty buffer follows the source unchanged-name
     -- result and leaves the live mon without a materialized nickname.
     submitAtOk(game)
+    game:advanceUntil("the OK press plays out and closes the first task", function()
+      return not game.runtime.pokemonNaming:isActive()
+    end, 240)
     waitForNaming(game, "the same script reopens its second nickname task")
     Assert.equal(game.runtime.scripts.worldState:getVar(VAR_BLANK_NICKNAME), 1)
     Assert.isNil(game.runtime.monService:partyMon(0).nickname, "blank input does not write a nickname")

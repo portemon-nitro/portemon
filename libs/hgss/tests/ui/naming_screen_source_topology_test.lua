@@ -16,6 +16,7 @@ end
 
 local function player()
   return NamingScreenController.new({
+    effect = function() end,
     kind = "player",
     maxLength = 7,
     initialText = "",

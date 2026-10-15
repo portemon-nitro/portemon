@@ -107,7 +107,8 @@ local function snapshot(subject, presentation)
     maxLength = 7,
     grid = grid,
     subject = subject,
-    presentation = presentation or { subjectTick = 0, cursorTick = 0, entrySlotTick = 0, glowAngle = 180 },
+    presentation = presentation
+      or { subjectTick = 0, cursorTick = 0, entrySlotTick = 0, glowAngle = 180, pressTicks = {} },
   }
 end
 
@@ -160,7 +161,7 @@ function T.tests.player_subjects_render_from_the_manifest_while_pokemon_delegate
   Assert.deepEqual(seen[1].subject, pokemonSubject)
   Assert.deepEqual(seen[1].placement, { x = -15, y = 9, frameIndex = 1 })
   renderer:draw(
-    snapshot(pokemonSubject, { subjectTick = 20, cursorTick = 0, entrySlotTick = 0, glowAngle = 180 }),
+    snapshot(pokemonSubject, { subjectTick = 20, cursorTick = 0, entrySlotTick = 0, glowAngle = 180, pressTicks = {} }),
     layout
   )
   Assert.equal(#seen, 2, "the animated Pokemon subject continues to draw one semantic part")

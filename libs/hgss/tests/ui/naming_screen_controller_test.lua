@@ -14,12 +14,33 @@ end
 local function player(options)
   options = options or {}
   return NamingScreenController.new({
+    effect = function() end,
     kind = "player",
     maxLength = options.maxLength or 7,
     initialText = options.initialText or "",
     charmap = CHARMAP,
     subject = { kind = "player", gender = options.gender or 0 },
+    effect = options.effect or function() end,
   })
+end
+
+local function recorded(options)
+  local played = {}
+  options = options or {}
+  options.effect = function(sequence)
+    played[#played + 1] = sequence
+  end
+  return player(options), played
+end
+
+-- A submitted name freezes every presentation clock except the OK press.
+local function withoutOkPress(presentation)
+  local copy = {}
+  for key, value in pairs(presentation) do
+    copy[key] = value
+  end
+  copy.pressTicks = { back = presentation.pressTicks.back }
+  return copy
 end
 
 function T.tests.snapshot_exposes_retail_pages_controls_and_source_surface()
@@ -34,6 +55,64 @@ function T.tests.snapshot_exposes_retail_pages_controls_and_source_surface()
   Assert.equal(view.grid[1][1].controlId, "upper")
   Assert.equal(view.grid[1][13].controlId, "ok")
   Assert.equal(#view.controls, 5)
+end
+
+function T.tests.retail_sound_effects_follow_each_accepted_action()
+  local controller, played = recorded({ maxLength = 2 })
+  controller:press("right")
+  controller:activateAt(2, 1)
+  controller:inputText("B")
+  controller:inputText("C")
+  Assert.deepEqual(
+    played,
+    { "SEQ_SE_DP_SELECT", "SEQ_SE_DP_BOX02", "SEQ_SE_DP_BOX02" },
+    "moves select, accepted glyphs click, and a full buffer stays silent"
+  )
+  played[1], played[2], played[3] = nil, nil, nil
+  controller:activateControl("upper")
+  controller:activateControl("lower")
+  controller:activateControl("lower")
+  controller:press("back")
+  controller:press("back")
+  controller:press("back")
+  controller:activateControl("ok")
+  Assert.deepEqual(
+    played,
+    { "SEQ_SE_DP_SYU03", "SEQ_SE_DP_SELECT", "SEQ_SE_DP_SELECT", "SEQ_SE_DP_PIRORIRO" },
+    "only a changed page, a back that deletes, and OK sound"
+  )
+end
+
+function T.tests.back_and_ok_presses_start_their_own_press_clocks()
+  local controller = player({ initialText = "A" })
+  Assert.deepEqual(controller:snapshot().presentation.pressTicks, {})
+  controller:updateFixed(3)
+  controller:press("back")
+  controller:updateFixed(2)
+  Assert.deepEqual(controller:snapshot().presentation.pressTicks, { back = 2 })
+  controller:press("back")
+  Assert.deepEqual(controller:snapshot().presentation.pressTicks, { back = 2 }, "a back on empty text is not a press")
+  controller:activateControl("ok")
+  controller:updateFixed(5)
+  Assert.deepEqual(
+    controller:snapshot().presentation.pressTicks,
+    { back = 2, ok = 5 },
+    "submitting freezes every clock except the OK press"
+  )
+end
+
+function T.tests.submitted_name_settles_after_the_ok_press_plays_out()
+  local controller = player({ initialText = "A" })
+  controller:activateControl("ok")
+  Assert.equal(controller:result().kind, "submit")
+  Assert.equal(controller:snapshot().settled, false)
+  controller:updateFixed(15)
+  Assert.equal(controller:snapshot().settled, false, "retail holds the screen for the sixteen-frame fade")
+  Assert.equal(controller:snapshot().presentation.pressTicks.ok, 15, "the OK press keeps animating")
+  controller:updateFixed(1)
+  Assert.equal(controller:snapshot().settled, true)
+  controller:updateFixed(5)
+  Assert.equal(controller:snapshot().presentation.pressTicks.ok, 16, "the press clock stops once settled")
 end
 
 function T.tests.directional_navigation_skips_blanks_wraps_and_resolves_wide_controls()
@@ -94,6 +173,7 @@ end
 
 function T.tests.player_and_pokemon_subject_contracts_are_strict()
   local pokemon = NamingScreenController.new({
+    effect = function() end,
     kind = "pokemon",
     maxLength = 12,
     initialText = "",
@@ -103,6 +183,7 @@ function T.tests.player_and_pokemon_subject_contracts_are_strict()
   Assert.equal(pokemon:snapshot().subject.species, 25)
   Assert.throws(function()
     NamingScreenController.new({
+      effect = function() end,
       kind = "player",
       maxLength = 7,
       initialText = "",
@@ -112,6 +193,7 @@ function T.tests.player_and_pokemon_subject_contracts_are_strict()
   end)
   Assert.throws(function()
     NamingScreenController.new({
+      effect = function() end,
       kind = "pokemon",
       maxLength = 7,
       initialText = "",
@@ -202,7 +284,7 @@ function T.tests.entry_slot_clock_restarts_only_when_text_moves_the_selected_slo
   controller:activateControl("ok")
   local frozen = assert(controller:snapshot().presentation)
   controller:updateFixed(2)
-  Assert.deepEqual(controller:snapshot().presentation, frozen, "submission freezes every presentation clock")
+  Assert.deepEqual(withoutOkPress(controller:snapshot().presentation), withoutOkPress(frozen), "submission freezes every presentation clock")
 end
 
 -- Two presentation ticks model one 30 Hz source tick driving the 60 Hz
@@ -222,7 +304,11 @@ function T.tests.two_presentation_ticks_keep_sixty_hertz_clocks_and_restore_the_
   Assert.isTrue(controller:activateControl("ok"))
   local frozen = assert(controller:snapshot().presentation)
   controller:updateFixed(2)
-  Assert.deepEqual(controller:snapshot().presentation, frozen, "a submitted name stops advancing presentation state")
+  Assert.deepEqual(
+    withoutOkPress(controller:snapshot().presentation),
+    withoutOkPress(frozen),
+    "a submitted name stops advancing presentation state"
+  )
 end
 
 function T.tests.glow_angle_wraps_to_zero_past_360_and_freezes_after_submit()
@@ -239,7 +325,11 @@ function T.tests.glow_angle_wraps_to_zero_past_360_and_freezes_after_submit()
   Assert.isTrue(controller:activateControl("ok"))
   local frozen = assert(controller:snapshot().presentation)
   controller:updateFixed()
-  Assert.deepEqual(controller:snapshot().presentation, frozen, "a submitted name stops advancing presentation state")
+  Assert.deepEqual(
+    withoutOkPress(controller:snapshot().presentation),
+    withoutOkPress(frozen),
+    "a submitted name stops advancing presentation state"
+  )
 end
 
 function T.tests.focus_movement_resets_cursor_age_and_glow_while_same_cell_keeps_them()

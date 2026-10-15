@@ -1717,6 +1717,19 @@ local function compileNamingScreen(romFs, sha1hex, deps, assets, manifestAssets)
     controls[id] = publish("control-" .. id, assetId, cfg.objAnims[id], cfg.objAnchors[id])
   end
 
+  local pageSelected = {}
+  for _, id in ipairs({ "upper", "lower", "symbols" }) do
+    local assetId = FieldUiAssetCache.ASSET["NAMING_SCREEN_CONTROL_" .. id:upper() .. "_SELECTED"]
+    pageSelected[id] =
+      publish("control-" .. id .. "-selected", assetId, cfg.objAnims[id .. "Selected"], cfg.objAnchors[id])
+  end
+  local pressed = {}
+  for _, id in ipairs({ "back", "ok" }) do
+    local assetId = FieldUiAssetCache.ASSET["NAMING_SCREEN_CONTROL_" .. id:upper() .. "_PRESSED"]
+    pressed[id] = publishAnimation("control-" .. id .. "-pressed", assetId, nil, cfg.objAnims[id .. "Pressed"])
+    pressed[id].anchor = { x = cfg.objAnchors[id].x, y = cfg.objAnchors[id].y }
+  end
+
   local keyboardCursor = publishAnimation(
     "cursor-keyboard",
     FieldUiAssetCache.ASSET.NAMING_SCREEN_CURSOR_KEYBOARD,
@@ -1917,6 +1930,8 @@ local function compileNamingScreen(romFs, sha1hex, deps, assets, manifestAssets)
       keyboard = { cells = keyboardCells },
     },
     controls = controls,
+    pageSelected = pageSelected,
+    pressed = pressed,
     cursor = {
       keyboard = keyboardCursor,
       home = homeCursor,

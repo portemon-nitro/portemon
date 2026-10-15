@@ -100,6 +100,9 @@ function OakIntroController:tick(frames)
       -- The narrative timeline stays at 30 Hz; the naming sprite/pulse
       -- presentation runs at the 60 Hz presentation cadence.
       self._profile:tickNameEditor(2)
+      if self._profile:nameSettled() then
+        self._timeline:beginNameComposition(self._profile:gender())
+      end
     end
   end
 end
@@ -180,11 +183,7 @@ function OakIntroController:press(action)
       return true
     end
   elseif phase == "name_edit" then
-    local accepted, submitted = self._profile:pressName(action)
-    if submitted == "submit" and accepted then
-      self._timeline:beginNameComposition(self._profile:gender())
-    end
-    return accepted
+    return (self._profile:pressName(action))
   else
     return self._timeline:press(action, self._profile)
   end
@@ -195,22 +194,14 @@ function OakIntroController:activateNameCell(row, column)
   if self._disposed or self._timeline:phase() ~= "name_edit" then
     return false
   end
-  local accepted = self._profile:activateNameCell(row, column)
-  if accepted and self._profile:namingResult() and self._profile:namingResult().kind == "submit" then
-    self._timeline:beginNameComposition(self._profile:gender())
-  end
-  return accepted
+  return self._profile:activateNameCell(row, column)
 end
 
 function OakIntroController:activateNameControl(id)
   if self._disposed or self._timeline:phase() ~= "name_edit" then
     return false
   end
-  local accepted = self._profile:activateNameControl(id)
-  if accepted and self._profile:namingResult() and self._profile:namingResult().kind == "submit" then
-    self._timeline:beginNameComposition(self._profile:gender())
-  end
-  return accepted
+  return self._profile:activateNameControl(id)
 end
 
 function OakIntroController:inputText(text)

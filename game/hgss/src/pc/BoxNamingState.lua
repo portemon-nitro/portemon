@@ -11,8 +11,10 @@ function BoxNamingState.new(options)
   assert(type(options) == "table", "box naming requires composition")
   assert(type(options.charmap) == "table", "box naming requires the shared charmap")
   assert(type(options.measureDisplay) == "function", "box naming requires display measurement")
+  assert(type(options.effect) == "function", "box naming requires its sound effect boundary")
   return setmetatable({
     _charmap = options.charmap,
+    _effect = options.effect,
     _measureDisplay = options.measureDisplay,
     _overrides = options.overrides,
     _controller = nil,
@@ -32,6 +34,7 @@ function BoxNamingState:open(request)
     initialText = text,
     charmap = self._charmap,
     subject = { kind = "box" },
+    effect = self._effect,
   })
   local session = ApplicationPresentation.new(NamingInterface.defaults(), self._overrides)
   self._controller, self._session, self._taken = controller, session, false
@@ -61,7 +64,7 @@ end
 
 function BoxNamingState:result()
   local controller = self._controller
-  if controller == nil or self._taken then
+  if controller == nil or self._taken or not controller:settled() then
     return nil
   end
   local result = controller:result()

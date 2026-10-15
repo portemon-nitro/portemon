@@ -1096,6 +1096,15 @@ function FieldUiFixture.namingSemanticsManifest()
         ok = sprite("control-ok", 40, 16, { x = 198, y = 68 }, { x = 0, y = 2 }),
         backing = sprite("control-backing", 216, 32, { x = 22, y = 56 }, { x = 0, y = 0 }),
       },
+      pageSelected = {
+        upper = sprite("control-upper-selected", 32, 16, { x = 26, y = 68 }, { x = 1, y = 3 }),
+        lower = sprite("control-lower-selected", 32, 16, { x = 58, y = 68 }, { x = 0, y = 3 }),
+        symbols = sprite("control-symbols-selected", 32, 16, { x = 90, y = 68 }, { x = 0, y = 3 }),
+      },
+      pressed = {
+        back = animated("control-back-pressed", 40, 16, { x = 158, y = 68 }, { x = 1, y = 3 }),
+        ok = animated("control-ok-pressed", 40, 16, { x = 198, y = 68 }, { x = 0, y = 3 }),
+      },
       cursor = {
         keyboard = (function()
           local record = animated("cursor-keyboard", 16, 19, nil, { x = 0, y = 0 }, "cursor_keyboard_mask")

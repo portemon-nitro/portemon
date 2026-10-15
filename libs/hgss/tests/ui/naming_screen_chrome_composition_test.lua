@@ -93,7 +93,7 @@ local function snapshot(page, cursor)
     maxLength = 7,
     grid = grid,
     subject = { kind = "player", gender = 0 },
-    presentation = { subjectTick = 0, cursorTick = 0, entrySlotTick = 0, glowAngle = 180 },
+    presentation = { subjectTick = 0, cursorTick = 0, entrySlotTick = 0, glowAngle = 180, pressTicks = {} },
   }
 end
 
@@ -155,6 +155,11 @@ function T.construction_acquires_the_base_pages_and_every_semantic_visual()
   for _, record in pairs(naming.cursor.home) do
     animationImages(record)
   end
+  for _, record in pairs(naming.pageSelected) do
+    expected[#expected + 1] = record.image
+  end
+  animationImages(naming.pressed.back)
+  animationImages(naming.pressed.ok)
   expected[#expected + 1] = naming.entrySlots.normal.image
   animationImages(naming.entrySlots.selected)
   Assert.equal(#loads.loads, #expected, "construction loads the chrome plus every semantic visual")
@@ -223,7 +228,8 @@ function T.draw_composes_base_page_controls_slots_text_cursor_and_manifest_subje
     paths[draw.image.path] = true
   end
   for _, id in ipairs({ "upper", "lower", "symbols", "back", "ok", "backing" }) do
-    Assert.isTrue(paths[naming.controls[id].image], "the " .. id .. " control draws its generated visual")
+    local record = id == "lower" and naming.pageSelected.lower or naming.controls[id]
+    Assert.isTrue(paths[record.image], "the " .. id .. " control draws its generated visual")
   end
   local keyboardFrame = naming.cursor.keyboard.frames[1]
   Assert.isTrue(paths[manifest().assets[keyboardFrame.asset].image], "the keyboard cursor draws its generated visual")

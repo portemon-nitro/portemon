@@ -3,6 +3,9 @@
 local NamingScreenController = require("libs.hgss.src.ui.NamingScreenController")
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 
+-- The editor is a silent product tool; the naming screen's effects go nowhere.
+local function silent(_) end
+
 ---@class SaveEditorChoiceOption
 ---@field key string
 ---@field label string
@@ -156,6 +159,7 @@ function SaveEditorValueEditor.new(options)
       initialText = options.initialText,
       charmap = options.charmap,
       subject = options.subject,
+      effect = silent,
     })
   else
     error("unknown Save Editor value editor kind", 2)
@@ -424,6 +428,7 @@ function SaveEditorValueEditor:retry()
       initialText = assert(naming.text),
       charmap = assert(self._nameCharmap),
       subject = assert(naming.subject),
+      effect = silent,
     })
   end
   self._result = nil

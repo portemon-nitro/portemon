@@ -8,6 +8,7 @@ local NamingScreenController = require("libs.hgss.src.ui.NamingScreenController"
 ---@field charmap table<string, integer>
 ---@field measureDisplay fun(): table<string, unknown>
 ---@field overrides table<string, unknown>?
+---@field effect fun(sequence: string)
 
 ---@class PokemonNamingState.Status
 ---@field done boolean
@@ -18,6 +19,7 @@ local NamingScreenController = require("libs.hgss.src.ui.NamingScreenController"
 ---@class PokemonNamingState
 ---@field private _charmap table<string, integer>
 ---@field private _measureDisplay fun(): table<string, unknown>
+---@field private _effect fun(sequence: string)
 ---@field private _overrides table<string, unknown>?
 ---@field private _controller NamingScreenController?
 ---@field private _session ApplicationPresentation?
@@ -35,8 +37,10 @@ function PokemonNamingState.new(options)
   assert(type(options) == "table", "Pokemon naming requires its composition")
   assert(type(options.charmap) == "table", "Pokemon naming requires the field charmap")
   assert(type(options.measureDisplay) == "function", "Pokemon naming requires display measurement")
+  assert(type(options.effect) == "function", "Pokemon naming requires its sound effect boundary")
   return setmetatable({
     _charmap = options.charmap,
+    _effect = options.effect,
     _measureDisplay = options.measureDisplay,
     _overrides = options.overrides,
     _controller = nil,
@@ -73,6 +77,7 @@ function PokemonNamingState:open(spec)
     initialText = assert(spec.currentText, "Pokemon naming requires current text"),
     charmap = self._charmap,
     subject = subject,
+    effect = self._effect,
   })
   local session = ApplicationPresentation.new(NamingInterface.defaults(), self._overrides)
   self._controller = controller
@@ -127,7 +132,7 @@ function PokemonNamingState:status()
   end
   local snapshot = controller:snapshot()
   return {
-    done = snapshot.result ~= nil,
+    done = snapshot.settled,
     text = snapshot.text,
     snapshot = snapshot,
     presentation = assert(self._session, "active Pokemon naming owns a presentation session"):plan(),

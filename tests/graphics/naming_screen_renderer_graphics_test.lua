@@ -63,7 +63,8 @@ local function snapshot(options)
     maxLength = options.maxLength or 7,
     grid = grid,
     subject = options.subject or { kind = "player", gender = 0 },
-    presentation = options.presentation or { subjectTick = 0, cursorTick = 0, entrySlotTick = 0, glowAngle = 180 },
+    presentation = options.presentation
+      or { subjectTick = 0, cursorTick = 0, entrySlotTick = 0, glowAngle = 180, pressTicks = {} },
   }
 end
 
@@ -175,7 +176,7 @@ function T.page_control_and_keyboard_text_use_independent_source_placements()
   renderer:draw(snapshot({ page = "upper", glyphs = { { row = 2, column = 1, value = "A" } } }), layout)
   renderer:dispose()
   assertDrawnOnce(graphics.draws, manifest.assets[naming.pages.upper.asset].image, 11, 80, "the upper page")
-  local upper = naming.controls.upper
+  local upper = naming.pageSelected.upper
   assertDrawnOnce(
     graphics.draws,
     upper.image,
@@ -253,7 +254,8 @@ function T.source_object_layers_and_player_subject_render_from_the_manifest()
   local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 })
   renderer:draw(snapshot({ page = "upper", cursor = { row = 3, column = 5 }, text = "AB", maxLength = 3 }), layout)
 
-  for id, record in pairs(naming.controls) do
+  for id, restingRecord in pairs(naming.controls) do
+    local record = id == "upper" and naming.pageSelected.upper or restingRecord
     assertDrawnOnce(
       graphics.draws,
       record.image,
@@ -386,21 +388,13 @@ function T.active_slot_replaces_static_chrome_with_selected_animation()
   local empty = render(snapshot({ text = "", maxLength = 7 }))
   Assert.equal(#normalDrawsAt(empty, naming.entrySlots.origin.x), 0, "the active empty slot draws no static chrome")
   Assert.equal(#selectedDraws(empty), 1, "the active empty slot draws its selected animation once")
-  Assert.equal(
-    #drawAt(empty, normalPath),
-    6,
-    "every non-active slot keeps its static chrome"
-  )
+  Assert.equal(#drawAt(empty, normalPath), 6, "every non-active slot keeps its static chrome")
   -- Partially filled name: the next empty slot carries only the selected animation.
   local partial = render(snapshot({ text = "AB", maxLength = 7 }))
   local activeX = naming.entrySlots.origin.x + 2 * naming.entrySlots.stepX
   Assert.equal(#normalDrawsAt(partial, activeX), 0, "the next empty slot draws no static chrome")
   Assert.equal(#selectedDraws(partial), 1, "the next empty slot draws its selected animation once")
-  Assert.equal(
-    #drawAt(partial, normalPath),
-    6,
-    "every filled and later slot keeps its static chrome"
-  )
+  Assert.equal(#drawAt(partial, normalPath), 6, "every filled and later slot keeps its static chrome")
   -- Full name: every slot is static and no selected slot remains.
   local full = render(snapshot({ text = "ABCDEFG", maxLength = 7 }))
   Assert.equal(#drawAt(full, normalPath), 7, "a full name keeps every static slot")
@@ -423,7 +417,7 @@ function T.active_entry_slot_uses_its_generated_animation_clock()
   renderer:draw(snapshot({}), layout)
   local first = drawAt(graphics.draws, assetPath)
   renderer:draw(
-    snapshot({ presentation = { subjectTick = 0, cursorTick = 0, entrySlotTick = 1, glowAngle = 180 } }),
+    snapshot({ presentation = { subjectTick = 0, cursorTick = 0, entrySlotTick = 1, glowAngle = 180, pressTicks = {} } }),
     layout
   )
   local second = drawAt(graphics.draws, assetPath)
@@ -460,12 +454,60 @@ function T.home_controls_composite_above_their_support_backing_with_focus_on_top
   end
   local backing = assert(order[naming.controls.backing.image], "the support backing composites")
   for _, id in ipairs({ "upper", "lower", "symbols", "back", "ok" }) do
-    local control = assert(order[naming.controls[id].image], "the " .. id .. " control composites")
+    local record = id == "upper" and naming.pageSelected.upper or naming.controls[id]
+    local control = assert(order[record.image], "the " .. id .. " control composites")
     Assert.isTrue(backing < control, "the " .. id .. " control stays visible above its support backing")
   end
   local variant = naming.cursor.home.back
   local cursor = assert(order[manifest.assets[variant.frames[1].asset].image], "the focus cursor composites")
   Assert.isTrue(cursor > order[naming.controls.back.image], "the focus cursor draws above its control")
+end
+
+function T.top_bar_controls_show_the_active_page_and_their_press_animation()
+  local graphics = FakeGraphics.new()
+  local manifest = FieldUiFixture.namingSemanticsManifest()
+  local naming = manifest.namingScreen
+  local renderer = NamingScreenRenderer.new({
+    graphics = graphics,
+    text = textFake({}),
+    drawSubject = function() end,
+    manifest = manifest,
+    imageLoader = imageLoaderFake({}),
+  })
+  local layout = NamingScreenLayout.compute({ x = 0, y = 0, width = 256, height = 192 })
+  local presentation =
+    { subjectTick = 0, cursorTick = 0, entrySlotTick = 0, glowAngle = 180, pressTicks = { back = 0 } }
+  renderer:draw(snapshot({ page = "lower", presentation = presentation }), layout)
+  renderer:dispose()
+
+  local function drawnOnce(record, what)
+    assertDrawnOnce(
+      graphics.draws,
+      record.image,
+      record.anchor.x + record.offset.x,
+      record.anchor.y + record.offset.y,
+      what
+    )
+  end
+  drawnOnce(naming.pageSelected.lower, "the selected lower control")
+  Assert.equal(
+    #drawAt(graphics.draws, naming.controls.lower.image),
+    0,
+    "the active page shows only its selected visual"
+  )
+  drawnOnce(naming.controls.upper, "the resting upper control")
+  Assert.equal(#drawAt(graphics.draws, naming.pageSelected.upper.image), 0, "an inactive page rests")
+  drawnOnce(naming.controls.ok, "the resting OK control")
+  local pressed = naming.pressed.back
+  local frame = pressed.frames[1]
+  assertDrawnOnce(
+    graphics.draws,
+    manifest.assets[frame.asset].image,
+    pressed.anchor.x + frame.offset.x,
+    pressed.anchor.y + frame.offset.y,
+    "the pressed Back frame"
+  )
+  Assert.equal(#drawAt(graphics.draws, naming.controls.back.image), 0, "a pressed Back replaces its resting visual")
 end
 
 function T.canonical_and_integer_host_scales_share_one_logical_surface()

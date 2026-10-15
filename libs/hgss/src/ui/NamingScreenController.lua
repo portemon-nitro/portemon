@@ -10,6 +10,7 @@ local NamingScreenController = {}
 ---@field initialText string
 ---@field charmap table<string, integer>
 ---@field subject table<string, unknown>
+---@field effect fun(sequence: string) the semantic sound boundary of the hosting application
 
 ---@class NamingScreenSnapshot
 ---@field kind "player"|"pokemon"|"box"
@@ -21,6 +22,7 @@ local NamingScreenController = {}
 ---@field grid table<integer, table<integer, table<string, unknown>>>
 ---@field subject table<string, unknown>
 ---@field result table<string, string>?
+---@field settled boolean whether the result may close the screen
 ---@field presentation table<string, unknown>
 
 ---@class NamingScreenController
@@ -33,9 +35,20 @@ local NamingScreenController = {}
 ---@field applyEvent fun(self: NamingScreenController, event: table<string, unknown>)
 ---@field result fun(self: NamingScreenController): table<string, string>?
 ---@field snapshot fun(self: NamingScreenController): table<string, unknown>
+---@field settled fun(self: NamingScreenController): boolean
 ---@field text fun(self: NamingScreenController): string
 ---@field updateFixed fun(self: NamingScreenController, ticks: integer?)
 NamingScreenController.__index = NamingScreenController
+
+-- Retail NamingScreen sound effects.
+local SELECT = "SEQ_SE_DP_SELECT"
+local GLYPH = "SEQ_SE_DP_BOX02"
+local PAGE = "SEQ_SE_DP_SYU03"
+local CONFIRM = "SEQ_SE_DP_PIRORIRO"
+
+-- Retail plays the OK press while a 16-step, one-frame fade-out runs, then
+-- closes the screen.
+local SUBMIT_SETTLE_TICKS = 16
 
 local ROWS, COLUMNS = 6, 13
 local PAGES = { "upper", "lower", "symbols" }
@@ -149,10 +162,11 @@ local function sameCell(first, second)
   return first.kind == second.kind and first.glyph == second.glyph and first.controlId == second.controlId
 end
 
----@param options { kind: "player"|"pokemon"|"box", maxLength: integer, initialText: string, charmap: table<string, integer>, subject: table<string, unknown> }
+---@param options NamingScreenOptions
 ---@return NamingScreenController
 function NamingScreenController.new(options)
   assert(type(options) == "table", "naming screen options are required")
+  assert(type(options.effect) == "function", "naming screen requires its sound effect boundary")
   assert(options.kind == "player" or options.kind == "pokemon" or options.kind == "box", "naming kind is invalid")
   assert(
     type(options.maxLength) == "number" and options.maxLength % 1 == 0 and options.maxLength > 0,
@@ -171,6 +185,7 @@ function NamingScreenController.new(options)
   end
   return setmetatable({
     _kind = options.kind,
+    _effect = options.effect,
     _maxLength = options.maxLength,
     _charmap = options.charmap,
     _subject = subjectCopy(options.subject),
@@ -184,6 +199,8 @@ function NamingScreenController.new(options)
     _cursorTick = 0,
     _entrySlotTick = 0,
     _glowAngle = 180,
+    _pressTicks = {},
+    _settleTicks = 0,
   }, NamingScreenController)
 end
 
@@ -202,7 +219,8 @@ end
 -- Deterministic presentation steps while the name is still being edited.
 -- One tick is the historical single source-tick step; a host running the
 -- presentation clock faster than the narrative clock requests more ticks
--- per source tick. A submitted name freezes the clocks.
+-- per source tick. A submitted name freezes the clocks except the OK press,
+-- which plays until the screen settles.
 ---@param ticks integer? requested presentation ticks; omitted means one
 function NamingScreenController:updateFixed(ticks)
   if ticks == nil then
@@ -214,16 +232,24 @@ function NamingScreenController:updateFixed(ticks)
   )
   for _ = 1, ticks do
     if self._result ~= nil then
-      return
+      if self._result.kind == "submit" and self._settleTicks < SUBMIT_SETTLE_TICKS then
+        self._settleTicks = self._settleTicks + 1
+        self._pressTicks.ok = self._pressTicks.ok + 1
+      end
+      goto continue
     end
     self._subjectTick = self._subjectTick + 1
     self._cursorTick = self._cursorTick + 1
     self._entrySlotTick = self._entrySlotTick + 1
+    for control, tick in pairs(self._pressTicks) do
+      self._pressTicks[control] = tick + 1
+    end
     local angle = self._glowAngle + 10
     if angle > 360 then
       angle = 0
     end
     self._glowAngle = angle
+    ::continue::
   end
 end
 
@@ -236,6 +262,7 @@ end
 -- same home-row control, with a remembered horizontal escape when moving
 -- vertically out of a skipped home-row region.
 function NamingScreenController:_move(direction)
+  self._effect(SELECT)
   local previousRow = self._cursor.row
   local row, column = self._cursor.row, self._cursor.column
   local dr = direction == "up" and -1 or direction == "down" and 1 or 0
@@ -274,6 +301,7 @@ function NamingScreenController:_insert(text)
     return false
   end
   self._text = self._text .. text
+  self._effect(GLYPH)
   if incoming > 0 then
     self._entrySlotTick = 0
   end
@@ -299,6 +327,8 @@ function NamingScreenController:deleteGlyph()
   glyphs[#glyphs] = nil
   self._text = table.concat(glyphs)
   self._entrySlotTick = 0
+  self._pressTicks.back = 0
+  self._effect(SELECT)
   return true
 end
 
@@ -307,6 +337,8 @@ function NamingScreenController:submit()
     return false
   end
   self._result = { kind = "submit", text = self._text }
+  self._pressTicks.ok = 0
+  self._effect(CONFIRM)
   return true
 end
 
@@ -316,7 +348,10 @@ function NamingScreenController:activateControl(id)
     return false
   end
   if id == "upper" or id == "lower" or id == "symbols" then
-    self._page = id
+    if self._page ~= id then
+      self._page = id
+      self._effect(PAGE)
+    end
     return true
   elseif id:sub(1, 6) == "glyph:" then
     return self:_insert(id:sub(7))
@@ -396,6 +431,13 @@ function NamingScreenController:applyEvent(event)
   end
 end
 
+-- Whether the result may close the screen: a cancel at once, a submit after
+-- its OK press has played out.
+---@return boolean
+function NamingScreenController:settled()
+  return self._result ~= nil and (self._result.kind ~= "submit" or self._settleTicks >= SUBMIT_SETTLE_TICKS)
+end
+
 function NamingScreenController:text()
   return self._text
 end
@@ -446,11 +488,13 @@ function NamingScreenController:snapshot()
     grid = grid,
     subject = subjectCopy(self._subject),
     result = self:result(),
+    settled = self:settled(),
     presentation = {
       subjectTick = self._subjectTick,
       cursorTick = self._cursorTick,
       entrySlotTick = self._entrySlotTick,
       glowAngle = self._glowAngle,
+      pressTicks = { back = self._pressTicks.back, ok = self._pressTicks.ok },
     },
   }
 end

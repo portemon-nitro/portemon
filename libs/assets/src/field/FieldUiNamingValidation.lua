@@ -178,6 +178,34 @@ local function checkNamingScreenControls(controls, atlases)
   end
 end
 
+local function checkNamingScreenControlStates(s, atlases)
+  if type(s.pageSelected) ~= "table" then
+    reject("namingScreen.pageSelected must be a table", {})
+  end
+  demandCount(s.pageSelected, 3, "namingScreen.pageSelected must carry the three page controls", {})
+  for _, id in ipairs({ "upper", "lower", "symbols" }) do
+    local what = "namingScreen.pageSelected." .. id
+    checkNamingSprite(s.pageSelected[id], atlases, what)
+    local anchor = NAMING_CONTROL_ANCHORS[id]
+    if s.pageSelected[id].anchor.x ~= anchor.x or s.pageSelected[id].anchor.y ~= anchor.y then
+      reject(what .. " must keep its source anchor", {})
+    end
+  end
+  if type(s.pressed) ~= "table" then
+    reject("namingScreen.pressed must be a table", {})
+  end
+  demandCount(s.pressed, 2, "namingScreen.pressed must carry Back and OK", {})
+  for _, id in ipairs({ "back", "ok" }) do
+    local what = "namingScreen.pressed." .. id
+    checkAnimationRecord(s.pressed[id], atlases, what, false)
+    checkCanonicalPoint(s.pressed[id].anchor, what .. " anchor")
+    local anchor = NAMING_CONTROL_ANCHORS[id]
+    if s.pressed[id].anchor.x ~= anchor.x or s.pressed[id].anchor.y ~= anchor.y then
+      reject(what .. " must keep its source anchor", {})
+    end
+  end
+end
+
 local function checkNamingScreenCursor(cursor, atlases)
   if type(cursor) ~= "table" then
     reject("namingScreen.cursor must be a table", {})
@@ -319,6 +347,7 @@ local function checkNamingScreen(s, atlases)
   checkNamingScreenBaseAndPlacement(s, atlases)
   checkNamingScreenText(s.text)
   checkNamingScreenControls(s.controls, atlases)
+  checkNamingScreenControlStates(s, atlases)
   checkNamingScreenCursor(s.cursor, atlases)
   checkNamingScreenEntrySlots(s.entrySlots, atlases)
   checkNamingScreenPlayerSubjects(s.playerSubjects, atlases)

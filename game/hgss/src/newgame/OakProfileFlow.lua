@@ -160,20 +160,29 @@ end
 
 ---@param ticks integer? requested naming presentation ticks; omitted means one
 function OakProfileFlow:tickNameEditor(ticks)
-  if self._naming == nil or self._naming:result() ~= nil then
+  if self._naming == nil then
     return
   end
   self._naming:updateFixed(ticks)
 end
 
+---@return boolean whether the submitted name's OK press has played out
+function OakProfileFlow:nameSettled()
+  return self._naming ~= nil and self._naming:settled()
+end
+
 function OakProfileFlow:enterNameEditor()
   self._name = ""
+  local function playEffect(sequence)
+    self._audio:play(sequence)
+  end
   self._naming = NamingScreenController.new({
     kind = "player",
     maxLength = 7,
     initialText = "",
     charmap = self._playerDataContext.charmap,
     subject = { kind = "player", gender = self._genderSelection },
+    effect = playEffect,
   })
 end
 

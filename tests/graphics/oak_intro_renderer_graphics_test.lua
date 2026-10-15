@@ -881,7 +881,7 @@ function T.oak_name_edit_draws_source_chrome_and_manifest_subject()
     maxLength = 7,
     grid = grid,
     subject = { kind = "player", gender = 1 },
-    presentation = { subjectTick = 0, cursorTick = 0, entrySlotTick = 0, glowAngle = 180 },
+    presentation = { subjectTick = 0, cursorTick = 0, entrySlotTick = 0, glowAngle = 180, pressTicks = {} },
   }
 
   renderer:draw(edit)
@@ -1058,7 +1058,7 @@ function T.oak_hosts_naming_without_duplicate_player_subject_art()
     maxLength = 7,
     grid = grid,
     subject = { kind = "player", gender = 0 },
-    presentation = { subjectTick = 0, cursorTick = 0, entrySlotTick = 0, glowAngle = 180 },
+    presentation = { subjectTick = 0, cursorTick = 0, entrySlotTick = 0, glowAngle = 180, pressTicks = {} },
   }
 
   renderer:draw(edit)

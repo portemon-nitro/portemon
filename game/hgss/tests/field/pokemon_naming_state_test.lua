@@ -27,6 +27,7 @@ end
 local function openState()
   local size = { width = 800, height = 600 }
   local state = PokemonNamingState.new({
+    effect = function() end,
     charmap = CatalogFixture.CHARMAP,
     measureDisplay = function()
       return measurement(size.width, size.height)
@@ -69,7 +70,12 @@ function T.tests.pointer_ok_submits_and_pointer_cancel_has_no_naming_meaning()
   local control = layout.controls.ok
   local x, y =
     LayoutGeometry.logicalToHost(plan.panes[1].placement, control.x + control.width / 2, control.y + control.height / 2)
+  state:setPresentationReady(true)
   state:handleInput({ { type = "pointer_down", pointerId = "touch:1", x = x, y = y } })
+  Assert.isFalse(state:status().done, "the OK press plays out before the task is done")
+  for _ = 1, 8 do
+    state:updateFixed()
+  end
   Assert.isTrue(state:status().done)
   state:close()
   Assert.isFalse(state:isActive())
@@ -158,6 +164,7 @@ end
 
 function T.tests.failed_open_does_not_publish_a_partial_active_state()
   local state = PokemonNamingState.new({
+    effect = function() end,
     charmap = CatalogFixture.CHARMAP,
     measureDisplay = function()
       return measurement(800, 600)

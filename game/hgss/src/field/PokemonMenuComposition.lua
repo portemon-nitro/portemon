@@ -332,7 +332,11 @@ function PokemonMenuComposition.create(deps)
     local function makeBoxName(request)
       local box = assert(request.box, "box naming carries its box index")
       local metadata = mons:boxMetadata(box)
-      local child = BoxNamingState.new({ charmap = charmap, measureDisplay = measureDisplay })
+      local child = BoxNamingState.new({
+        charmap = charmap,
+        measureDisplay = measureDisplay,
+        effect = assert(deps.effect, "box naming requires the menu effect boundary"),
+      })
       child:open({ currentText = metadata.name, maxLength = 16 })
       return child
     end

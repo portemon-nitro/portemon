@@ -46,6 +46,11 @@
 -- (type, map) rect is a 6x4 arrangement (48px wide, 32px tall) composed at
 -- build time from the original 24 8x8 tiles, instead of a raw 192x8 strip.
 --
+-- fieldUi schema 22: the normal naming section carries the selected-page
+-- visuals of the three page controls and the pressed animations of Back and
+-- OK, so a stale cache whose top-bar controls cannot show their state must
+-- fail readiness.
+--
 -- fieldUi schema 21: the Start Menu section carries the Running Shoes toggle
 -- (its touch rectangle plus the source-composed button and lock-indicator
 -- off/on visuals and anchors in the shared icon atlas), so a stale cache
@@ -326,7 +331,7 @@ DerivedAssetContract.fieldEmotes = {
 -- that section must fail readiness.
 DerivedAssetContract.fieldUi = {
   cacheFormat = "field-ui-cache-v1",
-  schema = "g4-field-ui-v21",
+  schema = "g4-field-ui-v22",
 }
 
 DerivedAssetContract.intro = {
