@@ -103,7 +103,9 @@ local function scenarioMoveFacts(seeds, extra)
   end
   for _, seed in ipairs(seeds or {}) do
     local learned = seed.mon --[[@as table<string, unknown>]]
-    for _, entry in ipairs(learned.moves --[[@as table<integer, table<string, unknown>>]]) do
+    for _, entry in
+      ipairs(learned.moves --[[@as table<integer, table<string, unknown>>]])
+    do
       if type(entry) == "table" and type(entry.move) == "string" and facts[entry.move] == nil then
         facts[entry.move] = catalog:move(entry.move)
       end
@@ -321,14 +323,20 @@ end
 local function copyChoice(choice)
   local copy = { actor = {}, kind = choice.kind, payload = {} } --[[@as table<string, unknown>]]
   local actor = copy.actor --[[@as table<string, unknown>]]
-  for key, value in pairs(choice.actor --[[@as table<string, unknown>]]) do
+  for key, value in
+    pairs(choice.actor --[[@as table<string, unknown>]])
+  do
     actor[key] = value
   end
   local payload = copy.payload --[[@as table<string, unknown>]]
-  for key, value in pairs(choice.payload --[[@as table<string, unknown>]]) do
+  for key, value in
+    pairs(choice.payload --[[@as table<string, unknown>]])
+  do
     if key == "target" and type(value) == "table" then
       local target = {}
-      for targetKey, targetValue in pairs(value --[[@as table<string, unknown>]]) do
+      for targetKey, targetValue in
+        pairs(value --[[@as table<string, unknown>]])
+      do
         target[targetKey] = targetValue
       end
       payload[key] = target
@@ -442,8 +450,7 @@ function T.doubles_projection_names_each_move_scope()
     PROBE_ALLY = probeFacts(256),
     PROBE_SPREAD = probeFacts(4),
   }
-  local scenario =
-    doublesScenario({ a1, a2 }, { b1, b2 }, scenarioMoveFacts(seeds, extra), scenarioSpeciesFacts(seeds))
+  local scenario = doublesScenario({ a1, a2 }, { b1, b2 }, scenarioMoveFacts(seeds, extra), scenarioSpeciesFacts(seeds))
   local session, frame = openWaiting(scenario)
   local held = session:capture()
   Assert.deepEqual(livePositionsBySide(held, 2), { 2, 4 }, "the foe side holds both far slots")
@@ -457,10 +464,7 @@ function T.doubles_projection_names_each_move_scope()
   local selfMove = moveOption(entry, 1)
   Assert.isTrue(selfMove.targets == nil, "the user move offers no foe picker")
   local selfTarget = (selfMove.choice.payload or {}).target or {}
-  Assert.isTrue(
-    selfTarget.position ~= 2 and selfTarget.position ~= 4,
-    "the user move never names a foe slot"
-  )
+  Assert.isTrue(selfTarget.position ~= 2 and selfTarget.position ~= 4, "the user move never names a foe slot")
 
   local ally = moveOption(entry, 2)
   Assert.isTrue(ally.targets == nil, "the ally move offers no foe picker")
@@ -500,8 +504,7 @@ function T.forged_choices_are_refused_without_spending_state()
     PROBE_SINGLE = probeFacts(0),
     SPENT_PROBE = probeFacts(0),
   }
-  local scenario =
-    doublesScenario({ a1, a2 }, { b1, b2 }, scenarioMoveFacts(seeds, extra), scenarioSpeciesFacts(seeds))
+  local scenario = doublesScenario({ a1, a2 }, { b1, b2 }, scenarioMoveFacts(seeds, extra), scenarioSpeciesFacts(seeds))
   local session, frame = openWaiting(scenario)
   local request = requestFor(frame, "alpha")
   local entry = actorEntry(optionsFor(session, request), 1)
@@ -513,11 +516,7 @@ function T.forged_choices_are_refused_without_spending_state()
   local function refusalsLeaveStateUntouched()
     local held = session:capture()
     Assert.equal(held.rng.calls, rngBefore, "refused choices draw no randomness")
-    Assert.equal(
-      held.combatants[1].mon.moves[1].pp,
-      35,
-      "refused choices spend no power points"
-    )
+    Assert.equal(held.combatants[1].mon.moves[1].pp, 35, "refused choices spend no power points")
   end
 
   local wrongSide = copyChoice(honestFirst)
@@ -534,21 +533,18 @@ function T.forged_choices_are_refused_without_spending_state()
 
   local wrongField = copyChoice(honestFirst)
   wrongField.payload.target = { kind = "field" }
-  local storedField, _ =
-    session:submit(SessionFixture.replyFor(request, { wrongField, copyChoice(honestPartner) }))
+  local storedField, _ = session:submit(SessionFixture.replyFor(request, { wrongField, copyChoice(honestPartner) }))
   Assert.isTrue(not storedField, "a field fragment for a foe-scoped move is refused")
   refusalsLeaveStateUntouched()
 
   local spentSlot = SessionFixture.attackChoice(requestActor(request, 1), 1, SessionFixture.positionTarget(2))
-  local storedSpent, _ =
-    session:submit(SessionFixture.replyFor(request, { spentSlot, copyChoice(honestPartner) }))
+  local storedSpent, _ = session:submit(SessionFixture.replyFor(request, { spentSlot, copyChoice(honestPartner) }))
   Assert.isTrue(not storedSpent, "a spent-slot strike is refused while another slot stays usable")
   refusalsLeaveStateUntouched()
 
   local staleToken = copyChoice(honestFirst)
   staleToken.actor.activation = 9999
-  local storedStale, _ =
-    session:submit(SessionFixture.replyFor(request, { staleToken, copyChoice(honestPartner) }))
+  local storedStale, _ = session:submit(SessionFixture.replyFor(request, { staleToken, copyChoice(honestPartner) }))
   Assert.isTrue(not storedStale, "a stale actor token is refused")
   refusalsLeaveStateUntouched()
 
@@ -558,8 +554,7 @@ function T.forged_choices_are_refused_without_spending_state()
   local freshOptions = optionsFor(session, fresh)
   local freshFirst = copyChoice(moveOption(actorEntry(freshOptions, 1), 0).choice)
   local freshPartner = copyChoice(moveOption(actorEntry(freshOptions, 3), 0).choice)
-  local accepted, acceptErr =
-    session:submit(SessionFixture.replyFor(fresh, { freshFirst, freshPartner }))
+  local accepted, acceptErr = session:submit(SessionFixture.replyFor(fresh, { freshFirst, freshPartner }))
   Assert.isTrue(accepted, "projected fragments still answer after refusals: " .. tostring(acceptErr))
   session:dispose()
 end
@@ -579,8 +574,7 @@ function T.spread_strikes_finish_every_recipient_after_a_faint()
   local species = scenarioSpeciesFacts(seeds)
 
   local function openSpread()
-    local scenario =
-      doublesScenario({ a1, a2 }, { b1, b2 }, scenarioMoveFacts(seeds, extra), species)
+    local scenario = doublesScenario({ a1, a2 }, { b1, b2 }, scenarioMoveFacts(seeds, extra), species)
     local opened, opening = openWaiting(scenario)
     return opened, opening
   end
@@ -616,8 +610,7 @@ function T.self_and_ally_strikes_land_on_their_own_side()
     TACKLE = catalogCopy("TACKLE", 16),
     QUICK_ATTACK = catalogCopy("QUICK_ATTACK", 256),
   }
-  local scenario =
-    doublesScenario({ a1, a2 }, { b1, b2 }, scenarioMoveFacts(seeds, extra), scenarioSpeciesFacts(seeds))
+  local scenario = doublesScenario({ a1, a2 }, { b1, b2 }, scenarioMoveFacts(seeds, extra), scenarioSpeciesFacts(seeds))
   local session, frame = openWaiting(scenario)
   local before = session:capture()
   local settled = playAnswers(session, projectedSlotZero(session, frame))
@@ -625,10 +618,7 @@ function T.self_and_ally_strikes_land_on_their_own_side()
   local after = session:capture()
   Assert.equal(after.combatants[2].hp, before.combatants[2].hp, "the first foe takes no self-scoped damage")
   Assert.equal(after.combatants[4].hp, before.combatants[4].hp, "the second foe takes no ally-scoped damage")
-  Assert.isTrue(
-    after.combatants[1].hp < before.combatants[1].hp,
-    "the striker takes its own user-scoped share"
-  )
+  Assert.isTrue(after.combatants[1].hp < before.combatants[1].hp, "the striker takes its own user-scoped share")
   session:dispose()
 end
 
@@ -641,12 +631,7 @@ function T.side_screens_settle_on_the_user_side()
   local b1 = withMoves(monSeed(2, "CHIKORITA", 5, 0xB141), { moveSlot("SPLASH", 40) })
   local b2 = withMoves(monSeed(4, "TOTODILE", 5, 0xB242), { moveSlot("SPLASH", 40) })
   local seeds = { a1, a2, b1, b2 }
-  local scenario = doublesScenario(
-    { a1, a2 },
-    { b1, b2 },
-    scenarioMoveFacts(seeds, nil),
-    scenarioSpeciesFacts(seeds)
-  )
+  local scenario = doublesScenario({ a1, a2 }, { b1, b2 }, scenarioMoveFacts(seeds, nil), scenarioSpeciesFacts(seeds))
   local session, frame = openWaiting(scenario)
   local request = requestFor(frame, "alpha")
   local screen = moveOption(actorEntry(optionsFor(session, request), 1), 0)
@@ -672,12 +657,7 @@ function T.field_weather_settles_across_the_field()
   local b1 = withMoves(monSeed(2, "CHIKORITA", 5, 0xB151), { moveSlot("SPLASH", 40) })
   local b2 = withMoves(monSeed(4, "TOTODILE", 5, 0xB252), { moveSlot("SPLASH", 40) })
   local seeds = { a1, a2, b1, b2 }
-  local scenario = doublesScenario(
-    { a1, a2 },
-    { b1, b2 },
-    scenarioMoveFacts(seeds, nil),
-    scenarioSpeciesFacts(seeds)
-  )
+  local scenario = doublesScenario({ a1, a2 }, { b1, b2 }, scenarioMoveFacts(seeds, nil), scenarioSpeciesFacts(seeds))
   local session, frame = openWaiting(scenario)
   local request = requestFor(frame, "alpha")
   local weather = moveOption(actorEntry(optionsFor(session, request), 1), 0)
@@ -711,8 +691,12 @@ function T.random_strikes_hit_one_foe_without_reads_spending_randomness()
   local extra = { TACKLE = catalogCopy("TACKLE", 2) }
 
   local function openRandom()
-    local scenario =
-      doublesScenario({ a1, a2 }, { b1, b2 }, scenarioMoveFacts(seeds, extra), scenarioSpeciesFacts(seeds))
+    local scenario = doublesScenario(
+      { a1, a2 },
+      { b1, b2 },
+      scenarioMoveFacts(seeds, extra),
+      scenarioSpeciesFacts(seeds)
+    )
     return openWaiting(scenario)
   end
 
@@ -768,12 +752,7 @@ function T.curse_answers_the_holder_without_ghost_typing()
   local b1 = withMoves(monSeed(2, "CHIKORITA", 5, 0xB171), { moveSlot("SPLASH", 40) })
   local b2 = withMoves(monSeed(4, "TOTODILE", 5, 0xB272), { moveSlot("SPLASH", 40) })
   local seeds = { a1, a2, b1, b2 }
-  local scenario = doublesScenario(
-    { a1, a2 },
-    { b1, b2 },
-    scenarioMoveFacts(seeds, nil),
-    scenarioSpeciesFacts(seeds)
-  )
+  local scenario = doublesScenario({ a1, a2 }, { b1, b2 }, scenarioMoveFacts(seeds, nil), scenarioSpeciesFacts(seeds))
   local session, frame = openWaiting(scenario)
   local request = requestFor(frame, "alpha")
   local options = optionsFor(session, request)
@@ -784,11 +763,7 @@ function T.curse_answers_the_holder_without_ghost_typing()
   Assert.equal(plainTarget.position, 1, "the ordinary curse names its holder slot")
 
   local hauntedOption = moveOption(actorEntry(options, 3), 0)
-  Assert.deepEqual(
-    variantPositions(hauntedOption),
-    { 2, 4 },
-    "the haunted curse keeps both live foe slots"
-  )
+  Assert.deepEqual(variantPositions(hauntedOption), { 2, 4 }, "the haunted curse keeps both live foe slots")
   session:dispose()
 end
 

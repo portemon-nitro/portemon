@@ -48,15 +48,21 @@ local function runtimeBehindBattle(battle)
     session = {
       player = { motion = "idle" },
       transition = { phase = "idle" },
-      mapEntryController = { isActive = function()
-        return false
-      end },
-      dialogue = { isModal = function()
-        return false
-      end },
-      signpost = { isModal = function()
-        return false
-      end },
+      mapEntryController = {
+        isActive = function()
+          return false
+        end,
+      },
+      dialogue = {
+        isModal = function()
+          return false
+        end,
+      },
+      signpost = {
+        isModal = function()
+          return false
+        end,
+      },
       applicationHost = nil,
     },
   }

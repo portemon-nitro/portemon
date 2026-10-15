@@ -529,20 +529,12 @@ function T.day_night_and_world_gated_methods_use_present_context()
   Assert.isTrue(stoneVector(167, "MOON_STONE") == nil, "the night stone waits for nightfall")
   local lad = pinLevel(makeMon(catalog, 173, {}), catalog, 12)
   lad.personality = 50
-  local dawnLad = Evolution.check(
-    lad,
-    vectorContext({ trigger = { kind = "item", item = "DAWN_STONE" } }),
-    catalog
-  )
+  local dawnLad = Evolution.check(lad, vectorContext({ trigger = { kind = "item", item = "DAWN_STONE" } }), catalog)
   Assert.notNil(dawnLad, "a male mon matches the gendered stone")
   Assert.equal(dawnLad.target, "TOTODILE", "the male stone slot answers")
   local lass = pinLevel(makeMon(catalog, 179, {}), catalog, 12)
   lass.personality = 12
-  local dawnLass = Evolution.check(
-    lass,
-    vectorContext({ trigger = { kind = "item", item = "DAWN_STONE" } }),
-    catalog
-  )
+  local dawnLass = Evolution.check(lass, vectorContext({ trigger = { kind = "item", item = "DAWN_STONE" } }), catalog)
   Assert.notNil(dawnLass, "a female mon matches the gendered stone")
   Assert.equal(dawnLass.target, "EEVEE", "the female stone slot answers")
   local holder = pinLevel(makeMon(catalog, 181, {}), catalog, 12)
@@ -591,10 +583,7 @@ function T.held_blockers_stop_level_triggers()
   Assert.notNil(Evolution.check(bare, vectorContext(), catalog), "the bare mon matches its level slot")
   local held = pinLevel(makeMon(catalog, 223, {}), catalog, 16)
   held.heldItem = "EVERSTONE"
-  Assert.isTrue(
-    Evolution.check(held, vectorContext(), catalog) == nil,
-    "the held blocker stops the same level trigger"
-  )
+  Assert.isTrue(Evolution.check(held, vectorContext(), catalog) == nil, "the held blocker stops the same level trigger")
 end
 
 -- The side product needs both a free party slot and a spare ball: with
@@ -650,10 +639,7 @@ function T.side_products_need_a_free_slot_and_a_spare_ball()
   Assert.equal(#broke.additionalMons, 0, "no spare ball means no side product")
   local young = partyMon(241)
   young.experience = Experience.expFor(catalog:growthCurve("erratic"), 19)
-  Assert.isTrue(
-    Evolution.plan(young, roomy, catalog) == nil,
-    "a line member below the slot level stages nothing"
-  )
+  Assert.isTrue(Evolution.plan(young, roomy, catalog) == nil, "a line member below the slot level stages nothing")
 end
 
 -- Naming is staged atomically with the species change: a custom name
@@ -723,8 +709,11 @@ function T.planned_results_recalculate_through_the_shared_owners()
   Assert.equal(staged.monAfter.experience, before.experience, "evolution keeps experience")
   local probe = copy(before)
   probe.species = "EEVEE"
-  local expectedHp =
-    MonStats.adjustHpForMaxChange(MonStats.derive(before, catalog).maxHp, MonStats.derive(probe, catalog).maxHp, before.condition.currentHp)
+  local expectedHp = MonStats.adjustHpForMaxChange(
+    MonStats.derive(before, catalog).maxHp,
+    MonStats.derive(probe, catalog).maxHp,
+    before.condition.currentHp
+  )
   Assert.equal(staged.monAfter.condition.currentHp, expectedHp, "health follows the shared maximum adjustment")
   local target = catalog:form("EEVEE", 0)
   local abilities = target.abilities --[[@as string[] ]]
@@ -806,11 +795,7 @@ function T.held_blockers_stop_trade_but_not_bag_use()
     Evolution.check(held, vectorContext({ trigger = { kind = "trade" } }), catalog) == nil,
     "the held blocker stops trade checks"
   )
-  local stoned = Evolution.check(
-    held,
-    vectorContext({ trigger = { kind = "item", item = "FIRE_STONE" } }),
-    catalog
-  )
+  local stoned = Evolution.check(held, vectorContext({ trigger = { kind = "item", item = "FIRE_STONE" } }), catalog)
   Assert.notNil(stoned, "bag-item use bypasses the blocker")
   Assert.equal(stoned.target, "EEVEE", "the stone slot answers")
 end
@@ -859,17 +844,12 @@ function T.shed_slots_need_their_line_sibling()
     return pinLevel(makeMon(catalog, seed, { species = "NINCADA" }), catalog, 20)
   end
   local solitary = lineMon(lone, 557)
-  Assert.isTrue(
-    Evolution.check(solitary, vectorContext(), lone) == nil,
-    "the shed slot never matches on its own"
-  )
-  Assert.isTrue(
-    Evolution.plan(solitary, vectorContext(), lone) == nil,
-    "the shed slot stages nothing alone"
-  )
+  Assert.isTrue(Evolution.check(solitary, vectorContext(), lone) == nil, "the shed slot never matches on its own")
+  Assert.isTrue(Evolution.plan(solitary, vectorContext(), lone) == nil, "the shed slot stages nothing alone")
   local primary = lineMon(line, 563)
   local mate = pinLevel(makeMon(line, 569, {}), line, 9)
-  local staged = Evolution.plan(primary, vectorContext({ party = { primary, mate }, inventory = { POKE_BALL = 5 } }), line)
+  local staged =
+    Evolution.plan(primary, vectorContext({ party = { primary, mate }, inventory = { POKE_BALL = 5 } }), line)
   Assert.notNil(staged, "the lone line slot still evolves its primary")
   Assert.equal(staged.monAfter.species, "NINJASK", "the primary carries the line target")
   Assert.deepEqual(staged.additionalMons, {}, "no sibling slot means no side product")
@@ -922,19 +902,12 @@ function T.marked_baby_forms_never_evolve_while_plain_forms_follow_slots()
     Evolution.check(marked, vectorContext({ trigger = { kind = "trade" } }), catalog) == nil,
     "the marked form ignores its matching trade slot"
   )
-  Assert.isTrue(
-    Evolution.plan(marked, vectorContext(), catalog) == nil,
-    "the marked form stages no plan"
-  )
+  Assert.isTrue(Evolution.plan(marked, vectorContext(), catalog) == nil, "the marked form stages no plan")
   local plain = pinLevel(makeMon(catalog, 703, { species = "PICHU", form = 0 }), catalog, 12)
   local grown = Evolution.check(plain, vectorContext(), catalog)
   Assert.notNil(grown, "the plain form matches its level slot")
   Assert.equal(grown.target, "TOTODILE", "the plain level slot answers")
-  local stoned = Evolution.check(
-    plain,
-    vectorContext({ trigger = { kind = "item", item = "FIRE_STONE" } }),
-    catalog
-  )
+  local stoned = Evolution.check(plain, vectorContext({ trigger = { kind = "item", item = "FIRE_STONE" } }), catalog)
   Assert.notNil(stoned, "the plain form matches its stone slot")
   Assert.equal(stoned.target, "EEVEE", "the plain stone slot answers")
   local traded = Evolution.check(plain, vectorContext({ trigger = { kind = "trade" } }), catalog)
@@ -964,11 +937,7 @@ function T.trade_blocker_exempts_one_source_species_while_controls_stay_blocked(
   local grown = Evolution.check(held, vectorContext(), catalog)
   Assert.notNil(grown, "the exempt species matches its level slot while holding the blocker")
   Assert.equal(grown.target, "TOTODILE", "the level slot answers")
-  local stoned = Evolution.check(
-    held,
-    vectorContext({ trigger = { kind = "item", item = "FIRE_STONE" } }),
-    catalog
-  )
+  local stoned = Evolution.check(held, vectorContext({ trigger = { kind = "item", item = "FIRE_STONE" } }), catalog)
   Assert.notNil(stoned, "bag-item use still answers while holding the blocker")
   Assert.equal(stoned.target, "EEVEE", "the stone slot answers")
   local control = pinLevel(makeMon(catalog, 733, {}), catalog, 12)

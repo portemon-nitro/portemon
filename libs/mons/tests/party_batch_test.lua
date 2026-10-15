@@ -44,7 +44,10 @@ local T = {}
 function T.staged_batch_combines_updates_and_appends_atomically()
   local party = twoMonParty()
   local revision = party:revision()
-  Assert.isTrue(type(Party.withChanges) == "function", "missing party batch owner: candidate updates plus appends (Party.withChanges)")
+  Assert.isTrue(
+    type(Party.withChanges) == "function",
+    "missing party batch owner: candidate updates plus appends (Party.withChanges)"
+  )
   local replacement = party:get(1)
   replacement.heldItem = "SITRUS_BERRY"
   local candidate = party:withChanges({ { slot = 1, mon = replacement } }, { caughtMon() })
@@ -72,14 +75,8 @@ function T.finalized_records_carry_only_persistent_identity()
   })
   Assert.equal(finalized.monUpdates[1].mon.species, "CHIKORITA", "a borrowed species never persists")
   Assert.equal(finalized.monUpdates[1].mon.form, 0, "a borrowed form never persists")
-  Assert.isNil(
-    finalized.monUpdates[1].mon.stages,
-    "projected combat stages never persist"
-  )
-  Assert.isNil(
-    finalized.monUpdates[1].mon.frame,
-    "frame-local references never persist"
-  )
+  Assert.isNil(finalized.monUpdates[1].mon.stages, "projected combat stages never persist")
+  Assert.isNil(finalized.monUpdates[1].mon.frame, "frame-local references never persist")
 end
 
 function T.empty_batch_preserves_the_live_revision()

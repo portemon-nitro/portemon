@@ -70,10 +70,8 @@ end
 -- with its remaining turns intact.
 function T.sleep_counts_down_and_wakes()
   local Status = statusOwner("native major status law owns application and replacement resets")
-  local EffectBag = SessionFixture.requirePresent(
-    "libs.battle.src.EffectBag",
-    "scoped effect instances own their lifetimes"
-  )
+  local EffectBag =
+    SessionFixture.requirePresent("libs.battle.src.EffectBag", "scoped effect instances own their lifetimes")
 
   local mon = freshMon()
   Assert.isTrue(Status.apply(mon, "sleep", EffectFixture.cause(2, 1), { turns = 2 }), "sleep applies with its turns")
@@ -180,10 +178,8 @@ end
 -- they are, but restarts the toxic counter while the toxic itself persists.
 function T.switch_keeps_the_condition_and_restarts_the_toxic_count()
   local Status = statusOwner("native major status law owns application and replacement resets")
-  local EffectBag = SessionFixture.requirePresent(
-    "libs.battle.src.EffectBag",
-    "scoped effect instances own their lifetimes"
-  )
+  local EffectBag =
+    SessionFixture.requirePresent("libs.battle.src.EffectBag", "scoped effect instances own their lifetimes")
 
   local toxic = freshMon()
   Assert.isTrue(Status.apply(toxic, "toxic", EffectFixture.cause(2, 1), { counter = 2 }), "toxic applies mid-count")

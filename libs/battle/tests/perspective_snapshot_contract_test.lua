@@ -102,11 +102,7 @@ local function checkPerspectiveShape(view, activeId)
   )
   Assert.isTrue(type(owned.mon) == "table", "owned roster details stay readable")
   for _, opponent in ipairs(view.opponents) do
-    Assert.keySet(
-      opponent,
-      "combatant,hp,participant,position",
-      "opponents read as public health bars only"
-    )
+    Assert.keySet(opponent, "combatant,hp,participant,position", "opponents read as public health bars only")
   end
   for _, slot in ipairs(view.positions) do
     Assert.keySet(slot, "id,occupant,side", "positions expose only occupancy")
@@ -198,11 +194,7 @@ local function nativeContent()
   local builder = ContentBuilder.new()
   NativeTypeChart.install(builder, "perspective-tests")
   local behaviors = BattleBehaviorBuilder.new()
-  behaviors:registerRuleset(
-    Executor.RULESET,
-    { key = Executor.RULESET, chart = Executor.RULESET },
-    "perspective-tests"
-  )
+  behaviors:registerRuleset(Executor.RULESET, { key = Executor.RULESET, chart = Executor.RULESET }, "perspective-tests")
   behaviors:registerFormat(NATIVE_FORMAT, { key = NATIVE_FORMAT }, "perspective-tests")
   return BattleContent.new(builder:freeze(), behaviors:freeze())
 end
@@ -224,7 +216,9 @@ local function duelMoveFacts(seeds)
   local facts = {}
   for _, seed in ipairs(seeds) do
     local learned = seed.mon --[[@as table<string, unknown>]]
-    for _, entry in ipairs(learned.moves --[[@as table<integer, table<string, unknown>>]]) do
+    for _, entry in
+      ipairs(learned.moves --[[@as table<integer, table<string, unknown>>]])
+    do
       if type(entry) == "table" and type(entry.move) == "string" and facts[entry.move] == nil then
         facts[entry.move] = catalog:move(entry.move)
       end
@@ -246,7 +240,9 @@ local function duelSpeciesFacts(seeds)
     local speciesRecord = catalog:species(species)
     local shape = catalog:form(species, form)
     local types = {}
-    for _, key in ipairs(shape.types --[[@as string[] ]]) do
+    for _, key in
+      ipairs(shape.types --[[@as string[] ]])
+    do
       types[#types + 1] = key
     end
     local bucket = facts[species]

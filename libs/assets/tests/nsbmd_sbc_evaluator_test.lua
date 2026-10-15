@@ -1298,7 +1298,11 @@ function T.in_place_maya_evaluation_matches_detached_results()
   })
   local scratch = NsbmdSbcEvaluator.newScratch(p)
   local live = NsbmdSbcEvaluator.evaluateInto(p, prov, scratch)
-  assertEvaluationEqual(snapshotEvaluation(live), NsbmdSbcEvaluator.evaluate(p, prov), "Maya in-place versus allocating")
+  assertEvaluationEqual(
+    snapshotEvaluation(live),
+    NsbmdSbcEvaluator.evaluate(p, prov),
+    "Maya in-place versus allocating"
+  )
 end
 
 return { tests = T }

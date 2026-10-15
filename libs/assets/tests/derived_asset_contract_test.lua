@@ -361,16 +361,8 @@ function T.battle_runtime_loads_skip_full_schema_validation()
     return originals.assertEncounterCatalog(compiled)
   end
   local ok, err = pcall(function()
-    Assert.deepEqual(
-      BattleDataCache.loadBattleData(c),
-      payloads.battleData,
-      "the published move facts load exactly"
-    )
-    Assert.deepEqual(
-      BattleDataCache.loadTrainers(c),
-      payloads.trainers,
-      "the published trainer catalog loads exactly"
-    )
+    Assert.deepEqual(BattleDataCache.loadBattleData(c), payloads.battleData, "the published move facts load exactly")
+    Assert.deepEqual(BattleDataCache.loadTrainers(c), payloads.trainers, "the published trainer catalog loads exactly")
     Assert.deepEqual(
       BattleDataCache.loadEncounters(c),
       payloads.encounters,

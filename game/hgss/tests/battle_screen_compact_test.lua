@@ -357,8 +357,12 @@ function T.command_pointer_cells_match_drawn_regions()
   Assert.notNil(edge, "the shared vertical edge still claims a control")
   Assert.equal(edge.control.id, "bag", "half-open intervals give the shared edge to the right cell")
   local firstRow = content.commands.cells[1] --[[@as table<string, unknown>]]
-  local rowEdge =
-    mappedAt(plan, view, firstRow.x --[[@as number]] + 2, firstRow.y --[[@as number]] + firstRow.height --[[@as number]])
+  local rowEdge = mappedAt(
+    plan,
+    view,
+    firstRow.x --[[@as number]] + 2,
+    firstRow.y --[[@as number]] + firstRow.height --[[@as number]]
+  )
   Assert.notNil(rowEdge, "the shared horizontal edge still claims a control")
   Assert.equal(rowEdge.control.id, "pokemon", "half-open intervals give the shared edge to the lower cell")
   Assert.isNil(mappedAt(plan, view, 12, 146), "the question origin claims no command")
@@ -505,20 +509,11 @@ function T.dock_draws_background_text_before_shared_borders()
       if type(region.text) == "string" and region.text ~= "" then
         Assert.isTrue(region.x >= side.x, region.id .. " starts inside its side bounds")
         Assert.isTrue(region.y >= side.y, region.id .. " sits inside its side bounds")
-        Assert.isTrue(
-          region.x + region.width <= side.x + side.width,
-          region.id .. " ends inside its side bounds"
-        )
-        Assert.isTrue(
-          region.y + region.height <= side.y + side.height,
-          region.id .. " stays inside its side bounds"
-        )
+        Assert.isTrue(region.x + region.width <= side.x + side.width, region.id .. " ends inside its side bounds")
+        Assert.isTrue(region.y + region.height <= side.y + side.height, region.id .. " stays inside its side bounds")
         Assert.isTrue(region.x >= scene.x, region.id .. " starts inside the scene viewport")
         Assert.isTrue(region.y >= scene.y, region.id .. " sits inside the scene viewport")
-        Assert.isTrue(
-          region.x + region.width <= scene.x + scene.width,
-          region.id .. " ends inside the scene viewport"
-        )
+        Assert.isTrue(region.x + region.width <= scene.x + scene.width, region.id .. " ends inside the scene viewport")
         Assert.isTrue(
           region.y + region.height <= scene.y + scene.height,
           region.id .. " stays inside the scene viewport"
@@ -1222,17 +1217,9 @@ local function assertDialogueTapConfirms(rig, what)
   Assert.notNil(plan, "the screen publishes its plan" .. what)
   for _, mode in ipairs({ "narration", "outcome" }) do
     local probe = snapshot(mode, { selection = nil })
-    local down = plan.mapInput(
-      { type = "pointer_down", pointerId = "touch:dialogue", x = 128, y = 164 },
-      probe,
-      plan
-    )
+    local down = plan.mapInput({ type = "pointer_down", pointerId = "touch:dialogue", x = 128, y = 164 }, probe, plan)
     Assert.notNil(down, "the " .. mode .. " dialogue answers taps" .. what)
-    local up = plan.mapInput(
-      { type = "pointer_up", pointerId = "touch:dialogue", x = 128, y = 164 },
-      probe,
-      plan
-    )
+    local up = plan.mapInput({ type = "pointer_up", pointerId = "touch:dialogue", x = 128, y = 164 }, probe, plan)
     Assert.notNil(up, "the " .. mode .. " dialogue completes taps" .. what)
     local confirms = up.type == "confirm"
       or (up.type == "battle_activate" and type(up.control) == "table" and up.control.scope == mode)
@@ -1350,11 +1337,7 @@ function T.learning_prompt_lists_choices_and_tap_seals_one_fragment()
     Assert.equal(#rig.submits, starterSubmits + 1, "selecting a row seals no reply" .. tag)
     press(rig, { type = "confirm" })
     Assert.equal(#rig.submits, starterSubmits + 2, "confirming the decline seals one reply" .. tag)
-    Assert.deepEqual(
-      rig.submits[#rig.submits].choices[1],
-      declineFragment,
-      "the decline matches its fragment" .. tag
-    )
+    Assert.deepEqual(rig.submits[#rig.submits].choices[1], declineFragment, "the decline matches its fragment" .. tag)
     assertDialogueTapConfirms(rig, tag)
     press(rig, { type = "cancel" })
     Assert.isTrue(#rig.submits <= starterSubmits + 2, "keyboard input passes through without extra seals" .. tag)

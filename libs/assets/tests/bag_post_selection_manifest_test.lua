@@ -59,7 +59,11 @@ function T.selected_item_panel_and_lower_message_geometry_are_published()
   local overlays = assert(manifest().interactive.overlays, "the manifest publishes overlays")
   local panel = assert(overlays.selectedItem, "the manifest publishes the retained selected-item panel")
   Assert.deepEqual(panel.iconCenter, { x = 86, y = 76 }, "the selected icon keeps its canonical center")
-  Assert.deepEqual(panel.textRect, { x = 96, y = 56, width = 88, height = 32 }, "the selected row keeps its text window")
+  Assert.deepEqual(
+    panel.textRect,
+    { x = 96, y = 56, width = 88, height = 32 },
+    "the selected row keeps its text window"
+  )
   local messages = assert(overlays.messages, "the manifest publishes lower-message geometry")
   Assert.deepEqual(
     messages.selected.contentRect,
@@ -85,10 +89,7 @@ function T.feedback_and_move_transition_timing_are_published()
 end
 
 function T.strict_validation_rejects_the_previous_manifest_shape()
-  Assert.isTrue(
-    BagAssetSchema.isValidManifest(manifest()),
-    "the current fixture validates once the contract lands"
-  )
+  Assert.isTrue(BagAssetSchema.isValidManifest(manifest()), "the current fixture validates once the contract lands")
   local incomplete = manifest()
   incomplete.interactive.backgrounds.move = nil
   Assert.isFalse(BagAssetSchema.isValidManifest(incomplete), "a manifest without move variants is not ready")

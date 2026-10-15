@@ -876,12 +876,7 @@ T.tests["rejects mismatched or duplicated index entries"] = function()
   Assert.isFalse(
     readyWithEntry(
       "very_tall_grass",
-      entryFor(
-        "very_tall_grass",
-        "animated_model",
-        "tall_grass",
-        FieldEffectAssetCache.definitionPath("tall_grass")
-      )
+      entryFor("very_tall_grass", "animated_model", "tall_grass", FieldEffectAssetCache.definitionPath("tall_grass"))
     ),
     "a duplicated definition reference must not be ready"
   )

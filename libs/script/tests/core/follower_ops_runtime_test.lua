@@ -217,10 +217,7 @@ function T.shiny_leaf_nodes_route_once_to_mons_and_keep_same_tick_outcome()
     Runtime.OUTCOME_CONTINUE
   )
   Assert.equal(stored[0x800C], 6, "the service's crowned count reaches the result")
-  Assert.equal(
-    Runtime.executeNode({ op = "try_give_shiny_leaf_crown", slot = 4 }, run),
-    Runtime.OUTCOME_CONTINUE
-  )
+  Assert.equal(Runtime.executeNode({ op = "try_give_shiny_leaf_crown", slot = 4 }, run), Runtime.OUTCOME_CONTINUE)
   Assert.deepEqual(calls, { { "count", 5 }, { "crown", 4 } }, "each semantic op calls its mon owner once")
 end
 
@@ -229,7 +226,10 @@ function T.interaction_node_blocks_on_the_registered_task()
   run.services.followerInteraction = {}
   Assert.equal(Runtime.executeNode({ op = "follower_interact" }, run), Runtime.OUTCOME_BLOCK)
   Assert.equal(run.blockTaskId, "task:follower_interaction")
-  Assert.deepEqual(run.scheduler.created, { taskType = "follower_interaction", spec = { node = { op = "follower_interact" } } })
+  Assert.deepEqual(
+    run.scheduler.created,
+    { taskType = "follower_interaction", spec = { node = { op = "follower_interact" } } }
+  )
 end
 
 function T.new_operations_fault_when_their_required_service_is_missing()

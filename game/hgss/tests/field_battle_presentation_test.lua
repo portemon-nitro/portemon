@@ -1284,7 +1284,10 @@ function T.failed_screen_before_commit_restores_the_field_without_a_result()
         failLiveScreen(envelope, "probe render failure at " .. point)
         runtime:update(1 / 30)
         envelope:updateFixed(TICK)
-        Assert.notNil(runtime.battleCoordinator._battleLaunch, "the launch survives a precommit renderer fault at " .. point)
+        Assert.notNil(
+          runtime.battleCoordinator._battleLaunch,
+          "the launch survives a precommit renderer fault at " .. point
+        )
         local _, busyReason = runtime.saveCoordinator:capture(false)
         Assert.notNil(busyReason, "the save gate stays closed before the field returns at " .. point)
         local ticks = 0
@@ -1299,8 +1302,7 @@ function T.failed_screen_before_commit_restores_the_field_without_a_result()
         Assert.isFalse(status.committed, "the abort commits nothing at " .. point)
         Assert.isNil(status.result, "the abort invents no outcome at " .. point)
         Assert.isTrue(
-          type(status.error) == "string"
-            and status.error:find("probe render failure at " .. point, 1, true) ~= nil,
+          type(status.error) == "string" and status.error:find("probe render failure at " .. point, 1, true) ~= nil,
           "the abort keeps the original error at " .. point
         )
         Assert.isNil(runtime:lastBattleResult(), "the abort publishes no battle result at " .. point)
@@ -1334,8 +1336,7 @@ function T.failed_screen_before_commit_restores_the_field_without_a_result()
         local settled = assert(runtime:battleStatus(launchId), "the receipt survives duplicate faults at " .. point)
         Assert.equal(settled.phase, "failed", "duplicates keep the single failed receipt at " .. point)
         Assert.isTrue(
-          type(settled.error) == "string"
-            and settled.error:find("probe render failure at " .. point, 1, true) ~= nil,
+          type(settled.error) == "string" and settled.error:find("probe render failure at " .. point, 1, true) ~= nil,
           "duplicates keep the original error at " .. point
         )
         overworld.requestRestore = realRestore
@@ -1412,7 +1413,10 @@ function T.committed_win_survives_a_lost_renderer_through_cover_and_reveal()
           ticks = ticks + 1
         end
         Assert.isNil(runtime.battleCoordinator._battleLaunch, "the committed return settles at " .. landmark)
-        Assert.isNil(runtime.battleCoordinator.battleRuntime, "the committed return releases the battle at " .. landmark)
+        Assert.isNil(
+          runtime.battleCoordinator.battleRuntime,
+          "the committed return releases the battle at " .. landmark
+        )
         local status = assert(runtime:battleStatus(launchId), "the committed launch leaves a receipt at " .. landmark)
         Assert.isTrue(status.committed, "the committed receipt stays committed at " .. landmark)
         Assert.equal(status.result, "win", "the committed win keeps its word at " .. landmark)
@@ -1438,8 +1442,7 @@ function T.committed_win_survives_a_lost_renderer_through_cover_and_reveal()
         local _, openReason = runtime.saveCoordinator:capture(false)
         Assert.isNil(openReason, "the save gate opens at the safe field at " .. landmark)
         runtime.battleCoordinator:_presentedNotify(launchId, "screen-failed", "second probe failure")
-        local again =
-          assert(runtime:battleStatus(launchId), "the receipt survives a duplicate fault at " .. landmark)
+        local again = assert(runtime:battleStatus(launchId), "the receipt survives a duplicate fault at " .. landmark)
         Assert.equal(again.result, "win", "a duplicate fault keeps the win at " .. landmark)
         Assert.isTrue(again.committed, "a duplicate fault keeps the commit at " .. landmark)
         overworld.requestRestore = realRestore
@@ -1518,8 +1521,7 @@ function T.defeat_and_unrecoverable_field_keep_their_return_when_the_renderer_is
     end
     do
       local runtime = bootRuntime(versionId)
-      local envelope, binding, _ =
-        bindEnvelope(runtime, versionId, dualMeasurement("lost-renderer-scripted-loss:dual"))
+      local envelope, binding, _ = bindEnvelope(runtime, versionId, dualMeasurement("lost-renderer-scripted-loss:dual"))
       local ok, failure = xpcall(function()
         local blackout = assert(runtime.blackoutFlow, "the runtime composes its recovery flow")
         local recoveries = 0
@@ -1605,7 +1607,11 @@ function T.lost_renderer_handoff_keeps_the_launch_until_the_safe_field()
         waitConstructed(runtime, envelope)
         runtime.battleCoordinator:_presentedNotify(launchId, "screen-failed", "probe direct precommit fault")
         Assert.notNil(runtime.battleCoordinator._battleLaunch, "the handoff keeps the launch")
-        Assert.equal(runtime.battleCoordinator._battleLaunch.phase, "aborting", "the handoff parks the launch in its abort")
+        Assert.equal(
+          runtime.battleCoordinator._battleLaunch.phase,
+          "aborting",
+          "the handoff parks the launch in its abort"
+        )
         runtime.battleCoordinator:_presentedNotify(launchId, "screen-failed", "second probe fault")
         runtime.battleCoordinator:_presentedNotify("stale-launch#0", "screen-failed", "stale probe fault")
         -- Disposing the uncommitted battle already released the screen
@@ -1663,7 +1669,11 @@ function T.lost_renderer_handoff_keeps_the_launch_until_the_safe_field()
         end
         runtime.battleCoordinator:_presentedNotify(launchId, "screen-failed", "probe direct committed fault")
         battle.status = nil
-        Assert.equal(runtime.battleCoordinator._battleLaunch.phase, "terminal", "the handoff continues a committed battle")
+        Assert.equal(
+          runtime.battleCoordinator._battleLaunch.phase,
+          "terminal",
+          "the handoff continues a committed battle"
+        )
         Assert.equal(runtime.battleCoordinator._battleLaunch.result, "win", "the handoff keeps the committed words")
         failLiveScreen(envelope, "probe render failure on the committed return")
         local ticks = 0
@@ -1676,17 +1686,9 @@ function T.lost_renderer_handoff_keeps_the_launch_until_the_safe_field()
         local status = assert(runtime:battleStatus(launchId), "the committed handoff leaves a receipt")
         Assert.isTrue(status.committed, "the committed handoff stays committed")
         Assert.equal(status.result, "win", "the committed handoff keeps the win")
-        Assert.equal(
-          runtime.playerData.profile.money,
-          liveMoney + 500,
-          "the committed handoff adopts the receipt once"
-        )
+        Assert.equal(runtime.playerData.profile.money, liveMoney + 500, "the committed handoff adopts the receipt once")
         pump(runtime, envelope, 30)
-        Assert.equal(
-          runtime.playerData.profile.money,
-          liveMoney + 500,
-          "settling adopts no second prize"
-        )
+        Assert.equal(runtime.playerData.profile.money, liveMoney + 500, "settling adopts no second prize")
         Assert.equal(runtime.overworld:phase(), "present", "the committed handoff restores presence")
         local _, openReason = runtime.saveCoordinator:capture(false)
         Assert.isNil(openReason, "the save gate opens at the safe field")
@@ -1985,8 +1987,7 @@ local function uploadCapableGraphics()
   local graphics = {}
   function graphics.newImage(_)
     local handle = {}
-    function handle.setFilter(...)
-    end
+    function handle.setFilter(...) end
     return handle
   end
   return graphics
@@ -2505,8 +2506,7 @@ end
 function T.fixed_updates_paint_nothing_without_an_explicit_draw()
   for _, versionId in ipairs(readyVersions()) do
     local runtime = bootRuntime(versionId)
-    local envelope, binding, doubles =
-      bindEnvelope(runtime, versionId, dualMeasurement("paint-free-updates:dual"))
+    local envelope, binding, doubles = bindEnvelope(runtime, versionId, dualMeasurement("paint-free-updates:dual"))
     local ok, failure = xpcall(function()
       runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
       local screen = driveToCommandMode(runtime, envelope)
@@ -2595,10 +2595,7 @@ function T.explicit_draws_stay_stable_and_route_render_failures_through_the_host
       doubles.text.draws = {}
       doubles.windows.calls = {}
       local spy = paintCountingGraphics()
-      Assert.isTrue(
-        envelope:drawBattle({ graphics = spy }),
-        "the failing draw still reaches the live screen"
-      )
+      Assert.isTrue(envelope:drawBattle({ graphics = spy }), "the failing draw still reaches the live screen")
       local failed = assert(envelope:liveScreen(), "the failed screen stays observable for its handoff")
       Assert.equal(failed:status().mode, "failed", "a genuine render failure marks the screen")
       envelope:updateFixed(1 / 30)

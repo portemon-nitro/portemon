@@ -76,10 +76,7 @@ function T.voluntary_exchange_keeps_outgoing_identity_and_mints_a_fresh_entry()
   Assert.equal(frame.incoming, 2, "the frame names its arrival")
   Assert.equal(frame.reason, "voluntary", "the frame keeps its reason")
   Assert.isTrue(frame.voluntary, "only the voluntary reason counts as a voluntary exchange")
-  Assert.isTrue(
-    type(frame.activation) == "number" and frame.activation ~= 7,
-    "the arrival mints a fresh entry token"
-  )
+  Assert.isTrue(type(frame.activation) == "number" and frame.activation ~= 7, "the arrival mints a fresh entry token")
   Assert.isTrue(type(frame.cursor) == "string" and frame.cursor ~= "", "the continuation names its cursor")
   SessionFixture.assertPlainData(frame, "frame")
 end
@@ -164,10 +161,7 @@ function T.forced_replacement_draws_only_eligible_reserves()
   local first = Switching.validateFrame(forcedStart())
   local second = Switching.validateFrame(forcedStart())
   Assert.equal(first.incoming, second.incoming, "fixed random state repeats the forced pick")
-  Assert.isTrue(
-    first.incoming == 3 or first.incoming == 4,
-    "the forced pick lands on an eligible reserve"
-  )
+  Assert.isTrue(first.incoming == 3 or first.incoming == 4, "the forced pick lands on an eligible reserve")
   Assert.isFalse(first.voluntary, "forced replacement is not a voluntary exchange")
 end
 
@@ -225,10 +219,8 @@ function T.entry_consequences_settle_before_the_parent_action_resumes()
   local outcome = Switching.step({ stream = fixedStream(), entry = { damageToIncoming = 999 } }, frame)
   Assert.notNil(outcome.needsReplacement, "the felled arrival requests another replacement first")
   Assert.isNil(outcome.parentResume, "the parent answer waits behind the replacement")
-  local followed = Switching.step(
-    { stream = fixedStream(), entry = { damageToIncoming = 0 }, replacement = 3 },
-    outcome.frame
-  )
+  local followed =
+    Switching.step({ stream = fixedStream(), entry = { damageToIncoming = 0 }, replacement = 3 }, outcome.frame)
   Assert.isTrue(followed.done, "the supplied replacement completes the exchange")
   Assert.notNil(followed.parentResume, "the parent answers once the exchange completes")
 end

@@ -100,10 +100,9 @@ function EffectFixture.define(spec)
     key = spec.key,
     stateVersion = spec.stateVersion or 1,
     validateState = spec.validate or EffectFixture.identityState,
-    timings = spec.timings
-      or {
-        { timing = "residual", handler = spec.key, orderClass = "affliction" },
-      },
+    timings = spec.timings or {
+      { timing = "residual", handler = spec.key, orderClass = "affliction" },
+    },
     lifecycle = {
       stacking = spec.stacking or "replace",
       transfer = spec.transfer or "clear",

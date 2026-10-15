@@ -332,7 +332,8 @@ local function fakeGraphics(opts)
     clear = function(...)
       local clearCall = { ... }
       clearCall.canvas = state.canvas
-      clearCall.scissor = state.scissor and { state.scissor[1], state.scissor[2], state.scissor[3], state.scissor[4] } or nil
+      clearCall.scissor = state.scissor and { state.scissor[1], state.scissor[2], state.scissor[3], state.scissor[4] }
+        or nil
       calls.clear[#calls.clear + 1] = clearCall
     end,
     getScissor = function()
@@ -962,21 +963,15 @@ function T.safely_offscreen_sprites_do_not_inflate_visible_work_or_submit_geomet
   local farLeft = boundedSpriteItem(-100, 0)
   local farRight = boundedSpriteItem(100, 0)
 
-  render(
-    mixedRenderer,
-    scene.runtime,
-    scene.camera,
-    nil,
-    { mixedVisible, farLeft, farRight },
-    viewport,
-    0,
-    nil,
-    3
-  )
+  render(mixedRenderer, scene.runtime, scene.camera, nil, { mixedVisible, farLeft, farRight }, viewport, 0, nil, 3)
 
   local mixedClear, _, mixedComposite = spriteScissor(mixedRenderer, mixedGraphics, mixedVisible.mesh)
   Assert.deepEqual(mixedClear, baselineClear, "safely offscreen bounds do not enlarge the target-local dirty region")
-  Assert.deepEqual(mixedComposite, baselineComposite, "safely offscreen bounds do not enlarge presentation composite work")
+  Assert.deepEqual(
+    mixedComposite,
+    baselineComposite,
+    "safely offscreen bounds do not enlarge presentation composite work"
+  )
   for _, call in ipairs(mixedGraphics.calls.draw) do
     Assert.isTrue(call.mesh ~= farLeft.mesh, "the far-left sprite is omitted from geometry submissions")
     Assert.isTrue(call.mesh ~= farRight.mesh, "the far-right sprite is omitted from geometry submissions")
@@ -1178,11 +1173,7 @@ function T.nonfinite_sprite_bounds_use_the_full_target_fallback()
   )
 
   local clearScissor = spriteScissor(renderer, lg, item.mesh)
-  Assert.deepEqual(
-    clearScissor,
-    { 0, 0, 640, 480 },
-    "non-finite bounds fall back to the whole sprite target"
-  )
+  Assert.deepEqual(clearScissor, { 0, 0, 640, 480 }, "non-finite bounds fall back to the whole sprite target")
   local submitted = false
   for _, call in ipairs(lg.calls.draw) do
     submitted = submitted or call.mesh == item.mesh
@@ -1369,10 +1360,7 @@ function T.sprite_target_to_window_switch_carries_no_scissor()
     end
     Assert.isNil(transition.scissor, "every render-target switch occurs with scissor disabled")
   end
-  Assert.isTrue(
-    sawSpriteToWindow,
-    "the frame switches from the sprite target back to the window"
-  )
+  Assert.isTrue(sawSpriteToWindow, "the frame switches from the sprite target back to the window")
   renderer:release()
 end
 
@@ -1550,10 +1538,7 @@ function T.draw_failure_propagates_without_a_restore_guarantee()
     renderer._activeShader,
     "no generic unwind clears the interrupted shader binding for continued rendering"
   )
-  Assert.isTrue(
-    lg.getCanvas() ~= canvas,
-    "no generic unwind restores the caller canvas for continued rendering"
-  )
+  Assert.isTrue(lg.getCanvas() ~= canvas, "no generic unwind restores the caller canvas for continued rendering")
   renderer:release()
   assertResourcesReleased(lg, renderer)
 end
@@ -2314,11 +2299,7 @@ function T.polygon_light_masks_reach_world_shader_uniforms()
         delivered = send.values[1]
       end
     end
-    Assert.deepEqual(
-      delivered,
-      case.expected,
-      "polygon mask reaches the world shader as four light-enable values"
-    )
+    Assert.deepEqual(delivered, case.expected, "polygon mask reaches the world shader as four light-enable values")
   end
 
   renderer:release()

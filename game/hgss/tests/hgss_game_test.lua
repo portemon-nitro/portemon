@@ -26,10 +26,7 @@ local function loadApplicationModules()
   local okPrepared, preparedOrError = pcall(require, "game.hgss.src.field.PreparedFieldEntry")
   Assert.isTrue(okPrepared, "the HGSS application must own the prepared field entry: " .. tostring(preparedOrError))
   local okPreparation, preparationOrError = pcall(require, "game.hgss.src.field.FieldPreparationState")
-  Assert.isTrue(
-    okPreparation,
-    "the HGSS application must own field preparation: " .. tostring(preparationOrError)
-  )
+  Assert.isTrue(okPreparation, "the HGSS application must own field preparation: " .. tostring(preparationOrError))
   return {
     hgssGame = hgssGameOrError,
     game = gameOrError,
@@ -448,7 +445,7 @@ function T.cold_continue_defers_world_read_until_field_planning_is_ready()
           onExit = function() end,
           derivedAssets = host,
         })
-            Assert.equal(observation.worldReads, 0, "selecting Continue reads no world metadata")
+        Assert.equal(observation.worldReads, 0, "selecting Continue reads no world metadata")
         Assert.equal(observation.loaderBuilds, 0, "selecting Continue builds no planning loader")
         settle(game)
         Assert.equal(observation.worldReads, 0, "pending planning never reads world metadata")
@@ -585,12 +582,8 @@ function T.missing_world_after_readiness_throws_the_original_cause()
       game:dispose()
       Assert.isFalse(ok, "a missing world manifest after planning readiness must throw through the game update")
       Assert.isTrue(
-        string.find(
-          tostring(err),
-          "field world metadata is unavailable although entry planning is ready",
-          1,
-          true
-        ) ~= nil,
+        string.find(tostring(err), "field world metadata is unavailable although entry planning is ready", 1, true)
+          ~= nil,
         "the failure carries the original missing-world diagnostic: " .. tostring(err)
       )
       Assert.isTrue(

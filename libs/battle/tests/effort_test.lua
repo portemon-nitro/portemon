@@ -333,13 +333,12 @@ function T.malformed_records_fail_before_application()
     Effort.apply(yield({ defense = 10 }), { defense = 4 }, subject())
   end, "a partial award fails instead of dropping stats")
   Assert.throws(function()
-    Effort.calculate({ hp = 0, attack = 0, defense = 0, speed = 0, specialAttack = 0, specialDefense = -1 }, modifiers())
+    Effort.calculate(
+      { hp = 0, attack = 0, defense = 0, speed = 0, specialAttack = 0, specialDefense = -1 },
+      modifiers()
+    )
   end, "a negative yield fails")
-  Assert.deepEqual(
-    Effort.apply(yield(), yield(), {}),
-    yield(),
-    "a subject without eligibility fields applies cleanly"
-  )
+  Assert.deepEqual(Effort.apply(yield(), yield(), {}), yield(), "a subject without eligibility fields applies cleanly")
 end
 
 return { tests = T }

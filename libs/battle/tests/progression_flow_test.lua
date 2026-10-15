@@ -147,11 +147,8 @@ function T.free_slots_fill_declines_stick_and_stale_replies_change_nothing()
   pinProgressionBaseline(mon, 419, 28)
   local pending = Progression.start(startInput({ entry(mon, 600, { defense = 4 }) }))
   local paused = Progression.step(pending.flow, Progression.validateFrame(pending.frame), nil)
-  local declined = Progression.step(
-    paused.flow,
-    Progression.validateFrame(paused.frame),
-    { combatant = 1, decision = "decline" }
-  )
+  local declined =
+    Progression.step(paused.flow, Progression.validateFrame(paused.frame), { combatant = 1, decision = "decline" })
   Assert.isTrue(declined.done, "a decline resumes the battle")
   Assert.equal(declined.flow.mons[1].moves[4].move, "POISONPOWDER", "a decline keeps the old set")
   local stale = Progression.step(
@@ -232,7 +229,9 @@ local function moveFactsFor(seeds)
   }
   for _, seed in ipairs(seeds or {}) do
     local learned = seed.mon --[[@as table<string, unknown>]]
-    for _, moveEntry in ipairs(learned.moves --[[@as table<integer, table<string, unknown>>]]) do
+    for _, moveEntry in
+      ipairs(learned.moves --[[@as table<integer, table<string, unknown>>]])
+    do
       if type(moveEntry) == "table" and type(moveEntry.move) == "string" and facts[moveEntry.move] == nil then
         facts[moveEntry.move] = catalog:move(moveEntry.move)
       end
@@ -251,7 +250,9 @@ end
 ---@return string[] detached semantic types for the form
 local function copyFormTypes(formRecord)
   local types = {} ---@type string[]
-  for _, key in ipairs(formRecord.types --[[@as string[] ]]) do
+  for _, key in
+    ipairs(formRecord.types --[[@as string[] ]])
+  do
     types[#types + 1] = key --[[@as string]]
   end
   return types
@@ -395,17 +396,20 @@ function T.knockout_participation_stays_with_the_foe_it_was_earned_against()
   local foeTwo = tackleSeed(4, 41)
   foeTwo.mon.condition.currentHp = 1
   local seeds = { first, second, foeOne, foeTwo }
-  local session = contracts.Battle.newSession(battleScenario({
-    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
-    participants = {
-      SessionFixture.participant(1, 1, "alpha", { first, second }),
-      SessionFixture.participant(2, 2, "beta", { foeOne, foeTwo }),
-    },
-    positions = {
-      SessionFixture.position(1, 1, { 1 }, 1),
-      SessionFixture.position(2, 2, { 2 }, 2),
-    },
-  }, seeds), content)
+  local session = contracts.Battle.newSession(
+    battleScenario({
+      sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+      participants = {
+        SessionFixture.participant(1, 1, "alpha", { first, second }),
+        SessionFixture.participant(2, 2, "beta", { foeOne, foeTwo }),
+      },
+      positions = {
+        SessionFixture.position(1, 1, { 1 }, 1),
+        SessionFixture.position(2, 2, { 2 }, 2),
+      },
+    }, seeds),
+    content
+  )
   local function strikeFoe(request)
     local actor = assert(request.actors[1], "action batches address their actor")
     if request.controller == "alpha" then
@@ -423,7 +427,9 @@ function T.knockout_participation_stays_with_the_foe_it_was_earned_against()
   Assert.isNil(next(expGains(reliefEvents)), "the relief turn awards nothing")
   answerRequests(session, afterFirst, function(request)
     local actor = assert(request.actors[1], "action batches address their actor")
-    return { SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(request.controller == "alpha" and 2 or 1)) }
+    return {
+      SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(request.controller == "alpha" and 2 or 1)),
+    }
   end)
   local afterSecond, foeOneEvents = drainEvents(session)
   Assert.equal(afterSecond.status, "waiting", "the second foe opens its own batch")
@@ -432,7 +438,9 @@ function T.knockout_participation_stays_with_the_foe_it_was_earned_against()
   Assert.deepEqual(foeOneGains[3], { 41 }, "the reserve earns its participant half of the first knockout")
   answerRequests(session, afterSecond, function(request)
     local actor = assert(request.actors[1], "action batches address their actor")
-    return { SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(request.controller == "alpha" and 2 or 1)) }
+    return {
+      SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(request.controller == "alpha" and 2 or 1)),
+    }
   end)
   local ended, foeTwoEvents = drainEvents(session)
   Assert.equal(ended.status, "ended", "the second knockout ends the battle with no reserve behind it")
@@ -468,19 +476,21 @@ function T.shared_and_traded_portions_combine_from_player_and_mon_facts()
     foe.mon.condition.currentHp = 1
     local seeds = { lead, switched, benched, foe }
     local alphaSpec = SessionFixture.participant(1, 1, "alpha", { lead, switched, benched })
-    alphaSpec.context =
-      { trainerId = profile.trainerId, trainerName = profile.name, language = language }
-    local session = contracts.Battle.newSession(battleScenario({
-      sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
-      participants = {
-        alphaSpec,
-        SessionFixture.participant(2, 2, "beta", { foe }),
-      },
-      positions = {
-        SessionFixture.position(1, 1, { 1 }, 1),
-        SessionFixture.position(2, 2, { 2 }, 2),
-      },
-    }, seeds), content)
+    alphaSpec.context = { trainerId = profile.trainerId, trainerName = profile.name, language = language }
+    local session = contracts.Battle.newSession(
+      battleScenario({
+        sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+        participants = {
+          alphaSpec,
+          SessionFixture.participant(2, 2, "beta", { foe }),
+        },
+        positions = {
+          SessionFixture.position(1, 1, { 1 }, 1),
+          SessionFixture.position(2, 2, { 2 }, 2),
+        },
+      }, seeds),
+      content
+    )
     local opening = SessionFixture.driveUntilSettled(session)
     answerRequests(session, opening, function(request)
       local actor = assert(request.actors[1], "action batches address their actor")
@@ -494,7 +504,9 @@ function T.shared_and_traded_portions_combine_from_player_and_mon_facts()
     Assert.isNil(next(expGains(reliefEvents)), "the relief turn awards nothing")
     answerRequests(session, relieved, function(request)
       local actor = assert(request.actors[1], "action batches address their actor")
-      return { SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(request.controller == "alpha" and 2 or 1)) }
+      return {
+        SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(request.controller == "alpha" and 2 or 1)),
+      }
     end)
     local ended, closing = drainEvents(session)
     Assert.equal(ended.status, "ended", "the lone foe ends the battle once it falls")
@@ -525,17 +537,20 @@ local function settleKnockoutWithPlayerContext(playerContext)
   local seeds = { first, foe }
   local alphaSpec = SessionFixture.participant(1, 1, "alpha", { first })
   alphaSpec.context = playerContext
-  local session = contracts.Battle.newSession(battleScenario({
-    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
-    participants = {
-      alphaSpec,
-      SessionFixture.participant(2, 2, "beta", { foe }),
-    },
-    positions = {
-      SessionFixture.position(1, 1, { 1 }, 1),
-      SessionFixture.position(2, 2, { 2 }, 2),
-    },
-  }, seeds), content)
+  local session = contracts.Battle.newSession(
+    battleScenario({
+      sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+      participants = {
+        alphaSpec,
+        SessionFixture.participant(2, 2, "beta", { foe }),
+      },
+      positions = {
+        SessionFixture.position(1, 1, { 1 }, 1),
+        SessionFixture.position(2, 2, { 2 }, 2),
+      },
+    }, seeds),
+    content
+  )
   local opening = SessionFixture.driveUntilSettled(session)
   answerRequests(session, opening, function(request)
     local actor = assert(request.actors[1], "action batches address their actor")
@@ -612,21 +627,26 @@ function T.benched_share_earners_learn_through_a_roster_scoped_prompt()
   local foe = tackleSeed(2, 23)
   foe.mon.condition.currentHp = 1
   local seeds = { striker, learnerSeed, foe }
-  local session = contracts.Battle.newSession(battleScenario({
-    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
-    participants = {
-      SessionFixture.participant(1, 1, "alpha", { striker, learnerSeed }),
-      SessionFixture.participant(2, 2, "beta", { foe }),
-    },
-    positions = {
-      SessionFixture.position(1, 1, { 1 }, 1),
-      SessionFixture.position(2, 2, { 2 }, 2),
-    },
-  }, seeds), content)
+  local session = contracts.Battle.newSession(
+    battleScenario({
+      sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+      participants = {
+        SessionFixture.participant(1, 1, "alpha", { striker, learnerSeed }),
+        SessionFixture.participant(2, 2, "beta", { foe }),
+      },
+      positions = {
+        SessionFixture.position(1, 1, { 1 }, 1),
+        SessionFixture.position(2, 2, { 2 }, 2),
+      },
+    }, seeds),
+    content
+  )
   local opening = SessionFixture.driveUntilSettled(session)
   answerRequests(session, opening, function(request)
     local actor = assert(request.actors[1], "action batches address their actor")
-    return { SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(request.controller == "alpha" and 2 or 1)) }
+    return {
+      SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(request.controller == "alpha" and 2 or 1)),
+    }
   end)
   local suspended, knockoutEvents = drainEvents(session)
   Assert.equal(suspended.status, "waiting", "the full set suspends the battle on its prompt")
@@ -653,7 +673,8 @@ function T.benched_share_earners_learn_through_a_roster_scoped_prompt()
   for _, live in ipairs({ session, revived }) do
     local held = assert(findLearnPrompt(live == session and first or second), "the run keeps its prompt")
     local entry = assert(held.actors[1], "the prompt addresses its recipient")
-    local ok, err = live:submit(SessionFixture.replyFor(held, { learnReply({ combatant = entry.combatant }, "replace", 3) }))
+    local ok, err =
+      live:submit(SessionFixture.replyFor(held, { learnReply({ combatant = entry.combatant }, "replace", 3) }))
     Assert.isTrue(ok, "the combatant-only reply is accepted")
     Assert.isNil(err, "accepted replies carry no input error")
   end
@@ -667,11 +688,7 @@ function T.benched_share_earners_learn_through_a_roster_scoped_prompt()
     Assert.equal(finished.combatants[3].mon.moves[4].move, "SYNTHESIS", "the replacement lands in the named slot")
     Assert.equal(finished.combatants[3].mon.experience, 1013, "the reply never awards twice")
   end
-  Assert.deepEqual(
-    firstEnded.outcome.evolutionEligible,
-    { 3 },
-    "the level gain surfaces once for post-battle handling"
-  )
+  Assert.deepEqual(firstEnded.outcome.evolutionEligible, { 3 }, "the level gain surfaces once for post-battle handling")
   session:dispose()
   revived:dispose()
 end
@@ -695,30 +712,34 @@ function T.benched_learners_keep_their_set_when_they_decline()
   local foe = tackleSeed(2, 23)
   foe.mon.condition.currentHp = 1
   local seeds = { striker, learnerSeed, foe }
-  local session = contracts.Battle.newSession(battleScenario({
-    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
-    participants = {
-      SessionFixture.participant(1, 1, "alpha", { striker, learnerSeed }),
-      SessionFixture.participant(2, 2, "beta", { foe }),
-    },
-    positions = {
-      SessionFixture.position(1, 1, { 1 }, 1),
-      SessionFixture.position(2, 2, { 2 }, 2),
-    },
-  }, seeds), content)
+  local session = contracts.Battle.newSession(
+    battleScenario({
+      sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+      participants = {
+        SessionFixture.participant(1, 1, "alpha", { striker, learnerSeed }),
+        SessionFixture.participant(2, 2, "beta", { foe }),
+      },
+      positions = {
+        SessionFixture.position(1, 1, { 1 }, 1),
+        SessionFixture.position(2, 2, { 2 }, 2),
+      },
+    }, seeds),
+    content
+  )
   local opening = SessionFixture.driveUntilSettled(session)
   answerRequests(session, opening, function(request)
     local actor = assert(request.actors[1], "action batches address their actor")
-    return { SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(request.controller == "alpha" and 2 or 1)) }
+    return {
+      SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(request.controller == "alpha" and 2 or 1)),
+    }
   end)
   local suspended, _ = drainEvents(session)
   local prompt = findLearnPrompt(suspended)
   Assert.notNil(prompt, "the suspension names the pending learning prompt")
   local actor = assert(prompt.actors[1], "the prompt addresses its recipient")
   Assert.isNil(actor.activation, "benched prompts carry no entry token")
-  local ok, err = session:submit(
-    SessionFixture.replyFor(prompt, { learnReply({ combatant = actor.combatant }, "decline") })
-  )
+  local ok, err =
+    session:submit(SessionFixture.replyFor(prompt, { learnReply({ combatant = actor.combatant }, "decline") }))
   Assert.isTrue(ok, "the decline is accepted")
   Assert.isNil(err, "accepted replies carry no input error")
   local ended, closing = drainEvents(session)
@@ -748,21 +769,26 @@ function T.active_learners_answer_without_an_entry_token()
   local foe = tackleSeed(2, 23)
   foe.mon.condition.currentHp = 1
   local seeds = { learnerSeed, foe }
-  local session = contracts.Battle.newSession(battleScenario({
-    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
-    participants = {
-      SessionFixture.participant(1, 1, "alpha", { learnerSeed }),
-      SessionFixture.participant(2, 2, "beta", { foe }),
-    },
-    positions = {
-      SessionFixture.position(1, 1, { 1 }, 1),
-      SessionFixture.position(2, 2, { 2 }, 2),
-    },
-  }, seeds), content)
+  local session = contracts.Battle.newSession(
+    battleScenario({
+      sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+      participants = {
+        SessionFixture.participant(1, 1, "alpha", { learnerSeed }),
+        SessionFixture.participant(2, 2, "beta", { foe }),
+      },
+      positions = {
+        SessionFixture.position(1, 1, { 1 }, 1),
+        SessionFixture.position(2, 2, { 2 }, 2),
+      },
+    }, seeds),
+    content
+  )
   local opening = SessionFixture.driveUntilSettled(session)
   answerRequests(session, opening, function(request)
     local actor = assert(request.actors[1], "action batches address their actor")
-    return { SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(request.controller == "alpha" and 2 or 1)) }
+    return {
+      SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(request.controller == "alpha" and 2 or 1)),
+    }
   end)
   local suspended, _ = drainEvents(session)
   Assert.equal(suspended.status, "waiting", "the full set suspends the battle on its prompt")
@@ -771,9 +797,7 @@ function T.active_learners_answer_without_an_entry_token()
   local actor = assert(prompt.actors[1], "the prompt addresses its recipient")
   Assert.equal(actor.combatant, 1, "the prompt addresses the active recipient")
   Assert.isNil(actor.activation, "active prompts carry no entry token either")
-  local ok, err = session:submit(
-    SessionFixture.replyFor(prompt, { learnReply({ combatant = 1 }, "replace", 3) })
-  )
+  local ok, err = session:submit(SessionFixture.replyFor(prompt, { learnReply({ combatant = 1 }, "replace", 3) }))
   Assert.isTrue(ok, "the combatant-only reply is accepted")
   Assert.isNil(err, "accepted replies carry no input error")
   local ended, closing = drainEvents(session)
@@ -798,17 +822,20 @@ function T.reentered_foes_start_a_fresh_participant_set()
   -- it can yield the field back, proving the return starts fresh.
   local foeTwo = tackleSeed(4, 41)
   local seeds = { first, second, foeOne, foeTwo }
-  local session = contracts.Battle.newSession(battleScenario({
-    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
-    participants = {
-      SessionFixture.participant(1, 1, "alpha", { first, second }),
-      SessionFixture.participant(2, 2, "beta", { foeOne, foeTwo }),
-    },
-    positions = {
-      SessionFixture.position(1, 1, { 1 }, 1),
-      SessionFixture.position(2, 2, { 2 }, 2),
-    },
-  }, seeds), content)
+  local session = contracts.Battle.newSession(
+    battleScenario({
+      sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+      participants = {
+        SessionFixture.participant(1, 1, "alpha", { first, second }),
+        SessionFixture.participant(2, 2, "beta", { foeOne, foeTwo }),
+      },
+      positions = {
+        SessionFixture.position(1, 1, { 1 }, 1),
+        SessionFixture.position(2, 2, { 2 }, 2),
+      },
+    }, seeds),
+    content
+  )
   local opening = SessionFixture.driveUntilSettled(session)
   answerRequests(session, opening, function(request)
     local actor = assert(request.actors[1], "action batches address their actor")
@@ -854,24 +881,28 @@ function T.action_replies_still_bind_their_live_entry_token()
   local first = tackleSeed(1, 11)
   local foe = tackleSeed(2, 23)
   local seeds = { first, foe }
-  local session = contracts.Battle.newSession(battleScenario({
-    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
-    participants = {
-      SessionFixture.participant(1, 1, "alpha", { first }),
-      SessionFixture.participant(2, 2, "beta", { foe }),
-    },
-    positions = {
-      SessionFixture.position(1, 1, { 1 }, 1),
-      SessionFixture.position(2, 2, { 2 }, 2),
-    },
-  }, seeds), content)
+  local session = contracts.Battle.newSession(
+    battleScenario({
+      sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+      participants = {
+        SessionFixture.participant(1, 1, "alpha", { first }),
+        SessionFixture.participant(2, 2, "beta", { foe }),
+      },
+      positions = {
+        SessionFixture.position(1, 1, { 1 }, 1),
+        SessionFixture.position(2, 2, { 2 }, 2),
+      },
+    }, seeds),
+    content
+  )
   local opening = SessionFixture.driveUntilSettled(session)
   local action = assert(opening.request.requests[1], "the opening batch carries its action request")
   local actor = assert(action.actors[1], "the action request addresses its live entry")
   Assert.notNil(actor.activation, "action batches keep addressing live entries")
   local bare = { combatant = actor.combatant }
-  local refused, refuseErr =
-    session:submit(SessionFixture.replyFor(action, { SessionFixture.attackChoice(bare, 0, SessionFixture.positionTarget(2)) }))
+  local refused, refuseErr = session:submit(
+    SessionFixture.replyFor(action, { SessionFixture.attackChoice(bare, 0, SessionFixture.positionTarget(2)) })
+  )
   Assert.isFalse(refused, "a tokenless reply answers no live entry")
   Assert.notNil(refuseErr, "rejected replies report their input error")
   local ok, err = session:submit(

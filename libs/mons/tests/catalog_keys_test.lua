@@ -27,8 +27,22 @@ function T.species_and_move_key_views_are_sorted_copies()
   local moves = catalog:moveKeys()
   local expectedSpecies = { "EEVEE", "CHIKORITA", "TOTODILE", "SHEDINJA" }
   local expectedMoves = {
-    "SCRATCH", "CUT", "SAND_ATTACK", "TACKLE", "TAIL_WHIP", "LEER", "GROWL", "WATER_GUN",
-    "RAZOR_LEAF", "POISONPOWDER", "TOXIC", "QUICK_ATTACK", "HARDEN", "REFLECT", "STRUGGLE", "SYNTHESIS",
+    "SCRATCH",
+    "CUT",
+    "SAND_ATTACK",
+    "TACKLE",
+    "TAIL_WHIP",
+    "LEER",
+    "GROWL",
+    "WATER_GUN",
+    "RAZOR_LEAF",
+    "POISONPOWDER",
+    "TOXIC",
+    "QUICK_ATTACK",
+    "HARDEN",
+    "REFLECT",
+    "STRUGGLE",
+    "SYNTHESIS",
     "BULLET_SEED",
   }
   assertKeysEqual(expectedSpecies, species)

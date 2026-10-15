@@ -167,11 +167,7 @@ function T.native_status_words_upgrade_losslessly_and_bad_combinations_fail()
     Assert.deepEqual(upgraded.condition.effects, effects, "upgrade keeps the decoded conditions")
     for key, value in pairs(pristine) do
       if key ~= "schema" and key ~= "condition" then
-        Assert.deepEqual(
-          upgraded[key],
-          value,
-          string.format("upgrade preserves %s for word 0x%x", tostring(key), word)
-        )
+        Assert.deepEqual(upgraded[key], value, string.format("upgrade preserves %s for word 0x%x", tostring(key), word))
       end
     end
     Assert.deepEqual(

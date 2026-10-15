@@ -175,11 +175,7 @@ local function parityNativeContent()
   local builder = ContentBuilder.new()
   NativeTypeChart.install(builder, "parity-tests")
   local behaviors = BattleBehaviorBuilder.new()
-  behaviors:registerRuleset(
-    Executor.RULESET,
-    { key = Executor.RULESET, chart = Executor.RULESET },
-    "parity-tests"
-  )
+  behaviors:registerRuleset(Executor.RULESET, { key = Executor.RULESET, chart = Executor.RULESET }, "parity-tests")
   behaviors:registerFormat("parity:native", { key = "parity:native" }, "parity-tests")
   return BattleContent.new(builder:freeze(), behaviors:freeze())
 end
@@ -205,7 +201,9 @@ local function parityNativeScenario()
     local speciesRecord = catalog:species(species)
     local formRecord = catalog:form(species, form)
     local types = {} ---@type string[]
-    for _, key in ipairs(formRecord.types --[[@as string[] ]]) do
+    for _, key in
+      ipairs(formRecord.types --[[@as string[] ]])
+    do
       types[#types + 1] = key --[[@as string]]
     end
     local bucket = speciesFacts[species]
@@ -250,7 +248,9 @@ local function copyPlain(value)
     return value
   end
   local out = {}
-  for key, item in pairs(value --[[@as table<unknown, unknown>]]) do
+  for key, item in
+    pairs(value --[[@as table<unknown, unknown>]])
+  do
     out[copyPlain(key)] = copyPlain(item)
   end
   return out

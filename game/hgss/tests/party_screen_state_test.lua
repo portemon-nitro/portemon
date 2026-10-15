@@ -293,7 +293,11 @@ function T.target_context_exposes_its_required_prompt_key()
     local calls = { swaps = {} }
     local state = openParty(true, nil, calls, case)
     state:updateFixed({})
-    Assert.equal(state:status().targetPromptKey, case.targetPromptKey, "target status carries its source prompt identity")
+    Assert.equal(
+      state:status().targetPromptKey,
+      case.targetPromptKey,
+      "target status carries its source prompt identity"
+    )
     state:dispose()
   end
 end
@@ -341,11 +345,7 @@ function T.waiting_screens_publish_their_resolved_application_plan()
     screen:updateFixed({})
     local preparationsBefore = probes.preparations()
     local status = screen:status()
-    Assert.equal(
-      status.preparationState,
-      case.state,
-      "a waiting screen reports its " .. case.state .. " preparation"
-    )
+    Assert.equal(status.preparationState, case.state, "a waiting screen reports its " .. case.state .. " preparation")
     Assert.isTrue(status.open, "a waiting screen stays open while " .. case.state)
     Assert.notNil(status.layout, "a waiting screen keeps its wait layout while " .. case.state)
     Assert.notNil(status.presentation, "a waiting screen carries its resolved plan while " .. case.state)
@@ -402,17 +402,9 @@ function T.wait_refresh_keeps_canonical_placement_without_advancing_preparation(
       local placement = assert(pane.placement, "every refreshed pane carries its placement")
       Assert.notNil(placement.frame, "every refreshed pane carries its host frame while " .. case.state)
     end
-    Assert.equal(
-      probes.preparations(),
-      preparationsBefore,
-      "wait refresh advances no preparation while " .. case.state
-    )
+    Assert.equal(probes.preparations(), preparationsBefore, "wait refresh advances no preparation while " .. case.state)
     local reread = screen:status()
-    Assert.equal(
-      reread.preparationState,
-      case.state,
-      "wait refresh keeps the " .. case.state .. " preparation"
-    )
+    Assert.equal(reread.preparationState, case.state, "wait refresh keeps the " .. case.state .. " preparation")
     Assert.isNil(reread.action, "wait refresh starts no controller action while " .. case.state)
     Assert.isNil(screen:takeResult(), "wait refresh completes nothing while " .. case.state)
     Assert.equal(#calls.swaps, 0, "wait refresh swaps nothing while " .. case.state)
@@ -462,17 +454,18 @@ local function openManual(spec, calls)
     end,
     overrides = spec.overrides,
   })
-  return state, {
-    preparations = function()
-      return preparations
-    end,
-    cancels = function()
-      return cancels
-    end,
-    setReady = function(ready)
-      readiness = ready
-    end,
-  }
+  return state,
+    {
+      preparations = function()
+        return preparations
+      end,
+      cancels = function()
+        return cancels
+      end,
+      setReady = function(ready)
+        readiness = ready
+      end,
+    }
 end
 
 local function oneDisplayTopo(width, height)
@@ -608,19 +601,11 @@ function T.single_display_host_menu_toggles_the_detail_overlay_without_touching_
   Assert.equal(paneSignature(before), "content+", "a single-display party starts content-only")
   state:updateFixed({ { type = "menu" } })
   local shown = state:status()
-  Assert.equal(
-    paneSignature(shown),
-    "content+,overlay-",
-    "the first host menu press shows the detail overlay"
-  )
+  Assert.equal(paneSignature(shown), "content+,overlay-", "the first host menu press shows the detail overlay")
   state:updateFixed({ { type = "menu" } })
   local hidden = state:status()
   Assert.equal(paneSignature(hidden), "content+", "the second host menu press hides it again")
-  Assert.deepEqual(
-    nativeGeometry(shown),
-    nativeGeometry(before),
-    "showing the overlay changes no native geometry"
-  )
+  Assert.deepEqual(nativeGeometry(shown), nativeGeometry(before), "showing the overlay changes no native geometry")
   Assert.deepEqual(
     nativeGeometry(hidden),
     nativeGeometry(before),
@@ -655,11 +640,7 @@ function T.toggle_consumes_only_the_menu_event_and_keeps_batch_order()
     reference:status().cursorNode,
     "navigation before the toggle lands identically"
   )
-  Assert.equal(
-    paneSignature(first:status()),
-    "content+,overlay-",
-    "a trailing toggle still shows the overlay"
-  )
+  Assert.equal(paneSignature(first:status()), "content+,overlay-", "a trailing toggle still shows the overlay")
   local leading, _ = openNative()
   leading:updateFixed({})
   drainReveal(leading)
@@ -669,11 +650,7 @@ function T.toggle_consumes_only_the_menu_event_and_keeps_batch_order()
     reference:status().cursorNode,
     "navigation after the toggle lands identically"
   )
-  Assert.equal(
-    paneSignature(leading:status()),
-    "content+,overlay-",
-    "a leading toggle still shows the overlay"
-  )
+  Assert.equal(paneSignature(leading:status()), "content+,overlay-", "a leading toggle still shows the overlay")
   first:dispose()
   reference:dispose()
   leading:dispose()
@@ -697,11 +674,7 @@ function T.host_menu_during_an_open_context_menu_changes_only_visibility()
   Assert.isTrue(menuCount >= 2, "the open menu carries its entries")
   state:updateFixed({ { type = "menu" } })
   local shown = state:status()
-  Assert.equal(
-    paneSignature(shown),
-    "content+,overlay-",
-    "the host menu press shows the overlay above the open menu"
-  )
+  Assert.equal(paneSignature(shown), "content+,overlay-", "the host menu press shows the overlay above the open menu")
   Assert.equal(shown.action, "context", "the toggle never advances the native menu")
   Assert.equal(shown.menuIndex, menuIndex, "the toggle keeps native menu focus")
   Assert.isTrue(shown.menu ~= nil and #shown.menu == menuCount, "the toggle keeps every menu entry")
@@ -728,14 +701,8 @@ function T.visible_overlay_keeps_pointer_input_on_native_content()
   shown:updateFixed({})
   drainReveal(shown)
   shown:updateFixed({ { type = "menu" } })
-  Assert.equal(
-    paneSignature(shown:status()),
-    "content+,overlay-",
-    "the overlay under test is actually visible"
-  )
-  for _, pane in
-    ipairs(assert(shown:status().presentation.panes, "the shown plan carries its panes"))
-  do
+  Assert.equal(paneSignature(shown:status()), "content+,overlay-", "the overlay under test is actually visible")
+  for _, pane in ipairs(assert(shown:status().presentation.panes, "the shown plan carries its panes")) do
     if pane.id == "overlay" then
       Assert.isFalse(pane.interactive, "the visible overlay takes no pointer input")
     end
@@ -755,15 +722,8 @@ function T.visible_overlay_keeps_pointer_input_on_native_content()
     plainStatus.cursorNode,
     "the same tap selects the same native target under the overlay"
   )
-  Assert.equal(
-    shownStatus.action,
-    plainStatus.action,
-    "the same tap starts the same native action under the overlay"
-  )
-  Assert.isNil(
-    shownStatus.presentation.content.infoRect,
-    "native content carries no host target"
-  )
+  Assert.equal(shownStatus.action, plainStatus.action, "the same tap starts the same native action under the overlay")
+  Assert.isNil(shownStatus.presentation.content.infoRect, "native content carries no host target")
   shown:dispose()
   plain:dispose()
 end
@@ -803,11 +763,7 @@ function T.paired_layouts_keep_both_panes_when_the_host_menu_arrives()
     local state, _ = openOnDisplay(calls, measure)
     state:updateFixed({})
     local before = state:status()
-    Assert.equal(
-      paneSignature(before),
-      "detail-,content+",
-      "the " .. case.name .. " party pairs detail with content"
-    )
+    Assert.equal(paneSignature(before), "detail-,content+", "the " .. case.name .. " party pairs detail with content")
     state:updateFixed({ { type = "menu" } })
     local after = state:status()
     Assert.equal(
@@ -815,11 +771,7 @@ function T.paired_layouts_keep_both_panes_when_the_host_menu_arrives()
       "detail-,content+",
       "the host menu press never hides paired detail on " .. case.name
     )
-    Assert.equal(
-      after.cursorNode,
-      before.cursorNode,
-      "the ignored press moves no paired cursor on " .. case.name
-    )
+    Assert.equal(after.cursorNode, before.cursorNode, "the ignored press moves no paired cursor on " .. case.name)
     Assert.equal(after.action, before.action, "the ignored press starts nothing on " .. case.name)
     Assert.isTrue(after.open, "the ignored press closes nothing on " .. case.name)
     Assert.isNil(state:takeResult(), "the ignored press completes nothing on " .. case.name)
@@ -894,18 +846,10 @@ function T.detail_toggle_waits_for_icon_readiness()
   pending:updateFixed({})
   local clean = pending:status()
   Assert.equal(clean.preparationState, "ready", "readiness arrives normally after the wait")
-  Assert.equal(
-    paneSignature(clean),
-    "content+",
-    "a menu press during the wait arms no overlay"
-  )
+  Assert.equal(paneSignature(clean), "content+", "a menu press during the wait arms no overlay")
   drainReveal(pending)
   pending:updateFixed({ { type = "menu" } })
-  Assert.equal(
-    paneSignature(pending:status()),
-    "content+,overlay-",
-    "the toggle works once preparation is ready"
-  )
+  Assert.equal(paneSignature(pending:status()), "content+,overlay-", "the toggle works once preparation is ready")
   pending:dispose()
   local failedCalls = { swaps = {} }
   local failedMeasure = function()
@@ -932,11 +876,7 @@ function T.reflow_and_disposal_drop_only_host_state()
   state:updateFixed({})
   drainReveal(state)
   state:updateFixed({ { type = "menu" } })
-  Assert.equal(
-    paneSignature(state:status()),
-    "content+,overlay-",
-    "the overlay under test is actually visible"
-  )
+  Assert.equal(paneSignature(state:status()), "content+,overlay-", "the overlay under test is actually visible")
   local frame = contentPaneFrame(state:status())
   local x = frame.x + frame.width / 2
   local y = frame.y + frame.height / 2
@@ -945,11 +885,7 @@ function T.reflow_and_disposal_drop_only_host_state()
   current = displayMeasurement(1280, 720, oneDisplayTopo(1280, 720), "toggle-reflow:wide")
   state:updateFixed({})
   local reflowed = state:status()
-  Assert.equal(
-    paneSignature(reflowed),
-    "detail-,content+",
-    "reflow presents the paired layout normally"
-  )
+  Assert.equal(paneSignature(reflowed), "detail-,content+", "reflow presents the paired layout normally")
   Assert.isTrue(reflowed.open, "reflow closes nothing")
   state:updateFixed({ { type = "pointer_up", pointerId = "touch:held", x = x, y = y } })
   local settled = state:status()
@@ -1053,11 +989,7 @@ function T.opening_discards_navigation_and_activation_until_reveal_completes()
   Assert.isNil(state:takeResult(), "reveal dismissal completes nothing")
   Assert.equal(#calls.swaps, 0, "reveal input swaps nothing")
   state:updateFixed({})
-  Assert.equal(
-    state:status().action,
-    "browse",
-    "discarded input is never replayed on the first interactive tick"
-  )
+  Assert.equal(state:status().action, "browse", "discarded input is never replayed on the first interactive tick")
   state:updateFixed({ { type = "confirm" } })
   Assert.equal(state:status().action, "context", "only post-reveal input acts")
   Assert.isNil(state:takeResult(), "opening the context menu completes nothing")
@@ -1096,10 +1028,7 @@ function T.closing_after_interactive_uses_the_existing_close_path()
   Assert.notNil(result, "confirming cancel closes the screen")
   Assert.equal(result.kind, "close", "close keeps its existing host translation")
   local closed = state:status()
-  Assert.isTrue(
-    closed.phase == nil or closed.phase ~= "closing",
-    "closing adds no reveal behavior on the way out"
-  )
+  Assert.isTrue(closed.phase == nil or closed.phase ~= "closing", "closing adds no reveal behavior on the way out")
   Assert.isNil(state:takeResult(), "a second take reports nothing further")
   Assert.equal(probes.cancels(), 1, "closing releases the preparation interest exactly once")
   state:dispose()
@@ -1280,11 +1209,7 @@ function T.menu_toggle_with_pointer_input_publishes_once_with_matching_target()
   local expected = reference:status()
   Assert.equal(resolves, 1, "a toggle tick publishes the changed geometry once")
   Assert.equal(paneSignature(shown), "content+,overlay-", "the toggle shows the overlay")
-  Assert.equal(
-    shown.cursorNode,
-    expected.cursorNode,
-    "the same tap selects the same target under the toggle"
-  )
+  Assert.equal(shown.cursorNode, expected.cursorNode, "the same tap selects the same target under the toggle")
   Assert.equal(shown.action, expected.action, "the same tap starts the same action under the toggle")
   Assert.deepEqual(nativeGeometry(shown), nativeGeometry(before), "the toggle changes no native geometry")
   local bad = pcall(function()
@@ -1371,20 +1296,12 @@ function T.stable_ticks_reuse_the_published_plan_and_refresh_on_demand()
   backingA.setMon(0, monRecord("TOTODILE"))
   state:updateFixed({})
   Assert.equal(resolves, 0, "a live revision reads fresh without rebuilding geometry")
-  Assert.equal(
-    state:status().view.slots[1].iconKey,
-    "TOTODILE/f0",
-    "the shared facts carry the changed member"
-  )
+  Assert.equal(state:status().view.slots[1].iconKey, "TOTODILE/f0", "the shared facts carry the changed member")
   backingA.service:swapPartyMons(0, 1)
   state:updateFixed({})
   state:updateFixed({})
   Assert.equal(resolves, 0, "a swap reconciles without a new plan")
-  Assert.equal(
-    state:status().view.slots[1].iconKey,
-    "CYNDAQUIL/f0",
-    "the shared facts carry the swapped member"
-  )
+  Assert.equal(state:status().view.slots[1].iconKey, "CYNDAQUIL/f0", "the shared facts carry the swapped member")
   current = displayMeasurement(1280, 720, oneDisplayTopo(1280, 720), "reuse:wide")
   state:updateFixed({})
   Assert.equal(resolves, 1, "a measurement change publishes once")

@@ -134,16 +134,13 @@ local function boxedService(entries, slots)
   local factory = CatalogFixture.makeFactory(0xB0517711, catalog)
   local updates = {}
   for index, entry in ipairs(entries) do
-    local mon =
-      factory:createNormal(CatalogFixture.normalRequest({ species = entry.species, form = entry.form or 0 }))
+    local mon = factory:createNormal(CatalogFixture.normalRequest({ species = entry.species, form = entry.form or 0 }))
     updates[#updates + 1] = { box = 0, slot = slots[index], mon = mon }
   end
-  local prepared = assert(
-    mons:preparePcChanges({
-      partyRevision = mons:partyRevision(),
-      boxRevision = mons:boxRevision(),
-    }, { boxUpdates = updates })
-  )
+  local prepared = assert(mons:preparePcChanges({
+    partyRevision = mons:partyRevision(),
+    boxRevision = mons:boxRevision(),
+  }, { boxUpdates = updates }))
   prepared.publish()
   return mons
 end
@@ -298,11 +295,7 @@ function T.boxed_summary_past_party_range_keeps_demand_on_the_selected_subject()
   local captured = {}
   local state = openBoxSummary(mons, { 2, 5, 9, 14, 19, 24, 29 }, captured, 0)
   settleToActive(state)
-  Assert.equal(
-    state:status().facts.identity.species,
-    "CHIKORITA",
-    "dense indexes start on the first occupied slot"
-  )
+  Assert.equal(state:status().facts.identity.species, "CHIKORITA", "dense indexes start on the first occupied slot")
   for _ = 1, 6 do
     state:updateFixed({ { type = "navigate", direction = "down" } })
   end
@@ -315,11 +308,7 @@ function T.boxed_summary_past_party_range_keeps_demand_on_the_selected_subject()
   Assert.equal(status.facts.identity.species, "SHEDINJA", "dense index six reads the seventh occupied slot")
   local demand = assert(captured[#captured], "the wrapper prepares demand for the selection")
   Assert.equal(#demand.portraitSelectors, 1, "boxed preparation carries only the selected portrait")
-  Assert.equal(
-    demand.portraitSelectors[1],
-    status.facts.portraitSelector,
-    "boxed demand follows the selection"
-  )
+  Assert.equal(demand.portraitSelectors[1], status.facts.portraitSelector, "boxed demand follows the selection")
   Assert.deepEqual(demand.iconKeys, { status.facts.iconKey }, "boxed preparation carries only the selected icon")
   Assert.equal(demand.revision, mons:boxRevision(), "boxed demand keys off the box revision")
   state:dispose()
@@ -330,14 +319,11 @@ function T.boxed_reorder_publishes_guarded_and_stale_attempts_write_nothing()
   storeBoxCopy(mons)
   local catalog = mons:catalog()
   local factory = CatalogFixture.makeFactory(0xB0517712, catalog)
-  local unrelated =
-    factory:createNormal(CatalogFixture.normalRequest({ species = "TOTODILE" }))
-  local stored = assert(
-    mons:preparePcChanges({
-      partyRevision = mons:partyRevision(),
-      boxRevision = mons:boxRevision(),
-    }, { boxUpdates = { { box = 0, slot = 10, mon = unrelated } } })
-  )
+  local unrelated = factory:createNormal(CatalogFixture.normalRequest({ species = "TOTODILE" }))
+  local stored = assert(mons:preparePcChanges({
+    partyRevision = mons:partyRevision(),
+    boxRevision = mons:boxRevision(),
+  }, { boxUpdates = { { box = 0, slot = 10, mon = unrelated } } }))
   stored.publish()
   local partyBefore = mons:partyMon(0)
   local unrelatedBefore = assert(mons:boxMon(0, 10))
@@ -358,12 +344,10 @@ function T.boxed_reorder_publishes_guarded_and_stale_attempts_write_nothing()
     edited[key] = value
   end
   edited.markings = (assert(unrelatedBefore.markings, "stored mons carry markings") + 1) % 256
-  local advanced = assert(
-    mons:preparePcChanges({
-      partyRevision = mons:partyRevision(),
-      boxRevision = mons:boxRevision(),
-    }, { boxUpdates = { { box = 0, slot = 10, mon = edited } } })
-  )
+  local advanced = assert(mons:preparePcChanges({
+    partyRevision = mons:partyRevision(),
+    boxRevision = mons:boxRevision(),
+  }, { boxUpdates = { { box = 0, slot = 10, mon = edited } } }))
   advanced.publish()
   Assert.equal(mons:boxRevision(), fresh + 2, "the external edit advances the box revision")
   local stale = state:reorderMoves(0, 1, 0, fresh + 1)

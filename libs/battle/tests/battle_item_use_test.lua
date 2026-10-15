@@ -371,10 +371,16 @@ function T.every_standard_cure_flag_clears_its_matching_condition()
   local ItemUse = itemUse("battle servings clear persistent conditions through their facts")
   local BattleRng =
     SessionFixture.requirePresent("libs.battle.src.gen4.BattleRng", "labeled native draws own the battle stream")
-  local cases = { { "sleep", "sleep" }, { "poison", "poison" }, { "burn", "burn" }, { "freeze", "freeze" }, {
-    "paralysis",
-    "paralysis",
-  } }
+  local cases = {
+    { "sleep", "sleep" },
+    { "poison", "poison" },
+    { "burn", "burn" },
+    { "freeze", "freeze" },
+    {
+      "paralysis",
+      "paralysis",
+    },
+  }
   for _, case in ipairs(cases) do
     local flag, condition = case[1], case[2]
     local view = remedyView(ailingHolder(30, 30, condition))
@@ -411,11 +417,7 @@ function T.mixed_restoration_and_cure_apply_together_before_single_consumption()
   Assert.isTrue(outcome.consumed, "the mixed serving consumes")
   Assert.equal(outcome.restored, 20, "the mixed serving reports its actual restoration")
   Assert.equal(battle.combatants[1].hp, 30, "the mixed serving heals its holder")
-  Assert.equal(
-    battle.combatants[1].mon.condition.currentHp,
-    30,
-    "the mixed serving synchronizes the condition mirror"
-  )
+  Assert.equal(battle.combatants[1].mon.condition.currentHp, 30, "the mixed serving synchronizes the condition mirror")
   Assert.deepEqual(battle.combatants[1].mon.condition.effects, {}, "the mixed serving clears the burn")
   Assert.equal(battle.inventories.party.quantities.REMEDY, 0, "the mixed serving consumes exactly once")
   Assert.equal(#battle.ledger, 1, "the mixed serving writes exactly one ledger delta")
@@ -558,10 +560,8 @@ end
 ---@param holder table holder combatant under test preparation
 ---@return table battle-owned execution state carrying one battle item and the holder
 local function battleState(key, holder)
-  local EffectBag = SessionFixture.requirePresent(
-    "libs.battle.src.EffectBag",
-    "the live effect owner holds battle-local instances"
-  )
+  local EffectBag =
+    SessionFixture.requirePresent("libs.battle.src.EffectBag", "the live effect owner holds battle-local instances")
   return {
     inventories = { pack = { quantities = { [key] = 1 }, revision = 0 } },
     ledger = {},
@@ -675,8 +675,7 @@ function T.guard_specs_screen_the_side_through_battle_use()
   local ItemUse = itemUse("battle servings screen through their generated battle use")
   local holder = battleHolder()
   local battle = battleState("X_ITEM", holder)
-  local plan =
-    ItemUse.plan(battleChoice("X_ITEM"), battle, battleFacts(attackStage(), nil, true))
+  local plan = ItemUse.plan(battleChoice("X_ITEM"), battle, battleFacts(attackStage(), nil, true))
   Assert.isNil(plan.failureReason, "the guard serving plans")
   ItemUse.execute(plan, battle)
   local BattleContext = SessionFixture.requirePresent(
@@ -708,8 +707,7 @@ function T.battle_cures_clear_volatiles_through_battle_use()
   )
   Assert.isTrue(context:hasBattleEffect(1, "confusion"), "setup confuses the holder")
   local cures = { confusion = true, infatuation = false }
-  local plan =
-    ItemUse.plan(battleChoice("X_ITEM"), battle, battleFacts(attackStage(), cures, false))
+  local plan = ItemUse.plan(battleChoice("X_ITEM"), battle, battleFacts(attackStage(), cures, false))
   Assert.isNil(plan.failureReason, "the cure serving plans")
   ItemUse.execute(plan, battle)
   Assert.isFalse(context:hasBattleEffect(1, "confusion"), "execution clears the volatile")
@@ -906,16 +904,8 @@ function T.volatile_cures_without_their_volatile_refuse()
     local refusal = Assert.throws(function()
       ItemUse.execute(plan, battle, rng)
     end)
-    Assert.equal(
-      (refusal --[[@as table]]).code,
-      "no_effect",
-      "the cure without " .. flag .. " names its reason"
-    )
-    Assert.equal(
-      battle.inventories.pack.quantities.CURE_CHARM,
-      1,
-      "the cure without " .. flag .. " consumes nothing"
-    )
+    Assert.equal((refusal --[[@as table]]).code, "no_effect", "the cure without " .. flag .. " names its reason")
+    Assert.equal(battle.inventories.pack.quantities.CURE_CHARM, 1, "the cure without " .. flag .. " consumes nothing")
     Assert.deepEqual(battle.ledger, {}, "the cure without " .. flag .. " writes no ledger")
     Assert.equal(rng:capture().calls, callsBefore, "the cure without " .. flag .. " draws nothing")
   end
@@ -929,8 +919,7 @@ function T.mixed_cure_and_stage_serves_only_the_applicable_stage()
   local holder = battleHolder()
   local battle = battleState("X_ITEM", holder)
   local cures = { confusion = true, infatuation = false }
-  local plan =
-    ItemUse.plan(battleChoice("X_ITEM"), battle, battleFacts(attackStage(), cures, false))
+  local plan = ItemUse.plan(battleChoice("X_ITEM"), battle, battleFacts(attackStage(), cures, false))
   Assert.isNil(plan.failureReason, "the mixed serving plans its applicable rider")
   Assert.equal(#plan.effectOperations, 1, "the mixed serving carries one operation")
   local operation = plan.effectOperations[1] --[[@as table<string, unknown>]]
@@ -960,11 +949,7 @@ function T.sibling_item_records_leave_serving_semantics_unchanged()
   }
   local traveling = ItemUse.plan(potionChoice(1), view, travelingFacts)
   Assert.isNil(traveling.failureReason, "the serving beside sibling records plans")
-  Assert.deepEqual(
-    traveling.effectOperations,
-    plain.effectOperations,
-    "sibling records change no serving operation"
-  )
+  Assert.deepEqual(traveling.effectOperations, plain.effectOperations, "sibling records change no serving operation")
   local battle = executionState(view)
   local outcome = ItemUse.execute(traveling, battle, nil)
   Assert.isTrue(outcome.consumed, "the serving beside sibling records consumes")
@@ -999,11 +984,7 @@ function T.sibling_item_records_leave_serving_semantics_unchanged()
     "BATTLE_MISSING_BEHAVIOR",
     "the foreign field reports its missing behavior"
   )
-  Assert.deepEqual(
-    view.inventories.party.quantities,
-    { POTION = 1, REVIVE = 0 },
-    "foreign fields consume no stock"
-  )
+  Assert.deepEqual(view.inventories.party.quantities, { POTION = 1, REVIVE = 0 }, "foreign fields consume no stock")
 end
 
 return { tests = T }

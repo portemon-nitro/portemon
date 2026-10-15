@@ -41,8 +41,7 @@ end
 local function strikeEveryone(request)
   local choices = {}
   for _, actor in ipairs(request.actors) do
-    choices[#choices + 1] =
-      SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(2))
+    choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(2))
   end
   return choices
 end
@@ -131,11 +130,7 @@ function T.rejected_replies_leave_state_randomness_and_resources_untouched()
   local ok, err = session:submit(SessionFixture.replyFor(alphaRequest, alphaChoices))
   Assert.isTrue(ok, "alpha answers first")
   Assert.isNil(err, "accepted replies carry no input error")
-  Assert.deepEqual(
-    session:view("beta"),
-    betaBefore,
-    "sealed choices stay hidden from waiting peers"
-  )
+  Assert.deepEqual(session:view("beta"), betaBefore, "sealed choices stay hidden from waiting peers")
 
   local betaChoices = strikeEveryone(betaRequest)
   local betaOk, betaErr = session:submit(SessionFixture.replyFor(betaRequest, betaChoices))
@@ -168,8 +163,7 @@ function T.rejected_replies_leave_state_randomness_and_resources_untouched()
   for _, actor in ipairs(firstRequest.actors) do
     doubled[#doubled + 1] = SessionFixture.confirmChoice(actor)
   end
-  local doubleOk, doubleErr =
-    fresh:submit(SessionFixture.replyFor(firstRequest, doubled))
+  local doubleOk, doubleErr = fresh:submit(SessionFixture.replyFor(firstRequest, doubled))
   Assert.isFalse(doubleOk, "duplicate actions for one actor cannot queue twice")
   Assert.notNil(doubleErr, "rejected duplicates name their input error")
 

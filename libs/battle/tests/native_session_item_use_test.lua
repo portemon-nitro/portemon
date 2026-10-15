@@ -67,7 +67,9 @@ end
 ---@return string[] detached semantic types for the form
 local function copyFormTypes(formRecord)
   local types = {} ---@type string[]
-  for _, key in ipairs(formRecord.types --[[@as string[] ]]) do
+  for _, key in
+    ipairs(formRecord.types --[[@as string[] ]])
+  do
     types[#types + 1] = key --[[@as string]]
   end
   return types
@@ -209,12 +211,7 @@ function T.generated_fixed_restoration_reaches_battle_state()
     SUPER_POTION = { partyUse = medicineFacts({ kind = "fixed", amount = 50 }, noCures()) },
   }
   local session = contracts.Battle.newSession(
-    itemScenario(
-      { lead },
-      { leveledCombatant(2, 41, "EEVEE", 5), leveledCombatant(4, 43, "EEVEE", 5) },
-      pack,
-      facts
-    ),
+    itemScenario({ lead }, { leveledCombatant(2, 41, "EEVEE", 5), leveledCombatant(4, 43, "EEVEE", 5) }, pack, facts),
     content
   )
   local opening = SessionFixture.driveUntilSettled(session)
@@ -223,21 +220,16 @@ function T.generated_fixed_restoration_reaches_battle_state()
   local hpBefore = before.combatants[1].hp
   local maxHp = before.combatants[1].maxHp
   Assert.isTrue(type(maxHp) == "number", "the holder carries its health ceiling")
-  Assert.isTrue(
-    maxHp --[[@as integer]] - hpBefore >= 50,
-    "the wound leaves room for the full fixed restoration"
-  )
+  Assert.isTrue(maxHp --[[@as integer]] - hpBefore >= 50, "the wound leaves room for the full fixed restoration")
   local callsBefore = before.rng.calls
   local alpha = requestFor(opening, "alpha")
   local beta = requestFor(opening, "beta")
   local actor = assert(alpha.actors[1], "the owning request addresses its lead")
   local foe = assert(beta.actors[1], "the opposing request addresses its lead")
-  local ok, replyErr =
-    session:submit(SessionFixture.replyFor(alpha, { bagChoice(actor, "SUPER_POTION", 1) }))
+  local ok, replyErr = session:submit(SessionFixture.replyFor(alpha, { bagChoice(actor, "SUPER_POTION", 1) }))
   Assert.isTrue(ok, "the fixed restoration choice is accepted")
   Assert.isNil(replyErr, "accepted bag use carries no input error")
-  local answered, answerErr =
-    session:submit(SessionFixture.replyFor(beta, { SessionFixture.switchChoice(foe, 4) }))
+  local answered, answerErr = session:submit(SessionFixture.replyFor(beta, { SessionFixture.switchChoice(foe, 4) }))
   Assert.isTrue(answered, "the opposing exchange is accepted")
   Assert.isNil(answerErr, "accepted exchanges carry no input error")
   local turn = session:advance(64)
@@ -286,10 +278,8 @@ function T.ineffective_and_unsupported_semantics_never_heal()
     "libs.battle.src.gen4.ItemUse",
     "battle bag planning owns selection without consuming"
   )
-  local BattleRng = SessionFixture.requirePresent(
-    "libs.battle.src.gen4.BattleRng",
-    "labeled native draws own the battle stream"
-  )
+  local BattleRng =
+    SessionFixture.requirePresent("libs.battle.src.gen4.BattleRng", "labeled native draws own the battle stream")
   local facts = {
     POTION = { partyUse = medicineFacts({ kind = "fixed", amount = 20 }, noCures()) },
     ETHER = { partyUse = { kind = "pp", target = "one", restore = 10, mood = 0 } },
@@ -302,10 +292,13 @@ function T.ineffective_and_unsupported_semantics_never_heal()
     outstanding = {},
     combatants = { [1] = { hp = 30, maxHp = 30 } },
   }
-  local fullChoice =
-    { inventoryId = "party", item = "POTION", target = { kind = "combatant", combatant = 1 } }
+  local fullChoice = { inventoryId = "party", item = "POTION", target = { kind = "combatant", combatant = 1 } }
   local refused = ItemUse.plan(fullChoice, fullView, facts)
-  Assert.equal(refused.failureReason, "no_effect", "full-health medicine plans its refusal, got " .. tostring(refused.failureReason))
+  Assert.equal(
+    refused.failureReason,
+    "no_effect",
+    "full-health medicine plans its refusal, got " .. tostring(refused.failureReason)
+  )
   Assert.isTrue(refused.executed ~= true, "refused plans carry no execution stamp")
   local fullBattle = {
     inventories = { party = { quantities = { POTION = 1, ETHER = 1 }, revision = 0 } },
@@ -314,11 +307,7 @@ function T.ineffective_and_unsupported_semantics_never_heal()
   }
   local refuseOk, refuseErr = pcall(ItemUse.execute, refused, fullBattle, rng)
   Assert.isFalse(refuseOk, "executing a refused plan raises its typed failure")
-  Assert.equal(
-    (refuseErr --[[@as table<string, unknown>]]).code,
-    "no_effect",
-    "the refusal names its reason"
-  )
+  Assert.equal((refuseErr --[[@as table<string, unknown>]]).code, "no_effect", "the refusal names its reason")
   Assert.deepEqual(fullBattle.ledger, {}, "refused executions write no ledger")
   Assert.equal(fullBattle.inventories.party.quantities.POTION, 1, "refused executions consume nothing")
   Assert.equal(fullBattle.combatants[1].hp, 30, "refused executions heal nothing")
@@ -329,8 +318,7 @@ function T.ineffective_and_unsupported_semantics_never_heal()
     outstanding = {},
     combatants = { [1] = { hp = 10, maxHp = 30 } },
   }
-  local strangeChoice =
-    { inventoryId = "party", item = "ETHER", target = { kind = "combatant", combatant = 1 } }
+  local strangeChoice = { inventoryId = "party", item = "ETHER", target = { kind = "combatant", combatant = 1 } }
   local hurtBattle = {
     inventories = { party = { quantities = { POTION = 1, ETHER = 1 }, revision = 0 } },
     ledger = {},
@@ -340,10 +328,7 @@ function T.ineffective_and_unsupported_semantics_never_heal()
   local failure = nil
   if planOk then
     local plan = planOrErr --[[@as table<string, unknown>]]
-    Assert.isNil(
-      plan.failureReason,
-      "unmodeled semantics never downgrade to a refusal"
-    )
+    Assert.isNil(plan.failureReason, "unmodeled semantics never downgrade to a refusal")
     local execOk, execErr = pcall(ItemUse.execute, plan, hurtBattle, rng)
     Assert.isFalse(execOk, "unmodeled semantics fail instead of healing")
     failure = execErr
@@ -390,12 +375,7 @@ function T.generated_battle_use_raises_its_stage_through_the_session()
     },
   }
   local session = contracts.Battle.newSession(
-    itemScenario(
-      { lead },
-      { leveledCombatant(2, 41, "EEVEE", 5), leveledCombatant(4, 43, "EEVEE", 5) },
-      pack,
-      facts
-    ),
+    itemScenario({ lead }, { leveledCombatant(2, 41, "EEVEE", 5), leveledCombatant(4, 43, "EEVEE", 5) }, pack, facts),
     content
   )
   local opening = SessionFixture.driveUntilSettled(session)
@@ -407,8 +387,7 @@ function T.generated_battle_use_raises_its_stage_through_the_session()
   local ok, replyErr = session:submit(SessionFixture.replyFor(alpha, { bagChoice(actor, "X_ATTACK", 1) }))
   Assert.isTrue(ok, "the battle-use choice is accepted")
   Assert.isNil(replyErr, "accepted bag use carries no input error")
-  local answered, answerErr =
-    session:submit(SessionFixture.replyFor(beta, { SessionFixture.switchChoice(foe, 4) }))
+  local answered, answerErr = session:submit(SessionFixture.replyFor(beta, { SessionFixture.switchChoice(foe, 4) }))
   Assert.isTrue(answered, "the opposing exchange is accepted")
   Assert.isNil(answerErr, "accepted exchanges carry no input error")
   local turn = session:advance(64)
@@ -509,8 +488,7 @@ function T.repeated_focusing_servings_refuse_at_commit()
   local ok, replyErr = session:submit(SessionFixture.replyFor(alpha, { bagChoice(actor, "DIRE_HIT", 1) }))
   Assert.isTrue(ok, "the first focusing choice is accepted")
   Assert.isNil(replyErr, "accepted bag use carries no input error")
-  local answered, answerErr =
-    session:submit(SessionFixture.replyFor(beta, { SessionFixture.switchChoice(foe, 4) }))
+  local answered, answerErr = session:submit(SessionFixture.replyFor(beta, { SessionFixture.switchChoice(foe, 4) }))
   Assert.isTrue(answered, "the opposing exchange is accepted")
   Assert.isNil(answerErr, "accepted exchanges carry no input error")
   local first = session:advance(64)
@@ -576,8 +554,7 @@ function T.repeated_screening_servings_refuse_at_commit()
   local ok, replyErr = session:submit(SessionFixture.replyFor(alpha, { bagChoice(actor, "GUARD_SPEC", 1) }))
   Assert.isTrue(ok, "the first screening choice is accepted")
   Assert.isNil(replyErr, "accepted bag use carries no input error")
-  local answered, answerErr =
-    session:submit(SessionFixture.replyFor(beta, { SessionFixture.switchChoice(foe, 4) }))
+  local answered, answerErr = session:submit(SessionFixture.replyFor(beta, { SessionFixture.switchChoice(foe, 4) }))
   Assert.isTrue(answered, "the opposing exchange is accepted")
   Assert.isNil(answerErr, "accepted exchanges carry no input error")
   local first = session:advance(64)

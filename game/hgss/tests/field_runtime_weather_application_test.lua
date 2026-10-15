@@ -178,7 +178,12 @@ local function runtimeWithClock(catalog, calls, currentMap)
       updatePrefetch = function() end,
     },
     scripts = {},
-    session = { accumulator = 0, setBattleActive = function() end, update = function() end, updateFixed = function() end },
+    session = {
+      accumulator = 0,
+      setBattleActive = function() end,
+      update = function() end,
+      updateFixed = function() end,
+    },
     applicationHost = {
       error = function()
         return nil

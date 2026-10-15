@@ -141,7 +141,6 @@ local function step(state, event)
   state:updateFixed(event and { { type = event } } or {})
 end
 
-
 local function waitFor(state, predicate, message, limit)
   for _ = 1, limit or 512 do
     local status = state:status()
@@ -261,7 +260,10 @@ function T.sound_failure_resumes_postcommit_without_replaying_the_sale()
       end, "committed sale acknowledgement", 512)
     end)
     Assert.isFalse(completed, "the injected sound failure reaches the caller")
-    Assert.isTrue(string.find(tostring(thrown), "injected sale sound failure", 1, true) ~= nil, "the sound error is preserved")
+    Assert.isTrue(
+      string.find(tostring(thrown), "injected sale sound failure", 1, true) ~= nil,
+      "the sound error is preserved"
+    )
     Assert.equal(resources.bag:quantity("POTION"), 0, "the successful sale commit happens before its sound")
     Assert.equal(resources.profile.money, 150, "the wallet is credited once before its sound")
     Assert.equal(soundCalls, 1, "the sale cue is attempted once")

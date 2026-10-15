@@ -546,19 +546,29 @@ function T.save_editor_routes_only_lua_drops_to_its_preset_entrypoint()
     end,
   }, SaveEditorState)
   App.setState(editor)
-  local luaFile = { getFilename = function() return "/tmp/fixture.LUA" end }
+  local luaFile = {
+    getFilename = function()
+      return "/tmp/fixture.LUA"
+    end,
+  }
   App.filedropped(luaFile)
   Assert.equal(imported, 1, "the active Save Editor receives one case-insensitive preset drop")
   Assert.equal(editor.receivedFile, luaFile, "the shell passes the original unopened File object")
   Assert.equal(notices, 0, "a preset drop does not show the ROM-import notice")
 
-  App.filedropped({ getFilename = function() return "fixture.nds" end })
+  App.filedropped({
+    getFilename = function()
+      return "fixture.nds"
+    end,
+  })
   Assert.equal(imported, 1, "other editor file types do not enter preset handling")
   Assert.equal(notices, 1, "other editor file types retain the ROM-import notice")
 end
 
 function T.non_editor_lua_drop_keeps_the_existing_rom_import_route()
-  withAppHarness({}, function() return true end, function()
+  withAppHarness({}, function()
+    return true
+  end, function()
     App.service = nil
     local originalImporterNew = RomImporter.new
     local originalImportStateNew = ImportState.new
@@ -572,7 +582,11 @@ function T.non_editor_lua_drop_keeps_the_existing_rom_import_route()
       return importState
     end
     local ok, err = pcall(function()
-      App.filedropped({ getFilename = function() return "ordinary.lua" end })
+      App.filedropped({
+        getFilename = function()
+          return "ordinary.lua"
+        end,
+      })
       Assert.equal(importer.filedroppedCalls, 1, "a non-editor Lua drop follows ROM import routing")
       Assert.equal(App.state, importState, "the normal import state owns the non-editor drop")
     end)
@@ -1167,15 +1181,11 @@ function T.unknown_generation_waits_without_demands_then_transfers_on_validation
     result.firstPlayCurrent = true
     App.update(0.016)
     Assert.equal(#result.menus, 1, "the validated completion transfers to the app menu")
-    Assert.deepEqual(
-      requests,
-      {
-        { requestKind = "milestone", name = "new-game-intro", urgency = "near" },
-        { requestKind = "milestone", name = "field-planning", urgency = "near" },
-        { requestKind = "milestone", name = "field-runtime", urgency = "near" },
-      },
-      "menu installation requests its intro prefetch and both field closures"
-    )
+    Assert.deepEqual(requests, {
+      { requestKind = "milestone", name = "new-game-intro", urgency = "near" },
+      { requestKind = "milestone", name = "field-planning", urgency = "near" },
+      { requestKind = "milestone", name = "field-runtime", urgency = "near" },
+    }, "menu installation requests its intro prefetch and both field closures")
     Assert.deepEqual(
       result.firstPlayPublished,
       { { versionId = "heartgold", generationId = "test-generation" } },
@@ -1308,10 +1318,7 @@ function T.fresh_import_first_play_stays_on_the_import_surface_until_the_menu()
         "the stale-cache wait still uses the preparation state"
       )
       Assert.equal(App.state.kind, "first-play", "the stale-cache wait still gates on the first-play closure")
-      Assert.isTrue(
-        App.state.importContinuation == nil,
-        "an ordinary stale-cache wait carries no import display facts"
-      )
+      Assert.isTrue(App.state.importContinuation == nil, "an ordinary stale-cache wait carries no import display facts")
       -- Fresh import: the completed importer identity crosses the handoff
       -- as display data while the importer itself is released.
       App.saveDir = "test-save-root"
@@ -1330,10 +1337,8 @@ function T.fresh_import_first_play_stays_on_the_import_surface_until_the_menu()
         "readiness still waits through the preparation state"
       )
       Assert.equal(App.state.kind, "first-play", "the handoff still waits on the first-play closure")
-      local continuation = assert(
-        App.state.importContinuation,
-        "the fresh-import wait carries the captured import display facts"
-      )
+      local continuation =
+        assert(App.state.importContinuation, "the fresh-import wait carries the captured import display facts")
       Assert.equal(continuation.saveDir, "test-save-root", "the continuation keeps the save root")
       local capturedSource = continuation.sourceName
       if capturedSource == nil and continuation.status ~= nil then

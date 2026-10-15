@@ -115,10 +115,7 @@ function T.catalog_borrows_the_published_root_without_a_recursive_copy()
   local ItemCatalog = require("libs.items.src.ItemCatalog")
   local root = ItemFixture.buildAssetRoot()
   local catalog = ItemCatalog.new(root)
-  Assert.isTrue(
-    catalog:item("POTION") == root.items.POTION,
-    "item lookups resolve the published record itself"
-  )
+  Assert.isTrue(catalog:item("POTION") == root.items.POTION, "item lookups resolve the published record itself")
   Assert.isTrue(
     catalog:pocket("medicine") == root.pockets.medicine,
     "pocket lookups resolve the published record itself"

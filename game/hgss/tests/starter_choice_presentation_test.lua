@@ -247,8 +247,15 @@ local function openPresentation(frameIndex)
     frameIndex = frameIndex == nil and 3 or frameIndex,
   })
   presentation._resources = {
-    instances = {}, renderMeshes = {}, staticBatches = {}, imageEntries = {}, meshEntries = {},
-    machineBackgroundImage = nil, infoBaseImage = nil, infoOverlayImage = nil, portraitQuads = {},
+    instances = {},
+    renderMeshes = {},
+    staticBatches = {},
+    imageEntries = {},
+    meshEntries = {},
+    machineBackgroundImage = nil,
+    infoBaseImage = nil,
+    infoOverlayImage = nil,
+    portraitQuads = {},
   }
   presentation:reset()
   return presentation, manifest
@@ -811,7 +818,8 @@ function T.focused_camera_uses_absolute_target_and_distinct_inspect_pivot()
   }
   local settled = snapshot({ selection = 0, selectionState = "inspect", transition = "waitZoom" })
   presentation:_drawItems(settled)
-  local selectedTransform = assert(presentation._resources.instances.ball1.transform, "the selected ball transform is realized")
+  local selectedTransform =
+    assert(presentation._resources.instances.ball1.transform, "the selected ball transform is realized")
   local arc = math.rad(layout.inspectArcDegrees)
   local pivotY = layout.modelY + 13.453 / 16
   local cosine, sine = math.cos(arc), math.sin(arc)
@@ -1267,10 +1275,7 @@ function T.opening_and_confirmation_copy_reveals_over_ticks_while_inspect_stays_
   local opening = snapshot({ selectionState = "null", transition = "idle" })
   presentation:update(opening)
   local first = drawInfo(manifest.messages.topInitial)
-  Assert.isTrue(
-    first < openingTotal,
-    "the opening copy starts as a partial reveal, not the complete lines"
-  )
+  Assert.isTrue(first < openingTotal, "the opening copy starts as a partial reveal, not the complete lines")
   local previous, complete = first, first
   for _ = 1, 5000 do
     presentation:update(opening)
@@ -1282,11 +1287,7 @@ function T.opening_and_confirmation_copy_reveals_over_ticks_while_inspect_stays_
     end
   end
   Assert.equal(complete, openingTotal, "the opening reveal completes on the fixed tick")
-  Assert.equal(
-    drawInfo(manifest.messages.topInitial),
-    complete,
-    "drawing reads the reveal without advancing it"
-  )
+  Assert.equal(drawInfo(manifest.messages.topInitial), complete, "drawing reads the reveal without advancing it")
   local inspecting = snapshot({ selection = 0, selectionState = "inspect", transition = "idle" })
   presentation:update(inspecting)
   Assert.equal(
@@ -1364,7 +1365,8 @@ end
 
 function T.adapted_pane_hides_portrait_before_selection_and_on_back_out()
   local presentation = openPresentation()
-  local hidden = adaptedPortraitDraws(presentation, snapshot({ selection = 0, selectionState = "null", transition = "idle" }))
+  local hidden =
+    adaptedPortraitDraws(presentation, snapshot({ selection = 0, selectionState = "null", transition = "idle" }))
   Assert.equal(#hidden, 0, "the single-pane opening frame shows no pokemon image")
   local backingOut =
     adaptedPortraitDraws(presentation, snapshot({ selection = 1, selectionState = "inspect", transition = "backOut" }))
@@ -1404,7 +1406,10 @@ function T.native_portrait_keeps_source_origin()
     { image = portraitImage, quad = { marker = "n2" } },
   }
   local ok, err = pcall(function()
-    presentation:_drawInfoPortrait(snapshot({ selection = 0, selectionState = "inspect", transition = "idle" }), manifest.surfaces.info.portrait)
+    presentation:_drawInfoPortrait(
+      snapshot({ selection = 0, selectionState = "inspect", transition = "idle" }),
+      manifest.surfaces.info.portrait
+    )
   end)
   if not ok then
     -- The single-argument portrait helper predates the adapted origin split.

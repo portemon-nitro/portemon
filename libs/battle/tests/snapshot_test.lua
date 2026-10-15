@@ -44,8 +44,7 @@ local function answer(request)
     elseif request.kind == "learn" then
       choices[#choices + 1] = SessionFixture.confirmChoice(actor)
     else
-      choices[#choices + 1] =
-        SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(2))
+      choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(2))
     end
   end
   return choices
@@ -130,11 +129,7 @@ function T.nested_interruptions_resume_from_plain_data_with_identical_results()
   for index = narrowRun.prefixLength + 1, #narrowRun.events do
     remaining[#remaining + 1] = narrowRun.events[index]
   end
-  Assert.deepEqual(
-    resumedEvents,
-    remaining,
-    "resuming replays the exact remaining stream without repeating parents"
-  )
+  Assert.deepEqual(resumedEvents, remaining, "resuming replays the exact remaining stream without repeating parents")
 
   local seenSequences = {}
   for _, event in ipairs(narrowRun.events) do
@@ -233,10 +228,8 @@ end
 -- current-version captures missing the marker reject outright.
 function T.activation_entry_clock_round_trips_and_rejects_stale_state()
   local contracts = SessionFixture.sessionContracts()
-  local BattleState = SessionFixture.requirePresent(
-    "libs.battle.src.BattleState",
-    "activation lifetime owns the entry clock"
-  )
+  local BattleState =
+    SessionFixture.requirePresent("libs.battle.src.BattleState", "activation lifetime owns the entry clock")
   local Snapshot = contracts.Snapshot
 
   local live = BattleState.create(SessionFixture.buildScenario(interruptible()))

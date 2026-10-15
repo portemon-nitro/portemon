@@ -11,22 +11,14 @@ local T = {}
 function T.custom_base_points_follow_multiply_before_truncate()
   local expected = { [0] = 7, 8, 9, 11 }
   for ups = 0, Moves.MAX_PP_UPS do
-    Assert.equal(
-      Moves.maxPp(7, ups),
-      expected[ups],
-      "base 7 with " .. ups .. " ups must multiply before truncating"
-    )
+    Assert.equal(Moves.maxPp(7, ups), expected[ups], "base 7 with " .. ups .. " ups must multiply before truncating")
   end
 end
 
 function T.ordinary_bases_keep_their_maxima()
   local expected = { [0] = 10, 12, 14, 16 }
   for ups = 0, Moves.MAX_PP_UPS do
-    Assert.equal(
-      Moves.maxPp(10, ups),
-      expected[ups],
-      "base 10 with " .. ups .. " ups keeps its ordinary maximum"
-    )
+    Assert.equal(Moves.maxPp(10, ups), expected[ups], "base 10 with " .. ups .. " ups keeps its ordinary maximum")
   end
 end
 

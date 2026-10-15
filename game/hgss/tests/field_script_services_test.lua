@@ -118,7 +118,8 @@ local function sliceChunk(id, steps)
     elseif step.op == "field_move" then
       lines[#lines + 1] = '    { op = "field_move", source = "pending" },'
     elseif step.op == "battle_launch" then
-      lines[#lines + 1] = '    { op = "battle_launch", kind = "wild", details = { species = "TOTODILE", level = 4 }, result = { value = "var", id = "VAR_TEMP_x4001" } },'
+      lines[#lines + 1] =
+        '    { op = "battle_launch", kind = "wild", details = { species = "TOTODILE", level = 4 }, result = { value = "var", id = "VAR_TEMP_x4001" } },'
     elseif step.op == "battle_result" then
       lines[#lines + 1] = '    { op = "battle_result", result = { value = "var", id = "VAR_TEMP_x4002" } },'
     else
@@ -308,9 +309,11 @@ function T.tests.production_trainer_card_service_counts_no_frontier_star()
           },
         },
       },
-      overworld = { phase = function()
-        return "present"
-      end },
+      overworld = {
+        phase = function()
+          return "present"
+        end,
+      },
       fieldTerrainEffectController = {},
       scriptHosts = nil,
       screenFade = nil,

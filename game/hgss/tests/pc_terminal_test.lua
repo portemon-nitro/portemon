@@ -27,8 +27,16 @@ function T.tests.terminal_effects_use_manifest_roles_and_release_once()
     end,
   }
   local terminal = PcTerminal.new({
-    mailbox = { usedCount = function() return 2 end },
-    photoAlbum = { usedCount = function() return 3 end },
+    mailbox = {
+      usedCount = function()
+        return 2
+      end,
+    },
+    photoAlbum = {
+      usedCount = function()
+        return 3
+      end,
+    },
     sourcePolicy = sourcePolicy(),
     resolveTerminalProp = function(propRef)
       Assert.equal(propRef, "pc_terminal", "the typed source prop reference is preserved")
@@ -52,8 +60,16 @@ end
 
 function T.tests.counts_and_capsule_defer_read_canonical_owners_without_mutation()
   local terminal = PcTerminal.new({
-    mailbox = { usedCount = function() return 4 end },
-    photoAlbum = { usedCount = function() return 6 end },
+    mailbox = {
+      usedCount = function()
+        return 4
+      end,
+    },
+    photoAlbum = {
+      usedCount = function()
+        return 6
+      end,
+    },
     sourcePolicy = sourcePolicy(),
     resolveTerminalProp = function()
       error("counting does not resolve a prop")

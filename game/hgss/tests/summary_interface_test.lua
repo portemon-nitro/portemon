@@ -156,8 +156,7 @@ local function openSummary(service, class)
     end
     return { kind = "ready", key = demand.key, assets = assets }
   end
-  function lease:release()
-  end
+  function lease:release() end
   local measured = measurementFor(class)
   local state = SummaryScreenState.new({
     mons = service,
@@ -272,8 +271,7 @@ function T.layout_changes_discard_the_overlay_without_native_side_effects()
   function lease:prepare(demand)
     return { kind = "ready", key = demand.key, assets = { manifest = family } }
   end
-  function lease:release()
-  end
+  function lease:release() end
   local measured = measurementFor("nativeLike")
   local state = SummaryScreenState.new({
     mons = service,
@@ -314,13 +312,15 @@ function T.host_chrome_rides_the_interface_render_outside_native_raster()
   local plan = assert(status.presentation, "the wrapper publishes its pane plan")
   local graphics = FakeGraphics.new({})
   local SummaryRenderer = require("libs.hgss.src.ui.SummaryRenderer")
-  local renderer = SummaryRenderer.new({ graphics = graphics, text = {
-    drawLineWithPalette = function(_, _, _, _, _)
-    end,
-    textWidth = function(_, _)
-      return 0
-    end,
-  } })
+  local renderer = SummaryRenderer.new({
+    graphics = graphics,
+    text = {
+      drawLineWithPalette = function(_, _, _, _, _) end,
+      textWidth = function(_, _)
+        return 0
+      end,
+    },
+  })
   plan.render({ graphics = graphics, summaryRenderer = renderer }, status, plan)
   local affordances = 0
   for _, rectangle in ipairs(graphics.rectangles) do

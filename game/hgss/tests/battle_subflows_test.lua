@@ -671,10 +671,7 @@ end
 function T.party_child_lists_six_stable_rows_with_no_hidden_screens()
   local flows = coordinator()
   local options = twoReserveOptions()
-  Assert.isTrue(
-    flows:open(partyIntent({ party = sixSlotRoster(), options = options })),
-    "the six-slot child opens"
-  )
+  Assert.isTrue(flows:open(partyIntent({ party = sixSlotRoster(), options = options })), "the six-slot child opens")
   -- No update or tick ran yet: the rows are already answerable.
   local view = flows:status().childView --[[@as table<string, unknown>]]
   Assert.isTrue(view.interactive == true, "the roster answers with no waiting")
@@ -688,21 +685,14 @@ function T.party_child_lists_six_stable_rows_with_no_hidden_screens()
   flows:update({ { type = "confirm" } })
   local result = flows:takeResult()
   Assert.notNil(result, "confirming without any tick still seals")
-  assertSealedAmong(
-    result.reply.choices[1],
-    options.actors[1].choices,
-    "the seal names a projected reserve"
-  )
+  assertSealedAmong(result.reply.choices[1], options.actors[1].choices, "the seal names a projected reserve")
   flows:dispose()
 end
 
 function T.party_keys_and_taps_seal_the_same_projected_reserve()
   local options = twoReserveOptions()
   local keyed = coordinator()
-  Assert.isTrue(
-    keyed:open(partyIntent({ party = sixSlotRoster(), options = options })),
-    "keys open the roster"
-  )
+  Assert.isTrue(keyed:open(partyIntent({ party = sixSlotRoster(), options = options })), "keys open the roster")
   for _ = 1, 10 do
     local view = keyed:status().childView --[[@as table<string, unknown>]]
     if view.focusId == "party:1" then
@@ -717,10 +707,7 @@ function T.party_keys_and_taps_seal_the_same_projected_reserve()
   Assert.notNil(keyedResult, "keys seal the reserve")
   keyed:dispose()
   local tapped = coordinator()
-  Assert.isTrue(
-    tapped:open(partyIntent({ party = sixSlotRoster(), options = options })),
-    "taps open the roster"
-  )
+  Assert.isTrue(tapped:open(partyIntent({ party = sixSlotRoster(), options = options })), "taps open the roster")
   Assert.isTrue(tapped:activateControl("party:1"), "the reserve row takes the tap")
   local tappedResult = tapped:takeResult()
   Assert.notNil(tappedResult, "the tap seals the reserve")
@@ -808,7 +795,9 @@ function T.bag_target_cancel_restores_the_resting_browse_without_spending()
   Assert.equal(returnedPage.current, restingPage.current, "cancel keeps the page")
   Assert.deepEqual(rowLabels(returned), rowLabels(resting), "cancel keeps the listed cells")
   local foundServing = false
-  for _, row in ipairs(returned.rows --[[@as table<integer, table<string, unknown>>]]) do
+  for _, row in
+    ipairs(returned.rows --[[@as table<integer, table<string, unknown>>]])
+  do
     if row.label == "Potion" then
       Assert.equal(row.sub, "x5", "the serving spends nothing on cancel")
       foundServing = true

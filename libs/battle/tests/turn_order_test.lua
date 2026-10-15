@@ -221,11 +221,7 @@ function T.staged_speeds_sample_through_exact_truncation()
     candidate(1, 1, "attack", 0, StatStages.effective(45, 6, "speed")),
     candidate(2, 2, "attack", 0, StatStages.effective(200, -6, "speed")),
   }, false, 7)
-  Assert.deepEqual(
-    orderIds(ordered),
-    { 1, 2 },
-    "a fully raised slower base outruns a fully lowered faster base"
-  )
+  Assert.deepEqual(orderIds(ordered), { 1, 2 }, "a fully raised slower base outruns a fully lowered faster base")
 end
 
 function T.malformed_candidates_fail_without_consuming_draws()

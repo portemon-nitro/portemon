@@ -838,8 +838,7 @@ function T.turntable_and_ball_animation_timing_survives_demand_preparation()
   local turntable = assert(resources.instances.turntable, "the turntable record stays live")
   local firstDraws = turntable:drawItems(assert(resources.renderMeshes.turntable, "turntable meshes stay resident"))
   host:update()
-  local secondDraws =
-    turntable:drawItems(assert(resources.renderMeshes.turntable, "turntable meshes stay resident"))
+  local secondDraws = turntable:drawItems(assert(resources.renderMeshes.turntable, "turntable meshes stay resident"))
   Assert.isTrue(firstDraws == secondDraws, "animated draw records keep stable live identities across ticks")
 
   host:confirm()

@@ -341,10 +341,7 @@ local function assertRejectsNamingItem(ItemAssetSchema, root, key, why)
   end, why)
   Assert.isTrue(Errors.is(err), "expected a structured catalog error, got " .. tostring(err))
   Assert.equal(err.code, "ITEM_CATALOG_INVALID")
-  Assert.isTrue(
-    string.find(err.message, key, 1, true) ~= nil,
-    "rejection must name the offending item: " .. why
-  )
+  Assert.isTrue(string.find(err.message, key, 1, true) ~= nil, "rejection must name the offending item: " .. why)
 end
 
 function T.catalogs_accept_the_optional_low_health_serving_gate()
@@ -387,50 +384,25 @@ function T.catalogs_reject_battle_only_records_missing_battle_use()
   local ItemAssetSchema = schema()
   local root = validRoot()
   makeBattleOnly(root.items["ITEM_55"])
-  assertRejectsNamingItem(
-    ItemAssetSchema,
-    root,
-    "ITEM_55",
-    "battle-only records without battle use must be rejected"
-  )
+  assertRejectsNamingItem(ItemAssetSchema, root, "ITEM_55", "battle-only records without battle use must be rejected")
 end
 
 function T.catalogs_reject_battle_use_outside_battle_only_records()
   local ItemAssetSchema = schema()
   local medicine = validRoot()
   medicine.items["POTION"].battleUse = completeBattleUse()
-  assertRejectsNamingItem(
-    ItemAssetSchema,
-    medicine,
-    "POTION",
-    "ordinary medicine must not carry battle use"
-  )
+  assertRejectsNamingItem(ItemAssetSchema, medicine, "POTION", "ordinary medicine must not carry battle use")
   local berry = validRoot()
   berry.items["SITRUS_BERRY"].battleUse = completeBattleUse()
-  assertRejectsNamingItem(
-    ItemAssetSchema,
-    berry,
-    "SITRUS_BERRY",
-    "berry medicine must not carry battle use"
-  )
+  assertRejectsNamingItem(ItemAssetSchema, berry, "SITRUS_BERRY", "berry medicine must not carry battle use")
   local mail = validRoot()
   mail.items["ITEM_55"].partyUse = { kind = "deferred", reason = "mail" }
   mail.items["ITEM_55"].battleUse = completeBattleUse()
-  assertRejectsNamingItem(
-    ItemAssetSchema,
-    mail,
-    "ITEM_55",
-    "deferred mail must not carry battle use"
-  )
+  assertRejectsNamingItem(ItemAssetSchema, mail, "ITEM_55", "deferred mail must not carry battle use")
   local evolution = validRoot()
   evolution.items["ITEM_55"].partyUse = { kind = "deferred", reason = "evolution" }
   evolution.items["ITEM_55"].battleUse = completeBattleUse()
-  assertRejectsNamingItem(
-    ItemAssetSchema,
-    evolution,
-    "ITEM_55",
-    "deferred evolution must not carry battle use"
-  )
+  assertRejectsNamingItem(ItemAssetSchema, evolution, "ITEM_55", "deferred evolution must not carry battle use")
 end
 
 function T.catalogs_reject_malformed_battle_use()

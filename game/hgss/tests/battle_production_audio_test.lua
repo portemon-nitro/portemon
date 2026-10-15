@@ -85,7 +85,8 @@ local function methodAudio()
     controller.calls[#controller.calls + 1] = { method = "play", receiver = self, symbol = symbol }
   end
   function controller:playCry(species, pattern)
-    controller.calls[#controller.calls + 1] = { method = "playCry", receiver = self, species = species, pattern = pattern }
+    controller.calls[#controller.calls + 1] =
+      { method = "playCry", receiver = self, species = species, pattern = pattern }
   end
   function controller:rejects()
     return false
@@ -230,7 +231,10 @@ end
 -- and the lead/foe portrait pages over the presentation fixture cache.
 ---@param cache table versioned derived cache under staging
 local function stageBattlePresentation(cache)
-  cache:writeLua(BattlePresentationCache.manifestPath(), stagedManifest(BattlePresentationCache.sceneImagePath(SCENE_KEY)))
+  cache:writeLua(
+    BattlePresentationCache.manifestPath(),
+    stagedManifest(BattlePresentationCache.sceneImagePath(SCENE_KEY))
+  )
   cache:write(MENU_IMAGE, solidPng(8, 8))
   for _, font in ipairs({ "font-0" }) do
     cache:write(font, "staged-font")
@@ -420,8 +424,7 @@ local function makeParty()
     date = CatalogFixture.metDate(),
   })
   local factory = CatalogFixture.makeFactory(0x33333333, catalog)
-  local record =
-    factory:createNormal(CatalogFixture.normalRequest({ species = LEAD_SPECIES, level = 20 }))
+  local record = factory:createNormal(CatalogFixture.normalRequest({ species = LEAD_SPECIES, level = 20 }))
   record.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
   Assert.isTrue(owner:addMon(record), "the production path needs its live party lead")
   return owner
@@ -535,7 +538,10 @@ function T.selection_and_cry_reach_the_bound_controller_once()
   local cries, plays = {}, {}
   for _, call in ipairs(audio.calls) do
     Assert.isTrue(call.receiver == audio, "every cue reaches the controller with its receiver")
-    Assert.isTrue(call.symbol == nil or tostring(call.symbol):sub(1, 4) ~= "cry:", "no cue dispatches a pseudo-sequence")
+    Assert.isTrue(
+      call.symbol == nil or tostring(call.symbol):sub(1, 4) ~= "cry:",
+      "no cue dispatches a pseudo-sequence"
+    )
     if call.method == "playCry" then
       cries[#cries + 1] = call
     elseif call.method == "play" then

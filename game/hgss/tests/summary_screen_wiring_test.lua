@@ -64,8 +64,7 @@ local function composition(service, opts)
   function lease:prepare(demand)
     return { kind = "ready", key = demand.key, assets = { manifest = family } }
   end
-  function lease:release()
-  end
+  function lease:release() end
   return {
     mons = service,
     manifest = family,
@@ -296,8 +295,7 @@ local function capturingComposition(service, captured)
     end
     return { kind = "ready", key = demand.key, assets = { manifest = composed.manifest } }
   end
-  function lease:release()
-  end
+  function lease:release() end
   composed.acquirePreparation = function()
     return lease
   end
@@ -356,11 +354,7 @@ function T.egg_only_demand_carries_no_portrait_selector()
   Assert.isTrue(#captured >= 1, "the wrapper prepares its egg-only demand")
   local demand = assert(captured[#captured], "the wrapper records its demand")
   Assert.deepEqual(demand.portraitSelectors, {}, "eggs request zero portrait pages")
-  Assert.deepEqual(
-    demand.iconKeys,
-    { MonCache.iconSelector("EGG", 0, true) },
-    "egg demand keeps its icon key"
-  )
+  Assert.deepEqual(demand.iconKeys, { MonCache.iconSelector("EGG", 0, true) }, "egg demand keeps its icon key")
   state:dispose()
 end
 
@@ -527,10 +521,7 @@ local OWNER_MODULE = "game.hgss.src.field.SummaryPresentationResources"
 ---@return table<string, unknown> field-owned Summary resource owner
 local function requireOwner(versionId, helper)
   local ok, Owner = pcall(require, OWNER_MODULE)
-  Assert.isTrue(
-    ok,
-    "production parent flows prepare Summary through the field resource owner: " .. tostring(Owner)
-  )
+  Assert.isTrue(ok, "production parent flows prepare Summary through the field resource owner: " .. tostring(Owner))
   return Owner.new(SummaryAcceptanceFixture.ownerOptions(versionId, helper))
 end
 
@@ -592,8 +583,7 @@ local function openProductionPartyFlow(versionId, summaryManifest)
     prepareIcons = function(_)
       return true, nil
     end,
-    cancelIconPreparation = function()
-    end,
+    cancelIconPreparation = function() end,
     effect = function(sequence)
       effects[#effects + 1] = sequence
     end,
@@ -609,9 +599,16 @@ local function openProductionPartyFlow(versionId, summaryManifest)
       return ownerLease(Owner)
     end,
   })
-  return { flow = flow, service = service, bag = bag, effects = effects, owner = Owner, leases = function()
-    return leases
-  end }
+  return {
+    flow = flow,
+    service = service,
+    bag = bag,
+    effects = effects,
+    owner = Owner,
+    leases = function()
+      return leases
+    end,
+  }
 end
 
 ---@param rig table<string, unknown> production flow rig
@@ -667,15 +664,9 @@ function T.host_layouts_present_native_main_and_sub_panes()
     local mainPlacement = assert(main.placement, class .. " places its main pane")
     local subPlacement = assert(sub.placement, class .. " places its sub pane")
     if class == "wide" then
-      Assert.isTrue(
-        mainPlacement.x < subPlacement.x,
-        "wide keeps the main pane left of the sub pane"
-      )
+      Assert.isTrue(mainPlacement.x < subPlacement.x, "wide keeps the main pane left of the sub pane")
     elseif class == "tall" then
-      Assert.isTrue(
-        mainPlacement.y < subPlacement.y,
-        "tall keeps the main pane above the sub pane"
-      )
+      Assert.isTrue(mainPlacement.y < subPlacement.y, "tall keeps the main pane above the sub pane")
     end
     contents[class] = status.presentation.content
     state:dispose()
@@ -695,17 +686,11 @@ function T.host_layouts_present_native_main_and_sub_panes()
   local fallback = openNativeSummary(service, summaryManifest, context, "wide", { measured = small })
   local fallbackStatus = activeStatus(fallback)
   local fallbackPlan = assert(fallbackStatus.presentation, "the too-small wide wrapper publishes its pane plan")
-  Assert.isTrue(
-    fallbackPlan.nativeLike == true,
-    "too-small wide falls back to the nativeLike entry"
-  )
+  Assert.isTrue(fallbackPlan.nativeLike == true, "too-small wide falls back to the nativeLike entry")
   local fallbackPanes = panesById(fallbackStatus)
   Assert.notNil(fallbackPanes.main, "the fallback still exposes the main pane")
   Assert.notNil(fallbackPanes.sub, "the fallback still exposes the sub pane")
-  Assert.isTrue(
-    fallbackPanes.sub.interactive ~= false,
-    "the fallback keeps the sub pane interactive"
-  )
+  Assert.isTrue(fallbackPanes.sub.interactive ~= false, "the fallback keeps the sub pane interactive")
   fallback:dispose()
 end
 
@@ -879,8 +864,7 @@ local function genericInstance()
   setmetatable(instance, {
     __index = function(self, key)
       if key == "release" or key == "dispose" then
-        local function forget(_)
-        end
+        local function forget(_) end
         self[key] = forget
         return forget
       end
@@ -945,8 +929,7 @@ local function fprRuntime(versionId)
   runtime.bindPartyIconPreparation = function(_, _, _)
     return 1
   end
-  runtime.unbindPartyIconPreparation = function(_, _)
-  end
+  runtime.unbindPartyIconPreparation = function(_, _) end
   -- The recording summary seam mirrors the production runtime binding:
   -- one live acquire callback with an identity, removed only by its own
   -- identity so a stale unbind can never drop a replacement owner.
@@ -1075,10 +1058,8 @@ function T.parent_round_trips_restore_selection_with_both_pane_fades()
     staged = flow:status()
   end
   Assert.notNil(staged.transition, "opening the Summary stages its exit transition")
-  local firstCoefficient = assert(
-    staged.transition.brightnessCoefficient,
-    "the Summary exit carries its brightness coefficient"
-  )
+  local firstCoefficient =
+    assert(staged.transition.brightnessCoefficient, "the Summary exit carries its brightness coefficient")
   local exitCoefficients = { firstCoefficient }
   for _ = 1, 24 do
     flow:updateFixed({ { type = "confirm" } })
@@ -1086,10 +1067,8 @@ function T.parent_round_trips_restore_selection_with_both_pane_fades()
     if status.transition == nil then
       break
     end
-    exitCoefficients[#exitCoefficients + 1] = assert(
-      status.transition.brightnessCoefficient,
-      "the Summary exit carries its brightness coefficient"
-    )
+    exitCoefficients[#exitCoefficients + 1] =
+      assert(status.transition.brightnessCoefficient, "the Summary exit carries its brightness coefficient")
   end
   Assert.deepEqual(
     exitCoefficients,
@@ -1148,10 +1127,7 @@ function T.parent_round_trips_restore_selection_with_both_pane_fades()
     resumed = flowChild(rig)
   end
   Assert.equal(resumed.cursorNode, 0, "the party resumes on the displayed member")
-  Assert.isTrue(
-    flowChild(rig).state ~= "context",
-    "transition input never replays into the replacement child"
-  )
+  Assert.isTrue(flowChild(rig).state ~= "context", "transition input never replays into the replacement child")
   Assert.isNil(flow:takeResult(), "returning reports no terminal result")
   Assert.equal(rig.service:partyRevision(), partyRevision, "the return journey mutates no mon")
   Assert.equal(rig.bag:revision(), bagRevision, "the return journey touches no bag transaction")
@@ -1185,16 +1161,12 @@ function T.production_presenters_draw_summary_without_a_test_renderer()
     local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
     local ok, err = pcall(resources.drawApplication, resources, FieldApplicationIds.POKEMON, status, {})
     Assert.isTrue(ok, "production presenters draw the native Summary: " .. tostring(err))
-    Assert.isTrue(
-      #graphics.rectangles + #graphics.draws > 0,
-      "the real presenter leaves drawn Summary output behind"
-    )
+    Assert.isTrue(#graphics.rectangles + #graphics.draws > 0, "the real presenter leaves drawn Summary output behind")
     local bagPlan = {
       panes = {},
       content = {},
       inputKey = "bag",
-      render = function(_, _, _)
-      end,
+      render = function(_, _, _) end,
       mapInput = function()
         return nil
       end,

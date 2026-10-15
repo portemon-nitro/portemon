@@ -200,7 +200,10 @@ function T.current_index_requires_all_three_well_formed_namespaces()
   assertInvalidDestination(cache, FieldMapDataCache.spawnDestination, "SPAWN_NEW_BARK")
   assertInvalidDestination(cache, FieldMapDataCache.specialSpawnDestination, "SPAWN_NEW_BARK")
 
-  writeIndex(cache, { schema = index.schema, blackoutSpawns = index.blackoutSpawns, specialSpawns = index.specialSpawns })
+  writeIndex(
+    cache,
+    { schema = index.schema, blackoutSpawns = index.blackoutSpawns, specialSpawns = index.specialSpawns }
+  )
   Assert.isFalse(FieldMapDataCache.isSpawnIndexReady(cache, "test-marker"), "outdoor namespace is required")
   assertInvalidDestination(cache, FieldMapDataCache.spawnDestination, "SPAWN_NEW_BARK")
   assertInvalidDestination(cache, FieldMapDataCache.blackoutDestination, "SPAWN_NEW_BARK")
@@ -236,7 +239,8 @@ function T.current_index_requires_all_three_well_formed_namespaces()
   for spawnKey, destination in pairs(index.specialSpawns) do
     malformedSpecial[spawnKey] = destination
   end
-  malformedSpecial.SPAWN_NEW_BARK = { map = "MAP_NEW_BARK", fieldX = 695, fieldZ = 397, warpId = 0, direction = "south" }
+  malformedSpecial.SPAWN_NEW_BARK =
+    { map = "MAP_NEW_BARK", fieldX = 695, fieldZ = 397, warpId = 0, direction = "south" }
   writeIndex(cache, {
     schema = index.schema,
     spawns = index.spawns,
@@ -257,8 +261,7 @@ function T.spawn_index_writer_refuses_a_partial_namespace_bundle()
     spawns = bundle.index.spawns,
     blackoutSpawns = bundle.index.blackoutSpawns,
   }
-  local ok, err =
-    pcall(FieldMapDataCacheWriter.writeSpawnIndex, cache, { index = partial, marker = bundle.marker })
+  local ok, err = pcall(FieldMapDataCacheWriter.writeSpawnIndex, cache, { index = partial, marker = bundle.marker })
   Assert.isFalse(ok, "a bundle without the special namespace must not publish")
   Assert.isTrue(Errors.is(err), "the refused publish carries a structured error")
 end

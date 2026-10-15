@@ -43,10 +43,8 @@ function T.custom_held_entry_resolves_without_a_native_identity()
     type(ItemCatalog.fromResolved) == "function",
     "missing item catalog contract ItemCatalog.fromResolved: composed definitions have no catalog owner"
   )
-  local ResolvedItemSchema = requireContract(
-    "libs.items.src.ResolvedItemSchema",
-    "composed item definitions have no runtime schema"
-  )
+  local ResolvedItemSchema =
+    requireContract("libs.items.src.ResolvedItemSchema", "composed item definitions have no runtime schema")
 
   local root = ItemFixture.buildAssetRoot()
   root.items["ember:EMBER_CHARM"] = customHeldEntry()

@@ -256,7 +256,8 @@ end
 -- and 3. Role geometry is synthetic but pane-correct; structural detail
 -- beyond the closed record shapes belongs to the compiled-output
 -- conformance coverage.
-local GROUP_ROLE_CENSUS = { info = { main = 2, sub = 6 }, skills = { main = 8, sub = 10 }, performance = { main = 5, sub = 3 } }
+local GROUP_ROLE_CENSUS =
+  { info = { main = 2, sub = 6 }, skills = { main = 8, sub = 10 }, performance = { main = 5, sub = 3 } }
 
 local function semanticRole(pane, seed)
   return {
@@ -331,7 +332,8 @@ local CHROME_ANIMATIONS = {
 }
 
 local function chromeVisuals()
-  local visuals = { detailBacking = { image = "assets/generated/summary/syn-detail-backing.png", width = 8, height = 8 } }
+  local visuals =
+    { detailBacking = { image = "assets/generated/summary/syn-detail-backing.png", width = 8, height = 8 } }
   for _, name in ipairs(CHROME_ANIMATIONS) do
     visuals["syn-" .. name] = { image = "assets/generated/summary/syn-" .. name .. ".png", width = 16, height = 16 }
   end
@@ -341,7 +343,8 @@ end
 local function chromeSprites()
   local animations = {}
   for _, name in ipairs(CHROME_ANIMATIONS) do
-    animations[name] = { frames = { { visual = "syn-" .. name, durationTicks = 2 } }, loopFrom = 1, playback = "static" }
+    animations[name] =
+      { frames = { { visual = "syn-" .. name, durationTicks = 2 } }, loopFrom = 1, playback = "static" }
   end
   local primaryAnchors = {}
   for index = 1, 6 do
@@ -513,7 +516,10 @@ function T.schema_requires_complete_bar_rules()
   Assert.isTrue(pcall(schema.assertManifest, missing) == false, "a family without bar rules must not validate")
   local partial = skeletonManifest()
   partial.bars = { hp = validBar(48) }
-  Assert.isTrue(pcall(schema.assertManifest, partial) == false, "a family without the experience rule must not validate")
+  Assert.isTrue(
+    pcall(schema.assertManifest, partial) == false,
+    "a family without the experience rule must not validate"
+  )
 end
 
 -- Touch targets are required content: an empty touch set must not
@@ -713,10 +719,8 @@ function T.synthetic_presentation_data_mirrors_the_generated_envelope()
   local manifest = Fixture.manifest()
   Assert.notNil(manifest, "the synthetic data builds a manifest")
   Assert.equal(manifest.schema, Fixture.SCHEMA, "the synthetic manifest carries the tracked schema")
-  local conditions = assert(
-    manifest.memo and manifest.memo.conditions,
-    "the synthetic memo carries its ordered branches"
-  )
+  local conditions =
+    assert(manifest.memo and manifest.memo.conditions, "the synthetic memo carries its ordered branches")
   Assert.isTrue(conditions[1] ~= nil, "the synthetic memo branches keep first-match order")
   local firstTemplate = assert(conditions[1].dateTemplate, "the first synthetic branch carries its date template")
   Assert.isTrue(
@@ -735,16 +739,11 @@ end
 function T.synthetic_memo_branches_carry_no_label_only_template_references()
   local Fixture = require("tests.support.SummaryPresentationFixture")
   local manifest = Fixture.manifest()
-  local conditions = assert(
-    manifest.memo and manifest.memo.conditions,
-    "the synthetic memo carries its ordered branches"
-  )
+  local conditions =
+    assert(manifest.memo and manifest.memo.conditions, "the synthetic memo carries its ordered branches")
   Assert.isTrue(conditions[1] ~= nil, "the synthetic memo branches keep first-match order")
   for index, branch in ipairs(conditions) do
-    Assert.isNil(
-      branch.template,
-      "synthetic branch " .. index .. " carries no label-only template reference"
-    )
+    Assert.isNil(branch.template, "synthetic branch " .. index .. " carries no label-only template reference")
     local template = assert(branch.dateTemplate, "synthetic branch " .. index .. " carries its date template")
     Assert.isTrue(
       type(template.segments) == "table" and #template.segments > 0,

@@ -109,10 +109,18 @@ function T.invalid_child_factory_result_is_cleaned_up()
   local disposals = 0
   local owner = PcApplicationHost.new({
     createStorage = function()
-      return { dispose = function() disposals = disposals + 1 end }
+      return {
+        dispose = function()
+          disposals = disposals + 1
+        end,
+      }
     end,
-    createMailbox = function() return {} end,
-    createPhotoAlbum = function() return {} end,
+    createMailbox = function()
+      return {}
+    end,
+    createPhotoAlbum = function()
+      return {}
+    end,
   })
   Assert.throws(function()
     owner:open({ app = "storage", mode = 0 })

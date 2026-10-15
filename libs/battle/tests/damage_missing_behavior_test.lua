@@ -75,7 +75,9 @@ end
 ---@return string[] detached semantic types for the form
 local function copyFormTypes(formRecord)
   local types = {} ---@type string[]
-  for _, key in ipairs(formRecord.types --[[@as string[] ]]) do
+  for _, key in
+    ipairs(formRecord.types --[[@as string[] ]])
+  do
     types[#types + 1] = key --[[@as string]]
   end
   return types
@@ -158,17 +160,13 @@ function T.unmodeled_damage_reports_missing_behavior_through_the_native_session(
   local betaRequest = requestFor(opening, "beta")
   local alphaActor = assert(alphaRequest.actors[1], "the owning request addresses its lead")
   local betaActor = assert(betaRequest.actors[1], "the opposing request addresses its lead")
-  local storedAlpha, alphaErr = session:submit(
-    SessionFixture.replyFor(alphaRequest, {
-      SessionFixture.attackChoice(alphaActor, 0, SessionFixture.positionTarget(2)),
-    })
-  )
+  local storedAlpha, alphaErr = session:submit(SessionFixture.replyFor(alphaRequest, {
+    SessionFixture.attackChoice(alphaActor, 0, SessionFixture.positionTarget(2)),
+  }))
   Assert.isTrue(storedAlpha, "the gated strike binds: " .. tostring(alphaErr))
-  local storedBeta, betaErr = session:submit(
-    SessionFixture.replyFor(betaRequest, {
-      SessionFixture.attackChoice(betaActor, 0, SessionFixture.positionTarget(1)),
-    })
-  )
+  local storedBeta, betaErr = session:submit(SessionFixture.replyFor(betaRequest, {
+    SessionFixture.attackChoice(betaActor, 0, SessionFixture.positionTarget(1)),
+  }))
   Assert.isTrue(storedBeta, "the opposing strike binds: " .. tostring(betaErr))
   local ok, failure = pcall(function()
     return session:advance(1024)
@@ -176,10 +174,7 @@ function T.unmodeled_damage_reports_missing_behavior_through_the_native_session(
   Assert.isFalse(ok, "the unmodeled strike reports its missing behavior instead of failing quietly")
   local record = failure --[[@as table<string, unknown>]]
   Assert.equal(record.code, "BATTLE_MISSING_BEHAVIOR", "the report carries the missing-behavior signal")
-  Assert.isTrue(
-    tostring(failure):find(GATED_PROBE_MOVE, 1, true) ~= nil,
-    "the report names the unmodeled move"
-  )
+  Assert.isTrue(tostring(failure):find(GATED_PROBE_MOVE, 1, true) ~= nil, "the report names the unmodeled move")
   session:dispose()
 end
 

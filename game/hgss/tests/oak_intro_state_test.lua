@@ -1736,8 +1736,6 @@ local function fakePreparedEntry(script)
   return entry
 end
 
-
-
 function T.injected_prepared_entry_is_polled_once_per_update_without_gating_progress()
   local entry = fakePreparedEntry()
   local state, controller = stateHarness(nil, entry)
@@ -1836,10 +1834,7 @@ function T.black_handoff_failure_raises_instead_of_waiting()
   state._blackHandoffPresented = true
   local ok, err = pcall(state.tick, state, 1)
   Assert.isFalse(ok, "a failed entry fails the handoff loudly")
-  Assert.isTrue(
-    string.find(tostring(err), "bedroom bank missing", 1, true) ~= nil,
-    "the preparation cause surfaces"
-  )
+  Assert.isTrue(string.find(tostring(err), "bedroom bank missing", 1, true) ~= nil, "the preparation cause surfaces")
   state:dispose()
 end
 

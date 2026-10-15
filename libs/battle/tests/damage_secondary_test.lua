@@ -176,7 +176,11 @@ function T.ordinary_strikes_deal_staged_damage()
   local probe = runStrike("SCRATCH", moveFacts("SCRATCH", { power = 40 }), FIXED_SEED)
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the ordinary strike connects")
-  Assert.isTrue((probe.dealt --[[@as integer]]) > 0, "the ordinary strike deals staged damage")
+  Assert.isTrue(
+    probe.dealt --[[@as integer]]
+      > 0,
+    "the ordinary strike deals staged damage"
+  )
 end
 
 -- High-critical strikes roll the raised native stage: with a stream draw
@@ -204,7 +208,8 @@ function T.high_critical_strikes_roll_the_raised_stage()
   local tackleOutcome = tackle.outcome --[[@as table<string, unknown>]]
   Assert.equal(tackleOutcome.result, "hit", "the ordinary strike connects on the same stream")
   Assert.isTrue(
-    (slash.dealt --[[@as integer]]) > (tackle.dealt --[[@as integer]]),
+    slash.dealt --[[@as integer]]
+      > tackle.dealt --[[@as integer]],
     "the raised stage crits where the base stage does not"
   )
 end
@@ -288,10 +293,8 @@ function T.burn_secondaries_roll_the_compiled_chance()
   local ctx = probe.ctx
   local mon = nil
   do
-    local BattleState = SessionFixture.requirePresent(
-      "libs.battle.src.BattleState",
-      "private battle data owns reference invariants"
-    )
+    local BattleState =
+      SessionFixture.requirePresent("libs.battle.src.BattleState", "private battle data owns reference invariants")
     mon = BattleState.combatant(probe.state, 2).mon --[[@as table<string, unknown>]]
   end
   local effects = (mon.condition --[[@as table<string, unknown>]]).effects --[[@as table<integer, unknown>]]
@@ -306,7 +309,9 @@ local function findInstance(state, key)
   local bag = state.effectBag --[[@as table<string, unknown>]]
   local capture = bag.capture --[[@as fun(self: table<string, unknown>): table<integer, table<string, unknown>>]]
   for _, record in ipairs(capture(bag)) do
-    if (record --[[@as table<string, unknown>]]).key == key then
+    if
+      (record --[[@as table<string, unknown>]]).key == key
+    then
       return record --[[@as table<string, unknown>]]
     end
   end
@@ -374,7 +379,9 @@ function T.confusion_secondaries_root_a_counted_volatile()
   Assert.equal(probeOutcome.result, "hit", "the confusing strike connects")
   local instance = findInstance(probe.state, "confusion")
   Assert.notNil(instance, "the confusion volatile lands on the defender")
-  local turns = (instance --[[@as table<string, unknown>]]).state --[[@as table<string, unknown>]].turns
+  local turns = (instance --[[@as table<string, unknown>]])
+    .state --[[@as table<string, unknown>]]
+    .turns
   Assert.isTrue(turns >= 2 and turns <= 5, "the confusion countdown spans two to five turns")
 end
 
@@ -391,7 +398,9 @@ function T.binding_strikes_trap_with_a_countdown()
   Assert.equal(probeOutcome.result, "hit", "the binding strike connects")
   local instance = findInstance(probe.state, "bind")
   Assert.notNil(instance, "the binding volatile lands on the defender")
-  local turns = (instance --[[@as table<string, unknown>]]).state --[[@as table<string, unknown>]].turns
+  local turns = (instance --[[@as table<string, unknown>]])
+    .state --[[@as table<string, unknown>]]
+    .turns
   Assert.isTrue(turns >= 3 and turns <= 6, "the binding countdown spans three to six turns")
 end
 
@@ -413,7 +422,8 @@ function T.fixed_two_hit_strikes_land_twice()
     { combat = probeCombat(5, 16, 16) }
   )
   Assert.isTrue(
-    (probe.dealt --[[@as integer]]) >= (single.dealt --[[@as integer]]),
+    probe.dealt --[[@as integer]]
+      >= single.dealt --[[@as integer]],
     "two hits deal at least the single-hit damage"
   )
 end
@@ -550,7 +560,9 @@ function T.item_taking_strikes_record_their_intent()
     end
     local finished = node --[[@as table<string, unknown>]]
     Assert.equal(finished.result, "hit", entry.move .. " connects")
-    for _, event in ipairs(state.outbox --[[@as table<integer, unknown>]]) do
+    for _, event in
+      ipairs(state.outbox --[[@as table<integer, unknown>]])
+    do
       local payload = event --[[@as table<string, unknown>]]
       if payload.kind == "item-intent" then
         intents[#intents + 1] = payload.payload
@@ -665,10 +677,8 @@ function T.fanged_strikes_roll_both_effects()
   )
   local probeOutcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(probeOutcome.result, "hit", "the fanged strike connects")
-  local BattleState = SessionFixture.requirePresent(
-    "libs.battle.src.BattleState",
-    "private battle data owns reference invariants"
-  )
+  local BattleState =
+    SessionFixture.requirePresent("libs.battle.src.BattleState", "private battle data owns reference invariants")
   local mon = BattleState.combatant(probe.state, 2).mon --[[@as table<string, unknown>]]
   local effects = (mon.condition --[[@as table<string, unknown>]]).effects --[[@as table<integer, unknown>]]
   Assert.equal(#effects, 1, "the in-window seed burns")
@@ -680,16 +690,17 @@ function T.tri_attack_draws_one_of_three_conditions()
   damageOwner("tri attack owns its random condition")
   local probe = runStrike(
     "TRI_ATTACK",
-    moveFacts("TRI_ATTACK", { power = 80, accuracy = 100, category = "special", moveType = "normal", effectChance = 20 }),
+    moveFacts(
+      "TRI_ATTACK",
+      { power = 80, accuracy = 100, category = "special", moveType = "normal", effectChance = 20 }
+    ),
     seedInWindow(FIXED_SEED, 20),
     { combat = probeCombat(5, 16, 16) }
   )
   local probeOutcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(probeOutcome.result, "hit", "tri attack connects")
-  local BattleState = SessionFixture.requirePresent(
-    "libs.battle.src.BattleState",
-    "private battle data owns reference invariants"
-  )
+  local BattleState =
+    SessionFixture.requirePresent("libs.battle.src.BattleState", "private battle data owns reference invariants")
   local mon = BattleState.combatant(probe.state, 2).mon --[[@as table<string, unknown>]]
   local effects = (mon.condition --[[@as table<string, unknown>]]).effects --[[@as table<integer, unknown>]]
   Assert.equal(#effects, 1, "the in-window seed applies one condition")
@@ -716,7 +727,10 @@ function T.self_raising_strikes_climb_on_their_chance()
   damageOwner("self-raising strikes own their climb")
   local probe = runStrike(
     "CHARGE_BEAM",
-    moveFacts("CHARGE_BEAM", { power = 50, accuracy = 90, category = "special", moveType = "electric", effectChance = 70 }),
+    moveFacts(
+      "CHARGE_BEAM",
+      { power = 50, accuracy = 90, category = "special", moveType = "electric", effectChance = 70 }
+    ),
     seedInWindow(FIXED_SEED, 70),
     { combat = probeCombat(5, 16, 16) }
   )
@@ -785,7 +799,11 @@ function T.sport_markers_halve_the_weakened_type_power()
     FIXED_SEED,
     { combat = probeCombat(5, 16, 16) }
   )
-  Assert.isTrue((plain.dealt --[[@as integer]]) > dealt, "the sport halves the weakened power")
+  Assert.isTrue(
+    plain.dealt --[[@as integer]]
+      > dealt,
+    "the sport halves the weakened power"
+  )
 end
 
 -- Focus energy raises later strikes by two stages: with a draw in the
@@ -932,7 +950,11 @@ function T.lucky_chant_shields_its_side_from_critical_strikes()
     seed --[[@as integer]],
     { combat = probeCombat(5, 16, 16) }
   )
-  Assert.isTrue((plain.dealt --[[@as integer]]) > shielded, "the chant shields the raised critical")
+  Assert.isTrue(
+    plain.dealt --[[@as integer]]
+      > shielded,
+    "the chant shields the raised critical"
+  )
 end
 
 -- Flame Wheel thaws its frozen user while landing its burn chance.
@@ -1009,8 +1031,10 @@ function T.secondaries_respect_immunities_and_substitutes()
         { version = 1, hp = 500 }
       )
     end
-    local facts =
-      moveFacts("FLAMETHROWER", { power = 95, accuracy = 100, category = "special", moveType = "fire", effectChance = 100 })
+    local facts = moveFacts(
+      "FLAMETHROWER",
+      { power = 95, accuracy = 100, category = "special", moveType = "fire", effectChance = 100 }
+    )
     local node = Execution.start({
       actionId = 912,
       actor = { combatant = 1 },
@@ -1065,20 +1089,15 @@ function T.feint_needs_protection_to_break()
   )
   local state = liveState()
   local ctx = liveContext(state)
-  ctx:addBattleEffect(
-    {
-      key = "PROTECT",
-      stateVersion = 1,
-      validateState = function(s)
-        return s
-      end,
-      timings = { { timing = "leave", handler = "PROTECT", orderClass = "affliction" } },
-      lifecycle = { stacking = "replace", transfer = "clear" },
-    },
-    { kind = "active", combatant = 2, activation = 1 },
-    { kind = "move", combatant = 2 },
-    { version = 1 }
-  )
+  ctx:addBattleEffect({
+    key = "PROTECT",
+    stateVersion = 1,
+    validateState = function(s)
+      return s
+    end,
+    timings = { { timing = "leave", handler = "PROTECT", orderClass = "affliction" } },
+    lifecycle = { stacking = "replace", transfer = "clear" },
+  }, { kind = "active", combatant = 2, activation = 1 }, { kind = "move", combatant = 2 }, { version = 1 })
   local facts = moveFacts("FEINT", { power = 50, accuracy = 100 })
   local node = Execution.start({
     actionId = 906,
@@ -1193,7 +1212,9 @@ end
 ---@param state table live battle state under inspection
 ---@return boolean true when a break announcement names the defender
 local function brokeAnnounced(state)
-  for _, event in ipairs(state.outbox --[[@as table<integer, unknown>]]) do
+  for _, event in
+    ipairs(state.outbox --[[@as table<integer, unknown>]])
+  do
     local record = event --[[@as table<string, unknown>]]
     if record.kind == "substitute-broke" then
       return true
@@ -1272,7 +1293,11 @@ function T.repeated_strikes_drain_the_doll_across_hits()
     end
   end
   Assert.isFalse(ctx:hasBattleEffect(2, "substitute"), "two fixed blows empty the doll")
-  Assert.equal(ctx:damage(2, 0, { kind = "probe" }).before, beforeFoe, "the dented-then-broken sequence never touches the body")
+  Assert.equal(
+    ctx:damage(2, 0, { kind = "probe" }).before,
+    beforeFoe,
+    "the dented-then-broken sequence never touches the body"
+  )
 end
 
 -- Missed strikes never touch the doll: the accuracy failure settles

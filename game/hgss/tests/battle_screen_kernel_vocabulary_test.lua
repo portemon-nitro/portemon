@@ -187,9 +187,7 @@ end
 function T.residual_tick_damages_with_a_message()
   local timeline = BattleTimeline.new({})
   timeline:reset(openingView())
-  timeline:present(
-    packet(1, { event("tick", { combatant = 1, key = "poison", amount = 6 }, { [1] = 46, [3] = 57 }) })
-  )
+  timeline:present(packet(1, { event("tick", { combatant = 1, key = "poison", amount = 6 }, { [1] = 46, [3] = 57 }) }))
   local messages = collectMessages(timeline)
   Assert.isTrue(messages:find("LEAD", 1, true) ~= nil, "residual damage names its battler: " .. messages)
   Assert.isTrue(
@@ -396,10 +394,12 @@ local function vocabularyParty(leadSpec, reserveSpec)
   })
   for _, member in ipairs({ leadSpec, reserveSpec }) do
     local factory = CatalogFixture.makeFactory(member.seed, catalog)
-    local record =
-      movesOnly(factory:createNormal(CatalogFixture.normalRequest({ species = member.species, level = member.level })), {
+    local record = movesOnly(
+      factory:createNormal(CatalogFixture.normalRequest({ species = member.species, level = member.level })),
+      {
         { move = "TACKLE", pp = 35, ppUps = 0 },
-      })
+      }
+    )
     Assert.isTrue(owner:addMon(record), "the vocabulary path needs its live party member")
   end
   return owner

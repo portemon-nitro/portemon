@@ -29,11 +29,7 @@ local function nativeContent()
   local builder = ContentBuilder.new()
   NativeTypeChart.install(builder, "counter-tests")
   local behaviors = BattleBehaviorBuilder.new()
-  behaviors:registerRuleset(
-    Executor.RULESET,
-    { key = Executor.RULESET, chart = Executor.RULESET },
-    "counter-tests"
-  )
+  behaviors:registerRuleset(Executor.RULESET, { key = Executor.RULESET, chart = Executor.RULESET }, "counter-tests")
   return BattleContent.new(builder:freeze(), behaviors:freeze())
 end
 

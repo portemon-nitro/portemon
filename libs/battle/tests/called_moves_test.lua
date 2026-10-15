@@ -599,8 +599,22 @@ function T.metronome_dynamic_tables_match_the_source_lists()
   local Called = calledOwner("metronome-class selection owns the called-move path")
   local gravity = { "FLY", "BOUNCE", "JUMP_KICK", "HI_JUMP_KICK", "SPLASH", "MAGNET_RISE" }
   Assert.equal(#gravity, 6, "the pinned gravity list stays complete")
-  local healBlocked =
-    { "RECOVER", "SOFTBOILED", "REST", "MILK_DRINK", "MORNING_SUN", "SYNTHESIS", "MOONLIGHT", "SWALLOW", "HEAL_ORDER", "SLACK_OFF", "ROOST", "LUNAR_DANCE", "HEALING_WISH", "WISH" }
+  local healBlocked = {
+    "RECOVER",
+    "SOFTBOILED",
+    "REST",
+    "MILK_DRINK",
+    "MORNING_SUN",
+    "SYNTHESIS",
+    "MOONLIGHT",
+    "SWALLOW",
+    "HEAL_ORDER",
+    "SLACK_OFF",
+    "ROOST",
+    "LUNAR_DANCE",
+    "HEALING_WISH",
+    "WISH",
+  }
   Assert.equal(#healBlocked, 14, "the pinned heal-block list stays complete")
   local seen = {}
   for _, move in ipairs(gravity) do

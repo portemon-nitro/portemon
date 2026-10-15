@@ -31,11 +31,7 @@ local function nativeContent()
   local builder = ContentBuilder.new()
   NativeTypeChart.install(builder, "multihit-tests")
   local behaviors = BattleBehaviorBuilder.new()
-  behaviors:registerRuleset(
-    Executor.RULESET,
-    { key = Executor.RULESET, chart = Executor.RULESET },
-    "multihit-tests"
-  )
+  behaviors:registerRuleset(Executor.RULESET, { key = Executor.RULESET, chart = Executor.RULESET }, "multihit-tests")
   return BattleContent.new(builder:freeze(), behaviors:freeze())
 end
 
@@ -147,8 +143,12 @@ local function runStrike(moveKey, extra)
   local finished = node --[[@as table<string, unknown>]]
   assert(finished.kind == "complete" and finished.frame == nil, "the strike settles")
   local strikes = 0
-  for _, event in ipairs(live.outbox --[[@as table<integer, unknown>]]) do
-    if (event --[[@as table<string, unknown>]]).kind == "struck" then
+  for _, event in
+    ipairs(live.outbox --[[@as table<integer, unknown>]])
+  do
+    if
+      (event --[[@as table<string, unknown>]]).kind == "struck"
+    then
       strikes = strikes + 1
     end
   end

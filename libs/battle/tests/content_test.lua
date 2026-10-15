@@ -101,10 +101,8 @@ local function freezeChart(ContentBuilder, BattleBehaviorBuilder, withExtra, own
   behaviors:registerRuleset("test:standard", { key = "test:standard", chart = "test:standard" }, owner)
   local bound = behaviors:freeze()
   local resolved = builder:freeze()
-  local BattleContent = requireContract(
-    "libs.battle.src.BattleContent",
-    "frozen executable battle bindings have no owner"
-  )
+  local BattleContent =
+    requireContract("libs.battle.src.BattleContent", "frozen executable battle bindings have no owner")
   local content = BattleContent.new(resolved, bound)
   return content:typeChart("test:standard")
 end
@@ -124,14 +122,10 @@ local function assertRational(rational, numerator, denominator)
 end
 
 function T.chart_relations_stay_exact_and_isolated_to_their_composition()
-  local ContentBuilder = requireContract(
-    "libs.content.src.ContentBuilder",
-    "ordered type definitions have no composition owner"
-  )
-  local BattleBehaviorBuilder = requireContract(
-    "libs.battle.src.BattleBehaviorBuilder",
-    "typed ruleset registration has no owner"
-  )
+  local ContentBuilder =
+    requireContract("libs.content.src.ContentBuilder", "ordered type definitions have no composition owner")
+  local BattleBehaviorBuilder =
+    requireContract("libs.battle.src.BattleBehaviorBuilder", "typed ruleset registration has no owner")
 
   local plain = freezeChart(ContentBuilder, BattleBehaviorBuilder, nil, "vanilla")
   assertRational(plain:effectiveness("fire", "water"), 1, 2)
@@ -154,32 +148,16 @@ function T.chart_relations_stay_exact_and_isolated_to_their_composition()
 end
 
 function T.sparse_chart_resolves_missing_known_pairs_as_neutral()
-  local ContentBuilder = requireContract(
-    "libs.content.src.ContentBuilder",
-    "ordered type definitions have no composition owner"
-  )
-  local BattleBehaviorBuilder = requireContract(
-    "libs.battle.src.BattleBehaviorBuilder",
-    "typed ruleset registration has no owner"
-  )
-  local BattleContent = requireContract(
-    "libs.battle.src.BattleContent",
-    "frozen executable battle bindings have no owner"
-  )
+  local ContentBuilder =
+    requireContract("libs.content.src.ContentBuilder", "ordered type definitions have no composition owner")
+  local BattleBehaviorBuilder =
+    requireContract("libs.battle.src.BattleBehaviorBuilder", "typed ruleset registration has no owner")
+  local BattleContent =
+    requireContract("libs.battle.src.BattleContent", "frozen executable battle bindings have no owner")
 
   local builder = ContentBuilder.new()
-  builder:define(
-    "types",
-    "spark",
-    typeRecord("spark", "Spark", { relation("spark", "ash", 2, 1) }),
-    "mod"
-  )
-  builder:define(
-    "types",
-    "ash",
-    typeRecord("ash", "Ash", { relation("ash", "ash", 0, 1) }),
-    "mod"
-  )
+  builder:define("types", "spark", typeRecord("spark", "Spark", { relation("spark", "ash", 2, 1) }), "mod")
+  builder:define("types", "ash", typeRecord("ash", "Ash", { relation("ash", "ash", 0, 1) }), "mod")
   local behaviors = BattleBehaviorBuilder.new()
   behaviors:registerRuleset("test:standard", { key = "test:standard", chart = "test:standard" }, "mod")
   local content = BattleContent.new(builder:freeze(), behaviors:freeze())
@@ -191,12 +169,7 @@ function T.sparse_chart_resolves_missing_known_pairs_as_neutral()
 
   -- A declared edge naming an undeclared type still fails composition.
   local bad = ContentBuilder.new()
-  bad:define(
-    "types",
-    "spark",
-    typeRecord("spark", "Spark", { relation("spark", "missing", 2, 1) }),
-    "mod"
-  )
+  bad:define("types", "spark", typeRecord("spark", "Spark", { relation("spark", "missing", 2, 1) }), "mod")
   bad:define("types", "ash", typeRecord("ash", "Ash", {}), "mod")
   Assert.throws(function()
     bad:freeze()
@@ -204,18 +177,8 @@ function T.sparse_chart_resolves_missing_known_pairs_as_neutral()
 
   -- The same directed pair declared twice with different ratios conflicts.
   local conflict = ContentBuilder.new()
-  conflict:define(
-    "types",
-    "spark",
-    typeRecord("spark", "Spark", { relation("spark", "ash", 2, 1) }),
-    "mod"
-  )
-  conflict:define(
-    "types",
-    "ash",
-    typeRecord("ash", "Ash", { relation("spark", "ash", 1, 2) }),
-    "mod"
-  )
+  conflict:define("types", "spark", typeRecord("spark", "Spark", { relation("spark", "ash", 2, 1) }), "mod")
+  conflict:define("types", "ash", typeRecord("ash", "Ash", { relation("spark", "ash", 1, 2) }), "mod")
   Assert.throws(function()
     conflict:freeze()
   end, "a conflicting duplicate directed pair never freezes")
@@ -231,18 +194,12 @@ function T.native_chart_declares_every_directed_pair_explicitly()
     "libs.battle.src.gen4.NativeTypeChart",
     "the native type matrix installs through content composition"
   )
-  local ContentBuilder = requireContract(
-    "libs.content.src.ContentBuilder",
-    "ordered type definitions have no composition owner"
-  )
-  local BattleBehaviorBuilder = requireContract(
-    "libs.battle.src.BattleBehaviorBuilder",
-    "typed ruleset registration has no owner"
-  )
-  local BattleContent = requireContract(
-    "libs.battle.src.BattleContent",
-    "frozen executable battle bindings have no owner"
-  )
+  local ContentBuilder =
+    requireContract("libs.content.src.ContentBuilder", "ordered type definitions have no composition owner")
+  local BattleBehaviorBuilder =
+    requireContract("libs.battle.src.BattleBehaviorBuilder", "typed ruleset registration has no owner")
+  local BattleContent =
+    requireContract("libs.battle.src.BattleContent", "frozen executable battle bindings have no owner")
   local universe = {
     "normal",
     "fighting",
@@ -279,8 +236,10 @@ function T.native_chart_declares_every_directed_pair_explicitly()
       local itemRecord = item --[[@as table<string, unknown>]]
       local attackKey = assert(itemRecord.attack, "declared relations name their attack") --[[@as string]]
       local defendKey = assert(itemRecord.defend, "declared relations name their defend") --[[@as string]]
-      declared[attackKey .. "\0" .. defendKey] =
-        { itemRecord.numerator --[[@as integer]], itemRecord.denominator --[[@as integer]] }
+      declared[attackKey .. "\0" .. defendKey] = {
+        itemRecord.numerator --[[@as integer]],
+        itemRecord.denominator --[[@as integer]],
+      }
     end
   end
   for _, attack in ipairs(universe) do
@@ -307,16 +266,9 @@ function T.native_chart_declares_every_directed_pair_explicitly()
   -- relation leaves exactly that ordered pair undeclared.
   local gapped = ContentBuilder.new()
   NativeTypeChart.install(gapped, "native-chart-tests")
-  local fireRelations = assert(
-    resolved:get("types", "fire").relations,
-    "the native inventory declares the fire relations"
-  )
-  gapped:patch(
-    "types",
-    "fire",
-    { { op = "remove", path = { "relations", #fireRelations } } },
-    "native-chart-tests"
-  )
+  local fireRelations =
+    assert(resolved:get("types", "fire").relations, "the native inventory declares the fire relations")
+  gapped:patch("types", "fire", { { op = "remove", path = { "relations", #fireRelations } } }, "native-chart-tests")
   local gappedResolved = gapped:freeze()
   local missing = {} ---@type string[]
   local gappedDeclared = {} ---@type table<string, boolean>
@@ -341,14 +293,10 @@ function T.native_chart_declares_every_directed_pair_explicitly()
 end
 
 function T.separate_compositions_keep_independent_definitions()
-  local ContentBuilder = requireContract(
-    "libs.content.src.ContentBuilder",
-    "ordered definitions have no composition owner"
-  )
-  local BattleBehaviorBuilder = requireContract(
-    "libs.battle.src.BattleBehaviorBuilder",
-    "typed behavior registration has no owner"
-  )
+  local ContentBuilder =
+    requireContract("libs.content.src.ContentBuilder", "ordered definitions have no composition owner")
+  local BattleBehaviorBuilder =
+    requireContract("libs.battle.src.BattleBehaviorBuilder", "typed behavior registration has no owner")
 
   local function installPower(power, owner)
     return function(builder, behaviors)
@@ -411,10 +359,8 @@ local function diagnosticText(err)
 end
 
 function T.duplicate_behavior_registration_names_both_owners_and_keeps_state()
-  local BattleBehaviorBuilder = requireContract(
-    "libs.battle.src.BattleBehaviorBuilder",
-    "typed behavior registration has no owner"
-  )
+  local BattleBehaviorBuilder =
+    requireContract("libs.battle.src.BattleBehaviorBuilder", "typed behavior registration has no owner")
 
   local behaviors = BattleBehaviorBuilder.new()
   behaviors:registerMove("test:tackle", { module = "test.tackle", version = 1 }, "vanilla")
@@ -431,10 +377,8 @@ function T.duplicate_behavior_registration_names_both_owners_and_keeps_state()
 end
 
 function T.behavior_registration_rejects_shapes_without_module_or_version()
-  local BattleBehaviorBuilder = requireContract(
-    "libs.battle.src.BattleBehaviorBuilder",
-    "typed behavior registration has no owner"
-  )
+  local BattleBehaviorBuilder =
+    requireContract("libs.battle.src.BattleBehaviorBuilder", "typed behavior registration has no owner")
 
   local behaviors = BattleBehaviorBuilder.new()
   Assert.throws(function()
@@ -459,10 +403,8 @@ function T.behavior_registration_rejects_shapes_without_module_or_version()
 end
 
 function T.registering_after_freeze_fails_while_freeze_stays_idempotent()
-  local BattleBehaviorBuilder = requireContract(
-    "libs.battle.src.BattleBehaviorBuilder",
-    "typed behavior registration has no owner"
-  )
+  local BattleBehaviorBuilder =
+    requireContract("libs.battle.src.BattleBehaviorBuilder", "typed behavior registration has no owner")
 
   local behaviors = BattleBehaviorBuilder.new()
   behaviors:registerMove("test:tackle", { module = "test.tackle", version = 1 }, "vanilla")
@@ -478,18 +420,12 @@ function T.registering_after_freeze_fails_while_freeze_stays_idempotent()
 end
 
 function T.unknown_type_identities_fail_while_charts_stay_detached()
-  local ContentBuilder = requireContract(
-    "libs.content.src.ContentBuilder",
-    "ordered type definitions have no composition owner"
-  )
-  local BattleBehaviorBuilder = requireContract(
-    "libs.battle.src.BattleBehaviorBuilder",
-    "typed ruleset registration has no owner"
-  )
-  local BattleContent = requireContract(
-    "libs.battle.src.BattleContent",
-    "frozen executable battle bindings have no owner"
-  )
+  local ContentBuilder =
+    requireContract("libs.content.src.ContentBuilder", "ordered type definitions have no composition owner")
+  local BattleBehaviorBuilder =
+    requireContract("libs.battle.src.BattleBehaviorBuilder", "typed ruleset registration has no owner")
+  local BattleContent =
+    requireContract("libs.battle.src.BattleContent", "frozen executable battle bindings have no owner")
 
   local builder = ContentBuilder.new()
   local behaviors = BattleBehaviorBuilder.new()
@@ -550,18 +486,12 @@ local function customMoveRecord(overrides)
 end
 
 function T.custom_move_numbers_beyond_native_limits_compose_without_clamping()
-  local ContentBuilder = requireContract(
-    "libs.content.src.ContentBuilder",
-    "ordered move definitions have no composition owner"
-  )
-  local BattleBehaviorBuilder = requireContract(
-    "libs.battle.src.BattleBehaviorBuilder",
-    "typed behavior registration has no owner"
-  )
-  local BattleContent = requireContract(
-    "libs.battle.src.BattleContent",
-    "frozen executable battle bindings have no owner"
-  )
+  local ContentBuilder =
+    requireContract("libs.content.src.ContentBuilder", "ordered move definitions have no composition owner")
+  local BattleBehaviorBuilder =
+    requireContract("libs.battle.src.BattleBehaviorBuilder", "typed behavior registration has no owner")
+  local BattleContent =
+    requireContract("libs.battle.src.BattleContent", "frozen executable battle bindings have no owner")
 
   local builder = ContentBuilder.new()
   local behaviors = BattleBehaviorBuilder.new()
@@ -621,10 +551,7 @@ function T.custom_move_numbers_beyond_native_limits_compose_without_clamping()
 end
 
 function T.composition_entrypoint_builds_an_isolated_bundle()
-  requireContract(
-    "libs.content.src.ContentBuilder",
-    "ordered type definitions have no composition owner"
-  )
+  requireContract("libs.content.src.ContentBuilder", "ordered type definitions have no composition owner")
   local Battle = require("gen4.battle")
   Assert.equal(Battle.API_VERSION, 1)
 
@@ -632,8 +559,7 @@ function T.composition_entrypoint_builds_an_isolated_bundle()
     defineChartTypes(builder, nil, "vanilla")
     behaviors:registerRuleset("test:standard", { key = "test:standard", chart = "test:standard" }, "vanilla")
   end
-  local resolved, bound, content =
-    Battle.compose({ { owner = "vanilla", revision = "1", install = install } })
+  local resolved, bound, content = Battle.compose({ { owner = "vanilla", revision = "1", install = install } })
   assertRational(content:typeChart("test:standard"):effectiveness("water", "fire"), 2, 1)
   Assert.equal(bound:get("rulesets", "test:standard").chart, "test:standard")
   Assert.isTrue(resolved:provenance("types", "fire").owner == "vanilla")
@@ -662,18 +588,12 @@ function T.composition_entrypoint_builds_an_isolated_bundle()
 end
 
 function T.unbound_behavior_references_fail_at_bind_time_without_publishing()
-  local ContentBuilder = requireContract(
-    "libs.content.src.ContentBuilder",
-    "ordered definitions have no composition owner"
-  )
-  local BattleBehaviorBuilder = requireContract(
-    "libs.battle.src.BattleBehaviorBuilder",
-    "typed behavior registration has no owner"
-  )
-  local BattleContent = requireContract(
-    "libs.battle.src.BattleContent",
-    "frozen executable battle bindings have no owner"
-  )
+  local ContentBuilder =
+    requireContract("libs.content.src.ContentBuilder", "ordered definitions have no composition owner")
+  local BattleBehaviorBuilder =
+    requireContract("libs.battle.src.BattleBehaviorBuilder", "typed behavior registration has no owner")
+  local BattleContent =
+    requireContract("libs.battle.src.BattleContent", "frozen executable battle bindings have no owner")
 
   local cases = {
     {

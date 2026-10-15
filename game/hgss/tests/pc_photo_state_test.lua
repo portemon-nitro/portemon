@@ -259,8 +259,12 @@ function T.host_fixed_steps_prepare_viewer_and_stop_after_cancel()
   prepared.publish()
   local scenes = {}
   local owner = PcApplicationHost.new({
-    createStorage = function() error("Storage is not opened") end,
-    createMailbox = function() error("Mailbox is not opened") end,
+    createStorage = function()
+      error("Storage is not opened")
+    end,
+    createMailbox = function()
+      error("Mailbox is not opened")
+    end,
     createPhotoAlbum = function()
       return PhotoAlbumScreenState.new({
         album = album,

@@ -192,14 +192,30 @@ function T.validates_optional_program_step_semantics_and_rejects_raw_source_fiel
   Assert.isTrue(Cache.validateCatalog(validOptionalStep))
 
   local invalids = {
-    function(step) step.sound = { kind = "unknown", id = 1 } end,
-    function(step) step.sound = { kind = "effect", id = 0 } end,
-    function(step) step.sound = { kind = "effect", id = 2379 } end,
-    function(step) step.sound = { kind = "cry", pattern = 1 } end,
-    function(step) step.sound = { kind = "cry", pattern = 0, id = 1 } end,
-    function(step) step.soundId = 1 end,
-    function(step) step.messageId = 0xFFFF end,
-    function(step) step.motionId = 0 end,
+    function(step)
+      step.sound = { kind = "unknown", id = 1 }
+    end,
+    function(step)
+      step.sound = { kind = "effect", id = 0 }
+    end,
+    function(step)
+      step.sound = { kind = "effect", id = 2379 }
+    end,
+    function(step)
+      step.sound = { kind = "cry", pattern = 1 }
+    end,
+    function(step)
+      step.sound = { kind = "cry", pattern = 0, id = 1 }
+    end,
+    function(step)
+      step.soundId = 1
+    end,
+    function(step)
+      step.messageId = 0xFFFF
+    end,
+    function(step)
+      step.motionId = 0
+    end,
   }
   for _, invalidate in ipairs(invalids) do
     local malformed = catalog()

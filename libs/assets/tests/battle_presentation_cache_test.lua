@@ -92,14 +92,10 @@ function T.single_battle_demands_stay_exact_deterministic_and_deduplicated()
   local second = assert(BattlePresentationCache.requirements(manifest, context, selectors, nil))
   Assert.deepEqual(first, second, "demands are deterministic")
   Assert.deepEqual(first.scenes, { "general/grass/day" }, "one battle demands exactly one scene")
-  Assert.deepEqual(
-    first.pages,
-    {
-      "CHIKORITA/f0/male/plain/back",
-      "TOTODILE/f0/male/plain",
-    },
-    "portrait selectors deduplicate and sort"
-  )
+  Assert.deepEqual(first.pages, {
+    "CHIKORITA/f0/male/plain/back",
+    "TOTODILE/f0/male/plain",
+  }, "portrait selectors deduplicate and sort")
   local unknown, err = BattlePresentationCache.requirements(
     manifest,
     { background = "effect", terrain = "flash", time = "day" },
@@ -187,8 +183,14 @@ local function validManifest()
       sprite("assets/generated/battle/menu-command-1.png"),
     },
     terrain = {
-      type0 = { cells = sprite("assets/generated/battle/menu-command-1.png").cells, animation = sprite("assets/generated/battle/menu-command-1.png").animation },
-      type1 = { cells = sprite("assets/generated/battle/menu-command-1.png").cells, animation = sprite("assets/generated/battle/menu-command-1.png").animation },
+      type0 = {
+        cells = sprite("assets/generated/battle/menu-command-1.png").cells,
+        animation = sprite("assets/generated/battle/menu-command-1.png").animation,
+      },
+      type1 = {
+        cells = sprite("assets/generated/battle/menu-command-1.png").cells,
+        animation = sprite("assets/generated/battle/menu-command-1.png").animation,
+      },
     },
     textRoles = {
       narration = { font = "font-0", sourceFontId = 1 },
@@ -216,12 +218,7 @@ end
 -- without a pixel payload.
 local function envelopePng()
   local function u32(v)
-    return string.char(
-      math.floor(v / 16777216) % 256,
-      math.floor(v / 65536) % 256,
-      math.floor(v / 256) % 256,
-      v % 256
-    )
+    return string.char(math.floor(v / 16777216) % 256, math.floor(v / 65536) % 256, math.floor(v / 256) % 256, v % 256)
   end
   return "\137PNG\r\n\26\n"
     .. u32(13)
@@ -310,10 +307,7 @@ function T.fully_staged_demands_read_ready_and_breakages_do_not()
   )
   Assert.isTrue(BattlePresentationCache.isReady(cache, demand), "a fully staged demand reads ready")
   cache:write(BattlePresentationCache.sceneImagePath("general/grass/day"), "truncated")
-  Assert.isFalse(
-    BattlePresentationCache.isReady(cache, demand),
-    "a corrupted scene image never reads as ready"
-  )
+  Assert.isFalse(BattlePresentationCache.isReady(cache, demand), "a corrupted scene image never reads as ready")
 end
 
 function T.delayed_pages_keep_readiness_pending()

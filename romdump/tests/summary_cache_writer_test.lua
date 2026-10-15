@@ -18,7 +18,8 @@ local SUMMARY_SCHEMA = "g4-summary-manifest-v4"
 -- (info 2/6, skills 8/10, performance 5/3) plus one ordered memo branch:
 -- publication-mechanics tests need a schema-valid envelope so staging
 -- behavior, not shape validity, is under test.
-local GROUP_ROLE_CENSUS = { info = { main = 2, sub = 6 }, skills = { main = 8, sub = 10 }, performance = { main = 5, sub = 3 } }
+local GROUP_ROLE_CENSUS =
+  { info = { main = 2, sub = 6 }, skills = { main = 8, sub = 10 }, performance = { main = 5, sub = 3 } }
 
 local function semanticRole(pane, seed)
   return {
@@ -129,7 +130,8 @@ local CHROME_ANIMATIONS = {
 }
 
 local function chromeVisuals()
-  local visuals = { detailBacking = { image = "assets/generated/summary/syn-detail-backing.png", width = 8, height = 8 } }
+  local visuals =
+    { detailBacking = { image = "assets/generated/summary/syn-detail-backing.png", width = 8, height = 8 } }
   for _, name in ipairs(CHROME_ANIMATIONS) do
     visuals["syn-" .. name] = { image = "assets/generated/summary/syn-" .. name .. ".png", width = 16, height = 16 }
   end
@@ -139,7 +141,8 @@ end
 local function chromeSprites()
   local animations = {}
   for _, name in ipairs(CHROME_ANIMATIONS) do
-    animations[name] = { frames = { { visual = "syn-" .. name, durationTicks = 2 } }, loopFrom = 1, playback = "static" }
+    animations[name] =
+      { frames = { { visual = "syn-" .. name, durationTicks = 2 } }, loopFrom = 1, playback = "static" }
   end
   local primaryAnchors = {}
   for index = 1, 6 do

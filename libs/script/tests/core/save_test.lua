@@ -27,7 +27,6 @@ local Diagnostics = require("libs.script.src.Diagnostics")
 
 local T = {}
 
-
 ---@class SaveHarness
 ---@field services FakeServices
 ---@field registry Registry
@@ -798,10 +797,7 @@ T["cross-script jump pins the target revision"] = function()
       return h.composition:effective(id)
     end,
   })
-  local ok, err = pcall(
-    ScriptSave.restore,
-bucket, scheduler,
-    100)
+  local ok, err = pcall(ScriptSave.restore, bucket, scheduler, 100)
   Assert.isFalse(ok)
   ---@cast err Errors.Error
   Assert.equal(err.code, "SCRIPT_SAVE_REVISION_MISMATCH")
@@ -1334,8 +1330,7 @@ T["valid save with suspended caller and minimal optional fields passes validatio
   )
   handoff.scheduler:step(100, nil)
   handoff.scheduler:step(101, nil)
-  local completedBucket =
-    ScriptSave.capture(handoff.scheduler, 101)
+  local completedBucket = ScriptSave.capture(handoff.scheduler, 101)
   local completed = false
   for _, record in ipairs(completedBucket.tasks) do
     if record.status == "completed" then

@@ -779,21 +779,9 @@ function T.dispatched_requests_carry_version_identity_and_the_logical_path()
     end
     Assert.notNil(record, "the request must reach the worker input channel")
     assert(record, "the pushed request record must be available")
-    Assert.equal(
-      record.versionId,
-      "heartgold",
-      "the worker rebuilds its versioned cache from this identity"
-    )
-    Assert.equal(
-      record.logicalPath,
-      "geometry/a.g4mesh",
-      "the worker reads decoded bytes through the logical path"
-    )
-    Assert.equal(
-      record.path,
-      "confined/geometry/a.g4mesh",
-      "the confined physical path still travels alongside"
-    )
+    Assert.equal(record.versionId, "heartgold", "the worker rebuilds its versioned cache from this identity")
+    Assert.equal(record.logicalPath, "geometry/a.g4mesh", "the worker reads decoded bytes through the logical path")
+    Assert.equal(record.path, "confined/geometry/a.g4mesh", "the confined physical path still travels alongside")
     Assert.equal(queue:poll(token), "pending", "no reply was faked, so the token stays pending")
     queue:release()
   end)

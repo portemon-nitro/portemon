@@ -76,10 +76,8 @@ function T.declared_contribution_order_wins_with_owner_provenance()
     "libs.content.src.ContentBuilder",
     "ordered definitions, patches, and aliases have no composition owner"
   )
-  local BattleBehaviorBuilder = requireContract(
-    "libs.battle.src.BattleBehaviorBuilder",
-    "typed move behavior registration has no owner"
-  )
+  local BattleBehaviorBuilder =
+    requireContract("libs.battle.src.BattleBehaviorBuilder", "typed move behavior registration has no owner")
 
   local function balance(builder)
     builder:patch("moves", "TACKLE", { { op = "set", path = { "power" }, value = 40 } }, "balance")
@@ -110,10 +108,8 @@ function T.invalid_composition_fails_without_publishing()
     "libs.content.src.ContentBuilder",
     "ordered definitions, patches, and aliases have no composition owner"
   )
-  local BattleBehaviorBuilder = requireContract(
-    "libs.battle.src.BattleBehaviorBuilder",
-    "typed move behavior registration has no owner"
-  )
+  local BattleBehaviorBuilder =
+    requireContract("libs.battle.src.BattleBehaviorBuilder", "typed move behavior registration has no owner")
 
   local builder = ContentBuilder.new()
   local behaviors = BattleBehaviorBuilder.new()
@@ -158,10 +154,8 @@ function T.patch_operation_shape_rejection_leaves_builder_unchanged()
     "libs.content.src.ContentBuilder",
     "ordered definitions, patches, and aliases have no composition owner"
   )
-  local BattleBehaviorBuilder = requireContract(
-    "libs.battle.src.BattleBehaviorBuilder",
-    "typed move behavior registration has no owner"
-  )
+  local BattleBehaviorBuilder =
+    requireContract("libs.battle.src.BattleBehaviorBuilder", "typed move behavior registration has no owner")
 
   local builder = ContentBuilder.new()
   local behaviors = BattleBehaviorBuilder.new()
@@ -268,10 +262,8 @@ function T.freeze_is_idempotent_and_locks_the_builder()
     "libs.content.src.ContentBuilder",
     "ordered definitions, patches, and aliases have no composition owner"
   )
-  local BattleBehaviorBuilder = requireContract(
-    "libs.battle.src.BattleBehaviorBuilder",
-    "typed move behavior registration has no owner"
-  )
+  local BattleBehaviorBuilder =
+    requireContract("libs.battle.src.BattleBehaviorBuilder", "typed move behavior registration has no owner")
 
   local builder = ContentBuilder.new()
   local behaviors = BattleBehaviorBuilder.new()
@@ -325,10 +317,8 @@ function T.kinds_and_keys_list_defined_identities_in_stable_order()
     "libs.content.src.ContentBuilder",
     "ordered definitions, patches, and aliases have no composition owner"
   )
-  local BattleBehaviorBuilder = requireContract(
-    "libs.battle.src.BattleBehaviorBuilder",
-    "typed move behavior registration has no owner"
-  )
+  local BattleBehaviorBuilder =
+    requireContract("libs.battle.src.BattleBehaviorBuilder", "typed move behavior registration has no owner")
 
   local builder = ContentBuilder.new()
   local behaviors = BattleBehaviorBuilder.new()

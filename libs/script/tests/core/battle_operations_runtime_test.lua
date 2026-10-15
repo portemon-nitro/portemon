@@ -75,9 +75,11 @@ function T.launch_without_a_host_is_an_attributed_fault()
 end
 
 function T.result_reads_the_host_latest_outcome()
-  local host = { lastBattleResult = function()
-    return { result = "win", sourceResult = 1 }
-  end }
+  local host = {
+    lastBattleResult = function()
+      return { result = "win", sourceResult = 1 }
+    end,
+  }
   local world = worldWith({})
   local fixture = runWith({ world = world, battle = host })
   local outcome = Runtime.executeNode({ op = "battle_result", result = var(3) }, fixture.run)
@@ -87,18 +89,22 @@ end
 
 function T.result_maps_contexts_and_unrecorded_battles_conservatively()
   local world = worldWith({})
-  local host = { lastBattleResult = function()
-    return { result = "draw", sourceResult = 0 }
-  end }
+  local host = {
+    lastBattleResult = function()
+      return { result = "draw", sourceResult = 0 }
+    end,
+  }
   local fixture = runWith({ world = world, battle = host })
   Runtime.executeNode({ op = "battle_result", result = var(3) }, fixture.run)
   Assert.equal(world.vars[3], 0, "a drawn battle never reads back won")
   Runtime.executeNode({ op = "battle_result", result = var(4), context = "static_wild_won_or_caught" }, fixture.run)
   Assert.equal(world.vars[4], 0)
 
-  local caughtHost = { lastBattleResult = function()
-    return { result = "capture", sourceResult = 1 }
-  end }
+  local caughtHost = {
+    lastBattleResult = function()
+      return { result = "capture", sourceResult = 1 }
+    end,
+  }
   local caughtFixture = runWith({ world = world, battle = caughtHost })
   Runtime.executeNode(
     { op = "battle_result", result = var(5), context = "static_wild_won_or_caught" },
@@ -106,9 +112,11 @@ function T.result_maps_contexts_and_unrecorded_battles_conservatively()
   )
   Assert.equal(world.vars[5], 1, "the static context counts captures")
 
-  local emptyHost = { lastBattleResult = function()
-    return nil
-  end }
+  local emptyHost = {
+    lastBattleResult = function()
+      return nil
+    end,
+  }
   local emptyFixture = runWith({ world = world, battle = emptyHost })
   Runtime.executeNode({ op = "battle_result", result = var(6) }, emptyFixture.run)
   Assert.equal(world.vars[6], 0, "an unrecorded battle reads back not-won")

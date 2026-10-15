@@ -746,11 +746,7 @@ function T.field_attempts_keep_their_lookup_while_recording_live_provenance()
   local prepared = assert(result.encounter, "prepared attempts carry their encounter")
   local fieldMon = assert(prepared.mons[1].mon, "the encounter carries its wild mon")
   Assert.equal(prepared.provenance.mapId, 11, "selection still reads table 11")
-  Assert.equal(
-    fieldMon.met.location,
-    77,
-    "the prepared mon records the native section, not the table member"
-  )
+  Assert.equal(fieldMon.met.location, 77, "the prepared mon records the native section, not the table member")
   Assert.deepEqual(
     { year = fieldMon.met.date.year, month = fieldMon.met.date.month, day = fieldMon.met.date.day },
     { year = 2026, month = 10, day = 9 },
@@ -767,15 +763,11 @@ function T.field_attempts_keep_their_lookup_while_recording_live_provenance()
   Assert.equal(authoredResult.kind, "prepared", "an authored record still prepares")
   local authoredMon = assert(authoredResult.encounter.mons[1].mon, "the encounter carries its wild mon")
   Assert.equal(authoredMon.met.location, 5, "an explicitly supplied record is never overwritten")
-  Assert.deepEqual(
-    {
-      year = authoredMon.met.date.year,
-      month = authoredMon.met.date.month,
-      day = authoredMon.met.date.day,
-    },
-    { year = 2024, month = 2, day = 29 },
-    "an explicitly supplied date is never overwritten"
-  )
+  Assert.deepEqual({
+    year = authoredMon.met.date.year,
+    month = authoredMon.met.date.month,
+    day = authoredMon.met.date.day,
+  }, { year = 2024, month = 2, day = 29 }, "an explicitly supplied date is never overwritten")
 
   local rejectedRuntime, _, rejectedRng = liveField(99)
   local rejected = attemptContext()
@@ -786,11 +778,7 @@ function T.field_attempts_keep_their_lookup_while_recording_live_provenance()
   end, "an invalid supplied record fails")
   Assert.isTrue(Errors.is(failure), "rejection uses the structured error path")
   Assert.equal(assert(failure).code, "ENCOUNTER_INVALID_INPUT", "rejection names its contract")
-  Assert.equal(
-    rejectedRng:serialize().calls,
-    drawsBefore,
-    "rejected input consumes no draws"
-  )
+  Assert.equal(rejectedRng:serialize().calls, drawsBefore, "rejected input consumes no draws")
   Assert.isNil(rejectedRuntime.pendingEncounterId, "rejected input holds no preparation")
 
   local headless = liveService()
@@ -804,21 +792,13 @@ function T.field_attempts_keep_their_lookup_while_recording_live_provenance()
   Assert.equal(headlessResult.kind, "prepared", "the same draws prepare without field context")
   local headlessMon = assert(headlessResult.encounter.mons[1].mon, "the encounter carries its wild mon")
   Assert.equal(headlessMon.species, fieldMon.species, "the lookup selects the same species")
-  Assert.equal(
-    headlessMon.personality,
-    fieldMon.personality,
-    "identical draws generate the identical mon"
-  )
+  Assert.equal(headlessMon.personality, fieldMon.personality, "identical draws generate the identical mon")
   Assert.equal(headlessMon.met.location, 11, "callers without context keep the neutral record")
-  Assert.deepEqual(
-    {
-      year = headlessMon.met.date.year,
-      month = headlessMon.met.date.month,
-      day = headlessMon.met.date.day,
-    },
-    { year = 2000, month = 1, day = 1 },
-    "callers without context keep the neutral date"
-  )
+  Assert.deepEqual({
+    year = headlessMon.met.date.year,
+    month = headlessMon.met.date.month,
+    day = headlessMon.met.date.day,
+  }, { year = 2000, month = 1, day = 1 }, "callers without context keep the neutral date")
 end
 
 -- The token-guarded per-launch factory binding: one owner, monotonic
@@ -1142,11 +1122,7 @@ function T.screen_failures_before_commitment_publish_nothing()
     { launchId = "screen-fail#1", phase = "active", presented = true, request = { id = "screen-fail#1" } }
   runtime.battleCoordinator:_presentedNotify("screen-fail#1", "screen-failed", "probe screen failure")
   Assert.notNil(runtime.battleCoordinator._battleLaunch, "the abort retains the launch until the field is safe")
-  Assert.equal(
-    runtime.battleCoordinator._battleLaunch.phase,
-    "aborting",
-    "the uncommitted failure parks in abort"
-  )
+  Assert.equal(runtime.battleCoordinator._battleLaunch.phase, "aborting", "the uncommitted failure parks in abort")
   Assert.isNil(runtime.battleCoordinator.battleRuntime, "the uncommitted battle releases at the fault")
   Assert.notNil(runtime.errorText, "the failure is retained loudly")
   Assert.isNil(runtime.battleCoordinator._battleReceipt, "no receipt publishes before the restored reveal")
@@ -1158,11 +1134,7 @@ function T.screen_failures_before_commitment_publish_nothing()
   )
   runtime.battleCoordinator:_presentedNotify("screen-fail#1", "revealed")
   runtime:updateBattle()
-  Assert.equal(
-    runtime.battleCoordinator._battleLaunch,
-    nil,
-    "no launch impersonates a battle after its screen fails"
-  )
+  Assert.equal(runtime.battleCoordinator._battleLaunch, nil, "no launch impersonates a battle after its screen fails")
   Assert.notNil(runtime.errorText, "the failure stays retained loudly")
   local receipt = assert(runtime.battleCoordinator._battleReceipt, "the launching task observes the failure")
   Assert.equal(receipt.phase, "failed", "the abort publishes its failed phase")

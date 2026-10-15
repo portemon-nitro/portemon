@@ -115,7 +115,11 @@ local function composition()
     saleSession = saleSession,
     manifest = manifest(),
     uiManifest = FieldUiFixture.manifest(),
-    monCatalog = { moveByNativeId = function() error("move lookup is outside this interaction", 0) end },
+    monCatalog = {
+      moveByNativeId = function()
+        error("move lookup is outside this interaction", 0)
+      end,
+    },
     heroGender = "male",
     textPolicy = { interGlyphDelay = 2, glyphBudget = 1, abAcceleration = true },
     measureDisplay = function()

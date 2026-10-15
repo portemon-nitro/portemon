@@ -166,7 +166,10 @@ end
 
 function T.tests.award_then_check_observes_the_live_profile_mask()
   local profile = liveProfile()
-  local platform, emitted = driveSlice(profile, "test.badge_award_check", [[
+  local platform, emitted = driveSlice(
+    profile,
+    "test.badge_award_check",
+    [[
 return {
   api = 1,
   id = "test.badge_award_check",
@@ -176,7 +179,8 @@ return {
     { op = "stop" },
   },
 }
-]])
+]]
+  )
   Assert.isTrue(PlayerProgression.new(profile):hasBadge("plain"), "the award must land on the live profile mask")
   Assert.equal(
     platform.worldState:getVar("VAR_SPECIAL_RESULT"),
@@ -191,7 +195,10 @@ function T.tests.count_reports_badges_awarded_through_the_same_profile()
   local setup = PlayerProgression.new(profile)
   setup:awardBadge("zephyr")
   setup:awardBadge("plain")
-  local platform, emitted = driveSlice(profile, "test.badge_count", [[
+  local platform, emitted = driveSlice(
+    profile,
+    "test.badge_count",
+    [[
 return {
   api = 1,
   id = "test.badge_count",
@@ -200,7 +207,8 @@ return {
     { op = "stop" },
   },
 }
-]])
+]]
+  )
   Assert.equal(
     platform.worldState:getVar("VAR_SPECIAL_RESULT"),
     2,
@@ -211,7 +219,10 @@ end
 
 function T.tests.badge_operations_without_a_profile_keep_the_missing_service_fault()
   local profile = nil
-  local _, emitted = driveSlice(profile, "test.badge_no_profile", [[
+  local _, emitted = driveSlice(
+    profile,
+    "test.badge_no_profile",
+    [[
 return {
   api = 1,
   id = "test.badge_no_profile",
@@ -220,7 +231,8 @@ return {
     { op = "stop" },
   },
 }
-]])
+]]
+  )
   local faults = errorRecords(emitted)
   Assert.equal(#faults, 1, "a badge operation without a profile must record exactly one script fault")
   Assert.equal(faults[1].payload.code, "SCRIPT_SERVICE_MISSING", "the fault must name the missing service")

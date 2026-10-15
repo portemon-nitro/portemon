@@ -143,7 +143,7 @@ end
 function T.invalid_scale_rejected()
   local ImageButton = imageButtonModule()
   Assert.throws(function()
-  ImageButton.resolve({ rect = rect(0, 0, 100, 100), scale = 0 })
+    ImageButton.resolve({ rect = rect(0, 0, 100, 100), scale = 0 })
   end)
   for _, scale in ipairs({ -1, 0.5, 0.75, 1.5, math.huge, 0 / 0 }) do
     Assert.throws(function()

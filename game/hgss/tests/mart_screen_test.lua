@@ -274,8 +274,7 @@ local function advanceUntil(state, label, expectedState, limit)
       return status
     end
     Assert.isNil(state:takeResult(), label .. " must keep the child open")
-    local printerActive =
-      status.state == "quantity_prompt"
+    local printerActive = status.state == "quantity_prompt"
       or status.state == "confirm_prompt"
       or status.state == "success_print"
       or status.state == "bonus_print"

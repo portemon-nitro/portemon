@@ -1402,10 +1402,7 @@ function T.follower_interaction_and_shiny_leaf_constructors_match_the_schema()
     result = { value = "var", id = "VAR_LEAVES" },
   })
   Assert.deepEqual(crown, { op = "try_give_shiny_leaf_crown", slot = 2 })
-  Assert.equal(
-    S.validate(S.script({ api = 1, id = "test.interaction", steps = { interaction, count, crown } })),
-    true
-  )
+  Assert.equal(S.validate(S.script({ api = 1, id = "test.interaction", steps = { interaction, count, crown } })), true)
 end
 
 function T.pc_operations_are_closed_typed_script_nodes()

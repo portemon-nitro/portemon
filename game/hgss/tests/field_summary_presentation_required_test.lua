@@ -128,8 +128,7 @@ local function compositionRuntime(versionId, helper)
     fieldEmoteModels = {},
     fieldEffectAssets = {},
     fieldTerrainEffectController = {
-      setModelFactory = function(_, _)
-      end,
+      setModelFactory = function(_, _) end,
     },
     derivedAssets = helper.derivedAssets,
     bindSummaryCalls = 0,
@@ -267,15 +266,9 @@ function T.missing_summary_manifest_fails_construction_without_leaving_a_binding
   local helper = SummaryAcceptanceFixture.preparationDoubles({})
   local runtime = compositionRuntime(versionId, helper)
   local constructed = nil
-  local ok, err = pcall(
-    withComposition,
-    runtime,
-    helper,
-    function(resources)
-      constructed = resources
-    end,
-    { summaryManifest = "invalid" }
-  )
+  local ok, err = pcall(withComposition, runtime, helper, function(resources)
+    constructed = resources
+  end, { summaryManifest = "invalid" })
   Assert.isFalse(ok, "a stale Summary manifest fails field construction: " .. tostring(err))
   Assert.isNil(constructed, "a failed construction publishes no live field owner")
   Assert.equal(runtime.bindSummaryCalls, 0, "a failed construction installs no Summary binding")
@@ -287,15 +280,9 @@ function T.summary_construction_failure_releases_earlier_resources()
   local helper = SummaryAcceptanceFixture.preparationDoubles({})
   local runtime = compositionRuntime(versionId, helper)
   local constructed = nil
-  local ok, err = pcall(
-    withComposition,
-    runtime,
-    helper,
-    function(resources)
-      constructed = resources
-    end,
-    { summaryManifest = "invalid" }
-  )
+  local ok, err = pcall(withComposition, runtime, helper, function(resources)
+    constructed = resources
+  end, { summaryManifest = "invalid" })
   Assert.isFalse(ok, "a stale Summary manifest fails field construction: " .. tostring(err))
   Assert.isNil(constructed, "a failed construction publishes no live field owner")
   Assert.equal(runtime.bindPartyCalls, 1, "the party binding installs before the Summary block runs")
@@ -312,17 +299,16 @@ function T.stale_dispose_keeps_a_replacement_binding()
     local bindingId = assert(resources._summaryBinding, "construction installs the runtime preparation binding")
     resources:dispose()
     Assert.deepEqual(runtime.unbindSummaryCalls, { bindingId }, "disposal unbinds the installed binding identity")
-    runtime._summaryPreparation = { id = 9999, acquire = function()
-      error("a stale owner never serves a replacement lease", 0)
-    end }
+    runtime._summaryPreparation = {
+      id = 9999,
+      acquire = function()
+        error("a stale owner never serves a replacement lease", 0)
+      end,
+    }
     resources:dispose()
     Assert.equal(#runtime.unbindSummaryCalls, 1, "repeat disposal unbinds nothing again")
     Assert.notNil(runtime._summaryPreparation, "repeat disposal keeps the replacement binding")
-    Assert.equal(
-      runtime._summaryPreparation.id,
-      9999,
-      "repeat disposal leaves the replacement binding untouched"
-    )
+    Assert.equal(runtime._summaryPreparation.id, 9999, "repeat disposal leaves the replacement binding untouched")
     runtime._summaryPreparation = nil
   end)
 end
@@ -476,8 +462,7 @@ local function openProductionPartyFlow(versionId, summaryManifest, runtime, coun
     prepareIcons = function(_)
       return true, nil
     end,
-    cancelIconPreparation = function()
-    end,
+    cancelIconPreparation = function() end,
     textPolicy = { interGlyphDelay = 0, glyphBudget = 512, abAcceleration = true },
     summaryContext = function()
       return context
@@ -543,10 +528,8 @@ function T.party_summary_round_trip_returns_to_the_displayed_member_over_the_bin
       staged = flow:status()
     end
     Assert.notNil(staged.transition, "opening the Summary stages its exit transition")
-    local firstCoefficient = assert(
-      staged.transition.brightnessCoefficient,
-      "the Summary exit carries its brightness coefficient"
-    )
+    local firstCoefficient =
+      assert(staged.transition.brightnessCoefficient, "the Summary exit carries its brightness coefficient")
     local exitCoefficients = { firstCoefficient }
     for _ = 1, 24 do
       flow:updateFixed({})
@@ -554,10 +537,8 @@ function T.party_summary_round_trip_returns_to_the_displayed_member_over_the_bin
       if status.transition == nil then
         break
       end
-      exitCoefficients[#exitCoefficients + 1] = assert(
-        status.transition.brightnessCoefficient,
-        "the Summary exit carries its brightness coefficient"
-      )
+      exitCoefficients[#exitCoefficients + 1] =
+        assert(status.transition.brightnessCoefficient, "the Summary exit carries its brightness coefficient")
     end
     Assert.deepEqual(
       exitCoefficients,

@@ -290,7 +290,11 @@ function T.stage_ratios_clamp_and_floor_exactly()
 
   Assert.deepEqual(StatStages.multiplier(2, "attack"), { numerator = 4, denominator = 2 }, "attack +2 doubles")
   Assert.deepEqual(StatStages.multiplier(-1, "attack"), { numerator = 2, denominator = 3 }, "attack -1 is two thirds")
-  Assert.deepEqual(StatStages.multiplier(1, "accuracy"), { numerator = 133, denominator = 100 }, "accuracy +1 is 133/100")
+  Assert.deepEqual(
+    StatStages.multiplier(1, "accuracy"),
+    { numerator = 133, denominator = 100 },
+    "accuracy +1 is 133/100"
+  )
   Assert.deepEqual(
     StatStages.multiplier(-1, "evasion"),
     { numerator = 75, denominator = 100 },
@@ -1052,8 +1056,7 @@ function T.critical_and_screen_removing_strikes_skip_the_barrier_stage()
     "the critical trace records no barrier stage"
   )
 
-  local shattering =
-    Damage.calculate(screenSpec({ screenApplies = true, removesScreens = true }), BattleRng.new(3))
+  local shattering = Damage.calculate(screenSpec({ screenApplies = true, removesScreens = true }), BattleRng.new(3))
   Assert.equal(shattering.amount, 48, "the shattering strike ignores the raised barrier")
   local shattered = Damage.trace(screenSpec({ screenApplies = true, removesScreens = true }), BattleRng.new(3))
   Assert.deepEqual(
@@ -1074,16 +1077,12 @@ function T.doubles_barrier_reduction_uses_two_thirds_before_spread()
   local BattleRng =
     SessionFixture.requirePresent("libs.battle.src.gen4.BattleRng", "labeled native draws own the battle stream")
 
-  local paired = Damage.calculate(
-    screenSpec({ screenApplies = true, screenReduction = "two_thirds" }),
-    BattleRng.new(3)
-  )
+  local paired =
+    Damage.calculate(screenSpec({ screenApplies = true, screenReduction = "two_thirds" }), BattleRng.new(3))
   Assert.equal(paired.amount, 32, "the paired-battle barrier keeps two thirds")
 
-  local singleSpread = Damage.calculate(
-    screenSpec({ screenApplies = true, screenReduction = "half", targetCount = 2 }),
-    BattleRng.new(3)
-  )
+  local singleSpread =
+    Damage.calculate(screenSpec({ screenApplies = true, screenReduction = "half", targetCount = 2 }), BattleRng.new(3))
   Assert.equal(singleSpread.amount, 19, "the half barrier still halves under two targets")
 
   local pairedSpread = Damage.calculate(

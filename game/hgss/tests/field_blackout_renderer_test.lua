@@ -38,14 +38,22 @@ function T.message_uses_source_window_palette_and_shared_centered_line_anchor()
     end,
   }
   local graphics = {
-    push = function() calls.pushes = calls.pushes + 1 end,
+    push = function()
+      calls.pushes = calls.pushes + 1
+    end,
     translate = function() end,
-    scale = function(x, y) calls.scales[#calls.scales + 1] = { x, y } end,
-    pop = function() calls.pops = calls.pops + 1 end,
+    scale = function(x, y)
+      calls.scales[#calls.scales + 1] = { x, y }
+    end,
+    pop = function()
+      calls.pops = calls.pops + 1
+    end,
     setScissor = function(x, y, width, height)
       calls.clip = { x = x, y = y, width = width, height = height }
     end,
-    getScissor = function() return nil end,
+    getScissor = function()
+      return nil
+    end,
     intersectScissor = function(x, y, width, height)
       calls.clip = { x = x, y = y, width = width, height = height }
     end,
@@ -91,7 +99,8 @@ function T.message_uses_source_window_palette_and_shared_centered_line_anchor()
 
   local priorTinyLove = love
   love = { graphics = graphics }
-  local okTiny, tinyErr = pcall(FieldBlackoutRenderer.draw, status, window, text, { x = 0, y = 0, width = 200, height = 150 })
+  local okTiny, tinyErr =
+    pcall(FieldBlackoutRenderer.draw, status, window, text, { x = 0, y = 0, width = 200, height = 150 })
   love = priorTinyLove
   Assert.isTrue(okTiny, tostring(tinyErr))
   local tinyScale = assert(calls.scales[2], "the constrained draw records its magnification")

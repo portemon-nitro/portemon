@@ -220,10 +220,7 @@ function T.reward_children_spawn_once_per_settled_ko()
   local repeated = Fainting.step(context, outcome.frame)
   Assert.equal(#spawned, 2, "re-stepping a drained settlement spawns no further children")
   Assert.equal(#repeated.progression, 0, "a drained settlement collects no children")
-  local plain = Fainting.step(
-    { queue = {} },
-    Fainting.validateFrame({ kind = "faint", cursor = "start" })
-  )
+  local plain = Fainting.step({ queue = {} }, Fainting.validateFrame({ kind = "faint", cursor = "start" }))
   Assert.isTrue(plain.done, "a hookless settlement still drains")
   Assert.equal(#plain.progression, 0, "a hookless settlement collects no children")
   local broken = { queue = {} }

@@ -165,10 +165,7 @@ function T.arbitrary_lineups_keep_stable_combatant_position_and_entry_identities
   }
   for _, lineup in ipairs(lineups) do
     checkTopology(lineup.parts, lineup.controllers)
-    local session = SessionFixture.newSession(
-      contracts,
-      SessionFixture.buildScenario(lineup.parts)
-    )
+    local session = SessionFixture.newSession(contracts, SessionFixture.buildScenario(lineup.parts))
     local frame = SessionFixture.driveUntilSettled(session, 64)
     if frame.status == "waiting" then
       Assert.notNil(frame.request, "waiting frames carry their decision batch")
@@ -242,11 +239,7 @@ function T.custom_ruleset_sessions_keep_the_generic_strike_settlement()
       strikes = strikes + 1
       local payload = event.payload --[[@as table<string, unknown>]]
       Assert.notNil(payload.resolved, "generic strikes resolve their target")
-      Assert.equal(
-        payload.after,
-        payload.before --[[@as integer]] - 1,
-        "generic strikes settle for exactly one point"
-      )
+      Assert.equal(payload.after, payload.before --[[@as integer]] - 1, "generic strikes settle for exactly one point")
     end
   end
   Assert.isTrue(strikes > 0, "custom ruleset attacks settle as generic strikes")

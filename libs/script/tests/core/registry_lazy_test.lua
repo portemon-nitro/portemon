@@ -106,8 +106,7 @@ local function lazyRegistry(cache)
   local registry = Registry.new({
     loadResource = function(id)
       calls[#calls + 1] = id
-      local resource =
-        assert(ScriptLoader.loadGeneratedFrom(cache, GENERATION, 0, id, requireShim))
+      local resource = assert(ScriptLoader.loadGeneratedFrom(cache, GENERATION, 0, id, requireShim))
       return resource
     end,
   })

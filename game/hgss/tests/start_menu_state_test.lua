@@ -101,18 +101,19 @@ end
 function T.tests.confirmation_forwards_the_controller_confirm_hop()
   local state = startMenuState().new(options({
     entries = {
-      { id = "vanilla.trainer_card", targetApplication = "trainer_card", actionKind = "application", displayPosition = 4 },
+      {
+        id = "vanilla.trainer_card",
+        targetApplication = "trainer_card",
+        actionKind = "application",
+        displayPosition = 4,
+      },
     },
   }))
   Assert.isNil(state:status().confirmHop, "the freshly opened menu hops no icon")
   state:updateFixed({ { type = "confirm" } })
   local status = state:status()
   Assert.notNil(state:takeResult(), "confirming an application entry launches")
-  Assert.deepEqual(
-    status.confirmHop,
-    { position = 4, age = 0 },
-    "the controller confirm hop reaches the presentation"
-  )
+  Assert.deepEqual(status.confirmHop, { position = 4, age = 0 }, "the controller confirm hop reaches the presentation")
   state:dispose()
 end
 

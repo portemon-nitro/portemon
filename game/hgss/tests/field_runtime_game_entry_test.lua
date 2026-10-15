@@ -710,10 +710,7 @@ end
 function T.modal_hosts_compose_identically_with_and_without_presentation()
   local Coordinator = require("game.hgss.src.field.FieldMenuCompositionCoordinator")
   local probe = Coordinator.new(modalRuntime(nil))
-  Assert.isTrue(
-    type(probe.composeModalHosts) == "function",
-    "the menu coordinator owns modal host construction"
-  )
+  Assert.isTrue(type(probe.composeModalHosts) == "function", "the menu coordinator owns modal host construction")
   Assert.isTrue(type(probe.releaseModalHosts) == "function", "the menu coordinator owns modal host release")
   local hostFields = {
     "menuHost",
@@ -772,10 +769,7 @@ function T.modal_hosts_compose_identically_with_and_without_presentation()
   local rebuildAudio = { count = 0 }
   Coordinator.new(presented):composeModalHosts(modalBoot(), modalCallbacks(rebuildAudio, { current = nil }))
   Assert.equal(rebuildAudio.count, 1, "recomposition rebuilds audio")
-  Assert.isTrue(
-    presented.dialogue ~= firstDialogue,
-    "recomposition builds fresh hosts instead of retaining them"
-  )
+  Assert.isTrue(presented.dialogue ~= firstDialogue, "recomposition builds fresh hosts instead of retaining them")
 end
 
 return {

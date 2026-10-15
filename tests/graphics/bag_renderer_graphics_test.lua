@@ -1435,8 +1435,16 @@ function T.toss_confirmation_text_starts_at_its_content_window_origin(scope, con
       layout
     )
 
-    Assert.equal(assert(calls["First line"]).x, modalRect.x, versionId .. " starts the first modal line at its content origin")
-    Assert.equal(assert(calls["First line"]).y, modalRect.y, versionId .. " starts the first modal line at its content origin")
+    Assert.equal(
+      assert(calls["First line"]).x,
+      modalRect.x,
+      versionId .. " starts the first modal line at its content origin"
+    )
+    Assert.equal(
+      assert(calls["First line"]).y,
+      modalRect.y,
+      versionId .. " starts the first modal line at its content origin"
+    )
     Assert.equal(assert(calls["Second line"]).x, modalRect.x, versionId .. " keeps the second modal line left aligned")
     Assert.equal(assert(calls["Second line"]).y, modalRect.y + 16, versionId .. " keeps the source line cadence")
   end
@@ -2302,15 +2310,12 @@ function T.compact_description_uses_the_source_frame_with_three_lines_and_focus_
       }),
       layout
     )
-    Assert.isTrue(
-      regionDistance(moved, empty, {
-        x = interactiveFrame.x + moveMessage.x,
-        y = interactiveFrame.y + moveMessage.y,
-        width = moveMessage.width,
-        height = moveMessage.height,
-      }, 2) > 0,
-      versionId .. " the move prompt survives while item focus is elsewhere"
-    )
+    Assert.isTrue(regionDistance(moved, empty, {
+      x = interactiveFrame.x + moveMessage.x,
+      y = interactiveFrame.y + moveMessage.y,
+      width = moveMessage.width,
+      height = moveMessage.height,
+    }, 2) > 0, versionId .. " the move prompt survives while item focus is elsewhere")
   end
 end
 
@@ -2467,11 +2472,13 @@ function T.offered_action_slot_carries_its_action_face(scope, context)
             and canonicalY >= textRect.y - 1
             and canonicalY < textRect.y + textRect.height + 1
           if not inLabel then
-            local cr, cg, cb, ca =
-              menu:getPixel(interactiveFrame.x + canonicalX, interactiveFrame.y + canonicalY)
-            if quantize(cr) == quantize(fr) and quantize(cg) == quantize(fg) and quantize(cb) == quantize(fb) and quantize(
-              ca
-            ) == quantize(fa) then
+            local cr, cg, cb, ca = menu:getPixel(interactiveFrame.x + canonicalX, interactiveFrame.y + canonicalY)
+            if
+              quantize(cr) == quantize(fr)
+              and quantize(cg) == quantize(fg)
+              and quantize(cb) == quantize(fb)
+              and quantize(ca) == quantize(fa)
+            then
               matched = matched + 1
             end
           end
@@ -2501,21 +2508,24 @@ function T.selected_message_fills_its_window_with_the_source_slot(scope, context
     local heroStatus = heroStatusAt(manifest, pocket, 6)
     local interactiveFrame = interactiveFrameOf(layout, versionId)
     local messages = assert(manifest.interactive.overlays.messages, versionId .. " carries its message windows")
-    local contentRect =
-      assert(messages.selected.contentRect, versionId .. " carries its selected-message rect")
-    local composed = render(scope, owned, presentation(firstIcon, secondIcon, heroStatus, {
-      state = "action_menu",
-      actions = { { id = "toss", slot = 1 } },
-      actionNode = 1,
-      lowerMessage = { visibleText = "Smoke A.", fullText = "Smoke A." },
-    }), layout)
+    local contentRect = assert(messages.selected.contentRect, versionId .. " carries its selected-message rect")
+    local composed = render(
+      scope,
+      owned,
+      presentation(firstIcon, secondIcon, heroStatus, {
+        state = "action_menu",
+        actions = { { id = "toss", slot = 1 } },
+        actionNode = 1,
+        lowerMessage = { visibleText = "Smoke A.", fullText = "Smoke A." },
+      }),
+      layout
+    )
     local fill = owned.text:windowBackgroundColor()
     local expected = { quantize(fill[1]), quantize(fill[2]), quantize(fill[3]) }
     local matched, sampled = 0, 0
     for y = contentRect.y, contentRect.y + contentRect.height - 1 do
       for x = contentRect.x + contentRect.width - 4, contentRect.x + contentRect.width - 1 do
-        local red, green, blue, alpha =
-          composed:getPixel(interactiveFrame.x + x, interactiveFrame.y + y)
+        local red, green, blue, alpha = composed:getPixel(interactiveFrame.x + x, interactiveFrame.y + y)
         sampled = sampled + 1
         if
           alpha > 0.5

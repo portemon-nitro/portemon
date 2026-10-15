@@ -143,10 +143,7 @@ function T.preparation_pending_and_typed_failures()
   })
   untyped:update()
   Assert.equal(untyped:state(), "failed", "a nil answer with a message fails closed")
-  Assert.isTrue(
-    (untyped:error() or ""):find("test%-typed%-nil", 1) ~= nil,
-    "the nil failure carries its context"
-  )
+  Assert.isTrue((untyped:error() or ""):find("test%-typed%-nil", 1) ~= nil, "the nil failure carries its context")
   untyped:dispose()
 
   local reluctant = { images = {}, released = {} }
@@ -170,10 +167,7 @@ function T.preparation_pending_and_typed_failures()
   })
   refused:update()
   Assert.equal(refused:state(), "failed", "a not-yet answer carrying a failure string fails closed")
-  Assert.isTrue(
-    (refused:error() or ""):find("test%-typed%-false", 1) ~= nil,
-    "the typed failure carries its context"
-  )
+  Assert.isTrue((refused:error() or ""):find("test%-typed%-false", 1) ~= nil, "the typed failure carries its context")
   refused:dispose()
 end
 
@@ -419,10 +413,7 @@ function T.switch_and_foe_reveal_rebind_the_exact_image_key()
   port.present({ launchId = launchId, packetId = 1, events = {}, before = openingAfter(), after = openingAfter() })
   pump(400)
   Assert.isTrue(hasPage(leadBack), "the opening demands the exact active lead back selector")
-  Assert.isFalse(
-    hasPage(reserveBack),
-    "the benched reserve stays undemanded before its switch packet makes it active"
-  )
+  Assert.isFalse(hasPage(reserveBack), "the benched reserve stays undemanded before its switch packet makes it active")
   Assert.isTrue(hasPage(foeFront), "the opening demands the exact revealed foe selector")
   Assert.isFalse(hasShorthand(), "no demand falls back to a shorthand species/form/facing key")
   Assert.isTrue(drewKey("mon:" .. leadBack), "the first draw asks for the exact lead image key")
@@ -439,17 +430,20 @@ function T.switch_and_foe_reveal_rebind_the_exact_image_key()
     launchId = launchId,
     packetId = 2,
     events = {
-      { sequence = 1, kind = "switch", cause = { key = "TACKLE" }, audience = "public", payload = { from = 1, to = 2 } },
+      {
+        sequence = 1,
+        kind = "switch",
+        cause = { key = "TACKLE" },
+        audience = "public",
+        payload = { from = 1, to = 2 },
+      },
     },
     before = openingAfter(),
     after = switchedAfter,
   })
   pump(600)
   Assert.isTrue(hasPage(reserveBack), "the switch demands the exact incoming reserve selector")
-  Assert.isTrue(
-    drewKey("mon:" .. reserveBack),
-    "the switch reveal asks for the exact incoming reserve image key"
-  )
+  Assert.isTrue(drewKey("mon:" .. reserveBack), "the switch reveal asks for the exact incoming reserve image key")
   local reliefAfter = {
     own = {
       battlerRecord(1, 1, false, "EEVEE", "LEADA", leadBack),
@@ -462,17 +456,20 @@ function T.switch_and_foe_reveal_rebind_the_exact_image_key()
     launchId = launchId,
     packetId = 3,
     events = {
-      { sequence = 1, kind = "switch", cause = { key = "TACKLE" }, audience = "public", payload = { from = 3, to = 4 } },
+      {
+        sequence = 1,
+        kind = "switch",
+        cause = { key = "TACKLE" },
+        audience = "public",
+        payload = { from = 3, to = 4 },
+      },
     },
     before = switchedAfter,
     after = reliefAfter,
   })
   pump(600)
   Assert.isTrue(hasPage(reliefFront), "the foe replacement demands its exact revealed selector")
-  Assert.isTrue(
-    drewKey("mon:" .. reliefFront),
-    "the foe reveal asks for the exact incoming foe image key"
-  )
+  Assert.isTrue(drewKey("mon:" .. reliefFront), "the foe reveal asks for the exact incoming foe image key")
   screen:dispose()
 end
 
@@ -594,7 +591,13 @@ function T.genderless_and_shiny_forms_resolve_from_the_declared_variant()
   Assert.equal(foe.form, 1, "alternate form identity is preserved")
   Assert.equal(
     foe.portraitSelector,
-    MonCache.portraitSelector("MAGNEMITE", 1, "female", Personality.shiny(trainerId, genderlessShiny --[[@as integer]]), "front"),
+    MonCache.portraitSelector(
+      "MAGNEMITE",
+      1,
+      "female",
+      Personality.shiny(trainerId, genderlessShiny --[[@as integer]]),
+      "front"
+    ),
     "genderless forms resolve the declared variant with the actual finish and facing"
   )
 end
@@ -1196,10 +1199,7 @@ function T.grown_selector_set_reopens_pending_without_losing_leased_handles()
     callsBeforeGrowth,
     "the grown demand waits for the next update instead of preparing inline"
   )
-  Assert.isTrue(
-    owned:drawable(sceneImage) == sceneHandle,
-    "the wait keeps its leased scene handle"
-  )
+  Assert.isTrue(owned:drawable(sceneImage) == sceneHandle, "the wait keeps its leased scene handle")
   Assert.isTrue(owned:drawable("menu:command") == menuHandle, "the wait keeps its leased menu handle")
   owned:update()
   Assert.equal(owned:state(), "pending", "the unbuilt reserve page keeps the launch pending")
@@ -1207,14 +1207,8 @@ function T.grown_selector_set_reopens_pending_without_losing_leased_handles()
   stagePortraitPage(cache, 11)
   owned:update()
   Assert.equal(owned:state(), "ready", "the built reserve page completes the grown demand")
-  Assert.notNil(
-    owned:drawable("mon:" .. reserveBack),
-    "the reserve sprite resolves under its canonical key"
-  )
-  Assert.isTrue(
-    owned:drawable(sceneImage) == sceneHandle,
-    "readiness keeps the original scene handle"
-  )
+  Assert.notNil(owned:drawable("mon:" .. reserveBack), "the reserve sprite resolves under its canonical key")
+  Assert.isTrue(owned:drawable(sceneImage) == sceneHandle, "readiness keeps the original scene handle")
   local demanded = {}
   for _, page in ipairs(lastPages) do
     demanded[page] = true
@@ -1268,15 +1262,9 @@ function T.opening_demand_names_only_visible_battlers_then_grows_on_switch()
   local opening = pumpScreen(screen, 400)
   Assert.isTrue(opening.mode ~= "failed", "the opening runs: " .. tostring(opening.error))
   local prepared = envelope:preparedDemands()
-  Assert.isTrue(
-    demandHasPage(prepared, leadBack),
-    "the opening demands the exact active lead back selector"
-  )
+  Assert.isTrue(demandHasPage(prepared, leadBack), "the opening demands the exact active lead back selector")
   Assert.isTrue(demandHasPage(prepared, foeFront), "the opening demands the exact revealed foe selector")
-  Assert.isFalse(
-    demandHasPage(prepared, reserveBack),
-    "the benched reserve stays undemanded before its switch"
-  )
+  Assert.isFalse(demandHasPage(prepared, reserveBack), "the benched reserve stays undemanded before its switch")
   Assert.isFalse(demandHasShorthand(prepared), "no demand falls back to a shorthand key")
   Assert.isFalse(askedPageSet(host)[11], "the opening never requests the benched reserve page")
   local switchedAfter = {
@@ -1290,7 +1278,13 @@ function T.opening_demand_names_only_visible_battlers_then_grows_on_switch()
     launchId = launchId,
     packetId = 2,
     events = {
-      { sequence = 1, kind = "switch", cause = { key = "TACKLE" }, audience = "public", payload = { from = 1, to = 2 } },
+      {
+        sequence = 1,
+        kind = "switch",
+        cause = { key = "TACKLE" },
+        audience = "public",
+        payload = { from = 1, to = 2 },
+      },
     },
     before = openingAfter(),
     after = switchedAfter,
@@ -1333,15 +1327,9 @@ function T.portrait_page_worker_failure_names_its_selector_and_page_once()
   Assert.isNil(failed, "the doomed page never reads ready")
   Assert.isTrue(type(failure) == "string" and failure ~= "", "the doomed page carries its reason")
   local reason = failure --[[@as string]]
-  Assert.isTrue(
-    reason:find(leadBack, 1, true) ~= nil,
-    "the failure names the exact doomed selector: " .. reason
-  )
+  Assert.isTrue(reason:find(leadBack, 1, true) ~= nil, "the failure names the exact doomed selector: " .. reason)
   Assert.isTrue(reason:find("13", 1, true) ~= nil, "the failure names the exact doomed page: " .. reason)
-  Assert.isTrue(
-    reason:find("probe-page-boom", 1, true) ~= nil,
-    "the failure carries the worker cause: " .. reason
-  )
+  Assert.isTrue(reason:find("probe-page-boom", 1, true) ~= nil, "the failure carries the worker cause: " .. reason)
   Assert.isTrue(askedPageSet(host)[13], "the doomed page went through the borrowed page host")
   local failedAgain, failureAgain = services.prepare(portraitDemand({ leadBack, foeFront }))
   Assert.isNil(failedAgain, "the doomed page stays failed across polls")
@@ -1361,10 +1349,7 @@ function T.portrait_page_worker_failure_names_its_selector_and_page_once()
   )
   local standin, standinErr = owned:drawable("mon:" .. leadBack)
   Assert.isNil(standin, "the doomed portrait hands out no stand-in sprite")
-  Assert.isTrue(
-    type(standinErr) == "string" and standinErr ~= "",
-    "the doomed portrait keeps its terminal reason"
-  )
+  Assert.isTrue(type(standinErr) == "string" and standinErr ~= "", "the doomed portrait keeps its terminal reason")
   Assert.equal(#graphics.images, 0, "the doomed page never reaches the image driver")
   owned:dispose()
   local launchId = "launch-doomed-demand"

@@ -156,11 +156,9 @@ function T.shared_awards_split_the_staged_total()
   )
   Assert.equal(crowded, 10, "six battlers split the staged total before the trainer lift")
   local tiny = knockout({ baseYield = 1, level = 1 })
-  local tinyBattler =
-    Experience.calculate(tiny, { battlers = 1, holders = 1, participated = true, share = false })
+  local tinyBattler = Experience.calculate(tiny, { battlers = 1, holders = 1, participated = true, share = false })
   Assert.equal(tinyBattler, 1, "a zero staged total still awards the minimum one to battlers")
-  local tinyHolder =
-    Experience.calculate(tiny, { battlers = 1, holders = 1, participated = false, share = true })
+  local tinyHolder = Experience.calculate(tiny, { battlers = 1, holders = 1, participated = false, share = true })
   Assert.equal(tinyHolder, 1, "a zero staged total still awards the minimum one to holders")
   local egged = Experience.calculate(
     knockout({ trainerBattle = true }),

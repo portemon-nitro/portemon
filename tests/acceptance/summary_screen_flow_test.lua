@@ -126,8 +126,7 @@ local function acquireSummaryLease(game)
     function lease:prepare(demand)
       return { kind = "ready", key = demand.key, assets = { manifest = manifest } }
     end
-    function lease:release()
-    end
+    function lease:release() end
     return lease
   end
 end
@@ -226,8 +225,12 @@ local function driveUntil(flow, label, maxSteps, predicate)
   end
   local status = flow:status()
   error(
-    "the flow never reaches " .. label .. "; page=" .. tostring(status.page)
-      .. "; child state=" .. tostring(status.child and status.child.state),
+    "the flow never reaches "
+      .. label
+      .. "; page="
+      .. tostring(status.page)
+      .. "; child state="
+      .. tostring(status.child and status.child.state),
     0
   )
 end
@@ -257,7 +260,9 @@ end
 local function settleSummary(flow)
   return driveUntil(flow, "the active summary child", 30, function(current)
     local child = current.child
-    return (current.page == "summary" or current.page == "move_pick") and child ~= nil and child.wrapperPhase == "active"
+    return (current.page == "summary" or current.page == "move_pick")
+      and child ~= nil
+      and child.wrapperPhase == "active"
   end)
 end
 
@@ -658,8 +663,10 @@ function T.tests.pp_restore_selects_a_move_and_consumes_once()
       Assert.equal(
         status.page,
         "move_pick",
-        "a power-point use must open the move picker; got page=" .. tostring(status.page)
-          .. "; childState=" .. tostring(child and child.state)
+        "a power-point use must open the move picker; got page="
+          .. tostring(status.page)
+          .. "; childState="
+          .. tostring(child and child.state)
       )
     end
     status = settleSummary(flow)

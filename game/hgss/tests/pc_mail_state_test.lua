@@ -72,7 +72,11 @@ local function openMailbox(slots, partyHasMembers)
     mailbox = mailbox,
     mailActions = { preview = function() end, commit = function() end },
     manifest = manifest(),
-    itemCatalog = { item = function(_, key) return { icon = key } end },
+    itemCatalog = {
+      item = function(_, key)
+        return { icon = key }
+      end,
+    },
     measureDisplay = measurement,
     audio = { play = function() end },
     charmap = CatalogFixture.CHARMAP,

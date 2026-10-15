@@ -141,14 +141,18 @@ end
 -- checkpoint never appears before the earlier one finishes.
 function T.strike_plays_message_then_health_without_read_ahead()
   local sounds = sink()
-  local timeline = BattleTimeline.new({ sound = function(name)
-    sounds.sound(name)
-  end })
+  local timeline = BattleTimeline.new({
+    sound = function(name)
+      sounds.sound(name)
+    end,
+  })
   timeline:reset(openingView())
   local after = openingView()
   after.foes[1].hp = 43
   Assert.isTrue(
-    timeline:present(packet(1, { event("struck", { target = 3, damage = 14, hitIndex = 1 }, { [1] = 52, [3] = 43 }) }, after)),
+    timeline:present(
+      packet(1, { event("struck", { target = 3, damage = 14, hitIndex = 1 }, { [1] = 52, [3] = 43 }) }, after)
+    ),
     "the first packet is accepted"
   )
   Assert.isFalse(timeline:settled(), "the strike leaves cues pending")
@@ -177,19 +181,19 @@ end
 -- checkpoints never resurrect it.
 function T.faint_hides_after_its_checkpoint_and_stays_hidden()
   local sounds = sink()
-  local timeline = BattleTimeline.new({ sound = function(name)
-    sounds.sound(name)
-  end })
+  local timeline = BattleTimeline.new({
+    sound = function(name)
+      sounds.sound(name)
+    end,
+  })
   timeline:reset(openingView())
   local mid = openingView()
   mid.foes[1].hp = 0
   Assert.isTrue(
-    timeline:present(
-      packet(1, {
-        event("struck", { target = 3, damage = 57, hitIndex = 1 }, { [1] = 52, [3] = 0 }),
-        event("faint", { combatant = 3, activation = 2, position = 2 }, { [1] = 52, [3] = 0 }),
-      }, mid)
-    ),
+    timeline:present(packet(1, {
+      event("struck", { target = 3, damage = 57, hitIndex = 1 }, { [1] = 52, [3] = 0 }),
+      event("faint", { combatant = 3, activation = 2, position = 2 }, { [1] = 52, [3] = 0 }),
+    }, mid)),
     "the knockout packet is accepted"
   )
   local faintAt = nil
@@ -213,14 +217,15 @@ end
 -- state motion.
 function T.duplicate_packets_are_rejected()
   local sounds = sink()
-  local timeline = BattleTimeline.new({ sound = function(name)
-    sounds.sound(name)
-  end })
+  local timeline = BattleTimeline.new({
+    sound = function(name)
+      sounds.sound(name)
+    end,
+  })
   timeline:reset(openingView())
   local after = openingView()
   after.foes[1].hp = 43
-  local first =
-    packet(1, { event("struck", { target = 3, damage = 14, hitIndex = 1 }, { [1] = 52, [3] = 43 }) }, after)
+  local first = packet(1, { event("struck", { target = 3, damage = 14, hitIndex = 1 }, { [1] = 52, [3] = 43 }) }, after)
   Assert.isTrue(timeline:present(first), "the first delivery is accepted")
   Assert.isFalse(timeline:present(first), "the same packet identity is rejected")
   local soundsBefore = #sounds.played
@@ -234,13 +239,17 @@ end
 -- stays at its earlier checkpoint until the image arrives.
 function T.held_images_hold_their_cue()
   local sounds = sink()
-  local timeline = BattleTimeline.new({ sound = function(name)
-    sounds.sound(name)
-  end })
+  local timeline = BattleTimeline.new({
+    sound = function(name)
+      sounds.sound(name)
+    end,
+  })
   timeline:reset(openingView())
   local after = openingView()
   after.foes[1].hp = 43
-  timeline:present(packet(1, { event("struck", { target = 3, damage = 14, hitIndex = 1 }, { [1] = 52, [3] = 43 }) }, after))
+  timeline:present(
+    packet(1, { event("struck", { target = 3, damage = 14, hitIndex = 1 }, { [1] = 52, [3] = 43 }) }, after)
+  )
   local foeKey = "mon:" .. MonCache.portraitSelector("EEVEE", 0, "male", false)
   local held = { [foeKey] = false }
   for _ = 1, 120 do
@@ -264,9 +273,11 @@ end
 -- final values, even across several levels.
 function T.experience_animates_each_level_segment()
   local sounds = sink()
-  local timeline = BattleTimeline.new({ sound = function(name)
-    sounds.sound(name)
-  end })
+  local timeline = BattleTimeline.new({
+    sound = function(name)
+      sounds.sound(name)
+    end,
+  })
   timeline:reset(openingView())
   local after = openingView()
   after.own[1].experience = 9000
@@ -288,9 +299,11 @@ end
 -- plays and the occurrence is recorded.
 function T.unknown_effects_produce_a_diagnostic()
   local sounds = sink()
-  local timeline = BattleTimeline.new({ sound = function(name)
-    sounds.sound(name)
-  end })
+  local timeline = BattleTimeline.new({
+    sound = function(name)
+      sounds.sound(name)
+    end,
+  })
   timeline:reset(openingView())
   timeline:present(packet(1, { event("mystery_surcharge", { target = 3 }, { [1] = 52, [3] = 57 }) }, openingView()))
   Assert.isFalse(timeline:settled(), "the diagnostic still plays as a cue")
@@ -306,13 +319,17 @@ end
 -- page consumes its edge and muted sinks still drain every cue.
 function T.acknowledgement_completes_pages_and_muted_drains()
   local muted = sink({ ["cry:EEVEE"] = true })
-  local timeline = BattleTimeline.new({ sound = function(name)
-    muted.sound(name)
-  end })
+  local timeline = BattleTimeline.new({
+    sound = function(name)
+      muted.sound(name)
+    end,
+  })
   timeline:reset(openingView())
   local after = openingView()
   after.foes[1].hp = 43
-  timeline:present(packet(1, { event("struck", { target = 3, damage = 14, hitIndex = 1 }, { [1] = 52, [3] = 43 }) }, after))
+  timeline:present(
+    packet(1, { event("struck", { target = 3, damage = 14, hitIndex = 1 }, { [1] = 52, [3] = 43 }) }, after)
+  )
   local firstId = timeline:messageId()
   Assert.isTrue(timeline:ack(), "an edge during narration is consumed by the page")
   advance(timeline, 10)
@@ -373,7 +390,12 @@ function T.first_packet_events_play_after_the_opening_once()
   local submits = {}
   local screen = BattleScreenState.new({
     launchId = launchId,
-    manifest = { schema = "test", version = { id = "t", language = "english" }, verified = false, scenes = { { key = "general/plain/day" } } },
+    manifest = {
+      schema = "test",
+      version = { id = "t", language = "english" },
+      verified = false,
+      scenes = { { key = "general/plain/day" } },
+    },
     model = Model,
     submit = function(reply)
       submits[#submits + 1] = reply
@@ -533,9 +555,11 @@ function T.active_lead_names_and_cries_the_live_slot_not_slot_zero()
   local liveBack = MonCache.portraitSelector("TOTODILE", 0, "female", false, "back")
   local benchBack = MonCache.portraitSelector("EEVEE", 0, "male", false, "back")
   local sounds = sink()
-  local timeline = BattleTimeline.new({ sound = function(name)
-    sounds.sound(name)
-  end })
+  local timeline = BattleTimeline.new({
+    sound = function(name)
+      sounds.sound(name)
+    end,
+  })
   local view = openingView()
   view.own = {
     {
@@ -575,11 +599,7 @@ function T.active_lead_names_and_cries_the_live_slot_not_slot_zero()
   }
   timeline:reset(view)
   local lead = battler(timeline:battlers(), 2)
-  Assert.equal(
-    lead.portraitSelector,
-    liveBack,
-    "the displayed live lead keeps its exact canonical back portrait"
-  )
+  Assert.equal(lead.portraitSelector, liveBack, "the displayed live lead keeps its exact canonical back portrait")
   timeline:intro(view, true)
   -- The send-out holds while its exact incoming portrait is missing:
   -- with that canonical key held back the opening never drains, and
@@ -609,10 +629,7 @@ function T.active_lead_names_and_cries_the_live_slot_not_slot_zero()
     if message:find("LIVE", 1, true) ~= nil then
       hailedLive = true
     end
-    Assert.isTrue(
-      message:find("BENCH", 1, true) == nil,
-      "no opening narration hails the fainted first slot"
-    )
+    Assert.isTrue(message:find("BENCH", 1, true) == nil, "no opening narration hails the fainted first slot")
   end
   Assert.isTrue(hailedLive, "the send-out hails the live lead by name")
   Assert.equal(sounds.count("cry:TOTODILE"), 1, "the opening cries the live lead species once")

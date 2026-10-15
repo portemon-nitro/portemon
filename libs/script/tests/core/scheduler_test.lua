@@ -1843,11 +1843,7 @@ T["player facing writes source direction codes"] = function()
     )
     h.scheduler:step(100, nil)
     local instance = assert(h.scheduler:instances()[1])
-    Assert.equal(
-      instance.locals.pf,
-      code,
-      "facing " .. facing .. " must write source code " .. tostring(code)
-    )
+    Assert.equal(instance.locals.pf, code, "facing " .. facing .. " must write source code " .. tostring(code))
   end
 
   local hBad = harness({ player = { facing = "diagonal" } })

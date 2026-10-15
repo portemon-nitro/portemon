@@ -342,7 +342,11 @@ function T.constructor_and_demand_shapes_fail_loudly()
     local owner = Resources.new(setup.newOptions())
     local lease = owner:acquire()
     Assert.isFalse(
-      pcall(lease.prepare, lease, { key = "", revision = 1, pictureEpoch = 0, portraitSelectors = {}, iconKeys = {}, cryBanks = {} }),
+      pcall(
+        lease.prepare,
+        lease,
+        { key = "", revision = 1, pictureEpoch = 0, portraitSelectors = {}, iconKeys = {}, cryBanks = {} }
+      ),
       versionId .. " demands carry a non-empty key"
     )
     local many = { "A", "B", "C", "D", "E", "F", "G" }
@@ -382,26 +386,24 @@ function T.late_completions_land_quietly_after_lease_release()
     local gate = { ready = false }
     local tokens = {}
     local queue = {
-    request = function(_, kind, path, priority)
-      local token = { id = #tokens + 1, kind = kind, path = path, priority = priority }
-      tokens[#tokens + 1] = token
-      return token
-    end,
-    poll = function(_, token)
-      if gate.ready then
-        return "ready"
-      end
-      return "pending"
-    end,
-    take = function(_, token)
-      Assert.isTrue(gate.ready, "payloads transfer once ready")
-      return { bytes = "late-image-bytes", path = token.path }
-    end,
-    cancel = function(_, _)
-    end,
-    release = function(_)
-    end,
-  }
+      request = function(_, kind, path, priority)
+        local token = { id = #tokens + 1, kind = kind, path = path, priority = priority }
+        tokens[#tokens + 1] = token
+        return token
+      end,
+      poll = function(_, token)
+        if gate.ready then
+          return "ready"
+        end
+        return "pending"
+      end,
+      take = function(_, token)
+        Assert.isTrue(gate.ready, "payloads transfer once ready")
+        return { bytes = "late-image-bytes", path = token.path }
+      end,
+      cancel = function(_, _) end,
+      release = function(_) end,
+    }
     local options = setup.newOptions()
     options.preparationQueue = queue
     local owner = Resources.new(options)
@@ -459,33 +461,33 @@ function T.dynamic_frame_visuals_prepare_through_the_existing_owner()
       "g4-summary-manifest-v4",
       versionId .. " tracks the generated schema in its synthetic family"
     )
-  local sprites = assert(manifest.sprites, "the synthetic family carries dynamic chrome")
-  for _, role in ipairs({ "animations", "primaryCursor", "secondaryMoveCursor", "performance", "leaves", "ribbons" }) do
-    Assert.notNil(sprites[role], "the synthetic family carries " .. role)
-  end
-  local animations = assert(sprites.animations, "the synthetic family carries animation descriptors")
-  local visuals = assert(manifest.visuals, "the synthetic family carries visuals")
-  local frameImages = {}
-  local seen = {}
-  for name, descriptor in pairs(animations) do
-    local frames = assert(descriptor.frames, "synthetic animation " .. tostring(name) .. " carries frames")
-    Assert.isTrue(#frames > 0, "synthetic animation " .. tostring(name) .. " is nonempty")
-    for _, frame in ipairs(frames) do
-      local visualName = assert(frame.visual, "synthetic frames name their visual")
-      local visual = assert(visuals[visualName], "synthetic frame resolves its visual")
-      local image = assert(visual.image, "synthetic frame visuals carry image paths")
-      Assert.equal(
-        image:sub(1, #"assets/generated/summary/"),
-        "assets/generated/summary/",
-        "synthetic frames stay family-owned: " .. image
-      )
-      Assert.isTrue(image:find("party", 1, true) == nil, "synthetic frames never reuse party art")
-      if seen[image] == nil then
-        seen[image] = true
-        frameImages[#frameImages + 1] = image
+    local sprites = assert(manifest.sprites, "the synthetic family carries dynamic chrome")
+    for _, role in ipairs({ "animations", "primaryCursor", "secondaryMoveCursor", "performance", "leaves", "ribbons" }) do
+      Assert.notNil(sprites[role], "the synthetic family carries " .. role)
+    end
+    local animations = assert(sprites.animations, "the synthetic family carries animation descriptors")
+    local visuals = assert(manifest.visuals, "the synthetic family carries visuals")
+    local frameImages = {}
+    local seen = {}
+    for name, descriptor in pairs(animations) do
+      local frames = assert(descriptor.frames, "synthetic animation " .. tostring(name) .. " carries frames")
+      Assert.isTrue(#frames > 0, "synthetic animation " .. tostring(name) .. " is nonempty")
+      for _, frame in ipairs(frames) do
+        local visualName = assert(frame.visual, "synthetic frames name their visual")
+        local visual = assert(visuals[visualName], "synthetic frame resolves its visual")
+        local image = assert(visual.image, "synthetic frame visuals carry image paths")
+        Assert.equal(
+          image:sub(1, #"assets/generated/summary/"),
+          "assets/generated/summary/",
+          "synthetic frames stay family-owned: " .. image
+        )
+        Assert.isTrue(image:find("party", 1, true) == nil, "synthetic frames never reuse party art")
+        if seen[image] == nil then
+          seen[image] = true
+          frameImages[#frameImages + 1] = image
+        end
       end
     end
-  end
     Assert.isTrue(#frameImages > 0, versionId .. " references frame images in its synthetic chrome")
     local owner = Resources.new(setup.newOptions())
     local counts = countQueueRequests(setup.helper)
@@ -638,11 +640,7 @@ function T.exact_selectors_resolve_their_own_pages_and_absent_selectors_never_fa
   local probe = probeSetup.owner:acquire()
   local refused = prepareToTerminal(probe, exactDemand("absent-identity", { missing }))
   Assert.equal(refused.kind, "failed", "identities without a generated page never adopt a sibling page")
-  Assert.equal(
-    #probeSetup.helper.calls.portraitPages,
-    0,
-    "no sibling page compiles for the missing identity"
-  )
+  Assert.equal(#probeSetup.helper.calls.portraitPages, 0, "no sibling page compiles for the missing identity")
   probe:release()
   setup.owner:release()
   probeSetup.owner:release()
@@ -657,7 +655,11 @@ function T.cry_banks_compile_before_the_lease_turns_ready_and_failures_surface()
     local lease = owner:acquire()
     local settled = prepareToTerminal(lease, syntheticDemand("syn-cry", 1))
     Assert.equal(settled.kind, "ready", versionId .. " prepares once its cry banks are ready")
-    Assert.deepEqual(uniquePages(setup.helper.calls.cryBanks), { 152, 158 }, versionId .. " requests exactly the demanded cry banks")
+    Assert.deepEqual(
+      uniquePages(setup.helper.calls.cryBanks),
+      { 152, 158 },
+      versionId .. " requests exactly the demanded cry banks"
+    )
     lease:release()
     owner:release()
 
@@ -801,10 +803,7 @@ function T.absent_selector_failure_names_the_selector()
   local lease = setup.owner:acquire()
   local refused = prepareToTerminal(lease, exactDemand("absent-cause", { missing }))
   Assert.equal(refused.kind, "failed", "identities without a generated page fail instead of falling back")
-  Assert.isTrue(
-    tostring(refused.error):find(missing, 1, true) ~= nil,
-    "the failure names the missing identity"
-  )
+  Assert.isTrue(tostring(refused.error):find(missing, 1, true) ~= nil, "the failure names the missing identity")
   Assert.equal(#setup.helper.calls.portraitPages, 0, "no page compiles for the missing identity")
   lease:release()
   setup.owner:release()
@@ -836,8 +835,7 @@ function T.runtime_summary_binding_is_identity_qualified()
   end)
   Assert.isTrue(type(first) == "number", "binding answers its identity")
   Assert.isFalse(
-    pcall(FieldRuntime.bindSummaryPreparation, runtime, function()
-    end),
+    pcall(FieldRuntime.bindSummaryPreparation, runtime, function() end),
     "one binding owns the presented lifetime"
   )
   FieldRuntime.unbindSummaryPreparation(runtime, first + 1)

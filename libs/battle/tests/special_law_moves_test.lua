@@ -33,11 +33,7 @@ local function nativeContent()
   local builder = ContentBuilder.new()
   NativeTypeChart.install(builder, "special-law-tests")
   local behaviors = BattleBehaviorBuilder.new()
-  behaviors:registerRuleset(
-    Executor.RULESET,
-    { key = Executor.RULESET, chart = Executor.RULESET },
-    "special-law-tests"
-  )
+  behaviors:registerRuleset(Executor.RULESET, { key = Executor.RULESET, chart = Executor.RULESET }, "special-law-tests")
   return BattleContent.new(builder:freeze(), behaviors:freeze())
 end
 
@@ -199,7 +195,6 @@ local function runStrike(moveKey, extra, setup, foeHp, foeTypes, seed)
   end
   local finished = node --[[@as table<string, unknown>]]
   assert(finished.kind == "complete" and finished.frame == nil, "the strike settles")
-
 
   local afterFoe = ctx:damage(2, 0, { kind = "probe" }).after
   local holder = state.combatant(live, 1)
@@ -632,16 +627,24 @@ end
 -- Unguarded ordinary recoil keeps its dealt-derived fraction: a quarter
 -- of the inflicted damage with a minimum of one.
 function T.unguarded_recoil_keeps_quarter_dealt_minimum_one()
-  local probe = runStrike("TAKE_DOWN", { abilities = { user = "ADAPTABILITY", foe = "ADAPTABILITY" } }, function(live, _)
-    seedHealth(live, 1, 200, 200)
-  end)
+  local probe = runStrike(
+    "TAKE_DOWN",
+    { abilities = { user = "ADAPTABILITY", foe = "ADAPTABILITY" } },
+    function(live, _)
+      seedHealth(live, 1, 200, 200)
+    end
+  )
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "the take-down connects")
   local expected = math.floor(probe.dealt / 4)
   if expected < 1 then
     expected = 1
   end
-  Assert.equal(200 - probe.ctx:damage(1, 0, { kind = "probe" }).before, expected, "unguarded recoil bills quarter dealt")
+  Assert.equal(
+    200 - probe.ctx:damage(1, 0, { kind = "probe" }).before,
+    expected,
+    "unguarded recoil bills quarter dealt"
+  )
 end
 
 -- Struggle recoil ignores both guards: the source performs no ability

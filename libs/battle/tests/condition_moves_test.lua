@@ -140,7 +140,9 @@ local function findInstance(state, key)
   local bag = state.effectBag --[[@as table<string, unknown>]]
   local capture = bag.capture --[[@as fun(self: table<string, unknown>): table<integer, table<string, unknown>>]]
   for _, record in ipairs(capture(bag)) do
-    if (record --[[@as table<string, unknown>]]).key == key then
+    if
+      (record --[[@as table<string, unknown>]]).key == key
+    then
       return record --[[@as table<string, unknown>]]
     end
   end
@@ -160,16 +162,15 @@ end
 -- hit; already-confused defenders refuse.
 function T.confusion_setting_moves_root_a_counted_volatile()
   conditionOwner("confusion setters own their volatile")
-  local probe = runCondition(
-    "CONFUSE_RAY",
-    moveFacts("CONFUSE_RAY", { accuracy = 100, moveType = "ghost" }),
-    FIXED_SEED
-  )
+  local probe =
+    runCondition("CONFUSE_RAY", moveFacts("CONFUSE_RAY", { accuracy = 100, moveType = "ghost" }), FIXED_SEED)
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "confuse ray connects")
   local instance = findInstance(probe.state, "confusion")
   Assert.notNil(instance, "confusion lands on the defender")
-  local turns = (instance --[[@as table<string, unknown>]]).state --[[@as table<string, unknown>]].turns
+  local turns = (instance --[[@as table<string, unknown>]])
+    .state --[[@as table<string, unknown>]]
+    .turns
   Assert.isTrue(turns >= 2 and turns <= 5, "confusion spans two to five turns")
 end
 
@@ -206,7 +207,9 @@ function T.taunt_roots_a_counted_volatile()
   Assert.equal(outcome.result, "hit", "taunt connects")
   local instance = findInstance(probe.state, "taunt")
   Assert.notNil(instance, "taunt lands on the defender")
-  local turns = (instance --[[@as table<string, unknown>]]).state --[[@as table<string, unknown>]].turns
+  local turns = (instance --[[@as table<string, unknown>]])
+    .state --[[@as table<string, unknown>]]
+    .turns
   Assert.isTrue(turns >= 2 and turns <= 4, "taunt spans two to four turns")
 end
 
@@ -303,7 +306,13 @@ function T.spikes_stack_to_three_layers()
   Assert.equal(laySpikes().result, "hit", "the third layer lands")
   local layers = ctx:sideEffect(foeSide, "spikes")
   Assert.notNil(layers, "the layers stand on the foe side")
-  Assert.equal((layers --[[@as table<string, unknown>]]).state --[[@as table<string, unknown>]].layers, 3, "three layers stand")
+  Assert.equal(
+    (layers --[[@as table<string, unknown>]])
+      .state --[[@as table<string, unknown>]]
+      .layers,
+    3,
+    "three layers stand"
+  )
   Assert.equal(laySpikes().result, "failed", "the fourth layer refuses")
 end
 
@@ -358,7 +367,13 @@ function T.toxic_spikes_stack_to_two_layers()
   Assert.equal(layToxic().result, "hit", "the second toxic layer lands")
   local layers = ctx:sideEffect(foeSide, "toxicspikes")
   Assert.notNil(layers, "the toxic layers stand on the foe side")
-  Assert.equal((layers --[[@as table<string, unknown>]]).state --[[@as table<string, unknown>]].layers, 2, "two layers stand")
+  Assert.equal(
+    (layers --[[@as table<string, unknown>]])
+      .state --[[@as table<string, unknown>]]
+      .layers,
+    2,
+    "two layers stand"
+  )
   Assert.equal(layToxic().result, "failed", "the third toxic layer refuses")
 end
 
@@ -511,7 +526,11 @@ function T.belly_drum_maximizes_attack_for_half_health()
   Assert.equal(finished.result, "hit", "belly drum connects above half health")
   Assert.equal(ctx:entryOf(1).stages.attack, 6, "belly drum maximizes attack")
   local left = ctx:damage(1, 0, { kind = "probe" }).before
-  Assert.equal(left, ceiling - math.floor(ceiling / 4) - math.floor(ceiling / 2), "belly drum costs half maximum health")
+  Assert.equal(
+    left,
+    ceiling - math.floor(ceiling / 4) - math.floor(ceiling / 2),
+    "belly drum costs half maximum health"
+  )
 end
 
 -- Acupressure raises a random raisable stat by two and refuses the
@@ -534,11 +553,7 @@ end
 -- dolls, and the already trapped.
 function T.trapping_moves_hold_the_defender()
   conditionOwner("trapping moves own their hold")
-  local probe = runCondition(
-    "MEAN_LOOK",
-    moveFacts("MEAN_LOOK", { accuracy = 0, moveType = "normal" }),
-    FIXED_SEED
-  )
+  local probe = runCondition("MEAN_LOOK", moveFacts("MEAN_LOOK", { accuracy = 0, moveType = "normal" }), FIXED_SEED)
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "mean look connects")
   Assert.isTrue(probe.ctx:hasBattleEffect(2, "trapped"), "mean look traps the defender")
@@ -570,7 +585,8 @@ function T.lock_on_and_foresight_shape_later_strikes()
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "lock-on connects")
   Assert.isTrue(probe.ctx:hasBattleEffect(2, "lockon"), "lock-on marks the defender")
-  local identified = runCondition("FORESIGHT", moveFacts("FORESIGHT", { accuracy = 0, moveType = "fighting" }), FIXED_SEED)
+  local identified =
+    runCondition("FORESIGHT", moveFacts("FORESIGHT", { accuracy = 0, moveType = "fighting" }), FIXED_SEED)
   local identifiedOutcome = identified.outcome --[[@as table<string, unknown>]]
   Assert.equal(identifiedOutcome.result, "hit", "foresight connects")
   Assert.isTrue(identified.ctx:hasBattleEffect(2, "foresight"), "foresight identifies the defender")
@@ -580,12 +596,19 @@ end
 -- and the rooted.
 function T.magnet_rise_levitates_for_five_turns()
   conditionOwner("magnet rise owns its levitation")
-  local probe = runCondition("MAGNET_RISE", moveFacts("MAGNET_RISE", { accuracy = 0, moveType = "electric" }), FIXED_SEED)
+  local probe =
+    runCondition("MAGNET_RISE", moveFacts("MAGNET_RISE", { accuracy = 0, moveType = "electric" }), FIXED_SEED)
   local outcome = probe.outcome --[[@as table<string, unknown>]]
   Assert.equal(outcome.result, "hit", "magnet rise connects")
   local instance = findInstance(probe.state, "magnetrise")
   Assert.notNil(instance, "magnet rise levitates its user")
-  Assert.equal((instance --[[@as table<string, unknown>]]).state --[[@as table<string, unknown>]].turns, 5, "levitation lasts five turns")
+  Assert.equal(
+    (instance --[[@as table<string, unknown>]])
+      .state --[[@as table<string, unknown>]]
+      .turns,
+    5,
+    "levitation lasts five turns"
+  )
 end
 
 -- Tailwind doubles its side speed window and refuses the duplicate;
@@ -598,14 +621,26 @@ function T.tailwind_and_lucky_chant_cover_their_sides()
   local side = tailwind.ctx:entryOf(1).side
   local tail = tailwind.ctx:sideEffect(side, "tailwind")
   Assert.notNil(tail, "tailwind covers the user side")
-  Assert.equal((tail --[[@as table<string, unknown>]]).state --[[@as table<string, unknown>]].turns, 3, "tailwind lasts three turns")
+  Assert.equal(
+    (tail --[[@as table<string, unknown>]])
+      .state --[[@as table<string, unknown>]]
+      .turns,
+    3,
+    "tailwind lasts three turns"
+  )
   local chant = runCondition("LUCKY_CHANT", moveFacts("LUCKY_CHANT", { accuracy = 0, moveType = "normal" }), FIXED_SEED)
   local chantOutcome = chant.outcome --[[@as table<string, unknown>]]
   Assert.equal(chantOutcome.result, "hit", "lucky chant connects")
   local chantSide = chant.ctx:entryOf(1).side
   local lucky = chant.ctx:sideEffect(chantSide, "luckychant")
   Assert.notNil(lucky, "lucky chant covers the user side")
-  Assert.equal((lucky --[[@as table<string, unknown>]]).state --[[@as table<string, unknown>]].turns, 5, "lucky chant lasts five turns")
+  Assert.equal(
+    (lucky --[[@as table<string, unknown>]])
+      .state --[[@as table<string, unknown>]]
+      .turns,
+    5,
+    "lucky chant lasts five turns"
+  )
 end
 
 -- Gravity grounds the field for five turns and refuses the duplicate;
@@ -617,7 +652,8 @@ function T.gravity_and_trick_room_shape_the_field()
   local gravityOutcome = gravity.outcome --[[@as table<string, unknown>]]
   Assert.equal(gravityOutcome.result, "hit", "gravity connects")
   Assert.notNil(gravity.ctx:fieldEffect("gravity"), "gravity grounds the field")
-  local faller = runCondition("MAGNET_RISE", moveFacts("MAGNET_RISE", { accuracy = 0, moveType = "electric" }), FIXED_SEED)
+  local faller =
+    runCondition("MAGNET_RISE", moveFacts("MAGNET_RISE", { accuracy = 0, moveType = "electric" }), FIXED_SEED)
   Assert.isTrue(faller.ctx:hasBattleEffect(1, "magnetrise"), "the entry rises first")
   local Execution = SessionFixture.requirePresent(
     "libs.battle.src.gen4.MoveExecution",
@@ -823,10 +859,8 @@ function T.spite_cuts_four_power_points()
   end
   local finished = node --[[@as table<string, unknown>]]
   Assert.equal(finished.result, "hit", "spite connects with a recorded move")
-  local BattleState = SessionFixture.requirePresent(
-    "libs.battle.src.BattleState",
-    "private battle data owns reference invariants"
-  )
+  local BattleState =
+    SessionFixture.requirePresent("libs.battle.src.BattleState", "private battle data owns reference invariants")
   local spent = nil
   for _, entry in ipairs(BattleState.combatant(state, 2).mon.moves) do
     local record = entry --[[@as table<string, unknown>]]
@@ -844,25 +878,18 @@ end
 -- special attack by one while confusing; teeter dance confuses.
 function T.swagger_flatter_and_teeter_dance_confuse()
   conditionOwner("swaggering moves own their confusion")
-  local swagger = runCondition(
-    "SWAGGER",
-    moveFacts("SWAGGER", { accuracy = 100, moveType = "normal" }),
-    FIXED_SEED
-  )
+  local swagger = runCondition("SWAGGER", moveFacts("SWAGGER", { accuracy = 100, moveType = "normal" }), FIXED_SEED)
   local swaggerOutcome = swagger.outcome --[[@as table<string, unknown>]]
   Assert.equal(swaggerOutcome.result, "hit", "swagger connects")
   Assert.equal(swagger.ctx:entryOf(2).stages.attack, 2, "swagger sharpens attack by two")
   Assert.isTrue(swagger.ctx:hasBattleEffect(2, "confusion"), "swagger confuses")
-  local flatter = runCondition(
-    "FLATTER",
-    moveFacts("FLATTER", { accuracy = 100, moveType = "dark" }),
-    FIXED_SEED
-  )
+  local flatter = runCondition("FLATTER", moveFacts("FLATTER", { accuracy = 100, moveType = "dark" }), FIXED_SEED)
   local flatterOutcome = flatter.outcome --[[@as table<string, unknown>]]
   Assert.equal(flatterOutcome.result, "hit", "flatter connects")
   Assert.equal(flatter.ctx:entryOf(2).stages.specialAttack, 1, "flatter sharpens special attack by one")
   Assert.isTrue(flatter.ctx:hasBattleEffect(2, "confusion"), "flatter confuses")
-  local dance = runCondition("TEETER_DANCE", moveFacts("TEETER_DANCE", { accuracy = 100, moveType = "normal" }), FIXED_SEED)
+  local dance =
+    runCondition("TEETER_DANCE", moveFacts("TEETER_DANCE", { accuracy = 100, moveType = "normal" }), FIXED_SEED)
   local danceOutcome = dance.outcome --[[@as table<string, unknown>]]
   Assert.equal(danceOutcome.result, "hit", "teeter dance connects")
   Assert.isTrue(dance.ctx:hasBattleEffect(2, "confusion"), "teeter dance confuses")

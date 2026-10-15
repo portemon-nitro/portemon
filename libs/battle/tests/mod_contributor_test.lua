@@ -161,11 +161,7 @@ function T.declared_dependency_order_wins_regardless_of_contributor_input_order(
   assert(type(forwardValue) == "table", "the forward composition resolves the patched record")
   assert(type(backwardValue) == "table", "the backward composition resolves the patched record")
   Assert.equal(forwardValue.value, "beta", "declared order applies the later contributor last")
-  Assert.deepEqual(
-    backwardValue,
-    forwardValue,
-    "contributor input order never changes the resolved patch outcome"
-  )
+  Assert.deepEqual(backwardValue, forwardValue, "contributor input order never changes the resolved patch outcome")
   local cyclicA = tuningContributor("alpha-pack", "alpha", { after = { "beta-pack" } })
   local cyclicB = tuningContributor("beta-pack", "beta", { after = { "alpha-pack" } })
   Assert.throws(function()

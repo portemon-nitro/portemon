@@ -20,26 +20,34 @@ local function measurement(width, height, topology)
 end
 
 local function single(width, height)
-  return measurement(width, height, ScreenTopology.oneDisplay({
-    id = "main",
-    rect = { x = 0, y = 0, width = width, height = height },
-    role = "world",
-    touch = false,
-  }))
+  return measurement(
+    width,
+    height,
+    ScreenTopology.oneDisplay({
+      id = "main",
+      rect = { x = 0, y = 0, width = width, height = height },
+      role = "world",
+      touch = false,
+    })
+  )
 end
 
 local function dual()
-  return measurement(800, 600, ScreenTopology.dualDisplay({
-    id = "world",
-    rect = { x = 400, y = 100, width = 256, height = 192 },
-    role = "world",
-    touch = false,
-  }, {
-    id = "aux",
-    rect = { x = 100, y = 300, width = 256, height = 192 },
-    role = "auxiliary",
-    touch = true,
-  }))
+  return measurement(
+    800,
+    600,
+    ScreenTopology.dualDisplay({
+      id = "world",
+      rect = { x = 400, y = 100, width = 256, height = 192 },
+      role = "world",
+      touch = false,
+    }, {
+      id = "aux",
+      rect = { x = 100, y = 300, width = 256, height = 192 },
+      role = "auxiliary",
+      touch = true,
+    })
+  )
 end
 
 local function interfaces()
@@ -94,10 +102,7 @@ function T.wide_and_tall_pair_source_panes_without_gap_or_reflow()
   Assert.isFalse(wideUpper.interactive)
   Assert.isTrue(wideLower.interactive)
   Assert.equal(wideUpper.placement.pixelScale, wideLower.placement.pixelScale)
-  Assert.equal(
-    wideLower.placement.frame.x,
-    wideUpper.placement.frame.x + 256 * wideUpper.placement.pixelScale
-  )
+  Assert.equal(wideLower.placement.frame.x, wideUpper.placement.frame.x + 256 * wideUpper.placement.pixelScale)
   uncropped(wideUpper.placement, "wide upper pane")
   uncropped(wideLower.placement, "wide lower pane")
   Assert.equal(#wide.frames, 1, "the pair reserves one independent application frame")
@@ -105,10 +110,7 @@ function T.wide_and_tall_pair_source_panes_without_gap_or_reflow()
   local tall = resolve(set, "tall", single(600, 1000))
   local tallUpper, tallLower = pane(tall, "upper"), pane(tall, "lower")
   Assert.equal(tallUpper.placement.pixelScale, tallLower.placement.pixelScale)
-  Assert.equal(
-    tallLower.placement.frame.y,
-    tallUpper.placement.frame.y + 192 * tallUpper.placement.pixelScale
-  )
+  Assert.equal(tallLower.placement.frame.y, tallUpper.placement.frame.y + 192 * tallUpper.placement.pixelScale)
   uncropped(tallLower.placement, "tall lower pane")
   Assert.equal(#tall.frames, 1, "the tall pair reserves one independent application frame")
 end
@@ -131,7 +133,11 @@ function T.input_is_already_lower_local_and_outside_press_becomes_dismiss()
   local plan = resolve(set, "nativeLike", single(640, 480))
   local view = { state = "quantity", quantity = 3 }
   local event = { type = "pointer_down", pointerId = "touch:0", x = 136, y = 100 }
-  Assert.deepEqual(plan.mapInput(event, view, plan), event, "pane-local pointer coordinates reach the controller unchanged")
+  Assert.deepEqual(
+    plan.mapInput(event, view, plan),
+    event,
+    "pane-local pointer coordinates reach the controller unchanged"
+  )
   Assert.deepEqual(
     plan.mapInput({ type = "pointer_down", pointerId = "touch:0", outside = true }, view, plan),
     { type = "dismiss" },

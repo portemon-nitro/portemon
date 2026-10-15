@@ -393,10 +393,7 @@ function T.tests.native_like_uses_machine_ball_mapping_with_no_action_buttons()
   local placement = assert(plan.panes[1].placement, "the rewritten pane carries its placement")
   Assert.equal(placement.logicalWidth, 256, "the rewritten pane keeps native logical width")
   Assert.equal(placement.logicalHeight, 192, "the rewritten pane keeps native logical height")
-  Assert.isTrue(
-    plan.inputKey ~= "starter-compact",
-    "the rewritten chooser no longer names the compact action geometry"
-  )
+  Assert.isTrue(plan.inputKey ~= "starter-compact", "the rewritten chooser no longer names the compact action geometry")
   local primary = plan.mapInput({ type = "pointer_down", pointerId = "touch:1", x = 64, y = 176 }, view, plan)
   Assert.deepEqual(
     primary,
@@ -405,8 +402,7 @@ function T.tests.native_like_uses_machine_ball_mapping_with_no_action_buttons()
   )
   local confirmView = viewWith(nil)
   confirmView.selectionState = "confirm"
-  local back =
-    plan.mapInput({ type = "pointer_down", pointerId = "touch:1", x = 192, y = 176 }, confirmView, plan)
+  local back = plan.mapInput({ type = "pointer_down", pointerId = "touch:1", x = 192, y = 176 }, confirmView, plan)
   Assert.deepEqual(
     back,
     { type = "tap", index = nil },
@@ -414,8 +410,7 @@ function T.tests.native_like_uses_machine_ball_mapping_with_no_action_buttons()
   )
   local hitView = viewWith(2)
   local hitPlan = interface.nativeLike(context, hitView)
-  local hit =
-    hitPlan.mapInput({ type = "pointer_down", pointerId = "touch:1", x = 128, y = 100 }, hitView, hitPlan)
+  local hit = hitPlan.mapInput({ type = "pointer_down", pointerId = "touch:1", x = 128, y = 100 }, hitView, hitPlan)
   Assert.deepEqual(hit, { type = "tap", index = 1 }, "machine ball hits become candidate taps")
   local native, compact = 0, 0
   local resources = {

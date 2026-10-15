@@ -126,16 +126,11 @@ function T.singles_accepts_one_active_per_side_and_rejects_a_doubles_layout()
   contracts.Scenario.validate(singles)
   local doubles = SessionFixture.buildScenario(doublesParts())
   contracts.Scenario.validate(doubles)
-  local NativeFormats = requireFormats(
-    FORMATS_MODULE,
-    "concrete singles topology and consequence policies own format validation"
-  )
+  local NativeFormats =
+    requireFormats(FORMATS_MODULE, "concrete singles topology and consequence policies own format validation")
   local policies = nativePolicies(NativeFormats)
   checkDefinitionShape(policies.singles, "singles")
-  Assert.isTrue(
-    NativeFormats.validateScenario("singles", singles),
-    "singles accepts its one-active-per-side topology"
-  )
+  Assert.isTrue(NativeFormats.validateScenario("singles", singles), "singles accepts its one-active-per-side topology")
   local accepted = pcall(NativeFormats.validateScenario, "singles", doubles)
   Assert.isFalse(accepted, "singles rejects a doubles layout instead of silently running it")
 end
@@ -146,16 +141,11 @@ function T.doubles_keeps_each_side_at_two_active_slots_with_separate_authority()
   contracts.Scenario.validate(doubles)
   local singles = SessionFixture.buildScenario(singlesParts())
   contracts.Scenario.validate(singles)
-  local NativeFormats = requireFormats(
-    FORMATS_MODULE,
-    "concrete doubles topology and consequence policies own format validation"
-  )
+  local NativeFormats =
+    requireFormats(FORMATS_MODULE, "concrete doubles topology and consequence policies own format validation")
   local policies = nativePolicies(NativeFormats)
   checkDefinitionShape(policies.doubles, "doubles")
-  Assert.isTrue(
-    NativeFormats.validateScenario("doubles", doubles),
-    "doubles accepts its two-active-per-side topology"
-  )
+  Assert.isTrue(NativeFormats.validateScenario("doubles", doubles), "doubles accepts its two-active-per-side topology")
   local accepted = pcall(NativeFormats.validateScenario, "doubles", singles)
   Assert.isFalse(accepted, "doubles rejects a singles layout instead of silently running it")
   Assert.isFalse(
@@ -169,10 +159,8 @@ function T.allied_participants_share_a_side_without_sharing_party_or_inventory()
   local contracts = SessionFixture.sessionContracts()
   local allied = SessionFixture.buildScenario(alliedParts())
   contracts.Scenario.validate(allied)
-  local NativeFormats = requireFormats(
-    FORMATS_MODULE,
-    "concrete multi and partner alliance policies own shared-side validation"
-  )
+  local NativeFormats =
+    requireFormats(FORMATS_MODULE, "concrete multi and partner alliance policies own shared-side validation")
   local policies = nativePolicies(NativeFormats)
   checkDefinitionShape(policies.multi, "multi")
   checkDefinitionShape(policies.partner, "partner")

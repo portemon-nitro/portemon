@@ -574,11 +574,7 @@ T["script_loader exposes no replacement validation surface; overrides stay autho
   end
   local defaultOk = tryEagerBuild(nil)
   local toggleOk = tryEagerBuild({ validateGenerated = false })
-  Assert.equal(
-    defaultOk,
-    toggleOk,
-    "ordinary loading must not change behavior through a validation toggle"
-  )
+  Assert.equal(defaultOk, toggleOk, "ordinary loading must not change behavior through a validation toggle")
   Assert.isTrue(defaultOk, "published-path loading trusts its fixtures without semantic validation")
   local S = requireShim("gen4.script")
   local malformed = S.script({ api = 1, id = "bad.override", steps = { S.setVar({}) } })
@@ -635,7 +631,7 @@ T["trusted override executes with standard libraries and a host-provided module"
   local content = table.concat({
     'local S = require("gen4.script")',
     'local helper = require("trusted.helper")',
-    'local label = string.upper(helper.word) .. tostring(math.floor(2.7))',
+    "local label = string.upper(helper.word) .. tostring(math.floor(2.7))",
     'assert(label == "HELLO2")',
     'return S.script { api = 1, id = "trusted.demo", steps = { S.say { message = "msg.hgss.0543.00097" }, S.stop() } }',
     "",
@@ -680,7 +676,7 @@ T["override-driven typed task survives snapshot restore while closures stay unsa
   local content = table.concat({
     'local S = require("gen4.script")',
     'local helper = require("trusted.helper")',
-    'local ticks = math.floor(helper.pauseTicks())',
+    "local ticks = math.floor(helper.pauseTicks())",
     'return S.script { api = 1, id = "trusted.save_demo", steps = { S.waitTicks { ticks = ticks }, S.stop() } }',
     "",
   }, "\n")

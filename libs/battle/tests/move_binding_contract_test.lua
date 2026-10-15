@@ -31,10 +31,7 @@ end
 
 ---@return table the loaded damage move family
 local function damageFamily()
-  return familyOwner(
-    "libs.battle.src.gen4.behaviors.moves.DamageMoves",
-    "the damage family owns its move bindings"
-  )
+  return familyOwner("libs.battle.src.gen4.behaviors.moves.DamageMoves", "the damage family owns its move bindings")
 end
 
 ---@return table<string, fun(ctx: table, frame: table): table> fresh condition bindings by move
@@ -191,7 +188,14 @@ local function runCondition(moveKey, facts, seed, extra)
   end
   if woundUser then
     local wounded = ctx:entryOf(1)
-    ctx:damage(1, math.floor((wounded.maxHp --[[@as integer]]) / 2), { kind = "probe" })
+    ctx:damage(
+      1,
+      math.floor(
+        wounded.maxHp --[[@as integer]]
+          / 2
+      ),
+      { kind = "probe" }
+    )
   end
   local node = Execution.start(inputs)
   for _ = 1, 8 do
@@ -304,8 +308,12 @@ local function runStrike(moveKey)
   local finished = node --[[@as table<string, unknown>]]
   assert(finished.kind == "complete" and finished.frame == nil, "the strike settles")
   local strikes = 0
-  for _, event in ipairs(live.outbox --[[@as table<integer, unknown>]]) do
-    if (event --[[@as table<string, unknown>]]).kind == "struck" then
+  for _, event in
+    ipairs(live.outbox --[[@as table<integer, unknown>]])
+  do
+    if
+      (event --[[@as table<string, unknown>]]).kind == "struck"
+    then
       strikes = strikes + 1
     end
   end

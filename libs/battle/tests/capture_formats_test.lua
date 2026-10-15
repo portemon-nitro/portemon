@@ -190,7 +190,8 @@ function T.exhausted_safari_counters_fail_before_any_draw()
     combatants = { [2] = { mon = { species = "PIKACHU", origin = { ball = "POKE_BALL" } }, hp = 100, maxHp = 100 } },
   }
   local stream = scriptedStream({ 0, 0, 0 })
-  local context = Context.forBall("SAFARI_BALL", targetFacts(), modeEnv("safari", { safariBalls = 0, safariCatchRateStage = 6 }))
+  local context =
+    Context.forBall("SAFARI_BALL", targetFacts(), modeEnv("safari", { safariBalls = 0, safariCatchRateStage = 6 }))
   local ok, err = pcall(Capture.execute, attempt, battle, stream)
   Assert.isFalse(ok, "an exhausted counter never throws")
   Assert.isTrue(type(err) == "table" and type(err.code) == "string", "an exhausted counter names its failure")
@@ -417,18 +418,11 @@ function T.safari_stage_transitions_clamp_and_refuse_outside_safari()
   Assert.isFalse(ok, "bait outside safari mode never executes")
   Assert.isTrue(type(err) == "table" and type(err.code) == "string", "a refused bait names its failure")
   Assert.deepEqual(quiet:capture(), { used = 0, labels = {} }, "a refused bait spends no draw")
-  Assert.deepEqual(
-    state,
-    { safariCatchRateStage = 6, safariRunAttempts = 6 },
-    "a refused bait mutates nothing"
-  )
+  Assert.deepEqual(state, { safariCatchRateStage = 6, safariRunAttempts = 6 }, "a refused bait mutates nothing")
   local loud = labeledStream({ 7 })
   local settled, settleErr = pcall(Formats.applyAction, "safari", "attack", state, loud)
   Assert.isFalse(settled, "a non-safari action never executes")
-  Assert.isTrue(
-    type(settleErr) == "table" and type(settleErr.code) == "string",
-    "a refused action names its failure"
-  )
+  Assert.isTrue(type(settleErr) == "table" and type(settleErr.code) == "string", "a refused action names its failure")
   Assert.deepEqual(loud:capture(), { used = 0, labels = {} }, "a refused action spends no draw")
 end
 

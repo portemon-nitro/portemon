@@ -186,11 +186,8 @@ function T.move_and_target_anchors_map()
   Assert.equal(moveAt(192, 107), "move:3", "the lower-right move anchor selects the fourth slot")
   Assert.equal(moveAt(128, 175), "cancel", "the bottom anchor cancels")
   local targets = resolve(session, dualMeasurement(), "target")
-  local aimed = targets.mapInput(
-    { type = "pointer_down", pointerId = "touch:0", x = 60, y = 116 },
-    view("target"),
-    targets
-  )
+  local aimed =
+    targets.mapInput({ type = "pointer_down", pointerId = "touch:0", x = 60, y = 116 }, view("target"), targets)
   Assert.notNil(aimed, "the admitted target anchor activates")
   Assert.equal(aimed.control.scope, "target", "target anchors carry the target scope")
 end
@@ -203,11 +200,8 @@ function T.pair_without_room_takes_the_compact_pane()
   local small = resolve(session, tinyMeasurement(), "command")
   Assert.isTrue(small.content.compact == true, "the fallback plan is the compact composition")
   Assert.isNil(small.content.tooSmall, "the fallback fits its one pane, it is not too small")
-  local pressed = small.mapInput(
-    { type = "pointer_down", pointerId = "touch:0", x = 152, y = 154 },
-    view("command"),
-    small
-  )
+  local pressed =
+    small.mapInput({ type = "pointer_down", pointerId = "touch:0", x = 152, y = 154 }, view("command"), small)
   Assert.notNil(pressed, "the fallback Fight cell claims its control")
   Assert.equal(pressed.control.id, "fight", "the fallback keeps the Fight identity")
 end
@@ -219,11 +213,8 @@ function T.square_surfaces_resolve_the_compact_pane()
   local single = resolve(session, squareMeasurement(), "command")
   Assert.isTrue(single.content.compact == true, "the single-surface plan is the compact composition")
   Assert.equal(#single.panes, 1, "the single-surface plan resolves one pane")
-  local pressed = single.mapInput(
-    { type = "pointer_down", pointerId = "touch:0", x = 152, y = 154 },
-    view("command"),
-    single
-  )
+  local pressed =
+    single.mapInput({ type = "pointer_down", pointerId = "touch:0", x = 152, y = 154 }, view("command"), single)
   Assert.notNil(pressed, "the single-pane Fight cell claims its control")
   Assert.equal(pressed.control.id, "fight", "the single pane keeps the Fight identity")
 end
@@ -331,7 +322,12 @@ local function openInterfaceRig(opts)
   local launchId = opts.launchId or "launch-pointer-cancel"
   local screen = BattleScreenState.new({
     launchId = launchId,
-    manifest = { schema = "test", version = { id = "t", language = "english" }, verified = false, scenes = { { key = "general/plain/day" } } },
+    manifest = {
+      schema = "test",
+      version = { id = "t", language = "english" },
+      verified = false,
+      scenes = { { key = "general/plain/day" } },
+    },
     model = Model,
     submit = function(reply)
       rig.submits[#rig.submits + 1] = reply

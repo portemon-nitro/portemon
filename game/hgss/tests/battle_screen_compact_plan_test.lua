@@ -309,11 +309,7 @@ function T.focused_slot_release_stays_a_scoped_activation()
   require(COMPACT_MODULE)
   local plan = resolve(singleMeasurement(256, 192, "compact-plan-test:confirm"), snapshot("moves"))
   local focused = snapshot("moves")
-  local focusedRelease = plan.mapInput(
-    { type = "pointer_up", pointerId = "touch:0", x = 52, y = 142 },
-    focused,
-    plan
-  )
+  local focusedRelease = plan.mapInput({ type = "pointer_up", pointerId = "touch:0", x = 52, y = 142 }, focused, plan)
   Assert.notNil(focusedRelease, "releasing over the focused slot answers")
   Assert.equal(focusedRelease.type, "battle_activate", "the focused move release stays scoped")
   Assert.equal(focusedRelease.control.id, "move:0", "the focused move release names its own slot")

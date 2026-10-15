@@ -503,20 +503,14 @@ function T.fourth_shake_check_decides_the_catch_after_three_visible_shakes()
   local Context = contextOwner("typed capture environments own the facts each ball reads")
   local attempt = { actor = 1, inventoryId = "party", ball = "POKE_BALL", target = { combatant = 2 } }
   local landedStream = scriptedStream({ 0, 0, 0, 0 })
-  local landed = Capture.calculate(
-    attempt,
-    Context.forBall("POKE_BALL", targetFacts({ hp = 1 }), wildEnv()),
-    landedStream
-  )
+  local landed =
+    Capture.calculate(attempt, Context.forBall("POKE_BALL", targetFacts({ hp = 1 }), wildEnv()), landedStream)
   Assert.isTrue(landed.success, "four kind draws land the catch")
   Assert.equal(landed.shakes, 3, "a landed catch never reports a fourth shake")
   Assert.deepEqual(landedStream:capture(), { used = 4 }, "a landed catch spends all four checks")
   local missedStream = scriptedStream({ 0, 0, 0, 65535 })
-  local missed = Capture.calculate(
-    attempt,
-    Context.forBall("POKE_BALL", targetFacts({ hp = 1 }), wildEnv()),
-    missedStream
-  )
+  local missed =
+    Capture.calculate(attempt, Context.forBall("POKE_BALL", targetFacts({ hp = 1 }), wildEnv()), missedStream)
   Assert.isFalse(missed.success, "a hostile fourth draw breaks free")
   Assert.equal(missed.shakes, 3, "a fourth-check breakout still reports three shakes")
   Assert.deepEqual(missedStream:capture(), { used = 4 }, "a fourth-check breakout spends all four checks")
@@ -567,11 +561,8 @@ function T.level_bonus_odd_attacker_levels_use_integer_floors()
   local Context = contextOwner("typed capture environments own the facts each ball reads")
   local attempt = { actor = 1, inventoryId = "party", ball = "LEVEL_BALL", target = { combatant = 2 } }
   local function oddsFor(attackerLevel, targetLevel)
-    local context = Context.forBall(
-      "LEVEL_BALL",
-      targetFacts({ level = targetLevel }),
-      wildEnv({ attackerLevel = attackerLevel })
-    )
+    local context =
+      Context.forBall("LEVEL_BALL", targetFacts({ level = targetLevel }), wildEnv({ attackerLevel = attackerLevel }))
     return Capture.calculate(attempt, context, scriptedStream({ 0, 0, 0, 0 })).odds
   end
   Assert.equal(oddsFor(5, 2), 30, "attacker 5 against target 2 doubles")
@@ -615,8 +606,7 @@ function T.early_shake_failures_exit_with_matching_shakes_and_draws()
   }
   for _, case in ipairs(cases) do
     local stream = scriptedStream(case.tape)
-    local result =
-      Capture.calculate(attempt, Context.forBall("POKE_BALL", targetFacts({ hp = 1 }), wildEnv()), stream)
+    local result = Capture.calculate(attempt, Context.forBall("POKE_BALL", targetFacts({ hp = 1 }), wildEnv()), stream)
     Assert.isFalse(result.success, "a hostile check breaks free")
     Assert.equal(result.shakes, case.shakes, "the breakout reports its landed checks")
     Assert.deepEqual(stream:capture(), { used = case.used }, "the breakout spends one draw per check")
@@ -673,11 +663,7 @@ function T.safari_balls_name_their_missing_stage()
   local ok, err = pcall(Context.forBall, "SAFARI_BALL", targetFacts(), wildEnv({ mode = "safari" }))
   Assert.isFalse(ok, "a stageless safari throw never stages")
   Assert.isTrue(type(err) == "table" and type(err.code) == "string", "a stageless throw names its failure")
-  local staged = Context.forBall(
-    "SAFARI_BALL",
-    targetFacts(),
-    wildEnv({ mode = "safari", safariCatchRateStage = 6 })
-  )
+  local staged = Context.forBall("SAFARI_BALL", targetFacts(), wildEnv({ mode = "safari", safariCatchRateStage = 6 }))
   Assert.isTrue(Context.validate(staged), "a staged safari throw validates")
 end
 

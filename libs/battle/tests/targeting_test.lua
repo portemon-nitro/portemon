@@ -77,25 +77,19 @@ function T.departed_selections_retarget_instead_of_fizzling()
   local field = doublesField()
   field.positions[2].occupant = nil
 
-  local retargeted = Targeting.resolve(
-    {
-      policy = "selected_foe",
-      user = { kind = "position", position = 0 },
-      selected = { kind = "position", position = 1 },
-    },
-    field
-  )
+  local retargeted = Targeting.resolve({
+    policy = "selected_foe",
+    user = { kind = "position", position = 0 },
+    selected = { kind = "position", position = 1 },
+  }, field)
   Assert.deepEqual(orderedPositions(retargeted), { 3 }, "departed selections fall through to the live foe")
 
-  local redirected = Targeting.redirect(
-    {
-      policy = "selected_foe",
-      user = { kind = "position", position = 0 },
-      selected = { kind = "position", position = 3 },
-      redirectTo = { kind = "position", position = 1 },
-    },
-    doublesField()
-  )
+  local redirected = Targeting.redirect({
+    policy = "selected_foe",
+    user = { kind = "position", position = 0 },
+    selected = { kind = "position", position = 3 },
+    redirectTo = { kind = "position", position = 1 },
+  }, doublesField())
   Assert.deepEqual(orderedPositions(redirected), { 1 }, "redirection owns its own target entry point")
 end
 

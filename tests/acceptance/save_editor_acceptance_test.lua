@@ -1783,22 +1783,17 @@ function T.tests.dropped_location_preset_resolves_stages_and_saves_through_the_e
         type(celebiStaged.terrainDependencyHash) == "string" and celebiStaged.terrainDependencyHash ~= "",
         "the staged destination retains its verified terrain dependency"
       )
-      Assert.equal(
-        celebiStaged.world.flags[assert(FieldScriptSymbols.flagsByName.FLAG_BEAT_RADIO_TOWER_ROCKETS)],
-        true
-      )
-      Assert.equal(
-        celebiStaged.world.flags[assert(FieldScriptSymbols.flagsByName.FLAG_HIDE_ILEX_FOREST_FRIEND)],
-        true
-      )
-      Assert.equal(
-        celebiStaged.world.variables[assert(FieldScriptSymbols.variablesByName.VAR_UNK_40FE)] or 0,
-        0
-      )
+      Assert.equal(celebiStaged.world.flags[assert(FieldScriptSymbols.flagsByName.FLAG_BEAT_RADIO_TOWER_ROCKETS)], true)
+      Assert.equal(celebiStaged.world.flags[assert(FieldScriptSymbols.flagsByName.FLAG_HIDE_ILEX_FOREST_FRIEND)], true)
+      Assert.equal(celebiStaged.world.variables[assert(FieldScriptSymbols.variablesByName.VAR_UNK_40FE)] or 0, 0)
       Assert.equal(celebiStaged.mons.party.mons[1].species, "CELEBI")
       Assert.isTrue(celebiStaged.mons.party.mons[1].fatefulEncounter)
       Assert.equal(celebiStaged.mons.party.mons[1].egg.location, 0)
-      Assert.deepEqual(assert(fixture.store:load(fixture.saveId)), fixture.initial, "the verified drop still waits for Save")
+      Assert.deepEqual(
+        assert(fixture.store:load(fixture.saveId)),
+        fixture.initial,
+        "the verified drop still waits for Save"
+      )
 
       local beforeMalformed = state.session:captureCandidate()
       local malformedFile = droppedFile("return { schema = 'unsupported' }", "malformed.lua")
@@ -1824,18 +1819,9 @@ function T.tests.dropped_location_preset_resolves_stages_and_saves_through_the_e
         celebiStaged.terrainDependencyHash,
         "manual Save publishes the verified terrain dependency"
       )
-      Assert.equal(
-        published.world.flags[assert(FieldScriptSymbols.flagsByName.FLAG_BEAT_RADIO_TOWER_ROCKETS)],
-        true
-      )
-      Assert.equal(
-        published.world.flags[assert(FieldScriptSymbols.flagsByName.FLAG_HIDE_ILEX_FOREST_FRIEND)],
-        true
-      )
-      Assert.equal(
-        published.world.variables[assert(FieldScriptSymbols.variablesByName.VAR_UNK_40FE)] or 0,
-        0
-      )
+      Assert.equal(published.world.flags[assert(FieldScriptSymbols.flagsByName.FLAG_BEAT_RADIO_TOWER_ROCKETS)], true)
+      Assert.equal(published.world.flags[assert(FieldScriptSymbols.flagsByName.FLAG_HIDE_ILEX_FOREST_FRIEND)], true)
+      Assert.equal(published.world.variables[assert(FieldScriptSymbols.variablesByName.VAR_UNK_40FE)] or 0, 0)
       Assert.equal(published.mons.party.mons[1].species, "CELEBI")
       Assert.isTrue(published.mons.party.mons[1].fatefulEncounter)
       Assert.equal(published.mons.party.mons[1].egg.location, 0)

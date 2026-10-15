@@ -1630,10 +1630,7 @@ function T.damaged_envelopes_fail_as_decode_errors_not_absences()
   end
   plant("audio/bad-codec.pcm16le", "PDC1" .. string.char(9) .. good:sub(6))
   plant("audio/short.pcm16le", "PDC1" .. string.char(2))
-  plant(
-    "audio/damaged.pcm16le",
-    good:sub(1, -2) .. (good:sub(-1, -1) == "A" and "B" or "A")
-  )
+  plant("audio/damaged.pcm16le", good:sub(1, -2) .. (good:sub(-1, -1) == "A" and "B" or "A"))
   plant("audio/bad-hash.pcm16le", good:sub(1, 9) .. string.rep("\0", 20) .. good:sub(30))
   plant("audio/huge.pcm16le", "PDC1" .. string.char(2) .. "\255\255\255\255" .. string.rep("\0", 20) .. "x")
   plant("data/generated/broken.lua", good:sub(1, -2) .. (good:sub(-1, -1) == "A" and "B" or "A"))
@@ -1702,10 +1699,7 @@ function T.png_bytes_stay_native_and_wrapped_modules_keep_the_require_allowlist(
   local denied, deniedErr = c:loadModule("data/generated/script/evil.lua")
   Assert.isNil(denied, "a module reaching outside the allowlist must fail wrapped or not")
   Assert.isTrue(Errors.is(deniedErr), "the rejection must stay structured")
-  Assert.isFalse(
-    deniedErr.code == CacheEnvelope.DECODE_FAILED,
-    "the rejection is sandbox policy, not a decode failure"
-  )
+  Assert.isFalse(deniedErr.code == CacheEnvelope.DECODE_FAILED, "the rejection is sandbox policy, not a decode failure")
 end
 
 -- Deterministic pseudorandom bytes that no codec can shrink: large but
@@ -1854,10 +1848,7 @@ function T.physical_envelopes_stay_within_the_decoder_length_limit()
   local huge = string.rep("a", limit + 1)
   c:write("audio/huge.pcm16le", huge)
   local physical = backendBytes(backend, "heartgold", "audio/huge.pcm16le")
-  Assert.isFalse(
-    CacheEnvelope.isWrapped(physical),
-    "an oversized payload must stay raw so its own reader accepts it"
-  )
+  Assert.isFalse(CacheEnvelope.isWrapped(physical), "an oversized payload must stay raw so its own reader accepts it")
   Assert.equal(c:read("audio/huge.pcm16le"), huge, "an oversized raw payload round-trips exactly")
   huge = nil
   physical = nil
@@ -1875,10 +1866,7 @@ function T.physical_envelopes_stay_within_the_decoder_length_limit()
   end)
   Assert.isTrue(Errors.is(writeErr))
   Assert.equal(writeErr.code, StorageErrors.CACHE_WRITE_FAILED)
-  Assert.isNil(
-    c:read("audio/colliding.pcm16le"),
-    "a refused oversized write leaves no file behind"
-  )
+  Assert.isNil(c:read("audio/colliding.pcm16le"), "a refused oversized write leaves no file behind")
   colliding = nil
   collectgarbage("collect")
 

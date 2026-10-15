@@ -32,10 +32,7 @@ end
 ---@param behavior string missing owner under test
 ---@return table the loaded native handler owner
 local function handlersOwner(behavior)
-  return SessionFixture.requirePresent(
-    "libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers",
-    behavior
-  )
+  return SessionFixture.requirePresent("libs.battle.src.gen4.behaviors.effects.NativeEffectHandlers", behavior)
 end
 
 ---@return table<string, unknown> base facts shared by the focused timing passes
@@ -478,12 +475,8 @@ function T.custom_typed_state_survives_snapshot_restore()
   )
 
   local bag = EffectBag.new()
-  local instance = bag:add(
-    definition,
-    EffectFixture.activeScope(1, 1),
-    EffectFixture.cause(1, 1),
-    { version = 2, counter = 1 }
-  )
+  local instance =
+    bag:add(definition, EffectFixture.activeScope(1, 1), EffectFixture.cause(1, 1), { version = 2, counter = 1 })
   Assert.equal(instance.version, 2, "stored instances carry their definition version")
   local dispatch = EffectDispatch.new(bag, {
     ["tests:wardrums"] = function(target, _)
@@ -561,11 +554,7 @@ function T.stored_state_never_aliases_caller_tables()
   viewed.scope.activation = 9
   local reread = bag:get(instance.id)
   Assert.deepEqual(reread.state, { version = 1, hp = 12 }, "lookups share no mutable state")
-  Assert.deepEqual(
-    reread.scope,
-    { kind = "active", combatant = 1, activation = 1 },
-    "lookups share no mutable scope"
-  )
+  Assert.deepEqual(reread.scope, { kind = "active", combatant = 1, activation = 1 }, "lookups share no mutable scope")
 end
 
 -- An entry binding without an executable native handler fails loudly
@@ -590,10 +579,7 @@ function T.entry_bindings_without_handlers_fail_naming_their_key()
   local err = Assert.throws(function()
     dispatch:invoke("entry", { speeds = { [1] = 50 }, health = { [1] = 30 } })
   end, "an unhandled entry binding fails")
-  Assert.isTrue(
-    string.find(tostring(err), "imprison", 1, true) ~= nil,
-    "the failure names the unhandled binding"
-  )
+  Assert.isTrue(string.find(tostring(err), "imprison", 1, true) ~= nil, "the failure names the unhandled binding")
 end
 
 -- A flinch marker inflicted after its owner acted expires silently at
@@ -615,11 +601,7 @@ function T.flinch_markers_expire_silently_at_turn_end()
   local outcome = dispatch:invoke("residual", { speeds = { [1] = 50 }, health = { [1] = 30 } })
   Assert.isTrue(outcome.done, "an unbounded pass runs to completion")
   Assert.deepEqual(outcome.events, {}, "the silent expiry emits nothing")
-  Assert.deepEqual(
-    bag:get(marked.id).state,
-    { version = 1, turns = 0 },
-    "the expiry spends the one-turn marker"
-  )
+  Assert.deepEqual(bag:get(marked.id).state, { version = 1, turns = 0 }, "the expiry spends the one-turn marker")
 end
 
 -- Confusion counts down once per action-time pass on the session stream:
@@ -629,10 +611,8 @@ function T.confusion_branches_share_one_decrement()
   local EffectBag = bagOwner("scoped effect instances own their lifetimes")
   local EffectDispatch = dispatchOwner("finite timing dispatch owns collection and liveness")
   local Handlers = handlersOwner("one registration owner binds native definitions to their handlers")
-  local BattleRng = SessionFixture.requirePresent(
-    "libs.battle.src.gen4.BattleRng",
-    "labeled native draws own the battle stream"
-  )
+  local BattleRng =
+    SessionFixture.requirePresent("libs.battle.src.gen4.BattleRng", "labeled native draws own the battle stream")
 
   ---@param hits boolean whether the probe draw must land the self-hit
   ---@return integer seed opening with the wanted first draw
@@ -673,11 +653,7 @@ function T.confusion_branches_share_one_decrement()
   Assert.isTrue(through.outcome.done, "an unbounded pass runs to completion")
   Assert.deepEqual(through.outcome.events, {}, "fighting through emits nothing")
   Assert.isNil(through.context.blockedBy, "fighting through permits the action")
-  Assert.deepEqual(
-    through.bag:capture()[1].state,
-    { version = 1, turns = 2 },
-    "the pass decrements exactly once"
-  )
+  Assert.deepEqual(through.bag:capture()[1].state, { version = 1, turns = 2 }, "the pass decrements exactly once")
 
   local struck = runPass(probeSeed(true))
   Assert.isTrue(struck.outcome.done, "an unbounded pass runs to completion")
@@ -686,11 +662,7 @@ function T.confusion_branches_share_one_decrement()
   Assert.equal(event.kind, "tick", "the self-hit travels as a tick")
   Assert.equal(event.key, "confusion", "the tick names its finite effect")
   Assert.isTrue(event.amount > 0, "the self-hit spends health")
-  Assert.equal(
-    struck.context.health[1],
-    30 - event.amount,
-    "the spent health lands in the pass map"
-  )
+  Assert.equal(struck.context.health[1], 30 - event.amount, "the spent health lands in the pass map")
   Assert.equal(struck.context.blockedBy, "confusion", "the self-hit denies the action")
   Assert.deepEqual(
     struck.bag:capture()[1].state,

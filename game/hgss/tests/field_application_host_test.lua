@@ -317,11 +317,7 @@ function T.tests.manual_save_publishes_then_updates_through_the_menu_host()
     Assert.equal(runtime.savePublished, true)
     ---@type { listMetadata: fun(self: table): table[] }
     local saveStore = assert(runtime.saveStore)
-    Assert.equal(
-      #saveStore:listMetadata(),
-      1,
-      "the first manual save must publish exactly one reserved record"
-    )
+    Assert.equal(#saveStore:listMetadata(), 1, "the first manual save must publish exactly one reserved record")
     local first = assert(saveStore:listMetadata()[1])
     Assert.isTrue(first.saveId:find("^save%-", 1) ~= nil)
     local firstWrites = game.lifecycle.saveWrites

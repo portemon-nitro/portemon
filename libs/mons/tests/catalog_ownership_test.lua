@@ -95,16 +95,9 @@ function T.mon_catalog_borrows_the_published_root_without_a_recursive_copy()
     catalog:species("CHIKORITA") == root.species.CHIKORITA,
     "species lookups resolve the published record itself"
   )
-  Assert.isTrue(
-    catalog:move("TACKLE") == root.moves.TACKLE,
-    "move lookups resolve the published record itself"
-  )
+  Assert.isTrue(catalog:move("TACKLE") == root.moves.TACKLE, "move lookups resolve the published record itself")
   root.species.CHIKORITA.nativeId = 9999
-  Assert.equal(
-    catalog:species("CHIKORITA").nativeId,
-    9999,
-    "the catalog borrows the live published root"
-  )
+  Assert.equal(catalog:species("CHIKORITA").nativeId, 9999, "the catalog borrows the live published root")
   Assert.equal(catalog:speciesKeyByNativeId(158), "TOTODILE")
   Assert.equal(catalog:move("TACKLE").nativeId, 33)
 end

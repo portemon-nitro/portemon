@@ -393,7 +393,8 @@ function T.production_reserves_enter_through_voluntary_switch()
   Assert.isTrue(admits(admittedKinds(request), "switch"), "the opening decision admits exchanges")
   local actor = assert(request.actors[1], "the opening decision addresses its lead")
   local reserve = reserveOf(scenario, actor.combatant)
-  local accepted, replyErr = battle:submit(SessionFixture.replyFor(request, { SessionFixture.switchChoice(actor, reserve) }))
+  local accepted, replyErr =
+    battle:submit(SessionFixture.replyFor(request, { SessionFixture.switchChoice(actor, reserve) }))
   Assert.isTrue(accepted, "the exchange into the production reserve is accepted")
   Assert.isNil(replyErr, "the accepted exchange carries no input error")
   local entered = false
@@ -474,10 +475,7 @@ function T.production_reserves_enter_through_faint_replacement()
         return
       else
         local accepted, replyErr = battle:submit(
-          SessionFixture.replyFor(
-            pending,
-            { SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(2)) }
-          )
+          SessionFixture.replyFor(pending, { SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(2)) })
         )
         Assert.isTrue(accepted, "opening strikes are accepted while the lead stands")
         Assert.isNil(replyErr, "accepted strikes carry no input error")
@@ -563,7 +561,11 @@ function T.session_healing_publishes_one_live_bag_decrement()
   local request = assert(opening.request, "the opening decision is exposed")
   local actor = assert(request.actors[1], "the opening decision addresses its lead")
   local accepted, replyErr = battle:submit(SessionFixture.replyFor(request, {
-    { actor = actor, kind = "item", payload = { item = "POTION", target = { kind = "combatant", combatant = actor.combatant } } },
+    {
+      actor = actor,
+      kind = "item",
+      payload = { item = "POTION", target = { kind = "combatant", combatant = actor.combatant } },
+    },
   }))
   Assert.isTrue(accepted, "the healing choice is accepted")
   Assert.isNil(replyErr, "the accepted healing choice carries no input error")
@@ -619,11 +621,7 @@ function T.session_item_facts_project_exactly_the_referenced_party_use()
   Assert.isNil(facts.POKE_BALL, "balls serve through the capture owner without facts")
   Assert.isNil(facts.TONIC, "unknown keys stay absent until their selection fails")
   facts.POTION.partyUse.restore.amount = 999
-  Assert.equal(
-    catalog:item("POTION").partyUse.restore.amount,
-    20,
-    "projector edits never reach the live catalog"
-  )
+  Assert.equal(catalog:item("POTION").partyUse.restore.amount, 20, "projector edits never reach the live catalog")
   battle:dispose()
 end
 
@@ -743,7 +741,11 @@ function T.a_stale_live_bag_blocks_every_publication()
   local request = assert(opening.request, "the opening decision is exposed")
   local actor = assert(request.actors[1], "the opening decision addresses its lead")
   local accepted, replyErr = battle:submit(SessionFixture.replyFor(request, {
-    { actor = actor, kind = "item", payload = { item = "POTION", target = { kind = "combatant", combatant = actor.combatant } } },
+    {
+      actor = actor,
+      kind = "item",
+      payload = { item = "POTION", target = { kind = "combatant", combatant = actor.combatant } },
+    },
   }))
   Assert.isTrue(accepted, "the healing choice is accepted")
   Assert.isNil(replyErr, "the accepted healing choice carries no input error")
@@ -773,10 +775,7 @@ function T.internal_opponent_answers_advance_the_session_stream()
   local party = newPartyOwner()
   local foe = foeRecord("TOTODILE", 20, 0x5EED0001)
   local launch = { id = "launch-unified-stream", kind = "wild", payload = { species = "TOTODILE", level = 20 } }
-  local scenario = ScenarioFactory.fromEncounter(
-    { attemptId = "attempt-unified-stream", mon = foe },
-    { party = party }
-  )
+  local scenario = ScenarioFactory.fromEncounter({ attemptId = "attempt-unified-stream", mon = foe }, { party = party })
   -- Seed 1 keeps the wild miss-then-answer shape under the native
   -- remainder-mapped damage law and pre-request order sampling.
   scenario.random.seed = 1

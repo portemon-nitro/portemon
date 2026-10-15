@@ -357,11 +357,7 @@ function T.navigation_without_a_focus_change_shakes_nothing()
   end
   local controller = newController()
   controller:updateFixed({ { type = "navigate", direction = "right" } })
-  Assert.deepEqual(
-    controller:status().focusShake,
-    { position = 4, axis = "horizontal", age = 0 },
-    "a real move shakes"
-  )
+  Assert.deepEqual(controller:status().focusShake, { position = 4, axis = "horizontal", age = 0 }, "a real move shakes")
   controller:updateFixed({ { type = "navigate", direction = "down" } })
   Assert.equal(controller:status().selectedPosition, 5, "down from 4 moves to 5")
   controller:updateFixed({ { type = "navigate", direction = "left" } })
@@ -407,11 +403,7 @@ function T.successful_activation_hops_the_activated_icon()
   )
   controller:updateFixed({})
   controller:updateFixed({})
-  Assert.deepEqual(
-    controller:status().confirmHop,
-    { position = 0, age = 2 },
-    "the hop ages one tick per fixed update"
-  )
+  Assert.deepEqual(controller:status().confirmHop, { position = 0, age = 2 }, "the hop ages one tick per fixed update")
   Assert.notNil(controller:takeResult(), "the host drains the launch before further input")
   controller:updateFixed({ { type = "navigate", direction = "right" } })
   controller:updateFixed({ { type = "confirm" } })

@@ -443,22 +443,14 @@ function T.species_locked_items_stay_silent_for_invalid_holders()
       for name, value in pairs(case.facts) do
         facts[name] = value
       end
-      Assert.equal(
-        #boosted(case.item, case.timing, facts),
-        1,
-        case.item .. " boosts its native holder " .. species
-      )
+      Assert.equal(#boosted(case.item, case.timing, facts), 1, case.item .. " boosts its native holder " .. species)
     end
     for _, species in ipairs(case.invalid) do
       local facts = { species = species, transformed = false }
       for name, value in pairs(case.facts) do
         facts[name] = value
       end
-      Assert.deepEqual(
-        boosted(case.item, case.timing, facts),
-        {},
-        case.item .. " stays silent for " .. species
-      )
+      Assert.deepEqual(boosted(case.item, case.timing, facts), {}, case.item .. " stays silent for " .. species)
     end
   end
   local transformedFacts = { moveType = "ghost", species = "GIRATINA", transformed = true }
@@ -481,8 +473,7 @@ end
 function T.species_locked_items_fail_closed_without_holder_facts()
   local handlers = nativeHandlers("native passive registration owns the item binding set")
   local statBag = bagWith("SOUL_DEW", "modifyStat", EffectFixture.activeScope(1, 1))
-  local statOutcome =
-    runPassive(statBag, handlers, "modifyStat", passiveContext({ stat = "specialAttack" }))
+  local statOutcome = runPassive(statBag, handlers, "modifyStat", passiveContext({ stat = "specialAttack" }))
   Assert.deepEqual(statOutcome.events, {}, "a stat booster without holder facts stays silent")
   local typeBag = bagWith("ADAMANT_ORB", "beforeHit", EffectFixture.activeScope(1, 1))
   local typeOutcome = runPassive(typeBag, handlers, "beforeHit", passiveContext({ moveType = "steel" }))
@@ -518,8 +509,7 @@ function T.light_ball_doubles_power_for_pikachu_only()
   ---@return table[] emitted boost events for the pass
   local function boostedPower(species)
     local bag = bagWith("LIGHT_BALL", "beforeHit", EffectFixture.activeScope(1, 1))
-    local outcome =
-      runPassive(bag, handlers, "beforeHit", passiveContext({ species = species, transformed = false }))
+    local outcome = runPassive(bag, handlers, "beforeHit", passiveContext({ species = species, transformed = false }))
     Assert.isTrue(outcome.done, "the item pass runs to completion")
     return outcome.events
   end
@@ -565,11 +555,7 @@ function T.chilan_answers_normal_hits_without_super_effectiveness()
     return outcome.events
   end
 
-  Assert.equal(
-    #resisted("CHILAN_BERRY", { moveType = "normal" }),
-    1,
-    "chilan answers a plain normal strike"
-  )
+  Assert.equal(#resisted("CHILAN_BERRY", { moveType = "normal" }), 1, "chilan answers a plain normal strike")
   Assert.deepEqual(
     resisted("CHILAN_BERRY", { moveType = "fire", superEffective = true }),
     {},
@@ -665,11 +651,7 @@ function T.lum_and_persim_cure_volatile_confusion()
   local persim = cured("PERSIM_BERRY", { confusion = true })
   Assert.equal(#persim, 1, "persim answers volatile confusion")
   Assert.equal(persim[1].cured, "confusion", "persim names the cured volatile")
-  Assert.deepEqual(
-    cured("PERSIM_BERRY", { status = "paralysis" }),
-    {},
-    "persim stays silent for major status"
-  )
+  Assert.deepEqual(cured("PERSIM_BERRY", { status = "paralysis" }), {}, "persim stays silent for major status")
   local lum = cured("LUM_BERRY", { confusion = true })
   Assert.equal(#lum, 1, "lum answers volatile confusion")
   Assert.equal(lum[1].cured, "confusion", "lum names the cured volatile")
@@ -706,16 +688,8 @@ function T.pinch_berries_respect_maxed_stages_and_focus()
     {},
     "liechi stays silent with maxed attack"
   )
-  Assert.equal(
-    #pinched("LIECHI_BERRY", { statStages = { attack = 5 } }),
-    1,
-    "liechi answers below the stage cap"
-  )
-  Assert.deepEqual(
-    pinched("LANSAT_BERRY", { focused = true }),
-    {},
-    "lansat stays silent for a focused holder"
-  )
+  Assert.equal(#pinched("LIECHI_BERRY", { statStages = { attack = 5 } }), 1, "liechi answers below the stage cap")
+  Assert.deepEqual(pinched("LANSAT_BERRY", { focused = true }), {}, "lansat stays silent for a focused holder")
   Assert.equal(#pinched("LANSAT_BERRY", {}), 1, "lansat answers an unfocused holder")
   Assert.deepEqual(
     pinched("STARF_BERRY", {
@@ -739,9 +713,11 @@ function T.starf_names_a_concrete_sharply_raised_stat()
     passiveContext({
       health = { [1] = 25, [2] = 30, [3] = 30 },
       maxHealth = { [1] = 100, [2] = 30, [3] = 30 },
-      stream = { nextU16 = function(_, _, _)
-        return 0
-      end },
+      stream = {
+        nextU16 = function(_, _, _)
+          return 0
+        end,
+      },
     })
   )
   Assert.isTrue(outcome.done, "the berry pass runs to completion")
@@ -844,8 +820,7 @@ function T.metronome_item_scales_from_the_second_consecutive_use()
   ---@return table[] emitted boost events for the pass
   local function boostedStreak(streak)
     local bag = bagWith("METRONOME", "beforeHit", EffectFixture.activeScope(1, 1))
-    local outcome =
-      runPassive(bag, handlers, "beforeHit", passiveContext({ consecutiveUses = streak }))
+    local outcome = runPassive(bag, handlers, "beforeHit", passiveContext({ consecutiveUses = streak }))
     Assert.isTrue(outcome.done, "the item pass runs to completion")
     return outcome.events
   end
@@ -988,19 +963,11 @@ function T.embargo_suppresses_the_effective_holding_through_the_bridge()
   Assert.isNil(bridge:effectiveHeldItem(1), "an active embargo empties the effective holding")
   local held = bridge:orderFacts(1, { moveUse = { user = 1 }, rawOrderRoll = 0 })
   Assert.isFalse(held.first, "a suppressed claw never orders first")
-  Assert.equal(
-    #(covered.effectBag:capture()),
-    1,
-    "the live bag keeps only its finite embargo"
-  )
+  Assert.equal(#(covered.effectBag:capture()), 1, "the live bag keeps only its finite embargo")
 
   local stale = embargoedState(9)
   local staleBridge = Bridge.wrap(stale)
-  Assert.equal(
-    staleBridge:effectiveHeldItem(1),
-    "QUICK_CLAW",
-    "a stale entry token never inherits the cover"
-  )
+  Assert.equal(staleBridge:effectiveHeldItem(1), "QUICK_CLAW", "a stale entry token never inherits the cover")
   local freed = staleBridge:orderFacts(1, { moveUse = { user = 1 }, rawOrderRoll = 0 })
   Assert.isTrue(freed.first, "the uncovered claw orders first again")
 end

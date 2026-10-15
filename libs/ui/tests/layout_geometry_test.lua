@@ -67,7 +67,10 @@ function T.hit_predicates_use_direct_arithmetic_over_negative_and_fractional_geo
   Assert.isTrue(LayoutGeometry.containsPoint(negative, -12.5, 39.75), "fractional interior points are inside")
   Assert.isFalse(LayoutGeometry.containsPoint(negative, 50, 0), "the far edge of a negative rect is outside")
   Assert.isFalse(LayoutGeometry.containsPoint(negative, -50.25, 0), "points left of a negative rect are outside")
-  Assert.isTrue(LayoutGeometry.contains(negative, rect(-50, -40, 100, 80)), "touching edges contain on negative origins")
+  Assert.isTrue(
+    LayoutGeometry.contains(negative, rect(-50, -40, 100, 80)),
+    "touching edges contain on negative origins"
+  )
   Assert.isTrue(LayoutGeometry.contains(negative, rect(-10.5, 0.25, 20, 20)), "fractional inner rects are contained")
   Assert.isFalse(LayoutGeometry.contains(negative, rect(-50, -40, 100.5, 80)), "a fractional overhang is not contained")
   Assert.isTrue(

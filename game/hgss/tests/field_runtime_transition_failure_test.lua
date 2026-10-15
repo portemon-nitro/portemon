@@ -133,7 +133,11 @@ function T.pc_presentation_failure_cancels_its_script_task_before_freezing_runti
     end,
   })
   local scriptId = "test.pc_presentation_failure"
-  registry:installBase(scriptId, S.script({ api = 1, id = scriptId, steps = { S.pcOpen({ app = "storage", mode = 0 }) } }), "generated")
+  registry:installBase(
+    scriptId,
+    S.script({ api = 1, id = scriptId, steps = { S.pcOpen({ app = "storage", mode = 0 }) } }),
+    "generated"
+  )
   local composed = assert(composition:effective(scriptId), "the test script composes")
   scheduler:startInteraction({ type = "test", scriptId = scriptId }, composed, 100, true)
   Assert.isTrue(host.active, "the production PC task opened its child")

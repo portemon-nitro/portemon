@@ -369,13 +369,12 @@ function T.apply_trusts_the_published_artifact_without_semantic_runtime_validati
     return original(...)
   end)
   local candidate = finalizedCandidate()
-  local ok, err = pcall(
-    NewGameInitialization.apply,
-    candidate,
-    { artifact = v3Artifact(), randomU16 = function()
+  local ok, err = pcall(NewGameInitialization.apply, candidate, {
+    artifact = v3Artifact(),
+    randomU16 = function()
       return 0x1234
-    end }
-  )
+    end,
+  })
   rawset(NewGameInitCache, "validate", original)
   if not ok then
     error(err, 0)

@@ -396,7 +396,8 @@ local function projectedReserveSwitch(rig, request)
     end
   end
   Assert.notNil(foundId, "the eligible reserve is projected (" .. rig.layout .. ")")
-  return foundId --[[@as integer]], foundFragment --[[@as table<string, unknown>]]
+  return foundId, --[[@as integer]]
+    foundFragment --[[@as table<string, unknown>]]
 end
 
 ---@param rig table live screen rig under test driving
@@ -1298,7 +1299,11 @@ function T.child_party_tap_requires_the_matching_pointer()
     rig.screen:input({ { type = "pointer_down", pointerId = "touch:A", x = x, y = y } })
     rig.screen:input({ { type = "pointer_up", pointerId = "touch:B", x = x, y = y } })
     rig.pump(1)
-    Assert.equal(rig.screen:status().mode, "child", "a foreign pointer cannot activate the party row (" .. layout .. ")")
+    Assert.equal(
+      rig.screen:status().mode,
+      "child",
+      "a foreign pointer cannot activate the party row (" .. layout .. ")"
+    )
     Assert.equal(#rig.submits, 0, "a foreign pointer seals no party choice (" .. layout .. ")")
 
     rig.screen:input({ { type = "pointer_down", pointerId = "touch:A", x = x, y = y } })
@@ -1534,11 +1539,7 @@ function T.six_slot_party_and_bag_answer_at_once_on_both_displays()
     assertPaintsOwnRows(commandInk, partyInk, partyMarker, "party roster" .. tag)
     press(rig, { type = "cancel" })
     Assert.equal(rig.screen:status().mode, "command", "party cancel returns to command" .. tag)
-    Assert.equal(
-      openScreenRequest(rig).requestId,
-      commandRequest.requestId,
-      "cancel keeps the command request" .. tag
-    )
+    Assert.equal(openScreenRequest(rig).requestId, commandRequest.requestId, "cancel keeps the command request" .. tag)
     openPartyFromCommand(rig)
     Assert.deepEqual(renderedContents(rig), partyInk, "reopen paints the same roster" .. tag)
     chooseReserveThroughChild(rig)
@@ -1809,21 +1810,14 @@ function T.forced_replacement_holds_cancel_and_seals_one_reply()
     Assert.equal(rig.screen:status().mode, "child", "the faint opens the replacement child" .. tag)
     local _, expectedReplacement = projectedReserveSwitch(rig, replacementRequest)
     local replacementInk = renderedContents(rig)
-    Assert.isTrue(
-      replacementInk["Choose a replacement!"] ~= nil,
-      "replacement titles its modal" .. tag
-    )
+    Assert.isTrue(replacementInk["Choose a replacement!"] ~= nil, "replacement titles its modal" .. tag)
     Assert.isTrue(replacementInk["2/6"] ~= nil, "replacement lists both roster slots" .. tag)
     press(rig, { type = "cancel" })
     Assert.equal(#rig.submits, 0, "forced cancel seals nothing" .. tag)
     Assert.equal(rig.screen:status().mode, "child", "forced cancel keeps the child" .. tag)
     chooseReserveThroughChild(rig)
     Assert.equal(#rig.submits, 1, "replacement seals exactly one reply" .. tag)
-    Assert.deepEqual(
-      rig.submits[1].choices[1],
-      expectedReplacement,
-      "replacement names the stable reserve" .. tag
-    )
+    Assert.deepEqual(rig.submits[1].choices[1], expectedReplacement, "replacement names the stable reserve" .. tag)
     rig.screen:dispose()
     rig.battle:dispose()
   end

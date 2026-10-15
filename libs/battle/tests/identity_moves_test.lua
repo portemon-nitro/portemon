@@ -147,9 +147,13 @@ function T.transform_then_switch_discards_only_transient_copies()
 
   local state = liveState()
   local user = combatantOf(state, 1)
-  local monBefore = (user.mon --[[@as table<string, unknown>]])
+  local monBefore = user.mon --[[@as table<string, unknown>]]
   local movesBefore = {}
-  for index, entry in ipairs((monBefore.moves --[[@as table<integer, unknown>]])) do
+  for index, entry in
+    ipairs(
+      monBefore.moves --[[@as table<integer, unknown>]]
+    )
+  do
     movesBefore[index] = (entry --[[@as table<string, unknown>]]).move
   end
 
@@ -158,9 +162,13 @@ function T.transform_then_switch_discards_only_transient_copies()
   local first = Execution.step(ctx, frame)
   Assert.isTrue(first.kind ~= nil, "the transform execution answers through the frame protocol")
 
-  local monAfter = (combatantOf(state, 1).mon --[[@as table<string, unknown>]])
+  local monAfter = combatantOf(state, 1).mon --[[@as table<string, unknown>]]
   local movesAfter = {}
-  for index, entry in ipairs((monAfter.moves --[[@as table<integer, unknown>]])) do
+  for index, entry in
+    ipairs(
+      monAfter.moves --[[@as table<integer, unknown>]]
+    )
+  do
     movesAfter[index] = (entry --[[@as table<string, unknown>]]).move
   end
   Assert.deepEqual(movesAfter, movesBefore, "transform never rewrites the persistent move set")
@@ -206,9 +214,11 @@ function T.sketch_writes_through_the_persistent_owner()
   Assert.equal(settled.kind, "complete", "the sketch execution runs to completion")
 
   local sketched = false
-  local moves = ((combatantOf(state, 1).mon --[[@as table<string, unknown>]]).moves --[[@as table<integer, unknown>]])
+  local moves = (combatantOf(state, 1).mon --[[@as table<string, unknown>]]).moves --[[@as table<integer, unknown>]]
   for _, entry in ipairs(moves) do
-    if (entry --[[@as table<string, unknown>]]).move == "TACKLE" then
+    if
+      (entry --[[@as table<string, unknown>]]).move == "TACKLE"
+    then
       sketched = true
     end
   end
@@ -216,9 +226,11 @@ function T.sketch_writes_through_the_persistent_owner()
   State.leave(state, 1)
   State.enter(state, 1, 1)
   local relearned = false
-  local fresh = ((combatantOf(state, 1).mon --[[@as table<string, unknown>]]).moves --[[@as table<integer, unknown>]])
+  local fresh = (combatantOf(state, 1).mon --[[@as table<string, unknown>]]).moves --[[@as table<integer, unknown>]]
   for _, entry in ipairs(fresh) do
-    if (entry --[[@as table<string, unknown>]]).move == "TACKLE" then
+    if
+      (entry --[[@as table<string, unknown>]]).move == "TACKLE"
+    then
       relearned = true
     end
   end
@@ -245,7 +257,8 @@ function T.delayed_damage_survives_attacker_exit()
   local landed = Execution.step(ctx, scheduled.frame or scheduled)
   Assert.isTrue(landed.kind ~= nil, "the delayed hit still resolves after the attacker leaves")
   Assert.isTrue(
-    (combatantOf(state, 2).hp --[[@as integer]]) < (combatantOf(state, 2).entryHp --[[@as integer]]),
+    combatantOf(state, 2).hp --[[@as integer]]
+      < combatantOf(state, 2).entryHp --[[@as integer]],
     "the delayed hit lands on the bound defender slot"
   )
 end
@@ -316,11 +329,14 @@ function T.self_destruct_and_recoil_follow_the_source_sequence()
   Assert.equal(outcome.kind, "complete", "the self-destructing execution runs to completion")
   Assert.equal(combatantOf(state, 1).hp, 0, "the user faints after its own strike lands")
   Assert.isTrue(
-    (combatantOf(state, 2).hp --[[@as integer]]) < (combatantOf(state, 2).entryHp --[[@as integer]]),
+    combatantOf(state, 2).hp --[[@as integer]]
+      < combatantOf(state, 2).entryHp --[[@as integer]],
     "the blast reaches the target before the user faints"
   )
   local kinds = {}
-  for _, event in ipairs(state.outbox --[[@as table<integer, unknown>]]) do
+  for _, event in
+    ipairs(state.outbox --[[@as table<integer, unknown>]])
+  do
     kinds[#kinds + 1] = (event --[[@as table<string, unknown>]]).kind
   end
   Assert.isTrue(#kinds > 0, "the sequence emits its ordered events")

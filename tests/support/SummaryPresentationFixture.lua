@@ -85,8 +85,7 @@ local function chromeVisuals()
     detailBacking = { image = "assets/generated/summary/syn-detail-backing.png", width = 8, height = 8 },
   }
   for _, name in ipairs(CHROME_ANIMATIONS) do
-    visuals["syn-" .. name] =
-      { image = "assets/generated/summary/syn-" .. name .. ".png", width = 16, height = 16 }
+    visuals["syn-" .. name] = { image = "assets/generated/summary/syn-" .. name .. ".png", width = 16, height = 16 }
   end
   return visuals
 end
@@ -94,7 +93,8 @@ end
 local function chromeSprites()
   local animations = {}
   for _, name in ipairs(CHROME_ANIMATIONS) do
-    animations[name] = { frames = { { visual = "syn-" .. name, durationTicks = 2 } }, loopFrom = 1, playback = "static" }
+    animations[name] =
+      { frames = { { visual = "syn-" .. name, durationTicks = 2 } }, loopFrom = 1, playback = "static" }
   end
   local primaryAnchors = {}
   for index = 1, 6 do
@@ -404,30 +404,141 @@ end
 -- gift-location closure entry travels with the rules but never
 -- selects, exactly like its generated counterpart.
 local MEMO_BRANCHES = {
-  { key = "migrated", match = { isEgg = false, fateful = false, eggLocation = "none", metLocation = "palPark" }, lines = { 1, 2, 6, 7, 0 }, template = migratedSegments },
-  { key = "fatefulEncounter", match = { isEgg = false, fateful = true, mine = true, eggLocation = "none", metLocation = "notPalPark" }, lines = { 1, 2, 7, 8, 0 }, template = metSegments },
-  { key = "fatefulEncounterTraded", match = { isEgg = false, fateful = true, mine = false, eggLocation = "none", metLocation = "notPalPark" }, lines = { 1, 2, 7, 8, 0 }, template = metSegments },
-  { key = "wildGift", match = { isEgg = false, fateful = false, eggLocation = "none", metLocation = "linkTrade" }, lines = { 1, 2, 6, 7, 0 }, template = metSegments },
-  { key = "wildGiftTraded", selectable = false, match = { isEgg = false, fateful = false, mine = false, eggLocation = "none", metLocation = "linkTrade" }, lines = { 1, 2, 6, 7, 0 }, template = metSegments },
-  { key = "wildEncounter", match = { isEgg = false, fateful = false, mine = true, eggLocation = "none", metLocation = "wild" }, lines = { 1, 2, 6, 7, 0 }, template = metSegments },
-  { key = "wildEncounterTraded", match = { isEgg = false, fateful = false, mine = false, eggLocation = "none", metLocation = "wild" }, lines = { 1, 2, 6, 7, 0 }, template = function()
-    return metSegments("SYN traded ")
-  end },
-  { key = "fatefulEggHatchedGift", match = { isEgg = false, fateful = true, mine = true, eggLocation = "linkTrade2" }, lines = { 1, 2, 9, 0, 0 }, template = hatchedSegments },
-  { key = "fatefulEggHatchedGiftTraded", match = { isEgg = false, fateful = true, mine = false, eggLocation = "linkTrade2" }, lines = { 1, 2, 9, 0, 0 }, template = hatchedSegments },
-  { key = "fatefulEggHatchedArrived", match = { isEgg = false, fateful = true, mine = true, eggLocation = "ranger" }, lines = { 1, 2, 9, 0, 0 }, template = hatchedSegments },
-  { key = "fatefulEggHatchedArrivedTraded", match = { isEgg = false, fateful = true, mine = false, eggLocation = "ranger" }, lines = { 1, 2, 9, 0, 0 }, template = hatchedSegments },
-  { key = "fatefulEggHatched", match = { isEgg = false, fateful = true, mine = true, eggLocation = "hatched" }, lines = { 1, 2, 9, 0, 0 }, template = hatchedSegments },
-  { key = "fatefulEggHatchedTraded", match = { isEgg = false, fateful = true, mine = false, eggLocation = "hatched" }, lines = { 1, 2, 9, 0, 0 }, template = hatchedSegments },
-  { key = "eggHatchedGift", match = { isEgg = false, fateful = false, mine = true, eggLocation = "giftSet" }, lines = { 1, 2, 8, 9, 0 }, template = hatchedSegments },
-  { key = "eggHatchedGiftTraded", match = { isEgg = false, fateful = false, mine = false, eggLocation = "giftSet" }, lines = { 1, 2, 8, 9, 0 }, template = hatchedSegments },
-  { key = "eggHatched", match = { isEgg = false, fateful = false, mine = true, eggLocation = "hatched" }, lines = { 1, 2, 8, 9, 0 }, template = hatchedSegments },
-  { key = "eggHatchedTraded", match = { isEgg = false, fateful = false, mine = false, eggLocation = "hatched" }, lines = { 1, 2, 8, 9, 0 }, template = hatchedSegments },
-  { key = "fatefulEggArrived", match = { isEgg = true, fateful = true, mine = true, eggLocation = "ranger" }, lines = { 0, 1, 0, 0, 6 }, template = eggSegments },
-  { key = "fatefulEgg", match = { isEgg = true, fateful = true, mine = true, eggLocation = "egg" }, lines = { 0, 1, 0, 0, 6 }, template = eggSegments },
-  { key = "fatefulEggTraded", match = { isEgg = true, fateful = true, mine = false, eggLocation = "egg" }, lines = { 0, 1, 0, 0, 6 }, template = eggSegments },
-  { key = "egg", match = { isEgg = true, fateful = false, mine = true, eggLocation = "egg" }, lines = { 0, 1, 0, 0, 6 }, template = eggSegments },
-  { key = "eggTraded", match = { isEgg = true, fateful = false, mine = false, eggLocation = "egg" }, lines = { 0, 1, 0, 0, 6 }, template = eggSegments },
+  {
+    key = "migrated",
+    match = { isEgg = false, fateful = false, eggLocation = "none", metLocation = "palPark" },
+    lines = { 1, 2, 6, 7, 0 },
+    template = migratedSegments,
+  },
+  {
+    key = "fatefulEncounter",
+    match = { isEgg = false, fateful = true, mine = true, eggLocation = "none", metLocation = "notPalPark" },
+    lines = { 1, 2, 7, 8, 0 },
+    template = metSegments,
+  },
+  {
+    key = "fatefulEncounterTraded",
+    match = { isEgg = false, fateful = true, mine = false, eggLocation = "none", metLocation = "notPalPark" },
+    lines = { 1, 2, 7, 8, 0 },
+    template = metSegments,
+  },
+  {
+    key = "wildGift",
+    match = { isEgg = false, fateful = false, eggLocation = "none", metLocation = "linkTrade" },
+    lines = { 1, 2, 6, 7, 0 },
+    template = metSegments,
+  },
+  {
+    key = "wildGiftTraded",
+    selectable = false,
+    match = { isEgg = false, fateful = false, mine = false, eggLocation = "none", metLocation = "linkTrade" },
+    lines = { 1, 2, 6, 7, 0 },
+    template = metSegments,
+  },
+  {
+    key = "wildEncounter",
+    match = { isEgg = false, fateful = false, mine = true, eggLocation = "none", metLocation = "wild" },
+    lines = { 1, 2, 6, 7, 0 },
+    template = metSegments,
+  },
+  {
+    key = "wildEncounterTraded",
+    match = { isEgg = false, fateful = false, mine = false, eggLocation = "none", metLocation = "wild" },
+    lines = { 1, 2, 6, 7, 0 },
+    template = function()
+      return metSegments("SYN traded ")
+    end,
+  },
+  {
+    key = "fatefulEggHatchedGift",
+    match = { isEgg = false, fateful = true, mine = true, eggLocation = "linkTrade2" },
+    lines = { 1, 2, 9, 0, 0 },
+    template = hatchedSegments,
+  },
+  {
+    key = "fatefulEggHatchedGiftTraded",
+    match = { isEgg = false, fateful = true, mine = false, eggLocation = "linkTrade2" },
+    lines = { 1, 2, 9, 0, 0 },
+    template = hatchedSegments,
+  },
+  {
+    key = "fatefulEggHatchedArrived",
+    match = { isEgg = false, fateful = true, mine = true, eggLocation = "ranger" },
+    lines = { 1, 2, 9, 0, 0 },
+    template = hatchedSegments,
+  },
+  {
+    key = "fatefulEggHatchedArrivedTraded",
+    match = { isEgg = false, fateful = true, mine = false, eggLocation = "ranger" },
+    lines = { 1, 2, 9, 0, 0 },
+    template = hatchedSegments,
+  },
+  {
+    key = "fatefulEggHatched",
+    match = { isEgg = false, fateful = true, mine = true, eggLocation = "hatched" },
+    lines = { 1, 2, 9, 0, 0 },
+    template = hatchedSegments,
+  },
+  {
+    key = "fatefulEggHatchedTraded",
+    match = { isEgg = false, fateful = true, mine = false, eggLocation = "hatched" },
+    lines = { 1, 2, 9, 0, 0 },
+    template = hatchedSegments,
+  },
+  {
+    key = "eggHatchedGift",
+    match = { isEgg = false, fateful = false, mine = true, eggLocation = "giftSet" },
+    lines = { 1, 2, 8, 9, 0 },
+    template = hatchedSegments,
+  },
+  {
+    key = "eggHatchedGiftTraded",
+    match = { isEgg = false, fateful = false, mine = false, eggLocation = "giftSet" },
+    lines = { 1, 2, 8, 9, 0 },
+    template = hatchedSegments,
+  },
+  {
+    key = "eggHatched",
+    match = { isEgg = false, fateful = false, mine = true, eggLocation = "hatched" },
+    lines = { 1, 2, 8, 9, 0 },
+    template = hatchedSegments,
+  },
+  {
+    key = "eggHatchedTraded",
+    match = { isEgg = false, fateful = false, mine = false, eggLocation = "hatched" },
+    lines = { 1, 2, 8, 9, 0 },
+    template = hatchedSegments,
+  },
+  {
+    key = "fatefulEggArrived",
+    match = { isEgg = true, fateful = true, mine = true, eggLocation = "ranger" },
+    lines = { 0, 1, 0, 0, 6 },
+    template = eggSegments,
+  },
+  {
+    key = "fatefulEgg",
+    match = { isEgg = true, fateful = true, mine = true, eggLocation = "egg" },
+    lines = { 0, 1, 0, 0, 6 },
+    template = eggSegments,
+  },
+  {
+    key = "fatefulEggTraded",
+    match = { isEgg = true, fateful = true, mine = false, eggLocation = "egg" },
+    lines = { 0, 1, 0, 0, 6 },
+    template = eggSegments,
+  },
+  {
+    key = "egg",
+    match = { isEgg = true, fateful = false, mine = true, eggLocation = "egg" },
+    lines = { 0, 1, 0, 0, 6 },
+    template = eggSegments,
+  },
+  {
+    key = "eggTraded",
+    match = { isEgg = true, fateful = false, mine = false, eggLocation = "egg" },
+    lines = { 0, 1, 0, 0, 6 },
+    template = eggSegments,
+  },
 }
 
 local function memoSection()

@@ -43,10 +43,8 @@ function T.only_shift_style_requests_the_optional_exchange()
     "the typed decision protocol owns prompt vocabulary"
   )
   Assert.isTrue(Protocol.isDecisionKind("shift"), "the optional exchange flows through the decision protocol")
-  local accepted = Protocol.validateChoice(
-    { actor = { combatant = 1 }, kind = "switch", payload = { replacement = 2 } },
-    "shift"
-  )
+  local accepted =
+    Protocol.validateChoice({ actor = { combatant = 1 }, kind = "switch", payload = { replacement = 2 } }, "shift")
   Assert.equal(accepted.kind, "switch", "the shift prompt accepts the exchange choice")
   local verdict = Switching.eligible(shiftQuery("shift", 1))
   Assert.isTrue(verdict.ok, "the shift style in singles requests the optional exchange")

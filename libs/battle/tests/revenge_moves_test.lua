@@ -32,11 +32,7 @@ local function nativeContent()
   local builder = ContentBuilder.new()
   NativeTypeChart.install(builder, "revenge-tests")
   local behaviors = BattleBehaviorBuilder.new()
-  behaviors:registerRuleset(
-    Executor.RULESET,
-    { key = Executor.RULESET, chart = Executor.RULESET },
-    "revenge-tests"
-  )
+  behaviors:registerRuleset(Executor.RULESET, { key = Executor.RULESET, chart = Executor.RULESET }, "revenge-tests")
   return BattleContent.new(builder:freeze(), behaviors:freeze())
 end
 
@@ -103,7 +99,9 @@ local function probeSpeciesFacts(seeds)
       local record = catalog:form(species, form)
       local speciesRecord = catalog:species(species)
       local types = {}
-      for _, key in ipairs(record.types --[[@as string[] ]]) do
+      for _, key in
+        ipairs(record.types --[[@as string[] ]])
+      do
         types[#types + 1] = key
       end
       bucket[form] = {
@@ -375,17 +373,13 @@ local function sessionStrikeDealt(userSpecies, userMove, foeSpecies, seedOverrid
   local betaActor = assert(betaRequest.actors[1], "the opposing request addresses its lead")
   local before = session:capture()
   local foeBefore = before.combatants[2].hp --[[@as integer]]
-  local storedAlpha, alphaErr = session:submit(
-    SessionFixture.replyFor(alphaRequest, {
-      SessionFixture.attackChoice(alphaActor, 0, SessionFixture.positionTarget(2)),
-    })
-  )
+  local storedAlpha, alphaErr = session:submit(SessionFixture.replyFor(alphaRequest, {
+    SessionFixture.attackChoice(alphaActor, 0, SessionFixture.positionTarget(2)),
+  }))
   Assert.isTrue(storedAlpha, "the user strike binds: " .. tostring(alphaErr))
-  local storedBeta, betaErr = session:submit(
-    SessionFixture.replyFor(betaRequest, {
-      SessionFixture.attackChoice(betaActor, 0, SessionFixture.positionTarget(1)),
-    })
-  )
+  local storedBeta, betaErr = session:submit(SessionFixture.replyFor(betaRequest, {
+    SessionFixture.attackChoice(betaActor, 0, SessionFixture.positionTarget(1)),
+  }))
   Assert.isTrue(storedBeta, "the opposing strike binds: " .. tostring(betaErr))
   local turn = session:advance(1024)
   local after = session:capture()

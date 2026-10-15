@@ -373,16 +373,8 @@ function T.host_detail_overlay_appends_the_framed_overlay()
     plain.panes[1].placement.pixelScale,
     "the overlay keeps the content magnification"
   )
-  Assert.deepEqual(
-    plan.content.slotRects,
-    plain.content.slotRects,
-    "the overlay changes no native panel geometry"
-  )
-  Assert.deepEqual(
-    plan.content.cancelRect,
-    plain.content.cancelRect,
-    "the overlay changes no native cancel target"
-  )
+  Assert.deepEqual(plan.content.slotRects, plain.content.slotRects, "the overlay changes no native panel geometry")
+  Assert.deepEqual(plan.content.cancelRect, plain.content.cancelRect, "the overlay changes no native cancel target")
   local off = interfaces.nativeLike(
     contextFor(singleDisplay(640, 480), "nativeLike", interfaces),
     { cancellable = true, cursorNode = 0, detailOverlay = false }
@@ -395,10 +387,7 @@ function T.overlay_plans_map_pointer_input_through_content_unchanged()
   local plainSession = partySession()
   plainSession:resolve(singleDisplay(640, 480), plainView)
   local plainPlan = plainSession:plan()
-  local frame = assert(
-    plainPlan.panes[1].placement.frame,
-    "the content pane carries its host frame"
-  )
+  local frame = assert(plainPlan.panes[1].placement.frame, "the content pane carries its host frame")
   local events = {
     { type = "pointer_down", pointerId = "touch:overlay-compare", x = frame.x + 64, y = frame.y + 24 },
     { type = "pointer_up", pointerId = "touch:overlay-compare", x = frame.x + 64, y = frame.y + 24 },
@@ -409,11 +398,7 @@ function T.overlay_plans_map_pointer_input_through_content_unchanged()
   overlaySession:resolve(singleDisplay(640, 480), overlayView)
   Assert.equal(#overlaySession:plan().panes, 2, "the overlay plan under test is actually shown")
   local overlayMapped = overlaySession:mapInput(events, overlayView)
-  Assert.deepEqual(
-    overlayMapped,
-    plainMapped,
-    "the visible overlay changes no pointer mapping"
-  )
+  Assert.deepEqual(overlayMapped, plainMapped, "the visible overlay changes no pointer mapping")
 end
 
 function T.closed_snapshots_resolve_a_disposable_plan()
@@ -468,11 +453,7 @@ function T.opening_covers_retreat_downward_in_pane_order()
     for _, rectangle in ipairs(graphics.rectangles) do
       if rectangle.mode == "fill" then
         local color = rectangle.color
-        Assert.deepEqual(
-          { color[1], color[2], color[3], color[4] },
-          { 0, 0, 0, 1 },
-          "reveal covers are opaque black"
-        )
+        Assert.deepEqual({ color[1], color[2], color[3], color[4] }, { 0, 0, 0, 1 }, "reveal covers are opaque black")
         Assert.equal(rectangle.w, 256, "reveal covers span the pane width")
         Assert.equal(rectangle.x, 0, "reveal covers start at the pane edge")
         Assert.equal(rectangle.y + rectangle.h, 192, "reveal covers stay bottom-anchored")
@@ -538,11 +519,7 @@ function T.opening_lone_content_pane_clears_with_the_second_leg()
     for _, rectangle in ipairs(graphics.rectangles) do
       if rectangle.mode == "fill" then
         local color = rectangle.color
-        Assert.deepEqual(
-          { color[1], color[2], color[3], color[4] },
-          { 0, 0, 0, 1 },
-          "reveal covers are opaque black"
-        )
+        Assert.deepEqual({ color[1], color[2], color[3], color[4] }, { 0, 0, 0, 1 }, "reveal covers are opaque black")
         Assert.isNil(height, "the lone pane carries at most one cover")
         height = rectangle.h
       end

@@ -220,7 +220,8 @@ function T.frustration_reads_explicit_friendship_facts()
     Assert.equal(outcome.kind, "complete", "the frustration execution runs to completion")
     local defender = state.combatants --[[@as table<integer, table<string, unknown>>]]
     local record = defender[2] --[[@as table<string, unknown>]]
-    return (record.entryHp --[[@as integer]]) - (record.hp --[[@as integer]])
+    return record.entryHp --[[@as integer]]
+      - record.hp --[[@as integer]]
   end
 
   local resentful = strikeWith(0)

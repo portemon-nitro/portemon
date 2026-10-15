@@ -57,8 +57,7 @@ local function composition(service, opts)
   function lease:prepare(demand)
     return { kind = "ready", key = demand.key, assets = { manifest = family } }
   end
-  function lease:release()
-  end
+  function lease:release() end
   return {
     mons = service,
     manifest = family,
@@ -170,8 +169,7 @@ local function openNativePicker(service, summaryManifest, context, request)
     end
     return { kind = "ready", key = demand.key, assets = { manifest = summaryManifest } }
   end
-  function lease:release()
-  end
+  function lease:release() end
   local state = SummaryScreenState.new({
     mons = service,
     manifest = summaryManifest,

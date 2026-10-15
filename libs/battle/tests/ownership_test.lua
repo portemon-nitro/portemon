@@ -38,8 +38,7 @@ end
 local function strikeEveryone(request)
   local choices = {}
   for _, actor in ipairs(request.actors) do
-    choices[#choices + 1] =
-      SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(2))
+    choices[#choices + 1] = SessionFixture.attackChoice(actor, 0, SessionFixture.positionTarget(2))
   end
   return choices
 end
@@ -76,10 +75,7 @@ function T.presentation_views_stay_detached_and_hide_future_state()
     type(contracts.View.forController) == "function",
     "views resolve per controller without exposing live state"
   )
-  Assert.isTrue(
-    type(contracts.View.forDebug) == "function",
-    "trusted debug reads stay separate from controller views"
-  )
+  Assert.isTrue(type(contracts.View.forDebug) == "function", "trusted debug reads stay separate from controller views")
 
   local session = SessionFixture.newSession(contracts, SessionFixture.buildScenario(singles()))
   local opening = SessionFixture.driveUntilSettled(session, 64)
@@ -97,11 +93,7 @@ function T.presentation_views_stay_detached_and_hide_future_state()
       Assert.isNil(err, "accepted replies carry no input error")
     end
   end
-  Assert.deepEqual(
-    session:view("beta"),
-    betaBefore,
-    "waiting peers never observe sealed opposing choices"
-  )
+  Assert.deepEqual(session:view("beta"), betaBefore, "waiting peers never observe sealed opposing choices")
 
   local heldEvents = opening.events or {}
   local seenCount = #heldEvents
@@ -178,8 +170,7 @@ function T.stale_entry_references_cannot_write_through_reused_slots()
 
   local clean = session:capture()
   local staleActor = { combatant = 1, activation = staleToken }
-  local staleChoices =
-    { SessionFixture.attackChoice(staleActor, 0, SessionFixture.combatantTarget(1, staleToken)) }
+  local staleChoices = { SessionFixture.attackChoice(staleActor, 0, SessionFixture.combatantTarget(1, staleToken)) }
   local staleReply = nil
   for _, request in ipairs((afterSwitch.request or {}).requests or {}) do
     if request.controller == "alpha" then
@@ -197,8 +188,7 @@ function T.stale_entry_references_cannot_write_through_reused_slots()
   for _, request in ipairs((afterSwitch.request or {}).requests or {}) do
     if request.controller == "alpha" then
       local liveActor = request.actors[1]
-      local liveChoices =
-        { SessionFixture.attackChoice(liveActor, 0, SessionFixture.positionTarget(2)) }
+      local liveChoices = { SessionFixture.attackChoice(liveActor, 0, SessionFixture.positionTarget(2)) }
       liveReply = SessionFixture.replyFor(request, liveChoices)
     end
   end
@@ -207,10 +197,7 @@ function T.stale_entry_references_cannot_write_through_reused_slots()
     Assert.isTrue(liveOk, "position references follow the current occupant")
     Assert.isNil(liveErr, "accepted replies carry no input error")
   end
-  Assert.isFalse(
-    leaksMarker(session:view("alpha"), "live-state-sentinel"),
-    "views expose values, never live handles"
-  )
+  Assert.isFalse(leaksMarker(session:view("alpha"), "live-state-sentinel"), "views expose values, never live handles")
   session:dispose()
 end
 

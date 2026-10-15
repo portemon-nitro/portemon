@@ -440,7 +440,11 @@ local function settleBattle(game, envelope, choose, budget)
   -- return without settling anything whenever the battle is still
   -- covering or leaving.
   local waited = 0
-  while runtime.battleCoordinator:activeBattle() == nil and runtime.battleCoordinator._battleLaunch ~= nil and waited < budget do
+  while
+    runtime.battleCoordinator:activeBattle() == nil
+    and runtime.battleCoordinator._battleLaunch ~= nil
+    and waited < budget
+  do
     local pending = runtime.battleCoordinator._battleLaunch
     if pending ~= nil and pending.phase == "failed" then
       error("the presented launch failed before construction: " .. tostring(pending.error or runtime.errorText), 0)
@@ -1024,7 +1028,11 @@ function T.tests.host_lifetime_survives_schedules_and_second_launches()
     }
     runtime:launchBattle({ kind = "wild", details = { species = "EEVEE", level = 4 } })
     local launched = 0
-    while runtime.battleCoordinator:activeBattle() == nil and runtime.battleCoordinator._battleLaunch ~= nil and launched < SETTLE_BUDGET do
+    while
+      runtime.battleCoordinator:activeBattle() == nil
+      and runtime.battleCoordinator._battleLaunch ~= nil
+      and launched < SETTLE_BUDGET
+    do
       for _ = 1, stepsPerPump do
         game:step()
       end

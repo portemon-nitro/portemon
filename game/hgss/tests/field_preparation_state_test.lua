@@ -284,10 +284,7 @@ function T.target_failure_raises_while_runtime_is_pending()
     FieldPreparationState.new(newGameOptions(gates, log, calls, { ready = false, failure = "injected target failure" }))
   local ok, err = pcall(settle, state)
   Assert.isFalse(ok, "a target failure raises instead of latching a failed phase")
-  Assert.isTrue(
-    string.find(tostring(err), "injected target failure", 1, true) ~= nil,
-    "the target cause is preserved"
-  )
+  Assert.isTrue(string.find(tostring(err), "injected target failure", 1, true) ~= nil, "the target cause is preserved")
   Assert.equal(calls.transfers or 0, 0, "a failed target never transfers")
   state:dispose()
 end
@@ -535,10 +532,7 @@ function T.continue_save_failure_raises_while_closures_are_still_pending()
   )
   local ok, err = pcall(settle, state)
   Assert.isFalse(ok, "a save failure raises even while closures are pending")
-  Assert.isTrue(
-    string.find(tostring(err), "injected save failure", 1, true) ~= nil,
-    "the save cause is preserved"
-  )
+  Assert.isTrue(string.find(tostring(err), "injected save failure", 1, true) ~= nil, "the save cause is preserved")
   Assert.equal(loaderCalls.transfers or 0, 0, "a failed save never transfers")
   Assert.equal(storeCalls.loads or 0, 1, "the failed load ran exactly once")
   state:dispose()
@@ -575,10 +569,7 @@ function T.preparation_draw_names_pending_closures_and_destination_truthfully()
     state:draw()
   end)
   Assert.isTrue(pending.ok, "drawing while closures are pending never fails: " .. tostring(pending.err))
-  Assert.isFalse(
-    printedMatching(pending.prints, "planning"),
-    "the closure wait never claims the entry-closure name"
-  )
+  Assert.isFalse(printedMatching(pending.prints, "planning"), "the closure wait never claims the entry-closure name")
   Assert.isTrue(printedMatching(pending.prints, "assets"), "the closure wait names the pending closures")
   gates.planning = true
   settle(state)

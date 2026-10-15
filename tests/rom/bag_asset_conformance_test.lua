@@ -360,19 +360,13 @@ function T.selection_entry_compiles_the_retail_blink_as_a_one_shot_sequence(romF
   Assert.deepEqual(BagSources.messages.templates.selectedItem, { bank = 10, index = 43 })
   local bundle = bundleFor(romFs, versionId)
   local manifest = bundle.manifest
-  local entry = assert(
-    manifest.interactive.selectionEntry,
-    "the compiled bundle publishes its selection-entry sequence"
-  )
+  local entry =
+    assert(manifest.interactive.selectionEntry, "the compiled bundle publishes its selection-entry sequence")
   Assert.equal(entry.playback, "once", "the selection entry plays exactly once")
   Assert.equal(#entry.frames, 4, "animation 41 carries four blink frames")
   local total = 0
   for index, frame in ipairs(entry.frames) do
-    Assert.equal(
-      frame.durationTicks,
-      3,
-      "selection frame " .. index .. " keeps its source duration"
-    )
+    Assert.equal(frame.durationTicks, 3, "selection frame " .. index .. " keeps its source duration")
     total = total + frame.durationTicks
     local width, height, rgba =
       PngReader.rgba(assert(bundle.assets[frame.image], "selection frame " .. index .. " must compile"))
@@ -558,8 +552,7 @@ end
 function T.quantity_background_omits_the_generic_cancel_chrome(romFs, versionId)
   local bundle = bundleFor(romFs, versionId)
   local manifest = bundle.manifest
-  local face =
-    assert(manifest.interactive.feedback.cancelFace.normal, "the manifest publishes the generic cancel face")
+  local face = assert(manifest.interactive.feedback.cancelFace.normal, "the manifest publishes the generic cancel face")
   local faceWidth, faceHeight, faceRgba =
     PngReader.rgba(assetBytes(assert(bundle.assets[face.image], "the generic cancel face bytes must compile")))
   Assert.equal(faceWidth, face.width, "the generic cancel face keeps its compiled width")
@@ -572,8 +565,7 @@ function T.quantity_background_omits_the_generic_cancel_chrome(romFs, versionId)
     "the generic cancel face sits inside the canonical pane"
   )
   local function backgroundCarriesChrome(background, label)
-    local width, _, rgba =
-      PngReader.rgba(assetBytes(assert(bundle.assets[background.image], label .. " must compile")))
+    local width, _, rgba = PngReader.rgba(assetBytes(assert(bundle.assets[background.image], label .. " must compile")))
     Assert.equal(width, 256, label .. " keeps the pane width")
     for y = 0, faceHeight - 1 do
       for x = 0, faceWidth - 1 do
@@ -1137,8 +1129,7 @@ function T.action_face_compiles_nonempty_from_its_audited_selector(romFs, versio
   local actionMenu =
     assert(bundle.manifest.interactive.overlays.actionMenu, "the compiled bundle publishes its action menu")
   local face = assert(actionMenu.face, "the compiled bundle publishes its action face")
-  local width, height, rgba =
-    PngReader.rgba(assert(bundle.assets[face.image], "the action face bytes must compile"))
+  local width, height, rgba = PngReader.rgba(assert(bundle.assets[face.image], "the action face bytes must compile"))
   Assert.equal(width, face.width, "the action face image keeps its compiled width")
   Assert.equal(height, face.height, "the action face image keeps its compiled height")
   Assert.isTrue(width > 0 and height > 0, "the action face has a nonempty extent")

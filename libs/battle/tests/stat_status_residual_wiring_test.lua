@@ -65,7 +65,9 @@ local function scenarioMoveFacts(seeds)
   -- catalog, so every moveset and learnset move carries its facts.
   for _, seed in ipairs(seeds or {}) do
     local learned = seed.mon --[[@as table<string, unknown>]]
-    for _, entry in ipairs(learned.moves --[[@as table<integer, table<string, unknown>>]]) do
+    for _, entry in
+      ipairs(learned.moves --[[@as table<integer, table<string, unknown>>]])
+    do
       if type(entry) == "table" and type(entry.move) == "string" and facts[entry.move] == nil then
         facts[entry.move] = catalog:move(entry.move)
       end
@@ -84,7 +86,9 @@ end
 ---@return string[] detached semantic types for the form
 local function copyFormTypes(formRecord)
   local types = {} ---@type string[]
-  for _, key in ipairs(formRecord.types --[[@as string[] ]]) do
+  for _, key in
+    ipairs(formRecord.types --[[@as string[] ]])
+  do
     types[#types + 1] = key --[[@as string]]
   end
   return types
@@ -226,7 +230,9 @@ end
 ---@return table[] live records carrying the key
 local function recordsWithKey(snapshot, key)
   local found = {}
-  for _, record in ipairs(snapshot.effects --[[@as table<integer, table<string, unknown>>]]) do
+  for _, record in
+    ipairs(snapshot.effects --[[@as table<integer, table<string, unknown>>]])
+  do
     if record.key == key then
       found[#found + 1] = record
     end
@@ -242,11 +248,8 @@ local function strikeAnswer(plans)
     Assert.notNil(plan, "every scripted controller carries its strike plan")
     local choices = {}
     for _, actor in ipairs(request.actors) do
-      choices[#choices + 1] = SessionFixture.attackChoice(
-        actor,
-        plan.slot --[[@as integer]],
-        plan.target --[[@as table<string, unknown>]]
-      )
+      choices[#choices + 1] =
+        SessionFixture.attackChoice(actor, plan.slot --[[@as integer]], plan.target --[[@as table<string, unknown>]])
     end
     return choices
   end
@@ -333,28 +336,37 @@ function T.raised_speed_stages_reorder_later_strikes()
   local beta = movesetCombatant(2, 31, { moveSlot("SCRATCH", 35) })
   local session = contracts.Battle.newSession(duelScenario({ alpha, beta }, {}, {}), content)
 
-  local _, opening = playTurn(session, strikeAnswer({
-    alpha = { slot = 1, target = SessionFixture.positionTarget(2) },
-    beta = { slot = 0, target = SessionFixture.positionTarget(1) },
-  }))
+  local _, opening = playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 1, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
   Assert.deepEqual(
     strikeKeys(opening),
     { "SCRATCH", "TACKLE" },
     "the naturally faster lead strikes first while stages stay flat"
   )
 
-  local _, staged = playTurn(session, strikeAnswer({
-    alpha = { slot = 0, target = SessionFixture.positionTarget(1) },
-    beta = { slot = 0, target = SessionFixture.positionTarget(1) },
-  }))
+  local _, staged = playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 0, target = SessionFixture.positionTarget(1) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
   Assert.isTrue(#staged > 0, "the stage turn settles its events")
   local stages = combatantOf(session:capture(), 1).stages --[[@as table<string, integer>]]
   Assert.equal(stages.speed, 2, "the self-raised Speed stage lands in battle state")
 
-  local _, replayed = playTurn(session, strikeAnswer({
-    alpha = { slot = 1, target = SessionFixture.positionTarget(2) },
-    beta = { slot = 0, target = SessionFixture.positionTarget(1) },
-  }))
+  local _, replayed = playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 1, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
   Assert.deepEqual(
     strikeKeys(replayed),
     { "TACKLE", "SCRATCH" },
@@ -373,10 +385,13 @@ function T.applied_sleep_gates_the_next_action()
   local beta = movesetCombatant(2, 31, { moveSlot("QUICK_ATTACK", 30) })
   local session = contracts.Battle.newSession(duelScenario({ alpha, beta }, {}, {}), content)
 
-  local _, applied = playTurn(session, strikeAnswer({
-    alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
-    beta = { slot = 0, target = SessionFixture.positionTarget(1) },
-  }))
+  local _, applied = playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
   Assert.isTrue(#applied > 0, "the status turn settles its events")
   local appliedCondition = conditionOf(session:capture(), 2)
   local appliedEffects = appliedCondition.effects --[[@as table<integer, table<string, unknown>>]]
@@ -388,10 +403,13 @@ function T.applied_sleep_gates_the_next_action()
     "sleep carries its source-defined remaining turns"
   )
 
-  local _, gated = playTurn(session, strikeAnswer({
-    alpha = { slot = 1, target = SessionFixture.positionTarget(2) },
-    beta = { slot = 0, target = SessionFixture.positionTarget(1) },
-  }))
+  local _, gated = playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 1, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
   local gatedKeys = strikeKeys(gated)
   local gatedEffects = conditionOf(session:capture(), 2).effects --[[@as table<integer, unknown>]]
   local blocked = true
@@ -400,10 +418,7 @@ function T.applied_sleep_gates_the_next_action()
       blocked = false
     end
   end
-  Assert.isTrue(
-    blocked or #gatedEffects == 0,
-    "the gated action either never starts or wakes the defender"
-  )
+  Assert.isTrue(blocked or #gatedEffects == 0, "the gated action either never starts or wakes the defender")
   session:dispose()
 end
 
@@ -419,10 +434,13 @@ function T.catalog_poison_powder_applies_poison_through_the_move_path()
 
   local landed = false
   for _ = 1, 4 do
-    local _, events = playTurn(session, strikeAnswer({
-      alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
-      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
-    }))
+    local _, events = playTurn(
+      session,
+      strikeAnswer({
+        alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+        beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+      })
+    )
     Assert.isTrue(#events > 0, "each powder turn settles its events")
     local effects = conditionOf(session:capture(), 2).effects --[[@as table<integer, table<string, unknown>>]]
     if #effects == 1 and effects[1].key == "poison" then
@@ -451,10 +469,13 @@ function T.lethal_residual_ticks_replace_the_fainted_lead()
   })
   local landed = false
   for _ = 1, 8 do
-    local _, events = playTurn(session, strikeAnswer({
-      alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
-      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
-    }))
+    local _, events = playTurn(
+      session,
+      strikeAnswer({
+        alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+        beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+      })
+    )
     Assert.isTrue(#events > 0, "each poisoning turn settles its events")
     local effects = conditionOf(session:capture(), 2).effects --[[@as table<integer, table<string, unknown>>]]
     if #effects == 1 and effects[1].key == "toxic" then
@@ -515,10 +536,13 @@ function T.restored_effect_state_ticks_exactly_once()
   })
   local landed = false
   for _ = 1, 8 do
-    playTurn(session, strikeAnswer({
-      alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
-      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
-    }))
+    playTurn(
+      session,
+      strikeAnswer({
+        alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+        beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+      })
+    )
     local effects = conditionOf(session:capture(), 2).effects --[[@as table<integer, table<string, unknown>>]]
     if #effects == 1 and effects[1].key == "toxic" then
       landed = true
@@ -550,11 +574,7 @@ function T.restored_effect_state_ticks_exactly_once()
     for _, event in ipairs(secondEvents) do
       secondTrace[#secondTrace + 1] = event
     end
-    Assert.equal(
-      firstFrame.status,
-      secondFrame.status,
-      "restored and uninterrupted sessions agree on continuation"
-    )
+    Assert.equal(firstFrame.status, secondFrame.status, "restored and uninterrupted sessions agree on continuation")
     if firstFrame.status == "ended" then
       break
     end
@@ -614,13 +634,18 @@ function T.switch_replacement_clears_stages_and_seeded_state()
   local reserve = movesetCombatant(3, 41, { moveSlot("SPLASH", 40) })
   local session = contracts.Battle.newSession(duelScenario({ alpha, beta }, { reserve }, {}), content)
 
-  local _, seeded = playTurn(session, strikeAnswer({
-    alpha = { slot = 0, target = SessionFixture.positionTarget(1) },
-    beta = { slot = 0, target = SessionFixture.positionTarget(1) },
-  }))
+  local _, seeded = playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 0, target = SessionFixture.positionTarget(1) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
   Assert.isTrue(#seeded > 0, "the seeding turn settles its events")
   local rooted = false
-  for _, record in ipairs(session:capture().effects --[[@as table<integer, table<string, unknown>>]]) do
+  for _, record in
+    ipairs(session:capture().effects --[[@as table<integer, table<string, unknown>>]])
+  do
     if record.key == "leechseed" then
       rooted = true
     end
@@ -643,7 +668,9 @@ function T.switch_replacement_clears_stages_and_seeded_state()
   end)
   Assert.equal(frame.status, "waiting", "the battle continues after the replacement")
   local snapshot = session:capture()
-  for _, record in ipairs(snapshot.effects --[[@as table<integer, table<string, unknown>>]]) do
+  for _, record in
+    ipairs(snapshot.effects --[[@as table<integer, table<string, unknown>>]])
+  do
     Assert.isTrue(record.key ~= "leechseed", "the seed clears with the departing entry")
   end
   local entered = combatantOf(snapshot, 3).stages --[[@as table<string, integer>]]
@@ -706,7 +733,9 @@ function T.leech_seed_replaces_instead_of_stacking()
     Assert.equal(frame.status, "waiting", "the battle continues across the seeding turns")
   end
   local seeds = 0
-  for _, record in ipairs(session:capture().effects --[[@as table<integer, table<string, unknown>>]]) do
+  for _, record in
+    ipairs(session:capture().effects --[[@as table<integer, table<string, unknown>>]])
+  do
     if record.key == "leechseed" then
       seeds = seeds + 1
     end
@@ -834,10 +863,13 @@ function T.roost_restores_half_maximum_through_the_move_path()
   local session = contracts.Battle.newSession(duelScenario({ alpha, beta }, {}, {}), content)
   local ceiling = combatantOf(session:capture(), 1).maxHp --[[@as integer]]
   Assert.isTrue(ceiling > 3, "the wounded user sits below its battle maximum")
-  local frame, events = playTurn(session, strikeAnswer({
-    alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
-    beta = { slot = 0, target = SessionFixture.positionTarget(1) },
-  }))
+  local frame, events = playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
   Assert.equal(frame.status, "waiting", "the recovery turn continues the battle")
   local restored = nil
   for _, event in ipairs(events) do
@@ -867,10 +899,13 @@ function T.fake_out_flinch_blocks_the_later_strike_through_dispatch()
   local beta = movesetCombatant(2, 31, { moveSlot("TACKLE", 35) })
   local session = contracts.Battle.newSession(duelScenario({ alpha, beta }, {}, {}), content)
 
-  local frame, events = playTurn(session, strikeAnswer({
-    alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
-    beta = { slot = 0, target = SessionFixture.positionTarget(1) },
-  }))
+  local frame, events = playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
   Assert.equal(frame.status, "waiting", "the flinch turn continues the battle")
   Assert.deepEqual(strikeKeys(events), { "FAKE_OUT" }, "the flinched strike never executes")
   local blocked = false
@@ -883,7 +918,9 @@ function T.fake_out_flinch_blocks_the_later_strike_through_dispatch()
     end
   end
   Assert.isTrue(blocked, "the flinch announces its block before move execution")
-  for _, record in ipairs(session:capture().effects --[[@as table<integer, table<string, unknown>>]]) do
+  for _, record in
+    ipairs(session:capture().effects --[[@as table<integer, table<string, unknown>>]])
+  do
     Assert.isTrue(record.key ~= "flinch", "the flinch is consumed by its block")
   end
   session:dispose()
@@ -966,7 +1003,9 @@ function T.switching_into_stealth_rock_pays_the_entry_fraction()
   )
   local settled = restored:capture()
   local hazards = 0
-  for _, record in ipairs(settled.effects --[[@as table<integer, table<string, unknown>>]]) do
+  for _, record in
+    ipairs(settled.effects --[[@as table<integer, table<string, unknown>>]])
+  do
     if record.key == "stealthrock" then
       hazards = hazards + 1
       Assert.isNil(record.state.turns, "the entry pass leaves no residual duration")
@@ -1057,10 +1096,13 @@ function T.confused_attacker_snaps_out_and_acts_on_its_last_turn()
     ),
   })
 
-  local frame, events = playTurn(restored, strikeAnswer({
-    alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
-    beta = { slot = 0, target = SessionFixture.positionTarget(1) },
-  }))
+  local frame, events = playTurn(
+    restored,
+    strikeAnswer({
+      alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
   Assert.equal(frame.status, "waiting", "the snap-out turn continues the battle")
   Assert.deepEqual(strikeKeys(events), { "TACKLE" }, "the cleared attacker still strikes")
   local expired = false
@@ -1091,10 +1133,13 @@ function T.raised_screen_keeps_its_duration_across_entries()
   local reserve = movesetCombatant(3, 41, { moveSlot("SPLASH", 40) })
   local session = contracts.Battle.newSession(duelScenario({ alpha, beta }, { reserve }, {}), content)
 
-  local frame, _ = playTurn(session, strikeAnswer({
-    alpha = { slot = 0, target = SessionFixture.positionTarget(1) },
-    beta = { slot = 0, target = SessionFixture.positionTarget(1) },
-  }))
+  local frame, _ = playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 0, target = SessionFixture.positionTarget(1) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
   Assert.equal(frame.status, "waiting", "the screen turn continues the battle")
   local raised = recordsWithKey(session:capture(), "reflect")
   Assert.equal(#raised, 1, "the screen lands in live effect state")
@@ -1207,10 +1252,13 @@ function T.only_the_flinched_actor_is_blocked()
     ),
   })
 
-  local frame, events = playTurn(restored, strikeAnswer({
-    alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
-    beta = { slot = 0, target = SessionFixture.positionTarget(1) },
-  }))
+  local frame, events = playTurn(
+    restored,
+    strikeAnswer({
+      alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
   Assert.equal(frame.status, "waiting", "the scoped turn continues the battle")
   Assert.deepEqual(strikeKeys(events), { "TACKLE" }, "the clean attacker strikes untouched")
   local blocked = false
@@ -1247,10 +1295,13 @@ function T.taunted_attacker_refuses_status_strikes_but_lands_damage()
     ),
   })
 
-  local denied, deniedEvents = playTurn(restored, strikeAnswer({
-    alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
-    beta = { slot = 1, target = SessionFixture.positionTarget(1) },
-  }))
+  local denied, deniedEvents = playTurn(
+    restored,
+    strikeAnswer({
+      alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 1, target = SessionFixture.positionTarget(1) },
+    })
+  )
   Assert.equal(denied.status, "waiting", "the denied turn continues the battle")
   Assert.deepEqual(strikeKeys(deniedEvents), { "TACKLE" }, "only the clean attacker strikes")
   local refused = false
@@ -1272,16 +1323,15 @@ function T.taunted_attacker_refuses_status_strikes_but_lands_damage()
     "the denied action spends the taunt countdown"
   )
 
-  local landed, landedEvents = playTurn(restored, strikeAnswer({
-    alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
-    beta = { slot = 0, target = SessionFixture.positionTarget(1) },
-  }))
-  Assert.equal(landed.status, "waiting", "the battle continues past the gated turn")
-  Assert.deepEqual(
-    strikeKeys(landedEvents),
-    { "TACKLE", "TACKLE" },
-    "the damaging strike lands through taunt"
+  local landed, landedEvents = playTurn(
+    restored,
+    strikeAnswer({
+      alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
   )
+  Assert.equal(landed.status, "waiting", "the battle continues past the gated turn")
+  Assert.deepEqual(strikeKeys(landedEvents), { "TACKLE", "TACKLE" }, "the damaging strike lands through taunt")
   restored:dispose()
 end
 
@@ -1357,10 +1407,13 @@ function T.live_turn_residuals_heal_before_they_drain_the_same_battler()
     { version = 1 }
   )
   local restored = Executor.restore(snapshot, content)
-  local _, events = playTurn(restored, strikeAnswer({
-    alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
-    beta = { slot = 0, target = SessionFixture.positionTarget(1) },
-  }))
+  local _, events = playTurn(
+    restored,
+    strikeAnswer({
+      alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
   local healedAt = nil
   local tickAt = nil
   for index, event in ipairs(events) do
@@ -1420,7 +1473,9 @@ function T.hazard_faint_on_arrival_owes_a_second_replacement()
     local choices = {}
     for _, actor in ipairs(request.actors) do
       if admitsSwitch and not admitsAttack then
-        local reserve = replacements[actor.combatant --[[@as integer]]]
+        local reserve = replacements[
+          actor.combatant --[[@as integer]]
+        ]
         Assert.notNil(reserve, "every replacement names its planned reserve")
         choices[#choices + 1] = SessionFixture.switchChoice(actor, reserve --[[@as integer]])
       elseif request.controller == "beta" then
@@ -1467,11 +1522,7 @@ function T.hazard_faint_on_arrival_owes_a_second_replacement()
   end
   Assert.notNil(again, "the arrival kill waits for a replacement instead of settling an outcome")
   local reasserted = assert(again, "the second replacement is addressed")
-  Assert.equal(
-    reasserted.actors[1].combatant,
-    3,
-    "the second obligation names the hazard-fainted arrival"
-  )
+  Assert.equal(reasserted.actors[1].combatant, 3, "the second obligation names the hazard-fainted arrival")
   Assert.isTrue(hasEventKind(secondEvents, "faint"), "the hazard kill announces its faint")
 
   local third, thirdEvents = playTurn(restored, answer)
@@ -1486,11 +1537,7 @@ function T.hazard_faint_on_arrival_owes_a_second_replacement()
     ceiling - expected,
     "the healthy arrival pays exactly the entry fraction"
   )
-  Assert.equal(
-    restored:capture().positions[1].occupant,
-    5,
-    "the healthy reserve holds the vacated position"
-  )
+  Assert.equal(restored:capture().positions[1].occupant, 5, "the healthy reserve holds the vacated position")
   local struck = {}
   for _, events in ipairs({ secondEvents, thirdEvents }) do
     for _, event in ipairs(events) do
@@ -1540,10 +1587,13 @@ end
 ---@return integer damage the opening water-gun strike dealt
 ---@return table rng position after the opening turn
 local function openingStrike(session)
-  local frame, events = playTurn(session, strikeAnswer({
-    alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
-    beta = { slot = 0, target = SessionFixture.positionTarget(1) },
-  }))
+  local frame, events = playTurn(
+    session,
+    strikeAnswer({
+      alpha = { slot = 0, target = SessionFixture.positionTarget(2) },
+      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+    })
+  )
   Assert.equal(frame.status, "waiting", "the probe turn continues the battle")
   local dealt = nil
   for _, event in ipairs(events) do
@@ -1557,7 +1607,8 @@ local function openingStrike(session)
   Assert.notNil(dealt, "the opening strike lands on the defender")
   local rng = session:capture().rng --[[@as table<string, unknown>]]
   Assert.notNil(rng, "captures carry the stream position")
-  return dealt --[[@as integer]], rng
+  return dealt, --[[@as integer]]
+    rng
 end
 
 ---@param content table frozen battle content for the restored session
@@ -1571,13 +1622,7 @@ local function sessionWithSky(content, setup, weatherKey)
     return session
   end
   return restoreWithEffects(session, content, {
-    effectRecord(
-      weatherKey,
-      901,
-      { kind = "field" },
-      { kind = "move", combatant = 1 },
-      { version = 1, turns = 5 }
-    ),
+    effectRecord(weatherKey, 901, { kind = "field" }, { kind = "move", combatant = 1 }, { version = 1, turns = 5 }),
   })
 end
 
@@ -1637,7 +1682,9 @@ function T.suppressing_ability_neutralizes_rain_without_clearing_it()
   Assert.equal(suppressedFire, neutralFire, "the suppressor restores the neutral amount under rain")
   Assert.deepEqual(suppressedRng, neutralRng, "suppression adds no random draws to the strike")
   local skies = 0
-  for _, record in ipairs(rainy:capture().effects --[[@as table<integer, table<string, unknown>>]]) do
+  for _, record in
+    ipairs(rainy:capture().effects --[[@as table<integer, table<string, unknown>>]])
+  do
     if record.key == "raindance" then
       skies = skies + 1
     end
@@ -1669,10 +1716,13 @@ function T.burn_halves_physical_strikes_and_spares_special_ones()
     local beta = movesetCombatant(2, 31, { moveSlot("SPLASH", 40) })
     local setup = duelScenario({ alpha, beta }, {}, {})
     local session = contracts.Battle.newSession(setup, content)
-    local frame, events = playTurn(session, strikeAnswer({
-      alpha = { slot = slot, target = SessionFixture.positionTarget(2) },
-      beta = { slot = 0, target = SessionFixture.positionTarget(1) },
-    }))
+    local frame, events = playTurn(
+      session,
+      strikeAnswer({
+        alpha = { slot = slot, target = SessionFixture.positionTarget(2) },
+        beta = { slot = 0, target = SessionFixture.positionTarget(1) },
+      })
+    )
     Assert.equal(frame.status, "waiting", "the probe turn continues the battle")
     local dealt = nil
     for _, event in ipairs(events) do
@@ -1686,7 +1736,8 @@ function T.burn_halves_physical_strikes_and_spares_special_ones()
     Assert.notNil(dealt, "the probe strike lands on the defender")
     local rng = session:capture().rng --[[@as table<string, unknown>]]
     session:dispose()
-    return dealt --[[@as integer]], rng
+    return dealt, --[[@as integer]]
+      rng
   end
 
   local plainPhysical, plainRng = probeStrike(false, 0)
@@ -1758,7 +1809,9 @@ local function ceilingsOf(makeScenario)
   local session = contracts.Battle.newSession(makeScenario(), nativeContent())
   local snapshot = session:capture()
   local ceilings = {}
-  for id, combatant in pairs(snapshot.combatants --[[@as table<integer, table<string, unknown>>]]) do
+  for id, combatant in
+    pairs(snapshot.combatants --[[@as table<integer, table<string, unknown>>]])
+  do
     local ceiling = combatant.maxHp
     Assert.isTrue(type(ceiling) == "number" and ceiling > 0, "the probe carries a battle maximum")
     ceilings[id] = ceiling --[[@as integer]]
@@ -1932,8 +1985,16 @@ function T.residual_work_nests_by_battler_before_phase()
   local first = residualWho(slice[1])
   Assert.isTrue(first == 1 or first == 2, "the pass opens on a live battler")
   local second = 3 - first
-  Assert.deepEqual(holderSequence(events, first), { "healed:ingrain", "tick:poison" }, "the opening holder finishes before the next begins")
-  Assert.deepEqual(holderSequence(events, second), { "healed:ingrain", "tick:poison" }, "the trailing holder keeps the same phase order")
+  Assert.deepEqual(
+    holderSequence(events, first),
+    { "healed:ingrain", "tick:poison" },
+    "the opening holder finishes before the next begins"
+  )
+  Assert.deepEqual(
+    holderSequence(events, second),
+    { "healed:ingrain", "tick:poison" },
+    "the trailing holder keeps the same phase order"
+  )
   local order = {}
   for _, event in ipairs(slice) do
     order[#order + 1] = residualWho(event)
@@ -2034,7 +2095,11 @@ function T.toxic_count_advances_once_per_completed_pass()
     if expected < 1 then
       expected = 1
     end
-    Assert.equal(before - combatantOf(session:capture(), 2).hp --[[@as integer]], expected, "the tick deals the exact scaled fraction")
+    Assert.equal(
+      before - combatantOf(session:capture(), 2).hp --[[@as integer]],
+      expected,
+      "the tick deals the exact scaled fraction"
+    )
   end
   session:dispose()
 end

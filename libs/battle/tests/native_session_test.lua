@@ -3931,7 +3931,15 @@ function T.mirror_move_copies_a_spread_strike_onto_both_foes()
   mirrorFacts.range = 0
   local scenario = withMoveFacts(doubleActionScenario({ copier, mate }, { spreader, bystander }), {
     MIRROR_MOVE = mirrorFacts,
-    TACKLE = { power = 35, accuracy = 100, category = "physical", moveType = "normal", effectChance = 0, priority = 0, range = 4 },
+    TACKLE = {
+      power = 35,
+      accuracy = 100,
+      category = "physical",
+      moveType = "normal",
+      effectChance = 0,
+      priority = 0,
+      range = 4,
+    },
     SPLASH = handFacts(0, 100, "other", "normal", 0),
   })
   local session = contracts.Battle.newSession(scenario, content)
@@ -3952,11 +3960,7 @@ function T.mirror_move_copies_a_spread_strike_onto_both_foes()
   session:advance(64)
   local copied = SessionFixture.driveUntilSettled(session)
   Assert.equal(copied.status, "waiting", "the copying turn asks for decisions")
-  Assert.equal(
-    session:capture().combatants[1].mon.moves[1].pp,
-    10,
-    "the failed copy spends no power points"
-  )
+  Assert.equal(session:capture().combatants[1].mon.moves[1].pp, 10, "the failed copy spends no power points")
   local beforeFirst = session:capture().combatants[2].hp
   local beforeSecond = session:capture().combatants[4].hp
   local secondAlpha = requestFor(copied, "alpha")

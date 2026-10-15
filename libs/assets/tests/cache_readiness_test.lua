@@ -591,7 +591,10 @@ function T.apricorn_actor_index_requires_source_sprite_files_and_tree_gestures()
     local treeVisual = assert(missingGesture:loadLua(FieldActorCache.visualPath(262)))
     treeVisual.gestures[gesture] = nil
     missingGesture:writeLua(FieldActorCache.visualPath(262), treeVisual)
-    Assert.isFalse(FieldActorCache.isReady(missingGesture, "m"), "the depleted tree requires its " .. gesture .. " clip")
+    Assert.isFalse(
+      FieldActorCache.isReady(missingGesture, "m"),
+      "the depleted tree requires its " .. gesture .. " clip"
+    )
   end
 end
 

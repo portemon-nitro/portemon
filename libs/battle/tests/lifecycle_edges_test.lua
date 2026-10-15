@@ -159,7 +159,8 @@ end
 -- Malformed faint reports fail loudly: missing entry tokens and
 -- non-positive ordinals never reach the queue.
 function T.detect_rejects_malformed_faint_reports()
-  local Fainting = SessionFixture.requirePresent("libs.battle.src.gen4.Fainting", "the native faint queue owns settlement")
+  local Fainting =
+    SessionFixture.requirePresent("libs.battle.src.gen4.Fainting", "the native faint queue owns settlement")
   Assert.throws(function()
     Fainting.detect({}, { combatant = 1 }, { kind = "damage" }, 1)
   end, "reports pin their entry token")
@@ -174,7 +175,8 @@ end
 -- Queued faint records keep their own cause copy: later caller mutations
 -- never rewrite the queued report.
 function T.detect_keeps_its_own_cause_copy()
-  local Fainting = SessionFixture.requirePresent("libs.battle.src.gen4.Fainting", "the native faint queue owns settlement")
+  local Fainting =
+    SessionFixture.requirePresent("libs.battle.src.gen4.Fainting", "the native faint queue owns settlement")
   local queue = {}
   local cause = { kind = "damage", actionId = 3 }
   Fainting.detect(queue, { combatant = 1, activation = 7 }, cause, 1)
@@ -185,7 +187,8 @@ end
 -- Settlement completes without a progression hook: every knockout still
 -- emits exactly once and settled records are marked processed.
 function T.settlement_completes_without_a_progression_hook()
-  local Fainting = SessionFixture.requirePresent("libs.battle.src.gen4.Fainting", "the native faint queue owns settlement")
+  local Fainting =
+    SessionFixture.requirePresent("libs.battle.src.gen4.Fainting", "the native faint queue owns settlement")
   local queue = {}
   Fainting.detect(queue, { combatant = 1, activation = 7 }, { kind = "damage" }, 1)
   local outcome = Fainting.step({ queue = queue }, Fainting.validateFrame({ kind = "faint", cursor = "start" }))
@@ -198,7 +201,8 @@ end
 -- twice: re-stepping with reserves still waiting answers the same request
 -- and adds no new faint events.
 function T.open_settlement_repeats_its_replacement_request_without_emitting_twice()
-  local Fainting = SessionFixture.requirePresent("libs.battle.src.gen4.Fainting", "the native faint queue owns settlement")
+  local Fainting =
+    SessionFixture.requirePresent("libs.battle.src.gen4.Fainting", "the native faint queue owns settlement")
   local queue = {}
   Fainting.detect(queue, { combatant = 1, activation = 7 }, { kind = "damage" }, 1)
   local context = {
@@ -261,7 +265,8 @@ end
 -- The odds boundary is strict: a roll equal to the odds fails while the
 -- next lower roll escapes, each spending exactly one roll.
 function T.equal_rolls_fail_the_strict_odds_boundary()
-  local Escape = SessionFixture.requirePresent("libs.battle.src.gen4.Escape", "run, trap, and flee mechanics own leaving")
+  local Escape =
+    SessionFixture.requirePresent("libs.battle.src.gen4.Escape", "run, trap, and flee mechanics own leaving")
   ---@param draw integer scripted roll under test
   ---@return table flight outcome over the boundary odds of 64
   local function attemptAt(draw)
@@ -285,7 +290,8 @@ end
 -- Faster combatants leave outright: no roll is spent and no attempt is
 -- recorded.
 function T.faster_combatants_leave_without_a_roll()
-  local Escape = SessionFixture.requirePresent("libs.battle.src.gen4.Escape", "run, trap, and flee mechanics own leaving")
+  local Escape =
+    SessionFixture.requirePresent("libs.battle.src.gen4.Escape", "run, trap, and flee mechanics own leaving")
   local stream = scriptedStream({ 250 })
   local outcome = Escape.attempt({
     battleKind = "wild",
@@ -303,7 +309,8 @@ end
 -- The flight gate refuses trapped runs and trainer battles while free wild
 -- runs stay permitted.
 function T.flight_gate_refuses_trapped_and_trainer_runs()
-  local Escape = SessionFixture.requirePresent("libs.battle.src.gen4.Escape", "run, trap, and flee mechanics own leaving")
+  local Escape =
+    SessionFixture.requirePresent("libs.battle.src.gen4.Escape", "run, trap, and flee mechanics own leaving")
   local trapped = Escape.canRun({ battleKind = "wild", trapped = true, guaranteed = false, attempts = 0 })
   Assert.isFalse(trapped.ok, "a trapped combatant cannot run")
   local trainer = Escape.canRun({ battleKind = "trainer", trapped = false, guaranteed = false, attempts = 0 })

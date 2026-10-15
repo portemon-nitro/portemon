@@ -344,9 +344,7 @@ function T.wonder_guard_permits_status_moves()
     "a super-effective move passes the guard"
   )
   Assert.deepEqual(
-    warded(
-      { moveType = "fire", superEffective = false, movePower = 80, hit = { attackerAbility = "MOLD_BREAKER" } }
-    ),
+    warded({ moveType = "fire", superEffective = false, movePower = 80, hit = { attackerAbility = "MOLD_BREAKER" } }),
     {},
     "a mold-breaking move passes the guard"
   )

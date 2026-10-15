@@ -668,9 +668,17 @@ function T.tests.save_capture_is_denied_while_a_pc_application_owns_field_ui()
     session = {
       player = { motion = "idle" },
       transition = { phase = "idle" },
-      mapEntryController = { isActive = function() return false end },
+      mapEntryController = {
+        isActive = function()
+          return false
+        end,
+      },
     },
-    pcApplicationHost = { isActive = function() return true end },
+    pcApplicationHost = {
+      isActive = function()
+        return true
+      end,
+    },
   }, FieldRuntime)
   runtime.battleCoordinator = FieldBattleCoordinator.new(runtime)
   runtime.saveCoordinator = FieldSaveCoordinator.new(runtime)

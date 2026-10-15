@@ -59,19 +59,14 @@ function T.unrelated_prevention_blocks_without_a_roll()
   local BattleRng = streamOwner()
 
   local guarded = BattleRng.new(1)
-  local protection = Accuracy.resolve(
-    { accuracy = 25, target = target(1), cause = cause(), protected = true },
-    guarded
-  )
+  local protection = Accuracy.resolve({ accuracy = 25, target = target(1), cause = cause(), protected = true }, guarded)
   Assert.equal(protection.kind, "protected", "intact protection reports its own kind")
   Assert.isTrue(type(protection.reason) == "string" and protection.reason ~= "", "protection names its reason")
   Assert.equal(guarded:capture().calls, 0, "protection is decided before the roll")
 
   local airborne = BattleRng.new(1)
-  local unreachable = Accuracy.resolve(
-    { accuracy = 100, target = target(1), cause = cause(), semiInvulnerable = true },
-    airborne
-  )
+  local unreachable =
+    Accuracy.resolve({ accuracy = 100, target = target(1), cause = cause(), semiInvulnerable = true }, airborne)
   Assert.equal(unreachable.kind, "unreachable", "semi-invulnerable targets report their own kind")
   Assert.isTrue(
     type(unreachable.reason) == "string" and unreachable.reason ~= "",
@@ -90,18 +85,14 @@ function T.skipped_rolls_never_skip_unrelated_prevention()
   Assert.equal(free:capture().calls, 0, "skipped rolls draw nothing")
 
   local guarded = BattleRng.new(1)
-  local protection = Accuracy.resolve(
-    { target = target(1), cause = cause(), skipCheck = true, protected = true },
-    guarded
-  )
+  local protection =
+    Accuracy.resolve({ target = target(1), cause = cause(), skipCheck = true, protected = true }, guarded)
   Assert.equal(protection.kind, "protected", "skipped rolls never bypass protection")
   Assert.equal(guarded:capture().calls, 0, "blocked skipped rolls still draw nothing")
 
   local airborne = BattleRng.new(1)
-  local unreachable = Accuracy.resolve(
-    { target = target(1), cause = cause(), skipCheck = true, semiInvulnerable = true },
-    airborne
-  )
+  local unreachable =
+    Accuracy.resolve({ target = target(1), cause = cause(), skipCheck = true, semiInvulnerable = true }, airborne)
   Assert.equal(unreachable.kind, "unreachable", "skipped rolls never reach semi-invulnerable targets")
 
   local reasons = { freeHit.reason, protection.reason, unreachable.reason }
@@ -195,10 +186,8 @@ function T.modulo_roll_compares_one_to_one_hundred()
 end
 
 function T.type_and_ability_immunities_report_distinct_reasons()
-  local Effectiveness = SessionFixture.requirePresent(
-    "libs.battle.src.gen4.TypeEffectiveness",
-    "semantic charts own immunity resolution"
-  )
+  local Effectiveness =
+    SessionFixture.requirePresent("libs.battle.src.gen4.TypeEffectiveness", "semantic charts own immunity resolution")
   Assert.isTrue(type(Effectiveness.resolve) == "function", "immunity resolution owns its resolver")
   local CombatFixture = require("libs.battle.tests.combat_fixture")
 
@@ -217,10 +206,7 @@ function T.type_and_ability_immunities_report_distinct_reasons()
     type(abilityImmune.reason) == "string" and abilityImmune.reason ~= "",
     "ability immunities name their reason"
   )
-  Assert.isTrue(
-    abilityImmune.reason ~= chartImmune.reason,
-    "ability and chart immunities never share a reason"
-  )
+  Assert.isTrue(abilityImmune.reason ~= chartImmune.reason, "ability and chart immunities never share a reason")
   Assert.deepEqual(
     { numerator = abilityImmune.numerator, denominator = abilityImmune.denominator },
     { numerator = 2, denominator = 1 },
@@ -233,10 +219,8 @@ end
 -- signed stage maps to its literal numerator/denominator pair, and both
 -- stage keys share the one canonical ratio owner.
 function T.stage_table_matches_the_literal_native_entries()
-  local StatStages = SessionFixture.requirePresent(
-    "libs.battle.src.gen4.StatStages",
-    "source stage clamps own stat ratios"
-  )
+  local StatStages =
+    SessionFixture.requirePresent("libs.battle.src.gen4.StatStages", "source stage clamps own stat ratios")
   local expected = {
     [-6] = { numerator = 33, denominator = 100 },
     [-5] = { numerator = 36, denominator = 100 },
@@ -275,10 +259,8 @@ end
 -- the top roll exactly.
 function T.truncation_vectors_match_the_literal_table()
   local Accuracy = accuracyOwner()
-  local StatStages = SessionFixture.requirePresent(
-    "libs.battle.src.gen4.StatStages",
-    "source stage clamps own stat ratios"
-  )
+  local StatStages =
+    SessionFixture.requirePresent("libs.battle.src.gen4.StatStages", "source stage clamps own stat ratios")
 
   Assert.equal(StatStages.effective(90, 1, "accuracy"), 119, "base 90 at +1 floors to 119")
   Assert.equal(StatStages.effective(60, 2, "accuracy"), 99, "base 60 at +2 floors to 99")
@@ -306,10 +288,8 @@ function T.modded_strikes_compose_through_the_staged_arithmetic()
   local Damage = SessionFixture.requirePresent("libs.battle.src.gen4.Damage", "exact phased arithmetic owns damage")
   local BattleRng =
     SessionFixture.requirePresent("libs.battle.src.gen4.BattleRng", "labeled native draws own the battle stream")
-  local Effectiveness = SessionFixture.requirePresent(
-    "libs.battle.src.gen4.TypeEffectiveness",
-    "semantic charts own immunity resolution"
-  )
+  local Effectiveness =
+    SessionFixture.requirePresent("libs.battle.src.gen4.TypeEffectiveness", "semantic charts own immunity resolution")
   local CombatFixture = require("libs.battle.tests.combat_fixture")
 
   ---@param bonus table<string, integer> exact same-type bonus under the strike

@@ -23,7 +23,8 @@ local ScriptErrors = require("libs.script.src.errors")
 
 local HOST_MODULE = "game.hgss.src.field.PartySelectionHost"
 
-local T = { metadata = { capabilities = { "rom_dump", "derived_assets" }, derivedAssets = { "party:global" } }, tests = {} }
+local T =
+  { metadata = { capabilities = { "rom_dump", "derived_assets" }, derivedAssets = { "party:global" } }, tests = {} }
 
 local function requireHost()
   local ok, host = pcall(require, HOST_MODULE)

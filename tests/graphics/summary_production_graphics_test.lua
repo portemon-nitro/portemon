@@ -1120,18 +1120,12 @@ function T.production_summary_moves_member_chrome_through_its_ready_bundle(scope
     readyLikeBundle(scope, cacheFs, summaryManifest, text, portraitProvider(scope, cacheFs), pictureShader(scope))
   local main = drawNativePane(scope, renderer, active, "main", assets)
   local first = drawNativePane(scope, renderer, active, "sub", assets)
-  Assert.isTrue(
-    paneDifference(main, first) > 1000,
-    "the production child draws distinct main and sub surfaces"
-  )
+  Assert.isTrue(paneDifference(main, first) > 1000, "the production child draws distinct main and sub surfaces")
   rig.flow:updateFixed({ { type = "navigate", direction = "down" } })
   active = flowChild(rig)
   Assert.equal(active.slot, 1, "vertical input reaches the second member")
   local second = drawNativePane(scope, renderer, active, "sub", assets)
-  Assert.isTrue(
-    paneDifference(first, second) > 20,
-    "switching members moves the member focus chrome"
-  )
+  Assert.isTrue(paneDifference(first, second) > 20, "switching members moves the member focus chrome")
   text:release()
   rig.flow:updateFixed({ { type = "cancel" } })
   for _ = 1, 24 do

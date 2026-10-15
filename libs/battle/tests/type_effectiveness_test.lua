@@ -100,10 +100,7 @@ function T.grounding_stays_a_separate_checkpoint_from_chart_immunity()
   -- airborne defender there isolates the grounding checkpoint.
   local grounded = Effectiveness.resolve(custom, "ground", { "flying" }, { airborne = true })
   Assert.isTrue(grounded.immune, "airborne defenders stay immune without chart immunity")
-  Assert.isTrue(
-    type(grounded.reason) == "string" and grounded.reason ~= "",
-    "grounding names its own reason"
-  )
+  Assert.isTrue(type(grounded.reason) == "string" and grounded.reason ~= "", "grounding names its own reason")
   Assert.isTrue(grounded.reason ~= chartImmune.reason, "grounding never reuses the chart immunity reason")
 
   local landed = Effectiveness.resolve(custom, "ground", { "flying" }, { airborne = false })

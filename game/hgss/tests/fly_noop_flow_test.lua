@@ -28,8 +28,7 @@ local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local PokemonMenuFlow = require("game.hgss.src.field.PokemonMenuFlow")
 
 local T = {
-  metadata = { capabilities = { "rom_dump", "derived_assets" },
-  derivedAssets = { "party:global" }, },
+  metadata = { capabilities = { "rom_dump", "derived_assets" }, derivedAssets = { "party:global" } },
   tests = {},
 }
 
