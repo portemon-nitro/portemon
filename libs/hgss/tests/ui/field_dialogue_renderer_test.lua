@@ -280,6 +280,7 @@ function T.scrolling_text_is_clipped_to_the_text_window()
     { lines = { { tokens = { glyph("C", 1) }, width = 0 } }, breakKind = "eos" },
   }
   local controller = FieldDialogueController.new({
+    audio = { play = function() end },
     layout = function()
       return { pages = pages, warnings = {}, lineHeight = 16, lineSpacing = 0 }
     end,
@@ -540,6 +541,7 @@ end
 local function openedWithTokens(tokens, opts)
   opts = opts or {}
   local controller = FieldDialogueController.new({
+    audio = { play = function() end },
     layout = function()
       return {
         pages = { { lines = { { tokens = tokens, width = 0 } }, breakKind = "eos" } },
@@ -904,6 +906,7 @@ function T.inactive_invisible_and_failing_draws_keep_borrowed_state_safe()
     graphics = closedGraphics,
   })
   local closedController = FieldDialogueController.new({
+    audio = { play = function() end },
     layout = function()
       return { pages = {}, warnings = {}, lineHeight = 0, lineSpacing = 0 }
     end,
@@ -983,6 +986,7 @@ function T.closed_controller_ignores_a_missing_presentation()
     graphics = lg,
   })
   local controller = FieldDialogueController.new({
+    audio = { play = function() end },
     layout = function()
       return { pages = {}, warnings = {}, lineHeight = 0, lineSpacing = 0 }
     end,

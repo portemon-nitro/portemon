@@ -50,6 +50,8 @@ local function runMessage(version, bankId, messageId)
   Assert.deepEqual(first, second, "layout is deterministic for the same tokens")
 
   local controller = FieldDialogueController.new({
+
+    audio = { play = function() end },
     layout = layout,
     continueCursor = { cycle = { 0, 1, 2, 1 }, framePrinterTicks = 9 },
   })
@@ -143,6 +145,7 @@ function T.page_break_retains_the_prior_bottom_line(_, version)
     )
   end
   local controller = FieldDialogueController.new({
+    audio = { play = function() end },
     layout = layout,
     continueCursor = { cycle = { 0, 1, 2, 1 }, framePrinterTicks = 9 },
   })

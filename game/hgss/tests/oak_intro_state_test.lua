@@ -1290,6 +1290,7 @@ function T.completed_name_question_stays_visible_through_real_close_sequence()
   local pages = { { lines = { { tokens = tokens, width = 0 } }, breakKind = "eos" } }
   local cursor = { cycle = { 0, 1, 2, 1 }, framePrinterTicks = 9, placement = DIALOGUE_CURSOR_PLACEMENT }
   local dialogue = FieldDialogueController.new({
+    audio = { play = function() end },
     layout = function()
       return {
         pages = pages,
@@ -1447,6 +1448,7 @@ function T.gender_question_stays_visible_through_selection_and_confirmation()
   local byeTokens = { { kind = "glyph", text = "BYE", code = 2, raw = { 2 } } }
   local cursor = { cycle = { 0, 1, 2, 1 }, framePrinterTicks = 9, placement = DIALOGUE_CURSOR_PLACEMENT }
   local dialogue = FieldDialogueController.new({
+    audio = { play = function() end },
     layout = function(message)
       return {
         pages = { { lines = { { tokens = message.tokens, width = 0 } }, breakKind = "eos" } },
@@ -1614,6 +1616,7 @@ function T.repeated_gender_question_stays_visible_through_selection()
   local helloTokens = { { kind = "glyph", text = "HELLO", code = 1, raw = { 1 } } }
   local cursor = { cycle = { 0, 1, 2, 1 }, framePrinterTicks = 9, placement = DIALOGUE_CURSOR_PLACEMENT }
   local dialogue = FieldDialogueController.new({
+    audio = { play = function() end },
     layout = function(message)
       return {
         pages = { { lines = { { tokens = message.tokens, width = 0 } }, breakKind = "eos" } },

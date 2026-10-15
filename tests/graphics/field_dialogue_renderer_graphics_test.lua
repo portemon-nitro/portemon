@@ -233,6 +233,7 @@ function T.a_closed_controller_draws_nothing_and_changes_no_state(scope)
   local lg = love.graphics
   local dialogue = renderer(scope)
   local controller = FieldDialogueController.new({
+    audio = { play = function() end },
     layout = function()
       return { pages = {}, warnings = {}, lineHeight = 0, lineSpacing = 0 }
     end,

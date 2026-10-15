@@ -41,7 +41,7 @@ local function controller(pages, opts)
       glyphBudget = 1,
       abAcceleration = true,
     },
-    audio = opts.audio,
+    audio = opts.audio or { play = function() end },
     continueCursor = opts.continueCursor or CURSOR,
     onPrinterCallback = opts.onPrinterCallback,
   })
@@ -302,9 +302,20 @@ function T.fixed_ticks_reveal_expected_glyph_count()
   Assert.equal(c:status().state, "WAITING_CLOSE")
 end
 
+function T.audio_host_is_required()
+  local ok = pcall(FieldDialogueController.new, {
+    layout = function()
+      return { pages = {}, warnings = {}, lineHeight = 16, lineSpacing = 0 }
+    end,
+    continueCursor = CURSOR,
+  })
+  Assert.isFalse(ok, "a dialogue without an audio host would advance silently")
+end
+
 function T.fastest_reveals_consecutive_source_glyphs_without_skipping()
   local tokens = { glyph("A", 1), glyph("B", 2), glyph("C", 3) }
   local c = FieldDialogueController.new({
+    audio = { play = function() end },
     layout = function()
       return { pages = { page({ line(tokens) }, "eos") }, warnings = {}, lineHeight = 16, lineSpacing = 0 }
     end,
@@ -321,6 +332,7 @@ end
 function T.default_policy_is_fastest()
   local tokens = { glyph("A", 1), glyph("B", 2), glyph("C", 3) }
   local c = FieldDialogueController.new({
+    audio = { play = function() end },
     layout = function()
       return { pages = { page({ line(tokens) }, "eos") }, warnings = {}, lineHeight = 16, lineSpacing = 0 }
     end,
@@ -729,6 +741,7 @@ end
 -- fixed printer update, with a final partial step when needed.
 function T.scroll_break_moves_exactly_one_line_in_fixed_increments()
   local c = FieldDialogueController.new({
+    audio = { play = function() end },
     layout = function()
       return {
         pages = {
@@ -813,6 +826,7 @@ end
 
 function T.malformed_message_fires_error_once_and_stays_closed()
   local c = FieldDialogueController.new({
+    audio = { play = function() end },
     layout = function()
       error(Errors.new("FONT_GLYPH_MISSING", "fixture layout failure", { code = 0x9999 }))
     end,

@@ -685,6 +685,7 @@ end
 local function productionHostWithPages(pages)
   local provider = assert(FieldMessageProvider.new(cacheWith({ [901] = nameBankArtifact(901, "AB", "AB") })))
   local controller = FieldDialogueController.new({
+    audio = { play = function() end },
     layout = function()
       return { pages = pages, warnings = {}, lineHeight = 16, lineSpacing = 0 }
     end,

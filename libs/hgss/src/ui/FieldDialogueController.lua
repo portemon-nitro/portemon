@@ -129,7 +129,7 @@ end
 ---@field layout fun(message: FieldMessageProvider.FormattedMessage): DialogueLayout.Result
 ---@field policy { interGlyphDelay: integer, glyphBudget: integer, abAcceleration: boolean }?
 ---@field printerDelay integer?
----@field audio table<string, unknown>? { play: function(self: table<string, unknown>, soundRef: string) }
+---@field audio table<string, unknown> { play: function(self: table<string, unknown>, soundRef: string) }
 ---@field continueCursor { cycle: integer[], framePrinterTicks: integer }?
 ---@field onPrinterCallback fun(token: MessageToken)?
 
@@ -139,6 +139,10 @@ function FieldDialogueController.new(opts)
   assert(
     type(opts) == "table" and type(opts.layout) == "function",
     "FieldDialogueController requires a layout function"
+  )
+  assert(
+    type(opts.audio) == "table" and type(opts.audio.play) == "function",
+    "FieldDialogueController requires an audio host with play"
   )
   local policy = opts.policy
     or (opts.printerDelay and { interGlyphDelay = opts.printerDelay, glyphBudget = 1, abAcceleration = true })
@@ -700,10 +704,7 @@ function FieldDialogueController:step(snapshot)
     end
   elseif self._state == "WAITING_BOUNDARY" or self._state == "WAITING_CLOSE" then
     if sourceNew then
-      if self._audio then
-        assert(type(self._audio.play) == "function", "dialogue audio host must provide play")
-        self._audio:play("SEQ_SE_DP_SELECT")
-      end
+      self._audio:play("SEQ_SE_DP_SELECT")
       if self._state == "WAITING_BOUNDARY" then
         local page = assert(self._pages[self._pageIndex])
         if continuationKind(page) == "scroll" then

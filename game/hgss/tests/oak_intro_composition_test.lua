@@ -123,8 +123,9 @@ function T.tests.composition_trusts_published_intro_manifest_without_revalidatin
       releaseBank = function() end,
     }
   end)
+  local sound = {}
   rawset(GameAudio, "compose", function()
-    return { sound = {}, sink = { release = function() end } }
+    return { sound = sound, sink = { release = function() end } }
   end)
   rawset(FieldTextRenderer, "new", function()
     return {}
@@ -132,7 +133,9 @@ function T.tests.composition_trusts_published_intro_manifest_without_revalidatin
   rawset(FieldDialogueRenderer, "new", function()
     return {}
   end)
-  rawset(FieldDialogueController, "new", function()
+  local dialogueOptions
+  rawset(FieldDialogueController, "new", function(options)
+    dialogueOptions = options
     return {}
   end)
   rawset(OakIntroController, "new", function()
@@ -179,6 +182,7 @@ function T.tests.composition_trusts_published_intro_manifest_without_revalidatin
   Assert.equal(calls, 0, "the comprehensive intro validator must not run during trusted composition")
   Assert.equal(state.trusted, true)
   Assert.equal(composed.manifest, introManifest, "composition retains the published intro manifest")
+  Assert.equal(dialogueOptions.audio, sound, "the Oak dialogue plays its advance effect through the intro audio")
 end
 
 function T.tests.random_u32_provider_returns_nonconstant_uint32_values()

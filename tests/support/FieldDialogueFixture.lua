@@ -192,6 +192,7 @@ function FieldDialogueFixture.openDialogue(text, frameIndex)
     { kind = "glyph", code = 2, text = "B", raw = { 2 } },
   }
   local controller = FieldDialogueController.new({
+    audio = { play = function() end },
     layout = function()
       return {
         pages = { { lines = { { tokens = tokens, width = 12 } }, breakKind = "eos" } },

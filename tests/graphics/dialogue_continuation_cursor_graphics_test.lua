@@ -91,6 +91,7 @@ T["renderer_is_passive_and_uses_layout_cursor"] = function(scope)
   if not status.waiting then
     local FieldDialogueController = require("libs.hgss.src.ui.FieldDialogueController")
     local ctrl2 = FieldDialogueController.new({
+      audio = { play = function() end },
       layout = function()
         return {
           pages = {

@@ -173,6 +173,7 @@ function OakIntroComposition.compose(options)
     end
     local dialogueController = FieldDialogueController.new({
       layout = layoutDialogue,
+      audio = audio.sound,
       continueCursor = uiManifest.dialogueFrames.continueCursor,
     })
     local controller = OakIntroController.new({
