@@ -598,7 +598,19 @@ function T.v8_migration_adds_only_the_companion_bucket()
   Assert.equal(migrated.schema, GameSave.SCHEMA, "the v8 step advances the envelope")
   Assert.equal(source.schema, GameSave.LEGACY_V8_SCHEMA, "migration leaves its input untouched")
   Assert.isNil(source.pokegear, "migration never mutates its source record")
-  Assert.deepEqual(migrated.playerData, source.playerData, "migration preserves the player bucket exactly")
+  local expectedProfile = { runningShoes = false, runningShoesLock = false }
+  for key, value in pairs(source.playerData.profile) do
+    expectedProfile[key] = value
+  end
+  local expectedPlayerData = { profile = expectedProfile }
+  for key, value in pairs(source.playerData) do
+    expectedPlayerData[key] = expectedPlayerData[key] or value
+  end
+  Assert.deepEqual(
+    migrated.playerData,
+    expectedPlayerData,
+    "migration preserves the player bucket and adds the running shoe defaults"
+  )
   Assert.deepEqual(migrated.world, source.world, "migration preserves world flags and variables exactly")
   Assert.deepEqual(migrated.party, source.party, "migration preserves the party exactly")
   Assert.deepEqual(migrated.bag, source.bag, "migration preserves the bag exactly")
