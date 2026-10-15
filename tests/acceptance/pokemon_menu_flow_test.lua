@@ -18,7 +18,7 @@ local FLOW_MODULE = "game.hgss.src.field.PokemonMenuFlow"
 local T = {
   metadata = {
     capabilities = { "rom_dump", "derived_assets" },
-    derivedAssets = { "field-runtime", "audio-bank:730", "map-data:7", "map:7", "pc:global", "summary:global" },
+    derivedAssets = { "field-runtime", "audio-bank:730", "map-data:7", "map:7", "pc:global", "move-icons:global", "summary:global" },
     tags = { "party", "bag", "flow" },
   },
   tests = {},

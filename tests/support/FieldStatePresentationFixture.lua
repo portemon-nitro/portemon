@@ -12,6 +12,8 @@ local MeshWriter = require("libs.assets.src.model.MeshWriter")
 local PngWriter = require("libs.assets.src.PngWriter")
 local PartyCache = require("libs.assets.src.PartyCache")
 local BagCache = require("libs.assets.src.BagCache")
+local MoveIconCache = require("libs.assets.src.MoveIconCache")
+local MoveIconFixture = require("tests.support.MoveIconFixture")
 local MartCache = require("libs.assets.src.MartCache")
 local ItemCache = require("libs.assets.src.ItemCache")
 local MonCache = require("libs.assets.src.MonCache")
@@ -366,6 +368,12 @@ function FieldStatePresentationFixture.cache()
   -- Every image the validated manifest references, so the eager bag
   -- presentation resources resolve during FieldState construction.
   for _, path in ipairs(BagCache.referencedPaths(bagManifest)) do
+    cache:write(path, solidPng(32, 32))
+  end
+  -- The shared move icons the Bag and Summary renderers read.
+  local moveIcons = MoveIconFixture.manifest()
+  cache:writeLua(MoveIconCache.manifestPath(), moveIcons)
+  for _, path in ipairs(MoveIconCache.referencedPaths(moveIcons)) do
     cache:write(path, solidPng(32, 32))
   end
   local martManifest = MartFixture.manifest()

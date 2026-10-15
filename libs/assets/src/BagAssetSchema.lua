@@ -29,7 +29,7 @@ local InteractiveValidation = require("libs.assets.src.BagInteractiveValidation"
 ---@class BagAssetSchema
 local BagAssetSchema = {}
 
-BagAssetSchema.SCHEMA = "g4-bag-assets-v17"
+BagAssetSchema.SCHEMA = "g4-bag-assets-v18"
 BagAssetSchema.PANE_WIDTH = 256
 BagAssetSchema.PANE_HEIGHT = 192
 BagAssetSchema.TAB_COUNT = 8
@@ -55,7 +55,7 @@ local VALIDATION_CONSTANTS = {
   STATE_COUNT = BagAssetSchema.STATE_COUNT,
 }
 
--- Full manifest validation remains the one public v17 admission boundary.
+-- Full manifest validation remains the one public v18 admission boundary.
 -- Section owners report their first fault in the established hero/interactive
 -- order before the source-identity sweep.
 function BagAssetSchema.assertManifest(manifest)

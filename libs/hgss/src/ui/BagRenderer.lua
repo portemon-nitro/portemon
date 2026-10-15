@@ -19,6 +19,7 @@
 -- state it touches.
 
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
+local MoveIconCache = require("libs.assets.src.MoveIconCache")
 local NativeDisplay = require("libs.ui.src.NativeDisplay")
 local BagSave = require("libs.hgss.src.save.BagSave")
 local FieldTextWindowRenderer = require("libs.hgss.src.ui.FieldTextWindowRenderer")
@@ -209,10 +210,11 @@ function BagRenderer.new(opts)
     local moveSummary = hero.moveSummary
     if moveSummary ~= nil then
       acquire("moveSummaryBackground", moveSummary.background)
-      for key, visual in pairs(moveSummary.typeIcons) do
+      local moveIcons = MoveIconCache.loadManifest(cacheFs)
+      for key, visual in pairs(moveIcons.types) do
         acquire("moveType:" .. key, visual)
       end
-      for key, visual in pairs(moveSummary.categoryIcons) do
+      for key, visual in pairs(moveIcons.categories) do
         acquire("moveCategory:" .. key, visual)
       end
     end

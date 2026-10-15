@@ -31,7 +31,7 @@ end
 function T.compiled_action_and_move_follow_their_retail_state_variants(romFs)
   local bundle = compile(romFs)
   local manifest = assert(bundle.manifest)
-  Assert.equal(manifest.schema, "g4-bag-assets-v17", "the compiled bundle carries the current contract")
+  Assert.equal(manifest.schema, "g4-bag-assets-v18", "the compiled bundle carries the current contract")
   local backgrounds = assert(manifest.interactive.backgrounds, "the bundle publishes backgrounds")
   local action = assert(backgrounds.action, "the bundle publishes the action background")
   local move = assert(backgrounds.move, "the bundle publishes the move background")
@@ -43,7 +43,10 @@ function T.compiled_action_and_move_follow_their_retail_state_variants(romFs)
     ((move[POCKET] or {})[1] or (move[POCKET] or {})["1"] or {}).none,
     "the move background varies with the visible count and origin row"
   )
-  Assert.isTrue(actionVariant.image ~= moveVariant.image, "action and move publish distinct retail state surfaces")
+  Assert.isTrue(
+    actionVariant.image ~= moveVariant.image,
+    "action and move publish distinct retail state surfaces"
+  )
   Assert.isNil(backgrounds.confirmation, "the toss flow owns no separate background")
 end
 
@@ -56,8 +59,10 @@ function T.quantity_keeps_the_selected_panel_surface(romFs)
     (quantity[POCKET] or {})[1] or (quantity[POCKET] or {})["1"],
     "the quantity background varies with the visible count"
   )
-  local actionVariant =
-    assert((action[POCKET] or {})[1] or (action[POCKET] or {})["1"], "setup resolves the matching action variant")
+  local actionVariant = assert(
+    (action[POCKET] or {})[1] or (action[POCKET] or {})["1"],
+    "setup resolves the matching action variant"
+  )
   Assert.isTrue(
     quantityVariant.image ~= actionVariant.image,
     "quantity layers its own overlay over the retained selected-item surface"
@@ -76,7 +81,10 @@ function T.bag_effect_banks_belong_to_the_field_runtime_closure(romFs)
   }
   local jobs = runtimeJobSet()
   for _, symbol in ipairs(symbols) do
-    local sequenceId = assert(index.sequenceBySymbol[symbol], "the real audio plan resolves " .. symbol)
+    local sequenceId = assert(
+      index.sequenceBySymbol[symbol],
+      "the real audio plan resolves " .. symbol
+    )
     local record = assert(index.sequences[sequenceId], symbol .. " has an index record")
     local bankId = assert(record.bankId, symbol .. " names its sound bank")
     Assert.isTrue(

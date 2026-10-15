@@ -340,8 +340,6 @@ function HeroValidation.validate(heroData, constantsForValidation)
       text = true,
       typeCenter = true,
       categoryCenter = true,
-      typeIcons = true,
-      categoryIcons = true,
     }, schemaContext, "hero.moveSummary")
     Checks.checkImage(summary.background, schemaContext, "hero.moveSummary.background")
     local labels = summary.labels
@@ -392,40 +390,6 @@ function HeroValidation.validate(heroData, constantsForValidation)
       schemaConstants.PANE_WIDTH,
       schemaConstants.PANE_HEIGHT
     )
-    local function checkIconMap(value, keys, what)
-      if type(value) ~= "table" then
-        Checks.reject(what .. " must be a record", schemaContext)
-      end
-      local allowed = {}
-      for _, key in ipairs(keys) do
-        allowed[key] = true
-      end
-      Checks.checkKeys(value, allowed, schemaContext, what)
-      for _, key in ipairs(keys) do
-        Checks.checkVisual(value[key], schemaContext, what .. "." .. key)
-      end
-    end
-    checkIconMap(summary.typeIcons, {
-      "normal",
-      "fighting",
-      "flying",
-      "poison",
-      "ground",
-      "rock",
-      "bug",
-      "ghost",
-      "steel",
-      "mystery",
-      "fire",
-      "water",
-      "grass",
-      "electric",
-      "psychic",
-      "ice",
-      "dragon",
-      "dark",
-    }, "hero.moveSummary.typeIcons")
-    checkIconMap(summary.categoryIcons, { "physical", "special", "status" }, "hero.moveSummary.categoryIcons")
     local model = heroSection.model
     Checks.checkRecord(model, { male = true, female = true }, schemaContext, "hero.model")
     checkModel(model.male, schemaContext, "hero.model.male")

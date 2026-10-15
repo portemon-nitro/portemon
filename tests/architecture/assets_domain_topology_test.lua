@@ -75,6 +75,8 @@ local SHARED = {
   "ItemCache",
   "MartAssetSchema",
   "MartCache",
+  "MoveIconAssetSchema",
+  "MoveIconCache",
   "MapAssetCache",
   "MenuProtocol",
   "MonAssetSchema",

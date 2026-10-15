@@ -39,6 +39,7 @@ local T = {
       "map:33",
       "map:60",
       "summary:global",
+      "move-icons:global",
     },
     tags = { "menu", "production" },
   },

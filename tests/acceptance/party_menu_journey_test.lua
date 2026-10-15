@@ -28,6 +28,7 @@ local T = {
       "map-data:7",
       "map:7",
       "summary:global",
+      "move-icons:global",
     },
     tags = { "party", "bag", "journey" },
   },

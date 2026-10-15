@@ -240,6 +240,7 @@ local FIELD_RUNTIME_JOBS = {
   "trainers:global",
   "encounters:global",
   "bag:global",
+  "move-icons:global",
   "apricorn-box:global",
   "party:global",
   "pc:global",
@@ -538,6 +539,16 @@ local function executeBag(artifact, context)
     return BagAssetCompiler.compile(romFs)
   end, "bag")
   return BagCacheWriter.stage(artifact, bundle)
+end
+
+local function executeMoveIcons(artifact, context)
+  local MoveIconAssetCompiler = require("romdump.src.digest.ui.MoveIconAssetCompiler")
+  local MoveIconCacheWriter = require("romdump.src.digest.ui.MoveIconCacheWriter")
+  local romFs = assert(context.romFs, "move icon jobs require a source reader")
+  local bundle = compileOrRaise(function()
+    return MoveIconAssetCompiler.compile(romFs)
+  end, "move icons")
+  return MoveIconCacheWriter.stage(artifact, bundle)
 end
 
 local function executeApricornBox(artifact, context)
@@ -1088,6 +1099,13 @@ end
 
 ---@param check ArtifactJobs.ReadinessCheck
 ---@return boolean
+local function validateMoveIcons(check)
+  local MoveIconCache = require("libs.assets.src.MoveIconCache")
+  return MoveIconCache.isReady(check.cacheFs, check.marker)
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
 local function validateApricornBox(check)
   local ApricornBoxAssetCache = require("libs.assets.src.ApricornBoxAssetCache")
   return ApricornBoxAssetCache.isReady(check.cacheFs, check.marker)
@@ -1564,6 +1582,11 @@ DESCRIPTORS = {
     execute = executeBag,
     validate = validateBag,
   },
+  ["move-icons"] = {
+    size = "normal",
+    execute = executeMoveIcons,
+    validate = validateMoveIcons,
+  },
   ["apricorn-box"] = {
     size = "normal",
     dependencies = dependenciesApricornBox,
@@ -1807,6 +1830,7 @@ local COMPLETE_STATIC_GLOBALS = {
   "items",
   "follower-interactions",
   "bag",
+  "move-icons",
   "apricorn-box",
   "party",
   "pc",

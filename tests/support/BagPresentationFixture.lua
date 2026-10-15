@@ -84,32 +84,6 @@ end
 
 ---@return table<string, unknown>
 local function bagMoveSummary()
-  local function icon(key)
-    return { image = "assets/generated/bag/move-" .. key .. ".png", width = 64, height = 16 }
-  end
-  local typeIcons = {}
-  for _, key in ipairs({
-    "normal",
-    "fighting",
-    "flying",
-    "poison",
-    "ground",
-    "rock",
-    "bug",
-    "ghost",
-    "steel",
-    "mystery",
-    "fire",
-    "water",
-    "grass",
-    "electric",
-    "psychic",
-    "ice",
-    "dragon",
-    "dark",
-  }) do
-    typeIcons[key] = icon(key)
-  end
   return {
     background = bagImageRef("assets/generated/bag/hero-move-summary.png"),
     labels = {
@@ -132,8 +106,6 @@ local function bagMoveSummary()
     },
     typeCenter = { x = 48, y = 112 },
     categoryCenter = { x = 144, y = 112 },
-    typeIcons = typeIcons,
-    categoryIcons = { physical = icon("physical"), special = icon("special"), status = icon("status") },
   }
 end
 

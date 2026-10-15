@@ -44,7 +44,7 @@ end
 
 local function manifest()
   local result = BagPresentationFixture.manifest()
-  result.schema = "g4-bag-assets-v17"
+  result.schema = "g4-bag-assets-v18"
   result.interactive.sale = {
     pressTicks = result.interactive.overlays.quantity.pressTicks,
     quantityBackground = visual("test/bag/sale-quantity.png"),

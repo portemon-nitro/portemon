@@ -12,6 +12,7 @@ local Assert = require("tests.support.Assert")
 local BagLayout = require("libs.hgss.src.ui.BagLayout")
 local BagRenderer = require("libs.hgss.src.ui.BagRenderer")
 local CacheFs = require("libs.storage.src.CacheFs")
+local MoveIconCache = require("libs.assets.src.MoveIconCache")
 local FakeCache = require("tests.support.FakeCache")
 local BagPresentationFixture = require("tests.support.BagPresentationFixture")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
@@ -492,12 +493,6 @@ local function moveSummaryManifest()
     },
     typeCenter = { x = 48, y = 112 },
     categoryCenter = { x = 144, y = 112 },
-    typeIcons = {
-      normal = { image = "bag/move-type-normal.png", width = 64, height = 16, offset = { x = -32, y = -8 } },
-    },
-    categoryIcons = {
-      physical = { image = "bag/move-category-physical.png", width = 64, height = 16, offset = { x = -32, y = -8 } },
-    },
   }
   return manifested
 end
@@ -512,13 +507,26 @@ local function moveSummaryCache(reads)
   function wrapped:write(path, data)
     return cache:write(path, data)
   end
-  for _, path in ipairs({
-    "bag/hero-move-summary.png",
-    "bag/move-type-normal.png",
-    "bag/move-category-physical.png",
-  }) do
-    wrapped:write(path, "png-bytes")
+  function wrapped:loadLua(path)
+    return cache:loadLua(path)
   end
+  wrapped:write("bag/hero-move-summary.png", "png-bytes")
+  -- The shared move-icons family supplies the type and category images.
+  local function icons(keys, prefix)
+    local records = {}
+    for _, key in ipairs(keys) do
+      local path = MoveIconCache.assetDir() .. "/" .. prefix .. "-" .. key .. ".png"
+      records[key] = { image = path, width = 64, height = 16, offset = { x = -32, y = -8 } }
+      wrapped:write(path, "png-bytes")
+    end
+    return records
+  end
+  local manifested = {
+    schema = MoveIconCache.SCHEMA,
+    types = icons(MoveIconCache.TYPE_KEYS, "type"),
+    categories = icons(MoveIconCache.CATEGORY_KEYS, "category"),
+  }
+  cache:writeLua(MoveIconCache.manifestPath(), manifested)
   return wrapped
 end
 

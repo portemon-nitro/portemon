@@ -17,6 +17,7 @@ local T = {
       "map:7",
       "pc:global",
       "summary:global",
+      "move-icons:global",
     },
     tags = { "field", "pc", "acceptance", "lifecycle" },
   },

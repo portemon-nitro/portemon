@@ -439,7 +439,15 @@ DerivedAssetContract.mart = {
 -- class; the bag manifest references no icon pixels.
 DerivedAssetContract.bag = {
   cacheFormat = "bag-cache-v2",
-  schema = "g4-bag-assets-v17",
+  schema = "g4-bag-assets-v18",
+}
+
+-- The move-icons class carries the type and damage-category icon sprites
+-- every move presentation shares (Bag move summary, Summary move rows):
+-- one static image per semantic type and category key.
+DerivedAssetContract.moveIcons = {
+  cacheFormat = "move-icon-cache-v1",
+  schema = "g4-move-icons-v1",
 }
 
 DerivedAssetContract.apricornBox = {

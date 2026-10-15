@@ -13,10 +13,8 @@ local BagCache = require("libs.assets.src.BagCache")
 local BagSources = require("romdump.src.config.BagSources")
 local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
 local G2dRasterizer = require("romdump.src.digest.ui.G2dRasterizer")
-local Lz10 = require("romdump.src.digest.Lz10")
 local HgssArchives = require("romdump.src.config.HgssArchives")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
-local MonSources = require("romdump.src.config.MonSources")
 local Hashing = require("romdump.src.digest.Hashing")
 local PngReader = require("tests.support.PngReader")
 local RomSuite = require("tests.rom.support.RomSuite")
@@ -360,13 +358,19 @@ function T.selection_entry_compiles_the_retail_blink_as_a_one_shot_sequence(romF
   Assert.deepEqual(BagSources.messages.templates.selectedItem, { bank = 10, index = 43 })
   local bundle = bundleFor(romFs, versionId)
   local manifest = bundle.manifest
-  local entry =
-    assert(manifest.interactive.selectionEntry, "the compiled bundle publishes its selection-entry sequence")
+  local entry = assert(
+    manifest.interactive.selectionEntry,
+    "the compiled bundle publishes its selection-entry sequence"
+  )
   Assert.equal(entry.playback, "once", "the selection entry plays exactly once")
   Assert.equal(#entry.frames, 4, "animation 41 carries four blink frames")
   local total = 0
   for index, frame in ipairs(entry.frames) do
-    Assert.equal(frame.durationTicks, 3, "selection frame " .. index .. " keeps its source duration")
+    Assert.equal(
+      frame.durationTicks,
+      3,
+      "selection frame " .. index .. " keeps its source duration"
+    )
     total = total + frame.durationTicks
     local width, height, rgba =
       PngReader.rgba(assert(bundle.assets[frame.image], "selection frame " .. index .. " must compile"))
@@ -421,46 +425,6 @@ function T.marker_dependencies_cover_messages_and_marker_member(romFs, versionId
   Assert.notNil(seen["bag_ui:member:37"], "the marker source member participates in the marker")
   Assert.deepEqual(bundle.dependencies.selection.messages, BagSources.messages)
   Assert.deepEqual(bundle.dependencies.selection.registration, BagSources.registration)
-end
-
--- The move-summary NARC members enter the cache marker in semantic id order:
--- shared palette/cell/animation first, then type members 0..17, then
--- category members 0..2. The expected sequence is derived from the
--- authoritative source tables in explicit numeric order, never from Lua
--- table traversal, so the hashed dependency array has a defined order.
-function T.move_summary_marker_dependencies_follow_semantic_id_order(romFs, versionId)
-  local bundle = bundleFor(romFs, versionId)
-  local facts = assert(BagSources.moveSummary, "the bag sources must publish move summary facts")
-  local expected = {
-    "narc8:member:" .. facts.shared.palette,
-    "narc8:member:" .. facts.shared.cell,
-    "narc8:member:" .. facts.shared.animation,
-  }
-  for typeId = 0, 17 do
-    Assert.notNil(MonSources.typeKeys[typeId], "move type " .. typeId .. " must keep its semantic key")
-    local memberId = assert(facts.typeChars[typeId], "move type " .. typeId .. " must keep its source member")
-    expected[#expected + 1] = "narc8:member:" .. memberId
-  end
-  for categoryId = 0, 2 do
-    Assert.notNil(
-      MonSources.damageCategories[categoryId],
-      "move category " .. categoryId .. " must keep its semantic key"
-    )
-    local memberId =
-      assert(facts.categoryChars[categoryId], "move category " .. categoryId .. " must keep its source member")
-    expected[#expected + 1] = "narc8:member:" .. memberId
-  end
-  local actual = {}
-  for _, dependency in ipairs(bundle.dependencies.dependencies) do
-    if dependency.name:find("narc8:member:", 1, true) == 1 then
-      actual[#actual + 1] = dependency.name
-    end
-  end
-  Assert.deepEqual(
-    actual,
-    expected,
-    "move summary marker dependencies must follow shared, type id, then category id order"
-  )
 end
 
 function T.runtime_manifest_carries_no_source_identities(romFs, versionId)
@@ -552,7 +516,8 @@ end
 function T.quantity_background_omits_the_generic_cancel_chrome(romFs, versionId)
   local bundle = bundleFor(romFs, versionId)
   local manifest = bundle.manifest
-  local face = assert(manifest.interactive.feedback.cancelFace.normal, "the manifest publishes the generic cancel face")
+  local face =
+    assert(manifest.interactive.feedback.cancelFace.normal, "the manifest publishes the generic cancel face")
   local faceWidth, faceHeight, faceRgba =
     PngReader.rgba(assetBytes(assert(bundle.assets[face.image], "the generic cancel face bytes must compile")))
   Assert.equal(faceWidth, face.width, "the generic cancel face keeps its compiled width")
@@ -565,7 +530,8 @@ function T.quantity_background_omits_the_generic_cancel_chrome(romFs, versionId)
     "the generic cancel face sits inside the canonical pane"
   )
   local function backgroundCarriesChrome(background, label)
-    local width, _, rgba = PngReader.rgba(assetBytes(assert(bundle.assets[background.image], label .. " must compile")))
+    local width, _, rgba =
+      PngReader.rgba(assetBytes(assert(bundle.assets[background.image], label .. " must compile")))
     Assert.equal(width, 256, label .. " keeps the pane width")
     for y = 0, faceHeight - 1 do
       for x = 0, faceWidth - 1 do
@@ -805,7 +771,7 @@ end
 function T.pocket_strips_replay_the_retained_palette_state(romFs, versionId)
   local bundle = bundleFor(romFs, versionId)
   local manifest = bundle.manifest
-  Assert.equal(manifest.schema, "g4-bag-assets-v17", "the rebuilt bag cache must publish the current contract")
+  Assert.equal(manifest.schema, "g4-bag-assets-v18", "the rebuilt bag cache must publish the current contract")
   local strips =
     assert(manifest.interactive.pocketTabs.strips, "the rebuilt manifest must publish one strip per active pocket")
   local keys = {}
@@ -1052,69 +1018,6 @@ function T.hero_edge_colors_carry_the_retail_table(romFs, versionId)
   }, "the compiled edge records match the retail table")
 end
 
--- Raw NARC members carry their transport wrapper: normalize LZ10 exactly as
--- the producer member reader does before handing bytes to the plain G2D
--- decoder. Uncompressed members pass through unchanged.
-local function plainMember(bytes)
-  if string.byte(bytes, 1) ~= 0x10 then
-    return bytes
-  end
-  return assert(Lz10.decode(bytes))
-end
-
-function T.narc8_move_summary_sources_decode_and_resolve_every_semantic_key(romFs, versionId)
-  local bundle = bundleFor(romFs, versionId)
-  local narc8 = assert(romFs:openNarc("NARC_a_0_0_8"))
-  local function assertDecodes(kind, memberId)
-    local bytes = assert(narc8:readMember(memberId), "NARC8 member " .. memberId .. " must exist")
-    local record, err = G2dDecoder[kind](plainMember(bytes), { label = "NARC8 member " .. memberId })
-    Assert.notNil(record, "NARC8 member " .. memberId .. " must decode: " .. (err and err.message or "?"))
-  end
-  assertDecodes("decodePalette", 74)
-  assertDecodes("decodeCell", 242)
-  assertDecodes("decodeAnimation", 243)
-  for _, memberId in ipairs({
-    221,
-    222,
-    223,
-    224,
-    225,
-    226,
-    227,
-    228,
-    229,
-    230,
-    231,
-    233,
-    234,
-    235,
-    236,
-    237,
-    238,
-    241,
-    244,
-    245,
-    246,
-  }) do
-    assertDecodes("decodeChar", memberId)
-  end
-
-  local summary = assert(bundle.manifest.hero.moveSummary, "the compiled bundle must publish semantic move visuals")
-  local typeCount, categoryCount = 0, 0
-  for key, visual in pairs(summary.typeIcons) do
-    typeCount = typeCount + 1
-    Assert.isTrue(type(visual.image) == "string" and #bundle.assets[visual.image] > 0, "type " .. key .. " has pixels")
-  end
-  for key, visual in pairs(summary.categoryIcons) do
-    categoryCount = categoryCount + 1
-    Assert.isTrue(
-      type(visual.image) == "string" and #bundle.assets[visual.image] > 0,
-      "category " .. key .. " has pixels"
-    )
-  end
-  Assert.equal(typeCount, 18, "every reachable HGSS move type resolves one visual")
-  Assert.equal(categoryCount, 3, "every move category resolves one visual")
-end
 
 -- The action face compiles from its audited selector into a nonempty
 -- anchored visual: animation 22 with palette 8 must rasterize to an image
@@ -1129,7 +1032,8 @@ function T.action_face_compiles_nonempty_from_its_audited_selector(romFs, versio
   local actionMenu =
     assert(bundle.manifest.interactive.overlays.actionMenu, "the compiled bundle publishes its action menu")
   local face = assert(actionMenu.face, "the compiled bundle publishes its action face")
-  local width, height, rgba = PngReader.rgba(assert(bundle.assets[face.image], "the action face bytes must compile"))
+  local width, height, rgba =
+    PngReader.rgba(assert(bundle.assets[face.image], "the action face bytes must compile"))
   Assert.equal(width, face.width, "the action face image keeps its compiled width")
   Assert.equal(height, face.height, "the action face image keeps its compiled height")
   Assert.isTrue(width > 0 and height > 0, "the action face has a nonempty extent")

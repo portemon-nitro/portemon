@@ -1290,83 +1290,10 @@ local function compileTossPrompt()
   }
 end
 
-local function compileMoveSummary(moveArchive, messageArchive, dependencies, assets)
+-- The TM/HM summary labels and placement. The type and category icons are
+-- the shared move-icons family; the Bag only owns where they sit.
+local function compileMoveSummary(messageArchive, dependencies)
   local facts = assert(BagSources.moveSummary)
-  local function materializeMovePalette(palette)
-    -- The retail loader places the packed NARC8 palette at VRAM bank 4; the
-    -- source selects banks 4..6 after applying the per-icon override. The
-    -- generic rasterizer indexes one flat palette, so preserve that loader
-    -- base explicitly at the producer boundary.
-    local colors = {}
-    for index = 1, 4 * 16 do
-      colors[index] = { r = 0, g = 0, b = 0 }
-    end
-    for index, color in ipairs(palette.colors) do
-      colors[4 * 16 + index] = color
-    end
-    return { colors = colors }
-  end
-  local shared = {
-    materializeMovePalette(
-      decode(
-        "decodePalette",
-        readMember(moveArchive, facts.shared.palette, "move-summary-palette", dependencies, "narc8"),
-        "move-summary-palette"
-      )
-    ),
-    decode(
-      "decodeCell",
-      readMember(moveArchive, facts.shared.cell, "move-summary-cell", dependencies, "narc8"),
-      "move-summary-cell"
-    ),
-    decode(
-      "decodeAnimation",
-      readMember(moveArchive, facts.shared.animation, "move-summary-animation", dependencies, "narc8"),
-      "move-summary-animation"
-    ),
-  }
-  local typeIcons, categoryIcons = {}, {}
-  local MonSources = require("romdump.src.config.MonSources")
-  for typeId = 0, 17 do
-    local key = assert(MonSources.typeKeys[typeId], "move type semantic key is missing")
-    local memberId = assert(facts.typeChars[typeId], "move type source member is missing")
-    local sprite = {
-      decode(
-        "decodeChar",
-        readMember(moveArchive, memberId, "move-type-" .. key, dependencies, "narc8"),
-        "move-type-" .. key
-      ),
-      shared[1],
-      shared[2],
-      shared[3],
-    }
-    typeIcons[key] = compileVisual(
-      sprite,
-      { animation = facts.shared.frame, palette = 4 + facts.typePaletteOverrides[typeId + 1] },
-      "move-type-" .. key,
-      assets
-    )
-  end
-  for categoryId = 0, 2 do
-    local key = assert(MonSources.damageCategories[categoryId], "move category semantic key is missing")
-    local memberId = assert(facts.categoryChars[categoryId], "move category source member is missing")
-    local sprite = {
-      decode(
-        "decodeChar",
-        readMember(moveArchive, memberId, "move-category-" .. key, dependencies, "narc8"),
-        "move-category-" .. key
-      ),
-      shared[1],
-      shared[2],
-      shared[3],
-    }
-    categoryIcons[key] = compileVisual(
-      sprite,
-      { animation = facts.shared.frame, palette = 4 + facts.categoryPaletteOverrides[categoryId + 1] },
-      "move-category-" .. key,
-      assets
-    )
-  end
   local labels = {}
   local messageBanks = {}
   local function bankOf(bankId)
@@ -1383,8 +1310,6 @@ local function compileMoveSummary(moveArchive, messageArchive, dependencies, ass
     text = facts.text,
     typeCenter = facts.typeCenter,
     categoryCenter = facts.categoryCenter,
-    typeIcons = typeIcons,
-    categoryIcons = categoryIcons,
   }
 end
 
@@ -1667,24 +1592,7 @@ local function _compile(romFs)
   end
   assert(messageArchive ~= nil, "unavailable message archives fail above")
   local text, saleMessages = compileText(messageArchive, dependencies)
-  local moveArchive, moveArchiveErr = romFs:openNarc(BagSources.moveSummary.archive.symbol)
-  if moveArchive == nil then
-    error(
-      moveArchiveErr
-        or Errors.new(
-          BagAssetCompiler.ERROR.SOURCE_INVALID,
-          "move summary archive is unavailable",
-          { alias = BagSources.moveSummary.archive.symbol }
-        ),
-      0
-    )
-  end
-  assert(moveArchive ~= nil, "unavailable move summary archive fails above")
-  local moveInfo =
-    must(romFs:resolvedNarc(BagSources.moveSummary.archive.symbol), "move summary archive has no resolution")
-  local moveBytes = must(romFs:read(moveInfo.fileId), "move summary archive bytes are unavailable")
-  dependencies[#dependencies + 1] = { name = "narc8:narc", sha1 = Hashing.sha1hex(moveBytes) }
-  local moveSummary = compileMoveSummary(moveArchive, messageArchive, dependencies, assets)
+  local moveSummary = compileMoveSummary(messageArchive, dependencies)
   moveSummary.background = screenReferences["upper-alternate"]
   local sprites = compileSprites(archive, dependencies, assets)
   local backgrounds, saleQuantityBackground = compileLowerBackgrounds(lower, sprites.cancelFace, assets)

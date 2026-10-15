@@ -154,7 +154,11 @@ function T.contract_pins_the_current_asset_identities()
     },
     bag = {
       cacheFormat = "bag-cache-v2",
-      schema = "g4-bag-assets-v17",
+      schema = "g4-bag-assets-v18",
+    },
+    moveIcons = {
+      cacheFormat = "move-icon-cache-v1",
+      schema = "g4-move-icons-v1",
     },
     apricornBox = {
       cacheFormat = "apricorn-box-cache-v2",
@@ -270,7 +274,7 @@ function T.summary_family_carries_the_v4_manifest_schema()
   )
   Assert.equal(
     DerivedAssetContract.bag.schema,
-    "g4-bag-assets-v17",
+    "g4-bag-assets-v18",
     "the bag sibling identity survives the summary schema change"
   )
 end

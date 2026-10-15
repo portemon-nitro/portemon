@@ -518,6 +518,7 @@ function T.common_session_drives_bootstrap_complete_and_background_storm(romFs, 
       "starter-choice:global",
       "items:global",
       "bag:global",
+      "move-icons:global",
       "party:global",
       "spawns:global",
     }) do

@@ -359,19 +359,6 @@ local function fixture(opts)
   members[BagSources.sprites.cursor.palette + 1] = palette256()
   members[BagSources.sprites.cursor.anim + 1] = animData(4)
   members[BagSources.chars.registrationMarker + 1] = charData(26)
-  local moveMembers = {}
-  for index = 1, 247 do
-    moveMembers[index] = string.rep("\0", 4)
-  end
-  moveMembers[75] = palette256()
-  moveMembers[243] = cellData({ { { x = -32, y = -8, tile = 0, size = 1 } } })
-  moveMembers[244] = animData(1)
-  for _, memberId in pairs(BagSources.moveSummary.typeChars) do
-    moveMembers[memberId + 1] = charData(4)
-  end
-  for _, memberId in pairs(BagSources.moveSummary.categoryChars) do
-    moveMembers[memberId + 1] = charData(4)
-  end
   if opts.tamper then
     members = opts.tamper(members)
   end
@@ -393,34 +380,21 @@ local function fixture(opts)
   end
   local messageBytes = narc(orderedMembers)
   local bytes = narc(members)
-  local moveBytes = narc(moveMembers)
   local info = { fileId = 15, narcId = 15, path = "a/0/1/5", symbol = "NARC_a_0_1_5", alias = "bag_ui" }
   return {
     _version = "soulsilver",
     _metadata = { sha1 = "rom-sha" },
     resolvedNarc = function(_)
-      if _ == "NARC_a_0_0_8" then
-        return { fileId = 8, narcId = 8, symbol = "NARC_a_0_0_8", alias = "NARC_a_0_0_8" }
-      end
       return info
     end,
     read = function(_)
-      if _ == 8 then
-        return moveBytes
-      end
       return bytes
     end,
     openNarc = function(_, alias)
-      assert(
-        alias == "bag_ui" or alias == "messages" or alias == "NARC_a_0_0_8",
-        "unexpected archive " .. tostring(alias)
-      )
+      assert(alias == "bag_ui" or alias == "messages", "unexpected archive " .. tostring(alias))
       local Narc = require("libs.nds.src.nitro.Narc")
       if alias == "messages" then
         return assert(Narc.open(messageBytes, alias))
-      end
-      if alias == "NARC_a_0_0_8" then
-        return assert(Narc.open(moveBytes, alias))
       end
       return assert(Narc.open(bytes, alias))
     end,
@@ -921,7 +895,7 @@ local function syntheticBundle(marker)
     tabs[#tabs + 1] = { x = i * 32, y = 0, width = 32, height = 32 }
   end
   local manifest = {
-    schema = "g4-bag-assets-v17",
+    schema = "g4-bag-assets-v18",
     logicalSize = { width = 256, height = 192 },
     hero = {
       background = {
@@ -957,8 +931,6 @@ local function syntheticBundle(marker)
         },
         typeCenter = { x = 48, y = 112 },
         categoryCenter = { x = 144, y = 112 },
-        typeIcons = {},
-        categoryIcons = {},
       },
       model = { male = heroDescriptor("male"), female = heroDescriptor("female") },
       animations = {
@@ -1340,31 +1312,6 @@ local function syntheticBundle(marker)
     },
   }
   local assets = {}
-  for _, key in ipairs({
-    "normal",
-    "fighting",
-    "flying",
-    "poison",
-    "ground",
-    "rock",
-    "bug",
-    "ghost",
-    "steel",
-    "mystery",
-    "fire",
-    "water",
-    "grass",
-    "electric",
-    "psychic",
-    "ice",
-    "dragon",
-    "dark",
-  }) do
-    manifest.hero.moveSummary.typeIcons[key] = visualRef("assets/generated/bag/move-type-" .. key .. ".png")
-  end
-  for _, key in ipairs({ "physical", "special", "status" }) do
-    manifest.hero.moveSummary.categoryIcons[key] = visualRef("assets/generated/bag/move-category-" .. key .. ".png")
-  end
   manifest.interactive.sale = BagPresentationFixture.manifest().interactive.sale
   for _, path in ipairs(BagCache.referencedPaths(manifest)) do
     assets[path] = "payload:" .. path
@@ -1383,7 +1330,7 @@ function T.writer_publishes_the_class_and_reports_ready()
   Assert.isTrue(BagCacheWriter.write(cacheFs, bundle))
   Assert.isTrue(BagCacheWriter.isReady(cacheFs, bundle.marker))
   local loaded = BagCache.loadManifest(cacheFs)
-  Assert.equal(loaded.schema, "g4-bag-assets-v17")
+  Assert.equal(loaded.schema, "g4-bag-assets-v18")
   Assert.equal(loaded.hero.presentation.lights.count, 4)
   Assert.deepEqual(loaded.hero.presentation.lights.color, { r = 31, g = 31, b = 31 })
   Assert.equal(#loaded.hero.presentation.lights.vectors, 4)

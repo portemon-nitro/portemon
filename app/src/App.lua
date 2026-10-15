@@ -625,6 +625,9 @@ function App._syncDrawableSize()
 end
 
 function App.draw()
+  -- LÖVE keeps the color across frames, so every frame starts from white
+  -- instead of whatever the previous state last drew with.
+  love.graphics.setColor(1, 1, 1, 1)
   if App.state and App.state.draw then
     App.state:draw()
     return

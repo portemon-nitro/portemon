@@ -521,7 +521,7 @@ end
 
 local function validFocusManifest()
   local manifest = validManifest()
-  manifest.schema = "g4-bag-assets-v17"
+  manifest.schema = "g4-bag-assets-v18"
   manifest.interactive.sale = salePresentation()
   manifest.interactive.overlays.tossPrompt = { x = 200, y = 48, shape = "compact", initialSelection = "yes" }
   manifest.interactive.overlays.selectedItem = {
@@ -592,32 +592,6 @@ local function validFocusManifest()
     playback = "once",
     totalTicks = 5,
   }
-  local icon = function(key)
-    return { image = "assets/generated/bag/move-" .. key .. ".png", width = 64, height = 16 }
-  end
-  local typeIcons = {}
-  for _, key in ipairs({
-    "normal",
-    "fighting",
-    "flying",
-    "poison",
-    "ground",
-    "rock",
-    "bug",
-    "ghost",
-    "steel",
-    "mystery",
-    "fire",
-    "water",
-    "grass",
-    "electric",
-    "psychic",
-    "ice",
-    "dragon",
-    "dark",
-  }) do
-    typeIcons[key] = icon(key)
-  end
   manifest.hero.moveSummary = {
     background = imageRef("assets/generated/bag/hero-move-summary.png"),
     labels = {
@@ -640,8 +614,6 @@ local function validFocusManifest()
     },
     typeCenter = { x = 48, y = 112 },
     categoryCenter = { x = 144, y = 112 },
-    typeIcons = typeIcons,
-    categoryIcons = { physical = icon("physical"), special = icon("special"), status = icon("status") },
   }
   manifest.interactive.backgrounds.browse = countVariantBackgrounds()
   manifest.interactive.cancel = {
@@ -693,7 +665,7 @@ end
 -- scenario keeps the versioned focus fixture above.
 local function validTossManifest()
   local manifest = validFocusManifest()
-  manifest.schema = "g4-bag-assets-v17"
+  manifest.schema = "g4-bag-assets-v18"
   manifest.interactive.overlays.tossPrompt = { x = 200, y = 48, shape = "compact", initialSelection = "yes" }
   manifest.interactive.text.tossResult = {
     segments = {
@@ -1025,9 +997,9 @@ end
 -- The strip contract is the current focus-manifest shape above.
 
 function T.pocket_strips_and_edge_colors_validate_as_the_current_contract()
-  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v17")
-  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v17")
-  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v17")
+  Assert.equal(BagAssetSchema.SCHEMA, "g4-bag-assets-v18")
+  Assert.equal(DerivedAssetContract.bag.schema, "g4-bag-assets-v18")
+  Assert.equal(BagCache.SCHEMA, "g4-bag-assets-v18")
   Assert.equal(BagCache.FORMAT, "bag-cache-v2")
   local manifest = validStripManifest()
   Assert.isTrue(BagAssetSchema.isValidManifest(manifest), "the pocket-strip manifest must pass the schema")

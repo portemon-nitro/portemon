@@ -5,21 +5,9 @@
 -- asm/overlay_15.s (the field-bag application; Bag_Init opens NARC 15 and
 -- every member below is loaded by an audited call site), plus
 -- include/camera.h, include/sprite_system.h, include/bg_window.h, and
--- include/text.h for the called-API signatures. The TM/HM summary facts
--- below are audited against asm/unk_02077678.s at the same pin: the table
--- at _02100048 carries the type char members in its first 18 entries
--- (indexed by sub_02077678), the table at _021000A4 carries the 18 type
--- palette overrides (indexed by sub_0207769C), the table at _0210003C
--- carries {0xF4, 0xF6, 0xF5} as the category char members (indexed by
--- sub_02077800), and the table at _02100038 carries {0, 1, 0} as the
--- category palette overrides (indexed by sub_02077818); the shared
--- palette/cell/animation members and the NARC 8 archive identity come
--- from the sub_02077690, sub_02077694, sub_02077698, and sub_020776B4
--- selectors. Resource kinds and source compression state for the reviewed
--- members come from files/data/resdat/resdat_00000024.json (animation
--- member 243, compressed), resdat_00000025.json (cell member 242,
--- compressed), resdat_00000026.json (char member 234, compressed), and
--- resdat_00000055.json (palette member 74, uncompressed). Pure data and pure
+-- include/text.h for the called-API signatures. The TM/HM summary labels
+-- below come from the bag message bank; its type and category icons are the
+-- shared move-icons family (MoveIconSources). Pure data and pure
 -- functions; no I/O. Never imported by runtime: libs/assets, game, and
 -- script packages must not require this module.
 --
@@ -143,35 +131,11 @@ BagSources.archive = {
   symbol = "NARC_a_0_1_5",
 }
 
--- The Bag's TM/HM summary uses the shared move-icon resources from the raw
--- decomp symbol NARC_a_0_0_8. These are producer facts; runtime receives only
--- the semantic records emitted by the compiler.
+-- The Bag's TM/HM summary labels and placement. The type and category icon
+-- sprites are the shared move-icons family (MoveIconSources); these are
+-- producer facts, and runtime receives only the semantic records emitted by
+-- the compiler.
 BagSources.moveSummary = {
-  archive = { alias = "NARC_a_0_0_8", symbol = "NARC_a_0_0_8" },
-  shared = { palette = 74, cell = 242, animation = 243, frame = 0 },
-  typeChars = {
-    [0] = 234,
-    [1] = 225,
-    [2] = 227,
-    [3] = 235,
-    [4] = 229,
-    [5] = 237,
-    [6] = 231,
-    [7] = 228,
-    [8] = 238,
-    [9] = 236,
-    [10] = 226,
-    [11] = 241,
-    [12] = 233,
-    [13] = 222,
-    [14] = 223,
-    [15] = 230,
-    [16] = 221,
-    [17] = 224,
-  },
-  typePaletteOverrides = { 0, 0, 1, 1, 0, 0, 2, 1, 0, 2, 0, 1, 2, 0, 1, 1, 2, 0 },
-  categoryChars = { [0] = 244, [1] = 246, [2] = 245 },
-  categoryPaletteOverrides = { 0, 1, 0 },
   typeCenter = { x = 48, y = 112 },
   categoryCenter = { x = 144, y = 112 },
   messages = {

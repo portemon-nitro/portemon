@@ -126,6 +126,8 @@ local DOMAINS = {
     "FieldUiCompiler",
     "MartAssetCompiler",
     "MartCacheWriter",
+    "MoveIconAssetCompiler",
+    "MoveIconCacheWriter",
     "G2dDecoder",
     "G2dRasterizer",
     "PartyAssetCompiler",
