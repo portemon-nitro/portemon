@@ -49,6 +49,7 @@ local function outdoorMap(coverage)
     mapId = 60,
     scene = { type = "outdoor" },
     coverage = coverage,
+    fieldData = { transitionEnvironment = "outdoors" },
   }
 end
 
@@ -66,7 +67,7 @@ local function runtimeForSwap(sourceCoverage)
       prepare = function() end,
       commit = function() end,
     }),
-    session = { beginMapEntry = function() end },
+    session = { beginMapEntry = function() end, dispose = function() end },
     menuComposer = { releaseModalHosts = function() end },
     zoneController = { currentMap = sourceRuntimeMap },
     fieldTerrainEffectController = { clear = function() end },
@@ -320,6 +321,7 @@ local function destinationMap(coverage)
     mapId = 60,
     coverage = coverage,
     scene = { type = "outdoor" },
+    fieldData = { transitionEnvironment = "outdoors" },
   }
 end
 

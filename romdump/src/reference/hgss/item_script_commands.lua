@@ -20,11 +20,11 @@
 --   item handling lives outside the field script protocol, so there is no
 --   battle row to claim (representative battle opcodes 213, 220, and 589
 --   stay outside this inventory);
--- - phone/gift feature commands (phone_gift rows below);
--- - seal, prize, and field rock-smash flows (rows below), whose behavior is
---   primarily another gameplay subsystem even when it reaches inventory;
--- - apricorn tree and Kurt collection commands, owned by the field Apricorn
---   flow even though they access inventory;
+-- - phone/gift feature commands, owned by the pocket-gear script family once
+--   their executable semantics land (no phone_gift rows remain here);
+-- - seal, prize, field rock-smash, and Apricorn/Kurt flows (rows below), whose
+--   behavior is primarily another gameplay subsystem even when it reaches
+--   inventory;
 -- - opcode 757: its name mentions the Bag but it drives a cutscene prop,
 --   never inventory, so a name match alone never confers membership.
 
@@ -51,9 +51,6 @@ local commands = {
   { opcode = 277, category = "shop" },
   { opcode = 278, category = "shop" },
   { opcode = 782, category = "shop" },
-  { opcode = 613, category = "phone_gift" },
-  { opcode = 614, category = "phone_gift" },
-  { opcode = 813, category = "phone_gift" },
   { opcode = 133, category = "seal" },
   { opcode = 134, category = "seal" },
   { opcode = 135, category = "seal" },

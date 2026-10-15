@@ -50,6 +50,7 @@ local function captureReadySession()
       facing = "south",
     },
     currentMap = { mapId = 0, terrainDependencyHash = "dep" },
+    dispose = function() end,
   }
 end
 

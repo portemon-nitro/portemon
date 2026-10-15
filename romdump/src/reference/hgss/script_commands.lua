@@ -1037,6 +1037,8 @@ return {
       },
     },
     [142] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_GetPhoneBookRematch",
       widths = {
         [1] = 2,
@@ -1057,18 +1059,24 @@ return {
       },
     },
     [145] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_RegisterPokegearCard",
       widths = {
         [1] = 1,
       },
     },
     [146] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_RegisterGearNumber",
       widths = {
         [1] = 2,
       },
     },
     [147] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_CheckRegisteredPhoneNumber",
       widths = {
         [1] = 2,
@@ -1076,6 +1084,8 @@ return {
       },
     },
     [148] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_148",
       widths = {
         [1] = 1,
@@ -1083,6 +1093,8 @@ return {
       },
     },
     [149] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "UnsetPhoneCallTrigger",
       widths = {
         [1] = 1,
@@ -1132,6 +1144,8 @@ return {
       widths = {},
     },
     [157] = {
+      classification = "native_wait",
+      disposition = "supported",
       name = "ScrCmd_TownMap",
       widths = {},
     },
@@ -3177,6 +3191,8 @@ return {
       },
     },
     [430] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_SetPhoneCall",
       widths = {
         [1] = 2,
@@ -3185,6 +3201,8 @@ return {
       },
     },
     [431] = {
+      classification = "native_wait",
+      disposition = "supported",
       name = "ScrCmd_RunPhoneCall",
       widths = {},
     },
@@ -3392,6 +3410,8 @@ return {
       widths = {},
     },
     [460] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_LoadPhoneDat",
       widths = {
         [1] = 2,
@@ -3399,6 +3419,8 @@ return {
       },
     },
     [461] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_GetPhoneContactMsgIds",
       widths = {
         [1] = 1,
@@ -4553,19 +4575,17 @@ return {
       },
     },
     [613] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_GetPhoneContactRandomGiftBerry",
-      disposition = "deferred",
-      deferredReason = "phone_gift",
-      deferredNote = "phone-contact gifts need the phone gift flow",
       widths = {
         [1] = 2,
       },
     },
     [614] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_GetPhoneContactGiftItem",
-      disposition = "deferred",
-      deferredReason = "phone_gift",
-      deferredNote = "phone-contact gifts need the phone gift flow",
       widths = {
         [1] = 2,
       },
@@ -5782,6 +5802,8 @@ return {
       widths = {},
     },
     [779] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_RadioMusicIsPlaying",
       widths = {
         [1] = 2,
@@ -6015,6 +6037,8 @@ return {
       widths = {},
     },
     [811] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_811",
       widths = {
         [1] = 2,
@@ -6022,14 +6046,15 @@ return {
       },
     },
     [812] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_812",
       widths = {},
     },
     [813] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_MomGiftCheck",
-      disposition = "deferred",
-      deferredReason = "phone_gift",
-      deferredNote = "parent gifts need the gift flow",
       widths = {
         [1] = 2,
       },
@@ -6072,6 +6097,8 @@ return {
       },
     },
     [821] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_GetBuenasPassword",
       widths = {
         [1] = 2,

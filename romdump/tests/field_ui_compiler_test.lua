@@ -367,9 +367,9 @@ end
 
 -- The shared start-menu icon cell/anim banks around one static cell: nine
 -- cells (the static cell plus its horizontal/vertical shake and confirm hop
--- displacements) and five animations (the static opening plus the
--- horizontal/vertical one-shot shake tracks and the confirm hop track the
--- producer publishes). Member numbers are the producer-side selection (this
+-- displacements) and six animations (the static opening, the
+-- horizontal/vertical one-shot shake tracks, the confirm hop track, and the
+-- incoming-call ringing animation at index 5). Member numbers are the producer-side selection (this
 -- is the romdump-side test).
 local function withShakeIconBank(members, staticObjs)
   staticObjs = staticObjs or { { x = 0, y = 0, tile = 0, pal = 0 } }
@@ -418,6 +418,11 @@ local function withShakeIconBank(members, staticObjs)
       { cell = 7, duration = 2 },
       { cell = 8, duration = 2 },
       { cell = 0, duration = 2 },
+    },
+    0,
+    {
+      { cell = 0, duration = 3 },
+      { cell = 0, duration = 3 },
     },
   }))
   return members

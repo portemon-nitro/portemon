@@ -50,6 +50,8 @@ local BattleTask = require("libs.hgss.src.script.tasks.BattleTask")
 local HgssBattleCommitter = require("libs.hgss.src.battle.HgssBattleCommitter")
 local HgssBattleRewards = require("libs.hgss.src.battle.HgssBattleRewards")
 local HgssOpponentControllers = require("libs.hgss.src.battle.HgssOpponentControllers")
+local PhoneRewards = require("game.hgss.src.pokegear.PhoneRewards")
+local PlayerData = require("libs.hgss.src.save.PlayerData")
 
 ---@class BattlePresentationPort
 ---@field enter fun(plan: table<string, unknown>): boolean
@@ -72,6 +74,7 @@ local HgssOpponentControllers = require("libs.hgss.src.battle.HgssOpponentContro
 ---@field dex table<string, unknown>? live dex knowledge staging sightings and catches
 ---@field roamer table<string, unknown>? roamer battle record with its owner, key, and revision
 ---@field player table<string, unknown>? player money facts with their validation context
+---@field pokegear table<string, unknown>? companion savings owner with its state, borrowed for Mom settlement
 ---@field captures table<integer, table<string, unknown>>? battle capture results in committer shape
 ---@field seed integer? unsigned 32-bit stream seed, derived from the launch identity when absent
 
@@ -85,6 +88,7 @@ local HgssOpponentControllers = require("libs.hgss.src.battle.HgssOpponentContro
 ---@field _dex table<string, unknown>?
 ---@field _roamer table<string, unknown>?
 ---@field _player table<string, unknown>?
+---@field _pokegear table<string, unknown>?
 ---@field _captures table<integer, table<string, unknown>>?
 ---@field _seed integer
 ---@field _seedExplicit boolean
@@ -264,6 +268,10 @@ local function checkConsequenceInputs(args)
     assert(type(args.player.record) == "table", "player money facts carry their record")
     assert(type(args.player.context) == "table", "player money facts carry their context")
   end
+  if args.pokegear ~= nil then
+    assert(type(args.pokegear) == "table", "companion savings facts arrive as a record")
+    assert(type(args.pokegear.state) == "table", "companion savings facts borrow the companion state")
+  end
   if args.captures ~= nil then
     assert(type(args.captures) == "table", "battle captures arrive as an array")
   end
@@ -327,6 +335,7 @@ function BattleRuntime.new(args)
     _dex = args.dex,
     _roamer = args.roamer,
     _player = args.player,
+    _pokegear = args.pokegear,
     _captures = args.captures ~= nil and copyValue(args.captures) or nil,
     _seed = args.seed or hashIdentity(request.id --[[@as string]]),
     _seedExplicit = args.seed ~= nil,
@@ -1554,6 +1563,61 @@ function BattleRuntime:_sessionBagDeltas()
   return deltas
 end
 
+-- Stages the source Mom savings settlement for a won battle from the
+-- actual before/after player money: the prize increase after the
+-- player-money ceiling, quartered with integer truncation and capped by
+-- Mom's remaining capacity. Returns nil whenever no savings move — no
+-- companion owner, no win, no positive delta, no player facts, savings
+-- disabled, no actual capped gain, or an excluded battle context — so
+-- those callers keep byte-identical behavior.
+---@param result string outcome word the commit carries
+---@param delta integer signed money delta for the player candidate
+---@return { candidate: table<string, unknown>, transfer: integer, settledGain: integer }? named savings candidate
+function BattleRuntime:_prepareMomCandidate(result, delta)
+  local pokegear = self._pokegear --[[@as table<string, unknown>?]]
+  if pokegear == nil or result ~= "win" or delta <= 0 then
+    return nil
+  end
+  if pokegear.savingsEnabled == false then
+    return nil
+  end
+  local state = pokegear.state --[[@as table<string, unknown>?]]
+  local player = self._player --[[@as table<string, unknown>?]]
+  if state == nil or player == nil then
+    return nil
+  end
+  local record = player.record --[[@as table<string, unknown>]]
+  local profile = record.profile --[[@as table<string, unknown>]]
+  local before = profile.money --[[@as integer]]
+  assert(type(before) == "number" and before % 1 == 0 and before >= 0, "savings settlement reads the pocket money")
+  local afterCapped = math.min(before + delta, PlayerData.MAX_MONEY)
+  local gain = afterCapped - before
+  if gain <= 0 then
+    return nil
+  end
+  local readPhone = state.readPhone --[[@as fun(self: table<string, unknown>): table<string, unknown>]]
+  local phone = readPhone(state)
+  local mom = phone.mom --[[@as table<string, unknown>]]
+  assert(type(mom) == "table" and type(mom.balance) == "number", "savings settlement reads the savings balance")
+  local revisionOf = state.revision --[[@as fun(self: table<string, unknown>): integer]]
+  local candidate = PhoneRewards.prepareBattle({
+    state = state,
+    beforePlayer = before,
+    afterPlayer = afterCapped,
+    momBalance = mom.balance --[[@as integer]],
+    battleKind = self._request.kind,
+    outcomeId = "pokegear:" .. self._request.id,
+    random = pokegear.random,
+    itemCatalog = pokegear.itemCatalog,
+    momPurchases = pokegear.momPurchases,
+  }, revisionOf(state))
+  local staged = candidate --[[@as { transfer: integer }]]
+  if staged.transfer <= 0 then
+    return nil
+  end
+  return { candidate = candidate, transfer = staged.transfer, settledGain = gain }
+end
+
 ---@return table<string, unknown> staged committer preparation
 function BattleRuntime:_prepareCommit()
   local result = self:_mapOutcome()
@@ -1628,9 +1692,21 @@ function BattleRuntime:_prepareCommit()
     args.bag = prep
   end
   local delta = moneyDeltaFor(result, rewards)
+  -- Mom savings join the same atomic publication: the settlement comes
+  -- from the actual before/after player money, and only the amount
+  -- actually transferred leaves the player's candidate. No post-commit
+  -- callback runs; the named candidate commits with everything else.
+  local momCandidate = self:_prepareMomCandidate(result, delta)
   if self._player ~= nil and delta ~= 0 then
     local player = self._player --[[@as table<string, unknown>]]
-    args.player = { record = player.record, context = player.context, moneyDelta = delta }
+    local applied = delta
+    if momCandidate ~= nil then
+      applied = momCandidate.settledGain - momCandidate.transfer
+    end
+    args.player = { record = player.record, context = player.context, moneyDelta = applied }
+  end
+  if momCandidate ~= nil then
+    args.pokegear = momCandidate.candidate
   end
   if self._roamer ~= nil then
     local spec = self._roamer --[[@as table<string, unknown>]]

@@ -29,6 +29,7 @@ FieldMoveRuntime.__index = FieldMoveRuntime
 ---@field dispose fun(self: FieldMoveRuntime)
 ---@field requestDisembark fun(self: FieldMoveRuntime): table<string, unknown>
 ---@field tryStrengthPush fun(self: FieldMoveRuntime, snapshot: table<string, unknown>): table<string, unknown>
+---@field confirmFlyDestination fun(self: FieldMoveRuntime, plan: table<string, unknown>, terminal: table<string, unknown>, livePartyRevision: integer?): table<string, unknown>
 
 local Errors = require("libs.errors.src.Errors")
 
@@ -70,7 +71,6 @@ local POLICY_MOVES = {
 }
 
 local EXPLICIT_DEFERRED = {
-  fly = "fly_map_deferred",
   headbutt = "headbutt_encounters_deferred",
   sweet_scent = "sweet_scent_encounters_deferred",
   chatter = "chatter_recording_deferred",
@@ -213,6 +213,68 @@ function FieldMoveRuntime:discardPending()
   self._pending = nil
 end
 
+-- Stage the Fly destination choice: re-check eligibility, then carry the
+-- initiating party slot/revision, the source map identity, the UI map
+-- context, and the source-permitted destination set into the bounded
+-- choose-destination phase. A missing or empty destination set refuses
+-- as not now before any UI, mirroring return planning without travel
+-- facts; the selector and travel revalidate the choice again.
+---@param request table<string, unknown>
+---@return table<string, unknown> plan or Decision
+local function buildFlyPlan(self, request)
+  if request.context ~= nil then
+    local decision = self._policy.check("fly", request.context)
+    assert(isRecord(decision) and type(decision.kind) == "string", "policy must return a decision record")
+    if decision.kind ~= "ok" then
+      return decision
+    end
+  end
+  local context = assert(request.context, "fly planning requires its context")
+  assert(type(context.mapId) == "number", "fly planning requires its source map")
+  local mapContext = assert(request.mapContext, "fly planning requires its map context")
+  assert(type(mapContext) == "table", "fly map contexts stay records")
+  local source = mapContext --[[@as table<string, unknown>]]
+  assert(
+    type(source.fieldMap) == "string"
+      and type(source.location) == "string"
+      and type(source.matrixX) == "number"
+      and type(source.matrixY) == "number"
+      and type(source.region) == "string"
+      and type(source.unlockLevel) == "number"
+      and (source.specialMode == nil or type(source.specialMode) == "string")
+      and type(source.playerGender) == "string",
+    "fly map contexts carry field, location, matrix, region, tier, and gender facts"
+  )
+  local destinations = request.destinations
+  if type(destinations) ~= "table" then
+    return { kind = "not_now" }
+  end
+  local permitted = {}
+  for _, key in
+    ipairs(destinations --[[@as table]])
+  do
+    assert(type(key) == "string" and key ~= "", "fly destinations name semantic flypoint keys")
+    permitted[#permitted + 1] = key
+  end
+  if #permitted == 0 then
+    return { kind = "not_now" }
+  end
+  return {
+    kind = "fly",
+    move = "fly",
+    slot = assertSlot(request.slot, "fly"),
+    partyRevision = request.partyRevision,
+    mapId = context.mapId,
+    mapContext = copyValue(mapContext),
+    destinations = permitted,
+    phase = "choose_destination",
+    ticksLeft = FieldMoveRuntime.ACKNOWLEDGE_TICKS,
+    committed = false,
+    warpStarted = false,
+    choice = nil,
+  }
+end
+
 -- Plan a Dig/Teleport return from durable travel facts: without a travel
 -- record there is no destination, so the request refuses as not now
 -- instead of guessing. Destination records and Decisions both flow back
@@ -258,16 +320,16 @@ end
 -- Build the closed executable plan union for a taken or explicit request.
 -- Menu requests re-check eligibility; explicit script-origin requests carry
 -- no context and execute without re-gating, matching the source commands
--- that read a slot and act. Deferred traversal/fly moves report honestly
--- instead of succeeding; Fly never plans because the menu flow completes
--- it as a checked no-op before admission.
+-- that read a slot and act. Deferred traversal moves report honestly
+-- instead of succeeding; Fly stages bounded destination selection before
+-- its validated travel.
 ---@param request table<string, unknown>
 ---@return table<string, unknown> plan or Decision
 local function buildPlan(self, request)
   assert(isRecord(request), "field planning requires a request record")
   local move = assert(request.move, "field planning requires a move key")
   if move == "fly" then
-    error("fly never plans a field task; the menu flow completes it as a checked no-op", 0)
+    return buildFlyPlan(self, request)
   end
   if POLICY_MOVES[move] and request.context ~= nil then
     local decision = self._policy.check(move, request.context)
@@ -384,7 +446,17 @@ local function buildPlan(self, request)
   error("unknown field move " .. tostring(move), 0)
 end
 
-local PLAN_PHASES = { acknowledge = true, commit = true, begin = true, step = true, traverse = true, warp = true }
+local PLAN_PHASES = {
+  acknowledge = true,
+  choose_destination = true,
+  travel = true,
+  complete = true,
+  commit = true,
+  begin = true,
+  step = true,
+  traverse = true,
+  warp = true,
+}
 
 -- Plan and register the live plan: the built plan table identifies the
 -- active operation for settling, so a stale plan can advance safely
@@ -500,18 +572,55 @@ function FieldMoveRuntime:advance(plan)
     end
     return { kind = "running" }
   end
-  if kind == DIG or kind == TELEPORT then
+  if kind == "fly" and plan.phase == "choose_destination" then
+    -- Destination selection rides the selector UI the task drives; the
+    -- runtime waits here until the one terminal arrives back through
+    -- confirmation.
+    return { kind = "running" }
+  end
+  if kind == DIG or kind == TELEPORT or kind == "fly" then
     -- Acknowledge on the shared cadence, then start the warp exactly
     -- once and observe it to completion. A failed start or a failed warp
     -- faults the plan with the service error; the world and travel state
     -- stay exactly as the failure left them, and settling releases the
-    -- runtime so nothing replays.
+    -- runtime so nothing replays. Fly resolves its confirmed semantic
+    -- choice through the world handoff after revalidating the source map.
     if plan.phase == "acknowledge" then
       plan.ticksLeft = (plan.ticksLeft or 0) - 1
       if plan.ticksLeft > 0 then
         return { kind = "running" }
       end
-      plan.phase = "warp"
+      if kind == "fly" then
+        plan.phase = "travel"
+      else
+        plan.phase = "warp"
+      end
+    end
+    if kind == "fly" and plan.warpStarted ~= true then
+      local mapDecision = self._world:validateTarget(plan)
+      if mapDecision ~= nil then
+        settle(self, plan)
+        return { kind = "failed", error = mapDecision }
+      end
+      local resolved, destination = pcall(function()
+        return self._world:planFly(
+          assert(plan.choice, "fly travel needs its confirmed choice"),
+          { slot = plan.slot, partyRevision = plan.partyRevision, mapContext = plan.mapContext }
+        )
+      end)
+      if not resolved then
+        if Errors.is(destination) then
+          settle(self, plan)
+          return { kind = "failed", error = destination }
+        end
+        error(destination, 0)
+      end
+      assert(isRecord(destination), "fly resolution answers a record")
+      if type(destination.kind) == "string" then
+        settle(self, plan)
+        return { kind = "failed", error = destination }
+      end
+      plan.destination = destination
     end
     if not plan.warpStarted then
       local started, startErr = pcall(function()
@@ -533,6 +642,9 @@ function FieldMoveRuntime:advance(plan)
         return { kind = "failed", error = warpError }
       end
       plan.committed = true
+      if kind == "fly" then
+        plan.phase = "complete"
+      end
       settle(self, plan)
       return { kind = "done" }
     end
@@ -581,6 +693,59 @@ function FieldMoveRuntime:cancel(plan)
     end
   end
   settle(self, plan)
+end
+
+-- Deliver the selector's one terminal choice back to the live Fly
+-- operation: only the active uncommitted plan in its choice phase
+-- consumes a result, the flypoint must still name the permitted set,
+-- and a supplied live party revision must still match admission. Any
+-- rejection abandons the operation like a refused plan so the busy gate
+-- releases with nothing half-published; a stale call against a settled
+-- or foreign plan touches nothing and never warps.
+---@param plan table<string, unknown> the live fly plan
+---@param terminal table<string, unknown> the selector terminal
+---@param livePartyRevision integer? the current party revision when the caller can read it
+---@return table<string, unknown> { kind = "confirmed" } or a Decision
+function FieldMoveRuntime:confirmFlyDestination(plan, terminal, livePartyRevision)
+  assert(isRecord(plan) and plan.kind == "fly", "fly confirmation needs its fly plan")
+  if self._activePlan ~= plan or plan.committed == true or plan.cancelled == true then
+    return { kind = "stale" }
+  end
+  local function abandon(decision)
+    self._activePlan = nil
+    self._activeRequest = nil
+    return decision
+  end
+  assert(type(plan.phase) == "string", "fly plans carry their phase")
+  assert(type(plan.destinations) == "table", "fly plans carry their permitted set")
+  if plan.phase ~= "choose_destination" then
+    return abandon({ kind = "stale", reason = "choice_already_settled" })
+  end
+  if type(terminal) ~= "table" or terminal.kind ~= "destination" then
+    return abandon({ kind = "stale", reason = "choice_unresolved" })
+  end
+  local key = terminal.flypointKey
+  local permitted = false
+  if type(key) == "string" and key ~= "" then
+    for _, candidate in
+      ipairs(plan.destinations --[[@as table]])
+    do
+      if candidate == key then
+        permitted = true
+        break
+      end
+    end
+  end
+  if not permitted then
+    return abandon({ kind = "stale", reason = "unknown_destination" })
+  end
+  if livePartyRevision ~= nil and plan.partyRevision ~= nil and livePartyRevision ~= plan.partyRevision then
+    return abandon({ kind = "stale", reason = "party_changed" })
+  end
+  plan.choice = key
+  plan.phase = "acknowledge"
+  plan.ticksLeft = FieldMoveRuntime.ACKNOWLEDGE_TICKS
+  return { kind = "confirmed" }
 end
 
 -- Clear transient map-lifetime strength permission. Called on the source

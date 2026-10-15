@@ -41,6 +41,7 @@ local CANONICAL_KEYS = {
   ["follower-interactions"] = "global",
   mart = "global",
   ["bag"] = "global",
+  ["pokegear"] = "global",
   ["mon-catalog"] = "global",
   ["mon-layout"] = "global",
   ["mon-icon-page"] = "3",
@@ -940,6 +941,37 @@ function T.unexpected_family_validator_fault_escapes_without_mutation()
   Assert.equal(readCount, 1, "the family validator is called once")
   Assert.equal(store.published, before.published, "the published artifact remains unchanged")
   Assert.equal(store[receiptPath], before.receipt, "the receipt remains unchanged")
+end
+
+function T.pokegear_word_entry_registers_a_bounded_global_family()
+  Assert.isTrue(
+    ArtifactState.KINDS["pokegear-word-entry"] == true,
+    "pokegear-word-entry is a recognized generated family"
+  )
+  Assert.equal(
+    ArtifactState.path("pokegear-word-entry", "global"),
+    "data/generated/jobs/pokegear-word-entry/global.lua",
+    "the word-entry family resolves to its receipt path"
+  )
+  Assert.isFalse(
+    pcall(ArtifactState.path, "pokegear-word-entry", "1"),
+    "the word-entry family carries no paged keys"
+  )
+  local classes = { normal = true, heavy = true, jumbo = true }
+  Assert.isTrue(
+    classes[ArtifactJobs.sizeClass("pokegear-word-entry")] == true,
+    "the word-entry family resolves to a known size class"
+  )
+  local dependencies, complete = ArtifactJobs.dependencies("pokegear-word-entry", "global", {})
+  Assert.isTrue(complete, "the word-entry closure is statically bounded")
+  local dependencySet = {}
+  for _, job in ipairs(dependencies) do
+    dependencySet[job.kind .. ":" .. job.key] = true
+  end
+  Assert.isTrue(
+    dependencySet["pc:global"] == true,
+    "the word-entry closure declares its dictionary dependency"
+  )
 end
 
 return { metadata = { capabilities = {} }, tests = T }

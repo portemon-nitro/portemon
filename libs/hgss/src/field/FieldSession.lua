@@ -62,6 +62,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field signpost FieldSignpostController
 ---@field applicationHost FieldApplicationHost the one application modal owner (Start Menu and its destinations)
 ---@field pcApplications table<string, unknown> script-owned PC child host
+---@field pokegearApplications FieldSession.PokegearHost? script-owned companion host; absent sessions route no companion lane
 ---@field fieldEntranceIndicator FieldEntranceIndicator
 ---@field terrainEffects FieldTerrainEffectController?
 ---@field playerAvatar FieldPlayerAvatarState? surf-phase owner stepped once per fixed tick
@@ -73,6 +74,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field initController table<string, unknown>|nil
 ---@field enterMapActors fun()?
 ---@field autoAcknowledgePresentation boolean?
+---@field incomingCalls FieldSession.IncomingCalls? ambient incoming-call collaborator; absent sessions offer no phone opportunity
 
 ---@class FieldSession.Interactions
 ---@field resolve fun(self: FieldSession.Interactions, snapshot: InteractionResolverSnapshot): InteractionIntent?
@@ -81,6 +83,19 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field tryStrengthPush fun(self: FieldSession.FieldMoves, snapshot: table<string, unknown>): table<string, unknown>
 ---@field discardPending fun(self: FieldSession.FieldMoves)
 ---@field requestDisembark fun(self: FieldSession.FieldMoves): table<string, unknown>
+
+---@class FieldSession.IncomingCalls
+---@field onOpportunity fun(self: FieldSession.IncomingCalls, args: table<string, unknown>)
+---@field notification fun(self: FieldSession.IncomingCalls): false|table<string, unknown>
+---@field accept fun(self: FieldSession.IncomingCalls, parentOwner: string): table<string, unknown>
+
+---@class FieldSession.PokegearHost
+---@field isActive fun(self: FieldSession.PokegearHost): boolean
+---@field activeHandle fun(self: FieldSession.PokegearHost): table<string, unknown>?
+---@field step fun(self: FieldSession.PokegearHost, handle: table<string, unknown>, events: table[])
+---@field result fun(self: FieldSession.PokegearHost, handle: table<string, unknown>): table<string, unknown>?
+---@field close fun(self: FieldSession.PokegearHost, handle: table<string, unknown>)
+---@field cancel fun(self: FieldSession.PokegearHost, reason: string)
 
 ---@class FieldSession
 ---@field versionId string
@@ -109,6 +124,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field signpost FieldSignpostController the fixed-tick signpost controller (save-gate interrogation only; the scheduler steps it)
 ---@field applicationHost FieldApplicationHost the one application modal owner (Start Menu and its destinations)
 ---@field pcApplications table<string, unknown> script-owned PC child host
+---@field pokegearApplications FieldSession.PokegearHost? script-owned companion host behind calls and town-map opens
 ---@field fieldEntranceIndicator FieldEntranceIndicator
 ---@field terrainEffects FieldTerrainEffectController?
 ---@field playerAvatar FieldPlayerAvatarState? surf-phase owner stepped once per fixed tick
@@ -119,6 +135,8 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field mapEntryController FieldMapEntryController
 ---@field private fieldMoves FieldSession.FieldMoves? validated push/disembark port; absent sessions bump boulders
 ---@field private overworld table<string, unknown>|nil
+---@field incomingCalls FieldSession.IncomingCalls? ambient incoming-call collaborator; absent sessions offer no phone opportunity
+---@field private acceptedAmbientCallHandle table<string, unknown>? private incoming call handle owned by this field session
 ---@field childResumePending boolean
 ---@field battleActive boolean whether an application battle owns player input
 ---@field foregroundHold boolean whether a presented battle holds field gameplay advancement
@@ -368,6 +386,27 @@ function FieldSession.new(options)
       "field session audio field-policy update and effect playback required"
     )
   end
+  if options.incomingCalls ~= nil then
+    assert(
+      type(options.incomingCalls) == "table"
+        and type(options.incomingCalls.onOpportunity) == "function"
+        and type(options.incomingCalls.notification) == "function"
+        and type(options.incomingCalls.accept) == "function",
+      "field session incoming-call collaborator needs its opportunity, notification, and acceptance operations"
+    )
+  end
+  if options.pokegearApplications ~= nil then
+    assert(
+      type(options.pokegearApplications) == "table"
+        and type(options.pokegearApplications.isActive) == "function"
+        and type(options.pokegearApplications.activeHandle) == "function"
+        and type(options.pokegearApplications.step) == "function"
+        and type(options.pokegearApplications.result) == "function"
+        and type(options.pokegearApplications.close) == "function"
+        and type(options.pokegearApplications.cancel) == "function",
+      "field session companion host needs its active and handle operations"
+    )
+  end
   local session = setmetatable({
     versionId = options.versionId,
     currentMap = options.currentMap,
@@ -415,6 +454,9 @@ function FieldSession.new(options)
     navigationBoundary = options.navigationBoundary,
     fieldMoves = options.fieldMoves,
     overworld = options.overworld,
+    incomingCalls = options.incomingCalls,
+    pokegearApplications = options.pokegearApplications,
+    acceptedAmbientCallHandle = nil,
     tick = 0,
     accumulator = 0,
     _boundaryMovementDirection = nil,
@@ -432,6 +474,32 @@ end
 function FieldSession:beginMapEntry()
   self:validateSurfSpawn()
   self.mapEntryController:begin("full")
+end
+
+-- Cancels only the incoming-call handle admitted by this session. Scripted
+-- Pokegear tasks remain owned by their scheduler and never enter this lane.
+---@param self FieldSession
+---@param reason string
+function FieldSession:_cancelAmbientCall(reason)
+  local handle = self.acceptedAmbientCallHandle
+  if handle == nil then
+    return
+  end
+  local host = assert(self.pokegearApplications, "an accepted ambient call keeps its composed host")
+  local activeHandle = host:activeHandle()
+  if activeHandle == handle then
+    host:cancel(reason)
+  elseif activeHandle == nil then
+    host:close(handle)
+  end
+  self.acceptedAmbientCallHandle = nil
+  self.input:clearUi()
+end
+
+-- Releases the session-owned call before FieldRuntime disposes the shared
+-- phone host. The host's cancel operation releases the feature lease once.
+function FieldSession:dispose()
+  self:_cancelAmbientCall("field-session-disposed")
 end
 
 -- A surfing avatar must stand on surfable water: an old save, warp, or
@@ -557,6 +625,67 @@ end
 -- narrower application/menu-lane concern.
 local function isPlayerInputOwned(scheduler)
   return playerInputOwned(scheduler)
+end
+
+-- Whether a higher-priority field owner holds the tick against an ambient
+-- incoming call: battles, held presentation, transitions, modals, script
+-- input ownership, foreground scripts, and script-owned choice surfaces.
+-- A script running its own phone child holds input here too, so its
+-- authorized task path stays out of the ambient gate by construction.
+---@param self FieldSession
+---@return boolean
+function FieldSession:_phoneClaimed()
+  if self.battleActive or self.foregroundHold then
+    return true
+  end
+  if self.transition.phase ~= FieldTransition.PHASES.idle then
+    return true
+  end
+  if self.dialogue:isModal() or self.signpost:isModal() then
+    return true
+  end
+  if self.menuHost:isModal() or self.contextChoice:isActive() then
+    return true
+  end
+  if self.applicationHost:isActive() then
+    return true
+  end
+  local function hostModal(host)
+    return host ~= nil and type(host.isActive) == "function" and host:isActive()
+  end
+  if hostModal(self.yesNoHost) or hostModal(self.starterChoice) or hostModal(self.partySelection) then
+    return true
+  end
+  if hostModal(self.martHost) or hostModal(self.pokemonNaming) or hostModal(self.pcApplications) then
+    return true
+  end
+  if hostModal(self.pokegearApplications) or self.acceptedAmbientCallHandle ~= nil then
+    return true
+  end
+  if isPlayerInputOwned(self.scriptScheduler) or isForegroundActive(self.scriptScheduler) then
+    return true
+  end
+  return false
+end
+
+-- Offers one phone opportunity to the ambient incoming-call collaborator:
+-- a claimed tick clears only transient ring state, a settled tick
+-- evaluates. Mid-step ticks offer nothing so the banner never interrupts
+-- motion. Absent collaborators cost nothing.
+---@param self FieldSession
+---@param claimed boolean
+local function offerPhoneOpportunity(self, claimed)
+  local collaborator = self.incomingCalls
+  if collaborator == nil then
+    return
+  end
+  local currentMap = self.currentMap
+  collaborator:onOpportunity({
+    mapKey = currentMap.mapSymbol or currentMap.mapId,
+    mapId = currentMap.mapId,
+    movementState = "none",
+    higherPriorityClaimed = claimed,
+  })
 end
 
 -- The idle-boundary gate for the Start Menu open edge: the menu may open
@@ -800,12 +929,13 @@ end
 ---@field mart boolean
 ---@field kurt boolean
 ---@field pc boolean
+---@field pokegear boolean
 
 -- One modal-status snapshot per tick edge: each host is probed exactly
 -- once per snapshot, and the currently prohibited combinations fail here
 -- instead of scattering per-lane checks across the tick. Menu and the
 -- live choice route a tick's input without holding field-to-modal
--- capture; the context/script/party/mart/kurt/PC lanes hold it.
+-- capture; the context/script/party/mart/kurt/PC/Pokegear lanes hold it.
 ---@param self FieldSession
 ---@return FieldSession.ModalStatus
 local function snapshotModalStatus(self)
@@ -825,6 +955,7 @@ local function snapshotModalStatus(self)
     mart = martHost ~= nil and martHost:isActive(),
     kurt = kurtBoxHost ~= nil and kurtBoxHost:isActive(),
     pc = self.pcApplications:isActive(),
+    pokegear = self.pokegearApplications ~= nil and self.pokegearApplications:isActive() or false,
   }
   assert(
     not (status.yesNo and status.contextChoice),
@@ -841,6 +972,13 @@ local function snapshotModalStatus(self)
   )
   assert(
     not (status.pc and (status.starterChoice or status.naming or status.party)),
+    "script-owned field modals are mutually exclusive"
+  )
+  assert(
+    not (
+        status.pokegear
+        and (status.starterChoice or status.naming or status.party or status.mart or status.kurt or status.pc)
+      ),
     "script-owned field modals are mutually exclusive"
   )
   return status
@@ -869,6 +1007,9 @@ local function captureOwner(status)
   if status.kurt then
     return "kurt"
   end
+  if status.pokegear then
+    return "pokegear"
+  end
   return nil
 end
 
@@ -888,8 +1029,8 @@ local function runScriptPhase(self, inputSnapshot)
   -- The script-owned starter modal routes the same normalized UI events to
   -- the scheduler while it owns the choice; like the contextual choice it
   -- suppresses the raw field edges for that tick. The script-owned party
-  -- modal rides the same lane: one shared snapshot reaches the scheduler
-  -- and the session never steps either controller.
+  -- modal and companion application ride the same lane: one shared snapshot
+  -- reaches the scheduler and the session never steps either controller.
   local before = snapshotModalStatus(self)
   local kurtBoxModal = before.kurt
   local modalInputOwnedAtTickStart = before.menu
@@ -901,6 +1042,7 @@ local function runScriptPhase(self, inputSnapshot)
     or kurtBoxModal
     or before.pc
     or before.naming
+    or before.pokegear
     or self.dialogue:isModal()
     or self.signpost:isModal()
     or self.applicationHost:isActive()
@@ -921,6 +1063,7 @@ local function runScriptPhase(self, inputSnapshot)
     or before.kurt
     or before.pc
     or before.yesNo
+    or before.pokegear
   then
     local uiEvents = self.input:uiSnapshot(self.tick + 1)
     if before.menu then
@@ -997,6 +1140,9 @@ function FieldSession:updateFixed(inputSnapshot)
   -- player motion -- so interpolation pairs collapse instead of replaying.
   local locomotionAtTickStart = self.player:presentationStateInto(self._tickScratch.playerPresentation).locomotionActive
   local playerAdvanced = self.transition:updateFixed()
+  if self.acceptedAmbientCallHandle ~= nil and self.transition.phase ~= FieldTransition.PHASES.idle then
+    self:_cancelAmbientCall("field-transition-started")
+  end
   if self.transition.locked or self.transition.completed then
     if not playerAdvanced and self.player.motion == "idle" then
       self.player:collapseRenderInterpolation()
@@ -1013,6 +1159,27 @@ function FieldSession:updateFixed(inputSnapshot)
     -- completion event and autosaves it, even when movement remains held.
     if self.transition.completed and self.input.clearEdges then
       self.input:clearEdges()
+    end
+    self:_advanceTick()
+    return
+  end
+
+  local ambientCallHandle = self.acceptedAmbientCallHandle
+  if ambientCallHandle ~= nil then
+    local host = assert(self.pokegearApplications, "an accepted ambient call keeps its composed host")
+    local activeHostHandle = host:activeHandle()
+    if activeHostHandle ~= nil and activeHostHandle ~= ambientCallHandle then
+      self.acceptedAmbientCallHandle = nil
+      self.input:clearUi()
+    else
+      if activeHostHandle == ambientCallHandle then
+        host:step(ambientCallHandle, self.input:uiSnapshot(self.tick + 1))
+      end
+      if host:result(ambientCallHandle) ~= nil then
+        host:close(ambientCallHandle)
+        self.acceptedAmbientCallHandle = nil
+        self.input:clearUi()
+      end
     end
     self:_advanceTick()
     return
@@ -1157,6 +1324,28 @@ function FieldSession:updateFixed(inputSnapshot)
     end
   end
 
+  if
+    inputSnapshot.actionPressed
+    and self.player.motion == "idle"
+    and self.incomingCalls ~= nil
+    and not inputSuppressedThisTick
+    and not inputSnapshot.menuPressed
+    and inputSnapshot.registeredSlotPressed == nil
+    and self.transition.phase == FieldTransition.PHASES.idle
+    and not self:_phoneClaimed()
+    and self.incomingCalls:notification() ~= false
+  then
+    assert(self.pokegearApplications, "incoming calls require the composed companion host")
+    self.acceptedAmbientCallHandle = self.incomingCalls:accept("field:incoming")
+    assert(
+      self.pokegearApplications:activeHandle() == self.acceptedAmbientCallHandle,
+      "accepted incoming call handle belongs to the composed companion host"
+    )
+    self.input:beginUi(self.tick + 1)
+    self:_advanceTick()
+    return
+  end
+
   -- World presentation advances even while a foreground script runs, and
   -- exactly once per world-advancing tick (not once per same-run presence
   -- flush). Input suppression does not freeze it.
@@ -1184,6 +1373,9 @@ function FieldSession:updateFixed(inputSnapshot)
   end
 
   if inputSuppressedThisTick then
+    -- A held tick belongs to its higher-priority owner: an ambient ring
+    -- quiets here while its pending trigger survives for a settled tick.
+    offerPhoneOpportunity(self, true)
     if self.player.motion == "idle" and type(self.player.collapseRenderInterpolation) == "function" then
       self.player:collapseRenderInterpolation()
     end
@@ -1462,6 +1654,13 @@ function FieldSession:updateFixed(inputSnapshot)
     self.playerVisual:updateFixed(ordinaryLocomotionAtTickStart, ordinaryStepSpeedAtTickStart)
   end
   self.camera:updateFixed(cameraTargetInto(self))
+  -- The ambient phone opportunity lives at this settled boundary, after
+  -- every higher-priority owner declined the tick by falling through.
+  -- A claimed tick clears only transient ring state; a settled idle tick
+  -- evaluates. Ticks that moved the player offer nothing.
+  if self.incomingCalls ~= nil and self.player.motion == "idle" then
+    offerPhoneOpportunity(self, self:_phoneClaimed())
+  end
   self:_advanceTick()
 end
 

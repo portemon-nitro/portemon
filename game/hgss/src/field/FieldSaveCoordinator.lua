@@ -85,6 +85,20 @@ function FieldSaveCoordinator:capture(allowMenu)
   if pcHost ~= nil and pcHost:isActive() then
     return nil, "Save deferred: a PC application is active"
   end
+  -- The composed companion feature denies capture while its script host
+  -- holds the feature lease (an accepted or staged call, a town-map
+  -- open, or a pending terminal result): live controllers and staged
+  -- rewards never serialize, while durable facts (contacts, triggers,
+  -- markings, tuning) ride the normal snapshot below. Closing the
+  -- application re-enables capture; the denial never touches the prior
+  -- save.
+  local gear = runtime.pokegear
+  if gear ~= nil then
+    local host = gear.scriptHost
+    if host ~= nil and host.isStableForSave ~= nil and host:isStableForSave() ~= true then
+      return nil, "Save deferred: a companion application is active"
+    end
+  end
   local battleReason = battleBusyReason(runtime)
   if battleReason ~= nil then
     return nil, battleReason
@@ -151,6 +165,16 @@ function FieldSaveCoordinator:capture(allowMenu)
     encounters = EncounterSave.capture(assert(runtime.roamerState, "field runtime has no roamer state")),
     pokedex = assert(runtime.dexKnowledge, "field runtime has no dex knowledge"):bucket(),
   }
+  -- The runtime-owned companion bucket rides alongside the existing
+  -- domains. The owner is required: capture never manufactures a default
+  -- bucket, and the live draw streams merge into the detached capture so
+  -- saving advances neither stream nor revision.
+  local gearOwner = assert(runtime.pokegearState, "field runtime has no companion state")
+  local gearBucket = gearOwner:capture()
+  if runtime.pokegearRandom ~= nil then
+    gearBucket.random = runtime.pokegearRandom:capture()
+  end
+  snapshot.pokegear = gearBucket
   if runtime.playerAvatar then
     snapshot.avatar = runtime.playerAvatar:capture()
   end

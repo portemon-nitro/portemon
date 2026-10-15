@@ -7,9 +7,11 @@ local FieldActorPresentation = require("game.hgss.src.field.FieldActorPresentati
 local FieldPresentationResources = require("game.hgss.src.field.FieldPresentationResources")
 local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentationLayout")
 local NativeDisplay = require("libs.ui.src.NativeDisplay")
+local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local PixelScale = require("libs.ui.src.PixelScale")
 local StandardFade = require("libs.hgss.src.presentation.StandardFade")
 local FieldBlackoutRenderer = require("game.hgss.src.field.FieldBlackoutRenderer")
+local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
 
 local KEY_DIRECTIONS =
   { w = "north", up = "north", s = "south", down = "south", a = "west", left = "west", d = "east", right = "east" }
@@ -650,6 +652,108 @@ function FieldState:_drawFieldAttachedUi(resources, hostStatus, alpha)
   end
 end
 
+-- Draws the open companion application through the shared shell renderer:
+-- the normal and scripted surfaces share this one draw owner, and the
+-- status shape is validated before anything draws. Plan images realize
+-- lazily from the generated asset paths on first draw and are retained
+-- for the field lifetime; draw itself never parses ROM data. No game
+-- logic lives here: input, ticks, and effects stay with the owners.
+---@param resources FieldPresentationResources
+---@param appStatus table<string, unknown> the shell status
+function FieldState:_drawPokegearApplication(resources, appStatus)
+  assert(type(appStatus) == "table", "the companion application publishes its status")
+  local plan = assert(appStatus.presentation, "the companion application publishes its plan")
+  assert(type(plan) == "table", "the companion plan stays a record")
+  assert(
+    type(appStatus.tab) == "string" and type(appStatus.focus) == "string",
+    "the companion view carries its card identities"
+  )
+  local PokegearRenderer = require("libs.hgss.src.presentation.PokegearRenderer")
+  local graphics = assert(love and love.graphics, "companion drawing requires its host graphics namespace")
+  self._pokegearImages = self._pokegearImages or {}
+  local images = self._pokegearImages --[[@as table<string, unknown>]]
+  local function realize(node)
+    if type(node) == "table" then
+      for _, value in pairs(node) do
+        realize(value)
+      end
+    elseif type(node) == "string" and node:sub(-4) == ".png" and images[node] == nil then
+      local bytes = assert(self.runtime.cacheFs:read(node), "missing generated Pokegear image " .. node)
+      images[node] = graphics.newImage(love.filesystem.newFileData(bytes, node))
+    end
+  end
+  realize(plan.content)
+  realize(plan.slots)
+  PokegearRenderer.draw({
+    graphics = graphics,
+    images = images,
+    textRenderer = resources.textRenderer,
+  }, appStatus, plan --[[@as table<string, unknown>]])
+end
+
+-- Draws the incoming-call caller window while the coordinator rings: the
+-- view is read once per frame and the source tile window renders through
+-- the shared placement, window, and text primitives. Modal application
+-- surfaces own the frame instead. Nothing is retained, so hiding, closing,
+-- or disposal clears the banner by itself. No audio or call policy lives
+-- here.
+---@param resources FieldPresentationResources
+---@param hostStatus table<string, unknown>?
+function FieldState:_drawIncomingCallBanner(resources, hostStatus)
+  if hostStatus ~= nil and (hostStatus.menu or hostStatus.application) then
+    return
+  end
+  local runtime = assert(self.runtime, "field presentation needs its runtime")
+  ---@type { notification: fun(self: table<string, unknown>): unknown }?
+  local coordinator = runtime.incomingCalls
+  if coordinator == nil then
+    return
+  end
+  local view = coordinator:notification()
+  if type(view) ~= "table" then
+    return
+  end
+  if type(view.sourceWindow) ~= "table" then
+    return
+  end
+  ---@type { tileLeft: integer, top: integer, height: integer, width: integer }
+  local window = view.sourceWindow
+  local windowRenderer = resources.windowRenderer
+  local textRenderer = resources.textRenderer
+  if windowRenderer == nil or textRenderer == nil then
+    return
+  end
+  local box = {
+    x = window.tileLeft * 8,
+    y = window.top * 8,
+    width = window.width * 8,
+    height = window.height * 8,
+  }
+  local name = view.name
+  if type(name) ~= "string" then
+    if type(view.nameTokens) == "table" then
+      name = table.concat(view.nameTokens)
+    else
+      return
+    end
+  end
+  local playerData = assert(runtime.playerData, "field presentation needs its player data")
+  local options = assert(playerData.options, "field presentation needs its player options")
+  local frameIndex = assert(options.textFrame, "field presentation needs its player frame") --[[@as integer]]
+  local background = textRenderer:windowBackgroundColor()
+  local viewport = assert(runtime.viewport, "field presentation needs its viewport")
+  local width, height = viewport.width, viewport.height
+  local placement = assert(
+    PixelScale.placeFixed({ x = 0, y = 0, width = width, height = height }, 256, 192),
+    "the caller window needs its placement record"
+  )
+  local lg = love.graphics
+  LogicalSurface.draw(lg, placement, function()
+    windowRenderer:drawWindow(box, frameIndex, background)
+    textRenderer:drawText(name, box.x + 4, box.y)
+  end)
+end
+
 -- The retained dialogue presentation geometry: recomputed only when the
 -- host bounds, the resolved pixel scale, or the cursor placement changes.
 -- Scalar comparisons only; no per-frame signature is built to support
@@ -766,6 +870,7 @@ function FieldState:draw()
   if overworldPresent or blackoutMessageActive then
     self:_drawFieldAttachedUi(resources, hostStatus, alpha)
   end
+  self:_drawIncomingCallBanner(resources, hostStatus)
   -- Each present application surface draws in order: the retained Start
   -- Menu through its resolved presentation plan, then the foreground
   -- field application owned by the presentation dispatch. The retained
@@ -783,7 +888,11 @@ function FieldState:draw()
       resources:drawStartMenu(menuPresentation --[[@as table<string, unknown>]])
     end
     if hostStatus.application then
-      resources:drawApplication(hostStatus.applicationId, hostStatus.application, self.runtime)
+      if hostStatus.applicationId == FieldApplicationIds.POKEGEAR then
+        self:_drawPokegearApplication(resources, hostStatus.application)
+      else
+        resources:drawApplication(hostStatus.applicationId, hostStatus.application, self.runtime)
+      end
     end
   end
   local presentation = self.runtime.menuHost:presentation()

@@ -24,6 +24,10 @@ local LogicalSurface = require("libs.ui.src.LogicalSurface")
 ---@field _subQuad love.Quad?
 ---@field _pokeImage love.Image?
 ---@field _pokeQuad love.Quad?
+---@field _ringingImage love.Image? the acquired ringing atlas, when the manifest projects it
+---@field _ringingQuads love.Quad[]? one quad per compiled ringing frame
+---@field _ringingOffset { x: number, y: number }? the opening ringing frame offset
+---@field _ringingNotification table<string, unknown>? the active notification view for the current draw only
 ---@field menu StartMenuRenderer.Menu the resolved manifest surface geometry
 local StartMenuRenderer = {}
 StartMenuRenderer.__index = StartMenuRenderer
@@ -80,6 +84,7 @@ function StartMenuRenderer.new(opts)
   local chrome = assert(startMenu.chrome and startMenu.chrome.sub, "the start menu must carry its sub chrome")
   local chromeAsset = assert(chrome.asset, "the start menu sub chrome must name an asset")
 
+  local actionIcons = startMenu.actionIcons
   local self = setmetatable({
     _graphics = graphics,
     _text = text,
@@ -91,12 +96,17 @@ function StartMenuRenderer.new(opts)
     _subQuad = nil,
     _pokeImage = nil,
     _pokeQuad = nil,
+    _ringingImage = nil,
+    _ringingQuads = nil,
+    _ringingNotification = nil,
     menu = {
       interactive = interactive,
       iconTable = iconTable,
       focusShake = assert(startMenu.focusShake, "the field-UI manifest must carry the focus shake record"),
       confirmHop = assert(startMenu.confirmHop, "the field-UI manifest must carry the confirm hop record"),
       runningShoes = assert(startMenu.runningShoes, "the field-UI manifest must carry the Running Shoes toggle"),
+      phoneNotification = startMenu.phoneNotification,
+      pokegearIcon = type(actionIcons) == "table" and actionIcons["vanilla.pokegear"] or nil,
     },
   }, StartMenuRenderer)
 
@@ -167,6 +177,31 @@ function StartMenuRenderer:_acquire(cacheFs, manifest, startMenu, chromeAsset)
   for _, part in ipairs({ shoes.button, shoes.indicator }) do
     for _, state in ipairs({ part.off, part.on }) do
       quadFor(assert(state.asset, "a Running Shoes visual must name its atlas"), assert(state.rect))
+    end
+  end
+  local notification = startMenu.phoneNotification
+  if type(notification) == "table" and type(notification.ringing) == "table" then
+    local ringing = notification.ringing --[[@as table<string, unknown>]]
+    if type(ringing.asset) == "string" and manifest.assets[ringing.asset] ~= nil then
+      local ringingImage =
+        acquire(ringing.asset, FieldErrors.FIELD_UI_START_MENU_ICONS_MISSING, "the start menu ringing atlas")
+      self._ringingImage = ringingImage
+      assert(type(ringing.frames) == "table", "ringing frames are compiled")
+      local frames = ringing.frames --[[@as table<integer, unknown>]]
+      local quads = {}
+      local openingOffset = nil
+      for _, frame in ipairs(frames) do
+        local entry = frame --[[@as { rect: { x: number, y: number, width: number, height: number }, offset: { x: number, y: number } }]]
+        local rect = entry.rect
+        local offset = entry.offset
+        quads[#quads + 1] =
+          graphics.newQuad(rect.x, rect.y, rect.width, rect.height, ringingImage:getWidth(), ringingImage:getHeight())
+        if openingOffset == nil then
+          openingOffset = { x = offset.x, y = offset.y }
+        end
+      end
+      self._ringingQuads = quads
+      self._ringingOffset = assert(openingOffset, "the ringing projection carries its opening frame")
     end
   end
   if startMenu.pokeIcons ~= nil and startMenu.pokeIcons.asset ~= nil then
@@ -270,6 +305,29 @@ function StartMenuRenderer:_drawActionIcon(action, selectedPosition, gender, foc
     end
     return
   end
+  -- While an incoming call rings, the Pokegear entry renders the compiled
+  -- ringing frame instead of its normal/selected visual. Every other
+  -- action, and every draw without an active notification, keeps the
+  -- source sequence. The renderer never queries phone state or advances
+  -- ring timing: the presentation carries the detached notification view.
+  local ringing = self._ringingNotification
+  if
+    ringing ~= nil
+    and (action.id == "vanilla.pokegear" or action.icon == self.menu.pokegearIcon)
+    and self._ringingImage ~= nil
+    and self._ringingQuads ~= nil
+  then
+    local ringPosition =
+      assert(positions[action.position], "position " .. tostring(action.position) .. " is outside the position set")
+    local offset = assert(self._ringingOffset, "the ringing projection carries its opening offset")
+    lg.draw(
+      self._ringingImage,
+      self._ringingQuads[1],
+      ringPosition.anchor.x + offset.x,
+      ringPosition.anchor.y + offset.y
+    )
+    return
+  end
   local visual = assert(row.visual, "a sprite icon row must carry its composed visual")
   if gender == "female" and row.variants ~= nil and row.variants.female ~= nil then
     visual = row.variants.female
@@ -354,7 +412,7 @@ end
 -- canvas, shader, scissor, blend, depth, wireframe, cull, and color
 -- afterwards so the HUD and host overlays draw normally.
 
----@param presentation { selectedPosition: integer, trainerGender?: string, actions?: table[], runningShoes?: { locked: boolean, focused: boolean }, focusShake?: { position: integer, axis: string, age: integer }, confirmHop?: { position: integer, age: integer } }?
+---@param presentation { selectedPosition: integer, trainerGender?: string, actions?: table[], runningShoes?: { locked: boolean, focused: boolean }, focusShake?: { position: integer, axis: string, age: integer }, confirmHop?: { position: integer, age: integer }, notification?: table<string, unknown> }?
 ---@param placement LayoutGeometry.Placement the resolved content placement (frame, origin, scale, clip)
 function StartMenuRenderer:draw(presentation, placement)
   if not presentation or not self._subImage then
@@ -365,6 +423,14 @@ function StartMenuRenderer:draw(presentation, placement)
     "the start menu surface requires the placement record"
   )
   local lg = assert(self._graphics)
+  -- The ringing selection is per-draw state, always overwritten here so a
+  -- rejected draw never leaks it into the next surface.
+  local notification = presentation.notification
+  if type(notification) == "table" and notification.ringingAnimation == 5 then
+    self._ringingNotification = notification
+  else
+    self._ringingNotification = nil
+  end
   lg.push("all")
   LogicalSurface.draw(lg, placement, function()
     self:_drawSurface(presentation)
@@ -376,7 +442,7 @@ end
 -- draw draws nothing), then the SUB chrome at the canonical origin plus
 -- per-action icons and labels. The manifest rects are canonical, so
 -- nothing is scaled twice.
----@param presentation { selectedPosition: integer, trainerGender?: string, actions?: table[], runningShoes?: { locked: boolean, focused: boolean }, focusShake?: { position: integer, axis: string, age: integer }, confirmHop?: { position: integer, age: integer } }
+---@param presentation { selectedPosition: integer, trainerGender?: string, actions?: table[], runningShoes?: { locked: boolean, focused: boolean }, focusShake?: { position: integer, axis: string, age: integer }, confirmHop?: { position: integer, age: integer }, notification?: table<string, unknown>|nil }
 function StartMenuRenderer:_drawSurface(presentation)
   local lg = assert(self._graphics)
   lg.setColor(1, 1, 1, 1)
@@ -481,6 +547,7 @@ function StartMenuRenderer:release()
   self._imageByAsset = {}
   self._quads = {}
   self._subImage, self._subQuad, self._pokeImage, self._pokeQuad = nil, nil, nil, nil
+  self._ringingImage, self._ringingQuads, self._ringingOffset, self._ringingNotification = nil, nil, nil, nil
 end
 
 -- The resolved manifest surface: the SUB chrome asset, the icon table with
@@ -504,6 +571,8 @@ end
 ---@field focusShake { horizontal: StartMenuRenderer.ShakeTrack, vertical: StartMenuRenderer.ShakeTrack } the generated focus-change wobble tracks
 ---@field confirmHop StartMenuRenderer.ShakeTrack the generated confirm hop track
 ---@field runningShoes table<string, unknown> the generated Running Shoes toggle record (button and indicator visuals)
+---@field phoneNotification table<string, unknown>? the compiled incoming-call projection, when the class carries it
+---@field pokegearIcon integer? the retail icon index behind the Pokegear action
 
 ---@class StartMenuRenderer.ShakeTrack
 ---@field frames { dx: integer, dy: integer, duration: integer }[]

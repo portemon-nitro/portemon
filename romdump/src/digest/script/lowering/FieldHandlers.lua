@@ -11,19 +11,21 @@ local FieldMoveSources = require("romdump.src.config.FieldMoveSources")
 
 -- Field-only operand normalization follows the pinned field direction table,
 -- message-symbol format, and scrcmd.h actor specials.
-local DIRECTION_BY_CODE = { [0] = "north", [1] = "south", [2] = "west", [3] = "east" }
-local STRING_SPECIALS = { obj_player = "player", obj_partner_poke = "partner" }
-local NUMERIC_SPECIALS = {
-  [255] = "player",
-  [253] = "partner",
-  [241] = "camera_target",
+local ACTOR_REFERENCES = {
+  directionByCode = { [0] = "north", [1] = "south", [2] = "west", [3] = "east" },
+  stringSpecials = { obj_player = "player", obj_partner_poke = "partner" },
+  numericSpecials = {
+    [255] = "player",
+    [253] = "partner",
+    [241] = "camera_target",
+  },
 }
 
 local function normalizeFacing(value)
   if type(value) ~= "number" then
     return value
   end
-  local direction = DIRECTION_BY_CODE[value]
+  local direction = ACTOR_REFERENCES.directionByCode[value]
   assert(direction ~= nil, "unknown direction code " .. tostring(value))
   return direction
 end
@@ -43,9 +45,9 @@ local function actorRef(value)
   local raw = Operands.operandValue(value)
   local special
   if type(raw) == "number" then
-    special = NUMERIC_SPECIALS[raw]
+    special = ACTOR_REFERENCES.numericSpecials[raw]
   elseif type(raw) == "string" then
-    special = STRING_SPECIALS[raw]
+    special = ACTOR_REFERENCES.stringSpecials[raw]
   end
   if special ~= nil then
     return { ref = "actor", special = special }
@@ -1511,6 +1513,204 @@ local function actorOscillate(ins)
   }
 end
 
+-- Bounded pocket-gear inventory lowerings: opcodes 142, 145, 146, 147, 148,
+-- 149, 157, 430, 431, 460, 461, 613, 614, 779, 813, and 821. Source
+-- operand widths live in the pinned command table; ScriptGetVar semantics
+-- keep var-range operands as references and immediates as values.
+-- Contact operands are source phonebook numbers; the runtime translates
+-- them through the compiled contact index at the script boundary, so
+-- both immediates and variable references pass through untouched.
+-- Card, trigger-slot, music-effect, and message-kind selectors translate
+-- here to closed semantic keys; anything outside the observed source
+-- vocabulary fails lowering loudly instead of emitting a plausible node.
+-- The 461/613/614 entry under discussion rides the source entry temp
+-- (VAR_TEMP_x4010 at every real use: 460 writes it, 142/146/147/462 read
+-- it); the lowering names that temp explicitly so the convention stays
+-- inspectable instead of hiding inside native call state. One table (not
+-- one local per helper): this file sits near LuaJIT's local budget.
+local GearLowering = {
+  cardByCode = { [0] = "phone", [1] = "map", [2] = "radio" },
+  musicEffectByCode = { [5] = "pokeflute" },
+  entryTemp = "VAR_TEMP_x4010",
+}
+
+function GearLowering.gearCard(ins)
+  local code = Operands.operandValue(ins.operands[1])
+  local card = GearLowering.cardByCode[code]
+  if card == nil then
+    Errors.raise("SCRIPT_UNKNOWN_GEAR_CARD", "RegisterPokegearCard names a known card selector", {
+      sourceOffset = ins.offset,
+      opcode = ins.opcode,
+      code = code,
+    })
+  end
+  return card --[[@as string]]
+end
+
+function GearLowering.gearTrigger(ins, position)
+  local slot = Operands.operandValue(ins.operands[position or 1])
+  if type(slot) ~= "number" or slot % 1 ~= 0 or slot < 0 or slot > 255 then
+    Errors.raise("SCRIPT_UNKNOWN_PHONE_TRIGGER", "phone triggers name a source slot", {
+      sourceOffset = ins.offset,
+      opcode = ins.opcode,
+      slot = slot,
+    })
+  end
+  return string.format("gear.trigger.%d", slot)
+end
+
+function GearLowering.getPhoneBookRematch(ins)
+  return {
+    op = "pokegear_query",
+    kind = "rematch_ready",
+    contact = Operands.varRef(ins.operands[1]),
+    result = Operands.varRef(ins.operands[2]),
+  }
+end
+
+function GearLowering.registerPokegearCard(ins)
+  return { op = "pokegear_register_card", card = GearLowering.gearCard(ins) }
+end
+
+function GearLowering.registerGearNumber(ins)
+  return {
+    op = "pokegear_update",
+    kind = "register_contact",
+    contact = Operands.varRef(ins.operands[1]),
+  }
+end
+
+function GearLowering.checkRegisteredPhoneNumber(ins)
+  return {
+    op = "pokegear_query",
+    kind = "contact_registered",
+    contact = Operands.varRef(ins.operands[1]),
+    result = Operands.varRef(ins.operands[2]),
+  }
+end
+
+function GearLowering.setPhoneTrigger(ins)
+  local active = Operands.operandValue(ins.operands[2])
+  if type(active) ~= "number" or active % 1 ~= 0 or active < 0 or active > 255 then
+    Errors.raise("SCRIPT_UNKNOWN_PHONE_TRIGGER", "phone trigger switches carry a source switch value", {
+      sourceOffset = ins.offset,
+      opcode = ins.opcode,
+      active = active,
+    })
+  end
+  return { op = "pokegear_set_trigger", trigger = GearLowering.gearTrigger(ins, 1), active = active ~= 0 }
+end
+
+function GearLowering.unsetPhoneCallTrigger(ins)
+  return { op = "pokegear_set_trigger", trigger = GearLowering.gearTrigger(ins, 1), active = false }
+end
+
+function GearLowering.openTownMap()
+  return { op = "pokegear_open", mode = "townMap" }
+end
+
+-- SetPhoneCall stages one evaluated setup request without blocking: the
+-- three operands stay value references (the single real use stages them
+-- through script variables) and the runtime maps the evaluated direction
+-- and kind codes onto the closed foreground vocabulary.
+function GearLowering.setPhoneCall(ins)
+  return {
+    op = "phone_set_call",
+    contact = Operands.varRef(ins.operands[1]),
+    direction = Operands.varRef(ins.operands[2]),
+    kind = Operands.varRef(ins.operands[3]),
+  }
+end
+
+function GearLowering.runPhoneCall()
+  return { op = "phone_run_call" }
+end
+
+function GearLowering.loadPhoneDat(ins)
+  return {
+    op = "phone_resolve_contact",
+    trainer = Operands.varRef(ins.operands[1]),
+    result = Operands.varRef(ins.operands[2]),
+  }
+end
+
+function GearLowering.getPhoneContactMsgIds(ins)
+  local kind = Operands.operandValue(ins.operands[1])
+  if type(kind) ~= "number" or kind % 1 ~= 0 or kind < 0 or kind > 4 then
+    Errors.raise("SCRIPT_UNKNOWN_PHONE_MESSAGE", "contact messages name a source message kind", {
+      sourceOffset = ins.offset,
+      opcode = ins.opcode,
+      kind = kind,
+    })
+  end
+  return {
+    op = "phone_contact_message",
+    contact = { value = "var", id = GearLowering.entryTemp },
+    kind = kind,
+    bank = Operands.varRef(ins.operands[2]),
+    entry = Operands.varRef(ins.operands[3]),
+  }
+end
+
+function GearLowering.phoneContactGiftBerry(ins)
+  return {
+    op = "phone_contact_gift",
+    contact = { value = "var", id = GearLowering.entryTemp },
+    kind = "berry",
+    result = Operands.varRef(ins.operands[1]),
+  }
+end
+
+function GearLowering.phoneContactGiftItem(ins)
+  return {
+    op = "phone_contact_gift",
+    contact = { value = "var", id = GearLowering.entryTemp },
+    kind = "item",
+    result = Operands.varRef(ins.operands[1]),
+  }
+end
+
+function GearLowering.radioMusicIsPlaying(ins)
+  local code = Operands.operandValue(ins.operands[1])
+  local effect = GearLowering.musicEffectByCode[code]
+  if effect == nil then
+    Errors.raise("SCRIPT_UNKNOWN_RADIO_EFFECT", "radio music queries name a known source effect code", {
+      sourceOffset = ins.offset,
+      opcode = ins.opcode,
+      code = code,
+    })
+  end
+  return {
+    op = "radio_music_query",
+    effect = effect,
+    result = Operands.varRef(ins.operands[2]),
+  }
+end
+
+function GearLowering.momGiftCheck(ins)
+  return { op = "mom_gift_check", result = Operands.varRef(ins.operands[1]) }
+end
+
+function GearLowering.momGiftHead(ins)
+  return {
+    op = "mom_gift_head",
+    item = Operands.varRef(ins.operands[1]),
+    quantity = Operands.varRef(ins.operands[2]),
+  }
+end
+
+function GearLowering.momGiftTake()
+  return { op = "mom_gift_take" }
+end
+
+function GearLowering.getBuenasPassword(ins)
+  return {
+    op = "buena_password",
+    firstWord = Operands.varRef(ins.operands[1]),
+    correct = Operands.varRef(ins.operands[2]),
+  }
+end
+
 local FieldHandlers = {
   [44] = nonNpcMessage,
   [45] = npcMessage,
@@ -1709,6 +1909,24 @@ local FieldHandlers = {
   [379] = FieldServiceHandlers.timeOfDay,
   [484] = FieldServiceHandlers.weekday,
   [436] = FieldServiceHandlers.overworldLeave,
+  [142] = GearLowering.getPhoneBookRematch,
+  [145] = GearLowering.registerPokegearCard,
+  [146] = GearLowering.registerGearNumber,
+  [147] = GearLowering.checkRegisteredPhoneNumber,
+  [148] = GearLowering.setPhoneTrigger,
+  [149] = GearLowering.unsetPhoneCallTrigger,
+  [157] = GearLowering.openTownMap,
+  [430] = GearLowering.setPhoneCall,
+  [431] = GearLowering.runPhoneCall,
+  [460] = GearLowering.loadPhoneDat,
+  [461] = GearLowering.getPhoneContactMsgIds,
+  [613] = GearLowering.phoneContactGiftBerry,
+  [614] = GearLowering.phoneContactGiftItem,
+  [779] = GearLowering.radioMusicIsPlaying,
+  [811] = GearLowering.momGiftHead,
+  [812] = GearLowering.momGiftTake,
+  [813] = GearLowering.momGiftCheck,
+  [821] = GearLowering.getBuenasPassword,
   [437] = FieldServiceHandlers.discardValue,
   [446] = FieldServiceHandlers.currentMapId,
   [487] = FieldServiceHandlers.pokemonCenterHeal,

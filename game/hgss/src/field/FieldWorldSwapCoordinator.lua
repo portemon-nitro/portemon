@@ -10,6 +10,7 @@ local SurfaceResolver = require("libs.hgss.src.world.SurfaceResolver")
 
 ---@class FieldWorldSwapCoordinator
 ---@field runtime FieldRuntime
+---@field pokegearLastExterior { x: integer, y: integer }? the last committed source-confirmed exterior cell
 local FieldWorldSwapCoordinator = {}
 FieldWorldSwapCoordinator.__index = FieldWorldSwapCoordinator
 
@@ -186,6 +187,7 @@ end
 ---@param prepared table<string, unknown>
 function FieldWorldSwapCoordinator:commit(resolution, _, prepared)
   local runtime = self.runtime
+  local sourceMap, sourcePlayer = runtime.runtimeMap, runtime.player
   self:publishEscapeEntrance(runtime, resolution)
   local runtimeMap = resolution.destinationMap
   local physical = (prepared and prepared.physical) or resolution.physical
@@ -230,9 +232,54 @@ function FieldWorldSwapCoordinator:commit(resolution, _, prepared)
   end
   runtime.scripts:onMapSwap(prepared.player, runtimeMap)
   runtime.session:beginMapEntry()
+  if runtimeMap.fieldData.transitionEnvironment ~= "outdoors" then
+    local exterior = self:_sourceExteriorCell(sourceMap, sourcePlayer)
+    if exterior ~= nil then
+      self.pokegearLastExterior = exterior
+    end
+  end
   if previousCoverage then
     previousCoverage:release()
   end
+end
+
+---@param sourceMap RuntimeFieldMap?
+---@param player table<string, unknown>?
+---@return { x: integer, y: integer }? the source-confirmed exterior cell
+function FieldWorldSwapCoordinator:_sourceExteriorCell(sourceMap, player)
+  if
+    type(sourceMap) ~= "table"
+    or sourceMap.fieldData.transitionEnvironment ~= "outdoors"
+    or type(sourceMap.mapSymbol) ~= "string"
+    or type(player) ~= "table"
+  then
+    return nil
+  end
+  local catalog = self.runtime.pokegearCatalog
+  local locations = type(catalog) == "table" and catalog.locations or nil
+  if type(locations) ~= "table" then
+    return nil
+  end
+  local sourceLocation
+  for _, entry in ipairs(locations) do
+    if type(entry) == "table" and entry.fieldMap == sourceMap.mapSymbol then
+      sourceLocation = entry
+      break
+    end
+  end
+  if
+    type(sourceLocation) ~= "table"
+    or type(sourceLocation.matrix) ~= "table"
+    or type(sourceLocation.matrix.x) ~= "number"
+    or type(sourceLocation.matrix.y) ~= "number"
+    or sourceLocation.explicitX ~= nil
+    or sourceLocation.explicitY ~= nil
+    or type(player.fieldX) ~= "number"
+    or type(player.fieldZ) ~= "number"
+  then
+    return nil
+  end
+  return { x = math.floor(player.fieldX / 32), y = math.floor(player.fieldZ / 32) }
 end
 
 ---@param runtime FieldRuntime

@@ -200,6 +200,22 @@ function FieldMessageCompiler.requiredBankIds()
   set[BLACKOUT_MESSAGE_BANK] = true
   -- Apricorn Box labels are addressed directly by the generated source manifest.
   set[APRICORN_BOX_MESSAGE_BANK] = true
+  -- Per-caller phone greeting banks ride the same demandable pipeline as
+  -- the radio broadcast banks above: each phonebook contact's script
+  -- messages live in the contact's own bank behind GetPhoneMessageGmm,
+  -- addressed through the compiled pokegear catalog rather than any map
+  -- header or field script bank. The Oak opening bank above is the
+  -- precedent for explicitly listing such code-addressed banks here.
+  local PokegearSources = require("romdump.src.config.PokegearSources")
+  for _, bankId in ipairs(PokegearSources.phoneMessageBankIds()) do
+    set[bankId] = true
+  end
+  set[PokegearSources.phoneClassLabels.specialBank] = true
+  set[PokegearSources.phoneClassLabels.trainerBank] = true
+  set[PokegearSources.phoneClassLabels.landmarkBank] = true
+  set[PokegearSources.phoneClassLabels.landmarkFallbackBank] = true
+  -- The region map prints its panel text and Fly prompts from this bank.
+  set[PokegearSources.regionMapMessageBank] = true
   local out = {}
   for bankId in pairs(set) do
     out[#out + 1] = bankId

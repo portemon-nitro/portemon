@@ -258,6 +258,11 @@ end
 ---@field fashionCase table<string, unknown> live fashion accessory inventory
 ---@field pcApplications table<string, unknown> the script-owned PC application host
 ---@field pcTerminal table<string, unknown> source PC terminal effects
+---@field pokegearApplications table<string, unknown>|nil the script-owned companion host behind calls and town-map opens (absent -> SCRIPT_SERVICE_MISSING on use)
+---@field phoneContactIndex table<string, unknown>|nil the compiled phonebook index { byId, byTrainer } for number resolution (absent -> SCRIPT_SERVICE_MISSING on use)
+---@field pokegearState table<string, unknown>|nil the durable companion state behind card and trigger writes (absent -> SCRIPT_SERVICE_MISSING on use)
+---@field phoneGifts table<string, unknown>|nil the contact and parent gift query adapter (absent -> SCRIPT_SERVICE_MISSING on use)
+---@field radioMusic table<string, unknown>|nil the audio-derived radio music query (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field battle table<string, unknown>|nil the battle host for script battle tasks (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field timeOfDay table<string, unknown> RTC-derived time-of-day service
 ---@field trainerCardStars table<string, unknown> source-derived Trainer Card star query
@@ -533,6 +538,11 @@ function FieldScripts.new(opts)
       starterBalls = opts.starterBalls,
       pcApplications = opts.pcApplications,
       pcTerminal = opts.pcTerminal,
+      pokegearApplications = opts.pokegearApplications,
+      phoneContactIndex = opts.phoneContactIndex,
+      pokegearState = opts.pokegearState,
+      phoneGifts = opts.phoneGifts,
+      radioMusic = opts.radioMusic,
       battle = opts.battle,
       advanceAsync = advanceAsync,
     },

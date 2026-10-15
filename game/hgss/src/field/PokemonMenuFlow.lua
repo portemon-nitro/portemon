@@ -1054,8 +1054,8 @@ function PokemonMenuFlow:_routeBrowseIntent(intent)
 end
 
 -- Checks one field entry before leaving the application: executable
--- checks emit the typed terminal handoff, the checked Fly branch restores
--- silently inside Party, and refusals hold the screen without publishing.
+-- checks emit the typed terminal handoff, and refusals hold the screen
+-- without publishing.
 ---@param intent table<string, unknown>
 function PokemonMenuFlow:_routeFieldMove(intent)
   -- Party menu entries spell moves like the stored mon record (FLY);
@@ -1071,13 +1071,6 @@ function PokemonMenuFlow:_routeFieldMove(intent)
     partyRevision = self._mons:partyRevision(),
   })
   assert(type(decision) == "table" and type(decision.kind) == "string", "field checks answer decisions")
-  if move == "fly" and decision.kind == "ok" then
-    -- Fly: hand the selected party slot to Town Map when that application is available.
-    local child = assert(self._child, "fly restores the live party child")
-    child:cancelPointerCapture()
-    child:completeAction({ kind = "no_op" })
-    return
-  end
   if decision.kind == "ok" then
     self:_terminate({
       kind = "field_action",

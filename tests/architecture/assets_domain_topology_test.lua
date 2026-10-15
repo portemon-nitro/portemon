@@ -86,6 +86,8 @@ local SHARED = {
   "PartyCache",
   "PcAssetSchema",
   "PcCache",
+  "PokegearAssetSchema",
+  "PokegearCache",
   "SummaryAssetSchema",
   "SummaryCache",
   "PngWriter",

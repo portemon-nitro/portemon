@@ -320,6 +320,10 @@ DerivedAssetContract.fieldEmotes = {
   schema = "g4-field-emote-v2",
 }
 
+-- fieldUi schema 21: the Start Menu section carries the incoming-call
+-- notification projection (the source caller-window tile geometry plus the
+-- shared ringing animation frames), so a stale pre-change cache without
+-- that section must fail readiness.
 DerivedAssetContract.fieldUi = {
   cacheFormat = "field-ui-cache-v1",
   schema = "g4-field-ui-v21",
@@ -474,6 +478,15 @@ DerivedAssetContract.party = {
 DerivedAssetContract.pc = {
   cacheFormat = "pc-cache-v1",
   schema = "g4-pc-v2",
+}
+
+-- The Pokegear family carries the source-independent shell, Configure,
+-- Phone, map, standalone Fly, and Radio presentation records plus the
+-- immutable contact/map/radio semantic catalogs (including the region-map
+-- location and flypoint tables) as one independently published family.
+DerivedAssetContract.pokegear = {
+  cacheFormat = "pokegear-cache-v1",
+  schema = "g4-pokegear-assets-v2",
 }
 
 -- The summary class carries the source-independent native summary

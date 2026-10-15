@@ -100,6 +100,24 @@ return {
     -- A320 loop restarts this one-shot sequence on the selected icon).
     -- Zero-based into the decoded animation bank.
     confirmHopSeq = 2,
+    -- While an incoming call rings, the Pokegear icon renders through the
+    -- shared ringing animation instead of the stable frame (overlay 27
+    -- caller notification; zero-based into the same animation bank).
+    iconRingingAnim = 5,
+    -- The caller-name window on the information screen: source background 5
+    -- at tile left 11, top 19, height 2 tiles, with the width capped at 9
+    -- tiles (overlay 27 caller notification geometry).
+    phoneNotification = {
+      subBg = 5,
+      tileLeft = 11,
+      top = 19,
+      height = 2,
+      maxWidthTiles = 9,
+    },
+    cursorCharMember = 64,
+    cursorPaletteMember = 61,
+    cursorCellMember = 62,
+    cursorAnimMember = 63,
     -- The 13 retail icon rows (Lua index = retail icon index + 1) from the
     -- ov27_0225CF94 table: the sprite char member per icon row, the
     -- bank-196 label id, and the label kind. Rows 9-10 are text-only (no

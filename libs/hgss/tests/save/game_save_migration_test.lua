@@ -264,6 +264,7 @@ function T.v3_migrates_through_v4_v5_and_both_v6_layout_steps()
   Assert.equal(current.playerData.profile.runningShoes, false)
   Assert.equal(current.playerData.profile.runningShoesLock, false)
   Assert.deepEqual(current.mart, MartSave.empty())
+  Assert.notNil(current.pokegear, "the companion bucket arrives through the v8 step")
 end
 
 function T.malformed_nested_economy_is_not_repaired_by_normalization()
@@ -385,6 +386,10 @@ function T.unrelated_extension_metadata_survives_legacy_migration_steps()
   local migrated = GameSave.migrateV7(predecessor)
   Assert.equal(migrated.schema, GameSave.LEGACY_V8_SCHEMA)
   Assert.deepEqual(migrated.modState, { marker = "kept" })
+  local latest = GameSave.migrateV8(migrated)
+  Assert.equal(latest.schema, GameSave.SCHEMA)
+  Assert.deepEqual(latest.modState, { marker = "kept" }, "the v8 step preserves unrelated top-level state")
+  Assert.notNil(latest.pokegear, "the v8 step adds the companion bucket")
   -- The same legacy payload normalizes end-to-end with its extension intact.
   local normalized = assert(GameSave.normalize(predecessor))
   Assert.equal(normalized.schema, GameSave.SCHEMA)
@@ -553,6 +558,85 @@ function T.version_advancement_keeps_each_historical_meaning()
   Assert.equal(v4.schema, "g4-game-save-v4")
   Assert.isNil(v4.playerData.profile.nationalDex)
   Assert.isNil(v4.mart)
+end
+
+-- The v8 step carries every existing bucket untouched and adds only the
+-- companion bucket: empty contact history, the base card, deterministic
+-- identity seeds, and the radio bit solely under acquisition evidence.
+local function v8record(overrides)
+  local value = {
+    schema = GameSave.LEGACY_V8_SCHEMA,
+    saveId = "save-00000009",
+    versionId = "heartgold",
+    playTimeSeconds = 42,
+    playerData = { profile = { name = "GOLD" } },
+    world = { flags = {}, variables = {} },
+    party = { members = {} },
+    bag = { items = {} },
+    box = { boxes = {} },
+    encounters = EncounterSave.initial(),
+  }
+  for key, replacement in pairs(overrides or {}) do
+    rawset(value, key, replacement)
+  end
+  return value
+end
+
+local function companionRefs()
+  return {
+    catalog = {
+      contacts = { { key = "custom.elm" } },
+      locations = { { key = "custom.new-bark" } },
+    },
+  }
+end
+
+function T.v8_migration_adds_only_the_companion_bucket()
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local source = v8record()
+  local migrated = GameSave.migrateV8(source)
+  Assert.equal(migrated.schema, GameSave.SCHEMA, "the v8 step advances the envelope")
+  Assert.equal(source.schema, GameSave.LEGACY_V8_SCHEMA, "migration leaves its input untouched")
+  Assert.isNil(source.pokegear, "migration never mutates its source record")
+  Assert.deepEqual(migrated.playerData, source.playerData, "migration preserves the player bucket exactly")
+  Assert.deepEqual(migrated.world, source.world, "migration preserves world flags and variables exactly")
+  Assert.deepEqual(migrated.party, source.party, "migration preserves the party exactly")
+  Assert.deepEqual(migrated.bag, source.bag, "migration preserves the bag exactly")
+  Assert.deepEqual(migrated.box, source.box, "migration preserves stored monsters exactly")
+  Assert.deepEqual(migrated.encounters, source.encounters, "migration preserves encounter records exactly")
+  Assert.notNil(migrated.pokegear, "migration creates the companion bucket")
+  local gear = PokegearState.restore(migrated.pokegear, companionRefs())
+  Assert.deepEqual(gear:readPhone().contactOrder, {}, "migration invents no contact history")
+  Assert.isNil(migrated.pokegear.registeredCards.map, "migration grants no map card without evidence")
+  Assert.isNil(migrated.pokegear.registeredCards.radio, "migration grants no radio card without evidence")
+  Assert.deepEqual(
+    GameSave.migrateV8(source).pokegear,
+    migrated.pokegear,
+    "migration derives companion seeds from saved identity alone"
+  )
+  local other = v8record({ saveId = "save-00000010" })
+  Assert.isTrue(
+    GameSave.migrateV8(other).pokegear.calendar.dailyGroupSeed ~= migrated.pokegear.calendar.dailyGroupSeed,
+    "distinct save identities seed distinct daily identities"
+  )
+end
+
+function T.v8_migration_reconstructs_only_the_proven_radio_card()
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local source = v8record({ world = { flags = { [138] = true }, variables = {} } })
+  local migrated = GameSave.migrateV8(source)
+  Assert.equal(migrated.schema, GameSave.SCHEMA)
+  Assert.isTrue(
+    migrated.pokegear.registeredCards.radio == true,
+    "the radio acquisition flag proves the radio card"
+  )
+  Assert.isTrue(migrated.pokegear.registeredCards.phone == true, "the base companion card stays acquired")
+  Assert.isNil(migrated.pokegear.registeredCards.map, "no flag proves a map card")
+  local gear = PokegearState.restore(migrated.pokegear, companionRefs())
+  Assert.deepEqual(gear:readPhone().contactOrder, {}, "proven cards still invent no contact history")
+  local normalized = assert(GameSave.normalize(v8record()))
+  Assert.equal(normalized.schema, GameSave.SCHEMA, "normalization chains v8 through the companion step")
+  Assert.notNil(normalized.pokegear, "normalized v8 records carry the companion bucket")
 end
 
 return { tests = T }

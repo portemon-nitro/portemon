@@ -56,6 +56,164 @@ for colorCode = 0, 6 do
   COLOR_BY_APRICORN[APRICORN_BY_COLOR[colorCode]] = colorCode
 end
 
+-- Builds the compiled phonebook index behind contact-number resolution:
+-- phonebook number to semantic key and trainer number to phonebook
+-- number. Pure data over the compiled catalog; resolution failures
+-- surface at the script boundary, never here.
+---@param catalog table<string, unknown>?
+---@return table<string, unknown>? the index, or nil without a catalog
+function FieldScriptComposition.phoneContactIndex(catalog)
+  if type(catalog) ~= "table" or type(catalog.contacts) ~= "table" then
+    return nil
+  end
+  local byId, byTrainer = {}, {}
+  for _, record in
+    ipairs(catalog.contacts --[[@as table<integer, unknown>]])
+  do
+    local entry = record --[[@as table<string, unknown>]]
+    if type(entry.key) == "string" and type(entry.id) == "number" then
+      byId[entry.id] = entry.key
+      if type(entry.trainer) == "number" then
+        byTrainer[entry.trainer] = entry.id
+      end
+    end
+  end
+  return { byId = byId, byTrainer = byTrainer }
+end
+
+-- Builds the contact and parent gift query adapter over the real owners:
+-- durable state for pending rewards, the compiled phonebook for fixed
+-- gift items, the companion streams for berry draws, and the item
+-- catalog for native-id translation. Queries are read-only: a waiting
+-- staged reward reports its own key instead of stacking, an
+-- unregistered contact waits for nothing, and the berry draw labels its
+-- stream. A missing owner yields no adapter and the script operation
+-- faults on use instead of answering a fabricated gift.
+---@param state table<string, unknown>?
+---@param catalog table<string, unknown>?
+---@param random table<string, unknown>?
+---@param itemCatalog table<string, unknown>?
+---@return table<string, unknown>? the adapter, or nil without its owners
+function FieldScriptComposition.phoneGiftQueries(state, catalog, random, itemCatalog)
+  if
+    type(state) ~= "table"
+    or type(state.readPhone) ~= "function"
+    or type(catalog) ~= "table"
+    or type(catalog.contacts) ~= "table"
+    or type(random) ~= "table"
+    or type(random.lc) ~= "function"
+    or type(itemCatalog) ~= "table"
+    or type(itemCatalog.itemKeyByNativeId) ~= "function"
+  then
+    return nil
+  end
+  local contactsByKey = {}
+  for _, record in
+    ipairs(catalog.contacts --[[@as table<integer, unknown>]])
+  do
+    local entry = record --[[@as table<string, unknown>]]
+    if type(entry.key) == "string" then
+      contactsByKey[entry.key] = entry
+    end
+  end
+  local PhoneRewards = require("game.hgss.src.pokegear.PhoneRewards")
+  local adapter = {}
+  local function nativeId(itemKey)
+    local item = itemCatalog:item(itemKey)
+    assert(type(item.nativeId) == "number", "phone gifts resolve to a native item identity")
+    return item.nativeId
+  end
+  local function stagedReward(contactKey)
+    local phone = state:readPhone()
+    assert(type(phone) == "table" and type(phone.contacts) == "table", "gift queries read registered contacts")
+    local entry = (phone.contacts --[[@as table<string, unknown>]])[contactKey]
+    if type(entry) ~= "table" then
+      return nil, false
+    end
+    local reward = (entry --[[@as table<string, unknown>]]).reward
+    if
+      type(reward) == "table" and type((reward --[[@as table<string, unknown>]]).item) == "string"
+    then
+      return (reward --[[@as table<string, string>]]).item, true
+    end
+    return nil, true
+  end
+  ---@param contactKey string
+  ---@return string|integer the waiting item key, or numeric zero
+  function adapter:berry(contactKey)
+    local waiting, registered = stagedReward(contactKey)
+    if waiting ~= nil then
+      return nativeId(waiting)
+    end
+    if not registered then
+      return 0
+    end
+    local draw = random.lc --[[@as fun(self: table<string, unknown>, label: string): integer]]
+    local pick = draw(random, "contact-berry") % PhoneRewards.BERRY_CHOICES
+    assert(pick >= 0 and pick < PhoneRewards.BERRY_CHOICES, "berry draws stay inside their choices")
+    local berries = catalog.momPurchases --[[@as table<integer, table<string, unknown>>]]
+    local berryIndex = 0
+    for _, entry in ipairs(berries) do
+      if entry.kind == "berry" then
+        if berryIndex == pick then
+          return entry.nativeItemId --[[@as integer]]
+        end
+        berryIndex = berryIndex + 1
+      end
+    end
+    error("the compiled Mom berry table does not cover its source selector", 0)
+  end
+  ---@param contactKey string
+  ---@return string|integer the waiting item key, or numeric zero
+  function adapter:giftItem(contactKey)
+    local waiting, registered = stagedReward(contactKey)
+    if waiting ~= nil then
+      return nativeId(waiting)
+    end
+    if not registered then
+      return 0
+    end
+    local record = contactsByKey[contactKey]
+    assert(type(record) == "table", "gift queries read catalogued contacts")
+    local nativeItemId = (record --[[@as table<string, unknown>]]).gift
+    assert(type(nativeItemId) == "number", "contact gifts carry their native item")
+    return nativeItemId
+  end
+  ---@return string|integer the waiting parent gift item ID, or numeric zero
+  function adapter:momGift()
+    local itemId = self:peekMom()
+    return itemId
+  end
+  ---@return integer, integer native item ID and quantity, or zero values
+  function adapter:peekMom()
+    local phone = state:readPhone()
+    assert(type(phone) == "table", "parent gift queries read phone facts")
+    local mom = (phone --[[@as table<string, unknown>]]).mom
+    assert(type(mom) == "table", "parent gift queries read savings facts")
+    local queue = (mom --[[@as table<string, unknown>]]).gifts
+    assert(type(queue) == "table", "parent gift queries read the gift queue")
+    local head = (queue --[[@as table<integer, unknown>]])[1]
+    if type(head) ~= "table" then
+      return 0, 0
+    end
+    local item = (head --[[@as table<string, unknown>]]).item
+    if type(item) ~= "string" or item == "" then
+      return 0, 0
+    end
+    local quantity = (head --[[@as table<string, unknown>]]).quantity
+    assert(type(quantity) == "number" and quantity % 1 == 0 and quantity > 0, "queued gifts carry a source quantity")
+    return nativeId(item), quantity
+  end
+  function adapter:takeMomAfterGive()
+    local queue = state:readPhone().mom.gifts
+    local head = queue[1]
+    assert(type(head) == "table", "the source dequeue follows a pending Mom gift")
+    local candidate = PhoneRewards.prepareCollection(state:revision(), { state = state, gift = head }) --[[@as { publish: fun(): table<string, unknown> }]]
+    candidate.publish()
+  end
+  return adapter
+end
+
 local function currentTimeOfDayCode(runtime)
   return TimeOfDayProps.rtcCodeForHour(runtime.localClock:nowLocal().hour)
 end
@@ -250,6 +408,14 @@ function FieldScriptComposition.compose(runtime, options)
   local function blackoutSourceMap()
     return assert(runtime.runtimeMap, "blackout swaps require the live source map")
   end
+  -- The companion script services ride the composed feature when the
+  -- runtime owns one; rigs without a feature composition keep nils here
+  -- and the companion operations fault on use instead of answering
+  -- through a fabricated owner.
+  local gear = runtime.pokegear
+  local gearHost = type(gear) == "table" and gear.scriptHost or nil
+  local gearRadio = type(gear) == "table" and gear.radioEffects or nil
+  local gearCatalog = runtime.pokegearCatalog
   local scripts = FieldScripts.new({
     cacheFs = options.cacheFs,
     overrideFs = runtime.overrideFs,
@@ -313,6 +479,16 @@ function FieldScriptComposition.compose(runtime, options)
     apricorn = apricornService(runtime),
     apricornKurt = apricornKurtService(runtime),
     kurtBoxHost = assert(runtime.kurtBoxHost, "Kurt Box host is composed before field scripts"),
+    pokegearApplications = gearHost,
+    phoneContactIndex = FieldScriptComposition.phoneContactIndex(gearCatalog),
+    pokegearState = runtime.pokegearState,
+    phoneGifts = FieldScriptComposition.phoneGiftQueries(
+      runtime.pokegearState,
+      gearCatalog,
+      runtime.pokegearRandom,
+      options.itemCatalog
+    ),
+    radioMusic = gearRadio,
   })
   runtime.blackoutFlow = assert(scripts.blackoutFlow)
   local function restore()

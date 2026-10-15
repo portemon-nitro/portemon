@@ -6,6 +6,8 @@ local checkInteger = Checks.checkInteger
 local checkRect = Checks.checkRect
 local checkAtlasRect = Checks.checkAtlasRect
 local demandCount = Checks.demandCount
+local demandDenseSequence = Checks.demandDenseSequence
+local checkFrameOffset = Checks.checkFrameOffset
 local checkSpriteVisual = Checks.checkSpriteVisual
 local VALID_ICON_ARTS = { sprite = true, text = true, poke_icon = true }
 local VALID_ICON_LABEL_KINDS = { static = true, player_name = true }
@@ -316,6 +318,51 @@ local function checkStartMenuLabelPalette(labelPalette)
   checkLabelRole(labelPalette, "background", 0)
 end
 
+local function checkPhoneNotification(notification, atlases)
+  if type(notification) ~= "table" then
+    reject("startMenu.phoneNotification must be a table", {})
+  end
+  demandCount(notification, 2, "startMenu.phoneNotification requires exactly window and ringing", {})
+  local window = notification.window
+  if type(window) ~= "table" then
+    reject("startMenu.phoneNotification.window must be a table", {})
+  end
+  if window.tileLeft ~= 11 or window.top ~= 19 or window.height ~= 2 or window.maxWidth ~= 9 then
+    reject("the caller window keeps its source tile geometry", {
+      tileLeft = window.tileLeft,
+      top = window.top,
+      height = window.height,
+      maxWidth = window.maxWidth,
+    })
+  end
+  local ringing = notification.ringing
+  if type(ringing) ~= "table" then
+    reject("startMenu.phoneNotification.ringing must be a table", {})
+  end
+  if type(ringing.asset) ~= "string" or atlases[ringing.asset] == nil then
+    reject("startMenu.phoneNotification.ringing must reference an indexed asset", {})
+  end
+  if type(ringing.playMode) ~= "string" then
+    reject("startMenu.phoneNotification.ringing carries a play mode", {})
+  end
+  if type(ringing.frames) ~= "table" then
+    reject("startMenu.phoneNotification.ringing must carry animation frames", {})
+  end
+  local frameCount =
+    demandDenseSequence(ringing.frames, "startMenu.phoneNotification.ringing frames must be a dense sequence", {})
+  checkInteger(ringing.loopStartFrameIdx, 0, frameCount - 1, "ringing loop start is outside its frames", {})
+  for index = 1, frameCount do
+    local frame = ringing.frames[index]
+    local frameWhat = "startMenu.phoneNotification.ringing frame " .. index
+    if type(frame) ~= "table" then
+      reject(frameWhat .. " must be a table", { what = frameWhat })
+    end
+    checkAtlasRect(frame.rect, atlases, ringing.asset, frameWhat .. " rect")
+    checkFrameOffset(frame.offset, frameWhat .. " must carry an integral frame offset", { what = frameWhat })
+    checkInteger(frame.duration, 1, nil, frameWhat .. " duration must be a positive integer", { what = frameWhat })
+  end
+end
+
 local function checkStartMenu(s, atlases, asset)
   checkAtlasRect(s.background, atlases, asset.START_MENU_BACKGROUND, "start menu background")
   checkStartMenuFocusShake(s.focusShake)
@@ -329,6 +376,9 @@ local function checkStartMenu(s, atlases, asset)
   checkStartMenuActionIcons(s.actionIcons, s.iconTable)
   checkStartMenuInteractive(s.interactive)
   checkStartMenuRunningShoes(s.runningShoes, atlases)
+  if s.phoneNotification ~= nil then
+    checkPhoneNotification(s.phoneNotification, atlases)
+  end
   checkStartMenuChrome(s.chrome, atlases)
   checkStartMenuLabelPalette(s.labelPalette)
 end

@@ -230,6 +230,7 @@ local function captureRuntime(overrides)
       maps = {},
     }),
     dexKnowledge = require("libs.hgss.src.mons.PokedexKnowledge").new({ species = { CHIKORITA = true } }),
+    pokegearState = require("libs.hgss.src.save.PokegearState").new({ seed = 1 }, { catalog = { contacts = {}, locations = {} } }),
   }, FieldRuntime)
   for key, value in pairs(overrides or {}) do
     runtime[key] = value
@@ -278,6 +279,7 @@ function T.captureGameSave_returns_an_owner_produced_snapshot_without_storage_io
   Assert.equal(valid.fashionCase.counts[1], 1, "every save captures Fashion Case quantities")
   Assert.equal(valid.encounters.schema, "hgss-encounter-v1", "every save captures the encounter bucket")
   Assert.equal(valid.pokedex.schema, "hgss-pokedex-v1", "every save captures the dex bucket")
+  Assert.equal(valid.pokegear.schema, "hgss-pokegear-v1", "every save captures the companion bucket")
   Assert.equal(scriptCaptureCalls, 1)
 end
 

@@ -2,7 +2,11 @@
 -- current field map audio record, effective field-music selection (day/night
 -- + flag overrides + persisted override), soundplate selection and
 -- environmental audio state, and delegating the script audio facade (play,
--- stop, playMusic, etc.) to the composed GameSound instance.
+-- stop, playMusic, etc.) to the composed GameSound instance. It also owns
+-- the radio interface teardown transition: closing during ordinary music
+-- leaves the surviving radio alive (an unchanged map never replaces the BGM
+-- behind it), while untuned, jingle, and commercial exits fade, clear the
+-- radio, and restore the field music exactly once.
 --
 -- Field-music policy:
 -- 1. mapHeaderMusic(): day/night selection + flag-based map override
@@ -227,6 +231,10 @@ end
 function FieldAudioController:enterMap(runtimeMap, options)
   options = options or {}
 
+  -- The effective music before this entry installs its map, so step 5 can
+  -- tell an unchanged field behind surviving radio from an explicit change.
+  local previousEffective = self:effectiveMusic()
+
   -- 1. Deactivate source environment BEFORE replacing state, using old identities
   if self._environment ~= nil then
     local oldSequence = self._environment.sequence
@@ -259,15 +267,27 @@ function FieldAudioController:enterMap(runtimeMap, options)
   -- 5. When play=true, play new effective BGM before ordinary soundplate selection.
   -- A presented battle hold suppresses this automatic playback while map
   -- installation above still lands; explicit battle/recovery playback stays live.
+  -- A surviving radio on unchanged music suppresses the replacement too:
+  -- the BGM branch would otherwise restart the field music behind it. An
+  -- explicit music change still replaces through the BGM branch below.
   if options.play and self._policySuspendedBy ~= nil then
     return
   end
   if options.play then
     local effective = self:effectiveMusic()
-    if effective == nil then
-      self._sound:stopMusic()
-    elseif effective ~= self._sound:currentMusic() then
-      self._sound:playMusic(effective)
+    local radioLatched = self._sound:currentRadioSequence() ~= nil
+    local musicChanged = effective ~= previousEffective
+    local radioSurvives = radioLatched and effective ~= nil and not musicChanged
+    if not radioSurvives then
+      if effective == nil then
+        self._sound:stopMusic()
+      elseif (musicChanged and radioLatched) or effective ~= self._sound:currentMusic() then
+        -- A changed entry takes the BGM branch even when the destination
+        -- already matches the reference: the branch stops a radio latched
+        -- to another sequence. Without radio the reference comparison alone
+        -- decides, so ordinary entries keep their behavior.
+        self._sound:playMusic(effective)
+      end
     end
   end
 
@@ -585,6 +605,62 @@ end
 
 function FieldAudioController:isCryFinished()
   return self._sound:isCryFinished()
+end
+
+-- Radio facade delegation to GameSound. The radio handle and latch stay
+-- owned by the audio runtime: interface teardown never releases them, only
+-- the explicit stop paths do.
+
+function FieldAudioController:playRadio(sequenceKey)
+  return self._sound:playRadio(sequenceKey)
+end
+
+function FieldAudioController:stopRadio(fadeFrames)
+  self._sound:stopRadio(fadeFrames)
+end
+
+function FieldAudioController:pauseRadio()
+  self._sound:pauseRadio()
+end
+
+function FieldAudioController:resumeRadio()
+  self._sound:resumeRadio()
+end
+
+function FieldAudioController:currentRadioSequence()
+  return self._sound:currentRadioSequence()
+end
+
+function FieldAudioController:radioIsPlaying()
+  return self._sound:radioIsPlaying()
+end
+
+-- Runs the radio interface teardown: closing during ordinary music destroys
+-- only the interface state and leaves the surviving radio alive, while an
+-- untuned, jingle, or commercial exit fades the recorded BGM handle,
+-- clears the radio with its own fade tail, and restores the given field
+-- music exactly once through the music service. All three effects land
+-- synchronously in source order; the programmed fades keep advancing on
+-- the semantic sound timeline, so the transition is complete on return.
+---@param args { tuned: boolean?, kind: string?, mapMusic: integer|string }
+function FieldAudioController:finishRadioUi(args)
+  assert(args ~= nil, "radio interface teardown requires its exit description")
+  assert(args.mapMusic ~= nil, "radio interface teardown requires the field music to restore")
+  local silent = args.tuned ~= true or args.kind == "jingle" or args.kind == "commercial"
+  if not silent then
+    return
+  end
+  self._sound:fadeMusicOut({ target = 0, durationTicks = 4 })
+  self._sound:stopRadio(4)
+  self:playMusic(args.mapMusic)
+end
+
+-- True once the interface teardown transition above has landed. Teardown
+-- effects are synchronous, so this holds on return; it exists so callers
+-- can poll the transition the same way they poll any audio wait.
+---@return boolean
+function FieldAudioController:isRadioUiTransitionComplete()
+  return true
 end
 
 -- Internal field-policy helpers (not script-facing)

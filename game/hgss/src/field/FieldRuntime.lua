@@ -198,6 +198,13 @@ end
 ---@field _battleHost table<string, unknown>? narrow battle host for script battle tasks
 ---@field roamerState table<string, unknown>? the owned roamer and encounter persistence
 ---@field dexKnowledge table<string, unknown>? the owned dex knowledge
+---@field pokegearState table<string, unknown> the owned companion state, calendar checkpoint, and persisted draw seeds
+---@field pokegearRandom table<string, unknown>? the live companion draw pair (nil after teardown)
+---@field pokegearCalendar table<string, unknown>? the companion-local civil calendar adapter (nil after teardown)
+---@field pokegearManifest table<string, unknown>? the compiled companion family (nil after teardown)
+---@field pokegearCatalog table<string, unknown>? the borrowed compiled contact catalog (nil after teardown)
+---@field pokegear table<string, unknown>? the composed companion feature bundle (nil after teardown)
+---@field incomingCalls table<string, unknown>? the owned ambient incoming-call coordinator (nil after teardown)
 ---@field playerDataContext table<string, unknown>? the generated charmap and frame-index context behind player validation
 ---@field bagCursor BagCursor the runtime-only field bag cursor
 ---@field pokemonMenu table<string, unknown>? the owned menu composition (nil before composition / after teardown)
@@ -1033,6 +1040,8 @@ function FieldRuntime:_composeFieldServices(boot)
   })
   self.mailbox = Mailbox.new(boot.loadedGame and boot.loadedGame.mailbox or nil)
   self.photoAlbum = PhotoAlbum.new(boot.loadedGame and boot.loadedGame.photoAlbum or nil)
+  self:_composePokegear(boot.loadedGame, boot.cacheFs)
+  self:_composePokegearFeature(boot)
   self:_composeBag(boot.activeGame, boot.loadedGame)
   self:_composeBattleState(
     boot.loadedGame,
@@ -1349,6 +1358,9 @@ function FieldRuntime:_startFieldSession(boot)
   end
   local function onZoneChange(change)
     self.lastZoneChange = change
+    if self.incomingCalls ~= nil then
+      self.incomingCalls:resetTransient("transition")
+    end
   end
   self.zoneController = FieldZoneController.new({
     currentMap = self.runtimeMap,
@@ -1439,6 +1451,8 @@ function FieldRuntime:_startFieldSession(boot)
     eventResolver = FieldEventResolver,
     eventState = self.eventState,
     fieldEntranceIndicator = self.fieldEntranceIndicator,
+    incomingCalls = assert(self.incomingCalls, "the field session routes the ambient phone opportunity"),
+    pokegearApplications = self.pokegear and self.pokegear.scriptHost or nil,
     enterMapActors = enterMapActors,
     autoAcknowledgePresentation = not self.presentation,
     terrainEffects = self.fieldTerrainEffectController,
@@ -1624,6 +1638,7 @@ function FieldRuntime:update(dt)
 
   -- After the fixed ticks: a tick may activate a new map, whose render
   -- environment must carry the current time in the frame that draws it.
+  self:_pumpIncomingClock()
   self:_refreshFieldTimeOfDay()
 
   -- The owned battle lifetime pumps once per runtime update, after the
@@ -1663,6 +1678,9 @@ function FieldRuntime:update(dt)
     end
   end
   local completed = self.transition:consumeCompleted()
+  if completed and self.incomingCalls ~= nil then
+    self.incomingCalls:resetTransient("transition")
+  end
   if completed and self.camera then
     -- The transition may finish on the same fixed tick that applies the
     -- destination stair/door arrival. Publish a settled camera pair with the
@@ -1670,6 +1688,48 @@ function FieldRuntime:update(dt)
     -- interpolate from the pre-arrival Y history.
     self.camera:collapseRenderInterpolation()
   end
+end
+
+-- Samples the host-local civil clock into the incoming-call owner once
+-- per field update, never from rendering or the displayed clock. The
+-- sample pauses while a higher-priority owner holds the field, matching
+-- the source advancement that only runs without a field task.
+function FieldRuntime:_pumpIncomingClock()
+  local calls = self.incomingCalls
+  local session = self.session
+  if calls == nil or session == nil then
+    return
+  end
+  if session:isBattleActive() then
+    return
+  end
+  local transition = session.transition
+  if transition ~= nil and transition.phase ~= nil then
+    local FieldTransition = require("libs.hgss.src.transition.FieldTransition")
+    if transition.phase ~= FieldTransition.PHASES.idle then
+      return
+    end
+  end
+  if session.mapEntryController:isActive() then
+    return
+  end
+  if session.dialogue:isModal() then
+    return
+  end
+  if session.applicationHost:isActive() then
+    return
+  end
+  local scripts = self.scripts
+  local scheduler = scripts ~= nil and scripts.scheduler or nil
+  if scheduler ~= nil then
+    if type(scheduler.playerInputOwned) == "function" and scheduler:playerInputOwned() then
+      return
+    end
+    if type(scheduler.foregroundEnvironmentId) == "function" and scheduler:foregroundEnvironmentId() ~= nil then
+      return
+    end
+  end
+  calls:onFieldClock(self.localClock:nowLocal())
 end
 
 -- Every semantic-input entry point below needs the same live-input guard;
@@ -2035,6 +2095,322 @@ function FieldRuntime:_composeBattleState(loadedGame, monRoot, world)
   self._battleHost = { launchBattle = hostLaunch, battleStatus = hostStatus, lastBattleResult = hostResult }
 end
 
+-- Composes the one companion owner: durable state restored with generated
+-- catalog references (or started fresh with the session seed when the
+-- record predates the bucket), the live draw pair continuing the persisted
+-- seeds, and the civil calendar adapter over the state checkpoint. The
+-- runtime holds the state as a required owner; the draw pair and calendar
+-- are transient adapters released at field shutdown. Field samples reach
+-- the calendar through explicit observations, never through polling here.
+---@param loadedGame table<string, unknown>?
+---@param cacheFs table<string, unknown> CacheFs-shaped
+function FieldRuntime:_composePokegear(loadedGame, cacheFs)
+  local PokegearState = require("libs.hgss.src.save.PokegearState")
+  local PokegearRandom = require("game.hgss.src.pokegear.PokegearRandom")
+  local PokegearCalendar = require("game.hgss.src.pokegear.PokegearCalendar")
+  local PokegearCache = require("libs.assets.src.PokegearCache")
+  local manifest = PokegearCache.loadManifest(cacheFs)
+  assert(
+    type(manifest) == "table" and type(manifest.catalog) == "table",
+    "companion composition needs its contact catalog"
+  )
+  local refs = { catalog = manifest.catalog }
+  local bucket = loadedGame ~= nil and loadedGame.pokegear or nil
+  if bucket ~= nil then
+    assert(type(bucket) == "table" and type(bucket.random) == "table", "saved companion state carries its draw seeds")
+    self.pokegearState = PokegearState.restore(bucket, refs)
+    self.pokegearRandom = PokegearRandom.restore(bucket.random)
+  else
+    local seed = self:_pokegearSeed()
+    self.pokegearState = PokegearState.new({ seed = seed }, refs)
+    self.pokegearRandom = PokegearRandom.new(seed)
+  end
+  local contacts = assert(manifest.catalog.contacts, "companion composition reads its compiled contacts")
+  local momKey = nil
+  for _, entry in
+    ipairs(contacts --[[@as table[] ]])
+  do
+    local contact = entry --[[@as table<string, unknown>]]
+    if contact.id == 0 then
+      assert(contact.family == "mother", "native contact zero is Mom")
+      assert(momKey == nil, "the compiled phonebook has one native Mom contact")
+      assert(type(contact.key) == "string" and contact.key ~= "", "native Mom carries its semantic key")
+      momKey = contact.key --[[@as string]]
+    end
+  end
+  local nativeMom = assert(momKey, "the compiled phonebook has native contact zero")
+  local phone = self.pokegearState:readPhone()
+  assert(type(phone) == "table" and type(phone.contacts) == "table", "field composition reads phonebook state")
+  if phone.contacts[nativeMom] == nil then
+    self.pokegearState:registerContact(nativeMom)
+  end
+
+  local sourceSkins = assert(manifest.skins, "companion composition reads its six compiled skins")
+  local unlockedSkins = {}
+  for skin = 0, 5 do
+    assert(sourceSkins[skin] ~= nil, "the compiled Configure palette includes every source skin")
+    unlockedSkins[#unlockedSkins + 1] = skin
+  end
+  local preferences = self.pokegearState:readPreferences()
+  assert(type(preferences) == "table", "field composition reads companion preferences")
+  local savedSkins = assert(preferences.unlockedSkins, "field composition reads saved Configure skins")
+  local sameSkins = #savedSkins == #unlockedSkins
+  if sameSkins then
+    for index, skin in ipairs(unlockedSkins) do
+      if savedSkins[index] ~= skin then
+        sameSkins = false
+        break
+      end
+    end
+  end
+  if not sameSkins then
+    self.pokegearState:setPreference("unlockedSkins", unlockedSkins)
+  end
+  self.pokegearCalendar = PokegearCalendar.new(self.pokegearState)
+  self.pokegearManifest = manifest
+  self.pokegearCatalog = manifest.catalog
+end
+
+-- Composes the one concrete companion feature over the durable owners:
+-- the screen factory, script host, incoming-call owner, and radio
+-- effect reader. Runs once after state, calendar, streams, clock, and
+-- audio exist; script composition consumes the bundle below. A failed
+-- composition releases nothing else: boot stays binary through the
+-- runtime's release path.
+-- Builds the shared phone greeting references from the compiled contact
+-- catalog: one msg.hgss identity per native contact from that contact's
+-- message bank and greeting number, plus the shared lease token. The
+-- token carries the first catalogued caller's real reference: call
+-- sessions freeze the identity but never display it, and per-contact text
+-- resolves at call time through the message provider behind the same
+-- identity language the script dialogue host already speaks. The trailing
+-- number is the source greeting (phone-script) number: it resolves as a
+-- direct bank entry only where the phone script table maps the selector
+-- onto itself, and call-time resolution otherwise fails loudly with its
+-- bank/entry evidence instead of inventing text. A contact without
+-- compiled bank or greeting facts fails the boot instead of installing a
+-- fabricated greeting.
+---@param catalog table<string, unknown> the borrowed compiled contact catalog
+---@param provider table<string, unknown> the borrowed field message provider
+---@param profile table<string, unknown> the native player profile
+---@param fontDef table<string, unknown> the generated field font
+---@param runtime table<string, unknown> the live field runtime
+---@return table<string, string> contact key to greeting reference, with .greeting as the lease token
+local function phoneGreetingRefs(catalog, provider, profile, fontDef, runtime)
+  local Errors = require("libs.errors.src.Errors")
+  local ScriptErrors = require("libs.script.src.errors")
+  local contacts = assert(catalog.contacts, "companion feature needs its compiled contacts")
+  assert(type(contacts) == "table", "companion greeting references read the compiled contacts")
+  assert(type(provider) == "table", "phone text resolves through the field message provider")
+  assert(type(profile) == "table" and type(profile.name) == "string", "phone text reads the live player profile")
+  assert(type(fontDef) == "table", "phone text uses the generated field font")
+  assert(type(runtime) == "table", "phone substitutions read the live field runtime")
+  local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
+  local phoneLabels = assert(catalog.landmarkLabels, "phone catalog carries landmark message references")
+  local messages = {}
+  local contactsByKey = {}
+  local firstRef = nil
+  for _, record in
+    ipairs(contacts --[[@as table<integer, unknown>]])
+  do
+    local contact = record --[[@as table<string, unknown>]]
+    local key = contact.key
+    local bank = contact.messageBank
+    local entry = contact.greeting
+    assert(type(key) == "string" and key ~= "", "companion greeting references name their contact")
+    assert(
+      type(bank) == "number" and bank % 1 == 0 and bank >= 0,
+      "companion greeting references read the compiled message bank for " .. key
+    )
+    assert(
+      type(entry) == "number" and entry % 1 == 0 and entry >= 0,
+      "companion greeting references read the compiled greeting number for " .. key
+    )
+    contactsByKey[
+      key --[[@as string]]
+    ] = contact
+    local ref = string.format("msg.hgss.%d.%d", bank, entry)
+    messages[
+      key --[[@as string]]
+    ] = ref
+    if firstRef == nil then
+      firstRef = ref
+    end
+  end
+  assert(firstRef ~= nil, "companion greeting references need at least one compiled contact")
+  messages.greeting = firstRef
+  local function resolve(bankId, messageId, contactKey)
+    local acquire = provider.acquireBank --[[@as fun(self: table<string, unknown>, bankId: integer): table<string, unknown>? , Errors.Error?]]
+    local release = provider.releaseBank --[[@as fun(self: table<string, unknown>, bankId: integer)]]
+    local get = provider.get --[[@as fun(self: table<string, unknown>, bankId: integer, messageId: integer): table<string, unknown>? , Errors.Error?]]
+    local format = provider.format --[[@as fun(self: table<string, unknown>, template: table<string, unknown>, context: table<string, unknown>, resolvers: table<integer, function>): table<string, unknown>]]
+    assert(
+      type(acquire) == "function"
+        and type(release) == "function"
+        and type(get) == "function"
+        and type(format) == "function"
+    )
+    local bank, acquireError = acquire(provider, bankId)
+    assert(type(bank) == "table", "phone text bank " .. bankId .. " is acquired: " .. tostring(acquireError))
+    local function formatMessage()
+      local template, getError = get(provider, bankId, messageId)
+      assert(
+        type(template) == "table",
+        "phone message " .. bankId .. "." .. messageId .. " exists: " .. tostring(getError)
+      )
+      local resolvers = {}
+      local templateTokens = (template --[[@as table<string, unknown>]]).tokens
+      assert(type(templateTokens) == "table", "phone templates carry tokens")
+      for _, token in ipairs(templateTokens) do
+        if token.kind == "substitution" and token.control == FieldMessageText.TRNAME then
+          local function resolveTrainerName()
+            return assert(FieldMessageProvider.asciiGlyphTokens(profile.name, fontDef))
+          end
+          resolvers[token.control] = resolveTrainerName
+        elseif
+          token.kind == "substitution"
+          and token.control >= FieldMessageText.STRVAR_1
+          and token.control <= FieldMessageText.STRVAR_1 + 3
+        then
+          assert(type(contactKey) == "string", "phone substitutions identify their caller")
+          local slot = token.control - FieldMessageText.STRVAR_1
+          local function resolveSourceSubstitution()
+            local text = nil
+            if slot == 0 then
+              text = profile.name
+            elseif slot == 1 then
+              local contact = assert(contactsByKey[contactKey], "caller-name substitution resolves a catalog contact")
+              text = resolve(contact.messageBank, 0).text
+            elseif slot == 2 or slot == 3 then
+              local mapSection = nil
+              if slot == 2 then
+                local session = runtime.session
+                local currentMap = type(session) == "table" and session.currentMap or runtime.runtimeMap
+                assert(type(currentMap) == "table", "player landmark substitution reads the current map")
+                mapSection = currentMap.mapSectionNativeId
+              else
+                local contact =
+                  assert(contactsByKey[contactKey], "caller landmark substitution resolves a catalog contact")
+                mapSection = contact.map
+              end
+              assert(
+                type(mapSection) == "number" and mapSection % 1 == 0,
+                "landmark substitutions use native map sections"
+              )
+              local landmarkBankId, landmarkEntryId = phoneLabels.bank, mapSection
+              local acquireLandmark = provider.acquireBank --[[@as fun(self: table<string, unknown>, bankId: integer): table<string, unknown>? , Errors.Error?]]
+              local releaseLandmark = provider.releaseBank --[[@as fun(self: table<string, unknown>, bankId: integer)]]
+              local landmarkBank =
+                assert(acquireLandmark(provider, landmarkBankId), "the native landmark bank is available")
+              local landmarkCount = landmarkBank.messageCount --[[@as integer]]
+              releaseLandmark(provider, landmarkBankId)
+              if landmarkEntryId == 0 or landmarkEntryId >= landmarkCount then
+                landmarkBankId, landmarkEntryId = phoneLabels.fallbackBank, phoneLabels.fallbackEntry
+              end
+              text = resolve(landmarkBankId, landmarkEntryId, contactKey).text
+            end
+            assert(type(text) == "string", "source phone substitution has a resolved text value")
+            return assert(FieldMessageProvider.asciiGlyphTokens(text, fontDef))
+          end
+          resolvers[token.control] = resolveSourceSubstitution
+        end
+      end
+      return format(provider, template, {}, resolvers)
+    end
+    local ok, result = pcall(formatMessage)
+    release(provider, bankId)
+    if not ok then
+      error(result, 0)
+    end
+    assert(
+      not result.hadUnresolvedSubstitutions,
+      "phone message substitutions resolve through the field profile: " .. result.text
+    )
+    return result
+  end
+  ---@param _ table<string, unknown>
+  ---@param contactKey string
+  ---@return string resolved caller name
+  local function resolveName(_, contactKey)
+    local contact = assert(contactsByKey[contactKey], "phone name resolves a catalog contact")
+    local name = assert(contact.name, "phone contact carries its source name reference")
+    local formatted = resolve(name.bank, name.entry, contactKey)
+    return formatted.text
+  end
+  messages.resolveName = resolveName
+  ---@param _ table<string, unknown>
+  ---@param contactKey string
+  ---@return string resolved class name
+  local function resolveClass(_, contactKey)
+    local contact = assert(contactsByKey[contactKey], "phone class resolves a catalog contact")
+    local class = assert(contact.class, "phone contact carries its source class rule")
+    if class.kind == "blank" then
+      return ""
+    end
+    return resolve(class.bank, class.entry, contactKey).text
+  end
+  messages.resolveClass = resolveClass
+  ---@param _ table<string, unknown>
+  ---@param contactKey string
+  ---@param scriptId integer native script index
+  ---@return table<string, unknown> formatted message text
+  local function resolveLine(_, contactKey, scriptId)
+    local contact = assert(contactsByKey[contactKey], "phone dialogue resolves a catalog contact")
+    local definitions = catalog.callDefinitions
+    assert(type(definitions) == "table", "phone dialogue reads the compiled native script table")
+    local definition = assert(definitions[scriptId], "phone dialogue uses a compiled native script")
+    local gender = profile.gender == 0 and "male" or profile.gender == 1 and "female" or nil
+    assert(gender ~= nil, "phone dialogue has a native player gender")
+    local message = definition[gender]
+    if type(message) ~= "table" or message.bank ~= contact.messageBank then
+      local failure = Errors.new(
+        ScriptErrors.FEATURE_UNAVAILABLE,
+        "native phone script belongs to a different caller bank",
+        { contact = contactKey, script = scriptId, bank = contact.messageBank }
+      )
+      error({ code = failure.code, message = failure.message, context = failure.context, domain = "phone" })
+    end
+    return resolve(message.bank, message.entry, contactKey)
+  end
+  messages.resolveLine = resolveLine
+  return messages
+end
+
+---@param boot table<string, unknown>
+function FieldRuntime:_composePokegearFeature(boot)
+  local PokegearComposition = require("game.hgss.src.pokegear.PokegearComposition")
+  local manifest = assert(self.pokegearManifest, "companion feature needs its compiled manifest")
+  local catalog = assert(self.pokegearCatalog, "companion feature needs its contact catalog")
+  local bundle = PokegearComposition.compose(self, {
+    state = assert(self.pokegearState, "companion feature needs its durable state"),
+    catalog = catalog,
+    assets = manifest,
+    clock = assert(self.localClock, "companion feature needs its civil clock"),
+    audio = self.audio or boot.audioService,
+    messages = phoneGreetingRefs(catalog, self.messageProvider, self.playerData.profile, self.fontDef, self),
+  })
+  self.pokegear = bundle
+  self.incomingCalls = assert(bundle.incoming, "companion feature carries its incoming owner")
+end
+
+-- The companion seed boundary: the validated trainer identity when the
+-- profile carries one, otherwise a deterministic hash of the save id.
+-- Never host time, so the same game always resumes the same streams.
+---@return integer
+function FieldRuntime:_pokegearSeed()
+  local profile = self.playerData ~= nil and self.playerData.profile or nil
+  local trainerId = type(profile) == "table" and profile.trainerId or nil
+  if type(trainerId) == "number" and trainerId % 1 == 0 and trainerId >= 0 then
+    return math.floor(trainerId % 4294967296)
+  end
+  local saveId = type(self.saveId) == "string" and self.saveId or ""
+  local hash = 0
+  for index = 1, #saveId do
+    hash = (hash * 31 + saveId:byte(index)) % 4294967296
+  end
+  return hash
+end
+
 -- Attaches the presentation port used by field-owned battles.
 ---@param port table<string, unknown>
 function FieldRuntime:attachBattlePresentation(port)
@@ -2305,7 +2681,11 @@ end
 ---@param args table<string, unknown>
 ---@return table<string, unknown> the owned application battle lifetime
 function FieldRuntime:startBattle(args)
-  return self.battleCoordinator:startBattle(args)
+  local battle = self.battleCoordinator:startBattle(args)
+  if self.incomingCalls ~= nil then
+    self.incomingCalls:resetTransient("battle")
+  end
+  return battle
 end
 
 function FieldRuntime:_reconcileBattleGate()
@@ -2468,6 +2848,60 @@ function FieldRuntime:attemptEncounter(context)
   return result
 end
 
+-- The current semantic radio music effect behind live encounters and the
+-- script music query: the audio latch through the one shared
+-- sequence-to-effect mapping. Frame-read-only; never restarts, resumes,
+-- or polls audio. Without audio there is no effect.
+---@return string the semantic music effect
+function FieldRuntime:_currentRadioEffect()
+  local audio = self.audio
+  local latch = nil
+  if type(audio) == "table" and type(audio.currentRadioSequence) == "function" then
+    latch = audio:currentRadioSequence()
+  end
+  local PokegearRadioEffects = require("game.hgss.src.pokegear.PokegearRadioEffects")
+  return PokegearRadioEffects.fromSequence(latch)
+end
+
+-- Answers the source radio script query for one semantic effect: exact
+-- comparison against the retained audio latch on the calling tick. The
+-- query mutates no world or actor state. This is the script-service
+-- boundary the opcode adapter consumes; encounters read the same mapping
+-- through preparation.
+---@param effect string the semantic music effect under test
+---@return boolean
+function FieldRuntime:radioMusicIs(effect)
+  assert(type(effect) == "string", "radio music queries compare a semantic effect")
+  return self:_currentRadioEffect() == effect
+end
+
+-- Whether the committed step swarms: the outbreak-active flag stays with
+-- the encounter owner while the outbreak identity is the shared companion
+-- seed resolved through the same lookup the broadcast announces, so field
+-- encounters can never swarm a different outbreak. Per-map applicability
+-- stays with the catalog's active-replacement gate. Without owners there
+-- is no swarm.
+---@return boolean
+function FieldRuntime:_stepSwarmActive()
+  local roamers = self.roamerState
+  if type(roamers) ~= "table" or type(roamers.isSwarmActive) ~= "function" then
+    return false
+  end
+  if roamers:isSwarmActive() ~= true then
+    return false
+  end
+  local gear = self.pokegearState
+  if type(gear) ~= "table" or type(gear.readDailyIdentity) ~= "function" then
+    return false
+  end
+  local identity = gear:readDailyIdentity()
+  if type(identity) ~= "table" or type(identity.outbreakSeed) ~= "number" then
+    return false
+  end
+  local RadioWorldContext = require("game.hgss.src.pokegear.RadioWorldContext")
+  return RadioWorldContext.swarmInfoFromSeed(identity.outbreakSeed) ~= nil
+end
+
 -- The committed-step encounter boundary, once per fixed tick: at most one
 -- fresh unclaimed completed step is considered, after that step's warp,
 -- coordinate-script, and map-boundary arbitration already ran inside the
@@ -2519,7 +2953,10 @@ function FieldRuntime:_consumeCommittedStep()
     mapId = memberId,
     method = method,
     movement = "step",
-    modifiers = {},
+    modifiers = {
+      radio = self:_currentRadioEffect(),
+      swarm = self:_stepSwarmActive(),
+    },
     environment = {},
     timeOfDay = self:_encounterTimeOfDay(),
     playerProfile = self.playerData.profile,
@@ -2942,6 +3379,9 @@ end
 -- dialogue -- and the field clearing means reset never leaves a hand-picked
 -- subset behind for its re-boot.
 function FieldRuntime:_releaseAll()
+  if self.session then
+    self.session:dispose()
+  end
   if self.battleCoordinator then
     self.battleCoordinator:dispose()
     self.battleCoordinator = nil
@@ -3042,6 +3482,13 @@ function FieldRuntime:_releaseAll()
   self.bagService, self.bagCursor = nil, nil
   self.martService = nil
   self.mailbox, self.photoAlbum = nil, nil
+  if self.pokegear ~= nil then
+    self.pokegear:dispose()
+  end
+  self.pokegear = nil
+  self.incomingCalls = nil
+  self.pokegearManifest, self.pokegearCatalog = nil, nil
+  self.pokegearState, self.pokegearRandom, self.pokegearCalendar = nil, nil, nil
   self.martStockResolver = nil
   self.itemCatalog = nil
   self.followerInteractionCatalog = nil

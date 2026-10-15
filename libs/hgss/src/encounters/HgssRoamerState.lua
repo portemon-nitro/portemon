@@ -18,7 +18,6 @@ local Validate = require("libs.assets.src.Validate")
 ---@field private _steps integer
 ---@field private _repelSteps integer
 ---@field private _swarm boolean
----@field private _radio string
 local HgssRoamerState = {}
 HgssRoamerState.__index = HgssRoamerState
 
@@ -98,7 +97,7 @@ local function checkRecord(record, refs)
   return record
 end
 
----@param args { records: table<string, unknown>[], species: table<string, boolean>, maps: table<integer, boolean>, steps?: integer, repelSteps?: integer, swarm?: boolean, radio?: string }
+---@param args { records: table<string, unknown>[], species: table<string, boolean>, maps: table<integer, boolean>, steps?: integer, repelSteps?: integer, swarm?: boolean }
 ---@return HgssRoamerState
 function HgssRoamerState.new(args)
   if type(args) ~= "table" then
@@ -135,10 +134,6 @@ function HgssRoamerState.new(args)
   if type(swarm) ~= "boolean" then
     Errors.raise("ENCOUNTER_INVALID_INPUT", "roamer swarm state must be a boolean", {})
   end
-  local radio = args.radio or "none"
-  if type(radio) ~= "string" or radio == "" then
-    Errors.raise("ENCOUNTER_INVALID_INPUT", "roamer radio state must be a non-empty string", {})
-  end
   return setmetatable({
     _records = records,
     _index = index,
@@ -147,7 +142,6 @@ function HgssRoamerState.new(args)
     _steps = steps,
     _repelSteps = repelSteps,
     _swarm = swarm,
-    _radio = radio,
   }, HgssRoamerState)
 end
 
@@ -175,8 +169,14 @@ function HgssRoamerState.restore(bucket, refs)
     steps = valid.steps,
     repelSteps = valid.repelSteps,
     swarm = valid.swarm,
-    radio = valid.radio,
   })
+end
+
+-- Reads the outbreak-active fact for encounter preparation. The flag lives
+-- with the encounter owner; radio music never resumes from saved state.
+---@return boolean
+function HgssRoamerState:isSwarmActive()
+  return self._swarm == true
 end
 
 ---@param key unknown
@@ -291,7 +291,7 @@ end
 
 -- Captures the persistable encounter state: authoritative counters plus the
 -- detached roamer records. Tables never persist.
----@return { steps: integer, repelSteps: integer, swarm: boolean, radio: string, roamers: table<string, table<string, unknown>> }
+---@return { steps: integer, repelSteps: integer, swarm: boolean, roamers: table<string, table<string, unknown>> }
 function HgssRoamerState:capture()
   local roamers = {}
   for _, record in ipairs(self._records) do
@@ -302,7 +302,6 @@ function HgssRoamerState:capture()
     steps = self._steps,
     repelSteps = self._repelSteps,
     swarm = self._swarm,
-    radio = self._radio,
     roamers = roamers,
   }
 end

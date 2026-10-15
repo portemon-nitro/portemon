@@ -1,8 +1,8 @@
 -- Production-composed Dig/Teleport returns and the checked Fly boundary:
 -- real cave-entrance recording through genuine map transitions, Dig exit
 -- through the composed field runtime/task/world/maps owners, Teleport
--- through saved spawn history, failed-warp fault containment, and the Fly
--- checked no-op inside the real menu flow. Stops before GPU rendering like
+-- through saved spawn history, failed-warp fault containment, and the
+-- checked Fly handoff inside the real menu flow. Stops before GPU rendering like
 -- every acceptance path. Return-point facts ride the durable travel record;
 -- no destination is ever derived from the live player position. Teleport
 -- resolves through the compiled spawn landing index behind a port the
@@ -574,7 +574,7 @@ local function activateMenuMove(flow, move)
   error("the action menu never offered " .. move, 0)
 end
 
-function T.tests.fly_is_the_only_checked_silent_noop()
+function T.tests.fly_hands_its_checked_request_to_the_field_move_owner()
   withGame(function(game)
     local pidgey = giftMon(game, "PIDGEY")
     teachMove(game, pidgey, "HM02")
@@ -594,7 +594,7 @@ function T.tests.fly_is_the_only_checked_silent_noop()
         flyPpBefore = entry.pp
       end
     end
-    Assert.notNil(flyPpBefore, "the setup must teach fly before the no-op leg")
+    Assert.notNil(flyPpBefore, "the setup must teach fly before the handoff leg")
     local playerBefore = game:snapshot().player
     local flow = openPartyFlow(game, {
       check = function(_)
@@ -607,10 +607,22 @@ function T.tests.fly_is_the_only_checked_silent_noop()
     drainOpen(flow)
     focusSlot(flow, pidgey)
     activateMenuMove(flow, "FLY")
-    status = flow:status()
-    Assert.isTrue(status.open, "checked fly keeps the party flow open")
-    Assert.equal(status.page, "party_browse", "checked fly returns to party browse")
-    Assert.isNil(flow:takeResult(), "checked fly reports no terminal result")
+    local handoff = nil
+    for _ = 1, 10 do
+      handoff = flow:takeResult()
+      if handoff ~= nil then
+        break
+      end
+      flow:updateFixed({})
+    end
+    Assert.notNil(handoff, "checked fly hands its request to the field-move owner")
+    assert(type(handoff) == "table", "handoff terminal validated above")
+    Assert.equal(handoff.kind, "field_action", "the handoff carries the typed field action")
+    Assert.equal(handoff.actionId, "pokemon.field_move", "the host receives the field-action id")
+    local request = assert(handoff.request, "the handoff carries its field request")
+    Assert.equal(request.move, "fly", "the handoff names its field move")
+    Assert.equal(request.slot, pidgey, "the handoff names the selected party slot")
+    Assert.isNil(flow:takeResult(), "the handoff terminal drains exactly once")
     local after = game:snapshot()
     Assert.equal(after.player.fieldX, playerBefore.fieldX, "checked fly must not move the player")
     Assert.equal(after.player.fieldZ, playerBefore.fieldZ, "checked fly must not move the player")
@@ -625,15 +637,6 @@ function T.tests.fly_is_the_only_checked_silent_noop()
       end
       Assert.equal(flyPpAfter, flyPpBefore, "checked fly must not spend move PP")
     end
-    -- Fresh subsequent input works on the restored party: stale pointer
-    -- releases are ignored, navigation moves, and a new menu opens.
-    flow:updateFixed({ { type = "pointer_up", pointerId = "mouse:1", x = 0, y = 0 } })
-    Assert.isNil(flow:takeResult(), "a stale release must not complete anything")
-    focusSlot(flow, 0)
-    flow:updateFixed({ { type = "confirm" } })
-    local reopened = childView(flow)
-    Assert.notNil(reopened.menu, "fresh input opens a new action menu after the no-op")
-    flow:updateFixed({ { type = "cancel" } })
     flow:dispose()
   end)
 end

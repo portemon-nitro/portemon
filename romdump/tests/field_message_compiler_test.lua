@@ -14,6 +14,7 @@ local LuaWriter = require("libs.codec.src.LuaWriter")
 local MapCatalog = require("romdump.src.digest.map.MapCatalog")
 local ScriptMembers = require("romdump.src.reference.hgss.script_members")
 local FieldMessages = require("romdump.src.config.FieldMessages")
+local PokegearSources = require("romdump.src.config.PokegearSources")
 local MenuProtocol = require("libs.assets.src.MenuProtocol")
 
 local T = {}
@@ -44,6 +45,16 @@ local function sourceReferenceBankIds()
   -- Retail blackout.c reads this global recovery message bank outside script
   -- bytecode; see FieldMessageCompiler's runtime-protocol bank set.
   ids[203] = true
+  -- Per-caller phone greeting banks ride the demandable pipeline through
+  -- the compiled pokegear catalog; see FieldMessageCompiler's explicit
+  -- phone bank set.
+  for _, bankId in ipairs(PokegearSources.phoneMessageBankIds()) do
+    ids[bankId] = true
+  end
+  ids[PokegearSources.phoneClassLabels.specialBank] = true
+  ids[PokegearSources.phoneClassLabels.trainerBank] = true
+  ids[PokegearSources.phoneClassLabels.landmarkBank] = true
+  ids[PokegearSources.phoneClassLabels.landmarkFallbackBank] = true
   local out = {}
   for bankId in pairs(ids) do
     out[#out + 1] = bankId
@@ -200,6 +211,16 @@ function T.source_references_form_one_sorted_bank_set()
   -- Retail blackout.c reads this global recovery message bank outside script
   -- bytecode; see FieldMessageCompiler's runtime-protocol bank set.
   expected[203] = true
+  -- Per-caller phone greeting banks ride the demandable pipeline through
+  -- the compiled pokegear catalog; see FieldMessageCompiler's explicit
+  -- phone bank set.
+  for _, bankId in ipairs(PokegearSources.phoneMessageBankIds()) do
+    expected[bankId] = true
+  end
+  expected[PokegearSources.phoneClassLabels.specialBank] = true
+  expected[PokegearSources.phoneClassLabels.trainerBank] = true
+  expected[PokegearSources.phoneClassLabels.landmarkBank] = true
+  expected[PokegearSources.phoneClassLabels.landmarkFallbackBank] = true
 
   Assert.deepEqual(required, sourceReferenceBankIds())
 

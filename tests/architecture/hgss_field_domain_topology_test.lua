@@ -77,6 +77,7 @@ local DOMAINS = {
   encounters = {
     "EncounterSelection",
     "HgssEncounterCatalog",
+    "HgssEncounterRate",
     "HgssEncounterService",
     "HgssRoamerState",
     "WildMonFactory",

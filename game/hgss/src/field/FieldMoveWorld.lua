@@ -500,6 +500,41 @@ function FieldMoveWorld:planReturn(move, context, travel)
   }
 end
 
+-- Resolve a semantic flypoint to the existing destination record shape:
+-- the confirmed key resolves through the cited landing destinations,
+-- never through raw coordinates or the last-heal spawn. An unknown key
+-- fails loudly instead of warping somewhere convenient; the caller
+-- starts arrival through the existing return-warp owner.
+---@param flypointKey string the confirmed semantic flypoint
+---@param context table<string, unknown> the initiating choice context
+---@return table<string, unknown> destination record or Decision
+function FieldMoveWorld:planFly(flypointKey, context)
+  assert(type(flypointKey) == "string" and flypointKey ~= "", "fly planning names its semantic flypoint")
+  assert(type(context) == "table", "fly planning requires its context")
+  local spawns = assert(self._spawns, "fly planning requires the cited landing destinations")
+  local destination = spawns:destinationFor(flypointKey)
+  if destination == nil then
+    Errors.raise(
+      ScriptErrors.SCRIPT_INVALID_REFERENCE,
+      "flypoint has no cited landing destination: " .. tostring(flypointKey),
+      { flypoint = flypointKey }
+    )
+  end
+  assert(type(destination) == "table", "landing destinations are records")
+  assert(type(destination.map) == "string" and destination.map ~= "", "landing destinations name a map")
+  assert(
+    type(destination.fieldX) == "number" and type(destination.fieldZ) == "number",
+    "landing destinations carry tiles"
+  )
+  return {
+    map = destination.map,
+    warp = 0,
+    fieldX = destination.fieldX,
+    fieldZ = destination.fieldZ,
+    facing = "south",
+  }
+end
+
 -- Start the return warp exactly once through the borrowed maps service.
 -- The destination resolves against the loaded map so global record
 -- coordinates convert to the destination-local tiles the warp owns; a

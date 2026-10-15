@@ -56,6 +56,36 @@ Schema.ENUMS = {
   mart_kind = { "standard", "special", "seal", "decoration", "athlete", "data_cards", "custom", "sell" },
   mart_query = { "athlete_available", "card_prefix" },
   pc_application = { "storage", "mailbox", "photoAlbum" },
+  -- The foreground phone call direction across the shared menu/script
+  -- application lane; numeric source selectors never appear past the
+  -- producer boundary.
+  phone_direction = { "incoming", "outgoing" },
+  -- The foreground phone call kind. A menu or staged script request names
+  -- one of these; the conversation engine resolves the caller program
+  -- from the kind and the contact identity.
+  phone_kind = { "ordinary", "rematch", "predefined", "incoming" },
+  -- Closed phone query vocabulary: read-only questions the injected
+  -- companion service answers synchronously, never through a task.
+  pokegear_query_kind = { "rematch_ready", "contact_registered" },
+  -- Closed phone update vocabulary: single validated mutations the
+  -- injected companion service commits synchronously.
+  pokegear_update_kind = { "register_contact" },
+  -- Explicit companion application modes a script may open through the
+  -- shared feature lease. Call and the view-only town map have concrete
+  -- children; fly stays named but unavailable until its field-move
+  -- selection arrives, and a bare fly open fails before any effect.
+  pokegear_open_mode = { "call", "townMap", "fly" },
+  -- Companion card identities: the base phone card plus the two optional
+  -- registered-card bits. Numeric source selectors never appear past the
+  -- producer boundary.
+  pokegear_card = { "phone", "map", "radio" },
+  -- Contact gift query kinds: the random berry draw or the fixed gift
+  -- item. Both write the item key or numeric zero when no gift waits.
+  phone_gift_kind = { "berry", "item" },
+  -- Live radio music effects a script may query: the audio-derived enum
+  -- including valid silence. A missing audio service fails; silence
+  -- compares like any other effect.
+  radio_music_effect = { "march", "lullaby", "hoenn", "sinnoh", "unown", "pokeflute", "none" },
   pc_count_kind = { "mailbox", "photos", "seals" },
   pc_terminal_action = { "start", "on", "off", "wait", "release" },
   -- The three persistent follower map-object movement modes opcode 604 may
@@ -317,6 +347,129 @@ Schema.OPERATIONS = {
   pc_hof_status = { fields = { result = { type = "writable_value", required = true } } },
   pc_hof_open = { fields = {} },
   restore_overworld = { fields = {} },
+  -- Staged foreground phone call setup: evaluates its operands and stores
+  -- one pending source request on the calling script session without
+  -- taking the feature lease or blocking. The run operation below consumes
+  -- it. Contact, direction, and kind accept evaluated value references so
+  -- intervening commands observe the staging order; runtime revalidates
+  -- evaluated enum operands against the closed vocabulary.
+  phone_set_call = {
+    fields = {
+      contact = { type = "scalar_or_value", required = true },
+      direction = { type = "scalar_or_value", required = true },
+      kind = { type = "scalar_or_value", required = true },
+    },
+  },
+  -- Blocking foreground phone call run: consumes the pending request
+  -- staged by phone_set_call and blocks on the shared application task.
+  -- Running without a staged request faults with its script context.
+  phone_run_call = { fields = {} },
+  -- Synchronous companion queries: read-only questions answered from the
+  -- injected companion service in the same tick. Contact-scoped kinds
+  -- require the contact operand; runtime enforces the per-kind shape.
+  pokegear_query = {
+    fields = {
+      kind = { type = "enum:pokegear_query_kind", required = true },
+      contact = { type = "scalar_or_value" },
+      result = { type = "writable_value", required = true },
+    },
+  },
+  -- Synchronous companion updates: single validated mutations committed
+  -- through the injected companion service in the same tick.
+  pokegear_update = {
+    fields = {
+      kind = { type = "enum:pokegear_update_kind", required = true },
+      contact = { type = "scalar_or_value" },
+    },
+  },
+  -- Explicit companion application open: blocks on the shared feature
+  -- task for the named mode. The call mode carries its full request and
+  -- opens immediately; modes without a concrete child fail before any
+  -- source effect.
+  pokegear_open = {
+    fields = {
+      mode = { type = "enum:pokegear_open_mode", required = true },
+      contact = { type = "scalar_or_value" },
+      direction = { type = "scalar_or_value" },
+      kind = { type = "scalar_or_value" },
+    },
+  },
+  -- Companion card registration: commits one card bit through the
+  -- durable companion owner in the same tick. Registering the base
+  -- phone card clears the two optional bits; map and radio set theirs.
+  pokegear_register_card = {
+    fields = {
+      card = { type = "enum:pokegear_card", required = true },
+    },
+  },
+  -- Companion trigger switch: sets or clears one durable phone trigger
+  -- in the same tick. The trigger names a source trigger slot; active
+  -- commits the pending call, inactive clears it.
+  pokegear_set_trigger = {
+    fields = {
+      trigger = { type = "scalar_or_value", required = true },
+      active = { type = "boolean", required = true },
+    },
+  },
+  -- Phonebook entry resolution: reads a trainer number and writes the
+  -- matching phonebook contact number, or the source none sentinel when
+  -- no contact answers for that trainer.
+  phone_resolve_contact = {
+    fields = {
+      trainer = { type = "scalar_or_value", required = true },
+      result = { type = "writable_value", required = true },
+    },
+  },
+  -- Contact message lookup: loads one per-kind message bank/entry pair
+  -- for the entry under discussion into two result variables.
+  phone_contact_message = {
+    fields = {
+      contact = { type = "scalar_or_value", required = true },
+      kind = { type = "scalar_or_value", required = true },
+      bank = { type = "writable_value", required = true },
+      entry = { type = "writable_value", required = true },
+    },
+  },
+  -- Contact gift query: writes the waiting berry or gift item key, or
+  -- numeric zero when no gift waits for that contact.
+  phone_contact_gift = {
+    fields = {
+      contact = { type = "scalar_or_value", required = true },
+      kind = { type = "enum:phone_gift_kind", required = true },
+      result = { type = "writable_value", required = true },
+    },
+  },
+  -- Live radio music query: compares one audio-derived effect and
+  -- writes 1 or 0. Silence compares as its own effect; a missing
+  -- audio service fails instead of answering empty.
+  radio_music_query = {
+    fields = {
+      effect = { type = "enum:radio_music_effect", required = true },
+      result = { type = "writable_value", required = true },
+    },
+  },
+  -- Saved-money gift check: writes the waiting parent gift item key,
+  -- or numeric zero when no gift waits.
+  mom_gift_check = {
+    fields = {
+      result = { type = "writable_value", required = true },
+    },
+  },
+  mom_gift_head = {
+    fields = {
+      item = { type = "writable_value", required = true },
+      quantity = { type = "writable_value", required = true },
+    },
+  },
+  mom_gift_take = { fields = {} },
+  -- Broadcast password service: writes the first of three consecutive
+  -- password-word message entries and the winning choice index.
+  buena_password = {
+    fields = {
+      firstWord = { type = "writable_value", required = true },
+      correct = { type = "writable_value", required = true },
+    },
+  },
   wait_ticks = {
     fields = {
       ticks = { type = "integer", required = true },
@@ -1531,6 +1684,87 @@ Schema.CONSTRUCTORS = {
         signature = "S.restoreOverworld()",
         canonical = "op=restore_overworld",
         notes = "Completes the source application's return boundary.",
+      },
+    },
+  },
+  {
+    section = "Phone application constructors",
+    notes = "Typed field-script operations for the shared foreground phone lane: setup stages one pending request without blocking, run consumes it and blocks, queries and updates resolve synchronously through the injected companion service, and open enters an explicit application mode.",
+    rows = {
+      {
+        signature = "S.phoneSetCall(spec)",
+        canonical = "op=phone_set_call",
+        notes = "spec={contact,direction,kind}; direction is incoming or outgoing, kind is ordinary, rematch, predefined, or incoming. Each operand accepts an evaluated value reference.",
+      },
+      {
+        signature = "S.phoneRunCall(spec=nil)",
+        canonical = "op=phone_run_call",
+        notes = "Consumes the staged request and blocks; faults without one. Takes no operands.",
+      },
+      {
+        signature = "S.pokegearQuery(spec)",
+        canonical = "op=pokegear_query",
+        notes = "spec={kind,result,contact=nil}; kind is rematch_ready or contact_registered. Contact-scoped kinds require contact; the source result convention writes 1 or 0.",
+      },
+      {
+        signature = "S.pokegearUpdate(spec)",
+        canonical = "op=pokegear_update",
+        notes = "spec={kind,contact=nil}; kind is register_contact, which requires contact.",
+      },
+      {
+        signature = "S.pokegearOpen(spec)",
+        canonical = "op=pokegear_open",
+        notes = "spec={mode,contact=nil,direction=nil,kind=nil}; mode is call, townMap, or fly. The call mode requires its full request; modes without a concrete child fail before any effect.",
+      },
+      {
+        signature = "S.pokegearRegisterCard(spec)",
+        canonical = "op=pokegear_register_card",
+        notes = "spec={card}; card is phone, map, or radio. Phone clears the optional bits; map and radio set theirs.",
+      },
+      {
+        signature = "S.pokegearSetTrigger(spec)",
+        canonical = "op=pokegear_set_trigger",
+        notes = "spec={trigger,active}; trigger names a source slot, active switches it. Clearing never replays.",
+      },
+      {
+        signature = "S.phoneResolveContact(spec)",
+        canonical = "op=phone_resolve_contact",
+        notes = "spec={trainer,result}; writes the matching phonebook number or the none sentinel.",
+      },
+      {
+        signature = "S.phoneContactMessage(spec)",
+        canonical = "op=phone_contact_message",
+        notes = "spec={contact,kind,bank,entry}; loads one per-kind message pair for the entry under discussion.",
+      },
+      {
+        signature = "S.phoneContactGift(spec)",
+        canonical = "op=phone_contact_gift",
+        notes = "spec={contact,kind,result}; kind is berry or item. Writes the item key or numeric zero.",
+      },
+      {
+        signature = "S.radioMusicQuery(spec)",
+        canonical = "op=radio_music_query",
+        notes = "spec={effect,result}; compares one audio-derived effect, writes 1 or 0.",
+      },
+      {
+        signature = "S.momGiftCheck(spec)",
+        canonical = "op=mom_gift_check",
+        notes = "spec={result}; writes the waiting parent gift key or numeric zero.",
+      },
+      {
+        signature = "S.momGiftHead(spec)",
+        canonical = "op=mom_gift_head",
+        notes = "spec={item,quantity}; writes the native FIFO head item and quantity, or zero values.",
+      },
+      {
+        signature = "S.momGiftTake()",
+        canonical = "op=mom_gift_take",
+        notes = "Pops the gift already granted by the source Bag command.",
+      },
+      {
+        signature = "S.buenaPassword(spec)",
+        canonical = "op=buena_password",
+        notes = "spec={firstWord,correct}; writes the first of three password-word entries and the winning index.",
       },
     },
   },

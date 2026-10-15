@@ -145,6 +145,15 @@ function FieldMenuCompositionCoordinator:applicationDescriptors()
     local composition = assert(runtime.pokemonMenu, "the bag application requires the menu composition")
     return composition.makeBagFlow()
   end
+  local function pokegearFactory()
+    -- The companion factory opens the composed shell over the shared
+    -- state: entry remembers the last tab, card locks hold inside the
+    -- shell, and a failed construction raises before any input capture.
+    -- A scripted application holding the feature lease refuses the
+    -- normal entry loudly instead of double-stepping one screen.
+    local composition = assert(runtime.pokegear, "the gear application requires the composed feature")
+    return composition.screenFactory({ kind = "browse" })
+  end
   return {
     {
       id = FieldApplicationIds.TRAINER_CARD,
@@ -157,6 +166,10 @@ function FieldMenuCompositionCoordinator:applicationDescriptors()
     {
       id = FieldApplicationIds.BAG,
       factory = bagFactory,
+    },
+    {
+      id = FieldApplicationIds.POKEGEAR,
+      factory = pokegearFactory,
     },
   }
 end

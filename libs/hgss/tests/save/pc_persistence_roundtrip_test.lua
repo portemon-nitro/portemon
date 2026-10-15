@@ -70,7 +70,7 @@ function T.v4_migration_adds_pc_state_without_changing_existing_values()
 
   Assert.equal(v4.schema, "g4-game-save-v4", "migration does not mutate the input")
   Assert.equal(v4.mons.schema, originalMons.schema)
-  Assert.equal(migrated.schema, GameSave.SCHEMA)
+  Assert.equal(migrated.schema, GameSave.LEGACY_V8_SCHEMA, "v7 migration stops at the v8 envelope; the companion step is explicit")
   Assert.deepEqual(migrated.world, v4.world)
   Assert.equal(migrated.scripts.schema, "g4-script-save-v2")
   Assert.deepEqual(migrated.scripts.tasks, v4.scripts.tasks)

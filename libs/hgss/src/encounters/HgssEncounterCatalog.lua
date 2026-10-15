@@ -80,9 +80,33 @@ local function setSlotSpecies(array, index, species)
   end
 end
 
+-- Native radio-music replacement over one land array: the first species
+-- covers zero-based slots 2,3 and the second covers 4,5, each only while
+-- it names a real entry. Levels and weights stay with the slots.
+---@param slots table<string, unknown>[]
+---@param first unknown
+---@param second unknown
+---@param game string?
+local function applyRadioSlots(slots, first, second, game)
+  if replacementIsActive(first, game) then
+    assert(type(first) == "table", "the active music carries its species")
+    assert(type(first.species) == "string", "the active music names its species")
+    setSlotSpecies(slots, 3, first.species)
+    setSlotSpecies(slots, 4, first.species)
+  end
+  if replacementIsActive(second, game) then
+    assert(type(second) == "table", "the active music carries its species")
+    assert(type(second.species) == "string", "the active music names its species")
+    setSlotSpecies(slots, 5, second.species)
+    setSlotSpecies(slots, 6, second.species)
+  end
+end
+
 ---@param resolved table<string, unknown>
----@param species string
-local function applyRadioPair(resolved, species)
+---@param first unknown
+---@param second unknown
+---@param game string?
+local function applyRadioReplacement(resolved, first, second, game)
   local land = resolved.land
   if type(land) ~= "table" then
     return
@@ -90,8 +114,9 @@ local function applyRadioPair(resolved, species)
   assert(type(land) == "table", "replacement reads the resolved land arrays")
   for _, timeOfDay in ipairs(LAND_TIMES) do
     local slots = land[timeOfDay]
-    setSlotSpecies(slots, 3, species)
-    setSlotSpecies(slots, 4, species)
+    if type(slots) == "table" then
+      applyRadioSlots(slots, first, second, game)
+    end
   end
 end
 
@@ -173,17 +198,9 @@ function HgssEncounterCatalog:tableFor(memberId, opts)
     end
   end
   if radio == "hoenn" then
-    local hoenn = replacements.radioHoenn
-    if replacementIsActive(hoenn, game) then
-      assert(type(hoenn) == "table", "the active music carries its species")
-      applyRadioPair(resolved, hoenn.species)
-    end
+    applyRadioReplacement(resolved, replacements.radioHoenn, replacements.radioHoennAlt, game)
   elseif radio == "sinnoh" then
-    local sinnoh = replacements.radioSinnoh
-    if replacementIsActive(sinnoh, game) then
-      assert(type(sinnoh) == "table", "the active music carries its species")
-      applyRadioPair(resolved, sinnoh.species)
-    end
+    applyRadioReplacement(resolved, replacements.radioSinnoh, replacements.radioSinnohAlt, game)
   end
   local rodKey = type(rod) == "string" and ROD_KEYS[rod] or nil
   if rodKey ~= nil then

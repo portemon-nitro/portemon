@@ -243,7 +243,9 @@ local function realizeImage(self, payload)
   if feed ~= nil then
     image = graphics.newImage(feed)
   else
-    image = graphics.newImage(assert(payload.path, "decoded payloads carry their path"))
+    local path = assert(payload.path, "decoded payloads carry their cache path")
+    local bytes = assert(self._cacheFs:read(path), "missing generated summary image " .. path)
+    image = graphics.newImage(love.filesystem.newFileData(bytes, path))
   end
   if type(image.setFilter) == "function" then
     image:setFilter("nearest", "nearest")

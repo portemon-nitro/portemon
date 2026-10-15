@@ -18,6 +18,9 @@ local ItemCache = require("libs.assets.src.ItemCache")
 local ItemCatalog = require("libs.items.src.ItemCatalog")
 local ScriptSave = require("libs.script.src.ScriptSave")
 local SaveEditorSession = require("app.src.saveeditor.SaveEditorSession")
+local SaveEditorPokegearDraft = require("app.src.saveeditor.SaveEditorPokegearDraft")
+local SaveEditorPokegearCard = require("app.src.saveeditor.SaveEditorPokegearCard")
+local PokegearCache = require("libs.assets.src.PokegearCache")
 
 local SaveEditorComposition = {}
 
@@ -93,6 +96,29 @@ function SaveEditorComposition.open(options)
   if session == nil then
     error(assert(sessionError, "save editor session creation failed"), 0)
   end
+  -- The companion catalog rides the same ready-cache preparation as the
+  -- other editor catalogs: presence through the published cache path is
+  -- sufficient, and the producer pipeline owns whole-manifest validation.
+  -- When the family is not provisioned for this version the editor still
+  -- opens; the companion card reports itself unavailable instead of
+  -- inventing references.
+  local pokegearRefs = nil
+  local pokegearManifest = cacheFs:loadLua(PokegearCache.manifestPath())
+  if
+    type(pokegearManifest) == "table"
+    and type(pokegearManifest.catalog) == "table"
+    and type(pokegearManifest.catalog.contacts) == "table"
+    and type(pokegearManifest.catalog.locations) == "table"
+  then
+    pokegearRefs = { catalog = pokegearManifest.catalog }
+  end
+  local function newPokegearDraft()
+    if pokegearRefs == nil then
+      return nil,
+        Errors.new("SAVE_EDITOR_POKEGEAR_UNAVAILABLE", "The companion catalog is not provisioned for this version.", {})
+    end
+    return SaveEditorPokegearDraft.new({ record = session:captureCandidate(), refs = pokegearRefs })
+  end
   return {
     session = session,
     context = context,
@@ -104,6 +130,9 @@ function SaveEditorComposition.open(options)
     derivedAssets = options.derivedAssets,
     savedObjects = copy(validated.world.objects),
     saveStore = store,
+    pokegearRefs = pokegearRefs,
+    newPokegearDraft = newPokegearDraft,
+    pokegearCard = SaveEditorPokegearCard,
   }
 end
 

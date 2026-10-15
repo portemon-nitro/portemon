@@ -308,6 +308,11 @@ local function fixture(opts)
       { cell = 8, duration = 2 },
       { cell = 0, duration = 2 },
     },
+    0,
+    {
+      { cell = 0, duration = 3 },
+      { cell = 0, duration = 3 },
+    },
   }))
   startMenuMembers[8] = lz10Wrap(subPaletteData())
   startMenuMembers[9] = lz10Wrap(charData(192))

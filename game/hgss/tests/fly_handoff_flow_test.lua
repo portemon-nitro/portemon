@@ -1,7 +1,7 @@
--- Checked Fly no-op inside the bounded menu flow: a learned Fly passing
--- eligibility restores Party on the same slot with no mon, bag, PP, task,
--- or save mutation, and fresh input keeps working. Runs without a ROM by
--- extending the fixture catalogs locally (HM02, FLY, PIDGEY); shared
+-- Checked Fly handoff inside the bounded menu flow: a learned Fly passing
+-- eligibility emits the typed field-move handoff with its party slot and
+-- no mon, bag, PP, or save mutation at handoff time. Runs without a ROM
+-- by extending the fixture catalogs locally (HM02, FLY, PIDGEY); shared
 -- fixtures stay untouched.
 
 local Assert = require("tests.support.Assert")
@@ -275,7 +275,7 @@ local function liveComposition(versionId)
   return { flow = flow, mons = mons, bag = bag }
 end
 
-function T.tests.checked_fly_restores_party_without_mutation(context)
+function T.tests.checked_fly_hands_its_request_to_the_field_move_owner(context)
   local versions = readyVersions()
   if #versions == 0 then
     if context ~= nil and type(context.hasCapability) == "function" then
@@ -297,14 +297,26 @@ function T.tests.checked_fly_restores_party_without_mutation(context)
         flyPp = entry.pp
       end
     end
-    Assert.notNil(flyPp, "the setup must teach fly before the no-op leg")
+    Assert.notNil(flyPp, "the setup must teach fly before the handoff leg")
     drainOpen(flow)
     focusSlot(flow, 0)
     activateMenuMove(flow, "FLY")
-    status = flow:status()
-    Assert.isTrue(status.open, "checked fly keeps the party flow open")
-    Assert.equal(status.page, "party_browse", "checked fly returns to party browse")
-    Assert.isNil(flow:takeResult(), "checked fly reports no terminal result")
+    local handoff = nil
+    for _ = 1, 10 do
+      handoff = flow:takeResult()
+      if handoff ~= nil then
+        break
+      end
+      flow:updateFixed({})
+    end
+    Assert.notNil(handoff, "checked fly hands its request to the field-move owner")
+    assert(type(handoff) == "table", "handoff terminal validated above")
+    Assert.equal(handoff.kind, "field_action", "the handoff carries the typed field action")
+    Assert.equal(handoff.actionId, "pokemon.field_move", "the host receives the field-action id")
+    local request = assert(handoff.request, "the handoff carries its field request")
+    Assert.equal(request.move, "fly", "the handoff names its field move")
+    Assert.equal(request.slot, 0, "the handoff names the selected party slot")
+    Assert.isNil(flow:takeResult(), "the handoff terminal drains exactly once")
     Assert.equal(rig.mons:partyRevision(), monRevision, "checked fly must not publish mon changes")
     Assert.equal(rig.bag:revision(), bagRevision, "checked fly must not consume items")
     local flyPpAfter = nil
@@ -314,12 +326,6 @@ function T.tests.checked_fly_restores_party_without_mutation(context)
       end
     end
     Assert.equal(flyPpAfter, flyPp, "checked fly must not spend move PP")
-    flow:updateFixed({ { type = "pointer_up", pointerId = "mouse:1", x = 0, y = 0 } })
-    Assert.isNil(flow:takeResult(), "a stale release must not complete anything")
-    focusSlot(flow, 0)
-    flow:updateFixed({ { type = "confirm" } })
-    Assert.notNil(childView(flow).menu, "fresh input opens a new action menu after the no-op")
-    flow:updateFixed({ { type = "cancel" } })
     flow:dispose()
     flow:dispose()
   end

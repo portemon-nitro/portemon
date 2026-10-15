@@ -826,6 +826,7 @@ function T.disposed_field_ignores_retained_battle_callbacks()
   local sessionCalls = 0
   local retainedHost
   runtime.session = {
+    dispose = function() end,
     setBattleActive = function()
       sessionCalls = sessionCalls + 1
     end,
