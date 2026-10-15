@@ -267,10 +267,12 @@ end
 ---@param direction FieldDirection
 ---@param bypassBlocking boolean?
 ---@param planned { mode: string, surfaceId: integer? }?
+---@param tiles integer? distance in tiles from the committed tile (default 1)
 ---@return table<string, unknown>?
-function FieldPlayer:_resolveStep(direction, bypassBlocking, planned)
+function FieldPlayer:_resolveStep(direction, bypassBlocking, planned, tiles)
   local delta = assert(DELTAS[direction], "unknown field direction " .. tostring(direction))
-  local destinationX, destinationZ = self.fieldX + delta.x, self.fieldZ + delta.z
+  tiles = tiles or 1
+  local destinationX, destinationZ = self.fieldX + delta.x * tiles, self.fieldZ + delta.z * tiles
   local mode = (planned ~= nil and planned.mode) or self._traversalMode
   assert(mode == "walking" or mode == "surfing", "traversal mode must be walking or surfing")
   if not bypassBlocking and planned == nil and self:_crossesToPhysicalProbe(destinationX, destinationZ) then
@@ -341,17 +343,19 @@ function FieldPlayer:_resolveStep(direction, bypassBlocking, planned)
       else
         local sourceX, sourceZ =
           self.localX + FieldCoordinates.TILE_CENTER_OFFSET, self.localZ + FieldCoordinates.TILE_CENTER_OFFSET
+        -- A crossing is one tile edge; a multi-tile jump resolves by height
+        -- continuity alone, like scripted actor jumps.
         sample = self.resolver:resolve({
           localX = destinationCenterX,
           localZ = destinationCenterZ,
           currentSurfaceId = self.surfaceId,
           currentY = self.worldY,
-          crossing = {
+          crossing = tiles == 1 and {
             fromX = sourceX,
             fromZ = sourceZ,
             toX = destinationCenterX,
             toZ = destinationCenterZ,
-          },
+          } or nil,
         })
       end
     end
@@ -1069,7 +1073,12 @@ function FieldPlayer:beginScriptedAction(action)
       bypass = false
       planned = { mode = action.mode, surfaceId = action.surfaceId }
     end
-    local dest = self:_resolveStep(direction, bypass, planned)
+    local tiles = 1
+    if kind == "jump" then
+      -- A zero jump is overwritten below; it still resolves the adjacent tile.
+      tiles = math.max(1, (MovementCalibration.jumpTiles(action.distance)))
+    end
+    local dest = self:_resolveStep(direction, bypass, planned, tiles)
     if kind == "jump" and action.distance == "zero" then
       dest = {
         fieldX = self.fieldX,

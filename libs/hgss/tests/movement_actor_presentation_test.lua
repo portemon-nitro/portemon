@@ -1155,7 +1155,7 @@ function T.source_backed_locomotion_matrix_preserves_timing_and_visible_frames()
       action = { action = "jump", direction = "east", distance = "far", speed = "fast" },
       ticks = 16,
       poseCadence = { 1 },
-      endFieldX = 3,
+      endFieldX = 4,
       endFieldZ = 3,
     },
   }

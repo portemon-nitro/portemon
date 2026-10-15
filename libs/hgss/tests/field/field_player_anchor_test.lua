@@ -325,6 +325,22 @@ function T.scripted_far_jump_applies_the_shared_vertical_profile()
   player:commitScriptedAction()
 end
 
+function T.scripted_jump_commits_the_distance_it_names()
+  local cases = {
+    { distance = "near", tiles = 1 },
+    { distance = "far", tiles = 2 },
+  }
+  for _, case in ipairs(cases) do
+    local player = playerAt(5, 5, "south")
+    local duration = MovementCalibration.actionTicks({ action = "jump", distance = case.distance, speed = "fast" })
+    player:beginScriptedAction({ action = "jump", direction = "south", distance = case.distance, speed = "fast" })
+    player:advanceScriptedAction(duration, duration)
+    player:commitScriptedAction()
+    Assert.equal(player.fieldZ, 5 + case.tiles, case.distance .. " jump commits " .. case.tiles .. " tile(s) south")
+    Assert.equal(player.fieldX, 5, case.distance .. " jump keeps its lane")
+  end
+end
+
 function T.scripted_jump_delegates_vertical_lift_to_the_calibration_owner()
   local player = playerAt(5, 5, "south")
   player:beginScriptedAction({ action = "jump", direction = "south", distance = "far", speed = "fast" })

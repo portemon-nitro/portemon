@@ -49,7 +49,7 @@ MovementCalibration.JUMP_TICKS = {
 local JUMP_TILES = {
   zero = 0,
   near = 1,
-  far = 1,
+  far = 2,
   farther = 3,
 }
 
