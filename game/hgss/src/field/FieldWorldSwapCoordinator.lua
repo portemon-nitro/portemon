@@ -232,6 +232,12 @@ function FieldWorldSwapCoordinator:commit(resolution, _, prepared)
   end
   runtime.scripts:onMapSwap(prepared.player, runtimeMap)
   runtime.session:beginMapEntry()
+  -- The durable destination is published: one ordinary arrival may announce
+  -- the new area, regardless of the source section. Ineligible destinations
+  -- are the controller's own compiled-eligibility decision.
+  if runtime.mapNameBanner then
+    runtime.mapNameBanner:request(runtimeMap.mapId, runtimeMap.mapSectionNativeId)
+  end
   if runtimeMap.fieldData.transitionEnvironment ~= "outdoors" then
     local exterior = self:_sourceExteriorCell(sourceMap, sourcePlayer)
     if exterior ~= nil then

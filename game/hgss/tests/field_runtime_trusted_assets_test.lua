@@ -9,6 +9,7 @@ local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
 local FieldActorEmoteRuntime = require("game.hgss.src.field.FieldActorEmoteRuntime")
 local FieldCameraCache = require("libs.assets.src.field.FieldCameraCache")
 local FieldEntranceIndicatorRuntime = require("game.hgss.src.field.FieldEntranceIndicatorRuntime")
+local FieldEntryAssetCache = require("libs.assets.src.field.FieldEntryAssetCache")
 local FieldFontLoader = require("libs.hgss.src.ui.FieldFontLoader")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
@@ -46,6 +47,49 @@ local function structuralWorld()
   }
 end
 
+-- The compiled field-entry class the runtime borrows as a strict structural
+-- contract: nine banner styles with their own text palettes, the map-to-style
+-- projection, and one destination's four preview slots. Every indexed asset
+-- is referenced, so the fixture satisfies the manifest's closure rule.
+local function fieldEntryManifest()
+  local assets = {}
+  local bannerStyles = {}
+  local bannerTextPalettes = {}
+  for style = 0, FieldEntryAssetCache.BANNER_STYLE_COUNT - 1 do
+    local key = "banner." .. style
+    assets[key] = {
+      image = FieldEntryAssetCache.assetDir() .. "/banner-" .. style .. ".png",
+      width = FieldEntryAssetCache.BANNER_WIDTH,
+      height = FieldEntryAssetCache.BANNER_HEIGHT,
+    }
+    bannerStyles[style] = key
+    bannerTextPalettes[style] = {
+      foreground = { r = 248, g = 248, b = 248 },
+      shadow = { r = 88, g = 88, b = 88 },
+      background = { r = 0, g = 0, b = 0 },
+    }
+  end
+  local preview = {}
+  for slot = 0, FieldEntryAssetCache.PREVIEW_SLOTS - 1 do
+    local key = "preview." .. slot
+    assets[key] = {
+      image = FieldEntryAssetCache.assetDir() .. "/preview-" .. slot .. ".png",
+      width = FieldEntryAssetCache.PREVIEW_WIDTH,
+      height = FieldEntryAssetCache.PREVIEW_HEIGHT,
+    }
+    preview[slot] = key
+  end
+  return {
+    schema = FieldEntryAssetCache.SCHEMA,
+    reference = { width = FieldEntryAssetCache.PREVIEW_WIDTH, height = FieldEntryAssetCache.PREVIEW_HEIGHT },
+    assets = assets,
+    bannerStyles = bannerStyles,
+    bannerTextPalettes = bannerTextPalettes,
+    bannerStyleByMapId = { [60] = 1 },
+    previewByMapId = { [60] = preview },
+  }
+end
+
 local function actorIndex()
   return {
     runtime = {
@@ -71,6 +115,7 @@ function T.runtime_assets_phase_trusts_published_catalogs_without_revalidating()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
   cache:writeLua(FieldActorCache.indexPath(), actorIndex())
   cache:writeLua(FieldUiAssetCache.manifestPath(), FieldUiFixture.manifest())
+  cache:writeLua(FieldEntryAssetCache.manifestPath(), fieldEntryManifest())
   cache:writeLua(MapAssetCache.worldPath(), structuralWorld())
   cache:writeLua(FieldCameraCache.profilesPath(), { schema = FieldCameraCache.SCHEMA, profiles = {} })
   local weatherCatalog = { schema = FieldWeatherCache.SCHEMA, presets = {}, rules = {} }

@@ -858,6 +858,13 @@ function FieldState:draw()
       lg.rectangle("fill", rectangle.x, rectangle.y, rectangle.width, rectangle.height)
     end
   end
+  -- The transient area-name banner sits over the world and warp fade and
+  -- under every attached modal surface, script cover, and foreground
+  -- application, anchored to the canonical MAIN reference frame.
+  local banner = self.runtime.mapNameBanner
+  if banner ~= nil then
+    resources:drawMapNameBanner(banner, self.runtime.viewport.referenceFrame)
+  end
   -- Attached dialogue and signposts share the field scale and yield to modal
   -- application surfaces.
   local blackoutStatus = self.runtime.blackoutFlow and self.runtime.blackoutFlow:status() or nil
