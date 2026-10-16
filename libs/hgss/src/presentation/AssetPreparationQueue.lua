@@ -1,11 +1,12 @@
 -- One persistent presentation preparation worker behind a two-priority
--- request queue. Cache I/O, mesh decode/validation/upload packing, and image
--- CPU decode run on the worker thread; the main thread only resolves cache
--- paths, polls non-blocking (or waits where its caller already requires a
--- synchronous result), and realizes prepared payloads into GPU objects it
--- owns. Demand requests dispatch ahead of queued prefetch requests, but a
--- running worker job is never preempted. Channel messages stay flat; bulk
--- memory crosses as love Data/ImageData userdata.
+-- request queue. Cache I/O, mesh decode/validation/upload packing, image
+-- CPU decode, and private image-derivative classification run on the worker
+-- thread; the main thread only resolves cache paths, polls non-blocking (or
+-- waits where its caller already requires a synchronous result), and realizes
+-- prepared payloads into GPU objects it owns. Demand requests dispatch ahead
+-- of queued prefetch requests, but a running worker job is never preempted.
+-- Channel messages stay flat; bulk memory crosses as love Data/ImageData
+-- userdata.
 
 ---@class AssetPreparationQueue
 ---@field _cacheFs table<string, unknown>
@@ -43,7 +44,7 @@ Worker.run(requestChannel, replyChannel)
   WORKER_MODULE
 )
 
-local VALID_KINDS = { mesh = true, image = true }
+local VALID_KINDS = { mesh = true, image = true, ["image-derivative"] = true }
 local VALID_PRIORITIES = { demand = true, prefetch = true }
 
 -- Upper bound between worker-liveness probes while a synchronous wait blocks
@@ -209,6 +210,19 @@ function AssetPreparationQueue:_absorb(response)
   end
   if response.ok then
     record.state = "ready"
+    if record.kind == "image-derivative" then
+      record.payload = {
+        sourceHash = response.sourceHash,
+        pixelHash = response.pixelHash,
+        width = response.width,
+        height = response.height,
+        kind = response.representation,
+        colors = response.colors,
+        indexData = response.indexData,
+        paletteData = response.paletteData,
+      }
+      return
+    end
     record.payload = {
       vertexData = response.vertexData,
       indexData = response.indexData,
@@ -243,7 +257,7 @@ function AssetPreparationQueue:_drain()
   end
 end
 
----@param kind "mesh"|"image"
+---@param kind "mesh"|"image"|"image-derivative"
 ---@param logicalPath string
 ---@param priority "demand"|"prefetch"
 ---@return integer

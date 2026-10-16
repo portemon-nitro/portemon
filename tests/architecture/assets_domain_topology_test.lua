@@ -61,6 +61,11 @@ local DOMAINS = {
     "BattlePresentationCache",
     "BattlePresentationSchema",
   },
+  -- The private effective-image derivative format behind worker-side
+  -- image classification: source-independent and love-free.
+  image = {
+    "RuntimeImageCache",
+  },
 }
 
 local SHARED = {
