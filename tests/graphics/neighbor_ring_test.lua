@@ -1,11 +1,12 @@
 -- Tests for NeighborRing.load: it turns compiled scene.neighbors descriptors
--- into GPU draws, reading geometry/textures from a cacheFs, baking each cell's
+-- into GPU draws, reading geometry from a cacheFs, baking each cell's
 -- world offset into the draw transform while retaining model-space sort centers,
--- and deduplicating a shared geometry path across cells into a single owned mesh. love-backed (it
--- builds real meshes/images) but ROM-free: cacheFs bytes are canned in-process.
--- load() needs a graphics context. The failure-path tests inject a fake graphics
--- namespace: a failed cell acquire or a malformed cell descriptor must
--- release every image the earlier cells already acquired.
+-- and deduplicating a shared geometry path across cells into a single owned mesh.
+-- Textures borrow from the injected session shared owner (fake headless);
+-- geometry is canned in-process, so the suite is ROM-free. load() needs a
+-- graphics context. The failure-path tests prove a failed cell acquire or a
+-- malformed cell descriptor returns every lease the earlier cells already
+-- borrowed.
 --
 -- Terrain animation wiring: load() accepts the central scene's
 -- compiled texture-SRT clip as `opts.textureSrt` (false = no area animation)
@@ -23,6 +24,7 @@ local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local NeighborRing = require("libs.hgss.src.presentation.NeighborRing")
 local RenderQueue = require("libs.hgss.src.presentation.RenderQueue")
 local Matrix4 = require("libs.math.src.Matrix4")
+local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
 
 local T = {}
 
@@ -137,7 +139,7 @@ end
 
 function T.builds_one_draw_per_cell_batch_with_offset_in_transform()
   local cacheFs, geomPath, texPath = fakeCacheFs()
-  local ring = NeighborRing.load(cacheFs, descriptors(geomPath, texPath))
+  local ring = NeighborRing.load(cacheFs, descriptors(geomPath, texPath), { imageAssets = SharedImagePoolFake.new() })
 
   Assert.equal(#ring.draws, 2) -- one batch per cell
   Assert.equal(ring.stats.cellCount, 2)
@@ -195,7 +197,8 @@ end
 
 function T.sorts_translucent_neighbors_using_one_cell_transform()
   local cacheFs, geomPath, texPath, elevatedGeomPath = fakeCacheFs()
-  local ring = NeighborRing.load(cacheFs, translucentDescriptors(geomPath, elevatedGeomPath, texPath))
+  local ring =
+    NeighborRing.load(cacheFs, translucentDescriptors(geomPath, elevatedGeomPath, texPath), { imageAssets = SharedImagePoolFake.new() })
 
   -- The first mesh center is z=1 and lives in the +32 cell, so its world-space
   -- sort center is z=33. The second mesh center is z=49 in the origin cell.
@@ -210,7 +213,7 @@ end
 
 function T.dedups_shared_geometry_into_one_owned_mesh()
   local cacheFs, geomPath, texPath = fakeCacheFs()
-  local ring = NeighborRing.load(cacheFs, descriptors(geomPath, texPath))
+  local ring = NeighborRing.load(cacheFs, descriptors(geomPath, texPath), { imageAssets = SharedImagePoolFake.new() })
   -- Both cells reference the same geometry/texture path, so only one mesh and
   -- one image are built and owned.
   Assert.equal(ring.stats.meshCount, 1)
@@ -223,27 +226,24 @@ end
 -- image, never one mutated sampler whose state depends on load order.
 function T.same_texture_with_different_wraps_gets_independent_images()
   local cacheFs, geomPath, texPath = fakeCacheFs()
+  local images = SharedImagePoolFake.new()
   local ring = NeighborRing.load(
     cacheFs,
-    descriptors(geomPath, texPath, { { x = "clamp", y = "clamp" }, { x = "repeat", y = "repeat" } })
+    descriptors(geomPath, texPath, { { x = "clamp", y = "clamp" }, { x = "repeat", y = "repeat" } }),
+    { imageAssets = images }
   )
-  Assert.equal(ring.stats.textureCount, 2, "one image per sampler state")
+  Assert.equal(ring.stats.textureCount, 2, "one borrowed image per sampler state")
   local drawA = ring.draws[1]
   local drawB = ring.draws[2]
   Assert.isTrue(drawA.material.image ~= drawB.material.image, "wrap variants must not alias")
-  local ax, ay = drawA.material.image:getWrap()
-  Assert.equal(ax, "clamp")
-  Assert.equal(ay, "clamp")
-  local bx, by = drawB.material.image:getWrap()
-  Assert.equal(bx, "repeat")
-  Assert.equal(by, "repeat")
+  Assert.equal(drawA.material.image, images:findPhysical(texPath, { wrapX = "clamp", wrapY = "clamp" }))
+  Assert.equal(drawB.material.image, images:findPhysical(texPath, { wrapX = "repeat", wrapY = "repeat" }))
   ring:release()
 end
 
--- A batch-free cell lets the first cell acquire its material image headless;
--- the second cell's unknown wrap then fails the load, and the first cell's
--- image must be released: a failed neighbor load cannot leak earlier cells'
--- GPU objects.
+-- A batch-free cell enrolls its material before the build; the second
+-- cell's unknown wrap then fails enrollment, before anything is borrowed:
+-- a failed neighbor load holds no leases and publishes nothing.
 function T.failed_cell_acquire_releases_earlier_cells_images()
   local cacheFs, _, texPath = fakeCacheFs()
   local function cell(ox, wrap)
@@ -262,16 +262,17 @@ function T.failed_cell_acquire_releases_earlier_cells_images()
       },
     }
   end
-  local graphics = fakeGraphics()
+  local images = SharedImagePoolFake.new()
   local err = Assert.throws(function()
     NeighborRing.load(cacheFs, {
       cell(32, { x = "clamp", y = "clamp" }),
       cell(-32, { x = "mirror", y = "clamp" }),
-    }, { graphics = graphics })
+    }, { graphics = fakeGraphics(), imageAssets = images })
   end)
   Assert.isTrue(Errors.is(err) and err.code == "SCENE_DESC_BAD_WRAP", "raises SCENE_DESC_BAD_WRAP")
-  Assert.equal(#graphics.images, 1, "the first cell's image was acquired")
-  Assert.equal(graphics.images[1].released, true, "a failed cell acquire releases the earlier cells' images")
+  Assert.equal(images.uploads, 0, "the wrap failure precedes any borrow")
+  Assert.equal(images:stats().outstandingLeases, 0, "a failed cell load holds no leases")
+  Assert.equal(images:prune(), 0, "a failed cell load publishes nothing to reclaim")
 end
 
 -- A malformed descriptor (missing batches array) fails outside the pool after
@@ -298,10 +299,13 @@ function T.malformed_cell_descriptor_releases_earlier_cells_images()
     materials = {},
   }
   local graphics = fakeGraphics()
-  local ok, err = pcall(NeighborRing.load, cacheFs, { first, second }, { graphics = graphics })
+  local images = SharedImagePoolFake.new()
+  local ok, err =
+    pcall(NeighborRing.load, cacheFs, { first, second }, { graphics = graphics, imageAssets = images })
   Assert.isFalse(ok, "a descriptor without a batches array fails the load: " .. tostring(err))
-  Assert.equal(#graphics.images, 1, "the first cell's image was acquired")
-  Assert.equal(graphics.images[1].released, true, "a malformed descriptor releases the earlier cells' images")
+  Assert.equal(images.uploads, 1, "the first cell's image was borrowed")
+  Assert.equal(images:stats().outstandingLeases, 0, "a malformed descriptor returns the earlier cells' leases")
+  Assert.equal(images:prune(), 1, "the rolled-back image is reclaimed exactly once")
 end
 
 -- ---- terrain animation wiring ----
@@ -409,43 +413,27 @@ local function animatedCell(ox, oz, geomPath, prefix)
   }
 end
 
--- A fake image builder that records created images and their release calls,
--- so the ring's pool ownership is observable: `images` collects the built
--- objects in build order, each tagged with its texture path and a release
--- counter.
-local function trackingImageBuilder(images)
-  return function(path)
-    local image = { path = path, releases = 0 }
-    image.setFilter = function() end
-    image.setWrap = function() end
-    image.release = function()
-      image.releases = image.releases + 1
-    end
-    images[#images + 1] = image
-    return image
-  end
-end
-
--- One animator spans every neighbor cell: all swap step images are acquired
+-- One animator spans every neighbor cell: all swap step images are borrowed
 -- inside the ring's load transaction (same-name paths dedup through the
--- pool), ring:updateAnimated() switches step images and advances the
+-- shared owner), ring:updateAnimated() switches step images and advances the
 -- targeted texture matrices in place on the draw materials -- no draw-list
--- rebuild -- and release after success releases every base and step image
--- exactly once.
+-- rebuild -- and release after success returns every base and step lease
+-- while the shared owner reclaims each idle image exactly once.
 function T.neighbor_swap_frames_are_acquired_and_update_in_place()
   local cacheFs, geomPath, _ = fakeCacheFs()
   local clip = terrainSrtClip(4, { 0x0, 0x1000, 0x2000, 0x3000 })
-  local images = {}
+  local images = SharedImagePoolFake.new()
   local ring = NeighborRing.load(
     cacheFs,
     { animatedCell(32, 0, geomPath, "f"), animatedCell(-32, -32, geomPath, "f") },
     {
-      imageBuilder = trackingImageBuilder(images),
+      imageAssets = images,
       textureSrt = clip,
     }
   )
-  Assert.equal(ring.stats.textureCount, 5, "base, the three unique steps, and water are pooled once across both cells")
-  Assert.equal(#images, 5)
+  Assert.equal(ring.stats.textureCount, 5, "base, the three unique steps, and water are borrowed once across both cells")
+  Assert.equal(images.uploads, 5)
+  local sampler = { wrapX = "repeat", wrapY = "repeat" }
 
   local draws = ring.draws
   local flowerA = draws[1].material
@@ -454,8 +442,8 @@ function T.neighbor_swap_frames_are_acquired_and_update_in_place()
   local image0 = flowerA.image
   local waterMatrix0 = waterA.texMatrix
   Assert.equal(
-    image0.path,
-    "f-base.png",
+    image0,
+    images:findPhysical("f-base.png", sampler),
     "load binds the base image and leaves it in place -- never the first replacement step"
   )
 
@@ -464,15 +452,21 @@ function T.neighbor_swap_frames_are_acquired_and_update_in_place()
   end
 
   Assert.equal(ring.draws, draws, "the neighbor draw array is not rebuilt on an animation tick")
-  Assert.equal(flowerA.image.path, "f1.png", "the step image switched to step 2 at tick 19")
-  Assert.isFalse(flowerA.image == image0, "the switched image is a different pooled image")
-  Assert.equal(flowerB.image.path, "f1.png", "both cells share the group clock")
+  Assert.equal(flowerA.image, images:findPhysical("f1.png", sampler), "the step image switched to step 2 at tick 19")
+  Assert.isFalse(flowerA.image == image0, "the switched image is a different shared image")
+  Assert.equal(flowerB.image, images:findPhysical("f1.png", sampler), "both cells share the group clock")
   Assert.near(waterA.texMatrix[7], -3, 1e-9, "the SRT sample advanced to frame 3 (0x3000 scroll)")
   Assert.isFalse(waterA.texMatrix == waterMatrix0, "a targeted matrix is replaced per tick")
 
+  local physicals = {}
+  for _, path in ipairs({ "f-base.png", "f0.png", "f1.png", "f2.png", "water.png" }) do
+    physicals[#physicals + 1] = images:findPhysical(path, sampler)
+  end
   ring:release()
-  for _, image in ipairs(images) do
-    Assert.equal(image.releases, 1, "every neighbor base and step image is released exactly once")
+  Assert.equal(images:stats().outstandingLeases, 0, "release returns every borrowed lease")
+  Assert.equal(images:prune(), 5, "all five idle images are reclaimed")
+  for _, physical in ipairs(physicals) do
+    Assert.equal(physical.releaseCount, 1, "every neighbor base and step image is reclaimed exactly once")
   end
 end
 
@@ -481,31 +475,32 @@ end
 -- keeps them in phase, each switching to its own image at the same tick.
 function T.same_name_neighbor_cells_stay_in_phase_with_distinct_paths()
   local cacheFs, geomPath, _ = fakeCacheFs()
-  local images = {}
+  local images = SharedImagePoolFake.new()
   local ring = NeighborRing.load(
     cacheFs,
     { animatedCell(32, 0, geomPath, "a"), animatedCell(-32, -32, geomPath, "b") },
     {
-      imageBuilder = trackingImageBuilder(images),
+      imageAssets = images,
       textureSrt = false,
     }
   )
+  local sampler = { wrapX = "repeat", wrapY = "repeat" }
   local flowerA = ring.draws[1].material
   local flowerB = ring.draws[3].material
-  Assert.equal(flowerA.image.path, "a-base.png")
-  Assert.equal(flowerB.image.path, "b-base.png")
+  Assert.equal(flowerA.image, images:findPhysical("a-base.png", sampler))
+  Assert.equal(flowerB.image, images:findPhysical("b-base.png", sampler))
 
   for _ = 1, 19 do
     ring:updateAnimated()
   end
-  Assert.equal(flowerA.image.path, "a1.png", "cell A enters its own step 2 at tick 19")
-  Assert.equal(flowerB.image.path, "b1.png", "cell B enters its own step 2 at the same tick")
+  Assert.equal(flowerA.image, images:findPhysical("a1.png", sampler), "cell A enters its own step 2 at tick 19")
+  Assert.equal(flowerB.image, images:findPhysical("b1.png", sampler), "cell B enters its own step 2 at the same tick")
 
   for _ = 1, 54 do
     ring:updateAnimated()
   end
-  Assert.equal(flowerA.image.path, "a0.png", "cell A wraps to its own step 1 at tick 73")
-  Assert.equal(flowerB.image.path, "b0.png", "cell B wraps to its own step 1 at tick 73")
+  Assert.equal(flowerA.image, images:findPhysical("a0.png", sampler), "cell A wraps to its own step 1 at tick 73")
+  Assert.equal(flowerB.image, images:findPhysical("b0.png", sampler), "cell B wraps to its own step 1 at tick 73")
 
   ring:release()
 end
@@ -515,14 +510,14 @@ end
 -- rebuilt.
 function T.empty_neighbor_ring_updates_safely()
   local cacheFs, _, _ = fakeCacheFs()
-  local images = {}
-  local ring = NeighborRing.load(cacheFs, {}, { imageBuilder = trackingImageBuilder(images), textureSrt = false })
+  local images = SharedImagePoolFake.new()
+  local ring = NeighborRing.load(cacheFs, {}, { imageAssets = images, textureSrt = false })
   Assert.equal(#ring.draws, 0)
   ring:updateAnimated()
-  Assert.equal(#images, 0)
+  Assert.equal(images.uploads, 0)
   ring:release()
   local clipRing = NeighborRing.load(cacheFs, {}, {
-    imageBuilder = trackingImageBuilder(images),
+    imageAssets = images,
     textureSrt = terrainSrtClip(4, { 0x0, 0x1000, 0x2000, 0x3000 }),
   })
   clipRing:updateAnimated()

@@ -67,10 +67,16 @@ local function prepareStatic(descriptor, pool)
   local materialById = {}
   for _, record in ipairs(descriptor.materials) do
     local wrap = SceneDescriptor.wrap(record)
+    -- Sampling handles bind the exact palette through the shared 3D
+    -- sampler instead of rendering index bytes; straight art carries
+    -- no palette and samples unchanged.
+    local handle = pool:sharedImage(record.texture, wrap.x, wrap.y)
     materialById[record.id] = {
       id = record.id,
       name = record.name,
-      image = pool:imageFor(record.texture, wrap.x, wrap.y),
+      image = handle and handle.image or nil,
+      palette = handle and handle.palette or nil,
+      indexed = handle and handle.indexed or nil,
       texMatrix = { 1, 0, 0, 0, 1, 0, 0, 0, 1 },
       wrap = wrap,
     }
@@ -130,7 +136,7 @@ end
 ---@return FollowingMonTransitionRenderer
 function FollowingMonTransitionRenderer.new(options, pool)
   assert(type(options) == "table" and type(options.transition) == "table", "transition definition is required")
-  assert(pool and pool.meshFor and pool.imageFor and pool.build, "transition asset pool is required")
+  assert(pool and pool.meshFor and pool.sharedImage and pool.build, "transition asset pool is required")
   local transition = options.transition
   local placementOffset = assert(
     type(transition.placementOffset) == "table" and transition.placementOffset,
@@ -165,7 +171,7 @@ function FollowingMonTransitionRenderer:newInstance(part)
   end
   local function resolveImage(path, materialId)
     local wrap = assert(resource.wraps[materialId], "missing transition material wrap")
-    return self.pool:imageFor(path, wrap.x, wrap.y)
+    return self.pool:sharedImage(path, wrap.x, wrap.y)
   end
   local instance = ModelInstance.new(resource.definition, {
     resolveImage = resolveImage,

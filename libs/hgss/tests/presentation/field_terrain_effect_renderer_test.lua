@@ -75,8 +75,8 @@ local function newRenderer()
     meshFor = function()
       return { mesh = {}, center = { 0, 0, 0 } }
     end,
-    imageFor = function()
-      return {}
+    sharedImage = function()
+      return { image = {}, palette = nil, indexed = false }
     end,
   }
   local effects = {

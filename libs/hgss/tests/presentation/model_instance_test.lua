@@ -288,6 +288,22 @@ function T.resolve_image_receives_only_the_texture_key_and_material_index()
   Assert.isNil(material.image, "the callback return value passes through")
 end
 
+-- A sampling handle unpacks onto the effective material: the bound image,
+-- the exact palette, and the indexed flag ride the record so the renderer's
+-- shared sampler binds indexed sources through their palette.
+function T.sampling_handle_unpacks_onto_the_effective_material()
+  local handle = { image = { stubImage = true }, palette = { stubPalette = true }, indexed = true }
+  local instance = ModelInstance.new(texturedDoorDefinition(), {
+    resolveImage = function()
+      return handle
+    end,
+  })
+  local material = instance:effectiveMaterial(0)
+  Assert.equal(material.image, handle.image, "the handle's image binds")
+  Assert.equal(material.palette, handle.palette, "the handle's palette binds")
+  Assert.isTrue(material.indexed, "the handle's indexed flag binds")
+end
+
 -- ---- nitro backend contract ----
 
 function T.nitro_backend_without_a_program_raises()

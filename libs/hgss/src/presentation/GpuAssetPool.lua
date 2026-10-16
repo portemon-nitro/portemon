@@ -1,22 +1,23 @@
 -- The one shared GPU-asset owner for scene loading: MapSceneLoader and
 -- NeighborRing both need "read content-addressed cache bytes, decode/build a
--- persistent love Mesh, and build a persistent love Image per unique sampler
--- state", so this pool is that shared responsibility. It dedups meshes by
--- content-addressed path and images by path plus wrap X/Y (two materials
--- sharing pixels but sampling them differently never alias one mutable
--- sampler), and owns every object it creates. The mesh entry caches the
--- model-space bounding-box center and AABB of each unique geometry path,
--- computed once (pure SceneDescriptor math) so no loader rescan of the
--- decoded vertices happens per draw or placement. Failure has two scopes: a
--- construction wrapped in build() releases everything the construction
--- created (the loaders wrap their whole scene build in one, on a pool
--- created immediately before), while a single lazy acquire outside a build
--- releases only the object that failed acquisition itself created -- a
--- failed variant load during live draw evaluation never frees the resources
--- the scene is drawing. The filter is currently uniform (nearest), so it
--- stays out of the image key; if it ever varies, it belongs in the key too.
--- The pool knows nothing about maps, neighbors, materials, or transforms;
--- those stay in the loaders.
+-- persistent love Mesh, and borrow a GPU Image per unique sampler state",
+-- so this pool is that shared responsibility. It dedups meshes by
+-- content-addressed path and owns every Mesh it creates, while every
+-- texture resolves to a lease borrowed from the session-scoped shared image
+-- owner (two materials sharing pixels but sampling them differently never
+-- alias one mutable sampler -- the shared owner keys physical images by
+-- pixel content plus sampler, and the scene dedups its leases by path plus
+-- wrap X/Y). The mesh entry caches the model-space bounding-box center and
+-- AABB of each unique geometry path, computed once (pure SceneDescriptor
+-- math) so no loader rescan of the decoded vertices happens per draw or
+-- placement. Failure has two scopes: a construction wrapped in build()
+-- releases everything the construction created (the loaders wrap their whole
+-- scene build in one, on a pool created immediately before), while a single
+-- lazy acquire outside a build releases only the object that failed
+-- acquisition itself created -- a failed variant load during live draw
+-- evaluation never frees the resources the scene is drawing. The pool knows
+-- nothing about maps, neighbors, materials, or transforms; those stay in
+-- the loaders.
 
 local SceneMesh = require("libs.hgss.src.presentation.SceneMesh")
 local SceneDescriptor = require("libs.hgss.src.presentation.SceneDescriptor")
@@ -30,26 +31,36 @@ local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 ---@class GpuAssetPool.Graphics
 ---@field newImage fun(data: unknown): GpuAssetPool.Image
 ---@alias GpuAssetPool.MeshBuilder fun(decoded: table<string, unknown>): GpuAssetPool.Mesh
----@alias GpuAssetPool.ImageBuilder fun(path: string): GpuAssetPool.Image
+-- The sampling handle one texture borrow resolves to: exactly the material
+-- shape ImageSampling.sendMaterialSampling consumes (bound image, exact
+-- palette for indexed sources, and the indexed flag that selects the
+-- palette path). One stable table per scene-local path/wrap identity, so
+-- repeated acquisitions share it like the lease it describes.
+---@class GpuAssetPool.SamplingHandle
+---@field image GpuAssetPool.Image bound source image (index bytes or straight RGBA)
+---@field palette GpuAssetPool.Image? exact RGBA palette, present only for indexed sources
+---@field indexed boolean true when the material must sample through the palette
 ---@class GpuAssetPool
 ---@field cacheFs table<string, unknown>
 ---@field graphics GpuAssetPool.Graphics|love.graphics
 ---@field meshBuilder GpuAssetPool.MeshBuilder
----@field imageBuilder GpuAssetPool.ImageBuilder?
 ---@field meshes GpuAssetPool.Mesh[]
----@field images GpuAssetPool.Image[]
 ---@field triangles integer
+---@field _imageAssets table<string, unknown>? session-scoped shared image owner every texture is borrowed from
+---@field _imageLeases table<string, unknown>[] leases this scene borrowed from the shared owner, in acquisition order
+---@field _pooledByKey table<string, GpuAssetPool.SamplingHandle> borrowed sampling handle by scene-local path/wrap identity
+---@field _prefetchTokens table<string, integer> outstanding shared prefetch request by scene-local path/wrap identity
 local GpuAssetPool = {}
 GpuAssetPool.__index = GpuAssetPool
 
--- LÖVE's real WrapMode vocabulary this pool configures Image:setWrap with;
+-- LÖVE's real WrapMode vocabulary for sampled scene materials;
 -- SceneDescriptor.MIRRORED_REPEAT is SceneDescriptor.wrap's resolved DS
 -- mirrored-repeat mode (a repeated axis whose NSBTX material sets the flip
 -- bit).
 local WRAP_MODES = { clamp = true, ["repeat"] = true, [SceneDescriptor.MIRRORED_REPEAT] = true }
 
--- The one sampler validation for both image acquisition paths: unknown wrap
--- modes on a sampled material are malformed data and raise instead of
+-- The one sampler validation for shared-owner texture acquisition: unknown
+-- wrap modes on a sampled material are malformed data and raise instead of
 -- degrading to clamp.
 local function checkWrap(path, wrapX, wrapY)
   if not WRAP_MODES[wrapX] or not WRAP_MODES[wrapY] then
@@ -61,42 +72,26 @@ local function checkWrap(path, wrapX, wrapY)
   end
 end
 
--- Configure a newly created image exactly once, before publication. Both the
--- synchronous and the prepared paths configure through here so one sampler
--- state always means one configuration.
-local function configureImage(image, wrapX, wrapY)
-  image:setFilter("nearest", "nearest")
-  image:setWrap(wrapX, wrapY)
-end
-
--- Release the last object of an owned list -- the failed acquisition's own --
--- after `revert` undid its dedup-cache bookkeeping. The pop happens only when
--- a guarded body recorded an object before failing.
-local function releaseLast(owned, revert)
+-- Release the last object of an owned list -- the failed acquisition's own.
+-- The pop happens only when a guarded body recorded an object before
+-- failing.
+local function releaseLast(owned)
   local object = owned[#owned]
   owned[#owned] = nil
-  if revert then
-    revert()
-  end
   object:release()
 end
 
--- Run an acquire under protection: any failure releases only the object the
--- failed acquisition itself created -- never objects from earlier acquisitions
--- or a live scene. The guarded body records at most one object (its owned-list
--- and dedup-cache entries) before any step that can fail; `revert` removes
--- that object's dedup-cache entry, and the owned-list pop plus the release
+-- Run a mesh acquire under protection: any failure releases only the Mesh
+-- the failed acquisition itself created -- never Meshes from earlier
+-- acquisitions or a live scene. The guarded body records at most one Mesh
+-- before any step that can fail, and the owned-list pop plus the release
 -- happen here. A body that fails before recording anything owns nothing.
-local function guarded(pool, fn, revert)
-  local imagesBefore = #pool.images
+local function guarded(pool, fn)
   local meshesBefore = #pool.meshes
   local ok, err = pcall(fn)
   if not ok then
-    if #pool.images > imagesBefore then
-      assert(#pool.meshes == meshesBefore, "a guarded acquire created a mesh and an image")
-      releaseLast(pool.images, revert)
-    elseif #pool.meshes > meshesBefore then
-      releaseLast(pool.meshes, revert)
+    if #pool.meshes > meshesBefore then
+      releaseLast(pool.meshes)
     end
     error(err)
   end
@@ -105,11 +100,12 @@ end
 ---@class GpuAssetPoolOptions
 ---@field graphics? unknown -- injectable graphics namespace (nil keeps love.graphics)
 ---@field meshBuilder? GpuAssetPool.MeshBuilder -- replaces SceneMesh.build (headless tests)
----@field imageBuilder? GpuAssetPool.ImageBuilder -- replaces graphics texture construction (headless tests)
+---@field imageAssets? table<string, unknown> -- session-scoped shared GPU image owner; required for every texture acquisition, which borrows a lease instead of owning an Image
 
 -- cacheFs: a CacheFs-shaped reader (read(path) returns raw bytes or nil); see
--- GpuAssetPoolOptions for the injectable GPU seams. A builder image is
--- configured (filter/wrap) and owned exactly like a love-built one.
+-- GpuAssetPoolOptions for the injectable mesh seam. Textures are never owned
+-- here: every image acquisition borrows a lease from the session-scoped
+-- shared image owner.
 ---@param cacheFs table<string, unknown>
 ---@param opts GpuAssetPoolOptions?
 ---@return GpuAssetPool
@@ -127,12 +123,16 @@ function GpuAssetPool.new(cacheFs, opts)
     cacheFs = cacheFs,
     graphics = graphics,
     meshBuilder = opts.meshBuilder or SceneMesh.build,
-    imageBuilder = opts.imageBuilder,
     meshes = {},
-    images = {},
     triangles = 0,
     _meshCache = {},
-    _imageCache = {},
+    -- The session-scoped shared image owner every texture is borrowed from.
+    -- Texture acquisition without it is a programming error and fails
+    -- loudly; meshes are unaffected and stay scene-owned.
+    _imageAssets = opts.imageAssets,
+    _imageLeases = {},
+    _pooledByKey = {},
+    _prefetchTokens = {},
   }, GpuAssetPool)
 end
 
@@ -167,15 +167,112 @@ function GpuAssetPool:meshFor(path)
   return entry
 end
 
--- Acquire (or fetch) the shared Image for a texture path under one immutable
--- sampler state (wrap X/Y). The image identity is the path plus the wrap
--- pair, so each distinct wrap pair owns its own configured Image. Unknown
--- wrap modes on a sampled material are malformed data and raise instead of
--- degrading to clamp; a nil path (untextured material, no sampler state)
--- yields no image. A failure here releases only the image this acquisition
--- itself created -- the pool's other objects stay owned. The image is
--- recorded before it is configured, so a configuration failure pops exactly
--- its own cache entry and owned-list slot.
+-- The immutable sampler state a shared-owner texture request carries. The
+-- filter stays nearest/nearest, matching the sampler contract every scene
+-- material renders through.
+---@param wrapX string
+---@param wrapY string
+---@return table<string, string>
+local function sharedSampler(wrapX, wrapY)
+  return { wrapX = wrapX, wrapY = wrapY, minFilter = "nearest", magFilter = "nearest" }
+end
+
+-- The scene-local identity of one borrowed texture: the shared owner keys
+-- physical images by pixel content plus sampler, while the scene only
+-- needs per path/wrap dedup so repeated acquisitions within one scene
+-- share a single lease.
+---@param path string
+---@param wrapX string
+---@param wrapY string
+---@return string
+local function pooledKey(path, wrapX, wrapY)
+  return wrapX .. "|" .. wrapY .. "|" .. path
+end
+
+-- Enroll one texture in the shared owner ahead of its first acquisition so
+-- classification starts before the staged build reaches the material. A nil
+-- path (untextured material) enrolls nothing. Enrollment without a session
+-- image owner is a programming error and fails loudly, matching the
+-- acquisition contract. Unknown wrap modes raise here instead of degrading
+-- to clamp, matching the acquisition contract.
+---@param path string?
+---@param wrapX string
+---@param wrapY string
+function GpuAssetPool:prefetchShared(path, wrapX, wrapY)
+  if path == nil then
+    return
+  end
+  local images = assert(self._imageAssets, "GpuAssetPool requires a session image owner for textures")
+  checkWrap(path, wrapX, wrapY)
+  local key = pooledKey(path, wrapX, wrapY)
+  if self._pooledByKey[key] == nil and self._prefetchTokens[key] == nil then
+    self._prefetchTokens[key] = images:request(path, sharedSampler(wrapX, wrapY), "prefetch")
+  end
+end
+
+-- Borrow one texture from the shared owner, blocking cooperatively while
+-- its classification is still in flight. `wait` is invoked once per
+-- pending poll so staged scene builds yield their checkpoint (nil waits by
+-- spinning, for synchronous callers with no checkpoint to yield). Returns
+-- the stable sampling handle for the scene-local path/wrap identity: the
+-- bound image plus the exact palette and indexed flag the renderer's
+-- shared sampler consumes. Borrowing without a session image owner is a
+-- programming error and fails loudly. Unknown wrap modes raise; a missing
+-- texture fails without publishing. A failure here borrows nothing -- the
+-- shared owner keeps every live pair it already published.
+---@param path string?
+---@param wrapX string
+---@param wrapY string
+---@param wait (fun())? invoked while the shared request is still pending
+---@return GpuAssetPool.SamplingHandle?
+function GpuAssetPool:sharedImage(path, wrapX, wrapY, wait)
+  if path == nil then
+    return nil
+  end
+  local images = assert(self._imageAssets, "GpuAssetPool requires a session image owner for textures")
+  checkWrap(path, wrapX, wrapY)
+  local key = pooledKey(path, wrapX, wrapY)
+  local held = self._pooledByKey[key]
+  if held ~= nil then
+    return held
+  end
+  local token = self._prefetchTokens[key]
+  self._prefetchTokens[key] = nil
+  if token == nil then
+    token = images:request(path, sharedSampler(wrapX, wrapY), "demand")
+  end
+  local status, failure = images:poll(token)
+  while status == "pending" do
+    if wait ~= nil then
+      wait()
+    end
+    status, failure = images:poll(token)
+  end
+  if status ~= "ready" then
+    error("shared image " .. path .. " is not ready: " .. tostring(failure), 0)
+  end
+  local lease = images:acquire(token)
+  -- The sampling handle mirrors the borrowed lease: the scene holds leases
+  -- (returned on release) while materials carry the handle's sampling
+  -- fields. The handle is stable per path/wrap identity, so repeated
+  -- acquisitions of one texture share it.
+  ---@type GpuAssetPool.SamplingHandle
+  local handle = { image = lease.image, palette = lease.palette, indexed = lease.kind == "r8" }
+  self._pooledByKey[key] = handle
+  self._imageLeases[#self._imageLeases + 1] = lease
+  return handle
+end
+
+-- Acquire the bound Image for a texture path under one immutable sampler
+-- state (wrap X/Y). Every texture is borrowed from the session-scoped
+-- shared image owner: the scene holds the lease while the shared owner owns
+-- the GPU object, so identical textures across scenes resolve to one
+-- physical image. This returns only the bound image; callers that render
+-- indexed sources need the full sampling handle (image + palette + indexed)
+-- from sharedImage. Unknown wrap modes on a sampled material are malformed
+-- data and raise instead of degrading to clamp; a nil path (untextured
+-- material, no sampler state) yields no image. Acquisition without a
+-- session image owner is a programming error and fails loudly.
 ---@param path string?
 ---@param wrapX string
 ---@param wrapY string
@@ -184,35 +281,8 @@ function GpuAssetPool:imageFor(path, wrapX, wrapY)
   if not path then
     return nil
   end
-  local byWrap = self._imageCache[path]
-  if not byWrap then
-    byWrap = {}
-    self._imageCache[path] = byWrap
-  end
-  local key = wrapX .. "|" .. wrapY
-  local image = byWrap[key]
-  if not image then
-    guarded(self, function()
-      checkWrap(path, wrapX, wrapY)
-      local created
-      if self.imageBuilder then
-        created = self.imageBuilder(path)
-        assert(created, "imageBuilder returned no image for " .. path)
-      else
-        local bytes = assert(self.cacheFs:read(path), "missing texture " .. path)
-        local data = love.filesystem.newFileData(bytes, "tex.png")
-        created = self.graphics.newImage(data)
-      end
-      ---@cast created GpuAssetPool.Image
-      byWrap[key] = created
-      self.images[#self.images + 1] = created
-      configureImage(created, wrapX, wrapY)
-      image = created
-    end, function()
-      byWrap[key] = nil
-    end)
-  end
-  return image
+  local handle = self:sharedImage(path, wrapX, wrapY)
+  return handle and handle.image or nil
 end
 
 -- Realize a worker-prepared mesh payload on the main thread. Shares the
@@ -269,60 +339,63 @@ function GpuAssetPool:meshFromPrepared(path, prepared)
   return entry
 end
 
--- Realize a worker-prepared image payload on the main thread. Shares the
--- path-plus-wrap dedup identity, the sampler configuration, and the
--- transactional rollback with imageFor.
+-- Borrow a worker-prepared texture payload's sampling handle from the shared
+-- owner on the main thread. The staged payload is superseded: the shared
+-- owner classifies the same effective texture through its own worker, so this
+-- delegates to the same borrow as imageFor and never builds a second Image.
+-- A nil path (untextured material) yields no handle.
 ---@param path string?
 ---@param wrapX string
 ---@param wrapY string
----@param prepared { imageData: unknown }
+---@param prepared { imageData: unknown } superseded staged payload; the shared owner classifies through its own worker
 ---@return GpuAssetPool.Image?
 function GpuAssetPool:imageFromPrepared(path, wrapX, wrapY, prepared)
   if not path then
     return nil
   end
-  local byWrap = self._imageCache[path]
-  if not byWrap then
-    byWrap = {}
-    self._imageCache[path] = byWrap
-  end
-  local key = wrapX .. "|" .. wrapY
-  local image = byWrap[key]
-  if not image then
-    guarded(self, function()
-      checkWrap(path, wrapX, wrapY)
-      assert(type(prepared) == "table" and prepared.imageData, "prepared image payload is required")
-      local created
-      if self.imageBuilder then
-        created = self.imageBuilder(path)
-        assert(created, "imageBuilder returned no image for " .. path)
-      else
-        created = self.graphics.newImage(prepared.imageData)
-      end
-      ---@cast created GpuAssetPool.Image
-      byWrap[key] = created
-      self.images[#self.images + 1] = created
-      configureImage(created, wrapX, wrapY)
-      image = created
-    end, function()
-      byWrap[key] = nil
-    end)
-  end
-  return image
+  -- A scene borrowing the shared owner never builds a second prepared
+  -- ImageData path: the shared owner classifies the same effective
+  -- texture through its own worker, so the staged payload is superseded.
+  assert(type(prepared) == "table", "prepared image payload is required")
+  local handle = self:sharedImage(path, wrapX, wrapY)
+  return handle and handle.image or nil
 end
 
--- Release every owned GPU object exactly once. Idempotent: the owned lists,
--- the dedup caches, and the triangle count are cleared, so a repeat release
--- (or a cleanup after a failed acquire) never touches the same object twice.
+-- The number of textures this scene holds: its borrowed shared leases.
+---@return integer
+function GpuAssetPool:textureCount()
+  return #self._imageLeases
+end
+
+-- Release every owned GPU object exactly once and return every borrowed
+-- lease to the shared owner. Outstanding prefetch tokens cancel through
+-- the shared owner so their worker payloads are discarded instead of
+-- retained unclaimed. Idempotent: the owned mesh list, the lease list,
+-- and the triangle count are cleared, so a repeat release (or a cleanup
+-- after a failed acquire) never touches the same object twice. Pools
+-- behind other scenes keep their own leases and meshes; a release here
+-- never evicts a committed scene's resources.
 function GpuAssetPool:release()
   for _, mesh in ipairs(self.meshes) do
     mesh:release()
   end
-  for _, image in ipairs(self.images) do
-    image:release()
+  -- Texture work borrows the session image owner; mesh-only pools without
+  -- one skip both loops exactly as before, keeping headless construction
+  -- release-safe.
+  local images = self._imageAssets
+  if images ~= nil then
+    for _, lease in ipairs(self._imageLeases) do
+      images:release(lease)
+    end
+    for _, token in pairs(self._prefetchTokens) do
+      images:cancel(token)
+    end
+  else
+    assert(#self._imageLeases == 0, "GpuAssetPool requires a session image owner for textures")
   end
-  self.meshes, self.images = {}, {}
-  self._meshCache, self._imageCache = {}, {}
+  self._imageLeases, self._pooledByKey, self._prefetchTokens = {}, {}, {}
+  self.meshes = {}
+  self._meshCache = {}
   self.triangles = 0
 end
 

@@ -10,11 +10,12 @@ local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
 local GxRenderer = require("libs.nds.src.love.GxRenderer")
 local MapSceneLoader = require("libs.hgss.src.presentation.MapSceneLoader")
+local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
+local CacheFs = require("libs.storage.src.CacheFs")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local CollisionGridAsset = require("libs.assets.src.field.CollisionGridAsset")
 local LuaWriter = require("libs.codec.src.LuaWriter")
 local MeshWriter = require("libs.assets.src.model.MeshWriter")
-local FakeCache = require("tests.support.FakeCache")
 local VertexFormat = require("libs.assets.src.model.VertexFormat")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 local FieldCamera = require("libs.hgss.src.field.FieldCamera")
@@ -1731,27 +1732,14 @@ local function collisionGridBytes()
   return CollisionGridAsset.encode({ width = 32, height = 32, cells = cells })
 end
 
--- The in-memory cache facade over a FakeCache backend: loadLua reads and
--- evals in an empty environment, like CacheFs.loadLua.
-local function luaCache(backend)
-  local function loadLua(path)
-    local data = assert(backend:read(path), "missing cache file " .. path)
-    local chunk = assert(loadstring(data, path))
-    setfenv(chunk, {})
-    local ok, result = pcall(chunk)
-    assert(ok, result)
-    return result
-  end
-  local result = {
-    read = function(_, path)
-      return backend:read(path)
-    end,
-    loadLua = function(_, path)
-      return loadLua(path)
-    end,
-  }
-  ---@cast result CacheFs
-  return result
+-- A file-backed versioned cache for the synthetic terrain scene: the real
+-- shared image owner's worker thread re-opens the version root from disk,
+-- so an in-memory backend cannot feed it. The unique version root keeps
+-- test output isolated from real derived caches; the caller removes it.
+local function versionedSceneCache()
+  local cache = CacheFs.forVersion("map-renderer-terrain-test")
+  cache:removeTree("")
+  return cache
 end
 
 -- A terrain scene with two materials: a texture-swap flower quad covering
@@ -1759,21 +1747,21 @@ end
 -- animated by the given SRT clip. Returns the cache facade.
 local function terrainAnimationScene(flowerFrames, waterPng, srtClip)
   local mapId = 61
-  local backend = FakeCache.new()
+  local cache = versionedSceneCache()
   local dir = MapAssetCache.mapDir(mapId)
   local flowerPaths = {}
   for i, png in ipairs(flowerFrames) do
     local path = MapAssetCache.texturePath("flower-f" .. i)
-    backend:write(path, png)
+    cache:write(path, png)
     flowerPaths[i] = path
   end
   local waterPath = MapAssetCache.texturePath("water")
-  backend:write(waterPath, waterPng)
+  cache:write(waterPath, waterPng)
 
   local flowerQuad = MapAssetCache.geometryPath("flower-quad")
   local waterQuad = MapAssetCache.geometryPath("water-quad")
-  backend:write(flowerQuad, MeshWriter.encode(uvQuad(-1, -1, 0, 1)))
-  backend:write(waterQuad, MeshWriter.encode(uvQuad(0, -1, 1, 1)))
+  cache:write(flowerQuad, MeshWriter.encode(uvQuad(-1, -1, 0, 1)))
+  cache:write(waterQuad, MeshWriter.encode(uvQuad(0, -1, 1, 1)))
 
   local scene = {
     schema = MapAssetCache.SCENE_SCHEMA,
@@ -1858,9 +1846,9 @@ local function terrainAnimationScene(flowerFrames, waterPng, srtClip)
     edgeColors = { [0] = 0, 0, 0, 0, 0, 0, 0, 0 },
     fog = zeroFogFixture(),
   }
-  backend:write(dir .. "/scene.lua", LuaWriter.encode(scene))
-  backend:write(dir .. "/collision.g4collision", collisionGridBytes())
-  return luaCache(backend)
+  cache:write(dir .. "/scene.lua", LuaWriter.encode(scene))
+  cache:write(dir .. "/collision.g4collision", collisionGridBytes())
+  return cache
 end
 
 -- One offscreen scenario for the terrain-animation proof: a single
@@ -1878,8 +1866,23 @@ function T.terrain_animation_offscreen_swap_and_srt(scope)
     solidPng(16, 16, 0, 255, 0),
   }
   local cache = terrainAnimationScene(flowerFrames, twoTonePng(16, 16), terrainSrtClip())
+  -- Teardown order is reverse registration: the runtime returns its leases,
+  -- then the image pool joins its worker and releases physicals, and only
+  -- then the isolated version root is removed. Scope teardown runs even on
+  -- failure, so a failed load still disposes and cleans up.
+  scope:own({
+    release = function()
+      cache:removeTree("")
+    end,
+  })
+  local imagePool = ImageAssetPool.new(cache)
+  scope:own({
+    release = function()
+      imagePool:dispose()
+    end,
+  })
   local scene = assert(cache:loadLua(MapAssetCache.mapDir(61) .. "/scene.lua"))
-  local runtime = scope:own(MapSceneLoader.load(cache, scene))
+  local runtime = scope:own(MapSceneLoader.load(cache, scene, { imageAssets = imagePool }))
   local renderer = scope:own(GxRenderer.new())
   local camera = fixedCamera()
   local viewport = FieldViewport.new(640, 480, { mode = "strict" })

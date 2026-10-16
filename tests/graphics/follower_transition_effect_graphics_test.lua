@@ -12,6 +12,7 @@ local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 local FollowingMonTransitionRenderer = require("libs.hgss.src.presentation.FollowingMonTransitionRenderer")
 local GpuAssetPool = require("libs.hgss.src.presentation.GpuAssetPool")
+local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
 local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local RomImporter = require("romdump.src.source.RomImporter")
@@ -48,7 +49,13 @@ local function runVersion(scope, versionId)
   Assert.isTrue(type(compiled.models) == "table", "the transition definition carries its source models")
   Assert.isTrue(type(compiled.placementOffset) == "table", "the transition definition carries its placement")
 
-  local pool = scope:own(GpuAssetPool.new(cache))
+  local imagePool = ImageAssetPool.new(cache)
+  scope:own({
+    release = function()
+      imagePool:dispose()
+    end,
+  })
+  local pool = scope:own(GpuAssetPool.new(cache, { imageAssets = imagePool }))
   local renderer = FollowingMonTransitionRenderer.new({ transition = compiled }, pool)
   scope:own({
     release = function()

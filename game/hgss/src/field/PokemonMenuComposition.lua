@@ -20,6 +20,7 @@ local MailboxScreenState = require("game.hgss.src.pc.MailboxScreenState")
 local PartyScreenState = require("game.hgss.src.field.PartyScreenState")
 local StorageScreenState = require("game.hgss.src.pc.StorageScreenState")
 local PhotoAlbumScreenState = require("game.hgss.src.pc.PhotoAlbumScreenState")
+local PhotoScene = require("game.hgss.src.pc.PhotoScene")
 local SummaryScreenState = require("game.hgss.src.field.SummaryScreenState")
 local BoxNamingState = require("game.hgss.src.pc.BoxNamingState")
 
@@ -52,6 +53,7 @@ local PokemonMenuComposition = {}
 ---@field photoAlbum table<string, unknown> persistent PhotoAlbum (borrowed)
 ---@field pcManifest table<string, unknown> validated PC manifest (borrowed)
 ---@field profile table<string, unknown> live player profile (borrowed)
+---@field fieldMapLoader table<string, unknown>? borrowed live field map loader behind Photo Album viewers
 ---@field versionId string selected game version
 ---@field cacheFs table<string, unknown>? selected version cache reader
 ---@field derivedAssets table<string, function> semantic asset host
@@ -113,6 +115,13 @@ function PokemonMenuComposition.create(deps)
   local photoAlbum = assert(deps.photoAlbum, "the menu composition borrows the persistent Photo Album")
   local pcManifest = assert(deps.pcManifest, "the menu composition borrows the compiled PC manifest")
   local profile = assert(deps.profile, "the menu composition borrows the live player profile")
+  local fieldMapLoader = deps.fieldMapLoader
+  if fieldMapLoader ~= nil then
+    assert(
+      type(fieldMapLoader.requestLocation) == "function" and type(fieldMapLoader.beginLoad) == "function",
+      "the menu composition borrows a live field map loader"
+    )
+  end
   local versionId = assert(deps.versionId, "the menu composition requires the selected game version")
   local cacheFs = assert(deps.cacheFs, "the menu composition requires the selected version cache")
   local derivedAssets = assert(deps.derivedAssets, "the menu composition requires semantic asset access")
@@ -374,6 +383,20 @@ function PokemonMenuComposition.create(deps)
       cacheFs = cacheFs,
       derivedAssets = derivedAssets,
       overrides = overrides and overrides.photoAlbum,
+      -- Photo viewers borrow the live field loader instead of building
+      -- a private one: a private loader owns no session image owner and
+      -- fails texture acquisition, besides starting a second worker.
+      createScene = fieldMapLoader ~= nil and function(_)
+        return PhotoScene.new({
+          versionId = versionId,
+          derivedAssets = derivedAssets,
+          profile = profile,
+          monCatalog = monCatalog,
+          cacheFs = cacheFs,
+          fieldMapLoader = fieldMapLoader,
+          borrowFieldMapLoader = true,
+        })
+      end or nil,
     })
   end
   local function mailboxCount()

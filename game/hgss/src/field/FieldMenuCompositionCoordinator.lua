@@ -556,6 +556,7 @@ function FieldMenuCompositionCoordinator:composePokemonMenu(cacheFs)
       runtime.playerData and runtime.playerData.profile,
       "the menu composition requires the player profile"
     ),
+    fieldMapLoader = assert(runtime.mapLoader, "the menu composition borrows the live field map loader"),
     versionId = runtime.versionId,
     cacheFs = cacheFs,
     derivedAssets = assert(runtime.derivedAssets, "the menu composition requires semantic asset access"),

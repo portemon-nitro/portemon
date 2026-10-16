@@ -19,6 +19,7 @@ local BillboardTransform = require("libs.hgss.src.presentation.BillboardTransfor
 ---@field private _index table<string, unknown>
 ---@field private _known table<integer, boolean>
 ---@field private _graphics love.graphics
+---@field private _imageAssets table<string, unknown>? session-scoped shared GPU image owner; when present every atlas resolves to a borrowed lease instead of a privately owned Image
 ---@field private _idleLimit integer
 ---@field private _entries table<integer, table<string, unknown>>
 ---@field private _idle integer[]
@@ -39,7 +40,9 @@ local DEFAULT_IDLE_LIMIT = 8
 
 -- opts.idleLimit: how many unreferenced entries stay resident before the least
 -- recently released one is disposed. opts.graphics: injectable LÖVE graphics
--- namespace for deterministic presentation-resource tests.
+-- namespace for deterministic presentation-resource tests. opts.imageAssets:
+-- optional session-scoped shared image owner; atlas Image lifetime follows
+-- its lease while actor/mesh semantics stay unchanged.
 ---@param cacheFs CacheFs
 ---@param opts table<string, unknown>?
 ---@return FieldActorAssetProvider
@@ -72,6 +75,7 @@ function FieldActorAssetProvider.new(cacheFs, opts)
     _index = index,
     _known = known,
     _graphics = graphics,
+    _imageAssets = opts.imageAssets,
     _idleLimit = opts.idleLimit or DEFAULT_IDLE_LIMIT,
     _entries = {},
     _idle = {}, -- least-recently-released first
@@ -105,7 +109,10 @@ local function removeIdle(self, spriteId)
 end
 
 local function disposeEntry(self, entry)
-  if entry.image and entry.image.release then
+  if entry.imageLease ~= nil then
+    self._imageAssets:release(entry.imageLease)
+    entry.imageLease = nil
+  elseif entry.image and entry.image.release then
     entry.image:release()
   end
   FieldActorMesh.release(entry.meshes)
@@ -142,6 +149,27 @@ local function billboardScales(visual)
   return scales
 end
 
+-- Borrow one actor atlas from the session image owner under the atlas's
+-- immutable sampler state (point-sampled, clamped like the private path).
+-- Actor loads are synchronous, so a still-pending classification spins
+-- here; predicted actor interest should already have warmed it.
+local function acquireSharedAtlas(images, path)
+  local token =
+    images:request(path, { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }, "demand")
+  local status, failure = images:poll(token)
+  while status == "pending" do
+    status, failure = images:poll(token)
+  end
+  if status ~= "ready" then
+    Errors.raise(
+      FieldErrors.FIELD_ACTOR_ATLAS_MISSING,
+      "shared atlas missing for " .. path .. ": " .. tostring(failure),
+      { path = path }
+    )
+  end
+  return images:acquire(token)
+end
+
 local function load(self, spriteId)
   -- Published cache data is producer-validated before publication
   -- (FieldActorCacheWriter readback); runtime uses the record directly
@@ -171,6 +199,27 @@ local function load(self, spriteId)
       "atlas missing for spriteId " .. spriteId .. ": " .. visual.render.image,
       { spriteId = spriteId, path = visual.render.image }
     )
+  end
+  -- A session image owner lends the atlas Image for this visual identity:
+  -- the entry holds the lease while it is referenced or idle-ringed and
+  -- returns it with the entry's meshes on eviction. Actor lookup,
+  -- reference, and idle-ring semantics are unchanged.
+  if self._imageAssets ~= nil then
+    local lease = acquireSharedAtlas(assert(self._imageAssets), visual.render.image)
+    entry.imageLease = lease
+    entry.image = lease.image
+    local ok, err = pcall(function()
+      entry.quads = buildQuads(self, visual, entry.image:getWidth(), entry.image:getHeight())
+      entry.meshes = FieldActorMesh.build(self._graphics, visual)
+    end)
+    if not ok then
+      self._imageAssets:release(lease)
+      entry.imageLease, entry.image = nil, nil
+      FieldActorMesh.release(entry.meshes)
+      error(err, 0)
+    end
+    self._stats.loads = self._stats.loads + 1
+    return entry
   end
   local ok, err = pcall(function()
     entry.image = self._graphics.newImage(love.filesystem.newFileData(data, visual.render.image))
@@ -256,7 +305,10 @@ end
 
 function FieldActorAssetProvider:dispose()
   for _, entry in pairs(self._entries) do
-    if entry.image and entry.image.release then
+    if entry.imageLease ~= nil then
+      self._imageAssets:release(entry.imageLease)
+      entry.imageLease = nil
+    elseif entry.image and entry.image.release then
       entry.image:release()
     end
     FieldActorMesh.release(entry.meshes)

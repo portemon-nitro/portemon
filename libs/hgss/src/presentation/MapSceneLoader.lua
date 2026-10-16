@@ -159,18 +159,23 @@ for _, band in ipairs(TimeOfDayProps.BANDS) do
   VALID_BANDS[band] = true
 end
 
--- Material assembly: acquire each normalized material record's image
--- under its resolved sampler wrap. The wrap pair is part of the image
--- identity, so materials with the same pixels but different wraps resolve to
--- independent images.
+-- Material assembly: acquire each normalized material record's sampling
+-- handle under its resolved sampler wrap. The wrap pair is part of the
+-- handle identity, so materials with the same pixels but different wraps
+-- resolve to independent handles, and the handle's image/palette/indexed
+-- fields ride the material table so the renderer's shared sampler binds
+-- indexed sources through their exact palette.
 local function materialsById(list, acquireImage, checkpoint)
   local byId = {}
   for id, record in pairs(SceneDescriptor.materials(list)) do
     local wrap = SceneDescriptor.wrap(record)
+    local handle = acquireImage(record.texture, wrap.x, wrap.y)
     byId[id] = {
       id = record.id,
       name = record.name,
-      image = acquireImage(record.texture, wrap.x, wrap.y),
+      image = handle and handle.image or nil,
+      palette = handle and handle.palette or nil,
+      indexed = handle and handle.indexed or nil,
       texMatrix = IDENTITY_TEX_MATRIX,
       wrap = wrap,
     }
@@ -182,8 +187,7 @@ end
 -- Build the runtime scene against an already-created pool. Raises on any
 -- failure; the owning build task releases the pool in that case. `opts.timeBand` seeds the time-of-day band
 -- (default: the band of the default field time, noon = day); `opts.meshBuilder`
--- / `opts.imageBuilder` pass through to the pool (the GPU seams, injectable
--- in headless tests). `opts.assetPreparation` routes mesh/image acquisition
+-- passes through to the pool (the GPU seam, injectable in headless tests). `opts.assetPreparation` routes mesh/image acquisition
 -- through a preparation queue: CPU work runs on the worker while this build
 -- blocks at the first unprepared resource, and GPU realization still happens
 -- here on the main thread. `task` carries the outstanding prepared token
@@ -197,12 +201,27 @@ end
 ---@return table<string, unknown>
 local function buildScene(pool, cacheFs, scene, opts, checkpoint, task)
   local queue = opts.assetPreparation
-  -- Task-local realized entries: a repeated path/wrap within one scene
+  -- Task-local realized entries: a repeated mesh path within one scene
   -- reuses its entry instead of repeating worker preparation. Checkpoint
   -- accounting stays per acquisition site, exactly like the synchronous
   -- path, so staged work budgets are unchanged.
   local meshEntries = {}
-  local imageEntries = {}
+  -- A scene borrowing the session image owner enrolls every distinct
+  -- texture path and immutable wrap state before the first readiness
+  -- check so classification starts while the staged build still walks
+  -- descriptors. Unknown wrap modes raise here, matching the
+  -- acquisition contract.
+  if opts.imageAssets ~= nil then
+    for _, record in pairs(SceneDescriptor.materials(scene.materials)) do
+      local wrap = SceneDescriptor.wrap(record)
+      pool:prefetchShared(record.texture, wrap.x, wrap.y)
+    end
+  end
+  -- Yield the staged-build checkpoint while a shared texture is still
+  -- pending so the worker classification never blocks the scene task.
+  local function waitShared()
+    coroutine["yield"](WAIT)
+  end
   -- Block at the first unprepared resource: request it, then poll until it
   -- is ready, yielding WAIT (zero work) while pending. The task owns the
   -- outstanding token so finish() can block-wait it and release() can
@@ -242,21 +261,20 @@ local function buildScene(pool, cacheFs, scene, opts, checkpoint, task)
     end
     return entry
   end
+  ---@param path string? texture path (nil yields no handle for untextured materials)
+  ---@param wrapX string
+  ---@param wrapY string
+  ---@return GpuAssetPool.SamplingHandle? stable sampling handle for the scene-local path/wrap identity
   local function acquireImage(path, wrapX, wrapY)
     if path == nil then
       return nil
     end
-    local key = wrapX .. "|" .. wrapY .. "|" .. path
-    local image = imageEntries[key]
-    if image == nil then
-      if queue then
-        image = pool:imageFromPrepared(path, wrapX, wrapY, awaitPrepared("image", path))
-      else
-        image = pool:imageFor(path, wrapX, wrapY)
-      end
-      imageEntries[key] = image
-    end
-    return image
+    -- A scene borrowing the session image owner resolves every texture
+    -- to a shared sampling handle through the scene pool, which dedups by
+    -- path/wrap and returns the leases on scene release. No private
+    -- ImageData/worker path runs alongside it; acquisition without the
+    -- session owner fails loudly inside the pool.
+    return pool:sharedImage(path, wrapX, wrapY, waitShared)
   end
   local timeBand = opts.timeBand or TimeOfDayProps.bandForSeconds(FieldLightProfile.DEFAULT_TIME_SECONDS)
   assert(VALID_BANDS[timeBand], "unknown time-of-day band " .. tostring(timeBand))
@@ -791,7 +809,7 @@ local function buildScene(pool, cacheFs, scene, opts, checkpoint, task)
   end
   runtime.stats = {
     meshCount = #pool.meshes,
-    textureCount = #pool.images,
+    textureCount = pool:textureCount(),
     triangleCount = pool.triangles,
     buildingInstances = #scene.buildingInstances,
     animatedInstances = #animatedInstances,
@@ -949,7 +967,7 @@ end
 -- without it the build keeps the direct synchronous path.
 ---@param cacheFs CacheFs
 ---@param scene table<string, unknown>
----@param opts { graphics?: GpuAssetPool.Graphics, timeBand?: string, meshBuilder?: GpuAssetPool.MeshBuilder, imageBuilder?: GpuAssetPool.ImageBuilder, assetPreparation?: table<string, unknown> }?
+---@param opts { graphics?: GpuAssetPool.Graphics, timeBand?: string, meshBuilder?: GpuAssetPool.MeshBuilder, assetPreparation?: table<string, unknown>, imageAssets?: table<string, unknown> }?
 ---@return MapSceneLoader.BuildTask
 function MapSceneLoader.begin(cacheFs, scene, opts)
   opts = opts or {}
@@ -984,7 +1002,7 @@ end
 -- background physical presentation prefetch.
 ---@param cacheFs CacheFs
 ---@param scene table<string, unknown>
----@param opts { graphics?: GpuAssetPool.Graphics, timeBand?: string, meshBuilder?: GpuAssetPool.MeshBuilder, imageBuilder?: GpuAssetPool.ImageBuilder }?
+---@param opts { graphics?: GpuAssetPool.Graphics, timeBand?: string, meshBuilder?: GpuAssetPool.MeshBuilder, imageAssets?: table<string, unknown> }?
 ---@return table<string, unknown>
 function MapSceneLoader.load(cacheFs, scene, opts)
   return MapSceneLoader.begin(cacheFs, scene, opts):finish()

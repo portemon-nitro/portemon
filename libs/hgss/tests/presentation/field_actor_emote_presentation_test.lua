@@ -105,7 +105,7 @@ local function drawRecordFor(mgr, actorId)
 end
 
 -- A minimal one-batch ModelAsset fixture and a recording fake pool, wired
--- exactly like the production GpuAssetPool contract (build/meshFor/imageFor),
+-- exactly like the production GpuAssetPool contract (build/meshFor/sharedImage),
 -- so the renderer's real quad-placement math runs against the real
 -- FieldActorManager draw-record trace instead of a semantic-only fixture.
 local IDENTITY_MATRIX = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 }
@@ -140,8 +140,8 @@ local function fakePool()
     meshFor = function()
       return { mesh = {}, center = { 0, 2, 0 }, bounds = FAKE_BOUNDS }
     end,
-    imageFor = function()
-      return {}
+    sharedImage = function()
+      return { image = {}, palette = nil, indexed = false }
     end,
   }
 end

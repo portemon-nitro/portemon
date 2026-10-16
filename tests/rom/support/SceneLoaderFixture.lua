@@ -34,6 +34,7 @@ local CollisionGridAsset = require("libs.assets.src.field.CollisionGridAsset")
 local MapAssetCompiler = require("romdump.src.digest.map.MapAssetCompiler")
 local MapSceneLoader = require("libs.hgss.src.presentation.MapSceneLoader")
 local RomRuntimeMap = require("tests.support.RomRuntimeMap")
+local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
 local CompiledAsset = require("tests.rom.support.CompiledAsset")
 
 local SceneLoaderFixture = {}
@@ -71,21 +72,10 @@ local function fakeMeshBuilder(decoded)
   }
 end
 
--- The fake image builder: the pool configures and releases images it builds;
--- the fake accepts those calls and never touches love.graphics. Texture bytes
--- are never read, so the bundle's textures are not written into the cache.
-local function fakeImageBuilder()
-  return {
-    release = function() end,
-    setFilter = function() end,
-    setWrap = function() end,
-  }
-end
-
 -- Write one compiled bundle into the cache layout the loader reads: scene.lua,
 -- the collision asset, every content-addressed .g4mesh, and every model
--- descriptor. Texture blobs are deliberately omitted -- the fake image
--- builder never reads them.
+-- descriptor. Texture blobs are deliberately omitted -- the injected fake
+-- shared owner below never reads them.
 local function writeBundle(backend, assets)
   local scene = assets.scene
   backend:write(MapAssetCache.mapDir(scene.mapId) .. "/scene.lua", LuaWriter.encode(scene))
@@ -98,9 +88,9 @@ local function writeBundle(backend, assets)
   end
 end
 
--- Compile one real scene, load it through the REAL MapSceneLoader with fake
--- mesh/image builders, and install the loader runtime as the runtime map's
--- sceneRuntime. `opts.editDescriptor(desc)` runs over every model descriptor
+-- Compile one real scene, load it through the REAL MapSceneLoader with a
+-- fake mesh builder and the injected fake shared image owner, and install
+-- the loader runtime as the runtime map's sceneRuntime. `opts.editDescriptor(desc)` runs over every model descriptor
 -- BEFORE the cache is written -- the deliberately-broken-door probes corrupt
 -- the door's compiled clip there. Returns { map, runtime }; the caller must
 -- release the runtime (pool ownership) when done.
@@ -122,7 +112,7 @@ function SceneLoaderFixture.loadScene(romFs, symbol, opts)
   local scene = assert(cache:loadLua(MapAssetCache.mapDir(assets.scene.mapId) .. "/scene.lua"))
   local runtime = MapSceneLoader.load(cache, scene, {
     meshBuilder = fakeMeshBuilder,
-    imageBuilder = fakeImageBuilder,
+    imageAssets = SharedImagePoolFake.new(),
   })
   local map = RomRuntimeMap.compile(romFs, symbol, assets)
   map.sceneRuntime = runtime

@@ -1,15 +1,14 @@
 -- Tests for the shared GPU asset pool used by MapSceneLoader and NeighborRing:
--- content-addressed mesh/image dedup, sampler-aware image identity (the wrap
--- pair is part of the key, so two materials sharing pixels but sampling them
--- differently never alias one mutable sampler), unknown wrap rejection, and
--- exactly-once ownership release. Failure handling has two scopes, mirroring
--- the two production failure classes: a build wrapper rolls back every
--- object created inside a failed construction (the whole scene build), while
--- a single post-construction acquire failure rolls back only the object that
--- acquisition itself created -- the live scene keeps the resources it is
--- drawing. The image side runs headless through an injected fake graphics
--- namespace; mesh construction needs a real graphics context, so this is a
--- graphics suite.
+-- content-addressed mesh dedup plus sampler-aware texture borrowing (the
+-- wrap pair selects the borrowed lease, so two materials sharing pixels but
+-- sampling them differently never alias one mutable sampler), unknown wrap
+-- rejection, and exactly-once lease/mesh release. Failure handling has two
+-- scopes, mirroring the two production failure classes: a build wrapper
+-- rolls back every lease and mesh created inside a failed construction (the
+-- whole scene build), while a single post-construction acquire failure
+-- borrows nothing -- the live scene keeps the leases it is drawing. The
+-- image side borrows from an injected fake shared owner headless; mesh
+-- construction needs a real graphics context, so this is a graphics suite.
 
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
@@ -20,6 +19,7 @@ local BinaryWriter = require("libs.codec.src.BinaryWriter")
 local ErrorCodes = require("libs.assets.src.ErrorCodes")
 local GpuAssetPool = require("libs.hgss.src.presentation.GpuAssetPool")
 local SceneMesh = require("libs.hgss.src.presentation.SceneMesh")
+local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
 
 local T = {}
 
@@ -72,41 +72,22 @@ local function fakeCacheFs()
   }
 end
 
--- Injected graphics namespace: tracks created images, the wrap pair each image
--- was configured with, and release calls. failOnNewImage makes the Nth
--- newImage call raise; failSetWrapOn makes the Nth created image's setWrap
--- raise after creation -- together they exercise failed-acquire cleanup both
--- before and after the failed acquisition created its own object, headless.
-local function fakeGraphics(opts)
-  opts = opts or {}
-  local images = {}
-  local wraps = {}
-  local newImageCalls = 0
+-- Injected graphics namespace for pool construction. Image construction
+-- itself always borrows from the injected shared owner, so this namespace
+-- only stands in for the Mesh side's graphics requirement headless.
+local function fakeGraphics()
   return {
-    images = images,
-    wraps = wraps,
     newImage = function()
-      newImageCalls = newImageCalls + 1
-      if opts.failOnNewImage == newImageCalls then
-        error("injected newImage failure")
-      end
-      local image = { released = false, releaseCount = 0, index = newImageCalls }
-      image.setFilter = function() end
-      image.setWrap = function(_, wx, wy)
-        if opts.failSetWrapOn == image.index then
-          error("injected setWrap failure")
-        end
-        wraps[#wraps + 1] = { wx, wy }
-      end
-      image.release = function()
-        image.released = true
-        image.releaseCount = image.releaseCount + 1
-      end
-      images[#images + 1] = image
-      return image
+      error("GpuAssetPool borrows textures from the session image owner")
     end,
   }
 end
+
+-- Borrowed-lease samplers: the shared owner keys physical images by pixel
+-- content plus sampler, so these are the lookup identities the tests assert
+-- published or absent through the fake.
+local CLAMP_SAMPLER = { wrapX = "clamp", wrapY = "clamp" }
+local REPEAT_SAMPLER = { wrapX = "repeat", wrapY = "clamp" }
 
 function T.rejects_a_missing_graphics_namespace()
   local err = Assert.throws(function()
@@ -115,136 +96,160 @@ function T.rejects_a_missing_graphics_namespace()
   Assert.isTrue(tostring(err):find("GpuAssetPool requires love.graphics", 1, true) ~= nil)
 end
 
-function T.unknown_wrap_modes_are_rejected()
+-- Texture acquisition without the session shared owner is a programming
+-- error and fails loudly instead of building a private image.
+function T.texture_acquisition_without_a_session_pool_fails_loudly()
   local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = fakeGraphics() })
+  local err = Assert.throws(function()
+    pool:imageFor(TEX_PATH, "clamp", "clamp")
+  end)
+  Assert.isTrue(
+    tostring(err):find("GpuAssetPool requires a session image owner", 1, true) ~= nil,
+    "borrowing without a session owner fails loudly"
+  )
+  local preparedErr = Assert.throws(function()
+    pool:imageFromPrepared(TEX_PATH, "clamp", "clamp", { imageData = {} })
+  end)
+  Assert.isTrue(
+    tostring(preparedErr):find("GpuAssetPool requires a session image owner", 1, true) ~= nil,
+    "prepared borrowing without a session owner fails loudly"
+  )
+  Assert.equal(pool:textureCount(), 0, "no lease is borrowed without a session owner")
+end
+
+function T.unknown_wrap_modes_are_rejected()
+  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = SharedImagePoolFake.new() })
   local err = Assert.throws(function()
     pool:imageFor(TEX_PATH, "mirror", "clamp")
   end)
   Assert.isTrue(Errors.is(err) and err.code == "GPU_ASSET_UNKNOWN_WRAP", "raises GPU_ASSET_UNKNOWN_WRAP")
-  Assert.equal(#pool.images, 0, "no image was created")
+  Assert.equal(pool:textureCount(), 0, "no lease is borrowed for a rejected sampler")
 end
 
 function T.image_identity_includes_the_wrap_pair()
-  local graphics = fakeGraphics()
-  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = graphics })
+  local images = SharedImagePoolFake.new()
+  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = images })
   local repeatX = pool:imageFor(TEX_PATH, "repeat", "clamp")
   local clampX = pool:imageFor(TEX_PATH, "clamp", "clamp")
-  Assert.isTrue(repeatX ~= clampX, "different wrap pairs must not alias one image")
-  Assert.deepEqual(graphics.wraps[1], { "repeat", "clamp" })
-  Assert.deepEqual(graphics.wraps[2], { "clamp", "clamp" })
-  Assert.equal(#pool.images, 2)
+  Assert.isTrue(repeatX ~= clampX, "different wrap pairs must not alias one borrowed image")
+  Assert.equal(images.uploads, 2, "each sampler state resolves its own physical image")
+  Assert.equal(images:findPhysical(TEX_PATH, REPEAT_SAMPLER), repeatX)
+  Assert.equal(images:findPhysical(TEX_PATH, CLAMP_SAMPLER), clampX)
 end
 
-function T.same_path_and_wrap_dedup_to_one_owned_image()
-  local graphics = fakeGraphics()
-  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = graphics })
+function T.same_path_and_wrap_dedup_to_one_borrowed_lease()
+  local images = SharedImagePoolFake.new()
+  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = images })
   local first = pool:imageFor(TEX_PATH, "repeat", "clamp")
   local second = pool:imageFor(TEX_PATH, "repeat", "clamp")
   Assert.equal(first, second)
-  Assert.equal(#pool.images, 1)
-  Assert.equal(#graphics.images, 1, "the underlying love image is built once")
+  Assert.equal(pool:textureCount(), 1, "one scene lease for the repeated acquisition")
+  Assert.equal(images.uploads, 1, "the shared owner builds the physical image once")
+end
+
+-- sharedImage propagates the full sampling handle: the bound image plus the
+-- exact palette and indexed flag the renderer's shared sampler consumes.
+-- The handle is stable per path/wrap identity, like the lease it describes.
+function T.sharedImage_propagates_the_sampling_handle()
+  local images = SharedImagePoolFake.new()
+  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = images })
+  local first = pool:sharedImage(TEX_PATH, "repeat", "clamp")
+  local second = pool:sharedImage(TEX_PATH, "repeat", "clamp")
+  Assert.equal(first, second, "repeated borrows share one stable handle")
+  Assert.equal(first.image, images:findPhysical(TEX_PATH, REPEAT_SAMPLER))
+  Assert.isFalse(first.indexed, "the fake straight image resolves a non-indexed handle")
+  Assert.isNil(first.palette, "the fake straight image resolves no palette")
+  Assert.equal(pool:imageFor(TEX_PATH, "repeat", "clamp"), first.image, "imageFor binds the handle's image")
+  pool:release()
 end
 
 function T.untextured_materials_get_no_image()
   local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = fakeGraphics() })
   Assert.isNil(pool:imageFor(nil, "clamp", "clamp"))
-  Assert.equal(#pool.images, 0)
+  Assert.isNil(pool:imageFromPrepared(nil, "clamp", "clamp", { imageData = {} }))
+  Assert.equal(pool:textureCount(), 0)
 end
 
 -- Construction rollback: the whole scene build runs inside the build
--- wrapper (MapSceneLoader.load and the NeighborRing load path), so the Nth
--- acquire failing must roll back every object created inside the build -- a
--- partially failed construction never leaks GPU objects.
-function T.build_releases_everything_when_the_second_acquire_fails()
-  local graphics = fakeGraphics({ failOnNewImage = 2 })
-  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = graphics })
+-- wrapper (MapSceneLoader.load and the NeighborRing load path), so a
+-- failing borrow must return every lease the build already holds -- a
+-- partially failed construction never keeps a borrowed texture.
+function T.build_returns_every_borrowed_lease_when_a_later_borrow_fails()
+  local images = SharedImagePoolFake.new()
+  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = images })
+  local first = pool:imageFor(TEX_PATH, "clamp", "clamp")
+  images:failAfterUploads(1, "injected shared image failure")
   local err = Assert.throws(function()
     pool:build(function()
-      pool:imageFor(TEX_PATH, "clamp", "clamp")
-      pool:imageFor(TEX_PATH, "repeat", "repeat")
+      pool:imageFor(TEX_PATH, "repeat", "clamp")
     end)
   end)
-  Assert.isTrue(tostring(err):find("injected newImage failure", 1, true) ~= nil, "rethrows the image build failure")
-  Assert.equal(graphics.images[1].released, true, "the build rolls back the first image")
-  Assert.equal(#pool.images, 0, "the pool owns nothing after the failed construction")
+  Assert.isTrue(
+    tostring(err):find("injected shared image failure", 1, true) ~= nil,
+    "rethrows the shared borrow failure"
+  )
+  Assert.equal(images:stats().outstandingLeases, 0, "the failed build returns every borrowed lease")
+  Assert.equal(images:prune(), 1, "the rolled-back physical image is reclaimed exactly once")
+  Assert.isTrue(first.released, "no lease outlives the reclaimed physical image")
+  images:clearFailure()
   local retry = pool:imageFor(TEX_PATH, "clamp", "clamp")
   Assert.isTrue(retry ~= nil, "the pool is usable after the rollback")
-  Assert.equal(#pool.images, 1)
-  Assert.equal(graphics.images[2].released, false, "the rebuilt image is owned, not a released leftover")
+  Assert.equal(pool:textureCount(), 1)
+  pool:release()
 end
 
 -- The build wrapper is not a release-everything-on-exit path: a successful
--- construction keeps its objects owned and returns the builder's value.
-function T.build_keeps_objects_and_returns_the_value_on_success()
-  local graphics = fakeGraphics()
-  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = graphics })
+-- construction keeps its leases and returns the builder's value.
+function T.build_keeps_borrowed_leases_and_returns_the_value_on_success()
+  local images = SharedImagePoolFake.new()
+  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = images })
   local result = pool:build(function()
     pool:imageFor(TEX_PATH, "clamp", "clamp")
     return "built"
   end)
   Assert.equal(result, "built", "the build returns the builder's value")
-  Assert.equal(graphics.images[1].released, false, "a successful construction keeps its objects")
-  Assert.equal(#pool.images, 1)
+  Assert.equal(images:stats().outstandingLeases, 1, "a successful construction keeps its lease")
+  Assert.equal(pool:textureCount(), 1)
+  pool:release()
 end
 
--- The guarded acquire and the build rollback interact: when the Nth acquire
--- fails AFTER recording its own object (a setWrap failure), the guarded
--- acquire pops and releases that object, and the build rollback releases the
--- earlier ones -- every created object is released exactly once, never twice,
--- and nothing stays owned. This is the failure-sequence contract the loaders
--- rely on when an alternate-image creation fails inside a scene build.
-function T.build_releases_everything_exactly_once_when_the_failed_acquire_created_its_object()
-  local graphics = fakeGraphics({ failSetWrapOn = 3 })
-  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = graphics })
-  local err = Assert.throws(function()
-    pool:build(function()
-      pool:imageFor(TEX_PATH, "clamp", "clamp")
-      pool:imageFor(TEX_PATH, "repeat", "repeat")
-      pool:imageFor(TEX_PATH, "repeat", "clamp")
-    end)
-  end)
-  Assert.isTrue(tostring(err):find("injected setWrap failure", 1, true) ~= nil, "rethrows the configuration failure")
-  Assert.equal(#graphics.images, 3, "the base and two alternates were all created")
-  for _, image in ipairs(graphics.images) do
-    Assert.equal(image.releaseCount, 1, "every created image is released exactly once")
-  end
-  Assert.equal(#pool.images, 0, "the pool owns nothing after the failed construction")
-end
-
--- Post-construction failure: a single lazy acquire failing while the live
--- scene draws must release only the object that failed acquisition itself
--- created -- never the earlier resources the scene is using. The failure is
--- injected after the second image was created (setWrap), so the failed
--- acquisition does own an object to roll back.
-function T.failed_single_acquire_releases_only_its_own_object()
-  local graphics = fakeGraphics({ failSetWrapOn = 2 })
-  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = graphics })
+-- Post-construction failure: a single borrow failing while the live scene
+-- draws borrows nothing -- the earlier leases the scene is using stay
+-- held, and the failed sampler state is borrowable again afterwards.
+function T.failed_single_borrow_keeps_the_live_scene_leases()
+  local images = SharedImagePoolFake.new()
+  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = images })
   local first = pool:imageFor(TEX_PATH, "clamp", "clamp")
+  images:failAfterUploads(1, "injected shared image failure")
   local err = Assert.throws(function()
     pool:imageFor(TEX_PATH, "repeat", "repeat")
   end)
-  Assert.isTrue(tostring(err):find("injected setWrap failure", 1, true) ~= nil, "rethrows the configuration failure")
-  Assert.equal(graphics.images[1].released, false, "the earlier image stays alive after a single failed acquire")
-  Assert.equal(graphics.images[2].released, true, "the failed acquire's own object is released")
-  Assert.equal(#pool.images, 1, "the pool still owns only the earlier image")
-  Assert.equal(first, graphics.images[1])
+  Assert.isTrue(tostring(err):find("injected shared image failure", 1, true) ~= nil, "rethrows the borrow failure")
+  Assert.equal(images:stats().outstandingLeases, 1, "the live lease stays held after a single failed borrow")
+  Assert.equal(images:findPhysical(TEX_PATH, CLAMP_SAMPLER), first, "the live image is still resident")
+  Assert.isNil(
+    images:findPhysical(TEX_PATH, { wrapX = "repeat", wrapY = "repeat" }),
+    "the failed borrow publishes no phantom physical image"
+  )
+  images:clearFailure()
   local retry = pool:imageFor(TEX_PATH, "repeat", "repeat")
-  Assert.isTrue(retry ~= nil, "the failed sampler state is acquirable again")
-  Assert.equal(graphics.images[3].released, false, "the rebuilt image is owned, not a released cache leftover")
-  Assert.equal(#pool.images, 2)
+  Assert.isTrue(retry ~= nil, "the failed sampler state is borrowable again")
+  Assert.equal(pool:textureCount(), 2)
+  pool:release()
 end
 
-function T.release_is_exactly_once_and_repeat_safe()
-  local graphics = fakeGraphics()
-  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = graphics })
-  pool:imageFor(TEX_PATH, "clamp", "clamp")
-  pool:imageFor(TEX_PATH, "repeat", "clamp")
+function T.release_returns_leases_and_prune_reclaims_exactly_once()
+  local images = SharedImagePoolFake.new()
+  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = images })
+  local clampImage = pool:imageFor(TEX_PATH, "clamp", "clamp")
+  local repeatImage = pool:imageFor(TEX_PATH, "repeat", "clamp")
   pool:release()
   pool:release()
-  Assert.equal(graphics.images[1].released, true)
-  Assert.equal(graphics.images[2].released, true)
-  Assert.equal(#pool.images, 0)
-  Assert.equal(#pool.meshes, 0)
+  Assert.equal(images:stats().outstandingLeases, 0, "release returns every borrowed lease")
+  Assert.equal(images:prune(), 2, "both idle physical images are reclaimed")
+  Assert.equal(clampImage.releaseCount, 1, "the clamp physical image is released exactly once")
+  Assert.equal(repeatImage.releaseCount, 1, "the repeat physical image is released exactly once")
+  Assert.equal(pool:textureCount(), 0)
 end
 
 function T.mesh_entries_dedup_and_accumulate_triangles_once()
@@ -404,33 +409,35 @@ function T.meshFromPrepared_rolls_back_the_partial_mesh_on_publish_failure()
   retryPool:release()
 end
 
--- imageFromPrepared shares GpuAssetPool's image identity/dedup/rollback
--- authority with imageFor: same content-addressed path plus wrap pair
--- realized through either entry point must resolve to one owned Image.
-function T.imageFromPrepared_dedups_with_imageFor_by_path_and_wrap()
-  local graphics = fakeGraphics()
-  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = graphics })
+-- imageFromPrepared delegates to the same shared borrow as imageFor: the
+-- staged payload is superseded by the shared owner's own classification,
+-- so both entry points resolve one physical image and one scene lease.
+function T.imageFromPrepared_delegates_to_the_shared_borrow()
+  local images = SharedImagePoolFake.new()
+  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = images })
   local prepared = { imageData = { fakeImageData = true } }
   local fromPrepared = pool:imageFromPrepared(TEX_PATH, "clamp", "clamp", prepared)
   local fromSync = pool:imageFor(TEX_PATH, "clamp", "clamp")
-  Assert.equal(fromPrepared, fromSync, "prepared and synchronous realization share one dedup key")
-  Assert.equal(#pool.images, 1)
+  Assert.equal(fromPrepared, fromSync, "prepared and synchronous borrowing share one lease")
+  Assert.equal(images.uploads, 1, "the superseded payload never builds a second image")
+  Assert.equal(pool:textureCount(), 1)
+  pool:release()
 end
 
-function T.imageFromPrepared_rolls_back_on_publish_failure_and_stays_usable()
-  local graphics = fakeGraphics({ failSetWrapOn = 1 })
-  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = graphics })
-  local prepared = { imageData = { fakeImageData = true } }
+-- The staged payload stays a required collaborator even though its bytes
+-- are superseded: callers must stage before borrowing.
+function T.imageFromPrepared_still_requires_its_staged_payload()
+  local images = SharedImagePoolFake.new()
+  local pool = GpuAssetPool.new(fakeCacheFs(), { graphics = fakeGraphics(), imageAssets = images })
   local err = Assert.throws(function()
-    pool:imageFromPrepared(TEX_PATH, "clamp", "clamp", prepared)
+    pool:imageFromPrepared(TEX_PATH, "clamp", "clamp", nil)
   end)
-  Assert.isTrue(tostring(err):find("injected setWrap failure", 1, true) ~= nil)
-  Assert.equal(#pool.images, 0, "no image is published before every configuration step succeeds")
-  Assert.equal(graphics.images[1].released, true, "the failed prepared image is released")
-
-  local retried = pool:imageFromPrepared(TEX_PATH, "clamp", "clamp", prepared)
-  Assert.notNil(retried, "the pool is usable again after a rolled-back prepared realization")
-  Assert.equal(#pool.images, 1)
+  Assert.isTrue(
+    tostring(err):find("prepared image payload is required", 1, true) ~= nil,
+    "borrowing without a staged payload fails loudly"
+  )
+  Assert.equal(images.uploads, 0, "no borrow happens without a staged payload")
+  pool:release()
 end
 
 return {

@@ -11,6 +11,7 @@ local FieldTerrainEffectRenderer = require("libs.hgss.src.presentation.FieldTerr
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 local FieldGrid = require("libs.hgss.src.world.FieldGrid")
 local GpuAssetPool = require("libs.hgss.src.presentation.GpuAssetPool")
+local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
 local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
 local GameVersion = require("romdump.src.source.GameVersion")
 local Matrix4 = require("libs.math.src.Matrix4")
@@ -45,7 +46,13 @@ local function runVersion(scope, versionId)
   end
 
   Assert.equal(Contract.fieldEffects.cacheFormat, "field-effect-cache-v12")
-  local pool = scope:own(GpuAssetPool.new(cache))
+  local imagePool = ImageAssetPool.new(cache)
+  scope:own({
+    release = function()
+      imagePool:dispose()
+    end,
+  })
+  local pool = scope:own(GpuAssetPool.new(cache, { imageAssets = imagePool }))
   local renderer = FieldTerrainEffectRenderer.new(assets, pool)
   scope:own({
     release = function()
@@ -127,7 +134,13 @@ end
 local function composedEffects(scope, versionId)
   local cache = CacheFs.forVersion(versionId)
   local assets = loadEffectAssets(cache)
-  local pool = scope:own(GpuAssetPool.new(cache))
+  local imagePool = ImageAssetPool.new(cache)
+  scope:own({
+    release = function()
+      imagePool:dispose()
+    end,
+  })
+  local pool = scope:own(GpuAssetPool.new(cache, { imageAssets = imagePool }))
   local renderer = FieldTerrainEffectRenderer.new(assets, pool)
   scope:own({
     release = function()

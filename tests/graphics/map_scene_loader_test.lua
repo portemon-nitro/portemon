@@ -15,6 +15,7 @@ local MeshWriter = require("libs.assets.src.model.MeshWriter")
 local CollisionGridAsset = require("libs.assets.src.field.CollisionGridAsset")
 local PngWriter = require("libs.assets.src.PngWriter")
 local SceneMesh = require("libs.hgss.src.presentation.SceneMesh")
+local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
 
 local T = {}
 
@@ -251,16 +252,13 @@ function T.same_texture_with_different_wraps_gets_independent_images()
   local s =
     scene({ material(0, texPath, { x = "clamp", y = "clamp" }), material(1, texPath, { x = "repeat", y = "repeat" }) })
   s.mapBatches = { batch(geomPath, 0), batch(geomPath, 1) }
-  local runtime = MapSceneLoader.load(cache, s)
+  local images = SharedImagePoolFake.new()
+  local runtime = MapSceneLoader.load(cache, s, { imageAssets = images })
   local clampImage = runtime.mapDraws[1].material.image
   local repeatImage = runtime.mapDraws[2].material.image
   Assert.isTrue(clampImage ~= repeatImage, "shared pixels with different wraps must not alias")
-  local ax, ay = clampImage:getWrap()
-  Assert.equal(ax, "clamp")
-  Assert.equal(ay, "clamp")
-  local bx, by = repeatImage:getWrap()
-  Assert.equal(bx, "repeat")
-  Assert.equal(by, "repeat")
+  Assert.equal(images:findPhysical(texPath, { wrapX = "clamp", wrapY = "clamp" }), clampImage)
+  Assert.equal(images:findPhysical(texPath, { wrapX = "repeat", wrapY = "repeat" }), repeatImage)
   Assert.equal(runtime.stats.textureCount, 2)
   Assert.equal(runtime.stats.meshCount, 1, "the shared geometry still dedups")
   runtime:release()
@@ -273,7 +271,7 @@ function T.same_texture_and_wrap_share_one_image()
     material(1, texPath, { x = "repeat", y = "clamp" }),
   })
   s.mapBatches = { batch(geomPath, 0), batch(geomPath, 1) }
-  local runtime = MapSceneLoader.load(cache, s)
+  local runtime = MapSceneLoader.load(cache, s, { imageAssets = SharedImagePoolFake.new() })
   Assert.equal(runtime.mapDraws[1].material.image, runtime.mapDraws[2].material.image)
   Assert.equal(runtime.stats.textureCount, 1)
   runtime:release()
@@ -298,7 +296,7 @@ function T.scene_and_building_descriptor_samplers_stay_independent()
     batches = { batch(geomPath, 0) },
     materials = { material(0, texPath, { x = "repeat", y = "repeat" }) },
   }
-  local runtime = MapSceneLoader.load(cache, s)
+  local runtime = MapSceneLoader.load(cache, s, { imageAssets = SharedImagePoolFake.new() })
   Assert.equal(runtime.stats.textureCount, 2)
   local sceneImage = runtime.mapDraws[1].material.image
   local buildingImage = runtime.staticBuildingDraws[1].material.image
@@ -317,19 +315,23 @@ function T.unknown_wrap_modes_fail_loudly()
   )
 end
 
--- A scene material image is acquired before the map batches; a missing
--- geometry path fails that later mesh load, and the image must be released.
+-- A scene material image is borrowed before the map batches; a missing
+-- geometry path fails that later mesh load, and the lease must be returned.
 function T.failed_mesh_load_releases_acquired_images()
   local cache, _, texPath = cacheFs()
   local s = scene({ material(0, texPath, { x = "clamp", y = "clamp" }) })
   s.mapBatches = { { geometry = "missing-geometry.g4mesh", material = 0 } }
-  local graphics = fakeGraphics()
+  local images = SharedImagePoolFake.new()
   local err = Assert.throws(function()
-    MapSceneLoader.load(cache, s, { graphics = graphics })
+    MapSceneLoader.load(cache, s, { graphics = fakeGraphics(), imageAssets = images })
   end)
   Assert.isTrue(tostring(err):find("missing mesh missing-geometry.g4mesh", 1, true) ~= nil, "mesh failure propagates")
-  Assert.equal(#graphics.images, 1, "the scene material image was acquired")
-  Assert.equal(graphics.images[1].released, true, "a failed mesh load releases the acquired image")
+  Assert.equal(images.uploads, 1, "the scene material image was borrowed")
+  local borrowed = images:findPhysical(texPath, { wrapX = "clamp", wrapY = "clamp" })
+  Assert.notNil(borrowed, "the borrowed image was published before the mesh failed")
+  Assert.equal(images:stats().outstandingLeases, 0, "a failed mesh load returns the borrowed lease")
+  Assert.equal(images:prune(), 1, "the rolled-back image is reclaimed exactly once")
+  Assert.isTrue(borrowed.released, "a failed mesh load releases the borrowed image")
 end
 
 -- The dedup consumption contract: one content-addressed mesh is
@@ -357,7 +359,7 @@ function T.one_mesh_center_serves_every_consumer_and_placement()
     batches = { batch(geomPath, 0) },
     materials = { material(0, texPath, { x = "clamp", y = "clamp" }) },
   }
-  local runtime = MapSceneLoader.load(cache, s)
+  local runtime = MapSceneLoader.load(cache, s, { imageAssets = SharedImagePoolFake.new() })
   local expectedCenter = { 1, 0, 1 }
   Assert.deepEqual(runtime.mapDraws[1].center, expectedCenter, "the terrain draw carries the mesh center")
   Assert.deepEqual(runtime.staticBuildingDraws[1].center, expectedCenter, "placement 0 carries the same mesh center")
@@ -382,18 +384,19 @@ function T.one_mesh_center_serves_every_consumer_and_placement()
 end
 
 -- A missing model descriptor fails building creation after scene images
--- exist; every acquired image must be released.
+-- exist; every borrowed lease must be returned.
 function T.failed_descriptor_load_releases_acquired_images()
   local cache, _, texPath = cacheFs()
   local s = scene({ material(0, texPath, { x = "clamp", y = "clamp" }) })
   s.buildingInstances = { { modelKey = "missing", transform = IDENTITY } }
-  local graphics = fakeGraphics()
+  local images = SharedImagePoolFake.new()
   local err = Assert.throws(function()
-    MapSceneLoader.load(cache, s, { graphics = graphics })
+    MapSceneLoader.load(cache, s, { graphics = fakeGraphics(), imageAssets = images })
   end)
   Assert.isTrue(tostring(err):find("missing model missing", 1, true) ~= nil, "descriptor failure propagates")
-  Assert.equal(#graphics.images, 1)
-  Assert.equal(graphics.images[1].released, true, "a failed descriptor load releases the acquired image")
+  Assert.equal(images.uploads, 1, "the scene material image was borrowed")
+  Assert.equal(images:stats().outstandingLeases, 0, "a failed descriptor load returns the borrowed lease")
+  Assert.equal(images:prune(), 1, "the rolled-back image is reclaimed exactly once")
 end
 
 -- An unknown wrap inside a building descriptor fails material creation after
@@ -407,13 +410,14 @@ function T.unknown_wrap_in_a_building_descriptor_releases_acquired_images()
     batches = {},
     materials = { material(0, texPath, { x = "mirror", y = "clamp" }) },
   }
-  local graphics = fakeGraphics()
+  local images = SharedImagePoolFake.new()
   local err = Assert.throws(function()
-    MapSceneLoader.load(cache, s, { graphics = graphics })
+    MapSceneLoader.load(cache, s, { graphics = fakeGraphics(), imageAssets = images })
   end)
   Assert.isTrue(Errors.is(err) and err.code == "SCENE_DESC_BAD_WRAP", "raises SCENE_DESC_BAD_WRAP")
-  Assert.equal(#graphics.images, 1)
-  Assert.equal(graphics.images[1].released, true, "the scene image is released with the failed descriptor")
+  Assert.equal(images.uploads, 1, "the scene image was borrowed before the descriptor failed")
+  Assert.equal(images:stats().outstandingLeases, 0, "the scene lease is returned with the failed descriptor")
+  Assert.equal(images:prune(), 1, "the rolled-back scene image is reclaimed exactly once")
 end
 
 -- An unsupported transform mode raises after its mesh was acquired; the load
@@ -422,14 +426,15 @@ function T.failed_transform_mode_releases_acquired_gpu_objects()
   local cache, geomPath, texPath = cacheFs()
   local s = scene({ material(0, texPath, { x = "clamp", y = "clamp" }) })
   s.mapBatches = { { geometry = geomPath, material = 0, transformMode = "spooky" } }
-  local graphics = fakeGraphics()
-  local ok, err = pcall(MapSceneLoader.load, cache, s, { graphics = graphics })
+  local images = SharedImagePoolFake.new()
+  local ok, err = pcall(MapSceneLoader.load, cache, s, { graphics = fakeGraphics(), imageAssets = images })
   Assert.isTrue(
     not ok and Errors.is(err) and err.code == "MAP_SCENE_UNSUPPORTED_TRANSFORM_MODE",
     "raises the transform-mode error"
   )
-  Assert.equal(#graphics.images, 1)
-  Assert.equal(graphics.images[1].released, true, "the acquired image is released with the mesh")
+  Assert.equal(images.uploads, 1, "the scene image was borrowed before the transform mode failed")
+  Assert.equal(images:stats().outstandingLeases, 0, "the failed load returns the borrowed lease")
+  Assert.equal(images:prune(), 1, "the rolled-back image is reclaimed exactly once")
 end
 
 function T.staged_scene_build_advances_one_atomic_operation_per_work_unit()
@@ -440,13 +445,10 @@ function T.staged_scene_build_advances_one_atomic_operation_per_work_unit()
     material(1, texPath, { x = "repeat", y = "repeat" }),
   })
   s.mapBatches = { batch(geomPath, 0), batch(geomPath, 1) }
-  local imageAcquisitions, meshAcquisitions = 0, 0
+  local meshAcquisitions = 0
   local task = MapSceneLoader.begin(cache, s, {
     graphics = fakeGraphics(),
-    imageBuilder = function()
-      imageAcquisitions = imageAcquisitions + 1
-      return fakeImage()
-    end,
+    imageAssets = SharedImagePoolFake.new(),
     meshBuilder = function()
       meshAcquisitions = meshAcquisitions + 1
       return fakeMesh()
@@ -455,16 +457,16 @@ function T.staged_scene_build_advances_one_atomic_operation_per_work_unit()
 
   Assert.equal(task:advance(1), 1, "one resume consumes one work unit")
   Assert.isFalse(task:isReady(), "a multi-resource scene is not ready after one work unit")
-  Assert.isTrue(imageAcquisitions + meshAcquisitions <= 1, "one work unit performs at most one atomic acquisition")
+  Assert.isTrue(meshAcquisitions <= 1, "one work unit performs at most one atomic mesh acquisition")
 
   Assert.equal(task:advance(1), 1, "the next resume consumes one work unit")
   Assert.isFalse(task:isReady(), "the staged scene remains incomplete across resumes")
-  Assert.isTrue(imageAcquisitions + meshAcquisitions <= 2, "two work units perform at most two atomic acquisitions")
+  Assert.isTrue(meshAcquisitions <= 2, "two work units perform at most two atomic mesh acquisitions")
 
   local staged = task:finish()
   local synchronous = MapSceneLoader.load(cache, s, {
     graphics = fakeGraphics(),
-    imageBuilder = fakeImage,
+    imageAssets = SharedImagePoolFake.new(),
     meshBuilder = fakeMesh,
   })
   Assert.equal(staged.stats.meshCount, synchronous.stats.meshCount, "staged and synchronous mesh ownership agree")
@@ -487,7 +489,7 @@ function T.build_task_waits_without_consuming_budget_until_prepared_assets_are_r
   local s = scene({ material(0, texPath, { x = "clamp", y = "clamp" }) })
   s.mapBatches = { batch(geomPath, 0) }
   local queue = fakeAssetPreparationQueue(cache, { pendingPolls = 2 })
-  local task = MapSceneLoader.begin(cache, s, { assetPreparation = queue })
+  local task = MapSceneLoader.begin(cache, s, { assetPreparation = queue, imageAssets = SharedImagePoolFake.new() })
 
   local guard = 0
   while not task:isReady() and guard < 100 do
@@ -506,7 +508,7 @@ function T.build_task_waits_without_consuming_budget_until_prepared_assets_are_r
   )
 
   local runtime = task:takeResult()
-  local synchronous = MapSceneLoader.load(cache, s)
+  local synchronous = MapSceneLoader.load(cache, s, { imageAssets = SharedImagePoolFake.new() })
   Assert.equal(#runtime.mapDraws, 1, "the frame-0 scene still assembles once preparation completes")
   Assert.deepEqual(
     runtime.mapDraws[1].center,
@@ -528,7 +530,8 @@ function T.ready_prepared_resources_still_respect_the_per_call_work_budget()
   })
   s.mapBatches = { batch(geomPath, 0), batch(geomPath, 1) }
   local queue = fakeAssetPreparationQueue(cache, { pendingPolls = 0 })
-  local task = MapSceneLoader.begin(cache, s, { assetPreparation = queue })
+  local images = SharedImagePoolFake.new()
+  local task = MapSceneLoader.begin(cache, s, { assetPreparation = queue, imageAssets = images })
 
   Assert.equal(task:advance(1), 1, "one ready resource realization is charged as one work unit")
   Assert.isFalse(task:isReady(), "a multi-resource scene is not ready after one work unit")
@@ -536,9 +539,10 @@ function T.ready_prepared_resources_still_respect_the_per_call_work_budget()
 
   local runtime = task:finish()
   Assert.equal(runtime.stats.textureCount, 2, "both distinct-wrap textures are realized by completion")
+  Assert.equal(images.uploads, 2, "both textures borrow through the shared owner")
   Assert.isTrue(
-    #queue.requestLog >= 2,
-    "prepared resources for a multi-texture scene are still routed through the injected queue"
+    #queue.requestLog >= 1,
+    "mesh preparation for the scene is still routed through the injected queue"
   )
   runtime:release()
 end
@@ -556,20 +560,16 @@ function T.synchronous_finish_propagates_preparation_wait_failure_and_releases_r
     waitFailurePath = geomPath,
     waitFailureMessage = "injected preparation wait failure",
   })
-  local task = MapSceneLoader.begin(cache, s, { graphics = graphics, assetPreparation = queue })
+  local images = SharedImagePoolFake.new()
+  local task =
+    MapSceneLoader.begin(cache, s, { graphics = graphics, assetPreparation = queue, imageAssets = images })
 
-  Assert.equal(task:advance(1), 1, "the first work unit realizes the prepared texture")
+  Assert.equal(task:advance(1), 1, "the first work unit borrows the texture")
   Assert.isFalse(task:isReady(), "the scene is not ready while the mesh preparation is pending")
   Assert.equal(task:advance(1), 0, "a pending preparation consumes no work budget")
-  Assert.equal(#graphics.images, 1, "the texture image was realized before the mesh failed")
-
-  local releases = 0
-  local image = graphics.images[1]
-  local baseRelease = image.release
-  image.release = function()
-    releases = releases + 1
-    baseRelease()
-  end
+  Assert.equal(images.uploads, 1, "the texture was borrowed before the mesh failed")
+  local borrowed = images:findPhysical(texPath, { wrapX = "clamp", wrapY = "clamp" })
+  Assert.notNil(borrowed, "the borrowed texture was published before the mesh failed")
 
   local err = Assert.throws(function()
     task:finish()
@@ -578,11 +578,91 @@ function T.synchronous_finish_propagates_preparation_wait_failure_and_releases_r
     tostring(err):find("injected preparation wait failure", 1, true) ~= nil,
     "the preparation wait failure propagates: " .. tostring(err)
   )
-  Assert.isTrue(image.released, "the realized image is released with the failed finish")
-  Assert.equal(releases, 1, "the failed finish releases the realized image exactly once")
+  Assert.equal(images:stats().outstandingLeases, 0, "the failed finish returns the borrowed lease")
+  Assert.equal(images:prune(), 1, "the failed finish leaves exactly one idle image")
+  Assert.isTrue(borrowed.released, "the borrowed image is reclaimed exactly once")
+  Assert.equal(borrowed.releaseCount, 1, "the failed finish reclaims the borrowed image exactly once")
 
   task:release()
-  Assert.equal(releases, 1, "releasing the failed task does not release twice")
+  Assert.equal(images:stats().outstandingLeases, 0, "releasing the failed task returns nothing further")
+end
+
+-- Resolve the physical image a draw material renders from, whether the
+-- material carries the image directly or wraps a borrowed lease record.
+local function materialImage(material)
+  local handle = material.image or material.lease or material.imageLease
+  Assert.notNil(handle, "scene material exposes no image handle")
+  if type(handle) == "table" and handle.lease ~= nil then
+    handle = handle.lease
+  end
+  if type(handle) == "table" and handle.image ~= nil and handle.physicalKey ~= nil then
+    return handle.image
+  end
+  return handle
+end
+
+-- A mesh builder recording every scene-owned mesh with a release flag, so
+-- the test can prove each scene release frees exactly its own meshes.
+local function trackedMeshes(store)
+  return function()
+    local mesh = { released = false }
+    mesh.release = function()
+      mesh.released = true
+    end
+    store[#store + 1] = mesh
+    return mesh
+  end
+end
+
+-- Two adjacent scenes compiled against the identical texture path and
+-- sampler state must resolve to one physical image borrowed from the
+-- session owner: staging both uploads once, releasing the first scene
+-- keeps the survivor rendering, and releasing the second returns the last
+-- lease while each scene frees only its own meshes.
+function T.overlapping_neighbor_scenes_share_one_physical_image()
+  local cache, geomPath, texPath = cacheFs()
+  local sceneA = scene({ material(0, texPath, { x = "clamp", y = "clamp" }) })
+  sceneA.mapBatches = { batch(geomPath, 0) }
+  local sceneB = scene({ material(0, texPath, { x = "clamp", y = "clamp" }) })
+  sceneB.mapBatches = { batch(geomPath, 0) }
+  local pool = SharedImagePoolFake.new()
+  local meshesA, meshesB = {}, {}
+  local runtimeA = MapSceneLoader.load(cache, sceneA, {
+    graphics = fakeGraphics(),
+    meshBuilder = trackedMeshes(meshesA),
+    imageAssets = pool,
+  })
+  local runtimeB = MapSceneLoader.load(cache, sceneB, {
+    graphics = fakeGraphics(),
+    meshBuilder = trackedMeshes(meshesB),
+    imageAssets = pool,
+  })
+
+  Assert.equal(pool.uploads, 1, "two scenes sharing one texture path and sampler resolve a single physical image")
+  local imageA = materialImage(runtimeA.mapDraws[1].material)
+  local imageB = materialImage(runtimeB.mapDraws[1].material)
+  Assert.equal(imageA, imageB, "both scenes render from the same physical image")
+  Assert.equal(pool:stats().outstandingLeases, 2, "each staged scene holds its own lease")
+
+  runtimeA:release()
+  Assert.isFalse(imageB.released, "releasing the first scene must not release the image under the survivor")
+  Assert.equal(materialImage(runtimeB.mapDraws[1].material), imageB, "the surviving scene still renders its image")
+  Assert.equal(pool:stats().outstandingLeases, 1, "only the released scene returned its lease")
+  for _, mesh in ipairs(meshesA) do
+    Assert.isTrue(mesh.released, "the released scene frees its owned meshes")
+  end
+  for _, mesh in ipairs(meshesB) do
+    Assert.isFalse(mesh.released, "the surviving scene keeps its owned meshes")
+  end
+
+  runtimeB:release()
+  Assert.equal(pool:stats().outstandingLeases, 0, "the second release returns the last lease")
+  for _, mesh in ipairs(meshesB) do
+    Assert.isTrue(mesh.released, "the second release frees its owned meshes")
+  end
+  Assert.equal(pool:prune(), 1, "the idle shared image is reclaimed exactly once")
+  Assert.isTrue(imageB.released, "no lease outlives the shared image")
+  pool:dispose()
 end
 
 return {

@@ -18,7 +18,8 @@
 -- definition's referenced .g4mesh geometry); drawItems itself stays pure so
 -- pose and item math are testable without graphics. An optional
 -- `resolveImage` callback (opts.resolveImage) maps a texture key to the
--- caller's image object; without one items draw untextured.
+-- caller's sampling handle (image + palette + indexed) or a bare image
+-- object; without one items draw untextured.
 --
 -- The definition and its clips are immutable and shared; materialState is
 -- the instance's own map, so two instances of one model can animate at
@@ -59,7 +60,9 @@ local BillboardTransform = require("libs.hgss.src.presentation.BillboardTransfor
 ---@field alphaMode string
 
 ---@class ModelInstance.EffectiveMaterial
----@field image unknown|nil
+---@field image unknown|nil bound source image of the evaluated material
+---@field palette unknown|nil exact RGBA palette when the material samples indexed
+---@field indexed boolean? true when the material samples through its palette
 ---@field texMatrix number[]
 ---@field matDiffuse number[]
 ---@field matAmbient number[]
@@ -83,7 +86,7 @@ local BillboardTransform = require("libs.hgss.src.presentation.BillboardTransfor
 ---@field materialState { [integer]: MaterialInstanceState }
 ---@field poseState PoseState|nil
 ---@field renderMeshesById table<string, unknown>|nil -- caller-built render meshes per mesh id
----@field resolveImage fun(key: string, materialId: integer): unknown|nil
+---@field resolveImage fun(key: string, materialId: integer): table<string, unknown>|unknown|nil sampling handle or bare image
 ---@field timeOfDayPlan table<string, unknown>|nil -- band plan the scene loader attaches (TimeOfDayProps.plan)
 ---@field _poseScratch table<string, unknown>|nil -- backend-owned reusable pose storage, built on first evaluation
 ---@field _drawItems ModelDrawItem[] -- the live draw list, reused across evaluations
@@ -98,7 +101,7 @@ ModelInstance.__index = ModelInstance
 
 ---@class ModelInstance.Options
 ---@field transform number[]?
----@field resolveImage? fun(key: string, materialId: integer): unknown|nil
+---@field resolveImage? fun(key: string, materialId: integer): table<string, unknown>|unknown|nil sampling handle or bare image
 ---@field timeOfDayPlan table<string, unknown>|nil
 
 -- The polygon draw fields the draw path consumes from a nitro backend mesh
@@ -426,11 +429,22 @@ function ModelInstance:effectiveMaterial(materialIndex)
   writeColor(record.matAmbient, colors, "ambient", material.baseColor)
   writeColor(record.matSpecular, colors, "specular", material.baseColor)
   writeColor(record.matEmission, colors, "emission", material.baseColor)
-  local image
+  local resolved
   if state and state.texture and self.resolveImage then
-    image = self.resolveImage(state.texture, materialIndex)
+    resolved = self.resolveImage(state.texture, materialIndex)
   end
-  record.image = image
+  -- The resolver answers a sampling handle (image + palette + indexed) or a
+  -- bare image: handles unpack onto the record so indexed materials bind
+  -- their palette, while bare images sample straight with no stale palette.
+  if type(resolved) == "table" and resolved.image ~= nil then
+    record.image = resolved.image
+    record.palette = resolved.palette
+    record.indexed = resolved.indexed
+  else
+    record.image = resolved
+    record.palette = nil
+    record.indexed = nil
+  end
   local texMatrix = state and state.texMatrix or IDENTITY_TEX_MATRIX
   for i = 1, 9 do
     record.texMatrix[i] = texMatrix[i]

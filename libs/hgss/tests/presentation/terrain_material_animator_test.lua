@@ -96,22 +96,26 @@ local function staticRecord(id, name, opts)
   }
 end
 
--- A resolver backed by nothing GPU-side: returns a plain preloaded-image
--- table carrying the wrap tag, memoized per path+wrap so identity assertions
--- hold (the pool dedups the same way); records every call. Returns the
--- resolver, the call log, and the image memo.
+-- A resolver backed by nothing GPU-side: returns a preloaded sampling
+-- handle (bound image + exact palette + indexed flag) memoized per
+-- path+wrap so identity assertions hold (the pool dedups the same way);
+-- records every call. Returns the resolver, the call log, and the handle memo.
 local function fakeImageResolver()
   local calls = {}
   local images = {}
   local function resolve(path, wrapX, wrapY)
     calls[#calls + 1] = { path = path, wrapX = wrapX, wrapY = wrapY }
     local key = path .. "@" .. wrapX .. "|" .. wrapY
-    local image = images[key]
-    if not image then
-      image = { path = path, wrapTag = wrapX .. "|" .. wrapY }
-      images[key] = image
+    local handle = images[key]
+    if not handle then
+      handle = {
+        image = { path = path, wrapTag = wrapX .. "|" .. wrapY },
+        palette = { paletteFor = path },
+        indexed = true,
+      }
+      images[key] = handle
     end
-    return image
+    return handle
   end
   return resolve, calls, images
 end
@@ -124,12 +128,15 @@ local function bindings(records, resolve)
   local out = {}
   for _, record in ipairs(records) do
     local wrap = SceneDescriptor.wrap(record)
+    local handle = record.texture and resolve(record.texture, wrap.x, wrap.y) or nil
     out[#out + 1] = {
       record = record,
       runtime = {
         id = record.id,
         name = record.name,
-        image = record.texture and resolve(record.texture, wrap.x, wrap.y) or nil,
+        image = handle and handle.image or nil,
+        palette = handle and handle.palette or nil,
+        indexed = handle and handle.indexed or nil,
         texMatrix = nil,
         wrap = wrap,
       },
@@ -174,11 +181,17 @@ function T.initial_base_image_is_left_in_place_and_no_tick_is_consumed()
   for _, step in ipairs(flowerSteps()) do
     assertResolved(calls, step.texture, "repeat", "repeat")
   end
-  Assert.equal(runtime.image, images[base .. "@repeat|repeat"], "the runtime material keeps the base image")
+  Assert.equal(runtime.image, images[base .. "@repeat|repeat"].image, "the runtime material keeps the base image")
+  Assert.equal(
+    runtime.palette,
+    images[base .. "@repeat|repeat"].palette,
+    "the base bind carries the handle's palette"
+  )
+  Assert.isTrue(runtime.indexed, "the base bind carries the handle's indexed flag")
   animator:updateFixed()
   Assert.equal(
     runtime.image,
-    images[base .. "@repeat|repeat"],
+    images[base .. "@repeat|repeat"].image,
     "the first switch comes only after the first step's 18 ticks"
   )
 end
@@ -195,7 +208,7 @@ function T.zero_duration_step_transitions_on_the_first_update()
   local runtime = list[1].runtime
   local animator = TerrainMaterialAnimator.new(list, false, resolve)
   animator:updateFixed()
-  Assert.equal(runtime.image, images["r1.png@repeat|repeat"], "a zero-duration step crosses on update 1")
+  Assert.equal(runtime.image, images["r1.png@repeat|repeat"].image, "a zero-duration step crosses on update 1")
 end
 
 -- The exact field-manager counter behavior for an 18-tick step: the first
@@ -217,19 +230,19 @@ function T.boundary_ticks_of_an_18_tick_step_follow_the_clock()
     end
   end
   advance(18)
-  Assert.equal(image(), images["base.png@repeat|repeat"], "step 1 (R0) runs its full 18 ticks")
+  Assert.equal(image(), images["base.png@repeat|repeat"].image, "step 1 (R0) runs its full 18 ticks")
   advance(1)
-  Assert.equal(image(), images["r1.png@repeat|repeat"], "the first switch is exactly at tick 19")
+  Assert.equal(image(), images["r1.png@repeat|repeat"].image, "the first switch is exactly at tick 19")
   advance(17)
-  Assert.equal(image(), images["r1.png@repeat|repeat"], "step 2 (R1) runs its full 18 ticks")
+  Assert.equal(image(), images["r1.png@repeat|repeat"].image, "step 2 (R1) runs its full 18 ticks")
   advance(1)
-  Assert.equal(image(), images["r0.png@repeat|repeat"], "step 3 (R0) begins at tick 37")
+  Assert.equal(image(), images["r0.png@repeat|repeat"].image, "step 3 (R0) begins at tick 37")
   advance(18)
-  Assert.equal(image(), images["r2.png@repeat|repeat"], "step 4 (R2) begins at tick 55")
+  Assert.equal(image(), images["r2.png@repeat|repeat"].image, "step 4 (R2) begins at tick 55")
   advance(17)
-  Assert.equal(image(), images["r2.png@repeat|repeat"], "step 4 runs its full 18 ticks")
+  Assert.equal(image(), images["r2.png@repeat|repeat"].image, "step 4 runs its full 18 ticks")
   advance(1)
-  Assert.equal(image(), images["r0.png@repeat|repeat"], "the cursor wraps to step 1 at tick 73")
+  Assert.equal(image(), images["r0.png@repeat|repeat"].image, "the cursor wraps to step 1 at tick 73")
 end
 
 -- Same-name materials may hold different replacement paths (neighbors
@@ -253,18 +266,18 @@ function T.same_name_materials_select_their_own_paths_in_phase()
   for _ = 1, 19 do
     animator:updateFixed()
   end
-  Assert.equal(list[1].runtime.image, images["a1.png@repeat|repeat"], "member a enters step 2 at tick 19")
-  Assert.equal(list[2].runtime.image, images["b1.png@repeat|repeat"], "member b enters step 2 at tick 19")
+  Assert.equal(list[1].runtime.image, images["a1.png@repeat|repeat"].image, "member a enters step 2 at tick 19")
+  Assert.equal(list[2].runtime.image, images["b1.png@repeat|repeat"].image, "member b enters step 2 at tick 19")
   for _ = 1, 18 do
     animator:updateFixed()
   end
-  Assert.equal(list[1].runtime.image, images["a2.png@repeat|repeat"], "member a enters step 3 at tick 37")
-  Assert.equal(list[2].runtime.image, images["b2.png@repeat|repeat"], "member b enters step 3 at tick 37")
+  Assert.equal(list[1].runtime.image, images["a2.png@repeat|repeat"].image, "member a enters step 3 at tick 37")
+  Assert.equal(list[2].runtime.image, images["b2.png@repeat|repeat"].image, "member b enters step 3 at tick 37")
   for _ = 1, 18 do
     animator:updateFixed()
   end
-  Assert.equal(list[1].runtime.image, images["a0.png@repeat|repeat"], "member a wraps to step 1 at tick 55")
-  Assert.equal(list[2].runtime.image, images["b0.png@repeat|repeat"], "member b wraps to step 1 at tick 55")
+  Assert.equal(list[1].runtime.image, images["a0.png@repeat|repeat"].image, "member a wraps to step 1 at tick 55")
+  Assert.equal(list[2].runtime.image, images["b0.png@repeat|repeat"].image, "member b wraps to step 1 at tick 55")
 end
 
 -- ---- texture-SRT playback ----

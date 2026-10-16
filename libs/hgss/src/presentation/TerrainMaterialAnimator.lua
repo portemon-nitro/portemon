@@ -51,7 +51,7 @@ TerrainMaterialAnimator.__index = TerrainMaterialAnimator
 -- bound material.texture, the schedule entries only supply alternate frames.
 ---@param bindings { record: table<string, unknown>, runtime: table<string, unknown> }[] scene material record + live runtime material table<string, unknown>
 ---@param clip table<string, unknown>|false the compiled texsrt clip or false for no area animation
----@param resolveImage fun(path: string, wrapX: string, wrapY: string): unknown the pool-backed image resolver
+---@param resolveImage fun(path: string, wrapX: string, wrapY: string): GpuAssetPool.SamplingHandle? the pool-backed sampling-handle resolver (image + palette + indexed per handle)
 ---@param checkpoint fun()? optional safe boundary after an image acquisition
 ---@return TerrainMaterialAnimator
 function TerrainMaterialAnimator.new(bindings, clip, resolveImage, checkpoint)
@@ -125,6 +125,19 @@ function TerrainMaterialAnimator.new(bindings, clip, resolveImage, checkpoint)
   }, TerrainMaterialAnimator)
 end
 
+-- Bind one preloaded swap entry to its member material: the handle's
+-- image/palette/indexed fields all ride the runtime table so the renderer's
+-- shared sampler follows the swap, with no stale palette left behind when a
+-- straight-RGBA frame replaces an indexed one or vice versa.
+---@param runtime table<string, unknown> live runtime material table
+---@param handle GpuAssetPool.SamplingHandle? preloaded sampling handle
+local function bindSwapImage(runtime, handle)
+  local borrowed = assert(handle, "terrain swap step borrowed no sampling handle")
+  runtime.image = borrowed.image
+  runtime.palette = borrowed.palette
+  runtime.indexed = borrowed.indexed
+end
+
 -- Advance every shared clock exactly once: each texture-swap group takes one
 -- counter step, and when the current schedule entry's duration crosses, the
 -- clock advances (wrapping at the schedule end) and every member selects the
@@ -132,7 +145,7 @@ end
 -- one frame and each targeted material's matrix is re-sampled. Untargeted
 -- matrices keep their base value. The first switch lands one tick later than
 -- an intuitive implementation: the base image shows for the first entry's
--- full duration, and only a crossing swaps to the first alternate. Image
+-- full duration, and only a crossing swaps to the first alternate. Sampling
 -- assignment happens only inside the crossing branch. No acquisition,
 -- filesystem access, or record mutation here.
 function TerrainMaterialAnimator:updateFixed()
@@ -144,7 +157,7 @@ function TerrainMaterialAnimator:updateFixed()
       group.ticksInScheduleEntry = 1
       group.scheduleIndex = group.scheduleIndex % #group.steps + 1
       for _, member in ipairs(group.members) do
-        member.runtime.image = member.images[group.scheduleIndex]
+        bindSwapImage(member.runtime, member.images[group.scheduleIndex])
       end
     end
   end
@@ -187,7 +200,7 @@ function TerrainMaterialAnimator:seekFixedTick(fieldTick)
     end
     group.ticksInScheduleEntry = remaining
     for _, member in ipairs(group.members) do
-      member.runtime.image = member.images[group.scheduleIndex]
+      bindSwapImage(member.runtime, member.images[group.scheduleIndex])
     end
   end
   if self.player then

@@ -8,6 +8,7 @@ local CollisionFixture = require("tests.support.CollisionFixture")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
 local PreparedFieldEntry = require("game.hgss.src.field.PreparedFieldEntry")
+local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
 
 local T = {}
 
@@ -199,18 +200,24 @@ local function fakeQueue(log)
   return queue
 end
 
-local function stagedEntry(log, hostScript)
+local function stagedEntry(log, hostScript, extra)
   local sceneLoader, builds = stagedSceneLoader(log)
   local host = derivedHost(hostScript)
   local queue = fakeQueue(log)
-  local entry = PreparedFieldEntry.new({
+  local options = {
     versionId = "heartgold",
     derivedAssets = host,
     location = OPENING,
     cacheFs = bedroomFixture(),
     sceneLoader = sceneLoader,
     assetPreparation = queue,
-  })
+  }
+  if extra ~= nil then
+    for key, value in pairs(extra) do
+      options[key] = value
+    end
+  end
+  local entry = PreparedFieldEntry.new(options)
   return entry, builds, host, queue
 end
 
@@ -337,6 +344,32 @@ function T.dispose_after_take_releases_no_transferred_resources()
   local claimed = transfer:claim({ versionId = "heartgold", mapSymbol = BEDROOM_SYMBOL })
   Assert.isTrue(claimed.mapLoader:get(BEDROOM_ID) ~= nil, "the transfer survives entry disposal")
   transfer:dispose()
+end
+
+function T.prepared_transfer_moves_the_shared_image_owner_exactly_once()
+  local log = {}
+  local pool = SharedImagePoolFake.new()
+  local entry, builds, _, queue = stagedEntry(log, nil, { imageAssets = pool })
+  Assert.isTrue(pollUntilReady(entry, builds), "the bedroom must stage to ready")
+  local uploadsBeforeClaim = pool.uploads
+  local transfer = entry:take()
+  local claimed = transfer:claim({ versionId = "heartgold", mapSymbol = BEDROOM_SYMBOL })
+  Assert.isTrue(claimed.assetPreparation == queue, "the claim still moves the identical queue")
+  Assert.equal(claimed.imageAssets, pool, "the claim moves the identical shared image owner, never a copy")
+  Assert.equal(
+    pool.uploads,
+    uploadsBeforeClaim,
+    "claiming the prepared bedroom reuses its staged images without a fresh upload"
+  )
+  local resident = claimed.mapLoader:get(BEDROOM_ID)
+  Assert.notNil(resident, "the claimed loader already holds the staged bedroom")
+  Assert.equal(resident.mapSymbol, BEDROOM_SYMBOL, "the resident entry is the staged map")
+  local okClaim = pcall(function()
+    return transfer:claim({ versionId = "heartgold", mapSymbol = BEDROOM_SYMBOL })
+  end)
+  Assert.isFalse(okClaim, "a second claim is a programmer error")
+  transfer:dispose()
+  pool:dispose()
 end
 
 return { tests = T }

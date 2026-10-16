@@ -15,10 +15,16 @@ local function materials(asset, pool)
   local out = {}
   for _, record in ipairs(asset.model.materials) do
     local wrap = SceneDescriptor.wrap(record)
+    -- Sampling handles bind the exact palette through the shared 3D
+    -- sampler instead of rendering index bytes; straight art carries
+    -- no palette and samples unchanged.
+    local handle = pool:sharedImage(record.texture, wrap.x, wrap.y)
     out[record.id] = {
       id = record.id,
       name = record.name,
-      image = pool:imageFor(record.texture, wrap.x, wrap.y),
+      image = handle and handle.image or nil,
+      palette = handle and handle.palette or nil,
+      indexed = handle and handle.indexed or nil,
       texMatrix = { 1, 0, 0, 0, 1, 0, 0, 0, 1 },
       wrap = wrap,
     }
@@ -31,7 +37,7 @@ end
 ---@return FieldStaticEffectRenderer
 function FieldStaticEffectRenderer.new(model, pool)
   assert(model and model.batches and model.materials, "field effect asset model is required")
-  assert(pool and pool.meshFor and pool.imageFor and pool.build, "field effect asset pool is required")
+  assert(pool and pool.meshFor and pool.sharedImage and pool.build, "field effect asset pool is required")
   local prepared = pool:build(function()
     local materialById = materials({ model = model }, pool)
     local batches = {}

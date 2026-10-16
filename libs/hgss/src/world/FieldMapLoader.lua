@@ -60,6 +60,7 @@ local FieldLightProfile = require("libs.assets.src.field.FieldLightProfile")
 ---@field neighborLoader table<string, unknown>|nil presentation-only finite neighbor-ring loader
 ---@field sceneOptions table<string, unknown>|nil options passed to physical-cell presentation loading
 ---@field assetPreparation table<string, unknown>|nil preparation queue forwarded into scene-loader options
+---@field imageAssets table<string, unknown>|nil session-scoped shared image owner borrowed into scene-loader options
 ---@field derivedAssets table<string, function>|nil semantic derived-asset host
 ---@field fieldCellIndex table<string, unknown>?
 ---@field entries table<integer, table<string, unknown>>
@@ -462,6 +463,7 @@ function FieldMapLoader.new(cacheFs, world, options)
     neighborLoader = options.neighborLoader,
     sceneOptions = options.sceneOptions,
     assetPreparation = options.assetPreparation,
+    imageAssets = options.imageAssets,
     derivedAssets = options.derivedAssets,
     fieldCellIndex = nil,
     entries = {},
@@ -869,6 +871,9 @@ local function startScene(loader, ctx)
     return nil, nil
   end
   local options = { mapProps = ctx.mapProps, assetPreparation = loader.assetPreparation }
+  if loader.imageAssets ~= nil then
+    options.imageAssets = loader.imageAssets
+  end
   if loader.sceneLoader.begin ~= nil then
     return loader.sceneLoader.begin(loader.cacheFs, scene, options), nil
   end
@@ -894,9 +899,13 @@ local function assembleComplete(loader, ctx, sceneRuntime, checkpoint, outerBox)
   local box = outerBox or {}
   local function body()
     if not physicalCells and loader.neighborLoader and #scene.neighbors > 0 then
-      box.neighborRuntime = loader.neighborLoader.load(loader.cacheFs, scene.neighbors, {
+      local neighborOptions = {
         textureSrt = scene.terrainAnimations.textureSrt,
-      })
+      }
+      if loader.imageAssets ~= nil then
+        neighborOptions.imageAssets = loader.imageAssets
+      end
+      box.neighborRuntime = loader.neighborLoader.load(loader.cacheFs, scene.neighbors, neighborOptions)
       if checkpoint then
         checkpoint()
       end
@@ -1680,6 +1689,18 @@ local function physicalCoverageOptions(loader, runtimeMap, position)
       end
     end
     merged.assetPreparation = loader.assetPreparation
+    sceneOptions = merged
+  end
+  -- The session image owner rides the same scene options as the worker
+  -- queue so every physical cell borrows from the one pooled owner.
+  if loader.imageAssets ~= nil then
+    local merged = {}
+    if sceneOptions then
+      for key, value in pairs(sceneOptions) do
+        merged[key] = value
+      end
+    end
+    merged.imageAssets = loader.imageAssets
     sceneOptions = merged
   end
   -- The semantic resolver for one newly normalized physical cell. Only the

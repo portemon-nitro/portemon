@@ -39,19 +39,24 @@ local NeighborRing = {}
 -- same immutable identity normal transform.
 local IDENTITY_MODEL_NORMAL = Matrix3.identity()
 
--- Material assembly: acquire each normalized material record's image
--- under its resolved sampler wrap. The wrap pair is part of the image
--- identity, so cells sharing a texture but sampling it differently get
--- independent configured images. The terrain animator initializes every
+-- Material assembly: acquire each normalized material record's sampling
+-- handle under its resolved sampler wrap. The wrap pair is part of the
+-- handle identity, so cells sharing a texture but sampling it differently get
+-- independent handles, and the handle's image/palette/indexed fields ride
+-- the material table so the renderer's shared sampler binds indexed sources
+-- through their exact palette. The terrain animator initializes every
 -- material's texMatrix at construction.
 local function materialsById(list, pool)
   local byId = {}
   for id, record in pairs(SceneDescriptor.materials(list)) do
     local wrap = SceneDescriptor.wrap(record)
+    local handle = pool:sharedImage(record.texture, wrap.x, wrap.y)
     byId[id] = {
       id = record.id,
       name = record.name,
-      image = pool:imageFor(record.texture, wrap.x, wrap.y),
+      image = handle and handle.image or nil,
+      palette = handle and handle.palette or nil,
+      indexed = handle and handle.indexed or nil,
       wrap = wrap,
     }
   end
@@ -66,6 +71,9 @@ end
 -- (lightMask included), with polygonAlpha normalized to the renderer's 0..1
 -- unit. `clip` is the central scene's compiled texture-SRT clip (or false),
 -- owned by the central scene: the ring never selects a clip per neighbour.
+-- When the pool borrows the session image owner, every texture resolves to
+-- the same pooled lease the scene loader borrows, and the ring holds no
+-- image reference after release.
 local function buildRing(pool, descriptors, clip)
   -- One draw per (cell, batch), with the cell's 32-tile world offset baked into
   -- the transform only -- the mesh center stays in model space for queue
@@ -117,7 +125,7 @@ local function buildRing(pool, descriptors, clip)
   -- commits, and construction initializes every cell material's static
   -- texMatrix. ring:updateAnimated() stays a safe no-op on empty rings.
   local terrainAnimator = TerrainMaterialAnimator.new(bindings, clip or false, function(path, wrapX, wrapY)
-    return pool:imageFor(path, wrapX, wrapY)
+    return pool:sharedImage(path, wrapX, wrapY)
   end)
 
   local ring = {
@@ -125,7 +133,7 @@ local function buildRing(pool, descriptors, clip)
     stats = {
       cellCount = #descriptors,
       meshCount = #pool.meshes,
-      textureCount = #pool.images,
+      textureCount = pool:textureCount(),
     },
   }
   function ring:updateAnimated()
@@ -147,11 +155,22 @@ end
 -- construction acquired before the error propagates.
 ---@param cacheFs table<string, unknown>
 ---@param descriptors table[]
----@param opts { graphics?: GpuAssetPool.Graphics, textureSrt?: table<string, unknown>|false }?
+---@param opts { graphics?: GpuAssetPool.Graphics, textureSrt?: table<string, unknown>|false, imageAssets?: table<string, unknown> }?
 ---@return table<string, unknown>
 function NeighborRing.load(cacheFs, descriptors, opts)
   opts = opts or {}
   local pool = GpuAssetPool.new(cacheFs, opts)
+  -- Enroll every distinct neighbor texture and immutable wrap state before
+  -- the build so neighbor classification shares the scene's prefetch
+  -- tickets instead of running a second enrollment pass.
+  if opts.imageAssets ~= nil then
+    for _, cell in ipairs(descriptors) do
+      for _, record in pairs(SceneDescriptor.materials(cell.materials)) do
+        local wrap = SceneDescriptor.wrap(record)
+        pool:prefetchShared(record.texture, wrap.x, wrap.y)
+      end
+    end
+  end
   return pool:build(function()
     return buildRing(pool, descriptors, opts.textureSrt)
   end)

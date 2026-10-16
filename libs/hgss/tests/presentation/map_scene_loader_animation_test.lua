@@ -22,8 +22,15 @@ local LuaWriter = require("libs.codec.src.LuaWriter")
 local MeshWriter = require("libs.assets.src.model.MeshWriter")
 local CollisionGridAsset = require("libs.assets.src.field.CollisionGridAsset")
 local TextureSrtEvaluator = require("libs.hgss.src.presentation.TextureSrtEvaluator")
+local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
 
 local T = {}
+
+-- The sampler identities the shared owner resolves fixture textures under:
+-- every animation material samples repeat/repeat unless the test pins a
+-- resolved flip. Assertions compare borrowed images against the fake's
+-- published physicals instead of builder-tagged paths.
+local REPEAT_SAMPLER = { wrapX = "repeat", wrapY = "repeat" }
 
 -- A disabled fog preset shape (HgssFieldFog.runtimePreset's shape for a
 -- disabled weather), the default for scene builders not exercising fog
@@ -431,23 +438,6 @@ local function fakeMeshBuilder(decoded)
   }
 end
 
--- A fake image builder that RECORDS the sampler configuration: the pool
--- configures every image it builds with image:setWrap(wrapX, wrapY), so the
--- recorded wrap pair is the observable imageFor request. `images` collects
--- the built objects in build order, each tagged with its texture path.
-local function recordingImageBuilder(images)
-  return function(path)
-    local image = { path = path, wraps = {} }
-    image.setFilter = function() end
-    image.setWrap = function(_, wrapX, wrapY)
-      image.wraps[#image.wraps + 1] = { wrapX, wrapY }
-    end
-    image.release = function() end
-    images[#images + 1] = image
-    return image
-  end
-end
-
 -- Run a live callback in a disposable coroutine so an accidental construction
 -- checkpoint is observable as a suspended callback instead of being hidden by
 -- the host's main-thread coroutine behavior.
@@ -629,42 +619,6 @@ local function terrainScene(materials, clip)
   backend:write(geomPath, MeshWriter.encode(doorQuad()))
   backend:write(dir .. "/collision.g4collision", collisionGrid())
   return luaCache(backend), scene
-end
-
--- A fake image builder that records created images and their release calls,
--- so the loader's pool ownership is observable: `images` collects the built
--- objects in build order, each tagged with its texture path and a release
--- counter.
-local function trackingImageBuilder(images)
-  return function(path)
-    local image = { path = path, releases = 0 }
-    image.setFilter = function() end
-    image.setWrap = function() end
-    image.release = function()
-      image.releases = image.releases + 1
-    end
-    images[#images + 1] = image
-    return image
-  end
-end
-
--- A tracking image builder that raises on the Nth build call (the failed
--- creation still records its own entry, so the test sees the failure landed
--- on an alternate-frame creation; the pool never owns that object).
-local function failingImageBuilder(images, failOn)
-  return function(path)
-    local image = { path = path, releases = 0 }
-    image.setFilter = function() end
-    image.setWrap = function() end
-    image.release = function()
-      image.releases = image.releases + 1
-    end
-    images[#images + 1] = image
-    if #images == failOn then
-      error("injected alternate-image failure")
-    end
-    return image
-  end
 end
 
 function T.animated_building_loads_advances_and_renders()
@@ -1416,17 +1370,16 @@ function T.animated_material_resolves_its_image_with_the_material_wrap()
       transform = identityMatrix(),
     },
   }, { [desc.key] = desc })
-  local images = {}
+  local images = SharedImagePoolFake.new()
   local runtime = MapSceneLoader.load(
     cache,
     assert(cache:loadLua(MapAssetCache.mapDir(61) .. "/scene.lua")),
-    { meshBuilder = fakeMeshBuilder, imageBuilder = recordingImageBuilder(images) }
+    { meshBuilder = fakeMeshBuilder, imageAssets = images }
   )
   runtime:updateAnimated()
   local image = runtime.animatedBuildingDraws[1].material.image
   Assert.notNil(image, "the animated material resolves an image")
-  Assert.equal(image.path, desc.materials[1].texture)
-  Assert.deepEqual(image.wraps, { { "repeat", "repeat" } }, "the image is requested with the material's wrap")
+  Assert.equal(image, images:findPhysical(desc.materials[1].texture, REPEAT_SAMPLER))
   Assert.equal(runtime.stats.textureCount, 1)
   runtime:release()
 end
@@ -1455,18 +1408,18 @@ function T.animated_variant_texture_uses_the_material_wrap()
       transform = identityMatrix(),
     },
   }, { [desc.key] = desc })
-  local images = {}
+  local images = SharedImagePoolFake.new()
   local runtime = MapSceneLoader.load(
     cache,
     assert(cache:loadLua(MapAssetCache.mapDir(61) .. "/scene.lua")),
-    { meshBuilder = fakeMeshBuilder, imageBuilder = recordingImageBuilder(images) }
+    { meshBuilder = fakeMeshBuilder, imageAssets = images }
   )
   local instance = runtime.animatedInstances[1]
 
   -- The base texture first: the material's wrap applies to the base too.
   runtime:updateAnimated()
   local baseImage = runtime.animatedBuildingDraws[1].material.image
-  Assert.deepEqual(baseImage.wraps, { { "repeat", "repeat" } }, "the base texture uses the material's wrap")
+  Assert.equal(baseImage, images:findPhysical(desc.materials[1].texture, REPEAT_SAMPLER))
 
   -- The pattern selects the variant; the variant resolves with the same wrap.
   -- The pattern play attaches the clip; the next scene tick advances it and
@@ -1474,8 +1427,8 @@ function T.animated_variant_texture_uses_the_material_wrap()
   instance:play("pattern")
   runtime:updateAnimated()
   local variantImage = runtime.animatedBuildingDraws[1].material.image
-  Assert.equal(variantImage.path, variantTexture, "the pattern switches to the variant texture")
-  Assert.deepEqual(variantImage.wraps, { { "repeat", "repeat" } }, "the variant texture uses its material's wrap")
+  Assert.equal(variantImage, images:findPhysical(variantTexture, REPEAT_SAMPLER))
+  Assert.isTrue(variantImage ~= baseImage, "the pattern switches to the variant texture")
   runtime:release()
 end
 
@@ -1502,14 +1455,14 @@ function T.lazy_variant_loads_after_staged_build()
       transform = identityMatrix(),
     },
   }, { [desc.key] = desc })
-  local images = {}
+  local images = SharedImagePoolFake.new()
   local task = MapSceneLoader.begin(
     cache,
     assert(cache:loadLua(MapAssetCache.mapDir(61) .. "/scene.lua")),
-    { meshBuilder = fakeMeshBuilder, imageBuilder = recordingImageBuilder(images) }
+    { meshBuilder = fakeMeshBuilder, imageAssets = images }
   )
   local runtime = task:finish()
-  Assert.equal(#images, 1, "only the frame-0 base image is acquired during construction")
+  Assert.equal(images.uploads, 1, "only the frame-0 base image is borrowed during construction")
 
   runtime.animatedInstances[1]:play("pattern")
   runToCompletion(function()
@@ -1517,9 +1470,8 @@ function T.lazy_variant_loads_after_staged_build()
   end)
 
   local variantImage = runtime.animatedBuildingDraws[1].material.image
-  Assert.equal(#images, 2, "the live tick acquires the lazy variant")
-  Assert.equal(variantImage.path, variantTexture)
-  Assert.deepEqual(variantImage.wraps, { { "repeat", "repeat" } })
+  Assert.equal(images.uploads, 2, "the live tick borrows the lazy variant")
+  Assert.equal(variantImage, images:findPhysical(variantTexture, REPEAT_SAMPLER))
   runtime:release()
 end
 
@@ -1534,13 +1486,13 @@ function T.untextured_animated_materials_never_request_an_image()
       transform = identityMatrix(),
     },
   }, { [desc.key] = desc })
-  local images = {}
+  local images = SharedImagePoolFake.new()
   local runtime = MapSceneLoader.load(
     cache,
     assert(cache:loadLua(MapAssetCache.mapDir(61) .. "/scene.lua")),
-    { meshBuilder = fakeMeshBuilder, imageBuilder = recordingImageBuilder(images) }
+    { meshBuilder = fakeMeshBuilder, imageAssets = images }
   )
-  Assert.equal(#images, 0, "no image is requested for an untextured material")
+  Assert.equal(images.uploads, 0, "no image is borrowed for an untextured material")
   Assert.equal(runtime.stats.textureCount, 0)
   runtime:updateAnimated()
   Assert.isNil(runtime.animatedBuildingDraws[1].material.image)
@@ -1548,7 +1500,7 @@ function T.untextured_animated_materials_never_request_an_image()
   local instance = runtime.animatedInstances[1]
   instance:play("door.open")
   runtime:updateAnimated()
-  Assert.equal(#images, 0, "playing an untextured clip never touches the image pool")
+  Assert.equal(images.uploads, 0, "playing an untextured clip never touches the image pool")
   runtime:release()
 end
 
@@ -1561,22 +1513,20 @@ end
 -- pool).
 function T.all_swap_frames_are_acquired_inside_the_load_transaction()
   local cache, scene = terrainScene({ swapMaterial(0, "flower01", "base.png", flowerSteps()) }, false)
-  local images = {}
-  local runtime = MapSceneLoader.load(cache, scene, { imageBuilder = trackingImageBuilder(images) })
+  local images = SharedImagePoolFake.new()
+  local runtime = MapSceneLoader.load(cache, scene, { imageAssets = images })
   Assert.equal(
     runtime.stats.textureCount,
     4,
     "base and the three unique steps are pooled before the transaction commits"
   )
-  local built = {}
-  for _, image in ipairs(images) do
-    built[#built + 1] = image.path
+  Assert.equal(images.uploads, 4, "base plus each unique step path resolves exactly once")
+  for _, path in ipairs({ "base.png", "a.png", "b.png", "c.png" }) do
+    Assert.notNil(
+      images:findPhysical(path, REPEAT_SAMPLER),
+      "step path " .. path .. " is borrowed inside the load transaction"
+    )
   end
-  Assert.deepEqual(
-    built,
-    { "base.png", "a.png", "b.png", "c.png" },
-    "base first, then each unique step path exactly once"
-  )
   runtime:release()
 end
 
@@ -1589,9 +1539,9 @@ function T.same_path_and_wrap_dedup_through_the_pool()
     swapMaterial(1, "flower", "base.png", flowerSteps()),
   }
   local cache, scene = terrainScene(materials, false)
-  local images = {}
-  local runtime = MapSceneLoader.load(cache, scene, { imageBuilder = trackingImageBuilder(images) })
-  Assert.equal(#images, 4, "one pool image per unique path/wrap across the group")
+  local images = SharedImagePoolFake.new()
+  local runtime = MapSceneLoader.load(cache, scene, { imageAssets = images })
+  Assert.equal(images.uploads, 4, "one shared image per unique path/wrap across the group")
   Assert.equal(runtime.stats.textureCount, 4)
   runtime:release()
 end
@@ -1621,13 +1571,13 @@ function T.central_map_material_with_flip_resolves_to_mirrored_repeat()
     texMtxMode = 0,
   }
   local cache, scene = terrainScene({ material }, false)
-  local images = {}
-  local runtime = MapSceneLoader.load(cache, scene, { imageBuilder = recordingImageBuilder(images) })
-  Assert.deepEqual(
-    images[1].wraps,
-    { { "mirroredrepeat", "repeat" } },
-    "a flipped repeat axis must reach the image as the resolved mirrored-repeat sampler, not raw repeat"
+  local images = SharedImagePoolFake.new()
+  local runtime = MapSceneLoader.load(cache, scene, { imageAssets = images })
+  Assert.notNil(
+    images:findPhysical("ground.png", { wrapX = "mirroredrepeat", wrapY = "repeat" }),
+    "a flipped repeat axis must reach the shared owner as the resolved mirrored-repeat sampler, not raw repeat"
   )
+  Assert.equal(images.uploads, 1)
   runtime:release()
 end
 
@@ -1646,9 +1596,12 @@ function T.clamp_with_flip_remains_clamp_through_the_loader()
     texMtxMode = 0,
   }
   local cache, scene = terrainScene({ material }, false)
-  local images = {}
-  local runtime = MapSceneLoader.load(cache, scene, { imageBuilder = recordingImageBuilder(images) })
-  Assert.deepEqual(images[1].wraps, { { "clamp", "clamp" } }, "a flipped clamp axis stays clamp")
+  local images = SharedImagePoolFake.new()
+  local runtime = MapSceneLoader.load(cache, scene, { imageAssets = images })
+  Assert.notNil(
+    images:findPhysical("wall.png", { wrapX = "clamp", wrapY = "clamp" }),
+    "a flipped clamp axis stays clamp"
+  )
   runtime:release()
 end
 
@@ -1679,11 +1632,11 @@ function T.same_texture_under_different_resolved_wraps_stays_separately_pooled()
     },
   }
   local cache, scene = terrainScene(materials, false)
-  local images = {}
-  local runtime = MapSceneLoader.load(cache, scene, { imageBuilder = recordingImageBuilder(images) })
-  Assert.equal(#images, 2, "distinct resolved wraps over the same path stay separately pooled")
-  Assert.deepEqual(images[1].wraps, { { "mirroredrepeat", "repeat" } })
-  Assert.deepEqual(images[2].wraps, { { "repeat", "repeat" } })
+  local images = SharedImagePoolFake.new()
+  local runtime = MapSceneLoader.load(cache, scene, { imageAssets = images })
+  Assert.equal(images.uploads, 2, "distinct resolved wraps over the same path stay separately shared")
+  Assert.notNil(images:findPhysical("shared.png", { wrapX = "mirroredrepeat", wrapY = "repeat" }))
+  Assert.notNil(images:findPhysical("shared.png", { wrapX = "repeat", wrapY = "repeat" }))
   runtime:release()
 end
 
@@ -1704,14 +1657,14 @@ function T.terrain_swap_replacement_images_share_the_resolved_mirrored_repeat_wr
     textureSwap = { name = "flower01", steps = flowerSteps() },
   }
   local cache, scene = terrainScene({ material }, false)
-  local images = {}
-  local runtime = MapSceneLoader.load(cache, scene, { imageBuilder = recordingImageBuilder(images) })
-  Assert.equal(#images, 4, "base plus the three unique replacement steps")
-  for _, image in ipairs(images) do
-    Assert.deepEqual(
-      image.wraps,
-      { { "mirroredrepeat", "repeat" } },
-      "replacement image " .. image.path .. " uses the same resolved wrap as the base"
+  local images = SharedImagePoolFake.new()
+  local runtime = MapSceneLoader.load(cache, scene, { imageAssets = images })
+  Assert.equal(images.uploads, 4, "base plus the three unique replacement steps")
+  local resolved = { wrapX = "mirroredrepeat", wrapY = "repeat" }
+  for _, path in ipairs({ "base.png", "a.png", "b.png", "c.png" }) do
+    Assert.notNil(
+      images:findPhysical(path, resolved),
+      "replacement image " .. path .. " uses the same resolved wrap as the base"
     )
   end
   runtime:release()
@@ -1737,8 +1690,8 @@ function T.terrain_frame_and_matrix_mutate_in_place_without_rebuilding_draws()
     },
   }
   local cache, scene = terrainScene(materials, clip)
-  local images = {}
-  local runtime = MapSceneLoader.load(cache, scene, { imageBuilder = trackingImageBuilder(images) })
+  local images = SharedImagePoolFake.new()
+  local runtime = MapSceneLoader.load(cache, scene, { imageAssets = images })
   local draws = runtime.mapDraws
   local flower = draws[1].material
   local water = draws[2].material
@@ -1747,8 +1700,8 @@ function T.terrain_frame_and_matrix_mutate_in_place_without_rebuilding_draws()
   local waterMatrix0 = water.texMatrix
   local meshes = { draws[1].mesh, draws[2].mesh }
   Assert.equal(
-    flowerImage0.path,
-    "base.png",
+    flowerImage0,
+    images:findPhysical("base.png", REPEAT_SAMPLER),
     "load binds the base image and leaves it in place -- never the first replacement step"
   )
 
@@ -1761,41 +1714,47 @@ function T.terrain_frame_and_matrix_mutate_in_place_without_rebuilding_draws()
   Assert.equal(draws[2].material, water)
   Assert.equal(draws[1].mesh, meshes[1], "the mesh identity is unchanged")
   Assert.equal(draws[2].mesh, meshes[2])
-  Assert.equal(flower.image.path, "b.png", "the step image switched to step 2 at tick 19")
-  Assert.isFalse(flower.image == flowerImage0, "the switched image is a different pooled image")
+  Assert.equal(flower.image, images:findPhysical("b.png", REPEAT_SAMPLER), "the step image switched to step 2 at tick 19")
+  Assert.isFalse(flower.image == flowerImage0, "the switched image is a different shared image")
   Assert.equal(flower.texMatrix, flowerMatrix0, "an untargeted matrix keeps its table identity")
   Assert.near(water.texMatrix[7], -3, 1e-9, "the SRT sample advanced to frame 3 (0x3000 scroll)")
   Assert.isFalse(water.texMatrix == waterMatrix0, "a targeted matrix is replaced per tick")
   runtime:release()
 end
 
--- A failure on an Nth alternate-frame creation rolls back the whole load
--- transaction: every earlier image (base and already-built steps) is
--- released exactly once, the failed creation is never owned, and the pool
--- re-raises the image build failure.
+-- A failure on an Nth alternate-frame borrow rolls back the whole load
+-- transaction: every already-borrowed lease (base and earlier steps) is
+-- returned, the failed borrow publishes nothing, and the pool re-raises the
+-- shared borrow failure.
 function T.failure_on_an_alternate_frame_creation_releases_resources_exactly_once()
   local cache, scene = terrainScene({ swapMaterial(0, "flower01", "base.png", flowerSteps()) }, false)
-  local images = {}
+  local images = SharedImagePoolFake.new()
+  images:failAfterUploads(2, "injected alternate-image failure")
   local err = Assert.throws(function()
-    MapSceneLoader.load(cache, scene, { imageBuilder = failingImageBuilder(images, 3) })
+    MapSceneLoader.load(cache, scene, { imageAssets = images })
   end)
   Assert.isTrue(tostring(err):find("injected alternate-image failure", 1, true) ~= nil, "the frame failure propagates")
-  Assert.equal(#images, 3, "base, step 1, and the failing step 2 creation all ran")
-  Assert.equal(images[1].releases, 1, "the base image is released exactly once")
-  Assert.equal(images[2].releases, 1, "the earlier step image is released exactly once")
-  Assert.equal(images[3].releases, 0, "the failed creation is never owned, so never released")
+  Assert.equal(images.uploads, 2, "base and step 1 borrowed before the failing step 2")
+  Assert.equal(images:stats().outstandingLeases, 0, "the failed load returns every borrowed lease")
+  Assert.equal(images:prune(), 2, "both rolled-back images are reclaimed")
 end
 
--- Release after a successful load releases every base and step image
--- exactly once through the scene's one pool owner.
+-- Release after a successful load returns every base and step lease
+-- through the scene's one pool owner; the shared owner then reclaims each
+-- idle physical image exactly once.
 function T.release_after_a_successful_load_releases_every_image_exactly_once()
   local cache, scene = terrainScene({ swapMaterial(0, "flower01", "base.png", flowerSteps()) }, false)
-  local images = {}
-  local runtime = MapSceneLoader.load(cache, scene, { imageBuilder = trackingImageBuilder(images) })
+  local images = SharedImagePoolFake.new()
+  local runtime = MapSceneLoader.load(cache, scene, { imageAssets = images })
+  local physicals = {}
+  for _, path in ipairs({ "base.png", "a.png", "b.png", "c.png" }) do
+    physicals[#physicals + 1] = images:findPhysical(path, REPEAT_SAMPLER)
+  end
   runtime:release()
-  Assert.equal(#images, 4)
-  for _, image in ipairs(images) do
-    Assert.equal(image.releases, 1, "base and step images are released exactly once")
+  Assert.equal(images:stats().outstandingLeases, 0, "release returns every borrowed lease")
+  Assert.equal(images:prune(), 4, "all four idle images are reclaimed")
+  for _, physical in ipairs(physicals) do
+    Assert.equal(physical.releaseCount, 1, "base and step images are reclaimed exactly once")
   end
 end
 
@@ -1814,12 +1773,12 @@ function T.no_animation_scenes_update_safely()
       texMtxMode = 0,
     },
   }, false)
-  local images = {}
-  local runtime = MapSceneLoader.load(cache, scene, { imageBuilder = trackingImageBuilder(images) })
+  local images = SharedImagePoolFake.new()
+  local runtime = MapSceneLoader.load(cache, scene, { imageAssets = images })
   local draws = runtime.mapDraws
   runtime:updateAnimated()
   Assert.equal(runtime.mapDraws, draws, "a no-animation scene tick leaves the draws untouched")
-  Assert.equal(#images, 1)
+  Assert.equal(images.uploads, 1)
   runtime:release()
 end
 
@@ -1848,7 +1807,7 @@ function T.static_only_terrain_srt_is_initialized_by_the_loader()
     srt = srt,
   }
   local cache, scene = terrainScene({ material }, false)
-  local runtime = MapSceneLoader.load(cache, scene, { imageBuilder = trackingImageBuilder({}) })
+  local runtime = MapSceneLoader.load(cache, scene, { imageAssets = SharedImagePoolFake.new() })
   local matrix = runtime.mapDraws[1].material.texMatrix
   Assert.near(matrix[7], -1 / 16, 1e-9, "the static srt matrix is non-identity")
   local expected = TextureSrtEvaluator.matrix(material, nil)
@@ -1900,7 +1859,7 @@ function T.static_building_draw_materials_carry_a_tex_matrix()
   local runtime = MapSceneLoader.load(
     cache,
     assert(cache:loadLua(MapAssetCache.mapDir(61) .. "/scene.lua")),
-    { meshBuilder = fakeMeshBuilder, imageBuilder = recordingImageBuilder({}) }
+    { meshBuilder = fakeMeshBuilder, imageAssets = SharedImagePoolFake.new() }
   )
   Assert.deepEqual(
     runtime.staticBuildingDraws[1].material.texMatrix,

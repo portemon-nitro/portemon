@@ -14,6 +14,7 @@ local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 local GameVersion = require("romdump.src.source.GameVersion")
 local GpuAssetPool = require("libs.hgss.src.presentation.GpuAssetPool")
+local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local RomImporter = require("romdump.src.source.RomImporter")
 
@@ -49,7 +50,13 @@ local function runVersion(scope, versionId)
   local cache = CacheFs.forVersion(versionId)
   local fieldEffects = FieldEntranceIndicatorRuntime.load(cache)
   local models, reactionTicks = FieldActorEmoteRuntime.load(cache, fieldEffects.effects)
-  local pool = scope:own(GpuAssetPool.new(cache))
+  local imagePool = ImageAssetPool.new(cache)
+  scope:own({
+    release = function()
+      imagePool:dispose()
+    end,
+  })
+  local pool = scope:own(GpuAssetPool.new(cache, { imageAssets = imagePool }))
   local renderer = FieldActorEmoteRenderer.new(models, pool)
   scope:own({
     release = function()

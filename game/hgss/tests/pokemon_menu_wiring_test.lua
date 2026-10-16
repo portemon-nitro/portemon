@@ -724,7 +724,10 @@ function T.tests.field_menu_coordinator_passes_its_runtime_mailbox_and_loaded_pc
   local runtime = {
     avatar = { gender = 0 },
     transition = {},
-    mapLoader = {},
+    mapLoader = {
+      requestLocation = function() end,
+      beginLoad = function() end,
+    },
     runtimeMap = { mapSymbol = "MAP_ROUTE_29", mapId = 200, fieldData = { fieldUse = {} } },
     actors = deps.worldPorts.actors,
     eventState = deps.worldPorts.events,

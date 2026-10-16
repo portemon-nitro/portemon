@@ -23,7 +23,7 @@ PokemonCenterHealRenderer.__index = PokemonCenterHealRenderer
 ---@return PokemonCenterHealRenderer
 function PokemonCenterHealRenderer.new(options, pool)
   assert(type(options) == "table" and type(options.definition) == "table", "healing definition is required")
-  assert(pool and pool.meshFor and pool.imageFor and pool.build, "healing asset pool is required")
+  assert(pool and pool.meshFor and pool.sharedImage and pool.build, "healing asset pool is required")
   local definition = options.definition
   local descriptor = assert(definition.models and definition.models[1], "healing ball model is missing")
   local modelDefinition = ModelDefinition.fromNitroDescriptor(descriptor, { key = "pokemon-center-heal:ball" })
@@ -53,7 +53,7 @@ function PokemonCenterHealRenderer:newBall(position, record, index)
   local renderer = self
   local function resolveImage(path, materialId)
     local wrap = assert(renderer.wraps[materialId], "healing material wrap is missing")
-    return renderer.pool:imageFor(path, wrap.x, wrap.y)
+    return renderer.pool:sharedImage(path, wrap.x, wrap.y)
   end
   local instance = ModelInstance.new(self.modelDefinition, { resolveImage = resolveImage })
   self.instances[index] = { instance = instance, animation = nil, position = position, role = record.role }

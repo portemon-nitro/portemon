@@ -34,6 +34,7 @@ local MapCacheWriter = require("romdump.src.digest.map.MapCacheWriter")
 local MapCompilePlan = require("romdump.src.digest.map.MapCompilePlan")
 local MapCatalog = require("romdump.src.digest.map.MapCatalog")
 local MapResolver = require("romdump.src.digest.map.MapResolver")
+local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
 local MapRomFixture = require("tests.support.MapRomFixture")
 local MapUnits = require("romdump.src.digest.map.MapUnits")
 local PcSources = require("romdump.src.config.PcSources")
@@ -971,14 +972,7 @@ function T.animated_bundle_round_trips_through_writer_readiness_and_loader()
   local meshBuilder = function()
     return { release = function() end }
   end
-  local imageBuilder = function()
-    return {
-      setFilter = function() end,
-      setWrap = function() end,
-      release = function() end,
-    }
-  end
-  local runtime = MapSceneLoader.load(c, scene, { meshBuilder = meshBuilder, imageBuilder = imageBuilder })
+  local runtime = MapSceneLoader.load(c, scene, { meshBuilder = meshBuilder, imageAssets = SharedImagePoolFake.new() })
   Assert.equal(runtime.stats.animatedInstances, 1)
   local instance = runtime.animatedInstances[1]
   -- The door clip is scripted (door role, not ambient): the play handle

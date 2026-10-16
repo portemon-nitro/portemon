@@ -51,10 +51,16 @@ local function materials(model, pool)
   local out = {}
   for _, record in ipairs(model.materials) do
     local wrap = SceneDescriptor.wrap(record)
+    -- Sampling handles bind the exact palette through the shared 3D
+    -- sampler instead of rendering index bytes; straight art carries
+    -- no palette and samples unchanged.
+    local handle = pool:sharedImage(record.texture, wrap.x, wrap.y)
     out[record.id] = {
       id = record.id,
       name = record.name,
-      image = pool:imageFor(record.texture, wrap.x, wrap.y),
+      image = handle and handle.image or nil,
+      palette = handle and handle.palette or nil,
+      indexed = handle and handle.indexed or nil,
       texMatrix = { 1, 0, 0, 0, 1, 0, 0, 0, 1 },
       wrap = wrap,
     }
@@ -117,7 +123,7 @@ end
 ---@return FieldActorEmoteRenderer
 function FieldActorEmoteRenderer.new(modelsByKind, pool)
   assert(type(modelsByKind) == "table", "field emote renderer requires its compiled models by kind")
-  assert(pool and pool.meshFor and pool.imageFor and pool.build, "field emote renderer requires an asset pool")
+  assert(pool and pool.meshFor and pool.sharedImage and pool.build, "field emote renderer requires an asset pool")
   local prepared = pool:build(function()
     local out = {}
     for kind, model in pairs(modelsByKind) do
@@ -181,7 +187,7 @@ local function animatedInstance(renderer, actorId, kind, prepared)
     local pool = renderer.pool
     local function resolveImage(path, materialId)
       local wrap = assert(prepared.wraps[materialId], "missing field emote material wrap")
-      return pool:imageFor(path, wrap.x, wrap.y)
+      return pool:sharedImage(path, wrap.x, wrap.y)
     end
     local instance = ModelInstance.new(prepared.definition, { resolveImage = resolveImage })
     local handle = instance:play(prepared.clipName, { loopMode = "once" })

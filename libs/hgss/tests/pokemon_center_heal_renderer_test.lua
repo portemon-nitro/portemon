@@ -61,7 +61,9 @@ T.tests["draws each live healing model at its world position and releases it"] =
         Assert.equal(path, "ball-mesh")
         return { mesh = {}, center = { 0, 0, 0 } }
       end,
-      imageFor = function() end,
+      sharedImage = function()
+        return { image = {}, palette = nil, indexed = false }
+      end,
     }
     local renderer =
       Renderer.new({ definition = { models = { { dynamic = {}, materials = {} } }, ballAnimation = "pc_mb" } }, pool)

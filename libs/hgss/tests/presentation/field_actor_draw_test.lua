@@ -174,12 +174,29 @@ function T.emits_every_static_model_part_with_its_own_material()
   Assert.equal(items[1].material.image, asset.image)
   Assert.isNil(items[2].material.image)
   Assert.equal(items[2].alphaClass, "translucent")
+  Assert.isNil(items[1].material.palette, "eager actor atlases bind no palette")
+  Assert.isNil(items[1].material.indexed, "eager actor atlases never flag indexed sampling")
   Assert.equal(items[1].modelNormal, items[2].modelNormal, "translation-only static-model parts share one normal")
   Assert.isNil(
     items[1].submissionIndex,
     "actor items carry no submission numbers; ordered-part traversal owns submission order"
   )
   Assert.isNil(items[2].submissionIndex)
+end
+
+function T.indexed_atlas_borrows_bind_their_exact_palette_on_the_material()
+  local asset = entry(99)
+  local palette = { id = "actor-palette" }
+  asset.imageLease = { image = asset.image, palette = palette, kind = "r8" }
+  local item = FieldActorDraw.item(record(), asset)
+  Assert.equal(item.material.image, asset.image, "the billboard material keeps its borrowed image")
+  Assert.equal(item.material.palette, palette, "indexed actor atlases bind their exact palette")
+  Assert.isTrue(item.material.indexed, "indexed actor atlases flag the shared sampler")
+  local straight = entry(99)
+  straight.imageLease = { image = straight.image, palette = { id = "actor-palette" }, kind = "rgba8" }
+  local straightItem = FieldActorDraw.item(record(), straight)
+  Assert.isNil(straightItem.material.palette, "straight borrows bind no palette")
+  Assert.isNil(straightItem.material.indexed, "straight borrows never flag indexed sampling")
 end
 
 function T.carries_the_source_polygon_state()

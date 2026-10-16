@@ -18,7 +18,7 @@ FieldTerrainEffectRenderer.__index = FieldTerrainEffectRenderer
 ---@return FieldTerrainEffectRenderer
 function FieldTerrainEffectRenderer.new(assets, pool)
   assert(type(assets) == "table" and type(assets.effects) == "table", "terrain effect assets are required")
-  assert(pool and pool.meshFor and pool.imageFor and pool.build, "field effect asset pool is required")
+  assert(pool and pool.meshFor and pool.sharedImage and pool.build, "field effect asset pool is required")
   local resources = {}
   pool:build(function()
     for _, kind in ipairs({ "tall_grass", "very_tall_grass", "trainer_reveal" }) do
@@ -46,7 +46,7 @@ function FieldTerrainEffectRenderer:newInstance(kind)
   local resource = assert(self.resources[kind], "terrain renderer is missing " .. kind)
   local function resolveImage(path, materialId)
     local wrap = assert(resource.wraps[materialId], "missing field effect material wrap")
-    return self.pool:imageFor(path, wrap.x, wrap.y)
+    return self.pool:sharedImage(path, wrap.x, wrap.y)
   end
   local instance = ModelInstance.new(resource.definition, {
     resolveImage = resolveImage,

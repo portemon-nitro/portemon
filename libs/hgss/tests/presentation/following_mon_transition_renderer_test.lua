@@ -107,9 +107,9 @@ local function newRenderer(poolCalls)
       poolCalls.meshes = (poolCalls.meshes or 0) + 1
       return { mesh = {}, center = { 0, 0, 0 } }
     end,
-    imageFor = function()
+    sharedImage = function()
       poolCalls.images = (poolCalls.images or 0) + 1
-      return {}
+      return { image = {}, palette = nil, indexed = false }
     end,
   }
   local renderer = Renderer.new({ transition = definition() }, pool)

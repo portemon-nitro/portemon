@@ -19,6 +19,7 @@ local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local MapSceneLoader = require("libs.hgss.src.presentation.MapSceneLoader")
+local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
 local RomImporter = require("romdump.src.source.RomImporter")
 
 local NEW_BARK_MAP_ID = 60
@@ -69,7 +70,13 @@ end
 local function runVersion(scope, versionId)
   local cache = CacheFs.forVersion(versionId)
   local scene = assert(cache:loadLua(MapAssetCache.mapDir(NEW_BARK_MAP_ID) .. "/scene.lua"))
-  local runtime = MapSceneLoader.load(cache, scene)
+  local imagePool = ImageAssetPool.new(cache)
+  scope:own({
+    release = function()
+      imagePool:dispose()
+    end,
+  })
+  local runtime = MapSceneLoader.load(cache, scene, { imageAssets = imagePool })
   scope:own({
     release = function()
       runtime:release()

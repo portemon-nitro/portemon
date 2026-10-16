@@ -14,6 +14,7 @@ local FieldMapLoader = require("libs.hgss.src.world.FieldMapLoader")
 local MapSceneLoader = require("libs.hgss.src.presentation.MapSceneLoader")
 local NeighborRing = require("libs.hgss.src.presentation.NeighborRing")
 local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
+local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
 
 -- Main-thread scene work advanced per Oak poll: enough to make steady
 -- progress at 60Hz without blocking the intro timeline.
@@ -25,6 +26,8 @@ local POLL_WORK_UNITS = 8
 ---@field _derivedAssets table<string, function> borrowed semantic derived-asset host
 ---@field _cacheFs table<string, unknown>? injected cache filesystem (production defaults to the version cache)
 ---@field _injectedQueue table<string, unknown>? adopted queue for fixture-driven tests (production builds its own)
+---@field _imageAssets table<string, unknown>? session image owner adopted from options or built alongside the queue; moved exactly once on take
+---@field _ownsImageAssets boolean true only when this entry built the image owner itself
 ---@field _sceneLoader table<string, unknown>? injected scene owner (production uses the presentation scene loader)
 ---@field _neighborLoader table<string, unknown>? injected neighbor owner (production uses the neighbor ring)
 ---@field _queue table<string, unknown>? owned preparation worker, present until take/dispose
@@ -37,7 +40,7 @@ local POLL_WORK_UNITS = 8
 local PreparedFieldEntry = {}
 PreparedFieldEntry.__index = PreparedFieldEntry
 
----@param options { versionId: string, derivedAssets: table<string, function>, location: table<string, unknown>, cacheFs?: table<string, unknown>, sceneLoader?: table<string, unknown>, neighborLoader?: table<string, unknown>, assetPreparation?: table<string, unknown> }
+---@param options { versionId: string, derivedAssets: table<string, function>, location: table<string, unknown>, cacheFs?: table<string, unknown>, sceneLoader?: table<string, unknown>, neighborLoader?: table<string, unknown>, assetPreparation?: table<string, unknown>, imageAssets?: table<string, unknown> }
 ---@return PreparedFieldEntry
 function PreparedFieldEntry.new(options)
   assert(type(options) == "table", "prepared field entry requires its composition")
@@ -69,6 +72,8 @@ function PreparedFieldEntry.new(options)
     _sceneLoader = options.sceneLoader,
     _neighborLoader = options.neighborLoader,
     _injectedQueue = options.assetPreparation,
+    _imageAssets = options.imageAssets,
+    _ownsImageAssets = false,
     _queue = nil,
     _loader = nil,
     _task = nil,
@@ -83,11 +88,20 @@ end
 function PreparedFieldEntry:_releaseOwned()
   local loader = self._loader
   local queue = self._queue
+  local imageAssets = self._ownsImageAssets and self._imageAssets or nil
   self._loader = nil
   self._queue = nil
+  self._imageAssets = nil
+  self._ownsImageAssets = false
   self._task = nil
   if loader ~= nil then
     loader:release()
+  end
+  -- The session image owner is disposed after every scene lease has been
+  -- returned through the loader release above. An adopted owner stays
+  -- with its composer.
+  if imageAssets ~= nil then
+    imageAssets:dispose()
   end
   if queue ~= nil then
     queue:release()
@@ -143,11 +157,11 @@ function PreparedFieldEntry:_ensureLoader()
     self._imageAssets = poolOrError
     self._ownsImageAssets = true
   end
->>>>>>> d711fedf (fixup! graphics: share indexed image textures and leases)
   local okLoader, loaderOrError = pcall(FieldMapLoader.new, cacheFs, worldOrError, {
     sceneLoader = self._sceneLoader or MapSceneLoader,
     neighborLoader = self._neighborLoader or NeighborRing,
     assetPreparation = queue,
+    imageAssets = self._imageAssets,
     derivedAssets = self._derivedAssets,
   })
   if not okLoader then
@@ -239,8 +253,15 @@ function PreparedFieldEntry:take()
   self._taken = true
   local loader = assert(self._loader)
   local queue = assert(self._queue)
+  -- The session image owner moves with the loader even when the entry only
+  -- adopted it: the entry keeps nothing after take, and a failed claim or
+  -- disposition below never touches a scene the runtime already owns.
+  local imageAssets = self._imageAssets
+  local ownsImageAssets = self._ownsImageAssets
   self._loader = nil
   self._queue = nil
+  self._imageAssets = nil
+  self._ownsImageAssets = false
   self._task = nil
   local transfer = {
     versionId = self.versionId,
@@ -252,14 +273,18 @@ function PreparedFieldEntry:take()
     },
     _mapLoader = loader,
     _assetPreparation = queue,
+    _imageAssets = imageAssets,
+    _ownsImageAssets = ownsImageAssets,
     _claimed = false,
     _released = false,
   }
-  -- Claims the owned loader and queue into the field runtime exactly once.
-  -- The expected version and map identity must match the prepared entry;
-  -- a mismatch is a route/data invariant failure, never a silent rebuild.
+  -- Claims the owned loader, queue, and image owner into the field runtime
+  -- exactly once. The expected version and map identity must match the
+  -- prepared entry; a mismatch is a route/data invariant failure, never a
+  -- silent rebuild. A failed claim keeps every resource with the transfer
+  -- so disposition still releases them.
   ---@param expected { versionId: string, mapSymbol: string }
-  ---@return { mapLoader: FieldMapLoader, assetPreparation: table<string, unknown> }
+  ---@return { mapLoader: FieldMapLoader, assetPreparation: table<string, unknown>, imageAssets: table<string, unknown>? }
   function transfer:claim(expected)
     assert(not self._claimed, "prepared field transfer is already claimed")
     assert(not self._released, "prepared field transfer is released")
@@ -269,13 +294,21 @@ function PreparedFieldEntry:take()
     self._claimed = true
     local claimedLoader = self._mapLoader
     local claimedQueue = self._assetPreparation
+    local claimedImageAssets = self._imageAssets
     self._mapLoader = nil
     self._assetPreparation = nil
-    return { mapLoader = assert(claimedLoader), assetPreparation = assert(claimedQueue) }
+    self._imageAssets = nil
+    self._ownsImageAssets = false
+    return {
+      mapLoader = assert(claimedLoader),
+      assetPreparation = assert(claimedQueue),
+      imageAssets = claimedImageAssets,
+    }
   end
   -- Releases an unclaimed transfer (route construction failure before the
   -- runtime adopted it). After a claim the runtime owns the resources and
-  -- this is a no-op.
+  -- this is a no-op. An adopted image owner is returned to its composer
+  -- undisposed; only an entry-built owner is disposed here.
   function transfer:dispose()
     if self._claimed or self._released then
       return
@@ -283,10 +316,16 @@ function PreparedFieldEntry:take()
     self._released = true
     local loaderToRelease = self._mapLoader
     local queueToRelease = self._assetPreparation
+    local poolToRelease = self._ownsImageAssets and self._imageAssets or nil
     self._mapLoader = nil
     self._assetPreparation = nil
+    self._imageAssets = nil
+    self._ownsImageAssets = false
     if loaderToRelease ~= nil then
       loaderToRelease:release()
+    end
+    if poolToRelease ~= nil then
+      poolToRelease:dispose()
     end
     if queueToRelease ~= nil then
       queueToRelease:release()

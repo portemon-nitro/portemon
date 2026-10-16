@@ -3,13 +3,15 @@
 -- descriptor wrap/flip pair must resolve through SceneDescriptor.wrap()
 -- before the image reaches the GPU pool, never the raw record.wrap.x/y the
 -- old materialsById passed straight through. Headless: the pool's
--- meshBuilder/imageBuilder seams and a stub graphics namespace stand in for
--- real love GPU resources, so this suite needs no graphics capability.
+-- meshBuilder seam and a stub graphics namespace stand in for real love GPU
+-- resources, while textures borrow from the injected fake shared owner, so
+-- this suite needs no graphics capability.
 
 local Assert = require("tests.support.Assert")
 local NeighborRing = require("libs.hgss.src.presentation.NeighborRing")
 local MeshWriter = require("libs.assets.src.model.MeshWriter")
 local FakeCache = require("tests.support.FakeCache")
+local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
 
 local T = {}
 
@@ -27,22 +29,6 @@ local function fakeMeshBuilder(decoded)
     id = decoded and decoded.name or "mesh",
     release = function() end,
   }
-end
-
--- Records every image built and the wrap pair(s) the pool later configures
--- it with (image:setWrap(wrapX, wrapY)) -- the observable request reaching
--- the GPU abstraction.
-local function recordingImageBuilder(images)
-  return function(path)
-    local image = { path = path, wraps = {} }
-    image.setFilter = function() end
-    image.setWrap = function(_, wrapX, wrapY)
-      image.wraps[#image.wraps + 1] = { wrapX, wrapY }
-    end
-    image.release = function() end
-    images[#images + 1] = image
-    return image
-  end
 end
 
 -- A 2x2-tile quad in tile space (MeshWriter vertex shape).
@@ -115,17 +101,16 @@ function T.neighbor_material_with_flip_resolves_to_mirrored_repeat()
     texMtxMode = 0,
   }
   local descriptors = { cell(32, 1, 0, material, geometryPath) }
-  local images = {}
+  local images = SharedImagePoolFake.new()
   local ring = NeighborRing.load(backend, descriptors, {
     meshBuilder = fakeMeshBuilder,
-    imageBuilder = recordingImageBuilder(images),
+    imageAssets = images,
     graphics = STUB_GRAPHICS,
   })
-  Assert.equal(#images, 1, "one pooled image for the one cell material")
-  Assert.deepEqual(
-    images[1].wraps,
-    { { "mirroredrepeat", "repeat" } },
-    "the neighbor image is requested with the resolved mirrored-repeat wrap, not the raw repeat pair"
+  Assert.equal(images.uploads, 1, "one shared image for the one cell material")
+  Assert.notNil(
+    images:findPhysical("neighbor-ground.png", { wrapX = "mirroredrepeat", wrapY = "repeat" }),
+    "the neighbor image is borrowed with the resolved mirrored-repeat wrap, not the raw repeat pair"
   )
   ring:release()
 end
@@ -146,7 +131,7 @@ function T.neighbor_vertical_offset_reaches_the_draw_transform()
   }
   local ring = NeighborRing.load(backend, { cell(32, 1, -32, material, geometryPath) }, {
     meshBuilder = fakeMeshBuilder,
-    imageBuilder = recordingImageBuilder({}),
+    imageAssets = SharedImagePoolFake.new(),
     graphics = STUB_GRAPHICS,
   })
   Assert.equal(ring.draws[1].transform[13], 32)

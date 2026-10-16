@@ -56,6 +56,7 @@ local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local MapSceneLoader = require("libs.hgss.src.presentation.MapSceneLoader")
 local TimeOfDayProps = require("libs.hgss.src.presentation.TimeOfDayProps")
 local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
+local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
 local NeighborRing = require("libs.hgss.src.presentation.NeighborRing")
 local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 local FieldWeatherCache = require("libs.assets.src.field.FieldWeatherCache")
@@ -267,6 +268,7 @@ end
 ---@field physicalCoverage FieldCoverage?
 ---@field residency FieldResidencyCoordinator?
 ---@field assetPreparation AssetPreparationQueue? presentation-only preparation worker owner (nil when headless)
+---@field imageAssets ImageAssetPool? presentation-only session image owner borrowed by every field scene (nil when headless)
 local FieldRuntime = {}
 FieldRuntime.__index = FieldRuntime
 
@@ -518,13 +520,14 @@ local function loadGameLocation(game, mapLoader, composeMap)
     }
 end
 
--- Acquires the runtime map loader and its preparation worker. A prepared
--- New Game entry moves its already-staged loader and queue in before the
--- initial map acquisition, so the first load hits the resident bedroom
--- instead of rebuilding it. Without one, presentation mode owns one
--- asset-preparation worker for the runtime lifetime (a headless runtime
--- leaves it nil and starts no thread); it is built before the map loader
--- so scene loading can route mesh/image CPU work through it. Kept outside
+-- Acquires the runtime map loader, its preparation worker, and the session
+-- image owner. A prepared New Game entry moves its already-staged loader,
+-- queue, and image owner in before the initial map acquisition, so the
+-- first load hits the resident bedroom instead of rebuilding it. Without
+-- one, presentation mode owns one asset-preparation worker and one image
+-- pool for the runtime lifetime (a headless runtime leaves both nil and
+-- starts no thread); both are built before the map loader so scene loading
+-- can route mesh CPU work and texture ownership through them. Kept outside
 -- the asset-loading phase to keep that closure under the upvalue limit.
 ---@param runtime FieldRuntime
 ---@param cacheFs table<string, unknown>
@@ -532,15 +535,18 @@ end
 ---@param loadOptions FieldRuntimeOptions?
 ---@return FieldMapLoader mapLoader
 ---@return table<string, unknown>? assetPreparation
+---@return ImageAssetPool? imageAssets
 local function acquireMapLoader(runtime, cacheFs, world, loadOptions)
   local preparedTransfer = loadOptions ~= nil and loadOptions.preparedEntry or nil
   if preparedTransfer ~= nil then
     local opening = assert(runtime.game.location, "a prepared field entry requires a finalized new-game location")
     local claimed = preparedTransfer:claim({ versionId = runtime.versionId, mapSymbol = opening.mapSymbol })
     return assert(claimed.mapLoader, "a prepared field entry carries its loader"),
-      assert(claimed.assetPreparation, "a prepared field entry carries its queue")
+      assert(claimed.assetPreparation, "a prepared field entry carries its queue"),
+      claimed.imageAssets
   end
   local queue
+  local imageAssets
   if runtime.presentation then
     queue = AssetPreparationQueue.new(cacheFs)
     -- The session image owner borrows the runtime worker above: one
@@ -551,9 +557,10 @@ local function acquireMapLoader(runtime, cacheFs, world, loadOptions)
     sceneLoader = runtime.presentation and MapSceneLoader or nil,
     neighborLoader = runtime.presentation and NeighborRing or nil,
     assetPreparation = queue,
+    imageAssets = imageAssets,
     derivedAssets = runtime.derivedAssets,
   })
-  return loader, queue
+  return loader, queue, imageAssets
 end
 
 -- The six `_load` boot phases below are ordinary FieldRuntime methods rather
@@ -662,14 +669,16 @@ function FieldRuntime:_loadRuntimeAssets(boot, loadOptions)
     modelFactory = require("libs.hgss.src.presentation.FieldTerrainEffectModelFactory").new(),
   })
 
-  -- A prepared New Game entry moves its already-staged loader and queue
-  -- in before the initial map acquisition, so the first load hits the
-  -- resident bedroom instead of rebuilding it. Without one, presentation
-  -- mode owns one asset-preparation worker for the runtime lifetime (a
-  -- headless runtime leaves it nil and starts no thread); it is
-  -- constructed before the map loader so scene loading can route
-  -- mesh/image CPU work through it.
-  self.mapLoader, self.assetPreparation = acquireMapLoader(self, boot.cacheFs, boot.world, loadOptions)
+  -- A prepared New Game entry moves its already-staged loader, queue, and
+  -- image owner in before the initial map acquisition, so the first load
+  -- hits the resident bedroom instead of rebuilding it. Without one,
+  -- presentation mode owns one asset-preparation worker and one session
+  -- image owner for the runtime lifetime (a headless runtime leaves both
+  -- nil and starts no thread); they are constructed before the map loader
+  -- so scene loading can route mesh CPU work and texture ownership
+  -- through them.
+  self.mapLoader, self.assetPreparation, self.imageAssets =
+    acquireMapLoader(self, boot.cacheFs, boot.world, loadOptions)
   local function mapMatrixMemberId(logicalMap)
     local mapIndex = assert(self.mapLoader.world.byId[logicalMap.mapId], "outdoor map catalog record is required")
     local mapRecord = assert(self.mapLoader.world.maps[mapIndex], "outdoor map catalog record is missing")
@@ -3518,6 +3527,13 @@ function FieldRuntime:_releaseAll()
   if self.mapLoader then
     self.mapLoader:release()
   end
+  -- The session image owner is disposed after every scene and actor lease
+  -- has been returned through the releases above, but before the
+  -- preparation worker is joined below.
+  if self.imageAssets then
+    self.imageAssets:dispose()
+  end
+  self.imageAssets = nil
   -- The preparation worker is released after every presentation scene
   -- consumer and pending task above, so no outstanding prepared token can
   -- outlive its queue.

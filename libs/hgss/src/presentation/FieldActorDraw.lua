@@ -35,6 +35,7 @@ local FieldActorDraw = {}
 ---@field visual FieldActorCache.Visual
 ---@field meshes table<string, unknown>?
 ---@field image table<string, unknown>?
+---@field imageLease table<string, unknown>? pooled atlas borrow carrying the exact sampling state
 ---@field billboardScales table<string, unknown>?
 
 -- Draw items carry no submission numbers: queue traversal orders every part
@@ -197,6 +198,18 @@ local function writeItem(record, entry, partIndex, item)
   end
   local material = item.material or {}
   material.image = image
+  -- The pooled atlas borrow carries the exact sampling state with it:
+  -- indexed pages bind their palette through the shared 3D sampler
+  -- instead of rendering index bytes, while bare/eager images sample
+  -- straight with no stale palette left behind.
+  local atlasLease = entry.imageLease
+  if image ~= nil and atlasLease ~= nil and atlasLease.kind == "r8" then
+    material.palette = assert(atlasLease.palette, "indexed actor atlases carry their exact palette")
+    material.indexed = true
+  else
+    material.palette = nil
+    material.indexed = nil
+  end
   material.alphaClass = part.alphaClass
   material.texMatrix = IDENTITY_TEX_MATRIX
   item.material = material

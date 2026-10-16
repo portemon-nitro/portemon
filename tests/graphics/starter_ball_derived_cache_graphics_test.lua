@@ -16,6 +16,7 @@ local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
 local GameVersion = require("romdump.src.source.GameVersion")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local MapSceneLoader = require("libs.hgss.src.presentation.MapSceneLoader")
+local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
 local MapResolver = require("romdump.src.digest.map.MapResolver")
 local MapUnits = require("romdump.src.digest.map.MapUnits")
 local FieldGrid = require("libs.hgss.src.world.FieldGrid")
@@ -138,7 +139,13 @@ function T.starter_balls_render_on_the_machine_in_the_real_lab_frame(scope)
       machine = assert(machine, "a lab machine placement registers the expected balls")
       local anchor = { x = machine.transform[13], y = machine.transform[14], z = machine.transform[15] }
 
-      local runtime = MapSceneLoader.load(cache, scene)
+      local imagePool = ImageAssetPool.new(cache)
+      scope:own({
+        release = function()
+          imagePool:dispose()
+        end,
+      })
+      local runtime = MapSceneLoader.load(cache, scene, { imageAssets = imagePool })
       scope:own({
         release = function()
           runtime:release()

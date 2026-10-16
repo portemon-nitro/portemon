@@ -10,6 +10,7 @@ local FieldCamera = require("libs.hgss.src.field.FieldCamera")
 local FieldStaticEffectRenderer = require("libs.hgss.src.presentation.FieldStaticEffectRenderer")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 local GpuAssetPool = require("libs.hgss.src.presentation.GpuAssetPool")
+local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
 local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
 
 local T = {}
@@ -40,7 +41,13 @@ function T.canonical_indicator_preserves_bright_background(scope, context)
   local model = assert(definition.model)
   local cameraProfiles = assert(cache:loadLua("data/generated/field/camera/profiles.lua"))
   local fieldCamera = FieldCamera.new(cameraProfiles.profiles[0], { canonicalAspect = 4 / 3 })
-  local pool = scope:own(GpuAssetPool.new(cache))
+  local imagePool = ImageAssetPool.new(cache)
+  scope:own({
+    release = function()
+      imagePool:dispose()
+    end,
+  })
+  local pool = scope:own(GpuAssetPool.new(cache, { imageAssets = imagePool }))
   local indicator = FieldStaticEffectRenderer.new(model, pool)
   scope:own({
     release = function()
