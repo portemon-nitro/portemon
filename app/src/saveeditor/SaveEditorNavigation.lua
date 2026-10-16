@@ -268,49 +268,95 @@ local function resolveOverride(snapshot, override, source, direction)
   return nil
 end
 
+local function matrixDestination(snapshot, region, targetId, direction)
+  local member = matrixMember(snapshot, region, targetId)
+  if member == nil then
+    return nil
+  end
+  local rowIndex, columnIndex = member.row, member.column
+  local matrix = region.logical.matrix
+  if direction == "left" or direction == "right" then
+    local step = direction == "left" and -1 or 1
+    local column = columnIndex + step
+    while column >= 1 and column <= #matrix[rowIndex] do
+      local candidate = matrix[rowIndex][column]
+      if type(candidate) == "string" then
+        return candidate, rowIndex
+      end
+      column = column + step
+    end
+    return nil
+  end
+  local nextRow = direction == "up" and rowIndex - 1 or rowIndex + 1
+  local row = matrix[nextRow]
+  if row == nil then
+    return nil
+  end
+  local candidate = row[columnIndex]
+  if type(candidate) == "string" then
+    return candidate, nextRow
+  end
+  for distance = 1, #row do
+    candidate = row[columnIndex - distance]
+    if type(candidate) == "string" then
+      return candidate, nextRow
+    end
+    candidate = row[columnIndex + distance]
+    if type(candidate) == "string" then
+      return candidate, nextRow
+    end
+  end
+  return nil
+end
+
+local function gridNextIndex(index, count, columns, direction)
+  if direction == "left" then
+    return (index - 1) % columns ~= 0 and index - 1 or nil
+  end
+  if direction == "right" then
+    local nextIndex = index + 1
+    return index % columns ~= 0 and nextIndex <= count and nextIndex or nil
+  end
+  local nextIndex = direction == "up" and index - columns or index + columns
+  if nextIndex < 1 then
+    return nil
+  end
+  if nextIndex > count then
+    local adjacentRow = math.floor((index - 1) / columns) + (direction == "down" and 1 or -1)
+    local rowStart = adjacentRow * columns + 1
+    if rowStart < 1 or rowStart > count then
+      return nil
+    end
+    nextIndex = math.min(rowStart + ((index - 1) % columns), count)
+  end
+  if math.floor((nextIndex - 1) / columns) == math.floor((index - 1) / columns) then
+    return nil
+  end
+  return nextIndex
+end
+
+local function listNextIndex(region, index, direction)
+  local horizontal = direction == "left" or direction == "right"
+  if horizontal ~= (region.kind == "row") then
+    return nil
+  end
+  local count = region.logical.count
+  local nextIndex = index + ((direction == "left" or direction == "up") and -1 or 1)
+  if region.logical.wrap then
+    nextIndex = (nextIndex - 1) % count + 1
+  end
+  if nextIndex < 1 or nextIndex > count then
+    return nil
+  end
+  return nextIndex
+end
+
 local function logicalDestination(snapshot, region, targetId, direction)
   if region.logical == nil then
     return nil
   end
   if region.logical.matrix ~= nil then
-    local member = matrixMember(snapshot, region, targetId)
-    if member == nil then
-      return nil
-    end
-    local rowIndex, columnIndex = member.row, member.column
-    local matrix = region.logical.matrix
-    if direction == "left" or direction == "right" then
-      local step = direction == "left" and -1 or 1
-      local column = columnIndex + step
-      while column >= 1 and column <= #matrix[rowIndex] do
-        local candidate = matrix[rowIndex][column]
-        if type(candidate) == "string" then
-          return candidate, rowIndex
-        end
-        column = column + step
-      end
-      return nil
-    end
-    local nextRow = direction == "up" and rowIndex - 1 or rowIndex + 1
-    local row = matrix[nextRow]
-    if row == nil then
-      return nil
-    end
-    local candidate = row[columnIndex]
-    if type(candidate) == "string" then
-      return candidate, nextRow
-    end
-    for distance = 1, #row do
-      candidate = row[columnIndex - distance]
-      if type(candidate) == "string" then
-        return candidate, nextRow
-      end
-      candidate = row[columnIndex + distance]
-      if type(candidate) == "string" then
-        return candidate, nextRow
-      end
-    end
-    return nil
+    return matrixDestination(snapshot, region, targetId, direction)
   end
   local index = logicalIndex(snapshot, region, targetId)
   if index == nil then
@@ -318,51 +364,13 @@ local function logicalDestination(snapshot, region, targetId, direction)
   end
   local columns = region.logical.columns or 1
   assert(type(columns) == "number" and columns >= 1 and columns % 1 == 0)
-  local count = region.logical.count
   local nextIndex
   if region.kind == "grid" then
-    local delta = direction == "left" and -1 or direction == "right" and 1 or direction == "up" and -columns or columns
-    nextIndex = index + delta
-    if direction == "left" and (index - 1) % columns == 0 then
-      return nil
-    end
-    if direction == "right" and (index % columns == 0 or nextIndex > count) then
-      return nil
-    end
-    if direction == "up" or direction == "down" then
-      if nextIndex < 1 then
-        return nil
-      end
-      if nextIndex > count then
-        local adjacentRow = math.floor((index - 1) / columns) + (direction == "down" and 1 or -1)
-        local rowStart = adjacentRow * columns + 1
-        if rowStart < 1 or rowStart > count then
-          return nil
-        end
-        nextIndex = math.min(rowStart + ((index - 1) % columns), count)
-      end
-      local targetRow = math.floor((nextIndex - 1) / columns)
-      if targetRow == math.floor((index - 1) / columns) then
-        return nil
-      end
-    end
+    nextIndex = gridNextIndex(index, region.logical.count, columns, direction)
   elseif region.kind == "row" or region.kind == "column" or region.kind == "list" then
-    if
-      (region.kind == "row" and (direction == "left" or direction == "right"))
-      or ((region.kind == "column" or region.kind == "list") and (direction == "up" or direction == "down"))
-    then
-      local step = (direction == "left" or direction == "up") and -1 or 1
-      nextIndex = index + step
-      if region.logical.wrap then
-        nextIndex = (nextIndex - 1) % count + 1
-      end
-      if nextIndex < 1 or nextIndex > count then
-        return nil
-      end
-    else
-      return nil
-    end
-  else
+    nextIndex = listNextIndex(region, index, direction)
+  end
+  if nextIndex == nil then
     return nil
   end
   local id = region.logical.idAt(nextIndex)
