@@ -38,6 +38,7 @@
 local Matrix3 = require("libs.math.src.Matrix3")
 local AlphaClassifier = require("libs.nds.src.gx.AlphaClassifier")
 local FixedPoint = require("libs.math.src.FixedPoint")
+local ImageSampling = require("libs.nds.src.love.ImageSampling")
 
 local IDENTITY_TEXTURE_MATRIX = { 1, 0, 0, 0, 1, 0, 0, 0, 1 }
 
@@ -460,7 +461,10 @@ function GxRenderer.new(opts)
   -- shader (or reading its source) releases every one already created before
   -- the error propagates, so a failed renderer never leaks GPU resources.
   local ok, err = pcall(function()
-    local colorSource = readSource(SHADER_SOURCE_PATHS.color)
+    -- The map source carries a marker where the one shared generated-image
+    -- sampling rule is substituted; sources without the marker keep their
+    -- exact construction contract.
+    local colorSource = ImageSampling.withSharedSampling(readSource(SHADER_SOURCE_PATHS.color))
     renderer.shader = graphics.newShader(colorSource)
     renderer._spriteShaderSource = "#define PRESENTATION_SPRITE\n#define PRESENTATION_SPRITE_LAYER\n" .. colorSource
     local exact = translucencyMode == GxRenderer.TRANSLUCENCY_EXACT
@@ -980,6 +984,10 @@ function GxRenderer:_drawMesh(
     shader:send("u_useTexture", false)
     mesh:setTexture()
   end
+  -- Shared exact sampling state travels with the texture bind: indexed
+  -- materials resolve through their palette, everything else samples
+  -- straight RGBA with no stale palette left behind.
+  ImageSampling.sendMaterialSampling(shader, mat)
 
   shader:send("u_fragmentPass", fragmentPass)
   shader:send("u_polygonAlpha", item.polygonAlpha)
@@ -1036,6 +1044,7 @@ function GxRenderer:_drawWireframeMesh(
   shader:send("u_matEmission", profileColors and profileColors.emission or ZERO_COLOR)
   shader:send("u_texMatrix", "column", IDENTITY_TEXTURE_MATRIX)
   shader:send("u_useTexture", false)
+  ImageSampling.sendMaterialSampling(shader, nil)
   shader:send("u_fragmentPass", FRAGMENT_PASS_OPAQUE)
   shader:send("u_polygonAlpha", 1.0)
   shader:send("u_polygonMode", 0)

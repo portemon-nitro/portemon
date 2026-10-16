@@ -287,6 +287,7 @@ uniform float u_polygonAlpha;  // normalized 5-bit polygon alpha
 uniform int u_polygonMode;     // 0 modulation/toon, 1 decal
 uniform mat3 u_texMatrix;      // normalized-UV transform (NSBTA texture SRT)
 uniform sampler2D MainTex;
+/*__portemon_shared_image_sampling__*/
 #if defined(WORLD_MRT) || defined(EXACT_SOURCE)
 uniform float u_polygonId;
 uniform bool u_polygonFogEnabled;
@@ -441,7 +442,7 @@ vec3 decalRgb6(vec3 texture6, vec3 vertex6, float textureAlpha5)
 void effect()
 {
   vec2 uv = (u_texMatrix * vec3(VaryingTexCoord.xy, 1.0)).xy;
-  vec4 base = u_useTexture ? Texel(MainTex, uv) : vec4(1.0);
+  vec4 base = u_useTexture ? resolveExactTexel(Texel(MainTex, uv)) : vec4(1.0);
 
   // Both operands enter the combiner as 5-bit components widened to the
   // 6-bit domain (expand5to6); v_dsColor already arrived

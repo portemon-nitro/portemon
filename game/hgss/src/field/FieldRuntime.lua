@@ -543,6 +543,9 @@ local function acquireMapLoader(runtime, cacheFs, world, loadOptions)
   local queue
   if runtime.presentation then
     queue = AssetPreparationQueue.new(cacheFs)
+    -- The session image owner borrows the runtime worker above: one
+    -- presented session runs exactly one background worker.
+    imageAssets = ImageAssetPool.new(cacheFs, { queue = queue })
   end
   local loader = FieldMapLoader.new(cacheFs, world, {
     sceneLoader = runtime.presentation and MapSceneLoader or nil,

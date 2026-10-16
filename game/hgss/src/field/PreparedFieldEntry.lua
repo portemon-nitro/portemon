@@ -124,6 +124,26 @@ function PreparedFieldEntry:_ensureLoader()
   if queue == nil then
     queue = AssetPreparationQueue.new(cacheFs)
   end
+  -- The session image owner borrows the worker above -- an injected owner
+  -- is adopted (its composer keeps disposal), while the default
+  -- scene-loader path builds the production owner here so the prepared
+  -- bedroom borrows it before the first scene starts. Either way the
+  -- entry moves one worker, never two, on take.
+  if self._imageAssets == nil and self._sceneLoader == nil then
+    local okPool, poolOrError = pcall(ImageAssetPool.new, cacheFs, { queue = queue })
+    if not okPool then
+      if ownsQueue then
+        pcall(function()
+          queue:release()
+        end)
+      end
+      self._failure = poolOrError
+      return false
+    end
+    self._imageAssets = poolOrError
+    self._ownsImageAssets = true
+  end
+>>>>>>> d711fedf (fixup! graphics: share indexed image textures and leases)
   local okLoader, loaderOrError = pcall(FieldMapLoader.new, cacheFs, worldOrError, {
     sceneLoader = self._sceneLoader or MapSceneLoader,
     neighborLoader = self._neighborLoader or NeighborRing,
