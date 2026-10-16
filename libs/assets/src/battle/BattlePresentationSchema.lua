@@ -965,19 +965,28 @@ local function checkMenuSection(section, context, code, field)
   if not Validate.isArray(section.screens) or #section.screens == 0 then
     fail(code, field .. " must carry its composed screens", context)
   end
+  local planes = {}
   for index, screen in ipairs(section.screens) do
     local entry = field .. ".screens[" .. index .. "]"
-    SchemaCheck.checkRecord(
-      screen,
-      { image = true, width = true, height = true, tilemapKey = true, template = true, priority = true },
-      context,
-      code,
-      entry
-    )
+    SchemaCheck.checkRecord(screen, {
+      image = true,
+      width = true,
+      height = true,
+      tilemapKey = true,
+      plane = true,
+      template = true,
+      priority = true,
+      feedback = true,
+    }, context, code, entry)
     checkImagePath(screen.image, context, code, entry .. ".image")
     checkInt(screen.width, 8, nil, context, code, entry .. ".width")
     checkInt(screen.height, 8, nil, context, code, entry .. ".height")
     checkString(screen.tilemapKey, context, code, entry .. ".tilemapKey")
+    checkInt(screen.plane, 0, 3, context, code, entry .. ".plane")
+    if planes[screen.plane] then
+      fail(code, field .. " assigns more than one screen to the same physical BG plane", context)
+    end
+    planes[screen.plane] = true
     -- Template and priority ride along only where the source pins them
     -- (the command composition); other menus carry their screens alone.
     if screen.template ~= nil and screen.template ~= "unused" then
@@ -985,6 +994,32 @@ local function checkMenuSection(section, context, code, field)
     end
     if screen.priority ~= nil then
       checkInt(screen.priority, 0, nil, context, code, entry .. ".priority")
+    end
+    if screen.feedback ~= nil then
+      SchemaCheck.checkRecord(screen.feedback, nil, context, code, entry .. ".feedback")
+      for controlId, states in pairs(screen.feedback) do
+        local controlField = entry .. ".feedback[" .. tostring(controlId) .. "]"
+        checkString(controlId, context, code, controlField .. " control id")
+        SchemaCheck.checkRecord(states, { selected = true, pressed = true }, context, code, controlField)
+        if next(states) == nil then
+          fail(code, controlField .. " must carry a selected or pressed patch", context)
+        end
+        for state, patch in pairs(states) do
+          local patchField = controlField .. "." .. tostring(state)
+          SchemaCheck.checkRecord(
+            patch,
+            { image = true, x = true, y = true, width = true, height = true },
+            context,
+            code,
+            patchField
+          )
+          checkImagePath(patch.image, context, code, patchField .. ".image")
+          checkInt(patch.x, 0, screen.width - 1, context, code, patchField .. ".x")
+          checkInt(patch.y, 0, screen.height - 1, context, code, patchField .. ".y")
+          checkInt(patch.width, 1, screen.width - patch.x, context, code, patchField .. ".width")
+          checkInt(patch.height, 1, screen.height - patch.y, context, code, patchField .. ".height")
+        end
+      end
     end
   end
 end

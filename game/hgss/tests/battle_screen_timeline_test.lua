@@ -6,7 +6,6 @@
 -- boundary, and sounds drain into a recording sink.
 
 local Assert = require("tests.support.Assert")
-local StubLease = require("tests.support.StubLease")
 local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
 local MonCache = require("libs.assets.src.MonCache")
 
@@ -358,6 +357,8 @@ function T.first_packet_events_play_after_the_opening_once()
   local BattleScreenState = require("game.hgss.src.battle.BattleScreenState")
   local Model = require("game.hgss.src.battle.BattlePresentationModel")
   local ScreenTopology = require("libs.ui.src.ScreenTopology")
+  local manifest = require("tests.support.BattlePresentationManifestFixture").manifest()
+  manifest.scenes = { { key = "general/plain/day" } }
   local measurement = {
     width = 256,
     height = 384,
@@ -392,7 +393,19 @@ function T.first_packet_events_play_after_the_opening_once()
   end
   function assets.drawable(key)
     if assets.images[key] == nil then
-      assets.images[key] = StubLease.new(key)
+      assets.images[key] = {
+        handle = key,
+        getDimensions = function()
+          return 80, 80
+        end,
+        getWidth = function()
+          return 80
+        end,
+        getHeight = function()
+          return 80
+        end,
+        setFilter = function() end,
+      }
     end
     local stored = assets.images[key]
     if key:sub(1, 4) == "mon:" then
@@ -407,12 +420,7 @@ function T.first_packet_events_play_after_the_opening_once()
   local submits = {}
   local screen = BattleScreenState.new({
     launchId = launchId,
-    manifest = {
-      schema = "test",
-      version = { id = "t", language = "english" },
-      verified = false,
-      scenes = { { key = "general/plain/day" } },
-    },
+    manifest = manifest,
     model = Model,
     submit = function(reply)
       submits[#submits + 1] = reply
@@ -979,9 +987,11 @@ function T.shared_source_time_agrees_across_host_partitions()
   -- same strike transcript.
   local function struckOver(schedule)
     local sounds = sink()
-    local played = BattleTimeline.new({ sound = function(name)
-      sounds.sound(name)
-    end })
+    local played = BattleTimeline.new({
+      sound = function(name)
+        sounds.sound(name)
+      end,
+    })
     played:reset(openingView())
     local after = openingView()
     after.foes[1].hp = 43
@@ -1030,9 +1040,11 @@ function T.shared_source_time_agrees_across_host_partitions()
   -- The opening cry drains exactly once on every schedule as well.
   local function openedOver(schedule)
     local sounds = sink()
-    local played = BattleTimeline.new({ sound = function(name)
-      sounds.sound(name)
-    end })
+    local played = BattleTimeline.new({
+      sound = function(name)
+        sounds.sound(name)
+      end,
+    })
     played:intro(openingView(), true)
     for _, dt in ipairs(schedule) do
       advance(played, dt)
@@ -1075,15 +1087,15 @@ function T.waits_terminate_on_their_own_ticks_without_holding_time()
   -- large ones, change neither the revealed text nor the displayed
   -- health, and releasing the image resumes to the exact checkpoint.
   local sounds = sink()
-  local held = BattleTimeline.new({ sound = function(name)
-    sounds.sound(name)
-  end })
+  local held = BattleTimeline.new({
+    sound = function(name)
+      sounds.sound(name)
+    end,
+  })
   held:reset(openingView())
   local after = openingView()
   after.foes[1].hp = 43
-  held:present(
-    packet(1, { event("struck", { target = 3, damage = 14, hitIndex = 1 }, { [1] = 52, [3] = 43 }) }, after)
-  )
+  held:present(packet(1, { event("struck", { target = 3, damage = 14, hitIndex = 1 }, { [1] = 52, [3] = 43 }) }, after))
   local foeKey = "mon:" .. MonCache.portraitSelector("EEVEE", 0, "male", false)
   local ready = { [foeKey] = false }
   local function available(key)
@@ -1110,6 +1122,405 @@ function T.waits_terminate_on_their_own_ticks_without_holding_time()
   end
   Assert.isTrue(held:settled(), "releasing the image resumes to completion")
   Assert.equal(battler(held:battlers(), 3).hp, 43, "the exact checkpoint applies after release")
+end
+
+-- The source menu reveal advances on accepted battle time. Read its
+-- visible window boundary through the screen's real draw/input boundary,
+-- and make host partitioning irrelevant to both the frame trace and the
+-- input gate.
+function T.native_menu_reveal_frames_and_input_gate_follow_source_ticks()
+  local BattleScreenState = require("game.hgss.src.battle.BattleScreenState")
+  local Model = require("game.hgss.src.battle.BattlePresentationModel")
+  local FakeGraphics = require("tests.support.FakeGraphics")
+  local ManifestFixture = require("tests.support.BattlePresentationManifestFixture")
+  local ScreenTopology = require("libs.ui.src.ScreenTopology")
+
+  local expectedEdges = { 184, 174, 164, 154, 145 }
+  local expectedOutsideWidths = { 0, 63, 127, 191, 254 }
+  local expectedScroll = { 1, 64, 128, 192, 255 }
+  local function run(partition, doublePartner)
+    local measurement = {
+      width = 256,
+      height = 384,
+      topology = ScreenTopology.dualDisplay(
+        { id = "main", rect = { x = 0, y = 0, width = 256, height = 192 }, touch = false, role = "world" },
+        { id = "lower", rect = { x = 0, y = 192, width = 256, height = 192 }, touch = true, role = "auxiliary" },
+        "battle-menu-slide:dual"
+      ),
+      pixelRatio = 1,
+      signature = "battle-menu-slide:dual",
+    }
+    local text = { draws = {} }
+    function text.measure(content)
+      return { width = 8 * #tostring(content), height = 16 }
+    end
+    function text.drawText(content, x, y)
+      text.draws[#text.draws + 1] = { content = tostring(content), x = x, y = y }
+    end
+    local windows = { calls = {} }
+    function windows.drawWindow(box, frameKey, background)
+      windows.calls[#windows.calls + 1] = { box = box, frame = frameKey, background = background }
+    end
+    local audio = { plays = {} }
+    function audio.play(name)
+      audio.plays[#audio.plays + 1] = name
+      return true
+    end
+    local assets = { images = {}, released = {} }
+    function assets.prepare(_)
+      return true
+    end
+    function assets.drawable(key)
+      if assets.images[key] == nil then
+        assets.images[key] = {
+          handle = key,
+          width = 1648,
+          height = 80,
+          getWidth = function(self)
+            return self.width
+          end,
+          getHeight = function(self)
+            return self.height
+          end,
+          getDimensions = function(self)
+            return self.width, self.height
+          end,
+          setFilter = function() end,
+        }
+      end
+      return assets.images[key]
+    end
+    function assets.release(key)
+      assets.released[key] = (assets.released[key] or 0) + 1
+    end
+
+    local graphicsBase = FakeGraphics.new({})
+    local graphics = setmetatable({}, { __index = graphicsBase })
+    local draws = {}
+    local currentScissor = nil
+    local scissorStack = {}
+    function graphics.push(...)
+      scissorStack[#scissorStack + 1] = currentScissor ~= nil
+          and {
+            currentScissor[1],
+            currentScissor[2],
+            currentScissor[3],
+            currentScissor[4],
+          }
+        or nil
+      graphicsBase.push(...)
+    end
+    function graphics.pop(...)
+      graphicsBase.pop(...)
+      currentScissor = table.remove(scissorStack)
+    end
+    function graphics.getScissor()
+      if currentScissor == nil then
+        return nil
+      end
+      return currentScissor[1], currentScissor[2], currentScissor[3], currentScissor[4]
+    end
+    function graphics.setScissor(x, y, width, height)
+      if x == nil then
+        currentScissor = nil
+      else
+        currentScissor = { x, y, width, height }
+      end
+      graphicsBase.setScissor(x, y, width, height)
+    end
+    function graphics.intersectScissor(x, y, width, height)
+      if currentScissor == nil then
+        currentScissor = { x, y, width, height }
+      else
+        local old = currentScissor
+        local right = math.min(old[1] + old[3], x + width)
+        local bottom = math.min(old[2] + old[4], y + height)
+        currentScissor = {
+          math.max(old[1], x),
+          math.max(old[2], y),
+          math.max(0, right - math.max(old[1], x)),
+          math.max(0, bottom - math.max(old[2], y)),
+        }
+      end
+      graphicsBase.intersectScissor(x, y, width, height)
+    end
+    function graphics.draw(image, quad, x, y, rotation, scaleX, scaleY)
+      local handle = type(image) == "table" and image.handle or nil
+      draws[#draws + 1] = {
+        handle = handle,
+        x = type(quad) == "number" and quad or x,
+        y = type(quad) == "number" and x or y,
+        scissor = currentScissor,
+      }
+      graphicsBase.draw(image, quad, x, y, rotation, scaleX, scaleY)
+    end
+
+    local submits = {}
+    local launchId = "battle-menu-slide-" .. partition
+    local screen = BattleScreenState.new({
+      launchId = launchId,
+      manifest = ManifestFixture.manifest(),
+      model = Model,
+      submit = function(reply)
+        submits[#submits + 1] = reply
+        return true
+      end,
+      measureDisplay = function()
+        return measurement
+      end,
+      assets = assets,
+      text = text,
+      windows = windows,
+      audio = audio,
+    })
+    local opening = openingView()
+    local actorCombatant = doublePartner and 2 or 1
+    if doublePartner then
+      opening.own[1].position = 0
+      opening.own[2] = {
+        combatant = 2,
+        participant = 2,
+        side = 1,
+        controller = "player",
+        active = true,
+        position = 1,
+        hp = 48,
+        maxHp = 48,
+        species = "EEVEE",
+        form = 0,
+        name = "PARTNER",
+        level = 20,
+        selector = "back",
+        portraitSelector = MonCache.portraitSelector("EEVEE", 0, "male", false, "back"),
+        moves = { { move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35 } },
+        experience = 8000,
+      }
+    end
+    local actor = {
+      combatant = actorCombatant,
+      activation = 1,
+      kind = "action",
+      choices = {
+        {
+          id = "move:0",
+          role = "move",
+          display = { move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35 },
+          enabled = true,
+          choice = {
+            actor = { combatant = actorCombatant, activation = 1 },
+            kind = "attack",
+            payload = { moveSlot = 0, target = { kind = "position", position = 2 } },
+          },
+        },
+      },
+    }
+    local request = {
+      requestId = 93001,
+      epoch = 1,
+      controller = "player",
+      kind = "action",
+      actors = { actor },
+    }
+    request.options = {
+      requestId = request.requestId,
+      epoch = request.epoch,
+      controller = request.controller,
+      kind = request.kind,
+      actors = { actor },
+    }
+    screen:presentationPort().present({
+      launchId = launchId,
+      packetId = 1,
+      events = {},
+      before = opening,
+      after = opening,
+      request = request,
+    })
+
+    local function advanceHost(dt)
+      screen:updateFixed(dt)
+    end
+    local hostStep = 1 / 30
+    local hostIndex = 1
+    local irregular = { 1 / 120, 3 / 120, 0.05, 0.02, 0.03 }
+    for _ = 1, 2400 do
+      if partition == "60" then
+        hostStep = 1 / 60
+      elseif partition == "144" then
+        hostStep = 1 / 144
+      elseif partition == "irregular" then
+        hostStep = irregular[hostIndex]
+        hostIndex = hostIndex % #irregular + 1
+      end
+      advanceHost(hostStep)
+      if screen:status().mode == "command" then
+        break
+      end
+    end
+    Assert.equal(screen:status().mode, "command", "the opening reaches the first command prompt")
+
+    local trace = {}
+    local function drawMenuFrame()
+      draws = {}
+      local viewEdge = screen:view().menuRevealEdge
+      Assert.equal(viewEdge, expectedEdges[#trace + 1], "the detached view publishes each native reveal edge")
+      local menuWindows = assert(screen:view().menuWindows, "menu slide publishes immutable native window geometry")
+      Assert.equal(
+        menuWindows.edge,
+        expectedEdges[#trace + 1],
+        "W1 follows the source vertical boundary at step " .. tostring(#trace) .. ": " .. tostring(menuWindows.edge)
+      )
+      local index = #trace + 1
+      Assert.equal(
+        menuWindows.outsideTop.x,
+        doublePartner and ({ 256, 192, 128, 64, 1 })[index] or 1,
+        "W0 outside region follows the source battler side"
+      )
+      Assert.equal(
+        menuWindows.outsideTop.width,
+        doublePartner and ({ 0, 64, 128, 192, 255 })[index] or expectedOutsideWidths[index]
+      )
+      Assert.equal(
+        menuWindows.scroll[0].x,
+        doublePartner and ({ 0, 64, 128, 192, 255 })[index] or expectedScroll[index]
+      )
+      Assert.equal(menuWindows.scroll[1].x, menuWindows.scroll[0].x)
+      screen:draw({ graphics = graphics })
+      trace[#trace + 1] = viewEdge
+    end
+    drawMenuFrame()
+    local gateChecks = 0
+    local gateIntact = true
+    for frame = 1, 4 do
+      screen:input({ { type = "pointer_down", pointerId = "slide-bag", x = 40, y = 360 } })
+      screen:input({ { type = "pointer_up", pointerId = "slide-bag", x = 40, y = 360 } })
+      screen:input({ { type = "confirm" } })
+      local status = screen:status()
+      gateIntact = gateIntact and status.mode == "command" and status.request ~= nil and #submits == 0
+      gateChecks = gateChecks + 1
+
+      local left = TICK
+      while left > 1e-12 do
+        local dt = partition == "60" and math.min(left, 1 / 60)
+          or partition == "144" and math.min(left, 1 / 144)
+          or partition == "irregular" and math.min(left, irregular[hostIndex])
+          or left
+        if partition == "irregular" then
+          hostIndex = hostIndex % #irregular + 1
+        end
+        screen:updateFixed(dt)
+        left = left - dt
+      end
+      drawMenuFrame()
+    end
+    screen:input({ { type = "confirm" } })
+    screen:updateFixed(TICK)
+    screen:input({ { type = "confirm" } })
+    local openedAfterGate = screen:status().mode == "moves" and #submits == 0
+    local windowsClosedAfterEntry = screen:view().menuWindows == nil and screen:view().menuRevealEdge == nil
+    screen:dispose()
+    return trace, gateChecks, gateIntact, openedAfterGate, windowsClosedAfterEntry
+  end
+
+  local reference, checks, gateIntact, openedAfterGate, windowsClosedAfterEntry = run("30")
+  local partitionTraces = {}
+  local partitionGates = {}
+  local partitionOpens = {}
+  partitionTraces[1] = reference
+  partitionGates[1] = gateIntact
+  partitionOpens[1] = openedAfterGate
+  for index, partition in ipairs({ "60", "144", "irregular" }) do
+    local trace, partitionChecks, gate, opened, windowsClosed = run(partition)
+    Assert.equal(partitionChecks, checks, partition .. " Hz keeps the same number of gated frames")
+    partitionTraces[index + 1] = trace
+    partitionGates[index + 1] = gate
+    partitionOpens[index + 1] = opened
+    Assert.isTrue(windowsClosed, partition .. " Hz closes source windows after entry")
+  end
+  local partnerTrace = run("30", true)
+  Assert.deepEqual(partnerTrace, expectedEdges, "the second player-side slot uses the opposite source W0/scroll edge")
+  local failures = {}
+  local function expect(condition, message)
+    if not condition then
+      failures[#failures + 1] = message
+    end
+  end
+  local function describe(entries)
+    local fields = {}
+    for _, edge in ipairs(entries) do
+      fields[#fields + 1] = tostring(edge)
+    end
+    return table.concat(fields, ",")
+  end
+  expect(
+    describe(reference) == describe(expectedEdges),
+    "drawn reveal edges should be " .. describe(expectedEdges) .. " but were " .. describe(reference)
+  )
+  expect(checks == 4, "all four intermediate reveal frames should suppress input")
+  expect(gateIntact, "touch and confirm should stay suppressed through all slide frames")
+  expect(openedAfterGate, "the next confirmation should work after the native gate opens")
+  expect(windowsClosedAfterEntry, "native entry windows clear when the command switches to its child menu")
+  for index, partition in ipairs({ "60", "144", "irregular" }) do
+    expect(
+      describe(partitionTraces[index + 1]) == describe(reference),
+      partition .. " Hz should match the 30 Hz source slide trace"
+    )
+    expect(partitionGates[index + 1] == gateIntact, partition .. " Hz should keep the same input gate boundaries")
+    expect(partitionOpens[index + 1] == openedAfterGate, partition .. " Hz should open at the same source boundary")
+  end
+  Assert.isTrue(#failures == 0, table.concat(failures, "; "))
+end
+
+-- The source-selected bank entry enters the same paced timeline as other
+-- narration, while the detached C04 event remains unchanged.
+function T.source_capture_text_uses_the_battle_printer_timeline()
+  local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
+  local packet = {
+    launchId = "capture-message-source",
+    packetId = 1,
+    before = {},
+    after = {},
+    events = {
+      {
+        sequence = 4,
+        kind = "broke_free",
+        payload = { shakes = 2 },
+      },
+    },
+  }
+  local timeline = BattleTimeline.new({ textSpeed = "mid" })
+  local malformedAccepted = pcall(function()
+    timeline:present(packet)
+  end)
+  Assert.isFalse(malformedAccepted, "a capture outcome without selected source text is rejected")
+  local sourceMessages = { [4] = "Aargh!\nAlmost had it!" }
+  Assert.isTrue(timeline:present(packet, sourceMessages), "the valid retry of the same packet is accepted")
+  sourceMessages[4] = "Changed after delivery"
+  Assert.isNil(packet.events[1].sourceText, "source selection never mutates the delivery packet")
+  local nextPacket = {
+    launchId = "capture-message-next-launch",
+    packetId = 2,
+    before = {},
+    after = {},
+    events = { { sequence = 4, kind = "broke_free", payload = { shakes = 1 } } },
+  }
+  local reusedSource = pcall(function()
+    timeline:present(nextPacket)
+  end)
+  Assert.isFalse(reusedSource, "a prior packet's source map does not apply to a later launch")
+  Assert.isTrue(
+    timeline:present(nextPacket, { [4] = "One shake" }),
+    "a later packet uses only its own selected source text"
+  )
+  for _ = 1, 120 do
+    timeline:update(1 / 30, function()
+      return true
+    end)
+    if timeline:message() ~= "" then
+      break
+    end
+  end
+  Assert.isTrue(timeline:message():sub(1, 1) == "A", "the source template feeds the paced battle printer")
 end
 
 return { tests = T }

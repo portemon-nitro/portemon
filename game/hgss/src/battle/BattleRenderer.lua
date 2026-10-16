@@ -12,7 +12,9 @@
 local BattleRenderer = {}
 
 local BattleChildText = require("game.hgss.src.battle.BattleChildText")
+local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local BattleScene = require("libs.hgss.src.presentation.BattleScene")
+local BattleMenuPresenter = require("game.hgss.src.battle.BattleMenuPresenter")
 
 -- Interim battler anchors on the native canvas: retained for layout
 -- compatibility while native picture geometry lives in the visual
@@ -33,7 +35,6 @@ BattleRenderer.ARROW_OFFSET = 72
 -- component tiles extend past the character-cell payload.
 local STRIP_HEIGHT = 8
 local ARROW_STRIP_WIDTH = 208
-local GAUGE_STRIP_WIDTH = 128
 
 -- Authored arrow cells in animation order: the zero-time opening cell
 -- carries no objects and draws nothing, the rest hold their authored
@@ -59,9 +60,6 @@ local ARROW_CELLS = {
 -- 16-pixel gauge cells by roster visibility: 0 absent/unrevealed, 1
 -- present/revealed, 2 fainted. The fourth authored state has no roster
 -- meaning and stays unused, as does the 32-pixel family.
-local GAUGE_CELL_TILES = { 0, 4, 8 }
-local GAUGE_CELL_SIZE = 16
-local GAUGE_CELL_OFFSET = -8
 
 -- Dynamic content anchors inside the composite bounds, in native logical
 -- pixels: the enemy box spans (-6,8)-(122,72), the player box
@@ -121,7 +119,6 @@ local GAUGE_PLAYER_PITCH = 19
 local GAUGE_ENEMY_RIGHT = 246
 local GAUGE_ENEMY_Y = 9
 local GAUGE_ENEMY_PITCH = 12
-local GAUGE_CELL_WIDTH = 16
 
 ---@param graphics table<string, unknown> injected host graphics
 ---@return number, number, number, number borrowed color for restoration
@@ -394,6 +391,69 @@ local function battlerImage(assets, record)
   return nil
 end
 
+-- Pool leases pair the staged image with the shared sampler while owned
+-- and test images draw directly. Resolves the measurable staged image
+-- behind a drawable handle, or nil when the handle carries no pixels:
+-- headless descriptors and bare test stand-ins stay drawable-shaped so
+-- recording views prove without GPU uploads, while pool leases resolve
+-- to their staged image for measurement.
+---@param art table<string, unknown> resolved drawable handle under drawing
+---@return table<string, unknown>|userdata|nil measurable staged image behind the handle
+local function stagedPixelsOf(art)
+  if type(art.getWidth) == "function" then
+    return art
+  end
+  local inner = art.image or (art.lease and art.lease.image)
+  if inner ~= nil and type(inner.getWidth) == "function" then
+    return inner
+  end
+  return nil
+end
+
+-- Draws one resolved scene layer: pool leases resolve to their staged
+-- image for the raw host draw while owned, test, and descriptor handles
+-- draw as resolved.
+---@param graphics table<string, unknown> injected host graphics
+---@param scene table<string, unknown> resolved scene drawable under drawing
+---@param scrollX number background horizontal scroll in native pixels
+---@param scrollY number background vertical scroll in native pixels
+local function drawSceneLayer(graphics, scene, scrollX, scrollY)
+  local staged = stagedPixelsOf(scene)
+  graphics.draw(staged == nil and scene or staged, 0 - scrollX, 0 - scrollY)
+end
+
+---@param art table<string, unknown> resolved drawable handle under drawing
+---@return number? strip width in pixels, nil for pixel-less stand-ins
+local function stripWidthOf(art)
+  if type(art.getWidth) == "function" then
+    return art:getWidth()
+  end
+  if type(art.width) ~= "number" then
+    return nil
+  end
+  local inner = art.image or (art.lease and art.lease.image)
+  if inner == nil or type(inner.getWidth) ~= "function" then
+    return nil
+  end
+  return art.width
+end
+
+---@param art table<string, unknown> resolved drawable handle under drawing
+---@return number? strip height in pixels, nil for pixel-less stand-ins
+local function stripHeightOf(art)
+  if type(art.getHeight) == "function" then
+    return art:getHeight()
+  end
+  if type(art.height) ~= "number" then
+    return nil
+  end
+  local inner = art.image or (art.lease and art.lease.image)
+  if inner == nil or type(inner.getHeight) ~= "function" then
+    return nil
+  end
+  return art.height
+end
+
 -- Neutral health-box wording through the borrowed text services: the
 -- field palette triple when the service carries the generated font
 -- definition, a neutral caller palette otherwise. Every health-box word
@@ -445,6 +505,58 @@ local function hudText(text, content, x, y)
 end
 
 ---@param text table<string, unknown> borrowed text services
+---@param role string source text role under drawing
+---@param content string text under drawing
+---@param x number horizontal origin under drawing
+---@param y number vertical origin under drawing
+---@param colors table<string, integer>? source palette slots for this text role
+local function drawRoleText(text, role, content, x, y, colors)
+  local draw = text.drawTextForRole --[[@as fun(role: string, content: string, x: number, y: number, colors: table<string, integer>?)?]]
+  if draw ~= nil then
+    draw(role, content, x, y, colors)
+  else
+    text.drawText(content, x, y)
+  end
+end
+
+local function movePpColors(pp, maxPp)
+  if pp == 0 then
+    return { foreground = 7, shadow = 8, background = 0 }
+  end
+  if pp == maxPp then
+    return { foreground = 1, shadow = 2, background = 0 }
+  end
+  if (maxPp <= 2 and pp == 1) or (maxPp <= 7 and pp == 1) then
+    return { foreground = 5, shadow = 6, background = 0 }
+  end
+  if maxPp <= 7 then
+    if pp == 2 then
+      return { foreground = 3, shadow = 4, background = 0 }
+    end
+  else
+    if pp <= maxPp / 4 then
+      return { foreground = 5, shadow = 6, background = 0 }
+    end
+    if pp <= maxPp / 2 then
+      return { foreground = 3, shadow = 4, background = 0 }
+    end
+  end
+  return { foreground = 1, shadow = 2, background = 0 }
+end
+
+---@param text table<string, unknown> borrowed text services
+---@param role string source text role under measurement
+---@param content string text under measurement
+---@return number measured width
+local function measureRoleText(text, role, content)
+  local measure = text.measureForRole --[[@as fun(role: string, content: string): table<string, number>?]]
+  if measure ~= nil then
+    return measure(role, content).width
+  end
+  return text.measure(content).width
+end
+
+---@param text table<string, unknown> borrowed text services
 ---@param content string label wording under truncation
 ---@param maxWidth number tile span width under truncation
 ---@return string label fitting its tile span
@@ -484,15 +596,17 @@ local function drawBarTiles(graphics, assets, artKey, anchor, objects, component
   if art == nil then
     return
   end
-  -- Headless descriptors and other dimension-less stand-ins carry no
-  -- strip pixels: patch tiles stay missing exactly like an unstaged
-  -- strip while anchors and wording still resolve.
-  if type(art.getWidth) ~= "function" or type(art.getHeight) ~= "function" then
+  -- Headless descriptors and other pixel-less stand-ins carry no strip
+  -- pixels: patch tiles stay missing exactly like an unstaged strip
+  -- while anchors and wording still resolve.
+  local stripWidth = stripWidthOf(art)
+  local stripHeight = stripHeightOf(art)
+  if stripWidth == nil or stripHeight == nil then
     return
   end
   for _, patch in ipairs(patches) do
     if patch.fill == nil or patch.fill > 0 then
-      local quad = graphics.newQuad((componentBase + patch.sourceTile) * 8, 0, 8, 8, art:getWidth(), art:getHeight())
+      local quad = graphics.newQuad((componentBase + patch.sourceTile) * 8, 0, 8, 8, stripWidth, stripHeight)
       local found = false
       for _, obj in ipairs(objects) do
         if not obj.disabled then
@@ -613,12 +727,21 @@ local function drawPicturePlanes(graphics, assets, view, players, enemies, singl
       -- The Substitute doll is a transient native animation picture. The
       -- scene hides the replaced mon; the animation owner supplies the
       -- doll through its effect instance.
-      -- The GPU picture pass consumes staged image handles: headless
-      -- descriptors and other dimension-less stand-ins carry no pixels,
-      -- so they never reach the isolated depth target.
+      -- The GPU picture pass consumes staged image handles: leases and
+      -- wrappers resolve to their staged image while headless descriptors
+      -- and other pixel-less stand-ins never reach the isolated depth target.
       local image = battler.substitute ~= true and battlerImage(assets, battler) or nil
-      if image ~= nil and type(image.getDimensions) ~= "function" then
-        image = nil
+      if image ~= nil then
+        if type(image) ~= "table" then
+          -- Host images draw directly.
+        else
+          local staged = image.image or (image.lease and image.lease.image) or image
+          if type(staged.getDimensions) ~= "function" then
+            image = nil
+          else
+            image = staged
+          end
+        end
       end
       if image ~= nil then
         local sourceHeight = (type(battler.height) == "number" and battler.height or 0)
@@ -723,7 +846,16 @@ local function drawSpriteObject(graphics, image, stripWidth, baseX, baseY, obj)
   local rows = math.floor(height / 8)
   for row = 0, rows - 1 do
     local quad = graphics.newQuad((tile + row * tilesPerRow) * 8, 0, width, STRIP_HEIGHT, stripWidth, STRIP_HEIGHT)
-    graphics.draw(image, quad, baseX + obj.x --[[@as number]], baseY + obj.y --[[@as number]] + row * 8)
+    -- Leases draw through the shared sampler so indexed pixels resolve
+    -- exactly and records carry staged identity; owned, test, and
+    -- descriptor handles draw directly, which records them in headless
+    -- composition.
+    local lease = (type(image) == "table" and image.lease) or image
+    if type(image) == "table" and type(lease.drawQuad) == "function" then
+      lease:drawQuad(graphics, quad, baseX + obj.x --[[@as number]], baseY + obj.y --[[@as number]] + row * 8)
+    else
+      graphics.draw(image, quad, baseX + obj.x --[[@as number]], baseY + obj.y --[[@as number]] + row * 8)
+    end
   end
 end
 
@@ -739,14 +871,22 @@ local function drawHudComposite(graphics, assets, artKey, anchor, objects)
   if art == nil then
     return
   end
-  -- Headless descriptors and other dimension-less stand-ins carry no
-  -- strip pixels: the composite stays missing exactly like an unstaged
-  -- strip while anchors and wording still resolve.
-  if type(art.getWidth) ~= "function" then
+  -- Headless descriptors and other pixel-less stand-ins carry no strip
+  -- pixels: the composite stays missing exactly like an unstaged strip
+  -- while anchors and wording still resolve.
+  local stripWidth = stripWidthOf(art)
+  if stripWidth == nil then
     return
   end
   for _, obj in ipairs(objects) do
-    drawSpriteObject(graphics, art --[[@as table<string, unknown>]], art:getWidth(), anchor.x, anchor.y, obj)
+    drawSpriteObject(
+      graphics,
+      art --[[@as table<string, unknown>]],
+      stripWidth --[[@as integer]],
+      anchor.x,
+      anchor.y,
+      obj
+    )
   end
 end
 
@@ -798,7 +938,6 @@ local function drawHpNumbers(graphics, text, anchor, objects, patches, hp, maxHp
     end
     return #value * 8
   end
-  local LogicalSurface = require("libs.ui.src.LogicalSurface")
   LogicalSurface.clip(graphics, { x = currentX, y = currentY, width = 24, height = 8 }, function()
     hudText(text, currentLabel, currentX + 24 - width(currentLabel), currentY)
   end)
@@ -853,10 +992,10 @@ local function drawDoublesHudCell(graphics, assets, sections, artKey, anchor)
   if art == nil then
     return nil, section
   end
-  -- Headless descriptors and other dimension-less stand-ins carry no
-  -- strip pixels: the HUD cell stays missing exactly like an unstaged
-  -- strip while field bounds and wording still resolve.
-  if type(art.getWidth) ~= "function" then
+  -- Headless descriptors and other pixel-less stand-ins carry no strip
+  -- pixels: the HUD cell stays missing exactly like an unstaged strip
+  -- while field bounds and wording still resolve.
+  if stripWidthOf(art) == nil then
     return nil, section
   end
   for index, obj in ipairs(objectsByPriority(cell.objs)) do
@@ -867,7 +1006,14 @@ local function drawDoublesHudCell(graphics, assets, sections, artKey, anchor)
     assert(not obj.mosaic and obj.objMode == "normal", context .. " uses unsupported object display flags")
     assert(obj.colorMode == "16-color", context .. " uses unsupported color depth")
     if not obj.disabled then
-      drawSpriteObject(graphics, art, art:getWidth(), anchor.x, anchor.y, obj)
+      drawSpriteObject(
+        graphics,
+        art,
+        assert(stripWidthOf(art), "doubled HUD strips carry their native width") --[[@as integer]],
+        anchor.x,
+        anchor.y,
+        obj
+      )
     end
   end
   return cell, section
@@ -1128,7 +1274,6 @@ end
 ---@param view table<string, unknown> internal semantic snapshot
 local function drawDetail(resources, view)
   local graphics = assert(resources.graphics, "the battle render borrows its host graphics")
-  local LogicalSurface = require("libs.ui.src.LogicalSurface")
   local text = assert(resources.text, "the battle render borrows its text services")
   local windows = assert(resources.windows, "the battle render borrows its window services")
   local assets = assert(resources.assets, "the battle render borrows its asset holder")
@@ -1150,7 +1295,7 @@ local function drawDetail(resources, view)
     scene = assets:drawable(resources.sceneImageKey --[[@as string]])
   end
   if scene ~= nil then
-    graphics.draw(scene, 0 - scrollX, 0 - scrollY)
+    drawSceneLayer(graphics, scene, scrollX, scrollY)
   end
   local players, enemies = splitBattlers(view)
   local singles = not doublesFormat(view, players, enemies)
@@ -1235,14 +1380,21 @@ local function drawDetail(resources, view)
     )
   end
   if type(view.message) == "string" and view.message ~= "" then
-    windows.drawWindow(NARRATION_BOX, resources.frameKey, { 0, 0, 0 })
+    windows.drawWindow(NARRATION_BOX, resources.frameKey, { 0, 0, 0, 0 })
     LogicalSurface.clip(graphics, {
       x = NARRATION_BOX.x + 8,
       y = NARRATION_BOX.y + 8,
       width = NARRATION_BOX.width - 16,
       height = NARRATION_BOX.height - 16,
     }, function()
-      text.drawText(view.message --[[@as string]], NARRATION_TEXT.x, NARRATION_TEXT.y)
+      drawRoleText(
+        text,
+        "narration",
+        view.message --[[@as string]],
+        NARRATION_TEXT.x,
+        NARRATION_TEXT.y,
+        { foreground = 1, shadow = 2, background = 0 }
+      )
     end)
   end
   restoreColor(graphics, r, g, b, a)
@@ -1292,11 +1444,12 @@ end
 ---@param text table<string, unknown> borrowed text services
 ---@param content string label wording under truncation
 ---@param maxWidth number region width under truncation
+---@param role string? source text role under truncation
 ---@return string label fitting its region
-local function fitLabel(text, content, maxWidth)
+local function fitLabel(text, content, maxWidth, role)
   local label = tostring(content)
-  if type(text.measure) == "function" and maxWidth > 0 then
-    while #label > 1 and text.measure(label).width > maxWidth do
+  if (type(text.measureForRole) == "function" or type(text.measure) == "function") and maxWidth > 0 then
+    while #label > 1 and measureRoleText(text, role or "menu", label) > maxWidth do
       label = label:sub(1, #label - 1)
     end
   end
@@ -1351,9 +1504,21 @@ local function drawControls(resources, view, layout, regions)
         local entry = commandsById[id]
         local enabled = entry == nil or entry.enabled ~= false
         if enabled or id == "fight" or id == "bag" or id == "pokemon" then
-          text.drawText(COMMAND_LABELS[id] or id, anchor.x + shift, anchor.y + shift)
+          local labelY = pressed and id == "fight" and layout == "command" and anchor.y - 2 or anchor.y
+          local commandColors = id == "fight" and { foreground = 1, shadow = 2, background = 3 }
+            or id == "bag" and { foreground = 4, shadow = 5, background = 6 }
+            or id == "pokemon" and { foreground = 7, shadow = 8, background = 9 }
+            or { foreground = 10, shadow = 11, background = 12 }
+          drawRoleText(text, "menu", COMMAND_LABELS[id] or id, anchor.x + shift, labelY, commandColors)
         else
-          text.drawText(fitLabel(text, COMMAND_LABELS[id] or id, box.w --[[@as number]]), anchor.x, anchor.y)
+          drawRoleText(
+            text,
+            "menu",
+            fitLabel(text, COMMAND_LABELS[id] or id, box.w --[[@as number]], "menu"),
+            anchor.x,
+            anchor.y,
+            { foreground = 10, shadow = 11, background = 12 }
+          )
         end
       elseif slot ~= nil then
         local slotIndex = tonumber(slot) --[[@as integer]]
@@ -1363,17 +1528,40 @@ local function drawControls(resources, view, layout, regions)
         local ppCurrent = PP_CURRENT_ANCHORS[slotIndex + 1]
         local ppMax = PP_MAX_ANCHORS[slotIndex + 1]
         if move ~= nil and anchor ~= nil and move.name ~= nil then
-          text.drawText(fitLabel(text, move.name --[[@as string]], 120), anchor.x + shift, anchor.y + shift)
+          drawRoleText(
+            text,
+            "menu",
+            fitLabel(text, move.name --[[@as string]], 120, "menu"),
+            anchor.x + shift,
+            anchor.y + shift,
+            { foreground = 7, shadow = 8, background = 9 }
+          )
           if ppCurrent ~= nil and ppMax ~= nil then
-            text.drawText(tostring(move.pp), ppCurrent.x + shift, ppCurrent.y + shift)
-            text.drawText("/" .. tostring(move.maxPp), ppMax.x + shift, ppMax.y + shift)
+            local ppColors = movePpColors(move.pp, move.maxPp)
+            drawRoleText(text, "menu", tostring(move.pp), ppCurrent.x + shift, ppCurrent.y + shift, ppColors)
+            drawRoleText(text, "menu", "/" .. tostring(move.maxPp), ppMax.x + shift, ppMax.y + shift, ppColors)
           end
-          if move.moveType ~= nil and typeAnchor ~= nil then
-            text.drawText(tostring(move.moveType), typeAnchor.x + shift, typeAnchor.y + shift)
+          if type(move.moveType) == "string" and typeAnchor ~= nil then
+            local icon = assets:drawable("battle:move-type-icon:" .. move.moveType:lower())
+            if icon ~= nil then
+              local iconWidth, iconHeight = icon:getDimensions()
+              graphics.draw(
+                icon,
+                typeAnchor.x + shift - math.floor(iconWidth / 2),
+                typeAnchor.y + shift - math.floor(iconHeight / 2)
+              )
+            end
           end
         end
       elseif id == "cancel" then
-        text.drawText("CANCEL", CANCEL_ANCHOR.x + shift, CANCEL_ANCHOR.y + shift)
+        drawRoleText(
+          text,
+          "menu",
+          "CANCEL",
+          CANCEL_ANCHOR.x + shift,
+          CANCEL_ANCHOR.y + shift,
+          { foreground = 10, shadow = 11, background = 12 }
+        )
       elseif id:match("^target:") ~= nil then
         -- Target rows name their projected candidate with the focus
         -- marker, so the chosen foe never depends on sprite order.
@@ -1381,10 +1569,14 @@ local function drawControls(resources, view, layout, regions)
         if view.selection == id then
           name = "> " .. name
         end
-        text.drawText(
-          fitLabel(text, name, box.w --[[@as number]]),
+        drawRoleText(
+          text,
+          "menu",
+          fitLabel(text, name, box.w --[[@as number]], "menu"),
           box.x --[[@as number]] + shift,
-          box.y --[[@as number]] + shift
+          box.y --[[@as number]] + shift,
+          (id == "target:0" or id == "target:2") and { foreground = 4, shadow = 5, background = 6 }
+            or { foreground = 1, shadow = 2, background = 3 }
         )
       end
     end
@@ -1392,25 +1584,28 @@ local function drawControls(resources, view, layout, regions)
   restoreColor(graphics, r, g, b, a)
 end
 
--- Draws one party gauge cell from the 16-pixel family: tiles lay out
--- row-major from the state base tile in the single strip row.
+-- Draws one party gauge cell from its source family and NCER cell.
 ---@param graphics table<string, unknown> injected host graphics
 ---@param image table<string, unknown> staged gauge strip handle under drawing
+---@param family table<string, unknown> source family carrying cell geometry
 ---@param slotX number slot horizontal origin under drawing
 ---@param slotY number slot vertical origin under drawing
 ---@param state integer roster visibility state under drawing: 0 absent, 1 present, 2 fainted
-local function drawGaugeCell(graphics, image, slotX, slotY, state)
-  local tile = GAUGE_CELL_TILES[state + 1] or GAUGE_CELL_TILES[1]
-  drawSpriteObject(graphics, image, GAUGE_STRIP_WIDTH, slotX, slotY, {
-    tile = tile,
-    width = GAUGE_CELL_SIZE,
-    height = GAUGE_CELL_SIZE,
-    x = GAUGE_CELL_OFFSET,
-    y = GAUGE_CELL_OFFSET,
-  })
+local function drawGaugeCell(graphics, image, family, slotX, slotY, state)
+  local cells = assert(family.cells, "a staged party gauge carries source NCER cells") --[[@as table[] ]]
+  local cell = assert(cells[state + 1], "a staged party gauge has a source cell for each roster state")
+  -- Headless descriptors and other pixel-less stand-ins carry no strip
+  -- pixels: gauge cells stay missing exactly like an unstaged strip.
+  local stripWidth = stripWidthOf(image)
+  if stripWidth == nil then
+    return
+  end
+  for _, object in ipairs(cell.objs) do
+    drawSpriteObject(graphics, image, stripWidth --[[@as integer]], slotX, slotY, object)
+  end
 end
 
--- Draws both party rows from the 16-pixel source family by roster
+-- Draws both party rows from their native source families by roster
 -- visibility: the committed battle roster behind the player row, the
 -- revealed active-foe count behind the enemy row. Unrevealed foes keep
 -- the absent cell, so no unrevealed species ever shows. A missing strip
@@ -1420,11 +1615,13 @@ end
 local function drawGauges(resources, view)
   local graphics = assert(resources.graphics, "the battle render borrows its host graphics")
   local assets = assert(resources.assets, "the battle render borrows its asset holder")
+  local families = assert(view.gaugeFamilies, "the battle view carries detached source gauge families")
   local roster = {}
   if type(view.partyRoster) == "table" then
     roster = view.partyRoster --[[@as table[] ]]
   end
   local playerArt = assets:drawable("gauges:player")
+  local playerFamily = assert(families.player, "the battle view carries the player gauge family")
   if playerArt ~= nil then
     for index = 0, 5 do
       local entry = roster[index + 1]
@@ -1438,6 +1635,7 @@ local function drawGauges(resources, view)
       drawGaugeCell(
         graphics,
         playerArt --[[@as table<string, unknown>]],
+        playerFamily,
         GAUGE_PLAYER_X + GAUGE_PLAYER_PITCH * index,
         GAUGE_PLAYER_Y,
         state
@@ -1445,6 +1643,7 @@ local function drawGauges(resources, view)
     end
   end
   local enemyArt = assets:drawable("gauges:enemy")
+  local enemyFamily = assert(families.enemy, "the battle view carries the opponent gauge family")
   if enemyArt ~= nil then
     local revealed = (type(view.foeCount) == "number" and view.foeCount or 1) --[[@as integer]]
     for index = 0, 5 do
@@ -1455,7 +1654,8 @@ local function drawGauges(resources, view)
       drawGaugeCell(
         graphics,
         enemyArt --[[@as table<string, unknown>]],
-        GAUGE_ENEMY_RIGHT - GAUGE_ENEMY_PITCH * index - GAUGE_CELL_WIDTH,
+        enemyFamily,
+        GAUGE_ENEMY_RIGHT - GAUGE_ENEMY_PITCH * index,
         GAUGE_ENEMY_Y,
         state
       )
@@ -1623,29 +1823,74 @@ end
 
 ---@param resources table<string, unknown> borrowed application collaborators
 ---@param view table<string, unknown> internal semantic snapshot
+---@param child table<string, unknown> confirmed learning child view with source labels
+local function drawTwoOptionConfirmation(resources, view, child)
+  local graphics = assert(resources.graphics, "the battle render borrows its host graphics")
+  local assets = assert(resources.assets, "the battle render borrows its asset holder")
+  local text = assert(resources.text, "the battle render borrows its text services")
+  local menuLayers = assert(view.menuLayers, "the battle view carries generated menu screen layers")
+  local layers = assert(menuLayers.twoOption, "the battle view carries source two-option layers") --[[@as table[] ]]
+  local armed = type(view.armed) == "table" and view.armed or nil
+  local selected = nil
+  local pressedId = nil
+  if type(armed) == "table" and armed.scope == "child" then
+    if armed.id == "confirm" then
+      selected, pressedId = "yes", "yes"
+    elseif armed.id == "back" then
+      selected, pressedId = "cancel", "cancel"
+    end
+  end
+  BattleMenuPresenter.draw(graphics, assets, "two-option", layers, {
+    selection = selected,
+    armed = pressedId ~= nil and { scope = "two-option", id = pressedId } or nil,
+  })
+  local labels = assert(child.twoOption, "learning confirmation carries source-selected labels") --[[@as table<string, unknown>]]
+  local top = assert(labels.top, "the top option has its staged source label") --[[@as string]]
+  local bottom = assert(labels.bottom, "the bottom option has its staged source label") --[[@as string]]
+  local topY = 67
+  local bottomY = 139
+  if armed ~= nil and armed.scope == "child" then
+    if armed.id == "confirm" then
+      topY = topY - 2
+    elseif armed.id == "back" then
+      bottomY = bottomY - 2
+    end
+  end
+  drawRoleText(text, "menu", top, 128 - math.floor(measureRoleText(text, "menu", top) / 2), topY, {
+    foreground = 1,
+    shadow = 2,
+    background = 3,
+  })
+  drawRoleText(text, "menu", bottom, 128 - math.floor(measureRoleText(text, "menu", bottom) / 2), bottomY, {
+    foreground = 10,
+    shadow = 11,
+    background = 12,
+  })
+end
+
+---@param resources table<string, unknown> borrowed application collaborators
+---@param view table<string, unknown> internal semantic snapshot
 ---@param content table<string, unknown> canonical plan content carrying the layout
 local function drawInteraction(resources, view, content)
   if view.mode == "child" and type(view.childView) == "table" then
-    drawChild(resources, view, view.childView --[[@as table<string, unknown>]])
+    local child = view.childView --[[@as table<string, unknown>]]
+    if child.kind == "learn" and type(child.confirmation) == "table" then
+      drawTwoOptionConfirmation(resources, view, child)
+    else
+      drawChild(resources, view, child)
+    end
     return
   end
   local graphics = assert(resources.graphics, "the battle render borrows its host graphics")
   local assets = assert(resources.assets, "the battle render borrows its asset holder")
   local text = assert(resources.text, "the battle render borrows its text services")
   local layout = content.layout --[[@as string]]
-  if layout ~= "command" and layout ~= "moves" and layout ~= "target" then
+  if layout ~= "command" and layout ~= "moves" and layout ~= "target" and layout ~= "two-option" then
     layout = "command"
   end
-  local background = assets:drawable("menu:" .. layout)
-  if background ~= nil then
-    graphics.draw(background, 0, 0)
-  end
-  -- Multi-actor turns name the acting battler above the menu so staged
-  -- choices are never mistaken for the previous entry's selection.
-  local acting = actingName(view)
-  if acting ~= nil then
-    text.drawText(fitLabel(text, acting, 44), 128, 8)
-  end
+  local menuLayers = assert(view.menuLayers, "the battle view carries generated menu screen layers")
+  local sectionKey = layout == "two-option" and "twoOption" or layout
+  local layers = assert(menuLayers[sectionKey], "the battle view carries layers for its selected menu") --[[@as table[] ]]
   local regions = {}
   if layout == "moves" then
     regions = {
@@ -1657,10 +1902,10 @@ local function drawInteraction(resources, view, content)
     }
   elseif layout == "target" then
     regions = {
-      { id = "target:0", x = 28, y = 92, w = 64, h = 48 },
-      { id = "target:1", x = 164, y = 8, w = 64, h = 48 },
-      { id = "target:2", x = 164, y = 92, w = 64, h = 48 },
-      { id = "target:3", x = 28, y = 8, w = 64, h = 48 },
+      { id = "target:0", x = 0, y = 88, w = 121, h = 57 },
+      { id = "target:1", x = 136, y = 8, w = 120, h = 73 },
+      { id = "target:2", x = 136, y = 88, w = 120, h = 57 },
+      { id = "target:3", x = 0, y = 8, w = 121, h = 73 },
       { id = "cancel", x = 8, y = 152, w = 240, h = 40 },
     }
   else
@@ -1671,7 +1916,26 @@ local function drawInteraction(resources, view, content)
       { id = "run", x = 88, y = 152, w = 80, h = 40 },
     }
   end
-  drawControls(resources, view, layout, regions)
+  local function drawMenu()
+    local revealEdge = type(view.menuRevealEdge) == "number" and view.menuRevealEdge or nil
+    local menuWindows = type(view.menuWindows) == "table" and view.menuWindows or nil
+    BattleMenuPresenter.draw(graphics, assets, layout, layers, view, menuWindows)
+    local function drawOverlay()
+      -- Multi-actor turns name the acting battler above the menu so staged
+      -- choices are never mistaken for the previous entry's selection.
+      local acting = actingName(view)
+      if acting ~= nil then
+        drawRoleText(text, "menu", fitLabel(text, acting, 44, "menu"), 128, 8)
+      end
+      drawControls(resources, view, layout, regions)
+    end
+    if revealEdge ~= nil then
+      LogicalSurface.clip(graphics, { x = 0, y = 0, width = 256, height = revealEdge }, drawOverlay)
+    else
+      drawOverlay()
+    end
+  end
+  drawMenu()
   drawGauges(resources, view)
 end
 
@@ -1702,7 +1966,6 @@ end
 ---@param view table<string, unknown> internal semantic snapshot
 ---@param spots table<integer, table<string, unknown>> compact sprite anchors keyed by native position
 local function drawCompactSlots(graphics, assets, view, spots)
-  local LogicalSurface = require("libs.ui.src.LogicalSurface")
   -- One sprite per declared slot, matched by the opaque native
   -- position in the plan's paint order. Hidden, benched and historic
   -- records own no slot; a missing portrait draws nothing under the
@@ -1748,7 +2011,15 @@ local function drawCompactSlots(graphics, assets, view, spots)
         local scale = assert(spot.scale, "compact doubles portraits carry their authored presentation scale")
         local allocation = { x = spot.x, y = spot.y, width = spot.width, height = spot.height }
         LogicalSurface.clip(graphics, allocation, function()
-          graphics.draw(image, spot.x + dx * scale, spot.y, 0, scale, scale)
+          -- Lease-paired cells draw through the shared sampler so the
+          -- recorded draw carries the staged cell exactly; owned and
+          -- test images draw directly.
+          local lease = image.lease or image
+          if image.quad ~= nil and type(lease.drawQuad) == "function" then
+            lease:drawQuad(graphics, image.quad, spot.x + dx * scale, spot.y, 0, scale, scale)
+          else
+            graphics.draw(image, spot.x + dx * scale, spot.y, 0, scale, scale)
+          end
         end)
       end
     end
@@ -1770,7 +2041,6 @@ end
 local function drawCompactScene(resources, view, content)
   local graphics = assert(resources.graphics, "the battle render borrows its host graphics")
   local assets = assert(resources.assets, "the battle render borrows its asset holder")
-  local LogicalSurface = require("libs.ui.src.LogicalSurface")
   local viewport = content.scene
   if type(viewport) ~= "table" then
     viewport = { x = 0, y = 0, width = 256, height = 136 }
@@ -1799,7 +2069,7 @@ local function drawCompactScene(resources, view, content)
     end
     if scene ~= nil then
       local scrollX, scrollY = bgScrollOf(view)
-      graphics.draw(scene, 0 - scrollX, 0 - scrollY)
+      drawSceneLayer(graphics, scene, scrollX, scrollY)
     end
     local spots = content.spriteCenters
     if type(spots) == "table" then
@@ -1810,14 +2080,24 @@ local function drawCompactScene(resources, view, content)
         local front = battlerImage(assets, enemy)
         if front ~= nil then
           local dx = (type(enemy.shakeDx) == "number" and enemy.shakeDx or 0) --[[@as number]]
-          graphics.draw(front, enemyCenter.x + dx, enemyCenter.y)
+          local frontLease = front.lease or front
+          if front.quad ~= nil and type(frontLease.drawQuad) == "function" then
+            frontLease:drawQuad(graphics, front.quad, enemyCenter.x + dx, enemyCenter.y)
+          else
+            graphics.draw(front, enemyCenter.x + dx, enemyCenter.y)
+          end
         end
       end
       if player ~= nil and player.visible ~= false then
         local back = battlerImage(assets, player)
         if back ~= nil then
           local dx = (type(player.shakeDx) == "number" and player.shakeDx or 0) --[[@as number]]
-          graphics.draw(back, playerCenter.x + dx, playerCenter.y)
+          local backLease = back.lease or back
+          if back.quad ~= nil and type(backLease.drawQuad) == "function" then
+            backLease:drawQuad(graphics, back.quad, playerCenter.x + dx, playerCenter.y)
+          else
+            graphics.draw(back, playerCenter.x + dx, playerCenter.y)
+          end
         end
       end
     end

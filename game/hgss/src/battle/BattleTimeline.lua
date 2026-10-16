@@ -946,8 +946,11 @@ local function translateCaught(self)
 end
 
 ---@param self BattleTimeline
-local function translateBrokeFree(self)
-  enqueueMessage(self, captureFoeName(self) .. " broke free!", false)
+---@param event table<string, unknown> native capture event under translation
+local function translateBrokeFree(self, event)
+  local sourceText = assert(event.sourceText, "capture outcomes require selected native source text")
+  assert(type(sourceText) == "string", "capture outcome source text is a string")
+  enqueueMessage(self, sourceText, false)
   enqueue(self, { kind = "wait", duration = BattleTimeline.HIT_TICKS })
 end
 
@@ -1026,8 +1029,9 @@ end
 -- identity is rejected without touching state. A completion naming an
 -- entry token without actor identity is stale and never unblocks.
 ---@param packet table<string, unknown> detached delivery packet
+---@param sourceMessages table<integer, string>? selected source text by event sequence
 ---@return boolean accepted
-function BattleTimeline:present(packet)
+function BattleTimeline:present(packet, sourceMessages)
   assert(type(packet) == "table", "the cue player consumes delivery packets")
   local id = packet.packetId --[[@as integer]]
   assert(type(id) == "number" and id % 1 == 0 and id >= 1, "delivery packets carry a monotonic identity")
@@ -1041,7 +1045,23 @@ function BattleTimeline:present(packet)
       ipairs(packet.events --[[@as table<integer, unknown>]])
     do
       if type(event) == "table" then
-        events[#events + 1] = event --[[@as table<string, unknown>]]
+        if event.kind == "broke_free" then
+          assert(
+            type(event.sequence) == "number" and event.sequence % 1 == 0 and event.sequence >= 0,
+            "capture outcomes carry an event sequence"
+          )
+        end
+        local sourceText = sourceMessages ~= nil and sourceMessages[event.sequence] or nil
+        if event.kind == "broke_free" then
+          assert(type(sourceText) == "string", "capture outcomes require selected native source text")
+        end
+        if type(sourceText) == "string" then
+          local detached = copyValue(event) --[[@as table<string, unknown>]]
+          detached.sourceText = sourceText
+          events[#events + 1] = detached
+        else
+          events[#events + 1] = event --[[@as table<string, unknown>]]
+        end
       end
     end
   end

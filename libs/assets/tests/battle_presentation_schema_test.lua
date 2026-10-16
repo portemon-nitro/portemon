@@ -591,6 +591,49 @@ function T.manifests_require_catalog_identity_and_source_backed_sections()
   Assert.isFalse(Schema.isValidManifest(oldShape), "old flat menu fields are rejected by the v2 contract")
 end
 
+function T.menu_feedback_patches_are_normalized_screen_assets()
+  local nativeFeedback = manifest()
+  local screen = nativeFeedback.menus.command.screens[1]
+  screen.plane = 1
+  screen.feedback = {
+    fight = {
+      selected = {
+        image = screen.image,
+        x = 16,
+        y = 32,
+        width = 224,
+        height = 96,
+      },
+      pressed = {
+        image = screen.image,
+        x = 16,
+        y = 32,
+        width = 224,
+        height = 96,
+      },
+    },
+  }
+  Assert.isTrue(
+    Schema.isValidManifest(nativeFeedback),
+    "native feedback states and physical BG plane use staged source bounds"
+  )
+
+  local invalidPlane = manifest()
+  invalidPlane.menus.command.screens[1].plane = 4
+  Assert.isFalse(Schema.isValidManifest(invalidPlane), "a menu screen names one physical BG plane")
+
+  local outsideScreen = manifest()
+  outsideScreen.menus.command.screens[1].feedback = nativeFeedback.menus.command.screens[1].feedback
+  outsideScreen.menus.command.screens[1].feedback.fight.selected.x = 250
+  Assert.isFalse(Schema.isValidManifest(outsideScreen), "a feedback patch stays inside its source screen")
+
+  local unsupportedState = manifest()
+  unsupportedState.menus.command.screens[1].feedback = nativeFeedback.menus.command.screens[1].feedback
+  unsupportedState.menus.command.screens[1].feedback.fight.disabled =
+    unsupportedState.menus.command.screens[1].feedback.fight.selected
+  Assert.isFalse(Schema.isValidManifest(unsupportedState), "feedback states are source-selected or pressed only")
+end
+
 function T.native_slot_geometry_is_complete_unique_and_semantic()
   local missing = manifest()
   missing.battlefield = nil

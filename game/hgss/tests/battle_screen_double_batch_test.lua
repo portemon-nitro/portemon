@@ -13,6 +13,7 @@ local Lcrng = require("libs.mons.src.gen4.Lcrng")
 local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
+local BattlePresentationManifestFixture = require("tests.support.BattlePresentationManifestFixture")
 
 local T = {}
 
@@ -32,36 +33,14 @@ local STATE_MODULE = "game.hgss.src.battle.BattleScreenState"
 local MODEL_MODULE = "game.hgss.src.battle.BattlePresentationModel"
 local SCENARIO_FACTORY_MODULE = "libs.hgss.src.battle.HgssBattleScenarioFactory"
 
+local function battleManifest()
+  local manifest = BattlePresentationManifestFixture.manifest()
+  manifest.scenes = { { key = "general/plain/day", background = "general", terrain = "plain", time = "day" } }
+  return manifest
+end
+
 local function testDoublesHud()
-  local function object(tile, x, y, width, height)
-    return {
-      tile = tile,
-      x = x,
-      y = y,
-      width = width,
-      height = height,
-      flipH = false,
-      flipV = false,
-      palette = 0,
-      affine = false,
-      disabled = false,
-      mosaic = false,
-      objMode = "normal",
-      colorMode = "16-color",
-    }
-  end
-  local function section(tile, x, y, width, height)
-    return {
-      cells = { { objs = { object(tile, x, y, width, height) } } },
-      animation = { frames = { { cell = 0, duration = 1 } } },
-    }
-  end
-  return {
-    playerLeft = section(3, -5, -7, 8, 8),
-    playerRight = section(7, -9, -11, 16, 8),
-    enemyLeft = section(11, -13, -17, 8, 16),
-    enemyRight = section(15, -19, -23, 16, 16),
-  }
+  return BattlePresentationManifestFixture.manifest().hud.doubles
 end
 
 ---@param layout string "paired" or "compact" surface arrangement under test driving
@@ -151,7 +130,18 @@ local function openDoubleRig(opts)
       rig.assets.images = {}
     end
     if rig.assets.images[key] == nil then
-      rig.assets.images[key] = stubPortrait(key)
+      rig.assets.images[key] = {
+        handle = key,
+        getWidth = function()
+          return 64
+        end,
+        getHeight = function()
+          return 64
+        end,
+        getDimensions = function()
+          return 64, 64
+        end,
+      }
     end
     return rig.assets.images[key]
   end
@@ -241,15 +231,10 @@ local function openDoubleRig(opts)
       },
     },
   }, { party = party, bag = bag, player = { trainerId = 99, trainerName = "MINT", language = "french" } })
-  local manifest = {
-    schema = "test",
-    version = { id = "t", language = "english" },
-    verified = false,
-    scenes = { { key = "general/plain/day" } },
-    doublesHud = testDoublesHud(),
-  }
+  local manifest = battleManifest()
+  manifest.hud.doubles = testDoublesHud()
   if opts.missingHud then
-    manifest.doublesHud = {}
+    manifest.hud.doubles = {}
   end
   local screen = BattleScreenState.new({
     launchId = launchId,
@@ -308,6 +293,13 @@ end
 ---@param rig table live screen rig under test driving
 ---@param event table<string, unknown> semantic input under test driving
 local function press(rig, event)
+  for _ = 1, 12 do
+    if rig.screen:view().menuInputEnabled ~= false then
+      break
+    end
+    rig.pump(1)
+  end
+  Assert.isTrue(rig.screen:view().menuInputEnabled ~= false, "source menu entry completes before input")
   rig.screen:input({ event })
   rig.pump(1)
 end
@@ -658,12 +650,7 @@ function T.two_fainted_leads_are_replaced_without_partial_submit()
   end
   local screen = BattleScreenState.new({
     launchId = launchId,
-    manifest = {
-      schema = "test",
-      version = { id = "t", language = "english" },
-      verified = false,
-      scenes = { { key = "general/plain/day" } },
-    },
+    manifest = battleManifest(),
     model = Model,
     submit = function(reply)
       local ok, err = pcall(BattleProtocol.validateReply, reply, "action")
@@ -957,6 +944,13 @@ function T.exhausted_doubled_lead_reaches_struggle_targets_and_batches_atomicall
   Assert.isTrue(touchStruggle.enabled == true, "the touch run keeps its projected struggle")
   Assert.equal(#touchStruggle.targets, 2, "the touch run projects both foe positions")
   local function tap(id, x, y)
+    for _ = 1, 12 do
+      if touch.screen:view().menuInputEnabled ~= false then
+        break
+      end
+      touch.pump(1)
+    end
+    Assert.isTrue(touch.screen:view().menuInputEnabled ~= false, "source menu entry completes before tap")
     touch.screen:input({ { type = "pointer_down", pointerId = id, x = x, y = y } })
     touch.screen:input({ { type = "pointer_up", pointerId = id, x = x, y = y } })
     touch.pump(1)
@@ -1030,12 +1024,7 @@ local function openTargetLabelRig(layout, launchId, requestId)
   end
   local screen = BattleScreenState.new({
     launchId = launchId,
-    manifest = {
-      schema = "test",
-      version = { id = "t", language = "english" },
-      verified = false,
-      scenes = { { key = "general/plain/day" } },
-    },
+    manifest = battleManifest(),
     model = Model,
     submit = function(reply)
       local ok, err = pcall(BattleProtocol.validateReply, reply, "action")
@@ -1254,6 +1243,13 @@ function T.target_pickers_name_projected_recipients_on_both_layouts()
     local tapRig = openTargetLabelRig(touch.layout, touch.launchId, touch.requestId)
     openScreenRequest(tapRig)
     local function tap(id, point)
+      for _ = 1, 12 do
+        if tapRig.screen:view().menuInputEnabled ~= false then
+          break
+        end
+        tapRig.pump(1)
+      end
+      Assert.isTrue(tapRig.screen:view().menuInputEnabled ~= false, "source menu entry completes before tap")
       tapRig.screen:input({ { type = "pointer_down", pointerId = id, x = point.x, y = point.y } })
       tapRig.screen:input({ { type = "pointer_up", pointerId = id, x = point.x, y = point.y } })
       tapRig.pump(1)
@@ -1471,7 +1467,24 @@ function T.both_sides_field_two_battlers_with_their_own_pictures_and_health()
       },
       assets = {
         drawable = function(_, key)
-          return stubPortrait(key)
+          return {
+            handle = key,
+            getWidth = function()
+              return 64
+            end,
+            getHeight = function()
+              return 64
+            end,
+            getDimensions = function()
+              return 64, 64
+            end,
+          }
+        end,
+        renderPictures = function(_, drawGraphics, pictures)
+          for _, picture in ipairs(pictures) do
+            drawGraphics.draw(picture.image, picture.centerX - picture.width / 2, picture.centerY - picture.height / 2)
+          end
+          return { handle = "test-picture-pass" }
         end,
       },
       frameKey = "four-pictures-frame",
@@ -1585,7 +1598,7 @@ function T.missing_native_doubles_sections_fail_the_screen_draw_without_substitu
   local status = rig.screen:status()
   Assert.equal(status.mode, "failed", "the screen reports its required source-cell failure")
   Assert.isTrue(
-    tostring(status.error):find("enemyLeft", 1, true) ~= nil,
+    tostring(status.error):find("playerLeft", 1, true) ~= nil,
     "the failure identifies the absent role: " .. tostring(status.error)
   )
   for index = requestedBeforeDraw + 1, #rig.assets.requested do

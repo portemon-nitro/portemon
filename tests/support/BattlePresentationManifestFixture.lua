@@ -10,11 +10,24 @@ local function menuSection()
         width = 256,
         height = 256,
         tilemapKey = "menu/tilemap/synthetic",
+        plane = 1,
         template = 1,
         priority = 2,
       },
     },
   }
+end
+
+---@param text string decoded synthetic menu label
+---@return table<string, unknown> synthetic source-shaped menu message
+local function menuLabel(text)
+  local tokens = {}
+  for index = 1, #text do
+    local character = text:sub(index, index)
+    tokens[#tokens + 1] = { kind = "glyph", code = character:byte(), text = character }
+  end
+  tokens[#tokens + 1] = { kind = "eos" }
+  return { tokens = tokens }
 end
 
 ---@return table sprite descriptor with one cell and one frame
@@ -50,14 +63,83 @@ local function spriteSection(image)
   }
 end
 
+---@param image string staged gauge strip
+---@param cellSize integer source NCER object size
+---@return table source gauge family with absent, healthy, and fainted cells
+local function gaugeSection(image, cellSize)
+  local section = spriteSection(image)
+  section.cells = {}
+  local tilesPerCell = (cellSize / 8) ^ 2
+  for state = 0, 2 do
+    section.cells[state + 1] = {
+      objs = {
+        {
+          x = -cellSize / 2,
+          y = -cellSize / 2,
+          tile = state * tilesPerCell,
+          flipH = false,
+          flipV = false,
+          palette = 0,
+          shape = cellSize == 16 and 0 or 1,
+          size = cellSize == 16 and 1 or 3,
+          width = cellSize,
+          height = cellSize,
+          affine = false,
+          disabled = false,
+          objMode = "normal",
+          mosaic = false,
+          colorMode = "16-color",
+          priority = 0,
+        },
+      },
+    }
+  end
+  section.animation = { playMode = "forward_loop", loopStartFrameIdx = 0, frames = { { cell = 1, duration = 4 } } }
+  return section
+end
+
 ---@param image string staged health-box strip
 ---@param y integer source OBJ row origin
 ---@return table native two-object health-box section
 local function hudSection(image, y)
   local section = spriteSection(image)
   section.cells[1].objs = {
-    { x = -64, y = y, tile = 0, width = 64, height = 64, affine = false, disabled = false, flipH = false, flipV = false, palette = 0, priority = 0, shape = 1, size = 3, objMode = "normal", mosaic = false, colorMode = "16-color" },
-    { x = 0, y = y, tile = 64, width = 64, height = 64, affine = false, disabled = false, flipH = false, flipV = false, palette = 0, priority = 0, shape = 1, size = 3, objMode = "normal", mosaic = false, colorMode = "16-color" },
+    {
+      x = -64,
+      y = y,
+      tile = 0,
+      width = 64,
+      height = 64,
+      affine = false,
+      disabled = false,
+      flipH = false,
+      flipV = false,
+      palette = 0,
+      priority = 0,
+      shape = 1,
+      size = 3,
+      objMode = "normal",
+      mosaic = false,
+      colorMode = "16-color",
+    },
+    {
+      x = 0,
+      y = y,
+      tile = 64,
+      width = 64,
+      height = 64,
+      affine = false,
+      disabled = false,
+      flipH = false,
+      flipV = false,
+      palette = 0,
+      priority = 0,
+      shape = 1,
+      size = 3,
+      objMode = "normal",
+      mosaic = false,
+      colorMode = "16-color",
+    },
   }
   section.componentBase = 128
   section.componentCount = 78
@@ -155,8 +237,8 @@ local function manifest()
     },
     arrow = spriteSection("assets/generated/battle/arrow-chars.png"),
     partyGauges = {
-      spriteSection("assets/generated/battle/gauges-0-chars.png"),
-      spriteSection("assets/generated/battle/gauges-1-chars.png"),
+      gaugeSection("assets/generated/battle/gauges-0-chars.png", 16),
+      gaugeSection("assets/generated/battle/gauges-1-chars.png", 32),
     },
     terrain = {
       type0 = terrainSection(),
@@ -384,12 +466,78 @@ local function manifest()
     scenes = old.scenes,
     battlefield = {
       slots = {
-        { sideType = 0, settledX = 64, settledY = 112, entryX = 336, entryY = 112, depth = -512, hudX = 192, hudY = 116, hudPriority = 23, hudBgPriority = 0 },
-        { sideType = 1, settledX = 192, settledY = 50, entryX = -80, entryY = 50, depth = -640, hudX = 58, hudY = 36, hudPriority = 24, hudBgPriority = 0 },
-        { sideType = 2, settledX = 40, settledY = 112, entryX = 316, entryY = 112, depth = -512, hudX = 192, hudY = 103, hudPriority = 28, hudBgPriority = 0 },
-        { sideType = 4, settledX = 80, settledY = 120, entryX = 356, entryY = 120, depth = 0, hudX = 198, hudY = 132, hudPriority = 26, hudBgPriority = 0 },
-        { sideType = 3, settledX = 216, settledY = 50, entryX = -60, entryY = 50, depth = -100, hudX = 64, hudY = 16, hudPriority = 25, hudBgPriority = 0 },
-        { sideType = 5, settledX = 176, settledY = 42, entryX = -100, entryY = 42, depth = -640, hudX = 58, hudY = 45, hudPriority = 27, hudBgPriority = 0 },
+        {
+          sideType = 0,
+          settledX = 64,
+          settledY = 112,
+          entryX = 336,
+          entryY = 112,
+          depth = -512,
+          hudX = 192,
+          hudY = 116,
+          hudPriority = 23,
+          hudBgPriority = 0,
+        },
+        {
+          sideType = 1,
+          settledX = 192,
+          settledY = 50,
+          entryX = -80,
+          entryY = 50,
+          depth = -640,
+          hudX = 58,
+          hudY = 36,
+          hudPriority = 24,
+          hudBgPriority = 0,
+        },
+        {
+          sideType = 2,
+          settledX = 40,
+          settledY = 112,
+          entryX = 316,
+          entryY = 112,
+          depth = -512,
+          hudX = 192,
+          hudY = 103,
+          hudPriority = 28,
+          hudBgPriority = 0,
+        },
+        {
+          sideType = 4,
+          settledX = 80,
+          settledY = 120,
+          entryX = 356,
+          entryY = 120,
+          depth = 0,
+          hudX = 198,
+          hudY = 132,
+          hudPriority = 26,
+          hudBgPriority = 0,
+        },
+        {
+          sideType = 3,
+          settledX = 216,
+          settledY = 50,
+          entryX = -60,
+          entryY = 50,
+          depth = -100,
+          hudX = 64,
+          hudY = 16,
+          hudPriority = 25,
+          hudBgPriority = 0,
+        },
+        {
+          sideType = 5,
+          settledX = 176,
+          settledY = 42,
+          entryX = -100,
+          entryY = 42,
+          depth = -640,
+          hudX = 58,
+          hudY = 45,
+          hudPriority = 27,
+          hudBgPriority = 0,
+        },
       },
     },
     layouts = { scene = { canvas = { width = 512, height = 256 } } },
@@ -454,6 +602,28 @@ local function manifest()
           assetRoles = {},
           assetBindings = {},
           requiredContext = { "main" },
+          resources = {},
+        },
+        ["menu/yes-no"] = {
+          screenGroup = "two-option",
+          textSet = "yes-no",
+          messageEntries = { "label/yes", "label/no" },
+          messageRoutes = {},
+          fontRoles = { "menu" },
+          assetRoles = {},
+          assetBindings = {},
+          requiredContext = {},
+          resources = {},
+        },
+        ["menu/keep-forget"] = {
+          screenGroup = "two-option",
+          textSet = "keep-forget",
+          messageEntries = { "label/keep-move", "label/forget-move" },
+          messageRoutes = {},
+          fontRoles = { "menu" },
+          assetRoles = {},
+          assetBindings = {},
+          requiredContext = {},
           resources = {},
         },
       },
@@ -668,6 +838,10 @@ local function manifest()
         ["label/bug-contest-ball"] = { tokens = {} },
         ["label/cancel"] = { tokens = {} },
         ["label/run"] = { tokens = {} },
+        ["label/yes"] = menuLabel("Yes"),
+        ["label/no"] = menuLabel("No"),
+        ["label/keep-move"] = menuLabel("Keep Move"),
+        ["label/forget-move"] = menuLabel("Forget Move"),
         ["label/recorder-stop"] = { tokens = {} },
         ["template/bug-contest-level"] = { tokens = {} },
         ["template/bug-contest-remaining-balls"] = { tokens = {} },

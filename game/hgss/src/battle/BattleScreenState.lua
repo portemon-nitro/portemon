@@ -15,6 +15,7 @@ local BattleScene = require("libs.hgss.src.presentation.BattleScene")
 local BattleScreenInterface = require("game.hgss.src.battle.BattleScreenInterface")
 local BattleSubflows = require("game.hgss.src.battle.BattleSubflows")
 local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
+local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 
 ---@class BattleScreenState
 ---@field _launchId string owning launch identity
@@ -51,6 +52,8 @@ local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
 ---@field _signature string? measurement signature behind the published plan
 ---@field _arrowTick integer selection arrow clock in presentation ticks
 ---@field _sourceAccum number accepted seconds banked toward the next arrow tick
+---@field _menuRevealStep integer source menu reveal frame, 0 through 4
+---@field _menuGateTicks integer source ticks until menu input opens
 ---@field _scene table<string, unknown> native visual-state owner for entry travel and scroll
 ---@field _gaugeVisuals table<string, { sideType: integer, kind: string }> active native HUD gauge task destinations
 ---@field _sceneHasBackground boolean true after staged BG3 state installs
@@ -207,6 +210,8 @@ function BattleScreenState.new(opts)
     _signature = nil,
     _arrowTick = 0,
     _sourceAccum = 0,
+    _menuRevealStep = 4,
+    _menuGateTicks = 0,
     _scene = BattleScene.new(),
     _gaugeVisuals = {},
     _sceneHasBackground = false,
@@ -358,6 +363,7 @@ local function enrichScene(self, battlers)
         order = battler.side == 1 and allyOrder or foeOrder
       end
       local row = BattleScene.slotRow(battler, order, self._manifest.battlefield.slots)
+      battler.sideType = row.sideType
       if battler.side == 1 and (row.sideType == 2 or row.sideType == 4) then
         local modeSideType = self._scene:healthBoxModeSideType(battler)
         assert(
@@ -376,6 +382,59 @@ local function enrichScene(self, battlers)
       end
     end
   end
+end
+
+---@param step integer source slide update count from zero through four
+---@param sideType integer source battler position type
+---@return table<string, unknown> detached native lower-plane window and scroll state
+local function menuSlideState(step, sideType)
+  local updates = math.min(step, 4)
+  local x = -25500 + updates * 6375
+  local y = 4000 - updates * 1000
+  local bgY = 40
+  if updates > 0 and updates < 4 then
+    bgY = -(40 - updates * 10)
+  end
+  if updates == 4 then
+    x = 0
+    y = 144
+    bgY = 0
+  end
+  -- Source BG IDs 4/5 are the first two lower menu planes (physical 0/1).
+  local edge = 144 + math.floor(y / 100)
+  local windowEdge
+  local bg0x
+  local bg1x
+  if sideType == 4 then
+    windowEdge = math.floor(-x / 100)
+    bg0x = math.max(0, 255 - windowEdge)
+    bg1x = 255 - windowEdge
+    return {
+      edge = edge,
+      outsideTop = { x = windowEdge + 1, y = 0, width = 255 - windowEdge, height = 144 },
+      outsideBottom = { x = 0, y = edge, width = 256, height = 192 - edge },
+      scroll = {
+        [0] = { x = bg0x, topY = 0, bottomY = bgY },
+        [1] = { x = bg1x, topY = 0, bottomY = bgY },
+      },
+    }
+  end
+  local hundredths = math.modf(x / 100)
+  windowEdge = 255 + hundredths
+  if windowEdge == 0 then
+    windowEdge = 1
+  end
+  bg0x = math.max(0, windowEdge)
+  bg1x = windowEdge
+  return {
+    edge = edge,
+    outsideTop = { x = 1, y = 0, width = windowEdge - 1, height = 144 },
+    outsideBottom = { x = 0, y = edge, width = 256, height = 192 - edge },
+    scroll = {
+      [0] = { x = bg0x, topY = 0, bottomY = bgY },
+      [1] = { x = bg1x, topY = 0, bottomY = bgY },
+    },
+  }
 end
 
 -- Applies a source appearance/transform update to the active visual scene.
@@ -540,6 +599,59 @@ function BattleScreenState:releaseEffect(id)
   self._scene:releaseEffect(id)
 end
 
+---@param tokens table<integer, table<string, unknown>> source menu label token stream
+---@return string rendered menu label containing only source glyphs
+local function menuLabelText(tokens)
+  local glyphs = {}
+  for _, token in ipairs(tokens) do
+    if token.kind == "eos" then
+      break
+    elseif token.kind == "glyph" then
+      glyphs[#glyphs + 1] = assert(token.text, "menu label glyphs carry decoded text")
+    elseif token.kind == "unsupported_control" and token.control == FieldMessageText.ALN_CENTER then
+      -- The source text object centers the label at its authored x anchor.
+    else
+      assert(false, "two-option labels contain only alignment and glyph tokens")
+    end
+  end
+  return table.concat(glyphs)
+end
+
+---@param child table<string, unknown>? detached current child view
+---@return table<string, unknown>? child view with source menu labels when confirmation is active
+function BattleScreenState:_twoOptionChildView(child)
+  if type(child) ~= "table" or child.kind ~= "learn" or type(child.confirmation) ~= "table" then
+    return child
+  end
+  local confirmation = child.confirmation --[[@as table<string, unknown>]]
+  local routeKey, topKey, bottomKey
+  if confirmation.kind == "replace" then
+    routeKey, topKey, bottomKey = "menu/keep-forget", "label/forget-move", "label/keep-move"
+  else
+    routeKey, topKey, bottomKey = "menu/yes-no", "label/yes", "label/no"
+  end
+  local menus = assert(self._manifest.menus, "learning confirmations require the staged menu catalog") --[[@as table<string, unknown>]]
+  local routes = assert(menus.routes, "learning confirmations require staged source routes") --[[@as table<string, unknown>]]
+  local route = assert(routes[routeKey], "learning confirmation selects its source menu route") --[[@as table<string, unknown>]]
+  local selected = {}
+  for _, key in
+    ipairs(route.messageEntries --[[@as table<integer, string>]])
+  do
+    selected[key] = true
+  end
+  assert(selected[topKey] == true and selected[bottomKey] == true, "the selected text set stages both source labels")
+  local messages = assert(self._manifest.messages, "learning labels require staged battle text") --[[@as table<string, unknown>]]
+  local entries = assert(messages.entries, "learning labels require staged message entries") --[[@as table<string, table<string, unknown>>]]
+  local topRecord = assert(entries[topKey], "the top source option has a staged label")
+  local bottomRecord = assert(entries[bottomKey], "the bottom source option has a staged label")
+  child.twoOption = {
+    route = routeKey,
+    top = menuLabelText(topRecord.tokens --[[@as table<integer, table<string, unknown>>]]),
+    bottom = menuLabelText(bottomRecord.tokens --[[@as table<integer, table<string, unknown>>]]),
+  }
+  return child
+end
+
 ---@return table<string, unknown> internal semantic snapshot for resolvers and renderers
 function BattleScreenState:_snapshot()
   local battlers = self._timeline:battlers()
@@ -572,13 +684,24 @@ function BattleScreenState:_snapshot()
     local actors = self._request.actors --[[@as table<integer, table<string, unknown>>]]
     local addressed = actors[self._actorIndex]
     if type(addressed) == "table" then
+      local activeBattler = type(addressed.combatant) == "number" and names[addressed.combatant] or nil
       acting = {
         index = self._actorIndex,
         total = #actors,
         combatant = addressed.combatant,
         activation = addressed.activation,
+        sideType = type(activeBattler) == "table" and activeBattler.sideType or nil,
       }
     end
+  end
+  local menuWindows = nil
+  if self._mode == "command" and self._menuGateTicks > 0 and type(acting) == "table" then
+    local sideType = acting.sideType
+    assert(
+      type(sideType) == "number" and sideType % 1 == 0,
+      "the active command actor resolves its integer source battle slot"
+    )
+    menuWindows = menuSlideState(self._menuRevealStep, sideType --[[@as integer]])
   end
   local targets = nil
   if self._targetCandidates ~= nil then
@@ -618,9 +741,13 @@ function BattleScreenState:_snapshot()
     end
     side[visual.kind] = self._scene:gaugeTaskPatchTiles(self._manifest.hud.patchSpans, key, visual.sideType)
   end
+  local childView = self:_twoOptionChildView(copyValue(self._subflows:status().childView))
   return {
     battleKind = self._kind,
     mode = self._mode,
+    menuRevealEdge = type(menuWindows) == "table" and menuWindows.edge or nil,
+    menuWindows = menuWindows,
+    menuInputEnabled = self._menuGateTicks == 0,
     selection = self._selection,
     armed = self._armed ~= nil and { scope = self._armed.scope, id = self._armed.id } or nil,
     requestId = self._request ~= nil and self._request.requestId or 0,
@@ -631,6 +758,16 @@ function BattleScreenState:_snapshot()
     effectInstances = self._scene:effectViews(),
     slotGeometry = self._manifest.battlefield.slots,
     hudSections = { player = self._manifest.hud.player, enemy = self._manifest.hud.enemy },
+    gaugeFamilies = {
+      player = copyValue(self._manifest.hud.partyGauges[2]),
+      enemy = copyValue(self._manifest.hud.partyGauges[1]),
+    },
+    menuLayers = {
+      command = copyValue(self._manifest.menus.command.screens),
+      moves = copyValue(self._manifest.menus.moves.screens),
+      target = copyValue(self._manifest.menus.target.screens),
+      twoOption = copyValue(self._manifest.menus.twoOption.screens),
+    },
     hudPatchSpans = self._manifest.hud.patchSpans,
     gaugePatchTiles = gaugePatchTiles,
     commands = self:_commands(),
@@ -642,7 +779,7 @@ function BattleScreenState:_snapshot()
     targetCandidates = targets,
     stagedChoices = staged,
     childIntent = self._child ~= nil and copyValue(self._child) or nil,
-    childView = copyValue(self._subflows:status().childView),
+    childView = childView,
   }
 end
 
@@ -809,6 +946,9 @@ function BattleScreenState:view()
   end
   return {
     message = snapshot.message,
+    menuRevealEdge = snapshot.menuRevealEdge,
+    menuWindows = copyValue(snapshot.menuWindows),
+    menuInputEnabled = snapshot.menuInputEnabled,
     messageId = self._timeline:messageId(),
     selection = self._selection,
     commands = copyValue(snapshot.commands),
@@ -966,7 +1106,32 @@ function BattleScreenState:_portPresent(packet)
       end
     end
   end
-  if not self._timeline:present(packet) then
+  local sourceMessages = {}
+  for _, event in ipairs(packet.events or {}) do
+    if type(event) == "table" and event.kind == "broke_free" then
+      local args = event.messageArgs --[[@as table<string, unknown>?]]
+      local shakes = type(args) == "table" and args.shakes or nil
+      local messages = assert(self._manifest.messages, "capture outcomes require staged messages") --[[@as table<string, unknown>]]
+      local dynamicRoutes = messages.dynamicRoutes
+      local route = type(dynamicRoutes) == "table" and dynamicRoutes.captureShake or nil
+      assert(type(route) == "table", "capture outcomes require the staged source message route")
+      local minimum = route.minimum --[[@as integer]]
+      local maximum = route.maximum --[[@as integer]]
+      assert(
+        type(shakes) == "number" and shakes % 1 == 0 and shakes >= minimum and shakes <= maximum,
+        "capture message selection uses the typed shake count"
+      )
+      local firstRecord = route.firstRecord --[[@as string]]
+      local messageKey = firstRecord:gsub("0$", tostring(shakes))
+      local entries = messages.entries --[[@as table<string, table<string, unknown>>]]
+      local record = assert(entries[messageKey], "the selected capture message is staged")
+      sourceMessages[
+        event.sequence --[[@as integer]]
+      ] =
+        FieldMessageText.tokensToText(record.tokens --[[@as table<integer, table<string, unknown>>]])
+    end
+  end
+  if not self._timeline:present(packet, sourceMessages) then
     return
   end
   if type(packet.after) == "table" then
@@ -1259,6 +1424,8 @@ function BattleScreenState:_enterActorPrompt()
     self._subflows:closeChild()
     self._mode = "command"
     self._selection = "fight"
+    self._menuRevealStep = 0
+    self._menuGateTicks = 5
     self._child = nil
     return
   end
@@ -1488,6 +1655,8 @@ function BattleScreenState:_activateCommand(id)
     end
     self._mode = "moves"
     self._selection = self:_defaultMoveSelection()
+    self._menuRevealStep = 4
+    self._menuGateTicks = 1
     self._notice = nil
   elseif id == "bag" then
     self:_openVoluntaryChild("bag", "bag")
@@ -1712,6 +1881,9 @@ function BattleScreenState:_consume(event)
   if eventType == "pointer_cancel" then
     self._armed = nil
     self._subflows:cancelPointerCapture()
+    return
+  end
+  if self._menuGateTicks > 0 then
     return
   end
   if self._mode == "child" and self._subflows:status().active then
@@ -2113,6 +2285,7 @@ function BattleScreenState:updateFixed(dt)
     return
   end
   assert(type(dt) == "number" and dt == dt and dt >= 0, "battle updates take accepted seconds")
+  local menuGateAtStart = self._menuGateTicks
   self._assets:update()
   if not self._sceneHasBackground then
     local layer = self._assets:sceneLayer()
@@ -2176,6 +2349,14 @@ function BattleScreenState:updateFixed(dt)
   while self._sourceAccum + SOURCE_TICK_EPSILON >= BattleScreenState.SOURCE_FRAME do
     self._sourceAccum = self._sourceAccum - BattleScreenState.SOURCE_FRAME
     arrowTicks = arrowTicks + 1
+  end
+  for _ = 1, arrowTicks do
+    if menuGateAtStart > 0 and self._menuGateTicks > 0 then
+      self._menuGateTicks = self._menuGateTicks - 1
+      if self._menuRevealStep < 4 then
+        self._menuRevealStep = self._menuRevealStep + 1
+      end
+    end
   end
   if self._mode == "command" or self._mode == "moves" then
     self._arrowTick = self._arrowTick + arrowTicks

@@ -51,12 +51,37 @@ local POKEGEAR_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "linear
 ---@return table<string, unknown> window services
 local function battleDrawServices(state, resources, runtime)
   local textRenderer = assert(resources.textRenderer, "battle text borrows the field text renderer")
+  local battleTextRenderers = assert(resources.battleTextRenderers, "battle text has source-role renderers")
   local windowRenderer = assert(resources.windowRenderer, "battle windows borrow the field window renderer")
   local _ = state
   local text = {}
   text.fontDef = textRenderer.fontDef
   function text.drawText(content, x, y)
     return textRenderer:drawText(content, x, y)
+  end
+  function text.drawTextForRole(role, content, x, y, colors)
+    local renderer = assert(battleTextRenderers[role], "battle text role has a source font renderer")
+    if colors ~= nil then
+      local fontPalette = assert(renderer.fontDef.palette, "colored battle text reads its source font palette")
+      local function colorAt(slot)
+        local source = assert(fontPalette[slot + 1], "battle text source palette contains its selected slot")
+        return {
+          r = assert(tonumber(source.r or source[1]), "source font color has red"),
+          g = assert(tonumber(source.g or source[2]), "source font color has green"),
+          b = assert(tonumber(source.b or source[3]), "source font color has blue"),
+        }
+      end
+      return renderer:drawTextWithPalette(content, x, y, {
+        foreground = colorAt(colors.foreground),
+        shadow = colorAt(colors.shadow),
+        background = colorAt(colors.background),
+      })
+    end
+    return renderer:drawText(content, x, y)
+  end
+  function text.measureForRole(role, content)
+    local renderer = assert(battleTextRenderers[role], "battle text role has a source font renderer")
+    return { width = renderer:textWidth(content), height = renderer.fontDef.lineHeight }
   end
   if type(textRenderer.drawTextWithPalette) == "function" then
     function text.drawTextWithPalette(content, x, y, palette)

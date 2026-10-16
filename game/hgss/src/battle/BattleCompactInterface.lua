@@ -15,6 +15,7 @@
 
 local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
 local BattleChildText = require("game.hgss.src.battle.BattleChildText")
+local BattleMenuPresenter = require("game.hgss.src.battle.BattleMenuPresenter")
 local BattleScene = require("libs.hgss.src.presentation.BattleScene")
 local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
@@ -227,14 +228,20 @@ local function targetRows(view)
 end
 
 ---@param mode string controller mode under resolution
+---@param view table<string, unknown>? active screen view under resolution
 ---@return string layout scope behind the current mode
-local function scopeFor(mode)
+local function scopeFor(mode, view)
   if mode == "moves" then
     return "moves"
   elseif mode == "target" then
     return "target"
   elseif mode == "narration" then
     return "narration"
+  elseif mode == "child" and type(view) == "table" and type(view.childView) == "table" then
+    local child = view.childView --[[@as table<string, unknown>]]
+    if child.kind == "learn" and type(child.confirmation) == "table" then
+      return "two-option"
+    end
   end
   return "command"
 end
@@ -630,9 +637,10 @@ end
 ---@param child table<string, unknown> detached child view under resolution
 ---@return table<string, unknown> canonical child plan content
 local function childContent(child)
+  local twoOption = child.kind == "learn" and type(child.confirmation) == "table"
   local rows = {}
   local source = child.rows --[[@as table<integer, table<string, unknown>>?]]
-  if type(source) == "table" then
+  if not twoOption and type(source) == "table" then
     for index, row in ipairs(source) do
       if index <= 6 then
         local box = row --[[@as table<string, unknown>]]
@@ -661,8 +669,9 @@ local function childContent(child)
     focusId = child.focusId,
     title = childTitle(child),
     rows = rows,
-    hasBack = child.cancellable == true or child.kind == "learn",
-    hasConfirm = child.kind == "learn" and type(child.confirmation) == "table",
+    hasBack = not twoOption and (child.cancellable == true or child.kind == "learn"),
+    hasConfirm = false,
+    twoOption = twoOption,
     hasPocketNav = child.kind == "bag" and child.empty ~= true,
     back = backRect,
     confirm = confirmRect,
@@ -820,7 +829,7 @@ function BattleCompactInterface.contentFor(view)
   local doubles = doublesFormat(view, players, enemies)
   return {
     kind = "battle",
-    layout = scopeFor(type(mode) == "string" and mode or "command"),
+    layout = scopeFor(type(mode) == "string" and mode or "command", view),
     compact = true,
     scene = { x = SCENE.x, y = SCENE.y, width = SCENE.width, height = SCENE.height },
     dock = { x = dock.x, y = dock.y, width = dock.width, height = dock.height },
@@ -899,6 +908,12 @@ end
 local function childRegions(child)
   if type(child) ~= "table" then
     return nil
+  end
+  if child.twoOption == true then
+    return {
+      { id = "confirm", x = 0, y = 32, width = 256, height = 64, scope = "child" },
+      { id = "back", x = 0, y = 104, width = 256, height = 64, scope = "child" },
+    }
   end
   local regions = {}
   local rows = child.rows --[[@as table<integer, table<string, unknown>>?]]
@@ -1511,9 +1526,27 @@ local function drawCompactHudCell(graphics, art, section, side, battler, view, s
   local scale = math.min(layoutWidth / width, layoutHeight / height)
   local originX = layoutX + (layoutWidth - width * scale) / 2 - left * scale
   local originY = layoutY + (layoutHeight - height * scale) / 2 - top * scale
-  art:setFilter("nearest", "nearest")
-  local stripWidth = art:getWidth()
-  local stripHeight = art:getHeight()
+  -- Pool leases resolve to their staged image for the raw sampler calls
+  -- while owned and test handles draw as resolved; pixel-less stand-ins
+  -- skip the cell exactly like an unstaged strip.
+  local source = art.image or (art.lease and art.lease.image) or art
+  if type(source.setFilter) ~= "function" or type(source.getWidth) ~= "function" then
+    return
+  end
+  source:setFilter("nearest", "nearest")
+  local stripWidth = source:getWidth()
+  local stripHeight = source:getHeight()
+  local stripArt = source
+  -- Pool leases draw through the shared sampler so indexed strips
+  -- resolve exactly; owned and test handles draw directly.
+  local function drawStripTile(quad, x, y, sx, sy)
+    local lease = (type(art) == "table" and art.lease) or nil
+    if lease ~= nil and type(lease.drawQuad) == "function" then
+      lease:drawQuad(graphics, quad, x, y, 0, sx, sy)
+    else
+      graphics.draw(stripArt, quad, x, y, 0, sx, sy)
+    end
+  end
 
   local function drawObjects()
     for _, object in ipairs(objects) do
@@ -1522,7 +1555,7 @@ local function drawCompactHudCell(graphics, art, section, side, battler, view, s
         for row = 0, object.height / 8 - 1 do
           local sourceTile = object.tile + row * columns
           local quad = graphics.newQuad(sourceTile * 8, 0, object.width, 8, stripWidth, stripHeight)
-          graphics.draw(art, quad, originX + object.x * scale, originY + (object.y + row * 8) * scale, 0, scale, scale)
+          drawStripTile(quad, originX + object.x * scale, originY + (object.y + row * 8) * scale, scale, scale)
         end
       end
     end
@@ -1538,12 +1571,10 @@ local function drawCompactHudCell(graphics, art, section, side, battler, view, s
             local offset = tile - object.tile
             if offset >= 0 and offset < columns * (object.height / 8) then
               local quad = graphics.newQuad((componentBase + patch.sourceTile) * 8, 0, 8, 8, stripWidth, stripHeight)
-              graphics.draw(
-                art,
+              drawStripTile(
                 quad,
                 originX + (object.x + offset % columns * 8) * scale,
                 originY + (object.y + math.floor(offset / columns) * 8) * scale,
-                0,
                 scale,
                 scale
               )
@@ -1734,6 +1765,43 @@ local function drawChildModal(resources, view, content)
   local frame = resources.frameKey
   local childPlan = assert(content.child, "the child modal carries its plan")
   local childView = view.childView --[[@as table<string, unknown>?]]
+  if childPlan.twoOption == true then
+    local graphics = assert(resources.graphics, "the compact render borrows its host graphics")
+    local assets = assert(resources.assets, "the compact render borrows its asset holder")
+    local menuLayers = assert(view.menuLayers, "the battle view carries generated menu screen layers")
+    local layers = assert(menuLayers.twoOption, "the battle view carries source two-option layers") --[[@as table[] ]]
+    local armed = type(view.armed) == "table" and view.armed or nil
+    local selection = nil
+    local pressedId = nil
+    if type(armed) == "table" and armed.scope == "child" then
+      if armed.id == "confirm" then
+        selection, pressedId = "yes", "yes"
+      elseif armed.id == "back" then
+        selection, pressedId = "cancel", "cancel"
+      end
+    end
+    BattleMenuPresenter.draw(graphics, assets, "two-option", layers, {
+      selection = selection,
+      armed = pressedId ~= nil and { scope = "two-option", id = pressedId } or nil,
+    })
+    local sourceLabels = assert(childView, "the child snapshot carries source text") --[[@as table<string, unknown>]]
+    local labels = assert(sourceLabels.twoOption, "learning confirmation carries staged source labels") --[[@as table<string, unknown>]]
+    local drawText = text.drawTextForRole --[[@as fun(role: string, content: string, x: number, y: number, colors: table<string, integer>?)?]]
+    local measureText = text.measureForRole --[[@as fun(role: string, content: string): table<string, number>?]]
+    local function drawOption(value, anchorY, colors, pressed)
+      local label = assert(value, "the two-option source label is staged") --[[@as string]]
+      local width = measureText ~= nil and measureText("menu", label).width or text.measure(label).width
+      local y = pressed and anchorY - 2 or anchorY
+      if drawText ~= nil then
+        drawText("menu", label, 128 - math.floor(width / 2), y, colors)
+      else
+        text.drawText(label, 128 - math.floor(width / 2), y)
+      end
+    end
+    drawOption(labels.top, 67, { foreground = 1, shadow = 2, background = 3 }, pressedId == "yes")
+    drawOption(labels.bottom, 139, { foreground = 10, shadow = 11, background = 12 }, pressedId == "cancel")
+    return
+  end
   fillBox(resources.graphics, background, { x = 0, y = 0, width = 256, height = 192 })
   local title = childPlan.title --[[@as string?]]
   drawLabel(text, fitText(text, tostring(title or ""), 200), 12, 10)
@@ -1883,6 +1951,10 @@ local function inputKey(mode, requestId, selection, signature, view)
   if type(view) == "table" and type(view.childView) == "table" then
     local child = view.childView --[[@as table<string, unknown>]]
     parts[#parts + 1] = tostring(child.kind or "-") .. ":" .. tostring(child.focusId or "-")
+    local confirmation = child.confirmation
+    if type(confirmation) == "table" then
+      parts[#parts + 1] = tostring(confirmation.kind or "-")
+    end
   end
   return table.concat(parts, ":")
 end

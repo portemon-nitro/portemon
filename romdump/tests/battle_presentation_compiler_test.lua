@@ -153,4 +153,33 @@ function T.native_shadow_compiler_extracts_the_four_selected_source_rectangles()
   Assert.deepEqual(pixel(4, 48), { 30, 0, 0, 255 }, "size three selects the final native atlas rows")
 end
 
+function T.native_menu_feedback_patch_uses_source_tile_offset_inside_source_bounds()
+  local compiler = require("romdump.src.digest.battle.BattlePresentationCompiler")
+  local charBytes = {}
+  for tile = 0, 399 do
+    for _ = 1, 32 do
+      charBytes[#charBytes + 1] = string.char(tile % 16 + math.floor(tile % 16) * 16)
+    end
+  end
+  local colors = {}
+  for index = 0, 15 do
+    colors[index + 1] = { r = index * 10, g = 0, b = 0 }
+  end
+  local screen = { width = 256, height = 256, entries = {} }
+  for index = 1, 32 * 32 do
+    screen.entries[index] = { tile = 1, palette = 0, flipH = false, flipV = false }
+  end
+  local patch = compiler.compileMenuFeedbackPatch(
+    { depth = 3, tiles = table.concat(charBytes) },
+    { colors = colors },
+    screen,
+    { left = 2, top = 4, right = 3, bottom = 4, offset = 192 }
+  )
+
+  Assert.equal(patch.width, 16, "feedback patch width follows the inclusive source tile rectangle")
+  Assert.equal(patch.height, 8, "feedback patch height follows the inclusive source tile rectangle")
+  Assert.equal(string.byte(patch.pixels, 1), 10, "the source tile offset selects the expected tile art")
+  Assert.equal(string.byte(patch.pixels, 4), 255, "nonzero source tile pixels remain opaque")
+end
+
 return { tests = T }

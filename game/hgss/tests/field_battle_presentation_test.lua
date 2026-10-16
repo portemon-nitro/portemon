@@ -164,13 +164,14 @@ end
 ---@return table envelope
 ---@return integer binding
 ---@return table doubles
-local function bindEnvelope(runtime, versionId, measurement)
+local function bindEnvelope(runtime, versionId, measurement, graphics)
   local doubles = { audio = recordingAudio(), windows = recordingWindows(), text = recordingText() }
   local envelope = FieldBattlePresentation.new({
     cacheFs = CacheFs.forVersion(versionId),
     windows = doubles.windows,
     text = doubles.text,
     audio = doubles.audio,
+    graphics = graphics,
     measureDisplay = function()
       return measurement
     end,
@@ -883,6 +884,13 @@ function T.battle_input_reaches_the_screen_before_field_controls()
       end
       local screen = assert(envelope:liveScreen(), "the battle reaches its command root")
       Assert.equal(screen:status().mode, "command", "the root shows its commands")
+      local gated = 0
+      while gated < 30 and not screen:view().menuInputEnabled do
+        runtime:update(SourceTick.DT)
+        envelope:updateFixed(TICK)
+        gated = gated + 1
+      end
+      Assert.isTrue(screen:view().menuInputEnabled, "the command view opens its menu input")
       envelope:input({ { type = "confirm" } })
       pump(runtime, envelope, 5)
       Assert.equal(screen:status().mode, "moves", "a confirm enters the move view")
@@ -2535,9 +2543,92 @@ local function paintCountingGraphics()
     end
     graphics.draws[#graphics.draws + 1] = { key = key, quad = quad, x = x, y = y }
   end
-  function graphics.newImage(_)
+  function graphics.newImage(data)
     graphics.uploads = graphics.uploads + 1
-    return { key = "test-image" }
+    local width, height = 8, 8
+    if type(data) == "table" and type(data.getDimensions) == "function" then
+      local decoded, decodedWidth, decodedHeight = pcall(function()
+        return data:getDimensions()
+      end)
+      if decoded and type(decodedWidth) == "number" and type(decodedHeight) == "number" then
+        width, height = decodedWidth, decodedHeight
+      end
+    end
+    local image = { key = "test-image", width = width, height = height }
+    function image.setFilter(_, _, _) end
+    function image.release() end
+    function image.getWidth()
+      return width
+    end
+    function image.getHeight()
+      return height
+    end
+    function image.getDimensions()
+      return width, height
+    end
+    return image
+  end
+  -- The native picture and menu passes compose through canvases,
+  -- meshes, and shaders: construction stays untracked like uploads
+  -- above so repeated draws stay comparable, while the state calls
+  -- around them still count as paint.
+  function graphics.newCanvas(width, height)
+    local canvas = { width = width, height = height }
+    function canvas.setFilter(_, _, _) end
+    function canvas.release() end
+    function canvas.getWidth()
+      return width
+    end
+    function canvas.getHeight()
+      return height
+    end
+    function canvas.getDimensions()
+      return width, height
+    end
+    return canvas
+  end
+  function graphics.newMesh(_, _, _, _)
+    local mesh = {}
+    function mesh.setVertices(_) end
+    function mesh.setTexture(_) end
+    function mesh.release() end
+    return mesh
+  end
+  function graphics.newShader(_)
+    local shader = {}
+    function shader.send(_, _, _) end
+    function shader.release() end
+    return shader
+  end
+  function graphics.getCanvas()
+    return nil
+  end
+  function graphics.setCanvas(_)
+    paint()
+  end
+  function graphics.clear(_, _, _, _)
+    paint()
+  end
+  function graphics.getShader()
+    return nil
+  end
+  function graphics.getBlendMode()
+    return nil
+  end
+  function graphics.getScissor()
+    return nil
+  end
+  function graphics.isWireframe()
+    return false
+  end
+  function graphics.getMeshCullMode()
+    return nil
+  end
+  function graphics.setWireframe(_)
+    paint()
+  end
+  function graphics.setMeshCullMode(_)
+    paint()
   end
   return graphics
 end
@@ -2615,16 +2706,24 @@ end
 function T.explicit_draws_stay_stable_and_route_render_failures_through_the_host()
   for _, versionId in ipairs(readyVersions()) do
     local runtime = bootRuntime(versionId)
-    local envelope, binding, doubles = bindEnvelope(runtime, versionId, dualMeasurement("stable-draws:dual"))
+    local envelope, binding, doubles = bindEnvelope(runtime, versionId, dualMeasurement("stable-draws:dual"), paintCountingGraphics())
     local ok, failure = xpcall(function()
       runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
-      driveToCommandMode(runtime, envelope)
+      local driven = driveToCommandMode(runtime, envelope)
+      local gated = 0
+      while gated < 30 and not driven:view().menuInputEnabled do
+        runtime:update(SourceTick.DT)
+        envelope:updateFixed(TICK)
+        gated = gated + 1
+      end
+      Assert.isTrue(driven:view().menuInputEnabled, "the command view opens its menu input")
       local function drawnCounts()
         doubles.text.draws = {}
         doubles.windows.calls = {}
         local spy = paintCountingGraphics()
         local audioBefore = #doubles.audio.plays
-        Assert.isTrue(envelope:drawBattle({ graphics = spy }), "each explicit draw reaches the live screen")
+        local drew = envelope:drawBattle({ graphics = spy })
+        Assert.isTrue(drew, "each explicit draw reaches the live screen")
         return {
           texts = #doubles.text.draws,
           frames = #doubles.windows.calls,
@@ -2633,7 +2732,7 @@ function T.explicit_draws_stay_stable_and_route_render_failures_through_the_host
           mode = envelope:liveScreen():status().mode,
         }
       end
-      local first = drawnCounts()
+        Assert.isTrue(drew, "each explicit draw reaches the live screen")
       Assert.isTrue(first.texts > 0, "the command view prints its wording")
       Assert.isTrue(first.frames > 0, "the command view frames its windows")
       for _ = 1, 3 do
@@ -2644,7 +2743,7 @@ function T.explicit_draws_stay_stable_and_route_render_failures_through_the_host
       local second = drawnCounts()
       Assert.equal(second.texts, first.texts, "repeated draws print the same wording")
       Assert.equal(second.frames, first.frames, "repeated draws frame the same windows")
-      Assert.equal(second.paint, first.paint, "repeated draws reach host graphics identically")
+        Assert.equal(second.paint, first.paint, "repeated draws reach host graphics identically")
       Assert.equal(second.audio, 0, "drawing plays no cues")
       Assert.equal(second.mode, first.mode, "drawing advances no semantics")
       doubles.windows.drawWindow = function()

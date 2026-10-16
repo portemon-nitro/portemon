@@ -57,6 +57,55 @@ local SUPPORTED_VERSIONS = { heartgold = true, soulsilver = true }
 local Sources = BattlePresentationSources
 local ROLES = Sources.ROLES
 
+---@param charData { depth: integer, tiles: string } decoded lower BG characters
+---@param paletteData { colors: table[] } decoded lower BG palette
+---@param screenData { width: integer, height: integer, entries: table[] } decoded menu tilemap
+---@param patch { left: integer, top: integer, right: integer, bottom: integer, offset: integer } inclusive source tile rectangle and raw map offset
+---@return { width: integer, height: integer, pixels: string } cropped state art for the patched source map region
+function BattlePresentationCompiler.compileMenuFeedbackPatch(charData, paletteData, screenData, patch)
+  assert(patch.left >= 0 and patch.top >= 0, "menu feedback bounds begin inside the source tilemap")
+  assert(patch.right >= patch.left and patch.bottom >= patch.top, "menu feedback bounds are ordered")
+  assert(
+    patch.right < screenData.width / 8 and patch.bottom < screenData.height / 8,
+    "menu feedback bounds fit the source tilemap"
+  )
+  assert(patch.offset >= 0 and patch.offset <= 0xffff, "menu feedback uses a source 16-bit map offset")
+  local columns = screenData.width / 8
+  local entries = {}
+  for index, entry in ipairs(screenData.entries) do
+    entries[index] = entry
+  end
+  for tileY = patch.top, patch.bottom do
+    for tileX = patch.left, patch.right do
+      local index = tileY * columns + tileX + 1
+      local entry = screenData.entries[index]
+      local raw = entry.tile + (entry.flipH and 1024 or 0) + (entry.flipV and 2048 or 0) + entry.palette * 4096
+      local patched = raw + patch.offset
+      assert(patched <= 0xffff, "menu feedback map offset fits the source entry")
+      entries[index] = {
+        tile = patched % 1024,
+        flipH = math.floor(patched / 1024) % 2 == 1,
+        flipV = math.floor(patched / 2048) % 2 == 1,
+        palette = math.floor(patched / 4096),
+      }
+    end
+  end
+  local raster = G2dRasterizer.renderScreen(charData, paletteData, {
+    width = screenData.width,
+    height = screenData.height,
+    entries = entries,
+  })
+  local patchWidth = (patch.right - patch.left + 1) * 8
+  local patchHeight = (patch.bottom - patch.top + 1) * 8
+  local rowBytes = patchWidth * 4
+  local rows = {}
+  for y = patch.top * 8, (patch.bottom + 1) * 8 - 1 do
+    local start = (y * screenData.width + patch.left * 8) * 4 + 1
+    rows[#rows + 1] = raster.pixels:sub(start, start + rowBytes - 1)
+  end
+  return { width = patchWidth, height = patchHeight, pixels = table.concat(rows) }
+end
+
 ---@generic T
 ---@param value T?
 ---@param err unknown?
@@ -983,7 +1032,8 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
     stageSlice("lower-chars", lowerStrip.pixels, lowerStrip.width, lowerStrip.height)
     -- One menu descriptor per lower composition: the staged screen slices
     -- with the source template/priority facts where the source pins them.
-    local function compileMenu(roleMembers, names, label, templates, priorities)
+    local function compileMenu(roleMembers, names, label, templates, priorities, planes, feedbackKey)
+      local feedback = Sources.MENU_FEEDBACK[feedbackKey]
       local screens = {}
       for index, memberId in ipairs(roleMembers) do
         local screen = decodeScreen(lower, memberId, label .. " screen " .. index)
@@ -1011,10 +1061,34 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
           width = raster.width,
           height = raster.height,
           tilemapKey = tilemapKey,
+          plane = planes[index],
+          template = templates[index],
+          priority = priorities[index],
         }
-        if templates ~= nil then
-          entry.template = templates[index]
-          entry.priority = priorities[index]
+        if feedback ~= nil and index == feedback.screenIndex then
+          entry.feedback = {}
+          for _, button in ipairs(feedback.buttons) do
+            local states = {}
+            for state, offset in pairs(feedback.states) do
+              local patch = BattlePresentationCompiler.compileMenuFeedbackPatch(lowerChars, lowerPalette, screen, {
+                left = button.left,
+                top = button.top,
+                right = button.right,
+                bottom = button.bottom,
+                offset = offset,
+              })
+              local variantName = name .. "-" .. button.id:gsub("[^%w]+", "-"):gsub("%-+$", "") .. "-" .. state
+              stageSlice(variantName, patch.pixels, patch.width, patch.height)
+              states[state] = {
+                image = BattlePresentationCache.globalImagePath(variantName),
+                x = button.left * 8,
+                y = button.top * 8,
+                width = patch.width,
+                height = patch.height,
+              }
+            end
+            entry.feedback[button.id] = states
+          end
         end
         screens[#screens + 1] = entry
       end
@@ -1026,17 +1100,25 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
       "menu-command-1",
       "menu-command-2",
       "menu-command-3",
-    }, "command", { 1, 2, 0 }, { 2, 3, 3 })
-    local moves = compileMenu(ROLES.fightScreens, { "menu-fight-1", "menu-fight-2" }, "fight")
+    }, "command", { 1, 2, 0 }, { 2, 3, 3 }, Sources.MENU_PLANES.command, "command")
+    local moves = compileMenu(
+      ROLES.fightScreens,
+      { "menu-fight-1", "menu-fight-2" },
+      "fight",
+      { 3, 0 },
+      { 2, 3 },
+      Sources.MENU_PLANES.moves,
+      "moves"
+    )
     local target = compileMenu(ROLES.targetScreens, {
       "menu-target-1",
       "menu-target-2",
       "menu-target-3",
-    }, "target")
+    }, "target", { 4, 2, 0 }, { 2, 3, 3 }, Sources.MENU_PLANES.target, "target")
     local twoOption = compileMenu(ROLES.twoOptionScreens, {
       "menu-two-option-1",
       "menu-two-option-2",
-    }, "two-option")
+    }, "two-option", { 6, 0 }, { 2, 3 }, Sources.MENU_PLANES.twoOption, "twoOption")
     -- Background-dependent lower palettes: backgrounds 0..16 read base
     -- 247+b with touch 271+b; background 17 reads base 288, touch 289.
     local lowerVariants = {}

@@ -9,6 +9,7 @@
 
 local SourceTick = require("libs.hgss.src.field.SourceTick")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
+local BagCache = require("libs.assets.src.BagCache")
 local BattlePresentationModel = require("game.hgss.src.battle.BattlePresentationModel")
 local BattleScreenState = require("game.hgss.src.battle.BattleScreenState")
 local MonCache = require("libs.assets.src.MonCache")
@@ -465,6 +466,33 @@ local function stagedArtPath(envelope, key)
     local section = menus.command
     return type(section) == "table" and section.image or nil
   end
+  local layout, screenIndex = tostring(key):match("^menu:([%a%-]+):screen:(%d+)$")
+  if layout ~= nil and screenIndex ~= nil then
+    local sectionKey = layout == "command" and "command"
+      or layout == "moves" and "moves"
+      or layout == "target" and "target"
+      or layout == "two-option" and "twoOption"
+      or nil
+    local section = sectionKey ~= nil and menus[sectionKey] or nil
+    local screens = type(section) == "table" and section.screens or nil
+    local record = type(screens) == "table" and screens[tonumber(screenIndex)] or nil
+    return type(record) == "table" and record.image or nil
+  end
+  local feedbackLayout, controlId, state = tostring(key):match("^menu:([%a%-]+):feedback:(.+):([%a]+)$")
+  if feedbackLayout ~= nil and controlId ~= nil and state ~= nil then
+    local sectionKey = feedbackLayout == "command" and "command"
+      or feedbackLayout == "moves" and "moves"
+      or feedbackLayout == "target" and "target"
+      or feedbackLayout == "two-option" and "twoOption"
+      or nil
+    local section = sectionKey ~= nil and menus[sectionKey] or nil
+    local screens = type(section) == "table" and section.screens or nil
+    local record = type(screens) == "table" and screens[1] or nil
+    local feedback = type(record) == "table" and record.feedback or nil
+    local controls = type(feedback) == "table" and feedback[controlId] or nil
+    local variant = type(controls) == "table" and controls[state] or nil
+    return type(variant) == "table" and variant.image or nil
+  end
   if key == "menu:moves" then
     local section = menus.moves
     return type(section) == "table" and section.image or nil
@@ -477,10 +505,9 @@ local function stagedArtPath(envelope, key)
     local section = hud.arrow
     return type(section) == "table" and section.image or nil
   end
-  -- Both interaction-pane gauge rows use the 16-pixel family: no roster
-  -- state selects the 32-pixel family, which stays staged but unused.
   if key == "gauges:player" or key == "gauges:enemy" then
-    local family = type(hud.partyGauges) == "table" and hud.partyGauges[1] or nil
+    local familyIndex = key == "gauges:player" and 2 or 1
+    local family = type(hud.partyGauges) == "table" and hud.partyGauges[familyIndex] or nil
     return type(family) == "table" and family.image or nil
   end
   return nil
@@ -589,6 +616,42 @@ local function checkStagedMembers(envelope)
     { key = "hud:enemy-left", path = stagedArtPath(envelope, "hud:enemy-left") },
     { key = "hud:enemy-right", path = stagedArtPath(envelope, "hud:enemy-right") },
   }
+  for _, menuKey in ipairs({ "command", "moves", "target", "twoOption" }) do
+    local menu = menus[menuKey]
+    local screens = type(menu) == "table" and menu.screens or nil
+    if type(screens) ~= "table" or #screens == 0 then
+      return "battle menu screens are not staged: " .. menuKey
+    end
+    for index, screen in ipairs(screens) do
+      required[#required + 1] = {
+        key = "menu:" .. (menuKey == "twoOption" and "two-option" or menuKey) .. ":screen:" .. tostring(index),
+        path = type(screen) == "table" and screen.image or nil,
+      }
+      if type(screen) == "table" and type(screen.feedback) == "table" then
+        for controlId, states in pairs(screen.feedback) do
+          for state in pairs(states) do
+            required[#required + 1] = {
+              key = "menu:"
+                .. (menuKey == "twoOption" and "two-option" or menuKey)
+                .. ":feedback:"
+                .. controlId
+                .. ":"
+                .. state,
+              path = stagedArtPath(
+                envelope,
+                "menu:"
+                  .. (menuKey == "twoOption" and "two-option" or menuKey)
+                  .. ":feedback:"
+                  .. controlId
+                  .. ":"
+                  .. state
+              ),
+            }
+          end
+        end
+      end
+    end
+  end
   for _, entry in ipairs(required) do
     local bytes = type(entry.path) == "string" and cacheFs:read(entry.path) or nil
     if type(bytes) ~= "string" or #bytes == 0 then
@@ -623,6 +686,7 @@ function FieldBattlePresentation:_preparationServices()
   local cacheFs = assert(self._cacheFs, "preparation requires the envelope cache")
   local graphics = self._graphics
   local images = self._images --[[@as table<string, unknown>]]
+  local bagManifest = nil
   local stagedSceneKey = nil
   local stagedSceneLayer = nil
   local backgroundPixels = nil
@@ -809,7 +873,20 @@ function FieldBattlePresentation:_preparationServices()
       images[key] = image
       return image
     end
-    local artPath = stagedArtPath(envelope, key)
+    local typeKey = key:match("^battle:move%-type%-icon:([a-z%-]+)$")
+    local artPath = nil
+    if typeKey ~= nil then
+      if bagManifest == nil then
+        bagManifest = BagCache.loadManifest(cacheFs)
+      end
+      local hero = bagManifest.hero --[[@as table<string, unknown>]]
+      local moveSummary = assert(hero.moveSummary, "the generated bag manifest carries move-summary art") --[[@as table<string, unknown>]]
+      local typeIcons = moveSummary.typeIcons --[[@as table<string, table<string, unknown>>]]
+      local icon = assert(typeIcons[typeKey], "the generated bag manifest carries every move type icon")
+      artPath = assert(icon.image, "the generated move type icon names its staged image") --[[@as string]]
+    else
+      artPath = stagedArtPath(envelope, key)
+    end
     if artPath ~= nil then
       if envelope._pool ~= nil then
         local image, failure = acquirePooled(envelope, key, artPath)
