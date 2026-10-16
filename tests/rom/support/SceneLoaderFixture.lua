@@ -152,13 +152,18 @@ end
 -- step-finished). The harness also records the phase timeline, the walking
 -- pose-clock ticks, and played sounds, like the acceptance harness.
 ---@param versionId string
----@param opts { scenes: { [integer]: { map: RuntimeFieldMap } }, spawn: { map: RuntimeFieldMap, x: integer, z: integer, facing: string }, doorTiles?: { [integer]: { x: integer, z: integer } } }
+---@param opts { scenes: { [integer]: { map: RuntimeFieldMap } }, spawn: { map: RuntimeFieldMap, x: integer, z: integer, facing: string }, doorTiles?: { [integer]: { x: integer, z: integer } }, requestWarpDelay?: integer }
 ---@return table harness
 function SceneLoaderFixture.newHarness(versionId, opts)
   local maps = {}
   for mapId, scene in pairs(opts.scenes) do
     maps[mapId] = scene.map
   end
+  -- The warp-readiness gate: with `opts.requestWarpDelay`, the first N
+  -- destination requests report "not ready" so the suite can observe the
+  -- source world held under the full-black cover until the destination is
+  -- ready. The gate always counts requests.
+  local warpGate = { calls = 0 }
   local loader = {
     load = function(_, mapId)
       return assert(maps[mapId], "map " .. tostring(mapId))
@@ -167,6 +172,10 @@ function SceneLoaderFixture.newHarness(versionId, opts)
       assert(type(sourceMap) == "table", "fixture warp source is required")
       assert(type(warp) == "table", "fixture warp record is required")
       assert(maps[warp.destinationMapId], "fixture destination is not preloaded")
+      warpGate.calls = warpGate.calls + 1
+      if opts.requestWarpDelay ~= nil and warpGate.calls <= opts.requestWarpDelay then
+        return false
+      end
       return true
     end,
     transitionEnvironment = function(_, mapId)
@@ -325,7 +334,21 @@ function SceneLoaderFixture.newHarness(versionId, opts)
   })
   harness.session = session
   harness.transition = transition
+  harness.warpGate = warpGate
   return harness
+end
+
+-- Clears the recorded event trace and its edge flags so a second leg over the
+-- same harness (an immediate reversal) is observed freshly, without the first
+-- leg's open/close edges masking the re-armed door.
+---@param harness table
+function SceneLoaderFixture.resetTrace(harness)
+  harness.events = {}
+  harness.walking = false
+  harness.sawOpenStart = false
+  harness.sawOpenFinished = false
+  harness.sawCloseStart = false
+  harness.sawCloseFinished = false
 end
 
 -- The semantic role of the door's retained play handle, or nil when nothing

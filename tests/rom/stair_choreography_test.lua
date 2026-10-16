@@ -1,13 +1,15 @@
--- Private target test: the stair choreography against the real
--- HGSS dump, run through the production FieldTransition over the real
--- player-house stair pair: 1F (3,3) <-> 2F (3,4), both WARP_STAIRS_WEST (95)
--- standing tiles gated on facing west. Both directions must: lock input,
--- use the source slow horizontal step, play the source-owned HGSS stair sound
--- (SEQ_SE_DP_KAIDAN2), swap only at full black, skip coordinate
--- suppression (pressing the gate direction on the destination stair tile
--- re-arms immediately), and unlock at the end of the destination fade-in --
--- no door animation anywhere. Runs against every ready dump through the ROM
--- layer.
+-- Private target test: the stair and ladder choreography against the real
+-- HGSS dump, run through the production FieldTransition over real stair and
+-- ladder pairs: the player-house 1F (3,3) <-> 2F (3,4) WARP_STAIRS_WEST pair,
+-- the Saffron Magnet Train Station 1F <-> 2F_EMPTY west/east stair pair, and
+-- the Sprout Tower 1F <-> 2F ladder pair including the profile-8 LADDER_DOWN
+-- step warp and its listed-preview branch. Both directions must: lock input,
+-- use the source-owned step/return, play the source-owned HGSS sound
+-- (SEQ_SE_DP_KAIDAN2), swap only at full black, settle the profile camera once,
+-- skip coordinate suppression (pressing the gate direction on the destination
+-- tile re-arms immediately), and unlock at the end of the destination
+-- presentation -- no door animation anywhere. Runs against every ready dump
+-- through the ROM layer.
 
 local Assert = require("tests.support.Assert")
 local DoorTiles = require("libs.hgss.src.transition.DoorTiles")
@@ -28,6 +30,10 @@ local T = {}
 
 local HOUSE_1F = "MAP_NEW_BARK_PLAYER_HOUSE_1F"
 local HOUSE_2F = "MAP_NEW_BARK_PLAYER_HOUSE_2F"
+local MAGNET_1F = "MAP_SAFFRON_MAGNET_TRAIN_STATION_1F"
+local MAGNET_2F = "MAP_SAFFRON_MAGNET_TRAIN_STATION_2F_EMPTY"
+local SPROUT_1F = "MAP_SPROUT_TOWER_1F"
+local SPROUT_2F = "MAP_SPROUT_TOWER_2F"
 
 -- One compiled scene: the runtime map and the MapProps facade, the shape
 -- MapSceneLoader produces (the player house carries no building placements,
@@ -91,12 +97,20 @@ local function surfaceAt(map, fieldX, fieldZ)
   return candidates[1].id
 end
 
--- Drive one full stair choreography over the real pair. `spawn` places the
--- source player on the standing stair warp tile; preparation builds the
--- destination player before the black-screen commit, like FieldRuntime.
+-- Drive one full stair/ladder choreography over the real pair. `trigger` is the
+-- real classified trigger record from TransitionTrigger (kind + warp + profile
+-- identity); a bare warp record is wrapped as the stair trigger the
+-- player-house pair uses. `spawn` places the source player on the standing warp
+-- tile; preparation builds the destination player before the black-screen
+-- commit, like FieldRuntime. `options.selectPreview` and `options.cameraAdjust`
+-- forward the post-commit preview selector and the camera hook.
 -- Returns the final player, the transition, the first-tick phase timeline,
--- and the recorded sound ids.
-local function runChoreography(_, sourceScene, destinationScene, stairWarp, facing, spawn)
+-- the recorded sound ids, and the recorded camera adjustments.
+local function runChoreography(_, sourceScene, destinationScene, trigger, facing, spawn, options)
+  options = options or {}
+  if trigger.warp == nil then
+    trigger = { kind = "stairs", warp = trigger }
+  end
   local srcMap, destinationMap = sourceScene.map, destinationScene.map
   local maps = { [srcMap.mapId] = srcMap, [destinationMap.mapId] = destinationMap }
   local propsByMapId = { [srcMap.mapId] = sourceScene.props, [destinationMap.mapId] = destinationScene.props }
@@ -127,6 +141,7 @@ local function runChoreography(_, sourceScene, destinationScene, stairWarp, faci
   })
 
   local sounds = {}
+  local cameraAdjustments = {}
   local transition
   local currentInstances = sourceScene.instances
   transition = FieldTransition.new({
@@ -141,6 +156,12 @@ local function runChoreography(_, sourceScene, destinationScene, stairWarp, faci
     playSound = function(soundId)
       sounds[#sounds + 1] = soundId
     end,
+    selectPreview = options.selectPreview,
+    cameraAdjust = options.cameraAdjust
+        and function(_, adjustment)
+          cameraAdjustments[#cameraAdjustments + 1] = adjustment
+        end
+      or nil,
     prepare = function(resolution, swapFacing)
       return FieldPlayer.new({
         currentMap = resolution.destinationMap,
@@ -158,7 +179,7 @@ local function runChoreography(_, sourceScene, destinationScene, stairWarp, faci
     end,
   })
   transition.player = player
-  transition:start(srcMap, { kind = "stairs", warp = stairWarp }, facing)
+  transition:start(srcMap, trigger, facing)
 
   -- The fixed-tick loop mirrors the session: the transition ticks, and while
   -- the stair choreography is active the scene's animated instances advance.
@@ -177,8 +198,9 @@ local function runChoreography(_, sourceScene, destinationScene, stairWarp, faci
       timeline[transition.phase] = ticks
     end
   end
-  Assert.equal(transition.phase, "idle", "the stair choreography completes within the tick budget")
-  return transition, player, timeline, sounds
+  Assert.equal(transition.phase, "idle", "the choreography completes within the tick budget")
+  Assert.notNil(transition.completed, "the choreography records one completion token")
+  return transition, player, timeline, sounds, cameraAdjustments
 end
 
 -- 1F (3,3) -> 2F: the standing WARP_STAIRS_WEST tile climbs in place while
@@ -241,6 +263,119 @@ function T.house_2f_to_1f_stairs_choreograph(romFs, _)
   local back =
     assert(TransitionTrigger.inputPath(h1.map, player.fieldX, player.fieldZ, "west"), "the 1F stair tile re-triggers")
   Assert.equal(back.kind, "stairs")
+end
+
+-- Saffron Magnet Train Station 1F <-> 2F_EMPTY: a real WEST <-> EAST stair pair
+-- (1F WARP_STAIRS_WEST (3,3) climbs to the 2F WARP_STAIRS_EAST tile (21,14),
+-- and the 2F east stair descends back). Both directions carry profile 3,
+-- settle the horizontal-stair camera once, and land standing on the reciprocal
+-- stair tile, immediately re-armed.
+function T.magnet_train_station_west_and_east_stairs_choreograph(romFs, _)
+  local s1 = compileScene(romFs, MAGNET_1F)
+  local s2 = compileScene(romFs, MAGNET_2F)
+
+  local up = assert(TransitionTrigger.inputPath(s1.map, 3, 3, "west"), "the 1F west stair triggers")
+  Assert.equal(up.kind, "stairs")
+  Assert.equal(up.transition.profile, FieldTransitionProfile.HORIZONTAL_STAIRS)
+  local upTransition, upPlayer, upTimeline, upSounds, upCamera =
+    runChoreography(romFs, s1, s2, up, "west", { x = 3, z = 3 }, { cameraAdjust = true })
+  Assert.equal(upPlayer.fieldX, 21)
+  Assert.equal(upPlayer.fieldZ, 14, "the ascent lands on the 2F east-stair tile")
+  Assert.equal(upPlayer.motion, "idle")
+  Assert.isFalse(upTransition.locked)
+  Assert.isNil(upTransition.suppression)
+  Assert.notNil(upTimeline.choreo_hold, "the stair ascent holds for its destination presentation")
+  Assert.deepEqual(upCamera, { "horizontal_stairs" }, "the stair camera settles once")
+  Assert.deepEqual(
+    upSounds,
+    { FieldTransitionProfile.ROUTINE_FAMILIES[FieldTransitionProfile.HORIZONTAL_STAIRS].exitSound },
+    "the ascent owns exactly the one stair sound"
+  )
+  Assert.isTrue(upTimeline.fade_out < upTimeline.swap_map)
+
+  local down = assert(TransitionTrigger.inputPath(s2.map, 21, 14, "east"), "the 2F east stair triggers")
+  Assert.equal(down.kind, "stairs")
+  Assert.equal(down.transition.profile, FieldTransitionProfile.HORIZONTAL_STAIRS)
+  Assert.equal(assert(down.warp).destinationMapId, s1.map.mapId, "the east stair points back at the 1F west stair")
+  local downTransition, downPlayer, _, downSounds, downCamera =
+    runChoreography(romFs, s2, s1, down, "east", { x = 21, z = 14 }, { cameraAdjust = true })
+  Assert.equal(downPlayer.fieldX, 3)
+  Assert.equal(downPlayer.fieldZ, 3, "the descent lands back on the 1F west-stair tile")
+  Assert.isFalse(downTransition.locked)
+  Assert.deepEqual(downCamera, { "horizontal_stairs" })
+  Assert.deepEqual(downSounds, {
+    FieldTransitionProfile.ROUTINE_FAMILIES[FieldTransitionProfile.HORIZONTAL_STAIRS].exitSound,
+  })
+end
+
+-- Sprout Tower 1F <-> 2F: the two standing ladder faces on 1F both climb
+-- (profile 7) to the 2F ladder tile (6,15), and the 2F LADDER_DOWN step warp
+-- descends (profile 8) to the 1F south landing (6,17). Each direction owns the
+-- ladder camera and the one ladder sound.
+function T.sprout_tower_ladders_climb_both_faces_and_descend(romFs, _)
+  local t1 = compileScene(romFs, SPROUT_1F)
+  local t2 = compileScene(romFs, SPROUT_2F)
+
+  for _, face in ipairs({
+    { x = 6, z = 15, facing = "south" },
+    { x = 6, z = 16, facing = "north" },
+  }) do
+    local up = assert(TransitionTrigger.inputPath(t1.map, face.x, face.z, face.facing), "the 1F ladder face triggers")
+    Assert.equal(up.kind, "directional")
+    Assert.equal(up.transition.profile, FieldTransitionProfile.LADDER)
+    local transition, player, timeline, sounds, camera =
+      runChoreography(romFs, t1, t2, up, face.facing, { x = face.x, z = face.z }, { cameraAdjust = true })
+    Assert.equal(player.fieldX, 6)
+    Assert.equal(player.fieldZ, 15, "the ascent lands on the 2F ladder tile")
+    Assert.equal(player.motion, "idle")
+    Assert.isFalse(transition.locked)
+    Assert.notNil(timeline.choreo_hold, "the ascent holds for the vertical return")
+    Assert.deepEqual(camera, { "ladder" }, "the ascent owns the vertical camera")
+    Assert.deepEqual(sounds, {
+      FieldTransitionProfile.ROUTINE_FAMILIES[FieldTransitionProfile.LADDER].exitSound,
+    })
+  end
+
+  local down = assert(TransitionTrigger.stepPath(t2.map, 6, 16, "south"), "the 2F ladder-down step warp triggers")
+  Assert.equal(down.kind, "generic")
+  Assert.equal(down.transition.profile, FieldTransitionProfile.LADDER_DOWN)
+  local transition, player, _, sounds, camera =
+    runChoreography(romFs, t2, t1, down, "south", { x = 6, z = 16 }, { cameraAdjust = true })
+  Assert.equal(player.fieldX, 6)
+  Assert.equal(player.fieldZ, 17, "the descent steps off the ladder to the 1F south landing")
+  Assert.isFalse(transition.locked)
+  Assert.deepEqual(camera, { "ladder_down" })
+  Assert.deepEqual(sounds, {
+    FieldTransitionProfile.ROUTINE_FAMILIES[FieldTransitionProfile.LADDER_DOWN].exitSound,
+  })
+end
+
+-- The profile-8 listed-preview source path: with a selected preview, the
+-- special vertical return owns the arrival and the generic destination step is
+-- never run, so the player lands on the ladder anchor (6,16) rather than one
+-- tile south (6,17), and the ordinary destination fade-in/hold never occur.
+function T.profile8_ladder_down_preview_replaces_the_generic_destination_step(romFs, _)
+  local t1 = compileScene(romFs, SPROUT_1F)
+  local t2 = compileScene(romFs, SPROUT_2F)
+  local down = assert(TransitionTrigger.stepPath(t2.map, 6, 16, "south"))
+  Assert.equal(down.transition.profile, FieldTransitionProfile.LADDER_DOWN)
+
+  local transition, player, timeline, sounds = runChoreography(romFs, t2, t1, down, "south", { x = 6, z = 16 }, {
+    selectPreview = function()
+      return { imageKey = "preview.test", timeSlot = 1, profileId = FieldTransitionProfile.LADDER_DOWN }
+    end,
+  })
+
+  Assert.equal(player.fieldX, 6)
+  Assert.equal(player.fieldZ, 16, "the preview arrival skips the generic destination step")
+  Assert.equal(player.facing, "south", "the preview arrival turns south exactly once")
+  Assert.isFalse(transition.locked)
+  Assert.notNil(timeline.preview, "the transition enters the preview substate")
+  Assert.isNil(timeline.fade_in, "the preview replaces the ordinary destination fade-in")
+  Assert.isNil(timeline.choreo_hold, "the preview replaces the generic destination hold")
+  Assert.deepEqual(sounds, {
+    FieldTransitionProfile.ROUTINE_FAMILIES[FieldTransitionProfile.LADDER_DOWN].exitSound,
+  })
 end
 
 return require("tests.rom.support.RomSuite").fromFacts(T)
