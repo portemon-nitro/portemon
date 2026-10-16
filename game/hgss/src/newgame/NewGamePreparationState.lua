@@ -77,8 +77,6 @@ end
 function NewGamePreparationState:draw()
   local lg = love.graphics
   local margin, line = DevScreenLayout.MARGIN, DevScreenLayout.LINE_HEIGHT
-  lg.setColor(1, 1, 1)
-  lg.print("Preparing New Game...", margin, margin)
   local fraction = 0
   local snapshot = self.progress
   if type(snapshot) == "table" and type(snapshot.total) == "number" and snapshot.total > 0 then
@@ -96,9 +94,6 @@ function NewGamePreparationState:draw()
   lg.rectangle("fill", barX, barY, barWidth, barHeight)
   lg.setColor(0.35, 0.75, 0.55)
   lg.rectangle("fill", barX, barY, barWidth * fraction, barHeight)
-  lg.setColor(0.7, 0.7, 0.75)
-  lg.print(string.format("%d%%", math.floor(fraction * 100 + 0.5)), barX + barWidth + 12, barY - 2)
-  lg.print("Press escape to cancel.", margin, margin + 2 * line)
 end
 
 ---@param key string

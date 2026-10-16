@@ -151,17 +151,11 @@ function T.constructor_validates_its_composition()
 end
 
 local function recordDraw(draw)
-  local calls = { rectangles = {}, prints = {} }
+  local calls = { rectangles = {} }
   local previousLove = rawget(_G, "love")
   rawset(_G, "love", {
     graphics = {
       setColor = function() end,
-      print = function(text, _, _)
-        calls.prints[#calls.prints + 1] = tostring(text)
-      end,
-      printf = function(text, _, _, _)
-        calls.prints[#calls.prints + 1] = tostring(text)
-      end,
       getWidth = function()
         return 640
       end,
@@ -172,7 +166,7 @@ local function recordDraw(draw)
   })
   local ok, err = pcall(draw)
   rawset(_G, "love", previousLove)
-  return { ok = ok, err = err, rectangles = calls.rectangles, prints = calls.prints }
+  return { ok = ok, err = err, rectangles = calls.rectangles }
 end
 
 local function widestFill(rectangles)
@@ -183,15 +177,6 @@ local function widestFill(rectangles)
     end
   end
   return widest
-end
-
-local function hasPrint(prints, pattern)
-  for _, text in ipairs(prints) do
-    if text:find(pattern) ~= nil then
-      return true
-    end
-  end
-  return false
 end
 
 function T.preparation_renders_progress_from_the_intro_milestone_only()
@@ -225,7 +210,6 @@ function T.preparation_renders_progress_from_the_intro_milestone_only()
   Assert.isTrue(drawn.ok, "drawing the progress bar never fails: " .. tostring(drawn.err))
   local fill = widestFill(drawn.rectangles)
   Assert.near(fill, 360 * 3 / 8, 1e-9, "the fill tracks ready over total")
-  Assert.isTrue(hasPrint(drawn.prints, "38%%"), "the percentage matches the rounded fraction")
 end
 
 function T.preparation_renders_an_empty_bar_while_membership_is_unknown()

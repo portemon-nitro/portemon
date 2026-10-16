@@ -451,37 +451,6 @@ local function continueGatedOptions(gates, log, storeCalls, loaderCalls, behavio
   })
 end
 
-local function recordPreparationDraw(draw)
-  local calls = { prints = {} }
-  local previousLove = rawget(_G, "love")
-  rawset(_G, "love", {
-    graphics = {
-      setColor = function() end,
-      print = function(text, _, _)
-        calls.prints[#calls.prints + 1] = tostring(text)
-      end,
-      printf = function(text, _, _, _)
-        calls.prints[#calls.prints + 1] = tostring(text)
-      end,
-      getWidth = function()
-        return 640
-      end,
-    },
-  })
-  local ok, err = pcall(draw)
-  rawset(_G, "love", previousLove)
-  return { ok = ok, err = err, prints = calls.prints }
-end
-
-local function printedMatching(prints, pattern)
-  for _, text in ipairs(prints) do
-    if text:find(pattern) ~= nil then
-      return true
-    end
-  end
-  return false
-end
-
 function T.continue_loads_the_saved_record_while_both_closures_are_still_pending()
   local log = {}
   local storeCalls = {}
@@ -554,34 +523,6 @@ function T.cancelled_continue_never_transfers_on_late_readiness()
   behavior.ready = true
   settle(state)
   Assert.equal(loaderCalls.transfers or 0, 0, "late readiness never transfers a cancelled preparation")
-  state:dispose()
-end
-
-function T.preparation_draw_names_pending_closures_and_destination_truthfully()
-  local log = {}
-  local storeCalls = {}
-  local loaderCalls = {}
-  local gates = { planning = false, runtime = false }
-  local behavior = { ready = false }
-  local state = FieldPreparationState.new(continueGatedOptions(gates, log, storeCalls, loaderCalls, behavior))
-  settle(state)
-  local pending = recordPreparationDraw(function()
-    state:draw()
-  end)
-  Assert.isTrue(pending.ok, "drawing while closures are pending never fails: " .. tostring(pending.err))
-  Assert.isFalse(printedMatching(pending.prints, "planning"), "the closure wait never claims the entry-closure name")
-  Assert.isTrue(printedMatching(pending.prints, "assets"), "the closure wait names the pending closures")
-  gates.planning = true
-  settle(state)
-  local destined = recordPreparationDraw(function()
-    state:draw()
-  end)
-  Assert.isTrue(destined.ok, "drawing while the destination is pending never fails: " .. tostring(destined.err))
-  Assert.isFalse(
-    printedMatching(destined.prints, "planning"),
-    "the destination wait never claims the entry-closure name"
-  )
-  Assert.isTrue(printedMatching(destined.prints, "location"), "the destination wait names the destination")
   state:dispose()
 end
 

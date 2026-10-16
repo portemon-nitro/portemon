@@ -154,8 +154,8 @@ end
 local function buildPresenters(owner)
   -- The party wait screen is reachable from either menu-flow host: the
   -- bag opens party targets for Use/Give, so a pending party child must
-  -- render its wait text through the bag application too. Drawing never
-  -- invokes icon getters, so no draw ever acquires resources.
+  -- draw nothing through the bag application too; failure raises its cause.
+  -- Drawing never invokes icon getters, so no draw ever acquires resources.
   ---@param presentation table<string, unknown>?
   ---@return boolean handled
   local function drawPartyWait(presentation)
@@ -163,14 +163,8 @@ local function buildPresenters(owner)
     if state ~= "pending" and state ~= "failed" then
       return false
     end
-    local status = assert(presentation, "the party application presents its layout")
-    local layout = assert(status.layout, "the party application presents its layout")
-    local frame = assert(layout.frame, "the party layout carries its frame")
-    local text = assert(owner.textRenderer, "party text renderer is unavailable")
-    if state == "pending" then
-      text:drawText("Preparing party icons...", frame.x + 8, frame.y + 8)
-    else
-      text:drawText("Party icons unavailable: " .. tostring(status.preparationError), frame.x + 8, frame.y + 8)
+    if state == "failed" then
+      error("party icon preparation failed: " .. tostring(assert(presentation).preparationError), 0)
     end
     return true
   end
@@ -202,9 +196,7 @@ local function buildPresenters(owner)
       return false
     end
     if state == "failed" then
-      local text = assert(owner.textRenderer, "summary text renderer is unavailable")
-      local status = assert(presentation, "the summary application presents its status")
-      text:drawText("Summary unavailable: " .. tostring(status.preparationError), 8, 8)
+      error("summary preparation failed: " .. tostring(assert(presentation).preparationError), 0)
     end
     return true
   end

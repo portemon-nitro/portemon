@@ -1,5 +1,3 @@
-local DevScreenLayout = require("game.hgss.src.ui.DevScreenLayout")
-
 -- Pending field-entry ownership for Continue and the New Game handoff.
 -- It tracks three independent readiness interests instead of one global
 -- gate: entry planning, the static field runtime, and the entry target
@@ -210,15 +208,8 @@ function FieldPreparationState:update(_)
   self:_pollGeometry()
 end
 
-function FieldPreparationState:draw()
-  local lg = love.graphics
-  local margin, line = DevScreenLayout.MARGIN, DevScreenLayout.LINE_HEIGHT
-  lg.setColor(1, 1, 1)
-  lg.print("Preparing field entry...", margin, margin)
-  lg.setColor(0.7, 0.7, 0.75)
-  lg.print("Phase: " .. self.phase, margin, margin + line)
-  lg.print("Press escape to cancel.", margin, margin + 2 * line)
-end
+-- Preparation shows nothing; the host presents only its cover.
+function FieldPreparationState:draw() end
 
 ---@param key string
 function FieldPreparationState:keypressed(key, _, _)

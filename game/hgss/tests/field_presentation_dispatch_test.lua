@@ -840,8 +840,7 @@ function T.party_wait_renders_without_icon_getters()
         },
         transition = { phase = "app_exit", step = 3, brightnessCoefficient = 7 },
       }, drawRuntime())
-      Assert.equal(#sink, 1, "the wait renders exactly one message")
-      Assert.equal(sink[1][1], "text", "pending party icons render as text, never icon getters")
+      Assert.equal(#sink, 0, "the pending wait prints no text")
       Assert.equal(#graphics.rectangles, 3, "the outgoing shutter and sub-pane brightness cover the Party wait")
       Assert.deepEqual(
         { graphics.rectangles[1].x, graphics.rectangles[1].y, graphics.rectangles[1].w, graphics.rectangles[1].h },
@@ -854,7 +853,7 @@ function T.party_wait_renders_without_icon_getters()
         "the Party wait shutter stays inside its resolved content pane"
       )
       Assert.equal(graphics.rectangles[3].color[4], 7 / 16, "the detail pane keeps its exit brightness")
-      resources:drawApplication(FieldApplicationIds.POKEMON, {
+      local failed, failure = pcall(resources.drawApplication, resources, FieldApplicationIds.POKEMON, {
         child = {
           preparationState = "failed",
           preparationError = "boom",
@@ -862,12 +861,9 @@ function T.party_wait_renders_without_icon_getters()
           presentation = plan,
         },
       }, drawRuntime())
-      Assert.equal(#sink, 2, "the failure renders exactly one message")
-      Assert.equal(sink[1][1], "text", "failed party icons render as text, never icon getters")
-      Assert.isTrue(
-        tostring(sink[2][2]):find("boom", 1, true) ~= nil,
-        "the failure message carries the preparation cause"
-      )
+      Assert.isFalse(failed, "failed party icons raise instead of drawing")
+      Assert.isTrue(tostring(failure):find("boom", 1, true) ~= nil, "the error carries the preparation cause")
+      Assert.equal(#sink, 0, "a failed party wait prints no text")
       resources:dispose()
     end)
   end)
@@ -878,7 +874,7 @@ function T.party_wait_renders_without_icon_getters()
 end
 
 -- A pending producer wait status draws through the app-exit transition:
--- the wait text renders from the producer layout and the shutter is
+-- the wait draws no text and the shutter is
 -- clipped to the real resolved party pane, without icon getters.
 function T.pending_producer_wait_draws_through_the_app_exit_transition()
   local screen, cancelCount = waitingPartyChild(false, nil)
@@ -897,8 +893,7 @@ function T.pending_producer_wait_draws_through_the_app_exit_transition()
         child = waiting,
         transition = { phase = "app_exit", step = 3, brightnessCoefficient = 7 },
       }, drawRuntime())
-      Assert.equal(#sink, 1, "the pending wait renders exactly one message")
-      Assert.equal(sink[1][1], "text", "pending party icons render as text, never icon getters")
+      Assert.equal(#sink, 0, "the pending wait prints no text")
       Assert.equal(#graphics.rectangles, 2, "the outgoing shutter draws its two bars over the pending wait")
       Assert.deepEqual(
         { graphics.rectangles[1].color[1], graphics.rectangles[1].color[2], graphics.rectangles[1].color[3] },
@@ -922,39 +917,23 @@ function T.pending_producer_wait_draws_through_the_app_exit_transition()
   end
 end
 
--- A failed producer wait status uses the same drawable contract: the
--- failure text stays visible beneath the same party transition plan and
--- disposal still releases preparation exactly once.
-function T.failed_producer_wait_draws_through_the_app_exit_transition()
+-- A failed producer wait status raises its cause from the draw instead of
+-- printing, and disposal still releases preparation exactly once.
+function T.failed_producer_wait_raises_its_cause_when_drawn()
   local screen, cancelCount = waitingPartyChild(false, "icons unavailable")
-  local waiting = screen:status()
-  Assert.equal(waiting.preparationState, "failed", "the producer child under test actually failed")
+  local failedStatus = screen:status()
+  Assert.equal(failedStatus.preparationState, "failed", "the producer child under test actually failed")
   local sink, calls = {}, {}
   local savedLove = rawget(_G, "love")
-  local graphics = require("tests.support.FakeGraphics").new({})
-  graphics.getDimensions = function()
-    error("party transition uses its resolved pane placement")
-  end
-  rawset(_G, "love", { graphics = graphics })
+  rawset(_G, "love", { graphics = require("tests.support.FakeGraphics").new({}) })
   local ok, err = pcall(function()
     withProductionComposition(sink, calls, compositionRuntime(), function(resources)
-      resources:drawApplication(FieldApplicationIds.POKEMON, {
-        child = waiting,
-        transition = { phase = "app_exit", step = 3, brightnessCoefficient = 7 },
+      local drew, failure = pcall(resources.drawApplication, resources, FieldApplicationIds.POKEMON, {
+        child = failedStatus,
       }, drawRuntime())
-      Assert.equal(#sink, 1, "the failed wait renders exactly one message")
-      Assert.equal(sink[1][1], "text", "failed party icons render as text, never icon getters")
-      Assert.isTrue(
-        tostring(sink[1][2]):find("icons unavailable", 1, true) ~= nil,
-        "the failure message carries the preparation cause"
-      )
-      Assert.equal(#graphics.rectangles, 2, "the outgoing shutter draws its two bars over the failed wait")
-      local contentFrame = assert(waiting.presentation.panes[1].placement.frame, "the wait plan carries its frame")
-      Assert.deepEqual(
-        graphics.scissorIntersections[1].effective,
-        { contentFrame.x, contentFrame.y, contentFrame.width, contentFrame.height },
-        "the failed wait shutter stays inside its resolved content pane"
-      )
+      Assert.isFalse(drew, "a failed party wait raises when drawn")
+      Assert.isTrue(tostring(failure):find("icons unavailable", 1, true) ~= nil, "the error carries the cause")
+      Assert.equal(#sink, 0, "a failed party wait prints no text")
       resources:dispose()
     end)
   end)
@@ -1126,25 +1105,21 @@ function T.bag_flow_party_target_wait_renders_without_icon_getters()
       page = "party_give_target",
       child = { preparationState = "pending", layout = { frame = frame } },
     }, drawRuntime())
-    Assert.equal(#sink, 1, "the bag-hosted party wait renders exactly one message")
-    Assert.equal(sink[1][1], "text", "pending party icons render as text, never icon getters")
-    resources:drawApplication(FieldApplicationIds.BAG, {
+    Assert.equal(#sink, 0, "the bag-hosted party wait prints no text")
+    local drew, failure = pcall(resources.drawApplication, resources, FieldApplicationIds.BAG, {
       open = true,
       root = "bag",
       page = "party_give_target",
       child = { preparationState = "failed", preparationError = "boom", layout = { frame = frame } },
     }, drawRuntime())
-    Assert.equal(#sink, 2, "the bag-hosted party failure renders exactly one message")
-    Assert.equal(sink[1][1], "text", "failed party icons render as text, never icon getters")
-    Assert.isTrue(
-      tostring(sink[2][2]):find("boom", 1, true) ~= nil,
-      "the failure message carries the preparation cause"
-    )
+    Assert.isFalse(drew, "the bag-hosted party failure raises")
+    Assert.isTrue(tostring(failure):find("boom", 1, true) ~= nil, "the error carries the preparation cause")
+    Assert.equal(#sink, 0, "the bag-hosted party failure prints no text")
     resources:dispose()
   end)
 end
 
-function T.summary_wait_draws_no_text_while_pending_and_names_its_failure()
+function T.summary_wait_draws_no_text_while_pending_and_raises_its_failure()
   local sink, calls = {}, {}
   withProductionComposition(sink, calls, compositionRuntime(), function(resources)
     local frame = { x = 0, y = 0, width = 256, height = 192 }
@@ -1156,7 +1131,7 @@ function T.summary_wait_draws_no_text_while_pending_and_names_its_failure()
       child = { preparationState = "pending", layout = { frame = frame }, presentation = plan },
     }, drawRuntime())
     Assert.equal(#sink, 0, "a pending summary draws only the host cover, never a wait message")
-    resources:drawApplication(FieldApplicationIds.POKEMON, {
+    local drew, failure = pcall(resources.drawApplication, resources, FieldApplicationIds.POKEMON, {
       open = true,
       root = "party",
       page = "summary",
@@ -1167,8 +1142,9 @@ function T.summary_wait_draws_no_text_while_pending_and_names_its_failure()
         presentation = plan,
       },
     }, drawRuntime())
-    Assert.equal(#sink, 1, "a failed summary renders its cause")
-    Assert.isTrue(tostring(sink[1][2]):find("boom", 1, true) ~= nil, "the failure message carries the cause")
+    Assert.isFalse(drew, "a failed summary raises")
+    Assert.isTrue(tostring(failure):find("boom", 1, true) ~= nil, "the error carries the cause")
+    Assert.equal(#sink, 0, "a failed summary prints no text")
     resources:dispose()
   end)
 end
