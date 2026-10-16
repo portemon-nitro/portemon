@@ -1139,7 +1139,7 @@ function FieldSession:updateFixed(inputSnapshot)
   -- every locked tick and on the completion tick -- never coupled to
   -- player motion -- so interpolation pairs collapse instead of replaying.
   local locomotionAtTickStart = self.player:presentationStateInto(self._tickScratch.playerPresentation).locomotionActive
-  local playerAdvanced = self.transition:updateFixed()
+  local playerAdvanced = self.transition:updateFixed(inputSnapshot)
   if self.acceptedAmbientCallHandle ~= nil and self.transition.phase ~= FieldTransition.PHASES.idle then
     self:_cancelAmbientCall("field-transition-started")
   end

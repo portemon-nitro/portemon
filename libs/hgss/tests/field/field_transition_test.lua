@@ -2002,4 +2002,347 @@ function T.aborted_outdoor_enter_restores_the_captured_destination_angle()
   Assert.isNil(transition.error, "a post-swap failure is not a coherent abort")
 end
 
+-- The post-commit preview branch: an eligible ordinary warp runs the pure
+-- preview substate instead of the ordinary enter choreography; an ineligible
+-- or covered warp is unchanged. The selector is injected by the coordinator
+-- and consulted once, after the single commit, with the original source map.
+local function previewTransition(options)
+  options = options or {}
+  local source = { mapId = 61, fieldData = { transitionEnvironment = "outdoors" } }
+  local destination = { mapId = 60, fieldData = { transitionEnvironment = "cave" } }
+  local events = {}
+  local player = options.player
+    or {
+      motion = "idle",
+      updateFixed = function()
+        return false
+      end,
+      beginTransitionStep = function()
+        error("the preview branch must not begin the ordinary destination step", 2)
+      end,
+      scriptedStep = function()
+        error("the preview branch must not run the ordinary door egress", 2)
+      end,
+    }
+  local transition = FieldTransition.new({
+    loader = {
+      requestWarp = function()
+        return true
+      end,
+    },
+    player = player,
+    resolveDestination = function()
+      return {
+        destinationMap = destination,
+        destinationWarp = { x = 4, z = 4 },
+        fieldX = 4,
+        fieldZ = 4,
+        surfaceId = 0,
+        worldY = 10,
+      }
+    end,
+    prepare = function(result)
+      return { destinationMap = result.destinationMap }
+    end,
+    commit = function()
+      events[#events + 1] = "commit"
+    end,
+    onProfile = function(_, phase)
+      events[#events + 1] = "profile:" .. phase
+    end,
+    selectPreview = options.selectPreview and function(sourceMap, destinationMap, profileId)
+      events[#events + 1] = "select"
+      return options.selectPreview(sourceMap, destinationMap, profileId)
+    end or nil,
+  })
+  return transition, { source = source, destination = destination, events = events, player = player }
+end
+
+local function startPreviewWarp(transition, source, profileId)
+  transition:start(source, {
+    warp = { index = 0, x = 4, z = 14, destinationMapId = 60, destinationWarpId = 0 },
+    transition = { mode = "fixed", profile = profileId or 0 },
+  }, "south")
+end
+
+local function requirePreviewPhase()
+  Assert.equal(FieldTransition.PHASES.preview, "preview", "the transition must declare its preview substate")
+end
+
+local function eligiblePreviewTransition()
+  requirePreviewPhase()
+  local transition, ctx = previewTransition({
+    selectPreview = function(_, _, profileId)
+      return { imageKey = "preview.day", timeSlot = 1, profileId = profileId }
+    end,
+  })
+  startPreviewWarp(transition, ctx.source)
+  advanceTo(transition, FieldTransition.PHASES.preview, 64)
+  return transition
+end
+
+function T.the_preview_phase_is_declared_for_the_transition_contract()
+  Assert.equal(FieldTransition.PHASES.preview, "preview", "the transition declares its preview substate")
+end
+
+function T.an_eligible_ordinary_warp_selects_a_preview_only_after_commit()
+  requirePreviewPhase()
+  local transition, ctx = previewTransition({
+    selectPreview = function(_, _, profileId)
+      return { imageKey = "preview.day", timeSlot = 1, profileId = profileId }
+    end,
+  })
+  startPreviewWarp(transition, ctx.source)
+  Assert.isNil(transition:presentationStatus().preview, "no preview exists before the destination commits")
+  advanceTo(transition, FieldTransition.PHASES.preview, 64)
+  Assert.equal(transition.phase, FieldTransition.PHASES.preview, "the committed swap branches into the preview state")
+
+  local commitIndex, selectIndex
+  for index, event in ipairs(ctx.events) do
+    if event == "commit" then
+      commitIndex = index
+    elseif event == "select" then
+      selectIndex = index
+    end
+  end
+  Assert.notNil(commitIndex, "the committed warp runs its single commit")
+  Assert.notNil(selectIndex, "the committed warp consults the selector")
+  Assert.isTrue(commitIndex < selectIndex, "the selector runs only after the commit")
+
+  local status = transition:presentationStatus()
+  local preview = status.preview
+  Assert.notNil(preview, "the transition publishes its preview status")
+  Assert.equal(preview.imageKey, "preview.day", "the selected semantic image key is published")
+  Assert.equal(preview.timeSlot, 1, "the sampled time slot is published")
+  Assert.equal(preview.stage, "fade_in", "the preview opens on its black cover")
+  Assert.isNil(transition.fade, "the preview branch creates no ordinary fade")
+  Assert.isNil(status.overlay, "the retired out-fade cannot cover the preview")
+  Assert.isTrue(transition.locked, "the field stays locked through the preview")
+  for _, event in ipairs(ctx.events) do
+    Assert.isFalse(event == "profile:enter", "the preview branch must not run the ordinary enter dispatch")
+  end
+
+  advanceTo(transition, "idle", 200)
+  Assert.equal(transition.phase, "idle", "the preview completes")
+  Assert.isFalse(transition.locked, "completion releases the field input lock")
+  Assert.isNil(transition:presentationStatus().preview, "the preview clears on completion")
+  Assert.deepEqual(
+    transition:consumeCompleted(),
+    { sourceMapId = 61, destinationMapId = 60, sourceWarpId = 0 },
+    "the preview completes through the ordinary completion token"
+  )
+  Assert.isNil(transition:consumeCompleted(), "the preview completes exactly one token")
+end
+
+function T.an_unlisted_destination_keeps_the_ordinary_enter_fade()
+  local consulted = 0
+  local transition, ctx = previewTransition({
+    selectPreview = function()
+      consulted = consulted + 1
+      return nil
+    end,
+  })
+  startPreviewWarp(transition, ctx.source)
+  advanceTo(transition, FieldTransition.PHASES.fade_in, 64)
+  Assert.equal(transition.phase, FieldTransition.PHASES.fade_in, "an unlisted destination keeps the ordinary enter fade")
+  Assert.equal(consulted, 1, "the selector is consulted exactly once per committed warp")
+  Assert.isNil(transition:presentationStatus().preview, "an ineligible warp publishes no preview")
+  Assert.notNil(transition.fade, "the ordinary arrival owns its own fade")
+  advanceTo(transition, "idle", 200)
+  Assert.equal(transition.phase, "idle", "the ordinary arrival still completes")
+end
+
+function T.a_covered_scripted_swap_never_selects_a_preview()
+  local transition, ctx = previewTransition({
+    selectPreview = function()
+      error("a covered scripted swap must not select a preview", 2)
+    end,
+  })
+  transition:startCoveredSwap(
+    ctx.source,
+    { warp = { index = 0, destinationMapId = 60, destinationWarpId = 0 } },
+    "south"
+  )
+  advanceTo(transition, "idle", 64)
+  Assert.equal(transition.phase, "idle", "the covered swap still completes")
+  for _, event in ipairs(ctx.events) do
+    Assert.isFalse(event == "select", "a covered scripted swap never selects a preview")
+  end
+end
+
+function T.a_selector_failure_after_commit_propagates_and_keeps_the_lock()
+  local transition, ctx = previewTransition({
+    selectPreview = function()
+      error("the local clock hour is unavailable", 0)
+    end,
+  })
+  startPreviewWarp(transition, ctx.source)
+  advanceTo(transition, "swap_map", 64)
+  local ok, err = pcall(function()
+    step(transition)
+  end)
+  Assert.isFalse(ok, "a post-commit selector failure must propagate")
+  Assert.isTrue(string.find(tostring(err), "the local clock hour is unavailable", 1, true) ~= nil)
+  local commits = 0
+  for _, event in ipairs(ctx.events) do
+    if event == "commit" then
+      commits = commits + 1
+    end
+  end
+  Assert.equal(commits, 1, "the destination commits exactly once")
+  Assert.isTrue(transition.locked, "a post-commit failure keeps the field locked")
+  Assert.isNil(transition.error, "a post-commit failure is not a coherent pre-commit abort")
+end
+
+function T.a_fresh_action_during_the_fade_in_does_not_shorten_the_hold()
+  local transition = eligiblePreviewTransition()
+  Assert.equal(transition:presentationStatus().preview.stage, "fade_in", "the preview opens on its cover")
+  transition:updateFixed({ actionPressed = true })
+  transition:updateSourceFrame()
+  local guard = 0
+  while transition:presentationStatus().preview.stage == "fade_in" and guard <= 16 do
+    transition:updateSourceFrame()
+    guard = guard + 1
+  end
+  Assert.equal(transition:presentationStatus().preview.stage, "hold", "the preview reaches its hold")
+  local hold = 0
+  while transition:presentationStatus().preview.stage == "hold" and hold <= 40 do
+    transition:updateSourceFrame()
+    hold = hold + 1
+  end
+  Assert.equal(transition:presentationStatus().preview.stage, "blend_out", "the hold releases into the blend")
+  Assert.isTrue(hold >= 29, "a press during the cover must not shorten the hold (" .. hold .. ")")
+end
+
+function T.an_action_held_from_before_the_hold_does_not_auto_skip_it()
+  local transition = eligiblePreviewTransition()
+  local reachedHold = false
+  for _ = 1, 20 do
+    local preview = transition:presentationStatus().preview
+    Assert.notNil(preview, "the preview is still running while the hold is reached")
+    if preview.stage == "hold" then
+      reachedHold = true
+      break
+    end
+    transition:updateFixed({ actionPressed = true })
+    transition:updateSourceFrame()
+  end
+  Assert.isTrue(reachedHold, "the preview reaches its hold")
+  local hold = 0
+  while transition:presentationStatus().preview.stage == "hold" and hold <= 40 do
+    transition:updateFixed({})
+    transition:updateSourceFrame()
+    hold = hold + 1
+  end
+  Assert.equal(transition:presentationStatus().preview.stage, "blend_out", "the hold releases into the blend")
+  Assert.isTrue(hold >= 29, "the Action held across the cover must not skip the hold (" .. hold .. ")")
+end
+
+function T.a_fresh_action_during_the_hold_shortens_the_wait()
+  local transition = eligiblePreviewTransition()
+  local guard = 0
+  while transition:presentationStatus().preview.stage ~= "hold" and guard <= 16 do
+    transition:updateSourceFrame()
+    guard = guard + 1
+  end
+  Assert.equal(transition:presentationStatus().preview.stage, "hold", "the preview reaches its hold")
+  transition:updateFixed({ actionPressed = true })
+  transition:updateSourceFrame()
+  Assert.equal(transition:presentationStatus().preview.stage, "blend_out", "a fresh A ends the remaining hold")
+end
+
+function T.an_action_during_the_blend_cannot_force_an_immediate_reveal()
+  local transition = eligiblePreviewTransition()
+  local guard = 0
+  while transition:presentationStatus().preview.stage ~= "hold" and guard <= 16 do
+    transition:updateSourceFrame()
+    guard = guard + 1
+  end
+  transition:updateFixed({ actionPressed = true })
+  transition:updateSourceFrame()
+  Assert.equal(transition:presentationStatus().preview.stage, "blend_out", "a fresh A ends the hold")
+  local blend = 0
+  while
+    transition:presentationStatus().preview ~= nil
+    and transition:presentationStatus().preview.stage == "blend_out"
+    and blend <= 24
+  do
+    transition:updateFixed({ actionPressed = true })
+    transition:updateSourceFrame()
+    blend = blend + 1
+  end
+  Assert.isNil(transition:presentationStatus().preview, "the blend still completes on its own clock")
+  Assert.isTrue(blend >= 14, "Action during the reveal cannot force the world sooner (" .. blend .. ")")
+end
+
+-- The profile8 preview arrival is preview-owned: it descends through the
+-- player's coherent vertical return (eight fixed ticks, from the pre-offset
+-- anchor) and faces south during the reveal blend, never the generic
+-- destination return/step pair.
+function T.a_profile8_preview_owns_its_arrival_without_the_generic_destination_return()
+  requirePreviewPhase()
+  local observed = {}
+  local player = {
+    motion = "idle",
+    durationTicks = 16,
+    progress = 0,
+    updateFixed = function(self)
+      if self.motion ~= "transition" then
+        return false
+      end
+      self.progress = self.progress + 1
+      if self.progress >= self.durationTicks then
+        self.motion = "idle"
+        self.progress = 0
+      end
+      return true
+    end,
+    beginTransitionLadderDownExit = function(self)
+      self.motion = "transition"
+      self.progress = 0
+      self.durationTicks = 16
+      return true
+    end,
+    beginTransitionVerticalReturn = function(self, anchorY, durationTicks)
+      observed.verticalReturn = { anchorY = anchorY, durationTicks = durationTicks }
+      observed.stageAtReturn = observed.currentStage()
+      self.motion = "transition"
+      self.progress = 0
+      self.durationTicks = durationTicks or 16
+      return true
+    end,
+    beginTransitionStep = function(self, direction)
+      observed.step = direction
+      self.motion = "walking"
+      return true
+    end,
+    turn = function(self, direction)
+      observed.turn = direction
+      return true
+    end,
+    scriptedStep = function()
+      error("the preview arrival runs no door egress", 2)
+    end,
+  }
+  local transition, ctx = previewTransition({
+    player = player,
+    selectPreview = function(_, _, profileId)
+      return { imageKey = "preview.day", timeSlot = 1, profileId = profileId }
+    end,
+  })
+  observed.currentStage = function()
+    local status = transition:presentationStatus().preview
+    return status and status.stage or nil
+  end
+  startPreviewWarp(transition, ctx.source, FieldTransitionProfile.LADDER_DOWN)
+  advanceTo(transition, "idle", 220)
+  Assert.equal(transition.phase, "idle", "the profile8 preview completes")
+  Assert.notNil(observed.verticalReturn, "the preview arrival descends through the player-owned vertical return")
+  Assert.equal(observed.verticalReturn.anchorY, 10, "the return targets the pre-offset destination anchor")
+  Assert.equal(observed.verticalReturn.durationTicks, 8, "the source's sixteen 60Hz increments become eight fixed ticks")
+  Assert.equal(observed.stageAtReturn, "blend_out", "the vertical return runs during the reveal blend")
+  Assert.equal(observed.turn, "south", "the arrival faces south")
+  Assert.isNil(observed.step, "the preview branch must not append the generic destination step")
+end
+
 return { tests = T }

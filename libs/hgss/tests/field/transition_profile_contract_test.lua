@@ -2,8 +2,10 @@
 -- door audio and the asymmetric HGSS door movement from ROM loading.
 
 local Assert = require("tests.support.Assert")
+local FieldPlayer = require("libs.hgss.src.actors.FieldPlayer")
 local FieldTransition = require("libs.hgss.src.transition.FieldTransition")
 local FieldTransitionProfile = require("libs.hgss.src.transition.FieldTransitionProfile")
+local TerrainSurface = require("libs.hgss.src.world.TerrainSurface")
 
 local T = { tests = {} }
 
@@ -1021,6 +1023,93 @@ function T.tests.profile_hook_failure_aborts_before_commit_but_after_commit_prop
   Assert.isFalse(enterOk)
   Assert.equal(tostring(enterErr), "enter failed")
   Assert.equal(after.phase, "swap_map")
+end
+
+-- The profile-8 preview special reuses the player-owned vertical return, so
+-- its duration argument must stay backwards-compatible: no override keeps the
+-- ordinary sixteen fixed ticks, while the preview route's eight ticks descend
+-- through the very same interpolation and reach the anchor exactly. Only a
+-- validated positive integer override is accepted.
+local function verticalReturnPlayer()
+  local EMPTY_MAP_PROPS = {}
+  ---@cast EMPTY_MAP_PROPS MapProps
+  local ROOT_HALF = math.sqrt(0.5)
+  local map = {
+    mapId = 60,
+    mapSymbol = "test-map",
+    mapSection = "test-section",
+    mapSectionNativeId = 7,
+    followMode = "ALLOW",
+    coordinateOrigin = { x = 0, z = 0 },
+    scene = {},
+    fieldData = {},
+    collision = {
+      containsLocal = function(_, x, z)
+        return x >= 0 and x < 32 and z >= 0 and z < 32
+      end,
+      isBlockedLocal = function()
+        return false
+      end,
+      getLocal = function()
+        return { blocked = false }
+      end,
+    },
+    terrain = TerrainSurface.new({
+      plates = {
+        {
+          id = 0,
+          minX = 0,
+          minZ = 0,
+          maxX = 32,
+          maxZ = 32,
+          normal = { x = -ROOT_HALF, y = ROOT_HALF, z = 0 },
+          distance = 0,
+          slopeClass = "flat",
+        },
+      },
+    }),
+    terrainDependencyHash = "test-terrain",
+    mapProps = EMPTY_MAP_PROPS,
+    fieldRegion = {},
+    cameraType = 0,
+    release = function() end,
+    updateAnimated = function() end,
+  } --[[@as RuntimeFieldMap]]
+  return FieldPlayer.new({ currentMap = map, fieldX = 0, fieldZ = 4, surfaceId = 0, facing = "south" })
+end
+
+function T.tests.vertical_return_keeps_sixteen_default_ticks_and_accepts_the_preview_eight()
+  local ordinary = verticalReturnPlayer()
+  Assert.isTrue(ordinary:beginTransitionVerticalReturn(2))
+  Assert.equal(ordinary.durationTicks, 16, "an unqualified vertical return keeps the ordinary sixteen fixed ticks")
+  local defaultTicks = 0
+  while ordinary.motion == "transition" do
+    ordinary:updateFixed()
+    defaultTicks = defaultTicks + 1
+    Assert.isTrue(defaultTicks <= 40, "the default vertical return must complete within a bounded tick count")
+  end
+  Assert.equal(defaultTicks, 16, "the default vertical return interpolates for sixteen fixed ticks")
+
+  local preview = verticalReturnPlayer()
+  Assert.isTrue(preview:beginTransitionVerticalReturn(2, 8))
+  Assert.equal(preview.durationTicks, 8, "the preview special descends over eight fixed ticks")
+  local previewTicks = 0
+  while preview.motion == "transition" do
+    preview:updateFixed()
+    previewTicks = previewTicks + 1
+    Assert.isTrue(previewTicks <= 40, "the preview vertical return must complete within a bounded tick count")
+  end
+  Assert.equal(previewTicks, 8, "the preview special interpolates for eight fixed ticks")
+end
+
+function T.tests.vertical_return_rejects_a_duration_that_is_not_a_positive_integer()
+  for _, invalid in ipairs({ 0, -1, 1.5, "8" }) do
+    local player = verticalReturnPlayer()
+    Assert.throws(function()
+      player:beginTransitionVerticalReturn(2, invalid)
+    end, "the vertical return must reject an invalid duration override: " .. tostring(invalid))
+    Assert.equal(player.motion, "idle", "a rejected duration override leaves the player idle")
+  end
 end
 
 return T

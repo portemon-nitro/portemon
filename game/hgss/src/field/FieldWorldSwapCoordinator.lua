@@ -343,6 +343,31 @@ function FieldWorldSwapCoordinator:createTransition(runtime, doorAt, escalatorAt
       screen:setPanelTransition(phase)
     end
   end
+  -- The post-commit area-preview selector: side-effect-free, reading only the
+  -- compiled field-entry manifest and the host-local clock. The cave guard is
+  -- the ORIGINAL source map's environment (never the destination's); the
+  -- destination must be a listed preview destination; the sampled hour selects
+  -- one of the four immutable time slots. The selected hour is snapshotted
+  -- once and the semantic image key resolves from the already-generated
+  -- manifest, so a clock rollover during the preview never swaps the art.
+  local function selectPreview(sourceMap, destinationMap, profileId)
+    local manifest = runtime.fieldEntryManifest
+    local slots = manifest.previewByMapId[destinationMap.mapId]
+    if slots == nil then
+      return nil
+    end
+    local sourceEnvironment = sourceMap.fieldData and sourceMap.fieldData.transitionEnvironment
+    if sourceEnvironment == "cave" then
+      return nil
+    end
+    local clock = assert(runtime.localClock, "the area preview requires the host-local clock")
+    local hour = assert(clock:nowLocal().hour, "the local clock must report a civil hour")
+    assert(hour % 1 == 0 and hour >= 0 and hour < 24, "malformed local clock hour: " .. tostring(hour))
+    local slot = (hour < 4 or hour >= 20) and 3 or (hour < 10 and 0 or (hour < 17 and 1 or 2))
+    local imageKey = slots[slot]
+    assert(imageKey, "the listed destination has no preview image for time slot " .. tostring(slot))
+    return { imageKey = imageKey, timeSlot = slot, profileId = profileId }
+  end
   return FieldTransition.new({
     loader = runtime.mapLoader,
     prepare = prepare,
@@ -357,6 +382,7 @@ function FieldWorldSwapCoordinator:createTransition(runtime, doorAt, escalatorAt
     onProfile = onProfile,
     cameraAdjust = cameraAdjust,
     onPanel = onPanel,
+    selectPreview = selectPreview,
   })
 end
 

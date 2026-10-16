@@ -42,6 +42,7 @@ local PcStorageRenderer = require("libs.hgss.src.ui.PcStorageRenderer")
 local MailboxRenderer = require("libs.hgss.src.ui.MailboxRenderer")
 local PhotoAlbumRenderer = require("libs.hgss.src.ui.PhotoAlbumRenderer")
 local FieldMapNameRenderer = require("game.hgss.src.field.FieldMapNameRenderer")
+local FieldAreaPreviewRenderer = require("game.hgss.src.field.FieldAreaPreviewRenderer")
 
 ---@alias PartyIconPrepare fun(iconKeys: string[]): boolean, string?
 ---@alias PartyIconCancel fun()
@@ -105,6 +106,9 @@ local FieldMapNameRenderer = require("game.hgss.src.field.FieldMapNameRenderer")
 ---@field bannerRenderer FieldMapNameRenderer? the borrowed map-name banner renderer
 ---@field _bannerSkin { image: love.Image, palette: FieldEntryAssetCache.BannerTextPalette }? the one retained banner skin
 ---@field _bannerSkinKey integer? the style of the retained banner skin
+---@field areaPreviewRenderer FieldAreaPreviewRenderer? the borrowed area-preview draw leaf
+---@field _previewImage love.Image? the one retained selected area-preview image
+---@field _previewImageKey string? the semantic key of the retained area-preview image
 ---@field fieldEntranceIndicatorPool GpuAssetPool?
 ---@field fieldEntranceIndicatorRenderer FieldStaticEffectRenderer?
 ---@field fieldSurfRenderer FieldStaticEffectRenderer?
@@ -432,6 +436,17 @@ function FieldPresentationResources.new(runtime)
       graphics = assert(love and love.graphics, "the map-name banner needs its graphics namespace"),
       text = textRenderer,
       imageFor = imageFor,
+    })
+    -- The area preview borrows the same text-less image surface leaf shape:
+    -- the renderer holds no image; the one selected preview bitmap is leased
+    -- lazily here and released on replacement or dispose, so a field that
+    -- never shows a preview materializes no preview art.
+    local function previewImageFor(imageKey)
+      return self:_previewImageFor(imageKey)
+    end
+    self.areaPreviewRenderer = FieldAreaPreviewRenderer.new({
+      graphics = assert(love and love.graphics, "the area preview needs its graphics namespace"),
+      imageFor = previewImageFor,
     })
     local playerData = assert(runtime.playerData, "field presentation requires the validated player data")
     local playerOptions = assert(playerData.options, "field presentation requires the player options")
@@ -902,6 +917,42 @@ function FieldPresentationResources:drawMapNameBanner(banner, referenceFrame)
   assert(self.bannerRenderer, "field presentation owns no map-name banner renderer"):draw(status, referenceFrame)
 end
 
+-- Leases the one selected area-preview image the status names. A replacement
+-- materializes the new image before releasing the outgoing one, so a failed
+-- construction preserves the current selection and at most one preview image
+-- is retained for the field lifetime. A missing generated PNG is a terminal
+-- cache-integrity error named by its path; it never degrades to a substitute.
+---@param imageKey string
+---@return love.Image
+function FieldPresentationResources:_previewImageFor(imageKey)
+  local retained = self._previewImage
+  if retained ~= nil and self._previewImageKey == imageKey then
+    return retained
+  end
+  local manifest = assert(self.fieldEntryManifest, "the area preview requires the compiled field-entry manifest")
+  local asset = assert(manifest.assets[imageKey], "the field-entry manifest has no preview asset " .. imageKey)
+  local path = assert(asset.image, "preview asset " .. imageKey .. " names no image")
+  local bytes = assert(self.cacheFs:read(path), "missing generated preview image " .. path)
+  local graphics = assert(love and love.graphics, "the area preview needs its graphics namespace")
+  local image = graphics.newImage(love.filesystem.newFileData(bytes, path))
+  image:setFilter("nearest", "nearest")
+  if retained ~= nil then
+    retained:release()
+  end
+  self._previewImage = image
+  self._previewImageKey = imageKey
+  return image
+end
+
+-- Draws the active time-aware area preview above the committed world and the
+-- warp fade and below the area-name banner, anchored to the canonical MAIN
+-- reference frame. The status carries the selected image key and alphas.
+---@param status { imageKey: string, imageAlpha: number, blackAlpha: number }
+---@param referenceFrame LayoutGeometry.Rect canonical MAIN field screen
+function FieldPresentationResources:drawAreaPreview(status, referenceFrame)
+  assert(self.areaPreviewRenderer, "field presentation owns no area-preview renderer"):draw(status, referenceFrame)
+end
+
 function FieldPresentationResources:dispose()
   self.presenters = nil
   if self.dialogueRenderer then
@@ -1017,6 +1068,12 @@ function FieldPresentationResources:dispose()
     self._bannerSkin.image:release()
     self._bannerSkin = nil
     self._bannerSkinKey = nil
+  end
+  self.areaPreviewRenderer = nil
+  if self._previewImage then
+    self._previewImage:release()
+    self._previewImage = nil
+    self._previewImageKey = nil
   end
   self.fieldEntryManifest = nil
   if self.textRenderer then

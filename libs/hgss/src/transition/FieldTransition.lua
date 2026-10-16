@@ -46,6 +46,7 @@ local Errors = require("libs.errors.src.Errors")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 local FieldTransitionProfile = require("libs.hgss.src.transition.FieldTransitionProfile")
 local FieldTransitionFade = require("libs.hgss.src.transition.FieldTransitionFade")
+local FieldAreaPreview = require("libs.hgss.src.transition.FieldAreaPreview")
 local FieldCoordinates = require("libs.hgss.src.field.FieldCoordinates")
 local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 local SurfaceResolver = require("libs.hgss.src.world.SurfaceResolver")
@@ -65,7 +66,7 @@ local SurfaceResolver = require("libs.hgss.src.world.SurfaceResolver")
 ---@field escalatorAt fun(runtimeMap: table<string, unknown>, fieldX: integer, fieldZ: integer): table<string, unknown>?
 ---@field onPanel fun(...: unknown)?
 ---@field player table<string, unknown>|nil -- FieldPlayer, bound by the owner across the swap
----@field phase "idle"|"await_source_visual"|"fade_out"|"load_destination"|"swap_map"|"fade_in"|"choreo_hold"
+---@field phase "idle"|"await_source_visual"|"fade_out"|"load_destination"|"swap_map"|"fade_in"|"choreo_hold"|"preview"
 ---@field fadeAlpha number
 ---@field fade FieldTransitionFade|nil
 ---@field fadeStarted boolean
@@ -91,6 +92,9 @@ local SurfaceResolver = require("libs.hgss.src.world.SurfaceResolver")
 ---@field sourceMap RuntimeFieldMap?
 ---@field sourceWarp table<string, unknown>?
 ---@field coveredSwap boolean -- true while a covered scripted swap owns the lifecycle: destination resolution/commit run, but no FieldTransitionFade is created or advanced because an external screen cover already owns visibility
+---@field selectPreview fun(sourceMap: RuntimeFieldMap, destinationMap: RuntimeFieldMap, profileId: integer|nil): { imageKey: string, timeSlot: integer, profileId: integer|nil }? -- post-commit source-selected area-preview selector
+---@field preview FieldAreaPreview? the active time-aware area preview, nil outside the preview substate
+---@field previewArrival "returning"|"done"? the preview-owned profile-8 arrival state
 ---@field _outdoorCamera table<string, unknown>? -- live camera driving the outdoor white-fade angle choreography, returned by cameraAdjust
 ---@field _outdoorExitSteps integer? -- exit source frames stepped so far; nil while the exit choreography is inactive
 ---@field _outdoorEnterSteps integer? -- enter source frames stepped so far; nil while the enter choreography is inactive
@@ -109,6 +113,7 @@ FieldTransition.PHASES = {
   load_destination = "load_destination",
   swap_map = "swap_map",
   choreo_hold = "choreo_hold",
+  preview = "preview",
 }
 
 function FieldTransition.new(options)
@@ -133,6 +138,7 @@ function FieldTransition.new(options)
     cameraAdjust = options.cameraAdjust,
     escalatorAt = options.escalatorAt,
     onPanel = options.onPanel,
+    selectPreview = options.selectPreview,
     player = options.player,
     profileId = nil,
     transitionMode = nil,
@@ -153,6 +159,8 @@ function FieldTransition.new(options)
     ownsPlayerAnimationPause = false,
     escalator = nil,
     coveredSwap = false,
+    preview = nil,
+    previewArrival = nil,
     _outdoorCamera = nil,
     _outdoorExitSteps = nil,
     _outdoorEnterSteps = nil,
@@ -186,6 +194,7 @@ function FieldTransition:presentationStatus()
     direction = fade.direction,
     completed = fade.completed,
     overlay = overlay,
+    preview = self.preview and self.preview:status() or nil,
     entryAction = self.profileId == FieldTransitionProfile.DOOR and "step_down" or nil,
   }
 end
@@ -408,6 +417,8 @@ local function resetTransient(self)
   self.escalator = nil
   self.progressTicks = 0
   self.coveredSwap = false
+  self.preview = nil
+  self.previewArrival = nil
   self._outdoorCamera = nil
   self._outdoorExitSteps = nil
   self._outdoorEnterSteps = nil
@@ -936,11 +947,81 @@ function FieldTransition:_abort(err)
   self.warpContext = context
 end
 
+-- The preview-owned profile-8 arrival reuses the player's coherent vertical
+-- return instead of the generic destination profile motion: the already-staged
+-- avatar descends from its ladder offset to the pre-offset destination anchor
+-- over the source's sixteen sixty-hertz increments as eight fixed ticks during
+-- the reveal blend, then faces south exactly once. An unavailable follower
+-- scenario stays a clean no-op at this leaf; a non-profile-8 preview performs
+-- no preview-specific vertical movement.
+local PREVIEW_RETURN_TICKS = 8
+
+local function beginPreviewArrival(self)
+  if self.profileId ~= FieldTransitionProfile.LADDER_DOWN or self.previewArrival ~= nil then
+    return
+  end
+  local preview = self.preview
+  if preview == nil or preview:status().stage ~= "blend_out" then
+    return
+  end
+  assert(
+    self.player and type(self.player.beginTransitionVerticalReturn) == "function",
+    "the preview arrival requires the player vertical return"
+  )
+  self.player:beginTransitionVerticalReturn(self.destinationAnchorY, PREVIEW_RETURN_TICKS)
+  self.previewArrival = "returning"
+end
+
+---@return boolean player advanced
+local function advancePreviewArrival(self)
+  if self.previewArrival ~= "returning" then
+    return false
+  end
+  local advanced = advanceProfileMotion(self)
+  if not self.player or self.player.motion ~= "transition" then
+    assert(self.player and type(self.player.turn) == "function", "the preview arrival requires the player turn")
+    self.player:turn("south")
+    self.previewArrival = "done"
+  end
+  return advanced == true
+end
+
+-- The preview may only finish once its blend completed and the profile-8
+-- arrival signalled ready. The other profiles have no arrival state.
+local function previewArrivalReady(self)
+  return self.profileId ~= FieldTransitionProfile.LADDER_DOWN or self.previewArrival == "done"
+end
+
+-- Begins the post-commit preview substate: the committed destination is already
+-- published, so the completed source out-fade is retired (it could otherwise
+-- paint an opaque rectangle above the preview) and the field stays locked. The
+-- pure controller owns the cover/hold/reveal timeline.
+local function beginPreview(self, selected)
+  self.fade, self.fadeStarted, self.fadeAlpha = nil, false, 0
+  self.preview = FieldAreaPreview.new(selected.imageKey, selected.timeSlot)
+  self.previewArrival = nil
+  self.phase = FieldTransition.PHASES.preview
+end
+
 -- Returns true when the tick advanced the choreographed player step, so the
 -- session knows to advance the pose clock. The camera and the scene animation
 -- clock advance on every locked tick regardless.
-function FieldTransition:updateFixed()
+function FieldTransition:updateFixed(inputSnapshot)
   if self.phase == FieldTransition.PHASES.idle then
+    return false
+  end
+  if self.phase == FieldTransition.PHASES.preview then
+    local preview = assert(self.preview, "an active preview substate owns its controller")
+    -- Only a freshly pressed normalized Action during the hold shortens it:
+    -- the transition never advances the preview timing here, so a press on the
+    -- fade-in/hold edge or a held door Action cannot skip the cover or reveal.
+    if inputSnapshot ~= nil and inputSnapshot.actionPressed and preview:status().stage == "hold" then
+      preview:skipHold()
+    end
+    if self.profileId == FieldTransitionProfile.LADDER_DOWN then
+      beginPreviewArrival(self)
+      return advancePreviewArrival(self)
+    end
     return false
   end
   if self.phase == FieldTransition.PHASES.await_source_visual then
@@ -1040,6 +1121,16 @@ function FieldTransition:updateFixed()
       finish(self)
       return false
     end
+    -- Source-selected time-aware area preview: selected only after the one
+    -- committed swap, and only for an ordinary non-covered warp. The preview
+    -- substate replaces the ordinary enter choreography and the fade-in.
+    if self.selectPreview then
+      local selected = self.selectPreview(self.sourceMap, self.resolution.destinationMap, self.profileId)
+      if selected ~= nil then
+        beginPreview(self, selected)
+        return false
+      end
+    end
     if self.transitionMode == FieldTransitionProfile.MODE_PANEL then
       if self.onPanel then
         self.onPanel("enter")
@@ -1103,6 +1194,14 @@ end
 function FieldTransition:updateSourceFrame()
   if self.phase == FieldTransition.PHASES.idle then
     return false
+  end
+  if self.phase == FieldTransition.PHASES.preview then
+    local preview = assert(self.preview, "an active preview substate owns its controller")
+    preview:updateSourceFrame()
+    if preview:isComplete() and previewArrivalReady(self) then
+      finish(self)
+    end
+    return true
   end
   if self.fadeStarted and self.fade and not self.fade:status().completed then
     advanceFade(self)

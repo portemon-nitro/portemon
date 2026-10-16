@@ -755,15 +755,26 @@ function FieldPlayer:beginTransitionLadderDownExit(facing)
   })
 end
 
--- Starts the sixteen-update vertical return from ladder staging to the
--- resolved anchor height. The caller performs the final cardinal tile step
--- only after this presentation interpolation completes.
-function FieldPlayer:beginTransitionVerticalReturn(anchorY)
+-- Starts the vertical return from ladder staging to the resolved anchor height.
+-- The ordinary ladder descent interpolates over sixteen fixed ticks; the
+-- source-specific preview arrival passes its own eight-tick source rate. The
+-- caller performs the final cardinal tile step only after this presentation
+-- interpolation completes.
+---@param anchorY number
+---@param durationTicks integer? positive override; sixteen when omitted
+---@return boolean
+function FieldPlayer:beginTransitionVerticalReturn(anchorY, durationTicks)
   assert(self.motion == "idle", "cannot begin a vertical return while moving")
   assert(type(anchorY) == "number", "ladder anchor height required")
+  if durationTicks ~= nil then
+    assert(
+      type(durationTicks) == "number" and durationTicks % 1 == 0 and durationTicks > 0,
+      "vertical return duration must be a positive integer"
+    )
+  end
   self.motion = "transition"
   self.progressTicks = 0
-  self.durationTicks = 16
+  self.durationTicks = durationTicks or 16
   self.transitionKind = "vertical_return"
   self.transitionFacing = nil
   self.transitionProgress = 0
