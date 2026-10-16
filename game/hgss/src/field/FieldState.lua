@@ -812,6 +812,22 @@ function FieldState:draw()
     end
   end
   if not self.runtime:destinationWorldPresentable() then
+    -- The committed but not-yet-presentable destination must not expose an
+    -- incomplete world: a selected preview (or its black fade) still covers
+    -- the screen, under the authoritative script cover. The status record is
+    -- gated on cheap owner state so an idle transition allocates none.
+    local transition = self.runtime.transition
+    local previewActive = transition.preview ~= nil
+    if previewActive then
+      resources:drawAreaPreview(transition:presentationStatus().preview, self.runtime.viewport.referenceFrame)
+    end
+    local banner = self.runtime.mapNameBanner
+    if banner ~= nil then
+      resources:drawMapNameBanner(banner, self.runtime.viewport.referenceFrame)
+    end
+    if previewActive then
+      self:_drawFieldAttachedUi(resources, nil, self.runtime.session:renderAlpha())
+    end
     self:_drawScriptScreenFadeIfNeeded()
     return
   end
@@ -842,8 +858,8 @@ function FieldState:draw()
   -- with the paused world beneath both; no application transition overlay
   -- is painted. The unrelated warp fade over the world viewport follows.
   -- Both status records are gated on cheap owner state: the closed host
-  -- allocates no status, and the settled transition (fadeAlpha 0) resolves
-  -- no presentation status.
+  -- allocates no status, and a settled transition (no fade, no preview)
+  -- resolves no presentation status.
   local hostStatus = nil
   local applicationHost = self.runtime.applicationHost
   if applicationHost:isActive() then
@@ -857,6 +873,22 @@ function FieldState:draw()
       lg.setColor(transitionOverlay.r, transitionOverlay.g, transitionOverlay.b, transitionOverlay.a)
       lg.rectangle("fill", rectangle.x, rectangle.y, rectangle.width, rectangle.height)
     end
+  end
+  -- The time-aware area preview sits above the committed world and the warp
+  -- fade (the preview branch retires the completed out-fade, so only the
+  -- preview's own black cover is present) and below the area-name banner and
+  -- every attached modal surface and script cover. A hidden preview paints
+  -- nothing, and the status record is gated on cheap owner state so an idle
+  -- transition allocates none.
+  if transition.preview ~= nil then
+    resources:drawAreaPreview(transition:presentationStatus().preview, self.runtime.viewport.referenceFrame)
+  end
+  -- The transient area-name banner sits over the world and warp fade and
+  -- under every attached modal surface, script cover, and foreground
+  -- application, anchored to the canonical MAIN reference frame.
+  local banner = self.runtime.mapNameBanner
+  if banner ~= nil then
+    resources:drawMapNameBanner(banner, self.runtime.viewport.referenceFrame)
   end
   -- Attached dialogue and signposts share the field scale and yield to modal
   -- application surfaces.

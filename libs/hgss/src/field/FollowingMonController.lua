@@ -35,6 +35,7 @@ FollowingMonController.__index = FollowingMonController
 ---@field _lead table<string, unknown>?
 ---@field _published table<string, unknown>?
 ---@field _pendingHiddenLead table<string, unknown>?
+---@field _rejoinHidden boolean arrival hide-until-step latch: the next publish installs hidden on the player tile and the first trail step reveals
 ---@field _mapEntry boolean
 ---@field _lastPlayerRevision integer?
 ---@field _lastAnchor table<string, unknown>?
@@ -70,6 +71,7 @@ FollowingMonController.__index = FollowingMonController
 ---@field clearRecallPresentationScale fun(self: FollowingMonController)
 ---@field hideForRecall fun(self: FollowingMonController)
 ---@field showForRecall fun(self: FollowingMonController)
+---@field rejoin fun(self: FollowingMonController, reason: string)
 ---@field armRecallTransition fun(self: FollowingMonController)
 ---@field setMovementType fun(self: FollowingMonController, movementType: string)
 ---@field repositionRelativeToPlayer fun(self: FollowingMonController, offsetSelector: integer, directionRaw: integer)
@@ -90,6 +92,7 @@ FollowingMonController.__index = FollowingMonController
 ---@field _observePlayer fun(self: FollowingMonController, mapId: integer)
 ---@field _commitMatchesLiveStart fun(self: FollowingMonController, previous: table<string, unknown>?, anchor: table<string, unknown>, mapId: integer): boolean
 ---@field _observeMovementStart fun(self: FollowingMonController, mapId: integer)
+---@field _revealRejoined fun(self: FollowingMonController)
 ---@field _beginOrdinaryFollow fun(self: FollowingMonController, mapId: integer, tx: FieldPlayer.MovementTransaction): boolean
 ---@field _enqueueLedgeCatchUp fun(self: FollowingMonController, mapId: integer, tx: FieldPlayer.MovementTransaction, speed: string): boolean
 ---@field _beginLedgeFollow fun(self: FollowingMonController, mapId: integer, tx: FieldPlayer.MovementTransaction)
@@ -219,6 +222,7 @@ function FollowingMonController.new(opts)
     _lead = nil,
     _published = nil,
     _pendingHiddenLead = nil,
+    _rejoinHidden = false,
     _mapEntry = false,
     _lastPlayerRevision = nil,
     _lastAnchor = nil,
@@ -554,6 +558,8 @@ function FollowingMonController:_publish(mapId)
       "pending follower birth identity is stale"
     )
     initiallyVisible = false
+  elseif self._rejoinHidden then
+    initiallyVisible = false
   end
   local anchor = self._playerOf():committedAnchor()
   if self._mapEntry then
@@ -598,6 +604,7 @@ function FollowingMonController:_suppress()
   self._queue = {}
   self._published = nil
   self._pendingHiddenLead = nil
+  self._rejoinHidden = false
   self._lastFollowerCommand = nil
   self._recallTransitionPending = false
 end
@@ -626,6 +633,7 @@ function FollowingMonController:_discontinuity(mapId)
   self._actors:clearPartner()
   self._published = nil
   self._pendingHiddenLead = nil
+  self._rejoinHidden = false
   self._lastFollowerCommand = nil
   self._recallTransitionPending = false
   if self._lead ~= nil and self:_permitted(mapId) then
@@ -797,6 +805,24 @@ function FollowingMonController:_enqueueReplay(mapId, direction, speed)
   }
 end
 
+-- Clear a pending arrival hide on the first observed trail step and re-show
+-- the live partner (retail FollowPlayerState_FollowMonStart revealing through
+-- HideUntilStep(FALSE), including the already-on-tile branch that never
+-- walks). Gated on the rejoin latch so unrelated hidden births stay hidden
+-- for their own owner.
+---@param self FollowingMonController
+function FollowingMonController:_revealRejoined()
+  if not self._rejoinHidden then
+    return
+  end
+  self._rejoinHidden = false
+  local partnerId = self._actors:partnerId()
+  if partnerId == nil or self._actors:getById(partnerId) == nil then
+    return
+  end
+  self._actors:show(partnerId)
+end
+
 -- Start the ordinary follow toward the transaction's source anchor: the tile
 -- the player vacated. The movement direction derives from the follower's own
 -- tile, never from the player's step direction. The follower keeps the
@@ -806,6 +832,7 @@ end
 ---@param tx FieldPlayer.MovementTransaction
 ---@return boolean accepted false when the follower was reconciled through the discontinuity path
 function FollowingMonController:_beginOrdinaryFollow(mapId, tx)
+  self:_revealRejoined()
   local speed = followerSpeed(tx.speed)
   self._consumedStep = {
     mapId = tx.mapId,
@@ -1202,6 +1229,7 @@ function FollowingMonController:handleMapExit()
   self._actors:clearPartner()
   self._published = nil
   self._pendingHiddenLead = nil
+  self._rejoinHidden = false
   self._mapEntry = false
   self._suspended = true
 end
@@ -1485,6 +1513,25 @@ function FollowingMonController:repositionRelativeToPlayer(offsetSelector, direc
   self._actors:setFacing(partnerId, facing)
 end
 
+-- Arrival rejoin (retail MoveToPlayer + HideUntilStep): place the live
+-- partner on the player tile facing south and hide it until its first trail
+-- step. When the partner is not installed -- the arrival cleared it before
+-- the reinstall -- the latch carries the hide so the map-entry publish
+-- installs hidden on the tile. The trail-step observation owns the reveal.
+-- The reason is accepted for the transition collaborator contract; panel and
+-- preview arrivals hide identically.
+---@param _ string arrival reason ("panel"|"preview"), descriptive only
+---@param self FollowingMonController
+function FollowingMonController:rejoin(_)
+  self._rejoinHidden = true
+  self:repositionRelativeToPlayer(9, 1)
+  local partnerId = self._actors:partnerId()
+  if partnerId == nil or self._actors:getById(partnerId) == nil then
+    return
+  end
+  self._actors:hide(partnerId)
+end
+
 -- Release follower state without touching saved data. The manager owns the
 -- actor teardown afterwards.
 ---@param self FollowingMonController
@@ -1497,6 +1544,7 @@ function FollowingMonController:dispose()
   self._recallTransitionPending = false
   self._published = nil
   self._pendingHiddenLead = nil
+  self._rejoinHidden = false
   self._lastMapId = nil
   self._mapEntry = false
   self._suspended = false

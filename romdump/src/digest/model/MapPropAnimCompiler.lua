@@ -17,10 +17,14 @@
 --
 -- Semantic roles: clip names are the source-format identifiers; gameplay
 -- must not depend on them. The door open/close pairs the field corpus uses
--- are mapped onto the door.open/door.close roles by name pattern:
+-- are mapped onto the door.open/door.close roles by name pattern, and the
+-- Goldenrod side-door one-shots stair_pc_u01u / stair_pc_u01d onto the
+-- escalator role (each side-door model carries exactly one clip; retail
+-- directionality comes from the prop model):
 --
 --   *door_op  -> door.open    *door_cl  -> door.close
 --   *door_mop -> door.open    *door_mcl -> door.close
+--   stair_pc_u01u -> escalator   stair_pc_u01d -> escalator
 --
 -- Every other clip keeps its name as the addressable id (prop.play("wind")).
 -- Playback policy is compiled from the decoded anim-list header
@@ -64,6 +68,8 @@ local ROLE_PATTERNS = {
   door_cl = AnimationClip.ROLES.DOOR_CLOSE,
   door_mop = AnimationClip.ROLES.DOOR_OPEN,
   door_mcl = AnimationClip.ROLES.DOOR_CLOSE,
+  stair_pc_u01u = AnimationClip.ROLES.ESCALATOR,
+  stair_pc_u01d = AnimationClip.ROLES.ESCALATOR,
 }
 
 -- The semantic role for a clip name, or nil (the clip keeps its name).

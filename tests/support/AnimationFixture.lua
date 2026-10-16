@@ -537,6 +537,14 @@ end
 
 -- pc_mb-like BTP: one target, 4 textures/palettes, keys every 4 frames.
 function AnimationFixture.patPcMb()
+  return AnimationFixture.patNamed("pc_mb")
+end
+
+-- The same BTP shape with an arbitrary dictionary/target name (the texture
+-- and palette table labels stay pc_mb: they are opaque fixture payload and
+-- never the clip identity). Used for clips whose Nitro name carries meaning,
+-- such as the escalator one-shots stair_pc_u01u / stair_pc_u01d.
+function AnimationFixture.patNamed(name)
   local numFrame = 68
   local keys = {}
   for i = 0, 16 do
@@ -577,13 +585,13 @@ function AnimationFixture.patPcMb()
   bw:u32(keyCount)
   bw:u16(0x0400) -- rate: one key every 4 frames
   bw:u16(ofsKeys)
-  bw:bytes(name16("pc_mb"))
+  bw:bytes(name16(name))
   for _, k in ipairs(keys) do
     bw:bytes(k)
   end
   bw:bytes(table.concat(texNames))
   bw:bytes(table.concat(plttNames))
-  return file("BTP0", "PAT0", dictWithRecord({ { name = "pc_mb", data = u32(0) } }, bw:tostring()))
+  return file("BTP0", "PAT0", dictWithRecord({ { name = name, data = u32(0) } }, bw:tostring()))
 end
 
 -- ---- NSBMA / MAT0 ----

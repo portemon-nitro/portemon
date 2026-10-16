@@ -2,8 +2,11 @@
 -- door audio and the asymmetric HGSS door movement from ROM loading.
 
 local Assert = require("tests.support.Assert")
+local FieldPlayer = require("libs.hgss.src.actors.FieldPlayer")
 local FieldTransition = require("libs.hgss.src.transition.FieldTransition")
 local FieldTransitionProfile = require("libs.hgss.src.transition.FieldTransitionProfile")
+local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
+local TerrainSurface = require("libs.hgss.src.world.TerrainSurface")
 
 local T = { tests = {} }
 
@@ -931,6 +934,8 @@ end
 function T.tests.panel_lifecycle_notifies_each_side_once_without_profile_dispatch()
   local panels = {}
   local profiles = {}
+  local cameras = {}
+  local commits = 0
   local transition = FieldTransition.new({
     loader = {
       requestWarp = function()
@@ -941,12 +946,17 @@ function T.tests.panel_lifecycle_notifies_each_side_once_without_profile_dispatc
       return { destinationMap = { mapId = 60 }, fieldX = 0, fieldZ = 0, surfaceId = 0, worldY = 0 }
     end,
     prepare = function() end,
-    commit = function() end,
+    commit = function()
+      commits = commits + 1
+    end,
     onPanel = function(phase)
       panels[#panels + 1] = phase
     end,
     onProfile = function()
       profiles[#profiles + 1] = true
+    end,
+    cameraAdjust = function()
+      cameras[#cameras + 1] = true
     end,
   })
   transition:start({ mapId = 61 }, {
@@ -959,8 +969,14 @@ function T.tests.panel_lifecycle_notifies_each_side_once_without_profile_dispatc
     end
     step(transition)
   end
+  -- The synthetic panel mode notifies each side exactly once and commits once;
+  -- it dispatches no numeric profile family and adjusts no camera, so the
+  -- notification never grows into a speculative rendered effect.
   Assert.deepEqual(panels, { "exit", "enter" })
   Assert.deepEqual(profiles, {})
+  Assert.deepEqual(cameras, {})
+  Assert.equal(commits, 1, "the panel lifecycle commits the shared destination once")
+  Assert.notNil(transition.completed, "the panel lifecycle records one completion")
 end
 
 function T.tests.profile_hook_failure_aborts_before_commit_but_after_commit_propagates()
@@ -1021,6 +1037,463 @@ function T.tests.profile_hook_failure_aborts_before_commit_but_after_commit_prop
   Assert.isFalse(enterOk)
   Assert.equal(tostring(enterErr), "enter failed")
   Assert.equal(after.phase, "swap_map")
+end
+
+-- The profile-8 preview special reuses the player-owned vertical return, so
+-- its duration argument must stay backwards-compatible: no override keeps the
+-- ordinary sixteen fixed ticks, while the preview route's eight ticks descend
+-- through the very same interpolation and reach the anchor exactly. Only a
+-- validated positive integer override is accepted.
+local function verticalReturnPlayer()
+  local EMPTY_MAP_PROPS = {}
+  ---@cast EMPTY_MAP_PROPS MapProps
+  local ROOT_HALF = math.sqrt(0.5)
+  local map = {
+    mapId = 60,
+    mapSymbol = "test-map",
+    mapSection = "test-section",
+    mapSectionNativeId = 7,
+    followMode = "ALLOW",
+    coordinateOrigin = { x = 0, z = 0 },
+    scene = {},
+    fieldData = {},
+    collision = {
+      containsLocal = function(_, x, z)
+        return x >= 0 and x < 32 and z >= 0 and z < 32
+      end,
+      isBlockedLocal = function()
+        return false
+      end,
+      getLocal = function()
+        return { blocked = false }
+      end,
+    },
+    terrain = TerrainSurface.new({
+      plates = {
+        {
+          id = 0,
+          minX = 0,
+          minZ = 0,
+          maxX = 32,
+          maxZ = 32,
+          normal = { x = -ROOT_HALF, y = ROOT_HALF, z = 0 },
+          distance = 0,
+          slopeClass = "flat",
+        },
+      },
+    }),
+    terrainDependencyHash = "test-terrain",
+    mapProps = EMPTY_MAP_PROPS,
+    fieldRegion = {},
+    cameraType = 0,
+    release = function() end,
+    updateAnimated = function() end,
+  } --[[@as RuntimeFieldMap]]
+  return FieldPlayer.new({ currentMap = map, fieldX = 0, fieldZ = 4, surfaceId = 0, facing = "south" })
+end
+
+function T.tests.vertical_return_keeps_sixteen_default_ticks_and_accepts_the_preview_eight()
+  local ordinary = verticalReturnPlayer()
+  Assert.isTrue(ordinary:beginTransitionVerticalReturn(2))
+  Assert.equal(ordinary.durationTicks, 16, "an unqualified vertical return keeps the ordinary sixteen fixed ticks")
+  local defaultTicks = 0
+  while ordinary.motion == "transition" do
+    ordinary:updateFixed()
+    defaultTicks = defaultTicks + 1
+    Assert.isTrue(defaultTicks <= 40, "the default vertical return must complete within a bounded tick count")
+  end
+  Assert.equal(defaultTicks, 16, "the default vertical return interpolates for sixteen fixed ticks")
+
+  local preview = verticalReturnPlayer()
+  Assert.isTrue(preview:beginTransitionVerticalReturn(2, 8))
+  Assert.equal(preview.durationTicks, 8, "the preview special descends over eight fixed ticks")
+  local previewTicks = 0
+  while preview.motion == "transition" do
+    preview:updateFixed()
+    previewTicks = previewTicks + 1
+    Assert.isTrue(previewTicks <= 40, "the preview vertical return must complete within a bounded tick count")
+  end
+  Assert.equal(previewTicks, 8, "the preview special interpolates for eight fixed ticks")
+end
+
+function T.tests.vertical_return_rejects_a_duration_that_is_not_a_positive_integer()
+  for _, invalid in ipairs({ 0, -1, 1.5, "8" }) do
+    local player = verticalReturnPlayer()
+    Assert.throws(function()
+      player:beginTransitionVerticalReturn(2, invalid)
+    end, "the vertical return must reject an invalid duration override: " .. tostring(invalid))
+    Assert.equal(player.motion, "idle", "a rejected duration override leaves the player idle")
+  end
+end
+
+-- Nine-profile source dispatch census -------------------------------------
+
+-- The complete source routine-family table, pinned to the pret/pokeheartgold
+-- 9-entry exit/enter/camera/audio dispatch. This is the single frozen table the
+-- runtime dispatch is compared against; the lifecycle censuses below prove the
+-- runtime reaches exactly these routines.
+function T.tests.source_routine_family_table_is_the_frozen_nine_profile_dispatch()
+  Assert.deepEqual(FieldTransitionProfile.ROUTINE_FAMILIES, {
+    [0] = { exit = "ordinary_exit", enter = "ordinary_enter", exitSound = "SEQ_SE_DP_KAIDAN2" },
+    [1] = { exit = "door_exit", enter = "door_enter", entryAction = "step_down" },
+    [2] = {
+      exit = "escalator_exit",
+      enter = "escalator_enter",
+      adjustment = "escalator",
+      exitSound = "SEQ_SE_DP_ESUKA",
+    },
+    [3] = {
+      exit = "horizontal_stairs_exit",
+      enter = "horizontal_stairs_enter",
+      adjustment = "horizontal_stairs",
+      exitSound = "SEQ_SE_DP_KAIDAN2",
+    },
+    [4] = {
+      exit = "cave_exit",
+      enter = "door_enter",
+      adjustment = "cave",
+      exitSound = "SEQ_SE_DP_KAIDAN2",
+      fadeMode = "environment_0x10",
+    },
+    [5] = {
+      exit = "outdoor_exit",
+      enter = "outdoor_enter",
+      adjustment = "outdoor",
+      exitSound = "SEQ_SE_DP_KAIDAN2",
+      fadeColor = 0x7FFF,
+    },
+    [6] = { exit = "ordinary_exit", enter = "indoor_enter", exitSound = "SEQ_SE_DP_KAIDAN2" },
+    [7] = {
+      exit = "ladder_up",
+      enter = "ladder_enter",
+      adjustment = "ladder",
+      exitSound = "SEQ_SE_DP_KAIDAN2",
+    },
+    [8] = {
+      exit = "ladder_down",
+      enter = "ladder_down_enter",
+      adjustment = "ladder_down",
+      exitSound = "SEQ_SE_DP_KAIDAN2",
+    },
+  })
+end
+
+-- A player stub that satisfies every profile's source and destination motion
+-- contract and records which begin method the transition invoked.
+local function profileDispatchPlayer(events)
+  return {
+    motion = "idle",
+    facing = "south",
+    turn = function(self, facing)
+      self.facing = facing
+    end,
+    pauseTransitionAnimation = function() end,
+    resumeTransitionAnimation = function() end,
+    updateFixed = function(self)
+      self.transitionTicks = (self.transitionTicks or 0) + 1
+      if self.transitionTicks == 1 then
+        self.motion = "idle"
+      end
+      return true
+    end,
+    beginTransitionStep = function(self, facing)
+      events[#events + 1] = { at = "player", method = "step", facing = facing }
+      self.motion = "transition"
+      self.transitionTicks = 0
+      return true
+    end,
+    beginTransitionHeldStair = function(self)
+      events[#events + 1] = { at = "player", method = "held_stair" }
+      self.motion = "transition"
+      self.transitionTicks = 0
+      return true
+    end,
+    beginTransitionLadderExit = function(self, facing)
+      events[#events + 1] = { at = "player", method = "ladder_exit", facing = facing }
+      self.motion = "transition"
+      self.transitionTicks = 0
+      return true
+    end,
+    beginTransitionLadderDownExit = function(self, facing)
+      events[#events + 1] = { at = "player", method = "ladder_down_exit", facing = facing }
+      self.motion = "transition"
+      self.transitionTicks = 0
+      return true
+    end,
+    beginTransitionVerticalReturn = function(self)
+      events[#events + 1] = { at = "player", method = "vertical_return" }
+      self.motion = "transition"
+      self.transitionTicks = 0
+      return true
+    end,
+  }
+end
+
+-- The horizontal-stair destination presentation needs a stair behavior byte
+-- and a covering plate: the runtime derives the visual start cell from the
+-- destination warp's behavior before the swap.
+local STAIR_ROOT_HALF = math.sqrt(0.5)
+
+local function stairDestinationMap()
+  return {
+    mapId = 60,
+    coordinateOrigin = { x = 0, z = 0 },
+    collision = {
+      containsLocal = function()
+        return true
+      end,
+      getLocal = function()
+        return { behavior = MetatileBehavior.BEHAVIOR.WARP_STAIRS_WEST }
+      end,
+    },
+    terrain = TerrainSurface.new({
+      plates = {
+        {
+          id = 0,
+          minX = 0,
+          minZ = 0,
+          maxX = 64,
+          maxZ = 64,
+          normal = { x = -STAIR_ROOT_HALF, y = STAIR_ROOT_HALF, z = 0 },
+          distance = 0,
+          slopeClass = "flat",
+        },
+      },
+    }),
+  }
+end
+
+local function censusDestination(profile)
+  if profile == FieldTransitionProfile.HORIZONTAL_STAIRS then
+    return stairDestinationMap()
+  end
+  return { mapId = 60 }
+end
+
+local function profileEvents(events, phase)
+  for index, event in ipairs(events) do
+    if event.at == "profile" and event.phase == phase then
+      return index, event
+    end
+  end
+  return nil, nil
+end
+
+-- A single complete lifecycle census over profiles 0..8: each drives one
+-- transition through its source exit, the one commit, and its destination
+-- enter, and reaches exactly the routine family, camera adjustment, and
+-- source exit audio the frozen table names.
+function T.tests.all_nine_profiles_dispatch_exit_enter_camera_and_one_commit()
+  for profile = 0, 8 do
+    local expected = FieldTransitionProfile.ROUTINE_FAMILIES[profile]
+    local events = {}
+    local sounds = {}
+    local player = profileDispatchPlayer(events)
+    local transition
+    transition = FieldTransition.new({
+      loader = {
+        requestWarp = function()
+          return true
+        end,
+      },
+      player = player,
+      resolveDestination = function()
+        return {
+          destinationMap = censusDestination(profile),
+          destinationWarp = { x = 4, z = 4 },
+          fieldX = 4,
+          fieldZ = 4,
+          surfaceId = 0,
+          worldY = 0,
+        }
+      end,
+      prepare = function() end,
+      commit = function()
+        events[#events + 1] = { at = "commit" }
+      end,
+      onProfile = function(profileId, phase, family)
+        events[#events + 1] = { at = "profile", profileId = profileId, phase = phase, family = family }
+      end,
+      cameraAdjust = function(profileId, adjustment)
+        events[#events + 1] = { at = "camera", profileId = profileId, family = adjustment }
+      end,
+      playSound = function(sound)
+        sounds[#sounds + 1] = sound
+      end,
+      stopSound = function() end,
+      escalatorAt = function()
+        return {
+          play = function() end,
+          isFinished = function()
+            return true
+          end,
+        }
+      end,
+    })
+    transition.player = player
+    transition:start({ mapId = 61 }, {
+      kind = "generic",
+      warp = { index = 0, x = 4, z = 4, destinationMapId = 60, destinationWarpId = 0 },
+      transition = { mode = "fixed", profile = profile },
+    }, "north")
+    advanceTo(transition, "idle", 256)
+    Assert.equal(transition.phase, "idle", "profile " .. profile .. " completes")
+
+    local exitIndex, exitEvent = profileEvents(events, "exit")
+    local enterIndex, enterEvent = profileEvents(events, "enter")
+    Assert.notNil(exitEvent, "profile " .. profile .. " dispatches its source exit routine")
+    Assert.equal(exitEvent.profileId, profile, "profile " .. profile .. " source dispatch carries its profile")
+    Assert.equal(exitEvent.family, expected.exit, "profile " .. profile .. " source exit family")
+    Assert.notNil(enterEvent, "profile " .. profile .. " dispatches its destination enter routine")
+    Assert.equal(enterEvent.profileId, profile, "profile " .. profile .. " enter dispatch carries its profile")
+    Assert.equal(enterEvent.family, expected.enter, "profile " .. profile .. " destination enter family")
+
+    local commitIndex
+    local commitCount = 0
+    for index, event in ipairs(events) do
+      if event.at == "commit" then
+        commitIndex = commitIndex or index
+        commitCount = commitCount + 1
+      end
+    end
+    Assert.equal(commitCount, 1, "profile " .. profile .. " commits the shared destination exactly once")
+    Assert.isTrue(exitIndex < commitIndex, "profile " .. profile .. " exits before the commit")
+    Assert.isTrue(commitIndex < enterIndex, "profile " .. profile .. " enters after the commit")
+
+    if expected.adjustment then
+      local cameraEvent
+      for _, event in ipairs(events) do
+        if event.at == "camera" then
+          cameraEvent = cameraEvent or event
+          Assert.equal(event.profileId, profile, "profile " .. profile .. " camera carries its profile")
+          Assert.equal(event.family, expected.adjustment, "profile " .. profile .. " camera adjustment")
+        end
+      end
+      Assert.notNil(cameraEvent, "profile " .. profile .. " adjusts the camera with " .. expected.adjustment)
+    else
+      for _, event in ipairs(events) do
+        Assert.isFalse(event.at == "camera", "profile " .. profile .. " adjusts no camera")
+      end
+    end
+
+    if expected.exitSound then
+      Assert.deepEqual(sounds, { expected.exitSound }, "profile " .. profile .. " plays its source exit sound once")
+    else
+      Assert.deepEqual(sounds, {}, "profile " .. profile .. " has no source exit sound")
+    end
+
+    Assert.notNil(transition.completed, "profile " .. profile .. " records a completion")
+    Assert.notNil(transition:consumeCompleted(), "profile " .. profile .. " hands back one completion token")
+    Assert.isNil(transition:consumeCompleted(), "profile " .. profile .. " never completes twice")
+  end
+end
+
+-- The source-selected preview replacement is a property of every profile, not
+-- profiles 0 and 8 alone: when the selector returns a preview the ordinary
+-- destination enter choreography never runs, the preview substate owns the
+-- reveal, and the one commit/completion contract is unchanged.
+function T.tests.every_profile_preview_replaces_the_ordinary_destination_choreography()
+  for profile = 0, 8 do
+    local events = {}
+    local player = profileDispatchPlayer(events)
+    local selections = {}
+    local transition
+    transition = FieldTransition.new({
+      loader = {
+        requestWarp = function()
+          return true
+        end,
+      },
+      player = player,
+      selectPreview = function(sourceMap, destinationMap, profileId)
+        selections[#selections + 1] = {
+          sourceMapId = sourceMap.mapId,
+          destinationMapId = destinationMap.mapId,
+          profileId = profileId,
+        }
+        return { imageKey = "preview.test", timeSlot = 1, profileId = profileId }
+      end,
+      resolveDestination = function()
+        return {
+          destinationMap = censusDestination(profile),
+          destinationWarp = { x = 4, z = 4 },
+          fieldX = 4,
+          fieldZ = 4,
+          surfaceId = 0,
+          worldY = 0,
+        }
+      end,
+      prepare = function() end,
+      commit = function()
+        events[#events + 1] = { at = "commit" }
+      end,
+      onProfile = function(profileId, phase, family)
+        events[#events + 1] = { at = "profile", profileId = profileId, phase = phase, family = family }
+      end,
+      cameraAdjust = function(profileId, adjustment)
+        events[#events + 1] = { at = "camera", profileId = profileId, family = adjustment }
+      end,
+      playSound = function() end,
+      stopSound = function() end,
+      escalatorAt = function()
+        return {
+          play = function() end,
+          isFinished = function()
+            return true
+          end,
+        }
+      end,
+    })
+    transition.player = player
+    transition:start({ mapId = 61 }, {
+      kind = "generic",
+      warp = { index = 0, x = 4, z = 4, destinationMapId = 60, destinationWarpId = 0 },
+      transition = { mode = "fixed", profile = profile },
+    }, "north")
+
+    local sawPreview = false
+    local ticks = 0
+    while transition.phase ~= "idle" and transition.phase ~= "error" and ticks < 256 do
+      ticks = ticks + 1
+      transition:updateFixed()
+      transition:updateSourceFrame()
+      if transition.phase == FieldTransition.PHASES.preview then
+        sawPreview = true
+      end
+    end
+    Assert.equal(transition.phase, "idle", "profile " .. profile .. " preview completes")
+    Assert.isTrue(sawPreview, "profile " .. profile .. " enters the preview substate")
+    Assert.equal(#selections, 1, "profile " .. profile .. " consults the preview selector once")
+    Assert.equal(selections[1].sourceMapId, 61)
+    Assert.equal(selections[1].destinationMapId, 60)
+    Assert.equal(selections[1].profileId, profile, "profile " .. profile .. " selects its own preview")
+
+    for _, event in ipairs(events) do
+      Assert.isFalse(
+        event.at == "profile" and event.phase == "enter",
+        "profile " .. profile .. " preview replaces the ordinary destination enter"
+      )
+    end
+
+    local commitIndex
+    for index, event in ipairs(events) do
+      if event.at == "commit" then
+        commitIndex = index
+      end
+    end
+    local destinationMotion = {}
+    for index = (commitIndex or 0) + 1, #events do
+      if events[index].at == "player" then
+        destinationMotion[#destinationMotion + 1] = events[index].method
+      end
+    end
+    if profile == FieldTransitionProfile.LADDER_DOWN then
+      Assert.deepEqual(destinationMotion, { "vertical_return" }, "the profile-8 preview owns its arrival")
+    else
+      Assert.deepEqual(destinationMotion, {}, "profile " .. profile .. " preview runs no destination motion")
+    end
+    Assert.notNil(transition.completed, "profile " .. profile .. " preview records one completion")
+  end
 end
 
 return T

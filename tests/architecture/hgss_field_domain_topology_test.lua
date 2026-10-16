@@ -54,6 +54,7 @@ local DOMAINS = {
     "FieldSignpostController",
   },
   transition = {
+    "FieldAreaPreview",
     "DoorSound",
     "DoorTiles",
     "FieldCoveredSwap",

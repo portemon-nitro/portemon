@@ -334,6 +334,14 @@ DerivedAssetContract.fieldUi = {
   schema = "g4-field-ui-v22",
 }
 
+-- The field-entry family carries the nine map-name banner skins and the
+-- distinct selected location-preview composites. It is independent of the
+-- field-UI family so either can rebuild without invalidating the other.
+DerivedAssetContract.fieldEntry = {
+  cacheFormat = "field-entry-cache-v1",
+  schema = "g4-field-entry-v1",
+}
+
 DerivedAssetContract.intro = {
   cacheFormat = "intro-cache-v14",
   schema = "g4-intro-assets-v14",

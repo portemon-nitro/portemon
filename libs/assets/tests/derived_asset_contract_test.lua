@@ -109,6 +109,10 @@ function T.contract_pins_the_current_asset_identities()
       cacheFormat = "field-ui-cache-v1",
       schema = "g4-field-ui-v22",
     },
+    fieldEntry = {
+      cacheFormat = "field-entry-cache-v1",
+      schema = "g4-field-entry-v1",
+    },
     intro = {
       cacheFormat = "intro-cache-v14",
       schema = "g4-intro-assets-v14",

@@ -73,12 +73,14 @@ AnimationClip.KINDS = {
 AnimationClip.BANDS = { "morn", "day", "eve", "nite" }
 
 -- The semantic animation roles gameplay and the digest share: the one owner
--- for the door open/close vocabulary -- MapPropAnimCompiler stamps the roles
--- onto compiled clips and MapDoor addresses them by role, so the strings have
--- exactly one home on the animation contract.
+-- for the door open/close and escalator vocabularies -- MapPropAnimCompiler
+-- stamps the roles onto compiled clips and MapDoor / the escalator transition
+-- address them by role, so the strings have exactly one home on the
+-- animation contract.
 AnimationClip.ROLES = {
   DOOR_OPEN = "door.open",
   DOOR_CLOSE = "door.close",
+  ESCALATOR = "escalator",
 }
 
 -- Validate one track: a target is required; anything else (channels, curve

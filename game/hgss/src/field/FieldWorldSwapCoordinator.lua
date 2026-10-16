@@ -232,6 +232,12 @@ function FieldWorldSwapCoordinator:commit(resolution, _, prepared)
   end
   runtime.scripts:onMapSwap(prepared.player, runtimeMap)
   runtime.session:beginMapEntry()
+  -- The durable destination is published: one ordinary arrival may announce
+  -- the new area, regardless of the source section. Ineligible destinations
+  -- are the controller's own compiled-eligibility decision.
+  if runtime.mapNameBanner then
+    runtime.mapNameBanner:request(runtimeMap.mapId, runtimeMap.mapSectionNativeId)
+  end
   if runtimeMap.fieldData.transitionEnvironment ~= "outdoors" then
     local exterior = self:_sourceExteriorCell(sourceMap, sourcePlayer)
     if exterior ~= nil then
@@ -337,6 +343,52 @@ function FieldWorldSwapCoordinator:createTransition(runtime, doorAt, escalatorAt
       screen:setPanelTransition(phase)
     end
   end
+  -- The post-commit area-preview selector: side-effect-free, reading only the
+  -- compiled field-entry manifest and the host-local clock. The cave guard is
+  -- the ORIGINAL source map's environment (never the destination's); the
+  -- destination must be a listed preview destination; the sampled hour selects
+  -- one of the four immutable time slots. The selected hour is snapshotted
+  -- once and the semantic image key resolves from the already-generated
+  -- manifest, so a clock rollover during the preview never swaps the art.
+  local function selectPreview(sourceMap, destinationMap, profileId)
+    local manifest = runtime.fieldEntryManifest
+    local slots = manifest.previewByMapId[destinationMap.mapId]
+    if slots == nil then
+      return nil
+    end
+    local sourceEnvironment = sourceMap.fieldData and sourceMap.fieldData.transitionEnvironment
+    if sourceEnvironment == "cave" then
+      return nil
+    end
+    local clock = assert(runtime.localClock, "the area preview requires the host-local clock")
+    local hour = assert(clock:nowLocal().hour, "the local clock must report a civil hour")
+    assert(hour % 1 == 0 and hour >= 0 and hour < 24, "malformed local clock hour: " .. tostring(hour))
+    local slot = (hour < 4 or hour >= 20) and 3 or (hour < 10 and 0 or (hour < 17 and 1 or 2))
+    local imageKey = slots[slot]
+    assert(imageKey, "the listed destination has no preview image for time slot " .. tostring(slot))
+    return { imageKey = imageKey, timeSlot = slot, profileId = profileId }
+  end
+  -- The follower collaborator closes over the live following-mon controller
+  -- with a late read: the transition composes before the field services own
+  -- the controller, so presence/recall/rejoin resolve it at hook-fire time.
+  -- Presence reads the live party (the reconciled lead lags by a tick after
+  -- party changes), departure recalls through the instant recall hide, and
+  -- each arrival rejoins hidden on the player tile until the first trail
+  -- step reveals (retail MoveToPlayer + HideUntilStep with the trail-step
+  -- observation as the reveal owner).
+  local function followerPresent()
+    local followingMon = runtime.followingMon
+    return followingMon ~= nil and followingMon:isSourceActive()
+  end
+  local function followerRecall()
+    local followingMon = assert(runtime.followingMon, "follower recall implies the controller")
+    followingMon:hideForRecall()
+  end
+  local function followerRejoin(reason)
+    local followingMon = assert(runtime.followingMon, "follower rejoin implies the controller")
+    followingMon:rejoin(reason)
+  end
+  local follower = { isPresent = followerPresent, recall = followerRecall, rejoin = followerRejoin }
   return FieldTransition.new({
     loader = runtime.mapLoader,
     prepare = prepare,
@@ -351,6 +403,8 @@ function FieldWorldSwapCoordinator:createTransition(runtime, doorAt, escalatorAt
     onProfile = onProfile,
     cameraAdjust = cameraAdjust,
     onPanel = onPanel,
+    selectPreview = selectPreview,
+    follower = follower,
   })
 end
 

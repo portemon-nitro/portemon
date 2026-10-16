@@ -230,6 +230,7 @@ local FIELD_RUNTIME_JOBS = {
   "field-effects:global",
   "field-emotes:global",
   "field-ui:global",
+  "field-entry:global",
   "field-font:global",
   "actors:global",
   "mon-catalog:global",
@@ -253,6 +254,7 @@ local FIELD_RUNTIME_JOBS = {
   "message-bank:" .. tostring(MenuProtocol.STANDARD_MESSAGE_BANK),
   "message-bank:40",
   "message-bank:265",
+  "message-bank:279",
   "audio-bank:750",
   "audio-bank:700",
   "audio-catalog:global",
@@ -473,6 +475,16 @@ local function executeFieldUi(artifact, context)
   local bundle = compileOrRaise(function()
     return Compiler.compile(romFs)
   end, "field ui")
+  return Writer.stage(artifact, bundle)
+end
+
+local function executeFieldEntry(artifact, context)
+  local Compiler = require("romdump.src.digest.ui.FieldEntryAssetCompiler")
+  local Writer = require("romdump.src.digest.ui.FieldEntryCacheWriter")
+  local romFs = assert(context.romFs, "coarse jobs require a source reader")
+  local bundle = compileOrRaise(function()
+    return Compiler.compile(romFs)
+  end, "field entry")
   return Writer.stage(artifact, bundle)
 end
 
@@ -1115,6 +1127,13 @@ end
 
 ---@param check ArtifactJobs.ReadinessCheck
 ---@return boolean
+local function validateFieldEntry(check)
+  local FieldEntryAssetCache = require("libs.assets.src.field.FieldEntryAssetCache")
+  return FieldEntryAssetCache.isReady(check.cacheFs, check.marker)
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
 local function validateFieldFont(check)
   local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
   return FieldFontCache.isReady(check.cacheFs, check.marker)
@@ -1562,6 +1581,11 @@ DESCRIPTORS = {
     execute = executeFieldUi,
     validate = validateFieldUi,
   },
+  ["field-entry"] = {
+    size = "normal",
+    execute = executeFieldEntry,
+    validate = validateFieldEntry,
+  },
   ["field-font"] = {
     size = "heavy",
     execute = executeFieldFont,
@@ -1914,6 +1938,7 @@ local COMPLETE_STATIC_GLOBALS = {
   "field-effects",
   "field-emotes",
   "field-ui",
+  "field-entry",
   "field-font",
   "intro",
   "new-game-init",

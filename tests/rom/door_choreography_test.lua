@@ -236,4 +236,103 @@ function T.door_open_that_never_finishes_stalls_the_ordered_trace(romFs, version
   lab.runtime:release()
 end
 
+-- The immediate reversal: once town -> lab completes, pressing back into the
+-- same doorway re-arms and runs a fresh, complete door choreography on the
+-- retained handles. Input stays locked through both legs, and the second leg's
+-- trace is observed from a cleared trace so the first leg's open/close edges
+-- cannot mask the re-armed door.
+function T.immediate_reverse_reenters_the_door_pair_with_a_fresh_trace(romFs, versionId)
+  local town, lab = townAndLab(romFs)
+  local harness = SceneLoaderFixture.newHarness(versionId, {
+    scenes = { [TOWN_MAP_ID] = town, [LAB_MAP_ID] = lab },
+    spawn = { map = town.map, x = 684, z = 394, facing = "north" },
+    doorTiles = { [TOWN_MAP_ID] = TOWN_DOOR_TILE, [LAB_MAP_ID] = LAB_ENTRANCE_TILE },
+  })
+
+  harness.onTick = function(h)
+    if h.transition.phase ~= "idle" then
+      Assert.isTrue(h.transition.locked, "the transition holds input while it owns the lifecycle")
+    end
+  end
+
+  local outbound = pressAndDrive(harness, "north", 500)
+  Assert.equal(
+    outbound,
+    "open-start,open-finished,step-start,step-finished",
+    "the outbound leg opens the town door and ingress (got: " .. outbound .. ")"
+  )
+  Assert.equal(harness.player.fieldX, 4)
+  Assert.equal(harness.player.fieldZ, 14)
+  Assert.equal(harness.swapCount, 1, "the outbound leg swaps exactly once")
+
+  SceneLoaderFixture.resetTrace(harness)
+  local inbound = pressAndDrive(harness, "south", 500)
+  Assert.equal(
+    inbound,
+    "open-start,open-finished,step-start,step-finished,close-start,close-finished",
+    "the reversal runs a fresh destination door open/close (got: " .. inbound .. ")"
+  )
+  Assert.equal(harness.swapCount, 2, "the reversal swaps exactly once more")
+  Assert.equal(harness.player.fieldX, 684)
+  Assert.equal(harness.player.fieldZ, 394, "the reversal lands back on the town approach tile")
+  Assert.equal(harness.player.motion, "idle")
+  Assert.isFalse(harness.transition.locked, "input unlocks after the reversal")
+
+  local door = assert(town.runtime.mapProps:doorAt(town.map, TOWN_DOOR_TILE.x, TOWN_DOOR_TILE.z))
+  Assert.isTrue(door:isFinished(), "the re-armed destination door finished, not a stale handle")
+  Assert.equal(
+    SceneLoaderFixture.entryRole(door),
+    CLOSE_ROLE,
+    "the retained entry state records the fresh closing role"
+  )
+
+  town.runtime:release()
+  lab.runtime:release()
+end
+
+-- A cold destination: the destination readiness is delayed, so the source world
+-- stays live and fully covered at black until the destination is ready. The
+-- choreography and event trace must match the warm run -- no premature swap, no
+-- second fade, no loading interstitial.
+function T.a_delayed_destination_holds_the_source_world_under_the_cover(romFs, versionId)
+  local town, lab = townAndLab(romFs)
+  local delay = 30
+  local harness = SceneLoaderFixture.newHarness(versionId, {
+    scenes = { [TOWN_MAP_ID] = town, [LAB_MAP_ID] = lab },
+    spawn = { map = town.map, x = 684, z = 394, facing = "north" },
+    doorTiles = { [TOWN_MAP_ID] = TOWN_DOOR_TILE, [LAB_MAP_ID] = LAB_ENTRANCE_TILE },
+    requestWarpDelay = delay,
+  })
+
+  local heldTicks = 0
+  harness.onTick = function(h)
+    if h.transition.phase == "load_destination" then
+      heldTicks = heldTicks + 1
+      Assert.isTrue(h.transition.locked, "the field stays locked while the destination is pending")
+      Assert.equal(h.transition.fadeAlpha, 1, "the held cover stays at full black")
+      Assert.equal(h.session.currentMap.mapId, TOWN_MAP_ID, "the source world stays live under the cover")
+      Assert.equal(h.swapCount, 0, "the swap never precedes destination readiness")
+    end
+  end
+
+  local trace = pressAndDrive(harness, "north", 800)
+  harness.onTick = nil
+
+  Assert.equal(
+    trace,
+    "open-start,open-finished,step-start,step-finished",
+    "the delayed destination runs the same door choreography as the warm path (got: " .. trace .. ")"
+  )
+  Assert.equal(heldTicks, delay + 1, "the source cover holds while the destination is pending")
+  Assert.equal(harness.warpGate.calls, delay + 1, "the destination is requested once per cover tick")
+  Assert.equal(harness.swapCount, 1, "the destination commits exactly once")
+  Assert.equal(harness.transition.phase, "idle")
+  Assert.isFalse(harness.transition.locked)
+  Assert.equal(harness.player.fieldX, 4)
+  Assert.equal(harness.player.fieldZ, 14)
+
+  town.runtime:release()
+  lab.runtime:release()
+end
+
 return require("tests.rom.support.RomSuite").fromFacts(T)

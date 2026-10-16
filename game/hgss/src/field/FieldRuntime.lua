@@ -15,6 +15,7 @@ local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldTravelState = require("libs.hgss.src.field.FieldTravelState")
 local PlayerData = require("libs.hgss.src.save.PlayerData")
 local FieldCameraCache = require("libs.assets.src.field.FieldCameraCache")
+local FieldEntryAssetCache = require("libs.assets.src.field.FieldEntryAssetCache")
 local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
 local FieldInput = require("libs.hgss.src.field.FieldInput")
 local FieldInteractionResolver = require("libs.hgss.src.interaction.FieldInteractionResolver")
@@ -49,6 +50,7 @@ local FieldScriptPropAnimations = require("libs.hgss.src.field.FieldScriptPropAn
 local TextSpeedPolicy = require("libs.hgss.src.ui.TextSpeedPolicy")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldWindowStyles = require("libs.hgss.src.field.FieldWindowStyles")
+local FieldMapNameBanner = require("libs.hgss.src.ui.FieldMapNameBanner")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local MapSceneLoader = require("libs.hgss.src.presentation.MapSceneLoader")
@@ -234,6 +236,8 @@ end
 ---@field presentation boolean
 ---@field windowStyles FieldWindowStyles the immutable per-runtime window style catalogue
 ---@field fontDef table<string, unknown> the generated field font and charmap
+---@field fieldEntryManifest FieldEntryAssetCache.Manifest the compiled map-name banner skins, palettes, and eligibility
+---@field mapNameBanner FieldMapNameBanner? the transient area-name banner controller (nil after teardown)
 ---@field scriptHosts FieldRuntimeScriptHosts?
 ---@field transitionPanel "exit"|"enter"|nil
 ---@field applications FieldApplicationRegistry the immutable per-runtime destination application catalogue
@@ -593,6 +597,10 @@ function FieldRuntime:_loadRuntimeAssets(boot, loadOptions)
   -- manifest: the production-owned built-in styles, immutable from then on.
   self.windowStyles = FieldWindowStyles.new(boot.uiManifest)
   self.uiManifest = boot.uiManifest
+  -- The compiled field-entry class carries the map-name banner skins, their
+  -- text palettes, and the strict map-to-style eligibility projection the
+  -- transient area-name banner consumes.
+  self.fieldEntryManifest = FieldEntryAssetCache.loadManifest(boot.cacheFs)
   local frameIndexes = {}
   for frame = 0, boot.uiManifest.dialogueFrames.count - 1 do
     frameIndexes[frame] = true
@@ -973,6 +981,27 @@ function FieldRuntime:_composeFieldUi(boot)
   if startMenuBankErr ~= nil then
     error(startMenuBankErr, 0)
   end
+  -- Pin the native section-name bank beside the Start Menu label bank: the
+  -- transient area-name banner resolves one section label per request through
+  -- this single held lease for the field lifetime, and the compiled manifest
+  -- supplies style eligibility. A missing bank fails the boot with the
+  -- provider's typed error.
+  local SECTION_NAME_MESSAGE_BANK = 279
+  local _, sectionNameBankErr = self.messageProvider:acquireBank(SECTION_NAME_MESSAGE_BANK)
+  if sectionNameBankErr ~= nil then
+    error(sectionNameBankErr, 0)
+  end
+  local function resolveSectionTitle(mapSectionNativeId)
+    local template, titleErr = self.messageProvider:get(SECTION_NAME_MESSAGE_BANK, mapSectionNativeId)
+    if template == nil then
+      error(titleErr, 0)
+    end
+    return template.text
+  end
+  self.mapNameBanner = FieldMapNameBanner.new({
+    styleByMapId = self.fieldEntryManifest.bannerStyleByMapId,
+    resolveTitle = resolveSectionTitle,
+  })
   local function actorAt(mapId, candidate)
     return self:_actorAt(mapId, candidate)
   end
@@ -1361,6 +1390,16 @@ function FieldRuntime:_startFieldSession(boot)
     if self.incomingCalls ~= nil then
       self.incomingCalls:resetTransient("transition")
     end
+    -- A seamless crossing is the only place the section fact is announced, and
+    -- the section fact ignores source/destination map identity. The zone
+    -- rebind has already published the destination logical map.
+    if change.mapSectionChanged and self.mapNameBanner ~= nil then
+      assert(
+        self.runtimeMap.mapId == change.newMapId,
+        "a seamless zone change must publish its destination map before the callback"
+      )
+      self.mapNameBanner:request(change.newMapId, self.runtimeMap.mapSectionNativeId)
+    end
   end
   self.zoneController = FieldZoneController.new({
     currentMap = self.runtimeMap,
@@ -1574,6 +1613,12 @@ function FieldRuntime:update(dt)
       self.pokemonCenterHeal:updateFixed()
     end
     self:_processApricornDate()
+    -- The transient banner advances one fixed tick before the session so a
+    -- request created during this tick keeps its initial source displacement
+    -- until the next tick, even while a transition holds input.
+    if self.mapNameBanner then
+      self.mapNameBanner:updateFixed()
+    end
     self.session:updateFixed()
     fieldExecuted = fieldExecuted + 1
     -- One committed step is considered per fixed tick, before another
@@ -1597,7 +1642,10 @@ function FieldRuntime:update(dt)
       local logicalMapId = assert(currentMap.mapId, "field logical map identity is required")
       local actorMapId = actors.currentMapId
       if actorMapId == logicalMapId then
-        self.followingMon:update()
+        local FieldTransition = require("libs.hgss.src.transition.FieldTransition")
+        if self.transition.phase ~= FieldTransition.PHASES.preview then
+          self.followingMon:update()
+        end
       elseif entry:isActive() then
         -- Map entry owns publication of the destination actor set. Until it
         -- publishes an identity, the follower has no coherent map to
@@ -1622,7 +1670,15 @@ function FieldRuntime:update(dt)
     if applicationError ~= nil then
       error(applicationError, 0)
     end
-    self.transition:updateSourceFrame()
+    local FieldTransition = require("libs.hgss.src.transition.FieldTransition")
+    local preview = self.transition.preview
+    local pausePreviewHold = self.transition.phase == FieldTransition.PHASES.preview
+      and preview ~= nil
+      and preview:status().stage == "hold"
+      and not self.session:destinationWorldPresentable()
+    if not pausePreviewHold then
+      self.transition:updateSourceFrame()
+    end
     self.screenFade:updateSourceFrame()
     if self.blackoutFlow then
       self.blackoutFlow:updateSourceFrame()
@@ -3417,6 +3473,7 @@ function FieldRuntime:_releaseAll()
   self.applications = nil
   self.displayContext, self.presentationDisplay, self.presentationOverrides = nil, nil, nil
   self._displayTopology = nil
+  self.mapNameBanner = nil
   if self.messageProvider then
     self.messageProvider:dispose()
   end
