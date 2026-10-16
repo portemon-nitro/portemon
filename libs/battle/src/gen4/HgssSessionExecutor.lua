@@ -3084,6 +3084,152 @@ end
 ---@field settleEntryTiming fun(state: table<string, unknown>, entrant: integer)
 ---@field settlePostReplacement fun(state: table<string, unknown>)
 
+---@param state table<string, unknown>
+---@param actor table<string, unknown>
+---@param userMon table<string, unknown>
+---@return {heldItem: string?, species: string?, ivs: table<string, unknown>?, usedMoves: table<integer, string>}
+function StrikeFacts.user(state, actor, userMon)
+  -- Source-law facts the strike frame carries beside the staged pair: the
+  -- holder item, user species and individual values, and the distinct-move
+  -- history for last resort. Absent facts fail in their handler, never default.
+  local heldItem = nil
+  if type(userMon.heldItem) == "string" and userMon.heldItem ~= "" and userMon.heldItem ~= "NONE" then
+    heldItem = userMon.heldItem
+  end
+  local species = nil
+  if type(userMon.species) == "string" and userMon.species ~= "" then
+    species = userMon.species
+  end
+  local ivs = nil
+  if type(userMon.ivs) == "table" then
+    ivs = copyValue(userMon.ivs)
+  end
+  local usedMoves = {}
+  if type(state.usedMoves) == "table" then
+    local recorded = (state.usedMoves --[[@as table<integer, unknown>]])[
+      actor.activation --[[@as integer]]
+    ]
+    if type(recorded) == "table" then
+      usedMoves = copyValue(recorded)
+    end
+  end
+  return { heldItem = heldItem, species = species, ivs = ivs, usedMoves = usedMoves }
+end
+
+-- A called move drew a different execution: the execution-time target class
+-- follows the drawn move, while selection and power-point ownership stay on
+-- the requested slot. Returns the redrawn targets, or nil when the target
+-- class is unchanged or the started frame already failed.
+---@param state table<string, unknown>
+---@param combatant table<string, unknown>
+---@param actor table<string, unknown>
+---@param payload table<string, unknown>
+---@param stream table<string, unknown>
+---@param started {moveFacts: table<string, unknown>, speciesFacts: table<string, unknown>, node: table<string, unknown>, policy: unknown}
+---@return table<integer, table<string, unknown>>?
+function StrikeFacts.redrawCalledTargets(state, combatant, actor, payload, stream, started)
+  local node = started.node
+  local frame = node.locals --[[@as table<string, unknown>]]
+  local drawn = node.executingMove --[[@as string]]
+  local drawnFacts = started.moveFacts[drawn]
+  local drawnTypes = nil
+  if drawn == "CURSE" then
+    drawnTypes = combatantTypes(combatant, started.speciesFacts)
+  end
+  local drawnPolicy = rangePolicy(drawn, drawnFacts, drawnTypes)
+  if drawnPolicy == nil then
+    error(unknownRangeError(drawn, drawnFacts))
+  end
+  drawnPolicy = effectivePolicy(state, actor.combatant --[[@as integer]], drawnPolicy)
+  if drawnPolicy == started.policy then
+    return nil
+  end
+  local drawnCategory = type(drawnFacts) == "table" and (drawnFacts --[[@as table<string, unknown>]]).category or nil
+  local redrawn = resolveStrikeRecipients(
+    state,
+    actor.combatant --[[@as integer]],
+    drawnPolicy,
+    payload.target --[[@as table<string, unknown>]],
+    stream
+  )
+  if #redrawn == 0 then
+    frame.failed = "no-targets"
+    return nil
+  end
+  local rebuilt = recipientStrikeFacts(state, combatant, redrawn, started.speciesFacts, drawnCategory, drawn)
+  node.targets = rebuilt.targets
+  frame.combat = rebuilt.facts
+  frame.targetFacts = rebuilt.targetFacts
+  frame.defenderTypes = rebuilt.defenderTypes
+  frame.speeds = rebuilt.speeds
+  frame.duel = rebuilt.duel
+  frame.foeLevel = rebuilt.foeLevel
+  frame.abilities = rebuilt.abilities
+  frame.foeWeightHg = rebuilt.foeWeightHg
+  frame.beatup = rebuilt.beatup
+  frame.copiedMove = rebuilt.copiedMove
+  frame.genders = rebuilt.genders
+  return rebuilt.targets
+end
+
+-- Records an executed strike's move in the last-move, received-hit, and
+-- distinct-move ledgers exactly once per strike, mirroring the native
+-- moveNoHit pair. The distinct-move ledger keys on the entry token in
+-- first-use order, so withdrawing resets the count like the native
+-- lastResortMoves; struggle records harmlessly beside real moves.
+---@param state table<string, unknown>
+---@param actor table<string, unknown>
+---@param node unknown
+---@param settledTargets table<integer, table<string, unknown>>
+function StrikeFacts.recordHistory(state, actor, node, settledTargets)
+  if type(node) ~= "table" or node.locals == nil then
+    return
+  end
+  local started = node.locals --[[@as table<string, unknown>]]
+  local move = node.requestedMove
+  if started.failed ~= nil or type(move) ~= "string" then
+    return
+  end
+  if type(state.lastMoves) ~= "table" then
+    state.lastMoves = {}
+  end
+  local lastMoves = state.lastMoves --[[@as table<integer, string>]]
+  lastMoves[
+    actor.combatant --[[@as integer]]
+  ] = move
+  if type(state.lastHits) ~= "table" then
+    state.lastHits = {}
+  end
+  local lastHits = state.lastHits --[[@as table<integer, table<string, unknown>>]]
+  for _, settled in ipairs(settledTargets) do
+    lastHits[
+      settled.combatant --[[@as integer]]
+    ] = {
+      move = move,
+      user = actor.combatant --[[@as integer]],
+    }
+  end
+  if type(state.usedMoves) ~= "table" then
+    state.usedMoves = {}
+  end
+  local ledger = state.usedMoves --[[@as table<integer, table<integer, string>>]]
+  local entry = ledger[
+    actor.activation --[[@as integer]]
+  ]
+  if type(entry) ~= "table" then
+    entry = {}
+    ledger[
+      actor.activation --[[@as integer]]
+    ] = entry
+  end
+  for _, key in ipairs(entry) do
+    if key == move then
+      return
+    end
+  end
+  entry[#entry + 1] = move
+end
+
 ---@param executor HgssSessionExecutor live native session owning the turn
 ---@param moveFacts table<string, table<string, unknown>> immutable move facts carried by the session
 ---@param speciesFacts table<string, SpeciesFormFacts> static species facts carried by the session
@@ -3531,29 +3677,7 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
     -- item with its immutable throw facts, user individual values for
     -- hidden power, the distinct-move history for last resort, and the
     -- beat-up party. Absent facts fail in their handler, never default.
-    local heldItem = nil
-    if type(userMon.heldItem) == "string" and userMon.heldItem ~= "" and userMon.heldItem ~= "NONE" then
-      heldItem = userMon.heldItem
-    end
-    -- The user species travels for species-gated holder answers behind
-    -- live strikes; readers fail closed when older frames omit it.
-    local userSpecies = nil
-    if type(userMon.species) == "string" and userMon.species ~= "" then
-      userSpecies = userMon.species
-    end
-    local userIvs = nil
-    if type(userMon.ivs) == "table" then
-      userIvs = copyValue(userMon.ivs)
-    end
-    local usedMoves = {}
-    if type(state.usedMoves) == "table" then
-      local recorded = (state.usedMoves --[[@as table<integer, unknown>]])[
-        actor.activation --[[@as integer]]
-      ]
-      if type(recorded) == "table" then
-        usedMoves = copyValue(recorded)
-      end
-    end
+    local user = StrikeFacts.user(state, actor, userMon)
     local inputs = {
       actionId = action.id,
       actor = { combatant = actor.combatant, activation = actor.activation },
@@ -3587,11 +3711,11 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       speeds = strike.speeds,
       foeLevel = strike.foeLevel,
       abilities = strike.abilities,
-      heldItem = heldItem,
-      userSpecies = userSpecies,
-      userIvs = userIvs,
+      heldItem = user.heldItem,
+      userSpecies = user.species,
+      userIvs = user.ivs,
       itemFacts = itemFacts,
-      usedMoves = usedMoves,
+      usedMoves = user.usedMoves,
       foeWeightHg = strike.foeWeightHg,
       beatup = strike.beatup,
     }
@@ -3607,103 +3731,14 @@ local function bindTurnHandlers(executor, moveFacts, speciesFacts, itemFacts, ch
       -- A called move drew a different execution: the execution-time
       -- target class follows the drawn move, while selection and
       -- power-point ownership stay on the requested slot.
-      local drawn = node.executingMove --[[@as string]]
-      local drawnFacts = moveFacts[drawn]
-      local drawnTypes = nil
-      if drawn == "CURSE" then
-        drawnTypes = combatantTypes(combatant, speciesFacts)
-      end
-      local drawnPolicy = rangePolicy(drawn, drawnFacts, drawnTypes)
-      if drawnPolicy == nil then
-        error(unknownRangeError(drawn, drawnFacts))
-      end
-      drawnPolicy = effectivePolicy(state, actor.combatant --[[@as integer]], drawnPolicy)
-      if drawnPolicy ~= policy then
-        local drawnCategory = type(drawnFacts) == "table" and (drawnFacts --[[@as table<string, unknown>]]).category
-          or nil
-        local redrawn = resolveStrikeRecipients(
-          state,
-          actor.combatant --[[@as integer]],
-          drawnPolicy,
-          payload.target --[[@as table<string, unknown>]],
-          stream
-        )
-        if #redrawn == 0 then
-          (startedFrame --[[@as table<string, unknown>]]).failed = "no-targets"
-        else
-          local rebuilt = recipientStrikeFacts(state, combatant, redrawn, speciesFacts, drawnCategory, drawn)
-          node.targets = rebuilt.targets
-          local locals = startedFrame --[[@as table<string, unknown>]]
-          locals.combat = rebuilt.facts
-          locals.targetFacts = rebuilt.targetFacts
-          locals.defenderTypes = rebuilt.defenderTypes
-          locals.speeds = rebuilt.speeds
-          locals.duel = rebuilt.duel
-          locals.foeLevel = rebuilt.foeLevel
-          locals.abilities = rebuilt.abilities
-          locals.foeWeightHg = rebuilt.foeWeightHg
-          locals.beatup = rebuilt.beatup
-          locals.copiedMove = rebuilt.copiedMove
-          locals.genders = rebuilt.genders
-          settledTargets = rebuilt.targets
-        end
-      end
+      settledTargets = StrikeFacts.redrawCalledTargets(state, combatant, actor, payload, stream, {
+        moveFacts = moveFacts,
+        speciesFacts = speciesFacts,
+        node = node,
+        policy = policy,
+      }) or settledTargets
     end
-    if type(node) == "table" and node.locals ~= nil then
-      local started = node.locals --[[@as table<string, unknown>]]
-      if started.failed == nil and type(node.requestedMove) == "string" then
-        if type(state.lastMoves) ~= "table" then
-          state.lastMoves = {}
-        end
-        (state.lastMoves --[[@as table<integer, string>]])[
-          actor.combatant --[[@as integer]]
-        ] =
-          node.requestedMove --[[@as string]]
-        -- Received-hit history behind the trainer switch tails keys on
-        -- the struck combatant: the striking move and its user record
-        -- exactly once per executed strike, mirroring the native
-        -- moveNoHit pair, whether or not the strike later lands.
-        if type(state.lastHits) ~= "table" then
-          state.lastHits = {}
-        end
-        for _, settled in ipairs(settledTargets) do
-          local targetId = (settled --[[@as table<string, unknown>]]).combatant; --[[@as integer]]
-          (state.lastHits --[[@as table<integer, table<string, unknown>>]])[targetId] = {
-            move = node.requestedMove --[[@as string]],
-            user = actor.combatant --[[@as integer]],
-          }
-        end
-        -- Distinct-move history behind Last Resort and the trainer
-        -- history reads keys on the entry token in first-use order, so
-        -- withdrawing resets the count like the native lastResortMoves.
-        -- Struggle records harmlessly beside real moves.
-        if type(state.usedMoves) ~= "table" then
-          state.usedMoves = {}
-        end
-        local ledger = state.usedMoves --[[@as table<integer, table<integer, string>>]]
-        local entry = ledger[
-          actor.activation --[[@as integer]]
-        ]
-        if type(entry) ~= "table" then
-          entry = {}
-          ledger[
-            actor.activation --[[@as integer]]
-          ] = entry
-        end
-        local seen = false
-        for _, key in ipairs(entry) do
-          if
-            key == node.requestedMove --[[@as string]]
-          then
-            seen = true
-            break
-          end
-        end
-        if not seen then
-          entry[#entry + 1] = node.requestedMove --[[@as string]]
-        end
-      end
-    end
+    StrikeFacts.recordHistory(state, actor, node, settledTargets)
     local emittedThrough = #state.outbox --[[@as table<integer, table<string, unknown>>]]
     while true do
       node = MoveExecution.step(context, node)
