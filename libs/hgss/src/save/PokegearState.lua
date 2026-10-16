@@ -513,106 +513,78 @@ local function checkMom(mom)
   return { balance = mom.balance, purchases = cleanFlags, gifts = cleanGifts }
 end
 
----@param data table<string, unknown>
----@param contacts table<string, boolean>
----@param locations table<string, boolean>
-local function checkRestorable(data, contacts, locations)
-  for key in pairs(data) do
-    if TOP_FIELDS[key] ~= true then
-      fail("pokegear state contains an unknown field", { field = key })
-    end
-  end
-  if data.schema ~= PokegearState.SCHEMA then
-    fail("pokegear schema must be " .. PokegearState.SCHEMA, { schema = data.schema })
-  end
-  if data.stateVersion ~= PokegearState.STATE_VERSION then
-    fail("pokegear state version must be " .. PokegearState.STATE_VERSION, { stateVersion = data.stateVersion })
-  end
-  if LAST_APPS[data.lastApp] ~= true then
-    fail("pokegear application must be a known companion application", { lastApp = data.lastApp })
-  end
-  if type(data.skin) ~= "number" or data.skin % 1 ~= 0 or data.skin < 0 or data.skin > 5 then
-    fail("pokegear skin must be a source skin identity", {})
-  end
-  data.unlockedSkins = checkUnlockedSkins(data.unlockedSkins)
-  if type(data.registeredCards) ~= "table" then
+---@param cards unknown
+local function checkRegisteredCards(cards)
+  if type(cards) ~= "table" then
     fail("pokegear registered cards must be a record", {})
   end
-  assert(type(data.registeredCards) == "table", "restoration reads the card set")
-  for key, value in pairs(data.registeredCards) do
+  assert(type(cards) == "table", "restoration reads the card set")
+  for key, value in pairs(cards) do
     if CARDS[key] ~= true or value ~= true then
       fail("pokegear registered cards carry only acquired card bits", { card = key })
     end
   end
-  if data.registeredCards.phone ~= true then
+  if cards.phone ~= true then
     fail("pokegear registered cards always carry the base companion card", {})
   end
-  if type(data.mapUnlockLevel) ~= "number" or data.mapUnlockLevel % 1 ~= 0 or data.mapUnlockLevel < 0 then
-    fail("pokegear map tier must be a non-negative integer", {})
-  end
-  if type(data.mapZoomed) ~= "boolean" then
-    fail("pokegear map zoom must be a boolean", {})
-  end
-  data.radioCursor = checkRadioCursor(data.radioCursor)
-  if type(data.contactOrder) ~= "table" then
+end
+
+---@param order unknown
+---@param contacts table<string, boolean>
+local function checkContactOrder(order, contacts)
+  if type(order) ~= "table" then
     fail("pokegear contact order must be a list", {})
   end
-  assert(type(data.contactOrder) == "table", "restoration reads the contact order")
-  do
-    local order = data.contactOrder
-    assert(type(order) == "table", "restoration counts the contact order")
-    local count = 0
-    for _ in pairs(order) do
-      count = count + 1
-    end
-    local seen = {}
-    for index = 1, count do
-      local contactKey = order[index]
-      if type(contactKey) ~= "string" then
-        fail("pokegear contact order carries contact keys", {})
-      end
-      if contacts[contactKey] ~= true then
-        fail("pokegear contact order references missing contact " .. contactKey, { key = contactKey })
-      end
-      if seen[contactKey] then
-        fail("pokegear contact order repeats a contact", { key = contactKey })
-      end
-      seen[contactKey] = true
-    end
+  assert(type(order) == "table", "restoration reads the contact order")
+  local count = 0
+  for _ in pairs(order) do
+    count = count + 1
   end
-  if type(data.markings) ~= "table" then
+  local seen = {}
+  for index = 1, count do
+    local contactKey = order[index]
+    if type(contactKey) ~= "string" then
+      fail("pokegear contact order carries contact keys", {})
+    end
+    if contacts[contactKey] ~= true then
+      fail("pokegear contact order references missing contact " .. contactKey, { key = contactKey })
+    end
+    if seen[contactKey] then
+      fail("pokegear contact order repeats a contact", { key = contactKey })
+    end
+    seen[contactKey] = true
+  end
+end
+
+---@param markings unknown
+---@param locations table<string, boolean>
+local function checkMarkings(markings, locations)
+  if type(markings) ~= "table" then
     fail("pokegear markings must be a record", {})
   end
-  assert(type(data.markings) == "table", "restoration reads the markings")
-  do
-    local count = 0
-    for locationKey, marking in pairs(data.markings) do
-      count = count + 1
-      if locations[locationKey] ~= true then
-        fail("pokegear markings reference missing location " .. tostring(locationKey), { key = locationKey })
-      end
-      data.markings[locationKey] = checkMarking(marking)
+  assert(type(markings) == "table", "restoration reads the markings")
+  local count = 0
+  for locationKey, marking in pairs(markings) do
+    count = count + 1
+    if locations[locationKey] ~= true then
+      fail("pokegear markings reference missing location " .. tostring(locationKey), { key = locationKey })
     end
-    if count > MAX_MARKING_LOCATIONS then
-      fail("pokegear markings hold at most one hundred locations", { count = count })
-    end
+    markings[locationKey] = checkMarking(marking)
   end
-  if type(data.phone) ~= "table" then
-    fail("pokegear phone state must be a record", {})
+  if count > MAX_MARKING_LOCATIONS then
+    fail("pokegear markings hold at most one hundred locations", { count = count })
   end
-  assert(type(data.phone) == "table", "restoration reads the phone state")
-  local phone = data.phone
-  assert(type(phone) == "table", "restoration reads phone fields")
-  for key in pairs(phone) do
-    if PHONE_FIELDS[key] ~= true then
-      fail("pokegear phone state contains an unknown field", { field = key })
-    end
-  end
+end
+
+---@param phone table<string, unknown>
+---@param contactOrder string[]
+---@param contacts table<string, boolean>
+local function checkPhoneContacts(phone, contactOrder, contacts)
   if type(phone.contacts) ~= "table" then
     fail("pokegear phone contacts must be a record", {})
   end
   assert(type(phone.contacts) == "table", "restoration reads phone contacts")
-  for _, contactKey in ipairs(data.contactOrder) do
+  for _, contactKey in ipairs(contactOrder) do
     if phone.contacts[contactKey] == nil then
       fail("pokegear contact order references an unregistered contact " .. contactKey, { key = contactKey })
     end
@@ -622,7 +594,7 @@ local function checkRestorable(data, contacts, locations)
       fail("pokegear phone contacts reference missing contact " .. tostring(contactKey), { key = contactKey })
     end
     local ordered = false
-    for _, orderedKey in ipairs(data.contactOrder) do
+    for _, orderedKey in ipairs(contactOrder) do
       if orderedKey == contactKey then
         ordered = true
         break
@@ -644,6 +616,11 @@ local function checkRestorable(data, contacts, locations)
       entry.reward = checkReward(entry.reward)
     end
   end
+end
+
+---@param phone table<string, unknown>
+---@param contacts table<string, boolean>
+local function checkPhoneJournals(phone, contacts)
   if type(phone.triggers) ~= "table" then
     fail("pokegear phone triggers must be a record", {})
   end
@@ -678,39 +655,101 @@ local function checkRestorable(data, contacts, locations)
       fail("pokegear rematch entry carries non-negative counters", { key = key })
     end
   end
-  phone.mom = checkMom(phone.mom)
-  if type(phone.kenji) ~= "table" then
+end
+
+---@param kenji unknown
+local function checkKenji(kenji)
+  if type(kenji) ~= "table" then
     fail("pokegear caller counters must be a record", {})
   end
-  assert(type(phone.kenji) == "table", "restoration reads caller counters")
-  for key in pairs(phone.kenji) do
+  assert(type(kenji) == "table", "restoration reads caller counters")
+  for key in pairs(kenji) do
     if key ~= "calls" then
       fail("pokegear caller counters contain an unknown field", { field = key })
     end
   end
-  if type(phone.kenji.calls) ~= "number" or phone.kenji.calls % 1 ~= 0 or phone.kenji.calls < 0 then
+  if type(kenji.calls) ~= "number" or kenji.calls % 1 ~= 0 or kenji.calls < 0 then
     fail("pokegear caller counters must be non-negative integers", {})
   end
-  if type(data.calendar) ~= "table" then
+end
+
+---@param phone unknown
+---@param contactOrder string[]
+---@param contacts table<string, boolean>
+local function checkPhone(phone, contactOrder, contacts)
+  if type(phone) ~= "table" then
+    fail("pokegear phone state must be a record", {})
+  end
+  assert(type(phone) == "table", "restoration reads phone fields")
+  for key in pairs(phone) do
+    if PHONE_FIELDS[key] ~= true then
+      fail("pokegear phone state contains an unknown field", { field = key })
+    end
+  end
+  checkPhoneContacts(phone, contactOrder, contacts)
+  checkPhoneJournals(phone, contacts)
+  phone.mom = checkMom(phone.mom)
+  checkKenji(phone.kenji)
+end
+
+---@param calendar unknown
+local function checkCalendar(calendar)
+  if type(calendar) ~= "table" then
     fail("pokegear calendar state must be a record", {})
   end
-  assert(type(data.calendar) == "table", "restoration reads the calendar state")
-  for key in pairs(data.calendar) do
+  assert(type(calendar) == "table", "restoration reads the calendar state")
+  for key in pairs(calendar) do
     if CALENDAR_FIELDS[key] ~= true then
       fail("pokegear calendar state contains an unknown field", { field = key })
     end
   end
-  data.calendar.checkpoint = checkCivil(data.calendar.checkpoint)
-  if data.calendar.daySerial ~= nil then
-    if type(data.calendar.daySerial) ~= "number" or data.calendar.daySerial % 1 ~= 0 then
+  calendar.checkpoint = checkCivil(calendar.checkpoint)
+  if calendar.daySerial ~= nil then
+    if type(calendar.daySerial) ~= "number" or calendar.daySerial % 1 ~= 0 then
       fail("pokegear calendar day must be an integral day serial", {})
     end
   end
-  if (data.calendar.checkpoint == nil) ~= (data.calendar.daySerial == nil) then
+  if (calendar.checkpoint == nil) ~= (calendar.daySerial == nil) then
     fail("pokegear calendar checkpoint and day advance together", {})
   end
-  checkU32(data.calendar.dailyGroupSeed, "daily group seed")
-  checkU32(data.calendar.outbreakSeed, "outbreak seed")
+  checkU32(calendar.dailyGroupSeed, "daily group seed")
+  checkU32(calendar.outbreakSeed, "outbreak seed")
+end
+
+---@param data table<string, unknown>
+---@param contacts table<string, boolean>
+---@param locations table<string, boolean>
+local function checkRestorable(data, contacts, locations)
+  for key in pairs(data) do
+    if TOP_FIELDS[key] ~= true then
+      fail("pokegear state contains an unknown field", { field = key })
+    end
+  end
+  if data.schema ~= PokegearState.SCHEMA then
+    fail("pokegear schema must be " .. PokegearState.SCHEMA, { schema = data.schema })
+  end
+  if data.stateVersion ~= PokegearState.STATE_VERSION then
+    fail("pokegear state version must be " .. PokegearState.STATE_VERSION, { stateVersion = data.stateVersion })
+  end
+  if LAST_APPS[data.lastApp] ~= true then
+    fail("pokegear application must be a known companion application", { lastApp = data.lastApp })
+  end
+  if type(data.skin) ~= "number" or data.skin % 1 ~= 0 or data.skin < 0 or data.skin > 5 then
+    fail("pokegear skin must be a source skin identity", {})
+  end
+  data.unlockedSkins = checkUnlockedSkins(data.unlockedSkins)
+  checkRegisteredCards(data.registeredCards)
+  if type(data.mapUnlockLevel) ~= "number" or data.mapUnlockLevel % 1 ~= 0 or data.mapUnlockLevel < 0 then
+    fail("pokegear map tier must be a non-negative integer", {})
+  end
+  if type(data.mapZoomed) ~= "boolean" then
+    fail("pokegear map zoom must be a boolean", {})
+  end
+  data.radioCursor = checkRadioCursor(data.radioCursor)
+  checkContactOrder(data.contactOrder, contacts)
+  checkMarkings(data.markings, locations)
+  checkPhone(data.phone, data.contactOrder, contacts)
+  checkCalendar(data.calendar)
   data.random = PokegearState.validateRandomBucket(data.random)
 end
 
