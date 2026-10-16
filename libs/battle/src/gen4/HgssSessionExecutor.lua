@@ -5742,6 +5742,68 @@ local function strikeProjection(state, actorId, moveName, facts, attackerTypes)
   return { kind = "none" }, {}
 end
 
+-- An option for a probed choice: enabled only when the kernel admits it,
+-- otherwise carrying the refusal reason.
+---@param state table<string, unknown> live battle state under read-only inspection
+---@param choice table<string, unknown> candidate choice to probe
+---@param id string stable option id
+---@param role string option role
+---@param display table<string, unknown> display facts
+---@param admitted string[] admitted action kinds resolved at construction
+---@param battleKind string wild-or-trainer encounter policy selecting flight and capture law
+---@param moveFacts table<string, table<string, unknown>>? immutable move facts by move identity
+---@param speciesFacts table<string, SpeciesFormFacts>? static species facts
+---@return table<string, unknown>
+local function probedOption(state, choice, id, role, display, admitted, battleKind, moveFacts, speciesFacts)
+  local rejected =
+    probeChoice(state, choice, HgssSessionExecutor.DECISION_KIND, admitted, battleKind, moveFacts, speciesFacts)
+  return {
+    id = id,
+    role = role,
+    display = display,
+    enabled = rejected == nil,
+    reason = rejected == nil and nil or refusalReason(rejected),
+    choice = choice,
+  }
+end
+
+-- Sorted keys of the participant's bag stock not already reserved this turn.
+---@param state table<string, unknown> live battle state under read-only inspection
+---@param participant table<string, unknown>
+---@return string[]
+local function availableItemKeys(state, participant)
+  local keys = {} ---@type string[]
+  local inventoryId = participant.inventoryId --[[@as string?]]
+  if type(inventoryId) ~= "string" then
+    return keys
+  end
+  local inventory = (state.inventories --[[@as table<string, table<string, unknown>>]])[inventoryId]
+  if type(inventory) ~= "table" then
+    return keys
+  end
+  local quantities = inventory.quantities --[[@as table<string, integer>]]
+  if type(quantities) ~= "table" then
+    return keys
+  end
+  local pending = state.pending --[[@as table<string, unknown>]]
+  local reserved = pending.reserved --[[@as table<string, unknown>]]
+  local held = (reserved.items --[[@as table<string, table<string, integer>>]])[inventoryId]
+  for key, stock in pairs(quantities) do
+    local claimed = 0
+    if type(held) == "table" and type(held[key]) == "number" then
+      claimed = held[key] --[[@as integer]]
+    end
+    if
+      type(stock) == "number" and stock --[[@as integer]]
+        - claimed >= 1
+    then
+      keys[#keys + 1] = key --[[@as string]]
+    end
+  end
+  table.sort(keys)
+  return keys
+end
+
 ---@param state table<string, unknown> live battle state under read-only inspection
 ---@param actor table<string, unknown> requested actor under projection
 ---@param admitted string[] admitted action kinds resolved at construction
@@ -5826,19 +5888,10 @@ local function actionActorOptions(state, actor, admitted, battleKind, moveFacts,
       kind = "attack",
       payload = { moveSlot = 0, target = projected },
     } --[[@as table<string, unknown>]]
-    local rejected =
-      probeChoice(state, struggle, HgssSessionExecutor.DECISION_KIND, admitted, battleKind, moveFacts, speciesFacts)
-    local struggleOption = {
-      id = "move:struggle",
-      role = "move",
-      display = {
-        move = "STRUGGLE",
-        name = (type(facts) == "table" and type(facts.name) == "string") and facts.name or "Struggle",
-      },
-      enabled = rejected == nil,
-      reason = rejected == nil and nil or refusalReason(rejected),
-      choice = struggle,
-    } --[[@as table<string, unknown>]]
+    local struggleOption = probedOption(state, struggle, "move:struggle", "move", {
+      move = "STRUGGLE",
+      name = (type(facts) == "table" and type(facts.name) == "string") and facts.name or "Struggle",
+    }, admitted, battleKind, moveFacts, speciesFacts)
     local struggleVariants =
       targetVariants(state, actor, candidates, 0, true, admitted, battleKind, moveFacts, speciesFacts)
     if struggleVariants ~= nil then
@@ -5854,82 +5907,43 @@ local function actionActorOptions(state, actor, admitted, battleKind, moveFacts,
       kind = "switch",
       payload = { replacement = reserve },
     } --[[@as table<string, unknown>]]
-    local rejected =
-      probeChoice(state, choice, HgssSessionExecutor.DECISION_KIND, admitted, battleKind, moveFacts, speciesFacts)
-    choices[#choices + 1] = {
-      id = "switch:" .. reserve,
-      role = "switch",
-      display = reserveDisplay(state, reserve),
-      enabled = rejected == nil,
-      reason = rejected == nil and nil or refusalReason(rejected),
-      choice = choice,
-    }
+    choices[#choices + 1] = probedOption(
+      state,
+      choice,
+      "switch:" .. reserve,
+      "switch",
+      reserveDisplay(state, reserve),
+      admitted,
+      battleKind,
+      moveFacts,
+      speciesFacts
+    )
   end
-  local inventoryId = participant.inventoryId --[[@as string?]]
-  if type(inventoryId) == "string" then
-    local inventory = (state.inventories --[[@as table<string, table<string, unknown>>]])[inventoryId]
-    if type(inventory) == "table" then
-      local quantities = inventory.quantities --[[@as table<string, integer>]]
-      local pending = state.pending --[[@as table<string, unknown>]]
-      local reserved = pending.reserved --[[@as table<string, unknown>]]
-      local held = (reserved.items --[[@as table<string, table<string, integer>>]])[inventoryId]
-      local keys = {} ---@type string[]
-      if type(quantities) == "table" then
-        for key, stock in pairs(quantities) do
-          local claimed = 0
-          if type(held) == "table" and type(held[key]) == "number" then
-            claimed = held[key] --[[@as integer]]
-          end
-          if
-            type(stock) == "number" and stock --[[@as integer]]
-              - claimed >= 1
-          then
-            keys[#keys + 1] = key --[[@as string]]
-          end
-        end
-      end
-      table.sort(keys)
-      -- Targets enumerate every active holder with the owner's limits:
-      -- selection stays legal while execution may still refuse an
-      -- effect-less serving without consuming anything.
-      for _, key in ipairs(keys) do
-        for _, holder in ipairs(activeCombatants(state)) do
-          local choice = {
-            actor = fragmentActor(actor),
-            kind = "item",
-            payload = { item = key, target = { kind = "combatant", combatant = holder } },
-          } --[[@as table<string, unknown>]]
-          local rejected =
-            probeChoice(state, choice, HgssSessionExecutor.DECISION_KIND, admitted, battleKind, moveFacts, speciesFacts)
-          choices[#choices + 1] = {
-            id = "item:" .. key .. ":" .. holder,
-            role = "item",
-            display = { item = key },
-            enabled = rejected == nil,
-            reason = rejected == nil and nil or refusalReason(rejected),
-            choice = choice,
-          }
-        end
-      end
+  -- Targets enumerate every active holder with the owner's limits:
+  -- selection stays legal while execution may still refuse an
+  -- effect-less serving without consuming anything.
+  for _, key in ipairs(availableItemKeys(state, participant)) do
+    for _, holder in ipairs(activeCombatants(state)) do
+      local choice = {
+        actor = fragmentActor(actor),
+        kind = "item",
+        payload = { item = key, target = { kind = "combatant", combatant = holder } },
+      } --[[@as table<string, unknown>]]
+      choices[#choices + 1] = probedOption(
+        state,
+        choice,
+        "item:" .. key .. ":" .. holder,
+        "item",
+        { item = key },
+        admitted,
+        battleKind,
+        moveFacts,
+        speciesFacts
+      )
     end
   end
-  do
-    local choice = {
-      actor = fragmentActor(actor),
-      kind = "run",
-      payload = {},
-    } --[[@as table<string, unknown>]]
-    local rejected =
-      probeChoice(state, choice, HgssSessionExecutor.DECISION_KIND, admitted, battleKind, moveFacts, speciesFacts)
-    choices[#choices + 1] = {
-      id = "run",
-      role = "run",
-      display = {},
-      enabled = rejected == nil,
-      reason = rejected == nil and nil or refusalReason(rejected),
-      choice = choice,
-    }
-  end
+  local run = { actor = fragmentActor(actor), kind = "run", payload = {} } --[[@as table<string, unknown>]]
+  choices[#choices + 1] = probedOption(state, run, "run", "run", {}, admitted, battleKind, moveFacts, speciesFacts)
   return entry
 end
 
@@ -5974,15 +5988,17 @@ local function replacementActorOptions(state, actor, admitted, battleKind)
       kind = "switch",
       payload = { replacement = reserve },
     } --[[@as table<string, unknown>]]
-    local rejected = probeChoice(state, choice, HgssSessionExecutor.DECISION_KIND, admitted, battleKind, nil, nil)
-    choices[#choices + 1] = {
-      id = "switch:" .. reserve,
-      role = "switch",
-      display = reserveDisplay(state, reserve),
-      enabled = rejected == nil,
-      reason = rejected == nil and nil or refusalReason(rejected),
-      choice = choice,
-    }
+    choices[#choices + 1] = probedOption(
+      state,
+      choice,
+      "switch:" .. reserve,
+      "switch",
+      reserveDisplay(state, reserve),
+      admitted,
+      battleKind,
+      nil,
+      nil
+    )
   end
   return entry
 end
