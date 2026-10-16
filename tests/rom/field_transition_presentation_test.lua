@@ -2,9 +2,9 @@
 -- real dump a supported WARP_PANEL map produces the synthetic panel mode -- not
 -- a numeric profile -- and the transition's panel lifecycle notifies each side
 -- once, commits the shared destination once, dispatches no profile family,
--- adjusts no camera, and plays no profile cue. The local absence of a rendered
--- panel effect is therefore a proven diagnostic, not a fabricated wipe. Runs
--- against every ready dump through the ROM layer.
+-- adjusts no camera, and owns only the two teleport spin cues. The local
+-- absence of a rendered panel effect is therefore a proven diagnostic, not a
+-- fabricated wipe. Runs against every ready dump through the ROM layer.
 
 local Assert = require("tests.support.Assert")
 local FieldCoordinates = require("libs.hgss.src.field.FieldCoordinates")
@@ -123,9 +123,144 @@ function T.real_panel_warp_uses_the_panel_mode_and_notifies_once(romFs, _)
   Assert.deepEqual(panels, { "exit", "enter" }, "each panel side is notified once")
   Assert.deepEqual(profiles, {}, "the panel mode dispatches no numeric profile family")
   Assert.deepEqual(cameras, {}, "the panel mode adjusts no camera")
-  Assert.deepEqual(sounds, {}, "the panel mode plays no profile cue")
+  Assert.deepEqual(
+    sounds,
+    { "SEQ_SE_DP_TELE2", "SEQ_SE_DP_TELE2" },
+    "the panel mode owns only the departure and arrival teleport spin cues"
+  )
   Assert.equal(commits, 1, "the panel warp commits the shared destination once")
   Assert.notNil(transition.completed, "the panel warp records one completion")
+end
+
+-- Retail panel-warp spin/teleport presentation (Task_WarpPanel in
+-- pret/pokeheartgold src/field_warp_tasks.c with the Task_WarpSpinDeparture /
+-- Task_WarpSpinArrival pair in src/field/warp_spin.c, via
+-- FieldSystem_StartWarpSpin): the departure runs 20 spin frames -- TELE2 at
+-- spin start, a quarter-turn counterclockwise rotation on each odd frame, a
+-- rising height arc -- the swap gates on spin completion, and the arrival
+-- reverses the spin and faces south exactly once. The follower ball recall
+-- stays a documented boundary (no ball-effect presentation exists yet), so
+-- this pins the player-observable spin only: sound, facing rotation, height
+-- arc, swap gating, and arrival facing.
+local SPIN_FRAMES = 20
+
+local function distinctInOrder(values)
+  local out = {}
+  for _, value in ipairs(values) do
+    if out[#out] ~= value then
+      out[#out + 1] = value
+    end
+  end
+  return out
+end
+
+function T.real_panel_warp_runs_the_departure_and_arrival_spin(romFs, _)
+  local sourceMap = RomRuntimeMap.compile(romFs, PANEL_MAP)
+  local fieldX, fieldZ, warp = findPanelWarp(sourceMap)
+  local trigger =
+    assert(TransitionTrigger.stepPath(sourceMap, fieldX, fieldZ, "north"), "panel tiles trigger on the step path")
+  Assert.equal(trigger.transition.mode, "panel")
+
+  local destinationMap = RomRuntimeMap.compile(romFs, warp.destinationMapId)
+  local maps = { [sourceMap.mapId] = sourceMap, [destinationMap.mapId] = destinationMap }
+  local groundY
+  local player = FieldPlayer.new({
+    currentMap = sourceMap,
+    fieldX = fieldX,
+    fieldZ = fieldZ,
+    surfaceId = surfaceAt(sourceMap, fieldX, fieldZ),
+    facing = "north",
+  })
+  groundY = player.worldY
+  local sounds = {}
+  local panels = {}
+  local commits = 0
+  local departureFacings = {}
+  local heights = {}
+  local transition
+  transition = FieldTransition.new({
+    loader = {
+      load = function(_, mapId)
+        return assert(maps[mapId], "map " .. tostring(mapId))
+      end,
+      requestWarp = function()
+        return true
+      end,
+      protectMap = function() end,
+    },
+    player = player,
+    onPanel = function(phase)
+      panels[#panels + 1] = phase
+    end,
+    playSound = function(sound)
+      sounds[#sounds + 1] = sound
+    end,
+    prepare = function(resolution, facing)
+      return FieldPlayer.new({
+        currentMap = resolution.destinationMap,
+        fieldX = resolution.fieldX,
+        fieldZ = resolution.fieldZ,
+        surfaceId = resolution.surfaceId,
+        facing = facing,
+      })
+    end,
+    commit = function(_, _, prepared)
+      commits = commits + 1
+      player = prepared
+      transition.player = player
+    end,
+  })
+  transition.player = player
+  transition:start(sourceMap, trigger, "north")
+
+  local ticks, commitTick = 0, nil
+  while transition.phase ~= "idle" and transition.phase ~= "error" and ticks < 400 do
+    ticks = ticks + 1
+    transition:updateFixed()
+    transition:updateSourceFrame()
+    if commits == 0 then
+      departureFacings[#departureFacings + 1] = player.facing
+      heights[#heights + 1] = player.worldY - groundY
+    else
+      if commitTick == nil then
+        commitTick = ticks
+      end
+      heights[#heights + 1] = player.worldY - groundY
+    end
+  end
+
+  Assert.equal(transition.phase, "idle", "the panel warp completes")
+  Assert.notNil(commitTick, "the run records the commit tick")
+  Assert.isTrue(
+    commitTick >= SPIN_FRAMES,
+    "the departure spin runs its 20 retail frames before the swap gates (committed at tick "
+      .. tostring(commitTick)
+      .. ")"
+  )
+  local teleports = 0
+  for _, sound in ipairs(sounds) do
+    if sound == "SEQ_SE_DP_TELE2" then
+      teleports = teleports + 1
+    end
+  end
+  Assert.isTrue(teleports >= 1, "the panel spin plays the teleport sound")
+  Assert.deepEqual(
+    distinctInOrder(departureFacings),
+    { "north", "west", "south", "east" },
+    "the departure rotates a quarter turn counterclockwise per spin beat"
+  )
+  local peak = 0
+  for _, height in ipairs(heights) do
+    peak = math.max(peak, height)
+  end
+  Assert.isTrue(peak > 0, "the spin rises on the height arc")
+  Assert.isTrue(
+    ticks - (commitTick or 0) >= SPIN_FRAMES,
+    "the arrival spin reverses its 20 frames after the swap before completing"
+  )
+  Assert.equal(player.facing, "south", "the arrival faces south exactly once at spin end")
+  Assert.deepEqual(panels, { "exit", "enter" }, "each panel side is still notified once around the spin")
+  Assert.equal(commits, 1, "the spin never duplicates the shared destination commit")
 end
 
 return require("tests.rom.support.RomSuite").fromFacts(T)

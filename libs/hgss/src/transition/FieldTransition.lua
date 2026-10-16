@@ -40,6 +40,19 @@
 --
 -- Stair warps use the profile-owned locked source step and never use door
 -- animation or coordinate compensation.
+--
+-- Panel warps run the teleport spin around the same lifecycle when the bound
+-- player offers facing + height pose control: TELE2 at each spin start, a
+-- 20-tick departure rising on the height arc while turning through each
+-- cardinal, the swap gated on spin completion under full black, and the
+-- reversed 20-tick arrival ending facing south. A headless caller without a
+-- posed player keeps the plain panel fade. The optional follower collaborator
+-- ({ isPresent, recall, rejoin }) carries the ball recall and the arrival
+-- rejoin through presence-gated exactly-once hooks: recall at departure start,
+-- rejoin("panel") at arrival end, rejoin("preview") once the profile-8 preview
+-- arrival completes. Absence or no present partner keeps current behavior.
+-- No coordinator injects the collaborator yet: there is no hide-until-step
+-- reveal owner, so wiring a hiding rejoin today would strand followers hidden.
 
 local WarpSystem = require("libs.hgss.src.transition.WarpSystem")
 local Errors = require("libs.errors.src.Errors")
@@ -93,8 +106,10 @@ local SurfaceResolver = require("libs.hgss.src.world.SurfaceResolver")
 ---@field sourceWarp table<string, unknown>?
 ---@field coveredSwap boolean -- true while a covered scripted swap owns the lifecycle: destination resolution/commit run, but no FieldTransitionFade is created or advanced because an external screen cover already owns visibility
 ---@field selectPreview fun(sourceMap: RuntimeFieldMap, destinationMap: RuntimeFieldMap, profileId: integer|nil): { imageKey: string, timeSlot: integer, profileId: integer|nil }? -- post-commit source-selected area-preview selector
+---@field follower { isPresent: fun(): boolean, recall: fun(), rejoin: fun(reason: string) }? -- optional presence-gated follower collaborator: panel departure recall, panel/preview arrival rejoin
 ---@field preview FieldAreaPreview? the active time-aware area preview, nil outside the preview substate
 ---@field previewArrival "returning"|"done"? the preview-owned profile-8 arrival state
+---@field _panelSpin { stage: "departure"|"arrival", frame: integer, baseY: number, entryIndex: integer }? -- the panel-warp teleport spin state, nil outside the spin or without a posed player
 ---@field _outdoorCamera table<string, unknown>? -- live camera driving the outdoor white-fade angle choreography, returned by cameraAdjust
 ---@field _outdoorExitSteps integer? -- exit source frames stepped so far; nil while the exit choreography is inactive
 ---@field _outdoorEnterSteps integer? -- enter source frames stepped so far; nil while the enter choreography is inactive
@@ -139,6 +154,7 @@ function FieldTransition.new(options)
     escalatorAt = options.escalatorAt,
     onPanel = options.onPanel,
     selectPreview = options.selectPreview,
+    follower = options.follower,
     player = options.player,
     profileId = nil,
     transitionMode = nil,
@@ -161,6 +177,7 @@ function FieldTransition.new(options)
     coveredSwap = false,
     preview = nil,
     previewArrival = nil,
+    _panelSpin = nil,
     _outdoorCamera = nil,
     _outdoorExitSteps = nil,
     _outdoorEnterSteps = nil,
@@ -187,12 +204,18 @@ function FieldTransition:presentationStatus()
     local channel = fade.color == 0x7FFF and 1 or 0
     overlay = { r = channel, g = channel, b = channel, a = math.min(1, math.max(0, fade.coefficient / 16)) }
   end
+  local fadeMode
+  if self.profileId ~= nil then
+    local family = FieldTransitionProfile.ROUTINE_FAMILIES[self.profileId]
+    fadeMode = family ~= nil and family.fadeMode or nil
+  end
   return {
     phase = phase,
     coefficient = fade.coefficient,
     color = fade.color,
     direction = fade.direction,
     completed = fade.completed,
+    fadeMode = fadeMode,
     overlay = overlay,
     preview = self.preview and self.preview:status() or nil,
     entryAction = self.profileId == FieldTransitionProfile.DOOR and "step_down" or nil,
@@ -213,6 +236,93 @@ local function invokeProfile(self, phase)
   if self.onProfile then
     self.onProfile(profileId, phase, family)
   end
+end
+
+-- Retail panel-warp teleport spin (Task_WarpPanel with the warp_spin pair in
+-- pret/pokeheartgold src/field/warp_spin.c): 20 fixed ticks per side, the
+-- TELE2 cue at each spin start, quarter-turn beats across the departure, the
+-- quadratic height arc, the swap gated on spin completion, and the reversed
+-- arrival ending facing south. Beats run at frames 6/11/16 so the departure
+-- visits each cardinal exactly once per spin.
+local PANEL_SPIN_FRAMES = 20
+local PANEL_SPIN_HEIGHT = 2
+local SPIN_ORDER_CCW = { "north", "west", "south", "east" }
+local SPIN_ORDER_CW = { "north", "east", "south", "west" }
+
+local function followerPresent(self)
+  local follower = self.follower
+  if follower == nil or type(follower.isPresent) ~= "function" then
+    return false
+  end
+  return follower.isPresent() == true
+end
+
+local function followerRecall(self)
+  if not followerPresent(self) then
+    return
+  end
+  local follower = assert(self.follower, "follower presence implies the collaborator")
+  follower.recall()
+end
+
+local function followerRejoin(self, reason)
+  if not followerPresent(self) then
+    return
+  end
+  local follower = assert(self.follower, "follower presence implies the collaborator")
+  follower.rejoin(reason)
+end
+
+-- The spin drives facing + height directly on the bound player, so it needs
+-- that pose control. A headless caller without a posed player keeps the plain
+-- panel fade; the panel lifecycle pins never grow a speculative effect.
+local function panelSpinSupported(self)
+  local player = self.player
+  return player ~= nil and type(player.turn) == "function" and type(player.worldY) == "number"
+end
+
+local function spinOrderIndex(facing, order)
+  for index, direction in ipairs(order) do
+    if direction == facing then
+      return index
+    end
+  end
+  return nil
+end
+
+local function beginPanelDepartureSpin(self)
+  local player = assert(self.player, "panel departure spin requires the bound player")
+  if self.playSound then
+    self.playSound("SEQ_SE_DP_TELE2")
+  end
+  followerRecall(self)
+  self._panelSpin = {
+    stage = "departure",
+    frame = 0,
+    baseY = player.worldY,
+    entryIndex = assert(spinOrderIndex(self.facing, SPIN_ORDER_CCW), "panel spin requires a cardinal entry facing"),
+  }
+  self.sourceChoreo = "panel_spin"
+end
+
+local function beginPanelArrivalSpin(self)
+  if self._panelSpin == nil or not panelSpinSupported(self) then
+    self._panelSpin = nil
+    return
+  end
+  local player = assert(self.player, "panel arrival spin requires the rebound player")
+  if self.playSound then
+    self.playSound("SEQ_SE_DP_TELE2")
+  end
+  local baseY = player.worldY
+  player.worldY = baseY + PANEL_SPIN_HEIGHT
+  self._panelSpin = {
+    stage = "arrival",
+    frame = 0,
+    baseY = baseY,
+    entryIndex = assert(spinOrderIndex(player.facing, SPIN_ORDER_CW), "panel spin requires a cardinal entry facing"),
+  }
+  self.destinationChoreo = "panel_spin"
 end
 
 local function beginProfileMotion(self, phase)
@@ -313,6 +423,43 @@ local function stopProfileSound(self)
   assert(self.stopSound, "profile transition sound stop callback required")
   self.stopSound(self.activeProfileSound)
   self.activeProfileSound = nil
+end
+
+local function advancePanelDepartureSpin(self)
+  local spin = assert(self._panelSpin, "panel departure spin requires its spin state")
+  local player = assert(self.player, "panel departure spin requires the bound player")
+  assert(type(player.turn) == "function", "panel departure spin requires the player turn")
+  spin.frame = spin.frame + 1
+  if spin.frame == 6 or spin.frame == 11 or spin.frame == 16 then
+    local beat = (spin.frame == 6 and 1) or (spin.frame == 11 and 2) or 3
+    player:turn(SPIN_ORDER_CCW[((spin.entryIndex - 1 + beat) % 4) + 1])
+  end
+  local frame = math.min(spin.frame, PANEL_SPIN_FRAMES)
+  player.worldY = spin.baseY + PANEL_SPIN_HEIGHT * frame * (PANEL_SPIN_FRAMES - frame) / 100
+  if spin.frame >= PANEL_SPIN_FRAMES then
+    self.sourceChoreo = "done"
+    startFade(self, "out", 0)
+  end
+end
+
+local function advancePanelArrivalSpin(self)
+  local spin = assert(self._panelSpin, "panel arrival spin requires its spin state")
+  local player = assert(self.player, "panel arrival spin requires the bound player")
+  assert(type(player.turn) == "function", "panel arrival spin requires the player turn")
+  spin.frame = spin.frame + 1
+  if spin.frame == 6 or spin.frame == 11 then
+    local beat = (spin.frame == 6 and 1) or 2
+    player:turn(SPIN_ORDER_CW[((spin.entryIndex - 1 + beat) % 4) + 1])
+  end
+  local frame = math.min(spin.frame, PANEL_SPIN_FRAMES)
+  player.worldY = spin.baseY + PANEL_SPIN_HEIGHT * (PANEL_SPIN_FRAMES - frame) / PANEL_SPIN_FRAMES
+  if spin.frame >= PANEL_SPIN_FRAMES then
+    player:turn("south")
+    player.worldY = spin.baseY
+    followerRejoin(self, "panel")
+    self.destinationChoreo = "done"
+    startFade(self, "in", 0)
+  end
 end
 
 -- The outdoor white-fade transition tilts the live camera perspective
@@ -419,6 +566,7 @@ local function resetTransient(self)
   self.coveredSwap = false
   self.preview = nil
   self.previewArrival = nil
+  self._panelSpin = nil
   self._outdoorCamera = nil
   self._outdoorExitSteps = nil
   self._outdoorEnterSteps = nil
@@ -549,6 +697,10 @@ local function beginSourceChoreography(self)
     return
   end
   if self.transitionMode == FieldTransitionProfile.MODE_PANEL then
+    if panelSpinSupported(self) then
+      beginPanelDepartureSpin(self)
+      return
+    end
     startFade(self, "out", 0)
     return
   end
@@ -589,6 +741,10 @@ end
 -- choreography reaches it, not at transition start. wait_step advances the
 -- player's step and resolves done when the movement finished.
 local function advanceSourceChoreo(self)
+  if self.sourceChoreo == "panel_spin" then
+    advancePanelDepartureSpin(self)
+    return
+  end
   if self.sourceChoreo == "profile_motion" then
     if self.profileId == FieldTransitionProfile.ESCALATOR and not self.fadeStarted then
       local family = profileFamily(self)
@@ -679,6 +835,10 @@ end
 -- door: nothing to close, done), and wait_close resolves when the closing
 -- finished -- nil isFinished (static door) resolves immediately.
 local function advanceDestinationChoreo(self)
+  if self.destinationChoreo == "panel_spin" then
+    advancePanelArrivalSpin(self)
+    return
+  end
   if self.destinationChoreo == "profile_motion" then
     advanceProfileMotion(self)
     if not self.player or (self.player.motion ~= "transition" and self.player.motion ~= "walking") then
@@ -982,6 +1142,7 @@ local function advancePreviewArrival(self)
     assert(self.player and type(self.player.turn) == "function", "the preview arrival requires the player turn")
     self.player:turn("south")
     self.previewArrival = "done"
+    followerRejoin(self, "preview")
   end
   return advanced == true
 end
@@ -1135,6 +1296,7 @@ function FieldTransition:updateFixed(inputSnapshot)
       if self.onPanel then
         self.onPanel("enter")
       end
+      beginPanelArrivalSpin(self)
     elseif self.profileId then
       invokeProfile(self, "enter")
       local family = profileFamily(self)
