@@ -1,15 +1,16 @@
--- Profile-8 preview follower rejoin (retail MapPreviewGraphic_RunPlayerDropIn
--- states 4-5 in pret/pokeheartgold src/map_preview_graphic.c): when the
--- post-commit area preview carries a ladder-down arrival and a partner is
--- present, the transition rejoins the follower onto the player exactly once --
+-- Preview follower rejoin (retail MapPreviewGraphic_RunPlayerDropIn states
+-- 4-5 in pret/pokeheartgold src/map_preview_graphic.c, generalized to
+-- Portemon's uniform preview): when the post-commit area preview runs and a
+-- partner is present, the transition rejoins the follower exactly once --
 -- the MoveToPlayer + hide-until-step equivalent -- after the preview-owned
--- vertical return completes. The follower travels through the transition's
+-- vertical return completes for a ladder-down arrival, or at preview
+-- completion for any other profile, since the preview uniformly replaces
+-- the enter choreography. The follower travels through the transition's
 -- optional follower collaborator (the selectPreview injection pattern):
--- `{ isPresent, recall, rejoin }`. Absence, no present partner, and
--- non-ladder-down previews never rejoin. This reverses the approved
--- deviation that kept the follower cleared through the preview; the ball
--- rendering itself stays out of scope -- only hook invocation and ordering
--- are pinned here.
+-- `{ isPresent, recall, rejoin }`. Absence and no present partner never
+-- rejoin. This reverses the approved deviation that kept the follower
+-- cleared through the preview; the ball rendering itself stays out of
+-- scope -- only hook invocation and ordering are pinned here.
 
 local Assert = require("tests.support.Assert")
 local FieldTransition = require("libs.hgss.src.transition.FieldTransition")
@@ -188,13 +189,14 @@ function T.profile8_preview_never_rejoins_without_a_collaborator()
   Assert.deepEqual(world.rejoinCalls, {}, "no follower collaborator means no rejoin")
 end
 
-function T.non_ladder_down_preview_never_rejoins_a_present_follower()
+function T.non_ladder_down_preview_rejoins_the_present_follower_once_at_completion()
   local world = previewWorld({ followerPresent = true })
   startLadderDownPreview(world, FieldTransitionProfile.ORDINARY)
   driveToIdle(world)
 
   Assert.equal(world.transition.phase, "idle", "the ordinary preview completes")
-  Assert.deepEqual(world.rejoinCalls, {}, "only the ladder-down preview arrival rejoins the follower")
+  Assert.equal(#world.rejoinCalls, 1, "the general preview completion rejoins the follower exactly once")
+  Assert.equal(world.rejoinCalls[1].reason, "preview", "the rejoin carries the preview arrival reason")
 end
 
 return { tests = T }

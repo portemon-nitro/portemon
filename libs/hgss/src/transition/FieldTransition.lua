@@ -50,9 +50,11 @@
 -- ({ isPresent, recall, rejoin }) carries the ball recall and the arrival
 -- rejoin through presence-gated exactly-once hooks: recall at departure start,
 -- rejoin("panel") at arrival end, rejoin("preview") once the profile-8 preview
--- arrival completes. Absence or no present partner keeps current behavior.
--- No coordinator injects the collaborator yet: there is no hide-until-step
--- reveal owner, so wiring a hiding rejoin today would strand followers hidden.
+-- arrival completes or, for any other profile, once the preview itself
+-- completes. Absence or no present partner keeps current behavior. The
+-- coordinator injects the collaborator over the live following-mon
+-- controller; the controller's hide-until-step latch keeps the rejoined
+-- follower hidden and its trail-step observation owns the reveal.
 
 local WarpSystem = require("libs.hgss.src.transition.WarpSystem")
 local Errors = require("libs.errors.src.Errors")
@@ -1361,6 +1363,13 @@ function FieldTransition:updateSourceFrame()
     local preview = assert(self.preview, "an active preview substate owns its controller")
     preview:updateSourceFrame()
     if preview:isComplete() and previewArrivalReady(self) then
+      if self.previewArrival ~= "done" then
+        -- Non-profile-8 previews have no preview-owned arrival step, so the
+        -- completion itself rejoins: the preview uniformly replaces the
+        -- enter choreography, and the follower arrives hidden like retail
+        -- HideUntilStep. Profile-8 already rejoined at its arrival end.
+        followerRejoin(self, "preview")
+      end
       finish(self)
     end
     return true

@@ -368,6 +368,27 @@ function FieldWorldSwapCoordinator:createTransition(runtime, doorAt, escalatorAt
     assert(imageKey, "the listed destination has no preview image for time slot " .. tostring(slot))
     return { imageKey = imageKey, timeSlot = slot, profileId = profileId }
   end
+  -- The follower collaborator closes over the live following-mon controller
+  -- with a late read: the transition composes before the field services own
+  -- the controller, so presence/recall/rejoin resolve it at hook-fire time.
+  -- Presence reads the live party (the reconciled lead lags by a tick after
+  -- party changes), departure recalls through the instant recall hide, and
+  -- each arrival rejoins hidden on the player tile until the first trail
+  -- step reveals (retail MoveToPlayer + HideUntilStep with the trail-step
+  -- observation as the reveal owner).
+  local function followerPresent()
+    local followingMon = runtime.followingMon
+    return followingMon ~= nil and followingMon:isSourceActive()
+  end
+  local function followerRecall()
+    local followingMon = assert(runtime.followingMon, "follower recall implies the controller")
+    followingMon:hideForRecall()
+  end
+  local function followerRejoin(reason)
+    local followingMon = assert(runtime.followingMon, "follower rejoin implies the controller")
+    followingMon:rejoin(reason)
+  end
+  local follower = { isPresent = followerPresent, recall = followerRecall, rejoin = followerRejoin }
   return FieldTransition.new({
     loader = runtime.mapLoader,
     prepare = prepare,
@@ -383,6 +404,7 @@ function FieldWorldSwapCoordinator:createTransition(runtime, doorAt, escalatorAt
     cameraAdjust = cameraAdjust,
     onPanel = onPanel,
     selectPreview = selectPreview,
+    follower = follower,
   })
 end
 
