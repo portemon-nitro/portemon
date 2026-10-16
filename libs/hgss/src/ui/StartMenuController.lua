@@ -280,6 +280,12 @@ function StartMenuController:_reconcileShoesFocus()
   end
 end
 
+function StartMenuController:_playCursorEffect()
+  if self._effect then
+    self._effect("SEQ_SE_DP_SELECT")
+  end
+end
+
 function StartMenuController:_moveSelection(direction)
   assert(
     direction == "up" or direction == "down" or direction == "left" or direction == "right",
@@ -305,6 +311,7 @@ function StartMenuController:_moveSelection(direction)
       if self._selectedPosition == anchor then
         self._shoesFocused = true
         self._shoesAnchor = anchor
+        self:_playCursorEffect()
         return
       end
     end
@@ -312,6 +319,9 @@ function StartMenuController:_moveSelection(direction)
     assert(type(resolved) == "number" and resolved % 1 == 0, "start menu focus resolves to a source position")
     ---@cast resolved integer
     self._selectedPosition = resolved
+  end
+  if self._shoesFocused ~= wasShoesFocused or self._selectedPosition ~= beforePosition then
+    self:_playCursorEffect()
   end
   if not self._shoesFocused and (wasShoesFocused or self._selectedPosition ~= beforePosition) then
     self._focusShake = {
@@ -426,19 +436,7 @@ function StartMenuController:updateFixed(uiInput)
     elseif event.type == "pointer_cancel" then
       self:cancelPointerCapture()
     elseif event.type == "pointer_move" then
-      if self._pointerId == nil then
-        local shoes = self._runningShoes
-        local shoesState = self:_shoesState()
-        if shoes ~= nil and shoesState ~= nil and shoesState.visible and contains(shoes.hitRect, event.x, event.y) then
-          self._shoesFocused = true
-          self._shoesAnchor = self:_shoesIngress(shoes, self:_normalGraph())
-        else
-          local position = positionAt(positions, self._visibleActions, event.x, event.y)
-          if position ~= nil then
-            self:_selectPosition(position)
-          end
-        end
-      end
+      -- Hovering never moves focus; only presses and directional input do.
     elseif event.type == "pointer_down" then
       if self._pointerId == nil then
         assert(type(event.pointerId) == "string", "pointer down needs a pointer id")

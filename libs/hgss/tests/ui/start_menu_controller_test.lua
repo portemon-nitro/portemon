@@ -115,7 +115,9 @@ function T.running_shoes_are_dpad_focusable_and_confirm_without_leaving_the_menu
   end
   Assert.deepEqual(controller:status().runningShoes, { locked = false, focused = true })
   Assert.equal(port.toggles, 2, "each confirm toggles exactly once")
-  Assert.deepEqual(effects, { "SEQ_SE_DP_SELECT", "SEQ_SE_DP_SELECT" })
+  -- Four focus moves (right, down, down, right onto the shoes), then two toggles.
+  Assert.equal(#effects, 6)
+  Assert.equal(effects[6], "SEQ_SE_DP_SELECT")
   Assert.isNil(controller:takeResult(), "shoes confirmation does not launch or close")
   controller:updateFixed({ { type = "navigate", direction = "left" } })
   Assert.equal(controller:status().selectedPosition, 6, "left returns to the ingress action")
@@ -163,17 +165,17 @@ function T.hidden_shoes_clear_focus_before_the_next_confirm()
   }, "confirm falls back to the remembered normal action")
 end
 
-function T.pointer_hover_focuses_shoes_and_normal_hover_restores_action_focus()
+function T.pointer_move_never_changes_focus()
   local port = shoesPort(true)
   local controller = newController({ runningShoes = port })
   local shoesX, shoesY = rectCenter(SHOES_RECT)
-  controller:updateFixed({ { type = "pointer_move", x = shoesX, y = shoesY } })
-  Assert.isTrue(controller:status().runningShoes.focused)
-  Assert.equal(port.toggles, 0, "hover never toggles")
-  local actionX, actionY = rectCenter(POSITIONS.positions[4].hitRect)
-  controller:updateFixed({ { type = "pointer_move", x = actionX, y = actionY } })
+  controller:updateFixed({ { type = "pointer_move", pointerId = "mouse:1", x = shoesX, y = shoesY } })
   Assert.isFalse(controller:status().runningShoes.focused)
-  Assert.equal(controller:status().selectedPosition, 4)
+  Assert.equal(port.toggles, 0)
+  local x, y = rectCenter(POSITIONS.positions[4].hitRect)
+  controller:updateFixed({ { type = "pointer_move", pointerId = "mouse:1", x = x, y = y } })
+  Assert.equal(controller:status().selectedPosition, 0, "hovering an action does not select it")
+  Assert.isNil(controller:status().focusShake)
 end
 
 function T.running_shoes_touch_is_inert_outside_the_rect_or_while_hidden()
@@ -292,6 +294,20 @@ function T.selection_and_close_emit_source_effects()
   Assert.equal(effects[#effects], "SEQ_SE_GS_GEARCANCEL")
 end
 
+function T.directional_focus_changes_play_the_cursor_effect()
+  local effects = {}
+  local controller = newController({
+    effect = function(sequence)
+      effects[#effects + 1] = sequence
+    end,
+  })
+  controller:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.deepEqual(effects, { "SEQ_SE_DP_SELECT" })
+  local x, y = rectCenter(POSITIONS.positions[4].hitRect)
+  controller:updateFixed({ { type = "pointer_move", pointerId = "mouse:1", x = x, y = y } })
+  Assert.equal(#effects, 1, "hover is silent")
+end
+
 function T.selection_restores_by_remembered_action_id()
   local controller = newController({ rememberedActionId = "vanilla.bag" })
   Assert.equal(controller:status().selectedPosition, 2, "the remembered action restores its display position")
@@ -378,10 +394,6 @@ end
 
 function T.pointer_selection_never_shakes()
   local controller = newController()
-  local x, y = rectCenter(POSITIONS.positions[4].hitRect)
-  controller:updateFixed({ { type = "pointer_move", pointerId = "mouse:1", x = x, y = y } })
-  Assert.equal(controller:status().selectedPosition, 4, "hover selects the hovered position")
-  Assert.isNil(controller:status().focusShake, "hovering never shakes")
   local zeroX, zeroY = rectCenter(POSITIONS.positions[0].hitRect)
   controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = zeroX, y = zeroY } })
   controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = zeroX, y = zeroY } })
@@ -526,13 +538,6 @@ function T.take_result_is_exactly_once_and_terminal()
   Assert.equal(controller:status().open, false, "a terminal controller stays closed")
 end
 
-function T.pointer_hover_moves_selection_without_activating()
-  local controller = newController()
-  local x, y = rectCenter(POSITIONS.positions[4].hitRect)
-  controller:updateFixed({ { type = "pointer_move", pointerId = "mouse:1", x = x, y = y } })
-  Assert.equal(controller:status().selectedPosition, 4, "hover selects the hovered position")
-end
-
 function T.pointer_down_up_on_the_same_position_activates()
   local controller = newController()
   local x, y = rectCenter(POSITIONS.positions[4].hitRect)
@@ -620,7 +625,7 @@ end
 
 function T.pointer_press_outside_any_hit_rect_does_not_move_selection()
   local controller = newController()
-  controller:updateFixed({ { type = "pointer_move", pointerId = "mouse:1", x = 255, y = 191 } })
+  controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = 255, y = 191 } })
   Assert.equal(controller:status().selectedPosition, 0, "a point outside the hit regions changes nothing")
 end
 
@@ -635,8 +640,6 @@ function T.pointer_over_a_position_without_a_visible_action_changes_nothing()
     },
   })
   local x, y = rectCenter(POSITIONS.positions[5].hitRect)
-  controller:updateFixed({ { type = "pointer_move", pointerId = "mouse:1", x = x, y = y } })
-  Assert.equal(controller:status().selectedPosition, 0, "hovering an empty position must not move the selection")
   controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = x, y = y } })
   controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = x, y = y, dragged = false } })
   Assert.isNil(controller:takeResult(), "a press on an empty position must not activate anything")
@@ -808,8 +811,9 @@ function T.pointer_resolves_against_the_generated_touch_bounds()
   local controller = newInteractiveController({ entries = interactiveEntries() })
   for _, position in ipairs({ 0, 2, 5 }) do
     local x, y = hitCenter(INTERACTIVE.positions[position].hitRect)
-    controller:updateFixed({ { type = "pointer_move", pointerId = "mouse:1", x = x, y = y } })
-    Assert.equal(controller:status().selectedPosition, position, "hover selects generated position " .. position)
+    controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = x, y = y } })
+    Assert.equal(controller:status().selectedPosition, position, "press selects generated position " .. position)
+    controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = 0, y = 0, dragged = true } })
   end
 
   local press = newInteractiveController({ entries = interactiveEntries() })
@@ -827,7 +831,8 @@ end
 function T.disabled_visible_entries_select_but_never_activate()
   local controller = newInteractiveController({ entries = interactiveEntries() })
   local x, y = hitCenter(INTERACTIVE.positions[5].hitRect)
-  controller:updateFixed({ { type = "pointer_move", pointerId = "mouse:1", x = x, y = y } })
+  controller:updateFixed({ { type = "pointer_down", pointerId = "touch:1", x = x, y = y } })
+  controller:updateFixed({ { type = "pointer_up", pointerId = "touch:1", x = 0, y = 0, dragged = true } })
   Assert.equal(controller:status().selectedPosition, 5, "a disabled visible entry is selectable")
   controller:updateFixed({ { type = "confirm" } })
   Assert.isNil(controller:takeResult(), "confirming a disabled entry is a no-op")

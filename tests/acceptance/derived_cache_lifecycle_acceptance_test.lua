@@ -352,12 +352,14 @@ local function completeOak(game, oakState, onBlack)
       local view = oakState:view()
       if view.phase == "name_edit" then
         -- The current naming screen inserts typed glyphs and submits only
-        -- on Start; confirming a cell never submits.
+        -- on Start; confirming a cell never submits. The submit settles
+        -- only after its OK press plays out, so the game keeps ticking.
         if view.name ~= "GOLD" then
           game:textinput("GOLD")
         end
         game:gamepadpressed(JOYSTICK, "start")
         game:gamepadreleased(JOYSTICK, "start")
+        game:update(1 / 60)
       elseif OAK_INTERACTIVE[view.phase] then
         game:gamepadpressed(JOYSTICK, "a")
         game:gamepadreleased(JOYSTICK, "a")
