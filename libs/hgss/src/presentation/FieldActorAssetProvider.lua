@@ -226,6 +226,27 @@ local function billboardScales(visual)
   return scales
 end
 
+-- Borrow one actor atlas from the session image owner under the atlas's
+-- immutable sampler state (point-sampled, clamped like the private path).
+-- Actor loads are synchronous, so a still-pending classification spins
+-- here; predicted actor interest should already have warmed it.
+local function acquireSharedAtlas(images, path)
+  local token =
+    images:request(path, { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }, "demand")
+  local status, failure = images:poll(token)
+  while status == "pending" do
+    status, failure = images:poll(token)
+  end
+  if status ~= "ready" then
+    Errors.raise(
+      FieldErrors.FIELD_ACTOR_ATLAS_MISSING,
+      "shared atlas missing for " .. path .. ": " .. tostring(failure),
+      { path = path }
+    )
+  end
+  return images:acquire(token)
+end
+
 local function load(self, spriteId)
   -- A session image owner lends the atlas Image for this visual identity:
   -- the entry holds the lease while it is referenced or idle-ringed and
@@ -282,6 +303,27 @@ local function load(self, spriteId)
       "atlas missing for spriteId " .. spriteId .. ": " .. visual.render.image,
       { spriteId = spriteId, path = visual.render.image }
     )
+  end
+  -- A session image owner lends the atlas Image for this visual identity:
+  -- the entry holds the lease while it is referenced or idle-ringed and
+  -- returns it with the entry's meshes on eviction. Actor lookup,
+  -- reference, and idle-ring semantics are unchanged.
+  if self._imageAssets ~= nil then
+    local lease = acquireSharedAtlas(assert(self._imageAssets), visual.render.image)
+    entry.imageLease = lease
+    entry.image = lease.image
+    local ok, err = pcall(function()
+      entry.quads = buildQuads(self, visual, entry.image:getWidth(), entry.image:getHeight())
+      entry.meshes = FieldActorMesh.build(self._graphics, visual)
+    end)
+    if not ok then
+      self._imageAssets:release(lease)
+      entry.imageLease, entry.image = nil, nil
+      FieldActorMesh.release(entry.meshes)
+      error(err, 0)
+    end
+    self._stats.loads = self._stats.loads + 1
+    return entry
   end
   local ok, err = pcall(function()
     entry.image = self._graphics.newImage(love.filesystem.newFileData(data, visual.render.image))
