@@ -7,26 +7,18 @@ WaveOutPlayer.__index = WaveOutPlayer
 ---@field channel integer
 ---@field generation integer
 ---@field mixerHandle { channel: integer, generation: integer }
----@field sample { metadata: table<string, unknown>, pcm: integer[] }
+---@field sample { metadata: table<string, unknown>, pcm: Pcm16 }
 
 ---@class WaveOutPlayer
 ---@field private _mixer VoiceMixer
 ---@field private _handles table<WaveOutHandle, WaveOutHandle>
 ---@field new fun(opts: { mixer: VoiceMixer }): WaveOutPlayer
----@field start fun(self: WaveOutPlayer, channel: integer, sample: { metadata: table<string, unknown>, pcm: integer[] }, options: { volume: integer, pan: integer, speed: integer, reverse: boolean }): WaveOutHandle?
+---@field start fun(self: WaveOutPlayer, channel: integer, sample: { metadata: table<string, unknown>, pcm: Pcm16 }, options: { volume: integer, pan: integer, speed: integer, reverse: boolean }): WaveOutHandle?
 ---@field isPlaying fun(self: WaveOutPlayer, handle: WaveOutHandle): boolean
 ---@field setVolume fun(self: WaveOutPlayer, handle: WaveOutHandle, volume: integer)
 ---@field setPan fun(self: WaveOutPlayer, handle: WaveOutHandle, pan: integer)
 ---@field setSpeed fun(self: WaveOutPlayer, handle: WaveOutHandle, speed: integer)
 ---@field stop fun(self: WaveOutPlayer, handle: WaveOutHandle)
-
-local function copySample(sample)
-  local pcm = {}
-  for index = #sample.pcm, 1, -1 do
-    pcm[#pcm + 1] = sample.pcm[index]
-  end
-  return { metadata = sample.metadata, pcm = pcm }
-end
 
 local function validHandle(self, handle)
   return type(handle) == "table" and self._handles[handle] ~= nil
@@ -41,14 +33,16 @@ function WaveOutPlayer:start(channel, sample, options)
   assert(channel == 14 or channel == 15, "WaveOut channel must be 14 or 15")
   assert(sample and sample.metadata and sample.pcm, "WaveOut requires a sample")
   assert(options and options.reverse ~= nil, "WaveOut options are required")
-  local playbackSample = options.reverse and copySample(sample) or sample
+  -- The provider sample is borrowed unchanged: reversal is a logical
+  -- voice flag indexing the whole buffer backwards, never a second copy.
   local mixerHandle = self._mixer:waveOn({
     channel = channel,
-    pcm = playbackSample.pcm,
-    metadata = playbackSample.metadata,
+    pcm = sample.pcm,
+    metadata = sample.metadata,
     volume = options.volume,
     pan = options.pan,
     speed = options.speed,
+    reverse = options.reverse,
   })
   if mixerHandle == nil then
     return nil
@@ -57,7 +51,7 @@ function WaveOutPlayer:start(channel, sample, options)
     channel = mixerHandle.channel,
     generation = mixerHandle.generation,
     mixerHandle = mixerHandle,
-    sample = playbackSample,
+    sample = sample,
   } ---@type WaveOutHandle
   self._handles[handle] = handle
   return handle

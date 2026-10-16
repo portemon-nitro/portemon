@@ -9,7 +9,7 @@
 -- is deliberately absent -- there is no runtime mod-injection path that
 -- bypasses the builder. Missing or unreadable artifacts are still structured
 -- failures, never silence. Samples arrive as metadata plus the
--- provider-decoded PCM array, decoded exactly once per key and shared across
+-- packed PCM16 sample, packed exactly once per key and shared across
 -- consumers. Loading policy: index eager; sequence/bank/sample descriptors
 -- lazy + memoized, loaded assets stay cached for the process lifetime. It is
 -- the only module that reads the audio cache: it never parses SDAT/SSEQ and
@@ -21,6 +21,7 @@ local Errors = require("libs.errors.src.Errors")
 local AudioErrors = require("libs.hgss.src.audio.AudioErrors")
 local AssetErrors = require("libs.assets.src.audio.AudioErrors")
 local AudioCache = require("libs.assets.src.audio.AudioCache")
+local Pcm16 = require("libs.nds.src.nitro.sound.Pcm16")
 
 ---@class AudioAssetProvider
 ---@field private _cacheFs CacheFs
@@ -32,7 +33,7 @@ local AudioCache = require("libs.assets.src.audio.AudioCache")
 ---@field sequence fun(self: AudioAssetProvider, idOrSymbol: integer|string): table<string, unknown>
 ---@field bank fun(self: AudioAssetProvider, idOrSymbol: integer|string): table<string, unknown>
 ---@field player fun(self: AudioAssetProvider, id: integer): table<string, unknown>
----@field loadSample fun(self: AudioAssetProvider, key: string): { metadata: table<string, unknown>, pcm: integer[] }
+---@field loadSample fun(self: AudioAssetProvider, key: string): { metadata: table<string, unknown>, pcm: Pcm16 }
 
 local AudioAssetProvider = {}
 AudioAssetProvider.__index = AudioAssetProvider
@@ -152,27 +153,11 @@ function AudioAssetProvider:player(id)
   return player
 end
 
--- Decodes the PCM16LE payload into the shared 1-based int16 sample array.
----@param bytes string
----@return integer[]
-local function decodePcm(bytes)
-  local samples = {}
-  for index = 0, #bytes / 2 - 1 do
-    local low = bytes:byte(index * 2 + 1)
-    local high = bytes:byte(index * 2 + 2)
-    local value = low + high * 256
-    if value >= 32768 then
-      value = value - 65536
-    end
-    samples[index + 1] = value
-  end
-  return samples
-end
-
--- Loads a sample's metadata and decoded PCM array by content key, memoized.
--- Both files must exist; a missing or unreadable file is
--- AUDIO_PROVIDER_SAMPLE_UNKNOWN. The decoded array is created once per key
--- and shared (consumers must not mutate it).
+-- Loads a sample's metadata and packed PCM16 sample by content key, memoized.
+-- Both files must exist and the payload must hold a non-empty even byte
+-- count; a missing, unreadable, or malformed artifact is
+-- AUDIO_PROVIDER_SAMPLE_UNKNOWN. The packed sample is created once per key
+-- and shared (consumers borrow it; they must not mutate or copy it).
 function AudioAssetProvider:loadSample(key)
   local sample = self._samples[key]
   if sample ~= nil then
@@ -183,12 +168,14 @@ function AudioAssetProvider:loadSample(key)
     Errors.raise(AudioErrors.AUDIO_PROVIDER_SAMPLE_UNKNOWN, "no audio sample metadata for key " .. key, { key = key })
   end
   local bytes = self._cacheFs:read(AudioCache.samplePath(key))
-  if bytes == nil then
+  if type(bytes) ~= "string" or #bytes == 0 or #bytes % 2 ~= 0 then
     Errors.raise(AudioErrors.AUDIO_PROVIDER_SAMPLE_UNKNOWN, "no audio sample payload for key " .. key, { key = key })
   end
+  local pcm = Pcm16.fromBytes(bytes --[[@as string]])
+  assert(metadata.frames == pcm.frames, "sample metadata frame count must match the packed payload")
   sample = {
     metadata = metadata,
-    pcm = decodePcm(bytes --[[@as string]]),
+    pcm = pcm,
   }
   self._samples[key] = sample
   return sample

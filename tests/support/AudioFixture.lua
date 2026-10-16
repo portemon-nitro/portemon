@@ -12,6 +12,7 @@
 local AudioCache = require("libs.assets.src.audio.AudioCache")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
+local Pcm16 = require("libs.nds.src.nitro.sound.Pcm16")
 
 local AudioFixture = {}
 
@@ -102,6 +103,15 @@ local AudioFixture = {}
 -- ever valid.
 function AudioFixture.key(n)
   return string.format("%040x", n)
+end
+
+-- Packs explicit int16 samples into the shared immutable packed shape that
+-- mixer voices borrow: the samples go through pcm16le bytes, then one FFI
+-- copy owns the single backing.
+---@param samples integer[]
+---@return Pcm16
+function AudioFixture.packed(samples)
+  return Pcm16.fromBytes(AudioFixture.pcm16le(samples))
 end
 
 -- Encodes signed int16 samples as little-endian PCM16LE bytes.

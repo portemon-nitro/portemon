@@ -33,7 +33,6 @@ end
 local function buildBundle(sequences)
   local keyA = AudioFixture.key(1)
   local bundle = AudioFixture.bundle()
-  ---@cast bundle +{ samples: table<string, integer[]> }
   local indexSequences, indexPlayers, sequenceBySymbol = {}, {}, {}
   for id, sequence in pairs(sequences) do
     indexSequences[id] = { id = id, symbol = sequence.symbol, bankId = sequence.bankId, playerId = sequence.player.id }
@@ -48,7 +47,7 @@ local function buildBundle(sequences)
   bundle.sequences = sequences
   bundle.banks = { [12] = AudioFixture.bank(12, "BANK_TEST") }
   bundle.samples = {
-    [keyA] = { 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000 },
+    [keyA] = AudioFixture.pcm16le({ 1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000 }),
   }
   bundle.sampleMetadata = {
     [keyA] = AudioFixture.sampleMetadata(keyA, { frames = 8, loop = { startFrame = 0, endFrame = 8 } }),

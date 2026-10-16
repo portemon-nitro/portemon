@@ -1,5 +1,7 @@
 -- Test-only normalized sound provider for NDS player tests.
 
+local Pcm16 = require("libs.nds.src.nitro.sound.Pcm16")
+
 local TestProvider = {}
 
 ---@param bundle table
@@ -19,7 +21,7 @@ function TestProvider.new(bundle)
     loadSample = function(_, key)
       return {
         metadata = assert(bundle.sampleMetadata[key]),
-        pcm = assert(bundle.samples[key]),
+        pcm = Pcm16.fromBytes(assert(bundle.samples[key])),
       }
     end,
   }

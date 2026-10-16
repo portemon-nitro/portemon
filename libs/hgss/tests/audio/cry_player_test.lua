@@ -4,6 +4,7 @@
 -- production composition injects.
 
 local Assert = require("tests.support.Assert")
+local AudioFixture = require("tests.support.AudioFixture")
 local AudioErrors = require("libs.hgss.src.audio.AudioErrors")
 local Errors = require("libs.errors.src.Errors")
 local CryPlayer = require("libs.hgss.src.audio.CryPlayer")
@@ -191,7 +192,7 @@ local function newPatternRecordingCry()
   local sampleKey = "cry-species-183"
   local sample = {
     metadata = { frames = 4, baseTimer = 8006, loopEnabled = false, loop = { startFrame = 0, endFrame = 4 } },
-    pcm = { 101, 202, 303, 404 },
+    pcm = AudioFixture.packed({ 101, 202, 303, 404 }),
   }
   local sequence = {
     id = 2,
@@ -276,19 +277,14 @@ local function newPatternRecordingCry()
   ---@cast player SequencePlayer
 
   local waveOut = {
+    -- The recording WaveOut mirrors the production borrow contract: the
+    -- provider sample passes through unchanged and reversal rides the
+    -- logical flag, never a second buffer.
     start = function(_, channel, resolvedSample, options)
-      local playbackSample = resolvedSample
-      if options.reverse then
-        local reversed = {}
-        for index = #resolvedSample.pcm, 1, -1 do
-          reversed[#reversed + 1] = resolvedSample.pcm[index]
-        end
-        playbackSample = { metadata = resolvedSample.metadata, pcm = reversed }
-      end
       local handle = {
         kind = "wave",
         channel = channel,
-        sample = playbackSample,
+        sample = resolvedSample,
         volume = options.volume,
         pan = options.pan,
         speed = options.speed,
@@ -397,9 +393,13 @@ function T.complex_patterns_keep_their_source_voice_families_and_controls()
         playing = true,
       },
     }, "pattern 4 uses both fixed WaveOut channels with reversed samples")
-    Assert.isFalse(state.waveStarts[1].sample == state.waveStarts[2].sample, "each wave owns its playback buffer")
-    Assert.deepEqual(state.waveStarts[1].sample.pcm, { 404, 303, 202, 101 }, "pattern 4 reverses a private sample")
-    Assert.deepEqual(state.sourceSample.pcm, { 101, 202, 303, 404 }, "the cached sample stays unchanged")
+    Assert.isTrue(state.waveStarts[1].sample == state.sourceSample, "pattern 4 borrows the provider sample")
+    Assert.isTrue(state.waveStarts[2].sample == state.sourceSample, "every wave shares the one borrowed sample")
+    local stored = {}
+    for index = 0, state.sourceSample.pcm.frames - 1 do
+      stored[#stored + 1] = state.sourceSample.pcm:read(index)
+    end
+    Assert.deepEqual(stored, { 101, 202, 303, 404 }, "the cached sample stays unchanged")
   end)
 
   recordPatternFailure(failures, 9, function()

@@ -290,18 +290,22 @@ function T.tests.audio_retained_bytes_count_unique_sample_keys_once()
   local sampleB = provider:loadSample(keyB)
   local secondA = provider:loadSample(keyA)
   Assert.isTrue(firstA ~= sampleB, "distinct content keys load distinct sample objects")
-  Assert.isTrue(secondA == firstA, "a repeated key shares the decoded array instead of decoding twice")
-  Assert.equal(#firstA.pcm, firstA.metadata.frames, "frame totals come from metadata, not payload length alone")
+  Assert.isTrue(secondA == firstA, "a repeated key shares the packed sample instead of packing twice")
+  Assert.equal(firstA.pcm.frames, firstA.metadata.frames, "frame totals come from the packed count")
   Assert.equal(firstA.metadata.frames, 4, "the first fixture sample holds four frames")
   Assert.isTrue(firstA.metadata.loopEnabled, "the first fixture sample is the looped representative")
-  Assert.deepEqual(sampleB.pcm, { 5000, 6000 }, "the second fixture sample decodes exactly")
-  Assert.equal(#sampleB.pcm, sampleB.metadata.frames, "every key carries its own frame total")
+  local secondFrames = {}
+  for index = 0, sampleB.pcm.frames - 1 do
+    secondFrames[#secondFrames + 1] = sampleB.pcm:read(index)
+  end
+  Assert.deepEqual(secondFrames, { 5000, 6000 }, "the second fixture sample packs exactly")
+  Assert.equal(sampleB.pcm.frames, sampleB.metadata.frames, "every key carries its own frame total")
   local seen, uniqueFrames, uniqueBytes = {}, 0, 0
   for _, sample in ipairs({ firstA, sampleB, secondA }) do
     if not seen[sample] then
       seen[sample] = true
-      uniqueFrames = uniqueFrames + #sample.pcm
-      uniqueBytes = uniqueBytes + #sample.pcm * 2
+      uniqueFrames = uniqueFrames + sample.pcm.frames
+      uniqueBytes = uniqueBytes + sample.pcm.frames * 2
     end
   end
   Assert.equal(uniqueFrames, 6, "two unique keys hold six frames despite three loads")
@@ -321,10 +325,18 @@ function T.tests.provider_decoded_pcm_fingerprints_pin_the_pre_change_storage()
   local provider = AudioAssetProvider.new(AudioFixture.readyCache(bundle))
   local looped = provider:loadSample(AudioFixture.key(1))
   local oneShot = provider:loadSample(oneShotKey)
-  Assert.deepEqual(oneShot.pcm, { 7000, -8000, 9000, -10000 }, "the one-shot representative decodes exactly")
+  local oneShotFrames = {}
+  for index = 0, oneShot.pcm.frames - 1 do
+    oneShotFrames[#oneShotFrames + 1] = oneShot.pcm:read(index)
+  end
+  Assert.deepEqual(oneShotFrames, { 7000, -8000, 9000, -10000 }, "the one-shot representative packs exactly")
   Assert.isFalse(oneShot.metadata.loopEnabled, "the one-shot representative carries no loop")
-  Assert.equal(fingerprint16(looped.pcm), 1040540112, "looped-sample storage fingerprint")
-  Assert.equal(fingerprint16(oneShot.pcm), 1209848112, "one-shot storage fingerprint")
+  local loopedFrames = {}
+  for index = 0, looped.pcm.frames - 1 do
+    loopedFrames[#loopedFrames + 1] = looped.pcm:read(index)
+  end
+  Assert.equal(fingerprint16(loopedFrames), 1040540112, "looped-sample storage fingerprint")
+  Assert.equal(fingerprint16(oneShotFrames), 1209848112, "one-shot storage fingerprint")
 
   local mixer = VoiceMixer.new({ sampleRate = 48000 })
   local wave = WaveOutPlayer.new({ mixer = mixer })
@@ -335,13 +347,18 @@ function T.tests.provider_decoded_pcm_fingerprints_pin_the_pre_change_storage()
   local backwardHandle = wave:start(15, looped, { volume = 127, pan = 64, speed = 8006, reverse = true })
   Assert.notNil(backwardHandle, "the reversed cry starts on its fixed channel")
   local backward = backwardHandle.sample
+  Assert.isTrue(backward == looped, "the reversed cry borrows the stored sample without copying")
   local expectedReverse = {}
-  for index = #looped.pcm, 1, -1 do
-    expectedReverse[#expectedReverse + 1] = looped.pcm[index]
+  for index = looped.pcm.frames - 1, 0, -1 do
+    expectedReverse[#expectedReverse + 1] = looped.pcm:read(index)
   end
-  Assert.deepEqual(backward.pcm, expectedReverse, "the reversed cry indexes the whole stored buffer backwards")
-  Assert.isTrue(backward.metadata == looped.metadata, "reversal shares metadata and copies only samples")
-  Assert.equal(fingerprint16(backward.pcm), 1130840112, "reversed-cry storage fingerprint")
+  local backwardFrames = {}
+  for index = 0, backward.pcm.frames - 1 do
+    backwardFrames[#backwardFrames + 1] = backward.pcm:read(index)
+  end
+  Assert.deepEqual(backwardFrames, loopedFrames, "the stored buffer itself is never rewritten")
+  Assert.isTrue(backward.metadata == looped.metadata, "reversal shares metadata and borrows the sample")
+  Assert.equal(fingerprint16(expectedReverse), 1130840112, "reversed-cry storage fingerprint")
 
   mixer:controlStep()
   local overlap = mixer:render(64)

@@ -4,9 +4,9 @@
 -- loads sequence/bank/sample assets lazily and memoized. The cache is a
 -- trusted runtime input (the readiness walk validates the whole cache at
 -- build time), so load-time content re-validation is not part of the
--- provider contract -- missing or unreadable files are, and stay structured
--- failures. Samples arrive as metadata plus the provider-decoded PCM array,
--- decoded exactly once per key. The contract is authored against
+-- provider contract -- missing, unreadable, or malformed files are, and stay
+-- structured failures. Samples arrive as metadata plus one packed PCM16
+-- sample, packed exactly once per key. The contract is authored against
 -- hand-written project-owned synthetic assets; nothing
 -- here touches a ROM. Loading policy: index eager, sequence/bank/
 -- sample descriptors lazy + memoized, loaded assets stay cached for the
@@ -109,7 +109,12 @@ function T.samples_load_by_content_key_with_metadata_and_decoded_pcm()
   local sample = p:loadSample(key)
   Assert.equal(sample.metadata.key, key)
   Assert.equal(sample.metadata.schema, AudioCache.SAMPLE_SCHEMA)
-  Assert.deepEqual(sample.pcm, { 1000, 2000, 3000, 4000 }, "the provider hands over the decoded PCM array")
+  Assert.equal(sample.pcm.frames, 4, "the packed sample counts frames, not array length")
+  local frames = {}
+  for index = 0, sample.pcm.frames - 1 do
+    frames[#frames + 1] = sample.pcm:read(index)
+  end
+  Assert.deepEqual(frames, { 1000, 2000, 3000, 4000 }, "the provider hands over the packed PCM sample")
 end
 
 function T.unknown_sample_keys_and_missing_payloads_fail()
@@ -148,7 +153,7 @@ function T.loading_is_lazy_and_memoized()
   local key = AudioFixture.key(1)
   local first = p:loadSample(key)
   local second = p:loadSample(key)
-  Assert.equal(type(first.pcm), "table", "the provider decodes the payload once")
+  Assert.equal(type(first.pcm), "table", "the provider packs the payload once")
   Assert.isTrue(second.pcm == first.pcm, "the decoded array is shared; loading twice decodes once")
   Assert.equal(count(AudioCache.sampleMetadataPath(key)), 1, "sample metadata is read once")
   Assert.equal(count(AudioCache.samplePath(key)), 1, "the PCM payload is read once")

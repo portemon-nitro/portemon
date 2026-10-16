@@ -40,9 +40,11 @@
 -- control step; rendering is independent of chunk size.
 --
 -- The voice/spec shapes follow the agreed contracts: voice = {generator,
--- originalKey, envelope, pan}; the sample voice spec = {pcm, baseTimer,
--- loop, loopEnabled} -- no source sample rate (playback derives from the DS
--- clock and the calculated timer). Every expected value below is a known
+-- originalKey, envelope, pan}; the sample voice spec = {packed pcm,
+-- baseTimer, loop, loopEnabled} -- no source sample rate (playback derives
+-- from the DS clock and the calculated timer). Inline number waves pack
+-- into the shared immutable shape at the spec boundary, so no production
+-- path ever indexes a Lua array. Every expected value below is a known
 -- vector transcribed from the SDK sources or the NDS ARM7 BIOS tables
 -- (getpitchtbl/getvoltbl hardware dumps); the tests never reimplement the
 -- SDK algorithms.
@@ -102,6 +104,9 @@ local function spec(overrides)
   }
   for key, value in pairs(overrides or {}) do
     s[key] = value
+  end
+  if type(s.pcm) == "table" and s.pcm.frames == nil then
+    s.pcm = AudioFixture.packed(s.pcm)
   end
   return s
 end

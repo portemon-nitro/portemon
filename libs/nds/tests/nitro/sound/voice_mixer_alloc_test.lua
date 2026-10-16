@@ -103,6 +103,9 @@ local function spec(overrides)
   for key, value in pairs(overrides or {}) do
     s[key] = value
   end
+  if type(s.pcm) == "table" and s.pcm.frames == nil then
+    s.pcm = AudioFixture.packed(s.pcm)
+  end
   return s
 end
 

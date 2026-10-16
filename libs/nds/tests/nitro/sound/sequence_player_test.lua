@@ -149,7 +149,6 @@ local function buildBundle(sequences, opts)
   local keyA, keyB, keyC = AudioFixture.key(1), AudioFixture.key(2), AudioFixture.key(3)
   local WAVE_C = { 500, 1000, 1500, 2000, 2500, 3000 }
   local bundle = AudioFixture.bundle()
-  ---@cast bundle +{ samples: table<string, integer[]> }
   local indexSequences, indexPlayers, sequenceBySymbol = {}, {}, {}
   for id, sequence in pairs(sequences) do
     indexSequences[id] = {
@@ -173,9 +172,9 @@ local function buildBundle(sequences, opts)
   bundle.sequences = sequences
   bundle.banks = { [12] = opts.bank or testBank() }
   bundle.samples = {
-    [keyA] = opts.sampleA or WAVE_A,
-    [keyB] = WAVE_B,
-    [keyC] = WAVE_C,
+    [keyA] = AudioFixture.pcm16le(opts.sampleA or WAVE_A),
+    [keyB] = AudioFixture.pcm16le(WAVE_B),
+    [keyC] = AudioFixture.pcm16le(WAVE_C),
   }
   bundle.sampleMetadata = {
     [keyA] = opts.sampleAMetadata
@@ -1663,7 +1662,11 @@ function T.note_spec_carries_the_semantic_mixer_contract()
   Assert.equal(#mixer.log.noteOns, 1, "one note, one voice command")
   local spec = mixer.log.noteOns[1]
   Assert.deepEqual(spec.generator, { kind = "sample", sample = AudioFixture.key(1) })
-  Assert.deepEqual(spec.pcm, WAVE_A, "the mixer receives the provider-decoded PCM array")
+  local frames = {}
+  for index = 0, spec.pcm.frames - 1 do
+    frames[#frames + 1] = spec.pcm:read(index)
+  end
+  Assert.deepEqual(frames, WAVE_A, "the mixer receives the provider-packed PCM sample")
   Assert.deepEqual(spec.loop, { startFrame = 0, endFrame = 8 })
   Assert.equal(spec.loopEnabled, true, "the mixer receives the wave's loop flag")
   Assert.equal(spec.baseTimer, 8006, "the mixer receives the wave's DS base timer")

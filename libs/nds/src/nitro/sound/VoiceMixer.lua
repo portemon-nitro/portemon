@@ -77,6 +77,7 @@ local NnsSoundMath = require("libs.nds.src.nitro.sound.NnsSoundMath")
 ---@field advanceTrackTick fun(self: VoiceMixer, handle: { channel: integer, generation: integer })
 ---@field retargetTiedVoice fun(self: VoiceMixer, handle: { channel: integer, generation: integer }, spec: table<string, unknown>)
 ---@field isVoiceAlive fun(self: VoiceMixer, handle: { channel: integer, generation: integer }): boolean
+---@field isSampleActive fun(self: VoiceMixer, sampleRef: table<string, unknown>): boolean
 ---@field controlStep fun(self: VoiceMixer)
 ---@field renderInto fun(self: VoiceMixer, out: integer[], frames: integer)
 ---@field render fun(self: VoiceMixer, frames: integer): integer[]
@@ -320,11 +321,14 @@ local function newVoice(spec)
     fixedTimer = spec.fixedTimer,
   }
   if generator.kind == "sample" then
-    -- The spec carries the provider-decoded PCM array (shared, immutable);
-    -- the mixer never decodes payload bytes. The base timer and the
-    -- calculated channel timer drive the phase; no source sample rate is
-    -- involved.
-    voice.pcm = spec.pcm
+    -- The spec carries the packed sample (shared, immutable); the mixer
+    -- borrows it through the pre-cast pointer and never decodes payload
+    -- bytes. The base timer and the calculated channel timer drive the
+    -- phase; no source sample rate is involved.
+    voice.sampleRef = spec.sampleRef or spec.pcm
+    voice.samplePtr = spec.pcm.ptr
+    voice.sampleFrames = spec.sampleFrames or spec.pcm.frames
+    voice.reverse = spec.reverse == true
     voice.baseTimer = spec.baseTimer
     voice.pos = 0
     voice.loop = spec.loop
@@ -526,7 +530,12 @@ local function sampleAt(voice)
     if voice.physicalInactive then
       return 0
     end
-    local sample = voice.pcm[math.floor(voice.pos) + 1]
+    local frame = math.floor(voice.pos)
+    if voice.reverse then
+      frame = voice.sampleFrames - 1 - frame
+    end
+    assert(frame >= 0 and frame < voice.sampleFrames, "sample read past the packed buffer")
+    local sample = tonumber(voice.samplePtr[frame]) --[[@as integer]]
     voice.pos = voice.pos + voice.ratio
     if voice.pos >= voice.loop.endFrame then
       if voice.loopEnabled then
@@ -614,6 +623,10 @@ function VoiceMixer:noteOn(spec)
       spec.pcm ~= nil and spec.baseTimer ~= nil and spec.loop ~= nil,
       "sample voice spec requires pcm/baseTimer/loop"
     )
+    assert(
+      type(spec.pcm.frames) == "number" and spec.pcm.ptr ~= nil,
+      "sample voice spec requires a packed PCM16 sample"
+    )
     assert(type(spec.loopEnabled) == "boolean", "sample voice spec requires the wave's loop flag")
   end
   local voice = newVoice(spec)
@@ -634,11 +647,11 @@ end
 
 -- Starts a raw WaveOut-style sample on a fixed channel through the same
 -- generation/liveness table used by sequence voices.
----@param spec { channel: integer, pcm: integer[], metadata: table<string, unknown>, volume: integer, pan: integer, speed: integer }
+---@param spec { channel: integer, pcm: Pcm16, metadata: table<string, unknown>, volume: integer, pan: integer, speed: integer, reverse: boolean? }
 ---@return { channel: integer, generation: integer } | nil
 function VoiceMixer:waveOn(spec)
   assert(spec and (spec.channel == 14 or spec.channel == 15), "WaveOut channel must be 14 or 15")
-  assert(type(spec.pcm) == "table" and type(spec.metadata) == "table", "WaveOut requires sample data")
+  assert(spec.pcm ~= nil and type(spec.metadata) == "table", "WaveOut requires sample data")
   assert(spec.volume >= 0 and spec.volume <= 127 and spec.volume % 1 == 0, "WaveOut volume must be 0..127")
   assert(spec.pan >= 0 and spec.pan <= 127 and spec.pan % 1 == 0, "WaveOut pan must be 0..127")
   assert(spec.speed > 0 and spec.speed <= 0xFFFF and spec.speed % 1 == 0, "WaveOut speed must be a timer")
@@ -649,6 +662,9 @@ function VoiceMixer:waveOn(spec)
     fixedTimer = spec.speed,
     generator = { kind = "sample", sample = "waveout" },
     pcm = spec.pcm,
+    sampleRef = spec.pcm,
+    sampleFrames = spec.pcm.frames,
+    reverse = spec.reverse == true,
     baseTimer = spec.speed,
     loop = loop,
     loopEnabled = false,
@@ -808,6 +824,23 @@ end
 function VoiceMixer:isVoiceAlive(handle)
   local voice = self._channels[handle.channel]
   return voice ~= nil and voice.generation == handle.generation and not voice.dead
+end
+
+-- Answers whether a packed sample still sounds on any of the 16 channels:
+-- a fixed identity scan for idle eviction only, never in the render loop.
+---@param sampleRef table<string, unknown>
+---@return boolean
+function VoiceMixer:isSampleActive(sampleRef)
+  if sampleRef == nil then
+    return false
+  end
+  for channel = 0, CHANNEL_COUNT - 1 do
+    local voice = self._channels[channel]
+    if voice ~= nil and voice.sampleRef == sampleRef then
+      return true
+    end
+  end
+  return false
 end
 
 -- One externally driven channel-control step (SND_ExChannelMain(step =

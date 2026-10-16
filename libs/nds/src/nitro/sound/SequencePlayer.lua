@@ -119,7 +119,7 @@ local bit = require("bit")
 
 ---@class NdsSoundProvider
 ---@field player fun(self: NdsSoundProvider, id: integer): table<string, unknown>
----@field loadSample fun(self: NdsSoundProvider, key: string): { metadata: table<string, unknown>, pcm: integer[] }
+---@field loadSample fun(self: NdsSoundProvider, key: string): { metadata: table<string, unknown>, pcm: Pcm16 }
 
 ---@class SequencePlayer
 ---@field private _sampleRate integer
@@ -605,6 +605,8 @@ local function startNote(provider, mixer, instance, track, midiKey, velocity, le
     local sample = provider:loadSample(voice.generator.sample)
     spec.baseTimer = sample.metadata.baseTimer
     spec.pcm = sample.pcm
+    spec.sampleRef = sample.pcm
+    spec.sampleFrames = sample.pcm.frames
     spec.loop = sample.metadata.loop
     spec.loopEnabled = sample.metadata.loopEnabled
   end
