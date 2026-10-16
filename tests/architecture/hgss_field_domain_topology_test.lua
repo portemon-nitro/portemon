@@ -112,6 +112,9 @@ local FIELD_COORDINATION = {
   "PokemonCenterHealFlow",
   "PartyActions",
   "PcStorageActions",
+  -- The shared byte-counted idle lease kernel behind the audio and image
+  -- pools: a field-coordination mechanism with no narrower domain owner.
+  "ResidentAssetCache",
 }
 
 local PRESENTATION = { "BillboardTransform" }

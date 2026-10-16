@@ -174,4 +174,79 @@ function T.missing_or_malformed_index_fails_construction()
   end)
 end
 
+-- Idle retention for decoded samples: the shared lease kernel holds one entry
+-- per sample key at its real packed byte cost, the mixer liveness query
+-- shields the sounding sample through a zero-byte idle budget, and the
+-- shielded voice still renders its exact frames. Stopping the voice lifts the
+-- shield so the next trim takes the sample, while the provider keeps serving
+-- its one packed backing per key instead of decoding a duplicate. The kernel
+-- module is required lazily so this scenario fails on the missing ownership
+-- behavior rather than failing the suite load.
+function T.active_samples_survive_a_zero_idle_budget_and_reload_after_stop()
+  local ok, ResidentAssetCache = pcall(require, "libs.hgss.src.field.ResidentAssetCache")
+  Assert.isTrue(
+    ok and type(ResidentAssetCache) == "table",
+    "bounded sample retention needs the shared idle lease kernel"
+  )
+  local VoiceMixer = require("libs.nds.src.nitro.sound.VoiceMixer")
+  local p = provider(AudioFixture.bundle())
+  local firstKey = AudioFixture.key(1)
+  local secondKey = AudioFixture.key(2)
+  local first = p:loadSample(firstKey)
+  local second = p:loadSample(secondKey)
+  Assert.isNil(first.pcm[1], "a retained sample is a packed buffer, never a one-based frame table")
+  Assert.equal(first.pcm.frames, 4, "the first fixture sample carries four packed frames")
+  Assert.equal(second.pcm.frames, 2, "the second fixture sample carries two packed frames")
+
+  local released = {}
+  local mixer = VoiceMixer.new({ sampleRate = 16756991 })
+  local retained = ResidentAssetCache.new({
+    idleByteLimit = 0,
+    release = function(value)
+      released[#released + 1] = value
+    end,
+    busy = function(value)
+      return mixer:isSampleActive(value.pcm)
+    end,
+  })
+  retained:publish(firstKey, first, first.pcm.frames * 2)
+  retained:publish(secondKey, second, second.pcm.frames * 2)
+  local handle = mixer:noteOn({
+    generator = { kind = "sample", sample = firstKey },
+    pcm = first.pcm,
+    baseTimer = first.metadata.baseTimer,
+    loop = first.metadata.loop,
+    loopEnabled = first.metadata.loopEnabled,
+    key = 60,
+    originalKey = 60,
+    velocity = 127,
+    trackVolume = 127,
+    expression = 127,
+    sequenceVolume = 127,
+    envelope = { attack = 127, decay = 127, sustain = 127, release = 127 },
+    pan = 0,
+    channelMask = 0xFFFF,
+    trackPriority = 64,
+    channelPriority = 64,
+  })
+  Assert.notNil(handle, "the guard voice starts on the first sample")
+  mixer:controlStep()
+  retained:trim()
+  Assert.equal(#released, 1, "a zero idle budget releases only the sample no voice sounds")
+  Assert.isTrue(released[1] == second, "the released sample is the idle one")
+  Assert.isTrue(retained:find(firstKey) == first, "the sounding sample survives the trim")
+  Assert.isTrue(mixer:isSampleActive(first.pcm), "the mixer still sounds the surviving sample")
+  local out = mixer:render(2)
+  Assert.deepEqual(out, { 1000, 0, 1000, 0 }, "the surviving voice renders its exact packed frames")
+  mixer:stopVoice(handle)
+  Assert.isFalse(mixer:isSampleActive(first.pcm), "the stopped voice drops the sample")
+  retained:trim()
+  Assert.equal(#released, 2, "the stopped sample becomes evictable")
+  Assert.isTrue(released[2] == first, "the evicted sample is the stopped one")
+  Assert.isNil(retained:find(firstKey), "the evicted sample leaves the retention set")
+  local again = p:loadSample(firstKey)
+  Assert.isTrue(again == first, "the provider still serves one memoized sample per key")
+  Assert.isTrue(again.pcm == first.pcm, "no duplicate backing appears for the reloaded key")
+end
+
 return { tests = T }

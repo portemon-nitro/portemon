@@ -75,6 +75,13 @@ function AudioRuntime.compose(opts)
       fieldDataForMap = opts.field.fieldDataForMap,
     })
   end
+  -- The sample idle budget must never take bytes a mixer voice still
+  -- sounds: the predicate runs only on trim passes, and the provider holds
+  -- no voice itself, so teardown order stays ownership-safe either way.
+  local function sampleIsActive(sample)
+    return mixer:isSampleActive(sample.pcm)
+  end
+  provider:setBusyPredicate(sampleIsActive)
   return {
     sound = sound,
     renderer = player,
