@@ -105,6 +105,43 @@ local function stepOnto(game, tile)
   game:step()
 end
 
+local function gift(game, species)
+  local added = game.runtime.monService:giveMon({ species = species, level = 5, form = 0 })
+  Assert.isTrue(added, "setup gift must enter the party: " .. tostring(species))
+end
+
+local function partnerId(game)
+  return game.runtime.actors:partnerId()
+end
+
+local function waitForPartner(game)
+  return game:advanceUntil("follower installation after party gift", function()
+    return partnerId(game) ~= nil
+  end, 120)
+end
+
+local function assertNoFault(game, where)
+  Assert.isNil(game.runtime.errorText, "field runtime faulted " .. where .. ": " .. tostring(game.runtime.errorText))
+end
+
+local function playerTile(snapshot)
+  return { fieldX = snapshot.player.fieldX, fieldZ = snapshot.player.fieldZ }
+end
+
+local function sameTile(a, b)
+  return a.fieldX == b.fieldX and a.fieldZ == b.fieldZ
+end
+
+local function partnerCount(snapshot)
+  local seen = 0
+  for actorId in pairs(snapshot.actors) do
+    if actorId == "field:partner" then
+      seen = seen + 1
+    end
+  end
+  return seen
+end
+
 -- The arrival lands on the destination warp tile under recovery suppression,
 -- so walking straight onto it is inert. Step to a walkable neighbour first;
 -- leaving the tile clears the suppression, and the return walk re-arms it.
@@ -190,6 +227,112 @@ function T.tests.an_outdoor_warp_holds_the_time_aware_preview_and_a_cave_warp_do
     end, 480)
     Assert.isFalse(sawPreview, "leaving a cave never selects a preview")
     Assert.isNil(transition:presentationStatus().preview, "no preview remains after an ineligible warp")
+  end)
+end
+
+-- One production journey proves the covered-entry contract end to end: the
+-- outdoor warp commits into the held preview, the opaque hold outlasts any
+-- still-covered destination (its source clock frozen, never a translucent
+-- reveal over an unready world), the first blend pixel composites over the
+-- genuinely presentable destination with the committed actor set, and the
+-- gifted follower stays unpublished-visible throughout the hold and arrives
+-- as the same single hidden partner on the committed tile.
+function T.tests.a_held_preview_reveals_only_a_presentable_destination_with_the_follower_hidden()
+  withGame(function(game)
+    gift(game, "CHIKORITA")
+    waitForPartner(game)
+    assertNoFault(game, "while installing the follower")
+    local before = assert(partnerId(game), "the lead gift must install one partner actor")
+    freezeAutonomousActors(game)
+    local runtime = game.runtime
+    local transition = assert(runtime.transition, "live transition required")
+    local destinationId = assert(runtime.mapLoader:load(DARK_CAVE), DARK_CAVE .. " must load").mapId
+
+    local mouth = findWarpTile(game, ROUTE_46, DARK_CAVE)
+    stepOnto(game, mouth)
+    game:advanceUntil("the cave destination commits", function()
+      freezeAutonomousActors(game)
+      return game:snapshot().mapId == destinationId
+    end, 480)
+    Assert.notNil(
+      transition:presentationStatus().preview,
+      "an eligible outdoor warp commits into a held time-aware preview"
+    )
+    Assert.equal(game:snapshot().mapSymbol, DARK_CAVE, "the destination is already the live map under the preview")
+
+    local holdSamples = 0
+    local previousStage, previousTicks = nil, nil
+    local completed = game:advanceUntil("the preview completes onto the committed cave", function()
+      freezeAutonomousActors(game)
+      local snapshot = game:snapshot()
+      local preview = transition:presentationStatus().preview
+      local presentable = runtime.session:destinationWorldPresentable()
+      if preview ~= nil then
+        local controller = assert(transition.preview, "an active preview owns its hold controller")
+        if controller.stage == "hold" then
+          holdSamples = holdSamples + 1
+          if previousStage == "hold" and not presentable then
+            Assert.equal(
+              controller.ticks,
+              previousTicks,
+              "the opaque hold waits for the covered destination instead of thinning over it"
+            )
+          end
+        end
+        if controller.stage == "blend_out" then
+          Assert.isTrue(presentable, "a translucent reveal needs a genuinely presentable destination")
+          Assert.equal(
+            runtime.actors.currentMapId,
+            destinationId,
+            "the reveal composites the committed destination actor set, never a stale map"
+          )
+          local entryStage = runtime.session.mapEntryController:currentStage()
+          Assert.isFalse(
+            entryStage == "transition"
+              or entryStage == "transition_running"
+              or entryStage == "actors"
+              or entryStage == "load"
+              or entryStage == "load_running"
+              or entryStage == "load_resume_running",
+            "a translucent reveal never overtakes the covered entry, still at " .. tostring(entryStage)
+          )
+        end
+        local follower = runtime.actors:partnerId()
+        if follower ~= nil then
+          Assert.isFalse(
+            runtime.actors:isVisible(follower),
+            "the held preview never publishes a visible follower"
+          )
+        end
+        previousStage, previousTicks = controller.stage, controller.ticks
+      end
+      return snapshot.mapSymbol == DARK_CAVE and snapshot.transition.phase == "idle"
+    end, 480)
+    assertNoFault(game, "across the covered preview transition")
+    Assert.isTrue(holdSamples >= 31, "the reveal honors the full opaque hold, sampled " .. holdSamples)
+    Assert.equal(completed.mapSymbol, DARK_CAVE, "the preview completes onto the committed cave")
+    Assert.isNil(transition:presentationStatus().preview, "the preview is released once the reveal completes")
+    Assert.isFalse(transition.locked, "the completed reveal releases the field input lock")
+
+    -- The transition's rejoin arms its hide-until-step latch at completion,
+    -- so the reinstall lands on the first post-preview follower update;
+    -- wait for it the same way the follower arrival scenario does.
+    game:advanceUntil("partner reinstalls on the arrival map", function()
+      return partnerId(game) ~= nil
+    end, 120)
+    freezeAutonomousActors(game)
+    Assert.equal(partnerId(game), before, "the preview arrival keeps the same follower, never a second actor")
+    local arrived = game:snapshot()
+    Assert.equal(partnerCount(arrived), 1, "the arrival publishes exactly one follower actor")
+    Assert.notNil(arrived.actors[before], "the rejoined follower is a real actor on the new map")
+    Assert.isTrue(
+      sameTile(arrived.actors[before], playerTile(arrived)),
+      "the rejoined follower stands on the committed player tile"
+    )
+    Assert.isFalse(
+      runtime.actors:isVisible(before),
+      "the rejoined follower stays hidden until its first trail step"
+    )
   end)
 end
 

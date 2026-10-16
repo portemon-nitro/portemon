@@ -817,8 +817,16 @@ function FieldState:draw()
     -- the screen, under the authoritative script cover. The status record is
     -- gated on cheap owner state so an idle transition allocates none.
     local transition = self.runtime.transition
-    if transition.preview ~= nil then
+    local previewActive = transition.preview ~= nil
+    if previewActive then
       resources:drawAreaPreview(transition:presentationStatus().preview, self.runtime.viewport.referenceFrame)
+    end
+    local banner = self.runtime.mapNameBanner
+    if banner ~= nil then
+      resources:drawMapNameBanner(banner, self.runtime.viewport.referenceFrame)
+    end
+    if previewActive then
+      self:_drawFieldAttachedUi(resources, nil, self.runtime.session:renderAlpha())
     end
     self:_drawScriptScreenFadeIfNeeded()
     return

@@ -170,7 +170,10 @@ end
 -- The field draw owner orders the preview above the world and below the banner
 -- and script cover; the fade is settled (fadeAlpha 0) so the ordinary warp fade
 -- paints nothing and the only draws are the world, preview, banner, and cover.
-local function drawableState(order, previewStatus, presentable)
+-- The `ui` override selects covered script-owned surfaces (`dialogue`,
+-- `choice`) and whether the banner is eligible (`banner = false` idles it).
+local function drawableState(order, previewStatus, presentable, ui)
+  ui = ui or {}
   local topology = ScreenTopology.oneDisplay({
     id = "main",
     rect = { x = 0, y = 0, width = 512, height = 384 },
@@ -195,7 +198,16 @@ local function drawableState(order, previewStatus, presentable)
         order[#order + 1] = "world"
       end,
     },
-    dialogueRenderer = { draw = function() end },
+    dialogueRenderer = {
+      draw = function()
+        order[#order + 1] = "dialogue"
+      end,
+    },
+    yesNoRenderer = {
+      draw = function()
+        order[#order + 1] = "choice"
+      end,
+    },
     signpostRenderer = { draw = function() end },
     startMenuRenderer = { draw = function() end },
     trainerCardRenderer = { draw = function() end },
@@ -205,7 +217,11 @@ local function drawableState(order, previewStatus, presentable)
   }
   local runtime = {
     errorText = nil,
-    uiManifest = { dialogueFrames = {} },
+    uiManifest = {
+      dialogueFrames = {
+        continueCursor = { placement = { x = 240, y = 168, width = 16, height = 16 } },
+      },
+    },
     runtimeMap = {
       mapId = 33,
       mapSymbol = "MAP_ROUTE_29",
@@ -247,20 +263,39 @@ local function drawableState(order, previewStatus, presentable)
     },
     fieldEntranceIndicator = { status = function() return { visible = false } end },
     fieldTerrainEffectController = { status = function() return { instances = {} } end },
-    dialogue = { isModal = function() return false end },
+    dialogue = {
+      isModal = function()
+        return ui.dialogue == true
+      end,
+    },
     scripts = { dialogueHost = { yesNoPresentation = function() return nil end } },
     signpost = { isModal = function() return false end },
     applicationHost = { isActive = function() return false end, status = function() return { fadeAlpha = 0 } end },
     pcApplicationHost = { isActive = function() return false end },
     menuHost = { presentation = function() return nil end },
     yesNoHost = {
-      isModal = function() return false end,
+      isModal = function()
+        return ui.choice == true
+      end,
+      presentation = function()
+        return { status = { prompt = "covered choice" }, layout = { rows = 2 } }
+      end,
       layoutFor = function() error("no choice is active in this fixture", 0) end,
     },
-    contextChoiceProvider = { status = function() return nil end },
+    contextChoiceProvider = {
+      status = function() return nil end,
+      isActive = function() return false end,
+    },
     contextChoicePresentation = function() return nil end,
     resizePresentation = function() end,
-    mapNameBanner = { status = function() return { title = "ROUTE 29", styleKey = 2, scrollOffset = 12 } end },
+    mapNameBanner = {
+      status = function()
+        if ui.banner == false then
+          return nil
+        end
+        return { title = "ROUTE 29", styleKey = 2, scrollOffset = 12 }
+      end,
+    },
   }
   return setmetatable({
     runtime = runtime,
@@ -276,8 +311,8 @@ local function drawableState(order, previewStatus, presentable)
   }, FieldState)
 end
 
-local function render(scope, order, previewStatus, presentable)
-  local state = drawableState(order, previewStatus, presentable)
+local function render(scope, order, previewStatus, presentable, ui)
+  local state = drawableState(order, previewStatus, presentable, ui)
   local canvas = scope:own(love.graphics.newCanvas(512, 384))
   love.graphics.setCanvas(canvas)
   local ok, err = pcall(function()
@@ -305,14 +340,93 @@ function T.the_field_draws_the_preview_above_the_world_below_the_banner_and_cove
   Assert.deepEqual(hidden, { "world", "banner", "scriptCover" }, "a hidden preview paints nothing")
 end
 
-function T.an_unpresentable_destination_still_shows_the_preview_or_its_black_fade(scope)
+function T.a_hidden_preview_keeps_the_banner_and_covered_script_ui_above_it(scope)
   local order = {}
-  render(scope, order, { imageKey = "preview.x", imageAlpha = 1, blackAlpha = 1, timeSlot = 1, stage = "fade_in" }, false)
+  render(
+    scope,
+    order,
+    { imageKey = "preview.x", imageAlpha = 1, blackAlpha = 1, timeSlot = 1, stage = "fade_in" },
+    false,
+    { dialogue = true, choice = true }
+  )
   Assert.deepEqual(
     order,
-    { "preview", "scriptCover" },
-    "the preview and its black fade cover the incomplete destination without exposing the world"
+    { "preview", "banner", "dialogue", "choice", "scriptCover" },
+    "the banner and covered script-owned surfaces paint above the preview while the world stays hidden"
   )
+end
+
+function T.a_hidden_destination_without_a_preview_still_shows_the_banner(scope)
+  local order = {}
+  render(scope, order, nil, false)
+  Assert.deepEqual(
+    order,
+    { "banner", "scriptCover" },
+    "the banner is never swallowed by the world gate, even with no preview active"
+  )
+
+  local idle = {}
+  render(scope, idle, { imageKey = "preview.x", imageAlpha = 1, blackAlpha = 0, timeSlot = 1, stage = "hold" }, false, {
+    banner = false,
+  })
+  Assert.deepEqual(
+    idle,
+    { "preview", "scriptCover" },
+    "an ineligible banner paints nothing over the covered preview"
+  )
+end
+
+function T.a_presentable_blend_composites_the_preview_over_the_drawn_world(scope)
+  local order = {}
+  render(
+    scope,
+    order,
+    { imageKey = "preview.x", imageAlpha = 0.5, blackAlpha = 0, timeSlot = 1, stage = "blend_out" },
+    true,
+    { dialogue = true }
+  )
+  Assert.deepEqual(
+    order,
+    { "world", "preview", "banner", "dialogue", "scriptCover" },
+    "the translucent reveal composites over the drawn destination, below the banner and script surfaces"
+  )
+end
+
+-- The reveal half of the entry contract at the pixel level: the production
+-- preview renderer paints its selected image with the status alpha, so a
+-- half-transparent image over a painted world leaves a blended readback
+-- pixel that is neither the world nor the image color alone.
+function T.a_translucent_preview_reveals_the_drawn_world_beneath_it(scope)
+  local lg = love.graphics
+  local canvas = scope:own(lg.newCanvas(CANONICAL_WIDTH, CANONICAL_HEIGHT))
+  local data = love.image.newImageData(CANONICAL_WIDTH, CANONICAL_HEIGHT)
+  data:mapPixel(function()
+    return 1, 0, 0, 1
+  end)
+  local image = scope:own(lg.newImage(data))
+  local module = rendererModule("area-preview presentation")
+  local instance = module.new({
+    graphics = lg,
+    imageFor = function()
+      return image
+    end,
+  })
+  lg.setCanvas(canvas)
+  local beforeRed, beforeGreen, beforeBlue, beforeAlpha = lg.getColor()
+  lg.setColor(0, 0, 1, 1)
+  lg.rectangle("fill", 0, 0, CANONICAL_WIDTH, CANONICAL_HEIGHT)
+  lg.setColor(beforeRed, beforeGreen, beforeBlue, beforeAlpha)
+  instance:draw(
+    { imageKey = "preview.x", imageAlpha = 0.5, blackAlpha = 0, timeSlot = 1, stage = "blend_out" },
+    referenceFrame(0, 0)
+  )
+  lg.setCanvas()
+  local pixels = scope:own(canvas:newImageData())
+  local red, green, blue, alpha = pixels:getPixel(128, 96)
+  Assert.near(red, 0.5, 0.02, "the blended pixel carries the half-transparent image red")
+  Assert.near(green, 0, 0.02, "the blended pixel carries no image green")
+  Assert.near(blue, 0.5, 0.02, "the blended pixel still carries the drawn world blue")
+  Assert.near(alpha, 1, 0.02, "the blended pixel stays opaque")
 end
 
 return GraphicsSmoke.suite(T)

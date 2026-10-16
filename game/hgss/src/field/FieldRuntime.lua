@@ -1642,7 +1642,10 @@ function FieldRuntime:update(dt)
       local logicalMapId = assert(currentMap.mapId, "field logical map identity is required")
       local actorMapId = actors.currentMapId
       if actorMapId == logicalMapId then
-        self.followingMon:update()
+        local FieldTransition = require("libs.hgss.src.transition.FieldTransition")
+        if self.transition.phase ~= FieldTransition.PHASES.preview then
+          self.followingMon:update()
+        end
       elseif entry:isActive() then
         -- Map entry owns publication of the destination actor set. Until it
         -- publishes an identity, the follower has no coherent map to
@@ -1667,7 +1670,15 @@ function FieldRuntime:update(dt)
     if applicationError ~= nil then
       error(applicationError, 0)
     end
-    self.transition:updateSourceFrame()
+    local FieldTransition = require("libs.hgss.src.transition.FieldTransition")
+    local preview = self.transition.preview
+    local pausePreviewHold = self.transition.phase == FieldTransition.PHASES.preview
+      and preview ~= nil
+      and preview:status().stage == "hold"
+      and not self.session:destinationWorldPresentable()
+    if not pausePreviewHold then
+      self.transition:updateSourceFrame()
+    end
     self.screenFade:updateSourceFrame()
     if self.blackoutFlow then
       self.blackoutFlow:updateSourceFrame()

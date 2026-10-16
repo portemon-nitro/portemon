@@ -4987,4 +4987,215 @@ function T.foreground_hold_freezes_gameplay_but_not_script_polling()
   Assert.notNil(session:takeCommittedStep(), "steps complete after the hold")
 end
 
+-- A locked area preview covers the destination while the covered map entry
+-- runs underneath it: the entry's own transition init, actor publication, and
+-- load script advance through the ordinary scheduler path, while gameplay
+-- (player steps, autonomous actors, menu arbitration) stays frozen. A fresh
+-- action edge pressed while a covered load script still owns the field
+-- reaches that script through the scheduler, never the preview skip.
+function T.a_locked_preview_advances_the_covered_map_entry_without_gameplay()
+  local FieldTransition = require("libs.hgss.src.transition.FieldTransition")
+  local transitionInputs = {}
+  local transition = {
+    phase = FieldTransition.PHASES.preview,
+    locked = true,
+    updateFixed = function(_, input)
+      transitionInputs[#transitionInputs + 1] = input
+      return false
+    end,
+    start = function()
+      error("a locked preview never starts a second warp", 2)
+    end,
+  }
+  local schedulerSteps = 0
+  local schedulerInputs = {}
+  local loadStarted = false
+  local settled = false
+  local scheduler = {
+    step = function(_, _, snapshot)
+      schedulerSteps = schedulerSteps + 1
+      -- The session lends one scratch table every tick and the borrower
+      -- must not retain it, so record the observed edge value immediately.
+      schedulerInputs[#schedulerInputs + 1] = snapshot.pressedAction == true
+    end,
+    playerInputLocked = function()
+      return false
+    end,
+    playerInputOwned = function()
+      return false
+    end,
+    foregroundEnvironmentId = function()
+      if loadStarted and not settled then
+        return "cover-init"
+      end
+      return nil
+    end,
+  }
+  local order = {}
+  local controller = {
+    hasLifecycle = function(_, lifecycle)
+      return lifecycle == "on_transition" or lifecycle == "on_load" or lifecycle == "on_resume"
+    end,
+    startLifecycle = function(_, lifecycle)
+      order[#order + 1] = lifecycle
+      if lifecycle == "on_load" then
+        loadStarted = true
+      end
+      return true
+    end,
+    isLifecycleSettled = function()
+      return settled
+    end,
+  }
+  local entered = 0
+  local beginSteps = 0
+  local actorSteps = 0
+  local player = defaultPlayer()
+  local playerSteps = 0
+  local baseUpdate = player.updateFixed
+  player.updateFixed = function(self, input)
+    playerSteps = playerSteps + 1
+    return baseUpdate(self, input)
+  end
+  player.collapseRenderInterpolation = function() end
+  local host = applicationHostFake()
+  local session = FieldSession.new(baseOptions({
+    player = player,
+    transition = transition,
+    scriptScheduler = scheduler,
+    initController = controller,
+    applicationHost = host,
+    actors = {
+      beginFixedStep = function()
+        beginSteps = beginSteps + 1
+      end,
+      step = function()
+        actorSteps = actorSteps + 1
+      end,
+    },
+    enterMapActors = function()
+      entered = entered + 1
+    end,
+  }))
+  session:beginMapEntry()
+  for _ = 1, 4 do
+    session:updateFixed({})
+  end
+  Assert.equal(session.mapEntryController:currentStage(), "load_running", "the covered load stays unsettled")
+  Assert.equal(entered, 1, "covered actor entry publishes exactly once")
+  Assert.deepEqual(order, { "on_transition", "on_load" }, "covered lifecycles start in order")
+  -- The covered load outlasts the opaque preview hold: forty fixed ticks
+  -- pass with no readiness, no resume, and no gameplay of any kind.
+  for tick = 1, 40 do
+    if tick == 6 then
+      session:updateFixed({ actionPressed = true })
+    else
+      session:updateFixed({})
+    end
+  end
+  Assert.equal(session.mapEntryController:currentStage(), "load_running", "genuine settlement is awaited")
+  Assert.isFalse(session:destinationWorldPresentable(), "an unsettled load is never presentable")
+  Assert.equal(entered, 1, "actors never publish twice under the cover")
+  Assert.equal(schedulerSteps, 40, "the scheduler polls exactly once per covered tick")
+  Assert.equal(beginSteps, 40, "actor framing runs exactly once per covered tick")
+  Assert.equal(actorSteps, 0, "autonomous actors freeze under the cover")
+  Assert.equal(playerSteps, 0, "the player never steps under the cover")
+  Assert.equal(player.fieldX, 4, "the player holds its tile under the cover")
+  Assert.equal(player.fieldZ, 13, "the player holds its tile under the cover")
+  Assert.deepEqual(host.openedTicks, {}, "the Start Menu never arbitrates under the cover")
+  local pressedActionSeen = 0
+  for _, pressed in ipairs(schedulerInputs) do
+    if pressed then
+      pressedActionSeen = pressedActionSeen + 1
+    end
+  end
+  Assert.equal(pressedActionSeen, 1, "the covered script receives the fresh action exactly once")
+  local previewInput = transitionInputs[4 + 6]
+  local previewEdge = previewInput ~= nil and previewInput.actionPressed or nil
+  Assert.isNil(previewEdge, "a covered script owns the fresh action edge, not the preview skip")
+  -- The script answers on its own lane; only then does the entry settle.
+  settled = true
+  session:updateFixed({})
+  Assert.isTrue(session:destinationWorldPresentable(), "settlement makes the destination presentable")
+  Assert.equal(
+    session.mapEntryController:currentStage(),
+    "await_presentation",
+    "settlement parks at presentation, never gameplay"
+  )
+  Assert.equal(entered, 1, "settlement publishes no second actor set")
+  for _, lifecycle in ipairs(order) do
+    Assert.isFalse(lifecycle == "on_resume", "gameplay resume never overtakes the covered reveal")
+  end
+  Assert.equal(session.tick, 45, "every covered tick advances the session clock exactly once")
+end
+
+-- A locked preview without entry scripts still completes the covered entry:
+-- actor publication runs once under the opaque image and the destination
+-- parks at presentation with no added delay and no gameplay resume.
+function T.a_locked_preview_without_entry_scripts_still_reaches_presentation()
+  local FieldTransition = require("libs.hgss.src.transition.FieldTransition")
+  local transition = {
+    phase = FieldTransition.PHASES.preview,
+    locked = true,
+    updateFixed = function()
+      return false
+    end,
+    start = function()
+      error("a locked preview never starts a second warp", 2)
+    end,
+  }
+  local schedulerSteps = 0
+  local scheduler = {
+    step = function()
+      schedulerSteps = schedulerSteps + 1
+    end,
+    playerInputLocked = function()
+      return false
+    end,
+    playerInputOwned = function()
+      return false
+    end,
+    foregroundEnvironmentId = function()
+      return nil
+    end,
+  }
+  local starts = {}
+  local controller = {
+    hasLifecycle = function()
+      return false
+    end,
+    startLifecycle = function(_, lifecycle)
+      starts[#starts + 1] = lifecycle
+      return true
+    end,
+    isLifecycleSettled = function()
+      return true
+    end,
+  }
+  local entered = 0
+  local player = defaultPlayer()
+  player.collapseRenderInterpolation = function() end
+  local session = FieldSession.new(baseOptions({
+    player = player,
+    transition = transition,
+    scriptScheduler = scheduler,
+    initController = controller,
+    enterMapActors = function()
+      entered = entered + 1
+    end,
+  }))
+  session:beginMapEntry()
+  for _ = 1, 6 do
+    session:updateFixed({})
+  end
+  Assert.isTrue(session:destinationWorldPresentable(), "a scriptless covered entry becomes presentable")
+  Assert.equal(
+    session.mapEntryController:currentStage(),
+    "await_presentation",
+    "a scriptless covered entry parks at presentation"
+  )
+  Assert.equal(entered, 1, "covered actor entry publishes exactly once")
+  Assert.deepEqual(starts, {}, "no lifecycle starts without entry scripts")
+end
+
 return { tests = T }

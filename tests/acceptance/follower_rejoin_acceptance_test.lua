@@ -51,7 +51,12 @@ local T = {
   tests = {},
 }
 
-local DIRECTIONS = { "north", "south", "east", "west" }
+-- Probe order for the reveal/trail steps below: the Dark Cave arrival tile
+-- carries ROM-data standing directional exit warp gated south (pressing south
+-- on a live field exits to Route 46, which the engine deliberately re-arms
+-- immediately), so south is tried last and the probe steps deeper into the
+-- cave instead of back out through the mouth.
+local DIRECTIONS = { "north", "west", "east", "south" }
 
 local function freezeAutonomousActors(game)
   local runtime = game.runtime

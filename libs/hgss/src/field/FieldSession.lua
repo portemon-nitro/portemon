@@ -1139,7 +1139,13 @@ function FieldSession:updateFixed(inputSnapshot)
   -- every locked tick and on the completion tick -- never coupled to
   -- player motion -- so interpolation pairs collapse instead of replaying.
   local locomotionAtTickStart = self.player:presentationStateInto(self._tickScratch.playerPresentation).locomotionActive
-  local playerAdvanced = self.transition:updateFixed(inputSnapshot)
+  local previewWasHidden = self.transition.phase == FieldTransition.PHASES.preview
+    and not self.mapEntryController:destinationWorldPresentable()
+  local transitionInput = inputSnapshot
+  if previewWasHidden then
+    transitionInput = nil -- the map-entry script, not the preview, owns A
+  end
+  local playerAdvanced = self.transition:updateFixed(transitionInput)
   if self.acceptedAmbientCallHandle ~= nil and self.transition.phase ~= FieldTransition.PHASES.idle then
     self:_cancelAmbientCall("field-transition-started")
   end
@@ -1159,6 +1165,20 @@ function FieldSession:updateFixed(inputSnapshot)
     -- completion event and autosaves it, even when movement remains held.
     if self.transition.completed and self.input.clearEdges then
       self.input:clearEdges()
+    end
+    if
+      self.transition.phase == FieldTransition.PHASES.preview
+      and self.mapEntryController:isActive()
+      and not self.mapEntryController:destinationWorldPresentable()
+    then
+      if advancePreSchedulerBoundary(self) == TICK_CONSUMED then
+        return
+      end
+      self.actors:beginFixedStep()
+      runScriptPhase(self, inputSnapshot)
+      if advancePostSchedulerBoundary(self) == TICK_CONSUMED then
+        return
+      end
     end
     self:_advanceTick()
     return
