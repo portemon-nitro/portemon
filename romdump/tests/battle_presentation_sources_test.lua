@@ -10,6 +10,25 @@ local function sources()
   return require("romdump.src.config.BattlePresentationSources")
 end
 
+function T.pokepic_shadow_source_reconstructs_the_native_texture_copy_geometry()
+  local shadow = sources().POKE_SHADOW
+  Assert.equal(shadow.characterMember, 259)
+  Assert.equal(shadow.paletteMember, 260)
+  Assert.equal(shadow.textureWidth, 256)
+  Assert.equal(shadow.textureHeight, 256)
+  Assert.equal(shadow.textureRowBytes, 0x80)
+  Assert.equal(shadow.sourceRowBytes, 0x50)
+  Assert.equal(shadow.sourceRows, 80)
+  Assert.equal(shadow.copiedRowBytes, 0x28)
+  Assert.equal(shadow.textureOriginByteOffset, 0x5050)
+  Assert.deepEqual(shadow.regions, {
+    { size = 0, x = 160, y = 160, width = 64, height = 16 },
+    { size = 1, x = 160, y = 160, width = 64, height = 16 },
+    { size = 2, x = 160, y = 176, width = 64, height = 16 },
+    { size = 3, x = 160, y = 192, width = 64, height = 16 },
+  })
+end
+
 function T.ordinary_backgrounds_keep_their_source_order()
   local Sources = sources()
   Assert.deepEqual(Sources.BACKGROUNDS, {
@@ -123,6 +142,156 @@ function T.doubled_health_box_families_keep_their_archive_members()
   Assert.isTrue(Sources.validate(), "the source tables validate with the doubled families")
 end
 
+function T.health_box_patch_spans_follow_all_source_bar_templates()
+  local Sources = sources()
+  Assert.deepEqual(Sources.HUD_PATCH_SPANS, {
+    hp = {
+      { sideType = 0, spans = { { tile = 39, count = 0 }, { tile = 97, count = 6 } } },
+      { sideType = 1, spans = { { tile = 39, count = 1 }, { tile = 96, count = 5 } } },
+      { sideType = 2, spans = { { tile = 39, count = 0 }, { tile = 96, count = 6 } } },
+      { sideType = 3, spans = { { tile = 39, count = 1 }, { tile = 96, count = 5 } } },
+      { sideType = 4, spans = { { tile = 39, count = 0 }, { tile = 96, count = 6 } } },
+      { sideType = 5, spans = { { tile = 39, count = 1 }, { tile = 96, count = 5 } } },
+    },
+    currentHp = {
+      { sideType = 0, tile = 104, count = 3 },
+      { sideType = 1, tile = 49, count = 3 },
+      { sideType = 2, tile = 96, count = 3 },
+      { sideType = 3, tile = 49, count = 3 },
+      { sideType = 4, tile = 96, count = 3 },
+      { sideType = 5, tile = 49, count = 3 },
+    },
+    maximumHp = {
+      { sideType = 0, tile = 108, count = 3 },
+      { sideType = 1, tile = 53, count = 3 },
+      { sideType = 2, tile = 100, count = 3 },
+      { sideType = 3, tile = 53, count = 3 },
+      { sideType = 4, tile = 100, count = 3 },
+      { sideType = 5, tile = 53, count = 3 },
+    },
+    experience = { { tile = 51, count = 5 }, { tile = 112, count = 7 } },
+    status = {
+      { sideType = 0, tile = 36, count = 3 },
+      { sideType = 1, tile = 34, count = 3 },
+      { sideType = 2, tile = 35, count = 3 },
+      { sideType = 3, tile = 34, count = 3 },
+      { sideType = 4, tile = 35, count = 3 },
+      { sideType = 5, tile = 34, count = 3 },
+    },
+    gender = {
+      { sideType = 0, spans = { { tile = 83, count = 2 }, { tile = 91, count = 2 } } },
+      { sideType = 1, spans = { { tile = 81, count = 2 }, { tile = 89, count = 2 } } },
+      { sideType = 2, spans = { { tile = 82, count = 2 }, { tile = 90, count = 2 } } },
+      { sideType = 3, spans = { { tile = 81, count = 2 }, { tile = 89, count = 2 } } },
+      { sideType = 4, spans = { { tile = 82, count = 2 }, { tile = 90, count = 2 } } },
+      { sideType = 5, spans = { { tile = 81, count = 2 }, { tile = 89, count = 2 } } },
+    },
+    caught = {
+      { sideType = 0, tile = 35, count = 1 },
+      { sideType = 1, tile = 33, count = 1 },
+      { sideType = 2, tile = 34, count = 1 },
+      { sideType = 3, tile = 33, count = 1 },
+      { sideType = 4, tile = 34, count = 1 },
+      { sideType = 5, tile = 33, count = 1 },
+    },
+    playerDoubleMode = {
+      {
+        sideType = 2,
+        gauge = {
+          { tile = 38, sourceTile = 66 },
+          { tile = 39, sourceTile = 67 },
+          { tile = 102, sourceTile = 68 },
+          { tile = 103, sourceTile = 38 },
+        },
+        numbers = {
+          { tile = 39, sourceTile = 70 },
+          { tile = 103, sourceTile = 71 },
+          { tile = 99, sourceTile = 69 },
+        },
+      },
+      {
+        sideType = 4,
+        gauge = {
+          { tile = 38, sourceTile = 66 },
+          { tile = 39, sourceTile = 67 },
+          { tile = 102, sourceTile = 68 },
+          { tile = 103, sourceTile = 38 },
+        },
+        numbers = {
+          { tile = 39, sourceTile = 70 },
+          { tile = 103, sourceTile = 71 },
+          { tile = 99, sourceTile = 69 },
+        },
+      },
+    },
+  }, "health and experience targets normalize the source byte offsets into character tile spans")
+  Assert.isTrue(Sources.validate(), "source tile spans validate with all side-type templates")
+end
+
+function T.double_player_mode_patch_sources_cover_only_native_player_rows()
+  local Sources = sources()
+  local spans = Sources.HUD_PATCH_SPANS.playerDoubleMode
+  local original = spans[2]
+  spans[2] = { sideType = 3, gauge = original.gauge, numbers = original.numbers }
+  Assert.isFalse(Sources.validate(), "double-player mode patches reject enemy side types")
+  spans[2] = original
+  Assert.isTrue(Sources.validate(), "source mode patches cover both double-player rows")
+end
+
+function T.hp_number_sources_require_bounded_complete_side_type_coverage()
+  local Sources = sources()
+  local patchSpans = Sources.HUD_PATCH_SPANS
+  local original = patchSpans.currentHp
+  local originalMaximum = patchSpans.maximumHp
+  patchSpans.currentHp = { original[1], original[2], original[3], original[4], original[5] }
+  local missingSide = Sources.validate()
+  patchSpans.currentHp = original
+  Assert.isFalse(missingSide, "every HP number span covers all six native side types")
+
+  local invalid = { unpack(original) }
+  invalid[1] = { sideType = 0, tile = -1, count = 3 }
+  patchSpans.maximumHp = invalid
+  local invalidTile = Sources.validate()
+  patchSpans.maximumHp = originalMaximum
+  Assert.isFalse(invalidTile, "HP number spans reject negative source tile indices")
+end
+
+function T.native_hud_component_tiles_match_the_pinned_source_array()
+  local components = sources().HUD_COMPONENTS
+  local bytes = {}
+  for index = 1, #components.hex, 2 do
+    bytes[#bytes + 1] = string.char(tonumber(components.hex:sub(index, index + 1), 16))
+  end
+  Assert.equal(components.source.revision, "9d8b7591f09b65804da2fb2dfd56f320633e0d36")
+  Assert.equal(components.source.symbol, "gBattleHpBar_RawGraphicComponents")
+  Assert.equal(components.tileCount, 78)
+  Assert.equal(require("romdump.src.digest.Hashing").sha1hex(table.concat(bytes)), "d4e734fd6a3ad2afdd13d5c09926eae173c506f8")
+  Assert.isTrue(sources().validate(), "native health-box component tiles retain exact pinned bytes")
+end
+
+function T.pokepic_shadow_members_and_source_uv_sizes_are_published_exactly()
+  local shadow = sources().POKE_SHADOW
+  Assert.deepEqual(shadow, {
+    archive = "pokemon_graphics_other",
+    characterMember = 259,
+    paletteMember = 260,
+    depth = 3,
+    textureWidth = 256,
+    textureHeight = 256,
+    textureRowBytes = 0x80,
+    sourceRowBytes = 0x50,
+    sourceRows = 80,
+    copiedRowBytes = 0x28,
+    textureOriginByteOffset = 0x5050,
+    regions = {
+      { size = 0, x = 160, y = 160, width = 64, height = 16 },
+      { size = 1, x = 160, y = 160, width = 64, height = 16 },
+      { size = 2, x = 160, y = 176, width = 64, height = 16 },
+      { size = 3, x = 160, y = 192, width = 64, height = 16 },
+    },
+  })
+end
+
 function T.scene_keys_round_trip_and_reject_effect_backgrounds()
   local Sources = sources()
   local key = Sources.sceneKey("general", "grass", "day")
@@ -141,6 +310,18 @@ end
 function T.every_supported_role_has_a_complete_recipe()
   local Sources = sources()
   Assert.isTrue(Sources.validate(), "the source tables validate")
+end
+
+function T.native_picture_geometry_covers_every_source_side_type()
+  local Sources = sources()
+  Assert.deepEqual(Sources.SLOT_GEOMETRY, {
+    { sideType = 0, settledX = 64, settledY = 112, entryX = 336, entryY = 112, depth = -512, hudX = 192, hudY = 116, hudPriority = 23, hudBgPriority = 0 },
+    { sideType = 1, settledX = 192, settledY = 50, entryX = -80, entryY = 50, depth = -640, hudX = 58, hudY = 36, hudPriority = 24, hudBgPriority = 0 },
+    { sideType = 2, settledX = 40, settledY = 112, entryX = 316, entryY = 112, depth = -512, hudX = 192, hudY = 103, hudPriority = 28, hudBgPriority = 0 },
+    { sideType = 4, settledX = 80, settledY = 120, entryX = 356, entryY = 120, depth = 0, hudX = 198, hudY = 132, hudPriority = 26, hudBgPriority = 0 },
+    { sideType = 3, settledX = 216, settledY = 50, entryX = -60, entryY = 50, depth = -100, hudX = 64, hudY = 16, hudPriority = 25, hudBgPriority = 0 },
+    { sideType = 5, settledX = 176, settledY = 42, entryX = -100, entryY = 42, depth = -640, hudX = 58, hudY = 45, hudPriority = 27, hudBgPriority = 0 },
+  }, "producer publishes all six semantic native geometry rows")
 end
 
 function T.menu_and_message_sources_keep_semantic_keys_separate_from_selector_ids()

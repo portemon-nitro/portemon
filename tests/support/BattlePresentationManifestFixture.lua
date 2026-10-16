@@ -50,6 +50,20 @@ local function spriteSection(image)
   }
 end
 
+---@param image string staged health-box strip
+---@param y integer source OBJ row origin
+---@return table native two-object health-box section
+local function hudSection(image, y)
+  local section = spriteSection(image)
+  section.cells[1].objs = {
+    { x = -64, y = y, tile = 0, width = 64, height = 64, affine = false, disabled = false, flipH = false, flipV = false, palette = 0, priority = 0, shape = 1, size = 3, objMode = "normal", mosaic = false, colorMode = "16-color" },
+    { x = 0, y = y, tile = 64, width = 64, height = 64, affine = false, disabled = false, flipH = false, flipV = false, palette = 0, priority = 0, shape = 1, size = 3, objMode = "normal", mosaic = false, colorMode = "16-color" },
+  }
+  section.componentBase = 128
+  section.componentCount = 78
+  return section
+end
+
 ---@return table shared per-type terrain bake metadata without staged pixels
 local function terrainSection()
   local sprite = spriteSection("assets/generated/battle/terrain-type0.png")
@@ -96,7 +110,7 @@ local function manifest()
     end
   end
   local old = {
-    schema = "g4-battle-presentation-v2",
+    schema = "g4-battle-presentation-v3",
     version = { id = "soulsilver", language = "en" },
     scenes = {
       { key = "general/grass/day", background = "general", terrain = "grass", time = "day" },
@@ -106,15 +120,16 @@ local function manifest()
       ["assets/generated/battle/menu-frontier-layout.png"] = { width = 256, height = 256 },
       ["assets/generated/battle/menu-vs-recorder-layout.png"] = { width = 256, height = 256 },
       ["assets/generated/battle/lower-chars.png"] = { width = 3072, height = 8 },
-      ["assets/generated/battle/hud-player-chars.png"] = { width = 1024, height = 8 },
-      ["assets/generated/battle/hud-enemy-chars.png"] = { width = 1024, height = 8 },
-      ["assets/generated/battle/hud-doubles-player-left-chars.png"] = { width = 1024, height = 8 },
-      ["assets/generated/battle/hud-doubles-player-right-chars.png"] = { width = 1024, height = 8 },
-      ["assets/generated/battle/hud-doubles-enemy-left-chars.png"] = { width = 1024, height = 8 },
-      ["assets/generated/battle/hud-doubles-enemy-right-chars.png"] = { width = 1024, height = 8 },
+      ["assets/generated/battle/hud-player-chars.png"] = { width = 1648, height = 8 },
+      ["assets/generated/battle/hud-enemy-chars.png"] = { width = 1648, height = 8 },
+      ["assets/generated/battle/hud-doubles-player-left-chars.png"] = { width = 1648, height = 8 },
+      ["assets/generated/battle/hud-doubles-player-right-chars.png"] = { width = 1648, height = 8 },
+      ["assets/generated/battle/hud-doubles-enemy-left-chars.png"] = { width = 1648, height = 8 },
+      ["assets/generated/battle/hud-doubles-enemy-right-chars.png"] = { width = 1648, height = 8 },
       ["assets/generated/battle/arrow-chars.png"] = { width = 208, height = 8 },
       ["assets/generated/battle/gauges-0-chars.png"] = { width = 128, height = 8 },
       ["assets/generated/battle/gauges-1-chars.png"] = { width = 512, height = 8 },
+      ["assets/generated/battle/pokepic-shadow.png"] = { width = 64, height = 64 },
     },
     command = menuSection(),
     moves = menuSection(),
@@ -130,13 +145,13 @@ local function manifest()
         },
       },
     },
-    playerHud = spriteSection("assets/generated/battle/hud-player-chars.png"),
-    enemyHud = spriteSection("assets/generated/battle/hud-enemy-chars.png"),
+    playerHud = hudSection("assets/generated/battle/hud-player-chars.png", -32),
+    enemyHud = hudSection("assets/generated/battle/hud-enemy-chars.png", -28),
     doublesHud = {
-      playerLeft = spriteSection("assets/generated/battle/hud-doubles-player-left-chars.png"),
-      playerRight = spriteSection("assets/generated/battle/hud-doubles-player-right-chars.png"),
-      enemyLeft = spriteSection("assets/generated/battle/hud-doubles-enemy-left-chars.png"),
-      enemyRight = spriteSection("assets/generated/battle/hud-doubles-enemy-right-chars.png"),
+      playerLeft = hudSection("assets/generated/battle/hud-doubles-player-left-chars.png", -32),
+      playerRight = hudSection("assets/generated/battle/hud-doubles-player-right-chars.png", -32),
+      enemyLeft = hudSection("assets/generated/battle/hud-doubles-enemy-left-chars.png", -28),
+      enemyRight = hudSection("assets/generated/battle/hud-doubles-enemy-right-chars.png", -28),
     },
     arrow = spriteSection("assets/generated/battle/arrow-chars.png"),
     partyGauges = {
@@ -367,6 +382,16 @@ local function manifest()
     version = old.version,
     catalogIdentity = "synthetic-catalog",
     scenes = old.scenes,
+    battlefield = {
+      slots = {
+        { sideType = 0, settledX = 64, settledY = 112, entryX = 336, entryY = 112, depth = -512, hudX = 192, hudY = 116, hudPriority = 23, hudBgPriority = 0 },
+        { sideType = 1, settledX = 192, settledY = 50, entryX = -80, entryY = 50, depth = -640, hudX = 58, hudY = 36, hudPriority = 24, hudBgPriority = 0 },
+        { sideType = 2, settledX = 40, settledY = 112, entryX = 316, entryY = 112, depth = -512, hudX = 192, hudY = 103, hudPriority = 28, hudBgPriority = 0 },
+        { sideType = 4, settledX = 80, settledY = 120, entryX = 356, entryY = 120, depth = 0, hudX = 198, hudY = 132, hudPriority = 26, hudBgPriority = 0 },
+        { sideType = 3, settledX = 216, settledY = 50, entryX = -60, entryY = 50, depth = -100, hudX = 64, hudY = 16, hudPriority = 25, hudBgPriority = 0 },
+        { sideType = 5, settledX = 176, settledY = 42, entryX = -100, entryY = 42, depth = -640, hudX = 58, hudY = 45, hudPriority = 27, hudBgPriority = 0 },
+      },
+    },
     layouts = { scene = { canvas = { width = 512, height = 256 } } },
     hud = {
       player = old.playerHud,
@@ -375,12 +400,24 @@ local function manifest()
       arrow = old.arrow,
       partyGauges = old.partyGauges,
       terrain = old.terrain,
+      patchSpans = require("romdump.src.config.BattlePresentationSources").HUD_PATCH_SPANS,
       roles = { health = "player-and-enemy" },
       selectors = { single = "player", double = "doubles" },
     },
     pictures = {
       attributes = old.pictureAttributes,
       selectors = { exemplar = "pokemon/CHIKORITA/form-0/male/back" },
+      shadow = {
+        image = "assets/generated/battle/pokepic-shadow.png",
+        width = 64,
+        height = 64,
+        regions = {
+          { size = 0, x = 0, y = 0, width = 64, height = 16 },
+          { size = 1, x = 0, y = 16, width = 64, height = 16 },
+          { size = 2, x = 0, y = 32, width = 64, height = 16 },
+          { size = 3, x = 0, y = 48, width = 64, height = 16 },
+        },
+      },
     },
     menus = {
       images = old.images,

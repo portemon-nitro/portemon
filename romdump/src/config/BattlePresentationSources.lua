@@ -1,4 +1,4 @@
--- Pinned native battle-presentation source inventory: the ordinary
+-- Native battle-presentation source inventory: the ordinary
 -- persistent-scene axes, the exact shared menu/HUD member roles, and the
 -- palette formulas behind the lower screen and the BG3 bake. Member
 -- selection follows the retail ROM's battle background setup; the main
@@ -30,6 +30,30 @@ BattlePresentationSources.PICTURE_ANIMATION_NARC = "NARC_a_1_8_0"
 BattlePresentationSources.PICTURE_ANIMATION_MEMBER = 0
 BattlePresentationSources.PICTURE_ANIMATION_RECORD_SIZE = 89
 
+-- Pokepic's shared 4bpp texture atlas uses the shadow entry from the
+-- other-pokemon graphics archive. The coordinates are the source UV table
+-- in src/pokepic.c; runtime receives the same four regions normalized into
+-- the staged 64x64 image.
+BattlePresentationSources.POKE_SHADOW = {
+  archive = "pokemon_graphics_other",
+  characterMember = 259,
+  paletteMember = 260,
+  depth = 3,
+  textureWidth = 256,
+  textureHeight = 256,
+  textureRowBytes = 0x80,
+  sourceRowBytes = 0x50,
+  sourceRows = 80,
+  copiedRowBytes = 0x28,
+  textureOriginByteOffset = 0x5050,
+  regions = {
+    { size = 0, x = 160, y = 160, width = 64, height = 16 },
+    { size = 1, x = 160, y = 160, width = 64, height = 16 },
+    { size = 2, x = 160, y = 176, width = 64, height = 16 },
+    { size = 3, x = 160, y = 192, width = 64, height = 16 },
+  },
+}
+
 -- Ordinary persistent backgrounds in source order. The first six are the
 -- outdoor recipes whose palettes follow the time of day; the rest use
 -- palette variant zero. The last entry is a known source recipe, not a new
@@ -58,6 +82,160 @@ BattlePresentationSources.BACKGROUNDS = {
 BattlePresentationSources.OUTDOOR_BACKGROUNDS = 6
 
 BattlePresentationSources.TIMES = { "day", "evening", "night" }
+
+-- Native Pokepic centers, spawn positions and Z values follow
+-- asm/overlay_07.s::ov07_022377DC/F4. Health-box anchors and OBJ/BG
+-- priorities follow the single and doubled templates in
+-- src/battle/battle_hp_bar.c; drawPriority is separate from Pokepic Z.
+-- The runtime catalog contains only normalized semantic values.
+BattlePresentationSources.SLOT_GEOMETRY = {
+  { sideType = 0, settledX = 64, settledY = 112, entryX = 336, entryY = 112, depth = -512, hudX = 192, hudY = 116, hudPriority = 23, hudBgPriority = 0 },
+  { sideType = 1, settledX = 192, settledY = 50, entryX = -80, entryY = 50, depth = -640, hudX = 58, hudY = 36, hudPriority = 24, hudBgPriority = 0 },
+  { sideType = 2, settledX = 40, settledY = 112, entryX = 316, entryY = 112, depth = -512, hudX = 192, hudY = 103, hudPriority = 28, hudBgPriority = 0 },
+  { sideType = 4, settledX = 80, settledY = 120, entryX = 356, entryY = 120, depth = 0, hudX = 198, hudY = 132, hudPriority = 26, hudBgPriority = 0 },
+  { sideType = 3, settledX = 216, settledY = 50, entryX = -60, entryY = 50, depth = -100, hudX = 64, hudY = 16, hudPriority = 25, hudBgPriority = 0 },
+  { sideType = 5, settledX = 176, settledY = 42, entryX = -100, entryY = 42, depth = -640, hudX = 58, hudY = 45, hudPriority = 27, hudBgPriority = 0 },
+}
+
+-- Character-tile targets normalized from pinned battle_hp_bar.c routines.
+-- Tile numbers are relative to each staged OBJ character buffer, not VRAM.
+BattlePresentationSources.HUD_PATCH_SPANS = {
+  hp = {
+    { sideType = 0, spans = { { tile = 39, count = 0 }, { tile = 97, count = 6 } } },
+    { sideType = 1, spans = { { tile = 39, count = 1 }, { tile = 96, count = 5 } } },
+    { sideType = 2, spans = { { tile = 39, count = 0 }, { tile = 96, count = 6 } } },
+    { sideType = 3, spans = { { tile = 39, count = 1 }, { tile = 96, count = 5 } } },
+    { sideType = 4, spans = { { tile = 39, count = 0 }, { tile = 96, count = 6 } } },
+    { sideType = 5, spans = { { tile = 39, count = 1 }, { tile = 96, count = 5 } } },
+  },
+  -- Native OBJ character-buffer writes from pinned
+  -- battle_hp_bar.c::ov12_0226D450 and ov12_0226D3F0. Tile positions are
+  -- byte offsets divided by the 32-byte 4bpp tile size.
+  currentHp = {
+    { sideType = 0, tile = 104, count = 3 },
+    { sideType = 1, tile = 49, count = 3 },
+    { sideType = 2, tile = 96, count = 3 },
+    { sideType = 3, tile = 49, count = 3 },
+    { sideType = 4, tile = 96, count = 3 },
+    { sideType = 5, tile = 49, count = 3 },
+  },
+  maximumHp = {
+    { sideType = 0, tile = 108, count = 3 },
+    { sideType = 1, tile = 53, count = 3 },
+    { sideType = 2, tile = 100, count = 3 },
+    { sideType = 3, tile = 53, count = 3 },
+    { sideType = 4, tile = 100, count = 3 },
+    { sideType = 5, tile = 53, count = 3 },
+  },
+  experience = { { tile = 51, count = 5 }, { tile = 112, count = 7 } },
+  -- Native OBJ character-buffer write tables from battle_hp_bar.c,
+  -- normalized from byte offsets to 8x8 4bpp tile indices.
+  status = {
+    { sideType = 0, tile = 36, count = 3 },
+    { sideType = 1, tile = 34, count = 3 },
+    { sideType = 2, tile = 35, count = 3 },
+    { sideType = 3, tile = 34, count = 3 },
+    { sideType = 4, tile = 35, count = 3 },
+    { sideType = 5, tile = 34, count = 3 },
+  },
+  gender = {
+    { sideType = 0, spans = { { tile = 83, count = 2 }, { tile = 91, count = 2 } } },
+    { sideType = 1, spans = { { tile = 81, count = 2 }, { tile = 89, count = 2 } } },
+    { sideType = 2, spans = { { tile = 82, count = 2 }, { tile = 90, count = 2 } } },
+    { sideType = 3, spans = { { tile = 81, count = 2 }, { tile = 89, count = 2 } } },
+    { sideType = 4, spans = { { tile = 82, count = 2 }, { tile = 90, count = 2 } } },
+    { sideType = 5, spans = { { tile = 81, count = 2 }, { tile = 89, count = 2 } } },
+  },
+  caught = {
+    { sideType = 0, tile = 35, count = 1 },
+    { sideType = 1, tile = 33, count = 1 },
+    { sideType = 2, tile = 34, count = 1 },
+    { sideType = 3, tile = 33, count = 1 },
+    { sideType = 4, tile = 34, count = 1 },
+    { sideType = 5, tile = 33, count = 1 },
+  },
+  -- Native double-player mode writes from battle_hp_bar.c::ov12_02264C84.
+  -- Tiles are normalized from OBJ character byte offsets; component tiles
+  -- are relative to gBattleHpBar_RawGraphicComponents.
+  playerDoubleMode = {
+    {
+      sideType = 2,
+      gauge = {
+        { tile = 38, sourceTile = 66 },
+        { tile = 39, sourceTile = 67 },
+        { tile = 102, sourceTile = 68 },
+        { tile = 103, sourceTile = 38 },
+      },
+      numbers = {
+        { tile = 39, sourceTile = 70 },
+        { tile = 103, sourceTile = 71 },
+        { tile = 99, sourceTile = 69 },
+      },
+    },
+    {
+      sideType = 4,
+      gauge = {
+        { tile = 38, sourceTile = 66 },
+        { tile = 39, sourceTile = 67 },
+        { tile = 102, sourceTile = 68 },
+        { tile = 103, sourceTile = 38 },
+      },
+      numbers = {
+        { tile = 39, sourceTile = 70 },
+        { tile = 103, sourceTile = 71 },
+        { tile = 99, sourceTile = 69 },
+      },
+    },
+  },
+}
+
+-- Native battle health-box OBJ tiles from battle_hp_bar_data.h::gBattleHpBar_RawGraphicComponents.
+BattlePresentationSources.HUD_COMPONENTS = {
+  depth = 3,
+  tileCount = 78,
+  source = { repository = "pret/pokeheartgold", revision = "9d8b7591f09b65804da2fb2dfd56f320633e0d36", file = "src/battle/battle_hp_bar_data.h", symbol = "gBattleHpBar_RawGraphicComponents" },
+  hex = table.concat({
+    "e3eeeeeeee888ee8ee888ee8ee8888e8ee888ee8ee888ee8e3eeeeee32333333eeeeeeee8888e8ee888ee8ee8888e8ee88eeeeee88eeeeeeeeeeeeee33333333",
+    "eeeeeeeeeeeeeeee222222224444444444444444eeeeeeeeeeeeeeee33333333eeeeeeeeeeeeeeee252222224644444446444444eeeeeeeeeeeeeeee33333333",
+    "eeeeeeeeeeeeeeee552222226644444466444444eeeeeeeeeeeeeeee33333333eeeeeeeeeeeeeeee552522226646444466464444eeeeeeeeeeeeeeee33333333",
+    "eeeeeeeeeeeeeeee555522226666444466664444eeeeeeeeeeeeeeee33333333eeeeeeeeeeeeeeee555525226666464466664644eeeeeeeeeeeeeeee33333333",
+    "eeeeeeeeeeeeeeee555555226666664466666644eeeeeeeeeeeeeeee33333333eeeeeeeeeeeeeeee555555256666664666666646eeeeeeeeeeeeeeee33333333",
+    "eeeeeeeeeeeeeeee555555556666666666666666eeeeeeeeeeeeeeee33333333eeeeeeeeeeeeeeee222222224444444444444444eeeeeeeeeeeeeeee33333333",
+    "eeeeeeeeeeeeeeee272222224844444448444444eeeeeeeeeeeeeeee33333333eeeeeeeeeeeeeeee772222228844444488444444eeeeeeeeeeeeeeee33333333",
+    "eeeeeeeeeeeeeeee772722228848444488484444eeeeeeeeeeeeeeee33333333eeeeeeeeeeeeeeee777722228888444488884444eeeeeeeeeeeeeeee33333333",
+    "eeeeeeeeeeeeeeee777727228888484488884844eeeeeeeeeeeeeeee33333333eeeeeeeeeeeeeeee777777228888884488888844eeeeeeeeeeeeeeee33333333",
+    "eeeeeeeeeeeeeeee777777278888884888888848eeeeeeeeeeeeeeee33333333eeeeeeeeeeeeeeee777777778888888888888888eeeeeeeeeeeeeeee33333333",
+    "eeeeeeeeeeeeeeee222222224444444444444444eeeeeeeeeeeeeeee33333333eeeeeeeeeeeeeeee292222224a4444444a444444eeeeeeeeeeeeeeee33333333",
+    "eeeeeeeeeeeeeeee99222222aa444444aa444444eeeeeeeeeeeeeeee33333333eeeeeeeeeeeeeeee99292222aa4a4444aa4a4444eeeeeeeeeeeeeeee33333333",
+    "eeeeeeeeeeeeeeee99992222aaaa4444aaaa4444eeeeeeeeeeeeeeee33333333eeeeeeeeeeeeeeee99992922aaaa4a44aaaa4a44eeeeeeeeeeeeeeee33333333",
+    "eeeeeeeeeeeeeeee99999922aaaaaa44aaaaaa44eeeeeeeeeeeeeeee33333333eeeeeeeeeeeeeeee99999929aaaaaa4aaaaaaa4aeeeeeeeeeeeeeeee33333333",
+    "eeeeeeeeeeeeeeee99999999aaaaaaaaaaaaaaaaeeeeeeeeeeeeeeee3333333333333333eeeeeeeeeeeeeeee2222222244444444eeeeeeeeeeeeeeee44444444",
+    "33333333eeeeeeeeeeeeeeee2b2222224c444444eeeeeeeeeeeeeeee4444444433333333eeeeeeeeeeeeeeeebb222222cc444444eeeeeeeeeeeeeeee44444444",
+    "33333333eeeeeeeeeeeeeeeebb2b2222cc4c4444eeeeeeeeeeeeeeee4444444433333333eeeeeeeeeeeeeeeebbbb2222cccc4444eeeeeeeeeeeeeeee44444444",
+    "33333333eeeeeeeeeeeeeeeebbbb2b22cccc4c44eeeeeeeeeeeeeeee4444444433333333eeeeeeeeeeeeeeeebbbbbb22cccccc44eeeeeeeeeeeeeeee44444444",
+    "33333333eeeeeeeeeeeeeeeebbbbbb2bcccccc4ceeeeeeeeeeeeeeee4444444433333333eeeeeeeeeeeeeeeebbbbbbbbcccccccceeeeeeeeeeeeeeee44444444",
+    "ffffffff22222222ffffffff2222222222222222222222222222222222222222ffffffff22222222ffffffff2222222222222222222222222222222222222222",
+    "ffffffff22222222ffffffff2222222222222222222222222222222222222222ff888888824844448f4877478248874882484444824877778248878822788788",
+    "8888888847444447477747474787484747444447477747474887484778877877888888ff44748828774787f88748872844448728477787284744872877778722",
+    "ffccccccc24c4444cf4cbbbbc24c4444c24cbbbbc24ccbccc24ccbcc22bccbcccccccccc4b44b44c4bbb4bbb4bcb4ccb4b44444b4c4bbb4b4c4b444bbcbbbbbb",
+    "ccccccff4444cb2cbb4bcbfc44b4cb2cbbbbcc2ccbcccc2c4444cb2cbbbbcb22ff333333324344443f4311113243444432131141323333433243444422131111",
+    "3333333341313343413133434131334341313343413133434144444111111111333333ff44443123114131f33143312344443123111131233133332331333322",
+    "ffddddddd24d4444df4d9949d24dd94dd24d4444d24d9999d24dd9dd229dd9dddddddddd49444449499999494944444999994949d9dd4d494d4444499d999999",
+    "ddddddff4449d92d4949d9fd4949d92d4949d92d4949d92d4944d92d9999d922ffaaaaaaa24a4494af4a9949a24a4444a24a9949a24aa94aa24a4444229a9999",
+    "aaaaaaaa4a44944a4999494949a94a4949444449494999494949444999999999aaaaaaff4449a92a4949a9fa4949a92a4949a92a4949a92a4944a92a9999a922",
+    "ffffffff22222222ffffffff2222222222222222222222222222222222222222ffffffff22222222ffffffff2222222222222222222222222222222222222222",
+    "ffffffff22222222ffffffff22222222222222222222222222222222222222222fee2effe2aaea22aee9a9feee4eee2e4ee2422ee344e42332ee3e2222222222",
+    "ffffffffffffffffffffffffafaaf2ff2a222aff2aff2aefa2aa22ef2f2af2efffffffffffffffffffffffffffffffffffffffff2effffff2effffff2eef2e2e",
+    "ffffffffffffffffffffffffff2bffffbfbbf2ff2b2b2beff22b22efbfbbf2efffffffffffffffffffffffffffffffffffffffff2effffff2effffff2eef2e2e",
+    "ffffffffffffffffffffffffffffffffffffffffffffffefffffffefffffffefffffffffffffffffffffffffffffffffffffffff2effffff2effffff2eef2e2e",
+    "e3eeeeeeee888ee8ee888ee8ee8888e8ee888ee8ee888ee8e3eeeeee32333333eeeeeeee8888e8ee888ee8ee8888e8ee88eeeeee88eeeeeeeeeeeeee33333333",
+    "3effffffee222222eeffffffee222222ee222222ee2222223e22222223222222ffffffffffffeffeffffeef2ffef2ef2ffee22ffef2ef2ffef22ffff2ff2ffff",
+    "eeeeeef38888e8fe888ee8fe8888e8fe88eeeefe88eeeefeeeeeeef3333333ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "aaaa2aef222a22efff2affefff22ff2fffffffffffffffffffffffffffffffff2eef2e2e2eef2e2eee2eee22222222f2ffffffffffffffffffffffffffffffff",
+    "2b222bef2bff2befb2bb22ef2f22f22fffffffffffffffffffffffffffffffff2ee42e2e2ee42e2eee2eee22222222f2ffffffffffffffffffffffffffffffff",
+    "ffffffefffffffefffffffefffffff2fffffffffffffffffffffffffffffffff2ee42e2e2ee42e2eee2eee22222222f2ffffffffffffffffffffffffffffffff",
+  }, ""),
+}
 
 -- Terrain recipes by native ordinal: the two 4bpp cell members plus the
 -- day/evening/night palette members. Every member below lives in the scene
@@ -1870,6 +2048,196 @@ function BattlePresentationSources.validate()
     end
   end
   if terrainCount ~= 18 then
+    return false
+  end
+  if #BattlePresentationSources.SLOT_GEOMETRY ~= 6 then
+    return false
+  end
+  local sideTypes = {}
+  for _, row in ipairs(BattlePresentationSources.SLOT_GEOMETRY) do
+    if type(row.sideType) ~= "number" or row.sideType ~= math.floor(row.sideType) or sideTypes[row.sideType] then
+      return false
+    end
+    sideTypes[row.sideType] = true
+    for _, field in ipairs({ "settledX", "settledY", "entryX", "entryY", "depth", "hudX", "hudY", "hudPriority", "hudBgPriority" }) do
+      if type(row[field]) ~= "number" or row[field] ~= math.floor(row[field]) then
+        return false
+      end
+    end
+    if row.hudPriority < 0 or row.hudPriority > 31 or row.hudBgPriority < 0 or row.hudBgPriority > 3 then
+      return false
+    end
+  end
+  for _, sideType in ipairs({ 0, 1, 2, 3, 4, 5 }) do
+    if not sideTypes[sideType] then
+      return false
+    end
+  end
+  local patchSpans = BattlePresentationSources.HUD_PATCH_SPANS
+  if type(patchSpans) ~= "table" or type(patchSpans.hp) ~= "table" or #patchSpans.hp ~= 6 then
+    return false
+  end
+  local patchSideTypes = {}
+  for _, record in ipairs(patchSpans.hp) do
+    if
+      type(record.sideType) ~= "number"
+      or record.sideType ~= math.floor(record.sideType)
+      or patchSideTypes[record.sideType]
+      or not sideTypes[record.sideType]
+      or type(record.spans) ~= "table"
+      or #record.spans ~= 2
+    then
+      return false
+    end
+    patchSideTypes[record.sideType] = true
+    local count = 0
+    for _, span in ipairs(record.spans) do
+      if
+        type(span.tile) ~= "number"
+        or span.tile ~= math.floor(span.tile)
+        or span.tile < 0
+        or span.tile > 1023
+        or type(span.count) ~= "number"
+        or span.count ~= math.floor(span.count)
+        or span.count < 0
+        or span.count > 12
+        or span.tile + span.count > 1024
+      then
+        return false
+      end
+      count = count + span.count
+    end
+    if count ~= 6 then
+      return false
+    end
+  end
+  for _, sideType in ipairs({ 0, 1, 2, 3, 4, 5 }) do
+    if not patchSideTypes[sideType] then
+      return false
+    end
+  end
+  if type(patchSpans.experience) ~= "table" or #patchSpans.experience ~= 2 then
+    return false
+  end
+  local experienceCount = 0
+  for _, span in ipairs(patchSpans.experience) do
+    if
+      type(span.tile) ~= "number"
+      or span.tile ~= math.floor(span.tile)
+      or span.tile < 0
+      or span.tile > 1023
+      or type(span.count) ~= "number"
+      or span.count ~= math.floor(span.count)
+      or span.count < 0
+      or span.count > 12
+      or span.tile + span.count > 1024
+    then
+      return false
+    end
+    experienceCount = experienceCount + span.count
+  end
+  if experienceCount ~= 12 then
+    return false
+  end
+  for category, expectedCounts in pairs({
+    currentHp = { 3 },
+    maximumHp = { 3 },
+    status = { 3 },
+    gender = { 2, 2 },
+    caught = { 1 },
+  }) do
+    local records = patchSpans[category]
+    if type(records) ~= "table" or #records ~= 6 then
+      return false
+    end
+    local covered = {}
+    for _, record in ipairs(records) do
+      if
+        type(record.sideType) ~= "number"
+        or record.sideType ~= math.floor(record.sideType)
+        or record.sideType < 0
+        or record.sideType > 5
+        or covered[record.sideType]
+        or not sideTypes[record.sideType]
+      then
+        return false
+      end
+      covered[record.sideType] = true
+      local spans = record.spans or { record }
+      if type(spans) ~= "table" or #spans ~= #expectedCounts then
+        return false
+      end
+      for index, span in ipairs(spans) do
+        if
+          type(span.tile) ~= "number"
+          or span.tile ~= math.floor(span.tile)
+          or span.tile < 0
+          or span.tile > 1023
+          or type(span.count) ~= "number"
+          or span.count ~= math.floor(span.count)
+          or span.count < 1
+          or span.count > 12
+          or span.tile + span.count > 1024
+          or span.count ~= expectedCounts[index]
+        then
+          return false
+        end
+      end
+    end
+    for _, sideType in ipairs({ 0, 1, 2, 3, 4, 5 }) do
+      if not covered[sideType] then
+        return false
+      end
+    end
+  end
+  if type(patchSpans.playerDoubleMode) ~= "table" or #patchSpans.playerDoubleMode ~= 2 then
+    return false
+  end
+  local doubleModeSides = {}
+  for _, record in ipairs(patchSpans.playerDoubleMode) do
+    if
+      (record.sideType ~= 2 and record.sideType ~= 4)
+      or doubleModeSides[record.sideType]
+      or type(record.gauge) ~= "table"
+      or #record.gauge ~= 4
+      or type(record.numbers) ~= "table"
+      or #record.numbers ~= 3
+    then
+      return false
+    end
+    doubleModeSides[record.sideType] = true
+    for _, mode in ipairs({ record.gauge, record.numbers }) do
+      local destinations = {}
+      for _, patch in ipairs(mode) do
+        if
+          type(patch.tile) ~= "number"
+          or patch.tile ~= math.floor(patch.tile)
+          or patch.tile < 0
+          or patch.tile > 1023
+          or destinations[patch.tile]
+          or type(patch.sourceTile) ~= "number"
+          or patch.sourceTile ~= math.floor(patch.sourceTile)
+          or patch.sourceTile < 0
+          or patch.sourceTile >= BattlePresentationSources.HUD_COMPONENTS.tileCount
+        then
+          return false
+        end
+        destinations[patch.tile] = true
+      end
+    end
+  end
+  if not doubleModeSides[2] or not doubleModeSides[4] then
+    return false
+  end
+  local hudComponents = BattlePresentationSources.HUD_COMPONENTS
+  if
+    type(hudComponents) ~= "table"
+    or hudComponents.depth ~= 3
+    or hudComponents.tileCount ~= 78
+    or type(hudComponents.hex) ~= "string"
+    or #hudComponents.hex ~= hudComponents.tileCount * 64
+    or hudComponents.hex:find("[^0-9a-f]") ~= nil
+  then
     return false
   end
   for ordinal = 0, 17 do

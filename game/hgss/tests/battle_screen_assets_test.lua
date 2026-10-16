@@ -8,8 +8,10 @@
 local Assert = require("tests.support.Assert")
 local StubLease = require("tests.support.StubLease")
 local BattlePresentationAssets = require("game.hgss.src.battle.BattlePresentationAssets")
+local BattlePresentationManifestFixture = require("tests.support.BattlePresentationManifestFixture")
 
 local T = {}
+local SHADOW_REGIONS = BattlePresentationManifestFixture.manifest().pictures.shadow.regions
 
 ---@param opts table? heldKeys, failPrepare, seedImages
 ---@return table preparation double owning only the handles it hands out
@@ -52,7 +54,19 @@ local function holder(overrides, assets)
     sceneImage = "scene:probe",
     frameKey = overrides and overrides.frameKey,
     frames = overrides and overrides.frames,
+    shadowRegions = SHADOW_REGIONS,
   })
+end
+
+function T.shadow_size_selects_the_published_source_uv_rectangle()
+  local assets = holder()
+  Assert.deepEqual(assets:shadowRegion(0), SHADOW_REGIONS[1], "small shadow uses the first staged source rectangle")
+  Assert.deepEqual(assets:shadowRegion(1), SHADOW_REGIONS[2], "medium shadow preserves the source alias rectangle")
+  Assert.deepEqual(assets:shadowRegion(2), SHADOW_REGIONS[3], "large shadow uses the next source rectangle")
+  Assert.deepEqual(assets:shadowRegion(3), SHADOW_REGIONS[4], "extra-large shadow uses the final source rectangle")
+  local ok = pcall(assets.shadowRegion, assets, 4)
+  Assert.isFalse(ok, "unknown shadow sizes have no guessed texture region")
+  assets:dispose()
 end
 
 -- The default frame and a declared custom frame both prepare; their
@@ -95,6 +109,7 @@ function T.preparation_failure_surfaces()
     launchId = "assets-sad",
     sceneKey = "general/plain/day",
     sceneImage = "scene:sad",
+    shadowRegions = SHADOW_REGIONS,
   })
   bad:update()
   Assert.equal(bad:state(), "failed", "the preparation failure stops the holder")
@@ -128,6 +143,7 @@ function T.preparation_pending_and_typed_failures()
     launchId = "assets-patient",
     sceneKey = "general/plain/day",
     sceneImage = "scene:patient",
+    shadowRegions = SHADOW_REGIONS,
   })
   waiting:update()
   Assert.equal(waiting:state(), "pending", "a bare not-yet answer polls again without failing")
@@ -141,6 +157,7 @@ function T.preparation_pending_and_typed_failures()
     launchId = "assets-untyped",
     sceneKey = "general/plain/day",
     sceneImage = "scene:untyped",
+    shadowRegions = SHADOW_REGIONS,
   })
   untyped:update()
   Assert.equal(untyped:state(), "failed", "a nil answer with a message fails closed")
@@ -165,6 +182,7 @@ function T.preparation_pending_and_typed_failures()
     launchId = "assets-refused",
     sceneKey = "general/plain/day",
     sceneImage = "scene:refused",
+    shadowRegions = SHADOW_REGIONS,
   })
   refused:update()
   Assert.equal(refused:state(), "failed", "a not-yet answer carrying a failure string fails closed")
@@ -325,12 +343,7 @@ function T.switch_and_foe_reveal_rebind_the_exact_image_key()
   local launchId = "launch-portrait-rebind"
   local screen = BattleScreenState.new({
     launchId = launchId,
-    manifest = {
-      schema = "test",
-      version = { id = "t", language = "english" },
-      verified = false,
-      scenes = { { key = "general/plain/day" } },
-    },
+    manifest = BattlePresentationManifestFixture.manifest(),
     model = {},
     submit = function(_)
       return true
@@ -756,9 +769,22 @@ local function layoutOnlyCache(portraitEntries)
   local charactersPath = BattlePresentationCache.sceneCharactersPath(PORTRAIT_SCENE_KEY)
   local mapPath = BattlePresentationCache.sceneMapPath(PORTRAIT_SCENE_KEY)
   local palettePath = BattlePresentationCache.scenePalettePath(PORTRAIT_SCENE_KEY)
-  local cache = { versionId = "portrait-demand-probe", files = {}, lua = {}, loadedPaths = {} }
+  local cache = { versionId = "portrait-demand-probe", files = {}, lua = {}, loadedPaths = {}, readPaths = {} }
   cache.files[PORTRAIT_MENU_IMAGE] = solidPortraitPng(8, 8)
   cache.files[PORTRAIT_FONT_PATH] = "staged-font"
+  local stagedManifest = stagedPortraitBattleManifest()
+  for _, menu in ipairs({ "command", "moves", "target" }) do
+    local image = stagedManifest.menus[menu].image
+    cache.files[image] = solidPortraitPng(8, 8)
+  end
+  local hud = stagedManifest.hud
+  for _, section in ipairs({ hud.player, hud.enemy }) do
+    cache.files[section.image] = solidPortraitPng(8, 8)
+  end
+  for _, section in pairs(hud.doubles) do
+    cache.files[section.image] = solidPortraitPng(8, 8)
+  end
+  cache.files[stagedManifest.pictures.shadow.image] = solidPortraitPng(64, 64)
   cache.files[sceneImage] = solidPortraitPng(512, 256)
   cache.files[charactersPath] = string.rep("\0", 65536)
   local mapEntries = {}
@@ -769,7 +795,7 @@ local function layoutOnlyCache(portraitEntries)
   for index = 1, 256 do
     paletteColors[index] = { r = 0, g = 0, b = 0 }
   end
-  cache.lua[BattlePresentationCache.manifestPath()] = stagedPortraitBattleManifest()
+  cache.lua[BattlePresentationCache.manifestPath()] = stagedManifest
   cache.lua[mapPath] = { width = 512, height = 256, entries = mapEntries }
   cache.lua[palettePath] = { colors = paletteColors }
   cache.lua[BattlePresentationCache.scenePath(PORTRAIT_SCENE_KEY)] = {
@@ -790,7 +816,7 @@ local function layoutOnlyCache(portraitEntries)
         characters = {
           key = "battle-scene/general-grass-day/background/characters",
           path = charactersPath,
-          format = "indexed4",
+          format = "indexed8",
         },
         map = {
           key = "battle-scene/general-grass-day/background/map",
@@ -812,6 +838,7 @@ local function layoutOnlyCache(portraitEntries)
     return self.lua[path]
   end
   function cache:read(path)
+    self.readPaths[#self.readPaths + 1] = path
     return self.files[path]
   end
   function cache:exists(path, _)
@@ -823,7 +850,17 @@ end
 ---@param pageId integer zero-based portrait page identity under staging
 ---@return table manifest cell covering an 8x8 portrait at the page origin
 local function portraitEntry(pageId)
-  return { x = 0, y = 0, width = 8, height = 8, pageId = pageId }
+  return {
+    x = 0,
+    y = 0,
+    width = 8,
+    height = 8,
+    pageId = pageId,
+    frames = {
+      { x = 0, y = 0, width = 8, height = 8 },
+      { x = 8, y = 0, width = 8, height = 8 },
+    },
+  }
 end
 
 -- Stages one portrait page exactly like the page worker would publish
@@ -1163,6 +1200,7 @@ function T.grown_selector_set_reopens_pending_without_losing_leased_handles()
     assets = services,
     launchId = "portrait-growth-probe",
     sceneKey = PORTRAIT_SCENE_KEY,
+    shadowRegions = SHADOW_REGIONS,
   })
   owned:addSelectors({ leadBack, foeFront })
   owned:update()
@@ -1172,6 +1210,15 @@ function T.grown_selector_set_reopens_pending_without_losing_leased_handles()
   local menuHandle = owned:drawable("menu:command")
   Assert.notNil(sceneHandle, "the opening leases its scene handle")
   Assert.notNil(menuHandle, "the opening leases its menu handle")
+  Assert.notNil(owned:drawable("shadow"), "the production asset route resolves the staged native shadow PNG")
+  local shadowPathRead = false
+  for _, path in ipairs(cache.readPaths) do
+    shadowPathRead = shadowPathRead or path == BattlePresentationManifestFixture.manifest().pictures.shadow.image
+  end
+  Assert.isTrue(
+    shadowPathRead,
+    "shadow lookup reads the exact image path published by the global catalog"
+  )
   local callsBeforeGrowth = prepareCalls
   owned:addSelectors({ reserveBack })
   Assert.equal(owned:state(), "pending", "the grown selector set reopens pending until its page builds")
@@ -1320,6 +1367,7 @@ function T.portrait_page_worker_failure_names_its_selector_and_page_once()
     assets = services,
     launchId = "portrait-doomed-probe",
     sceneKey = PORTRAIT_SCENE_KEY,
+    shadowRegions = SHADOW_REGIONS,
   })
   owned:addSelectors({ leadBack, foeFront })
   owned:update()
@@ -1420,6 +1468,7 @@ function T.unstaged_and_undecodable_pages_fail_closed_without_standins()
     assets = services,
     launchId = "portrait-missing-probe",
     sceneKey = PORTRAIT_SCENE_KEY,
+    shadowRegions = SHADOW_REGIONS,
   })
   owned:addSelectors({ leadBack })
   owned:update()

@@ -193,7 +193,7 @@ local function stageBattle(cache, manifest, sceneKey)
         characters = {
           key = "battle-scene/general-grass-day/background/characters",
           path = "data/generated/battle/scenes/general-grass-day.bg3.chars",
-          format = "indexed4",
+          format = "indexed8",
         },
         map = {
           key = "battle-scene/general-grass-day/background/map",

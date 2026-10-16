@@ -11,6 +11,7 @@
 
 local Errors = require("libs.errors.src.Errors")
 local BinaryReader = require("libs.codec.src.BinaryReader")
+local U32 = require("libs.codec.src.U32")
 local Hashing = require("romdump.src.digest.Hashing")
 local Lz10 = require("romdump.src.digest.Lz10")
 local MonSources = require("romdump.src.config.MonSources")
@@ -24,6 +25,7 @@ local BattlePresentationSources = require("romdump.src.config.BattlePresentation
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
 local BattlePresentationSchema = require("libs.assets.src.battle.BattlePresentationSchema")
 local Spl = require("libs.nds.src.nitro.particle.Spl")
+local bit = require("bit")
 
 ---@class BattlePresentationCompiler
 local BattlePresentationCompiler = {}
@@ -257,6 +259,83 @@ local function compilePictureAttributes(romFs)
     end
   end
   return pictureAttributes, pictureSelectors
+end
+
+-- Pokepic's shadow NCGR is the same scanned 6,400-byte row surface used by
+-- the portrait path. UnscanPokepic_PtHGSS XORs its 3,200 little-endian words
+-- with the running 16-bit LCRNG state before PokepicManager_Create copies
+-- the first 40 bytes of each row into the 256x256 texture at (160,160).
+local function unscanShadowCharacters(characters)
+  local shadow = Sources.POKE_SHADOW
+  assert(
+    #characters == shadow.sourceRowBytes * shadow.sourceRows,
+    "Pokepic shadow characters match the native scanned source surface (found " .. #characters .. " bytes)"
+  )
+  local seed = string.byte(characters, 1) + string.byte(characters, 2) * 256
+  local output = {}
+  for wordOffset = 0, 3199 do
+    local offset = wordOffset * 2
+    local word = string.byte(characters, offset + 1) + string.byte(characters, offset + 2) * 256
+    local plain = bit.bxor(word, seed % 65536)
+    output[#output + 1] = string.char(plain % 256, math.floor(plain / 256))
+    seed = U32.add(U32.mul(seed, 1103515245), 24691)
+  end
+  return table.concat(output)
+end
+
+local function shadowTexture(characters)
+  local shadow = Sources.POKE_SHADOW
+  local source = unscanShadowCharacters(characters)
+  local texture = {}
+  local fill = string.byte(source, 1)
+  for offset = 1, shadow.textureWidth * shadow.textureHeight / 2 do
+    texture[offset] = fill
+  end
+  for row = 0, shadow.sourceRows - 1 do
+    local sourceOffset = row * shadow.sourceRowBytes
+    local textureOffset = shadow.textureOriginByteOffset + row * shadow.textureRowBytes
+    for byteX = 0, shadow.copiedRowBytes - 1 do
+      texture[textureOffset + byteX + 1] = string.byte(source, sourceOffset + byteX + 1)
+    end
+  end
+  local chunks = {}
+  for first = 1, #texture, 2048 do
+    local bytes = {}
+    for index = first, math.min(first + 2047, #texture) do
+      bytes[#bytes + 1] = string.char(texture[index])
+    end
+    chunks[#chunks + 1] = table.concat(bytes)
+  end
+  return table.concat(chunks)
+end
+
+-- Compile the native shadow character/palette UV selections into one
+-- source-independent image. The logical size selector remains in the
+-- manifest as four normalized rectangles stacked in this image.
+---@param characterData { depth: integer, tiles: string } decoded NARC 259 NCGR
+---@param paletteData { colors: table[] } decoded NARC 260 NCLR
+---@return { width: integer, height: integer, pixels: string } staged shadow atlas
+function BattlePresentationCompiler.compileShadowImage(characterData, paletteData)
+  assert(characterData.depth == Sources.POKE_SHADOW.depth, "native shadow art uses 4bpp characters")
+  assert(type(characterData.tiles) == "string", "native shadow art has decoded character bytes")
+  assert(type(paletteData.colors) == "table" and #paletteData.colors == 16, "native shadow art has one 4bpp palette")
+  local texture = shadowTexture(characterData.tiles)
+  local rows = {}
+  for _, region in ipairs(Sources.POKE_SHADOW.regions) do
+    local rgba = {}
+    for y = 0, region.height - 1 do
+      for x = 0, region.width - 1 do
+        local pixelX, pixelY = region.x + x, region.y + y
+        local byteOffset = pixelY * Sources.POKE_SHADOW.textureRowBytes + math.floor(pixelX / 2)
+        local packed = string.byte(texture, byteOffset + 1)
+        local colorIndex = pixelX % 2 == 0 and packed % 16 or math.floor(packed / 16)
+        local color = assert(paletteData.colors[colorIndex + 1], "shadow pixel palette index is in range")
+        rgba[#rgba + 1] = string.char(color.r, color.g, color.b, colorIndex == 0 and 0 or 255)
+      end
+    end
+    rows[#rows + 1] = table.concat(rgba)
+  end
+  return { width = 64, height = 64, pixels = table.concat(rows) }
 end
 
 ---@generic T
@@ -850,6 +929,16 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
     checkColorCount(lowerPalette, 256, "base lower palette")
     local hudPalette = decodePalette(sceneArchive, ROLES.hudPalette, "ordinary HUD palette")
     checkColorCount(hudPalette, 16, "ordinary HUD palette")
+    local componentByteParts = {}
+    local componentHex = Sources.HUD_COMPONENTS.hex
+    for index = 1, #componentHex, 2 do
+      componentByteParts[#componentByteParts + 1] = string.char(tonumber(componentHex:sub(index, index + 1), 16))
+    end
+    local componentBytes = table.concat(componentByteParts)
+    assert(
+      #componentBytes == Sources.HUD_COMPONENTS.tileCount * 32,
+      "native HUD component bytes match their published tile count"
+    )
     local lowerObjPalette = decodePalette(sceneArchive, ROLES.lowerObjPalette, "lower OBJ palette")
     checkColorCount(lowerObjPalette, 112, "lower OBJ palette")
     local images = {}
@@ -858,6 +947,34 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
     local menuTilemapProvenance = {}
     local function stageSlice(name, pixels, width, height)
       images[name] = { width = width, height = height, pixels = pixels }
+    end
+    local shadowArchive = openArchive(romFs, Sources.POKE_SHADOW.archive, "Pokepic shadow art")
+    local shadowCharacterBytes =
+      decodeMember(shadowArchive, Sources.POKE_SHADOW.characterMember, "Pokepic shadow characters")
+    local shadowPaletteBytes = decodeMember(shadowArchive, Sources.POKE_SHADOW.paletteMember, "Pokepic shadow palette")
+    local shadowCharacters = mustDecode(
+      G2dDecoder.decodeChar(shadowCharacterBytes, { label = "Pokepic shadow characters" }),
+      nil,
+      "Pokepic shadow characters",
+      Sources.POKE_SHADOW.characterMember
+    )
+    local shadowPalette = mustDecode(
+      G2dDecoder.decodePalette(shadowPaletteBytes, { label = "Pokepic shadow palette" }),
+      nil,
+      "Pokepic shadow palette",
+      Sources.POKE_SHADOW.paletteMember
+    )
+    local shadowRaster = BattlePresentationCompiler.compileShadowImage(shadowCharacters, shadowPalette)
+    stageSlice("pokepic-shadow", shadowRaster.pixels, shadowRaster.width, shadowRaster.height)
+    local shadowRegions = {}
+    for index, sourceRegion in ipairs(Sources.POKE_SHADOW.regions) do
+      shadowRegions[index] = {
+        size = sourceRegion.size,
+        x = 0,
+        y = (index - 1) * sourceRegion.height,
+        width = sourceRegion.width,
+        height = sourceRegion.height,
+      }
     end
     local lowerStrip = G2dRasterizer.renderTileStrip(lowerChars, lowerPalette, 0, Sources.LOWER_USED_TILES, 0, {
       asset = Sources.LOWER_NARC,
@@ -936,22 +1053,34 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
     -- Single-battle sprites: HUD boxes through the HUD palette, the arrow
     -- and party gauges through the lower OBJ palette. Associations are
     -- never swapped.
-    local function compileSprite(triple, name, label, animIndex)
-      local strip =
-        G2dRasterizer.renderTileStrip(triple.chars, triple.palette, 0, math.floor(#triple.chars.tiles / 32), 0, {
-          asset = Sources.SCENE_NARC,
-          role = label,
-        })
+    local function compileSprite(triple, name, label, animIndex, includeHudComponents)
+      local charTiles = triple.chars.tiles
+      local componentBase = nil
+      if includeHudComponents then
+        assert(triple.chars.depth == 3, "native health-box components use 4bpp characters")
+        componentBase = #charTiles / 32
+        charTiles = charTiles .. componentBytes
+      end
+      local strip = G2dRasterizer.renderTileStrip(
+        { depth = triple.chars.depth, tiles = charTiles },
+        triple.palette,
+        0,
+        math.floor(#charTiles / 32),
+        0,
+        { asset = Sources.SCENE_NARC, role = label }
+      )
       stageSlice(name, strip.pixels, strip.width, strip.height)
       return {
         image = BattlePresentationCache.globalImagePath(name),
         cells = triple.cells,
         animation = selectAnimation(triple, animIndex),
         palette = { colors = paletteRecords(triple.palette) },
+        componentBase = componentBase,
+        componentCount = includeHudComponents and Sources.HUD_COMPONENTS.tileCount or nil,
       }
     end
-    local playerTriple = decodeTriple(sceneArchive, ROLES.playerHud, hudPalette, "player HUD")
-    local enemyTriple = decodeTriple(sceneArchive, ROLES.enemyHud, hudPalette, "enemy HUD")
+    local playerTriple = decodeTriple(sceneArchive, ROLES.playerHud, hudPalette, "player HUD", true)
+    local enemyTriple = decodeTriple(sceneArchive, ROLES.enemyHud, hudPalette, "enemy HUD", true)
     local playerDoubleLeftTriple =
       decodeTriple(sceneArchive, ROLES.playerHudDoubleLeft, hudPalette, "player left doubled HUD", true)
     local playerDoubleRightTriple =
@@ -962,8 +1091,8 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
       decodeTriple(sceneArchive, ROLES.enemyHudDoubleRight, hudPalette, "enemy right doubled HUD", true)
     local arrowTriple = decodeTriple(sceneArchive, ROLES.arrow, lowerObjPalette, "player arrow")
     checkArrow(arrowTriple)
-    local playerHud = compileSprite(playerTriple, "hud-player-chars", "player HUD")
-    local enemyHud = compileSprite(enemyTriple, "hud-enemy-chars", "enemy HUD")
+    local playerHud = compileSprite(playerTriple, "hud-player-chars", "player HUD", nil, true)
+    local enemyHud = compileSprite(enemyTriple, "hud-enemy-chars", "enemy HUD", nil, true)
     -- Doubled health boxes ride the same HUD palette association as the
     -- single-battle boxes, never the lower OBJ palette. Each family
     -- keeps its staged strip, source cells, animation, and palette
@@ -973,20 +1102,29 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
         playerDoubleLeftTriple,
         "hud-doubles-player-left-chars",
         "player left doubled HUD",
-        nil
+        nil,
+        true
       ),
       playerRight = compileSprite(
         playerDoubleRightTriple,
         "hud-doubles-player-right-chars",
         "player right doubled HUD",
-        nil
+        nil,
+        true
       ),
-      enemyLeft = compileSprite(enemyDoubleLeftTriple, "hud-doubles-enemy-left-chars", "enemy left doubled HUD", nil),
+      enemyLeft = compileSprite(
+        enemyDoubleLeftTriple,
+        "hud-doubles-enemy-left-chars",
+        "enemy left doubled HUD",
+        nil,
+        true
+      ),
       enemyRight = compileSprite(
         enemyDoubleRightTriple,
         "hud-doubles-enemy-right-chars",
         "enemy right doubled HUD",
-        nil
+        nil,
+        true
       ),
     }
     local arrow = compileSprite(arrowTriple, "arrow-chars", "player arrow")
@@ -2666,6 +2804,7 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
       version = { id = versionId, language = assert(MonSources.versionLanguages[versionId]) },
       catalogIdentity = versionId .. ":" .. romFs:metadata().sha1,
       scenes = BattlePresentationCache.sceneInventory(),
+      battlefield = { slots = {} },
       layouts = {
         menu = {
           width = Sources.MENU_LAYOUT.width,
@@ -2681,6 +2820,7 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
         doubles = doublesHud,
         arrow = arrow,
         partyGauges = partyGauges,
+        patchSpans = Sources.HUD_PATCH_SPANS,
         terrain = {
           type0 = { cells = type0Cells.cells, animation = selectAnimation({ anims = type0Anim.anims }) },
           type1 = { cells = type1Cells.cells, animation = selectAnimation({ anims = type1Anim.anims }) },
@@ -2705,7 +2845,16 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
           },
         },
       },
-      pictures = { attributes = pictureAttributes, selectors = pictureSelectors },
+      pictures = {
+        attributes = pictureAttributes,
+        selectors = pictureSelectors,
+        shadow = {
+          image = BattlePresentationCache.globalImagePath("pokepic-shadow"),
+          width = shadowRaster.width,
+          height = shadowRaster.height,
+          regions = shadowRegions,
+        },
+      },
       menus = {
         images = imageManifest,
         layouts = menuLayouts,
@@ -2792,6 +2941,20 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
       resources = resourceCatalog,
       coverage = transitionCoverage,
     }
+    for index, row in ipairs(Sources.SLOT_GEOMETRY) do
+      partialManifest.battlefield.slots[index] = {
+        sideType = row.sideType,
+        settledX = row.settledX,
+        settledY = row.settledY,
+        entryX = row.entryX,
+        entryY = row.entryY,
+        depth = row.depth,
+        hudX = row.hudX,
+        hudY = row.hudY,
+        hudPriority = row.hudPriority,
+        hudBgPriority = row.hudBgPriority,
+      }
+    end
     local menuLayerIndices = {}
     for _, layer in ipairs(Sources.MENU_LAYOUT.layers) do
       partialManifest.layouts.menu.layers[#partialManifest.layouts.menu.layers + 1] = {
@@ -2848,6 +3011,21 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
       menuTilemaps = menuTilemapProvenance,
       menuLayouts = menuLayoutProvenance,
       menuLayerIndices = menuLayerIndices,
+      hudComponents = {
+        source = Sources.HUD_COMPONENTS.source,
+        contentIdentity = Hashing.sha1hex(componentBytes),
+      },
+      pokepicShadow = {
+        source = {
+          archive = Sources.POKE_SHADOW.archive,
+          characterMember = Sources.POKE_SHADOW.characterMember,
+          paletteMember = Sources.POKE_SHADOW.paletteMember,
+          file = "src/pokepic.c",
+          symbol = "PokepicManager_Create / PokepicManager_BufferPlttData / sPokepicShadowUVParams",
+        },
+        characterIdentity = Hashing.sha1hex(shadowCharacterBytes),
+        paletteIdentity = Hashing.sha1hex(shadowPaletteBytes),
+      },
       introMusicSources = Sources.INTRO_MUSIC,
     }
     return {
@@ -3068,7 +3246,7 @@ function BattlePresentationCompiler.compileScene(romFs, opts, sceneKey)
       characters = {
         key = "battle-scene/" .. sceneStem .. "/background/characters",
         path = BattlePresentationCache.sceneCharactersPath(sceneKey),
-        format = "indexed4",
+        format = "indexed8",
       },
       map = {
         key = "battle-scene/" .. sceneStem .. "/background/map",

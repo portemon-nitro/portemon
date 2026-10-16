@@ -12,9 +12,12 @@
 local BattleRenderer = {}
 
 local BattleChildText = require("game.hgss.src.battle.BattleChildText")
+local BattleScene = require("libs.hgss.src.presentation.BattleScene")
 
--- Interim battler centers on the native canvas: a product baseline for
--- the idle pose, not a forensic claim about every species pose.
+-- Interim battler anchors on the native canvas: retained for layout
+-- compatibility while native picture geometry lives in the visual
+-- scene owner. The foe picture center is one row above this anchor;
+-- the renderer never uses these values as picture origins.
 BattleRenderer.PLAYER_CENTER = { x = 64, y = 112 }
 BattleRenderer.ENEMY_CENTER = { x = 192, y = 56 }
 
@@ -25,26 +28,12 @@ BattleRenderer.PLAYER_HUD = { x = 192, y = 116 }
 BattleRenderer.ENEMY_HUD = { x = 58, y = 36 }
 BattleRenderer.ARROW_OFFSET = 72
 
--- Staged sprite strips behind the battle keys: one 8-pixel tile row, so
--- each width is eight times the compiled tile count (both HUD strips 128
--- tiles, the arrow 26 tiles, the 16-pixel gauge family 16 tiles). The
--- ROM-backed captures pin these against the staged manifest; a producer
--- repagination fails there first.
+-- The arrow and gauge families are source-sized 8-pixel tile rows. HUD
+-- strips use the staged drawable's actual width because appended source
+-- component tiles extend past the character-cell payload.
 local STRIP_HEIGHT = 8
-local HUD_STRIP_WIDTH = 1024
 local ARROW_STRIP_WIDTH = 208
 local GAUGE_STRIP_WIDTH = 128
-
--- Authored HUD cells: two 64x64 objects each, drawn at the anchor with
--- the compiled local offsets.
-local PLAYER_HUD_OBJECTS = {
-  { tile = 0, width = 64, height = 64, x = -64, y = -32 },
-  { tile = 32, width = 64, height = 64, x = 0, y = -32 },
-}
-local ENEMY_HUD_OBJECTS = {
-  { tile = 0, width = 64, height = 64, x = -64, y = -28 },
-  { tile = 32, width = 64, height = 64, x = 0, y = -28 },
-}
 
 -- Authored arrow cells in animation order: the zero-time opening cell
 -- carries no objects and draws nothing, the rest hold their authored
@@ -77,21 +66,14 @@ local GAUGE_CELL_OFFSET = -8
 -- Dynamic content anchors inside the composite bounds, in native logical
 -- pixels: the enemy box spans (-6,8)-(122,72), the player box
 -- (128,84)-(256,148). Name, level, and numeric health keep their
--- established anchors; the condition rides beside the level, the enemy
--- bar mirrors the player bar row, and the numeric experience sits
--- beneath the player health row.
-local ENEMY_CONDITION = { x = 40, y = 28 }
-local ENEMY_BAR = { x = 8, y = 44, width = 48, height = 4 }
-local PLAYER_CONDITION = { x = 176, y = 104 }
--- The numeric experience shares the health row right of the numbers: the
--- narration frame tiles cover rows 136 and below, so nothing dynamic
--- sits beneath the health row.
-local PLAYER_EXP = { x = 192, y = 116 }
-
+-- established anchors; the condition rides beside the level and the bar
+-- rows carry tile work. The player experience tile row sits beneath the
+-- health numerals; the narration frame tiles cover rows 136 and below,
+-- so nothing dynamic sits beneath the experience row.
 -- Narration window: content origin with its size, wrapped by the
 -- selected frame border.
-local NARRATION_BOX = { x = 8, y = 144, width = 240, height = 40 }
-local NARRATION_TEXT = { x = 16, y = 152 }
+local NARRATION_BOX = { x = 16, y = 152, width = 216, height = 32 }
+local NARRATION_TEXT = { x = 24, y = 160 }
 
 -- Command text anchors from the source bounds table.
 local COMMAND_ANCHORS = {
@@ -252,56 +234,40 @@ local function doublesRow(order, battler, fallback, rows, context)
   return rows[fallback]
 end
 
--- Doubled battlefield rows from the retail source tables, in 256x192
--- upper-screen pixels. Settled X and the HUD anchors come from the
--- doubles layout tables; portrait anchors are center-style for nominal
--- 80x80 pictures (species height offsets from the retail picture
--- routine have no mon-fact counterpart here, so the vertical
--- composition uses the base row unshifted). Rows stay verbatim per
--- side: the enemy left row sits screen-right of the enemy right row.
--- Source: overlay_07 asm settled-X and entry/base/Z tables, the
--- opponent-controller construction and entry-to-settled move, the four
--- doubled health-bar sprite templates, and the picture-center
--- semantics. Positions stay opaque: the
--- first sorted slot of a side owns that side's left row, whatever
--- screen side that row lands on. Entry coordinates and depths are
--- source data, never 2D layering: paint order follows slot order.
+-- Semantic art roles associated with the four doubled source side types.
+-- Coordinates, entry points, depth, and HUD anchors come from the
+-- producer-published battlefield geometry.
 local DOUBLES_ROWS = {
   player = {
-    {
-      type = 2,
-      sprite = { x = 40, y = 112 },
-      hud = { x = 192, y = 103 },
-      art = "hud:player-left",
-    },
-    {
-      type = 4,
-      sprite = { x = 80, y = 120 },
-      hud = { x = 198, y = 132 },
-      art = "hud:player-right",
-    },
+    { sideType = 2, art = "hud:player-left" },
+    { sideType = 4, art = "hud:player-right" },
   },
   enemy = {
-    {
-      type = 3,
-      sprite = { x = 216, y = 50 },
-      hud = { x = 64, y = 16 },
-      art = "hud:enemy-left",
-    },
-    {
-      type = 5,
-      sprite = { x = 176, y = 42 },
-      hud = { x = 58, y = 45 },
-      art = "hud:enemy-right",
-    },
+    { sideType = 3, art = "hud:enemy-left" },
+    { sideType = 5, art = "hud:enemy-right" },
   },
 }
 
--- Half the nominal picture edge: sourced centers convert to top-left
--- draw origins through this inset. No per-species picture height rides
--- the mon facts, so no height shift applies; that gap stays open until
--- a sourced height counterpart lands.
-local PORTRAIT_HALF = 40
+---@class BattleRenderer.SlotGeometry
+---@field sideType integer normalized source slot identity
+---@field settledX integer
+---@field settledY integer
+---@field entryX integer
+---@field entryY integer
+---@field depth integer source Pokepic Z
+---@field hudX integer
+---@field hudY integer
+---@field hudPriority integer native OBJ priority
+---@field hudBgPriority integer native BG priority
+local function sourceSlotGeometry(view, sideType)
+  local rows = view.slotGeometry --[[@as table<integer, BattleRenderer.SlotGeometry>]]
+  for _, row in ipairs(rows) do
+    if row.sideType == sideType then
+      return row
+    end
+  end
+  error("the published battle geometry contains side type " .. tostring(sideType), 0)
+end
 
 local DOUBLES_HUD_SECTIONS = {
   ["hud:player-left"] = "playerLeft",
@@ -335,8 +301,6 @@ local DOUBLES_FIELDS = {
     bar = { x = 50, y = 49 },
   },
 }
-local DOUBLES_BAR_WIDTH = 48
-local DOUBLES_BAR_HEIGHT = 4
 
 -- Loud doubles occupancy: at most two live records per side and no
 -- shared visible slot. Identity rides the message so a doubled claim
@@ -404,71 +368,341 @@ end
 
 ---@param assets table<string, unknown> injected asset holder
 ---@param record table<string, unknown> displayed battler facts under drawing
----@return table<string, unknown>? portrait drawable for the displayed battler, nil while unavailable: the pool lease plus cell quad in production, the bare lease for whole images, or a headless descriptor under inspection
+---@return table<string, unknown>? image handle for the displayed battler, nil while unavailable
 local function battlerImage(assets, record)
   -- Each displayed battler draws its own exact canonical portrait:
   -- the selector rides the displayed record, so a switch rebinds the
-  -- cell at its reveal instead of reusing a side-role picture. The
-  -- handle pairs the pooled atlas lease with its renderer-owned cell
-  -- quad, so the drawn pixels are exactly the staged cell through the
-  -- lease sampler surface.
+  -- image at its reveal instead of reusing a side-role picture.
   -- A record without a canonical selector draws nothing: nil means
   -- unavailable, never a substitute picture.
   local selector = record.portraitSelector
   if type(selector) == "string" and selector ~= "" then
-    -- Production handles pair the pool lease with its cell quad;
-    -- recording doubles answer the same lease-plus-quad shape instead.
-    return assets:drawable("mon:" .. selector)
+    local portrait = assets:drawable("mon:" .. selector)
+    if portrait == nil then
+      return nil
+    end
+    local frames = portrait.frames --[[@as table<integer, table<string, unknown>>?]]
+    if type(frames) == "table" then
+      local frame = record.pictureFrame
+      if type(frame) ~= "number" then
+        frame = 0
+      end
+      return assert(frames[frame + 1], "portrait animation selects a staged source frame")
+    end
+    return portrait
   end
   return nil
 end
 
--- Draws one borrowed portrait cell at its anchor: the pooled page image
--- clipped to the staged cell quad, so the top-left of the drawn cell
--- lands exactly where the retired per-battler copy drew.
----@param graphics table<string, unknown> injected host graphics
----@param handle table<string, unknown> borrowed portrait cell or headless descriptor
----@param x number anchor horizontal origin under drawing
----@param y number anchor vertical origin under drawing
-local function drawPortraitCell(graphics, handle, x, y)
-  -- Headless inspection descriptors carry no lease or quad: they
-  -- record their whole-draw exactly like the raw draws they replace.
-  local lease = handle.lease or handle
-  if handle.quad ~= nil then
-    lease:drawQuad(graphics, handle.quad, x, y)
-  else
-    lease:draw(graphics, x, y)
-  end
-end
-
----@param hp number
----@param maxHp number
----@return number fraction clamped to valid pixel bounds
-local function barFraction(hp, maxHp)
-  if type(maxHp) ~= "number" or maxHp <= 0 then
-    return 0
-  end
-  local fraction = hp / maxHp
-  if fraction < 0 then
-    return 0
-  end
-  if fraction > 1 then
-    return 1
-  end
-  return fraction
-end
-
----@param graphics table<string, unknown>
+-- Neutral health-box wording through the borrowed text services: the
+-- field palette triple when the service carries the generated font
+-- definition, a neutral caller palette otherwise. Every health-box word
+-- carries its palette; no wording draws palette-less.
 ---@param text table<string, unknown> borrowed text services
----@param name string
----@param level integer?
----@param x number
----@param y number
-local function drawNameLevel(graphics, text, name, level, x, y)
-  local _ = graphics
-  text.drawText(tostring(name), x, y)
-  if type(level) == "number" then
-    text.drawText("Lv" .. tostring(level), x, y + 12)
+---@param content string wording under drawing
+---@param x number horizontal origin under drawing
+---@param y number vertical origin under drawing
+local function hudText(text, content, x, y)
+  local wording = tostring(content)
+  if type(text.drawTextWithPalette) == "function" then
+    local palette = nil
+    local fontDef = text.fontDef --[[@as table<string, unknown>?]]
+    if type(fontDef) == "table" and type(fontDef.palette) == "table" then
+      local slots = fontDef.palette --[[@as table[] ]]
+      local function channel(slot)
+        local color = slots[slot]
+        assert(type(color) == "table", "health-box wording reads its font palette slot")
+        local r = assert(tonumber(color.r or color[1]), "font palette slots carry red") --[[@as number]]
+        local g = assert(tonumber(color.g or color[2]), "font palette slots carry green") --[[@as number]]
+        local b = assert(tonumber(color.b or color[3]), "font palette slots carry blue") --[[@as number]]
+        if r > 1 or g > 1 or b > 1 then
+          r, g, b = r / 255, g / 255, b / 255
+        end
+        return { r = r * 255, g = g * 255, b = b * 255 }
+      end
+      local ok, triple = pcall(function()
+        return {
+          foreground = channel(2),
+          shadow = channel(3),
+          background = channel(16),
+        }
+      end)
+      if ok then
+        palette = triple
+      end
+    end
+    if palette == nil then
+      palette = {
+        foreground = { r = 255, g = 255, b = 255 },
+        shadow = { r = 0, g = 0, b = 0 },
+        background = { r = 0, g = 0, b = 0, a = 0 },
+      }
+    end
+    text.drawTextWithPalette(wording, x, y, palette)
+    return
+  end
+  text.drawText(wording, x, y)
+end
+
+---@param text table<string, unknown> borrowed text services
+---@param content string label wording under truncation
+---@param maxWidth number tile span width under truncation
+---@return string label fitting its tile span
+local function fitSpan(text, content, maxWidth)
+  local label = tostring(content)
+  if maxWidth > 0 then
+    if type(text.measure) == "function" then
+      while #label > 1 and text.measure(label).width > maxWidth do
+        label = label:sub(1, #label - 1)
+      end
+    elseif type(text.textWidth) == "function" then
+      while #label > 1 and text.textWidth(label) > maxWidth do
+        label = label:sub(1, #label - 1)
+      end
+    elseif 8 * #label > maxWidth then
+      label = label:sub(1, math.max(1, math.floor(maxWidth / 8)))
+    end
+  end
+  return label
+end
+
+-- Draws one native bar row as tile work over the staged strip: each
+-- 8-pixel tile samples the color base plus its 0..8 fill level, so the
+-- selection and quantization follow the value with no painted
+-- rectangles and no interim tints. Empty fills stay transparent like the
+-- native patch, so only filled tiles draw. A missing strip draws
+-- nothing.
+---@param graphics table<string, unknown> injected host graphics
+---@param assets table<string, unknown> injected asset holder
+---@param artKey string staged strip identity under drawing
+---@param anchor table<string, number> source HUD anchor under drawing
+---@param objects table<integer, table<string, unknown>> source cell objects
+---@param componentBase integer appended native component strip tile base, zero for bar tiles
+---@param patches table<integer, { tile: integer, sourceTile: integer, fill?: integer }> source character-buffer patches
+local function drawBarTiles(graphics, assets, artKey, anchor, objects, componentBase, patches)
+  local art = assets:drawable(artKey)
+  if art == nil then
+    return
+  end
+  -- Headless descriptors and other dimension-less stand-ins carry no
+  -- strip pixels: patch tiles stay missing exactly like an unstaged
+  -- strip while anchors and wording still resolve.
+  if type(art.getWidth) ~= "function" or type(art.getHeight) ~= "function" then
+    return
+  end
+  for _, patch in ipairs(patches) do
+    if patch.fill == nil or patch.fill > 0 then
+      local quad = graphics.newQuad((componentBase + patch.sourceTile) * 8, 0, 8, 8, art:getWidth(), art:getHeight())
+      local found = false
+      for _, obj in ipairs(objects) do
+        if not obj.disabled then
+          local columns = math.floor(obj.width / 8)
+          local rows = math.floor(obj.height / 8)
+          assert(columns > 0 and rows > 0, "source HUD objects contain character tiles")
+          local tileOffset = patch.tile - obj.tile
+          local tileCount = columns * rows
+          if tileOffset >= 0 and tileOffset < tileCount then
+            found = true
+            graphics.draw(
+              art,
+              quad,
+              anchor.x + obj.x + (tileOffset % columns) * 8,
+              anchor.y + obj.y + math.floor(tileOffset / columns) * 8
+            )
+          end
+        end
+      end
+      assert(found, "dynamic HUD tile " .. tostring(patch.tile) .. " belongs to a source NCER object")
+    end
+  end
+end
+
+local function gaugeTaskTiles(all, sideType, kind)
+  all = all --[[@as table<integer, table<string, unknown>>?]]
+  local bySide = all ~= nil and all[sideType] or nil
+  return bySide ~= nil and bySide[kind] or nil
+end
+
+local function pictureRecord(records, battler, row)
+  records[#records + 1] = { battler = battler, row = row, insertion = #records + 1 }
+end
+
+local function drawPicturePlanes(graphics, assets, view, players, enemies, singles)
+  local records = {}
+  if singles then
+    local enemy, player = enemies[1], players[1]
+    if enemy ~= nil then
+      pictureRecord(records, enemy, sourceSlotGeometry(view, 1))
+    end
+    if player ~= nil then
+      pictureRecord(records, player, sourceSlotGeometry(view, 0))
+    end
+  else
+    local foeOrder = canonicalOrder(view, false)
+    local allyOrder = canonicalOrder(view, true)
+    for index, foe in ipairs(enemies) do
+      local role = doublesRow(foeOrder, foe, index, DOUBLES_ROWS.enemy, "the sourced enemy rows cover every live foe")
+      pictureRecord(records, foe, sourceSlotGeometry(view, role.sideType))
+    end
+    for index, ally in ipairs(players) do
+      local role =
+        doublesRow(allyOrder, ally, index, DOUBLES_ROWS.player, "the sourced player rows cover every live ally")
+      pictureRecord(records, ally, sourceSlotGeometry(view, role.sideType))
+    end
+  end
+  table.sort(records, function(left, right)
+    local leftRow = left.row --[[@as BattleRenderer.SlotGeometry]]
+    local rightRow = right.row --[[@as BattleRenderer.SlotGeometry]]
+    if leftRow.depth ~= rightRow.depth then
+      return leftRow.depth < rightRow.depth
+    end
+    return left.insertion < right.insertion
+  end)
+  local pictures = {}
+  for _, record in ipairs(records) do
+    local battler = record.battler --[[@as table<string, unknown>]]
+    local row = record.row --[[@as BattleRenderer.SlotGeometry]]
+    if battler.vanished ~= true and battler.dontDraw ~= true then
+      local shadow
+      local shadowSize = type(battler.shadowSize) == "number" and battler.shadowSize or 0
+      if shadowSize ~= 0 and battler.shadowVisible ~= false and battler.pictureVisible ~= true then
+        shadow = assets:drawable("shadow")
+      end
+      if shadow ~= nil then
+        local entryDx = type(battler.entryDx) == "number" and battler.entryDx or 0
+        local entryDy = type(battler.entryDy) == "number" and battler.entryDy or 0
+        local pictureCenterX = row.settledX + entryDx + (type(battler.shakeDx) == "number" and battler.shakeDx or 0)
+        local pictureCenterY = row.settledY
+          - (type(battler.height) == "number" and battler.height or 0)
+          - (type(battler.sourceHeight) == "number" and battler.sourceHeight or 0)
+          + entryDy
+        local shadowOffsetX = type(battler.shadowOffsetX) == "number" and battler.shadowOffsetX or 0
+        local shadowOffsetY = type(battler.shadowOffsetY) == "number" and battler.shadowOffsetY or 0
+        local shadowX = battler.shadowAdjustX == false
+            and assert(type(battler.shadowX) == "number" and battler.shadowX, "fixed shadows carry their source X")
+          or pictureCenterX
+            + (type(battler.pictureXOffset) == "number" and battler.pictureXOffset or 0)
+            + shadowOffsetX
+        local shadowY = battler.shadowAdjustY == false
+            and assert(type(battler.shadowY) == "number" and battler.shadowY, "fixed shadows carry their source Y")
+          or pictureCenterY
+            + (type(battler.pictureYOffset) == "number" and battler.pictureYOffset or 0)
+            + shadowOffsetY
+        pictures[#pictures + 1] = {
+          kind = "shadow",
+          image = shadow,
+          centerX = shadowX,
+          centerY = shadowY,
+          zCenter = BattleScene.SHADOW_DEPTH,
+          width = BattleScene.SHADOW_WIDTH,
+          height = BattleScene.SHADOW_HEIGHT,
+          textureRegion = assets:shadowRegion(shadowSize),
+          shadowSize = shadowSize,
+          shadowAffine = battler.shadowAffine ~= false,
+          shadowOffsetX = type(battler.shadowOffsetX) == "number" and battler.shadowOffsetX or 0,
+          shadowOffsetY = type(battler.shadowOffsetY) == "number" and battler.shadowOffsetY or 0,
+          affineWidth = type(battler.affineWidth) == "number" and battler.affineWidth or 0x100,
+          affineHeight = type(battler.affineHeight) == "number" and battler.affineHeight or 0x100,
+          tintR = battler.shadowTint ~= nil and battler.shadowTint.r or 1,
+          tintG = battler.shadowTint ~= nil and battler.shadowTint.g or 1,
+          tintB = battler.shadowTint ~= nil and battler.shadowTint.b or 1,
+          alpha = (type(battler.polygonAlpha) == "number" and battler.polygonAlpha or 31) / 31,
+          paletteFade = battler.paletteFade,
+        }
+      end
+      -- The Substitute doll is a transient native animation picture. The
+      -- scene hides the replaced mon; the animation owner supplies the
+      -- doll through its effect instance.
+      -- The GPU picture pass consumes staged image handles: headless
+      -- descriptors and other dimension-less stand-ins carry no pixels,
+      -- so they never reach the isolated depth target.
+      local image = battler.substitute ~= true and battlerImage(assets, battler) or nil
+      if image ~= nil and type(image.getDimensions) ~= "function" then
+        image = nil
+      end
+      if image ~= nil then
+        local sourceHeight = (type(battler.height) == "number" and battler.height or 0)
+          + (type(battler.sourceHeight) == "number" and battler.sourceHeight or 0)
+        local tint = battler.pictureTint --[[@as table<string, number>?]]
+        local scaleX = type(battler.scaleX) == "number" and battler.scaleX or 1
+        local scaleY = type(battler.scaleY) == "number" and battler.scaleY or 1
+        if battler.affineMode == true then
+          scaleX = scaleX
+            * assert(
+              type(battler.affineWidth) == "number" and battler.affineWidth,
+              "affine pictures carry native width"
+            )
+            / 0x100
+          scaleY = scaleY
+            * assert(
+              type(battler.affineHeight) == "number" and battler.affineHeight,
+              "affine pictures carry native height"
+            )
+            / 0x100
+        end
+        local alpha = (type(battler.polygonAlpha) == "number" and battler.polygonAlpha or 31) / 31
+        local pictureVisible = battler.pictureVisible == true
+        pictures[#pictures + 1] = {
+          image = image,
+          centerX = row.settledX + (type(battler.entryDx) == "number" and battler.entryDx or 0) + (type(
+            battler.shakeDx
+          ) == "number" and battler.shakeDx or 0),
+          centerY = row.settledY - sourceHeight + (type(battler.entryDy) == "number" and battler.entryDy or 0),
+          zCenter = row.depth,
+          zOffset = type(battler.zOffset) == "number" and battler.zOffset or 0,
+          xOffset = type(battler.pictureXOffset) == "number" and battler.pictureXOffset or 0,
+          yOffset = type(battler.pictureYOffset) == "number" and battler.pictureYOffset or 0,
+          xOffset2 = type(battler.pictureXOffset2) == "number" and battler.pictureXOffset2 or 0,
+          yOffset2 = type(battler.pictureYOffset2) == "number" and battler.pictureYOffset2 or 0,
+          pictureVisible = pictureVisible,
+          shadowHeight = type(battler.shadowHeight) == "number" and battler.shadowHeight or 0,
+          pivotX = type(battler.pivotX) == "number" and battler.pivotX or 0,
+          pivotY = type(battler.pivotY) == "number" and battler.pivotY or 0,
+          width = pictureVisible and (type(battler.pictureWidth) == "number" and battler.pictureWidth or 80)
+            or 80 * scaleX,
+          height = pictureVisible and (type(battler.pictureHeight) == "number" and battler.pictureHeight or 80)
+            or 80 * scaleY,
+          rotationX = battler.rotationX,
+          rotationY = battler.rotationY,
+          rotationZ = battler.rotationZ,
+          rotation = battler.rotation,
+          tintR = tint ~= nil and tint.r or 1,
+          tintG = tint ~= nil and tint.g or 1,
+          tintB = tint ~= nil and tint.b or 1,
+          alpha = alpha * (tint ~= nil and tint.a or 1),
+          paletteFade = battler.paletteFade,
+        }
+      end
+    end
+  end
+  for _, effect in ipairs(assert(view.effectInstances, "battle snapshots carry transient effect instances")) do
+    local picture = effect.picture --[[@as table<string, unknown>?]]
+    if picture ~= nil then
+      local assetKey = assert(picture.assetKey, "transient pictures carry their staged drawable key")
+      local image = assert(assets:drawable(assetKey), "transient effect drawables are staged before submission")
+      pictures[#pictures + 1] = {
+        kind = "effect",
+        image = image,
+        centerX = assert(picture.centerX, "transient pictures carry native X"),
+        centerY = assert(picture.centerY, "transient pictures carry native Y"),
+        zCenter = assert(picture.zCenter, "transient pictures carry native depth"),
+        width = assert(picture.width, "transient pictures carry native width"),
+        height = assert(picture.height, "transient pictures carry native height"),
+        alpha = assert(picture.alpha, "transient pictures carry polygon alpha"),
+        rotationX = picture.rotationX,
+        rotationY = picture.rotationY,
+        rotationZ = picture.rotationZ,
+        tintR = picture.tintR or 1,
+        tintG = picture.tintG or 1,
+        tintB = picture.tintB or 1,
+        paletteFade = picture.paletteFade,
+      }
+    end
+  end
+  if #pictures > 0 then
+    local layer = assets:renderPictures(graphics, pictures)
+    graphics.setColor(1, 1, 1, 1)
+    graphics.draw(layer, 0, 0)
   end
 end
 
@@ -476,12 +710,12 @@ end
 -- out row-major from the object base tile, so each 8-pixel band is one
 -- quad over the single strip row.
 ---@param graphics table<string, unknown> injected host graphics
----@param lease table<string, unknown> staged strip lease under drawing
+---@param image table<string, unknown> staged strip handle under drawing
 ---@param stripWidth integer staged strip width in pixels
 ---@param baseX number anchor horizontal origin under drawing
 ---@param baseY number anchor vertical origin under drawing
 ---@param obj table<string, unknown> compiled object carrying tile, width, height, x, y
-local function drawSpriteObject(graphics, lease, stripWidth, baseX, baseY, obj)
+local function drawSpriteObject(graphics, image, stripWidth, baseX, baseY, obj)
   local tile = obj.tile --[[@as integer]]
   local width = obj.width --[[@as integer]]
   local height = obj.height --[[@as integer]]
@@ -489,7 +723,7 @@ local function drawSpriteObject(graphics, lease, stripWidth, baseX, baseY, obj)
   local rows = math.floor(height / 8)
   for row = 0, rows - 1 do
     local quad = graphics.newQuad((tile + row * tilesPerRow) * 8, 0, width, STRIP_HEIGHT, stripWidth, STRIP_HEIGHT)
-    lease:drawQuad(graphics, quad, baseX + obj.x --[[@as number]], baseY + obj.y --[[@as number]] + row * 8)
+    graphics.draw(image, quad, baseX + obj.x --[[@as number]], baseY + obj.y --[[@as number]] + row * 8)
   end
 end
 
@@ -499,15 +733,106 @@ end
 ---@param assets table<string, unknown> injected asset holder
 ---@param artKey string staged strip identity under drawing
 ---@param anchor table<string, number> composite anchor under drawing
----@param objects table<integer, table<string, unknown>> compiled objects under drawing
+---@param objects table<integer, table<string, unknown>> staged source cell objects
 local function drawHudComposite(graphics, assets, artKey, anchor, objects)
   local art = assets:drawable(artKey)
   if art == nil then
     return
   end
-  for _, obj in ipairs(objects) do
-    drawSpriteObject(graphics, art --[[@as table<string, unknown>]], HUD_STRIP_WIDTH, anchor.x, anchor.y, obj)
+  -- Headless descriptors and other dimension-less stand-ins carry no
+  -- strip pixels: the composite stays missing exactly like an unstaged
+  -- strip while anchors and wording still resolve.
+  if type(art.getWidth) ~= "function" then
+    return
   end
+  for _, obj in ipairs(objects) do
+    drawSpriteObject(graphics, art --[[@as table<string, unknown>]], art:getWidth(), anchor.x, anchor.y, obj)
+  end
+end
+
+---@param section table<string, unknown> staged HUD sprite section
+---@return table<string, unknown> opening cell selected by the source animation
+local function openingHudCell(section)
+  local animation = assert(section.animation, "a staged HUD section carries its source animation")
+  local firstFrame = assert(animation.frames[1], "a staged HUD animation carries its opening frame")
+  return assert(section.cells[firstFrame.cell + 1], "a staged HUD animation selects a source cell")
+end
+
+---@param anchor table<string, number> source HUD anchor under drawing
+---@param objects table<integer, table<string, unknown>> source cell objects under reading
+---@param tile integer normalized source character tile
+---@return number, number tile screen origin
+local function hudTileOrigin(anchor, objects, tile)
+  for _, obj in ipairs(objects) do
+    if not obj.disabled then
+      local columns = math.floor(obj.width / 8)
+      local rows = math.floor(obj.height / 8)
+      local offset = tile - obj.tile
+      if offset >= 0 and offset < columns * rows then
+        return anchor.x + obj.x + (offset % columns) * 8, anchor.y + obj.y + math.floor(offset / columns) * 8
+      end
+    end
+  end
+  error("native HUD number tile belongs to a source cell object", 0)
+end
+
+---@param text table<string, unknown> borrowed text services
+---@param anchor table<string, number> source HUD anchor under drawing
+---@param objects table<integer, table<string, unknown>> source cell objects under reading
+---@param patches table<string, table<integer, { tile: integer }>> current/max native glyph spans
+---@param hp integer displayed current HP
+---@param maxHp integer displayed maximum HP
+---@param graphics table<string, unknown> injected host graphics
+local function drawHpNumbers(graphics, text, anchor, objects, patches, hp, maxHp)
+  local current = tostring(hp)
+  local maximum = tostring(maxHp)
+  local currentX, currentY = hudTileOrigin(anchor, objects, patches.current[1].tile)
+  local maximumX, maximumY = hudTileOrigin(anchor, objects, patches.maximum[1].tile)
+  local currentLabel = fitSpan(text, current, 24)
+  local maximumLabel = fitSpan(text, maximum, 24)
+  local function width(value)
+    if type(text.measure) == "function" then
+      return text.measure(value).width
+    elseif type(text.textWidth) == "function" then
+      return text.textWidth(value)
+    end
+    return #value * 8
+  end
+  local LogicalSurface = require("libs.ui.src.LogicalSurface")
+  LogicalSurface.clip(graphics, { x = currentX, y = currentY, width = 24, height = 8 }, function()
+    hudText(text, currentLabel, currentX + 24 - width(currentLabel), currentY)
+  end)
+  LogicalSurface.clip(graphics, { x = maximumX, y = maximumY, width = 24, height = 8 }, function()
+    hudText(text, maximumLabel, maximumX, maximumY)
+  end)
+end
+
+-- OAM priority is back-to-front in a painter, with the source object index
+-- retaining the native tie order. Copy the records so staged cell arrays stay immutable.
+---@param objects table<integer, table<string, unknown>> source cell objects
+---@return table<integer, table<string, unknown>> objects ordered back to front
+local function objectsByPriority(objects)
+  local ordered = {}
+  for index, object in ipairs(objects) do
+    ordered[#ordered + 1] = { index = index, object = object }
+  end
+  table.sort(ordered, function(left, right)
+    local leftObject = left.object --[[@as table<string, unknown>]]
+    local rightObject = right.object --[[@as table<string, unknown>]]
+    local leftPriority = assert(leftObject.priority, "staged cell objects carry native priority") --[[@as integer]]
+    local rightPriority = assert(rightObject.priority, "staged cell objects carry native priority") --[[@as integer]]
+    if leftPriority ~= rightPriority then
+      return leftPriority > rightPriority
+    end
+    local leftIndex = left.index --[[@as integer]]
+    local rightIndex = right.index --[[@as integer]]
+    return leftIndex < rightIndex
+  end)
+  local result = {}
+  for _, entry in ipairs(ordered) do
+    result[#result + 1] = entry.object --[[@as table<string, unknown>]]
+  end
+  return result
 end
 
 -- Draws the opening cell of a staged native doubles HUD at its template
@@ -518,17 +843,23 @@ end
 ---@param sections table<string, unknown> staged role sections
 ---@param artKey string semantic doubles HUD image key
 ---@param anchor table<string, number> native sprite template anchor
+---@return table<string, unknown>? selected source cell, absent without its staged drawable
+---@return table<string, unknown> source section owning the selected cell
 local function drawDoublesHudCell(graphics, assets, sections, artKey, anchor)
   local sectionKey = assert(DOUBLES_HUD_SECTIONS[artKey], "doubles HUD rows name a source section")
   local section = assert(sections[sectionKey], "the doubled battle manifest carries " .. sectionKey)
-  local animation = assert(section.animation, "the doubled HUD section carries its selected animation")
-  local firstFrame = assert(animation.frames[1], "the doubled HUD animation carries its opening frame")
-  local cell = assert(section.cells[firstFrame.cell + 1], "the doubled HUD animation selects a source cell")
+  local cell = openingHudCell(section)
   local art = assets:drawable(artKey)
   if art == nil then
-    return
+    return nil, section
   end
-  for index, obj in ipairs(cell.objs) do
+  -- Headless descriptors and other dimension-less stand-ins carry no
+  -- strip pixels: the HUD cell stays missing exactly like an unstaged
+  -- strip while field bounds and wording still resolve.
+  if type(art.getWidth) ~= "function" then
+    return nil, section
+  end
+  for index, obj in ipairs(objectsByPriority(cell.objs)) do
     local context = sectionKey .. " source object " .. tostring(index)
     assert(not obj.affine, context .. " uses unsupported affine drawing")
     assert(not obj.flipH and not obj.flipV, context .. " uses unsupported object flipping")
@@ -536,89 +867,119 @@ local function drawDoublesHudCell(graphics, assets, sections, artKey, anchor)
     assert(not obj.mosaic and obj.objMode == "normal", context .. " uses unsupported object display flags")
     assert(obj.colorMode == "16-color", context .. " uses unsupported color depth")
     if not obj.disabled then
-      drawSpriteObject(graphics, art, HUD_STRIP_WIDTH, anchor.x, anchor.y, obj)
+      drawSpriteObject(graphics, art, art:getWidth(), anchor.x, anchor.y, obj)
     end
   end
-end
-
--- Colors one health fill by its fraction: full, worn, then critical.
----@param graphics table<string, unknown> injected host graphics
----@param fraction number health fraction under coloring
-local function setBarColor(graphics, fraction)
-  if fraction > 0.5 then
-    graphics.setColor(0.2, 0.8, 0.2, 1)
-  elseif fraction > 0.2 then
-    graphics.setColor(0.9, 0.8, 0.2, 1)
-  else
-    graphics.setColor(0.9, 0.2, 0.2, 1)
-  end
+  return cell, section
 end
 
 ---@param graphics table<string, unknown> injected host graphics
 ---@param text table<string, unknown> borrowed text services
 ---@param assets table<string, unknown> injected asset holder
 ---@param sections table<string, unknown> staged role sections
----@param r number borrowed red channel for restoration
----@param g number borrowed green channel for restoration
----@param b number borrowed blue channel for restoration
----@param a number borrowed alpha channel for restoration
 ---@param view table<string, unknown> internal semantic snapshot carrying claimed slots
 ---@param players table<integer, table<string, unknown>> live player-side battler facts in slot order
 ---@param enemies table<integer, table<string, unknown>> live enemy-side battler facts in slot order
-local function drawDoublesDetail(graphics, text, assets, sections, r, g, b, a, view, players, enemies)
-  -- Every live slot paints its own sprite and HUD at its canonical
-  -- sourced row: the surviving partner never reindexes when a slot
-  -- empties mid-transition, and a missing portrait or strip draws
-  -- nothing under the existing missing-art pending path (never a
-  -- fallback mon or a shared single-battle strip).
+local function drawDoublesDetail(graphics, text, assets, sections, view, players, enemies)
+  -- Every live slot paints its HUD at its canonical sourced row; picture
+  -- planes were already submitted by depth before this OBJ pass.
   checkDoublesSlots(players, enemies)
   local foeOrder = canonicalOrder(view, false)
   local allyOrder = canonicalOrder(view, true)
+  -- Build one ordered native HUD pass. Its template draw priority is
+  -- distinct from the battler's Pokepic depth and the BG priority.
+  local hudRecords = {}
   for index, foe in ipairs(enemies) do
-    local row = doublesRow(foeOrder, foe, index, DOUBLES_ROWS.enemy, "the sourced enemy rows cover every live foe")
-    local front = battlerImage(assets, foe)
-    if front ~= nil then
-      local dx = (type(foe.shakeDx) == "number" and foe.shakeDx or 0) --[[@as number]]
-      drawPortraitCell(graphics, front, row.sprite.x - PORTRAIT_HALF + dx, row.sprite.y - PORTRAIT_HALF)
-    end
-    drawDoublesHudCell(graphics, assets, sections, row.art, row.hud)
-    local fields = assert(DOUBLES_FIELDS[row.art], "doubled enemy rows carry field bounds")
-    text.drawText(tostring(foe.name or "FOE"), fields.name.x, fields.name.y)
-    if type(foe.level) == "number" then
-      text.drawText("Lv" .. tostring(foe.level), fields.level.x, fields.level.y)
-    end
-    if type(foe.condition) == "string" and foe.condition ~= "" then
-      text.drawText(foe.condition --[[@as string]], fields.condition.x, fields.condition.y)
-    end
-    local foeHp = (type(foe.hp) == "number" and foe.hp or 0) --[[@as number]]
-    local foeMaxHp = (type(foe.maxHp) == "number" and foe.maxHp or 1) --[[@as number]]
-    local foeFraction = barFraction(foeHp, foeMaxHp)
-    setBarColor(graphics, foeFraction)
-    graphics.rectangle("fill", fields.bar.x, fields.bar.y, DOUBLES_BAR_WIDTH * foeFraction, DOUBLES_BAR_HEIGHT)
-    restoreColor(graphics, r, g, b, a)
+    local role = doublesRow(foeOrder, foe, index, DOUBLES_ROWS.enemy, "the sourced enemy rows cover every live foe")
+    hudRecords[#hudRecords + 1] = {
+      battler = foe,
+      row = sourceSlotGeometry(view, role.sideType),
+      art = role.art,
+      insertion = #hudRecords + 1,
+    }
   end
   for index, ally in ipairs(players) do
-    local row = doublesRow(allyOrder, ally, index, DOUBLES_ROWS.player, "the sourced player rows cover every live ally")
-    local back = battlerImage(assets, ally)
-    if back ~= nil then
-      local dx = (type(ally.shakeDx) == "number" and ally.shakeDx or 0) --[[@as number]]
-      drawPortraitCell(graphics, back, row.sprite.x - PORTRAIT_HALF + dx, row.sprite.y - PORTRAIT_HALF)
+    local role =
+      doublesRow(allyOrder, ally, index, DOUBLES_ROWS.player, "the sourced player rows cover every live ally")
+    hudRecords[#hudRecords + 1] = {
+      battler = ally,
+      row = sourceSlotGeometry(view, role.sideType),
+      art = role.art,
+      insertion = #hudRecords + 1,
+    }
+  end
+  table.sort(hudRecords, function(left, right)
+    local leftRow = left.row --[[@as BattleRenderer.SlotGeometry]]
+    local rightRow = right.row --[[@as BattleRenderer.SlotGeometry]]
+    local leftPriority = assert(leftRow.hudPriority, "published slot geometry carries HUD OBJ priority") --[[@as integer]]
+    local rightPriority = assert(rightRow.hudPriority, "published slot geometry carries HUD OBJ priority") --[[@as integer]]
+    if leftPriority ~= rightPriority then
+      return leftPriority > rightPriority
     end
-    drawDoublesHudCell(graphics, assets, sections, row.art, row.hud)
-    local fields = assert(DOUBLES_FIELDS[row.art], "doubled player rows carry field bounds")
-    local hp = (type(ally.hp) == "number" and ally.hp or 0) --[[@as number]]
-    local maxHp = (type(ally.maxHp) == "number" and ally.maxHp or 1) --[[@as number]]
-    text.drawText(tostring(ally.name or "LEAD"), fields.name.x, fields.name.y)
-    if type(ally.level) == "number" then
-      text.drawText("Lv" .. tostring(ally.level), fields.level.x, fields.level.y)
+    local leftInsertion = left.insertion --[[@as integer]]
+    local rightInsertion = right.insertion --[[@as integer]]
+    return leftInsertion < rightInsertion
+  end)
+  for _, record in ipairs(hudRecords) do
+    local row = record.row --[[@as BattleRenderer.SlotGeometry]]
+    local art = record.art --[[@as string]]
+    local cell, section = drawDoublesHudCell(graphics, assets, sections, art, { x = row.hudX, y = row.hudY })
+    local battler = record.battler --[[@as table<string, unknown>]]
+    local componentBase = assert(section.componentBase, "doubled HUD strips publish their native component tile base")
+    if cell ~= nil then
+      local patchSpans = assert(view.hudPatchSpans, "battle manifest carries source HUD patch spans")
+      local playerMode = battler.side == 1 and (battler.healthBoxMode or "gauge") or nil
+      if playerMode ~= nil then
+        drawBarTiles(
+          graphics,
+          assets,
+          art,
+          { x = row.hudX, y = row.hudY },
+          cell.objs,
+          componentBase,
+          BattleScene.healthBoxModePatchTiles(patchSpans, row.sideType, playerMode)
+        )
+      end
+      if playerMode ~= "numbers" then
+        local patches = gaugeTaskTiles(view.gaugePatchTiles, row.sideType, "health")
+          or BattleScene.hpPatchTiles(patchSpans, row.sideType, battler.hp, battler.maxHp)
+        drawBarTiles(graphics, assets, art, { x = row.hudX, y = row.hudY }, cell.objs, 0, patches)
+      end
+      local caught = nil
+      if view.battleKind == "wild" and battler.side == 2 then
+        caught = battler.caught
+      end
+      local iconPatches =
+        BattleScene.hudIconPatchTiles(patchSpans, row.sideType, battler.condition, battler.gender, caught)
+      drawBarTiles(graphics, assets, art, { x = row.hudX, y = row.hudY }, cell.objs, componentBase, iconPatches)
     end
-    if type(ally.condition) == "string" and ally.condition ~= "" then
-      text.drawText(ally.condition --[[@as string]], fields.condition.x, fields.condition.y)
+    record.cell = cell
+  end
+  for _, record in ipairs(hudRecords) do
+    local battler = record.battler --[[@as table<string, unknown>]]
+    local row = record.row --[[@as BattleRenderer.SlotGeometry]]
+    local art = record.art --[[@as string]]
+    local fields = assert(DOUBLES_FIELDS[art], "doubled HUD rows carry field bounds")
+    local name = battler.side == 1 and "LEAD" or "FOE"
+    hudText(text, fitSpan(text, tostring(battler.name or name), 72), fields.name.x, fields.name.y)
+    if type(battler.level) == "number" then
+      hudText(text, "Lv" .. tostring(battler.level), fields.level.x, fields.level.y)
     end
-    local fraction = barFraction(hp, maxHp)
-    setBarColor(graphics, fraction)
-    graphics.rectangle("fill", fields.bar.x, fields.bar.y, DOUBLES_BAR_WIDTH * fraction, DOUBLES_BAR_HEIGHT)
-    restoreColor(graphics, r, g, b, a)
+    if battler.side == 1 and battler.healthBoxMode == "numbers" and record.cell ~= nil then
+      local numberPatches = BattleScene.hpNumberPatchTiles(
+        assert(view.hudPatchSpans, "battle manifest carries source HUD patch spans"),
+        row.sideType
+      )
+      drawHpNumbers(
+        graphics,
+        text,
+        { x = row.hudX, y = row.hudY },
+        record.cell.objs,
+        numberPatches,
+        assert(battler.hp, "player health boxes carry displayed HP"),
+        assert(battler.maxHp, "player health boxes carry maximum HP")
+      )
+    end
   end
 end
 
@@ -642,81 +1003,161 @@ local function doublesArrowBase(view, players)
       end
     end
   end
-  return row.hud.x - BattleRenderer.ARROW_OFFSET, row.hud.y
+  local sourceRow = sourceSlotGeometry(view, row.sideType)
+  return sourceRow.hudX - BattleRenderer.ARROW_OFFSET, sourceRow.hudY
+end
+
+---@param view table<string, unknown> internal semantic snapshot
+---@return number horizontal background scroll in native pixels
+---@return number vertical background scroll in native pixels
+local function bgScrollOf(view)
+  local scroll = view.bgScroll --[[@as table<string, unknown>?]]
+  if type(scroll) ~= "table" then
+    return 0, 0
+  end
+  local x, y = scroll.x, scroll.y
+  if type(x) ~= "number" then
+    x = 0
+  end
+  if type(y) ~= "number" then
+    y = 0
+  end
+  return x, --[[@as number]]
+    y --[[@as number]]
+end
+
+-- Draws one single-battle health box: the staged cell composite, the
+-- native bar tile row, and the palette-aware name, level, condition
+-- and health facts inside the tile spans. The foe box hides its
+-- private health facts and carries no experience row; the player box
+-- keeps its numeric health and draws its experience tile row.
+---@param graphics table<string, unknown> injected host graphics
+---@param text table<string, unknown> borrowed text services
+---@param assets table<string, unknown> injected asset holder
+---@param battler table<string, unknown> displayed battler facts under drawing
+---@param artKey string staged strip identity under drawing
+---@param anchor table<string, number> composite anchor under drawing
+---@param section table<string, unknown> staged source HUD section under drawing
+---@param nameX number name row horizontal origin under drawing
+---@param nameY number name row vertical origin under drawing
+---@param levelY number level row vertical origin under drawing
+---@param playerBox boolean true for the player box with numerals and experience
+---@param sideType integer source HUD side type
+---@param patchSpans table<string, unknown> normalized source HUD patch spans
+---@param gaugePatchTiles table<string, unknown>? active source task tile writes
+---@param battleKind string battle encounter kind controlling the caught marker
+---@param textPass boolean true during the separate health-box wording pass
+local function drawSingleHud(
+  graphics,
+  text,
+  assets,
+  battler,
+  artKey,
+  anchor,
+  section,
+  nameX,
+  nameY,
+  levelY,
+  playerBox,
+  sideType,
+  patchSpans,
+  gaugePatchTiles,
+  battleKind,
+  textPass
+)
+  if not textPass then
+    local cell = openingHudCell(section)
+    local objects = cell.objs --[[@as table<integer, table<string, unknown>>]]
+    drawHudComposite(graphics, assets, artKey, anchor, objects)
+    local componentBase = assert(section.componentBase, "single HUD strips publish their native component tile base")
+    local healthPatches = gaugeTaskTiles(gaugePatchTiles, sideType, "health")
+      or BattleScene.hpPatchTiles(patchSpans, sideType, battler.hp, battler.maxHp)
+    drawBarTiles(graphics, assets, artKey, anchor, objects, 0, healthPatches)
+    local caught = nil
+    if not playerBox and battleKind == "wild" then
+      caught = battler.caught
+    end
+    drawBarTiles(
+      graphics,
+      assets,
+      artKey,
+      anchor,
+      objects,
+      componentBase,
+      BattleScene.hudIconPatchTiles(patchSpans, sideType, battler.condition, battler.gender, caught)
+    )
+    if playerBox then
+      local into = battler.expInto
+      local span = battler.expSpan
+      if type(battler.level) == "number" and battler.level >= 100 then
+        into, span = 0, 0
+      end
+      drawBarTiles(
+        graphics,
+        assets,
+        artKey,
+        anchor,
+        objects,
+        0,
+        gaugeTaskTiles(gaugePatchTiles, sideType, "experience")
+          or BattleScene.expPatchTiles(patchSpans, BattleScene.expTileFills(into, span))
+      )
+    end
+    return
+  end
+  local name = fitSpan(text, tostring(battler.name or (playerBox and "LEAD" or "FOE")), 88)
+  hudText(text, name, nameX, nameY)
+  if type(battler.level) == "number" then
+    hudText(text, "Lv" .. tostring(battler.level), nameX, levelY)
+  end
+  if playerBox then
+    local numberPatches = BattleScene.hpNumberPatchTiles(patchSpans, sideType)
+    drawHpNumbers(
+      graphics,
+      text,
+      anchor,
+      openingHudCell(section).objs,
+      numberPatches,
+      assert(battler.hp, "player health boxes carry displayed HP"),
+      assert(battler.maxHp, "player health boxes carry maximum HP")
+    )
+  end
 end
 
 ---@param resources table<string, unknown> borrowed application collaborators
 ---@param view table<string, unknown> internal semantic snapshot
 local function drawDetail(resources, view)
   local graphics = assert(resources.graphics, "the battle render borrows its host graphics")
+  local LogicalSurface = require("libs.ui.src.LogicalSurface")
   local text = assert(resources.text, "the battle render borrows its text services")
   local windows = assert(resources.windows, "the battle render borrows its window services")
   local assets = assert(resources.assets, "the battle render borrows its asset holder")
   local doublesHud = resources.doublesHud --[[@as table<string, unknown>?]]
+  -- The battlefield draws under the neutral image tint however hostile
+  -- the incoming graphics state is; the borrowed color returns on every
+  -- path below.
   local r, g, b, a = saveColor(graphics)
-  local scene = assets:drawable(resources.sceneImageKey --[[@as string]])
+  graphics.setColor(1, 1, 1, 1)
+  -- The background layer honors the viewport scroll on its own decoded
+  -- layer; portraits and health boxes stay layer-independent.
+  local scrollX, scrollY = bgScrollOf(view)
+  local scene = nil
+  local backgroundFailure = nil
+  if type(view.backgroundRaster) == "table" and type(assets.background) == "function" then
+    scene, backgroundFailure = assets:background(view.backgroundRaster --[[@as table<string, unknown>]])
+  end
+  if scene == nil and backgroundFailure == nil then
+    scene = assets:drawable(resources.sceneImageKey --[[@as string]])
+  end
   if scene ~= nil then
-    scene:draw(graphics, 0, 0)
+    graphics.draw(scene, 0 - scrollX, 0 - scrollY)
   end
   local players, enemies = splitBattlers(view)
   local singles = not doublesFormat(view, players, enemies)
-  if not singles then
-    drawDoublesDetail(
-      graphics,
-      text,
-      assets,
-      assert(doublesHud, "the doubled battle render borrows its verified HUD sections"),
-      r,
-      g,
-      b,
-      a,
-      view,
-      players,
-      enemies
-    )
-  end
+  drawPicturePlanes(graphics, assets, view, players, enemies, singles)
   local player = singles and players[1] or nil
   local enemy = singles and enemies[1] or nil
-  if enemy ~= nil and enemy.visible ~= false then
-    local front = battlerImage(assets, enemy)
-    if front ~= nil then
-      local dx = (type(enemy.shakeDx) == "number" and enemy.shakeDx or 0) --[[@as number]]
-      drawPortraitCell(graphics, front, BattleRenderer.ENEMY_CENTER.x + dx, BattleRenderer.ENEMY_CENTER.y)
-    end
-    drawHudComposite(graphics, assets, "hud:enemy", BattleRenderer.ENEMY_HUD, ENEMY_HUD_OBJECTS)
-    drawNameLevel(graphics, text, enemy.name or "FOE", enemy.level --[[@as integer?]], 8, 16)
-    if type(enemy.condition) == "string" and enemy.condition ~= "" then
-      text.drawText(enemy.condition --[[@as string]], ENEMY_CONDITION.x, ENEMY_CONDITION.y)
-    end
-    local foeHp = (type(enemy.hp) == "number" and enemy.hp or 0) --[[@as number]]
-    local foeMaxHp = (type(enemy.maxHp) == "number" and enemy.maxHp or 1) --[[@as number]]
-    local foeFraction = barFraction(foeHp, foeMaxHp)
-    setBarColor(graphics, foeFraction)
-    graphics.rectangle("fill", ENEMY_BAR.x, ENEMY_BAR.y, ENEMY_BAR.width * foeFraction, ENEMY_BAR.height)
-    restoreColor(graphics, r, g, b, a)
-  end
-  if player ~= nil and player.visible ~= false then
-    local back = battlerImage(assets, player)
-    if back ~= nil then
-      local dx = (type(player.shakeDx) == "number" and player.shakeDx or 0) --[[@as number]]
-      drawPortraitCell(graphics, back, BattleRenderer.PLAYER_CENTER.x + dx, BattleRenderer.PLAYER_CENTER.y)
-    end
-    drawHudComposite(graphics, assets, "hud:player", BattleRenderer.PLAYER_HUD, PLAYER_HUD_OBJECTS)
-    local hp = (type(player.hp) == "number" and player.hp or 0) --[[@as number]]
-    local maxHp = (type(player.maxHp) == "number" and player.maxHp or 1) --[[@as number]]
-    drawNameLevel(graphics, text, player.name or "LEAD", player.level --[[@as integer?]], 144, 92)
-    if type(player.condition) == "string" and player.condition ~= "" then
-      text.drawText(player.condition --[[@as string]], PLAYER_CONDITION.x, PLAYER_CONDITION.y)
-    end
-    text.drawText(tostring(hp) .. "/" .. tostring(maxHp), 144, 116)
-    local fraction = barFraction(hp, maxHp)
-    setBarColor(graphics, fraction)
-    graphics.rectangle("fill", 144, 108, 48 * fraction, 4)
-    restoreColor(graphics, r, g, b, a)
-    if type(player.exp) == "number" then
-      text.drawText(tostring(player.exp --[[@as number]]), PLAYER_EXP.x, PLAYER_EXP.y)
-    end
-  end
+  -- The arrow OBJ uses priority 0x11, behind the source HP box OBJ range.
   if view.mode == "command" or view.mode == "moves" or view.mode == "target" then
     local cell = view.arrowFrame --[[@as integer?]]
     if type(cell) == "number" and cell >= 1 and cell <= #ARROW_CELLS - 1 then
@@ -724,8 +1165,9 @@ local function drawDetail(resources, view)
       if art ~= nil then
         local baseX, baseY
         if singles then
-          baseX = BattleRenderer.PLAYER_HUD.x - BattleRenderer.ARROW_OFFSET
-          baseY = BattleRenderer.PLAYER_HUD.y - 2
+          local row = sourceSlotGeometry(view, 0)
+          baseX = row.hudX - BattleRenderer.ARROW_OFFSET
+          baseY = row.hudY - 2
         else
           baseX, baseY = doublesArrowBase(view, players)
         end
@@ -735,9 +1177,73 @@ local function drawDetail(resources, view)
       end
     end
   end
+  if singles then
+    local patchSpans = assert(view.hudPatchSpans, "battle manifest carries source HUD patch spans")
+    for _, pass in ipairs({ false, true }) do
+      if enemy ~= nil then
+        local row = sourceSlotGeometry(view, 1)
+        drawSingleHud(
+          graphics,
+          text,
+          assets,
+          enemy,
+          "hud:enemy",
+          { x = row.hudX, y = row.hudY },
+          assert(view.hudSections, "the battle view carries staged single HUD cells").enemy,
+          8,
+          16,
+          28,
+          false,
+          row.sideType,
+          patchSpans,
+          view.gaugePatchTiles,
+          view.battleKind,
+          pass
+        )
+      end
+      if player ~= nil then
+        local row = sourceSlotGeometry(view, 0)
+        drawSingleHud(
+          graphics,
+          text,
+          assets,
+          player,
+          "hud:player",
+          { x = row.hudX, y = row.hudY },
+          assert(view.hudSections, "the battle view carries staged single HUD cells").player,
+          144,
+          92,
+          104,
+          true,
+          row.sideType,
+          patchSpans,
+          view.gaugePatchTiles,
+          view.battleKind,
+          pass
+        )
+      end
+    end
+  else
+    drawDoublesDetail(
+      graphics,
+      text,
+      assets,
+      assert(doublesHud, "the doubled battle render borrows its verified HUD sections"),
+      view,
+      players,
+      enemies
+    )
+  end
   if type(view.message) == "string" and view.message ~= "" then
     windows.drawWindow(NARRATION_BOX, resources.frameKey, { 0, 0, 0 })
-    text.drawText(view.message --[[@as string]], NARRATION_TEXT.x, NARRATION_TEXT.y)
+    LogicalSurface.clip(graphics, {
+      x = NARRATION_BOX.x + 8,
+      y = NARRATION_BOX.y + 8,
+      width = NARRATION_BOX.width - 16,
+      height = NARRATION_BOX.height - 16,
+    }, function()
+      text.drawText(view.message --[[@as string]], NARRATION_TEXT.x, NARRATION_TEXT.y)
+    end)
   end
   restoreColor(graphics, r, g, b, a)
 end
@@ -838,7 +1344,7 @@ local function drawControls(resources, view, layout, regions)
       -- Missing move slots stay visibly empty: no art, no label.
     else
       if art ~= nil then
-        art:draw(graphics, box.x --[[@as number]] + shift, box.y --[[@as number]] + shift)
+        graphics.draw(art, box.x --[[@as number]] + shift, box.y --[[@as number]] + shift)
       end
       if layout == "command" and COMMAND_ANCHORS[id] ~= nil then
         local anchor = COMMAND_ANCHORS[id]
@@ -1132,7 +1638,7 @@ local function drawInteraction(resources, view, content)
   end
   local background = assets:drawable("menu:" .. layout)
   if background ~= nil then
-    background:draw(graphics, 0, 0)
+    graphics.draw(background, 0, 0)
   end
   -- Multi-actor turns name the acting battler above the menu so staged
   -- choices are never mistaken for the previous entry's selection.
@@ -1233,18 +1739,16 @@ local function drawCompactSlots(graphics, assets, view, spots)
   for _, spot in ipairs(spots) do
     local battler = live[spot.position]
     if battler ~= nil then
-      local cell = battlerImage(assets, battler)
-      if cell ~= nil then
+      local image = battlerImage(assets, battler)
+      if image ~= nil then
         local dx = (type(battler.shakeDx) == "number" and battler.shakeDx or 0) --[[@as number]]
+        if type(battler.pictureXOffset) == "number" then
+          dx = dx + battler.pictureXOffset --[[@as number]]
+        end
         local scale = assert(spot.scale, "compact doubles portraits carry their authored presentation scale")
         local allocation = { x = spot.x, y = spot.y, width = spot.width, height = spot.height }
         LogicalSurface.clip(graphics, allocation, function()
-          local lease = cell.lease or cell
-          if cell.quad ~= nil then
-            lease:drawQuad(graphics, cell.quad, spot.x + dx * scale, spot.y, 0, scale, scale)
-          else
-            lease:draw(graphics, spot.x + dx * scale, spot.y, 0, scale, scale)
-          end
+          graphics.draw(image, spot.x + dx * scale, spot.y, 0, scale, scale)
         end)
       end
     end
@@ -1279,10 +1783,23 @@ local function drawCompactScene(resources, view, content)
   if type(enemyCenter) ~= "table" then
     enemyCenter = BattleRenderer.ENEMY_CENTER
   end
+  -- Compact images use ordinary alpha composition under an isolated
+  -- neutral image tint, then restore the caller's complete graphics state.
+  graphics.push("all")
+  graphics.setBlendMode("alpha", "alphamultiply")
+  graphics.setColor(1, 1, 1, 1)
   LogicalSurface.clip(graphics, viewport, function()
-    local scene = assets:drawable(resources.sceneImageKey --[[@as string]])
+    local scene = nil
+    local backgroundFailure = nil
+    if type(view.backgroundRaster) == "table" and type(assets.background) == "function" then
+      scene, backgroundFailure = assets:background(view.backgroundRaster --[[@as table<string, unknown>]])
+    end
+    if scene == nil and backgroundFailure == nil then
+      scene = assets:drawable(resources.sceneImageKey --[[@as string]])
+    end
     if scene ~= nil then
-      scene:draw(graphics, 0, 0)
+      local scrollX, scrollY = bgScrollOf(view)
+      graphics.draw(scene, 0 - scrollX, 0 - scrollY)
     end
     local spots = content.spriteCenters
     if type(spots) == "table" then
@@ -1293,18 +1810,19 @@ local function drawCompactScene(resources, view, content)
         local front = battlerImage(assets, enemy)
         if front ~= nil then
           local dx = (type(enemy.shakeDx) == "number" and enemy.shakeDx or 0) --[[@as number]]
-          drawPortraitCell(graphics, front, enemyCenter.x + dx, enemyCenter.y)
+          graphics.draw(front, enemyCenter.x + dx, enemyCenter.y)
         end
       end
       if player ~= nil and player.visible ~= false then
         local back = battlerImage(assets, player)
         if back ~= nil then
           local dx = (type(player.shakeDx) == "number" and player.shakeDx or 0) --[[@as number]]
-          drawPortraitCell(graphics, back, playerCenter.x + dx, playerCenter.y)
+          graphics.draw(back, playerCenter.x + dx, playerCenter.y)
         end
       end
     end
   end)
+  graphics.pop()
 end
 
 -- Draws one pane in its logical space: "detail" for the battlefield,

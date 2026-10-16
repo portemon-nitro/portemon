@@ -15,6 +15,7 @@
 
 local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
 local BattleChildText = require("game.hgss.src.battle.BattleChildText")
+local BattleScene = require("libs.hgss.src.presentation.BattleScene")
 local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
@@ -419,10 +420,32 @@ local function hudHealth(battler)
   return ""
 end
 
+---@param battler table<string, unknown>? combatant facts under resolution
+---@return string gender mark wording, empty without a binary gender fact
+local function hudGender(battler)
+  if battler ~= nil and battler.gender == "male" then
+    return "\226\153\130"
+  elseif battler ~= nil and battler.gender == "female" then
+    return "\226\153\128"
+  end
+  return ""
+end
+
+---@param battler table<string, unknown>? combatant facts under resolution
+---@return string caught mark wording, empty without the caught fact
+local function hudCaught(battler)
+  if battler ~= nil and battler.caught == true then
+    return "\226\151\143"
+  end
+  return ""
+end
+
 -- One side HUD box with its dynamic regions and health bar: the bounds
 -- anchor the complete box while every region carries the resolved
--- snapshot wording for the draw clip. The player box adds the numeric
--- experience row beneath the health row.
+-- snapshot wording for the draw clip. The name row reserves two mark
+-- cells for the gender and caught facts; the player box keeps an
+-- experience row that carries no numeric wording because experience is
+-- bar work, never printed totals.
 ---@param battler table<string, unknown>? combatant facts under resolution
 ---@param fallback string name wording when the snapshot carries none
 ---@param origin table<string, number> bounds left/top under resolution
@@ -434,14 +457,31 @@ local function hudBox(battler, fallback, origin, size, withExp)
   local maxHp = (battler ~= nil and type(battler.maxHp) == "number" and battler.maxHp or 0) --[[@as number]]
   local fraction = hudFraction(hp, maxHp)
   local levelWidth = math.floor(size.width / 2)
+  local markWidth = 14
   local regions = {
     {
       id = "name",
       x = origin.x,
       y = origin.y,
-      width = size.width,
+      width = size.width - 2 * markWidth,
       height = HUD_ROW_HEIGHT,
       text = hudName(battler, fallback),
+    },
+    {
+      id = "gender",
+      x = origin.x + size.width - 2 * markWidth,
+      y = origin.y,
+      width = markWidth,
+      height = HUD_ROW_HEIGHT,
+      text = hudGender(battler),
+    },
+    {
+      id = "caught",
+      x = origin.x + size.width - markWidth,
+      y = origin.y,
+      width = markWidth,
+      height = HUD_ROW_HEIGHT,
+      text = hudCaught(battler),
     },
     {
       id = "level",
@@ -469,17 +509,13 @@ local function hudBox(battler, fallback, origin, size, withExp)
     },
   }
   if withExp then
-    local expText = ""
-    if battler ~= nil and type(battler.exp) == "number" then
-      expText = tostring(battler.exp)
-    end
     regions[#regions + 1] = {
       id = "exp",
       x = origin.x,
       y = origin.y + 3 * HUD_ROW_HEIGHT,
       width = size.width,
       height = HUD_ROW_HEIGHT,
-      text = expText,
+      text = "",
     }
   end
   return {
@@ -1435,28 +1471,141 @@ local function drawNarrationDock(resources, view, content)
 end
 
 -- Draws one side HUD inside the scene clip: the selected source artwork
--- composite unscaled at the plan bounds, the resolved name, level,
--- condition, health and experience wording through the borrowed text
--- services at the plan region origins, and the health bar beside the
+-- sampled through quads at the plan bounds, the resolved name, level,
+-- condition and health wording through the borrowed text services at the
+-- plan region origins, and the health bar as native tile work beside the
 -- numeric health region. Missing artwork draws nothing, never a
--- substitute, and the bar and the wording always draw so actual health
--- stays visible.
+-- substitute, and the wording always draws so actual health stays
+-- visible. Empty bar tiles stay transparent like the native patch: only
+-- filled tiles sample the strip. Artwork draws under the neutral image
+-- tint however hostile the incoming graphics state is.
+---@param graphics table<string, unknown> injected host graphics
+---@param art table<string, unknown> staged source character strip
+---@param section table<string, unknown> staged source HUD section
+---@param side table<string, unknown> anchored HUD box content under drawing
+---@param battler table<string, unknown>? combatant facts under drawing
+---@param view table<string, unknown> internal semantic snapshot under drawing
+---@param sideType integer native side type used by source HUD spans
+---@param wildEnemy boolean whether caught-marker art is source-visible
+local function drawCompactHudCell(graphics, art, section, side, battler, view, sideType, wildEnemy)
+  local layout = assert(side, "compact HUD artwork has an anchored box")
+  local displayed = assert(battler, "compact HUD artwork belongs to a visible battler")
+  local animation = assert(section.animation, "compact HUD artwork carries its native animation")
+  local frame = assert(animation.frames[1], "compact HUD artwork carries its opening frame")
+  local cell = assert(section.cells[frame.cell + 1], "compact HUD animation selects its opening cell")
+  local objects = cell.objs
+  local left, top, right, bottom = math.huge, math.huge, -math.huge, -math.huge
+  for _, object in ipairs(objects) do
+    if not object.disabled then
+      left = math.min(left, object.x)
+      top = math.min(top, object.y)
+      right = math.max(right, object.x + object.width)
+      bottom = math.max(bottom, object.y + object.height)
+    end
+  end
+  local width, height = right - left, bottom - top
+  local layoutX, layoutY = layout.x, layout.y
+  local layoutWidth, layoutHeight = layout.width, layout.height
+  assert(type(layoutX) == "number" and type(layoutY) == "number", "compact HUD box has native coordinates")
+  assert(type(layoutWidth) == "number" and type(layoutHeight) == "number", "compact HUD box has native dimensions")
+  local scale = math.min(layoutWidth / width, layoutHeight / height)
+  local originX = layoutX + (layoutWidth - width * scale) / 2 - left * scale
+  local originY = layoutY + (layoutHeight - height * scale) / 2 - top * scale
+  art:setFilter("nearest", "nearest")
+  local stripWidth = art:getWidth()
+  local stripHeight = art:getHeight()
+
+  local function drawObjects()
+    for _, object in ipairs(objects) do
+      if not object.disabled then
+        local columns = object.width / 8
+        for row = 0, object.height / 8 - 1 do
+          local sourceTile = object.tile + row * columns
+          local quad = graphics.newQuad(sourceTile * 8, 0, object.width, 8, stripWidth, stripHeight)
+          graphics.draw(art, quad, originX + object.x * scale, originY + (object.y + row * 8) * scale, 0, scale, scale)
+        end
+      end
+    end
+  end
+
+  local function drawPatches(patches, componentBase)
+    for _, patch in ipairs(patches) do
+      if patch.fill == nil or patch.fill > 0 then
+        local tile = patch.tile
+        for _, object in ipairs(objects) do
+          if not object.disabled then
+            local columns = object.width / 8
+            local offset = tile - object.tile
+            if offset >= 0 and offset < columns * (object.height / 8) then
+              local quad = graphics.newQuad((componentBase + patch.sourceTile) * 8, 0, 8, 8, stripWidth, stripHeight)
+              graphics.draw(
+                art,
+                quad,
+                originX + (object.x + offset % columns * 8) * scale,
+                originY + (object.y + math.floor(offset / columns) * 8) * scale,
+                0,
+                scale,
+                scale
+              )
+            end
+          end
+        end
+      end
+    end
+  end
+
+  drawObjects()
+  local patchSpans = assert(view.hudPatchSpans, "compact HUD uses the source patch spans")
+  local gaugePatches = view.gaugePatchTiles --[[@as table<integer, table<string, table<integer, table>>>?]]
+  local sidePatches = gaugePatches ~= nil and gaugePatches[sideType] or nil
+  local hp, maxHp = displayed.hp, displayed.maxHp
+  assert(type(hp) == "number" and type(maxHp) == "number", "compact HUD carries numeric HP values")
+  local health = sidePatches ~= nil and sidePatches.health or BattleScene.hpPatchTiles(patchSpans, sideType, hp, maxHp)
+  drawPatches(health, 0)
+  local condition, gender, caught = displayed.condition, displayed.gender, displayed.caught
+  assert(condition == nil or type(condition) == "string", "compact HUD status is a source status name")
+  assert(gender == nil or type(gender) == "string", "compact HUD gender is a source category when present")
+  assert(caught == nil or type(caught) == "boolean", "compact HUD caught marker is a source flag")
+  caught = wildEnemy and caught or nil
+  drawPatches(
+    BattleScene.hudIconPatchTiles(patchSpans, sideType, condition, gender, caught),
+    assert(section.componentBase, "compact HUD publishes the native component tile base")
+  )
+  if sideType == 0 then
+    local into, span, level = displayed.expInto, displayed.expSpan, displayed.level
+    if type(level) == "number" and level >= 100 then
+      into, span = 0, 0
+    end
+    drawPatches(
+      sidePatches ~= nil and sidePatches.experience
+        or BattleScene.expPatchTiles(patchSpans, BattleScene.expTileFills(into, span)),
+      0
+    )
+  end
+end
+
 ---@param graphics table<string, unknown> injected host graphics
 ---@param assets table<string, unknown> injected asset holder
 ---@param text table<string, unknown> borrowed text services
 ---@param artKey string artwork identity under drawing
 ---@param battler table<string, unknown>? combatant facts under drawing
 ---@param side table<string, unknown>? anchored HUD box content under drawing
-local function drawHudSide(graphics, assets, text, artKey, battler, side)
+---@param section table<string, unknown> staged source HUD section
+---@param view table<string, unknown> internal semantic snapshot under drawing
+---@param sideType integer native side type used by source HUD spans
+---@param wildEnemy boolean whether caught-marker art is source-visible
+local function drawHudSide(graphics, assets, text, artKey, battler, side, section, view, sideType, wildEnemy)
   if type(side) ~= "table" then
     return
   end
   if battler == nil or battler.visible == false then
     return
   end
+  local r, g, b, a = graphics.getColor()
+  graphics.setColor(1, 1, 1, 1)
   local art = assets:drawable(artKey)
   if art ~= nil then
-    art:draw(graphics, side.x, side.y)
+    drawCompactHudCell(graphics, art, section, side, battler, view, sideType, wildEnemy)
   end
   if type(side.regions) == "table" then
     for _, region in ipairs(side.regions) do
@@ -1465,23 +1614,7 @@ local function drawHudSide(graphics, assets, text, artKey, battler, side)
       end
     end
   end
-  local bar = side.bar
-  if type(bar) == "table" then
-    local fraction = 0
-    if type(bar.fraction) == "number" then
-      fraction = bar.fraction --[[@as number]]
-    end
-    local r, g, b, a = graphics.getColor()
-    if fraction > 0.5 then
-      graphics.setColor(0.2, 0.8, 0.2, 1)
-    elseif fraction > 0.2 then
-      graphics.setColor(0.9, 0.8, 0.2, 1)
-    else
-      graphics.setColor(0.9, 0.2, 0.2, 1)
-    end
-    graphics.rectangle("fill", bar.x, bar.y, bar.width, bar.height)
-    graphics.setColor(r, g, b, a)
-  end
+  graphics.setColor(r, g, b, a)
 end
 
 ---@param resources table<string, unknown> borrowed presentation services
@@ -1559,8 +1692,31 @@ local function drawCompactHud(resources, view, content)
   end
   local player, enemy = singleSlots(view)
   LogicalSurface.clip(graphics, viewport, function()
-    drawHudSide(graphics, assets, text, "hud:enemy", enemy, hud.enemy --[[@as table<string, unknown>?]])
-    drawHudSide(graphics, assets, text, "hud:player", player, hud.player --[[@as table<string, unknown>?]])
+    local sections = assert(view.hudSections, "compact HUD carries staged native cell sections")
+    drawHudSide(
+      graphics,
+      assets,
+      text,
+      "hud:enemy",
+      enemy,
+      hud.enemy --[[@as table<string, unknown>?]],
+      sections.enemy,
+      view,
+      1,
+      view.battleKind == "wild"
+    )
+    drawHudSide(
+      graphics,
+      assets,
+      text,
+      "hud:player",
+      player,
+      hud.player --[[@as table<string, unknown>?]],
+      sections.player,
+      view,
+      0,
+      false
+    )
   end)
 end
 

@@ -186,6 +186,22 @@ local function displayedOf(record)
   if type(record.portraitSelector) == "string" and record.portraitSelector ~= "" then
     shown.portraitSelector = record.portraitSelector
   end
+  -- Presentation-only picture facts ride the displayed record when the
+  -- model answers them: gender and caught marks, the signed height
+  -- displacement, and the substitute channel. Absent facts stay absent;
+  -- the renderer defaults them.
+  if record.gender == "male" or record.gender == "female" or record.gender == "genderless" then
+    shown.gender = record.gender
+  end
+  if type(record.caught) == "boolean" then
+    shown.caught = record.caught
+  end
+  if type(record.height) == "number" then
+    shown.height = record.height
+  end
+  if record.substitute == true then
+    shown.substitute = true
+  end
   return shown
 end
 
@@ -1631,6 +1647,26 @@ function BattleTimeline:reconcileBattler(record, known)
     shown.exp = record.experience
     shown.condition = record.condition
     shown.moves = copyValue(record.moves)
+    if record.gender == "male" or record.gender == "female" or record.gender == "genderless" then
+      shown.gender = record.gender
+    else
+      shown.gender = nil
+    end
+    if type(record.caught) == "boolean" then
+      shown.caught = record.caught
+    else
+      shown.caught = nil
+    end
+    if type(record.height) == "number" then
+      shown.height = record.height
+    else
+      shown.height = nil
+    end
+    if record.substitute == true then
+      shown.substitute = true
+    else
+      shown.substitute = nil
+    end
     -- The displayed image identity tracks the active combatant: a
     -- switch or reveal rebinds the exact canonical selector while
     -- visibility still changes only through explicit cues.

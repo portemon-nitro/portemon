@@ -11,21 +11,26 @@
 ---@field prepare fun(demand: table<string, unknown>): boolean?, string?
 ---@field drawable fun(key: string): table<string, unknown>?, string?
 ---@field release fun(key: string)
+---@field sceneLayer? fun(): table<string, unknown>?, string?
+---@field background? fun(raster: table<string, unknown>): table<string, unknown>?, string?
 
 ---@class BattlePresentationAssets
 ---@field _assets BattlePresentationAssets.Services preparation services carrying prepare/drawable/release
 ---@field _launchId string owning launch identity
 ---@field _sceneKey string semantic scene identity for the demand
 ---@field _sceneImage string selected scene image key
+---@field _sceneLayer table<string, unknown>? staged BG3 payload for the active scene
 ---@field _audioRoles string[] staged audio role symbols behind the demand
 ---@field _frameKey string selected window frame key
 ---@field _frames table<string, table<string, unknown>>? per-instance frame declarations
+---@field _shadowRegions table<integer, table<string, unknown>> normalized Pokepic shadow source rectangles
 ---@field _state "pending"|"ready"|"failed"
 ---@field _error string?
 ---@field _prepared boolean preparation accepted for the current demand
 ---@field _selectors string[] portrait selectors named so far
 ---@field _owned table<string, boolean> image keys acquired through this holder
 ---@field _imageErrors table<string, string> terminal upload failures by key, latched without retry
+---@field _picturePass table<string, unknown>? per-screen Pokepic color/depth renderer
 ---@field _released boolean release guard
 local BattlePresentationAssets = {}
 BattlePresentationAssets.__index = BattlePresentationAssets
@@ -40,6 +45,7 @@ BattlePresentationAssets.DEFAULT_FRAME = "default"
 ---@field sceneImage string? selected scene image key, derived from the scene key when absent
 ---@field frameKey string? selected window frame key, the built-in default when absent
 ---@field frames table<string, table<string, unknown>>? per-instance frame declarations
+---@field shadowRegions table<integer, table<string, unknown>> normalized Pokepic shadow source rectangles
 
 ---@param opts BattlePresentationAssets.Options
 ---@return BattlePresentationAssets
@@ -60,20 +66,24 @@ function BattlePresentationAssets.new(opts)
   if opts.audioRoles ~= nil then
     assert(type(opts.audioRoles) == "table", "staged audio roles arrive as an array")
   end
+  assert(type(opts.shadowRegions) == "table", "staged Pokepic shadow size regions are required")
   return setmetatable({
     _assets = opts.assets,
     _launchId = opts.launchId,
     _sceneKey = opts.sceneKey,
     _audioRoles = opts.audioRoles or {},
     _sceneImage = opts.sceneImage or ("scene:" .. opts.sceneKey),
+    _sceneLayer = nil,
     _frameKey = opts.frameKey or BattlePresentationAssets.DEFAULT_FRAME,
     _frames = opts.frames,
+    _shadowRegions = opts.shadowRegions,
     _state = "pending",
     _error = nil,
     _prepared = false,
     _selectors = {},
     _owned = {},
     _imageErrors = {},
+    _picturePass = nil,
     _released = false,
   }, BattlePresentationAssets)
 end
@@ -120,7 +130,7 @@ end
 -- composites, and all three menu surfaces. Battler portraits stay
 -- cue-gated through their side keys instead: their selectors arrive
 -- after the opening delivery, so readiness cannot wait on them.
-local REQUIRED_DRAWABLES = { "hud:enemy", "hud:player", "menu:command", "menu:moves", "menu:target" }
+local REQUIRED_DRAWABLES = { "hud:enemy", "hud:player", "menu:command", "menu:moves", "menu:target", "shadow" }
 
 -- Runs preparation once per demand: an invalid frame selection or a
 -- service failure becomes failed with context; a missing required image
@@ -153,17 +163,31 @@ function BattlePresentationAssets:update()
     end
     self._prepared = true
   end
-  local sceneHandle, sceneFailure = self._assets.drawable(self._sceneImage)
-  if sceneFailure ~= nil then
-    self._state = "failed"
-    self._error = "battle scene image failed for launch " .. self._launchId .. ": " .. tostring(sceneFailure)
-    self._imageErrors[self._sceneImage] = self._error --[[@as string]]
-    return
+  local sceneLayer = nil
+  if type(self._assets.sceneLayer) == "function" then
+    local layerFailure = nil
+    sceneLayer, layerFailure = self._assets.sceneLayer()
+    if layerFailure ~= nil then
+      self._state = "failed"
+      self._error = "battle scene layer failed for launch " .. self._launchId .. ": " .. tostring(layerFailure)
+      return
+    end
   end
-  if sceneHandle == nil then
-    return
+  if sceneLayer ~= nil then
+    self._sceneLayer = sceneLayer
+  else
+    local sceneHandle, sceneFailure = self._assets.drawable(self._sceneImage)
+    if sceneFailure ~= nil then
+      self._state = "failed"
+      self._error = "battle scene image failed for launch " .. self._launchId .. ": " .. tostring(sceneFailure)
+      self._imageErrors[self._sceneImage] = self._error --[[@as string]]
+      return
+    end
+    if sceneHandle == nil then
+      return
+    end
+    self._owned[self._sceneImage] = true
   end
-  self._owned[self._sceneImage] = true
   for _, key in ipairs(REQUIRED_DRAWABLES) do
     local handle, failure = self._assets.drawable(key)
     if failure ~= nil then
@@ -239,6 +263,55 @@ function BattlePresentationAssets:sceneImage()
   return self._sceneImage
 end
 
+---@return table<string, unknown>? staged BG3 payload when a runtime layer is available
+function BattlePresentationAssets:sceneLayer()
+  return self._sceneLayer
+end
+
+---@param raster table<string, unknown> cached BG3 raster from BattleScene
+---@return table<string, unknown>? image handle, nil when this host has no mutable layer adapter
+---@return string? terminal image failure
+function BattlePresentationAssets:background(raster)
+  if type(self._assets.background) ~= "function" then
+    return nil
+  end
+  local image, failure = self._assets.background(raster)
+  if failure ~= nil then
+    self._state = "failed"
+    self._error = "battle BG3 image failed for launch " .. self._launchId .. ": " .. tostring(failure)
+    return nil, self._error
+  end
+  if image ~= nil then
+    self._owned["battle-background"] = true
+  end
+  return image
+end
+
+-- Renders one source Pokepic plane into this screen's isolated depth target.
+---@param graphics table<string, unknown> borrowed graphics namespace
+---@param pictures table<integer, table<string, unknown>> visible native picture submissions
+---@return table<string, unknown> staged picture color layer
+function BattlePresentationAssets:renderPictures(graphics, pictures)
+  assert(not self._released, "released battle assets render no pictures")
+  if self._picturePass == nil then
+    local BattlePicturePass = require("libs.hgss.src.presentation.BattlePicturePass")
+    self._picturePass = BattlePicturePass.new(graphics)
+  end
+  return self._picturePass:render(graphics, pictures)
+end
+
+---@param size integer native Pokepic shadow-size selector
+---@return table<string, unknown> normalized image rectangle for the selected size
+function BattlePresentationAssets:shadowRegion(size)
+  assert(type(size) == "number" and size % 1 == 0, "Pokepic shadow size is integral")
+  for _, region in ipairs(self._shadowRegions) do
+    if region.size == size then
+      return region
+    end
+  end
+  error("Pokepic shadow size is not staged: " .. tostring(size), 2)
+end
+
 ---@return string selected window frame key
 function BattlePresentationAssets:frameKey()
   return self._frameKey
@@ -261,6 +334,10 @@ function BattlePresentationAssets:dispose()
     return
   end
   self._released = true
+  if self._picturePass ~= nil then
+    self._picturePass:release()
+    self._picturePass = nil
+  end
   for key in pairs(self._owned) do
     self._assets.release(key)
   end

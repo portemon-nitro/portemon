@@ -1876,7 +1876,7 @@ function T.cold_scene_demand_waits_then_enters_once_staged()
           characters = {
             key = "battle-scene/general-plain-day/background/characters",
             path = charactersPath,
-            format = "indexed4",
+            format = "indexed8",
           },
           map = {
             key = "battle-scene/general-plain-day/background/map",
@@ -2415,7 +2415,7 @@ function T.scene_failure_reports_once_without_driving_the_host()
         host = host,
       })
       for _ = 1, 5 do
-        envelope:updateFixed(TICK)
+        envelope:updateFixed(SourceTick.DT)
       end
       Assert.equal(host.advances, 5, "fixed updates advance the host once each at " .. point)
       Assert.equal(#host.notifies, 0, "pending reports no failure at " .. point)
@@ -2428,7 +2428,7 @@ function T.scene_failure_reports_once_without_driving_the_host()
       Assert.equal(host.advances, driven, "port callbacks never advance the host at " .. point)
       worker.failure = "probe-controller-boom"
       for _ = 1, 10 do
-        envelope:updateFixed(TICK)
+        envelope:updateFixed(SourceTick.DT)
       end
       Assert.equal(host.advances, driven + 10, "failure ticks advance the host once each at " .. point)
       Assert.equal(host.violations, 0, "the report never fires inside a host advance at " .. point)

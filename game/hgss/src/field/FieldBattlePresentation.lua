@@ -239,6 +239,7 @@ function FieldBattlePresentation.new(opts)
     _musicStarted = false,
     _musicNote = nil,
     _disposed = false,
+    _images = {},
     _imageFailures = {},
     _pool = opts.imagePool,
     _leases = {},
@@ -318,28 +319,50 @@ local function acquirePooled(envelope, key, path)
   return lease
 end
 
--- Borrows one staged portrait cell for a canonical portrait selector:
--- the owning atlas page comes from the shared owner under the drawable
--- key while the cell rectangle stays renderer-owned geometry over the
--- borrowed page, so exact staged pixels draw through one pooled atlas
--- quad instead of a private per-battler copy. A page the worker has not
--- attested yet answers a legitimate pending wait without touching the
--- image driver or the shared owner; staged bytes that fail
--- classification or GPU upload answer a terminal failure naming the
--- canonical selector and its page path.
----@param envelope FieldBattlePresentation
+-- Uploads one staged image file through the host graphics namespace:
+-- decode the staged bytes, then build and configure the owned image.
+-- Success answers the owned handle. Staged bytes that fail decoding or
+-- GPU upload answer a terminal keyed failure so the caller fails closed
+-- instead of holding forever on a deterministic corrupt image.
+---@param graphics table<string, unknown> host graphics namespace enabling GPU upload
 ---@param key string drawable key behind diagnostics
----@param graphics table<string, unknown> host graphics namespace carrying quad construction
+---@param path string cache-relative staged image path behind diagnostics
+---@param bytes string staged image bytes
+---@return table<string, unknown>? owned image handle, nil on terminal failure
+---@return string? terminal failure naming the key and path, nil on success
+local function uploadStaged(graphics, key, path, bytes)
+  local ok, imageOrErr = pcall(function()
+    local pixels = love.image.newImageData(love.filesystem.newFileData(bytes, path))
+    local uploaded = graphics.newImage(pixels)
+    assert(uploaded ~= nil, "the graphics driver handed out no image")
+    uploaded:setFilter("nearest", "nearest")
+    return uploaded
+  end)
+  if ok and imageOrErr ~= nil then
+    return imageOrErr
+  end
+  local cause = ok and "empty image handle" or tostring(imageOrErr)
+  return nil, "battle image " .. tostring(key) .. " upload failed: " .. tostring(path) .. ": " .. cause
+end
+
+-- Uploads one staged portrait cell for a canonical portrait selector:
+-- decode the owning atlas page, crop exactly the staged cell, then
+-- build and configure the owned image. Success answers the owned
+-- handle; a page the worker has not attested yet answers a legitimate
+-- pending wait without touching the image driver; staged bytes that
+-- fail decoding or GPU upload answer a terminal failure naming the
+-- canonical selector and its page path.
+---@param graphics table<string, unknown> host graphics namespace enabling GPU upload
 ---@param cacheFs table<string, unknown> versioned derived cache behind demand validation
 ---@param selector string canonical staged portrait selector
----@return table<string, unknown>? cell handle pairing the pool lease with its renderer-owned quad, nil while pending or on terminal failure
+---@return table<string, unknown>? owned image handle, nil while pending or on terminal failure
 ---@return string? terminal failure naming the selector and page path, nil while pending or on success
-local function acquirePortraitCell(envelope, key, graphics, cacheFs, selector)
+local function uploadPortraitCell(graphics, cacheFs, selector)
   local pagePath = nil
   local entry = nil
   do
-    -- Only a worker-attested page borrows: an unstaged page waits for
-    -- preparation instead of borrowing missing bytes or standing in
+    -- Only a worker-attested page decodes: an unstaged page waits for
+    -- preparation instead of decoding missing bytes or standing in
     -- another image. Structural manifest problems still fail below.
     local portraits = cacheFs:loadLua(MonCache.portraitManifestPath())
     if type(portraits) == "table" and type(portraits.entries) == "table" then
@@ -358,28 +381,22 @@ local function acquirePortraitCell(envelope, key, graphics, cacheFs, selector)
   local ok, handleOrErr = pcall(function()
     assert(type(entry) == "table", "the staged manifest plans no such portrait: " .. tostring(selector))
     assert(type(entry.pageId) == "number", "the staged portrait names its page: " .. tostring(selector))
-    assert(
-      type(entry.x) == "number" and type(entry.y) == "number",
-      "the staged portrait names its cell origin: " .. tostring(selector)
-    )
-    assert(
-      type(entry.width) == "number" and type(entry.height) == "number",
-      "the staged portrait names its cell size: " .. tostring(selector)
-    )
+    assert(type(entry.frames) == "table" and #entry.frames == 2, "the staged battle portrait names both Pokepic frames")
     local path = MonCache.pageImagePath("portraits", entry.pageId)
     pagePath = path
-    local lease, failure = borrowPage(envelope, key, path)
-    assert(lease ~= nil, failure)
-    assert(lease.image, "shared borrows carry their resolved image")
-    -- Hoisted before the call: assert returns all its arguments, so an
-    -- inline assert in final position would leak its message string into
-    -- the quad argument list.
-    local pageWidth = assert(lease.width, "shared borrows carry their page width")
-    local pageHeight = assert(lease.height, "shared borrows carry their page height")
-    local quad = graphics.newQuad(entry.x, entry.y, entry.width, entry.height, pageWidth, pageHeight)
-    local handle = { lease = lease, quad = quad }
-    envelope._leases[key] = { lease = lease, handle = handle }
-    return handle
+    local bytes = cacheFs:read(path)
+    assert(type(bytes) == "string", "the staged portrait page is not staged: " .. tostring(path))
+    local page = love.image.newImageData(love.filesystem.newFileData(bytes, path))
+    local frames = {}
+    for index, frame in ipairs(entry.frames) do
+      local cropped = love.image.newImageData(frame.width, frame.height)
+      cropped:paste(page, 0, 0, frame.x, frame.y, frame.width, frame.height)
+      local uploaded = graphics.newImage(cropped)
+      assert(uploaded ~= nil, "the graphics driver handed out no portrait frame image")
+      uploaded:setFilter("nearest", "nearest")
+      frames[index] = uploaded
+    end
+    return { frames = frames }
   end)
   if ok and handleOrErr ~= nil then
     return handleOrErr
@@ -401,14 +418,23 @@ end
 ---@return string? cache-relative staged image path, nil without a staged counterpart
 local function stagedArtPath(envelope, key)
   local manifest = envelope._manifest
-  if type(manifest) ~= "table" or manifest.verified ~= true then
+  if type(manifest) ~= "table" or type(manifest.hud) ~= "table" or type(manifest.menus) ~= "table" then
     return nil
   end
+  local hud = manifest.hud --[[@as table<string, unknown>]]
+  local menus = manifest.menus --[[@as table<string, unknown>]]
+  if key == "shadow" then
+    local pictures = manifest.pictures
+    local shadow = type(pictures) == "table" and pictures.shadow or nil
+    return type(shadow) == "table" and shadow.image or nil
+  end
   if key == "hud:enemy" then
-    return type(manifest.enemyHud) == "table" and manifest.enemyHud.image or nil
+    local section = hud.enemy
+    return type(section) == "table" and section.image or nil
   end
   if key == "hud:player" then
-    return type(manifest.playerHud) == "table" and manifest.playerHud.image or nil
+    local section = hud.player
+    return type(section) == "table" and section.image or nil
   end
   -- Doubled health boxes resolve through the staged doubled family by
   -- slot: each row owns its dedicated strip, never a shared
@@ -420,7 +446,7 @@ local function stagedArtPath(envelope, key)
     or doublesSlot == "enemy-left"
     or doublesSlot == "enemy-right"
   then
-    local family = type(manifest.doublesHud) == "table" and manifest.doublesHud or nil
+    local family = type(hud.doubles) == "table" and hud.doubles or nil
     local section = nil
     if type(family) == "table" then
       if doublesSlot == "player-left" then
@@ -436,21 +462,25 @@ local function stagedArtPath(envelope, key)
     return type(section) == "table" and section.image or nil
   end
   if key == "menu:command" then
-    return type(manifest.command) == "table" and manifest.command.image or nil
+    local section = menus.command
+    return type(section) == "table" and section.image or nil
   end
   if key == "menu:moves" then
-    return type(manifest.moves) == "table" and manifest.moves.image or nil
+    local section = menus.moves
+    return type(section) == "table" and section.image or nil
   end
   if key == "menu:target" then
-    return type(manifest.target) == "table" and manifest.target.image or nil
+    local section = menus.target
+    return type(section) == "table" and section.image or nil
   end
   if key == "arrow" then
-    return type(manifest.arrow) == "table" and manifest.arrow.image or nil
+    local section = hud.arrow
+    return type(section) == "table" and section.image or nil
   end
   -- Both interaction-pane gauge rows use the 16-pixel family: no roster
   -- state selects the 32-pixel family, which stays staged but unused.
   if key == "gauges:player" or key == "gauges:enemy" then
-    local family = type(manifest.partyGauges) == "table" and manifest.partyGauges[1] or nil
+    local family = type(hud.partyGauges) == "table" and hud.partyGauges[1] or nil
     return type(family) == "table" and family.image or nil
   end
   return nil
@@ -486,7 +516,7 @@ end
 ---@return string? reason, nil when the audio members validate
 local function checkAudioMembers(envelope, demand)
   local manifest = envelope._manifest
-  if type(manifest) ~= "table" or manifest.verified ~= true then
+  if type(manifest) ~= "table" or type(manifest.hud) ~= "table" or type(manifest.menus) ~= "table" then
     return "battle presentation is not staged: the launch needs its staged menu, HUD, font, and audio roles"
   end
   local audio = demand.audio or { roles = {}, banks = {}, cries = {} }
@@ -540,16 +570,20 @@ end
 ---@return string? reason, nil when the staged members validate
 local function checkStagedMembers(envelope)
   local manifest = envelope._manifest
-  if type(manifest) ~= "table" or manifest.verified ~= true then
+  if type(manifest) ~= "table" or type(manifest.hud) ~= "table" or type(manifest.menus) ~= "table" then
     return "battle presentation is not staged: the launch needs its staged menu, HUD, font, and audio roles"
   end
   local cacheFs = assert(envelope._cacheFs, "preparation requires the envelope cache")
+  local hud = manifest.hud --[[@as table<string, unknown>]]
+  local menus = manifest.menus --[[@as table<string, unknown>]]
+  local messages = manifest.messages --[[@as table<string, unknown>]]
+  local textRoles = type(messages) == "table" and messages.roles or nil
   local required = {
-    { key = "menu:command", path = type(manifest.command) == "table" and manifest.command.image or nil },
-    { key = "menu:moves", path = type(manifest.moves) == "table" and manifest.moves.image or nil },
-    { key = "menu:target", path = type(manifest.target) == "table" and manifest.target.image or nil },
-    { key = "hud:enemy", path = type(manifest.enemyHud) == "table" and manifest.enemyHud.image or nil },
-    { key = "hud:player", path = type(manifest.playerHud) == "table" and manifest.playerHud.image or nil },
+    { key = "menu:command", path = type(menus.command) == "table" and menus.command.image or nil },
+    { key = "menu:moves", path = type(menus.moves) == "table" and menus.moves.image or nil },
+    { key = "menu:target", path = type(menus.target) == "table" and menus.target.image or nil },
+    { key = "hud:enemy", path = type(hud.enemy) == "table" and hud.enemy.image or nil },
+    { key = "hud:player", path = type(hud.player) == "table" and hud.player.image or nil },
     { key = "hud:player-left", path = stagedArtPath(envelope, "hud:player-left") },
     { key = "hud:player-right", path = stagedArtPath(envelope, "hud:player-right") },
     { key = "hud:enemy-left", path = stagedArtPath(envelope, "hud:enemy-left") },
@@ -561,11 +595,11 @@ local function checkStagedMembers(envelope)
       return "battle menu art is not staged: " .. tostring(entry.key)
     end
   end
-  if type(manifest.textRoles) ~= "table" then
+  if type(textRoles) ~= "table" then
     return "battle presentation is not staged: the launch needs its staged font roles"
   end
   for _, role in ipairs({ "narration", "menu", "hud" }) do
-    local record = manifest.textRoles[role]
+    local record = textRoles[role]
     local font = type(record) == "table" and record.font or nil
     if type(font) ~= "string" or type(cacheFs:read(font)) ~= "string" then
       return "battle font is not staged: " .. tostring(role)
@@ -588,6 +622,11 @@ function FieldBattlePresentation:_preparationServices()
   local envelope = self
   local cacheFs = assert(self._cacheFs, "preparation requires the envelope cache")
   local graphics = self._graphics
+  local images = self._images --[[@as table<string, unknown>]]
+  local stagedSceneKey = nil
+  local stagedSceneLayer = nil
+  local backgroundPixels = nil
+  local backgroundImage = nil
   local services = {}
   function services.prepare(demand)
     if type(demand) ~= "table" then
@@ -632,6 +671,21 @@ function FieldBattlePresentation:_preparationServices()
           end
           return nil, "battle scene image is not staged: " .. tostring(sceneKey)
         end
+        local layer = record.layers[1]
+        local characters = cacheFs:read(layer.characters.path)
+        local map = cacheFs:loadLua(layer.map.path)
+        local palette = cacheFs:loadLua(layer.palette.path)
+        if type(characters) ~= "string" or type(map) ~= "table" or type(palette) ~= "table" then
+          return nil, "battle scene BG3 payload is not staged: " .. tostring(sceneKey)
+        end
+        stagedSceneKey = sceneKey
+        assert(layer.characters.format == "indexed8", "persistent BG3 uses the staged 8bpp character format")
+        stagedSceneLayer = {
+          characters = characters,
+          map = map,
+          palette = palette,
+          colorMode = "8bpp",
+        }
       end
     end
     local portraitsOk, portraitsErr = checkPortraitPages(envelope, demand.pages or {})
@@ -656,11 +710,48 @@ function FieldBattlePresentation:_preparationServices()
     end
     return true
   end
+  function services.sceneLayer()
+    return stagedSceneLayer
+  end
+  function services.background(raster)
+    assert(graphics ~= nil, "BG3 image upload requires host graphics")
+    assert(type(raster) == "table", "BG3 upload takes a composed raster")
+    if raster == backgroundPixels then
+      return backgroundImage
+    end
+    local ok, uploadedOrError = pcall(function()
+      local imageData = love.image.newImageData(raster.width, raster.height)
+      for y = 0, raster.height - 1 do
+        for x = 0, raster.width - 1 do
+          local r, g, b, a = raster:pixel(x, y)
+          imageData:setPixel(x, y, r / 255, g / 255, b / 255, a / 255)
+        end
+      end
+      local uploaded = graphics.newImage(imageData)
+      assert(uploaded ~= nil, "the graphics driver handed out no BG3 image")
+      uploaded:setFilter("nearest", "nearest")
+      return uploaded
+    end)
+    if not ok or uploadedOrError == nil then
+      local cause = ok and "empty BG3 image handle" or tostring(uploadedOrError)
+      return nil, "battle scene BG3 upload failed for " .. tostring(stagedSceneKey) .. ": " .. cause
+    end
+    if backgroundImage ~= nil and type(backgroundImage.release) == "function" then
+      backgroundImage:release()
+    end
+    backgroundPixels = raster
+    backgroundImage = uploadedOrError
+    images["battle-background"] = backgroundImage
+    return backgroundImage
+  end
   function services.drawable(key)
     assert(type(key) == "string" and key ~= "", "image resolution names its key")
     local leases = envelope._leases --[[@as table<string, FieldBattlePresentation.PooledHandle>]]
     if leases[key] ~= nil then
       return leases[key].handle
+    end
+    if images[key] ~= nil then
+      return images[key]
     end
     -- A terminal upload failure replays identically without re-entering
     -- the driver: the decode already proved deterministic for this
@@ -693,30 +784,58 @@ function FieldBattlePresentation:_preparationServices()
     local sceneKey = tostring(key):match("^scene:(.+)$")
     if sceneKey ~= nil then
       local path = BattlePresentationCache.sceneImagePath(sceneKey)
-      -- Manifest-declared battle art borrows the shared owner: the
-      -- staged request classifies through its worker and the borrow
-      -- resolves exactly one pooled image per key.
-      local image, failure = acquirePooled(envelope, key, path)
+      -- Manifest-declared battle art borrows the shared owner when the
+      -- host provides one; without a pool the envelope uploads and owns
+      -- the staged bytes directly so pool-less production draws resolve.
+      if envelope._pool ~= nil then
+        local image, failure = acquirePooled(envelope, key, path)
+        if image == nil then
+          assert(type(failure) == "string", "staged upload failures carry their reason")
+          failures[key] = failure --[[@as string]]
+          return nil, failure
+        end
+        return image
+      end
+      local bytes = cacheFs:read(path)
+      if type(bytes) ~= "string" then
+        return nil
+      end
+      local image, failure = uploadStaged(graphics, key, path, bytes)
       if image == nil then
         assert(type(failure) == "string", "staged upload failures carry their reason")
         failures[key] = failure --[[@as string]]
         return nil, failure
       end
+      images[key] = image
       return image
     end
     local artPath = stagedArtPath(envelope, key)
     if artPath ~= nil then
-      local image, failure = acquirePooled(envelope, key, artPath)
+      if envelope._pool ~= nil then
+        local image, failure = acquirePooled(envelope, key, artPath)
+        if image == nil then
+          assert(type(failure) == "string", "staged upload failures carry their reason")
+          failures[key] = failure --[[@as string]]
+          return nil, failure
+        end
+        return image
+      end
+      local bytes = cacheFs:read(artPath)
+      if type(bytes) ~= "string" then
+        return nil
+      end
+      local image, failure = uploadStaged(graphics, key, artPath, bytes)
       if image == nil then
         assert(type(failure) == "string", "staged upload failures carry their reason")
         failures[key] = failure --[[@as string]]
         return nil, failure
       end
+      images[key] = image
       return image
     end
     local selector = exactPortraitSelector(key)
     if selector ~= nil then
-      local cell, failure = acquirePortraitCell(envelope, key, graphics, cacheFs, selector)
+      local cell, failure = uploadPortraitCell(graphics, cacheFs, selector)
       if cell == nil then
         if failure == nil then
           return nil
@@ -739,6 +858,12 @@ function FieldBattlePresentation:_preparationServices()
       local pool = assert(envelope._pool, "pooled battle borrows return to the shared image owner")
       pool:release(pooled.lease)
     end
+    if key == "battle-background" and backgroundImage ~= nil and type(backgroundImage.release) == "function" then
+      backgroundImage:release()
+      backgroundImage = nil
+      backgroundPixels = nil
+    end
+    images[key] = nil
   end
   return services
 end
@@ -985,12 +1110,12 @@ function FieldBattlePresentation:_pollPendingScreen()
     end
   end
   local manifest = loadManifest(self._cacheFs)
-  if type(manifest) ~= "table" or manifest.verified ~= true then
+  if type(manifest) ~= "table" or type(manifest.hud) ~= "table" or type(manifest.menus) ~= "table" then
     if type(requestScene) ~= "function" then
       self:_failPendingLaunch("battle scene " .. tostring(sceneKey) .. ": no scene demand host to schedule it")
     else
       self:_failPendingLaunch(
-        "battle scene " .. tostring(sceneKey) .. ": the staged battle presentation is not verified"
+        "battle scene " .. tostring(sceneKey) .. ": the staged battle presentation is unavailable"
       )
     end
     return

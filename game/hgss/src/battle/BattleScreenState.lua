@@ -11,6 +11,7 @@
 
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local BattlePresentationAssets = require("game.hgss.src.battle.BattlePresentationAssets")
+local BattleScene = require("libs.hgss.src.presentation.BattleScene")
 local BattleScreenInterface = require("game.hgss.src.battle.BattleScreenInterface")
 local BattleSubflows = require("game.hgss.src.battle.BattleSubflows")
 local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
@@ -50,6 +51,10 @@ local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
 ---@field _signature string? measurement signature behind the published plan
 ---@field _arrowTick integer selection arrow clock in presentation ticks
 ---@field _sourceAccum number accepted seconds banked toward the next arrow tick
+---@field _scene table<string, unknown> native visual-state owner for entry travel and scroll
+---@field _gaugeVisuals table<string, { sideType: integer, kind: string }> active native HUD gauge task destinations
+---@field _sceneHasBackground boolean true after staged BG3 state installs
+---@field _monCatalog table<string, unknown>? borrowed immutable mon catalog for experience spans
 ---@field _outcomeAcked boolean terminal narration acknowledged once
 ---@field _error string? failure context
 ---@field _disposed boolean
@@ -94,7 +99,7 @@ local SOURCE_TICK_EPSILON = 1e-12
 ---@return string[] staged audio role symbols
 local function stagedAudioRoles(manifest)
   local roles = {}
-  if type(manifest) == "table" and manifest.verified == true and type(manifest.audioRoles) == "table" then
+  if type(manifest) == "table" and type(manifest.hud) == "table" and type(manifest.audioRoles) == "table" then
     for _, role in ipairs({ "wild", "trainer", "rival", "select" }) do
       if type(manifest.audioRoles[role]) == "string" then
         roles[#roles + 1] = manifest.audioRoles[role]
@@ -167,6 +172,7 @@ function BattleScreenState.new(opts)
       launchId = opts.launchId,
       sceneKey = sceneKey --[[@as string]],
       audioRoles = stagedAudioRoles(manifest),
+      shadowRegions = manifest.pictures.shadow.regions,
       sceneImage = overrides.sceneImage --[[@as string?]],
       frameKey = overrides.frameKey --[[@as string?]],
       frames = overrides.frames --[[@as table<string, table<string, unknown>>?]],
@@ -201,6 +207,11 @@ function BattleScreenState.new(opts)
     _signature = nil,
     _arrowTick = 0,
     _sourceAccum = 0,
+    _scene = BattleScene.new(),
+    _gaugeVisuals = {},
+    _sceneHasBackground = false,
+    _sceneAccum = 0,
+    _monCatalog = opts.monCatalog,
     _outcomeAcked = false,
     _error = nil,
     _disposed = false,
@@ -246,12 +257,297 @@ function BattleScreenState.new(opts)
   return self
 end
 
+-- Resolves one battler's experience progress within its level from the
+-- borrowed mon catalog growth curve: the absolute experience minus the
+-- level base over the level span. Anything unanswerable stays absent;
+-- the renderer draws an empty experience row without a span.
+---@param catalog table<string, unknown>? borrowed immutable mon catalog
+---@param battler table<string, unknown> displayed battler facts under reading
+---@return number? progress within the level, nil when unanswerable
+---@return number? level span, nil when unanswerable
+local function expProgress(catalog, battler)
+  if type(catalog) ~= "table" then
+    return nil, nil
+  end
+  local speciesKey = battler.species
+  local level = battler.level
+  local exp = battler.exp
+  if type(speciesKey) ~= "string" or speciesKey == "" then
+    return nil, nil
+  end
+  if type(level) ~= "number" or level % 1 ~= 0 or level < 1 or level >= 100 then
+    return nil, nil
+  end
+  if type(exp) ~= "number" then
+    return nil, nil
+  end
+  local speciesOf = catalog.species --[[@as fun(self: table<string, unknown>, key: string): table<string, unknown>?]]
+  local curveOf = catalog.growthCurve --[[@as fun(self: table<string, unknown>, key: string): table<integer, integer>?]]
+  if type(speciesOf) ~= "function" or type(curveOf) ~= "function" then
+    return nil, nil
+  end
+  local okSpecies, species = pcall(speciesOf, catalog, speciesKey)
+  if not okSpecies or type(species) ~= "table" or type(species.growthCurve) ~= "string" then
+    return nil, nil
+  end
+  local okCurve, curve = pcall(curveOf, catalog, species.growthCurve --[[@as string]])
+  if not okCurve or type(curve) ~= "table" then
+    return nil, nil
+  end
+  local base, top = curve[level], curve[level + 1]
+  if type(base) ~= "number" or type(top) ~= "number" or top <= base then
+    return nil, nil
+  end
+  local into = exp - base
+  if into < 0 then
+    into = 0
+  elseif into > top - base then
+    into = top - base
+  end
+  return into, top - base
+end
+
+---@param battlers table<integer, table<string, unknown>> displayed battlers
+---@return integer[], integer[] foe then player occupied positions
+local function sceneSlotOrders(battlers)
+  local foeOrder, allyOrder = {}, {}
+  local foeSeen, allySeen = {}, {}
+  for _, battler in ipairs(battlers) do
+    if type(battler) == "table" and type(battler.position) == "number" then
+      if battler.side == 1 then
+        if not allySeen[battler.position] then
+          allySeen[battler.position] = true
+          allyOrder[#allyOrder + 1] = battler.position --[[@as integer]]
+        end
+      elseif not foeSeen[battler.position] then
+        foeSeen[battler.position] = true
+        foeOrder[#foeOrder + 1] = battler.position --[[@as integer]]
+      end
+    end
+  end
+  table.sort(foeOrder)
+  table.sort(allyOrder)
+  return foeOrder, allyOrder
+end
+
+---@param self BattleScreenState
+---@param battlers table<integer, table<string, unknown>> displayed battler facts under enriching
+local function enrichScene(self, battlers)
+  local foeOrder, allyOrder = sceneSlotOrders(battlers)
+  for _, battler in ipairs(battlers) do
+    if type(battler) == "table" then
+      local pictureState = self._scene:pictureState(battler)
+      if pictureState ~= nil then
+        for key, value in pairs(pictureState) do
+          battler[key] = value
+        end
+      end
+      if type(battler.portraitSelector) == "string" then
+        local pictureAttributes = BattleScene.pictureAttributes(self._manifest, battler.portraitSelector)
+        if pictureAttributes ~= nil then
+          battler.sourceHeight = pictureAttributes.height
+          battler.pictureAnimation = pictureAttributes.animation
+          local pose = self._scene:picturePose(battler, pictureAttributes.animation)
+          battler.pictureFrame = pose.frame
+          battler.pictureXOffset = pose.xOffset
+          battler.pictureAnimationActive = pose.active
+        end
+      end
+      local order = nil
+      if type(battler.position) == "number" then
+        order = battler.side == 1 and allyOrder or foeOrder
+      end
+      local row = BattleScene.slotRow(battler, order, self._manifest.battlefield.slots)
+      if battler.side == 1 and (row.sideType == 2 or row.sideType == 4) then
+        local modeSideType = self._scene:healthBoxModeSideType(battler)
+        assert(
+          modeSideType == nil or modeSideType == row.sideType,
+          "health-box mode remains attached to its native row"
+        )
+        battler.healthBoxMode = self._scene:healthBoxMode(battler)
+      end
+      local dx, dy = self._scene:entryOffsetFor(battler, row)
+      battler.entryDx = dx
+      battler.entryDy = dy
+      local into, span = expProgress(self._monCatalog, battler)
+      if into ~= nil and span ~= nil then
+        battler.expInto = into
+        battler.expSpan = span
+      end
+    end
+  end
+end
+
+-- Applies a source appearance/transform update to the active visual scene.
+-- Runtime simulation records remain owned by the battle timeline.
+---@param battler table<string, unknown> activation receiving the presentation update
+---@param attributes table<string, unknown> source picture attributes
+---@return table<string, unknown> detached presentation view
+function BattleScreenState:applyPictureState(battler, attributes)
+  assert(type(attributes) == "table", "picture updates carry source attributes")
+  if type(attributes.portraitSelector) == "string" and attributes.portraitSelector ~= "" then
+    self._assets:addSelectors({ attributes.portraitSelector })
+  end
+  return self._scene:applyPictureState(battler, attributes)
+end
+
+-- Restores the activation's saved visual snapshot when its transform ends.
+---@param battler table<string, unknown> activation being restored
+---@return table<string, unknown>? restored presentation view
+function BattleScreenState:restorePictureState(battler)
+  return self._scene:restorePictureState(battler)
+end
+
+-- Starts the scene-owned portion of a send-out task at the controller's
+-- event boundary. Task start policy stays with its event owner.
+---@param battler table<string, unknown> displayed activation entering the scene
+---@param stepX integer native controller horizontal step for this route
+function BattleScreenState:startPictureEntry(battler, stepX)
+  assert(type(battler) == "table", "picture entry names its activation")
+  local battlers = self._timeline:battlers()
+  local target = nil
+  for _, candidate in ipairs(battlers) do
+    if candidate.combatant == battler.combatant and candidate.activation == battler.activation then
+      target = candidate
+      break
+    end
+  end
+  if target == nil then
+    target = battler
+    battlers[#battlers + 1] = target
+  end
+  local foes, allies = sceneSlotOrders(battlers)
+  local order = target.side == 1 and allies or foes
+  local row = BattleScene.slotRow(target, order, self._manifest.battlefield.slots)
+  self._scene:install(target)
+  self._scene:startEntry(target, row, stepX)
+end
+
+---@param battler table<string, unknown> activation whose entry phase is queried
+---@return string phase
+---@return integer remaining source wait ticks
+function BattleScreenState:pictureEntryStatus(battler)
+  return self._scene:entryStatus(battler)
+end
+
+---@param battler table<string, unknown> activation whose entry controller completed
+---@param readiness { battlerReady: boolean, pictureAnimationActive: boolean, followupTaskRequired: boolean, followupTaskComplete: boolean } detached controller observations
+---@return boolean true when the entry task completed
+function BattleScreenState:completePictureEntry(battler, readiness)
+  return self._scene:completeEntry(battler, readiness)
+end
+
+-- Starts one event-owned health task using its detached source checkpoint.
+-- This screen exposes the visual mechanism; the controller owns timing and
+-- decides which checkpoint starts or replaces the task.
+---@param key string stable event-time task identity
+---@param spec { maximum: integer, current: integer, delta: integer, amount?: integer, sideType: integer } detached source health facts
+function BattleScreenState:startHealthGaugeTask(key, spec)
+  assert(type(spec) == "table", "health tasks receive detached source facts")
+  assert(
+    type(spec.sideType) == "number" and spec.sideType == math.floor(spec.sideType),
+    "health task identifies its native side type"
+  )
+  self._scene:startGaugeTask(key, {
+    maximum = spec.maximum,
+    current = spec.current,
+    delta = spec.delta,
+    tiles = BattleScene.HP_TILES,
+    amount = spec.amount,
+  })
+  self._gaugeVisuals[key] = { sideType = spec.sideType, kind = "health" }
+end
+
+-- Starts one event-owned experience task at its supplied level checkpoint.
+---@param key string stable event-time task identity
+---@param spec { maximum: integer, current: integer, delta: integer, sideType: integer } detached source experience facts
+function BattleScreenState:startExperienceGaugeTask(key, spec)
+  assert(type(spec) == "table", "experience tasks receive detached source facts")
+  assert(
+    type(spec.sideType) == "number" and spec.sideType == math.floor(spec.sideType),
+    "experience task identifies its native side type"
+  )
+  self._scene:startExpGaugeTask(key, spec)
+  self._gaugeVisuals[key] = { sideType = spec.sideType, kind = "experience" }
+end
+
+---@param key string task identity under reading
+---@return boolean true while the source task is moving
+function BattleScreenState:gaugeTaskActive(key)
+  return self._scene:gaugeTaskActive(key)
+end
+
+---@param key string task identity under reading
+---@return number displayed task checkpoint
+function BattleScreenState:gaugeTaskValue(key)
+  return self._scene:gaugeTaskValue(key)
+end
+
+---@param key string task identity under patching
+---@param sideType integer? native side type for a health bar
+---@return table<integer, { barIndex: integer, tile: integer, sourceTile: integer, fill: integer }> native character-buffer writes
+function BattleScreenState:gaugeTaskPatchTiles(key, sideType)
+  return self._scene:gaugeTaskPatchTiles(self._manifest.hud.patchSpans, key, sideType)
+end
+
+-- Removes the completed task's visual override after its controller has
+-- observed the completion gate and accepted the endpoint checkpoint.
+---@param key string completed task identity
+function BattleScreenState:completeGaugeTask(key)
+  self._scene:completeGaugeTask(key)
+  self._gaugeVisuals[key] = nil
+end
+
+-- Exposes the controller-selected visual state; event timing stays with its owner.
+---@param battler table<string, unknown> active player activation
+---@param sideType integer native double-player side type
+---@param mode string source health-box mode
+function BattleScreenState:setHealthBoxMode(battler, sideType, mode)
+  self._scene:setHealthBoxMode(battler, sideType, mode)
+end
+
+-- Allocates a screen-lifetime transient visual slot for an animation owner.
+---@param sourceKey string semantic source route key
+---@return { id: integer, sourceKey: string, age: integer } launch-owned instance identity
+function BattleScreenState:allocateEffect(sourceKey)
+  assert(not self._disposed, "disposed screens allocate no effects")
+  return self._scene:allocEffect(sourceKey)
+end
+
+-- Supplies the currently selected staged picture and native attributes for
+-- one transient slot. Animation policy and source timing remain with the caller.
+---@param id integer live screen effect identity
+---@param picture table<string, unknown> staged drawable key and native picture state
+---@return boolean applied true only when the requested drawable is ready
+---@return string? failure terminal staging failure, nil while pending or ready
+function BattleScreenState:setEffectPicture(id, picture)
+  assert(not self._disposed, "disposed screens update no effects")
+  assert(type(picture) == "table" and type(picture.selector) == "string", "transient pictures carry a demand selector")
+  self._assets:addSelectors({ picture.selector })
+  local assetKey = assert(picture.assetKey, "transient pictures name a staged drawable")
+  local image, failure = self._assets:drawable(assetKey --[[@as string]])
+  if image == nil then
+    return false, failure
+  end
+  self._scene:setEffectPicture(id, picture)
+  return true
+end
+
+-- Removes one transient visual slot from future immutable render snapshots.
+---@param id integer effect identity under release
+function BattleScreenState:releaseEffect(id)
+  assert(not self._disposed, "disposed screens release no effects")
+  self._scene:releaseEffect(id)
+end
+
 ---@return table<string, unknown> internal semantic snapshot for resolvers and renderers
 function BattleScreenState:_snapshot()
   local battlers = self._timeline:battlers()
   for _, battler in ipairs(battlers) do
     battler.shakeDx = self._timeline:shake(battler.combatant --[[@as integer]])
   end
+  self._scene:observe(battlers)
+  enrichScene(self, battlers)
   local roster = {}
   local latest = self._pendingFinal or self._latestView
   if type(latest) == "table" and type(latest.own) == "table" then
@@ -313,13 +609,30 @@ function BattleScreenState:_snapshot()
       end
     end
   end
+  local gaugePatchTiles = {}
+  for key, visual in pairs(self._gaugeVisuals) do
+    local side = gaugePatchTiles[visual.sideType]
+    if side == nil then
+      side = {}
+      gaugePatchTiles[visual.sideType] = side
+    end
+    side[visual.kind] = self._scene:gaugeTaskPatchTiles(self._manifest.hud.patchSpans, key, visual.sideType)
+  end
   return {
+    battleKind = self._kind,
     mode = self._mode,
     selection = self._selection,
     armed = self._armed ~= nil and { scope = self._armed.scope, id = self._armed.id } or nil,
     requestId = self._request ~= nil and self._request.requestId or 0,
     message = self._notice or self._timeline:message(),
     battlers = battlers,
+    bgScroll = self._scene:scroll(),
+    backgroundRaster = self._scene:hasBackground() and self._scene:backgroundRaster() or nil,
+    effectInstances = self._scene:effectViews(),
+    slotGeometry = self._manifest.battlefield.slots,
+    hudSections = { player = self._manifest.hud.player, enemy = self._manifest.hud.enemy },
+    hudPatchSpans = self._manifest.hud.patchSpans,
+    gaugePatchTiles = gaugePatchTiles,
     commands = self:_commands(),
     moves = self:_moves(),
     partyRoster = roster,
@@ -1801,6 +2114,13 @@ function BattleScreenState:updateFixed(dt)
   end
   assert(type(dt) == "number" and dt == dt and dt >= 0, "battle updates take accepted seconds")
   self._assets:update()
+  if not self._sceneHasBackground then
+    local layer = self._assets:sceneLayer()
+    if layer ~= nil then
+      self._scene:installBackground(layer)
+      self._sceneHasBackground = true
+    end
+  end
   if self._assets:state() == "failed" then
     self._mode = "failed"
     self._error = self._assets:error()
@@ -1862,6 +2182,9 @@ function BattleScreenState:updateFixed(dt)
   else
     self._arrowTick = 0
   end
+  -- Entry travel consumes the same accepted source ticks through the
+  -- visual scene owner; draws and polls never advance it.
+  self._scene:advance(dt)
   if self._session ~= nil then
     pcall(function()
       self._session:resolve(measurement, self:_snapshot())
@@ -1915,7 +2238,7 @@ function BattleScreenState:draw(resources)
     text = self._text,
     windows = self._windows,
     assets = self._assets,
-    doublesHud = self._manifest.doublesHud,
+    doublesHud = type(self._manifest.hud) == "table" and self._manifest.hud.doubles or nil,
     frameKey = self._assets:frameKey(),
     sceneImageKey = self._assets:sceneImage(),
   }
@@ -1977,6 +2300,9 @@ function BattleScreenState:dispose()
   end
   if self._assets ~= nil then
     self._assets:dispose()
+  end
+  if self._scene ~= nil then
+    self._scene:release()
   end
   if self._session ~= nil then
     self._session:dispose()

@@ -108,4 +108,49 @@ function T.picture_offset_callback_declares_battler_topology()
   Assert.deepEqual(effect.requiredContext.battlerTopology, { type = "battle-animation-battler-topology" })
 end
 
+function T.native_shadow_compiler_extracts_the_four_selected_source_rectangles()
+  local compiler = require("romdump.src.digest.battle.BattlePresentationCompiler")
+  local bit = require("bit")
+  local surface = {}
+  for y = 0, 79 do
+    local value = y < 16 and 0x11 or y < 32 and 0x22 or y < 48 and 0x33 or 0x44
+    for x = 0, 79 do
+      surface[y * 80 + x + 1] = x < 40 and value or 0x55
+    end
+  end
+  surface[1], surface[2] = 0, 0
+  local scanned = {}
+  local seed = 0x1234
+  for wordOffset = 0, 3199 do
+    local plain = surface[wordOffset * 2 + 1] + surface[wordOffset * 2 + 2] * 256
+    local encoded = bit.bxor(plain, seed % 65536)
+    scanned[#scanned + 1] = string.char(encoded % 256, math.floor(encoded / 256))
+    local low, high = seed % 65536, math.floor(seed / 65536)
+    local lowProduct = low * 20077 + 24691
+    local highProduct = (low * 16838 + high * 20077 + math.floor(lowProduct / 65536)) % 65536
+    seed = lowProduct % 65536 + highProduct * 65536
+  end
+  local palette = { colors = {} }
+  for index = 0, 15 do
+    palette.colors[index + 1] = { r = index * 10, g = 0, b = 0 }
+  end
+  local image = compiler.compileShadowImage({ depth = 3, tiles = table.concat(scanned) }, palette)
+
+  Assert.equal(image.width, 64, "shadow metadata keeps the native 64-pixel width")
+  Assert.equal(image.height, 64, "four native shadow-size regions are staged vertically")
+  local function pixel(x, y)
+    local offset = (y * image.width + x) * 4 + 1
+    return {
+      string.byte(image.pixels, offset),
+      string.byte(image.pixels, offset + 1),
+      string.byte(image.pixels, offset + 2),
+      string.byte(image.pixels, offset + 3),
+    }
+  end
+  Assert.deepEqual(pixel(4, 0), { 10, 0, 0, 255 }, "size zero reads the copied first shadow rows")
+  Assert.deepEqual(pixel(4, 16), { 10, 0, 0, 255 }, "size one aliases the source size-zero rectangle")
+  Assert.deepEqual(pixel(4, 32), { 20, 0, 0, 255 }, "size two selects the next native atlas rows")
+  Assert.deepEqual(pixel(4, 48), { 30, 0, 0, 255 }, "size three selects the final native atlas rows")
+end
+
 return { tests = T }

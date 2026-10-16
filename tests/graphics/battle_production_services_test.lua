@@ -8,6 +8,7 @@
 
 local Assert = require("tests.support.Assert")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
+local BattlePresentationSchema = require("libs.assets.src.battle.BattlePresentationSchema")
 local BattlePresentationModel = require("game.hgss.src.battle.BattlePresentationModel")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FieldBattlePresentation = require("game.hgss.src.field.FieldBattlePresentation")
@@ -38,6 +39,22 @@ local function readyVersions()
     end
   end
   return versions
+end
+
+local function assertStagedManifest(manifest, context)
+  Assert.equal(manifest.schema, BattlePresentationSchema.MANIFEST_SCHEMA, context .. " stages the current catalog schema")
+  Assert.isTrue(
+    type(manifest.battlefield.slots) == "table" and #manifest.battlefield.slots == 6,
+    context .. " stages all source side-type geometry"
+  )
+  Assert.isTrue(
+    type(manifest.hud.patchSpans.playerDoubleMode) == "table" and #manifest.hud.patchSpans.playerDoubleMode == 2,
+    context .. " stages both native double-player health-box modes"
+  )
+  Assert.isTrue(
+    type(manifest.pictures.selectors) == "table" and next(manifest.pictures.selectors) ~= nil,
+    context .. " stages source picture selectors"
+  )
 end
 
 local function compactMeasurement()
@@ -257,8 +274,6 @@ local function stagedPortraitSelector(cacheFs, species, facing)
     "the staged cache carries its portrait manifest"
   )
   local entries = assert(portraits.entries, "the staged cache plans its portrait entries")
-  local markers =
-    assert(cacheFs:loadLua(MonCache.indexPath()), "the staged cache carries its mon page markers").portraitPages
   local fallback = nil
   local keys = {}
   for selector in pairs(entries) do
@@ -273,7 +288,12 @@ local function stagedPortraitSelector(cacheFs, species, facing)
       and ((facing == "back") == isBack)
       and type(entry) == "table"
       and type(entry.pageId) == "number"
-      and MonCache.isPageReady(cacheFs, "portraits", entry.pageId, markers[entry.pageId + 1])
+      and MonCache.isPageReady(
+        cacheFs,
+        "portraits",
+        entry.pageId,
+        cacheFs:read(MonCache.pageMarkerPath("portraits", entry.pageId))
+      )
     then
       if selector:find("/male/plain", 1, true) ~= nil then
         return selector
@@ -452,7 +472,7 @@ function T.presented_launch_renders_real_staged_frames(scope, context)
   for _, versionId in ipairs(versions) do
     local cacheFs = CacheFs.forVersion(versionId)
     local manifest = BattlePresentationCache.load(cacheFs)
-    Assert.isTrue(manifest.verified == true, versionId .. " stages the verified battle manifest")
+    assertStagedManifest(manifest, versionId)
     local wildRole = assert(manifest.audioRoles.wild, versionId .. " stages its wild music role")
     local text, windows = productionDrawServices(scope, cacheFs, versionId)
     -- Real staged pixels draw through the session image owner: the real
@@ -563,9 +583,16 @@ function T.presented_launch_renders_real_staged_frames(scope, context)
     local hud = assert(content.hud, versionId .. " carries its compact HUD")
     for _, side in ipairs({ { box = hud.enemy, label = "enemy" }, { box = hud.player, label = "player" } }) do
       local bar = assert(side.box.bar, versionId .. " carries its " .. side.label .. " bar")
+      -- Native tile bars carry staged-strip ink with the native
+      -- quantization; the interim flat tint never paints the bar.
       Assert.isTrue(
-        countColor(firstPixels, hostRect(frame, bar), { 51, 204, 51 }) > 10,
+        countInk(firstPixels, hostRect(frame, bar)) > 10,
         versionId .. " draws the " .. side.label .. " health bar"
+      )
+      Assert.equal(
+        countColor(firstPixels, hostRect(frame, bar), { 51, 204, 51 }),
+        0,
+        versionId .. " paints no interim tint on the " .. side.label .. " health bar"
       )
     end
     for _, event in ipairs(host.notifies) do
@@ -580,7 +607,7 @@ end
 -- publishes: the admitted port stays unacknowledged with no live screen
 -- and no painted frame while pending, then exactly one staged-backed
 -- screen enters and renders staged scene ink deterministically.
-function T.cold_global_and_scene_build_one_verified_screen(scope, context)
+function T.cold_global_and_scene_build_one_staged_screen(scope, context)
   local versions = readyVersions()
   if #versions == 0 then
     context:skip("the cold battle coverage needs a ready user-owned ROM with a derived cache")
@@ -589,7 +616,7 @@ function T.cold_global_and_scene_build_one_verified_screen(scope, context)
   for _, versionId in ipairs(versions) do
     local cacheFs = CacheFs.forVersion(versionId)
     local manifest = BattlePresentationCache.load(cacheFs)
-    Assert.isTrue(manifest.verified == true, versionId .. " stages the verified battle manifest")
+    assertStagedManifest(manifest, versionId)
     local wildRole = assert(manifest.audioRoles.wild, versionId .. " stages its wild music role")
     local manifestPath = BattlePresentationCache.manifestPath()
     local recordPath = BattlePresentationCache.scenePath(SCENE_KEY)
@@ -693,9 +720,10 @@ function T.cold_global_and_scene_build_one_verified_screen(scope, context)
       driveToEnter(envelope, port, launchId, versionId)
       Assert.equal(#constructions, 1, versionId .. " constructs exactly one screen")
       Assert.isTrue(
-        type(constructions[1]) == "table" and constructions[1].verified == true,
+        type(constructions[1]) == "table",
         versionId .. " backs its screen with the staged global"
       )
+      assertStagedManifest(constructions[1], versionId .. " screen")
       local demands = envelope:preparedDemands()
       Assert.isTrue(#demands >= 1, versionId .. " prepares its exact launch demand")
       Assert.deepEqual(demands[1].scenes, { SCENE_KEY }, versionId .. " demands exactly its staged scene")
@@ -876,7 +904,7 @@ function T.hostile_incoming_graphics_state_never_reaches_battle_pixels(scope, co
   for _, versionId in ipairs(versions) do
     local cacheFs = CacheFs.forVersion(versionId)
     local manifest = BattlePresentationCache.load(cacheFs)
-    Assert.isTrue(manifest.verified == true, versionId .. " stages the verified battle manifest")
+    assertStagedManifest(manifest, versionId)
     local text, windows = productionDrawServices(scope, cacheFs, versionId)
     local envelope = FieldBattlePresentation.new({
       cacheFs = cacheFs,
@@ -1001,7 +1029,7 @@ function T.battle_draw_preserves_caller_graphics_state(scope, context)
   for _, versionId in ipairs(versions) do
     local cacheFs = CacheFs.forVersion(versionId)
     local manifest = BattlePresentationCache.load(cacheFs)
-    Assert.isTrue(manifest.verified == true, versionId .. " stages the verified battle manifest")
+    assertStagedManifest(manifest, versionId)
     local text, windows = productionDrawServices(scope, cacheFs, versionId)
     local envelope = FieldBattlePresentation.new({
       cacheFs = cacheFs,
@@ -1099,7 +1127,7 @@ function T.failed_battle_draw_reports_and_leaves_no_graphics_behind(scope, conte
   for _, versionId in ipairs(versions) do
     local cacheFs = CacheFs.forVersion(versionId)
     local manifest = BattlePresentationCache.load(cacheFs)
-    Assert.isTrue(manifest.verified == true, versionId .. " stages the verified battle manifest")
+    assertStagedManifest(manifest, versionId)
     local text, windows = productionDrawServices(scope, cacheFs, versionId)
     local envelope = FieldBattlePresentation.new({
       cacheFs = cacheFs,
@@ -1395,7 +1423,7 @@ function T.equal_source_time_paints_the_same_arrow_cell_on_every_schedule(scope,
   for _, versionId in ipairs(versions) do
     local cacheFs = CacheFs.forVersion(versionId)
     local manifest = BattlePresentationCache.load(cacheFs)
-    Assert.isTrue(manifest.verified == true, versionId .. " stages the verified battle manifest")
+    assertStagedManifest(manifest, versionId)
     local function renderOver(envelope, text, windows, schedule)
       for _, dt in ipairs(schedule) do
         envelope:updateFixed(dt)

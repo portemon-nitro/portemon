@@ -6,23 +6,20 @@
 -- geometry and the drawing.
 
 local Assert = require("tests.support.Assert")
-local StubLease = require("tests.support.StubLease")
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local BattleScreenInterface = require("game.hgss.src.battle.BattleScreenInterface")
 local FakeGraphics = require("tests.support.FakeGraphics")
+local BattlePresentationManifestFixture = require("tests.support.BattlePresentationManifestFixture")
 local MonCache = require("libs.assets.src.MonCache")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = {}
-
--- Portrait drawables pair their stub image with a stub cell quad,
--- matching the production image-plus-quad handle behind draws while
--- keeping the string identity assertions on the stub image intact.
-local function stubPortrait(key)
-  if key:sub(1, 4) == "mon:" then
-    return { lease = StubLease.new(key), quad = { handle = "quad:" .. key } }
-  end
-  return StubLease.new(key)
+local function fakeArtSetFilter() end
+local function fakeArtWidth()
+  return 1648
+end
+local function fakeArtHeight()
+  return 8
 end
 
 ---@param width integer host width under test driving
@@ -154,6 +151,13 @@ local function drawnHud(view, held)
   for _, key in ipairs(held or {}) do
     missing[key] = true
   end
+  local manifest = BattlePresentationManifestFixture.manifest()
+  local drawView = {}
+  for key, value in pairs(view) do
+    drawView[key] = value
+  end
+  drawView.hudSections = { player = manifest.hud.player, enemy = manifest.hud.enemy }
+  drawView.hudPatchSpans = manifest.hud.patchSpans
   local resources = {
     graphics = graphics,
     text = text,
@@ -164,13 +168,18 @@ local function drawnHud(view, held)
         if missing[key] then
           return nil
         end
-        return stubPortrait(key)
+        return {
+          handle = key,
+          setFilter = fakeArtSetFilter,
+          getWidth = fakeArtWidth,
+          getHeight = fakeArtHeight,
+        }
       end,
     },
     frameKey = "compact-hud-test-frame",
     sceneImageKey = "scene:test",
   }
-  ApplicationPresentation.draw(graphics, resources, view, plan)
+  ApplicationPresentation.draw(graphics, resources, drawView, plan)
   return { graphics = graphics, text = text, windows = windows, plan = plan, requests = requests }
 end
 
@@ -187,43 +196,60 @@ local function drawsOf(graphics, handle)
   return found
 end
 
--- The enemy composite draws unscaled from the selected enemy artwork with
--- its complete bounds at the left/top anchor.
+-- The enemy composite samples its source artwork through quads at the
+-- left/top anchor, never a whole strip.
 function T.enemy_composite_draws_unscaled_at_left_top_bounds()
   local result = drawnHud(snapshot(), {})
   local content = assert(result.plan.content, "the compact plan carries its content")
   local bounds = assert(content.hud.enemy, "the plan carries the enemy bounds")
   Assert.equal(bounds.x, 4, "the enemy bounds keep their left anchor")
   Assert.equal(bounds.y, 4, "the enemy bounds keep their top anchor")
-  local composites = drawsOf(result.graphics, "hud:enemy")
-  Assert.equal(#composites, 1, "the enemy artwork draws exactly once")
-  Assert.equal(composites[1].x, bounds.x, "the enemy composite starts at the bounds left")
+  local composites = {}
+  for _, entry in ipairs(drawsOf(result.graphics, "hud:enemy")) do
+    if type(entry.quad) == "table" and entry.quad.w == 64 and entry.quad.h == 8 then
+      composites[#composites + 1] = entry
+    end
+  end
+  Assert.equal(#composites, 16, "the enemy cell draws both native objects one scan row at a time")
+  Assert.equal(composites[1].x, bounds.x + 12, "the enemy native cell stays centered in its aspect-fit bounds")
   Assert.equal(composites[1].y, bounds.y, "the enemy composite starts at the bounds top")
-  Assert.isTrue(composites[1].sx == nil or composites[1].sx == 1, "the enemy composite draws unscaled horizontally")
-  Assert.isTrue(composites[1].sy == nil or composites[1].sy == 1, "the enemy composite draws unscaled vertically")
-  Assert.isNil(composites[1].quad, "the enemy composite draws whole, never a sub-cell")
+  Assert.equal(composites[1].sx, 0.5625, "the enemy cell preserves its source aspect ratio")
+  Assert.equal(composites[1].sy, 0.5625, "the enemy cell preserves its source aspect ratio")
+  Assert.notNil(
+    composites[1].quad,
+    "the enemy composite samples its source strip through quads, never a whole strip"
+  )
 end
 
--- The player composite draws unscaled from the selected player artwork
--- with its complete bounds right-aligned and above the dock.
+-- The player composite samples its source artwork through quads with its
+-- complete bounds right-aligned and above the dock, never a whole strip.
 function T.player_composite_right_and_bottom_edges_hold_above_dock()
   local result = drawnHud(snapshot(), {})
   local content = assert(result.plan.content, "the compact plan carries its content")
   local bounds = assert(content.hud.player, "the plan carries the player bounds")
   Assert.equal(bounds.x + bounds.width, 252, "the player bounds keep their right edge")
   Assert.equal(bounds.y + bounds.height, 132, "the player bounds sit above the dock")
-  local composites = drawsOf(result.graphics, "hud:player")
-  Assert.equal(#composites, 1, "the player artwork draws exactly once")
-  Assert.equal(composites[1].x, bounds.x, "the player composite starts at the bounds left")
+  local composites = {}
+  for _, entry in ipairs(drawsOf(result.graphics, "hud:player")) do
+    if type(entry.quad) == "table" and entry.quad.w ~= 8 then
+      composites[#composites + 1] = entry
+    end
+  end
+  Assert.equal(#composites, 16, "the player cell draws both native objects one scan row at a time")
+  Assert.equal(composites[1].x, bounds.x + 4, "the player native cell is centered in its aspect-fit bounds")
   Assert.equal(composites[1].y, bounds.y, "the player composite starts at the bounds top")
-  Assert.isTrue(composites[1].sx == nil or composites[1].sx == 1, "the player composite draws unscaled horizontally")
-  Assert.isTrue(composites[1].sy == nil or composites[1].sy == 1, "the player composite draws unscaled vertically")
-  Assert.isNil(composites[1].quad, "the player composite draws whole, never a sub-cell")
+  Assert.equal(composites[1].sx, 0.75, "the player cell preserves its source aspect ratio")
+  Assert.equal(composites[1].sy, 0.75, "the player cell preserves its source aspect ratio")
+  Assert.notNil(
+    composites[1].quad,
+    "the player composite samples its source strip through quads, never a whole strip"
+  )
 end
 
 -- Every dynamic region resolves the snapshot values: names, levels,
--- conditions and health on both sides plus the player numeric health and
--- experience, each inside its own side bounds.
+-- conditions and health on both sides plus the player numeric health,
+-- each inside its own side bounds. Experience draws as bar work, so the
+-- experience region carries no numeric wording.
 function T.hud_regions_carry_the_snapshot_values()
   local view = snapshot({
     battlers = {
@@ -281,7 +307,7 @@ function T.hud_regions_carry_the_snapshot_values()
   Assert.equal(regionText(player, "level"), "Lv5", "the player level resolves")
   Assert.equal(regionText(player, "condition"), "PSN", "the player condition resolves")
   Assert.equal(regionText(player, "hp"), "13/52", "the player numeric health resolves")
-  Assert.equal(regionText(player, "exp"), "987", "the player numeric experience resolves")
+  Assert.equal(regionText(player, "exp"), "", "experience never prints its numeric total")
   Assert.equal(regionText(enemy, "name"), "WILDJR", "the enemy name resolves")
   Assert.equal(regionText(enemy, "level"), "Lv4", "the enemy level resolves")
   Assert.equal(regionText(enemy, "condition"), "", "a healthy combatant resolves no condition")
@@ -294,59 +320,72 @@ function T.hud_regions_carry_the_snapshot_values()
   end
 end
 
--- Health bars keep the paired fractions and shades: full health fills the
--- bar green, quarter health fills a quarter yellow, empty health fills
--- nothing red.
+-- Health bars draw as native tile work with native quantization: full
+-- health fills every tile from the green base, quarter health shows
+-- yellow partial tiles, empty health shows fainted tiles. No painted
+-- rectangles and no interim shades appear anywhere above the dock.
 function T.damaged_and_empty_bars_keep_paired_fractions_and_shades()
-  local function barRects(view)
+  local function barTiles(view)
     local result = drawnHud(view, {})
-    local bars = {}
-    for _, rectangle in ipairs(result.graphics.rectangles) do
-      if rectangle.y < 136 and rectangle.h == 4 and rectangle.w <= 48 then
-        bars[#bars + 1] = rectangle
+    local tiles = {}
+    for _, entry in ipairs(result.graphics.draws) do
+      if
+        type(entry.image) == "table"
+        and type(entry.image.handle) == "string"
+        and entry.image.handle:sub(1, 4) == "hud:"
+        and type(entry.quad) == "table"
+        and entry.quad.w == 8
+        and entry.quad.h == 8
+        and (entry.quad.x == 80 or entry.quad.x == 120 or entry.quad.x == 152)
+      then
+        tiles[#tiles + 1] = math.floor(entry.quad.x / 8)
       end
     end
-    return bars
+    table.sort(tiles)
+    return tiles, result
   end
-  local full = barRects(snapshot())
-  Assert.equal(#full, 2, "both sides draw their health bar at full health")
-  for _, bar in ipairs(full) do
-    Assert.equal(bar.w, 48, "full health fills the whole bar")
-    Assert.deepEqual(bar.color, { 0.2, 0.8, 0.2, 1 }, "full health keeps the healthy shade")
+  local function noSceneRectangles(result)
+    for _, rectangle in ipairs(result.graphics.rectangles) do
+      if rectangle.y < 136 then
+        error("the battlefield draws no painted rectangle above the dock", 0)
+      end
+    end
   end
-  local hurt = barRects(snapshot({
+  local full, fullResult = barTiles(snapshot())
+  Assert.deepEqual(
+    full,
+    { 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10 },
+    "full health fills every tile from the green base on both sides"
+  )
+  noSceneRectangles(fullResult)
+  local hurt, hurtResult = barTiles(snapshot({
     battlers = {
       { combatant = 1, side = 1, hp = 13, maxHp = 52, visible = true, name = "LEAD", level = 20, shakeDx = 0 },
       { combatant = 3, side = 2, hp = 57, maxHp = 57, visible = true, name = "FOE", level = 20, shakeDx = 0 },
     },
   }))
-  Assert.equal(#hurt, 2, "both sides still draw their bar while hurt")
-  local foundQuarter = false
-  for _, bar in ipairs(hurt) do
-    if bar.w == 12 then
-      foundQuarter = true
-      Assert.deepEqual(bar.color, { 0.9, 0.8, 0.2, 1 }, "quarter health keeps the warning shade")
-    end
-  end
-  Assert.isTrue(foundQuarter, "quarter health fills a quarter of the bar")
-  local empty = barRects(snapshot({
+  Assert.deepEqual(
+    hurt,
+    { 10, 10, 10, 10, 10, 10, 15, 19 },
+    "quarter health keeps its yellow partial tiles while the full side stays green"
+  )
+  noSceneRectangles(hurtResult)
+  local empty, emptyResult = barTiles(snapshot({
     battlers = {
       { combatant = 1, side = 1, hp = 0, maxHp = 52, visible = true, name = "LEAD", level = 20, shakeDx = 0 },
       { combatant = 3, side = 2, hp = 57, maxHp = 57, visible = true, name = "FOE", level = 20, shakeDx = 0 },
     },
   }))
-  local foundEmpty = false
-  for _, bar in ipairs(empty) do
-    if bar.w == 0 then
-      foundEmpty = true
-      Assert.deepEqual(bar.color, { 0.9, 0.2, 0.2, 1 }, "empty health keeps the danger shade")
-    end
-  end
-  Assert.isTrue(foundEmpty, "empty health fills nothing")
+  Assert.deepEqual(
+    empty,
+    { 10, 10, 10, 10, 10, 10 },
+    "empty health draws no bar tiles while the full side stays green"
+  )
+  noSceneRectangles(emptyResult)
 end
 
--- A hidden battler draws neither artwork nor bar: only the shown side
--- occupies the scene.
+-- A hidden battler draws neither artwork nor bar tiles: only the shown
+-- side occupies the scene.
 function T.hidden_battler_draws_no_artwork_or_bar()
   local view = snapshot({
     battlers = {
@@ -356,34 +395,39 @@ function T.hidden_battler_draws_no_artwork_or_bar()
   })
   local result = drawnHud(view, {})
   Assert.equal(#drawsOf(result.graphics, "hud:enemy"), 0, "the hidden enemy draws no artwork")
-  Assert.equal(#drawsOf(result.graphics, "hud:player"), 1, "the shown player still draws its artwork")
-  local bars = 0
-  for _, rectangle in ipairs(result.graphics.rectangles) do
-    if rectangle.y < 136 and rectangle.h == 4 and rectangle.w <= 48 then
-      bars = bars + 1
+  local composites, tiles = 0, 0
+  for _, entry in ipairs(drawsOf(result.graphics, "hud:player")) do
+    if type(entry.quad) == "table" and entry.quad.w == 8 and entry.quad.h == 8 then
+      if entry.quad.x == 80 or entry.quad.x == 120 or entry.quad.x == 152 then
+        tiles = tiles + 1
+      end
+    else
+      composites = composites + 1
     end
   end
-  Assert.equal(bars, 1, "only the shown side draws its health bar")
+  Assert.equal(composites, 16, "the shown player still draws its native cell objects")
+  Assert.equal(tiles, 6, "only the shown side draws its health tiles")
 end
 
--- Missing artwork never hides actual health: without a resolvable image
--- the side still draws its bar at the anchored bounds.
-function T.missing_artwork_keeps_health_bars()
+-- Missing artwork draws no bar tiles: health tiles sample the staged
+-- strip, so without a resolvable image the side keeps its wording but
+-- no tiles. A missing strip draws nothing, never a substitute.
+function T.missing_artwork_draws_no_bar_tiles()
   local view = snapshot()
   local result = drawnHud(view, { "hud:enemy", "hud:player" })
   Assert.equal(#drawsOf(result.graphics, "hud:enemy"), 0, "missing enemy artwork draws nothing")
   Assert.equal(#drawsOf(result.graphics, "hud:player"), 0, "missing player artwork draws nothing")
-  local bars = 0
-  for _, rectangle in ipairs(result.graphics.rectangles) do
-    if rectangle.y < 136 and rectangle.h == 4 and rectangle.w <= 48 then
-      bars = bars + 1
-    end
+  local drawn = {}
+  for _, entry in ipairs(result.text.draws) do
+    drawn[entry.content] = (drawn[entry.content] or 0) + 1
   end
-  Assert.equal(bars, 2, "both health bars still draw without their artwork")
+  Assert.equal(drawn["LEAD"], 1, "the player name still draws without its artwork")
+  Assert.equal(drawn["FOE"], 1, "the enemy name still draws without its artwork")
 end
 
 -- The auxiliary arrow and ball strips stay hidden: the compact scene owns
--- exactly the scene, the two battler pictures and the two composites.
+-- exactly the scene, the two battler pictures, the two sampled HUD
+-- composites and their bar tiles.
 function T.arrow_and_ball_strips_stay_hidden()
   local result = drawnHud(snapshot(), {})
   local handles = {}
@@ -393,13 +437,21 @@ function T.arrow_and_ball_strips_stay_hidden()
     end
   end
   table.sort(handles)
-  Assert.deepEqual(handles, {
-    "hud:enemy",
-    "hud:player",
-    "mon:" .. MonCache.portraitSelector("FOE", 0, "male", false),
-    "mon:" .. MonCache.portraitSelector("LEAD", 0, "male", false, "back"),
-    "scene:test",
-  }, "the compact scene draws only its scene, battlers and composites")
+  local foeKey = "mon:" .. MonCache.portraitSelector("FOE", 0, "male", false)
+  local leadKey = "mon:" .. MonCache.portraitSelector("LEAD", 0, "male", false, "back")
+  for _, handle in ipairs(handles) do
+    Assert.isTrue(
+      handle == "scene:test" or handle == foeKey or handle == leadKey or handle == "hud:enemy" or handle == "hud:player",
+      "the compact scene uses only its scene, battlers and native HUD cells"
+    )
+  end
+  for _, entry in ipairs(result.graphics.draws) do
+    local handle = type(entry.image) == "table" and entry.image.handle or ""
+    Assert.isTrue(
+      tostring(handle):sub(1, 6) ~= "arrow:",
+      "the compact scene never paints the arrow strip"
+    )
+  end
 end
 
 -- Every HUD draw and bar stays inside the scene viewport under the scene

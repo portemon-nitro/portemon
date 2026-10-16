@@ -178,6 +178,18 @@ function T.strike_plays_message_then_health_without_read_ahead()
   Assert.equal(battler(timeline:battlers(), 1).hp, 52, "untouched health never moves")
 end
 
+function T.displayed_battlers_preserve_false_source_caught_state()
+  local view = openingView()
+  view.foes[1].caught = false
+  local timeline = BattleTimeline.new({})
+  timeline:reset(view)
+  Assert.equal(battler(timeline:battlers(), 3).caught, false, "an explicit false caught bit remains visible to the HUD")
+
+  view.foes[1].caught = true
+  timeline:reset(view)
+  Assert.equal(battler(timeline:battlers(), 3).caught, true, "an explicit true caught bit remains visible to the HUD")
+end
+
 -- Faint hides its battler only after the health checkpoint, and later
 -- checkpoints never resurrect it.
 function T.faint_hides_after_its_checkpoint_and_stays_hidden()

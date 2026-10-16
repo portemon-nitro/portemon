@@ -8,6 +8,7 @@
 
 local Assert = require("tests.support.Assert")
 local ArtifactState = require("romdump.src.build.ArtifactState")
+local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
 local BattlePresentationSources = require("romdump.src.config.BattlePresentationSources")
 local MonSources = require("romdump.src.config.MonSources")
 local Hashing = require("romdump.src.digest.Hashing")
@@ -80,6 +81,7 @@ local function compileGlobal(compiler, romFs, versionId)
 end
 
 local REQUIRED_SECTIONS = {
+  "battlefield",
   "catalogIdentity",
   "scenes",
   "layouts",
@@ -101,15 +103,181 @@ local function readSourceMember(romFs, archiveSymbol, memberId)
   return assert(archive:readMember(memberId), "the source member is readable: " .. memberId)
 end
 
+---@param scene table compiled source-backed scene
+---@param x integer source canvas pixel X
+---@param y integer source canvas pixel Y
+---@param label string diagnostic label
+local function assertScenePixelMatchesBg3(scene, x, y, label)
+  local payload = assert(scene.layerPayloads[1], label .. ": the scene carries BG3 source payload")
+  local map = payload.map
+  local entry = assert(map.entries[math.floor(y / 8) * (map.width / 8) + math.floor(x / 8) + 1])
+  local sourceX = x % 8
+  local sourceY = y % 8
+  if entry.flipH then
+    sourceX = 7 - sourceX
+  end
+  if entry.flipV then
+    sourceY = 7 - sourceY
+  end
+  local tileByte = entry.tile * 64 + sourceY * 8 + sourceX + 1
+  local paletteIndex = string.byte(payload.characters, tileByte) + 1
+  local color = assert(payload.palette.colors[paletteIndex], label .. ": the BG3 palette covers the decoded pixel")
+  local pixel = (y * scene.canvasWidth + x) * 4
+  Assert.deepEqual(
+    {
+      string.byte(scene.image, pixel + 1),
+      string.byte(scene.image, pixel + 2),
+      string.byte(scene.image, pixel + 3),
+      string.byte(scene.image, pixel + 4),
+    },
+    { color.r, color.g, color.b, 255 },
+    label .. ": the composed scene pixel equals its decoded BG3 character/map/palette result"
+  )
+end
+
+function T.persistent_scene_variants_match_their_decoded_bg3_pixels(romFs, versionId)
+  local compiler = requireBoundary(
+    "romdump.src.digest.battle.BattlePresentationCompiler",
+    versionId .. ": scene pixels use the source producer"
+  )
+  for _, sceneKey in ipairs({
+    "general/grass/day",
+    "general/grass/evening",
+    "general/grass/night",
+    "cave_1/cave/day",
+  }) do
+    local scene = compileSourceScene(compiler, romFs, versionId, sceneKey)
+    Assert.equal(scene.layers[1].characters.format, "indexed8", versionId .. ": persistent BG3 is 8bpp: " .. sceneKey)
+    assertScenePixelMatchesBg3(scene, 0, 0, versionId .. ": " .. sceneKey)
+    if sceneKey == "general/grass/day" then
+      local BattleScene = requireBoundary(
+        "libs.hgss.src.presentation.BattleScene",
+        versionId .. ": staged BG3 pixels use the BattleScene layer owner"
+      )
+      local nativeScene = BattleScene.new()
+      local payload = assert(scene.layerPayloads[1])
+      nativeScene:installBackground({
+        characters = payload.characters,
+        map = payload.map,
+        palette = payload.palette,
+        colorMode = "8bpp",
+      })
+      local raster = nativeScene:backgroundRaster()
+      local entry = payload.map.entries[1]
+      local index = string.byte(payload.characters, entry.tile * 64 + 1)
+      local color = payload.palette.colors[index + 1]
+      Assert.deepEqual(
+        { raster:pixel(0, 0) },
+        { color.r, color.g, color.b, 255 },
+        versionId .. ": BattleScene renders the actual decoded BG3 character, map, and palette"
+      )
+      nativeScene:patchBackgroundPalette(index, { r = 19, g = 23, b = 29 })
+      Assert.deepEqual(
+        { nativeScene:backgroundRaster():pixel(0, 0) },
+        { 19, 23, 29, 255 },
+        versionId .. ": a source-indexed palette operation changes the installed plane"
+      )
+      nativeScene:applyScrollPatch(5, 7)
+      Assert.deepEqual(nativeScene:scroll(), { x = 5, y = 7 }, versionId .. ": native scroll remains mutable scene state")
+    end
+  end
+end
+
+function T.pokepic_shadow_atlas_decodes_from_the_pinned_source_members(romFs, versionId)
+  local source = BattlePresentationSources.POKE_SHADOW
+  local archive = assert(romFs:openNarc(source.archive), versionId .. ": Pokepic shadow archive opens")
+  local characterBytes = assert(archive:readMember(source.characterMember), versionId .. ": NCGR 259 is present")
+  local paletteBytes = assert(archive:readMember(source.paletteMember), versionId .. ": NCLR 260 is present")
+  if string.byte(characterBytes, 1) == 0x10 then
+    characterBytes = assert(Lz10.decode(characterBytes), versionId .. ": shadow NCGR unwraps")
+  end
+  if string.byte(paletteBytes, 1) == 0x10 then
+    paletteBytes = assert(Lz10.decode(paletteBytes), versionId .. ": shadow NCLR unwraps")
+  end
+  local characters, characterErr = G2dDecoder.decodeChar(characterBytes, { label = "Pokepic shadow characters" })
+  Assert.isNil(characterErr, versionId .. ": native shadow NCGR decodes")
+  Assert.equal(#assert(characters).tiles, 6400, versionId .. ": native shadow source has 3,200 words")
+  Assert.equal(assert(characters).depth, 3, versionId .. ": native shadow source is 4bpp")
+  local palette, paletteErr = G2dDecoder.decodePalette(paletteBytes, { label = "Pokepic shadow palette" })
+  Assert.isNil(paletteErr, versionId .. ": native shadow NCLR decodes")
+  Assert.equal(#assert(palette).colors, 16, versionId .. ": native shadow palette has one 4bpp bank")
+  local compiler = requireBoundary(
+    "romdump.src.digest.battle.BattlePresentationCompiler",
+    versionId .. ": shadow UVs use the battle presentation producer"
+  )
+  local atlas = compiler.compileShadowImage(assert(characters), assert(palette))
+  Assert.deepEqual({ atlas.width, atlas.height }, { 64, 64 }, versionId .. ": four native shadow sizes stage as one atlas")
+  Assert.equal(source.characterMember, 259, versionId .. ": character member matches PokepicManager_Create")
+  Assert.equal(source.paletteMember, 260, versionId .. ": palette member matches PokepicManager_BufferPlttData")
+  local bit = require("bit")
+  local U32 = require("libs.codec.src.U32")
+  local scanned = assert(characters).tiles
+  local seed = string.byte(scanned, 1) + string.byte(scanned, 2) * 256
+  local unscanned = {}
+  for wordOffset = 0, 3199 do
+    local byteOffset = wordOffset * 2
+    local word = string.byte(scanned, byteOffset + 1) + string.byte(scanned, byteOffset + 2) * 256
+    local plain = bit.bxor(word, seed % 65536)
+    unscanned[#unscanned + 1] = string.char(plain % 256, math.floor(plain / 256))
+    seed = U32.add(U32.mul(seed, 1103515245), 24691)
+  end
+  unscanned = table.concat(unscanned)
+  local regionHashes = {}
+  for index = 1, 4 do
+    local first = (index - 1) * 64 * 16 * 4 + 1
+    local last = index * 64 * 16 * 4
+    local actual = atlas.pixels:sub(first, last)
+    local expected = {}
+    local source = BattlePresentationSources.POKE_SHADOW.regions[index]
+    for y = 0, source.height - 1 do
+      local sourceY = source.y - 160 + y
+      for x = 0, source.width - 1 do
+        local sourceX = source.x - 160 + x
+        local packed = string.byte(unscanned, sourceY * 80 + math.floor(sourceX / 2) + 1)
+        local colorIndex = sourceX % 2 == 0 and packed % 16 or math.floor(packed / 16)
+        local color = assert(assert(palette).colors[colorIndex + 1], "pixel palette index is available")
+        expected[#expected + 1] = string.char(color.r, color.g, color.b, colorIndex == 0 and 0 or 255)
+      end
+    end
+    expected = table.concat(expected)
+    Assert.equal(actual, expected, versionId .. ": staged UV rectangle matches the native copied texture pixels")
+    regionHashes[index] = Hashing.sha1hex(actual)
+  end
+  Assert.equal(regionHashes[1], regionHashes[2], versionId .. ": native size one aliases size zero")
+  for _, identity in ipairs(regionHashes) do
+    Assert.isTrue(identity:match("^%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x$") ~= nil)
+  end
+end
 
 function T.shared_menu_and_hud_definitions_compile_from_the_dump(romFs, versionId)
   local compiler, _ = presentationBoundary(romFs, versionId)
   local bundle = compileGlobal(compiler, romFs, versionId)
   local manifest = bundle.manifest
   Assert.isTrue(type(manifest) == "table", versionId .. ": the global compile yields source-backed catalog data")
+  local shadow = assert(manifest.pictures.shadow, versionId .. ": Pokepic shadow art is part of global staging")
+  Assert.deepEqual(
+    { shadow.image, shadow.width, shadow.height },
+    { BattlePresentationCache.globalImagePath("pokepic-shadow"), 64, 64 },
+    versionId .. ": native shadow regions resolve through the staged global image"
+  )
+  Assert.deepEqual(
+    { bundle.images["pokepic-shadow"].width, bundle.images["pokepic-shadow"].height },
+    { shadow.width, shadow.height },
+    versionId .. ": the global compiler stages the raster under the manifest image key"
+  )
+  Assert.equal(
+    bundle.provenance.pokepicShadow.source.symbol,
+    "PokepicManager_Create / PokepicManager_BufferPlttData / sPokepicShadowUVParams",
+    versionId .. ": the shadow member selection and native UV provenance stay producer-side"
+  )
   for _, section in ipairs(REQUIRED_SECTIONS) do
     Assert.notNil(manifest[section], versionId .. ": the catalog carries its " .. section .. " section")
   end
+  Assert.deepEqual(
+    manifest.battlefield.slots,
+    BattlePresentationSources.SLOT_GEOMETRY,
+    versionId .. ": the runtime manifest publishes only normalized native side-type geometry"
+  )
   Assert.isTrue(
     type(manifest.menus.layouts) == "table" and type(manifest.menus.layouts.frontier) == "table",
     versionId .. ": Frontier menu composition keeps its source-selected tile, palette, and palette-animation resources"
@@ -954,11 +1122,23 @@ local function compileScene(compiler, romFs, versionId, manifest, background, te
   return scene
 end
 
+---@param compiler table source scene compiler
+---@param romFs table borrowed ROM filesystem
+---@param versionId string selected source version
+---@param sceneKey string canonical scene identity
+---@return table decoded source scene
+local function compileSourceScene(compiler, romFs, versionId, sceneKey)
+  local scene, reason = compiler.compileScene(romFs, { versionId = versionId }, sceneKey)
+  Assert.isNil(reason, versionId .. ": source scene compiles: " .. sceneKey)
+  return assert(scene, versionId .. ": source scene exists: " .. sceneKey)
+end
+
 function T.persistent_scenes_compile_per_background_terrain_and_time(romFs, versionId)
   local compiler, _ = presentationBoundary(romFs, versionId)
   local bundle = compileGlobal(compiler, romFs, versionId)
   local manifest = bundle.manifest
   local day = compileScene(compiler, romFs, versionId, manifest, "general", "grass", "day")
+  assertScenePixelMatchesBg3(day, 0, 0, versionId .. ": grass day")
   Assert.equal(day.canvasWidth, 512, versionId .. ": the persistent scene keeps its 512-wide source canvas")
   Assert.equal(day.canvasHeight, 256, versionId .. ": the persistent scene keeps its 256-high source canvas")
   Assert.notNil(day.image, versionId .. ": the scene record references its composed image")
@@ -985,7 +1165,7 @@ function T.persistent_scenes_compile_per_background_terrain_and_time(romFs, vers
   Assert.equal(
     #day.layerPayloads[1].characters,
     65536,
-    versionId .. ": the layer closure carries all packed 4bpp character bytes"
+    versionId .. ": the layer closure carries the decoded 8bpp character tile bytes"
   )
   Assert.equal(day.layerPayloads[1].map.width, 512, versionId .. ": the BG3 map payload retains pixel width")
   Assert.equal(day.layerPayloads[1].map.height, 256, versionId .. ": the BG3 map payload retains pixel height")
@@ -996,6 +1176,7 @@ function T.persistent_scenes_compile_per_background_terrain_and_time(romFs, vers
     versionId .. ": the patched background carries its full palette"
   )
   local plain = compileScene(compiler, romFs, versionId, manifest, "general", "plain", "day")
+  assertScenePixelMatchesBg3(plain, 0, 0, versionId .. ": plain day")
   Assert.isTrue(
     plain.layerPayloads[1].characters ~= day.layerPayloads[1].characters,
     versionId .. ": terrain selection changes the native patched character payload"
@@ -1033,12 +1214,31 @@ function T.persistent_scenes_compile_per_background_terrain_and_time(romFs, vers
   )
   local evening = compileScene(compiler, romFs, versionId, manifest, "general", "grass", "evening")
   local night = compileScene(compiler, romFs, versionId, manifest, "general", "grass", "night")
+  assertScenePixelMatchesBg3(evening, 0, 0, versionId .. ": grass evening")
+  assertScenePixelMatchesBg3(night, 0, 0, versionId .. ": grass night")
   Assert.isTrue(evening.image ~= day.image, versionId .. ": evening palette selection changes the composed scene")
   Assert.isTrue(night.image ~= day.image, versionId .. ": night palette selection changes the composed scene")
   local cave = compileScene(compiler, romFs, versionId, manifest, "cave_1", "cave", "day")
+  assertScenePixelMatchesBg3(cave, 0, 0, versionId .. ": indoor cave fixed-day")
   Assert.isTrue(cave.image ~= day.image, versionId .. ": a second background family follows its own recipe")
   local dayAgain = compileScene(compiler, romFs, versionId, manifest, "general", "grass", "day")
+  assertScenePixelMatchesBg3(dayAgain, 0, 0, versionId .. ": grass day again")
   Assert.equal(dayAgain.image, day.image, versionId .. ": scene compilation is deterministic")
+end
+
+function T.persistent_scene_variants_match_their_decoded_bg3_pixels(romFs, versionId)
+  local compiler, _ = presentationBoundary(romFs, versionId)
+  local day = compileSourceScene(compiler, romFs, versionId, "general/grass/day")
+  local evening = compileSourceScene(compiler, romFs, versionId, "general/grass/evening")
+  local night = compileSourceScene(compiler, romFs, versionId, "general/grass/night")
+  local indoor = compileSourceScene(compiler, romFs, versionId, "cave_1/cave/day")
+  assertScenePixelMatchesBg3(day, 0, 0, versionId .. ": decoded grass day")
+  assertScenePixelMatchesBg3(evening, 0, 0, versionId .. ": decoded grass evening")
+  assertScenePixelMatchesBg3(night, 0, 0, versionId .. ": decoded grass night")
+  assertScenePixelMatchesBg3(indoor, 0, 0, versionId .. ": decoded indoor cave")
+  Assert.isTrue(day.image ~= evening.image, versionId .. ": the evening source palette changes output pixels")
+  Assert.isTrue(day.image ~= night.image, versionId .. ": the night source palette changes output pixels")
+  Assert.equal(indoor.buildMetadata.palette.selection, "fixed-day", versionId .. ": indoor scenes use the source fixed-day palette")
 end
 
 function T.effect_backgrounds_are_not_admitted_as_persistent_scenes(romFs, versionId)

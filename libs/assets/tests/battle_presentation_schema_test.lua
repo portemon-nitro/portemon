@@ -502,6 +502,80 @@ function T.manifests_reject_missing_roles_and_bad_geometry()
   Assert.isFalse(Schema.isValidManifest(stale), "an old catalog schema never validates as current")
 end
 
+function T.health_box_patch_spans_are_complete_and_stay_in_character_tile_units()
+  local missing = manifest()
+  missing.hud.patchSpans = nil
+  Assert.isFalse(Schema.isValidManifest(missing), "the manifest includes source HUD patch spans")
+
+  local valid = manifest()
+  local sourceSpans = require("romdump.src.config.BattlePresentationSources").HUD_PATCH_SPANS
+  valid.hud.patchSpans = sourceSpans
+  Assert.isTrue(Schema.isValidManifest(valid), "source tile spans normalize into runtime character-buffer units")
+
+  local incompleteNumbers = manifest()
+  local numberSpans = {}
+  for category, records in pairs(sourceSpans) do
+    numberSpans[category] = records
+  end
+  numberSpans.currentHp = { sourceSpans.currentHp[1], sourceSpans.currentHp[2] }
+  incompleteNumbers.hud.patchSpans = numberSpans
+  Assert.isFalse(Schema.isValidManifest(incompleteNumbers), "HP numeral spans cover all six native side types")
+
+  local invalidNumberTile = manifest()
+  local invalidNumberSpans = {}
+  for category, records in pairs(sourceSpans) do
+    invalidNumberSpans[category] = records
+  end
+  invalidNumberSpans.maximumHp = { { sideType = 0, tile = 1022, count = 3 }, unpack(sourceSpans.maximumHp, 2) }
+  invalidNumberTile.hud.patchSpans = invalidNumberSpans
+  Assert.isFalse(Schema.isValidManifest(invalidNumberTile), "HP numeral spans stay within character tile bounds")
+
+  local physicalOffset = manifest()
+  physicalOffset.hud.patchSpans = {
+    hp = { { sideType = 0, spans = { { offset = 0x4E0, size = 0 } } } },
+    experience = {},
+  }
+  Assert.isFalse(Schema.isValidManifest(physicalOffset), "byte offsets and physical partial span tables are rejected")
+
+  local incomplete = manifest()
+  incomplete.hud.patchSpans = {
+    hp = { { sideType = 0, spans = { { tile = 39, count = 0 }, { tile = 97, count = 6 } } } },
+    experience = { { tile = 51, count = 5 }, { tile = 112, count = 7 } },
+  }
+  Assert.isFalse(Schema.isValidManifest(incomplete), "every semantic side type has its own complete patch map")
+end
+
+function T.double_player_mode_patch_spans_require_native_tiles_for_both_rows()
+  local sourceSpans = require("romdump.src.config.BattlePresentationSources").HUD_PATCH_SPANS
+  local valid = manifest()
+  valid.hud.patchSpans = sourceSpans
+  Assert.isTrue(Schema.isValidManifest(valid), "both double-player mode rows publish native character patches")
+
+  local missing = manifest()
+  local patchSpans = {}
+  for key, value in pairs(sourceSpans) do
+    patchSpans[key] = value
+  end
+  patchSpans.playerDoubleMode = { sourceSpans.playerDoubleMode[1] }
+  missing.hud.patchSpans = patchSpans
+  Assert.isFalse(Schema.isValidManifest(missing), "double-player mode patches cover both player rows")
+
+  local badComponent = manifest()
+  local invalidModes = { sourceSpans.playerDoubleMode[1], sourceSpans.playerDoubleMode[2] }
+  invalidModes[1] = {
+    sideType = 2,
+    gauge = { { tile = 38, sourceTile = 78 }, unpack(sourceSpans.playerDoubleMode[1].gauge, 2) },
+    numbers = sourceSpans.playerDoubleMode[1].numbers,
+  }
+  patchSpans = {}
+  for key, value in pairs(sourceSpans) do
+    patchSpans[key] = value
+  end
+  patchSpans.playerDoubleMode = invalidModes
+  badComponent.hud.patchSpans = patchSpans
+  Assert.isFalse(Schema.isValidManifest(badComponent), "native mode patches use staged component tiles")
+end
+
 function T.manifests_require_catalog_identity_and_source_backed_sections()
   local missingIdentity = manifest()
   missingIdentity.catalogIdentity = nil
@@ -515,6 +589,33 @@ function T.manifests_require_catalog_identity_and_source_backed_sections()
   local oldShape = manifest()
   oldShape.command = oldShape.menus.command
   Assert.isFalse(Schema.isValidManifest(oldShape), "old flat menu fields are rejected by the v2 contract")
+end
+
+function T.native_slot_geometry_is_complete_unique_and_semantic()
+  local missing = manifest()
+  missing.battlefield = nil
+  Assert.isFalse(Schema.isValidManifest(missing), "slot geometry is required by the current manifest schema")
+
+  local duplicate = manifest()
+  duplicate.battlefield.slots[6].sideType = duplicate.battlefield.slots[5].sideType
+  Assert.isFalse(Schema.isValidManifest(duplicate), "each native side type occurs exactly once")
+
+  local native = manifest()
+  native.battlefield.slots[1].memberId = 24
+  Assert.isFalse(Schema.isValidManifest(native), "physical producer identities do not enter runtime geometry")
+
+  local priorities = manifest()
+  priorities.battlefield.slots[1].hudPriority = 23
+  priorities.battlefield.slots[1].hudBgPriority = 0
+  Assert.isTrue(Schema.isValidManifest(priorities), "native HUD plane priorities are normalized")
+
+  local missingPriority = manifest()
+  missingPriority.battlefield.slots[1].hudPriority = nil
+  Assert.isFalse(Schema.isValidManifest(missingPriority), "HUD OBJ priority is required")
+
+  local invalidPriority = manifest()
+  invalidPriority.battlefield.slots[1].hudPriority = 32
+  Assert.isFalse(Schema.isValidManifest(invalidPriority), "HUD OBJ priority is bounded")
 end
 
 ---@return table valid composed scene record
@@ -537,7 +638,7 @@ local function scene()
         characters = {
           key = "battle-scene/general-grass-day/bg3/characters",
           path = "data/generated/battle/scenes/general-grass-day.bg3.chars",
-          format = "indexed4",
+          format = "indexed8",
         },
         map = {
           key = "battle-scene/general-grass-day/bg3/map",
@@ -587,6 +688,19 @@ function T.picture_attributes_reject_runtime_unsafe_records()
   local badAuxiliary = manifest()
   badAuxiliary.pictures.attributes["pokemon/CHIKORITA/form-0/male/back"].animation.steps[1].auxiliary = 128
   Assert.isFalse(Schema.isValidManifest(badAuxiliary), "all signed animation bytes validate their range")
+end
+
+function T.pokepic_shadow_regions_require_all_bounded_native_sizes()
+  Assert.isTrue(Schema.isValidManifest(manifest()), "the source-selected 64x64 shadow atlas validates")
+  local missing = manifest()
+  table.remove(missing.pictures.shadow.regions)
+  Assert.isFalse(Schema.isValidManifest(missing), "all four native shadow-size regions are required")
+  local outside = manifest()
+  outside.pictures.shadow.regions[3].y = 60
+  Assert.isFalse(Schema.isValidManifest(outside), "a native shadow crop cannot escape its staged image")
+  local repeated = manifest()
+  repeated.pictures.shadow.regions[4].size = 2
+  Assert.isFalse(Schema.isValidManifest(repeated), "each source shadow-size selector occurs once")
 end
 
 function T.menu_contexts_publish_typed_source_inputs()

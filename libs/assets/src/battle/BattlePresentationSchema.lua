@@ -10,7 +10,7 @@ local Validate = require("libs.assets.src.Validate")
 ---@class BattlePresentationSchema
 local BattlePresentationSchema = {}
 
-BattlePresentationSchema.MANIFEST_SCHEMA = "g4-battle-presentation-v2"
+BattlePresentationSchema.MANIFEST_SCHEMA = "g4-battle-presentation-v3"
 BattlePresentationSchema.SCENE_SCHEMA = "g4-battle-scene-v2"
 
 local fail = SchemaCheck.fail
@@ -84,6 +84,44 @@ end
 
 local function checkImagePath(value, context, code, field)
   checkString(value, context, code, field)
+end
+
+local function checkSlotGeometry(battlefield, context, code)
+  SchemaCheck.checkRecord(battlefield, { slots = true }, context, code, "manifest battlefield")
+  if not Validate.isArray(battlefield.slots) or #battlefield.slots ~= 6 then
+    fail(code, "manifest battlefield must publish six native slot records", context)
+  end
+  local sideTypes = {}
+  for index, row in ipairs(battlefield.slots) do
+    local field = "manifest battlefield.slots[" .. index .. "]"
+    SchemaCheck.checkRecord(row, {
+      sideType = true,
+      settledX = true,
+      settledY = true,
+      entryX = true,
+      entryY = true,
+      depth = true,
+      hudX = true,
+      hudY = true,
+      hudPriority = true,
+      hudBgPriority = true,
+    }, context, code, field)
+    checkInt(row.sideType, 0, 5, context, code, field .. ".sideType")
+    if sideTypes[row.sideType] then
+      fail(code, "manifest battlefield slot side types must be unique", context)
+    end
+    sideTypes[row.sideType] = true
+    for _, coordinate in ipairs({ "settledX", "settledY", "entryX", "entryY", "depth", "hudX", "hudY" }) do
+      checkInt(row[coordinate], -2048, 2047, context, code, field .. "." .. coordinate)
+    end
+    checkInt(row.hudPriority, 0, 31, context, code, field .. ".hudPriority")
+    checkInt(row.hudBgPriority, 0, 3, context, code, field .. ".hudBgPriority")
+  end
+  for _, sideType in ipairs({ 0, 1, 2, 3, 4, 5 }) do
+    if not sideTypes[sideType] then
+      fail(code, "manifest battlefield slot geometry must cover every side type", context)
+    end
+  end
 end
 
 -- Producer identities never reach runtime records at any depth.
@@ -452,8 +490,8 @@ local function checkSceneLayer(layer, context, field)
   checkSceneResource(layer.characters, context, field .. ".characters")
   checkSceneResource(layer.map, context, field .. ".map")
   checkSceneResource(layer.palette, context, field .. ".palette")
-  if layer.characters.format ~= "indexed4" or layer.map.format ~= "tilemap" or layer.palette.format ~= "rgb888" then
-    fail(CODE_SCENE, field .. " resources must use normalized indexed4, tilemap, and rgb888 formats", context)
+  if layer.characters.format ~= "indexed8" or layer.map.format ~= "tilemap" or layer.palette.format ~= "rgb888" then
+    fail(CODE_SCENE, field .. " resources must use normalized indexed8, tilemap, and rgb888 formats", context)
   end
 end
 
@@ -1024,13 +1062,15 @@ local function checkAnimation(animation, context, code, field)
 end
 
 local function checkSpriteSection(section, context, code, field)
-  SchemaCheck.checkRecord(
-    section,
-    { image = true, cells = true, animation = true, animations = true, palette = true },
-    context,
-    code,
-    field
-  )
+  SchemaCheck.checkRecord(section, {
+    image = true,
+    cells = true,
+    animation = true,
+    animations = true,
+    palette = true,
+    componentBase = true,
+    componentCount = true,
+  }, context, code, field)
   checkImagePath(section.image, context, code, field .. ".image")
   if not Validate.isArray(section.cells) or #section.cells == 0 then
     fail(code, field .. " must carry its cells", context)
@@ -1046,6 +1086,12 @@ local function checkSpriteSection(section, context, code, field)
     end
   end
   checkAnimation(section.animation, context, code, field .. ".animation")
+  if section.componentBase ~= nil then
+    checkInt(section.componentBase, 0, 1023, context, code, field .. ".componentBase")
+  end
+  if section.componentCount ~= nil then
+    checkInt(section.componentCount, 1, 256, context, code, field .. ".componentCount")
+  end
   -- Gauge families keep every per-state animation alongside the selected
   -- one; single-animation sprites omit the extension.
   if section.animations ~= nil then
@@ -1079,6 +1125,167 @@ local function checkTerrainSection(section, context, code, field)
     end
   end
   checkAnimation(section.animation, context, code, field .. ".animation")
+end
+
+local function checkHudPatchSpans(patchSpans, context, code, field)
+  SchemaCheck.checkRecord(patchSpans, {
+    hp = true,
+    currentHp = true,
+    maximumHp = true,
+    experience = true,
+    status = true,
+    gender = true,
+    caught = true,
+    playerDoubleMode = true,
+  }, context, code, field)
+  if not Validate.isArray(patchSpans.hp) or #patchSpans.hp ~= 6 then
+    fail(code, field .. ".hp must carry all six side types", context)
+  end
+  local sideTypes = {}
+  for index, record in ipairs(patchSpans.hp) do
+    local entry = field .. ".hp[" .. index .. "]"
+    SchemaCheck.checkRecord(record, { sideType = true, spans = true }, context, code, entry)
+    checkInt(record.sideType, 0, 5, context, code, entry .. ".sideType")
+    if sideTypes[record.sideType] then
+      fail(code, field .. ".hp side types must be unique", context)
+    end
+    sideTypes[record.sideType] = true
+    if not Validate.isArray(record.spans) or #record.spans ~= 2 then
+      fail(code, entry .. ".spans must carry both source patch ranges", context)
+    end
+    local count = 0
+    local occupied = {}
+    for spanIndex, span in ipairs(record.spans) do
+      local spanField = entry .. ".spans[" .. spanIndex .. "]"
+      SchemaCheck.checkRecord(span, { tile = true, count = true }, context, code, spanField)
+      checkInt(span.tile, 0, 1023, context, code, spanField .. ".tile")
+      checkInt(span.count, 0, 12, context, code, spanField .. ".count")
+      if span.tile + span.count > 1024 then
+        fail(code, spanField .. " exceeds the character tile index range", context)
+      end
+      for tile = span.tile, span.tile + span.count - 1 do
+        if occupied[tile] then
+          fail(code, entry .. " patch spans overlap", context)
+        end
+        occupied[tile] = true
+      end
+      count = count + span.count
+    end
+    if count ~= 6 then
+      fail(code, entry .. " spans must cover six health tiles", context)
+    end
+  end
+  for _, sideType in ipairs({ 0, 1, 2, 3, 4, 5 }) do
+    if not sideTypes[sideType] then
+      fail(code, field .. ".hp must cover every side type", context)
+    end
+  end
+  if not Validate.isArray(patchSpans.experience) or #patchSpans.experience ~= 2 then
+    fail(code, field .. ".experience must carry its two source patch ranges", context)
+  end
+  local experienceCount = 0
+  local occupiedExperience = {}
+  for index, span in ipairs(patchSpans.experience) do
+    local entry = field .. ".experience[" .. index .. "]"
+    SchemaCheck.checkRecord(span, { tile = true, count = true }, context, code, entry)
+    checkInt(span.tile, 0, 1023, context, code, entry .. ".tile")
+    checkInt(span.count, 0, 12, context, code, entry .. ".count")
+    if span.tile + span.count > 1024 then
+      fail(code, entry .. " exceeds the character tile index range", context)
+    end
+    for tile = span.tile, span.tile + span.count - 1 do
+      if occupiedExperience[tile] then
+        fail(code, field .. ".experience patch spans overlap", context)
+      end
+      occupiedExperience[tile] = true
+    end
+    experienceCount = experienceCount + span.count
+  end
+  if experienceCount ~= 12 then
+    fail(code, field .. ".experience spans must cover twelve experience tiles", context)
+  end
+  for category, spanCounts in pairs({
+    currentHp = { 3 },
+    maximumHp = { 3 },
+    status = { 3 },
+    gender = { 2, 2 },
+    caught = { 1 },
+  }) do
+    local records = patchSpans[category]
+    if not Validate.isArray(records) or #records ~= 6 then
+      fail(code, field .. "." .. category .. " must cover all six native side types", context)
+    end
+    local covered = {}
+    for index, record in ipairs(records) do
+      local entry = field .. "." .. category .. "[" .. index .. "]"
+      SchemaCheck.checkRecord(
+        record,
+        { sideType = true, tile = true, count = true, spans = true },
+        context,
+        code,
+        entry
+      )
+      checkInt(record.sideType, 0, 5, context, code, entry .. ".sideType")
+      if covered[record.sideType] then
+        fail(code, field .. "." .. category .. " side types must be unique", context)
+      end
+      covered[record.sideType] = true
+      local spans = record.spans or { { tile = record.tile, count = record.count } }
+      if not Validate.isArray(spans) or #spans ~= #spanCounts then
+        fail(code, entry .. ".spans must match the native character writes", context)
+      end
+      for spanIndex, span in ipairs(spans) do
+        local spanField = entry .. ".spans[" .. spanIndex .. "]"
+        SchemaCheck.checkRecord(span, { tile = true, count = true }, context, code, spanField)
+        checkInt(span.tile, 0, 1023, context, code, spanField .. ".tile")
+        checkInt(span.count, spanCounts[spanIndex], spanCounts[spanIndex], context, code, spanField .. ".count")
+        if span.tile + span.count > 1024 then
+          fail(code, spanField .. " exceeds the character tile index range", context)
+        end
+      end
+    end
+    for sideType = 0, 5 do
+      if not covered[sideType] then
+        fail(code, field .. "." .. category .. " must cover all six native side types", context)
+      end
+    end
+  end
+  if not Validate.isArray(patchSpans.playerDoubleMode) or #patchSpans.playerDoubleMode ~= 2 then
+    fail(code, field .. ".playerDoubleMode must cover both double-player rows", context)
+  end
+  local doubleSides = {}
+  for index, record in ipairs(patchSpans.playerDoubleMode) do
+    local entry = field .. ".playerDoubleMode[" .. index .. "]"
+    SchemaCheck.checkRecord(record, { sideType = true, gauge = true, numbers = true }, context, code, entry)
+    if record.sideType ~= 2 and record.sideType ~= 4 then
+      fail(code, entry .. ".sideType must name a double-player row", context)
+    end
+    if doubleSides[record.sideType] then
+      fail(code, field .. ".playerDoubleMode side types must be unique", context)
+    end
+    doubleSides[record.sideType] = true
+    for modeName, expectedCount in pairs({ gauge = 4, numbers = 3 }) do
+      local patches = record[modeName]
+      local modeField = entry .. "." .. modeName
+      if not Validate.isArray(patches) or #patches ~= expectedCount then
+        fail(code, modeField .. " must carry every native mode tile", context)
+      end
+      local destinations = {}
+      for patchIndex, patch in ipairs(patches) do
+        local patchField = modeField .. "[" .. patchIndex .. "]"
+        SchemaCheck.checkRecord(patch, { tile = true, sourceTile = true }, context, code, patchField)
+        checkInt(patch.tile, 0, 1023, context, code, patchField .. ".tile")
+        checkInt(patch.sourceTile, 0, 77, context, code, patchField .. ".sourceTile")
+        if destinations[patch.tile] then
+          fail(code, modeField .. " destination tiles must be unique", context)
+        end
+        destinations[patch.tile] = true
+      end
+    end
+  end
+  if not doubleSides[2] or not doubleSides[4] then
+    fail(code, field .. ".playerDoubleMode must cover side types 2 and 4", context)
+  end
 end
 
 local function checkTextRoles(roles, context, code, field)
@@ -2311,6 +2518,7 @@ function BattlePresentationSchema.assertManifest(manifest)
     catalogIdentity = true,
     scenes = true,
     layouts = true,
+    battlefield = true,
     hud = true,
     pictures = true,
     menus = true,
@@ -2328,6 +2536,7 @@ function BattlePresentationSchema.assertManifest(manifest)
   checkString(manifest.version.id, context, CODE_MANIFEST, "manifest version id")
   checkString(manifest.version.language, context, CODE_MANIFEST, "manifest version language")
   checkString(manifest.catalogIdentity, context, CODE_MANIFEST, "manifest catalogIdentity")
+  checkSlotGeometry(manifest.battlefield, context, CODE_MANIFEST)
   if not Validate.isArray(manifest.scenes) or #manifest.scenes == 0 then
     fail(CODE_MANIFEST, "manifest must inventory its supported scene keys", context)
   end
@@ -2650,9 +2859,18 @@ function BattlePresentationSchema.assertManifest(manifest)
     terrain = true,
     roles = true,
     selectors = true,
+    patchSpans = true,
   }, context, CODE_MANIFEST, "manifest hud")
+  checkHudPatchSpans(manifest.hud.patchSpans, context, CODE_MANIFEST, "manifest hud.patchSpans")
   checkSpriteSection(manifest.hud.player, context, CODE_MANIFEST, "manifest hud.player")
   checkSpriteSection(manifest.hud.enemy, context, CODE_MANIFEST, "manifest hud.enemy")
+  local function checkHudComponents(section, field)
+    if section.componentBase == nil or section.componentCount ~= 78 then
+      fail(CODE_MANIFEST, field .. " must append the 78 source health-box components", context)
+    end
+  end
+  checkHudComponents(manifest.hud.player, "manifest hud.player")
+  checkHudComponents(manifest.hud.enemy, "manifest hud.enemy")
   SchemaCheck.checkRecord(
     manifest.hud.doubles,
     { playerLeft = true, playerRight = true, enemyLeft = true, enemyRight = true },
@@ -2662,6 +2880,7 @@ function BattlePresentationSchema.assertManifest(manifest)
   )
   for _, slot in ipairs({ "playerLeft", "playerRight", "enemyLeft", "enemyRight" }) do
     checkSpriteSection(manifest.hud.doubles[slot], context, CODE_MANIFEST, "manifest hud.doubles " .. slot)
+    checkHudComponents(manifest.hud.doubles[slot], "manifest hud.doubles " .. slot)
   end
   checkSpriteSection(manifest.hud.arrow, context, CODE_MANIFEST, "manifest hud.arrow")
   for _, field in ipairs({ "roles", "selectors" }) do
@@ -2706,7 +2925,7 @@ function BattlePresentationSchema.assertManifest(manifest)
 
   SchemaCheck.checkRecord(
     manifest.pictures,
-    { attributes = true, selectors = true },
+    { attributes = true, selectors = true, shadow = true },
     context,
     CODE_MANIFEST,
     "manifest pictures"
@@ -2715,6 +2934,55 @@ function BattlePresentationSchema.assertManifest(manifest)
   checkCatalogTable(manifest.pictures.selectors, context, CODE_MANIFEST, "manifest pictures.selectors")
   if next(manifest.pictures.selectors) == nil then
     fail(CODE_MANIFEST, "manifest pictures.selectors must carry source-backed entries", context)
+  end
+  SchemaCheck.checkRecord(
+    manifest.pictures.shadow,
+    { image = true, width = true, height = true, regions = true },
+    context,
+    CODE_MANIFEST,
+    "manifest pictures.shadow"
+  )
+  checkImageRef(manifest.pictures.shadow.image, "manifest pictures.shadow image")
+  local shadowImage = manifest.menus.images[manifest.pictures.shadow.image]
+  if manifest.pictures.shadow.width ~= 64 or manifest.pictures.shadow.height ~= 64 then
+    fail(CODE_MANIFEST, "manifest pictures.shadow must preserve the native 64x64 selector atlas", context)
+  end
+  if shadowImage.width ~= manifest.pictures.shadow.width or shadowImage.height ~= manifest.pictures.shadow.height then
+    fail(CODE_MANIFEST, "manifest pictures.shadow geometry must match its staged image", context)
+  end
+  if not Validate.isArray(manifest.pictures.shadow.regions) or #manifest.pictures.shadow.regions ~= 4 then
+    fail(CODE_MANIFEST, "manifest pictures.shadow.regions must contain four source size selections", context)
+  end
+  local shadowSizes = {}
+  for index, region in ipairs(manifest.pictures.shadow.regions) do
+    local field = "manifest pictures.shadow.regions[" .. index .. "]"
+    SchemaCheck.checkRecord(
+      region,
+      { size = true, x = true, y = true, width = true, height = true },
+      context,
+      CODE_MANIFEST,
+      field
+    )
+    checkInt(region.size, 0, 3, context, CODE_MANIFEST, field .. ".size")
+    checkInt(region.x, 0, 63, context, CODE_MANIFEST, field .. ".x")
+    checkInt(region.y, 0, 63, context, CODE_MANIFEST, field .. ".y")
+    checkInt(region.width, 1, 64, context, CODE_MANIFEST, field .. ".width")
+    checkInt(region.height, 1, 64, context, CODE_MANIFEST, field .. ".height")
+    if region.x + region.width > 64 or region.y + region.height > 64 then
+      fail(CODE_MANIFEST, field .. " escapes the staged shadow atlas", context)
+    end
+    if region.width ~= 64 or region.height ~= 16 then
+      fail(CODE_MANIFEST, field .. " must retain the 64x16 native shadow geometry", context)
+    end
+    if shadowSizes[region.size] then
+      fail(CODE_MANIFEST, "manifest pictures.shadow repeats a native size selector", context)
+    end
+    shadowSizes[region.size] = true
+  end
+  for size = 0, 3 do
+    if not shadowSizes[size] then
+      fail(CODE_MANIFEST, "manifest pictures.shadow omits native size " .. size, context)
+    end
   end
   SchemaCheck.checkRecord(manifest.messages, {
     roles = true,
