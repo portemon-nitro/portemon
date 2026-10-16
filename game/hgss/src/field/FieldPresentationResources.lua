@@ -887,18 +887,34 @@ function FieldPresentationResources:_bannerSkinFor(styleKey)
     assert(manifest.bannerStyles[styleKey], "the field-entry manifest has no banner style " .. tostring(styleKey))
   local asset = assert(manifest.assets[assetKey], "the field-entry manifest has no banner asset " .. assetKey)
   local path = assert(asset.image, "banner asset " .. assetKey .. " names no image")
-  local bytes = assert(self.cacheFs:read(path), "missing generated banner image " .. path)
-  local graphics = assert(love and love.graphics, "the map-name banner needs its graphics namespace")
-  local image = graphics.newImage(love.filesystem.newFileData(bytes, path))
-  image:setFilter("nearest", "nearest")
-  if skin ~= nil then
-    skin.image:release()
-  end
-  local palette = assert(
+  local sourcePalette = assert(
     manifest.bannerTextPalettes[styleKey],
     "the field-entry manifest has no banner palette " .. tostring(styleKey)
   )
-  skin = { image = image, palette = palette }
+  local viewPalette = {
+    foreground = sourcePalette.foreground, -- borrowed, never mutated
+    shadow = sourcePalette.shadow, -- borrowed, never mutated
+    background = {
+      r = sourcePalette.background.r,
+      g = sourcePalette.background.g,
+      b = sourcePalette.background.b,
+      a = 0, -- normalized shader alpha, not persisted in the manifest
+    },
+  }
+  local bytes = assert(self.cacheFs:read(path), "missing generated banner image " .. path)
+  local graphics = assert(love and love.graphics, "the map-name banner needs its graphics namespace")
+  local image = graphics.newImage(love.filesystem.newFileData(bytes, path))
+  local filterOk, filterErr = pcall(function()
+    image:setFilter("nearest", "nearest")
+  end)
+  if not filterOk then
+    image:release()
+    error(filterErr, 0)
+  end
+  if skin ~= nil then
+    skin.image:release()
+  end
+  skin = { image = image, palette = viewPalette }
   self._bannerSkin = skin
   self._bannerSkinKey = styleKey
   return skin

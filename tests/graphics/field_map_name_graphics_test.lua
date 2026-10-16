@@ -7,7 +7,12 @@
 
 local Assert = require("tests.support.Assert")
 local FakeGraphics = require("tests.support.FakeGraphics")
+local FieldDialogueFixture = require("tests.support.FieldDialogueFixture")
+local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
+local FieldPresentationResources = require("game.hgss.src.field.FieldPresentationResources")
+local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
+local PngWriter = require("libs.assets.src.PngWriter")
 local FieldState = require("game.hgss.src.field.FieldState")
 local PixelScale = require("libs.ui.src.PixelScale")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
@@ -259,6 +264,284 @@ function T.the_field_draws_the_banner_above_the_world_and_below_the_script_cover
   local hidden = {}
   render(scope, hidden, nil)
   Assert.deepEqual(hidden, { "world", "warpFade", "scriptCover" }, "a hidden banner paints nothing")
+end
+
+-- The banner skin must survive whatever graphics color the preceding warp
+-- fade left behind: the renderer neutralizes the inherited tint inside its
+-- own logical scope, so the selected art always draws fully opaque white
+-- while the caller color is restored on return.
+function T.the_skin_draws_at_full_white_tint_under_a_hostile_inherited_color()
+  for _, tint in ipairs({ { 0, 0, 0, 0.5 }, { 1, 1, 1, 0.25 } }) do
+    local label = string.format("tint (%.2f,%.2f,%.2f,%.2f)", tint[1], tint[2], tint[3], tint[4])
+    local graphics = FakeGraphics.new()
+    graphics.setColor(tint[1], tint[2], tint[3], tint[4])
+    local text = recordingText(80)
+    local renderer, skin = bannerRenderer("area-name tint scope", graphics, text)
+    renderer:draw({ title = "ROUTE 29", styleKey = 2, scrollOffset = 38 }, referenceFrame(40, 30))
+
+    local skinDraw = assert(graphics.draws[1], "the banner skin is drawn under " .. label)
+    Assert.isTrue(skinDraw.image == skin, "the selected banner skin is drawn under " .. label)
+    Assert.deepEqual(
+      { skinDraw.color[1], skinDraw.color[2], skinDraw.color[3], skinDraw.color[4] },
+      { 1, 1, 1, 1 },
+      "the banner skin ignores the inherited warp fade color under " .. label
+    )
+    Assert.equal(skinDraw.x, 0, "the skin keeps logical x0 under " .. label)
+    Assert.equal(skinDraw.y, -38, "the skin keeps its scroll displacement under " .. label)
+    local r, g, b, a = graphics.getColor()
+    Assert.deepEqual({ r, g, b, a }, tint, "the caller graphics color is restored after " .. label)
+  end
+end
+
+-- A two-style banner lease fixture: source-like RGB-only role palettes with
+-- deliberately nonzero background bytes, and one small skin PNG per style.
+-- The cache double answers only the banner image paths the lease resolves.
+local function bannerLeaseFixture()
+  local function solidPng(r, g, b)
+    local cells = {}
+    for _ = 1, 64 do
+      cells[#cells + 1] = string.char(r, g, b, 255)
+    end
+    return PngWriter.encode(8, 8, table.concat(cells))
+  end
+  local manifest = {
+    bannerStyles = { [4] = "banner-style-4", [7] = "banner-style-7" },
+    assets = {
+      ["banner-style-4"] = { image = "banner/style-4.png" },
+      ["banner-style-7"] = { image = "banner/style-7.png" },
+    },
+    bannerTextPalettes = {
+      [4] = {
+        foreground = { r = 16, g = 32, b = 48 },
+        shadow = { r = 64, g = 80, b = 96 },
+        background = { r = 96, g = 112, b = 128 },
+      },
+      [7] = {
+        foreground = { r = 200, g = 210, b = 220 },
+        shadow = { r = 30, g = 40, b = 50 },
+        background = { r = 70, g = 80, b = 90 },
+      },
+    },
+  }
+  local cacheFs = {
+    files = {
+      ["banner/style-4.png"] = solidPng(10, 20, 30),
+      ["banner/style-7.png"] = solidPng(40, 50, 60),
+    },
+    read = function(self, path)
+      return self.files[path]
+    end,
+  }
+  return manifest, cacheFs
+end
+
+-- The shared fixture mask atlas carries only foreground and shadow classes,
+-- so this 16x16 replacement splits the first glyph cell into a foreground
+-- half and a background (blue mask channel) half while keeping the second
+-- glyph an all-shadow cell. A background-class texel over textured art is
+-- the only probe that can catch an opaque glyph backing.
+local function maskBytesWithBackgroundClass()
+  local cells = {}
+  for _ = 1, 16 do
+    for x = 1, 16 do
+      if x <= 4 then
+        cells[#cells + 1] = string.char(255, 0, 0, 255)
+      elseif x <= 8 then
+        cells[#cells + 1] = string.char(0, 0, 255, 255)
+      else
+        cells[#cells + 1] = string.char(0, 255, 0, 255)
+      end
+    end
+  end
+  return PngWriter.encode(16, 16, table.concat(cells))
+end
+
+-- Deliberately nonuniform skin stand-in: a two-color checkerboard whose
+-- expected color at any pixel is computed from its coordinates, so no
+-- uniform fill can conceal an opaque glyph backing.
+local function checkerColor(x, y)
+  if (x + y) % 2 == 0 then
+    return 200 / 255, 10 / 255, 10 / 255
+  end
+  return 10 / 255, 200 / 255, 10 / 255
+end
+
+-- Glyph text recolored through the real palette shader must leave the skin
+-- visible wherever the mask names the background class, while foreground
+-- and shadow classes paint their exact style roles. The palette under test
+-- is the lease-local view resolved by the production banner lease, never a
+-- hand-built alpha table, so an RGB-only generated palette that defaults
+-- to opaque would paint a solid block over the checkerboard.
+function T.glyph_background_class_leaves_textured_skin_visible_through_the_real_shader(scope)
+  local lg = love.graphics
+  local manifest, cacheFs = bannerLeaseFixture()
+  local resources =
+    setmetatable({ cacheFs = cacheFs, fieldEntryManifest = manifest }, FieldPresentationResources)
+  local viewPalette = resources:_bannerSkinFor(4).palette
+
+  local fontCache = FieldDialogueFixture.cacheWithFont()
+  fontCache:write(FieldFontCache.maskAtlasPath(0), maskBytesWithBackgroundClass())
+  local text = scope:own(FieldTextRenderer.new({ cacheFs = fontCache }))
+
+  local canvas = scope:own(lg.newCanvas(32, 32))
+  local backdropData = love.image.newImageData(32, 32)
+  for y = 0, 31 do
+    for x = 0, 31 do
+      local r, g, b = checkerColor(x, y)
+      backdropData:setPixel(x, y, r, g, b, 1)
+    end
+  end
+  local backdropImage = scope:own(lg.newImage(backdropData))
+  backdropImage:setFilter("nearest", "nearest")
+
+  lg.setColor(1, 1, 1, 1)
+  lg.setBlendMode("alpha")
+  lg.setCanvas(canvas)
+  lg.clear(0, 0, 0, 0)
+  local drawOk, drawErr = pcall(function()
+    lg.draw(backdropImage, 0, 0)
+    text:drawTextWithPalette("AB", 4, 4, viewPalette)
+  end)
+  lg.setCanvas()
+  local pixels = drawOk and scope:own(canvas:newImageData()) or nil
+  local disposeOk, disposeErr = pcall(function()
+    resources:dispose()
+  end)
+  if not drawOk then
+    error(drawErr, 0)
+  end
+  Assert.isTrue(disposeOk, "the banner lease cleans up after the compositing draw: " .. tostring(disposeErr))
+  Assert.notNil(pixels, "the compositing readback is available")
+  assert(pixels, "the compositing readback is available")
+
+  local function assertPixel(x, y, er, eg, eb, ea, label)
+    local r, g, b, a = pixels:getPixel(x, y)
+    local got = {
+      math.floor(r * 255 + 0.5),
+      math.floor(g * 255 + 0.5),
+      math.floor(b * 255 + 0.5),
+      math.floor(a * 255 + 0.5),
+    }
+    local close = math.abs(got[1] - er) <= 1
+      and math.abs(got[2] - eg) <= 1
+      and math.abs(got[3] - eb) <= 1
+      and math.abs(got[4] - ea) <= 1
+    Assert.isTrue(
+      close,
+      label
+        .. string.format(": expected (%d,%d,%d,%d) got (%d,%d,%d,%d)", er, eg, eb, ea, got[1], got[2], got[3], got[4])
+    )
+  end
+
+  assertPixel(5, 6, 16, 32, 48, 255, "a foreground-class texel paints the style foreground")
+  assertPixel(11, 6, 64, 80, 96, 255, "a shadow-class texel paints the style shadow")
+  assertPixel(30, 30, 200, 10, 10, 255, "an untouched texel keeps the skin color")
+  local br, bg, bb = checkerColor(9, 6)
+  assertPixel(
+    9,
+    6,
+    math.floor(br * 255 + 0.5),
+    math.floor(bg * 255 + 0.5),
+    math.floor(bb * 255 + 0.5),
+    255,
+    "a background-class texel leaves the skin visible"
+  )
+  Assert.isNil(
+    manifest.bannerTextPalettes[4].background.a,
+    "the generated palette carries no alpha of its own"
+  )
+  Assert.equal(viewPalette.background.a, 0, "the lease-local background role requests normalized zero alpha")
+end
+
+-- The banner lease borrows the immutable generated palette for a
+-- presentation-only transparent-background view, retains one image at a
+-- time, and keeps the last valid skin when a replacement fails: a missing
+-- PNG fails before acquiring anything, and an image that fails filtering
+-- after creation is freed exactly once without publishing a half lease.
+function T.a_failed_style_replacement_keeps_the_last_valid_skin_and_lease_palette(_scope)
+  local manifest, cacheFs = bannerLeaseFixture()
+  local style7png = cacheFs.files["banner/style-7.png"]
+  local resources =
+    setmetatable({ cacheFs = cacheFs, fieldEntryManifest = manifest }, FieldPresentationResources)
+
+  local created = {}
+  local failSetFilter = false
+  local realNewImage = love.graphics.newImage
+  love.graphics.newImage = function(_fileData)
+    local image = { released = false, releaseCount = 0, filters = {} }
+    image.setFilter = function(_, min, mag)
+      if failSetFilter then
+        error("injected banner setFilter failure", 0)
+      end
+      image.filters[#image.filters + 1] = { min = min, mag = mag }
+    end
+    image.release = function()
+      image.released = true
+      image.releaseCount = image.releaseCount + 1
+    end
+    created[#created + 1] = image
+    return image
+  end
+
+  local ok, err = pcall(function()
+    local skinA = resources:_bannerSkinFor(4)
+    Assert.equal(#created, 1, "the first lease acquires exactly one image")
+    Assert.deepEqual(
+      skinA.palette.foreground,
+      manifest.bannerTextPalettes[4].foreground,
+      "the lease keeps the source foreground role"
+    )
+    Assert.deepEqual(
+      skinA.palette.shadow,
+      manifest.bannerTextPalettes[4].shadow,
+      "the lease keeps the source shadow role"
+    )
+    Assert.equal(skinA.palette.background.r, 96, "the lease keeps the source background red byte")
+    Assert.equal(skinA.palette.background.g, 112, "the lease keeps the source background green byte")
+    Assert.equal(skinA.palette.background.b, 128, "the lease keeps the source background blue byte")
+    Assert.equal(skinA.palette.background.a, 0, "the lease-local background role requests normalized zero alpha")
+    Assert.isNil(
+      manifest.bannerTextPalettes[4].background.a,
+      "presentation alpha never persists into the manifest"
+    )
+    Assert.isTrue(resources:_bannerSkinFor(4) == skinA, "a repeated style draw reuses the retained lease")
+    Assert.equal(#created, 1, "a repeated style draw allocates nothing")
+
+    cacheFs.files["banner/style-7.png"] = nil
+    Assert.throws(function()
+      resources:_bannerSkinFor(7)
+    end, "a style with missing art fails loudly")
+    Assert.isTrue(resources._bannerSkin == skinA, "a failed lease keeps the last valid skin")
+    Assert.equal(resources._bannerSkinKey, 4, "a failed lease keeps the last valid style key")
+    Assert.equal(#created, 1, "a failed lease acquires no image")
+
+    cacheFs.files["banner/style-7.png"] = style7png
+    failSetFilter = true
+    Assert.throws(function()
+      resources:_bannerSkinFor(7)
+    end, "a filter failure on the replacement fails loudly")
+    failSetFilter = false
+    Assert.equal(#created, 2, "the failed replacement acquired exactly one image")
+    Assert.equal(created[2].releaseCount, 1, "a failed replacement frees its own image exactly once")
+    Assert.isTrue(resources._bannerSkin == skinA, "a filter failure keeps the last valid skin")
+    Assert.equal(resources._bannerSkinKey, 4, "a filter failure keeps the last valid style key")
+
+    local skinB = resources:_bannerSkinFor(7)
+    Assert.equal(#created, 3, "the retry acquires its replacement image")
+    Assert.equal(created[1].releaseCount, 1, "a successful replacement releases the outgoing skin exactly once")
+    Assert.isTrue(resources._bannerSkin == skinB, "the retry publishes the replacement skin")
+    Assert.equal(resources._bannerSkinKey, 7, "the retry publishes the replacement style key")
+  end)
+  love.graphics.newImage = realNewImage
+  local disposeOk, disposeErr = pcall(function()
+    resources:dispose()
+  end)
+  if not ok then
+    error(err, 0)
+  end
+  Assert.isTrue(disposeOk, "dispose cleans up the retained lease: " .. tostring(disposeErr))
+  Assert.equal(created[3].releaseCount, 1, "dispose releases the retained skin exactly once")
+  Assert.isNil(resources._bannerSkin, "dispose clears the lease")
 end
 
 return GraphicsSmoke.suite(T)

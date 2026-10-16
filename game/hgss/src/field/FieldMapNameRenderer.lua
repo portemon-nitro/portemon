@@ -51,6 +51,7 @@ function FieldMapNameRenderer:draw(status, referenceFrame)
   local textX = math.floor((BANNER_TEXT_SPAN - text:textWidth(status.title)) / 2) + TEXT_INSET
   local graphics = self._graphics
   LogicalSurface.draw(graphics, placement, function()
+    graphics.setColor(1, 1, 1, 1)
     graphics.draw(skin.image, 0, -offset)
     text:drawTextWithPalette(status.title, textX, TEXT_Y - offset, skin.palette)
   end)
