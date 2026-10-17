@@ -19,6 +19,12 @@ local SummaryScreenState = require("game.hgss.src.field.SummaryScreenState")
 
 local T = {}
 
+-- The production owner borrows at most one new fixed-chrome pair per
+-- prepare call over ~196 real-manifest paths, so readiness loops allow
+-- one update per path plus slack. Updates are fake-driven and prompt;
+-- the bound is plumbing, not a timing threshold.
+local SETTLE_UPDATES = 256
+
 local function openService(catalog, seed)
   local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
   return HgssMonService.new({
@@ -487,7 +493,7 @@ end
 ---@param state table<string, unknown> open wrapper
 ---@return table<string, unknown> interactive child status
 local function activeStatus(state)
-  settle(state, 24)
+  settle(state, SETTLE_UPDATES)
   local status = state:status()
   Assert.isTrue(
     status.open,
@@ -1023,7 +1029,7 @@ function T.summary_entry_uses_the_source_fade_recurrence_once()
     end,
   })
   local coefficients = {}
-  for _ = 1, 16 do
+  for _ = 1, SETTLE_UPDATES do
     state:updateFixed({})
     local status = state:status()
     if status.entryFade ~= nil then
@@ -1085,7 +1091,7 @@ function T.parent_round_trips_restore_selection_with_both_pane_fades()
   )
   Assert.equal(flow:status().page, "summary", "the nested Summary owns the replacement")
   local entryCoefficients = {}
-  for _ = 1, 16 do
+  for _ = 1, SETTLE_UPDATES do
     flow:updateFixed({})
     local child = flowChild(rig)
     if child.entryFade ~= nil then

@@ -33,6 +33,12 @@ local T = {}
 local OWNER_MODULE = "game.hgss.src.field.SummaryPresentationResources"
 local FPR_MODULE = "game.hgss.src.field.FieldPresentationResources"
 
+-- The production owner borrows at most one new fixed-chrome pair per
+-- prepare call over ~196 real-manifest paths, so readiness loops allow
+-- one update per path plus slack. Updates are fake-driven and prompt;
+-- the bound is plumbing, not a timing threshold.
+local SETTLE_UPDATES = 256
+
 local function readyVersion()
   local versions = SummaryAcceptanceFixture.readySummaryVersions()
   Assert.isTrue(#versions >= 1, "the prepared cache publishes the Summary family")
@@ -290,7 +296,7 @@ local function openNestedSummary(rig)
   end
   Assert.equal(flow:status().page, "summary", "the nested Summary owns the replacement")
   local entryCoefficients = {}
-  for _ = 1, 16 do
+  for _ = 1, SETTLE_UPDATES do
     flow:updateFixed({})
     local nested = flowChild(rig)
     if nested.entryFade ~= nil then
@@ -782,7 +788,7 @@ function T.native_content_ignores_host_topology_with_a_guarded_fallback()
       return lease
     end,
   })
-  for _ = 1, 24 do
+  for _ = 1, SETTLE_UPDATES do
     state:updateFixed({})
     if state:status().wrapperPhase == "active" then
       break
@@ -936,7 +942,7 @@ function T.input_preparation_and_disposal_cannot_leak_across_children()
     })
   end
   local first = openCounted(0)
-  for _ = 1, 24 do
+  for _ = 1, SETTLE_UPDATES do
     first:updateFixed({})
     if first:status().wrapperPhase == "active" then
       break
@@ -963,7 +969,7 @@ function T.input_preparation_and_disposal_cannot_leak_across_children()
     "stable frames request no further portrait pages"
   )
   local second = openCounted(1)
-  for _ = 1, 24 do
+  for _ = 1, SETTLE_UPDATES do
     second:updateFixed({})
     if second:status().wrapperPhase == "active" then
       break
@@ -1043,7 +1049,7 @@ function T.input_preparation_and_disposal_cannot_leak_across_children()
       return ownerLease(overlayOwner)
     end,
   })
-  for _ = 1, 24 do
+  for _ = 1, SETTLE_UPDATES do
     overlayState:updateFixed({})
     if overlayState:status().wrapperPhase == "active" then
       break

@@ -17,6 +17,12 @@ local SummaryAcceptanceFixture = require("tests.support.SummaryAcceptanceFixture
 
 local T = {}
 
+-- The production owner borrows at most one new fixed-chrome pair per
+-- prepare call over ~196 real-manifest paths, so readiness loops allow
+-- one update per path plus slack. Updates are fake-driven and prompt;
+-- the bound is plumbing, not a timing threshold.
+local SETTLE_UPDATES = 256
+
 local FPR_MODULE = "game.hgss.src.field.FieldPresentationResources"
 
 local CONSTRUCTOR_MODULES = {
@@ -553,7 +559,7 @@ function T.party_summary_round_trip_returns_to_the_displayed_member_over_the_bin
     )
     Assert.equal(flow:status().page, "summary", "the nested Summary owns the replacement")
     local entryCoefficients = {}
-    for _ = 1, 40 do
+    for _ = 1, SETTLE_UPDATES do
       flow:updateFixed({})
       local nested = flowChild(rig)
       if nested.entryFade ~= nil then
@@ -659,7 +665,7 @@ function T.machine_picker_round_trip_preserves_result_semantics_over_the_binding
       })
     end
     local refusing = openPicker({ context = "replace_machine", protected = { [2] = "hm" } })
-    settlePicker(refusing, 40)
+    settlePicker(refusing, SETTLE_UPDATES)
     Assert.equal(refusing:status().group, "skills", "the teaching picker opens on its move rows")
     refusing:updateFixed({ { type = "navigate", direction = "down" } })
     refusing:updateFixed({ { type = "confirm" } })
@@ -678,7 +684,7 @@ function T.machine_picker_round_trip_preserves_result_semantics_over_the_binding
     Assert.equal(picked.partyRevision, revision, "the pick carries the live revision")
     refusing:dispose()
     local cancelling = openPicker({ context = "replace_machine" })
-    settlePicker(cancelling, 40)
+    settlePicker(cancelling, SETTLE_UPDATES)
     cancelling:updateFixed({ { type = "dismiss" } })
     local cancelled = assert(cancelling:takeResult(), "dismissal reports its result")
     Assert.equal(cancelled.kind, "cancelled", "cancellation stays explicit")

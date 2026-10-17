@@ -80,12 +80,19 @@ local function demandFor(service, context, manifest, key, epoch)
   }
 end
 
+-- Fixed chrome borrows at most one new pair per prepare call over the
+-- full chrome path set (synthetic families enumerate 137 distinct
+-- paths), so settling loops allow one round per path plus slack for the
+-- parallel portrait, icon, and cry prerequisites. Rounds are fake-driven
+-- and complete promptly; the bound is plumbing, not a timing threshold.
+local SETTLE_ROUNDS = 256
+
 ---@param lease table<string, unknown>
 ---@param demand table<string, unknown>
 ---@return table<string, unknown> terminal prepare outcome (never pending)
 local function prepareUntilSettled(lease, demand)
   local outcome = nil
-  for _ = 1, 12 do
+  for _ = 1, SETTLE_ROUNDS do
     outcome = assert(lease.prepare(lease, demand), "prepare reports its lease state")
     Assert.isTrue(type(outcome.kind) == "string", "prepare outcomes name their kind")
     if outcome.kind ~= "pending" then
@@ -310,7 +317,7 @@ function T.synthetic_demand_coalesces_pages_and_shares_across_leases()
     local first = owner:acquire()
     local second = owner:acquire()
     local ready = nil
-    for _ = 1, 12 do
+    for _ = 1, SETTLE_ROUNDS do
       ready = assert(first:prepare(syntheticDemand("syn-pair", 1)))
       if ready.kind ~= "pending" then
         break
@@ -322,7 +329,7 @@ function T.synthetic_demand_coalesces_pages_and_shares_across_leases()
     Assert.equal(assets.manifest, setup.manifest, versionId .. " carries the family")
     Assert.notNil(assets.portraits, versionId .. " carries portrait accessors")
     local shared = nil
-    for _ = 1, 12 do
+    for _ = 1, SETTLE_ROUNDS do
       shared = assert(second:prepare(syntheticDemand("syn-pair", 1)))
       if shared.kind ~= "pending" then
         break
@@ -451,7 +458,7 @@ function T.late_completions_land_quietly_after_lease_release()
     gate.ready = true
     local second = owner:acquire()
     local ready = nil
-    for _ = 1, 12 do
+    for _ = 1, SETTLE_ROUNDS do
       ready = assert(second:prepare(syntheticDemand("late", 1)))
       if ready.kind ~= "pending" then
         break
@@ -534,7 +541,7 @@ function T.dynamic_frame_visuals_prepare_through_the_existing_owner()
     )
     local lease = owner:acquire()
     local outcome = nil
-    for _ = 1, 12 do
+    for _ = 1, SETTLE_ROUNDS do
       outcome = assert(lease:prepare(syntheticDemand("dynamic-chrome", 1)))
       if outcome.kind ~= "pending" then
         break
@@ -653,7 +660,7 @@ end
 ---@return table<string, unknown> terminal prepare outcome (never pending)
 local function prepareToTerminal(lease, demand)
   local outcome = nil
-  for _ = 1, 12 do
+  for _ = 1, SETTLE_ROUNDS do
     local ok, result = pcall(lease.prepare, lease, demand)
     Assert.isTrue(ok, "preparation answers instead of raising: " .. tostring(result))
     outcome = result
@@ -762,15 +769,19 @@ function T.uncompiled_portrait_pages_wait_instead_of_failing_on_their_missing_fi
   }
   local sharedPool = assert(helper.imagePool, "the doubles carry the shared image owner")
   local portraitPolls = 0
-  -- Simulate the missing generated PNG while the page is uncompiled: any
+  -- Simulate the missing generated PNG while the page is uncompiled: the
   -- portrait decode polled before compilation reports the production
-  -- unreadable-file failure instead of staging.
+  -- unreadable-file failure instead of staging, while unrelated fixed
+  -- chrome polls pass through so chrome keeps its own progress.
   local failingPool = {}
+  local tokenPaths = {}
   function failingPool:request(path, sampler, priority)
-    return sharedPool:request(path, sampler, priority)
+    local token = sharedPool:request(path, sampler, priority)
+    tokenPaths[token] = path
+    return token
   end
   function failingPool:poll(token)
-    if not compiled then
+    if not compiled and tokenPaths[token] == pagePath then
       portraitPolls = portraitPolls + 1
       return "failed", "unreadable cache file: soulsilver/" .. pagePath
     end
@@ -1122,17 +1133,22 @@ function T.concurrent_picture_epochs_share_one_portrait_image_and_enroll_before_
   Assert.equal(enrolledBanks[158], 1, "the second cry bank enrolls before the first pending answer")
   Assert.equal(decodeRequests[sharedPath], 1, "the shared page enrolls before the first pending answer")
   Assert.equal(decodeRequests[firstPath], 1, "the first-only page enrolls before the first pending answer")
-  Assert.equal(
-    poolInner:stats().outstandingLeases,
-    1,
-    "the first round adopts one portrait page while icons are still pending"
-  )
-  local waitingAgain = assert(first:prepare(demandA), "prepare reports its lease state")
-  Assert.equal(waitingAgain.kind, "pending", "the second round still waits on the icon pages")
+  -- Fixed chrome progresses in parallel with portraits: each round borrows
+  -- at most one new chrome pair alongside at most one portrait pair, so
+  -- the first round holds one chrome plus one portrait lease.
+  Assert.equal(poolInner.uploads, 2, "the first round borrows at most one chrome plus one portrait pair")
   Assert.equal(
     poolInner:stats().outstandingLeases,
     2,
-    "both portrait leases land while icons are still pending"
+    "the first round adopts one chrome pair plus one portrait page while icons are still pending"
+  )
+  local waitingAgain = assert(first:prepare(demandA), "prepare reports its lease state")
+  Assert.equal(waitingAgain.kind, "pending", "the second round still waits on the icon pages")
+  Assert.equal(poolInner.uploads, 4, "the second round borrows at most one further chrome plus portrait pair")
+  Assert.equal(
+    poolInner:stats().outstandingLeases,
+    4,
+    "both portrait leases land beside two chrome pairs while icons are still pending"
   )
   local readyA = prepareToTerminal(first, demandA)
   Assert.equal(readyA.kind, "ready", "the first picture settles once its icons arrive")
@@ -1231,6 +1247,411 @@ function T.concurrent_picture_epochs_share_one_portrait_image_and_enroll_before_
   Assert.equal(firstImage.releaseCount, 1, "the replaced page stays freed exactly once")
   Assert.equal(chromeSample.releaseCount, 1, "the pinned chrome frees exactly once")
   Assert.equal(helper.calls.iconReleases, 0, "the borrowed icon provider outlives the owner")
+end
+
+-- Progressive chrome admission below: fixed chrome enrolls on the first
+-- preparation round while icons and portraits are still pending, admits at
+-- most one new chrome pair per round alongside at most one portrait pair,
+-- and never performs pool work through bundle reads or pinned reprepares.
+-- Every chrome path enrolls exactly once no matter how many records name
+-- it.
+
+---@param counts table<string, integer>
+---@return integer number of distinct keys
+local function countKeys(counts)
+  local total = 0
+  for _ in pairs(counts) do
+    total = total + 1
+  end
+  return total
+end
+
+function T.fixed_chrome_enrolls_while_portraits_compile_and_admits_one_pair_per_round()
+  local Resources = requireResources()
+  local one = MonCache.portraitSelector("CHIKORITA", 0, "male", false)
+  local other = MonCache.portraitSelector("CHIKORITA", 0, "female", false)
+  local entries = { [one] = portraitEntry(3), [other] = portraitEntry(9) }
+  local helper = SummaryAcceptanceFixture.preparationDoubles({})
+  local gates = { iconPendingRounds = 2, portraitsCompiled = false }
+  local iconRounds = 0
+  function helper.icons.prepareKeys(_, keys)
+    iconRounds = iconRounds + 1
+    helper.calls.iconPrepares[#helper.calls.iconPrepares + 1] = keys
+    if iconRounds <= gates.iconPendingRounds then
+      return false, nil
+    end
+    return true, nil
+  end
+  function helper.derivedAssets.requestMonPortraitPage(pageId, _)
+    Assert.equal(type(pageId), "number", "portrait demand names its page")
+    helper.calls.portraitPages[#helper.calls.portraitPages + 1] = { pageId = pageId }
+    if gates.portraitsCompiled then
+      return true, nil
+    end
+    return false, nil
+  end
+  local shared = assert(helper.imagePool, "the doubles carry the shared image owner")
+  local poolInner = assert(helper.poolInner, "the doubles carry the pool census")
+  local chromeRequests = {}
+  local totalRequests = 0
+  local pool = {}
+  function pool:request(path, sampler, priority)
+    chromeRequests[path] = (chromeRequests[path] or 0) + 1
+    totalRequests = totalRequests + 1
+    return shared:request(path, sampler, priority)
+  end
+  function pool:poll(token)
+    return shared:poll(token)
+  end
+  function pool:acquire(token)
+    return shared:acquire(token)
+  end
+  function pool:release(lease)
+    return shared:release(lease)
+  end
+  function pool:cancel(token)
+    return shared:cancel(token)
+  end
+  function pool:prune()
+    return shared:prune()
+  end
+  function pool:stats()
+    return shared:stats()
+  end
+  local family = SummaryPresentationFixture.manifest()
+  local owner = Resources.new({
+    cacheFs = portraitCache(entries),
+    graphics = helper.graphics,
+    text = helper.text,
+    icons = helper.icons,
+    imagePool = pool,
+    derivedAssets = helper.derivedAssets,
+    manifest = family,
+  })
+  local chromeSet = {}
+  for _, path in ipairs(SummaryCache.referencedPaths(family)) do
+    chromeSet[path] = true
+  end
+  for _, path in ipairs(MoveIconCache.referencedPaths(MoveIconFixture.manifest())) do
+    chromeSet[path] = true
+  end
+  local chromeCount = countKeys(chromeSet)
+  Assert.isTrue(chromeCount >= 2, "the synthetic family carries at least two chrome images")
+  local lease = owner:acquire()
+  local demand = exactDemand("admission", { one, other })
+  -- The first round enrolls every chrome path even though icons and
+  -- portraits are still pending, and returns pending without stalling.
+  local first = assert(lease:prepare(demand))
+  Assert.equal(first.kind, "pending", "the first round waits on icons and portraits")
+  Assert.equal(countKeys(chromeRequests), chromeCount, "every chrome path enrolls on the first round")
+  for path in pairs(chromeSet) do
+    Assert.equal(chromeRequests[path], 1, "chrome enrolls once per canonical path: " .. path)
+  end
+  Assert.isTrue(poolInner.uploads <= 1, "the first round admits at most one chrome pair")
+  -- While portraits stay uncompiled only chrome may admit, one pair per
+  -- round; icons clearing changes nothing about the chrome bound.
+  local outcome = first
+  local rounds = 0
+  while outcome.kind == "pending" do
+    rounds = rounds + 1
+    Assert.isTrue(rounds <= chromeCount + 12, "admission settles within one pair per round plus slack")
+    if rounds == 4 then
+      gates.portraitsCompiled = true
+    end
+    local before = poolInner.uploads
+    outcome = assert(lease:prepare(demand))
+    local admitted = poolInner.uploads - before
+    if gates.portraitsCompiled then
+      Assert.isTrue(admitted <= 2, "one chrome pair plus one portrait pair per round at most")
+    else
+      Assert.isTrue(admitted <= 1, "only chrome admits while portraits still compile")
+    end
+  end
+  Assert.equal(outcome.kind, "ready", "the demand settles once every prerequisite arrives")
+  Assert.equal(outcome.key, "admission", "readiness carries the demand key")
+  local assets = assert(outcome.assets, "ready preparation carries its bundle")
+  Assert.notNil(assets.visualImage("detailBacking"), "the ready bundle draws its chrome")
+  Assert.notNil(assets.portraits:image(one), "the ready bundle draws its portraits")
+  -- Bundle reads and pinned reprepares perform no pool work.
+  local requestsBefore = totalRequests
+  local uploadsBefore = poolInner.uploads
+  assets.visualImage("detailBacking")
+  assets.imageForPath("assets/generated/summary/syn-detail-backing.png")
+  assets.portraits:image(one)
+  assets.portraits:quadFor(one, 1)
+  Assert.equal(totalRequests, requestsBefore, "bundle reads enroll no new pool interest")
+  Assert.equal(poolInner.uploads, uploadsBefore, "bundle reads stage no new physical pair")
+  local repinned = assert(lease:prepare(demand))
+  Assert.equal(repinned.kind, "ready", "the pinned demand stays ready")
+  Assert.equal(totalRequests, requestsBefore, "a pinned reprepare enrolls no new pool interest")
+  for path in pairs(chromeSet) do
+    Assert.equal(chromeRequests[path], 1, "chrome never re-enrolls per open: " .. path)
+  end
+  lease:release()
+  owner:release()
+end
+
+-- A failing chrome path surfaces its named cause without publishing a
+-- partial bundle, while a previously settled live lease keeps drawing.
+-- Clearing the failure lets the same demand settle afterwards.
+function T.chrome_failure_names_its_path_and_spares_the_live_lease()
+  local Resources = requireResources()
+  local selector = MonCache.portraitSelector("CHIKORITA", 0, "male", false)
+  local entries = { [selector] = portraitEntry(3) }
+  local liveSetup = exactComposition(entries)
+  local live = liveSetup.owner:acquire()
+  local liveReady = prepareToTerminal(live, exactDemand("live", { selector }))
+  Assert.equal(liveReady.kind, "ready", "the live lease settles before the failure")
+  local liveImage = liveReady.assets.portraits:image(selector)
+  -- Portraits stay uncompiled so only chrome progresses; the pool refuses
+  -- every new physical while the failure is armed.
+  local helper = SummaryAcceptanceFixture.preparationDoubles({})
+  local gates = { portraitsCompiled = false }
+  function helper.derivedAssets.requestMonPortraitPage(pageId, _)
+    Assert.equal(type(pageId), "number", "portrait demand names its page")
+    helper.calls.portraitPages[#helper.calls.portraitPages + 1] = { pageId = pageId }
+    if gates.portraitsCompiled then
+      return true, nil
+    end
+    return false, nil
+  end
+  local shared = assert(helper.imagePool, "the doubles carry the shared image owner")
+  local poolInner = assert(helper.poolInner, "the doubles carry the pool census")
+  local pool = {}
+  function pool:request(path, sampler, priority)
+    return shared:request(path, sampler, priority)
+  end
+  function pool:poll(token)
+    return shared:poll(token)
+  end
+  function pool:acquire(token)
+    return shared:acquire(token)
+  end
+  function pool:release(lease)
+    return shared:release(lease)
+  end
+  function pool:cancel(token)
+    return shared:cancel(token)
+  end
+  function pool:prune()
+    return shared:prune()
+  end
+  function pool:stats()
+    return shared:stats()
+  end
+  local family = SummaryPresentationFixture.manifest()
+  local owner = Resources.new({
+    cacheFs = portraitCache(entries),
+    graphics = helper.graphics,
+    text = helper.text,
+    icons = helper.icons,
+    imagePool = pool,
+    derivedAssets = helper.derivedAssets,
+    manifest = family,
+  })
+  poolInner:failAfterUploads(0)
+  local lease = owner:acquire()
+  local failed = assert(lease:prepare(exactDemand("failing", { selector })))
+  Assert.equal(failed.kind, "failed", "a failing chrome path surfaces instead of waiting")
+  Assert.isTrue(type(failed.error) == "string", "the chrome failure names its cause")
+  Assert.isTrue(
+    tostring(failed.error):find("%.png") ~= nil,
+    "the chrome failure names its path: " .. tostring(failed.error)
+  )
+  Assert.isNil(failed.assets, "a failed preparation publishes no partial bundle")
+  Assert.isTrue(liveReady.assets.portraits:image(selector) == liveImage, "the live lease still draws after the failure")
+  poolInner:clearFailure()
+  gates.portraitsCompiled = true
+  local recovered = prepareToTerminal(lease, exactDemand("failing", { selector }))
+  Assert.equal(recovered.kind, "ready", "the demand settles once the worker recovers")
+  lease:release()
+  owner:release()
+  live:release()
+  liveSetup.owner:release()
+end
+
+-- A failing portrait upload surfaces as a failed outcome instead of
+-- escaping the preparation call, while adopted chrome stays staged; the
+-- next round re-enrolls the portrait token and settles once the worker
+-- recovers.
+function T.portrait_upload_failure_surfaces_and_retries_without_raising()
+  local Resources = requireResources()
+  local selector = MonCache.portraitSelector("CHIKORITA", 0, "male", false)
+  local entries = { [selector] = portraitEntry(3) }
+  local helper = SummaryAcceptanceFixture.preparationDoubles({})
+  function helper.derivedAssets.requestMonPortraitPage(pageId, _)
+    Assert.equal(type(pageId), "number", "portrait demand names its page")
+    helper.calls.portraitPages[#helper.calls.portraitPages + 1] = { pageId = pageId }
+    return true, nil
+  end
+  local shared = assert(helper.imagePool, "the doubles carry the shared image owner")
+  local portraitPath = MonCache.portraitPagePath(3)
+  local failPortraitOnce = true
+  local byToken = {}
+  local pool = {}
+  function pool:request(path, sampler, priority)
+    local token = shared:request(path, sampler, priority)
+    byToken[token] = path
+    return token
+  end
+  function pool:poll(token)
+    return shared:poll(token)
+  end
+  function pool:acquire(token)
+    if failPortraitOnce and byToken[token] == portraitPath then
+      failPortraitOnce = false
+      error("injected portrait upload failure", 0)
+    end
+    return shared:acquire(token)
+  end
+  function pool:release(lease)
+    return shared:release(lease)
+  end
+  function pool:cancel(token)
+    byToken[token] = nil
+    return shared:cancel(token)
+  end
+  function pool:prune()
+    return shared:prune()
+  end
+  function pool:stats()
+    return shared:stats()
+  end
+  local owner = Resources.new({
+    cacheFs = portraitCache(entries),
+    graphics = helper.graphics,
+    text = helper.text,
+    icons = helper.icons,
+    imagePool = pool,
+    derivedAssets = helper.derivedAssets,
+    manifest = SummaryPresentationFixture.manifest(),
+  })
+  local lease = owner:acquire()
+  local demand = exactDemand("portrait-fails", { selector })
+  local failed = assert(lease:prepare(demand))
+  Assert.equal(failed.kind, "failed", "a failing portrait upload surfaces instead of raising")
+  Assert.isTrue(
+    tostring(failed.error):find("injected portrait upload failure", 1, true) ~= nil,
+    "the portrait failure names its cause: " .. tostring(failed.error)
+  )
+  Assert.isNil(failed.assets, "a failed preparation publishes no partial bundle")
+  local recovered = prepareToTerminal(lease, demand)
+  Assert.equal(recovered.kind, "ready", "the demand settles once the portrait upload recovers")
+  Assert.notNil(recovered.assets.portraits:image(selector), "the ready bundle draws its portrait")
+  lease:release()
+  owner:release()
+end
+
+-- Disposal cancels every still-unconsumed token so late worker payloads
+-- can never become resident by themselves, and returns every adopted
+-- borrow exactly once.
+function T.owner_disposal_cancels_unconsumed_interest_and_returns_every_borrow()
+  local Resources = requireResources()
+  local kept = MonCache.portraitSelector("CHIKORITA", 0, "male", false)
+  local dropped = MonCache.portraitSelector("TOTODILE", 0, "male", false)
+  local entries = { [kept] = portraitEntry(3), [dropped] = portraitEntry(9) }
+  local helper = SummaryAcceptanceFixture.preparationDoubles({})
+  local inner = assert(helper.imagePool, "the doubles carry the shared image owner")
+  local poolInner = assert(helper.poolInner, "the doubles carry the pool census")
+  local droppedPath = MonCache.portraitPagePath(9)
+  local gated = { [droppedPath] = true }
+  local tokenPaths = {}
+  local tokensByPath = {}
+  local cancels = {}
+  local pool = {}
+  function pool:request(path, sampler, priority)
+    local token = inner:request(path, sampler, priority)
+    tokenPaths[token] = path
+    tokensByPath[path] = tokensByPath[path] or {}
+    tokensByPath[path][#tokensByPath[path] + 1] = token
+    return token
+  end
+  function pool:poll(token)
+    if gated[tokenPaths[token]] then
+      return "pending"
+    end
+    return inner:poll(token)
+  end
+  function pool:acquire(token)
+    return inner:acquire(token)
+  end
+  function pool:release(lease)
+    return inner:release(lease)
+  end
+  function pool:cancel(token)
+    cancels[#cancels + 1] = token
+    return inner:cancel(token)
+  end
+  function pool:prune()
+    return inner:prune()
+  end
+  function pool:stats()
+    return inner:stats()
+  end
+  local family = SummaryPresentationFixture.manifest()
+  local owner = Resources.new({
+    cacheFs = portraitCache(entries),
+    graphics = helper.graphics,
+    text = helper.text,
+    icons = helper.icons,
+    imagePool = pool,
+    derivedAssets = helper.derivedAssets,
+    manifest = family,
+  })
+  local first = owner:acquire()
+  local settled = prepareToTerminal(first, exactDemand("settled", { kept }))
+  Assert.equal(settled.kind, "ready", "the first lease settles")
+  local second = owner:acquire()
+  local waiting = assert(second:prepare(exactDemand("replacement", { kept, dropped })))
+  Assert.equal(waiting.kind, "pending", "the replacement waits on its gated page")
+  local abandoned = tokensByPath[droppedPath] or {}
+  Assert.isTrue(#abandoned >= 1, "the gated page enrolls its interest")
+  owner:release()
+  for _, token in ipairs(abandoned) do
+    local seen = false
+    for _, cancelled in ipairs(cancels) do
+      if cancelled == token then
+        seen = true
+      end
+    end
+    Assert.isTrue(seen, "disposal cancels every unconsumed token")
+    Assert.isFalse(pcall(inner.poll, inner, token), "a cancelled token never polls again")
+    Assert.isFalse(pcall(inner.acquire, inner, token), "a cancelled token never becomes resident")
+  end
+  Assert.equal(poolInner:stats().outstandingLeases, 0, "disposal returns every adopted borrow")
+  owner:release()
+end
+
+-- A picture shader that cannot compile stays a visible per-open failure
+-- instead of publishing a bundle without its blend state.
+function T.shader_compilation_failure_stays_a_visible_failure()
+  local Resources = requireResources()
+  local selector = MonCache.portraitSelector("CHIKORITA", 0, "male", false)
+  local entries = { [selector] = portraitEntry(3) }
+  local helper = SummaryAcceptanceFixture.preparationDoubles({})
+  local FakeGraphics = require("tests.support.FakeGraphics")
+  helper.graphics = FakeGraphics.new({ failOnShaderCall = 1 })
+  local family = SummaryPresentationFixture.manifest()
+  local owner = Resources.new({
+    cacheFs = portraitCache(entries),
+    graphics = helper.graphics,
+    text = helper.text,
+    icons = helper.icons,
+    imagePool = assert(helper.imagePool, "the doubles carry the shared image owner"),
+    derivedAssets = helper.derivedAssets,
+    manifest = family,
+  })
+  local lease = owner:acquire()
+  local failed = prepareToTerminal(lease, exactDemand("shader", { selector }))
+  Assert.equal(failed.kind, "failed", "a broken picture shader fails instead of publishing")
+  Assert.isTrue(
+    tostring(failed.error):find("newShader", 1, true) ~= nil,
+    "the failure names the shader cause: " .. tostring(failed.error)
+  )
+  local again = prepareToTerminal(lease, exactDemand("shader", { selector }))
+  Assert.equal(again.kind, "failed", "the shader failure persists across prepares")
+  lease:release()
+  owner:release()
 end
 
 function T.runtime_summary_binding_is_identity_qualified()

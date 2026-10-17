@@ -66,6 +66,7 @@ end
 ---@field _portraitEntries table<string, table<string, unknown>>
 ---@field _chromePaths string[] unique canonical chrome paths pinned on first demand
 ---@field _chrome table<string, table<string, unknown>> field-lifetime chrome leases by canonical path
+---@field _chromeTokens table<string, integer> unconsumed shared-owner tokens by canonical path
 ---@field _chromeReady boolean true once chrome leases are installed
 ---@field _pages table<integer, table<string, unknown>> portrait demand records by page id
 ---@field _leasedPortraits table<string, table<string, unknown>> adopted portrait leases by canonical path
@@ -143,6 +144,7 @@ function SummaryPresentationResources.new(opts)
     _moveIcons = moveIcons,
     _chromePaths = chromePaths,
     _chrome = {},
+    _chromeTokens = {},
     _chromeReady = false,
     _pages = {},
     _leasedPortraits = {},
@@ -183,67 +185,90 @@ function SummaryPresentationResources:_loadShader()
   self._shader = shader
 end
 
--- Borrows one generated visual through the shared owner, waiting out its
--- classification without blocking the field longer than the bounded stall
--- budget. Failures name their path instead of preparing a blank visual.
+-- Drops every still-unconsumed chrome token without touching adopted
+-- leases: late worker payloads are discarded instead of retained
+-- unclaimed, while already pinned chrome stays drawable.
 ---@param self SummaryPresentationResources
----@param path string
----@return table<string, unknown> lease resolving the immutable visual
-local function acquirePinned(self, path)
+local function cancelChromeTokens(self)
   local pool = assert(self._pool, "summary preparation borrows its shared image owner")
-  local token = pool:request(path, POOLED_SAMPLER, "demand")
-  local stalled = 0
-  while true do
-    local status, failure = pool:poll(token)
-    if status == "ready" then
-      return pool:acquire(token)
-    end
-    if status == "failed" then
-      error("compiled Summary image missing at " .. path .. ": " .. tostring(failure), 0)
-    end
-    assert(status == "pending", "summary preparation reports pending or ready")
-    stalled = stalled + 1
-    if stalled > 10000 then
-      error("compiled Summary image stalled at " .. path, 0)
-    end
-    local timer = love and love.timer
-    if timer ~= nil and timer.sleep ~= nil then
-      timer.sleep(0.001)
-    end
+  for path, token in pairs(self._chromeTokens) do
+    pool:cancel(token)
+    self._chromeTokens[path] = nil
   end
 end
 
--- Installs the field-lifetime chrome leases once on first demand: every
--- family-owned visual borrows the shared owner up front, so opening a
--- Summary never waits on chrome afterwards. A failed visual returns the
--- leases installed so far and fails visibly instead of pinning chrome
--- the field lifetime cannot draw.
+-- Returns the incomplete chrome group after a failed round: every lease
+-- adopted while the chrome set was still incomplete goes back to the
+-- shared owner, while complete chrome published elsewhere stays valid.
+-- Only runs while the set is incomplete; pinned complete chrome never
+-- passes through here.
 ---@param self SummaryPresentationResources
-local function ensureChrome(self)
+local function releasePartialChrome(self)
+  assert(not self._chromeReady, "complete chrome stays pinned through a failed round")
+  local pool = assert(self._pool, "summary preparation borrows its shared image owner")
+  for path, lease in pairs(self._chrome) do
+    pool:release(lease)
+    self._chrome[path] = nil
+  end
+end
+
+-- Progresses the field-lifetime chrome leases without sleeping or
+-- spinning: the first round enrolls one shared-owner token per still-
+-- unborrowed chrome path while icons, portraits, and cry banks make
+-- their own progress, and each round borrows at most one newly ready
+-- pair through its single-use token. A failed path cancels every
+-- remaining token, returns the incomplete group, and names its path
+-- instead of pinning chrome the field lifetime cannot draw. Once every
+-- listed path is borrowed the set stays pinned for the field lifetime.
+---@param self SummaryPresentationResources
+---@return boolean ready true once every chrome path is borrowed
+---@return string? failure named cause when a chrome path cannot be borrowed
+local function advanceChrome(self)
   if self._chromeReady then
-    return
+    return true, nil
   end
   local pool = assert(self._pool, "summary preparation borrows its shared image owner")
-  local installed = {}
-  local ok, err = pcall(function()
-    for _, path in ipairs(self._chromePaths) do
-      if self._chrome[path] == nil then
-        local lease = acquirePinned(self, path)
-        self._chrome[path] = lease
-        installed[#installed + 1] = lease
+  for _, path in ipairs(self._chromePaths) do
+    if self._chrome[path] == nil and self._chromeTokens[path] == nil then
+      self._chromeTokens[path] = pool:request(path, POOLED_SAMPLER, "demand")
+    end
+  end
+  for _, path in ipairs(self._chromePaths) do
+    if self._chrome[path] == nil then
+      local token = self._chromeTokens[path]
+      if token ~= nil then
+        local status, cause = pool:poll(token)
+        if status == "failed" then
+          local failure = "compiled Summary image missing at " .. path .. ": " .. tostring(cause)
+          cancelChromeTokens(self)
+          releasePartialChrome(self)
+          return false, failure
+        elseif status == "ready" then
+          local ok, lease = pcall(pool.acquire, pool, token)
+          if not ok then
+            local failure = "compiled Summary image missing at " .. path .. ": " .. tostring(lease)
+            self._chromeTokens[path] = nil
+            pool:cancel(token)
+            cancelChromeTokens(self)
+            releasePartialChrome(self)
+            return false, failure
+          end
+          self._chromeTokens[path] = nil
+          self._chrome[path] = lease
+          break
+        else
+          assert(status == "pending", "summary preparation reports pending or ready")
+        end
       end
     end
-  end)
-  if not ok then
-    for _, lease in ipairs(installed) do
-      pool:release(lease)
+  end
+  for _, path in ipairs(self._chromePaths) do
+    if self._chrome[path] == nil then
+      return false, nil
     end
-    for path, _ in pairs(self._chrome) do
-      self._chrome[path] = nil
-    end
-    error(err, 0)
   end
   self._chromeReady = true
+  return true, nil
 end
 
 ---@param self SummaryPresentationResources
@@ -526,6 +551,11 @@ local function prepareLease(self, lease, demand)
     watched[#watched + 1] = MonCache.portraitPagePath(pageId)
   end
   lease._watched = watched
+  -- Fixed chrome enrolls before any prerequisite-specific early return:
+  -- every still-unborrowed family visual takes one shared-owner token
+  -- on the first round while the icon, portrait, and cry work below
+  -- makes its own progress, borrowing at most one new pair per call.
+  local chromeReady, chromeFailure = advanceChrome(self)
   -- Every independent prerequisite enrolls before the first pending
   -- answer: roster icons through the borrowed provider, portrait page
   -- compilation and cry bank readiness through the provisioner seam, and
@@ -620,6 +650,12 @@ local function prepareLease(self, lease, demand)
   if cryFailure ~= nil then
     return { kind = "failed", error = cryFailure }
   end
+  -- A failed chrome path surfaces like any other missing visual while
+  -- the adopted portrait leases stay pinned; pending chrome simply
+  -- joins the readiness decision below.
+  if chromeFailure ~= nil then
+    return { kind = "failed", error = chromeFailure }
+  end
   local pool = assert(self._pool, "summary preparation borrows its shared image owner")
   for _, pageId in ipairs(pages) do
     if portraitReady[pageId] == true then
@@ -645,7 +681,12 @@ local function prepareLease(self, lease, demand)
         record.token = nil
         return { kind = "failed", error = tostring(cause) }
       elseif status == "ready" then
-        local adoptedLease = pool:acquire(record.token)
+        local okAdopt, adoptedLease = pcall(pool.acquire, pool, record.token)
+        if not okAdopt then
+          pool:cancel(record.token)
+          record.token = nil
+          return { kind = "failed", error = tostring(adoptedLease) }
+        end
         record.token = nil
         record.lease = adoptedLease
         self._leasedPortraits[MonCache.portraitPagePath(pageId)] = adoptedLease
@@ -660,15 +701,11 @@ local function prepareLease(self, lease, demand)
   if not iconsReady then
     pending = true
   end
-  -- Summary chrome pins on the first demand that reaches polling: every
-  -- family-owned visual borrows the shared owner up front, so later opens
-  -- never wait on chrome. Chrome failures surface like any other missing
-  -- visual while the adopted portrait leases stay pinned.
-  if not pending then
-    local chromeOk, chromeErr = pcall(ensureChrome, self)
-    if not chromeOk then
-      return { kind = "failed", error = tostring(chromeErr) }
-    end
+  -- A ready bundle needs its chrome as well: later opens reuse the
+  -- pinned set immediately while a first open waits without blocking
+  -- the field. Chrome failures already returned above.
+  if not chromeReady then
+    pending = true
   end
   if pending then
     return { kind = "pending" }
@@ -734,6 +771,7 @@ function SummaryPresentationResources:release()
   local pool = assert(self._pool, "summary preparation borrows its shared image owner")
   for pageId, record in pairs(self._pages) do
     if record.token ~= nil then
+      pool:cancel(record.token)
       record.token = nil
     end
     if record.lease ~= nil then
@@ -741,6 +779,10 @@ function SummaryPresentationResources:release()
       record.lease = nil
     end
     self._pages[pageId] = nil
+  end
+  for path, token in pairs(self._chromeTokens) do
+    pool:cancel(token)
+    self._chromeTokens[path] = nil
   end
   self._leasedPortraits = {}
   for path, lease in pairs(self._chrome) do

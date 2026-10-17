@@ -267,7 +267,9 @@ end
 
 ---@param state table<string, unknown> open picker wrapper
 local function settleOwnerPicker(state)
-  for _ = 1, 40 do
+  -- Chrome admits at most one pair per prepare call over the ~196-path
+  -- real-manifest chrome set; 256 rounds cover the full set with slack.
+  for _ = 1, 256 do
     state:updateFixed({})
     if state:status().wrapperPhase == "active" then
       return
