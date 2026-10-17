@@ -39,18 +39,31 @@ local NeighborRing = {}
 -- same immutable identity normal transform.
 local IDENTITY_MODEL_NORMAL = Matrix3.identity()
 
+-- Private staged-work sentinel: the build coroutine yields WAIT while a
+-- shared image is still pending. WAIT consumes no work budget; only a
+-- checkpoint yield of 1 charges one unit. This mirrors MapSceneLoader's
+-- BuildTask semantics without depending on it.
+local WAIT = {}
+
 -- Material assembly: acquire each normalized material record's sampling
 -- handle under its resolved sampler wrap. The wrap pair is part of the
 -- handle identity, so cells sharing a texture but sampling it differently get
 -- independent handles, and the handle's image/palette/indexed fields ride
 -- the material table so the renderer's shared sampler binds indexed sources
 -- through their exact palette. The terrain animator initializes every
--- material's texMatrix at construction.
-local function materialsById(list, pool)
+-- material's texMatrix at construction. `wait` yields the staged checkpoint
+-- while a shared image is still pending; `checkpoint` charges one bounded
+-- main-thread work unit after each acquisition.
+---@param list table[]
+---@param pool GpuAssetPool
+---@param wait fun()
+---@param checkpoint fun()
+---@return table<number, table<string, unknown>> runtime materials by material id
+local function materialsById(list, pool, wait, checkpoint)
   local byId = {}
   for id, record in pairs(SceneDescriptor.materials(list)) do
     local wrap = SceneDescriptor.wrap(record)
-    local handle = pool:sharedImage(record.texture, wrap.x, wrap.y)
+    local handle = pool:sharedImage(record.texture, wrap.x, wrap.y, wait)
     byId[id] = {
       id = record.id,
       name = record.name,
@@ -59,12 +72,13 @@ local function materialsById(list, pool)
       indexed = handle and handle.indexed or nil,
       wrap = wrap,
     }
+    checkpoint()
   end
   return byId
 end
 
--- Build the ring against an already-created pool, inside the build
--- wrapper load() opens. Raises on any failure; the wrapper releases the pool
+-- Build the ring against an already-created pool, inside the staged task
+-- begin() opens. Raises on any failure; the owning task releases the pool
 -- in that case. Draws carry no submission numbers: the final scene assembly
 -- queue traversal orders every part and draw in source order, positionally. The
 -- draw-state field set is the shared PolygonState schema the compiler emits on every batch
@@ -74,7 +88,13 @@ end
 -- When the pool borrows the session image owner, every texture resolves to
 -- the same pooled lease the scene loader borrows, and the ring holds no
 -- image reference after release.
-local function buildRing(pool, descriptors, clip)
+---@param pool GpuAssetPool
+---@param descriptors table[]
+---@param clip table<string, unknown>|false
+---@param wait fun() staged checkpoint yielded while a shared image is pending
+---@param checkpoint fun() charges one bounded main-thread work unit
+---@return table<string, unknown> ring with draws, stats, updateAnimated, release
+local function buildRing(pool, descriptors, clip, wait, checkpoint)
   -- One draw per (cell, batch), with the cell's 32-tile world offset baked into
   -- the transform only -- the mesh center stays in model space for queue
   -- sorting -- and one { record, runtime } binding per source material: the
@@ -85,7 +105,7 @@ local function buildRing(pool, descriptors, clip)
   for _, cell in ipairs(descriptors) do
     local ox, oy, oz = cell.offsetTilesX, cell.offsetTilesY, cell.offsetTilesZ
     local transform = Matrix4.translate(ox, oy, oz)
-    local materials = materialsById(cell.materials, pool)
+    local materials = materialsById(cell.materials, pool, wait, checkpoint)
     for _, record in ipairs(cell.materials) do
       bindings[#bindings + 1] = {
         record = record,
@@ -115,6 +135,7 @@ local function buildRing(pool, descriptors, clip)
       draw.modelNormal = IDENTITY_MODEL_NORMAL
       draw.center = c
       draws[#draws + 1] = draw
+      checkpoint()
     end
   end
 
@@ -125,8 +146,8 @@ local function buildRing(pool, descriptors, clip)
   -- commits, and construction initializes every cell material's static
   -- texMatrix. ring:updateAnimated() stays a safe no-op on empty rings.
   local terrainAnimator = TerrainMaterialAnimator.new(bindings, clip or false, function(path, wrapX, wrapY)
-    return pool:sharedImage(path, wrapX, wrapY)
-  end)
+    return pool:sharedImage(path, wrapX, wrapY, wait)
+  end, checkpoint)
 
   local ring = {
     draws = draws,
@@ -145,35 +166,185 @@ local function buildRing(pool, descriptors, clip)
   return ring
 end
 
--- Load the compiled neighbour ring into GPU draw items. `cacheFs` is a
--- CacheFs.forVersion; `descriptors` is scene.neighbors; `opts` passes through
--- to the asset pool (injectable graphics for headless tests), and
--- `opts.textureSrt` carries the central scene's compiled texture-SRT clip
--- (false/nil = no area animation). Returns { draws, stats, updateAnimated,
--- release }. The whole build runs inside pool:build(), so any failure --
--- including a malformed cell descriptor -- releases every GPU object the
--- construction acquired before the error propagates.
+-- One resumable neighbor-ring build. The task owns its pool until the
+-- completed ring is transferred or the task is cancelled/failed. `advance`
+-- executes bounded main-thread work and yields promptly (consuming no work
+-- unit) while a shared image is still pending; `finish` is the explicitly
+-- blocking path for synchronous callers. A failure releases everything the
+-- task acquired exactly once and stays loud on every later call.
+---@class NeighborRing.BuildTask
+---@field _pool GpuAssetPool
+---@field _thread thread
+---@field _state string "active", "ready", "transferred", "released", or "failed"
+---@field _poolReleased boolean
+---@field _result table<string, unknown>?
+---@field _failed unknown?
+local NeighborBuildTask = {}
+NeighborBuildTask.__index = NeighborBuildTask
+
+---@param task NeighborRing.BuildTask
+---@param err unknown
+local function failBuildTask(task, err)
+  if task._state == "active" then
+    task._state = "failed"
+    if not task._poolReleased then
+      task._poolReleased = true
+      task._pool:release()
+    end
+  end
+  task._failed = err
+  error(err, 0)
+end
+
+---@param maxWorkUnits integer main-thread work budget for this advance
+---@return integer consumed work units within the caller budget
+function NeighborBuildTask:advance(maxWorkUnits)
+  if self._failed ~= nil then
+    error(self._failed, 0)
+  end
+  assert(self._state == "active" or self._state == "ready", "neighbor build task is no longer active")
+  assert(
+    type(maxWorkUnits) == "number" and maxWorkUnits >= 0 and maxWorkUnits % 1 == 0,
+    "neighbor advance requires non-negative integer work units"
+  )
+  if self._state == "ready" or maxWorkUnits == 0 then
+    return 0
+  end
+  local consumed = 0
+  while consumed < maxWorkUnits and self._state == "active" do
+    local ok, yielded = coroutine.resume(self._thread)
+    if not ok then
+      failBuildTask(self, yielded)
+    end
+    if coroutine.status(self._thread) == "dead" then
+      self._result = assert(yielded, "neighbor build returned no runtime")
+      self._state = "ready"
+    else
+      -- WAIT means a shared image is still pending: return promptly
+      -- without consuming a work unit, exactly like MapSceneLoader.
+      if yielded == WAIT then
+        break
+      end
+      assert(yielded == 1, "neighbor build yielded an invalid work unit")
+      consumed = consumed + 1
+    end
+  end
+  return consumed
+end
+
+---@return boolean
+function NeighborBuildTask:isReady()
+  return self._state == "ready"
+end
+
+---@return table<string, unknown> the completed ring; the runtime map owns its release after transfer
+function NeighborBuildTask:takeResult()
+  if self._failed ~= nil then
+    error(self._failed, 0)
+  end
+  assert(self._state == "ready", "neighbor build result is not ready")
+  local result = assert(self._result)
+  self._result = nil
+  self._state = "transferred"
+  return result
+end
+
+-- Finish the build synchronously: keep advancing (re-polling pending
+-- shared images, the same wait a direct image acquisition performs) until
+-- the ring completes. Only explicit synchronous owners call this; staged
+-- map assembly advances cooperatively instead.
+---@return table<string, unknown> the completed ring
+function NeighborBuildTask:finish()
+  if self._failed ~= nil then
+    error(self._failed, 0)
+  end
+  while self._state == "active" do
+    self:advance(1)
+  end
+  return self:takeResult()
+end
+
+-- Release the task: a pending build returns its borrows and drops pending
+-- interest; after transfer the ring owns its release, so this is a no-op.
+-- Idempotent, and safe after failure.
+function NeighborBuildTask:release()
+  if self._state == "transferred" or self._state == "released" or self._state == "failed" then
+    return
+  end
+  self._state = "released"
+  self._result = nil
+  if not self._poolReleased then
+    self._poolReleased = true
+    self._pool:release()
+  end
+end
+
+-- Begin one resumable neighbor-ring build. The task owns a fresh pool until
+-- the completed ring is transferred or the task is cancelled/failed.
+-- `cacheFs` is a CacheFs.forVersion; `descriptors` is scene.neighbors;
+-- `opts` passes through to the asset pool (injectable graphics for headless
+-- tests), and `opts.textureSrt` carries the central scene's compiled
+-- texture-SRT clip (false/nil = no area animation).
+---@param cacheFs table<string, unknown>
+---@param descriptors table[]
+---@param opts { graphics?: GpuAssetPool.Graphics, textureSrt?: table<string, unknown>|false, imageAssets?: table<string, unknown> }?
+---@return NeighborRing.BuildTask
+function NeighborRing.begin(cacheFs, descriptors, opts)
+  opts = opts or {}
+  local pool = GpuAssetPool.new(cacheFs, opts)
+  local function waitShared()
+    coroutine["yield"](WAIT)
+  end
+  local function checkpoint()
+    coroutine["yield"](1)
+  end
+  ---@type NeighborRing.BuildTask
+  local task = setmetatable({
+    _pool = pool,
+    _state = "active",
+    _poolReleased = false,
+    _result = nil,
+    _failed = nil,
+  }, NeighborBuildTask)
+  task._thread = coroutine.create(function()
+    -- Enroll every distinct neighbor base texture and texture-swap frame
+    -- under its immutable wrap state before the first readiness check so
+    -- neighbor classification shares the scene's prefetch tickets instead
+    -- of running a second enrollment pass.
+    if opts.imageAssets ~= nil then
+      for _, cell in ipairs(descriptors) do
+        for _, record in pairs(SceneDescriptor.materials(cell.materials)) do
+          local wrap = SceneDescriptor.wrap(record)
+          pool:prefetchShared(record.texture, wrap.x, wrap.y)
+          local swap = record.textureSwap
+          if type(swap) == "table" and type(swap.steps) == "table" then
+            for _, step in ipairs(swap.steps) do
+              pool:prefetchShared(step.texture, wrap.x, wrap.y)
+            end
+          end
+        end
+      end
+    end
+    return buildRing(pool, descriptors, opts.textureSrt, waitShared, checkpoint)
+  end)
+  return task
+end
+
+-- Load the compiled neighbour ring into GPU draw items. This is the
+-- explicitly blocking wrapper over the staged task for standalone callers:
+-- `cacheFs` is a CacheFs.forVersion; `descriptors` is scene.neighbors;
+-- `opts` passes through to the asset pool (injectable graphics for headless
+-- tests), and `opts.textureSrt` carries the central scene's compiled
+-- texture-SRT clip (false/nil = no area animation). Returns
+-- { draws, stats, updateAnimated, release }. Any failure -- including a
+-- malformed cell descriptor -- releases every GPU object the construction
+-- acquired before the error propagates.
 ---@param cacheFs table<string, unknown>
 ---@param descriptors table[]
 ---@param opts { graphics?: GpuAssetPool.Graphics, textureSrt?: table<string, unknown>|false, imageAssets?: table<string, unknown> }?
 ---@return table<string, unknown>
 function NeighborRing.load(cacheFs, descriptors, opts)
-  opts = opts or {}
-  local pool = GpuAssetPool.new(cacheFs, opts)
-  -- Enroll every distinct neighbor texture and immutable wrap state before
-  -- the build so neighbor classification shares the scene's prefetch
-  -- tickets instead of running a second enrollment pass.
-  if opts.imageAssets ~= nil then
-    for _, cell in ipairs(descriptors) do
-      for _, record in pairs(SceneDescriptor.materials(cell.materials)) do
-        local wrap = SceneDescriptor.wrap(record)
-        pool:prefetchShared(record.texture, wrap.x, wrap.y)
-      end
-    end
-  end
-  return pool:build(function()
-    return buildRing(pool, descriptors, opts.textureSrt)
-  end)
+  return NeighborRing.begin(cacheFs, descriptors, opts):finish()
 end
 
 return NeighborRing

@@ -881,6 +881,31 @@ local function startScene(loader, ctx)
   return nil, loader.sceneLoader.load(loader.cacheFs, scene, options)
 end
 
+-- Starts staged neighbor-ring assembly for a presented nonphysical map
+-- with neighbors. A staged-capable neighbor loader yields a resumable
+-- task advanced alongside the scene task; a synchronous-only loader leaves
+-- assembly to the legacy blocking path inside assembleComplete, exactly as
+-- before. Nothing is published in any case.
+---@param loader FieldMapLoader
+---@param ctx table<string, unknown>
+---@return table<string, unknown>? neighborTask
+local function startNeighbor(loader, ctx)
+  if ctx.physicalCells then
+    return nil
+  end
+  local neighborLoader = loader.neighborLoader
+  if neighborLoader == nil or #ctx.scene.neighbors == 0 or neighborLoader.begin == nil then
+    return nil
+  end
+  local neighborOptions = {
+    textureSrt = ctx.scene.terrainAnimations.textureSrt,
+  }
+  if loader.imageAssets ~= nil then
+    neighborOptions.imageAssets = loader.imageAssets
+  end
+  return neighborLoader.begin(loader.cacheFs, ctx.scene.neighbors, neighborOptions)
+end
+
 -- Completes one load transaction: neighbor-ring load, terrain
 -- construction, neighbor decoding, region assembly, aggregate
 -- construction, and single cache publication. Any failure releases the
@@ -899,7 +924,9 @@ local function assembleComplete(loader, ctx, sceneRuntime, checkpoint, outerBox)
   local physicalCells = ctx.physicalCells
   local box = outerBox or {}
   local function body()
-    if not physicalCells and loader.neighborLoader and #scene.neighbors > 0 then
+    -- A staged neighbor runtime carried in the box replaces the legacy
+    -- blocking load: the staged path advanced it cooperatively instead.
+    if not physicalCells and loader.neighborLoader and #scene.neighbors > 0 and box.neighborRuntime == nil then
       local neighborOptions = {
         textureSrt = scene.terrainAnimations.textureSrt,
       }
@@ -1055,6 +1082,8 @@ end
 ---@field _ctx table<string, unknown>?
 ---@field _sceneTask FieldMapLoader.SceneBuildTask?
 ---@field _sceneRuntime FieldMapLoader.SceneRuntime?
+---@field _neighborTask table<string, unknown>?
+---@field _neighborRuntime table<string, unknown>?
 ---@field _ready boolean
 ---@field _result table<string, unknown>?
 ---@field _failed unknown?
@@ -1089,18 +1118,38 @@ local function failStaged(task, err)
       sceneRuntime:release()
     end)
   end
+  if task._neighborTask ~= nil then
+    local neighborTask = assert(task._neighborTask)
+    task._neighborTask = nil
+    pcall(function()
+      neighborTask:release()
+    end)
+  end
+  if task._neighborRuntime ~= nil then
+    local neighborRuntime = assert(task._neighborRuntime)
+    task._neighborRuntime = nil
+    pcall(function()
+      neighborRuntime:release()
+    end)
+  end
   task._failed = err
   error(err, 0)
 end
 
--- Completes one staged transaction: the scene runtime moves into the
--- single assembly transaction so a failure releases it exactly once,
--- and the published resident map marks the task ready.
+-- Completes one staged transaction: the scene and staged neighbor runtimes
+-- move into the single assembly transaction so a failure releases each
+-- exactly once, and the published resident map marks the task ready.
 ---@param task FieldMapLoader.StagedTask
 local function completeAssembly(task)
   local sceneRuntime = task._sceneRuntime
   task._sceneRuntime = nil
-  local okAssemble, mapOrErr = pcall(assembleComplete, task._loader, task._ctx, sceneRuntime)
+  local neighborRuntime = task._neighborRuntime
+  task._neighborRuntime = nil
+  local box = {}
+  if neighborRuntime ~= nil then
+    box.neighborRuntime = neighborRuntime
+  end
+  local okAssemble, mapOrErr = pcall(assembleComplete, task._loader, task._ctx, sceneRuntime, nil, box)
   if not okAssemble then
     task._failed = mapOrErr
     error(mapOrErr, 0)
@@ -1210,18 +1259,45 @@ function StagedLoadTask:advance(workUnits)
       "scene build consumed an invalid work-unit count"
     )
     consumed = sceneConsumed
-    if not self._sceneTask:isReady() then
-      return consumed
+    if self._sceneTask:isReady() then
+      local okResult, runtimeOrErr = pcall(self._sceneTask.takeResult, self._sceneTask)
+      self._sceneTask = nil
+      if not okResult then
+        failStaged(self, runtimeOrErr)
+      end
+      self._sceneRuntime = runtimeOrErr
     end
-    local okResult, runtimeOrErr = pcall(self._sceneTask.takeResult, self._sceneTask)
-    self._sceneTask = nil
-    if not okResult then
-      failStaged(self, runtimeOrErr)
+  end
+  -- The staged neighbor ring advances within the same caller budget: a
+  -- pending worker result yields promptly without consuming work, so a
+  -- cold neighbor never blocks scene progress or map publication timing.
+  if self._neighborTask ~= nil then
+    local okAdvance, neighborConsumed = pcall(self._neighborTask.advance, self._neighborTask, workUnits - consumed)
+    if not okAdvance then
+      failStaged(self, neighborConsumed)
     end
-    self._sceneRuntime = runtimeOrErr
+    assert(
+      type(neighborConsumed) == "number"
+        and neighborConsumed >= 0
+        and neighborConsumed % 1 == 0
+        and neighborConsumed <= workUnits - consumed,
+      "neighbor build consumed an invalid work-unit count"
+    )
+    consumed = consumed + neighborConsumed
+    if self._neighborTask:isReady() then
+      local okResult, runtimeOrErr = pcall(self._neighborTask.takeResult, self._neighborTask)
+      self._neighborTask = nil
+      if not okResult then
+        failStaged(self, runtimeOrErr)
+      end
+      self._neighborRuntime = runtimeOrErr
+    end
+  end
+  if self._sceneTask ~= nil or self._neighborTask ~= nil then
+    return consumed
   end
   -- Assembly is loader-owned work worth one unit: when the delegated
-  -- scene build already consumed the whole budget, publication waits for
+  -- builds already consumed the whole budget, publication waits for
   -- a later advance or a blocking finish instead of overspending.
   if consumed >= workUnits then
     return consumed
@@ -1246,8 +1322,8 @@ function StagedLoadTask:takeResult()
 end
 
 -- Finishes the staged transaction synchronously: a pending driver runs to
--- completion, a pending scene build is finished through its own
--- synchronous path (the same block-wait a direct scene load performs),
+-- completion, pending scene and neighbor builds are finished through their
+-- own synchronous paths (the same block-wait a direct load performs),
 -- then assembly publishes exactly once.
 ---@return table<string, unknown> the published resident runtime map
 function StagedLoadTask:finish()
@@ -1266,6 +1342,15 @@ function StagedLoadTask:finish()
           failStaged(self, runtimeOrErr)
         end
         self._sceneRuntime = runtimeOrErr
+      end
+      if self._neighborTask ~= nil then
+        local neighborTask = assert(self._neighborTask)
+        local okFinish, runtimeOrErr = pcall(neighborTask.finish, neighborTask)
+        self._neighborTask = nil
+        if not okFinish then
+          failStaged(self, runtimeOrErr)
+        end
+        self._neighborRuntime = runtimeOrErr
       end
       completeAssembly(self)
     end
@@ -1314,6 +1399,20 @@ function StagedLoadTask:release()
       self._sceneRuntime = nil
       pcall(function()
         sceneRuntime:release()
+      end)
+    end
+    if self._neighborTask ~= nil then
+      local neighborTask = assert(self._neighborTask)
+      self._neighborTask = nil
+      pcall(function()
+        neighborTask:release()
+      end)
+    end
+    if self._neighborRuntime ~= nil then
+      local neighborRuntime = assert(self._neighborRuntime)
+      self._neighborRuntime = nil
+      pcall(function()
+        neighborRuntime:release()
       end)
     end
   end
@@ -1399,11 +1498,14 @@ function FieldMapLoader:beginLoad(idOrSymbol)
   end
   local ctx = prepareLoad(self, record)
   local sceneTask, sceneRuntime = startScene(self, ctx)
+  local neighborTask = startNeighbor(self, ctx)
   return setmetatable({
     _loader = self,
     _ctx = ctx,
     _sceneTask = sceneTask,
     _sceneRuntime = sceneRuntime,
+    _neighborTask = neighborTask,
+    _neighborRuntime = nil,
     _driver = nil,
     _ready = false,
     _result = nil,

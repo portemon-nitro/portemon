@@ -2731,4 +2731,173 @@ function T.cell_index_and_field_record_failures_keep_typed_errors_without_map_fa
   fieldLoader:release()
 end
 
+-- One neighbor cell with valid collision and terrain for a map id, so the
+-- aggregate region decode succeeds and only the staged neighbor ring governs
+-- readiness.
+local function withNeighborCell(files, mapId)
+  local dir = string.format("data/generated/maps/%04d", mapId)
+  local collisionPath = dir .. "/neighbors/3/collision.g4collision"
+  local terrainPath = dir .. "/neighbors/3/terrain.lua"
+  files[dir .. "/scene.lua"].neighbors = {
+    {
+      offsetTilesX = 32,
+      offsetTilesY = 0,
+      offsetTilesZ = 0,
+      collision = { file = collisionPath },
+      terrain = { file = terrainPath },
+    },
+  }
+  files[terrainPath] = { schema = "g4-terrain-surfaces-v1", plates = {}, source = { bdhcSha1 = "east" } }
+  files[collisionPath] = CollisionFixture.asset(32, 32)
+end
+
+-- A controllable staged neighbor build: pending until its held flag clears,
+-- failing loudly with its injected message, and recording release so staged
+-- ownership is observable. Its synchronous entry raises instead of
+-- blocking, proving the staged map path never waits on it.
+local function stagedNeighborLoader()
+  local builds = {}
+  local loader = {}
+  function loader.begin(_, descriptors, _)
+    local build = {
+      descriptors = descriptors,
+      held = true,
+      released = false,
+      taken = false,
+      ready = false,
+      failMessage = nil,
+    }
+    builds[#builds + 1] = build
+    local task = {}
+    function task:advance(workUnits)
+      assert(type(workUnits) == "number" and workUnits >= 0, "neighbor advance needs a budget")
+      if build.failMessage ~= nil then
+        error(build.failMessage, 0)
+      end
+      if build.held then
+        return 0
+      end
+      build.ready = true
+      return 0
+    end
+    function task:isReady()
+      return build.ready
+    end
+    function task:takeResult()
+      assert(build.ready, "staged neighbor result is not ready")
+      build.taken = true
+      local ring = { draws = { { neighbor = true } } }
+      function ring:updateAnimated() end
+      function ring:release()
+        build.released = true
+      end
+      return ring
+    end
+    function task:finish()
+      build.held = false
+      build.ready = true
+      return task:takeResult()
+    end
+    function task:release()
+      build.released = true
+    end
+    build.task = task
+    return task
+  end
+  function loader.load()
+    error("presented staged loads must not synchronously block on the neighbor ring", 0)
+  end
+  return loader, builds
+end
+
+-- A cold neighbor texture never blocks a staged map load: while the
+-- neighbor stage is pending the map advance returns promptly with nothing
+-- published, and the completed map carries the staged neighbor result.
+function T.staged_load_with_cold_neighbor_stays_pending_without_publishing()
+  local cache, world, _, _, files = fixture(2)
+  withNeighborCell(files, 1)
+  local sceneLoader, _ = stagedSceneLoader(1)
+  local neighborLoader, neighborBuilds = stagedNeighborLoader()
+  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader, neighborLoader = neighborLoader })
+  local task = loader:beginLoad(1)
+  Assert.equal(task:advance(0), 0, "a zero budget does no work")
+  Assert.isFalse(task:isReady(), "nothing is ready before any budgeted advance")
+  task:advance(1)
+  Assert.isFalse(task:isReady(), "a cold neighbor keeps the staged map pending")
+  Assert.isNil(loader:get(1), "no map is published while the neighbor is cold")
+  Assert.equal(#neighborBuilds, 1, "beginning a presented load starts a staged neighbor task")
+  neighborBuilds[1].held = false
+  task:advance(1)
+  Assert.isTrue(task:isReady(), "the map completes once the neighbor worker replies")
+  local map = task:takeResult()
+  Assert.equal(map.mapId, 1, "the staged result carries the requested map")
+  Assert.isTrue(neighborBuilds[1].taken, "the published map carries the staged neighbor result")
+  Assert.notNil(map.neighborRuntime, "the runtime map owns its neighbor ring")
+  Assert.isTrue(loader:get(1) == map, "completion publishes the staged identity")
+  loader:release()
+end
+
+-- Cancelling a staged load releases both the partial scene build and the
+-- pending neighbor stage without publishing, and a later load succeeds.
+function T.staged_load_cancel_releases_scene_and_neighbor_stages_without_publishing()
+  local cache, world, _, _, files = fixture(2)
+  withNeighborCell(files, 1)
+  local sceneLoader, sceneBuilds = stagedSceneLoader(100)
+  local neighborLoader, neighborBuilds = stagedNeighborLoader()
+  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader, neighborLoader = neighborLoader })
+  local task = loader:beginLoad(1)
+  task:advance(1)
+  Assert.isFalse(task:isReady(), "both stages are still pending")
+  Assert.equal(#neighborBuilds, 1, "beginning a presented load starts a staged neighbor task")
+  task:release()
+  Assert.isTrue(sceneBuilds[1].released, "cancelling releases the partial scene build")
+  Assert.isTrue(neighborBuilds[1].released, "cancelling releases the pending neighbor stage")
+  Assert.isNil(loader:get(1), "a cancelled staged load publishes no entry")
+  Assert.equal(loader:residentCount(), 0, "a cancelled staged load leaves no resident")
+  local map = loader:load(1)
+  Assert.notNil(map.neighborRuntime, "an independent load still attaches its neighbor ring")
+  Assert.isTrue(loader:get(1) == map, "the independent load publishes its identity")
+  loader:release()
+end
+
+-- A failed neighbor stage fails the staged advance with its cause, keeps
+-- the previously committed map resident, and leaves the loader usable for
+-- an independent load.
+function T.staged_load_neighbor_failure_keeps_prior_map_and_stays_loud()
+  local cache, world, _, _, files = fixture(2)
+  withNeighborCell(files, 1)
+  local sceneLoader, sceneBuilds = stagedSceneLoader(1)
+  local neighborLoader, neighborBuilds = stagedNeighborLoader()
+  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader, neighborLoader = neighborLoader })
+  local first = loader:load(0)
+  Assert.equal(#neighborBuilds, 0, "a map without neighbors starts no neighbor stage")
+  local task = loader:beginLoad(1)
+  task:advance(1)
+  Assert.isFalse(task:isReady(), "a cold neighbor keeps the staged map pending")
+  Assert.isNil(loader:get(1), "no map is published while the neighbor is cold")
+  neighborBuilds[1].held = false
+  neighborBuilds[1].failMessage = "injected neighbor texture failure"
+  local ok, err = pcall(task.advance, task, 1)
+  Assert.isFalse(ok, "a failed neighbor stage fails the staged advance")
+  Assert.isTrue(
+    tostring(err):find("injected neighbor texture failure", 1, true) ~= nil,
+    "the neighbor cause propagates"
+  )
+  Assert.isNil(loader:get(1), "a failed staged load publishes no entry")
+  Assert.isTrue(loader:get(0) == first, "the previously committed map stays resident")
+  Assert.isTrue(sceneBuilds[2].released, "the failed stage releases its scene runtime exactly once")
+  local okAgain = pcall(task.advance, task, 1)
+  Assert.isFalse(okAgain, "the failure stays sticky")
+  local healthyCache, healthyWorld, _, _, healthyFiles = fixture(2)
+  withNeighborCell(healthyFiles, 1)
+  local healthyScene, _ = stagedSceneLoader(1)
+  local healthyNeighbor, _ = stagedNeighborLoader()
+  local healthyLoader =
+    FieldMapLoader.new(healthyCache, healthyWorld, { sceneLoader = healthyScene, neighborLoader = healthyNeighbor })
+  local healthy = healthyLoader:load(1)
+  Assert.notNil(healthy.neighborRuntime, "an independent load still attaches its neighbor ring")
+  healthyLoader:release()
+  loader:release()
+end
+
 return { tests = T }
