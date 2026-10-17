@@ -203,7 +203,7 @@ local function drawableState(order, bannerStatus)
     screenFade = {
       presentationOverlay = function()
         order[#order + 1] = "scriptCover"
-        return { r = 0, g = 0, b = 0, a = 0.5 }
+        return { r = 0, g = 0, b = 0, a = 0.5, screenScope = "both" }
       end,
     },
     screenTopology = topology,

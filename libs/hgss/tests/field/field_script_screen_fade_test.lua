@@ -128,6 +128,56 @@ function T.starting_a_second_fade_while_one_is_active_is_a_programming_error()
   Assert.isFalse(ok, "two concurrent script screen fades must never blend")
 end
 
+function T.fade_leases_are_unique_and_clear_only_the_current_cover()
+  local fade = newFade()
+  local firstLease = fade:startFade({
+    direction = "out",
+    color = "white",
+    duration = 4,
+    speed = 1,
+    screenScope = "main",
+  })
+  Assert.isTrue(type(firstLease) == "number", "starting a fade returns its lease")
+  Assert.equal(fade:status().screenScope, "main", "status exposes the requested screen")
+  Assert.equal(fade:presentationOverlay().screenScope, "main", "presentation exposes the requested screen")
+  Assert.isTrue(fade:clearIfCurrent(firstLease), "the owner clears its current lease")
+  Assert.isNil(fade:presentationOverlay(), "clearing releases the borrowed overlay immediately")
+  Assert.isFalse(fade:clearIfCurrent(firstLease), "releasing the same lease twice is harmless")
+
+  local secondLease = fade:startFade({ direction = "in", color = "black", duration = 6, speed = 1 })
+  Assert.isTrue(secondLease > firstLease, "a later fade receives a newer lease")
+  Assert.isFalse(fade:clearIfCurrent(firstLease), "a stale owner cannot clear a newer fade")
+  Assert.equal(fade:status().screenScope, "both", "ordinary fades keep the two-screen default")
+end
+
+function T.invalid_scope_does_not_mutate_fade_controller()
+  local fade = newFade()
+  local ok = pcall(function()
+    fade:startFade({
+      direction = "out",
+      color = "white",
+      duration = 4,
+      speed = 1,
+      screenScope = "lower",
+    })
+  end)
+  Assert.isFalse(ok, "unsupported screen scopes must be rejected")
+  Assert.isTrue(fade:fadeDone(), "a rejected scope must leave the controller idle")
+  Assert.isNil(fade:status().screenScope, "a rejected scope must not be published")
+end
+
+function T.malformed_lease_is_rejected_without_clearing_the_active_fade()
+  local fade = newFade()
+  fade:startFade(OPENING_OUT)
+  fade:updateSourceFrame()
+  Assert.isTrue(type(fade.clearIfCurrent) == "function", "the controller exposes its lease release operation")
+  local ok = pcall(function()
+    fade:clearIfCurrent(1.5)
+  end)
+  Assert.isFalse(ok, "fractional leases must be rejected")
+  Assert.notNil(fade:presentationOverlay(), "a malformed lease cannot clear the active cover")
+end
+
 function T.idle_presentation_borrows_nil_without_allocation()
   local fade = newFade()
   Assert.isNil(fade:presentationOverlay(), "an idle fade borrows nil for the renderer")

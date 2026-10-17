@@ -864,7 +864,7 @@ function T.screen_fade_cover_rects_reused_until_topology_changes()
   local alpha = 0.5
   runtime.screenFade = {
     presentationOverlay = function()
-      return { r = 0, g = 0, b = 0, a = alpha }
+      return { r = 0, g = 0, b = 0, a = alpha, screenScope = "both" }
     end,
   }
   local rectReads = 0

@@ -11,6 +11,12 @@
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
 local CelebiTimeTravelTask = require("libs.hgss.src.script.tasks.CelebiTimeTravelTask")
+local S = require("gen4.script")
+local Registry = require("libs.script.src.Registry")
+local Composition = require("libs.script.src.Composition")
+local TaskRegistry = require("libs.script.src.TaskRegistry")
+local Scheduler = require("libs.script.src.Scheduler")
+local RuntimeValues = require("libs.hgss.src.script.RuntimeValues")
 
 local T = {}
 
@@ -35,8 +41,12 @@ local function liveScreen()
       color = spec.color,
       duration = spec.duration,
       speed = spec.speed,
+      screenScope = spec.screenScope,
     }
-    self.fade:startFade(spec)
+    return self.fade:startFade(spec)
+  end
+  function backend:clearIfCurrent(lease)
+    return self.fade:clearIfCurrent(lease)
   end
   function backend:fadeDone()
     return self.fade:fadeDone()
@@ -51,6 +61,29 @@ local function liveScreen()
     self.fade:updateSourceFrame()
   end
   return backend
+end
+
+local function schedulerWith(screen)
+  local registry = Registry.new()
+  local composition = Composition.new(registry)
+  local resource = S.script({ api = 1, id = "test.celebi_cancel", steps = { S.waitTicks({ ticks = 100 }) } })
+  registry:installBase(resource.id, resource, "generated")
+  local taskRegistry = TaskRegistry.new()
+  taskRegistry:register(CelebiTimeTravelTask.type, CelebiTimeTravelTask.version, CelebiTimeTravelTask)
+  local WaitTicksTask = require("libs.script.src.tasks.WaitTicksTask")
+  taskRegistry:register(WaitTicksTask.type, WaitTicksTask.version, WaitTicksTask)
+  local scheduler = Scheduler.new({
+    semantics = RuntimeValues,
+    services = { screen = screen },
+    taskRegistry = taskRegistry,
+    resolveComposition = function(id)
+      return composition:effective(id)
+    end,
+  })
+  local instanceId = scheduler:createForeground(assert(composition:effective(resource.id)), nil, 100)
+  local instance = assert(scheduler:instance(instanceId))
+  scheduler:createTask("celebi_time_travel", {}, instance, 100, nil)
+  return scheduler, instance
 end
 
 local function ctxWith(screen)
@@ -107,6 +140,7 @@ function T.opening_fades_run_out_then_in_and_clear_before_the_beat()
   Assert.isFalse(result.complete, "starting the opening fade must not settle the cutscene")
   Assert.equal(#screen.starts, 1, "the first poll starts exactly one fade")
   assertStart(screen.starts[1], "out", OPENING_STEPS, "opening fade-out")
+  Assert.equal(screen.starts[1].screenScope, "main", "the opening fade targets the source main screen")
   Assert.equal(screen:status().coefficient, 4, "one source frame interpolates the white cover to 4")
   local borrowed = screen.fade:presentationOverlay()
   Assert.notNil(borrowed, "the opening fade lends a presentation overlay while active")
@@ -125,6 +159,7 @@ function T.opening_fades_run_out_then_in_and_clear_before_the_beat()
   Assert.isFalse(result.complete, "starting the fade-in must not settle the cutscene")
   Assert.equal(#screen.starts, 2, "the landed fade-out hands off to exactly one fade-in")
   assertStart(screen.starts[2], "in", OPENING_STEPS, "opening fade-in")
+  Assert.equal(screen.starts[2].screenScope, "main", "the opening fade-in targets the source main screen")
   Assert.equal(screen:status().coefficient, 12, "the start poll's own source frame interpolates the cover to 12")
   local expected = { 8, 4, 0 }
   for index, want in ipairs(expected) do
@@ -167,6 +202,7 @@ function T.beat_and_early_swirl_stay_visible_until_the_late_closing_fade()
       closingPoll = swirlPolls
       Assert.equal(state.elapsed, CLOSING_START_TICK, "the closing fade starts exactly at swirl tick 80")
       assertStart(screen.starts[3], "out", CLOSING_STEPS, "closing fade-out")
+      Assert.equal(screen.starts[3].screenScope, "both", "the final white cover targets both source screens")
     end
     if result.complete then
       break
@@ -257,6 +293,9 @@ function T.a_done_but_clear_backend_is_a_loud_fault()
   function backend:startFade(spec)
     self.starts[#self.starts + 1] = spec
   end
+  function backend:clearIfCurrent(_)
+    return false
+  end
   function backend:fadeDone()
     return true
   end
@@ -273,6 +312,9 @@ function T.a_backend_without_opaque_status_is_an_attributed_fault()
   local backend = { starts = {} }
   function backend:startFade(spec)
     self.starts[#self.starts + 1] = spec
+  end
+  function backend:clearIfCurrent(_)
+    return false
   end
   function backend:fadeDone()
     return true
@@ -313,12 +355,82 @@ function T.cancellation_settles_without_starting_another_fade()
   local result
   result, state = tick(screen, state, ctx)
   Assert.equal(#screen.starts, 1, "the setup starts the opening fade")
-  CelebiTimeTravelTask.cancel(state, "acceptance injected failure")
+  CelebiTimeTravelTask.cancel(state, "acceptance injected failure", ctx)
   result = CelebiTimeTravelTask.poll(state, ctx)
   state = result.state
   Assert.isTrue(result.complete, "cancellation settles the cutscene")
   Assert.equal(#screen.starts, 1, "cancellation starts no further fade")
   Assert.isNil(CelebiTimeTravelTask.validate(state), "the cancelled shape still validates")
+end
+
+function T.cancellation_before_the_first_poll_needs_no_fade_owner()
+  local state = CelebiTimeTravelTask.create()
+  CelebiTimeTravelTask.cancel(state, "cancelled before acceptance", nil)
+  Assert.isNil(CelebiTimeTravelTask.validate(state), "early cancellation keeps a valid task state")
+  local result = CelebiTimeTravelTask.poll(state, {})
+  Assert.isTrue(result.complete, "a task cancelled before polling settles without starting a fade")
+end
+
+function T.cancellation_during_opening_in_and_beat_releases_the_latest_lease()
+  local screen = liveScreen()
+  local ctx = ctxWith(screen)
+  local state = CelebiTimeTravelTask.create()
+  _, _, state = drivePhase(screen, state, ctx, "opening_out", 30)
+  Assert.equal(state.phase, "opening_in", "the opening out hands off to the inbound fade")
+  Assert.notNil(screen.fade:presentationOverlay(), "the inbound fade has a visible cover to release")
+  CelebiTimeTravelTask.cancel(state, "interrupted during opening in", ctx)
+  Assert.isNil(screen.fade:presentationOverlay(), "inbound cancellation clears the owned cover immediately")
+  Assert.isNil(screen:status().screenScope, "inbound cancellation returns ownership to idle")
+
+  screen = liveScreen()
+  ctx = ctxWith(screen)
+  state = reachBeat(screen, ctx)
+  Assert.equal(state.phase, "beat", "the opening fades finish before the model beat")
+  CelebiTimeTravelTask.cancel(state, "interrupted during beat", ctx)
+  Assert.isNil(screen:status().screenScope, "beat cancellation releases the retained completed fade lease")
+end
+
+function T.scheduler_cancellation_releases_the_opening_cover_and_allows_an_ordinary_fade()
+  local screen = liveScreen()
+  local scheduler, instance = schedulerWith(screen)
+  scheduler:step(100, nil)
+  scheduler:step(101, nil)
+  screen:tick()
+  scheduler:step(102, nil)
+  screen:tick()
+  Assert.equal(screen:status().coefficient, 8, "the scheduler has entered the active opening cover")
+
+  scheduler:cancelEnvironment(instance.environmentId, "injected failure")
+  Assert.isNil(screen.fade:presentationOverlay(), "scheduler cancellation immediately removes the owned cover")
+  Assert.isFalse(screen:status().active, "scheduler cancellation returns the shared controller to idle")
+  for _ = 1, 40 do
+    screen:tick()
+  end
+  Assert.isNil(screen.fade:presentationOverlay(), "later source ticks cannot restore the cancelled cover")
+  local ok = pcall(function()
+    screen.fade:startFade({ direction = "out", color = "black", duration = 6, speed = 1 })
+  end)
+  Assert.isTrue(ok, "an ordinary fade can start after cleanup")
+end
+
+function T.cancelling_while_waiting_for_a_foreign_fade_preserves_it()
+  local screen = liveScreen()
+  screen.fade:startFade({ direction = "out", color = "black", duration = 30, speed = 1 })
+  local scheduler, instance = schedulerWith(screen)
+  scheduler:step(100, nil)
+  scheduler:step(101, nil)
+  screen:tick()
+  scheduler:step(102, nil)
+  screen:tick()
+  Assert.equal(#screen.starts, 0, "Celebi is still waiting while the foreign fade owns the controller")
+  local foreignCoefficient = screen.fade:status().coefficient
+
+  scheduler:cancelEnvironment(instance.environmentId, "injected failure")
+  Assert.equal(
+    screen.fade:status().coefficient,
+    foreignCoefficient,
+    "cancelling a waiter leaves the foreign fade's progress intact"
+  )
 end
 
 function T.only_the_documented_state_shape_validates()

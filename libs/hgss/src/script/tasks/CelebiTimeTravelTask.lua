@@ -37,7 +37,7 @@ CelebiTimeTravelTask.CLOSING_FADE_STEPS = 30
 
 ---@return table<string, unknown> state
 local function initialState()
-  return { phase = "opening_out", elapsed = 0, fadeStarted = false }
+  return { phase = "opening_out", elapsed = 0, fadeStarted = false, fadeLease = nil }
 end
 
 -- Creation takes no input: the cutscene owns its fixed source schedule.
@@ -47,7 +47,8 @@ function CelebiTimeTravelTask.create()
 end
 
 ---@class CelebiTimeTravelScreen
----@field startFade fun(self: CelebiTimeTravelScreen, spec: { direction: string, color: string, duration: integer, speed: integer })
+---@field startFade fun(self: CelebiTimeTravelScreen, spec: { direction: string, color: string, duration: integer, speed: integer, screenScope: "main"|"both" }): integer
+---@field clearIfCurrent fun(self: CelebiTimeTravelScreen, lease: integer): boolean
 ---@field fadeDone fun(self: CelebiTimeTravelScreen): boolean
 ---@field isOpaque fun(self: CelebiTimeTravelScreen): boolean
 
@@ -66,6 +67,7 @@ function CelebiTimeTravelTask.poll(state, ctx)
   if
     type(screen) ~= "table"
     or type(screen.startFade) ~= "function"
+    or type(screen.clearIfCurrent) ~= "function"
     or type(screen.fadeDone) ~= "function"
     or type(screen.isOpaque) ~= "function"
   then
@@ -94,11 +96,12 @@ function CelebiTimeTravelTask.poll(state, ctx)
       return { complete = false, state = state }
     end
     local direction = state.phase == "opening_out" and "out" or "in"
-    screenService:startFade({
+    state.fadeLease = screenService:startFade({
       direction = direction,
       color = "white",
       duration = CelebiTimeTravelTask.OPENING_FADE_STEPS,
       speed = 1,
+      screenScope = "main",
     })
     state.fadeStarted = true
     return { complete = false, state = state }
@@ -119,11 +122,12 @@ function CelebiTimeTravelTask.poll(state, ctx)
   state.elapsed = math.min(state.elapsed + 1, CelebiTimeTravelTask.SWIRL_TICKS)
   if state.elapsed == CelebiTimeTravelTask.CLOSING_START_TICK and not state.fadeStarted then
     assert(screenService:fadeDone(), "closing white fade cannot overlap an active fade")
-    screenService:startFade({
+    state.fadeLease = screenService:startFade({
       direction = "out",
       color = "white",
       duration = CelebiTimeTravelTask.CLOSING_FADE_STEPS,
       speed = 1,
+      screenScope = "both",
     })
     state.fadeStarted = true
   end
@@ -139,7 +143,21 @@ end
 
 ---@param state table<string, unknown>
 ---@param reason string
-function CelebiTimeTravelTask.cancel(state, reason)
+---@param ctx table<string, unknown>?
+function CelebiTimeTravelTask.cancel(state, reason, ctx)
+  if state.cancelled ~= nil then
+    return
+  end
+  if state.fadeLease ~= nil then
+    local services = ctx and ctx.services
+    local screen = type(services) == "table" and services.screen or nil
+    assert(
+      type(screen) == "table" and type(screen.clearIfCurrent) == "function",
+      "Celebi cancellation requires the screen fade owner"
+    )
+    screen:clearIfCurrent(state.fadeLease)
+    state.fadeLease = nil
+  end
   state.cancelled = reason
 end
 
@@ -174,12 +192,17 @@ function CelebiTimeTravelTask.validate(state)
   if type(state.fadeStarted) ~= "boolean" then
     return invalid("celebi time travel fade progress must be a boolean")
   end
+  if
+    state.fadeLease ~= nil and (type(state.fadeLease) ~= "number" or state.fadeLease % 1 ~= 0 or state.fadeLease <= 0)
+  then
+    return invalid("celebi time travel fade lease must be a positive integer")
+  end
   for key, value in pairs(state) do
     if key == "cancelled" then
       if type(value) ~= "string" then
         return invalid("celebi time travel cancellation must be a string")
       end
-    elseif key ~= "phase" and key ~= "elapsed" and key ~= "fadeStarted" then
+    elseif key ~= "phase" and key ~= "elapsed" and key ~= "fadeStarted" and key ~= "fadeLease" then
       return invalid("celebi time travel state contains an unexpected field")
     end
   end

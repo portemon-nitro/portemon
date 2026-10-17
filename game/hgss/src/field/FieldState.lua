@@ -92,7 +92,7 @@ end
 ---@field _terrainItems table[] reusable terrain-effect draw storage refilled every frame
 ---@field _transitionItems table[] reusable follower-transition draw storage refilled every frame
 ---@field _dialogueGeometry { boundsX: number, boundsY: number, boundsWidth: number, boundsHeight: number, fieldScale: integer, placement: table<string, unknown>, presentation: table<string, unknown> }? retained dialogue presentation geometry, rebuilt only when bounds/scale/placement changes
----@field _fadeCover { topology: ScreenTopology, rects: { x: number, y: number, width: number, height: number }[] }? retained screen-fade cover rectangles, rebuilt only when the topology changes
+---@field _fadeCover { topology: ScreenTopology, main: { x: number, y: number, width: number, height: number }[], both: { x: number, y: number, width: number, height: number }[] }? retained screen-fade cover rectangles, rebuilt only when the topology changes
 ---@field _entryFade StandardFade? one-shot covered-entry reveal, nil when inactive or complete
 ---@field _entryAccumulator number source-frame time held for the covered-entry reveal
 ---@field development boolean product mode (default) hides the developer overlay; dev mode shows it only after the F3 toggle and unbound keys stay inert
@@ -1061,17 +1061,27 @@ function FieldState:_drawScriptScreenFadeIfNeeded()
   if overlay == nil then
     return
   end
+  assert(
+    overlay.screenScope == "main" or overlay.screenScope == "both",
+    "script screen fade requires a supported screen scope"
+  )
   local topology = assert(self.runtime.screenTopology, "script screen fade requires a current topology")
   local cached = self._fadeCover
   local rects
   if cached ~= nil and cached.topology == topology then
-    rects = cached.rects
+    rects = cached[overlay.screenScope]
   else
-    rects = {}
+    local mainRects, bothRects = {}, {}
     for _, surface in ipairs(topology.surfaces) do
-      rects = rectUnion(rects, surface.rect)
+      local surfaceRect = surface.rect
+      bothRects = rectUnion(bothRects, surfaceRect)
+      if surface.role == "world" then
+        mainRects = rectUnion(mainRects, surfaceRect)
+      end
     end
-    self._fadeCover = { topology = topology, rects = rects }
+    assert(#mainRects > 0, "script screen fade topology requires a main display surface")
+    self._fadeCover = { topology = topology, main = mainRects, both = bothRects }
+    rects = self._fadeCover[overlay.screenScope]
   end
   local lg = love.graphics
   local prevR, prevG, prevB, prevA = lg.getColor()
