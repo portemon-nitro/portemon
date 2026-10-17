@@ -149,14 +149,10 @@ function PredictionDriver:_tier1(runtime)
     end
   end
   local held = 0
-  if
-    runtime.session ~= nil
-    and type(runtime.session.isForegroundHoldActive) == "function"
-    and pcall(function()
-      return runtime.session.isForegroundHoldActive(runtime.session)
-    end)
-  then
-    held = 1
+  if runtime.session ~= nil and type(runtime.session.isForegroundHoldActive) == "function" then
+    local active = runtime.session:isForegroundHoldActive()
+    assert(type(active) == "boolean", "field foreground hold reports a boolean")
+    held = active and 1 or 0
   end
   local band = ""
   if type(runtime.mapMusicDayNight) == "function" then

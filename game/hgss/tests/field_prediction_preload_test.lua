@@ -1057,4 +1057,192 @@ function T.tests.image_idle_budget_trims_oldest_first_and_reuse_shields_the_pred
   pool:dispose()
 end
 
+local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
+
+-- A minimal production-shaped runtime for the private prediction driver:
+-- fixed map, music, audio round, day band, coverage anchor, and stable
+-- membership, with a toggling hold sensor behind the existing session
+-- method and counters for background demand actions.
+local function holdPredictionRuntime(initialHold)
+  local hold = { value = initialHold }
+  local counters = { holdCalls = 0, prewarms = 0, trims = 0, drains = 0, prunes = 0 }
+  local audio = {
+    effectiveMusic = function()
+      return 42
+    end,
+    predictionEpoch = function()
+      return 7
+    end,
+    predictedBanksFor = function()
+      return {}
+    end,
+    prewarmAudioBanks = function()
+      counters.prewarms = counters.prewarms + 1
+    end,
+    drainBackgroundSamples = function()
+      counters.drains = counters.drains + 1
+    end,
+    bankSampleKeys = function()
+      return {}
+    end,
+    trimIdleSamples = function()
+      counters.trims = counters.trims + 1
+    end,
+    cancelUnpredictedSamples = function() end,
+  }
+  local residency = {
+    coverage = { anchorX = 3, anchorZ = 5 },
+    predictionMembership = function()
+      return {}, {}
+    end,
+    mapForId = function()
+      return { fieldData = {} }
+    end,
+  }
+  local session = {
+    currentMap = { mapId = 11 },
+  }
+  function session:isForegroundHoldActive()
+    counters.holdCalls = counters.holdCalls + 1
+    if hold.error ~= nil then
+      error(hold.error, 0)
+    end
+    return hold.value
+  end
+  local runtime = setmetatable({
+    assetPreparation = {},
+    audio = audio,
+    residency = residency,
+    runtimeMap = { mapId = 11 },
+    session = session,
+    mapMusicDayNight = function()
+      return "day"
+    end,
+    imageAssets = {
+      prune = function()
+        counters.prunes = counters.prunes + 1
+      end,
+    },
+  }, FieldRuntime)
+  return runtime, hold, counters
+end
+
+local function predictionDriverOf(runtime)
+  local driver = runtime._predictionDriver
+  Assert.notNil(driver, "prediction refresh owns its fingerprint driver")
+  Assert.notNil(driver.fingerprint, "prediction refresh commits a fingerprint")
+  return driver
+end
+
+local function assertHoldMarker(fingerprint, marker, message)
+  Assert.isTrue(
+    fingerprint:find("|" .. marker .. "|", 1, true) ~= nil,
+    message .. " (got " .. fingerprint .. ")"
+  )
+end
+
+-- The predicted working-set fingerprint records the actual hold state:
+-- released -> held -> released with every other factor fixed drives one
+-- epoch per real transition and none for steady repeats, while background
+-- demand, idle trim, and image prune actions track committed epochs only.
+function T.tests.foreground_hold_transitions_drive_prediction_epochs_without_spurious_recommits()
+  local runtime, hold, counters = holdPredictionRuntime(false)
+
+  runtime:_refreshPrediction()
+  local driver = predictionDriverOf(runtime)
+  assertHoldMarker(driver.fingerprint, "h0", "a hold sensor returning false records the released marker")
+  Assert.equal(driver.epoch, 1, "the first prediction round commits one epoch")
+  Assert.isTrue(counters.holdCalls > 0, "the fingerprint consults the hold sensor")
+  local prewarms, trims = counters.prewarms, counters.trims
+
+  runtime:_refreshPrediction()
+  Assert.equal(driver.epoch, 1, "an unchanged released hold commits no new epoch")
+  Assert.equal(counters.prewarms, prewarms, "a steady hold enrolls no new background demand")
+  Assert.equal(counters.trims, trims, "a steady hold trims no idle bytes again")
+
+  hold.value = true
+  runtime:_refreshPrediction()
+  assertHoldMarker(driver.fingerprint, "h1", "a hold sensor returning true records the held marker")
+  Assert.equal(driver.epoch, 2, "entering the hold commits exactly one epoch")
+  Assert.equal(counters.prewarms, prewarms + 1, "entering the hold re-enrolls background demand once")
+  Assert.equal(counters.trims, trims + 1, "entering the hold trims once")
+
+  runtime:_refreshPrediction()
+  Assert.equal(driver.epoch, 2, "an unchanged held state commits no new epoch")
+  Assert.equal(counters.prewarms, prewarms + 1, "a steady held state enrolls no further demand")
+
+  hold.value = false
+  runtime:_refreshPrediction()
+  assertHoldMarker(driver.fingerprint, "h0", "leaving the hold records the released marker again")
+  Assert.equal(driver.epoch, 3, "leaving the hold commits exactly one epoch")
+
+  runtime:_refreshPrediction()
+  Assert.equal(driver.epoch, 3, "settling back to released commits no further epoch")
+  Assert.equal(counters.trims, trims + 2, "only real transitions trim")
+  Assert.equal(counters.prunes, driver.epoch, "every committed epoch prunes idle images exactly once")
+end
+
+-- A failing hold sensor must surface instead of settling on either marker:
+-- the refresh propagates the original failure and commits nothing.
+function T.tests.foreground_hold_sensor_failure_propagates_instead_of_encoding_a_state()
+  local runtime, hold = holdPredictionRuntime(false)
+  runtime:_refreshPrediction()
+  Assert.equal(runtime._predictionDriver.epoch, 1, "the released baseline commits first")
+
+  hold.error = "foreground hold sensor failed"
+  local ok, err = pcall(function()
+    runtime:_refreshPrediction()
+  end)
+  Assert.isFalse(ok, "a failing hold sensor must propagate instead of encoding a hold state")
+  Assert.isTrue(
+    tostring(err):find("foreground hold sensor failed", 1, true) ~= nil,
+    "the propagated failure retains its original diagnostic"
+  )
+  Assert.equal(runtime._predictionDriver.epoch, 1, "a failed sensor commits no new epoch")
+end
+
+-- The hold report is a strict boolean: anything else fails loudly instead
+-- of coercing to a marker, and commits nothing.
+function T.tests.foreground_hold_sensor_must_report_a_boolean()
+  local runtime, hold = holdPredictionRuntime(false)
+  runtime:_refreshPrediction()
+  Assert.equal(runtime._predictionDriver.epoch, 1, "the released baseline commits first")
+
+  hold.value = "held"
+  local ok = pcall(function()
+    runtime:_refreshPrediction()
+  end)
+  Assert.isFalse(ok, "a nonboolean hold report must fail loudly instead of coercing")
+  Assert.equal(runtime._predictionDriver.epoch, 1, "a malformed hold report commits no new epoch")
+end
+
+-- A steady hold never masks the other fingerprint signals: a music change
+-- still commits exactly once with the hold marker untouched, and a
+-- pre-composition runtime without a session still predicts.
+function T.tests.steady_hold_preserves_other_prediction_signals()
+  local runtime = holdPredictionRuntime(false)
+  runtime:_refreshPrediction()
+  local driver = predictionDriverOf(runtime)
+  local epoch = driver.epoch
+  local before = driver.fingerprint:match("|(h%d)|")
+  Assert.notNil(before, "the baseline fingerprint carries a hold marker")
+
+  runtime.audio.effectiveMusic = function()
+    return 99
+  end
+  runtime:_refreshPrediction()
+  Assert.equal(driver.epoch, epoch + 1, "a music change under a steady hold still commits")
+  Assert.equal(
+    driver.fingerprint:match("|(h%d)|"),
+    before,
+    "a music change leaves the steady hold marker untouched"
+  )
+
+  runtime.session = nil
+  local ok, err = pcall(function()
+    runtime:_refreshPrediction()
+  end)
+  Assert.isTrue(ok, "a pre-composition runtime without a session still predicts (got " .. tostring(err) .. ")")
+end
+
 return { tests = T.tests }
