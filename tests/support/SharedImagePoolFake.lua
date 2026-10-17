@@ -46,6 +46,17 @@ local function fakeImage()
   local image = { released = false, releaseCount = 0 }
   function image:setFilter() end
   function image:setWrap() end
+  -- Real lease images always carry their decoded dimensions; pooled
+  -- renderers build quads from them, so the stand-in does too.
+  function image:getWidth()
+    return 64
+  end
+  function image:getHeight()
+    return 32
+  end
+  function image:getDimensions()
+    return 64, 32
+  end
   function image:release()
     self.released = true
     self.releaseCount = self.releaseCount + 1

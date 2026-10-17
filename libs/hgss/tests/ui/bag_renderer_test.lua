@@ -1137,19 +1137,47 @@ end
 
 function T.image_filter_failure_releases_the_new_image()
   local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
-  local newImage = graphics.newImage
-  graphics.newImage = function(...)
-    local image = newImage(...)
-    image.setFilter = function()
-      error("injected image filter failure")
+  -- Fixed prompt chrome binds through the shared owner at construction, so
+  -- the failure is injected on the first borrowed image instead of a
+  -- directly built one; the unwind contract is unchanged.
+  local inner = SharedImagePoolFake.new()
+  local failFilter = true
+  local pool = {}
+  function pool:request(path, sampler, priority)
+    return inner:request(path, sampler, priority)
+  end
+  function pool:poll(token)
+    return inner:poll(token)
+  end
+  function pool:acquire(token)
+    local lease = inner:acquire(token)
+    if failFilter then
+      failFilter = false
+      local image = assert(lease.image, "shared borrows carry their resolved image")
+      image.setFilter = function()
+        error("injected image filter failure")
+      end
     end
-    return image
+    return lease
+  end
+  function pool:release(lease)
+    return inner:release(lease)
+  end
+  function pool:cancel(token)
+    return inner:cancel(token)
   end
   Assert.throws(function()
-    renderer(graphics)
+    BagRenderer.new({
+      cacheFs = seedCache(),
+      manifest = manifest(),
+      promptManifest = promptManifest(),
+      text = text(),
+      graphics = graphics,
+      heroRenderer = heroSpy(nil),
+      imagePool = pool,
+    })
   end, "an image filter failure unwinds construction")
-  Assert.equal(#graphics.images, 1, "the failed image was still created")
-  Assert.equal(graphics.images[1].releaseCount, 1, "the failed image is released exactly once")
+  Assert.equal(inner:stats().outstandingLeases, 0, "the failed chrome lease is released exactly once")
 end
 
 function T.empty_pockets_draw_no_icons_but_keep_navigation_labels()
@@ -3813,7 +3841,12 @@ function T.state_visuals_follow_demand_through_churn_without_blank_stale_or_leak
   local pool, gate, inner = demandPool()
   local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
   local content = text()
+  -- Fixed prompt chrome binds synchronously through the same pool at
+  -- construction; the gate models stalled state-visual classification, so
+  -- it stays open while chrome binds, then closes for the demand below.
+  gate.open = true
   local draw = demandRenderer(graphics, pool, content)
+  gate.open = false
   Assert.isTrue(
     type(draw.prepare) == "function",
     "state visuals resolve through a demand entry that enrolls each visual before polling"
@@ -3825,7 +3858,8 @@ function T.state_visuals_follow_demand_through_churn_without_blank_stale_or_leak
     #graphics.images < 64,
     "construction keeps only bounded chrome instead of every state variant (" .. #graphics.images .. ")"
   )
-  Assert.equal(inner.uploads, 0, "construction resolves no state visual before the first demand")
+  local chromeUploads = inner.uploads
+  Assert.isTrue(chromeUploads > 0, "construction binds only the fixed prompt chrome before the first demand")
 
   local browseBalls = status()
   local browseItems = status({ pocket = "items", tabFocusPocket = "items" })
@@ -3928,7 +3962,9 @@ function T.state_visuals_follow_demand_through_churn_without_blank_stale_or_leak
   -- readiness never uploads its visuals, and the ready state draws alone.
   local freshGraphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
   local freshPool, freshGate, freshInner = demandPool()
+  freshGate.open = true
   local fresh = demandRenderer(freshGraphics, freshPool)
+  freshGate.open = false
   Assert.isTrue(type(fresh.prepare) == "function", "the fresh renderer exposes its demand entry")
   local staleStatus = status({ pocket = "medicine", tabFocusPocket = "medicine" })
   Assert.isFalse(fresh:prepare(staleStatus), "the first rapid demand starts pending")
@@ -4230,7 +4266,12 @@ end
 function T.superseded_demands_abandon_staged_work_without_partial_draws()
   local pool, gate, inner = demandPool()
   local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  -- Fixed prompt chrome binds synchronously through the same pool at
+  -- construction; the gate models stalled state-visual classification, so
+  -- it stays open while chrome binds, then closes for the demand below.
+  gate.open = true
   local draw = demandRenderer(graphics, pool)
+  gate.open = false
   local sampler = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }
   gate.open = true
   local first = status()
@@ -4396,6 +4437,27 @@ function T.required_failure_surfaces_from_preparation_while_the_installed_state_
   Assert.isTrue(#graphics.draws > 0, "the installed state stays drawable after the failed replacement")
   draw:release()
   Assert.equal(inner:stats().outstandingLeases, 0, "release returns every borrowed handle")
+end
+
+-- The Bag-owned modal prompt borrows the same session image owner as its
+-- host renderer instead of privately uploading button art: the nested
+-- prompt holds the identical pool object, and release still returns
+-- every borrowed handle exactly once.
+function T.nested_prompt_borrows_the_shared_image_pool()
+  local pool = SharedImagePoolFake.new()
+  local draw = BagRenderer.new({
+    cacheFs = seedCache(),
+    manifest = manifest(),
+    promptManifest = promptManifest(),
+    text = text(),
+    graphics = FakeGraphics({ imageSizes = IMAGE_SIZES }),
+    heroRenderer = heroSpy(nil),
+    imagePool = pool,
+  })
+  local prompt = assert(draw._promptRenderer, "the Bag owns its modal prompt renderer")
+  Assert.isTrue(prompt._pool == pool, "the nested prompt renderer borrows the shared image owner")
+  draw:release()
+  Assert.equal(pool:stats().outstandingLeases, 0, "release returns the nested prompt leases")
 end
 
 return { tests = T }

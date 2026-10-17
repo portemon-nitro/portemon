@@ -159,6 +159,7 @@ local function buildDoubles(sink, calls)
     ["libs.hgss.src.ui.FieldDialogueRenderer"] = {
       new = function(opts)
         calls.dialogueWindow = opts and opts.windowRenderer
+        calls.dialogueImagePool = opts and opts.imagePool
         return releasable(calls, "dialogue")
       end,
     },
@@ -194,7 +195,8 @@ local function buildDoubles(sink, calls)
       end,
     },
     ["libs.hgss.src.ui.FieldSignpostRenderer"] = {
-      new = function(_)
+      new = function(opts)
+        calls.signpostImagePool = opts and opts.imagePool
         return releasable(calls, "signpost")
       end,
     },
@@ -249,7 +251,8 @@ local function buildDoubles(sink, calls)
       end,
     },
     ["libs.hgss.src.ui.TrainerCardRenderer"] = {
-      new = function(_)
+      new = function(opts)
+        calls.cardImagePool = opts and opts.imagePool
         return card
       end,
     },
@@ -1760,6 +1763,33 @@ function T.mart_sale_prepares_through_the_shared_bag_presenter()
     Assert.equal(calls.bagPrepares, 1, "the Mart buy surface delegates nothing to the Bag renderer")
     Assert.equal(#sink, 0, "Mart preparation draws nothing through any presenter")
     resources:dispose()
+  end)
+end
+
+-- Fixed field chrome borrows the session image owner instead of privately
+-- uploading duplicates: dialogue, signpost, and Trainer Card construction
+-- each receive the runtime-owned shared image owner, and disposal still
+-- returns every borrowed renderer exactly once.
+function T.fixed_chrome_borrows_the_session_image_pool()
+  local sink, calls = {}, {}
+  local runtime = compositionRuntime()
+  withProductionComposition(sink, calls, runtime, function(resources)
+    Assert.isTrue(
+      calls.dialogueImagePool == runtime.imageAssets,
+      "the dialogue renderer borrows the runtime-owned shared image owner"
+    )
+    Assert.isTrue(
+      calls.signpostImagePool == runtime.imageAssets,
+      "the signpost renderer borrows the runtime-owned shared image owner"
+    )
+    Assert.isTrue(
+      calls.cardImagePool == runtime.imageAssets,
+      "the Trainer Card renderer borrows the runtime-owned shared image owner"
+    )
+    resources:dispose()
+    Assert.equal(calls.dialogue, 1, "disposal still releases the dialogue renderer once")
+    Assert.equal(calls.signpost, 1, "disposal still releases the signpost renderer once")
+    Assert.equal(calls.card, 1, "disposal still releases the card renderer once")
   end)
 end
 

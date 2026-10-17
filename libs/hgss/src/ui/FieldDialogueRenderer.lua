@@ -166,6 +166,18 @@ function FieldDialogueRenderer.new(opts)
   local cursor = assert(manifest.dialogueFrames.continueCursor)
   local cursorAsset = assert(manifest.assets[cursor.asset])
   local cursorPath = assert(cursorAsset.image)
+  -- A missing cursor is the existing named construction failure in every
+  -- branch: the pooled borrow below never substitutes another image.
+  local cursorData = cacheFs:read(cursorPath)
+  if not cursorData then
+    self:release()
+    Errors.raise(
+      FieldErrors.FIELD_UI_CONTINUE_CURSOR_MISSING,
+      "dialogue continuation cursor missing at " .. cursorPath,
+      { path = cursorPath }
+    )
+  end
+  cursorData = assert(cursorData)
   local pool = opts.imagePool
   local cursorOk, cursorErr = pcall(function()
     if pool ~= nil then
@@ -177,15 +189,7 @@ function FieldDialogueRenderer.new(opts)
       self._cursorImage = assert(lease.image, "shared borrows carry their resolved image")
       self._cursorImage:setFilter("nearest", "nearest")
     else
-      local cursorData = cacheFs:read(cursorPath)
-      if not cursorData then
-        Errors.raise(
-          FieldErrors.FIELD_UI_CONTINUE_CURSOR_MISSING,
-          "dialogue continuation cursor missing at " .. cursorPath,
-          { path = cursorPath }
-        )
-      end
-      self._cursorImage = graphics.newImage(love.filesystem.newFileData(assert(cursorData), cursorPath))
+      self._cursorImage = graphics.newImage(love.filesystem.newFileData(cursorData, cursorPath))
       self._cursorImage:setFilter("nearest", "nearest")
     end
     self._cursorQuadCache = {}

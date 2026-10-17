@@ -178,6 +178,22 @@ function FieldSignpostRenderer.new(opts)
     _wayfindingQuadCache = nil,
   }, FieldSignpostRenderer)
 
+  -- Missing strips are the existing named construction failures in every
+  -- branch: the pooled borrows below never substitute another image.
+  local tilesData = cacheFs:read(tilesPath)
+  if not tilesData then
+    self:release()
+    Errors.raise(FieldErrors.FIELD_UI_SIGNPOST_TILES_MISSING, "signpost frame strip missing at " .. tilesPath, {
+      path = tilesPath,
+    })
+  end
+  local wayfindingData = cacheFs:read(wayfindingPath)
+  if not wayfindingData then
+    self:release()
+    Errors.raise(FieldErrors.FIELD_UI_WAYFINDING_MISSING, "wayfinding atlas missing at " .. wayfindingPath, {
+      path = wayfindingPath,
+    })
+  end
   local pool = opts.imagePool
   if pool ~= nil then
     -- Both atlases borrow the shared owner as installed leases; frame and
@@ -201,20 +217,6 @@ function FieldSignpostRenderer.new(opts)
       error(err)
     end
     return self
-  end
-  local tilesData = cacheFs:read(tilesPath)
-  if not tilesData then
-    self:release()
-    Errors.raise(FieldErrors.FIELD_UI_SIGNPOST_TILES_MISSING, "signpost frame strip missing at " .. tilesPath, {
-      path = tilesPath,
-    })
-  end
-  local wayfindingData = cacheFs:read(wayfindingPath)
-  if not wayfindingData then
-    self:release()
-    Errors.raise(FieldErrors.FIELD_UI_WAYFINDING_MISSING, "wayfinding atlas missing at " .. wayfindingPath, {
-      path = wayfindingPath,
-    })
   end
   local ok, err = pcall(function()
     self._tilesImage = graphics.newImage(love.filesystem.newFileData(assert(tilesData), tilesPath))

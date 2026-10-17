@@ -192,14 +192,6 @@ local function load(self, spriteId)
     billboardScales = billboardScales(visual),
     references = 0,
   }
-  local data = self._cacheFs:read(visual.render.image)
-  if not data then
-    Errors.raise(
-      FieldErrors.FIELD_ACTOR_ATLAS_MISSING,
-      "atlas missing for spriteId " .. spriteId .. ": " .. visual.render.image,
-      { spriteId = spriteId, path = visual.render.image }
-    )
-  end
   -- A session image owner lends the atlas Image for this visual identity:
   -- the entry holds the lease while it is referenced or idle-ringed and
   -- returns it with the entry's meshes on eviction. Actor lookup,
@@ -220,6 +212,14 @@ local function load(self, spriteId)
     end
     self._stats.loads = self._stats.loads + 1
     return entry
+  end
+  local data = self._cacheFs:read(visual.render.image)
+  if not data then
+    Errors.raise(
+      FieldErrors.FIELD_ACTOR_ATLAS_MISSING,
+      "atlas missing for spriteId " .. spriteId .. ": " .. visual.render.image,
+      { spriteId = spriteId, path = visual.render.image }
+    )
   end
   local ok, err = pcall(function()
     entry.image = self._graphics.newImage(love.filesystem.newFileData(data, visual.render.image))

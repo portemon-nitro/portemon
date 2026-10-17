@@ -471,6 +471,7 @@ function FieldPresentationResources.new(runtime)
       manifest = runtime.uiManifest,
       text = textRenderer,
       windowRenderer = self.windowRenderer,
+      imagePool = sharedImages,
     })
     self.yesNoRenderer = FieldYesNoRenderer.new({ text = textRenderer, window = self.windowRenderer })
     self.menuRenderer = FieldMenuRenderer.new({ text = textRenderer, window = self.windowRenderer })
@@ -479,6 +480,7 @@ function FieldPresentationResources.new(runtime)
       manifest = runtime.uiManifest,
       text = textRenderer,
       windowStyles = runtime.windowStyles,
+      imagePool = sharedImages,
     })
     self.startMenuRenderer = StartMenuRenderer.new({
       cacheFs = runtime.cacheFs,
@@ -490,6 +492,7 @@ function FieldPresentationResources.new(runtime)
       cacheFs = runtime.cacheFs,
       manifest = runtime.uiManifest,
       text = textRenderer,
+      imagePool = sharedImages,
     })
     self.partyScreenRenderer = PartyScreenRenderer.new({
       cacheFs = runtime.cacheFs,

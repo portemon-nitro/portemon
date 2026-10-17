@@ -133,6 +133,16 @@ function TrainerCardRenderer.new(opts)
     },
   }, TrainerCardRenderer)
 
+  -- A missing card front is the existing named construction failure in
+  -- every branch: the pooled borrow below never substitutes another image.
+  local cardData = cacheFs:read(cardPath)
+  if not cardData then
+    self:release()
+    Errors.raise(FieldErrors.FIELD_UI_TRAINER_CARD_FRONT_MISSING, "trainer card front missing at " .. cardPath, {
+      path = cardPath,
+    })
+  end
+  cardData = assert(cardData)
   local pool = opts.imagePool
   local ok, err = pcall(function()
     if pool ~= nil then
@@ -144,14 +154,7 @@ function TrainerCardRenderer.new(opts)
       self._cardImage = assert(lease.image, "shared borrows carry their resolved image")
       self._cardImage:setFilter("nearest", "nearest")
     else
-      local cardData = cacheFs:read(cardPath)
-      if not cardData then
-        self:release()
-        Errors.raise(FieldErrors.FIELD_UI_TRAINER_CARD_FRONT_MISSING, "trainer card front missing at " .. cardPath, {
-          path = cardPath,
-        })
-      end
-      self._cardImage = graphics.newImage(love.filesystem.newFileData(assert(cardData), cardPath))
+      self._cardImage = graphics.newImage(love.filesystem.newFileData(cardData, cardPath))
       self._cardImage:setFilter("nearest", "nearest")
     end
     self:_buildQuads()

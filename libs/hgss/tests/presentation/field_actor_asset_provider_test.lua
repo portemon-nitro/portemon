@@ -10,6 +10,7 @@ local FakeCache = require("tests.support.FakeCache")
 local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
 local FieldActorAssetProvider = require("libs.hgss.src.presentation.FieldActorAssetProvider")
 local FieldActorFixture = require("tests.support.FieldActorFixture")
+local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
 
 local T = {}
 
@@ -250,6 +251,126 @@ function T.rejects_a_cache_without_an_index()
   throwsCode("FIELD_ACTOR_INDEX_UNAVAILABLE", function()
     FieldActorAssetProvider.new(CacheFs.forVersion("heartgold", FakeCache.new()), {})
   end)
+end
+
+-- The pooled actor path borrows its atlas from the session image owner: two
+-- compiled sprites sharing one generated atlas resolve one physical pair
+-- through two independent leases, the provider-side cache is never asked
+-- for the atlas bytes, and no private GPU image is constructed.
+local POOLED_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }
+local SHARED_TEST_ATLAS = "assets/generated/field/actors/shared-test.png"
+
+local function pooledTestImage(width, height)
+  local image = { released = false, releaseCount = 0 }
+  function image:getWidth()
+    return width
+  end
+  function image:getHeight()
+    return height
+  end
+  function image:setFilter() end
+  function image:setWrap() end
+  function image:release()
+    self.released = true
+    self.releaseCount = self.releaseCount + 1
+  end
+  return image
+end
+
+local function pooledTestGraphics(failOnNewMesh)
+  local meshCalls = 0
+  return {
+    newImage = function()
+      error("pooled actor load must not construct a private image", 0)
+    end,
+    newQuad = function(x, y, w, h)
+      return { x = x, y = y, w = w, h = h }
+    end,
+    newMesh = function(_, vertices)
+      meshCalls = meshCalls + 1
+      if failOnNewMesh == meshCalls then
+        error("injected newMesh failure")
+      end
+      local mesh = { vertices = vertices, released = false }
+      function mesh:setVertexMap(map)
+        self.map = map
+      end
+      function mesh:release()
+        self.released = true
+      end
+      return mesh
+    end,
+  }
+end
+
+-- Two compiled sprites sharing one generated atlas, served by a seeded
+-- session pool. Any provider-side read of the atlas bytes fails loudly so
+-- the redundant pooled-path read cannot hide behind a passing cache.
+---@return CacheFs cache, SharedImagePoolFake pool, table graphics
+local function sharedAtlasSetup(spriteIds, failOnNewMesh)
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  cache:writeLua(FieldActorCache.indexPath(), {
+    schema = FieldActorCache.INDEX_SCHEMA,
+    romVersion = "heartgold",
+    spriteIds = spriteIds,
+    runtime = { avatars = {}, variableSprites = { first = 1, last = 1, variableBase = 0 } },
+    variableSprites = {},
+    recordCount = #spriteIds,
+  })
+  for _, spriteId in ipairs(spriteIds) do
+    local visual = FieldActorFixture.visual(spriteId, { frameCount = 2 })
+    visual.render.image = SHARED_TEST_ATLAS
+    cache:writeLua(FieldActorCache.visualPath(spriteId), visual)
+    cache:write(FieldActorCache.atlasPath(spriteId), "png-bytes")
+  end
+  local innerRead = cache.read
+  function cache.read(self, path)
+    if path == SHARED_TEST_ATLAS then
+      error("redundant provider-side atlas read for " .. path, 0)
+    end
+    return innerRead(self, path)
+  end
+  local pool = SharedImagePoolFake.new()
+  pool:seedPhysical(SHARED_TEST_ATLAS, POOLED_SAMPLER, { image = pooledTestImage(64, 32) })
+  return cache, pool, pooledTestGraphics(failOnNewMesh)
+end
+
+function T.pooled_branch_shares_one_leased_atlas_without_provider_side_png_read()
+  local cache, pool, graphics = sharedAtlasSetup({ 0, 29 })
+  local provider = FieldActorAssetProvider.new(cache, { graphics = graphics, imageAssets = pool })
+  local first = provider:acquire(0)
+  local second = provider:acquire(29)
+  Assert.isTrue(first.image == second.image, "sharing sprites resolve one physical atlas")
+  Assert.equal(#first.quads, 2, "the leased atlas keeps stable quad geometry")
+  Assert.equal(first.quads[2].x, 32, "the second frame still slides onto the shared strip")
+  Assert.equal(#first.meshes, 2, "one world mesh per atlas frame")
+  Assert.equal(pool:stats().physicalImages, 1, "one physical pair for matching content and sampler")
+  Assert.equal(pool:stats().outstandingLeases, 2, "each presented sprite holds its own lease")
+  provider:release(0)
+  Assert.notNil(provider:resident(29), "the live peer survives its sibling release")
+  Assert.isFalse(first.image.released, "the shared physical stays live while a peer holds it")
+  Assert.equal(pool:stats().outstandingLeases, 2, "the idle-ringed sibling retains its lease until eviction or dispose")
+  provider:release(29)
+  provider:dispose()
+  Assert.equal(pool:stats().outstandingLeases, 0, "teardown returns every borrowed lease")
+  Assert.equal(pool:stats().physicalImages, 1, "the idle physical stays resident until pruned")
+  Assert.isFalse(first.image.released, "disposal never releases the borrowed physical directly")
+  Assert.equal(provider:stats().references, 0, "no presentation residency leaks")
+  Assert.equal(pool:prune(), 1, "the idle physical is reclaimed exactly once by its owner")
+  Assert.equal(first.image.releaseCount, 1, "the physical pair is released exactly once")
+end
+
+function T.pooled_mesh_failure_returns_the_borrowed_lease_once()
+  local cache, pool, graphics = sharedAtlasSetup({ 0 }, 1)
+  local provider = FieldActorAssetProvider.new(cache, { graphics = graphics, imageAssets = pool })
+  local err = Assert.throws(function()
+    provider:acquire(0)
+  end)
+  Assert.isTrue(tostring(err):find("injected newMesh failure", 1, true) ~= nil)
+  Assert.equal(pool:stats().outstandingLeases, 0, "the failed load returns its borrowed lease")
+  Assert.notNil(pool:findPhysical(SHARED_TEST_ATLAS, POOLED_SAMPLER), "the pool-owned pair stays valid")
+  Assert.equal(provider:stats().live, 0, "the failed entry publishes nothing")
+  Assert.equal(provider:stats().loads, 0, "the failed load counts no completed load")
 end
 
 return { tests = T }

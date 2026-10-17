@@ -11,6 +11,7 @@ local FieldActorDraw = require("libs.hgss.src.presentation.FieldActorDraw")
 
 ---@class FieldActorPresentationRuntime
 ---@field cacheFs CacheFs?
+---@field imageAssets table<string, unknown>? the runtime-owned shared image owner borrowed by presented actors
 ---@field actors FieldActorManager
 ---@field playerVisual FieldPlayerVisual
 ---@field apricornTreePresentation table<string, function>?
@@ -36,7 +37,8 @@ function FieldActorPresentation.new(runtime, options)
   local self = setmetatable({
     runtime = runtime,
     assets = options.assets or FieldActorAssetProvider.new(
-      assert(runtime.cacheFs, "field actor presentation cache filesystem is unavailable")
+      assert(runtime.cacheFs, "field actor presentation cache filesystem is unavailable"),
+      { imageAssets = assert(runtime.imageAssets, "presented field actors borrow the field image pool") }
     ),
     _presentationSpriteRefs = {},
     _lastActorManager = nil,

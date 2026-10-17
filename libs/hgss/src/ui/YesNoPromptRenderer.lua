@@ -195,7 +195,9 @@ function YesNoPromptRenderer:draw(status)
   if type(status) ~= "table" or status.active ~= true then
     return
   end
-  if #self._images == 0 then
+  -- Drawn chrome is either privately owned images or pooled borrows: an
+  -- empty prompt with neither draws nothing, including after release.
+  if #self._images == 0 and next(self._leases) == nil then
     return
   end
   local selected = assert(status.selected, "an active prompt has a selection")

@@ -375,6 +375,7 @@ function BagRenderer.new(opts)
       cacheFs = cacheFs,
       manifest = promptManifest,
       graphics = graphics,
+      imagePool = pool,
     })
   end)
   if not ok then

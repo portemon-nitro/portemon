@@ -6,6 +6,10 @@
 -- depend on them.
 
 local Assert = require("tests.support.Assert")
+local CacheFs = require("libs.storage.src.CacheFs")
+local FakeCache = require("tests.support.FakeCache")
+local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
+local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
 local FieldState = require("game.hgss.src.field.FieldState")
 local FieldActorPresentation = require("game.hgss.src.field.FieldActorPresentation")
 local FieldSession = require("libs.hgss.src.field.FieldSession")
@@ -2126,6 +2130,51 @@ function T.update_prepares_the_active_bag_leaf_and_the_mart_sale()
     "the update propagates the preparation cause unwrapped"
   )
   state:dispose()
+end
+
+-- The default presented actor presentation borrows the runtime-owned
+-- session image owner instead of privately uploading atlases: the
+-- provider behind a real FieldActorPresentation holds the identical pool
+-- object the runtime owns.
+function T.actor_presentation_borrows_the_runtime_image_pool_by_default()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  cache:writeLua(FieldActorCache.indexPath(), {
+    schema = FieldActorCache.INDEX_SCHEMA,
+    romVersion = "heartgold",
+    spriteIds = { 0 },
+    runtime = { avatars = {}, variableSprites = { first = 1, last = 1, variableBase = 0 } },
+    variableSprites = {},
+    recordCount = 1,
+  })
+  cache:writeLua(FieldActorCache.visualPath(0), FieldActorFixture.visual(0, { frameCount = 2 }))
+  cache:write(FieldActorCache.atlasPath(0), "png-bytes")
+  local pool = SharedImagePoolFake.new()
+  local savedLove = rawget(_G, "love")
+  rawset(_G, "love", {
+    graphics = {
+      newImage = function()
+        error("default actor presentation must not construct a private image", 0)
+      end,
+      newQuad = function(x, y, w, h)
+        return { x = x, y = y, w = w, h = h }
+      end,
+      newMesh = function()
+        error("default actor presentation construction stages no mesh", 0)
+      end,
+    },
+  })
+  local ok, err = pcall(function()
+    local presentation = FieldActorPresentation.new({ cacheFs = cache, imageAssets = pool })
+    Assert.isTrue(
+      presentation.assets._imageAssets == pool,
+      "the default actor provider borrows the runtime-owned shared image owner"
+    )
+    presentation:dispose()
+  end)
+  rawset(_G, "love", savedLove)
+  if not ok then
+    error(err, 0)
+  end
 end
 
 return { tests = T }
