@@ -717,14 +717,18 @@ return {
       },
     },
     [102] = {
-      name = "ScrCmd_102",
+      classification = "continue_same_tick",
+      disposition = "supported",
+      name = "ScrCmd_CreateCameraTarget",
       widths = {
         [1] = 2,
         [2] = 2,
       },
     },
     [103] = {
-      name = "ScrCmd_103",
+      classification = "continue_same_tick",
+      disposition = "supported",
+      name = "ScrCmd_RemoveCameraTarget",
       widths = {},
     },
     [104] = {
@@ -1332,6 +1336,8 @@ return {
       },
     },
     [184] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_PlayerOnBikeCheck",
       widths = {
         [1] = 2,
@@ -3698,6 +3704,8 @@ return {
       },
     },
     [490] = {
+      classification = "continue_same_tick",
+      disposition = "supported",
       name = "ScrCmd_NopVar490",
       widths = {
         [1] = 2,
@@ -4521,11 +4529,10 @@ return {
       },
     },
     [606] = {
-      name = "ScrCmd_606",
+      classification = "continue_same_tick",
+      disposition = "supported",
       feature = "following_mon",
-      disposition = "deferred",
-      deferredReason = "special_follower_event",
-      deferredNote = "opcode 606 is an opaque follower neighbour off the default trail; it stays deferred pending a source trace",
+      name = "ScrCmd_FollowMonReleaseNextToPlayer",
       widths = {},
     },
     [607] = {
@@ -5794,11 +5801,10 @@ return {
       },
     },
     [778] = {
-      name = "ScrCmd_GiveSpikyEarPichu",
+      classification = "continue_same_tick",
+      disposition = "supported",
       feature = "mons",
-      disposition = "deferred",
-      deferredReason = "special_follower_event",
-      deferredNote = "the event-locked Spiky-Ear form needs the special-event application",
+      name = "ScrCmd_GiveSpikyEarPichu",
       widths = {},
     },
     [779] = {
@@ -6033,7 +6039,9 @@ return {
       },
     },
     [810] = {
-      name = "ScrCmd_810",
+      classification = "native_wait",
+      disposition = "supported",
+      name = "ScrCmd_CelebiTimeTravel",
       widths = {},
     },
     [811] = {

@@ -90,6 +90,64 @@ function T.source_synchronous_player_time_and_discard_commands_keep_their_values
   Assert.deepEqual(evaluated, { { id = "WATCHED" } })
 end
 
+function T.camera_focus_ops_pin_and_release_through_the_actor_world()
+  local focused = {}
+  local run = runState({
+    actors = {
+      createCameraTarget = function(_, fieldX, fieldZ)
+        focused = { fieldX = fieldX, fieldZ = fieldZ }
+      end,
+      clearCameraTarget = function()
+        focused = {}
+      end,
+    },
+  }, {})
+  run.semantics.evaluateValue = function(value)
+    return value
+  end
+
+  Assert.equal(
+    Runtime.executeNode({ op = "camera_focus_set", fieldX = 12, fieldZ = 34 }, run),
+    Runtime.OUTCOME_CONTINUE
+  )
+  Assert.deepEqual(focused, { fieldX = 12, fieldZ = 34 }, "the set pins the evaluated tile")
+  Assert.equal(Runtime.executeNode({ op = "camera_focus_clear" }, run), Runtime.OUTCOME_CONTINUE)
+  Assert.deepEqual(focused, {}, "the clear releases the focus")
+end
+
+function T.player_on_bike_check_reports_the_cycling_state()
+  local written = {}
+  local stateCode = 1
+  local run = runState({
+    player = {
+      stateCode = function()
+        return stateCode
+      end,
+    },
+  }, written)
+
+  Assert.equal(
+    Runtime.executeNode({ op = "player_on_bike_check", result = { id = "ON_BIKE" } }, run),
+    Runtime.OUTCOME_CONTINUE
+  )
+  Assert.equal(written.ON_BIKE, 1, "the cycling avatar reads as on the bike")
+
+  stateCode = 0
+  Assert.equal(
+    Runtime.executeNode({ op = "player_on_bike_check", result = { id = "ON_BIKE" } }, run),
+    Runtime.OUTCOME_CONTINUE
+  )
+  Assert.equal(written.ON_BIKE, 0, "the walking avatar reads as off the bike")
+end
+
+function T.celebi_time_travel_blocks_on_its_cutscene_task()
+  local written = {}
+  local run = runState({}, written)
+  local outcome = Runtime.executeNode({ op = "celebi_time_travel" }, run)
+  Assert.equal(outcome, Runtime.OUTCOME_BLOCK)
+  Assert.equal(run.blockTaskId.type, "celebi_time_travel")
+end
+
 function T.trainer_card_stars_writes_the_live_save_result()
   local written = {}
   local run = runState({

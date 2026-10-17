@@ -90,6 +90,17 @@ function T.give_mon_writes_the_source_boolean_result()
   Assert.equal(service:partyCount(), 3, "the created mon enters the party")
 end
 
+function T.give_spiky_ear_pichu_publishes_through_the_configured_meeting_point()
+  local service = openService()
+  local run = runWith(service)
+  Assert.equal(Runtime.executeNode({ op = "give_spiky_ear_pichu" }, run), Runtime.OUTCOME_CONTINUE)
+  Assert.equal(service:partyCount(), 3, "the event mon enters the party")
+  local mon = service:partyMon(2)
+  Assert.equal(mon.species, "PICHU")
+  Assert.equal(mon.form, 1)
+  Assert.equal(mon.met.location, 7, "the bare call uses the configured map section")
+end
+
 function T.queries_write_counts_slots_and_sentinels()
   local service = openService()
   local run = runWith(service)

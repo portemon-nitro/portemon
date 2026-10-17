@@ -48,6 +48,9 @@ local function follower(overrides)
     facePlayer = function()
       calls[#calls + 1] = "facePlayer"
     end,
+    releaseNextToPlayer = function()
+      calls[#calls + 1] = "releaseNextToPlayer"
+    end,
     setMovementPaused = function(_, paused)
       calls[#calls + 1] = { "setMovementPaused", paused }
     end,
@@ -122,6 +125,13 @@ function T.partner_state_reports_source_object_param_nibble()
     Runtime.OUTCOME_CONTINUE
   )
   Assert.equal(absentStored[0x800C], 0, "zero source state remains zero")
+end
+
+function T.release_next_to_player_delegates_to_the_controller()
+  local followingMon = follower()
+  local run = runWith(followingMon)
+  Assert.equal(Runtime.executeNode({ op = "follower_release_next_to_player" }, run), Runtime.OUTCOME_CONTINUE)
+  Assert.equal(followingMon._calls[1], "releaseNextToPlayer", "the release runs through the one owner")
 end
 
 function T.face_player_delegates_to_the_controller()

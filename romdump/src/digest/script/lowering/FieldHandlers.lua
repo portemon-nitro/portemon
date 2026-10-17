@@ -855,6 +855,13 @@ local function giveMon(ins)
   }
 end
 
+local function giveSpikyEarPichu(_)
+  -- ScrCmd_GiveSpikyEarPichu carries no operands: the source checks
+  -- party room in the script, creates the fixed event distribution
+  -- through the service, and publishes it, all in the same tick.
+  return { op = "give_spiky_ear_pichu" }
+end
+
 local function returnLoanMon(ins)
   return {
     op = "return_loan_mon",
@@ -1764,6 +1771,7 @@ local FieldHandlers = {
   [202] = bufferSpeciesName,
   [203] = bufferStarterSpeciesName,
   [137] = giveMon,
+  [778] = giveSpikyEarPichu,
   [125] = giveItem,
   [126] = takeItem,
   [127] = hasSpaceForItem,
@@ -1870,6 +1878,7 @@ local FieldHandlers = {
   [603] = followerWait,
   [604] = followerSetMovementType,
   [605] = followerReposition,
+  [606] = FieldServiceHandlers.followerReleaseNextToPlayer,
   [608] = followerTransition,
   [621] = placeStarterBalls,
   [609] = yieldFollowerCheck,
@@ -1886,6 +1895,7 @@ local FieldHandlers = {
   [589] = BattleHandlers.wildBattle,
   [219] = FieldServiceHandlers.whiteout,
   [279] = FieldServiceHandlers.whiteout,
+  [810] = FieldServiceHandlers.celebiTimeTravel,
   [746] = hideAuxiliaryUi,
   [747] = showAuxiliaryUi,
   [748] = contextChoice,
@@ -1898,6 +1908,9 @@ local FieldHandlers = {
   [178] = explicitFieldMove("surf"),
   [179] = explicitFieldMove("waterfall"),
   [182] = explicitFieldMove("whirlpool"),
+  [102] = FieldServiceHandlers.createCameraTarget,
+  [103] = FieldServiceHandlers.removeCameraTarget,
+  [184] = FieldServiceHandlers.playerOnBikeCheck,
   [187] = FieldServiceHandlers.playerState,
   [275] = FieldServiceHandlers.martBuy,
   [276] = FieldServiceHandlers.martSpecial,
@@ -1928,6 +1941,10 @@ local FieldHandlers = {
   [813] = GearLowering.momGiftCheck,
   [821] = GearLowering.getBuenasPassword,
   [437] = FieldServiceHandlers.discardValue,
+  -- ScrCmd_NopVar490 is essentially a nop over one variable operand
+  -- (pret/pokeheartgold src/scrcmd_battle_hall.c): it shares the
+  -- discard_value semantic exactly like opcodes 219/279 share whiteout.
+  [490] = FieldServiceHandlers.discardValue,
   [446] = FieldServiceHandlers.currentMapId,
   [487] = FieldServiceHandlers.pokemonCenterHeal,
   [590] = FieldServiceHandlers.trainerCardStars,

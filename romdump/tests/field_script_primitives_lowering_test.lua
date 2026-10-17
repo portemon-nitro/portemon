@@ -14,6 +14,9 @@ end
 
 function T.lifecycle_map_query_and_prop_commands_have_source_dispositions()
   local expected = {
+    [102] = { "continue_same_tick", "camera_focus_set" },
+    [103] = { "continue_same_tick", "camera_focus_clear" },
+    [184] = { "continue_same_tick", "player_on_bike_check" },
     [187] = { "continue_same_tick", "player_state" },
     [590] = { "continue_same_tick", "trainer_card_stars" },
     [292] = { "continue_same_tick", "check_running_shoes" },
@@ -26,6 +29,8 @@ function T.lifecycle_map_query_and_prop_commands_have_source_dispositions()
     [446] = { "continue_same_tick", "current_map_id" },
     [379] = { "continue_same_tick", "time_of_day" },
     [437] = { "continue_same_tick", "discard_value" },
+    [490] = { "continue_same_tick", "discard_value" },
+    [810] = { "native_wait", "celebi_time_travel" },
     [487] = { "native_wait", "pokemon_center_heal" },
   }
   for opcode, result in pairs(expected) do
@@ -35,10 +40,12 @@ function T.lifecycle_map_query_and_prop_commands_have_source_dispositions()
       operands = { raw(2), raw(1), raw(5), raw(9), raw(7) }
     elseif opcode == 310 or opcode == 311 or opcode == 446 or opcode == 487 then
       operands = { raw(4) }
-    elseif opcode == 187 or opcode == 379 or opcode == 590 or opcode == 292 or opcode == 484 then
+    elseif opcode == 184 or opcode == 187 or opcode == 379 or opcode == 590 or opcode == 292 or opcode == 484 then
       operands = { raw("VAR_RESULT") }
-    elseif opcode == 437 then
+    elseif opcode == 437 or opcode == 490 then
       operands = { raw("VAR_TEMP") }
+    elseif opcode == 102 then
+      operands = { raw("VAR_X"), raw("VAR_Y") }
     end
     local node = assert(FieldHandlers[opcode])(instruction(opcode, operands))
     Assert.equal(node.op, result[2])
@@ -53,10 +60,13 @@ function T.lifecycle_map_query_and_prop_commands_have_source_dispositions()
       Assert.equal(node.direction, "reverse")
     elseif opcode == 487 then
       Assert.equal(node.count, 4)
-    elseif opcode == 187 or opcode == 379 or opcode == 590 or opcode == 292 or opcode == 484 then
+    elseif opcode == 184 or opcode == 187 or opcode == 379 or opcode == 590 or opcode == 292 or opcode == 484 then
       Assert.deepEqual(node.result, { value = "var", id = "VAR_RESULT" })
-    elseif opcode == 437 then
+    elseif opcode == 437 or opcode == 490 then
       Assert.deepEqual(node.value, { value = "var", id = "VAR_TEMP" })
+    elseif opcode == 102 then
+      Assert.deepEqual(node.fieldX, { value = "var", id = "VAR_X" })
+      Assert.deepEqual(node.fieldZ, { value = "var", id = "VAR_Y" })
     end
   end
 end

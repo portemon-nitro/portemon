@@ -42,6 +42,20 @@ function T.give_mon_lowers_to_a_semantic_service_operation()
   Assert.equal(items[1].op, "give_mon", "the gift command lowers to the semantic gift operation")
 end
 
+function T.give_spiky_ear_pichu_lowers_to_a_semantic_service_operation()
+  local lowered = SemanticLowering.lowerScript(
+    { instructions = { { opcode = 778, operands = {}, offset = 0 } } },
+    { member = 12, scripts = {}, movements = {} },
+    { stdCatalog = SourceCatalog.catalog() }
+  )
+  Assert.equal(#lowered.items, 1, "the gift command lowers to exactly one semantic step")
+  Assert.deepEqual(
+    lowered.items[1].op,
+    "give_spiky_ear_pichu",
+    "the spiky-ear gift lowers to its semantic operation"
+  )
+end
+
 function T.give_mon_creates_adds_and_reports_in_source_order()
   local HgssMonService = requireService()
   local catalog = CatalogFixture.makeCatalog()

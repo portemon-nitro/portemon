@@ -894,8 +894,19 @@ Schema.OPERATIONS = {
   overworld_leave = { fields = {} },
   overworld_restore = { fields = {} },
   whiteout = { fields = {} },
+  celebi_time_travel = { fields = {} },
+  give_spiky_ear_pichu = { fields = {} },
+  follower_release_next_to_player = { fields = {} },
   current_map_id = { fields = { result = { type = "id_or_var", required = true } } },
   player_state = { fields = { result = { type = "id_or_var", required = true } } },
+  player_on_bike_check = { fields = { result = { type = "id_or_var", required = true } } },
+  camera_focus_set = {
+    fields = {
+      fieldX = { type = "scalar_or_value", required = true },
+      fieldZ = { type = "scalar_or_value", required = true },
+    },
+  },
+  camera_focus_clear = { fields = {} },
   time_of_day = { fields = { result = { type = "id_or_var", required = true } } },
   weekday = { fields = { result = { type = "id_or_var", required = true } } },
   discard_value = { fields = { value = { type = "scalar_or_value", required = true } } },
@@ -2000,7 +2011,11 @@ Schema.CONSTRUCTORS = {
         notes = "Requires source kind/speed/direction/color or normalized equivalents.",
       },
       { signature = "S.waitFade(spec)", canonical = "op=wait_fade", notes = "spec optional." },
-      { signature = "S.warp(spec)", canonical = "op=warp", notes = "Requires map and target coordinates/warp." },
+      {
+        signature = "S.warp(spec)",
+        canonical = "op=warp",
+        notes = "Requires map, warp, and fieldX/fieldZ in global field tile coordinates.",
+      },
       { signature = "S.setSpawn(spec)", canonical = "op=set_spawn", notes = "spec={spawn}." },
       {
         signature = "S.shakeCamera(spec)",

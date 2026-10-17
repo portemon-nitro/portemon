@@ -1098,6 +1098,7 @@ end
 ---@field setMovementPaused fun(self: RuntimeFollowingMon, paused: boolean)
 ---@field setMovementType fun(self: RuntimeFollowingMon, movementType: string)
 ---@field repositionRelativeToPlayer fun(self: RuntimeFollowingMon, offsetSelector: integer, directionRaw: integer)
+---@field releaseNextToPlayer fun(self: RuntimeFollowingMon): boolean
 ---@field isEventTrigger fun(self: RuntimeFollowingMon, kind: string, param: unknown): boolean
 
 do
@@ -1175,6 +1176,11 @@ do
     return blockOnTask(run, "follower_recall", {})
   end
 
+  local function handleFollowerReleaseNextToPlayer(_, run)
+    followingMonFor(run):releaseNextToPlayer()
+    return Runtime.OUTCOME_CONTINUE
+  end
+
   HANDLERS.follower_is_active = handleFollowerIsActive
   HANDLERS.follower_partner_state = handleFollowerPartnerState
   HANDLERS.follower_face_player = handleFollowerFacePlayer
@@ -1185,6 +1191,7 @@ do
   HANDLERS.follower_is_event_trigger = handleFollowerIsEventTrigger
   HANDLERS.follower_transition = handleFollowerTransition
   HANDLERS.follower_recall = handleFollowerRecall
+  HANDLERS.follower_release_next_to_player = handleFollowerReleaseNextToPlayer
 end
 
 local function handlePlaceStarterBalls(_, run)
@@ -2476,12 +2483,34 @@ function HANDLERS.whiteout(node, run)
   requireForeground(run, node.op)
   return blockOnTask(run, "whiteout", {})
 end
+function HANDLERS.celebi_time_travel(_, run)
+  return blockOnTask(run, "celebi_time_travel", {})
+end
+function HANDLERS.give_spiky_ear_pichu(_, run)
+  monsFor(run):giveSpikyEarPichu()
+  return Runtime.OUTCOME_CONTINUE
+end
+function HANDLERS.camera_focus_set(node, run)
+  requireService(run, "actors"):createCameraTarget(evalField(node, run, "fieldX"), evalField(node, run, "fieldZ"))
+  return Runtime.OUTCOME_CONTINUE
+end
+function HANDLERS.camera_focus_clear(_, run)
+  requireService(run, "actors"):clearCameraTarget()
+  return Runtime.OUTCOME_CONTINUE
+end
 function HANDLERS.current_map_id(node, run)
   semanticsFor(run).writeRef(node.result, requireService(run, "maps"):currentId(), run)
   return Runtime.OUTCOME_CONTINUE
 end
 function HANDLERS.player_state(node, run)
   semanticsFor(run).writeRef(node.result, requireService(run, "player"):stateCode(), run)
+  return Runtime.OUTCOME_CONTINUE
+end
+function HANDLERS.player_on_bike_check(node, run)
+  -- pret/pokeheartgold src/scrcmd_c.c ScrCmd_PlayerOnBikeCheck: the result
+  -- is 1 exactly when the live avatar state is cycling (state code 1).
+  local onBike = requireService(run, "player"):stateCode() == 1
+  semanticsFor(run).writeRef(node.result, onBike and 1 or 0, run)
   return Runtime.OUTCOME_CONTINUE
 end
 function HANDLERS.time_of_day(node, run)

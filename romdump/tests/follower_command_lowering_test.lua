@@ -85,6 +85,15 @@ function T.following_mon_interaction_lowers_to_one_no_operand_node()
   Assert.isNil(node.command, "runtime dispatch carries no source opcode")
 end
 
+function T.opcode_606_releases_next_to_the_player_in_the_same_tick()
+  Assert.equal(CommandCatalog.disposition(606), "supported", "the release command must be supported")
+  Assert.equal(CommandCatalog.classification(606), CommandCatalog.CONTINUE, "the release continues in the same tick")
+  Assert.deepEqual(CommandCatalog.widths(606), {}, "the release command carries no operands")
+  local node = lowerSingle(606, {})
+  Assert.equal(node.op, "follower_release_next_to_player", "the release lowers to controller semantics")
+  Assert.isNil(node.command, "runtime dispatch carries no source opcode")
+end
+
 function T.opcode_599_is_a_blocking_recall_distinct_from_opcode_608()
   Assert.equal(CommandCatalog.disposition(599), "supported")
   Assert.equal(CommandCatalog.classification(599), CommandCatalog.NATIVE_WAIT)

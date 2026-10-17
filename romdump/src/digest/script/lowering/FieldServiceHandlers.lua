@@ -11,6 +11,12 @@ function FieldServiceHandlers.whiteout(_)
   return { op = "whiteout" }
 end
 
+function FieldServiceHandlers.celebiTimeTravel(_)
+  -- ScrCmd_CelebiTimeTravel carries no operands: the source starts its
+  -- cutscene task and waits for it (pret/pokeheartgold src/scrcmd_c.c).
+  return { op = "celebi_time_travel" }
+end
+
 function FieldServiceHandlers.processSoundplate()
   return { op = "process_soundplate" }
 end
@@ -25,6 +31,36 @@ end
 
 function FieldServiceHandlers.playerState(ins)
   return { op = "player_state", result = Operands.varRef(ins.operands[1]) }
+end
+
+function FieldServiceHandlers.playerOnBikeCheck(ins)
+  -- ScrCmd_PlayerOnBikeCheck result: the source comparison against the
+  -- cycling avatar state becomes the semantic bike query writing 1 or 0
+  -- in the same tick.
+  return { op = "player_on_bike_check", result = Operands.varRef(ins.operands[1]) }
+end
+
+function FieldServiceHandlers.createCameraTarget(ins)
+  -- ScrCmd_CreateCameraTarget x, y: the source pins its invisible focus
+  -- object on the tile and fixes the camera on it. The focus object
+  -- itself never moves, so the semantic operation carries the tile the
+  -- camera holds; focus height resolves against the bound map at run time.
+  return {
+    op = "camera_focus_set",
+    fieldX = Operands.varRef(ins.operands[1]),
+    fieldZ = Operands.varRef(ins.operands[2]),
+  }
+end
+
+function FieldServiceHandlers.removeCameraTarget(_)
+  return { op = "camera_focus_clear" }
+end
+
+function FieldServiceHandlers.followerReleaseNextToPlayer(_)
+  -- ScrCmd_FollowMonReleaseNextToPlayer carries no operands: with an
+  -- active permitted follower it moves next to the player hidden until
+  -- its first step, otherwise it is a same-tick no-op.
+  return { op = "follower_release_next_to_player" }
 end
 
 function FieldServiceHandlers.timeOfDay(ins)
