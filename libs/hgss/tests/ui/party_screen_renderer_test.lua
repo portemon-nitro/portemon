@@ -270,10 +270,23 @@ local function fakeCacheFs()
   }
 end
 
+-- Stub mon icon atlas behind sampler draws: a pooled-shaped straight
+-- handle over a filterable stub image, so icon draws exercise the shared
+-- exact sampler exactly like production pooled pages.
+local function stubAtlasImage()
+  return {
+    setFilter = function() end,
+  }
+end
+
 local function icons()
+  local atlas = stubAtlasImage()
   return {
     image = function()
-      return "atlas"
+      return atlas
+    end,
+    handleFor = function()
+      return { image = atlas, kind = "rgba8", width = 32, height = 32 }
     end,
     quadFor = function(_, key)
       return { key = key }
@@ -1177,9 +1190,13 @@ local function paletteText(calls)
 end
 
 local function frameIcons(calls)
+  local atlas = stubAtlasImage()
   return {
     image = function()
-      return "atlas"
+      return atlas
+    end,
+    handleFor = function()
+      return { image = atlas, kind = "rgba8", width = 32, height = 32 }
     end,
     quadFor = function(_, key, frameIndex)
       calls[#calls + 1] = { key = key, frameIndex = frameIndex }

@@ -542,6 +542,60 @@ function T.release_frees_the_owned_images(scope)
   Assert.isNil(next(renderer._imageByAsset))
 end
 
+-- Repeated Start Menu open/close cycles reuse one warm renderer and its
+-- chrome: alternating selections render identically per selection without
+-- re-creating images, closing never drops the chrome, and construction
+-- binds only a handful of fixed surfaces.
+function T.repeated_open_and_close_reuses_one_warm_start_menu(scope)
+  local cache, manifest = selectorCacheAndManifest()
+  local placement = canonicalPlacement()
+  local actions = {
+    { id = "vanilla.pokedex", position = 0, icon = 0, label = "POKEDEX" },
+    { id = "vanilla.pokemon", position = 1, icon = 1, label = "POKEMON" },
+  }
+  local imagesBeforeConstruction = love.graphics.getStats().images
+  local renderer = StartMenuRenderer.new({ cacheFs = cache, manifest = manifest, text = recordingText() })
+  local chromeImages = love.graphics.getStats().images - imagesBeforeConstruction
+  Assert.isTrue(chromeImages < 16, "the warm Start Menu binds only its fixed chrome (" .. chromeImages .. ")")
+  local function capture(selectedPosition)
+    local canvas = scope:own(love.graphics.newCanvas(CANONICAL_WIDTH, CANONICAL_HEIGHT))
+    love.graphics.setCanvas(canvas)
+    love.graphics.clear(0, 0, 0, 0)
+    renderer:draw({
+      selectedPosition = selectedPosition,
+      trainerGender = "male",
+      actions = actions,
+    }, placement)
+    love.graphics.setCanvas()
+    return scope:own(canvas:newImageData())
+  end
+  -- Warm up once before measuring the global image census: the first
+  -- present may settle a finalizer left over from earlier suites, so the
+  -- steady-state draws below are measured against the settled count.
+  capture(0)
+  collectgarbage("collect")
+  local settledImages = love.graphics.getStats().images
+  local firstUnselected = capture(0)
+  local firstSelected = capture(1)
+  Assert.equal(
+    love.graphics.getStats().images,
+    settledImages,
+    "opening the menu draws from retained chrome without new images"
+  )
+  -- Close the menu (no draw, renderer kept alive) and reopen each
+  -- selection: per-selection views match exactly and no chrome returns.
+  local reopenedUnselected = capture(0)
+  local reopenedSelected = capture(1)
+  assertPixelsEqual(firstUnselected, reopenedUnselected, "reopened unselected golden")
+  assertPixelsEqual(firstSelected, reopenedSelected, "reopened selected golden")
+  Assert.equal(
+    love.graphics.getStats().images,
+    settledImages,
+    "repeated open and close cycles re-create no chrome"
+  )
+  renderer:release()
+end
+
 local suite = GraphicsSmoke.suite(T, {
   capabilities = { "graphics", "rom_dump" },
   tags = { "field", "menu", "real-cache" },

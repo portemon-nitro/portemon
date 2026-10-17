@@ -8,6 +8,7 @@
 
 local FieldTextWindowRenderer = require("libs.hgss.src.ui.FieldTextWindowRenderer")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
+local ImageSampling = require("libs.nds.src.love.ImageSampling")
 local PartyScreenTheme = require("libs.hgss.src.ui.PartyScreenTheme")
 local YesNoPromptRenderer = require("libs.hgss.src.ui.YesNoPromptRenderer")
 
@@ -20,6 +21,9 @@ local YesNoPromptRenderer = require("libs.hgss.src.ui.YesNoPromptRenderer")
 ---@field _prompt YesNoPromptRenderer the owned source prompt renderer
 ---@field _window table<string, unknown>? the borrowed shared window decoration
 ---@field _frameIndex integer? the borrowed application frame choice for shared decoration
+---@field _pool table<string, unknown>? the borrowed shared image owner; nil keeps eager construction
+---@field _leases table<integer, table<string, unknown>>? installed chrome leases returned on release
+---@field _handles table<string, table<string, unknown>>? installed chrome leases by image key behind sampler draws
 local PartyScreenRenderer = {}
 PartyScreenRenderer.__index = PartyScreenRenderer
 
@@ -27,6 +31,40 @@ PartyScreenRenderer.__index = PartyScreenRenderer
 local SELECT_SHIFT = 2
 local BOB_UP = -3
 local BOB_DOWN = 1
+
+-- Every party visual samples point-filtered and clamped, matching the
+-- eager acquisition below, so pooled leases draw identically.
+local POOLED_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }
+
+-- Borrows one generated path from the shared image owner, yielding to the
+-- worker until the chrome resolves. A missing visual fails loudly without
+-- publishing a partial chrome set; the caller returns earlier leases when
+-- a later visual fails.
+---@param pool table<string, unknown>
+---@param path string
+---@return table<string, unknown> lease
+local function acquirePinned(pool, path)
+  local token = pool:request(path, POOLED_SAMPLER, "demand")
+  local stalled = 0
+  while true do
+    local status, failure = pool:poll(token)
+    if status == "ready" then
+      return pool:acquire(token)
+    end
+    if status == "failed" then
+      error("party image missing at " .. path .. ": " .. tostring(failure), 0)
+    end
+    assert(status == "pending", "party preparation reports pending or ready")
+    stalled = stalled + 1
+    if stalled > 10000 then
+      error("party image stalled at " .. path, 0)
+    end
+    local timer = love and love.timer
+    if timer ~= nil and timer.sleep ~= nil then
+      timer.sleep(0.001)
+    end
+  end
+end
 
 ---@param graphics love.graphics
 ---@param path string
@@ -77,7 +115,7 @@ local function manifestSection(manifest, section)
   return value
 end
 
----@param opts { cacheFs: CacheFs, manifest: table<string, unknown>, uiManifest: table<string, unknown>?, text: table<string, unknown>, window: table<string, unknown>?, frameIndex: integer?, graphics?: love.graphics }
+---@param opts { cacheFs: CacheFs, manifest: table<string, unknown>, uiManifest: table<string, unknown>?, text: table<string, unknown>, window: table<string, unknown>?, frameIndex: integer?, graphics?: love.graphics, imagePool?: table<string, unknown> }
 ---@return PartyScreenRenderer
 function PartyScreenRenderer.new(opts)
   assert(type(opts) == "table", "party renderer options must be a table")
@@ -114,9 +152,12 @@ function PartyScreenRenderer.new(opts)
     _manifest = manifest,
     _window = opts.window,
     _frameIndex = opts.frameIndex,
+    _pool = opts.imagePool,
+    _leases = opts.imagePool ~= nil and {} or nil,
   }, PartyScreenRenderer)
   local ok, err = pcall(function()
-    renderer._contextText = FieldTextRenderer.new({ cacheFs = cacheFs, fontId = 4, graphics = graphics })
+    renderer._contextText =
+      FieldTextRenderer.new({ cacheFs = cacheFs, fontId = 4, graphics = graphics, imagePool = opts.imagePool })
     renderer:_acquire(cacheFs, manifest, opts.uiManifest)
   end)
   if not ok then
@@ -134,13 +175,28 @@ end
 function PartyScreenRenderer:_acquire(cacheFs, manifest, uiManifest)
   local graphics = self._graphics
   local images = self._images
+  local pool = self._pool
+  local leases = self._leases
   local panels = manifestSection(manifest, "panels")
   local seen = {}
-  local function acquire(path)
-    if seen[path] == nil then
-      seen[path] = true
-      acquireImage(graphics, cacheFs, path, images, "asset:" .. path)
+  local function take(path, key)
+    if seen[path] ~= nil then
+      return
     end
+    seen[path] = true
+    if pool ~= nil then
+      local lease = acquirePinned(pool, path)
+      assert(leases ~= nil, "pooled chrome tracks its installed leases")
+      leases[#leases + 1] = lease
+      self._handles = self._handles or {}
+      self._handles[key] = lease
+      images[key] = assert(lease.image, "shared leases carry their resolved image")
+    else
+      acquireImage(graphics, cacheFs, path, images, key)
+    end
+  end
+  local function acquire(path)
+    take(path, "asset:" .. path)
   end
   for slot0 = 0, 5 do
     local panel = assert(panels[slot0 + 1], "the party manifest carries panel " .. slot0)
@@ -194,12 +250,12 @@ function PartyScreenRenderer:_acquire(cacheFs, manifest, uiManifest)
   assert(type(digits) == "table" and #digits == 10, "the party manifest carries ten digit glyphs")
   for digit = 0, 9 do
     local glyph = assert(digits[digit + 1], "the party manifest carries digit " .. digit)
-    acquireImage(graphics, cacheFs, assert(glyph.image, "digit glyphs carry image paths"), images, "digit:" .. digit)
+    take(assert(glyph.image, "digit glyphs carry image paths"), "digit:" .. digit)
   end
   local level = assert(glyphs.level, "the party manifest carries the level prefix")
-  acquireImage(graphics, cacheFs, assert(level.image, "level prefix carries its image path"), images, "level")
+  take(assert(level.image, "level prefix carries its image path"), "level")
   local slash = assert(glyphs.slash, "the party manifest carries the HP slash")
-  acquireImage(graphics, cacheFs, assert(slash.image, "the HP slash carries its image path"), images, "slash")
+  take(assert(slash.image, "the HP slash carries its image path"), "slash")
   if uiManifest ~= nil then
     self._prompt = YesNoPromptRenderer.new({ cacheFs = cacheFs, manifest = uiManifest, graphics = graphics })
   end
@@ -209,6 +265,40 @@ end
 ---@return love.Image
 function PartyScreenRenderer:_image(path)
   return assert(self._images["asset:" .. path], "party image resolves once: " .. path)
+end
+
+-- One chrome/glyph draw through the shared exact sampler when its image
+-- key is a pooled borrow, else the unchanged eager raw draw. The quad
+-- stays optional: bare placements and quad viewports share the branch.
+---@param key string images/handles key ("asset:" .. path, "digit:" .. digit, "level", "slash")
+---@param quad love.Quad?
+---@param x number
+---@param y number
+function PartyScreenRenderer:_drawKeyed(key, quad, x, y)
+  local graphics = self._graphics
+  local handles = self._handles
+  local handle = handles ~= nil and handles[key] or nil
+  if handle ~= nil then
+    ImageSampling.draw(graphics, handle, quad, x, y)
+    return
+  end
+  local image = assert(self._images[key], "party image resolves once: " .. key)
+  if quad ~= nil then
+    graphics.draw(image, quad, x, y)
+  else
+    graphics.draw(image, x, y)
+  end
+end
+
+-- One mon icon draw through the shared exact sampler: indexed pages bind
+-- their exact palette instead of rendering index bytes.
+---@param icons table<string, unknown> borrowed mon icon provider
+---@param iconKey string
+---@param quad love.Quad
+---@param x number
+---@param y number
+function PartyScreenRenderer:_drawMonIcon(icons, iconKey, quad, x, y)
+  ImageSampling.draw(self._graphics, icons:handleFor(iconKey), quad, x, y)
 end
 
 ---@param sequence table<string, unknown>
@@ -271,8 +361,9 @@ function PartyScreenRenderer:_drawSequence(sequence, tick, anchor)
   local frame = frameAt(sequence, tick)
   local offset = frame.offset or ZERO_OFFSET
   setColor(self._graphics, WHITE)
-  self._graphics.draw(
-    self:_image(assert(frame.image, "party frames carry image paths")),
+  self:_drawKeyed(
+    "asset:" .. assert(frame.image, "party frames carry image paths"),
+    nil,
     anchor.x + assert(offset.x, "party frame offset carries x"),
     anchor.y + assert(offset.y, "party frame offset carries y")
   )
@@ -285,11 +376,22 @@ function PartyScreenRenderer:release()
     self._contextText:release()
     self._contextText = nil
   end
+  local pool = self._pool
+  self._pool = nil
+  local leases = self._leases
+  self._leases = nil
   local images = self._images
   self._images = {}
-  for _, image in pairs(images) do
-    if image ~= nil and image.release then
-      image:release()
+  self._handles = {}
+  if pool ~= nil then
+    for _, lease in ipairs(leases or {}) do
+      pool:release(lease)
+    end
+  else
+    for _, image in pairs(images) do
+      if image ~= nil and image.release then
+        image:release()
+      end
     end
   end
   local hpQuads = self._hpQuads
@@ -465,7 +567,6 @@ function PartyScreenRenderer:_drawHpBar(bar, currentHp, maxHp)
   assert(zone == "green" or zone == "yellow" or zone == "red", "living HP bars have a source color")
   local fill = PartyScreenTheme.fillLength(currentHp, maxHp)
   local visual = assert(self._manifest.visuals.hpBars[zone], "party HP bars carry their source zone")
-  local image = self:_image(assert(visual.image, "party HP bars carry image paths"))
   local quad = nil
   if fill < bar.width then
     local key = zone .. ":" .. fill
@@ -478,11 +579,7 @@ function PartyScreenRenderer:_drawHpBar(bar, currentHp, maxHp)
   setColor(graphics, WHITE)
   local x = bar.x
   local y = bar.y + math.floor((bar.height - visual.height) / 2)
-  if quad == nil then
-    graphics.draw(image, x, y)
-  else
-    graphics.draw(image, quad, x, y)
-  end
+  self:_drawKeyed("asset:" .. assert(visual.image, "party HP bars carry image paths"), quad, x, y)
 end
 
 -- Draws current/max HP numerals through the compiled digit glyphs at
@@ -508,12 +605,12 @@ function PartyScreenRenderer:_drawHpNumerals(currentHp, maxHp, rect)
     local digit = tonumber(current:sub(index, index))
     assert(digit ~= nil, "HP numerals render decimal digits")
     assert(digits[digit + 1], "the party manifest carries digit glyphs")
-    graphics.draw(assert(self._images["digit:" .. digit], "digit images resolve once"), x, y)
+    self:_drawKeyed("digit:" .. digit, nil, x, y)
     x = x + advance
   end
   local slash = assert(glyphs.slash, "the party manifest carries the HP slash")
   assert(slash.width, "the HP slash carries its width")
-  graphics.draw(assert(self._images.slash, "slash images resolve once"), rect.x + slashOrigin.x, rect.y + slashOrigin.y)
+  self:_drawKeyed("slash", nil, rect.x + slashOrigin.x, rect.y + slashOrigin.y)
   local max = tostring(maxHp)
   x = rect.x + maxOrigin.x
   y = rect.y + maxOrigin.y
@@ -521,7 +618,7 @@ function PartyScreenRenderer:_drawHpNumerals(currentHp, maxHp, rect)
     local digit = tonumber(max:sub(index, index))
     assert(digit ~= nil, "HP numerals render decimal digits")
     assert(digits[digit + 1], "the party manifest carries digit glyphs")
-    graphics.draw(assert(self._images["digit:" .. digit], "digit images resolve once"), x, y)
+    self:_drawKeyed("digit:" .. digit, nil, x, y)
     x = x + advance
   end
 end
@@ -542,13 +639,13 @@ function PartyScreenRenderer:_drawLevel(level, rect)
   setColor(graphics, WHITE)
   local x = rect.x + origin.x
   local y = rect.y + origin.y
-  graphics.draw(assert(self._images.level, "level images resolve once"), x, y)
+  self:_drawKeyed("level", nil, x, y)
   x = x + prefixWidth
   for index = 1, #tostring(level) do
     local digit = tonumber(tostring(level):sub(index, index))
     assert(digit ~= nil, "levels render decimal digits")
     assert(digits[digit + 1], "the party manifest carries digit glyphs")
-    graphics.draw(assert(self._images["digit:" .. digit], "digit images resolve once"), x, y)
+    self:_drawKeyed("digit:" .. digit, nil, x, y)
     x = x + advance
   end
 end
@@ -567,7 +664,6 @@ function PartyScreenRenderer:_drawIcon(record, panel, dx, selected, sequenceTick
   local timelines = assert(animations.sequences, "icon timelines resolve six sequences")
   local timeline = assert(timelines[sequence + 1], "icon timelines cover sequence " .. tostring(sequence))
   local iconFrame, translateX, translateY = iconFrameAt(timeline, sequenceTick)
-  local iconImage = icons:image(iconKey)
   local quad = icons:quadFor(iconKey, iconFrame)
   local dims = icons:dimensions(iconKey)
   assert(
@@ -589,7 +685,7 @@ function PartyScreenRenderer:_drawIcon(record, panel, dx, selected, sequenceTick
     end
   end
   setColor(graphics, WHITE)
-  graphics.draw(iconImage, quad, x, y)
+  self:_drawMonIcon(icons, iconKey, quad, x, y)
 end
 
 ---@param panel table<string, unknown>
@@ -633,7 +729,7 @@ end
 ---@param y number
 function PartyScreenRenderer:_drawChrome(visual, x, y)
   setColor(self._graphics, WHITE)
-  self._graphics.draw(self:_image(assert(visual.image, "party panel states carry image paths")), x, y)
+  self:_drawKeyed("asset:" .. assert(visual.image, "party panel states carry image paths"), nil, x, y)
 end
 
 -- Draws one occupied slot's text row: the display name in the ordinary
@@ -700,8 +796,9 @@ function PartyScreenRenderer:_drawStatusMarker(record, panel, dx)
   local visual = assert(self._manifest.visuals.status[status], "party status carries its semantic visual")
   local statusRect = assert(panel.statusRect, "party panels carry the status rectangle")
   setColor(self._graphics, WHITE)
-  self._graphics.draw(
-    self:_image(assert(visual.image, "party status visuals carry image paths")),
+  self:_drawKeyed(
+    "asset:" .. assert(visual.image, "party status visuals carry image paths"),
+    nil,
     statusRect.x + dx,
     statusRect.y
   )
@@ -771,7 +868,7 @@ function PartyScreenRenderer:_drawMenu(menu, menuIndex, menuPress, kind, layout)
     graphics.rectangle("fill", textRect.x, textRect.y, textRect.width, textRect.height)
     local visual = assert(group[frameState], "context frames carry the " .. frameState .. " state")
     setColor(graphics, WHITE)
-    graphics.draw(self:_image(assert(visual.image, "context frames carry image paths")), frameRect.x, frameRect.y)
+    self:_drawKeyed("asset:" .. assert(visual.image, "context frames carry image paths"), nil, frameRect.x, frameRect.y)
     local label = assert(entry.label, "menu entries carry display labels")
     local labelX, labelY = textRect.x, textRect.y
     if style == "cancel" then
@@ -942,14 +1039,14 @@ end
 function PartyScreenRenderer:_drawDetailFacts(facts, originX, originY, slide, icons)
   local graphics = self._graphics
   local iconKey = assert(facts.iconKey, "detail facts carry an icon key")
-  local iconImage = icons:image(iconKey)
   local quad = icons:quadFor(iconKey)
   setColor(graphics, WHITE)
   local dims = icons:dimensions(iconKey)
   local detail = assert(self._manifest.detail, "the party manifest carries detail geometry")
   local iconAnchor = assert(detail.iconAnchor, "party detail carries the icon anchor")
-  graphics.draw(
-    iconImage,
+  self:_drawMonIcon(
+    icons,
+    iconKey,
     quad,
     originX + iconAnchor.x - dims.width / 2,
     originY + iconAnchor.y - slide - dims.height / 2
@@ -961,8 +1058,9 @@ function PartyScreenRenderer:_drawDetailFacts(facts, originX, originY, slide, ic
     local width = assert(visual.width, "party status visuals carry widths")
     local height = assert(visual.height, "party status visuals carry heights")
     setColor(graphics, WHITE)
-    graphics.draw(
-      self:_image(assert(visual.image, "party status visuals carry image paths")),
+    self:_drawKeyed(
+      "asset:" .. assert(visual.image, "party status visuals carry image paths"),
+      nil,
       originX + statusAnchor.x - width / 2,
       originY + statusAnchor.y - slide - height / 2
     )
@@ -1001,8 +1099,8 @@ function PartyScreenRenderer:_drawDetailPane(presentation, placement, icons)
   assert(placement.logicalHeight == 192, "detail panes use the canonical 192-pixel height")
   local visuals = assert(self._manifest.visuals, "the party manifest carries visuals")
   setColor(graphics, WHITE)
-  graphics.draw(self:_image(assert(visuals.backdropSub.image, "the sub backdrop carries an image path")), 0, 0)
-  graphics.draw(self:_image(assert(visuals.detailSub.image, "the detail layer carries an image path")), 0, -slide)
+  self:_drawKeyed("asset:" .. assert(visuals.backdropSub.image, "the sub backdrop carries an image path"), nil, 0, 0)
+  self:_drawKeyed("asset:" .. assert(visuals.detailSub.image, "the detail layer carries an image path"), nil, 0, -slide)
   if slide > 0 and type(facts) == "table" and facts.occupied then
     self:_drawDetailFacts(facts, 0, 0, slide, icons)
   end
@@ -1164,7 +1262,7 @@ function PartyScreenRenderer:_drawContent(presentation, layout, icons)
   local visuals = assert(self._manifest.visuals, "the party manifest carries visuals")
   local mainBackdrop = assert(visuals.backdropMain, "party visuals carry the main backdrop")
   setColor(graphics, WHITE)
-  graphics.draw(self:_image(assert(mainBackdrop.image, "the main backdrop carries an image path")), 0, 0)
+  self:_drawKeyed("asset:" .. assert(mainBackdrop.image, "the main backdrop carries an image path"), nil, 0, 0)
   -- Per-slot swap geometry resolves once: each travelling slot slides
   -- outward from its own column and exchanges its visible record at full
   -- exit while the domain order holds for the final commit.

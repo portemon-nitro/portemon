@@ -116,6 +116,11 @@ function T.open_selection_paints_native_chrome(scope)
     local realProvider =
       scope:own(PreparedMonIcons.preparedProvider(PreparedMonIcons.iconCache(), { "MON0/f0" }))
     local fixtureImage = realProvider:image("MON0/f0")
+    -- The prepared page behind the scripted icon key: the stub stays
+    -- key-agnostic like the image/quad/dimensions projections below, so
+    -- sampler draws exercise the real pooled handle whatever key the
+    -- scripted status carries.
+    local fixtureHandle = realProvider:handleFor("MON0/f0")
     local fixtureQuad, fixtureW, fixtureH = nil, 32, 32
     do
       local quad = realProvider:quadFor("MON0/f0")
@@ -125,6 +130,9 @@ function T.open_selection_paints_native_chrome(scope)
     local icons = {
       image = function(_)
         return fixtureImage
+      end,
+      handleFor = function()
+        return fixtureHandle
       end,
       quadFor = function(_)
         return fixtureQuad

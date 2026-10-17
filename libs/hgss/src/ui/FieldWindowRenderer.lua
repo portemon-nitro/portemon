@@ -14,12 +14,15 @@
 
 local Errors = require("libs.errors.src.Errors")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
+local ImageSampling = require("libs.nds.src.love.ImageSampling")
 local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 
 ---@class FieldWindowRenderer
 ---@field _manifest table<string, unknown> the runtime-validated generated field-UI manifest
 ---@field _graphics love.graphics
+---@field _pool table<string, unknown>? the borrowed shared image owner; nil keeps eager construction
+---@field _stripLease table<string, unknown>? the installed frame-strip lease returned on release
 ---@field _frameImage love.Image?
 ---@field _applicationFrameImage love.Image? keyed copy, built lazily on first application draw
 ---@field _frameBytes string? retained strip bytes backing the lazy keyed build
@@ -141,7 +144,40 @@ function FieldWindowRenderer.keyApplicationCopy(imageData, frames)
   end
 end
 
----@param opts { cacheFs: CacheFs, manifest: table<string, unknown>, graphics?: love.graphics }
+-- The frame strip samples point-filtered and clamped, matching the eager
+-- construction below, so pooled leases draw identically.
+local POOLED_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }
+
+-- Borrows the frame strip from the shared image owner, yielding to the
+-- worker until the chrome resolves. A missing strip fails loudly without
+-- publishing a half-built renderer.
+---@param pool table<string, unknown>
+---@param path string
+---@return table<string, unknown> lease
+local function acquirePinned(pool, path)
+  local token = pool:request(path, POOLED_SAMPLER, "demand")
+  local stalled = 0
+  while true do
+    local status, failure = pool:poll(token)
+    if status == "ready" then
+      return pool:acquire(token)
+    end
+    if status == "failed" then
+      error("dialogue frame strip missing at " .. path .. ": " .. tostring(failure), 0)
+    end
+    assert(status == "pending", "window preparation reports pending or ready")
+    stalled = stalled + 1
+    if stalled > 10000 then
+      error("dialogue frame strip stalled at " .. path, 0)
+    end
+    local timer = love and love.timer
+    if timer ~= nil and timer.sleep ~= nil then
+      timer.sleep(0.001)
+    end
+  end
+end
+
+---@param opts { cacheFs: CacheFs, manifest: table<string, unknown>, graphics?: love.graphics, imagePool?: table<string, unknown> }
 ---@return FieldWindowRenderer
 function FieldWindowRenderer.new(opts)
   assert(
@@ -164,6 +200,8 @@ function FieldWindowRenderer.new(opts)
   local self = setmetatable({
     _manifest = manifest,
     _graphics = graphics,
+    _pool = opts.imagePool,
+    _stripLease = nil,
     _frameImage = nil,
     _applicationFrameImage = nil,
     _frameBytes = nil,
@@ -181,7 +219,20 @@ function FieldWindowRenderer.new(opts)
     )
   end
   frameData = assert(frameData)
+  local pool = opts.imagePool
   local ok, err = pcall(function()
+    if pool ~= nil then
+      -- The strip pixels borrow the shared owner while the retained bytes
+      -- below still back the lazily keyed application copy: the keyed copy
+      -- is a renderer-derived variant, not the source image.
+      local lease = acquirePinned(pool, frameImagePath)
+      self._stripLease = lease
+      local image = assert(lease.image, "shared leases carry their resolved image")
+      image:setFilter("nearest", "nearest")
+      self._frameImage = image
+      self._frameBytes = frameData
+      return
+    end
     local imageData = love.image.newImageData(love.filesystem.newFileData(frameData, frameImagePath))
     self._frameImage = graphics.newImage(imageData)
     self._frameImage:setFilter("nearest", "nearest")
@@ -355,12 +406,21 @@ local function drawWindowWithQuads(self, box, backgroundColor, quads, placements
   lg.setColor(backgroundColor[1], backgroundColor[2], backgroundColor[3], backgroundColor[4] or 1)
   lg.rectangle("fill", box.x, box.y, box.width, box.height)
   local image = assert(self._frameImage)
+  -- The pooled strip borrow draws through the shared exact sampler;
+  -- the eager RGBA-direct strip keeps its raw draw. The lazily keyed
+  -- application copy below is a renderer-derived variant, never a
+  -- lease, so its draws stay raw by construction.
+  local stripLease = self._stripLease
   lg.setColor(1, 1, 1, 1)
   for _, placement in ipairs(placements) do
     local tile = assert(quads[placement.tile])
     for row = 0, (placement.spanY or 1) - 1 do
       for col = 0, (placement.spanX or 1) - 1 do
-        lg.draw(image, tile, placement.x + col * TILE_SIZE, placement.y + row * TILE_SIZE)
+        if stripLease ~= nil then
+          ImageSampling.draw(lg, stripLease, tile, placement.x + col * TILE_SIZE, placement.y + row * TILE_SIZE)
+        else
+          lg.draw(image, tile, placement.x + col * TILE_SIZE, placement.y + row * TILE_SIZE)
+        end
       end
     end
   end
@@ -433,7 +493,13 @@ function FieldWindowRenderer:drawWindow(box, frameIndex, backgroundColor)
 end
 
 function FieldWindowRenderer:release()
-  if self._frameImage and self._frameImage.release then
+  local pool = self._pool
+  self._pool = nil
+  local stripLease = self._stripLease
+  self._stripLease = nil
+  if pool ~= nil and stripLease ~= nil then
+    pool:release(stripLease)
+  elseif self._frameImage and self._frameImage.release then
     self._frameImage:release()
   end
   if self._applicationFrameImage and self._applicationFrameImage.release then

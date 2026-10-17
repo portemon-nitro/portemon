@@ -11,6 +11,7 @@
 
 local Errors = require("libs.errors.src.Errors")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
+local ImageSampling = require("libs.nds.src.love.ImageSampling")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 
 ---@class StartMenuRenderer
@@ -19,11 +20,17 @@ local LogicalSurface = require("libs.ui.src.LogicalSurface")
 ---@field _labelPalette { foreground: { r: number, g: number, b: number, a: number? }, shadow: { r: number, g: number, b: number, a: number? }, background: { r: number, g: number, b: number, a: number? } } the generated label roles from the manifest start menu record
 ---@field _images love.Image[] every acquired image, released exactly once
 ---@field _imageByAsset table<string, love.Image> acquired images by manifest asset id
+---@field _leases table<integer, table<string, unknown>>? installed chrome leases returned on release
+---@field _leaseByAsset table<string, table<string, unknown>>? installed chrome leases by manifest asset id behind sampler draws
+---@field _pool table<string, unknown>? the borrowed shared image owner; nil keeps eager construction
 ---@field _quads table<string, love.Quad> quads by asset id plus rect
 ---@field _subImage love.Image?
 ---@field _subQuad love.Quad?
+---@field _subAsset string?
 ---@field _pokeImage love.Image?
 ---@field _pokeQuad love.Quad?
+---@field _pokeAsset string?
+---@field _ringingAsset string?
 ---@field _ringingImage love.Image? the acquired ringing atlas, when the manifest projects it
 ---@field _ringingQuads love.Quad[]? one quad per compiled ringing frame
 ---@field _ringingOffset { x: number, y: number }? the opening ringing frame offset
@@ -40,7 +47,7 @@ StartMenuRenderer.__index = StartMenuRenderer
 -- calls; LÖVE itself remains an allowed presentation-layer dependency (the
 -- PNG bytes still enter through love.filesystem.newFileData).
 
----@param opts { cacheFs: CacheFs, manifest: table<string, unknown>, text: unknown, graphics?: unknown }
+---@param opts { cacheFs: CacheFs, manifest: table<string, unknown>, text: unknown, graphics?: unknown, imagePool?: table<string, unknown> }
 ---@return StartMenuRenderer
 function StartMenuRenderer.new(opts)
   assert(
@@ -85,12 +92,16 @@ function StartMenuRenderer.new(opts)
   local chromeAsset = assert(chrome.asset, "the start menu sub chrome must name an asset")
 
   local actionIcons = startMenu.actionIcons
+  local pool = opts.imagePool
   local self = setmetatable({
     _graphics = graphics,
     _text = text,
     _labelPalette = labelPalette,
     _images = {},
     _imageByAsset = {},
+    _leases = pool ~= nil and {} or nil,
+    _leaseByAsset = pool ~= nil and {} or nil,
+    _pool = pool,
     _quads = {},
     _subImage = nil,
     _subQuad = nil,
@@ -120,6 +131,60 @@ function StartMenuRenderer.new(opts)
   return self
 end
 
+-- Every start menu visual samples point-filtered and clamped, matching
+-- the eager acquisition below, so pooled leases draw identically.
+local POOLED_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }
+
+-- Borrows one manifest asset from the shared image owner, yielding to the
+-- worker until the chrome resolves. Failures release through the
+-- constructor unwinding below, never a partial chrome set.
+---@param self StartMenuRenderer
+---@param pool table<string, unknown>
+---@param manifest table<string, unknown>
+---@param assetId string
+---@param code string
+---@param what string
+---@return love.Image
+local function acquirePooledAsset(self, pool, manifest, assetId, code, what)
+  if self._imageByAsset[assetId] ~= nil then
+    return assert(self._imageByAsset[assetId])
+  end
+  assert(self._leases ~= nil, "pooled chrome tracks its installed leases")
+  local entry = assert(manifest.assets[assetId], "the field-UI manifest must carry " .. what)
+  local path = assert(entry.image, what .. " must name an image path")
+  local token = pool:request(path, POOLED_SAMPLER, "demand")
+  local stalled = 0
+  while true do
+    local status, failure = pool:poll(token)
+    if status == "ready" then
+      local lease = pool:acquire(token)
+      self._leases[#self._leases + 1] = lease
+      assert(self._leaseByAsset ~= nil, "pooled chrome tracks its leases by asset")
+      self._leaseByAsset[assetId] = lease
+      local image = assert(lease.image, "shared leases carry their resolved image")
+      image:setFilter("nearest", "nearest")
+      self._images[#self._images + 1] = image
+      self._imageByAsset[assetId] = image
+      return image
+    end
+    if status == "failed" then
+      if failure == nil then
+        Errors.raise(code, what .. " missing at " .. path, { path = path })
+      end
+      error(what .. " missing at " .. path .. ": " .. tostring(failure), 0)
+    end
+    assert(status == "pending", "start menu preparation reports pending or ready")
+    stalled = stalled + 1
+    if stalled > 10000 then
+      error(what .. " stalled at " .. path, 0)
+    end
+    local timer = love and love.timer
+    if timer ~= nil and timer.sleep ~= nil then
+      timer.sleep(0.001)
+    end
+  end
+end
+
 -- Acquires the SUB chrome, every icon visual atlas, and the optional
 -- poke-icon image, then builds every visual quad. Any failure releases
 -- everything acquired so far before the constructor rethrows.
@@ -129,7 +194,11 @@ end
 ---@param chromeAsset string
 function StartMenuRenderer:_acquire(cacheFs, manifest, startMenu, chromeAsset)
   local graphics = assert(self._graphics)
+  local pool = self._pool
   local function acquire(assetId, code, what)
+    if pool ~= nil then
+      return acquirePooledAsset(self, pool, manifest, assetId, code, what)
+    end
     if self._imageByAsset[assetId] ~= nil then
       return assert(self._imageByAsset[assetId])
     end
@@ -148,6 +217,7 @@ function StartMenuRenderer:_acquire(cacheFs, manifest, startMenu, chromeAsset)
   end
   local subImage = acquire(chromeAsset, FieldErrors.FIELD_UI_START_MENU_CHROME_MISSING, "the start menu sub chrome")
   self._subImage = subImage
+  self._subAsset = chromeAsset
   self._subQuad =
     graphics.newQuad(0, 0, subImage:getWidth(), subImage:getHeight(), subImage:getWidth(), subImage:getHeight())
   local function quadFor(assetId, rect)
@@ -186,6 +256,7 @@ function StartMenuRenderer:_acquire(cacheFs, manifest, startMenu, chromeAsset)
       local ringingImage =
         acquire(ringing.asset, FieldErrors.FIELD_UI_START_MENU_ICONS_MISSING, "the start menu ringing atlas")
       self._ringingImage = ringingImage
+      self._ringingAsset = ringing.asset
       assert(type(ringing.frames) == "table", "ringing frames are compiled")
       local frames = ringing.frames --[[@as table<integer, unknown>]]
       local quads = {}
@@ -209,6 +280,7 @@ function StartMenuRenderer:_acquire(cacheFs, manifest, startMenu, chromeAsset)
     if manifest.assets[pokeAsset] ~= nil then
       self._pokeImage =
         acquire(pokeAsset, FieldErrors.FIELD_UI_START_MENU_POKE_ICONS_MISSING, "the start menu poke icons")
+      self._pokeAsset = pokeAsset
       local pokeImage = assert(self._pokeImage)
       self._pokeQuad =
         graphics.newQuad(0, 0, pokeImage:getWidth(), pokeImage:getHeight(), pokeImage:getWidth(), pokeImage:getHeight())
@@ -270,6 +342,24 @@ function StartMenuRenderer:_quadFor(assetId, rect)
   return assert(self._quads[key], "a start menu icon visual must have a built quad")
 end
 
+-- One chrome/atlas draw through the shared exact sampler when the asset
+-- is a pooled borrow, else the unchanged eager raw draw.
+---@param assetId string? manifest asset behind the image, nil when eager-only
+---@param image love.Image
+---@param quad love.Quad
+---@param x number
+---@param y number
+function StartMenuRenderer:_drawAtlas(assetId, image, quad, x, y)
+  local lg = assert(self._graphics)
+  local byAsset = self._leaseByAsset
+  local lease = assetId ~= nil and byAsset ~= nil and byAsset[assetId] or nil
+  if lease ~= nil then
+    ImageSampling.draw(lg, lease, quad, x, y)
+    return
+  end
+  lg.draw(image, quad, x, y)
+end
+
 -- One presented action's icon draw: the composed visual for the action's
 -- source position at the position's source anchor plus the visual's
 -- source-relative offset, through the gender-conditional variant when the
@@ -282,7 +372,6 @@ end
 ---@param focusShake { position: integer, axis: string, age: integer }?
 ---@param confirmHop { position: integer, age: integer }?
 function StartMenuRenderer:_drawActionIcon(action, selectedPosition, gender, focusShake, confirmHop)
-  local lg = assert(self._graphics)
   local menu = self.menu
   local iconTable = assert(menu.iconTable, "the icon presentation requires the icon contract")
   local positions = assert(menu.interactive and menu.interactive.positions, "the icon presentation requires positions")
@@ -301,7 +390,13 @@ function StartMenuRenderer:_drawActionIcon(action, selectedPosition, gender, foc
   end
   if row.art == "poke_icon" then
     if self._pokeImage ~= nil then
-      lg.draw(self._pokeImage, assert(self._pokeQuad), record.anchor.x + shakeX, record.anchor.y + shakeY)
+      self:_drawAtlas(
+        self._pokeAsset,
+        self._pokeImage,
+        assert(self._pokeQuad),
+        record.anchor.x + shakeX,
+        record.anchor.y + shakeY
+      )
     end
     return
   end
@@ -320,8 +415,9 @@ function StartMenuRenderer:_drawActionIcon(action, selectedPosition, gender, foc
     local ringPosition =
       assert(positions[action.position], "position " .. tostring(action.position) .. " is outside the position set")
     local offset = assert(self._ringingOffset, "the ringing projection carries its opening offset")
-    lg.draw(
-      self._ringingImage,
+    self:_drawAtlas(
+      self._ringingAsset,
+      assert(self._ringingImage),
       self._ringingQuads[1],
       ringPosition.anchor.x + offset.x,
       ringPosition.anchor.y + offset.y
@@ -336,7 +432,8 @@ function StartMenuRenderer:_drawActionIcon(action, selectedPosition, gender, foc
   local asset = assert(state.asset, "an icon visual must name its atlas")
   local rect = assert(state.rect, "an icon visual must carry its atlas rect")
   local offset = assert(state.offset, "an icon visual must carry its frame offset")
-  lg.draw(
+  self:_drawAtlas(
+    asset,
     assert(self._imageByAsset[asset]),
     self:_quadFor(asset, rect),
     record.anchor.x + offset.x + shakeX,
@@ -349,11 +446,11 @@ end
 -- off or on state of the live auto-run lock.
 ---@param locked boolean
 function StartMenuRenderer:_drawRunningShoes(locked)
-  local lg = assert(self._graphics)
   local shoes = assert(self.menu.runningShoes, "the Running Shoes presentation requires its record")
   for _, part in ipairs({ shoes.button, shoes.indicator }) do
     local state = locked and part.on or part.off
-    lg.draw(
+    self:_drawAtlas(
+      state.asset,
       assert(self._imageByAsset[state.asset]),
       self:_quadFor(state.asset, state.rect),
       part.anchor.x + state.offset.x,
@@ -522,7 +619,7 @@ function StartMenuRenderer:_drawSurface(presentation)
   if shoes ~= nil and shoes.focused then
     selectedPosition = nil
   end
-  lg.draw(assert(self._subImage), assert(self._subQuad), 0, 0)
+  self:_drawAtlas(self._subAsset, assert(self._subImage), assert(self._subQuad), 0, 0)
   if actions ~= nil then
     for _, action in ipairs(actions) do
       self:_drawActionIcon(action, selectedPosition, presentation.trainerGender, focusShake, confirmHop)
@@ -538,15 +635,27 @@ function StartMenuRenderer:_drawSurface(presentation)
 end
 
 function StartMenuRenderer:release()
-  for _, image in ipairs(self._images) do
-    if image.release then
-      image:release()
+  local pool = self._pool
+  self._pool = nil
+  local leases = self._leases
+  self._leases = nil
+  if pool ~= nil then
+    for _, lease in ipairs(leases or {}) do
+      pool:release(lease)
+    end
+  else
+    for _, image in ipairs(self._images) do
+      if image.release then
+        image:release()
+      end
     end
   end
   self._images = {}
   self._imageByAsset = {}
+  self._leaseByAsset = nil
   self._quads = {}
   self._subImage, self._subQuad, self._pokeImage, self._pokeQuad = nil, nil, nil, nil
+  self._subAsset, self._pokeAsset, self._ringingAsset = nil, nil, nil
   self._ringingImage, self._ringingQuads, self._ringingOffset, self._ringingNotification = nil, nil, nil, nil
 end
 

@@ -14,6 +14,7 @@ local BagRenderer = require("libs.hgss.src.ui.BagRenderer")
 local CacheFs = require("libs.storage.src.CacheFs")
 local MoveIconCache = require("libs.assets.src.MoveIconCache")
 local FakeCache = require("tests.support.FakeCache")
+local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
 local BagPresentationFixture = require("tests.support.BagPresentationFixture")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local PromptController = require("libs.hgss.src.ui.YesNoPromptController")
@@ -566,6 +567,11 @@ local function icons(calls)
     image = function()
       return "atlas"
     end,
+    -- The eager unit double carries no pooled lease, so draws stay on
+    -- the raw path exactly like the unmigrated provider seam.
+    handle = function()
+      return nil
+    end,
     quadFor = function(_, key)
       if calls ~= nil then
         calls.quadFor = calls.quadFor + 1
@@ -643,6 +649,52 @@ local function readPathsContaining(reads, needle)
     end
   end
   return found
+end
+
+-- Pumps one demand to readiness through the prepare entry, like the
+-- active screen does before the first present on a semantic change.
+local function pumpReady(draw, record)
+  for _ = 1, 1000 do
+    if draw:prepare(record) then
+      return true
+    end
+  end
+  return false
+end
+
+-- Demand enrollment observer: records every generated path the renderer
+-- enrolls with the shared owner in enrollment order, backed by the
+-- synchronous fake so draws resolve immediately. Acquisition tests assert
+-- on enrolled demand instead of construction-time cache reads.
+local function observingPool(requested)
+  local inner = SharedImagePoolFake.new()
+  local pool = {}
+  function pool:request(path, sampler, priority)
+    requested[#requested + 1] = path
+    return inner:request(path, sampler, priority)
+  end
+  function pool:poll(token)
+    return inner:poll(token)
+  end
+  function pool:acquire(token)
+    return inner:acquire(token)
+  end
+  function pool:release(lease)
+    return inner:release(lease)
+  end
+  function pool:cancel(token)
+    return inner:cancel(token)
+  end
+  function pool:prune()
+    return inner:prune()
+  end
+  function pool:dispose()
+    return inner:dispose()
+  end
+  function pool:stats()
+    return inner:stats()
+  end
+  return pool, inner
 end
 
 local function slot(item, quantity)
@@ -801,6 +853,7 @@ local function renderer(graphics)
     text = text(),
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = SharedImagePoolFake.new(),
   })
 end
 
@@ -833,16 +886,17 @@ function T.closed_status_draws_nothing()
 end
 
 function T.hero_switches_between_machine_summary_and_ordinary_description()
-  local reads = {}
+  local requested = {}
   local content = text()
   local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
   local draw = BagRenderer.new({
-    cacheFs = moveSummaryCache(reads),
+    cacheFs = moveSummaryCache({}),
     manifest = moveSummaryManifest(),
     promptManifest = promptManifest(),
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = observingPool(requested),
   })
   local machine = slot("TM01", 1)
   machine.description = "TM01 description"
@@ -856,13 +910,13 @@ function T.hero_switches_between_machine_summary_and_ordinary_description()
   local machineCells = visibleSlots()
   machineCells[1] = machine
   draw:draw(status({ selected = machine, visibleSlots = machineCells }), plan(true), { icons = icons() })
-  local summaryReads = 0
-  for _, path in ipairs(reads) do
+  local summaryRequests = 0
+  for _, path in ipairs(requested) do
     if path == "bag/hero-move-summary.png" then
-      summaryReads = summaryReads + 1
+      summaryRequests = summaryRequests + 1
     end
   end
-  Assert.equal(summaryReads, 1, "a machine selection acquires the semantic summary background")
+  Assert.equal(summaryRequests, 1, "a machine selection enrolls the semantic summary background once")
   for _, label in ipairs({ "TYPE", "35", "CATEGORY", "40", "100" }) do
     Assert.isTrue(printedText(content, label), "the machine summary prints " .. label)
   end
@@ -877,6 +931,7 @@ function T.hero_switches_between_machine_summary_and_ordinary_description()
     text = lowerContent,
     graphics = FakeGraphics({ imageSizes = IMAGE_SIZES }),
     heroRenderer = heroSpy(nil),
+    imagePool = SharedImagePoolFake.new(),
   })
   lowerDraw:draw(status({ selected = machine, visibleSlots = machineCells }), plan(false), { icons = icons() })
   Assert.isFalse(printedText(lowerContent, "TYPE"), "lower-only topology does not invent the hidden summary")
@@ -894,6 +949,7 @@ function T.two_pane_mode_draws_hero_and_interactive_content()
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = SharedImagePoolFake.new(),
   })
   draw:draw(status(), plan(true), { icons = icons() })
   Assert.isTrue(#graphics.draws >= 6, "both panes compose backgrounds, strip, icons, and cursors")
@@ -922,6 +978,7 @@ function T.page_indicator_prints_inside_its_manifest_rectangle()
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = SharedImagePoolFake.new(),
   })
   draw:draw(status(), plan(true), { icons = icons() })
   local rect = manifested.interactive.pageIndicator.rect
@@ -936,25 +993,26 @@ end
 function T.semantic_visuals_drive_tabs_focus_and_state_backgrounds()
   local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
   local calls = { quadFor = 0, dimensions = 0, keys = {} }
-  local reads = {}
+  local requested = {}
   local manifested = manifest()
   local draw = BagRenderer.new({
-    cacheFs = trackingCache(reads),
+    cacheFs = seedCache(),
     manifest = manifested,
     promptManifest = promptManifest(),
     text = text(),
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = observingPool(requested),
   })
-  local focusReads = readPathsContaining(reads, "focus-")
-  table.sort(focusReads)
-  Assert.deepEqual(
-    focusReads,
-    { "bag/focus-actions.png", "bag/focus-cancel.png", "bag/focus-items.png", "bag/focus-tabs.png" },
-    "construction binds every generated focus visual exactly once"
-  )
-  Assert.equal(#readPathsContaining(reads, "highlight"), 0, "no retired tab highlight is ever acquired")
   draw:draw(status(), plan(true), { icons = icons(calls) })
+  local focusRequests = readPathsContaining(requested, "focus-")
+  table.sort(focusRequests)
+  Assert.deepEqual(
+    focusRequests,
+    { "bag/focus-actions.png", "bag/focus-cancel.png", "bag/focus-items.png", "bag/focus-tabs.png" },
+    "one status enrolls every generated focus visual exactly once"
+  )
+  Assert.equal(#readPathsContaining(requested, "highlight"), 0, "no retired tab highlight is ever enrolled")
   local ballsStrip = assert(draw._images["strip:balls"], "the current pocket strip is bound")
   Assert.isTrue(wasDrawn(graphics, ballsStrip), "browse draws its pocket-specific strip")
   for _, pocket in ipairs({ "items", "medicine", "tmhm", "berries", "mail", "battle_items", "key_items" }) do
@@ -1003,18 +1061,19 @@ end
 function T.browse_keeps_generated_chrome()
   local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
   local content = text()
-  local reads = {}
+  local requested = {}
   local draw = BagRenderer.new({
-    cacheFs = trackingCache(reads),
+    cacheFs = seedCache(),
     manifest = manifest(),
     promptManifest = promptManifest(),
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = observingPool(requested),
   })
   draw:draw(status(), plan(true), { icons = icons() })
   Assert.isTrue(wasDrawn(graphics, draw._images["strip:balls"]), "browse draws its pocket-specific strip")
-  Assert.equal(#readPathsContaining(reads, "highlight"), 0, "the selected pocket carries no synthetic highlight")
+  Assert.equal(#readPathsContaining(requested, "highlight"), 0, "the selected pocket enrolls no synthetic highlight")
   Assert.isTrue(
     wasDrawn(graphics, draw._images["background:browse:balls:2"]),
     "browse uses its pocket-specific background"
@@ -1083,6 +1142,7 @@ function T.empty_pockets_draw_no_icons_but_keep_navigation_labels()
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = SharedImagePoolFake.new(),
   })
   local cells = {}
   for index = 1, 6 do
@@ -1125,6 +1185,7 @@ function T.constrained_overlay_draws_the_description_panel()
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = SharedImagePoolFake.new(),
   })
   draw:draw(status({ state = "description_overlay" }), plan(false), { icons = icons() })
   local panel = false
@@ -1226,6 +1287,7 @@ local function snapshotImages(records, mode)
     text = text(),
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = SharedImagePoolFake.new(),
   })
   local snaps = {}
   for _, record in ipairs(records) do
@@ -1252,6 +1314,7 @@ function T.action_menu_draws_generated_labels_and_never_raw_ids()
       text = content,
       graphics = graphics,
       heroRenderer = heroSpy(nil),
+      imagePool = SharedImagePoolFake.new(),
       window = window,
       frameIndex = 3,
     })
@@ -1304,6 +1367,7 @@ function T.selection_entry_suppresses_static_focus_and_animates_generated_frames
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = SharedImagePoolFake.new(),
   })
   local function entryImageAt(elapsed, x, y)
     local mark = #graphics.draws
@@ -1358,6 +1422,7 @@ function T.action_menu_shows_selected_item_message_and_icon_at_generated_center(
       text = content,
       graphics = graphics,
       heroRenderer = heroSpy(nil),
+      imagePool = SharedImagePoolFake.new(),
     })
     draw:draw(actionStatus(), plan(mode ~= "interactive_only"), { icons = icons() })
     local joined = joinedText(content)
@@ -1380,25 +1445,27 @@ function T.action_menu_shows_selected_item_message_and_icon_at_generated_center(
 end
 
 function T.action_menu_acquires_faces_and_uses_physical_focus_nodes()
-  local reads = {}
+  local requested = {}
   local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
   local content = text()
   local draw = BagRenderer.new({
-    cacheFs = trackingCache(reads),
+    cacheFs = seedCache(),
     manifest = manifest(),
     promptManifest = promptManifest(),
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = observingPool(requested),
   })
   local record = actionStatus({
     actions = { { id = "toss", enabled = true, slot = 1 }, { id = "move", enabled = true, slot = 3 } },
     actionNode = 3,
   })
   draw:draw(record, plan(true), { icons = icons() })
-  Assert.isTrue(
-    #readPathsContaining(reads, "bag/action-face.png") == 2,
-    "the shared normal face backs the action control and the feedback latch"
+  Assert.equal(
+    #readPathsContaining(requested, "bag/action-face.png"),
+    1,
+    "the shared normal face enrolls once for the action control and the feedback latch"
   )
   Assert.isTrue(printedText(content, "TRASH"), "the populated slot keeps its semantic label")
   draw:release()
@@ -1414,6 +1481,7 @@ function T.action_focus_indexes_from_the_selected_action_without_clamping()
     text = text(),
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = SharedImagePoolFake.new(),
   })
   local actionFocus = manifested.interactive.focus.actions
   local lastX, lastY = focusOrigin(actionFocus, actionFocus.targets[4])
@@ -1441,6 +1509,7 @@ function T.action_menu_resolves_register_and_unregister_labels_independently()
       text = content,
       graphics = graphics,
       heroRenderer = heroSpy(nil),
+      imagePool = SharedImagePoolFake.new(),
     })
     local record = actionStatus({
       actions = { { id = case.id, enabled = true, slot = 1 } },
@@ -1465,6 +1534,7 @@ function T.action_menu_without_generated_labels_is_a_composition_error()
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = SharedImagePoolFake.new(),
   })
   Assert.throws(function()
     draw:draw(actionStatus(), plan(true), { icons = icons() })
@@ -1485,6 +1555,7 @@ function T.action_menu_without_generated_buttons_is_a_composition_error()
       text = content,
       graphics = graphics,
       heroRenderer = heroSpy(nil),
+      imagePool = SharedImagePoolFake.new(),
     })
   end, "an action menu without generated geometry fails instead of falling back to a list")
 end
@@ -1506,6 +1577,7 @@ function T.quantity_state_draws_generated_layers_digits_and_prompt()
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = SharedImagePoolFake.new(),
   })
   draw:draw(status({ state = "toss_quantity", quantity = 2, quantityMax = 5 }), plan(true), {
     icons = icons(),
@@ -1534,16 +1606,17 @@ function T.quantity_state_draws_generated_layers_digits_and_prompt()
 end
 
 function T.quantity_state_acquires_six_controls_and_no_text_surrogates()
-  local reads = {}
+  local requested = {}
   local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
   local content = text()
   local draw = BagRenderer.new({
-    cacheFs = trackingCache(reads),
+    cacheFs = seedCache(),
     manifest = manifest(),
     promptManifest = promptManifest(),
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = observingPool(requested),
   })
   draw:draw(
     status({ state = "toss_quantity", quantity = 2, quantityMax = 25, quantityPressedControl = 3 }),
@@ -1552,12 +1625,12 @@ function T.quantity_state_acquires_six_controls_and_no_text_surrogates()
       icons = icons(),
     }
   )
-  Assert.equal(#readPathsContaining(reads, "bag/quantity-increment.png"), 1, "increment visuals are acquired")
-  Assert.equal(#readPathsContaining(reads, "bag/quantity-decrement.png"), 1, "decrement visuals are acquired")
+  Assert.equal(#readPathsContaining(requested, "bag/quantity-increment.png"), 1, "increment visuals are enrolled")
+  Assert.equal(#readPathsContaining(requested, "bag/quantity-decrement.png"), 1, "decrement visuals are enrolled")
   Assert.equal(
-    #readPathsContaining(reads, "bag/quantity-confirm.png"),
-    2,
-    "the shared confirm visual backs the control and the feedback latch"
+    #readPathsContaining(requested, "bag/quantity-confirm.png"),
+    1,
+    "the shared confirm visual enrolls once for the control and the feedback latch"
   )
   Assert.isFalse(printedText(content, "-"), "quantity controls are not textual minus signs")
   Assert.isFalse(printedText(content, "+"), "quantity controls are not textual plus signs")
@@ -1609,6 +1682,7 @@ function T.action_and_move_states_keep_the_fixed_cancel_label()
       text = content,
       graphics = graphics,
       heroRenderer = heroSpy(nil),
+      imagePool = SharedImagePoolFake.new(),
       window = windowSpy(),
       frameIndex = 3,
     })
@@ -1635,6 +1709,7 @@ function T.quantity_labels_draw_at_their_generated_origins()
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = SharedImagePoolFake.new(),
   })
   draw:draw(status({ state = "toss_quantity", quantity = 2, quantityMax = 5 }), plan(true), {
     icons = icons(),
@@ -1648,31 +1723,32 @@ function T.quantity_labels_draw_at_their_generated_origins()
 end
 
 function T.quantity_cancel_feedback_uses_its_own_face()
-  local reads = {}
+  local requested = {}
   local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
   local content = text()
   local draw = BagRenderer.new({
-    cacheFs = quantityCache(reads),
+    cacheFs = seedCache(),
     manifest = quantityManifest(),
     promptManifest = promptManifest(),
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = observingPool(requested),
   })
-  Assert.equal(
-    #readPathsContaining(reads, "bag/quantity-cancel.png"),
-    2,
-    "the quantity cancel visual backs the control and the feedback latch"
-  )
-  Assert.equal(
-    #readPathsContaining(reads, "bag/quantity-cancel-selected.png"),
-    1,
-    "the quantity cancel flash is acquired"
-  )
   draw:draw(
     status({ state = "toss_quantity", quantity = 2, quantityMax = 5, feedback = { kind = "quantityCancel" } }),
     plan(true),
     { icons = icons() }
+  )
+  Assert.equal(
+    #readPathsContaining(requested, "bag/quantity-cancel.png"),
+    1,
+    "the quantity cancel visual enrolls once for the control and the feedback latch"
+  )
+  Assert.equal(
+    #readPathsContaining(requested, "bag/quantity-cancel-selected.png"),
+    1,
+    "the quantity cancel flash is enrolled"
   )
   local manifested = quantityManifest()
   local cancelCenter = manifested.interactive.overlays.quantity.cancel.center
@@ -1695,6 +1771,7 @@ function T.confirmation_state_draws_its_own_screen_and_prompt()
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = SharedImagePoolFake.new(),
     window = window,
     frameIndex = 3,
   })
@@ -1723,6 +1800,7 @@ function T.confirmation_state_keeps_the_singular_name_for_one_copy()
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = SharedImagePoolFake.new(),
   })
   local record = status({ state = "toss_confirm", quantity = 1, quantityMax = 5, tossBase = "action" })
   record.lowerMessage = { visibleText = "Toss 1 POTION?", fullText = "Toss 1 POTION?" }
@@ -1756,6 +1834,7 @@ function T.move_state_communicates_the_generated_move_prompt()
       text = content,
       graphics = graphics,
       heroRenderer = heroSpy(nil),
+      imagePool = SharedImagePoolFake.new(),
     })
     local cells = {}
     for index = 1, 6 do
@@ -1789,6 +1868,7 @@ function T.toss_states_communicate_their_prompts_in_every_topology()
         text = content,
         graphics = graphics,
         heroRenderer = heroSpy(nil),
+        imagePool = SharedImagePoolFake.new(),
       })
       local record = status({ state = case.state, quantity = case.quantity, quantityMax = 5, tossBase = case.tossBase })
       if case.state == "toss_confirm" then
@@ -1814,6 +1894,7 @@ function T.move_highlight_marks_the_target_across_a_page_boundary()
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = SharedImagePoolFake.new(),
   })
   local cells = {}
   for index = 1, 6 do
@@ -1865,6 +1946,7 @@ function T.nested_states_label_their_responsive_buttons()
       text = content,
       graphics = graphics,
       heroRenderer = heroSpy(nil),
+      imagePool = SharedImagePoolFake.new(),
       window = windowSpy(),
       frameIndex = 3,
     })
@@ -1922,17 +2004,29 @@ function T.nested_states_label_their_responsive_buttons()
   )
 end
 
-function T.release_frees_images_exactly_once()
+function T.release_returns_every_borrowed_lease_exactly_once()
   local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
-  local draw = renderer(graphics)
-  Assert.equal(#graphics.images, 602, "the renderer acquires bag and prompt button images")
+  local pool, inner = observingPool({})
+  local draw = BagRenderer.new({
+    cacheFs = seedCache(),
+    manifest = manifest(),
+    promptManifest = promptManifest(),
+    text = text(),
+    graphics = graphics,
+    heroRenderer = heroSpy(nil),
+    imagePool = pool,
+  })
+  draw:draw(status(), plan(true), { icons = icons() })
+  Assert.isTrue(inner:stats().outstandingLeases > 0, "the ready state holds borrowed leases")
   draw:release()
+  Assert.equal(inner:stats().outstandingLeases, 0, "release returns every borrowed handle exactly once")
   for _, image in ipairs(graphics.images) do
-    Assert.equal(image.releaseCount, 1, "every image releases exactly once")
+    Assert.equal(image.releaseCount, 1, "every owned prompt image releases exactly once")
   end
   draw:release()
+  Assert.equal(inner:stats().outstandingLeases, 0, "a second release stays a safe no-op")
   for _, image in ipairs(graphics.images) do
-    Assert.equal(image.releaseCount, 1, "a second release stays a safe no-op")
+    Assert.equal(image.releaseCount, 1, "owned prompt images still release exactly once")
   end
 end
 
@@ -1950,6 +2044,7 @@ local function rendererWithHero(graphics, order)
     text = text(),
     graphics = graphics,
     heroRenderer = spy,
+    imagePool = SharedImagePoolFake.new(),
   })
   return draw, spy
 end
@@ -1963,6 +2058,7 @@ function T.construction_requires_the_borrowed_hero_model_renderer()
       promptManifest = promptManifest(),
       text = text(),
       graphics = graphics,
+      imagePool = SharedImagePoolFake.new(),
     })
   end, "the pane composer borrows its hero model renderer")
 end
@@ -2032,6 +2128,7 @@ function T.unknown_registration_slot_is_a_composition_error()
     text = text(),
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = SharedImagePoolFake.new(),
   })
   local record = status()
   record.visibleSlots[1].registrationSlot = 3
@@ -2041,29 +2138,68 @@ function T.unknown_registration_slot_is_a_composition_error()
   draw:release()
 end
 
-function T.acquisition_failure_releases_every_image_acquired_before_it()
-  local probe = FakeGraphics({ imageSizes = IMAGE_SIZES })
-  local bound = renderer(probe)
-  local total = #probe.images
-  bound:release()
-  Assert.equal(total, 602, "setup binds every generated state, tab, focus, control, and prompt image")
-  for _, failCall in ipairs({ 1, total }) do
-    local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES, failOnImageCall = failCall })
-    Assert.throws(function()
-      BagRenderer.new({
-        cacheFs = seedCache(),
-        manifest = manifest(),
-        promptManifest = promptManifest(),
-        text = text(),
-        graphics = graphics,
-        heroRenderer = heroSpy(nil),
-      })
-    end, "an acquisition failure unwinds the images acquired before it")
-    Assert.equal(#graphics.images, failCall - 1, "only the images before the failure exist")
-    for _, image in ipairs(graphics.images) do
-      Assert.equal(image.releaseCount, 1, "every acquired image releases exactly once")
-    end
+-- A demand install failure releases its staged leases and keeps the
+-- installed state drawable: the replacement never publishes partially.
+function T.demand_install_failure_releases_staged_leases_and_keeps_the_installed_state()
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local inner = SharedImagePoolFake.new()
+  local acquired = 0
+  local failAfter = nil
+  local pool = {}
+  function pool:request(path, sampler, priority)
+    return inner:request(path, sampler, priority)
   end
+  function pool:poll(token)
+    return inner:poll(token)
+  end
+  function pool:acquire(token)
+    acquired = acquired + 1
+    if failAfter ~= nil and acquired > failAfter then
+      error("injected lease install failure")
+    end
+    return inner:acquire(token)
+  end
+  function pool:release(lease)
+    return inner:release(lease)
+  end
+  function pool:cancel(token)
+    return inner:cancel(token)
+  end
+  local draw = BagRenderer.new({
+    cacheFs = seedCache(),
+    manifest = manifest(),
+    promptManifest = promptManifest(),
+    text = text(),
+    graphics = graphics,
+    heroRenderer = heroSpy(nil),
+    imagePool = pool,
+  })
+  local browse = status()
+  Assert.isTrue(pumpReady(draw, browse), "the live demand resolves before the failure probe")
+  local held = inner:stats().outstandingLeases
+  Assert.isTrue(held > 0, "the live demand holds its installed leases")
+  draw:draw(browse, plan(true), { icons = icons() })
+  Assert.isTrue(#graphics.draws > 0, "the live demand draws before the failure probe")
+  acquired = 0
+  failAfter = 1
+  local switched = status({ pocket = "items", tabFocusPocket = "items" })
+  local err = Assert.throws(function()
+    draw:draw(switched, plan(true), { icons = icons() })
+  end, "a failed install never publishes a partial replacement")
+  Assert.isTrue(
+    tostring(err):find("injected lease install failure", 1, true) ~= nil,
+    "the install failure surfaces unwrapped"
+  )
+  Assert.equal(graphics.pushDepth(), 0, "the refused replacement leaves the transform stack balanced")
+  Assert.equal(
+    inner:stats().outstandingLeases,
+    held,
+    "the failed install returns its staged leases and keeps the installed state"
+  )
+  draw:draw(browse, plan(true), { icons = icons() })
+  Assert.isTrue(#graphics.draws > 0, "the installed state stays drawable after the failed replacement")
+  draw:release()
+  Assert.equal(inner:stats().outstandingLeases, 0, "release returns every borrowed handle")
 end
 
 function T.registration_markers_follow_live_service_slot_identities()
@@ -2106,6 +2242,7 @@ function T.registration_markers_follow_live_service_slot_identities()
     text = text(),
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = SharedImagePoolFake.new(),
   })
   local record = status({
     slots = view.slots,
@@ -2216,6 +2353,7 @@ local function composedRenderer(graphics, content, reads)
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = SharedImagePoolFake.new(),
   }),
     manifested
 end
@@ -2261,18 +2399,19 @@ end
 function T.browse_selects_the_background_of_the_current_pocket()
   local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
   local draw, manifested = composedRenderer(graphics, text(), nil)
-  local itemsBackground = draw._images["background:browse:items:2"]
-  local medicineBackground = draw._images["background:browse:medicine:2"]
-  Assert.notNil(itemsBackground, "the items browse background is bound")
-  Assert.notNil(medicineBackground, "the medicine browse background is bound")
-  Assert.isTrue(itemsBackground ~= medicineBackground, "pocket variants are distinct bindings")
   draw:draw(status({ pocket = "items" }), singlePane(), { icons = icons() })
+  local itemsBackground = assert(draw._images["background:browse:items:2"], "the items browse background resolves")
   Assert.isTrue(wasDrawn(graphics, itemsBackground), "the items pocket draws its own background")
-  Assert.isFalse(wasDrawn(graphics, medicineBackground), "the items pocket never borrows the medicine background")
+  local prefetchedMedicine =
+    assert(draw._images["background:browse:medicine:2"], "the one-step-ahead pocket enrolls")
+  Assert.isFalse(wasDrawn(graphics, prefetchedMedicine), "the items pocket never draws the prefetched pocket")
   for key in pairs(graphics.draws) do
     graphics.draws[key] = nil
   end
   draw:draw(status({ pocket = "medicine" }), singlePane(), { icons = icons() })
+  local medicineBackground =
+    assert(draw._images["background:browse:medicine:2"], "the medicine browse background resolves")
+  Assert.isTrue(itemsBackground ~= medicineBackground, "pocket variants are distinct bindings")
   Assert.isTrue(wasDrawn(graphics, medicineBackground), "the medicine pocket draws its own background")
   Assert.isFalse(wasDrawn(graphics, itemsBackground), "the medicine pocket never falls back to items")
   Assert.equal(manifested.interactive.backgrounds.browse.items[3].width, 256, "the pocket variant keeps pane size")
@@ -2290,6 +2429,7 @@ function T.tabs_draw_at_source_anchors_with_focus_only_while_tabbed()
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = SharedImagePoolFake.new(),
   })
   local record = status({ pocket = "balls", focus = "tabs" })
   record.selected = nil
@@ -2342,6 +2482,7 @@ function T.item_rows_use_split_text_geometry_with_unchanged_icons()
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = SharedImagePoolFake.new(),
   })
   draw:draw(status({ pocket = "items" }), singlePane(), { icons = icons() })
   local first = manifested.interactive.itemSlots.slots[1]
@@ -2370,18 +2511,18 @@ function T.item_rows_use_split_text_geometry_with_unchanged_icons()
 end
 
 function T.item_focus_draws_the_generated_visual_at_the_visible_target()
-  local reads = {}
+  local requested = {}
   local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
   local manifested = manifest()
   local draw = BagRenderer.new({
-    cacheFs = trackingCache(reads),
+    cacheFs = seedCache(),
     manifest = manifested,
     promptManifest = promptManifest(),
     text = paletteText(),
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = observingPool(requested),
   })
-  Assert.equal(#readPathsContaining(reads, "focus"), 4, "every generated focus visual is acquired")
   -- The selection sits two pages in: absolute index 4 with window start 3
   -- must resolve to the second visible target, not the second slot rect.
   local cells = {}
@@ -2401,6 +2542,7 @@ function T.item_focus_draws_the_generated_visual_at_the_visible_target()
     plan(true),
     { icons = icons() }
   )
+  Assert.equal(#readPathsContaining(requested, "focus"), 4, "one status enrolls every generated focus visual")
   local itemFocus = manifested.interactive.focus.items
   local focusX, focusY = focusOrigin(itemFocus, itemFocus.targets[2])
   Assert.isTrue(staticDrawnAt(graphics, focusX, focusY), "item focus lands on the visible window target")
@@ -2460,6 +2602,7 @@ function T.cancel_uses_background_chrome_and_its_text_window()
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = SharedImagePoolFake.new(),
   })
   draw:draw(status({ pocket = "items" }), plan(true), { icons = icons() })
   Assert.equal(#graphics.rectangles, 0, "unfocused Cancel emits no primitive chrome")
@@ -2508,6 +2651,7 @@ function T.browse_background_follows_the_visible_occupied_count()
     text = text(),
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = SharedImagePoolFake.new(),
   })
   for _, count in ipairs({ 0, 3, 6 }) do
     for key in pairs(graphics.draws) do
@@ -2552,6 +2696,7 @@ function T.tab_focus_draws_after_the_selected_strip()
     text = text(),
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = SharedImagePoolFake.new(),
   })
   local record = status({ pocket = "balls", focus = "tabs" })
   record.selected = nil
@@ -2583,6 +2728,7 @@ function T.cancel_label_centers_inside_its_source_label_area()
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = SharedImagePoolFake.new(),
   })
   draw:draw(status({ pocket = "items" }), plan(true), { icons = icons() })
   local label = assert(palettedAt(content, "BACK OUT"), "Cancel prints through the palette path")
@@ -2605,6 +2751,7 @@ function T.browse_background_selects_each_partial_count()
     text = text(),
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = SharedImagePoolFake.new(),
   })
   for _, count in ipairs({ 1, 2, 4, 5 }) do
     for key in pairs(graphics.draws) do
@@ -2634,6 +2781,7 @@ function T.leading_empty_cell_fails_the_visible_count()
     text = text(),
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = SharedImagePoolFake.new(),
   })
   local cells = occupiedCells(0)
   cells[2] = slot("ITEM_2", 1)
@@ -2652,6 +2800,7 @@ function T.normal_tab_draws_match_with_and_without_focus()
     text = text(),
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = SharedImagePoolFake.new(),
   })
   local function stripDraws(focus)
     for key in pairs(graphics.draws) do
@@ -2687,6 +2836,7 @@ function T.cancel_focus_draws_after_the_normal_tab_row()
     text = text(),
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = SharedImagePoolFake.new(),
   })
   draw:draw(status({ pocket = "items", focus = "cancel" }), singlePane(), { icons = icons() })
   local function drawIndex(image)
@@ -2724,19 +2874,6 @@ local function seedStripCache()
   return cache
 end
 
-local function trackingStripCache(reads)
-  local cache = seedStripCache()
-  local wrapped = {}
-  function wrapped:read(path)
-    reads[#reads + 1] = path
-    return cache:read(path)
-  end
-  function wrapped:write(path, data)
-    return cache:write(path, data)
-  end
-  return wrapped
-end
-
 local function drawCount(graphics, image)
   local count = 0
   for _, entry in ipairs(graphics.draws) do
@@ -2749,28 +2886,37 @@ end
 
 function T.browse_draws_the_committed_strip_before_tab_focus()
   local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
-  local reads = {}
+  local requested = {}
   local manifested = stripManifest()
   local draw = BagRenderer.new({
-    cacheFs = trackingStripCache(reads),
+    cacheFs = seedStripCache(),
     manifest = manifested,
     promptManifest = promptManifest(),
     text = text(),
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = observingPool(requested),
   })
-  local stripReads = readPathsContaining(reads, "strip-")
-  table.sort(stripReads)
+  -- Every pocket strip enrolls on its own demand: draw each pocket once
+  -- and collect the enrolled strip set across all demands.
+  for _, pocket in ipairs(STRIP_POCKETS) do
+    local record = status({ pocket = pocket, focus = "items" })
+    record.selected = nil
+    draw:draw(record, singlePane(), { icons = icons() })
+    for key in pairs(graphics.draws) do
+      graphics.draws[key] = nil
+    end
+  end
+  local stripRequests = {}
+  for _, path in ipairs(readPathsContaining(requested, "strip-")) do
+    stripRequests[path] = true
+  end
   local expectedStrips = {}
   for _, pocket in ipairs(STRIP_POCKETS) do
-    expectedStrips[#expectedStrips + 1] = "bag/strip-" .. pocket .. ".png"
+    expectedStrips["bag/strip-" .. pocket .. ".png"] = true
   end
-  table.sort(expectedStrips)
-  Assert.deepEqual(stripReads, expectedStrips, "construction binds every pocket strip exactly once")
-  Assert.equal(#readPathsContaining(reads, "tab-normal-"), 0, "no retired per-tab normal visual is ever acquired")
-  for key in pairs(draw._images) do
-    Assert.isNil(key:find("tabNormal:", 1, true), "no retired per-tab normal binding survives: " .. key)
-  end
+  Assert.deepEqual(stripRequests, expectedStrips, "every pocket strip enrolls on its own demand")
+  Assert.equal(#readPathsContaining(requested, "tab-normal-"), 0, "no retired per-tab normal visual is ever enrolled")
   local function drawIndex(image)
     for position, entry in ipairs(graphics.draws) do
       if entry.image == image then
@@ -2827,6 +2973,7 @@ function T.tabbed_strip_and_focus_resolve_from_separate_pockets()
     text = text(),
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = SharedImagePoolFake.new(),
   })
   local record = status({ pocket = "balls", focus = "tabs", tabFocusPocket = "medicine" })
   draw:draw(record, singlePane(), { icons = icons() })
@@ -2965,6 +3112,7 @@ function T.compact_browsing_description_uses_source_frame_and_three_lines()
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = SharedImagePoolFake.new(),
   })
   local selected = threeLineSelection()
   local record = status({ state = "browsing", focus = "items", selected = selected })
@@ -3003,6 +3151,7 @@ function T.compact_browsing_description_follows_item_focus_while_prompts_persist
       text = content,
       graphics = graphics,
       heroRenderer = heroSpy(nil),
+      imagePool = SharedImagePoolFake.new(),
     })
     draw:draw(presentationRecord, compactPlan(manifested), { icons = icons() })
     return graphics, content, draw
@@ -3116,6 +3265,7 @@ function T.bag_renderer_without_prompt_resources_is_a_composition_error()
       text = text(),
       graphics = graphics,
       heroRenderer = heroSpy(nil),
+      imagePool = SharedImagePoolFake.new(),
     })
   end)
 end
@@ -3134,6 +3284,7 @@ function T.toss_ack_presents_the_generated_result_text()
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = SharedImagePoolFake.new(),
   })
   local record = status({ state = "toss_ack", quantity = 2, quantityMax = 5, tossBase = "quantity" })
   record.selected = ackSelected("POTION", "POTIONS", 2)
@@ -3168,6 +3319,7 @@ function T.toss_ack_keeps_the_singular_name_for_one_copy()
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = SharedImagePoolFake.new(),
   })
   local record = status({ state = "toss_ack", quantity = 1, quantityMax = 5, tossBase = "quantity" })
   record.selected = ackSelected("POTION", "POTIONS", 1)
@@ -3198,6 +3350,7 @@ function T.move_select_keeps_cells_but_hides_browse_chrome()
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = SharedImagePoolFake.new(),
   })
   local calls = { quadFor = 0, dimensions = 0, keys = {} }
   local record = status({
@@ -3240,6 +3393,7 @@ function T.move_select_keeps_cells_but_hides_browse_chrome()
     text = text(),
     graphics = tabbed,
     heroRenderer = heroSpy(nil),
+    imagePool = SharedImagePoolFake.new(),
   })
   tabDraw:draw(
     status({
@@ -3266,6 +3420,7 @@ function T.move_select_keeps_cells_but_hides_browse_chrome()
     text = text(),
     graphics = cancelled,
     heroRenderer = heroSpy(nil),
+    imagePool = SharedImagePoolFake.new(),
   })
   cancelDraw:draw(
     status({ state = "move_select", focus = "cancel", visibleStart = 0, moveTarget = 0, moveOrigin = 0 }),
@@ -3292,6 +3447,7 @@ function T.description_overlay_keeps_the_browse_base_layers()
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = SharedImagePoolFake.new(),
   })
   draw:draw(status({ state = "description_overlay" }), plan(true), { icons = icons() })
   Assert.isTrue(printedText(content, "POTION"), "the overlay keeps the browse cells it covers")
@@ -3319,6 +3475,7 @@ function T.toss_ack_hides_interactive_widgets_but_keeps_its_result()
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = SharedImagePoolFake.new(),
   })
   local record = status({ state = "toss_ack", quantity = 2, quantityMax = 5, tossBase = "action" })
   record.selected = ackSelected("POTION", "POTIONS", 2)
@@ -3357,6 +3514,7 @@ function T.selected_message_uses_the_source_fill_role_and_origin()
     text = content,
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = SharedImagePoolFake.new(),
     window = window,
     frameIndex = 3,
   })
@@ -3427,12 +3585,14 @@ function T.cancel_feedback_applies_the_generated_offset_exactly_once()
       text = text(),
       graphics = graphics,
       heroRenderer = heroSpy(nil),
+      imagePool = SharedImagePoolFake.new(),
     })
     draw:draw(record, plan(true), { icons = icons() })
     local flash = assert(draw._visuals[visualKey], "the cancel flash is bound")
+    local flashImage = assert(flash.handle.image, "the cancel flash resolves its lease image")
     local found = {}
     for _, entry in ipairs(graphics.draws) do
-      if entry.image == flash.image then
+      if entry.image == flashImage then
         found[#found + 1] = entry
       end
     end
@@ -3460,8 +3620,9 @@ function T.cancel_feedback_applies_the_generated_offset_exactly_once()
   end
 end
 
--- An unknown lower-pane state is a composition error, never an empty or
--- borrowed screen.
+-- An unknown lower-pane state is a composition error: demand admission
+-- fails before any graphics scope is pushed, so the refused draw leaves
+-- the transform stack exactly balanced.
 function T.unknown_interactive_state_is_a_composition_error()
   local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
   local draw = BagRenderer.new({
@@ -3471,6 +3632,7 @@ function T.unknown_interactive_state_is_a_composition_error()
     text = text(),
     graphics = graphics,
     heroRenderer = heroSpy(nil),
+    imagePool = SharedImagePoolFake.new(),
   })
   local err = Assert.throws(function()
     draw:draw(status({ state = "nebula" }), plan(true), { icons = icons() })
@@ -3479,8 +3641,349 @@ function T.unknown_interactive_state_is_a_composition_error()
     tostring(err):find("the bag renderer draws a known lower-pane state", 1, true) ~= nil,
     "the unknown state fails at its own policy lookup"
   )
-  Assert.equal(graphics.pushDepth(), 2, "the failed draw leaks exactly its two unpopped scopes (renderer and surface)")
+  Assert.equal(graphics.pushDepth(), 0, "the refused demand leaves the transform stack balanced")
   draw:release()
+end
+
+-- State visuals follow demand through churn: the renderer exposes a demand
+-- entry that enrolls every visual for one Bag status before reporting
+-- readiness, drawing admits only a complete ready state (never a blank or
+-- partial publish), rapid status changes abandon stale interest without
+-- uploading it, an idle trim between complete views re-resolves exactly the
+-- evicted visuals, repeated preparation uploads nothing twice, and release
+-- returns every borrowed handle exactly once. The shared image owner below
+-- is the injectable demand fixture: synchronous like the real owner once
+-- its work is staged, with an explicit pending gate so the test observes
+-- the pending path instead of assuming instant readiness.
+local function demandPool()
+  local inner = SharedImagePoolFake.new()
+  local gate = { open = false, requests = 0 }
+  local pool = {}
+  function pool:request(path, sampler, priority)
+    gate.requests = gate.requests + 1
+    return inner:request(path, sampler, priority)
+  end
+  function pool:poll(token)
+    if not gate.open then
+      return "pending"
+    end
+    return inner:poll(token)
+  end
+  function pool:acquire(token)
+    return inner:acquire(token)
+  end
+  function pool:release(lease)
+    return inner:release(lease)
+  end
+  function pool:cancel(token)
+    return inner:cancel(token)
+  end
+  function pool:prune()
+    return inner:prune()
+  end
+  function pool:dispose()
+    return inner:dispose()
+  end
+  function pool:stats()
+    return inner:stats()
+  end
+  return pool, gate, inner
+end
+
+local function demandRenderer(graphics, pool, content)
+  return BagRenderer.new({
+    cacheFs = seedCache(),
+    manifest = manifest(),
+    promptManifest = promptManifest(),
+    text = content or text(),
+    graphics = graphics,
+    heroRenderer = heroSpy(nil),
+    imagePool = pool,
+  })
+end
+
+-- One structural fingerprint of a draw: every image draw reduced to its
+-- placement and quad identity plus the primitive rectangles. Image object
+-- identity is kept only in the strict mode, so a re-uploaded state can
+-- still prove identical layers and geometry after an idle trim.
+-- Stable cross-call image identity for strict fingerprints: each image
+-- table keeps one label for the life of the test process, so redraws of
+-- the same leases digest equal while different leases digest different.
+-- (Per-call positional labels cannot express pure image swaps at identical
+-- geometry.) Non-strict fingerprints still collapse every image to one
+-- token for structural comparisons after re-uploads.
+local digestIds = {}
+local digestNextId = 0
+
+local function drawDigest(graphics, strict)
+  local function idOf(image)
+    if type(image) ~= "table" then
+      return tostring(image)
+    end
+    if not strict then
+      return "image"
+    end
+    if digestIds[image] == nil then
+      digestNextId = digestNextId + 1
+      digestIds[image] = "image:" .. tostring(digestNextId)
+    end
+    return digestIds[image]
+  end
+  local function quadKey(quad)
+    if type(quad) ~= "table" then
+      return "static"
+    end
+    if quad.key ~= nil then
+      return "icon:" .. tostring(quad.key)
+    end
+    return "quad:" .. tostring(quad.x) .. "," .. tostring(quad.y) .. "," .. tostring(quad.w) .. "," .. tostring(quad.h)
+  end
+  local fingerprint = { draws = {}, rectangles = {} }
+  for _, entry in ipairs(graphics.draws) do
+    fingerprint.draws[#fingerprint.draws + 1] = {
+      image = idOf(entry.image),
+      quad = quadKey(entry.quad),
+      x = entry.x,
+      y = entry.y,
+    }
+  end
+  for _, rectangle in ipairs(graphics.rectangles) do
+    fingerprint.rectangles[#fingerprint.rectangles + 1] =
+      { rectangle.mode, rectangle.x, rectangle.y, rectangle.w, rectangle.h }
+  end
+  return fingerprint
+end
+
+local function clearDraws(graphics)
+  for key in pairs(graphics.draws) do
+    graphics.draws[key] = nil
+  end
+  for key in pairs(graphics.rectangles) do
+    graphics.rectangles[key] = nil
+  end
+end
+
+-- Images the renderer built itself through the injected graphics namespace
+-- instead of borrowing from the shared owner. Post-demand every generated
+-- visual arrives as a borrowed lease, so this census stays empty.
+local function directlyBuiltCount(graphics, entries)
+  local count = 0
+  for _, entry in ipairs(entries) do
+    if type(entry.image) == "table" then
+      for _, built in ipairs(graphics.images) do
+        if built == entry.image then
+          count = count + 1
+          break
+        end
+      end
+    end
+  end
+  return count
+end
+
+function T.state_visuals_follow_demand_through_churn_without_blank_stale_or_leaked_handles()
+  local pool, gate, inner = demandPool()
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local content = text()
+  local draw = demandRenderer(graphics, pool, content)
+  Assert.isTrue(
+    type(draw.prepare) == "function",
+    "state visuals resolve through a demand entry that enrolls each visual before polling"
+  )
+  -- Construction binds no eager state population: a few dozen directly
+  -- built images at most, two orders of magnitude below the hundreds of
+  -- mutually exclusive pocket/count/origin variants the eager path pins.
+  Assert.isTrue(
+    #graphics.images < 64,
+    "construction keeps only bounded chrome instead of every state variant (" .. #graphics.images .. ")"
+  )
+  Assert.equal(inner.uploads, 0, "construction resolves no state visual before the first demand")
+
+  local browseBalls = status()
+  local browseItems = status({ pocket = "items", tabFocusPocket = "items" })
+  local tossQuantity = status({ state = "toss_quantity", quantity = 2, quantityMax = 5 })
+
+  -- A state that was never prepared cannot publish: no blank face, no
+  -- partial chrome, a loud failure instead.
+  Assert.throws(function()
+    draw:draw(browseBalls, plan(true), { icons = icons() })
+  end, "drawing without a ready demand fails instead of publishing a partial menu")
+  Assert.equal(graphics.pushDepth(), 0, "the refused draw leaves the transform stack balanced")
+  clearDraws(graphics)
+
+  -- While classification is in flight the demand stays pending and the
+  -- refused draw still publishes nothing.
+  Assert.isFalse(draw:prepare(browseBalls), "the demand stays pending while its visuals are in flight")
+  local enrolledFirst = gate.requests
+  Assert.isTrue(enrolledFirst > 1, "one demand enrolls several independent visuals before the first poll")
+  Assert.throws(function()
+    draw:draw(browseBalls, plan(true), { icons = icons() })
+  end, "a pending demand still publishes nothing")
+  clearDraws(graphics)
+
+  -- Opening the gate resolves the whole enrolled set with no duplicate
+  -- submissions, and the ready draw borrows every visual from the owner.
+  gate.open = true
+  Assert.isTrue(pumpReady(draw, browseBalls), "the enrolled demand resolves once its work is staged")
+  Assert.equal(gate.requests, enrolledFirst, "promoting outstanding work submits no duplicate demand")
+  local uploadsAfterBrowse = inner.uploads
+  Assert.isTrue(uploadsAfterBrowse > 0, "the ready state resolved its visuals through the shared owner")
+  draw:draw(browseBalls, plan(true), { icons = icons() })
+  Assert.isTrue(#graphics.draws > 0, "the ready browse state draws its composition")
+  Assert.equal(directlyBuiltCount(graphics, graphics.draws), 0, "the browse composition borrows every visual")
+  Assert.isTrue(printedText(content, "BACK OUT"), "the demanded browse keeps its generated cancel label")
+  Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
+  local digestBrowse = drawDigest(graphics, true)
+  clearDraws(graphics)
+
+  -- Normal frame redraws reuse the retained leases: no new demand, no new
+  -- uploads, byte-identical draw structure.
+  draw:draw(browseBalls, plan(true), { icons = icons() })
+  Assert.deepEqual(drawDigest(graphics, true), digestBrowse, "redraws reuse the retained handles exactly")
+  Assert.equal(gate.requests, enrolledFirst, "redraws enroll no new demand")
+  Assert.equal(inner.uploads, uploadsAfterBrowse, "redraws upload no duplicate pair")
+  clearDraws(graphics)
+
+  -- The selection animation advances through its generated frames from the
+  -- single demand: one enrollment covers the whole tick range.
+  local animated = status({ state = "item_select", itemSelectElapsed = 0, itemSelectTotal = 5 })
+  Assert.isTrue(pumpReady(draw, animated), "the selection demand resolves")
+  local requestsAfterAnimate = gate.requests
+  local frames = {}
+  for _, elapsed in ipairs({ 0, 2, 4 }) do
+    clearDraws(graphics)
+    animated.itemSelectElapsed = elapsed
+    draw:draw(animated, plan(true), { icons = icons() })
+    frames[#frames + 1] = drawDigest(graphics, true)
+  end
+  local function digestsDiffer(first, second)
+    if #first.draws ~= #second.draws then
+      return true
+    end
+    for index, entry in ipairs(first.draws) do
+      local other = second.draws[index]
+      if entry.image ~= other.image or entry.quad ~= other.quad or entry.x ~= other.x or entry.y ~= other.y then
+        return true
+      end
+    end
+    return false
+  end
+  Assert.isTrue(#frames[1].draws > 0, "every selection tick draws its composition")
+  Assert.isTrue(digestsDiffer(frames[1], frames[2]), "the selection clock advances its generated frame")
+  Assert.isTrue(digestsDiffer(frames[2], frames[3]), "later ticks keep advancing the selection sequence")
+  Assert.equal(gate.requests, requestsAfterAnimate, "animation ticks reuse the enrolled demand without re-preparing")
+  clearDraws(graphics)
+
+  -- A pocket swap resolves a distinct ready state: the composition differs
+  -- from the previous pocket instead of showing stale visuals.
+  gate.open = false
+  Assert.isFalse(draw:prepare(browseItems), "the pocket swap demand starts pending")
+  gate.open = true
+  Assert.isTrue(pumpReady(draw, browseItems), "the pocket swap demand resolves")
+  draw:draw(browseItems, plan(true), { icons = icons() })
+  local digestItems = drawDigest(graphics, true)
+  Assert.isTrue(digestsDiffer(digestBrowse, digestItems), "the pocket swap paints its own state visuals")
+  Assert.equal(directlyBuiltCount(graphics, graphics.draws), 0, "the swapped pocket borrows every visual")
+  local uploadsAfterItems = inner.uploads
+  Assert.isTrue(
+    uploadsAfterItems >= uploadsAfterBrowse,
+    "the pocket swap resolves its own visuals without re-uploading shared chrome"
+  )
+  clearDraws(graphics)
+
+  -- Rapid changes abandon stale interest: a demand superseded before
+  -- readiness never uploads its visuals, and the ready state draws alone.
+  local freshGraphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local freshPool, freshGate, freshInner = demandPool()
+  local fresh = demandRenderer(freshGraphics, freshPool)
+  Assert.isTrue(type(fresh.prepare) == "function", "the fresh renderer exposes its demand entry")
+  local staleStatus = status({ pocket = "medicine", tabFocusPocket = "medicine" })
+  Assert.isFalse(fresh:prepare(staleStatus), "the first rapid demand starts pending")
+  Assert.isFalse(fresh:prepare(tossQuantity), "the superseding demand starts pending too")
+  freshGate.open = true
+  Assert.isTrue(pumpReady(fresh, tossQuantity), "the latest demand resolves")
+  local uploadsForQuantity = freshInner.uploads
+  fresh:draw(tossQuantity, plan(true), { icons = icons() })
+  local digestQuantity = drawDigest(freshGraphics, true)
+  Assert.isTrue(#freshGraphics.draws > 0, "the superseding state draws its composition")
+  -- Re-demanding the abandoned pocket uploads its visuals for the first
+  -- time now, proving the stale interest never resolved them earlier.
+  Assert.isFalse(fresh:prepare(staleStatus), "the abandoned pocket re-enrolls after the swap")
+  Assert.isTrue(pumpReady(fresh, staleStatus), "the abandoned pocket resolves on re-demand")
+  Assert.isTrue(
+    freshInner.uploads > uploadsForQuantity,
+    "the abandoned pocket uploads only once it becomes the live demand"
+  )
+  clearDraws(freshGraphics)
+  fresh:draw(staleStatus, plan(true), { icons = icons() })
+  Assert.isTrue(
+    digestsDiffer(digestQuantity, drawDigest(freshGraphics, true)),
+    "the re-demanded pocket paints its own visuals, not the stale quantity state"
+  )
+  fresh:release()
+  Assert.equal(freshInner:stats().outstandingLeases, 0, "release returns every borrowed handle")
+  fresh:release()
+  Assert.equal(freshInner:stats().outstandingLeases, 0, "repeat release stays a safe no-op")
+  clearDraws(freshGraphics)
+
+  -- Closing the menu keeps the renderer warm: no draw, no dropped leases,
+  -- and the live state draws identically without re-enrolling.
+  local requestsBeforeClose = gate.requests
+  draw:draw({ open = false }, plan(true), { icons = icons() })
+  Assert.equal(#graphics.draws, 0, "a closed presentation draws no images")
+  Assert.isTrue(pumpReady(draw, browseItems), "the live demand stays ready across the close")
+  Assert.equal(gate.requests, requestsBeforeClose, "the close drops no lease and enrolls nothing anew")
+  Assert.equal(inner.uploads, uploadsAfterItems, "the close uploads nothing anew")
+  draw:draw(browseItems, plan(true), { icons = icons() })
+  Assert.deepEqual(drawDigest(graphics, true), digestItems, "the live state survives the close byte-identically")
+  clearDraws(graphics)
+
+  -- An idle trim between complete views reclaims only unborrowed visuals:
+  -- re-demanding the trimmed pocket re-uploads exactly the evicted pairs
+  -- and draws the identical layers and geometry.
+  Assert.isTrue(pumpReady(draw, browseBalls), "the earlier pocket re-resolves after churn")
+  draw:draw(browseBalls, plan(true), { icons = icons() })
+  Assert.deepEqual(
+    drawDigest(graphics, true),
+    digestBrowse,
+    "the earlier pocket keeps its exact composition across churn"
+  )
+  Assert.isTrue(pumpReady(draw, browseItems), "the live pocket stays ready")
+  local uploadsBeforeTrim = inner.uploads
+  local evicted = pool:prune()
+  Assert.isTrue(evicted >= 0, "the idle trim reports its evicted count")
+  local structuralBrowse = drawDigest(graphics, false)
+  Assert.isTrue(pumpReady(draw, browseBalls), "the trimmed pocket re-resolves")
+  Assert.equal(
+    inner.uploads,
+    uploadsBeforeTrim + evicted,
+    "the trimmed pocket re-uploads exactly its evicted visuals, never a duplicate"
+  )
+  clearDraws(graphics)
+  draw:draw(browseBalls, plan(true), { icons = icons() })
+  Assert.deepEqual(
+    drawDigest(graphics, false),
+    structuralBrowse,
+    "the re-resolved pocket keeps identical layers and geometry"
+  )
+  for _, entry in ipairs(graphics.draws) do
+    if type(entry.image) == "table" then
+      Assert.isFalse(entry.image.released == true, "no draw borrows a reclaimed visual")
+    end
+  end
+  Assert.equal(graphics.pushDepth(), 0, "the transform stack stays balanced")
+
+  -- Re-preparing the live state uploads nothing twice.
+  local uploadsBeforeRepeat = inner.uploads
+  local requestsBeforeRepeat = gate.requests
+  Assert.isTrue(pumpReady(draw, browseBalls), "the live demand stays ready")
+  Assert.equal(gate.requests, requestsBeforeRepeat, "re-preparing the live state enrolls nothing anew")
+  Assert.equal(inner.uploads, uploadsBeforeRepeat, "re-preparing the live state uploads nothing twice")
+
+  draw:release()
+  Assert.equal(inner:stats().outstandingLeases, 0, "release returns every borrowed handle exactly once")
+  draw:release()
+  Assert.equal(inner:stats().outstandingLeases, 0, "repeat release stays a safe no-op")
 end
 
 return { tests = T }

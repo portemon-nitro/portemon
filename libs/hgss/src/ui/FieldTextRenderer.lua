@@ -28,6 +28,7 @@ local Errors = require("libs.errors.src.Errors")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
 local FieldFontLoader = require("libs.hgss.src.ui.FieldFontLoader")
+local ImageSampling = require("libs.nds.src.love.ImageSampling")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 
@@ -60,9 +61,14 @@ end
 ---@field fontDef FieldFontDef
 ---@field _graphics love.graphics
 ---@field _atlas love.Image?
+---@field _atlasLease table<string, unknown>? installed baked-atlas borrow behind sampler draws
 ---@field _maskAtlas love.Image?
+---@field _maskLease table<string, unknown>? installed mask-atlas borrow behind sampler binds
 ---@field _paletteShader love.Shader?
+---@field _focusLease table<string, unknown>? installed focus-strip borrow behind sampler draws
 ---@field _focusImage love.Image?
+---@field _pool table<string, unknown>? the borrowed shared image owner; nil keeps eager construction
+---@field _leases table<integer, table<string, unknown>>? installed atlas leases returned on release
 ---@field _quads table<integer, table<integer, love.Quad>>? glyph quads per color band, band 0 built eagerly
 ---@field _maskQuads table<integer, love.Quad>? mask-atlas glyph quads, built lazily
 ---@field _focusQuads table<integer, table<integer, love.Quad>>? focus-indicator layer quads, built lazily
@@ -76,7 +82,43 @@ FieldTextRenderer.__index = FieldTextRenderer
 -- allowed presentation-layer dependency (the atlas bytes still enter through
 -- love.filesystem.newFileData).
 
----@param opts { cacheFs: CacheFs, fontId?: integer, graphics?: unknown, readSource?: fun(path: string): string }
+-- Every font atlas samples point-filtered, matching the eager
+-- construction below, so pooled leases draw identically.
+local POOLED_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }
+
+-- Borrows one font atlas path from the shared image owner, yielding to
+-- the worker until the atlas resolves. A missing atlas fails loudly
+-- without publishing a half-built renderer.
+---@param pool table<string, unknown>
+---@param path string
+---@param what string
+---@return table<string, unknown> lease
+local function acquirePinned(pool, path, what)
+  local token = pool:request(path, POOLED_SAMPLER, "demand")
+  local stalled = 0
+  while true do
+    local status, failure = pool:poll(token)
+    if status == "ready" then
+      return pool:acquire(token)
+    end
+    if status == "failed" then
+      error(what .. " missing at " .. path .. ": " .. tostring(failure), 0)
+    end
+    assert(status == "pending", "font preparation reports pending or ready")
+    stalled = stalled + 1
+    if stalled > 10000 then
+      error(what .. " stalled at " .. path, 0)
+    end
+    local timer = love and love.timer
+    if timer ~= nil and timer.sleep ~= nil then
+      timer.sleep(0.001)
+    end
+  end
+end
+
+---@alias FieldTextSourceReader fun(path: string): string
+
+---@param opts { cacheFs: CacheFs, fontId?: integer, graphics?: unknown, readSource?: FieldTextSourceReader, imagePool?: table<string, unknown> }
 ---@return FieldTextRenderer
 function FieldTextRenderer.new(opts)
   assert(
@@ -102,6 +144,8 @@ function FieldTextRenderer.new(opts)
     _maskQuads = nil,
     _focusImage = nil,
     _focusQuads = nil,
+    _pool = opts.imagePool,
+    _leases = opts.imagePool ~= nil and {} or nil,
   }, FieldTextRenderer)
   local atlasPath = FieldFontCache.atlasPath(fontId)
   local data = opts.cacheFs:read(atlasPath)
@@ -130,12 +174,37 @@ function FieldTextRenderer.new(opts)
     })
   end
   focusData = assert(focusData)
+  local pool = opts.imagePool
   local ok, err = pcall(function()
+    if pool ~= nil then
+      -- The three font atlases borrow the shared owner as pinned leases;
+      -- quads and the palette shader below stay renderer-owned geometry.
+      assert(self._leases ~= nil, "pooled chrome tracks its installed leases")
+      local leases = assert(self._leases)
+      local atlasLease = acquirePinned(pool, atlasPath, "font atlas")
+      leases[#leases + 1] = atlasLease
+      self._atlasLease = atlasLease
+      self._atlas = assert(atlasLease.image, "shared leases carry their resolved image")
+      self._atlas:setFilter("nearest", "nearest")
+      local maskLease = acquirePinned(pool, maskAtlasPath, "font mask atlas")
+      leases[#leases + 1] = maskLease
+      self._maskLease = maskLease
+      self._maskAtlas = assert(maskLease.image, "shared leases carry their resolved image")
+      self._maskAtlas:setFilter("nearest", "nearest")
+      self._paletteShader = graphics.newShader(ImageSampling.withSharedSampling(readSource(PALETTE_SHADER_PATH)))
+      self:_buildQuads()
+      local focusLease = acquirePinned(pool, focusPath, "focus indicator strip")
+      leases[#leases + 1] = focusLease
+      self._focusLease = focusLease
+      self._focusImage = assert(focusLease.image, "shared leases carry their resolved image")
+      self._focusImage:setFilter("nearest", "nearest")
+      return
+    end
     self._atlas = graphics.newImage(love.filesystem.newFileData(data, atlasPath))
     self._atlas:setFilter("nearest", "nearest")
     self._maskAtlas = graphics.newImage(love.filesystem.newFileData(maskData, maskAtlasPath))
     self._maskAtlas:setFilter("nearest", "nearest")
-    self._paletteShader = graphics.newShader(readSource(PALETTE_SHADER_PATH))
+    self._paletteShader = graphics.newShader(ImageSampling.withSharedSampling(readSource(PALETTE_SHADER_PATH)))
     self:_buildQuads()
     self._focusImage = graphics.newImage(love.filesystem.newFileData(focusData, focusPath))
     self._focusImage:setFilter("nearest", "nearest")
@@ -221,13 +290,23 @@ end
 function FieldTextRenderer:drawLine(tokens, x, y)
   local lg = assert(self._graphics)
   local atlas = assert(self._atlas)
+  -- The pooled baked atlas draws through the shared exact sampler;
+  -- the eager RGBA-direct atlas keeps its raw draw. The mask-atlas
+  -- palette-shader paths below keep their recolor shader, which
+  -- carries the integrated shared sampling rule with the mask borrow
+  -- bound per draw.
+  local lease = self._atlasLease
   local def = self.fontDef
   local letterSpacing = def.letterSpacing or 0
   lg.setColor(1, 1, 1, 1)
   for _, token in ipairs(tokens) do
     if token.kind == "glyph" then
       local quad = self:_quad(token.colorIndex or 0, token.code)
-      lg.draw(atlas, quad, x, y)
+      if lease ~= nil then
+        ImageSampling.draw(lg, lease, quad, x, y)
+      else
+        lg.draw(atlas, quad, x, y)
+      end
       local glyph = def.glyphs[token.code] or def.glyphs[0]
       x = x + glyph.advance + letterSpacing
     end
@@ -252,6 +331,25 @@ function FieldTextRenderer:_maskQuad(code)
   quads[code] = quad
   self._maskQuads = quads
   return quad
+end
+
+-- Binds the mask atlas sampling state for one palette-shader draw: a
+-- pooled mask borrow resolves through its exact palette first, while the
+-- eager RGBA-direct mask keeps the shader default (straight sampling).
+-- Sent after the caller recolor uniforms so existing uniform assertions
+-- keep their order.
+---@param self FieldTextRenderer
+---@param shader love.Shader
+local function sendMaskSampling(self, shader)
+  local lease = self._maskLease
+  if lease == nil then
+    return
+  end
+  ImageSampling.sendMaterialSampling(shader, {
+    image = assert(lease.image, "mask borrows carry their resolved image"),
+    palette = lease.palette,
+    indexed = lease.kind == "r8",
+  })
 end
 
 local function normalizePaletteColor(color)
@@ -286,6 +384,7 @@ function FieldTextRenderer:drawLineWithPalette(tokens, x, y, palette)
   shader:send("u_foreground", normalizePaletteColor(palette.foreground))
   shader:send("u_shadow", normalizePaletteColor(palette.shadow))
   shader:send("u_background", normalizePaletteColor(palette.background))
+  sendMaskSampling(self, shader)
 
   lg.setShader(shader)
   lg.setColor(1, 1, 1, 1)
@@ -321,6 +420,7 @@ function FieldTextRenderer:drawLineWithColorVariants(tokens, x, y, variants, bac
   assert(type(background) == "table", "drawLineWithColorVariants requires the line background color")
 
   shader:send("u_background", normalizePaletteColor(background))
+  sendMaskSampling(self, shader)
 
   lg.setShader(shader)
   lg.setColor(1, 1, 1, 1)
@@ -365,6 +465,7 @@ function FieldTextRenderer:drawText(text, x, y)
   local lg = assert(self._graphics)
   local atlas = assert(self._atlas)
   local def = self.fontDef
+  local lease = self._atlasLease
   for char in Utf8Glyphs.iter(text) do
     local code = def.charmap[char]
     if not code then
@@ -372,7 +473,11 @@ function FieldTextRenderer:drawText(text, x, y)
     end
     local glyph = def.glyphs[code] or def.glyphs[0]
     local quad = self:_quad(0, code)
-    lg.draw(atlas, quad, x, y)
+    if lease ~= nil then
+      ImageSampling.draw(lg, lease, quad, x, y)
+    else
+      lg.draw(atlas, quad, x, y)
+    end
     x = x + glyph.advance + (def.letterSpacing or 0)
   end
 end
@@ -392,6 +497,7 @@ function FieldTextRenderer:drawTextWithPalette(text, x, y, palette)
   shader:send("u_foreground", normalizePaletteColor(palette.foreground))
   shader:send("u_shadow", normalizePaletteColor(palette.shadow))
   shader:send("u_background", normalizePaletteColor(palette.background))
+  sendMaskSampling(self, shader)
 
   lg.setShader(shader)
   lg.setColor(1, 1, 1, 1)
@@ -537,30 +643,48 @@ function FieldTextRenderer:drawFocusIndicator(field, x, y, palette)
     quads[field] = fieldQuads
     self._focusQuads = quads
   end
+  local focusLease = self._focusLease
   for index, layer in ipairs(layers) do
     local slot = layer.paletteSlot
     local color = assert(palette[slot], "focus indicator palette slot is missing")
     lg.setColor(color.r / 255, color.g / 255, color.b / 255, 1)
-    lg.draw(focusImage, fieldQuads[index], x, y)
+    if focusLease ~= nil then
+      ImageSampling.draw(lg, focusLease, fieldQuads[index], x, y)
+    else
+      lg.draw(focusImage, fieldQuads[index], x, y)
+    end
   end
 end
 
 function FieldTextRenderer:release()
-  if self._atlas and self._atlas.release then
-    self._atlas:release()
-  end
-  if self._maskAtlas and self._maskAtlas.release then
-    self._maskAtlas:release()
+  local pool = self._pool
+  self._pool = nil
+  local leases = self._leases
+  self._leases = nil
+  if pool ~= nil then
+    for _, lease in ipairs(leases or {}) do
+      pool:release(lease)
+    end
+  else
+    if self._atlas and self._atlas.release then
+      self._atlas:release()
+    end
+    if self._maskAtlas and self._maskAtlas.release then
+      self._maskAtlas:release()
+    end
+    if self._focusImage and self._focusImage.release then
+      self._focusImage:release()
+    end
   end
   if self._paletteShader and self._paletteShader.release then
     self._paletteShader:release()
   end
-  if self._focusImage and self._focusImage.release then
-    self._focusImage:release()
-  end
   self._atlas, self._quads = nil, nil
+  self._atlasLease = nil
   self._maskAtlas, self._maskQuads = nil, nil
+  self._maskLease = nil
   self._paletteShader = nil
+  self._focusLease = nil
   self._focusImage, self._focusQuads = nil, nil
 end
 

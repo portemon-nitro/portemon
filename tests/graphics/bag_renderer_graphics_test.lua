@@ -24,6 +24,7 @@ local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local ItemCache = require("libs.assets.src.ItemCache")
 local ItemIconAssetProvider = require("libs.hgss.src.presentation.ItemIconAssetProvider")
+local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
 local PixelScale = require("libs.ui.src.PixelScale")
 local RomImporter = require("romdump.src.source.RomImporter")
 
@@ -219,9 +220,16 @@ local function twoPockets(manifest, versionId)
 end
 
 local function owners(cacheFs, manifest, scope, versionId)
+  local pool = ImageAssetPool.new(cacheFs)
+  scope:own({
+    release = function()
+      pool:dispose()
+    end,
+  })
   local text = scope:own(FieldTextRenderer.new({ cacheFs = cacheFs }))
   local icons = scope:own(ItemIconAssetProvider.new(cacheFs))
-  local heroRenderer = scope:own(BagHeroRenderer.new({ cacheFs = cacheFs, manifest = manifest }))
+  local heroRenderer =
+    scope:own(BagHeroRenderer.new({ cacheFs = cacheFs, manifest = manifest, imageAssets = pool }))
   local uiManifest = assert(
     cacheFs:loadLua(FieldUiAssetCache.manifestPath()),
     (versionId or "bag") .. " the generated field-UI manifest loads"
@@ -233,14 +241,34 @@ local function owners(cacheFs, manifest, scope, versionId)
     promptManifest = uiManifest,
     text = text,
     heroRenderer = heroRenderer,
+    imagePool = pool,
   }))
-  return { text = text, icons = icons, heroRenderer = heroRenderer, renderer = renderer }
+  return { text = text, icons = icons, heroRenderer = heroRenderer, renderer = renderer, pool = pool }
+end
+
+-- Resolves one demanded Bag state before its first present, yielding to the
+-- worker between rounds instead of blocking the field update.
+local function prepareReady(renderer, presentationRecord, versionId)
+  local deadline = os.clock() + 120
+  while true do
+    if renderer:prepare(presentationRecord) then
+      return
+    end
+    Assert.isTrue(
+      os.clock() < deadline,
+      (versionId or "bag") .. " the demanded Bag state resolves without stalling"
+    )
+    if love.timer ~= nil and love.timer.sleep ~= nil then
+      love.timer.sleep(0.005)
+    end
+  end
 end
 
 local function render(scope, owned, presentationRecord, layout)
   local canvas = scope:own(love.graphics.newCanvas(CANVAS_WIDTH, CANVAS_HEIGHT))
   love.graphics.setCanvas(canvas)
   love.graphics.clear(0, 0, 0, 0)
+  prepareReady(owned.renderer, presentationRecord)
   owned.renderer:draw(presentationRecord, layout, { icons = owned.icons })
   love.graphics.setCanvas()
   return scope:own(canvas:newImageData())
@@ -1633,9 +1661,15 @@ function T.release_teardown_is_idempotent(scope, context)
     local firstIcon, secondIcon = iconKeys(cacheFs, versionId)
     local pocket = twoPockets(manifest, versionId)
 
+    local pool = ImageAssetPool.new(cacheFs)
+    scope:own({
+      release = function()
+        pool:dispose()
+      end,
+    })
     local text = FieldTextRenderer.new({ cacheFs = cacheFs })
     local icons = ItemIconAssetProvider.new(cacheFs)
-    local heroRenderer = BagHeroRenderer.new({ cacheFs = cacheFs, manifest = manifest })
+    local heroRenderer = BagHeroRenderer.new({ cacheFs = cacheFs, manifest = manifest, imageAssets = pool })
     local uiManifest =
       assert(cacheFs:loadLua(FieldUiAssetCache.manifestPath()), versionId .. " the generated field-UI manifest loads")
     Assert.isTrue(FieldUiAssetCache.validateManifest(uiManifest), versionId .. " field-UI manifest is invalid")
@@ -1645,6 +1679,7 @@ function T.release_teardown_is_idempotent(scope, context)
       promptManifest = uiManifest,
       text = text,
       heroRenderer = heroRenderer,
+      imagePool = pool,
     })
     local owned = { text = text, icons = icons, heroRenderer = heroRenderer, renderer = renderer }
     local heroStatus = heroStatusAt(manifest, pocket, 6)
@@ -1694,10 +1729,17 @@ end
 
 function T.real_model_stages_use_real_culling_and_preserve_geometry_occupancy(scope, context)
   local cacheFs, manifest = soulSilverCache(context)
+  local pool = ImageAssetPool.new(cacheFs)
+  scope:own({
+    release = function()
+      pool:dispose()
+    end,
+  })
   local stages = { "base", "material", "joint", "joint_pattern", "full" }
   local captures = {}
   for _, stage in ipairs(stages) do
-    local heroRenderer = scope:own(BagHeroRenderer.new({ cacheFs = cacheFs, manifest = manifest }))
+    local heroRenderer =
+      scope:own(BagHeroRenderer.new({ cacheFs = cacheFs, manifest = manifest, imageAssets = pool }))
     captures[stage] = drawRealizedStage(scope, heroRenderer, "male", stage)
   end
 
@@ -1733,9 +1775,16 @@ end
 -- lit, and a repeated realization of the same pocket state is identical.
 function T.full_hero_stage_carries_lit_source_material_pixels(scope, context)
   local cacheFs, manifest = soulSilverCache(context)
+  local pool = ImageAssetPool.new(cacheFs)
+  scope:own({
+    release = function()
+      pool:dispose()
+    end,
+  })
   local firstPocket, secondPocket = twoPockets(manifest, "soulsilver")
   for _, pocket in ipairs({ firstPocket, secondPocket }) do
-    local firstRenderer = scope:own(BagHeroRenderer.new({ cacheFs = cacheFs, manifest = manifest }))
+    local firstRenderer =
+      scope:own(BagHeroRenderer.new({ cacheFs = cacheFs, manifest = manifest, imageAssets = pool }))
     local first = drawRealizedStage(scope, firstRenderer, "male", "full", pocket)
     assertCanonicalBounds(bounds(first, false), "the male " .. pocket .. " full-stage alpha coverage")
     local material = stageMaterialStats(first)
@@ -1747,7 +1796,8 @@ function T.full_hero_stage_carries_lit_source_material_pixels(scope, context)
       material.chromatic >= 800,
       "the male " .. pocket .. " hero carries chromatic source material, got " .. material.chromatic
     )
-    local secondRenderer = scope:own(BagHeroRenderer.new({ cacheFs = cacheFs, manifest = manifest }))
+    local secondRenderer =
+      scope:own(BagHeroRenderer.new({ cacheFs = cacheFs, manifest = manifest, imageAssets = pool }))
     local second = drawRealizedStage(scope, secondRenderer, "male", "full", pocket)
     Assert.equal(
       imageDataDigest(second),
@@ -1766,12 +1816,20 @@ end
 -- stage carries the same lit-population floor.
 function T.female_joint_stages_preserve_the_base_silhouette(scope, context)
   local cacheFs, manifest = soulSilverCache(context)
-  local baseRenderer = scope:own(BagHeroRenderer.new({ cacheFs = cacheFs, manifest = manifest }))
+  local pool = ImageAssetPool.new(cacheFs)
+  scope:own({
+    release = function()
+      pool:dispose()
+    end,
+  })
+  local baseRenderer =
+    scope:own(BagHeroRenderer.new({ cacheFs = cacheFs, manifest = manifest, imageAssets = pool }))
   local base = drawRealizedStage(scope, baseRenderer, "female", "base")
   local baseRegion = bounds(base, false)
   assertCanonicalBounds(baseRegion, "the female base alpha coverage")
   for _, stage in ipairs({ "joint", "joint_pattern", "full" }) do
-    local renderer = scope:own(BagHeroRenderer.new({ cacheFs = cacheFs, manifest = manifest }))
+    local renderer =
+      scope:own(BagHeroRenderer.new({ cacheFs = cacheFs, manifest = manifest, imageAssets = pool }))
     local capture = drawRealizedStage(scope, renderer, "female", stage)
     local region = bounds(capture, false)
     assertCanonicalBounds(region, "the female " .. stage .. " alpha coverage")
@@ -1785,7 +1843,8 @@ function T.female_joint_stages_preserve_the_base_silhouette(scope, context)
         .. baseRegion.count
     )
   end
-  local fullRenderer = scope:own(BagHeroRenderer.new({ cacheFs = cacheFs, manifest = manifest }))
+  local fullRenderer =
+    scope:own(BagHeroRenderer.new({ cacheFs = cacheFs, manifest = manifest, imageAssets = pool }))
   local fullMaterial = stageMaterialStats(drawRealizedStage(scope, fullRenderer, "female", "full"))
   Assert.isTrue(fullMaterial.lit >= 2000, "the female full stage carries lit source material, got " .. fullMaterial.lit)
 end
@@ -1794,9 +1853,17 @@ end
 -- two gender renders differ across the canonical target.
 function T.male_and_female_full_stages_render_distinct_descriptors(scope, context)
   local cacheFs, manifest = soulSilverCache(context)
-  local maleRenderer = scope:own(BagHeroRenderer.new({ cacheFs = cacheFs, manifest = manifest }))
+  local pool = ImageAssetPool.new(cacheFs)
+  scope:own({
+    release = function()
+      pool:dispose()
+    end,
+  })
+  local maleRenderer =
+    scope:own(BagHeroRenderer.new({ cacheFs = cacheFs, manifest = manifest, imageAssets = pool }))
   local male = drawRealizedStage(scope, maleRenderer, "male", "full")
-  local femaleRenderer = scope:own(BagHeroRenderer.new({ cacheFs = cacheFs, manifest = manifest }))
+  local femaleRenderer =
+    scope:own(BagHeroRenderer.new({ cacheFs = cacheFs, manifest = manifest, imageAssets = pool }))
   local female = drawRealizedStage(scope, femaleRenderer, "female", "full")
   Assert.isTrue(
     regionDistance(male, female, { x = 0, y = 0, width = 256, height = 192 }, 2) > 100,
@@ -1806,7 +1873,14 @@ end
 
 function T.transparent_model_pixels_preserve_a_prepainted_sentinel(scope, context)
   local cacheFs, manifest = soulSilverCache(context)
-  local heroRenderer = scope:own(BagHeroRenderer.new({ cacheFs = cacheFs, manifest = manifest }))
+  local pool = ImageAssetPool.new(cacheFs)
+  scope:own({
+    release = function()
+      pool:dispose()
+    end,
+  })
+  local heroRenderer =
+    scope:own(BagHeroRenderer.new({ cacheFs = cacheFs, manifest = manifest, imageAssets = pool }))
   local layerCanvas = scope:own(love.graphics.newCanvas(256, 192, { format = "rgba8", readable = true }))
   love.graphics.setCanvas(layerCanvas)
   love.graphics.clear(0, 0, 0, 0)
@@ -1898,8 +1972,16 @@ end
 
 function T.real_hero_rendering_has_a_repeatable_nonempty_digest(scope, context)
   local cacheFs, manifest = soulSilverCache(context)
-  local firstRenderer = scope:own(BagHeroRenderer.new({ cacheFs = cacheFs, manifest = manifest }))
-  local secondRenderer = scope:own(BagHeroRenderer.new({ cacheFs = cacheFs, manifest = manifest }))
+  local pool = ImageAssetPool.new(cacheFs)
+  scope:own({
+    release = function()
+      pool:dispose()
+    end,
+  })
+  local firstRenderer =
+    scope:own(BagHeroRenderer.new({ cacheFs = cacheFs, manifest = manifest, imageAssets = pool }))
+  local secondRenderer =
+    scope:own(BagHeroRenderer.new({ cacheFs = cacheFs, manifest = manifest, imageAssets = pool }))
   local first = drawRealizedStage(scope, firstRenderer, "male", "full")
   local second = drawRealizedStage(scope, secondRenderer, "male", "full")
   local firstDigest = imageDataDigest(first)
@@ -2529,6 +2611,162 @@ function T.selected_message_fills_its_window_with_the_source_slot(scope, context
     end
     Assert.isTrue(sampled > 0, versionId .. " samples trailing message-window pixels")
     Assert.equal(matched, sampled, versionId .. " the selected message keeps the source fill past its text")
+  end
+end
+
+-- Field entry keeps menu chrome warm while Bag state visuals follow demand:
+-- constructing the field-lifetime Bag renderer without opening the Bag binds
+-- only bounded chrome, one prepared state at a time resolves through the
+-- shared image owner, repeated open/close cycles reuse the same renderer
+-- instances without re-creating chrome, and the first usable view realizes
+-- only its own demanded visuals instead of every pocket/count variant.
+function T.field_entry_keeps_chrome_warm_while_bag_variants_follow_demand(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the bag smoke needs a ready user-owned ROM with a derived cache")
+  end
+  for _, versionId in ipairs(versions) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local layout = twoPaneLayout(manifest)
+    local firstIcon, secondIcon = iconKeys(cacheFs, versionId)
+    local pocketA, pocketB = twoPockets(manifest, versionId)
+    local pool = ImageAssetPool.new(cacheFs)
+    local renderer = nil
+    local text, icons, heroRenderer = nil, nil, nil
+    local ok, err = pcall(function()
+      text = FieldTextRenderer.new({ cacheFs = cacheFs })
+      icons = ItemIconAssetProvider.new(cacheFs)
+      heroRenderer = BagHeroRenderer.new({ cacheFs = cacheFs, manifest = manifest, imageAssets = pool })
+      local uiManifest = assert(
+        cacheFs:loadLua(FieldUiAssetCache.manifestPath()),
+        versionId .. " the generated field-UI manifest loads"
+      )
+      Assert.isTrue(
+        FieldUiAssetCache.validateManifest(uiManifest),
+        versionId .. " field-UI manifest is invalid"
+      )
+      local imagesBeforeBag = love.graphics.getStats().images
+      renderer = BagRenderer.new({
+        cacheFs = cacheFs,
+        manifest = manifest,
+        promptManifest = uiManifest,
+        text = text,
+        heroRenderer = heroRenderer,
+        imagePool = pool,
+      })
+      Assert.isTrue(
+        type(renderer.prepare) == "function",
+        versionId .. " resolves Bag state visuals through a demand entry"
+      )
+      local constructionImages = love.graphics.getStats().images - imagesBeforeBag
+      Assert.isTrue(
+        constructionImages < 64,
+        versionId .. " binds only bounded chrome without opening the Bag (" .. constructionImages .. ")"
+      )
+      Assert.isTrue(
+        pool:stats().physicalImages < 64,
+        versionId .. " pins no state-variant population at field entry"
+      )
+      local owned = { text = text, icons = icons, heroRenderer = heroRenderer, renderer = renderer }
+      local function prepareReady(record)
+        local deadline = os.clock() + 120
+        while true do
+          if renderer:prepare(record) then
+            return
+          end
+          Assert.isTrue(
+            os.clock() < deadline,
+            versionId .. " the demanded Bag state resolves without stalling"
+          )
+          if love.timer ~= nil and love.timer.sleep ~= nil then
+            love.timer.sleep(0.005)
+          end
+        end
+      end
+      local recordA = presentation(firstIcon, secondIcon, heroStatusAt(manifest, pocketA, 6))
+      prepareReady(recordA)
+      Assert.isTrue(
+        pool:stats().physicalImages < 64,
+        versionId .. " the first usable view realizes only its demanded visuals"
+      )
+      local interactiveFrame = interactiveFrameOf(layout, versionId)
+      local viewA = render(scope, owned, recordA, layout)
+      Assert.isTrue(hasOccupiedPixel(viewA), versionId .. " the first usable view is never blank")
+      local digestA = imageDataDigest(viewA)
+      local imagesAfterFirstView = love.graphics.getStats().images
+      local viewARepeat = render(scope, owned, recordA, layout)
+      Assert.equal(
+        imageDataDigest(viewARepeat),
+        digestA,
+        versionId .. " repeated draws at one demanded state match exactly"
+      )
+      Assert.equal(
+        love.graphics.getStats().images,
+        imagesAfterFirstView,
+        versionId .. " redraws of a demanded state allocate no new GPU images"
+      )
+      local recordB = presentation(firstIcon, secondIcon, heroStatusAt(manifest, pocketB, 6))
+      prepareReady(recordB)
+      local viewB = render(scope, owned, recordB, layout)
+      Assert.isTrue(hasOccupiedPixel(viewB), versionId .. " the swapped pocket view is never blank")
+      Assert.isTrue(
+        regionDistance(viewA, viewB, interactiveFrame, 2) > 0,
+        versionId .. " the pocket swap expands the demanded state visuals instead of stale chrome"
+      )
+      Assert.isTrue(
+        pool:stats().physicalImages < 64,
+        versionId .. " two demanded states still retain far fewer than every variant"
+      )
+      local imagesAfterSwap = love.graphics.getStats().images
+      prepareReady(recordA)
+      local viewABack = render(scope, owned, recordA, layout)
+      Assert.equal(
+        imageDataDigest(viewABack),
+        digestA,
+        versionId .. " reopening the first pocket restores its exact first view"
+      )
+      Assert.equal(
+        love.graphics.getStats().images,
+        imagesAfterSwap,
+        versionId .. " reopening a retained state re-creates no chrome"
+      )
+      renderer:release()
+      renderer = nil
+      heroRenderer:release()
+      icons:release()
+      text:release()
+      heroRenderer, icons, text = nil, nil, nil
+    end)
+    if renderer ~= nil then
+      pcall(function()
+        renderer:release()
+      end)
+    end
+    if heroRenderer ~= nil then
+      pcall(function()
+        heroRenderer:release()
+      end)
+    end
+    if icons ~= nil then
+      pcall(function()
+        icons:release()
+      end)
+    end
+    if text ~= nil then
+      pcall(function()
+        text:release()
+      end)
+    end
+    if ok then
+      pool:dispose()
+    else
+      pcall(function()
+        pool:dispose()
+      end)
+    end
+    if not ok then
+      error(err, 0)
+    end
   end
 end
 

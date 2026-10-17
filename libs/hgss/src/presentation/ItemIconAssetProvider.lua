@@ -14,9 +14,15 @@ local ItemCache = require("libs.assets.src.ItemCache")
 ---@field _manifest table<string, unknown>
 ---@field _image love.Image?
 ---@field _quads table<string, love.Quad>
+---@field _pool table<string, unknown>? the borrowed shared image owner; nil keeps eager construction
+---@field _lease table<string, unknown>? the installed atlas lease returned on release
 ---@field _released boolean
 local ItemIconAssetProvider = {}
 ItemIconAssetProvider.__index = ItemIconAssetProvider
+
+-- The compiled atlas samples point-filtered and clamped, matching the
+-- eager construction below, so pooled leases draw identically.
+local POOLED_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }
 
 -- The published icon manifest arrives through the staged writer boundary,
 -- which already proved the full contract: construction only needs the
@@ -58,7 +64,7 @@ local function entryFor(manifest, iconKey)
 end
 
 ---@param cacheFs CacheFs
----@param opts { graphics?: love.graphics }?
+---@param opts { graphics?: love.graphics, imagePool?: table<string, unknown> }?
 ---@return ItemIconAssetProvider
 function ItemIconAssetProvider.new(cacheFs, opts)
   assert(cacheFs ~= nil, "ItemIconAssetProvider requires a CacheFs")
@@ -82,10 +88,53 @@ function ItemIconAssetProvider.new(cacheFs, opts)
     _manifest = manifest,
     _image = nil,
     _quads = {},
+    _pool = opts.imagePool,
+    _lease = nil,
     _released = false,
   }, ItemIconAssetProvider)
   local imageData = assert(data, "the icon atlas bytes are required")
+  local pool = opts.imagePool
   local ok, err = pcall(function()
+    if pool ~= nil then
+      -- The compiled atlas borrows the shared owner as one pinned lease;
+      -- quads stay renderer-owned geometry over the leased dimensions.
+      local token = pool:request(ItemCache.iconImagePath(), POOLED_SAMPLER, "demand")
+      local stalled = 0
+      while true do
+        local status, failure = pool:poll(token)
+        if status == "ready" then
+          break
+        end
+        if status == "failed" then
+          Errors.raise(
+            FieldErrors.ITEM_ICON_ATLAS_MISSING,
+            "item icon atlas missing at " .. ItemCache.iconImagePath() .. ": " .. tostring(failure),
+            { path = ItemCache.iconImagePath() }
+          )
+        end
+        assert(status == "pending", "item icon preparation reports pending or ready")
+        stalled = stalled + 1
+        if stalled > 10000 then
+          error("item icon atlas stalled at " .. ItemCache.iconImagePath(), 0)
+        end
+        local timer = love and love.timer
+        if timer ~= nil and timer.sleep ~= nil then
+          timer.sleep(0.001)
+        end
+      end
+      local lease = pool:acquire(token)
+      self._lease = lease
+      self._image = assert(lease.image, "shared leases carry their resolved image")
+      self._image:setFilter("nearest", "nearest")
+      local imageWidth, imageHeight = self._image:getWidth(), self._image:getHeight()
+      for selector, entry in pairs(manifest.entries) do
+        assert(
+          entry.x + entry.width <= imageWidth and entry.y + entry.height <= imageHeight,
+          "icon frame for " .. selector .. " exceeds the atlas"
+        )
+      end
+      return
+    end
     self._image = graphics.newImage(love.filesystem.newFileData(imageData, ItemCache.iconImagePath()))
     self._image:setFilter("nearest", "nearest")
     local imageWidth, imageHeight = self._image:getWidth(), self._image:getHeight()
@@ -106,6 +155,18 @@ end
 ---@return love.Image the shared atlas image for draw calls
 function ItemIconAssetProvider:image()
   return assert(self._image, "the icon atlas is loaded")
+end
+
+-- The sampling handle over the pooled atlas lease for palette-aware
+-- draws, or nil on the eager path (whose RGBA-direct image keeps its raw
+-- draw). Read-only like image: a pooled atlas without a lease is a loud
+-- error, never a blank icon.
+---@return table<string, unknown>? sampling handle carrying image+palette+kind
+function ItemIconAssetProvider:handle()
+  if self._lease == nil then
+    return nil
+  end
+  return assert(self._lease, "the icon atlas lease is installed")
 end
 
 ---@param iconKey string
@@ -133,10 +194,20 @@ end
 -- Releases the atlas image exactly once; quads reference no resources of
 -- their own, so dropping the cache is sufficient. Safe to call repeatedly.
 function ItemIconAssetProvider:release()
+  local pool = self._pool
+  self._pool = nil
+  local lease = self._lease
+  self._lease = nil
   local image = self._image
   self._image = nil
   self._quads = {}
   self._released = true
+  if pool ~= nil then
+    if lease ~= nil then
+      pool:release(lease)
+    end
+    return
+  end
   if image ~= nil and image.release then
     image:release()
   end

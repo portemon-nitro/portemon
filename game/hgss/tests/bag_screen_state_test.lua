@@ -621,6 +621,7 @@ local BagRenderer = require("libs.hgss.src.ui.BagRenderer")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local FakeGraphics = require("tests.support.FakeGraphics").new
+local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
 
 -- Production-composition manifest in the generated presentation shape: the
 -- layout fields above plus pocket-aware backgrounds, normal tabs, and the
@@ -1019,6 +1020,9 @@ local function composedIcons()
     image = function()
       return "atlas"
     end,
+    handle = function()
+      return nil
+    end,
     quadFor = function(_, key)
       return { key = key }
     end,
@@ -1057,6 +1061,24 @@ local function staticDrawnAt(graphics, x, y)
   return false
 end
 
+-- The immutable sampler state pooled bag draws resolve under: the fake
+-- pool keys physicals by path plus these fields, so the test names the
+-- enrolled physical for a manifest path through the same key.
+local POOLED_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }
+
+-- Pumps one status demand to readiness through the prepare entry, like the
+-- active screen does before the first present on a semantic change.
+local function presentReady(draw, record, message)
+  local ready = false
+  for _ = 1, 1000 do
+    if draw:prepare(record) then
+      ready = true
+      break
+    end
+  end
+  Assert.isTrue(ready, message)
+end
+
 function T.production_bag_draws_pocket_specific_presentation()
   local manifested = composedManifest()
   local options, box = composition({ manifest = manifested })
@@ -1076,6 +1098,7 @@ function T.production_bag_draws_pocket_specific_presentation()
   function frameSpy:drawWindow(box, frameIndex, background)
     self.calls[#self.calls + 1] = { box = box, frameIndex = frameIndex, background = background }
   end
+  local pool = SharedImagePoolFake.new()
   local draw = BagRenderer.new({
     cacheFs = seedComposedCache(),
     manifest = manifested,
@@ -1085,14 +1108,23 @@ function T.production_bag_draws_pocket_specific_presentation()
     heroRenderer = hero,
     window = frameSpy,
     frameIndex = 1,
+    imagePool = pool,
   })
   local icons = composedIcons()
+  presentReady(draw, view, "the open bag demand resolves before its first present")
   draw:draw(view, assert(view.presentation, "the composed status carries its presentation plan"), { icons = icons })
-  local ballsBackground = draw._images["background:browse:balls:2"]
-  local medicineBackground = draw._images["background:browse:medicine:1"]
-  Assert.notNil(ballsBackground, "the balls background is bound")
+  local ballsPath = assert(
+    manifested.interactive.backgrounds.browse.balls[3].image,
+    "the composed manifest carries the balls background"
+  )
+  local ballsBackground = pool:findPhysical(ballsPath, POOLED_SAMPLER)
+  Assert.notNil(ballsBackground, "the open bag enrolls its pocket background")
   Assert.isTrue(wasDrawn(graphics, ballsBackground), "the open bag draws its pocket background")
-  Assert.isFalse(wasDrawn(graphics, medicineBackground), "the open bag never borrows another pocket")
+  local medicinePath = assert(
+    manifested.interactive.backgrounds.browse.medicine[2].image,
+    "the composed manifest carries the medicine background"
+  )
+  Assert.isNil(pool:findPhysical(medicinePath, POOLED_SAMPLER), "the open bag never enrolls another pocket")
   Assert.equal(hero.draws, 1, "the composed draw delegates exactly one hero model draw")
   local itemFocus = manifested.interactive.focus.items
   local absolute = assert(tonumber(view.selectedAbsoluteIndex), "the composed status carries its selection index")
@@ -1119,6 +1151,7 @@ function T.production_bag_draws_pocket_specific_presentation()
   for key in pairs(graphics.draws) do
     graphics.draws[key] = nil
   end
+  presentReady(draw, menu, "the menu demand resolves before its present")
   draw:draw(menu, assert(menu.presentation, "the menu status carries its presentation plan"), { icons = icons })
   local actionFocus = manifested.interactive.focus.actions
   local actionNode = assert(tonumber(menu.actionNode), "the menu status carries its physical selection")
@@ -1138,11 +1171,14 @@ function T.production_bag_draws_pocket_specific_presentation()
   for key in pairs(graphics.draws) do
     graphics.draws[key] = nil
   end
+  presentReady(draw, switched, "the switched pocket demand resolves before its present")
   draw:draw(
     switched,
     assert(switched.presentation, "the switched status carries its presentation plan"),
     { icons = icons }
   )
+  local medicineBackground = pool:findPhysical(medicinePath, POOLED_SAMPLER)
+  Assert.notNil(medicineBackground, "the switched pocket enrolls its own background")
   Assert.isTrue(wasDrawn(graphics, medicineBackground), "the switched pocket draws its own background")
   Assert.isFalse(wasDrawn(graphics, ballsBackground), "the switched pocket never falls back to balls")
   Assert.equal(graphics.pushDepth(), 0, "the composed draws keep the transform stack balanced")

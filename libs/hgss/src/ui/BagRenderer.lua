@@ -20,10 +20,23 @@
 
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local MoveIconCache = require("libs.assets.src.MoveIconCache")
+local ImageSampling = require("libs.nds.src.love.ImageSampling")
 local NativeDisplay = require("libs.ui.src.NativeDisplay")
 local BagSave = require("libs.hgss.src.save.BagSave")
 local FieldTextWindowRenderer = require("libs.hgss.src.ui.FieldTextWindowRenderer")
 local YesNoPromptRenderer = require("libs.hgss.src.ui.YesNoPromptRenderer")
+
+---@class BagPathEntry
+---@field path string the generated image path enrolled with the shared owner
+---@field width integer the generated visual width draws place
+---@field height integer the generated visual height draws place
+---@field offset table<string, integer>? the generated visual offset draws place
+
+---@class BagDemandVisual
+---@field handle table<string, unknown> the installed lease handle draws resolve (image plus palette and kind)
+---@field width integer the generated visual width draws place
+---@field height integer the generated visual height draws place
+---@field offset table<string, integer>? the generated visual offset draws place
 
 ---@class BagRenderer
 ---@field _graphics love.graphics
@@ -31,10 +44,15 @@ local YesNoPromptRenderer = require("libs.hgss.src.ui.YesNoPromptRenderer")
 ---@field _heroRenderer table<string, unknown> the borrowed hero model renderer owned by field presentation resources
 ---@field _manifest table<string, unknown>
 ---@field _images table<string, love.Image>
----@field _visuals table<string, table<string, unknown>>
+---@field _visuals table<string, BagDemandVisual>
 ---@field _promptRenderer table<string, unknown>? the owned modal prompt renderer for toss confirmation
 ---@field _window table<string, unknown>? the borrowed shared frame-strip atlas owner, never released here
 ---@field _frameIndex integer? the borrowed player-selected frame style, never owned here
+---@field _pool table<string, unknown> the borrowed shared image owner; every bag visual resolves through its demand leases
+---@field _paths table<string, BagPathEntry> the immutable semantic-key to generated-path map built at construction
+---@field _readySignature string? the semantic demand key of the installed visual leases
+---@field _readyLeases table<integer, table<string, unknown>> installed demand leases returned on swap or release
+---@field _pending BagDemandPending? the enrolled but not yet resolved demand
 local BagRenderer = {}
 BagRenderer.__index = BagRenderer
 
@@ -78,44 +96,6 @@ local function compactContextualText(presentation)
   return selected.description
 end
 
----@param graphics love.graphics
----@param path string
----@param data string
----@param images table<string, love.Image>
----@param key string
----@return love.Image
-local function loadImage(graphics, path, data, images, key)
-  local image = graphics.newImage(love.filesystem.newFileData(data, path))
-  images[key] = image
-  image:setFilter("nearest", "nearest")
-  return image
-end
-
----@param graphics love.graphics
----@param cacheFs CacheFs
----@param visual table<string, unknown>
----@param key string
----@param images table<string, love.Image>
----@return table<string, unknown>
-local function loadVisual(graphics, cacheFs, visual, key, images)
-  assert(type(visual) == "table", key .. " must be a semantic visual")
-  local function acquire(path, imageKey)
-    assert(type(path) == "string" and path ~= "", key .. " carries an image path")
-    local data = cacheFs:read(path)
-    assert(data, "bag image missing at " .. path)
-    return loadImage(graphics, path, data, images, imageKey)
-  end
-  if visual.image ~= nil then
-    return {
-      image = acquire(visual.image, key),
-      width = assert(visual.width, key .. " carries its image width"),
-      height = assert(visual.height, key .. " carries its image height"),
-      offset = visual.offset,
-    }
-  end
-  error(key .. " carries no realized static image", 0)
-end
-
 -- Draws one realized static visual at its placement point plus its generated
 -- offset, which already positions the image relative to the anchor the
 -- producer composed it against. Placement points are sprite anchors (tab
@@ -125,10 +105,12 @@ end
 ---@param x number
 ---@param y number
 local function drawVisual(graphics, visual, x, y)
-  local image = assert(visual.image, "static visuals carry their realized image")
+  local handle = assert(visual.handle, "static visuals carry their resolved lease handle")
   local offset = visual.offset or { x = 0, y = 0 }
   setColor(graphics, WHITE)
-  graphics.draw(assert(image), x + offset.x, y + offset.y)
+  -- Lease handles resolve through the shared exact sampling rule, so
+  -- indexed sources draw through their palette exactly like straight RGBA.
+  ImageSampling.draw(graphics, handle, nil, x + offset.x, y + offset.y)
 end
 
 -- Resolves one zero-based field-font palette slot to byte-valued RGB, exactly
@@ -165,7 +147,184 @@ local function paletteRecord(fontDef, foregroundSlot, shadowSlot, backgroundSlot
   }
 end
 
----@param opts { cacheFs: CacheFs, manifest: table<string, unknown>, promptManifest: table<string, unknown>, text: table<string, unknown>, heroRenderer: table<string, unknown>, graphics?: love.graphics, window?: table<string, unknown>, frameIndex?: integer }
+-- Builds the immutable semantic-key to generated-path map at construction:
+-- every pocket/count/origin background variant, strip, focus visual,
+-- control face, and marker the demand can resolve, validated exactly once
+-- here. Construction reads no image
+-- bytes and binds no GPU object; state visuals resolve through
+-- prepare(status) demand leases.
+---@param manifest table<string, unknown>
+---@param moveIcons table<string, unknown>?
+---@return table<string, BagPathEntry>
+local function buildPathMap(manifest, moveIcons)
+  local hero = assert(manifest.hero, "the bag manifest must carry its hero pane")
+  local interactive = assert(manifest.interactive, "the bag manifest must carry its interactive pane")
+  local quantity = assert(interactive.overlays.quantity, "the bag manifest carries its quantity overlay")
+  local sale = assert(interactive.sale, "the bag manifest carries its sale presentation")
+  assert(
+    sale.confirm.visual.image == quantity.confirm.visual.image,
+    "sale and quantity confirmation share their source confirm visual"
+  )
+  assert(
+    sale.cancel.visual.image == quantity.cancel.visual.image,
+    "sale and quantity cancellation share their source cancel visual"
+  )
+  local paths = {} ---@type table<string, BagPathEntry>
+  local function add(key, visual, forcedWidth, forcedHeight)
+    assert(type(visual) == "table", key .. " must be a semantic visual")
+    local path = assert(visual.image, key .. " carries an image path")
+    assert(type(path) == "string" and path ~= "", key .. " carries an image path")
+    paths[key] = {
+      path = path,
+      width = forcedWidth or assert(visual.width, key .. " carries its image width"),
+      height = forcedHeight or assert(visual.height, key .. " carries its image height"),
+      offset = visual.offset,
+    }
+  end
+  add("heroMale", hero.background.male)
+  add("heroFemale", hero.background.female)
+  add("descriptionFrame", {
+    image = hero.description.frame.image,
+    width = NativeDisplay.WIDTH,
+    height = NativeDisplay.HEIGHT,
+  })
+  local moveSummary = hero.moveSummary
+  if moveSummary ~= nil then
+    add("moveSummaryBackground", moveSummary.background)
+    local icons = assert(moveIcons, "the move icons resolve before the machine summary binds")
+    for key, visual in pairs(assert(icons.types, "the move icons carry their types")) do
+      add("moveType:" .. key, visual)
+    end
+    for key, visual in pairs(assert(icons.categories, "the move icons carry their categories")) do
+      add("moveCategory:" .. key, visual)
+    end
+  end
+  -- Seven realized count variants per pocket for browse, action, and
+  -- quantity, plus seven count/origin variants per pocket for move: bind
+  -- each variant under its count (and origin) so the state selection can
+  -- resolve it. Anything else fails at the lookup below instead of
+  -- borrowing another shape. Toss confirmation owns no background of its
+  -- own; it retains its action/quantity base.
+  do
+    local browse = assert(interactive.backgrounds.browse, "the bag manifest carries its browse backgrounds")
+    for _, pocket in ipairs(BagSave.POCKET_ORDER) do
+      local published = assert(browse[pocket], "browse carries " .. pocket)
+      for count = 0, 6 do
+        add(
+          "background:browse:" .. pocket .. ":" .. count,
+          assert(published[count + 1], "browse carries " .. pocket .. " count " .. count)
+        )
+      end
+    end
+  end
+  for _, state in ipairs({ "action", "quantity" }) do
+    local pockets = assert(interactive.backgrounds[state], "the bag manifest carries its " .. state .. " backgrounds")
+    for _, pocket in ipairs(BagSave.POCKET_ORDER) do
+      local published = assert(pockets[pocket], state .. " carries " .. pocket)
+      for count = 0, 6 do
+        add(
+          "background:" .. state .. ":" .. pocket .. ":" .. count,
+          assert(published[count], state .. " carries " .. pocket .. " count " .. count)
+        )
+      end
+    end
+  end
+  do
+    local move = assert(interactive.backgrounds.move, "the bag manifest carries its move backgrounds")
+    for _, pocket in ipairs(BagSave.POCKET_ORDER) do
+      local published = assert(move[pocket], "move carries " .. pocket)
+      for count = 0, 6 do
+        local perCount = assert(published[count], "move carries " .. pocket .. " count " .. count)
+        for _, origin in ipairs({ "none", "0", "1", "2", "3", "4", "5" }) do
+          add(
+            "background:move:" .. pocket .. ":" .. count .. ":" .. origin,
+            assert(perCount[origin], "move carries " .. pocket .. " count " .. count .. " origin " .. origin)
+          )
+        end
+      end
+    end
+  end
+  local feedback = assert(interactive.feedback, "the bag manifest carries its activation feedback")
+  add("feedback:action:normal", assert(feedback.actionFace.normal, "feedback carries its action face"))
+  add("feedback:action:selected", assert(feedback.actionFace.selected, "feedback carries its action flash"))
+  add("feedback:cancel:normal", assert(feedback.cancelFace.normal, "feedback carries its cancel face"))
+  add("feedback:cancel:selected", assert(feedback.cancelFace.selected, "feedback carries its cancel flash"))
+  add(
+    "feedback:quantityConfirm:normal",
+    assert(feedback.quantityConfirm.normal, "feedback carries its quantity confirm")
+  )
+  add(
+    "feedback:quantityConfirm:selected",
+    assert(feedback.quantityConfirm.selected, "feedback carries its quantity flash")
+  )
+  add(
+    "feedback:quantityCancel:normal",
+    assert(feedback.quantityCancel.normal, "feedback carries its quantity cancel face")
+  )
+  add(
+    "feedback:quantityCancel:selected",
+    assert(feedback.quantityCancel.selected, "feedback carries its quantity cancel flash")
+  )
+  local moveCursor = assert(interactive.moveCursor, "the bag manifest carries its move target cursor")
+  add("moveCursor:original", assert(moveCursor.original, "the move cursor carries its original target"))
+  add("moveCursor:candidate", assert(moveCursor.candidate, "the move cursor carries its candidate target"))
+  assert(interactive.overlays.selectedItem ~= nil, "the bag manifest carries its retained selected-item panel")
+  assert(interactive.overlays.messages ~= nil, "the bag manifest carries its lower-message geometry")
+  -- One realized strip per active pocket, carrying the persistent
+  -- selected-pocket treatment; the transient tab focus stays a separate
+  -- visual drawn after the strip.
+  local strips = assert(interactive.pocketTabs.strips, "the bag manifest carries its pocket strips")
+  for _, pocket in ipairs(BagSave.POCKET_ORDER) do
+    add("strip:" .. pocket, assert(strips[pocket], "the bag manifest carries the " .. pocket .. " strip"))
+  end
+  local focus = assert(interactive.focus, "the bag manifest must carry its focus visuals")
+  add("focus:tabs", assert(focus.tabs.visual, "the bag manifest carries its tab focus"))
+  add("focus:items", assert(focus.items.visual, "the bag manifest carries its item focus"))
+  add("focus:cancel", assert(focus.cancel.visual, "the bag manifest carries its cancel focus"))
+  add("focus:actions", assert(focus.actions.visual, "the bag manifest carries its action focus"))
+  local selectionEntry = assert(interactive.selectionEntry, "the bag manifest carries its selection-entry sequence")
+  local entryFrames = assert(selectionEntry.frames, "the selection entry carries its realized frames")
+  assert(type(entryFrames) == "table" and #entryFrames >= 1, "the selection entry carries its frames")
+  for index, frame in ipairs(entryFrames) do
+    add("selectionEntry:" .. index, frame)
+  end
+  local actionMenu = assert(interactive.overlays.actionMenu, "the bag manifest carries its action menu")
+  add("actionFace", assert(actionMenu.face, "the bag manifest carries its action face"))
+  local quantityVisuals = assert(quantity.visuals, "the quantity overlay carries its controls")
+  add("quantityIncrement", assert(quantityVisuals.increment.normal, "the quantity carries increment visuals"))
+  add(
+    "quantityIncrementPressed",
+    assert(quantityVisuals.increment.pressed, "the quantity carries pressed increment visuals")
+  )
+  add("quantityDecrement", assert(quantityVisuals.decrement.normal, "the quantity carries decrement visuals"))
+  add(
+    "quantityDecrementPressed",
+    assert(quantityVisuals.decrement.pressed, "the quantity carries pressed decrement visuals")
+  )
+  add("quantityConfirm", assert(quantity.confirm.visual, "the quantity carries its confirm visual"))
+  add("quantityCancel", assert(quantity.cancel.visual, "the quantity carries its cancel visual"))
+  add("saleQuantityBackground", sale.quantityBackground)
+  paths.saleConfirm = assert(paths.quantityConfirm, "the bag presentation names its quantity controls")
+  paths.saleCancel = assert(paths.quantityCancel, "the bag presentation names its quantity controls")
+  local registration =
+    assert(interactive.itemSlots.registration, "the bag manifest must carry its registration markers")
+  local slot1 = assert(registration.slot1, "the bag manifest must carry its first registration marker")
+  local slot2 = assert(registration.slot2, "the bag manifest must carry its second registration marker")
+  assert(
+    type(slot1.image) == "string" and slot1.image ~= "",
+    "the first registration marker carries its generated image"
+  )
+  assert(
+    type(slot2.image) == "string" and slot2.image ~= "",
+    "the second registration marker carries its generated image"
+  )
+  assert(type(registration.offset) == "table", "the registration markers carry their generated offset")
+  add("registrationSlot1", slot1)
+  add("registrationSlot2", slot2)
+  return paths
+end
+
+---@param opts { cacheFs: CacheFs, manifest: table<string, unknown>, promptManifest: table<string, unknown>, text: table<string, unknown>, heroRenderer: table<string, unknown>, graphics?: love.graphics, window?: table<string, unknown>, frameIndex?: integer, imagePool?: table<string, unknown> }
 ---@return BagRenderer
 function BagRenderer.new(opts)
   assert(type(opts) == "table", "bag renderer options must be a table")
@@ -184,8 +343,16 @@ function BagRenderer.new(opts)
     graphics = love and love.graphics
   end
   assert(graphics and graphics.newImage and graphics.push and graphics.setScissor, "BagRenderer requires love.graphics")
+  -- Every bag visual resolves through shared demand leases: construction
+  -- builds only the immutable semantic-key to generated-path map (no image
+  -- bytes, no GPU object) plus the small fixed prompt chrome, while state
+  -- visuals resolve through prepare(status).
+  local pool = assert(opts.imagePool, "BagRenderer borrows its shared image owner")
   local hero = assert(manifest.hero, "the bag manifest must carry its hero pane")
-  local interactive = assert(manifest.interactive, "the bag manifest must carry its interactive pane")
+  local moveIcons = nil
+  if hero.moveSummary ~= nil then
+    moveIcons = MoveIconCache.loadManifest(cacheFs)
+  end
   local self = setmetatable({
     _graphics = graphics,
     _text = text,
@@ -195,163 +362,15 @@ function BagRenderer.new(opts)
     _frameIndex = opts.frameIndex,
     _images = {},
     _visuals = {},
+    _pool = pool,
+    _paths = buildPathMap(manifest, moveIcons),
+    _readySignature = nil,
+    _readyLeases = {},
+    _pending = nil,
   }, BagRenderer)
   local ok, err = pcall(function()
-    local function acquire(key, visual)
-      self._visuals[key] = loadVisual(graphics, cacheFs, visual, key, self._images)
-    end
-    acquire("heroMale", hero.background.male)
-    acquire("heroFemale", hero.background.female)
-    acquire("descriptionFrame", {
-      image = hero.description.frame.image,
-      width = NativeDisplay.WIDTH,
-      height = NativeDisplay.HEIGHT,
-    })
-    local moveSummary = hero.moveSummary
-    if moveSummary ~= nil then
-      acquire("moveSummaryBackground", moveSummary.background)
-      local moveIcons = MoveIconCache.loadManifest(cacheFs)
-      for key, visual in pairs(moveIcons.types) do
-        acquire("moveType:" .. key, visual)
-      end
-      for key, visual in pairs(moveIcons.categories) do
-        acquire("moveCategory:" .. key, visual)
-      end
-    end
-    -- Seven realized count variants per pocket for browse, action, and
-    -- quantity, plus seven count/origin variants per pocket for move: bind
-    -- each variant under its count (and origin) so the state selection can
-    -- resolve it. Anything else fails at the lookup below instead of
-    -- borrowing another shape. Toss confirmation owns no background of its
-    -- own; it retains its action/quantity base.
-    do
-      local browse = assert(interactive.backgrounds.browse, "the bag manifest carries its browse backgrounds")
-      for _, pocket in ipairs(BagSave.POCKET_ORDER) do
-        local published = assert(browse[pocket], "browse carries " .. pocket)
-        for count = 0, 6 do
-          acquire(
-            "background:browse:" .. pocket .. ":" .. count,
-            assert(published[count + 1], "browse carries " .. pocket .. " count " .. count)
-          )
-        end
-      end
-    end
-    for _, state in ipairs({ "action", "quantity" }) do
-      local pockets = assert(interactive.backgrounds[state], "the bag manifest carries its " .. state .. " backgrounds")
-      for _, pocket in ipairs(BagSave.POCKET_ORDER) do
-        local published = assert(pockets[pocket], state .. " carries " .. pocket)
-        for count = 0, 6 do
-          acquire(
-            "background:" .. state .. ":" .. pocket .. ":" .. count,
-            assert(published[count], state .. " carries " .. pocket .. " count " .. count)
-          )
-        end
-      end
-    end
-    do
-      local move = assert(interactive.backgrounds.move, "the bag manifest carries its move backgrounds")
-      for _, pocket in ipairs(BagSave.POCKET_ORDER) do
-        local published = assert(move[pocket], "move carries " .. pocket)
-        for count = 0, 6 do
-          local perCount = assert(published[count], "move carries " .. pocket .. " count " .. count)
-          for _, origin in ipairs({ "none", "0", "1", "2", "3", "4", "5" }) do
-            acquire(
-              "background:move:" .. pocket .. ":" .. count .. ":" .. origin,
-              assert(perCount[origin], "move carries " .. pocket .. " count " .. count .. " origin " .. origin)
-            )
-          end
-        end
-      end
-    end
-    local feedback = assert(interactive.feedback, "the bag manifest carries its activation feedback")
-    acquire("feedback:action:normal", assert(feedback.actionFace.normal, "feedback carries its action face"))
-    acquire("feedback:action:selected", assert(feedback.actionFace.selected, "feedback carries its action flash"))
-    acquire("feedback:cancel:normal", assert(feedback.cancelFace.normal, "feedback carries its cancel face"))
-    acquire("feedback:cancel:selected", assert(feedback.cancelFace.selected, "feedback carries its cancel flash"))
-    acquire(
-      "feedback:quantityConfirm:normal",
-      assert(feedback.quantityConfirm.normal, "feedback carries its quantity confirm")
-    )
-    acquire(
-      "feedback:quantityConfirm:selected",
-      assert(feedback.quantityConfirm.selected, "feedback carries its quantity flash")
-    )
-    acquire(
-      "feedback:quantityCancel:normal",
-      assert(feedback.quantityCancel.normal, "feedback carries its quantity cancel face")
-    )
-    acquire(
-      "feedback:quantityCancel:selected",
-      assert(feedback.quantityCancel.selected, "feedback carries its quantity cancel flash")
-    )
-    local moveCursor = assert(interactive.moveCursor, "the bag manifest carries its move target cursor")
-    acquire("moveCursor:original", assert(moveCursor.original, "the move cursor carries its original target"))
-    acquire("moveCursor:candidate", assert(moveCursor.candidate, "the move cursor carries its candidate target"))
-    assert(interactive.overlays.selectedItem ~= nil, "the bag manifest carries its retained selected-item panel")
-    assert(interactive.overlays.messages ~= nil, "the bag manifest carries its lower-message geometry")
-    -- One realized strip per active pocket, carrying the persistent
-    -- selected-pocket treatment; the transient tab focus stays a separate
-    -- visual drawn after the strip.
-    local strips = assert(interactive.pocketTabs.strips, "the bag manifest carries its pocket strips")
-    for _, pocket in ipairs(BagSave.POCKET_ORDER) do
-      acquire("strip:" .. pocket, assert(strips[pocket], "the bag manifest carries the " .. pocket .. " strip"))
-    end
-    local focus = assert(interactive.focus, "the bag manifest must carry its focus visuals")
-    acquire("focus:tabs", assert(focus.tabs.visual, "the bag manifest carries its tab focus"))
-    acquire("focus:items", assert(focus.items.visual, "the bag manifest carries its item focus"))
-    acquire("focus:cancel", assert(focus.cancel.visual, "the bag manifest carries its cancel focus"))
-    acquire("focus:actions", assert(focus.actions.visual, "the bag manifest carries its action focus"))
-    local selectionEntry = assert(interactive.selectionEntry, "the bag manifest carries its selection-entry sequence")
-    local entryFrames = assert(selectionEntry.frames, "the selection entry carries its realized frames")
-    assert(type(entryFrames) == "table" and #entryFrames >= 1, "the selection entry carries its frames")
-    for index, frame in ipairs(entryFrames) do
-      acquire("selectionEntry:" .. index, frame)
-    end
-    local actionMenu = assert(interactive.overlays.actionMenu, "the bag manifest carries its action menu")
-    acquire("actionFace", assert(actionMenu.face, "the bag manifest carries its action face"))
-    local quantity = assert(interactive.overlays.quantity, "the bag manifest carries its quantity overlay")
-    local quantityVisuals = assert(quantity.visuals, "the quantity overlay carries its controls")
-    acquire("quantityIncrement", assert(quantityVisuals.increment.normal, "the quantity carries increment visuals"))
-    acquire(
-      "quantityIncrementPressed",
-      assert(quantityVisuals.increment.pressed, "the quantity carries pressed increment visuals")
-    )
-    acquire("quantityDecrement", assert(quantityVisuals.decrement.normal, "the quantity carries decrement visuals"))
-    acquire(
-      "quantityDecrementPressed",
-      assert(quantityVisuals.decrement.pressed, "the quantity carries pressed decrement visuals")
-    )
-    acquire("quantityConfirm", assert(quantity.confirm.visual, "the quantity carries its confirm visual"))
-    acquire("quantityCancel", assert(quantity.cancel.visual, "the quantity carries its cancel visual"))
-    local sale = assert(interactive.sale, "the bag manifest carries its sale presentation")
-    assert(
-      sale.confirm.visual.image == quantity.confirm.visual.image,
-      "sale and quantity confirmation share their source confirm visual"
-    )
-    assert(
-      sale.cancel.visual.image == quantity.cancel.visual.image,
-      "sale and quantity cancellation share their source cancel visual"
-    )
-    acquire("saleQuantityBackground", sale.quantityBackground)
-    self._visuals.saleConfirm = self._visuals.quantityConfirm
-    self._visuals.saleCancel = self._visuals.quantityCancel
-    local registration =
-      assert(interactive.itemSlots.registration, "the bag manifest must carry its registration markers")
-    local slot1 = assert(registration.slot1, "the bag manifest must carry its first registration marker")
-    local slot2 = assert(registration.slot2, "the bag manifest must carry its second registration marker")
-    assert(
-      type(slot1.image) == "string" and slot1.image ~= "",
-      "the first registration marker carries its generated image"
-    )
-    assert(
-      type(slot2.image) == "string" and slot2.image ~= "",
-      "the second registration marker carries its generated image"
-    )
-    assert(type(registration.offset) == "table", "the registration markers carry their generated offset")
-    acquire("registrationSlot1", slot1)
-    acquire("registrationSlot2", slot2)
-    -- The modal prompt button art binds after every bag visual, so the
-    -- prompt images stay trailing in acquisition order.
+    -- The modal prompt chrome binds at construction; every bag visual
+    -- resolves through prepare(status) demand leases.
     self._promptRenderer = YesNoPromptRenderer.new({
       cacheFs = cacheFs,
       manifest = promptManifest,
@@ -535,6 +554,329 @@ local function moveOriginKey(presentation)
     return tostring(cell)
   end
   return "none"
+end
+
+---@class BagDemandEntry
+---@field key string the visual key draws resolve, matching the construction path map keys
+---@field path string the generated image path enrolled with the shared owner
+---@field width integer the generated visual width draws place
+---@field height integer the generated visual height draws place
+---@field offset table<string, integer>? the generated visual offset draws place
+---@field prefetch boolean true for the bounded one-step-ahead pocket visuals
+
+---@class BagDemandPending
+---@field signature string the semantic demand key this enrollment resolves
+---@field tokens table<integer, integer> enrolled shared-owner tokens in enrollment order
+---@field tokenByPath table<string, integer> enrolled tokens by generated path
+---@field entries table<integer, BagDemandEntry> visual keys in enrollment order
+---@field settled table<integer, boolean> tokens observed ready at least once
+---@field settledCount integer count of settled tokens
+
+-- Every bag visual samples point-filtered and clamped: pooled leases
+-- draw under this exact sampler state.
+local POOLED_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }
+
+-- Rounds of consecutive observations without any enrolled visual settling
+-- before a draw admits its demand is stuck instead of hanging the field.
+local DEMAND_STALL_ROUNDS = 100
+
+-- Resolves the one-step-ahead pocket following the current pocket in the
+-- canonical pocket order, wrapping around the end of the list.
+---@param pocket string the current pocket key
+---@return string the prefetched neighbor pocket key
+local function nextPocket(pocket)
+  local order = BagSave.POCKET_ORDER
+  local at = nil
+  for index, key in ipairs(order) do
+    if key == pocket then
+      at = index
+      break
+    end
+  end
+  assert(at ~= nil, "the bag presentation names a known pocket")
+  return order[(at % #order) + 1]
+end
+
+-- The immutable semantic key of one bag status: pocket, occupied count,
+-- background class, move origin, toss base, and machine summary identity.
+-- Animation clocks, focus positions, labels, quantities, and messages never
+-- change the enrolled visuals, so redraws and animation ticks reuse the
+-- installed leases without re-enrolling.
+---@param presentation table<string, unknown>
+---@return string
+local function demandSignature(presentation)
+  local pocket = assert(presentation.pocket, "the bag presentation names its pocket")
+  local count = backgroundCount(presentation)
+  local state = assert(presentation.state, "the bag presentation names its state")
+  local parts = { "pocket:", pocket, "|count:", tostring(count), "|state:", state }
+  if state == "move_select" then
+    parts[#parts + 1] = "|origin:" .. moveOriginKey(presentation)
+  elseif state == "toss_confirm" or state == "toss_ack" then
+    local base = assert(presentation.tossBase, "toss confirmation retains its action/quantity base")
+    parts[#parts + 1] = "|base:" .. tostring(base)
+  end
+  local selected = presentation.selected
+  if type(selected) == "table" then
+    local summary = selected.moveSummary
+    if type(summary) == "table" then
+      parts[#parts + 1] = "|machine:" .. tostring(assert(summary.moveType)) .. "/" .. tostring(assert(summary.category))
+    end
+  end
+  return table.concat(parts)
+end
+
+-- Resolves the move origin key for one background lookup: the live origin
+-- for the current pocket, the origin-absent variant for prefetched
+-- pockets whose target is not yet known.
+---@param presentation table<string, unknown>
+---@param targetPocket string
+---@param pocket string
+---@return string
+local function targetPocketOrigin(presentation, targetPocket, pocket)
+  if targetPocket == pocket and presentation.state == "move_select" then
+    return moveOriginKey(presentation)
+  end
+  return "none"
+end
+
+-- Collects every visual key one bag status draws, in a stable enrollment
+-- order: shared chrome first, then the state background and pocket strip,
+-- then the bounded one-step-ahead pocket visuals. Mirrors the construction
+-- path map keys exactly; an unknown
+-- state/pocket/count fails here instead of borrowing another screen.
+---@param self BagRenderer
+---@param presentation table<string, unknown>
+---@param signature string
+---@return BagDemandPending
+local function enrollDemand(self, presentation, signature)
+  local paths = assert(self._paths, "bag state preparation resolves its construction path map")
+  local pocket = assert(presentation.pocket, "the bag presentation names its pocket")
+  local count = backgroundCount(presentation)
+  local state = assert(presentation.state, "the bag presentation names its state")
+  local entries = {} ---@type BagDemandEntry[]
+  local function add(key)
+    local pathEntry = assert(paths[key], "the demand resolves " .. key .. " through the construction path map")
+    entries[#entries + 1] = {
+      key = key,
+      path = pathEntry.path,
+      width = pathEntry.width,
+      height = pathEntry.height,
+      offset = pathEntry.offset,
+      prefetch = false,
+    }
+  end
+  add("focus:tabs")
+  add("focus:items")
+  add("focus:cancel")
+  add("focus:actions")
+  local selectionIndex = 1
+  while paths["selectionEntry:" .. selectionIndex] ~= nil do
+    add("selectionEntry:" .. selectionIndex)
+    selectionIndex = selectionIndex + 1
+  end
+  add("heroMale")
+  add("heroFemale")
+  add("descriptionFrame")
+  add("registrationSlot1")
+  add("registrationSlot2")
+  add("actionFace")
+  add("feedback:action:normal")
+  add("feedback:action:selected")
+  add("feedback:cancel:normal")
+  add("feedback:cancel:selected")
+  add("feedback:quantityConfirm:normal")
+  add("feedback:quantityConfirm:selected")
+  add("feedback:quantityCancel:normal")
+  add("feedback:quantityCancel:selected")
+  add("quantityIncrement")
+  add("quantityIncrementPressed")
+  add("quantityDecrement")
+  add("quantityDecrementPressed")
+  add("quantityConfirm")
+  add("quantityCancel")
+  add("saleQuantityBackground")
+  add("moveCursor:original")
+  add("moveCursor:candidate")
+  local function backgroundKey(targetPocket, origin)
+    if state == "browsing" or state == "description_overlay" or state == "item_select" then
+      return "background:browse:" .. targetPocket .. ":" .. count
+    elseif
+      state == "action_menu"
+      or state == "sale_offer"
+      or state == "sale_result"
+      or state == "sale_refusal"
+      or state == "sale_ack"
+    then
+      return "background:action:" .. targetPocket .. ":" .. count
+    elseif state == "toss_quantity" then
+      return "background:quantity:" .. targetPocket .. ":" .. count
+    elseif state == "sale_quantity" then
+      return ""
+    elseif state == "toss_confirm" or state == "toss_ack" then
+      local base = assert(presentation.tossBase, "toss confirmation retains its action/quantity base")
+      assert(base == "action" or base == "quantity", "toss confirmation retains a known base")
+      return "background:" .. base .. ":" .. targetPocket .. ":" .. count
+    elseif state == "move_select" then
+      return "background:move:" .. targetPocket .. ":" .. count .. ":" .. origin
+    end
+    error("the bag renderer draws a known lower-pane state", 0)
+  end
+  -- The sale quantity state draws the sale chrome without a lower-pane
+  -- background: the empty key enrolls nothing below.
+  local stateBackgroundKey = backgroundKey(pocket, targetPocketOrigin(presentation, pocket, pocket))
+  if stateBackgroundKey ~= "" then
+    add(stateBackgroundKey)
+  end
+  add("strip:" .. pocket)
+  local ahead = nextPocket(pocket)
+  local aheadBackgroundKey = backgroundKey(ahead, "none")
+  if aheadBackgroundKey ~= "" then
+    local first = #entries + 1
+    add(aheadBackgroundKey)
+    entries[first].prefetch = true
+  end
+  local stripFirst = #entries + 1
+  add("strip:" .. ahead)
+  entries[stripFirst].prefetch = true
+  local selected = presentation.selected
+  if type(selected) == "table" and type(selected.moveSummary) == "table" then
+    local facts = assert(selected.moveSummary)
+    local moveType = assert(facts.moveType, "the move summary carries its type")
+    local category = assert(facts.category, "the move summary carries its category")
+    add("moveSummaryBackground")
+    add("moveType:" .. moveType)
+    add("moveCategory:" .. category)
+  end
+  local pool = assert(self._pool, "bag state preparation borrows its shared image owner")
+  local tokens = {} ---@type table<integer, integer>
+  local tokenByPath = {} ---@type table<string, integer>
+  for _, entry in ipairs(entries) do
+    local token = tokenByPath[entry.path]
+    if token == nil then
+      token = pool:request(entry.path, POOLED_SAMPLER, entry.prefetch and "prefetch" or "demand")
+      tokenByPath[entry.path] = token
+      tokens[#tokens + 1] = token
+    end
+  end
+  return {
+    signature = signature,
+    tokens = tokens,
+    tokenByPath = tokenByPath,
+    entries = entries,
+    settled = {},
+    settledCount = 0,
+  }
+end
+
+-- Polls every enrolled token once without blocking. Returns true with the
+-- replacement leases installed once the whole demand resolved, and releases
+-- the previous leases only then; a failed visual fails loudly while the
+-- installed state stays drawable. Never enrolls: callers promote the
+-- returned pending group across rounds.
+---@param self BagRenderer
+---@param pending BagDemandPending
+---@return boolean ready
+local function pollPending(self, pending)
+  local pool = assert(self._pool, "bag state preparation borrows its shared image owner")
+  local settled, settledCount = pending.settled, pending.settledCount
+  for _, token in ipairs(pending.tokens) do
+    if not settled[token] then
+      local status, failure = pool:poll(token)
+      if status == "failed" then
+        error("bag state image is not ready: " .. tostring(failure), 0)
+      end
+      assert(status == "pending" or status == "ready", "bag state preparation reports pending or ready")
+      if status == "ready" then
+        settled[token] = true
+        settledCount = settledCount + 1
+      end
+    end
+  end
+  pending.settledCount = settledCount
+  if settledCount < #pending.tokens then
+    return false
+  end
+  local staged = {} ---@type table<integer, table<string, unknown>>
+  local ok, failure = pcall(function()
+    for _, token in ipairs(pending.tokens) do
+      staged[#staged + 1] = pool:acquire(token)
+    end
+  end)
+  if not ok then
+    for _, lease in ipairs(staged) do
+      pool:release(lease)
+    end
+    error(failure, 0)
+  end
+  local leaseByPath = {} ---@type table<string, table<string, unknown>>
+  for path, token in pairs(pending.tokenByPath) do
+    for index, enrolled in ipairs(pending.tokens) do
+      if enrolled == token then
+        leaseByPath[path] = staged[index]
+        break
+      end
+    end
+  end
+  local visuals = {} ---@type table<string, BagDemandVisual>
+  local images = {} ---@type table<string, unknown>
+  for _, entry in ipairs(pending.entries) do
+    local lease = assert(leaseByPath[entry.path], "the resolved demand carries " .. entry.key)
+    assert(lease.image, "shared leases carry their resolved image")
+    visuals[entry.key] = { handle = lease, width = entry.width, height = entry.height, offset = entry.offset }
+    images[entry.key] = lease.image
+  end
+  local aliases = { { "saleConfirm", "quantityConfirm" }, { "saleCancel", "quantityCancel" } }
+  for _, alias in ipairs(aliases) do
+    visuals[alias[1]] = assert(visuals[alias[2]], "the bag presentation names its quantity controls")
+  end
+  for _, lease in ipairs(self._readyLeases) do
+    pool:release(lease)
+  end
+  self._visuals = visuals
+  self._images = images --[[@as table<string, love.Image>]]
+  self._readyLeases = staged
+  self._readySignature = pending.signature
+  self._pending = nil
+  return true
+end
+
+-- Advances the demand for one bag status by a single enrollment and poll
+-- round: enrolls the whole independent path set before the first readiness
+-- probe, promotes outstanding tokens across rounds, and abandons stale
+-- interest that a newer status superseded. Returns readiness plus whether
+-- this round made progress.
+---@param self BagRenderer
+---@param presentation table<string, unknown>
+---@return boolean ready
+---@return boolean progressed
+local function advanceDemand(self, presentation)
+  local signature = demandSignature(presentation)
+  if self._readySignature == signature then
+    return true, false
+  end
+  local pending = self._pending
+  if pending == nil or pending.signature ~= signature then
+    -- A fresh enrollment reports pending on its own round: every
+    -- independent path enrolls before the first readiness poll, so
+    -- readiness is observable only on a later round, even when the pool
+    -- could serve the whole demand immediately. A superseded pending is
+    -- cancelled first so its enrolled-but-unpolled worker payloads are
+    -- discarded instead of retained unclaimed for the field lifetime.
+    if pending ~= nil then
+      local pool = assert(self._pool, "bag state preparation borrows its shared image owner")
+      for _, token in ipairs(pending.tokens) do
+        pool:cancel(token)
+      end
+    end
+    self._pending = enrollDemand(self, presentation, signature)
+    return false, true
+  end
+  local before = pending.settledCount
+  local ready = pollPending(self, pending)
+  if ready then
+    return true, true
+  end
+  return false, pending.settledCount ~= before
 end
 
 -- Draws the one generated lower-pane background for the current state and
@@ -809,9 +1151,15 @@ function BagRenderer:_drawItemCells(presentation, icons, iconImage, palettes)
       local dims = icons:dimensions(iconKey)
       local center = assert(slot.iconCenter, "every cell needs its icon center")
       setColor(graphics, WHITE)
-      graphics.draw(iconImage, quad, center.x - dims.width / 2, center.y - dims.height / 2)
+      local handle = icons:handle()
+      if handle ~= nil then
+        ImageSampling.draw(graphics, handle, quad, center.x - dims.width / 2, center.y - dims.height / 2)
+      else
+        graphics.draw(iconImage, quad, center.x - dims.width / 2, center.y - dims.height / 2)
+      end
       setColor(graphics, WHITE)
-      -- The registration badge composites above the icon it overlaps under
+      -- The registration badge composites above the icon it overlaps
+      -- under
       -- the corrected icon anchor, so the slot distinction stays visible;
       -- cell text still prints above the badge.
       local registrationSlot = cell.registrationSlot
@@ -820,10 +1168,10 @@ function BagRenderer:_drawItemCells(presentation, icons, iconImage, palettes)
           registrationSlot == 1 or registrationSlot == 2,
           "occupied cells carry a registration slot of 1, 2, or nil"
         )
-        local marker = registrationSlot == 1 and self._images.registrationSlot1 or self._images.registrationSlot2
+        local marker = registrationSlot == 1 and self._visuals.registrationSlot1 or self._visuals.registrationSlot2
         drawVisual(
           graphics,
-          { image = marker, width = 40, height = 16 },
+          assert(marker, "occupied cells carry a registration slot of 1, 2, or nil"),
           rect.x + registrationOffset.x,
           rect.y + registrationOffset.y
         )
@@ -871,7 +1219,12 @@ function BagRenderer:_drawSelectedItemPanel(presentation, icons, iconImage, item
   local quad = icons:quadFor(iconKey)
   local dims = icons:dimensions(iconKey)
   setColor(graphics, WHITE)
-  graphics.draw(iconImage, quad, center.x - dims.width / 2, center.y - dims.height / 2)
+  local handle = icons:handle()
+  if handle ~= nil then
+    ImageSampling.draw(graphics, handle, quad, center.x - dims.width / 2, center.y - dims.height / 2)
+  else
+    graphics.draw(iconImage, quad, center.x - dims.width / 2, center.y - dims.height / 2)
+  end
   local nameAt = assert(panel.nameAt, "the selected-item panel carries its name anchor")
   local quantityAt = assert(panel.quantityAt, "the selected-item panel carries its quantity anchor")
   assert(type(selected.name) == "string", "the selected item carries a name")
@@ -1322,7 +1675,12 @@ function BagRenderer:_drawDescriptionOverlay(presentation, icons, iconImage)
   local quad = icons:quadFor(iconKey)
   local dims = icons:dimensions(iconKey)
   setColor(graphics, { 1, 1, 1, 1 })
-  graphics.draw(iconImage, quad, frame.x + 4, frame.y + (frame.height - dims.height) / 2)
+  local handle = icons:handle()
+  if handle ~= nil then
+    ImageSampling.draw(graphics, handle, quad, frame.x + 4, frame.y + (frame.height - dims.height) / 2)
+  else
+    graphics.draw(iconImage, quad, frame.x + 4, frame.y + (frame.height - dims.height) / 2)
+  end
   setColor(graphics, WHITE)
   assert(type(selected.name) == "string", "the overlay item carries a name")
   self._text:drawText(plainText(selected.name), frame.x + 44, frame.y + 2)
@@ -1330,6 +1688,61 @@ function BagRenderer:_drawDescriptionOverlay(presentation, icons, iconImage)
   self:_drawLines(selected.description, frame.x + 44, frame.y + 2 + LINE_HEIGHT, 2)
   local hint = "B Back"
   self._text:drawText(hint, frame.x + frame.width - self._text:textWidth(hint) - 4, frame.y + frame.height - 14)
+end
+
+-- Resolves the state visuals for one bag status through the shared
+-- image owner without blocking: enrolls every independent path of a new
+-- demand before the first readiness probe, promotes outstanding work
+-- across rounds, and swaps the installed leases only once the whole
+-- replacement resolved. Returns true once the status is drawable.
+-- A superseded pending demand is abandoned without uploading; a failed
+-- visual fails loudly while the installed state stays drawable.
+---@param status table<string, unknown> the controller status selecting the demand
+---@return boolean ready
+function BagRenderer:prepare(status)
+  assert(type(status) == "table", "the bag renderer requires a presentation")
+  assert(self._pool ~= nil, "bag state preparation borrows its shared image owner")
+  local ready = advanceDemand(self, status)
+  return ready
+end
+
+-- Admits one open status for drawing: advances its demand until the
+-- shared owner resolves every visual, yielding to the worker between
+-- rounds. A demand that settles nothing for a bounded number of rounds
+-- is stuck and fails loudly instead of publishing a partial menu or
+-- hanging the field; the caller keeps drawing its previous complete
+-- status while a replacement stays pending.
+---@param presentation table<string, unknown>
+local function awaitDemand(self, presentation)
+  local signature = demandSignature(presentation)
+  if self._readySignature == signature then
+    return
+  end
+  local stalled = 0
+  while true do
+    local ready, progressed = advanceDemand(self, presentation)
+    if ready then
+      return
+    end
+    if progressed then
+      stalled = 0
+    else
+      stalled = stalled + 1
+    end
+    if stalled >= DEMAND_STALL_ROUNDS then
+      error(
+        "bag state visuals are not ready for pocket "
+          .. tostring(presentation.pocket)
+          .. " state "
+          .. tostring(presentation.state),
+        0
+      )
+    end
+    local timer = love and love.timer
+    if timer ~= nil and timer.sleep ~= nil then
+      timer.sleep(0.001)
+    end
+  end
 end
 
 -- Draws one presentation snapshot through the resolved plan with quads
@@ -1348,6 +1761,9 @@ function BagRenderer:draw(presentation, plan, collaborators)
   if not presentation.open then
     return
   end
+  -- Demand leases admit only a complete ready state: an unprepared or
+  -- superseded status fails loudly instead of drawing a partial menu.
+  awaitDemand(self, presentation)
   local icons = assert(collaborators and collaborators.icons, "occupied cells need the icon provider")
   local content = assert(plan.content, "the bag plan carries its canonical content")
   local panes = assert(plan.panes, "the bag plan orders its panes")
@@ -1389,14 +1805,18 @@ function BagRenderer:draw(presentation, plan, collaborators)
 end
 
 function BagRenderer:release()
-  local images = self._images
+  local pool = assert(self._pool, "bag state visuals borrow their shared image owner")
+  local leases = self._readyLeases
+  self._readyLeases = {}
+  self._readySignature = nil
+  self._pending = nil
+  for _, lease in ipairs(leases) do
+    pool:release(lease)
+  end
   self._images = {}
   self._visuals = {}
-  for _, image in pairs(images) do
-    if image ~= nil and image.release then
-      image:release()
-    end
-  end
+  -- Demand visuals arrive as borrowed leases returned above; only the small
+  -- fixed prompt chrome below stays renderer-owned.
   local promptRenderer = self._promptRenderer
   self._promptRenderer = nil
   if promptRenderer ~= nil then

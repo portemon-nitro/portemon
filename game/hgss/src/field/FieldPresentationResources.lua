@@ -50,6 +50,8 @@ local FieldAreaPreviewRenderer = require("game.hgss.src.field.FieldAreaPreviewRe
 
 ---@class FieldPresentationResourcesRuntime
 ---@field cacheFs CacheFs
+---@field imageAssets table<string, unknown>? the runtime-owned shared image owner borrowed by menu chrome
+---@field assetPreparation table<string, unknown>? the runtime-owned preparation worker borrowed for icon pages
 ---@field derivedAssets table<string, function>? semantic derived-asset host in presented composition
 ---@field bindPartyIconPreparation fun(runtime: FieldPresentationResourcesRuntime, prepare: PartyIconPrepare, cancel: PartyIconCancel): integer? runtime party preparation binding in presented composition
 ---@field unbindPartyIconPreparation fun(runtime: FieldPresentationResourcesRuntime, binding: integer)? runtime preparation unbinding in presented composition
@@ -84,7 +86,8 @@ local FieldAreaPreviewRenderer = require("game.hgss.src.field.FieldAreaPreviewRe
 ---@field monIconProvider MonIconAssetProvider? the one shared party-icon atlas for the state lifetime
 ---@field namingRenderer NamingScreenRenderer? lazily owned script naming renderer
 ---@field namingIconQuads table<string, table<integer, unknown>> prepared mon icon frames borrowed from the provider
----@field imageQueue AssetPreparationQueue? the one owned worker decoding party icon pages
+---@field imageQueue table<string, unknown>? the owned worker decoding party icon pages, or the borrowed runtime queue
+---@field _ownsImageQueue boolean? true while the image queue above is owned here instead of borrowed
 ---@field _presentationRuntime FieldPresentationResourcesRuntime? borrowed runtime owning the party preparation binding
 ---@field _partyIconBinding integer? installed preparation binding identity
 ---@field _summaryBinding integer? installed summary preparation binding identity
@@ -421,8 +424,10 @@ function FieldPresentationResources.new(runtime)
     -- rendering and reused for every application outer frame. The selected
     -- frame index snapshots the current player option because no live
     -- in-field options mutation exists.
-    self.windowRenderer = FieldWindowRenderer.new({ cacheFs = runtime.cacheFs, manifest = runtime.uiManifest })
-    local textRenderer = FieldTextRenderer.new({ cacheFs = runtime.cacheFs })
+    local sharedImages = runtime.imageAssets
+    self.windowRenderer =
+      FieldWindowRenderer.new({ cacheFs = runtime.cacheFs, manifest = runtime.uiManifest, imagePool = sharedImages })
+    local textRenderer = FieldTextRenderer.new({ cacheFs = runtime.cacheFs, imagePool = sharedImages })
     self.textRenderer = textRenderer
     -- The transient area-name banner borrows this one text atlas and the
     -- generated field-entry skins. The renderer holds no image itself; the
@@ -475,6 +480,7 @@ function FieldPresentationResources.new(runtime)
       cacheFs = runtime.cacheFs,
       manifest = runtime.uiManifest,
       text = textRenderer,
+      imagePool = sharedImages,
     })
     self.trainerCardRenderer = TrainerCardRenderer.new({
       cacheFs = runtime.cacheFs,
@@ -488,8 +494,19 @@ function FieldPresentationResources.new(runtime)
       text = textRenderer,
       window = self.windowRenderer,
       frameIndex = self.applicationFrameIndex,
+      imagePool = sharedImages,
     })
-    self.imageQueue = AssetPreparationQueue.new(runtime.cacheFs)
+    -- The field borrows the runtime-owned preparation worker and image
+    -- owner when the runtime provides them, instead of starting a second
+    -- worker beside the runtime queue. Borrowed owners are never released
+    -- or disposed here; a runtime without them keeps the owned worker.
+    if sharedImages ~= nil then
+      self.imageQueue = runtime.assetPreparation
+      self._ownsImageQueue = false
+    else
+      self.imageQueue = AssetPreparationQueue.new(runtime.cacheFs)
+      self._ownsImageQueue = true
+    end
     self.monIconProvider = MonIconAssetProvider.new(runtime.cacheFs, {
       preparationQueue = self.imageQueue,
       derivedAssets = assert(runtime.derivedAssets, "presented party icons require the semantic cache host"),
@@ -530,7 +547,7 @@ function FieldPresentationResources.new(runtime)
     -- boots only when the compiled item/bag caches are present, and the
     -- launch-time capability gate in the FieldRuntime bag factory still
     -- fails fast on missing service/cursor/catalog/assets when Bag opens.
-    self.itemIconProvider = ItemIconAssetProvider.new(runtime.cacheFs)
+    self.itemIconProvider = ItemIconAssetProvider.new(runtime.cacheFs, { imagePool = sharedImages })
     -- The bag manifest loads once: the 2D pane renderer and the borrowed
     -- hero model renderer share the same validated table.
     local bagManifest = BagCache.loadManifest(runtime.cacheFs)
@@ -543,6 +560,7 @@ function FieldPresentationResources.new(runtime)
       heroRenderer = self.heroRenderer,
       window = self.windowRenderer,
       frameIndex = self.applicationFrameIndex,
+      imagePool = sharedImages,
     })
     self.martRenderer = MartRenderer.new({
       cacheFs = runtime.cacheFs,
@@ -551,6 +569,7 @@ function FieldPresentationResources.new(runtime)
       text = textRenderer,
       window = self.windowRenderer,
       frameIndex = self.applicationFrameIndex,
+      imagePool = sharedImages,
     })
     self.pcManifest = PcCache.loadManifest(runtime.cacheFs)
     local graphics = assert(love and love.graphics, "PC application rendering requires LÖVE graphics")
@@ -644,12 +663,11 @@ local function ensurePokemonNamingRenderer(owner)
     local iconFrames =
       assert(owner.namingIconQuads[iconKey], "Pokemon naming icon frames were not prepared before draw")
     local quad = assert(iconFrames[placement.frameIndex], "Pokemon naming icon frame was not prepared before draw")
-    hostGraphics.draw(
-      assert(owner.monIconProvider, "field presentation owns the mon icon provider"):image(iconKey),
-      quad,
-      placement.x,
-      placement.y
-    )
+    -- Mon icon handles carry the shared pool-lease draw surface, so the subject
+    -- resolves through the exact sampler with zero new imports.
+    assert(owner.monIconProvider, "field presentation owns the mon icon provider")
+      :handleFor(iconKey)
+      :drawQuad(hostGraphics, quad, placement.x, placement.y)
   end
   local renderer = NamingScreenRenderer.new({
     graphics = graphics,
@@ -1055,10 +1073,11 @@ function FieldPresentationResources:dispose()
     self.summaryResources = nil
   end
   self.summaryRenderer = nil
-  if self.imageQueue then
+  if self.imageQueue ~= nil and self._ownsImageQueue then
     self.imageQueue:release()
-    self.imageQueue = nil
   end
+  self.imageQueue = nil
+  self._ownsImageQueue = nil
   if self.itemIconProvider then
     self.itemIconProvider:release()
     self.itemIconProvider = nil

@@ -7,6 +7,8 @@
 // color -- including one that happens to look reddish or greenish -- can
 // never be misread as a different glyph class.
 
+/*__portemon_shared_image_sampling__*/
+
 #ifdef PIXEL
 uniform vec4 u_foreground;
 uniform vec4 u_shadow;
@@ -14,7 +16,10 @@ uniform vec4 u_background;
 
 vec4 effect(vec4 tint, Image tex, vec2 uv, vec2 screenCoords)
 {
-  vec4 mask = Texel(tex, uv);
+  // The mask atlas is a generated image like any other: an indexed
+  // source resolves through its exact palette first, so the class
+  // channels below always read exact texels.
+  vec4 mask = resolveExactTexel(Texel(tex, uv));
 
   if (mask.a < 0.5) {
     return vec4(0.0);

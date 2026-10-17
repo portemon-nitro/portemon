@@ -1,5 +1,6 @@
 -- Source-layered mart painting; all simulation data is borrowed read-only.
 
+local ImageSampling = require("libs.nds.src.love.ImageSampling")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 local YesNoPromptRenderer = require("libs.hgss.src.ui.YesNoPromptRenderer")
@@ -14,6 +15,9 @@ local YesNoPromptRenderer = require("libs.hgss.src.ui.YesNoPromptRenderer")
 ---@field private _images table<string, love.Image>
 ---@field private _quads table<string, love.Quad>
 ---@field private _promptRenderer YesNoPromptRenderer
+---@field private _pool table<string, unknown>? the borrowed shared image owner; nil keeps eager construction
+---@field private _leases table<integer, table<string, unknown>>? installed chrome leases returned on release
+---@field private _leaseByPath table<string, table<string, unknown>>? installed chrome leases by visual path behind sampler draws
 ---@field private _released boolean
 local MartRenderer = {}
 MartRenderer.__index = MartRenderer
@@ -46,6 +50,40 @@ local function visualMap(manifest)
   end
   visit(manifest)
   return byPath
+end
+
+-- Every mart visual samples point-filtered and clamped, matching the
+-- eager construction below, so pooled leases draw identically.
+local POOLED_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }
+
+-- Borrows one generated path from the shared image owner, yielding to the
+-- worker until the visual resolves. A missing visual fails loudly without
+-- publishing a partial chrome set; the caller returns earlier leases when
+-- a later visual fails.
+---@param pool table<string, unknown>
+---@param path string
+---@return table<string, unknown> lease
+local function acquirePinned(pool, path)
+  local token = pool:request(path, POOLED_SAMPLER, "demand")
+  local stalled = 0
+  while true do
+    local status, failure = pool:poll(token)
+    if status == "ready" then
+      return pool:acquire(token)
+    end
+    if status == "failed" then
+      error("mart visual is unavailable at " .. path .. ": " .. tostring(failure), 0)
+    end
+    assert(status == "pending", "mart preparation reports pending or ready")
+    stalled = stalled + 1
+    if stalled > 10000 then
+      error("mart visual stalled at " .. path, 0)
+    end
+    local timer = love and love.timer
+    if timer ~= nil and timer.sleep ~= nil then
+      timer.sleep(0.001)
+    end
+  end
 end
 
 ---@param opts table<string, unknown>
@@ -86,6 +124,33 @@ function MartRenderer.new(opts)
     _released = false,
   }, MartRenderer)
   local images, quads = self._images, self._quads
+  local pool = opts.imagePool
+  -- A borrowed shared owner replaces every private image with a pinned
+  -- field-lifetime lease: the same fixed chrome set, owned by the common
+  -- pool and returned on release instead of destroyed.
+  if pool ~= nil then
+    self._pool = pool
+    local leases = {}
+    self._leases = leases
+    local leaseByPath = {}
+    self._leaseByPath = leaseByPath
+    local ok, err = pcall(function()
+      for path in pairs(visualMap(manifest)) do
+        local lease = acquirePinned(pool, path)
+        leases[#leases + 1] = lease
+        leaseByPath[path] = lease
+        local image = assert(lease.image, "shared leases carry their resolved image")
+        images[path] = image
+        local width, height = image:getDimensions()
+        quads[path] = graphics.newQuad(0, 0, width, height, width, height)
+      end
+    end)
+    if not ok then
+      self:release()
+      error(err, 0)
+    end
+    return self
+  end
   local ok, err = pcall(function()
     for path in pairs(visualMap(manifest)) do
       local bytes = cacheFs:read(path)
@@ -124,6 +189,12 @@ function MartRenderer:_drawVisual(visual, x, y)
   local offsetX, offsetY = visual.offsetX or 0, visual.offsetY or 0
   local graphics = self._graphics
   graphics.setColor(1, 1, 1, 1)
+  local leaseByPath = self._leaseByPath
+  local lease = leaseByPath ~= nil and leaseByPath[path] or nil
+  if lease ~= nil then
+    ImageSampling.draw(graphics, lease, self._quads[path], x + offsetX, y + offsetY)
+    return
+  end
   graphics.draw(image, self._quads[path], x + offsetX, y + offsetY)
 end
 
@@ -171,6 +242,11 @@ function MartRenderer:_drawIcon(icons, itemKey, anchor)
   local quad = icons:quadFor(itemKey)
   local size = icons:dimensions(itemKey)
   self._graphics.setColor(1, 1, 1, 1)
+  local handle = icons:handle()
+  if handle ~= nil then
+    ImageSampling.draw(self._graphics, handle, quad, anchor.x - size.width / 2, anchor.y - size.height / 2)
+    return
+  end
   self._graphics.draw(icons:image(), quad, anchor.x - size.width / 2, anchor.y - size.height / 2)
 end
 
@@ -358,9 +434,20 @@ function MartRenderer:release()
     return
   end
   self._released = true
-  for _, image in pairs(self._images) do
-    if image.release then
-      image:release()
+  local pool = self._pool
+  self._pool = nil
+  local leases = self._leases
+  self._leases = nil
+  self._leaseByPath = nil
+  if pool ~= nil then
+    for _, lease in ipairs(leases or {}) do
+      pool:release(lease)
+    end
+  else
+    for _, image in pairs(self._images) do
+      if image.release then
+        image:release()
+      end
     end
   end
   self._promptRenderer:release()

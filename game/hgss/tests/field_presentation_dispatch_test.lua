@@ -8,6 +8,7 @@
 
 local Assert = require("tests.support.Assert")
 local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
+local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
 
 local T = {}
 
@@ -133,7 +134,8 @@ local function buildDoubles(sink, calls)
       end,
     },
     ["libs.hgss.src.ui.BagRenderer"] = {
-      new = function(_)
+      new = function(opts)
+        calls.bagOpts = opts
         return bag
       end,
     },
@@ -1627,6 +1629,29 @@ function T.start_menu_draw_executes_the_resolved_plan_with_borrowed_resources()
   if not ok then
     error(err, 0)
   end
+end
+
+-- The Bag renderer borrows the runtime-owned shared image owner instead of
+-- triggering a second preparation worker: construction hands the runtime
+-- pool to the Bag renderer, builds no additional queue, stages no state
+-- visual by itself, and disposal never tears down the borrowed pool.
+function T.bag_renderer_borrows_the_shared_image_owner_without_a_second_queue()
+  local sink, calls = {}, {}
+  local runtime = compositionRuntime()
+  local pool = SharedImagePoolFake.new()
+  local disposed = 0
+  function pool:dispose()
+    disposed = disposed + 1
+  end
+  runtime.imageAssets = pool
+  withProductionComposition(sink, calls, runtime, function(resources)
+    local bagOpts = assert(calls.bagOpts, "field entry constructs its Bag renderer")
+    Assert.isTrue(bagOpts.imagePool == pool, "the Bag renderer borrows the runtime-owned shared image owner")
+    Assert.isNil(calls.queue, "field entry builds no second preparation worker beside the runtime queue")
+    Assert.equal(pool:stats().physicalImages, 0, "construction stages no state visual by itself")
+    resources:dispose()
+    Assert.equal(disposed, 0, "disposal never tears down the borrowed image owner")
+  end)
 end
 
 return { tests = T }
