@@ -4,10 +4,17 @@
 -- resolver, and proves the shrine dispatch script runs instead of faulting
 -- on its first instruction. The staged Celebi leg then plays the fateful
 -- lead branch through the time-travel beat and asserts the Route 22 warp
--- with its script-visible state (VAR_UNK_40FE, friend visibility). The
--- auto-started Route 22 past scene (camera-target ops 102/103) is a
--- separate follow-up and stays outside this contract: fault assertions are
--- scoped to the Ilex member-92 scripts.
+-- with its script-visible state (VAR_UNK_40FE, friend visibility), while
+-- sampling the production screen-fade cover on every tick: the journey
+-- must show a visible interval between the cutscene's opening cover and
+-- its closing white cover, never a single unbroken white hold. Exact
+-- beat/swirl counts and the terminal opaque gate live in the cutscene
+-- task unit contract; this scenario only proves the composed ordering
+-- reaches the covered warp. The 3D model, camera roll, and motion blur
+-- have no presentation owner, so nothing here claims cinematic
+-- completeness. The auto-started Route 22 past scene (camera-target ops
+-- 102/103) is a separate follow-up and stays outside this contract:
+-- fault assertions are scoped to the Ilex member-92 scripts.
 
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
@@ -184,11 +191,29 @@ end
 
 -- Drive semantic Action edges until the field reaches the named map or a
 -- journey script faults. The past scenes use no menus, so holding Action
--- through dialogue and movement is safe.
-local function driveUntilMap(game, mapSymbol, maxTicks)
+-- through dialogue and movement is safe. When `cover` is given, every
+-- tick also samples the production screen-fade coefficient so the caller
+-- can prove the journey showed a visible interval before its covered
+-- warp: opaque, then clear, then opaque again. The saves and derived
+-- caches stay isolated: the harness boots a per-run save namespace over
+-- read-only fixtures, and this driver writes nothing back.
+local function driveUntilMap(game, mapSymbol, maxTicks, cover)
   local arrived = nil
   for _ = 1, maxTicks do
     local snapshot = game:snapshot()
+    if cover ~= nil then
+      local fade = assert(snapshot.screenFade, "the composed runtime owns the screen-fade controller")
+      if fade.coefficient == 16 then
+        if cover.clearAfterOpaque then
+          cover.opaqueAfterClear = true
+        end
+        cover.opaque = true
+      elseif fade.coefficient == 0 then
+        if cover.opaque then
+          cover.clearAfterOpaque = true
+        end
+      end
+    end
     if snapshot.mapSymbol == mapSymbol then
       arrived = snapshot
       break
@@ -255,22 +280,32 @@ end
 -- The staged pre-event state (Rockets beaten, friend hidden, fateful
 -- Celebi lead, untouched progress) must take the Celebi branch: the
 -- friend appears, the time-travel beat completes, and the field warps to
--- Route 22 with progress set and the friend hidden again. The
--- auto-started past scene stays outside this contract: its principals
--- stand on pocket tiles our generated terrain does not cover yet (see
--- the terrain gap below), so it cannot run to its Tohjo warp here.
+-- Route 22 with progress set and the friend hidden again. The cover
+-- trace must show the field visible between the cutscene's opening
+-- cover and its closing white cover; an unbroken white hold from the
+-- cutscene start to the warp would fail this ordering. The auto-started
+-- past scene stays outside this contract: its principals stand on
+-- pocket tiles our generated terrain does not cover yet (see the
+-- terrain gap below), so it cannot run to its Tohjo warp here. The
+-- absent 3D swirl/model is likewise out of scope: only the fade
+-- ordering and the covered warp are asserted.
 function T.tests.celebi_branch_warps_to_route_22_with_progress_set()
   withShrineGame(function(game)
     game:pressAction()
     Assert.equal(game.lastInteraction.kind, "background", "the shrine resolves as a background event")
 
-    local route22 = driveUntilMap(game, "MAP_ROUTE_22", 20000)
+    local cover = {}
+    local route22 = driveUntilMap(game, "MAP_ROUTE_22", 20000, cover)
     Assert.equal(
       #journeyFaults(game),
       0,
       "the Celebi branch must not fault through its warp (got " .. faultDetail(game) .. ")"
     )
     Assert.notNil(route22, "the Celebi branch must warp the field to Route 22")
+    Assert.isTrue(
+      cover.opaqueAfterClear == true,
+      "the cutscene must clear its opening cover before closing white for the warp"
+    )
     local world = assert(game.runtime.scripts.worldState, "field world state is available")
     Assert.equal(world:getVar(PROGRESS_40FE), 1, "the time travel advances the event progress")
     Assert.isTrue(world:isFlagSet(FRIEND_HIDDEN), "the departure hides the friend again")

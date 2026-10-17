@@ -1,17 +1,20 @@
--- Celebi time-travel cutscene task: the source-timed wait behind the
--- shrine's CelebiTimeTravel command. pret/pokeheartgold
--- src/field/event_cutscene_celebi.c runs a white fade, a 30-tick model
--- beat, then a 180-tick (0xB4) camera swirl with a 30-tick white fade
--- starting 80 ticks in, and lands with the screen cover fully opaque
--- white (the following warp requires it). The 3D swirl, motion blur, and
--- legend models have no presentation owner in this engine, so the task
--- owns the source beat structure (30 + 180 polls) plus one white fade-out
--- through the screen service: completion needs the beats and the landed
--- fade together, exactly like the source waits for its swirl and its
--- palette fade. An in-flight fade lands before the cutscene fade starts
--- (two script screen fades must never overlap); a missing screen backend
--- is an attributed fault, never a silent timing-only wait, because the
--- downstream warp faults without its opaque cover anyway.
+-- Celebi time-travel cutscene task: the visible source-ordered fade
+-- timeline behind the shrine's CelebiTimeTravel command.
+-- pret/pokeheartgold src/field/event_cutscene_celebi.c opens with a short
+-- main-screen white fade-out and back in, holds a 30-tick model beat,
+-- then runs a 180-tick (0xB4) camera swirl whose own white fade starts 80
+-- ticks in and lasts 30 ticks, landing opaque white for the following
+-- warp. The task mirrors that schedule through the shared screen
+-- service: opening_out (white out) -> opening_in (white in) -> beat (30
+-- clear polls) -> swirl (180 polls, closing white out at tick 80).
+-- Completion needs the full swirl and a landed opaque cover together.
+-- The 3D model, camera roll, motion blur, and legend actors have no
+-- presentation owner in this engine, so the visible interval stays an
+-- unobscured field rather than a rendered effect. The source opens with
+-- main-screen-only cover while the shared controller overlays the whole
+-- field presentation; that targeting distinction is not reproduced here.
+-- The task never advances the fade itself: the field runtime owns the
+-- source-frame clock and the task only polls the backend state.
 
 local Errors = require("libs.errors.src.Errors")
 local ScriptErrors = require("libs.script.src.errors")
@@ -21,22 +24,23 @@ local CelebiTimeTravelTask = {}
 CelebiTimeTravelTask.type = "celebi_time_travel"
 CelebiTimeTravelTask.version = 1
 
--- Source beats from Task_CelebiTimeTravelCutscene: the model beat waits
--- 30 ticks before the swirl starts, and the swirl effect runs 180 ticks
--- (its white fade at +80 for 30 ticks finishes inside the swirl, so the
--- swirl owns the total). The single white-out below mirrors the source
--- closing fade (duration 30); the brief opening palette fade is
--- presentation-owned and carries no ticks here.
+-- Source counts from Task_CelebiTimeTravelCutscene: the opening palette
+-- fades step 4 frames each, the model beat waits 30 ticks, the swirl
+-- effect runs 180 ticks, and the closing white fade steps 30 frames
+-- starting 80 swirl ticks in (it lands inside the swirl, so the swirl
+-- owns the total). Every fade starts with speed 1.
+CelebiTimeTravelTask.OPENING_FADE_STEPS = 4
 CelebiTimeTravelTask.BEAT_TICKS = 30
 CelebiTimeTravelTask.SWIRL_TICKS = 180
-CelebiTimeTravelTask.FADE_DURATION = 30
+CelebiTimeTravelTask.CLOSING_START_TICK = 80
+CelebiTimeTravelTask.CLOSING_FADE_STEPS = 30
 
 ---@return table<string, unknown> state
 local function initialState()
-  return { phase = "beat", elapsed = 0, fadeStarted = false }
+  return { phase = "opening_out", elapsed = 0, fadeStarted = false }
 end
 
--- Creation takes no input: the cutscene owns its fixed source beats.
+-- Creation takes no input: the cutscene owns its fixed source schedule.
 ---@return table<string, unknown> state
 function CelebiTimeTravelTask.create()
   return initialState()
@@ -45,6 +49,7 @@ end
 ---@class CelebiTimeTravelScreen
 ---@field startFade fun(self: CelebiTimeTravelScreen, spec: { direction: string, color: string, duration: integer, speed: integer })
 ---@field fadeDone fun(self: CelebiTimeTravelScreen): boolean
+---@field isOpaque fun(self: CelebiTimeTravelScreen): boolean
 
 ---@param state table<string, unknown>
 ---@param ctx table<string, unknown>
@@ -58,40 +63,75 @@ function CelebiTimeTravelTask.poll(state, ctx)
     Errors.raise(ScriptErrors.SCRIPT_SERVICE_MISSING, "the celebi cutscene requires task services", {})
   end
   local screen = services.screen
-  if type(screen) ~= "table" or type(screen.startFade) ~= "function" or type(screen.fadeDone) ~= "function" then
+  if
+    type(screen) ~= "table"
+    or type(screen.startFade) ~= "function"
+    or type(screen.fadeDone) ~= "function"
+    or type(screen.isOpaque) ~= "function"
+  then
     Errors.raise(ScriptErrors.SCRIPT_SERVICE_MISSING, "the celebi cutscene requires the screen service", {
       scriptId = ctx.instance and ctx.instance.scriptId,
     })
   end
   local screenService = screen --[[@as CelebiTimeTravelScreen]]
-  if not state.fadeStarted then
+  if state.phase == "opening_out" or state.phase == "opening_in" then
+    if state.fadeStarted then
+      if not screenService:fadeDone() then
+        return { complete = false, state = state }
+      end
+      if state.phase == "opening_out" then
+        state.phase = "opening_in"
+      else
+        state.phase = "beat"
+      end
+      state.elapsed = 0
+      state.fadeStarted = false
+      if state.phase == "beat" then
+        return { complete = false, state = state }
+      end
+    end
     if not screenService:fadeDone() then
       return { complete = false, state = state }
     end
+    local direction = state.phase == "opening_out" and "out" or "in"
     screenService:startFade({
-      direction = "out",
+      direction = direction,
       color = "white",
-      duration = CelebiTimeTravelTask.FADE_DURATION,
+      duration = CelebiTimeTravelTask.OPENING_FADE_STEPS,
       speed = 1,
     })
     state.fadeStarted = true
+    return { complete = false, state = state }
   end
   assert(state.phase == "beat" or state.phase == "swirl", "celebi time travel requires a known phase")
   assert(
     type(state.elapsed) == "number" and state.elapsed % 1 == 0 and state.elapsed >= 0,
     "celebi time travel requires a non-negative elapsed count"
   )
-  local limit = state.phase == "beat" and CelebiTimeTravelTask.BEAT_TICKS or CelebiTimeTravelTask.SWIRL_TICKS
-  local elapsed = math.min(state.elapsed + 1, limit)
-  state.elapsed = elapsed
   if state.phase == "beat" then
-    if elapsed >= CelebiTimeTravelTask.BEAT_TICKS then
+    state.elapsed = state.elapsed + 1
+    if state.elapsed >= CelebiTimeTravelTask.BEAT_TICKS then
       state.phase = "swirl"
       state.elapsed = 0
     end
     return { complete = false, state = state }
   end
-  if elapsed >= CelebiTimeTravelTask.SWIRL_TICKS and screenService:fadeDone() then
+  state.elapsed = math.min(state.elapsed + 1, CelebiTimeTravelTask.SWIRL_TICKS)
+  if state.elapsed == CelebiTimeTravelTask.CLOSING_START_TICK and not state.fadeStarted then
+    assert(screenService:fadeDone(), "closing white fade cannot overlap an active fade")
+    screenService:startFade({
+      direction = "out",
+      color = "white",
+      duration = CelebiTimeTravelTask.CLOSING_FADE_STEPS,
+      speed = 1,
+    })
+    state.fadeStarted = true
+  end
+  if state.elapsed >= CelebiTimeTravelTask.SWIRL_TICKS then
+    if not screenService:fadeDone() then
+      return { complete = false, state = state }
+    end
+    assert(state.fadeStarted and screenService:isOpaque(), "celebi warp requires finished opaque white cover")
     return { complete = true, state = state, result = nil }
   end
   return { complete = false, state = state }
@@ -114,10 +154,20 @@ function CelebiTimeTravelTask.validate(state)
   if type(state) ~= "table" then
     return invalid("celebi time travel state must be a table")
   end
-  if state.phase ~= "beat" and state.phase ~= "swirl" then
-    return invalid("celebi time travel phase must be beat or swirl")
+  if
+    state.phase ~= "opening_out"
+    and state.phase ~= "opening_in"
+    and state.phase ~= "beat"
+    and state.phase ~= "swirl"
+  then
+    return invalid("celebi time travel phase must be opening_out, opening_in, beat, or swirl")
   end
-  local limit = state.phase == "beat" and CelebiTimeTravelTask.BEAT_TICKS or CelebiTimeTravelTask.SWIRL_TICKS
+  local limit = CelebiTimeTravelTask.SWIRL_TICKS
+  if state.phase == "opening_out" or state.phase == "opening_in" then
+    limit = 0
+  elseif state.phase == "beat" then
+    limit = CelebiTimeTravelTask.BEAT_TICKS
+  end
   if type(state.elapsed) ~= "number" or state.elapsed % 1 ~= 0 or state.elapsed < 0 or state.elapsed > limit then
     return invalid("celebi time travel elapsed must stay within its phase")
   end
