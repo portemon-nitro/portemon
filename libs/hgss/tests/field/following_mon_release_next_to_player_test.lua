@@ -1,8 +1,11 @@
 -- FollowMonReleaseNextToPlayer at component scope (pret/pokeheartgold
 -- src/scrcmd_c.c ScrCmd_FollowMonReleaseNextToPlayer): with an active
--- follower permitted on the current map, the partner lands next to the
--- player hidden until its first trail step; without a follower, or where
--- the map forbids following, it reports false and touches nothing. The
+-- follower permitted on the current map, the partner lands on the player
+-- tile facing south with its visibility left alone -- a visible partner
+-- stays visible through stationary ticks, a hidden partner stays hidden.
+-- Without a follower, or where the map forbids following, it reports false
+-- and touches nothing. Genuine map arrivals instead rejoin hidden until the
+-- first trail step; the release command never arms that arrival latch. The
 -- real FollowingMonController, the real FieldActorManager, and a live
 -- player run here; only the party service is a scriptable fake at its
 -- documented contract.
@@ -21,6 +24,8 @@ local T = {}
 local POLICY = {
   variableSprites = { first = 101, last = 117, variableBase = 0x4020 },
 }
+
+local PLAYER_TILE = { fieldX = 6, fieldZ = 16 }
 
 local function terrain()
   return TerrainSurface.new({
@@ -130,8 +135,8 @@ local function world(followMode)
   local playerRef = {}
   playerRef.current = FieldPlayer.new({
     currentMap = sourceMap,
-    fieldX = 6,
-    fieldZ = 16,
+    fieldX = PLAYER_TILE.fieldX,
+    fieldZ = PLAYER_TILE.fieldZ,
     surfaceId = 0,
     facing = "south",
   })
@@ -161,34 +166,111 @@ local function installFollower(w, slot)
   return assert(w.manager:partnerId(), "setup installs the partner from the party lead")
 end
 
-function T.active_permitted_follower_lands_hidden_next_to_the_player()
+local function tickStationary(w, count)
+  for _ = 1, count do
+    w.controller:update()
+  end
+end
+
+local function drainPlayerStep(w)
+  for _ = 1, 12 do
+    if w.player.current.motion ~= "idle" then
+      w.player.current:updateFixed({})
+    end
+    w.controller:update()
+  end
+end
+
+local function assertOnPlayerTile(w, partnerId, what)
+  local position = w.manager:getPosition(partnerId)
+  Assert.equal(position.fieldX, PLAYER_TILE.fieldX, what .. " keeps the player fieldX")
+  Assert.equal(position.fieldZ, PLAYER_TILE.fieldZ, what .. " keeps the player fieldZ")
+  local actor = assert(w.manager:getById(partnerId), "the release keeps the installed partner")
+  Assert.equal(actor.facing, "south", what .. " faces the partner south")
+end
+
+function T.visible_release_keeps_the_partner_visible_through_stationary_ticks()
   local w = world("ALLOW")
   local partnerId = installFollower(w, 0)
   w.manager:show(partnerId)
   Assert.isTrue(w.controller:releaseNextToPlayer(), "the permitted release acts")
-  local snapshot = w.manager:getById(partnerId)
-  Assert.notNil(snapshot, "the release keeps the installed partner")
-  local position = w.manager:getPosition(partnerId)
-  Assert.equal(position.fieldX, 6, "the release moves the partner onto the player tile")
-  Assert.equal(position.fieldZ, 16)
-  Assert.isFalse(w.manager:isVisible(partnerId), "the release hides until the first trail step")
+  assertOnPlayerTile(w, partnerId, "the release")
+  Assert.isTrue(w.manager:isVisible(partnerId), "the release preserves a visible partner")
+  Assert.isTrue(w.controller:isMovementSettled(), "the release leaves no stale trail behind")
+  tickStationary(w, 8)
+  Assert.isTrue(w.manager:isVisible(partnerId), "stationary ticks keep the partner visible with no trail step")
+  assertOnPlayerTile(w, partnerId, "the stationary release")
+  w.manager:dispose()
+end
+
+function T.release_cancels_an_in_flight_trail_without_touching_visibility()
+  local w = world("ALLOW")
+  local partnerId = installFollower(w, 0)
+  w.manager:show(partnerId)
+  Assert.isTrue(w.player.current:tryStep("south"), "the fixture step must start")
+  w.controller:update()
+  Assert.isFalse(w.controller:isMovementSettled(), "the step starts a real follower trail")
+  Assert.isTrue(w.controller:releaseNextToPlayer(), "the permitted release acts")
+  Assert.isTrue(w.controller:isMovementSettled(), "the release drops the stale trail")
+  assertOnPlayerTile(w, partnerId, "the release")
+  Assert.isTrue(w.manager:isVisible(partnerId), "the release preserves a visible partner")
+  w.manager:dispose()
+end
+
+function T.hidden_release_keeps_the_partner_hidden_through_stationary_ticks()
+  local w = world("ALLOW")
+  local partnerId = installFollower(w, 0)
+  w.manager:hide(partnerId)
+  Assert.isTrue(w.controller:releaseNextToPlayer(), "the permitted release acts")
+  assertOnPlayerTile(w, partnerId, "the release")
+  Assert.isFalse(w.manager:isVisible(partnerId), "the release never shows a hidden partner")
+  tickStationary(w, 8)
+  Assert.isFalse(w.manager:isVisible(partnerId), "stationary ticks keep the partner hidden")
+  assertOnPlayerTile(w, partnerId, "the stationary release")
+  w.manager:dispose()
 end
 
 function T.without_a_follower_the_release_reports_false_and_touches_nothing()
   local w = world("ALLOW")
   Assert.isFalse(w.controller:releaseNextToPlayer(), "no follower means no release")
   Assert.isNil(w.manager:partnerId(), "the refusal installs nothing")
+  w.manager:dispose()
 end
 
 function T.a_forbidden_map_refuses_without_moving_the_partner()
   local w = world("ALLOW")
   local partnerId = installFollower(w, 0)
+  w.manager:show(partnerId)
   w.map.followMode = "PREVENT"
   local before = w.manager:getPosition(partnerId)
   Assert.isFalse(w.controller:releaseNextToPlayer(), "a forbidden map refuses the release")
   local after = w.manager:getPosition(partnerId)
   Assert.equal(after.fieldX, before.fieldX, "the refusal leaves the partner where it stands")
   Assert.equal(after.fieldZ, before.fieldZ, "the refusal leaves the partner where it stands")
+  Assert.isTrue(w.manager:isVisible(partnerId), "the refusal leaves visibility alone")
+  w.manager:dispose()
+end
+
+function T.arrival_rejoin_hides_until_the_first_trail_step()
+  local w = world("ALLOW")
+  local partnerId = installFollower(w, 0)
+  w.manager:show(partnerId)
+  w.controller:rejoin("panel")
+  assertOnPlayerTile(w, partnerId, "the arrival rejoin")
+  Assert.isFalse(w.manager:isVisible(partnerId), "the arrival hides the rejoined partner")
+  tickStationary(w, 6)
+  Assert.isFalse(w.manager:isVisible(partnerId), "stationary ticks keep the arrival hidden")
+  assertOnPlayerTile(w, partnerId, "the stationary arrival")
+  Assert.isTrue(w.player.current:tryStep("south"), "the fixture step must start")
+  w.controller:update()
+  Assert.isTrue(w.manager:isVisible(partnerId), "the first observed trail step reveals the rejoined partner")
+  drainPlayerStep(w)
+  Assert.isTrue(w.manager:isVisible(partnerId), "the revealed partner stays visible")
+  Assert.isTrue(w.controller:isMovementSettled(), "the arrival trail settles")
+  Assert.equal(w.player.current.fieldZ, PLAYER_TILE.fieldZ + 1, "the player commits one tile south")
+  local position = w.manager:getPosition(partnerId)
+  Assert.equal(position.fieldZ, PLAYER_TILE.fieldZ, "the satisfied first step leaves the partner on the vacated tile")
+  w.manager:dispose()
 end
 
 return { tests = T }

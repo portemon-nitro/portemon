@@ -1534,10 +1534,13 @@ end
 
 -- Release-next-to-player behind ScrCmd_FollowMonReleaseNextToPlayer
 -- (pret/pokeheartgold src/scrcmd_c.c): with an active follower permitted
--- on the current map, move it next to the player hidden until its first
--- trail step (the arrival-rejoin pattern); otherwise a no-op. The
+-- on the current map, copy the partner onto the player tile facing south
+-- and leave its visibility alone -- the opcode carries no hide or show, so
+-- a visible partner stays visible and a hidden one stays hidden. Unlike
+-- arrival rejoin, no hide-until-step latch is armed here; the trail-step
+-- observation owns only genuine arrivals. Otherwise a no-op. The
 -- release-ball pending flag has no presentation owner (arrivals skip it
--- the same way), so only placement and the step latch are modeled.
+-- the same way), so only placement is modeled.
 ---@param self FollowingMonController
 ---@return boolean acted
 function FollowingMonController:releaseNextToPlayer()
@@ -1548,7 +1551,7 @@ function FollowingMonController:releaseNextToPlayer()
   if mapId == nil or not self:_permitted(mapId) then
     return false
   end
-  self:rejoin("event")
+  self:repositionRelativeToPlayer(9, 1)
   return true
 end
 
