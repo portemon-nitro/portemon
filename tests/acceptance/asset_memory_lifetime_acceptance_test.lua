@@ -776,4 +776,160 @@ function T.tests.scripted_travel_reports_attributed_memory_at_state_boundaries(c
   end
 end
 
+-- The paired release-gate snapshot protocol: three warm passes, each run
+-- once under the compact representation and once under the straight
+-- representation through the same owner, plus one cold-cache pass. Every
+-- snapshot carries its image policy and keeps externally sampled process
+-- memory an explicit unavailable marker until a real external sampler
+-- attaches its series offline; nothing here fabricates a high-water.
+local WARM_PASS_POLICIES = { "compact", "straight", "compact", "straight", "compact", "straight" }
+
+-- The release verdict for one paired comparison. Only a native hardware
+-- renderer with a measured external high-water under the whole-process
+-- ceiling passes. A software rasterizer, an unidentified renderer, or an
+-- unmeasured high-water stays pending; a measured over-ceiling high-water
+-- fails. The pending outcome blocks the release claim; it never approves
+-- compact representations on its own.
+local function releaseVerdict(rendererName, hwmKb)
+  local lowered = type(rendererName) == "string" and rendererName:lower() or ""
+  local native = lowered ~= ""
+    and lowered:find("llvmpipe", 1, true) == nil
+    and lowered:find("softpipe", 1, true) == nil
+    and lowered:find("software", 1, true) == nil
+    and lowered:find("unknown", 1, true) == nil
+  if not native then
+    return "hardware-pending", "software rasterizer cannot prove the native memory ceiling"
+  end
+  if type(hwmKb) ~= "number" then
+    return "hardware-pending", "no externally measured process high-water"
+  end
+  if hwmKb < 1024 * 1024 then
+    return "pass", "measured high-water fits the whole-process ceiling"
+  end
+  return "fail", "measured high-water exceeds the whole-process ceiling"
+end
+
+-- Paired warm/cold structure for the full-session memory comparison.
+-- Passes without hardware or a ROM: the six warm snapshots and the one
+-- cold snapshot record their policies and keep process memory explicit,
+-- and the verdict on this host stays pending with the reason named.
+function T.tests.paired_warm_and_cold_snapshots_keep_external_memory_explicit_for_the_release_gate(context)
+  local tracer = AssetMemoryTrace.new()
+  tracer:snapshot("field-entry", {
+    coldCache = true,
+    luaKb = 512,
+    rssKbAvailable = false,
+    hwmKbAvailable = false,
+  })
+  for pass = 1, #WARM_PASS_POLICIES do
+    tracer:observeFrameTime(16.6)
+    tracer:snapshot("travel", {
+      pass = pass,
+      imagePolicy = WARM_PASS_POLICIES[pass],
+      luaKb = 512 + pass,
+      rssKbAvailable = false,
+      hwmKbAvailable = false,
+    })
+  end
+  Assert.equal(tracer:snapshotCount(), #WARM_PASS_POLICIES + 1, "three paired warm passes plus one cold pass")
+  local compact, straight = 0, 0
+  for _, record in ipairs(tracer:history()) do
+    if record.facts.imagePolicy == "compact" then
+      compact = compact + 1
+    elseif record.facts.imagePolicy == "straight" then
+      straight = straight + 1
+    end
+    Assert.isFalse(record.facts.rssKbAvailable, "process RSS stays an explicit marker without an external sampler")
+    Assert.isFalse(record.facts.hwmKbAvailable, "process high-water stays an explicit marker without an external sampler")
+    Assert.isNil(record.facts.totalBytes, "no snapshot merges families into a combined total")
+  end
+  Assert.equal(compact, 3, "three warm passes run under the compact representation")
+  Assert.equal(straight, 3, "three warm passes run under the straight representation")
+  local summary = assert(tracer:frameSummary(), "warm passes produce a frame summary")
+  Assert.isTrue(type(summary.p95Ms) == "number", "the warm summary reports its upper tail")
+  Assert.isTrue(type(summary.p99Ms) == "number", "the warm summary reports its extreme tail")
+
+  local rendererName = "unknown-renderer"
+  if context:hasCapability("graphics") then
+    rendererName = AssetMemoryTrace.rendererIdentity(love.graphics).name or "unknown-renderer"
+  end
+  local verdict, reason = releaseVerdict(rendererName, nil)
+  Assert.equal(verdict, "hardware-pending", "this host cannot pass the native memory comparison: " .. reason)
+  local nativePending, _ = releaseVerdict("Native GPU Device", nil)
+  Assert.equal(nativePending, "hardware-pending", "native hardware without a measured high-water stays pending")
+  Assert.equal(releaseVerdict("Native GPU Device", 900 * 1024), "pass", "a measured under-ceiling high-water passes")
+  Assert.equal(
+    releaseVerdict("Native GPU Device", 2 * 1024 * 1024),
+    "fail",
+    "a measured over-ceiling high-water fails instead of manufacturing success"
+  )
+end
+
+-- Release audio comparison: the pinned mix fingerprints reproduce
+-- bit-identically on a second independent composition, so the paired
+-- image-policy passes compare against one audio baseline. Any drift in
+-- the music, fanfare-over-music, radio, or fanfare-over-radio stream
+-- fails here before it can be mistaken for an image-policy effect.
+function T.tests.release_audio_comparison_reproduces_the_pinned_mix_on_a_second_composition()
+  local firstSound, firstPlayer = composeStreams()
+  firstSound:playMusic(STREAM_BUNDLE_SEQUENCES.bgm.symbol)
+  local firstBgm = renderSpan(firstSound, firstPlayer, 1500)
+  firstSound:playFanfare(STREAM_BUNDLE_SEQUENCES.fanfare.symbol)
+  local firstFanfare = renderFanfareToCompletion(firstSound, firstPlayer)
+
+  local secondSound, secondPlayer = composeStreams()
+  secondSound:playMusic(STREAM_BUNDLE_SEQUENCES.bgm.symbol)
+  local secondBgm = renderSpan(secondSound, secondPlayer, 1500)
+  secondSound:playFanfare(STREAM_BUNDLE_SEQUENCES.fanfare.symbol)
+  local secondFanfare = renderFanfareToCompletion(secondSound, secondPlayer)
+
+  Assert.equal(fingerprint16(firstBgm), 3603820576, "the music stream reproduces its pinned fingerprint")
+  Assert.equal(fingerprint16(firstFanfare), 3691276832, "the fanfare-over-music stream reproduces its pinned fingerprint")
+  Assert.equal(
+    fingerprint16(secondBgm),
+    fingerprint16(firstBgm),
+    "a second composition renders the identical music stream"
+  )
+  Assert.equal(
+    fingerprint16(secondFanfare),
+    fingerprint16(firstFanfare),
+    "a second composition renders the identical fanfare-over-music stream"
+  )
+
+  local radioSound, radioPlayer = composeStreams()
+  radioSound:playRadio(STREAM_BUNDLE_SEQUENCES.radio.symbol)
+  local radio = renderSpan(radioSound, radioPlayer, 1500)
+  radioSound:playFanfare(STREAM_BUNDLE_SEQUENCES.fanfare.symbol)
+  local fanfareOverRadio = renderFanfareToCompletion(radioSound, radioPlayer)
+  Assert.equal(fingerprint16(radio), 4059610112, "the radio stream reproduces its pinned fingerprint")
+  Assert.equal(
+    fingerprint16(fanfareOverRadio),
+    2755067968,
+    "the fanfare-over-radio stream reproduces its pinned fingerprint"
+  )
+end
+
+-- Missing trusted inputs fail loudly: an unknown sample key and an unknown
+-- bank raise through the provider error contract and name the missing
+-- reference instead of returning silence. Only a corrupt disposable
+-- derivative may rebuild; absent trusted bytes never become a quiet
+-- success on the release path.
+function T.tests.missing_trusted_audio_inputs_fail_loudly_instead_of_rendering_silence()
+  local provider = AudioAssetProvider.new(AudioFixture.readyCache())
+  local sampleError = Assert.throws(function()
+    provider:loadSample("no-such-sample-key")
+  end, "an unknown sample key must fail")
+  Assert.isTrue(
+    tostring(sampleError):find("no-such-sample-key", 1, true) ~= nil,
+    "the sample failure names the missing key"
+  )
+  local bankError = Assert.throws(function()
+    provider:bank("no-such-bank")
+  end, "an unknown bank reference must fail")
+  Assert.isTrue(
+    tostring(bankError):find("no-such-bank", 1, true) ~= nil,
+    "the bank failure names the missing reference"
+  )
+end
+
 return T

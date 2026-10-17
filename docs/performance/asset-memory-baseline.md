@@ -237,3 +237,71 @@ above. If live/pinned usage already exceeds the
 whole-process target on the target device, the release gate fails rather
 than manufacturing a cache success. Software-rasterizer timings must not
 set idle budgets.
+
+## Full-session release comparison (appended for the hardware rollout validation)
+
+Nothing above is modified: the pre-change picture and the calibration
+appendix stay pinned, and this section only records the paired warm/cold
+harness plus the honest local run for the compact-representation rollout.
+
+Paired protocol (target hardware, still pending): the same scripted
+journey at the reference and optimized commits, three warm passes per
+image policy (compact and straight representations through the same
+owner) plus one cold-cache pass, with identical ROM, viewport/scale,
+cache state, and warmness. An external OS sampler overlays process RSS
+and high-water joined to trace checkpoints by timestamp; GPU measurement
+synchronizes with readback/fence where supported. Release thresholds:
+whole-process high-water under 1 GiB with narrower PCM/image/worker/GPU
+attribution, first usable frame within one 60 Hz frame of the reference
+at matched cache state, 3-run median p95 frame time within 1.05x of the
+straight policy and p99 within 1.10x with no repeated >20 ms upload stall
+at visible state boundaries, and bit-exact image/audio output across
+policies. Software-rasterizer timings never set budgets and never approve
+the compact representation; an unmeasured high-water blocks the release
+claim instead of passing it.
+
+Local honest run (acceptance authoring machine, software rasterizer):
+
+- Focused suites: `asset_memory` 14 passed, `image_sampling` 5 passed,
+  `module_boundaries` 14 passed; 0 failed, 0 skipped throughout.
+- The paired-harness test records six warm snapshots (three per image
+  policy) plus one cold snapshot with process RSS/high-water as explicit
+  unavailable markers, and the release verdict on this host is
+  `hardware-pending` with the software-rasterizer reason named. Native
+hardware without a measured high-water stays pending; a measured
+over-ceiling high-water fails rather than manufacturing success.
+- The audio comparison test reproduces the pinned music,
+  fanfare-over-music, radio, and fanfare-over-radio mix fingerprints on a
+  second independent composition, so the paired image-policy passes share
+  one audio baseline.
+- The missing-input test proves unknown sample keys and unknown bank
+  references raise through the provider error contract and name the
+  missing reference instead of rendering silence.
+- The paired-capture graphics test renders a three-frame material swap
+  under indexed and straight sampling with fog and lighting live, under
+  repeat and mirrored-repeat wrapping: every frame matches across
+  representations, the swap visibly changes the frame, and returning to
+  the first material restores its frame.
+- The straight-fallback graphics test draws through the shared sampler
+  without consulting the format probe and proves a failed draw restores
+  the caller shader and tint before re-raising.
+
+Explicit fallback list (all covered by the suites named in parentheses):
+
+- No indexed-texture support: straight RGBA8 through the same pool and
+  sampler, never a second loader (`devices_without_indexed_support_fall_back_to_straight_rgba`).
+- Shader/state failure at draw time: caller shader and tint restored,
+  error re-raised, nothing adopted
+  (`straight_fallback_draws_without_indexed_support_and_restores_state_on_failure`).
+- Corrupt disposable derivative: rebuilt off the trusted source while the
+  published asset stays untouched (`rebuilt_derivative_replaces_a_corrupted_private_file`,
+  `failed_writes_keep_the_previous_valid_derivative`).
+- Missing generated source: hard failure without poisoning the pool
+  (`missing_sources_fail_without_poisoning_the_pool`; a missing trusted
+  PNG or audio sample never becomes silent success).
+- Audio read failure: structured provider error naming the missing
+  reference (`missing_trusted_audio_inputs_fail_loudly_instead_of_rendering_silence`).
+
+Pointer: the full device/driver identity, the disk-study numbers, and the
+explicit pending native-hardware procedure live in
+`docs/performance/asset-memory-results.md`.

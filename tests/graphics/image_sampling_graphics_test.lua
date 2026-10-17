@@ -22,12 +22,21 @@ local PALETTE_COUNT = 4
 
 -- The palette under test: an opaque entry, a fully transparent entry with
 -- non-zero RGB (transparent RGB must survive), a fractional-alpha entry,
--- and white.
+-- and white. The alternate palette permutes the same entries so an
+-- animated material swap changes visible pixels without changing the
+-- fixture shape; both palettes travel through the same sampler.
 local PALETTE = {
   { 200, 10, 20, 255 },
   { 10, 200, 30, 0 },
   { 10, 20, 30, 128 },
   { 255, 255, 255, 255 },
+}
+
+local PALETTE_ALTERNATE = {
+  { 255, 255, 255, 255 },
+  { 10, 20, 30, 128 },
+  { 10, 200, 30, 0 },
+  { 200, 10, 20, 255 },
 }
 
 -- Loads the shared sampler. Each test below fails on this message -- naming
@@ -57,21 +66,23 @@ local function buildIndexData()
   return love.image.newImageData(IMAGE_WIDTH, IMAGE_HEIGHT, "r8", indexedBytes())
 end
 
-local function buildPaletteData()
+local function buildPaletteData(palette)
+  palette = palette or PALETTE
   local data = love.image.newImageData(PALETTE_COUNT, 1)
-  for index, entry in ipairs(PALETTE) do
+  for index, entry in ipairs(palette) do
     data:setPixel(index - 1, 0, entry[1] / 255, entry[2] / 255, entry[3] / 255, entry[4] / 255)
   end
   return data
 end
 
-local function buildRgbaData()
+local function buildRgbaData(palette)
+  palette = palette or PALETTE
   local data = love.image.newImageData(IMAGE_WIDTH, IMAGE_HEIGHT)
   local raw = indexedBytes()
   for y = 0, IMAGE_HEIGHT - 1 do
     for x = 0, IMAGE_WIDTH - 1 do
       local slot = string.byte(raw, y * IMAGE_WIDTH + x + 1)
-      local entry = PALETTE[slot + 1]
+      local entry = palette[slot + 1]
       data:setPixel(x, y, entry[1] / 255, entry[2] / 255, entry[3] / 255, entry[4] / 255)
     end
   end
@@ -331,6 +342,123 @@ vec4 effect(vec4 color, Image tex, vec2 texCoord, vec2 screenCoord) {
     unfoggedPresented ~= foggedPresented,
     "disabling fog still changes the frame: the fog stage stays live, not bypassed"
   )
+end
+
+-- Animated swaps stay exact across representations: a three-frame material
+-- sequence (first palette, alternate palette, first again) renders
+-- byte-identical color and render-state frames under indexed and straight
+-- sampling on the map path with fog and lighting live, under both repeat
+-- and mirrored-repeat wrapping. The swap visibly changes the frame and
+-- returning to the first material restores its frame, so the comparison
+-- proves live pixels rather than a dormant texture.
+function T.paired_captures_match_across_animated_swaps_and_uv_phases(scope, context)
+  skipWithoutIndexedSupport(context)
+  local Sampler = sampler()
+  Assert.notNil(Sampler, "the swap comparison needs the shared sampler module present")
+  local lg = love.graphics
+  local renderer = scope:own(GxRenderer.new())
+
+  local firstIndex = scope:own(lg.newImage(buildIndexData()))
+  local firstPalette = scope:own(lg.newImage(buildPaletteData()))
+  local firstStraight = scope:own(lg.newImage(buildRgbaData()))
+  local secondIndex = scope:own(lg.newImage(buildIndexData()))
+  local secondPalette = scope:own(lg.newImage(buildPaletteData(PALETTE_ALTERNATE)))
+  local secondStraight = scope:own(lg.newImage(buildRgbaData(PALETTE_ALTERNATE)))
+  for _, image in ipairs({ firstIndex, firstPalette, firstStraight, secondIndex, secondPalette, secondStraight }) do
+    image:setFilter("nearest", "nearest")
+  end
+  local mesh = wrappedQuad(scope)
+  local sequence = {
+    { index = firstIndex, palette = firstPalette, straight = firstStraight },
+    { index = secondIndex, palette = secondPalette, straight = secondStraight },
+    { index = firstIndex, palette = firstPalette, straight = firstStraight },
+  }
+
+  local tintShader = scope:own(lg.newShader([[
+vec4 effect(vec4 color, Image tex, vec2 texCoord, vec2 screenCoord) {
+  return color;
+}
+]]))
+  for _, wrap in ipairs({ "repeat", "mirroredrepeat" }) do
+    for _, image in ipairs({ firstIndex, firstStraight, secondIndex, secondStraight }) do
+      image:setWrap(wrap, wrap)
+    end
+    local frames = {}
+    lg.setShader(tintShader)
+    lg.setColor(0.3, 0.5, 0.7, 1)
+    for step, entry in ipairs(sequence) do
+      renderScene(renderer, texturedItem(mesh, entry.straight), denseFog())
+      local straightColor = frameBytes(renderer.sceneColor)
+      local straightState = frameBytes(renderer.renderState)
+      renderScene(renderer, texturedItem(mesh, entry.index, { palette = entry.palette }), denseFog())
+      local indexedColor = frameBytes(renderer.sceneColor)
+      local indexedState = frameBytes(renderer.renderState)
+      Assert.equal(
+        indexedColor,
+        straightColor,
+        "swap frame " .. step .. " matches across representations under wrap " .. wrap
+      )
+      Assert.equal(
+        indexedState,
+        straightState,
+        "swap frame " .. step .. " stamps identical render state under wrap " .. wrap
+      )
+      frames[#frames + 1] = indexedColor
+    end
+    Assert.equal(lg.getShader(), tintShader, "a swap sequence restores the caller shader (" .. wrap .. ")")
+    lg.setShader()
+    Assert.isTrue(frames[1] ~= frames[2], "the material swap visibly changes the frame under wrap " .. wrap)
+    Assert.equal(frames[1], frames[3], "returning to the first material restores its frame under wrap " .. wrap)
+  end
+end
+
+-- The same-pipeline straight fallback needs no indexed capability: a
+-- straight handle draws deterministically through the shared sampler
+-- without consulting the format probe, and a failed draw restores the
+-- caller shader and tint before re-raising instead of adopting pixels.
+function T.straight_fallback_draws_without_indexed_support_and_restores_state_on_failure(scope)
+  local Sampler = sampler()
+  local lg = love.graphics
+
+  local rgbaImage = scope:own(lg.newImage(buildRgbaData()))
+  rgbaImage:setWrap("repeat", "repeat")
+  local handle = { image = rgbaImage, kind = "rgba8", width = 8, height = 4 }
+  -- A viewport twice the source in each axis: sampling spans [0,2], so the
+  -- wrap mode decides every far texel instead of staying dormant.
+  local stretched = lg.newQuad(0, 0, IMAGE_WIDTH * 2, IMAGE_HEIGHT * 2, IMAGE_WIDTH, IMAGE_HEIGHT)
+  local first = scope:own(lg.newCanvas(IMAGE_WIDTH * 2, IMAGE_HEIGHT * 2))
+  local second = scope:own(lg.newCanvas(IMAGE_WIDTH * 2, IMAGE_HEIGHT * 2))
+  lg.setColor(1, 1, 1, 1)
+  lg.setCanvas(first)
+  lg.clear(0, 0, 0, 0)
+  Sampler.draw(lg, handle, stretched, 0, 0)
+  lg.setCanvas(second)
+  lg.clear(0, 0, 0, 0)
+  Sampler.draw(lg, handle, stretched, 0, 0)
+  lg.setCanvas()
+  Assert.equal(
+    frameBytes(first),
+    frameBytes(second),
+    "the straight fallback renders deterministically through the shared sampler"
+  )
+
+  local tintShader = scope:own(lg.newShader([[
+vec4 effect(vec4 color, Image tex, vec2 texCoord, vec2 screenCoord) {
+  return color;
+}
+]]))
+  lg.setShader(tintShader)
+  lg.setColor(0.2, 0.4, 0.6, 0.8)
+  local ok = pcall(Sampler.draw, lg, handle, "not-a-quad", 0, 0)
+  Assert.isFalse(ok, "a failed sampler draw re-raises instead of adopting pixels")
+  Assert.equal(lg.getShader(), tintShader, "a failed draw restores the caller shader")
+  local r, g, b, a = lg.getColor()
+  Assert.near(r, 0.2, 1e-6, "a failed draw restores the caller tint red")
+  Assert.near(g, 0.4, 1e-6, "a failed draw restores the caller tint green")
+  Assert.near(b, 0.6, 1e-6, "a failed draw restores the caller tint blue")
+  Assert.near(a, 0.8, 1e-6, "a failed draw restores the caller tint alpha")
+  lg.setShader()
+  lg.setColor(1, 1, 1, 1)
 end
 
 -- Host contracts the shared image path relies on: the 11.5 indexed pixel
