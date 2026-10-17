@@ -550,16 +550,24 @@ local function prepareLease(self, lease, demand)
   -- failure surfaces, an unready page waits, and dispatched jobs are
   -- never cancelled from here. A missing seam fails visibly instead of
   -- hanging the lease. Pages with an adopted lease never recompile, so
-  -- overlapping leases compile each shared page once.
+  -- overlapping leases compile each shared page once. Per-page readiness
+  -- gates the shared-owner image requests below: a page whose bytes are
+  -- not yet compiled enrolls no worker decode, so a pending compilation
+  -- waits instead of failing on its missing file.
   local portraitPending = false
   local portraitFailure = nil
+  local portraitReady = {}
   local requestPage = self._derivedAssets.requestMonPortraitPage
   if type(requestPage) ~= "function" then
     portraitFailure = "portrait compilation is unavailable"
   else
     for _, pageId in ipairs(pages) do
       local record = self._pages[pageId]
-      if record == nil or (record.lease == nil and record.token == nil) then
+      if record ~= nil and record.lease ~= nil then
+        portraitReady[pageId] = true
+      elseif record ~= nil and record.token ~= nil then
+        portraitReady[pageId] = true
+      else
         local ok, ready, failure = pcall(requestPage, pageId, "required")
         if not ok then
           portraitFailure = tostring(ready)
@@ -569,6 +577,8 @@ local function prepareLease(self, lease, demand)
           break
         elseif not ready then
           portraitPending = true
+        else
+          portraitReady[pageId] = true
         end
       end
     end
@@ -596,16 +606,11 @@ local function prepareLease(self, lease, demand)
       end
     end
   end
-  -- Portrait image requests enroll through the shared owner for every page
-  -- without an adopted lease or an outstanding request, so one shared page
-  -- borrows once no matter how many leases watch it.
-  local pool = assert(self._pool, "summary preparation borrows its shared image owner")
-  for _, pageId in ipairs(pages) do
-    local record = pageRecord(self, pageId)
-    if record.lease == nil and record.token == nil then
-      record.token = pool:request(MonCache.portraitPagePath(pageId), POOLED_SAMPLER, "demand")
-    end
-  end
+  -- Portrait image requests enroll through the shared owner only for
+  -- pages whose compilation is confirmed above, so one shared page
+  -- borrows once no matter how many leases watch it while an uncompiled
+  -- page waits without decoding its missing file. Failures surface
+  -- before any new worker decode enrolls.
   if iconsFailure ~= nil then
     return { kind = "failed", error = iconsFailure }
   end
@@ -615,14 +620,25 @@ local function prepareLease(self, lease, demand)
   if cryFailure ~= nil then
     return { kind = "failed", error = cryFailure }
   end
+  local pool = assert(self._pool, "summary preparation borrows its shared image owner")
+  for _, pageId in ipairs(pages) do
+    if portraitReady[pageId] == true then
+      local record = pageRecord(self, pageId)
+      if record.lease == nil and record.token == nil then
+        record.token = pool:request(MonCache.portraitPagePath(pageId), POOLED_SAMPLER, "demand")
+      end
+    end
+  end
   local pending = portraitPending or cryPending
   -- Portrait pages adopt at most one new lease per call so a cold open
   -- never uploads the party at once. A failed request forgets its token
   -- and names its cause; the next round re-enrolls it.
   local adopted = false
   for _, pageId in ipairs(pages) do
-    local record = assert(self._pages[pageId], "demand enrolls every page before polling")
-    if record.lease == nil and record.token ~= nil and not adopted then
+    local record = self._pages[pageId]
+    if record == nil then
+      pending = true
+    elseif record.lease == nil and record.token ~= nil and not adopted then
       local status, cause = pool:poll(record.token)
       if status == "failed" then
         pool:cancel(record.token)
@@ -637,8 +653,7 @@ local function prepareLease(self, lease, demand)
       else
         pending = true
       end
-    end
-    if record.lease == nil then
+    elseif record.lease == nil then
       pending = true
     end
   end

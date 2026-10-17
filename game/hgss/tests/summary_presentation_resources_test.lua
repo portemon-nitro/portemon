@@ -734,6 +734,85 @@ function T.cry_banks_compile_before_the_lease_turns_ready_and_failures_surface()
   end
 end
 
+-- An uncompiled portrait page has no generated PNG yet: the shared owner
+-- fails its decode while the provisioner still reports pending, so the
+-- lease must wait instead of surfacing the missing file. Once the page
+-- compiles, the same lease settles without re-enrolling a failed decode.
+function T.uncompiled_portrait_pages_wait_instead_of_failing_on_their_missing_file()
+  local Resources = requireResources()
+  local selector = MonCache.portraitSelector("CHIKORITA", 0, "male", false)
+  local entries = { [selector] = portraitEntry(45) }
+  local helper = SummaryAcceptanceFixture.preparationDoubles({})
+  local family = SummaryPresentationFixture.manifest()
+  local pagePath = MonCache.portraitPagePath(45)
+  local compiled = false
+  local portraitCalls = 0
+  local derivedAssets = {
+    requestMonPortraitPage = function(pageId, _)
+      Assert.equal(pageId, 45, "portrait demand names its page")
+      portraitCalls = portraitCalls + 1
+      if not compiled then
+        return false, nil
+      end
+      return true, nil
+    end,
+    requestAudioBank = function()
+      return true, nil
+    end,
+  }
+  local sharedPool = assert(helper.imagePool, "the doubles carry the shared image owner")
+  local portraitPolls = 0
+  -- Simulate the missing generated PNG while the page is uncompiled: any
+  -- portrait decode polled before compilation reports the production
+  -- unreadable-file failure instead of staging.
+  local failingPool = {}
+  function failingPool:request(path, sampler, priority)
+    return sharedPool:request(path, sampler, priority)
+  end
+  function failingPool:poll(token)
+    if not compiled then
+      portraitPolls = portraitPolls + 1
+      return "failed", "unreadable cache file: soulsilver/" .. pagePath
+    end
+    return sharedPool:poll(token)
+  end
+  function failingPool:acquire(token)
+    return sharedPool:acquire(token)
+  end
+  function failingPool:release(lease)
+    return sharedPool:release(lease)
+  end
+  function failingPool:cancel(token)
+    return sharedPool:cancel(token)
+  end
+  function failingPool:prune()
+    return sharedPool:prune()
+  end
+  function failingPool:stats()
+    return sharedPool:stats()
+  end
+  local owner = Resources.new({
+    cacheFs = portraitCache(entries),
+    graphics = helper.graphics,
+    text = helper.text,
+    icons = helper.icons,
+    imagePool = failingPool,
+    derivedAssets = derivedAssets,
+    manifest = family,
+  })
+  local lease = owner:acquire()
+  local waiting = assert(lease:prepare(exactDemand("missing-page", { selector })))
+  Assert.equal(waiting.kind, "pending", "an uncompiled page waits instead of failing on its missing file")
+  Assert.equal(portraitPolls, 0, "no portrait decode polls while the page is uncompiled")
+  Assert.isTrue(portraitCalls >= 1, "the uncompiled page still enrolls its compilation")
+  compiled = true
+  local ready = prepareToTerminal(lease, exactDemand("missing-page", { selector }))
+  Assert.equal(ready.kind, "ready", "the lease settles once the page compiles")
+  Assert.notNil(ready.assets.portraits:image(selector), "the compiled page resolves its image")
+  lease:release()
+  owner:release()
+end
+
 function T.shared_paths_resolve_one_canonical_image()
   local selector = MonCache.portraitSelector("CHIKORITA", 0, "male", false)
   local family = SummaryPresentationFixture.manifest()
