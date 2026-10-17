@@ -9,11 +9,10 @@
 -- must show a visible interval between the cutscene's opening cover and
 -- its closing white cover, never a single unbroken white hold. Exact
 -- beat/swirl counts and the terminal opaque gate live in the cutscene
--- task unit contract; this scenario only proves the composed ordering
--- reaches the covered warp. The 3D model, camera roll, and motion blur
--- have no presentation owner, so nothing here claims cinematic
--- completeness. The auto-started Route 22 past scene (camera-target ops
--- 102/103) is a separate follow-up and stays outside this contract:
+-- task unit contract; this scenario also traces the production scene and
+-- camera state through the covered warp. Rendered model and capture pixels
+-- are covered by graphics tests. The auto-started Route 22 past scene
+-- (camera-target ops 102/103) remains a separate follow-up outside this contract:
 -- fault assertions are scoped to the Ilex member-92 scripts.
 
 local Assert = require("tests.support.Assert")
@@ -50,6 +49,10 @@ local T = {
       "message-bank:115",
       "map:27",
       "map-data:27",
+      "map-data:30",
+      "map-data:32",
+      "map-data:50",
+      "map-data:58",
       "script-member:212",
     },
     tags = { "field", "shrine", "celebi", "acceptance" },
@@ -162,8 +165,7 @@ end
 
 -- Faults raised by the journey scripts (Ilex member 92, Route 22 member
 -- 212, Tohjo member 114). The Tohjo Giovanni battle and its post-battle
--- resume (a follower release-next-to-player the engine does not implement
--- yet) stay outside this contract.
+-- resume stay outside this contract.
 local JOURNEY_MEMBERS = { "scr_seq.0092", "scr_seq.0212", "scr_seq.0114" }
 
 local function journeyFaults(game)
@@ -189,28 +191,119 @@ local function faultDetail(game)
   return tostring(payload.scriptId) .. "/" .. tostring(payload.code)
 end
 
+-- Return the first missing source-visible cutscene milestone. Samples are
+-- collected only while the identified Celebi task exists, so earlier
+-- shrine/friend fades cannot satisfy this check.
+local function visibilityFailure(samples, taskId)
+  local openingOpaque = false
+  local beatClearRun = 0
+  local earlySwirlClearRun = 0
+  local closingOpaque = false
+  local previousRank = 0
+  local phaseRanks = { opening_out = 1, opening_in = 2, beat = 3, swirl = 4 }
+
+  for _, sample in ipairs(samples) do
+    if sample.taskId == taskId then
+      local rank = phaseRanks[sample.phase]
+      if rank == nil or rank < previousRank then
+        return "Celebi task phases are missing or out of order"
+      end
+      previousRank = rank
+
+      if sample.phase == "opening_out" and sample.coefficient == 16 then
+        openingOpaque = true
+      end
+      if openingOpaque and sample.phase == "beat" and sample.coefficient == 0 then
+        beatClearRun = beatClearRun + 1
+      elseif sample.phase == "beat" then
+        beatClearRun = 0
+      end
+      if
+        openingOpaque
+        and sample.phase == "swirl"
+        and sample.elapsed < 80
+        and sample.coefficient == 0
+      then
+        earlySwirlClearRun = earlySwirlClearRun + 1
+      elseif sample.phase == "swirl" and sample.elapsed < 80 then
+        earlySwirlClearRun = 0
+      end
+      if sample.phase == "swirl" and sample.elapsed >= 110 and sample.coefficient == 16 then
+        closingOpaque = true
+      end
+    end
+  end
+
+  if not openingOpaque then
+    return "Celebi task never showed its opening white cover"
+  end
+  if beatClearRun < 2 or earlySwirlClearRun < 2 then
+    return "Celebi task never showed a clear beat and early-swirl interval"
+  end
+  if not closingOpaque then
+    return "Celebi task never restored opaque white before its handoff"
+  end
+  return nil
+end
+
+local function taskEvents(game, eventName)
+  local matches = {}
+  for _, record in ipairs(game:recordsNamed(eventName)) do
+    local payload = record.payload or {}
+    if payload.taskType == "celebi_time_travel" then
+      matches[#matches + 1] = payload
+    end
+  end
+  return matches
+end
+
+-- A friend scene can supply white/clear/white samples before the Celebi
+-- task starts. The task-only predicate must still reject an all-white task.
+function T.tests.all_white_celebi_task_fails_visibility_counterfactual()
+  local failure = visibilityFailure({
+    { taskId = "friend-fade", phase = "opening_out", elapsed = 0, coefficient = 16 },
+    { taskId = "friend-fade", phase = "beat", elapsed = 0, coefficient = 0 },
+    { taskId = "celebi-task", phase = "opening_out", elapsed = 0, coefficient = 16 },
+    { taskId = "celebi-task", phase = "opening_in", elapsed = 0, coefficient = 16 },
+    { taskId = "celebi-task", phase = "beat", elapsed = 0, coefficient = 16 },
+    { taskId = "celebi-task", phase = "beat", elapsed = 1, coefficient = 16 },
+    { taskId = "celebi-task", phase = "swirl", elapsed = 1, coefficient = 16 },
+    { taskId = "celebi-task", phase = "swirl", elapsed = 80, coefficient = 16 },
+    { taskId = "celebi-task", phase = "swirl", elapsed = 110, coefficient = 16 },
+  }, "celebi-task")
+  Assert.equal(
+    failure,
+    "Celebi task never showed a clear beat and early-swirl interval",
+    "the friend's earlier clear fade must not rescue an all-white Celebi task"
+  )
+end
+
 -- Drive semantic Action edges until the field reaches the named map or a
--- journey script faults. The past scenes use no menus, so holding Action
--- through dialogue and movement is safe. When `cover` is given, every
--- tick also samples the production screen-fade coefficient so the caller
--- can prove the journey showed a visible interval before its covered
--- warp: opaque, then clear, then opaque again. The saves and derived
--- caches stay isolated: the harness boots a per-run save namespace over
--- read-only fixtures, and this driver writes nothing back.
-local function driveUntilMap(game, mapSymbol, maxTicks, cover)
+-- journey script faults. When `trace` is given, collect fade samples only
+-- for the actual Celebi task, keyed by its scheduler task ID. The saves and
+-- derived caches stay isolated: the harness boots a per-run save namespace
+-- over read-only fixtures, and this driver writes nothing back.
+local function driveUntilMap(game, mapSymbol, maxTicks, trace)
   local arrived = nil
+  local seenTaskIds = {}
   for _ = 1, maxTicks do
     local snapshot = game:snapshot()
-    if cover ~= nil then
-      local fade = assert(snapshot.screenFade, "the composed runtime owns the screen-fade controller")
-      if fade.coefficient == 16 then
-        if cover.clearAfterOpaque then
-          cover.opaqueAfterClear = true
+    if trace ~= nil then
+      for _, payload in ipairs(taskEvents(game, "script.task_started")) do
+        if not seenTaskIds[payload.taskId] then
+          seenTaskIds[payload.taskId] = true
+          trace.taskIds[#trace.taskIds + 1] = payload.taskId
         end
-        cover.opaque = true
-      elseif fade.coefficient == 0 then
-        if cover.opaque then
-          cover.clearAfterOpaque = true
+      end
+      local fade = assert(snapshot.screenFade, "the composed runtime owns the screen-fade controller")
+      for _, task in ipairs(game.runtime.scripts.scheduler:tasks()) do
+        if task.taskType == "celebi_time_travel" and seenTaskIds[task.taskId] then
+          trace.samples[#trace.samples + 1] = {
+            taskId = task.taskId,
+            phase = task.state.phase,
+            elapsed = task.state.elapsed,
+            coefficient = fade.coefficient,
+          }
         end
       end
     end
@@ -280,32 +373,43 @@ end
 -- The staged pre-event state (Rockets beaten, friend hidden, fateful
 -- Celebi lead, untouched progress) must take the Celebi branch: the
 -- friend appears, the time-travel beat completes, and the field warps to
--- Route 22 with progress set and the friend hidden again. The cover
--- trace must show the field visible between the cutscene's opening
--- cover and its closing white cover; an unbroken white hold from the
--- cutscene start to the warp would fail this ordering. The auto-started
+-- Route 22 with progress set and the friend hidden again. The task-scoped
+-- trace must show opening white, a clear beat and early swirl, then the
+-- closing white cover; earlier friend fades do not count. The auto-started
 -- past scene stays outside this contract: its principals stand on
 -- pocket tiles our generated terrain does not cover yet (see the
--- terrain gap below), so it cannot run to its Tohjo warp here. The
--- absent 3D swirl/model is likewise out of scope: only the fade
--- ordering and the covered warp are asserted.
+-- terrain gap below), so it cannot run to its Tohjo warp here. This
+-- acceptance stops before GPU rendering and asserts only the composed
+-- fade timeline and covered warp.
 function T.tests.celebi_branch_warps_to_route_22_with_progress_set()
   withShrineGame(function(game)
     game:pressAction()
     Assert.equal(game.lastInteraction.kind, "background", "the shrine resolves as a background event")
 
-    local cover = {}
-    local route22 = driveUntilMap(game, "MAP_ROUTE_22", 20000, cover)
+    local trace = { taskIds = {}, samples = {} }
+    local route22 = driveUntilMap(game, "MAP_ROUTE_22", 20000, trace)
     Assert.equal(
       #journeyFaults(game),
       0,
       "the Celebi branch must not fault through its warp (got " .. faultDetail(game) .. ")"
     )
     Assert.notNil(route22, "the Celebi branch must warp the field to Route 22")
-    Assert.isTrue(
-      cover.opaqueAfterClear == true,
-      "the cutscene must clear its opening cover before closing white for the warp"
-    )
+    Assert.isTrue(#trace.taskIds > 0, "the journey never started a Celebi time-travel task")
+    Assert.equal(#trace.taskIds, 1, "the journey unexpectedly started more than one Celebi time-travel task")
+    local taskId = trace.taskIds[1]
+    local taskEnded = false
+    for _, payload in ipairs(taskEvents(game, "script.task_ended")) do
+      if payload.taskId == taskId then
+        taskEnded = true
+      end
+    end
+    Assert.isTrue(taskEnded, "the observed Celebi task must complete normally")
+    Assert.isTrue(#trace.samples > 0, "the observed Celebi task must have source-tick samples")
+    for _, sample in ipairs(trace.samples) do
+      Assert.equal(sample.taskId, taskId, "all visibility samples belong to the identified task")
+    end
+    local visibilityError = visibilityFailure(trace.samples, taskId)
+    Assert.isNil(visibilityError, visibilityError or "the Celebi task visibility trace is valid")
     local world = assert(game.runtime.scripts.worldState, "field world state is available")
     Assert.equal(world:getVar(PROGRESS_40FE), 1, "the time travel advances the event progress")
     Assert.isTrue(world:isFlagSet(FRIEND_HIDDEN), "the departure hides the friend again")
