@@ -161,6 +161,7 @@ end
 ---@param runtime FieldRuntime
 ---@param versionId string
 ---@param measurement table
+---@param graphics table? borrowed graphics namespace staging pixels behind explicit draws
 ---@return table envelope
 ---@return integer binding
 ---@return table doubles
@@ -189,6 +190,21 @@ local function bindEnvelope(runtime, versionId, measurement, graphics)
   return envelope, binding, doubles
 end
 
+local function readyVersions()
+  local GameVersion = require("romdump.src.source.GameVersion")
+  local RomImporter = require("romdump.src.source.RomImporter")
+  local versions = {}
+  for _, versionId in ipairs(GameVersion.ORDER) do
+    if RomImporter.isReady(versionId) then
+      versions[#versions + 1] = versionId
+    end
+  end
+  if #versions == 0 then
+    error("presented battle integration needs a ready versioned cache", 0)
+  end
+  return versions
+end
+
 function T.presented_launch_captures_semantic_transition_context_before_mutation()
   local runtime = bootRuntime(readyVersions()[1])
   local envelope, binding, doubles = bindEnvelope(runtime, runtime.versionId, dualMeasurement("transition-context"))
@@ -203,7 +219,7 @@ function T.presented_launch_captures_semantic_transition_context_before_mutation
       alternateTransition = false,
       playerGender = "male",
       wildSetupFallback = false,
-      terrain = "plain",
+      terrain = "building",
       timeOfDay = "day",
     })
   end, debug.traceback)
@@ -233,6 +249,22 @@ local function pump(runtime, envelope, ticks)
     runtime:update(SourceTick.DT)
     envelope:updateFixed(TICK)
   end
+end
+
+-- Waits for the source menu input gate to open before answering: the
+-- production command menu drops input during its entry travel, so an
+-- input sent earlier would never reach the live screen.
+---@param runtime FieldRuntime live production runtime under test driving
+---@param envelope table live presented-battle envelope under test driving
+local function waitMenuInput(runtime, envelope)
+  for _ = 1, 300 do
+    local screen = envelope:liveScreen()
+    if screen ~= nil and screen:view().menuInputEnabled then
+      return
+    end
+    pump(runtime, envelope, 1)
+  end
+  error("the source menu input gate never opened", 0)
 end
 
 ---@param runtime FieldRuntime
@@ -402,21 +434,6 @@ local function sparringChoose(runtime, request)
   error("no prepared fragment answers the request", 0)
 end
 
-local function readyVersions()
-  local GameVersion = require("romdump.src.source.GameVersion")
-  local RomImporter = require("romdump.src.source.RomImporter")
-  local versions = {}
-  for _, versionId in ipairs(GameVersion.ORDER) do
-    if RomImporter.isReady(versionId) then
-      versions[#versions + 1] = versionId
-    end
-  end
-  if #versions == 0 then
-    error("presented battle integration needs a ready versioned cache", 0)
-  end
-  return versions
-end
-
 -- A presented wild win returns through cover and receipt: full cover
 -- bridges semantic absence, one construction serves the launch, and the
 -- continuing receipt publishes only after the revealed field returns.
@@ -496,6 +513,7 @@ function T.encounter_music_starts_with_transition_before_full_cover()
         envelope:updateFixed(TICK)
         ticks = ticks + 1
       end
+
 
       Assert.notNil(envelope:musicNote(), "the selected transition emits its battle-music operation")
       Assert.isTrue(
@@ -956,13 +974,7 @@ function T.battle_input_reaches_the_screen_before_field_controls()
       end
       local screen = assert(envelope:liveScreen(), "the battle reaches its command root")
       Assert.equal(screen:status().mode, "command", "the root shows its commands")
-      local gated = 0
-      while gated < 30 and not screen:view().menuInputEnabled do
-        runtime:update(SourceTick.DT)
-        envelope:updateFixed(TICK)
-        gated = gated + 1
-      end
-      Assert.isTrue(screen:view().menuInputEnabled, "the command view opens its menu input")
+      waitMenuInput(runtime, envelope)
       envelope:input({ { type = "confirm" } })
       pump(runtime, envelope, 5)
       Assert.equal(screen:status().mode, "moves", "a confirm enters the move view")
@@ -972,6 +984,7 @@ function T.battle_input_reaches_the_screen_before_field_controls()
         "battle input never moves the player"
       )
       Assert.isFalse(runtime.applicationHost:isActive(), "battle input never opens the Start Menu")
+      waitMenuInput(runtime, envelope)
       envelope:input({ { type = "cancel" } })
       pump(runtime, envelope, 5)
       Assert.equal(screen:status().mode, "command", "a cancel returns to the command root")
@@ -2724,13 +2737,39 @@ local function driveToCommandMode(runtime, envelope)
   error("the presented battle never reached its command", 0)
 end
 
+-- Settles the live command view inside one native arrow run before a
+-- frozen draw pair: the selection arrow cycles its cells on accepted
+-- ticks, so two draws spaced by updates only paint identically inside
+-- a single run. Ten consecutive equal paints prove the long two-object
+-- run with margin left for the frozen gap.
+---@param envelope table live presented-battle envelope under test driving
+local function settleArrowRun(envelope)
+  local paint, run = nil, 0
+  for _ = 1, 200 do
+    local spy = paintCountingGraphics()
+    if envelope:drawBattle({ graphics = spy }) then
+      if spy.paint == paint then
+        run = run + 1
+      else
+        paint, run = spy.paint, 1
+      end
+      if run >= 10 then
+        return
+      end
+    end
+    envelope:updateFixed(TICK)
+  end
+  error("the live command view never settled into one arrow run", 0)
+end
+
 -- Fixed updates paint nothing without an explicit draw: text, windows,
 -- and host graphics stay untouched across update-only ticks while the
 -- command view holds, and one explicit draw prints and frames the view.
 function T.fixed_updates_paint_nothing_without_an_explicit_draw()
   for _, versionId in ipairs(readyVersions()) do
     local runtime = bootRuntime(versionId)
-    local envelope, binding, doubles = bindEnvelope(runtime, versionId, dualMeasurement("paint-free-updates:dual"))
+    local envelope, binding, doubles =
+      bindEnvelope(runtime, versionId, dualMeasurement("paint-free-updates:dual"), paintCountingGraphics())
     local ok, failure = xpcall(function()
       runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
       local screen = driveToCommandMode(runtime, envelope)
@@ -2778,17 +2817,13 @@ end
 function T.explicit_draws_stay_stable_and_route_render_failures_through_the_host()
   for _, versionId in ipairs(readyVersions()) do
     local runtime = bootRuntime(versionId)
-    local envelope, binding, doubles = bindEnvelope(runtime, versionId, dualMeasurement("stable-draws:dual"), paintCountingGraphics())
+    local envelope, binding, doubles =
+      bindEnvelope(runtime, versionId, dualMeasurement("stable-draws:dual"), paintCountingGraphics())
     local ok, failure = xpcall(function()
       runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
-      local driven = driveToCommandMode(runtime, envelope)
-      local gated = 0
-      while gated < 30 and not driven:view().menuInputEnabled do
-        runtime:update(SourceTick.DT)
-        envelope:updateFixed(TICK)
-        gated = gated + 1
-      end
-      Assert.isTrue(driven:view().menuInputEnabled, "the command view opens its menu input")
+      driveToCommandMode(runtime, envelope)
+      waitMenuInput(runtime, envelope)
+      settleArrowRun(envelope)
       local function drawnCounts()
         doubles.text.draws = {}
         doubles.windows.calls = {}
@@ -2804,7 +2839,7 @@ function T.explicit_draws_stay_stable_and_route_render_failures_through_the_host
           mode = envelope:liveScreen():status().mode,
         }
       end
-        Assert.isTrue(drew, "each explicit draw reaches the live screen")
+      local first = drawnCounts()
       Assert.isTrue(first.texts > 0, "the command view prints its wording")
       Assert.isTrue(first.frames > 0, "the command view frames its windows")
       for _ = 1, 3 do
