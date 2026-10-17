@@ -1,17 +1,11 @@
--- Reconstructs one saved photo in a private field-map presentation owner.
+-- Reconstructs one saved photo using the live field-map presentation owner.
 -- Camera and subject behavior follows pokeheartgold src/field_take_photo.c
 -- at 9d8b7591f09b65804da2fb2dfd56f320633e0d36.
 
-local CacheFs = require("libs.storage.src.CacheFs")
-local FieldMapLoader = require("libs.hgss.src.world.FieldMapLoader")
-local MapSceneLoader = require("libs.hgss.src.presentation.MapSceneLoader")
-local NeighborRing = require("libs.hgss.src.presentation.NeighborRing")
-local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
 local FieldActorAssetProvider = require("libs.hgss.src.presentation.FieldActorAssetProvider")
 local FieldActorDraw = require("libs.hgss.src.presentation.FieldActorDraw")
 local FieldCamera = require("libs.hgss.src.field.FieldCamera")
 local FieldActorCache = require("libs.assets.src.field.FieldActorCache")
-local MapAssetCache = require("libs.assets.src.MapAssetCache")
 
 local PhotoScene = {}
 PhotoScene.__index = PhotoScene
@@ -41,22 +35,6 @@ local function copy(value)
   return result
 end
 
-local function recordFor(options)
-  if options.fieldMapLoader then
-    return options.fieldMapLoader
-  end
-  local cacheFs = options.cacheFs or CacheFs.forVersion(options.versionId)
-  local world = assert(cacheFs:loadLua(MapAssetCache.worldPath()), "photo field world cache is unavailable")
-  local queue = AssetPreparationQueue.new(cacheFs)
-  local loader = FieldMapLoader.new(cacheFs, world, {
-    sceneLoader = options.sceneLoader or MapSceneLoader,
-    neighborLoader = options.neighborLoader or NeighborRing,
-    assetPreparation = queue,
-    derivedAssets = options.derivedAssets,
-  })
-  return loader, queue, cacheFs
-end
-
 ---@param options table<string, unknown>
 ---@return PhotoScene
 function PhotoScene.new(options)
@@ -64,15 +42,17 @@ function PhotoScene.new(options)
   assert(type(options.versionId) == "string" and options.versionId ~= "", "photo scene requires a version")
   assert(type(options.derivedAssets) == "table", "photo scene requires derived asset access")
   assert(type(options.monCatalog) == "table", "photo scene requires the shared MonCatalog")
-  local loader, queue, cacheFs = recordFor(options)
+  local loader = assert(options.fieldMapLoader, "photo scene borrows a field map loader")
+  local imageAssets = assert(loader.imageAssets, "presented photo scene requires the field image pool")
+  local cacheFs = assert(options.cacheFs or loader.cacheFs, "photo scene requires a version cache")
   return setmetatable({
     versionId = options.versionId,
     _derivedAssets = options.derivedAssets,
     monCatalog = options.monCatalog,
     profile = copy(assert(options.profile, "photo scene requires the current player profile")),
-    cacheFs = options.cacheFs or cacheFs,
+    cacheFs = cacheFs,
     loader = loader,
-    queue = queue,
+    imageAssets = imageAssets,
     phase = "idle",
     photo = nil,
     failure = nil,
@@ -118,10 +98,6 @@ function PhotoScene:_releaseOwned()
     self.loader:release()
     self.loader = nil
   end
-  if self.queue then
-    self.queue:release()
-    self.queue = nil
-  end
 end
 
 function PhotoScene:request(photo)
@@ -134,16 +110,6 @@ function PhotoScene:request(photo)
   self.photo = copy(photo)
   self.failure = nil
   self.phase = "pending"
-  if self.loader == nil then
-    local ok, loader, queue, cacheFs =
-      pcall(recordFor, { versionId = self.versionId, derivedAssets = self._derivedAssets })
-    if not ok then
-      self.failure = loader
-      self.phase = "failed"
-      return
-    end
-    self.loader, self.queue, self.cacheFs = loader, queue, cacheFs
-  end
   self._globalPosition = nil
   self._generationAtRequest = self.generation
   local ok, result = pcall(function()
@@ -179,8 +145,9 @@ end
 local function actors(self, localX, localZ)
   local photo = assert(self.photo)
   local cacheFs = assert(self.cacheFs)
+  local imageAssets = assert(self.imageAssets, "presented photo scene requires the field image pool")
   local avatars = fieldActorConfig(cacheFs)
-  local assets = FieldActorAssetProvider.new(cacheFs)
+  local assets = FieldActorAssetProvider.new(cacheFs, { imageAssets = imageAssets })
   self.actorAssets = assets
   local selected = {}
   local function add(spriteId, actorId, x, z, pose)
