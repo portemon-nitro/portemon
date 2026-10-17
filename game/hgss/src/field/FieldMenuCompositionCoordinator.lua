@@ -429,14 +429,14 @@ function FieldMenuCompositionCoordinator:composePokemonMenu(cacheFs)
   local function lanePendingError(_)
     return lane:pendingError()
   end
-  local function resolveLaneWarp(_, ref)
-    return lane:resolve(ref)
+  local function placeLaneWarp(_, ref)
+    return lane:placement(ref)
   end
   local warps = {
     startWarp = startLaneWarp,
     warpDone = laneWarpDone,
     pendingError = lanePendingError,
-    resolve = resolveLaneWarp,
+    placement = placeLaneWarp,
   }
   local function changeLiveWeather(_, weatherId)
     runtime:_setLiveWeather(assert(runtime.runtimeMap, "flash needs the active map"), weatherId)

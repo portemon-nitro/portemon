@@ -83,11 +83,9 @@ local function warpsDouble()
     errorValue = nil,
     origin = { x = 600, z = 300 },
   }
-  function service:resolve(ref)
-    if ref == "MAP_ROUTE_46" then
-      return { mapSymbol = ref, mapId = 48, coordinateOrigin = self.origin }
-    end
-    return nil
+  function service:placement(ref)
+    assert(ref == "MAP_ROUTE_46", "unexpected map " .. tostring(ref))
+    return { id = 48, originX = self.origin.x, originZ = self.origin.z }
   end
   function service:startWarp(target)
     self.starts = self.starts + 1

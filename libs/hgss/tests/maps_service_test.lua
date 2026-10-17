@@ -17,6 +17,9 @@ local function fakeLoader()
     load = function(_, ref)
       return { mapId = ref, coordinateOrigin = { x = 600, z = 300 } }
     end,
+    mapPlacement = function(_, _)
+      return { id = 61, originX = 600, originZ = 300 }
+    end,
   }
 end
 
@@ -149,11 +152,11 @@ function T.a_covered_scripted_swap_never_starts_the_ordinary_transition_fade()
       index = 0,
       x = 612,
       z = 306,
-      destinationMapId = "MAP_NEW_BARK_ELMS_LAB_2F",
+      destinationMapId = 61,
       destinationWarpId = 0,
       direct = true,
     },
-  }, "script coordinates remain destination-local until the covered swap rebases them")
+  }, "the structural placement resolves the record without building assets")
   Assert.equal(calls[1].facing, "west")
 end
 

@@ -28,9 +28,9 @@ function T.covered_swap_rebases_coordinates_and_tracks_transition_ownership()
     end,
   }
   local loader = {
-    load = function(_, map)
+    mapPlacement = function(_, map)
       loaderCalls[#loaderCalls + 1] = map
-      return { mapId = 42, coordinateOrigin = { x = 680, z = 392 } }
+      return { id = 42, originX = 680, originZ = 392 }
     end,
   }
   local swap = FieldCoveredSwap.new({ loader = loader, transition = transition, sourceMap = sourceMap })
@@ -70,8 +70,8 @@ function T.covered_swap_captures_transition_failure_and_can_be_reused()
   }
   local swap = FieldCoveredSwap.new({
     loader = {
-      load = function()
-        return { mapId = 42, coordinateOrigin = { x = 0, z = 0 } }
+      mapPlacement = function()
+        return { id = 42, originX = 0, originZ = 0 }
       end,
     },
     transition = transition,
@@ -94,7 +94,7 @@ end
 function T.covered_swap_rejects_an_unavailable_destination_as_a_script_error()
   local swap = FieldCoveredSwap.new({
     loader = {
-      load = function()
+      mapPlacement = function()
         return nil
       end,
     },

@@ -207,6 +207,39 @@ function T.requires_physical_cells_for_outdoor_maps_but_keeps_indoor_aggregate_l
   loader:release()
 end
 
+-- Structural placement lookup: the numeric id plus world origin resolve
+-- through the world table alone, reading no generated asset, so scripted
+-- warps can name a cold destination without faulting its build. Unknown
+-- ids/symbols raise the unknown-map fault.
+function T.map_placement_resolves_without_reading_generated_assets()
+  local cache, world, sceneLoader = fixture(2)
+  local reads = 0
+  local realLoadLua = cache.loadLua
+  local realRead = cache.read
+  cache.loadLua = function(_, path)
+    reads = reads + 1
+    return realLoadLua(cache, path)
+  end
+  cache.read = function(_, path)
+    reads = reads + 1
+    return realRead(cache, path)
+  end
+  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader, capacity = 4 })
+  local bySymbol = loader:mapPlacement("MAP_1")
+  Assert.equal(bySymbol.id, 1)
+  Assert.equal(bySymbol.originX, 32)
+  Assert.equal(bySymbol.originZ, 0)
+  local byId = loader:mapPlacement(1)
+  Assert.deepEqual(byId, bySymbol, "numeric ids resolve identically")
+  Assert.equal(reads, 0, "placement reads no generated asset")
+  local err = Assert.throws(function()
+    loader:mapPlacement("MAP_MISSING")
+  end)
+  Assert.isTrue(require("libs.errors.src.Errors").is(err), "unknown maps raise a structured fault")
+  Assert.equal(err.code, "FIELD_MAP_UNKNOWN")
+  loader:release()
+end
+
 function T.loads_visual_field_collision_and_terrain_into_one_aggregate()
   local cache, world, sceneLoader = fixture(1)
   local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader, capacity = 4 })

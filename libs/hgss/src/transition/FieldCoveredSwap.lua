@@ -1,6 +1,7 @@
 -- Owns one direct map replacement under cover already supplied by its caller.
 
 local Errors = require("libs.errors.src.Errors")
+local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 local ScriptErrors = require("libs.script.src.errors")
 local FieldTransition = require("libs.hgss.src.transition.FieldTransition")
 
@@ -31,35 +32,46 @@ function FieldCoveredSwap:setSourceMap(sourceMap)
   self.sourceMap = sourceMap
 end
 
+-- Structural destination placement without building generated assets, so a
+-- cold destination waits in the transition's async preparation instead of
+-- faulting the warp start. Unknown maps keep the script-shaped
+-- unavailable-destination fault; anything else propagates untouched.
+---@param loader table<string, unknown>
+---@param symbol string
+---@return { id: integer, originX: integer, originZ: integer }
+local function lookupPlacement(loader, symbol)
+  local ok, placement = pcall(loader.mapPlacement, loader, symbol)
+  if not ok then
+    if Errors.is(placement) and placement.code == FieldErrors.FIELD_MAP_UNKNOWN then
+      placement = nil
+    else
+      error(placement, 0)
+    end
+  end
+  if
+    type(placement) ~= "table"
+    or type(placement.id) ~= "number"
+    or type(placement.originX) ~= "number"
+    or type(placement.originZ) ~= "number"
+  then
+    Errors.raise(
+      ScriptErrors.SCRIPT_INVALID_REFERENCE,
+      "covered swap target map is unavailable: " .. tostring(symbol),
+      { map = symbol }
+    )
+  end
+  return placement
+end
+
 function FieldCoveredSwap:start(target)
   assert(not self.pending, "a covered map swap is already in progress")
-  local destination, loadErr = self.loader:load(target.map)
-  if destination == nil or destination.mapId == nil then
-    Errors.raise(
-      ScriptErrors.SCRIPT_INVALID_REFERENCE,
-      "covered swap target map is unavailable: " .. tostring(target.map),
-      {
-        map = target.map,
-        cause = loadErr,
-      }
-    )
-  end
-  local loadedMap = destination --[[@as table<string, unknown>]]
-  local origin = loadedMap.coordinateOrigin
-  if type(origin) ~= "table" or type(origin.x) ~= "number" or type(origin.z) ~= "number" then
-    Errors.raise(
-      ScriptErrors.SCRIPT_INVALID_REFERENCE,
-      "covered swap target has no coordinate origin",
-      { map = target.map }
-    )
-  end
-  local coordinateOrigin = origin --[[@as table<string, number>]]
+  local placement = lookupPlacement(self.loader, target.map)
   local warpId = target.warp or 0
   local warp = {
     index = warpId,
-    x = coordinateOrigin.x + target.fieldX,
-    z = coordinateOrigin.z + target.fieldZ,
-    destinationMapId = assert(loadedMap.mapId) --[[@as number]],
+    x = placement.originX + target.fieldX,
+    z = placement.originZ + target.fieldZ,
+    destinationMapId = placement.id,
     destinationWarpId = warpId,
     direct = true,
   }

@@ -98,6 +98,16 @@ function ScriptMapsService:resolve(ref)
   error(map, 0)
 end
 
+-- Structural placement (numeric id plus world origin) of a map symbol or id.
+-- Reads only the world table: nothing is loaded or cached, so a script warp
+-- to a cold destination leaves its build to the transition's async
+-- preparation. Unknown maps raise FIELD_MAP_UNKNOWN.
+---@param ref string|integer
+---@return { id: integer, originX: integer, originZ: integer }
+function ScriptMapsService:placement(ref)
+  return self._loader:mapPlacement(ref)
+end
+
 function ScriptMapsService:has(ref)
   return self:resolve(ref) ~= nil
 end
@@ -118,7 +128,9 @@ end
 
 -- Start a scripted warp. `target` is the graph node's warp descriptor:
 -- { map = "<symbol>", warp = index, fieldX, fieldZ, facing } with the
--- destination coordinates in the destination map's local cell space.
+-- destination coordinates in the destination map's local cell space. Script
+-- `warp` nodes carry global coordinates; the warp task converts them through
+-- `placement` before calling here.
 ---@param target table<string, unknown>
 function ScriptMapsService:startWarp(target)
   assert(self.pendingWarp == nil, "a scripted warp is already in progress")
@@ -135,14 +147,17 @@ function ScriptMapsService:startWarp(target)
     assert(self._screen:isOpaque(), "a covered scripted swap requires the screen cover to be fully opaque")
     self._coveredSwap:start(target)
   else
-    local destination = assert(self._loader:load(target.map))
-    local origin = assert(destination.coordinateOrigin)
+    -- Structural placement only: the transition's async preparation owns
+    -- the destination build, so a cold map waits there instead of
+    -- faulting this synchronous start. Unknown maps raise here exactly
+    -- like the loader's own unknown-map fault.
+    local placement = self._loader:mapPlacement(target.map)
     local warpId = target.warp or 0
     local warp = {
       index = warpId,
-      x = origin.x + target.fieldX,
-      z = origin.z + target.fieldZ,
-      destinationMapId = destination.mapId,
+      x = placement.originX + target.fieldX,
+      z = placement.originZ + target.fieldZ,
+      destinationMapId = placement.id,
       destinationWarpId = warpId,
       direct = true,
     }

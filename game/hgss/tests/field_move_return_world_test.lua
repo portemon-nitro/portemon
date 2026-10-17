@@ -5,6 +5,7 @@
 -- exactly once with destination-local coordinates, completion and
 -- failures surface through the service protocol, and nothing is owned.
 
+local Errors = require("libs.errors.src.Errors")
 local Assert = require("tests.support.Assert")
 local FieldMoveWorld = require("game.hgss.src.field.FieldMoveWorld")
 
@@ -17,7 +18,7 @@ local T = {}
 ---@field done boolean
 ---@field errorValue unknown
 ---@field started table<string, unknown>?
----@field resolve fun(self: ReturnWarpsDouble, ref: unknown): table<string, unknown>?
+---@field placement fun(self: ReturnWarpsDouble, ref: unknown): { id: integer, originX: integer, originZ: integer }
 ---@field startWarp fun(self: ReturnWarpsDouble, target: table<string, unknown>)
 ---@field warpDone fun(self: ReturnWarpsDouble): boolean
 ---@field pendingError fun(self: ReturnWarpsDouble): unknown
@@ -29,11 +30,11 @@ local function warpsDouble()
     done = false,
     errorValue = nil,
     origin = { x = 600, z = 300 },
-    resolve = function(self, ref)
-      if ref == "MAP_ROUTE_46" then
-        return { mapSymbol = ref, mapId = 48, coordinateOrigin = self.origin }
+    placement = function(self, ref)
+      if ref ~= "MAP_ROUTE_46" then
+        Errors.raise("FIELD_MAP_UNKNOWN", "no runtime map for " .. tostring(ref), {})
       end
-      return nil
+      return { id = 48, originX = self.origin.x, originZ = self.origin.z }
     end,
     startWarp = function(self, target)
       calls.start = calls.start + 1
@@ -202,7 +203,6 @@ function T.unresolvable_destination_refuses_with_the_service_code()
     kind = "dig",
     destination = { map = "MAP_NOWHERE", warp = 0, fieldX = 1, fieldZ = 2, facing = "south" },
   }
-  local Errors = require("libs.errors.src.Errors")
   local ok, err = pcall(function()
     world:beginReturnWarp(plan)
   end)

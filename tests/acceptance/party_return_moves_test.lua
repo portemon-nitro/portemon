@@ -10,6 +10,7 @@
 -- through the script travel service; the red names a missing datum,
 -- never infrastructure.
 
+local Errors = require("libs.errors.src.Errors")
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local RomSourcePath = require("tests.rom.support.RomSourcePath")
@@ -405,11 +406,11 @@ function T.tests.failed_return_warp_fabricates_nothing()
     waitForMap(game, mouth.destinationSymbol)
     local runtime = game.runtime
     local realLoader = assert(runtime.mapLoader, "live map loader required")
-    local loadCalls = 0
+    local placementCalls = 0
     local faultingLoader = setmetatable({
-      load = function()
-        loadCalls = loadCalls + 1
-        return nil, "injected destination failure"
+      mapPlacement = function(_, symbol)
+        placementCalls = placementCalls + 1
+        Errors.raise("FIELD_MAP_UNKNOWN", "injected destination failure: " .. tostring(symbol), {})
       end,
     }, { __index = realLoader })
     local MapsService = require("libs.hgss.src.script.ScriptMapsService")
@@ -429,7 +430,7 @@ function T.tests.failed_return_warp_fabricates_nothing()
     Assert.isNil(state.refused, "dig planning must produce an executable plan")
     local result = driveTask(game, mover, state)
     Assert.equal(result.kind, "field_move_failed", "the failed warp must fault the task, not succeed")
-    Assert.equal(loadCalls, 1, "the failed warp must start exactly once")
+    Assert.equal(placementCalls, 1, "the failed warp must start exactly once")
     local settled = game:snapshot()
     Assert.equal(settled.mapSymbol, before.mapSymbol, "failure must not move the player")
     Assert.equal(settled.player.fieldX, before.player.fieldX, "failure must not jump position")

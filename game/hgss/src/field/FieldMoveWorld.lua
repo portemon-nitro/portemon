@@ -134,7 +134,7 @@ function FieldMoveWorld.new(ports)
     assert(type(world._warps.startWarp) == "function", "warps port must start warps")
     assert(type(world._warps.warpDone) == "function", "warps port must observe warp completion")
     assert(type(world._warps.pendingError) == "function", "warps port must report warp failures")
-    assert(type(world._warps.resolve) == "function", "warps port must resolve destination maps")
+    assert(type(world._warps.placement) == "function", "warps port must place destination maps")
   end
   if world._spawns ~= nil then
     assert(type(world._spawns.destinationFor) == "function", "spawns port must resolve cited landing destinations")
@@ -547,23 +547,25 @@ function FieldMoveWorld:beginReturnWarp(plan)
   local warps = assert(self._warps, "return warps need the maps service")
   local destination = assert(plan.destination, "return plans carry their destination")
   assert(type(destination.map) == "string" and destination.map ~= "", "return destinations name a map")
-  local resolved = warps:resolve(destination.map)
-  if resolved == nil then
-    Errors.raise(
-      ScriptErrors.SCRIPT_INVALID_REFERENCE,
-      "return destination map is unavailable: " .. tostring(destination.map),
-      { map = destination.map }
-    )
+  -- Structural placement only: the destination build belongs to the transition.
+  local placed, placement = pcall(warps.placement, warps, destination.map)
+  if not placed then
+    if Errors.is(placement) and placement.code == FieldErrors.FIELD_MAP_UNKNOWN then
+      Errors.raise(
+        ScriptErrors.SCRIPT_INVALID_REFERENCE,
+        "return destination map is unavailable: " .. tostring(destination.map),
+        { map = destination.map }
+      )
+    end
+    error(placement, 0)
   end
-  local origin = assert(resolved and resolved.coordinateOrigin, "return destinations need the map origin")
-  assert(type(origin.x) == "number" and type(origin.z) == "number", "map origins carry coordinates")
   assert(type(destination.fieldX) == "number", "return destinations carry tiles")
   assert(type(destination.fieldZ) == "number", "return destinations carry tiles")
   warps:startWarp({
     map = destination.map,
     warp = destination.warp or 0,
-    fieldX = destination.fieldX - origin.x,
-    fieldZ = destination.fieldZ - origin.z,
+    fieldX = destination.fieldX - placement.originX,
+    fieldZ = destination.fieldZ - placement.originZ,
     facing = destination.facing,
   })
   plan.warpStarted = true

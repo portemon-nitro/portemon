@@ -1807,6 +1807,25 @@ function FieldMapLoader:mapSymbol(idOrSymbol)
   return worldRecord(self.world, idOrSymbol).symbol
 end
 
+-- Resolve a numeric map id or symbol to its structural placement (numeric
+-- id plus world origin) through the structural world table alone: no
+-- scene, collision, terrain, or other generated asset is read and nothing
+-- is cached. Scripted warps name cold destinations through this edge so
+-- the transition's async preparation (not the warp start) owns the build.
+-- Unknown ids/symbols raise FIELD_MAP_UNKNOWN.
+---@param idOrSymbol string|integer
+---@return { id: integer, originX: integer, originZ: integer }
+function FieldMapLoader:mapPlacement(idOrSymbol)
+  assert(not self.released, "field map loader is released")
+  local record = worldRecord(self.world, idOrSymbol)
+  local originX, originZ = record.worldOriginX, record.worldOriginZ
+  assert(
+    type(originX) == "number" and type(originZ) == "number",
+    "world record carries no origin for " .. tostring(idOrSymbol)
+  )
+  return { id = assert(record.id, "world record carries no id"), originX = originX, originZ = originZ }
+end
+
 -- Counts currently resident map entries without acquiring or releasing them.
 function FieldMapLoader:residentCount()
   local count = 0

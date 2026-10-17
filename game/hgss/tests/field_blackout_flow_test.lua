@@ -90,6 +90,10 @@ local function harness(initialPhase, indexOverride)
         events[#events + 1] = { "load", map }
         return { mapId = 69, coordinateOrigin = { x = 100, z = 200 } }
       end,
+      mapPlacement = function(_, map)
+        events[#events + 1] = { "mapPlacement", map }
+        return { id = 69, originX = 100, originZ = 200 }
+      end,
     },
     transition = transition,
     sourceMap = function()
@@ -165,7 +169,7 @@ T["mother recovery waits for covered relocation, audio, fade, input and restore"
   h.setPhase("absent")
   h.flow:updateFixed({ pressedAction = true })
   Assert.equal(h.flow:status().phase, "relocate")
-  Assert.equal(h.events[5][1], "load")
+  Assert.equal(h.events[5][1], "mapPlacement", "relocation resolves placement without loading assets")
   h.finishSwap()
   h.flow:updateFixed()
   Assert.equal(h.events[7][1], "fadeMusicOut")

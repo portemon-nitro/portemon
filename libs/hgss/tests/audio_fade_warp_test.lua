@@ -184,8 +184,14 @@ end
 local FakeMapsBackend = {}
 FakeMapsBackend.__index = FakeMapsBackend
 
-function FakeMapsBackend.new()
-  return setmetatable({ warping = false, calls = {} }, FakeMapsBackend)
+function FakeMapsBackend.new(origin)
+  local backend = setmetatable({ warping = false, calls = {} }, FakeMapsBackend)
+  backend.origin = origin or { x = 0, z = 0 }
+  return backend
+end
+
+function FakeMapsBackend:placement(_)
+  return { id = 1, originX = self.origin.x, originZ = self.origin.z }
 end
 
 function FakeMapsBackend:startWarp(target)
@@ -224,7 +230,7 @@ local function harness(opts)
   local audio = opts.audio and FakeAudioBackend.new() or nil
   local camera = opts.camera and FakeCameraBackend.new() or nil
   local screen = opts.screen and FakeScreenBackend.new() or nil
-  local maps = opts.maps and FakeMapsBackend.new() or nil
+  local maps = opts.maps and FakeMapsBackend.new(opts.mapsOrigin) or nil
   services.audio = audio
   services.camera = camera
   services.screen = screen
@@ -446,6 +452,32 @@ T["warp task"] = function()
   Assert.equal(h.services.world:getVar("VAR_AFTER"), 1)
 end
 
+-- Script warp coordinates are global (the source authors them alongside
+-- zone-event coordinates, e.g. the shrine's Route 22 arrival beside its
+-- actors), while the maps service owns destination-local records: the
+-- warp task converts through the destination placement, which never
+-- loads the destination.
+T["warp task converts global script coordinates to destination-local tiles"] = function()
+  local h = harness({ maps = true, mapsOrigin = { x = 680, z = 390 } })
+  local resource = script("test.warpconvert", {
+    S.warp({
+      map = "MAP_NEW_BARK",
+      warp = 0,
+      fieldX = 684,
+      fieldZ = 393,
+      facing = "south",
+    }),
+    S.stop(),
+  })
+  startForeground(h, resource, 100)
+  h.scheduler:step(100, nil)
+  local target = h.maps.calls[1].target
+  Assert.equal(target.map, "MAP_NEW_BARK")
+  Assert.equal(target.fieldX, 4, "the destination origin rebases global x")
+  Assert.equal(target.fieldZ, 3, "the destination origin rebases global z")
+  Assert.equal(target.facing, "south")
+end
+
 -- 4b. The real maps service drives a scripted warp through a colon-method
 -- loader: the destination coordinates are rebased by the destination map's
 -- origin, and a loader that raises for an unknown map is a re-raised fault
@@ -454,10 +486,19 @@ T["real maps service warp"] = function()
   local ScriptMapsService = require("libs.hgss.src.script.ScriptMapsService")
   local started = nil
   local loader = {}
+  local loads = 0
   loader.load = function(self, symbol)
     assert(self == loader, "load is a colon method")
+    loads = loads + 1
     if symbol == "MAP_NEW_BARK" then
       return { mapId = 60, coordinateOrigin = { x = 680, z = 390 } }
+    end
+    Errors.raise("FIELD_MAP_UNKNOWN", "no runtime map for " .. tostring(symbol), {})
+  end
+  loader.mapPlacement = function(self, symbol)
+    assert(self == loader, "mapPlacement is a colon method")
+    if symbol == "MAP_NEW_BARK" then
+      return { id = 60, originX = 680, originZ = 390 }
     end
     Errors.raise("FIELD_MAP_UNKNOWN", "no runtime map for " .. tostring(symbol), {})
   end
@@ -477,6 +518,8 @@ T["real maps service warp"] = function()
   Assert.equal(started.warp.x, 684, "destination-local x rebased by the map origin")
   Assert.equal(started.warp.z, 393)
   Assert.equal(started.facing, "north")
+  Assert.equal(maps:placement("MAP_NEW_BARK").originX, 680)
+  Assert.equal(loads, 0, "warp start and placement never build the destination")
   Assert.isNil(maps:resolve("MAP_MISSING"))
   local maps2 = ScriptMapsService.new({
     transition = transition,
@@ -573,6 +616,12 @@ T["failed scripted warp faults the script"] = function()
     load = function(_, symbol)
       if symbol == "MAP_NEW_BARK" then
         return { mapId = 60, coordinateOrigin = { x = 680, z = 390 } }
+      end
+      Errors.raise("FIELD_MAP_UNKNOWN", "no runtime map for " .. tostring(symbol), {})
+    end,
+    mapPlacement = function(_, symbol)
+      if symbol == "MAP_NEW_BARK" then
+        return { id = 60, originX = 680, originZ = 390 }
       end
       Errors.raise("FIELD_MAP_UNKNOWN", "no runtime map for " .. tostring(symbol), {})
     end,
