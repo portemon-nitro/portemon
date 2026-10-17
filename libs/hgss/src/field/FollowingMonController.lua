@@ -1520,7 +1520,7 @@ end
 -- installs hidden on the tile. The trail-step observation owns the reveal.
 -- The reason is accepted for the transition collaborator contract; panel and
 -- preview arrivals hide identically.
----@param _ string arrival reason ("panel"|"preview"), descriptive only
+---@param _ string arrival reason ("panel"|"preview"|"event"), descriptive only
 ---@param self FollowingMonController
 function FollowingMonController:rejoin(_)
   self._rejoinHidden = true
@@ -1530,6 +1530,26 @@ function FollowingMonController:rejoin(_)
     return
   end
   self._actors:hide(partnerId)
+end
+
+-- Release-next-to-player behind ScrCmd_FollowMonReleaseNextToPlayer
+-- (pret/pokeheartgold src/scrcmd_c.c): with an active follower permitted
+-- on the current map, move it next to the player hidden until its first
+-- trail step (the arrival-rejoin pattern); otherwise a no-op. The
+-- release-ball pending flag has no presentation owner (arrivals skip it
+-- the same way), so only placement and the step latch are modeled.
+---@param self FollowingMonController
+---@return boolean acted
+function FollowingMonController:releaseNextToPlayer()
+  if not self:isActive() then
+    return false
+  end
+  local mapId = self._actors.currentMapId
+  if mapId == nil or not self:_permitted(mapId) then
+    return false
+  end
+  self:rejoin("event")
+  return true
 end
 
 -- Release follower state without touching saved data. The manager owns the
