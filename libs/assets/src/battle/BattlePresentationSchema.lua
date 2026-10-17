@@ -1706,6 +1706,94 @@ local function checkTransitionRouteResources(routes, messageEntries, resources, 
   end
 end
 
+local function checkTransitionTask(task, context, code, field)
+  SchemaCheck.checkRecord(task, { kind = true, parameters = true }, context, code, field)
+  checkString(task.kind, context, code, field .. ".kind")
+  local parameters = task.parameters
+  if task.kind == "field-camera-pose-sequence" then
+    SchemaCheck.checkRecord(
+      parameters,
+      { poses = true, fadeTicks = true, graphicsMode = true },
+      context,
+      code,
+      field .. ".parameters"
+    )
+    if not Validate.isArray(parameters.poses) or #parameters.poses ~= 16 then
+      fail(code, field .. ".parameters.poses must carry all sixteen source camera poses", context)
+    end
+    for index, pose in ipairs(parameters.poses) do
+      local poseField = field .. ".parameters.poses[" .. index .. "]"
+      SchemaCheck.checkRecord(
+        pose,
+        { distanceFx32 = true, angleXRaw = true, angleYRaw = true, perspectiveRaw = true, waitTicks = true },
+        context,
+        code,
+        poseField
+      )
+      checkInt(pose.distanceFx32, 1, 0x7fffffff, context, code, poseField .. ".distanceFx32")
+      checkInt(pose.angleXRaw, 0, 0xffff, context, code, poseField .. ".angleXRaw")
+      checkInt(pose.angleYRaw, 0, 0xffff, context, code, poseField .. ".angleYRaw")
+      checkInt(pose.perspectiveRaw, 0, 0xffff, context, code, poseField .. ".perspectiveRaw")
+      checkInt(pose.waitTicks, 1, 255, context, code, poseField .. ".waitTicks")
+    end
+    checkInt(parameters.fadeTicks, 1, 255, context, code, field .. ".parameters.fadeTicks")
+  elseif task.kind == "field-camera-perspective-distance-fade" then
+    SchemaCheck.checkRecord(parameters, {
+      perspectiveDeltaRaw = true,
+      perspectiveTicks = true,
+      waitTicks = true,
+      distanceDeltaFx32 = true,
+      distanceVelocityFx32 = true,
+      distanceTicks = true,
+      fadeTicks = true,
+      graphicsMode = true,
+    }, context, code, field .. ".parameters")
+    checkInt(parameters.perspectiveDeltaRaw, -0xffff, 0xffff, context, code, field .. ".parameters.perspectiveDeltaRaw")
+    checkInt(parameters.perspectiveTicks, 1, 255, context, code, field .. ".parameters.perspectiveTicks")
+    checkInt(parameters.waitTicks, 1, 255, context, code, field .. ".parameters.waitTicks")
+    checkInt(
+      parameters.distanceDeltaFx32,
+      -0x80000000,
+      0x7fffffff,
+      context,
+      code,
+      field .. ".parameters.distanceDeltaFx32"
+    )
+    checkInt(
+      parameters.distanceVelocityFx32,
+      -0x80000000,
+      0x7fffffff,
+      context,
+      code,
+      field .. ".parameters.distanceVelocityFx32"
+    )
+    checkInt(parameters.distanceTicks, 1, 255, context, code, field .. ".parameters.distanceTicks")
+    checkInt(parameters.fadeTicks, 1, 255, context, code, field .. ".parameters.fadeTicks")
+  elseif task.kind == "overlay115-gym-rival-intro" then
+    SchemaCheck.checkRecord(parameters, { endXFx32 = true }, context, code, field .. ".parameters")
+    checkInt(parameters.endXFx32, -0x80000000, 0x7fffffff, context, code, field .. ".parameters.endXFx32")
+    if parameters.endXFx32 ~= 876544 then
+      fail(code, field .. ".parameters.endXFx32 must retain the source Q12 endpoint", context)
+    end
+    return
+  elseif task.kind == "overlay115-elite-intro" then
+    SchemaCheck.checkRecord(parameters, { shakeTicks = true }, context, code, field .. ".parameters")
+    checkInt(parameters.shakeTicks, 1, 0xffff, context, code, field .. ".parameters.shakeTicks")
+    return
+  else
+    fail(code, field .. ".kind is not a supported normalized transition task", context)
+  end
+  SchemaCheck.checkRecord(
+    parameters.graphicsMode,
+    { mode = true, bank = true },
+    context,
+    code,
+    field .. ".parameters.graphicsMode"
+  )
+  checkInt(parameters.graphicsMode.mode, 0, 0xffff, context, code, field .. ".parameters.graphicsMode.mode")
+  checkInt(parameters.graphicsMode.bank, 0, 0xffff, context, code, field .. ".parameters.graphicsMode.bank")
+end
+
 local function checkTransitionRoutes(routes, messageEntries, messageRoutes, resources, context, code, field)
   checkCatalogTable(routes, context, code, field)
   local contextNames = {
@@ -1714,7 +1802,7 @@ local function checkTransitionRoutes(routes, messageEntries, messageRoutes, reso
     timeOfDay = true,
     trainerClass = true,
     wildSpecies = true,
-    playerTrainerGender = true,
+    playerGender = true,
     trainerName = true,
     rivalName = true,
     transitionTrainer = true,
@@ -1723,14 +1811,19 @@ local function checkTransitionRoutes(routes, messageEntries, messageRoutes, reso
   for key, route in pairs(routes) do
     checkString(key, context, code, field .. " key")
     local entry = field .. "[" .. key .. "]"
-    SchemaCheck.checkRecord(
-      route,
-      { role = true, requiredContext = true, resources = true, assetGroups = true, messages = true, trainer = true },
-      context,
-      code,
-      entry
-    )
+    SchemaCheck.checkRecord(route, {
+      role = true,
+      requiredContext = true,
+      resources = true,
+      assetGroups = true,
+      messages = true,
+      trainer = true,
+      task = true,
+    }, context, code, entry)
     checkString(route.role, context, code, entry .. ".role")
+    if route.task ~= nil then
+      checkTransitionTask(route.task, context, code, entry .. ".task")
+    end
     if not Validate.isArray(route.requiredContext) then
       fail(code, entry .. ".requiredContext must list its source-derived inputs", context)
     end
@@ -1796,6 +1889,8 @@ local function checkTransitionSelection(selection, routes, context, code, field)
   SchemaCheck.checkRecord(selection, {
     trainerClassRoutes = true,
     wildSpeciesRoutes = true,
+    trainerClassMusicRoles = true,
+    wildSpeciesMusicRoles = true,
     trainerRules = true,
     wildRules = true,
     fallbackRoutes = true,
@@ -1811,14 +1906,30 @@ local function checkTransitionSelection(selection, routes, context, code, field)
       end
     end
   end
+  for _, musicMapName in ipairs({ "trainerClassMusicRoles", "wildSpeciesMusicRoles" }) do
+    local musicRoles = selection[musicMapName]
+    checkCatalogTable(musicRoles, context, code, field .. "." .. musicMapName)
+    for inputKey, musicRole in pairs(musicRoles) do
+      checkString(inputKey, context, code, field .. "." .. musicMapName .. " key")
+      checkString(musicRole, context, code, field .. "." .. musicMapName .. " role")
+      local routeMapName = musicMapName == "trainerClassMusicRoles" and "trainerClassRoutes" or "wildSpeciesRoutes"
+      if selection[routeMapName][inputKey] == nil then
+        fail(code, field .. "." .. musicMapName .. " contains an input without a semantic route", context)
+      end
+    end
+  end
   local trainer = selection.trainerRules
-  SchemaCheck.checkRecord(
-    trainer,
-    { inputs = true, specialBattle = true, doublesRoute = true, alternateTransitionRoute = true },
-    context,
-    code,
-    field .. ".trainerRules"
-  )
+  SchemaCheck.checkRecord(trainer, {
+    inputs = true,
+    specialBattle = true,
+    preserveRoutes = true,
+    doublesRoute = true,
+    alternateTransitionRoute = true,
+    unknownRoute = true,
+    unknownMusicRole = true,
+    doublesMusicRole = true,
+    alternateMusicRole = true,
+  }, context, code, field .. ".trainerRules")
   if
     not Validate.isArray(trainer.inputs)
     or #trainer.inputs ~= 2
@@ -1828,24 +1939,22 @@ local function checkTransitionSelection(selection, routes, context, code, field)
     fail(code, field .. ".trainerRules must declare trainer and battle type inputs", context)
   end
   local special = trainer.specialBattle
-  SchemaCheck.checkRecord(
-    special,
-    { preserveRoutes = true, defaultRoute = true, doublesRoute = true },
-    context,
-    code,
-    field
-  )
-  if not Validate.isArray(special.preserveRoutes) or #special.preserveRoutes == 0 then
-    fail(code, field .. ".trainerRules.specialBattle must retain its preserved routes", context)
-  end
-  for _, routeKey in ipairs(special.preserveRoutes) do
-    if routes[routeKey] == nil then
-      fail(code, field .. ".trainerRules.specialBattle references an unknown route", context)
-    end
+  SchemaCheck.checkRecord(special, {
+    preserveRoute = true,
+    preserveMusicRole = true,
+    defaultRoute = true,
+    defaultMusicRole = true,
+    doublesRoute = true,
+    doublesMusicRole = true,
+  }, context, code, field)
+  if not Validate.isArray(trainer.preserveRoutes) or #trainer.preserveRoutes == 0 then
+    fail(code, field .. ".trainerRules must retain source-preserved semantic routes", context)
   end
   for _, routeKey in ipairs({
+    special.preserveRoute,
     special.defaultRoute,
     special.doublesRoute,
+    trainer.unknownRoute,
     trainer.doublesRoute,
     trainer.alternateTransitionRoute,
   }) do
@@ -1854,14 +1963,31 @@ local function checkTransitionSelection(selection, routes, context, code, field)
       fail(code, field .. ".trainerRules references an unknown semantic route", context)
     end
   end
+  for _, routeKey in ipairs(trainer.preserveRoutes) do
+    checkString(routeKey, context, code, field .. ".trainerRules.preserveRoutes")
+    if routeKey ~= "setup-fallback" and routes[routeKey] == nil then
+      fail(code, field .. ".trainerRules.preserveRoutes references an unknown semantic route", context)
+    end
+  end
+  for _, musicRole in ipairs({
+    special.preserveMusicRole,
+    special.defaultMusicRole,
+    special.doublesMusicRole,
+    trainer.unknownMusicRole,
+    trainer.doublesMusicRole,
+    trainer.alternateMusicRole,
+  }) do
+    checkString(musicRole, context, code, field .. ".trainerRules music role")
+  end
   local wild = selection.wildRules
-  SchemaCheck.checkRecord(
-    wild,
-    { inputs = true, specialMode = true, fallbackRoute = true, doublesRoute = true },
-    context,
-    code,
-    field .. ".wildRules"
-  )
+  SchemaCheck.checkRecord(wild, {
+    inputs = true,
+    specialMode = true,
+    fallbackRoute = true,
+    fallbackMusicRole = true,
+    doublesRoute = true,
+    doublesMusicRole = true,
+  }, context, code, field .. ".wildRules")
   if
     not Validate.isArray(wild.inputs)
     or #wild.inputs ~= 3
@@ -1878,6 +2004,8 @@ local function checkTransitionSelection(selection, routes, context, code, field)
       fail(code, field .. ".wildRules references an unknown semantic route", context)
     end
   end
+  checkString(wild.fallbackMusicRole, context, code, field .. ".wildRules.fallbackMusicRole")
+  checkString(wild.doublesMusicRole, context, code, field .. ".wildRules.doublesMusicRole")
   if not Validate.isArray(selection.fallbackRoutes) or #selection.fallbackRoutes ~= 12 then
     fail(code, field .. ".fallbackRoutes must enumerate every semantic setup fallback", context)
   end

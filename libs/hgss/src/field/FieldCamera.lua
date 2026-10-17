@@ -45,6 +45,9 @@ local FIELD_BILLBOARD_DEPTH_OFFSET_TILES = 0.5
 ---@field projectionAspect number
 ---@field _rawPerspective integer -- live perspective half angle in Nintendo raw units (65536 per turn)
 ---@field _rawPerspectiveBase integer -- raw angle matching the profile half angle exactly
+---@field _transitionDistanceTiles number
+---@field _transitionAngleXRaw integer
+---@field _transitionAngleYRaw integer
 ---@field _billboardDepthOffset number
 ---@field _projectionDirty boolean
 ---@field _projectionCache number[]
@@ -57,6 +60,16 @@ local FIELD_BILLBOARD_DEPTH_OFFSET_TILES = 0.5
 ---@field _billboardProjectionArray number[]
 local FieldCamera = {}
 FieldCamera.__index = FieldCamera
+
+---@class FieldCamera.TransitionState
+---@field distanceTiles number
+---@field angleXRaw integer
+---@field angleYRaw integer
+---@field rawPerspective integer
+---@field eye {x: number, y: number, z: number}
+---@field previousEye {x: number, y: number, z: number}
+---@field target {x: number, y: number, z: number}
+---@field previousTarget {x: number, y: number, z: number}
 
 local TAU = 2 * math.pi
 
@@ -96,12 +109,13 @@ local function liveHalfFovRadians(camera)
   return camera.profile.halfFovRadians + (camera._rawPerspective - camera._rawPerspectiveBase) * (TAU / 65536)
 end
 
-local function writeEyeFromTarget(target, profile, out)
-  local angleX = angleIndexToRadians(profile.angleXRaw)
-  local yaw = angleIndexToRadians(profile.angleYRaw)
-  local horizontalDistance = profile.distanceTiles * math.cos(angleX)
+local function writeEyeFromTarget(target, profile, out, distance, angleXRaw, angleYRaw)
+  local cameraDistance = distance or profile.distanceTiles
+  local angleX = angleIndexToRadians(angleXRaw or profile.angleXRaw)
+  local yaw = angleIndexToRadians(angleYRaw or profile.angleYRaw)
+  local horizontalDistance = cameraDistance * math.cos(angleX)
   out.x = target.x + math.sin(yaw) * horizontalDistance
-  out.y = target.y + math.sin(-angleX) * profile.distanceTiles
+  out.y = target.y + math.sin(-angleX) * cameraDistance
   out.z = target.z + math.cos(yaw) * horizontalDistance
 end
 
@@ -175,6 +189,9 @@ function FieldCamera.new(profile, options)
     zoom = 1,
     _rawPerspective = halfFovToRaw(profile.halfFovRadians),
     _rawPerspectiveBase = halfFovToRaw(profile.halfFovRadians),
+    _transitionDistanceTiles = profile.distanceTiles,
+    _transitionAngleXRaw = profile.angleXRaw,
+    _transitionAngleYRaw = profile.angleYRaw,
     _billboardDepthOffset = FIELD_BILLBOARD_DEPTH_OFFSET_TILES * math.cos(angleIndexToRadians(profile.angleXRaw)),
     _projectionDirty = true,
     _projectionCache = projectionArray,
@@ -186,6 +203,63 @@ function FieldCamera.new(profile, options)
     _projectionArray = projectionArray,
     _billboardProjectionArray = billboardProjectionArray,
   }, FieldCamera)
+end
+
+---@return FieldCamera.TransitionState snapshot used to restore one source transition's camera changes
+function FieldCamera:captureTransitionState()
+  return {
+    distanceTiles = self._transitionDistanceTiles,
+    angleXRaw = self._transitionAngleXRaw,
+    angleYRaw = self._transitionAngleYRaw,
+    rawPerspective = self._rawPerspective,
+    eye = { x = self.eye.x, y = self.eye.y, z = self.eye.z },
+    previousEye = { x = self.previousEye.x, y = self.previousEye.y, z = self.previousEye.z },
+    target = { x = self.target.x, y = self.target.y, z = self.target.z },
+    previousTarget = { x = self.previousTarget.x, y = self.previousTarget.y, z = self.previousTarget.z },
+  }
+end
+
+---@param pose {distanceFx32: integer, angleXRaw: integer, angleYRaw: integer, perspectiveRaw: integer}
+function FieldCamera:setTransitionPose(pose)
+  assert(type(pose) == "table", "source transition camera pose is required")
+  assert(type(pose.distanceFx32) == "number" and pose.distanceFx32 > 0, "source camera distance is positive fx32")
+  assert(type(pose.angleXRaw) == "number" and pose.angleXRaw % 1 == 0, "source camera pitch is an integer")
+  assert(type(pose.angleYRaw) == "number" and pose.angleYRaw % 1 == 0, "source camera yaw is an integer")
+  assert(type(pose.perspectiveRaw) == "number" and pose.perspectiveRaw % 1 == 0, "source perspective is an integer")
+  self._transitionDistanceTiles = pose.distanceFx32 / 65536
+  self._transitionAngleXRaw = pose.angleXRaw
+  self._transitionAngleYRaw = pose.angleYRaw
+  self.distance = self._transitionDistanceTiles
+  self._rawPerspective = pose.perspectiveRaw
+  self._billboardDepthOffset = FIELD_BILLBOARD_DEPTH_OFFSET_TILES
+    * math.cos(angleIndexToRadians(self._transitionAngleXRaw))
+  self._projectionDirty = true
+  writeEyeFromTarget(
+    self.target,
+    self.profile,
+    self.eye,
+    self._transitionDistanceTiles,
+    self._transitionAngleXRaw,
+    self._transitionAngleYRaw
+  )
+  copyComponents(self.previousEye, self.eye)
+end
+
+---@param state FieldCamera.TransitionState state returned by captureTransitionState
+function FieldCamera:restoreTransitionState(state)
+  assert(type(state) == "table", "captured source camera state is required")
+  self._transitionDistanceTiles = state.distanceTiles
+  self._transitionAngleXRaw = state.angleXRaw
+  self._transitionAngleYRaw = state.angleYRaw
+  self.distance = state.distanceTiles
+  self._rawPerspective = state.rawPerspective
+  self._billboardDepthOffset = FIELD_BILLBOARD_DEPTH_OFFSET_TILES
+    * math.cos(angleIndexToRadians(self._transitionAngleXRaw))
+  self._projectionDirty = true
+  copyComponents(self.eye, state.eye)
+  copyComponents(self.previousEye, state.previousEye)
+  copyComponents(self.target, state.target)
+  copyComponents(self.previousTarget, state.previousTarget)
 end
 
 function FieldCamera:updateFixed(playerTarget)
@@ -409,6 +483,12 @@ function FieldCamera:canonicalProjection()
   local buffer = Matrix4.newBuffer()
   fillProjectionBuffer(buffer, self, self.canonicalAspect, 1)
   return Matrix4.toArrayBuffer(buffer)
+end
+
+function FieldCamera:canonicalBillboardProjection()
+  local projection = self:canonicalProjection()
+  projection[15] = projection[15] + projection[11] * self._billboardDepthOffset
+  return projection
 end
 
 FieldCamera.FIELD_BILLBOARD_DEPTH_OFFSET_TILES = FIELD_BILLBOARD_DEPTH_OFFSET_TILES

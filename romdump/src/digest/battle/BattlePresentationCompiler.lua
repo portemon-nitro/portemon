@@ -17,6 +17,7 @@ local Lz10 = require("romdump.src.digest.Lz10")
 local MonSources = require("romdump.src.config.MonSources")
 local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
 local G2dRasterizer = require("romdump.src.digest.ui.G2dRasterizer")
+local TransitionCellNormalizer = require("romdump.src.digest.battle.TransitionCellNormalizer")
 local PngWriter = require("libs.assets.src.PngWriter")
 local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
 local UiMessageBank = require("romdump.src.digest.ui.UiMessageBank")
@@ -1993,6 +1994,12 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
           geometry = { depth = decoded.depth, tileCount = #decoded.tiles / (decoded.depth == 3 and 32 or 64) }
         elseif resource.kind == "cell" then
           decoded = decodeCells(transitionArchive, resource.member, label)
+          local sourceMapping, mappingErr = G2dDecoder.decodeCellMapping(bytes, { label = label })
+          local mapping = mustDecode(sourceMapping, mappingErr, label .. " mapping", resource.member)
+          local characterKey = assert(resourceKeys.characters, "the route cell follows its character resource")
+          local characterResource =
+            assert(resourceCatalog[characterKey], "the route character is cataloged before its cell")
+          TransitionCellNormalizer.normalize(decoded, mapping, characterResource.geometry.depth)
           format = "nitro-obj-cells-v1"
           local bounds = {}
           for cellIndex, cell in ipairs(decoded.cells) do
@@ -2333,24 +2340,14 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
       for _, resourceKey in ipairs(resourceKeys) do
         resourceSet[resourceKey] = true
       end
-      for _, memberId in ipairs(sourceRoute.particleMembers or {}) do
-        local resourceKey = transitionSourceResources["particle:" .. memberId]
-        if resourceKey == nil then
-          error(
-            Errors.new("BATTLE_TRANSITION_RESOURCE_UNRESOLVED", "transition route particle payload is not staged", {
-              memberId = memberId,
-            }),
-            0
-          )
-        end
-        resourceSet[resourceKey] = true
-      end
       local groups = {}
       for _, groupName in ipairs({
         "sprite",
         "record",
         "fixedSprite",
         "extraSprite",
+        "opponent",
+        "nameplate",
         "spriteVariants",
         "background",
         "sceneAssets",
@@ -2359,6 +2356,24 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
         if sourceGroup ~= nil then
           groups[groupName] = normalizeTransitionResourceGroup(sourceGroup, sourceRoute.key)
         end
+      end
+      if sourceRoute.particles ~= nil then
+        local particles = {}
+        for role, memberId in pairs(sourceRoute.particles) do
+          local resourceKey = transitionSourceResources["particle:" .. memberId]
+          if resourceKey == nil then
+            error(
+              Errors.new("BATTLE_TRANSITION_RESOURCE_UNRESOLVED", "transition route particle payload is not staged", {
+                memberId = memberId,
+                route = sourceRoute.key,
+              }),
+              0
+            )
+          end
+          particles[role] = resourceKey
+          resourceSet[resourceKey] = true
+        end
+        groups.particles = particles
       end
       local groupSet = {}
       local function collectGroup(value)
@@ -2398,8 +2413,8 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
         requireContext("trainerClass")
         requireContext("battleType")
       end
-      if sourceRoute.context ~= nil and sourceRoute.context.playerTrainerGender == true then
-        requireContext("playerTrainerGender")
+      if sourceRoute.context ~= nil and sourceRoute.context.playerGender == true then
+        requireContext("playerGender")
       end
       local trainer
       if sourceRoute.trainer ~= nil then
@@ -2423,6 +2438,9 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
         assetGroups = groups,
         trainer = trainer,
       }
+      if sourceRoute.task ~= nil then
+        route.task = sourceRoute.task
+      end
       if #messages > 0 then
         route.messages = messages
       end
@@ -2436,6 +2454,15 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
             0
           )
         end
+        if prior.task ~= nil and route.task ~= nil then
+          error(
+            Errors.new("BATTLE_TRANSITION_ROUTE_CONFLICT", "semantic transition key has conflicting source tasks", {
+              route = sourceRoute.key,
+            }),
+            0
+          )
+        end
+        route.task = route.task or prior.task
         for _, resourceKey in ipairs(route.resources) do
           resourceSet[resourceKey] = true
         end
@@ -2491,9 +2518,31 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
       end
       return routes
     end
+    local function musicRoleForCategory(category)
+      local sequenceSymbol = Sources.INTRO_MUSIC.rows[category + 1]
+      assert(sequenceSymbol ~= nil, "every source category selects an intro sequence")
+      local role = Sources.INTRO_MUSIC.roles[sequenceSymbol]
+      if role == nil and sequenceSymbol == Sources.AUDIO_ROLES.kantoTrainer then
+        role = "kanto-trainer"
+      end
+      assert(type(role) == "string", "every selected intro sequence has a semantic role")
+      return role
+    end
+    local function normalizeInputMusicRoles(sourceRoutes, categories)
+      local roles = {}
+      for inputKey, routeKey in pairs(sourceRoutes) do
+        local category = assert(categories[routeKey], "every source trainer or species route has a category")
+        roles[inputKey] = musicRoleForCategory(category)
+      end
+      return roles
+    end
     local trainerClassRoutes =
       normalizeInputRoutes(sourcePreselection.trainerClasses, sourcePreselection.trainerCategoryByKey)
     local wildSpeciesRoutes = normalizeInputRoutes(sourcePreselection.wildSpecies, sourcePreselection.wildCategoryByKey)
+    local trainerClassMusicRoles =
+      normalizeInputMusicRoles(sourcePreselection.trainerClasses, sourcePreselection.trainerCategoryByKey)
+    local wildSpeciesMusicRoles =
+      normalizeInputMusicRoles(sourcePreselection.wildSpecies, sourcePreselection.wildCategoryByKey)
     local function categoryRoutesForList(categories)
       local routes = {}
       for _, category in ipairs(categories) do
@@ -2505,21 +2554,33 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
     local transitionSelection = {
       trainerClassRoutes = trainerClassRoutes,
       wildSpeciesRoutes = wildSpeciesRoutes,
+      trainerClassMusicRoles = trainerClassMusicRoles,
+      wildSpeciesMusicRoles = wildSpeciesMusicRoles,
       trainerRules = {
         inputs = { "trainerClass", "battleType" },
         specialBattle = {
-          preserveRoutes = categoryRoutesForList(sourceRules.trainer.preserveCategories),
+          preserveRoute = semanticCategoryRoute(sourceRules.trainer.specialBattle.preserveCategory),
+          preserveMusicRole = musicRoleForCategory(sourceRules.trainer.specialBattle.preserveCategory),
           defaultRoute = semanticCategoryRoute(sourceRules.trainer.specialBattle.defaultCategory),
+          defaultMusicRole = musicRoleForCategory(sourceRules.trainer.specialBattle.defaultCategory),
           doublesRoute = semanticCategoryRoute(sourceRules.trainer.specialBattle.doublesCategory),
+          doublesMusicRole = musicRoleForCategory(sourceRules.trainer.specialBattle.doublesCategory),
         },
+        preserveRoutes = categoryRoutesForList(sourceRules.trainer.preserveCategories),
         doublesRoute = semanticCategoryRoute(sourceRules.trainer.doublesCategory),
         alternateTransitionRoute = semanticCategoryRoute(sourceRules.trainer.alternateCategory),
+        unknownRoute = semanticCategoryRoute(41),
+        unknownMusicRole = musicRoleForCategory(41),
+        doublesMusicRole = musicRoleForCategory(sourceRules.trainer.doublesCategory),
+        alternateMusicRole = musicRoleForCategory(sourceRules.trainer.alternateCategory),
       },
       wildRules = {
         inputs = { "wildSpecies", "battleType", "transitionMode" },
         specialMode = "wild-transition-special-case",
         fallbackRoute = semanticCategoryRoute(sourceRules.wild.fallbackCategory),
+        fallbackMusicRole = musicRoleForCategory(sourceRules.wild.fallbackCategory),
         doublesRoute = semanticCategoryRoute(sourceRules.wild.doublesCategoryWhenCategoryAtLeast.category),
+        doublesMusicRole = musicRoleForCategory(sourceRules.wild.doublesCategoryWhenCategoryAtLeast.category),
       },
       fallbackRoutes = {},
     }

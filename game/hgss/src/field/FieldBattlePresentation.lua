@@ -14,6 +14,8 @@ local BattlePresentationModel = require("game.hgss.src.battle.BattlePresentation
 local BattleScreenState = require("game.hgss.src.battle.BattleScreenState")
 local MonCache = require("libs.assets.src.MonCache")
 local PngWriter = require("libs.assets.src.PngWriter")
+local BattleEncounterTransition = require("libs.hgss.src.transition.BattleEncounterTransition")
+local TransitionFamilyFactory = require("libs.hgss.src.transition.TransitionFamilyFactory")
 
 ---@class FieldBattlePresentation
 ---@field _cacheFs table<string, unknown> versioned derived cache behind demand validation
@@ -46,6 +48,13 @@ local PngWriter = require("libs.assets.src.PngWriter")
 ---@field _musicNote string? battle-music start outcome for launch diagnostics
 ---@field _pool table<string, unknown>? borrowed shared generated-image owner, required once graphics resolve pixels
 ---@field _leases table<string, FieldBattlePresentation.PooledHandle> shared-owner leases by drawable key
+---@field _fieldRenderer table<string, unknown>? field-local native plane compositor
+---@field _fieldCamera fun(): table<string, unknown>? current field camera provider
+---@field _captureFieldLayers fun(): table<string, unknown>? fresh launch-owned native field planes
+---@field _transition table<string, unknown>? selected launch-owned native transition
+---@field _transitionContext table<string, unknown>? immutable context captured before field mutation
+---@field _transitionCapture table<string, unknown>? latest source-tick native field planes
+---@field _transitionFailed boolean true after a reported native transition failure
 ---@field _disposed boolean
 local FieldBattlePresentation = {}
 FieldBattlePresentation.__index = FieldBattlePresentation
@@ -68,6 +77,9 @@ FieldBattlePresentation.MAX_CATCH_UP = 6
 ---@field itemCatalog table<string, unknown>? borrowed immutable item catalog behind battle bag grouping
 ---@field monCatalog table<string, unknown>? borrowed immutable mon catalog behind machine display facts
 ---@field imagePool table<string, unknown>? borrowed shared generated-image owner behind pooled uploads, required to resolve graphical drawables
+---@field fieldRenderer table<string, unknown>? field-local native plane compositor
+---@field fieldCamera fun(): table<string, unknown>? current field camera provider
+---@field captureFieldLayers fun(): table<string, unknown>? fresh launch-owned native field planes
 ---@field overrides table<string, unknown>? per-instance scene, frame, and case inputs
 
 ---@class FieldBattlePresentation.PooledHandle
@@ -239,6 +251,13 @@ function FieldBattlePresentation.new(opts)
     _revealingBattle = false,
     _musicStarted = false,
     _musicNote = nil,
+    _fieldRenderer = opts.fieldRenderer,
+    _fieldCamera = opts.fieldCamera,
+    _captureFieldLayers = opts.captureFieldLayers,
+    _transition = nil,
+    _transitionContext = nil,
+    _transitionCapture = nil,
+    _transitionFailed = false,
     _disposed = false,
     _images = {},
     _imageFailures = {},
@@ -999,6 +1018,10 @@ function FieldBattlePresentation:_admitLaunch(descriptor)
   self._revealingBattle = false
   self._musicStarted = false
   self._musicNote = nil
+  self._transition = nil
+  self._transitionCapture = nil
+  self._transitionFailed = false
+  self:_startTransition(descriptor)
   local derived = self._derivedAssets
   local scheduled = self._graphics ~= nil
     and type(derived) == "table"
@@ -1473,6 +1496,165 @@ function FieldBattlePresentation:musicNote()
   return self._musicNote
 end
 
+-- Starts the source-selected transition for a graphical field launch.
+-- Data-only envelope compositions have no field renderer and retain their
+-- host-only presentation contract; the production field supplies both
+-- collaborators together.
+---@param descriptor table<string, unknown> admitted launch descriptor
+function FieldBattlePresentation:_startTransition(descriptor)
+  if self._fieldRenderer == nil and self._captureFieldLayers == nil then
+    return
+  end
+  assert(
+    self._fieldRenderer ~= nil and type(self._captureFieldLayers) == "function",
+    "transition rendering is composed as a pair"
+  )
+  local context = descriptor.transitionContext
+  assert(type(context) == "table", "presented field launches carry their captured semantic transition context")
+  local function emitAudio(_, operation)
+    assert(type(operation) == "table" and operation.kind == "start-battle-music", "transition audio is typed")
+    self:_startBattleMusic(operation.role)
+  end
+  local function createEffect(route, resources, launchContext)
+    return TransitionFamilyFactory.new(
+      route,
+      resources,
+      assert(self._graphics, "source transition sprites need the field graphics owner"),
+      {
+        camera = self._fieldCamera and self._fieldCamera() or nil,
+        fieldRenderer = assert(self._fieldRenderer, "source camera transitions borrow the field compositor"),
+      },
+      launchContext
+    )
+  end
+  assert(type(descriptor.environment) == "table", "presented field launches carry their selected scene key")
+  local transition = BattleEncounterTransition.new({
+    manifest = self._manifest,
+    cacheFs = self._cacheFs,
+    battleAssets = assert(
+      self._derivedAssets,
+      "battle transition waits on its selected scene through the selected-game host"
+    ),
+    sceneKey = assert(descriptor.environment.sceneKey, "presented field launches carry their selected scene key"),
+    audioOperations = { emit = emitAudio },
+    effectFactory = createEffect,
+  })
+  self._transition = transition
+  self._transitionContext = context
+end
+
+function FieldBattlePresentation:_startReadyTransition()
+  local transition = assert(self._transition, "selected transition handle is retained by the launch")
+  transition:start()
+  local capture = assert(self._captureFieldLayers, "the field launch supplies fresh source captures")
+  self._transitionCapture = capture()
+  transition:acceptFieldLayers(self._transitionCapture)
+end
+
+-- Advances one selected source callback, then captures the field after its
+-- camera/state mutation. The frame consumed by draw is therefore current,
+-- while repeated draw calls cannot advance tasks or recapture the world.
+function FieldBattlePresentation:_stepTransition()
+  local transition = self._transition
+  if transition == nil then
+    return
+  end
+  local ok, err = pcall(function()
+    local phase = transition:status().phase
+    if phase == "new" or phase == "pending" then
+      local readiness = transition:prepare(assert(self._transitionContext))
+      if readiness == "ready" then
+        self:_startReadyTransition()
+      end
+      return
+    end
+    if transition:status().phase ~= "running" then
+      return
+    end
+    transition:stepSourceTick()
+    local state = transition:status()
+    if state.phase == "running" then
+      local frame = transition:frame()
+      if frame.requiresCurrentFieldLayers == true then
+        local nextCapture = self._captureFieldLayers()
+        local previous = self._transitionCapture
+        self._transitionCapture = nextCapture
+        transition:acceptFieldLayers(nextCapture)
+        if previous ~= nil then
+          previous:dispose()
+        end
+      end
+    elseif state.phase == "complete" then
+      local previous = self._transitionCapture
+      self._transitionCapture = nil
+      if previous ~= nil then
+        previous:dispose()
+      end
+    end
+  end)
+  if not ok then
+    self:_reportTransitionFailure("source update", err)
+  end
+end
+
+-- Presents the latest captured field and source task frame without changing
+-- either owner. The caller supplies the live destination so resize affects
+-- only mapping, never native transition state.
+---@param destination table<string, number> live field viewport
+---@return boolean whether a field transition owned this frame
+function FieldBattlePresentation:drawTransition(destination)
+  if self._transitionFailed then
+    return true
+  end
+  local transition = self._transition
+  if transition == nil or transition:status().phase ~= "running" then
+    return false
+  end
+  local ok, err = pcall(function()
+    assert(self._transitionCapture ~= nil, "a running field transition owns its native source planes")
+    self._fieldRenderer:drawTransition(self._transitionCapture, transition:frame(), destination)
+  end)
+  if not ok then
+    self:_reportTransitionFailure("draw", err)
+  end
+  -- The failed route consumed this frame. Do not replace its pixels with
+  -- the battle screen or the unrelated generic cover; C01 owns recovery.
+  return true
+end
+
+-- Reports one native task/render failure to the existing launch owner before
+-- releasing the route's images, field planes, and family task exactly once.
+---@param operation string transition operation that failed
+---@param cause unknown original transition failure
+function FieldBattlePresentation:_reportTransitionFailure(operation, cause)
+  if self._transitionFailed then
+    return
+  end
+  self._transitionFailed = true
+  local descriptor = self._descriptor
+  local launchId = descriptor ~= nil and descriptor.launchId or "unknown"
+  local detail = "battle transition "
+    .. operation
+    .. " failed for launch "
+    .. tostring(launchId)
+    .. ": "
+    .. tostring(cause)
+  local host = descriptor ~= nil and descriptor.host or nil
+  if host ~= nil and type(host.notify) == "function" then
+    host.notify("screen-failed", detail)
+  end
+  self:_disposeTransition()
+end
+
+---@return table<string, unknown>? detached launch-scoped transition status
+function FieldBattlePresentation:transitionStatus()
+  local transition = self._transition
+  if transition == nil then
+    return nil
+  end
+  return transition:status()
+end
+
 -- Advances the envelope on the accepted source clock: the scheduled scene
 -- behind a pending launch is observed outside time, then every accepted
 -- tick runs encounter cover work, the coordinator advance exactly once, and
@@ -1499,6 +1681,7 @@ function FieldBattlePresentation:updateFixed(dt)
   do
     self._accumulator = self._accumulator - FieldBattlePresentation.SOURCE_FRAME
     steps = steps + 1
+    self:_stepTransition()
     self:_stepCover()
     -- The presented launch advances only here: the runtime phase machine
     -- and the owned battle clock run once per accepted tick, never through
@@ -1553,12 +1736,23 @@ function FieldBattlePresentation:_stepCover()
     return
   end
   if phase == "covering" then
+    -- The source encounter task starts its selected music in the same
+    -- initialization tick that launches the native transition effect.
+    -- Keep this operation at task admission; the host cover remains a
+    -- separate safety layer and may continue after the transition starts.
+    if
+      self._transition ~= nil
+      and self._transition:status().phase ~= "running"
+      and self._transition:status().phase ~= "complete"
+    then
+      return
+    end
     self:_stepCoverUp()
-    if self._cover >= FieldBattlePresentation.COVER_MAX then
+    if
+      self._cover >= FieldBattlePresentation.COVER_MAX
+      and (self._transition == nil or self._transition:status().phase == "complete")
+    then
       host.notify("cover-complete")
-      -- Battle music starts once under full cover: the role was selected
-      -- from staged source data at admission.
-      self:_startBattleMusic()
     end
     return
   end
@@ -1647,13 +1841,13 @@ end
 -- its outcome and the launch continues, since the acceptance closure
 -- stages no audio sequences while production playback resolves through
 -- the normalized catalog.
-function FieldBattlePresentation:_startBattleMusic()
+function FieldBattlePresentation:_startBattleMusic(selectedRole)
   if self._musicStarted then
     return
   end
   self._musicStarted = true
   local descriptor = self._descriptor
-  local role = descriptor ~= nil and descriptor.musicRole or nil
+  local role = selectedRole or (descriptor ~= nil and descriptor.musicRole or nil)
   local audio = descriptor ~= nil and descriptor.audio or nil
   if type(role) ~= "string" or role == "" then
     self._musicNote = "skipped-no-role"
@@ -1712,6 +1906,7 @@ end
 -- so only envelope bookkeeping remains. Runs only from settlement
 -- observation or full disposal, never from port disposal.
 function FieldBattlePresentation:_dropLaunch()
+  self:_disposeTransition()
   self._launchId = nil
   self._descriptor = nil
   self._pendingFailed = false
@@ -1725,6 +1920,23 @@ function FieldBattlePresentation:_dropLaunch()
   self._revealingBattle = false
   self._musicStarted = false
   self._musicNote = nil
+  self._transitionFailed = false
+end
+
+-- Releases the active native task and its latest launch-owned field planes
+-- exactly once, including completion, failure, and envelope disposal.
+function FieldBattlePresentation:_disposeTransition()
+  local transition = self._transition
+  self._transition = nil
+  self._transitionContext = nil
+  if transition ~= nil then
+    transition:dispose()
+  end
+  local capture = self._transitionCapture
+  self._transitionCapture = nil
+  if capture ~= nil then
+    capture:dispose()
+  end
 end
 
 -- Idempotent release of the envelope lifetime: the live screen releases

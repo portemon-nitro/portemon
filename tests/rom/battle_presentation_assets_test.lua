@@ -823,6 +823,10 @@ function T.source_traced_transition_payloads_are_decoded_and_content_addressed(r
     local route = assert(semanticTransitions[routeKey], versionId .. ": transition route " .. routeKey .. " is emitted")
     Assert.equal(route.role, sourceRoute.role, versionId .. ": transition route role is source-normalized")
     Assert.isTrue(type(route.resources) == "table", versionId .. ": transition route carries staged resource references")
+    if sourceRoute.task ~= nil then
+      Assert.deepEqual(route.task, sourceRoute.task, versionId .. ": source camera task is published as typed semantic data")
+      Assert.isNil(route.task.callback, versionId .. ": runtime task data omits native callback ordinals")
+    end
     for _, resourceKey in ipairs(route.resources) do
       Assert.notNil(bundle.manifest.resources[resourceKey], versionId .. ": transition route resource is staged")
       Assert.isTrue(type(resourceKey) == "string", versionId .. ": transition route resource keys are semantic")
@@ -880,6 +884,25 @@ function T.source_traced_transition_payloads_are_decoded_and_content_addressed(r
   Assert.isNil(selection.categoryRoutes, versionId .. ": native category indexes remain producer-side")
   Assert.equal(selection.trainerClassRoutes["trainer/red"], "trainer/red")
   Assert.equal(selection.wildSpeciesRoutes["wild/ho-oh"], "wild/ho-oh")
+  for _, maps in ipairs({
+    { selection.trainerClassRoutes, selection.trainerClassMusicRoles },
+    { selection.wildSpeciesRoutes, selection.wildSpeciesMusicRoles },
+  }) do
+    local routes, musicRoles = maps[1], maps[2]
+    for inputKey, routeKey in pairs(routes) do
+      Assert.isTrue(
+        semanticTransitions[routeKey] ~= nil,
+        versionId .. ": source input " .. inputKey .. " resolves before its music role"
+      )
+      Assert.isTrue(
+        type(musicRoles[inputKey]) == "string",
+        versionId .. ": music role uses the source input key " .. inputKey .. " rather than the route key"
+      )
+    end
+    for inputKey in pairs(musicRoles) do
+      Assert.isTrue(routes[inputKey] ~= nil, versionId .. ": music role belongs to a selected source input")
+    end
+  end
   Assert.equal(
     selection.trainerRules.specialBattle.doublesRoute,
     "wild/generic",

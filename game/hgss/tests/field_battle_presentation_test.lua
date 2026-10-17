@@ -177,14 +177,46 @@ local function bindEnvelope(runtime, versionId, measurement, graphics)
     end,
   })
   local ports = {}
+  doubles.descriptors = {}
   local factory = envelope:factory()
   local binding = runtime:bindBattlePresentation(function(descriptor)
+    doubles.descriptors[#doubles.descriptors + 1] = descriptor
     local port = factory(descriptor)
     ports[#ports + 1] = port
     return port
   end)
   doubles.ports = ports
   return envelope, binding, doubles
+end
+
+function T.presented_launch_captures_semantic_transition_context_before_mutation()
+  local runtime = bootRuntime(readyVersions()[1])
+  local envelope, binding, doubles = bindEnvelope(runtime, runtime.versionId, dualMeasurement("transition-context"))
+  local ok, failure = xpcall(function()
+    runtime:launchBattle({ kind = "wild", details = { species = "HO_OH", level = 45 } })
+    local context = assert(doubles.descriptors[1].transitionContext)
+    Assert.deepEqual(context, {
+      kind = "wild",
+      wildSpecies = "HO_OH",
+      doubleBattle = false,
+      specialBattle = false,
+      alternateTransition = false,
+      playerGender = "male",
+      wildSetupFallback = false,
+      terrain = "plain",
+      timeOfDay = "day",
+    })
+  end, debug.traceback)
+  pcall(function()
+    runtime:unbindBattlePresentation(binding)
+  end)
+  pcall(function()
+    runtime:dispose()
+  end)
+  if not ok then
+    error(failure, 0)
+  end
+  envelope:dispose()
 end
 
 ---@param actor table addressed combatant under test driving
@@ -445,6 +477,46 @@ function T.presented_win_returns_through_cover_and_receipt()
     end
     Assert.isTrue(unbound, "the lifetime releases its factory binding")
     Assert.isTrue(closed, "teardown releases the presented lifetime")
+  end
+end
+
+-- Native encounter admission starts battle music with the selected effect
+-- task. The field stays present until that task completes; music must not be
+-- deferred until an emergency black cover reaches full opacity.
+function T.encounter_music_starts_with_transition_before_full_cover()
+  for _, versionId in ipairs(readyVersions()) do
+    local runtime = bootRuntime(versionId)
+    local envelope, binding = bindEnvelope(runtime, versionId, dualMeasurement("encounter-transition:dual"))
+    local ok, failure = xpcall(function()
+      runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
+
+      local ticks = 0
+      while envelope:musicNote() == nil and ticks < 30 do
+        runtime:update(TICK)
+        envelope:updateFixed(TICK)
+        ticks = ticks + 1
+      end
+
+      Assert.notNil(envelope:musicNote(), "the selected transition emits its battle-music operation")
+      Assert.isTrue(
+        envelope:cover().coefficient < 16,
+        "transition music starts with effect initialization before any full-cover handoff"
+      )
+      Assert.equal(runtime.overworld:phase(), "present", "the field remains present while the transition runs")
+      Assert.isNil(
+        runtime.battleCoordinator:activeBattle(),
+        "the battle is not constructed until the native transition completes"
+      )
+    end, debug.traceback)
+    pcall(function()
+      runtime:unbindBattlePresentation(binding)
+    end)
+    pcall(function()
+      runtime:dispose()
+    end)
+    if not ok then
+      error(failure, 0)
+    end
   end
 end
 
@@ -3032,18 +3104,14 @@ end
 function T.scheduled_win_returns_through_cover_and_receipt()
   for _, versionId in ipairs(readyVersions()) do
     local runtime = bootRuntime(versionId)
-    local envelope, binding, doubles =
-      bindScheduledEnvelope(runtime, versionId, dualMeasurement("deferred-win:dual"))
+    local envelope, binding, doubles = bindScheduledEnvelope(runtime, versionId, dualMeasurement("deferred-win:dual"))
     local ok, failure = xpcall(function()
       local launchId = runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
       local port = assert(doubles.ports[#doubles.ports], "the admission owns its port")
       requirePendingAdmission(envelope, port, launchId, "wild")
       waitConstructed(runtime, envelope)
       Assert.notNil(envelope:liveScreen(), "the staged launch builds its live screen")
-      Assert.isTrue(
-        port.enter({ launchId = launchId, kind = "wild" }),
-        "the staged launch acknowledges its entry"
-      )
+      Assert.isTrue(port.enter({ launchId = launchId, kind = "wild" }), "the staged launch acknowledges its entry")
       local experienceBefore = assert(runtime.monService:partyMon(0), "the live lead is readable").experience
       local turns = settle(runtime, envelope, function(request)
         return sparringChoose(runtime, request)
@@ -3055,17 +3123,10 @@ function T.scheduled_win_returns_through_cover_and_receipt()
       local receipt = assert(runtime:battleStatus(launchId), "the settled launch leaves a readable receipt")
       Assert.equal(receipt.result, "win", "the receipt carries the win")
       Assert.isTrue(receipt.committed, "the receipt commits only at the safe field")
-      Assert.isTrue(
-        runtime.monService:partyMon(0).experience > experienceBefore,
-        "the win publishes experience once"
-      )
+      Assert.isTrue(runtime.monService:partyMon(0).experience > experienceBefore, "the win publishes experience once")
       local settledExperience = runtime.monService:partyMon(0).experience
       pump(runtime, envelope, 30)
-      Assert.equal(
-        runtime.monService:partyMon(0).experience,
-        settledExperience,
-        "settling publishes no second effect"
-      )
+      Assert.equal(runtime.monService:partyMon(0).experience, settledExperience, "settling publishes no second effect")
       Assert.equal(runtime.overworld:phase(), "present", "the continuing return restores presence")
       Assert.isNil(runtime.battleCoordinator._battleLaunch, "the return clears the launch")
       Assert.isNil(envelope:liveScreen(), "the return releases the live screen")
@@ -3106,10 +3167,7 @@ function T.scheduled_escape_and_capture_complete_with_fresh_identities()
       local firstId = runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
       local firstPort = assert(doubles.ports[#doubles.ports], "the first launch owns its port")
       pump(runtime, envelope, 5)
-      Assert.isFalse(
-        firstPort.enter({ launchId = firstId, kind = "wild" }),
-        "the cold demand stays unacknowledged"
-      )
+      Assert.isFalse(firstPort.enter({ launchId = firstId, kind = "wild" }), "the cold demand stays unacknowledged")
       Assert.isNil(envelope:liveScreen(), "the cold demand builds no screen before its scene stages")
       doubles.worker.ready = true
       waitConstructed(runtime, envelope)
@@ -3128,10 +3186,7 @@ function T.scheduled_escape_and_capture_complete_with_fresh_identities()
       pump(runtime, envelope, 60)
       Assert.equal(runtime:lastBattleResult().result, "win", "the first leg reports its own win")
       Assert.isFalse(firstPort.ready(), "the settled port never reads interactive again")
-      Assert.isFalse(
-        firstPort.enter({ launchId = firstId, kind = "wild" }),
-        "the settled port never reacknowledges"
-      )
+      Assert.isFalse(firstPort.enter({ launchId = firstId, kind = "wild" }), "the settled port never reacknowledges")
       local secondId = runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
       Assert.isTrue(secondId ~= firstId, "the next launch receives a new identity")
       local secondPort = assert(doubles.ports[#doubles.ports], "the second launch owns its port")
@@ -3151,10 +3206,7 @@ function T.scheduled_escape_and_capture_complete_with_fresh_identities()
       Assert.equal(runtime:battleStatus(secondId).result, "flee", "the flight receipt carries the flight")
       local presentOk = pcall(firstPort.present, { launchId = firstId, packetId = 1 })
       Assert.isTrue(presentOk, "a stale delivery never raises")
-      Assert.isTrue(
-        runtime:battleStatus(secondId).result == "flee",
-        "a stale delivery never rewrites the live receipt"
-      )
+      Assert.isTrue(runtime:battleStatus(secondId).result == "flee", "a stale delivery never rewrites the live receipt")
       local ballsBefore = runtime.bagService:quantity("MASTER_BALL")
       local partyBefore = runtime.monService:partyCount()
       local thirdId = runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
@@ -3174,11 +3226,7 @@ function T.scheduled_escape_and_capture_complete_with_fresh_identities()
       end, 6000)
       pump(runtime, envelope, 60)
       Assert.equal(runtime:lastBattleResult().result, "capture", "capture reports its exact word")
-      Assert.equal(
-        runtime.bagService:quantity("MASTER_BALL"),
-        ballsBefore - 1,
-        "the capture spends one ball"
-      )
+      Assert.equal(runtime.bagService:quantity("MASTER_BALL"), ballsBefore - 1, "the capture spends one ball")
       Assert.equal(runtime.monService:partyCount(), partyBefore + 1, "the capture publishes one mon")
       Assert.deepEqual(disposed, { 1, 2, 3 }, "each port disposes exactly once in launch order")
       Assert.equal(runtime.overworld:phase(), "present", "the third return restores presence")
@@ -3422,10 +3470,7 @@ function T.scheduled_committed_faults_keep_the_committed_return()
           return sparringChoose(runtime, request)
         end, 1200)
         Assert.isNil(runtime.battleCoordinator._battleLaunch, "the committed return settles at " .. timing)
-        Assert.isNil(
-          runtime.battleCoordinator.battleRuntime,
-          "the committed return releases the battle at " .. timing
-        )
+        Assert.isNil(runtime.battleCoordinator.battleRuntime, "the committed return releases the battle at " .. timing)
         local status = assert(runtime:battleStatus(launchId), "the committed launch leaves a receipt")
         Assert.isTrue(status.committed, "the committed receipt stays committed at " .. timing)
         Assert.equal(status.result, "win", "the committed win keeps its word at " .. timing)
@@ -3501,11 +3546,7 @@ function T.scheduled_losses_keep_their_authored_and_automatic_returns()
         requirePendingAdmission(envelope, port, launchId, "wild")
         waitConstructed(runtime, envelope)
         driveLaunchToPhase(runtime, envelope, "terminal", 15000)
-        Assert.equal(
-          runtime.battleCoordinator._battleLaunch.result,
-          "loss",
-          "the defeat reaches terminal as a loss"
-        )
+        Assert.equal(runtime.battleCoordinator._battleLaunch.result, "loss", "the defeat reaches terminal as a loss")
         pump(runtime, envelope, 90)
         blackout.start = realStart
         Assert.equal(recoveries, 0, "scripted defeat starts no automatic recovery")
@@ -3655,10 +3696,7 @@ function T.scheduled_unrecoverable_restore_and_pending_quit_fail_explicitly()
         waitConstructed(runtime, envelope)
         failLiveScreen(envelope, "probe render failure before world collapse")
         pump(runtime, envelope, 5)
-        Assert.notNil(
-          runtime.battleCoordinator._battleLaunch,
-          "the abort keeps its launch while restoring"
-        )
+        Assert.notNil(runtime.battleCoordinator._battleLaunch, "the abort keeps its launch while restoring")
         runtime.overworld:fail("probe world collapse")
         pump(runtime, envelope, 30)
         local status = assert(runtime:battleStatus(launchId), "the failed world leaves a receipt")
@@ -3730,10 +3768,7 @@ function T.scheduled_port_operation_failures_report_once_with_their_context()
       host = host,
     })
     local ok, failure = xpcall(function()
-      Assert.isFalse(
-        port.enter({ launchId = launchId, kind = "wild" }),
-        "the pending operation stays unacknowledged"
-      )
+      Assert.isFalse(port.enter({ launchId = launchId, kind = "wild" }), "the pending operation stays unacknowledged")
       Assert.isFalse(port.ready(), "the pending operation never reads interactive")
       Assert.isFalse(port.leave({ launchId = launchId }), "the pending return stays unacknowledged")
       worker.ready = true
@@ -3897,8 +3932,7 @@ end
 function T.scheduled_precommit_abort_publishes_no_live_effect()
   for _, versionId in ipairs(readyVersions()) do
     local runtime = bootRuntime(versionId)
-    local envelope, binding, _ =
-      bindScheduledEnvelope(runtime, versionId, dualMeasurement("deferred-clean-abort:dual"))
+    local envelope, binding, _ = bindScheduledEnvelope(runtime, versionId, dualMeasurement("deferred-clean-abort:dual"))
     Assert.isTrue(runtime.bagService:add("MASTER_BALL", 1), "the abort leg stocks its ball")
     local ok, failure = xpcall(function()
       local experienceBefore = assert(runtime.monService:partyMon(0), "the live lead is readable").experience

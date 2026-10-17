@@ -617,6 +617,14 @@ function T.draw_passes_the_render_environment_and_queries_the_menu_host()
   local presentations = 0
   local received
   local state = setmetatable({
+    battleEnvelope = {
+      ownsInput = function()
+        return false
+      end,
+      cover = function()
+        return { coefficient = 0 }
+      end,
+    },
     runtime = {
       pcApplicationHost = idlePcApplicationHost(),
       runtimeMap = {
@@ -732,7 +740,65 @@ function T.draw_passes_the_render_environment_and_queries_the_menu_host()
   Assert.isTrue(received.worldParts[3] == sceneRuntime.animatedBuildingDraws)
   Assert.deepEqual(received.worldParts[4], {})
   Assert.deepEqual(received.worldParts[5], {})
+  Assert.isNil(received.capture, "ordinary field draw does not create transition planes")
   Assert.equal(presentations, 1, "draw always queries the menu host presentation")
+end
+
+function T.transition_capture_reads_fresh_field_planes_without_drawing_the_field()
+  local camera = { frame = 1 }
+  local viewport = { worldViewport = { x = 0, y = 0, width = 256, height = 192 } }
+  local captures = {}
+  local fieldParts = { { kind = "world" } }
+  local renderer = {
+    captureTransitionLayers = function(_, environment, capturedCamera, parts, sprites, capturedViewport, alpha, scale)
+      local capture = { world = {}, dispose = function() end }
+      captures[#captures + 1] = {
+        environment = environment,
+        camera = capturedCamera,
+        parts = parts,
+        sprites = sprites,
+        viewport = capturedViewport,
+        alpha = alpha,
+        scale = scale,
+        result = capture,
+      }
+      return capture
+    end,
+  }
+  local environment = { lighting = { records = {} } }
+  local alpha = 0.25
+  local state = setmetatable({
+    runtime = {
+      runtimeMap = { renderEnvironment = environment },
+      camera = camera,
+      viewport = viewport,
+      session = { renderAlpha = function() return alpha end },
+      fieldPixelScale = { resolvedScale = function() return 3 end },
+    },
+    presentationResources = { renderer = renderer },
+    worldParts = fieldParts,
+    spriteItems = {},
+    _worldParts = function() return fieldParts end,
+  }, FieldState)
+
+  local first = state:_captureTransitionLayers()
+  alpha = 0.75
+  camera = { frame = 2 }
+  state.runtime.camera = camera
+  local second = state:_captureTransitionLayers()
+
+  Assert.equal(#captures, 2, "each source tick requests a fresh native field render")
+  Assert.equal(captures[1].environment, environment)
+  Assert.equal(captures[1].camera.frame, 1)
+  Assert.equal(captures[1].alpha, 0.25)
+  Assert.equal(captures[2].camera.frame, 2)
+  Assert.equal(captures[2].alpha, 0.75)
+  Assert.equal(captures[1].parts, fieldParts)
+  Assert.equal(captures[1].sprites, state.spriteItems)
+  Assert.equal(captures[1].viewport, viewport)
+  Assert.equal(captures[1].scale, 3)
+  Assert.equal(first, captures[1].result)
+  Assert.equal(second, captures[2].result)
 end
 
 -- A physical-coverage map whose active logical map has no realized scene

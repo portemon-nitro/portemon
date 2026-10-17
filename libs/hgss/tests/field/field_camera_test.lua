@@ -305,6 +305,24 @@ function T.canonical_projection_ignores_runtime_aspect_and_zoom()
   Assert.deepEqual(camera:canonicalProjection(), canonical)
 end
 
+function T.canonical_billboard_projection_keeps_the_native_aspect_and_depth_pull()
+  local prof = profile()
+  local camera = FieldCamera.new(prof, { initialTarget = { x = 0, y = 0, z = 0 } })
+  camera:setProjectionAspect(16 / 9)
+  camera:setZoom(0.5)
+
+  local normal = camera:canonicalProjection()
+  local billboard = camera:canonicalBillboardProjection()
+  local angleX = angleIndexToRadians(prof.angleXRaw)
+  local expectedDelta = normal[11] * FieldCamera.FIELD_BILLBOARD_DEPTH_OFFSET_TILES * math.cos(angleX)
+  Assert.near(billboard[15], normal[15] + expectedDelta, 1e-9)
+  for i = 1, 16 do
+    if i ~= 15 then
+      Assert.near(billboard[i], normal[i], 1e-9, "element " .. i .. " is unchanged")
+    end
+  end
+end
+
 -- The billboard projection is the world projection with the Z-row translation
 -- pulled toward the camera (see FieldCamera:billboardProjection).
 function T.billboard_projection_bumps_only_the_z_translation()
@@ -532,6 +550,30 @@ function T.live_raw_perspective_angle_drives_world_and_billboard_projections()
     sameProjection(copyMatrix(camera:billboardProjection()), beforeBillboard),
     "the restored angle restores the billboard projection"
   )
+end
+
+function T.transition_camera_pose_changes_live_eye_and_projection_and_restores_exactly()
+  local camera = FieldCamera.new(newBarkProfile(), { initialTarget = { x = 0, y = 0, z = 0 } })
+  local initialEye = { x = camera.eye.x, y = camera.eye.y, z = camera.eye.z }
+  local initialProjection = copyMatrix(camera:projection())
+  local initialRawPerspective = camera:rawPerspective()
+  local state = camera:captureTransitionState()
+
+  camera:setTransitionPose({
+    distanceFx32 = 0x0029AEC1,
+    angleXRaw = 54786 - 65536,
+    angleYRaw = 0,
+    perspectiveRaw = 1600,
+  })
+  local movedProjection = copyMatrix(camera:projection())
+  Assert.isTrue(camera.eye.y ~= initialEye.y or camera.eye.z ~= initialEye.z, "source pose moves the live eye")
+  Assert.isTrue(not sameProjection(initialProjection, movedProjection), "source perspective changes projection")
+  Assert.equal(camera:rawPerspective(), 1600, "source pose writes the raw perspective")
+
+  camera:restoreTransitionState(state)
+  Assert.deepEqual({ camera.eye.x, camera.eye.y, camera.eye.z }, { initialEye.x, initialEye.y, initialEye.z })
+  Assert.deepEqual(camera:projection(), initialProjection, "restoration returns exact projection values")
+  Assert.equal(camera:rawPerspective(), initialRawPerspective)
 end
 
 -- Fractional and non-finite deltas are programming faults: they raise before

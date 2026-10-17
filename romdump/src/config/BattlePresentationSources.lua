@@ -1866,6 +1866,25 @@ local standardTrainerRecordIds = {
   0x77,
   0x7b,
 }
+local gymLeaderBackgrounds = {
+  { 21, 20, 22 },
+  { 24, 23, 25 },
+  { 27, 26, 28 },
+  { 30, 29, 31 },
+  { 33, 32, 34 },
+  { 36, 35, 37 },
+  { 39, 38, 40 },
+  { 42, 41, 43 },
+  { 21, 20, 22 },
+  { 24, 23, 25 },
+  { 27, 26, 28 },
+  { 30, 29, 31 },
+  { 33, 32, 34 },
+  { 36, 35, 37 },
+  { 39, 38, 40 },
+  { 42, 41, 43 },
+  { 45, 44, 46 },
+}
 for selector = 12, 27 do
   local member = standardTrainerRecordIds[selector - 11]
   local trainerKeys = {
@@ -1892,6 +1911,12 @@ for selector = 12, 27 do
     messageRoute = "transition/trainer-name",
     record = { palette = member, character = member + 1, cell = member + 2, animation = member + 3 },
     fixedSprite = { palette = 0x3b, character = 0x3c, cell = 0x3d, animation = 0x3e },
+    background = {
+      palette = gymLeaderBackgrounds[selector - 11][1],
+      character = gymLeaderBackgrounds[selector - 11][2],
+      map = gymLeaderBackgrounds[selector - 11][3],
+    },
+    task = { kind = "overlay115-gym-rival-intro", parameters = { endXFx32 = 876544 } },
     sharedPalette = 0x10,
   })
 end
@@ -1900,39 +1925,104 @@ addTransitionRoute(28, {
   role = "rival-transition",
   record = { palette = 0x7f, character = 0x80, cell = 0x81, animation = 0x82 },
   fixedSprite = { palette = 0x3b, character = 0x3c, cell = 0x3d, animation = 0x3e },
+  background = { palette = 0x2d, character = 0x2c, map = 0x2e },
+  task = { kind = "overlay115-gym-rival-intro", parameters = { endXFx32 = 876544 } },
   sharedPalette = 0x10,
   messageRoute = "transition/rival-name",
   message = { archive = "NARC_msgdata_msg", member = 189, stringId = 0, name = "rival" },
 })
 
 local eliteTrainerRoutes = {
-  { key = "will", trainerId = 0xf5 },
-  { key = "koga", trainerId = 0xf7 },
-  { key = "bruno", trainerId = 0x1a2 },
-  { key = "karen", trainerId = 0xf6 },
-  { key = "lance", trainerId = 0xf4 },
+  { key = "will", trainerId = 0xf5, opponent = 131, nameplatePalette = 0x2f, shakeTicks = 32 },
+  { key = "koga", trainerId = 0xf7, opponent = 135, nameplatePalette = 0x33, shakeTicks = 32 },
+  { key = "bruno", trainerId = 0x1a2, opponent = 139, nameplatePalette = 0x34, shakeTicks = 32 },
+  { key = "karen", trainerId = 0xf6, opponent = 143, nameplatePalette = 0x35, shakeTicks = 32 },
+  { key = "lance", trainerId = 0xf4, opponent = 147, nameplatePalette = 0x36, shakeTicks = 9 },
 }
 for selector = 29, 33 do
+  local source = eliteTrainerRoutes[selector - 28]
   addTransitionRoute(selector, {
-    key = "trainer/" .. eliteTrainerRoutes[selector - 28].key,
+    key = "trainer/" .. source.key,
     role = "trainer-intro",
-    trainer = eliteTrainerRoutes[selector - 28],
+    trainer = { key = source.key },
     messageRoute = "transition/trainer-name",
-    context = { playerTrainerGender = true },
+    context = { playerGender = true },
     spriteVariants = {
       male = { palette = 0xcf, character = 0xd0, cell = 0xd1, animation = 0xd2 },
       female = { palette = 0xd3, character = 0xd4, cell = 0xd5, animation = 0xd6 },
     },
-    extraSprite = { character = 0x30, cell = 0x31, animation = 0x32 },
+    opponent = {
+      palette = source.opponent,
+      character = source.opponent + 1,
+      cell = source.opponent + 2,
+      animation = source.opponent + 3,
+    },
+    nameplate = {
+      palette = source.nameplatePalette,
+      character = 0x30,
+      cell = 0x31,
+      animation = 0x32,
+    },
     fixedSprite = { palette = 0x3b, character = 0x3c, cell = 0x3d, animation = 0x3e },
+    particles = { intro = 0x97, followup = 0x98 },
     particleMembers = { 0x97, 0x98 },
+    task = { kind = "overlay115-elite-intro", parameters = { shakeTicks = source.shakeTicks } },
     message = { archive = "NARC_msgdata_msg", member = 189, name = "trainer" },
   })
 end
 
-addTransitionRoute(34, { key = "wild/special-legendary", role = "camera-and-fade-transition" })
-addTransitionRoute(35, { key = "wild/ho-oh", role = "camera-and-fade-transition" })
-addTransitionRoute(36, { key = "wild/lugia", role = "camera-and-fade-transition" })
+addTransitionRoute(34, {
+  key = "wild/special-legendary",
+  role = "camera-and-fade-transition",
+  task = {
+    kind = "field-camera-pose-sequence",
+    parameters = {
+      poses = {
+        { distanceFx32 = 2731713, angleXRaw = 54786, angleYRaw = 0, perspectiveRaw = 1473, waitTicks = 4 },
+        { distanceFx32 = 2731713, angleXRaw = 52994, angleYRaw = 65280, perspectiveRaw = 1537, waitTicks = 4 },
+        { distanceFx32 = 2731713, angleXRaw = 58882, angleYRaw = 4096, perspectiveRaw = 1681, waitTicks = 4 },
+        { distanceFx32 = 2731713, angleXRaw = 54786, angleYRaw = 2560, perspectiveRaw = 1809, waitTicks = 3 },
+        { distanceFx32 = 2731713, angleXRaw = 57602, angleYRaw = 61440, perspectiveRaw = 1920, waitTicks = 3 },
+        { distanceFx32 = 2731713, angleXRaw = 50690, angleYRaw = 0, perspectiveRaw = 1873, waitTicks = 3 },
+        { distanceFx32 = 2731713, angleXRaw = 57346, angleYRaw = 61440, perspectiveRaw = 2048, waitTicks = 3 },
+        { distanceFx32 = 2731713, angleXRaw = 54786, angleYRaw = 0, perspectiveRaw = 2050, waitTicks = 3 },
+        { distanceFx32 = 2731713, angleXRaw = 53250, angleYRaw = 4096, perspectiveRaw = 2048, waitTicks = 3 },
+        { distanceFx32 = 2731713, angleXRaw = 55554, angleYRaw = 62720, perspectiveRaw = 1873, waitTicks = 3 },
+        { distanceFx32 = 2731713, angleXRaw = 53250, angleYRaw = 2560, perspectiveRaw = 1217, waitTicks = 2 },
+        { distanceFx32 = 2731713, angleXRaw = 57346, angleYRaw = 61440, perspectiveRaw = 961, waitTicks = 2 },
+        { distanceFx32 = 2731713, angleXRaw = 53250, angleYRaw = 61440, perspectiveRaw = 1616, waitTicks = 1 },
+        { distanceFx32 = 2731713, angleXRaw = 57346, angleYRaw = 40960, perspectiveRaw = 577, waitTicks = 1 },
+        { distanceFx32 = 2731713, angleXRaw = 57762, angleYRaw = 1280, perspectiveRaw = 1280, waitTicks = 1 },
+        { distanceFx32 = 2731713, angleXRaw = 54786, angleYRaw = 0, perspectiveRaw = 577, waitTicks = 1 },
+      },
+      fadeTicks = 10,
+      graphicsMode = { mode = 3, bank = 15 },
+    },
+  },
+})
+local cameraDistanceTasks = {
+  [35] = { key = "wild/ho-oh", distanceDeltaFx32 = -2703360, fadeTicks = 60 },
+  [36] = { key = "wild/lugia", distanceDeltaFx32 = -2252800, fadeTicks = 13 },
+}
+for selector, source in pairs(cameraDistanceTasks) do
+  addTransitionRoute(selector, {
+    key = source.key,
+    role = "camera-and-fade-transition",
+    task = {
+      kind = "field-camera-perspective-distance-fade",
+      parameters = {
+        perspectiveDeltaRaw = 0x100,
+        perspectiveTicks = 40,
+        waitTicks = 5,
+        distanceDeltaFx32 = source.distanceDeltaFx32,
+        distanceVelocityFx32 = 2048,
+        distanceTicks = 8,
+        fadeTicks = source.fadeTicks,
+        graphicsMode = { mode = 5, bank = 13 },
+      },
+    },
+  })
+end
 addTransitionRoute(37, {
   key = "trainer/generic",
   role = "generic-trainer-transition",
@@ -2007,9 +2097,8 @@ BattlePresentationSources.TRANSITION_RESOURCE_SETS = {
 -- Member IDs and selector numbers are build provenance; runtime resource keys
 -- are content-addressed after decoding.
 BattlePresentationSources.TRANSITION_TYPED_RESOURCES = {}
--- Overlay 115 passes these whole members to the JN SPL loader. Their exact
--- transition selection context is not yet closed, so this is only a source
--- member inventory and not a selector route.
+-- Overlay 115's Elite Four callbacks load these whole members as intro and
+-- follow-up particle programs.
 BattlePresentationSources.TRANSITION_PARTICLE_MEMBERS = { 0x97, 0x98 }
 -- Overlay 120's selector 46 callback resolves to Red's fixed resource tuple.
 BattlePresentationSources.TRANSITION_INTERNAL_RESOURCES = {
@@ -2052,9 +2141,19 @@ for selector = 12, 28 do
   local first = 0x3f + (selector - 12) * 4
   addTransitionQuartet(first, first + 1, first + 2, first + 3, { selector })
 end
+for selector = 12, 28 do
+  local background = gymLeaderBackgrounds[selector - 11]
+  addTransitionResource(background[1], "palette", { selector })
+  addTransitionResource(background[2], "texture", { selector })
+  addTransitionResource(background[3], "map", { selector })
+end
 for selector = 29, 33 do
   addTransitionQuartet(0xcf, 0xd0, 0xd1, 0xd2, { selector })
   addTransitionQuartet(0xd3, 0xd4, 0xd5, 0xd6, { selector })
+end
+for selector = 29, 33 do
+  local opponent = 131 + (selector - 29) * 4
+  addTransitionQuartet(opponent, opponent + 1, opponent + 2, opponent + 3, { selector })
 end
 -- The second overlay-115 sprite loader takes a record-selected palette byte
 -- followed by fixed character, cell, and animation members. Its helper's
@@ -2090,6 +2189,13 @@ for _, selector in ipairs({ 0, 1, 2, 3, 4, 5 }) do
   addTransitionResource(0xa7, "texture", { selector })
   addTransitionResource(0xa8, "map", { selector })
 end
+-- The Red callback's asynchronous helper uploads the same typed background
+-- members used by the first overlay-120 family before its child tasks run.
+addTransitionResource(0xa0, "palette", { 46 })
+addTransitionResource(0xa1, "texture", { 46 })
+addTransitionResource(0xa4, "texture", { 46 })
+addTransitionResource(0xa2, "map", { 46 })
+addTransitionResource(0xa5, "map", { 46 })
 addTransitionResource(0xa6, "palette", { 45 })
 addTransitionResource(0xa7, "texture", { 45 })
 addTransitionResource(0xa8, "map", { 45 })

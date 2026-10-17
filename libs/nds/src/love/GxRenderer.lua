@@ -1390,9 +1390,18 @@ local function drawFrame(
       end
     end
   end
+
+  if frame.captureLayers == true then
+    return {
+      world = assert(self._resolvedColor),
+      objects = self._spriteColor,
+      objectCoverage = self._spriteCoverage,
+    }
+  end
 end
 
 ---@param frame table<string, unknown> DS frame
+---@return { world: GxRenderer.Canvas, objects: GxRenderer.Canvas?, objectCoverage: GxRenderer.Canvas? }?
 function GxRenderer:draw(frame)
   local stats = self.stats
   stats.geometrySubmissions = 0
@@ -1446,7 +1455,7 @@ function GxRenderer:draw(frame)
   local colorRed, colorGreen, colorBlue, colorAlpha = lg.getColor()
   local scissorX, scissorY, scissorWidth, scissorHeight = lg.getScissor()
 
-  drawFrame(
+  local layers = drawFrame(
     self,
     frame,
     presentationCanvas,
@@ -1479,6 +1488,7 @@ function GxRenderer:draw(frame)
   else
     lg.setScissor(scissorX, scissorY, scissorWidth, scissorHeight)
   end
+  return layers
 end
 
 function GxRenderer:release()

@@ -8,6 +8,7 @@
 local Assert = require("tests.support.Assert")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
+local Overlay114Effect = require("libs.hgss.src.transition.battle.Overlay114Effect")
 local GxRenderer = require("libs.nds.src.love.GxRenderer")
 local MapSceneLoader = require("libs.hgss.src.presentation.MapSceneLoader")
 local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
@@ -41,7 +42,15 @@ local function fixedCamera()
   local function identity(_)
     return IDENTITY
   end
-  return { distance = 26, far = 400, view = identity, projection = identity, billboardProjection = identity }
+  return {
+    distance = 26,
+    far = 400,
+    view = identity,
+    projection = identity,
+    billboardProjection = identity,
+    canonicalProjection = identity,
+    canonicalBillboardProjection = identity,
+  }
 end
 
 local function zeroFogFixture()
@@ -117,7 +126,16 @@ local function normalizedSprites(spriteItems, billboardProjection)
   return normalized
 end
 
-local function render(renderer, sceneRuntime, camera, worldParts, spriteItems, viewport, presentationPixelScale)
+local function render(
+  renderer,
+  sceneRuntime,
+  camera,
+  worldParts,
+  spriteItems,
+  viewport,
+  presentationPixelScale,
+  captureLayers
+)
   if spriteItems ~= nil and #spriteItems > 0 then
     presentationPixelScale = presentationPixelScale or 3
   end
@@ -141,6 +159,7 @@ local function render(renderer, sceneRuntime, camera, worldParts, spriteItems, v
     spriteItems = normalizedSprites(spriteItems, billboardProjection),
     viewport = viewport,
     presentationPixelScale = presentationPixelScale,
+    captureLayers = captureLayers,
   })
 end
 
@@ -197,6 +216,354 @@ function T.shader_compiles(scope)
   local renderer = scope:own(exactRenderer())
 
   Assert.notNil(renderer.shader)
+end
+
+function T.transition_field_composition_fades_world_and_draws_native_obj_pixels(scope)
+  local nativeWorld = scope:own(lg.newCanvas(256, 192, { format = "rgba8", dpiscale = 1 }))
+  local nativeObjects = scope:own(lg.newCanvas(256, 192, { format = "rgba8", dpiscale = 1 }))
+  local target = scope:own(lg.newCanvas(256, 192, { format = "rgba8", dpiscale = 1 }))
+  lg.push("all")
+  lg.setCanvas(nativeWorld)
+  lg.clear(1, 0, 0, 1)
+  lg.setCanvas(nativeObjects)
+  lg.clear(0, 0, 0, 0)
+  lg.setBlendMode("replace", "premultiplied")
+  lg.setColor(0, 0, 1, 1)
+  lg.rectangle("fill", 128, 96, 1, 1)
+  lg.setCanvas()
+  lg.pop()
+
+  local imageData = scope:own(love.image.newImageData(1, 1))
+  imageData:setPixel(0, 0, 0, 1, 0, 1)
+  local sprite = scope:own(lg.newImage(imageData))
+  sprite:setFilter("nearest", "nearest")
+  local renderer = FieldRenderer.new({ gxRenderer = GxRenderer.new(), graphics = lg })
+  scope:own(renderer.gxRenderer)
+
+  lg.push("all")
+  lg.setCanvas(target)
+  lg.clear(0, 0, 0, 1)
+  renderer:drawTransition({ world = nativeWorld, objects = nativeObjects }, {
+    blendAlpha = 8,
+    paletteFade = 0,
+    sprites = {
+      {
+        visible = true,
+        imageHandle = sprite,
+        image = { origin = { x = 0, y = 0 } },
+        position = { x = 0x80000, y = 0x60000 },
+        affine = { translateX = 0, translateY = 0, scaleX = 1, scaleY = 1, rotation = 0 },
+      },
+    },
+  }, { x = 0, y = 0, width = 256, height = 192 })
+  lg.setCanvas()
+  lg.pop()
+  local pixels = scope:own(target:newImageData())
+  local fieldR, fieldG, fieldB = pixels:getPixel(20, 20)
+  Assert.near(fieldR, 1, 0.03, "source OBJ blend leaves the native field color unchanged")
+  Assert.near(fieldG, 0, 0.03, "source OBJ blend does not tint the field green")
+  Assert.near(fieldB, 0, 0.03, "source OBJ blend does not tint the field blue")
+  local spriteR, spriteG, spriteB = pixels:getPixel(128, 96)
+  Assert.near(spriteR, 0, 0.03, "source OBJ coefficient preserves the field's zero red channel")
+  Assert.near(spriteG, 0.5, 0.03, "source OBJ blend applies the coefficient to its own pixels")
+  Assert.near(spriteB, 0.5, 0.03, "source OBJ coefficient retains the underlying blue object pixel")
+end
+
+function T.encounter_motion_blur_blends_live_and_previous_native_frames(scope)
+  local previous = scope:own(lg.newCanvas(256, 192, { format = "rgba8", dpiscale = 1 }))
+  local current = scope:own(lg.newCanvas(256, 192, { format = "rgba8", dpiscale = 1 }))
+  local previousObjects = scope:own(lg.newCanvas(256, 192, { format = "rgba8", dpiscale = 1 }))
+  local currentObjects = scope:own(lg.newCanvas(256, 192, { format = "rgba8", dpiscale = 1 }))
+  local firstTarget = scope:own(lg.newCanvas(256, 192, { format = "rgba8", dpiscale = 1 }))
+  local target = scope:own(lg.newCanvas(256, 192, { format = "rgba8", dpiscale = 1 }))
+  for canvas, color in pairs({ [previous] = { 1, 0, 0, 1 }, [current] = { 0, 0, 1, 1 } }) do
+    lg.push("all")
+    lg.setCanvas(canvas)
+    lg.clear(unpack(color))
+    lg.setCanvas()
+    lg.pop()
+  end
+  lg.push("all")
+  lg.setCanvas(previousObjects)
+  lg.clear(0, 0, 0, 0)
+  lg.setColor(0, 1, 0, 1)
+  lg.rectangle("fill", 128, 96, 1, 1)
+  lg.setCanvas(currentObjects)
+  lg.clear(0, 0, 0, 0)
+  lg.setCanvas()
+  lg.pop()
+
+  local renderer = FieldRenderer.new({ gxRenderer = GxRenderer.new(), graphics = lg })
+  scope:own(renderer.gxRenderer)
+  local motionBlur = renderer:beginEncounterMotionBlur({ world = previous, objects = previousObjects })
+  renderer:stepEncounterMotionBlur(motionBlur, { world = current, objects = currentObjects })
+  local compositePixel = { motionBlur.composite:newImageData():getPixel(128, 96) }
+  Assert.near(compositePixel[2], 15 / 16, 0.03, "source tick publishes a native feedback composite")
+  lg.push("all")
+  lg.setCanvas(firstTarget)
+  lg.clear(0, 0, 0, 1)
+  renderer:drawTransition(
+    { world = previous },
+    { motionBlur = motionBlur },
+    { x = 0, y = 0, width = 256, height = 192 }
+  )
+  lg.setCanvas(target)
+  lg.clear(0, 0, 0, 1)
+  renderer:drawTransition(
+    { world = previous },
+    { motionBlur = motionBlur },
+    { x = 0, y = 0, width = 256, height = 192 }
+  )
+  lg.setCanvas()
+  lg.pop()
+  local firstFrame = scope:own(firstTarget:newImageData())
+  local repeatedFrame = scope:own(target:newImageData())
+  local _, green, blue = firstFrame:getPixel(128, 96)
+  Assert.near(green, 15 / 16, 0.03, "previous object plane is composed before the native capture blend: " .. tostring(green))
+  Assert.near(blue, 3 / 16, 0.03, "native capture coefficient keeps three sixteenths of the live frame")
+  local _, repeatedGreen, repeatedBlue = repeatedFrame:getPixel(128, 96)
+  Assert.near(repeatedGreen, green, 0.03, "draw reads but does not advance source feedback")
+  Assert.near(repeatedBlue, blue, 0.03, "repeated draw presents the same accepted source frame")
+  local redOutsideObject, _, blueOutsideObject = firstFrame:getPixel(20, 20)
+  Assert.near(redOutsideObject, 15 / 16, 0.03, "previous world plane is retained outside the object")
+  Assert.near(blueOutsideObject, 3 / 16, 0.03, "live world plane contributes outside the object")
+
+  lg.push("all")
+  lg.setCanvas(current)
+  lg.clear(0, 1, 0, 1)
+  lg.setCanvas(target)
+  lg.clear(0, 0, 0, 1)
+  renderer:stepEncounterMotionBlur(motionBlur, { world = current, objects = currentObjects })
+  renderer:drawTransition(
+    { world = previous },
+    { motionBlur = motionBlur },
+    { x = 0, y = 0, width = 256, height = 192 }
+  )
+  lg.setCanvas()
+  lg.pop()
+  local nextFrame = scope:own(target:newImageData())
+  local _, green, nextBlue = nextFrame:getPixel(128, 96)
+  Assert.near(green, 3 / 16, 0.03, "next source frame becomes the live contribution")
+  Assert.near(nextBlue, 15 / 16, 0.03, "feedback stores the immediately previous source frame")
+  Assert.isTrue(motionBlur:dispose(), "transition releases its two feedback canvases")
+  Assert.isFalse(motionBlur:dispose(), "feedback disposal is exactly once")
+end
+
+function T.overlay_114_upload_renders_real_cell_pixels_and_disposes_images(scope)
+  local world = scope:own(lg.newCanvas(256, 192, { format = "rgba8", dpiscale = 1 }))
+  local target = scope:own(lg.newCanvas(256, 192, { format = "rgba8", dpiscale = 1 }))
+  lg.push("all")
+  lg.setCanvas(world)
+  lg.clear(1, 0, 0, 1)
+  lg.setCanvas()
+  lg.pop()
+
+  local resources = {
+    palette = { colors = { { r = 0, g = 0, b = 0 }, { r = 0, g = 0, b = 0 }, { r = 10, g = 240, b = 20 } } },
+    characters = { depth = 3, tiles = string.rep(string.char(0x22), 32) },
+    cells = { cells = { { objs = { { tile = 0, width = 8, height = 8, x = -4, y = -4, palette = 0 } } } } },
+    animation = {
+      anims = {
+        {
+          frames = { { cell = 0, duration = 1, translateX = 0, translateY = 0, scaleX = 1, scaleY = 1, rotation = 0 } },
+        },
+      },
+    },
+  }
+  local effect = Overlay114Effect.new({
+    role = "generic-wild-transition",
+    assetGroups = { sprite = { palette = "p", characters = "c", cell = "n", animation = "a" } },
+  }, { p = resources.palette, c = resources.characters, n = resources.cells, a = resources.animation })
+  effect:prepareGraphics(lg)
+  effect:start()
+  local ticks = 0
+  while effect:frame().sourcePhase < 4 and ticks < 50 do
+    effect:stepSourceTick()
+    ticks = ticks + 1
+  end
+  Assert.equal(effect:frame().sourcePhase, 4, "source task makes its uploaded OBJ sprite visible")
+
+  local renderer = FieldRenderer.new({ gxRenderer = GxRenderer.new(), graphics = lg })
+  scope:own(renderer.gxRenderer)
+  lg.push("all")
+  lg.setCanvas(target)
+  lg.clear(0, 0, 0, 1)
+  renderer:drawTransition({ world = world }, effect:frame(), { x = 0, y = 0, width = 256, height = 192 })
+  lg.setCanvas()
+  lg.pop()
+  local result = scope:own(target:newImageData())
+  local red, green, blue = result:getPixel(124, 92)
+  Assert.near(red, 10 / 255, 0.03)
+  Assert.near(green, 240 / 255, 0.03, "uploaded source sprite preserves its palette green")
+  Assert.near(blue, 20 / 255, 0.03, "uploaded source sprite preserves its palette blue")
+  effect:dispose()
+  Assert.equal(effect:frame().ownsResources, false, "transition disposal releases uploaded sprite images")
+end
+
+function T.overlay_114_matrix_fields_move_cells_in_native_field_coordinates(scope)
+  local world = scope:own(lg.newCanvas(256, 192, { format = "rgba8", dpiscale = 1 }))
+  local target = scope:own(lg.newCanvas(512, 384, { format = "rgba8", dpiscale = 1 }))
+  lg.push("all")
+  lg.setCanvas(world)
+  lg.clear(0, 0, 0, 1)
+  lg.setCanvas()
+  lg.pop()
+
+  local imageData = scope:own(love.image.newImageData(1, 1))
+  imageData:setPixel(0, 0, 0, 1, 0, 1)
+  local sprite = scope:own(lg.newImage(imageData))
+  sprite:setFilter("nearest", "nearest")
+  local renderer = FieldRenderer.new({ gxRenderer = GxRenderer.new(), graphics = lg })
+  scope:own(renderer.gxRenderer)
+
+  local graphicsState = lg.getShader()
+  lg.push("all")
+  lg.setCanvas(target)
+  lg.clear(0, 0, 0, 1)
+  renderer:drawTransition({ world = world }, {
+    paletteFade = 0,
+    sprites = {
+      {
+        visible = true,
+        imageHandle = sprite,
+        image = { origin = { x = 0, y = 0 } },
+        position = { x = 128 * 4096, y = 96 * 4096 },
+        affine = { translateX = 0, translateY = 0, scaleX = 1, scaleY = 1, rotation = 0 },
+        matrix = { 128 * 4096, 40 * 4096, 0 },
+      },
+    },
+  }, { x = 0, y = 0, width = 512, height = 384 })
+  lg.setCanvas()
+  lg.pop()
+
+  local pixels = scope:own(target:newImageData())
+  local r1, g1, _, a1 = pixels:getPixel(256, 80)
+  local r2, g2, _, a2 = pixels:getPixel(256, 192)
+  Assert.near(r1, 0, 0.03, "source matrix x remains a native Q12 field coordinate")
+  Assert.near(g1, 1, 0.03, "source matrix y moves the actual cell to its native location")
+  Assert.near(a1, 1, 0.03, "moved cell retains its palette alpha")
+  Assert.near(g2, 0, 0.03, "source matrix replaces the original sprite position")
+  Assert.near(a2, 1, 0.03, "field underneath remains opaque at the original position")
+  Assert.equal(lg.getShader(), graphicsState, "transition composition restores graphics shader state")
+end
+
+function T.overlay_114_source_circle_and_sector_wipes_clip_field_pixels(scope)
+  local world = scope:own(lg.newCanvas(256, 192, { format = "rgba8", dpiscale = 1 }))
+  local target = scope:own(lg.newCanvas(256, 192, { format = "rgba8", dpiscale = 1 }))
+  lg.push("all")
+  lg.setCanvas(world)
+  lg.clear(1, 0, 0, 1)
+  lg.setCanvas()
+  lg.pop()
+
+  local resources = {
+    palette = { colors = { { r = 0, g = 0, b = 0 } } },
+    characters = { depth = 3, tiles = string.rep("\0", 32) },
+    cells = { cells = { { objs = { { tile = 0, width = 8, height = 8, x = 0, y = 0, palette = 0 } } } } },
+    animation = {
+      anims = {
+        {
+          frames = { { cell = 0, duration = 1, translateX = 0, translateY = 0, scaleX = 1, scaleY = 1, rotation = 0 } },
+        },
+      },
+    },
+  }
+  local function effectFor(role)
+    local effect = Overlay114Effect.new({
+      role = role,
+      assetGroups = { sprite = { palette = "p", characters = "c", cell = "n", animation = "a" } },
+    }, { p = resources.palette, c = resources.characters, n = resources.cells, a = resources.animation })
+    effect:prepareGraphics(lg)
+    effect:start()
+    local ticks = 0
+    while effect:frame().sourcePhase < 6 and ticks < 100 do
+      effect:stepSourceTick()
+      ticks = ticks + 1
+    end
+    Assert.equal(effect:frame().sourcePhase, 6, "pinned source callback reaches its fade state")
+    return effect
+  end
+  local renderer = FieldRenderer.new({ gxRenderer = GxRenderer.new(), graphics = lg })
+  scope:own(renderer.gxRenderer)
+
+  local trainer = effectFor("generic-trainer-transition")
+  for _ = 1, 4 do
+    trainer:stepSourceTick()
+  end
+  lg.push("all")
+  lg.setCanvas({ target, stencil = true })
+  renderer:drawTransition({ world = world }, trainer:frame(), { x = 0, y = 0, width = 256, height = 192 })
+  lg.setCanvas()
+  lg.pop()
+  local circlePixels = scope:own(target:newImageData())
+  local circleCenter = { circlePixels:getPixel(100, 96) }
+  local circleOutside = { circlePixels:getPixel(20, 0) }
+  Assert.near(circleCenter[1], 1, 0.03, "source circle retains the field inside its shrinking radius")
+  Assert.near(circleOutside[1], 0, 0.03, "source circle fades the field outside its radius to backdrop")
+  trainer:dispose()
+
+  local wild = effectFor("generic-wild-transition")
+  for _ = 1, 4 do
+    wild:stepSourceTick()
+  end
+  lg.push("all")
+  lg.setCanvas({ target, stencil = true })
+  renderer:drawTransition({ world = world }, wild:frame(), { x = 0, y = 0, width = 256, height = 192 })
+  lg.setCanvas()
+  lg.pop()
+  local sectorPixels = scope:own(target:newImageData())
+  local sectorVisible = { sectorPixels:getPixel(50, 0) }
+  local sectorClosed = { sectorPixels:getPixel(128, 0) }
+  Assert.near(sectorVisible[1], 1, 0.03, "source mirrored sector retains the two side windows")
+  Assert.near(sectorClosed[1], 0, 0.03, "source mirrored sector closes the center wedge")
+  wild:dispose()
+end
+
+function T.overlay_114_wipe_failure_restores_graphics_state_without_touching_the_target(scope)
+  local world = scope:own(lg.newCanvas(256, 192, { format = "rgba8", dpiscale = 1 }))
+  local target = scope:own(lg.newCanvas(256, 192, { format = "rgba8", dpiscale = 1 }))
+  local renderer = FieldRenderer.new({ gxRenderer = GxRenderer.new(), graphics = lg })
+  scope:own(renderer.gxRenderer)
+  local rows = {}
+  for y = 1, 192 do
+    rows[y] = {}
+  end
+
+  lg.push("all")
+  lg.setCanvas(target)
+  lg.clear(0.2, 0.3, 0.4, 1)
+  lg.setColor(0.1, 0.2, 0.3, 0.4)
+  lg.setBlendMode("add", "alphamultiply")
+  lg.setScissor(2, 3, 5, 6)
+  local shader = lg.getShader()
+  local ok, err = pcall(function()
+    renderer:drawTransition({ world = world }, { wipe = { rows = rows }, sprites = {} }, {
+      x = 0,
+      y = 0,
+      width = 256,
+      height = 192,
+    })
+  end)
+
+  Assert.isFalse(ok, "a target without stencil storage reports the rendering boundary failure")
+  Assert.isTrue(tostring(err):find("stencil=true", 1, true) ~= nil, "failure identifies the missing target capability")
+  Assert.equal(lg.getCanvas(), target, "caller render target is restored")
+  Assert.equal(lg.getShader(), shader, "caller shader is restored")
+  Assert.deepEqual({ lg.getBlendMode() }, { "add", "alphamultiply" }, "caller blend mode is restored")
+  local redState, greenState, blueState, alphaState = lg.getColor()
+  Assert.near(redState, 0.1, 1e-6, "caller red is restored")
+  Assert.near(greenState, 0.2, 1e-6, "caller green is restored")
+  Assert.near(blueState, 0.3, 1e-6, "caller blue is restored")
+  Assert.near(alphaState, 0.4, 1e-6, "caller alpha is restored")
+  Assert.deepEqual({ lg.getScissor() }, { 2, 3, 5, 6 }, "caller scissor is restored")
+  lg.setScissor()
+  lg.setCanvas()
+  lg.pop()
+  local pixels = scope:own(target:newImageData())
+  local red, green, blue = pixels:getPixel(0, 0)
+  Assert.near(red, 0.2, 0.03, "stencil acquisition fails before replacing the target pixels")
+  Assert.near(green, 0.3, 0.03, "stencil acquisition leaves target pixels intact")
+  Assert.near(blue, 0.4, 0.03, "stencil acquisition leaves target pixels intact")
 end
 
 function T.shader_has_required_lighting_uniforms(scope)
@@ -3886,7 +4253,6 @@ local function fieldPathReadback(_, fieldRenderer, camera, parts)
   return { color = color, state = state, compact = compact }
 end
 
-
 -- The production field-path regression: the same overlapping same-ID draws
 -- rendered once through an owned FieldRenderer in exact mode must reproduce
 -- the exact DS rejection above instead of the approximate accumulated result.
@@ -5755,6 +6121,217 @@ function T.non_divisible_billboard_depth_registration_matches_the_right_edge_bou
   local after = { pixels:getPixel(boundary, row) }
   Assert.isTrue(before[1] > before[2], "the front world state is visible immediately before the edge boundary")
   Assert.isTrue(after[2] > after[1], "the behind billboard is visible immediately after the edge boundary")
+end
+
+function T.transition_capture_exposes_world_and_object_planes_at_native_resolution(scope)
+  local renderer = scope:own(FieldRenderer.new({ clearColor = { 0.1, 0.2, 0.3, 1 } }))
+  local target, color = presentationTarget(scope, 256, 192)
+  local sprite = presentationSprite(scope, depthQuadMesh(scope, 0), solidAlphaImage(scope, 220, 20, 20, 255))
+  local viewport = FieldViewport.new(256, 192, { mode = "strict" })
+  local function draw(sprites, capture)
+    return renderer:draw(emptyRuntime(), fixedCamera(), {}, sprites, viewport, 0, 1, capture)
+  end
+  love.graphics.setCanvas(target)
+  love.graphics.clear(0, 0, 0, 1)
+  draw({ sprite })
+  love.graphics.setCanvas()
+  local ordinary = color:newImageData()
+
+  love.graphics.setCanvas(target)
+  love.graphics.clear(0, 0, 0, 1)
+  local layers = draw({ sprite }, true)
+  love.graphics.setCanvas()
+
+  Assert.notNil(layers, "transition rendering publishes its captured planes")
+  Assert.equal(layers.world:getWidth(), 256, "the background plane keeps native width")
+  Assert.equal(layers.world:getHeight(), 192, "the background plane keeps native height")
+  Assert.equal(layers.objects:getWidth(), 256, "the object plane keeps native width")
+  Assert.equal(layers.objects:getHeight(), 192, "the object plane keeps native height")
+  Assert.notNil(layers.objectCoverage, "the object mask is available for native blend semantics")
+
+  local capturedOutput = color:newImageData()
+  for y = 0, 191 do
+    for x = 0, 255 do
+      Assert.deepEqual(
+        { capturedOutput:getPixel(x, y) },
+        { ordinary:getPixel(x, y) },
+        "capturing planes preserves ordinary field composition at " .. x .. "," .. y
+      )
+    end
+  end
+
+  local laterSprite = presentationSprite(scope, depthQuadMesh(scope, 0), solidAlphaImage(scope, 20, 20, 220, 255))
+  renderer.clearColor = { 0.8, 0.1, 0.1, 1 }
+  love.graphics.setCanvas(target)
+  love.graphics.clear(0, 0, 0, 1)
+  draw({ laterSprite })
+  love.graphics.setCanvas()
+
+  local worldPixels = layers.world:newImageData()
+  local currentWorldPixels = renderer.gxRenderer._resolvedColor:newImageData()
+  local launchWorld = { worldPixels:getPixel(128, 96) }
+  local laterWorld = { currentWorldPixels:getPixel(128, 96) }
+  Assert.near(launchWorld[1], 0.1, 1 / 255, "the native world plane retains launch pixels")
+  Assert.near(launchWorld[2], 0.2, 1 / 255, "the native world plane retains launch pixels")
+  Assert.near(launchWorld[3], 0.3, 1 / 255, "the native world plane retains launch pixels")
+  Assert.near(laterWorld[1], 0.8, 1 / 255, "the renderer scratch world advances to the later frame")
+  Assert.near(laterWorld[2], 0.1, 1 / 255, "the renderer scratch world advances to the later frame")
+  Assert.near(laterWorld[3], 0.1, 1 / 255, "the renderer scratch world advances to the later frame")
+  local worldRed = { worldPixels:getPixel(128, 96) }
+  local objectPixels = layers.objects:newImageData()
+  local objectRed = { objectPixels:getPixel(128, 96) }
+  Assert.isTrue(objectRed[1] > objectRed[2], "the field billboard remains on the object plane")
+  Assert.isFalse(worldRed[1] > worldRed[2], "field billboards are not flattened into the background plane")
+  Assert.isTrue(type(layers.dispose) == "function", "the launch owns a disposable field capture")
+  local capturedWorld, capturedObjects = layers.world, layers.objects
+  Assert.isTrue(layers:dispose(), "the launch releases its capture once")
+  Assert.isFalse(layers:dispose(), "capture cleanup is idempotent")
+  Assert.throws(function()
+    capturedWorld:newImageData()
+  end, "dispose releases the copied world surface")
+  Assert.throws(function()
+    capturedObjects:newImageData()
+  end, "dispose releases the copied object surface")
+end
+
+function T.transition_capture_stays_native_in_an_expanded_field_view(scope)
+  local renderer = scope:own(FieldRenderer.new())
+  local target = presentationTarget(scope, 640, 480)
+  local viewport = FieldViewport.new(640, 480, { mode = "expanded" })
+  love.graphics.setCanvas(target)
+  love.graphics.clear(0, 0, 0, 1)
+  local capture = renderer:draw(emptyRuntime(), fixedCamera(), {}, nil, viewport, 0, 3, true)
+  love.graphics.setCanvas()
+
+  Assert.notNil(capture)
+  Assert.equal(capture.world:getWidth(), 256, "expanded layout capture keeps native width")
+  Assert.equal(capture.world:getHeight(), 192, "expanded layout capture keeps native height")
+  Assert.isTrue(capture:dispose())
+end
+
+function T.transition_tick_capture_refreshes_native_planes_without_painting_the_field(scope)
+  local renderer = scope:own(FieldRenderer.new({ clearColor = { 0.1, 0.2, 0.3, 1 } }))
+  local target, color = presentationTarget(scope, 256, 192)
+  local viewport = FieldViewport.new(256, 192, { mode = "strict" })
+  local arguments = { emptyRuntime(), fixedCamera(), {}, nil, viewport, 0, 1 }
+
+  love.graphics.setCanvas(target)
+  love.graphics.clear(0.75, 0.1, 0.6, 1)
+  local first = renderer:captureTransitionLayers(unpack(arguments))
+  love.graphics.setCanvas()
+
+  Assert.near(first.world:newImageData():getPixel(128, 96), 0.1, 1 / 255)
+  local untouched = { color:newImageData():getPixel(128, 96) }
+  Assert.near(untouched[1], 0.75, 1 / 255, "source-tick capture leaves ordinary field output untouched")
+  Assert.near(untouched[2], 0.1, 1 / 255)
+  Assert.near(untouched[3], 0.6, 1 / 255)
+
+  renderer.clearColor = { 0.2, 0.3, 0.8, 1 }
+  love.graphics.setCanvas(target)
+  local second = renderer:captureTransitionLayers(unpack(arguments))
+  love.graphics.setCanvas()
+  local firstPixel = { first.world:newImageData():getPixel(128, 96) }
+  local secondPixel = { second.world:newImageData():getPixel(128, 96) }
+  Assert.near(firstPixel[1], 0.1, 1 / 255, "each transition tick owns its previous native planes")
+  Assert.near(secondPixel[3], 0.8, 1 / 255, "the next tick captures the current source planes")
+  Assert.isTrue(first:dispose())
+  Assert.isTrue(second:dispose())
+end
+
+function T.transition_capture_is_released_when_the_live_field_draw_fails(scope)
+  local _, sourceWorld = presentationTarget(scope, 256, 192)
+  local allocated = {}
+  local graphics = setmetatable({
+    newCanvas = function(width, height, options)
+      local canvas = lg.newCanvas(width, height, options)
+      allocated[#allocated + 1] = canvas
+      return canvas
+    end,
+  }, { __index = lg })
+  local gxRenderer = {
+    stats = {},
+    draw = function(_, frame)
+      if frame.captureLayers == true then
+        return { world = sourceWorld }
+      end
+      error("injected live field draw failure")
+    end,
+  }
+  local renderer = scope:own(FieldRenderer.new({ gxRenderer = gxRenderer, graphics = graphics }))
+  local target = presentationTarget(scope, 256, 192)
+  lg.setCanvas(target)
+  local ok, err = pcall(function()
+    renderer:draw(emptyRuntime(), fixedCamera(), {}, nil, FieldViewport.new(256, 192), 0, 3, true)
+  end)
+  lg.setCanvas()
+
+  Assert.isFalse(ok)
+  Assert.isTrue(tostring(err):find("injected live field draw failure", 1, true) ~= nil)
+  Assert.equal(#allocated, 2, "native render target and launch snapshot are both acquired")
+  for _, canvas in ipairs(allocated) do
+    Assert.throws(function()
+      canvas:newImageData()
+    end, "failed capture releases every acquired canvas")
+  end
+end
+
+function T.transition_plane_copy_failure_restores_graphics_and_releases_partial_canvases(scope)
+  local _, sourceWorld = presentationTarget(scope, 256, 192)
+  local allocated = {}
+  local graphics = setmetatable({
+    newCanvas = function(width, height, options)
+      local canvas = lg.newCanvas(width, height, options)
+      allocated[#allocated + 1] = canvas
+      return canvas
+    end,
+    draw = function()
+      error("injected plane copy failure")
+    end,
+  }, { __index = lg })
+  local gxRenderer = {
+    stats = {},
+    draw = function(_, frame)
+      if frame.captureLayers == true then
+        return { world = sourceWorld }
+      end
+      return nil
+    end,
+  }
+  local renderer = scope:own(FieldRenderer.new({ gxRenderer = gxRenderer, graphics = graphics }))
+  local target = presentationTarget(scope, 256, 192)
+  lg.setCanvas(target)
+  lg.setColor(0.2, 0.3, 0.4, 0.5)
+  lg.setBlendMode("alpha", "alphamultiply")
+  lg.setScissor(2, 3, 5, 6)
+  local ok, err = pcall(function()
+    renderer:draw(emptyRuntime(), fixedCamera(), {}, nil, FieldViewport.new(256, 192), 0, 3, true)
+  end)
+
+  Assert.isFalse(ok)
+  Assert.isTrue(tostring(err):find("injected plane copy failure", 1, true) ~= nil)
+  local activeCanvas = lg.getCanvas()
+  if type(activeCanvas) == "table" then
+    activeCanvas = activeCanvas[1]
+    if type(activeCanvas) == "table" then
+      activeCanvas = activeCanvas[1]
+    end
+  end
+  Assert.equal(activeCanvas:getWidth(), 256, "the caller's target is restored")
+  local red, green, blue, alpha = lg.getColor()
+  Assert.near(red, 0.2, 1e-6, "caller red is restored")
+  Assert.near(green, 0.3, 1e-6, "caller green is restored")
+  Assert.near(blue, 0.4, 1e-6, "caller blue is restored")
+  Assert.near(alpha, 0.5, 1e-6, "caller alpha is restored")
+  Assert.deepEqual({ lg.getBlendMode() }, { "alpha", "alphamultiply" }, "caller blend mode is restored")
+  Assert.deepEqual({ lg.getScissor() }, { 2, 3, 5, 6 }, "caller scissor is restored")
+  Assert.equal(#allocated, 2, "native target and partial world snapshot were acquired")
+  for _, canvas in ipairs(allocated) do
+    Assert.throws(function()
+      canvas:newImageData()
+    end, "copy failure releases every acquired canvas")
+  end
+  lg.setScissor()
+  lg.setCanvas()
 end
 
 return GraphicsSmoke.suite(T)

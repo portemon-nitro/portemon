@@ -1084,6 +1084,46 @@ function T.overlay_117_stages_bg_resources_only_on_selectors_40_through_44()
   Assert.isFalse(has(0xd7, "palette", 39), "selector 39 does not dispatch through the BG helper")
 end
 
+function T.overlay_115_routes_publish_complete_semantic_sprite_and_bg_groups()
+  local routes = sources().TRANSITION_SELECTOR_ROUTES
+  local gym = assert(routes[12])
+  Assert.deepEqual(gym.background, { palette = 21, character = 20, map = 22 })
+  Assert.deepEqual(gym.task, {
+    kind = "overlay115-gym-rival-intro",
+    parameters = { endXFx32 = 214 * 4096 },
+  })
+  local expectedShakeTicks = { 32, 32, 32, 32, 9 }
+  local expectedOpponentStart = { 0x83, 0x87, 0x8b, 0x8f, 0x93 }
+  local expectedNameplatePalette = { 0x2f, 0x33, 0x34, 0x35, 0x36 }
+  for index, selector in ipairs({ 29, 30, 31, 32, 33 }) do
+    local route = assert(routes[selector])
+    local opponent = expectedOpponentStart[index]
+    Assert.deepEqual(route.task, {
+      kind = "overlay115-elite-intro",
+      parameters = { shakeTicks = expectedShakeTicks[index] },
+    })
+    Assert.deepEqual(route.opponent, {
+      palette = opponent,
+      character = opponent + 1,
+      cell = opponent + 2,
+      animation = opponent + 3,
+    })
+    Assert.deepEqual(route.nameplate, {
+      palette = expectedNameplatePalette[index],
+      character = 0x30,
+      cell = 0x31,
+      animation = 0x32,
+    })
+    Assert.deepEqual(route.particleMembers, { 151, 152 })
+    Assert.deepEqual(route.fixedSprite, { palette = 0x3b, character = 0x3c, cell = 0x3d, animation = 0x3e })
+    Assert.deepEqual(route.spriteVariants.male, { palette = 0xcf, character = 0xd0, cell = 0xd1, animation = 0xd2 })
+    Assert.deepEqual(
+      route.spriteVariants.female,
+      { palette = 0xd3, character = 0xd4, cell = 0xd5, animation = 0xd6 }
+    )
+  end
+end
+
 function T.menu_context_contracts_preserve_dynamic_source_inputs()
   local contexts = assert(sources().MENU_CONTEXTS, "menu context contracts are source data")
   Assert.deepEqual(contexts.main, {

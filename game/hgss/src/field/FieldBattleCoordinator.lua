@@ -842,6 +842,7 @@ function FieldBattleCoordinator:launchPresentedBattle(launchId, request, method)
   assert(self._battleLaunch == nil and self.battleRuntime == nil, "a field-owned battle is already active")
   local binding = assert(self._battlePresentationFactory, "presented launches require their factory binding")
   local environment = self:_captureLaunchEnvironment(request, method)
+  local transitionContext = self:_captureTransitionContext(request, environment)
   local launch = {
     launchId = launchId,
     phase = "covering",
@@ -849,6 +850,7 @@ function FieldBattleCoordinator:launchPresentedBattle(launchId, request, method)
     presented = true,
     scripted = false,
     environment = environment,
+    transitionContext = transitionContext,
     coverComplete = false,
     battleCovered = false,
     revealed = false,
@@ -885,6 +887,7 @@ function FieldBattleCoordinator:launchPresentedBattle(launchId, request, method)
     kind = request.kind,
     scripted = false,
     environment = environment,
+    transitionContext = transitionContext,
     textSpeed = launchSpeed,
     audio = fieldRuntime(self).audio,
     musicRole = self:_battleMusicRole(request),
@@ -921,6 +924,86 @@ function FieldBattleCoordinator:launchPresentedBattle(launchId, request, method)
     audio:suspendFieldPolicy(launchId)
   end
   return launchId
+end
+
+-- Captures the semantic selector facts from the prepared request before
+-- the field changes. Trainer templates are read without materializing a
+-- party or consuming the world RNG.
+---@param request table<string, unknown> admitted source battle request
+---@param environment table<string, unknown> immutable field environment captured for this launch
+---@return table<string, unknown> normalized selector context
+function FieldBattleCoordinator:_captureTransitionContext(request, environment)
+  local payload = request.payload
+  assert(type(payload) == "table", "presented battle requests carry their source payload")
+  local sourceEnvironment = payload.environment
+  if type(sourceEnvironment) ~= "table" then
+    sourceEnvironment = {}
+  end
+  local function sourceFlag(key)
+    local value = payload[key]
+    if value == nil then
+      value = sourceEnvironment[key]
+    end
+    if value == nil then
+      return false
+    end
+    assert(type(value) == "boolean", "transition source flags are explicit booleans: " .. key)
+    return value
+  end
+
+  local timeOfDay = environment.time
+  if timeOfDay == "evening" or timeOfDay == "night" then
+    timeOfDay = "late"
+  end
+  local context = {
+    kind = request.kind,
+    doubleBattle = sourceFlag("doubleBattle") or payload.format == "double" or payload.format == "wild-double",
+    specialBattle = sourceFlag("specialBattle"),
+    alternateTransition = sourceFlag("alternateTransition"),
+    terrain = environment.terrain,
+    timeOfDay = timeOfDay,
+  }
+  local profileGender = assert(fieldRuntime(self).playerData.profile.gender, "player profile carries its gender")
+  assert(profileGender == 0 or profileGender == 1, "player profile gender is a normalized binary value")
+  context.playerGender = profileGender == 0 and "male" or "female"
+
+  if request.kind == "trainer" then
+    local trainer = payload.trainer
+    local trainers = payload.trainers
+    if type(trainers) == "table" and #trainers > 0 then
+      trainer = assert(trainers[1]).id
+      context.doubleBattle = true
+    end
+    assert(trainer ~= nil, "trainer transition context names its first trainer")
+    local catalog = assert(fieldRuntime(self)._trainerCatalog, "trainer transition context reads the trainer catalog")
+    local template = assert(
+      require("libs.hgss.src.battle.HgssTrainerCatalog").trainer(catalog, trainer),
+      "trainer transition context resolves its trainer template"
+    )
+    assert(type(template.trainerClass) == "string", "trainer templates carry normalized semantic classes")
+    context.trainerClass = template.trainerClass
+    context.doubleBattle = context.doubleBattle or template.doubleBattle == true
+  elseif request.kind == "wild" then
+    local mon = payload.mon
+    local species = payload.species
+    if species == nil and type(mon) == "table" then
+      species = mon.species
+    end
+    context.wildSpecies = species
+    local fallback = payload.wildSetupFallback
+    if fallback == nil then
+      fallback = sourceEnvironment.wildSetupFallback
+    end
+    if fallback == nil then
+      fallback = species == nil
+    end
+    assert(type(fallback) == "boolean", "wild transition setup fallback is an explicit source fact")
+    context.wildSetupFallback = fallback
+  else
+    error("presented transition context requires a trainer or wild launch", 0)
+  end
+
+  return context
 end
 
 -- Captures the actual launch environment before the field changes: source

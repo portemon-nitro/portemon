@@ -23,6 +23,75 @@ function T.transition_routes_require_semantic_context_and_staged_resources()
   Assert.isFalse(Schema.isValidManifest(nativeInput), "transition routes must not expose native selector indexes")
 end
 
+function T.transition_routes_accept_strict_normalized_camera_task_data()
+  local valid = manifest()
+  local poses = {}
+  for index = 1, 16 do
+    poses[index] = {
+      distanceFx32 = 2731713,
+      angleXRaw = 54786,
+      angleYRaw = 0,
+      perspectiveRaw = 1473,
+      waitTicks = 4,
+    }
+  end
+  valid.transitions.routes["trainer/red"].task = {
+    kind = "field-camera-pose-sequence",
+    parameters = {
+      poses = poses,
+      fadeTicks = 10,
+      graphicsMode = { mode = 3, bank = 15 },
+    },
+  }
+  Assert.isTrue(Schema.isValidManifest(valid), "a source-normalized task and its typed parameters are valid")
+
+  local missingPose = manifest()
+  missingPose.transitions.routes["trainer/red"].task = {
+    kind = "field-camera-pose-sequence",
+    parameters = { poses = {}, fadeTicks = 10, graphicsMode = { mode = 3, bank = 15 } },
+  }
+  Assert.isFalse(Schema.isValidManifest(missingPose), "camera task schema requires the complete source pose sequence")
+
+  local nativeId = manifest()
+  nativeId.transitions.routes["trainer/red"].task = {
+    kind = "field-camera-pose-sequence",
+    callback = 34,
+    parameters = {
+      poses = poses,
+      fadeTicks = 10,
+      graphicsMode = { mode = 3, bank = 15 },
+    },
+  }
+  Assert.isFalse(
+    Schema.isValidManifest(nativeId),
+    "normalized transition tasks do not publish native callback ordinals"
+  )
+end
+
+function T.overlay115_task_parameters_are_source_normalized_and_strict()
+  local gym = manifest()
+  gym.transitions.routes["trainer/red"].task = {
+    kind = "overlay115-gym-rival-intro",
+    parameters = { endXFx32 = 214 * 4096 },
+  }
+  local gymValid, gymError = Schema.isValidManifest(gym)
+  Assert.isTrue(gymValid, "gym route keeps its source FX32 endpoint: " .. tostring(gymError))
+
+  local elite = manifest()
+  elite.transitions.routes["trainer/red"].task = {
+    kind = "overlay115-elite-intro",
+    parameters = { shakeTicks = 9 },
+  }
+  Assert.isTrue(Schema.isValidManifest(elite), "elite route keeps its source shake duration")
+
+  local pixels = manifest()
+  pixels.transitions.routes["trainer/red"].task = {
+    kind = "overlay115-gym-rival-intro",
+    parameters = { endXFx32 = 214 },
+  }
+  Assert.isFalse(Schema.isValidManifest(pixels), "FX32 endpoints are not silently interpreted as pixels")
+end
+
 function T.transition_trainer_name_routes_bind_a_semantic_trainer_context()
   local valid = manifest()
   local route = valid.transitions.routes["trainer/red"]

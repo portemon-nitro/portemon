@@ -240,6 +240,12 @@ function FieldState.new(game, options)
     local function battleDisplay()
       return runtime.presentationDisplay
     end
+    local function captureFieldLayers()
+      return self:_captureTransitionLayers()
+    end
+    local function currentFieldCamera()
+      return runtime.camera
+    end
     self.battleEnvelope = FieldBattlePresentation.new({
       cacheFs = runtime.cacheFs,
       graphics = love.graphics,
@@ -250,6 +256,9 @@ function FieldState.new(game, options)
       imagePool = runtime.imageAssets,
       itemCatalog = assert(runtime.itemCatalog, "the presented battle envelope borrows its item catalog"),
       monCatalog = assert(runtime.monCatalog, "the presented battle envelope borrows its mon catalog"),
+      fieldRenderer = assert(self.presentationResources.renderer, "field transition borrows the field compositor"),
+      fieldCamera = currentFieldCamera,
+      captureFieldLayers = captureFieldLayers,
       measureDisplay = battleDisplay,
     })
     if type(runtime.bindBattlePresentation) == "function" then
@@ -773,6 +782,30 @@ function FieldState:_worldParts(alpha)
   return worldParts
 end
 
+-- Captures the current native field planes after a transition source tick
+-- changed camera or plane state. This path prepares the transition input
+-- without drawing or advancing the ordinary field composition.
+function FieldState:_captureTransitionLayers()
+  local runtime = assert(self.runtime, "field transition capture requires its runtime")
+  local renderer = assert(
+    self.presentationResources and self.presentationResources.renderer,
+    "field transition capture requires its renderer"
+  )
+  local alpha = runtime.session:renderAlpha()
+  return renderer:captureTransitionLayers(
+    assert(
+      runtime.runtimeMap and runtime.runtimeMap.renderEnvironment,
+      "transition capture requires the active field environment"
+    ),
+    assert(runtime.camera, "transition capture requires the active field camera"),
+    self:_worldParts(alpha),
+    self.spriteItems,
+    assert(runtime.viewport, "transition capture requires the active field viewport"),
+    alpha,
+    assert(runtime.fieldPixelScale, "transition capture requires its pixel scale"):resolvedScale()
+  )
+end
+
 -- The structural presentation-geometry signature: the window dimensions plus
 -- every surface identity, role, and safe rectangle. A safe-area change with
 -- the same window dimensions must recompute the placement, and a change
@@ -1094,14 +1127,16 @@ function FieldState:_drawBattleEnvelopeIfNeeded(width, height)
   if envelope == nil or (not envelope:ownsInput() and envelope:cover().coefficient <= 0) then
     return
   end
-  if envelope:cover().coefficient < FieldBattlePresentation.COVER_MAX then
+  local destination = assert(self.runtime.viewport.worldViewport, "battle transition uses the live world viewport")
+  local transitionDrawn = envelope:drawTransition(destination)
+  if not transitionDrawn and envelope:cover().coefficient < FieldBattlePresentation.COVER_MAX then
     envelope:drawBattle({
       graphics = love.graphics,
       text = assert(self._battleText, "battle draw needs its text services"),
       windows = assert(self._battleWindows, "battle draw needs its window services"),
     })
   end
-  local coefficient = envelope:cover().coefficient
+  local coefficient = transitionDrawn and 0 or envelope:cover().coefficient
   if coefficient > 0 then
     local lg = love.graphics
     local prevR, prevG, prevB, prevA = lg.getColor()
