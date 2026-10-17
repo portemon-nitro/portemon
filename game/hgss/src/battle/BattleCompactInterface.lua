@@ -1456,7 +1456,7 @@ local function drawHudSide(graphics, assets, text, artKey, battler, side)
   end
   local art = assets:drawable(artKey)
   if art ~= nil then
-    graphics.draw(art, side.x, side.y)
+    art:draw(graphics, side.x, side.y)
   end
   if type(side.regions) == "table" then
     for _, region in ipairs(side.regions) do

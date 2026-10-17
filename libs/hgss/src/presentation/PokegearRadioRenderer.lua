@@ -16,14 +16,14 @@ local SLIDE_STEPS = 8
 local SLIDE_PIXELS = 10
 local TEXT_LINE_HEIGHT = 16
 
----@param images table<string, unknown>
+---@param images table<string, unknown> pooled atlas leases by generated path
 ---@param path string
----@return table<string, unknown> image
+---@return table<string, unknown> pooled atlas lease behind the plane
 local function preparedImage(images, path)
   assert(type(path) == "string", "the radio plan resolves its image paths")
-  local image = images[path]
-  assert(image ~= nil, "the radio render needs its prepared image")
-  return image --[[@as table<string, unknown>]]
+  local lease = images[path]
+  assert(lease ~= nil, "the radio render needs its prepared image")
+  return lease
 end
 
 ---@param placement table<string, unknown>
@@ -52,24 +52,22 @@ local function toHost(placement, sourceX, sourceY)
   return typed.x + sourceX * scale, typed.y + sourceY * scale
 end
 
----@param graphics table<string, unknown>
----@param image table<string, unknown>
+---@param graphics table<string, unknown> host graphics namespace
+---@param lease table<string, unknown> pooled atlas lease behind the plane
 ---@param x number
 ---@param y number
 ---@param width number
 ---@param height number
-local function drawStretched(graphics, image, x, y, width, height)
-  local drawable = image --[[@as table<string, unknown>]]
-  local getWidth = assert(drawable.getWidth, "prepared images carry their widths")
-  local getHeight = assert(drawable.getHeight, "prepared images carry their heights")
+local function drawStretched(graphics, lease, x, y, width, height)
+  local image = assert(lease.image, "atlas leases carry their resolved image")
+  local getWidth = assert(image.getWidth, "prepared images carry their widths")
+  local getHeight = assert(image.getHeight, "prepared images carry their heights")
   assert(type(getWidth) == "function" and type(getHeight) == "function", "prepared images size")
-  local nativeWidth = getWidth(drawable)
-  local nativeHeight = getHeight(drawable)
+  local nativeWidth = getWidth(image)
+  local nativeHeight = getHeight(image)
   assert(type(nativeWidth) == "number" and nativeWidth > 0, "prepared images size")
   assert(type(nativeHeight) == "number" and nativeHeight > 0, "prepared images size")
-  local draw = assert(graphics.draw, "the host graphics draws images")
-  assert(type(draw) == "function", "the host graphics draws images")
-  draw(image, x, y, 0, width / nativeWidth, height / nativeHeight)
+  lease:draw(graphics, x, y, 0, width / nativeWidth, height / nativeHeight)
 end
 
 ---@param graphics table<string, unknown>
@@ -153,28 +151,25 @@ function PokegearRadioRenderer.drawPanes(graphics, images, textRenderer, content
     local pulse = preparedImage(images, assert(pulseFrames[pulseFrame + 1], "the radio view selects a pulse frame"))
     local hostX, hostY = toHost(controlsPlacement, cursor.x, cursor.y)
     local _, scale = placementParts(controlsPlacement)
-    local drawable = pulse --[[@as table<string, unknown>]]
-    local getWidth = assert(drawable.getWidth, "prepared images carry their widths")
-    local getHeight = assert(drawable.getHeight, "prepared images carry their heights")
-    local nativeWidth = getWidth(drawable) --[[@as number]]
-    local nativeHeight = getHeight(drawable) --[[@as number]]
-    local draw = assert(graphics.draw, "the host graphics draws images")
-    draw(pulse, hostX - (nativeWidth * scale) / 2, hostY - (nativeHeight * scale) / 2, 0, scale, scale)
+    local pulseImage = assert(pulse.image, "atlas leases carry their resolved image")
+    local getWidth = assert(pulseImage.getWidth, "prepared images carry their widths")
+    local getHeight = assert(pulseImage.getHeight, "prepared images carry their heights")
+    local nativeWidth = getWidth(pulseImage) --[[@as number]]
+    local nativeHeight = getHeight(pulseImage) --[[@as number]]
+    pulse:draw(graphics, hostX - (nativeWidth * scale) / 2, hostY - (nativeHeight * scale) / 2, 0, scale, scale)
   end
   if view.focused == true then
     local corner = preparedImage(images, content.corner)
-    local drawable = corner --[[@as table<string, unknown>]]
-    local getWidth = assert(drawable.getWidth, "prepared images carry their widths")
-    local getHeight = assert(drawable.getHeight, "prepared images carry their heights")
-    local cornerWidth = getWidth(drawable) --[[@as number]]
-    local cornerHeight = getHeight(drawable) --[[@as number]]
-    local draw = assert(graphics.draw, "the host graphics draws images")
-    assert(type(draw) == "function", "the host graphics draws images")
-    draw(corner, controlsFrame.x, controlsFrame.y)
-    draw(corner, controlsFrame.x + controlsFrame.width - cornerWidth, controlsFrame.y)
-    draw(corner, controlsFrame.x, controlsFrame.y + controlsFrame.height - cornerHeight)
-    draw(
-      corner,
+    local cornerImage = assert(corner.image, "atlas leases carry their resolved image")
+    local getWidth = assert(cornerImage.getWidth, "prepared images carry their widths")
+    local getHeight = assert(cornerImage.getHeight, "prepared images carry their heights")
+    local cornerWidth = getWidth(cornerImage) --[[@as number]]
+    local cornerHeight = getHeight(cornerImage) --[[@as number]]
+    corner:draw(graphics, controlsFrame.x, controlsFrame.y)
+    corner:draw(graphics, controlsFrame.x + controlsFrame.width - cornerWidth, controlsFrame.y)
+    corner:draw(graphics, controlsFrame.x, controlsFrame.y + controlsFrame.height - cornerHeight)
+    corner:draw(
+      graphics,
       controlsFrame.x + controlsFrame.width - cornerWidth,
       controlsFrame.y + controlsFrame.height - cornerHeight
     )
@@ -219,18 +214,17 @@ function PokegearRadioRenderer.drawPanes(graphics, images, textRenderer, content
   local panelWidth = infoFrame.width - SLIDE_STEPS * SLIDE_PIXELS
   assert(panelWidth > 0, "the information pane fits the panel slide")
   local panel = preparedImage(images, content.panel)
-  local panelDrawable = panel --[[@as table<string, unknown>]]
-  local panelGetWidth = assert(panelDrawable.getWidth, "prepared images carry their widths")
-  local panelGetHeight = assert(panelDrawable.getHeight, "prepared images carry their heights")
-  local panelNativeWidth = panelGetWidth(panelDrawable) --[[@as number]]
-  local panelNativeHeight = panelGetHeight(panelDrawable) --[[@as number]]
+  local panelImage = assert(panel.image, "atlas leases carry their resolved image")
+  local panelGetWidth = assert(panelImage.getWidth, "prepared images carry their widths")
+  local panelGetHeight = assert(panelImage.getHeight, "prepared images carry their heights")
+  local panelNativeWidth = panelGetWidth(panelImage) --[[@as number]]
+  local panelNativeHeight = panelGetHeight(panelImage) --[[@as number]]
   assert(type(panelNativeWidth) == "number" and panelNativeWidth > 0, "prepared images size")
   assert(type(panelNativeHeight) == "number" and panelNativeHeight > 0, "prepared images size")
   local panelHeight = panelWidth * panelNativeHeight / panelNativeWidth
   local panelY = infoFrame.y + (infoFrame.height - panelHeight) / 2
-  local drawPanel = assert(graphics.draw, "the host graphics draws images")
-  drawPanel(
-    panel,
+  panel:draw(
+    graphics,
     infoFrame.x + clampedStep * SLIDE_PIXELS,
     panelY,
     0,

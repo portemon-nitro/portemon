@@ -13,6 +13,7 @@
 -- learning child owner, so the run stays red until that owner lands.
 
 local Assert = require("tests.support.Assert")
+local StubLease = require("tests.support.StubLease")
 local FakeGraphics = require("tests.support.FakeGraphics")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local HgssBagService = require("libs.hgss.src.items.HgssBagService")
@@ -170,9 +171,13 @@ local function openRig(opts)
       rig.assets.images = {}
     end
     if rig.assets.images[key] == nil then
-      rig.assets.images[key] = { handle = key }
+      rig.assets.images[key] = StubLease.new(key)
     end
-    return rig.assets.images[key]
+    local stored = rig.assets.images[key]
+    if key:sub(1, 4) == "mon:" then
+      return { lease = stored, quad = { handle = "quad:" .. key } }
+    end
+    return stored
   end
   function rig.assets.release(key)
     rig.assets.released[key] = (rig.assets.released[key] or 0) + 1

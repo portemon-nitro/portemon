@@ -13,6 +13,7 @@ local FieldDialogueRenderer = require("libs.hgss.src.ui.FieldDialogueRenderer")
 local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local LocalClock = require("game.src.LocalClock")
+local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
 local OakIntroController = require("game.hgss.src.newgame.OakIntroController")
 local OakIntroMessages = require("game.hgss.src.newgame.OakIntroMessages")
 local OakIntroState = require("game.hgss.src.newgame.OakIntroState")
@@ -69,13 +70,124 @@ function OakIntroComposition.randomU32(mathHost)
   return randomValue
 end
 
-local function generatedImageLoader(cacheFs, graphics)
-  local function loadImage(path)
-    local bytes = assert(cacheFs:read(path), "missing generated image " .. path)
-    local fileData = love.filesystem.newFileData(bytes, path)
-    return graphics.newImage(fileData, { linear = false, mipmaps = false })
+-- Intro visuals sample exactly as the manifest declares: the stretched
+-- background filters linearly while widgets sample nearest, so pooled
+-- borrows draw identically to the retired direct construction.
+local POOLED_SAMPLERS = {
+  linear = { wrapX = "clamp", wrapY = "clamp", minFilter = "linear", magFilter = "linear" },
+  nearest = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" },
+}
+
+-- Collects every intro-only generated image behind its declared sampler:
+-- the linear background plus each widget frame. First declaration wins
+-- for a path named twice, matching the renderer's own first-load cache.
+---@param manifest table<string, unknown> validated intro manifest
+---@return { path: string, sampler: table<string, string> }[] ordered unique intro image demands
+local function introImageDemands(manifest)
+  local demands = {}
+  local seen = {}
+  local function add(path, sampling)
+    if type(path) ~= "string" or path == "" or seen[path] then
+      return
+    end
+    seen[path] = true
+    demands[#demands + 1] = {
+      path = path,
+      sampler = POOLED_SAMPLERS[sampling] or POOLED_SAMPLERS.nearest,
+    }
   end
-  return loadImage
+  local background = manifest.background
+  if type(background) == "table" then
+    add(background.image, type(background.sampling) == "string" and background.sampling or "linear")
+  end
+  local widgets = manifest.widgets
+  if type(widgets) == "table" then
+    local ids = {}
+    for id in pairs(widgets) do
+      ids[#ids + 1] = id
+    end
+    table.sort(ids)
+    for _, id in ipairs(ids) do
+      local asset = widgets[id]
+      if type(asset) == "table" then
+        local sampling = type(asset.sampling) == "string" and asset.sampling or "nearest"
+        if type(asset.frames) == "table" then
+          for _, frame in ipairs(asset.frames) do
+            if type(frame) == "table" then
+              add(frame.image, sampling)
+            end
+          end
+        end
+      end
+    end
+  end
+  return demands
+end
+
+-- Builds the intro-only shared image owner and its generated-image loader.
+-- Every manifest-declared intro image is enrolled before the first
+-- readiness wait so independent classifications run concurrently; the
+-- loader then borrows each path on demand and remembers every borrow for
+-- the single release at intro teardown. The pool is intro-owned and
+-- disposed independently of the prepared field entry beside it: intro
+-- pixels never copy into a second buffer for the bedroom handoff.
+---@param cacheFs table<string, unknown> versioned derived cache behind the intro manifest
+---@param graphics table<string, unknown> host graphics namespace behind GPU realization
+---@param manifest table<string, unknown> validated intro manifest
+---@return table<string, unknown> intro-owned shared image owner
+---@return table<string, unknown>[] borrow records behind every loader borrow, in order
+---@return fun(path: string): unknown generated-image loader resolving pooled borrows
+local function pooledImageLoader(cacheFs, graphics, manifest)
+  local pool = ImageAssetPool.new(cacheFs, { graphics = graphics })
+  -- Every manifest-declared intro image enrolls before the first
+  -- readiness wait so independent classifications run concurrently.
+  local samplers = {}
+  local tokens = {}
+  for _, demand in ipairs(introImageDemands(manifest)) do
+    samplers[demand.path] = demand.sampler
+    tokens[demand.path] = pool:request(demand.path, demand.sampler, "demand")
+  end
+  local leases = {}
+  local images = {}
+  -- The loader answers pool leases so renderers draw through the lease
+  -- sampler surface with zero new imports; the borrow stays cached
+  -- beside its lease for release bookkeeping.
+  local function loadImage(path)
+    assert(type(path) == "string" and path ~= "", "intro image loads name their path")
+    local known = images[path]
+    if known ~= nil then
+      return known
+    end
+    local token = tokens[path]
+    if token == nil then
+      token = pool:request(path, samplers[path] or POOLED_SAMPLERS.nearest, "demand")
+      tokens[path] = token
+    end
+    local stalled = 0
+    while true do
+      local status, failure = pool:poll(token)
+      if status == "ready" then
+        local lease = pool:acquire(token)
+        assert(lease.image, "shared borrows carry their resolved image")
+        leases[#leases + 1] = lease
+        images[path] = lease
+        return lease
+      end
+      if status == "failed" then
+        error("intro image missing at " .. path .. ": " .. tostring(failure), 0)
+      end
+      assert(status == "pending", "intro preparation reports pending or ready")
+      stalled = stalled + 1
+      if stalled > 10000 then
+        error("intro image stalled at " .. path, 0)
+      end
+      local timer = love and love.timer
+      if timer ~= nil and timer.sleep ~= nil then
+        timer.sleep(0.001)
+      end
+    end
+  end
+  return pool, leases, loadImage
 end
 
 local function validManifest(manifest, validate, name)
@@ -125,6 +237,9 @@ function OakIntroComposition.compose(options)
   local textRenderer
   local choiceText
   local dialogueRenderer
+  local imagePool
+  local imageLeases
+  local pooledLoader
   local ok, state = pcall(function()
     assert(provider:acquireBank(219))
     bankAcquired = true
@@ -155,14 +270,23 @@ function OakIntroComposition.compose(options)
 
     local graphics = options.graphics or love.graphics
     ---@cast graphics love.graphics
-    textRenderer = FieldTextRenderer.new({ cacheFs = cacheFs, graphics = graphics })
-    choiceText = FieldTextRenderer.new({ cacheFs = cacheFs, fontId = 4, graphics = graphics })
+    -- The intro stages its own image owner beside the prepared bedroom
+    -- entry: intro pixels stay intro-owned and release at intro teardown,
+    -- never copying into a second buffer for the field handoff. An
+    -- injected loader keeps its own ownership and builds no pool here, so
+    -- the eager text below keeps its direct construction on that seam.
+    if options.imageLoader == nil then
+      imagePool, imageLeases, pooledLoader = pooledImageLoader(cacheFs, graphics, introManifest)
+    end
+    textRenderer = FieldTextRenderer.new({ cacheFs = cacheFs, graphics = graphics, imagePool = imagePool })
+    choiceText = FieldTextRenderer.new({ cacheFs = cacheFs, fontId = 4, graphics = graphics, imagePool = imagePool })
     dialogueRenderer = FieldDialogueRenderer.new({
       cacheFs = cacheFs,
       manifest = uiManifest,
       text = textRenderer,
       graphics = graphics,
       drawFocusIndicator = false,
+      imagePool = imagePool,
     })
     local function layoutDialogue(formatted)
       return DialogueLayout.layout(
@@ -195,7 +319,10 @@ function OakIntroComposition.compose(options)
       graphics = graphics,
       displayContext = options.displayContext,
       namingOverrides = options.namingOverrides,
-      imageLoader = options.imageLoader or generatedImageLoader(cacheFs, graphics),
+      imageLoader = options.imageLoader or pooledLoader,
+      imagePool = imagePool,
+      ownsImagePool = imagePool ~= nil,
+      imageLeases = imageLeases or {},
       textInputHost = options.textInputHost,
       width = options.width,
       height = options.height,
@@ -227,6 +354,17 @@ function OakIntroComposition.compose(options)
     end
     if choiceText then
       pcall(choiceText.release, choiceText)
+    end
+    if imagePool ~= nil then
+      -- Renderer teardown above already released loader images it owned;
+      -- returning the borrows here is bookkeeping-only and safe to
+      -- repeat. The pool teardown below joins its worker before dropping
+      -- bookkeeping, so its secondary release noise (if any) stays
+      -- contained while the original composition failure propagates.
+      for _, lease in ipairs(imageLeases or {}) do
+        imagePool:release(lease)
+      end
+      pcall(imagePool.dispose, imagePool)
     end
     error(state, 0)
   end

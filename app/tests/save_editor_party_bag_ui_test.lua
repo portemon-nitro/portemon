@@ -509,6 +509,10 @@ function T.visible_party_rows_prepare_only_their_icon_keys()
       image = function()
         return {}
       end,
+      -- Prepare-only double: no draws run, so no pooled borrow is served.
+      handleFor = function()
+        return nil
+      end,
       quadFor = function()
         return {}
       end,

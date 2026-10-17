@@ -17,6 +17,8 @@ local quadsByImage = setmetatable({}, { __mode = "k" })
 ---@param height number
 ---@return love.Quad
 function PokegearAtlas.quad(graphics, image, x, y, width, height)
+  -- Quads stay keyed by the resolved image so pooled leases and their
+  -- bare images share geometry without per-draw allocation.
   local quads = quadsByImage[image]
   if quads == nil then
     quads = {}
@@ -32,17 +34,19 @@ function PokegearAtlas.quad(graphics, image, x, y, width, height)
   return quad
 end
 
--- Draws one rectangle of an atlas image at a destination.
+-- Draws one rectangle of a pooled atlas lease at a destination, through
+-- the lease sampler surface with zero new imports.
 ---@param graphics love.graphics
----@param image love.Image
+---@param lease table<string, unknown> pooled atlas lease behind the plane
 ---@param srcX number
 ---@param srcY number
 ---@param width number
 ---@param height number
 ---@param destX number
 ---@param destY number
-function PokegearAtlas.draw(graphics, image, srcX, srcY, width, height, destX, destY)
-  graphics.draw(image, PokegearAtlas.quad(graphics, image, srcX, srcY, width, height), destX, destY)
+function PokegearAtlas.draw(graphics, lease, srcX, srcY, width, height, destX, destY)
+  local image = assert(lease.image, "atlas leases carry their resolved image")
+  lease:drawQuad(graphics, PokegearAtlas.quad(graphics, image, srcX, srcY, width, height), destX, destY)
 end
 
 -- Runs a drawing function with the host scissor narrowed to a logical-space

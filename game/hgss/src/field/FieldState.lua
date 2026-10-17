@@ -19,6 +19,10 @@ local KEY_DIRECTIONS =
   { w = "north", up = "north", s = "south", down = "south", a = "west", left = "west", d = "east", right = "east" }
 local GAMEPAD_DIRECTIONS = { dpup = "north", dpdown = "south", dpleft = "west", dpright = "east" }
 
+-- Companion chrome samples with the host default filtering, matching the
+-- retired direct construction which kept the default filter and clamp.
+local POKEGEAR_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "linear", magFilter = "linear" }
+
 ---@class FieldStateOptions
 ---@field fieldScaleConfig table<string, unknown>? runtime field-scale configuration
 ---@field development boolean? product mode (the default) hides the developer overlay
@@ -208,6 +212,7 @@ function FieldState.new(game, options)
       text = self._battleText,
       audio = runtime.audio,
       derivedAssets = runtime.derivedAssets,
+      imagePool = runtime.imageAssets,
       itemCatalog = assert(runtime.itemCatalog, "the presented battle envelope borrows its item catalog"),
       monCatalog = assert(runtime.monCatalog, "the presented battle envelope borrows its mon catalog"),
       measureDisplay = battleDisplay,
@@ -323,6 +328,7 @@ function FieldState:_advanceStarterPreparation()
   local fieldRenderer = assert(resources.renderer, "field renderer is unavailable")
   starter:advancePresentationPreparation({
     assetPreparation = runtime.assetPreparation,
+    imageAssets = runtime.imageAssets,
     gxRenderer = assert(fieldRenderer.gxRenderer, "field graphics backend is unavailable"),
     derivedAssets = runtime.derivedAssets,
   }, 1)
@@ -695,16 +701,53 @@ function FieldState:_drawPokegearApplication(resources, appStatus)
   )
   local PokegearRenderer = require("libs.hgss.src.presentation.PokegearRenderer")
   local graphics = assert(love and love.graphics, "companion drawing requires its host graphics namespace")
+  -- Companion chrome borrows the session image owner: one lease per
+  -- generated path, retained for the field lifetime like other pinned
+  -- chrome and returned exactly once at disposal. The sampler matches
+  -- the previous direct construction, which kept the host default
+  -- filtering through plain draws.
+  local pool = assert(self.runtime.imageAssets, "companion drawing borrows the shared image owner")
   self._pokegearImages = self._pokegearImages or {}
+  self._pokegearLeases = self._pokegearLeases or {}
+  -- The realized table carries the leases themselves so companion
+  -- renderers draw through the lease sampler surface with zero new
+  -- imports; the parallel lease table behind disposal holds the same
+  -- borrows for their exactly-once return.
   local images = self._pokegearImages --[[@as table<string, unknown>]]
+  local leases = self._pokegearLeases --[[@as table<string, unknown>]]
+  local function acquire(path)
+    local token = pool:request(path, POKEGEAR_SAMPLER, "demand")
+    local stalled = 0
+    while true do
+      local status, failure = pool:poll(token)
+      if status == "ready" then
+        local lease = pool:acquire(token)
+        assert(lease.image, "shared borrows carry their resolved image")
+        leases[path] = lease
+        images[path] = lease
+        return
+      end
+      if status == "failed" then
+        error("missing generated Pokegear image " .. path .. ": " .. tostring(failure), 0)
+      end
+      assert(status == "pending", "companion preparation reports pending or ready")
+      stalled = stalled + 1
+      if stalled > 10000 then
+        error("stalled generated Pokegear image " .. path, 0)
+      end
+      local timer = love and love.timer
+      if timer ~= nil and timer.sleep ~= nil then
+        timer.sleep(0.001)
+      end
+    end
+  end
   local function realize(node)
     if type(node) == "table" then
       for _, value in pairs(node) do
         realize(value)
       end
     elseif type(node) == "string" and node:sub(-4) == ".png" and images[node] == nil then
-      local bytes = assert(self.runtime.cacheFs:read(node), "missing generated Pokegear image " .. node)
-      images[node] = graphics.newImage(love.filesystem.newFileData(bytes, node))
+      acquire(node)
     end
   end
   realize(plan.content)
@@ -1670,6 +1713,17 @@ function FieldState:dispose()
     self.battleEnvelope:dispose()
     self.battleEnvelope = nil
   end
+  -- Companion borrows return before their session owner tears down: the
+  -- runtime disposal below owns the shared image owner.
+  if self._pokegearLeases ~= nil and self.runtime ~= nil then
+    local pool = assert(self.runtime.imageAssets, "companion borrows return to the shared image owner")
+    for path, lease in pairs(self._pokegearLeases) do
+      self._pokegearLeases[path] = nil
+      pool:release(lease)
+    end
+  end
+  self._pokegearLeases = nil
+  self._pokegearImages = nil
   if self._battlePresentationBinding ~= nil and self.runtime ~= nil then
     if type(self.runtime.unbindBattlePresentation) == "function" then
       self.runtime:unbindBattlePresentation(self._battlePresentationBinding)
@@ -1699,16 +1753,18 @@ function FieldState:dispose()
     self.actorPresentation:dispose()
     self.actorPresentation = nil
   end
-  -- Borrowers release before their owner: open flows and screens
-  -- release their icon-preparation interest while the presentation
-  -- binding is still installed; the presentation unbinds last.
-  if self.runtime then
-    self.runtime:dispose()
-    self.runtime = nil
-  end
+  -- Borrowers release before their owner: pooled renderer and provider
+  -- leases return to the session image owner while it is still alive,
+  -- and open flows release their icon-preparation interest while the
+  -- presentation binding is still installed; the runtime teardown that
+  -- disposes the shared image owner runs last.
   if self.presentationResources then
     self.presentationResources:dispose()
     self.presentationResources = nil
+  end
+  if self.runtime then
+    self.runtime:dispose()
+    self.runtime = nil
   end
 end
 

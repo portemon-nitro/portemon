@@ -220,6 +220,12 @@ function FieldWindowRenderer.new(opts)
   end
   frameData = assert(frameData)
   local pool = opts.imagePool
+  if pool ~= nil then
+    assert(type(pool.request) == "function", "the shared image owner carries pooled requests")
+    assert(type(pool.poll) == "function", "the shared image owner carries pooled readiness")
+    assert(type(pool.acquire) == "function", "the shared image owner carries pooled borrows")
+    assert(type(pool.release) == "function", "the shared image owner carries pooled returns")
+  end
   local ok, err = pcall(function()
     if pool ~= nil then
       -- The strip pixels borrow the shared owner while the retained bytes

@@ -10,6 +10,7 @@ local FakeCache = require("tests.support.FakeCache")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local InactivePokemonNaming = require("tests.support.InactivePokemonNaming")
+local SummaryAcceptanceFixture = require("tests.support.SummaryAcceptanceFixture")
 
 local T = {}
 
@@ -436,7 +437,7 @@ local function stubBackend()
   return { marker = "field-backend", released = false }
 end
 
-local function fieldComposition(starter, queue, backend)
+local function fieldComposition(starter, queue, backend, images)
   local FieldState = requireModule(FIELD_STATE_MODULE, "the field state owns presentation composition")
   local inputCalls = {}
   local input = {}
@@ -472,6 +473,11 @@ local function fieldComposition(starter, queue, backend)
     pokemonNaming = InactivePokemonNaming.new(),
     starterChoice = starter,
     assetPreparation = queue,
+    -- The field update borrows the session image owner for the hidden
+    -- chooser exactly like production: the sized pool keeps texture
+    -- borrows (portrait quads read dimensions off leases) honest without
+    -- a second worker beside the fake queue.
+    imageAssets = images,
     actionKeys = { z = true },
     cancelKeys = { x = true },
     menuKeys = {},
@@ -510,13 +516,16 @@ local function fieldComposition(starter, queue, backend)
   return state, inputCalls, zoomCalls
 end
 
-local function fieldCompositionWithRealInput(starter, queue, backend, input)
+local function fieldCompositionWithRealInput(starter, queue, backend, input, images)
   local FieldState = requireModule(FIELD_STATE_MODULE, "the field state owns presentation composition")
   local zoomCalls = { zoomIn = 0, zoomOut = 0, reset = 0, applied = 0 }
   local runtime = {
     pokemonNaming = InactivePokemonNaming.new(),
     starterChoice = starter,
     assetPreparation = queue,
+    -- The field update borrows the session image owner for the hidden
+    -- chooser exactly like production (see fieldComposition above).
+    imageAssets = images,
     actionKeys = { z = true },
     cancelKeys = { x = true },
     menuKeys = {},
@@ -555,12 +564,13 @@ local function fieldCompositionWithRealInput(starter, queue, backend, input)
   return state, zoomCalls
 end
 
-local function advanceToReady(host, queue, backend, bound)
+local function advanceToReady(host, queue, backend, images, bound)
   bound = bound or 256
   for _ = 1, bound do
     local consumed = host:advancePresentationPreparation({
       assetPreparation = queue,
       gxRenderer = backend,
+      imageAssets = images,
     }, 1)
     Assert.isTrue(consumed == 0 or consumed == 1, "one update finishes at most one preparation step")
     if host:isPresentationReady() then
@@ -612,9 +622,10 @@ function T.reopening_prepares_the_new_presentation_again()
   local host, service = openHeadlessChoice()
   local queue = fakePreparationQueue()
   local backend = stubBackend()
+  local images = SummaryAcceptanceFixture.sizedImagePool()
   openTrio(host, service)
   Assert.equal(
-    host:advancePresentationPreparation({ assetPreparation = queue, gxRenderer = backend }, 1),
+    host:advancePresentationPreparation({ assetPreparation = queue, gxRenderer = backend, imageAssets = images }, 1),
     0,
     "outstanding preparation consumes no step"
   )
@@ -632,13 +643,16 @@ function T.reopening_prepares_the_new_presentation_again()
   openTrio(host, service)
   Assert.isFalse(host:isPresentationReady(), "the reopened chooser starts unprepared")
   Assert.equal(
-    host:advancePresentationPreparation({ assetPreparation = queue, gxRenderer = backend }, 1),
+    host:advancePresentationPreparation({ assetPreparation = queue, gxRenderer = backend, imageAssets = images }, 1),
     0,
     "the reopened chooser waits on its own preparation"
   )
   Assert.isTrue(#queue.requests > firstRequests, "the reopened chooser requests its resources again")
   queue.ready = true
-  Assert.isTrue(advanceToReady(host, queue, backend), "the reopened chooser prepares through bounded steps")
+  Assert.isTrue(
+    advanceToReady(host, queue, backend, images),
+    "the reopened chooser prepares through bounded steps"
+  )
   host:close()
   host:dispose()
 end
@@ -647,7 +661,8 @@ function T.activation_stays_suppressed_while_cleanup_reaches_input_when_hidden()
   local host, service = openHeadlessChoice()
   local queue = fakePreparationQueue()
   local backend = stubBackend()
-  local state, inputCalls = fieldComposition(host, queue, backend)
+  local images = SummaryAcceptanceFixture.sizedImagePool()
+  local state, inputCalls = fieldComposition(host, queue, backend, images)
   openTrio(host, service)
   state:update(1 / 30)
   Assert.isFalse(host:isPresentationReady(), "the chooser stays hidden while preparation is outstanding")
@@ -694,8 +709,9 @@ function T.hidden_keyboard_release_clears_held_direction_before_visible_repeat()
   local host, service = openHeadlessChoice()
   local queue = fakePreparationQueue()
   local backend = stubBackend()
+  local images = SummaryAcceptanceFixture.sizedImagePool()
   local input = FieldInput.new()
-  local state = fieldCompositionWithRealInput(host, queue, backend, input)
+  local state = fieldCompositionWithRealInput(host, queue, backend, input, images)
   input:pressDirection("north", "key:w")
   input:beginUi(0)
   openTrio(host, service)
@@ -712,7 +728,10 @@ function T.hidden_keyboard_release_clears_held_direction_before_visible_repeat()
   Assert.deepEqual(host:status(), before, "hidden preparation never moves starter selection")
 
   queue.ready = true
-  Assert.isTrue(advanceToReady(host, queue, backend), "the chooser prepares through bounded steps")
+  Assert.isTrue(
+    advanceToReady(host, queue, backend, images),
+    "the chooser prepares through bounded steps"
+  )
   state.runtime.session.tick = delay + 3
   state:update(1 / 30)
   Assert.isFalse(input:isHeld("north"), "readiness does not resurrect the released source")
@@ -734,8 +753,9 @@ function T.hidden_stick_neutral_clears_stick_ownership_before_readiness()
   local host, service = openHeadlessChoice()
   local queue = fakePreparationQueue()
   local backend = stubBackend()
+  local images = SummaryAcceptanceFixture.sizedImagePool()
   local input = FieldInput.new()
-  local state = fieldCompositionWithRealInput(host, queue, backend, input)
+  local state = fieldCompositionWithRealInput(host, queue, backend, input, images)
   local joystick = {
     getID = function()
       return 7
@@ -758,7 +778,10 @@ function T.hidden_stick_neutral_clears_stick_ownership_before_readiness()
   end
 
   queue.ready = true
-  Assert.isTrue(advanceToReady(host, queue, backend), "the chooser prepares through bounded steps")
+  Assert.isTrue(
+    advanceToReady(host, queue, backend, images),
+    "the chooser prepares through bounded steps"
+  )
   state.runtime.session.tick = delay + 3
   state:update(1 / 30)
   Assert.isFalse(input:isHeld("west"), "readiness does not resurrect the neutralized stick")
@@ -775,7 +798,8 @@ function T.zoom_controls_stay_live_while_the_chooser_is_hidden()
   local host, service = openHeadlessChoice()
   local queue = fakePreparationQueue()
   local backend = stubBackend()
-  local state, inputCalls, zoomCalls = fieldComposition(host, queue, backend)
+  local images = SummaryAcceptanceFixture.sizedImagePool()
+  local state, inputCalls, zoomCalls = fieldComposition(host, queue, backend, images)
   openTrio(host, service)
   state:update(1 / 30)
   Assert.isFalse(host:isPresentationReady(), "the chooser stays hidden while preparation is outstanding")
@@ -796,8 +820,9 @@ function T.zero_budget_advances_nothing_and_disposal_ends_preparation()
   local host, service = openHeadlessChoice()
   local queue = fakePreparationQueue()
   local backend = stubBackend()
+  local images = SummaryAcceptanceFixture.sizedImagePool()
   openTrio(host, service)
-  local context = { assetPreparation = queue, gxRenderer = backend }
+  local context = { assetPreparation = queue, gxRenderer = backend, imageAssets = images }
   Assert.equal(host:advancePresentationPreparation(context, 0), 0, "a zero budget finishes nothing")
   Assert.equal(#queue.requests, 0, "a zero budget requests nothing")
   Assert.equal(host:advancePresentationPreparation(context, 1), 0, "outstanding preparation consumes no step")
@@ -828,8 +853,9 @@ function T.chooser_holds_at_most_two_unconsumed_preparation_tokens()
   local host, service = openHeadlessChoice()
   local queue = fakePreparationQueue()
   local backend = stubBackend()
+  local images = SummaryAcceptanceFixture.sizedImagePool()
   openTrio(host, service)
-  local context = { assetPreparation = queue, gxRenderer = backend }
+  local context = { assetPreparation = queue, gxRenderer = backend, imageAssets = images }
 
   -- The worker answers faster than the main thread uploads: every advance
   -- below leaves preparation outstanding, so the submitted-but-unconsumed
@@ -842,10 +868,106 @@ function T.chooser_holds_at_most_two_unconsumed_preparation_tokens()
     )
   end
   queue.ready = true
-  Assert.isTrue(advanceToReady(host, queue, backend), "every staged asset still realizes once preparation completes")
+  Assert.isTrue(
+    advanceToReady(host, queue, backend, images),
+    "every staged asset still realizes once preparation completes"
+  )
   Assert.isTrue(host:isPresentationReady(), "the chooser becomes drawable after bounded preparation")
   host:close()
   host:dispose()
+end
+
+function T.session_pool_borrows_back_leased_2d_draws_and_returns_them_once()
+  local host, service = openHeadlessChoice()
+  local queue = fakePreparationQueue()
+  local backend = stubBackend()
+  openTrio(host, service)
+  -- Session-pool double with sized images behind quad geometry, wired
+  -- exactly like the shared owner contract borrows code against.
+  local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
+  local MonCache = require("libs.assets.src.MonCache")
+  local inner = SharedImagePoolFake.new()
+  local pool = {}
+  function pool:request(path, sampler, priority)
+    return inner:request(path, sampler, priority)
+  end
+  function pool:poll(token)
+    return inner:poll(token)
+  end
+  function pool:acquire(token)
+    local lease = inner:acquire(token)
+    lease.kind = "rgba8"
+    local image = assert(lease.image, "shared leases carry their resolved image")
+    if image.getWidth == nil then
+      function image:getWidth()
+        return 256
+      end
+      function image:getHeight()
+        return 256
+      end
+      function image:getDimensions()
+        return 256, 256
+      end
+    end
+    return lease
+  end
+  function pool:release(lease)
+    return inner:release(lease)
+  end
+  function pool:cancel(token)
+    return inner:cancel(token)
+  end
+  function pool:prune()
+    return inner:prune()
+  end
+  function pool:stats()
+    return inner:stats()
+  end
+  queue.ready = true
+  local ready = false
+  for _ = 1, 256 do
+    host:advancePresentationPreparation({ assetPreparation = queue, gxRenderer = backend, imageAssets = pool }, 1)
+    if host:isPresentationReady() then
+      ready = true
+      break
+    end
+  end
+  Assert.isTrue(ready, "pooled preparation still reaches readiness")
+  local presentation = assert(host._presentation, "opening owns the presentation records")
+  local preparation = assert(presentation._preparation, "readiness keeps its preparation records")
+  local resources = preparation:resources()
+  local leases = assert(resources.imageLeases, "pooled preparation tracks its 2D borrows")
+  Assert.notNil(next(leases), "pooled preparation borrows its drawn identities")
+  for key, lease in pairs(leases) do
+    Assert.equal(lease.image, resources.imageEntries[key], "a 2D borrow lands on its prepared physical image")
+  end
+  local machineBackground = assert(resources.machineBackgroundLease, "readiness leases its machine background")
+  Assert.equal(
+    machineBackground.image,
+    resources.machineBackgroundImage,
+    "the machine background draw resolves its prepared image"
+  )
+  local infoBase = assert(resources.infoBaseLease, "readiness leases its info base layer")
+  Assert.equal(infoBase.image, resources.infoBaseImage, "the info base draw resolves its prepared image")
+  local infoOverlay = assert(resources.infoOverlayLease, "readiness leases its info overlay layer")
+  Assert.equal(infoOverlay.image, resources.infoOverlayImage, "the info overlay draw resolves its prepared image")
+  local firstCell = assert(resources.portraitQuads[1], "readiness keeps its portrait cells")
+  Assert.equal(
+    firstCell.lease,
+    leases[MonCache.portraitPagePath(0) .. "|clamp|clamp"],
+    "portrait cells draw through the page borrow"
+  )
+  local handles = assert(resources.imageHandles, "pooled preparation shares stable sampling handles")
+  for key, lease in pairs(leases) do
+    local handle = assert(handles[key], "every 2D borrow carries its material handle")
+    Assert.equal(handle.image, lease.image, "handles resolve the borrowed image")
+    Assert.equal(handle.palette, lease.palette, "handles resolve the borrowed palette")
+    Assert.equal(handle.indexed, lease.kind == "r8", "handles flag indexed sampling exactly")
+    Assert.equal(handle.image, resources.imageEntries[key], "handles share the prepared physical image")
+  end
+  host:close()
+  host:dispose()
+  Assert.equal(inner:stats().outstandingLeases, 0, "disposal returns every 2D borrow exactly once")
 end
 
 function T.malformed_prepared_payloads_fail_preparation_without_blank_scene()
@@ -857,8 +979,9 @@ function T.malformed_prepared_payloads_fail_preparation_without_blank_scene()
   queue.malformed = true
   queue.ready = true
   local backend = stubBackend()
+  local images = SummaryAcceptanceFixture.sizedImagePool()
   openTrio(host, service)
-  local context = { assetPreparation = queue, gxRenderer = backend }
+  local context = { assetPreparation = queue, gxRenderer = backend, imageAssets = images }
 
   local failure = Assert.throws(function()
     for _ = 1, 64 do
@@ -979,7 +1102,11 @@ function T.chooser_requests_only_the_pages_selected_by_its_candidates()
   local queue = fakePreparationQueue()
   queue.ready = true
   local backend = stubBackend()
-  Assert.isTrue(advanceToReady(host, queue, backend), "the chooser prepares through bounded steps")
+  local images = SummaryAcceptanceFixture.sizedImagePool()
+  Assert.isTrue(
+    advanceToReady(host, queue, backend, images),
+    "the chooser prepares through bounded steps"
+  )
   Assert.isTrue(host:isPresentationReady(), "the chooser becomes drawable from its selected pages")
   local pagesByImage = {}
   for pageId, page in pairs(assert(portraits.pages, "the staged manifest carries its pages")) do
@@ -1051,7 +1178,8 @@ function T.actual_portrait_pages_are_required_before_their_image_paths()
   local queue = fakePreparationQueue()
   queue.ready = true
   local backend = stubBackend()
-  local context = { assetPreparation = queue, gxRenderer = backend, derivedAssets = derivedAssets }
+  local images = SummaryAcceptanceFixture.sizedImagePool()
+  local context = { assetPreparation = queue, gxRenderer = backend, derivedAssets = derivedAssets, imageAssets = images }
   for _ = 1, 64 do
     host:advancePresentationPreparation(context, 1)
   end
@@ -1099,6 +1227,7 @@ function T.absent_portrait_page_fails_preparation_without_substitution()
   local queue = fakePreparationQueue()
   queue.ready = true
   local backend = stubBackend()
+  local images = SummaryAcceptanceFixture.sizedImagePool()
   openTrio(host, service)
   local derivedAssets = {
     requestMonPortraitPage = function(pageId, _)
@@ -1107,7 +1236,7 @@ function T.absent_portrait_page_fails_preparation_without_substitution()
   }
   local failure = Assert.throws(function()
     host:advancePresentationPreparation(
-      { assetPreparation = queue, gxRenderer = backend, derivedAssets = derivedAssets },
+      { assetPreparation = queue, gxRenderer = backend, derivedAssets = derivedAssets, imageAssets = images },
       1
     )
   end, "an absent portrait page fails instead of substituting content")

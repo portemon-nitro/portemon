@@ -9,10 +9,11 @@
 -- generated durations and playback modes. Non-player subjects stay
 -- host-owned: the host injects drawSubject with an explicit source position
 -- and icon frame, and the renderer only brackets the call with balanced
--- graphics state. Generated images are owned here
--- and released on dispose; the text renderer and subject resources stay
--- host-owned.
+-- graphics state. Generated images are owned here and released on
+-- dispose, or borrowed from the shared image owner and returned there;
+-- the text renderer and subject resources stay host-owned.
 
+local ImageSampling = require("libs.nds.src.love.ImageSampling")
 local PixelScale = require("libs.ui.src.PixelScale")
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 local Rgb555 = require("libs.codec.src.Rgb555")
@@ -24,7 +25,8 @@ local NamingScreenRenderer = {}
 ---@field text table<string, function>
 ---@field drawSubject fun(graphics: table<string, function>, subject: table<string, unknown>, placement: { x: number, y: number, frameIndex: integer })
 ---@field manifest table<string, unknown>
----@field imageLoader fun(path: string): unknown
+---@field imageLoader (fun(path: string): unknown)? injected generated-image loader behind test and intro composition
+---@field imagePool table<string, unknown>? borrowed shared generated-image owner behind field chrome
 
 ---@class NamingScreenRenderer
 ---@field graphics table<string, function>
@@ -35,6 +37,8 @@ local NamingScreenRenderer = {}
 ---@field images table<string, unknown>
 ---@field quads table<table, table<string, unknown>>
 ---@field atlasSizes table<string, table<string, integer>>
+---@field _pool table<string, unknown>? borrowed shared image owner behind leased chrome
+---@field _leases table<string, table<string, unknown>> installed borrows by image key
 ---@field released boolean
 ---@field new fun(options: NamingScreenRendererOptions): NamingScreenRenderer
 ---@field draw fun(self: NamingScreenRenderer, view: NamingScreenSnapshot, layout: NamingScreenLayoutResult)
@@ -223,14 +227,71 @@ local function requireDenseArray(entries, what)
   assert(count > 0 and highestIndex == count, "naming renderer requires nonempty dense " .. what)
 end
 
----@param options { graphics: table<string, function>, text: table<string, function>, drawSubject: fun(graphics: table<string, function>, subject: table<string, unknown>, placement: { x: number, y: number, frameIndex: integer }), manifest: table<string, unknown>, imageLoader: fun(path: string): unknown }
+-- Naming chrome samples point-filtered and clamped, matching the direct
+-- construction below, so pooled borrows draw identically.
+local POOLED_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }
+
+-- Borrows one generated visual through the shared owner, waiting out its
+-- classification without blocking the field longer than the bounded stall
+-- budget. Failures name their path instead of drawing a blank visual.
+---@param pool table<string, unknown>
+---@param token integer shared-owner request token behind the borrow
+---@param path string generated visual path behind diagnostics
+---@param what string visual role behind diagnostics
+---@return table<string, unknown> borrow resolving the immutable visual
+local function acquireReady(pool, token, path, what)
+  local stalled = 0
+  while true do
+    local status, failure = pool:poll(token)
+    if status == "ready" then
+      return pool:acquire(token)
+    end
+    if status == "failed" then
+      error(what .. " missing at " .. path .. ": " .. tostring(failure), 0)
+    end
+    assert(status == "pending", "naming preparation reports pending or ready")
+    stalled = stalled + 1
+    if stalled > 10000 then
+      error(what .. " stalled at " .. path, 0)
+    end
+    local timer = love and love.timer
+    if timer ~= nil and timer.sleep ~= nil then
+      timer.sleep(0.001)
+    end
+  end
+end
+
+-- Requests one generated visual through the shared owner and resolves
+-- its borrow. Pool calls stay in module scope: captured upvalues do not
+-- narrow inside the acquisition closure below.
+---@param pool table<string, unknown>
+---@param path string generated visual path behind diagnostics
+---@param what string visual role behind diagnostics
+---@return table<string, unknown> borrow resolving the immutable visual
+local function acquireLease(pool, path, what)
+  local token = pool:request(path, POOLED_SAMPLER, "demand")
+  return acquireReady(pool, token, path, what)
+end
+
+-- Returns one borrow to the shared owner without touching its image:
+-- pooled images die with their lease, never with an image release.
+---@param pool table<string, unknown>
+---@param lease table<string, unknown> borrow to return
+local function releaseLease(pool, lease)
+  pcall(pool.release, pool, lease)
+end
+
+---@param options { graphics: table<string, function>, text: table<string, function>, drawSubject: fun(graphics: table<string, function>, subject: table<string, unknown>, placement: { x: number, y: number, frameIndex: integer }), manifest: table<string, unknown>, imageLoader: (fun(path: string): unknown)?, imagePool: table<string, unknown>? }
 ---@return NamingScreenRenderer
 function NamingScreenRenderer.new(options)
   assert(type(options) == "table" and options.graphics and options.text, "naming renderer requires graphics and text")
   assert(type(options.text.drawText) == "function", "naming renderer requires FieldTextRenderer.drawText")
   assert(type(options.drawSubject) == "function", "naming renderer requires a host drawSubject callback")
   assert(type(options.manifest) == "table", "naming renderer requires the field-UI naming manifest")
-  assert(type(options.imageLoader) == "function", "naming renderer requires the generated image loader")
+  assert(
+    type(options.imageLoader) == "function" or options.imagePool ~= nil,
+    "naming renderer requires the generated image loader or a shared image owner"
+  )
   local naming = options.manifest.namingScreen
   assert(type(naming) == "table", "naming renderer requires the namingScreen manifest section")
   assert(type(naming.base) == "table", "naming renderer requires the naming base entry")
@@ -353,6 +414,7 @@ function NamingScreenRenderer.new(options)
     end
   end
   ---@type NamingScreenRenderer
+  local pool = options.imagePool
   local renderer = setmetatable({
     graphics = options.graphics,
     text = options.text,
@@ -362,17 +424,41 @@ function NamingScreenRenderer.new(options)
     images = {},
     quads = {},
     atlasSizes = atlasSizes,
+    _pool = pool,
+    _leases = {},
     released = false,
   }, NamingScreenRenderer)
   local acquired = renderer.images
   local order = acquireOrder(naming)
   local ok, failure = pcall(function()
     for _, key in ipairs(order) do
-      local image = options.imageLoader(paths[key])
-      assert(image ~= nil, "naming image loader returned no image for " .. key)
-      acquired[key] = image
-      assert(type(image.setFilter) == "function", "naming image filtering is unavailable for " .. key)
-      image:setFilter("nearest", "nearest")
+      -- A borrowed pool image stays renderer-drawn but pool-owned: its
+      -- lease returns at dispose while loader-owned images release
+      -- directly, so the two ownership paths never mix on one instance.
+      if pool ~= nil then
+        local lease = acquireLease(assert(pool), paths[key], "naming chrome")
+        local image = assert(lease.image, "shared borrows carry their resolved image")
+        renderer._leases[key] = lease
+        acquired[key] = image
+        assert(type(image.setFilter) == "function", "naming image filtering is unavailable for " .. key)
+        image:setFilter("nearest", "nearest")
+      else
+        local loader = assert(options.imageLoader, "naming renderer requires its generated image loader")
+        local loaded = loader(paths[key])
+        assert(loaded ~= nil, "naming image loader returned no image for " .. key)
+        -- A loader answer carrying the lease sampler surface borrows
+        -- from the shared owner: the image stays drawable while the
+        -- lease installs beside it for sampler draws and returns at
+        -- dispose. Bare loader-owned images behave exactly as before.
+        local image = loaded
+        if type(loaded) == "table" and type(loaded.drawQuad) == "function" then
+          renderer._leases[key] = loaded
+          image = assert(loaded.image, "shared borrows carry their resolved image")
+        end
+        acquired[key] = image
+        assert(type(image.setFilter) == "function", "naming image filtering is unavailable for " .. key)
+        image:setFilter("nearest", "nearest")
+      end
     end
     for _, record in ipairs(animatedRecords) do
       for _, frame in ipairs(record.frames) do
@@ -403,10 +489,21 @@ function NamingScreenRenderer.new(options)
   end)
   if not ok then
     for _, key in ipairs(order) do
-      local image = acquired[key]
-      if image ~= nil then
-        pcall(image.release, image)
+      local lease = renderer._leases[key]
+      if lease ~= nil then
+        -- Borrowed images die with their lease: releasing the image as
+        -- well would free the session-owned physical underneath the pool.
+        renderer._leases[key] = nil
         acquired[key] = nil
+        if pool ~= nil then
+          releaseLease(assert(pool), lease)
+        end
+      else
+        local image = acquired[key]
+        if image ~= nil then
+          pcall(image.release, image)
+          acquired[key] = nil
+        end
       end
     end
     renderer.quads = {}
@@ -444,11 +541,10 @@ function NamingScreenRenderer:draw(view, layout)
   g.push()
   g.translate(layout.surface.x, layout.surface.y)
   g.setColor(1, 1, 1, 1)
-  g.draw(self.images.base, 0, 0)
-  g.draw(page, self.placement.x, self.placement.y)
+  self:_drawKeyed("base", nil, 0, 0)
+  self:_drawKeyed(view.page, nil, self.placement.x, self.placement.y)
   local function drawVisual(imageKey, x, y)
-    local image = assert(self.images[imageKey], "naming visual is missing: " .. imageKey)
-    g.draw(image, PixelScale.snapLogical(x), PixelScale.snapLogical(y))
+    self:_drawKeyed(imageKey, nil, PixelScale.snapLogical(x), PixelScale.snapLogical(y))
   end
   -- The support backing composites first so the home controls it frames
   -- stay visible above it.
@@ -580,25 +676,46 @@ function NamingScreenRenderer:draw(view, layout)
   g.pop()
 end
 
+-- One chrome/atlas draw through the shared exact sampler when its image
+-- key is a pooled borrow, else the unchanged eager raw draw. The quad
+-- stays optional and extra placement arguments pass through.
+---@param imageKey string acquisition key ("base", page, "control:*", "atlas:*")
+---@param quad love.Quad?
+---@param x number
+---@param y number
+---@param ... unknown extra placement arguments forwarded to the draw call
+function NamingScreenRenderer:_drawKeyed(imageKey, quad, x, y, ...)
+  local g = self.graphics
+  local lease = self._leases[imageKey]
+  if lease ~= nil then
+    ImageSampling.draw(g, lease, quad, x, y, ...)
+    return
+  end
+  local image = assert(self.images[imageKey], "naming visual is missing: " .. tostring(imageKey))
+  if quad ~= nil then
+    g.draw(image, quad, x, y, ...)
+  else
+    g.draw(image, x, y, ...)
+  end
+end
+
 -- Draw one resolved animation frame at its anchor plus the generated frame
 -- offset. Cursor frames additionally draw their pulse mask tinted with the
 -- current glow color; only mask pixels take the tint.
 function NamingScreenRenderer:_drawAnimatedFrame(record, frame, anchorX, anchorY, glowAngle)
   local g = self.graphics
   local visual = assert(self.quads[frame], "naming animation frame was not acquired")
-  local image = assert(self.images["atlas:" .. frame.asset], "naming animation atlas is missing")
-  g.draw(
-    image,
+  self:_drawKeyed(
+    "atlas:" .. frame.asset,
     visual.quad,
     PixelScale.snapLogical(anchorX + frame.offset.x),
     PixelScale.snapLogical(anchorY + frame.offset.y)
   )
   if glowAngle ~= nil and record.pulseAsset ~= nil then
-    local maskImage = assert(self.images["atlas:" .. record.pulseAsset], "naming pulse-mask atlas is missing")
     local tint = pulseColor(glowAngle)
     g.setColor(tint.r, tint.g, tint.b, 1)
-    g.draw(
-      maskImage,
+    self:_drawKeyed(
+      "atlas:" .. record.pulseAsset,
       assert(visual.maskQuad, "naming cursor frame was not masked"),
       PixelScale.snapLogical(anchorX + frame.offset.x),
       PixelScale.snapLogical(anchorY + frame.offset.y)
@@ -612,12 +729,30 @@ function NamingScreenRenderer:dispose()
     return
   end
   self.released = true
-  for key, image in pairs(self.images) do
-    if image ~= nil then
-      pcall(image.release, image)
+  -- Borrowed chrome returns to the shared owner instead of releasing
+  -- its images: the pool alone frees session-owned physicals.
+  local pool = self._pool
+  self._pool = nil
+  if pool ~= nil then
+    for key, lease in pairs(self._leases) do
+      self._leases[key] = nil
       self.images[key] = nil
+      pcall(pool.release, pool, lease)
     end
+    self.quads = {}
+    self.drawSubject = nil
+    return
   end
+  for key, image in pairs(self.images) do
+    -- Loader answers that borrowed a pool lease stay loader-owned: the
+    -- loader returns its borrows at its own teardown, so releasing the
+    -- image here would free the session-owned physical underneath it.
+    if image ~= nil and self._leases[key] == nil then
+      pcall(image.release, image)
+    end
+    self.images[key] = nil
+  end
+  self._leases = {}
   self.quads = {}
   self.drawSubject = nil
 end

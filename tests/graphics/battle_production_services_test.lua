@@ -16,6 +16,7 @@ local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldWindowRenderer = require("libs.hgss.src.ui.FieldWindowRenderer")
 local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
+local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
 local MonCache = require("libs.assets.src.MonCache")
 local RomImporter = require("romdump.src.source.RomImporter")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
@@ -454,6 +455,16 @@ function T.presented_launch_renders_real_staged_frames(scope, context)
     Assert.isTrue(manifest.verified == true, versionId .. " stages the verified battle manifest")
     local wildRole = assert(manifest.audioRoles.wild, versionId .. " stages its wild music role")
     local text, windows = productionDrawServices(scope, cacheFs, versionId)
+    -- Real staged pixels draw through the session image owner: the real
+    -- pool classifies through its own worker, following the migrated
+    -- starter-ball/map-renderer/bag precedent (fake leases can never reach
+    -- the real GPU backend or satisfy staged-pixel assertions).
+    local images = ImageAssetPool.new(cacheFs)
+    scope:own({
+      release = function()
+        images:dispose()
+      end,
+    })
     local envelope = FieldBattlePresentation.new({
       cacheFs = cacheFs,
       graphics = love.graphics,
@@ -461,6 +472,7 @@ function T.presented_launch_renders_real_staged_frames(scope, context)
       text = text,
       audio = recordingAudio(),
       measureDisplay = compactMeasurement,
+      imagePool = images,
     })
     local launchId = "battle-production"
     local host = stubHost()
@@ -596,6 +608,12 @@ function T.cold_global_and_scene_build_one_verified_screen(scope, context)
       end
       return cacheFs:read(path)
     end
+    -- The session image owner resolves paths exactly like the versioned
+    -- cache: the hiding view delegates confinement while still hiding the
+    -- pending global/scene bytes above.
+    function view.resolve(_, relativePath)
+      return cacheFs:resolve(relativePath)
+    end
     local worker = { ready = nil, failure = nil, asks = {} }
     local derivedAssets = {}
     function derivedAssets.requestBattleScene(key, urgency)
@@ -621,6 +639,15 @@ function T.cold_global_and_scene_build_one_verified_screen(scope, context)
     end
     local ok, failure = xpcall(function()
       local text, windows = productionDrawServices(scope, cacheFs, versionId)
+      -- Real staged pixels draw through the session image owner (see the
+      -- presented launch above); the hiding view still governs cache
+      -- reads for the pending/ready progression.
+      local images = ImageAssetPool.new(view)
+      scope:own({
+        release = function()
+          images:dispose()
+        end,
+      })
       local envelope = FieldBattlePresentation.new({
         cacheFs = view,
         graphics = love.graphics,
@@ -629,6 +656,7 @@ function T.cold_global_and_scene_build_one_verified_screen(scope, context)
         audio = recordingAudio(),
         measureDisplay = compactMeasurement,
         derivedAssets = derivedAssets,
+        imagePool = images,
       })
       local launchId = "battle-cold-global"
       local port = buildPort(envelope, {

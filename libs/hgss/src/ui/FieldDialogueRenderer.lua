@@ -17,6 +17,7 @@
 -- injected explicitly; this renderer never reloads it from the cache.
 
 local Errors = require("libs.errors.src.Errors")
+local ImageSampling = require("libs.nds.src.love.ImageSampling")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
@@ -32,6 +33,8 @@ local FieldWindowRenderer = require("libs.hgss.src.ui.FieldWindowRenderer")
 ---@field _focusIndicatorEnabled boolean whether the source focus indicator is composed
 ---@field _window FieldWindowRenderer? shared user-frame image/quads plus content fill
 ---@field _ownsWindow boolean whether this renderer owns (and releases) its window primitive
+---@field _pool table<string, unknown>? borrowed shared image owner behind the continuation cursor
+---@field _cursorLease table<string, unknown>? installed cursor borrow returned on release
 ---@field _cursorImage love.Image?
 ---@field _cursorQuadCache table<integer, table<integer, love.Quad>>|nil
 local FieldDialogueRenderer = {}
@@ -55,7 +58,41 @@ FieldDialogueRenderer.__index = FieldDialogueRenderer
 -- PNG bytes still enter through love.filesystem.newFileData); opts.theme:
 -- geometry record.
 
----@param opts { cacheFs: CacheFs, manifest: table<string, unknown>, text: unknown, theme?: FieldDialogueTheme, graphics?: unknown, drawFocusIndicator?: boolean, windowRenderer?: FieldWindowRenderer }
+-- Dialogue visuals sample point-filtered and clamped, matching the
+-- direct construction below, so pooled borrows draw identically.
+local POOLED_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }
+
+-- Borrows one generated visual through the shared owner, waiting out its
+-- classification without blocking the field longer than the bounded stall
+-- budget. Failures name their path instead of drawing a blank visual.
+---@param pool table<string, unknown>
+---@param token integer shared-owner request token behind the borrow
+---@param path string generated visual path behind diagnostics
+---@param what string visual role behind diagnostics
+---@return table<string, unknown> borrow resolving the immutable visual
+local function acquireReady(pool, token, path, what)
+  local stalled = 0
+  while true do
+    local status, failure = pool:poll(token)
+    if status == "ready" then
+      return pool:acquire(token)
+    end
+    if status == "failed" then
+      error(what .. " missing at " .. path .. ": " .. tostring(failure), 0)
+    end
+    assert(status == "pending", "dialogue preparation reports pending or ready")
+    stalled = stalled + 1
+    if stalled > 10000 then
+      error(what .. " stalled at " .. path, 0)
+    end
+    local timer = love and love.timer
+    if timer ~= nil and timer.sleep ~= nil then
+      timer.sleep(0.001)
+    end
+  end
+end
+
+---@param opts { cacheFs: CacheFs, manifest: table<string, unknown>, text: unknown, theme?: FieldDialogueTheme, graphics?: unknown, drawFocusIndicator?: boolean, windowRenderer?: FieldWindowRenderer, imagePool?: table<string, unknown> }
 ---@return FieldDialogueRenderer
 function FieldDialogueRenderer.new(opts)
   assert(
@@ -104,6 +141,8 @@ function FieldDialogueRenderer.new(opts)
     _focusIndicatorEnabled = opts.drawFocusIndicator ~= false,
     _window = nil,
     _ownsWindow = borrowedWindow == nil,
+    _pool = opts.imagePool,
+    _cursorLease = nil,
     _cursorImage = nil,
     _cursorQuadCache = nil,
   }, FieldDialogueRenderer)
@@ -112,7 +151,12 @@ function FieldDialogueRenderer.new(opts)
     self._window = borrowedWindow
   else
     local windowOk, windowErr = pcall(function()
-      self._window = FieldWindowRenderer.new({ cacheFs = cacheFs, manifest = manifest, graphics = graphics })
+      self._window = FieldWindowRenderer.new({
+        cacheFs = cacheFs,
+        manifest = manifest,
+        graphics = graphics,
+        imagePool = opts.imagePool,
+      })
     end)
     if not windowOk then
       self:release()
@@ -121,19 +165,29 @@ function FieldDialogueRenderer.new(opts)
   end
   local cursor = assert(manifest.dialogueFrames.continueCursor)
   local cursorAsset = assert(manifest.assets[cursor.asset])
-  local cursorData = cacheFs:read(cursorAsset.image)
-  if not cursorData then
-    self:release()
-    Errors.raise(
-      FieldErrors.FIELD_UI_CONTINUE_CURSOR_MISSING,
-      "dialogue continuation cursor missing at " .. cursorAsset.image,
-      { path = cursorAsset.image }
-    )
-  end
-  cursorData = assert(cursorData)
+  local cursorPath = assert(cursorAsset.image)
+  local pool = opts.imagePool
   local cursorOk, cursorErr = pcall(function()
-    self._cursorImage = graphics.newImage(love.filesystem.newFileData(cursorData, assert(cursorAsset.image)))
-    self._cursorImage:setFilter("nearest", "nearest")
+    if pool ~= nil then
+      -- The continuation cursor borrows the shared owner as an installed
+      -- lease; quads stay renderer-owned geometry over the borrowed image.
+      local token = pool:request(cursorPath, POOLED_SAMPLER, "demand")
+      local lease = acquireReady(pool, token, cursorPath, "dialogue continuation cursor")
+      self._cursorLease = lease
+      self._cursorImage = assert(lease.image, "shared borrows carry their resolved image")
+      self._cursorImage:setFilter("nearest", "nearest")
+    else
+      local cursorData = cacheFs:read(cursorPath)
+      if not cursorData then
+        Errors.raise(
+          FieldErrors.FIELD_UI_CONTINUE_CURSOR_MISSING,
+          "dialogue continuation cursor missing at " .. cursorPath,
+          { path = cursorPath }
+        )
+      end
+      self._cursorImage = graphics.newImage(love.filesystem.newFileData(assert(cursorData), cursorPath))
+      self._cursorImage:setFilter("nearest", "nearest")
+    end
     self._cursorQuadCache = {}
     for style, styleEntry in pairs(cursor.styles) do
       local phases = assert(styleEntry).phases
@@ -189,6 +243,11 @@ function FieldDialogueRenderer:_drawCursor(status, layout)
   local quad = assert(quads)[status.cursorPhase]
   local placement = assert(layout.cursor, "dialogue layout must supply a cursor rectangle")
   lg.setColor(1, 1, 1, 1)
+  local cursorLease = self._cursorLease
+  if cursorLease ~= nil then
+    ImageSampling.draw(lg, cursorLease, quad, placement.x, placement.y)
+    return
+  end
   lg.draw(assert(self._cursorImage), quad, placement.x, placement.y)
 end
 
@@ -281,7 +340,15 @@ function FieldDialogueRenderer:release()
   if self._window ~= nil then
     self._window = nil
   end
-  if self._cursorImage and self._cursorImage.release then
+  local pool = self._pool
+  self._pool = nil
+  local lease = self._cursorLease
+  self._cursorLease = nil
+  if pool ~= nil then
+    if lease ~= nil then
+      pool:release(lease)
+    end
+  elseif self._cursorImage and self._cursorImage.release then
     self._cursorImage:release()
   end
   self._cursorImage = nil

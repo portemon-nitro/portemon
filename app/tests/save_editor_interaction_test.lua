@@ -7576,6 +7576,11 @@ local function drawPaintView(view, width, height, graphics, text, cacheReads)
       image = function()
         return stubPaintImage("item")
       end,
+      -- Eager-shaped provider: no pooled borrow, so icon draws keep
+      -- their raw path and the stable draw-command assertions hold.
+      handle = function()
+        return nil
+      end,
       quadFor = function()
         return {}
       end,

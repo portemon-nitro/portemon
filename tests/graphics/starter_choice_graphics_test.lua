@@ -6,6 +6,7 @@ local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldWindowRenderer = require("libs.hgss.src.ui.FieldWindowRenderer")
 local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
+local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local RomImporter = require("romdump.src.source.RomImporter")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
@@ -72,12 +73,23 @@ end
 -- Prepares the production chooser through the field-owned composition seam:
 -- concrete resources resolve through the queue while the renderer wrapper
 -- borrows the live backend. Returns the borrowed backend for release.
-local function prepareHost(host, cacheFs)
+local function prepareHost(host, cacheFs, scope)
   local GxRenderer = requireModule("libs.nds.src.love.GxRenderer", "the field graphics backend owns the shader suite")
   local backend = GxRenderer.new()
   local queue = preparationQueue(cacheFs)
+  -- Real staged pixels draw through the session image owner: the real pool
+  -- classifies through its own worker while the deterministic fake queue
+  -- above keeps serving the mesh/plan path, so no second worker starts
+  -- beside the session one. Precedent: the starter-ball, map-renderer, and
+  -- bag graphics suites own a real pool the same way.
+  local images = ImageAssetPool.new(cacheFs)
+  scope:own({
+    release = function()
+      images:dispose()
+    end,
+  })
   for _ = 1, 4096 do
-    host:advancePresentationPreparation({ assetPreparation = queue, gxRenderer = backend }, 1)
+    host:advancePresentationPreparation({ assetPreparation = queue, gxRenderer = backend, imageAssets = images }, 1)
     if host:isPresentationReady() then
       return backend
     end
@@ -382,7 +394,7 @@ function T.source_rate_rotation_renders_intermediate_frames_without_advancing_se
     local host = openProductionChoice(versionId, cacheFs, nil, function()
       return nativeWideBox()
     end)
-    local backend = prepareHost(host, cacheFs)
+    local backend = prepareHost(host, cacheFs, scope)
     local window = openWindowBorrower(cacheFs, versionId)
     host:move("right")
     host:update()
@@ -480,7 +492,7 @@ function T.native_info_artwork_remains_visible_through_zoom_and_back_out(scope, 
     local host = openProductionChoice(versionId, cacheFs, nil, function()
       return nativeWideBox()
     end)
-    local backend = prepareHost(host, cacheFs)
+    local backend = prepareHost(host, cacheFs, scope)
     local window = openWindowBorrower(cacheFs, versionId)
     local fieldColor = { 0.9, 0, 0.8, 1 }
     host:confirm()
@@ -537,7 +549,7 @@ function T.native_machine_art_tracks_source_prompt_layer_visibility(scope, conte
     local host = openProductionChoice(versionId, cacheFs, nil, function()
       return nativeWideBox()
     end)
-    local backend = prepareHost(host, cacheFs)
+    local backend = prepareHost(host, cacheFs, scope)
     local window = openWindowBorrower(cacheFs, versionId)
     local initial = drawFrame(scope, host, window, 536, 240)
     local candidates, machinePlacement = machineSampleCandidates(host, manifest, cacheFs)
@@ -642,7 +654,7 @@ function T.retail_scene_realizes_generated_assets_and_changes_across_choice_flow
     end)
     Assert.isFalse(host:status().done, versionId .. " opens an active chooser")
 
-    local backend = prepareHost(host, cacheFs)
+    local backend = prepareHost(host, cacheFs, scope)
     local window = openWindowBorrower(cacheFs, versionId)
     local initial = drawFrame(scope, host, window, 536, 240)
     Assert.isTrue(brightPixels(initial, 536, 240) > 20, versionId .. " initial chooser state leaves visible pixels")
@@ -733,7 +745,7 @@ function T.non_trio_candidate_inspects_through_the_mon_portrait_contract(scope, 
     local status = host:status()
     Assert.isFalse(status.done, versionId .. " inspecting keeps the chooser active")
     Assert.equal(status.cursor, 1, versionId .. " the middle candidate remains selected")
-    local backend = prepareHost(host, cacheFs)
+    local backend = prepareHost(host, cacheFs, scope)
     local window = openWindowBorrower(cacheFs, versionId)
     local middleFrame = drawFrame(scope, host, window, 536, 240)
     Assert.isTrue(brightPixels(middleFrame, 536, 240) > 0, versionId .. " portrait is visible")
@@ -1001,7 +1013,7 @@ function T.actual_topology_replaces_fabricated_screens_with_usable_machine_pane(
     local adaptedPlacement = assert(adaptedPlan.panes[1].placement, versionId .. " nativeLike pane carries its placement")
     Assert.equal(adaptedPlacement.logicalWidth, 256, versionId .. " nativeLike keeps native logical width")
     Assert.equal(adaptedPlacement.logicalHeight, 192, versionId .. " nativeLike keeps native logical height")
-    local backend = prepareHost(adapted, cacheFs)
+    local backend = prepareHost(adapted, cacheFs, scope)
     local window = openWindowBorrower(cacheFs, versionId)
     local before = snapshotOf(adapted, versionId)
     drawFrame(scope, adapted, window, 640, 480)
@@ -1065,7 +1077,7 @@ function T.native_like_inspect_shows_the_machine_derived_chooser(scope, context)
     local placement = assert(plan.panes[1].placement, versionId .. " rewritten pane carries its placement")
     Assert.equal(placement.logicalWidth, 256, versionId .. " rewritten pane keeps native logical width")
     Assert.equal(placement.logicalHeight, 192, versionId .. " rewritten pane keeps native logical height")
-    local backend = prepareHost(host, cacheFs)
+    local backend = prepareHost(host, cacheFs, scope)
     local window = openWindowBorrower(cacheFs, versionId)
     local image = drawFrame(scope, host, window, 640, 480)
     local manifest = loadManifest(cacheModule, cacheFs)

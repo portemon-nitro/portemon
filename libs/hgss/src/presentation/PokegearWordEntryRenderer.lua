@@ -86,7 +86,7 @@ function PokegearWordEntryRenderer.drawPane(graphics, images, text, content, vie
   if type(panelPath) == "string" then
     local panel = images[panelPath]
     if panel ~= nil then
-      graphics.draw(panel, 0, 0)
+      panel:draw(graphics, 0, 0)
     end
   end
   if text ~= nil and type(text.drawText) == "function" and view.wordKey ~= nil then

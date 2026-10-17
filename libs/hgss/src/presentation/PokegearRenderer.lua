@@ -40,10 +40,10 @@ end
 ---@param what string
 local function drawPrepared(graphics, images, path, what)
   assert(type(path) == "string", "the companion plan resolves its " .. what .. " image")
-  local image = images[path]
-  assert(image ~= nil, "the companion render needs its prepared " .. what .. " image")
+  local lease = images[path]
+  assert(lease ~= nil, "the companion render needs its prepared " .. what .. " image")
   graphics.setColor(1, 1, 1, 1)
-  graphics.draw(image, 0, 0)
+  lease:draw(graphics, 0, 0)
 end
 
 ---@param graphics love.graphics
@@ -54,9 +54,9 @@ end
 ---@param y number sprite center
 local function drawSprite(graphics, images, frames, frameIndex, x, y)
   local frame = assert(frames[frameIndex], "the clock sprite strip carries its frame")
-  local image = images[frame.image]
-  assert(image ~= nil, "the companion render needs its prepared clock sprite")
-  graphics.draw(image, x + frame.anchorX, y + frame.anchorY)
+  local lease = images[frame.image]
+  assert(lease ~= nil, "the companion render needs its prepared clock sprite")
+  lease:draw(graphics, x + frame.anchorX, y + frame.anchorY)
 end
 
 -- The civil clock strip in upper information-local coordinates: the source
@@ -137,9 +137,9 @@ local function drawStrip(graphics, images, content, view)
   ]
   if corners ~= nil and view.entered ~= true and centerX ~= nil then
     for index, offset in ipairs(CORNER_OFFSETS) do
-      local corner = images[corners[index]] --[[@as love.Image]]
+      local corner = images[corners[index]]
       assert(corner ~= nil, "the companion render needs its prepared cursor corners")
-      graphics.draw(corner, centerX + offset[1] - 8, SLOT_CENTER_Y + offset[2] - 8)
+      corner:draw(graphics, centerX + offset[1] - 8, SLOT_CENTER_Y + offset[2] - 8)
     end
   end
 end
@@ -185,10 +185,10 @@ local function drawChild(graphics, images, text, content, view)
     tab --[[@as string]]
   ]
   if type(path) == "string" then
-    local image = images[path]
-    if image ~= nil then
+    local lease = images[path]
+    if lease ~= nil then
       graphics.setColor(1, 1, 1, 1)
-      graphics.draw(image, 0, 0)
+      lease:draw(graphics, 0, 0)
     end
   end
 end

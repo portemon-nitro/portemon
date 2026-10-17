@@ -9,6 +9,7 @@
 -- view must be identical. PNG copies land beside the run for inspection.
 
 local Assert = require("tests.support.Assert")
+local StubLease = require("tests.support.StubLease")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
 local BattlePresentationModel = require("game.hgss.src.battle.BattlePresentationModel")
 local BattleScreenState = require("game.hgss.src.battle.BattleScreenState")
@@ -132,6 +133,20 @@ local function stagedImage(scope, cacheFs, path, what)
   local image = scope:own(love.graphics.newImage(decodeData(scope, cacheFs, path, what)))
   image:setFilter("nearest", "nearest")
   return image
+end
+
+-- Wraps one cropped test-side portrait cell in the production drawable
+-- shape: the pool lease paired with its cell quad, here a straight
+-- sampler lease over the staged crop image with a full crop quad.
+---@param image love.Image
+---@return { lease: table<string, unknown>, image: love.Image, quad: love.Quad }
+local function cellHandle(image)
+  local width, height = image:getWidth(), image:getHeight()
+  return {
+    lease = StubLease.over(image),
+    image = image,
+    quad = love.graphics.newQuad(0, 0, width, height, width, height),
+  }
 end
 
 -- Crops one staged portrait cell out of its atlas page into its own
@@ -284,10 +299,10 @@ local function captureServices(scope, cacheFs, versionId)
   local foeSelector = MonCache.portraitSelector(FOE_SPECIES, 0, "male", false)
   local leadSelector = MonCache.portraitSelector(LEAD_SPECIES, 0, "male", false, "back")
   local foeImage, foeCell = cropPortrait(scope, cacheFs, foeSelector, FOE_FRONT_PAGE)
-  images["mon:" .. foeSelector] = foeImage
+  images["mon:" .. foeSelector] = cellHandle(foeImage)
   portraitCells["mon:" .. foeSelector] = foeCell
   local leadImage, leadCell = cropPortrait(scope, cacheFs, leadSelector, LEAD_BACK_PAGE)
-  images["mon:" .. leadSelector] = leadImage
+  images["mon:" .. leadSelector] = cellHandle(leadImage)
   portraitCells["mon:" .. leadSelector] = leadCell
   local femaleBackSelector = MonCache.portraitSelector(LEAD_SPECIES, 0, "female", false, "back")
   local stagedPortraits = cacheFs:loadLua(MonCache.portraitManifestPath())
@@ -298,7 +313,7 @@ local function captureServices(scope, cacheFs, versionId)
   if type(femaleEntry) == "table" and type(femaleEntry.pageId) == "number" then
     local croppedOk, croppedImage = pcall(cropPortrait, scope, cacheFs, femaleBackSelector, femaleEntry.pageId)
     if croppedOk then
-      images["mon:" .. femaleBackSelector] = croppedImage
+      images["mon:" .. femaleBackSelector] = cellHandle(croppedImage)
     end
   end
   local services = { prepared = {} }
@@ -327,7 +342,17 @@ local function captureServices(scope, cacheFs, versionId)
   end
   function services.drawable(key)
     assert(type(key) == "string" and key ~= "", "image resolution names its key")
-    return images[key]
+    local stored = images[key]
+    if stored == nil then
+      return nil
+    end
+    -- Whole-image entries resolve as straight sampler leases over the
+    -- staged image (pixel-identical); portrait cells already pair
+    -- their lease and pass through untouched.
+    if stored.lease ~= nil or type(stored.draw) == "function" then
+      return stored
+    end
+    return StubLease.over(stored)
   end
   function services.release(key)
     images[key] = nil
@@ -1284,7 +1309,7 @@ function T.compact_doubles_captures_four_bounded_panels_and_half_scale_portraits
     local screen, images, portraitCells = captureScreen(scope, cacheFs, versionId, compactMeasurement())
     for _, portrait in ipairs(portraitSpecs) do
       local image, pixels = cropPortrait(scope, cacheFs, portrait.selector, portrait.pageId)
-      images["mon:" .. portrait.selector] = image
+      images["mon:" .. portrait.selector] = cellHandle(image)
       portraitCells["mon:" .. portrait.selector] = pixels
     end
 
@@ -2168,7 +2193,8 @@ function T.drawable_keys_resolve_to_their_staged_source_images(scope, context)
       { key = "gauges:enemy", path = assert(manifest.partyGauges[1], versionId .. " carries party gauges").image },
     }) do
       local source = decodeData(scope, cacheFs, entry.path, versionId .. " " .. entry.key .. " source")
-      local image = assert(services.drawable(entry.key), versionId .. " resolves " .. entry.key)
+      local lease = assert(services.drawable(entry.key), versionId .. " resolves " .. entry.key)
+      local image = assert(lease.image, versionId .. " carries the staged image for " .. entry.key)
       Assert.equal(image:getWidth(), source:getWidth(), versionId .. " sizes " .. entry.key .. " from source")
       Assert.equal(image:getHeight(), source:getHeight(), versionId .. " heights " .. entry.key .. " from source")
     end
@@ -2185,9 +2211,20 @@ function T.drawable_keys_resolve_to_their_staged_source_images(scope, context)
       local portraits =
         assert(cacheFs:loadLua(MonCache.portraitManifestPath()), versionId .. " carries its portrait manifest")
       local cell = assert(portraits.entries[entry.selector], versionId .. " plans " .. entry.selector)
-      local image = assert(services.drawable(entry.key), versionId .. " resolves " .. entry.key)
+      -- Portrait drawables pair the staged crop image with its cell
+      -- quad, so the test crop resolves to the staged cell through
+      -- the same image-plus-quad shape production draws.
+      local handle = assert(services.drawable(entry.key), versionId .. " resolves " .. entry.key)
+      local lease = assert(handle.lease, versionId .. " carries the staged cell lease for " .. entry.key)
+      local image = assert(lease.image, versionId .. " carries the staged cell image for " .. entry.key)
+      local quad = assert(handle.quad, versionId .. " carries the staged cell quad for " .. entry.key)
       Assert.equal(image:getWidth(), cell.width, versionId .. " sizes " .. entry.key .. " from its staged cell")
       Assert.equal(image:getHeight(), cell.height, versionId .. " heights " .. entry.key .. " from its staged cell")
+      local qx, qy, qw, qh = quad:getViewport()
+      Assert.equal(qx, 0, versionId .. " frames " .. entry.key .. " at its crop origin")
+      Assert.equal(qy, 0, versionId .. " frames " .. entry.key .. " at its crop origin")
+      Assert.equal(qw, cell.width, versionId .. " frames " .. entry.key .. " at its staged width")
+      Assert.equal(qh, cell.height, versionId .. " frames " .. entry.key .. " at its staged height")
     end
     Assert.isNil(services.drawable("menu:command:fight"), versionId .. " leaves per-control art unmapped")
     Assert.isNil(services.drawable("menu:moves:move:0"), versionId .. " leaves per-slot art unmapped")
@@ -2228,8 +2265,8 @@ function T.compact_active_lead_draws_its_exact_canonical_portrait(scope, context
     local maleEntry = assert(portraits.entries[maleBack], versionId .. " plans the benched selector " .. maleBack)
     local maleImage, maleCell =
       cropPortrait(scope, cacheFs, maleBack, assert(maleEntry.pageId, versionId .. " pages its benched lead"))
-    images["mon:" .. maleBack] = maleImage
-    images["mon:" .. femaleBack] = stagedFemaleImage
+    images["mon:" .. maleBack] = cellHandle(maleImage)
+    images["mon:" .. femaleBack] = cellHandle(stagedFemaleImage)
     local packet = openingPacket()
     packet.after.own = {
       {

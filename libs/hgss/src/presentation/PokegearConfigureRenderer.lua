@@ -24,16 +24,16 @@ local function unlockSet(list)
   return set
 end
 
----@param images table<string, unknown>
+---@param images table<string, unknown> pooled atlas leases by generated path
 ---@param path string?
----@return table<string, unknown>? image
+---@return table<string, unknown>? pooled atlas lease behind the thumbnail
 local function preparedImage(images, path)
   if path == nil then
     return nil
   end
-  local image = images[path]
-  assert(image ~= nil, "the setup render needs its prepared thumbnail image")
-  return image --[[@as table<string, unknown>]]
+  local lease = images[path]
+  assert(lease ~= nil, "the setup render needs its prepared thumbnail image")
+  return lease
 end
 
 -- Draws the six thumbnail cells with lock patches and the OBJ cursor, then
@@ -55,7 +55,7 @@ function PokegearConfigureRenderer.drawPane(graphics, images, text, content, chi
   local background = images[backgroundPath]
   assert(background ~= nil, "the setup render needs its prepared background image")
   graphics.setColor(1, 1, 1, 1)
-  graphics.draw(background, 0, 0)
+  background:draw(graphics, 0, 0)
   local unlocked = unlockSet(unlockedSkins)
   local patch = preparedImage(images, content.configurePatch --[[@as string?]])
   local cursor = childView.cursor
@@ -74,7 +74,7 @@ function PokegearConfigureRenderer.drawPane(graphics, images, text, content, chi
     graphics.rectangle("fill", cell.x, cell.y, cell.width, cell.height)
     if unlocked[skin] ~= true and patch ~= nil then
       graphics.setColor(1, 1, 1, 1)
-      graphics.draw(patch, cell.x, cell.y)
+      patch:draw(graphics, cell.x, cell.y)
     end
     graphics.setColor(0.08, 0.08, 0.1, 1)
     graphics.rectangle("line", cell.x + 0.5, cell.y + 0.5, cell.width - 1, cell.height - 1)

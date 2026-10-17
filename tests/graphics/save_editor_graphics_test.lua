@@ -1,7 +1,12 @@
 -- Render and inspect the editor's canonical targets across measured topologies.
 
 local Assert = require("tests.support.Assert")
+local StubLease = require("tests.support.StubLease")
+local CacheFs = require("libs.storage.src.CacheFs")
+local FakeGraphics = require("tests.support.FakeGraphics")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
+local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
+local PngWriter = require("libs.assets.src.PngWriter")
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
 local DisplayContext = require("libs.ui.src.DisplayContext")
@@ -1549,6 +1554,9 @@ function T.party_icons_center_from_distinct_provider_dimensions(scope)
     end,
     image = function()
       return image
+    end,
+    handleFor = function()
+      return StubLease.over(image)
     end,
     quadFor = function(_, key)
       return quads[key]
@@ -4972,6 +4980,9 @@ function T.bag_icon_preparation_needs_no_browse_or_focus_art(scope)
     image = function()
       return iconImage
     end,
+    handle = function()
+      return StubLease.over(iconImage)
+    end,
     quadFor = function()
       return iconQuad
     end,
@@ -5555,6 +5566,118 @@ function T.deferred_icon_preparation_uses_the_draw_time_presentation(_)
   disposedRenderer:prepareVisibleIcons(oldView, oldPlan, cacheFs, derivedAssets, true)
   disposedRenderer:dispose()
   Assert.isNil(disposedRenderer._pendingIconPreparation, "dispose releases deferred presentation references")
+end
+
+-- Editor generated images borrow the shared classified image owner and
+-- free on exit: one renderer opens over synthetic quantity visuals,
+-- prepares the same set twice without duplicate uploads, cycles to a
+-- second visual set, keeps drawing its numeric targets through the
+-- production composition, and releases every created image exactly once
+-- on dispose. No generated-image GPU upload may arrive as a private
+-- FileData build; classified shared images stay valid draw sources
+-- throughout the session.
+function T.editor_generated_images_use_borrowed_classified_images_and_free_on_exit(scope)
+  local visualSets = {
+    {
+      incNormal = "editor-staging/set-a/inc-normal.png",
+      incPressed = "editor-staging/set-a/inc-pressed.png",
+      decNormal = "editor-staging/set-a/dec-normal.png",
+      decPressed = "editor-staging/set-a/dec-pressed.png",
+    },
+    {
+      incNormal = "editor-staging/set-b/inc-normal.png",
+      incPressed = "editor-staging/set-b/inc-pressed.png",
+      decNormal = "editor-staging/set-b/dec-normal.png",
+      decPressed = "editor-staging/set-b/dec-pressed.png",
+    },
+  }
+  local cache = CacheFs.forVersion("editor-staging-convergence-probe")
+  local seed = 3
+  for _, set in ipairs(visualSets) do
+    for _, path in pairs(set) do
+      seed = seed + 17
+      local pixel = string.char(seed % 256, (seed + 60) % 256, (seed + 120) % 256, 255)
+      cache:write(path, PngWriter.encode(8, 8, string.rep(pixel, 8 * 8)))
+    end
+  end
+  local graphics = FakeGraphics.new()
+  graphics.getImageFormats = function()
+    return {}
+  end
+  local uploadArgs = {}
+  local rawNewImage = graphics.newImage
+  graphics.newImage = function(arg)
+    uploadArgs[#uploadArgs + 1] = arg
+    local image = rawNewImage(arg)
+    if image.setWrap == nil then
+      image.setWrap = function() end
+    end
+    return image
+  end
+  local pool = ImageAssetPool.new(cache, { graphics = graphics })
+  local ok, err = pcall(function()
+    local renderer = Renderer.new({ text = {}, graphics = graphics, versionId = "heartgold", imagePool = pool })
+    local function numberView(set)
+      return {
+        section = "Progress",
+        valueEditor = { kind = "number" },
+        numberControlVisuals = {
+          increment = { normal = { image = set.incNormal }, pressed = { image = set.incPressed } },
+          decrement = { normal = { image = set.decNormal }, pressed = { image = set.decPressed } },
+        },
+      }
+    end
+    renderer:prepareVisibleIcons(numberView(visualSets[1]), {}, cache, {}, false)
+    Assert.equal(#graphics.images, 4, "opening the editor stages its four quantity visuals")
+    renderer:prepareVisibleIcons(numberView(visualSets[1]), {}, cache, {}, false)
+    Assert.equal(#graphics.images, 4, "re preparing one visual set uploads no duplicate images")
+    renderer:prepareVisibleIcons(numberView(visualSets[2]), {}, cache, {}, false)
+    Assert.equal(#graphics.images, 8, "cycling visual sets stages the new frames")
+    local _, _, _, _, _, _, _, records = draw(
+      scope,
+      256,
+      192,
+      ScreenTopology.oneDisplay({
+        id = "main",
+        rect = { x = 0, y = 0, width = 256, height = 192 },
+        touch = true,
+        role = "world",
+      }),
+      "convergence-number",
+      "Player",
+      "number-modal"
+    )
+    Assert.isTrue(#records > 0, "the numeric targets keep painting through the production renderer")
+    renderer:dispose()
+    renderer:dispose()
+    for _, image in ipairs(graphics.images) do
+      Assert.isTrue(image.released, "exiting the editor frees every staged image")
+      Assert.equal(image.releaseCount, 1, "exiting the editor frees every staged image exactly once")
+    end
+    local directBuilds = 0
+    for _, arg in ipairs(uploadArgs) do
+      if type(arg) == "userdata" then
+        local built, kind = pcall(function()
+          return arg:type()
+        end)
+        if built and kind == "FileData" then
+          directBuilds = directBuilds + 1
+        end
+      end
+    end
+    Assert.equal(
+      directBuilds,
+      0,
+      "editor generated images borrow classified shared images instead of private FileData builds"
+    )
+  end)
+  local disposeOk, disposeErr = pcall(pool.dispose, pool)
+  local removeOk, removeErr = pcall(cache.removeTree, cache, "")
+  if not ok then
+    error(err, 0)
+  end
+  Assert.isTrue(disposeOk, "the borrowed image owner disposes after the run: " .. tostring(disposeErr))
+  Assert.isTrue(removeOk, "the synthetic fixture cleans up after the run: " .. tostring(removeErr))
 end
 
 return GraphicsSmoke.suite(T, { capabilities = { "graphics" } })

@@ -3,6 +3,7 @@
 local CacheFs = require("libs.storage.src.CacheFs")
 local SaveFs = require("libs.storage.src.SaveFs")
 local GameSaveStore = require("libs.hgss.src.save.GameSaveStore")
+local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local DisplayContext = require("libs.ui.src.DisplayContext")
 local MainMenuRenderer = require("app.src.mainmenu.MainMenuRenderer")
@@ -25,15 +26,32 @@ function MainMenuComposition.new(options)
 
   local displayContext = DisplayContext.new({})
   local saveStore = GameSaveStore.new(SaveFs.global())
-  local text = FieldTextRenderer.new({ cacheFs = CacheFs.forVersion(options.versionId) })
+  local versionCacheFs = CacheFs.forVersion(options.versionId)
+  -- The menu stages its own standalone image owner: the menu lifetime
+  -- never overlaps field ownership, so no pool is shared or handed off.
+  -- A cache no pool can serve (headless or test doubles) keeps the
+  -- direct text path; those paths never reach pooled draws.
+  local imagePool
+  do
+    local poolOk, poolOrError = pcall(ImageAssetPool.new, versionCacheFs, {})
+    if poolOk then
+      imagePool = poolOrError
+    end
+  end
+  local text = FieldTextRenderer.new({ cacheFs = versionCacheFs, imagePool = imagePool })
   local rendererOk, rendererOrError = pcall(MainMenuRenderer.new, {
     text = text,
     versionId = options.versionId,
+    imagePool = imagePool,
+    ownsImagePool = imagePool ~= nil,
   })
   if not rendererOk then
     pcall(function()
       text:release()
     end)
+    if imagePool ~= nil then
+      pcall(imagePool.dispose, imagePool)
+    end
     error(rendererOrError, 0)
   end
   local renderer = assert(rendererOrError)

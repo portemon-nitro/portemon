@@ -10,6 +10,7 @@ local FakeCache = require("tests.support.FakeCache")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local InactivePokemonNaming = require("tests.support.InactivePokemonNaming")
+local SummaryAcceptanceFixture = require("tests.support.SummaryAcceptanceFixture")
 
 local T = {}
 
@@ -523,12 +524,13 @@ local function assertNoAcquisition(spies, what)
   Assert.equal(spies.newShader, 0, what .. " compiles no shaders")
 end
 
-local function advanceToReady(host, queue, backend, bound)
+local function advanceToReady(host, queue, backend, images, bound)
   bound = bound or 256
   for _ = 1, bound do
     local consumed = host:advancePresentationPreparation({
       assetPreparation = queue,
       gxRenderer = backend,
+      imageAssets = images,
     }, 1)
     Assert.isTrue(consumed ~= nil and consumed <= 1, "one update realizes at most one resource")
     if host:isPresentationReady() then
@@ -544,7 +546,7 @@ end
 
 -- A bare field composition over fakes: the real update/draw/input entry
 -- points run against a stub runtime, so readiness gating is what can fail.
-local function fieldComposition(starter, queue, backend)
+local function fieldComposition(starter, queue, backend, images)
   local FieldState = requireModule(FIELD_STATE_MODULE, "the field state owns presentation composition")
   local inputCalls = {}
   local input = {}
@@ -573,6 +575,11 @@ local function fieldComposition(starter, queue, backend)
     pokemonNaming = InactivePokemonNaming.new(),
     starterChoice = starter,
     assetPreparation = queue,
+    -- The field update borrows the session image owner for the hidden
+    -- chooser exactly like production: the sized pool keeps texture
+    -- borrows (portrait quads read dimensions off leases) honest without
+    -- a second worker beside the fake queue.
+    imageAssets = images,
     actionKeys = { z = true },
     cancelKeys = { x = true },
     menuKeys = {},
@@ -606,12 +613,13 @@ function T.demand_preparation_begins_only_after_the_chooser_opens()
   )
   local queue = fakePreparationQueue()
   local backend = stubBackend()
+  local images = SummaryAcceptanceFixture.sizedImagePool()
 
   Assert.isFalse(host:isActive(), "the chooser starts idle")
   Assert.isFalse(host:isPresentationReady(), "nothing is ready before the chooser opens")
   Assert.equal(queue:requestCount(), 0, "no demand exists while the chooser is idle")
 
-  local state = fieldComposition(host, queue, backend)
+  local state = fieldComposition(host, queue, backend, images)
   state:update(1 / 30)
   state:update(1 / 30)
   Assert.equal(queue:requestCount(), 0, "field updates without an open chooser prepare nothing")
@@ -633,7 +641,8 @@ function T.pending_preparation_keeps_the_field_visible_and_inputs_frozen()
   Assert.isTrue(type(host.isPresentationReady) == "function", "the chooser exposes presentation readiness")
   local queue = fakePreparationQueue()
   local backend = stubBackend()
-  local state, inputCalls = fieldComposition(host, queue, backend)
+  local images = SummaryAcceptanceFixture.sizedImagePool()
+  local state, inputCalls = fieldComposition(host, queue, backend, images)
 
   openTrio(host, service)
   local starterDraws = 0
@@ -652,7 +661,8 @@ function T.pending_preparation_keeps_the_field_visible_and_inputs_frozen()
   end
 
   for _ = 1, 3 do
-    local consumed = host:advancePresentationPreparation({ assetPreparation = queue, gxRenderer = backend }, 1)
+    local consumed =
+      host:advancePresentationPreparation({ assetPreparation = queue, gxRenderer = backend, imageAssets = images }, 1)
     Assert.equal(consumed, 0, "worker-pending preparation consumes no main-thread work")
   end
   Assert.isFalse(host:isPresentationReady(), "the chooser stays invisible while the worker is pending")
@@ -680,7 +690,8 @@ function T.pending_preparation_keeps_the_field_visible_and_inputs_frozen()
   Assert.equal(seen.releaseAction or 0, 1, "the invisible release still clears its physical source")
 
   markQueueReady(queue)
-  local consumed = host:advancePresentationPreparation({ assetPreparation = queue, gxRenderer = backend }, 1)
+  local consumed =
+    host:advancePresentationPreparation({ assetPreparation = queue, gxRenderer = backend, imageAssets = images }, 1)
   Assert.isTrue(consumed <= 1, "one update realizes at most one resource after the worker answers")
   Assert.isTrue(starterDraws == 0, "no starter surface drew before readiness")
 
@@ -695,9 +706,13 @@ function T.ready_draws_acquire_no_resources_and_reuse_stable_records()
   Assert.isTrue(type(host.advancePresentationPreparation) == "function", "the chooser advances demand preparation")
   local queue = fakePreparationQueue()
   local backend = stubBackend()
+  local images = SummaryAcceptanceFixture.sizedImagePool()
   markQueueReady(queue)
   openTrio(host, service)
-  Assert.isTrue(advanceToReady(host, queue, backend), "the chooser reaches readiness through bounded advancement")
+  Assert.isTrue(
+    advanceToReady(host, queue, backend, images),
+    "the chooser reaches readiness through bounded advancement"
+  )
 
   local cacheFs = host._cacheFs
   local spies, restore = resourceSpies(cacheFs)
@@ -747,6 +762,7 @@ function T.starter_shares_the_field_graphics_backend_without_sharing_ownership()
   Assert.isTrue(type(host.advancePresentationPreparation) == "function", "the chooser advances demand preparation")
   local queue = fakePreparationQueue()
   local backend = stubBackend()
+  local images = SummaryAcceptanceFixture.sizedImagePool()
   markQueueReady(queue)
   openTrio(host, service)
 
@@ -757,7 +773,7 @@ function T.starter_shares_the_field_graphics_backend_without_sharing_ownership()
     shaderConstructs = shaderConstructs + 1
     return originalNew(...)
   end
-  local ok, readyErr = pcall(advanceToReady, host, queue, backend)
+  local ok, readyErr = pcall(advanceToReady, host, queue, backend, images)
   GxRenderer.new = originalNew
   Assert.isTrue(ok and readyErr, "the chooser reaches readiness while borrowing the backend")
 
@@ -777,9 +793,10 @@ function T.selection_changes_use_only_resident_resources()
   Assert.isTrue(type(host.advancePresentationPreparation) == "function", "the chooser advances demand preparation")
   local queue = fakePreparationQueue()
   local backend = stubBackend()
+  local images = SummaryAcceptanceFixture.sizedImagePool()
   markQueueReady(queue)
   openTrio(host, service)
-  Assert.isTrue(advanceToReady(host, queue, backend), "selection starts from readiness")
+  Assert.isTrue(advanceToReady(host, queue, backend, images), "selection starts from readiness")
 
   local spies, restore = resourceSpies(host._cacheFs)
   local queueRequestsBefore = queue:requestCount()
@@ -810,9 +827,10 @@ function T.turntable_and_ball_animation_timing_survives_demand_preparation()
   Assert.isTrue(type(host.advancePresentationPreparation) == "function", "the chooser advances demand preparation")
   local queue = fakePreparationQueue()
   local backend = stubBackend()
+  local images = SummaryAcceptanceFixture.sizedImagePool()
   markQueueReady(queue)
   openTrio(host, service)
-  Assert.isTrue(advanceToReady(host, queue, backend), "timing starts from readiness")
+  Assert.isTrue(advanceToReady(host, queue, backend, images), "timing starts from readiness")
 
   local presentation = assert(host._presentation, "readiness owns the presentation records")
   local ModelInstance = requireModule(

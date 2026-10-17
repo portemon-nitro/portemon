@@ -5,6 +5,7 @@
 -- generated trainer records only; no dump capability is required.
 
 local Assert = require("tests.support.Assert")
+local StubLease = require("tests.support.StubLease")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local HgssBagService = require("libs.hgss.src.items.HgssBagService")
 local ItemFixture = require("libs.items.tests.item_fixture")
@@ -14,6 +15,16 @@ local Party = require("libs.mons.src.Party")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = {}
+
+-- Portrait drawables pair their stub image with a stub cell quad,
+-- matching the production image-plus-quad handle behind draws while
+-- keeping the string identity assertions on the stub image intact.
+local function stubPortrait(key)
+  if key:sub(1, 4) == "mon:" then
+    return { lease = StubLease.new(key), quad = { handle = "quad:" .. key } }
+  end
+  return StubLease.new(key)
+end
 local TICK = 1 / 60
 
 local RUNTIME_MODULE = "game.hgss.src.battle.BattleRuntime"
@@ -140,7 +151,7 @@ local function openDoubleRig(opts)
       rig.assets.images = {}
     end
     if rig.assets.images[key] == nil then
-      rig.assets.images[key] = { handle = key }
+      rig.assets.images[key] = stubPortrait(key)
     end
     return rig.assets.images[key]
   end
@@ -638,7 +649,7 @@ function T.two_fainted_leads_are_replaced_without_partial_submit()
       rig.assets.images = {}
     end
     if rig.assets.images[key] == nil then
-      rig.assets.images[key] = { handle = key }
+      rig.assets.images[key] = stubPortrait(key)
     end
     return rig.assets.images[key]
   end
@@ -1010,7 +1021,7 @@ local function openTargetLabelRig(layout, launchId, requestId)
       rig.assets.images = {}
     end
     if rig.assets.images[key] == nil then
-      rig.assets.images[key] = { handle = key }
+      rig.assets.images[key] = stubPortrait(key)
     end
     return rig.assets.images[key]
   end
@@ -1460,7 +1471,7 @@ function T.both_sides_field_two_battlers_with_their_own_pictures_and_health()
       },
       assets = {
         drawable = function(_, key)
-          return { handle = key }
+          return stubPortrait(key)
         end,
       },
       frameKey = "four-pictures-frame",

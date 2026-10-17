@@ -86,7 +86,7 @@ local function drawMarking(graphics, images, text, content, view)
   local backdrop = imageAt(images, content.markingBackdrop)
   local panel = imageAt(images, content.markingPanel)
   graphics.setColor(1, 1, 1, 1)
-  graphics.draw(backdrop, 0, 0)
+  backdrop:draw(graphics, 0, 0)
   if marking == nil then
     return
   end

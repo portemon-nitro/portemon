@@ -6,6 +6,7 @@
 -- counts.
 
 local Assert = require("tests.support.Assert")
+local StubLease = require("tests.support.StubLease")
 local BattlePresentationAssets = require("game.hgss.src.battle.BattlePresentationAssets")
 
 local T = {}
@@ -30,7 +31,7 @@ local function stubAssets(opts)
       return nil
     end
     if assets.images[key] == nil then
-      assets.images[key] = { handle = key }
+      assets.images[key] = StubLease.new(key)
     end
     return assets.images[key]
   end
@@ -115,7 +116,7 @@ function T.preparation_pending_and_typed_failures()
   end
   function patient.drawable(key)
     if patient.images[key] == nil then
-      patient.images[key] = { handle = key }
+      patient.images[key] = StubLease.new(key)
     end
     return patient.images[key]
   end
@@ -152,7 +153,7 @@ function T.preparation_pending_and_typed_failures()
   end
   function reluctant.drawable(key)
     if reluctant.images[key] == nil then
-      reluctant.images[key] = { handle = key }
+      reluctant.images[key] = StubLease.new(key)
     end
     return reluctant.images[key]
   end
@@ -312,9 +313,13 @@ function T.switch_and_foe_reveal_rebind_the_exact_image_key()
   function assets.drawable(key)
     drawnKeys[#drawnKeys + 1] = key
     if images[key] == nil then
-      images[key] = { handle = key }
+      images[key] = StubLease.new(key)
     end
-    return images[key]
+    local stored = images[key]
+    if key:sub(1, 4) == "mon:" then
+      return { lease = stored, quad = { handle = "quad:" .. key } }
+    end
+    return stored
   end
   function assets.release(_) end
   local launchId = "launch-portrait-rebind"
@@ -621,7 +626,7 @@ function T.incoming_portrait_upload_failure_names_its_exact_key()
       return nil, "battle image " .. key .. " upload failed: probe-decode-boom"
     end
     if images[key] == nil then
-      images[key] = { handle = key }
+      images[key] = StubLease.new(key)
     end
     return images[key]
   end
@@ -668,7 +673,7 @@ function T.genuinely_pending_images_become_ready_without_failing()
       return nil
     end
     if images[key] == nil then
-      images[key] = { handle = key }
+      images[key] = StubLease.new(key)
     end
     return images[key]
   end
@@ -914,7 +919,31 @@ end
 ---@param host table page host under borrowing
 ---@param graphics table host graphics namespace under borrowing
 ---@return table live presented-battle envelope under test driving
-local function demandEnvelope(cache, host, graphics)
+-- A scripted stand-in for the shared generated-image owner behind
+-- portrait demand: answers ready borrows immediately, or one terminal
+-- failure for every request when constructed with a cause.
+---@param failure string? terminal classification cause behind every request, nil answers ready
+---@return table scripted pool behind the envelope under test
+local function scriptedPool(failure)
+  local pool = { requests = 0 }
+  function pool:request(_, _, _)
+    self.requests = self.requests + 1
+    return self.requests
+  end
+  function pool:poll(_)
+    if failure ~= nil then
+      return "failed", failure
+    end
+    return "ready"
+  end
+  function pool:acquire(_)
+    return { image = {}, width = 256, height = 256 }
+  end
+  function pool:release(_) end
+  return pool
+end
+
+local function demandEnvelope(cache, host, graphics, pool)
   local FieldBattlePresentation = require("game.hgss.src.field.FieldBattlePresentation")
   local ScreenTopology = require("libs.ui.src.ScreenTopology")
   local text = {}
@@ -942,6 +971,7 @@ local function demandEnvelope(cache, host, graphics)
     end,
     graphics = graphics,
     derivedAssets = host.derivedAssets,
+    imagePool = pool or scriptedPool(),
   })
 end
 
@@ -1451,14 +1481,9 @@ function T.unstaged_and_undecodable_pages_fail_closed_without_standins()
   stagePortraitPage(staged, 17)
   local stagedHost = portraitPageHost()
   stagedHost.answers[17] = { ready = true }
-  local attempts = 0
+  local pool = scriptedPool("probe-decode-boom")
   local throwing = FakeGraphics.new({ failOnImageCall = 1 })
-  local rawImage = throwing.newImage
-  function throwing.newImage(...)
-    attempts = attempts + 1
-    return rawImage(...)
-  end
-  local stagedEnvelope = demandEnvelope(staged, stagedHost, throwing)
+  local stagedEnvelope = demandEnvelope(staged, stagedHost, throwing, pool)
   local stagedServices = stagedEnvelope:_preparationServices()
   Assert.isTrue(
     stagedServices.prepare(portraitDemand({ leadBack })),
@@ -1479,7 +1504,7 @@ function T.unstaged_and_undecodable_pages_fail_closed_without_standins()
   local brokenAgain, brokenErrAgain = stagedServices.drawable("mon:" .. leadBack)
   Assert.isNil(brokenAgain, "the undecodable portrait stays failed without a substitute")
   Assert.equal(brokenErrAgain, brokenReason, "the undecodable failure replays identically")
-  Assert.equal(attempts, 1, "the undecodable upload is attempted once, never retried per tick")
+  Assert.equal(pool.requests, 1, "the undecodable upload is attempted once, never retried per tick")
   Assert.equal(#throwing.images, 0, "the undecodable page leaves no staged handle behind")
   stagedEnvelope:dispose()
 end

@@ -12,6 +12,7 @@
 -- owner, so the run stays red until that owner lands.
 
 local Assert = require("tests.support.Assert")
+local StubLease = require("tests.support.StubLease")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local FakeGraphics = require("tests.support.FakeGraphics")
 local HgssBagService = require("libs.hgss.src.items.HgssBagService")
@@ -276,9 +277,17 @@ local function stubAssets(opts)
       return nil
     end
     if assets.images[key] == nil then
-      assets.images[key] = { handle = key }
+      assets.images[key] = StubLease.new(key)
     end
-    return assets.images[key]
+    -- Portrait cells resolve the lease-plus-quad drawable shape
+    -- production draws; every other key resolves its bare lease.
+    -- Already-paired cells (test-overwritten demand portraits) pass
+    -- through instead of wrapping twice.
+    local stored = assets.images[key]
+    if key:sub(1, 4) == "mon:" and stored.lease == nil then
+      return { lease = stored, quad = { handle = "quad:" .. key } }
+    end
+    return stored
   end
   function assets.release(key)
     assets.released[key] = (assets.released[key] or 0) + 1
@@ -881,10 +890,15 @@ function T.paired_panes_use_source_regions_and_survive_redraw()
   -- generic side keys: back selectors keep the back handle, front
   -- selectors the front handle, so each drawn image stays identifiable.
   for _, selector in ipairs(demandedPortraits(rig)) do
+    -- Portrait drawables pair their stub image with a stub cell quad,
+    -- matching the production image-plus-quad handle behind draws while
+    -- the drawn image stays the identifiable side handle.
     if selector:sub(-5) == "/back" then
-      rig.assets.images["mon:" .. selector] = playerBack
+      rig.assets.images["mon:" .. selector] =
+        { lease = StubLease.over(playerBack), image = playerBack, quad = { handle = "quad:" .. selector } }
     else
-      rig.assets.images["mon:" .. selector] = enemyFront
+      rig.assets.images["mon:" .. selector] =
+        { lease = StubLease.over(enemyFront), image = enemyFront, quad = { handle = "quad:" .. selector } }
     end
   end
   rig.pump(2)
@@ -1212,7 +1226,15 @@ function T.definitions_and_leases_follow_single_ownership()
   -- never appear.
   local customScene = { handle = "scene:custom-test" }
   local vanillaScene = { handle = "scene:vanilla" }
-  local assets = stubAssets({ seedImages = { ["scene:custom"] = customScene, ["scene:vanilla"] = vanillaScene } })
+  -- Seeded drawables carry the lease surface over their stub image so the
+  -- scene draw records the seeded image through the sampler, exactly like
+  -- pooled production leases.
+  local assets = stubAssets({
+    seedImages = {
+      ["scene:custom"] = StubLease.over(customScene),
+      ["scene:vanilla"] = StubLease.over(vanillaScene),
+    },
+  })
   local windows = recordingWindows()
   local rig = openWildRig(
     modules,

@@ -162,6 +162,19 @@ local function recordingGraphics()
   function graphics.newQuad(x, y, w, h, imgW, imgH)
     return { x = x, y = y, w = w, h = h, imgW = imgW, imgH = imgH }
   end
+  -- Minimal sampler-driver surface: pooled battle leases draw through
+  -- the shared exact rule, which binds one shader per graphics
+  -- namespace, sends its sampling uniforms, and restores the caller
+  -- shader around each draw. Recorded draws stay exactly like raw draws.
+  function graphics.newShader(_)
+    local shader = {}
+    function shader.send(_, _, _) end
+    return shader
+  end
+  function graphics.getShader()
+    return nil
+  end
+  function graphics.setShader(_) end
   function graphics.draw(drawable, quad, x, y)
     if type(quad) == "number" then
       quad, x, y = nil, quad, x
@@ -179,7 +192,9 @@ end
 local function drawForInspection(envelope, doubles)
   doubles.text.draws = {}
   doubles.windows.calls = {}
-  Assert.isTrue(envelope:drawBattle({ graphics = recordingGraphics() }), "the explicit draw reaches its live screen")
+  local inspectionGraphics = recordingGraphics()
+  Assert.isTrue(envelope:drawBattle({ graphics = inspectionGraphics }), "the explicit draw reaches its live screen")
+
 end
 
 ---@param signature string stable measurement identity under test driving

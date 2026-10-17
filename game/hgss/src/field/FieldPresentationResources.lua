@@ -547,7 +547,11 @@ function FieldPresentationResources.new(runtime)
     -- The bag manifest loads once: the 2D pane renderer and the borrowed
     -- hero model renderer share the same validated table.
     local bagManifest = BagCache.loadManifest(runtime.cacheFs)
-    self.heroRenderer = BagHeroRenderer.new({ cacheFs = runtime.cacheFs, manifest = bagManifest })
+    self.heroRenderer = BagHeroRenderer.new({
+      cacheFs = runtime.cacheFs,
+      manifest = bagManifest,
+      imageAssets = sharedImages,
+    })
     self.bagRenderer = BagRenderer.new({
       cacheFs = runtime.cacheFs,
       manifest = bagManifest,
@@ -591,7 +595,9 @@ function FieldPresentationResources.new(runtime)
       manifest = self.pcManifest,
       imagePool = sharedImages,
     })
-    local entrancePool = GpuAssetPool.new(runtime.cacheFs)
+    -- Entrance, surf, follower-transition, heal, and terrain effects draw
+    -- through the session image owner instead of privately owned textures.
+    local entrancePool = GpuAssetPool.new(runtime.cacheFs, { imageAssets = sharedImages })
     self.fieldEntranceIndicatorPool = entrancePool
     self.fieldEntranceIndicatorRenderer =
       FieldStaticEffectRenderer.new(runtime.fieldEntranceIndicatorAsset.model, entrancePool)
@@ -627,7 +633,9 @@ function FieldPresentationResources.new(runtime)
       assert(surfEffects and surfEffects.surf_attachment, "field-effect cache is missing surf_attachment")
     self.surfPresentation = assert(surfAttachment.presentation, "field-effect cache is missing surf presentation")
     self.fieldSurfRenderer = FieldStaticEffectRenderer.new(surfAttachment.model, entrancePool)
-    local emotePool = GpuAssetPool.new(runtime.cacheFs)
+    -- Actor emotes borrow the same session owner; a runtime without one
+    -- keeps the pool's private ownership for headless composition.
+    local emotePool = GpuAssetPool.new(runtime.cacheFs, { imageAssets = sharedImages })
     self.fieldEmotePool = emotePool
     self.fieldEmoteRenderer = FieldActorEmoteRenderer.new(runtime.fieldEmoteModels, emotePool)
     local fieldEffectAssets = assert(runtime.fieldEffectAssets, "field terrain-effect assets are unavailable")
@@ -656,10 +664,9 @@ local function ensurePokemonNamingRenderer(owner)
     return owner.namingRenderer
   end
   local graphics = assert(love and love.graphics, "Pokemon naming renderer requires graphics")
-  local function imageLoader(path)
-    local bytes = assert(owner.cacheFs:read(path), "missing generated naming image " .. path)
-    return graphics.newImage(love.filesystem.newFileData(bytes, path))
-  end
+  -- Naming chrome borrows the session image owner like the other pooled
+  -- field renderers: no private image construction stays beside the pool.
+  local pool = assert(owner._imagePool, "Pokemon naming borrows the shared image owner")
   local function drawSubject(hostGraphics, subject, placement)
     local iconKey = assert(subject.iconKey, "Pokemon naming subject requires its icon key")
     local iconFrames =
@@ -676,7 +683,7 @@ local function ensurePokemonNamingRenderer(owner)
     text = assert(owner.textRenderer, "field text renderer is unavailable"),
     drawSubject = drawSubject,
     manifest = assert(owner.uiManifest, "field UI manifest is unavailable"),
-    imageLoader = imageLoader,
+    imagePool = pool,
   })
   owner.namingRenderer = renderer
   return renderer

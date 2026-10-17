@@ -11,6 +11,7 @@
 -- host-boundary fake hung on a genuine validated manifest path.
 
 local Assert = require("tests.support.Assert")
+local StubLease = require("tests.support.StubLease")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
@@ -179,7 +180,7 @@ local function renderResources(scope, manifest)
     if path:find("closed", 1, true) ~= nil then
       dim = 0.45
     end
-    images[path] = solidImage(scope, visual.width, visual.height, hue[1] * dim, hue[2] * dim, hue[3] * dim)
+    images[path] = StubLease.over(solidImage(scope, visual.width, visual.height, hue[1] * dim, hue[2] * dim, hue[3] * dim))
   end
   local text = scope:own(FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() }))
   return { graphics = love.graphics, images = images, textRenderer = text }

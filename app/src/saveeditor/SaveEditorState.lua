@@ -24,6 +24,7 @@ local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
 local ModalStack = require("app.src.saveeditor.SaveEditorModalStack")
+local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
 local MapCatalog = require("app.src.saveeditor.SaveEditorMapCatalog")
 local SaveEditorPreset = require("app.src.saveeditor.SaveEditorPreset")
 local SaveEditorPokegearDraft = require("app.src.saveeditor.SaveEditorPokegearDraft")
@@ -263,6 +264,7 @@ end
 ---@field modalLayerSequence integer
 ---@field renderer SaveEditorRenderer?
 ---@field presentation ApplicationPresentation?
+---@field sessionImagePool table<string, unknown>? editor session image owner shared by State-built text and renderer
 ---@field status string
 ---@field message string
 ---@field session SaveEditorSession?
@@ -468,7 +470,10 @@ local function logicalFocus(layout, targetId)
   return nil
 end
 
-local function makeText(versionId)
+local function makeText(versionId, pool)
+  if pool ~= nil then
+    return FieldTextRenderer.new({ cacheFs = CacheFs.forVersion(versionId), imagePool = pool })
+  end
   return FieldTextRenderer.new({ cacheFs = CacheFs.forVersion(versionId) })
 end
 
@@ -522,12 +527,29 @@ function State.new(options)
       return { year = date.year, month = date.month, day = date.day }
     end
   assert(type(dateProvider) == "function", "save editor date provider must be callable")
-  local text = makeText(options.versionId)
-  local rendererOk, rendererOrError = pcall(Renderer.new, { text = text, versionId = options.versionId })
+  -- The editor session pool backs both the State-built text and the
+  -- renderer below, so font atlases and editor visuals share one owner
+  -- instead of a second worker beside the renderer's lazy pool. A cache
+  -- no pool can serve (headless or test doubles) keeps the direct path;
+  -- those paths never reach pooled draws. The renderer borrows this
+  -- pool; the State disposes it after renderer teardown.
+  local sessionPool
+  do
+    local poolOk, poolOrError = pcall(ImageAssetPool.new, CacheFs.forVersion(options.versionId), {})
+    if poolOk then
+      sessionPool = poolOrError
+    end
+  end
+  local text = makeText(options.versionId, sessionPool)
+  local rendererOk, rendererOrError =
+    pcall(Renderer.new, { text = text, versionId = options.versionId, imagePool = sessionPool })
   if not rendererOk then
     pcall(function()
       text:release()
     end)
+    if sessionPool ~= nil then
+      pcall(sessionPool.dispose, sessionPool)
+    end
     error(rendererOrError, 0)
   end
   local presentationOk, presentationOrError = pcall(ApplicationPresentation.new, Interface.defaults())
@@ -535,6 +557,9 @@ function State.new(options)
     pcall(function()
       assert(rendererOrError):dispose()
     end)
+    if sessionPool ~= nil then
+      pcall(sessionPool.dispose, sessionPool)
+    end
     error(presentationOrError, 0)
   end
   ---@type SaveEditorState
@@ -553,6 +578,7 @@ function State.new(options)
     modalLayerSequence = 0,
     renderer = assert(rendererOrError),
     presentation = assert(presentationOrError),
+    sessionImagePool = sessionPool,
     status = "opening",
     message = "Preparing save data",
     session = nil,
@@ -618,6 +644,11 @@ function State.new(options)
     self.presentation:dispose()
     self.renderer:dispose()
     self.presentation, self.renderer = nil, nil
+    local failedPool = self.sessionImagePool
+    self.sessionImagePool = nil
+    if failedPool ~= nil then
+      pcall(failedPool.dispose, failedPool)
+    end
     error(resolveError, 0)
   end
   return self
@@ -4848,6 +4879,11 @@ function State:dispose()
   if self.renderer then
     self.renderer:dispose()
     self.renderer = nil
+  end
+  local retiredPool = self.sessionImagePool
+  self.sessionImagePool = nil
+  if retiredPool ~= nil then
+    retiredPool:dispose()
   end
   self.modalStack:dispose()
   if self.valueEditor then

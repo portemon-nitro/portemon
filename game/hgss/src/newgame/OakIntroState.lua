@@ -91,6 +91,9 @@ local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentatio
 ---@field renderer OakIntroStateRenderer?
 ---@field graphics unknown?
 ---@field imageLoader (fun(path: string): unknown)?
+---@field imagePool table<string, unknown>? intro-owned shared image owner behind the loader borrows
+---@field ownsImagePool boolean? true once the intro owns (and disposes) the image owner
+---@field imageLeases table<string, unknown>[]? loader borrows returned before the owned pool disposes
 ---@field uiManifest table<string, unknown>?
 ---@field textInputHost OakIntroStateTextInputHost?
 ---@field glyphs string[]?
@@ -137,6 +140,9 @@ local DialoguePresentationLayout = require("libs.hgss.src.ui.DialoguePresentatio
 ---@field dialoguePresentation DialoguePresentationLayout.Presentation?
 ---@field dialogueCursorPlacement { x: number, y: number, width: number, height: number }?
 ---@field disposed boolean
+---@field _imagePool table<string, unknown>? intro-owned shared image owner behind the loader borrows
+---@field _ownsImagePool boolean true once the intro owns (and disposes) the image owner
+---@field _imageLeases table<string, unknown>[] loader borrows returned before the owned pool disposes
 ---@field _displayContext DisplayContext
 ---@field _preparedEntry table<string, function>? prepared New Game field entry, polled per update
 ---@field _namingOverrides table<string, unknown>?
@@ -281,9 +287,18 @@ function OakIntroState.new(options)
         text = assert(options.textRenderer, "Oak state requires the shared FieldTextRenderer"),
         choiceText = assert(options.choiceText, "Oak state requires the font-4 FieldTextRenderer"),
       })
+    if options.imagePool ~= nil then
+      assert(
+        type(options.imagePool.release) == "function" and type(options.imagePool.dispose) == "function",
+        "Oak image owner carries pooled returns and disposal"
+      )
+    end
     self = setmetatable({
       controller = options.controller,
       manifest = options.manifest,
+      _imagePool = options.imagePool,
+      _ownsImagePool = options.ownsImagePool == true,
+      _imageLeases = options.imageLeases or {},
       renderer = renderer --[[@as OakIntroStateRenderer]],
       inputHost = textInputHost(options.textInputHost),
       glyphs = {},
@@ -327,9 +342,33 @@ function OakIntroState.new(options)
     if self and self.audioLifetime then
       pcall(self.audioLifetime.dispose, self.audioLifetime)
     end
+    if self then
+      self:_releaseImageOwner()
+    end
     error(result, 0)
   end
   return self
+end
+
+-- Returns every loader borrow and disposes the owned intro image owner.
+-- Borrow returns are bookkeeping-only; the owned pool teardown joins its
+-- worker before dropping bookkeeping, and any secondary release noise
+-- from images the renderer already released stays contained here.
+function OakIntroState:_releaseImageOwner()
+  local pool = self._imagePool
+  self._imagePool = nil
+  local owns = self._ownsImagePool
+  self._ownsImagePool = false
+  local leases = self._imageLeases
+  self._imageLeases = {}
+  if pool ~= nil then
+    for _, lease in ipairs(leases) do
+      pool:release(lease)
+    end
+  end
+  if owns and pool ~= nil then
+    pcall(pool.dispose, pool)
+  end
 end
 
 function OakIntroState:_setTextInput(enabled)
@@ -792,6 +831,12 @@ function OakIntroState:dispose()
   self:_clearFrozen()
   self:_setTextInput(false)
   self.controller:dispose()
+  -- Intro image borrows return and the owned intro pool goes before the
+  -- renderer releases loader images, so pool-side frees land first on
+  -- valid objects while renderer-side seconds stay inside its own guard.
+  -- The prepared bedroom entry beside it is untouched: its transfer to
+  -- the field claims the bedroom resources exactly once elsewhere.
+  self:_releaseImageOwner()
   if self.renderer then
     self.renderer:dispose()
     self.renderer = nil

@@ -21,7 +21,6 @@ local PngWriter = require("libs.assets.src.PngWriter")
 ---@field _screenAudio table<string, unknown> semantic cue-audio boundary behind the screen
 ---@field _itemCatalog table<string, unknown>? borrowed immutable item catalog behind battle bag grouping
 ---@field _monCatalog table<string, unknown>? borrowed immutable mon catalog behind machine display facts
----@field _images table<string, unknown> owned image handles behind the live screen
 ---@field _imageFailures table<string, string> terminal upload failures by key, latched for the envelope lifetime
 ---@field _measureDisplay fun(): table<string, unknown> live display facts
 ---@field _graphics table<string, unknown>? host graphics namespace enabling GPU upload, nil for data descriptors
@@ -42,6 +41,8 @@ local PngWriter = require("libs.assets.src.PngWriter")
 ---@field _revealingBattle boolean true once the constructed battle starts its reveal
 ---@field _musicStarted boolean true once battle music was attempted for the launch
 ---@field _musicNote string? battle-music start outcome for launch diagnostics
+---@field _pool table<string, unknown>? borrowed shared generated-image owner, required once graphics resolve pixels
+---@field _leases table<string, FieldBattlePresentation.PooledHandle> shared-owner leases by drawable key
 ---@field _disposed boolean
 local FieldBattlePresentation = {}
 FieldBattlePresentation.__index = FieldBattlePresentation
@@ -63,7 +64,12 @@ FieldBattlePresentation.MAX_CATCH_UP = 6
 ---@field graphics table<string, unknown>? host graphics namespace enabling GPU upload, nil for data descriptors
 ---@field itemCatalog table<string, unknown>? borrowed immutable item catalog behind battle bag grouping
 ---@field monCatalog table<string, unknown>? borrowed immutable mon catalog behind machine display facts
+---@field imagePool table<string, unknown>? borrowed shared generated-image owner behind pooled uploads, required to resolve graphical drawables
 ---@field overrides table<string, unknown>? per-instance scene, frame, and case inputs
+
+---@class FieldBattlePresentation.PooledHandle
+---@field lease table<string, unknown> shared-owner borrow returned at release or disposal
+---@field handle table<string, unknown> resolved drawable behind the borrow: the pool lease itself for whole images, or a lease-plus-quad pair for atlas cells. Renderers draw through the lease sampler surface, never the bare image.
 
 ---@return table<string, unknown> silent cue sink used when no audio boundary is composed
 local function nullAudio()
@@ -230,60 +236,102 @@ function FieldBattlePresentation.new(opts)
     _musicStarted = false,
     _musicNote = nil,
     _disposed = false,
-    _images = {},
     _imageFailures = {},
+    _pool = opts.imagePool,
+    _leases = {},
   }, FieldBattlePresentation)
+  -- Pool interface validation stays at composition: graphical resolution
+  -- requires the pool at first use (acquirePooled asserts it), so pending
+  -- and headless flows compose without one while no private GPU image
+  -- can be constructed beside the pool on any drawn path.
+  if envelope._pool ~= nil then
+    assert(type(envelope._pool.request) == "function", "the shared image owner carries pooled requests")
+    assert(type(envelope._pool.poll) == "function", "the shared image owner carries pooled readiness")
+    assert(type(envelope._pool.acquire) == "function", "the shared image owner carries pooled borrows")
+    assert(type(envelope._pool.release) == "function", "the shared image owner carries pooled returns")
+  end
   envelope._services = envelope:_preparationServices()
   return envelope
 end
 
--- Uploads one staged image file through the host graphics namespace:
--- decode the staged bytes, then build and configure the owned image.
--- Success answers the owned handle. Staged bytes that fail decoding or
--- GPU upload answer a terminal keyed failure so the caller fails closed
--- instead of holding forever on a deterministic corrupt image.
----@param graphics table<string, unknown> host graphics namespace enabling GPU upload
+-- Battle visuals sample point-filtered and clamped, matching the direct
+-- construction below, so pooled borrows draw identically.
+local POOLED_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }
+
+-- Borrows one staged page through the shared owner under a drawable key:
+-- the same bounded stall and keyed terminal failure as a whole-image
+-- borrow, answering the raw lease so cell drawables can pair the pooled
+-- page with their renderer-owned quad.
+---@param envelope FieldBattlePresentation
 ---@param key string drawable key behind diagnostics
----@param path string cache-relative staged image path behind diagnostics
----@param bytes string staged image bytes
----@return table<string, unknown>? owned image handle, nil on terminal failure
+---@param path string cache-relative staged page path behind diagnostics
+---@return table<string, unknown>? resolved page lease, nil on terminal failure
 ---@return string? terminal failure naming the key and path, nil on success
-local function uploadStaged(graphics, key, path, bytes)
-  local ok, imageOrErr = pcall(function()
-    local pixels = love.image.newImageData(love.filesystem.newFileData(bytes, path))
-    local uploaded = graphics.newImage(pixels)
-    assert(uploaded ~= nil, "the graphics driver handed out no image")
-    uploaded:setFilter("nearest", "nearest")
-    return uploaded
-  end)
-  if ok and imageOrErr ~= nil then
-    return imageOrErr
+local function borrowPage(envelope, key, path)
+  local pool = assert(envelope._pool, "pooled battle uploads borrow the shared image owner")
+  local token = pool:request(path, POOLED_SAMPLER, "demand")
+  local stalled = 0
+  while true do
+    local status, failure = pool:poll(token)
+    if status == "ready" then
+      return pool:acquire(token)
+    end
+    if status == "failed" then
+      return nil, "battle image " .. tostring(key) .. " upload failed: " .. tostring(path) .. ": " .. tostring(failure)
+    end
+    assert(status == "pending", "battle preparation reports pending or ready")
+    stalled = stalled + 1
+    if stalled > 10000 then
+      return nil, "battle image " .. tostring(key) .. " upload failed: " .. tostring(path) .. ": stalled"
+    end
+    local timer = love and love.timer
+    if timer ~= nil and timer.sleep ~= nil then
+      timer.sleep(0.001)
+    end
   end
-  local cause = ok and "empty image handle" or tostring(imageOrErr)
-  return nil, "battle image " .. tostring(key) .. " upload failed: " .. tostring(path) .. ": " .. cause
 end
 
--- Uploads one staged portrait cell for a canonical portrait selector:
--- decode the owning atlas page, crop exactly the staged cell, then
--- build and configure the owned image. Success answers the owned
--- handle; a page the worker has not attested yet answers a legitimate
--- pending wait without touching the image driver; staged bytes that
--- fail decoding or GPU upload answer a terminal failure naming the
+-- Borrows one staged whole battle visual through the shared owner,
+-- installing the resolved image as the drawable behind the key.
+---@param envelope FieldBattlePresentation
+---@param key string drawable key behind diagnostics
+---@param path string cache-relative staged image path behind diagnostics
+---@return table<string, unknown>? resolved drawable lease, nil on terminal failure
+---@return string? terminal failure naming the key and path, nil on success
+local function acquirePooled(envelope, key, path)
+  local lease, failure = borrowPage(envelope, key, path)
+  if lease == nil then
+    return nil, failure
+  end
+  assert(lease.image, "shared borrows carry their resolved image")
+  envelope._leases[key] = { lease = lease, handle = lease }
+  return lease
+end
+
+-- Borrows one staged portrait cell for a canonical portrait selector:
+-- the owning atlas page comes from the shared owner under the drawable
+-- key while the cell rectangle stays renderer-owned geometry over the
+-- borrowed page, so exact staged pixels draw through one pooled atlas
+-- quad instead of a private per-battler copy. A page the worker has not
+-- attested yet answers a legitimate pending wait without touching the
+-- image driver or the shared owner; staged bytes that fail
+-- classification or GPU upload answer a terminal failure naming the
 -- canonical selector and its page path.
----@param graphics table<string, unknown> host graphics namespace enabling GPU upload
+---@param envelope FieldBattlePresentation
+---@param key string drawable key behind diagnostics
+---@param graphics table<string, unknown> host graphics namespace carrying quad construction
 ---@param cacheFs table<string, unknown> versioned derived cache behind demand validation
 ---@param selector string canonical staged portrait selector
----@return table<string, unknown>? owned image handle, nil while pending or on terminal failure
+---@return table<string, unknown>? cell handle pairing the pool lease with its renderer-owned quad, nil while pending or on terminal failure
 ---@return string? terminal failure naming the selector and page path, nil while pending or on success
-local function uploadPortraitCell(graphics, cacheFs, selector)
-  ---@type string?
+local function acquirePortraitCell(envelope, key, graphics, cacheFs, selector)
   local pagePath = nil
+  local entry = nil
   do
-    -- Only a worker-attested page decodes: an unstaged page waits for
-    -- preparation instead of decoding missing bytes or standing in
+    -- Only a worker-attested page borrows: an unstaged page waits for
+    -- preparation instead of borrowing missing bytes or standing in
     -- another image. Structural manifest problems still fail below.
     local portraits = cacheFs:loadLua(MonCache.portraitManifestPath())
-    local entry = nil
     if type(portraits) == "table" and type(portraits.entries) == "table" then
       local entries = portraits.entries --[[@as table<string, table<string, unknown>>]]
       entry = entries[selector]
@@ -297,13 +345,7 @@ local function uploadPortraitCell(graphics, cacheFs, selector)
       end
     end
   end
-  local ok, imageOrErr = pcall(function()
-    local portraits = cacheFs:loadLua(MonCache.portraitManifestPath())
-    assert(
-      type(portraits) == "table" and type(portraits.entries) == "table",
-      "the staged portrait manifest is unavailable"
-    )
-    local entry = portraits.entries[selector]
+  local ok, handleOrErr = pcall(function()
     assert(type(entry) == "table", "the staged manifest plans no such portrait: " .. tostring(selector))
     assert(type(entry.pageId) == "number", "the staged portrait names its page: " .. tostring(selector))
     assert(
@@ -316,20 +358,23 @@ local function uploadPortraitCell(graphics, cacheFs, selector)
     )
     local path = MonCache.pageImagePath("portraits", entry.pageId)
     pagePath = path
-    local bytes = cacheFs:read(path)
-    assert(type(bytes) == "string", "the staged portrait page is not staged: " .. tostring(path))
-    local page = love.image.newImageData(love.filesystem.newFileData(bytes, path))
-    local cropped = love.image.newImageData(entry.width, entry.height)
-    cropped:paste(page, 0, 0, entry.x, entry.y, entry.width, entry.height)
-    local uploaded = graphics.newImage(cropped)
-    assert(uploaded ~= nil, "the graphics driver handed out no portrait image")
-    uploaded:setFilter("nearest", "nearest")
-    return uploaded
+    local lease, failure = borrowPage(envelope, key, path)
+    assert(lease ~= nil, failure)
+    assert(lease.image, "shared borrows carry their resolved image")
+    -- Hoisted before the call: assert returns all its arguments, so an
+    -- inline assert in final position would leak its message string into
+    -- the quad argument list.
+    local pageWidth = assert(lease.width, "shared borrows carry their page width")
+    local pageHeight = assert(lease.height, "shared borrows carry their page height")
+    local quad = graphics.newQuad(entry.x, entry.y, entry.width, entry.height, pageWidth, pageHeight)
+    local handle = { lease = lease, quad = quad }
+    envelope._leases[key] = { lease = lease, handle = handle }
+    return handle
   end)
-  if ok and imageOrErr ~= nil then
-    return imageOrErr
+  if ok and handleOrErr ~= nil then
+    return handleOrErr
   end
-  local cause = ok and "empty portrait handle" or tostring(imageOrErr)
+  local cause = ok and "empty portrait handle" or tostring(handleOrErr)
   local label = "mon:" .. tostring(selector)
   if pagePath ~= nil then
     label = label .. " " .. tostring(pagePath)
@@ -533,7 +578,6 @@ function FieldBattlePresentation:_preparationServices()
   local envelope = self
   local cacheFs = assert(self._cacheFs, "preparation requires the envelope cache")
   local graphics = self._graphics
-  local images = self._images --[[@as table<string, unknown>]]
   local services = {}
   function services.prepare(demand)
     if type(demand) ~= "table" then
@@ -604,8 +648,9 @@ function FieldBattlePresentation:_preparationServices()
   end
   function services.drawable(key)
     assert(type(key) == "string" and key ~= "", "image resolution names its key")
-    if images[key] ~= nil then
-      return images[key]
+    local leases = envelope._leases --[[@as table<string, FieldBattlePresentation.PooledHandle>]]
+    if leases[key] ~= nil then
+      return leases[key].handle
     end
     -- A terminal upload failure replays identically without re-entering
     -- the driver: the decode already proved deterministic for this
@@ -617,8 +662,18 @@ function FieldBattlePresentation:_preparationServices()
     if graphics == nil then
       -- Data descriptors carry the validated staged identity without
       -- GPU objects: the recording boundary proves views while pixels
-      -- stay unstaged in headless composition.
-      return { kind = "staged", key = key }
+      -- stay unstaged in headless composition. Descriptors stay
+      -- drawable-shaped so inspection draws record exactly like the raw
+      -- draws they replace; production never draws them (a GPU-backed
+      -- envelope resolves leases instead).
+      local descriptor = { kind = "staged", key = key }
+      function descriptor:draw(drawGraphics, x, y, ...)
+        drawGraphics.draw(self, x, y, ...)
+      end
+      function descriptor:drawQuad(drawGraphics, quad, x, y, ...)
+        drawGraphics.draw(self, quad, x, y, ...)
+      end
+      return descriptor
     end
     -- Production drawables are real owned handles, legitimate waits, or
     -- terminal failures: staged bytes that fail decoding or GPU upload
@@ -628,51 +683,52 @@ function FieldBattlePresentation:_preparationServices()
     local sceneKey = tostring(key):match("^scene:(.+)$")
     if sceneKey ~= nil then
       local path = BattlePresentationCache.sceneImagePath(sceneKey)
-      local bytes = cacheFs:read(path)
-      if type(bytes) ~= "string" then
-        return nil
-      end
-      local image, failure = uploadStaged(graphics, key, path, bytes)
+      -- Manifest-declared battle art borrows the shared owner: the
+      -- staged request classifies through its worker and the borrow
+      -- resolves exactly one pooled image per key.
+      local image, failure = acquirePooled(envelope, key, path)
       if image == nil then
         assert(type(failure) == "string", "staged upload failures carry their reason")
         failures[key] = failure --[[@as string]]
         return nil, failure
       end
-      images[key] = image
       return image
     end
     local artPath = stagedArtPath(envelope, key)
     if artPath ~= nil then
-      local bytes = cacheFs:read(artPath)
-      if type(bytes) ~= "string" then
-        return nil
-      end
-      local image, failure = uploadStaged(graphics, key, artPath, bytes)
+      local image, failure = acquirePooled(envelope, key, artPath)
       if image == nil then
         assert(type(failure) == "string", "staged upload failures carry their reason")
         failures[key] = failure --[[@as string]]
         return nil, failure
       end
-      images[key] = image
       return image
     end
     local selector = exactPortraitSelector(key)
     if selector ~= nil then
-      local portrait, failure = uploadPortraitCell(graphics, cacheFs, selector)
-      if portrait == nil then
+      local cell, failure = acquirePortraitCell(envelope, key, graphics, cacheFs, selector)
+      if cell == nil then
         if failure == nil then
           return nil
         end
         failures[key] = failure --[[@as string]]
         return nil, failure
       end
-      images[key] = portrait
-      return portrait
+      return cell
     end
     return nil
   end
   function services.release(key)
-    images[key] = nil
+    -- Returned borrows rest resident under the shared owner until its own
+    -- eviction: releasing forgets the borrow here so a later resolution
+    -- borrows it again instead of drawing through a returned lease.
+    local leases = envelope._leases --[[@as table<string, FieldBattlePresentation.PooledHandle>]]
+    local pooled = leases[key]
+    if pooled ~= nil then
+      leases[key] = nil
+      local pool = assert(envelope._pool, "pooled battle borrows return to the shared image owner")
+      pool:release(pooled.lease)
+    end
   end
   return services
 end
@@ -1384,8 +1440,14 @@ function FieldBattlePresentation:dispose()
       return screen:dispose()
     end)
   end
-  for key, _ in pairs(self._images) do
-    self._images[key] = nil
+  -- Battle closure returns every shared borrow exactly once; the shared
+  -- owner alone frees physical images, so no raw image release runs here.
+  local pool = self._pool
+  for key, pooled in pairs(self._leases) do
+    self._leases[key] = nil
+    if pool ~= nil then
+      pool:release(pooled.lease)
+    end
   end
   for key, _ in pairs(self._imageFailures) do
     self._imageFailures[key] = nil

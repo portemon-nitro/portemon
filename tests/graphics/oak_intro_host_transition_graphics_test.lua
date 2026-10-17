@@ -186,6 +186,7 @@ local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local FieldStatePresentationFixture = require("tests.support.FieldStatePresentationFixture")
+local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local ItemFixture = require("libs.items.tests.item_fixture")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
@@ -222,6 +223,46 @@ local function driveToShrink(state)
   error("Oak did not reach the shrink animation", 0)
 end
 
+-- A synchronous stub for the session-scoped shared image owner: one real
+-- love Image per texture path decoded from the fixture cache on first
+-- poll, borrowed as leases shaped like pool leases ({image, palette,
+-- kind}). Request/poll/acquire/release/cancel match the borrowing
+-- contract pooled renderers code against; nothing classifies off-thread.
+local function stubImageOwner(cache)
+  local images = {}
+  local owner = {}
+  function owner:request(path, _, _)
+    assert(type(path) == "string", "stub image requests need their texture path")
+    return path
+  end
+  function owner:poll(path)
+    assert(type(path) == "string", "stub image tokens are texture paths")
+    if images[path] == nil then
+      local bytes = assert(cache:read(path), "stub image owner is missing " .. path)
+      local data = love.image.newImageData(love.filesystem.newFileData(bytes, path))
+      images[path] = love.graphics.newImage(data)
+    end
+    return "ready"
+  end
+  function owner:acquire(path)
+    local image = assert(images[path], "stub image lease borrows a polled texture")
+    return { image = image, palette = nil, kind = "rgba8" }
+  end
+  function owner:release(_) end
+  function owner:cancel(_)
+    return false
+  end
+  function owner:dispose()
+    for _, image in pairs(images) do
+      pcall(function()
+        image:release()
+      end)
+    end
+    images = {}
+  end
+  return owner
+end
+
 -- A covered field entry over a stubbed runtime: the presentation resources
 -- are real, so the first drawn frame proves the player/runtime is
 -- constructed beneath the entry black.
@@ -230,6 +271,25 @@ local function bootCoveredField(scope)
   local viewport = FieldViewport.new(hostWidth, hostHeight, { mode = "expanded" })
   viewport.worldViewport = { x = 0, y = 0, width = hostWidth, height = hostHeight }
   local cache = FieldStatePresentationFixture.cache()
+  -- The stub runtime borrows a synchronous stub image owner like
+  -- production borrows the session pool: fixture bytes live in an
+  -- in-memory FakeCache the preparation worker cannot see, so leases
+  -- decode to real love Images on the main thread instead. A real queue
+  -- is still borrowed because non-nil image ownership switches resource
+  -- construction to it; both are test-owned and disposed after the field
+  -- state returns its leases.
+  local assetPreparation = AssetPreparationQueue.new(cache)
+  scope:own({
+    release = function()
+      assetPreparation:release()
+    end,
+  })
+  local imageAssets = stubImageOwner(cache)
+  scope:own({
+    release = function()
+      imageAssets:dispose()
+    end,
+  })
   local terrain = FieldStatePresentationFixture.terrainEffects(cache)
   -- The draw path renders through the real field renderer, which needs a
   -- camera with projection matrices; identity matrices suffice for the
@@ -261,6 +321,8 @@ local function bootCoveredField(scope)
   FieldRuntime.new = function(_, _)
     local runtime = setmetatable({
       cacheFs = cache,
+      assetPreparation = assetPreparation,
+      imageAssets = imageAssets,
       derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
       uiManifest = FieldUiFixture.fieldStateManifest(),
       pokemonNaming = InactivePokemonNaming.new(),

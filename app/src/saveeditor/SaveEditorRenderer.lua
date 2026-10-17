@@ -20,11 +20,13 @@ local ProductMenuSkin = require("app.src.ui.ProductMenuSkin")
 ---@field graphics table<string, unknown>
 ---@field _disposed boolean
 ---@field _iconProvider MonIconAssetProvider?
----@field _icons table<string, { image: love.Image, quad: love.Quad, dimensions: { width: number, height: number } }>
+---@field _icons table<string, { lease: table<string, unknown>?, image: love.Image, quad: love.Quad, dimensions: { width: number, height: number } }>
 ---@field _windowRenderer FieldWindowRenderer?
----@field _bagImages table<string, love.Image>
----@field _imagePool ImageAssetPool?
----@field _ownsImagePool boolean
+---@field _bagImages table<string, love.Image> drawable quantity and pocket visuals by path
+---@field _bagLeases table<string, table<string, unknown>> shared-owner borrows behind the pooled visuals
+---@field _imagePool table<string, unknown>? session-local shared generated-image owner
+---@field _ownsImagePool boolean true once this renderer built the session image owner itself
+---@field _poolUnusable boolean true once pooling proved unusable for the session caches
 ---@field _pendingIconPreparation { cacheFs: table<string, unknown>, derivedAssets: table<string, unknown> }?
 ---@field iconStatus string?
 ---@field iconFailure string?
@@ -129,33 +131,146 @@ function Renderer.new(options)
     _windowRenderer = nil,
     _itemIconProvider = nil,
     _bagImages = {},
+    _bagLeases = {},
     _imagePool = options.imagePool,
     _ownsImagePool = false,
+    _poolUnusable = false,
     _pendingIconPreparation = nil,
     iconStatus = nil,
     iconFailure = nil,
   }, Renderer)
 end
 
---- Session image owner behind mon icons. Production lazily owns one pool
---- (with its single worker) per editor lifetime; an injected pool is borrowed
---- and outlives the renderer.
+-- The session-local shared generated-image owner behind editor visuals:
+-- borrowed when the composer lends one, otherwise built here for the
+-- editor lifetime and disposed with it. Caches the composer can only
+-- serve on the main thread (test doubles) cannot back the pool worker,
+-- so a pool that cannot be built simply answers nil and those paths
+-- keep their direct construction. The editor never reaches field runtime
+-- internals for images and never starts a second image thread beside
+-- the pool's own worker.
 ---@param cacheFs table<string, unknown>
----@return ImageAssetPool
+---@return table<string, unknown>? usable session image owner, nil when no pool backs this cache
 function Renderer:_poolFor(cacheFs)
   if self._imagePool ~= nil then
     return self._imagePool
   end
-  local pool = ImageAssetPool.new(cacheFs, { graphics = self.graphics })
+  if self._poolUnusable then
+    return nil
+  end
+  local ok, pool = pcall(ImageAssetPool.new, cacheFs, { graphics = self.graphics })
+  if not ok then
+    self._poolUnusable = true
+    return nil
+  end
   self._imagePool = pool
   self._ownsImagePool = true
   return pool
+end
+
+-- Drops an owned session image owner that proved unusable for its cache:
+-- the worker joins and no borrow is outstanding yet, so nothing leaks.
+function Renderer:_dropOwnedPool()
+  local pool = self._imagePool
+  self._imagePool = nil
+  self._ownsImagePool = false
+  self._poolUnusable = true
+  if pool ~= nil then
+    pool:dispose()
+  end
+end
+
+-- Editor visuals sample point-filtered and clamped, matching the retired
+-- direct construction, so pooled borrows draw identically.
+local POOLED_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }
+
+-- Borrows one retail quantity or pocket visual through the session image
+-- owner, waiting out its classification within the bounded stall budget.
+-- Answers nil when no pool backs the cache or the borrow fails, so the
+-- caller keeps its direct construction for pool-less caches.
+---@param pool table<string, unknown> session image owner behind the borrow
+---@param path string cache-relative generated visual path
+---@return table<string, unknown>? borrow behind the visual, nil when the pool cannot serve it
+local function borrowVisual(pool, path)
+  local token = pool:request(path, POOLED_SAMPLER, "demand")
+  local stalled = 0
+  while true do
+    local status, _ = pool:poll(token)
+    if status == "ready" then
+      return pool:acquire(token)
+    end
+    if status == "failed" then
+      return nil
+    end
+    if status ~= "pending" then
+      return nil
+    end
+    stalled = stalled + 1
+    if stalled > 10000 then
+      return nil
+    end
+    local timer = love and love.timer
+    if timer ~= nil and timer.sleep ~= nil then
+      timer.sleep(0.001)
+    end
+  end
+end
+
+-- Resolves one retail quantity or pocket visual: the pooled borrow when a
+-- session image owner serves the cache, direct construction otherwise.
+-- Repeat preparations reuse the memoized visual instead of uploading a
+-- duplicate; a missing visual fails loudly naming its path either way.
+---@param cacheFs table<string, unknown>
+---@param path string cache-relative generated visual path
+---@return love.Image drawable visual
+local function acquireBagVisual(self, cacheFs, path)
+  local borrowed = self._bagImages[path]
+  if borrowed ~= nil then
+    return borrowed
+  end
+  local pool = self:_poolFor(cacheFs)
+  if pool ~= nil then
+    local ok, lease = pcall(borrowVisual, pool, path)
+    if ok and lease ~= nil then
+      local image = assert(lease.image, "shared borrows carry their resolved image")
+      self._bagLeases[path] = lease
+      self._bagImages[path] = image
+      return image
+    end
+  end
+  local bytes = assert(cacheFs:read(path), "retail quantity visual bytes are required: " .. path)
+  local image = self.graphics.newImage(love.filesystem.newFileData(bytes, path))
+  image:setFilter("nearest", "nearest")
+  self._bagImages[path] = image
+  return image
 end
 
 function Renderer:preparePresentationAssets(cacheFs, manifest)
   assert(not self._disposed, "disposed save editor renderer cannot prepare assets")
   if self._windowRenderer ~= nil then
     return
+  end
+  local pool = self:_poolFor(cacheFs)
+  if pool ~= nil then
+    local ok, windowOrError = pcall(FieldWindowRenderer.new, {
+      cacheFs = cacheFs,
+      manifest = manifest,
+      graphics = self.graphics,
+      imagePool = pool,
+    })
+    if ok then
+      self._windowRenderer = windowOrError
+      return
+    end
+    -- A pool built over a main-thread-only cache cannot serve the frame
+    -- strip worker: drop it and keep the direct window so editor chrome
+    -- still prepares. A lent pool never lands here without failing its
+    -- own borrow first, which stays loud at that borrow.
+    if self._ownsImagePool then
+      self:_dropOwnedPool()
+    else
+      self._poolUnusable = true
+    end
   end
   self._windowRenderer = FieldWindowRenderer.new({ cacheFs = cacheFs, manifest = manifest, graphics = self.graphics })
 end
@@ -169,18 +284,14 @@ function Renderer:prepareVisibleIcons(view, plan, cacheFs, derivedAssets, deferG
     for _, role in ipairs({ "increment", "decrement" }) do
       for _, state in ipairs({ "normal", "pressed" }) do
         local visual = assert(view.numberControlVisuals[role][state])
-        if self._bagImages[visual.image] == nil then
-          local bytes = assert(cacheFs:read(visual.image), "retail quantity visual bytes are required")
-          local image = self.graphics.newImage(love.filesystem.newFileData(bytes, visual.image))
-          image:setFilter("nearest", "nearest")
-          self._bagImages[visual.image] = image
-        end
+        acquireBagVisual(self, cacheFs, visual.image)
       end
     end
   end
   if view.section == "Bag" then
     if self._itemIconProvider == nil then
-      self._itemIconProvider = ItemIconAssetProvider.new(cacheFs, { graphics = self.graphics })
+      self._itemIconProvider =
+        ItemIconAssetProvider.new(cacheFs, { graphics = self.graphics, imagePool = self:_poolFor(cacheFs) })
     end
     local paths = { assert(view.bagPocketStrip).image }
     if view.bagTabFocusVisual ~= nil then
@@ -193,16 +304,12 @@ function Renderer:prepareVisibleIcons(view, plan, cacheFs, derivedAssets, deferG
       end
     end
     for _, path in ipairs(paths) do
-      if self._bagImages[path] == nil then
-        local bytes = assert(cacheFs:read(path), "Bag visual bytes are required")
-        local image = self.graphics.newImage(love.filesystem.newFileData(bytes, path))
-        image:setFilter("nearest", "nearest")
-        self._bagImages[path] = image
-      end
+      acquireBagVisual(self, cacheFs, path)
     end
     for _, card in ipairs(assert(plan.content.layout).bagGrid or {}) do
       if card.iconKey and self._icons[card.iconKey] == nil then
         self._icons[card.iconKey] = {
+          lease = self._itemIconProvider:handle(),
           image = self._itemIconProvider:image(),
           quad = self._itemIconProvider:quadFor(card.iconKey),
           dimensions = self._itemIconProvider:dimensions(card.iconKey),
@@ -217,13 +324,7 @@ function Renderer:prepareVisibleIcons(view, plan, cacheFs, derivedAssets, deferG
     local visuals = assert(view.bagQuantityVisuals)
     for _, direction in ipairs({ "decrement", "increment" }) do
       for _, state in ipairs({ "normal", "pressed" }) do
-        local path = visuals[direction][state].image
-        if self._bagImages[path] == nil then
-          local bytes = assert(cacheFs:read(path), "Party pager visual bytes are required")
-          local image = self.graphics.newImage(love.filesystem.newFileData(bytes, path))
-          image:setFilter("nearest", "nearest")
-          self._bagImages[path] = image
-        end
+        acquireBagVisual(self, cacheFs, visuals[direction][state].image)
       end
     end
   end
@@ -283,6 +384,7 @@ function Renderer:prepareVisibleIcons(view, plan, cacheFs, derivedAssets, deferG
   for _, iconKey in ipairs(iconKeys) do
     if self._icons[iconKey] == nil then
       self._icons[iconKey] = {
+        lease = self._iconProvider:handleFor(iconKey),
         image = self._iconProvider:image(iconKey),
         quad = self._iconProvider:quadFor(iconKey, 1),
         dimensions = self._iconProvider:dimensions(iconKey),
@@ -680,9 +782,30 @@ local function drawBagCard(renderer, card, focused)
   end
 end
 
+-- One pooled bag visual through the lease sampler surface, else the
+-- unchanged eager raw draw. Tinted states ride the sampler identically.
+local function drawBagImage(renderer, path, quad, x, y, ...)
+  local lease = renderer._bagLeases[path]
+  if lease ~= nil then
+    if quad ~= nil then
+      lease:drawQuad(renderer.graphics, quad, x, y, ...)
+    else
+      lease:draw(renderer.graphics, x, y, ...)
+    end
+    return
+  end
+  local image = assert(renderer._bagImages[path], "bag visuals prepare before drawing: " .. tostring(path))
+  if quad ~= nil then
+    renderer.graphics.draw(image, quad, x, y, ...)
+  else
+    renderer.graphics.draw(image, x, y, ...)
+  end
+end
+
 local function drawPageArrow(renderer, target, visuals, angle, focused, pressed, disabled)
   local visual = (pressed == true and not disabled) and visuals.pressed or visuals.normal
-  local image = assert(renderer._bagImages[assert(visual.image)])
+  local path = assert(visual.image)
+  local image = assert(renderer._bagImages[path])
   local width, height = image:getDimensions()
   local scale = PixelScale.assertInteger(1)
   if disabled then
@@ -690,8 +813,10 @@ local function drawPageArrow(renderer, target, visuals, angle, focused, pressed,
   else
     renderer.graphics.setColor(1, 1, 1, 1)
   end
-  renderer.graphics.draw(
-    image,
+  drawBagImage(
+    renderer,
+    path,
+    nil,
     PixelScale.snapLogical(target.x + target.width / 2),
     PixelScale.snapLogical(target.y + target.height / 2),
     angle,
@@ -732,6 +857,17 @@ drawCenteredIcon = function(renderer, icon, bounds)
   local y = PixelScale.snapLogical(bounds.y + (bounds.height - dimensions.height) / 2)
   renderer.graphics.setColor(1, 1, 1, 1)
   LogicalSurface.clip(renderer.graphics, bounds, function()
+    -- Pooled icon borrows resolve through the lease sampler surface;
+    -- caller-owned images keep their raw draw.
+    local lease = icon.lease
+    if lease ~= nil then
+      if icon.quad ~= nil then
+        lease:drawQuad(renderer.graphics, icon.quad, x, y, 0, scale, scale)
+      else
+        lease:draw(renderer.graphics, x, y, 0, scale, scale)
+      end
+      return
+    end
     if icon.quad ~= nil then
       renderer.graphics.draw(icon.image, icon.quad, x, y, 0, scale, scale)
     else
@@ -895,7 +1031,12 @@ local function paintRows(ctx)
         local icon = row.iconKey and renderer._icons[row.iconKey]
         if icon and graphics.draw then
           graphics.setColor(1, 1, 1, 1)
-          graphics.draw(icon.image, icon.quad, PixelScale.snapLogical(rect.x + 3), PixelScale.snapLogical(rect.y + 2))
+          local lease = icon.lease
+          if lease ~= nil then
+            lease:drawQuad(graphics, icon.quad, PixelScale.snapLogical(rect.x + 3), PixelScale.snapLogical(rect.y + 2))
+          else
+            graphics.draw(icon.image, icon.quad, PixelScale.snapLogical(rect.x + 3), PixelScale.snapLogical(rect.y + 2))
+          end
         end
         local labelRect = assert(row.labelRect, "layout rows own their label text bounds")
         local labelRole = row.role == "warning" and "error" or row.role == "read-only value" and "hint" or nil
@@ -1054,10 +1195,10 @@ local function paintBag(ctx)
   local renderer, graphics, view, layout = ctx.renderer, ctx.graphics, ctx.view, ctx.layout
   if view.section == "Bag" then
     local strip = assert(layout.bagStripTarget)
-    local stripImage = renderer._bagImages[assert(view.bagPocketStrip).image]
-    assert(stripImage, "selected Bag pocket strip was prepared before drawing")
+    local stripPath = assert(view.bagPocketStrip).image
+    assert(renderer._bagImages[stripPath], "selected Bag pocket strip was prepared before drawing")
     graphics.setColor(1, 1, 1, 1)
-    graphics.draw(stripImage, PixelScale.snapLogical(strip.x), PixelScale.snapLogical(strip.y))
+    drawBagImage(renderer, stripPath, nil, PixelScale.snapLogical(strip.x), PixelScale.snapLogical(strip.y))
     for _, targetId in ipairs(layout.bagTabs or {}) do
       if isFocusedVisible(view, targetId) and view.bagTabFocusVisual ~= nil then
         local tabIndex = tonumber(targetId:match("bag:pocket:(%d+)$"))
@@ -1070,11 +1211,13 @@ local function paintBag(ctx)
         end
         local point = assert(view.bagTabFocusTargets[assert(tabIndex)])
         local descriptor = assert(view.bagTabFocusVisual)
-        local image = assert(renderer._bagImages[descriptor.image])
+        assert(renderer._bagImages[descriptor.image])
         local offset = descriptor.offset or { x = 0, y = 0 }
         graphics.setColor(1, 1, 1, 1)
-        graphics.draw(
-          image,
+        drawBagImage(
+          renderer,
+          descriptor.image,
+          nil,
           PixelScale.snapLogical(strip.x + point.x + offset.x),
           PixelScale.snapLogical(strip.y + point.y + offset.y)
         )
@@ -1223,19 +1366,19 @@ local function paintValueEditor(ctx)
           local downState = view.numberHoldTarget == downId and "pressed" or "normal"
           local upVisual = assert(view.numberControlVisuals.increment[upState])
           local downVisual = assert(view.numberControlVisuals.decrement[downState])
-          local upImage =
-            assert(renderer._bagImages[upVisual.image], "retail number controls are prepared before drawing")
-          local downImage =
-            assert(renderer._bagImages[downVisual.image], "retail number controls are prepared before drawing")
+          assert(renderer._bagImages[upVisual.image], "retail number controls are prepared before drawing")
+          assert(renderer._bagImages[downVisual.image], "retail number controls are prepared before drawing")
           for _, item in ipairs({
-            { image = upImage, target = column.upRect, visual = upVisual, targetId = upId },
-            { image = downImage, target = column.downRect, visual = downVisual, targetId = downId },
+            { path = upVisual.image, target = column.upRect, visual = upVisual, targetId = upId },
+            { path = downVisual.image, target = column.downRect, visual = downVisual, targetId = downId },
           }) do
             local scale = PixelScale.assertInteger(number.arrowScale)
             assert(item.visual.width == item.target.width and item.visual.height == item.target.height)
             graphics.setColor(1, 1, 1, 1)
-            graphics.draw(
-              item.image,
+            drawBagImage(
+              renderer,
+              item.path,
+              nil,
               PixelScale.snapLogical(item.target.x + (item.target.width - item.visual.width) / 2),
               PixelScale.snapLogical(item.target.y + (item.target.height - item.visual.height) / 2),
               0,
@@ -1842,19 +1985,31 @@ function Renderer:dispose()
     self._itemIconProvider:release()
     self._itemIconProvider = nil
   end
-  for _, image in pairs(self._bagImages) do
-    if image.release then
+  -- Pooled visuals return their borrows exactly once; visuals the editor
+  -- never pooled (test-seeded direct images) release directly. The owned
+  -- session image owner is disposed after every borrow returned, so its
+  -- retained pairs free exactly once; a borrowed owner stays with its
+  -- composer.
+  local pool = self._imagePool
+  self._imagePool = nil
+  local ownsPool = self._ownsImagePool
+  self._ownsImagePool = false
+  for path, image in pairs(self._bagImages) do
+    self._bagImages[path] = nil
+    local lease = self._bagLeases[path]
+    self._bagLeases[path] = nil
+    if lease ~= nil then
+      if pool ~= nil then
+        pool:release(lease)
+      end
+    elseif image.release then
       image:release()
     end
   end
-  self._bagImages = {}
-  local pool = self._imagePool
-  local ownsPool = self._ownsImagePool
-  self._imagePool = nil
-  self._ownsImagePool = false
-  -- Exiting trims the session owner: every returned borrow is idle now,
-  -- so the trim frees exactly the staged editor pairs. Borrowed pairs
-  -- still outlive elsewhere; only fully released pairs are evicted.
+  -- Exiting trims the session owner: every returned borrow is idle now
+  -- and competes for the idle budget like any other unborrowed pair.
+  -- Borrowed pairs still outlive elsewhere; only fully released pairs
+  -- are eviction candidates.
   if pool ~= nil then
     pool:prune()
   end

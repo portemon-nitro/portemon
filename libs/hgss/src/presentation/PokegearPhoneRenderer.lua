@@ -102,12 +102,12 @@ local function drawPrepared(graphics, images, path)
   if path == nil then
     return false
   end
-  local image = images[path]
-  if image == nil then
+  local lease = images[path]
+  if lease == nil then
     return false
   end
   graphics.setColor(1, 1, 1, 1)
-  graphics.draw(image, 0, 0)
+  lease:draw(graphics, 0, 0)
   return true
 end
 
@@ -332,10 +332,10 @@ local function drawPanel(graphics, images, cell, content)
   end
   local drawn = false
   if path ~= nil then
-    local image = images[path]
-    if image ~= nil then
+    local lease = images[path]
+    if lease ~= nil then
       graphics.setColor(1, 1, 1, 1)
-      graphics.draw(image, PANEL_RECT.x, PANEL_RECT.y)
+      lease:draw(graphics, PANEL_RECT.x, PANEL_RECT.y)
       drawn = true
     end
   end
@@ -420,9 +420,9 @@ function PokegearPhoneRenderer.drawInformation(resources, content)
   local graphics = assert(resources.graphics, "the phone render borrows its host graphics") --[[@as love.graphics]]
   local images = assert(resources.images, "the phone render borrows its prepared images") --[[@as table<string, unknown>]]
   if type(content.upper) == "string" then
-    local image = assert(images[content.upper], "the phone render needs its prepared upper image")
+    local lease = assert(images[content.upper], "the phone render needs its prepared upper image")
     graphics.setColor(1, 1, 1, 1)
-    graphics.draw(image, 0, 0)
+    lease:draw(graphics, 0, 0)
   end
 end
 

@@ -7,6 +7,7 @@ local ImageButton = require("libs.ui.src.ImageButton")
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local PixelScale = require("libs.ui.src.PixelScale")
 local NamingScreenRenderer = require("libs.hgss.src.ui.NamingScreenRenderer")
+local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
 
 ---@class OakIntroRenderer
 ---@field graphics table<string, unknown>
@@ -36,10 +37,16 @@ local REQUIRED_ASSETS = {
 local OakIntroRenderer = {}
 OakIntroRenderer.__index = OakIntroRenderer
 
+-- The reveal brightness shader carries the shared exact-sampling rule
+-- like the palette-text and summary picture shaders: an indexed source
+-- resolves through its exact palette ahead of the brightness math, so
+-- the effect is preserved exactly while r8 bindings resolve. RGBA
+-- sources pass through the identity rule untouched.
 local REVEAL_SHADER = [[
+  /*__portemon_shared_image_sampling__*/
   uniform number brightness;
   vec4 effect(vec4 color, Image texture, vec2 texture_coords, vec2 screen_coords) {
-    vec4 sampled = Texel(texture, texture_coords) * color;
+    vec4 sampled = resolveExactTexel(Texel(texture, texture_coords)) * color;
     sampled.rgb = mix(sampled.rgb, vec3(1.0), brightness);
     return sampled;
   }
@@ -98,6 +105,26 @@ local function paletteColor(definition, slot)
   return { r = r * 255, g = g * 255, b = b * 255 }
 end
 
+-- Binds one reveal draw's sampling state: a pooled indexed borrow
+-- resolves through its exact palette first, everything else samples
+-- straight. This layer cannot import the platform sampler, so the
+-- three shared-rule uniforms send directly, mirroring the sampler's
+-- own bind; the uniform names and semantics are owned once by the
+-- shared snippet.
+---@param shader table<string, unknown> reveal shader behind the draw
+---@param binding table<string, unknown> widget binding carrying an optional pool lease
+local function bindRevealSampling(shader, binding)
+  local lease = binding.lease
+  if type(lease) == "table" and lease.kind == "r8" then
+    local palette = assert(lease.palette, "indexed intro bindings carry their exact palette")
+    shader:send("u_usePalette", true)
+    shader:send("u_paletteCount", palette:getWidth())
+    shader:send("u_palette", palette)
+  else
+    shader:send("u_usePalette", false)
+  end
+end
+
 local function releaseAll(resources)
   for index = #resources, 1, -1 do
     if resources[index].release then
@@ -107,9 +134,23 @@ local function releaseAll(resources)
 end
 
 -- Generated intro widgets share one image acquisition and release owner.
+-- The loader answers either a pool lease (shared-owner path, drawn
+-- through the lease sampler surface) or a bare caller-owned image
+-- (injected-loader path, drawn raw exactly as before).
+---@param loaded unknown loader answer behind one generated path
+---@return table<string, unknown>? pool lease when the answer borrows one
+---@return unknown resolved image behind the answer
+local function splitLease(loaded)
+  if type(loaded) == "table" and type(loaded.drawQuad) == "function" then
+    return loaded, assert(loaded.image, "intro leases carry their resolved image")
+  end
+  return nil, loaded
+end
+
 local function loadResources(manifest, graphics, imageLoader)
   local bindings, acquired = {}, {}
   local imagesByPath = {}
+  local leaseByPath = {}
   local assets = {}
   local ok, failure = pcall(function()
     for assetId, asset in pairs(manifest.widgets) do
@@ -135,19 +176,24 @@ local function loadResources(manifest, graphics, imageLoader)
       bindings[assetId] = {}
       for frameIndex, frame in ipairs(asset.frames) do
         local image = imagesByPath[frame.image]
+        local lease = nil
         if image == nil then
-          image = imageLoader(frame.image)
-          assert(image ~= nil, "intro image loader returned no image for " .. assetId)
+          local loaded = imageLoader(frame.image)
+          assert(loaded ~= nil, "intro image loader returned no image for " .. assetId)
+          lease, image = splitLease(loaded)
           imagesByPath[frame.image] = image
+          leaseByPath[frame.image] = lease
           acquired[#acquired + 1] = image
           if image.setFilter then
             assert(asset.sampling == "linear" or asset.sampling == "nearest", "intro asset sampling is invalid")
             image:setFilter(asset.sampling, asset.sampling)
           end
+        else
+          lease = leaseByPath[frame.image]
         end
         local quad =
           graphics.newQuad(frame.x or 0, frame.y or 0, frame.width, frame.height, image:getWidth(), image:getHeight())
-        bindings[assetId][frameIndex] = { image = image, quad = quad }
+        bindings[assetId][frameIndex] = { image = image, quad = quad, lease = lease }
       end
     end
   end)
@@ -172,8 +218,16 @@ local function drawAsset(self, assetId, frameIndex, region, opacity, brightness,
   if opacity ~= nil then
     assert(opacity >= 0 and opacity <= 1, "intro reveal opacity is out of range")
   end
-  if brightness and brightness > 0 then
+  -- The reveal pass draws under its brightness shader, which now
+  -- resolves the shared sampling rule ahead of its math: the sampling
+  -- uniforms bind per draw (sent on every reveal draw since the shader
+  -- object is shared and stale palette state must never leak across
+  -- indexed and straight draws), then the raw draw flows through the
+  -- integrated rule exactly like the standalone lease sampler.
+  local revealing = brightness and brightness > 0
+  if revealing then
     self.revealShader:send("brightness", brightness)
+    bindRevealSampling(self.revealShader, binding)
     self.graphics.setShader(self.revealShader)
   end
   local tr, tg, tb = 1, 1, 1
@@ -181,8 +235,12 @@ local function drawAsset(self, assetId, frameIndex, region, opacity, brightness,
     tr, tg, tb = tint.r or tint[1], tint.g or tint[2], tint.b or tint[3]
   end
   self.graphics.setColor(tr, tg, tb, opacity or 1)
-  self.graphics.draw(binding.image, binding.quad, x, y, 0, scale, scale)
-  if brightness and brightness > 0 then
+  if binding.lease ~= nil and not revealing then
+    binding.lease:drawQuad(self.graphics, binding.quad, x, y, 0, scale, scale)
+  else
+    self.graphics.draw(binding.image, binding.quad, x, y, 0, scale, scale)
+  end
+  if revealing then
     self.graphics.setShader(nil)
   end
 end
@@ -214,7 +272,7 @@ function OakIntroRenderer.new(options)
     "Oak renderer requires the validated field-UI manifest"
   ) --[[@as table<string, unknown>]]
   local images, bindings, renderedAssets = loadResources(options.manifest, graphics, imageLoader)
-  local ok, revealShader = pcall(graphics.newShader, REVEAL_SHADER)
+  local ok, revealShader = pcall(graphics.newShader, ImageAssetPool.withSharedSampling(REVEAL_SHADER))
   if not ok then
     local acquired = {}
     for _, image in pairs(images) do
@@ -285,7 +343,11 @@ local function drawBackground(self, region)
   local sx = region.width / frame.width
   local sy = region.height / frame.height
   self.graphics.setColor(1, 1, 1, 1)
-  self.graphics.draw(binding.image, binding.quad, region.x, region.y, 0, sx, sy)
+  if binding.lease ~= nil then
+    binding.lease:drawQuad(self.graphics, binding.quad, region.x, region.y, 0, sx, sy)
+  else
+    self.graphics.draw(binding.image, binding.quad, region.x, region.y, 0, sx, sy)
+  end
 end
 
 ---@param surface table<string, unknown>

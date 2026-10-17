@@ -8,6 +8,7 @@ local FieldDialogueRenderer = require("libs.hgss.src.ui.FieldDialogueRenderer")
 local FieldFontLoader = require("libs.hgss.src.ui.FieldFontLoader")
 local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
+local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
 local GameAudio = require("game.hgss.src.audio.GameAudio")
 local OakIntroComposition = require("game.hgss.src.newgame.OakIntroComposition")
 local OakIntroController = require("game.hgss.src.newgame.OakIntroController")
@@ -202,6 +203,7 @@ function T.tests.composition_releases_font_zero_when_font_four_acquisition_fails
     cache = CacheFs.forVersion,
     fontLoad = FieldFontLoader.load,
     providerNew = FieldMessageProvider.new,
+    poolNew = ImageAssetPool.new,
     audioCompose = GameAudio.compose,
     textNew = FieldTextRenderer.new,
     dialogueRendererNew = FieldDialogueRenderer.new,
@@ -252,6 +254,17 @@ function T.tests.composition_releases_font_zero_when_font_four_acquisition_fails
   rawset(FieldMessageProvider, "new", function()
     return provider
   end)
+  -- The intro stages its image owner before the text renderers, so the
+  -- stub manifest (no image demands) resolves to a pool with no
+  -- requests; the font-4 failure below still disposes it exactly once.
+  local fakePool = { disposals = 0 }
+  function fakePool:release() end
+  function fakePool:dispose()
+    self.disposals = self.disposals + 1
+  end
+  rawset(ImageAssetPool, "new", function()
+    return fakePool
+  end)
   rawset(GameAudio, "compose", function()
     return { sound = {}, sink = sink }
   end)
@@ -273,6 +286,7 @@ function T.tests.composition_releases_font_zero_when_font_four_acquisition_fails
   rawset(CacheFs, "forVersion", modules.cache)
   rawset(FieldFontLoader, "load", modules.fontLoad)
   rawset(FieldMessageProvider, "new", modules.providerNew)
+  rawset(ImageAssetPool, "new", modules.poolNew)
   rawset(GameAudio, "compose", modules.audioCompose)
   rawset(FieldTextRenderer, "new", modules.textNew)
   rawset(FieldDialogueRenderer, "new", modules.dialogueRendererNew)
@@ -284,6 +298,7 @@ function T.tests.composition_releases_font_zero_when_font_four_acquisition_fails
   Assert.isTrue(tostring(failure):find("font 4 construction failed", 1, true) ~= nil)
   Assert.deepEqual(calls, { 0, 4 })
   Assert.equal(fontZero.releases, 1, "font 0 is released after font 4 construction fails")
+  Assert.equal(fakePool.disposals, 1, "the staged image owner is disposed after font 4 construction fails")
   Assert.equal(sink.releases, 1, "audio is released after partial Oak composition failure")
 end
 

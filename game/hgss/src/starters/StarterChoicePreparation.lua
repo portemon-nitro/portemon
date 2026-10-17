@@ -12,6 +12,7 @@ local FixedPoint = require("libs.math.src.FixedPoint")
 ---@field cacheFs CacheFs
 ---@field portraits table[]
 ---@field pool GpuAssetPool?
+---@field _sessionImages table<string, unknown>? borrowed session image owner behind leased 2D draws; nil fails loudly at the first texture acquisition (mesh-only and headless stand-in paths carry no textures)
 ---@field prepareQueue table<string, unknown>? borrowed queue
 ---@field plan table<string, unknown>[]?
 ---@field planIndex integer
@@ -37,6 +38,11 @@ StarterChoicePreparation.__index = StarterChoicePreparation
 ---@field infoOverlayImage GpuAssetPool.Image?
 ---@field portraitImages table<integer, GpuAssetPool.Image>
 ---@field portraitQuads table[]
+---@field imageLeases table<string, table<string, unknown>> session-pool leases by image path and sampler behind leased 2D draws
+---@field imageHandles table<string, table<string, unknown>> stable sampling handles beside the leases behind material resolution
+---@field machineBackgroundLease table<string, unknown>? session-pool lease behind the machine background draw
+---@field infoBaseLease table<string, unknown>? session-pool lease behind the info base draw
+---@field infoOverlayLease table<string, unknown>? session-pool lease behind the info overlay draw
 
 local ROLES = { "tabletop", "turntable", "ballEffect", "ball1", "ball2", "ball3" }
 local PREPARATION_WINDOW = 2
@@ -50,10 +56,20 @@ local function prepareStatic(descriptor, acquire)
   local materialById = {}
   for listIndex, record in ipairs(descriptor.materials) do
     local wrap = SceneDescriptor.wrap(record)
+    -- Static materials skip the instance unpack, so sampling handles
+    -- unpack here: indexed art binds its exact palette through the
+    -- shared 3D sampler while bare images sample straight.
+    local resolved = acquire:imageFor(record.texture, wrap.x, wrap.y)
+    local image, palette, indexed = resolved, nil, nil
+    if type(resolved) == "table" and resolved.image ~= nil then
+      image, palette, indexed = resolved.image, resolved.palette, resolved.indexed
+    end
     materialById[record.id] = {
       id = record.id,
       name = record.name,
-      image = acquire:imageFor(record.texture, wrap.x, wrap.y),
+      image = image,
+      palette = palette,
+      indexed = indexed,
       texMatrix = { 1, 0, 0, 0, 1, 0, 0, 0, 1 },
       wrap = wrap,
       listIndex = listIndex,
@@ -121,7 +137,7 @@ end
 -- changes after readiness never touch the cache, the queue, or the pool.
 ---@class StarterChoiceAcquisition
 ---@field meshFor fun(self: StarterChoiceAcquisition, path: string): StarterChoiceMeshEntry
----@field imageFor fun(self: StarterChoiceAcquisition, path: string?, wrapX: string, wrapY: string): GpuAssetPool.Image?
+---@field imageFor fun(self: StarterChoiceAcquisition, path: string?, wrapX: string, wrapY: string): table<string, unknown>? sampling handle or bare image behind the texture
 
 ---@class StarterChoiceMeshEntry
 ---@field mesh unknown
@@ -142,6 +158,7 @@ end
 
 ---@class StarterChoicePrepContext
 ---@field assetPreparation table<string, unknown>? borrowed preparation queue; nil prepares synchronously from the cache
+---@field imageAssets table<string, unknown>? borrowed session image owner; nil fails loudly at the first texture acquisition (mesh-only and headless stand-in paths carry no textures)
 ---@field gxRenderer table<string, unknown> borrowed field graphics backend for the renderer wrapper
 ---@field derivedAssets table<string, function>? borrowed semantic host gating actual portrait pages
 
@@ -159,7 +176,18 @@ local function realizedSource(preparation)
     if path == nil then
       return nil
     end
-    local entry = preparation._resources.imageEntries[path .. "|" .. wrapX .. "|" .. wrapY]
+    local key = path .. "|" .. wrapX .. "|" .. wrapY
+    -- The stable sampling handle when the session owner backs this
+    -- identity (built once beside its lease, shared by every material
+    -- so per-frame resolution allocates nothing); the bare entry from
+    -- the same session borrow otherwise. ModelInstance unpacks either
+    -- form. Without a session owner neither form is installed and the
+    -- lookup below fails loudly.
+    local handle = preparation._resources.imageHandles[key]
+    if handle ~= nil then
+      return handle
+    end
+    local entry = preparation._resources.imageEntries[key]
     assert(entry ~= nil, "starter texture is not prepared: " .. tostring(path))
     return entry
   end
@@ -333,6 +361,8 @@ function StarterChoicePreparation.new(manifest, cacheFs, portraits)
     _resources = {
       meshEntries = {},
       imageEntries = {},
+      imageLeases = {},
+      imageHandles = {},
       definitions = {},
       renderMeshes = {},
       wraps = {},
@@ -427,7 +457,14 @@ function StarterChoicePreparation:advance(context, maxWorkUnits)
   end
   if self.plan == nil then
     local meshPaths, imageSteps = collectResources(self.manifest, self.portraits)
-    self.pool = GpuAssetPool.new(self.cacheFs)
+    -- The chooser draws through the session image owner when the field
+    -- composition provides one, instead of privately owned textures.
+    -- The session owner behind leased 2D draws is remembered beside
+    -- the pool: pool entries stay bare for assembly while 2D draws
+    -- borrow the same identities directly, landing on the identical
+    -- physical pair through the matching sampler below.
+    self._sessionImages = context.imageAssets
+    self.pool = GpuAssetPool.new(self.cacheFs, { imageAssets = context.imageAssets })
     self.prepareQueue = context.assetPreparation
     self.pageHost = context.derivedAssets
     local plan = {}
@@ -560,6 +597,54 @@ function StarterChoicePreparation:_advancePlanStep()
   return true
 end
 
+-- Borrows one image identity from the session owner for leased 2D
+-- draws, under the exact sampler the pool resolves it with, so the
+-- borrow lands on the identical physical pair. Without a session owner
+-- there is nothing to borrow and the function answers nil; texture
+-- acquisition itself then fails loudly instead of falling back to raw
+-- draws. Idempotent per path and sampler.
+---@param path string generated image path behind the borrow
+---@param wrapX string
+---@param wrapY string
+---@return table<string, unknown>? session-pool lease behind the identity
+local function borrowImageLease(self, path, wrapX, wrapY)
+  local key = path .. "|" .. wrapX .. "|" .. wrapY
+  local known = self._resources.imageLeases[key]
+  if known ~= nil then
+    return known
+  end
+  local session = self._sessionImages
+  if session == nil then
+    return nil
+  end
+  local token =
+    session:request(path, { wrapX = wrapX, wrapY = wrapY, minFilter = "nearest", magFilter = "nearest" }, "demand")
+  local stalled = 0
+  while true do
+    local status, _ = session:poll(token)
+    if status == "ready" then
+      local lease = session:acquire(token)
+      self._resources.imageLeases[key] = lease
+      -- The stable sampling handle beside its lease: materials share
+      -- this one record instead of building per-resolution tables.
+      self._resources.imageHandles[key] = { image = lease.image, palette = lease.palette, indexed = lease.kind == "r8" }
+      return lease
+    end
+    if status == "failed" then
+      return nil
+    end
+    assert(status == "pending", "starter preparation reports pending or ready")
+    stalled = stalled + 1
+    if stalled > 10000 then
+      return nil
+    end
+    local timer = love and love.timer
+    if timer ~= nil and timer.sleep ~= nil then
+      timer.sleep(0.001)
+    end
+  end
+end
+
 -- Realizes one taken payload through the owned pool. A payload without
 -- upload buffers is malformed and fails instead of rendering a blank scene.
 ---@param step StarterChoicePrepStep
@@ -582,6 +667,7 @@ function StarterChoicePreparation:_realizePrepared(step, payload)
   end
   self._resources.imageEntries[path .. "|" .. wrapX .. "|" .. wrapY] =
     pool:imageFromPrepared(path, wrapX, wrapY, payload --[[@as { imageData: unknown }]])
+  borrowImageLease(self, path, wrapX, wrapY)
 end
 
 -- Realizes one resource synchronously from the cache for compositions
@@ -598,6 +684,7 @@ function StarterChoicePreparation:_realizeSynchronous(step)
   local wrapX, wrapY =
     assert(step.wrapX, "starter image step carries no wrap"), assert(step.wrapY, "starter image step carries no wrap")
   self._resources.imageEntries[path .. "|" .. wrapX .. "|" .. wrapY] = pool:imageFor(path, wrapX, wrapY)
+  borrowImageLease(self, path, wrapX, wrapY)
 end
 
 -- Builds every model definition and instance from the realized entries. A
@@ -640,6 +727,10 @@ function StarterChoicePreparation:_finishResources()
     resources.imageEntries[assert(machineBackground.image, "starter manifest is missing its machine background image") .. "|clamp|clamp"],
     "starter preparation owns no machine background image"
   )
+  resources.machineBackgroundLease = resources.imageLeases[assert(
+    machineBackground.image,
+    "starter manifest is missing its machine background image"
+  ) .. "|clamp|clamp"]
   local infoArtwork = assert(backgrounds.info, "starter manifest is missing its info artwork")
   resources.infoBaseImage = assert(
     resources.imageEntries[assert(infoArtwork.base, "starter manifest is missing its info base layer").image .. "|clamp|clamp"],
@@ -649,6 +740,14 @@ function StarterChoicePreparation:_finishResources()
     resources.imageEntries[assert(infoArtwork.overlay, "starter manifest is missing its info overlay layer").image .. "|clamp|clamp"],
     "starter preparation owns no info overlay layer"
   )
+  resources.infoBaseLease = resources.imageLeases[assert(
+    infoArtwork.base,
+    "starter manifest is missing its info base layer"
+  ).image .. "|clamp|clamp"]
+  resources.infoOverlayLease = resources.imageLeases[assert(
+    infoArtwork.overlay,
+    "starter manifest is missing its info overlay layer"
+  ).image .. "|clamp|clamp"]
   for _, descriptor in ipairs(self.portraits) do
     local pageId = assert(descriptor.pageId, "starter portrait descriptor carries its page")
     if resources.portraitImages[pageId] == nil then
@@ -678,7 +777,11 @@ function StarterChoicePreparation:_finishResources()
     else
       quad = { x = entry.x, y = entry.y, width = entry.width, height = entry.height }
     end
-    resources.portraitQuads[index] = { image = pageImage, quad = quad }
+    resources.portraitQuads[index] = {
+      lease = resources.imageLeases[MonCache.portraitPagePath(descriptor.pageId) .. "|clamp|clamp"],
+      image = pageImage,
+      quad = quad,
+    }
   end
   self.ready = true
 end
@@ -702,6 +805,16 @@ function StarterChoicePreparation:dispose()
   end
   self.disposed = true
   self:_cancelTokens()
+  -- Session-pool 2D borrows return to their owner exactly once; the
+  -- pool below owns only its own entries and private textures.
+  local session = self._sessionImages
+  self._sessionImages = nil
+  if session ~= nil then
+    for key, lease in pairs(self._resources.imageLeases) do
+      self._resources.imageLeases[key] = nil
+      session:release(lease)
+    end
+  end
   if self.pool ~= nil then
     self.pool:release()
     self.pool = nil
@@ -709,6 +822,8 @@ function StarterChoicePreparation:dispose()
   self._resources = {
     meshEntries = {},
     imageEntries = {},
+    imageLeases = {},
+    imageHandles = {},
     definitions = {},
     renderMeshes = {},
     wraps = {},

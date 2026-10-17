@@ -16,6 +16,7 @@ local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local FieldTerrainEffectController = require("libs.hgss.src.world.FieldTerrainEffectController")
 local FieldStatePresentationFixture = require("tests.support.FieldStatePresentationFixture")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
+local SummaryAcceptanceFixture = require("tests.support.SummaryAcceptanceFixture")
 
 local T = {}
 
@@ -60,6 +61,11 @@ local function boot(withCover)
     return setmetatable({
       cacheFs = cache,
       derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
+      -- The presented composition borrows its session image owner for
+      -- icons, Summary, and PC visuals: the sized pool keeps real
+      -- consumers (font quads read dimensions off borrows) honest without
+      -- a second worker beside the stub.
+      imageAssets = SummaryAcceptanceFixture.sizedImagePool(),
       uiManifest = FieldUiFixture.fieldStateManifest(),
       itemCatalog = ItemFixture.makeCatalog(),
       monCatalog = CatalogFixture.makeCatalog(),

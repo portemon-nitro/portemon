@@ -10,6 +10,7 @@
 -- animation durations stay with the source payloads.
 
 local Assert = require("tests.support.Assert")
+local StubLease = require("tests.support.StubLease")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
@@ -202,7 +203,7 @@ local function renderResources(scope, manifest)
   local images = {}
   for path, visual in pairs(collectVisuals(manifest)) do
     local hue = hues[colorSeedFor(path) + 1]
-    images[path] = solidImage(scope, visual.width, visual.height, hue[1], hue[2], hue[3])
+    images[path] = StubLease.over(solidImage(scope, visual.width, visual.height, hue[1], hue[2], hue[3]))
   end
   local text = scope:own(FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() }))
   return { graphics = love.graphics, images = images, textRenderer = text }

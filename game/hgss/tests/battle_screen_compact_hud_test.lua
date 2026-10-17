@@ -6,6 +6,7 @@
 -- geometry and the drawing.
 
 local Assert = require("tests.support.Assert")
+local StubLease = require("tests.support.StubLease")
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local BattleScreenInterface = require("game.hgss.src.battle.BattleScreenInterface")
 local FakeGraphics = require("tests.support.FakeGraphics")
@@ -13,6 +14,16 @@ local MonCache = require("libs.assets.src.MonCache")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = {}
+
+-- Portrait drawables pair their stub image with a stub cell quad,
+-- matching the production image-plus-quad handle behind draws while
+-- keeping the string identity assertions on the stub image intact.
+local function stubPortrait(key)
+  if key:sub(1, 4) == "mon:" then
+    return { lease = StubLease.new(key), quad = { handle = "quad:" .. key } }
+  end
+  return StubLease.new(key)
+end
 
 ---@param width integer host width under test driving
 ---@param height integer host height under test driving
@@ -153,7 +164,7 @@ local function drawnHud(view, held)
         if missing[key] then
           return nil
         end
-        return { handle = key }
+        return stubPortrait(key)
       end,
     },
     frameKey = "compact-hud-test-frame",

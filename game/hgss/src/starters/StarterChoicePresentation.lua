@@ -1128,10 +1128,20 @@ end
 function StarterChoicePresentation:_drawInfoArtwork()
   local graphics = assert(love and love.graphics, "starter presentation requires the graphics namespace")
   graphics.setColor(1, 1, 1, 1)
-  graphics.draw(assert(self._resources.infoBaseImage, "starter presentation owns no info base layer"), 0, 0)
+  local baseLease = self._resources.infoBaseLease
+  if baseLease ~= nil then
+    baseLease:draw(graphics, 0, 0)
+  else
+    graphics.draw(assert(self._resources.infoBaseImage, "starter presentation owns no info base layer"), 0, 0)
+  end
   local red, green, blue, alpha = graphics.getColor()
   graphics.setColor(1, 1, 1, self._manifest.backgrounds.info.overlayAlpha)
-  graphics.draw(assert(self._resources.infoOverlayImage, "starter presentation owns no info overlay layer"), 0, 0)
+  local overlayLease = self._resources.infoOverlayLease
+  if overlayLease ~= nil then
+    overlayLease:draw(graphics, 0, 0)
+  else
+    graphics.draw(assert(self._resources.infoOverlayImage, "starter presentation owns no info overlay layer"), 0, 0)
+  end
   graphics.setColor(red, green, blue, alpha)
 end
 
@@ -1337,7 +1347,11 @@ function StarterChoicePresentation:_drawInfoPortrait(snapshot, rect)
   assert(type(rect.x) == "number" and type(rect.y) == "number", "starter portrait drawing requires its origin")
   local graphics = assert(love and love.graphics, "starter presentation requires the graphics namespace")
   graphics.setColor(1, 1, 1, 1)
-  graphics.draw(framed.image, framed.quad, rect.x, rect.y)
+  if framed.lease ~= nil then
+    framed.lease:drawQuad(graphics, framed.quad, rect.x, rect.y)
+  else
+    graphics.draw(framed.image, framed.quad, rect.x, rect.y)
+  end
 end
 
 -- Draws every published outer application frame through the already-owned
@@ -1433,7 +1447,12 @@ function StarterChoicePresentation:drawNative(snapshot, view, text, plan, window
   LogicalSurface.draw(graphics, machinePlacement, function()
     graphics.draw(target, 0, 0)
     if machinePromptVisible(sampledSnapshot) then
-      graphics.draw(assert(self._resources.machineBackgroundImage), 0, 0)
+      local machineLease = self._resources.machineBackgroundLease
+      if machineLease ~= nil then
+        machineLease:draw(graphics, 0, 0)
+      else
+        graphics.draw(assert(self._resources.machineBackgroundImage), 0, 0)
+      end
       self:_drawMessageLines(
         surfaces.machine.prompt,
         promptText,
@@ -1486,7 +1505,12 @@ function StarterChoicePresentation:_drawAdaptedPane(
   local graphics = assert(love and love.graphics, "starter presentation requires the graphics namespace")
   LogicalSurface.draw(graphics, machinePlacement, function()
     graphics.draw(target, 0, 0)
-    graphics.draw(assert(self._resources.machineBackgroundImage), 0, 0)
+    local machineLease = self._resources.machineBackgroundLease
+    if machineLease ~= nil then
+      machineLease:draw(graphics, 0, 0)
+    else
+      graphics.draw(assert(self._resources.machineBackgroundImage), 0, 0)
+    end
     local adaptedInfo, _ = infoMessageFor(self, snapshot)
     self:_drawMessageLines(
       surfaces.machine.prompt,

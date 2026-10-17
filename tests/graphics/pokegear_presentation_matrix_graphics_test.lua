@@ -9,6 +9,7 @@
 -- schema-validated synthetic family.
 
 local Assert = require("tests.support.Assert")
+local StubLease = require("tests.support.StubLease")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
@@ -520,7 +521,7 @@ function T.drawn_plan_paints_opaque_source_content(scope)
     local seed = 0
     for path, visual in pairs(collectVisuals(manifest)) do
       seed = seed + 1
-      images[path] = solidImage(scope, visual.width, visual.height, seed)
+      images[path] = StubLease.over(solidImage(scope, visual.width, visual.height, seed))
     end
     local text = scope:own(FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() }))
     local resources = { graphics = love.graphics, images = images, textRenderer = text }

@@ -22,11 +22,14 @@
 local Errors = require("libs.errors.src.Errors")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
+local ImageSampling = require("libs.nds.src.love.ImageSampling")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 
 ---@class TrainerCardRenderer
 ---@field _graphics love.graphics
 ---@field _text FieldTextRenderer the shared glyph atlas/text drawing collaborator
+---@field _pool table<string, unknown>? borrowed shared image owner behind the card front
+---@field _cardLease table<string, unknown>? installed card-front borrow returned on release
 ---@field _cardImage love.Image?
 ---@field _cardQuad love.Quad?
 ---@field card { front: { x: number, y: number, width: number, height: number } } the resolved manifest front surface
@@ -56,7 +59,41 @@ TrainerCardRenderer.TRAINER_ID_DIGITS = 5
 -- calls; LÖVE itself remains an allowed presentation-layer dependency (the
 -- PNG bytes still enter through love.filesystem.newFileData).
 
----@param opts { cacheFs: CacheFs, manifest: table<string, unknown>, text: FieldTextRenderer, graphics?: love.graphics }
+-- The card front samples point-filtered and clamped, matching the direct
+-- construction below, so pooled borrows draw identically.
+local POOLED_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }
+
+-- Borrows one generated visual through the shared owner, waiting out its
+-- classification without blocking the field longer than the bounded stall
+-- budget. Failures name their path instead of drawing a blank visual.
+---@param pool table<string, unknown>
+---@param token integer shared-owner request token behind the borrow
+---@param path string generated visual path behind diagnostics
+---@param what string visual role behind diagnostics
+---@return table<string, unknown> borrow resolving the immutable visual
+local function acquireReady(pool, token, path, what)
+  local stalled = 0
+  while true do
+    local status, failure = pool:poll(token)
+    if status == "ready" then
+      return pool:acquire(token)
+    end
+    if status == "failed" then
+      error(what .. " missing at " .. path .. ": " .. tostring(failure), 0)
+    end
+    assert(status == "pending", "trainer card preparation reports pending or ready")
+    stalled = stalled + 1
+    if stalled > 10000 then
+      error(what .. " stalled at " .. path, 0)
+    end
+    local timer = love and love.timer
+    if timer ~= nil and timer.sleep ~= nil then
+      timer.sleep(0.001)
+    end
+  end
+end
+
+---@param opts { cacheFs: CacheFs, manifest: table<string, unknown>, text: FieldTextRenderer, graphics?: love.graphics, imagePool?: table<string, unknown> }
 ---@return TrainerCardRenderer
 function TrainerCardRenderer.new(opts)
   assert(
@@ -87,6 +124,8 @@ function TrainerCardRenderer.new(opts)
   local self = setmetatable({
     _graphics = graphics,
     _text = text,
+    _pool = opts.imagePool,
+    _cardLease = nil,
     _cardImage = nil,
     _cardQuad = nil,
     card = {
@@ -94,16 +133,27 @@ function TrainerCardRenderer.new(opts)
     },
   }, TrainerCardRenderer)
 
-  local cardData = cacheFs:read(cardPath)
+  local pool = opts.imagePool
   local ok, err = pcall(function()
-    if not cardData then
-      self:release()
-      Errors.raise(FieldErrors.FIELD_UI_TRAINER_CARD_FRONT_MISSING, "trainer card front missing at " .. cardPath, {
-        path = cardPath,
-      })
+    if pool ~= nil then
+      -- The card front borrows the shared owner as an installed lease;
+      -- quads stay renderer-owned geometry over the borrowed image.
+      local token = pool:request(cardPath, POOLED_SAMPLER, "demand")
+      local lease = acquireReady(pool, token, cardPath, "trainer card front")
+      self._cardLease = lease
+      self._cardImage = assert(lease.image, "shared borrows carry their resolved image")
+      self._cardImage:setFilter("nearest", "nearest")
+    else
+      local cardData = cacheFs:read(cardPath)
+      if not cardData then
+        self:release()
+        Errors.raise(FieldErrors.FIELD_UI_TRAINER_CARD_FRONT_MISSING, "trainer card front missing at " .. cardPath, {
+          path = cardPath,
+        })
+      end
+      self._cardImage = graphics.newImage(love.filesystem.newFileData(assert(cardData), cardPath))
+      self._cardImage:setFilter("nearest", "nearest")
     end
-    self._cardImage = graphics.newImage(love.filesystem.newFileData(assert(cardData), cardPath))
-    self._cardImage:setFilter("nearest", "nearest")
     self:_buildQuads()
   end)
   if not ok then
@@ -148,7 +198,12 @@ function TrainerCardRenderer:draw(presentation, placement)
   lg.push("all")
   LogicalSurface.draw(lg, placement, function()
     lg.setColor(1, 1, 1, 1)
-    lg.draw(assert(self._cardImage), assert(self._cardQuad), self.card.front.x, self.card.front.y)
+    local cardLease = self._cardLease
+    if cardLease ~= nil then
+      ImageSampling.draw(lg, cardLease, assert(self._cardQuad), self.card.front.x, self.card.front.y)
+    else
+      lg.draw(assert(self._cardImage), assert(self._cardQuad), self.card.front.x, self.card.front.y)
+    end
     for _, anchor in ipairs(TrainerCardRenderer.LABEL_ANCHORS) do
       self._text:drawText(anchor.text, anchor.x, anchor.y)
     end
@@ -168,7 +223,15 @@ function TrainerCardRenderer:draw(presentation, placement)
 end
 
 function TrainerCardRenderer:release()
-  if self._cardImage and self._cardImage.release then
+  local pool = self._pool
+  self._pool = nil
+  local lease = self._cardLease
+  self._cardLease = nil
+  if pool ~= nil then
+    if lease ~= nil then
+      pool:release(lease)
+    end
+  elseif self._cardImage and self._cardImage.release then
     self._cardImage:release()
   end
   self._cardImage, self._cardQuad = nil, nil

@@ -10,9 +10,12 @@
 
 local Errors = require("libs.errors.src.Errors")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
+local ImageSampling = require("libs.nds.src.love.ImageSampling")
 
 ---@class YesNoPromptRenderer
 ---@field _graphics love.graphics
+---@field _pool table<string, unknown>? borrowed shared image owner behind the button art
+---@field _leases table<string, table<string, unknown>> installed borrows by manifest asset id
 ---@field _images love.Image[] every acquired image, released exactly once
 ---@field _imageByAsset table<string, love.Image> acquired images by manifest asset id
 ---@field _quads table<string, love.Quad> quads by asset id plus rect
@@ -27,7 +30,41 @@ YesNoPromptRenderer.__index = YesNoPromptRenderer
 -- calls; LÖVE itself remains an allowed presentation-layer dependency (the
 -- PNG bytes still enter through love.filesystem.newFileData).
 
----@param opts { cacheFs: CacheFs, manifest: table<string, unknown>, graphics?: unknown }
+-- Prompt button art samples point-filtered and clamped, matching the
+-- direct construction below, so pooled borrows draw identically.
+local POOLED_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }
+
+-- Borrows one generated visual through the shared owner, waiting out its
+-- classification without blocking the field longer than the bounded stall
+-- budget. Failures name their path instead of drawing a blank visual.
+---@param pool table<string, unknown>
+---@param token integer shared-owner request token behind the borrow
+---@param path string generated visual path behind diagnostics
+---@param what string visual role behind diagnostics
+---@return table<string, unknown> borrow resolving the immutable visual
+local function acquireReady(pool, token, path, what)
+  local stalled = 0
+  while true do
+    local status, failure = pool:poll(token)
+    if status == "ready" then
+      return pool:acquire(token)
+    end
+    if status == "failed" then
+      error(what .. " missing at " .. path .. ": " .. tostring(failure), 0)
+    end
+    assert(status == "pending", "prompt preparation reports pending or ready")
+    stalled = stalled + 1
+    if stalled > 10000 then
+      error(what .. " stalled at " .. path, 0)
+    end
+    local timer = love and love.timer
+    if timer ~= nil and timer.sleep ~= nil then
+      timer.sleep(0.001)
+    end
+  end
+end
+
+---@param opts { cacheFs: CacheFs, manifest: table<string, unknown>, graphics?: unknown, imagePool?: table<string, unknown> }
 ---@return YesNoPromptRenderer
 function YesNoPromptRenderer.new(opts)
   assert(
@@ -64,6 +101,8 @@ function YesNoPromptRenderer.new(opts)
 
   local self = setmetatable({
     _graphics = graphics,
+    _pool = opts.imagePool,
+    _leases = {},
     _images = {},
     _imageByAsset = {},
     _quads = {},
@@ -88,6 +127,7 @@ end
 ---@param manifest table<string, unknown>
 function YesNoPromptRenderer:_acquire(cacheFs, manifest)
   local graphics = assert(self._graphics)
+  local pool = self._pool
   local function acquire(assetId)
     local known = self._imageByAsset[assetId]
     if known ~= nil then
@@ -95,6 +135,18 @@ function YesNoPromptRenderer:_acquire(cacheFs, manifest)
     end
     local entry = assert(manifest.assets[assetId], "the field-UI manifest must carry the prompt button asset")
     local path = assert(entry.image, "a prompt button asset must name an image path")
+    if pool ~= nil then
+      -- Button atlases borrow the shared owner as installed leases; the
+      -- drawn image stays the resolved lease image, released with the
+      -- renderer instead of outliving the prompt.
+      local token = pool:request(path, POOLED_SAMPLER, "demand")
+      local lease = acquireReady(pool, token, path, "the prompt button art")
+      local image = assert(lease.image, "shared borrows carry their resolved image")
+      self._leases[assetId] = lease
+      self._imageByAsset[assetId] = image
+      image:setFilter("nearest", "nearest")
+      return image
+    end
     local data = cacheFs:read(path)
     if not data then
       Errors.raise(
@@ -158,21 +210,41 @@ function YesNoPromptRenderer:draw(status)
   local noVisual = assert(self._visuals[selected == "no" and highlighted and "no.selected" or "no.normal"])
   local graphics = assert(self._graphics)
   graphics.setColor(1, 1, 1, 1)
-  graphics.draw(
-    assert(self._imageByAsset[assert(yesVisual.asset)]),
-    self:_quadFor(assert(yesVisual.asset), assert(yesVisual.rect)),
-    yesRow.x,
-    yesRow.y
-  )
-  graphics.draw(
-    assert(self._imageByAsset[assert(noVisual.asset)]),
-    self:_quadFor(assert(noVisual.asset), assert(noVisual.rect)),
-    noRow.x,
-    noRow.y
-  )
+  self:_drawButton(yesVisual, yesRow.x, yesRow.y)
+  self:_drawButton(noVisual, noRow.x, noRow.y)
+end
+
+-- One prompt button through the shared exact sampler when its atlas is a
+-- pooled borrow, else the unchanged eager raw draw. RGBA borrows render
+-- pixel-identical through the sampler; indexed borrows bind their exact
+-- palette instead of rendering index bytes.
+---@param visual { asset: string, rect: { x: integer, y: integer, width: integer, height: integer } }
+---@param x number
+---@param y number
+function YesNoPromptRenderer:_drawButton(visual, x, y)
+  local graphics = assert(self._graphics)
+  local asset = assert(visual.asset, "a prompt visual must name its atlas")
+  local quad = self:_quadFor(asset, assert(visual.rect, "a prompt visual must carry its atlas rect"))
+  local lease = self._leases[asset]
+  if lease ~= nil then
+    ImageSampling.draw(graphics, lease, quad, x, y)
+    return
+  end
+  graphics.draw(assert(self._imageByAsset[asset], "a prompt button visual must have its image"), quad, x, y)
 end
 
 function YesNoPromptRenderer:release()
+  local pool = self._pool
+  self._pool = nil
+  if pool ~= nil then
+    for _, lease in pairs(self._leases) do
+      pool:release(lease)
+    end
+    self._leases = {}
+    self._imageByAsset = {}
+    self._quads = {}
+    return
+  end
   for _, image in ipairs(self._images) do
     if image.release then
       image:release()

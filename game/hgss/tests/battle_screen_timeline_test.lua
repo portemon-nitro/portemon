@@ -6,6 +6,7 @@
 -- boundary, and sounds drain into a recording sink.
 
 local Assert = require("tests.support.Assert")
+local StubLease = require("tests.support.StubLease")
 local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
 local MonCache = require("libs.assets.src.MonCache")
 
@@ -379,9 +380,13 @@ function T.first_packet_events_play_after_the_opening_once()
   end
   function assets.drawable(key)
     if assets.images[key] == nil then
-      assets.images[key] = { handle = key }
+      assets.images[key] = StubLease.new(key)
     end
-    return assets.images[key]
+    local stored = assets.images[key]
+    if key:sub(1, 4) == "mon:" then
+      return { lease = stored, quad = { handle = "quad:" .. key } }
+    end
+    return stored
   end
   function assets.release(key)
     assets.released[key] = (assets.released[key] or 0) + 1

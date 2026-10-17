@@ -5,6 +5,7 @@
 -- draw-state restoring render smoke through the recording boundary.
 
 local Assert = require("tests.support.Assert")
+local StubLease = require("tests.support.StubLease")
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local BattleScreenInterface = require("game.hgss.src.battle.BattleScreenInterface")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
@@ -240,9 +241,13 @@ function T.render_restores_borrowed_state()
     assets = {
       drawable = function(_, key)
         if images[key] == nil then
-          images[key] = { handle = key }
+          images[key] = StubLease.new(key)
         end
-        return images[key]
+        local stored = images[key]
+        if key:sub(1, 4) == "mon:" and stored.lease == nil then
+          return { lease = stored, quad = { handle = "quad:" .. key } }
+        end
+        return stored
       end,
     },
     frameKey = "default",
@@ -312,9 +317,13 @@ local function openInterfaceRig(opts)
   end
   function rig.assets.drawable(key)
     if rig.assets.images[key] == nil then
-      rig.assets.images[key] = { handle = key }
+      rig.assets.images[key] = StubLease.new(key)
     end
-    return rig.assets.images[key]
+    local stored = rig.assets.images[key]
+    if key:sub(1, 4) == "mon:" then
+      return { lease = stored, quad = { handle = "quad:" .. key } }
+    end
+    return stored
   end
   function rig.assets.release(key)
     rig.assets.released[key] = (rig.assets.released[key] or 0) + 1
@@ -602,9 +611,13 @@ local function openChildRig(opts)
       rig.assets.images = {}
     end
     if rig.assets.images[key] == nil then
-      rig.assets.images[key] = { handle = key }
+      rig.assets.images[key] = StubLease.new(key)
     end
-    return rig.assets.images[key]
+    local stored = rig.assets.images[key]
+    if key:sub(1, 4) == "mon:" then
+      return { lease = stored, quad = { handle = "quad:" .. key } }
+    end
+    return stored
   end
   function rig.assets.release(key)
     rig.assets.released[key] = (rig.assets.released[key] or 0) + 1

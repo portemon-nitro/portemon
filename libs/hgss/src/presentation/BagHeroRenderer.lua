@@ -29,6 +29,7 @@ local BagCache = require("libs.assets.src.BagCache")
 ---@field definition ModelDefinition
 ---@field instance ModelInstance
 ---@field renderMeshes table<string, unknown>
+---@field handleLeases table[] session-pool borrows behind the sampling handles, returned at release
 
 ---@class BagHeroRenderer
 ---@field _cacheFs table<string, unknown>
@@ -44,6 +45,7 @@ local BagCache = require("libs.assets.src.BagCache")
 ---@field _sceneRuntime table<string, unknown>
 ---@field _cameraFar number
 ---@field _pool GpuAssetPool?
+---@field _imageAssets table<string, unknown>? borrowed session image owner behind hero textures
 ---@field _renderer FieldRenderer?
 ---@field _realized table<string, BagHeroRealization>
 ---@field _sync table<string, BagHeroSync>
@@ -253,6 +255,7 @@ end
 ---@field cacheFs table<string, unknown> generated-asset filesystem the model/texture bytes read through
 ---@field manifest table<string, unknown> the validated bag manifest carrying hero models and presentation
 ---@field graphics unknown? injectable graphics namespace (nil keeps love.graphics at realization)
+---@field imageAssets table<string, unknown>? borrowed session image owner; nil fails loudly at the first texture acquisition (mesh-only and headless stand-in paths carry no textures)
 
 ---@param opts BagHeroRenderer.Options
 ---@return BagHeroRenderer
@@ -281,6 +284,7 @@ function BagHeroRenderer.new(opts)
     _cacheFs = cacheFs,
     _manifest = manifest,
     _graphics = opts.graphics,
+    _imageAssets = opts.imageAssets,
     _modelCanvas = nil,
     _cameraFacts = cameraFacts,
     _transformFacts = transformFacts,
@@ -339,6 +343,46 @@ local function genderDescriptor(self, gender)
   return descriptor
 end
 
+-- Borrow one session-pool sampling handle for a hero texture path: the
+-- single borrow per texture feeds the instance unpack, so indexed hero
+-- textures bind their exact palette with no second borrow beside it.
+-- Handles are cached per path and wrap; the caller owns the returned
+-- borrows through its lease sink. A failed classification fails closed
+-- naming the path.
+---@param imageAssets table<string, unknown> borrowed session image owner
+---@param wrap table<string, string> resolved sampler wrap behind the borrow
+---@param path string generated texture path behind diagnostics
+---@param cache table<string, table<string, unknown>> path-and-wrap-keyed handle cache, mutated
+---@param owned table[] acquired-lease sink, mutated
+---@return table<string, unknown> sampling handle {image, palette?, indexed}
+local function borrowSamplingHandle(imageAssets, wrap, path, cache, owned)
+  local key = wrap.x .. "|" .. wrap.y .. "|" .. path
+  local known = cache[key]
+  if known ~= nil then
+    return known
+  end
+  -- The sampler mirrors the scene pool's shared sampler exactly: same
+  -- path and wrap resolve the same physical pair scene draws share.
+  local sampler = { wrapX = wrap.x, wrapY = wrap.y, minFilter = "nearest", magFilter = "nearest" }
+  local token = imageAssets:request(path, sampler, "demand")
+  local status, failure = imageAssets:poll(token)
+  while status == "pending" do
+    status, failure = imageAssets:poll(token)
+  end
+  if status ~= "ready" then
+    error("hero shared image " .. path .. " is not ready: " .. tostring(failure), 0)
+  end
+  local lease = imageAssets:acquire(token)
+  owned[#owned + 1] = lease
+  local handle = {
+    image = assert(lease.image, "shared borrows carry their resolved image"),
+    palette = lease.palette,
+    indexed = lease.kind == "r8",
+  }
+  cache[key] = handle
+  return handle
+end
+
 -- Realize one gender exactly once: definition, render meshes retained by mesh
 -- id, sampler wraps, and the model instance. Only the resources this attempt
 -- creates are unwound on failure; a shared pool already owned for the other
@@ -351,11 +395,20 @@ function BagHeroRenderer:_ensureGender(gender)
   assert(not self._released, "the bag hero renderer is released")
   local poolWasOwned = self._pool ~= nil
   local rendererWasOwned = self._renderer ~= nil
+  -- The resolver answers the borrowed sampling handle itself: one borrow
+  -- per texture, unpacked onto the material record by the instance, so
+  -- indexed hero textures bind their exact palette. Attempt-scoped, so
+  -- a failed realization returns exactly what it borrowed.
+  local imageAssets = self._imageAssets
+  local samplingByKey = {}
+  local handleLeases = {}
   local ok, err = pcall(function()
     local pool = self._pool
     if pool == nil then
       local graphics = graphicsFor(self)
-      pool = GpuAssetPool.new(self._cacheFs, { graphics = graphics })
+      -- Hero textures borrow the session image owner instead of private
+      -- ownership; a composition without one keeps the private textures.
+      pool = GpuAssetPool.new(self._cacheFs, { graphics = graphics, imageAssets = self._imageAssets })
       self._pool = pool
     end
     local descriptor = genderDescriptor(self, gender)
@@ -372,12 +425,18 @@ function BagHeroRenderer:_ensureGender(gender)
     for _, record in ipairs(materials) do
       wrapsByMaterial[record.id] = SceneDescriptor.wrap(record)
     end
-    ---@param path string
+    ---@param path string?
     ---@param materialId integer
     ---@return unknown
     local function resolveImage(path, materialId)
+      if path == nil then
+        return nil
+      end
       local wrap = assert(wrapsByMaterial[materialId], "the hero model has no sampler wrap")
-      return pool:imageFor(path, wrap.x, wrap.y)
+      if imageAssets == nil then
+        return pool:imageFor(path, wrap.x, wrap.y)
+      end
+      return borrowSamplingHandle(assert(imageAssets), wrap, path, samplingByKey, handleLeases)
     end
     local instance = ModelInstance.new(definition, { resolveImage = resolveImage })
     instance.transform = self._modelTransform
@@ -385,7 +444,12 @@ function BagHeroRenderer:_ensureGender(gender)
       local graphics = graphicsFor(self)
       self._renderer = FieldRenderer.new({ clearColor = { 0, 0, 0, 0 }, graphics = graphics })
     end
-    self._realized[gender] = { definition = definition, instance = instance, renderMeshes = renderMeshes }
+    self._realized[gender] = {
+      definition = definition,
+      instance = instance,
+      renderMeshes = renderMeshes,
+      handleLeases = handleLeases,
+    }
   end)
   if not ok then
     if not rendererWasOwned and self._renderer ~= nil then
@@ -395,6 +459,12 @@ function BagHeroRenderer:_ensureGender(gender)
     if not poolWasOwned and self._pool ~= nil then
       self._pool:release()
       self._pool = nil
+    end
+    if imageAssets ~= nil then
+      local owned = assert(imageAssets)
+      for _, lease in ipairs(handleLeases) do
+        owned:release(lease)
+      end
     end
     error(err, 0)
   end
@@ -616,12 +686,24 @@ end
 
 -- Idempotent release of the owned pool and renderer. Borrowed manifest data
 -- and per-gender instances (whose GPU objects the pool owns) need no further
--- disposal; a release after a failed realization stays a safe no-op.
+-- disposal; sampling borrows return to the session owner with the
+-- realization that holds them; a release after a failed realization stays
+-- a safe no-op.
 function BagHeroRenderer:release()
   if self._released then
     return
   end
   self._released = true
+  local imageAssets = self._imageAssets
+  if imageAssets ~= nil then
+    local owned = assert(imageAssets)
+    for _, realized in pairs(self._realized) do
+      for _, lease in ipairs(realized.handleLeases or {}) do
+        owned:release(lease)
+      end
+      realized.handleLeases = {}
+    end
+  end
   self._realized = {}
   self._sync = {}
   if self._renderer ~= nil then

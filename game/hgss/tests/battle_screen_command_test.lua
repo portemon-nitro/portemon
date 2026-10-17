@@ -6,6 +6,7 @@
 -- Synthetic fixtures only.
 
 local Assert = require("tests.support.Assert")
+local StubLease = require("tests.support.StubLease")
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local BattleScreenInterface = require("game.hgss.src.battle.BattleScreenInterface")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
@@ -19,6 +20,16 @@ local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = {}
 local TICK = 1 / 60
+
+-- Portrait drawables pair their stub image with a stub cell quad,
+-- matching the production image-plus-quad handle behind draws while
+-- keeping the string identity assertions on the stub image intact.
+local function stubPortrait(key)
+  if key:sub(1, 4) == "mon:" then
+    return { lease = StubLease.new(key), quad = { handle = "quad:" .. key } }
+  end
+  return StubLease.new(key)
+end
 
 local STATE_MODULE = "game.hgss.src.battle.BattleScreenState"
 local MODEL_MODULE = "game.hgss.src.battle.BattlePresentationModel"
@@ -140,7 +151,7 @@ local function openRig(opts)
   end
   function rig.assets.drawable(key)
     if rig.assets.images[key] == nil then
-      rig.assets.images[key] = { handle = key }
+      rig.assets.images[key] = stubPortrait(key)
     end
     return rig.assets.images[key]
   end
@@ -440,7 +451,7 @@ function openSealingScreen(launchId, specs, requestId)
   end
   function rig.assets.drawable(key)
     if rig.assets.images[key] == nil then
-      rig.assets.images[key] = { handle = key }
+      rig.assets.images[key] = stubPortrait(key)
     end
     return rig.assets.images[key]
   end
@@ -887,7 +898,7 @@ local function drawNativePane(paneId, view, layout, held, doublesHud)
         if missing[key] then
           return nil
         end
-        return { handle = key }
+        return stubPortrait(key)
       end,
     },
     frameKey = "default",
@@ -1336,7 +1347,7 @@ local function openWeakTerminalRig(launchId)
   end
   function rig.assets.drawable(key)
     if rig.assets.images[key] == nil then
-      rig.assets.images[key] = { handle = key }
+      rig.assets.images[key] = stubPortrait(key)
     end
     return rig.assets.images[key]
   end
@@ -1499,7 +1510,7 @@ local function openLongOutcomeRig(launchId)
   end
   function rig.assets.drawable(key)
     if rig.assets.images[key] == nil then
-      rig.assets.images[key] = { handle = key }
+      rig.assets.images[key] = stubPortrait(key)
     end
     return rig.assets.images[key]
   end
@@ -1716,7 +1727,7 @@ local function openPacedScreen(launchId, speed)
   end
   function rig.assets.drawable(key)
     if rig.assets.images[key] == nil then
-      rig.assets.images[key] = { handle = key }
+      rig.assets.images[key] = stubPortrait(key)
     end
     return rig.assets.images[key]
   end

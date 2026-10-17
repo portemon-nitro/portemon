@@ -10,14 +10,14 @@ local PokegearMapLayers = {}
 
 local HIGHLIGHT_ALPHA = 10 / 16
 
----@param images table<string, unknown>
+---@param images table<string, unknown> pooled atlas leases by generated path
 ---@param path unknown
----@return love.Image
+---@return table<string, unknown> pooled atlas lease behind the plane
 function PokegearMapLayers.imageAt(images, path)
   assert(type(path) == "string", "the map plan resolves its plane images")
-  local image = images[path]
-  assert(image ~= nil, "the map render needs its prepared plane image")
-  return image --[[@as love.Image]]
+  local lease = images[path]
+  assert(lease ~= nil, "the map render needs its prepared plane image")
+  return lease
 end
 
 -- Draws one frame of a compiled sprite sequence centred on a position.
@@ -33,11 +33,11 @@ end
 function PokegearMapLayers.drawSprite(graphics, images, sprites, set, sequence, frame, x, y, scale)
   local clip = assert(sprites[set][sequence], "the map sprites carry their sequence")
   local info = assert(clip.frames[frame], "the map sprite carries its frame")
-  local image = PokegearMapLayers.imageAt(images, info.image)
+  local lease = PokegearMapLayers.imageAt(images, info.image)
   if scale ~= nil and scale ~= 1 then
-    graphics.draw(image, x + info.anchorX * scale, y + info.anchorY * scale, 0, scale, scale)
+    lease:draw(graphics, x + info.anchorX * scale, y + info.anchorY * scale, 0, scale, scale)
   else
-    graphics.draw(image, x + info.anchorX, y + info.anchorY)
+    lease:draw(graphics, x + info.anchorX, y + info.anchorY)
   end
 end
 
@@ -68,7 +68,7 @@ end
 ---@param view table<string, unknown>
 function PokegearMapLayers.drawWorld(graphics, images, content, view)
   local world = view.world --[[@as table<string, number>]]
-  local image = PokegearMapLayers.imageAt(images, content.world)
+  local lease = PokegearMapLayers.imageAt(images, content.world)
   local r = world.ratio
   graphics.push()
   graphics.translate(
@@ -77,13 +77,13 @@ function PokegearMapLayers.drawWorld(graphics, images, content, view)
   )
   graphics.scale(r, r)
   graphics.setColor(1, 1, 1, 1)
-  graphics.draw(image, 0, 0)
+  lease:draw(graphics, 0, 0)
   for _, patch in
     ipairs(view.patches --[[@as table[] ]])
   do
     PokegearAtlas.draw(
       graphics,
-      image,
+      lease,
       patch.srcX * 8,
       patch.srcY * 8,
       patch.width * 8,
@@ -98,7 +98,7 @@ function PokegearMapLayers.drawWorld(graphics, images, content, view)
   do
     PokegearAtlas.draw(
       graphics,
-      image,
+      lease,
       patch.srcX * 8,
       patch.srcY * 8,
       patch.width * 8,

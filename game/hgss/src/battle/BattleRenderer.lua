@@ -404,18 +404,41 @@ end
 
 ---@param assets table<string, unknown> injected asset holder
 ---@param record table<string, unknown> displayed battler facts under drawing
----@return table<string, unknown>? image handle for the displayed battler, nil while unavailable
+---@return table<string, unknown>? portrait drawable for the displayed battler, nil while unavailable: the pool lease plus cell quad in production, the bare lease for whole images, or a headless descriptor under inspection
 local function battlerImage(assets, record)
   -- Each displayed battler draws its own exact canonical portrait:
   -- the selector rides the displayed record, so a switch rebinds the
-  -- image at its reveal instead of reusing a side-role picture.
+  -- cell at its reveal instead of reusing a side-role picture. The
+  -- handle pairs the pooled atlas lease with its renderer-owned cell
+  -- quad, so the drawn pixels are exactly the staged cell through the
+  -- lease sampler surface.
   -- A record without a canonical selector draws nothing: nil means
   -- unavailable, never a substitute picture.
   local selector = record.portraitSelector
   if type(selector) == "string" and selector ~= "" then
+    -- Production handles pair the pool lease with its cell quad;
+    -- recording doubles answer the same lease-plus-quad shape instead.
     return assets:drawable("mon:" .. selector)
   end
   return nil
+end
+
+-- Draws one borrowed portrait cell at its anchor: the pooled page image
+-- clipped to the staged cell quad, so the top-left of the drawn cell
+-- lands exactly where the retired per-battler copy drew.
+---@param graphics table<string, unknown> injected host graphics
+---@param handle table<string, unknown> borrowed portrait cell or headless descriptor
+---@param x number anchor horizontal origin under drawing
+---@param y number anchor vertical origin under drawing
+local function drawPortraitCell(graphics, handle, x, y)
+  -- Headless inspection descriptors carry no lease or quad: they
+  -- record their whole-draw exactly like the raw draws they replace.
+  local lease = handle.lease or handle
+  if handle.quad ~= nil then
+    lease:drawQuad(graphics, handle.quad, x, y)
+  else
+    lease:draw(graphics, x, y)
+  end
 end
 
 ---@param hp number
@@ -453,12 +476,12 @@ end
 -- out row-major from the object base tile, so each 8-pixel band is one
 -- quad over the single strip row.
 ---@param graphics table<string, unknown> injected host graphics
----@param image table<string, unknown> staged strip handle under drawing
+---@param lease table<string, unknown> staged strip lease under drawing
 ---@param stripWidth integer staged strip width in pixels
 ---@param baseX number anchor horizontal origin under drawing
 ---@param baseY number anchor vertical origin under drawing
 ---@param obj table<string, unknown> compiled object carrying tile, width, height, x, y
-local function drawSpriteObject(graphics, image, stripWidth, baseX, baseY, obj)
+local function drawSpriteObject(graphics, lease, stripWidth, baseX, baseY, obj)
   local tile = obj.tile --[[@as integer]]
   local width = obj.width --[[@as integer]]
   local height = obj.height --[[@as integer]]
@@ -466,7 +489,7 @@ local function drawSpriteObject(graphics, image, stripWidth, baseX, baseY, obj)
   local rows = math.floor(height / 8)
   for row = 0, rows - 1 do
     local quad = graphics.newQuad((tile + row * tilesPerRow) * 8, 0, width, STRIP_HEIGHT, stripWidth, STRIP_HEIGHT)
-    graphics.draw(image, quad, baseX + obj.x --[[@as number]], baseY + obj.y --[[@as number]] + row * 8)
+    lease:drawQuad(graphics, quad, baseX + obj.x --[[@as number]], baseY + obj.y --[[@as number]] + row * 8)
   end
 end
 
@@ -556,7 +579,7 @@ local function drawDoublesDetail(graphics, text, assets, sections, r, g, b, a, v
     local front = battlerImage(assets, foe)
     if front ~= nil then
       local dx = (type(foe.shakeDx) == "number" and foe.shakeDx or 0) --[[@as number]]
-      graphics.draw(front, row.sprite.x - PORTRAIT_HALF + dx, row.sprite.y - PORTRAIT_HALF)
+      drawPortraitCell(graphics, front, row.sprite.x - PORTRAIT_HALF + dx, row.sprite.y - PORTRAIT_HALF)
     end
     drawDoublesHudCell(graphics, assets, sections, row.art, row.hud)
     local fields = assert(DOUBLES_FIELDS[row.art], "doubled enemy rows carry field bounds")
@@ -579,7 +602,7 @@ local function drawDoublesDetail(graphics, text, assets, sections, r, g, b, a, v
     local back = battlerImage(assets, ally)
     if back ~= nil then
       local dx = (type(ally.shakeDx) == "number" and ally.shakeDx or 0) --[[@as number]]
-      graphics.draw(back, row.sprite.x - PORTRAIT_HALF + dx, row.sprite.y - PORTRAIT_HALF)
+      drawPortraitCell(graphics, back, row.sprite.x - PORTRAIT_HALF + dx, row.sprite.y - PORTRAIT_HALF)
     end
     drawDoublesHudCell(graphics, assets, sections, row.art, row.hud)
     local fields = assert(DOUBLES_FIELDS[row.art], "doubled player rows carry field bounds")
@@ -633,7 +656,7 @@ local function drawDetail(resources, view)
   local r, g, b, a = saveColor(graphics)
   local scene = assets:drawable(resources.sceneImageKey --[[@as string]])
   if scene ~= nil then
-    graphics.draw(scene, 0, 0)
+    scene:draw(graphics, 0, 0)
   end
   local players, enemies = splitBattlers(view)
   local singles = not doublesFormat(view, players, enemies)
@@ -658,7 +681,7 @@ local function drawDetail(resources, view)
     local front = battlerImage(assets, enemy)
     if front ~= nil then
       local dx = (type(enemy.shakeDx) == "number" and enemy.shakeDx or 0) --[[@as number]]
-      graphics.draw(front, BattleRenderer.ENEMY_CENTER.x + dx, BattleRenderer.ENEMY_CENTER.y)
+      drawPortraitCell(graphics, front, BattleRenderer.ENEMY_CENTER.x + dx, BattleRenderer.ENEMY_CENTER.y)
     end
     drawHudComposite(graphics, assets, "hud:enemy", BattleRenderer.ENEMY_HUD, ENEMY_HUD_OBJECTS)
     drawNameLevel(graphics, text, enemy.name or "FOE", enemy.level --[[@as integer?]], 8, 16)
@@ -676,7 +699,7 @@ local function drawDetail(resources, view)
     local back = battlerImage(assets, player)
     if back ~= nil then
       local dx = (type(player.shakeDx) == "number" and player.shakeDx or 0) --[[@as number]]
-      graphics.draw(back, BattleRenderer.PLAYER_CENTER.x + dx, BattleRenderer.PLAYER_CENTER.y)
+      drawPortraitCell(graphics, back, BattleRenderer.PLAYER_CENTER.x + dx, BattleRenderer.PLAYER_CENTER.y)
     end
     drawHudComposite(graphics, assets, "hud:player", BattleRenderer.PLAYER_HUD, PLAYER_HUD_OBJECTS)
     local hp = (type(player.hp) == "number" and player.hp or 0) --[[@as number]]
@@ -815,7 +838,7 @@ local function drawControls(resources, view, layout, regions)
       -- Missing move slots stay visibly empty: no art, no label.
     else
       if art ~= nil then
-        graphics.draw(art, box.x --[[@as number]] + shift, box.y --[[@as number]] + shift)
+        art:draw(graphics, box.x --[[@as number]] + shift, box.y --[[@as number]] + shift)
       end
       if layout == "command" and COMMAND_ANCHORS[id] ~= nil then
         local anchor = COMMAND_ANCHORS[id]
@@ -1109,7 +1132,7 @@ local function drawInteraction(resources, view, content)
   end
   local background = assets:drawable("menu:" .. layout)
   if background ~= nil then
-    graphics.draw(background, 0, 0)
+    background:draw(graphics, 0, 0)
   end
   -- Multi-actor turns name the acting battler above the menu so staged
   -- choices are never mistaken for the previous entry's selection.
@@ -1210,13 +1233,18 @@ local function drawCompactSlots(graphics, assets, view, spots)
   for _, spot in ipairs(spots) do
     local battler = live[spot.position]
     if battler ~= nil then
-      local image = battlerImage(assets, battler)
-      if image ~= nil then
+      local cell = battlerImage(assets, battler)
+      if cell ~= nil then
         local dx = (type(battler.shakeDx) == "number" and battler.shakeDx or 0) --[[@as number]]
         local scale = assert(spot.scale, "compact doubles portraits carry their authored presentation scale")
         local allocation = { x = spot.x, y = spot.y, width = spot.width, height = spot.height }
         LogicalSurface.clip(graphics, allocation, function()
-          graphics.draw(image, spot.x + dx * scale, spot.y, 0, scale, scale)
+          local lease = cell.lease or cell
+          if cell.quad ~= nil then
+            lease:drawQuad(graphics, cell.quad, spot.x + dx * scale, spot.y, 0, scale, scale)
+          else
+            lease:draw(graphics, spot.x + dx * scale, spot.y, 0, scale, scale)
+          end
         end)
       end
     end
@@ -1254,7 +1282,7 @@ local function drawCompactScene(resources, view, content)
   LogicalSurface.clip(graphics, viewport, function()
     local scene = assets:drawable(resources.sceneImageKey --[[@as string]])
     if scene ~= nil then
-      graphics.draw(scene, 0, 0)
+      scene:draw(graphics, 0, 0)
     end
     local spots = content.spriteCenters
     if type(spots) == "table" then
@@ -1265,14 +1293,14 @@ local function drawCompactScene(resources, view, content)
         local front = battlerImage(assets, enemy)
         if front ~= nil then
           local dx = (type(enemy.shakeDx) == "number" and enemy.shakeDx or 0) --[[@as number]]
-          graphics.draw(front, enemyCenter.x + dx, enemyCenter.y)
+          drawPortraitCell(graphics, front, enemyCenter.x + dx, enemyCenter.y)
         end
       end
       if player ~= nil and player.visible ~= false then
         local back = battlerImage(assets, player)
         if back ~= nil then
           local dx = (type(player.shakeDx) == "number" and player.shakeDx or 0) --[[@as number]]
-          graphics.draw(back, playerCenter.x + dx, playerCenter.y)
+          drawPortraitCell(graphics, back, playerCenter.x + dx, playerCenter.y)
         end
       end
     end

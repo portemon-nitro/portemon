@@ -82,7 +82,7 @@ local function displayUpper(value)
   end))
 end
 
----@param options { text: table<string, function>, versionId: string, graphics?: love.graphics }
+---@param options { text: table<string, function>, versionId: string, graphics?: love.graphics, imagePool?: table<string, unknown>, ownsImagePool?: boolean }
 ---@return MainMenuRenderer
 function MainMenuRenderer.new(options)
   assert(type(options) == "table" and options.text, "Main Menu renderer requires FieldTextRenderer")
@@ -94,12 +94,17 @@ function MainMenuRenderer.new(options)
   assert(type(versionId) == "string" and versionId ~= "", "Main Menu renderer requires a game version")
   ---@cast versionId string
   local skin = ProductMenuSkin.forVersion(versionId)
+  -- The standalone menu image owner rides the renderer lifetime: text
+  -- leases return at dispose below, so the owned pool frees exactly its
+  -- idle pairs. A borrowed pool stays with its composer.
   return setmetatable({
     text = options.text,
     graphics = graphics,
     versionId = versionId,
     background = skin.background,
     skin = skin,
+    _imagePool = options.imagePool,
+    _ownsImagePool = options.ownsImagePool == true and options.imagePool ~= nil,
   }, MainMenuRenderer)
 end
 
@@ -317,6 +322,13 @@ function MainMenuRenderer:dispose()
     self.text:release()
   end
   self.text = nil
+  local pool = self._imagePool
+  self._imagePool = nil
+  local ownsPool = self._ownsImagePool
+  self._ownsImagePool = false
+  if ownsPool and pool ~= nil then
+    pool:dispose()
+  end
 end
 
 return MainMenuRenderer

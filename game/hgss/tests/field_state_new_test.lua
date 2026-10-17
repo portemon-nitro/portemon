@@ -16,6 +16,7 @@ local FieldTerrainEffectController = require("libs.hgss.src.world.FieldTerrainEf
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldState = require("game.hgss.src.field.FieldState")
 local InactivePokemonNaming = require("tests.support.InactivePokemonNaming")
+local SummaryAcceptanceFixture = require("tests.support.SummaryAcceptanceFixture")
 
 local T = {}
 
@@ -29,6 +30,11 @@ local function stubPresentationRuntime(cache)
     pokemonNaming = InactivePokemonNaming.new(),
     cacheFs = cache or FieldStatePresentationFixture.cache(),
     derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
+    -- The presented composition borrows its session image owner for
+    -- icons, Summary, and PC visuals: the sized pool keeps real
+    -- consumers (font quads read dimensions off borrows) honest without
+    -- a second worker beside the stub.
+    imageAssets = SummaryAcceptanceFixture.sizedImagePool(),
     uiManifest = FieldUiFixture.fieldStateManifest(),
     itemCatalog = ItemFixture.makeCatalog(),
     monCatalog = CatalogFixture.makeCatalog(),

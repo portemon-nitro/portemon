@@ -32,6 +32,7 @@ local FieldSignpostTheme = require("libs.hgss.src.ui.FieldSignpostTheme")
 local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
+local ImageSampling = require("libs.nds.src.love.ImageSampling")
 
 -- The frame/palette bank used when a window is shown without a source
 -- appearance (a bare SHOW): a degenerate script state the engine's own
@@ -54,6 +55,10 @@ end
 ---@field _windowStyles FieldSignpostRenderer.WindowStyles
 ---@field _text FieldSignpostRenderer.TextRenderer the shared glyph atlas/line drawing collaborator
 ---@field _manifest table<string, unknown> the generated field-UI manifest
+---@field _pool table<string, unknown>? borrowed shared image owner behind the strip atlases
+---@field _leases table<string, unknown>[] installed atlas borrows returned on release
+---@field _tilesLease table<string, unknown>? installed frame-strip borrow behind sampler draws
+---@field _wayfindingLease table<string, unknown>? installed wayfinding borrow behind sampler draws
 ---@field _tilesImage love.Image? the signpost frame strip
 ---@field _wayfindingImage love.Image? the wayfinding atlas
 ---@field _frameQuadCache table<integer, love.Quad[]>|nil per-source-type frame quads, built lazily
@@ -78,7 +83,41 @@ FieldSignpostRenderer.__index = FieldSignpostRenderer
 -- enter through love.filesystem.newFileData); opts.windowStyles: the
 -- per-runtime window style catalogue the controller's styleId resolves in.
 
----@param opts { cacheFs: CacheFs, manifest: table<string, unknown>, text: unknown, windowStyles: unknown, graphics?: unknown }
+-- Signpost art samples point-filtered and clamped, matching the direct
+-- construction below, so pooled borrows draw identically.
+local POOLED_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }
+
+-- Borrows one generated visual through the shared owner, waiting out its
+-- classification without blocking the field longer than the bounded stall
+-- budget. Failures name their path instead of drawing a blank visual.
+---@param pool table<string, unknown>
+---@param token integer shared-owner request token behind the borrow
+---@param path string generated visual path behind diagnostics
+---@param what string visual role behind diagnostics
+---@return table<string, unknown> borrow resolving the immutable visual
+local function acquireReady(pool, token, path, what)
+  local stalled = 0
+  while true do
+    local status, failure = pool:poll(token)
+    if status == "ready" then
+      return pool:acquire(token)
+    end
+    if status == "failed" then
+      error(what .. " missing at " .. path .. ": " .. tostring(failure), 0)
+    end
+    assert(status == "pending", "signpost preparation reports pending or ready")
+    stalled = stalled + 1
+    if stalled > 10000 then
+      error(what .. " stalled at " .. path, 0)
+    end
+    local timer = love and love.timer
+    if timer ~= nil and timer.sleep ~= nil then
+      timer.sleep(0.001)
+    end
+  end
+end
+
+---@param opts { cacheFs: CacheFs, manifest: table<string, unknown>, text: unknown, windowStyles: unknown, graphics?: unknown, imagePool?: table<string, unknown> }
 ---@return FieldSignpostRenderer
 function FieldSignpostRenderer.new(opts)
   assert(
@@ -131,12 +170,38 @@ function FieldSignpostRenderer.new(opts)
     _windowStyles = windowStyles,
     _text = text,
     _manifest = manifest,
+    _pool = opts.imagePool,
+    _leases = {},
     _tilesImage = nil,
     _wayfindingImage = nil,
     _frameQuadCache = nil,
     _wayfindingQuadCache = nil,
   }, FieldSignpostRenderer)
 
+  local pool = opts.imagePool
+  if pool ~= nil then
+    -- Both atlases borrow the shared owner as installed leases; frame and
+    -- wayfinding quads stay renderer-owned geometry over the borrowed
+    -- images, and sign text keeps its source palette slots.
+    local ok, err = pcall(function()
+      local tilesToken = pool:request(tilesPath, POOLED_SAMPLER, "demand")
+      local wayfindingToken = pool:request(wayfindingPath, POOLED_SAMPLER, "demand")
+      local tilesLease = acquireReady(pool, tilesToken, tilesPath, "signpost frame strip")
+      local wayfindingLease = acquireReady(pool, wayfindingToken, wayfindingPath, "wayfinding atlas")
+      self._leases = { tilesLease, wayfindingLease }
+      self._tilesLease = tilesLease
+      self._wayfindingLease = wayfindingLease
+      self._tilesImage = assert(tilesLease.image, "shared borrows carry their resolved image")
+      self._tilesImage:setFilter("nearest", "nearest")
+      self._wayfindingImage = assert(wayfindingLease.image, "shared borrows carry their resolved image")
+      self._wayfindingImage:setFilter("nearest", "nearest")
+    end)
+    if not ok then
+      self:release()
+      error(err)
+    end
+    return self
+  end
   local tilesData = cacheFs:read(tilesPath)
   if not tilesData then
     self:release()
@@ -247,6 +312,7 @@ end
 function FieldSignpostRenderer:_drawFrame(status, graphicRegion, wipe, typeEntry)
   local lg = assert(self._graphics)
   local image = assert(self._tilesImage)
+  local tilesLease = self._tilesLease
   local types =
     assert(self._manifest.signposts and self._manifest.signposts.types, "the manifest must carry signpost types")
   local appearance = status.sourceAppearance
@@ -261,7 +327,11 @@ function FieldSignpostRenderer:_drawFrame(status, graphicRegion, wipe, typeEntry
     local tile = assert(frameQuads[placement.tile])
     for row = 0, (placement.spanY or 1) - 1 do
       for col = 0, (placement.spanX or 1) - 1 do
-        lg.draw(image, tile, placement.x + col * 8, placement.y + row * 8 + wipe)
+        if tilesLease ~= nil then
+          ImageSampling.draw(lg, tilesLease, tile, placement.x + col * 8, placement.y + row * 8 + wipe)
+        else
+          lg.draw(image, tile, placement.x + col * 8, placement.y + row * 8 + wipe)
+        end
       end
     end
   end
@@ -285,7 +355,12 @@ function FieldSignpostRenderer:_drawFrame(status, graphicRegion, wipe, typeEntry
     local wayfinding = assert(self._wayfindingImage)
     local key = appearance.type .. ":" .. appearance.map
     local quad = self:_wayfindingQuad(key, manifestRect)
-    lg.draw(wayfinding, quad, graphicRegion.x, graphicRegion.y + wipe)
+    local wayfindingLease = self._wayfindingLease
+    if wayfindingLease ~= nil then
+      ImageSampling.draw(lg, wayfindingLease, quad, graphicRegion.x, graphicRegion.y + wipe)
+    else
+      lg.draw(wayfinding, quad, graphicRegion.x, graphicRegion.y + wipe)
+    end
   end
 end
 
@@ -412,11 +487,20 @@ function FieldSignpostRenderer:_drawFocusIndicator(status, contentGeometry, wipe
 end
 
 function FieldSignpostRenderer:release()
-  if self._tilesImage and self._tilesImage.release then
-    self._tilesImage:release()
-  end
-  if self._wayfindingImage and self._wayfindingImage.release then
-    self._wayfindingImage:release()
+  local pool = self._pool
+  self._pool = nil
+  if pool ~= nil then
+    for _, lease in ipairs(self._leases) do
+      pool:release(lease)
+    end
+    self._leases = {}
+  else
+    if self._tilesImage and self._tilesImage.release then
+      self._tilesImage:release()
+    end
+    if self._wayfindingImage and self._wayfindingImage.release then
+      self._wayfindingImage:release()
+    end
   end
   self._tilesImage, self._wayfindingImage = nil, nil
   self._frameQuadCache, self._wayfindingQuadCache = nil, nil

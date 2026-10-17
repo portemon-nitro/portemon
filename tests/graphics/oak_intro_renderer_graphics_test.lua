@@ -1,5 +1,8 @@
 local Assert = require("tests.support.Assert")
 local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
+local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
+local CacheFs = require("libs.storage.src.CacheFs")
+local FieldBattlePresentation = require("game.hgss.src.field.FieldBattlePresentation")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FakeGraphics = require("tests.support.FakeGraphics")
@@ -10,7 +13,9 @@ local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local NewGame = require("game.hgss.src.newgame.NewGame")
 local OakIntroController = require("game.hgss.src.newgame.OakIntroController")
 local OakIntroRenderer = require("game.hgss.src.newgame.OakIntroRenderer")
+local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
 local PixelScale = require("libs.ui.src.PixelScale")
+local PngWriter = require("libs.assets.src.PngWriter")
 
 local T = {}
 
@@ -1084,6 +1089,333 @@ function T.oak_hosts_naming_without_duplicate_player_subject_art()
     y = subject.anchor.y + subjectFrame.offset.y,
   })
   renderer:dispose()
+end
+
+-- Staged battle images borrow the shared classified image owner and roll
+-- back atomically: one envelope enters a staged scene against synthetic
+-- bytes, resolves its scene, menu, and HUD drawables, keeps resolving its
+-- previously staged siblings after one injected upload failure, replays
+-- that failure without re-entering the driver, recovers its preparation
+-- and audio boundary, cancels cleanly, and draws identical intro frames
+-- before and after. Every generated-image pixel upload must arrive as a
+-- classified derivative through the shared owner; a private direct PNG
+-- decode or portrait crop fails this scenario and names the missing
+-- shared ownership.
+function T.battle_staging_borrows_classified_images_and_rolls_back_one_failure(_)
+  local sceneKey = "general/grass/day"
+  local sceneImagePath = BattlePresentationCache.sceneImagePath(sceneKey)
+  local artPaths = {
+    command = "battle-staging/command.png",
+    moves = "battle-staging/moves.png",
+    target = "battle-staging/target.png",
+    twoOption = "battle-staging/two-option.png",
+    lower = "battle-staging/lower.png",
+    enemyHud = "battle-staging/hud-enemy.png",
+    playerHud = "battle-staging/hud-player.png",
+    playerLeft = "battle-staging/hud-player-left.png",
+    playerRight = "battle-staging/hud-player-right.png",
+    enemyLeft = "battle-staging/hud-enemy-left.png",
+    enemyRight = "battle-staging/hud-enemy-right.png",
+    arrow = "battle-staging/arrow.png",
+    gauge0 = "battle-staging/gauge-0.png",
+    gauge1 = "battle-staging/gauge-1.png",
+  }
+  local fontPaths = {
+    narration = "battle-staging/font-narration.fnt",
+    menu = "battle-staging/font-menu.fnt",
+    hud = "battle-staging/font-hud.fnt",
+  }
+  local function artPng(seed)
+    local pixel = string.char(seed % 256, (seed + 40) % 256, (seed + 90) % 256, 255)
+    return PngWriter.encode(8, 8, string.rep(pixel, 8 * 8))
+  end
+  local function stagedObj()
+    return {
+      x = 0,
+      y = 0,
+      tile = 0,
+      flipH = false,
+      flipV = false,
+      palette = 0,
+      shape = 0,
+      size = 0,
+      width = 8,
+      height = 8,
+      affine = false,
+      disabled = false,
+      mosaic = false,
+      objMode = "normal",
+      colorMode = "color16",
+      priority = 0,
+    }
+  end
+  local function stagedAnimation()
+    return {
+      playMode = "forward",
+      loopStartFrameIdx = 0,
+      frames = { { cell = 0, duration = 1 } },
+    }
+  end
+  local function stagedPalette()
+    return { colors = { { r = 10, g = 20, b = 30 } } }
+  end
+  local function menuSection(path)
+    return {
+      image = path,
+      screens = { { image = path, width = 8, height = 8 } },
+    }
+  end
+  local function spriteSection(path)
+    return {
+      image = path,
+      cells = { { objs = { stagedObj() } } },
+      animation = stagedAnimation(),
+      palette = stagedPalette(),
+    }
+  end
+  local images = {}
+  for _, path in pairs(artPaths) do
+    images[path] = { width = 8, height = 8 }
+  end
+  local battleManifest = {
+    schema = "g4-battle-presentation-v1",
+    version = { id = "battle-staging-convergence-probe", language = "en" },
+    verified = true,
+    scenes = { { key = sceneKey, background = "general", terrain = "grass", time = "day" } },
+    images = images,
+    command = menuSection(artPaths.command),
+    moves = menuSection(artPaths.moves),
+    target = menuSection(artPaths.target),
+    twoOption = menuSection(artPaths.twoOption),
+    lower = {
+      image = artPaths.lower,
+      palette = stagedPalette(),
+      variants = { general = { base = stagedPalette(), touch = stagedPalette() } },
+    },
+    playerHud = spriteSection(artPaths.playerHud),
+    enemyHud = spriteSection(artPaths.enemyHud),
+    doublesHud = {
+      playerLeft = spriteSection(artPaths.playerLeft),
+      playerRight = spriteSection(artPaths.playerRight),
+      enemyLeft = spriteSection(artPaths.enemyLeft),
+      enemyRight = spriteSection(artPaths.enemyRight),
+    },
+    arrow = spriteSection(artPaths.arrow),
+    partyGauges = { spriteSection(artPaths.gauge0), spriteSection(artPaths.gauge1) },
+    terrain = {
+      type0 = { cells = { { objs = { stagedObj() } } }, animation = stagedAnimation() },
+      type1 = { cells = { { objs = { stagedObj() } } }, animation = stagedAnimation() },
+    },
+    textRoles = {
+      narration = { font = fontPaths.narration },
+      menu = { font = fontPaths.menu },
+      hud = { font = fontPaths.hud },
+    },
+    audioRoles = {
+      wild = "wild-symbol",
+      trainer = "trainer-symbol",
+      rival = "rival-symbol",
+      select = "select-symbol",
+      narrationBank = 0,
+      cries = "cries-symbol",
+    },
+  }
+  local cache = CacheFs.forVersion("battle-staging-convergence-probe")
+  cache:writeLua(BattlePresentationCache.manifestPath(), battleManifest)
+  cache:writeLua(BattlePresentationCache.scenePath(sceneKey), {
+    schema = "g4-battle-scene-v1",
+    key = sceneKey,
+    background = "general",
+    terrain = "grass",
+    time = "day",
+    canvasWidth = 256,
+    canvasHeight = 192,
+    viewport = { x = 0, y = 0, width = 256, height = 192 },
+    imagePath = sceneImagePath,
+  })
+  cache:write(sceneImagePath, PngWriter.encode(256, 192, string.rep(string.char(12, 34, 56, 255), 256 * 192)))
+  local seed = 7
+  for _, path in pairs(artPaths) do
+    seed = seed + 11
+    cache:write(path, artPng(seed))
+  end
+  for _, path in pairs(fontPaths) do
+    cache:write(path, "battle-staging-font-bytes")
+  end
+  local graphics = FakeGraphics.new()
+  graphics.getImageFormats = function()
+    return {}
+  end
+  local rawNewImage = graphics.newImage
+  local failNextUpload = false
+  graphics.newImage = function(arg)
+    if failNextUpload then
+      failNextUpload = false
+      error("injected staged upload failure", 0)
+    end
+    local image = rawNewImage(arg)
+    if image.setWrap == nil then
+      image.setWrap = function() end
+    end
+    return image
+  end
+  local pool = ImageAssetPool.new(cache, { graphics = graphics })
+  local savedLove = rawget(_G, "love")
+  local realNewImageData = savedLove.image.newImageData
+  local decodeForms = {}
+  local stubLove = {}
+  for key, value in pairs(savedLove) do
+    stubLove[key] = value
+  end
+  stubLove.image = {}
+  for key, value in pairs(savedLove.image) do
+    stubLove.image[key] = value
+  end
+  stubLove.image.newImageData = function(first, second, third, fourth)
+    local form
+    if fourth ~= nil then
+      form = "classified"
+    elseif first ~= nil and second == nil then
+      form = "direct-decode"
+    elseif first ~= nil and second ~= nil and third == nil then
+      form = "procedural-blank"
+    else
+      form = "other"
+    end
+    decodeForms[#decodeForms + 1] = form
+    return realNewImageData(first, second, third, fourth)
+  end
+  rawset(_G, "love", stubLove)
+  local ok, err = pcall(function()
+    local audioPlays = {}
+    local envelope = FieldBattlePresentation.new({
+      cacheFs = cache,
+      windows = {},
+      text = {},
+      measureDisplay = function()
+        return {}
+      end,
+      graphics = graphics,
+      audio = {
+        play = function(name)
+          audioPlays[#audioPlays + 1] = name
+          return true
+        end,
+      },
+      imagePool = pool,
+    })
+    local services = envelope:_preparationServices()
+    local function demand()
+      return {
+        launchId = "convergence-probe",
+        scenes = { sceneKey },
+        pages = {},
+        audio = { roles = {}, banks = {}, cries = {} },
+      }
+    end
+    Assert.isTrue(services.prepare(demand()), "the staged synthetic demand enters")
+    local stagedKeys = { "scene:" .. sceneKey, "menu:command", "hud:enemy", "hud:player" }
+    for _, key in ipairs(stagedKeys) do
+      Assert.notNil(services.drawable(key), "the staged demand resolves " .. key)
+    end
+    local settledImages = #graphics.images
+    for _, key in ipairs(stagedKeys) do
+      Assert.notNil(services.drawable(key), "re resolving " .. key .. " reuses its staged image")
+    end
+    Assert.equal(#graphics.images, settledImages, "stable stages upload no duplicate images")
+    local oakGraphics = FakeGraphics.new()
+    local oak = OakIntroRenderer.new({
+      manifest = manifest(),
+      uiManifest = namingManifest(),
+      graphics = oakGraphics,
+      imageLoader = function(path)
+        local image = oakGraphics.newImage()
+        image.path = path
+        return image
+      end,
+      text = textRenderer(),
+      choiceText = choiceTextRenderer(),
+    })
+    local function drawSignature()
+      local offset = #oakGraphics.draws
+      oak:draw(view())
+      local signature = {}
+      for index = offset + 1, #oakGraphics.draws do
+        local recorded = oakGraphics.draws[index]
+        local quadSig = nil
+        if recorded.quad ~= nil then
+          quadSig = {
+            x = recorded.quad.x,
+            y = recorded.quad.y,
+            w = recorded.quad.w,
+            h = recorded.quad.h,
+            imgW = recorded.quad.imgW,
+            imgH = recorded.quad.imgH,
+          }
+        end
+        signature[#signature + 1] = {
+          x = recorded.x,
+          y = recorded.y,
+          rotation = recorded.rotation,
+          sx = recorded.sx,
+          sy = recorded.sy,
+          quad = quadSig,
+          path = type(recorded.image) == "table" and recorded.image.path or nil,
+          color = { recorded.color[1], recorded.color[2], recorded.color[3], recorded.color[4] },
+        }
+      end
+      return signature
+    end
+    local firstFrame = drawSignature()
+    Assert.isTrue(#firstFrame > 0, "the intro frame draws its staged widgets")
+    failNextUpload = true
+    local failedHandle, failure = services.drawable("menu:moves")
+    Assert.isNil(failedHandle, "one failed upload hands out no image")
+    Assert.isTrue(type(failure) == "string" and failure ~= "", "one failed upload names its reason")
+    Assert.isTrue(failure:find("menu:moves", 1, true) ~= nil, "the staged failure names its drawable key")
+    local replayImages = #graphics.images
+    local failedAgain, failureAgain = services.drawable("menu:moves")
+    Assert.isNil(failedAgain, "the failed key stays failed without a substitute")
+    Assert.equal(failureAgain, failure, "the failed key replays its latched failure")
+    Assert.equal(#graphics.images, replayImages, "the latched failure never re-enters the driver")
+    for _, key in ipairs(stagedKeys) do
+      Assert.notNil(services.drawable(key), "staged siblings survive the failed upload of " .. key)
+    end
+    Assert.equal(#graphics.images, replayImages, "only the new stage fails; siblings upload nothing new")
+    Assert.equal(#audioPlays, 0, "a failed stage holds its cues instead of playing success")
+    Assert.isTrue(services.prepare(demand()), "the envelope recovers and prepares again after the failure")
+    for _, key in ipairs(stagedKeys) do
+      services.release(key)
+    end
+    for _, key in ipairs(stagedKeys) do
+      Assert.notNil(services.drawable(key), "cancelled stages resolve again on demand: " .. key)
+    end
+    local secondFrame = drawSignature()
+    Assert.deepEqual(secondFrame, firstFrame, "intro frames stay identical across the battle failure")
+    envelope:dispose()
+    envelope:dispose()
+    oak:dispose()
+    local shared = 0
+    for _, form in ipairs(decodeForms) do
+      if form ~= "classified" then
+        shared = shared + 1
+      end
+    end
+    Assert.isTrue(#decodeForms > 0, "the staged run actually uploaded generated images")
+    Assert.equal(
+      shared,
+      0,
+      "staged battle images borrow classified shared images instead of private direct decodes or portrait crops"
+    )
+  end)
+  rawset(_G, "love", savedLove)
+  local disposeOk, disposeErr = pcall(pool.dispose, pool)
+  local removeOk, removeErr = pcall(cache.removeTree, cache, "")
+  if not ok then
+    error(err, 0)
+  end
+  Assert.isTrue(disposeOk, "the borrowed image owner disposes after the run: " .. tostring(disposeErr))
+  Assert.isTrue(removeOk, "the synthetic fixture cleans up after the run: " .. tostring(removeErr))
 end
 
 return GraphicsSmoke.suite(T)

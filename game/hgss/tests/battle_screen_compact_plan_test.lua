@@ -6,6 +6,7 @@
 -- interface set and the real dialogue theme carry the geometry.
 
 local Assert = require("tests.support.Assert")
+local StubLease = require("tests.support.StubLease")
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local BattleScreenInterface = require("game.hgss.src.battle.BattleScreenInterface")
 local FakeGraphics = require("tests.support.FakeGraphics")
@@ -356,7 +357,7 @@ function T.disabled_focusable_absent_blank()
     windows = recordingWindows(order),
     assets = {
       drawable = function(_, key)
-        return { handle = key }
+        return key:sub(1, 4) == "mon:" and StubLease.cell(key) or StubLease.new(key)
       end,
     },
     frameKey = "compact-plan-test-frame",
@@ -427,7 +428,7 @@ function T.label_clip_regions_bound_drawn_text()
     windows = recordingWindows(order),
     assets = {
       drawable = function(_, key)
-        return { handle = key }
+        return key:sub(1, 4) == "mon:" and StubLease.cell(key) or StubLease.new(key)
       end,
     },
     frameKey = "compact-plan-test-frame",
@@ -453,7 +454,7 @@ function T.label_clip_regions_bound_drawn_text()
     windows = recordingWindows(promptOrder),
     assets = {
       drawable = function(_, key)
-        return { handle = key }
+        return key:sub(1, 4) == "mon:" and StubLease.cell(key) or StubLease.new(key)
       end,
     },
     frameKey = "compact-plan-test-frame",
@@ -742,7 +743,7 @@ function T.dock_draw_uses_shared_background_and_shared_frame()
     windows = windows,
     assets = {
       drawable = function(_, key)
-        return { handle = key }
+        return key:sub(1, 4) == "mon:" and StubLease.cell(key) or StubLease.new(key)
       end,
     },
     frameKey = "compact-plan-test-frame",
@@ -805,7 +806,7 @@ local function childDrawCensus(plan, view)
     windows = recordingWindows(order),
     assets = {
       drawable = function(_, key)
-        return { handle = key }
+        return key:sub(1, 4) == "mon:" and StubLease.cell(key) or StubLease.new(key)
       end,
     },
     frameKey = "compact-plan-test-frame",

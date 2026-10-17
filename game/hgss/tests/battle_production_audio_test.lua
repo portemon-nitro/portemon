@@ -26,6 +26,7 @@ local ItemFixture = require("libs.items.tests.item_fixture")
 local MonCache = require("libs.assets.src.MonCache")
 local PngWriter = require("libs.assets.src.PngWriter")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
+local SummaryAcceptanceFixture = require("tests.support.SummaryAcceptanceFixture")
 
 local T = {}
 
@@ -285,6 +286,11 @@ local function stubPresentationRuntime(cache, audio, itemCatalog, monCatalog)
     pokemonNaming = InactivePokemonNaming.new(),
     cacheFs = cache,
     derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
+    -- The presented composition borrows its session image owner for the
+    -- battle envelope and menu chrome: the sized pool keeps real
+    -- consumers (font quads read dimensions off borrows) honest without
+    -- a second worker beside the stub.
+    imageAssets = SummaryAcceptanceFixture.sizedImagePool(),
     uiManifest = FieldUiFixture.fieldStateManifest(),
     audio = audio,
     itemCatalog = itemCatalog,

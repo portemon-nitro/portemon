@@ -14,6 +14,7 @@
 -- behavior lands.
 
 local Assert = require("tests.support.Assert")
+local StubLease = require("tests.support.StubLease")
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local BattleScreenInterface = require("game.hgss.src.battle.BattleScreenInterface")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
@@ -402,7 +403,7 @@ function T.dock_draws_background_text_before_shared_borders()
     windows = windows,
     assets = {
       drawable = function(_, key)
-        return { handle = key }
+        return key:sub(1, 4) == "mon:" and StubLease.cell(key) or StubLease.new(key)
       end,
     },
     frameKey = "single-pane-test-frame",
@@ -787,9 +788,13 @@ local function openRig(opts)
   end
   function rig.assets.drawable(key)
     if rig.assets.images[key] == nil then
-      rig.assets.images[key] = { handle = key }
+      rig.assets.images[key] = StubLease.new(key)
     end
-    return rig.assets.images[key]
+    local stored = rig.assets.images[key]
+    if key:sub(1, 4) == "mon:" then
+      return { lease = stored, quad = { handle = "quad:" .. key } }
+    end
+    return stored
   end
   function rig.assets.release(key)
     rig.assets.released[key] = (rig.assets.released[key] or 0) + 1
@@ -1094,9 +1099,13 @@ local function openLearnRig(layout)
   end
   function rig.assets.drawable(key)
     if rig.assets.images[key] == nil then
-      rig.assets.images[key] = { handle = key }
+      rig.assets.images[key] = StubLease.new(key)
     end
-    return rig.assets.images[key]
+    local stored = rig.assets.images[key]
+    if key:sub(1, 4) == "mon:" then
+      return { lease = stored, quad = { handle = "quad:" .. key } }
+    end
+    return stored
   end
   function rig.assets.release(key)
     rig.assets.released[key] = (rig.assets.released[key] or 0) + 1

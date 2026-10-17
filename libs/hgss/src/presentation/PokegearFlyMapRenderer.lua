@@ -37,7 +37,7 @@ local MENU_HIGHLIGHT, MENU_SEPARATOR_BELOW = 12, 18
 local MENU_ROW = 4
 
 ---@param graphics love.graphics
----@param image love.Image
+---@param image table<string, unknown> pooled atlas lease behind the menu strip
 ---@param tile integer tile index in the menu strip
 ---@param column integer
 ---@param row integer
@@ -47,7 +47,7 @@ end
 
 -- One three-tile row of the menu frame: left, repeated middle, right.
 ---@param graphics love.graphics
----@param image love.Image
+---@param image table<string, unknown> pooled atlas lease behind the menu strip
 ---@param base integer first tile of the group
 ---@param x integer left column
 ---@param row integer
@@ -186,7 +186,7 @@ function PokegearFlyMapRenderer.renderInformation(resources, child, plan)
   local colors = content.textColors --[[@as table<string, unknown>]]
   local slide = town and TOWN_SLIDE or 0
   graphics.setColor(1, 1, 1, 1)
-  graphics.draw(imageAt(images, content.top), 0, 0)
+  imageAt(images, content.top):draw(graphics, 0, 0)
   local upper = imageAt(images, content.upper)
   local previews = imageAt(images, content.previews)
   if town then

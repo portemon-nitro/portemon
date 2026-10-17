@@ -8,6 +8,7 @@
 -- colour mismatch.
 
 local Assert = require("tests.support.Assert")
+local StubLease = require("tests.support.StubLease")
 local Fixture = require("tests.support.PokegearMapFixture")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 
@@ -65,7 +66,7 @@ local function renderResources(scope, manifest)
       end
       return red, green, blue, 1
     end)
-    images[path] = scope:own(love.graphics.newImage(data))
+    images[path] = StubLease.over(scope:own(love.graphics.newImage(data)))
   end
   return { graphics = love.graphics, images = images }
 end

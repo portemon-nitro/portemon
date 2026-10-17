@@ -42,6 +42,17 @@ local function fakeGraphics()
   function graphics.draw(image, x, y)
     calls[#calls + 1] = { op = "draw", image = image, x = x, y = y }
   end
+  -- Sampler-driver surface so pooled-lease draws record exactly like raw
+  -- draws through this minimal double.
+  function graphics.newShader(_)
+    local shader = {}
+    function shader.send(_, _, _) end
+    return shader
+  end
+  function graphics.getShader()
+    return nil
+  end
+  function graphics.setShader(_) end
   return graphics, calls
 end
 
@@ -98,7 +109,8 @@ T.tests["drawing uses only prepared content and focused identities"] = function(
   local text, lines = fakeText()
   local plan = Renderer.layout(freshStatus())
   local panel = { prepared = true }
-  Renderer.drawPane(graphics, { ["test-panel"] = panel }, text, { panel = "test-panel" }, freshStatus())
+  local StubLease = require("tests.support.StubLease")
+  Renderer.drawPane(graphics, { ["test-panel"] = StubLease.over(panel) }, text, { panel = "test-panel" }, freshStatus())
   local drewPanel = false
   for _, call in ipairs(calls) do
     if call.op == "draw" and call.image == panel then
