@@ -8,6 +8,8 @@
 -- the fixed clock is the only thing that advances presentation.
 
 local SourceTick = require("libs.hgss.src.field.SourceTick")
+local AudioCache = require("libs.assets.src.audio.AudioCache")
+local BattleAudio = require("libs.hgss.src.audio.BattleAudio")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
 local BagCache = require("libs.assets.src.BagCache")
 local BattlePresentationModel = require("game.hgss.src.battle.BattlePresentationModel")
@@ -33,7 +35,7 @@ local TransitionFamilyFactory = require("libs.hgss.src.transition.TransitionFami
 ---@field _preparedDemands table<integer, table<string, unknown>> exact launch demands requested, in order
 ---@field _launchId string? active launch identity, nil outside launches
 ---@field _descriptor table<string, unknown>? active launch descriptor from the runtime
----@field _pendingFailed boolean true once a pending launch reported its terminal build failure
+---@field _pendingFailed boolean true once the envelope reported its terminal launch failure
 ---@field _pendingBuild boolean true while a scheduled launch still awaits its deferred screen
 ---@field _portDisposed boolean true once the live five-operation port released its screen
 ---@field _recoveryPointerId string|number|nil pending recovery press identity awaiting its release
@@ -45,7 +47,9 @@ local TransitionFamilyFactory = require("libs.hgss.src.transition.TransitionFami
 ---@field _accumulator number source-frame time held toward the next cover step
 ---@field _revealingBattle boolean true once the constructed battle starts its reveal
 ---@field _musicStarted boolean true once battle music was attempted for the launch
----@field _musicNote string? battle-music start outcome for launch diagnostics
+---@field _musicNote string? battle-music start note, set once the staged track voices
+---@field _musicRole string? chosen battle-music symbol behind the exact demand closure
+---@field _fanfarePlayed boolean true once the result fanfare was attempted for the launch
 ---@field _pool table<string, unknown>? borrowed shared generated-image owner, required once graphics resolve pixels
 ---@field _leases table<string, FieldBattlePresentation.PooledHandle> shared-owner leases by drawable key
 ---@field _fieldRenderer table<string, unknown>? field-local native plane compositor
@@ -251,6 +255,8 @@ function FieldBattlePresentation.new(opts)
     _revealingBattle = false,
     _musicStarted = false,
     _musicNote = nil,
+    _musicRole = nil,
+    _fanfarePlayed = false,
     _fieldRenderer = opts.fieldRenderer,
     _fieldCamera = opts.fieldCamera,
     _captureFieldLayers = opts.captureFieldLayers,
@@ -576,6 +582,13 @@ local function checkAudioMembers(envelope, demand)
         stagedRoles[manifest.audioRoles[role]] = true
       end
     end
+  end
+  -- The launch's chosen battle-music track is legitimate by
+  -- construction from the source selector beside the staged interface
+  -- roles: special-species and class tracks name staged sequences
+  -- outside the four ordinary roles.
+  if type(envelope._musicRole) == "string" and envelope._musicRole ~= "" then
+    stagedRoles[envelope._musicRole] = true
   end
   if type(audio.roles) ~= "table" then
     return "battle demands carry their audio roles"
@@ -991,7 +1004,7 @@ end
 -- that the fixed update completes. Concurrent launches fail at
 -- admission; the launch owns one launch at a time.
 ---@param descriptor table<string, unknown> detached launch descriptor from the runtime
----@return table<string, unknown> fresh five-operation port behind the launch
+---@return table<string, unknown>? fresh five-operation port behind the launch, nil once the build fails loudly
 function FieldBattlePresentation:_admitLaunch(descriptor)
   assert(type(descriptor) == "table", "presentation factories take a launch descriptor")
   assert(
@@ -1018,6 +1031,8 @@ function FieldBattlePresentation:_admitLaunch(descriptor)
   self._revealingBattle = false
   self._musicStarted = false
   self._musicNote = nil
+  self._musicRole = descriptor.musicRole
+  self._fanfarePlayed = false
   self._transition = nil
   self._transitionCapture = nil
   self._transitionFailed = false
@@ -1027,7 +1042,17 @@ function FieldBattlePresentation:_admitLaunch(descriptor)
     and type(derived) == "table"
     and type(derived.requestBattleScene) == "function"
   if not scheduled then
-    local constructed = self:_buildPort(descriptor)
+    -- A directly built screen can still fail against an unstaged
+    -- manifest: like the deferred completion below, the first failure
+    -- reports once with its launch context instead of escaping as a
+    -- host error, and admission hands back no port.
+    local okBuild, constructed = pcall(function()
+      return self:_buildPort(descriptor)
+    end)
+    if not okBuild then
+      self:_failPendingLaunch("battle scene " .. tostring(sceneKey) .. ": " .. tostring(constructed))
+      return nil
+    end
     self._port = constructed
     return constructed
   end
@@ -1247,10 +1272,13 @@ function FieldBattlePresentation:_pollPendingScreen()
   self._innerPort = innerOrErr
 end
 
--- Latches the first terminal build failure for the pending launch and
--- reports it through the host exactly once. The descriptor, cover, and
--- launch identity stay with the host until the field drains the abort;
--- a disposed launch reports nothing late.
+-- Latches the first terminal failure for the launch and reports it
+-- through the host exactly once. This latch owns every envelope-level
+-- terminal report: pending build failures and battle-music failures
+-- share it, so the first report wins with its launch context and any
+-- later failure for the same launch collapses without a second host
+-- report. The descriptor, cover, and launch identity stay with the host
+-- until the field drains the abort; a disposed launch reports nothing late.
 ---@param reason string terminal failure context behind the report
 function FieldBattlePresentation:_failPendingLaunch(reason)
   if self._pendingFailed then
@@ -1265,48 +1293,6 @@ function FieldBattlePresentation:_failPendingLaunch(reason)
   if host ~= nil and type(host.notify) == "function" then
     host.notify("screen-failed", reason)
   end
-end
-
--- Adapts one launch behind the screen-owned one-argument cue sink.
--- A method-based production controller resolves `select` to the staged
--- interface role and `cry:<species>` to the numeric species cry; every
--- other role is an explicit failure with launch context. An injected
--- semantic sink (no cry voice of its own) passes through untouched for
--- the deliberate headless contract, never as a production fallback.
----@param launchId string owning launch identity behind failure context
----@return table<string, unknown> one-argument cue sink behind the screen
-function FieldBattlePresentation:_screenAudioFor(launchId)
-  local controller = self._screenAudio
-  if type(controller.playCry) ~= "function" then
-    return controller
-  end
-  local manifest = self._manifest
-  local monCatalog = self._monCatalog
-  local function play(role)
-    assert(type(role) == "string" and role ~= "", "battle cues name their sound role")
-    if role == "select" then
-      local audioRoles = type(manifest) == "table" and manifest.audioRoles or nil
-      assert(type(audioRoles) == "table", "battle sound needs its staged select role for launch " .. launchId)
-      local symbol = audioRoles.select
-      assert(
-        type(symbol) == "string" and symbol ~= "",
-        "battle sound needs its staged select role for launch " .. launchId
-      )
-      return controller:play(symbol)
-    end
-    local speciesKey = role:match("^cry:(.+)$")
-    if speciesKey ~= nil then
-      assert(monCatalog ~= nil, "battle cries need their mon catalog for launch " .. launchId)
-      local facts = monCatalog:species(speciesKey)
-      assert(
-        type(facts) == "table" and type(facts.nativeId) == "number",
-        "battle cries name a cataloged species for launch " .. launchId .. ": " .. tostring(role)
-      )
-      return controller:playCry(facts.nativeId, 0)
-    end
-    error("unknown battle sound role for launch " .. launchId .. ": " .. tostring(role), 0)
-  end
-  return { play = play }
 end
 
 ---@param descriptor table<string, unknown> admitted launch descriptor from the runtime
@@ -1347,13 +1333,15 @@ function FieldBattlePresentation:_buildPort(descriptor)
     launchId = descriptor.launchId,
     manifest = manifest,
     model = BattlePresentationModel,
+    musicRole = self._musicRole,
+    musicBanks = self:_musicBanks(),
     textSpeed = launchSpeed,
     submit = submit,
     measureDisplay = self._measureDisplay,
     assets = self._services,
     text = self._text,
     windows = self._windows,
-    audio = self:_screenAudioFor(descriptor.launchId),
+    audio = self._screenAudio,
     itemCatalog = self._itemCatalog,
     monCatalog = self._monCatalog,
     overrides = { sceneKey = sceneKey },
@@ -1491,7 +1479,38 @@ function FieldBattlePresentation:drawBattle(resources)
   return true
 end
 
----@return string? battle-music start outcome for launch diagnostics
+-- Resolves the chosen battle-music track to its audio bank closure
+-- through the staged audio index: the exact demand stages only the
+-- chosen track's bank beside the interface role. A cold or unstaged
+-- index stages nothing instead of guessing.
+---@return integer[] chosen track bank identities, empty without a staged index
+function FieldBattlePresentation:_musicBanks()
+  local role = self._musicRole
+  if type(role) ~= "string" or role == "" then
+    return {}
+  end
+  local ok, index = pcall(function()
+    return self._cacheFs:loadLua(AudioCache.indexPath())
+  end)
+  if not ok or type(index) ~= "table" then
+    return {}
+  end
+  local sequences = index.sequences --[[@as table<integer, table<string, unknown>>?]]
+  local bySymbol = index.sequenceBySymbol --[[@as table<string, integer>?]]
+  if type(sequences) ~= "table" or type(bySymbol) ~= "table" then
+    return {}
+  end
+  local id = bySymbol[role]
+  local entry = type(id) == "number" and sequences[id] or nil
+  if type(entry) == "table" and type(entry.bankId) == "number" then
+    return {
+      entry.bankId --[[@as integer]],
+    }
+  end
+  return {}
+end
+
+---@return string? battle-music start note, nil until the staged track voices
 function FieldBattlePresentation:musicNote()
   return self._musicNote
 end
@@ -1510,10 +1529,17 @@ function FieldBattlePresentation:_startTransition(descriptor)
     "transition rendering is composed as a pair"
   )
   local context = descriptor.transitionContext
+  if context == nil then
+    -- Direct test launches bypass the field coordinator that captures
+    -- selector facts: without a context there is no transition to run,
+    -- and the launch continues cover-driven. A present but malformed
+    -- context still fails fast below.
+    return
+  end
   assert(type(context) == "table", "presented field launches carry their captured semantic transition context")
   local function emitAudio(_, operation)
     assert(type(operation) == "table" and operation.kind == "start-battle-music", "transition audio is typed")
-    self:_startBattleMusic(operation.role)
+    self:_startBattleMusic()
   end
   local function createEffect(route, resources, launchContext)
     return TransitionFamilyFactory.new(
@@ -1691,6 +1717,7 @@ function FieldBattlePresentation:updateFixed(dt)
     if self._launchId ~= nil and host ~= nil then
       host.advance()
     end
+    self:_maybePlayResultFanfare()
     local screen = self._screen
     if screen ~= nil then
       screen:updateFixed(FieldBattlePresentation.SOURCE_FRAME)
@@ -1753,6 +1780,11 @@ function FieldBattlePresentation:_stepCover()
       and (self._transition == nil or self._transition:status().phase == "complete")
     then
       host.notify("cover-complete")
+    end
+    if self._cover >= FieldBattlePresentation.COVER_MAX then
+      -- Battle music starts once under full cover: the role was selected
+      -- from staged source data at admission.
+      self:_startBattleMusic()
     end
     return
   end
@@ -1836,34 +1868,85 @@ function FieldBattlePresentation:_portEnterReady()
   return ok and ready == true
 end
 
--- Starts the source-defined battle music role once under full cover. The
--- start is attempted exactly once per launch; an unstaged bank records
--- its outcome and the launch continues, since the acceptance closure
--- stages no audio sequences while production playback resolves through
--- the normalized catalog.
-function FieldBattlePresentation:_startBattleMusic(selectedRole)
+-- Starts the source-defined battle music role once under full cover:
+-- the staged chosen-track closure voices through the launch voice
+-- operations at the transition boundary. The start is attempted exactly
+-- once per launch. A missing role, a rejected start, or a missing
+-- staged track fails the launch through the host with its music
+-- identity instead of continuing silently; a launch without a music
+-- port keeps its headless test-sink contract.
+function FieldBattlePresentation:_startBattleMusic()
   if self._musicStarted then
     return
   end
   self._musicStarted = true
+  local launchId = self._launchId
   local descriptor = self._descriptor
-  local role = selectedRole or (descriptor ~= nil and descriptor.musicRole or nil)
+  local role = self._musicRole
   local audio = descriptor ~= nil and descriptor.audio or nil
   if type(role) ~= "string" or role == "" then
-    self._musicNote = "skipped-no-role"
+    self:_failMusic("battle music needs its staged track role for launch " .. tostring(launchId))
     return
   end
   if audio == nil or type(audio.playMusic) ~= "function" then
-    self._musicNote = "skipped-no-audio"
     return
   end
-  local ok, err = pcall(function()
-    return audio:playMusic(role)
-  end)
-  if ok then
-    self._musicNote = "started:" .. role
+  local voice = BattleAudio.new({
+    sink = audio,
+    launchId = launchId --[[@as string]],
+  })
+  local ok, err = pcall(voice.startMusic, voice, role)
+  if not ok then
+    self:_failMusic(tostring(err))
   else
-    self._musicNote = "unstaged:" .. role .. ":" .. tostring(err)
+    self._musicNote = "started:" .. role
+  end
+end
+
+-- Reports one battle-music failure through the envelope's first-failure
+-- latch with its launch and track identity: whichever terminal failure
+-- comes first for the launch wins, whether it names the music role or
+-- the scene worker, and any later failure collapses without a second
+-- host report. The coordinator collapses the report into its classified
+-- failure path: uncommitted launches abort with the original cause,
+-- committed launches keep their words.
+---@param reason string failure context behind the report
+function FieldBattlePresentation:_failMusic(reason)
+  self:_failPendingLaunch(reason)
+end
+
+-- Voices the victory fanfare once behind the committed win words: the
+-- wild track answers ordinary encounters, the trainer track answers
+-- trainer victories. The fanfare rides the launch voice operations so
+-- a rejected start fails through the host with its identity while the
+-- committed words survive through the existing committed path. A
+-- launch without a fanfare port keeps its headless test-sink contract.
+function FieldBattlePresentation:_maybePlayResultFanfare()
+  if self._fanfarePlayed then
+    return
+  end
+  local status = self._lastStatus
+  if type(status) ~= "table" or status.result ~= "win" then
+    return
+  end
+  self._fanfarePlayed = true
+  local descriptor = self._descriptor
+  local audio = descriptor ~= nil and descriptor.audio or nil
+  if audio == nil or type(audio.playFanfare) ~= "function" then
+    return
+  end
+  local launchId = self._launchId
+  if type(launchId) ~= "string" or launchId == "" then
+    return
+  end
+  local symbol = BattleAudio.VICTORY_FANFARES.wild
+  if type(descriptor) == "table" and descriptor.kind == "trainer" then
+    symbol = BattleAudio.VICTORY_FANFARES.trainer
+  end
+  local voice = BattleAudio.new({ sink = audio, launchId = launchId })
+  local ok, err = pcall(voice.playFanfare, voice, symbol)
+  if not ok then
+    self:_failMusic(tostring(err))
   end
 end
 
@@ -1871,7 +1954,9 @@ end
 -- instead of polling a dead presentation: the screen disposes once while
 -- the descriptor, black cover, and launch identity stay with the host
 -- until the safe field returns. Repeats collapse into the first report
--- because the screen is gone after the first one.
+-- because the screen is gone after the first one, and a terminal music
+-- failure that already went out suppresses this report through the
+-- same latch while the dead screen is still released.
 function FieldBattlePresentation:_observeScreenFailure()
   local screen = self._screen
   local descriptor = self._descriptor
@@ -1886,7 +1971,15 @@ function FieldBattlePresentation:_observeScreenFailure()
     return screen:status()
   end)
   if ok and type(status) == "table" and status.mode == "failed" then
-    host.notify("screen-failed", status.error)
+    -- Shares the envelope's first-failure latch with the pending-build
+    -- and battle-music reports: a music failure that already went out
+    -- for this launch suppresses this second host report, while the
+    -- dead screen is still released exactly once below either way.
+    local firstReport = not self._pendingFailed
+    self._pendingFailed = true
+    if firstReport then
+      host.notify("screen-failed", status.error)
+    end
     -- The report runs synchronously: the owner may have disposed the
     -- battle (and this screen with it) from inside the notification, so
     -- only the screen still owned here is released, exactly once. The
@@ -1920,6 +2013,8 @@ function FieldBattlePresentation:_dropLaunch()
   self._revealingBattle = false
   self._musicStarted = false
   self._musicNote = nil
+  self._musicRole = nil
+  self._fanfarePlayed = false
   self._transitionFailed = false
 end
 

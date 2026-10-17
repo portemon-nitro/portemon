@@ -829,12 +829,16 @@ end
 
 -- Script facade delegation to GameSound
 
+---@param idOrSymbol integer|string effect sequence reference under staging
+---@return boolean started true once the effect voice starts
 function FieldAudioController:play(idOrSymbol)
-  self._sound:play(idOrSymbol)
+  return self._sound:play(idOrSymbol)
 end
 
+---@param idOrSymbol integer|string effect sequence reference under release
+---@return boolean stopped true once the stop reaches the engine player
 function FieldAudioController:stop(idOrSymbol)
-  self._sound:stop(idOrSymbol)
+  return self._sound:stop(idOrSymbol)
 end
 
 function FieldAudioController:isEffectPlaying(idOrSymbol)
@@ -845,14 +849,17 @@ function FieldAudioController:isEffectWaitComplete(idOrSymbol)
   return self._sound:isEffectWaitComplete(idOrSymbol)
 end
 
+---@param idOrSymbol integer|string battle-music sequence reference under staging
+---@return boolean started true once the battle-music voice starts
 function FieldAudioController:playMusic(idOrSymbol)
   self._pendingFieldMusicPolicy = nil
-  self._sound:playMusic(idOrSymbol)
+  return self._sound:playMusic(idOrSymbol)
 end
 
+---@return boolean stopped true once the music stop reaches the engine player
 function FieldAudioController:stopMusic()
   self._pendingFieldMusicPolicy = nil
-  self._sound:stopMusic()
+  return self._sound:stopMusic()
 end
 
 function FieldAudioController:currentMusic()
@@ -863,8 +870,10 @@ function FieldAudioController:currentMapId()
   return self._currentMap and self._currentMap.mapId or nil
 end
 
+---@param idOrSymbol integer|string fanfare sequence reference under staging
+---@return boolean started true once the fanfare voice starts
 function FieldAudioController:playFanfare(idOrSymbol)
-  self._sound:playFanfare(idOrSymbol)
+  return self._sound:playFanfare(idOrSymbol)
 end
 
 function FieldAudioController:isFanfarePlaying()
@@ -889,8 +898,12 @@ function FieldAudioController:temporaryMusic(idOrSymbol)
   self._sound:temporaryMusic(idOrSymbol)
 end
 
+---@param species integer numeric species identity behind the cry voice
+---@param pattern integer cry pattern behind the voice family
+---@param form integer? the mon's form; nil plays the species bank
+---@return boolean started true once the cry voice starts
 function FieldAudioController:playCry(species, pattern, form)
-  self._sound:playCry(species, pattern, form)
+  return self._sound:playCry(species, pattern, form)
 end
 
 function FieldAudioController:isCryFinished()

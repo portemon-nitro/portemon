@@ -3273,6 +3273,30 @@ function FieldRuntime:composeTrainers(compiled)
   })
 end
 
+-- Names one trainer template's class without materializing its party:
+-- battle-music selection reads the class while the factory keeps owning
+-- party builds and their randomness. Unknown trainers answer nil so the
+-- caller keeps the ordinary default instead of guessing.
+---@param key string|integer trainer identity behind the lookup
+---@return string? trainer class key, nil for unknown trainers or before composition
+function FieldRuntime:trainerClassFor(key)
+  local catalog = self._trainerCatalog
+  if catalog == nil then
+    return nil
+  end
+  local ok, template = pcall(function()
+    local HgssTrainerCatalog = require("libs.hgss.src.battle.HgssTrainerCatalog")
+    return HgssTrainerCatalog.trainer(catalog, key)
+  end)
+  if not ok or type(template) ~= "table" then
+    return nil
+  end
+  if type(template.trainerClass) == "string" and template.trainerClass ~= "" then
+    return template.trainerClass --[[@as string]]
+  end
+  return nil
+end
+
 -- Runs one encounter attempt over the composed service. Without a service
 -- (or while a battle or preparation owns the field) there is nothing to
 -- attempt. A prepared encounter is held exactly once under its attempt

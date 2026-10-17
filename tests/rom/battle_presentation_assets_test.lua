@@ -882,8 +882,8 @@ function T.source_traced_transition_payloads_are_decoded_and_content_addressed(r
     end
   end
   Assert.isNil(selection.categoryRoutes, versionId .. ": native category indexes remain producer-side")
-  Assert.equal(selection.trainerClassRoutes["trainer/red"], "trainer/red")
-  Assert.equal(selection.wildSpeciesRoutes["wild/ho-oh"], "wild/ho-oh")
+  Assert.equal(selection.trainerClassRoutes["PKMN_TRAINER_RED"], "trainer/red")
+  Assert.equal(selection.wildSpeciesRoutes["HO_OH"], "wild/ho-oh")
   for _, maps in ipairs({
     { selection.trainerClassRoutes, selection.trainerClassMusicRoles },
     { selection.wildSpeciesRoutes, selection.wildSpeciesMusicRoles },
@@ -891,7 +891,7 @@ function T.source_traced_transition_payloads_are_decoded_and_content_addressed(r
     local routes, musicRoles = maps[1], maps[2]
     for inputKey, routeKey in pairs(routes) do
       Assert.isTrue(
-        semanticTransitions[routeKey] ~= nil,
+        routeKey == "setup-fallback" or semanticTransitions[routeKey] ~= nil,
         versionId .. ": source input " .. inputKey .. " resolves before its music role"
       )
       Assert.isTrue(
@@ -912,7 +912,7 @@ function T.source_traced_transition_payloads_are_decoded_and_content_addressed(r
   local eliteIntro = assert(semanticTransitions["trainer/will"])
   Assert.deepEqual(
     eliteIntro.requiredContext,
-    { "battleType", "playerTrainerGender", "trainerClass", "trainerName", "transitionTrainer" }
+    { "battleType", "playerGender", "trainerClass", "trainerName", "transitionTrainer" }
   )
   Assert.isTrue(type(eliteIntro.assetGroups.spriteVariants.male) == "table")
   Assert.isTrue(type(eliteIntro.assetGroups.spriteVariants.female) == "table")

@@ -980,8 +980,19 @@ function FieldBattleCoordinator:_captureTransitionContext(request, environment)
       require("libs.hgss.src.battle.HgssTrainerCatalog").trainer(catalog, trainer),
       "trainer transition context resolves its trainer template"
     )
-    assert(type(template.trainerClass) == "string", "trainer templates carry normalized semantic classes")
-    context.trainerClass = template.trainerClass
+    assert(
+      type(template.trainerClass) == "string" or type(template.trainerClass) == "number",
+      "trainer transition context resolves its trainer class for trainer " .. tostring(trainer)
+    )
+    if type(template.trainerClass) == "string" and template.trainerClass ~= "" then
+      context.trainerClass = template.trainerClass
+    else
+      -- Numeric native classes carry no pinned semantic name yet, so
+      -- they resolve through the designed unknown-class route and music
+      -- role instead of guessing a name; class-name precision for special
+      -- classes is later producer work.
+      context.trainerClass = "SOURCE_UNKNOWN_TRAINER"
+    end
     context.doubleBattle = context.doubleBattle or template.doubleBattle == true
   elseif request.kind == "wild" then
     local mon = payload.mon
@@ -1106,12 +1117,15 @@ function FieldBattleCoordinator:_captureLaunchEnvironment(request, method)
   }
 end
 
--- Chooses the source-defined battle music role for one launch: ordinary
--- wild, trainer, or rival roles from the staged presentation manifest.
--- Banks resolve through the normalized audio catalog at playback; a
--- missing manifest or role selects no music instead of guessing.
+-- Chooses the source-defined battle music track for one launch: the
+-- wild special-species table wins first, then the trainer class table
+-- with the rival override, then the ordinary kind default, with the
+-- Kanto regional remap last. Selection consumes no battle or
+-- encounter randomness and never infers from display strings. Banks
+-- resolve through the normalized audio catalog at playback; a launch
+-- without staged roles selects no music instead of guessing.
 ---@param request table<string, unknown> launch request carrying its kind and payload
----@return string? symbolic battle music role
+---@return string? normalized battle-music sequence symbol
 function FieldBattleCoordinator:_battleMusicRole(request)
   if fieldRuntime(self).cacheFs == nil then
     return nil
@@ -1125,21 +1139,34 @@ function FieldBattleCoordinator:_battleMusicRole(request)
   if type(roles) ~= "table" then
     return nil
   end
-  if request.kind ~= "wild" then
-    local payload = request.payload
-    local rival = type(payload) == "table" and payload.rivalName
-    if type(rival) == "string" and rival ~= "" and type(roles.rival) == "string" then
-      return roles.rival
+  local BattleMusicSelection = require("game.hgss.src.battle.BattleMusicSelection")
+  local payload = request.payload
+  if type(payload) ~= "table" then
+    payload = {}
+  end
+  local species = type(payload.species) == "string" and payload.species or nil
+  local rivalName = type(payload.rivalName) == "string" and payload.rivalName or nil
+  local trainerClass = nil
+  if request.kind ~= "wild" and (payload.trainer ~= nil or payload.trainerClass ~= nil) then
+    if type(payload.trainerClass) == "string" then
+      trainerClass = payload.trainerClass
+    elseif fieldRuntime(self).trainerClassFor ~= nil then
+      local okClass, class = pcall(fieldRuntime(self).trainerClassFor, fieldRuntime(self), payload.trainer)
+      if okClass and type(class) == "string" then
+        trainerClass = class
+      end
     end
-    if type(roles.trainer) == "string" then
-      return roles.trainer
-    end
+  end
+  local okSelect, selected = pcall(BattleMusicSelection.select, {
+    kind = request.kind,
+    species = species,
+    trainerClass = trainerClass,
+    rivalName = rivalName,
+  })
+  if not okSelect or type(selected) ~= "table" or type(selected.music) ~= "string" then
     return nil
   end
-  if type(roles.wild) == "string" then
-    return roles.wild
-  end
-  return nil
+  return selected.music --[[@as string]]
 end
 
 -- Presented-launch observation for the envelope's fixed driver: the launch

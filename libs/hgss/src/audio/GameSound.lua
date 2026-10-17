@@ -63,16 +63,16 @@ local PlayerFaderTimeline = require("libs.hgss.src.audio.PlayerFaderTimeline")
 ---@field private _faderTimeline PlayerFaderTimeline
 ---@field private _cryActive boolean
 ---@field new fun(opts: { provider: AudioAssetProvider, player: SequencePlayer, completionAvailable: boolean?, cry: table<string, unknown>?, mapMusic: fun(): integer|string|nil? }): GameSound
----@field play fun(self: GameSound, idOrSymbol: integer|string)
----@field stop fun(self: GameSound, idOrSymbol: integer|string)
+---@field play fun(self: GameSound, idOrSymbol: integer|string): boolean
+---@field stop fun(self: GameSound, idOrSymbol: integer|string): boolean
 ---@field isEffectPlaying fun(self: GameSound, idOrSymbol: integer|string): boolean
 ---@field isEffectWaitComplete fun(self: GameSound, idOrSymbol: integer|string): boolean
----@field playMusic fun(self: GameSound, idOrSymbol: integer|string)
----@field stopMusic fun(self: GameSound)
+---@field playMusic fun(self: GameSound, idOrSymbol: integer|string): boolean
+---@field stopMusic fun(self: GameSound): boolean
 ---@field currentMusic fun(self: GameSound): integer?
----@field playFanfare fun(self: GameSound, idOrSymbol: integer|string)
+---@field playFanfare fun(self: GameSound, idOrSymbol: integer|string): boolean
 ---@field isFanfarePlaying fun(self: GameSound): boolean
----@field playCry fun(self: GameSound, species: integer, pattern: integer, form: integer?)
+---@field playCry fun(self: GameSound, species: integer, pattern: integer, form: integer?): boolean
 ---@field isCryFinished fun(self: GameSound): boolean
 ---@field playRadio fun(self: GameSound, sequenceKey: integer|string): boolean
 ---@field stopRadio fun(self: GameSound, fadeFrames: integer?)
@@ -316,14 +316,17 @@ end
 -- replaces the earlier attachment while the player stays busy -- exactly
 -- what an HGSS WaitSE observes through the player-state query.
 ---@param idOrSymbol integer|string
+---@return boolean started true once the effect voice starts
 function GameSound:play(idOrSymbol)
   self:_startSequence(idOrSymbol)
+  return true
 end
 
 -- Stops every instance of the requested sequence ID. Effect waits remain
 -- player-scoped, so a surviving sibling keeps the logical player busy. A
 -- surviving canonical attachment also keeps its fader record and ramp.
 ---@param idOrSymbol integer|string
+---@return boolean stopped true once the stop reaches the engine player
 function GameSound:stop(idOrSymbol)
   local sequence = self._provider:sequence(idOrSymbol)
   self._player:stopSequence(sequence.id)
@@ -331,6 +334,7 @@ function GameSound:stop(idOrSymbol)
   if handle == nil or not self._player:isHandlePlaying(handle) then
     self:_resetPlayerFader(sequence.player.id)
   end
+  return true
 end
 
 -- True while the sequence's player has a running sequence. An unresolvable
@@ -360,6 +364,7 @@ end
 -- after the admission attempt even when no instance is attached; allocation
 -- and semantic current-music bookkeeping are separate state domains.
 ---@param idOrSymbol integer|string
+---@return boolean started true once the battle-music voice starts
 function GameSound:playMusic(idOrSymbol)
   self._queuedMusicReplacement = nil
   -- Resolve once: the radio guard reads the incoming identity from the
@@ -368,16 +373,19 @@ function GameSound:playMusic(idOrSymbol)
   self:_stopRadioForBgm(sequence.id)
   self:_startResolvedSequence(sequence)
   self._currentMusic = sequence.id
+  return true
 end
 
 -- Stops the current BGM, drops the reference, and cancels its fade (a
 -- music fade belongs to the BGM it fades; the StopBGM operand is an
 -- erasure both at lowering and here -- the service takes no arguments).
+---@return boolean stopped true once the music stop reaches the engine player
 function GameSound:stopMusic()
   self._queuedMusicReplacement = nil
   self:stopRadio()
   self:_stopBgmPlayer()
   self._currentMusic = nil
+  return true
 end
 
 -- The resolved id of the current BGM reference, or nil while silent. The
@@ -396,6 +404,7 @@ end
 -- during the fanfare is never resumed, even if its detached instance remains
 -- active. Without a current BGM the pause is a no-op.
 ---@param idOrSymbol integer|string
+---@return boolean started true once the fanfare voice starts
 function GameSound:playFanfare(idOrSymbol)
   local sequence = self._provider:sequence(idOrSymbol)
   self._fanfare = { playerId = sequence.player.id, frames = FANFARE_POST_WAIT_FRAMES }
@@ -404,6 +413,7 @@ function GameSound:playFanfare(idOrSymbol)
     self._player:pauseHandle(self:_handleForPlayer(bgm.player.id))
   end
   self:_startResolvedSequence(sequence)
+  return true
 end
 
 ---@return boolean
@@ -457,6 +467,7 @@ end
 ---@param species integer
 ---@param pattern integer
 ---@param form integer? the mon's form; nil plays the species cry
+---@return boolean started true once the cry voice starts
 function GameSound:playCry(species, pattern, form)
   if self._cry == nil then
     Errors.raise(AudioErrors.AUDIO_CRY_UNAVAILABLE, "no cry subsystem is available", {
@@ -466,6 +477,7 @@ function GameSound:playCry(species, pattern, form)
   end
   self._cry:play(species, pattern, form)
   self._cryActive = true
+  return true
 end
 
 ---@return boolean

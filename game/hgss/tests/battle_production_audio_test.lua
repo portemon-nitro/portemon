@@ -86,10 +86,21 @@ local function methodAudio()
   local controller = { calls = {} }
   function controller:play(symbol)
     controller.calls[#controller.calls + 1] = { method = "play", receiver = self, symbol = symbol }
+    return true
   end
-  function controller:playCry(species, pattern)
-    controller.calls[#controller.calls + 1] =
-      { method = "playCry", receiver = self, species = species, pattern = pattern }
+  function controller:playCry(species, pattern, form, mode, pan, volume, pitch)
+    controller.calls[#controller.calls + 1] = {
+      method = "playCry",
+      receiver = self,
+      species = species,
+      pattern = pattern,
+      form = form,
+      mode = mode,
+      pan = pan,
+      volume = volume,
+      pitch = pitch,
+    }
+    return true
   end
   function controller:rejects()
     return false
@@ -146,11 +157,28 @@ end
 -- and the lead/foe portrait pages over the presentation fixture cache.
 ---@param cache table versioned derived cache under staging
 local function stageBattlePresentation(cache)
-  cache:writeLua(
-    BattlePresentationCache.manifestPath(),
-    stagedManifest(BattlePresentationCache.sceneImagePath(SCENE_KEY))
-  )
+  local staged = stagedManifest(BattlePresentationCache.sceneImagePath(SCENE_KEY))
+  cache:writeLua(BattlePresentationCache.manifestPath(), staged)
   cache:write(MENU_IMAGE, solidPng(8, 8))
+  -- The field narration renderer behind battle text reads font 1:
+  -- stage it beside the menu font the shared fixture already carries.
+  FieldUiFixture.writeFont(cache, 1)
+  -- The health-box strips the launch validator requires before a battle
+  -- admits: every HUD section image needs staged bytes beside the menu art.
+  local hud = staged.hud --[[@as table<string, unknown>]]
+  local doubles = hud.doubles --[[@as table<string, unknown>]]
+  local strips = { hud.enemy, hud.player }
+  for _, slot in ipairs({ "playerLeft", "playerRight", "enemyLeft", "enemyRight" }) do
+    strips[#strips + 1] = doubles[slot]
+  end
+  for _, section in ipairs(strips) do
+    local image = (section --[[@as table<string, unknown>]]).image --[[@as string]]
+    cache:write(image, solidPng(1648, 8))
+  end
+  -- The Pokepic shadow plate the asset holder requires beside the HUD.
+  local pictures = staged.pictures --[[@as table<string, unknown>]]
+  local shadow = pictures.shadow --[[@as table<string, unknown>]]
+  cache:write(shadow.image --[[@as string]], solidPng(64, 64))
   for _, font in ipairs({ "font-0" }) do
     cache:write(font, "staged-font")
   end
@@ -183,7 +211,7 @@ local function stageBattlePresentation(cache)
         characters = {
           key = "battle-scene/general-grass-day/background/characters",
           path = charactersPath,
-          format = "indexed4",
+          format = "indexed8",
         },
         map = {
           key = "battle-scene/general-grass-day/background/map",
@@ -214,7 +242,17 @@ local function stageBattlePresentation(cache)
     FOE_SPECIES .. "/f0/female/plain",
     FOE_SPECIES .. "/f0/female/shiny",
   }) do
-    entries[selector] = { x = 0, y = 0, width = 8, height = 8, pageId = 0 }
+    entries[selector] = {
+      x = 0,
+      y = 0,
+      width = 8,
+      height = 8,
+      pageId = 0,
+      frames = {
+        { x = 0, y = 0, width = 8, height = 8 },
+        { x = 8, y = 0, width = 8, height = 8 },
+      },
+    }
   end
   cache:writeLua(MonCache.portraitManifestPath(), { entries = entries })
   cache:writeLua(MonCache.indexPath(), { portraitPages = { "portrait-marker-0" } })
@@ -452,6 +490,20 @@ local function pump(rig)
   rig.state.battleEnvelope:updateFixed(TICK)
 end
 
+-- Waits for the source menu input gate to open before answering: the
+-- production command menu drops input during its entry travel, so a
+-- reply sent earlier would never reach the cue sink.
+---@param rig table live rig under test driving
+local function waitMenuInput(rig)
+  for _ = 1, 300 do
+    if rig.screen:view().menuInputEnabled then
+      return
+    end
+    pump(rig)
+  end
+  error("the source menu input gate never opened", 0)
+end
+
 -- Drives the live battle until the screen exposes its command decision,
 -- failing loudly with the screen context when presentation fails first.
 ---@param rig table live rig under test driving
@@ -463,6 +515,7 @@ local function driveToCommand(rig)
       error("the production battle failed before its command: " .. tostring(status.error), 0)
     end
     if status.mode == "command" then
+      waitMenuInput(rig)
       return
     end
   end
@@ -483,9 +536,10 @@ local function countCalls(calls, method)
 end
 
 -- The played battle reaches the bound controller with real method
--- signatures: one numeric send-out cry for the active lead and one
--- selection sound for the accepted Fight choice, each dispatched exactly
--- once with the controller as its receiver and no pseudo-sequence.
+-- signatures: one numeric send-out cry per battler for the wild foe
+-- and the active lead, and one selection sound for the accepted Fight
+-- choice, each dispatched exactly once with the controller as its
+-- receiver and no pseudo-sequence.
 function T.selection_and_cry_reach_the_bound_controller_once()
   local cache = FieldStatePresentationFixture.cache()
   stageBattlePresentation(cache)
@@ -496,6 +550,7 @@ function T.selection_and_cry_reach_the_bound_controller_once()
   local rig = openBattle(state, {})
   driveToCommand(rig)
   local leadNativeId = monCatalog:species(LEAD_SPECIES).nativeId
+  local foeNativeId = monCatalog:species(FOE_SPECIES).nativeId
   local cries, plays = {}, {}
   for _, call in ipairs(audio.calls) do
     Assert.isTrue(call.receiver == audio, "every cue reaches the controller with its receiver")
@@ -509,13 +564,26 @@ function T.selection_and_cry_reach_the_bound_controller_once()
       plays[#plays + 1] = call
     end
   end
-  Assert.equal(#cries, 1, "the send-out cries exactly once")
-  Assert.equal(cries[1].species, leadNativeId, "the cry names the numeric lead identity")
-  Assert.equal(cries[1].pattern, 0, "the cry uses the plain pattern")
+  local leadCries, foeCries = {}, {}
+  for _, cry in ipairs(cries) do
+    if cry.species == leadNativeId then
+      leadCries[#leadCries + 1] = cry
+    elseif cry.species == foeNativeId then
+      foeCries[#foeCries + 1] = cry
+    end
+  end
+  Assert.equal(#leadCries, 1, "the lead send-out cries exactly once")
+  Assert.equal(#foeCries, 1, "the foe send-out cries exactly once")
+  Assert.equal(leadCries[1].species, leadNativeId, "the cry names the numeric lead identity")
+  Assert.equal(leadCries[1].pattern, 0, "the cry uses the plain pattern")
+  Assert.equal(foeCries[1].pattern, 0, "the foe cry uses the plain pattern")
+  Assert.isTrue(leadCries[1].form == 0, "the lead cry names its form")
+  Assert.isTrue(foeCries[1].pan ~= leadCries[1].pan, "foe and lead cries voice from their own sides")
   Assert.equal(#plays, 0, "no selection plays before an accepted reply")
   rig.screen:input({ { type = "confirm" } })
   pump(rig)
   Assert.equal(rig.screen:status().mode, "moves", "confirming Fight opens move selection")
+  waitMenuInput(rig)
   rig.screen:input({ { type = "confirm" } })
   pump(rig)
   Assert.equal(rig.screen:status().mode, "awaiting_resolution", "confirming the known slot submits")
@@ -531,7 +599,7 @@ function T.selection_and_cry_reach_the_bound_controller_once()
   Assert.equal(select.symbol, SELECT_SYMBOL, "the selection plays the staged interface role")
   pump(rig)
   pump(rig)
-  Assert.equal(countCalls(audio.calls, "playCry"), 1, "settling replays no cry")
+  Assert.equal(countCalls(audio.calls, "playCry"), 2, "settling replays no cry")
   Assert.equal(countCalls(audio.calls, "play"), 1, "settling replays no selection")
   rig.battle:dispose()
   state:dispose()

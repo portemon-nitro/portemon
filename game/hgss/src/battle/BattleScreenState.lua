@@ -10,6 +10,7 @@
 -- applied.
 
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
+local BattleAudio = require("libs.hgss.src.audio.BattleAudio")
 local BattlePresentationAssets = require("game.hgss.src.battle.BattlePresentationAssets")
 local BattleScene = require("libs.hgss.src.presentation.BattleScene")
 local BattleScreenInterface = require("game.hgss.src.battle.BattleScreenInterface")
@@ -25,6 +26,9 @@ local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 ---@field _text table<string, unknown> borrowed text services
 ---@field _windows table<string, unknown> borrowed window services
 ---@field _audio table<string, unknown> semantic sound boundary
+---@field _battleAudio BattleAudio launch-scoped voice operations over the sound boundary
+---@field _legacyAudio boolean true while the sink voices string roles without a cry port
+---@field _monCatalog table<string, unknown>? borrowed immutable mon catalog behind cry identities, move names, and experience spans
 ---@field _assets BattlePresentationAssets per-launch preparation leases
 ---@field _timeline BattleTimeline ordered visible-cue player
 ---@field _session ApplicationPresentation per-open presentation session
@@ -57,7 +61,6 @@ local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 ---@field _scene table<string, unknown> native visual-state owner for entry travel and scroll
 ---@field _gaugeVisuals table<string, { sideType: integer, kind: string }> active native HUD gauge task destinations
 ---@field _sceneHasBackground boolean true after staged BG3 state installs
----@field _monCatalog table<string, unknown>? borrowed immutable mon catalog for experience spans
 ---@field _outcomeAcked boolean terminal narration acknowledged once
 ---@field _error string? failure context
 ---@field _disposed boolean
@@ -99,8 +102,24 @@ local SOURCE_TICK_EPSILON = 1e-12
 -- none; the preparation services fail closed on unstaged roles where
 -- pixels are actually required.
 ---@param manifest table<string, unknown> staged or planning presentation manifest
+---@param musicRole string? chosen battle-music symbol behind the exact demand closure
 ---@return string[] staged audio role symbols
-local function stagedAudioRoles(manifest)
+local function stagedAudioRoles(manifest, musicRole)
+  if type(musicRole) == "string" and musicRole ~= "" then
+    -- The exact launch demand stages only its chosen music closure
+    -- beside the interface role: unrelated battle tracks never ride.
+    local roles = { musicRole }
+    if
+      type(manifest) == "table"
+      and manifest.verified == true
+      and type(manifest.audioRoles) == "table"
+      and type(manifest.audioRoles.select) == "string"
+      and manifest.audioRoles.select ~= musicRole
+    then
+      roles[#roles + 1] = manifest.audioRoles.select
+    end
+    return roles
+  end
   local roles = {}
   if type(manifest) == "table" and type(manifest.hud) == "table" and type(manifest.audioRoles) == "table" then
     for _, role in ipairs({ "wild", "trainer", "rival", "select" }) do
@@ -138,6 +157,8 @@ end
 ---@field itemCatalog table<string, unknown>? borrowed immutable item catalog for battle bag grouping
 ---@field monCatalog table<string, unknown>? borrowed immutable mon catalog for machine display facts
 ---@field textSpeed string? narration pace for this launch, defaulting to the middle pace
+---@field musicRole string? chosen battle-music symbol behind the exact demand closure
+---@field musicBanks integer[]? chosen track bank identities behind the demand
 ---@field overrides table<string, unknown>? per-instance scene/frame/case inputs
 
 ---@param opts BattleScreenState.Options
@@ -153,6 +174,9 @@ function BattleScreenState.new(opts)
   assert(type(opts.text) == "table", "the battle screen borrows its text services")
   assert(type(opts.windows) == "table", "the battle screen borrows its window services")
   assert(type(opts.audio) == "table", "the battle screen needs its sound boundary")
+  if opts.monCatalog ~= nil then
+    assert(type(opts.monCatalog) == "table", "the mon catalog arrives as a record")
+  end
   local overrides = opts.overrides or {}
   assert(type(overrides) == "table", "per-instance inputs arrive as a record")
   local manifest = opts.manifest --[[@as table<string, unknown>]]
@@ -170,11 +194,15 @@ function BattleScreenState.new(opts)
     _text = opts.text,
     _windows = opts.windows,
     _audio = opts.audio,
+    _battleAudio = BattleAudio.new({ sink = opts.audio, launchId = opts.launchId }),
+    _legacyAudio = type(opts.audio.playCry) ~= "function",
+    _monCatalog = opts.monCatalog,
     _assets = BattlePresentationAssets.new({
       assets = opts.assets,
       launchId = opts.launchId,
       sceneKey = sceneKey --[[@as string]],
-      audioRoles = stagedAudioRoles(manifest),
+      audioRoles = stagedAudioRoles(manifest, opts.musicRole),
+      audioBanks = opts.musicBanks,
       shadowRegions = manifest.pictures.shadow.regions,
       sceneImage = overrides.sceneImage --[[@as string?]],
       frameKey = overrides.frameKey --[[@as string?]],
@@ -216,7 +244,6 @@ function BattleScreenState.new(opts)
     _gaugeVisuals = {},
     _sceneHasBackground = false,
     _sceneAccum = 0,
-    _monCatalog = opts.monCatalog,
     _outcomeAcked = false,
     _error = nil,
     _disposed = false,
@@ -1306,27 +1333,134 @@ function BattleScreenState:_moveEntry(id)
   return nil
 end
 
--- Dispatches one semantic cue through the bound one-argument sink. A
+-- Names one typed cue for failure context and legacy string sinks.
+---@param cue table<string, unknown>|string typed sound cue under dispatch
+---@return string role name behind failure context
+local function cueRole(cue)
+  if type(cue) == "string" then
+    return cue
+  end
+  if cue.kind == "select" then
+    return "select"
+  end
+  if cue.kind == "effect" then
+    return tostring(cue.symbol)
+  end
+  if cue.kind == "cry" then
+    return "cry:" .. tostring(cue.species)
+  end
+  return tostring(cue.kind)
+end
+
+-- Resolves the staged interface symbol behind menu feedback.
+---@return string staged select symbol
+function BattleScreenState:_selectSymbol()
+  local manifest = self._manifest --[[@as table<string, unknown>]]
+  local audioRoles = type(manifest) == "table" and manifest.audioRoles or nil
+  assert(type(audioRoles) == "table", "battle sound needs its staged select role for launch " .. self._launchId)
+  local symbol = audioRoles.select
+  assert(
+    type(symbol) == "string" and symbol ~= "",
+    "battle sound needs its staged select role for launch " .. self._launchId
+  )
+  return symbol --[[@as string]]
+end
+
+-- Resolves one cry cue to its numeric species identity: the borrowed
+-- mon catalog names the cry, never a guessed integer.
+---@param cue table<string, unknown> typed cry cue under resolution
+---@return integer numeric species identity behind the cry voice
+function BattleScreenState:_crySpecies(cue)
+  local speciesKey = cue.species
+  assert(
+    type(speciesKey) == "string" and speciesKey ~= "",
+    "battle cries name their species for launch " .. self._launchId
+  )
+  local catalog = self._monCatalog
+  assert(catalog ~= nil, "battle cries need their mon catalog for launch " .. self._launchId)
+  local facts = catalog:species(speciesKey)
+  assert(
+    type(facts) == "table" and type(facts.nativeId) == "number",
+    "battle cries name a cataloged species for launch " .. self._launchId .. ": cry:" .. tostring(speciesKey)
+  )
+  return facts.nativeId --[[@as integer]]
+end
+
+-- Dispatches one typed cue through the launch voice operations. A
 -- rejected cue fails the launch once with launch and role context; the
 -- envelope then reports the failed screen and later ticks replay
 -- nothing because the timeline queue already drained exactly once.
----@param role string semantic sound role under dispatch
+-- Sinks without a cry port voice the legacy string roles directly.
+---@param cue table<string, unknown>|string typed sound cue under dispatch
 ---@return boolean played true when the sink accepted the cue
-function BattleScreenState:_playCue(role)
-  local ok, err = pcall(self._audio.play, role)
+function BattleScreenState:_playCue(cue)
+  local role = cueRole(cue)
+  local ok, err = pcall(function()
+    if type(cue) == "string" then
+      if cue == "select" then
+        self._battleAudio:playEffect(self:_selectSymbol())
+      else
+        error("unknown battle sound role for launch " .. self._launchId .. ": " .. tostring(cue), 0)
+      end
+      return
+    end
+    if cue.kind == "select" then
+      self._battleAudio:playEffect(self:_selectSymbol())
+    elseif cue.kind == "effect" then
+      assert(type(cue.symbol) == "string" and cue.symbol ~= "", "effect cues name their staged symbol")
+      self._battleAudio:playEffect(cue.symbol --[[@as string]])
+    elseif cue.kind == "cry" then
+      self:_playCryCue(cue --[[@as table<string, unknown>]])
+    else
+      error("unknown battle sound role for launch " .. self._launchId .. ": " .. tostring(role), 0)
+    end
+  end)
   if ok then
     return true
   end
   if self._mode ~= "failed" then
     self._mode = "failed"
-    self._error = "battle sound failed for launch "
-      .. self._launchId
-      .. ": role "
-      .. tostring(role)
-      .. ": "
-      .. tostring(err)
+    self._error = "battle sound failed for launch " .. self._launchId .. ": role " .. role .. ": " .. tostring(err)
   end
   return false
+end
+
+-- Voices one send-out cry through the launch operations: the plain
+-- pattern over the view-carried form, panned by side at the subsystem
+-- primary volume. Sinks without a cry port voice the legacy string
+-- role instead so headless recording boundaries keep their shape.
+---@param cue table<string, unknown> typed cry cue under dispatch
+function BattleScreenState:_playCryCue(cue)
+  local speciesKey = type(cue.species) == "string" and cue.species or nil
+  assert(speciesKey ~= nil, "cry cues name their view species")
+  if self._legacyAudio then
+    self._battleAudio:playEffect("cry:" .. speciesKey --[[@as string]])
+    return
+  end
+  local species = self:_crySpecies(cue)
+  local form = cue.form
+  if type(form) ~= "number" or form % 1 ~= 0 or form < 0 then
+    form = 0
+  end
+  local pan = BattleAudio.SIDE_PAN.player
+  if cue.foe == true then
+    pan = BattleAudio.SIDE_PAN.foe
+  end
+  local defaults = BattleAudio.DEFAULT_CRY
+  self._battleAudio:playCry({
+    species = species,
+    pattern = defaults.pattern,
+    form = form,
+    mode = defaults.mode,
+    pan = pan,
+    volume = defaults.volume,
+    pitch = defaults.pitch,
+  })
+end
+
+-- Records one menu-cancel feedback voice behind the backing-out edge.
+function BattleScreenState:_playCancelFeedback()
+  self:_playCue({ kind = "effect", symbol = BattleAudio.SINK_SOUNDS.slide })
 end
 
 ---@param fragment table<string, unknown> prepared choice fragment under staging
@@ -1702,6 +1836,7 @@ function BattleScreenState:_activateMove(id, armed)
     self._mode = "command"
     self._selection = "fight"
     self._notice = nil
+    self:_playCancelFeedback()
     return
   end
   local entry = self:_moveEntry(id)
@@ -1741,6 +1876,7 @@ function BattleScreenState:_activateTarget(id, armed)
   local _ = armed
   if id == "cancel" then
     self._targetCandidates = nil
+    self:_playCancelFeedback()
     if self._pendingMoveId == "move:struggle" then
       self._pendingMoveId = nil
       self._mode = "command"
@@ -2065,9 +2201,12 @@ function BattleScreenState:_cancel()
     self._mode = "command"
     self._selection = "fight"
     self._notice = nil
+    self:_playCancelFeedback()
   elseif self._mode == "command" then
     -- Back across staged choices returns to the previous entry with its
     -- staged fragment intact and editable; the request itself is kept.
+    -- Every backing-out edge voices its interface feedback.
+    self:_playCancelFeedback()
     if self._request ~= nil and self._actorIndex > 1 then
       self._actorIndex = self._actorIndex - 1
       self._mode = "command"

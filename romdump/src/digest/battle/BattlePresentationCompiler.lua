@@ -2503,18 +2503,17 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
     end
     local function normalizeInputRoutes(sourceRoutes, categories)
       local routes = {}
-      for semanticKey, category in pairs(categories) do
-        routes[semanticKey] = semanticCategoryRoute(category)
-      end
-      for _, sourceKey in pairs(sourceRoutes) do
-        if routes[sourceKey] == nil then
+      for inputKey, routeKey in pairs(sourceRoutes) do
+        local category = categories[routeKey]
+        if category == nil then
           error(
             Errors.new("BATTLE_TRANSITION_ROUTE_UNRESOLVED", "source input has no semantic category route", {
-              input = sourceKey,
+              input = inputKey,
             }),
             0
           )
         end
+        routes[inputKey] = semanticCategoryRoute(category)
       end
       return routes
     end

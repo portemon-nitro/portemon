@@ -1,3 +1,5 @@
+local BattleAudio = require("libs.hgss.src.audio.BattleAudio")
+
 -- Bounded visible-cue player for one battle launch. Translates the
 -- detached delivery packets of the battle runtime into an ordered queue
 -- of small typed cues (messages, health interpolation, hit recoil,
@@ -13,7 +15,7 @@ local TextSpeedPolicy = require("libs.hgss.src.ui.TextSpeedPolicy")
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 
 ---@class BattleTimeline
----@field _pendingSounds table<integer, string> queued one-shot sound intents for the screen drain
+---@field _pendingSounds table<integer, table<string, unknown>> queued one-shot sound cues for the screen drain
 ---@field _battlers table<integer, table<string, unknown>> displayed facts by combatant identity
 ---@field _order integer[] player-first combatant identities for view order
 ---@field _queue table<integer, table<string, unknown>> ordered unplayed cues
@@ -84,7 +86,7 @@ local function copyValue(value)
 end
 
 ---@class BattleTimeline.Options
----@field sound (fun(name: string))? legacy sound-intent sink, drained immediately when supplied
+---@field sound (fun(cue: table<string, unknown>))? sound-cue sink, drained immediately when supplied
 ---@field moveName (fun(move: string): string?)? display-name resolver for move identities the views never name
 ---@field textSpeed string? narration pace for this launch, defaulting to the middle pace
 
@@ -296,12 +298,33 @@ local function enqueue(self, cue)
   self._queue[#self._queue + 1] = cue
 end
 
----@param name string
-local function emitSound(self, name)
-  self._pendingSounds[#self._pendingSounds + 1] = name
+---@param cue table<string, unknown> typed one-shot sound cue under queueing
+local function emitSound(self, cue)
+  assert(type(cue) == "table" and type(cue.kind) == "string", "sound cues carry their typed kind")
+  self._pendingSounds[#self._pendingSounds + 1] = cue
   if self._sound ~= nil then
-    self._sound(name)
+    self._sound(cue)
   end
+end
+
+-- One staged effect cue behind battle flows.
+---@param symbol string staged effect sequence symbol
+---@return table<string, unknown> typed effect cue
+local function effectCue(symbol)
+  assert(type(symbol) == "string" and symbol ~= "", "effect cues name their staged symbol")
+  return { kind = "effect", symbol = symbol }
+end
+
+-- One send-out cry cue for a battler: the view-carried species and
+-- form with its player/foe side. The screen resolves the numeric cry
+-- identity and the side mix convention at dispatch.
+---@param species string view-carried species key
+---@param form integer|nil view-carried form, nil reads as the species bank
+---@param foe boolean true for the foe send-out, false for the player send-out
+---@return table<string, unknown> typed cry cue
+local function cryCue(species, form, foe)
+  assert(type(species) == "string" and species ~= "", "cry cues name their view species")
+  return { kind = "cry", species = species, form = form, foe = foe == true }
 end
 
 ---@param text string narration wording under presentation
@@ -473,6 +496,20 @@ local function translateStruck(self, event)
     duration = BattleTimeline.HIT_TICKS,
     requiresImage = self:_imageKeyFor(target),
   })
+  -- Each damaging turn records its impact and effectiveness voices at
+  -- the hit moment: the exact per-move route arrives with the native
+  -- animation programs through this same sink, while the timing and
+  -- ownership proof rides these staged battle-domain cues.
+  enqueue(self, {
+    kind = "sound",
+    cue = effectCue(BattleAudio.SINK_SOUNDS.impact),
+    duration = 0,
+  })
+  enqueue(self, {
+    kind = "sound",
+    cue = effectCue(BattleAudio.SINK_SOUNDS.effectiveness),
+    duration = 0,
+  })
   local after = event.after --[[@as table<string, unknown>]]
   local hp = after.hp --[[@as table<string, unknown>?]]
   if type(hp) == "table" and type(hp[target]) == "number" then
@@ -582,6 +619,11 @@ local function translateStats(self, event, packet)
   local _, afterLevel = progressionOf(packet.after, target)
   if beforeLevel ~= nil and afterLevel ~= nil and afterLevel > beforeLevel then
     enqueueMessage(self, combatName(self, target) .. " grew to level " .. tostring(afterLevel) .. "!", false)
+    enqueue(self, {
+      kind = "sound",
+      cue = effectCue(BattleAudio.SINK_SOUNDS.levelUp),
+      duration = 0,
+    })
     enqueue(self, { kind = "wait", duration = BattleTimeline.MESSAGE_HOLD_TICKS })
   end
   -- A stat recompute without a visible change carries no presentation:
@@ -697,7 +739,12 @@ local function translateFlee(self, event)
   local payload = event.payload --[[@as table<string, unknown>]]
   if payload.escaped == true then
     -- The terminal result owns the successful-escape narration; the
-    -- event itself only yields its moment in order.
+    -- event itself yields its moment with the parting voice in order.
+    enqueue(self, {
+      kind = "sound",
+      cue = effectCue(BattleAudio.SINK_SOUNDS.escape),
+      duration = 0,
+    })
     enqueue(self, { kind = "wait", duration = BattleTimeline.HIT_TICKS })
   else
     enqueueMessage(self, nameOrBattler(self, payload.combatant) .. " could not escape!", false)
@@ -919,6 +966,11 @@ local function translateShake(self, event)
   else
     enqueueMessage(self, "The ball is shaking.", false)
   end
+  enqueue(self, {
+    kind = "sound",
+    cue = effectCue(BattleAudio.SINK_SOUNDS.shake),
+    duration = 0,
+  })
   enqueue(self, { kind = "wait", duration = BattleTimeline.HIT_TICKS })
 end
 
@@ -942,6 +994,11 @@ end
 ---@param self BattleTimeline
 local function translateCaught(self)
   enqueueMessage(self, "Gotcha! " .. captureFoeName(self) .. " was caught!", false)
+  enqueue(self, {
+    kind = "sound",
+    cue = effectCue(BattleAudio.SINK_SOUNDS.caught),
+    duration = 0,
+  })
   enqueue(self, { kind = "wait", duration = BattleTimeline.MESSAGE_HOLD_TICKS })
 end
 
@@ -1137,11 +1194,20 @@ function BattleTimeline:intro(view, wild)
   local foeName = "The foe"
   local ownName = "Go"
   local ownSpecies = nil
+  local ownForm = nil
+  local foeSpecies = nil
+  local foeForm = nil
   local leadSelector = nil
   if type(view.foes) == "table" and type(view.foes[1]) == "table" then
     local foe = view.foes[1] --[[@as table<string, unknown>]]
     if type(foe.name) == "string" then
       foeName = foe.name --[[@as string]]
+    end
+    if type(foe.species) == "string" then
+      foeSpecies = foe.species --[[@as string]]
+    end
+    if type(foe.form) == "number" then
+      foeForm = foe.form --[[@as integer]]
     end
   end
   -- The send-out names the actual active lead, never the first party
@@ -1167,21 +1233,31 @@ function BattleTimeline:intro(view, wild)
   if type(own.species) == "string" then
     ownSpecies = own.species --[[@as string]]
   end
+  if type(own.form) == "number" then
+    ownForm = own.form --[[@as integer]]
+  end
   if type(own.portraitSelector) == "string" and own.portraitSelector ~= "" then
     leadSelector = "mon:" .. own.portraitSelector --[[@as string]]
   end
-  -- The encounter narration shows the real active enemy; the one cry
-  -- belongs to the player send-out beside its back image, so
-  -- same-species pairings keep one sound identity per cue start.
+  -- The encounter narration shows the real active enemy; the foe cry
+  -- voices beside the encounter and the player send-out cry follows
+  -- beside its back image, so same-species pairings keep one sound
+  -- identity per battler start.
   if wild then
     enqueueMessage(self, "Wild " .. foeName .. " appeared!", false)
   else
     enqueueMessage(self, "The foe wants to battle!", false)
   end
-  -- The send-out cry names the real lead; without one no cry queues
-  -- rather than a guessed species call.
+  -- Each send-out cry names its real battler; without one no cry
+  -- queues rather than a guessed species call. The player send-out
+  -- voices first beside its message, the foe answer overlaps beside
+  -- the encounter, so same-species pairings keep one sound identity
+  -- per battler start.
   if type(ownSpecies) == "string" then
-    enqueue(self, { kind = "sound", name = "cry:" .. ownSpecies, duration = 0 })
+    enqueue(self, { kind = "sound", cue = cryCue(ownSpecies, ownForm, false), duration = 0 })
+  end
+  if type(foeSpecies) == "string" then
+    enqueue(self, { kind = "sound", cue = cryCue(foeSpecies, foeForm, true), duration = 0 })
   end
   local sendOut = {
     kind = "message",
@@ -1217,7 +1293,7 @@ end
 local function startCue(self, cue)
   cue.started = true
   if cue.kind == "sound" then
-    emitSound(self, cue.name --[[@as string]])
+    emitSound(self, cue.cue --[[@as table<string, unknown>]])
   elseif cue.kind == "message" then
     cue.revealedCount = 0
     cue.delayCounter = 0
@@ -1636,10 +1712,10 @@ function BattleTimeline:announce(text, ackable)
   return id
 end
 
--- Drains the queued one-shot sound intents in order. Playback
--- availability never gates a cue; the screen routes each intent to its
+-- Drains the queued one-shot sound cues in order. Playback
+-- availability never gates a cue; the screen routes each cue to its
 -- audio boundary and drops the results.
----@return string[] sound names in cue-start order
+---@return table<integer, table<string, unknown>> typed sound cues in cue-start order
 function BattleTimeline:drainSounds()
   local sounds = self._pendingSounds
   self._pendingSounds = {}

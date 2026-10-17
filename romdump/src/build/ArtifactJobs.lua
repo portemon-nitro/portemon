@@ -614,6 +614,66 @@ local function executeMart(artifact, context)
   return MartCacheWriter.stage(artifact, bundle)
 end
 
+-- Every battle-music track the source selector can start: the ordinary
+-- wild/trainer/rival tracks, the special-species and class tracks, the
+-- Kanto regional variants, and the wild/trainer victory fanfares.
+-- Resolved against the adopted normalized audio index; resolved bank
+-- ids are never spelled here.
+local BATTLE_MUSIC_SEQUENCES = {
+  "SEQ_GS_VS_NORAPOKE",
+  "SEQ_GS_VS_TRAINER",
+  "SEQ_GS_VS_GYMREADER",
+  "SEQ_GS_VS_RIVAL",
+  "SEQ_GS_VS_ROCKET",
+  "SEQ_GS_VS_SUICUNE",
+  "SEQ_GS_VS_ENTEI",
+  "SEQ_GS_VS_RAIKOU",
+  "SEQ_GS_VS_CHAMP",
+  "SEQ_GS_VS_NORAPOKE_KANTO",
+  "SEQ_GS_VS_TRAINER_KANTO",
+  "SEQ_GS_VS_GYMREADER_KANTO",
+  "SEQ_GS_VS_HOUOU",
+  "SEQ_GS_VS_LUGIA",
+  "SEQ_GS_VS_KODAI",
+  "SEQ_GS_BA_BRAIN",
+  "SEQ_GS_WIN1",
+  "SEQ_GS_WIN2",
+}
+
+---@param key string
+---@param plans ArtifactJobs.Plans
+---@return { kind: string, key: string }[], boolean
+local function dependenciesBattlePresentation(key, plans)
+  assert(key == "global", "battle presentation family only has the global job")
+  local jobs = {}
+  local audioPlan = plans.audioPlan
+  if audioPlan == nil then
+    return sortedJobs(jobs), false
+  end
+  assert(type(audioPlan) == "table", "battle music membership requires the adopted audio plan")
+  local index = assert(audioPlan.index, "battle music membership requires the adopted audio index")
+  assert(type(index.sequences) == "table", "battle music membership requires the adopted sequences")
+  assert(type(index.sequenceBySymbol) == "table", "battle music membership requires the adopted sequence symbols")
+  local seen = {}
+  for _, reference in ipairs(BATTLE_MUSIC_SEQUENCES) do
+    local sequenceId = index.sequenceBySymbol[reference]
+    if sequenceId == nil then
+      error("battle music reference has no adopted sequence: " .. reference, 0)
+    end
+    local entry = index.sequences[sequenceId]
+    if type(entry) ~= "table" then
+      error("battle music reference has no adopted sequence: " .. tostring(reference), 0)
+    end
+    local bankId = assert(entry.bankId, "battle music sequence has no bank")
+    local bankKey = tostring(bankId)
+    if not seen[bankKey] then
+      seen[bankKey] = true
+      jobs[#jobs + 1] = { kind = "audio-bank", key = bankKey }
+    end
+  end
+  return sortedJobs(jobs), true
+end
+
 local function executeParty(artifact, context)
   local PartyAssetCompiler = require("romdump.src.digest.ui.PartyAssetCompiler")
   local PartyCacheWriter = require("romdump.src.digest.ui.PartyCacheWriter")
@@ -1669,8 +1729,11 @@ DESCRIPTORS = {
   },
   -- Battle presentation: the shared ordinary menu/HUD definitions once,
   -- then one lazily compiled persistent scene per demanded semantic key.
+  -- The global carries the battle-music bank closures behind the source
+  -- music selector so the chosen track stages with the presentation.
   ["battle-presentation"] = {
     size = "normal",
+    dependencies = dependenciesBattlePresentation,
     execute = ArtifactBattleJobs.executePresentation,
     validate = ArtifactBattleJobs.validatePresentation,
   },

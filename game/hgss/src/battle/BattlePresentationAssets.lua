@@ -21,6 +21,7 @@
 ---@field _sceneImage string selected scene image key
 ---@field _sceneLayer table<string, unknown>? staged BG3 payload for the active scene
 ---@field _audioRoles string[] staged audio role symbols behind the demand
+---@field _audioBanks integer[] chosen track bank identities behind the exact demand closure
 ---@field _frameKey string selected window frame key
 ---@field _frames table<string, table<string, unknown>>? per-instance frame declarations
 ---@field _shadowRegions table<integer, table<string, unknown>> normalized Pokepic shadow source rectangles
@@ -42,6 +43,7 @@ BattlePresentationAssets.DEFAULT_FRAME = "default"
 ---@field launchId string owning launch identity
 ---@field sceneKey string semantic scene identity for the demand
 ---@field audioRoles string[]? staged audio role symbols behind the demand, none when absent
+---@field audioBanks integer[]? chosen track bank identities behind the demand, none when absent
 ---@field sceneImage string? selected scene image key, derived from the scene key when absent
 ---@field frameKey string? selected window frame key, the built-in default when absent
 ---@field frames table<string, table<string, unknown>>? per-instance frame declarations
@@ -66,12 +68,16 @@ function BattlePresentationAssets.new(opts)
   if opts.audioRoles ~= nil then
     assert(type(opts.audioRoles) == "table", "staged audio roles arrive as an array")
   end
+  if opts.audioBanks ~= nil then
+    assert(type(opts.audioBanks) == "table", "chosen track banks arrive as an array")
+  end
   assert(type(opts.shadowRegions) == "table", "staged Pokepic shadow size regions are required")
   return setmetatable({
     _assets = opts.assets,
     _launchId = opts.launchId,
     _sceneKey = opts.sceneKey,
     _audioRoles = opts.audioRoles or {},
+    _audioBanks = opts.audioBanks or {},
     _sceneImage = opts.sceneImage or ("scene:" .. opts.sceneKey),
     _sceneLayer = nil,
     _frameKey = opts.frameKey or BattlePresentationAssets.DEFAULT_FRAME,
@@ -118,11 +124,18 @@ function BattlePresentationAssets:_demand()
     end
   end
   table.sort(cries)
+  local banks = {}
+  for _, bank in ipairs(self._audioBanks) do
+    if type(bank) == "number" then
+      banks[#banks + 1] = bank
+    end
+  end
+  table.sort(banks)
   return {
     launchId = self._launchId,
     scenes = { self._sceneKey },
     pages = selectors,
-    audio = { roles = roles, banks = {}, cries = cries },
+    audio = { roles = roles, banks = banks, cries = cries },
   }
 end
 

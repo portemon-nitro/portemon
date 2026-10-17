@@ -13,16 +13,25 @@ local T = {}
 local TICK = 1 / 30
 
 ---@param sounds table<string, boolean>? names the sink must refuse (muted)
----@return table recording sound-intent sink
+---@return table recording sound-cue sink
 local function sink(muted)
   local records = { played = {}, muted = muted or {} }
-  function records.sound(name)
-    records.played[#records.played + 1] = name
+  function records.sound(cue)
+    records.played[#records.played + 1] = cue
   end
-  function records.count(name)
+  function records.countCry(species, foe)
     local total = 0
     for _, played in ipairs(records.played) do
-      if played == name then
+      if type(played) == "table" and played.kind == "cry" and played.species == species and played.foe == foe then
+        total = total + 1
+      end
+    end
+    return total
+  end
+  function records.countEffect(symbol)
+    local total = 0
+    for _, played in ipairs(records.played) do
+      if type(played) == "table" and played.kind == "effect" and played.symbol == symbol then
         total = total + 1
       end
     end
@@ -142,8 +151,8 @@ end
 function T.strike_plays_message_then_health_without_read_ahead()
   local sounds = sink()
   local timeline = BattleTimeline.new({
-    sound = function(name)
-      sounds.sound(name)
+    sound = function(cue)
+      sounds.sound(cue)
     end,
   })
   timeline:reset(openingView())
@@ -194,8 +203,8 @@ end
 function T.faint_hides_after_its_checkpoint_and_stays_hidden()
   local sounds = sink()
   local timeline = BattleTimeline.new({
-    sound = function(name)
-      sounds.sound(name)
+    sound = function(cue)
+      sounds.sound(cue)
     end,
   })
   timeline:reset(openingView())
@@ -230,8 +239,8 @@ end
 function T.duplicate_packets_are_rejected()
   local sounds = sink()
   local timeline = BattleTimeline.new({
-    sound = function(name)
-      sounds.sound(name)
+    sound = function(cue)
+      sounds.sound(cue)
     end,
   })
   timeline:reset(openingView())
@@ -239,10 +248,22 @@ function T.duplicate_packets_are_rejected()
   after.foes[1].hp = 43
   local first = packet(1, { event("struck", { target = 3, damage = 14, hitIndex = 1 }, { [1] = 52, [3] = 43 }) }, after)
   Assert.isTrue(timeline:present(first), "the first delivery is accepted")
+  advance(timeline, 10)
+  local BattleAudio = require("libs.hgss.src.audio.BattleAudio")
+  Assert.equal(
+    sounds.countEffect(BattleAudio.SINK_SOUNDS.impact),
+    1,
+    "a strike carries its impact voice exactly once"
+  )
+  Assert.equal(
+    sounds.countEffect(BattleAudio.SINK_SOUNDS.effectiveness),
+    1,
+    "a strike carries its effectiveness voice exactly once"
+  )
   Assert.isFalse(timeline:present(first), "the same packet identity is rejected")
   local soundsBefore = #sounds.played
   advance(timeline, 10)
-  Assert.equal(#sounds.played, soundsBefore, "a strike carries no sound intent of its own")
+  Assert.equal(#sounds.played, soundsBefore, "a duplicate delivery queues no new sound")
   Assert.isTrue(timeline:settled(), "the single delivery drains")
   Assert.equal(battler(timeline:battlers(), 3).hp, 43, "one delivery applies its checkpoint once")
 end
@@ -252,8 +273,8 @@ end
 function T.held_images_hold_their_cue()
   local sounds = sink()
   local timeline = BattleTimeline.new({
-    sound = function(name)
-      sounds.sound(name)
+    sound = function(cue)
+      sounds.sound(cue)
     end,
   })
   timeline:reset(openingView())
@@ -286,8 +307,8 @@ end
 function T.experience_animates_each_level_segment()
   local sounds = sink()
   local timeline = BattleTimeline.new({
-    sound = function(name)
-      sounds.sound(name)
+    sound = function(cue)
+      sounds.sound(cue)
     end,
   })
   timeline:reset(openingView())
@@ -312,8 +333,8 @@ end
 function T.unknown_effects_produce_a_diagnostic()
   local sounds = sink()
   local timeline = BattleTimeline.new({
-    sound = function(name)
-      sounds.sound(name)
+    sound = function(cue)
+      sounds.sound(cue)
     end,
   })
   timeline:reset(openingView())
@@ -581,8 +602,8 @@ function T.active_lead_names_and_cries_the_live_slot_not_slot_zero()
   local benchBack = MonCache.portraitSelector("EEVEE", 0, "male", false, "back")
   local sounds = sink()
   local timeline = BattleTimeline.new({
-    sound = function(name)
-      sounds.sound(name)
+    sound = function(cue)
+      sounds.sound(cue)
     end,
   })
   local view = openingView()
@@ -657,8 +678,9 @@ function T.active_lead_names_and_cries_the_live_slot_not_slot_zero()
     Assert.isTrue(message:find("BENCH", 1, true) == nil, "no opening narration hails the fainted first slot")
   end
   Assert.isTrue(hailedLive, "the send-out hails the live lead by name")
-  Assert.equal(sounds.count("cry:TOTODILE"), 1, "the opening cries the live lead species once")
-  Assert.equal(sounds.count("cry:EEVEE"), 0, "the fainted first slot never lends its cry")
+  Assert.equal(sounds.countCry("TOTODILE", false), 1, "the opening cries the live lead species once")
+  Assert.equal(sounds.countCry("EEVEE", false), 0, "the fainted first slot never lends its cry")
+  Assert.equal(sounds.countCry("EEVEE", true), 1, "the opening cries the wild foe species once")
 end
 
 -- Each named narration pace reveals a bounded number of glyphs per
@@ -1054,7 +1076,7 @@ function T.shared_source_time_agrees_across_host_partitions()
   local _, cry30 = openedOver(at30)
   local _, cry60 = openedOver(at60)
   local _, cryIrregular = openedOver(irregular)
-  Assert.deepEqual(cry30.played, { "cry:EEVEE" }, "the opening cries its lead once")
+  Assert.equal(cry30.countCry("EEVEE", false), 1, "the opening cries its lead once")
   Assert.deepEqual(cry60.played, cry30.played, "60 Hz keeps the same audio ticks")
   Assert.deepEqual(cryIrregular.played, cry30.played, "irregular frames keep the same audio ticks")
 end
@@ -1088,8 +1110,8 @@ function T.waits_terminate_on_their_own_ticks_without_holding_time()
   -- health, and releasing the image resumes to the exact checkpoint.
   local sounds = sink()
   local held = BattleTimeline.new({
-    sound = function(name)
-      sounds.sound(name)
+    sound = function(cue)
+      sounds.sound(cue)
     end,
   })
   held:reset(openingView())
