@@ -89,6 +89,7 @@ local DOMAINS = {
     "FieldCameraInspector",
     "FieldCellCacheWriter",
     "FieldCellCompiler",
+    "CelebiTimeTravelAssetCompiler",
     "FieldEffectPatternAnimation",
     "FieldEntranceIndicatorCacheWriter",
     "FieldEntranceIndicatorCompiler",

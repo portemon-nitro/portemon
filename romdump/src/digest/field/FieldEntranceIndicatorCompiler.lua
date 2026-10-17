@@ -20,6 +20,7 @@ local MapResolver = require("romdump.src.digest.map.MapResolver")
 local AreaData = require("romdump.src.digest.map.AreaData")
 local LandData = require("romdump.src.digest.map.LandData")
 local BuildingModelCompiler = require("romdump.src.digest.map.BuildingModelCompiler")
+local CelebiTimeTravelAssetCompiler = require("romdump.src.digest.field.CelebiTimeTravelAssetCompiler")
 
 local Compiler = {}
 
@@ -859,6 +860,8 @@ function Compiler.compile(romFs, hashLua)
   )
   local centerHeal, centerHealModelShas = compilePokemonCenterHeal(romFs, meshes, textures)
   sourceHashesByKind.pokemon_center_heal = centerHealModelShas
+  local celebi = CelebiTimeTravelAssetCompiler.compile(romFs)
+  sourceHashesByKind.celebi_time_travel = celebi.memberHashes
   for sha1, mesh in pairs(tallMeshes) do
     meshes[sha1] = mesh
   end
@@ -887,6 +890,12 @@ function Compiler.compile(romFs, hashLua)
     meshes[sha1] = mesh
   end
   for sha1, texture in pairs(transitionTextures) do
+    textures[sha1] = texture
+  end
+  for sha1, mesh in pairs(celebi.meshes) do
+    meshes[sha1] = mesh
+  end
+  for sha1, texture in pairs(celebi.textures) do
     textures[sha1] = texture
   end
   local surfPresentation = assert(surfSelection.presentation, "surf attachment presentation is required")
@@ -953,6 +962,7 @@ function Compiler.compile(romFs, hashLua)
     },
     follower_transition = transition,
     pokemon_center_heal = centerHeal,
+    celebi_time_travel = celebi.definition,
   }
   local reactionMeshes, reactionTextures, reactionSha1s = {}, {}, {}
   for _, source in ipairs(FieldEffects.followerReactions) do
@@ -1011,6 +1021,11 @@ function Compiler.compile(romFs, hashLua)
         definition = "pokemon_center_heal",
         path = FieldEffectAssetCache.definitionPath("pokemon_center_heal"),
       },
+      celebi_time_travel = {
+        kind = "cinematic",
+        definition = "celebi_time_travel",
+        path = FieldEffectAssetCache.definitionPath("celebi_time_travel"),
+      },
     },
   }
   for _, source in ipairs(FieldEffects.followerReactions) do
@@ -1037,6 +1052,9 @@ function Compiler.compile(romFs, hashLua)
     memberSha1[#memberSha1 + 1] = source.sha1
   end
   for _, source in ipairs(centerHealModelShas.animations) do
+    memberSha1[#memberSha1 + 1] = source.sha1
+  end
+  for _, source in ipairs(celebi.memberHashes) do
     memberSha1[#memberSha1 + 1] = source.sha1
   end
   local depHash = hashLua({

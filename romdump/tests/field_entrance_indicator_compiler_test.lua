@@ -83,9 +83,28 @@ local function installCenterHealingMocks()
   }
 end
 
+local function installCelebiCompilerMock()
+  package.loaded["romdump.src.digest.field.CelebiTimeTravelAssetCompiler"] = {
+    compile = function()
+      return {
+        definition = { model = { kind = "nitro-dynamic", key = "field-effect:celebi-time-travel", animations = {} } },
+        meshes = {},
+        textures = {},
+        memberHashes = {
+          { memberId = 75, sha1 = "celebi-model" },
+          { memberId = 76, sha1 = "celebi-joint" },
+          { memberId = 78, sha1 = "celebi-pattern" },
+          { memberId = 77, sha1 = "celebi-srt" },
+        },
+      }
+    end,
+  }
+end
+
 T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
   local names = {
     "romdump.src.digest.field.FieldEntranceIndicatorCompiler",
+    "romdump.src.digest.field.CelebiTimeTravelAssetCompiler",
     "libs.nds.src.nitro.g3d.Nsbmd",
     "libs.nds.src.nitro.g3d.Nsbtx",
     "libs.nds.src.nitro.g3d.NitroAnimation",
@@ -174,6 +193,7 @@ T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
     followerReactionBase = SourceFieldEffects.followerReactionBase,
   }
   installCenterHealingMocks()
+  installCelebiCompilerMock()
   package.loaded["libs.nds.src.nitro.g3d.Nsbmd"] = {
     decode = function(_, context)
       assert(context and context.section, "Nsbmd.decode context.section is required")
@@ -449,6 +469,7 @@ end
 T.tests["rewrites compiled geometry and texture references into the effect root"] = function()
   local names = {
     "romdump.src.digest.field.FieldEntranceIndicatorCompiler",
+    "romdump.src.digest.field.CelebiTimeTravelAssetCompiler",
     "libs.nds.src.nitro.g3d.Nsbmd",
     "libs.nds.src.nitro.g3d.Nsbtx",
     "libs.nds.src.nitro.g3d.NitroAnimation",
@@ -561,6 +582,7 @@ T.tests["rewrites compiled geometry and texture references into the effect root"
     end,
   }
   installCenterHealingMocks()
+  installCelebiCompilerMock()
   package.loaded["romdump.src.digest.field.FieldEntranceIndicatorCompiler"] = nil
 
   local ok, result = pcall(function()

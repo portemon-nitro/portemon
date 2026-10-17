@@ -920,6 +920,49 @@ local function publishEffectFamily(cache)
     }
     return model
   end
+  local function celebiTimeTravelModel()
+    local model = dynamicModel("field-effect:celebi-time-travel")
+    local joint = model.animations[1]
+    joint.id = "celebi.joint"
+    joint.name = "sere_demo01"
+    joint.semanticNames = { "celebi.joint" }
+
+    local patternModel = reactionModel(1)
+    local pattern = patternModel.animations[1]
+    pattern.id = "celebi.pattern"
+    pattern.name = "sere_demo01"
+    pattern.semanticNames = { "celebi.pattern" }
+
+    local function constant(value)
+      return { source = "constant", value = value }
+    end
+    local srt = {
+      id = "celebi.srt",
+      name = "sere_demo01",
+      category = "material",
+      kind = "texsrt",
+      frameCount = 4,
+      tracks = { { target = "effect", targetIndex = 0 } },
+      semanticNames = { "celebi.srt" },
+      compiled = {
+        targets = {
+          {
+            name = "effect",
+            index = 0,
+            channels = {
+              transS = constant(0),
+              transT = constant(0),
+              rot = constant(0),
+              scaleS = constant(1),
+              scaleT = constant(1),
+            },
+          },
+        },
+      },
+    }
+    model.animations = { joint, pattern, srt }
+    return model
+  end
   local marker = EffectCache.marker("test-rom", "test-dep")
   local bundle = {
     marker = marker,
@@ -960,6 +1003,11 @@ local function publishEffectFamily(cache)
           path = EffectCache.definitionPath("pokemon_center_heal"),
           definition = "pokemon_center_heal",
           kind = "healing",
+        },
+        celebi_time_travel = {
+          path = EffectCache.definitionPath("celebi_time_travel"),
+          definition = "celebi_time_travel",
+          kind = "cinematic",
         },
       },
     },
@@ -1014,6 +1062,7 @@ local function publishEffectFamily(cache)
         placementSound = "SEQ_SE_DP_BOWA",
         fanfare = "SEQ_ME_ASA",
       },
+      celebi_time_travel = { model = celebiTimeTravelModel() },
     },
     meshes = { ["mesh-key"] = {} },
     textures = { ["texture-key"] = { width = 1, height = 1, data = PngWriter.encode(1, 1, "rgba") } },

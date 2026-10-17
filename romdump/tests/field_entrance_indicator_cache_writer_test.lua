@@ -81,6 +81,8 @@ end
 
 T.tests["aborts before publication when the canonical model is invalid"] = function()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local oldMarker = "field-effect-cache-v11:rom:previous"
+  cache:write(FieldEffectAssetCache.markerPath(), oldMarker)
   local ok = pcall(Writer.write, cache, {
     marker = "field-effect-cache-v3:rom:dep",
     index = { schema = "g4-field-effect-index-v1", effects = {} },
@@ -90,7 +92,7 @@ T.tests["aborts before publication when the canonical model is invalid"] = funct
     textures = {},
   })
   Assert.isFalse(ok)
-  Assert.isFalse(cache:exists(FieldEffectAssetCache.markerPath(), "file"))
+  Assert.equal(cache:read(FieldEffectAssetCache.markerPath()), oldMarker)
   Assert.isFalse(cache:exists(FieldEffectAssetCache.indexPath(), "file"))
 end
 
@@ -113,9 +115,9 @@ T.tests["publishes the surf attachment definition and its referenced paths atomi
     },
   }
   local bundle = {
-    marker = "field-effect-cache-v11:rom:dep",
+    marker = "field-effect-cache-v12:rom:dep",
     index = {
-      schema = "g4-field-effect-index-v3",
+      schema = "g4-field-effect-index-v4",
       effects = {
         warp_entrance = { path = FieldEffectAssetCache.definitionPath("warp_entrance"), definition = "warp_entrance" },
         tall_grass = { path = FieldEffectAssetCache.definitionPath("tall_grass"), definition = "tall_grass" },

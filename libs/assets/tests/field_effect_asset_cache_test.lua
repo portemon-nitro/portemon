@@ -6,7 +6,7 @@ local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCac
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 
 local T = { tests = {} }
-local EXPECTED_MARKER = "field-effect-cache-v11:rom:dep"
+local EXPECTED_MARKER = "field-effect-cache-v12:rom:dep"
 
 local function validModel()
   return {
@@ -150,10 +150,49 @@ local function validReactionModel(selector)
   return model
 end
 
+local function validCelebiDefinition()
+  local model = validDynamicModel()
+  model.key = "field-effect:celebi-time-travel"
+  local joint = model.animations[1]
+  joint.id = "celebi.joint"
+  joint.name = "source-joint"
+  joint.semanticNames = { "celebi.joint" }
+  local pattern = validReactionModel("1").animations[1]
+  pattern.id = "celebi.pattern"
+  pattern.name = "source-pattern"
+  pattern.semanticNames = { "celebi.pattern" }
+  local srt = {
+    id = "celebi.srt",
+    name = "source-srt",
+    category = "material",
+    kind = "texsrt",
+    frameCount = 4,
+    tracks = { { target = "grass", targetIndex = 0 } },
+    semanticNames = { "celebi.srt" },
+    compiled = {
+      targets = {
+        {
+          index = 0,
+          name = "grass",
+          channels = {
+            transS = { source = "constant", value = 0 },
+            transT = { source = "constant", value = 0 },
+            rot = { source = "constant", value = 0x10000000 },
+            scaleS = { source = "constant", value = 0x1000 },
+            scaleT = { source = "constant", value = 0x1000 },
+          },
+        },
+      },
+    },
+  }
+  model.animations = { joint, pattern, srt }
+  return { model = model }
+end
+
 local function cache(model, present, marker, omitLifecycle, omitPlacement, extra)
   extra = extra or {}
   local index = {
-    schema = "g4-field-effect-index-v3",
+    schema = extra.indexSchema or "g4-field-effect-index-v4",
     effects = {},
   }
   for _, kind in ipairs({
@@ -164,11 +203,13 @@ local function cache(model, present, marker, omitLifecycle, omitPlacement, extra
     "surf_attachment",
     "follower_transition",
     "pokemon_center_heal",
+    "celebi_time_travel",
   }) do
     index.effects[kind] = {
       kind = (kind == "warp_entrance" or kind == "surf_attachment") and "model"
         or kind == "follower_transition" and "transition"
         or kind == "pokemon_center_heal" and "healing"
+        or kind == "celebi_time_travel" and "cinematic"
         or "animated_model",
       definition = kind,
       path = FieldEffectAssetCache.definitionPath(kind),
@@ -288,6 +329,9 @@ local function cache(model, present, marker, omitLifecycle, omitPlacement, extra
             fanfare = "SEQ_ME_ASA",
           }
       end
+      if kind == "celebi_time_travel" then
+        return extra.celebiDefinition or validCelebiDefinition()
+      end
       if kind == "trainer_reveal" then
         if extra.unknownLifecycleMode then
           return {
@@ -337,6 +381,34 @@ local function cache(model, present, marker, omitLifecycle, omitPlacement, extra
   }
 end
 
+T.tests["requires all three Celebi clip selectors and their exact semantic bindings"] = function()
+  local present = {
+    ["mesh-a"] = true,
+    ["texture-a"] = true,
+    ["texture-variant"] = true,
+    ["grass.mesh"] = true,
+  }
+  local definition = validCelebiDefinition()
+  local ready, err = FieldEffectAssetCache.isReady(cache(validModel(), present, nil, nil, nil, { celebiDefinition = definition }), EXPECTED_MARKER)
+  Assert.isTrue(ready, tostring(err))
+
+  local missingSrt = validCelebiDefinition()
+  missingSrt.model.animations[3] = nil
+  ready = FieldEffectAssetCache.isReady(
+    cache(validModel(), present, nil, nil, nil, { celebiDefinition = missingSrt }),
+    EXPECTED_MARKER
+  )
+  Assert.isFalse(ready)
+
+  local wrongSemantic = validCelebiDefinition()
+  wrongSemantic.model.animations[2].semanticNames[1] = "celebi.joint"
+  ready = FieldEffectAssetCache.isReady(
+    cache(validModel(), present, nil, nil, nil, { celebiDefinition = wrongSemantic }),
+    EXPECTED_MARKER
+  )
+  Assert.isFalse(ready)
+end
+
 T.tests["accepts the current format and rejects the previous format"] = function()
   local present = {
     ["mesh-a"] = true,
@@ -353,10 +425,20 @@ T.tests["accepts the current format and rejects the previous format"] = function
       ["texture-a"] = true,
       ["texture-variant"] = true,
       ["grass.mesh"] = true,
-    }, "field-effect-cache-v8:rom:dep"),
+    }, "field-effect-cache-v11:rom:dep"),
     EXPECTED_MARKER
   )
   Assert.isFalse(staleReady)
+  local oldIndexReady = FieldEffectAssetCache.isReady(
+    cache(validModel(), {
+      ["mesh-a"] = true,
+      ["texture-a"] = true,
+      ["texture-variant"] = true,
+      ["grass.mesh"] = true,
+    }, nil, false, false, { indexSchema = "g4-field-effect-index-v3" }),
+    EXPECTED_MARKER
+  )
+  Assert.isFalse(oldIndexReady)
 end
 
 T.tests["accepts a complete runtime definition without source metadata"] = function()
@@ -499,8 +581,8 @@ T.tests["rejects trainer reveal with missing or malformed placement"] = function
   Assert.isFalse(malformed, "trainer reveal with non-finite placement must not be ready")
 end
 
-local SURF_MARKER = "field-effect-cache-v11:rom:dep"
-local SURF_INDEX_SCHEMA = "g4-field-effect-index-v3"
+local SURF_MARKER = "field-effect-cache-v12:rom:dep"
+local SURF_INDEX_SCHEMA = "g4-field-effect-index-v4"
 T.tests["requires the complete generated Pokémon Center healing definition"] = function()
   local present = {
     ["mesh-a"] = true,
@@ -604,6 +686,11 @@ local function surfCache(surfDefinition, mutateIndex)
         definition = "pokemon_center_heal",
         path = FieldEffectAssetCache.definitionPath("pokemon_center_heal"),
       },
+      celebi_time_travel = {
+        kind = "cinematic",
+        definition = "celebi_time_travel",
+        path = FieldEffectAssetCache.definitionPath("celebi_time_travel"),
+      },
     },
   }
   for selector = 1, 14 do
@@ -631,6 +718,9 @@ local function surfCache(surfDefinition, mutateIndex)
       end
       if kind == "surf_attachment" then
         return surfDefinition
+      end
+      if kind == "celebi_time_travel" then
+        return validCelebiDefinition()
       end
       if kind == "follower_transition" then
         return {

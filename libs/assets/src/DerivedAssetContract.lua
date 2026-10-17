@@ -308,15 +308,10 @@ DerivedAssetContract.newGameInit = {
 }
 
 DerivedAssetContract.fieldEffects = {
-  -- v9 adds the source-selected follower reaction clips to the field-effect
-  -- index (indexSchema v3) and publishes their shared-model dynamic
-  -- descriptors, plus the source-selected Pokémon Center healing
-  -- choreography model. Caches predating either payload fail readiness
-  -- through the required-kind inventory. v10 times the reaction clips by
-  -- their source per-texture durations. v11 publishes the healing-ball
-  -- offsets in runtime tiles instead of source model units.
-  cacheFormat = "field-effect-cache-v11",
-  indexSchema = "g4-field-effect-index-v3",
+  -- v12 adds the normalized three-clip Celebi time-travel model to the
+  -- required field-effect inventory; prior caches rebuild through readiness.
+  cacheFormat = "field-effect-cache-v12",
+  indexSchema = "g4-field-effect-index-v4",
 }
 
 DerivedAssetContract.fieldEmotes = {

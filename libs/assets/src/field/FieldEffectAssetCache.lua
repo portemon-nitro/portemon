@@ -332,6 +332,53 @@ local function validPokemonCenterHealDefinition(definition, _)
   return true
 end
 
+local function validCelebiTimeTravelDefinition(definition, _)
+  if type(definition) ~= "table" or type(definition.model) ~= "table" then
+    return false
+  end
+  local definitionFields = 0
+  for key in pairs(definition) do
+    definitionFields = definitionFields + 1
+    if key ~= "model" then
+      return false
+    end
+  end
+  if definitionFields ~= 1 then
+    return false
+  end
+  local model = definition.model
+  if model.kind ~= "nitro-dynamic" or model.key ~= "field-effect:celebi-time-travel" then
+    return false
+  end
+  local expected = {
+    { id = "celebi.joint", category = "joint", kind = "trs" },
+    { id = "celebi.pattern", category = "material", kind = "pattern" },
+    { id = "celebi.srt", category = "material", kind = "texsrt" },
+  }
+  if type(model.animations) ~= "table" or #model.animations ~= #expected then
+    return false
+  end
+  for index, selector in ipairs(expected) do
+    local clip = model.animations[index]
+    if
+      type(clip) ~= "table"
+      or clip.id ~= selector.id
+      or clip.category ~= selector.category
+      or clip.kind ~= selector.kind
+      or type(clip.name) ~= "string"
+      or type(clip.semanticNames) ~= "table"
+      or #clip.semanticNames ~= 1
+      or clip.semanticNames[1] ~= selector.id
+      or not finiteNumber(clip.frameCount)
+      or clip.frameCount < 1
+      or clip.frameCount ~= math.floor(clip.frameCount)
+    then
+      return false
+    end
+  end
+  return true
+end
+
 local function validWarpDefinition(definition, _)
   return type(definition.lifetime) == "number" and definition.lifetime > 0
 end
@@ -358,6 +405,7 @@ local FIELD_EFFECT_INVENTORY = {
   { key = "surf_attachment", entryKind = "model", validator = validSurfDefinition },
   { key = "follower_transition", entryKind = "transition", validator = validTransitionDefinition },
   { key = "pokemon_center_heal", entryKind = "healing", validator = validPokemonCenterHealDefinition },
+  { key = "celebi_time_travel", entryKind = "cinematic", validator = validCelebiTimeTravelDefinition },
 }
 for selector = 1, 14 do
   FIELD_EFFECT_INVENTORY[#FIELD_EFFECT_INVENTORY + 1] = followerReactionEntry(selector)
@@ -420,7 +468,7 @@ function FieldEffectAssetCache.isReady(cacheFs, expectedMarker)
     if not definitionLoaded or type(definition) ~= "table" then
       return false
     end
-    if spec.entryKind == "reaction" and not spec.validator(definition, kind) then
+    if (spec.entryKind == "reaction" or spec.entryKind == "cinematic") and not spec.validator(definition, kind) then
       return false
     end
     local descriptors = definition.models or { definition.model }
