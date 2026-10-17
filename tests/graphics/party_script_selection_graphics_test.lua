@@ -15,6 +15,14 @@ local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
 local MonCache = require("libs.assets.src.MonCache")
 local PreparedMonIcons = require("tests.support.PreparedMonIcons")
+
+-- One prepared icon provider over its own session image owner: the pool is
+-- disposed with the graphics scope, so no worker outlives the test.
+---@param scope table<string, unknown> graphics ownership scope
+---@return table<string, unknown> provider with the demanded icon page ready
+local function preparedIcons(scope)
+  return PreparedMonIcons.seededProvider(scope, PreparedMonIcons.iconCache(), { "MON0/f0" })
+end
 local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
 local PartyCache = require("libs.assets.src.PartyCache")
@@ -114,7 +122,7 @@ function T.open_selection_paints_native_chrome(scope)
     Assert.notNil(status.presentation, "the open selection carries a visible plan")
     local text = scope:own(FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() }))
     local realProvider =
-      scope:own(PreparedMonIcons.preparedProvider(PreparedMonIcons.iconCache(), { "MON0/f0" }))
+      scope:own(preparedIcons(scope))
     local fixtureImage = realProvider:image("MON0/f0")
     -- The prepared page behind the scripted icon key: the stub stays
     -- key-agnostic like the image/quad/dimensions projections below, so

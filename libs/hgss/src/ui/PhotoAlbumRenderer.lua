@@ -1,5 +1,6 @@
 -- Draws source Photo Album art, state controls, and ready private scenes.
 
+local ImageSampling = require("libs.nds.src.love.ImageSampling")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local PhotoSceneRenderer = require("libs.hgss.src.presentation.PhotoSceneRenderer")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
@@ -7,7 +8,8 @@ local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 ---@class PhotoAlbumRenderer
 ---@field graphics table<string, unknown>
 ---@field manifest table<string, unknown>
----@field images table<string, unknown>
+---@field leases table<string, unknown> installed shared-image borrows by path; draws resolve through the lease sampler surface, never a bare image table
+---@field _pool table<string, unknown> the borrowed shared image owner behind every visual
 ---@field released boolean
 local PhotoAlbumRenderer = {}
 PhotoAlbumRenderer.__index = PhotoAlbumRenderer
@@ -22,16 +24,52 @@ local SOURCE_SPRITES = {
   { x = 224, y = 176, animation = 8 },
 }
 
-local function acquireImages(self, cacheFs)
-  local graphics = self.graphics
+-- Album visuals sample point-filtered and clamped, matching the eager
+-- construction below, so pooled leases draw identically.
+local POOLED_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }
+
+-- Borrows one generated visual through the shared owner, waiting out its
+-- classification without blocking the field longer than the bounded stall
+-- budget. Failures name their path instead of drawing a blank visual.
+---@param pool table<string, unknown>
+---@param path string
+---@return table<string, unknown> lease resolving the immutable visual
+local function acquirePinned(pool, path)
+  local token = pool:request(path, POOLED_SAMPLER, "demand")
+  local stalled = 0
+  while true do
+    local status, failure = pool:poll(token)
+    if status == "ready" then
+      return pool:acquire(token)
+    end
+    if status == "failed" then
+      error("Photo Album visual is unavailable: " .. path .. ": " .. tostring(failure), 0)
+    end
+    assert(status == "pending", "photo album preparation reports pending or ready")
+    stalled = stalled + 1
+    if stalled > 10000 then
+      error("Photo Album visual stalled at " .. path, 0)
+    end
+    local timer = love and love.timer
+    if timer ~= nil and timer.sleep ~= nil then
+      timer.sleep(0.001)
+    end
+  end
+end
+
+local function acquireImages(self)
+  local pool = assert(self._pool, "Photo Album renderer borrows its shared image owner")
   local function acquire(visual)
     local path = assert(visual.image, "Photo Album visual carries its compiled image path")
-    if self.images[path] == nil then
-      local bytes = assert(cacheFs:read(path), "Photo Album visual is unavailable: " .. path)
-      local image = graphics.newImage(love.filesystem.newFileData(bytes, path))
-      image:setFilter("nearest", "nearest")
-      self.images[path] = image
+    if self.leases[path] ~= nil then
+      return
     end
+    -- Album chrome borrows the shared owner as installed leases held
+    -- for presentation and relinquished together on exit or change.
+    -- Draws resolve the lease itself; no bare image is retained.
+    local lease = acquirePinned(pool, path)
+    assert(lease.image, "shared leases carry their resolved image")
+    self.leases[path] = lease
   end
   for _, visual in pairs(self.manifest.photoAlbum.ui.backgrounds) do
     acquire(visual)
@@ -47,13 +85,22 @@ end
 ---@return PhotoAlbumRenderer
 function PhotoAlbumRenderer.new(options)
   assert(type(options) == "table", "Photo Album renderer requires options")
-  local cacheFs = assert(options.cacheFs, "Photo Album renderer requires its version cache")
   local manifest = assert(options.manifest, "Photo Album renderer requires C02 assets")
   local graphics = options.graphics or (love and love.graphics)
   assert(graphics and graphics.newImage and graphics.newQuad, "Photo Album renderer requires LÖVE graphics")
-  local self =
-    setmetatable({ graphics = graphics, manifest = manifest, images = {}, released = false }, PhotoAlbumRenderer)
-  local ok, err = pcall(acquireImages, self, cacheFs)
+  local pool = assert(options.imagePool, "Photo Album renderer borrows its shared image owner")
+  assert(
+    type(pool.request) == "function"
+      and type(pool.poll) == "function"
+      and type(pool.acquire) == "function"
+      and type(pool.release) == "function",
+    "Photo Album renderer drives request, poll, acquire, and release"
+  )
+  local self = setmetatable(
+    { graphics = graphics, manifest = manifest, leases = {}, _pool = pool, released = false },
+    PhotoAlbumRenderer
+  )
+  local ok, err = pcall(acquireImages, self)
   if not ok then
     self:release()
     error(err, 0)
@@ -87,7 +134,8 @@ end
 local function drawSprite(self, animationId, x, y, tick)
   local frame = animationFrame(self, animationId, tick)
   self.graphics.setColor(1, 1, 1, 1)
-  self.graphics.draw(assert(self.images[frame.image]), x + (frame.anchorX or 0), y + (frame.anchorY or 0))
+  local lease = assert(self.leases[frame.image], "Photo Album chrome borrows its frame visual")
+  ImageSampling.draw(self.graphics, lease, nil, x + (frame.anchorX or 0), y + (frame.anchorY or 0))
 end
 
 local function drawSourceSprites(self, view)
@@ -226,8 +274,9 @@ local function drawPhotoIcons(self, view, resources, textRenderer, controlBySlot
     if iconKey then
       local dimensions = icons:dimensions(iconKey)
       self.graphics.setColor(1, 1, 1, 1)
-      self.graphics.draw(
-        icons:image(iconKey),
+      ImageSampling.draw(
+        self.graphics,
+        icons:handleFor(iconKey),
         icons:quadFor(iconKey, 1),
         rect.x + (rect.width - dimensions.width) / 2,
         rect.y + (rect.height - dimensions.height) / 2
@@ -264,8 +313,8 @@ function PhotoAlbumRenderer:draw(view, plan, resources)
     for _, name in ipairs({ "albumCanvas", "albumControls" }) do
       local visual = self.manifest.photoAlbum.ui.backgrounds[name]
       if visual then
-        local image = assert(self.images[visual.image])
-        self.graphics.draw(image, visual.anchorX or 0, visual.anchorY or 0)
+        local lease = assert(self.leases[visual.image], "Photo Album chrome borrows its background visual")
+        ImageSampling.draw(self.graphics, lease, nil, visual.anchorX or 0, visual.anchorY or 0)
       end
     end
     drawSourceSprites(self, view)
@@ -337,10 +386,12 @@ function PhotoAlbumRenderer:release()
     return
   end
   self.released = true
-  for _, image in pairs(self.images) do
-    image:release()
+  local pool = assert(self._pool, "Photo Album renderer borrows its shared image owner")
+  self._pool = nil
+  for _, lease in pairs(self.leases) do
+    pool:release(lease)
   end
-  self.images = {}
+  self.leases = {}
 end
 
 return PhotoAlbumRenderer

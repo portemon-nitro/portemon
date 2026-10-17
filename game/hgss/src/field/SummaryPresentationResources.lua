@@ -1,31 +1,38 @@
 -- Field-owned Summary preparation lifetimes: one resource owner loads the
--- Summary-owned referenced visuals and the picture shader once at
+-- Summary-owned referenced metadata and the picture shader once at
 -- construction, like the Party and Bag renderers, and keeps them for the
 -- field lifetime. It then hands out per-open demand leases over bounded
 -- per-mon demand, isolates overlapping leases by demand key and picture
--- epoch, surfaces failures instead of hanging, and releases every owned
--- GPU object exactly once while borrowed icon, queue, and text
--- collaborators stay alive. Demand per lease is the current roster icon
--- keys, the cry banks, and at most the six unique portrait pages behind
--- the current party portrait identities; eggs resolve to small
--- Summary-owned visuals and demand no portrait page. Shared pages are
--- coalesced across leases; releasing one lease never cancels a
--- replacement lease's work. Portrait pages realize at most one new page
--- per prepare call while the borrowed icon provider keeps its own
--- independent bound. Every realized image is owned once under its
--- canonical cache-relative path; semantic names and page ids resolve to
--- that path instead of storing a second image. Realized portrait art stays
--- cached at the owner while a live lease watches it; the last release of
--- shared demand frees each owned page and quad exactly once, so a later
--- lease re-decodes with fresh identities.
+-- epoch, surfaces failures instead of hanging, and returns every borrowed
+-- lease exactly once while borrowed icon, pool, and text collaborators
+-- stay alive. Demand per lease is the current roster icon keys, the cry
+-- banks, and at most the six unique portrait pages behind the current
+-- party portrait identities; eggs resolve to small Summary-owned visuals
+-- and demand no portrait page. Shared pages are coalesced across leases;
+-- releasing one lease never cancels a replacement lease's work. Portrait
+-- pages adopt at most one new lease per prepare call while the borrowed
+-- icon provider keeps its own independent bound. Every realized image is
+-- borrowed from the session image owner under its canonical
+-- cache-relative path; semantic names and page ids resolve to that borrow
+-- instead of a second image store. Adopted portrait leases stay pinned at
+-- the owner while a live lease watches them; the last release of shared
+-- demand returns each borrow exactly once and its quads clear with it, so
+-- a later lease re-borrows with fresh identities while the physical image
+-- rests idle under the shared idle limit. Summary chrome resolves through
+-- the same owner on first demand and stays pinned for the field lifetime.
 -- A stale demand key can never be adopted as the selected picture.
 
 local MonCache = require("libs.assets.src.MonCache")
 local MoveIconCache = require("libs.assets.src.MoveIconCache")
 local SummaryCache = require("libs.assets.src.SummaryCache")
+local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
 
 local SHADER_PATH = "libs/hgss/src/ui/shaders/summary_picture.glsl"
 local MAX_PORTRAIT_PAGES = 6
+
+-- Summary visuals sample point-filtered and clamped, matching the retired
+-- direct construction, so pooled leases draw identically.
+local POOLED_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }
 
 ---@param path string
 ---@return string shader source
@@ -52,16 +59,16 @@ end
 ---@field _graphics table<string, unknown>
 ---@field _text table<string, unknown>
 ---@field _icons table<string, unknown>
----@field _queue table<string, unknown>
+---@field _pool table<string, unknown> borrowed session image owner behind chrome and portrait leases
 ---@field _derivedAssets table<string, unknown>
 ---@field _manifest table<string, unknown>
 ---@field _moveIcons table<string, unknown> the shared move-icons manifest
 ---@field _portraitEntries table<string, table<string, unknown>>
----@field _visualPaths string[]
----@field _visualImages table<string, table<string, unknown>> field-lifetime family visuals by canonical path
----@field _imagesByPath table<string, table<string, unknown>> realized portrait pages by canonical path
----@field _tokensByPath table<string, unknown> decode tokens by canonical path
----@field _payloadsByPath table<string, table<string, unknown>> decoded payloads awaiting realization by path
+---@field _chromePaths string[] unique canonical chrome paths pinned on first demand
+---@field _chrome table<string, table<string, unknown>> field-lifetime chrome leases by canonical path
+---@field _chromeReady boolean true once chrome leases are installed
+---@field _pages table<integer, table<string, unknown>> portrait demand records by page id
+---@field _leasedPortraits table<string, table<string, unknown>> adopted portrait leases by canonical path
 ---@field _quads table<string, unknown> realized quads by selector and frame
 ---@field _quadPaths table<string, string> owning page path per cached quad
 ---@field _shader table<string, unknown>? the one owned picture-palette shader
@@ -76,7 +83,7 @@ SummaryPresentationResources.__index = SummaryPresentationResources
 ---@field graphics table<string, unknown>
 ---@field text table<string, unknown>
 ---@field icons table<string, unknown>
----@field preparationQueue table<string, unknown>
+---@field imagePool table<string, unknown>
 ---@field derivedAssets table<string, unknown>
 ---@field manifest table<string, unknown>
 
@@ -93,22 +100,33 @@ function SummaryPresentationResources.new(opts)
   )
   local text = assert(opts.text, "summary preparation borrows its text renderer")
   local icons = assert(opts.icons, "summary preparation borrows its icon provider")
-  local queue = assert(opts.preparationQueue, "summary preparation borrows its image queue")
+  local pool = assert(opts.imagePool, "summary preparation borrows its shared image owner")
   assert(
-    type(queue.request) == "function"
-      and type(queue.poll) == "function"
-      and type(queue.take) == "function"
-      and type(queue.cancel) == "function",
-    "summary preparation drives request, poll, take, and cancel"
+    type(pool.request) == "function"
+      and type(pool.poll) == "function"
+      and type(pool.acquire) == "function"
+      and type(pool.release) == "function"
+      and type(pool.cancel) == "function",
+    "summary preparation drives request, poll, acquire, release, and cancel"
   )
   local derivedAssets = assert(opts.derivedAssets, "summary preparation needs its compilation seam")
   assert(type(derivedAssets) == "table", "summary preparation demands portrait pages through the provisioner")
   local manifest = assert(opts.manifest, "summary preparation needs the summary family")
   SummaryCache.validateManifest(manifest)
   local moveIcons = MoveIconCache.loadManifest(cacheFs)
-  local visualPaths = SummaryCache.referencedPaths(manifest)
+  local seen = {}
+  local chromePaths = {}
+  local function addChrome(path)
+    if seen[path] ~= true then
+      seen[path] = true
+      chromePaths[#chromePaths + 1] = path
+    end
+  end
+  for _, path in ipairs(SummaryCache.referencedPaths(manifest)) do
+    addChrome(path)
+  end
   for _, path in ipairs(MoveIconCache.referencedPaths(moveIcons)) do
-    visualPaths[#visualPaths + 1] = path
+    addChrome(path)
   end
   local portraitManifest =
     assert(cacheFs:loadLua(MonCache.portraitManifestPath()), "summary preparation needs the portrait manifest")
@@ -118,16 +136,16 @@ function SummaryPresentationResources.new(opts)
     _graphics = graphics,
     _text = text,
     _icons = icons,
-    _queue = queue,
+    _pool = pool,
     _derivedAssets = derivedAssets,
     _manifest = manifest,
     _portraitEntries = portraitManifest.entries,
     _moveIcons = moveIcons,
-    _visualPaths = visualPaths,
-    _visualImages = {},
-    _imagesByPath = {},
-    _tokensByPath = {},
-    _payloadsByPath = {},
+    _chromePaths = chromePaths,
+    _chrome = {},
+    _chromeReady = false,
+    _pages = {},
+    _leasedPortraits = {},
     _quads = {},
     _quadPaths = {},
     _shader = nil,
@@ -135,7 +153,7 @@ function SummaryPresentationResources.new(opts)
     _released = false,
   }, SummaryPresentationResources)
   local loaded, loadErr = pcall(function()
-    self:_loadVisuals()
+    self:_loadShader()
   end)
   if not loaded then
     self:release()
@@ -144,30 +162,88 @@ function SummaryPresentationResources.new(opts)
   return self
 end
 
--- Loads every family-owned visual and the picture shader once: the
--- fixed Summary art is small and decodes in milliseconds, so opening a
--- Summary never waits on it. A shader that fails to compile stays a
--- visible per-open failure instead of failing the field.
-function SummaryPresentationResources:_loadVisuals()
-  for _, path in ipairs(self._visualPaths) do
-    local bytes = assert(self._cacheFs:read(path), "the summary family is missing " .. path)
-    local image = self._graphics.newImage(love.filesystem.newFileData(bytes, path))
-    if type(image.setFilter) == "function" then
-      image:setFilter("nearest", "nearest")
-    end
-    self._visualImages[path] = image
-  end
+-- compiles the picture shader once: the picture palette blend is
+-- Summary-owned non-image state, so opening a Summary never waits on
+-- it. The shared exact-sampling rule splices in through the pool
+-- module (this layer cannot import the platform sampler itself), so
+-- indexed portrait pages resolve through their exact palette before
+-- the blend math runs. A shader that fails to compile stays a visible
+-- per-open failure instead of failing the field.
+function SummaryPresentationResources:_loadShader()
   local ok, source = pcall(readShaderSource, SHADER_PATH)
   if not ok then
     self._shaderFailed = tostring(source)
     return
   end
-  local compiled, shader = pcall(self._graphics.newShader, source)
+  local compiled, shader = pcall(self._graphics.newShader, ImageAssetPool.withSharedSampling(source))
   if not compiled then
     self._shaderFailed = tostring(shader)
     return
   end
   self._shader = shader
+end
+
+-- Borrows one generated visual through the shared owner, waiting out its
+-- classification without blocking the field longer than the bounded stall
+-- budget. Failures name their path instead of preparing a blank visual.
+---@param self SummaryPresentationResources
+---@param path string
+---@return table<string, unknown> lease resolving the immutable visual
+local function acquirePinned(self, path)
+  local pool = assert(self._pool, "summary preparation borrows its shared image owner")
+  local token = pool:request(path, POOLED_SAMPLER, "demand")
+  local stalled = 0
+  while true do
+    local status, failure = pool:poll(token)
+    if status == "ready" then
+      return pool:acquire(token)
+    end
+    if status == "failed" then
+      error("compiled Summary image missing at " .. path .. ": " .. tostring(failure), 0)
+    end
+    assert(status == "pending", "summary preparation reports pending or ready")
+    stalled = stalled + 1
+    if stalled > 10000 then
+      error("compiled Summary image stalled at " .. path, 0)
+    end
+    local timer = love and love.timer
+    if timer ~= nil and timer.sleep ~= nil then
+      timer.sleep(0.001)
+    end
+  end
+end
+
+-- Installs the field-lifetime chrome leases once on first demand: every
+-- family-owned visual borrows the shared owner up front, so opening a
+-- Summary never waits on chrome afterwards. A failed visual returns the
+-- leases installed so far and fails visibly instead of pinning chrome
+-- the field lifetime cannot draw.
+---@param self SummaryPresentationResources
+local function ensureChrome(self)
+  if self._chromeReady then
+    return
+  end
+  local pool = assert(self._pool, "summary preparation borrows its shared image owner")
+  local installed = {}
+  local ok, err = pcall(function()
+    for _, path in ipairs(self._chromePaths) do
+      if self._chrome[path] == nil then
+        local lease = acquirePinned(self, path)
+        self._chrome[path] = lease
+        installed[#installed + 1] = lease
+      end
+    end
+  end)
+  if not ok then
+    for _, lease in ipairs(installed) do
+      pool:release(lease)
+    end
+    for path, _ in pairs(self._chrome) do
+      self._chrome[path] = nil
+    end
+    error(err, 0)
+  end
+  self._chromeReady = true
 end
 
 ---@param self SummaryPresentationResources
@@ -233,82 +309,8 @@ local function demandPages(self, demand)
   return pages
 end
 
----@param self SummaryPresentationResources
----@param payload table<string, unknown>
----@return table<string, unknown> realized image with nearest filtering
-local function realizeImage(self, payload)
-  local graphics = assert(self._graphics, "summary preparation keeps its graphics namespace")
-  local feed = payload.imageData or payload.bytes
-  local image = nil
-  if feed ~= nil then
-    image = graphics.newImage(feed)
-  else
-    local path = assert(payload.path, "decoded payloads carry their cache path")
-    local bytes = assert(self._cacheFs:read(path), "missing generated summary image " .. path)
-    image = graphics.newImage(love.filesystem.newFileData(bytes, path))
-  end
-  if type(image.setFilter) == "function" then
-    image:setFilter("nearest", "nearest")
-  end
-  return image
-end
-
--- Advances one decode: request once per path, poll the outstanding token,
--- and take exactly one ready payload. Failures cancel the token and name
--- their cause; a second lease sharing the path reuses the same record.
----@param self SummaryPresentationResources
----@param path string cache-relative image path
----@return "ready"|"pending"|"failed", string?
-local function advanceDecode(self, path)
-  if self._imagesByPath[path] ~= nil then
-    return "ready"
-  end
-  if self._payloadsByPath[path] ~= nil then
-    return "ready"
-  end
-  local token = self._tokensByPath[path]
-  if token == nil then
-    local ok, requested = pcall(self._queue.request, self._queue, "image", path, "demand")
-    if not ok then
-      return "failed", tostring(requested)
-    end
-    self._tokensByPath[path] = requested
-    token = requested
-  end
-  local ok, pollState, pollCause = pcall(self._queue.poll, self._queue, token)
-  if not ok then
-    self._tokensByPath[path] = nil
-    return "failed", tostring(pollState)
-  end
-  -- The preparation harness reports table outcomes while the production
-  -- queue reports bare statuses; both ride the same pending/ready/failed
-  -- vocabulary.
-  local state, cause = pollState, pollCause
-  if type(pollState) == "table" then
-    state = pollState.status
-    cause = pollState.error or pollCause
-  end
-  if state == "failed" then
-    pcall(self._queue.cancel, self._queue, token)
-    self._tokensByPath[path] = nil
-    return "failed", tostring(cause)
-  end
-  if state == "ready" then
-    local takeOk, payload = pcall(self._queue.take, self._queue, token)
-    self._tokensByPath[path] = nil
-    if not takeOk then
-      return "failed", tostring(payload)
-    end
-    assert(type(payload) == "table", "decoded payloads arrive as records")
-    payload.path = payload.path or path
-    self._payloadsByPath[path] = payload
-    return "ready"
-  end
-  return "pending"
-end
-
----@param image table<string, unknown>? owned GPU object
-local function releaseOwned(image)
+---@param image table<string, unknown>? borrowed GPU object
+local function releaseBorrowed(image)
   if image == nil then
     return
   end
@@ -335,69 +337,66 @@ local function liveWatchedPaths(self)
   return watched
 end
 
--- Drops owned state no live lease watches anymore: outstanding decode
--- tokens cancel through the borrowed queue, decoded payloads clear, and
--- each realized image releases exactly once. Quads resolve through their
--- owning page path, so quads behind a dropped page clear with it. When
--- no live lease watches anything, the owned quads and picture shader
--- release as well and the shader failure clears so a later lease can
--- retry; the shader source bytes stay cached because they own no GPU
--- state. A surviving replacement lease keeps its coalesced demand
--- usable without re-decoding.
+-- Drops quads behind one released portrait page so a later borrow rebuilds
+-- its quads instead of aliasing freed art.
 ---@param self SummaryPresentationResources
----@param watched table<string, boolean> canonical paths kept by live leases
-local function dropUnwatchedArt(self, watched)
-  for path, token in pairs(self._tokensByPath) do
-    if watched[path] ~= true then
-      pcall(self._queue.cancel, self._queue, token)
-      self._tokensByPath[path] = nil
-    end
-  end
-  for path, _ in pairs(self._payloadsByPath) do
-    if watched[path] ~= true then
-      self._payloadsByPath[path] = nil
-    end
-  end
-  local dropped = {}
-  for path, image in pairs(self._imagesByPath) do
-    if watched[path] ~= true then
-      releaseOwned(image)
-      self._imagesByPath[path] = nil
-      dropped[path] = true
-    end
-  end
-  local keepQuads = next(dropped) == nil
-  if not keepQuads and next(watched) ~= nil then
-    for cacheKey, path in pairs(self._quadPaths) do
-      if dropped[path] == true then
-        releaseOwned(self._quads[cacheKey])
-        self._quads[cacheKey] = nil
-        self._quadPaths[cacheKey] = nil
-      end
-    end
-  end
-  if next(watched) == nil then
-    for cacheKey, quad in pairs(self._quads) do
-      releaseOwned(quad)
+---@param path string canonical portrait page path
+local function dropPageQuads(self, path)
+  for cacheKey, owner in pairs(self._quadPaths) do
+    if owner == path then
+      releaseBorrowed(self._quads[cacheKey])
       self._quads[cacheKey] = nil
       self._quadPaths[cacheKey] = nil
     end
   end
 end
--- Releases the demand interest the lease no longer owns: paths no other
--- live lease watches cancel through the borrowed queue, and owned art no
--- live lease watches disposes so the last release frees every owned
--- object exactly once. A surviving replacement lease keeps its coalesced
--- demand without re-decoding.
+
+-- Returns the portrait borrows the live leases no longer watch: each
+-- returned borrow rests idle under the shared idle limit while a surviving
+-- replacement lease keeps its coalesced demand usable without
+-- re-borrowing. Tokens the live leases stopped watching cancel unstaged
+-- so their worker payloads are discarded instead of retained unclaimed.
+-- A surviving replacement lease keeps its demand; a failed demand changes
+-- nothing, preserving the last-good picture.
+---@param self SummaryPresentationResources
+---@param watched table<string, boolean> canonical paths kept by live leases
+local function dropUnwatchedPortraits(self, watched)
+  local pool = assert(self._pool, "summary preparation borrows its shared image owner")
+  for pageId, record in pairs(self._pages) do
+    local path = MonCache.portraitPagePath(pageId)
+    if watched[path] ~= true then
+      if record.token ~= nil then
+        pool:cancel(record.token)
+        record.token = nil
+      end
+      if record.lease ~= nil then
+        local lease = record.lease
+        record.lease = nil
+        self._leasedPortraits[path] = nil
+        dropPageQuads(self, path)
+        pool:release(lease)
+      end
+      if record.token == nil and record.lease == nil then
+        self._pages[pageId] = nil
+      end
+    end
+  end
+end
+
+-- Releases the demand interest the lease no longer owns: portrait borrows
+-- no other live lease watches return to the shared owner, and their quads
+-- clear with them, so the last release returns every borrow exactly once.
+-- A surviving replacement lease keeps its coalesced demand without
+-- re-borrowing.
 ---@param self SummaryPresentationResources
 ---@param lease table<string, unknown>
 local function dropLeaseInterest(self, lease)
   lease._watched = {}
-  dropUnwatchedArt(self, liveWatchedPaths(self))
+  dropUnwatchedPortraits(self, liveWatchedPaths(self))
 end
 
 ---@param self SummaryPresentationResources
----@return table<string, unknown> ready bundle accessors over canonical path-owned art
+---@return table<string, unknown> ready bundle accessors over borrowed art
 local function readyBundle(self)
   local owner = self
   local manifest = assert(owner._manifest, "summary preparation keeps its family")
@@ -406,9 +405,22 @@ local function readyBundle(self)
     assert(type(selector) == "string", "portrait reads name their selector")
     local entry = assert(owner._portraitEntries[selector], "the portrait manifest carries no page for " .. selector)
     local pageId = assert(entry.pageId, "the portrait entry for " .. selector .. " carries its page")
-    local image = owner._imagesByPath[MonCache.portraitPagePath(pageId)]
-    assert(image ~= nil, "the portrait page is not prepared for " .. selector)
-    return image
+    local record = owner._pages[pageId]
+    local lease = record and record.lease
+    assert(lease ~= nil, "the portrait page is not prepared for " .. selector)
+    return lease.image
+  end
+  -- The sampling handle behind one portrait selector for palette-aware
+  -- draws: the adopted page lease itself, so indexed pages bind their
+  -- exact palette through the shared sampler. Read-only like image.
+  function portraits:handleFor(selector)
+    assert(type(selector) == "string", "portrait reads name their selector")
+    local entry = assert(owner._portraitEntries[selector], "the portrait manifest carries no page for " .. selector)
+    local pageId = assert(entry.pageId, "the portrait entry for " .. selector .. " carries its page")
+    local record = owner._pages[pageId]
+    local lease = record and record.lease
+    assert(lease ~= nil, "the portrait page is not prepared for " .. selector)
+    return lease
   end
   function portraits:quadFor(selector, frameIndex)
     assert(type(selector) == "string", "portrait reads name their selector")
@@ -444,17 +456,56 @@ local function readyBundle(self)
     local visuals = assert(manifest.visuals, "the summary family carries its visuals")
     local record = assert(visuals[name], "the summary family carries visual " .. name)
     local path = assert(record.image, "visual " .. name .. " carries its image")
-    local image = owner._visualImages[path]
-    assert(image ~= nil, "visual " .. name .. " is not loaded at " .. path)
-    return image
+    local lease = owner._chrome[path]
+    assert(lease ~= nil, "visual " .. name .. " is not loaded at " .. path)
+    return lease.image
+  end
+  -- The sampling handle behind one named visual for palette-aware
+  -- draws: the installed chrome lease itself. Mirrors visualImage.
+  function bundle.visualHandle(name)
+    assert(type(name) == "string" and name ~= "", "visual reads name their record")
+    local visuals = assert(manifest.visuals, "the summary family carries its visuals")
+    local record = assert(visuals[name], "the summary family carries visual " .. name)
+    local path = assert(record.image, "visual " .. name .. " carries its image")
+    local lease = owner._chrome[path]
+    assert(lease ~= nil, "visual " .. name .. " is not loaded at " .. path)
+    return lease
   end
   function bundle.imageForPath(path)
     assert(type(path) == "string" and path ~= "", "path reads name their cache-relative path")
-    local image = owner._visualImages[path] or owner._imagesByPath[path]
-    assert(image ~= nil, "no prepared image for path " .. path)
-    return image
+    local chrome = owner._chrome[path]
+    if chrome ~= nil then
+      return chrome.image
+    end
+    local portrait = owner._leasedPortraits[path]
+    assert(portrait ~= nil, "no prepared image for path " .. path)
+    return portrait.image
+  end
+  -- The sampling handle behind one canonical path for palette-aware
+  -- draws: the chrome or portrait lease itself. Mirrors imageForPath.
+  function bundle.handleForPath(path)
+    assert(type(path) == "string" and path ~= "", "path reads name their cache-relative path")
+    local chrome = owner._chrome[path]
+    if chrome ~= nil then
+      return chrome
+    end
+    local portrait = owner._leasedPortraits[path]
+    assert(portrait ~= nil, "no prepared image for path " .. path)
+    return portrait
   end
   return bundle
+end
+
+---@param self SummaryPresentationResources
+---@param pageId integer
+---@return table<string, unknown> the mutable demand record for the page
+local function pageRecord(self, pageId)
+  local record = self._pages[pageId]
+  if record == nil then
+    record = { token = nil, lease = nil }
+    self._pages[pageId] = record
+  end
+  return record
 end
 
 ---@param self SummaryPresentationResources
@@ -471,104 +522,137 @@ local function prepareLease(self, lease, demand)
     return { kind = "failed", error = tostring(pageCause) }
   end
   local watched = {}
-  local pagePaths = {}
   for _, pageId in ipairs(pages) do
-    local path = MonCache.portraitPagePath(pageId)
-    pagePaths[#pagePaths + 1] = path
-    watched[#watched + 1] = path
+    watched[#watched + 1] = MonCache.portraitPagePath(pageId)
   end
   lease._watched = watched
-  -- A changed demand drops interest the union no longer owns before new
-  -- work starts, so cancelled tokens and their late completions can
-  -- never populate a path the live leases stopped watching.
-  dropUnwatchedArt(self, liveWatchedPaths(self))
+  -- Every independent prerequisite enrolls before the first pending
+  -- answer: roster icons through the borrowed provider, portrait page
+  -- compilation and cry bank readiness through the provisioner seam, and
+  -- portrait image requests through the shared owner. Nothing enrolled
+  -- here is released; readiness evaluates only after all of it is in
+  -- flight, so one unready family never serializes the others.
   -- Roster icons ride the borrowed provider with its own lifetime: never
   -- cancelled or released here, only observed ready or failed.
+  local iconsReady = false
+  local iconsFailure = nil
   do
     local ok, ready, failure = pcall(self._icons.prepareKeys, self._icons, demand.iconKeys)
     if not ok then
-      return { kind = "failed", error = tostring(ready) }
-    end
-    if failure ~= nil then
-      return { kind = "failed", error = tostring(failure) }
-    end
-    if not ready then
-      return { kind = "pending" }
+      iconsFailure = tostring(ready)
+    elseif failure ~= nil then
+      iconsFailure = tostring(failure)
+    else
+      iconsReady = ready
     end
   end
   -- Portrait compilation through the existing provisioner seam: a named
   -- failure surfaces, an unready page waits, and dispatched jobs are
   -- never cancelled from here. A missing seam fails visibly instead of
-  -- hanging the lease.
+  -- hanging the lease. Pages with an adopted lease never recompile, so
+  -- overlapping leases compile each shared page once.
+  local portraitPending = false
+  local portraitFailure = nil
   local requestPage = self._derivedAssets.requestMonPortraitPage
   if type(requestPage) ~= "function" then
-    return { kind = "failed", error = "portrait compilation is unavailable" }
-  end
-  for _, pageId in ipairs(pages) do
-    local path = MonCache.portraitPagePath(pageId)
-    if self._imagesByPath[path] == nil and self._payloadsByPath[path] == nil then
-      local ok, ready, failure = pcall(requestPage, pageId, "required")
-      if not ok then
-        return { kind = "failed", error = tostring(ready) }
-      end
-      if failure ~= nil then
-        return { kind = "failed", error = tostring(failure) }
-      end
-      if not ready then
-        return { kind = "pending" }
+    portraitFailure = "portrait compilation is unavailable"
+  else
+    for _, pageId in ipairs(pages) do
+      local record = self._pages[pageId]
+      if record == nil or (record.lease == nil and record.token == nil) then
+        local ok, ready, failure = pcall(requestPage, pageId, "required")
+        if not ok then
+          portraitFailure = tostring(ready)
+          break
+        elseif failure ~= nil then
+          portraitFailure = tostring(failure)
+          break
+        elseif not ready then
+          portraitPending = true
+        end
       end
     end
   end
   -- Cry banks compile through the same provisioner seam so the summary
-  -- never plays a cry whose bank is not in the generated cache.
+  -- never plays a cry whose bank is not in the generated cache. Banks
+  -- enroll even while portraits are still decoding, so a cached portrait
+  -- never hides a pending cry bank.
+  local cryPending = false
+  local cryFailure = nil
   local requestBank = self._derivedAssets.requestAudioBank
   if type(requestBank) ~= "function" then
-    return { kind = "failed", error = "audio bank compilation is unavailable" }
-  end
-  for _, bankId in ipairs(demand.cryBanks) do
-    local ok, ready, failure = pcall(requestBank, bankId, "required")
-    if not ok then
-      return { kind = "failed", error = tostring(ready) }
-    end
-    if failure ~= nil then
-      return { kind = "failed", error = tostring(failure) }
-    end
-    if not ready then
-      return { kind = "pending" }
-    end
-  end
-  local pending = false
-  local function decodePath(path)
-    local state, cause = advanceDecode(self, path)
-    if state == "failed" then
-      return cause
-    end
-    if state == "pending" then
-      pending = true
-    end
-    return nil
-  end
-  for _, path in ipairs(pagePaths) do
-    local failure = decodePath(path)
-    if failure ~= nil then
-      return { kind = "failed", error = failure }
-    end
-  end
-  -- Portrait pages realize at most one new page per call so a cold open
-  -- never uploads the party at once. Realization failures name their path.
-  local realizedPage = false
-  for _, path in ipairs(pagePaths) do
-    if self._imagesByPath[path] == nil and self._payloadsByPath[path] ~= nil and not realizedPage then
-      local ok, image = pcall(realizeImage, self, self._payloadsByPath[path])
+    cryFailure = "audio bank compilation is unavailable"
+  else
+    for _, bankId in ipairs(demand.cryBanks) do
+      local ok, ready, failure = pcall(requestBank, bankId, "required")
       if not ok then
-        return { kind = "failed", error = tostring(image) }
+        cryFailure = tostring(ready)
+        break
+      elseif failure ~= nil then
+        cryFailure = tostring(failure)
+        break
+      elseif not ready then
+        cryPending = true
       end
-      self._imagesByPath[path] = image
-      self._payloadsByPath[path] = nil
-      realizedPage = true
     end
-    if self._imagesByPath[path] == nil then
+  end
+  -- Portrait image requests enroll through the shared owner for every page
+  -- without an adopted lease or an outstanding request, so one shared page
+  -- borrows once no matter how many leases watch it.
+  local pool = assert(self._pool, "summary preparation borrows its shared image owner")
+  for _, pageId in ipairs(pages) do
+    local record = pageRecord(self, pageId)
+    if record.lease == nil and record.token == nil then
+      record.token = pool:request(MonCache.portraitPagePath(pageId), POOLED_SAMPLER, "demand")
+    end
+  end
+  if iconsFailure ~= nil then
+    return { kind = "failed", error = iconsFailure }
+  end
+  if portraitFailure ~= nil then
+    return { kind = "failed", error = portraitFailure }
+  end
+  if cryFailure ~= nil then
+    return { kind = "failed", error = cryFailure }
+  end
+  local pending = portraitPending or cryPending
+  -- Portrait pages adopt at most one new lease per call so a cold open
+  -- never uploads the party at once. A failed request forgets its token
+  -- and names its cause; the next round re-enrolls it.
+  local adopted = false
+  for _, pageId in ipairs(pages) do
+    local record = assert(self._pages[pageId], "demand enrolls every page before polling")
+    if record.lease == nil and record.token ~= nil and not adopted then
+      local status, cause = pool:poll(record.token)
+      if status == "failed" then
+        pool:cancel(record.token)
+        record.token = nil
+        return { kind = "failed", error = tostring(cause) }
+      elseif status == "ready" then
+        local adoptedLease = pool:acquire(record.token)
+        record.token = nil
+        record.lease = adoptedLease
+        self._leasedPortraits[MonCache.portraitPagePath(pageId)] = adoptedLease
+        adopted = true
+      else
+        pending = true
+      end
+    end
+    if record.lease == nil then
       pending = true
+    end
+  end
+  if not iconsReady then
+    pending = true
+  end
+  -- Summary chrome pins on the first demand that reaches polling: every
+  -- family-owned visual borrows the shared owner up front, so later opens
+  -- never wait on chrome. Chrome failures surface like any other missing
+  -- visual while the adopted portrait leases stay pinned.
+  if not pending then
+    local chromeOk, chromeErr = pcall(ensureChrome, self)
+    if not chromeOk then
+      return { kind = "failed", error = tostring(chromeErr) }
     end
   end
   if pending then
@@ -578,6 +662,10 @@ local function prepareLease(self, lease, demand)
     return { kind = "failed", error = self._shaderFailed }
   end
   lease._readyKey = demand.key
+  -- Stale portrait interest releases only now that the replacement covers
+  -- the visible state: borrows no live lease watches return to the shared
+  -- owner while the committed demand keeps its coalesced pages.
+  dropUnwatchedPortraits(self, liveWatchedPaths(self))
   return { kind = "ready", key = demand.key, assets = readyBundle(self) }
 end
 
@@ -615,9 +703,9 @@ function SummaryPresentationResources:acquire()
 end
 
 -- Idempotent release of the field lifetime: invalidates every remaining
--- lease, cancels owned decode interest, and disposes each owned GPU
--- object once. Borrowed icon, queue, text, and graphics collaborators
--- stay alive.
+-- lease and returns every adopted portrait and chrome borrow exactly once.
+-- Returned borrows rest idle under the shared idle limit; the borrowed
+-- icon, pool, text, and graphics collaborators stay alive.
 function SummaryPresentationResources:release()
   if self._released then
     return
@@ -628,30 +716,32 @@ function SummaryPresentationResources:release()
     lease._watched = {}
   end
   self._leases = {}
-  for path, token in pairs(self._tokensByPath) do
-    pcall(self._queue.cancel, self._queue, token)
-    self._tokensByPath[path] = nil
+  local pool = assert(self._pool, "summary preparation borrows its shared image owner")
+  for pageId, record in pairs(self._pages) do
+    if record.token ~= nil then
+      record.token = nil
+    end
+    if record.lease ~= nil then
+      pool:release(record.lease)
+      record.lease = nil
+    end
+    self._pages[pageId] = nil
   end
-  self._payloadsByPath = {}
-  -- Each canonical path owns exactly one image, so releasing per path
-  -- releases each owned GPU object once with no alias bookkeeping.
-  for path, image in pairs(self._imagesByPath) do
-    releaseOwned(image)
-    self._imagesByPath[path] = nil
+  self._leasedPortraits = {}
+  for path, lease in pairs(self._chrome) do
+    pool:release(lease)
+    self._chrome[path] = nil
   end
+  self._chromeReady = false
   for cacheKey, quad in pairs(self._quads) do
-    releaseOwned(quad)
+    releaseBorrowed(quad)
     self._quads[cacheKey] = nil
     self._quadPaths[cacheKey] = nil
-  end
-  for path, image in pairs(self._visualImages) do
-    releaseOwned(image)
-    self._visualImages[path] = nil
   end
   local shader = self._shader
   self._shader = nil
   self._shaderFailed = nil
-  releaseOwned(shader)
+  releaseBorrowed(shader)
 end
 
 return SummaryPresentationResources

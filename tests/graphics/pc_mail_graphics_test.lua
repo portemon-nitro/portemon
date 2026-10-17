@@ -4,6 +4,7 @@ local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
+local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
 local PcCache = require("libs.assets.src.PcCache")
 local ItemCache = require("libs.assets.src.ItemCache")
 local MonCache = require("libs.assets.src.MonCache")
@@ -21,32 +22,19 @@ local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = {}
 
-local function iconQueue(cacheFs)
-  local nextToken = 0
-  local pending = {}
-  local queue = {}
-  function queue:request(kind, path, priority)
-    Assert.equal(kind, "image")
-    Assert.equal(priority, "demand")
-    nextToken = nextToken + 1
-    pending[nextToken] = path
-    return nextToken
-  end
-  function queue:poll(token)
-    Assert.isTrue(pending[token] ~= nil, "only a requested icon page is polled")
-    return "ready"
-  end
-  function queue:take(token)
-    local path = assert(pending[token])
-    pending[token] = nil
-    local bytes = assert(cacheFs:read(path))
-    local data = assert(love.filesystem.newFileData(bytes, path))
-    return { imageData = assert(love.image.newImageData(data)) }
-  end
-  function queue:cancel(token)
-    pending[token] = nil
-  end
-  return queue
+-- One session image owner per version under test: mailbox chrome and
+-- letter icons share one physical owner like the production composition.
+---@param scope table<string, unknown> graphics ownership scope disposing the pool
+---@param cacheFs CacheFs version cache the pool classifies from
+---@return table<string, unknown> session image owner disposed with the scope
+local function versionPool(scope, cacheFs)
+  local pool = ImageAssetPool.new(cacheFs)
+  scope:own({
+    release = function()
+      pool:dispose()
+    end,
+  })
+  return pool
 end
 
 local function readyVersions()
@@ -101,10 +89,12 @@ function T.twelve_compiled_stationery_backgrounds_render_distinct_source_pixels(
   local versions = readyVersions()
   Assert.isTrue(#versions > 0, "the declared global PC cache is available")
   for _, version in ipairs(versions) do
+    local pool = versionPool(scope, version.cacheFs)
     local renderer = scope:own(MailboxRenderer.new({
       cacheFs = version.cacheFs,
       manifest = version.manifest,
       graphics = love.graphics,
+      imagePool = pool,
     }))
     local text = scope:own(FieldTextRenderer.new({ cacheFs = version.cacheFs, graphics = love.graphics }))
     local uiManifest = assert(version.cacheFs:loadLua(FieldUiAssetCache.manifestPath()))
@@ -121,7 +111,7 @@ function T.twelve_compiled_stationery_backgrounds_render_distinct_source_pixels(
       monCatalog:iconSelection({ species = "TOTODILE", form = 0 }),
     }
     local iconProvider = scope:own(MonIconAssetProvider.new(version.cacheFs, {
-      preparationQueue = iconQueue(version.cacheFs),
+      imagePool = pool,
       derivedAssets = {
         requestIconPage = function()
           return true
@@ -130,10 +120,15 @@ function T.twelve_compiled_stationery_backgrounds_render_distinct_source_pixels(
       graphics = love.graphics,
     }))
     local ready, failure
-    for _ = 1, 8 do
+    local deadline = os.clock() + 120
+    while true do
       ready, failure = iconProvider:prepareKeys(iconKeys)
       if ready or failure ~= nil then
         break
+      end
+      Assert.isTrue(os.clock() < deadline, "captured Mail icon pages prepare without stalling")
+      if love.timer ~= nil and love.timer.sleep ~= nil then
+        love.timer.sleep(0.005)
       end
     end
     Assert.isTrue(ready, "captured Mail icon pages are prepared: " .. tostring(failure))

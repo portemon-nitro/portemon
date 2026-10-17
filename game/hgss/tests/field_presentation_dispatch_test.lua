@@ -290,8 +290,18 @@ local function buildDoubles(sink, calls)
           return { width = 32, height = 32 }
         end
         function provider:image()
-          calls.iconImage = (calls.iconImage or 0) + 1
           return "borrowed-icon-image"
+        end
+        -- Eager-shaped borrow: the lease surface records the raw draw
+        -- through the injected graphics double, exactly like the
+        -- retired direct image draw.
+        function provider:handleFor(_)
+          calls.iconImage = (calls.iconImage or 0) + 1
+          local handle = { image = "borrowed-icon-image", kind = "rgba8" }
+          function handle:drawQuad(graphics, quad, x, y, ...)
+            graphics.draw(self.image, quad, x, y, ...)
+          end
+          return handle
         end
         function provider:prepareKeys(iconKeys)
           calls.iconPrepareCalls = (calls.iconPrepareCalls or 0) + 1
@@ -361,6 +371,10 @@ local function compositionRuntime()
     fieldTerrainEffectController = {
       setModelFactory = function(_, _) end,
     },
+    -- The presentation composition borrows its session image owner for
+    -- icons, Summary, and PC visuals: the injected pool keeps the
+    -- composition honest without a second worker beside the doubles.
+    imageAssets = SharedImagePoolFake.new(),
   }
   runtime.iconDemands = {}
   runtime.derivedAssets = {
@@ -530,7 +544,27 @@ function T.pokemon_naming_renderer_is_prepared_lazily_and_borrows_shared_mon_ico
   local savedLove = rawget(_G, "love")
   rawset(_G, "love", { graphics = require("tests.support.FakeGraphics").new({}) })
   local ok, err = pcall(function()
-    withProductionComposition(sink, calls, compositionRuntime(), function(resources)
+    -- Naming chrome borrows the session image owner like production:
+    -- the stub answers ready borrows without decoding.
+    local runtime = compositionRuntime()
+    local poolTokens = 0
+    runtime.imageAssets = {
+      request = function(_, _, _, _)
+        poolTokens = poolTokens + 1
+        return poolTokens
+      end,
+      poll = function(_)
+        return "ready"
+      end,
+      acquire = function(_)
+        return { image = { stubPoolImage = true } }
+      end,
+      release = function(_) end,
+      cancel = function(_)
+        return false
+      end,
+    }
+    withProductionComposition(sink, calls, runtime, function(resources)
       Assert.isNil(calls.namingConstructed, "ordinary field construction does not acquire naming chrome")
       Assert.isNil(calls.iconImage, "ordinary field construction does not acquire naming images")
       Assert.isNil(calls.iconQuadCount, "ordinary field construction does not acquire naming quads")
@@ -1330,7 +1364,10 @@ function T.dispose_releases_owned_resources_exactly_once()
       Assert.equal(calls.terrain, 1, "repeat disposal never releases the terrain effect renderer twice")
       Assert.equal(calls.emote, 1, "repeat disposal never releases the emote renderer twice")
       Assert.equal(calls.pool, 2, "repeat disposal releases each asset pool once")
-      Assert.equal(calls.queue, 1, "repeat disposal releases the owned image queue exactly once")
+      -- The composition borrows the session image owner instead of owning
+      -- a worker: no owned image queue exists to release, and disposal
+      -- never tears down the borrowed pool.
+      Assert.isNil(calls.queue, "repeat disposal builds no image queue beside the runtime owner")
     end)
   end)
   rawset(_G, "love", savedLove)

@@ -8,8 +8,45 @@ local PngWriter = require("libs.assets.src.PngWriter")
 local PcPresentationFixture = require("tests.support.PcPresentationFixture")
 local PcStorageRenderer = require("libs.hgss.src.ui.PcStorageRenderer")
 local PixelScale = require("libs.ui.src.PixelScale")
+local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
 
 local T = {}
+
+-- The injected shared image owner behind Storage visuals: the
+-- synchronous fake with straight sampling leases, recording every image
+-- it hands out so the suite can prove no draw references a freed image
+-- and the idle trim reclaims exactly the stale visuals.
+---@return table<string, unknown> pool double
+---@return SharedImagePoolFake inner fake behind census assertions
+---@return table<string, unknown>[] every image handed out so far
+local function storagePool()
+  local inner = SharedImagePoolFake.new()
+  local seen = {}
+  local pool = {}
+  function pool:request(path, sampler, priority)
+    return inner:request(path, sampler, priority)
+  end
+  function pool:poll(token)
+    return inner:poll(token)
+  end
+  function pool:acquire(token)
+    local lease = inner:acquire(token)
+    lease.kind = "rgba8"
+    local image = assert(lease.image, "shared leases carry their resolved image")
+    seen[#seen + 1] = image
+    return lease
+  end
+  function pool:release(lease)
+    return inner:release(lease)
+  end
+  function pool:prune()
+    return inner:prune()
+  end
+  function pool:stats()
+    return inner:stats()
+  end
+  return pool, inner, seen
+end
 
 local function visuals(manifest)
   local storage = manifest.storage
@@ -41,7 +78,7 @@ local function visuals(manifest)
   return all
 end
 
-local function rendererFixture()
+local function rendererFixture(pool)
   local manifest = PcPresentationFixture.manifest()
   -- Every message id reads "b<bank>:<id>" so tests can name what was drawn.
   manifest.text = { banks = { [24] = {}, [25] = {} } }
@@ -62,7 +99,13 @@ local function rendererFixture()
       return 0
     end,
   }
-  return PcStorageRenderer.new({ graphics = graphics, cacheFs = cache, manifest = manifest, text = text }),
+  return PcStorageRenderer.new({
+    graphics = graphics,
+    cacheFs = cache,
+    manifest = manifest,
+    text = text,
+    imagePool = pool or assert(storagePool()),
+  }),
     graphics,
     manifest
 end
@@ -309,6 +352,7 @@ end
 function T.box_renderer_skips_empty_sentinels_and_draws_the_final_slot()
   local renderer, graphics, manifest = rendererFixture()
   local iconDraws = {}
+  local iconImage = { setFilter = function() end }
   local plainDraw = graphics.draw
   graphics.draw = function(image, quad, x, ...)
     if type(quad) == "table" and quad.icon then
@@ -322,7 +366,10 @@ function T.box_renderer_skips_empty_sentinels_and_draws_the_final_slot()
       return { width = 32, height = 32 }
     end,
     image = function()
-      return {}
+      return iconImage
+    end,
+    handleFor = function()
+      return { image = iconImage, kind = "rgba8" }
     end,
     quadFor = function()
       return { icon = true }
@@ -349,6 +396,153 @@ function T.box_renderer_skips_empty_sentinels_and_draws_the_final_slot()
   Assert.deepEqual(iconDraws, { { x = 8 + 24 * 5, y = 32 + 24 * 4 } }, "slot 29 renders at its fixed box geometry")
   Assert.isTrue(manifest.storage.wallpapers[0] ~= nil, "the active box keeps its compiled wallpaper")
   renderer:release()
+end
+
+-- Shared box visuals resolve to one physical image across open renderers
+-- through the session image owner, and returning to the active box after
+-- visiting many boxes returns the stale box leases to idle while the
+-- active box stays drawable with no per-draw image enrollment. Two opens
+-- of one box never borrow the same visual twice, the explicit idle trim
+-- reclaims exactly the stale visuals, and no draw ever references a
+-- released image.
+local function storageFixture()
+  local manifest = PcPresentationFixture.manifest()
+  manifest.text = { banks = { [24] = {}, [25] = {} } }
+  for bankId, bank in pairs(manifest.text.banks) do
+    for messageId = 0, 100 do
+      bank[messageId] = { { kind = "glyph", text = "b" .. bankId .. ":" .. messageId } }
+    end
+  end
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local image = PngWriter.encode(1, 1, string.char(255, 255, 255, 255))
+  for _, visual in ipairs(visuals(manifest)) do
+    cache:write(visual.image, image)
+  end
+  local graphics = FakeGraphics.new()
+  local text = {
+    drawText = function() end,
+    textWidth = function()
+      return 0
+    end,
+  }
+  local pool, inner, seen = storagePool()
+  return graphics, cache, manifest, text, pool, inner, seen
+end
+
+local function openStorage(graphics, cache, manifest, text, pool)
+  return PcStorageRenderer.new({
+    graphics = graphics,
+    cacheFs = cache,
+    manifest = manifest,
+    text = text,
+    imagePool = pool,
+  })
+end
+
+local function browseView(wallpaperId)
+  return {
+    mode = 0,
+    activeBox = 0,
+    tray = "closed",
+    wallpaperId = wallpaperId,
+    wallpaperUnlocks = {},
+    boxSlots = {},
+    party = {},
+  }
+end
+
+local function liveImages(seen)
+  local live = 0
+  local known = {}
+  for _, image in ipairs(seen) do
+    if known[image] == nil then
+      known[image] = true
+      if image.releaseCount == 0 then
+        live = live + 1
+      end
+    end
+  end
+  return live
+end
+
+local function assertNoDrawAfterFree(graphics)
+  for _, draw in ipairs(graphics.draws) do
+    if draw.image ~= nil and type(draw.image) == "table" and draw.image.releaseCount ~= nil then
+      Assert.equal(draw.image.releaseCount, 0, "no draw references a released image")
+    end
+  end
+end
+
+function T.box_visuals_share_one_image_and_release_stale_boxes_on_change()
+  local graphics, cache, manifest, text, pool, inner, seen = storageFixture()
+  local first = openStorage(graphics, cache, manifest, text, pool)
+  first:drawPane(browseView(0), {}, "lower", placement())
+  local opened = inner.uploads
+  Assert.isTrue(opened > 0, "the open box borrows its visuals")
+  assertNoDrawAfterFree(graphics)
+  local second = openStorage(graphics, cache, manifest, text, pool)
+  second:drawPane(browseView(0), {}, "lower", placement())
+  Assert.equal(inner.uploads, opened, "two opens of one box share one physical image per visual")
+  Assert.equal(
+    inner:stats().outstandingLeases,
+    2 * opened,
+    "each open holds its own borrow of the shared visuals"
+  )
+  second:release()
+  Assert.equal(
+    inner:stats().outstandingLeases,
+    opened,
+    "closing the second box returns only its own borrows"
+  )
+  for wallpaperId = 1, 7 do
+    first:drawPane(browseView(wallpaperId), {}, "lower", placement())
+    assertNoDrawAfterFree(graphics)
+  end
+  local afterVisits = inner.uploads
+  Assert.isTrue(afterVisits > opened, "visiting boxes borrows their wallpapers")
+  first:drawPane(browseView(0), {}, "lower", placement())
+  assertNoDrawAfterFree(graphics)
+  local drawsBefore = #graphics.draws
+  first:drawPane(browseView(0), {}, "lower", placement())
+  Assert.equal(inner.uploads, afterVisits, "redrawing the active box enrolls no image per draw")
+  Assert.isTrue(#graphics.draws > drawsBefore, "the active box still renders")
+  assertNoDrawAfterFree(graphics)
+  -- Returning the stale state leases never frees synchronously: every
+  -- visited visual stays resident while idle, so no draw references a
+  -- released image while the turnover is still in flight.
+  Assert.equal(liveImages(seen), afterVisits, "returned leases stay resident while idle")
+  for _, image in ipairs(seen) do
+    Assert.equal(image.releaseCount, 0, "no visual frees on lease return alone")
+  end
+  -- The explicit idle trim bounds physical retention: the seven stale
+  -- wallpapers free exactly once while shared chrome and the active box
+  -- keep their hard references.
+  first:trimIdle()
+  local stale = 0
+  local counted = {}
+  for _, image in ipairs(seen) do
+    if counted[image] == nil then
+      counted[image] = true
+      if image.releaseCount == 0 then
+        -- Still resident: shared chrome or the active box wallpaper.
+      else
+        Assert.equal(image.releaseCount, 1, "a stale box visual frees exactly once on trim")
+        stale = stale + 1
+      end
+    end
+  end
+  Assert.equal(stale, 7, "trimming bounds the seven idle wallpapers")
+  Assert.equal(liveImages(seen), afterVisits - 7, "only shared chrome and the active box stay resident")
+  first:release()
+  Assert.equal(inner:stats().outstandingLeases, 0, "closing the box returns every remaining borrow")
+  pool:prune()
+  local freed = {}
+  for _, image in ipairs(seen) do
+    if freed[image] == nil then
+      freed[image] = true
+      Assert.equal(image.releaseCount, 1, "closing the box frees every remaining image exactly once")
+    end
+  end
 end
 
 return { tests = T }

@@ -6,6 +6,7 @@
 -- with a continuation marker, and repeated draws are identical.
 
 local Assert = require("tests.support.Assert")
+local ImageSampling = require("libs.nds.src.love.ImageSampling")
 local MoveIconCache = require("libs.assets.src.MoveIconCache")
 local RosterIconStandIn = require("tests.support.RosterIconStandIn")
 local CacheFs = require("libs.storage.src.CacheFs")
@@ -81,12 +82,15 @@ end
 
 -- Test-local atlas glue: quads cut from a realized atlas image through
 -- manifest entries. Production wiring owns its own provider; the renderer
--- only requires image/quadFor/dimensions.
+-- only requires image/handleFor/quadFor/dimensions.
 local function atlasProvider(graphics, image, entries)
   local quads = {}
   return {
     image = function()
       return image
+    end,
+    handleFor = function()
+      return { image = image, kind = "rgba8", width = image:getWidth(), height = image:getHeight() }
     end,
     quadFor = function(_, selector)
       local entry = assert(entries[selector], "atlas carries " .. tostring(selector))
@@ -228,6 +232,17 @@ local function readyLikeBundle(scope, cacheFs, manifest, text, portraits, shader
     end
     return image
   end
+  -- Straight sampling handles over the realized test images: eager
+  -- RGBA-direct art draws pixel-identical through the shared sampler.
+  function bundle.visualHandle(name)
+    local image = bundle.visualImage(name)
+    assert(image ~= nil, "visual " .. name .. " is not prepared")
+    return { image = image, kind = "rgba8", width = image:getWidth(), height = image:getHeight() }
+  end
+  function bundle.handleForPath(path)
+    local image = bundle.imageForPath(path)
+    return { image = image, kind = "rgba8", width = image:getWidth(), height = image:getHeight() }
+  end
   return bundle
 end
 
@@ -243,7 +258,9 @@ local function pictureShader(scope)
     handle:close()
   end
   Assert.notNil(source, "the picture shader source loads")
-  return scope:own(love.graphics.newShader(source))
+  -- Mirror production bundle assembly: the shared sampling rule splices
+  -- into the picture shader before compilation.
+  return scope:own(love.graphics.newShader(ImageSampling.withSharedSampling(source)))
 end
 
 ---@param renderer table<string, unknown> Summary renderer under test
@@ -701,7 +718,7 @@ function T.picture_shader_matches_the_integer_reference_across_levels(scope)
     handle:close()
   end
   Assert.notNil(source, "the picture shader source loads")
-  local shader = scope:own(love.graphics.newShader(source))
+  local shader = scope:own(love.graphics.newShader(ImageSampling.withSharedSampling(source)))
   local steps = 32
   local data = love.image.newImageData(steps + 1, 1)
   for level = 0, 31 do

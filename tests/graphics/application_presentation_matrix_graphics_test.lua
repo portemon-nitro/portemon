@@ -16,12 +16,12 @@ local BagInterface = require("game.hgss.src.field.BagInterface")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
+local PreparedMonIcons = require("tests.support.PreparedMonIcons")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local MainMenuInterface = require("app.src.mainmenu.MainMenuInterface")
 local SaveEditorInterface = require("app.src.saveeditor.SaveEditorInterface")
 local MonCache = require("libs.assets.src.MonCache")
-local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetProvider")
 local NamingInterface = require("game.hgss.src.newgame.NamingInterface")
 local PartyPresentationFixture = require("tests.support.PartyPresentationFixture")
 local PartyScreenInterface = require("game.hgss.src.field.PartyScreenInterface")
@@ -567,59 +567,6 @@ local function iconCache()
   return cache
 end
 
-local function decodingQueue(cache)
-  local nextToken = 0
-  local live = {}
-  local queue = {}
-  function queue:request(kind, path, priority)
-    assert(kind == "image", "icon pages decode as images")
-    assert(priority == "demand", "visible party pages decode as demand")
-    nextToken = nextToken + 1
-    live[nextToken] = path
-    return nextToken
-  end
-  function queue:poll(token)
-    assert(live[token], "poll observes a live token")
-    return "ready"
-  end
-  function queue:take(token)
-    local path = assert(live[token], "take transfers a live token once")
-    live[token] = nil
-    local bytes = assert(cache:read(path), "the compiled icon page is present")
-    local fileData = assert(love.filesystem.newFileData(bytes, "icon-page.png"), "page bytes form a file")
-    return { imageData = assert(love.image.newImageData(fileData), "page bytes decode") }
-  end
-  function queue:cancel(token)
-    live[token] = nil
-  end
-  return queue
-end
-
-local function readyDerivedAssets()
-  return {
-    requestIconPage = function(pageId, _)
-      assert(type(pageId) == "number", "icon demand carries its page")
-      return true
-    end,
-  }
-end
-
-local function preparedProvider(cache, keys)
-  local provider = MonIconAssetProvider.new(cache, {
-    preparationQueue = decodingQueue(cache),
-    derivedAssets = readyDerivedAssets(),
-  })
-  local ready, failure
-  for _ = 1, 8 do
-    ready, failure = provider:prepareKeys(keys)
-    if ready or failure ~= nil then
-      break
-    end
-  end
-  Assert.isTrue(ready, "demanded icon pages prepare: " .. tostring(failure))
-  return provider
-end
-
 -- Synthetic party asset cache: the matrix manifest paths resolve to
 -- stub art so geometry (not generated pixels) is under test; generated
 -- pixels are covered against the canonical cache in the dedicated party
@@ -734,7 +681,7 @@ end
 function T.party_cards_stay_readable_across_densities(scope)
   local lg = love.graphics
   local text = scope:own(FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() }))
-  local provider = preparedProvider(iconCache(), { "MON0/f0" })
+  local provider = PreparedMonIcons.seededProvider(scope, iconCache(), { "MON0/f0" })
   local cacheFs = partyAssetCache()
   local manifest = matrixPartyManifest()
   local visuals, digits = matrixPartyVisuals()

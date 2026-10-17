@@ -13,11 +13,11 @@ local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 local MonBucket = require("tests.support.MonBucket")
 local MonCache = require("libs.assets.src.MonCache")
-local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetProvider")
 local PcCache = require("libs.assets.src.PcCache")
 local PngWriter = require("libs.assets.src.PngWriter")
 local PhotoAlbumInterface = require("game.hgss.src.pc.PhotoAlbumInterface")
 local PhotoAlbumRenderer = require("libs.hgss.src.ui.PhotoAlbumRenderer")
+local PreparedMonIcons = require("tests.support.PreparedMonIcons")
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local FieldCellCache = require("libs.assets.src.field.FieldCellCache")
@@ -44,7 +44,7 @@ local function photoRenderer()
   return assert(renderer)
 end
 
-local function preparedIcons(versionId, iconKey)
+local function iconCache(versionId, iconKey)
   local cacheFs = CacheFs.forVersion(versionId, FakeCache.new())
   local path = MonCache.iconPagePath(0)
   local manifest = {
@@ -67,32 +67,7 @@ local function preparedIcons(versionId, iconKey)
   cacheFs:writeLua(MonCache.iconManifestPath(), manifest)
   local pixels = string.rep(string.char(180, 60, 80, 255), 32 * 32)
   cacheFs:write(path, PngWriter.encode(32, 32, pixels))
-  local live = {}
-  local queue = {}
-  function queue:request(_, imagePath)
-    live[imagePath] = true
-    return imagePath
-  end
-  function queue:poll(token)
-    return live[token] and "ready" or "failed"
-  end
-  function queue:take(token)
-    live[token] = nil
-    local bytes = assert(cacheFs:read(token))
-    return { imageData = love.image.newImageData(love.filesystem.newFileData(bytes, token)) }
-  end
-  function queue:cancel(token)
-    live[token] = nil
-  end
-  local provider = MonIconAssetProvider.new(cacheFs, {
-    preparationQueue = queue,
-    derivedAssets = {
-      requestIconPage = function()
-        return true
-      end,
-    },
-  })
-  return provider
+  return cacheFs
 end
 
 local function displayLayouts()
@@ -621,8 +596,14 @@ function T.photo_owner_prepares_source_view_and_private_coverage_before_render(s
       )
     end
     local textRenderer = scope:own(FieldTextRenderer.new({ cacheFs = versionCache }))
-    local albumRenderer = scope:own(PhotoAlbumRenderer.new({ cacheFs = versionCache, manifest = albumManifest }))
-    local icons = scope:own(preparedIcons(versionId, catalog:iconSelection(photo.party[1])))
+    local albumPool = PreparedMonIcons.scopedImagePool(scope, versionCache)
+    local albumRenderer =
+      scope:own(PhotoAlbumRenderer.new({ cacheFs = versionCache, manifest = albumManifest, imagePool = albumPool }))
+    local icons = scope:own(
+      PreparedMonIcons.seededProvider(scope, iconCache(versionId, catalog:iconSelection(photo.party[1])), {
+        catalog:iconSelection(photo.party[1]),
+      })
+    )
     local albumResources = {
       photoAlbumRenderer = albumRenderer,
       fieldRenderer = fieldRenderer,

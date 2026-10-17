@@ -1,26 +1,40 @@
--- Runtime owner of the compiled mon icon pages. Construction loads and
+-- Runtime owner of the compiled mon icon page demand. Construction loads and
 -- validates the generated icon layout metadata only and builds the
 -- page-to-entries index; no GPU image is realized there. The visible party
 -- demands exactly the pages behind its current icon keys through
--- prepareKeys, which stages each page through compilation readiness, image
--- worker decoding, and at most one GPU realization per call. Getters stay
--- read-only: an unprepared page is a loud error, never a blank icon or a
--- draw-time load. Portrait pages are never acquired here: the visible party
--- demands its icon pages through prepareKeys, and portraits stay on demand elsewhere.
+-- prepareKeys, which enrolls compilation readiness plus one shared-owner
+-- image request per page, then adopts at most one new page lease per call.
+-- Page images live in the borrowed session image owner: adopted leases pin
+-- the demanded pages while released demand rests idle under the shared idle
+-- limit instead of a provider-specific evictor. Getters stay read-only: an
+-- unprepared page is a loud error, never a blank icon or a draw-time load.
+-- Portrait pages are never acquired here: the visible party demands its icon
+-- pages through prepareKeys, and portraits stay on demand elsewhere.
 
 local Errors = require("libs.errors.src.Errors")
 local FieldErrors = require("libs.hgss.src.field.FieldErrors")
+local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
 local MonCache = require("libs.assets.src.MonCache")
+
+---@class MonIconSamplingHandle
+---@field image table<string, unknown> adopted page image behind the selector
+---@field palette table<string, unknown>? exact RGBA palette for indexed pages
+---@field kind string? payload representation of the page image
+---@field width integer? adopted page width in pixels
+---@field height integer? adopted page height in pixels
+---@field draw fun(self: MonIconSamplingHandle, graphics: love.graphics, x: number, y: number, ...: unknown) palette-exact sampler draw shared with pool leases
+---@field drawQuad fun(self: MonIconSamplingHandle, graphics: love.graphics, quad: love.Quad, x: number, y: number, ...: unknown) palette-exact viewport draw shared with pool leases
 
 ---@class MonIconAssetProvider
 ---@field _graphics love.graphics
 ---@field _cacheFs CacheFs
 ---@field _manifest table<string, unknown>
 ---@field _pageEntries table<integer, table<string, unknown>[]> validated entries by zero-based page id
----@field _pages table<integer, table<string, unknown>> preparation state by zero-based page id
----@field _queue table<string, unknown>? borrowed image preparation worker
+---@field _pages table<integer, table<string, unknown>> demand interest by zero-based page id
+---@field _pool table<string, unknown> borrowed session image owner behind every page lease
 ---@field _derivedAssets table<string, unknown>? borrowed semantic cache host
----@field _images table<integer, love.Image> page image by zero-based page id
+---@field _leases table<integer, table<string, unknown>> adopted page leases by zero-based page id
+---@field _handles table<integer, table<string, unknown>> sampling handles over the adopted leases
 ---@field _quads table<string, love.Quad>
 ---@field _released boolean
 local MonIconAssetProvider = {}
@@ -82,7 +96,7 @@ local function indexEntriesByPage(manifest)
 end
 
 ---@param cacheFs CacheFs
----@param opts { graphics?: love.graphics, preparationQueue?: table<string, unknown>, derivedAssets?: table<string, unknown> }?
+---@param opts { graphics?: love.graphics, imagePool: table<string, unknown>, derivedAssets?: table<string, unknown> }?
 ---@return MonIconAssetProvider
 function MonIconAssetProvider.new(cacheFs, opts)
   assert(cacheFs ~= nil, "MonIconAssetProvider requires a CacheFs")
@@ -92,6 +106,15 @@ function MonIconAssetProvider.new(cacheFs, opts)
     graphics = love and love.graphics
   end
   assert(graphics and graphics.newImage and graphics.newQuad, "MonIconAssetProvider requires love.graphics")
+  local pool = assert(opts.imagePool, "MonIconAssetProvider borrows its shared image owner")
+  assert(
+    type(pool.request) == "function"
+      and type(pool.poll) == "function"
+      and type(pool.acquire) == "function"
+      and type(pool.release) == "function"
+      and type(pool.cancel) == "function",
+    "MonIconAssetProvider borrows request, poll, acquire, release, and cancel from its image owner"
+  )
   local manifest = loadManifest(cacheFs)
   return setmetatable({
     _graphics = graphics,
@@ -99,21 +122,26 @@ function MonIconAssetProvider.new(cacheFs, opts)
     _manifest = manifest,
     _pageEntries = indexEntriesByPage(manifest),
     _pages = {},
-    _queue = opts.preparationQueue,
+    _pool = pool,
     _derivedAssets = opts.derivedAssets,
-    _images = {},
+    _leases = {},
+    _handles = {},
     _quads = {},
     _released = false,
   }, MonIconAssetProvider)
 end
 
+-- Icon pages sample point-filtered and clamped, matching the retired
+-- direct construction, so pooled leases draw identically.
+local POOLED_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }
+
 ---@param self MonIconAssetProvider
 ---@param pageId integer
----@return table<string, unknown> the mutable preparation record for the page
+---@return table<string, unknown> the mutable demand record for the page
 local function pageState(self, pageId)
   local state = self._pages[pageId]
   if state == nil then
-    state = { phase = "compile-pending", token = nil, payload = nil, image = nil, failure = nil }
+    state = { token = nil, failure = nil }
     self._pages[pageId] = state
   end
   return state
@@ -140,181 +168,223 @@ end
 
 ---@param self MonIconAssetProvider
 ---@param pageId integer
----@param image love.Image
-local function validatePageBounds(self, pageId, image)
-  local imageWidth, imageHeight = image:getWidth(), image:getHeight()
+---@param lease table<string, unknown> adopted shared page lease
+local function validateLeaseBounds(self, pageId, lease)
+  local width = assert(lease.width, "shared icon leases carry their page width")
+  local height = assert(lease.height, "shared icon leases carry their page height")
   for _, entry in ipairs(assert(self._pageEntries[pageId], "the page index carries the realized page")) do
     for _, frame in ipairs(entry.frames) do
-      assert(
-        frame.x + frame.width <= imageWidth and frame.y + frame.height <= imageHeight,
-        "icon frame exceeds its page"
-      )
+      assert(frame.x + frame.width <= width and frame.y + frame.height <= height, "icon frame exceeds its page")
     end
   end
 end
 
+-- Enrolls one demanded page once: compilation readiness through the
+-- semantic cache host, then one shared-owner image request. A page that is
+-- already enrolled, leased, or failed enrolls nothing more, so shared pages
+-- deduplicate and the unrelated pages stay untouched. Missing compiled
+-- bytes fail the page with its path instead of enrolling pool work that
+-- could never stage.
+
 ---@param self MonIconAssetProvider
 ---@param pageId integer
----@param payload table<string, unknown>
-local function realizePage(self, pageId, payload)
-  local imageData = assert(payload.imageData, "decoded icon page carries its image data")
-  local image = self._graphics.newImage(imageData)
-  image:setFilter("nearest", "nearest")
-  validatePageBounds(self, pageId, image)
-  self._images[pageId] = image
+local function enrollPage(self, pageId)
   local state = pageState(self, pageId)
-  state.image = image
-  state.payload = nil
-  state.phase = "ready"
+  if state.token ~= nil or self._leases[pageId] ~= nil or state.failure ~= nil then
+    return
+  end
+  local derivedAssets = assert(self._derivedAssets, "presented icon preparation requires the semantic cache host")
+  local ok, ready, failure = pcall(derivedAssets.requestIconPage, pageId, "required")
+  if not ok then
+    state.failure = tostring(ready)
+    return
+  end
+  if failure ~= nil then
+    state.failure = tostring(failure)
+    return
+  end
+  if not ready then
+    return
+  end
+  local path = MonCache.iconPagePath(pageId)
+  if self._cacheFs:read(path) == nil then
+    state.failure = "mon icon page missing at " .. path
+    return
+  end
+  state.token = self._pool:request(path, POOLED_SAMPLER, "demand")
 end
 
--- Advances the demanded pages one step: compilation readiness through the
--- semantic cache host, then one image-worker decode per compiled page,
--- then at most one GPU realization. Returns whether the full key set is
--- ready and the first page failure, if any. Unknown keys fail the round
--- as a visible error instead of enrolling partial work.
+-- Returns the leases the current demand no longer covers: each returned
+-- borrow rests idle under the shared idle limit while quads behind a
+-- released page clear with it, so getters never alias freed art and a
+-- later demand re-borrows with fresh identities.
+---@param self MonIconAssetProvider
+---@param pages integer[] sorted unique page ids behind the current demand
+local function releaseUndemandedLeases(self, pages)
+  local wanted = {}
+  for _, pageId in ipairs(pages) do
+    wanted[pageId] = true
+  end
+  local pool = assert(self._pool, "the icon provider borrows its shared image owner")
+  local evicted = {}
+  for pageId, state in pairs(self._pages) do
+    if not wanted[pageId] then
+      -- Pending interest is cancelled unstaged: enrolled-but-unpolled
+      -- worker payloads are discarded instead of retained unclaimed,
+      -- while adopted leases below rest idle under the shared limit.
+      if state.token ~= nil then
+        pool:cancel(state.token)
+        state.token = nil
+      end
+      self._pages[pageId] = nil
+      local lease = self._leases[pageId]
+      if lease ~= nil then
+        evicted[pageId] = true
+        self._leases[pageId] = nil
+        self._handles[pageId] = nil
+        pool:release(lease)
+      end
+    end
+  end
+  if next(evicted) ~= nil then
+    for iconKey, entry in pairs(self._manifest.entries) do
+      if evicted[entry.pageId] == true then
+        for frameIndex = 1, #entry.frames do
+          self._quads[iconKey .. "#" .. frameIndex] = nil
+        end
+      end
+    end
+  end
+end
+
+-- Adopts one staged page without enforcing the per-advance budget: the
+-- caller polls progressively and stops after the first adoption, so at
+-- most one new GPU page lands per preparation update while pending pages
+-- keep polling without staging.
+
+-- Advances the demanded pages one step: every independent page enrolls
+-- its compilation readiness plus its shared-owner image request first, then
+-- enrolled requests poll progressively with at most one new page adoption
+-- per call. Returns whether the full key set is ready and the first page
+-- failure, if any. Unknown keys fail the round as a visible error instead
+-- of enrolling partial work. Pending rounds keep every adopted lease (last
+-- known good) and failed rounds change nothing, so replacing demand never
+-- strands a borrower mid-transition.
 ---@param iconKeys string[]
 ---@return boolean ready
 ---@return string? failure
 function MonIconAssetProvider:prepareKeys(iconKeys)
   assert(not self._released, "the icon provider is released")
-  local queue = assert(self._queue, "presented icon preparation requires the image preparation queue")
-  local derivedAssets = assert(self._derivedAssets, "presented icon preparation requires the semantic cache host")
+  assert(self._derivedAssets, "presented icon preparation requires the semantic cache host")
+  local pool = assert(self._pool, "the icon provider borrows its shared image owner")
   local ok, pages = pcall(uniquePages, self, iconKeys)
   if not ok then
     return false, tostring(pages)
   end
   assert(pages ~= nil, "icon keys resolve to demanded pages")
+  for _, pageId in ipairs(pages) do
+    enrollPage(self, pageId)
+  end
   local allReady = true
   local firstFailure = nil
-  local realized = 0
+  local adopted = false
   for _, pageId in ipairs(pages) do
-    local state = pageState(self, pageId)
-    if state.phase == "ready" then
-      -- Already realized for the field lifetime; nothing to do.
-    elseif state.phase == "failed" then
+    local state = assert(self._pages[pageId], "demand enrolls every page before polling")
+    if self._leases[pageId] ~= nil then
+      -- Already adopted for the current demand; nothing to do.
+    elseif state.failure ~= nil then
       allReady = false
       if firstFailure == nil then
         firstFailure = state.failure
       end
-    else
-      local pageReady, pageFailure = derivedAssets.requestIconPage(pageId, "required")
-      if pageFailure ~= nil then
-        state.phase = "failed"
-        state.failure = tostring(pageFailure)
+    elseif state.token ~= nil and not adopted then
+      local status, cause = pool:poll(state.token)
+      if status == "failed" then
+        pool:cancel(state.token)
+        state.token = nil
+        state.failure = tostring(cause)
         allReady = false
         if firstFailure == nil then
           firstFailure = state.failure
         end
-      elseif not pageReady then
-        allReady = false
+      elseif status == "ready" then
+        local lease = pool:acquire(state.token)
+        state.token = nil
+        local boundsOk, boundsErr = pcall(validateLeaseBounds, self, pageId, lease)
+        if not boundsOk then
+          pool:release(lease)
+          state.failure = tostring(boundsErr)
+          allReady = false
+          if firstFailure == nil then
+            firstFailure = state.failure
+          end
+        else
+          self._leases[pageId] = lease
+          -- Sampling handles share the pool-lease draw surface so icon
+          -- consumers behind unimportable layers draw through the exact
+          -- sampler with zero new imports; the record shape is unchanged.
+          self._handles[pageId] = setmetatable({
+            image = assert(lease.image, "shared leases carry their page image"),
+            palette = lease.palette,
+            kind = lease.kind,
+            width = lease.width,
+            height = lease.height,
+          }, ImageAssetPool.Lease)
+          adopted = true
+        end
       else
-        if state.token == nil and state.payload == nil then
-          local path = MonCache.iconPagePath(pageId)
-          local bytes = self._cacheFs:read(path)
-          if bytes == nil then
-            state.phase = "failed"
-            state.failure = "mon icon page missing at " .. path
-            allReady = false
-            if firstFailure == nil then
-              firstFailure = state.failure
-            end
-          else
-            state.token = queue:request("image", path, "demand")
-          end
-        end
-        if state.phase ~= "failed" then
-          if state.payload ~= nil then
-            if realized == 0 then
-              local payloadOk, payloadErr = pcall(realizePage, self, pageId, state.payload)
-              if payloadOk then
-                realized = realized + 1
-              else
-                state.phase = "failed"
-                state.failure = tostring(payloadErr)
-                state.payload = nil
-                allReady = false
-                if firstFailure == nil then
-                  firstFailure = state.failure
-                end
-              end
-            else
-              allReady = false
-            end
-          elseif state.token ~= nil then
-            local status, cause = queue:poll(state.token)
-            if status == "failed" then
-              queue:cancel(state.token)
-              state.token = nil
-              state.phase = "failed"
-              state.failure = tostring(cause)
-              allReady = false
-              if firstFailure == nil then
-                firstFailure = state.failure
-              end
-            elseif status == "ready" then
-              state.payload = queue:take(state.token)
-              state.token = nil
-              if realized == 0 then
-                local payloadOk, payloadErr = pcall(realizePage, self, pageId, state.payload)
-                if payloadOk then
-                  realized = realized + 1
-                else
-                  state.phase = "failed"
-                  state.failure = tostring(payloadErr)
-                  state.payload = nil
-                  allReady = false
-                  if firstFailure == nil then
-                    firstFailure = state.failure
-                  end
-                end
-              else
-                allReady = false
-              end
-            else
-              allReady = false
-            end
-          else
-            allReady = false
-          end
-        end
+        allReady = false
       end
+    else
+      allReady = false
     end
+  end
+  if allReady then
+    releaseUndemandedLeases(self, pages)
   end
   return allReady, firstFailure
 end
 
--- Drops pending image interest without touching realized pages: owned
--- decode tokens cancel through the borrowed queue and compiled pages wait
--- for a fresh decode on the next round. Ready GPU pages survive for
--- reopen and reorder; release owns their lifetime instead.
+-- Drops pending image interest without touching adopted page leases:
+-- unenrolled tokens cancel through the shared owner so their worker
+-- payloads are discarded, and compiled pages wait for a fresh request on
+-- the next round. Adopted leases survive for reopen and reorder; release
+-- owns their lifetime instead.
 function MonIconAssetProvider:cancelPreparation()
-  local queue = self._queue
-  if queue == nil then
-    return
-  end
+  local pool = assert(self._pool, "the icon provider borrows its shared image owner")
   for _, state in pairs(self._pages) do
     if state.token ~= nil then
-      queue:cancel(state.token)
+      pool:cancel(state.token)
       state.token = nil
-      if state.phase ~= "failed" then
-        state.phase = "compile-pending"
-      end
     end
   end
 end
 
 -- The page image carrying one icon selector. Selectors sharing a page
--- share its image; selectors on different pages resolve to their own.
--- Read-only: an unprepared page is a loud error, never a blank icon.
+-- share its leased image; selectors on different pages resolve to their
+-- own. Read-only: an unprepared page is a loud error, never a blank icon.
 ---@param iconKey string
 ---@return love.Image the page image for draw calls
 function MonIconAssetProvider:image(iconKey)
   assert(not self._released, "the icon provider is released")
   local entry = entryFor(self._manifest, iconKey)
-  local image = self._images[entry.pageId]
-  assert(image ~= nil, "the icon page is not prepared for " .. iconKey)
-  return image
+  local lease = self._leases[entry.pageId]
+  assert(lease ~= nil, "the icon page is not prepared for " .. iconKey)
+  return lease.image
+end
+
+-- The sampling handle carrying one icon selector for palette-aware draws:
+-- the cached record over the adopted page lease, so indexed pages bind
+-- their exact palette through the shared sampler instead of rendering
+-- index bytes. Read-only like image: an unprepared page is a loud error.
+---@param iconKey string
+---@return MonIconSamplingHandle sampling handle carrying the adopted page lease surface
+function MonIconAssetProvider:handleFor(iconKey)
+  assert(not self._released, "the icon provider is released")
+  local entry = entryFor(self._manifest, iconKey)
+  local handle = self._handles[entry.pageId]
+  assert(handle ~= nil, "the icon page is not prepared for " .. iconKey)
+  return handle
 end
 
 ---@param iconKey string
@@ -330,8 +400,9 @@ function MonIconAssetProvider:quadFor(iconKey, frameIndex)
   local quad = self._quads[cacheKey]
   if quad == nil then
     local frame = entry.frames[frameIndex]
-    local image = self._images[entry.pageId]
-    assert(image ~= nil, "the icon page is not prepared for " .. iconKey)
+    local lease = self._leases[entry.pageId]
+    assert(lease ~= nil, "the icon page is not prepared for " .. iconKey)
+    local image = assert(lease.image, "shared leases carry their page image")
     quad = self._graphics.newQuad(frame.x, frame.y, frame.width, frame.height, image:getWidth(), image:getHeight())
     self._quads[cacheKey] = quad
   end
@@ -346,21 +417,22 @@ function MonIconAssetProvider:dimensions(iconKey)
   return { width = entry.width, height = entry.height }
 end
 
--- Releases every page image exactly once; quads reference no resources of
--- their own, so dropping the cache is sufficient. Safe to call repeatedly.
--- Preparation tokens cancel first so no decode outlives the provider; the
--- borrowed image queue itself is field-owned and stays live.
+-- Returns every adopted page lease exactly once; quads and sampling
+-- handles reference no resources of their own, so dropping the caches is
+-- sufficient. Safe to call repeatedly. Pending interest is abandoned
+-- unstaged first so no decode outlives the provider; the borrowed image
+-- owner itself is field-owned and stays live.
 function MonIconAssetProvider:release()
   self:cancelPreparation()
-  local images = self._images
-  self._images = {}
+  local pool = assert(self._pool, "the icon provider borrows its shared image owner")
+  local leases = self._leases
+  self._leases = {}
+  self._handles = {}
   self._quads = {}
   self._pages = {}
   self._released = true
-  for _, image in pairs(images) do
-    if image ~= nil and image.release then
-      image:release()
-    end
+  for _, lease in pairs(leases) do
+    pool:release(lease)
   end
 end
 

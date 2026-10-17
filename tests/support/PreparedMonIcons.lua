@@ -1,9 +1,10 @@
 -- Shared mon-icon fixture for graphics smoke: one synthetic MON0/f0
--- icon page in the current manifest shape, plus the immediate decoding
--- queue, the always-ready derived-asset host, and a provider prepared
--- for the demanded keys. One owner so the page contract (pageId on
--- every entry, per-page images, explicit preparation before draw) stays
--- in exactly one place instead of drifting across suites.
+-- icon page in the current manifest shape, the always-ready
+-- derived-asset host, session image owners for real and synthetic
+-- caches, and providers prepared for the demanded keys. One owner so the
+-- page contract (pageId on every entry, per-page images, explicit
+-- preparation before draw) stays in exactly one place instead of drifting
+-- across suites.
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
@@ -11,6 +12,7 @@ local FakeCache = require("tests.support.FakeCache")
 local MonCache = require("libs.assets.src.MonCache")
 local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetProvider")
 local PngWriter = require("libs.assets.src.PngWriter")
+local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
 
 local PreparedMonIcons = {}
 
@@ -47,34 +49,73 @@ function PreparedMonIcons.iconCache()
   return cache
 end
 
----@param cache CacheFs backing cache the queue decodes from
----@return table<string, unknown> immediately-ready image decoding queue
-function PreparedMonIcons.decodingQueue(cache)
-  local nextToken = 0
-  local live = {}
-  local queue = {}
-  function queue:request(kind, path, priority)
-    assert(kind == "image", "icon pages decode as images")
-    assert(priority == "demand", "visible party pages decode as demand")
-    nextToken = nextToken + 1
-    live[nextToken] = path
-    return nextToken
+---@param cache CacheFs backing cache the pool classifies from
+---@return table<string, unknown> session image owner for graphics icon preparation
+function PreparedMonIcons.imagePool(cache)
+  local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
+  return ImageAssetPool.new(cache)
+end
+
+---@param scope table<string, unknown> graphics ownership scope disposing the pool
+---@param cache CacheFs backing cache the pool classifies from
+---@return table<string, unknown> session image owner disposed with the scope
+function PreparedMonIcons.scopedImagePool(scope, cache)
+  local pool = PreparedMonIcons.imagePool(cache)
+  scope:own({
+    release = function()
+      pool:dispose()
+    end,
+  })
+  return pool
+end
+
+-- The sampler icon pages borrow under: an exact copy of the provider's
+-- own sampler state, so seeded physicals adopt instead of duplicating.
+-- A mismatch fails loudly at draw instead of aliasing.
+local SEEDED_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }
+
+---@param scope table<string, unknown> graphics ownership scope owning realized images
+---@param cache CacheFs synthetic cache carrying the icon manifest and pages
+---@param keys string[] icon selectors to prepare
+---@return table<string, unknown> provider with the demanded pages ready
+function PreparedMonIcons.seededProvider(scope, cache, keys)
+  -- Synthetic pages live in a main-thread-only test cache the pool worker
+  -- cannot see, so their exact pixels realize on the main thread and seed
+  -- the injected owner as already-classified straight content: borrow,
+  -- return, and prune semantics stay real, and only worker classification
+  -- is out of scope (proven over real caches elsewhere).
+  local manifest = assert(cache:loadLua(MonCache.iconManifestPath()), "the synthetic icon manifest loads")
+  local pool = SharedImagePoolFake.new()
+  local seenPages = {}
+  for _, entry in pairs(assert(manifest.entries, "the synthetic icon manifest carries entries")) do
+    local pageId = assert(entry.pageId, "synthetic icon entries carry their page")
+    if seenPages[pageId] ~= true then
+      seenPages[pageId] = true
+      local path = MonCache.iconPagePath(pageId)
+      local bytes = assert(cache:read(path), "the synthetic icon page is present: " .. path)
+      local data = love.image.newImageData(love.filesystem.newFileData(bytes, path))
+      local image = scope:own(love.graphics.newImage(data))
+      pool:seedPhysical(path, SEEDED_SAMPLER, {
+        image = image,
+        kind = "rgba8",
+        width = image:getWidth(),
+        height = image:getHeight(),
+      })
+    end
   end
-  function queue:poll(token)
-    assert(live[token], "poll observes a live token")
-    return "ready"
+  local provider = MonIconAssetProvider.new(cache, {
+    imagePool = pool,
+    derivedAssets = PreparedMonIcons.readyDerivedAssets(),
+  })
+  local ready, failure
+  for _ = 1, 8 do
+    ready, failure = provider:prepareKeys(keys)
+    if ready or failure ~= nil then
+      break
+    end
   end
-  function queue:take(token)
-    local path = assert(live[token], "take transfers a live token once")
-    live[token] = nil
-    local bytes = assert(cache:read(path), "the compiled icon page is present")
-    local fileData = assert(love.filesystem.newFileData(bytes, "icon-page.png"), "page bytes form a file")
-    return { imageData = assert(love.image.newImageData(fileData), "page bytes decode") }
-  end
-  function queue:cancel(token)
-    live[token] = nil
-  end
-  return queue
+  Assert.isTrue(ready, "demanded icon pages prepare: " .. tostring(failure))
+  return provider
 end
 
 ---@return table<string, unknown> derived-asset host that always grants icon pages
@@ -89,17 +130,26 @@ end
 
 ---@param cache CacheFs backing cache carrying the icon page
 ---@param keys string[] icon selectors to prepare
+---@param pool table<string, unknown> session image owner borrowing the pages
 ---@return table<string, unknown> provider with the demanded pages ready
-function PreparedMonIcons.preparedProvider(cache, keys)
+function PreparedMonIcons.preparedProvider(cache, keys, pool)
+  assert(pool ~= nil, "icon preparation borrows its session image owner")
   local provider = MonIconAssetProvider.new(cache, {
-    preparationQueue = PreparedMonIcons.decodingQueue(cache),
+    imagePool = pool,
     derivedAssets = PreparedMonIcons.readyDerivedAssets(),
   })
+  -- The session owner classifies off-thread: yield between rounds instead
+  -- of spinning the preparation update, with a bounded stall budget.
+  local deadline = os.clock() + 120
   local ready, failure
-  for _ = 1, 8 do
+  while true do
     ready, failure = provider:prepareKeys(keys)
     if ready or failure ~= nil then
       break
+    end
+    Assert.isTrue(os.clock() < deadline, "demanded icon pages prepare without stalling")
+    if love.timer ~= nil and love.timer.sleep ~= nil then
+      love.timer.sleep(0.005)
     end
   end
   Assert.isTrue(ready, "demanded icon pages prepare: " .. tostring(failure))

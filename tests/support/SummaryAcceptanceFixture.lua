@@ -10,6 +10,7 @@ local Lcrng = require("libs.mons.src.gen4.Lcrng")
 local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
 local RomImporter = require("romdump.src.source.RomImporter")
+local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
 
 local SummaryAcceptanceFixture = {}
 
@@ -114,6 +115,70 @@ function SummaryAcceptanceFixture.openService(catalog, seed)
   })
 end
 
+-- The injected shared image owner behind the Summary preparation
+-- doubles: the synchronous fake wrapped with test-only source geometry,
+-- so leased images answer getWidth/getHeight for quad construction and
+-- leases carry the straight sampling kind. Real pixel dimensions never
+-- matter here: the shared sampler is proven with real pixels in the
+-- image-sampling graphics suite, and these suites assert ownership, not
+-- texels. Suites needing real pixels install a real pool themselves.
+local POOL_IMAGE_WIDTH = 128
+local POOL_IMAGE_HEIGHT = 128
+
+---@return table<string, unknown> pool double with stamped source geometry
+---@return SharedImagePoolFake inner fake behind pool census assertions
+local function sizedImagePool()
+  local inner = SharedImagePoolFake.new()
+  local pool = {}
+  function pool:request(path, sampler, priority)
+    return inner:request(path, sampler, priority)
+  end
+  function pool:poll(token)
+    return inner:poll(token)
+  end
+  function pool:acquire(token)
+    local lease = inner:acquire(token)
+    lease.width = POOL_IMAGE_WIDTH
+    lease.height = POOL_IMAGE_HEIGHT
+    lease.kind = "rgba8"
+    local image = assert(lease.image, "shared leases carry their resolved image")
+    if image.getWidth == nil then
+      function image:getWidth()
+        return POOL_IMAGE_WIDTH
+      end
+      function image:getHeight()
+        return POOL_IMAGE_HEIGHT
+      end
+      function image:getDimensions()
+        return POOL_IMAGE_WIDTH, POOL_IMAGE_HEIGHT
+      end
+    end
+    return lease
+  end
+  function pool:release(lease)
+    return inner:release(lease)
+  end
+  function pool:cancel(token)
+    return inner:cancel(token)
+  end
+  function pool:prune()
+    return inner:prune()
+  end
+  function pool:dispose()
+    return inner:dispose()
+  end
+  function pool:stats()
+    return inner:stats()
+  end
+  return pool, inner
+end
+
+---@return table<string, unknown> pool double with stamped source geometry
+---@return SharedImagePoolFake inner fake behind pool census assertions
+function SummaryAcceptanceFixture.sizedImagePool()
+  return sizedImagePool()
+end
+
 ---@param failures table<string, boolean>? armed failure switches shared with the doubles
 ---@return table<string, unknown> counting preparation doubles
 function SummaryAcceptanceFixture.preparationDoubles(failures)
@@ -144,6 +209,7 @@ function SummaryAcceptanceFixture.preparationDoubles(failures)
       return true, nil
     end,
   }
+  local iconImage = { id = "roster-icon-image", setFilter = function() end }
   local icons = {
     prepareKeys = function(_, keys)
       local snapshot = {}
@@ -157,7 +223,10 @@ function SummaryAcceptanceFixture.preparationDoubles(failures)
       return true, nil
     end,
     image = function(_, _)
-      return { id = "roster-icon-image" }
+      return iconImage
+    end,
+    handleFor = function(_, _)
+      return { image = iconImage, kind = "rgba8", width = 32, height = 32 }
     end,
     quadFor = function(_, key)
       return { key = key }
@@ -212,11 +281,14 @@ function SummaryAcceptanceFixture.preparationDoubles(failures)
       return 0
     end,
   }
+  local pool, poolInner = sizedImagePool()
   return {
     calls = calls,
     derivedAssets = derivedAssets,
     icons = icons,
     preparationQueue = preparationQueue,
+    imagePool = pool,
+    poolInner = poolInner,
     graphics = graphics,
     text = text,
   }
@@ -256,7 +328,7 @@ function SummaryAcceptanceFixture.ownerOptions(versionId, helper)
     graphics = helper.graphics,
     text = helper.text,
     icons = helper.icons,
-    preparationQueue = helper.preparationQueue,
+    imagePool = assert(helper.imagePool, "summary preparation borrows its shared image owner"),
     derivedAssets = helper.derivedAssets,
     manifest = manifest,
   }

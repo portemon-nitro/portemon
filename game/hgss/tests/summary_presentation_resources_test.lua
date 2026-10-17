@@ -150,27 +150,42 @@ function T.preparation_leases_bound_portrait_demand_and_release_exactly_once()
     Assert.equal(again.kind, "ready", versionId .. " keeps the surviving lease usable after the old release")
     second:release()
     second:release()
-    local graphics = setup.helper.graphics
-    local resident = 0
-    for _, image in ipairs(graphics.images) do
-      if image.releaseCount == 0 then
-        resident = resident + 1
-      else
-        Assert.equal(image.releaseCount, 1, versionId .. " releases each leased portrait page exactly once")
-      end
-    end
+    local poolInner = assert(setup.helper.poolInner, "the doubles carry the pool census")
+    local chromeCount = #SummaryCache.referencedPaths(manifest)
+      + #MoveIconCache.referencedPaths(MoveIconCache.loadManifest(CacheFs.forVersion(versionId)))
     Assert.equal(
-      resident,
-      #SummaryCache.referencedPaths(manifest)
-        + #MoveIconCache.referencedPaths(MoveIconCache.loadManifest(CacheFs.forVersion(versionId))),
+      poolInner:stats().outstandingLeases,
+      chromeCount,
+      versionId .. " returns every portrait borrow on the last release while chrome stays pinned"
+    )
+    Assert.equal(
+      poolInner:stats().physicalImages,
+      chromeCount + #unique,
+      versionId .. " keeps returned portrait pages idle instead of freeing them synchronously"
+    )
+    -- The shared idle limit bounds physical retention: the idle portrait
+    -- pages free exactly once while pinned chrome stays resident.
+    local trimmed = poolInner:prune()
+    Assert.equal(trimmed, #unique, versionId .. " trims exactly the idle portrait pages")
+    Assert.equal(
+      poolInner:stats().physicalImages,
+      chromeCount,
       versionId .. " keeps the family visuals resident across leases"
     )
     Assert.equal(setup.helper.calls.iconReleases, 0, versionId .. " never releases the borrowed icon provider")
-    Assert.equal(setup.helper.calls.queueReleases, 0, versionId .. " never releases the borrowed image queue")
     owner:release()
-    for _, image in ipairs(graphics.images) do
-      Assert.equal(image.releaseCount, 1, versionId .. " releases each owned image exactly once")
-    end
+    Assert.equal(
+      poolInner:stats().outstandingLeases,
+      0,
+      versionId .. " returns every remaining borrow on owner release"
+    )
+    local finalTrimmed = poolInner:prune()
+    Assert.equal(finalTrimmed, chromeCount, versionId .. " trims every returned chrome visual")
+    Assert.equal(
+      poolInner:stats().physicalImages,
+      0,
+      versionId .. " reclaims every physical image exactly once with no double free"
+    )
   end
 end
 
@@ -221,13 +236,21 @@ function T.field_release_invalidates_leases_and_keeps_borrowed_owners_alive()
     owner:release()
     local invalidated = pcall(lease.prepare, lease, demandFor(service, context, manifest, "demand-release", 1))
     Assert.isFalse(invalidated, versionId .. " invalidates remaining leases on field release")
-    local graphics = setup.helper.graphics
-    for _, image in ipairs(graphics.images) do
-      Assert.equal(image.releaseCount, 1, versionId .. " disposes each owned GPU object once")
-    end
+    local poolInner = assert(setup.helper.poolInner, "the doubles carry the pool census")
+    Assert.equal(
+      poolInner:stats().outstandingLeases,
+      0,
+      versionId .. " returns every borrow on field release"
+    )
+    local trimmed = poolInner:prune()
+    Assert.isTrue(trimmed > 0, versionId .. " trims the returned physical images")
+    Assert.equal(
+      poolInner:stats().physicalImages,
+      0,
+      versionId .. " reclaims each borrowed GPU object once with no double free"
+    )
     Assert.equal(setup.helper.calls.iconCancels, 0, versionId .. " never cancels the borrowed icon provider")
     Assert.equal(setup.helper.calls.iconReleases, 0, versionId .. " never releases the borrowed icon provider")
-    Assert.equal(setup.helper.calls.queueReleases, 0, versionId .. " never releases the borrowed image queue")
   end
 end
 
@@ -254,7 +277,7 @@ local function syntheticComposition(failures, versionId)
         graphics = helper.graphics,
         text = helper.text,
         icons = helper.icons,
-        preparationQueue = helper.preparationQueue,
+        imagePool = assert(helper.imagePool, "the doubles carry the shared image owner"),
         derivedAssets = helper.derivedAssets,
         manifest = manifest,
       }
@@ -341,8 +364,8 @@ function T.constructor_and_demand_shapes_fail_loudly()
     for key, value in pairs(options) do
       bad[key] = value
     end
-    bad.preparationQueue = nil
-    Assert.isFalse(pcall(Resources.new, bad), versionId .. " requires its image queue")
+    bad.imagePool = nil
+    Assert.isFalse(pcall(Resources.new, bad), versionId .. " requires its shared image owner")
     local owner = Resources.new(setup.newOptions())
     local lease = owner:acquire()
     Assert.isFalse(
@@ -388,32 +411,41 @@ function T.late_completions_land_quietly_after_lease_release()
   for _, versionId in ipairs(versions) do
     local setup = syntheticComposition({}, versionId)
     local gate = { ready = false }
-    local tokens = {}
-    local queue = {
-      request = function(_, kind, path, priority)
-        local token = { id = #tokens + 1, kind = kind, path = path, priority = priority }
-        tokens[#tokens + 1] = token
-        return token
-      end,
-      poll = function(_, token)
-        if gate.ready then
-          return "ready"
-        end
-        return "pending"
-      end,
-      take = function(_, token)
-        Assert.isTrue(gate.ready, "payloads transfer once ready")
-        return { bytes = "late-image-bytes", path = token.path }
-      end,
-      cancel = function(_, _) end,
-      release = function(_) end,
-    }
+    local shared = assert(setup.helper.imagePool, "the doubles carry the shared image owner")
+    local requested = {}
+    local pool = {}
+    function pool:request(path, sampler, priority)
+      requested[#requested + 1] = path
+      return shared:request(path, sampler, priority)
+    end
+    function pool:poll(token)
+      if gate.ready then
+        return shared:poll(token)
+      end
+      return "pending"
+    end
+    function pool:acquire(token)
+      return shared:acquire(token)
+    end
+    function pool:release(lease)
+      return shared:release(lease)
+    end
+    function pool:cancel(token)
+      return shared:cancel(token)
+    end
+    function pool:prune()
+      return shared:prune()
+    end
+    function pool:stats()
+      return shared:stats()
+    end
     local options = setup.newOptions()
-    options.preparationQueue = queue
+    options.imagePool = pool
     local owner = Resources.new(options)
     local first = owner:acquire()
     local outcome = assert(first:prepare(syntheticDemand("late", 1)))
-    Assert.equal(outcome.kind, "pending", versionId .. " waits on gated decodes")
+    Assert.equal(outcome.kind, "pending", versionId .. " waits on gated image requests")
+    Assert.isTrue(#requested >= 1, versionId .. " enrolls portrait demand before the first pending answer")
     first:release()
     first:release()
     gate.ready = true
@@ -425,26 +457,26 @@ function T.late_completions_land_quietly_after_lease_release()
         break
       end
     end
-    Assert.equal(ready.kind, "ready", versionId .. " lands late worker results for a live lease")
+    Assert.equal(ready.kind, "ready", versionId .. " lands late image results for a live lease")
     Assert.equal(ready.key, "late", versionId .. " qualifies late results by the live demand key")
     second:release()
     owner:release()
   end
 end
 
--- Counts image-queue requests per cache-relative path from installation
--- onward: the returned table fills as preparation issues requests, so
--- callers install it before preparing and read per-path totals after
--- the demand settles.
+-- Counts shared-owner image requests per cache-relative path from
+-- installation onward: the returned table fills as preparation enrolls
+-- demand, so callers install it before preparing and read per-path totals
+-- after the demand settles.
 ---@param helper table<string, unknown> preparation doubles
 ---@return table<string, integer> live per-path request counts
-local function countQueueRequests(helper)
+local function countPoolRequests(helper)
   local counts = {}
-  local queue = assert(helper.preparationQueue, "the doubles carry the image queue")
-  local inner = assert(queue.request, "the image queue issues requests")
-  queue.request = function(_, kind, path, priority)
+  local pool = assert(helper.imagePool, "the doubles carry the shared image owner")
+  local inner = assert(pool.request, "the image owner enrolls requests")
+  pool.request = function(_, path, sampler, priority)
     counts[path] = (counts[path] or 0) + 1
-    return inner(_, kind, path, priority)
+    return inner(pool, path, sampler, priority)
   end
   return counts
 end
@@ -494,7 +526,12 @@ function T.dynamic_frame_visuals_prepare_through_the_existing_owner()
     end
     Assert.isTrue(#frameImages > 0, versionId .. " references frame images in its synthetic chrome")
     local owner = Resources.new(setup.newOptions())
-    local counts = countQueueRequests(setup.helper)
+    local counts = countPoolRequests(setup.helper)
+    Assert.equal(
+      setup.helper.poolInner:stats().physicalImages,
+      0,
+      versionId .. " stages no chrome image at construction"
+    )
     local lease = owner:acquire()
     local outcome = nil
     for _ = 1, 12 do
@@ -507,7 +544,16 @@ function T.dynamic_frame_visuals_prepare_through_the_existing_owner()
     local assets = assert(outcome.assets, versionId .. " carries its bundle on readiness")
     for _, image in ipairs(frameImages) do
       Assert.notNil(assets.imageForPath(image), versionId .. " resolves frame " .. image)
-      Assert.isNil(counts[image], versionId .. " loads frame " .. image .. " at construction, not through the queue")
+      Assert.equal(
+        counts[image],
+        1,
+        versionId .. " pins frame " .. image .. " once on first demand, not per open"
+      )
+    end
+    local repinned = assert(lease:prepare(syntheticDemand("dynamic-chrome", 1)))
+    Assert.equal(repinned.kind, "ready", versionId .. " keeps the pinned chrome drawable")
+    for _, image in ipairs(frameImages) do
+      Assert.equal(counts[image], 1, versionId .. " never re-enrolls pinned frame " .. image)
     end
     lease:release()
     lease:release()
@@ -561,7 +607,7 @@ local function exactComposition(entries, manifest)
     graphics = helper.graphics,
     text = helper.text,
     icons = helper.icons,
-    preparationQueue = helper.preparationQueue,
+    imagePool = assert(helper.imagePool, "the doubles carry the shared image owner"),
     derivedAssets = helper.derivedAssets,
     manifest = family,
   })
@@ -590,14 +636,14 @@ local function exactDemand(key, selectors)
 end
 
 ---@param helper table<string, unknown> preparation doubles
----@return table<string, integer> decode request counts by cache-relative path
-local function countQueueRequests(helper)
-  local queue = assert(helper.preparationQueue, "the doubles carry the image queue")
-  local inner = assert(queue.request, "the queue requests by path")
+---@return table<string, integer> image request counts by cache-relative path
+local function countPoolRequests(helper)
+  local pool = assert(helper.imagePool, "the doubles carry the shared image owner")
+  local inner = assert(pool.request, "the owner enrolls by path")
   local counts = {}
-  queue.request = function(self, kind, path, priority)
+  pool.request = function(self, path, sampler, priority)
     counts[path] = (counts[path] or 0) + 1
-    return inner(self, kind, path, priority)
+    return inner(self, path, sampler, priority)
   end
   return counts
 end
@@ -695,15 +741,17 @@ function T.shared_paths_resolve_one_canonical_image()
   family.bars.hp.full = { image = shared, width = 8, height = 8 }
   family.visuals.namedPanel = { image = shared, width = 8, height = 8 }
   local setup = exactComposition({ [selector] = portraitEntry(3) }, family)
-  local counts = countQueueRequests(setup.helper)
-  Assert.equal(
-    #setup.helper.graphics.images,
-    #SummaryCache.referencedPaths(family) + #MoveIconCache.referencedPaths(MoveIconFixture.manifest()),
-    "one path loads one image no matter how many records name it"
-  )
+  local counts = countPoolRequests(setup.helper)
+  local poolInner = assert(setup.helper.poolInner, "the doubles carry the pool census")
+  Assert.equal(poolInner:stats().physicalImages, 0, "construction stages no image before the first demand")
   local lease = setup.owner:acquire()
   local ready = prepareToTerminal(lease, exactDemand("shared-path", { selector }))
   Assert.equal(ready.kind, "ready", "the shared-path demand prepares")
+  Assert.equal(
+    poolInner.uploads,
+    #SummaryCache.referencedPaths(family) + #MoveIconCache.referencedPaths(MoveIconFixture.manifest()) + 1,
+    "one path borrows one physical image no matter how many records name it, plus the portrait page"
+  )
   local assets = assert(ready.assets, "ready preparation carries its bundle")
   Assert.isTrue(
     type(assets.imageForPath) == "function",
@@ -725,55 +773,91 @@ function T.shared_paths_resolve_one_canonical_image()
     pcall(assets.imageForPath, "assets/generated/summary/absent.png"),
     "an unprepared path asserts instead of returning nil"
   )
-  Assert.isNil(counts[shared], "family visuals never ride the preparation queue")
+  Assert.equal(counts[shared], 1, "family visuals borrow the shared owner once on first demand")
+  local repinned = prepareToTerminal(lease, exactDemand("shared-path", { selector }))
+  Assert.equal(repinned.kind, "ready", "the pinned demand stays ready")
+  Assert.equal(counts[shared], 1, "family visuals never re-enroll per open")
   lease:release()
   setup.owner:release()
 end
 
-function T.last_lease_release_frees_pages_while_family_visuals_stay_resident()
+function T.last_lease_release_returns_pages_while_family_visuals_stay_pinned()
   local selector = MonCache.portraitSelector("CHIKORITA", 0, "male", false)
   local setup = exactComposition({ [selector] = portraitEntry(3) })
   local owner = setup.owner
-  local graphics = setup.helper.graphics
-  local visualCount = #graphics.images
-  Assert.equal(
-    visualCount,
-    #SummaryCache.referencedPaths(setup.manifest) + #MoveIconCache.referencedPaths(MoveIconFixture.manifest()),
-    "construction loads every family and shared move icon visual"
-  )
+  local poolInner = assert(setup.helper.poolInner, "the doubles carry the pool census")
+  local chromeCount = #SummaryCache.referencedPaths(setup.manifest)
+    + #MoveIconCache.referencedPaths(MoveIconFixture.manifest())
+  Assert.equal(poolInner:stats().physicalImages, 0, "construction stages no image before the first demand")
   local first = owner:acquire()
   local second = owner:acquire()
   local demand = exactDemand("shared-lifetime", { selector })
   local ready = prepareToTerminal(first, demand)
   Assert.equal(ready.kind, "ready", "the first lease prepares")
   local shader = assert(ready.assets.shader, "ready preparation carries its picture shader")
+  local page = ready.assets.portraits:image(selector)
+  local firstQuad = ready.assets.portraits:quadFor(selector, 1)
+  local chromeSample = ready.assets.visualImage("detailBacking")
+  Assert.equal(
+    poolInner.uploads,
+    chromeCount + 1,
+    "the first demand pins chrome plus exactly the portrait page"
+  )
   local shared = prepareToTerminal(second, demand)
   Assert.equal(shared.kind, "ready", "the second lease shares the demand")
+  Assert.equal(
+    poolInner.uploads,
+    chromeCount + 1,
+    "the shared demand borrows no duplicate physical image"
+  )
   first:release()
   local surviving = prepareToTerminal(second, demand)
   Assert.equal(surviving.kind, "ready", "the surviving lease stays usable after the old release")
-  Assert.notNil(surviving.assets.portraits:image(selector), "the surviving lease keeps its portrait page")
-  Assert.equal(#graphics.images, visualCount + 1, "preparation realizes only the portrait page")
-  local page = graphics.images[visualCount + 1]
+  Assert.isTrue(
+    surviving.assets.portraits:image(selector) == page,
+    "the surviving lease keeps its portrait page"
+  )
+  Assert.equal(page.releaseCount, 0, "the watched page stays borrowed while a live lease watches it")
   second:release()
-  Assert.equal(page.releaseCount, 1, "the last release frees the portrait page exactly once")
-  for index = 1, visualCount do
-    Assert.equal(graphics.images[index].releaseCount, 0, "the family visuals outlive their leases")
-  end
+  Assert.equal(
+    poolInner:stats().outstandingLeases,
+    chromeCount,
+    "the last release returns the portrait borrow while chrome stays pinned"
+  )
+  Assert.equal(page.releaseCount, 0, "the returned page rests idle instead of freeing synchronously")
+  Assert.equal(chromeSample.releaseCount, 0, "the family visuals outlive their leases")
+  -- The shared idle limit bounds physical retention: the idle portrait
+  -- frees exactly once while pinned chrome stays resident regardless of
+  -- idle age.
+  poolInner:prune()
+  Assert.equal(page.releaseCount, 1, "the idle trim frees the returned portrait page exactly once")
+  Assert.equal(chromeSample.releaseCount, 0, "the trim keeps pinned chrome resident")
   Assert.isTrue(shader.released ~= true, "the picture shader outlives its leases")
   local third = owner:acquire()
   local rebuilt = prepareToTerminal(third, exactDemand("shared-lifetime", { selector }))
   Assert.equal(rebuilt.kind, "ready", "a later lease reacquires after the last release")
   Assert.equal(rebuilt.assets.shader, shader, "reacquisition reuses the resident picture shader")
-  Assert.equal(#graphics.images, visualCount + 2, "reacquisition realizes a fresh portrait page only")
-  Assert.equal(page.releaseCount, 1, "reacquisition never touches released handles")
+  Assert.equal(poolInner.uploads, chromeCount + 2, "reacquisition borrows a fresh portrait page only")
+  Assert.isTrue(
+    rebuilt.assets.portraits:image(selector) ~= page,
+    "reacquisition never revives the trimmed handle"
+  )
+  Assert.equal(page.releaseCount, 1, "reacquisition never touches trimmed handles")
+  local rebuiltQuad = rebuilt.assets.portraits:quadFor(selector, 1)
+  Assert.isTrue(rebuiltQuad ~= firstQuad, "the trimmed page rebuilds its quads instead of aliasing freed art")
+  Assert.deepEqual(
+    { x = rebuiltQuad.x, y = rebuiltQuad.y, w = rebuiltQuad.w, h = rebuiltQuad.h },
+    { x = firstQuad.x, y = firstQuad.y, w = firstQuad.w, h = firstQuad.h },
+    "rebuilt quads keep their geometry"
+  )
   Assert.equal(setup.helper.calls.iconReleases, 0, "reacquisition never releases the borrowed icon provider")
-  Assert.equal(setup.helper.calls.queueReleases, 0, "reacquisition never releases the borrowed image queue")
   third:release()
   owner:release()
-  for _, image in ipairs(graphics.images) do
-    Assert.equal(image.releaseCount, 1, "the owner release frees every remaining image exactly once")
-  end
+  Assert.equal(poolInner:stats().outstandingLeases, 0, "the owner release returns every remaining borrow")
+  poolInner:prune()
+  Assert.equal(poolInner:stats().physicalImages, 0, "the idle trim reclaims every returned physical image")
+  Assert.equal(page.releaseCount, 1, "the owner release never double-frees the trimmed page")
+  Assert.equal(chromeSample.releaseCount, 1, "the owner release frees every pinned visual exactly once")
 end
 
 function T.egg_only_demand_requests_no_portrait_page()
@@ -823,12 +907,12 @@ end
 function T.duplicate_selectors_coalesce_to_one_page()
   local selector = MonCache.portraitSelector("CHIKORITA", 0, "male", false)
   local setup = exactComposition({ [selector] = portraitEntry(3) })
-  local counts = countQueueRequests(setup.helper)
+  local counts = countPoolRequests(setup.helper)
   local lease = setup.owner:acquire()
   local ready = prepareToTerminal(lease, exactDemand("duplicates", { selector, selector }))
   Assert.equal(ready.kind, "ready", "duplicated identities prepare")
   Assert.equal(#setup.helper.calls.portraitPages, 1, "one shared page compiles once")
-  Assert.equal(counts[MonCache.portraitPagePath(3)], 1, "one shared page decodes once")
+  Assert.equal(counts[MonCache.portraitPagePath(3)], 1, "one shared page borrows once")
   local assets = assert(ready.assets, "ready preparation carries its bundle")
   Assert.isTrue(
     assets.portraits:image(selector) == assets.portraits:image(selector),
@@ -836,6 +920,238 @@ function T.duplicate_selectors_coalesce_to_one_page()
   )
   lease:release()
   setup.owner:release()
+end
+
+-- Overlapping per-open picture epochs over one shared portrait page: two
+-- leases prepare changing epochs, the first cancels, the survivor trims
+-- and redraws. Every independent icon, portrait, and cry prerequisite is
+-- enrolled before the first pending answer; the survivor keeps one common
+-- physical portrait image with no late resurrection of the replaced page
+-- and no double free, while the picture shader and shared quads outlive
+-- the turnover. A later failing page cannot disturb the retained page.
+function T.concurrent_picture_epochs_share_one_portrait_image_and_enroll_before_pending()
+  local Resources = requireResources()
+  local shared = MonCache.portraitSelector("CHIKORITA", 0, "male", false)
+  local firstOnly = MonCache.portraitSelector("CHIKORITA", 0, "female", false)
+  local secondOnly = MonCache.portraitSelector("TOTODILE", 0, "male", false)
+  local entries = {
+    [shared] = portraitEntry(3),
+    [firstOnly] = portraitEntry(9),
+    [secondOnly] = portraitEntry(12),
+  }
+  local helper = SummaryAcceptanceFixture.preparationDoubles({})
+  local baseIcons = helper.icons
+  local iconRounds = 0
+  local icons = {
+    image = baseIcons.image,
+    quadFor = baseIcons.quadFor,
+    dimensions = baseIcons.dimensions,
+    cancelPreparation = baseIcons.cancelPreparation,
+    release = baseIcons.release,
+  }
+  function icons.prepareKeys(_, keys)
+    iconRounds = iconRounds + 1
+    helper.calls.iconPrepares[#helper.calls.iconPrepares + 1] = keys
+    if iconRounds <= 2 then
+      return false, nil
+    end
+    return true, nil
+  end
+  local baseDerived = helper.derivedAssets
+  local cryWaits = { [201] = 1 }
+  local derivedAssets = {
+    requestMonPortraitPage = function(pageId, priority)
+      return baseDerived.requestMonPortraitPage(pageId, priority)
+    end,
+    requestAudioBank = function(bankId, priority)
+      if cryWaits[bankId] ~= nil and cryWaits[bankId] > 0 then
+        cryWaits[bankId] = cryWaits[bankId] - 1
+        helper.calls.cryBanks[#helper.calls.cryBanks + 1] = { pageId = bankId }
+        return false, nil
+      end
+      return baseDerived.requestAudioBank(bankId, priority)
+    end,
+  }
+  local sharedPool = assert(helper.imagePool, "the doubles carry the shared image owner")
+  local poolInner = assert(helper.poolInner, "the doubles carry the pool census")
+  local decodeRequests = {}
+  local pool = {}
+  function pool:request(path, sampler, priority)
+    decodeRequests[path] = (decodeRequests[path] or 0) + 1
+    return sharedPool:request(path, sampler, priority)
+  end
+  function pool:poll(token)
+    return sharedPool:poll(token)
+  end
+  function pool:acquire(token)
+    return sharedPool:acquire(token)
+  end
+  function pool:release(lease)
+    return sharedPool:release(lease)
+  end
+  function pool:cancel(token)
+    return sharedPool:cancel(token)
+  end
+  function pool:prune()
+    return sharedPool:prune()
+  end
+  function pool:stats()
+    return sharedPool:stats()
+  end
+  local family = SummaryPresentationFixture.manifest()
+  local owner = Resources.new({
+    cacheFs = portraitCache(entries),
+    graphics = helper.graphics,
+    text = helper.text,
+    icons = icons,
+    imagePool = pool,
+    derivedAssets = derivedAssets,
+    manifest = family,
+  })
+  Assert.equal(poolInner:stats().physicalImages, 0, "construction stages no image before the first demand")
+  Assert.equal(#helper.graphics.shaders, 1, "construction keeps the non-image picture shader resident")
+
+  local function demand(key, epoch, selectors, banks)
+    return {
+      key = key,
+      revision = 7,
+      pictureEpoch = epoch,
+      portraitSelectors = selectors,
+      iconKeys = { "test-icon-a", "test-icon-b" },
+      cryBanks = banks,
+    }
+  end
+  local function requestedIds(records)
+    local found = {}
+    for _, record in ipairs(records) do
+      found[record.pageId] = (found[record.pageId] or 0) + 1
+    end
+    return found
+  end
+  local sharedPath = MonCache.portraitPagePath(3)
+  local firstPath = MonCache.portraitPagePath(9)
+
+  local demandA = demand("first-picture", 1, { shared, firstOnly }, { 152, 158 })
+  local first = owner:acquire()
+  local waiting = assert(first:prepare(demandA), "prepare reports its lease state")
+  Assert.equal(waiting.kind, "pending", "the first round waits on the icon pages")
+  local enrolledPages = requestedIds(helper.calls.portraitPages)
+  Assert.equal(enrolledPages[3], 1, "the shared portrait page enrolls before the first pending answer")
+  Assert.equal(enrolledPages[9], 1, "the first-only portrait page enrolls before the first pending answer")
+  local enrolledBanks = requestedIds(helper.calls.cryBanks)
+  Assert.equal(enrolledBanks[152], 1, "the first cry bank enrolls before the first pending answer")
+  Assert.equal(enrolledBanks[158], 1, "the second cry bank enrolls before the first pending answer")
+  Assert.equal(decodeRequests[sharedPath], 1, "the shared page enrolls before the first pending answer")
+  Assert.equal(decodeRequests[firstPath], 1, "the first-only page enrolls before the first pending answer")
+  Assert.equal(
+    poolInner:stats().outstandingLeases,
+    1,
+    "the first round adopts one portrait page while icons are still pending"
+  )
+  local waitingAgain = assert(first:prepare(demandA), "prepare reports its lease state")
+  Assert.equal(waitingAgain.kind, "pending", "the second round still waits on the icon pages")
+  Assert.equal(
+    poolInner:stats().outstandingLeases,
+    2,
+    "both portrait leases land while icons are still pending"
+  )
+  local readyA = prepareToTerminal(first, demandA)
+  Assert.equal(readyA.kind, "ready", "the first picture settles once its icons arrive")
+  Assert.equal(readyA.key, "first-picture", "readiness carries the first demand key")
+  local bundleA = assert(readyA.assets, "ready preparation carries its bundle")
+  local sharedImage = bundleA.portraits:image(shared)
+  local firstImage = bundleA.portraits:image(firstOnly)
+  local sharedQuad = bundleA.portraits:quadFor(shared, 1)
+  local firstQuad = bundleA.portraits:quadFor(firstOnly, 1)
+  local shader = assert(bundleA.shader, "ready preparation carries its picture shader")
+  local uploadsAfterA = poolInner.uploads
+
+  local demandB = demand("second-picture", 2, { shared, secondOnly }, { 152, 158 })
+  local second = owner:acquire()
+  local readyB = prepareToTerminal(second, demandB)
+  Assert.equal(readyB.kind, "ready", "the overlapping picture settles on its changed epoch")
+  Assert.equal(readyB.key, "second-picture", "the replacement key never adopts the stale picture")
+  local bundleB = assert(readyB.assets, "ready preparation carries its bundle")
+  Assert.isTrue(bundleB.portraits:image(shared) == sharedImage, "overlapping leases share one physical portrait image")
+  local settledPages = requestedIds(helper.calls.portraitPages)
+  Assert.equal(settledPages[3], 1, "the shared page compiles once across overlapping leases")
+  Assert.equal(settledPages[12], 1, "the second-only page compiles once")
+  Assert.equal(
+    poolInner.uploads - uploadsAfterA,
+    1,
+    "the overlapping picture borrows only its new second-only page"
+  )
+  local chromeCount = #SummaryCache.referencedPaths(family)
+    + #MoveIconCache.referencedPaths(MoveIconFixture.manifest())
+  Assert.equal(
+    uploadsAfterA,
+    chromeCount + 2,
+    "the first picture pins chrome plus its two portrait pages with no duplicates"
+  )
+
+  first:release()
+  local redrawn = prepareToTerminal(second, demandB)
+  Assert.equal(redrawn.kind, "ready", "the surviving lease stays ready after the old release")
+  Assert.equal(redrawn.key, "second-picture", "the surviving picture is unchanged by the trim")
+  Assert.equal(firstImage.releaseCount, 0, "the returned page rests idle instead of freeing synchronously")
+  -- The shared idle limit bounds physical retention: the explicit trim
+  -- frees the replaced page exactly once while the shared page survives.
+  local trimmed = poolInner:prune()
+  Assert.equal(trimmed, 1, "the trim reclaims exactly the replaced portrait page")
+  Assert.equal(firstImage.releaseCount, 1, "the replaced page frees exactly once on trim")
+  Assert.equal(sharedImage.releaseCount, 0, "the shared page survives the trim")
+  local bundleB2 = assert(redrawn.assets, "ready preparation carries its bundle")
+  Assert.isTrue(bundleB2.portraits:image(shared) == sharedImage, "the second picture still draws the same image")
+  Assert.isTrue(bundleB2.shader == shader, "the picture shader outlives the lease turnover")
+  Assert.isTrue(bundleB2.portraits:quadFor(shared, 1) == sharedQuad, "shared quads stay resolved with their page")
+  Assert.equal(requestedIds(helper.calls.portraitPages)[9], 1, "the cancelled page never resurrects")
+  Assert.isFalse(pcall(first.prepare, first, demandA), "the cancelled lease never prepares again")
+  local chromeSample = bundleB2.visualImage("detailBacking")
+
+  local revived = owner:acquire()
+  local readyAgain = prepareToTerminal(revived, demand("first-picture-again", 3, { firstOnly }, { 152 }))
+  Assert.equal(readyAgain.kind, "ready", "a later lease reacquires the dropped page")
+  local rebuilt = readyAgain.assets.portraits:quadFor(firstOnly, 1)
+  Assert.isTrue(rebuilt ~= firstQuad, "the dropped page rebuilds its quads instead of aliasing freed art")
+  Assert.deepEqual(
+    { x = rebuilt.x, y = rebuilt.y, w = rebuilt.w, h = rebuilt.h },
+    { x = firstQuad.x, y = firstQuad.y, w = firstQuad.w, h = firstQuad.h },
+    "rebuilt quads keep their geometry"
+  )
+  revived:release()
+
+  local demandC = demand("third-picture", 3, { shared }, { 201 })
+  local cryWaiting = assert(second:prepare(demandC), "prepare reports its lease state")
+  Assert.equal(cryWaiting.kind, "pending", "a pending cry bank waits even with its portrait cached")
+  local waitedBanks = requestedIds(helper.calls.cryBanks)
+  Assert.isTrue((waitedBanks[201] or 0) >= 1, "the cry bank enrolls even with its portrait cached")
+  local readyC = prepareToTerminal(second, demandC)
+  Assert.equal(readyC.kind, "ready", "the cached portrait settles once its cry bank arrives")
+  Assert.equal(readyC.key, "third-picture", "readiness carries the third demand key")
+
+  local missing = MonCache.portraitSelector("MEW", 0, "male", false)
+  local uploadsBefore = poolInner.uploads
+  local fourth = owner:acquire()
+  local refused = prepareToTerminal(fourth, demand("fourth-picture", 4, { shared, missing }, { 152 }))
+  Assert.equal(refused.kind, "failed", "a page without generated art fails instead of falling back")
+  Assert.isTrue(
+    tostring(refused.error):find(missing, 1, true) ~= nil,
+    "the failure names the missing portrait identity"
+  )
+  Assert.equal(poolInner.uploads, uploadsBefore, "the failed page borrows no image")
+  Assert.equal(sharedImage.releaseCount, 0, "the retained page survives the sibling failure")
+  Assert.isTrue(bundleB2.portraits:image(shared) == sharedImage, "the live lease still draws after the sibling failure")
+  fourth:release()
+
+  second:release()
+  owner:release()
+  Assert.equal(poolInner:stats().outstandingLeases, 0, "the owner release returns every remaining borrow")
+  poolInner:prune()
+  Assert.equal(poolInner:stats().physicalImages, 0, "the idle trim reclaims every returned physical image")
+  Assert.equal(sharedImage.releaseCount, 1, "the shared page frees exactly once with no double free")
+  Assert.equal(firstImage.releaseCount, 1, "the replaced page stays freed exactly once")
+  Assert.equal(chromeSample.releaseCount, 1, "the pinned chrome frees exactly once")
+  Assert.equal(helper.calls.iconReleases, 0, "the borrowed icon provider outlives the owner")
 end
 
 function T.runtime_summary_binding_is_identity_qualified()

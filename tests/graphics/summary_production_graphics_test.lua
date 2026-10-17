@@ -6,6 +6,7 @@
 -- renderer, and real caches throughout; sibling dispatch is preserved.
 
 local Assert = require("tests.support.Assert")
+local ImageSampling = require("libs.nds.src.love.ImageSampling")
 local MoveIconCache = require("libs.assets.src.MoveIconCache")
 local RosterIconStandIn = require("tests.support.RosterIconStandIn")
 local CacheFs = require("libs.storage.src.CacheFs")
@@ -22,6 +23,7 @@ local Party = require("libs.mons.src.Party")
 local PartyCache = require("libs.assets.src.PartyCache")
 local RomImporter = require("romdump.src.source.RomImporter")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
+local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
 local SummaryAcceptanceFixture = require("tests.support.SummaryAcceptanceFixture")
 local SummaryModel = require("libs.hgss.src.ui.SummaryModel")
 local SummaryRenderer = require("libs.hgss.src.ui.SummaryRenderer")
@@ -305,12 +307,15 @@ end
 
 -- Test-local atlas glue: quads cut from a realized atlas image through
 -- manifest entries. Production wiring owns its own provider; the renderer
--- only requires image/quadFor/dimensions.
+-- only requires image/handleFor/quadFor/dimensions.
 local function atlasProvider(graphics, image, entries)
   local quads = {}
   return {
     image = function()
       return image
+    end,
+    handleFor = function()
+      return { image = image, kind = "rgba8", width = image:getWidth(), height = image:getHeight() }
     end,
     quadFor = function(_, selector)
       local entry = assert(entries[selector], "atlas carries " .. tostring(selector))
@@ -428,7 +433,9 @@ local function pictureShader(scope)
     handle:close()
   end
   Assert.notNil(source, "the picture shader source loads")
-  return scope:own(love.graphics.newShader(source))
+  -- Mirror production bundle assembly: the shared sampling rule splices
+  -- into the picture shader before compilation.
+  return scope:own(love.graphics.newShader(ImageSampling.withSharedSampling(source)))
 end
 
 -- Ready-bundle-shaped test assembly over realized cache art: named
@@ -573,6 +580,11 @@ local function fprRuntime(versionId)
     fieldTerrainEffectController = {
       setModelFactory = function(_, _) end,
     },
+    -- The presentation composition borrows its session image owner for
+    -- icons, Summary, and PC visuals even though this suite never draws
+    -- through it: the injected pool keeps construction honest without
+    -- staging anything behind the doubles.
+    imageAssets = SharedImagePoolFake.new(),
   }
   runtime.derivedAssets = {}
   runtime.bindPartyIconPreparation = function(_, _, _)

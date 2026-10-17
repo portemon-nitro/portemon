@@ -1,7 +1,7 @@
 -- A roster icon provider over one generated 32x32 image, for graphics
 -- tests that draw the Summary without preparing the real icon pages.
--- The provider keeps the production read surface: image, quadFor, and
--- dimensions by icon key.
+-- The provider keeps the production read surface: image, handleFor,
+-- quadFor, and dimensions by icon key.
 
 local RosterIconStandIn = {}
 
@@ -17,6 +17,9 @@ function RosterIconStandIn.new(scope)
   local provider = {}
   function provider:image(_)
     return image
+  end
+  function provider:handleFor(_)
+    return { image = image, kind = "rgba8", width = 32, height = 32 }
   end
   function provider:quadFor(_)
     return quad

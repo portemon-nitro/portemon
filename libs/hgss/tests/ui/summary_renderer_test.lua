@@ -587,10 +587,13 @@ end
 
 ---@return table<string, unknown> roster icon provider over one dummy image
 local function iconDouble()
-  local image = { id = "icon-image" }
+  local image = { id = "icon-image", setFilter = function() end }
   local icons = {}
   function icons:image(_)
     return image
+  end
+  function icons:handleFor(_)
+    return { image = image, kind = "rgba8", width = 32, height = 32 }
   end
   function icons:quadFor(key)
     return { key = key }
@@ -604,11 +607,15 @@ end
 ---@param calls table<string, unknown> recorded portrait reads
 ---@return table<string, unknown> portrait provider over one dummy image
 local function portraitDouble(calls)
-  local image = { id = "portrait-image" }
+  local image = { id = "portrait-image", setFilter = function() end }
   local portraits = {}
   function portraits:image(selector)
     calls.images[#calls.images + 1] = selector
     return image
+  end
+  function portraits:handleFor(selector)
+    calls.images[#calls.images + 1] = selector
+    return { image = image, kind = "rgba8", width = 80, height = 80 }
   end
   function portraits:quadFor(selector, frameIndex)
     calls.quads[#calls.quads + 1] = { selector = selector, frameIndex = frameIndex }

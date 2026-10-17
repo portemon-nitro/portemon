@@ -928,6 +928,11 @@ local function fprRuntime(versionId)
       setModelFactory = function(_, _) end,
     },
   }
+  -- The presentation composition borrows its session image owner for
+  -- icons, Summary, and PC visuals even though this suite draws through
+  -- rig-owned bundles: the sized pool keeps real consumers (mart chrome
+  -- reads dimensions off borrows) honest without staging anything.
+  runtime.imageAssets = SummaryAcceptanceFixture.sizedImagePool()
   runtime.derivedAssets = {}
   runtime.bindPartyIconPreparation = function(_, _, _)
     return 1

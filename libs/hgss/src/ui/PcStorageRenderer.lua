@@ -1,18 +1,59 @@
 -- Draws compiled Storage visuals through the paired source presentation plan.
 
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
+local ImageSampling = require("libs.nds.src.love.ImageSampling")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local PcStorageGeometry = require("libs.hgss.src.ui.PcStorageGeometry")
 
 ---@class PcStorageRenderer
 ---@field _graphics love.graphics
----@field _cacheFs CacheFs
 ---@field _manifest table<string, unknown>
 ---@field _text table<string, unknown>
----@field _images table<string, love.Image>
+---@field _images table<string, love.Image> resolved visual images by path for draw identity
+---@field _leases table<string, unknown> installed shared-owner borrows by path
+---@field _pool table<string, unknown> the borrowed shared image owner behind every visual
+---@field _paneTouch table<string, boolean>? paths drawn by the in-flight pane
+---@field _requiredByPane table<string, table<string, boolean>> last drawn demand per pane id
 ---@field _disposed boolean
 local PcStorageRenderer = {}
 PcStorageRenderer.__index = PcStorageRenderer
+
+-- Storage visuals sample point-filtered and clamped, matching the shared
+-- construction below, so pooled leases draw identically.
+local POOLED_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }
+
+-- Borrows one generated visual through the shared owner, waiting out its
+-- classification without blocking the field longer than the bounded stall
+-- budget. Failures name their path instead of drawing a blank visual.
+---@param pool table<string, unknown>
+---@param path string
+---@return table<string, unknown> lease resolving the immutable visual
+local function acquirePinned(pool, path)
+  local token = pool:request(path, POOLED_SAMPLER, "demand")
+  local stalled = 0
+  while true do
+    local status, failure = pool:poll(token)
+    if status == "ready" then
+      return pool:acquire(token)
+    end
+    if status == "failed" then
+      error("compiled Storage image missing at " .. path .. ": " .. tostring(failure), 0)
+    end
+    assert(status == "pending", "storage preparation reports pending or ready")
+    stalled = stalled + 1
+    if stalled > 10000 then
+      error("compiled Storage image stalled at " .. path, 0)
+    end
+    local timer = love and love.timer
+    if timer ~= nil and timer.sleep ~= nil then
+      timer.sleep(0.001)
+    end
+  end
+end
+
+-- State visuals borrow instead of owning: each drawn visual holds one
+-- installed shared-owner lease, so two opens of one box resolve one
+-- physical image per visual through the pool's own dedup.
 
 local ACTION_MESSAGES = {
   deposit = 70,
@@ -45,20 +86,60 @@ end
 
 local function imageFor(self, visual)
   assert(type(visual) == "table" and type(visual.image) == "string", "Storage visuals carry image paths")
-  local image = self._images[visual.image]
-  if image == nil then
-    local bytes = assert(self._cacheFs:read(visual.image), "compiled Storage image exists: " .. visual.image)
-    image = self._graphics.newImage(love.filesystem.newFileData(bytes, visual.image))
-    image:setFilter("nearest", "nearest")
-    self._images[visual.image] = image
+  local path = visual.image
+  local lease = self._leases[path]
+  if lease == nil then
+    -- State visuals borrow the shared owner as installed leases; two opens
+    -- of one box resolve one physical image per visual through the pool.
+    lease = acquirePinned(assert(self._pool, "Storage renderer borrows its shared image owner"), path)
+    self._leases[path] = lease
+    self._images[path] = assert(lease.image, "shared leases carry their resolved image")
   end
-  return image
+  local touched = self._paneTouch
+  if touched ~= nil then
+    touched[path] = true
+  end
+  return lease
+end
+
+---@param self PcStorageRenderer
+---@param path string
+local function dropBorrowed(self, path)
+  local lease = self._leases[path]
+  if lease == nil then
+    return
+  end
+  self._leases[path] = nil
+  self._images[path] = nil
+  assert(self._pool, "Storage renderer borrows its shared image owner"):release(lease)
+end
+
+-- Returns the borrows the live panes no longer demand: the current box
+-- keeps its hard reference while replaced state rests idle and resident.
+-- Callers trim idle physicals explicitly once the turnover settles.
+---@param self PcStorageRenderer
+local function dropUnrequired(self)
+  local required = {}
+  for _, set in pairs(self._requiredByPane) do
+    for path in pairs(set) do
+      required[path] = true
+    end
+  end
+  local stale = {}
+  for path in pairs(self._leases) do
+    if required[path] ~= true then
+      stale[#stale + 1] = path
+    end
+  end
+  for _, path in ipairs(stale) do
+    dropBorrowed(self, path)
+  end
 end
 
 local function drawVisual(self, visual, x, y)
   self._graphics.setColor(1, 1, 1, 1)
   local offset = visual.offset or { x = 0, y = 0 }
-  self._graphics.draw(imageFor(self, visual), x + offset.x, y + offset.y)
+  ImageSampling.draw(self._graphics, imageFor(self, visual), nil, x + offset.x, y + offset.y)
 end
 
 -- A framed button strip (palette bank 12 window frame) with one text line per
@@ -70,7 +151,16 @@ local function drawButton(self, rect, label)
   )
   local graphics = self._graphics
   graphics.setColor(1, 1, 1, 1)
-  graphics.draw(imageFor(self, frame), rect.x, rect.y, 0, rect.width / frame.width, rect.height / frame.height)
+  ImageSampling.draw(
+    graphics,
+    imageFor(self, frame),
+    nil,
+    rect.x,
+    rect.y,
+    0,
+    rect.width / frame.width,
+    rect.height / frame.height
+  )
   local line = 0
   for text in label:gmatch("[^\n]+") do
     self._text:drawText(text, rect.x + 8, rect.y + 4 + line * 16)
@@ -78,27 +168,43 @@ local function drawButton(self, rect, label)
   end
 end
 
----@param options { graphics: love.graphics, cacheFs: CacheFs, manifest: table<string, unknown>, text: table<string, unknown> }
+---@param options { graphics: love.graphics, manifest: table<string, unknown>, text: table<string, unknown>, imagePool: table<string, unknown> }
 ---@return PcStorageRenderer
 function PcStorageRenderer.new(options)
   assert(type(options) == "table", "Storage renderer requires its borrowed collaborators")
+  local pool = assert(options.imagePool, "Storage renderer borrows its shared image owner")
+  assert(
+    type(pool.request) == "function"
+      and type(pool.poll) == "function"
+      and type(pool.acquire) == "function"
+      and type(pool.release) == "function",
+    "Storage renderer drives request, poll, acquire, and release"
+  )
   return setmetatable({
     _graphics = assert(options.graphics, "Storage renderer requires graphics"),
-    _cacheFs = assert(options.cacheFs, "Storage renderer requires the selected asset cache"),
     _manifest = assert(options.manifest, "Storage renderer requires the PC manifest"),
     _text = assert(options.text, "Storage renderer borrows the shared text renderer"),
     _images = {},
+    _leases = {},
+    _pool = pool,
+    _paneTouch = nil,
+    _requiredByPane = {},
     _disposed = false,
   }, PcStorageRenderer)
 end
 
+-- Mon icons resolve through the shared mon provider's sampling handles
+-- so indexed pages bind their exact palette on capable hardware. Item
+-- icons ride the shared item provider's own read surface, which stays
+-- owned by its own provider.
 local function drawIcon(graphics, provider, iconKey, x, y, scale)
   if iconKey == nil or provider == nil then
     return
   end
   local dimensions = provider:dimensions(iconKey)
-  graphics.draw(
-    provider:image(iconKey),
+  ImageSampling.draw(
+    graphics,
+    provider:handleFor(iconKey),
     provider:quadFor(iconKey),
     x,
     y,
@@ -106,6 +212,23 @@ local function drawIcon(graphics, provider, iconKey, x, y, scale)
     scale / dimensions.width,
     scale / dimensions.height
   )
+end
+
+-- Held-item icons ride the shared item provider's pooled atlas borrow
+-- through the exact sampler; the eager RGBA-direct atlas keeps its raw
+-- draw. Extra placement arguments pass through to the draw call.
+local function drawItemIcon(graphics, provider, iconKey, x, y, scale)
+  if iconKey == nil or provider == nil then
+    return
+  end
+  local dimensions = provider:dimensions(iconKey)
+  local quad = provider:quadFor(iconKey)
+  local handle = provider:handle()
+  if handle ~= nil then
+    ImageSampling.draw(graphics, handle, quad, x, y, 0, scale / dimensions.width, scale / dimensions.height)
+    return
+  end
+  graphics.draw(provider:image(), quad, x, y, 0, scale / dimensions.width, scale / dimensions.height)
 end
 
 -- The hand cursor sprite at a nav-table node (OBJ set A anims 8, 14 and 10).
@@ -129,7 +252,7 @@ local function drawBoxMon(self, resources, mon, slot, carried)
   local x, y = rect.x + rect.width / 2 - BOX_ICON_SIZE / 2, rect.y + rect.height / 2 - 4 - lift - BOX_ICON_SIZE / 2
   local graphics = self._graphics
   drawIcon(graphics, resources.icons, mon.iconKey, x, y, BOX_ICON_SIZE)
-  drawIcon(graphics, resources.itemIcons, mon.heldItem ~= "NONE" and mon.itemIconKey or nil, x + 20, y + 20, 12)
+  drawItemIcon(graphics, resources.itemIcons, mon.heldItem ~= "NONE" and mon.itemIconKey or nil, x + 20, y + 20, 12)
 end
 
 -- Top-screen info text at the source window positions (ov14_021F84B4):
@@ -193,7 +316,16 @@ local function drawEditor(self, view)
       local rect = PcStorageGeometry.markingRect(bit)
       local visual = markings[bit][marked and "set" or "clear"]
       graphics.setColor(1, 1, 1, 1)
-      graphics.draw(imageFor(self, visual), rect.x, rect.y, 0, rect.width / visual.width, rect.height / visual.height)
+      ImageSampling.draw(
+        graphics,
+        imageFor(self, visual),
+        nil,
+        rect.x,
+        rect.y,
+        0,
+        rect.width / visual.width,
+        rect.height / visual.height
+      )
     end
     drawCursor(self, "browse", PcStorageGeometry.markingCursorAnchor(editor.selected))
   elseif editor.kind == "wallpaper" then
@@ -248,7 +380,14 @@ local function drawPartyMon(self, resources, mon, slot, side, carried)
   local y = rect.y - (carried and CARRY_LIFT or 0)
   local graphics = self._graphics
   drawIcon(graphics, resources.icons, mon.iconKey, rect.x, y, PcStorageGeometry.PARTY_ICON_SIZE)
-  drawIcon(graphics, resources.itemIcons, mon.heldItem ~= "NONE" and mon.itemIconKey or nil, rect.x + 20, y + 20, 12)
+  drawItemIcon(
+    graphics,
+    resources.itemIcons,
+    mon.heldItem ~= "NONE" and mon.itemIconKey or nil,
+    rect.x + 20,
+    y + 20,
+    12
+  )
 end
 
 local function carriedFrom(view, kind, index)
@@ -302,6 +441,7 @@ function PcStorageRenderer:drawPane(view, resources, paneId, placement)
   assert(not self._disposed, "disposed Storage renderer draws nothing")
   local graphics = self._graphics
   resources = resources or {}
+  self._paneTouch = {}
   LogicalSurface.draw(graphics, placement, function()
     local storage = self._manifest.storage
     if paneId == "upper" then
@@ -415,6 +555,9 @@ function PcStorageRenderer:drawPane(view, resources, paneId, placement)
       end
     end
   end)
+  self._requiredByPane[paneId] = assert(self._paneTouch, "the drawn pane records its demand")
+  self._paneTouch = nil
+  dropUnrequired(self)
 end
 
 function PcStorageRenderer:draw(view, plan)
@@ -423,15 +566,31 @@ function PcStorageRenderer:draw(view, plan)
   end
 end
 
+-- Bounds physical retention after a state lease turnover through the
+-- shared idle limit: returned borrows rest idle and resident while the
+-- live panes keep their hard references, and the explicit trim frees
+-- every idle visual exactly once. Borrowed visuals stay resident
+-- regardless of idle age.
+---@return integer freed physical image count
+function PcStorageRenderer:trimIdle()
+  assert(not self._disposed, "disposed Storage renderer trims nothing")
+  return assert(self._pool, "Storage renderer borrows its shared image owner"):prune()
+end
+
 function PcStorageRenderer:dispose()
   if self._disposed then
     return
   end
   self._disposed = true
-  for _, image in pairs(self._images) do
-    image:release()
+  local pool = assert(self._pool, "Storage renderer borrows its shared image owner")
+  self._pool = nil
+  for _, lease in pairs(self._leases) do
+    pool:release(lease)
   end
+  self._leases = {}
   self._images = {}
+  self._requiredByPane = {}
+  self._paneTouch = nil
 end
 
 function PcStorageRenderer:release()

@@ -17,6 +17,14 @@ local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local PreparedMonIcons = require("tests.support.PreparedMonIcons")
+
+-- One prepared icon provider over its own session image owner: the pool is
+-- disposed with the graphics scope, so no worker outlives the test.
+---@param scope table<string, unknown> graphics ownership scope
+---@return table<string, unknown> provider with the demanded icon page ready
+local function preparedIcons(scope)
+  return PreparedMonIcons.seededProvider(scope, PreparedMonIcons.iconCache(), { "MON0/f0" })
+end
 local PartyCache = require("libs.assets.src.PartyCache")
 local PartyScreenLayout = require("libs.hgss.src.ui.PartyScreenLayout")
 local PartyScreenRenderer = require("libs.hgss.src.ui.PartyScreenRenderer")
@@ -175,7 +183,7 @@ end
 local function renderPane(scope, cacheFs, manifest, status, width, height)
   local text = scope:own(FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() }))
   local layout = PartyScreenLayout.resolve({ manifest = manifest, cancellable = true })
-  local provider = scope:own(PreparedMonIcons.preparedProvider(PreparedMonIcons.iconCache(), { "MON0/f0" }))
+  local provider = scope:own(preparedIcons(scope))
   local renderer =
     PartyScreenRenderer.new({ graphics = love.graphics, cacheFs = cacheFs, manifest = manifest, text = text })
   local canvas = scope:own(love.graphics.newCanvas(width or 256, height or 192))
@@ -389,7 +397,7 @@ function T.panes_magnify_uniformly_with_consistent_hit_geometry(scope)
       "the doubled canvas fits its single pane"
     )
     local text = scope:own(FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() }))
-    local provider = scope:own(PreparedMonIcons.preparedProvider(PreparedMonIcons.iconCache(), { "MON0/f0" }))
+    local provider = scope:own(preparedIcons(scope))
     local renderer =
       PartyScreenRenderer.new({ graphics = love.graphics, cacheFs = cacheFs, manifest = manifest, text = text })
     LogicalSurface.draw(love.graphics, placement, function()

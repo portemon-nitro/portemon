@@ -1533,7 +1533,6 @@ function T.party_icons_center_from_distinct_provider_dimensions(scope)
   local view, presentation, plan = fixture(scope, size, height, topology, "Party", "Stats")
   local RendererModule = require("app.src.saveeditor.SaveEditorRenderer")
   local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetProvider")
-  local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
   local image = scope:own(love.graphics.newImage(love.image.newImageData(64, 64)))
   local dimensions = {
     small = { width = 14, height = 9 },
@@ -1559,11 +1558,14 @@ function T.party_icons_center_from_distinct_provider_dimensions(scope)
     end,
     release = function() end,
   }
-  local oldProviderNew, oldQueueNew = MonIconAssetProvider.new, AssetPreparationQueue.new
+  local oldProviderNew = MonIconAssetProvider.new
   local oldDraw = love.graphics.draw
   local drawnText = {}
+  local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
+  local pool = SharedImagePoolFake.new()
   local renderer = RendererModule.new({
     versionId = "heartgold",
+    imagePool = pool,
     text = {
       fontDef = { lineHeight = view.textMetrics.lineHeight },
       textWidth = function(_, text)
@@ -1591,9 +1593,6 @@ function T.party_icons_center_from_distinct_provider_dimensions(scope)
   local ok, failure = xpcall(function()
     MonIconAssetProvider.new = function()
       return provider
-    end
-    AssetPreparationQueue.new = function()
-      return { release = function() end }
     end
     local strip = assert(plan.content.layout.partyStrip, "Party layout publishes its member strip")
     for _, slot in ipairs(strip.slots) do
@@ -1656,7 +1655,7 @@ function T.party_icons_center_from_distinct_provider_dimensions(scope)
     draws.oversized = compactDraw
   end, debug.traceback)
   love.graphics.draw = oldDraw
-  MonIconAssetProvider.new, AssetPreparationQueue.new = oldProviderNew, oldQueueNew
+  MonIconAssetProvider.new = oldProviderNew
   renderer:dispose()
   presentation:dispose()
   if not ok then

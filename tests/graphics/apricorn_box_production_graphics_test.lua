@@ -14,6 +14,8 @@ local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local RomImporter = require("romdump.src.source.RomImporter")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
+local PreparedMonIcons = require("tests.support.PreparedMonIcons")
+local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
 
 local T = {}
 local BACKGROUND = { 0.08, 0.08, 0.1 }
@@ -243,6 +245,47 @@ local function assertSourceLabels(cacheFs, manifest)
   provider:releaseBank(manifest.messageBankId)
 end
 
+-- Scripted session owner behind Box art: synchronous borrows with
+-- optional acquisition failure, recording every image handed out so the
+-- suite can prove construction unwind and trim behavior. Prompt chrome
+-- keeps its direct construction through the injected graphics namespace.
+---@param failAcquireAt integer? 1-based acquisition index failing construction
+---@return table<string, unknown> pool double
+---@return SharedImagePoolFake inner fake behind census assertions
+---@return table<string, unknown>[] every image handed out so far
+local function boxPool(failAcquireAt)
+  local inner = SharedImagePoolFake.new()
+  local seen = {}
+  local acquired = 0
+  local pool = {}
+  function pool:request(path, sampler, priority)
+    return inner:request(path, sampler, priority)
+  end
+  function pool:poll(token)
+    return inner:poll(token)
+  end
+  function pool:acquire(token)
+    acquired = acquired + 1
+    if failAcquireAt ~= nil and acquired == failAcquireAt then
+      error("injected Box lease acquisition failure")
+    end
+    local lease = inner:acquire(token)
+    lease.kind = "rgba8"
+    seen[#seen + 1] = assert(lease.image, "shared leases carry their resolved image")
+    return lease
+  end
+  function pool:release(lease)
+    return inner:release(lease)
+  end
+  function pool:prune()
+    return inner:prune()
+  end
+  function pool:stats()
+    return inner:stats()
+  end
+  return pool, inner, seen
+end
+
 local function trackingGraphics(failAt, failFilterAt)
   local calls = { created = 0, released = 0, filters = 0 }
   local graphics = {
@@ -299,64 +342,111 @@ function T.box_renderer_releases_prompt_and_source_images_once(_, context)
       promptAssetCount = promptAssetCount + 1
     end
     local successGraphics, successCalls = trackingGraphics()
+    local pool, inner, seen = boxPool()
     local renderer = ApricornBoxRenderer.new({
       cacheFs = cacheFs,
       manifest = manifest,
       text = { drawText = function() end },
       uiManifest = uiManifest,
       graphics = successGraphics,
+      imagePool = pool,
     })
     renderer:release()
     renderer:release()
-    Assert.equal(successCalls.released, successCalls.created, "successful construction releases every owned image once")
+    Assert.equal(
+      inner:stats().outstandingLeases,
+      0,
+      "successful construction returns every Box borrow exactly once"
+    )
+    Assert.equal(
+      inner.uploads,
+      #ApricornBoxAssetCache.referencedPaths(manifest),
+      "construction borrows each source Box image once"
+    )
+    local trimmed = pool:prune()
+    Assert.equal(trimmed, inner.uploads, "the idle trim reclaims every returned Box image")
+    for _, image in ipairs(seen) do
+      Assert.equal(image.releaseCount, 1, "successful construction frees every Box image once")
+    end
+    Assert.equal(successCalls.released, successCalls.created, "successful construction releases every prompt image once")
 
     local boxAssetCount = #ApricornBoxAssetCache.referencedPaths(manifest)
-    local failureGraphics, failureCalls = trackingGraphics(boxAssetCount + 1)
+    local failureGraphics, failureCalls = trackingGraphics(1)
+    local failingPool, failingInner, failingSeen = boxPool()
     local ok, err = pcall(ApricornBoxRenderer.new, {
       cacheFs = cacheFs,
       manifest = manifest,
       text = { drawText = function() end },
       uiManifest = uiManifest,
       graphics = failureGraphics,
+      imagePool = failingPool,
     })
     Assert.isFalse(ok, "a prompt image allocation failure propagates")
     Assert.isTrue(tostring(err):find("injected Box image allocation failure", 1, true) ~= nil)
     Assert.equal(
-      failureCalls.created,
-      boxAssetCount + 1,
-      "failure occurs after source Box images were acquired"
+      failingInner:stats().outstandingLeases,
+      0,
+      "failure unwinds every Box borrow before the prompt failure"
     )
-    Assert.equal(failureCalls.released, boxAssetCount, "partial construction releases every source image once")
+    Assert.equal(failureCalls.created, 1, "failure occurs at the first prompt image")
+    Assert.equal(failureCalls.released, 0, "the failed prompt image never exists to release")
+    local failingTrimmed = failingPool:prune()
+    Assert.equal(failingTrimmed, boxAssetCount, "failure unwinds every source Box image once")
+    for _, image in ipairs(failingSeen) do
+      Assert.equal(image.releaseCount, 1, "partial construction frees every source image once")
+    end
 
-    local filterFailureGraphics, filterFailureCalls = trackingGraphics(nil, 1)
-    local filterOk, filterErr = pcall(ApricornBoxRenderer.new, {
-      cacheFs = cacheFs,
-      manifest = manifest,
-      text = { drawText = function() end },
-      uiManifest = uiManifest,
-      graphics = filterFailureGraphics,
-    })
-    Assert.isFalse(filterOk, "an image filter failure propagates")
-    Assert.isTrue(tostring(filterErr):find("injected Box image filter failure", 1, true) ~= nil)
-    Assert.equal(filterFailureCalls.created, 1, "filter failure follows image acquisition")
-    Assert.equal(filterFailureCalls.released, 1, "filter failure releases the acquired image once")
-
-    local promptFilterGraphics, promptFilterCalls = trackingGraphics(nil, boxAssetCount + 1)
+    local promptFilterGraphics, promptFilterCalls = trackingGraphics(nil, 1)
+    local promptPool, promptInner, promptSeen = boxPool()
     local promptFilterOk, promptFilterErr = pcall(ApricornBoxRenderer.new, {
       cacheFs = cacheFs,
       manifest = manifest,
       text = { drawText = function() end },
       uiManifest = uiManifest,
       graphics = promptFilterGraphics,
+      imagePool = promptPool,
     })
     Assert.isFalse(promptFilterOk, "a prompt image filter failure propagates")
     Assert.isTrue(tostring(promptFilterErr):find("injected Box image filter failure", 1, true) ~= nil)
-    Assert.equal(promptFilterCalls.created, boxAssetCount + 1, "prompt filter failure follows image acquisition")
+    Assert.equal(promptFilterCalls.created, 1, "prompt filter failure follows prompt image acquisition")
     Assert.equal(
       promptFilterCalls.released,
-      boxAssetCount + 1,
-      "prompt filter failure releases source and prompt images once"
+      1,
+      "prompt filter failure releases the acquired prompt image once"
     )
+    Assert.equal(
+      promptInner:stats().outstandingLeases,
+      0,
+      "prompt filter failure unwinds every Box borrow"
+    )
+    local promptTrimmed = promptPool:prune()
+    Assert.equal(promptTrimmed, boxAssetCount, "prompt filter failure unwinds every source Box image once")
+    for _, image in ipairs(promptSeen) do
+      Assert.equal(image.releaseCount, 1, "prompt filter failure frees source images once")
+    end
+
+    local leasePool, leaseInner, leaseSeen = boxPool(boxAssetCount)
+    local leaseGraphics, _ = trackingGraphics()
+    local leaseOk, leaseErr = pcall(ApricornBoxRenderer.new, {
+      cacheFs = cacheFs,
+      manifest = manifest,
+      text = { drawText = function() end },
+      uiManifest = uiManifest,
+      graphics = leaseGraphics,
+      imagePool = leasePool,
+    })
+    Assert.isFalse(leaseOk, "a Box lease acquisition failure propagates")
+    Assert.isTrue(tostring(leaseErr):find("injected Box lease acquisition failure", 1, true) ~= nil)
+    Assert.equal(
+      leaseInner:stats().outstandingLeases,
+      0,
+      "lease failure unwinds every installed Box borrow"
+    )
+    local leaseTrimmed = leasePool:prune()
+    Assert.equal(leaseTrimmed, boxAssetCount - 1, "lease failure unwinds every installed Box image once")
+    for _, image in ipairs(leaseSeen) do
+      Assert.equal(image.releaseCount, 1, "lease failure frees installed Box images once")
+    end
   end
 end
 
@@ -382,6 +472,7 @@ function T.source_box_renders_browse_and_kurt_modes_for_each_layout(scope, conte
       text = text,
       uiManifest = uiManifest,
       graphics = love.graphics,
+      imagePool = PreparedMonIcons.scopedImagePool(scope, cacheFs),
     }))
     for _, topology in ipairs({ "native", "wide", "tall", "dual" }) do
       for _, mode in ipairs({ "browse", "kurt_select" }) do

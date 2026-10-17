@@ -3,7 +3,7 @@
 local Renderer = {}
 Renderer.__index = Renderer
 
-local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
+local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
 local Errors = require("libs.errors.src.Errors")
 local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetProvider")
 local ItemIconAssetProvider = require("libs.hgss.src.presentation.ItemIconAssetProvider")
@@ -19,11 +19,12 @@ local ProductMenuSkin = require("app.src.ui.ProductMenuSkin")
 ---@field skin ProductMenuSkin
 ---@field graphics table<string, unknown>
 ---@field _disposed boolean
----@field _iconQueue table<string, unknown>?
 ---@field _iconProvider MonIconAssetProvider?
 ---@field _icons table<string, { image: love.Image, quad: love.Quad, dimensions: { width: number, height: number } }>
 ---@field _windowRenderer FieldWindowRenderer?
 ---@field _bagImages table<string, love.Image>
+---@field _imagePool ImageAssetPool?
+---@field _ownsImagePool boolean
 ---@field _pendingIconPreparation { cacheFs: table<string, unknown>, derivedAssets: table<string, unknown> }?
 ---@field iconStatus string?
 ---@field iconFailure string?
@@ -123,16 +124,32 @@ function Renderer.new(options)
     skin = ProductMenuSkin.forVersion(options.versionId),
     graphics = options.graphics or love.graphics,
     _disposed = false,
-    _iconQueue = nil,
     _iconProvider = nil,
     _icons = {},
     _windowRenderer = nil,
     _itemIconProvider = nil,
     _bagImages = {},
+    _imagePool = options.imagePool,
+    _ownsImagePool = false,
     _pendingIconPreparation = nil,
     iconStatus = nil,
     iconFailure = nil,
   }, Renderer)
+end
+
+--- Session image owner behind mon icons. Production lazily owns one pool
+--- (with its single worker) per editor lifetime; an injected pool is borrowed
+--- and outlives the renderer.
+---@param cacheFs table<string, unknown>
+---@return ImageAssetPool
+function Renderer:_poolFor(cacheFs)
+  if self._imagePool ~= nil then
+    return self._imagePool
+  end
+  local pool = ImageAssetPool.new(cacheFs, { graphics = self.graphics })
+  self._imagePool = pool
+  self._ownsImagePool = true
+  return pool
 end
 
 function Renderer:preparePresentationAssets(cacheFs, manifest)
@@ -230,14 +247,22 @@ function Renderer:prepareVisibleIcons(view, plan, cacheFs, derivedAssets, deferG
     return
   end
   if self._iconProvider == nil then
-    local queue = AssetPreparationQueue.new(cacheFs)
+    -- Mon icons borrow the session image owner like every other editor
+    -- visual: the pool below already exists for this session, so icon
+    -- pages share one physical owner instead of a second worker beside it.
+    -- A cache no pool can serve reports failed icons instead of raising,
+    -- matching the previous unprepared-icons status.
+    local pool = self:_poolFor(cacheFs)
+    if pool == nil then
+      self.iconStatus, self.iconFailure = "failed", "save editor icons require the session image owner"
+      return
+    end
     local ok, providerOrError = pcall(createIconProvider, cacheFs, {
       graphics = self.graphics,
-      preparationQueue = queue,
+      imagePool = pool,
       derivedAssets = derivedAssets,
     })
     if not ok then
-      queue:release()
       if Errors.is(providerOrError) then
         ---@cast providerOrError Errors.Error
         self.iconStatus, self.iconFailure = "failed", providerOrError.message
@@ -245,7 +270,6 @@ function Renderer:prepareVisibleIcons(view, plan, cacheFs, derivedAssets, deferG
       end
       error(providerOrError, 0)
     end
-    self._iconQueue = queue
     self._iconProvider = assert(providerOrError)
   end
   local ready, failure = self._iconProvider:prepareKeys(iconKeys)
@@ -1824,9 +1848,18 @@ function Renderer:dispose()
     end
   end
   self._bagImages = {}
-  if self._iconQueue then
-    self._iconQueue:release()
-    self._iconQueue = nil
+  local pool = self._imagePool
+  local ownsPool = self._ownsImagePool
+  self._imagePool = nil
+  self._ownsImagePool = false
+  -- Exiting trims the session owner: every returned borrow is idle now,
+  -- so the trim frees exactly the staged editor pairs. Borrowed pairs
+  -- still outlive elsewhere; only fully released pairs are evicted.
+  if pool ~= nil then
+    pool:prune()
+  end
+  if ownsPool and pool ~= nil then
+    pool:dispose()
   end
   self._icons = {}
   if self.text and self.text.release then

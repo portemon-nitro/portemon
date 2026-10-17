@@ -14,7 +14,6 @@ local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 local SummaryCache = require("libs.assets.src.SummaryCache")
 local SummaryPresentationResources = require("game.hgss.src.field.SummaryPresentationResources")
 local SummaryRenderer = require("libs.hgss.src.ui.SummaryRenderer")
-local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
 local FieldPresentationConfig = require("game.hgss.src.field.FieldPresentationConfig")
 local FieldDialogueRenderer = require("libs.hgss.src.ui.FieldDialogueRenderer")
 local FieldWindowRenderer = require("libs.hgss.src.ui.FieldWindowRenderer")
@@ -51,7 +50,7 @@ local FieldAreaPreviewRenderer = require("game.hgss.src.field.FieldAreaPreviewRe
 ---@class FieldPresentationResourcesRuntime
 ---@field cacheFs CacheFs
 ---@field imageAssets table<string, unknown>? the runtime-owned shared image owner borrowed by menu chrome
----@field assetPreparation table<string, unknown>? the runtime-owned preparation worker borrowed for icon pages
+---@field assetPreparation table<string, unknown>? the runtime-owned preparation worker borrowed by scene owners
 ---@field derivedAssets table<string, function>? semantic derived-asset host in presented composition
 ---@field bindPartyIconPreparation fun(runtime: FieldPresentationResourcesRuntime, prepare: PartyIconPrepare, cancel: PartyIconCancel): integer? runtime party preparation binding in presented composition
 ---@field unbindPartyIconPreparation fun(runtime: FieldPresentationResourcesRuntime, binding: integer)? runtime preparation unbinding in presented composition
@@ -83,11 +82,10 @@ local FieldAreaPreviewRenderer = require("game.hgss.src.field.FieldAreaPreviewRe
 ---@field startMenuRenderer StartMenuRenderer?
 ---@field trainerCardRenderer TrainerCardRenderer?
 ---@field partyScreenRenderer PartyScreenRenderer?
----@field monIconProvider MonIconAssetProvider? the one shared party-icon atlas for the state lifetime
+---@field monIconProvider MonIconAssetProvider? the one shared party-icon demand owner for the state lifetime
 ---@field namingRenderer NamingScreenRenderer? lazily owned script naming renderer
 ---@field namingIconQuads table<string, table<integer, unknown>> prepared mon icon frames borrowed from the provider
----@field imageQueue table<string, unknown>? the owned worker decoding party icon pages, or the borrowed runtime queue
----@field _ownsImageQueue boolean? true while the image queue above is owned here instead of borrowed
+---@field _imagePool table<string, unknown>? borrowed shared generated-image owner behind icons, Summary, and PC visuals
 ---@field _presentationRuntime FieldPresentationResourcesRuntime? borrowed runtime owning the party preparation binding
 ---@field _partyIconBinding integer? installed preparation binding identity
 ---@field _summaryBinding integer? installed summary preparation binding identity
@@ -98,9 +96,9 @@ local FieldAreaPreviewRenderer = require("game.hgss.src.field.FieldAreaPreviewRe
 ---@field heroRenderer BagHeroRenderer the one bag hero model renderer borrowed by the bag renderer
 ---@field bagRenderer BagRenderer the one field-bag pane renderer
 ---@field pcManifest table<string, unknown> validated PC manifest borrowed by its application renderers
----@field storageRenderer PcStorageRenderer PC Storage renderer
----@field mailboxRenderer MailboxRenderer Mailbox renderer
----@field photoAlbumRenderer PhotoAlbumRenderer Photo Album renderer
+---@field storageRenderer PcStorageRenderer PC Storage renderer (borrows the shared image owner)
+---@field mailboxRenderer MailboxRenderer Mailbox renderer (borrows the shared image owner)
+---@field photoAlbumRenderer PhotoAlbumRenderer Photo Album renderer (borrows the shared image owner)
 ---@field martRenderer MartRenderer? owned source-layered mart background and prompt images
 ---@field followingMonTransitionRenderer FollowingMonTransitionRenderer? transient follower-transition presentation (nil without the generated definition)
 ---@field pokemonCenterHealRenderer PokemonCenterHealRenderer? transient healing-ball presentation
@@ -424,7 +422,13 @@ function FieldPresentationResources.new(runtime)
     -- rendering and reused for every application outer frame. The selected
     -- frame index snapshots the current player option because no live
     -- in-field options mutation exists.
-    local sharedImages = runtime.imageAssets
+    -- One session image owner for the field lifetime, lent to icons,
+    -- Summary, and PC composition instead of a second worker beside the
+    -- runtime queue. The borrowed owner is never released or disposed
+    -- here; a presentation composition without one cannot borrow image
+    -- leases and fails fast below.
+    local sharedImages = assert(runtime.imageAssets, "field presentation borrows the runtime-owned shared image owner")
+    self._imagePool = sharedImages
     self.windowRenderer =
       FieldWindowRenderer.new({ cacheFs = runtime.cacheFs, manifest = runtime.uiManifest, imagePool = sharedImages })
     local textRenderer = FieldTextRenderer.new({ cacheFs = runtime.cacheFs, imagePool = sharedImages })
@@ -496,19 +500,11 @@ function FieldPresentationResources.new(runtime)
       frameIndex = self.applicationFrameIndex,
       imagePool = sharedImages,
     })
-    -- The field borrows the runtime-owned preparation worker and image
-    -- owner when the runtime provides them, instead of starting a second
-    -- worker beside the runtime queue. Borrowed owners are never released
-    -- or disposed here; a runtime without them keeps the owned worker.
-    if sharedImages ~= nil then
-      self.imageQueue = runtime.assetPreparation
-      self._ownsImageQueue = false
-    else
-      self.imageQueue = AssetPreparationQueue.new(runtime.cacheFs)
-      self._ownsImageQueue = true
-    end
+    -- Icon, Summary, and PC visuals resolve through the one session image
+    -- owner above: a single physical GPU image owner for the field
+    -- lifetime, with per-owner demand leases instead of private caches.
     self.monIconProvider = MonIconAssetProvider.new(runtime.cacheFs, {
-      preparationQueue = self.imageQueue,
+      imagePool = sharedImages,
       derivedAssets = assert(runtime.derivedAssets, "presented party icons require the semantic cache host"),
     })
     self.namingIconQuads = {}
@@ -533,7 +529,7 @@ function FieldPresentationResources.new(runtime)
       graphics = assert(love and love.graphics, "summary preparation needs its graphics namespace"),
       text = textRenderer,
       icons = provider,
-      preparationQueue = self.imageQueue,
+      imagePool = sharedImages,
       derivedAssets = runtime.derivedAssets or {},
       manifest = SummaryCache.loadManifest(runtime.cacheFs),
     })
@@ -573,21 +569,27 @@ function FieldPresentationResources.new(runtime)
     })
     self.pcManifest = PcCache.loadManifest(runtime.cacheFs)
     local graphics = assert(love and love.graphics, "PC application rendering requires LÖVE graphics")
+    -- PC-generated visuals resolve through the same shared image owner as
+    -- every other menu. The renderer objects stay resident while their
+    -- state visuals borrow and release.
     self.storageRenderer = PcStorageRenderer.new({
       graphics = graphics,
       cacheFs = runtime.cacheFs,
       manifest = self.pcManifest,
       text = textRenderer,
+      imagePool = sharedImages,
     })
     self.mailboxRenderer = MailboxRenderer.new({
       graphics = graphics,
       cacheFs = runtime.cacheFs,
       manifest = self.pcManifest,
+      imagePool = sharedImages,
     })
     self.photoAlbumRenderer = PhotoAlbumRenderer.new({
       graphics = graphics,
       cacheFs = runtime.cacheFs,
       manifest = self.pcManifest,
+      imagePool = sharedImages,
     })
     local entrancePool = GpuAssetPool.new(runtime.cacheFs)
     self.fieldEntranceIndicatorPool = entrancePool
@@ -1073,11 +1075,9 @@ function FieldPresentationResources:dispose()
     self.summaryResources = nil
   end
   self.summaryRenderer = nil
-  if self.imageQueue ~= nil and self._ownsImageQueue then
-    self.imageQueue:release()
-  end
-  self.imageQueue = nil
-  self._ownsImageQueue = nil
+  -- The session image owner stays borrowed: disposal returns demand
+  -- leases through the owners above and never tears down the pool.
+  self._imagePool = nil
   if self.itemIconProvider then
     self.itemIconProvider:release()
     self.itemIconProvider = nil
@@ -1154,6 +1154,7 @@ function FieldPresentationResources:getApricornBoxRenderer()
       manifest = manifest,
       text = assert(self.textRenderer, "Apricorn Box presentation requires the field text renderer"),
       uiManifest = self.uiManifest,
+      imagePool = self._imagePool,
     })
   end
   return self._apricornBoxRenderer

@@ -84,8 +84,10 @@ local function constructorDoubles(helper, opts)
     },
     -- PartyCache stays real: the production composition reads the party
     -- manifest directly for its screen renderer and badge realization.
-    -- The Summary preparation owner stays real, so its queue and icon
+    -- The Summary preparation owner stays real, so its pool and icon
     -- collaborators keep production behavior instead of nil answers.
+    -- The image queue module stays doubled but unused: the composition
+    -- borrows the session image owner instead of a second worker.
     ["libs.hgss.src.presentation.AssetPreparationQueue"] = {
       new = function(_)
         return helper.preparationQueue
@@ -130,6 +132,10 @@ local function compositionRuntime(versionId, helper)
     fieldTerrainEffectController = {
       setModelFactory = function(_, _) end,
     },
+    -- The presentation composition borrows its session image owner for
+    -- icons, Summary, and PC visuals: the injected pool keeps the real
+    -- Summary owner working without a second worker beside the doubles.
+    imageAssets = helper.imagePool,
     derivedAssets = helper.derivedAssets,
     bindSummaryCalls = 0,
     unbindSummaryCalls = {},

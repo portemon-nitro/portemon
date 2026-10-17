@@ -101,24 +101,31 @@ end
 
 local function drawPlan(scope, cacheFs, manifest, view, plan, width, height)
   local text = scope:own(FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() }))
+  local pool = PreparedMonIcons.scopedImagePool(scope, cacheFs)
   local renderer = scope:own(PcStorageRenderer.new({
     graphics = love.graphics,
     cacheFs = cacheFs,
     manifest = manifest,
     text = text,
+    imagePool = pool,
   }))
   local itemIcons = scope:own(ItemIconAssetProvider.new(cacheFs))
   local icons = scope:own(MonIconAssetProvider.new(cacheFs, {
-    preparationQueue = PreparedMonIcons.decodingQueue(cacheFs),
+    imagePool = pool,
     derivedAssets = PreparedMonIcons.readyDerivedAssets(),
   }))
   local iconKey = iconKeyForPage(cacheFs, 0)
   local prepared = false
   local prepareFailure = nil
-  for _ = 1, 8 do
+  local deadline = os.clock() + 120
+  while true do
     prepared, prepareFailure = icons:prepareKeys({ iconKey })
-    if prepared then
+    if prepared or prepareFailure ~= nil then
       break
+    end
+    Assert.isTrue(os.clock() < deadline, "visible Storage mon icon page prepares without stalling")
+    if love.timer ~= nil and love.timer.sleep ~= nil then
+      love.timer.sleep(0.005)
     end
   end
   Assert.isTrue(
@@ -138,8 +145,11 @@ local function drawPlan(scope, cacheFs, manifest, view, plan, width, height)
   renderer._text = textSpy
   local iconSpy = {
     image = function(_, key)
-      draws.monIcons = draws.monIcons + 1
       return icons:image(key)
+    end,
+    handleFor = function(_, key)
+      draws.monIcons = draws.monIcons + 1
+      return icons:handleFor(key)
     end,
     quadFor = function(_, key)
       return icons:quadFor(key)
@@ -152,6 +162,9 @@ local function drawPlan(scope, cacheFs, manifest, view, plan, width, height)
     image = function(_, key)
       draws.itemIcons = draws.itemIcons + 1
       return itemIcons:image()
+    end,
+    handle = function()
+      return itemIcons:handle()
     end,
     quadFor = function(_, key)
       return itemIcons:quadFor(key)

@@ -486,9 +486,9 @@ function T.nickname_blank_and_clear_have_distinct_raw_results()
 end
 function T.visible_party_rows_prepare_only_their_icon_keys()
   local Renderer = require("app.src.saveeditor.SaveEditorRenderer")
-  local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
   local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetProvider")
-  local queueNew, providerNew = AssetPreparationQueue.new, MonIconAssetProvider.new
+  local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
+  local providerNew = MonIconAssetProvider.new
   local prepared, released = {}, 0
   local sourceDimensions = {
     ["0001:0"] = { width = 32, height = 32 },
@@ -500,13 +500,6 @@ function T.visible_party_rows_prepare_only_their_icon_keys()
     ["0004:0"] = { width = 24, height = 32 },
     ["0007:0"] = { width = 16, height = 32 },
   }
-  AssetPreparationQueue.new = function()
-    return {
-      release = function()
-        released = released + 1
-      end,
-    }
-  end
   MonIconAssetProvider.new = function()
     return {
       prepareKeys = function(_, keys)
@@ -528,8 +521,9 @@ function T.visible_party_rows_prepare_only_their_icon_keys()
     }
   end
 
+  local pool = SharedImagePoolFake.new()
   local ok, err = xpcall(function()
-    local renderer = Renderer.new({ text = {}, graphics = {}, versionId = "heartgold" })
+    local renderer = Renderer.new({ text = {}, graphics = {}, versionId = "heartgold", imagePool = pool })
     renderer:prepareVisibleIcons({ section = "Party" }, {
       content = {
         layout = {
@@ -543,11 +537,17 @@ function T.visible_party_rows_prepare_only_their_icon_keys()
     Assert.deepEqual(sourceDimensions, expectedDimensions, "sizing does not mutate provider-owned dimension facts")
     renderer:dispose()
   end, debug.traceback)
-  AssetPreparationQueue.new, MonIconAssetProvider.new = queueNew, providerNew
+  MonIconAssetProvider.new = providerNew
   if not ok then
     error(err, 0)
   end
-  Assert.equal(released, 2, "disposing the renderer releases its icon provider and preparation queue")
+  Assert.equal(released, 1, "disposing the renderer releases its icon provider exactly once")
+  Assert.equal(
+    pool:stats().outstandingLeases,
+    0,
+    "disposing the renderer borrows nothing from the session owner"
+  )
+  Assert.equal(pool:stats().physicalImages, 0, "the borrowed session owner outlives the renderer")
 end
 function T.controller_cancel_clears_pending_removal()
   local controller = Controller.new()

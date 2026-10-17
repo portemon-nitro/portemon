@@ -109,6 +109,43 @@ function SharedImagePoolFake:poll(token)
   return "ready"
 end
 
+---@class SharedImagePoolFake.SeedHandle
+---@field image table<string, unknown> pre-realized source image adopted as the physical pair
+---@field palette table<string, unknown>? pre-realized exact palette, required for indexed seeds
+---@field kind "r8"|"rgba8"? payload representation of the seeded image
+---@field width integer? decoded source width in pixels
+---@field height integer? decoded source height in pixels
+
+-- Pre-register one physical pair for a texture path plus sampler state,
+-- modelling already-classified content a worker would have staged: later
+-- compatible requests adopt the seeded image instead of constructing a
+-- new one, and adoption never counts as an upload. Suites that must draw
+-- exact synthetic pixels the worker cannot see (main-thread-only test
+-- caches) realize the image on the main thread and seed it here, keeping
+-- real borrow, return, and prune semantics. A second seed for a live
+-- identity fails loudly instead of aliasing.
+---@param path string logical texture path
+---@param sampler table<string, string> immutable sampler state, matching the borrower's exactly
+---@param handle SharedImagePoolFake.SeedHandle pre-realized pair behind the identity
+function SharedImagePoolFake:seedPhysical(path, sampler, handle)
+  assert(type(path) == "string", "seeded physical path is required")
+  assert(
+    type(sampler) == "table" and type(sampler.wrapX) == "string" and type(sampler.wrapY) == "string",
+    "seeded physical needs an immutable sampler state"
+  )
+  assert(type(handle) == "table" and handle.image ~= nil, "seeded physical needs its image")
+  local key = keyFor(path, sampler)
+  assert(self._physicals[key] == nil, "seeded physical image is already published: " .. path)
+  self._physicals[key] = {
+    image = handle.image,
+    palette = handle.palette,
+    kind = handle.kind,
+    width = handle.width,
+    height = handle.height,
+    leases = 0,
+  }
+end
+
 -- Borrow one staged request as an immutable lease record. The first request
 -- for an identity constructs its physical image; later compatible requests
 -- adopt the live image, so identical textures under matching sampler state

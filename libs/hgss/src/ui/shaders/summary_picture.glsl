@@ -8,13 +8,18 @@
 // 0) as its plain unshaded frame, so the quantized round trip below never
 // stands in for identity.
 
+/*__portemon_shared_image_sampling__*/
+
 #ifdef PIXEL
 uniform vec3 u_target;
 uniform float u_coefficient;
 
 vec4 effect(vec4 tint, Image tex, vec2 uv, vec2 screenCoords)
 {
-  vec4 texel = Texel(tex, uv);
+  // Portraits are generated images like any other: an indexed page
+  // resolves through its exact palette first, so the blend math below
+  // always runs on exact texels with palette-carried alpha.
+  vec4 texel = resolveExactTexel(Texel(tex, uv));
 
   if (texel.a < 0.5) {
     return vec4(0.0);

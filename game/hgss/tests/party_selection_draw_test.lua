@@ -17,6 +17,7 @@ local PartyCache = require("libs.assets.src.PartyCache")
 local PcPresentationFixture = require("tests.support.PcPresentationFixture")
 local RomImporter = require("romdump.src.source.RomImporter")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
+local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
 
 local HOST_MODULE = "game.hgss.src.field.PartySelectionHost"
 local TARGET_MODULE = "game.hgss.src.field.FieldPresentationResources"
@@ -294,6 +295,10 @@ local function compositionRuntime()
     fieldTerrainEffectController = {
       setModelFactory = function(_, _) end,
     },
+    -- The presentation composition borrows its session image owner for
+    -- icons, Summary, and PC visuals: the injected pool keeps the
+    -- composition honest without staging anything behind the doubles.
+    imageAssets = SharedImagePoolFake.new(),
   }
   runtime.iconDemands = {}
   runtime.derivedAssets = {

@@ -13,6 +13,7 @@ local Lcrng = require("libs.mons.src.gen4.Lcrng")
 local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
+local StubLease = require("tests.support.StubLease")
 local SummaryPresentationFixture = require("tests.support.SummaryPresentationFixture")
 local SummaryScreenInterface = require("game.hgss.src.field.SummaryScreenInterface")
 local SummaryScreenState = require("game.hgss.src.field.SummaryScreenState")
@@ -123,6 +124,12 @@ local function openSummary(service, class)
   function portraits:image(_)
     return portraitImage
   end
+  -- Lease-shaped sampling handles over the stub image: production draws
+  -- resolve portraits through the shared sampler, so the double carries
+  -- the same draw surface while string-identity assertions hold.
+  function portraits:handleFor(_)
+    return StubLease.over(portraitImage)
+  end
   function portraits:quadFor(selector, frameIndex)
     return { selector = selector, frameIndex = frameIndex }
   end
@@ -133,6 +140,9 @@ local function openSummary(service, class)
   local icons = {}
   function icons:image(_)
     return iconImage
+  end
+  function icons:handleFor(_)
+    return StubLease.over(iconImage)
   end
   function icons:quadFor(key)
     return { key = key }

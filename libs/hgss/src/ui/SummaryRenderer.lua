@@ -15,6 +15,7 @@
 -- stays in preparation. A visual role the family leaves unmapped skips
 -- its layer while mapped roles stay strict.
 
+local ImageSampling = require("libs.nds.src.love.ImageSampling")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 
@@ -73,10 +74,48 @@ local function checkDrawArgs(status, pane, assets)
   if portraits ~= nil then
     assert(
       type(portraits.image) == "function"
+        and type(portraits.handleFor) == "function"
         and type(portraits.quadFor) == "function"
         and type(portraits.dimensions) == "function",
-      "portrait providers expose image, quadFor, and dimensions"
+      "portrait providers expose image, handleFor, quadFor, and dimensions"
     )
+  end
+  local icons = assets.icons
+  if icons ~= nil then
+    assert(
+      type(icons.image) == "function"
+        and type(icons.handleFor) == "function"
+        and type(icons.quadFor) == "function"
+        and type(icons.dimensions) == "function",
+      "roster icon providers expose image, handleFor, quadFor, and dimensions"
+    )
+  end
+  if type(assets.visualHandle) == "function" then
+    assert(type(assets.handleForPath) == "function", "ready bundles carry path sampling handles")
+  end
+end
+
+-- One chrome or portrait draw through the shared exact sampler when its
+-- sampling handle resolves, else the unchanged raw draw. RGBA handles
+-- render pixel-identical through the sampler; indexed handles bind their
+-- exact palette instead of rendering index bytes. The quad stays
+-- optional and extra placement arguments pass through.
+---@param graphics love.graphics
+---@param handle table<string, unknown>? sampling handle carrying image+palette+kind
+---@param image table<string, unknown> realized image behind the eager raw path
+---@param quad love.Quad?
+---@param x number
+---@param y number
+---@param ... unknown extra placement arguments forwarded to the draw call
+local function drawSampled(graphics, handle, image, quad, x, y, ...)
+  if handle ~= nil then
+    ImageSampling.draw(graphics, handle, quad, x, y, ...)
+    return
+  end
+  if quad ~= nil then
+    graphics.draw(image, quad, x, y, ...)
+  else
+    graphics.draw(image, x, y, ...)
   end
 end
 
@@ -537,6 +576,39 @@ local function imageForPath(scope, path)
   return image
 end
 
+-- Resolves the sampling handle behind one named chrome visual, or nil
+-- when the bundle predates handle threading (its raw image draws stay
+-- untouched). Unmapped visuals resolve nil like visualImage.
+---@param scope SummaryRenderer.DrawScope
+---@param name string compiled visual name
+---@return table<string, unknown>? sampling handle carrying image+palette+kind
+local function visualHandle(scope, name)
+  local visuals = assert(scope.manifest.visuals, "the summary family carries its visuals")
+  assert(type(visuals) == "table", "summary visuals arrive as a record")
+  if visuals[name] == nil then
+    return nil
+  end
+  local handleFor = scope.assets.visualHandle
+  if type(handleFor) ~= "function" then
+    return nil
+  end
+  return handleFor(name)
+end
+
+-- Resolves the sampling handle behind one canonical path, or nil when
+-- the bundle predates handle threading. Mirrors imageForPath.
+---@param scope SummaryRenderer.DrawScope
+---@param path string cache-relative image path
+---@return table<string, unknown>? sampling handle carrying image+palette+kind
+local function handleForPath(scope, path)
+  assert(type(path) == "string" and path ~= "", "path reads name their cache-relative path")
+  local handleFor = scope.assets.handleForPath
+  if type(handleFor) ~= "function" then
+    return nil
+  end
+  return handleFor(path)
+end
+
 -- Samples one generated frame sequence at a controller animation tick:
 -- single-frame playbacks hold their first frame, one-shot playbacks
 -- rest on their final frame, and looping playbacks run their prefix
@@ -647,6 +719,7 @@ local function drawAnimation(scope, name, owner, anchor, tick)
   assert(type(record) == "table", "summary visuals are records")
   local image = visualImage(scope, visual)
   assert(image ~= nil, "no prepared image for animation " .. tostring(name))
+  local handle = visualHandle(scope, visual)
   local shiftX, shiftY = 0, 0
   if record.offset ~= nil then
     assert(type(record.offset) == "table", "visual offsets are records")
@@ -654,7 +727,7 @@ local function drawAnimation(scope, name, owner, anchor, tick)
     shiftY = assert(record.offset.y, "visual offsets carry y")
     assert(type(shiftX) == "number" and type(shiftY) == "number", "visual offsets stay numeric")
   end
-  scope.graphics.draw(image, anchorX + shiftX, anchorY + shiftY)
+  drawSampled(scope.graphics, handle, image, nil, anchorX + shiftX, anchorY + shiftY)
 end
 
 -- Draws the pane backing: the condition-selected backdrop over the whole
@@ -668,7 +741,7 @@ local function drawBackdrop(scope, index)
   if image == nil then
     return
   end
-  scope.graphics.draw(image, 0, 0)
+  drawSampled(scope.graphics, visualHandle(scope, "backdrop" .. index), image, nil, 0, 0)
 end
 
 ---@param color table<string, integer> 8-bit source color
@@ -707,6 +780,8 @@ local function drawBar(scope, ruleName, pixels)
   if empty == nil or full == nil then
     return
   end
+  local emptyHandle = visualHandle(scope, ruleName .. "-empty")
+  local fullHandle = visualHandle(scope, ruleName .. "-full")
   local tile = 8
   local tiles = math.floor(length / tile)
   local filled = math.floor(pixels / tile)
@@ -730,7 +805,7 @@ local function drawBar(scope, ruleName, pixels)
         local r, g, b = normalizeColor(tint)
         graphics.setColor(r, g, b, 1)
       end
-      graphics.draw(full, x, originY)
+      drawSampled(graphics, fullHandle, full, nil, x, originY)
       if tint ~= nil then
         graphics.setColor(red, green, blue, alpha)
       end
@@ -740,12 +815,12 @@ local function drawBar(scope, ruleName, pixels)
         graphics.setColor(r, g, b, 1)
       end
       local quad = graphics.newQuad(0, 0, partial, tile, tile, tile)
-      graphics.draw(full, quad, x, originY)
+      drawSampled(graphics, fullHandle, full, quad, x, originY)
       if tint ~= nil then
         graphics.setColor(red, green, blue, alpha)
       end
     else
-      graphics.draw(empty, x, originY)
+      drawSampled(graphics, emptyHandle, empty, nil, x, originY)
     end
   end
 end
@@ -769,12 +844,20 @@ local function drawPicture(scope, status)
   assert(type(picture) == "table", "the picture selection exists in the summary family")
   local anchor = SummaryRenderer.PICTURE_ANCHOR
   if facts.isEgg == true then
-    local image = imageForPath(scope, assert(picture.visual, "egg pictures carry their visual"))
+    local visual = assert(picture.visual, "egg pictures carry their visual")
+    local image = imageForPath(scope, visual)
     local width, height = 80, 80
     if type(image.getWidth) == "function" then
       width, height = image:getWidth(), image:getHeight()
     end
-    graphics.draw(image, anchor.x - math.floor(width / 2), anchor.y - math.floor(height / 2))
+    drawSampled(
+      graphics,
+      handleForPath(scope, visual),
+      image,
+      nil,
+      anchor.x - math.floor(width / 2),
+      anchor.y - math.floor(height / 2)
+    )
     return
   end
   local selector = assert(facts.portraitSelector, "facts carry the portrait selection")
@@ -786,7 +869,8 @@ local function drawPicture(scope, status)
   end
   local frameIndex = assert(sample.frameIndex, "picture samples carry their frame") + 1
   local quad = portraits:quadFor(selector, frameIndex)
-  local image = portraits:image(selector)
+  local portraitHandle = portraits:handleFor(selector)
+  local image = assert(portraitHandle.image, "portrait sampling handles carry their image")
   local dims = portraits:dimensions(selector)
   local width = assert(dims.width, "portraits report dimensions")
   local height = assert(dims.height, "portraits report dimensions")
@@ -806,6 +890,14 @@ local function drawPicture(scope, status)
     previousShader = graphics.getShader()
   end
   if shader ~= nil then
+    -- The portrait sampling state binds first so the integrated shared
+    -- rule resolves indexed pages before the blend math runs; the
+    -- blend uniforms keep their order behind it.
+    ImageSampling.sendMaterialSampling(shader, {
+      image = portraitHandle.image,
+      palette = portraitHandle.palette,
+      indexed = portraitHandle.kind == "r8",
+    })
     local target = assert(blend.target, "palette blends carry their target")
     shader:send("u_target", { target.r, target.g, target.b })
     shader:send("u_coefficient", blend.coefficient)
@@ -813,7 +905,16 @@ local function drawPicture(scope, status)
   end
   local red, green, blue, alpha = currentColor(graphics)
   graphics.setColor(1, 1, 1, 1)
-  graphics.draw(image, quad, x, y, rotation, sx, sy, width / 2, height / 2)
+  if shader ~= nil then
+    -- The palette-blend picture shader carries the integrated shared
+    -- sampling rule: routing through the standalone sampler here would
+    -- replace the blend effect, so the blended path draws under its
+    -- own shader with the portrait sampling state bound above. The
+    -- unblended path draws through the shared sampler directly.
+    graphics.draw(image, quad, x, y, rotation, sx, sy, width / 2, height / 2)
+  else
+    drawSampled(graphics, portraitHandle, image, quad, x, y, rotation, sx, sy, width / 2, height / 2)
+  end
   graphics.setColor(red, green, blue, alpha)
   if shader ~= nil then
     if previousShader ~= nil then
@@ -955,7 +1056,15 @@ local function drawMemberIcons(scope, status)
     local anchor = assert(anchors[index], "the member icons cover roster slot " .. tostring(index - 1))
     local key = assert(member.iconKey, "roster members carry their icon key")
     local dims = icons:dimensions(key)
-    scope.graphics.draw(icons:image(key), icons:quadFor(key), anchor.x - dims.width / 2, anchor.y - dims.height / 2)
+    local handle = icons:handleFor(key)
+    drawSampled(
+      scope.graphics,
+      handle,
+      assert(handle.image, "roster icon handles carry their image"),
+      icons:quadFor(key),
+      anchor.x - dims.width / 2,
+      anchor.y - dims.height / 2
+    )
   end
 end
 
@@ -1081,10 +1190,11 @@ local function drawDetailBacking(scope, status, key)
   assert(axis == "x" or axis == "y", "nested positions run along x or y")
   local image = visualImage(scope, "detailBacking")
   assert(image ~= nil, "no prepared image for the nested detail backing")
+  local handle = visualHandle(scope, "detailBacking")
   if axis == "x" then
-    scope.graphics.draw(image, -offset, 0)
+    drawSampled(scope.graphics, handle, image, nil, -offset, 0)
   else
-    scope.graphics.draw(image, 0, -offset)
+    drawSampled(scope.graphics, handle, image, nil, 0, -offset)
   end
 end
 
@@ -1099,7 +1209,14 @@ local function drawMoveIcon(scope, set, key, anchor)
   local icons = assert(scope.assets.moveIcons, "the summary bundle carries the shared move icons")
   local visual = assert(icons[set][key], "the shared move icons carry the " .. key .. " icon")
   local offset = visual.offset or { x = 0, y = 0 }
-  scope.graphics.draw(scope.assets.imageForPath(visual.image), anchor.x + offset.x, anchor.y + offset.y)
+  drawSampled(
+    scope.graphics,
+    handleForPath(scope, visual.image),
+    scope.assets.imageForPath(visual.image),
+    nil,
+    anchor.x + offset.x,
+    anchor.y + offset.y
+  )
 end
 
 -- The displayed mon's types on the INFO sub pane: one icon centered, or
@@ -1181,7 +1298,7 @@ local function drawMoveDetailTab(scope, status)
   local tab = manifest.sprites.moveDetail.switchTab
   local visual = status.tabPressed == true and tab.pressedVisual or tab.visual
   local stamp = assert(visualImage(scope, visual), "the ready bundle carries the Switch tab stamp")
-  scope.graphics.draw(stamp, tab.origin.x, tab.origin.y)
+  drawSampled(scope.graphics, visualHandle(scope, visual), stamp, nil, tab.origin.x, tab.origin.y)
   drawWindowLine(
     scope,
     groupWindow(manifest, "skills", "sub", "switchLabel"),
@@ -1200,8 +1317,11 @@ local function drawMoveDetailMon(scope, facts)
   local anchor = manifest.sprites.moveDetail.monIcon
   local dims = icons:dimensions(key)
   -- Party icons face left; the move panel's mon faces right.
-  scope.graphics.draw(
-    icons:image(key),
+  local facing = icons:handleFor(key)
+  drawSampled(
+    scope.graphics,
+    facing,
+    assert(facing.image, "roster icon handles carry their image"),
     icons:quadFor(key),
     anchor.x + dims.width / 2,
     anchor.y - dims.height / 2,
@@ -1529,7 +1649,14 @@ local function drawRibbons(scope, status, facts, tick)
       assert(type(width) == "number" and type(height) == "number", "ribbon art carries dimensions")
       local column = cell % 3
       local row = math.floor(cell / 3)
-      scope.graphics.draw(imageForPath(scope, path), nameRect.x + column * width, nameRect.y - (3 - row) * height)
+      drawSampled(
+        scope.graphics,
+        handleForPath(scope, path),
+        imageForPath(scope, path),
+        nil,
+        nameRect.x + column * width,
+        nameRect.y - (3 - row) * height
+      )
     end
   end
   drawWindowLine(
@@ -1578,8 +1705,12 @@ local function drawHeader(scope, facts)
   if facts.isEgg ~= true then
     -- The "Lv." glyph sits five pixels down; the number follows at x = 16.
     local level = fixedWindow(scope.manifest, "level")
-    scope.graphics.draw(
-      assert(visualImage(scope, "levelPrefix"), "the summary family carries the level prefix"),
+    local prefix = assert(visualImage(scope, "levelPrefix"), "the summary family carries the level prefix")
+    drawSampled(
+      scope.graphics,
+      visualHandle(scope, "levelPrefix"),
+      prefix,
+      nil,
       level.rect.x,
       level.rect.y + LEVEL_PREFIX_Y
     )
@@ -1590,8 +1721,12 @@ local function drawHeader(scope, facts)
   if ballVisual ~= nil then
     local visual = scope.manifest.visuals[ballVisual]
     local offset = visual.offset or { x = 0, y = 0 }
-    scope.graphics.draw(
-      assert(visualImage(scope, ballVisual), "the ready bundle carries every ball visual"),
+    local ball = assert(visualImage(scope, ballVisual), "the ready bundle carries every ball visual")
+    drawSampled(
+      scope.graphics,
+      visualHandle(scope, ballVisual),
+      ball,
+      nil,
       balls.center.x + offset.x,
       balls.center.y + offset.y
     )
@@ -1600,8 +1735,12 @@ local function drawHeader(scope, facts)
   for index, marking in ipairs(scope.manifest.sprites.markings) do
     local name = markings[index] and marking.set or marking.unset
     local offset = scope.manifest.visuals[name].offset or { x = 0, y = 0 }
-    scope.graphics.draw(
-      assert(visualImage(scope, name), "the ready bundle carries every marking visual"),
+    local art = assert(visualImage(scope, name), "the ready bundle carries every marking visual")
+    drawSampled(
+      scope.graphics,
+      visualHandle(scope, name),
+      art,
+      nil,
       marking.center.x + offset.x,
       marking.center.y + offset.y
     )

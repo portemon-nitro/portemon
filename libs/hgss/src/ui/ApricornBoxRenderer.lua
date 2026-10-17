@@ -1,5 +1,6 @@
 -- Draws source-derived Apricorn Box panes and seven animated stock rows.
 
+local ImageSampling = require("libs.nds.src.love.ImageSampling")
 local ApricornBoxAssetCache = require("libs.assets.src.ApricornBoxAssetCache")
 local YesNoPromptRenderer = require("libs.hgss.src.ui.YesNoPromptRenderer")
 
@@ -8,29 +9,64 @@ local YesNoPromptRenderer = require("libs.hgss.src.ui.YesNoPromptRenderer")
 ---@field _cacheFs CacheFs
 ---@field _text table<string, unknown>
 ---@field _manifest table<string, unknown>
----@field _images table<string, love.Image>
+---@field _leases table<string, unknown> installed shared-image borrows by path; draws resolve through the lease sampler surface, never a bare image table
+---@field _pool table<string, unknown> the borrowed shared image owner behind every visual
 ---@field _promptRenderer YesNoPromptRenderer
 ---@field _released boolean
 local ApricornBoxRenderer = {}
 ApricornBoxRenderer.__index = ApricornBoxRenderer
+
+-- Box visuals sample point-filtered, matching the private construction
+-- below, so pooled leases draw identically.
+local POOLED_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }
+
+-- Borrows one generated visual through the shared owner, waiting out its
+-- classification without blocking the field longer than the bounded stall
+-- budget. Failures name their path instead of drawing a blank visual.
+---@param pool table<string, unknown>
+---@param path string
+---@return table<string, unknown> lease resolving the immutable visual
+local function acquirePinned(pool, path)
+  local token = pool:request(path, POOLED_SAMPLER, "demand")
+  local stalled = 0
+  while true do
+    local status, failure = pool:poll(token)
+    if status == "ready" then
+      return pool:acquire(token)
+    end
+    if status == "failed" then
+      error("generated Apricorn Box image missing at " .. path .. ": " .. tostring(failure), 0)
+    end
+    assert(status == "pending", "apricorn box preparation reports pending or ready")
+    stalled = stalled + 1
+    if stalled > 10000 then
+      error("generated Apricorn Box image stalled at " .. path, 0)
+    end
+    local timer = love and love.timer
+    if timer ~= nil and timer.sleep ~= nil then
+      timer.sleep(0.001)
+    end
+  end
+end
 
 local function setWhite(graphics)
   graphics.setColor(1, 1, 1, 1)
 end
 
 local function imageFor(self, path)
-  local image = self._images[path]
-  if image ~= nil then
-    return image
+  local lease = self._leases[path]
+  if lease == nil then
+    -- Box state visuals borrow the shared owner as installed leases held
+    -- for presentation and relinquished together on exit or change.
+    -- Draws resolve the lease itself; no bare image is retained.
+    lease = acquirePinned(assert(self._pool, "Apricorn Box renderer borrows its shared image owner"), path)
+    assert(lease.image, "shared leases carry their resolved image")
+    self._leases[path] = lease
   end
-  local bytes = assert(self._cacheFs:read(path), "generated Apricorn Box image exists: " .. path)
-  image = self._graphics.newImage(love.filesystem.newFileData(bytes, path))
-  self._images[path] = image
-  image:setFilter("nearest", "nearest")
-  return image
+  return lease
 end
 
----@param opts { cacheFs: CacheFs, manifest: table<string, unknown>, text: table<string, unknown>, uiManifest: table<string, unknown>, graphics?: love.graphics }
+---@param opts { cacheFs: CacheFs, manifest: table<string, unknown>, text: table<string, unknown>, uiManifest: table<string, unknown>, graphics?: love.graphics, imagePool: table<string, unknown> }
 ---@return ApricornBoxRenderer
 function ApricornBoxRenderer.new(opts)
   assert(type(opts) == "table", "Apricorn Box renderer options are records")
@@ -41,10 +77,23 @@ function ApricornBoxRenderer.new(opts)
   local text = assert(opts.text, "Apricorn Box rendering borrows the generated field font")
   assert(type(text.drawText) == "function", "Apricorn Box rendering borrows text drawing")
   local uiManifest = assert(opts.uiManifest, "Apricorn Box rendering borrows generated prompt art")
-  local self = setmetatable(
-    { _graphics = graphics, _cacheFs = cacheFs, _images = {}, _manifest = manifest, _text = text, _released = false },
-    ApricornBoxRenderer
+  local pool = assert(opts.imagePool, "Apricorn Box renderer borrows its shared image owner")
+  assert(
+    type(pool.request) == "function"
+      and type(pool.poll) == "function"
+      and type(pool.acquire) == "function"
+      and type(pool.release) == "function",
+    "Apricorn Box renderer drives request, poll, acquire, and release"
   )
+  local self = setmetatable({
+    _graphics = graphics,
+    _cacheFs = cacheFs,
+    _leases = {},
+    _pool = pool,
+    _manifest = manifest,
+    _text = text,
+    _released = false,
+  }, ApricornBoxRenderer)
   local ok, err = pcall(function()
     for _, path in ipairs(ApricornBoxAssetCache.referencedPaths(manifest)) do
       imageFor(self, path)
@@ -66,10 +115,10 @@ function ApricornBoxRenderer:drawPane(view, pane)
   end
   assert(pane.id == "upper" or pane.id == "lower", "Apricorn Box pane identity is source-defined")
   local manifest = self._manifest
-  local image = imageFor(self, manifest[pane.id].image)
+  local paneLease = imageFor(self, manifest[pane.id].image)
   local graphics = self._graphics
   setWhite(graphics)
-  graphics.draw(image, 0, 0)
+  ImageSampling.draw(graphics, paneLease, nil, 0, 0)
   if pane.id ~= "lower" then
     return
   end
@@ -90,8 +139,10 @@ function ApricornBoxRenderer:drawPane(view, pane)
     local selected = frame or icon.frames[#icon.frames]
     local sprite = imageFor(self, selected.image)
     setWhite(graphics)
-    graphics.draw(
+    ImageSampling.draw(
+      graphics,
       sprite,
+      nil,
       icon.x - selected.width / 2 + selected.offsetX,
       icon.y - selected.height / 2 + selected.offsetY
     )
@@ -116,10 +167,12 @@ function ApricornBoxRenderer:drawPane(view, pane)
     cursorElapsed = cursorElapsed - candidate.durationTicks
   end
   local cursorVisible = cursorFrame or cursorState.frames[#cursorState.frames]
-  local cursorImage = imageFor(self, cursorVisible.image)
+  local cursorLease = imageFor(self, cursorVisible.image)
   setWhite(graphics)
-  graphics.draw(
-    cursorImage,
+  ImageSampling.draw(
+    graphics,
+    cursorLease,
+    nil,
     selectedRow.icon.x - cursorVisible.width / 2 + cursorVisible.offsetX,
     selectedRow.icon.y - cursorVisible.height / 2 + cursorVisible.offsetY + view.cursorOffsetY
   )
@@ -143,10 +196,12 @@ function ApricornBoxRenderer:drawPane(view, pane)
     local x = menu.x * 8
     local y = menu.y * 8
     local atlas = imageFor(self, self._manifest.actionMenu.image)
+    local atlasWidth = assert(atlas.width, "shared leases carry their menu atlas width")
+    local atlasHeight = assert(atlas.height, "shared leases carry their menu atlas height")
     local function drawTile(tileIndex, tileX, tileY)
-      local quad = graphics.newQuad(tileIndex * 8, 0, 8, 8, atlas:getWidth(), atlas:getHeight())
+      local quad = graphics.newQuad(tileIndex * 8, 0, 8, 8, atlasWidth, atlasHeight)
       setWhite(graphics)
-      graphics.draw(atlas, quad, tileX, tileY)
+      ImageSampling.draw(graphics, atlas, quad, tileX, tileY)
     end
     local function drawRowTiles(tileIndex, tileY)
       drawTile(tileIndex, x, tileY)
@@ -198,10 +253,12 @@ function ApricornBoxRenderer:release()
     self._promptRenderer:release()
     self._promptRenderer = nil
   end
-  for path, image in pairs(self._images) do
-    self._images[path] = nil
-    image:release()
+  local pool = assert(self._pool, "Apricorn Box renderer borrows its shared image owner")
+  self._pool = nil
+  for _, lease in pairs(self._leases) do
+    pool:release(lease)
   end
+  self._leases = {}
 end
 
 return ApricornBoxRenderer

@@ -10,6 +10,14 @@ local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local PreparedMonIcons = require("tests.support.PreparedMonIcons")
+
+-- One prepared icon provider over its own session image owner: the pool is
+-- disposed with the graphics scope, so no worker outlives the test.
+---@param scope table<string, unknown> graphics ownership scope
+---@return table<string, unknown> provider with the demanded icon page ready
+local function preparedIcons(scope)
+  return PreparedMonIcons.seededProvider(scope, PreparedMonIcons.iconCache(), { "MON0/f0" })
+end
 local PartyCache = require("libs.assets.src.PartyCache")
 local PartyScreenLayout = require("libs.hgss.src.ui.PartyScreenLayout")
 local PartyScreenRenderer = require("libs.hgss.src.ui.PartyScreenRenderer")
@@ -185,7 +193,7 @@ end
 local function renderPane(scope, cacheFs, manifest, status)
   local text = scope:own(FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() }))
   local layout = PartyScreenLayout.resolve({ manifest = manifest, cancellable = true })
-  local provider = scope:own(PreparedMonIcons.preparedProvider(PreparedMonIcons.iconCache(), { "MON0/f0" }))
+  local provider = scope:own(preparedIcons(scope))
   local renderer =
     PartyScreenRenderer.new({ graphics = love.graphics, cacheFs = cacheFs, manifest = manifest, text = text })
   local canvas = scope:own(love.graphics.newCanvas(256, 192))
@@ -199,7 +207,7 @@ end
 local function renderDetailPane(scope, cacheFs, manifest, status)
   local text = scope:own(FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() }))
   local layout = PartyScreenLayout.resolve({ manifest = manifest, cancellable = true })
-  local provider = scope:own(PreparedMonIcons.preparedProvider(PreparedMonIcons.iconCache(), { "MON0/f0" }))
+  local provider = scope:own(preparedIcons(scope))
   local renderer =
     PartyScreenRenderer.new({ graphics = love.graphics, cacheFs = cacheFs, manifest = manifest, text = text })
   local canvas = scope:own(love.graphics.newCanvas(600, 440))
@@ -225,7 +233,7 @@ function T.party_view_paints_frame_slots_icons_hp_and_cursor(scope)
     local text = scope:own(FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() }))
     for _, size in ipairs({ { width = 320, height = 240 }, { width = 640, height = 480 } }) do
       local layout = PartyScreenLayout.resolve({ manifest = manifest, cancellable = true })
-      local provider = PreparedMonIcons.preparedProvider(PreparedMonIcons.iconCache(), { "MON0/f0" })
+      local provider = preparedIcons(scope)
       local renderer =
         PartyScreenRenderer.new({ graphics = love.graphics, cacheFs = cacheFs, manifest = manifest, text = text })
       local canvas = scope:own(love.graphics.newCanvas(size.width, size.height))
@@ -661,7 +669,7 @@ function T.native_panels_render_staggered_chrome_icons_and_glyphs(scope)
       { 128, 8 },
       versionId .. " staggers the right column down eight pixels"
     )
-    local provider = scope:own(PreparedMonIcons.preparedProvider(PreparedMonIcons.iconCache(), { "MON0/f0" }))
+    local provider = scope:own(preparedIcons(scope))
     local renderer =
       PartyScreenRenderer.new({ graphics = love.graphics, cacheFs = cacheFs, manifest = manifest, text = text })
     local canvas = scope:own(love.graphics.newCanvas(256, 192))
@@ -702,7 +710,7 @@ function T.context_menu_covers_its_window_with_highlighted_focus(scope)
     local cacheFs, manifest = manifestFor(versionId)
     local text = scope:own(FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() }))
     local layout = PartyScreenLayout.resolve({ manifest = manifest, cancellable = true })
-    local provider = scope:own(PreparedMonIcons.preparedProvider(PreparedMonIcons.iconCache(), { "MON0/f0" }))
+    local provider = scope:own(preparedIcons(scope))
     local renderer =
       PartyScreenRenderer.new({ graphics = love.graphics, cacheFs = cacheFs, manifest = manifest, text = text })
     local menu = {
@@ -784,7 +792,7 @@ function T.browse_message_paints_and_magnifies_uniformly(scope)
     local cacheFs, manifest = manifestFor(versionId)
     local text = scope:own(FieldTextRenderer.new({ cacheFs = FieldUiFixture.cacheWithFontAndFrames() }))
     local layout = PartyScreenLayout.resolve({ manifest = manifest, cancellable = true })
-    local provider = scope:own(PreparedMonIcons.preparedProvider(PreparedMonIcons.iconCache(), { "MON0/f0" }))
+    local provider = scope:own(preparedIcons(scope))
     local renderer =
       PartyScreenRenderer.new({ graphics = love.graphics, cacheFs = cacheFs, manifest = manifest, text = text })
     local canvas = scope:own(love.graphics.newCanvas(256, 192))
