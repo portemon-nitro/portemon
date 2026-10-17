@@ -146,20 +146,18 @@ function SharedImagePoolFake:seedPhysical(path, sampler, handle)
   }
 end
 
--- Borrow one staged request as an immutable lease record. The first request
--- for an identity constructs its physical image; later compatible requests
--- adopt the live image, so identical textures under matching sampler state
--- resolve to one image. Fails loudly before staging, after cancellation, or
--- on double acquisition of the same token.
+-- Borrow one staged request as an immutable lease record and consume the
+-- ticket, matching the shared owner's single-use interest: the first
+-- request for an identity constructs its physical image; later compatible
+-- requests adopt the live image, so identical textures under matching
+-- sampler state resolve to one image. Fails loudly before staging, after
+-- cancellation, or on a second acquisition of the same token.
 ---@param token integer
 ---@return table<string, unknown>
 function SharedImagePoolFake:acquire(token)
   local request = assert(self._requests[token], "unknown image request token")
   if request.state == "cancelled" then
     error("image request was cancelled", 0)
-  end
-  if request.state == "acquired" then
-    error("image request token is already acquired", 0)
   end
   assert(request.state == "staged", "image request is not ready: " .. tostring(request.state))
   local key = assert(request.physicalKey, "staged image request has no physical identity")
@@ -170,7 +168,7 @@ function SharedImagePoolFake:acquire(token)
     self.uploads = self.uploads + 1
   end
   physical.leases = physical.leases + 1
-  request.state = "acquired"
+  self._requests[token] = nil
   return setmetatable({
     image = physical.image,
     palette = physical.palette,
@@ -184,17 +182,13 @@ function SharedImagePoolFake:acquire(token)
 end
 
 -- Drop logical interest in one request that never reached a lease.
--- Staged-but-unacquired records are forgotten; already-acquired tokens
--- keep their record for outstanding leases, so cancellation reports false
--- and changes nothing. Unknown tokens report false. Total: never fails.
+-- Staged-but-unacquired records are forgotten; consumed or unknown
+-- tokens report false and change nothing. Total: never fails.
 ---@param token integer
 ---@return boolean true when interest was dropped
 function SharedImagePoolFake:cancel(token)
   local request = self._requests[token]
   if request == nil then
-    return false
-  end
-  if request.state == "acquired" then
     return false
   end
   self._requests[token] = nil

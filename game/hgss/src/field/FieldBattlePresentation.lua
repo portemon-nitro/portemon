@@ -274,7 +274,14 @@ local function borrowPage(envelope, key, path)
   while true do
     local status, failure = pool:poll(token)
     if status == "ready" then
-      return pool:acquire(token)
+      local ok, leaseOrCause = pcall(function()
+        return pool:acquire(token)
+      end)
+      if ok then
+        return leaseOrCause
+      end
+      return nil,
+        "battle image " .. tostring(key) .. " upload failed: " .. tostring(path) .. ": " .. tostring(leaseOrCause)
     end
     if status == "failed" then
       return nil, "battle image " .. tostring(key) .. " upload failed: " .. tostring(path) .. ": " .. tostring(failure)

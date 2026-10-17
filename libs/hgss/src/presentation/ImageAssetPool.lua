@@ -1,25 +1,23 @@
 -- The one session-scoped owner of physical GPU images for generated PNGs:
 -- every field, menu, mon, battle, and editor consumer borrows immutable
 -- image and palette objects here instead of building textures privately.
--- Logical requests (generated PNG paths under immutable sampler state) fan
--- into worker-classified derivatives; the main thread realizes at most one
--- source and palette pair per poll, stages both GPU objects transactionally,
--- and drops its temporary payload references afterwards. Each poll stages
--- its own pair: a failed stage releases only its own new objects, reports
--- failure, and publishes nothing. Acquire publishes the staged pair under
--- the physical identity -- exact pixel content plus representation plus
--- sampler -- or adopts the live pair another request already published and
--- releases its staged duplicate, so identical pixels under matching sampler
--- state resolve to one image and palette while a different wrap or filter
--- pair never aliases. A shared idle kernel retains released pairs in
--- oldest-first order: a pair with a single logical owner rests resident
--- until the prune pass, while a pair shared by several owners is swept
--- with its last returned lease. Borrowed pairs stay alive either way.
+-- Logical requests (generated PNG paths under immutable sampler state) first
+-- resolve against still-resident pairs without worker or GPU work; a miss
+-- fans into worker-classified derivatives whose pixel identity is resolved
+-- before any GPU staging. Readiness never creates GPU objects: the consuming
+-- acquire borrows the live pair or realizes and publishes exactly one source
+-- and palette pair, then retires its ticket. Tickets are single-use interest,
+-- never lifetime: a successful acquire consumes its token and a later lease
+-- needs a fresh request, which is an immediate hit while the pair stays
+-- resident. A shared idle kernel retains released pairs in oldest-first
+-- order: a pair with a single logical owner rests resident until the prune
+-- pass, while a pair shared by several owners is swept with its last
+-- returned lease. Borrowed pairs stay alive either way.
 -- The pool borrows the session preparation worker instead of starting its
 -- own, so one presented session runs exactly one background worker. Only
 -- use without a session queue (headless or test fixtures) builds a
 -- pool-owned fallback worker through the thread option. Disposal cancels
--- pending interest, releases unstaged pairs, frees retained pairs exactly
+-- pending interest, drops unclaimed payloads, frees retained pairs exactly
 -- once, and joins the worker only when the pool owns its fallback worker,
 -- so late payloads never publish after their owner left.
 
@@ -57,17 +55,13 @@ local DEFAULT_IDLE_IMAGE_BYTES = 64 * 1024 * 1024
 ---@field idleByteLimit number? maximum unborrowed resident bytes retained across prunes (nil keeps the compiled first-pass budget)
 
 ---@class ImageAssetPoolRequest
+---@field logicalKey string private resident lookup identity for the path plus sampler
 ---@field logicalPath string
 ---@field sampler ImageAssetPoolSampler
 ---@field priority "demand"|"prefetch"
----@field job integer preparation queue token
----@field state "queued"|"staged"|"ready"|"failed"|"cancelled"
----@field stagedImage ImageAssetPoolImage? unpublished pair staged by this request
----@field stagedPalette ImageAssetPoolImage? unpublished palette staged by this request
----@field stagedKind "r8"|"rgba8"? representation of the staged pair
----@field stagedWidth integer? decoded width of the staged pair
----@field stagedHeight integer? decoded height of the staged pair
----@field stagedWeight integer? resident byte weight of the staged pair
+---@field job integer? preparation queue token while the request is still queued
+---@field state "queued"|"prepared"|"cached"|"failed"
+---@field payload ImageAssetPoolPayload? unuploaded worker result held only by a prepared ticket
 ---@field physicalKey string?
 ---@field failure string?
 
@@ -107,9 +101,9 @@ local DEFAULT_IDLE_IMAGE_BYTES = 64 * 1024 * 1024
 
 ---@class ImageAssetPoolStats
 ---@field requests integer total logical requests recorded
----@field staged integer requests holding an unpublished staged pair
----@field ready integer requests resolved to a physical pair
----@field failed integer requests that failed or were cancelled
+---@field staged integer unconsumed prepared CPU payloads
+---@field ready integer live cached tickets ready to borrow
+---@field failed integer live failed tickets awaiting cancellation
 ---@field physicalImages integer live physical pairs retained
 ---@field idleBytes integer unborrowed resident bytes
 ---@field pinnedBytes integer bytes held by outstanding leases
@@ -122,6 +116,8 @@ local DEFAULT_IDLE_IMAGE_BYTES = 64 * 1024 * 1024
 ---@field _ownsQueue boolean true only when the pool built its fallback worker itself
 ---@field _images ResidentAssetCache
 ---@field _requests table<integer, ImageAssetPoolRequest>
+---@field _residentByLogical table<string, string> private logical identity to live physical identity
+---@field _logicalByPhysical table<string, table<string, boolean>> private live physical identity to logical identities
 ---@field _nextToken integer
 ---@field _physicalCount integer
 ---@field _disposed boolean
@@ -186,7 +182,7 @@ local function checkSampler(sampler)
 end
 
 -- Normalize a worker hash (raw string or Data) to comparable bytes for
--- the physical key.
+-- the physical key. Hashes are small fixed digests, never image buffers.
 ---@param hash string|love.ByteData
 ---@return string
 local function hashToString(hash)
@@ -236,12 +232,46 @@ local function physicalKeyFor(pixelHash, width, height, sampler, kind)
   })
 end
 
--- Release one evicted physical pair exactly once and forget its census
--- share. Borrowed pairs never reach here: the kernel only evicts idle
--- entries, so a throwing release still leaves coherent bookkeeping behind.
+-- The private logical identity: the generated path plus the full immutable
+-- sampler state. The length prefix keeps a path containing a separator from
+-- colliding with a longer path plus sampler suffix; sampler channels are
+-- fixed enum strings that never embed a NUL byte.
+---@param logicalPath string
+---@param sampler ImageAssetPoolSampler
+---@return string
+local function logicalKeyFor(logicalPath, sampler)
+  return table.concat({
+    tostring(#logicalPath),
+    ":",
+    logicalPath,
+    "\0",
+    sampler.wrapX,
+    "\0",
+    sampler.wrapY,
+    "\0",
+    sampler.minFilter,
+    "\0",
+    sampler.magFilter,
+  })
+end
+
+-- Release one evicted physical pair exactly once, forget its census share,
+-- and invalidate every logical alias that pointed at it. Borrowed pairs
+-- never reach here: the kernel only evicts idle entries, so a throwing
+-- release still leaves coherent bookkeeping behind.
 ---@param pool ImageAssetPool
 ---@param entry ImageAssetPoolPhysical
 local function releasePhysical(pool, entry)
+  local key = entry.physicalKey
+  local aliases = pool._logicalByPhysical[key]
+  if aliases ~= nil then
+    for logicalKey in pairs(aliases) do
+      if pool._residentByLogical[logicalKey] == key then
+        pool._residentByLogical[logicalKey] = nil
+      end
+    end
+    pool._logicalByPhysical[key] = nil
+  end
   entry.image:release()
   if entry.palette ~= nil then
     entry.palette:release()
@@ -249,9 +279,42 @@ local function releasePhysical(pool, entry)
   pool._physicalCount = pool._physicalCount - 1
 end
 
+-- Remember one successful logical resolution: the alias may be reused while
+-- its physical entry stays resident and is forgotten on eviction above.
+---@param pool ImageAssetPool
+---@param logicalKey string
+---@param physicalKey string
+local function registerAlias(pool, logicalKey, physicalKey)
+  pool._residentByLogical[logicalKey] = physicalKey
+  local reverse = pool._logicalByPhysical[physicalKey]
+  if reverse == nil then
+    reverse = {}
+    pool._logicalByPhysical[physicalKey] = reverse
+  end
+  reverse[logicalKey] = true
+end
+
+-- Forget one logical mapping whose physical entry proved absent, keeping the
+-- reverse membership coherent for the remaining aliases.
+---@param pool ImageAssetPool
+---@param logicalKey string
+---@param physicalKey string
+local function dropStaleAlias(pool, logicalKey, physicalKey)
+  if pool._residentByLogical[logicalKey] == physicalKey then
+    pool._residentByLogical[logicalKey] = nil
+  end
+  local reverse = pool._logicalByPhysical[physicalKey]
+  if reverse ~= nil then
+    reverse[logicalKey] = nil
+    if next(reverse) == nil then
+      pool._logicalByPhysical[physicalKey] = nil
+    end
+  end
+end
+
 -- Release a staged-but-unpublished GPU object while unwinding a failed
--- realization or an adopted duplicate. Staged objects are never published,
--- so this never touches live or previously retained pairs.
+-- realization. Staged objects are never published, so this never touches
+-- live or previously retained pairs.
 ---@param object ImageAssetPoolImage
 local function releaseStagedObject(object)
   object:release()
@@ -288,6 +351,24 @@ local function stagePhysicalObjects(staged, graphics, sourceData, paletteData, s
   return image, palette
 end
 
+-- Byte size of one transferred worker buffer without copying its bytes:
+-- Data reports its size directly while plain strings measure by length.
+---@param data love.ByteData|string
+---@return integer
+local function dataByteSize(data)
+  if type(data) == "string" then
+    return #data
+  end
+  local sized = data --[[@as love.ByteData]]
+  local ok, size = pcall(function()
+    return sized:getSize()
+  end)
+  if ok and type(size) == "number" and size >= 0 then
+    return math.floor(size)
+  end
+  error("image preparation payload has unreadable data", 0)
+end
+
 -- Expand one indexed payload to straight RGBA bytes on a device without
 -- indexed texture support. One bulk FFI pass over contiguous words; the
 -- classification below already guarantees every slot lands in the palette.
@@ -309,23 +390,59 @@ local function expandIndexedPayload(indexBytes, paletteBytes, count)
   return out:getString()
 end
 
----@class ImageAssetPoolStagedPixels
+-- Expand Data-held indexed buffers to a straight RGBA Data without a
+-- whole-image Lua string: both inputs stay owned by their locals until the
+-- bulk FFI copy completes, then the fresh output Data travels to ImageData.
+---@param indexData love.ByteData packed first-seen slots
+---@param paletteData love.ByteData concatenated RGBA tuples in first-seen order
+---@param count integer pixel count
+---@return love.ByteData concatenated row-major RGBA bytes
+local function expandIndexedData(indexData, paletteData, count)
+  if ffi.abi("le") ~= true then
+    error("indexed image fallback requires a little-endian host", 0)
+  end
+  local indexes = ffi.cast("const uint8_t *", indexData:getFFIPointer())
+  local palette = ffi.cast("const uint32_t *", paletteData:getFFIPointer())
+  local out = love.data.newByteData(count * 4)
+  local pixels = ffi.cast("uint32_t *", out:getFFIPointer())
+  for slot = 0, count - 1 do
+    pixels[slot] = palette[indexes[slot]]
+  end
+  return out
+end
+
+---@class ImageAssetPoolRealizedPixels
 ---@field pixelHash string exact pixel identity bytes for the physical key
 ---@field width integer decoded source width in pixels
 ---@field height integer decoded source height in pixels
 ---@field sourceData love.ImageData
 ---@field paletteData love.ImageData?
----@field kind "r8"|"rgba8"
----@field weight integer
+---@field kind "r8"|"rgba8" effective representation after the device fallback
+---@field weight integer resident byte weight of the pair
 
--- Decode one transferred worker payload into staged pixel data without
--- consulting retained pairs: every poll builds its own source bytes, so a
--- failed upload belongs to exactly one request and a missing source fails
--- without touching live pairs.
+-- The effective representation for one classified payload on this device:
+-- indexed payloads collapse to straight RGBA where the format probe says
+-- the device cannot sample them, otherwise the classified kind stands.
+---@param pool ImageAssetPool
+---@param kind "r8"|"rgba8"
+---@return "r8"|"rgba8"
+local function effectiveKindFor(pool, kind)
+  if kind == "r8" and not pool._indexed then
+    return "rgba8"
+  end
+  return kind
+end
+
+-- Compute the physical identity for one worker payload under one sampler
+-- without decoding pixels or creating GPU objects: validates the small
+-- classification metadata and normalizes the representation first so the
+-- fallback and native paths key identically for the device.
 ---@param pool ImageAssetPool
 ---@param payload ImageAssetPoolPayload
----@return ImageAssetPoolStagedPixels
-local function decodeTransferred(pool, payload)
+---@param sampler ImageAssetPoolSampler
+---@return string physicalKey
+---@return "r8"|"rgba8" effectiveKind
+local function keyForPayload(pool, payload, sampler)
   assert(type(payload) == "table", "image preparation answered without a payload")
   local record = payload --[[@as ImageAssetPoolPayload]]
   assert(
@@ -338,50 +455,99 @@ local function decodeTransferred(pool, payload)
     "image preparation answered with invalid dimensions"
   )
   assert(record.kind == "r8" or record.kind == "rgba8", "image preparation answered with an unknown representation")
-  local kind = record.kind
-  if kind == "r8" and not pool._indexed then
-    kind = "rgba8"
+  assert(record.pixelHash ~= nil, "image preparation answered without a pixel identity")
+  local kind = effectiveKindFor(pool, record.kind)
+  if kind == "r8" then
+    assert(type(record.colors) == "number" and record.colors >= 1, "indexed image preparation needs a palette")
+    assert(record.paletteData ~= nil, "indexed image preparation needs palette bytes")
+    assert(record.indexData ~= nil, "indexed image preparation needs index bytes")
+  elseif record.kind == "r8" then
+    assert(record.paletteData ~= nil, "indexed image fallback needs palette bytes")
+    assert(record.indexData ~= nil, "indexed image fallback needs index bytes")
+  else
+    assert(record.indexData ~= nil, "straight image preparation needs pixel bytes")
   end
+  return physicalKeyFor(hashToString(record.pixelHash), record.width, record.height, sampler, kind), kind
+end
+
+-- Realize one transferred worker payload into staged pixel data on the
+-- consuming acquire, passing the transferred Data straight to ImageData so
+-- the common path copies no whole-image Lua string. The caller keeps the
+-- payload Data alive across the FFI fallback copy; size checks run before
+-- every native construction.
+---@param pool ImageAssetPool
+---@param payload ImageAssetPoolPayload
+---@return ImageAssetPoolRealizedPixels
+local function realizePayload(pool, payload)
+  assert(type(payload) == "table", "image preparation answered without a payload")
+  local record = payload --[[@as ImageAssetPoolPayload]]
+  assert(
+    type(record.width) == "number"
+      and record.width % 1 == 0
+      and record.width >= 1
+      and type(record.height) == "number"
+      and record.height % 1 == 0
+      and record.height >= 1,
+    "image preparation answered with invalid dimensions"
+  )
+  assert(record.kind == "r8" or record.kind == "rgba8", "image preparation answered with an unknown representation")
+  local kind = effectiveKindFor(pool, record.kind)
   local count = record.width * record.height
-  local sourceBytes
-  local paletteBytes = nil
-  local weight
   if kind == "r8" then
     assert(type(record.colors) == "number" and record.colors >= 1, "indexed image preparation needs a palette")
     local paletteData = assert(record.paletteData, "indexed image preparation needs palette bytes")
     local indexData = assert(record.indexData, "indexed image preparation needs index bytes")
-    sourceBytes = indexData:getString()
-    paletteBytes = paletteData:getString()
-    assert(#sourceBytes == count, "indexed image payload length must match its dimensions")
-    assert(#paletteBytes == record.colors * 4, "palette payload length must match its slot count")
-    weight = count + record.colors * 4
-  elseif record.kind == "r8" then
+    assert(dataByteSize(indexData) == count, "indexed image payload length must match its dimensions")
+    assert(dataByteSize(paletteData) == record.colors * 4, "palette payload length must match its slot count")
+    local sourceData = love.image.newImageData(record.width, record.height, kind, indexData --[[@as string]])
+    local paletteImageData = love.image.newImageData(record.colors, 1, "rgba8", paletteData --[[@as string]])
+    return {
+      pixelHash = hashToString(record.pixelHash),
+      width = record.width,
+      height = record.height,
+      sourceData = sourceData,
+      paletteData = paletteImageData,
+      kind = kind,
+      weight = count + record.colors * 4,
+    }
+  end
+  if record.kind == "r8" then
     local paletteData = assert(record.paletteData, "indexed image fallback needs palette bytes")
     local indexData = assert(record.indexData, "indexed image fallback needs index bytes")
-    local indexString = indexData:getString()
-    local paletteString = paletteData:getString()
-    assert(#indexString == count, "indexed image payload length must match its dimensions")
-    sourceBytes = expandIndexedPayload(indexString, paletteString, count)
-    weight = count * 4
-  else
-    local indexData = assert(record.indexData, "straight image preparation needs pixel bytes")
-    sourceBytes = indexData:getString()
-    assert(#sourceBytes == count * 4, "straight image payload length must match its dimensions")
-    weight = count * 4
+    assert(dataByteSize(indexData) == count, "indexed image payload length must match its dimensions")
+    assert(dataByteSize(paletteData) == record.colors * 4, "palette payload length must match its slot count")
+    local sourceData
+    if type(indexData) == "string" or type(paletteData) == "string" then
+      local indexString = type(indexData) == "string" and indexData or (indexData --[[@as love.ByteData]]):getString()
+      local paletteString = type(paletteData) == "string" and paletteData
+        or (paletteData --[[@as love.ByteData]]):getString()
+      local rgbaBytes = expandIndexedPayload(indexString, paletteString, count)
+      sourceData = love.image.newImageData(record.width, record.height, kind, rgbaBytes)
+    else
+      local rgbaData = expandIndexedData(indexData --[[@as love.ByteData]], paletteData --[[@as love.ByteData]], count)
+      sourceData = love.image.newImageData(record.width, record.height, kind, rgbaData --[[@as string]])
+    end
+    return {
+      pixelHash = hashToString(record.pixelHash),
+      width = record.width,
+      height = record.height,
+      sourceData = sourceData,
+      paletteData = nil,
+      kind = kind,
+      weight = count * 4,
+    }
   end
-  local sourceData = love.image.newImageData(record.width, record.height, kind, sourceBytes)
-  local paletteImageData = nil
-  if paletteBytes ~= nil then
-    paletteImageData = love.image.newImageData(record.colors, 1, "rgba8", paletteBytes)
-  end
+  local indexData = assert(record.indexData, "straight image preparation needs pixel bytes")
+  assert(dataByteSize(indexData) == count * 4, "straight image payload length must match its dimensions")
+  local sourceData = love.image.newImageData(record.width, record.height, kind, indexData --[[@as string]])
   return {
     pixelHash = hashToString(record.pixelHash),
     width = record.width,
     height = record.height,
     sourceData = sourceData,
-    paletteData = paletteImageData,
+    paletteData = nil,
     kind = kind,
-    weight = weight,
+    weight = count * 4,
   }
 end
 
@@ -428,13 +594,16 @@ function ImageAssetPool.new(cacheFs, opts)
     _ownsQueue = ownsQueue,
     -- Idle entries accumulate until the owner prunes: unborrowed pairs
     -- beyond the idle budget leave oldest-first while borrowed pairs stay
-    -- alive. New requests refresh already-resident pairs below, so the
-    -- prune pass prefers predicted reuse over the historical idle tail.
+    -- alive. Resident logical aliases resolve while their physical entry
+    -- stays present and are forgotten on eviction, so the maps stay bounded
+    -- by the live resident set instead of the session history.
     _images = ResidentAssetCache.new({
       idleByteLimit = opts.idleByteLimit or DEFAULT_IDLE_IMAGE_BYTES,
       release = onPhysicalRelease,
     }),
     _requests = {},
+    _residentByLogical = {},
+    _logicalByPhysical = {},
     _nextToken = 0,
     _physicalCount = 0,
     _disposed = false,
@@ -442,35 +611,11 @@ function ImageAssetPool.new(cacheFs, opts)
   return pool
 end
 
--- Refresh already-resident pairs matching a new request as semantic
--- reuse: predicted demand that reuses a resident pair moves it to
--- most-recently-used, so a later prune evicts the historical idle tail
--- first. Unknown or evicted identities are ignored; borrowed pairs need
--- no move. The scan is linear in recorded requests with no allocation;
--- requests are scene-lifetime interest, never per-frame or per-draw.
----@param pool ImageAssetPool
----@param logicalPath string
----@param sampler ImageAssetPoolSampler
-local function touchResidentPair(pool, logicalPath, sampler)
-  for _, prior in pairs(pool._requests) do
-    if
-      prior.physicalKey ~= nil
-      and prior.logicalPath == logicalPath
-      and prior.sampler.wrapX == sampler.wrapX
-      and prior.sampler.wrapY == sampler.wrapY
-      and prior.sampler.minFilter == sampler.minFilter
-      and prior.sampler.magFilter == sampler.magFilter
-    then
-      pcall(function()
-        pool._images:find(prior.physicalKey --[[@as string]])
-      end)
-    end
-  end
-end
-
 -- Record logical interest in one generated PNG under one immutable sampler
--- state and enroll its classification work immediately. Returns an opaque
--- token; readiness is observed through poll, never assumed.
+-- state. A still-resident logical mapping resolves without dispatching
+-- worker work; otherwise the request enrolls classification work at once.
+-- Returns an opaque single-use token; readiness is observed through poll
+-- and the token is consumed by exactly one successful acquire.
 ---@param logicalPath string generated PNG path in the selected cache
 ---@param sampler ImageAssetPoolSampler immutable sampler state for the physical key
 ---@param priority "demand"|"prefetch"? demand jumps ahead of prefetch work
@@ -481,40 +626,66 @@ function ImageAssetPool:request(logicalPath, sampler, priority)
   checkSampler(sampler)
   local level = priority or "demand"
   assert(level == "demand" or level == "prefetch", "unknown preparation priority " .. tostring(priority))
+  local samplerCopy = {
+    wrapX = sampler.wrapX,
+    wrapY = sampler.wrapY,
+    minFilter = sampler.minFilter,
+    magFilter = sampler.magFilter,
+  }
+  local logicalKey = logicalKeyFor(logicalPath, samplerCopy)
+  local mapped = self._residentByLogical[logicalKey]
+  if mapped ~= nil then
+    local resident = self._images:find(mapped)
+    if resident ~= nil then
+      self._nextToken = self._nextToken + 1
+      local token = self._nextToken
+      self._requests[token] = {
+        logicalKey = logicalKey,
+        logicalPath = logicalPath,
+        sampler = samplerCopy,
+        priority = level,
+        state = "cached",
+        physicalKey = mapped,
+      }
+      return token
+    end
+    dropStaleAlias(self, logicalKey, mapped)
+  end
   local job = self._queue:request("image-derivative", logicalPath, level)
   self._nextToken = self._nextToken + 1
   local token = self._nextToken
   self._requests[token] = {
+    logicalKey = logicalKey,
     logicalPath = logicalPath,
-    sampler = sampler,
+    sampler = samplerCopy,
     priority = level,
     job = job,
     state = "queued",
   }
-  touchResidentPair(self, logicalPath, sampler)
   return token
 end
 
--- Probe one request without blocking, staging at most one physical pair
--- per call. Returns "pending" while classification or the worker is in
--- flight, "ready" once this request staged its pair, or "failed" with the
--- cause when the source is missing or the upload stage failed. Staging
--- never consults retained pairs: the staged pair belongs to this request
--- until acquire publishes or adopts it.
+-- Probe one request without blocking and without creating GPU objects.
+-- Returns "pending" while classification or the worker is in flight, "ready"
+-- once the pixel identity resolved to a borrowable pair or an unuploaded
+-- prepared payload, or "failed" with the cause when the source is missing
+-- or its classification is unusable. A ready ticket borrows or realizes
+-- exactly once through its consuming acquire.
 ---@param token integer
 ---@return string, string?
 function ImageAssetPool:poll(token)
   local request = assert(self._requests[token], "unknown image request token")
-  if request.state == "staged" or request.state == "ready" then
+  if request.state == "cached" or request.state == "prepared" then
     return "ready"
   end
   if request.state == "failed" then
     return "failed", request.failure
   end
-  if request.state == "cancelled" or self._disposed then
+  if self._disposed then
     error("image request was cancelled", 0)
   end
-  local status, cause = self._queue:poll(request.job)
+  assert(request.state == "queued", "image request is not ready: " .. tostring(request.state))
+  local status, cause = self._queue:poll(assert(request.job, "queued image request has no worker job"))
   if status == "pending" then
     return "pending"
   end
@@ -523,128 +694,58 @@ function ImageAssetPool:poll(token)
     request.failure = cause
     return "failed", cause
   end
-  local payload = self._queue:take(request.job)
-  local decodeOk, decoded = pcall(decodeTransferred, self, payload)
-  if not decodeOk then
+  local payload = self._queue:take(assert(request.job, "queued image request has no worker job"))
+  request.job = nil
+  local keyOk, physicalKey = pcall(keyForPayload, self, payload --[[@as ImageAssetPoolPayload]], request.sampler)
+  if not keyOk then
     request.state = "failed"
-    request.failure = tostring(decoded)
-    return "failed", tostring(decoded)
+    request.failure = tostring(physicalKey)
+    return "failed", tostring(physicalKey)
   end
-  local staged = {} ---@type ImageAssetPoolImage[]
-  local stageOk, image, palette =
-    pcall(stagePhysicalObjects, staged, self._graphics, decoded.sourceData, decoded.paletteData, request.sampler)
-  if not stageOk then
-    for _, object in ipairs(staged) do
-      pcall(releaseStagedObject, object)
-    end
-    request.state = "failed"
-    request.failure = tostring(image)
-    return "failed", tostring(image)
+  ---@cast physicalKey string
+  local resident = self._images:find(physicalKey)
+  if resident ~= nil then
+    request.payload = nil
+    request.physicalKey = physicalKey
+    request.state = "cached"
+    return "ready"
   end
-  attachSourcePayload(image, decoded.sourceData)
-  request.stagedImage = image
-  request.stagedPalette = palette
-  request.stagedKind = decoded.kind
-  request.stagedWidth = decoded.width
-  request.stagedHeight = decoded.height
-  request.stagedWeight = decoded.weight
-  request.physicalKey = physicalKeyFor(decoded.pixelHash, decoded.width, decoded.height, request.sampler, decoded.kind)
-  request.state = "staged"
+  request.payload = payload --[[@as ImageAssetPoolPayload]]
+  request.physicalKey = physicalKey
+  request.state = "prepared"
   return "ready"
 end
 
--- Adopt the live pair for a staged request: borrow the retained entry and
--- release this request's staged duplicate exactly once.
----@param pool ImageAssetPool
----@param request ImageAssetPoolRequest
----@param physical ImageAssetPoolPhysical
----@return ImageAssetPoolLease
-local function adoptLivePair(pool, request, physical)
-  local stagedImage = assert(request.stagedImage, "staged image request has no staged pair")
-  local borrowed = pool._images:borrow(physical.physicalKey)
-  physical.liveLeases = physical.liveLeases + 1
-  physical.shared = true
-  pcall(releaseStagedObject, stagedImage)
-  if request.stagedPalette ~= nil then
-    pcall(releaseStagedObject, request.stagedPalette)
-  end
-  request.stagedImage = nil
-  request.stagedPalette = nil
-  request.physicalKey = physical.physicalKey
-  request.state = "ready"
-  return setmetatable({
-    image = physical.image,
-    palette = physical.palette,
-    kind = physical.kind,
-    width = physical.width,
-    height = physical.height,
-    physicalKey = physical.physicalKey,
-    _cacheLease = borrowed,
-    _pool = pool,
-    _released = false,
-  }, Lease)
-end
-
--- Publish a staged request as the new live pair and borrow it for the
--- returned lease.
----@param pool ImageAssetPool
----@param request ImageAssetPoolRequest
----@param key string
----@return ImageAssetPoolLease
-local function publishStagedPair(pool, request, key)
-  local stagedImage = assert(request.stagedImage, "staged image request has no staged pair")
-  local weight = assert(request.stagedWeight, "staged image request has no staged weight")
-  local physical = {
-    image = stagedImage,
-    palette = request.stagedPalette,
-    kind = assert(request.stagedKind, "staged image request has no staged representation"),
-    width = assert(request.stagedWidth, "staged image request has no staged width"),
-    height = assert(request.stagedHeight, "staged image request has no staged height"),
-    physicalKey = key,
-    bytes = weight,
-    liveLeases = 1,
-    shared = false,
-  }
-  pool._images:publish(key, physical, weight)
-  pool._physicalCount = pool._physicalCount + 1
-  local borrowed = pool._images:borrow(key)
-  request.stagedImage = nil
-  request.stagedPalette = nil
-  request.physicalKey = key
-  request.state = "ready"
-  return setmetatable({
-    image = physical.image,
-    palette = physical.palette,
-    kind = physical.kind,
-    width = physical.width,
-    height = physical.height,
-    physicalKey = physical.physicalKey,
-    _cacheLease = borrowed,
-    _pool = pool,
-    _released = false,
-  }, Lease)
-end
-
--- Borrow one staged request as an immutable lease record. The first
--- request for an identity publishes its staged pair; a later request for
--- the same identity adopts the live pair and releases its staged
--- duplicate, so compatible requests resolve one image and palette. The
--- lease holds the pair alive; release it when the logical owner lets go.
--- Acquiring before staging, after failure, or after cancellation fails
--- loudly instead of fabricating pixels.
+-- Borrow one ready ticket as an immutable lease record and consume the
+-- ticket. A live pair is borrowed directly; otherwise the prepared payload
+-- is realized and published exactly once under its physical identity, so
+-- compatible tickets that resolved the same identity share one image and
+-- palette while a different wrap, filter, or representation never aliases.
+-- The lease holds the pair alive; release it when the logical owner lets
+-- go. Acquiring before readiness, after failure, cancellation, or a second
+-- acquire of the same token fails loudly instead of fabricating pixels.
 ---@param token integer
 ---@return ImageAssetPoolLease
 function ImageAssetPool:acquire(token)
   local request = assert(self._requests[token], "unknown image request token")
-  if request.state == "ready" then
-    local key = assert(request.physicalKey, "ready image request has no physical identity")
-    local found = assert(self._images:find(key), "physical image left the pool under its request")
+  if request.state ~= "cached" and request.state ~= "prepared" then
+    if request.state == "failed" then
+      error("image request is not ready: failed", 0)
+    end
+    error("image request is not ready: " .. tostring(request.state), 0)
+  end
+  local key = assert(request.physicalKey, "ready image request has no physical identity")
+  local found = self._images:find(key)
+  if found ~= nil then
     local physical = found --[[@as ImageAssetPoolPhysical]]
+    request.payload = nil
     local borrowed = self._images:borrow(key)
     physical.liveLeases = physical.liveLeases + 1
     if physical.liveLeases > 1 then
       physical.shared = true
     end
+    registerAlias(self, request.logicalKey, key)
+    self._requests[token] = nil
     return setmetatable({
       image = physical.image,
       palette = physical.palette,
@@ -657,24 +758,79 @@ function ImageAssetPool:acquire(token)
       _released = false,
     }, Lease)
   end
-  if request.state ~= "staged" then
-    error("image request is not ready: " .. tostring(request.state), 0)
+  if request.state == "cached" then
+    dropStaleAlias(self, request.logicalKey, key)
+    self._requests[token] = nil
+    error("physical image left the pool under its request", 0)
   end
-  assert(request.stagedImage ~= nil, "staged image request has no staged pair")
-  local key = assert(request.physicalKey, "staged image request has no physical identity")
-  local found = self._images:find(key)
-  if found ~= nil then
-    return adoptLivePair(self, request, found --[[@as ImageAssetPoolPhysical]])
+  local payload = assert(request.payload, "prepared image request has no payload")
+  local decodeOk, realized = pcall(realizePayload, self, payload)
+  if not decodeOk then
+    request.payload = nil
+    self._requests[token] = nil
+    error(realized, 0)
   end
-  return publishStagedPair(self, request, key)
+  ---@cast realized ImageAssetPoolRealizedPixels
+  assert(realized.pixelHash ~= nil, "realized image has no pixel identity")
+  local staged = {} ---@type ImageAssetPoolImage[]
+  local stageOk, image, palette =
+    pcall(stagePhysicalObjects, staged, self._graphics, realized.sourceData, realized.paletteData, request.sampler)
+  if not stageOk then
+    for _, object in ipairs(staged) do
+      pcall(releaseStagedObject, object)
+    end
+    request.payload = nil
+    self._requests[token] = nil
+    error(image, 0)
+  end
+  attachSourcePayload(image, realized.sourceData)
+  local physical = {
+    image = image,
+    palette = palette,
+    kind = realized.kind,
+    width = realized.width,
+    height = realized.height,
+    physicalKey = key,
+    bytes = realized.weight,
+    liveLeases = 1,
+    shared = false,
+  }
+  local publishOk, publishErr = pcall(function()
+    self._images:publish(key, physical, realized.weight)
+  end)
+  if not publishOk then
+    pcall(releaseStagedObject, image)
+    if palette ~= nil then
+      pcall(releaseStagedObject, palette)
+    end
+    request.payload = nil
+    self._requests[token] = nil
+    error(publishErr, 0)
+  end
+  self._physicalCount = self._physicalCount + 1
+  local borrowed = self._images:borrow(key)
+  registerAlias(self, request.logicalKey, key)
+  request.payload = nil
+  self._requests[token] = nil
+  return setmetatable({
+    image = physical.image,
+    palette = physical.palette,
+    kind = physical.kind,
+    width = physical.width,
+    height = physical.height,
+    physicalKey = physical.physicalKey,
+    _cacheLease = borrowed,
+    _pool = self,
+    _released = false,
+  }, Lease)
 end
 
 -- Drop logical interest in one request that never reached a lease.
 -- Queued work cancels through the borrowed queue so its late payload is
--- discarded; staged-but-unacquired pairs release their staged objects.
--- Already-acquired requests keep their record: outstanding leases still
--- borrow through it for re-acquire, so cancellation reports false and
--- changes nothing. Unknown tokens report false. Total: never fails.
+-- discarded; prepared payloads and cached identities are forgotten without
+-- creating GPU objects. Consumed or unknown tokens report false: an
+-- acquired ticket owns its borrow through its lease, never through a
+-- resurrected token. Total: never fails.
 ---@param token integer
 ---@return boolean true when interest was dropped
 function ImageAssetPool:cancel(token)
@@ -682,20 +838,13 @@ function ImageAssetPool:cancel(token)
   if request == nil then
     return false
   end
-  if request.state == "ready" then
-    return false
+  if request.job ~= nil then
+    pcall(function()
+      self._queue:cancel(request.job)
+    end)
+    request.job = nil
   end
-  if request.stagedImage ~= nil then
-    pcall(releaseStagedObject, request.stagedImage)
-    request.stagedImage = nil
-  end
-  if request.stagedPalette ~= nil then
-    pcall(releaseStagedObject, request.stagedPalette)
-    request.stagedPalette = nil
-  end
-  pcall(function()
-    self._queue:cancel(request.job)
-  end)
+  request.payload = nil
   self._requests[token] = nil
   return true
 end
@@ -724,15 +873,15 @@ end
 
 -- Trim unborrowed pairs oldest-first until the idle budget is met and
 -- report the evicted count. Borrowed pairs stay resident regardless of
--- idle age; request-time reuse plus this oldest-first order prefers
--- predicted entries over the historical idle tail.
+-- idle age; eviction invalidates every logical alias to the evicted pair
+-- through the release callback, so no later request resolves a stale hit.
 ---@return integer
 function ImageAssetPool:prune()
   local evicted, _ = self._images:trim()
   return evicted
 end
 
--- Cancel every pending request, release unstaged pairs, and release
+-- Cancel every pending ticket, drop unclaimed payloads, and release
 -- retained pairs exactly once, joining the worker only when the pool owns
 -- its fallback worker. A borrowed session worker outlives its pool: the
 -- session owner joins it after every borrower above is gone. Late worker
@@ -744,24 +893,20 @@ function ImageAssetPool:dispose()
   end
   self._disposed = true
   for _, request in pairs(self._requests) do
-    if request.state == "queued" or request.state == "staged" then
-      request.state = "cancelled"
-      if request.stagedImage ~= nil then
-        pcall(releaseStagedObject, request.stagedImage)
-        request.stagedImage = nil
-      end
-      if request.stagedPalette ~= nil then
-        pcall(releaseStagedObject, request.stagedPalette)
-        request.stagedPalette = nil
-      end
+    if request.job ~= nil then
       -- A borrowed session queue outlives this pool: drop the worker
       -- interest so its late payload is discarded instead of retained
       -- unclaimed until the session owner joins the worker.
       pcall(function()
         self._queue:cancel(request.job)
       end)
+      request.job = nil
     end
+    request.payload = nil
   end
+  self._requests = {}
+  self._residentByLogical = {}
+  self._logicalByPhysical = {}
   -- Only the pool-owned fallback worker is joined here; a borrowed
   -- session worker stays live for its owner.
   if self._ownsQueue then
@@ -770,8 +915,10 @@ function ImageAssetPool:dispose()
   self._images:clear()
 end
 
--- Current census: request states, live physical pairs, and resident bytes
--- split into idle and lease-held shares.
+-- Current census: live ticket states, live physical pairs, and resident
+-- bytes split into idle and lease-held shares. Ticket counts are current
+-- live interest, never history: successful acquires and cancellations
+-- leave no record behind.
 ---@return ImageAssetPoolStats
 function ImageAssetPool:stats()
   local resident = self._images:stats()
@@ -779,11 +926,11 @@ function ImageAssetPool:stats()
   local ready = 0
   local failed = 0
   for _, request in pairs(self._requests) do
-    if request.state == "staged" then
+    if request.state == "prepared" then
       staged = staged + 1
-    elseif request.state == "ready" then
+    elseif request.state == "cached" then
       ready = ready + 1
-    elseif request.state == "failed" or request.state == "cancelled" then
+    elseif request.state == "failed" then
       failed = failed + 1
     end
   end

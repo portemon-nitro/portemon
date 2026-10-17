@@ -361,11 +361,7 @@ local function requestedJobToken(host, kind, seen)
 end
 
 local function fakeByteData(bytes)
-  return {
-    getString = function()
-      return bytes
-    end,
-  }
+  return love.data.newByteData(bytes)
 end
 
 local function imageDerivativeReply(width, height, pixelTag)
@@ -960,15 +956,23 @@ function T.tests.image_idle_budget_trims_oldest_first_and_reuse_shields_the_pred
     return pool:acquire(token)
   end
   -- Re-enroll resident interest without acquiring: the enrollment itself
-  -- refreshes the resident pair, the reply frees the worker slot for later
-  -- demand, and the pushed job is consumed so later demand resolves its
-  -- own token. The pool never polls the reuse token.
+  -- refreshes the resident pair. A still-resident path resolves its cached
+  -- ticket without worker work, so the reuse token polls ready at once; a
+  -- genuine miss still enrolls classification work, and the pushed job is
+  -- consumed so later demand resolves its own token.
   local function reuse(tag, useSampler)
     local path = "gen/field/" .. tag .. ".png"
-    pool:request(path, useSampler, "prefetch")
+    local token = pool:request(path, useSampler, "prefetch")
     local job = requestedJobToken(host, "image-derivative", seen)
-    Assert.notNil(job, "reuse enrolls classification work for " .. path)
-    replyTo(host, job, imageDerivativeReply(2, 1, tag))
+    if job == nil then
+      Assert.equal(
+        pool:poll(token),
+        "ready",
+        "resident reuse resolves its cached ticket without worker work for " .. path
+      )
+    else
+      replyTo(host, job, imageDerivativeReply(2, 1, tag))
+    end
   end
 
   -- Three idle images total 30 bytes against the 25-byte budget: the trim
