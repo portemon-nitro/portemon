@@ -416,6 +416,20 @@ function FieldScriptComposition.compose(runtime, options)
   local gearHost = type(gear) == "table" and gear.scriptHost or nil
   local gearRadio = type(gear) == "table" and gear.radioEffects or nil
   local gearCatalog = runtime.pokegearCatalog
+  -- The Spiky-Ear Pichu gift couples two already-live owners: the party
+  -- service inserts the event mon and Pokedex knowledge records the
+  -- received species. The catch stages before insertion and publishes
+  -- only on success, so a full party leaves both owners untouched.
+  local specialMonGifts = {}
+  function specialMonGifts:giveSpikyEarPichu()
+    local caught = assert(runtime.dexKnowledge, "script gifts require Pokedex knowledge"):capture("PICHU")
+    if not options.mons:giveSpikyEarPichu() then
+      return false
+    end
+    assert(caught.isCurrent(), "gift Pokedex candidate became stale")
+    caught.publish()
+    return true
+  end
   local scripts = FieldScripts.new({
     cacheFs = options.cacheFs,
     overrideFs = runtime.overrideFs,
@@ -448,6 +462,7 @@ function FieldScriptComposition.compose(runtime, options)
     yesNoHost = runtime.yesNoHost,
     startMenuReopen = { request = requestStartMenuReopen },
     mons = options.mons,
+    specialMonGifts = specialMonGifts,
     items = options.items,
     itemCatalog = options.itemCatalog,
     followingMon = options.followingMon,

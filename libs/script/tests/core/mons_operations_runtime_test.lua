@@ -90,15 +90,37 @@ function T.give_mon_writes_the_source_boolean_result()
   Assert.equal(service:partyCount(), 3, "the created mon enters the party")
 end
 
-function T.give_spiky_ear_pichu_publishes_through_the_configured_meeting_point()
+-- The special gift opcode delegates to the game-side gift host only:
+-- with no `mons` service present, reaching for it would fault, so success
+-- proves the handler never touches the generic party service directly.
+function T.give_spiky_ear_pichu_delegates_to_the_gift_only_host()
   local service = openService()
-  local run = runWith(service)
+  local calls = 0
+  local run = runWith(nil)
+  run.services.specialMonGifts = {
+    giveSpikyEarPichu = function()
+      calls = calls + 1
+      return service:giveSpikyEarPichu()
+    end,
+  }
   Assert.equal(Runtime.executeNode({ op = "give_spiky_ear_pichu" }, run), Runtime.OUTCOME_CONTINUE)
+  Assert.equal(calls, 1, "the opcode reaches the gift host exactly once")
   Assert.equal(service:partyCount(), 3, "the event mon enters the party")
   local mon = service:partyMon(2)
   Assert.equal(mon.species, "PICHU")
   Assert.equal(mon.form, 1)
   Assert.equal(mon.met.location, 7, "the bare call uses the configured map section")
+end
+
+function T.give_spiky_ear_pichu_without_its_host_is_an_attributed_fault()
+  local run = runWith(openService())
+  local ok, err = pcall(function()
+    Runtime.executeNode({ op = "give_spiky_ear_pichu" }, run)
+  end)
+  Assert.isFalse(ok, "a missing gift host must not silently skip the gift")
+  Assert.isTrue(Errors.is(err))
+  ---@cast err Errors.Error
+  Assert.equal(err.code, "SCRIPT_SERVICE_MISSING")
 end
 
 function T.queries_write_counts_slots_and_sentinels()

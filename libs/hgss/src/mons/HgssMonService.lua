@@ -697,8 +697,9 @@ end
 -- (pret/pokeheartgold src/field/scrcmd_pokemon_misc.c
 -- ScrCmd_GiveSpikyEarPichu): the party-full refusal reports before any
 -- creation, so unlike the ordinary script gift no generator draws run
--- when the party is full. Only the Pokedex update is omitted, because no
--- Pokedex owner exists.
+-- when the party is full. The mon service owns party insertion only;
+-- Pokedex registration happens through game-side script composition
+-- after a successful insertion.
 ---@param metContext { location: integer?, date: MonDate|(fun(): MonDate)|nil }?
 ---@return boolean
 function HgssMonService:giveSpikyEarPichu(metContext)

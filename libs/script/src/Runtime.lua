@@ -2487,7 +2487,7 @@ function HANDLERS.celebi_time_travel(_, run)
   return blockOnTask(run, "celebi_time_travel", {})
 end
 function HANDLERS.give_spiky_ear_pichu(_, run)
-  monsFor(run):giveSpikyEarPichu()
+  requireService(run, "specialMonGifts"):giveSpikyEarPichu()
   return Runtime.OUTCOME_CONTINUE
 end
 function HANDLERS.camera_focus_set(node, run)
