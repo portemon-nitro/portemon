@@ -65,6 +65,7 @@ local FieldLightProfile = require("libs.assets.src.field.FieldLightProfile")
 ---@field fieldCellIndex table<string, unknown>?
 ---@field entries table<integer, table<string, unknown>>
 ---@field protectedMaps table<integer, boolean>
+---@field _nearDemandIds integer[]? demand membership resolved by the latest location request
 ---@field clock integer
 ---@field released boolean
 local FieldMapLoader = {}
@@ -1499,13 +1500,30 @@ function FieldMapLoader:requestLocation(idOrSymbol, fieldX, fieldZ, urgency)
   assert(type(urgency) == "string" and urgency ~= "", "location demand requires an urgency")
   local record = worldRecord(self.world, idOrSymbol)
   local host = self.derivedAssets
+  -- Read-only snapshot of the already resolved demand membership for the
+  -- prediction driver: the destination plus every represented/warp id seen
+  -- so far. Stored on every exit below without changing readiness.
+  local seen = {} --[[@as table<integer, boolean>]]
+  local function snap()
+    local ids = { record.id }
+    for mapId in pairs(seen) do
+      local id = math.floor(mapId)
+      if id ~= record.id then
+        ids[#ids + 1] = id
+      end
+    end
+    table.sort(ids)
+    self._nearDemandIds = ids
+  end
   if host == nil then
+    self._nearDemandIds = { record.id }
     return true
   end
   -- The destination-only prerequisite keeps its enrollment even while
   -- pending so the physical/warp closure below is never narrowed.
   local assetsReady, assetsFailure = self:requestMapAssets(idOrSymbol, urgency)
   if assetsFailure ~= nil then
+    snap()
     return false, assetsFailure
   end
   local pending = not assetsReady
@@ -1518,12 +1536,12 @@ function FieldMapLoader:requestLocation(idOrSymbol, fieldX, fieldZ, urgency)
     end
     return nil
   end
-  local seen = {}
   local matrix = record.matrix
   if type(matrix) == "table" and type(matrix.memberId) == "number" then
     if self.fieldCellIndex == nil then
       local indexOk, indexOrError = pcall(loadFieldCellIndex, self.cacheFs)
       if not indexOk then
+        snap()
         return false, Errors.is(indexOrError) and Errors.format(indexOrError) or tostring(indexOrError)
       end
       self.fieldCellIndex = indexOrError
@@ -1533,6 +1551,7 @@ function FieldMapLoader:requestLocation(idOrSymbol, fieldX, fieldZ, urgency)
     for _, descriptor in ipairs(committed) do
       local cellFailure = consume(host.requestCell(descriptor, urgency))
       if cellFailure ~= nil then
+        snap()
         return false, cellFailure
       end
     end
@@ -1550,6 +1569,7 @@ function FieldMapLoader:requestLocation(idOrSymbol, fieldX, fieldZ, urgency)
         if headerId ~= record.id and self:definesMap(headerId) then
           local logicalFailure = consume(host.requestLogicalField(headerId, urgency))
           if logicalFailure ~= nil then
+            snap()
             return false, logicalFailure
           end
           host.requestField(headerId, "near")
@@ -1579,6 +1599,7 @@ function FieldMapLoader:requestLocation(idOrSymbol, fieldX, fieldZ, urgency)
             seen[warpId] = true
             local warpFailure = consume(host.requestLogicalField(warpId, urgency))
             if warpFailure ~= nil then
+              snap()
               return false, warpFailure
             end
             host.requestField(warpId, "near")
@@ -1588,8 +1609,10 @@ function FieldMapLoader:requestLocation(idOrSymbol, fieldX, fieldZ, urgency)
     end
   end
   if pending then
+    snap()
     return false
   end
+  snap()
   return true
 end
 
@@ -1862,6 +1885,18 @@ function FieldMapLoader:protectMap(mapId, protected)
   if not protected then
     self:_evict()
   end
+end
+
+-- Read-only copy of the demand membership resolved by the most recent
+-- location request: the destination plus its represented one-hop warp and
+-- neighbor ids. Empty until the first request; never recalculates.
+---@return integer[]
+function FieldMapLoader:nearDemandIds()
+  local copy = {} ---@type integer[]
+  for index, mapId in ipairs(self._nearDemandIds or {}) do
+    copy[index] = mapId
+  end
+  return copy
 end
 
 function FieldMapLoader:release()

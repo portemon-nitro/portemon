@@ -10,6 +10,7 @@ local GameAudio = {}
 ---@field cacheFs CacheFs
 ---@field outputRate integer
 ---@field outputHost table<string, unknown>?
+---@field assetPreparation table<string, unknown>?
 ---@field field table<string, unknown>?
 
 ---@class GameAudioComposition

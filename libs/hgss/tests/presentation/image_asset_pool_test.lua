@@ -102,7 +102,9 @@ local function freshCache(tag)
 end
 
 local function newPool(cache, graphics)
-  return owner().new(cache, { graphics = graphics })
+  -- These unit tests pin the historical evict-all cadence explicitly; the
+  -- production default is the compiled first-pass idle budget.
+  return owner().new(cache, { graphics = graphics, idleByteLimit = 0 })
 end
 
 -- Drives one logical request to a terminal state using only the pool's own

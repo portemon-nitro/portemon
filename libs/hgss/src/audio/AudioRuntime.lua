@@ -26,6 +26,7 @@ local RADIO_PLAYER_RECORD = { id = 9, maxSequences = 1, channelMask = 0xA7FE }
 ---@field cacheFs CacheFs
 ---@field outputRate integer
 ---@field field HgssAudioRuntimeFieldOptions?
+---@field assetPreparation table<string, unknown>? shared background preparation queue bound to the sample provider when a presented field exists
 
 ---@class HgssAudioRuntimeComposition
 ---@field sound GameSound
@@ -38,6 +39,13 @@ function AudioRuntime.compose(opts)
   assert(opts and opts.cacheFs and opts.outputRate, "AudioRuntime.compose requires cacheFs and outputRate")
 
   local provider = AudioAssetProvider.new(opts.cacheFs)
+  -- A presented field shares one background preparation queue with the
+  -- scene/image owners, so predicted sample payloads arrive as worker
+  -- ByteData instead of main-thread decodes. Headless audio keeps no queue
+  -- and stays on the synchronous-safe sample path.
+  if opts.field ~= nil and opts.assetPreparation ~= nil then
+    provider:bindQueue(opts.assetPreparation)
+  end
   -- A small provider adapter for the sequence engine: player 9 resolves to
   -- the radio configuration above while every other player record and
   -- every sample delegates unchanged to the asset provider. GameSound keeps

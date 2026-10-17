@@ -322,6 +322,27 @@ function FieldResidencyCoordinator:_release(mapId)
   self:_releaseResident(mapId, self.residents)
 end
 
+-- Read-only snapshot of the already computed current/near map membership:
+-- committed residents plus the live prefetch window. The copy is safe to
+-- hold across updates; it changes no protection, acquires nothing, and
+-- never recalculates coverage.
+---@return integer[] committedMapIds
+---@return integer[] nearMapIds
+function FieldResidencyCoordinator:predictionMembership()
+  assert(not self.disposed, "field residency coordinator is disposed")
+  local committed = {} ---@type integer[]
+  for mapId in pairs(self.residents) do
+    committed[#committed + 1] = mapId
+  end
+  table.sort(committed)
+  local near = self:_prefetchMapIds()
+  local copy = {} ---@type integer[]
+  for index, mapId in ipairs(near) do
+    copy[index] = mapId
+  end
+  return committed, copy
+end
+
 ---@param mapId integer
 ---@return RuntimeFieldMap|LogicalFieldMap|nil
 function FieldResidencyCoordinator:mapForId(mapId)

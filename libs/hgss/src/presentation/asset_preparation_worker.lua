@@ -186,6 +186,40 @@ function Worker.run(requestChannel, replyChannel)
     end
   end
 
+  -- Sample payloads travel as one transferable ByteData built from the
+  -- versioned PCM16LE bytes, without assembling Lua sample tables and
+  -- without touching graphics. The confined path travels with the request
+  -- for channel compatibility, but the logical path is authoritative: it
+  -- must resolve to exactly the confined path before any byte is read.
+  local function prepareAudioSample(token, versionId, logicalPath, path)
+    local function work()
+      assert(type(versionId) == "string" and versionId ~= "", "audio-sample preparation requires a version identity")
+      assert(type(logicalPath) == "string" and logicalPath ~= "", "audio-sample preparation requires a logical path")
+      local CacheFs = require("libs.storage.src.CacheFs")
+      local cache = CacheFs.forVersion(versionId)
+      if cache:resolve(logicalPath) ~= path then
+        error("audio-sample preparation path escapes its confined cache entry", 0)
+      end
+      local bytes = cache:read(logicalPath)
+      if type(bytes) ~= "string" or #bytes == 0 or #bytes % 2 ~= 0 then
+        error("unreadable audio sample payload: " .. tostring(path), 0)
+      end
+      local byteData = love.data.newByteData(bytes)
+      replyChannel:push({
+        token = token,
+        ok = true,
+        kind = "audio-sample",
+        path = path,
+        byteData = byteData,
+        size = #bytes,
+      })
+    end
+    local ok, err = pcall(work)
+    if not ok then
+      fail(token, "audio-sample", path, err)
+    end
+  end
+
   local function prepareImage(token, path)
     local bytes, readError = love.filesystem.read(path)
     if bytes == nil then
@@ -222,6 +256,11 @@ function Worker.run(requestChannel, replyChannel)
       end
     elseif job.op == "prepare" and job.kind == "image-derivative" then
       local ok, err = pcall(prepareImageDerivative, job.token, job.versionId, job.logicalPath, job.path)
+      if not ok then
+        fail(job.token, job.kind, job.path, err)
+      end
+    elseif job.op == "prepare" and job.kind == "audio-sample" then
+      local ok, err = pcall(prepareAudioSample, job.token, job.versionId, job.logicalPath, job.path)
       if not ok then
         fail(job.token, job.kind, job.path, err)
       end

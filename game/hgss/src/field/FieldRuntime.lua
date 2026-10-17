@@ -92,6 +92,334 @@ local function composeStarterBalls(runtime)
   })
 end
 
+-- Predicted working-set driver (private to this runtime): one soft-demand
+-- epoch over the already computed current/near map membership from the
+-- residency coordinator and the map loader. It joins published field music,
+-- soundplate, and script-audio sequences to audio bank demand through the
+-- audio controller; scene and menu images already flow through the existing
+-- prefetch, so the driver only leans on it and prunes at epoch commit.
+-- Prediction is soft interest: live voices, staged scenes, and borrowed
+-- chrome keep hard ownership and may exceed the idle budgets, with the
+-- admitted-but-uncovered gap reported by the provider census. The epoch
+-- recomputes only when its fingerprint changes (map, coverage, audio
+-- override, modal hold, or day/night band) and the script index memo holds
+-- a single entry; steady-state updates only adopt ready payloads.
+local PredictionDriver = {}
+PredictionDriver.__index = PredictionDriver
+
+---@class PredictionDriver
+---@field epoch integer
+---@field tier1 string?
+---@field fingerprint string?
+---@field scriptIndex table<string, unknown>?|false single-entry published script index memo (false until first load)
+---@field new fun(): PredictionDriver
+---@field _tier1 fun(self: PredictionDriver, runtime: FieldRuntime): string?
+---@field _scriptSymbols fun(self: PredictionDriver, runtime: FieldRuntime, fieldData: table<string, unknown>?): string[]?
+---@field _commit fun(self: PredictionDriver, runtime: FieldRuntime, currentId: integer, orderedIds: integer[])
+---@field refresh fun(self: PredictionDriver, runtime: FieldRuntime)
+
+---@return PredictionDriver
+function PredictionDriver.new()
+  return setmetatable({ epoch = 0, tier1 = nil, fingerprint = nil, scriptIndex = false }, PredictionDriver)
+end
+
+-- Scalar change signal with no table allocation: current map, effective
+-- music, controller round, modal hold, day/night band, and coverage anchor.
+---@param runtime FieldRuntime
+---@return string?
+function PredictionDriver:_tier1(runtime)
+  local audio = runtime.audio
+  if audio == nil or type(audio.effectiveMusic) ~= "function" then
+    return nil
+  end
+  local currentId = runtime.runtimeMap ~= nil and runtime.runtimeMap.mapId or nil
+  if runtime.session ~= nil and runtime.session.currentMap ~= nil then
+    currentId = runtime.session.currentMap.mapId
+  end
+  local effectiveOk, effective = pcall(function()
+    return audio:effectiveMusic()
+  end)
+  local audioEpoch = 0
+  if type(audio.predictionEpoch) == "function" then
+    local epochOk, epoch = pcall(function()
+      return audio:predictionEpoch()
+    end)
+    if epochOk and type(epoch) == "number" then
+      audioEpoch = epoch
+    end
+  end
+  local held = 0
+  if
+    runtime.session ~= nil
+    and type(runtime.session.isForegroundHoldActive) == "function"
+    and pcall(function()
+      return runtime.session.isForegroundHoldActive(runtime.session)
+    end)
+  then
+    held = 1
+  end
+  local band = ""
+  if type(runtime.mapMusicDayNight) == "function" then
+    local bandOk, value = pcall(runtime.mapMusicDayNight)
+    if bandOk and type(value) == "string" then
+      band = value
+    end
+  end
+  local anchor = ""
+  local residency = runtime.residency
+  if residency ~= nil and residency.coverage ~= nil then
+    anchor = tostring(residency.coverage.anchorX) .. "," .. tostring(residency.coverage.anchorZ)
+  end
+  if currentId == nil or not effectiveOk then
+    return nil
+  end
+  return table.concat({
+    "m" .. tostring(currentId),
+    "u" .. tostring(effective),
+    "e" .. tostring(audioEpoch),
+    "h" .. tostring(held),
+    "b" .. band,
+    "a" .. anchor,
+  }, "|")
+end
+
+-- Best-effort transitive script-audio symbols for one field record's script
+-- member, through the published script index. The index memo holds a single
+-- entry for the runtime lifetime; an unavailable index simply contributes
+-- no script banks.
+---@param runtime FieldRuntime
+---@param fieldData table<string, unknown>?
+---@return string[]?
+function PredictionDriver:_scriptSymbols(runtime, fieldData)
+  local memberId = type(fieldData) == "table" and fieldData.scriptBankId or nil
+  if type(memberId) ~= "number" then
+    return nil
+  end
+  local cacheFs = runtime.cacheFs
+  if cacheFs == nil or type(cacheFs.loadLua) ~= "function" then
+    return nil
+  end
+  if self.scriptIndex == false then
+    local ok, index = pcall(function()
+      local ScriptCache = require("libs.assets.src.ScriptCache")
+      return cacheFs:loadLua(ScriptCache.activeIndexPath())
+    end)
+    if not ok or type(index) ~= "table" then
+      self.scriptIndex = nil
+    else
+      self.scriptIndex = index
+    end
+  end
+  if self.scriptIndex == nil then
+    return nil
+  end
+  local ok, closure = pcall(function()
+    local ScriptCache = require("libs.assets.src.ScriptCache")
+    return ScriptCache.audioSequencesForMember(self.scriptIndex, memberId)
+  end)
+  if not ok then
+    return nil
+  end
+  return closure --[[@as string[]?]]
+end
+
+-- Commits one epoch: current-first/near-second bank admission with all
+-- independent banks enrolled before polling, then a predicted-shielded
+-- trim and stale-interest cancellation, and one image-pool prune. Near-map
+-- failures are isolated per map so they never corrupt the current state.
+---@param runtime FieldRuntime
+---@param currentId integer
+---@param orderedIds integer[] current-first map order
+function PredictionDriver:_commit(runtime, currentId, orderedIds)
+  local audio = assert(runtime.audio, "prediction commit requires its audio service")
+  local residency = runtime.residency
+  local currentFieldData
+  if residency ~= nil and type(residency.mapForId) == "function" then
+    local ok, currentMap = pcall(function()
+      return residency:mapForId(currentId)
+    end)
+    if ok and type(currentMap) == "table" then
+      currentFieldData = currentMap.fieldData
+    end
+  end
+  if currentFieldData == nil and runtime.runtimeMap ~= nil then
+    currentFieldData = runtime.runtimeMap.fieldData
+  end
+  local currentBanks = {} ---@type integer[]
+  if currentFieldData ~= nil then
+    local ok, banks = pcall(function()
+      return audio:predictedBanksFor(currentFieldData, self:_scriptSymbols(runtime, currentFieldData))
+    end)
+    if ok and type(banks) == "table" then
+      currentBanks = banks
+    end
+  end
+  local nearBanks = {} ---@type integer[]
+  local seenBank = {} ---@type table<integer, boolean>
+  for _, bankId in ipairs(currentBanks) do
+    seenBank[bankId] = true
+  end
+  for _, mapId in ipairs(orderedIds) do
+    if mapId ~= currentId and residency ~= nil and type(residency.mapForId) == "function" then
+      local ok, runtimeMap = pcall(function()
+        return residency:mapForId(mapId)
+      end)
+      local fieldData = ok and type(runtimeMap) == "table" and runtimeMap.fieldData or nil
+      if fieldData ~= nil then
+        local banksOk, banks = pcall(function()
+          return audio:predictedBanksFor(fieldData, nil)
+        end)
+        if banksOk and type(banks) == "table" then
+          for _, bankId in ipairs(banks) do
+            if not seenBank[bankId] then
+              seenBank[bankId] = true
+              nearBanks[#nearBanks + 1] = bankId
+            end
+          end
+        end
+      end
+    end
+  end
+  -- Enroll every independent bank before polling: background enrollment
+  -- never blocks the update, and the single drain below adopts whatever
+  -- completed meanwhile.
+  pcall(function()
+    audio:prewarmAudioBanks(currentBanks)
+  end)
+  for _, bankId in ipairs(nearBanks) do
+    pcall(function()
+      audio:prewarmAudioBanks({ bankId })
+    end)
+  end
+  pcall(function()
+    audio:drainBackgroundSamples()
+  end)
+  -- Current-first keep order for the admission-aware trim, then stale
+  -- background interest outside the predicted set is dropped.
+  local keep = {} ---@type string[]
+  local seenKey = {} ---@type table<string, boolean>
+  local function noteKeys(bankId)
+    local keysOk, keys = pcall(function()
+      return audio:bankSampleKeys(bankId)
+    end)
+    if keysOk and type(keys) == "table" then
+      for _, key in ipairs(keys) do
+        if not seenKey[key] then
+          seenKey[key] = true
+          keep[#keep + 1] = key
+        end
+      end
+    end
+  end
+  for _, bankId in ipairs(currentBanks) do
+    noteKeys(bankId)
+  end
+  for _, bankId in ipairs(nearBanks) do
+    noteKeys(bankId)
+  end
+  pcall(function()
+    audio:trimIdleSamples(keep)
+  end)
+  local keepSet = {} ---@type table<string, boolean>
+  for _, key in ipairs(keep) do
+    keepSet[key] = true
+  end
+  pcall(function()
+    audio:cancelUnpredictedSamples(keepSet)
+  end)
+  -- Image idle trim lands here at epoch commit, never on draw.
+  if runtime.imageAssets ~= nil and type(runtime.imageAssets.prune) == "function" then
+    pcall(function()
+      runtime.imageAssets:prune()
+    end)
+  end
+end
+
+-- Advances the soft epoch when its fingerprint changed; steady-state
+-- updates only adopt ready background payloads. Headless runtimes without
+-- a shared preparation worker stay on the synchronous path and skip.
+---@param runtime FieldRuntime
+function PredictionDriver:refresh(runtime)
+  if runtime.assetPreparation == nil then
+    return
+  end
+  local audio = runtime.audio
+  local residency = runtime.residency
+  if audio == nil or residency == nil then
+    return
+  end
+  if type(audio.predictedBanksFor) ~= "function" then
+    return
+  end
+  local tier1 = self:_tier1(runtime)
+  if tier1 == nil then
+    return
+  end
+  if tier1 == self.tier1 then
+    if type(audio.drainBackgroundSamples) == "function" then
+      audio:drainBackgroundSamples()
+    end
+    return
+  end
+  local committed, near, loaderIds = {}, {}, {}
+  if type(residency.predictionMembership) == "function" then
+    local ok, committedIds, nearIds = pcall(function()
+      return residency:predictionMembership()
+    end)
+    if not ok then
+      return
+    end
+    committed, near = committedIds or {}, nearIds or {}
+  end
+  local loader = runtime.mapLoader
+  if loader ~= nil and type(loader.nearDemandIds) == "function" then
+    local ok, ids = pcall(function()
+      return loader:nearDemandIds()
+    end)
+    if ok and type(ids) == "table" then
+      loaderIds = ids
+    end
+  end
+  local currentId = runtime.runtimeMap ~= nil and runtime.runtimeMap.mapId or nil
+  if runtime.session ~= nil and runtime.session.currentMap ~= nil then
+    currentId = runtime.session.currentMap.mapId
+  end
+  if currentId == nil then
+    return
+  end
+  local ordered, seen = {}, {} ---@type integer[], table<integer, boolean>
+  local function note(id)
+    if type(id) == "number" and not seen[id] then
+      seen[id] = true
+      ordered[#ordered + 1] = id
+    end
+  end
+  note(currentId)
+  for _, group in ipairs({ near, committed, loaderIds }) do
+    for _, id in ipairs(group) do
+      if id ~= currentId then
+        note(id)
+      end
+    end
+  end
+  local union = {} ---@type string[]
+  for _, id in ipairs(ordered) do
+    union[#union + 1] = tostring(id)
+  end
+  local fingerprint = tier1 .. "#" .. table.concat(union, ",")
+  if fingerprint == self.fingerprint then
+    self.tier1 = tier1
+    if type(audio.drainBackgroundSamples) == "function" then
+      audio:drainBackgroundSamples()
+    end
+    return
+  end
+  self.tier1 = tier1
+  self.fingerprint = fingerprint
+  self.epoch = self.epoch + 1
+  self:_commit(runtime, currentId --[[@as integer]], ordered)
+end
+
 -- The script party composition: the modal selection surface over the
 -- live party. The blocking selection task receives it through scheduler
 -- services; no script code requires the concrete host module after this
@@ -268,6 +596,7 @@ end
 ---@field physicalCoverage FieldCoverage?
 ---@field residency FieldResidencyCoordinator?
 ---@field assetPreparation AssetPreparationQueue? presentation-only preparation worker owner (nil when headless)
+---@field _predictionDriver table<string, unknown>? soft current/near working-set epoch owner
 ---@field imageAssets ImageAssetPool? presentation-only session image owner borrowed by every field scene (nil when headless)
 local FieldRuntime = {}
 FieldRuntime.__index = FieldRuntime
@@ -1722,6 +2051,11 @@ function FieldRuntime:update(dt)
   -- Lifetimes may have settled or released during pumping, so reconcile
   -- the gate again before the next update observes it.
   self:_reconcileBattleGate()
+  -- Soft prediction round for the current/near working set at end of
+  -- update: enrolls background audio demand and trims idle caches at epoch
+  -- commit. Steady-state updates only adopt ready payloads; drawing never
+  -- prunes.
+  self:_refreshPrediction()
   -- The audio output clock: pump PCM from the engine into the host sink once
   -- per runtime update, separate from the field fixed tick (the sink never
   -- advances game-semantic audio state).
@@ -1757,6 +2091,17 @@ function FieldRuntime:update(dt)
     -- interpolate from the pre-arrival Y history.
     self.camera:collapseRenderInterpolation()
   end
+end
+
+-- Advances the soft predicted working-set epoch at end of update, never on
+-- draw. The driver owns change detection; steady-state updates only adopt
+-- ready background payloads.
+function FieldRuntime:_refreshPrediction()
+  if self._predictionDriver == nil then
+    self._predictionDriver = PredictionDriver.new()
+  end
+  local driver = self._predictionDriver --[[@as PredictionDriver]]
+  driver:refresh(self)
 end
 
 -- Samples the host-local civil clock into the incoming-call owner once
@@ -3546,6 +3891,7 @@ function FieldRuntime:_releaseAll()
   end
   self.actors, self.actorAssets, self.mapLoader = nil, nil, nil
   self.audio, self.audioSink, self.mapMusicDayNight = nil, nil, nil
+  self._predictionDriver = nil
   self.session, self.saveStore, self.scripts = nil, nil, nil
   self.transition, self.camera, self.player, self.runtimeMap, self.physicalCoverage = nil, nil, nil, nil, nil
   self.fieldTerrainEffectController = nil

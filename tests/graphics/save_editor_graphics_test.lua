@@ -5614,7 +5614,10 @@ function T.editor_generated_images_use_borrowed_classified_images_and_free_on_ex
     end
     return image
   end
-  local pool = ImageAssetPool.new(cache, { graphics = graphics })
+  -- This convergence probe pins the historical evict-all cadence explicitly
+  -- so renderer disposal frees staged images without a pool prune; the
+  -- production default is the compiled first-pass idle budget.
+  local pool = ImageAssetPool.new(cache, { graphics = graphics, idleByteLimit = 0 })
   local ok, err = pcall(function()
     local renderer = Renderer.new({ text = {}, graphics = graphics, versionId = "heartgold", imagePool = pool })
     local function numberView(set)

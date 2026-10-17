@@ -29,6 +29,14 @@ local ResidentAssetCache = require("libs.hgss.src.field.ResidentAssetCache")
 local AssetPreparationQueue = require("libs.hgss.src.presentation.AssetPreparationQueue")
 local ImageSampling = require("libs.nds.src.love.ImageSampling")
 
+-- First-pass idle budget for unborrowed physical pairs: 64 MiB of idle
+-- images stay resident across prunes. Borrowed pairs are never evicted for
+-- budget; overflow stays visible in stats until a later pass admits or
+-- trims it. Target-device calibration is pending: this first-pass value is
+-- not a measured device limit, and the release gate re-measures it on
+-- hardware.
+local DEFAULT_IDLE_IMAGE_BYTES = 64 * 1024 * 1024
+
 ---@class ImageAssetPoolSampler
 ---@field wrapX string horizontal wrap mode
 ---@field wrapY string vertical wrap mode
@@ -46,6 +54,7 @@ local ImageSampling = require("libs.nds.src.love.ImageSampling")
 ---@field graphics ImageAssetPoolGraphics|love.graphics|nil injectable graphics namespace (nil keeps love.graphics)
 ---@field queue AssetPreparationQueue? borrowed session preparation worker (nil builds a pool-owned fallback worker; production always passes the live session queue)
 ---@field thread table<string, unknown>? injectable love.thread-shaped namespace for the pool-owned fallback worker only (nil keeps love.thread)
+---@field idleByteLimit number? maximum unborrowed resident bytes retained across prunes (nil keeps the compiled first-pass budget)
 
 ---@class ImageAssetPoolRequest
 ---@field logicalPath string
@@ -417,17 +426,46 @@ function ImageAssetPool.new(cacheFs, opts)
     _indexed = indexed,
     _queue = queue,
     _ownsQueue = ownsQueue,
-    -- Idle entries accumulate until the owner prunes: with a zero budget
-    -- the kernel evicts every unborrowed pair on prune while borrowed
-    -- pairs stay alive, and admission budgets arrive with the driver that
-    -- sets the prune cadence.
-    _images = ResidentAssetCache.new({ idleByteLimit = 0, release = onPhysicalRelease }),
+    -- Idle entries accumulate until the owner prunes: unborrowed pairs
+    -- beyond the idle budget leave oldest-first while borrowed pairs stay
+    -- alive. New requests refresh already-resident pairs below, so the
+    -- prune pass prefers predicted reuse over the historical idle tail.
+    _images = ResidentAssetCache.new({
+      idleByteLimit = opts.idleByteLimit or DEFAULT_IDLE_IMAGE_BYTES,
+      release = onPhysicalRelease,
+    }),
     _requests = {},
     _nextToken = 0,
     _physicalCount = 0,
     _disposed = false,
   }, ImageAssetPool) --[[@as ImageAssetPool]]
   return pool
+end
+
+-- Refresh already-resident pairs matching a new request as semantic
+-- reuse: predicted demand that reuses a resident pair moves it to
+-- most-recently-used, so a later prune evicts the historical idle tail
+-- first. Unknown or evicted identities are ignored; borrowed pairs need
+-- no move. The scan is linear in recorded requests with no allocation;
+-- requests are scene-lifetime interest, never per-frame or per-draw.
+---@param pool ImageAssetPool
+---@param logicalPath string
+---@param sampler ImageAssetPoolSampler
+local function touchResidentPair(pool, logicalPath, sampler)
+  for _, prior in pairs(pool._requests) do
+    if
+      prior.physicalKey ~= nil
+      and prior.logicalPath == logicalPath
+      and prior.sampler.wrapX == sampler.wrapX
+      and prior.sampler.wrapY == sampler.wrapY
+      and prior.sampler.minFilter == sampler.minFilter
+      and prior.sampler.magFilter == sampler.magFilter
+    then
+      pcall(function()
+        pool._images:find(prior.physicalKey --[[@as string]])
+      end)
+    end
+  end
 end
 
 -- Record logical interest in one generated PNG under one immutable sampler
@@ -453,6 +491,7 @@ function ImageAssetPool:request(logicalPath, sampler, priority)
     job = job,
     state = "queued",
   }
+  touchResidentPair(self, logicalPath, sampler)
   return token
 end
 
@@ -683,8 +722,10 @@ function ImageAssetPool:release(lease)
   return firstReturn
 end
 
--- Evict every fully released pair in oldest-first order and report the
--- evicted count. Borrowed pairs stay resident regardless of idle age.
+-- Trim unborrowed pairs oldest-first until the idle budget is met and
+-- report the evicted count. Borrowed pairs stay resident regardless of
+-- idle age; request-time reuse plus this oldest-first order prefers
+-- predicted entries over the historical idle tail.
 ---@return integer
 function ImageAssetPool:prune()
   local evicted, _ = self._images:trim()

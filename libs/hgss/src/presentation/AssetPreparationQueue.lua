@@ -22,6 +22,8 @@
 ---@field _nextToken integer
 ---@field _released boolean
 ---@field _joined boolean
+---@field _readyPayloadLimit integer upper bound on ready-but-unclaimed payload bytes
+---@field _readyPayloadBytes integer currently held ready-but-unclaimed payload bytes
 local AssetPreparationQueue = {}
 AssetPreparationQueue.__index = AssetPreparationQueue
 
@@ -44,8 +46,14 @@ Worker.run(requestChannel, replyChannel)
   WORKER_MODULE
 )
 
-local VALID_KINDS = { mesh = true, image = true, ["image-derivative"] = true }
+local VALID_KINDS = { mesh = true, image = true, ["image-derivative"] = true, ["audio-sample"] = true }
 local VALID_PRIORITIES = { demand = true, prefetch = true }
+
+-- Default ceiling for completed-but-unclaimed payload bytes held on the
+-- main thread. Prefetch dispatch pauses while the ceiling is reached so an
+-- over-cap prediction cannot spike transient RAM; demand work still
+-- dispatches so actual gameplay never starves behind prefetch.
+local DEFAULT_READY_PAYLOAD_LIMIT = 8 * 1024 * 1024
 
 -- Upper bound between worker-liveness probes while a synchronous wait blocks
 -- on the reply channel.
@@ -54,6 +62,7 @@ local WAIT_HEALTH_PROBE_SECONDS = 0.05
 ---@class AssetPreparationQueueOptions
 ---@field thread table<string, unknown>? injectable love.thread-shaped namespace (defaults to the global one)
 ---@field workerSource unknown? worker entry point override, passed to the thread constructor
+---@field readyPayloadByteLimit integer? ceiling for ready-but-unclaimed payload bytes
 
 -- cacheFs resolves and confines every logical path on the main thread before
 -- dispatch; the worker only ever sees the confined save-relative path.
@@ -76,6 +85,11 @@ function AssetPreparationQueue.new(cacheFs, options)
     workerSource = BOOTSTRAP
   end
   local worker = threadHost.newThread(workerSource)
+  local readyLimit = options.readyPayloadByteLimit or DEFAULT_READY_PAYLOAD_LIMIT
+  assert(
+    type(readyLimit) == "number" and readyLimit >= 0,
+    "AssetPreparationQueue ready payload bound must be a non-negative byte count"
+  )
   local self = setmetatable({
     _cacheFs = cacheFs,
     _versionId = cacheFs.versionId,
@@ -90,6 +104,8 @@ function AssetPreparationQueue.new(cacheFs, options)
     _nextToken = 0,
     _released = false,
     _joined = false,
+    _readyPayloadLimit = readyLimit,
+    _readyPayloadBytes = 0,
   }, AssetPreparationQueue)
   worker:start(requestChannel, replyChannel, package.path)
   return self
@@ -110,14 +126,19 @@ function AssetPreparationQueue:_shiftLive(pending)
 end
 
 -- Dispatch one job while the worker is physically idle, choosing queued
--- demand work before queued prefetch work. Physical idleness is authoritative:
+-- demand work before queued prefetch work. While ready-but-unclaimed
+-- payloads reach the transient ceiling, prefetch dispatch pauses and demand
+-- still flows. Physical idleness is authoritative:
 -- a token cancelled after dispatch keeps occupying the worker until its late
 -- reply (or the worker's death) frees the slot.
 function AssetPreparationQueue:_dispatch()
   if self._released or self._workerFailure ~= nil or self._workerBusyToken ~= nil then
     return
   end
-  local token = self:_shiftLive(self._demand) or self:_shiftLive(self._prefetch)
+  local token = self:_shiftLive(self._demand)
+  if token == nil and self._readyPayloadBytes < self._readyPayloadLimit then
+    token = self:_shiftLive(self._prefetch)
+  end
   if token == nil then
     return
   end
@@ -132,6 +153,77 @@ function AssetPreparationQueue:_dispatch()
     versionId = self._versionId,
     logicalPath = record.logicalPath,
   })
+end
+
+-- Best-effort byte size for one absorbed payload, so the transient
+-- ready-but-unclaimed ceiling stays honest across payload kinds. Unknown
+-- shapes count zero rather than blocking the bound.
+---@param kind string
+---@param payload table<string, unknown>
+---@return integer
+function AssetPreparationQueue:_payloadByteSize(kind, payload)
+  if kind == "audio-sample" then
+    if type(payload.size) == "number" and payload.size >= 0 then
+      return math.floor(payload.size)
+    end
+    local data = payload.byteData
+    if type(data) == "table" or type(data) == "userdata" then
+      local ok, size = pcall(function()
+        return (data --[[@as { getSize: fun(self: table): integer }]]):getSize()
+      end)
+      if ok and type(size) == "number" and size >= 0 then
+        return math.floor(size)
+      end
+    end
+    return 0
+  end
+  local total = 0
+  for _, field in ipairs({ "indexData", "paletteData", "vertexData", "imageData" }) do
+    local data = payload[field]
+    if type(data) == "string" then
+      total = total + #data
+    elseif type(data) == "table" or type(data) == "userdata" then
+      local ok, size = pcall(function()
+        local sized = data --[[@as { getSize: fun(self: table): integer }]]
+        if type(sized.getSize) == "function" then
+          return sized:getSize()
+        end
+        return 0
+      end)
+      if ok and type(size) == "number" and size > 0 then
+        total = total + math.floor(size)
+      elseif type(data.getString) == "function" then
+        local stringOk, bytes = pcall(function()
+          return (data --[[@as { getString: fun(self: table): string }]]):getString()
+        end)
+        if stringOk and type(bytes) == "string" then
+          total = total + #bytes
+        end
+      end
+    end
+  end
+  return total
+end
+
+-- Releases one token's accounted ready payload bytes exactly once.
+---@param record table<string, unknown>
+function AssetPreparationQueue:_forgetReadyPayload(record)
+  local accounted = record.payloadBytes --[[@as integer?]]
+  if type(accounted) == "number" and accounted > 0 then
+    record.payloadBytes = 0
+    self._readyPayloadBytes = self._readyPayloadBytes - accounted
+    if self._readyPayloadBytes < 0 then
+      self._readyPayloadBytes = 0
+    end
+  end
+end
+
+-- Retunes the transient ready-payload ceiling. Already-held payloads stay
+-- transferable; the new bound only gates further prefetch dispatch.
+---@param limit integer
+function AssetPreparationQueue:setReadyPayloadByteLimit(limit)
+  assert(type(limit) == "number" and limit >= 0, "ready payload bound must be a non-negative byte count")
+  self._readyPayloadLimit = limit
 end
 
 -- Record an unexpected worker exit exactly once: every still-live queued or
@@ -210,6 +302,16 @@ function AssetPreparationQueue:_absorb(response)
   end
   if response.ok then
     record.state = "ready"
+    if record.kind == "audio-sample" then
+      record.payload = {
+        byteData = response.byteData,
+        size = response.size,
+        path = response.path,
+      }
+      record.payloadBytes = self:_payloadByteSize(record.kind, record.payload)
+      self._readyPayloadBytes = self._readyPayloadBytes + (record.payloadBytes or 0)
+      return
+    end
     if record.kind == "image-derivative" then
       record.payload = {
         sourceHash = response.sourceHash,
@@ -221,6 +323,8 @@ function AssetPreparationQueue:_absorb(response)
         indexData = response.indexData,
         paletteData = response.paletteData,
       }
+      record.payloadBytes = self:_payloadByteSize(record.kind, record.payload)
+      self._readyPayloadBytes = self._readyPayloadBytes + (record.payloadBytes or 0)
       return
     end
     record.payload = {
@@ -240,6 +344,8 @@ function AssetPreparationQueue:_absorb(response)
       maxZ = response.maxZ,
       imageData = response.imageData,
     }
+    record.payloadBytes = self:_payloadByteSize(record.kind, record.payload)
+    self._readyPayloadBytes = self._readyPayloadBytes + (record.payloadBytes or 0)
   else
     record.state = "failed"
     record.failure = response.error
@@ -257,7 +363,7 @@ function AssetPreparationQueue:_drain()
   end
 end
 
----@param kind "mesh"|"image"|"image-derivative"
+---@param kind "mesh"|"image"|"image-derivative"|"audio-sample"
 ---@param logicalPath string
 ---@param priority "demand"|"prefetch"
 ---@return integer
@@ -318,6 +424,7 @@ function AssetPreparationQueue:take(token)
   record = self._tokens[token]
   assert(record, "unknown preparation token")
   assert(record.state == "ready", "preparation result is not ready")
+  self:_forgetReadyPayload(record)
   self._tokens[token] = nil
   return assert(record.payload, "ready preparation has no payload")
 end
@@ -328,7 +435,8 @@ end
 -- worker idleness and priority is decided at the next physical dispatch.
 ---@param token integer
 function AssetPreparationQueue:cancel(token)
-  assert(self._tokens[token], "unknown preparation token")
+  local record = assert(self._tokens[token], "unknown preparation token")
+  self:_forgetReadyPayload(record)
   self._tokens[token] = nil
   for _, pending in ipairs({ self._demand, self._prefetch }) do
     for index, queued in ipairs(pending) do
@@ -379,6 +487,7 @@ function AssetPreparationQueue:wait(token)
     local record = self._tokens[token]
     assert(record, "unknown preparation token")
     if record.state == "ready" then
+      self:_forgetReadyPayload(record)
       self._tokens[token] = nil
       return assert(record.payload, "ready preparation has no payload")
     end
@@ -405,6 +514,7 @@ function AssetPreparationQueue:release()
   self._demand = {}
   self._prefetch = {}
   self._workerBusyToken = nil
+  self._readyPayloadBytes = 0
   pcall(function()
     self._request:push({ op = "shutdown" })
   end)

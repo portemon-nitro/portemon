@@ -13,6 +13,7 @@ local FieldAudio = {}
 ---@field dayNight fun(): "day"|"night"
 ---@field fieldDataForMap fun(mapIdOrSymbol: integer|string): unknown
 ---@field outputHost table<string, unknown>|nil
+---@field assetPreparation table<string, unknown>? shared background preparation queue for predicted sample payloads
 
 ---@param opts FieldAudioComposeOptions
 ---@return { service: FieldAudioController, sink: LoveAudioSink|nil }
@@ -32,6 +33,7 @@ function FieldAudio.compose(opts)
     cacheFs = opts.cacheFs,
     outputRate = opts.outputRate,
     outputHost = opts.outputHost,
+    assetPreparation = opts.assetPreparation,
     field = {
       eventState = opts.eventState,
       fieldPosition = opts.fieldPosition,

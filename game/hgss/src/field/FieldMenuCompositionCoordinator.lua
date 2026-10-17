@@ -778,6 +778,10 @@ function FieldMenuCompositionCoordinator:composeAudio(cacheFs, restoredAudio)
       dayNight = runtime.mapMusicDayNight,
       fieldDataForMap = fieldDataForMap,
       outputHost = runtime.audioOutput,
+      -- The presented field shares its preparation worker with the scene
+      -- and image owners; headless runtimes pass no queue and stay on the
+      -- synchronous-safe sample path.
+      assetPreparation = runtime.assetPreparation,
     })
     runtime.audio = audio.service
     runtime.audioSink = audio.sink

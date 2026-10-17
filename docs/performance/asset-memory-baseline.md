@@ -183,3 +183,57 @@ Audio PCM today is per-sample Lua integer arrays decoded once per key and
 shared across consumers; there is no public retained-byte counter yet.
 Texture statistics and process RSS are different accounting domains and
 are reported in separate fields for that reason.
+
+## Predicted working-set calibration (appended after idle-budget preloading landed)
+
+Nothing above is modified: the pre-change picture stays pinned, and this
+section only records the calibration for the current/near preloading and
+idle-budget trim that landed later.
+
+Method: run the same replay with idle retention disabled (zero-idle
+control) and take the externally measured process high-water from that run
+as `H`. From the replay metadata take `A`, the maximum distinct predicted
+idle PCM bytes, and `I`, the maximum distinct predicted physical image
+bytes. The combined safety-capped allowance is
+`B = max(0, 1 GiB - H - 128 MiB)`; when `A + I > 0` the per-family limits
+are `audioLimit = floor(B * A / (A + I))` and `imageLimit = B - audioLimit`,
+otherwise both are zero. The split is a conservative admission heuristic,
+not a claim that image bytes equal process RSS; the external high-water
+gate on target hardware remains decisive.
+
+Host honesty: this host renders in software, so no number below is
+presented as target-device calibration. Target-device high-water and
+compiled limits stay pending until they are measured on hardware.
+
+Local observations (soulsilver user-owned dump, same derived-cache
+generation as the reference run):
+
+- Zero-idle control over the live map-2 closure (audio banks 700 and 702,
+  322 distinct sample keys): idle retention disabled, predicted 1,815,056
+  bytes, resident 0 bytes, uncovered 1,815,056 bytes. Repeating the round
+  reloads instead of retaining (158 reloads after the first pass, 480
+  after the second; 644 decode misses total), and each bank call decodes
+  its keys independently (3,527,328 payload bytes decoded for 1,815,056
+  distinct predicted bytes). The control visibly retains nothing.
+- Lua heap observed around the control: about 69,824 KiB before and about
+  86,360 KiB after. That is an in-process heap observation, never a
+  process high-water.
+- Distinct predicted idle PCM for the measured map (`A`): 1,815,056 bytes.
+  This is one map's closure, a lower bound for a full-replay maximum, not
+  the maximum itself.
+- Distinct predicted physical image bytes for the same replay (`I`): not
+  measured on this host; no image-byte census was run here.
+- Process high-water without idle retention (`H`): not measured on this
+  host; no external sampler run and no target-device run exist yet.
+  Graphics stayed explicitly unavailable in the control probe, never
+  zero-filled.
+
+Resulting limits: the target-device high-water measurement is pending, so
+no allowance or per-family limit is compiled from these numbers. The
+shipped first-pass defaults are the audio idle budget's compiled 32 MiB
+value and the shared image pool's compiled 64 MiB value; both stay pending
+target-device calibration and neither is derived from the host numbers
+above. If live/pinned usage already exceeds the
+whole-process target on the target device, the release gate fails rather
+than manufacturing a cache success. Software-rasterizer timings must not
+set idle budgets.

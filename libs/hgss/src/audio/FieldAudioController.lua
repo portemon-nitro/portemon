@@ -20,6 +20,7 @@
 -- - Exit: fade-stop environment, restore BGM to level 128
 
 local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
+local AudioBank = require("libs.assets.src.audio.AudioBank")
 
 ---@class FieldAudioControllerOptions
 ---@field sound GameSound
@@ -41,6 +42,10 @@ local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
 ---@field _environment { sequence: integer }|nil
 ---@field _pendingFieldMusicPolicy FieldAudioControllerPendingMusicPolicy|nil
 ---@field _eventState unknown
+---@field _predictionEpoch integer soft-demand round published by prewarm and override transitions
+---@field _predictedBankIds integer[] reachable audio bank ids of the current round, ascending
+---@field _prewarmMemo table<string, integer[]>
+---@field _prewarmMemoOrder string[]
 ---@field isEffectPlaying fun(self: FieldAudioController, idOrSymbol: integer|string): boolean
 ---@field isEffectWaitComplete fun(self: FieldAudioController, idOrSymbol: integer|string): boolean
 local FieldAudioController = {}
@@ -82,6 +87,10 @@ function FieldAudioController.new(opts)
     _environment = nil,
     _pendingFieldMusicPolicy = nil,
     _policySuspendedBy = nil,
+    _predictionEpoch = 0,
+    _predictedBankIds = {},
+    _prewarmMemo = {},
+    _prewarmMemoOrder = {},
   }, FieldAudioController)
 end
 
@@ -172,6 +181,10 @@ function FieldAudioController:mapHeaderMusic(fieldData)
 end
 
 -- Loads a prepared map's selected music metadata without changing playback state.
+-- It also publishes one prediction round for the map's reachable audio banks
+-- (day/night alternates, flag and traversal overrides, soundplates): the
+-- epoch owns soft background demand only, and the sounding music, radio,
+-- fades, and cries keep their hard references regardless of the round.
 ---@param runtimeMap FieldAudioController.RuntimeMap
 function FieldAudioController:prewarmMapMusic(runtimeMap)
   local reference = self:mapHeaderMusic(assert(runtimeMap.fieldData))
@@ -180,6 +193,270 @@ function FieldAudioController:prewarmMapMusic(runtimeMap)
   end
   local sequence = self._provider:sequence(reference)
   self._provider:bank(sequence.bankId)
+  self:_warmPredictedBanks(assert(runtimeMap.fieldData))
+end
+
+-- The current prediction round: a monotonically increasing soft-demand
+-- identity. Every prewarm or override transition publishes a new round;
+-- background deliveries from superseded rounds never publish.
+---@return integer
+function FieldAudioController:predictionEpoch()
+  return self._predictionEpoch
+end
+
+-- Joins one field record's map-derived banks with published script-audio
+-- sequence symbols into one distinct bank set in stable ascending order:
+-- the prediction driver's mapper over published metadata. Unknown
+-- references fail loudly; near-map callers isolate that failure per map so
+-- one unreadable neighbor never corrupts the current game state.
+---@param fieldData table<string, unknown>
+---@param scriptSequences string[]? published transitive script-audio symbols
+---@return integer[]
+function FieldAudioController:predictedBanksFor(fieldData, scriptSequences)
+  local seen = {} ---@type table<integer, boolean>
+  local ordered = {} ---@type integer[]
+  local function note(bankId)
+    if not seen[bankId] then
+      seen[bankId] = true
+      ordered[#ordered + 1] = bankId
+    end
+  end
+  for _, bankId in ipairs(self:_collectPredictedBankIds(fieldData)) do
+    note(bankId)
+  end
+  if type(scriptSequences) == "table" then
+    for _, symbol in ipairs(scriptSequences) do
+      note(self:_predictedBankId(symbol))
+    end
+  end
+  table.sort(ordered)
+  return ordered
+end
+
+-- The content-addressed sample keys of one audio bank in closure order,
+-- for current-first admission accounting. A malformed closure fails loudly.
+---@param bankId integer
+---@return string[]
+function FieldAudioController:bankSampleKeys(bankId)
+  local bank = self._provider:bank(bankId)
+  local keys = AudioBank.sampleKeys(bank)
+  if keys == nil then
+    error("no readable sample closure for audio bank " .. tostring(bankId), 0)
+  end
+  return keys
+end
+
+-- Warms an explicit bank set through the provider without touching
+-- playback: the driver's current-first/near-second admission path.
+---@param bankIds integer[]
+function FieldAudioController:prewarmAudioBanks(bankIds)
+  if type(self._provider.prewarmBank) ~= "function" then
+    return
+  end
+  for _, bankId in ipairs(bankIds) do
+    self._provider:prewarmBank(bankId)
+  end
+end
+
+-- Adopts already-ready background sample payloads without blocking.
+---@return integer adopted count
+function FieldAudioController:drainBackgroundSamples()
+  if type(self._provider.drainReadySamples) ~= "function" then
+    return 0
+  end
+  return self._provider:drainReadySamples()
+end
+
+-- Trims idle samples oldest-first, shielding the keep set and every live
+-- voice. Reports the evicted count; adverse budget overflow stays visible
+-- in the provider census instead of cutting audio.
+---@param keepKeys string[]|nil current-first protection priority
+---@return integer
+function FieldAudioController:trimIdleSamples(keepKeys)
+  return self._provider:trim(keepKeys)
+end
+
+-- Drops background sample interest outside the current predicted set.
+---@param predictedSet table<string, boolean>
+function FieldAudioController:cancelUnpredictedSamples(predictedSet)
+  if type(self._provider.cancelUnpredicted) ~= "function" then
+    return
+  end
+  self._provider:cancelUnpredicted(predictedSet)
+end
+
+-- The reachable audio bank ids of the current prediction round, in stable
+-- ascending order. A read-only copy: callers must not mutate the round.
+---@return integer[]
+function FieldAudioController:predictedBankIds()
+  local copy = {} ---@type integer[]
+  for index, bankId in ipairs(self._predictedBankIds) do
+    copy[index] = bankId
+  end
+  return copy
+end
+
+-- Resolves one sequence reference to its bank id through the published
+-- audio metadata. An unknown reference fails loudly like any other
+-- missing published asset; prediction never synthesizes a bank.
+---@param reference integer|string
+---@return integer
+function FieldAudioController:_predictedBankId(reference)
+  local sequence
+  if type(reference) == "number" then
+    sequence = self._provider:sequence(reference)
+  else
+    sequence = self._provider:sequence(reference --[[@as string]])
+  end
+  local bankId = assert(sequence.bankId, "published audio sequence carries its bank identity")
+  assert(type(bankId) == "number", "published audio bank identity is numeric")
+  return bankId
+end
+
+-- Collects the distinct reachable bank ids for one field record, mirroring
+-- the producer closure semantics: day and night alternates, flag and
+-- traversal overrides, and soundplates. Script-reachable sequences join
+-- through the prediction driver, not here.
+---@param fieldData table<string, unknown>
+---@return integer[]
+function FieldAudioController:_collectPredictedBankIds(fieldData)
+  local seen = {} ---@type table<integer, boolean>
+  local ordered = {} ---@type integer[]
+  local function note(reference)
+    if reference == nil then
+      return
+    end
+    local bankId = self:_predictedBankId(reference --[[@as integer|string]])
+    if not seen[bankId] then
+      seen[bankId] = true
+      ordered[#ordered + 1] = bankId
+    end
+  end
+  local music = fieldData.music --[[@as table<string, unknown>]]
+  if type(music) == "table" then
+    note(music.day)
+    note(music.night)
+    for _, overrides in ipairs({ music.flagOverrides, music.traversalOverrides }) do
+      if type(overrides) == "table" then
+        for _, override in
+          ipairs(overrides --[[@as table[] ]])
+        do
+          if type(override) == "table" then
+            note(override.sequence)
+          end
+        end
+      end
+    end
+  end
+  local soundplates = fieldData.soundplates --[[@as table[]?]]
+  if type(soundplates) == "table" then
+    for _, plate in ipairs(soundplates) do
+      if type(plate) == "table" then
+        note(plate.sequence)
+      end
+    end
+  end
+  table.sort(ordered)
+  return ordered
+end
+
+-- Memoizes the reachable-bank walk by record content, day/night band, and
+-- flag states. The memo stays bounded; warming itself is idempotent, so a
+-- memoized round only skips the metadata walk, never the demand.
+---@param fieldData table<string, unknown>
+---@return integer[]
+function FieldAudioController:_memoizedPredictedBankIds(fieldData)
+  local music = fieldData.music --[[@as table<string, unknown>]]
+  local parts = {} ---@type string[]
+  parts[#parts + 1] = "daynight=" .. tostring(self._dayNight())
+  if type(music) == "table" then
+    parts[#parts + 1] = "day=" .. tostring(music.day)
+    parts[#parts + 1] = "night=" .. tostring(music.night)
+    -- Flag overrides resolve exactly like the header policy; traversal
+    -- overrides carry their own condition shape (unlessFlagId, possibly
+    -- absent for an unconditional rule), which the header policy never
+    -- consults, so only numeric conditions are queried here.
+    if type(music.flagOverrides) == "table" then
+      for _, override in
+        ipairs(music.flagOverrides --[[@as table[] ]])
+      do
+        if type(override) == "table" then
+          local set = self._eventState:isFlagSet(override.flagId) == true
+          parts[#parts + 1] = tostring(override.sequence) .. (set and ":1" or ":0")
+        end
+      end
+    end
+    if type(music.traversalOverrides) == "table" then
+      for _, override in
+        ipairs(music.traversalOverrides --[[@as table[] ]])
+      do
+        if type(override) == "table" then
+          local marker = tostring(override.sequence)
+          if type(override.unlessFlagId) == "number" then
+            local set = self._eventState:isFlagSet(override.unlessFlagId) == true
+            marker = marker .. (set and ":1" or ":0")
+          end
+          parts[#parts + 1] = "traversal=" .. marker
+        end
+      end
+    end
+  end
+  local soundplates = fieldData.soundplates --[[@as table[]?]]
+  if type(soundplates) == "table" then
+    for _, plate in ipairs(soundplates) do
+      if type(plate) == "table" then
+        parts[#parts + 1] = "plate=" .. tostring(plate.sequence)
+      end
+    end
+  end
+  local memoKey = table.concat(parts, "|")
+  local memoized = self._prewarmMemo[memoKey]
+  if memoized ~= nil then
+    return memoized
+  end
+  local bankIds = self:_collectPredictedBankIds(fieldData)
+  self._prewarmMemo[memoKey] = bankIds
+  self._prewarmMemoOrder[#self._prewarmMemoOrder + 1] = memoKey
+  while #self._prewarmMemoOrder > 16 do
+    local oldest = table.remove(self._prewarmMemoOrder, 1)
+    self._prewarmMemo[oldest] = nil
+  end
+  return bankIds
+end
+
+-- Publishes one prediction round for a field record and warms its banks
+-- through the provider without touching playback. Providers without a bank
+-- prewarm keep the metadata-only behavior, so headless policy composition
+-- never decodes a sample.
+---@param fieldData table<string, unknown>
+function FieldAudioController:_warmPredictedBanks(fieldData)
+  if type(self._provider.prewarmBank) ~= "function" then
+    return
+  end
+  local bankIds = self:_memoizedPredictedBankIds(fieldData)
+  self._predictionEpoch = self._predictionEpoch + 1
+  self._predictedBankIds = bankIds
+  for _, bankId in ipairs(bankIds) do
+    self._provider:prewarmBank(bankId)
+  end
+end
+
+-- Publishes one prediction round for a field record as background interest
+-- only: missing samples enqueue through the shared queue and nothing
+-- decodes synchronously, so map entry, zone transitions, and overrides
+-- never pay a decode on the audio path. Providers without background
+-- prewarm keep the metadata-only behavior.
+---@param fieldData table<string, unknown>
+function FieldAudioController:_prefetchPredictedBanks(fieldData)
+  if type(self._provider.prewarmBankBackground) ~= "function" then
+    return
+  end
+  local bankIds = self:_memoizedPredictedBankIds(fieldData)
+  self._predictionEpoch = self._predictionEpoch + 1
+  self._predictedBankIds = bankIds
+  for _, bankId in ipairs(bankIds) do
+    self._provider:prewarmBankBackground(bankId)
+  end
 end
 
 -- Returns the effective field music: persisted override > map-header
@@ -211,6 +488,11 @@ function FieldAudioController:setMusicOverride(sequenceRef)
   end
   ---@cast sequenceRef integer|nil
   self._musicOverride = sequenceRef
+  -- A new round warms the override bank when a map is already installed;
+  -- playback itself still changes only through the entry paths.
+  if sequenceRef ~= nil and self._currentMap ~= nil and self._currentMap.fieldData ~= nil then
+    self:_prefetchPredictedBanks(self._currentMap.fieldData)
+  end
 end
 
 -- Clears the persisted override
@@ -271,6 +553,7 @@ function FieldAudioController:enterMap(runtimeMap, options)
   -- the BGM branch would otherwise restart the field music behind it. An
   -- explicit music change still replaces through the BGM branch below.
   if options.play and self._policySuspendedBy ~= nil then
+    self:_prefetchPredictedBanks(runtimeMap.fieldData)
     return
   end
   if options.play then
@@ -298,6 +581,11 @@ function FieldAudioController:enterMap(runtimeMap, options)
     assert(type(fieldX) == "number" and type(fieldZ) == "number", "fieldPosition must return fieldX, fieldZ")
     self:_processSelection(fieldX, fieldZ)
   end
+  -- 7. Soft prediction round for the installed map. Playback above is final;
+  -- warming only enrolls background demand for the reachable banks.
+  if runtimeMap.fieldData ~= nil then
+    self:_prefetchPredictedBanks(runtimeMap.fieldData)
+  end
 end
 
 ---@param runtimeMap FieldAudioController.RuntimeMap
@@ -308,6 +596,7 @@ function FieldAudioController:enterZone(runtimeMap)
   if self._policySuspendedBy ~= nil then
     self._currentMap = runtimeMap
     self._fieldMusic = self:mapHeaderMusic(runtimeMap.fieldData)
+    self:_prefetchPredictedBanks(runtimeMap.fieldData)
     return
   end
   local currentMusic = self._sound:currentMusic()
@@ -345,6 +634,7 @@ function FieldAudioController:enterZone(runtimeMap)
     self:updateField()
     self._sound:queueMusicReplacement(effective, 60)
   end
+  self:_prefetchPredictedBanks(runtimeMap.fieldData)
 end
 
 -- Pre-fade current BGM if destination map-header differs. When the destination
