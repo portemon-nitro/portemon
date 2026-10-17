@@ -132,4 +132,49 @@ function T.script_gift_applies_item_form_and_ability_after_creation()
   end)
 end
 
+-- The event-locked Spiky-Ear Pichu distribution: a fixed level-30 form-1
+-- Pichu with the source moveset at full power points, the Zap Plate, and
+-- an arithmetically forced Naughty female personality (no generator
+-- draws), exactly like pret/pokeheartgold
+-- src/field/scrcmd_pokemon_misc.c ScrCmd_GiveSpikyEarPichu.
+function T.spiky_ear_pichu_pins_the_event_distribution()
+  local catalog = CatalogFixture.makeCatalog()
+  local Personality = require("libs.mons.src.gen4.Personality")
+  local MonFactory = require("libs.mons.src.gen4.MonFactory")
+  local args = CatalogFixture.factoryArgs(0x5151ED, catalog)
+  local factory = MonFactory.new(args)
+
+  local mon = factory:createSpikyEarPichu({
+    profile = CatalogFixture.profile(),
+    location = 7,
+    date = CatalogFixture.metDate(),
+  })
+
+  Assert.equal(mon.species, "PICHU")
+  Assert.equal(mon.form, 1, "the event form is applied")
+  Assert.equal(mon.met.level, 30)
+  Assert.equal(mon.ability, "STATIC")
+  Assert.equal(mon.heldItem, "ZAP_PLATE")
+  Assert.equal(Personality.nature(mon.personality), 4, "the forced nature is Naughty")
+  Assert.equal(Personality.gender(127, mon.personality), "female", "the forced pid reads female")
+  Assert.equal(mon.personality % 2, 0, "the forced pid keeps the ability parity")
+  Assert.deepEqual(mon.moves, {
+    { move = "HELPING_HAND", pp = 20, ppUps = 0 },
+    { move = "VOLT_TACKLE", pp = 15, ppUps = 0 },
+    { move = "SWAGGER", pp = 15, ppUps = 0 },
+    { move = "PAIN_SPLIT", pp = 20, ppUps = 0 },
+  })
+  Assert.equal(mon.origin.ball, "POKE_BALL")
+  Assert.equal(mon.met.terrain, 24)
+  Assert.equal(mon.met.location, 7)
+  Assert.equal(mon.origin.trainerId, CatalogFixture.profile().trainerId)
+  Assert.isFalse(mon.isEgg, "the gift arrives as a mon")
+  Assert.equal(mon.egg.location, 0)
+  Assert.isFalse(mon.fatefulEncounter, "the gift itself is not fateful")
+  -- The forced personality consumes no generator draws: only the two
+  -- individual-value draws run, exactly like the source CreateMon with a
+  -- fixed personality.
+  Assert.equal(args.rng:capture().calls, 2)
+end
+
 return { tests = T }

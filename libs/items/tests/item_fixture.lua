@@ -112,6 +112,11 @@ local KNOWN = {
     },
   },
   BICYCLE = { nativeId = 450, pocket = "key_items", preventToss = true, selectable = true },
+  -- The Spiky-Ear Pichu gift hold item (pret/pokeheartgold
+  -- src/field/scrcmd_pokemon_misc.c, include/constants/items.h): a real
+  -- plate identity, carrying the shared plate form effect explicitly
+  -- because named records bypass the placeholder plate rule below.
+  ZAP_PLATE = { nativeId = 300, pocket = "items", heldFormEffect = "arceus_plate" },
 }
 
 local MANUAL_POCKETS = { "items", "medicine", "balls", "mail", "battle_items", "key_items" }

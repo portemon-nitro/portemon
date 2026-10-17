@@ -102,8 +102,12 @@ local function catalog()
     record.heldFormEffect = "none"
   end
   itemRoot.items["ITEM_112"].heldFormEffect = "griseous_orb"
-  for nativeId = 298, 313 do
-    itemRoot.items["ITEM_" .. nativeId].heldFormEffect = "arceus_plate"
+  -- Plates resolve by native identity so named plate records keep working
+  -- alongside the synthetic placeholders.
+  for _, record in pairs(itemRoot.items) do
+    if record.nativeId >= 298 and record.nativeId <= 313 then
+      record.heldFormEffect = "arceus_plate"
+    end
   end
   local items = require("libs.items.src.ItemCatalog").new(itemRoot)
   return MonCatalog.new(monRoot, items)

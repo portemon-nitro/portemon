@@ -88,6 +88,60 @@ function Personality.shiny(trainerId, personality)
   return xor16(xor16(a, b), xor16(c, d)) < SHINY_XOR_THRESHOLD
 end
 
+-- Forced personality convolution for event distributions.
+-- pret/pokeheartgold src/pokemon.c
+-- ChangePersonalityToNatureGenderAndAbility in its non-generator branch
+-- (the Spiky-Ear Pichu and Pokewalker path): the input doubles as the
+-- trainer ID, the high word is folded arithmetically (no generator
+-- draws), the low word is nudged to the requested nature, and the low
+-- byte is nudged to the requested gender while keeping nature and
+-- ability parity. Fixed ratios (0/254/255) skip the gender nudge but
+-- still force the nature. All arithmetic wraps mod 2^32 like the source
+-- u32 operations.
+---@param trainerId integer unsigned 32-bit trainer ID doubling as the seed
+---@param ratio integer u8 species gender ratio
+---@param nature integer 0..24 requested nature
+---@param gender string "male"|"female" requested gender
+---@param ability integer 0|1 requested ability slot parity
+---@return integer personality
+function Personality.forcedNatureGenderAbility(trainerId, ratio, nature, gender, ability)
+  assert(
+    type(trainerId) == "number" and trainerId % 1 == 0 and trainerId >= 0 and trainerId <= U32.MAX,
+    "trainer id must be an unsigned 32-bit integer"
+  )
+  assert(type(ratio) == "number" and ratio % 1 == 0 and ratio >= 0 and ratio <= 255, "gender ratio must be a u8")
+  assert(
+    type(nature) == "number" and nature % 1 == 0 and nature >= 0 and nature <= Stats.MAX_NATURE,
+    "nature must be an integer in 0.." .. Stats.MAX_NATURE
+  )
+  assert(gender == "male" or gender == "female", "forced gender must be male or female")
+  assert(ability == 0 or ability == 1, "forced ability parity must be 0 or 1")
+  assert(nature % 2 == ability, "forced nature and ability parities must agree")
+  local trainerIdXor = xor16(math.floor(trainerId / U32.HALF_BASE) % U32.HALF_BASE, trainerId % U32.HALF_BASE)
+  local pid = xor16(0xFF00, math.floor(trainerIdXor / 256) % 256 * 256) * U32.HALF_BASE
+  pid = (pid + nature - (pid % NATURE_COUNT)) % U32.MOD
+  if ratio ~= GENDER_RATIO_MALE and ratio ~= GENDER_RATIO_FEMALE and ratio ~= GENDER_RATIO_GENDERLESS then
+    if gender == "male" then
+      local low = pid % BYTE_RANGE
+      if ratio > low then
+        pid = (pid + NATURE_COUNT * (math.floor((ratio - low) / NATURE_COUNT) + 1)) % U32.MOD
+        if pid % 2 ~= ability then
+          pid = (pid + NATURE_COUNT) % U32.MOD
+        end
+      end
+    else
+      local low = pid % BYTE_RANGE
+      if ratio < low then
+        pid = (pid - NATURE_COUNT * (math.floor((low - ratio) / NATURE_COUNT) + 1)) % U32.MOD
+        if pid % 2 ~= ability then
+          pid = (pid - NATURE_COUNT) % U32.MOD
+        end
+      end
+    end
+  end
+  return pid
+end
+
 ---@param abilityCount integer
 ---@param personality integer
 ---@return integer

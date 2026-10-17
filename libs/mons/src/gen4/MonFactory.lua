@@ -14,6 +14,7 @@ local Moves = require("libs.mons.src.gen4.Moves")
 local NativeLegality = require("libs.mons.src.gen4.NativeLegality")
 local Personality = require("libs.mons.src.gen4.Personality")
 local Stats = require("libs.mons.src.gen4.Stats")
+local U32 = require("libs.codec.src.U32")
 
 ---@class MonFactory
 ---@field private _catalog MonCatalog
@@ -76,7 +77,7 @@ function MonFactory:_finish(record)
   return canonical
 end
 
----@param request { species: string, level: integer, form: integer, profile: { name: string, gender: integer, trainerId: integer }, ball: string, location: integer, terrain: integer, date: { year: integer, month: integer, day: integer }, heldItem?: string }
+---@param request { species: string, level: integer, form: integer, profile: { name: string, gender: integer, trainerId: integer }, ball: string, location: integer, terrain: integer, date: { year: integer, month: integer, day: integer }, heldItem?: string, personality?: integer }
 ---@return table<string, unknown>
 function MonFactory:_normalRecord(request)
   assert(type(request) == "table", "normal creation requires a request record")
@@ -111,7 +112,18 @@ function MonFactory:_normalRecord(request)
     )
   end
 
-  local personality = self._rng:nextU32FromTwoDraws()
+  -- A forced personality skips its two generator draws (the source
+  -- CreateMon with a fixed personality still draws the individual
+  -- values); ordinary creation always draws all four values.
+  local personality = request.personality
+  if personality == nil then
+    personality = self._rng:nextU32FromTwoDraws()
+  else
+    assert(
+      type(personality) == "number" and personality % 1 == 0 and personality >= 0 and personality <= U32.MAX,
+      "normal creation personality override must be an unsigned 32-bit integer"
+    )
+  end
   local first = splitIvDraw(self._rng:nextU16())
   local second = splitIvDraw(self._rng:nextU16())
   local ivs = {
@@ -227,6 +239,49 @@ function MonFactory:createScriptGift(request)
   if request.ability ~= nil then
     mon.ability = request.ability
   end
+  return self:_finish(mon)
+end
+
+-- The source Spiky-Ear Pichu distribution constants in distribution order
+-- (pret/pokeheartgold src/field/scrcmd_pokemon_misc.c): Naughty is nature
+-- 4, and the ability parity must agree with it (source GF_ASSERT).
+local SPIKY_EAR_PICHU_MOVES = { "HELPING_HAND", "VOLT_TACKLE", "SWAGGER", "PAIN_SPLIT" }
+local SPIKY_EAR_NATURE = 4
+
+-- The event-locked Spiky-Ear Pichu distribution: a fixed level-30 form-1
+-- Pichu holding the Zap Plate with the source moveset at full power
+-- points and an arithmetically forced Naughty female personality, exactly
+-- like pret/pokeheartgold src/field/scrcmd_pokemon_misc.c
+-- ScrCmd_GiveSpikyEarPichu. The forced personality consumes no generator
+-- draws (only the two individual-value draws run); met location and date
+-- ride the request like any script gift. The caller owns party
+-- publication, including the source full-party refusal before creation.
+---@param request { profile: { name: string, gender: integer, trainerId: integer }, location: integer, date: { year: integer, month: integer, day: integer } }
+---@return table<string, unknown>
+function MonFactory:createSpikyEarPichu(request)
+  assert(type(request) == "table", "spiky-ear pichu creation requires a request record")
+  local profile = assert(request.profile, "spiky-ear pichu creation requires an owner profile")
+  local ratio = self._catalog:species("PICHU").genderRatio
+  local personality = Personality.forcedNatureGenderAbility(profile.trainerId, ratio, SPIKY_EAR_NATURE, "female", 0)
+  local mon = self:_normalRecord({
+    species = "PICHU",
+    level = 30,
+    form = 0,
+    profile = profile,
+    ball = "POKE_BALL",
+    location = request.location,
+    terrain = 24,
+    date = request.date,
+    personality = personality,
+  })
+  mon.form = 1
+  mon.heldItem = "ZAP_PLATE"
+  local moves = {}
+  for _, key in ipairs(SPIKY_EAR_PICHU_MOVES) do
+    local definition = self._catalog:move(key)
+    moves[#moves + 1] = { move = key, pp = definition.basePp, ppUps = 0 }
+  end
+  mon.moves = moves
   return self:_finish(mon)
 end
 

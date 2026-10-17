@@ -25,7 +25,7 @@ function T.species_and_move_key_views_are_sorted_copies()
   local catalog = CatalogFixture.makeCatalog()
   local species = catalog:speciesKeys()
   local moves = catalog:moveKeys()
-  local expectedSpecies = { "EEVEE", "CHIKORITA", "TOTODILE", "SHEDINJA" }
+  local expectedSpecies = { "EEVEE", "CHIKORITA", "TOTODILE", "PICHU", "SHEDINJA" }
   local expectedMoves = {
     "SCRATCH",
     "CUT",
@@ -42,8 +42,12 @@ function T.species_and_move_key_views_are_sorted_copies()
     "HARDEN",
     "REFLECT",
     "STRUGGLE",
+    "SWAGGER",
+    "PAIN_SPLIT",
     "SYNTHESIS",
+    "HELPING_HAND",
     "BULLET_SEED",
+    "VOLT_TACKLE",
   }
   assertKeysEqual(expectedSpecies, species)
   assertKeysEqual(expectedMoves, moves)

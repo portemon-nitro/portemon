@@ -9,6 +9,7 @@
 
 local Experience = require("libs.mons.src.gen4.Experience")
 local Mon = require("libs.mons.src.Mon")
+local Party = require("libs.mons.src.Party")
 local MonFactory = require("libs.mons.src.gen4.MonFactory")
 local MonsErrors = require("libs.mons.src.errors")
 local MonsSave = require("libs.mons.src.MonsSave")
@@ -688,6 +689,28 @@ function HgssMonService:giveMon(request)
     heldItem = self:_itemKey(request.heldItem),
     form = form,
     ability = self:_abilityKeyOrNil(request.ability),
+  })
+  return self._party:add(mon)
+end
+
+-- Field-script Spiky-Ear Pichu gift in source order
+-- (pret/pokeheartgold src/field/scrcmd_pokemon_misc.c
+-- ScrCmd_GiveSpikyEarPichu): the party-full refusal reports before any
+-- creation, so unlike the ordinary script gift no generator draws run
+-- when the party is full. Only the Pokedex update is omitted, because no
+-- Pokedex owner exists.
+---@param metContext { location: integer?, date: MonDate|(fun(): MonDate)|nil }?
+---@return boolean
+function HgssMonService:giveSpikyEarPichu(metContext)
+  local context = metContext or {}
+  assert(type(context) == "table", "spiky-ear pichu gift requires a met context")
+  if self._party:count() >= Party.MAX then
+    return false
+  end
+  local mon = self._factory:createSpikyEarPichu({
+    profile = self._profile,
+    location = self:_metLocation(context),
+    date = self:_metDate(context),
   })
   return self._party:add(mon)
 end

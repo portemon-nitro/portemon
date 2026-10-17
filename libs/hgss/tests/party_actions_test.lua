@@ -13,8 +13,9 @@ local PartyActions = require("libs.hgss.src.field.PartyActions")
 
 -- Source item identities used below (include/constants/items.h): the flame
 -- plate is 298, the plate run ends at the iron plate 313, and the griseous
--- orb is 112. The synthetic keys stay untouched so shared placeholder
--- expectations keep holding; only the action metadata is specialized here.
+-- orb is 112. Plate records resolve by native identity so named plate
+-- records keep working alongside the synthetic placeholders; only the
+-- action metadata is specialized here.
 local FLAME_PLATE = "ITEM_298"
 local GRISEOUS_ORB = "ITEM_112"
 local GRASS_MAIL = "ITEM_137"
@@ -43,11 +44,14 @@ local function itemRoot()
   orb.pocket = "items"
   orb.canHold = true
   orb.heldFormEffect = "griseous_orb"
-  for nativeId = 298, 313 do
-    local plate = root.items["ITEM_" .. nativeId]
-    plate.pocket = "items"
-    plate.canHold = true
-    plate.heldFormEffect = "arceus_plate"
+  -- Plates resolve by native identity so named plate records keep working
+  -- alongside the synthetic placeholders.
+  for _, record in pairs(root.items) do
+    if record.nativeId >= 298 and record.nativeId <= 313 then
+      record.pocket = "items"
+      record.canHold = true
+      record.heldFormEffect = "arceus_plate"
+    end
   end
   local mail = root.items[GRASS_MAIL]
   mail.pocket = "mail"

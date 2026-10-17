@@ -303,6 +303,35 @@ function CatalogFixture.buildAssetRoot()
           ),
         },
       }),
+      PICHU = speciesEntry({
+        nativeId = 172,
+        name = "PICHU",
+        growthCurve = "medium_fast",
+        genderRatio = 127,
+        eggGroups = { "undiscovered", "undiscovered" },
+        baseExpYield = 42,
+        evYield = statSet(0, 0, 0, 1, 0, 0),
+        forms = {
+          [0] = formEntry(
+            statSet(20, 40, 15, 60, 35, 35),
+            { "electric" },
+            { "STATIC" },
+            { "TOXIC" },
+            learnset({ { 1, "TACKLE" } }),
+            "PICHU/f0",
+            "PICHU/f0/male/plain"
+          ),
+          [1] = formEntry(
+            statSet(20, 40, 15, 60, 35, 35),
+            { "electric" },
+            { "STATIC" },
+            { "TOXIC" },
+            learnset({ { 1, "TACKLE" } }),
+            "PICHU/f1",
+            "PICHU/f1/male/plain"
+          ),
+        },
+      }),
       SHEDINJA = speciesEntry({
         nativeId = 292,
         name = "SHEDINJA",
@@ -345,6 +374,12 @@ function CatalogFixture.buildAssetRoot()
       -- native identity 165 with its ordinary single-foe bracket, so
       -- synthetic sessions can seal and execute it like catalog moves.
       STRUGGLE = moveEntry(165, "Struggle", "Struggles with no PP left.", "physical", 50, "normal", 100, 1),
+      -- The fixed Spiky-Ear Pichu gift moveset (pret/pokeheartgold
+      -- src/field/scrcmd_pokemon_misc.c ScrCmd_GiveSpikyEarPichu).
+      SWAGGER = moveEntry(207, "Swagger", "Confuses the foe.", "status", 0, "normal", 90, 15),
+      PAIN_SPLIT = moveEntry(220, "Pain Split", "Shares HP with the foe.", "status", 0, "normal", 100, 20),
+      HELPING_HAND = moveEntry(270, "Helping Hand", "Boosts the ally.", "status", 0, "normal", 100, 20),
+      VOLT_TACKLE = moveEntry(344, "Volt Tackle", "The user electrifies.", "physical", 120, "electric", 100, 15),
     },
     abilities = {
       OVERGROW = abilityEntry(65, "Overgrow"),
@@ -352,6 +387,7 @@ function CatalogFixture.buildAssetRoot()
       RUN_AWAY = abilityEntry(50, "Run Away"),
       ADAPTABILITY = abilityEntry(91, "Adaptability"),
       WONDER_GUARD = abilityEntry(25, "Wonder Guard"),
+      STATIC = abilityEntry(9, "Static"),
     },
     growthCurves = growthTables(),
   }
