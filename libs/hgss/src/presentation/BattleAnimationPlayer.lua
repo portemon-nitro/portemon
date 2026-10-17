@@ -355,6 +355,27 @@ local function scanView(view, combatantId)
   return nil
 end
 
+---@param scene table<string, unknown> presentation scene behind the fallback
+---@param selector integer native battler selector under resolution
+---@return table<string, unknown>? identity combatant and activation pair, when observed
+local function resolveObservedFallback(scene, selector)
+  if type(scene) ~= "table" then
+    return nil
+  end
+  local resolve = scene.resolveObservedActivation
+  if type(resolve) ~= "function" then
+    return nil
+  end
+  local ok, identity = pcall(resolve, scene, selector)
+  if not ok then
+    return nil
+  end
+  if type(identity) ~= "table" then
+    return nil
+  end
+  return identity
+end
+
 ---@param packet table<string, unknown> playback packet under resolution
 ---@param selector integer native battler selector under resolution
 ---@return table<string, unknown>? identity combatant and activation pair, when carried
@@ -678,7 +699,14 @@ function BattleAnimationPlayer:_exec(occurrence)
     if type(packet) ~= "table" then
       return nil
     end
-    return resolveSelector(packet, selector)
+    -- Recorded packets carry explicit topology and stay first; headless
+    -- or recorded packets over an already observed scene fall back to
+    -- the scene's observed activations instead of failing the picture.
+    local identity = resolveSelector(packet, selector)
+    if identity ~= nil then
+      return identity
+    end
+    return resolveObservedFallback(player._scene, selector)
   end
   function exec.note(entry)
     occurrence.journal[#occurrence.journal + 1] = entry

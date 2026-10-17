@@ -1558,6 +1558,46 @@ function BattleScene:remove(combatant, activation)
   self._healthBoxModes[tostring(combatant) .. ":" .. tostring(activation)] = nil
 end
 
+-- Resolves a native battler selector to an observed activation in sorted
+-- entry order. Recorded playback packets carry explicit topology and stay
+-- first; this covers headless or recorded packets over an already
+-- observed scene. Selectors past the observed entries resolve to nothing
+-- instead of inventing a combatant.
+---@param selector integer native battler selector under resolution
+---@return table<string, unknown>? combatant and activation pair, when observed
+function BattleScene:resolveObservedActivation(selector)
+  assert(not self._released, "released scenes resolve nothing")
+  assert(
+    type(selector) == "number" and selector % 1 == 0 and selector >= 0,
+    "battler selectors are non-negative integers"
+  )
+  local keys = {}
+  for key in pairs(self._entries) do
+    keys[#keys + 1] = key
+  end
+  table.sort(keys)
+  local key = keys[selector + 1]
+  if key == nil then
+    return nil
+  end
+  local combatantText, activationText = key:match("^([^:]+):(.*)$")
+  if type(combatantText) ~= "string" or type(activationText) ~= "string" then
+    return nil
+  end
+  local combatant = tonumber(combatantText)
+  if combatant == nil then
+    return nil
+  end
+  local activationNumber = tonumber(activationText)
+  if activationNumber ~= nil then
+    return { combatant = combatant, activation = activationNumber }
+  end
+  if activationText ~= "" then
+    return { combatant = combatant, activation = activationText }
+  end
+  return nil
+end
+
 -- Allocates one launch-scoped transient effect instance behind a
 -- concrete record. Effect visuals stay with their kind owner; the scene
 -- only tracks the lifetime.
