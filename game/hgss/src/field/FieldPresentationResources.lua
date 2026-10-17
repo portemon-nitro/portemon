@@ -767,6 +767,32 @@ function FieldPresentationResources:drawApplication(applicationId, presentation,
   draw(presentation, runtime)
 end
 
+-- Advances the active Bag leaf outside drawing: the field update forwards
+-- the current application and script Mart sale statuses here before the
+-- next present. A plan-less outer flow resolves through its child exactly
+-- like the menu draw dispatch; ordinary Bag, inactive Bag, and sell-mart
+-- leaves delegate to the shared Bag renderer while every other leaf is a
+-- ready no-op that borrows nothing and draws nothing.
+---@param status table<string, unknown> the active application or script mart status
+---@return boolean ready
+---@return string? failure
+function FieldPresentationResources:prepareBagApplication(status)
+  assert(type(status) == "table", "Bag preparation requires its active status")
+  local leaf = status
+  if leaf.presentation == nil and type(leaf.child) == "table" then
+    leaf = leaf.child
+  end
+  local presentation = leaf.presentation
+  if type(presentation) ~= "table" then
+    return true
+  end
+  local inputKey = presentation.inputKey
+  if inputKey ~= "bag" and inputKey ~= "bag-inactive" then
+    return true
+  end
+  return assert(self.bagRenderer, "bag renderer is unavailable"):prepare(leaf)
+end
+
 ---@param status table<string, unknown> active PC status published by the host
 ---@param runtime FieldRuntime live mon catalog owner
 ---@return boolean ready

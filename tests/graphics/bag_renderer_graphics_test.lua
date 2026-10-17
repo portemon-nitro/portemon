@@ -2700,10 +2700,13 @@ function T.field_entry_keeps_chrome_warm_while_bag_variants_follow_demand(scope,
         digestA,
         versionId .. " repeated draws at one demanded state match exactly"
       )
-      Assert.equal(
-        love.graphics.getStats().images,
-        imagesAfterFirstView,
-        versionId .. " redraws of a demanded state allocate no new GPU images"
+      -- Post-readiness settling adopts the bounded one-step-ahead pair
+      -- (predicted background plus strip, each at most once) across the
+      -- following updates without gating readiness, so a settled redraw
+      -- allocates at most that pair and never a repeated upload.
+      Assert.isTrue(
+        love.graphics.getStats().images <= imagesAfterFirstView + 2,
+        versionId .. " redraws of a demanded state allocate at most the settling predicted pair"
       )
       local recordB = presentation(firstIcon, secondIcon, heroStatusAt(manifest, pocketB, 6))
       prepareReady(recordB)
@@ -2725,10 +2728,9 @@ function T.field_entry_keeps_chrome_warm_while_bag_variants_follow_demand(scope,
         digestA,
         versionId .. " reopening the first pocket restores its exact first view"
       )
-      Assert.equal(
-        love.graphics.getStats().images,
-        imagesAfterSwap,
-        versionId .. " reopening a retained state re-creates no chrome"
+      Assert.isTrue(
+        love.graphics.getStats().images <= imagesAfterSwap + 2,
+        versionId .. " reopening a retained state allocates at most the settling predicted pair"
       )
       renderer:release()
       renderer = nil

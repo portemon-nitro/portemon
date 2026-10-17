@@ -136,6 +136,18 @@ local function buildDoubles(sink, calls)
     ["libs.hgss.src.ui.BagRenderer"] = {
       new = function(opts)
         calls.bagOpts = opts
+        -- Preparation recorder: the field update advances Bag leaves
+        -- outside drawing, so the double tracks every prepared leaf while
+        -- drawing stays a pure sink record like the other presenters.
+        calls.bagPrepareLeaves = calls.bagPrepareLeaves or {}
+        function bag:prepare(leaf)
+          calls.bagPrepareLeaves[#calls.bagPrepareLeaves + 1] = leaf
+          calls.bagPrepares = (calls.bagPrepares or 0) + 1
+          if calls.bagPrepareReady == false then
+            return false, calls.bagPrepareFailure
+          end
+          return true
+        end
         return bag
       end,
     },
@@ -1688,6 +1700,66 @@ function T.bag_renderer_borrows_the_shared_image_owner_without_a_second_queue()
     Assert.equal(pool:stats().physicalImages, 0, "construction stages no state visual by itself")
     resources:dispose()
     Assert.equal(disposed, 0, "disposal never tears down the borrowed image owner")
+  end)
+end
+
+-- The field update advances the active Bag leaf outside drawing: the leaf
+-- picker unwraps an outer flow child, delegates Bag leaves to the shared
+-- renderer, and leaves every other application untouched without drawing.
+function T.bag_preparation_advances_the_active_leaf_without_drawing()
+  local sink, calls = {}, {}
+  withProductionComposition(sink, calls, compositionRuntime(), function(resources)
+    Assert.isTrue(
+      type(resources.prepareBagApplication) == "function",
+      "the field update prepares Bag leaves outside draw"
+    )
+    local leaf = { presentation = { inputKey = "bag" } }
+    local ready, failure = resources:prepareBagApplication(leaf)
+    Assert.isTrue(ready, "the active Bag leaf prepares")
+    Assert.isNil(failure, "the active Bag leaf prepares without failure")
+    Assert.equal(calls.bagPrepares, 1, "the active Bag leaf delegates exactly once")
+    Assert.isTrue(calls.bagPrepareLeaves[1] == leaf, "preparation receives the active leaf itself")
+    -- An outer flow without its own plan resolves through its child: the
+    -- Party host carries the Bag picker the same way production draws it.
+    local inactive = { presentation = { inputKey = "bag-inactive" } }
+    ready, failure = resources:prepareBagApplication({ child = inactive })
+    Assert.isTrue(ready, "the inactive Bag leaf prepares")
+    Assert.isNil(failure, "the inactive Bag leaf prepares without failure")
+    Assert.equal(calls.bagPrepares, 2, "the unwrapped leaf delegates exactly once")
+    Assert.isTrue(calls.bagPrepareLeaves[2] == inactive, "preparation receives the unwrapped child leaf")
+    -- Any other application is a no-op: no delegation, no borrowed art,
+    -- and no presenter draws through the preparation path.
+    ready, failure = resources:prepareBagApplication({ presentation = { inputKey = "party" } })
+    Assert.isTrue(ready, "an unrelated application stays ready")
+    Assert.isNil(failure, "an unrelated application prepares without failure")
+    Assert.equal(calls.bagPrepares, 2, "an unrelated application delegates nothing")
+    Assert.equal(#sink, 0, "preparation draws nothing through any presenter")
+    resources:dispose()
+  end)
+end
+
+-- The script Mart sale prepares through the shared Bag presenter: the
+-- sell status carries its own Bag plan, so the same leaf picker admits it
+-- without drawing, while the buy surface stays out of Bag preparation.
+function T.mart_sale_prepares_through_the_shared_bag_presenter()
+  local sink, calls = {}, {}
+  withProductionComposition(sink, calls, compositionRuntime(), function(resources)
+    Assert.isTrue(
+      type(resources.prepareBagApplication) == "function",
+      "the Mart sale prepares its Bag leaf outside draw"
+    )
+    local sell = { martKind = "sell", presentation = { inputKey = "bag" } }
+    local ready, failure = resources:prepareBagApplication(sell)
+    Assert.isTrue(ready, "the Mart sale prepares")
+    Assert.isNil(failure, "the Mart sale prepares without failure")
+    Assert.equal(calls.bagPrepares, 1, "the Mart sale delegates exactly once")
+    Assert.isTrue(calls.bagPrepareLeaves[1] == sell, "preparation receives the Mart sale status itself")
+    ready, failure = resources:prepareBagApplication({ martKind = "buy", presentation = { inputKey = "mart" } })
+    Assert.isTrue(ready, "the Mart buy surface stays ready")
+    Assert.isNil(failure, "the Mart buy surface prepares without failure")
+    Assert.equal(calls.bagPrepares, 1, "the Mart buy surface delegates nothing to the Bag renderer")
+    Assert.equal(#sink, 0, "Mart preparation draws nothing through any presenter")
+    resources:dispose()
   end)
 end
 

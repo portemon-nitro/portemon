@@ -2047,4 +2047,85 @@ function T.idle_field_draw_resolves_no_modal_status_or_layout()
   end
 end
 
+-- The field update prepares Bag visuals before drawing: the active menu
+-- application and the script Mart sale each advance the shared Bag leaf
+-- through the update phase, idle hosts prepare nothing, and a failed
+-- preparation propagates its cause instead of drawing an incomplete menu.
+function T.update_prepares_the_active_bag_leaf_and_the_mart_sale()
+  local assets = presentationAssets({ [99] = presentationEntry(99), [34] = presentationEntry(34) })
+  local state, _, runtime = presentationState(assets, { [99] = true })
+  local prepared = {}
+  local failNext = nil
+  state.presentationResources.prepareBagApplication = function(_, status)
+    prepared[#prepared + 1] = status
+    if failNext ~= nil then
+      local failure = failNext
+      failNext = nil
+      return false, failure
+    end
+    return true
+  end
+  local bagLeaf = { presentation = { inputKey = "bag" } }
+  runtime.applicationHost = {
+    isActive = function()
+      return true
+    end,
+    status = function()
+      return { application = bagLeaf }
+    end,
+  }
+  local sell = { martKind = "sell", presentation = { inputKey = "bag" } }
+  runtime.martHost = {
+    isActive = function()
+      return true
+    end,
+    status = function()
+      return sell
+    end,
+  }
+  state:update(0.016)
+  Assert.equal(#prepared, 2, "the update prepares the active Bag leaf and the Mart sale")
+  Assert.isTrue(prepared[1] == bagLeaf, "the active application status reaches preparation")
+  Assert.isTrue(prepared[2] == sell, "the Mart sale status reaches preparation")
+  -- Idle hosts prepare nothing and publish no status.
+  prepared = {}
+  runtime.applicationHost = {
+    isActive = function()
+      return false
+    end,
+    status = function()
+      error("an idle application host publishes no status")
+    end,
+  }
+  runtime.martHost = {
+    isActive = function()
+      return false
+    end,
+    status = function()
+      error("an idle mart host publishes no status")
+    end,
+  }
+  state:update(0.016)
+  Assert.equal(#prepared, 0, "idle hosts prepare nothing")
+  -- A failed Bag preparation propagates its cause instead of continuing
+  -- toward an incomplete menu draw.
+  runtime.applicationHost = {
+    isActive = function()
+      return true
+    end,
+    status = function()
+      return { application = bagLeaf }
+    end,
+  }
+  failNext = "injected bag preparation failure"
+  local err = Assert.throws(function()
+    state:update(0.016)
+  end, "a failed Bag preparation propagates its cause")
+  Assert.isTrue(
+    tostring(err):find("injected bag preparation failure", 1, true) ~= nil,
+    "the update propagates the preparation cause unwrapped"
+  )
+  state:dispose()
+end
+
 return { tests = T }

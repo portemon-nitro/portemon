@@ -52,7 +52,7 @@ local YesNoPromptRenderer = require("libs.hgss.src.ui.YesNoPromptRenderer")
 ---@field _paths table<string, BagPathEntry> the immutable semantic-key to generated-path map built at construction
 ---@field _readySignature string? the semantic demand key of the installed visual leases
 ---@field _readyLeases table<integer, table<string, unknown>> installed demand leases returned on swap or release
----@field _pending BagDemandPending? the enrolled but not yet resolved demand
+---@field _pending BagDemandPending? the enrolled demand resolving or draining its soft interest
 local BagRenderer = {}
 BagRenderer.__index = BagRenderer
 
@@ -562,23 +562,25 @@ end
 ---@field width integer the generated visual width draws place
 ---@field height integer the generated visual height draws place
 ---@field offset table<string, integer>? the generated visual offset draws place
----@field prefetch boolean true for the bounded one-step-ahead pocket visuals
 
 ---@class BagDemandPending
 ---@field signature string the semantic demand key this enrollment resolves
----@field tokens table<integer, integer> enrolled shared-owner tokens in enrollment order
+---@field requiredTokens table<integer, integer> demand tokens for the current state in enrollment order
+---@field softTokens table<integer, integer> one-step-ahead prefetch tokens, never published
 ---@field tokenByPath table<string, integer> enrolled tokens by generated path
----@field entries table<integer, BagDemandEntry> visual keys in enrollment order
----@field settled table<integer, boolean> tokens observed ready at least once
----@field settledCount integer count of settled tokens
+---@field entries table<integer, BagDemandEntry> current-state visual keys in enrollment order
+---@field stagedByToken table<integer, table<string, unknown>> acquired required leases by token
+---@field acquiredRequired integer count of acquired required leases
+---@field published boolean true once the complete current state installed
 
 -- Every bag visual samples point-filtered and clamped: pooled leases
 -- draw under this exact sampler state.
 local POOLED_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }
 
--- Rounds of consecutive observations without any enrolled visual settling
--- before a draw admits its demand is stuck instead of hanging the field.
-local DEMAND_STALL_ROUNDS = 100
+-- Required GPU acquisitions completed in one update round. A cold Bag
+-- opening spreads its uploads across frames instead of stalling one
+-- update; the next update continues from the remaining tokens.
+local MAX_REQUIRED_ACQUISITIONS = 8
 
 -- Resolves the one-step-ahead pocket following the current pocket in the
 -- canonical pocket order, wrapping around the end of the list.
@@ -639,10 +641,13 @@ local function targetPocketOrigin(presentation, targetPocket, pocket)
   return "none"
 end
 
--- Collects every visual key one bag status draws, in a stable enrollment
--- order: shared chrome first, then the state background and pocket strip,
--- then the bounded one-step-ahead pocket visuals. Mirrors the construction
--- path map keys exactly; an unknown
+-- Collects the current-state visual keys one bag status draws, in a stable
+-- enrollment order: shared chrome first, then the state background and
+-- pocket strip, plus the bounded one-step-ahead pocket visuals as soft
+-- interest. Current art enrolls as demand and alone gates readiness; the
+-- predicted strip/background enroll as prefetch and never delay the
+-- current pocket. A predicted path that duplicates a current path stays
+-- required. Mirrors the construction path map keys exactly; an unknown
 -- state/pocket/count fails here instead of borrowing another screen.
 ---@param self BagRenderer
 ---@param presentation table<string, unknown>
@@ -654,6 +659,7 @@ local function enrollDemand(self, presentation, signature)
   local count = backgroundCount(presentation)
   local state = assert(presentation.state, "the bag presentation names its state")
   local entries = {} ---@type BagDemandEntry[]
+  local softKeys = {} ---@type string[]
   local function add(key)
     local pathEntry = assert(paths[key], "the demand resolves " .. key .. " through the construction path map")
     entries[#entries + 1] = {
@@ -662,7 +668,6 @@ local function enrollDemand(self, presentation, signature)
       width = pathEntry.width,
       height = pathEntry.height,
       offset = pathEntry.offset,
-      prefetch = false,
     }
   end
   add("focus:tabs")
@@ -731,13 +736,9 @@ local function enrollDemand(self, presentation, signature)
   local ahead = nextPocket(pocket)
   local aheadBackgroundKey = backgroundKey(ahead, "none")
   if aheadBackgroundKey ~= "" then
-    local first = #entries + 1
-    add(aheadBackgroundKey)
-    entries[first].prefetch = true
+    softKeys[#softKeys + 1] = aheadBackgroundKey
   end
-  local stripFirst = #entries + 1
-  add("strip:" .. ahead)
-  entries[stripFirst].prefetch = true
+  softKeys[#softKeys + 1] = "strip:" .. ahead
   local selected = presentation.selected
   if type(selected) == "table" and type(selected.moveSummary) == "table" then
     local facts = assert(selected.moveSummary)
@@ -748,73 +749,71 @@ local function enrollDemand(self, presentation, signature)
     add("moveCategory:" .. category)
   end
   local pool = assert(self._pool, "bag state preparation borrows its shared image owner")
-  local tokens = {} ---@type table<integer, integer>
+  local requiredTokens = {} ---@type table<integer, integer>
   local tokenByPath = {} ---@type table<string, integer>
   for _, entry in ipairs(entries) do
-    local token = tokenByPath[entry.path]
-    if token == nil then
-      token = pool:request(entry.path, POOLED_SAMPLER, entry.prefetch and "prefetch" or "demand")
+    if tokenByPath[entry.path] == nil then
+      local token = pool:request(entry.path, POOLED_SAMPLER, "demand")
       tokenByPath[entry.path] = token
-      tokens[#tokens + 1] = token
+      requiredTokens[#requiredTokens + 1] = token
+    end
+  end
+  local softTokens = {} ---@type table<integer, integer>
+  for _, key in ipairs(softKeys) do
+    local pathEntry = assert(paths[key], "the demand resolves " .. key .. " through the construction path map")
+    if tokenByPath[pathEntry.path] == nil then
+      local token = pool:request(pathEntry.path, POOLED_SAMPLER, "prefetch")
+      tokenByPath[pathEntry.path] = token
+      softTokens[#softTokens + 1] = token
     end
   end
   return {
     signature = signature,
-    tokens = tokens,
+    requiredTokens = requiredTokens,
+    softTokens = softTokens,
     tokenByPath = tokenByPath,
     entries = entries,
-    settled = {},
-    settledCount = 0,
+    stagedByToken = {},
+    acquiredRequired = 0,
+    published = false,
   }
 end
 
--- Polls every enrolled token once without blocking. Returns true with the
--- replacement leases installed once the whole demand resolved, and releases
--- the previous leases only then; a failed visual fails loudly while the
--- installed state stays drawable. Never enrolls: callers promote the
--- returned pending group across rounds.
+-- Releases staged required leases and cancels every unconsumed token of
+-- a pending group without touching installed state. Cancelling an already
+-- consumed token is a harmless no-op; each staged lease returns exactly
+-- once here. Used on failure, supersede, and release.
+---@param pool table<string, unknown> the borrowed shared image owner
+---@param pending BagDemandPending the group to forget
+local function abandonPending(pool, pending)
+  for _, lease in pairs(pending.stagedByToken) do
+    pool:release(lease)
+  end
+  pending.stagedByToken = {}
+  pending.acquiredRequired = 0
+  for _, token in ipairs(pending.requiredTokens) do
+    pool:cancel(token)
+  end
+  for _, token in ipairs(pending.softTokens) do
+    pool:cancel(token)
+  end
+  pending.softTokens = {}
+end
+
+-- Installs the complete required group atomically once every required
+-- lease is acquired: builds the visual map from staged leases, swaps it
+-- in, and returns the previous installed leases exactly once. Ownership
+-- of the staged leases moves to the installed group; the pending record
+-- keeps only its soft interest afterwards.
 ---@param self BagRenderer
----@param pending BagDemandPending
----@return boolean ready
-local function pollPending(self, pending)
-  local pool = assert(self._pool, "bag state preparation borrows its shared image owner")
-  local settled, settledCount = pending.settled, pending.settledCount
-  for _, token in ipairs(pending.tokens) do
-    if not settled[token] then
-      local status, failure = pool:poll(token)
-      if status == "failed" then
-        error("bag state image is not ready: " .. tostring(failure), 0)
-      end
-      assert(status == "pending" or status == "ready", "bag state preparation reports pending or ready")
-      if status == "ready" then
-        settled[token] = true
-        settledCount = settledCount + 1
-      end
-    end
-  end
-  pending.settledCount = settledCount
-  if settledCount < #pending.tokens then
-    return false
-  end
-  local staged = {} ---@type table<integer, table<string, unknown>>
-  local ok, failure = pcall(function()
-    for _, token in ipairs(pending.tokens) do
-      staged[#staged + 1] = pool:acquire(token)
-    end
-  end)
-  if not ok then
-    for _, lease in ipairs(staged) do
-      pool:release(lease)
-    end
-    error(failure, 0)
-  end
+---@param pool table<string, unknown> the borrowed shared image owner
+---@param pending BagDemandPending the fully acquired group to publish
+local function publishRequired(self, pool, pending)
   local leaseByPath = {} ---@type table<string, table<string, unknown>>
   for path, token in pairs(pending.tokenByPath) do
-    for index, enrolled in ipairs(pending.tokens) do
-      if enrolled == token then
-        leaseByPath[path] = staged[index]
-        break
-      end
+    local lease = pending.stagedByToken[token]
+    if lease ~= nil then
+      leaseByPath[path] = lease
     end
   end
   local visuals = {} ---@type table<string, BagDemandVisual>
@@ -829,6 +828,13 @@ local function pollPending(self, pending)
   for _, alias in ipairs(aliases) do
     visuals[alias[1]] = assert(visuals[alias[2]], "the bag presentation names its quantity controls")
   end
+  local staged = {} ---@type table<integer, table<string, unknown>>
+  for _, token in ipairs(pending.requiredTokens) do
+    staged[#staged + 1] = assert(pending.stagedByToken[token], "every required token staged its lease")
+  end
+  pending.stagedByToken = {}
+  pending.acquiredRequired = 0
+  pending.published = true
   for _, lease in ipairs(self._readyLeases) do
     pool:release(lease)
   end
@@ -836,47 +842,134 @@ local function pollPending(self, pending)
   self._images = images --[[@as table<string, love.Image>]]
   self._readyLeases = staged
   self._readySignature = pending.signature
-  self._pending = nil
-  return true
+end
+
+-- Polls every required token once without blocking and acquires at most a
+-- bounded batch of ready leases. Returns true once the whole current
+-- demand installed. A failed required visual abandons the partial group
+-- loudly while the installed state stays drawable; optional work is never
+-- consulted here, so a stalled predicted pocket cannot delay readiness.
+-- Never enrolls: callers promote the pending group across rounds.
+---@param self BagRenderer
+---@param pool table<string, unknown> the borrowed shared image owner
+---@param pending BagDemandPending the group to advance
+---@return boolean published
+---@return boolean progressed
+local function progressRequired(self, pool, pending)
+  local acquired = 0
+  for _, token in ipairs(pending.requiredTokens) do
+    if pending.stagedByToken[token] == nil then
+      local status, failure = pool:poll(token)
+      if status == "failed" then
+        abandonPending(pool, pending)
+        self._pending = nil
+        error("bag state image is not ready: " .. tostring(failure), 0)
+      end
+      assert(status == "pending" or status == "ready", "bag state preparation reports pending or ready")
+      if status == "ready" and acquired < MAX_REQUIRED_ACQUISITIONS then
+        local ok, lease = pcall(pool.acquire, pool, token)
+        if not ok then
+          abandonPending(pool, pending)
+          self._pending = nil
+          error(lease, 0)
+        end
+        pending.stagedByToken[token] = lease
+        pending.acquiredRequired = pending.acquiredRequired + 1
+        acquired = acquired + 1
+      end
+    end
+  end
+  if pending.acquiredRequired == #pending.requiredTokens then
+    publishRequired(self, pool, pending)
+    return true, true
+  end
+  return false, acquired > 0
+end
+
+-- Settles one-step-ahead interest after the current state installed, with
+-- at most one optional adoption per update. Adopted leases return to idle
+-- immediately and are never drawn; failed optional work is discarded
+-- silently so prefetch can never surface a visible Bag error. Readiness
+-- is never consulted or changed here.
+---@param pool table<string, unknown> the borrowed shared image owner
+---@param pending BagDemandPending the published group whose soft tokens drain
+local function progressSoft(pool, pending)
+  local kept = {} ---@type table<integer, integer>
+  local adopted = false
+  for _, token in ipairs(pending.softTokens) do
+    if adopted then
+      kept[#kept + 1] = token
+    else
+      local status = pool:poll(token)
+      assert(status == "pending" or status == "ready" or status == "failed", "soft interest reports a known state")
+      if status == "failed" then
+        pool:cancel(token)
+      elseif status == "ready" then
+        local ok, lease = pcall(pool.acquire, pool, token)
+        if ok then
+          pool:release(lease)
+        else
+          pool:cancel(token)
+        end
+        adopted = true
+      else
+        kept[#kept + 1] = token
+      end
+    end
+  end
+  pending.softTokens = kept
 end
 
 -- Advances the demand for one bag status by a single enrollment and poll
--- round: enrolls the whole independent path set before the first readiness
+-- round: enrolls the whole required path set before the first readiness
 -- probe, promotes outstanding tokens across rounds, and abandons stale
--- interest that a newer status superseded. Returns readiness plus whether
--- this round made progress.
+-- interest that a newer status superseded. Publishes the complete
+-- current state as soon as its required leases are acquired, then drains
+-- soft interest without ever changing readiness. Returns readiness plus
+-- whether this round made progress.
 ---@param self BagRenderer
 ---@param presentation table<string, unknown>
 ---@return boolean ready
 ---@return boolean progressed
 local function advanceDemand(self, presentation)
   local signature = demandSignature(presentation)
-  if self._readySignature == signature then
-    return true, false
-  end
+  local pool = assert(self._pool, "bag state preparation borrows its shared image owner")
   local pending = self._pending
-  if pending == nil or pending.signature ~= signature then
-    -- A fresh enrollment reports pending on its own round: every
-    -- independent path enrolls before the first readiness poll, so
-    -- readiness is observable only on a later round, even when the pool
-    -- could serve the whole demand immediately. A superseded pending is
-    -- cancelled first so its enrolled-but-unpolled worker payloads are
-    -- discarded instead of retained unclaimed for the field lifetime.
-    if pending ~= nil then
-      local pool = assert(self._pool, "bag state preparation borrows its shared image owner")
-      for _, token in ipairs(pending.tokens) do
-        pool:cancel(token)
-      end
-    end
-    self._pending = enrollDemand(self, presentation, signature)
-    return false, true
+  if pending ~= nil and pending.signature ~= signature then
+    -- A superseded pending never publishes: its staged leases return and
+    -- its unconsumed tokens cancel, while the installed group stays
+    -- drawable until a complete replacement arrives.
+    abandonPending(pool, pending)
+    self._pending = nil
+    pending = nil
   end
-  local before = pending.settledCount
-  local ready = pollPending(self, pending)
-  if ready then
+  if pending == nil then
+    if self._readySignature == signature then
+      return true, false
+    end
+    -- A fresh enrollment enrolls every required path before the first
+    -- readiness probe, then falls through to the progress logic below
+    -- in the same call, so a fully warm hit publishes immediately
+    -- instead of idling one round.
+    pending = enrollDemand(self, presentation, signature)
+    self._pending = pending
+  end
+  if pending.published then
+    progressSoft(pool, pending)
+    if #pending.softTokens == 0 then
+      self._pending = nil
+    end
     return true, true
   end
-  return false, pending.settledCount ~= before
+  local published, progressed = progressRequired(self, pool, pending)
+  if published then
+    progressSoft(pool, pending)
+    if #pending.softTokens == 0 then
+      self._pending = nil
+    end
+    return true, true
+  end
+  return false, progressed
 end
 
 -- Draws the one generated lower-pane background for the current state and
@@ -1690,13 +1783,15 @@ function BagRenderer:_drawDescriptionOverlay(presentation, icons, iconImage)
   self._text:drawText(hint, frame.x + frame.width - self._text:textWidth(hint) - 4, frame.y + frame.height - 14)
 end
 
--- Resolves the state visuals for one bag status through the shared
--- image owner without blocking: enrolls every independent path of a new
+-- Resolves the current-state visuals for one bag status through the
+-- shared image owner without blocking: enrolls every current path as
 -- demand before the first readiness probe, promotes outstanding work
--- across rounds, and swaps the installed leases only once the whole
--- replacement resolved. Returns true once the status is drawable.
--- A superseded pending demand is abandoned without uploading; a failed
--- visual fails loudly while the installed state stays drawable.
+-- across bounded acquisition rounds, and swaps the installed leases only
+-- once the whole replacement resolved. Soft one-step-ahead interest
+-- drains after the current state installed and never gates readiness.
+-- Returns true once the status is drawable. A superseded pending demand
+-- is abandoned without uploading; a failed required visual fails loudly
+-- while the installed state stays drawable.
 ---@param status table<string, unknown> the controller status selecting the demand
 ---@return boolean ready
 function BagRenderer:prepare(status)
@@ -1704,45 +1799,6 @@ function BagRenderer:prepare(status)
   assert(self._pool ~= nil, "bag state preparation borrows its shared image owner")
   local ready = advanceDemand(self, status)
   return ready
-end
-
--- Admits one open status for drawing: advances its demand until the
--- shared owner resolves every visual, yielding to the worker between
--- rounds. A demand that settles nothing for a bounded number of rounds
--- is stuck and fails loudly instead of publishing a partial menu or
--- hanging the field; the caller keeps drawing its previous complete
--- status while a replacement stays pending.
----@param presentation table<string, unknown>
-local function awaitDemand(self, presentation)
-  local signature = demandSignature(presentation)
-  if self._readySignature == signature then
-    return
-  end
-  local stalled = 0
-  while true do
-    local ready, progressed = advanceDemand(self, presentation)
-    if ready then
-      return
-    end
-    if progressed then
-      stalled = 0
-    else
-      stalled = stalled + 1
-    end
-    if stalled >= DEMAND_STALL_ROUNDS then
-      error(
-        "bag state visuals are not ready for pocket "
-          .. tostring(presentation.pocket)
-          .. " state "
-          .. tostring(presentation.state),
-        0
-      )
-    end
-    local timer = love and love.timer
-    if timer ~= nil and timer.sleep ~= nil then
-      timer.sleep(0.001)
-    end
-  end
 end
 
 -- Draws one presentation snapshot through the resolved plan with quads
@@ -1761,9 +1817,13 @@ function BagRenderer:draw(presentation, plan, collaborators)
   if not presentation.open then
     return
   end
-  -- Demand leases admit only a complete ready state: an unprepared or
-  -- superseded status fails loudly instead of drawing a partial menu.
-  awaitDemand(self, presentation)
+  -- Only the admitted current signature paints: preparation resolved its
+  -- leases during the update phase, so drawing performs no worker waits,
+  -- polls, or acquisitions. A pending or superseded status paints nothing
+  -- instead of a partial menu while the field keeps rendering beneath it.
+  if self._readySignature ~= demandSignature(presentation) then
+    return
+  end
   local icons = assert(collaborators and collaborators.icons, "occupied cells need the icon provider")
   local content = assert(plan.content, "the bag plan carries its canonical content")
   local panes = assert(plan.panes, "the bag plan orders its panes")
@@ -1806,10 +1866,14 @@ end
 
 function BagRenderer:release()
   local pool = assert(self._pool, "bag state visuals borrow their shared image owner")
+  local pending = self._pending
+  self._pending = nil
+  if pending ~= nil then
+    abandonPending(pool, pending)
+  end
   local leases = self._readyLeases
   self._readyLeases = {}
   self._readySignature = nil
-  self._pending = nil
   for _, lease in ipairs(leases) do
     pool:release(lease)
   end

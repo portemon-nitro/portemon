@@ -246,6 +246,34 @@ function FieldState:update(dt)
       self.runtime:failPcApplicationPresentation("PC application presentation failed: " .. tostring(failure))
     end
   end
+  -- The active Bag leaf and the script Mart sale advance their shared Bag
+  -- visuals here, before the next draw: the preparation entry admits only
+  -- complete current states, so drawing stays wait-free. Unrelated leaves
+  -- are a ready no-op inside the entry; a failed Bag preparation
+  -- propagates instead of drawing an incomplete menu.
+  do
+    local applicationHost = self.runtime.applicationHost
+    if applicationHost ~= nil and applicationHost:isActive() then
+      local hostStatus = assert(applicationHost:status(), "active application host publishes its status")
+      local application = hostStatus.application
+      if application ~= nil then
+        local resources = assert(self.presentationResources, "field presentation resources are unavailable")
+        local _, failure = resources:prepareBagApplication(application)
+        if failure ~= nil then
+          error(failure, 0)
+        end
+      end
+    end
+    local martHost = self.runtime.martHost
+    if martHost ~= nil and martHost:isActive() then
+      local resources = assert(self.presentationResources, "field presentation resources are unavailable")
+      local _, failure =
+        resources:prepareBagApplication(assert(martHost:status(), "active mart host publishes its status"))
+      if failure ~= nil then
+        error(failure, 0)
+      end
+    end
+  end
   local kurtBoxHost = self.runtime.kurtBoxHost
   if kurtBoxHost ~= nil and kurtBoxHost:isActive() then
     local handle = assert(kurtBoxHost:activeHandle(), "active Kurt Box host publishes its handle")
