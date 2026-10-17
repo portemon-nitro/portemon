@@ -12,8 +12,8 @@ local PcStorageGeometry = require("libs.hgss.src.ui.PcStorageGeometry")
 ---@field _images table<string, love.Image> resolved visual images by path for draw identity
 ---@field _leases table<string, unknown> installed shared-owner borrows by path
 ---@field _pool table<string, unknown> the borrowed shared image owner behind every visual
----@field _paneTouch table<string, boolean>? paths drawn by the in-flight pane
----@field _requiredByPane table<string, table<string, boolean>> last drawn demand per pane id
+---@field _readySignature string? stable identity of the installed visual group
+---@field _pending PcStorageVisualPending? the enrolled visual group resolving outside drawing
 ---@field _disposed boolean
 local PcStorageRenderer = {}
 PcStorageRenderer.__index = PcStorageRenderer
@@ -22,34 +22,16 @@ PcStorageRenderer.__index = PcStorageRenderer
 -- construction below, so pooled leases draw identically.
 local POOLED_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }
 
--- Borrows one generated visual through the shared owner, waiting out its
--- classification without blocking the field longer than the bounded stall
--- budget. Failures name their path instead of drawing a blank visual.
----@param pool table<string, unknown>
----@param path string
----@return table<string, unknown> lease resolving the immutable visual
-local function acquirePinned(pool, path)
-  local token = pool:request(path, POOLED_SAMPLER, "demand")
-  local stalled = 0
-  while true do
-    local status, failure = pool:poll(token)
-    if status == "ready" then
-      return pool:acquire(token)
-    end
-    if status == "failed" then
-      error("compiled Storage image missing at " .. path .. ": " .. tostring(failure), 0)
-    end
-    assert(status == "pending", "storage preparation reports pending or ready")
-    stalled = stalled + 1
-    if stalled > 10000 then
-      error("compiled Storage image stalled at " .. path, 0)
-    end
-    local timer = love and love.timer
-    if timer ~= nil and timer.sleep ~= nil then
-      timer.sleep(0.001)
-    end
-  end
-end
+-- Bounds the GPU realizations one update may install, so a cold open
+-- spreads its uploads across frames instead of stalling the field.
+local MAX_ACQUISITIONS_PER_UPDATE = 4
+
+---@class PcStorageVisualPending
+---@field signature string stable identity of the resolving visual group
+---@field paths string[] every required path in stable order
+---@field entries { path: string, token: integer }[] freshly enrolled borrows
+---@field tokenByPath table<string, integer> freshly enrolled token by path
+---@field staged table<integer, table<string, unknown>> acquired leases by token
 
 -- State visuals borrow instead of owning: each drawn visual holds one
 -- installed shared-owner lease, so two opens of one box resolve one
@@ -84,56 +66,19 @@ local function sourceLabel(self, action)
   return sourceText(self, messageId)
 end
 
+-- Resolves one admitted visual lease for drawing. Preparation installed
+-- every drawn path before the present, so drawing never enrolls, polls,
+-- acquires, sleeps, or creates GPU objects; a missing path is a
+-- preparation bug that fails loudly instead of painting a blank visual.
+---@param self PcStorageRenderer
+---@param visual table<string, unknown>
+---@return table<string, unknown> lease resolving the immutable visual
 local function imageFor(self, visual)
   assert(type(visual) == "table" and type(visual.image) == "string", "Storage visuals carry image paths")
   local path = visual.image
   local lease = self._leases[path]
-  if lease == nil then
-    -- State visuals borrow the shared owner as installed leases; two opens
-    -- of one box resolve one physical image per visual through the pool.
-    lease = acquirePinned(assert(self._pool, "Storage renderer borrows its shared image owner"), path)
-    self._leases[path] = lease
-    self._images[path] = assert(lease.image, "shared leases carry their resolved image")
-  end
-  local touched = self._paneTouch
-  if touched ~= nil then
-    touched[path] = true
-  end
+  assert(lease ~= nil, "Storage visual was not admitted before drawing: " .. path)
   return lease
-end
-
----@param self PcStorageRenderer
----@param path string
-local function dropBorrowed(self, path)
-  local lease = self._leases[path]
-  if lease == nil then
-    return
-  end
-  self._leases[path] = nil
-  self._images[path] = nil
-  assert(self._pool, "Storage renderer borrows its shared image owner"):release(lease)
-end
-
--- Returns the borrows the live panes no longer demand: the current box
--- keeps its hard reference while replaced state rests idle and resident.
--- Callers trim idle physicals explicitly once the turnover settles.
----@param self PcStorageRenderer
-local function dropUnrequired(self)
-  local required = {}
-  for _, set in pairs(self._requiredByPane) do
-    for path in pairs(set) do
-      required[path] = true
-    end
-  end
-  local stale = {}
-  for path in pairs(self._leases) do
-    if required[path] ~= true then
-      stale[#stale + 1] = path
-    end
-  end
-  for _, path in ipairs(stale) do
-    dropBorrowed(self, path)
-  end
 end
 
 local function drawVisual(self, visual, x, y)
@@ -168,6 +113,247 @@ local function drawButton(self, rect, label)
   end
 end
 
+-- Collects the exact generated-image paths one published view draws,
+-- branch by branch with the pane rendering below: the upper info pane
+-- with the selected mon's marking tiles, the lower base, wallpaper, and
+-- box pane, the tray and marking panel while open, the editor chrome,
+-- the arrows and cursor of the current pose, and the button frame while
+-- any button draws. Hidden wallpapers and undrawn poses never enroll.
+---@param self PcStorageRenderer
+---@param view table<string, unknown>
+---@return string[] sorted required paths
+local function requiredPaths(self, view)
+  local storage = assert(self._manifest.storage, "Storage borrows its compiled storage manifest")
+  local ui = assert(storage.ui, "Storage chrome is compiled")
+  local set = {} ---@type table<string, boolean>
+  local function add(visual)
+    assert(type(visual) == "table" and type(visual.image) == "string", "Storage visuals carry image paths")
+    set[visual.image] = true
+  end
+  -- The top screen carries only the selected Pokémon's info panel.
+  add(ui.infoPane)
+  local focus = view.focus
+  local selected = view.carry and view.carry.mon
+  if selected == nil and focus ~= nil then
+    local party = focus.domain == "party" or focus.kind == "party"
+    local slots = party and view.party or view.boxSlots
+    if slots ~= nil then
+      selected = slots[focus.slot + 1]
+    end
+  end
+  if type(selected) == "table" then
+    local markings = assert(ui.markings, "Storage marking visuals are compiled")
+    for bit = 0, 5 do
+      local isSet = math.floor(selected.markings / (2 ^ bit)) % 2 == 1
+      add(markings[bit][isSet and "set" or "clear"])
+    end
+  end
+  add(storage.backgrounds.default)
+  local wallpaperId = view.wallpaperId or 0
+  add(assert(storage.wallpapers[wallpaperId], "selected wallpaper is compiled"))
+  add(ui.boxPane)
+  local editor = view.editor
+  if editor == nil then
+    add(ui.arrows.left)
+    add(ui.arrows.right)
+  end
+  if view.tray ~= "closed" then
+    add(ui.partyTray)
+  end
+  if editor ~= nil and editor.kind == "markings" then
+    add(ui.markingPanel)
+  end
+  if editor ~= nil then
+    if editor.kind == "markings" then
+      local markings = assert(ui.markings, "Storage marking visuals are compiled")
+      for bit = 0, 5 do
+        local marked = math.floor(editor.mask / (2 ^ bit)) % 2 == 1
+        add(markings[bit][marked and "set" or "clear"])
+      end
+      add(ui.cursors.browse)
+    elseif editor.kind == "wallpaper" then
+      add(ui.wallpaperBar)
+      add(ui.arrows.left)
+      add(ui.arrows.right)
+      add(
+        assert(
+          storage.ui.windowFrames.standard.paletteBank0,
+          "Storage button frame style and palette bank are compiled"
+        )
+      )
+      add(ui.cursors.menu)
+    else
+      error("unknown Storage editor " .. tostring(editor.kind), 0)
+    end
+  end
+  -- The button frame draws while any button draws: the menu list, the
+  -- bottom buttons, or the wallpaper confirm pair.
+  local needsFrame = editor ~= nil and editor.kind == "wallpaper"
+  if not needsFrame and self._text.drawText ~= nil then
+    needsFrame = view.menu ~= nil or #PcStorageGeometry.bottomButtons(view) > 0
+  end
+  if needsFrame then
+    add(
+      assert(storage.ui.windowFrames.standard.paletteBank0, "Storage button frame style and palette bank are compiled")
+    )
+  end
+  if editor == nil then
+    local pose ---@type string?
+    if view.carry ~= nil then
+      local target = view.carry.destination or view.focus
+      if target == nil then
+        pose = nil
+      elseif target.kind == "party" or target.domain == "party" then
+        pose = view.tray ~= "closed" and "carry" or nil
+      else
+        pose = "carry"
+      end
+    elseif view.menu ~= nil then
+      pose = "menu"
+    elseif view.focus ~= nil then
+      local partyFocus = focus.domain == "party" or focus.kind == "party"
+      pose = partyFocus and view.tray == "closed" and nil or "browse"
+    end
+    if pose ~= nil then
+      add(assert(ui.cursors[pose], "Storage cursor pose is compiled: " .. pose))
+    end
+  end
+  local paths = {} ---@type string[]
+  for path in pairs(set) do
+    paths[#paths + 1] = path
+  end
+  table.sort(paths)
+  return paths
+end
+
+-- Enrolls the freshly needed paths of one visual group: paths the
+-- installed group already holds stay on their existing leases without a
+-- new request, so a wallpaper turnover borrows only its new wallpaper.
+---@param self PcStorageRenderer
+---@param pool table<string, unknown>
+---@param paths string[]
+---@param signature string
+---@return PcStorageVisualPending
+local function enroll(self, pool, paths, signature)
+  local tokenByPath = {} ---@type table<string, integer>
+  local entries = {} ---@type { path: string, token: integer }[]
+  for _, path in ipairs(paths) do
+    if self._leases[path] == nil and tokenByPath[path] == nil then
+      local token = pool:request(path, POOLED_SAMPLER, "demand")
+      tokenByPath[path] = token
+      entries[#entries + 1] = { path = path, token = token }
+    end
+  end
+  return { signature = signature, paths = paths, entries = entries, tokenByPath = tokenByPath, staged = {} }
+end
+
+-- Forgets one resolving group without touching the installed state:
+-- staged leases return and unconsumed tokens cancel, each exactly once.
+---@param pool table<string, unknown>
+---@param pending PcStorageVisualPending
+local function abandonPending(pool, pending)
+  for _, entry in ipairs(pending.entries) do
+    local staged = pending.staged[entry.token]
+    if staged ~= nil then
+      pool:release(staged)
+    else
+      pool:cancel(entry.token)
+    end
+  end
+  pending.staged = {}
+end
+
+-- Installs one fully acquired group atomically: carried-over leases stay
+-- borrowed, staged leases move into the installed group, and only the
+-- leases the new group no longer needs return.
+---@param self PcStorageRenderer
+---@param pool table<string, unknown>
+---@param pending PcStorageVisualPending
+local function publishPending(self, pool, pending)
+  local leases = {} ---@type table<string, unknown>
+  local images = {} ---@type table<string, love.Image>
+  for _, path in ipairs(pending.paths) do
+    local lease = self._leases[path]
+    if lease == nil then
+      lease = assert(
+        pending.staged[assert(pending.tokenByPath[path], "every required visual enrolled its token")],
+        "every required visual staged its lease"
+      )
+    end
+    leases[path] = lease
+    images[path] = assert(lease.image, "shared leases carry their resolved image")
+  end
+  for path, lease in pairs(self._leases) do
+    if leases[path] == nil then
+      pool:release(lease)
+    end
+  end
+  self._leases = leases
+  self._images = images
+  self._readySignature = pending.signature
+  self._pending = nil
+end
+
+--- Admits one published view outside drawing: enrolls the exact visible
+--- paths once, then polls and borrows at most four ready leases per
+--- call. Returns true once every required lease is installed and the
+--- view draws with no image-owner traffic; false while the worker is
+--- still resolving, or false with the missing path's cause when a
+--- required visual fails. A superseded resolving group never publishes:
+--- its partial work returns while the installed group stays drawable.
+---@param view table<string, unknown> the published snapshot drawing will use
+---@return boolean ready
+---@return string? failure the named missing visual when a required path failed
+function PcStorageRenderer:prepare(view)
+  assert(not self._disposed, "disposed Storage renderer prepares nothing")
+  assert(type(view) == "table", "Storage preparation requires its published view")
+  local pool = assert(self._pool, "Storage renderer borrows its shared image owner")
+  local paths = requiredPaths(self, view)
+  local signature = table.concat(paths, "\0")
+  local pending = self._pending
+  if pending ~= nil and pending.signature ~= signature then
+    abandonPending(pool, pending)
+    self._pending = nil
+    pending = nil
+  end
+  if pending == nil then
+    if self._readySignature == signature then
+      return true
+    end
+    pending = enroll(self, pool, paths, signature)
+    self._pending = pending
+  end
+  local acquired = 0
+  for _, entry in ipairs(pending.entries) do
+    if pending.staged[entry.token] == nil then
+      local status, failure = pool:poll(entry.token)
+      if status == "failed" then
+        abandonPending(pool, pending)
+        self._pending = nil
+        return false, "compiled Storage image missing at " .. entry.path .. ": " .. tostring(failure)
+      end
+      assert(status == "pending" or status == "ready", "storage preparation reports pending or ready")
+      if status == "ready" and acquired < MAX_ACQUISITIONS_PER_UPDATE then
+        local ok, lease = pcall(pool.acquire, pool, entry.token)
+        if not ok then
+          abandonPending(pool, pending)
+          self._pending = nil
+          return false, "compiled Storage image missing at " .. entry.path .. ": " .. tostring(lease)
+        end
+        pending.staged[entry.token] = lease
+        acquired = acquired + 1
+      end
+    end
+  end
+  for _, entry in ipairs(pending.entries) do
+    if pending.staged[entry.token] == nil then
+      return false
+    end
+  end
+  publishPending(self, pool, pending)
+  return true
+end
+
 ---@param options { graphics: love.graphics, manifest: table<string, unknown>, text: table<string, unknown>, imagePool: table<string, unknown> }
 ---@return PcStorageRenderer
 function PcStorageRenderer.new(options)
@@ -187,8 +373,8 @@ function PcStorageRenderer.new(options)
     _images = {},
     _leases = {},
     _pool = pool,
-    _paneTouch = nil,
-    _requiredByPane = {},
+    _readySignature = nil,
+    _pending = nil,
     _disposed = false,
   }, PcStorageRenderer)
 end
@@ -441,7 +627,6 @@ function PcStorageRenderer:drawPane(view, resources, paneId, placement)
   assert(not self._disposed, "disposed Storage renderer draws nothing")
   local graphics = self._graphics
   resources = resources or {}
-  self._paneTouch = {}
   LogicalSurface.draw(graphics, placement, function()
     local storage = self._manifest.storage
     if paneId == "upper" then
@@ -555,9 +740,6 @@ function PcStorageRenderer:drawPane(view, resources, paneId, placement)
       end
     end
   end)
-  self._requiredByPane[paneId] = assert(self._paneTouch, "the drawn pane records its demand")
-  self._paneTouch = nil
-  dropUnrequired(self)
 end
 
 function PcStorageRenderer:draw(view, plan)
@@ -584,13 +766,17 @@ function PcStorageRenderer:dispose()
   self._disposed = true
   local pool = assert(self._pool, "Storage renderer borrows its shared image owner")
   self._pool = nil
+  local pending = self._pending
+  self._pending = nil
+  if pending ~= nil then
+    abandonPending(pool, pending)
+  end
   for _, lease in pairs(self._leases) do
     pool:release(lease)
   end
   self._leases = {}
   self._images = {}
-  self._requiredByPane = {}
-  self._paneTouch = nil
+  self._readySignature = nil
 end
 
 function PcStorageRenderer:release()

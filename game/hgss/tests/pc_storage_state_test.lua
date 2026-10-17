@@ -140,6 +140,9 @@ local function heldItemPicker(item)
       takeResult = function()
         return nil
       end,
+      status = function()
+        return {}
+      end,
       dispose = function() end,
     }
   end
@@ -509,6 +512,9 @@ function T.move_swap_cancel_and_held_item_routes_keep_domain_owners_authoritativ
       end,
       takeResult = function()
         return nil
+      end,
+      status = function()
+        return {}
       end,
       dispose = function() end,
     }
@@ -2104,6 +2110,57 @@ function T.editor_opening_mid_batch_keeps_trailing_cancel_from_the_parent_prompt
   Assert.equal(state:status().phase, "browse")
   Assert.equal(assert(mons:boxMon(0, 0)).markings, beforeMarkings)
   Assert.equal(state:_view().message.id, 18, "the browse prompt returns with no continue prompt queued")
+  state:dispose()
+end
+
+-- The published visual snapshot rides the transient status for the
+-- admission boundary: status carries the exact same view object the next
+-- draw consumes, with the live wallpaper, tray, and mode selectors.
+function T.status_publishes_the_exact_drawn_visual_snapshot()
+  local mons = monService()
+  local state = PcStorageState.new(openOptions(mons, 2, "wide"))
+  local status = state:status()
+  local published = state:_ensurePublished()
+  Assert.isTrue(status.visualView == published, "status carries the exact published view drawn later")
+  Assert.equal(status.visualView.wallpaperId, published.wallpaperId, "the snapshot carries the active wallpaper")
+  Assert.equal(status.visualView.tray, published.tray, "the snapshot carries the tray pose")
+  Assert.equal(status.visualView.mode, published.mode, "the snapshot carries the retail mode")
+  Assert.isNil(status.bagChildStatus, "browsing publishes no picker leaf")
+  state:updateFixed({})
+  Assert.isTrue(state:status().visualView == published, "an idle tick reuses its published snapshot")
+  state:dispose()
+end
+
+-- The held-item picker leaf rides alongside the status for the shared Bag
+-- preparation path: the live child leaf is the exact object the picker
+-- reports, while the parent snapshot stays published underneath it.
+function T.held_item_picker_status_rides_alongside_for_bag_preparation()
+  local mons = monService()
+  local held = mons:partyMon(0)
+  held.heldItem = "POTION"
+  assert(mons:preparePartyChanges(mons:partyRevision(), { { slot = 0, mon = held } })).publish()
+  local bagLeaf = { presentation = { inputKey = "bag" } }
+  local options = openOptions(mons, 2, "wide")
+  options.childFactories = {
+    heldItemPicker = function()
+      return {
+        updateFixed = function() end,
+        takeIntent = function() end,
+        status = function()
+          return bagLeaf
+        end,
+        dispose = function() end,
+      }
+    end,
+  }
+  local state = PcStorageState.new(options)
+  state:updateFixed({ { type = "action", action = "heldItems" } })
+  Assert.equal(mons:partyMon(0).heldItem, "NONE", "a held item is taken back to the Bag")
+  state:updateFixed({ { type = "action", action = "heldItems" } })
+  Assert.equal(state:status().childKind, "heldItemPicker", "an empty hand opens the Bag picker")
+  local status = state:status()
+  Assert.isTrue(status.bagChildStatus == bagLeaf, "status carries the live picker leaf for preparation")
+  Assert.isTrue(status.visualView == state:_ensurePublished(), "the picker still rides its published snapshot")
   state:dispose()
 end
 

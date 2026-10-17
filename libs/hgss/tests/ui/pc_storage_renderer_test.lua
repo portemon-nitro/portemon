@@ -39,6 +39,9 @@ local function storagePool()
   function pool:release(lease)
     return inner:release(lease)
   end
+  function pool:cancel(token)
+    return inner:cancel(token)
+  end
   function pool:prune()
     return inner:prune()
   end
@@ -114,6 +117,22 @@ local function placement()
   return assert(PixelScale.placeFixed({ x = 0, y = 0, width = 256, height = 192 }, 256, 192))
 end
 
+-- Admitting helper: production prepares Storage visuals in the update phase
+-- and draws only admitted signatures, so every composition below resolves
+-- its demand before its first present.
+local function admit(renderer, view)
+  local ready, failure = false, nil
+  for _ = 1, 200 do
+    ready, failure = renderer:prepare(view)
+    if ready then
+      break
+    end
+    Assert.isNil(failure, "admission reports no failure while pending")
+  end
+  Assert.isTrue(ready, "the view admits before drawing")
+  Assert.isNil(failure, "admission reports no failure")
+end
+
 function T.wallpaper_chooser_draws_one_page_of_four_swatches_with_locked_entries_black()
   local renderer, graphics, manifest = rendererFixture()
   local drawn = {}
@@ -126,7 +145,7 @@ function T.wallpaper_chooser_draws_one_page_of_four_swatches_with_locked_entries
     end,
   }
   -- Logical 17 sits on the fifth page (16..19); only bonus 16 is unlocked.
-  renderer:drawPane({
+  local chooserView = {
     mode = 0,
     activeBox = 0,
     tray = "closed",
@@ -135,7 +154,9 @@ function T.wallpaper_chooser_draws_one_page_of_four_swatches_with_locked_entries
     boxSlots = {},
     party = {},
     editor = { kind = "wallpaper", selected = 17, focus = "slots" },
-  }, {}, "lower", placement())
+  }
+  admit(renderer, chooserView)
+  renderer:drawPane(chooserView, {}, "lower", placement())
   local menuHand = renderer._images[manifest.storage.ui.cursors.menu.image]
   renderer:release()
 
@@ -164,7 +185,7 @@ end
 
 function T.marking_editor_draws_six_compiled_clear_set_tiles_in_the_marking_panel()
   local renderer, graphics, manifest = rendererFixture()
-  renderer:drawPane({
+  local markingView = {
     mode = 0,
     activeBox = 0,
     tray = "closed",
@@ -173,7 +194,9 @@ function T.marking_editor_draws_six_compiled_clear_set_tiles_in_the_marking_pane
     boxSlots = {},
     party = {},
     editor = { kind = "markings", mask = 5, selected = 2 },
-  }, {}, "lower", placement(), true)
+  }
+  admit(renderer, markingView)
+  renderer:drawPane(markingView, {}, "lower", placement(), true)
   local setZero = renderer._images[manifest.storage.ui.markings[0].set.image]
   local clearOne = renderer._images[manifest.storage.ui.markings[1].clear.image]
   local setTwo = renderer._images[manifest.storage.ui.markings[2].set.image]
@@ -214,7 +237,7 @@ function T.storage_menu_draws_compiled_source_messages()
       end
     end,
   }
-  renderer:drawPane({
+  local menuView = {
     mode = 3,
     activeBox = 0,
     tray = "closed",
@@ -223,7 +246,9 @@ function T.storage_menu_draws_compiled_source_messages()
     boxSlots = {},
     party = {},
     menu = { actions = { "giveItem", "swapItems" }, selected = 1 },
-  }, {}, "lower", placement(), true)
+  }
+  admit(renderer, menuView)
+  renderer:drawPane(menuView, {}, "lower", placement(), true)
   Assert.equal(#drawn, 2, "Storage draws both menu labels")
   Assert.equal(drawn[1], "b24:81", "Give Item uses source message 81")
   Assert.equal(drawn[2], "b24:64", "Sort Items uses source message 64")
@@ -255,7 +280,7 @@ function T.message_line_draws_in_the_player_frame_with_yes_no_and_the_bottom_but
       end,
     },
   }
-  renderer:drawPane({
+  local messageView = {
     mode = 2,
     activeBox = 0,
     tray = "closed",
@@ -264,7 +289,9 @@ function T.message_line_draws_in_the_player_frame_with_yes_no_and_the_bottom_but
     boxSlots = {},
     party = {},
     message = { id = 11, window = "W37", yesNo = true },
-  }, resources, "lower", placement())
+  }
+  admit(renderer, messageView)
+  renderer:drawPane(messageView, resources, "lower", placement())
   Assert.deepEqual(
     windows[1],
     { "player", { x = 16, y = 168, width = 216, height = 16 }, 3 },
@@ -310,21 +337,18 @@ function T.top_screen_prints_the_selected_mon_info_at_the_source_windows()
       info = info,
     }
   end
-  renderer:drawPane(
-    infoView({
-      nickname = "CHIKO",
-      speciesName = "CHIKORITA",
-      level = 12,
-      dexNumber = 152,
-      gender = "female",
-      natureName = "Calm",
-      abilityName = "Overgrow",
-      itemName = nil,
-    }),
-    {},
-    "upper",
-    placement()
-  )
+  local firstInfo = infoView({
+    nickname = "CHIKO",
+    speciesName = "CHIKORITA",
+    level = 12,
+    dexNumber = 152,
+    gender = "female",
+    natureName = "Calm",
+    abilityName = "Overgrow",
+    itemName = nil,
+  })
+  admit(renderer, firstInfo)
+  renderer:drawPane(firstInfo, {}, "upper", placement())
   Assert.deepEqual(drawn, {
     { "b25:50", 8, 8 },
     { "CHIKO", 8, 56 },
@@ -343,7 +367,9 @@ function T.top_screen_prints_the_selected_mon_info_at_the_source_windows()
   }, "the info panel prints each fact in its source window")
 
   drawn = {}
-  renderer:drawPane(infoView({ nickname = "Egg", egg = true }), {}, "upper", placement())
+  local eggInfo = infoView({ nickname = "Egg", egg = true })
+  admit(renderer, eggInfo)
+  renderer:drawPane(eggInfo, {}, "upper", placement())
   Assert.equal(drawn[3][1], "b24:87", "an egg skips species facts and keeps the labels")
   Assert.equal(drawn[4][1], "b24:93", "an egg's nature is hidden")
   renderer:release()
@@ -380,16 +406,18 @@ function T.box_renderer_skips_empty_sentinels_and_draws_the_final_slot()
     slots[slot] = false
   end
   slots[30] = { heldItem = "NONE", markings = 0, iconKey = "last-slot" }
+  local slotView = {
+    mode = 0,
+    activeBox = 0,
+    tray = "closed",
+    wallpaperId = 0,
+    wallpaperUnlocks = { false, false, false, false, false, false, false, false },
+    boxSlots = slots,
+    party = {},
+  }
   local rendered, failure = pcall(function()
-    renderer:drawPane({
-      mode = 0,
-      activeBox = 0,
-      tray = "closed",
-      wallpaperId = 0,
-      wallpaperUnlocks = { false, false, false, false, false, false, false, false },
-      boxSlots = slots,
-      party = {},
-    }, { icons = icons }, "lower", placement(), true)
+    admit(renderer, slotView)
+    renderer:drawPane(slotView, { icons = icons }, "lower", placement(), true)
   end)
   Assert.isTrue(rendered, "Storage rendering skips explicit empty slots: " .. tostring(failure))
   -- Slot 29 is column 5, row 4: a 32px icon centred four pixels above its slot centre.
@@ -476,12 +504,17 @@ end
 function T.box_visuals_share_one_image_and_release_stale_boxes_on_change()
   local graphics, cache, manifest, text, pool, inner, seen = storageFixture()
   local first = openStorage(graphics, cache, manifest, text, pool)
-  first:drawPane(browseView(0), {}, "lower", placement())
+  local function present(renderer, wallpaperId)
+    local view = browseView(wallpaperId)
+    admit(renderer, view)
+    renderer:drawPane(view, {}, "lower", placement())
+  end
+  present(first, 0)
   local opened = inner.uploads
   Assert.isTrue(opened > 0, "the open box borrows its visuals")
   assertNoDrawAfterFree(graphics)
   local second = openStorage(graphics, cache, manifest, text, pool)
-  second:drawPane(browseView(0), {}, "lower", placement())
+  present(second, 0)
   Assert.equal(inner.uploads, opened, "two opens of one box share one physical image per visual")
   Assert.equal(
     inner:stats().outstandingLeases,
@@ -495,15 +528,15 @@ function T.box_visuals_share_one_image_and_release_stale_boxes_on_change()
     "closing the second box returns only its own borrows"
   )
   for wallpaperId = 1, 7 do
-    first:drawPane(browseView(wallpaperId), {}, "lower", placement())
+    present(first, wallpaperId)
     assertNoDrawAfterFree(graphics)
   end
   local afterVisits = inner.uploads
   Assert.isTrue(afterVisits > opened, "visiting boxes borrows their wallpapers")
-  first:drawPane(browseView(0), {}, "lower", placement())
+  present(first, 0)
   assertNoDrawAfterFree(graphics)
   local drawsBefore = #graphics.draws
-  first:drawPane(browseView(0), {}, "lower", placement())
+  present(first, 0)
   Assert.equal(inner.uploads, afterVisits, "redrawing the active box enrolls no image per draw")
   Assert.isTrue(#graphics.draws > drawsBefore, "the active box still renders")
   assertNoDrawAfterFree(graphics)
@@ -543,6 +576,211 @@ function T.box_visuals_share_one_image_and_release_stale_boxes_on_change()
       Assert.equal(image.releaseCount, 1, "closing the box frees every remaining image exactly once")
     end
   end
+end
+
+-- Image-owner observer: records every enrollment call the renderer makes
+-- after admission, so the suite can prove drawing performs no worker work.
+local function countingPool(pool, tally)
+  local counting = {}
+  function counting:request(path, sampler, priority)
+    tally.request = tally.request + 1
+    return pool:request(path, sampler, priority)
+  end
+  function counting:poll(token)
+    tally.poll = tally.poll + 1
+    return pool:poll(token)
+  end
+  function counting:acquire(token)
+    tally.acquire = tally.acquire + 1
+    return pool:acquire(token)
+  end
+  function counting:release(lease)
+    tally.release = tally.release + 1
+    return pool:release(lease)
+  end
+  function counting:cancel(token)
+    return pool:cancel(token)
+  end
+  function counting:prune()
+    return pool:prune()
+  end
+  function counting:stats()
+    return pool:stats()
+  end
+  return counting
+end
+
+-- A delayed shared owner: chosen generated paths stay pending until their
+-- entry clears, modelling a cold wallpaper worker job without blocking.
+local function delayingPool(pool, pendingPaths)
+  local tokenPaths = {}
+  local delayed = {}
+  function delayed:request(path, sampler, priority)
+    local token = pool:request(path, sampler, priority)
+    tokenPaths[token] = path
+    return token
+  end
+  function delayed:poll(token)
+    if pendingPaths[tokenPaths[token]] then
+      return "pending"
+    end
+    return pool:poll(token)
+  end
+  function delayed:acquire(token)
+    return pool:acquire(token)
+  end
+  function delayed:release(lease)
+    return pool:release(lease)
+  end
+  function delayed:cancel(token)
+    tokenPaths[token] = nil
+    return pool:cancel(token)
+  end
+  function delayed:prune()
+    return pool:prune()
+  end
+  function delayed:stats()
+    return pool:stats()
+  end
+  return delayed
+end
+
+-- An admitted view draws both panes with no image-owner traffic: no
+-- enrollment, polling, acquisition, or lease release on the render path.
+-- Either pane order paints the same admitted group without invalidating
+-- the other pane's art.
+function T.admitted_storage_draw_performs_no_image_owner_calls()
+  local pool, _, _ = storagePool()
+  local tally = { request = 0, poll = 0, acquire = 0, release = 0 }
+  local renderer, graphics, _ = rendererFixture(countingPool(pool, tally))
+  Assert.isTrue(
+    type(renderer.prepare) == "function",
+    "the renderer prepares its visuals outside drawing"
+  )
+  local view = browseView(0)
+  admit(renderer, view)
+  tally.request, tally.poll, tally.acquire, tally.release = 0, 0, 0, 0
+  renderer:drawPane(view, {}, "upper", placement())
+  renderer:drawPane(view, {}, "lower", placement())
+  Assert.equal(tally.request, 0, "drawing an admitted view enrolls no image")
+  Assert.equal(tally.poll, 0, "drawing an admitted view polls no image")
+  Assert.equal(tally.acquire, 0, "drawing an admitted view acquires no image")
+  Assert.equal(tally.release, 0, "drawing an admitted view releases no image")
+  Assert.isTrue(#graphics.draws > 0, "the admitted view still paints")
+  renderer:dispose()
+end
+
+-- A wallpaper change borrows only the newly needed visual: static chrome
+-- stays on its existing leases without new enrollment, and exactly one
+-- new physical image appears for the incoming wallpaper.
+function T.wallpaper_change_borrows_only_the_new_wallpaper()
+  local pool, inner, _ = storagePool()
+  local renderer, _, manifest = rendererFixture(pool)
+  Assert.isTrue(
+    type(renderer.prepare) == "function",
+    "the renderer prepares its visuals outside drawing"
+  )
+  local requested = {}
+  local baselineRequest = pool.request
+  function pool:request(path, sampler, priority)
+    requested[#requested + 1] = path
+    return baselineRequest(self, path, sampler, priority)
+  end
+  admit(renderer, browseView(0))
+  local opened = inner.uploads
+  Assert.isTrue(opened > 0, "the open view borrows its visuals")
+  requested = {}
+  admit(renderer, browseView(1))
+  Assert.equal(inner.uploads, opened + 1, "a wallpaper change uploads only the new wallpaper")
+  Assert.deepEqual(
+    requested,
+    { manifest.storage.wallpapers[1].image },
+    "static chrome is reused without new enrollment"
+  )
+  renderer:dispose()
+end
+
+-- A superseded pending turnover never publishes: the current view stays
+-- admitted while its replacement waits on the worker, and a repeated
+-- demand for the current paths answers immediately.
+function T.superseded_pending_turnover_keeps_the_current_view_ready()
+  local pool, _, _ = storagePool()
+  local pendingPaths = {}
+  local renderer, graphics, manifest = rendererFixture(delayingPool(pool, pendingPaths))
+  Assert.isTrue(
+    type(renderer.prepare) == "function",
+    "the renderer prepares its visuals outside drawing"
+  )
+  local current = browseView(0)
+  admit(renderer, current)
+  pendingPaths[manifest.storage.wallpapers[1].image] = true
+  local ready, failure = renderer:prepare(browseView(1))
+  Assert.isFalse(ready, "a pending wallpaper keeps preparation unready")
+  Assert.isNil(failure, "a pending wallpaper reports no failure")
+  local again, againFailure = renderer:prepare(current)
+  Assert.isTrue(again, "the current view stays admitted while its replacement pends")
+  Assert.isNil(againFailure, "the current view reports no failure")
+  local drawsBefore = #graphics.draws
+  renderer:drawPane(current, {}, "lower", placement())
+  Assert.isTrue(#graphics.draws > drawsBefore, "the current view still draws while its replacement pends")
+  pendingPaths[manifest.storage.wallpapers[1].image] = nil
+  admit(renderer, browseView(1))
+  renderer:dispose()
+end
+
+-- A failed wallpaper names its missing visual and leaves the previous
+-- group drawable: no half-ready state publishes, and the replacement
+-- admits cleanly once the worker recovers.
+function T.failed_wallpaper_keeps_the_previous_group_drawable()
+  local pool, inner, _ = storagePool()
+  local renderer, graphics, manifest = rendererFixture(pool)
+  Assert.isTrue(
+    type(renderer.prepare) == "function",
+    "the renderer prepares its visuals outside drawing"
+  )
+  local first = browseView(0)
+  admit(renderer, first)
+  local opened = inner.uploads
+  local missing = manifest.storage.wallpapers[1].image
+  inner:failAfterUploads(opened, "injected wallpaper failure")
+  local ok, ready, failure = pcall(function()
+    return renderer:prepare(browseView(1))
+  end)
+  if ok then
+    Assert.isFalse(ready, "a failed wallpaper never reports ready")
+    Assert.isTrue(
+      type(failure) == "string" and failure:find(missing, 1, true) ~= nil,
+      "the failure names its missing visual"
+    )
+  else
+    Assert.isTrue(
+      tostring(ready):find(missing, 1, true) ~= nil,
+      "the failure names its missing visual"
+    )
+  end
+  inner:clearFailure()
+  local drawsBefore = #graphics.draws
+  renderer:drawPane(first, {}, "lower", placement())
+  Assert.isTrue(#graphics.draws > drawsBefore, "the previous group still draws after a failed turnover")
+  admit(renderer, browseView(1))
+  renderer:dispose()
+end
+
+-- Disposal returns every admitted and partial lease exactly once and stays
+-- quiet when repeated: no outstanding borrow survives the close.
+function T.repeated_dispose_returns_leases_once_and_stays_quiet()
+  local pool, inner, _ = storagePool()
+  local renderer, _, _ = rendererFixture(pool)
+  Assert.isTrue(
+    type(renderer.prepare) == "function",
+    "the renderer prepares its visuals outside drawing"
+  )
+  admit(renderer, browseView(0))
+  Assert.isTrue(inner:stats().outstandingLeases > 0, "admission holds its leases")
+  renderer:dispose()
+  Assert.equal(inner:stats().outstandingLeases, 0, "disposal returns every lease")
+  renderer:dispose()
+  Assert.equal(inner:stats().outstandingLeases, 0, "repeated disposal returns nothing again")
 end
 
 return { tests = T }

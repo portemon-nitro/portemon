@@ -1099,8 +1099,8 @@ function StorageScreenState:updateFixed(events)
 end
 
 function StorageScreenState:status()
-  local view = self:_view()
-  return {
+  local view = self:_ensurePublished()
+  local status = {
     mode = self._mode,
     activeBox = self._activeBox,
     focus = copy(self._focus),
@@ -1116,10 +1116,21 @@ function StorageScreenState:status()
     childKind = self._childKind,
     releaseCheck = copy(self._releaseCheck),
     boxName = view.boxName,
-    boxSlots = view.boxSlots,
-    party = view.party,
-    carry = view.carry,
+    -- The slot projections stay detached copies: mutating a published
+    -- status never reaches the stored mons nor the cached render facts,
+    -- while the drawing snapshot below rides by identity.
+    boxSlots = copy(view.boxSlots),
+    party = copy(view.party),
+    carry = copy(view.carry),
+    -- The exact published snapshot drawing consumes this tick, borrowed
+    -- transiently so the presentation boundary admits the same wallpaper,
+    -- tray, and editor the next present paints. Never persisted.
+    visualView = view,
   }
+  if self._childKind == "heldItemPicker" and self._child ~= nil then
+    status.bagChildStatus = self._child:status()
+  end
+  return status
 end
 
 function StorageScreenState:draw(resources)

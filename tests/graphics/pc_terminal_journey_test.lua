@@ -104,7 +104,21 @@ function T.production_storage_draws_with_real_pc_graphics_across_layouts(scope)
       runtime:resizePresentation(measured.width, measured.height, measured.topology)
       host:setPresentationReady(handle, true)
       host:step(handle, {})
-      local ready, failure = state.presentationResources:preparePcApplication(host:status(), runtime)
+      -- Readiness now waits for the admitted Storage visuals beside the
+      -- mon icons: advance preparation the way the field update does
+      -- until the host turns ready, then present the admitted view.
+      local ready, failure
+      local deadline = os.clock() + 120
+      while true do
+        ready, failure = state.presentationResources:preparePcApplication(host:status(), runtime)
+        if ready or failure ~= nil then
+          break
+        end
+        Assert.isTrue(os.clock() < deadline, layout.label .. " admits its Storage visuals without stalling")
+        if love.timer ~= nil and love.timer.sleep ~= nil then
+          love.timer.sleep(0.005)
+        end
+      end
       Assert.isNil(failure, layout.label .. " prepares without a graphics failure")
       Assert.isTrue(ready, layout.label .. " has all visible Storage icons ready")
       host:setPresentationReady(handle, ready)

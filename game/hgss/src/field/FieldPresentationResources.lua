@@ -806,6 +806,13 @@ function FieldPresentationResources:preparePcApplication(status, runtime)
   if status.app == "photoAlbum" then
     return self.photoAlbumRenderer:advance(status, resources)
   elseif status.app == "storage" then
+    -- A held-item picker admits through the shared Bag presenter: the
+    -- live picker leaf gates the host while Storage wallpaper rests.
+    if status.childKind == "heldItemPicker" then
+      return self:prepareBagApplication(
+        assert(status.bagChildStatus, "Storage picker preparation requires its Bag leaf")
+      )
+    end
     for _, mon in ipairs(assert(status.boxSlots, "Storage status publishes box icon snapshots")) do
       if mon ~= false then
         iconKeys[#iconKeys + 1] = mon.iconKey
@@ -818,6 +825,13 @@ function FieldPresentationResources:preparePcApplication(status, runtime)
     if type(carry) == "table" and type(carry.mon) == "table" then
       iconKeys[#iconKeys + 1] = carry.mon.iconKey
     end
+    -- Readiness composes independent prerequisites without serializing enrollment.
+    local iconsReady, iconsFailure =
+      assert(self.monIconProvider, "PC applications borrow the shared mon icon provider"):prepareKeys(iconKeys)
+    local imagesReady, imageFailure = assert(self.storageRenderer, "Storage borrows its owned renderer"):prepare(
+      assert(status.visualView, "Storage preparation requires its published view")
+    )
+    return iconsReady and imagesReady, iconsFailure or imageFailure
   elseif status.app == "mailbox" then
     for _, icon in ipairs(assert(status.icons, "Mailbox status publishes message icon snapshots")) do
       iconKeys[#iconKeys + 1] = icon.iconKey

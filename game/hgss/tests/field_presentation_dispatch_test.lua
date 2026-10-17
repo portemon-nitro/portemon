@@ -276,7 +276,18 @@ local function buildDoubles(sink, calls)
     },
     ["libs.hgss.src.ui.PcStorageRenderer"] = {
       new = function(_)
-        return releasable(calls, "pcStorage")
+        local renderer = releasable(calls, "pcStorage")
+        -- Preparation recorder: the field update admits Storage visuals
+        -- beside mon icons, so the double tracks every prepared view.
+        calls.pcStorageViews = calls.pcStorageViews or {}
+        function renderer:prepare(view)
+          calls.pcStorageViews[#calls.pcStorageViews + 1] = view
+          if calls.pcStoragePrepareReady == false then
+            return false, calls.pcStoragePrepareFailure
+          end
+          return true
+        end
+        return renderer
       end,
     },
     ["libs.hgss.src.ui.MailboxRenderer"] = {
@@ -1432,6 +1443,7 @@ function T.storage_icon_preparation_skips_empty_box_sentinels()
         app = "storage",
         boxSlots = boxSlots,
         party = {},
+        visualView = {},
       }, { monCatalog = {} })
     end)
     Assert.isTrue(prepared, "Storage icon preparation skips explicit empty slots: " .. tostring(ready))
@@ -1790,6 +1802,94 @@ function T.fixed_chrome_borrows_the_session_image_pool()
     Assert.equal(calls.dialogue, 1, "disposal still releases the dialogue renderer once")
     Assert.equal(calls.signpost, 1, "disposal still releases the signpost renderer once")
     Assert.equal(calls.card, 1, "disposal still releases the card renderer once")
+  end)
+end
+
+-- Storage readiness waits for both mon icons and visual leases: pending
+-- visuals keep the host unready while icons are ready, pending icons keep
+-- the host unready while visuals enroll independently, and preparation
+-- admits the exact published view without drawing anything.
+function T.storage_preparation_waits_for_visual_leases_beside_icon_readiness()
+  local sink, calls = {}, {}
+  withProductionComposition(sink, calls, compositionRuntime(), function(resources)
+    Assert.isTrue(
+      type(resources.preparePcApplication) == "function",
+      "the host admits the PC application outside drawing"
+    )
+    local preparedViews = {}
+    local visualsReady = false
+    resources.storageRenderer.prepare = function(_, view)
+      preparedViews[#preparedViews + 1] = view
+      if visualsReady then
+        return true
+      end
+      return false
+    end
+    local visualView = { mode = 0, wallpaperId = 0 }
+    local status = { app = "storage", boxSlots = {}, party = {}, visualView = visualView }
+    local ready, failure = resources:preparePcApplication(status, { monCatalog = {} })
+    Assert.isFalse(ready, "pending Storage visuals keep the host unready")
+    Assert.isNil(failure, "pending Storage visuals report no failure")
+    Assert.equal(#preparedViews, 1, "visual enrollment runs beside icon preparation")
+    Assert.isTrue(preparedViews[1] == visualView, "preparation admits the exact published view")
+    visualsReady = true
+    ready, failure = resources:preparePcApplication(status, { monCatalog = {} })
+    Assert.isTrue(ready, "admitted visuals with ready icons turn the host ready")
+    Assert.isNil(failure, "a ready host reports no failure")
+    visualsReady = false
+    calls.iconPageReady = false
+    preparedViews = {}
+    ready, failure = resources:preparePcApplication(status, { monCatalog = {} })
+    Assert.isFalse(ready, "pending icons keep the host unready")
+    Assert.isNil(failure, "pending icons report no failure")
+    Assert.equal(#preparedViews, 1, "visual enrollment never waits behind icon readiness")
+    Assert.equal(#sink, 0, "preparation draws nothing through any presenter")
+    resources:dispose()
+  end)
+end
+
+-- The held-item picker admits through the shared Bag presenter: a pending
+-- picker leaf keeps the host unready without touching Storage wallpaper,
+-- and closing the picker resumes ordinary Storage readiness.
+function T.held_item_picker_preparation_delegates_to_the_bag_presenter()
+  local sink, calls = {}, {}
+  withProductionComposition(sink, calls, compositionRuntime(), function(resources)
+    local storagePrepares = 0
+    resources.storageRenderer.prepare = function(_)
+      storagePrepares = storagePrepares + 1
+      return true
+    end
+    local bagLeaf = { presentation = { inputKey = "bag" } }
+    local status = {
+      app = "storage",
+      boxSlots = {},
+      party = {},
+      childKind = "heldItemPicker",
+      bagChildStatus = bagLeaf,
+      visualView = { mode = 2, wallpaperId = 0 },
+    }
+    calls.bagPrepareReady = false
+    local ready, failure = resources:preparePcApplication(status, { monCatalog = {} })
+    Assert.isFalse(ready, "a pending picker leaf keeps the host unready")
+    Assert.isNil(failure, "a pending picker leaf reports no failure")
+    Assert.equal(storagePrepares, 0, "the picker admits no Storage wallpaper")
+    Assert.equal(calls.bagPrepares, 1, "the picker delegates to the shared Bag presenter")
+    Assert.isTrue(
+      calls.bagPrepareLeaves[#calls.bagPrepareLeaves] == bagLeaf,
+      "preparation receives the live picker leaf"
+    )
+    calls.bagPrepareReady = nil
+    ready, failure = resources:preparePcApplication(status, { monCatalog = {} })
+    Assert.isTrue(ready, "an admitted picker leaf turns the host ready")
+    Assert.isNil(failure, "an admitted picker leaf reports no failure")
+    Assert.equal(storagePrepares, 0, "an admitted picker still admits no Storage wallpaper")
+    local browsing = { app = "storage", boxSlots = {}, party = {}, visualView = { mode = 2, wallpaperId = 0 } }
+    ready, failure = resources:preparePcApplication(browsing, { monCatalog = {} })
+    Assert.isTrue(ready, "closing the picker resumes Storage readiness")
+    Assert.isNil(failure, "resumed Storage reports no failure")
+    Assert.equal(storagePrepares, 1, "the resumed view admits its visuals")
+    Assert.equal(#sink, 0, "picker preparation draws nothing through any presenter")
+    resources:dispose()
   end)
 end
 

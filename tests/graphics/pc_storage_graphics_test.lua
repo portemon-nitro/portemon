@@ -143,6 +143,21 @@ local function drawPlan(scope, cacheFs, manifest, view, plan, width, height)
     end,
   }
   renderer._text = textSpy
+  -- Storage visuals admit beside the mon icons: the renderer borrows its
+  -- exact visible paths before the present, so drawing performs no worker
+  -- work.
+  local visualsDeadline = os.clock() + 120
+  while true do
+    local visualsReady, visualFailure = renderer:prepare(view)
+    if visualsReady or visualFailure ~= nil then
+      Assert.isNil(visualFailure, "visible Storage visuals prepare from the generated cache")
+      break
+    end
+    Assert.isTrue(os.clock() < visualsDeadline, "visible Storage visuals prepare without stalling")
+    if love.timer ~= nil and love.timer.sleep ~= nil then
+      love.timer.sleep(0.005)
+    end
+  end
   local iconSpy = {
     image = function(_, key)
       return icons:image(key)
