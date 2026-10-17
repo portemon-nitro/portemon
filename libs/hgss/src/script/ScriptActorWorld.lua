@@ -89,13 +89,20 @@ function ScriptActorWorld.new(manager, player)
 end
 
 -- The player is a valid script actor only while the facade is live.
+-- Store actors answer through the manager's actor lookup; the one virtual
+-- script focus lives outside the store, so only the manager's own focus
+-- identity consults position liveness. No other virtual shape is alive.
 ---@param actorId string
 ---@return boolean
 function ScriptActorWorld:exists(actorId)
   if actorId == "player" then
     return self._player ~= nil
   end
-  return self._manager:getActor(actorId) ~= nil
+  if self._manager:getActor(actorId) ~= nil then
+    return true
+  end
+  local focusId = self._manager:cameraTargetId()
+  return focusId ~= nil and actorId == focusId and self._manager:getPosition(actorId) ~= nil
 end
 
 -- Resolve a numeric local map-object index to the current map's actor id
@@ -153,7 +160,22 @@ function ScriptActorWorld:snapshot(actorId)
   end
   local actor = self._manager:getActor(actorId)
   if actor == nil then
-    return nil
+    -- The live script focus snapshots its committed position and facing
+    -- without a store actor; anything else absent stays absent.
+    local focusId = self._manager:cameraTargetId()
+    if focusId == nil or actorId ~= focusId then
+      return nil
+    end
+    local position = self._manager:getPosition(actorId)
+    if position == nil then
+      return nil
+    end
+    return {
+      actorId = actorId,
+      position = position,
+      facing = self._manager:getFacing(actorId),
+      visible = false,
+    }
   end
   local position = self._manager:getPosition(actorId)
   local facing = self._manager:getFacing(actorId)

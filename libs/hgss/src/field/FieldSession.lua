@@ -805,6 +805,20 @@ local function cameraTargetInto(self)
   if focusId ~= nil then
     local position = self.actors:getPosition(focusId)
     if position ~= nil and type(position.worldY) == "number" then
+      -- The focus carries its interpolated world triple while ordinary
+      -- targets carry only the committed tile. A half pair is a malformed
+      -- internal shape, never a projection.
+      local hasWorldX = position.worldX ~= nil
+      local hasWorldZ = position.worldZ ~= nil
+      assert(hasWorldX == hasWorldZ, "camera target world coordinates must arrive as a pair")
+      if hasWorldX and hasWorldZ then
+        assert(
+          type(position.worldX) == "number" and type(position.worldZ) == "number",
+          "camera target world coordinates must be numbers"
+        )
+        target.x, target.y, target.z = position.worldX, position.worldY, position.worldZ
+        return target
+      end
       local world = FieldCoordinates.fieldToWorld(self.currentMap, position.fieldX, position.fieldZ, position.worldY)
       target.x, target.y, target.z = world.x, world.y, world.z
       return target

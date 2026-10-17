@@ -9,6 +9,7 @@ local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldInput = require("libs.hgss.src.field.FieldInput")
 local FieldPlayerModule = require("libs.hgss.src.actors.FieldPlayer")
 local FieldPlayerVisual = require("libs.hgss.src.actors.FieldPlayerVisual")
+local FieldCoordinates = require("libs.hgss.src.field.FieldCoordinates")
 local FieldSessionModule = require("libs.hgss.src.field.FieldSession")
 local FieldOverworldLifecycle = require("libs.hgss.src.field.FieldOverworldLifecycle")
 local ScriptInteractionClient = require("libs.hgss.src.script.ScriptInteractionClient")
@@ -5235,6 +5236,188 @@ function T.a_locked_preview_without_entry_scripts_still_reaches_presentation()
   )
   Assert.equal(entered, 1, "covered actor entry publishes exactly once")
   Assert.deepEqual(starts, {}, "no lifecycle starts without entry scripts")
+end
+
+-- The session camera for a live script focus samples the focus's own
+-- fractional world position on every fixed tick: mid-motion ticks pan
+-- strictly between the committed endpoints while the script tile holds,
+-- and the commit tick rests exactly on the published endpoint. The
+-- session reuses its single target record instead of allocating per tick.
+local function focusMap()
+  return {
+    mapId = 61,
+    mapSection = "test-section",
+    mapSectionNativeId = 7,
+    followMode = "ALLOW",
+    coordinateOrigin = { x = 0, z = 0 },
+    collision = {
+      containsLocal = function(_, fieldX, fieldZ)
+        return fieldX >= 0 and fieldX < 32 and fieldZ >= 0 and fieldZ < 32
+      end,
+    },
+    terrain = TerrainSurface.new({
+      plates = {
+        {
+          id = 0,
+          minX = 0,
+          minZ = 0,
+          maxX = 32,
+          maxZ = 32,
+          normal = { x = 0, y = 1, z = 0 },
+          distance = 0,
+          slopeClass = "flat",
+        },
+      },
+    }),
+    mapSymbol = "test-map",
+    scene = {},
+    cameraType = 4,
+    fieldData = { events = { objects = {}, background = {}, warps = {}, coordinates = {} } },
+    release = function() end,
+    updateAnimated = function() end,
+  }
+end
+
+local function focusManager(map)
+  local mgr = FieldActorManager.new({
+    assets = {
+      references = {},
+      knows = function()
+        return false
+      end,
+      acquire = function()
+        error("focus sampling acquires no visual", 0)
+      end,
+      release = function() end,
+      total = function()
+        return 0
+      end,
+    },
+    policy = { variableSprites = { first = 101, last = 117, variableBase = 0x4020 } },
+  })
+  mgr:enterMap(map, FieldEventState.new())
+  return mgr
+end
+
+function T.focus_camera_target_tracks_fractional_world_between_commits()
+  local map = focusMap()
+  local mgr = focusManager(map)
+  local id = mgr:createCameraTarget(10, 5)
+  local recorded = {}
+  local camera = {
+    updateFixed = function(_, target)
+      recorded[#recorded + 1] = { x = target.x, y = target.y, z = target.z, ref = target }
+    end,
+  }
+  local session = FieldSession.new(baseOptions({ currentMap = map, actors = mgr, camera = camera }))
+  session:updateFixed({})
+  local rest = assert(recorded[1], "the live focus must feed the camera")
+  mgr:beginScriptedAction(id, { action = "walk", direction = "east", distance = "near", speed = "normal" })
+  mgr:advanceScriptedAction(id, 4, 8)
+  session:updateFixed({})
+  local mid = assert(recorded[2], "mid-motion motion must feed the camera")
+  local midPosition = assert(mgr:getPosition(id), "the focus keeps its position mid-motion")
+  Assert.equal(midPosition.fieldX, 10, "the script tile stays committed mid-motion")
+  Assert.equal(midPosition.fieldZ, 5, "the script tile stays committed mid-motion")
+  mgr:advanceScriptedAction(id, 8, 8)
+  session:updateFixed({})
+  local full = assert(recorded[3], "the full travel tick must feed the camera")
+  local travel = full.x - rest.x
+  Assert.isTrue(travel ~= 0, "an east walk must displace the camera target")
+  local progress = (mid.x - rest.x) / travel
+  Assert.isTrue(
+    progress > 0 and progress < 1,
+    "the camera target pans strictly between its endpoints mid-motion"
+  )
+  Assert.isTrue(mid.ref == rest.ref, "the session reuses its camera target record")
+  mgr:commitScriptedAction(id)
+  session:updateFixed({})
+  local settled = assert(recorded[4], "the commit tick must feed the camera")
+  local committed = assert(mgr:getPosition(id), "the focus keeps its position after commit")
+  Assert.equal(committed.fieldX, 11, "commit publishes the destination tile")
+  Assert.equal(settled.x, full.x, "the camera rests on the committed endpoint")
+  mgr:dispose()
+end
+
+function T.ordinary_camera_target_projects_its_committed_tile()
+  local map = focusMap()
+  local position = { fieldX = 2, fieldZ = 3, worldY = 0 }
+  local actors = {
+    beginFixedStep = function() end,
+    step = function() end,
+    cameraTargetId = function()
+      return "map:61:object:0"
+    end,
+    getPosition = function()
+      return position
+    end,
+  }
+  local recorded = {}
+  local camera = {
+    updateFixed = function(_, target)
+      recorded[#recorded + 1] = { x = target.x, y = target.y, z = target.z }
+    end,
+  }
+  local session = FieldSession.new(baseOptions({ currentMap = map, actors = actors, camera = camera }))
+  session:updateFixed({})
+  local expected = FieldCoordinates.fieldToWorld(map, 2, 3, 0)
+  Assert.deepEqual(
+    recorded[1],
+    { x = expected.x, y = expected.y, z = expected.z },
+    "an ordinary target projects its committed tile"
+  )
+end
+
+function T.absent_camera_target_sample_follows_the_player()
+  local map = focusMap()
+  local actors = {
+    beginFixedStep = function() end,
+    step = function() end,
+    cameraTargetId = function()
+      return "map:61:object:0"
+    end,
+    getPosition = function()
+      return nil
+    end,
+  }
+  local recorded = {}
+  local camera = {
+    updateFixed = function(_, target)
+      recorded[#recorded + 1] = { x = target.x, y = target.y, z = target.z }
+    end,
+  }
+  local player = defaultPlayer()
+  player.worldX, player.worldY, player.worldZ = 1.25, 2.5, 3.75
+  local session =
+    FieldSession.new(baseOptions({ currentMap = map, actors = actors, camera = camera, player = player }))
+  session:updateFixed({})
+  Assert.deepEqual(recorded[1], { x = 1.25, y = 2.5, z = 3.75 }, "no sample falls back to the player")
+end
+
+function T.half_fractional_pair_is_rejected_not_projected()
+  for _, position in ipairs({
+    { fieldX = 2, fieldZ = 3, worldY = 0, worldX = 5 },
+    { fieldX = 2, fieldZ = 3, worldY = 0, worldZ = 7 },
+  }) do
+    local map = focusMap()
+    local actors = {
+      beginFixedStep = function() end,
+      step = function() end,
+      cameraTargetId = function()
+        return "map:61:object:0"
+      end,
+      getPosition = function()
+        return position
+      end,
+    }
+    local session = FieldSession.new(
+      baseOptions({ currentMap = map, actors = actors, camera = { updateFixed = function() end } })
+    )
+    local ok = pcall(function()
+      session:updateFixed({})
+    end)
+    Assert.isFalse(ok, "half a fractional world pair must fault, never silently project")
+  end
 end
 
 return { tests = T }

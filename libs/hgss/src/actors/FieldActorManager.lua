@@ -281,6 +281,8 @@ end
 ---@field fieldX integer
 ---@field fieldZ integer
 ---@field worldY number?
+---@field worldX number? fractional world X, present only for the script camera focus
+---@field worldZ number? fractional world Z, present only for the script camera focus
 
 ---@class FieldActorManager.DrawRecord
 ---@field actorId string
@@ -2403,7 +2405,15 @@ function FieldActorManager:getPosition(actorId)
     if focus == nil then
       return nil
     end
-    return { fieldX = focus.fieldX, fieldZ = focus.fieldZ, worldY = focus.worldY }
+    -- Only the virtual focus publishes the fractional pair; ordinary actor
+    -- positions keep their committed tile shape.
+    return {
+      fieldX = focus.fieldX,
+      fieldZ = focus.fieldZ,
+      worldX = focus.worldX,
+      worldY = focus.worldY,
+      worldZ = focus.worldZ,
+    }
   end
   local actor = self:getById(actorId)
   if actor == nil then
@@ -3007,6 +3017,15 @@ function FieldActorManager:cancelScriptedMovement(actorId)
   if isCameraFocus(actorId) then
     local focus = self.cameraFocus
     if focus ~= nil then
+      -- A cancelled walk must not leak its partial travel: restore the
+      -- committed start endpoint before releasing the motion. Motions
+      -- without a travel endpoint only release.
+      local motion = focus.motion
+      if motion ~= nil and motion.startWorldX ~= nil then
+        focus.worldX = motion.startWorldX
+        focus.worldY = motion.startWorldY
+        focus.worldZ = motion.startWorldZ
+      end
       focus.motion = nil
     end
     return
