@@ -106,6 +106,7 @@ local PlayerData = require("libs.hgss.src.save.PlayerData")
 ---@field _outcome table<string, unknown>?
 ---@field _prepared table<string, unknown>?
 ---@field _receipt table<string, unknown>?
+---@field _completions table<string, { receipt: table<string, unknown>, taken: boolean }>
 ---@field _result string?
 ---@field _sourceResult integer
 ---@field _postTicks integer
@@ -352,6 +353,7 @@ function BattleRuntime.new(args)
     _outcome = nil,
     _prepared = nil,
     _receipt = nil,
+    _completions = {},
     _result = nil,
     _sourceResult = BattleTask.SOURCE_NOT_WON,
     _postTicks = 0,
@@ -1937,6 +1939,98 @@ function BattleRuntime:dispose()
     self._session = nil
   end
   self._presentation.dispose()
+end
+
+-- Publishes one post-battle progression command exactly once per launch. The
+-- command stages its complete domain result through the existing owners,
+-- publishes once, and records a completion receipt keyed by its barrier
+-- identity. A repeated command with an already committed identity returns
+-- the stored receipt without running prepare or commit again. Failure
+-- before publication leaves all live owners unchanged and records nothing;
+-- failure while publishing records nothing either, so a retried command
+-- never double-publishes through this ledger. Domain atomicity itself
+-- belongs to the staged prepare/commit owners; save/load replay freedom
+-- follows because committed receipts are plain data and the ledger never
+-- replays a settled identity.
+---@param command table<string, unknown> completion command under publication
+---@return table<string, unknown>? receipt, nil on failure
+---@return string? failure cause
+function BattleRuntime:completeProgression(command)
+  assert(not self._disposed, "completion needs its battle lifetime")
+  if self._phase == "failed" then
+    return nil, "settled failures never publish"
+  end
+  if type(command) ~= "table" then
+    return nil, "completion commands arrive as records"
+  end
+  local identity = command.identity
+  if type(identity) ~= "string" or identity == "" then
+    return nil, "completion commands name their barrier identity"
+  end
+  if type(command.kind) ~= "string" or command.kind == "" then
+    return nil, "completion commands name their progression kind"
+  end
+  if command.subjectIdentity == nil then
+    return nil, "completion commands read their committed subject identity"
+  end
+  if command.subjectRevision == nil then
+    return nil, "completion commands read their committed subject revision"
+  end
+  if type(command.prepare) ~= "function" then
+    return nil, "completion commands stage through their prepare owner"
+  end
+  if type(command.commit) ~= "function" then
+    return nil, "completion commands publish through their commit owner"
+  end
+  local settled = self._completions[identity]
+  if settled ~= nil then
+    return copyValue(settled.receipt), nil
+  end
+  local prepared, staged = pcall(command.prepare)
+  if not prepared then
+    return nil, tostring(staged)
+  end
+  if staged == nil then
+    return nil, "completion prepare stages its domain result"
+  end
+  local published, outcome = pcall(command.commit, staged)
+  if not published then
+    return nil, tostring(outcome)
+  end
+  if type(outcome) ~= "table" then
+    return nil, "completion commit answers its outcome record"
+  end
+  local receipt = {
+    identity = identity,
+    kind = command.kind,
+    committed = true,
+    subjectIdentity = copyValue(command.subjectIdentity),
+    subjectRevision = copyValue(command.subjectRevision),
+    resultingRevision = copyValue(outcome.resultingRevision or command.subjectRevision),
+    outcome = copyValue(outcome),
+  }
+  self._completions[identity] = { receipt = receipt, taken = false }
+  return copyValue(receipt), nil
+end
+
+-- Answers the settled completion receipt for one barrier identity without
+-- running the command again. The handoff reports exactly once: the first
+-- take answers a copy and every later take reports nil, while the ledger
+-- retains the committed record so a repeated completion still answers
+-- without republishing. Unknown identities report nil.
+---@param identity string barrier identity under query
+---@return table<string, unknown>? settled receipt copy, nil when unsettled or already handed off
+function BattleRuntime:takeCompletionReceipt(identity)
+  assert(not self._disposed, "completion receipts need their battle lifetime")
+  if type(identity) ~= "string" or identity == "" then
+    return nil
+  end
+  local settled = self._completions[identity]
+  if settled == nil or settled.taken then
+    return nil
+  end
+  settled.taken = true
+  return copyValue(settled.receipt)
 end
 
 -- BattleTask host observation: the committed outcome for one launch, or nil

@@ -14,6 +14,7 @@
 
 local BagCursor = require("libs.hgss.src.items.BagCursor")
 local BagSave = require("libs.hgss.src.save.BagSave")
+local BattleChildApplications = require("game.hgss.src.battle.BattleChildApplications")
 local PartyScreenLayout = require("libs.hgss.src.ui.PartyScreenLayout")
 
 ---@class BattleSubflows
@@ -35,6 +36,9 @@ local PartyScreenLayout = require("libs.hgss.src.ui.PartyScreenLayout")
 ---@field _bag table<string, unknown>? battle-local bag browser behind bag selection
 ---@field _retained table<string, unknown>? retained bag browser behind target selection
 ---@field _learn table<string, unknown>? active learning prompt state
+---@field _composed table<string, unknown>? concrete battle child application behind the active child
+---@field _actors table<integer, table<string, unknown>>? addressed actor entries behind batch selection
+---@field _served table<integer, boolean>? actor combatants with a staged reply behind batch selection
 ---@field _disposed boolean
 local BattleSubflows = {}
 BattleSubflows.__index = BattleSubflows
@@ -107,6 +111,9 @@ function BattleSubflows.new(opts)
     _bag = nil,
     _retained = nil,
     _learn = nil,
+    _composed = nil,
+    _actors = nil,
+    _served = nil,
     _disposed = false,
   }, BattleSubflows)
 end
@@ -115,8 +122,8 @@ end
 local function checkIntent(intent)
   assert(type(intent) == "table", "child intents arrive as records")
   assert(
-    intent.kind == "party" or intent.kind == "bag" or intent.kind == "learn",
-    "child intents name party, bag, or learn"
+    intent.kind == "party" or intent.kind == "bag" or intent.kind == "learn" or intent.kind == "naming",
+    "child intents name party, bag, learn, or naming"
   )
   assert(type(intent.purpose) == "string" and intent.purpose ~= "", "child intents name their purpose")
   assert(type(intent.launchId) == "string" and intent.launchId ~= "", "child intents carry their launch")
@@ -129,15 +136,20 @@ local function checkIntent(intent)
   assert(type(intent.inventory) == "table", "child intents carry their inventory snapshot")
 end
 
+-- Collects the addressed actor entries behind batch selection: every actor
+-- keeps its combatant identity with its own enabled switch fragments by
+-- replacement, in actor order. A reserve already staged by another actor
+-- stays excludable through the served set the coordinator keeps.
 ---@param options table<string, unknown> decision options under projection
----@return table<integer, table<string, unknown>> enabled switch fragments by replacement combatant
-local function enabledSwitches(options)
-  local found = {}
+---@return table<integer, table<string, unknown>> addressed actor entries in order
+local function actorSwitchEntries(options)
+  local entries = {}
   if type(options.actors) ~= "table" then
-    return found
+    return entries
   end
   for _, actor in ipairs(options.actors) do
-    if type(actor) == "table" and type(actor.choices) == "table" then
+    if type(actor) == "table" and type(actor.combatant) == "number" and type(actor.choices) == "table" then
+      local byReplacement = {}
       for _, choice in ipairs(actor.choices) do
         if
           type(choice) == "table"
@@ -147,12 +159,13 @@ local function enabledSwitches(options)
           and type(choice.choice.payload) == "table"
           and type(choice.choice.payload.replacement) == "number"
         then
-          found[choice.choice.payload.replacement] = choice.choice
+          byReplacement[choice.choice.payload.replacement] = choice.choice
         end
       end
+      entries[#entries + 1] = { actor = actor.combatant, byReplacement = byReplacement }
     end
   end
-  return found
+  return entries
 end
 
 ---@param options table<string, unknown> decision options under projection
@@ -385,6 +398,36 @@ local function openPartyPicker(roster, eligible, fragments, cancellable)
   return state
 end
 
+-- Stages one reserve combatant through the first unserved actor offering
+-- it, marking that actor served so batch reservations never supersede
+-- each other. The single-fragment target path keeps its direct map.
+---@param combatant number reserve combatant under staging
+---@return boolean staged
+local function stageReserve(self, combatant)
+  local served = self._served
+  if served == nil then
+    local state = assert(self._party, "target selection stages its own picker")
+    local fragments = state.fragments --[[@as table<integer, table<string, unknown>>]]
+    local fragment = fragments[combatant]
+    if fragment == nil then
+      return false
+    end
+    self._pending = { kind = "choice", reply = self:_bind(fragment) }
+    return true
+  end
+  for _, entry in ipairs(assert(self._actors, "batch selection keeps its actor entries")) do
+    if not served[entry.actor] then
+      local fragment = entry.byReplacement[combatant]
+      if fragment ~= nil then
+        served[entry.actor] = true
+        self._pending = { kind = "choice", reply = self:_bind(fragment) }
+        return true
+      end
+    end
+  end
+  return false
+end
+
 -- Confirms one picker slot: an eligible row stages its exact projected
 -- fragment once, while a visibly disabled row explains itself without
 -- submitting. Focus never moves onto the refusal.
@@ -394,10 +437,7 @@ local function confirmPartySlot(self, slot)
   local slots = state.slots --[[@as table<integer, table<string, unknown>>]]
   local record = slots[slot]
   local combatant = type(record) == "table" and record.combatant or nil
-  local fragments = state.fragments --[[@as table<integer, table<string, unknown>>]]
-  local fragment = type(combatant) == "number" and fragments[combatant] or nil
-  if fragment ~= nil then
-    self._pending = { kind = "choice", reply = self:_bind(fragment) }
+  if type(combatant) == "number" and stageReserve(self, combatant) then
     return
   end
   local hp = type(record) == "table" and record.hp or nil
@@ -412,6 +452,9 @@ end
 -- sealing or moving stock. The retained browser keeps its pocket,
 -- focus, scroll, and counts.
 local function cancelTarget(self)
+  if self._composed ~= nil then
+    self._composed:closeTarget()
+  end
   self._bag = assert(self._retained, "target cancel reactivates its bag")
   self._retained = nil
   self._party = nil
@@ -776,13 +819,36 @@ local function confirmBagCell(self)
   end
 end
 
+-- Composes the concrete child application before the barrier captures:
+-- a composition failure reports its boundary with prior state untouched.
+-- The initiating input terminates at the barrier: the composed child
+-- starts from its entry state, so opening consumes the edge that opened
+-- it and the edge can never confirm an unintended choice.
+---@param intent table<string, unknown> child intent under composition
+---@return table<string, unknown>? composed child application
+---@return string? failure cause
+local function composeChild(self, intent)
+  return BattleChildApplications.open(intent, { itemCatalog = self._itemCatalog, monCatalog = self._monCatalog })
+end
+
 ---@param intent table<string, unknown> party selection intent under opening
 ---@return boolean opened
 ---@return string? failure cause
 local function openParty(self, intent)
   local options = intent.options --[[@as table<string, unknown>]]
   local roster = intent.party --[[@as table<integer, table<string, unknown>>]]
-  local fragments = enabledSwitches(options)
+  -- Batch reservations open per addressed actor without superseding: the
+  -- union of unserved offers drives the picker while every actor keeps
+  -- its own fragments for staged binding.
+  local entries = actorSwitchEntries(options)
+  local fragments = {}
+  for _, entry in ipairs(entries) do
+    for replacement, fragment in pairs(entry.byReplacement) do
+      if fragments[replacement] == nil then
+        fragments[replacement] = fragment
+      end
+    end
+  end
   if next(fragments) == nil then
     return false, "no eligible reserve answers the request"
   end
@@ -790,13 +856,21 @@ local function openParty(self, intent)
   for combatant in pairs(fragments) do
     eligible[combatant] = true
   end
+  local child, childErr = composeChild(self, intent)
+  if child == nil then
+    return false, childErr
+  end
   self:_capture(intent)
   local picker, pickerErr = openPartyPicker(roster, eligible, fragments, self._cancellable)
   if picker == nil then
+    child:dispose()
     self:closeChild()
     return false, pickerErr
   end
   self._party = picker
+  self._actors = entries
+  self._served = {}
+  self._composed = child
   return true
 end
 
@@ -816,11 +890,16 @@ local function openBag(self, intent)
       break
     end
   end
-  self:_capture(intent)
   if not stocked then
+    self:_capture(intent)
     self._bag = { empty = true }
     return true
   end
+  local child, childErr = composeChild(self, intent)
+  if child == nil then
+    return false, childErr
+  end
+  self:_capture(intent)
   local cursor = BagCursor.new()
   local bag = { cursor = cursor, items = items, focusNode = "slot:0", lastSlot = 0 }
   local pocket = cursor:currentPocket()
@@ -829,6 +908,7 @@ local function openBag(self, intent)
     cursor:setPosition(pocket, 0)
   end
   self._bag = bag
+  self._composed = child
   return true
 end
 
@@ -883,6 +963,10 @@ local function openLearn(self, intent)
   if decline == nil then
     return false, "the prompt stays declinable"
   end
+  local child, childErr = composeChild(self, intent)
+  if child == nil then
+    return false, childErr
+  end
   self:_capture(intent)
   self._learn = {
     recipient = actors[1].combatant,
@@ -893,11 +977,25 @@ local function openLearn(self, intent)
     focus = 1,
     confirmation = nil,
   }
+  self._composed = child
+  return true
+end
+
+---@param intent table<string, unknown> naming intent under opening
+---@return boolean opened
+---@return string? failure cause
+local function openNaming(self, intent)
+  local child, childErr = composeChild(self, intent)
+  if child == nil then
+    return false, childErr
+  end
+  self:_capture(intent)
+  self._composed = child
   return true
 end
 
 ---@class BattleSubflows.Intent
----@field kind "party"|"bag"|"learn" child kind under opening
+---@field kind "party"|"bag"|"learn"|"naming" child kind under opening
 ---@field purpose string selection purpose under opening
 ---@field launchId string owning launch identity under opening
 ---@field requestId integer open request identity under opening
@@ -923,19 +1021,30 @@ function BattleSubflows:open(intent)
   if intent.launchId ~= self._launchId then
     return false, "children answer their own launch"
   end
-  -- Children select for exactly one addressed entry: the parent narrows
-  -- the intent options to the acting entry, and the narrowed entry stays
+  -- Children select for their addressed entries: bag, learning, and
+  -- naming answer exactly one addressed entry while party batches open
+  -- per addressed actor without superseding. Every addressed entry stays
   -- authoritative here instead of unioning fragments across entries.
   local actors = intent.options.actors --[[@as table<integer, table<string, unknown>>?]]
-  if type(actors) ~= "table" or #actors ~= 1 or type(actors[1]) ~= "table" then
+  if type(actors) ~= "table" or #actors < 1 then
+    return false, "children answer their addressed entries"
+  end
+  for _, actor in ipairs(actors) do
+    if type(actor) ~= "table" then
+      return false, "children answer their addressed entries"
+    end
+  end
+  if intent.kind ~= "party" and #actors ~= 1 then
     return false, "children answer exactly one addressed entry"
   end
   if intent.kind == "party" then
     return openParty(self, intent)
   elseif intent.kind == "bag" then
     return openBag(self, intent)
+  elseif intent.kind == "learn" then
+    return openLearn(self, intent)
   end
-  return openLearn(self, intent)
+  return openNaming(self, intent)
 end
 
 ---@param allowed table<string, boolean> accepted input edges under routing
@@ -947,6 +1056,15 @@ end
 
 local BAG_EVENTS = { navigate = true, confirm = true, cancel = true, pointer_cancel = true }
 local LIST_EVENTS = { navigate = true, confirm = true, cancel = true }
+local NAMING_EVENTS = {
+  navigate = true,
+  confirm = true,
+  cancel = true,
+  pointer_cancel = true,
+  text = true,
+  name_cell = true,
+  name_control = true,
+}
 
 -- Stages one battle item: capture throws directly at the opposing
 -- holder through its native fragment, while servings retain the local
@@ -1003,6 +1121,15 @@ function BattleSubflows:stageItem(itemKey)
   self._active = "target"
   self._stagedItem = itemKey
   self._party = picker
+  -- The composed bag child opens the native item-target picker beside
+  -- the retained browser. A target composition failure unwinds to the
+  -- resting browser with its refusal instead of half-opening selection.
+  local composed = assert(self._composed, "target selection keeps its composed child")
+  local targeted, targetErr = pcall(composed.openTarget, composed, itemKey)
+  if not targeted then
+    cancelTarget(self)
+    self._notice = tostring(targetErr or "target selection stays unavailable")
+  end
 end
 
 ---@param direction string navigation direction under learning focus
@@ -1087,12 +1214,24 @@ local function updateLearn(self, event)
   end
 end
 
----@param events table<integer, table<string, unknown>> semantic input batch under routing
+---@param events table<integer, table<string, unknown>> semantic input batch under lockstep
+local function routeComposed(self, events)
+  -- The composed child application owns the same semantic edges in
+  -- lockstep: navigation, confirmation, cancellation, and pointer-capture
+  -- release travel to the native controller while pointer press topology
+  -- stays with the barrier. Native intents drain as evidence; the barrier
+  -- keeps binding authoritative kernel fragments for the legacy kinds.
+  if self._composed ~= nil then
+    self._composed:input(events)
+  end
+end
+
 function BattleSubflows:update(events)
   if self._disposed or self._active == nil or self._pending ~= nil then
     return
   end
   assert(type(events) == "table", "child input arrives as an event list")
+  routeComposed(self, events)
   for _, event in ipairs(events) do
     if self._pending ~= nil then
       break
@@ -1157,14 +1296,25 @@ function BattleSubflows:update(events)
         break
       end
       updateLearn(self, event)
+    elseif self._active == "naming" then
+      -- The composed naming child owns this lane outright: the barrier
+      -- only admits the naming vocabulary so no foreign edge leaks into
+      -- the native screen. Staging and sealing live behind takeResult.
+      if not laneEvent(NAMING_EVENTS, event) then
+        break
+      end
     end
   end
 end
 
--- The battle child owns no transient clock: browsing and picking answer
--- at once, so the fixed step is a semantic no-op and never warms a
--- hidden controller.
-function BattleSubflows:tick() end
+-- Steps the composed child presentation clock: the naming presentation
+-- advances its cursor and subject clocks while browser and picker kinds
+-- stay event-stepped and keep no transient clock.
+function BattleSubflows:tick()
+  if self._composed ~= nil and self._active ~= nil and not self._disposed then
+    self._composed:stepSourceTick(1)
+  end
+end
 
 ---@param entry unknown held move entry under labeling
 ---@return string visible move wording
@@ -1202,8 +1352,26 @@ local function partyChildView(self)
   if state == nil then
     return shell
   end
+  if self._composed ~= nil then
+    shell.application = self._composed:application()
+  end
   local slots = state.slots --[[@as table<integer, table<string, unknown>>]]
   local fragments = state.fragments --[[@as table<integer, table<string, unknown>>]]
+  -- Batch eligibility excludes reserves already staged by another actor:
+  -- a row stays enabled only while an unserved actor offers it. The
+  -- single-fragment target path keeps its direct map.
+  local offered = nil
+  if self._actors ~= nil then
+    offered = {}
+    local served = self._served or {}
+    for _, entry in ipairs(self._actors) do
+      if not served[entry.actor] then
+        for replacement in pairs(entry.byReplacement) do
+          offered[replacement] = true
+        end
+      end
+    end
+  end
   local rows = {}
   for slot = 0, 5 do
     local record = slots[slot]
@@ -1224,7 +1392,15 @@ local function partyChildView(self)
       local maxHp = tonumber(record.maxHp) or 0
       detail = "HP " .. tostring(hp) .. "/" .. tostring(maxHp)
       local combatant = record.combatant
-      if type(combatant) == "number" and fragments[combatant] ~= nil then
+      local selectable = false
+      if type(combatant) == "number" then
+        if offered ~= nil then
+          selectable = offered[combatant] == true
+        else
+          selectable = fragments[combatant] ~= nil
+        end
+      end
+      if selectable then
         enabled = true
         detail = detail .. " OK"
       elseif hp <= 0 then
@@ -1343,7 +1519,7 @@ local function bagChildView(self)
   for _, pocketKey in ipairs(BagSave.POCKET_ORDER) do
     pockets[#pockets + 1] = pocketKey
   end
-  return {
+  local view = {
     kind = "bag",
     purpose = self._purpose,
     interactive = true,
@@ -1356,6 +1532,10 @@ local function bagChildView(self)
     page = { current = pageCurrent, count = pageCount },
     stock = count,
   } --[[@as table<string, unknown>]]
+  if self._composed ~= nil then
+    view.application = self._composed:application()
+  end
+  return view
 end
 
 -- Detached learning rows for paint and hit regions: the four held
@@ -1370,18 +1550,35 @@ local function learnChildView(self)
     return nil
   end
   local moves = learn.currentMoves --[[@as table<integer, unknown>]]
+  -- Held-move detail facts come from the composed native summary owner:
+  -- the same battle-local facts model the move-pick presentation
+  -- navigates. The decline row carries no held facts.
+  local facts = nil
+  if self._composed ~= nil then
+    local moveFacts = self._composed.moveFacts
+    if type(moveFacts) == "function" then
+      local ok, held = pcall(moveFacts, self._composed)
+      if ok and type(held) == "table" then
+        facts = held
+      end
+    end
+  end
   local rows = {}
   for index = 1, 4 do
-    rows[#rows + 1] = {
+    local row = {
       id = "learn:" .. tostring(index - 1),
       label = learnMoveLabel(moves[index]),
       detail = "Replace",
       enabled = true,
-    }
+    } --[[@as table<string, unknown>]]
+    if type(facts) == "table" and type(facts[index]) == "table" then
+      row.facts = facts[index]
+    end
+    rows[#rows + 1] = row
   end
   rows[#rows + 1] = { id = "learn:decline", label = "Decline", detail = "Keep moves", enabled = true }
   local focus = learn.focus --[[@as integer]]
-  return {
+  local view = {
     kind = "learn",
     purpose = self._purpose,
     interactive = true,
@@ -1391,6 +1588,42 @@ local function learnChildView(self)
     focusId = focus <= 4 and ("learn:" .. tostring(focus - 1)) or "learn:decline",
     confirmation = copyValue(learn.confirmation),
     incomingMove = learn.incomingMove,
+  } --[[@as table<string, unknown>]]
+  if self._composed ~= nil then
+    view.application = self._composed:application()
+  end
+  return view
+end
+
+-- Detached naming child view for paint and hit regions: the native naming
+-- screen kind with its application receipt, the staged text (never sealed
+-- by reading), and the barrier identity. Taps route through the same
+-- control mapping as keyboard input.
+---@param self BattleSubflows
+---@return table<string, unknown>? detached naming child view, nil without its composed child
+local function namingChildView(self)
+  local child = self._composed
+  if child == nil then
+    return nil
+  end
+  local text = ""
+  local namingText = child.namingText
+  if type(namingText) == "function" then
+    local ok, staged = pcall(namingText, child)
+    if ok and type(staged) == "string" then
+      text = staged
+    end
+  end
+  return {
+    kind = "naming",
+    purpose = self._purpose,
+    interactive = true,
+    notice = self._notice,
+    cancellable = self._cancellable,
+    rows = {},
+    focusId = nil,
+    text = text,
+    application = child:application(),
   } --[[@as table<string, unknown>]]
 end
 
@@ -1420,6 +1653,15 @@ function BattleSubflows:status()
     record.incomingMove = learn.incomingMove
     record.currentMoves = copyValue(learn.currentMoves)
   end
+  if self._active == "naming" and self._composed ~= nil then
+    local namingText = self._composed.namingText
+    if type(namingText) == "function" then
+      local ok, staged = pcall(namingText, self._composed)
+      if ok and type(staged) == "string" then
+        record.stagedText = staged
+      end
+    end
+  end
   record.childView = self:_projectChildView()
   return record
 end
@@ -1440,6 +1682,8 @@ function BattleSubflows:_projectChildView()
     return bagChildView(self)
   elseif self._active == "learn" then
     return learnChildView(self)
+  elseif self._active == "naming" then
+    return namingChildView(self)
   end
   return nil
 end
@@ -1464,13 +1708,10 @@ function BattleSubflows:_activatePartyControl(id)
     return false
   end
   local state = assert(self._party, "picker taps keep their picker")
-  local fragments = state.fragments --[[@as table<integer, table<string, unknown>>]]
   local slots = state.slots --[[@as table<integer, table<string, unknown>>]]
   local record = slots[slot]
   local combatant = type(record) == "table" and record.combatant or nil
-  local fragment = type(combatant) == "number" and fragments[combatant] or nil
-  if fragment ~= nil then
-    self._pending = { kind = "choice", reply = self:_bind(fragment) }
+  if type(combatant) == "number" and stageReserve(self, combatant) then
     return true
   end
   -- A visibly disabled row explains itself without submitting.
@@ -1604,6 +1845,28 @@ end
 -- unknown ids never seal.
 ---@param id string stable row/control identity under activation
 ---@return boolean consumed true when the tap belonged to the open child
+function BattleSubflows:_activateNamingControl(id)
+  -- Naming taps operate the native keyboard controls directly: pages
+  -- twist, glyphs insert, Back deletes one glyph, and OK submits. Barrier
+  -- cancellation arrives through the update cancel edge, never a tap, so
+  -- a tap can neither abandon nor seal behind the screen's back.
+  if
+    id ~= "upper"
+    and id ~= "lower"
+    and id ~= "symbols"
+    and id ~= "back"
+    and id ~= "ok"
+    and id:sub(1, 6) ~= "glyph:"
+  then
+    return false
+  end
+  local child = assert(self._composed, "naming taps keep their composed child")
+  child:input({ { type = "name_control", id = id } })
+  return true
+end
+
+---@param id string stable row/control identity under activation
+---@return boolean consumed true when the tap belonged to the open child
 function BattleSubflows:activateControl(id)
   if self._disposed or self._active == nil or self._pending ~= nil then
     return false
@@ -1615,6 +1878,8 @@ function BattleSubflows:activateControl(id)
     return self:_activateBagControl(id)
   elseif self._active == "learn" then
     return self:_activateLearnControl(id)
+  elseif self._active == "naming" then
+    return self:_activateNamingControl(id)
   end
   return false
 end
@@ -1623,6 +1888,13 @@ end
 function BattleSubflows:takeResult()
   if self._disposed or self._active == nil then
     return nil
+  end
+  -- The naming child owns its result through the composed native screen:
+  -- submitting seals the entered text once and a permitted cancel reports
+  -- its bound cancellation once.
+  if self._active == "naming" then
+    local child = assert(self._composed, "naming takes its composed result")
+    return child:takeResult()
   end
   local result = self._pending
   self._pending = nil
@@ -1634,13 +1906,21 @@ end
 
 -- Closes the active child and drops its retained browser. The battle
 -- owns every cursor record, so closing only clears references without
--- sealing. Staged state clears without sealing.
+-- sealing. The composed child disposes exactly once: borrowed catalogs
+-- stay usable while owned controller state releases. Staged state clears
+-- without sealing.
 function BattleSubflows:closeChild()
+  if self._composed ~= nil then
+    self._composed:dispose()
+    self._composed = nil
+  end
   self._party = nil
   self._stagedItem = nil
   self._bag = nil
   self._retained = nil
   self._learn = nil
+  self._actors = nil
+  self._served = nil
   self._active = nil
   self._purpose = nil
   self._pending = nil
@@ -1649,11 +1929,15 @@ function BattleSubflows:closeChild()
   self._openPartyValue = nil
 end
 
--- Cancels a held press through the active owner so a stale release never
--- activates after remeasure. The battle keeps no held-press state of its
--- own: press arming lives with the parent, and cursor focus and stored
--- request identity stay put.
-function BattleSubflows:cancelPointerCapture() end
+-- Cancels a held press through the active composed child so a stale
+-- release never activates after remeasure. The battle keeps no held-press
+-- state of its own: press arming lives with the parent, and cursor focus
+-- and stored request identity stay put.
+function BattleSubflows:cancelPointerCapture()
+  if self._composed ~= nil and self._active ~= nil and not self._disposed then
+    self._composed:input({ { type = "pointer_cancel" } })
+  end
+end
 
 -- Idempotent release of the child lifetime: staged results clear, and
 -- borrowed catalogs stay usable.

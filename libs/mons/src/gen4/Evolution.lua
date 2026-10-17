@@ -266,16 +266,18 @@ local function matchesTrade(slot, mon)
   return false
 end
 
--- Returns the first matching evolution slot in source order, or nil when
--- nothing matches. The marked baby form never evolves. The blocker held
--- item stops level and trade checks but never bag-item use, except for
--- one trade-evolving species that still answers level and trade checks
--- while holding it.
+-- Validates the shared trigger context and resolves the ordered form slots
+-- with the trigger facts the matchers need. blockers (the marked baby
+-- form, the held blocker outside bag-item use) resolve here so every
+-- entry point answers them identically.
 ---@param mon table<string, unknown>
 ---@param context table<string, unknown>
 ---@param catalog table<string, unknown>
----@return table<string, unknown>?
-function Evolution.check(mon, context, catalog)
+---@return table<integer, table<string, unknown>>? ordered form slots, nil while a blocker holds
+---@return string? trigger kind, nil while a blocker holds
+---@return integer? derived level for level triggers
+---@return string? used item for item triggers
+local function triggerSlots(mon, context, catalog)
   checkMon(mon)
   assert(type(context) == "table", "evolution checks read a trigger context")
   assert(catalog ~= nil, "evolution checks read a catalog")
@@ -301,28 +303,82 @@ function Evolution.check(mon, context, catalog)
     usedItem = trigger.item
     assert(type(usedItem) == "string" and usedItem ~= "", "item uses name their item")
   end
+  return slots, kind, level, usedItem
+end
+
+---@param slot table<string, unknown>
+---@param mon table<string, unknown>
+---@param context table<string, unknown>
+---@param catalog table<string, unknown>
+---@param kind string
+---@param level integer?
+---@param usedItem string?
+---@return boolean matched
+local function slotMatches(slot, mon, context, catalog, kind, level, usedItem)
+  assert(type(slot) == "table", "evolution slots are records")
+  -- Composed methods are namespaced slots carrying their own callable
+  -- predicate, evaluated once in source order; native methods dispatch
+  -- through the exact matchers below. A composed predicate may throw,
+  -- and the failure propagates with the input untouched.
+  local custom = slot.matches
+  if type(custom) == "function" and KNOWN_METHODS[slot.method] == nil then
+    return custom(mon, context, catalog, slot) == true
+  elseif kind == "level" then
+    return matchesLevel(slot, mon, context, catalog, assert(level, "level checks derive the level"))
+  elseif kind == "item" then
+    return matchesItemUse(slot, mon, context, catalog, assert(usedItem, "item uses name their item"))
+  end
+  return matchesTrade(slot, mon)
+end
+
+-- Returns the first matching evolution slot in source order, or nil when
+-- nothing matches. The marked baby form never evolves. The blocker held
+-- item stops level and trade checks but never bag-item use, except for
+-- one trade-evolving species that still answers level and trade checks
+-- while holding it.
+---@param mon table<string, unknown>
+---@param context table<string, unknown>
+---@param catalog table<string, unknown>
+---@return table<string, unknown>?
+function Evolution.check(mon, context, catalog)
+  local slots, kind, level, usedItem = triggerSlots(mon, context, catalog)
+  if slots == nil then
+    return nil
+  end
+  assert(type(kind) == "string", "triggers name their kind")
   for _, slot in ipairs(slots) do
-    assert(type(slot) == "table", "evolution slots are records")
-    local matched = false
-    -- Composed methods are namespaced slots carrying their own callable
-    -- predicate, evaluated once in source order; native methods dispatch
-    -- through the exact matchers below. A composed predicate may throw,
-    -- and the failure propagates with the input untouched.
-    local custom = slot.matches
-    if type(custom) == "function" and KNOWN_METHODS[slot.method] == nil then
-      matched = custom(mon, context, catalog, slot) == true
-    elseif kind == "level" then
-      matched = matchesLevel(slot, mon, context, catalog, assert(level, "level checks derive the level"))
-    elseif kind == "item" then
-      matched = matchesItemUse(slot, mon, context, catalog, assert(usedItem, "item uses name their item"))
-    else
-      matched = matchesTrade(slot, mon)
-    end
-    if matched then
+    if slotMatches(slot, mon, context, catalog, kind, level, usedItem) then
       return slot
     end
   end
   return nil
+end
+
+-- Collects every matching evolution slot in source order, each annotated
+-- with its one-based rule index into the ordered form slots. Eligibility
+-- stays with this owner; the visual sequence walks the returned order and
+-- never treats the first entry as universally correct. The input is never
+-- mutated and catalog-owned slot records are never annotated in place.
+---@param mon table<string, unknown>
+---@param context table<string, unknown>
+---@param catalog table<string, unknown>
+---@return table<integer, table<string, unknown>> ordered matching candidates with ruleIndex
+function Evolution.candidates(mon, context, catalog)
+  local slots, kind, level, usedItem = triggerSlots(mon, context, catalog)
+  local found = {}
+  if slots == nil then
+    return found
+  end
+  assert(type(kind) == "string", "triggers name their kind")
+  for ruleIndex, slot in ipairs(slots) do
+    if slotMatches(slot, mon, context, catalog, kind, level, usedItem) then
+      local candidate = copyValue(slot)
+      assert(type(candidate) == "table", "candidates copy their slot")
+      candidate.ruleIndex = ruleIndex
+      found[#found + 1] = candidate
+    end
+  end
+  return found
 end
 
 -- Applies the nickname policy to a private copy: custom names survive onto
@@ -414,19 +470,16 @@ local function shedinjaSideProduct(mon, monBefore, context, catalog)
   return extra
 end
 
--- Stages the full candidate result for the first matching slot, or nil when
--- nothing matches. Experience is untouched, health follows the shared
--- maximum adjustment, ability follows the personality slot of the new form,
--- and held trade items are consumed. The input is never mutated.
+-- Stages the full candidate result for one authoritative slot. Experience
+-- is untouched, health follows the shared maximum adjustment, ability
+-- follows the personality slot of the new form, and held trade items are
+-- consumed. The input is never mutated.
 ---@param mon table<string, unknown>
+---@param slot table<string, unknown>
 ---@param context table<string, unknown>
 ---@param catalog table<string, unknown>
----@return table<string, unknown>?
-function Evolution.plan(mon, context, catalog)
-  local slot = Evolution.check(mon, context, catalog)
-  if slot == nil then
-    return nil
-  end
+---@return table<string, unknown>
+local function stageSlot(mon, slot, context, catalog)
   local monBefore = copyValue(mon)
   assert(type(monBefore) == "table", "planning copies the pre-evolution mon")
   local staged = copyValue(mon)
@@ -466,6 +519,52 @@ function Evolution.plan(mon, context, catalog)
     canCancel = slot.method ~= "trade" and slot.method ~= "trade_item",
     reason = slot.method,
   }
+end
+
+-- Stages the full candidate result for the first matching slot, or nil when
+-- nothing matches. Shares the single staging path with apply, so the first
+-- match and an explicitly selected candidate stage identical records.
+---@param mon table<string, unknown>
+---@param context table<string, unknown>
+---@param catalog table<string, unknown>
+---@return table<string, unknown>?
+function Evolution.plan(mon, context, catalog)
+  local slot = Evolution.check(mon, context, catalog)
+  if slot == nil then
+    return nil
+  end
+  return stageSlot(mon, slot, context, catalog)
+end
+
+-- Applies the explicitly selected native candidate and stages its complete
+-- domain result: all returned mons and consumption publish as one staged
+-- operation, never sequential partial writes. The candidate must be a
+-- record previously returned by candidates: its rule index resolves the
+-- authoritative catalog slot and the method, target, and form must agree,
+-- so no invented candidate can stage. A candidate whose trigger context no
+-- longer matches (blockers, changed trigger) fails loudly instead of
+-- staging from stale eligibility. Publication belongs to the caller; the
+-- input is never mutated.
+---@param mon table<string, unknown>
+---@param candidate table<string, unknown>
+---@param context table<string, unknown>
+---@param catalog table<string, unknown>
+---@return table<string, unknown>
+function Evolution.apply(mon, candidate, context, catalog)
+  assert(type(candidate) == "table", "evolution applies a selected candidate")
+  local ruleIndex = candidate.ruleIndex
+  assert(
+    type(ruleIndex) == "number" and ruleIndex % 1 == 0 and ruleIndex >= 1,
+    "evolution candidates carry their source rule index"
+  )
+  local slots, _, _, _ = triggerSlots(mon, context, catalog)
+  assert(slots ~= nil, "stale evolution candidates never stage")
+  local slot = slots[ruleIndex]
+  assert(type(slot) == "table", "evolution candidates resolve their source slot")
+  assert(slot.method == candidate.method, "evolution candidates keep their source method")
+  assert(slot.target == candidate.target, "evolution candidates keep their source target")
+  assert(slot.form == candidate.form, "evolution candidates keep their source form")
+  return stageSlot(mon, slot, context, catalog)
 end
 
 return Evolution

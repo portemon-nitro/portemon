@@ -1037,4 +1037,89 @@ function T.custom_matchers_answer_in_slot_order_while_native_gates_hold()
   Assert.deepEqual(gambler, gamblerBefore, "a throwing matcher leaves its input alone")
 end
 
+-- Ordered candidates share the domain entry point: every matching slot
+-- answers in source order with its one-based rule index, the first entry
+-- stages identically to the legacy plan, catalog-owned slots are never
+-- annotated in place, and eligibility and planning never mutate input.
+function T.candidates_share_the_domain_entry_point_in_source_order()
+  local Evolution = requirePresent("libs.mons.src.gen4.Evolution", "pure native evolution planning owns eligibility")
+  Assert.isTrue(type(Evolution.candidates) == "function", "the domain exposes ordered evolution candidates")
+  Assert.isTrue(type(Evolution.apply) == "function", "the domain applies the selected candidate")
+  local catalog = buildCatalog(function(root)
+    local species = root.species --[[@as table<string, table<string, unknown>>]]
+    local forms = species.CHIKORITA.forms --[[@as table<integer, table<string, unknown>>]]
+    forms[0].evolutions = {
+      { method = "level", level = 16, target = "TOTODILE", form = 0 },
+      { method = "level", level = 10, target = "EEVEE", form = 0 },
+    }
+  end)
+  local grown = pinLevel(makeMon(catalog, 11, {}), catalog, 16)
+  local before = copy(grown)
+  local found = Evolution.candidates(grown, vectorContext(), catalog)
+  Assert.equal(#found, 2, "both matching slots answer")
+  Assert.equal(found[1].target, "TOTODILE", "the first candidate keeps source order")
+  Assert.equal(found[1].ruleIndex, 1, "the first candidate carries its source rule index")
+  Assert.equal(found[2].target, "EEVEE", "the second candidate keeps source order")
+  Assert.equal(found[2].ruleIndex, 2, "the second candidate carries its source rule index")
+  Assert.deepEqual(grown, before, "collecting candidates never mutates its input")
+  local slots = catalog:form("CHIKORITA", 0).evolutions
+  for _, slot in ipairs(slots) do
+    Assert.isTrue(slot.ruleIndex == nil, "catalog-owned slots stay unannotated")
+  end
+  local middle = pinLevel(makeMon(catalog, 23, {}), catalog, 12)
+  local single = Evolution.candidates(middle, vectorContext(), catalog)
+  Assert.equal(#single, 1, "a level-twelve mon answers once")
+  Assert.equal(single[1].ruleIndex, 2, "the surviving candidate keeps its source rule index")
+  local young = pinLevel(makeMon(catalog, 37, {}), catalog, 9)
+  Assert.equal(#Evolution.candidates(young, vectorContext(), catalog), 0, "a level-nine mon answers never")
+  local staged = Evolution.plan(grown, vectorContext(), catalog)
+  local applied = Evolution.apply(grown, found[1], vectorContext(), catalog)
+  Assert.deepEqual(applied, staged, "the first candidate stages identically to the legacy plan")
+  local second = Evolution.apply(grown, found[2], vectorContext(), catalog)
+  Assert.equal(second.monAfter.species, "EEVEE", "the selected candidate stages its own target")
+  Assert.deepEqual(grown, before, "applying never mutates its input")
+end
+
+-- Selected candidates are verified against their source slot: invented
+-- methods, targets, forms, and out-of-range rule indexes fail loudly
+-- instead of staging, and a candidate whose trigger context no longer
+-- matches fails as stale instead of staging from dead eligibility.
+function T.apply_rejects_invented_and_stale_candidates()
+  local Evolution = requirePresent("libs.mons.src.gen4.Evolution", "pure native evolution planning owns eligibility")
+  local catalog = buildCatalog(function(root)
+    local species = root.species --[[@as table<string, table<string, unknown>>]]
+    local forms = species.CHIKORITA.forms --[[@as table<integer, table<string, unknown>>]]
+    forms[0].evolutions = {
+      { method = "level", level = 16, target = "TOTODILE", form = 0 },
+    }
+  end)
+  local grown = pinLevel(makeMon(catalog, 11, {}), catalog, 16)
+  local found = Evolution.candidates(grown, vectorContext(), catalog)
+  Assert.equal(#found, 1, "setup: one slot matches")
+  local function invented(overrides)
+    local candidate = {}
+    for key, value in pairs(found[1]) do
+      candidate[key] = value
+    end
+    for key, value in pairs(overrides) do
+      candidate[key] = value
+    end
+    return candidate
+  end
+  Assert.throws(function()
+    Evolution.apply(grown, invented({ method = "stone" }), vectorContext(), catalog)
+  end, "an invented method never stages")
+  Assert.throws(function()
+    Evolution.apply(grown, invented({ target = "EEVEE" }), vectorContext(), catalog)
+  end, "an invented target never stages")
+  Assert.throws(function()
+    Evolution.apply(grown, invented({ ruleIndex = 2 }), vectorContext(), catalog)
+  end, "an out-of-range rule index never stages")
+  local blocked = copy(grown)
+  blocked.heldItem = "EVERSTONE"
+  Assert.throws(function()
+    Evolution.apply(blocked, found[1], vectorContext(), catalog)
+  end, "a blocked trigger fails its candidate as stale")
+end
+
 return { tests = T }
