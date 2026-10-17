@@ -100,7 +100,7 @@ local function sessionOptions(overrides)
     },
     camera = { updateFixed = function() end },
     transition = idleTransition(),
-    actors = { beginFixedStep = function() end, step = function() end },
+    actors = { beginFixedStep = function() end, step = function() end, cameraTargetId = function() return nil end },
     input = idleInput(),
     dialogue = {
       isModal = function()
@@ -251,6 +251,9 @@ end
 function T.actor_step_context_and_lock_predicate_identity_is_stable_across_ordinary_ticks()
   local receivedContexts = {}
   local actors = {
+    cameraTargetId = function()
+      return nil
+    end,
     beginFixedStep = function() end,
     step = function(_, _, context)
       receivedContexts[#receivedContexts + 1] = context
@@ -280,6 +283,9 @@ function T.actor_locked_predicate_reads_current_scheduler_state_at_call_time()
   local locked = false
   local capturedPredicate
   local actors = {
+    cameraTargetId = function()
+      return nil
+    end,
     beginFixedStep = function() end,
     step = function(_, _, context)
       capturedPredicate = context.actorLocked
@@ -352,6 +358,9 @@ end
 function T.actor_manager_candidate_storage_identity_is_stable_and_current_across_ticks()
   local receivedContexts = {}
   local actors = {
+    cameraTargetId = function()
+      return nil
+    end,
     beginFixedStep = function() end,
     step = function(_, _, context)
       receivedContexts[#receivedContexts + 1] = context

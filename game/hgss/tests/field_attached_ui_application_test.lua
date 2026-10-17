@@ -188,7 +188,7 @@ local function modalSession(overrides)
         error("idle transition must never start a warp", 2)
       end,
     },
-    actors = { beginFixedStep = function() end, step = function() end },
+    actors = { beginFixedStep = function() end, step = function() end, cameraTargetId = function() return nil end },
     input = input,
     dialogue = {
       isModal = function()

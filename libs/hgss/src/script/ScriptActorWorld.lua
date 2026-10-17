@@ -32,6 +32,8 @@
 ---@field allPausable fun(self: ScriptActorManager): boolean
 ---@field syncEventStateChanges fun(self: ScriptActorManager)?
 ---@field isVisible fun(self: ScriptActorManager, actorId: string): boolean
+---@field createCameraTarget fun(self: ScriptActorManager, fieldX: integer, fieldZ: integer): string
+---@field clearCameraTarget fun(self: ScriptActorManager)
 ---@field setPresentationOffset fun(self: ScriptActorManager, actorId: string, offset: { x: number, y: number, z: number })
 ---@field clearPresentationOffset fun(self: ScriptActorManager, actorId: string)
 
@@ -116,6 +118,19 @@ end
 ---@return string|nil
 function ScriptActorWorld:partnerId()
   return self._manager:partnerId()
+end
+
+-- Pin the script camera focus on a global field tile of the current map.
+---@param fieldX integer
+---@param fieldZ integer
+---@return string actorId
+function ScriptActorWorld:createCameraTarget(fieldX, fieldZ)
+  return self._manager:createCameraTarget(fieldX, fieldZ)
+end
+
+-- Release the script camera focus; idempotent.
+function ScriptActorWorld:clearCameraTarget()
+  self._manager:clearCameraTarget()
 end
 
 -- Serializable read-only snapshot of one actor; nil when

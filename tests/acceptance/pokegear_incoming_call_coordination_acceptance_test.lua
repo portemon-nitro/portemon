@@ -425,6 +425,9 @@ local function makeFieldSession(opts)
     actors = {
       beginFixedStep = function() end,
       step = function() end,
+      cameraTargetId = function()
+        return nil
+      end,
     },
     input = {
       snapshot = function()

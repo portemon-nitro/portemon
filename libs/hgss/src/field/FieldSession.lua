@@ -800,6 +800,16 @@ end
 ---@return { x: number, y: number, z: number }
 local function cameraTargetInto(self)
   local target = self._tickScratch.cameraTarget
+  -- A live script focus holds the camera; otherwise it follows the player.
+  local focusId = self.actors:cameraTargetId()
+  if focusId ~= nil then
+    local position = self.actors:getPosition(focusId)
+    if position ~= nil and type(position.worldY) == "number" then
+      local world = FieldCoordinates.fieldToWorld(self.currentMap, position.fieldX, position.fieldZ, position.worldY)
+      target.x, target.y, target.z = world.x, world.y, world.z
+      return target
+    end
+  end
   target.x = self.player.worldX
   target.y = self.player.worldY
   target.z = self.player.worldZ

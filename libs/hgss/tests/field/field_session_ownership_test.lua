@@ -84,7 +84,12 @@ local function makeSession(opts)
   local player = (opts.player or basePlayer()) --[[@as FieldPlayer]]
   local camera = (opts.camera or { updateFixed = function() end }) --[[@as FieldCamera]]
   local actors = (
-    opts.actors or { beginFixedStep = function() end, step = function() end, syncEventStateChanges = opts.syncFn }
+    opts.actors or {
+      beginFixedStep = function() end,
+      step = function() end,
+      syncEventStateChanges = opts.syncFn,
+      cameraTargetId = function() return nil end,
+    }
   ) --[[@as FieldActorManager]]
   local scheduler = opts.scheduler
     or {
@@ -271,6 +276,9 @@ end
 function T.actor_world_continues_while_foreground_holds_the_field_and_release_tick_stays_suppressed()
   local poseAdvances = 0
   local actors = {
+    cameraTargetId = function()
+      return nil
+    end,
     beginFixedStep = function() end,
     step = function(_, _)
       poseAdvances = poseAdvances + 1

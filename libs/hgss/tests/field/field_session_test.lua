@@ -123,7 +123,13 @@ local function applicationHostFake(overrides)
 end
 
 local function idleActors()
-  return { beginFixedStep = function() end, step = function() end }
+  return {
+    beginFixedStep = function() end,
+    step = function() end,
+    cameraTargetId = function()
+      return nil
+    end,
+  }
 end
 
 local function defaultPlayer()
@@ -537,6 +543,9 @@ function T.fixed_tick_runs_the_major_arbitration_phases_in_order()
       end,
     },
     actors = {
+      cameraTargetId = function()
+        return nil
+      end,
       step = function()
         mark("actors")
       end,
@@ -734,7 +743,7 @@ function T.session_requires_player_presentation_state()
     player = playerWithoutPresentation,
     camera = { updateFixed = function() end },
     transition = { phase = "idle", locked = false, updateFixed = function() end, start = function() end },
-    actors = { step = function() end },
+    actors = { step = function() end, cameraTargetId = function() return nil end },
     input = {
       snapshot = function()
         return {}
@@ -853,6 +862,9 @@ function T.absent_overworld_keeps_scripts_running_and_suspends_actor_activity()
       end,
     },
     actors = {
+      cameraTargetId = function()
+        return nil
+      end,
       beginFixedStep = function() end,
       step = function()
         actorSteps = actorSteps + 1
@@ -1776,6 +1788,9 @@ local function dialogueSession(opts)
     end,
   }
   local actors = {
+    cameraTargetId = function()
+      return nil
+    end,
     step = function()
       worldSteps.actors = worldSteps.actors + 1
     end,
@@ -1918,7 +1933,7 @@ local function interactionSession(opts)
     collapseRenderInterpolation = function() end,
   }
   local camera = { updateFixed = function() end }
-  local actors = { step = function() end }
+  local actors = { step = function() end, cameraTargetId = function() return nil end }
   local transition = {
     phase = "idle",
     locked = false,
@@ -2072,7 +2087,7 @@ function T.catch_up_ticks_do_not_replay_one_action_edge()
     end,
   }
   local camera = { updateFixed = function() end }
-  local actors = { step = function() end }
+  local actors = { step = function() end, cameraTargetId = function() return nil end }
   local transition = {
     phase = "idle",
     locked = false,
@@ -2800,6 +2815,9 @@ function T.application_host_owns_the_tick_and_freezes_world_simulation()
     return false
   end
   local actors = {
+    cameraTargetId = function()
+      return nil
+    end,
     step = function()
       stepped.actors = stepped.actors + 1
     end,
@@ -2876,6 +2894,9 @@ function T.an_eligible_menu_edge_opens_the_menu_and_consumes_the_tick()
     return false
   end
   local actors = {
+    cameraTargetId = function()
+      return nil
+    end,
     step = function()
       stepped.actors = stepped.actors + 1
     end,
@@ -2921,6 +2942,9 @@ function T.an_open_that_opens_nothing_leaves_the_tick_to_the_field()
     return false
   end
   local actors = {
+    cameraTargetId = function()
+      return nil
+    end,
     step = function()
       stepped.actors = stepped.actors + 1
     end,
@@ -3011,6 +3035,9 @@ local function applicationCompositionFixture(menuFactory)
     return false
   end
   local actors = {
+    cameraTargetId = function()
+      return nil
+    end,
     step = function()
       worldSteps.actors = worldSteps.actors + 1
     end,
@@ -4349,6 +4376,9 @@ local function pushSession(overrides)
   local options = baseOptions({
     player = player,
     actors = {
+      cameraTargetId = function()
+        return nil
+      end,
       step = function() end,
       getAt = function(_, _, _)
         if overrides.boulder == false then
@@ -4511,6 +4541,9 @@ local function disembarkSession(overrides)
     player = player,
     playerAvatar = avatar,
     actors = {
+      cameraTargetId = function()
+        return nil
+      end,
       step = function() end,
       getAt = function()
         return nil
@@ -4966,6 +4999,9 @@ function T.foreground_hold_freezes_gameplay_but_not_script_polling()
       end,
     },
     actors = {
+      cameraTargetId = function()
+        return nil
+      end,
       beginFixedStep = function() end,
       step = function()
         actorSteps = actorSteps + 1
@@ -5066,6 +5102,9 @@ function T.a_locked_preview_advances_the_covered_map_entry_without_gameplay()
     initController = controller,
     applicationHost = host,
     actors = {
+      cameraTargetId = function()
+        return nil
+      end,
       beginFixedStep = function()
         beginSteps = beginSteps + 1
       end,

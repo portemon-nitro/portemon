@@ -33,7 +33,73 @@ local PARTNER_OBJECT_ID = 253
 -- the dynamic partner keeps one stable id across maps so scripts and the
 -- interaction resolver never chase a renamed actor after a transition.
 local PARTNER_ACTOR_ID = "field:partner"
+-- The script camera focus id. Like the partner it keeps one stable id (the
+-- source pins a single focus object), but unlike map actors it lives
+-- outside the store: it is never drawn, saved, or in occupancy, and it
+-- dies with its map.
+local CAMERA_FOCUS_ACTOR_ID = "script:camera_target"
+-- Focus scripted-motion kinds: walks displace one tile per repetition
+-- (multi-tile walks repeat through here), while turns-in-place, delays,
+-- and facings hold. Anything else is rejected exactly like an
+-- unsupported map-actor action.
+local FOCUS_WALK_KINDS = { walk = true }
+local FOCUS_HOLD_KINDS = { walk_in_place = true, delay = true, face = true }
+local FOCUS_STEP_DELTAS = {
+  north = { fieldX = 0, fieldZ = -1 },
+  south = { fieldX = 0, fieldZ = 1 },
+  west = { fieldX = -1, fieldZ = 0 },
+  east = { fieldX = 1, fieldZ = 0 },
+}
 local AUTONOMOUS_STEP_TICKS = assert(MovementCalibration.SPEED_TICKS.normal)
+
+-- Script camera focus helpers. The presence lives outside the actor store
+-- (never drawn, saved, or in occupancy); these locals keep the per-method
+-- branches small.
+---@param actorId string
+---@return boolean
+local function isCameraFocus(actorId)
+  return actorId == CAMERA_FOCUS_ACTOR_ID
+end
+
+---@param self FieldActorManager
+---@return table<string, unknown>
+local function requireFocus(self)
+  local focus = self.cameraFocus
+  assert(focus ~= nil, "camera focus presence is missing")
+  return focus
+end
+
+-- Topmost walkable terrain height at a global tile, mirroring the warp
+-- arrival fallback. A tile with no walkable surface is a script/data
+-- fault, never a sea-level height.
+---@param map table<string, unknown>
+---@param fieldX integer
+---@param fieldZ integer
+---@return number worldY
+local function sampleFocusHeight(map, fieldX, fieldZ)
+  local localX, localZ = FieldCoordinates.fieldToLocal(map, fieldX, fieldZ)
+  local x = localX + FieldCoordinates.TILE_CENTER_OFFSET
+  local z = localZ + FieldCoordinates.TILE_CENTER_OFFSET
+  local best = nil
+  for _, plate in ipairs(map.terrain:candidatesAt(x, z)) do
+    if plate.walkable ~= false then
+      local sample = map.terrain:sample(plate.id, x, z)
+      if best == nil or sample.worldY > best.worldY then
+        best = sample
+      end
+    end
+  end
+  if best == nil then
+    Errors.raise(FieldErrors.FIELD_COORDINATES_OUT_OF_COVERAGE, "camera focus has no walkable surface", {
+      fieldX = fieldX,
+      fieldZ = fieldZ,
+    })
+  end
+  -- Unreachable when best is nil (the raise above always throws); the
+  -- cast names the narrowed shape for the type checker.
+  local surface = best --[[@as { worldY: number }]]
+  return surface.worldY
+end
 
 ---@class FieldActorAssets
 ---@field knows fun(self: FieldActorAssets, spriteId: integer): boolean
@@ -115,6 +181,7 @@ local AUTONOMOUS_STEP_TICKS = assert(MovementCalibration.SPEED_TICKS.normal)
 ---@field pendingFlags FieldActorFlagChange[]
 ---@field removedOverrides table<string, boolean>
 ---@field currentMapId integer|nil
+---@field cameraFocus table<string, unknown>? the script camera focus presence; nil while the camera follows the player
 ---@field _visualRevision integer
 ---@field _drawRecords FieldActorManager.DrawRecord[]
 ---@field _drawRecordByActorId table<string, FieldActorManager.DrawRecord>
@@ -303,6 +370,7 @@ function FieldActorManager.new(opts)
     -- snapshot so an explicit reset flows through like any save content.
     removedOverrides = {},
     currentMapId = nil,
+    cameraFocus = nil,
     _visualRevision = 0,
     _drawRecords = {},
     _drawRecordByActorId = {},
@@ -1140,6 +1208,11 @@ function FieldActorManager:enterMap(runtimeMap, eventState, restoredObjects)
   local previous = self.currentMapId and self.maps[self.currentMapId] or nil
   self.maps[mapId] = entry
   self.currentMapId = mapId
+  -- The source focus object dies with its map: entering a different map
+  -- releases the focus so the camera falls back to the player.
+  if self.cameraFocus ~= nil and self.cameraFocus.mapId ~= mapId then
+    self.cameraFocus = nil
+  end
   if entry.store:actorCount() > 0 then
     self._visualRevision = self._visualRevision + 1
   end
@@ -2324,10 +2397,14 @@ function FieldActorManager:getActor(actorId)
   return self:getById(actorId)
 end
 
----@param actorId string
----@return FieldActorManager.ActorPosition?
----@param self FieldActorManager
 function FieldActorManager:getPosition(actorId)
+  if isCameraFocus(actorId) then
+    local focus = self.cameraFocus
+    if focus == nil then
+      return nil
+    end
+    return { fieldX = focus.fieldX, fieldZ = focus.fieldZ, worldY = focus.worldY }
+  end
   local actor = self:getById(actorId)
   if actor == nil then
     return nil
@@ -2344,6 +2421,10 @@ end
 ---@return FieldDirection?
 ---@param self FieldActorManager
 function FieldActorManager:getFacing(actorId)
+  if isCameraFocus(actorId) then
+    local focus = self.cameraFocus
+    return focus and focus.facing or nil
+  end
   local actor = self:getById(actorId)
   if actor == nil then
     return nil
@@ -2355,6 +2436,10 @@ end
 ---@param direction FieldDirection
 ---@param self FieldActorManager
 function FieldActorManager:setFacing(actorId, direction)
+  if isCameraFocus(actorId) then
+    requireFocus(self).facing = direction
+    return
+  end
   local actor = requireActor(self, actorId)
   actor:setFacing(direction)
 end
@@ -2508,6 +2593,9 @@ end
 ---@param self FieldActorManager
 ---@return boolean
 function FieldActorManager:isVisible(actorId)
+  if isCameraFocus(actorId) then
+    return false
+  end
   local actor = self:getById(actorId)
   if actor == nil then
     Errors.raise(ScriptErrors.SCRIPT_ACTOR_NOT_FOUND, "no live actor " .. tostring(actorId), { actor = actorId })
@@ -2726,6 +2814,44 @@ end
 ---@param action table<string, unknown>
 ---@param self FieldActorManager
 function FieldActorManager:beginScriptedAction(actorId, action)
+  if isCameraFocus(actorId) then
+    local focus = requireFocus(self)
+    local kind = action.action
+    if FOCUS_HOLD_KINDS[kind] then
+      focus.motion = { action = kind }
+      return
+    end
+    if not FOCUS_WALK_KINDS[kind] then
+      Errors.raise(
+        ScriptErrors.SCRIPT_UNSUPPORTED_REACHABLE,
+        "unsupported scripted focus action " .. tostring(kind),
+        { actor = actorId }
+      )
+    end
+    local direction = assert(action.direction, "focus walks require a direction")
+    local delta = assert(FOCUS_STEP_DELTAS[direction], "unknown direction " .. tostring(direction))
+    local entry = self.currentMapId ~= nil and self.maps[self.currentMapId] or nil
+    assert(entry ~= nil, "camera focus requires the current map")
+    local map = entry.runtimeMap
+    local destFieldX, destFieldZ = focus.fieldX + delta.fieldX, focus.fieldZ + delta.fieldZ
+    local world =
+      FieldCoordinates.fieldToWorld(map, destFieldX, destFieldZ, sampleFocusHeight(map, destFieldX, destFieldZ))
+    focus.motion = {
+      action = kind,
+      direction = direction,
+      startFieldX = focus.fieldX,
+      startFieldZ = focus.fieldZ,
+      startWorldX = focus.worldX,
+      startWorldY = focus.worldY,
+      startWorldZ = focus.worldZ,
+      destFieldX = destFieldX,
+      destFieldZ = destFieldZ,
+      destWorldX = world.x,
+      destWorldY = world.y,
+      destWorldZ = world.z,
+    }
+    return
+  end
   local actor = requireActor(self, actorId)
   local entry = assert(self.maps[actor.mapId], "actor map entry missing")
   entry.autonomousPresentationCarry[actorId] = nil
@@ -2836,6 +2962,17 @@ end
 ---@param durationTicks integer
 ---@param self FieldActorManager
 function FieldActorManager:advanceScriptedAction(actorId, progressTicks, durationTicks)
+  if isCameraFocus(actorId) then
+    local focus = requireFocus(self)
+    local motion = assert(focus.motion, "camera focus has no active motion")
+    if motion.action == "walk" and durationTicks > 0 then
+      local t = math.min(1, math.max(0, progressTicks / durationTicks))
+      focus.worldX = motion.startWorldX + (motion.destWorldX - motion.startWorldX) * t
+      focus.worldY = motion.startWorldY + (motion.destWorldY - motion.startWorldY) * t
+      focus.worldZ = motion.startWorldZ + (motion.destWorldZ - motion.startWorldZ) * t
+    end
+    return
+  end
   local actor = requireActor(self, actorId)
   actor:advanceScriptedAction(progressTicks, durationTicks)
 end
@@ -2843,6 +2980,16 @@ end
 ---@param actorId string
 ---@param self FieldActorManager
 function FieldActorManager:commitScriptedAction(actorId)
+  if isCameraFocus(actorId) then
+    local focus = requireFocus(self)
+    local motion = focus.motion
+    if motion ~= nil and motion.action == "walk" then
+      focus.fieldX, focus.fieldZ = motion.destFieldX, motion.destFieldZ
+      focus.worldX, focus.worldY, focus.worldZ = motion.destWorldX, motion.destWorldY, motion.destWorldZ
+    end
+    focus.motion = nil
+    return
+  end
   local actor = requireActor(self, actorId)
   local m = actor:scriptedMotionState()
   if not m then
@@ -2857,6 +3004,13 @@ end
 ---@param actorId string
 ---@param self FieldActorManager
 function FieldActorManager:cancelScriptedMovement(actorId)
+  if isCameraFocus(actorId) then
+    local focus = self.cameraFocus
+    if focus ~= nil then
+      focus.motion = nil
+    end
+    return
+  end
   local actor = self:getById(actorId)
   if actor == nil then
     return
@@ -2886,6 +3040,10 @@ end
 ---@return boolean
 ---@param self FieldActorManager
 function FieldActorManager:isScriptedMoving(actorId)
+  if isCameraFocus(actorId) then
+    local focus = self.cameraFocus
+    return focus ~= nil and focus.motion ~= nil
+  end
   local actor = self:getById(actorId)
   if actor == nil then
     return false
@@ -2905,21 +3063,69 @@ end
 
 -- Resolve a numeric local map-object index to the current map's actor id
 -- (the pinned HGSS object-id path used by `S.actorIndex(n)`); nil when the
--- current map has no such object.
+-- current map has no such object. A live script focus answers for the
+-- camera-target index exactly like the source's created focus object.
 ---@param index integer
 ---@return string|nil
 ---@param self FieldActorManager
 function FieldActorManager:actorIdForMapIndex(index)
+  if index == CAMERA_TARGET_OBJECT_ID and self.cameraFocus ~= nil then
+    return CAMERA_FOCUS_ACTOR_ID
+  end
   local entry = self.currentMapId ~= nil and self.maps[self.currentMapId] or nil
   return entry and entry.store:getActorByIndex(index) or nil
 end
 
--- The field camera target (pinned HGSS object id 241) of the current map;
--- nil when the map declares no camera target.
+-- The field camera target: the live script focus while one is pinned, else
+-- the map-declared camera target (pinned HGSS object id 241); nil when
+-- neither exists.
 ---@return string|nil
 ---@param self FieldActorManager
 function FieldActorManager:cameraTargetId()
+  if self.cameraFocus ~= nil then
+    return CAMERA_FOCUS_ACTOR_ID
+  end
   return self:actorIdForMapIndex(CAMERA_TARGET_OBJECT_ID)
+end
+
+-- Pin the script camera focus (pret/pokeheartgold CreateCameraTarget) on
+-- a global field tile of the current map, sampling the topmost walkable
+-- terrain surface for height exactly like the warp arrival fallback. A
+-- tile with no walkable surface is a script/data fault, never a sea-level
+-- target. Replaces any live focus; the source assigns its single focus
+-- object unconditionally.
+---@param fieldX integer
+---@param fieldZ integer
+---@return string actorId
+---@param self FieldActorManager
+function FieldActorManager:createCameraTarget(fieldX, fieldZ)
+  assert(
+    type(fieldX) == "number" and fieldX % 1 == 0 and type(fieldZ) == "number" and fieldZ % 1 == 0,
+    "camera focus requires integer tiles"
+  )
+  local entry = self.currentMapId ~= nil and self.maps[self.currentMapId] or nil
+  assert(entry ~= nil, "camera focus requires the current map")
+  local map = entry.runtimeMap
+  local world = FieldCoordinates.fieldToWorld(map, fieldX, fieldZ, sampleFocusHeight(map, fieldX, fieldZ))
+  self.cameraFocus = {
+    mapId = map.mapId,
+    fieldX = fieldX,
+    fieldZ = fieldZ,
+    worldX = world.x,
+    worldY = world.y,
+    worldZ = world.z,
+    facing = "south",
+    motion = nil,
+  }
+  return CAMERA_FOCUS_ACTOR_ID
+end
+
+-- Release the script camera focus (pret/pokeheartgold RemoveCameraTarget).
+-- Idempotent: clearing an already-released focus is a no-op so map-change
+-- and script paths clear unconditionally.
+---@param self FieldActorManager
+function FieldActorManager:clearCameraTarget()
+  self.cameraFocus = nil
 end
 
 -- The walking partner (pinned HGSS object id 253) of the current map; nil

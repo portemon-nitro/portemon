@@ -1235,6 +1235,9 @@ function T.ambient_clip_advances_once_per_session_tick_and_through_dialogue()
   }
   ---@cast transition FieldTransition
   local actors = {
+    cameraTargetId = function()
+      return nil
+    end,
     beginFixedStep = function() end,
     step = function() end,
   }
