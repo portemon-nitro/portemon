@@ -126,6 +126,14 @@ function PcApplicationHost:setPresentationReady(handle, ready)
   local active = activeFor(self, handle)
   assert(type(ready) == "boolean", "PC presentation readiness is boolean")
   local changed = active.presentationReady ~= ready
+  -- Every Storage ready admission records its presented pair before the
+  -- flag is set, including synchronous warm cutovers where the host is
+  -- already ready: the recorded pair must track the retired icon pages.
+  -- Picker admissions preserve the previously recorded parent pair inside
+  -- admitParentPresentation, so they stay no-ops here.
+  if ready and active.app == "storage" and type(active.child.admitParentPresentation) == "function" then
+    active.child:admitParentPresentation()
+  end
   active.presentationReady = ready
   return changed
 end
@@ -165,18 +173,44 @@ end
 
 function PcApplicationHost:draw(resources)
   local active = assert(self._active, "no PC application is open")
-  if not active.presentationReady then
+  assert(type(active.child.draw) == "function", "PC child owns its draw route")
+  if active.presentationReady then
+    if active.app == "storage" then
+      active.child:draw(resources, true)
+      return
+    end
+    active.child:draw(resources, active.child:status())
     return
   end
-  assert(type(active.child.draw) == "function", "PC child owns its draw route")
-  active.child:draw(resources, active.child:status())
+  -- A Storage replacement keeps painting its last recorded parent while
+  -- the readiness input gate stays closed; other children stay hidden
+  -- until their first admission.
+  if active.app ~= "storage" or type(active.child.admitParentPresentation) ~= "function" then
+    return
+  end
+  if active.child:status().admittedParentView == nil then
+    return
+  end
+  active.child:draw(resources, false)
 end
 
 -- The plan the open child just drew, when it presents one with outer frames.
 ---@return ApplicationPlan?
 function PcApplicationHost:presentationPlan()
   local active = assert(self._active, "no PC application is open")
-  if not active.presentationReady or type(active.child.presentationPlan) ~= "function" then
+  if type(active.child.presentationPlan) ~= "function" then
+    return nil
+  end
+  if active.app == "storage" and type(active.child.admitParentPresentation) == "function" then
+    if active.presentationReady then
+      return active.child:presentationPlan(true)
+    end
+    if active.child:status().admittedParentView == nil then
+      return nil
+    end
+    return active.child:presentationPlan(false)
+  end
+  if not active.presentationReady then
     return nil
   end
   return active.child:presentationPlan()

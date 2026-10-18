@@ -129,4 +129,78 @@ function T.invalid_child_factory_result_is_cleaned_up()
   Assert.isFalse(owner:isActive())
 end
 
+local function gatedChild(calls)
+  local child = child(calls)
+  child.drawn = 0
+  child.plan = { frames = {} }
+  function child:draw(_)
+    calls.draws = calls.draws + 1
+  end
+  function child:presentationPlan()
+    return child.plan
+  end
+  return child
+end
+
+local function gatedHost(calls, activeChild)
+  local factory = function(request)
+    calls.request = request
+    return activeChild
+  end
+  return PcApplicationHost.new({
+    createStorage = factory,
+    createMailbox = factory,
+    createPhotoAlbum = factory,
+  })
+end
+
+local function gatedCalls()
+  local state = calls()
+  state.draws = 0
+  return state
+end
+
+-- Sibling applications keep their existing readiness gate: an unready
+-- Mailbox or Photo Album child draws nothing, publishes no plan, and
+-- receives no input until the host turns ready.
+function T.unready_sibling_applications_draw_nothing_and_gate_input()
+  for _, app in ipairs({ "mailbox", "photoAlbum" }) do
+    local state = gatedCalls()
+    local active = gatedChild(state)
+    local owner = gatedHost(state, active)
+    local request = { app = app }
+    local handle = owner:open(request)
+    Assert.equal(state.request.app, app)
+    owner:draw({})
+    Assert.equal(state.draws, 0, app .. " draws nothing while unready")
+    Assert.isNil(owner:presentationPlan(), app .. " publishes no plan while unready")
+    local events = { { type = "confirm" } }
+    owner:step(handle, events)
+    Assert.deepEqual(state.events, {}, app .. " receives no input while unready")
+    owner:setPresentationReady(handle, true)
+    owner:step(handle, events)
+    Assert.equal(state.events, events, app .. " receives input once ready")
+    owner:draw({})
+    Assert.equal(state.draws, 1, app .. " draws once ready")
+    Assert.isTrue(owner:presentationPlan() == active.plan, app .. " publishes its plan once ready")
+    owner:cancel("test")
+  end
+end
+
+-- The Storage input gate stays boolean: an unready Storage child ticks
+-- without consuming input, and a ready one receives the event batch.
+function T.unready_storage_gates_input_until_prepared()
+  local state = gatedCalls()
+  local active = gatedChild(state)
+  local owner = gatedHost(state, active)
+  local handle = owner:open({ app = "storage", mode = 0 })
+  local events = { { type = "confirm" } }
+  owner:step(handle, events)
+  Assert.deepEqual(state.events, {}, "unready Storage receives no input")
+  owner:setPresentationReady(handle, true)
+  owner:step(handle, events)
+  Assert.equal(state.events, events, "ready Storage receives the event batch")
+  owner:cancel("test")
+end
+
 return { tests = T }

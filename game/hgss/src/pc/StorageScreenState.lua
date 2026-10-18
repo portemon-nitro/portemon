@@ -19,6 +19,8 @@ local Personality = require("libs.mons.src.gen4.Personality")
 ---@field _contents table<string, unknown>?
 ---@field _publishedView table<string, unknown>?
 ---@field _publishedKey string?
+---@field _admittedParentView table<string, unknown>?
+---@field _admittedParentPlan table<string, unknown>?
 ---@field _dexNumber fun(speciesKey: string): integer?
 ---@field _tray "left"|"closed"
 ---@field _prompt { kind: "exit"|"continue" }?
@@ -111,6 +113,8 @@ function StorageScreenState.new(options)
     _contents = nil,
     _publishedView = nil,
     _publishedKey = nil,
+    _admittedParentView = nil,
+    _admittedParentPlan = nil,
     _focus = { domain = options.mode == 1 and "box" or "party", slot = 0 },
     _dexNumber = assert(options.dexNumber, "Storage needs its dex number reader"),
     -- The party tray starts open at the left only in Deposit mode; the other
@@ -1126,6 +1130,10 @@ function StorageScreenState:status()
     -- transiently so the presentation boundary admits the same wallpaper,
     -- tray, and editor the next present paints. Never persisted.
     visualView = view,
+    -- The last host-admitted parent pair, borrowed transiently so icon
+    -- preparation can retain its pages while a replacement pends. The
+    -- reference is read-only for composition and is never persisted.
+    admittedParentView = self._admittedParentView,
   }
   if self._childKind == "heldItemPicker" and self._child ~= nil then
     status.bagChildStatus = self._child:status()
@@ -1133,37 +1141,72 @@ function StorageScreenState:status()
   return status
 end
 
-function StorageScreenState:draw(resources)
+--- Records the exact presented parent pair once the host admits it:
+--- the current published view with its resolved plan. A held-item
+--- picker admission preserves the previously recorded pair, so a pending
+--- picker keeps drawing the parent it opened over. An open editor also
+--- preserves the pair: the admitted surface stays the editor-free parent
+--- the fallback is allowed to draw, never the transient chooser state.
+function StorageScreenState:admitParentPresentation()
+  assert(not self._disposed, "disposed Storage admits no presentation")
+  if self._child ~= nil and self._childKind == "heldItemPicker" then
+    return
+  end
+  if self._editor ~= nil then
+    return
+  end
+  self:_ensurePublished()
+  self._admittedParentView = self._publishedView
+  self._admittedParentPlan = self._session:plan()
+end
+
+function StorageScreenState:draw(resources, presentationReady)
   assert(not self._disposed, "disposed Storage draws nothing")
   assert(type(resources) == "table", "Storage draw borrows its renderer resources")
   if self._child ~= nil and self._childKind == "heldItemPicker" then
-    local status = self._child:status()
-    if status.presentation ~= nil then
-      ApplicationPresentation.draw(assert(love.graphics), {
-        graphics = love.graphics,
-        bagRenderer = assert(resources.bagRenderer, "Storage borrows the Bag renderer"),
-        heroRenderer = assert(resources.heroRenderer, "Storage borrows the Bag hero renderer"),
-        icons = assert(resources.itemIcons, "Storage borrows the Bag item icon provider"),
-        text = assert(resources.textRenderer, "Storage borrows the text renderer"),
-      }, status, status.presentation)
+    if presentationReady then
+      local status = self._child:status()
+      if status.presentation ~= nil then
+        -- The narrowed Bag record mirrors the field Bag presenter; the
+        -- plan's own render owns its requirements, so a presentation
+        -- that ignores resources still draws through its own surface.
+        ApplicationPresentation.draw(assert(love.graphics), {
+          graphics = love.graphics,
+          bagRenderer = assert(resources.bagRenderer, "Storage borrows the Bag renderer"),
+          heroRenderer = assert(resources.heroRenderer, "Storage borrows the Bag hero renderer"),
+          icons = assert(resources.itemIcons, "Storage borrows the Bag item icon provider"),
+          text = assert(resources.textRenderer, "Storage borrows the text renderer"),
+        }, status, status.presentation)
+      end
+      return
     end
+  elseif presentationReady then
+    local published = self:_ensurePublished()
+    ApplicationPresentation.draw(assert(love.graphics), resources, published, self._session:plan())
     return
   end
-  local published = self._publishedView
-  if published == nil then
-    self:_refreshContents()
-    published = self:_buildView()
-    self._publishedView = published
+  local admittedView = self._admittedParentView
+  local admittedPlan = self._admittedParentPlan
+  if admittedView == nil or admittedPlan == nil then
+    return
   end
-  ApplicationPresentation.draw(assert(love.graphics), resources, published, self._session:plan())
+  ApplicationPresentation.draw(assert(love.graphics), resources, admittedView, admittedPlan)
 end
 
 -- The plan the last draw presented, so the host can decorate it with its outer
--- application frames.
+-- application frames. Selects the same route draw uses: the ready picker or
+-- current parent when ready, otherwise the last recorded parent pair.
+---@param presentationReady boolean?
 ---@return ApplicationPlan?
-function StorageScreenState:presentationPlan()
+function StorageScreenState:presentationPlan(presentationReady)
   if self._child ~= nil and self._childKind == "heldItemPicker" then
-    return self._child:status().presentation
+    if presentationReady then
+      return self._child:status().presentation
+    end
+    return self._admittedParentPlan
+  end
+  if presentationReady == false then
+    return self._admittedParentPlan
   end
   return self._session:plan()
 end
@@ -1210,6 +1253,8 @@ function StorageScreenState:dispose()
   self._contents = nil
   self._publishedView = nil
   self._publishedKey = nil
+  self._admittedParentView = nil
+  self._admittedParentPlan = nil
   self:_disposeChild()
   self._session:dispose()
 end

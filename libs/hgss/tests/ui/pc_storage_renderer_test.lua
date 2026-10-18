@@ -119,7 +119,15 @@ end
 
 -- Admitting helper: production prepares Storage visuals in the update phase
 -- and draws only admitted signatures, so every composition below resolves
--- its demand before its first present.
+-- its demand before its first present. Preparation stages the next group
+-- beside the installed one; the explicit commit below publishes a staged
+-- group once every other prerequisite for the same view is ready.
+local function settleStagedView(renderer, view)
+  if type(renderer.commitPrepared) == "function" then
+    renderer:commitPrepared(view)
+  end
+end
+
 local function admit(renderer, view)
   local ready, failure = false, nil
   for _ = 1, 200 do
@@ -131,6 +139,7 @@ local function admit(renderer, view)
   end
   Assert.isTrue(ready, "the view admits before drawing")
   Assert.isNil(failure, "admission reports no failure")
+  settleStagedView(renderer, view)
 end
 
 function T.wallpaper_chooser_draws_one_page_of_four_swatches_with_locked_entries_black()
@@ -781,6 +790,73 @@ function T.repeated_dispose_returns_leases_once_and_stays_quiet()
   Assert.equal(inner:stats().outstandingLeases, 0, "disposal returns every lease")
   renderer:dispose()
   Assert.equal(inner:stats().outstandingLeases, 0, "repeated disposal returns nothing again")
+end
+
+-- A resolved replacement stages beside the installed group: preparation
+-- alone reports ready without retiring the previous visuals, so the old
+-- view keeps drawing until the explicit commit installs the new group
+-- and returns only the leases the replacement no longer needs.
+function T.staged_wallpaper_replacement_keeps_the_previous_group_drawable_until_commit()
+  local pool, inner, _ = storagePool()
+  local pendingPaths = {}
+  local renderer, graphics, manifest = rendererFixture(delayingPool(pool, pendingPaths))
+  local current = browseView(0)
+  local replacement = browseView(1)
+  admit(renderer, current)
+  local installedBefore = inner:stats().outstandingLeases
+  Assert.isTrue(installedBefore > 0, "admission holds its leases")
+  local oldWallpaper = manifest.storage.wallpapers[0].image
+  local newWallpaper = manifest.storage.wallpapers[1].image
+  local oldImage = assert(renderer._images[oldWallpaper], "the admitted group carries its wallpaper")
+
+  local function drawsImageSince(mark, image)
+    for index = mark + 1, #graphics.draws do
+      if graphics.draws[index].image == image then
+        return true
+      end
+    end
+    return false
+  end
+
+  pendingPaths[newWallpaper] = true
+  local ready, failure = renderer:prepare(replacement)
+  Assert.isFalse(ready, "a pending wallpaper keeps preparation unready")
+  Assert.isNil(failure, "a pending wallpaper reports no failure")
+  local drawsBefore = #graphics.draws
+  renderer:drawPane(current, {}, "lower", placement())
+  Assert.isTrue(drawsImageSince(drawsBefore, oldImage), "the current wallpaper still paints while pending")
+
+  pendingPaths[newWallpaper] = nil
+  ready, failure = renderer:prepare(replacement)
+  Assert.isTrue(ready, "a resolved wallpaper stages ready")
+  Assert.isNil(failure, "staging reports no failure")
+  drawsBefore = #graphics.draws
+  renderer:drawPane(current, {}, "lower", placement())
+  Assert.isTrue(
+    drawsImageSince(drawsBefore, oldImage),
+    "preparation alone leaves the previous group drawable"
+  )
+  Assert.equal(
+    inner:stats().outstandingLeases,
+    installedBefore + 1,
+    "staging holds the new wallpaper beside the installed group"
+  )
+
+  settleStagedView(renderer, replacement)
+  drawsBefore = #graphics.draws
+  renderer:drawPane(replacement, {}, "lower", placement())
+  local newImage = assert(renderer._images[newWallpaper], "the commit installs the new wallpaper")
+  Assert.isTrue(drawsImageSince(drawsBefore, newImage), "the committed replacement paints its wallpaper")
+  Assert.equal(
+    inner:stats().outstandingLeases,
+    installedBefore,
+    "the commit returns only the leases the replacement no longer needs"
+  )
+  local retired, _ = pcall(function()
+    renderer:drawPane(current, {}, "lower", placement())
+  end)
+  Assert.isFalse(retired, "the retired group no longer draws after the commit")
+  renderer:dispose()
 end
 
 return { tests = T }

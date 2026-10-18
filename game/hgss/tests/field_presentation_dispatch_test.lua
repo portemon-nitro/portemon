@@ -7,7 +7,26 @@
 -- resources and never acquire them.
 
 local Assert = require("tests.support.Assert")
+local CacheFs = require("libs.storage.src.CacheFs")
+local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+local FakeCache = require("tests.support.FakeCache")
+local FakeGraphics = require("tests.support.FakeGraphics")
 local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
+local FieldPresentationResources = require("game.hgss.src.field.FieldPresentationResources")
+local HgssBagService = require("libs.hgss.src.items.HgssBagService")
+local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
+local ItemFixture = require("libs.items.tests.item_fixture")
+local Lcrng = require("libs.mons.src.gen4.Lcrng")
+local MonCache = require("libs.assets.src.MonCache")
+local MonIconAssetProvider = require("libs.hgss.src.presentation.MonIconAssetProvider")
+local MonsSave = require("libs.mons.src.MonsSave")
+local Party = require("libs.mons.src.Party")
+local PcApplicationHost = require("game.hgss.src.pc.PcApplicationHost")
+local PcPresentationFixture = require("tests.support.PcPresentationFixture")
+local PcStorageRenderer = require("libs.hgss.src.ui.PcStorageRenderer")
+local PcStorageState = require("game.hgss.src.pc.StorageScreenState")
+local PngWriter = require("libs.assets.src.PngWriter")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
 
 local T = {}
@@ -286,6 +305,12 @@ local function buildDoubles(sink, calls)
             return false, calls.pcStoragePrepareFailure
           end
           return true
+        end
+        -- The double tracks the explicit install beside preparation: the
+        -- real renderer stages on prepare and installs only on commit.
+        calls.pcStorageCommits = calls.pcStorageCommits or {}
+        function renderer:commitPrepared(view)
+          calls.pcStorageCommits[#calls.pcStorageCommits + 1] = view
         end
         return renderer
       end,
@@ -1891,6 +1916,745 @@ function T.held_item_picker_preparation_delegates_to_the_bag_presenter()
     Assert.equal(#sink, 0, "picker preparation draws nothing through any presenter")
     resources:dispose()
   end)
+end
+
+-- Production Storage replacement coverage below: the real host keeps
+-- painting the admitted view while its replacement waits, and old icon
+-- pages survive until the full replacement admits. These tests drive the
+-- real application host, the real Storage child, the real Storage visual
+-- renderer, and (for icons) the real mon icon page owner behind one
+-- shared synchronous image owner, ticked in the field update order of
+-- child step, resource preparation, then host readiness.
+local function transitionMonService()
+  local catalog = CatalogFixture.makeCatalog()
+  local service = HgssMonService.new({
+    catalog = catalog,
+    bucket = MonsSave.capture(
+      Party.new():capture(),
+      Lcrng.new(0x12345678):capture(),
+      nil,
+      nil
+    ),
+    profile = CatalogFixture.profile(),
+    game = "heartgold",
+    language = "english",
+    charmap = CatalogFixture.CHARMAP,
+    games = CatalogFixture.GAMES,
+    languages = CatalogFixture.LANGUAGES,
+    items = CatalogFixture.ITEMS,
+    balls = CatalogFixture.BALLS,
+  })
+  local factory = CatalogFixture.makeFactory(0x87654321, catalog)
+  Assert.isTrue(service:addMon(factory:createNormal(CatalogFixture.normalRequest({ species = "CHIKORITA" }))))
+  return service
+end
+
+local function transitionMeasureDisplay()
+  return {
+    width = 512,
+    height = 192,
+    topology = ScreenTopology.oneDisplay({
+      id = "main",
+      rect = { x = 0, y = 0, width = 512, height = 192 },
+      role = "world",
+      touch = true,
+    }),
+    pixelRatio = 1,
+    signature = "pc-transition-test:wide",
+  }
+end
+
+local function openTransitionStorage(mons, mode)
+  return PcStorageState.new({
+    mode = mode,
+    mons = mons,
+    bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() }),
+    manifest = PcPresentationFixture.manifest(),
+    measureDisplay = transitionMeasureDisplay,
+    audio = { play = function() end },
+    dexNumber = function() end,
+    charmap = CatalogFixture.CHARMAP,
+    icons = {},
+    portraits = {},
+    childFactories = {},
+  })
+end
+
+-- One shared synchronous image owner behind Storage visuals and icon
+-- pages, with per-path delay control: chosen generated paths stay pending
+-- until their entry clears, modelling a cold worker job without blocking.
+-- Acquired leases carry decoded dimensions so icon page bounds validate.
+local function transitionImageOwner()
+  local inner = SharedImagePoolFake.new()
+  local pendingPaths = {}
+  local tokenPaths = {}
+  local pool = {}
+  function pool:request(path, sampler, priority)
+    local token = inner:request(path, sampler, priority)
+    tokenPaths[token] = path
+    return token
+  end
+  function pool:poll(token)
+    if pendingPaths[tokenPaths[token]] then
+      return "pending"
+    end
+    return inner:poll(token)
+  end
+  function pool:acquire(token)
+    local lease = inner:acquire(token)
+    lease.width = 256
+    lease.height = 128
+    lease.kind = "rgba8"
+    local image = assert(lease.image, "shared leases carry their resolved image")
+    function image:getWidth()
+      return 256
+    end
+    function image:getHeight()
+      return 128
+    end
+    return lease
+  end
+  function pool:release(lease)
+    return inner:release(lease)
+  end
+  function pool:cancel(token)
+    tokenPaths[token] = nil
+    return inner:cancel(token)
+  end
+  function pool:prune()
+    return inner:prune()
+  end
+  function pool:stats()
+    return inner:stats()
+  end
+  return pool, inner, pendingPaths
+end
+
+local function transitionVisualPaths(manifest)
+  local storage = manifest.storage
+  local all = {
+    storage.backgrounds.default,
+    storage.ui.boxPane,
+    storage.ui.infoPane,
+    storage.ui.partyTray,
+    storage.ui.markingPanel,
+    storage.ui.wallpaperBar,
+    storage.ui.arrows.left,
+    storage.ui.arrows.right,
+    storage.ui.cursors.browse,
+    storage.ui.cursors.menu,
+    storage.ui.cursors.carry,
+  }
+  for _, visual in pairs(storage.wallpapers) do
+    all[#all + 1] = visual
+  end
+  for _, pair in pairs(storage.ui.markings) do
+    all[#all + 1] = pair.clear
+    all[#all + 1] = pair.set
+  end
+  for _, style in pairs(storage.ui.windowFrames) do
+    for _, visual in pairs(style) do
+      all[#all + 1] = visual
+    end
+  end
+  return all
+end
+
+local function transitionRenderer(pool)
+  local manifest = PcPresentationFixture.manifest()
+  manifest.text = { banks = { [24] = {}, [25] = {} } }
+  for bankId, bank in pairs(manifest.text.banks) do
+    for messageId = 0, 100 do
+      bank[messageId] = { { kind = "glyph", text = "b" .. bankId .. ":" .. messageId } }
+    end
+  end
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local image = PngWriter.encode(1, 1, string.char(255, 255, 255, 255))
+  for _, visual in ipairs(transitionVisualPaths(manifest)) do
+    cache:write(visual.image, image)
+  end
+  local graphics = FakeGraphics.new({})
+  local text = {
+    drawText = function() end,
+    textWidth = function()
+      return 0
+    end,
+    windowBackgroundColor = function()
+      return { 1, 1, 1, 1 }
+    end,
+  }
+  local renderer = PcStorageRenderer.new({
+    graphics = graphics,
+    cacheFs = cache,
+    manifest = manifest,
+    text = text,
+    imagePool = pool,
+  })
+  return renderer, graphics, manifest
+end
+
+local function iconEntryForTest(pageId, x, y)
+  return {
+    x = x,
+    y = y,
+    width = 32,
+    height = 32,
+    frames = {
+      { x = x, y = y, width = 32, height = 32, duration = 1 },
+      { x = x + 32, y = y, width = 32, height = 32, duration = 1 },
+    },
+    pageId = pageId,
+  }
+end
+
+-- The real mon icon page owner behind two demanded pages: the first
+-- species on page zero, the second on page one. Demand is recorded per
+-- call without changing behavior, so the suite can prove which icon keys
+-- the composition holds while a replacement pends.
+local function transitionIconProvider(pool, graphics)
+  local manifest = {
+    schema = MonCache.ICON_MANIFEST_SCHEMA,
+    version = { id = "heartgold", language = "english" },
+    pages = {
+      [0] = { pageId = 0, image = MonCache.iconPagePath(0), width = 256, height = 128 },
+      [1] = { pageId = 1, image = MonCache.iconPagePath(1), width = 256, height = 128 },
+    },
+    pageIds = { 0, 1 },
+    entries = {
+      ["CHIKORITA/f0"] = iconEntryForTest(0, 0, 0),
+      ["TOTODILE/f0"] = iconEntryForTest(1, 64, 0),
+    },
+    representative = { "CHIKORITA/f0", "TOTODILE/f0" },
+  }
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  cache:writeLua(MonCache.iconManifestPath(), manifest)
+  cache:write(MonCache.iconPagePath(0), "page-zero-bytes")
+  cache:write(MonCache.iconPagePath(1), "page-one-bytes")
+  local provider = MonIconAssetProvider.new(cache, {
+    graphics = graphics,
+    imagePool = pool,
+    derivedAssets = {
+      requestIconPage = function(_)
+        return true
+      end,
+    },
+  })
+  local demanded = {}
+  local baselinePrepareKeys = provider.prepareKeys
+  function provider:prepareKeys(keys)
+    local snapshot = {}
+    for _, key in ipairs(keys) do
+      snapshot[#snapshot + 1] = key
+    end
+    demanded[#demanded + 1] = snapshot
+    return baselinePrepareKeys(provider, keys)
+  end
+  return provider, demanded
+end
+
+local function hostForTransitionChild(child)
+  return PcApplicationHost.new({
+    createStorage = function()
+      return child
+    end,
+    createMailbox = function()
+      error("mailbox unused", 0)
+    end,
+    createPhotoAlbum = function()
+      error("photo album unused", 0)
+    end,
+  })
+end
+
+local function transitionResources(renderer, icons)
+  return {
+    storageRenderer = renderer,
+    icons = icons,
+    windowRenderer = {
+      drawWindow = function() end,
+      drawStandardWindow = function() end,
+    },
+    applicationFrameIndex = 3,
+  }
+end
+
+-- The real production preparation function over the composed owners:
+-- untouched sibling collaborators stay inert dummies on the Storage
+-- path, which borrows only the mon icon provider and Storage renderer.
+-- Method lookups fall back to the production module, so the exercised
+-- path is the real composition with only its sibling owners stubbed.
+local function transitionPreparation(icons, renderer)
+  return setmetatable({
+    monIconProvider = icons,
+    itemIconProvider = {},
+    storageRenderer = renderer,
+    mailboxRenderer = {},
+    photoAlbumRenderer = {},
+    textRenderer = {},
+    windowRenderer = {},
+    bagRenderer = {},
+    heroRenderer = {},
+    applicationFrameIndex = 3,
+  }, { __index = FieldPresentationResources })
+end
+
+-- One field-update tick in production order: the host steps the child
+-- with gated input, preparation admits resources, and the host takes the
+-- resulting readiness for its input gate and draw route.
+local function tickTransitionPc(host, handle, preparation, events)
+  host:step(handle, events or {})
+  local status = assert(host:status(), "the open child publishes its status")
+  local ready, failure =
+    FieldPresentationResources.preparePcApplication(preparation, status, { monCatalog = {} })
+  host:setPresentationReady(handle, ready)
+  return ready, failure, status
+end
+
+-- Scopes the host graphics namespace for one replacement test: draws
+-- record through the injected fake while every other host capability
+-- (filesystem shader sources, timer) keeps its real behavior.
+local function scopeTransitionLove(graphics)
+  local savedLove = rawget(_G, "love")
+  local scopedLove = {}
+  for key, value in pairs(savedLove) do
+    scopedLove[key] = value
+  end
+  scopedLove.graphics = graphics
+  rawset(_G, "love", scopedLove)
+  return savedLove
+end
+
+local function drawsImageSinceTransition(graphics, mark, image)
+  for index = mark + 1, #graphics.draws do
+    if graphics.draws[index].image == image then
+      return true
+    end
+  end
+  return false
+end
+
+local function admitTransitionBox(host, handle, preparation, message)
+  local ready, failure = false, nil
+  for _ = 1, 200 do
+    ready, failure = tickTransitionPc(host, handle, preparation, {})
+    if ready then
+      break
+    end
+    Assert.isNil(failure, message .. ": admission reports no failure while pending")
+  end
+  Assert.isTrue(ready, message .. ": the box admits before drawing")
+  Assert.isNil(failure, message .. ": admission reports no failure")
+end
+
+-- A delayed wallpaper keeps the admitted Storage surface on the real host:
+-- pending frames repaint the old wallpaper under the admitted plan with
+-- input gated, and the new wallpaper appears only once every prerequisite
+-- is ready, releasing just the retired leases.
+function T.pending_wallpaper_replacement_keeps_drawing_the_admitted_view()
+  local pool, inner, pendingPaths = transitionImageOwner()
+  local renderer, graphics, manifest = transitionRenderer(pool)
+  local icons = {
+    prepareKeys = function()
+      return true
+    end,
+  }
+  local preparation = transitionPreparation(icons, renderer)
+  local mons = transitionMonService()
+  local child = openTransitionStorage(mons, 1)
+  local host = hostForTransitionChild(child)
+  local handle = host:open({ app = "storage", mode = 1 })
+  local resources = transitionResources(renderer, nil)
+  local savedLove = scopeTransitionLove(graphics)
+  local ok, err = pcall(function()
+    admitTransitionBox(host, handle, preparation, "first open")
+    local uploadsAfterFirst = inner.uploads
+    Assert.isTrue(uploadsAfterFirst > 0, "the open box borrows its visuals")
+    local oldWallpaper = manifest.storage.wallpapers[0].image
+    local oldImage = assert(renderer._images[oldWallpaper], "admission installs its wallpaper")
+    local drawsBefore = #graphics.draws
+    host:draw(resources)
+    Assert.isTrue(
+      drawsImageSinceTransition(graphics, drawsBefore, oldImage),
+      "the admitted box paints its wallpaper"
+    )
+    local admittedPlan = host:presentationPlan()
+    Assert.notNil(admittedPlan, "the admitted box publishes its plan")
+
+    pendingPaths[manifest.storage.wallpapers[2].image] = true
+    local ready, failure = tickTransitionPc(host, handle, preparation, { { type = "action", action = "wallpaper" } })
+    Assert.isTrue(ready, "opening the chooser keeps the admitted view ready")
+    Assert.isNil(failure, "opening the chooser reports no failure")
+    ready, failure =
+      tickTransitionPc(host, handle, preparation, { { type = "wallpaper_choice", id = 2 } })
+    Assert.isTrue(ready, "highlighting a choice keeps the admitted view ready")
+    Assert.isNil(failure, "highlighting a choice reports no failure")
+    ready, failure = tickTransitionPc(host, handle, preparation, { { type = "submit" } })
+    Assert.isFalse(ready, "a pending wallpaper keeps the host unready")
+    Assert.isNil(failure, "a pending wallpaper reports no failure")
+    local uploadsAtSubmit = inner.uploads
+
+    for _ = 1, 3 do
+      local focusBefore = child:status().focus
+      ready, failure =
+        tickTransitionPc(host, handle, preparation, { { type = "navigate", direction = "down" } })
+      Assert.isFalse(ready, "the replacement stays pending")
+      Assert.isNil(failure, "the replacement reports no failure")
+      Assert.deepEqual(child:status().focus, focusBefore, "unadmitted input never reaches the child")
+      Assert.equal(inner.uploads, uploadsAtSubmit, "pending pixels upload nothing new")
+      drawsBefore = #graphics.draws
+      host:draw(resources)
+      Assert.isTrue(
+        drawsImageSinceTransition(graphics, drawsBefore, oldImage),
+        "pending frames keep painting the admitted wallpaper"
+      )
+      Assert.isTrue(host:presentationPlan() == admittedPlan, "pending frames keep the admitted plan")
+    end
+
+    pendingPaths[manifest.storage.wallpapers[2].image] = nil
+    admitTransitionBox(host, handle, preparation, "wallpaper recovery")
+    Assert.equal(inner.uploads, uploadsAtSubmit + 1, "admission uploads only the new wallpaper")
+    local newWallpaper = manifest.storage.wallpapers[2].image
+    local newImage = assert(renderer._images[newWallpaper], "admission installs the new wallpaper")
+    drawsBefore = #graphics.draws
+    host:draw(resources)
+    Assert.isTrue(
+      drawsImageSinceTransition(graphics, drawsBefore, newImage),
+      "the admitted replacement paints its wallpaper"
+    )
+    Assert.isFalse(
+      drawsImageSinceTransition(graphics, drawsBefore, oldImage),
+      "the retired wallpaper paints no longer"
+    )
+    local focusBefore = child:status().focus
+    tickTransitionPc(host, handle, preparation, { { type = "navigate", direction = "down" } })
+    Assert.isTrue(
+      child:status().focus.slot ~= focusBefore.slot,
+      "admitted input reaches the child again"
+    )
+    host:close(handle)
+    renderer:dispose()
+    Assert.equal(inner:stats().outstandingLeases, 0, "closing returns every visual lease")
+  end)
+  rawset(_G, "love", savedLove)
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- A warm wallpaper switch commits synchronously while the host stays
+-- ready: the replacement installs before the next draw, and a later
+-- pending replacement falls back to the newly admitted view, never the
+-- retired one.
+function T.warm_wallpaper_replacement_commits_before_drawing_the_new_view()
+  local pool, inner, pendingPaths = transitionImageOwner()
+  local renderer, graphics, manifest = transitionRenderer(pool)
+  local icons = {
+    prepareKeys = function()
+      return true
+    end,
+  }
+  local preparation = transitionPreparation(icons, renderer)
+  local mons = transitionMonService()
+  local child = openTransitionStorage(mons, 1)
+  local host = hostForTransitionChild(child)
+  local handle = host:open({ app = "storage", mode = 1 })
+  local resources = transitionResources(renderer, nil)
+  local savedLove = scopeTransitionLove(graphics)
+  local ok, err = pcall(function()
+    admitTransitionBox(host, handle, preparation, "first open")
+    local oldWallpaper = manifest.storage.wallpapers[0].image
+    local oldImage = assert(renderer._images[oldWallpaper], "admission installs its wallpaper")
+    local drawsBefore = #graphics.draws
+    host:draw(resources)
+    Assert.isTrue(
+      drawsImageSinceTransition(graphics, drawsBefore, oldImage),
+      "the admitted box paints its wallpaper"
+    )
+
+    -- The replacement wallpaper stays unflagged, so every new path
+    -- resolves in the same tick while the host is still ready.
+    local ready, failure = tickTransitionPc(host, handle, preparation, { { type = "action", action = "wallpaper" } })
+    Assert.isTrue(ready, "opening the chooser keeps the admitted view ready")
+    Assert.isNil(failure, "opening the chooser reports no failure")
+    ready, failure = tickTransitionPc(host, handle, preparation, { { type = "wallpaper_choice", id = 1 } })
+    Assert.isTrue(ready, "highlighting a choice keeps the admitted view ready")
+    Assert.isNil(failure, "highlighting a choice reports no failure")
+    ready, failure = tickTransitionPc(host, handle, preparation, { { type = "submit" } })
+    Assert.isTrue(ready, "a resident replacement admits without pending")
+    Assert.isNil(failure, "a resident replacement reports no failure")
+    local newWallpaper = manifest.storage.wallpapers[1].image
+    Assert.notNil(
+      renderer._images[newWallpaper],
+      "the warm cutover installs the new wallpaper before drawing"
+    )
+    Assert.isNil(
+      renderer._images[oldWallpaper],
+      "the warm cutover retires the superseded wallpaper at once"
+    )
+    local newImage = assert(renderer._images[newWallpaper], "the new wallpaper resolves its lease")
+    drawsBefore = #graphics.draws
+    host:draw(resources)
+    Assert.isTrue(
+      drawsImageSinceTransition(graphics, drawsBefore, newImage),
+      "the warm replacement paints its wallpaper"
+    )
+    Assert.isFalse(
+      drawsImageSinceTransition(graphics, drawsBefore, oldImage),
+      "the retired wallpaper paints no longer"
+    )
+    local admittedPair = child:presentationPlan(false)
+    Assert.notNil(admittedPair, "the warm cutover records its admitted pair")
+
+    -- A later pending replacement falls back to the newly admitted
+    -- view, proving the admitted pair tracked the warm cutover.
+    pendingPaths[manifest.storage.wallpapers[2].image] = true
+    ready, failure = tickTransitionPc(host, handle, preparation, { { type = "action", action = "wallpaper" } })
+    Assert.isTrue(ready, "reopening the chooser keeps the admitted view ready")
+    Assert.isNil(failure, "reopening the chooser reports no failure")
+    ready, failure = tickTransitionPc(host, handle, preparation, { { type = "wallpaper_choice", id = 2 } })
+    Assert.isTrue(ready, "highlighting a choice keeps the admitted view ready")
+    Assert.isNil(failure, "highlighting a choice reports no failure")
+    ready, failure = tickTransitionPc(host, handle, preparation, { { type = "submit" } })
+    Assert.isFalse(ready, "a pending wallpaper keeps the host unready")
+    Assert.isNil(failure, "a pending wallpaper reports no failure")
+    drawsBefore = #graphics.draws
+    host:draw(resources)
+    Assert.isTrue(
+      drawsImageSinceTransition(graphics, drawsBefore, newImage),
+      "pending frames keep painting the warm-admitted wallpaper"
+    )
+    Assert.isFalse(
+      drawsImageSinceTransition(graphics, drawsBefore, oldImage),
+      "pending frames never revive the retired wallpaper"
+    )
+    Assert.isTrue(host:presentationPlan() == child:presentationPlan(false), "pending frames serve the recorded pair route")
+    host:close(handle)
+    renderer:dispose()
+    Assert.equal(inner:stats().outstandingLeases, 0, "closing returns every visual lease")
+  end)
+  rawset(_G, "love", savedLove)
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- A delayed icon page cannot invalidate the admitted view: the old page
+-- stays borrowed and painted while the new page and wallpaper resolve in
+-- either order, and full admission retires only the undesired page with a
+-- single visual commit.
+function T.delayed_icon_page_keeps_the_admitted_view_and_its_icons_until_admission()
+  local pool, inner, pendingPaths = transitionImageOwner()
+  local renderer, graphics, manifest = transitionRenderer(pool)
+  local icons, demanded = transitionIconProvider(pool, graphics)
+  local preparation = transitionPreparation(icons, renderer)
+  local mons = transitionMonService()
+  local boxed = mons:partyMon(0)
+  local stored = assert(mons:preparePcChanges({
+    partyRevision = mons:partyRevision(),
+    boxRevision = mons:boxRevision(),
+  }, { boxUpdates = { { box = 0, slot = 0, mon = boxed } } }))
+  stored.publish()
+  local child = openTransitionStorage(mons, 1)
+  local host = hostForTransitionChild(child)
+  local handle = host:open({ app = "storage", mode = 1 })
+  local resources = transitionResources(renderer, icons)
+  local savedLove = scopeTransitionLove(graphics)
+  local ok, err = pcall(function()
+    admitTransitionBox(host, handle, preparation, "first open")
+    local oldWallpaper = manifest.storage.wallpapers[0].image
+    local oldImage = assert(renderer._images[oldWallpaper], "admission installs its wallpaper")
+    local oldPage = assert(icons:handleFor("CHIKORITA/f0"), "admission borrows the old icon page")
+    local drawsBefore = #graphics.draws
+    host:draw(resources)
+    Assert.isTrue(
+      drawsImageSinceTransition(graphics, drawsBefore, oldPage.image),
+      "the admitted box paints its old icon page"
+    )
+    local admittedPlan = host:presentationPlan()
+    Assert.notNil(admittedPlan, "the admitted box publishes its plan")
+
+    -- The new view needs another icon page and another wallpaper while
+    -- the wallpaper resolves last: the old page must survive the wait.
+    pendingPaths[manifest.storage.wallpapers[2].image] = true
+    local ready, failure = tickTransitionPc(host, handle, preparation, { { type = "action", action = "wallpaper" } })
+    Assert.isTrue(ready, "opening the chooser keeps the admitted view ready")
+    ready, failure =
+      tickTransitionPc(host, handle, preparation, { { type = "wallpaper_choice", id = 2 } })
+    Assert.isTrue(ready, "highlighting a choice keeps the admitted view ready")
+    ready, failure = tickTransitionPc(host, handle, preparation, { { type = "submit" } })
+    Assert.isFalse(ready, "a pending wallpaper keeps the host unready")
+    Assert.isNil(failure, "a pending wallpaper reports no failure")
+    local factory = CatalogFixture.makeFactory(0x22222222, mons:catalog())
+    local partyTotodile = factory:createNormal(CatalogFixture.normalRequest({ species = "TOTODILE" }))
+    local boxTotodile = factory:createNormal(CatalogFixture.normalRequest({ species = "TOTODILE" }))
+    local partyChange = assert(mons:preparePartyChanges(mons:partyRevision(), { { slot = 0, mon = partyTotodile } }))
+    partyChange.publish()
+    local boxChange = assert(mons:preparePcChanges({
+      partyRevision = mons:partyRevision(),
+      boxRevision = mons:boxRevision(),
+    }, { boxUpdates = { { box = 0, slot = 0, mon = boxTotodile } } }))
+    boxChange.publish()
+    ready, failure = tickTransitionPc(host, handle, preparation, {})
+    Assert.isFalse(ready, "the icon turnover keeps the host unready")
+    Assert.isNil(failure, "the icon turnover reports no failure")
+
+    for _ = 1, 5 do
+      ready, failure = tickTransitionPc(host, handle, preparation, {})
+      Assert.isFalse(ready, "the replacement stays pending")
+      Assert.isNil(failure, "the replacement reports no failure")
+      local demandedNow = demanded[#demanded]
+      local holdsOld = false
+      for _, key in ipairs(assert(demandedNow, "preparation demands icon keys while pending")) do
+        if key == "CHIKORITA/f0" then
+          holdsOld = true
+        end
+      end
+      Assert.isTrue(holdsOld, "pending preparation keeps demanding the admitted icon page")
+      Assert.notNil(icons:handleFor("CHIKORITA/f0"), "the admitted icon page stays borrowed")
+      drawsBefore = #graphics.draws
+      host:draw(resources)
+      Assert.isTrue(
+        drawsImageSinceTransition(graphics, drawsBefore, oldImage),
+        "pending frames keep painting the admitted wallpaper"
+      )
+      Assert.isTrue(
+        drawsImageSinceTransition(graphics, drawsBefore, oldPage.image),
+        "pending frames keep painting the admitted icon page"
+      )
+      Assert.isTrue(host:presentationPlan() == admittedPlan, "pending frames keep the admitted plan")
+    end
+
+    pendingPaths[manifest.storage.wallpapers[2].image] = nil
+    admitTransitionBox(host, handle, preparation, "icon and wallpaper recovery")
+    local uploadsAtAdmission = inner.uploads
+    local newImage = assert(
+      renderer._images[manifest.storage.wallpapers[2].image],
+      "admission installs the new wallpaper"
+    )
+    local newPage = assert(icons:handleFor("TOTODILE/f0"), "admission borrows the new icon page")
+    drawsBefore = #graphics.draws
+    host:draw(resources)
+    Assert.isTrue(
+      drawsImageSinceTransition(graphics, drawsBefore, newImage),
+      "the admitted replacement paints its wallpaper"
+    )
+    Assert.isTrue(
+      drawsImageSinceTransition(graphics, drawsBefore, newPage.image),
+      "the admitted replacement paints its icon page"
+    )
+    local retired, _ = pcall(function()
+      icons:handleFor("CHIKORITA/f0")
+    end)
+    Assert.isFalse(retired, "admission retires the undesired icon page")
+    for _ = 1, 3 do
+      ready, failure = tickTransitionPc(host, handle, preparation, {})
+      Assert.isTrue(ready, "the admitted replacement stays ready")
+      Assert.isNil(failure, "the admitted replacement reports no failure")
+    end
+    Assert.equal(inner.uploads, uploadsAtAdmission, "one admission performs no second commit")
+    host:close(handle)
+    renderer:dispose()
+    icons:release()
+    Assert.equal(inner:stats().outstandingLeases, 0, "closing returns every visual and icon lease")
+  end)
+  rawset(_G, "love", savedLove)
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- The inverse order: a delayed icon page behind an already resolved
+-- wallpaper keeps the admitted view drawable too, since the replacement
+-- visuals stage without publishing until every prerequisite is ready.
+function T.delayed_icon_page_behind_a_resolved_wallpaper_keeps_the_admitted_view()
+  local pool, inner, pendingPaths = transitionImageOwner()
+  local renderer, graphics, manifest = transitionRenderer(pool)
+  local icons, _ = transitionIconProvider(pool, graphics)
+  local preparation = transitionPreparation(icons, renderer)
+  local mons = transitionMonService()
+  local boxed = mons:partyMon(0)
+  local stored = assert(mons:preparePcChanges({
+    partyRevision = mons:partyRevision(),
+    boxRevision = mons:boxRevision(),
+  }, { boxUpdates = { { box = 0, slot = 0, mon = boxed } } }))
+  stored.publish()
+  local child = openTransitionStorage(mons, 1)
+  local host = hostForTransitionChild(child)
+  local handle = host:open({ app = "storage", mode = 1 })
+  local resources = transitionResources(renderer, icons)
+  local savedLove = scopeTransitionLove(graphics)
+  local ok, err = pcall(function()
+    admitTransitionBox(host, handle, preparation, "first open")
+    local oldWallpaper = manifest.storage.wallpapers[0].image
+    local oldImage = assert(renderer._images[oldWallpaper], "admission installs its wallpaper")
+    local oldPage = assert(icons:handleFor("CHIKORITA/f0"), "admission borrows the old icon page")
+    local admittedPlan = host:presentationPlan()
+    Assert.notNil(admittedPlan, "the admitted box publishes its plan")
+
+    pendingPaths[MonCache.iconPagePath(1)] = true
+    local ready, failure = tickTransitionPc(host, handle, preparation, { { type = "action", action = "wallpaper" } })
+    Assert.isTrue(ready, "opening the chooser keeps the admitted view ready")
+    ready, failure =
+      tickTransitionPc(host, handle, preparation, { { type = "wallpaper_choice", id = 1 } })
+    Assert.isTrue(ready, "highlighting a choice keeps the admitted view ready")
+    local factory = CatalogFixture.makeFactory(0x33333333, mons:catalog())
+    local partyTotodile = factory:createNormal(CatalogFixture.normalRequest({ species = "TOTODILE" }))
+    local boxTotodile = factory:createNormal(CatalogFixture.normalRequest({ species = "TOTODILE" }))
+    local partyChange = assert(mons:preparePartyChanges(mons:partyRevision(), { { slot = 0, mon = partyTotodile } }))
+    partyChange.publish()
+    local boxChange = assert(mons:preparePcChanges({
+      partyRevision = mons:partyRevision(),
+      boxRevision = mons:boxRevision(),
+    }, { boxUpdates = { { box = 0, slot = 0, mon = boxTotodile } } }))
+    boxChange.publish()
+    ready, failure = tickTransitionPc(host, handle, preparation, { { type = "submit" } })
+    Assert.isFalse(ready, "a pending icon page keeps the host unready")
+    Assert.isNil(failure, "a pending icon page reports no failure")
+
+    for _ = 1, 3 do
+      ready, failure = tickTransitionPc(host, handle, preparation, {})
+      Assert.isFalse(ready, "the replacement stays pending")
+      Assert.isNil(failure, "the replacement reports no failure")
+      Assert.notNil(icons:handleFor("CHIKORITA/f0"), "the admitted icon page stays borrowed")
+      local drawsBefore = #graphics.draws
+      host:draw(resources)
+      Assert.isTrue(
+        drawsImageSinceTransition(graphics, drawsBefore, oldImage),
+        "pending frames keep painting the admitted wallpaper"
+      )
+      Assert.isTrue(
+        drawsImageSinceTransition(graphics, drawsBefore, oldPage.image),
+        "pending frames keep painting the admitted icon page"
+      )
+      Assert.isTrue(host:presentationPlan() == admittedPlan, "pending frames keep the admitted plan")
+    end
+
+    pendingPaths[MonCache.iconPagePath(1)] = nil
+    admitTransitionBox(host, handle, preparation, "icon recovery")
+    local newImage = assert(
+      renderer._images[manifest.storage.wallpapers[1].image],
+      "admission installs the new wallpaper"
+    )
+    local newPage = assert(icons:handleFor("TOTODILE/f0"), "admission borrows the new icon page")
+    local drawsBefore = #graphics.draws
+    host:draw(resources)
+    Assert.isTrue(
+      drawsImageSinceTransition(graphics, drawsBefore, newImage),
+      "the admitted replacement paints its wallpaper"
+    )
+    Assert.isTrue(
+      drawsImageSinceTransition(graphics, drawsBefore, newPage.image),
+      "the admitted replacement paints its icon page"
+    )
+    host:close(handle)
+    renderer:dispose()
+    icons:release()
+    Assert.equal(inner:stats().outstandingLeases, 0, "closing returns every visual and icon lease")
+  end)
+  rawset(_G, "love", savedLove)
+  if not ok then
+    error(err, 0)
+  end
 end
 
 return { tests = T }

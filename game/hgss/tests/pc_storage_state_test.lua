@@ -2,7 +2,12 @@
 -- topologies and returns cleanly without taking custody from the domain.
 
 local Assert = require("tests.support.Assert")
+local CacheFs = require("libs.storage.src.CacheFs")
+local FakeCache = require("tests.support.FakeCache")
+local FakeGraphics = require("tests.support.FakeGraphics")
 local Mon = require("libs.mons.src.Mon")
+local PngWriter = require("libs.assets.src.PngWriter")
+local PcStorageRenderer = require("libs.hgss.src.ui.PcStorageRenderer")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local ItemFixture = require("libs.items.tests.item_fixture")
 local HgssBagService = require("libs.hgss.src.items.HgssBagService")
@@ -2162,6 +2167,458 @@ function T.held_item_picker_status_rides_alongside_for_bag_preparation()
   Assert.isTrue(status.bagChildStatus == bagLeaf, "status carries the live picker leaf for preparation")
   Assert.isTrue(status.visualView == state:_ensurePublished(), "the picker still rides its published snapshot")
   state:dispose()
+end
+
+-- Draw-gate coverage below: the Storage child keeps painting its last
+-- admitted parent view while a replacement waits, and only an admitted
+-- parent may draw while the host readiness stays false. The helpers stage
+-- visuals through the real renderer behind a delayable image owner; the
+-- readiness flag travels the way the host passes it to child draw/plan.
+local function stateImageOwner()
+  local inner = require("tests.support.SharedImagePoolFake").new()
+  local pendingPaths = {}
+  local tokenPaths = {}
+  local pool = {}
+  function pool:request(path, sampler, priority)
+    local token = inner:request(path, sampler, priority)
+    tokenPaths[token] = path
+    return token
+  end
+  function pool:poll(token)
+    if pendingPaths[tokenPaths[token]] then
+      return "pending"
+    end
+    return inner:poll(token)
+  end
+  function pool:acquire(token)
+    return inner:acquire(token)
+  end
+  function pool:release(lease)
+    return inner:release(lease)
+  end
+  function pool:cancel(token)
+    tokenPaths[token] = nil
+    return inner:cancel(token)
+  end
+  function pool:prune()
+    return inner:prune()
+  end
+  function pool:stats()
+    return inner:stats()
+  end
+  return pool, inner, pendingPaths
+end
+
+local function stateVisualPaths(manifest)
+  local storage = manifest.storage
+  local all = {
+    storage.backgrounds.default,
+    storage.ui.boxPane,
+    storage.ui.infoPane,
+    storage.ui.partyTray,
+    storage.ui.markingPanel,
+    storage.ui.wallpaperBar,
+    storage.ui.arrows.left,
+    storage.ui.arrows.right,
+    storage.ui.cursors.browse,
+    storage.ui.cursors.menu,
+    storage.ui.cursors.carry,
+  }
+  for _, visual in pairs(storage.wallpapers) do
+    all[#all + 1] = visual
+  end
+  for _, pair in pairs(storage.ui.markings) do
+    all[#all + 1] = pair.clear
+    all[#all + 1] = pair.set
+  end
+  for _, style in pairs(storage.ui.windowFrames) do
+    for _, visual in pairs(style) do
+      all[#all + 1] = visual
+    end
+  end
+  return all
+end
+
+local function stateRenderer(pool)
+  local manifest = PcPresentationFixture.manifest()
+  manifest.text = { banks = { [24] = {}, [25] = {} } }
+  for bankId, bank in pairs(manifest.text.banks) do
+    for messageId = 0, 100 do
+      bank[messageId] = { { kind = "glyph", text = "b" .. bankId .. ":" .. messageId } }
+    end
+  end
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local image = PngWriter.encode(1, 1, string.char(255, 255, 255, 255))
+  for _, visual in ipairs(stateVisualPaths(manifest)) do
+    cache:write(visual.image, image)
+  end
+  local graphics = FakeGraphics.new({})
+  local text = {
+    drawText = function() end,
+    textWidth = function()
+      return 0
+    end,
+    windowBackgroundColor = function()
+      return { 1, 1, 1, 1 }
+    end,
+  }
+  local renderer = PcStorageRenderer.new({
+    graphics = graphics,
+    cacheFs = cache,
+    manifest = manifest,
+    text = text,
+    imagePool = pool,
+  })
+  return renderer, graphics, manifest
+end
+
+local function stateResources(renderer)
+  -- The ready-picker draw route requires its production collaborators;
+  -- this fake picker surface ignores them, so plain stubs stand in.
+  return {
+    storageRenderer = renderer,
+    bagRenderer = {},
+    heroRenderer = {},
+    itemIcons = {},
+    textRenderer = {},
+    windowRenderer = {
+      drawWindow = function() end,
+      drawStandardWindow = function() end,
+    },
+    applicationFrameIndex = 3,
+  }
+end
+
+-- Finishes a staged visual group once every other prerequisite for the
+-- same view is ready; absent until the renderer stages separately from
+-- publishing, when this becomes the explicit commit.
+local function settleStateView(renderer, view)
+  if type(renderer.commitPrepared) == "function" then
+    renderer:commitPrepared(view)
+  end
+end
+
+local function admitStateView(renderer, view)
+  local ready, failure = false, nil
+  for _ = 1, 200 do
+    ready, failure = renderer:prepare(view)
+    if ready then
+      break
+    end
+    Assert.isNil(failure, "admission reports no failure while pending")
+  end
+  Assert.isTrue(ready, "the view admits before drawing")
+  Assert.isNil(failure, "admission reports no failure")
+  settleStateView(renderer, view)
+end
+
+-- Records the admitted parent once the host turns ready; absent until the
+-- child owns its last admitted snapshot, when this becomes the narrow
+-- admission recording reconciled with the host cutover.
+local function recordAdmittedParent(state)
+  if type(state.admitParentPresentation) == "function" then
+    state:admitParentPresentation()
+  end
+end
+
+local function scopeStateLove(graphics)
+  local savedLove = rawget(_G, "love")
+  local scopedLove = {}
+  for key, value in pairs(savedLove) do
+    scopedLove[key] = value
+  end
+  scopedLove.graphics = graphics
+  rawset(_G, "love", scopedLove)
+  return savedLove
+end
+
+local function drawsStateImageSince(graphics, mark, image)
+  for index = mark + 1, #graphics.draws do
+    if graphics.draws[index].image == image then
+      return true
+    end
+  end
+  return false
+end
+
+local function switchWallpaper(state, wallpaperId)
+  state:updateFixed({ { type = "action", action = "wallpaper" } })
+  state:updateFixed({ { type = "wallpaper_choice", id = wallpaperId } })
+  state:updateFixed({ { type = "submit" } })
+end
+
+function T.unready_first_open_draws_nothing_and_reports_no_plan()
+  local mons = monService()
+  local state = PcStorageState.new(openOptions(mons, 1, "wide"))
+  local pool, _, _ = stateImageOwner()
+  local renderer, graphics, _ = stateRenderer(pool)
+  admitStateView(renderer, state:status().visualView)
+  local resources = stateResources(renderer)
+  local savedLove = scopeStateLove(graphics)
+  local ok, err = pcall(function()
+    local drew, drawFailure = pcall(function()
+      state:draw(resources, false)
+    end)
+    Assert.isTrue(drew, "an unadmitted open never fails its draw: " .. tostring(drawFailure))
+    Assert.equal(#graphics.draws, 0, "an unadmitted open paints no surface")
+    Assert.isNil(state:presentationPlan(false), "an unadmitted open publishes no plan")
+    state:dispose()
+    renderer:dispose()
+  end)
+  rawset(_G, "love", savedLove)
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.pending_replacement_draws_the_admitted_parent_instead_of_the_current_view()
+  local mons = monService()
+  local state = PcStorageState.new(openOptions(mons, 1, "wide"))
+  local pool, inner, pendingPaths = stateImageOwner()
+  local renderer, graphics, manifest = stateRenderer(pool)
+  admitStateView(renderer, state:status().visualView)
+  recordAdmittedParent(state)
+  local admittedPlan = state:presentationPlan()
+  Assert.notNil(admittedPlan, "admission publishes its plan")
+  local oldWallpaper = manifest.storage.wallpapers[0].image
+  local newWallpaper = manifest.storage.wallpapers[2].image
+  local oldImage = assert(renderer._images[oldWallpaper], "admission installs its wallpaper")
+  local resources = stateResources(renderer)
+  local savedLove = scopeStateLove(graphics)
+  local ok, err = pcall(function()
+    pendingPaths[newWallpaper] = true
+    switchWallpaper(state, 2)
+    Assert.equal(state:status().visualView.wallpaperId, 2, "the desired view advances past admission")
+    for _ = 1, 3 do
+      local ready, failure = renderer:prepare(state:status().visualView)
+      Assert.isFalse(ready, "the replacement stays pending")
+      Assert.isNil(failure, "the replacement reports no failure")
+    end
+    local drew, drawFailure = pcall(function()
+      state:draw(resources, false)
+    end)
+    Assert.isTrue(drew, "a pending draw keeps the admitted parent drawable: " .. tostring(drawFailure))
+    local drawsBefore = #graphics.draws
+    state:draw(resources, false)
+    Assert.isTrue(
+      drawsStateImageSince(graphics, drawsBefore, oldImage),
+      "a pending draw paints the admitted wallpaper, not the desired one"
+    )
+    Assert.isTrue(state:presentationPlan(false) == admittedPlan, "a pending plan stays the admitted one")
+    pendingPaths[newWallpaper] = nil
+    admitStateView(renderer, state:status().visualView)
+    drawsBefore = #graphics.draws
+    state:draw(resources, true)
+    local newImage = assert(renderer._images[newWallpaper], "admission installs the new wallpaper")
+    Assert.isTrue(
+      drawsStateImageSince(graphics, drawsBefore, newImage),
+      "an admitted draw paints the new wallpaper"
+    )
+    Assert.isTrue(inner:stats().outstandingLeases > 0, "admission holds its leases")
+    state:dispose()
+    renderer:dispose()
+    Assert.equal(inner:stats().outstandingLeases, 0, "closing returns every visual lease")
+  end)
+  rawset(_G, "love", savedLove)
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.pending_picker_draws_the_admitted_parent()
+  local mons = monService()
+  local options = openOptions(mons, 3, "wide")
+  Assert.isTrue(options.bag:add("POTION", 1))
+  local pickerStatus = {}
+  options.childFactories.heldItemPicker = function()
+    return {
+      updateFixed = function() end,
+      takeIntent = function()
+        return nil
+      end,
+      takeResult = function()
+        return nil
+      end,
+      status = function()
+        return pickerStatus
+      end,
+      dispose = function() end,
+    }
+  end
+  local state = PcStorageState.new(options)
+  local pool, inner, _ = stateImageOwner()
+  local renderer, graphics, manifest = stateRenderer(pool)
+  admitStateView(renderer, state:status().visualView)
+  recordAdmittedParent(state)
+  local admittedPlan = state:presentationPlan()
+  Assert.notNil(admittedPlan, "admission publishes its plan")
+  local oldImage = assert(renderer._images[manifest.storage.wallpapers[0].image], "admission installs its wallpaper")
+  local resources = stateResources(renderer)
+  local savedLove = scopeStateLove(graphics)
+  local ok, err = pcall(function()
+    state:updateFixed({ { type = "action", action = "giveItem" } })
+    Assert.equal(state:status().childKind, "heldItemPicker", "Give Item opens the picker")
+    local drew, drawFailure = pcall(function()
+      state:draw(resources, false)
+    end)
+    Assert.isTrue(drew, "a pending picker keeps its draw safe: " .. tostring(drawFailure))
+    local drawsBefore = #graphics.draws
+    state:draw(resources, false)
+    Assert.isTrue(
+      drawsStateImageSince(graphics, drawsBefore, oldImage),
+      "a pending picker falls back to the admitted parent"
+    )
+    Assert.isTrue(state:presentationPlan(false) == admittedPlan, "a pending picker keeps the admitted plan")
+    local pickerDraws = 0
+    pickerStatus = {
+      presentation = {
+        render = function()
+          pickerDraws = pickerDraws + 1
+        end,
+      },
+    }
+    state:draw(resources, true)
+    Assert.equal(pickerDraws, 1, "a ready picker draws its own surface")
+    state:dispose()
+    renderer:dispose()
+    Assert.equal(inner:stats().outstandingLeases, 0, "closing returns every visual lease")
+  end)
+  rawset(_G, "love", savedLove)
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.failed_replacement_surfaces_its_cause_and_keeps_the_admitted_parent()
+  local mons = monService()
+  local state = PcStorageState.new(openOptions(mons, 1, "wide"))
+  local pool, inner, _ = stateImageOwner()
+  local renderer, graphics, manifest = stateRenderer(pool)
+  admitStateView(renderer, state:status().visualView)
+  recordAdmittedParent(state)
+  local oldImage = assert(renderer._images[manifest.storage.wallpapers[0].image], "admission installs its wallpaper")
+  local missing = manifest.storage.wallpapers[2].image
+  inner:failAfterUploads(inner.uploads, "injected wallpaper failure")
+  local resources = stateResources(renderer)
+  local savedLove = scopeStateLove(graphics)
+  local ok, err = pcall(function()
+    switchWallpaper(state, 2)
+    local ready, failure = renderer:prepare(state:status().visualView)
+    Assert.isFalse(ready, "a failed wallpaper never reports ready")
+    Assert.isTrue(
+      type(failure) == "string" and failure:find(missing, 1, true) ~= nil,
+      "the failure names its missing visual"
+    )
+    inner:clearFailure()
+    local drew, drawFailure = pcall(function()
+      state:draw(resources, false)
+    end)
+    Assert.isTrue(drew, "a failed replacement keeps its draw safe: " .. tostring(drawFailure))
+    local drawsBefore = #graphics.draws
+    state:draw(resources, false)
+    Assert.isTrue(
+      drawsStateImageSince(graphics, drawsBefore, oldImage),
+      "a failed replacement keeps painting the admitted wallpaper"
+    )
+    admitStateView(renderer, state:status().visualView)
+    drawsBefore = #graphics.draws
+    state:draw(resources, true)
+    local newImage = assert(renderer._images[missing], "recovery installs the new wallpaper")
+    Assert.isTrue(
+      drawsStateImageSince(graphics, drawsBefore, newImage),
+      "recovery paints the new wallpaper"
+    )
+    state:dispose()
+    renderer:dispose()
+    Assert.equal(inner:stats().outstandingLeases, 0, "closing returns every visual lease")
+  end)
+  rawset(_G, "love", savedLove)
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.superseded_replacement_keeps_the_admitted_parent_until_the_last_view_admits()
+  local mons = monService()
+  local state = PcStorageState.new(openOptions(mons, 1, "wide"))
+  local pool, inner, pendingPaths = stateImageOwner()
+  local renderer, graphics, manifest = stateRenderer(pool)
+  admitStateView(renderer, state:status().visualView)
+  recordAdmittedParent(state)
+  local admittedPlan = state:presentationPlan()
+  local oldImage = assert(renderer._images[manifest.storage.wallpapers[0].image], "admission installs its wallpaper")
+  local uploadsAfterFirst = inner.uploads
+  local resources = stateResources(renderer)
+  local savedLove = scopeStateLove(graphics)
+  local ok, err = pcall(function()
+    pendingPaths[manifest.storage.wallpapers[1].image] = true
+    pendingPaths[manifest.storage.wallpapers[2].image] = true
+    switchWallpaper(state, 1)
+    local ready, failure = renderer:prepare(state:status().visualView)
+    Assert.isFalse(ready, "the first replacement stays pending")
+    Assert.isNil(failure, "the first replacement reports no failure")
+    switchWallpaper(state, 2)
+    for _ = 1, 3 do
+      ready, failure = renderer:prepare(state:status().visualView)
+      Assert.isFalse(ready, "the superseding replacement stays pending")
+      Assert.isNil(failure, "the superseding replacement reports no failure")
+    end
+    Assert.equal(inner.uploads, uploadsAfterFirst, "superseded staging uploads no pixels")
+    local drew, drawFailure = pcall(function()
+      state:draw(resources, false)
+    end)
+    Assert.isTrue(drew, "a superseded draw keeps the admitted parent drawable: " .. tostring(drawFailure))
+    local drawsBefore = #graphics.draws
+    state:draw(resources, false)
+    Assert.isTrue(
+      drawsStateImageSince(graphics, drawsBefore, oldImage),
+      "a superseded draw paints the admitted wallpaper"
+    )
+    Assert.isTrue(state:presentationPlan(false) == admittedPlan, "a superseded plan stays the admitted one")
+    pendingPaths[manifest.storage.wallpapers[2].image] = nil
+    admitStateView(renderer, state:status().visualView)
+    Assert.equal(inner.uploads, uploadsAfterFirst + 1, "only the last wallpaper uploads")
+    drawsBefore = #graphics.draws
+    state:draw(resources, true)
+    local newImage = assert(
+      renderer._images[manifest.storage.wallpapers[2].image],
+      "admission installs the last wallpaper"
+    )
+    Assert.isTrue(
+      drawsStateImageSince(graphics, drawsBefore, newImage),
+      "an admitted draw paints the last wallpaper"
+    )
+    state:dispose()
+    renderer:dispose()
+    Assert.equal(inner:stats().outstandingLeases, 0, "closing returns every visual lease")
+  end)
+  rawset(_G, "love", savedLove)
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.admitted_view_in_status_is_transient_and_read_only()
+  local mons = monService()
+  local state = PcStorageState.new(openOptions(mons, 1, "wide"))
+  Assert.isNil(state:status().admittedParentView, "no view is admitted before first presentation")
+  local pool, inner, _ = stateImageOwner()
+  local renderer, _, _ = stateRenderer(pool)
+  admitStateView(renderer, state:status().visualView)
+  recordAdmittedParent(state)
+  local admitted = state:status().admittedParentView
+  Assert.notNil(admitted, "admission exposes its parent view")
+  Assert.isTrue(admitted == state:status().visualView, "the first admission matches the presented view")
+  switchWallpaper(state, 2)
+  local advanced = state:status()
+  Assert.equal(advanced.visualView.wallpaperId, 2, "the desired view advances past admission")
+  Assert.notNil(advanced.admittedParentView, "the admitted parent survives desired advances")
+  Assert.equal(advanced.admittedParentView.wallpaperId, 0, "the admitted parent stays behind the desired view")
+  advanced.admittedParentView = nil
+  Assert.notNil(state:status().admittedParentView, "the admitted reference survives caller mutation")
+  state:dispose()
+  renderer:dispose()
+  Assert.equal(inner:stats().outstandingLeases, 0, "closing returns every visual lease")
 end
 
 return { tests = T }

@@ -796,6 +796,38 @@ function FieldPresentationResources:prepareBagApplication(status)
   return assert(self.bagRenderer, "bag renderer is unavailable"):prepare(leaf)
 end
 
+-- Appends the mon icon keys one Storage view draws, skipping pages the
+-- demand already holds. A non-view (no admitted parent yet) adds nothing.
+---@param view table<string, unknown>?
+---@param iconKeys string[]
+---@param seen table<string, boolean>
+---@return string[] iconKeys
+local function iconKeysForStorageView(view, iconKeys, seen)
+  if type(view) ~= "table" then
+    return iconKeys
+  end
+  local function add(mon)
+    if type(mon) == "table" and mon.iconKey ~= nil and not seen[mon.iconKey] then
+      seen[mon.iconKey] = true
+      iconKeys[#iconKeys + 1] = mon.iconKey
+    end
+  end
+  if type(view.boxSlots) == "table" then
+    for _, mon in ipairs(view.boxSlots) do
+      add(mon)
+    end
+  end
+  if type(view.party) == "table" then
+    for _, mon in ipairs(view.party) do
+      add(mon)
+    end
+  end
+  if type(view.carry) == "table" then
+    add(view.carry.mon)
+  end
+  return iconKeys
+end
+
 ---@param status table<string, unknown> active PC status published by the host
 ---@param runtime FieldRuntime live mon catalog owner
 ---@return boolean ready
@@ -825,13 +857,47 @@ function FieldPresentationResources:preparePcApplication(status, runtime)
     if type(carry) == "table" and type(carry.mon) == "table" then
       iconKeys[#iconKeys + 1] = carry.mon.iconKey
     end
+    local desiredCount = #iconKeys
+    local seen = {} ---@type table<string, boolean>
+    for _, key in ipairs(iconKeys) do
+      seen[key] = true
+    end
+    -- The previously presented parent stays drawable while its replacement
+    -- prepares, so its icon pages join the demand until the full cutover.
+    iconKeysForStorageView(status.admittedParentView, iconKeys, seen)
     -- Readiness composes independent prerequisites without serializing enrollment.
     local iconsReady, iconsFailure =
       assert(self.monIconProvider, "PC applications borrow the shared mon icon provider"):prepareKeys(iconKeys)
     local imagesReady, imageFailure = assert(self.storageRenderer, "Storage borrows its owned renderer"):prepare(
       assert(status.visualView, "Storage preparation requires its published view")
     )
-    return iconsReady and imagesReady, iconsFailure or imageFailure
+    if not iconsReady or not imagesReady then
+      return iconsReady and imagesReady, iconsFailure or imageFailure
+    end
+    -- Both prerequisites are ready in this same update. An editor-free
+    -- view installs at once, so the host cutover in this update draws the
+    -- new view against its own leases. A transient editor view only
+    -- stages: it draws through the staged group with no image-owner
+    -- traffic, while the installed group keeps the admitted parent's
+    -- leases until an editor-free replacement commits. Installing the
+    -- editor chrome would retire paths a later pending fallback still
+    -- needs, and the fallback must never show transient chooser state.
+    local visualView = assert(status.visualView, "Storage preparation requires its published view")
+    if status.editor == nil then
+      assert(self.storageRenderer, "Storage borrows its owned renderer"):commitPrepared(visualView)
+      if #iconKeys > desiredCount then
+        local desiredKeys = {} ---@type string[]
+        for index = 1, desiredCount do
+          desiredKeys[index] = iconKeys[index]
+        end
+        -- The union already proved the desired pages ready, so demanding them
+        -- alone retires only the pages the replacement no longer needs.
+        local retired, retireFailure =
+          assert(self.monIconProvider, "PC applications borrow the shared mon icon provider"):prepareKeys(desiredKeys)
+        assert(retired, "Storage icon retirement preserves admitted readiness: " .. tostring(retireFailure))
+      end
+    end
+    return true
   elseif status.app == "mailbox" then
     for _, icon in ipairs(assert(status.icons, "Mailbox status publishes message icon snapshots")) do
       iconKeys[#iconKeys + 1] = icon.iconKey

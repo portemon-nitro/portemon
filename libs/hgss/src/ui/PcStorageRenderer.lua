@@ -66,10 +66,24 @@ local function sourceLabel(self, action)
   return sourceText(self, messageId)
 end
 
--- Resolves one admitted visual lease for drawing. Preparation installed
--- every drawn path before the present, so drawing never enrolls, polls,
--- acquires, sleeps, or creates GPU objects; a missing path is a
--- preparation bug that fails loudly instead of painting a blank visual.
+---@param pending PcStorageVisualPending
+---@return boolean complete every freshly enrolled lease staged its borrow
+local function stagedComplete(pending)
+  for _, entry in ipairs(pending.entries) do
+    if pending.staged[entry.token] == nil then
+      return false
+    end
+  end
+  return true
+end
+
+-- Resolves one admitted visual lease for drawing. An installed lease wins;
+-- a fully staged group also resolves, so a view that just reported ready
+-- draws with no image-owner traffic before its cutover installs it.
+-- Preparation stages or installs every drawn path before the present, so
+-- drawing never enrolls, polls, acquires, sleeps, or creates GPU objects;
+-- a missing path is a preparation bug that fails loudly instead of
+-- painting a blank visual.
 ---@param self PcStorageRenderer
 ---@param visual table<string, unknown>
 ---@return table<string, unknown> lease resolving the immutable visual
@@ -77,6 +91,15 @@ local function imageFor(self, visual)
   assert(type(visual) == "table" and type(visual.image) == "string", "Storage visuals carry image paths")
   local path = visual.image
   local lease = self._leases[path]
+  if lease == nil then
+    local pending = self._pending
+    if pending ~= nil and stagedComplete(pending) then
+      local token = pending.tokenByPath[path]
+      if token ~= nil then
+        lease = pending.staged[token]
+      end
+    end
+  end
   assert(lease ~= nil, "Storage visual was not admitted before drawing: " .. path)
   return lease
 end
@@ -294,10 +317,13 @@ local function publishPending(self, pool, pending)
   self._pending = nil
 end
 
---- Admits one published view outside drawing: enrolls the exact visible
+--- Stages one published view outside drawing: enrolls the exact visible
 --- paths once, then polls and borrows at most four ready leases per
---- call. Returns true once every required lease is installed and the
---- view draws with no image-owner traffic; false while the worker is
+--- call. Returns true once every required lease is staged or already
+--- installed and the view could draw with no image-owner traffic;
+--- installation waits for an explicit commit once every other
+--- prerequisite for the same view is ready, so a pending replacement
+--- never retires the installed group. Returns false while the worker is
 --- still resolving, or false with the missing path's cause when a
 --- required visual fails. A superseded resolving group never publishes:
 --- its partial work returns while the installed group stays drawable.
@@ -345,13 +371,32 @@ function PcStorageRenderer:prepare(view)
       end
     end
   end
-  for _, entry in ipairs(pending.entries) do
-    if pending.staged[entry.token] == nil then
-      return false
-    end
+  if not stagedComplete(pending) then
+    return false
   end
-  publishPending(self, pool, pending)
   return true
+end
+
+--- Installs one fully staged visual group: the staged leases move into
+--- the installed group atomically and only the leases the new group no
+--- longer needs return. A view matching the installed group is a quiet
+--- no-op. Any other view without a complete staged group is a
+--- programming error, so a pending replacement can never retire the
+--- installed visuals before its own admission.
+---@param view table<string, unknown> the staged snapshot to install
+function PcStorageRenderer:commitPrepared(view)
+  assert(not self._disposed, "disposed Storage renderer commits nothing")
+  assert(type(view) == "table", "Storage commit requires its published view")
+  local pool = assert(self._pool, "Storage renderer borrows its shared image owner")
+  local paths = requiredPaths(self, view)
+  local signature = table.concat(paths, "\0")
+  local pending = self._pending
+  if pending == nil or pending.signature ~= signature then
+    assert(self._readySignature == signature, "Storage commits only its staged view")
+    return
+  end
+  assert(stagedComplete(pending), "Storage commits only a fully staged view")
+  publishPending(self, pool, pending)
 end
 
 ---@param options { graphics: love.graphics, manifest: table<string, unknown>, text: table<string, unknown>, imagePool: table<string, unknown> }
