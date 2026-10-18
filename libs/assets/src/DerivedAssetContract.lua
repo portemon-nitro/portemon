@@ -497,6 +497,16 @@ DerivedAssetContract.pokegear = {
   schema = "g4-pokegear-assets-v2",
 }
 
+-- The Pokedex family carries the semantic data catalog (species orders,
+-- policies, measurements, areas, text bindings) and the application
+-- presentation manifest (page roles, cells, animations, personalization)
+-- as two independently published scopes under one versioned identity.
+DerivedAssetContract.pokedex = {
+  cacheFormat = "pokedex-cache-v1",
+  catalogSchema = "g4-pokedex-catalog-v1",
+  schema = "g4-pokedex-assets-v1",
+}
+
 -- The summary class carries the source-independent native summary
 -- presentation: the canonical panes, group background variants, semantic
 -- windows, background/stamp/picture visuals, lowered text, palette roles,

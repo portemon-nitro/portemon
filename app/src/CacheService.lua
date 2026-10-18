@@ -19,6 +19,7 @@ local VALID_KINDS = {
   ["icon-page"] = true,
   ["battle-scene"] = true,
   ["audio-bank"] = true,
+  pokedex = true,
 }
 local VALID_URGENCIES = { required = true, near = true, sweep = true }
 local URGENCY_ORDER = { required = 0, near = 10, sweep = 100 }
@@ -136,6 +137,15 @@ local function selectorKey(selector)
       "audio-bank request requires a non-negative integer bankId"
     )
     return "audio-bank:" .. tostring(selector.bankId)
+  elseif kind == "pokedex" then
+    assert(selector.pageId == nil, "pokedex request carries no page selector")
+    assert(selector.name == nil, "pokedex request carries no milestone selector")
+    assert(selector.mapId == nil, "pokedex request carries no map selector")
+    assert(selector.matrixMemberId == nil, "pokedex request carries no cell selector")
+    assert(selector.index == nil, "pokedex request carries no cell selector")
+    assert(selector.sceneKey == nil, "pokedex request carries no scene selector")
+    assert(selector.bankId == nil, "pokedex request carries no bank selector")
+    return "pokedex"
   else
     assert(
       type(selector.pageId) == "number" and selector.pageId % 1 == 0 and selector.pageId >= 0,
@@ -243,6 +253,9 @@ function CacheService:request(epoch, selector)
     command.sceneKey = selector.sceneKey
   elseif selector.requestKind == "audio-bank" then
     command.bankId = selector.bankId
+  elseif selector.requestKind == "pokedex" then
+    -- The selector-free pokedex demand carries no job, source, page, or
+    -- map identity: the dispatched packet names its kind and urgency only.
   else
     command.pageId = selector.pageId
   end

@@ -77,6 +77,7 @@ local VALID_KINDS = {
   ["icon-page"] = true,
   ["battle-scene"] = true,
   ["audio-bank"] = true,
+  pokedex = true,
 }
 local VALID_URGENCIES = { required = true, near = true, sweep = true }
 
@@ -327,6 +328,14 @@ local function validateSelectors(params)
     if not Sources.validateSceneKey(params.sceneKey) then
       return "battle-scene request needs its background/terrain/time sceneKey"
     end
+  elseif kind == "pokedex" then
+    -- The selector-free pokedex demand carries no job, source, page, or
+    -- map identity: urgency alone rides the registered global job.
+    for _, field in ipairs({ "name", "mapId", "matrixMemberId", "index", "pageId", "sceneKey", "bankId" }) do
+      if params[field] ~= nil then
+        return "pokedex request carries no " .. field .. " selector"
+      end
+    end
   end
   return nil
 end
@@ -351,6 +360,8 @@ function Worker:_invoke(params)
     return session:requestJob("audio-bank", tostring(params.bankId), urgency)
   elseif kind == "icon-page" then
     return session:requestIconPage(params.pageId, urgency)
+  elseif kind == "pokedex" then
+    return session:requestJob("pokedex", "global", urgency)
   elseif kind == "battle-scene" then
     return session:requestJob("battle-scene", params.sceneKey, urgency)
   end

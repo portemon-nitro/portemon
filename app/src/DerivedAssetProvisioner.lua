@@ -154,6 +154,19 @@ function DerivedAssetProvisioner.new(options)
       )
       return ask("battle-scene", urgency, { sceneKey = sceneKey })
     end,
+    -- The single bounded Pokedex readiness demand: field boot consumes
+    -- the data scope eagerly while the browser or registration lease
+    -- requests presentation through this one semantic method (dot call).
+    -- It carries only the existing urgency vocabulary, never a species,
+    -- archive, page, or arbitrary job selector. A ready worker result
+    -- reads true; anything else reads pending with retained attribution.
+    requestPokedex = function(urgency)
+      local ready, failure = ask("pokedex", urgency)
+      if ready then
+        return true
+      end
+      return nil, failure
+    end,
     milestoneStatus = function(name)
       assert(type(name) == "string" and name ~= "", "milestone progress requires its name")
       local active = guard()

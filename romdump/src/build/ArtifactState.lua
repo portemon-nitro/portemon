@@ -62,6 +62,12 @@ ArtifactState.KINDS = {
   pc = true,
   pokegear = true,
   ["pokegear-word-entry"] = true,
+  -- Two independently published Pokedex scopes: the semantic data catalog
+  -- (field-runtime prerequisite) and the on-demand presentation manifest.
+  -- Each owns its exact payload and marker files, never the shared data
+  -- directory root, so one scope cannot erase the other.
+  ["pokedex-data"] = true,
+  pokedex = true,
   summary = true,
   -- One staged battle input artifact per job: move battle facts, trainer
   -- records, and encounter tables each own their payload and marker.
@@ -154,6 +160,10 @@ local function checkKey(kind, key)
   end
   if kind == "pokegear-word-entry" then
     assert(key == "global", "pokegear word-entry artifacts require the global key")
+    return
+  end
+  if kind == "pokedex-data" or kind == "pokedex" then
+    assert(key == "global", "pokedex artifacts require the global key")
     return
   end
   if kind == "battle-presentation" then
