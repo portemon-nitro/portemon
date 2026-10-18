@@ -1,7 +1,7 @@
 -- Converts normalized executable images into conservative application
 -- behavior evidence: structural OverlayManagerTemplate candidate discovery,
 -- reachable Thumb control-flow/exact-value analysis, the generic bounded
--- signed-halfword switch idiom, and pointer/literal census. No decomp/config
+-- signed-halfword switch idiom, and pointer/literal census. No external reference or config
 -- input; every fact is derived from the target ROM's own bytes.
 
 local Errors = require("libs.errors.src.Errors")

@@ -1,6 +1,6 @@
 -- Follower-specific source selection compiled into existing field-actor
 -- visual definitions. Species/form/gender resolve to source follower sprites
--- through src/follow_mon.c FollowMon_GetSpriteID (model LUT plus form-count
+-- through FollowMon_GetSpriteID (model LUT plus form-count
 -- and female-form tables); each sprite compiles through the shared
 -- FieldActorCompiler sprite pipeline into a directional atlas visual with
 -- source-authentic placement, poses, timing, and render state. A static-model
@@ -11,9 +11,7 @@
 -- (FOLLOWER_VISUAL_ID_BASE + tp_param index) so they cannot collide with map
 -- actor IDs. The enormous source species-to-model LUT never reaches runtime:
 -- the mon catalog carries only the resolved visual ID plus normalized size
--- and object parameters. Source: pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981
--- src/follow_mon.c, include/follow_mon.h,
--- include/constants/follow_mon_idx.h.
+-- and object parameters. Source: the retail ROM.
 
 local Errors = require("libs.errors.src.Errors")
 local MonSources = require("romdump.src.config.MonSources")
@@ -106,22 +104,20 @@ local function assertFollowerCapability(visual, visualId, spriteId)
   end
 end
 
--- Retail idle-bob selection for the follower object: ov01_022055B0 returns the
--- low nibble of map-object param 1 for object 253, and src/follow_mon.c packs
+-- Retail idle-bob selection for the follower object: the source returns the
+-- low nibble of map-object param 1 for object 253, and packs
 -- that param from follower parameter bytes 1..2 as (data[1] << 8) | data[2],
 -- so the third archive byte carries the observed nibble. Source:
--- pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981
--- asm/overlay_01_022053EC.s, src/follow_mon.c.
+-- the retail ROM.
 ---@param member string validated four-byte follower parameter member
 ---@return boolean
 local function usesAlternateIdleBob(member)
   return string.byte(member, 3) % 16 ~= 0
 end
 
--- Retail ov01_021F8FC0 bob timing for the alternate branch, on the shared
+-- Retail bob timing for the alternate branch, on the shared
 -- 20-tick idle clock: south rests mid-loop while north/west/east hold the
--- first half raised. Source: pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981
--- asm/overlay_01_021F8D80.s.
+-- first half raised. Source: the retail ROM.
 ---@param direction string cardinal facing
 ---@param tick integer zero-based normalized idle tick
 ---@return boolean

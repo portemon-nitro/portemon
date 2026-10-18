@@ -42,8 +42,7 @@ end
 -- Starter portraits decoded from the retail source through the row layout:
 -- the unscanned 6400-byte surface is 80 rows of 80 bytes with two 40-byte
 -- frame halves per row, each byte expanding low nibble then high nibble
--- (pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981, src/pokepic.c
--- UnscanPokepic_PtHGSS row addressing pRawCharData[j * 80 + k]). Expected
+-- (retail ROM portrait unscan row addressing, byte j * 80 + k). Expected
 -- pixels are recomputed here from the dump's own character and palette
 -- members, never from the portrait compiler output, so a fragmented
 -- tile-major atlas fails these samples.

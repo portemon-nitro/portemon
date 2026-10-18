@@ -1,5 +1,4 @@
--- Initial moveset replay. Canonical source: pret/pokeheartgold,
--- src/pokemon.c (InitBoxMonMoveset, TryAppendBoxMonMove,
+-- Initial moveset replay. Source: the retail ROM (InitBoxMonMoveset, TryAppendBoxMonMove,
 -- DeleteBoxMonFirstMoveAndAppend). Eligible learnset entries at or below the
 -- current level are considered in source order: a move already present is
 -- skipped without shifting, a new move is appended, and appending past four

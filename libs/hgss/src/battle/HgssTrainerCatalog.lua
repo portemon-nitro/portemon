@@ -1,8 +1,7 @@
 -- Immutable semantic trainer templates and selection programs. Templates
 -- arrive as validated producer data: the trainer compiler projection of the
--- native trainer records (pret/pokeheartgold include/trainer_data.h with
--- the four TRTYPE party variants, the rival-name indirection of
--- src/trainer_data.c, and AI flags projected per bit). The catalog resolves
+-- native trainer records (the four TRTYPE party variants, the
+-- rival-name indirection, and AI flags projected per bit). The catalog resolves
 -- current runtime content keys, preserves record and program order, and
 -- hands out detached copies so consumers can never mutate published
 -- templates. Malformed records fail at this owner before anything reads

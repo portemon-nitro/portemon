@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Iterable
 
 
-DECLARATIVE_PREFIXES = ("romdump/src/config/", "romdump/src/reference/")
+DECLARATIVE_PREFIXES = ("romdump/src/config/", "romdump/src/catalog/")
 DECLARATIVE_MARKER = "-- codehealth: declarative"
 MARKER_SCAN_LINES = 5
 

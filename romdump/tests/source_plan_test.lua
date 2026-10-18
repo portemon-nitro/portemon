@@ -6,7 +6,7 @@
 -- pass does bounded planning work with urgent demand first, a warm selection
 -- performs no aggregate compilation, and exhaustive scheduling covers every
 -- current family exactly once. Map identities come from the frozen
--- pokeheartgold map-header reference; no commercial bytes are involved.
+-- the retail ROM map-header reference; no commercial bytes are involved.
 
 local Assert = require("tests.support.Assert")
 local ArtifactJobs = require("romdump.src.build.ArtifactJobs")

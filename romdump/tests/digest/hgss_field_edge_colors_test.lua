@@ -1,6 +1,6 @@
 -- Tests for HgssFieldEdgeColors: the two real HGSS field edge-color tables
--- (ov01_02208BA0 / ov01_02208BB0) and the per-area selector byte that picks
--- between them. Source: pret/pokeheartgold overlay_01_021FB878.s.
+-- (the two ROM tables) and the per-area selector byte that picks
+-- between them. Source: the retail ROM.
 
 local Assert = require("tests.support.Assert")
 local HgssFieldEdgeColors = require("romdump.src.digest.field.HgssFieldEdgeColors")
@@ -57,7 +57,7 @@ function T.selector_rejects_invalid_input()
   end)
 end
 
-function T.packed_values_decode_to_raw_decomp_bytes()
+function T.packed_values_decode_to_raw_rom_bytes()
   local r, g, b = decodeRgb555(HgssFieldEdgeColors.TABLE_A[0])
   Assert.equal(r, 0)
   Assert.equal(g, 0)

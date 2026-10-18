@@ -3,8 +3,8 @@ local Operands = require("romdump.src.digest.script.lowering.Operands")
 local FieldServiceHandlers = require("romdump.src.digest.script.lowering.FieldServiceHandlers")
 local BattleHandlers = require("romdump.src.digest.script.lowering.BattleHandlers")
 local MovementDecoder = require("romdump.src.digest.script.MovementDecoder")
-local SignpostCommands = require("romdump.src.reference.hgss.signpost_commands")
-local PlayerAvatar = require("romdump.src.reference.hgss.player_avatar")
+local SignpostCommands = require("romdump.src.catalog.hgss.signpost_commands")
+local PlayerAvatar = require("romdump.src.catalog.hgss.player_avatar")
 local Errors = require("libs.errors.src.Errors")
 local HgssObjectMovement = require("romdump.src.digest.field.HgssObjectMovement")
 local FieldMoveSources = require("romdump.src.config.FieldMoveSources")
@@ -387,8 +387,8 @@ local FOLLOWER_MOVEMENT_TYPES = {
 
 local function followerSetMovementType(ins)
   -- ScrCmd_FollowingPokemonMovement carries a persistent map-object movement
-  -- selector (sub_0205FC94 clears the controller and calls
-  -- MapObject_SetMovement, never a movement-script command). Normalize
+  -- selector (the source clears the controller and sets
+  -- the movement directly, never a movement-script command). Normalize
   -- through the shared object-movement table and keep only the three
   -- follower modes; anything else is attributed unsupported source.
   local raw = Operands.operandValue(ins.operands[1])
@@ -805,7 +805,7 @@ local function nicknameInput(ins)
       originalName = "ScrCmd_NicknameInput",
       arguments = { slot, Operands.operandValue(ins.operands[2]) },
       sourceOffset = ins.offset,
-      reason = "Bug Contest caught-Pokemon nickname target has no runtime storage owner",
+      reason = "Bug Contest caught mon nickname target has no runtime storage owner",
     }
   end
   return {
@@ -817,7 +817,7 @@ end
 
 -- ScrCmd_SetStarterChoice carries one value-or-variable operand. It stores
 -- the operand into the player-starter script variable and continues in the
--- same tick (pinned pokeheartgold scrcmd_c.c ScrCmd_SetStarterChoice). The
+-- same tick (retail ROM behavior). The
 -- starter scene already published the party, so the command reuses the
 -- existing variable store; the symbolic name resolves through the field
 -- variable catalog at runtime.
@@ -1475,9 +1475,9 @@ local function contextChoice(ins)
   return { op = "context_choice", result = Operands.varRef(ins.operands[1]) }
 end
 
--- ScrCmd_815 in src/scrcmd_c.c reads an immediate selector and only sets the
+-- ScrCmd_815 reads an immediate selector and only sets the
 -- field display-return target. The mart host always restores the default
--- target, as field_system.c::sub_0203E33C does for selector zero. Other values
+-- target, as the retail ROM does for selector zero. Other values
 -- are not equivalent and remain explicitly unsupported.
 local function setDefaultFieldReturn(ins)
   if ins.operands[1].raw == 0 then
@@ -1942,7 +1942,7 @@ local FieldHandlers = {
   [821] = GearLowering.getBuenasPassword,
   [437] = FieldServiceHandlers.discardValue,
   -- ScrCmd_NopVar490 is essentially a nop over one variable operand
-  -- (pret/pokeheartgold src/scrcmd_battle_hall.c): it shares the
+  -- (retail ROM): it shares the
   -- discard_value semantic exactly like opcodes 219/279 share whiteout.
   [490] = FieldServiceHandlers.discardValue,
   [446] = FieldServiceHandlers.currentMapId,

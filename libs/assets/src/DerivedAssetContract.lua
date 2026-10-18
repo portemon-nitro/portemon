@@ -113,12 +113,12 @@
 -- semantic id), so a stale pre-change cache without that section must fail
 -- readiness.
 -- fieldUi schema 17: selected name slots preserve their NANR animation and
--- Pokémon naming carries the source anchor and mon-icon frame selection.
+-- mon naming carries the source anchor and mon-icon frame selection.
 -- Species pixels remain owned by the shared mon-icon atlas.
--- fieldUi schema 18: Pokémon naming preserves every validated source OAM
+-- fieldUi schema 18: mon naming preserves every validated source OAM
 -- placement and carries generated gender marker animations.
 --
--- fieldUi schema 19: Pokémon naming publishes visible semantic dynamic-icon
+-- fieldUi schema 19: mon naming publishes visible semantic dynamic-icon
 -- parts and consumer-safe animation geometry; icon pixels remain in the
 -- shared mon-icon atlas.
 -- fieldUi schema 20: Naming Screen interaction geometry uses fixed canonical

@@ -795,7 +795,7 @@ function T.tests.save_gate_denies_live_controllers_and_defers_to_later_gates()
   local martBusy = {
     pokegear = bundle,
     pcApplicationHost = idleHost,
-    pokemonMenu = nil,
+    partyMenu = nil,
     session = {
       player = { motion = "idle" },
       transition = { phase = "idle" },

@@ -10,7 +10,7 @@
 local PlayerProgression = {}
 
 -- Semantic badge order: the source's Johto badge indexes 0..7 followed by
--- the Kanto indexes 8..15 (pret/pokeheartgold field_move.c badge gates).
+-- the Kanto indexes 8..15.
 PlayerProgression.BADGE_ORDER = {
   "zephyr",
   "hive",

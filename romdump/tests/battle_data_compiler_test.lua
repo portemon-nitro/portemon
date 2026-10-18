@@ -1,5 +1,5 @@
 -- Synthetic battle-metadata compilation: hand-built native move-table entries
--- (pret/pokeheartgold include/move.h MoveTbl, 16 bytes) project through the
+-- (the retail ROM's 16-byte move table) project through the
 -- battle-data compiler into source-independent facts, malformed entries fail
 -- with attributed errors before anything is published, the native behavior
 -- inventory covers every usable binding with no silent fallback, and loading
@@ -360,7 +360,7 @@ end
 
 -- Species weight projection: member 1 of the pokedex weight NARC is an s32
 -- array indexed by species id carrying hectograms
--- (src/battle/battle_command.c GetMonWeight). The vector below is a
+-- (the retail ROM's weight table). The vector below is a
 -- hand-built table in that layout, never bytes copied from a dump.
 local function s32entry(value)
   local unsigned = value
@@ -440,7 +440,7 @@ end
 
 -- Item throw facts: struct ItemData bytes carry pluckEffect@4,
 -- flingEffect@5, flingPower@6, naturalGiftPower@7, and the bitfield u16@8
--- with naturalGiftType:5 at bits 0-4 (include/item.h). Hand-built member,
+-- with naturalGiftType:5 at bits 0-4. Hand-built member,
 -- never dump bytes.
 function T.item_fling_and_natural_gift_decode_from_source_bytes()
   local ItemCatalogCompiler = require("romdump.src.digest.items.ItemCatalogCompiler")

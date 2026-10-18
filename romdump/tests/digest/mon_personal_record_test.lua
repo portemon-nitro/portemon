@@ -1,11 +1,10 @@
 -- Personal-record decoding contract for the mon catalog compiler.
--- Fixture layout mirrors pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981
--- include/pokemon_types_def.h BASE_STATS: six base stats, two types, catch
+-- Fixture layout mirrors the retail ROM's base stats: six base stats, two types, catch
 -- rate, base experience, a packed u16 EV yield word, two held items,
 -- gender/egg-cycle/friendship/growth fields, two egg groups, two u8
 -- abilities, the Great Marsh rate, packed color/flip metadata, two reserved
 -- bytes, and four TM/HM compatibility words. The producer verifies every
--- offset against the pinned decomp; the ROM fidelity suite anchors real values.
+-- offset against the retail ROM; the ROM fidelity suite anchors real values.
 
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")

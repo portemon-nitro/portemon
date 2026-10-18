@@ -723,7 +723,7 @@ function T.modal_hosts_compose_identically_with_and_without_presentation()
     "contextChoiceProvider",
     "starterProvider",
     "starterChoice",
-    "pokemonNaming",
+    "monNaming",
     "applications",
     "applicationHost",
   }
@@ -766,7 +766,7 @@ function T.modal_hosts_compose_identically_with_and_without_presentation()
   Assert.equal(presented.applicationHost:status().phase, "closed", "the application host starts closed")
   Assert.isFalse(presented.applicationHost:requestOpen(3), "an unavailable menu leaves the field running")
   Assert.isFalse(presented.starterChoice:isActive(), "starter choice starts inactive")
-  Assert.isFalse(presented.pokemonNaming:isActive(), "naming starts inactive")
+  Assert.isFalse(presented.monNaming:isActive(), "naming starts inactive")
   local firstDialogue = presented.dialogue
   local rebuildAudio = { count = 0 }
   Coordinator.new(presented):composeModalHosts(modalBoot(), modalCallbacks(rebuildAudio, { current = nil }))

@@ -30,7 +30,7 @@ end
 local CARDINAL_DIRECTIONS = { "north", "south", "west", "east" }
 local LOCOMOTION_POSES = { "idle", "walk" }
 
--- Pokemon field visuals idle from their own source animation: the compiled
+-- Mon field visuals idle from their own source animation: the compiled
 -- directional idle pose runs the same facing animation on the same clock as
 -- the walk pose instead of a one-frame hold, with the source vertical offset
 -- coupled to the animation phase.

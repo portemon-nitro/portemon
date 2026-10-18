@@ -9,10 +9,10 @@ local T = {}
 
 local function serviceModule()
   local ok, result = pcall(require, "libs.hgss.src.mons.HgssMonService")
-  Assert.isTrue(ok, "Pokemon custody must support atomic party and box changes")
+  Assert.isTrue(ok, "mon custody must support atomic party and box changes")
   Assert.isTrue(
     type(result.preparePcChanges) == "function",
-    "Pokemon custody must expose a joint prepared change for party and boxes"
+    "mon custody must expose a joint prepared change for party and boxes"
   )
   return result
 end

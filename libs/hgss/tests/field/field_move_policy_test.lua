@@ -1,6 +1,6 @@
 -- FieldMovePolicy contract tests: source-ordered eligibility over copied
 -- context records. Every paired-failure case proves the first source reason
--- wins; the following Pokemon alone never triggers the human-escort
+-- wins; the following mon alone never triggers the human-escort
 -- refusal; checks never mutate HP/PP state (contexts are value records).
 
 local Assert = require("tests.support.Assert")

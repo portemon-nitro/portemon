@@ -1,5 +1,5 @@
 -- Source-faithful non-player trainer party generation. Ports
--- pret/pokeheartgold src/trainer_data.c CreateNPCTrainerParty across all
+-- the retail ROM's NPC trainer party creation across all
 -- four trainer record variants (plain, custom moves, held item, both):
 -- difficulty, level, numeric species, and numeric trainer identity seed a
 -- private generator per member; the generator advances once per numeric
@@ -37,7 +37,7 @@ local HgssTrainerFactory = {}
 HgssTrainerFactory.__index = HgssTrainerFactory
 
 -- Native trainer-class Wanderers in class-index order, transcribed from the
--- class gender table in src/trainer_data.c: M for male, F for female, D for
+-- class gender table: M for male, F for female, D for
 -- double. Female-based classes seed the feminine personality byte, every
 -- other class the masculine one. The table also drives the per-member
 -- generator roll count, which equals the numeric class identity.

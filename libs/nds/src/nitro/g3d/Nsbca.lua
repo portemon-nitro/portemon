@@ -1,7 +1,6 @@
 -- NSBCA (JNT0) joint animation decoder and sampler.
 --
--- Authority: pokediamond arm9/asm/NNS_G3D_nsbca.s (pinned commit
--- 038cccaed, 2025-12-24), layout cross-verified against every NSBCA member
+-- Authority: the retail ROM's NitroSystem code, layout cross-verified against every NSBCA member
 -- of the real HGSS field animation archive. Record layout (record-relative):
 --
 --   +0x00 u32 magic "J\0AC"   +0x04 u16 numFrame     +0x06 u16 numAnm

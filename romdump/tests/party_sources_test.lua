@@ -11,7 +11,7 @@ local T = {}
 
 function T.provenance_records_both_pins()
   Assert.isTrue(type(PartySources.provenance.repoPin) == "string", "the producer records the research commit")
-  Assert.isTrue(type(PartySources.provenance.decompPin) == "string", "the producer records the audited decomp pin")
+  Assert.isTrue(type(PartySources.provenance.romAudit) == "string", "the producer records the audited source")
   Assert.isTrue(#PartySources.provenance.repoPin >= 7, "the research pin is a real commit prefix")
 end
 

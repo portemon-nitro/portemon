@@ -2,7 +2,7 @@
 -- fixed NNSG3dResMatData prefix (+0x2C), governed by bits of the material's
 -- flags word (+0x1E).
 --
--- Authority: pokediamond arm9/asm/NNS_G3D_sbc.s, the SBC MAT handler
+-- Authority: the retail ROM's SBC MAT handler
 -- (NNSi_G3dFuncSbc_MAT_InternalDefault, ~0x020B8BC4), which locates the
 -- material record, tests the flags, and skips the present components to
 -- reach the texture matrix; layout cross-verified against all 29 real

@@ -1,5 +1,5 @@
 -- Pure incremental mon progression. Native anchor:
--- pret/pokeheartgold src/battle/battle_command.c Task_GetExp (level-up
+-- retail ROM Task_GetExp (level-up
 -- detection per crossed level, learnset traversal in source order, learned
 -- moves reset to base power points) composed with the existing
 -- Experience/MonStats/learnset owners. This module owns caller-neutral mon

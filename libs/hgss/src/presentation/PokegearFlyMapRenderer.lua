@@ -3,8 +3,7 @@
 -- indicators, the player, the cursor, the chrome frame, the prompt bar and
 -- the Fly/Quit menu; the information pane composes the Fly banner background,
 -- the location preview, the info frame and its text. Follows the Fly entry
--- of the Pokegear map application of pret/pokeheartgold (fly_map.c,
--- overlay_101_021EDCE0.c): the Town map shows only the location name, its
+-- of the Pokegear map application of the retail ROM: the Town map shows only the location name, its
 -- banner shifted down the screen. Draws from the selector's detached view
 -- and the plan's resolved image paths, borrows prepared images, and allocates
 -- none while drawing. The two panes carry no shell: a host wraps each in its

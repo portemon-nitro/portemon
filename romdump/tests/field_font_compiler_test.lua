@@ -165,8 +165,8 @@ local function fixture(opts)
   local tile = string.char(0xBB, 0x55) .. string.rep(string.char(0xAA, 0x55), 7)
   local glyphMember = buildFontMember(1, glyph64(tile), { 6 })
   local font4Member = buildFontMember(1, glyph64(tile), { 7 })
-  -- Font palette slots mirroring the ROM font palette (src/font.c
-  -- sFontInfos[0]: fgColor=1, shadowColor=2, bgColor=0xF): slot 0 = unused
+  -- Font palette slots mirroring the ROM font palette
+  -- (fgColor=1, shadowColor=2, bgColor=0xF): slot 0 = unused
   -- green, 1 = fg (0x296B dark), 2 = shadow (0x5EF5 gray), 15 = bg (white).
   -- Slots 3..10 are the additional color-band foreground/shadow pairs and
   -- slots 11..14 the focus-indicator colors; all are distinct so the

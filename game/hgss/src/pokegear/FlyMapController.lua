@@ -3,7 +3,7 @@
 -- markings. Fly confirms one visited flypoint through the source's
 -- "Fly / Quit" menu and reports it by its semantic key with its operation
 -- identity; the view-only Town map never settles a destination. Follows
--- fly_map.c and overlay_101_021EB568.c of pret/pokeheartgold. World motion
+-- the retail ROM's Fly map. World motion
 -- lives in MapWorld, location and flypoint queries in MapLocations. Pure
 -- module: no love, no I/O.
 

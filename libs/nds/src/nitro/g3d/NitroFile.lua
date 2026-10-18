@@ -1,6 +1,6 @@
 -- Decoder for the common Nitro 3D container header shared by BMD0 (NSBMD) and
--- BTX0 (NSBTX) files. Layout is NNSG3dResFileHeader in pokeheartgold
--- lib/include/nnsys/g3d/binres/res_struct.h: a 16-byte header followed by a
+-- BTX0 (NSBTX) files. Layout is NNSG3dResFileHeader as in the retail ROM's Nitro files (see GBATEK where
+-- applicable): a 16-byte header followed by a
 -- u32 table of section offsets, each pointing at an NNSG3dResDataBlockHeader
 -- (4-char kind + u32 size). Pure domain module; decode returns (file | nil,
 -- err) at the public boundary and preserves unknown sections rather than

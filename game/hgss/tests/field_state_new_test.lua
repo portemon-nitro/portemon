@@ -15,7 +15,7 @@ local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local FieldTerrainEffectController = require("libs.hgss.src.world.FieldTerrainEffectController")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldState = require("game.hgss.src.field.FieldState")
-local InactivePokemonNaming = require("tests.support.InactivePokemonNaming")
+local InactiveMonNaming = require("tests.support.InactiveMonNaming")
 local SummaryAcceptanceFixture = require("tests.support.SummaryAcceptanceFixture")
 
 local T = {}
@@ -27,7 +27,7 @@ local function stubPresentationRuntime(cache)
   cache = cache or FieldStatePresentationFixture.cache()
   local effects = FieldStatePresentationFixture.terrainEffects(cache)
   return setmetatable({
-    pokemonNaming = InactivePokemonNaming.new(),
+    monNaming = InactiveMonNaming.new(),
     cacheFs = cache or FieldStatePresentationFixture.cache(),
     derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
     -- The presented composition borrows its session image owner for
@@ -224,7 +224,7 @@ function T.update_forwards_to_the_runtime()
   local updates = 0
   local state = setmetatable({
     runtime = {
-      pokemonNaming = InactivePokemonNaming.new(),
+      monNaming = InactiveMonNaming.new(),
       update = function()
         updates = updates + 1
       end,

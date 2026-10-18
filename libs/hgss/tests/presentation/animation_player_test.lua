@@ -3,8 +3,8 @@
 -- FRAME_UNIT) and advance by one FRAME_UNIT per updateFixed. HGSS's field
 -- animation manager steps 0x1000 per tick and reports done through the
 -- checked advance (Field3dModelAnimation_FrameAdvanceAndCheck clamps the
--- positive terminal at numFrame << 12 and sets done there; pokeheartgold
--- overlay_01_021FB878.s), so a "once" clip finishes exactly when frameFx
+-- positive terminal at numFrame << 12 and sets done there in the retail
+-- ROM), so a "once" clip finishes exactly when frameFx
 -- reaches frameCount * FRAME_UNIT -- the single completion notion: playback
 -- always runs forward from 0. Pure domain module.
 

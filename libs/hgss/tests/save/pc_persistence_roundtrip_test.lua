@@ -1,4 +1,4 @@
--- Existing save migration preserves Pokemon and random-generator state.
+-- Existing save migration preserves mon and random-generator state.
 
 local Assert = require("tests.support.Assert")
 local GameSave = require("libs.hgss.src.save.GameSave")

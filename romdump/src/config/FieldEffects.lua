@@ -2,8 +2,7 @@
 -- the curated field_static_models archive; generated assets carry semantic
 -- definitions and cache references instead of source archive details.
 --
--- Surf attachment presentation (pret/pokeheartgold ov01_021FE7AC,
--- ov01_021FE868, ov01_021FE8C8): the surf resource loader attaches the field
+-- Surf attachment presentation (retail ROM): the surf resource loader attaches the field
 -- model selected below, starts player presentation at {0, 0x4000, 0x4000},
 -- and bounces an oscillator height between 0x1000 and 0x4000 in 0x400 steps.
 -- Player presentation Y is the oscillator plus 0x4000, player Z stays 0x4000,
@@ -113,8 +112,7 @@ return {
       },
     },
   },
-  -- The source callback table `ov01_02209544` in
-  -- pret/pokeheartgold@9d8b7591f09b65804da2fb2dfd56f320633e0d36
+  -- The retail ROM's follower reaction callback table
   -- pairs each reaction's BTX0 texture member with a companion four-frame
   -- selector table. Both source identities stay here; generated keys stay semantic.
   followerReactions = {

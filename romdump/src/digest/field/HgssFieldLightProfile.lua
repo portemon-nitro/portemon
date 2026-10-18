@@ -8,7 +8,7 @@
 -- CRLF) and returns normalized integer records; hashing/IO stays with the
 -- caller. No source text grammar, file path, or HGSS parsing error belongs in
 -- the runtime half. Source: the field light tables and loader in
--- pret/pokeheartgold.
+-- the retail ROM.
 
 local Errors = require("libs.errors.src.Errors")
 

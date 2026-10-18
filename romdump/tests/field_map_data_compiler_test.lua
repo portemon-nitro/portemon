@@ -490,7 +490,7 @@ end
 
 function T.map_header_message_and_script_banks_are_emitted()
   -- Maps 60/61 associate to message banks 542/543 through the frozen map
-  -- catalog (src/data/map_headers.h); the artifact must carry them so runtime
+  -- catalog; the artifact must carry them so runtime
   -- code never branches on map ids.
   local romFs, sha1, hashLua = fixture()
   local newBark = assert(FieldMapDataCompiler.compile(romFs, 60, sha1, hashLua))

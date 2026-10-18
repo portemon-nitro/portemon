@@ -9,11 +9,11 @@ local FieldScripts = {}
 -- so subset reads canonicalize exactly like the whole-archive decode.
 local function catalog()
   return {
-    sounds = require("romdump.src.reference.hgss.sndseq").byId,
-    flags = require("romdump.src.reference.hgss.flags").byId,
-    vars = require("romdump.src.reference.hgss.vars").byId,
-    maps = require("romdump.src.reference.hgss.maps").byId,
-    spawns = require("romdump.src.reference.hgss.spawns").byId,
+    sounds = require("romdump.src.catalog.hgss.sndseq").byId,
+    flags = require("romdump.src.catalog.hgss.flags").byId,
+    vars = require("romdump.src.catalog.hgss.vars").byId,
+    maps = require("romdump.src.catalog.hgss.maps").byId,
+    spawns = require("romdump.src.catalog.hgss.spawns").byId,
   }
 end
 
@@ -22,7 +22,7 @@ end
 ---@return table[] memberIrs
 function FieldScripts.decode(romFs)
   local ScriptBinaryDecoder = require("romdump.src.digest.script.ScriptBinaryDecoder")
-  local ScriptMembers = require("romdump.src.reference.hgss.script_members")
+  local ScriptMembers = require("romdump.src.catalog.hgss.script_members")
   local archive = assert(romFs:openNarc("field_scripts"))
   local memberIrs = ScriptBinaryDecoder.decodeArchive(archive, ScriptMembers.banks, "romfs/scr_seq.narc", catalog())
   return archive, memberIrs
@@ -40,7 +40,7 @@ end
 ---@return table memberIrs
 function FieldScripts.decodeMembers(romFs, memberIds)
   local ScriptBinaryDecoder = require("romdump.src.digest.script.ScriptBinaryDecoder")
-  local ScriptMembers = require("romdump.src.reference.hgss.script_members")
+  local ScriptMembers = require("romdump.src.catalog.hgss.script_members")
   assert(type(memberIds) == "table", "decodeMembers needs an array of member ids")
   local archive = assert(romFs:openNarc("field_scripts"))
   local count = archive:memberCount()

@@ -4,8 +4,7 @@
 -- transparent source-zero holes so the base shows through, and the producer
 -- fingerprint pins exactly the proven normal members. Asserts only structural
 -- facts and pixel alpha behavior, never copied source bytes or text.
--- Pokémon icon placement follows pret/pokeheartgold@9d8b7591f09b65804da2fb2dfd56f320633e0d36,
--- src/naming_screen.c::NamingScreen_LoadMonIcon.
+-- Mon icon placement follows the retail ROM's naming-screen mon icon loading.
 
 local Assert = require("tests.support.Assert")
 local PngReader = require("tests.support.PngReader")

@@ -14,7 +14,7 @@ local RomSuite = require("tests.rom.support.RomSuite")
 
 local T = {}
 
-local SOURCE_REVISION = "0985e8718df4f25e64d6507d89c0c97c0d288981"
+local SOURCE_REVISION = "retail ROM"
 local FIXED_SEED = 287454020
 
 ---@param name string module path under test
@@ -44,7 +44,7 @@ function T.trigger_slot_and_level_vectors_match_the_native_branches(romFs, versi
     provenance = {
       basis = "source-derived",
       sourceRevision = SOURCE_REVISION,
-      sourceLocation = "pret/pokeheartgold src/field/encounter_check.c (opportunity check)",
+      sourceLocation = "retail ROM (opportunity check)",
       evidenceIdentity = "opportunity boundaries bound to " .. versionId,
       oracleMethod = "hand transcription of the native rate comparison, cross-checked by the encounter vector suite",
     },
@@ -76,7 +76,7 @@ function T.trigger_slot_and_level_vectors_match_the_native_branches(romFs, versi
     provenance = {
       basis = "source-derived",
       sourceRevision = SOURCE_REVISION,
-      sourceLocation = "pret/pokeheartgold src/field/encounter_check.c (ordered slot ladders)",
+      sourceLocation = "retail ROM (ordered slot ladders)",
       evidenceIdentity = "land ladder edges bound to " .. versionId,
       oracleMethod = "hand transcription of the native interval widths, cross-checked by the encounter vector suite",
     },
@@ -102,7 +102,7 @@ function T.trigger_slot_and_level_vectors_match_the_native_branches(romFs, versi
     provenance = {
       basis = "source-derived",
       sourceRevision = SOURCE_REVISION,
-      sourceLocation = "pret/pokeheartgold src/field/encounter_check.c (level windows)",
+      sourceLocation = "retail ROM (level windows)",
       evidenceIdentity = "level window edges bound to " .. versionId,
       oracleMethod = "hand transcription of the native window wrap, cross-checked by the encounter vector suite",
     },
@@ -218,7 +218,7 @@ end
 -- values through floor(difficulty*31/255), the gender-override nibble
 -- selects male, and the saved rival name resolves per story branch.
 -- Transcribed from the trainer data source
--- (pret/pokeheartgold src/trainer_data.c: difficulty-to-IV calculation
+-- (retail difficulty-to-IV calculation
 -- and PID/gender override polarity) and pinned by the trainer generation
 -- suite, never read out of the factory under test.
 function T.native_trainer_generation_maps_difficulty_applies_overrides_and_names_the_rival(romFs, versionId)
@@ -314,7 +314,7 @@ function T.native_trainer_generation_maps_difficulty_applies_overrides_and_names
     provenance = {
       basis = "source-derived",
       sourceRevision = SOURCE_REVISION,
-      sourceLocation = "pret/pokeheartgold src/trainer_data.c (difficulty-to-IV calculation)",
+      sourceLocation = "retail ROM (difficulty-to-IV calculation)",
       evidenceIdentity = "difficulty 3 maps to zero individual values, bound to " .. versionId,
       oracleMethod = "hand transcription of floor(difficulty*31/255), cross-checked by the trainer generation suite",
     },
@@ -352,7 +352,7 @@ function T.native_trainer_generation_maps_difficulty_applies_overrides_and_names
     provenance = {
       basis = "source-derived",
       sourceRevision = SOURCE_REVISION,
-      sourceLocation = "pret/pokeheartgold src/trainer_data.c (PID and gender override polarity)",
+      sourceLocation = "retail ROM (PID and gender override polarity)",
       evidenceIdentity = "gender and ability overrides bound to " .. versionId,
       oracleMethod = "hand transcription of the override polarity, cross-checked by the trainer generation suite",
     },
@@ -377,7 +377,7 @@ function T.native_trainer_generation_maps_difficulty_applies_overrides_and_names
     provenance = {
       basis = "source-derived",
       sourceRevision = SOURCE_REVISION,
-      sourceLocation = "pret/pokeheartgold src/trainer_data.c (rival name indirection and party variants)",
+      sourceLocation = "retail ROM (rival name indirection and party variants)",
       evidenceIdentity = "rival branches bound to " .. versionId,
       oracleMethod = "hand transcription of the story-branch parties, cross-checked by the trainer generation suite",
     },

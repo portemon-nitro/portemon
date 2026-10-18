@@ -46,8 +46,7 @@ FollowerRecallTask.version = 1
 local VECTOR_STEPS = 8
 local TAIL_TICKS = 20
 
--- Native HGSS model-space vector increments behind state 4 (ov01_02205B14,
--- state 4 shifts these by 0xC into the map object's FX32 position vector).
+-- Native HGSS model-space vector increments behind state 4 (state 4 shifts these by 0xC into the map object's FX32 position vector).
 -- Runtime presentation offsets are in world units (one unit per tile), and
 -- 16 model units make one tile, so the task normalizes each increment by
 -- 1/16 before it enters runtime presentation state. The tables stay

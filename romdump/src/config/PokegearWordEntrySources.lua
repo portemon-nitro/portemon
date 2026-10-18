@@ -1,14 +1,13 @@
 -- Source selectors for the single-word Easy Chat map annotation
 -- application: the closed overlay/graphics/message set behind the selector,
 -- validated per game version. Every number below is gate-measured evidence
--- from pret/pokeheartgold@9d8b7591f09b65804da2fb2dfd56f320633e0d36 joined
--- to the owned HeartGold dump; FAT ids are provenance, never identity.
+-- from the retail ROM joined to the owned HeartGold dump; FAT ids are provenance, never identity.
 -- Runtime records never carry them.
 
 local PokegearWordEntrySources = {}
 
 PokegearWordEntrySources.provenance = {
-  decompRevision = "pret/pokeheartgold@9d8b7591f09b65804da2fb2dfd56f320633e0d36",
+  romAudit = "retail ROM",
   symbols = {
     "asm/overlay_102.s",
     "src/application/pokegear/main/pokegear_main.c",

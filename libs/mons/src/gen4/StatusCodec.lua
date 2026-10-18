@@ -1,5 +1,5 @@
 -- Native Generation-IV party-status word conversion
--- (pret/pokeheartgold include/constants/pokemon.h MON_STATUS_*): the low
+-- (retail ROM MON_STATUS_*): the low
 -- three bits carry remaining sleep turns, poison, burn, freeze, paralysis,
 -- and toxic occupy one bit each, and bits 8..11 carry the toxic turn
 -- counter. Decode maps every supported word to the persistent condition

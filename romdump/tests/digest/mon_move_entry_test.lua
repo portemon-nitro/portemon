@@ -1,8 +1,7 @@
 -- Move-entry decoding contract for the mon catalog compiler.
--- Fixture widths mirror pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981
--- include/move.h `MoveTbl`: one 16-byte entry per move, with a u16 range, a
+-- Fixture widths mirror the retail ROM's move table: one 16-byte entry per move, with a u16 range, a
 -- signed priority byte, and neutral trailing bytes. The producer verifies
--- every offset against the pinned decomp; the ROM suite anchors real move
+-- every offset against the retail ROM; the ROM suite anchors real move
 -- values.
 
 local Assert = require("tests.support.Assert")

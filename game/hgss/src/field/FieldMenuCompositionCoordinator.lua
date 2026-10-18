@@ -138,11 +138,11 @@ function FieldMenuCompositionCoordinator:applicationDescriptors()
     })
   end
   local function partyScreenFactory()
-    local composition = assert(runtime.pokemonMenu, "the pokemon application requires the menu composition")
+    local composition = assert(runtime.partyMenu, "the pokemon application requires the menu composition")
     return composition.makePartyFlow()
   end
   local function bagFactory()
-    local composition = assert(runtime.pokemonMenu, "the bag application requires the menu composition")
+    local composition = assert(runtime.partyMenu, "the bag application requires the menu composition")
     return composition.makeBagFlow()
   end
   local function pokegearFactory()
@@ -397,9 +397,9 @@ end
 -- and Bag/Party flow factories. Missing collaborators fail loudly
 -- instead of opening half-built menus.
 ---@param cacheFs table<string, unknown> version cache reader for cited spawn landings
-function FieldMenuCompositionCoordinator:composePokemonMenu(cacheFs)
+function FieldMenuCompositionCoordinator:composePartyMenu(cacheFs)
   local runtime = self.runtime
-  local PokemonMenuComposition = require("game.hgss.src.field.PokemonMenuComposition")
+  local PartyMenuComposition = require("game.hgss.src.field.PartyMenuComposition")
   local BagCache = require("libs.assets.src.BagCache")
   local PartyCache = require("libs.assets.src.PartyCache")
   local SummaryCache = require("libs.assets.src.SummaryCache")
@@ -537,7 +537,7 @@ function FieldMenuCompositionCoordinator:composePokemonMenu(cacheFs)
       overrides = runtime.presentationOverrides ~= nil and runtime.presentationOverrides.apricorn_box or nil,
     })
   end
-  runtime.pokemonMenu = PokemonMenuComposition.create({
+  runtime.partyMenu = PartyMenuComposition.create({
     effect = playBagSequence,
     playCry = playSummaryCry,
     textPolicy = bagTextPolicy,
@@ -909,7 +909,7 @@ local function composeStarterHosts(runtime, boot)
   local function playNamingEffect(sequence)
     boot.audioService:play(sequence)
   end
-  runtime.pokemonNaming = require("game.hgss.src.field.PokemonNamingState").new({
+  runtime.monNaming = require("game.hgss.src.field.MonNamingState").new({
     charmap = boot.fontDef.charmap,
     measureDisplay = starterMeasureDisplay,
     overrides = namingOverrides,

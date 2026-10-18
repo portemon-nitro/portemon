@@ -10,8 +10,8 @@ local Errors = require("libs.errors.src.Errors")
 local Hashing = require("romdump.src.digest.Hashing")
 local PokegearSources = require("romdump.src.config.PokegearSources")
 local PokegearPhoneScriptSources = require("romdump.src.config.PokegearPhoneScriptSources")
-local MapReference = require("romdump.src.reference.hgss.maps")
-local PokegearMapReference = require("romdump.src.reference.hgss.pokegear_map")
+local MapReference = require("romdump.src.catalog.hgss.maps")
+local PokegearMapReference = require("romdump.src.catalog.hgss.pokegear_map")
 
 local PokegearCatalogCompiler = {}
 

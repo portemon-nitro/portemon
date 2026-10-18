@@ -2,8 +2,7 @@
 -- compiler bundle must publish atomically into one source-independent cache
 -- boundary the runtime can trust, and the derived-cache audit must account
 -- for the family. A missing reference, a stale marker, or a failure before
--- marker publication must never read ready. Source basis:
--- pret/pokeheartgold src/choose_starter_app.c and src/choose_starter.c.
+-- marker publication must never read ready. Source basis: the retail ROM.
 -- Requires a ready user-owned dump (rom_dump capability); skips otherwise.
 
 local Assert = require("tests.support.Assert")

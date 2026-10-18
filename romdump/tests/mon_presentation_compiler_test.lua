@@ -1,11 +1,10 @@
 -- Front-portrait producer contract: HGSS character payloads are stored scanned
--- (pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981,
--- src/pokepic.c UnscanPokepic_PtHGSS: 3200 little-endian words masked by the
+-- (the retail ROM's portrait unscramble: 3200 little-endian words masked by the
 -- 32-bit LCRNG seeded from word 0) and laid out as 80 rows of 80 bytes whose
 -- left and right 40-byte halves are the two authored 80x80 frames, each byte
 -- expanding low nibble then high nibble
--- (src/pokepic.c UnscanPokepic_PtHGSS row addressing
--- pRawCharData[j * 80 + k]; src/unk_02013FDC.c portrait extraction; the
+-- (retail ROM row addressing
+-- j * 80 + k; portrait extraction; the
 -- second frame sits at an 80-pixel horizontal offset). Fixtures below drive the real production
 -- entrypoints with synthetic NCGR/NCLR containers served by a fake archive
 -- pair, so the unscan seam and the frame geometry are proved without a
@@ -279,8 +278,7 @@ end
 
 -- The retail unscanned portrait is 80 rows of 80 bytes: each row carries
 -- two 40-byte frame halves, and each byte holds two horizontally adjacent
--- pixels low nibble first (pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981,
--- src/pokepic.c UnscanPokepic_PtHGSS row addressing pRawCharData[j * 80 + k]).
+-- pixels low nibble first (retail ROM row addressing j * 80 + k).
 -- The surface below marks row 0, row 1, and row 79 in both halves with bytes
 -- whose nibbles differ, so tile traversal and reversed nibble order both
 -- misplace them. Offsets are zero-based source offsets into the 6400-byte

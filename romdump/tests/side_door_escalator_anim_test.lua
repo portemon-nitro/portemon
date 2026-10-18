@@ -1,6 +1,6 @@
 -- Side-door (escalator) one-shot animation role: retail resolves the
 -- Goldenrod Department Store escalators through the side-door transition
--- (pret/pokeheartgold src/field/door_transition.c
+-- (the retail ROM's
 -- DoorTransition_WalkOutOfSideDoor / DoorTransition_WalkIntoSideDoor, tag
 -- SIDE_DOOR_ANIM_TAG, SEQ_SE_DP_ESUKA). The prop is one of the interior
 -- build models gSideDoorExitModels / gSideDoorEntryModels (asm/

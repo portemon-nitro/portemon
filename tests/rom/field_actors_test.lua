@@ -141,10 +141,10 @@ function T.compiled_visuals_cover_the_target_maps(romFs)
   )
 end
 
--- Pokemon field visuals idle from their own source animation: the compiled
+-- Mon field visuals idle from their own source animation: the compiled
 -- directional idle pose runs the same facing animation on the same clock as
 -- the walk pose instead of a one-frame hold, with the source vertical offset
--- coupled to the animation phase. Ordinary non-Pokemon actors keep a static
+-- coupled to the animation phase. Ordinary non-mon actors keep a static
 -- one-frame idle.
 local function assertIdleUsesSourceRange(visual, label)
   Assert.equal(visual.idlePresentation.mode, "animated", label .. " native idle presentation")
@@ -278,7 +278,7 @@ function T.compiled_visuals_animate_pokemon_idle_from_the_source_range(romFs)
   end
   Assert.equal(marill.directions.south.idle.durationTicks, 20, "marill south idle runs on the same 20-tick clock")
 
-  -- A family-16 field Pokemon idles on the same native clock.
+  -- A family-16 field mon idles on the same native clock.
   local kyogre = assert(bundle.visuals[1043], "static Kyogre visual 1043 must be compiled")
   assertIdleUsesSourceRange(kyogre, "kyogre")
 
@@ -293,9 +293,9 @@ function T.compiled_visuals_animate_pokemon_idle_from_the_source_range(romFs)
   end
 end
 
--- ov01_021F8E70 shifts a Pokemon actor's drawn position per facing, in
+-- ov01_021F8E70 shifts a mon actor's drawn position per facing, in
 -- sixteenths of a tile: model key 0xA (the large descriptor) moves N/S on z
--- and W/E by ten; every other Pokemon model moves W/E by two.
+-- and W/E by ten; every other mon model moves W/E by two.
 function T.pokemon_visuals_shift_their_draw_position_per_facing(romFs)
   local bundle = assert(FieldActorCompiler.compile(romFs))
   local marill = assert(bundle.visuals[1032], "static Marill visual 1032 must be compiled")

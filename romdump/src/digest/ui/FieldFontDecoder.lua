@@ -1,10 +1,10 @@
 -- Import-time decoder for the HGSS field font (NARC_graphic_font) members used
 -- by the field dialogue: the glyph member (FontHeader + 2bpp tiles + per-glyph
--- width table, per src/font_data.c FontData_Init/TryLoadGlyph) and the palette
+-- width table, per the retail ROM's FontData_Init/TryLoadGlyph) and the palette
 -- member (RLCN-wrapped TTLP palette data loaded through
--- NNS_G2dGetUnpackedPaletteData per src/font.c LoadFontPal0). Tile pixel
+-- NNS_G2dGetUnpackedPaletteData per the retail ROM's LoadFontPal0). Tile pixel
 -- values are 2-bit: 0 = transparent, 1 = foreground, 2 = shadow, 3 = background,
--- converted by GenerateFontHalfRowLookupTable (src/text.c). The runtime only
+-- converted by GenerateFontHalfRowLookupTable. The runtime only
 -- consumes the compiled font definition, never this digester. Pure module: no
 -- love dependency.
 
@@ -23,7 +23,7 @@ local FieldFontDecoder = {}
 
 -- Glyph index used by TryLoadGlyph for code 0 and codes above numGlyphs.
 FieldFontDecoder.FALLBACK_GLYPH_INDEX = 428 - 1
--- Default font colors per sFontInfos[0] in src/font.c.
+-- Default font colors per the retail ROM's font info table.
 FieldFontDecoder.FG_PALETTE_INDEX = 1
 FieldFontDecoder.SHADOW_PALETTE_INDEX = 2
 FieldFontDecoder.BG_PALETTE_INDEX = 0x0F
@@ -139,7 +139,7 @@ local function openMember(data, opts)
   -- width glyphWidth*8). Sub-tiles run row-major (TL, TR, BL, BR); each tile
   -- row is two bytes with the SECOND byte holding the left half, and pixel 0
   -- of a byte is its HIGH two bits. The high-bit order follows
-  -- DecompressGlyphTile (src/text.c): the half-row lookup table places the
+  -- the retail ROM's DecompressGlyphTile: the half-row lookup table places the
   -- source byte's bits 6-7 into dest bits 0-3, and pixel 0 of a 4bpp group is
   -- the low nibble -- so the leftmost pixel is the byte's most significant
   -- pair. (The DS shadow sits down-right of the ink; low-bit ordering would
@@ -336,7 +336,7 @@ function FieldFontDecoder.decodePalette(data, opts)
 end
 
 -- The decoded glyph member: header facts plus per-glyph accessors
--- (TryLoadGlyph semantics from src/font_data.c).
+-- (TryLoadGlyph semantics of the retail ROM).
 
 ---@class FieldFontDecoder.DecodedFont
 ---@field schema string

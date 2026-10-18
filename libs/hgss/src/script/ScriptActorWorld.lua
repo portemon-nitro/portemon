@@ -121,7 +121,7 @@ function ScriptActorWorld:cameraTargetId()
 end
 
 -- The walking partner actor (pinned HGSS object id 253); nil while no
--- Pokémon follows the player.
+-- mon follows the player.
 ---@return string|nil
 function ScriptActorWorld:partnerId()
   return self._manager:partnerId()
@@ -223,7 +223,7 @@ function ScriptActorWorld:materialize(mapIndex)
 end
 
 -- Every position set reaching the manager through this adapter is
--- script-driven (`ApplyMovement`/`set_object_position`); pinned source never
+-- script-driven (`ApplyMovement`/`set_object_position`); the retail ROM never
 -- checks inter-object collision during scripted movement, so the manager is
 -- told to skip its hard occupancy-conflict check for these calls.
 ---@param actorId string

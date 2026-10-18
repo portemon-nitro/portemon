@@ -1,7 +1,6 @@
 -- Source-backed battle presentation production: the shared ordinary
 -- menu/HUD definitions plus lazily compiled persistent BG3 scenes. Source
--- selection follows src/battle/battle_system.c:BattleSystem_SetBackground
--- (pret/pokeheartgold@9d8b7591f09b65804da2fb2dfd56f320633e0d36); container
+-- selection follows the retail ROM's battle background selection; container
 -- and animation layouts follow GBATEK's "Nitro Character Tiles / BG Maps
 -- Screens / OBJ Animations / OBJ Metatile Cells" pages. Decoding reuses the
 -- existing G2D primitives (including the retail-tail producer option for

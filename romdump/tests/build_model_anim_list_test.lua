@@ -77,8 +77,8 @@ end
 function T.banded_records_carry_the_time_band_policy()
   -- HGSS marks time-of-day props with policy 0x08 (header 01 08 00 00 00
   -- 00 04 01): the game registers the ids as the four band slots
-  -- (MORN/DAY/EVE/NITE, band map ov01_022095EC) and swaps them on RTC
-  -- time-of-day changes (ov01_022047DC).
+  -- (MORN/DAY/EVE/NITE, the game's band map) and swaps them on RTC
+  -- time-of-day changes.
   local r = BuildModelAnimList.decode(record("\1\8\0\0\0\0\4\1", { 6, 7, 8, 9 }))
   assertHeader(r, 1, 8, 0, 0)
   Assert.equal(#r.ids, 4)
@@ -97,8 +97,8 @@ function T.ordinary_records_are_not_banded()
 end
 
 function T.policy_bits_name_the_registrar_and_the_play_state()
-  -- bit 0 (ov01_021E8864): the record is managed outside the ordinary
-  -- registrar (doors, interaction props); bit 1 (ov01_021E887C): the clips
+  -- bit 0: the record is managed outside the ordinary
+  -- registrar (doors, interaction props); bit 1: the clips
   -- load but are not played at registration.
   local door = BuildModelAnimList.decode(record("\1\3\0\1\1\0\1\2", {}))
   Assert.notNil(door.policy, "decode exposes byte 1 as the policy field")

@@ -15,8 +15,7 @@
 -- duplicating them. Item icons resolve through the item class and are never
 -- read here. The runtime consumes only the manifest and the generated
 -- files, never this module. Pure module: no love dependency.
--- Source basis: pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981
--- asm/overlay_15.s.
+-- Source basis: the retail ROM.
 
 local Errors = require("libs.errors.src.Errors")
 local Hashing = require("romdump.src.digest.Hashing")
@@ -39,7 +38,7 @@ local BagPresentationCompiler = require("romdump.src.digest.ui.BagPresentationCo
 local RgbaImage = require("romdump.src.digest.ui.RgbaImage")
 local UiMessageBank = require("romdump.src.digest.ui.UiMessageBank")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
-local charmap = require("romdump.src.reference.hgss.charmap")
+local charmap = require("romdump.src.catalog.hgss.charmap")
 
 ---@class BagAssetCompiler
 local BagAssetCompiler = {}
@@ -963,7 +962,7 @@ end
 -- audited marker band block onto the audited cell rectangle through a
 -- snapshot so the source band survives the stamp. The band entry offset
 -- selects the low band for original rows 0..1 and the high band
--- otherwise, exactly as ov15_021FD4C0 selects its copy source.
+-- otherwise, exactly as the retail ROM selects its copy source.
 local function stampMoveOrigin(screen, origin)
   local row = assert(BagSources.moveOriginRows[origin + 1], "move origin selects an audited marker row")
   local columns = screen.width / 8

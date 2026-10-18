@@ -58,7 +58,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field partySelection table<string, unknown>? the modal script-party surface; while active the tick's UI events route to the script scheduler
 ---@field martHost table<string, unknown>? the modal script-mart surface; while active the tick's UI events route to the script scheduler
 ---@field kurtBoxHost table<string, unknown>? the modal Kurt selector; while active UI events route to its blocking task
----@field pokemonNaming table<string, unknown>? the script-owned Pokemon Naming Screen surface
+---@field monNaming table<string, unknown>? the script-owned mon Naming Screen surface
 ---@field signpost FieldSignpostController
 ---@field applicationHost FieldApplicationHost the one application modal owner (Start Menu and its destinations)
 ---@field pcApplications table<string, unknown> script-owned PC child host
@@ -120,7 +120,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field partySelection table<string, unknown>? the modal script-party surface; while active the tick's UI events route to the script scheduler
 ---@field martHost table<string, unknown>? the modal script-mart surface; while active the tick's UI events route to the script scheduler
 ---@field kurtBoxHost table<string, unknown>? the modal Kurt selector; while active UI events route to its blocking task
----@field pokemonNaming table<string, unknown>? the script-owned Pokemon Naming Screen surface
+---@field monNaming table<string, unknown>? the script-owned mon Naming Screen surface
 ---@field signpost FieldSignpostController the fixed-tick signpost controller (save-gate interrogation only; the scheduler steps it)
 ---@field applicationHost FieldApplicationHost the one application modal owner (Start Menu and its destinations)
 ---@field pcApplications table<string, unknown> script-owned PC child host
@@ -430,7 +430,7 @@ function FieldSession.new(options)
     partySelection = options.partySelection,
     martHost = options.martHost,
     kurtBoxHost = options.kurtBoxHost,
-    pokemonNaming = options.pokemonNaming,
+    monNaming = options.monNaming,
     signpost = options.signpost,
     applicationHost = options.applicationHost,
     pcApplications = options.pcApplications,
@@ -656,7 +656,7 @@ function FieldSession:_phoneClaimed()
   if hostModal(self.yesNoHost) or hostModal(self.starterChoice) or hostModal(self.partySelection) then
     return true
   end
-  if hostModal(self.martHost) or hostModal(self.pokemonNaming) or hostModal(self.pcApplications) then
+  if hostModal(self.martHost) or hostModal(self.monNaming) or hostModal(self.pcApplications) then
     return true
   end
   if hostModal(self.pokegearApplications) or self.acceptedAmbientCallHandle ~= nil then
@@ -968,13 +968,13 @@ local function snapshotModalStatus(self)
   local partySelection = self.partySelection
   local martHost = self.martHost
   local kurtBoxHost = self.kurtBoxHost
-  local pokemonNaming = self.pokemonNaming
+  local monNaming = self.monNaming
   local status = {
     menu = self.menuHost:isModal(),
     contextChoice = self.contextChoice:isActive(),
     yesNo = yesNoHost ~= nil and yesNoHost:isModal(),
     starterChoice = starterChoice ~= nil and starterChoice:isActive(),
-    naming = pokemonNaming ~= nil and pokemonNaming:isActive(),
+    naming = monNaming ~= nil and monNaming:isActive(),
     party = partySelection ~= nil and partySelection:isActive(),
     mart = martHost ~= nil and martHost:isActive(),
     kurt = kurtBoxHost ~= nil and kurtBoxHost:isActive(),
@@ -1242,7 +1242,7 @@ function FieldSession:updateFixed(inputSnapshot)
         and not (self.partySelection ~= nil and self.partySelection:isActive())
         and not (self.martHost ~= nil and self.martHost:isActive())
         and not self.pcApplications:isActive()
-        and not (self.pokemonNaming ~= nil and self.pokemonNaming:isActive())
+        and not (self.monNaming ~= nil and self.monNaming:isActive())
         and not isForegroundActive(self.scriptScheduler),
       "registered Apricorn Box owns the exclusive field modal lane"
     )

@@ -1,22 +1,20 @@
 -- TimeOfDayProps: the time-of-day field-prop policy. HGSS registers up to
 -- four banded animations per field object -- morning, day, evening, night --
--- and swaps the active band when the RTC time-of-day changes (pokeheartgold
--- src/field/overlay_01_02204004.c ov01_022047DC, with the band map
--- ov01_022095EC: MORN=0, DAY=1, EVE=2, NITE=3, LATE=3, and the hour table
--- sTimeOfDayByHour in src/gf_rtc.c GF_RTC_GetTimeOfDayByHour).
+-- and swaps the active band when the RTC time-of-day changes (retail ROM
+-- band map: MORN=0, DAY=1, EVE=2, NITE=3, LATE=3, with a fixed hour table).
 --
 -- A model is banded when its compiled clips carry time-band metadata
 -- (clip.timeBand, stamped by MapPropAnimCompiler from the banded anim-list
--- record's slot order, the decomp's band map); a plan never infers policy
--- from names or clip counts. The swap mirrors the decomp's remove-and-add: stop the
--- previous band's clip, play the current band's clip looping. Every other
+-- record's slot order, the retail ROM's band map); a plan never infers policy
+-- from names or clip counts. The swap mirrors the retail ROM's remove-and-add: stop
+-- the previous band's clip, play the current band's clip looping. Every other
 -- model follows the ordinary ambient policy (every clip of an
 -- ordinary-policy anim-list record carries the compiled ambientLoop role).
 -- Pure domain module.
 
 -- The four bands in HGSS band-slot order, owned by the animation contract
 -- (AnimationClip.BANDS): the digest stamps clip.timeBand from the same table
--- (ov01_022095EC indices 0-3; LATE maps to the NITE slot).
+-- (indices 0-3; LATE maps to the NITE slot).
 local AnimationClip = require("libs.assets.src.model.AnimationClip")
 
 local TimeOfDayProps = {}
@@ -121,8 +119,8 @@ function TimeOfDayProps.plan(definition)
   return byBand
 end
 
--- Swap a banded instance from one band to another (the decomp's remove-and-
--- add): stop the previous band's clip, play the current band's clip looping
+-- Swap a banded instance from one band to another (the retail ROM's
+-- remove-and-add): stop the previous band's clip, play the current band's clip looping
 -- from frame 0. `fromBand` is nil at load (nothing playing yet). A band
 -- without a clip just stops the previous playback.
 ---@param instance TimeOfDayProps.Instance

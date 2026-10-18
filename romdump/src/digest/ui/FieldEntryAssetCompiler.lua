@@ -125,9 +125,8 @@ end
 -- The 1-based source area icon selects banner graphic `areaIcon - 1`, but only
 -- where retail would draw the area-name banner at all. `bannerStyleByMapId`
 -- mirrors that eligibility so the runtime banner controller gates on
--- membership alone. Source: pret/pokeheartgold
--- src/map_header.c:MapHeader_IsInBuilding (map types INTERIOR and
--- POKEMON_CENTER) and src/field/draw_map_name.c:FieldSystem_DrawMapNameAnimation.
+-- membership alone. Source: the retail ROM's in-building check (map types INTERIOR and
+-- POKEMON_CENTER) and map-name animation.
 local function bannerStyleFor(record)
   if record.mapType == "INTERIOR" or record.mapType == "POKEMON_CENTER" then
     return nil

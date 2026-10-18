@@ -132,10 +132,8 @@ function T.real_panel_warp_uses_the_panel_mode_and_notifies_once(romFs, _)
   Assert.notNil(transition.completed, "the panel warp records one completion")
 end
 
--- Retail panel-warp spin/teleport presentation (Task_WarpPanel in
--- pret/pokeheartgold src/field_warp_tasks.c with the Task_WarpSpinDeparture /
--- Task_WarpSpinArrival pair in src/field/warp_spin.c, via
--- FieldSystem_StartWarpSpin): the departure runs 20 spin frames -- TELE2 at
+-- Retail panel-warp spin/teleport presentation (warp panel with the
+-- warp-spin departure/arrival pair): the departure runs 20 spin frames -- TELE2 at
 -- spin start, a quarter-turn counterclockwise rotation on each odd frame, a
 -- rising height arc -- the swap gates on spin completion, and the arrival
 -- reverses the spin and faces south exactly once. The follower ball recall

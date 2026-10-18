@@ -419,9 +419,8 @@ function T.profile8_ladder_down_preview_replaces_the_generic_destination_step(ro
 end
 
 -- Goldenrod Department Store escalators: the real 1F (13,7) <-> 2F (18,7)
--- reciprocal pair (retail profile 2, FieldTransition_ExitThroughSideDoor /
--- FieldTransition_EnterThroughSideDoor in pret/pokeheartgold
--- src/field/door_transition.c with SEQ_SE_DP_ESUKA). The production resolver
+-- reciprocal pair (retail profile 2, exit/enter through the side door
+-- with SEQ_SE_DP_ESUKA). The production resolver
 -- chain (MapProps:propAt, the same owner FieldRuntime wires) resolves a live
 -- prop on both tiles, but the generated indoor models carry no "escalator"
 -- animation clip, so playback raises MAP_PROP_ANIM_UNKNOWN. That missing
@@ -547,7 +546,7 @@ end
 -- ECRUTEAK (376,149, WARP_NORTH step) <-> BURNED_TOWER_1F (15,26,
 -- WARP_ENTRANCE_SOUTH input) pair. Outdoors -> cave runs profile 4
 -- (cave_exit, SEQ_SE_DP_KAIDAN2, the 0x10 environment wipe from retail
--- Task_StairsFadeOut in pret/pokeheartgold src/field/door_transition.c);
+-- stairs fade-out);
 -- cave -> outdoors runs profile 5 (outdoor_exit, KAIDAN2, the white 0x7FFF
 -- fade with the camera zoom choreography). The Union Cave <-> Route 32/33
 -- warps are real but unreachable with the available harness: both

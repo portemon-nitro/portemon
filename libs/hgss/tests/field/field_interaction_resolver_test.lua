@@ -210,7 +210,7 @@ function T.pc_metatile_requires_north_facing_and_does_not_match_neighbors()
 end
 
 function T.background_direction_compatibility_matches_the_source_table()
-  -- The pinned assembly's BgEventDirectionIsCompatibleWithPlayerFacing.
+  -- The retail ROM's background direction compatibility table.
   Assert.isTrue(FieldInteractionResolver.backgroundDirectionCompatible(0, 0))
   Assert.isTrue(FieldInteractionResolver.backgroundDirectionCompatible(0, 6))
   Assert.isFalse(FieldInteractionResolver.backgroundDirectionCompatible(0, 3))

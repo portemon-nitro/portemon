@@ -1,14 +1,12 @@
 -- Producer-side semantic inventory of the native summary presentation
 -- sources: NARC member selection, canonical geometry, sprite/text/numeric/
 -- ribbon/performance/memo selection, and normalized presentation facts.
--- The audit basis is pret/pokeheartgold@9d8b7591f09b65804da2fb2dfd56f320633e0d36:
--- src/pokemon.c (picture metadata and performance readers), src/pokepic.c
--- (frame interpreter), asm/unk_02016EDC.s (motion interpreter),
--- src/trainer_memo.c (encounter conditions and line placement),
--- src/ribbon.c (ribbon table and description rules), src/palette.c
--- (blend arithmetic), src/message_format.c (landmark/month names), and the
--- summary application/windows/picture/object modules (group maps, window
--- templates, picture anchor, sprite resources). Pure data and pure
+-- The audit basis is the retail ROM:
+-- picture metadata and performance readers, the picture frame and motion
+-- interpreters, trainer memo encounter conditions and line placement, the
+-- ribbon table and description rules, palette blend arithmetic, landmark and
+-- month names, and the summary application/windows/picture/object modules
+-- (group maps, window templates, picture anchor, sprite resources). Pure data and pure
 -- functions; no I/O. Never imported by runtime: libs/assets, game, and
 -- script packages must not require this module.
 
@@ -16,7 +14,7 @@ local SummarySources = {}
 
 SummarySources.provenance = {
   repoPin = "0db201af99db913e5a90cdb9f372f4e0b63f4401",
-  decompPin = "pret/pokeheartgold@9d8b7591f09b65804da2fb2dfd56f320633e0d36",
+  romAudit = "retail ROM",
   symbols = {
     "src/pokemon.c",
     "src/pokepic.c",
@@ -274,7 +272,7 @@ SummarySources.backgrounds = {
 }
 
 -- Dynamic gauge rules transcribed from the summary application bar
--- routines (asm/unk_02088288.s, same pin): sub_0208A0EC draws the health
+-- routines: sub_0208A0EC draws the health
 -- track and sub_0208A1A0 draws the experience track. Both fill
 -- left to right through FillBgTilemapRect one 8-pixel tile column per
 -- iteration: six columns for health (tile origin x=10, y=5) and seven
@@ -283,7 +281,7 @@ SummarySources.backgrounds = {
 -- or more fill pixels remain and the full tile (base + 8) otherwise, so
 -- every run spans nine tiles from its empty tile to its full tile. The
 -- fill quotient and the threshold color decision both reuse the shared
--- gauge helpers (src/unk_0208805C.c, same pin): the quotient is
+-- gauge helpers: the quotient is
 -- floor(value * length / total) with a minimum of one filled pixel for
 -- any nonzero value, and the color reads full when value equals total,
 -- green above one half, yellow above one fifth, red above zero, and
@@ -334,7 +332,7 @@ SummarySources.bars = {
 }
 
 -- Touch targets transcribed from the overlay hitbox tables in source
--- order (asm/unk_02088288.s and asm/unk_0208DE40.s, same pin). Rects
+-- order. Rects
 -- are { top, bottom, left, right } bytes on the 256x192 touch pane; a
 -- right edge of 0 encodes 256. Entries keep their source table order:
 -- the root tab/member/exit list first, then the move rows, then the
@@ -443,10 +441,10 @@ SummarySources.substitutions = {
 }
 
 -- Window text palette roles transcribed from the printer triples at the
--- summary window/text module call sites (asm/unk_0208C3E4.s, same pin as
+-- summary window/text module call sites (as
 -- the window templates above). Every site prints through
 -- AddTextPrinterParameterizedWithColor, whose color word is
--- MAKE_TEXT_COLOR(fg, sh, bg) (include/text.h): each triple names
+-- MAKE_TEXT_COLOR(fg, sh, bg): each triple names
 -- { foreground, shadow, background } slots in the window palette bank
 -- below. All 34 window templates select bank 13, so every triple indexes
 -- that bank; the background slot matches the window fill the call site
@@ -491,7 +489,7 @@ SummarySources.textRoles = {
   },
 }
 
--- The 80 ribbon definitions in source order, transcribing src/ribbon.c
+-- The 80 ribbon definitions in source order, transcribing the retail ROM's ribbon table
 -- `sRibbonInfo`. `monData` is the native mon-data field id; the bit
 -- binding resolves it to the boxed ribbon group/bit on the producer side.
 -- `art` selects the shared-graphics character member, `palette` its
@@ -1202,7 +1200,7 @@ SummarySources.ribbons = {
 }
 
 -- Special ribbon description slots, transcribing the RIBBON_DESC slot
--- values in src/ribbon.c. The runtime description is message
+-- values in the retail ROM. The runtime description is message
 -- `descriptionBase + context[slot]`; the initial context is caller
 -- supplied per open, so the producer records the zero context the
 -- zero-initialized caller state provides.
@@ -1212,7 +1210,7 @@ SummarySources.ribbonSpecials = {
 }
 
 -- Species to performance-member indices, transcribing
--- `sPokeathlonPerformanceArcIdxs` in src/pokemon.c. The member for one
+-- `sPokeathlonPerformanceArcIdxs` in the retail ROM. The member for one
 -- form is the species index plus the form id.
 SummarySources.performanceArcIdxs = {
   0,
@@ -1712,7 +1710,7 @@ SummarySources.performanceArcIdxs = {
 }
 
 -- Nature modifiers per stat, transcribing
--- `sPokeathlonPerformanceNatureMods` in src/pokemon.c. Rows follow nature
+-- `sPokeathlonPerformanceNatureMods` in the retail ROM. Rows follow nature
 -- order; columns follow power, skill, speed, jump, stamina.
 SummarySources.performanceNatureMods = {
   { 10, 0, 0, 0, -10 },
@@ -1743,7 +1741,7 @@ SummarySources.performanceNatureMods = {
 }
 
 -- Encounter conditions in source evaluation order, transcribing
--- `MonMetCondition` and the notepad switch in src/trainer_memo.c. The
+-- `MonMetCondition` and the notepad switch in the retail ROM. The
 -- first condition whose predicate holds selects the template; line
 -- numbers place each formatted run, with 0 meaning the run is absent.
 -- Location predicates use packed map-section ids (normal mapsec,
@@ -2144,7 +2142,7 @@ SummarySources.memoFlavors = { default = 70, byFlavor = { 65, 66, 67, 68, 69 } }
 SummarySources.memoEggWatch = { thresholds = { 5, 10, 40 }, templates = { 105, 106, 107, 108 } }
 
 -- Origin-game to arrival-region mapping, transcribing the migrated
--- branch of `FormatDateAndLocation_Migrated` in src/trainer_memo.c (same
+-- branch of `FormatDateAndLocation_Migrated` in the retail ROM
 -- pin): FireRed/LeafGreen arrive from Kanto, HeartGold/SoulSilver from
 -- Johto, Ruby/Sapphire/Emerald from Hoenn, GameCube arrivals read the
 -- Distant Land entry, and Diamond/Pearl/Platinum arrivals read the
@@ -2166,7 +2164,7 @@ SummarySources.memoMigrationRegions = {
 }
 
 -- Summary object-resource inventory, transcribing the `_02103A2C` table
--- selection in asm/unk_0208B1AC.s (same pin): header member 85 selects
+-- selection in the retail ROM: header member 85 selects
 -- one resource set per dynamic role, and members 54/55/53/52 list the
 -- character, palette, cell, and animation resources each set draws from.
 -- Records follow the same on-disk resource-table/header layout the intro
@@ -2189,7 +2187,7 @@ SummarySources.levelPrefix = { fontMember = 5, tile = 11, tiles = 2 }
 -- members 48 and 47, one 16x16 sequence), while sub_0208B48C replaces its
 -- character with summary-archive member `charBase + ball` and its palette
 -- with member `paletteBase + paletteSlots[ball]` (sprite template 8 of
--- asm/unk_0208B1AC.s, same pin, supplies the center). Ball ids follow include/constants/balls.h;
+-- supplies the center). Ball ids follow the retail ROM's ball constants;
 -- ball 25 has no source sprite.
 SummarySources.ballIcons = {
   cellMember = 48,
@@ -2203,7 +2201,7 @@ SummarySources.ballIcons = {
 }
 
 -- The six marking sprites under the picture: sprite templates 23..28 of
--- asm/unk_0208B1AC.s (same pin) use resource sets 17..22 of the header-85
+-- use resource sets 17..22 of the header-85
 -- inventory, which share one palette (summary archive member 61), cell, and
 -- animation (shared archive members 51 and 50) and differ in character member. Sequence 0 is the
 -- unset gray shape and sequence 1 the set shape. Order follows the marking
@@ -2233,7 +2231,7 @@ SummarySources.markings = {
 -- palette bank for states whose native palette override differs from
 -- the role default. The primary member cursor keeps its three state
 -- visuals with the sequence and palette override each native state
--- applies (asm/unk_02088288.s, same pin): the ordinary root/member
+-- applies: the ordinary root/member
 -- state restores sequence 2 with override 2 (sub_0208B400), the
 -- move-detail-style state selects sequence 0 with override 0
 -- (sub_0208A564; sub_0208A9C4 applies override 0 on entry), and
@@ -2277,8 +2275,7 @@ SummarySources.chromeResources = {
 }
 
 -- Dynamic-chrome placement in native pixels, transcribed from the
--- overlay object-setup routines (asm/unk_0208B1AC.s and
--- asm/unk_02088288.s, same pin). The primary cursor visits the six
+-- overlay object-setup routines). The primary cursor visits the six
 -- party-member slots in column-major display order; nested move rows
 -- start at the row base and advance by the row step with the two cancel
 -- rows below; performance rows list in display order with five star
@@ -2298,7 +2295,7 @@ SummarySources.chromeGeometry = {
       { x = 223, y = 127 },
     },
     -- The six party icon sprites sit inside the same member boxes,
-    -- from the sprite resource header table of asm/unk_0208B1AC.s.
+    -- from the sprite resource header table.
     iconAnchors = {
       { x = 184, y = 50 },
       { x = 224, y = 58 },
@@ -2373,7 +2370,7 @@ SummarySources.chromeGeometry = {
 }
 
 -- Nested-state background motion, transcribing the overlay BG5 position
--- traces (asm/unk_02088288.s, same pin): the move detail state steps
+-- traces: the move detail state steps
 -- the sub-pane background along X through 0/64/128 and the ribbon
 -- detail state steps it along Y through 0/36/72. The compiler lowers
 -- these traces verbatim; closing a nested state replays its trace in

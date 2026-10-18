@@ -5,9 +5,7 @@
 -- Ordinary actors use a shared camera-facing billboard and timeline. Static
 -- map-object models keep their source geometry and polygon parts. Both paths
 -- normalize source textures into a private RGBA atlas.
--- Source layout follows pret/pokeheartgold@b23531f6c82fc6a785058825a447d8439b38e47f:
--- asm/overlay_01_sprite_data.s, asm/overlay_01_021F8D80.s, and
--- asm/overlay_01_021F944C.s.
+-- Source layout follows the retail ROM.
 -- See .agents/docs/adr/field-actor-visual-representation.md for the durable
 -- producer/runtime representation decision.
 --
@@ -28,7 +26,7 @@ local FieldActorFrames = require("romdump.src.digest.actor.FieldActorFrames")
 local FieldActorModel = require("romdump.src.digest.actor.FieldActorModel")
 local FieldActorStaticModel = require("romdump.src.digest.actor.FieldActorStaticModel")
 local FieldActorTimeline = require("romdump.src.digest.actor.FieldActorTimeline")
-local PlayerAvatar = require("romdump.src.reference.hgss.player_avatar")
+local PlayerAvatar = require("romdump.src.catalog.hgss.player_avatar")
 local PoseContract = require("libs.assets.src.model.PoseContract")
 local manifest = require("romdump.src.config.FieldActors")
 local ApricornSources = require("romdump.src.config.ApricornSources")
@@ -45,8 +43,8 @@ for _, spriteId in pairs(ApricornSources.treeSpriteIdByKey) do
   RIPE_APRICORN_TREE_SPRITES[spriteId] = true
 end
 
--- Source HEAL/BANZAI callback: ov01_021F8AB0 applies facing-vector Z of 2<<10
--- (pret/pokeheartgold@b23531f6 asm/overlay_01_sprite_data.s, asm/overlay_01_021F72DC.s).
+-- Source HEAL/BANZAI callback applies facing-vector Z of 2<<10
+-- (retail ROM).
 -- Normalized to runtime tiles via SOURCE_MODEL_UNITS_PER_TILE * FX32_ONE.
 local BANZAI_FACING_Z_FX32 = 2 * 1024
 local BANZAI_DISPLAY_OFFSET_Z = BANZAI_FACING_Z_FX32 / (SOURCE_MODEL_UNITS_PER_TILE * FX32_ONE)
@@ -54,8 +52,8 @@ local BANZAI_DISPLAY_OFFSET_Z = BANZAI_FACING_Z_FX32 / (SOURCE_MODEL_UNITS_PER_T
 -- Private source gesture bindings: actor family + visual descriptor -> semantic
 -- gesture name + 1-based decoded range index + normalized fixed display offset.
 -- Family 12 + descriptor 5 (SPRITE_PCWOMAN1) range 5 is Nurse Joy bow (state 9
--- selects animation 4, asm/overlay_01_021F72DC.s). Family 10 + descriptor 13
--- (SPRITE_BANZAIHERO/HEROINE, 200/201 via src/player_avatar.c PLAYER_STATE_HEAL)
+-- selects animation 4). Family 10 + descriptor 13
+-- (SPRITE_BANZAIHERO/HEROINE, 200/201 via PLAYER_STATE_HEAL)
 -- ranges 1 and 2 are give/receive (states 0/1 select animations 0/1, single-level).
 local GESTURE_BINDINGS = {
   -- The 32-frame shake interval matches the looping 16-frame descriptor range;
@@ -74,8 +72,8 @@ local GESTURE_BINDINGS = {
   },
 }
 
--- Source: pret/pokeheartgold 0985, ov01_02209A38. Families 16 and 17 reach
--- ov01_021F8D80's taskless path and ov01_021F8FC0 bob; the other families use
+-- Source: the retail ROM. Families 16 and 17 reach
+-- the taskless path and bob; the other families use
 -- callbacks without that follower idle behavior. The callback-struct table
 -- itself shows the split: 16/17 share one distinct struct while every other
 -- family, including the player-state families below, uses a callback struct.
@@ -273,8 +271,8 @@ local function decodeAtlas(pack, frames, context)
   }
 end
 
--- ov01_021F8E70: the Pokemon draw callback shifts the drawn position per
--- facing, in source model units. Model key 0xA is the large Pokemon model.
+-- The mon draw callback shifts the drawn position per
+-- facing, in source model units. Model key 0xA is the large mon model.
 local LARGE_POKEMON_MODEL_KEY = 0x0A
 local FACING_SHIFT_UNITS = {
   large = { north = { x = 0, z = 1 }, south = { x = 0, z = -1 }, west = { x = 10, z = 0 }, east = { x = -10, z = 0 } },
@@ -347,7 +345,7 @@ end
 -- Turn per-range displayed frames into the direction-keyed pose sets. Ranges
 -- 1-4 are the base directional set in global_fieldmap.h order; additional
 -- source ranges have actor-family/state-specific selectors
--- (ov01_021FA44C/021FA458/021FA464) with no single generic runtime meaning, so
+-- (three separate callbacks) with no single generic runtime meaning, so
 -- unclaimed ranges remain producer-private and only named semantic poses are
 -- published.
 local function buildPoses(perRange, ranges, idleMode, modelKey)

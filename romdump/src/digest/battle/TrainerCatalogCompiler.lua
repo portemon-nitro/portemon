@@ -1,8 +1,7 @@
 -- Projection of native trainer records into ordered semantic templates.
--- Headers follow the TrainerData layout in include/trainer_data.h and party
+-- Headers follow the TrainerData layout and party
 -- members follow the four TRPOKE shapes selected by the TRTYPE_* moves/item
--- bits in include/constants/trainers.h
--- (pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981): all four
+-- bits in the retail ROM: all four
 -- variants decode through one normalized template schema preserving species
 -- and form identities, difficulty, level, held items, explicit custom moves,
 -- gender/ability overrides, and capsule facts. Default movesets stay

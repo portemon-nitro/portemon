@@ -1,5 +1,5 @@
 -- ROM-conformance test: selected source edge cases in the compiled mon
--- catalog match decomp/ROM facts. Assertions are relationships and known
+-- catalog match retail ROM facts. Assertions are relationships and known
 -- source facts (native identities, form counts, representative stats), never
 -- whole-catalog snapshots. Expected stat values below are verified against
 -- the personal NARC on supported dumps (Chikorita special attack is 49,

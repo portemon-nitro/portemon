@@ -7,8 +7,7 @@
 -- controller neither requires nor carries it. It owns close input only and
 -- has no access to Start Menu internals; a cancel edge returns
 -- { kind = "close" } to the FieldApplicationHost exactly once. The close
--- input step exists in the source (ov51_021E6A54 in
--- asm/overlay_trainer_card_main.s at the pinned decomp commit plays
+-- input step exists in the source (the retail ROM plays
 -- SEQ_SE_GS_GEARCANCEL for B and returns the close state), but this branch
 -- does not reproduce the card's cancel effect: the controller requests no
 -- sound. Every other input — directions, confirm, the synthesized menu edge,

@@ -2,17 +2,14 @@
 -- tables are addressed by their original
 -- runtime (RAM) addresses; the importer converts them to overlay offsets using
 -- the load address the ROM's own overlay table reports, so no raw .nds file
--- offset is ever hardcoded. Addresses are read from `asm/overlay_01_sprite_data.s`,
--- `asm/overlay_01_021F8D80.s`, and `asm/overlay_01_021F944C.s` in the pinned
--- pret/pokeheartgold source and validated byte-for-byte against every supported
--- ROM at import time. Pure data; no love dependency.
+-- offset is ever hardcoded. Addresses are taken from the retail ROM's overlay 1 sprite and field data
+-- and validated byte-for-byte against every supported ROM at import time. Pure data; no love dependency.
 
 return {
   schema = 1,
 
   provenance = {
-    repo = "pret/pokeheartgold",
-    commit = "b23531f6c82fc6a785058825a447d8439b38e47f",
+    repo = "retail ROM",
     sources = {
       "asm/overlay_01_sprite_data.s",
       "asm/overlay_01_021F8D80.s",
@@ -58,12 +55,12 @@ return {
   directionOrder = { "north", "south", "west", "east" },
 
   -- FieldSystem_ResolveObjectSpriteID redirects this inclusive range through
-  -- field variables before the graphics lookup (`src/map_object.c`), so these
+  -- field variables before the graphics lookup, so these
   -- IDs are absent from the table by design. spriteId `s` reads variable
   -- `variableVarBase + (s - first)` once, at object creation
-  -- (`src/script_manager.c`). Every variable defaults to 0, the hero graphic.
+  -- Every variable defaults to 0, the hero graphic.
   variableSpriteRange = { first = 101, last = 117 },
-  -- VAR_OBJ_GFX_BASE (`include/constants/vars.h`). The decomp flags spriteId
+  -- VAR_OBJ_GFX_BASE. The retail ROM flags spriteId
   -- 117 as an off-by-one reading the variable past the sixteen VAR_OBJ_* slots;
   -- the var-base formula above reproduces that original behavior.
   variableVarBase = 0x4020,

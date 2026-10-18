@@ -1,11 +1,8 @@
 -- Pinned native battle/trainer/encounter source inventory. Every table below is
--- generated from pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981:
--- MoveTbl from include/move.h with the move-effect vocabulary in
--- include/constants/move_effects.h, trainer records from include/trainer_data.h
--- with the TRTYPE_* selection bits in include/constants/trainers.h and the
--- rival-name rule in src/trainer_data.c (TRAINERCLASS_RIVAL), encounter
--- members from include/wild_encounter.h with slot/replacement selection in
--- src/field/encounter_check.c. Semantic keys reuse MonSources/ItemSources;
+-- generated from the retail ROM:
+-- the move table with its move-effect vocabulary, trainer records with the
+-- TRTYPE_* selection bits and the rival-name rule (TRAINERCLASS_RIVAL), and
+-- encounter members with slot/replacement selection. Semantic keys reuse MonSources/ItemSources;
 -- this module adds no new identities. Pure data; no I/O. Never imported by
 -- runtime: libs/assets and game packages must not require this module.
 
@@ -16,8 +13,7 @@ local ItemSources = require("romdump.src.config.ItemSources")
 local BattleSources = {}
 
 BattleSources.provenance = {
-  repo = "pret/pokeheartgold",
-  commit = "0985e8718df4f25e64d6507d89c0c97c0d288981",
+  repo = "retail ROM",
   sources = {
     "include/move.h",
     "include/constants/move_effects.h",
@@ -79,7 +75,7 @@ for nativeId = 0, 536 do
   BattleSources.heldItemBindings[itemKey] = { key = class, params = { nativeId = nativeId } }
 end
 
--- Encounter-dispatch command families from src/field/encounter_check.c
+-- Encounter-dispatch command families from the retail ROM
 -- (ENCOUNTER_TYPE_* selection, rod types, and the safari/contest contexts).
 -- Each family carries its native slot count; battle-script commands belong
 -- to the move-execution consumer, not this import inventory.
@@ -95,7 +91,7 @@ BattleSources.commandBindings = {
 }
 
 -- Native slot-selection weights from the EncounterSlot_WildMonSlotRoll_*
--- interval ladders in src/field/encounter_check.c. Entries are per-slot
+-- interval ladders in the retail ROM. Entries are per-slot
 -- interval widths in selection order; they sum to 100 per method.
 BattleSources.slotWeights = {
   land = { 20, 20, 10, 10, 10, 10, 5, 5, 4, 4, 1, 1 },
@@ -105,7 +101,7 @@ BattleSources.slotWeights = {
   headbutt = { 50, 15, 15, 10, 5, 5 },
 }
 
--- Native replacement targets from src/field/encounter_check.c: radio music
+-- Native replacement targets from the retail ROM: radio music
 -- replaces land slots 2,3 (first species) and 4,5 (second species); the land
 -- swarm replaces land slots 0,1; the surf swarm replaces surf slot 0; night
 -- fishing replaces the rod slot by rod (good 3, super 1); the fishing swarm
@@ -124,8 +120,7 @@ BattleSources.replacementSlots = {
 }
 
 -- Pinned species weight-table selection facts from
--- src/battle/battle_command.c GetMonWeight
--- (pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981): member 1
+-- the retail ROM's battle weight lookup: member 1
 -- of NARC_application_zukanlist_zkn_data_zukan_data (narcId 74, path
 -- "a/0/7/4") is an s32 array indexed by species id carrying weight in
 -- hectograms. The units follow the Heavy Ball site in the same file, which
@@ -134,7 +129,7 @@ BattleSources.replacementSlots = {
 -- form dimension exists, so the catalog carries weight per species, never
 -- per form. No HgssArchives alias exists for this archive (checked against
 -- its alias table), so the selection is pinned here; compilers resolve the
--- raw decomp symbol through RomFs. Height is deliberately out of scope: no
+-- raw source symbol through RomFs. Height is deliberately out of scope: no
 -- HGSS ball rule consumes height (Heavy Ball consumes weight only).
 BattleSources.weightSources = {
   symbol = "NARC_application_zukanlist_zkn_data_zukan_data",
@@ -150,10 +145,10 @@ BattleSources.weightSources = {
   maxSpecies = 493,
 }
 
--- Pinned TRDATA/TRPOKE selection facts from include/trainer_data.h and
--- include/constants/trainers.h: the 20-byte header, the four member shapes
+-- Pinned TRDATA/TRPOKE selection facts from the retail ROM and
+-- the retail ROM: the 20-byte header, the four member shapes
 -- selected by the TRTYPE_* moves/item bits, the species-word packing, and
--- the rival class whose name resolves from the save (src/trainer_data.c).
+-- the rival class whose name resolves from the save.
 BattleSources.trainerSources = {
   recordSize = 20,
   memberSizes = { [0] = 8, [1] = 16, [2] = 10, [3] = 18 },
@@ -169,8 +164,7 @@ BattleSources.trainerSources = {
 }
 
 -- Pinned trainer-class payout rates from
--- asm/overlay_12_battle_command.s sPrizeMoneyTbl
--- (pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981): one
+-- the retail ROM's prize-money table: one
 -- non-negative integer rate per numeric trainer class 0..128, keyed by
 -- that class identity. The source table order is not numeric order; this
 -- projection is keyed so consumers never depend on row position. The
@@ -196,7 +190,7 @@ BattleSources.prizeMoneyRates = {
   [120] = 30, [121] = 30, [122] = 16, [123] = 0, [124] = 45, [125] = 0, [126] = 0, [127] = 0,
   [128] = 0,
 }
--- Pinned EncounterData member facts from include/wild_encounter.h: the
+-- Pinned EncounterData member facts from the retail ROM: the
 -- 0xC4-byte member with per-method slot counts and byte offsets of every
 -- rate array, level/species array, and replacement field.
 BattleSources.encounterSources = {

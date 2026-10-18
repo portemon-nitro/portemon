@@ -211,7 +211,7 @@ function T.rejects_zero_dimension()
   Assert.equal(assert(err).code, "MAP_MATRIX_EMPTY")
 end
 
--- 40x20 = 800 cells, one past the decompilation's 799-cell capacity.
+-- 40x20 = 800 cells, one past the retail ROM's 799-cell capacity.
 function T.rejects_cell_count_over_limit()
   local m, err = MapMatrix.decode(u8(40) .. u8(20) .. u8(0) .. u8(0) .. u8(0))
   Assert.isNil(m)

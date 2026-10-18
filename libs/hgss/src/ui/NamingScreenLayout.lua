@@ -1,6 +1,5 @@
 -- Canonical HGSS naming surface geometry using the source integer cursor and
--- touch layout. Pinned source: pret/pokeheartgold `src/naming_screen.c`
--- (`NamingScreen_UpdateCursorSpritePosition`, `sTouchHitboxDef`).
+-- touch layout. Source: the retail ROM.
 
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local NativeDisplay = require("libs.ui.src.NativeDisplay")

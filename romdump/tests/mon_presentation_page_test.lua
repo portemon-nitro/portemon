@@ -245,7 +245,7 @@ local function syntheticRomFs()
     follower_params = fixedArchive(4096, function()
       return allZero(4)
     end),
-    -- The species weight table resolves through its pinned decomp symbol;
+    -- The species weight table resolves through its source symbol;
     -- member 1 carries one zero s32 per species, member 0 is never read.
     [BattleSources.weightSources.symbol] = fixedArchive(2, function(memberId)
       if memberId == BattleSources.weightSources.memberId then

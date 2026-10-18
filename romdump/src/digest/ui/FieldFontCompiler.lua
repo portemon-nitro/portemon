@@ -5,12 +5,12 @@
 -- categorically (0 transparent, 1 red foreground, 2 green shadow, 3 blue
 -- background) instead of a baked color, so a palette-driven draw path can
 -- recolor glyphs against any runtime palette. Glyph tiles and
--- the width table come from NARC_graphic_font member 0 (src/font_data.c); the
+-- the width table come from NARC_graphic_font member 0; the
 -- screen-focus indicator set the YESNO printer control blits comes from member
 -- 6 (the GfGfxLoader_GetCharData payload, decoded as NCGR char data); colors
--- come from the RLCN-wrapped TTLP palette member 7 (src/font.c LoadFontPal0).
+-- come from the RLCN-wrapped TTLP palette member 7 (LoadFontPal0).
 -- Glyph pixel values map to palette slots via GenerateFontHalfRowLookupTable
--- (src/text.c): 0 = transparent, 1 = foreground, 2 = shadow, 3 = background.
+-- 0 = transparent, 1 = foreground, 2 = shadow, 3 = background.
 -- Each color variant resolves one foreground/shadow palette pair (slots 2n+1
 -- and 2n+2 for color n; slot 15 stays the field-window background), so the
 -- atlas stacks COLOR_VARIANT_COUNT bands of the base glyph geometry.
@@ -21,7 +21,7 @@ local PngWriter = require("libs.assets.src.PngWriter")
 local FieldFontDecoder = require("romdump.src.digest.ui.FieldFontDecoder")
 local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
 local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
-local charmap = require("romdump.src.reference.hgss.charmap")
+local charmap = require("romdump.src.catalog.hgss.charmap")
 local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 local manifest = require("romdump.src.config.FieldMessages")
@@ -83,8 +83,8 @@ end
 -- 1 = the band's foreground ink, 2 = the band's shadow, 3 = the font's
 -- background slot. Band n resolves source values 1/2 to palette slots 2n+1
 -- and 2n+2, so band 0 keeps the font's default sFontInfos[0] pair
--- (fgColor = 0x01, shadowColor = 0x02) from src/font.c applied through
--- GenerateFontHalfRowLookupTable (src/text.c); palette.colors is 1-based
+-- (fgColor = 0x01, shadowColor = 0x02) applied through
+-- GenerateFontHalfRowLookupTable; palette.colors is 1-based
 -- (colors[i] = slot i-1), so the index is slot + 1. The DS drew the
 -- background slot in the window fill color so it *looked* transparent; in a
 -- composited atlas it must be actually transparent ("transparent glyph

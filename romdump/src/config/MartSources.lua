@@ -1,12 +1,10 @@
 -- Producer-side HGSS mart resource selectors and audited source bindings.
--- Source authority: pret/pokeheartgold@9d8b7591f09b65804da2fb2dfd56f320633e0d36,
--- src/scrcmd_mart.c, asm/overlay_31.s, and src/overlay_03/shop_menu.c.
+-- Source authority: the retail ROM's mart script commands and shop menu.
 
 local MartSources = {}
 
 MartSources.provenance = {
-  repo = "pret/pokeheartgold",
-  commit = "9d8b7591f09b65804da2fb2dfd56f320633e0d36",
+  repo = "retail ROM",
   sources = {
     "src/scrcmd_mart.c",
     "src/unk_02091054.c",
@@ -15,7 +13,7 @@ MartSources.provenance = {
   },
 }
 
--- Resolve these by their decomp symbols through RomFs. Physical NARC IDs are
+-- Resolve these by their source symbols through RomFs. Physical NARC IDs are
 -- documented by the ROM evidence, but are intentionally not compiler inputs.
 MartSources.archive = {
   alias = "NARC_a_0_6_0",

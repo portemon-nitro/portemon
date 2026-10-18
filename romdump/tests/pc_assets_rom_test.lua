@@ -7,7 +7,7 @@ local FieldMessageBank = require("romdump.src.digest.ui.FieldMessageBank")
 local FieldMessageTokenizer = require("romdump.src.digest.ui.FieldMessageTokenizer")
 local MapAssetCompiler = require("romdump.src.digest.map.MapAssetCompiler")
 local PcSources = require("romdump.src.config.PcSources")
-local charmap = require("romdump.src.reference.hgss.charmap")
+local charmap = require("romdump.src.catalog.hgss.charmap")
 local PcAssetSchema = require("libs.assets.src.PcAssetSchema")
 
 local T = {}

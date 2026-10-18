@@ -1,9 +1,9 @@
 -- Import-time lossless tokenizer over decrypted HGSS message code units
 -- (romdump digester; the runtime never sees raw code units). Single-unit
--- specials follow include/constants/charcode.h (CHAR_LF 0xE000, EOS 0xFFFF);
+-- specials follow the retail ROM's charcodes (CHAR_LF 0xE000, EOS 0xFFFF);
 -- the prompt/page breaks (0x25BC = GMM \r, 0x25BD = GMM \f) and the extended
 -- control framing (EXT_CTRL_CODE_BEGIN 0xFFFE, count, arguments) follow
--- charmap.txt and src/string_control_code.c. Glyph display text and control
+-- charmap.txt and the retail ROM's string control codes. Glyph display text and control
 -- names come from the frozen charmap reference; widths are resolved later from
 -- the font, never here. Truncated packed trainer names raise a structured
 -- MESSAGE_TRNAME_TRUNCATED error. Pure module: no love dependency.
@@ -178,7 +178,7 @@ local function tokenizeUnits(units, charmap)
 end
 
 -- units: decrypted u16 code units (FieldMessageBank output). charmap: the
--- frozen reference (romdump/src/reference/hgss/charmap.lua). Returns the lossless
+-- frozen reference (romdump/src/catalog/hgss/charmap.lua). Returns the lossless
 -- token stream; raises MESSAGE_CONTROL_TRUNCATED, MESSAGE_TRNAME_TRUNCATED, or
 -- MESSAGE_GLYPH_UNMAPPED.
 function FieldMessageTokenizer.tokenize(units, charmap, _)

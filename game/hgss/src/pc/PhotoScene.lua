@@ -1,6 +1,5 @@
 -- Reconstructs one saved photo using the live field-map presentation owner.
--- Camera and subject behavior follows pokeheartgold src/field_take_photo.c
--- at 9d8b7591f09b65804da2fb2dfd56f320633e0d36.
+-- Camera and subject behavior follows the retail ROM's photo capture.
 
 local FieldActorAssetProvider = require("libs.hgss.src.presentation.FieldActorAssetProvider")
 local FieldActorDraw = require("libs.hgss.src.presentation.FieldActorDraw")

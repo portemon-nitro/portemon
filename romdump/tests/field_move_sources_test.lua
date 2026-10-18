@@ -1,12 +1,11 @@
 -- FieldMoveSources contract tests: verified source move/badge/map/object
 -- policy facts stay producer-owned, with numeric source identities resolved
 -- here and semantic keys crossing to runtime.
--- Source basis: pret/pokeheartgold@9d8b7591f09b65804da2fb2dfd56f320633e0d36,
--- asm/unk_0203BA5C.s (sSpawnMaps and GetDeathWarpData).
+-- Source basis: the retail ROM (spawn maps and death-warp data).
 
 local Assert = require("tests.support.Assert")
 local FieldMoveSources = require("romdump.src.config.FieldMoveSources")
-local Spawns = require("romdump.src.reference.hgss.spawns")
+local Spawns = require("romdump.src.catalog.hgss.spawns")
 
 local T = {}
 

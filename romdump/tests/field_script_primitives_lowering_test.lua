@@ -1,6 +1,6 @@
 local Assert = require("tests.support.Assert")
 local FieldHandlers = require("romdump.src.digest.script.lowering.FieldHandlers")
-local ScriptCommands = require("romdump.src.reference.hgss.script_commands")
+local ScriptCommands = require("romdump.src.catalog.hgss.script_commands")
 
 local T = {}
 

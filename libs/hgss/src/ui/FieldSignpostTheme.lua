@@ -1,11 +1,10 @@
 -- Pure signpost window presentation geometry: the frame tilemap and the
 -- wipe translation of the HGSS signpost window. The signpost is a different
--- window system from ordinary dialogue (src/field/signpost.c,
--- asm/render_window.s at the pinned decomp commit): DrawFrameAndWindow3 draws
+-- window system from ordinary dialogue (retail ROM): DrawFrameAndWindow3 draws
 -- the full-width DrawFrameAndWindow2 tilemap for every source type, and for
 -- types 0/1 additionally reserves the seven-tile wayfinding area -- the
 -- precomposed 48x32 final wayfinding surface left of the text window and
--- frame tile 8 becomes the divider (sub_0200ECBC + sub_0200EF84). The
+-- frame tile 8 becomes the divider. The
 -- wayfinding source is 24 tiles arranged 6x4 at build time; runtime draws
 -- one rect. The whole signpost BG layer slides by the logical wipe offset:
 -- the DS BG y-scroll register holds the offset, so the hidden -48 value
@@ -25,7 +24,7 @@ local FieldDialogueTheme = require("libs.hgss.src.ui.FieldDialogueTheme")
 local FieldSignpostTheme = {}
 
 -- The signpost frame surrounds the full-width 27x4-tile box for every source
--- type (the DIALOG_BOX_* constants from src/dialog_box.c); types 0/1 only
+-- type (the DIALOG_BOX_* constants); types 0/1 only
 -- move the text window to the right of the wayfinding area.
 FieldSignpostTheme.WINDOW_BOX = FieldDialogueTheme.box
 

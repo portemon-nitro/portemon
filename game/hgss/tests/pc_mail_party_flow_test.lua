@@ -15,7 +15,7 @@ local MonCatalog = require("libs.mons.src.MonCatalog")
 local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
 local PartyPresentationFixture = require("tests.support.PartyPresentationFixture")
-local PokemonMenuComposition = require("game.hgss.src.field.PokemonMenuComposition")
+local PartyMenuComposition = require("game.hgss.src.field.PartyMenuComposition")
 local MailboxScreenState = require("game.hgss.src.pc.MailboxScreenState")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
@@ -205,7 +205,7 @@ local function makeComposition(attachMail)
 
   local bag = HgssBagService.new({ catalog = items })
   local mailbox = Mailbox.new()
-  local composition = PokemonMenuComposition.create({
+  local composition = PartyMenuComposition.create({
     mons = mons,
     bag = bag,
     mailbox = mailbox,

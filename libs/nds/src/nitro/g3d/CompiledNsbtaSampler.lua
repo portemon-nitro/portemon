@@ -24,7 +24,7 @@
 -- artifact gate (ModelAsset.validate) rejects any other source before the
 -- runtime, so a bad channel here is a program invariant, not data.
 --
--- The result matches GetTexSRTAnm_ (pokediamond NNS_G3D_nsbta.s): the
+-- The result matches GetTexSRTAnm_ (retail ROM): the
 -- "one" flags select the texture-matrix variant, and a component flagged
 -- "one" carries no value:
 --   transOne  = transS == 0 and transT == 0

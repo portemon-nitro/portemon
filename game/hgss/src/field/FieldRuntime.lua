@@ -534,7 +534,7 @@ end
 ---@field incomingCalls table<string, unknown>? the owned ambient incoming-call coordinator (nil after teardown)
 ---@field playerDataContext table<string, unknown>? the generated charmap and frame-index context behind player validation
 ---@field bagCursor BagCursor the runtime-only field bag cursor
----@field pokemonMenu table<string, unknown>? the owned menu composition (nil before composition / after teardown)
+---@field partyMenu table<string, unknown>? the owned menu composition (nil before composition / after teardown)
 ---@field menuLaneWarps table<string, unknown>? the long-lived menu-origin warp service (nil before composition / after teardown)
 ---@field followingMon FollowingMonController|nil the one derived follower controller (nil after teardown)
 ---@field celebiTimeTravelScene table<string, unknown>|nil runtime-owned headless Celebi cutscene state
@@ -553,7 +553,7 @@ end
 ---@field starterProvider table<string, unknown> the hand-editable default starter roster, injected into the starter task
 ---@field starterChoice StarterChoiceState? the modal starter-choice surface the blocking task opens and closes
 ---@field partySelection table<string, unknown>? the modal script-party surface the blocking selection task opens and closes
----@field pokemonNaming PokemonNamingState the script-owned Pokemon Naming Screen host
+---@field monNaming MonNamingState the script-owned Pokemon Naming Screen host
 ---@field menuHost FieldMenuHost?
 ---@field yesNoHost FieldYesNoHost? the live choice presentation host shared by the session, the script dialogue host, and field draw
 ---@field actionKeys table<string, boolean>?
@@ -1462,11 +1462,11 @@ function FieldRuntime:_composeFieldServices(boot)
   })
   self.starterBalls = composeStarterBalls(self)
   self.partySelection = buildPartySelectionHost(self, boot.cacheFs)
-  self:_composePokemonMenu(boot.cacheFs)
+  self:_composePartyMenu(boot.cacheFs)
   local ApricornBoxHost = require("game.hgss.src.apricorn.ApricornBoxHost")
   self.kurtBoxHost = ApricornBoxHost.new({
     makeApricornBox = assert(
-      self.pokemonMenu.makeApricornBox,
+      self.partyMenu.makeApricornBox,
       "Kurt selector uses the composed source Apricorn Box factory"
     ),
     service = self.martService,
@@ -1474,13 +1474,13 @@ function FieldRuntime:_composeFieldServices(boot)
   })
   local PcApplicationHost = require("game.hgss.src.pc.PcApplicationHost")
   local function createStorage(request)
-    return self.pokemonMenu.makeStorageChild(assert(request.mode, "Storage mode required"))
+    return self.partyMenu.makeStorageChild(assert(request.mode, "Storage mode required"))
   end
   local function createMailbox()
-    return self.pokemonMenu.makeMailboxChild()
+    return self.partyMenu.makeMailboxChild()
   end
   local function createPhotoAlbum()
-    return self.pokemonMenu.makePhotoAlbumChild()
+    return self.partyMenu.makePhotoAlbumChild()
   end
   self.pcApplicationHost = PcApplicationHost.new({
     createStorage = createStorage,
@@ -1494,7 +1494,7 @@ function FieldRuntime:_composeFieldServices(boot)
   self.pcTerminal = PcTerminal.new({
     mailbox = self.mailbox,
     photoAlbum = self.photoAlbum,
-    sourcePolicy = self.pokemonMenu.pcManifest.terminal,
+    sourcePolicy = self.partyMenu.pcManifest.terminal,
     resolveTerminalProp = resolveTerminalProp,
   })
   self:_composePokemonCenterHeal(boot.audioService)
@@ -1512,8 +1512,8 @@ function FieldRuntime:_composeFieldServices(boot)
     partySelection = self.partySelection,
     mart = self.martHost,
     travel = self.fieldTravel,
-    fieldMoves = self.pokemonMenu.fieldMoves,
-    pokemonNaming = self.pokemonNaming,
+    fieldMoves = self.partyMenu.fieldMoves,
+    monNaming = self.monNaming,
     followingMon = self.followingMon,
     followerInteractionCatalog = self.followerInteractionCatalog,
     followerReactionTicks = self.followerReactionTicks,
@@ -1548,7 +1548,7 @@ end
 ---@return table<string, unknown>
 function FieldRuntime:_resolvePcTerminalProp(propRef)
   assert(propRef == "pc_terminal", "PC terminal prop reference is closed")
-  local pcManifest = assert(self.pokemonMenu, "PC terminal needs the menu composition").pcManifest
+  local pcManifest = assert(self.partyMenu, "PC terminal needs the menu composition").pcManifest
   local terminal = assert(pcManifest.terminal, "PC terminal source policy is compiled")
   local mapProps = assert(self.runtimeMap.mapProps, "the active map owns canonical scene props")
   local selected
@@ -1807,9 +1807,9 @@ function FieldRuntime:_startFieldSession(boot)
     partySelection = self.partySelection,
     martHost = self.martHost,
     kurtBoxHost = self.kurtBoxHost,
-    fieldMoves = self.pokemonMenu.fieldMoves,
+    fieldMoves = self.partyMenu.fieldMoves,
     overworld = self.overworld,
-    pokemonNaming = self.pokemonNaming,
+    monNaming = self.monNaming,
     signpost = self.signpost,
     applicationHost = self.applicationHost,
     pcApplications = self.pcApplicationHost,
@@ -2261,8 +2261,8 @@ function FieldRuntime:_composeBag(activeGame, loadedGame)
 end
 
 ---@param cacheFs table<string, unknown> version cache reader for cited spawn landings
-function FieldRuntime:_composePokemonMenu(cacheFs)
-  self.menuComposer:composePokemonMenu(cacheFs)
+function FieldRuntime:_composePartyMenu(cacheFs)
+  self.menuComposer:composePartyMenu(cacheFs)
 end
 
 ---@return table<string, unknown>
@@ -3520,7 +3520,7 @@ function FieldRuntime:_admitFieldAction(actionId, request)
   assert(actionId == "pokemon.field_move", "unknown field action " .. tostring(actionId))
   local BuiltinScripts = require("libs.hgss.src.script.BuiltinScripts")
   local ScriptInteractionClient = require("libs.hgss.src.script.ScriptInteractionClient")
-  local composition = assert(self.pokemonMenu, "field admission requires the menu composition")
+  local composition = assert(self.partyMenu, "field admission requires the menu composition")
   local fieldMoves = assert(composition.fieldMoves, "field admission requires the field runtime")
   local flowRequest = assert(request, "field admission requires its request")
   assert(type(flowRequest.move) == "string", "field admission requires its move key")
@@ -3915,9 +3915,9 @@ function FieldRuntime:_releaseAll()
   self.martStockResolver = nil
   self.itemCatalog = nil
   self.followerInteractionCatalog = nil
-  self.starterProvider, self.starterChoice, self.pokemonNaming = nil, nil, nil
+  self.starterProvider, self.starterChoice, self.monNaming = nil, nil, nil
   self.partySelection = nil
-  self.pokemonMenu, self.menuLaneWarps = nil, nil
+  self.partyMenu, self.menuLaneWarps = nil, nil
 end
 
 -- End the state's lifetime: persist the field session if one is live, then
@@ -3960,14 +3960,14 @@ function FieldRuntime:dispose()
   -- The menu composition owns the field-move runtime: cancel owned
   -- pending/active work exactly once; borrowed services stay live for
   -- the remaining teardown below.
-  if self.pokemonMenu then
-    self.pokemonMenu.dispose()
+  if self.partyMenu then
+    self.partyMenu.dispose()
   end
   if self.starterChoice then
     self.starterChoice:dispose()
   end
-  if self.pokemonNaming then
-    self.pokemonNaming:dispose()
+  if self.monNaming then
+    self.monNaming:dispose()
   end
   self:_releaseAll()
 end

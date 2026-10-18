@@ -1,8 +1,7 @@
 -- Compiles the HGSS movement-emote billboard: field_static_models member
 -- 118 ("sisen_ef" -- the exclamation-mark badge drawn above an actor
--- performing EmoteExclamationMark, per MapObjectMovementCmd075_Step0 ->
--- sub_02062F48 -> ov01_02200540 with the field-effect vtable at
--- ov01_022092DC). The model is self-contained: its BMD0 embeds its own
+-- performing EmoteExclamationMark, per the retail ROM's
+-- movement emote command). The model is self-contained: its BMD0 embeds its own
 -- TEX0, so no separate texture member is required. Nitro decoding ends
 -- here; the runtime receives only normalized model data and content-
 -- addressed mesh/texture references.

@@ -74,7 +74,7 @@ local function validManifest()
   end
 
   local bannerStyleByMapId = {}
-  local maps = require("romdump.src.reference.hgss.maps").byId
+  local maps = require("romdump.src.catalog.hgss.maps").byId
   for id = 0, 539 do
     local record = maps[id]
     local areaIcon = record and record.areaIcon

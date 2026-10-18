@@ -2268,7 +2268,7 @@ Schema.CONSTRUCTORS = {
       {
         signature = "S.pokemonNicknameInput(spec)",
         canonical = "op=pokemon_nickname_input",
-        notes = "spec={slot,result}; blocks on the field Pokemon Naming Screen.",
+        notes = "spec={slot,result}; blocks on the field mon naming screen.",
       },
       {
         signature = "S.battleLaunch(spec)",

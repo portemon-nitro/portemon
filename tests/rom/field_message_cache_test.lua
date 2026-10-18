@@ -11,7 +11,7 @@ local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProv
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 local FieldMessageTokenizer = require("romdump.src.digest.ui.FieldMessageTokenizer")
 local FieldFontCompiler = require("romdump.src.digest.ui.FieldFontCompiler")
-local charmap = require("romdump.src.reference.hgss.charmap")
+local charmap = require("romdump.src.catalog.hgss.charmap")
 local MenuProtocol = require("libs.assets.src.MenuProtocol")
 
 local T = {}

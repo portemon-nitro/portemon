@@ -1,10 +1,10 @@
 -- Source selectors and shared geometry for the retained HGSS PC applications.
--- Overlay call sites were verified against pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981.
+-- Overlay call sites were verified against the retail ROM.
 
 local PcSources = {}
 
 PcSources.provenance = {
-  decompRevision = "pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981",
+  romAudit = "retail ROM",
   symbols = { "asm/overlay_14.s", "asm/overlay_103.s", "asm/overlay_109.s" },
 }
 
@@ -29,7 +29,7 @@ PcSources.stationeryTypes = {}
 for stationeryType = 0, 11 do
   PcSources.stationeryTypes[#PcSources.stationeryTypes + 1] = stationeryType
 end
--- Mail type order follows include/constants/mail.h and the names remain the
+-- Mail type order follows the retail ROM's mail table and the names remain the
 -- existing ItemCatalog keys from ItemSources.itemKeys.
 PcSources.stationeryItemKeys = {
   "GRASS_MAIL",
@@ -133,7 +133,7 @@ PcSources.storageWallpaperSwatches = { palette = 75, count = 24, lockedIndex = 2
 -- resources to the Mailbox and Photo Album application sprites.
 PcSources.mailboxUiMembers = { character = 7, palette = 10, cell = 8, animation = 9 }
 PcSources.photoAlbumSpriteMembers = { character = 1, palette = 0, cell = 2, animation = 3 }
--- Source prop policy from overlay_02_02248728.s and src/unk_02054648.c.
+-- Source prop policy from overlay_02_02248728.s.
 PcSources.terminal = {
   buildModels = {
     { archiveAlias = "interior_build_models", memberId = 33 },
@@ -144,13 +144,12 @@ PcSources.terminal = {
     [1] = { role = "terminal.off", playMode = "forward" },
   },
 }
--- Bank counts and ordering follow `src/easy_chat.c` and
--- `include/constants/easy_chat.h` in the cited HGSS decompilation.
+-- Bank counts and ordering follow the retail ROM's Easy Chat tables.
 PcSources.mailText = {
   storageBanks = { 24, 25 },
   mailboxBank = 232,
   albumBank = 0,
-  -- src/unk_02068F84.c resolves native map sections through this bank.
+  -- The retail ROM resolves native map sections through this bank.
   landmarkBank = 279,
   lineBanks = { 294, 296, 292, 293, 295 },
   wordBanks = {

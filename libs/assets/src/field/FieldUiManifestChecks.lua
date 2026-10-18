@@ -206,7 +206,7 @@ local function checkSignedPoint(point, message)
   end
 end
 
--- One signed integral coordinate: icon parts and Pokemon anchors may extend
+-- One signed integral coordinate: icon parts and mon anchors may extend
 -- left/up of their source origin, so only finite integrality is required.
 
 local function checkCanonicalPoint(point, what)

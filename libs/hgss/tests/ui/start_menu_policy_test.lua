@@ -7,8 +7,7 @@
 -- (source enablement). actions() returns every source-present entry with its
 -- source-enablement state and routing metadata, independent of
 -- implementation capability -- the runtime is the sole place that composes
--- this with the registered destination applications. Source evidence:
--- pret/pokeheartgold@008257708: src/start_menu.c and src/sys_flags.c.
+-- this with the registered destination applications. Source evidence: the retail ROM.
 
 local Assert = require("tests.support.Assert")
 local StartMenuPolicy = require("libs.hgss.src.ui.StartMenuPolicy")

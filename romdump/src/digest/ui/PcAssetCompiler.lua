@@ -13,7 +13,7 @@ local PcCache = require("libs.assets.src.PcCache")
 local PcSources = require("romdump.src.config.PcSources")
 local FieldMessageBank = require("romdump.src.digest.ui.FieldMessageBank")
 local FieldMessageTokenizer = require("romdump.src.digest.ui.FieldMessageTokenizer")
-local charmap = require("romdump.src.reference.hgss.charmap")
+local charmap = require("romdump.src.catalog.hgss.charmap")
 
 local PcAssetCompiler = {}
 

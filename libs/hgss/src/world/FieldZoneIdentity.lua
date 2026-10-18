@@ -1,6 +1,6 @@
 -- Resolves physical coverage cells to logical-zone identity. The shared
--- EVERYWHERE matrix header (header 0, MAP_EVERYWHERE in the frozen
--- pokeheartgold map-header reference) owns valid physical terrain but no
+-- EVERYWHERE matrix header (header 0, MAP_EVERYWHERE in the retail
+-- ROM's map headers) owns valid physical terrain but no
 -- logical map, so behavior over such a cell stays with the currently active
 -- map. Every other header names its own logical map; a header the loader
 -- cannot define is not filler and fails at logical acquisition instead of

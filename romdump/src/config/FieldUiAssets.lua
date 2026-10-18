@@ -2,8 +2,7 @@
 -- NARC alias/member number lives here and in the dependencies/provenance
 -- records; the generated manifest never carries them. Member numbers are
 -- zero-based per the repository convention. The signpost source-type domain
--- is exactly {0,1,2,3}: `LoadMapSignpostFrameAndGraphic` (asm/render_window.s
--- at the pinned decomp commit) always reads NARC 0x24 member 1 and selects
+-- is exactly {0,1,2,3}: the retail ROM's signpost frame loader always reads NARC 0x24 member 1 and selects
 -- palette bank `type * 0x20`, with no alternate palette source for any other
 -- type value; `tests/rom/script_corpus_test.lua`'s "signpost contracts hold
 -- on the real corpus" case decodes every DirectionSignpost/SetSignpostMap
@@ -13,23 +12,21 @@
 -- additionally load the map-specific wayfinding graphic (the `type > 1`
 -- branch skips it); the wayfinding member is map + 0x21 for type 0 and
 -- map + 2 for type 1, over the corpus-audited map ranges. Start Menu members
--- follow src/start_menu.c and overlay 27 at pret/pokeheartgold
--- 008257708bd41df5b8c9037e019088ba24df0a87: the MAIN BG triple (char 12,
+-- follow the retail ROM's start menu and overlay 27: the MAIN BG triple (char 12,
 -- screen 13, palette 15) carries only the bottom-panel chrome, the SUB set
 -- (char 8, screen 9, palette 7) sits behind the entry windows, the eleven
 -- 20-tile icon chars with the shared cell/anim banks (16/17) and OBJ palette
 -- image (14) supply the entry sprites; the focus-change wobble reuses the
 -- shared cell/anim banks (horizontal sequence 1, vertical sequence 3). The
--- start_menu.c cursor sprite (members 64/61/62/63) never tracks focus and is
+-- start menu cursor sprite (members 64/61/62/63) never tracks focus and is
 -- not selected. The icon rows, context rows, action-to-icon map, sprite
 -- bases, and label windows below transcribe the overlay-27 icon/context
 -- mapping and sprite-base/window tables; the per-icon cell/anim members
 -- (19/20...) have no traced consumer and are not selected. Dialogue frames follow
 -- LoadUserFrameGfx2 (member = frame + 2, palette = frame + 0x1A), Trainer
--- Card members src/overlay_trainer_card_main.s. No sound archive is
+-- Card members come from the trainer card overlay. No sound archive is
 -- selected: the branch does not reproduce the source Start Menu effects. Normal naming chrome
--- follows src/naming_screen.c at pret/pokeheartgold
--- 008257708bd41df5b8c9037e019088ba24df0a87: the normal player/Pokemon path
+-- follows the retail ROM's naming screen: the normal player/mon path
 -- loads the full 256x192 base screen 4 on the main base layer and switches
 -- the keyboard layer through `pageNum + 6`, cycling page numbers 0..2, so
 -- the normal pages are screens 6 (Upper), 7 (Lower), and 8 (Symbols).
@@ -40,7 +37,7 @@
 -- 112-high page content belongs at canonical y=80 over the base. The normal
 -- OBJ stack is char 10, palette 1 (nine 16-color banks selected per OAM
 -- object), NCER 12, and NANR 14. The semantic animation/anchor table below
--- transcribes src/naming_screen.c `sUISpritesParam`, the home-row cursor
+-- transcribes the naming screen UI sprite parameters, the home-row cursor
 -- tables, the entry-slot/subject creation, and the keyboard window geometry:
 -- page controls use anims 3/8/13 (selected 0/5/10), Back/OK use 23/25
 -- (selected 24/26), the support backing uses 37, the keyboard cursor uses 39
@@ -55,8 +52,7 @@
 return {
   schema = 1,
   provenance = {
-    repo = "pret/pokeheartgold",
-    commit = "0985e8718df4f25e64d6507d89c0c97c0d288981",
+    repo = "retail ROM",
     sources = {
       { path = "src/start_menu.c" },
       { path = "asm/overlay_27.s" },
@@ -158,8 +154,7 @@ return {
       { 1, 2, 4, 6, false, false, false },
       { 1, 4, 6, false, false, false, false },
     },
-    -- The normal visual actions: semantic action id to retail icon index
-    -- (src/start_menu.c sActionToIconIndex). Only icon-backed actions are
+    -- The normal visual actions: semantic action id to retail icon index. Only icon-backed actions are
     -- visual buttons; the cancel sentinel and the bookkeeping specials carry
     -- no icon slot and stay source-policy facts outside the visual menu.
     actionIcons = {
@@ -371,7 +366,7 @@ return {
       },
     },
   },
-  -- The compact two-row choice prompt follows src/yes_no_prompt.c: the
+  -- The compact two-row choice prompt follows the retail ROM: the
   -- confirmation row renders through the first prompt palette bank and the
   -- rejection row through the second, from the shared character bank. The
   -- shape-0 screens are 6x4 tiles (48x32 pixels) each: YES normal/selected

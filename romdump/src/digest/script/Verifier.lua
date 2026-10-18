@@ -24,7 +24,7 @@ local Cfg = require("romdump.src.digest.script.Cfg")
 local CommandCatalog = require("romdump.src.digest.script.CommandCatalog")
 local SemanticLowering = require("romdump.src.digest.script.SemanticLowering")
 local Operands = require("romdump.src.digest.script.lowering.Operands")
-local SignpostCommands = require("romdump.src.reference.hgss.signpost_commands")
+local SignpostCommands = require("romdump.src.catalog.hgss.signpost_commands")
 
 local Verifier = {}
 

@@ -1,6 +1,6 @@
 -- Normalization of native move-table entries into source-independent battle
--- facts. Move entries follow include/move.h MoveTbl widths
--- (pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981): effect u16,
+-- facts. Move entries follow the retail ROM's move table widths:
+-- effect u16,
 -- category/power/type/accuracy/pp/effectChance u8, range u16, priority s8,
 -- then source-only bytes the semantic projection never leaks. Semantic keys
 -- reuse MonSources; behavior bindings come from the BattleSources inventory,

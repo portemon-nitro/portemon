@@ -7,16 +7,15 @@
 --
 --   graphics     six-byte records `u16 spriteId, u16 mapModelId, u16 packed`,
 --                scanned linearly to a `spriteId == 0xFFFF` terminator by
---                ObjectEvent_GetGraphicsInfo (asm/overlay_01_021F8D80.s).
+--                ObjectEvent_GetGraphicsInfo.
 --   descriptors  24 eight-byte visual descriptors indexed by packed bits 10-15;
 --                `+2` is a shared-model key, `+3` a timeline key, and `+4` a
---                pointer to that descriptor's animation-range table
---                (asm/overlay_01_021F944C.s).
+--                pointer to that descriptor's animation-range table.
 --   modelKeys    flat u16 (key, mmodel memberId) pairs, terminated by key 255.
 --   timelineKeys the same shape for the timeline `.bin` members.
 --
--- An animation-range record is `s32 startFrame, s32 endFrame, s32 endMode`
--- (asm/unk_02023694.s); `endMode == 0` wraps and non-zero clamps. The array is
+-- An animation-range record is `s32 startFrame, s32 endFrame, s32 endMode`;
+-- `endMode == 0` wraps and non-zero clamps. The array is
 -- terminated by a `[0, 0, 2]` record, so the per-descriptor range count is read
 -- from the data rather than assumed. Ranges are indexed by
 -- the global_fieldmap.h direction order north, south, west, east; a descriptor

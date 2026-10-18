@@ -1,19 +1,18 @@
 -- Source decode and semantic normalization of non-image mon data.
--- Personal members follow include/pokemon_types_def.h BASE_STATS widths
--- (pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981):
+-- Personal members follow the retail ROM's base-stats widths:
 -- six base stats, two types, catch rate, base experience, packed EV yields,
 -- two held items, gender/egg-cycle/friendship/growth fields, two egg groups,
 -- two u8 abilities, the Great Marsh rate, packed color/flip metadata, and
 -- four TM/HM compatibility words. Level-up learnsets follow
--- src/pokemon.c InitBoxMonMoveset/LoadLevelUpLearnset_HandleAlternateForm
+-- InitBoxMonMoveset/LoadLevelUpLearnset_HandleAlternateForm
 -- packing (move id in the low 9 bits, level in the high 7, 0xFFFF
--- terminator). Move entries follow include/move.h MoveTbl widths with the
--- src/move.c MoveAttr field names. Evolutions follow the struct Evolution
--- slot layout with src/pokemon.c evolution-check parameter semantics.
+-- terminator). Move entries follow the retail ROM's move table widths with its
+-- MoveAttr field names. Evolutions follow the struct Evolution
+-- slot layout with the retail ROM's evolution-check parameter semantics.
 -- Personal/learnset member selection follows ResolveMonForm; evolution
 -- members resolve by plain species id (LoadMonEvolutionTable). Display text
--- comes through the existing message decoder at the src/message_format.c
--- banks (species 237, move names 750, move descriptions 749, ability names
+-- comes through the existing message decoder at the retail ROM's
+-- message banks (species 237, move names 750, move descriptions 749, ability names
 -- 720, ability descriptions 722). No LOVE objects or filesystem writes;
 -- callers publish through MonCacheWriter.
 
@@ -27,7 +26,7 @@ local MonAssetSchema = require("libs.assets.src.MonAssetSchema")
 local FieldMessageBank = require("romdump.src.digest.ui.FieldMessageBank")
 local FieldMessageTokenizer = require("romdump.src.digest.ui.FieldMessageTokenizer")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
-local charmap = require("romdump.src.reference.hgss.charmap")
+local charmap = require("romdump.src.catalog.hgss.charmap")
 local MonCache = require("libs.assets.src.MonCache")
 local MonPresentationCompiler = require("romdump.src.digest.mons.MonPresentationCompiler")
 
@@ -255,9 +254,9 @@ function MonCatalogCompiler.decodeLearnset(member, context)
   return moves
 end
 
--- PokeathlonBasePerformance follows include/pokemon_types_def.h: five source
+-- PokeathlonBasePerformance follows the retail ROM: five source
 -- base bytes, four reserved bytes, ten min/max bytes, then one reserved byte.
--- Array order follows include/constants/pokemon.h ARCPERF_* identities.
+-- Array order follows the retail ROM's ARCPERF_* identities.
 ---@param member string
 ---@param context Errors.Context|nil
 ---@return table<string, {base:integer, min:integer, max:integer}>|nil, Errors.Error|nil
@@ -302,7 +301,7 @@ function MonCatalogCompiler.decodePerformance(member, context)
   }
 end
 
--- Decode one 16-byte MoveTbl entry. Field names follow the src/move.c
+-- Decode one 16-byte MoveTbl entry. Field names follow the retail ROM's
 -- MoveAttr vocabulary; the trailing word is verified zero padding on
 -- supported dumps.
 ---@param entry string
@@ -431,8 +430,7 @@ end
 -- Decode the pokedex species weight table: member 1 of
 -- NARC_application_zukanlist_zkn_data_zukan_data as an s32 array indexed
 -- by species id 0..MAX_SPECIES carrying hectograms
--- (src/battle/battle_command.c GetMonWeight,
--- pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981; member
+-- (the retail ROM's weight table; member
 -- selection pinned in BattleSources.weightSources). Weights are
 -- non-negative; a negative entry is corrupt input and fails, never clamps.
 ---@param member string
@@ -476,7 +474,7 @@ function MonCatalogCompiler.decodeWeightTable(member, context)
 end
 
 -- Decode one display-text bank into its message texts indexed by native id.
--- Banks are selected by MonSources.messageBanks (src/message_format.c call
+-- Banks are selected by MonSources.messageBanks (call
 -- sites, content-verified for descriptions); every message must tokenize.
 ---@param messagesNarc Narc
 ---@param bankId integer
@@ -540,7 +538,7 @@ end
 -- Normalize one raw evolution slot into its semantic record. Level-like
 -- parameters stay integers; item/move/species parameters become semantic
 -- keys; fixed-threshold and trigger methods carry no parameter. Parameter
--- semantics follow the src/pokemon.c evolution checks.
+-- semantics follow the retail ROM's evolution checks.
 local function normalizeEvolution(slot, context)
   local methodKey = must(MonSources.evolutionMethods[slot.method])
   local targetKey, targetErr = lookupKey(MonSources.speciesKeys, slot.target, "species", "MON_EVO_BAD_VALUE", context)
@@ -689,7 +687,7 @@ local function assembleForm(speciesId, form, personal, learnsets, evos, tpArchiv
   local seenAbility = {}
   for _, abilityId in ipairs(personal.abilities) do
     if abilityId ~= 0 and not seenAbility[abilityId] then
-      -- Ability slot 2 of 0 means "no second ability": src/pokemon.c
+      -- Ability slot 2 of 0 means "no second ability":
       -- creation falls back to slot 1, so the catalog carries one entry.
       -- Identical pairs (both slots the same ability) likewise collapse:
       -- PID selection cannot distinguish them.

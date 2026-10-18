@@ -403,7 +403,7 @@ local function fixture(opts)
     end
     -- Sequence 50 animates between source cells 52 and 53. Both cells point
     -- at the dynamically loaded icon tile and its underlay; neither adds
-    -- Pokémon pixels to the naming OBJ character bank.
+    -- mon pixels to the naming OBJ character bank.
     for cell = 52, 53 do
       cells[cell + 1] = {
         { x = 0, y = 0, tile = 0x57E0 / 32, pal = 6, size = 2 },

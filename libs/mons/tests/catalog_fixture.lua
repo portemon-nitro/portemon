@@ -374,8 +374,7 @@ function CatalogFixture.buildAssetRoot()
       -- native identity 165 with its ordinary single-foe bracket, so
       -- synthetic sessions can seal and execute it like catalog moves.
       STRUGGLE = moveEntry(165, "Struggle", "Struggles with no PP left.", "physical", 50, "normal", 100, 1),
-      -- The fixed Spiky-Ear Pichu gift moveset (pret/pokeheartgold
-      -- src/field/scrcmd_pokemon_misc.c ScrCmd_GiveSpikyEarPichu).
+      -- The fixed Spiky-Ear Pichu gift moveset (retail ROM).
       SWAGGER = moveEntry(207, "Swagger", "Confuses the foe.", "status", 0, "normal", 90, 15),
       PAIN_SPLIT = moveEntry(220, "Pain Split", "Shares HP with the foe.", "status", 0, "normal", 100, 20),
       HELPING_HAND = moveEntry(270, "Helping Hand", "Boosts the ally.", "status", 0, "normal", 100, 20),

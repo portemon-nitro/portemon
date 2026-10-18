@@ -334,7 +334,7 @@ function T.directional_navigation_walks_the_full_normal_menu()
 end
 
 -- Retail shakes the newly focused icon along the movement axis
--- (ov27_0225B404: up/down restart animation 3, left/right animation 1),
+-- (up/down restart animation 3, left/right animation 1),
 -- only when focus actually changes; touch selection never shakes.
 function T.directional_focus_change_shakes_the_new_icon_along_the_movement_axis()
   local controller = newController()
@@ -401,7 +401,7 @@ function T.pointer_selection_never_shakes()
 end
 
 -- Retail hops the activated icon upward on successful activation
--- (ov27_0225A2CC arms it; the A320 loop restarts sequence 2 on the
+-- (the loop restarts sequence 2 on the
 -- selected icon): confirm-key and tap activation hop; disabled, cancel,
 -- and shoes-toggle activation never hop.
 function T.successful_activation_hops_the_activated_icon()

@@ -1,6 +1,6 @@
 -- Compiles source-referenced HGSS message banks into tokenized, lossless bank
 -- artifacts. Each bank member is validated and decrypted by FieldMessageBank
--- (src/msgdata.c Decrypt1/Decrypt2) and then tokenized by
+-- (Decrypt1/Decrypt2) and then tokenized by
 -- FieldMessageTokenizer. Bank selection comes from frozen map and script
 -- references; static font configuration remains in FieldMessages.
 
@@ -11,9 +11,9 @@ local FieldMessageTokenizer = require("romdump.src.digest.ui.FieldMessageTokeniz
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
 local MenuProtocol = require("libs.assets.src.MenuProtocol")
-local charmap = require("romdump.src.reference.hgss.charmap")
+local charmap = require("romdump.src.catalog.hgss.charmap")
 local MapCatalog = require("romdump.src.digest.map.MapCatalog")
-local ScriptMembers = require("romdump.src.reference.hgss.script_members")
+local ScriptMembers = require("romdump.src.catalog.hgss.script_members")
 local manifest = require("romdump.src.config.FieldMessages")
 
 -- Oak's scripted opening introduction reads its dialogue directly from this
@@ -79,13 +79,10 @@ local APRICORN_BOX_MESSAGE_BANK = 21
 
 local FieldMessageCompiler = {}
 
--- The charmap catalog identity: a source-input hash (commit + input SHA-256),
--- not an implementation version. Implementation freshness belongs to the
+-- The charmap catalog identity: a source-input hash (input SHA-256), not an
+-- implementation version. Implementation freshness belongs to the
 -- producer fingerprint.
-FieldMessageCompiler.CHARMAP_VERSION = "hgss-charmap-v1:"
-  .. charmap.source.commit
-  .. ":"
-  .. charmap.source.inputs[1].sha256
+FieldMessageCompiler.CHARMAP_VERSION = "hgss-charmap-v1:" .. charmap.source.inputs[1].sha256
 
 local function must(value, err)
   if value == nil then

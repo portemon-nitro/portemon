@@ -1,7 +1,5 @@
--- Panel-warp spin/teleport presentation contract (retail Task_WarpPanel in
--- pret/pokeheartgold src/field_warp_tasks.c with the Task_WarpSpinDeparture /
--- Task_WarpSpinArrival pair in src/field/warp_spin.c, via
--- FieldSystem_StartWarpSpin): the MODE_PANEL path must run a 20-frame
+-- Panel-warp spin/teleport presentation contract (retail ROM panel warp with its
+-- spin departure/arrival pair): the MODE_PANEL path must run a 20-frame
 -- departure spin -- SEQ_SE_DP_TELE2 once at spin start, a quarter-turn
 -- counterclockwise rotation on each odd frame, a rising height arc -- gate the
 -- map swap on spin completion, then run the reversed arrival spin and face
@@ -20,7 +18,7 @@ local TerrainSurface = require("libs.hgss.src.world.TerrainSurface")
 local T = {}
 
 -- Retail WARP_SPIN_FRAMES: the departure spin runs 20 frames and the arrival
--- reverses them (src/field/warp_spin.c).
+-- reverses them.
 local SPIN_FRAMES = 20
 
 local function terrain()

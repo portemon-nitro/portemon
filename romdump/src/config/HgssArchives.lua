@@ -4,7 +4,7 @@
 -- alias against the active game version. Pure Lua; the only
 -- dependency is the pure-data catalog.
 
-local catalog = require("romdump.src.reference.hgss.narcs")
+local catalog = require("romdump.src.catalog.hgss.narcs")
 
 local HgssArchives = {}
 
@@ -12,7 +12,6 @@ HgssArchives.schema = 1
 
 HgssArchives.provenance = {
   repo = catalog.source.repo,
-  commit = catalog.source.commit,
   sources = {
     "include/filesystem_files_def.h",
     "include/filesystem.h",
@@ -20,7 +19,7 @@ HgssArchives.provenance = {
   },
 }
 
--- Friendly alias -> decomp symbol. Each symbol has one primary
+-- Friendly alias -> source symbol. Each symbol has one primary
 -- alias; version-neutral aliases are resolved separately below.
 local ALIAS_TO_SYMBOL = {
   personal = "NARC_poketool_personal_personal",
@@ -63,7 +62,7 @@ local ALIAS_TO_SYMBOL = {
   trainer_card_graphics = "NARC_a_0_4_9",
   touch_subwindow = "NARC_system_touch_subwindow",
   field_static_models = "NARC_a_1_0_3",
-  -- Map-asset archives. Symbolic decomp names are not exposed
+  -- Map-asset archives. Symbolic source names are not exposed
   -- for these in the pinned catalog, so they resolve through the a/G/D/F path.
   area_data = "NARC_a_0_4_2",
   area_build_config = "NARC_a_0_4_3",

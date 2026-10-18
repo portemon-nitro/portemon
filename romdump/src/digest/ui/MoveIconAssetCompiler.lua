@@ -1,7 +1,7 @@
 -- Compiles the shared type and damage-category icon sprites from the move
 -- icon archive: one static realization per semantic key over the shared
--- palette, cell, and animation. Source basis: asm/unk_02077678.s (member
--- and palette-bank selectors) at the audited decomp pin of MoveIconSources.
+-- palette, cell, and animation. Source basis: the retail ROM (member
+-- and palette-bank selectors, see MoveIconSources).
 
 local Errors = require("libs.errors.src.Errors")
 local Hashing = require("romdump.src.digest.Hashing")

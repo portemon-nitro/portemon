@@ -1,5 +1,5 @@
 -- CameraHistory reproduces the field camera's Y-only circular delta history
--- recovered in pret/pokeheartgold's field overlay 1 assembly. HGSS initializes
+-- recovered from the retail ROM. HGSS initializes
 -- a seven-entry ring at write index six: the ring is live while priming, then
 -- emits the entry after the current write, six ticks old.
 

@@ -18,8 +18,7 @@ local MovementCalibration = require("libs.hgss.src.script.tasks.MovementCalibrat
 
 local T = { tests = {} }
 
--- Source: pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981,
--- asm/unk_02062108.s: run commands 88-91 use a four-update movement countdown;
+-- Source: the retail ROM: run commands 88-91 use a four-update movement countdown;
 -- commands 24-39 store the configured count plus one for walk-in-place;
 -- commands 44-59 use sixteen updates for slow/on-spot and far jumps and
 -- eight updates for fast/on-spot and near jumps.
@@ -33,16 +32,14 @@ local SOURCE_TIMINGS = {
   { action = { action = "jump", distance = "zero", speed = "fast" }, ticks = 8 },
   { action = { action = "jump", distance = "near", speed = "fast" }, ticks = 8 },
   { action = { action = "jump", distance = "far", speed = "fast" }, ticks = 16 },
-  -- Source: pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981,
-  -- asm/overlay_01_022001E4.s: state 1 holds for 30 updates, surrounded
+  -- Source: the retail ROM: state 1 holds for 30 updates, surrounded
   -- by the entrance and completion-poll progression.
   { action = { action = "emote", name = "exclamation" }, ticks = 33 },
 }
 
--- Source: pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981,
--- asm/unk_02062108.s and asm/unk_data_020FDB44.s: gesture lifetimes
+-- Source: the retail ROM: gesture lifetimes
 -- are the per-update state-machine counts including same-update chaining
--- of setup/final steps via sub_02062400.
+-- of setup/final steps.
 local GESTURE_TIMINGS = {
   { action = { action = "gesture", name = "warp_out" }, ticks = 20 },
   { action = { action = "gesture", name = "warp_in" }, ticks = 20 },

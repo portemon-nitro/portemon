@@ -86,7 +86,7 @@ function T.places_the_billboard_at_the_world_position_plus_the_source_anchor()
   Assert.equal(item.modelNormal, nextItem.modelNormal, "ordinary actor billboards share one identity normal")
 end
 
--- Animated Pokemon visuals shift their drawn position by their facing's
+-- Animated mon visuals shift their drawn position by their facing's
 -- offset; a held offset facing pins the shift while the drawn facing turns.
 function T.pokemon_billboards_shift_by_their_facing_offset()
   local pokemon = entry(99)

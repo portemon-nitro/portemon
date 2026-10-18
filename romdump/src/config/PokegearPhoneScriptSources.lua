@@ -1,5 +1,4 @@
--- Native phone message definitions from pret/pokeheartgold at
--- 9d8b7591f09b65804da2fb2dfd56f320633e0d36, src/application/pokegear/phone/phone_script_defs.c.
+-- Native phone message definitions from the retail ROM.
 -- IDs are the native gPhoneCallScriptDef indices; text remains in ROM message banks.
 
 local PokegearPhoneScriptSources = {}

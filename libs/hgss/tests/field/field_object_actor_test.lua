@@ -347,7 +347,7 @@ function T.animated_pose_clock_freezes_and_resumes_while_paused()
   Assert.equal(animated:getPoseTick(), 1, "resumed animated actor advances from the held phase")
 end
 
--- ov01_021F8D80 restarts a Pokemon actor's animation whenever its drawn
+-- The retail ROM restarts a mon actor's animation whenever its drawn
 -- facing changes; ordinary actors have no running idle animation to restart.
 function T.animated_actors_restart_their_animation_on_a_facing_change()
   local visual = animatedBobVisual()
@@ -368,7 +368,7 @@ function T.animated_actors_restart_their_animation_on_a_facing_change()
 end
 
 -- A presentation offset replaces the action's vertical presentation while the
--- Pokemon idle animation keeps running underneath it, bob included.
+-- Mon idle animation keeps running underneath it, bob included.
 function T.presentation_offset_actions_keep_the_idle_animation_running()
   local visual = animatedBobVisual()
   local animated = actor({}, { visual = visual, idlePresentation = visual.idlePresentation })

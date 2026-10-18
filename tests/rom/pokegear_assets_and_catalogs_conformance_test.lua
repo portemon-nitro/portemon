@@ -5,7 +5,7 @@
 -- 276-member research closure is accounted for with no invented resources;
 -- and members outside the closure are explicitly classified instead of
 -- silently dropped. Archive/member expectations pin the HeartGold evidence
--- anchors and the decomp-derived sprite bindings independently of the
+-- anchors and the retail ROM sprite bindings independently of the
 -- compiler under test. Member bytes are never committed to the repository.
 
 local Assert = require("tests.support.Assert")
@@ -26,7 +26,7 @@ local EXPECTED_ARCHIVES = {
   { role = "radio", path = "a/1/4/7", firstMember = 0, lastMember = 45 },
 }
 
--- Decomp-derived sprite bindings: CHAR/PLTT/CELL/ANIM descriptor members in
+-- Retail ROM sprite bindings: CHAR/PLTT/CELL/ANIM descriptor members in
 -- archive a/1/7/5 plus the header member that binds each set to graphics.
 local SPRITE_ARCHIVE_PATH = "a/1/7/5"
 local EXPECTED_SPRITE_BINDINGS = {

@@ -1,14 +1,14 @@
 -- Decoder for the field-actor timeline members of the `mmodel` archive. A
 -- timeline maps animation time to the texture and palette slot the shared
 -- billboard should display; the serialized layout is the one
--- `scripts/dump_mmodel_unk.py` writes in the pinned pret/pokeheartgold source:
+-- `scripts/dump_mmodel_unk.py` writes from the retail ROM:
 --
 --   u32 count
 --   u16 threshold[count]
 --   u8  textureSlot[count]
 --   u8  paletteSlot[count]
 --
--- `sub_02026DE0` selects the last entry whose threshold is less than or equal to
+-- The retail ROM selects the last entry whose threshold is less than or equal to
 -- the integer animation frame and returns `textureSlot | (paletteSlot << 8)`, so
 -- thresholds partition the frame axis and must be non-decreasing. Slot durations
 -- are read from the thresholds rather than assumed uniform: Marill's

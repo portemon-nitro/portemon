@@ -1,6 +1,6 @@
 -- The field-UI producer owns the normal naming source selection: the naming
 -- archive alias plus the palette, character bank, base screen, and the three
--- normal page screens. The normal player/Pokemon path uses exactly those
+-- normal page screens. The normal player/mon path uses exactly those
 -- members; the special numpad page and the unmapped archive members stay
 -- outside this contract.
 

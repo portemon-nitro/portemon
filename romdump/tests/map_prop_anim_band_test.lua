@@ -1,16 +1,15 @@
 -- MapPropAnimCompiler playback-policy contract: every runtime playback
 -- role is compiled from the decoded anim-list header (BuildModelAnimList),
 -- never guessed from clip count. The game's ordinary registrar
--- (ov01_021E8F3C) registers and plays EVERY id slot of a record whose header is
+-- registers and plays EVERY id slot of a record whose header is
 -- registration=1, policy=0 (both bits clear), control=0 (the
--- never-finishing forward loop state, ov01_022044C8(-1, 0, 0)), areaGate=0
+-- never-finishing forward loop state (-1, 0, 0)), areaGate=0
 -- -- so every clip of such a record is an ambient loop, and no clip of any
 -- other record is.
 --
 -- The time band of a clip is its slot in a banded record (policy 0x08),
 -- mapped through the game's band map MORN=0 DAY=1 EVE=2 NITE=3
--- (overlay_01_02204004.c ov01_022095EC, consumed by the swap at
--- ov01_022047DC). The record policy -- not the clip name -- selects the
+-- (consumed by the swap on time-of-day changes). The record policy -- not the clip name -- selects the
 -- banded policy: door pairs and ambient effects never carry time-band
 -- metadata, and two clips in one banded record can never be ambiguous
 -- because every slot is unique.

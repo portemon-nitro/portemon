@@ -1,9 +1,8 @@
 -- The region map's world view model: the selected cell, the visible cell
 -- window, the hardware-style scroll and affine zoom of the world layer, the
 -- cursor sprite position, and the tick-driven cell-move, zoom, and touch-drag
--- animations. Follows the Pokegear map application of pret/pokeheartgold
--- (src/application/pokegear/map: pokegear_map.c, overlay_101_021E9270.c and
--- overlay_101_021EB568.c) for both the gear card and the Fly/Town map, which
+-- animations. Follows the retail ROM's Pokegear map application
+-- for both the gear card and the Fly/Town map, which
 -- differ only in their screen frame. Coordinates are map cells (eight world
 -- pixels) unless a name says pixels. Pure module: no love, no I/O.
 

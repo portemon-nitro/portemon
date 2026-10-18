@@ -153,7 +153,7 @@ local function startSequence(self, handle, sequence, bank, action, species, patt
 end
 
 -- The cry bank for a species and form: Sky Forme Shaymin has its own bank
--- (sub_02006A0C); every other form shares its species bank.
+-- in the retail ROM; every other form shares its species bank.
 ---@param species integer
 ---@param form integer|nil
 ---@return integer the audio bank id the cry plays from

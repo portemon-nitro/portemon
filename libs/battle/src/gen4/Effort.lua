@@ -1,6 +1,5 @@
 -- Knockout effort eligibility and award order. Native anchor:
--- pret/pokeheartgold src/battle/battle_command.c
--- BattleScript_CalcEffortValues (held power-item bonus first, Pokerus
+-- retail ROM BattleScript_CalcEffortValues (held power-item bonus first, Pokerus
 -- doubling, Macho Brace doubling, then the 510-total trim before the
 -- 255-per-stat trim) called from Task_GetExp only for conscious non-egg
 -- mons below level 100, so level-capped battlers bank nothing here. Award

@@ -1,7 +1,7 @@
 -- Owns the object actors of every runtime map the session currently holds, plus
 -- the occupancy index they contribute to collision. Visibility follows
--- pret/pokeheartgold's rule that an object exists only while its event flag is
--- clear (`src/map_object.c`), so this manager subscribes to FieldEventState and
+-- the retail ROM's rule that an object exists only while its event flag is
+-- clear, so this manager subscribes to FieldEventState and
 -- applies queued changes on one fixed-tick boundary: an actor never draws while
 -- collision considers it absent, or the reverse.
 --
@@ -25,8 +25,7 @@ local FieldActorPersistence = require("libs.hgss.src.actors.FieldActorPersistenc
 local FieldActorStore = require("libs.hgss.src.actors.FieldActorStore")
 
 -- Pinned HGSS special object ids: the field camera target and the walking
--- partner (the object table pins these ids; see
--- pret/pokeheartgold src/field_system.c FieldSystem_CameraTarget).
+-- partner (the object table pins these ids).
 local CAMERA_TARGET_OBJECT_ID = 241
 local PARTNER_OBJECT_ID = 253
 -- The walking partner actor id. Map objects use map-scoped identities, but
@@ -347,7 +346,7 @@ end
 
 -- opts.assets: a FieldActorAssetProvider-shaped acquire/release/knows owner.
 -- opts.policy: the generated actor index's runtime block
--- ({ variableSprites = { first, last, variableBase } }), so no decomp-derived
+-- ({ variableSprites = { first, last, variableBase } }), so no ROM-derived
 -- constant is inlined here.
 ---@param opts FieldActorManagerOptions
 ---@return FieldActorManager
@@ -511,7 +510,7 @@ local projectionFor = FieldActorPlacement.projectionFor
 
 -- The runtime sprite of an object event. FieldSystem_ResolveObjectSpriteID
 -- redirects the variable range through the VAR_OBJ_* save variables before the
--- graphics lookup, once at object creation (pret/pokeheartgold src/map_object.c),
+-- graphics lookup, once at object creation,
 -- so this mirrors that call. The variables default to 0, the hero graphic, so a
 -- variable actor exists even when no script has written one.
 ---@param event FieldActorEvent
@@ -3107,7 +3106,7 @@ function FieldActorManager:cameraTargetId()
   return self:actorIdForMapIndex(CAMERA_TARGET_OBJECT_ID)
 end
 
--- Pin the script camera focus (pret/pokeheartgold CreateCameraTarget) on
+-- Pin the script camera focus on
 -- a global field tile of the current map, sampling the topmost walkable
 -- terrain surface for height exactly like the warp arrival fallback. A
 -- tile with no walkable surface is a script/data fault, never a sea-level
@@ -3139,7 +3138,7 @@ function FieldActorManager:createCameraTarget(fieldX, fieldZ)
   return CAMERA_FOCUS_ACTOR_ID
 end
 
--- Release the script camera focus (pret/pokeheartgold RemoveCameraTarget).
+-- Release the script camera focus.
 -- Idempotent: clearing an already-released focus is a no-op so map-change
 -- and script paths clear unconditionally.
 ---@param self FieldActorManager
@@ -3148,7 +3147,7 @@ function FieldActorManager:clearCameraTarget()
 end
 
 -- The walking partner (pinned HGSS object id 253) of the current map; nil
--- while no Pokémon follows the player.
+-- while no mon follows the player.
 ---@return string|nil
 ---@param self FieldActorManager
 function FieldActorManager:partnerId()

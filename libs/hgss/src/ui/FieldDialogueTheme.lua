@@ -4,10 +4,9 @@
 -- the user-frame tilemap composition, and the reference-to-screen
 -- mapping into FieldViewport.referenceFrame.
 -- The content rect is 16,152,216,32: DIALOG_BOX_X=2, DIALOG_BOX_Y=19,
--- DIALOG_BOX_W=27, DIALOG_BOX_H=4 tiles at 8px/tile (src/dialog_box.c,
--- pret/pokeheartgold commit 008257708bd41df5b8c9037e019088ba24df0a87).
+-- DIALOG_BOX_W=27, DIALOG_BOX_H=4 tiles at 8px/tile (retail ROM).
 -- The frame tilemap is the DrawFrameAndWindow2 composition
--- (asm/render_window.s sub_0200E6B4 at the same commit): 18 strip tiles
+-- (retail ROM): 18 strip tiles
 -- placed around the box -- one tile above and below, two left, three right.
 -- All geometry is pure so the box layout is testable headlessly at every
 -- host aspect; the LÖVE renderer draws exactly what this module computes.

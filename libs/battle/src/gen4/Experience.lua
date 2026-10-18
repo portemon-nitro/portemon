@@ -1,5 +1,5 @@
 -- Knockout experience eligibility and award stages. Native anchor:
--- pret/pokeheartgold src/battle/battle_command.c BtlCmd_CalcExpGain (base
+-- retail ROM BtlCmd_CalcExpGain (base
 -- yield times fainted level over seven, halved shares with minimum-one
 -- floors) and Task_GetExp (per-recipient order: share addition, Lucky Egg
 -- three halves, trainer three halves, traded seventeen tenths for a

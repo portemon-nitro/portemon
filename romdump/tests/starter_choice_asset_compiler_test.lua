@@ -2,8 +2,7 @@
 -- dump through the production compiler. The manifest must carry the six render
 -- roles, the semantic animation bindings, the normalized scene constants, the
 -- decoded chooser messages, and the three species-display sprites without
--- exposing source archive or member identities. Source basis:
--- pret/pokeheartgold src/choose_starter_app.c and src/choose_starter.c.
+-- exposing source archive or member identities. Source basis: the retail ROM.
 -- Requires a ready user-owned dump (rom_dump capability); skips otherwise.
 
 local Assert = require("tests.support.Assert")
@@ -357,8 +356,7 @@ end
 -- The retail choose-starter application loads its own window palette for
 -- text: the compiled manifest must resolve every prepared COLOR index
 -- through that palette member, never the generic field font palette.
--- Source basis: pret/pokeheartgold src/choose_starter_app.c
--- (makeAndDrawWindows) and src/render_text.c (COLOR control handling).
+-- Source basis: the retail ROM (chooser window drawing and COLOR control handling).
 local CHOOSER_WINDOW_PALETTE_MEMBER = 8
 
 local function decodeChooserWindowPalette(romFs)

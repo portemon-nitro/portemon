@@ -1,8 +1,7 @@
 -- Pinned native battle-presentation source inventory: the ordinary
 -- persistent-scene axes, the exact shared menu/HUD member roles, and the
 -- palette formulas behind the lower screen and the BG3 bake. Member
--- selection follows src/battle/battle_system.c:BattleSystem_SetBackground
--- (pret/pokeheartgold@9d8b7591f09b65804da2fb2dfd56f320633e0d36); the main
+-- selection follows the retail ROM's battle background setup; the main
 -- scene is the overlay-12 BG3 recipe, never the overlay-7 effect
 -- backgrounds. Pure data and pure functions; no I/O. Never imported by
 -- runtime: libs/assets and game packages must not require this module (see
@@ -12,8 +11,7 @@
 local BattlePresentationSources = {}
 
 BattlePresentationSources.provenance = {
-  repo = "pret/pokeheartgold",
-  commit = "9d8b7591f09b65804da2fb2dfd56f320633e0d36",
+  repo = "retail ROM",
   sources = {
     "src/battle/battle_system.c",
     "src/battle/battle_setup.c",
@@ -84,8 +82,7 @@ BattlePresentationSources.TERRAIN = {
 -- Exact shared menu/HUD member roles. All numbers below are zero-based
 -- archive members: lower-screen roles live in the lower archive, HUD/arrow
 -- and terrain roles in the scene archive. The doubled health-box
--- families follow src/battle/battle_hp_bar.c:sSpriteTemplate_HpBarDouble*
--- (pret/pokeheartgold@9d8b7591f09b65804da2fb2dfd56f320633e0d36): one
+-- families follow the retail ROM's double HP bar sprite templates: one
 -- animation, cell, and character member per slot, in left/right row
 -- order per side.
 BattlePresentationSources.ROLES = {

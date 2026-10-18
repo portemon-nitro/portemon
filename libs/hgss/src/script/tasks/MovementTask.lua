@@ -22,7 +22,7 @@ MovementTask.version = 1
 -- Source-proven automatic movement-emote sounds: HGSS spawns the shared
 -- exclamation/question field-effect object with a "play sound" flag set for
 -- both MapObjectMovementCmd075 (exclamation) and MapObjectMovementCmd103
--- (question), and the effect's init function (ov01_0220059C) issues
+-- (question), and the effect's init function issues
 -- PlaySE(SEQ_SE_DP_DECIDE) when that flag is set.
 local EMOTE_SOUND_CATALOG = EmoteSoundCatalog.new({ exclamation = "SEQ_SE_DP_DECIDE", question = "SEQ_SE_DP_DECIDE" })
 

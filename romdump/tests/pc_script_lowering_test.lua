@@ -1,11 +1,10 @@
 -- Retail PC commands retain their reads, writes, and wait boundaries through lowering.
--- Source: pret/pokeheartgold@9d8b7591f09b65804da2fb2dfd56f320633e0d36,
--- src/scrcmd_c.c and files/fielddata/script/scr_seq/scr_seq_0003.s.
+-- Source: the retail ROM.
 
 local Assert = require("tests.support.Assert")
 local CommandCatalog = require("romdump.src.digest.script.CommandCatalog")
 local SemanticLowering = require("romdump.src.digest.script.SemanticLowering")
-local ScriptCommands = require("romdump.src.reference.hgss.script_commands")
+local ScriptCommands = require("romdump.src.catalog.hgss.script_commands")
 local SourceCatalog = require("romdump.src.digest.script.SourceCatalog")
 local Verifier = require("romdump.src.digest.script.Verifier")
 

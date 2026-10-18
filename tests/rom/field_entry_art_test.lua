@@ -3,10 +3,9 @@
 -- preview composites, every selected source triple renders the compiled PNG,
 -- the output is deterministic, and publication reads ready. Asserts only
 -- non-copyright structural facts. Source selection follows
--- pret/pokeheartgold src/field/draw_map_name.c:LoadAreaIconGraphics (NARC163
+-- the retail ROM's area-icon loading (NARC163
 -- char member 2*i, palette 2*i+1, source tiles 1..68 in a 17x4 grid) and
--- src/map_preview_graphic.c / files/fielddata/graphic/preview_graphic/
--- preview_graphic.order (NARC150 triples base NCLR, base+1 NCGR, base+2 NSCR).
+-- map-preview graphic order (NARC150 triples base NCLR, base+1 NCGR, base+2 NSCR).
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
@@ -100,7 +99,7 @@ function T.compiled_entry_assets_are_ready_and_stable(romFs, version)
 
   -- The banner style map is retail banner eligibility: buildings carry no
   -- style so the runtime controller gates on membership alone.
-  local maps = require("romdump.src.reference.hgss.maps").byId
+  local maps = require("romdump.src.catalog.hgss.maps").byId
   for id in pairs(bundle.manifest.bannerStyleByMapId) do
     local record = assert(maps[id], "a banner style names a frozen map header")
     Assert.isTrue(

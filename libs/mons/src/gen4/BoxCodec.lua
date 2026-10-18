@@ -1,5 +1,5 @@
 -- Exact Generation-IV boxed-mon codec. Layout mirrors
--- pret/pokeheartgold include/pokemon_types_def.h (BoxPokemon with its four
+-- the retail ROM (BoxPokemon with its four
 -- 0x20 data blocks A-D); the PID-selected block permutation mirrors
 -- GetSubstruct, the word-wise cipher mirrors MonEncryptSegment and
 -- MonDecryptSegment, and the checksum mirrors CalcMonChecksum. The semantic

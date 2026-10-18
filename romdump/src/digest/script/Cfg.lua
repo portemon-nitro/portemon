@@ -1,7 +1,7 @@
 -- Script control-flow graph : builds basic blocks, edges,
 -- reachability, irreducible regions, and call/return balance from the Raw IR
 -- instruction list. Branch and call targets resolve either through the
--- symbolic labels of the decomp assembly or the relative word offsets of the
+-- symbolic labels of an assembly-style source or the relative word offsets of the
 -- binary member. The graph is what the verifier uses to prove translation
 -- accounting : every reachable instruction, every control
 -- edge, and every call/return site. Pure domain module: no love dependency.
@@ -19,7 +19,7 @@ local OP_GOTO_IF = 28
 local OP_CALL_IF = 29
 local OP_END = 2
 
--- Resolve a branch/call operand to an absolute target offset. Decomp
+-- Resolve a branch/call operand to an absolute target offset. Symbolic
 -- operands are label symbols; binary operands are relative word offsets
 -- from the end of the instruction (ScriptReadWord semantics).
 ---@param ins table<string, unknown>

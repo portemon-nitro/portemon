@@ -1,8 +1,8 @@
 -- FieldEffectPatternAnimation: decodes the compact texture-pattern resources
 -- used by HGSS field effects. The field-effect manager loads these resources
 -- directly from field_static_models; they are not BTP0 files. Their layout is
--- documented by the texture-pattern accessors in pret/pokeheartgold's
--- lib/asm/nnsys.s and the renderer registrations in overlay_01_021F1348.s.
+-- documented by the texture-pattern accessors and renderer registrations
+-- of the retail ROM.
 -- ROM-source parser; the normalized clip remains an asset-level contract.
 
 local Errors = require("libs.errors.src.Errors")

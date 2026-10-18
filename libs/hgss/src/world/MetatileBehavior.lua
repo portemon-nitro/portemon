@@ -1,6 +1,5 @@
 -- MetatileBehavior: the TILE_BEHAVIOR_* metatile behavior byte vocabulary
--- (pret/pokeheartgold include/constants/metatile_behavior.h, sequential
--- enum, NONE = 255) plus the pure behavior predicates the field runtime
+-- (sequential enum, NONE = 255) plus the pure behavior predicates the field runtime
 -- shares. The vocabulary lives below gameplay trigger policy so door-tile
 -- enumeration and door lookup never depend on the whole TransitionTrigger
 -- module. Pure domain module (no love).
@@ -26,7 +25,7 @@ local WALKING_ENCOUNTER_BEHAVIORS = {
   [167] = true,
 }
 
--- TILE_BEHAVIOR_* warp-relevant values (pokeheartgold metatile_behavior.h).
+-- TILE_BEHAVIOR_* warp-relevant values.
 MetatileBehavior.BEHAVIOR = {
   TALL_GRASS = 2,
   VERY_TALL_GRASS = 3,
@@ -57,7 +56,7 @@ MetatileBehavior.BEHAVIOR = {
   WARP_WEST = 109,
   WARP_NORTH = 110,
   WARP_SOUTH = 111,
-  -- TILE_BEHAVIOR_128 (`sub_0205B700`): objects behind it answer the Action button.
+  -- TILE_BEHAVIOR_128: objects behind it answer the Action button.
   COUNTER = 128,
   PC = 131,
 }

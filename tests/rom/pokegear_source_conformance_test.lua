@@ -2,7 +2,7 @@
 -- published archive selection opens with its closed member ranges, the
 -- phonebook payload keeps its published length, and the compiled catalog
 -- carries the native program and place closure with independent
--- expectations transcribed from the decomp-derived anchors rather than
+-- expectations transcribed from the retail ROM anchors rather than
 -- from the producer under test. HeartGold is verified; SoulSilver stays
 -- explicitly unverified until owned SoulSilver bytes arrive, and no
 -- HeartGold physical identity is ever substituted for a SoulSilver one.
@@ -30,7 +30,7 @@ local EXPECTED_ARCHIVES = {
 
 -- Sprite descriptor bindings: CHAR/PLTT/CELL/ANIM descriptor members in
 -- the sprite archive plus the header member binding each set, carried
--- from the decomp-derived sprite bindings.
+-- from the retail ROM sprite bindings.
 local SPRITE_ARCHIVE_PATH = "a/1/7/5"
 local EXPECTED_SPRITE_BINDINGS = {
   { set = "map", members = { 32, 33, 34, 35, 80 } },

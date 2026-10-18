@@ -661,8 +661,8 @@ end
 
 --------------------------------------------------------------------------
 -- appdiscovery is a ROM-only leaf: production files under
--- romdump/src/appdiscovery/ may never acquire curated HGSS/decomp
--- configuration, the imported/derived-cache reader, the cache build
+-- romdump/src/appdiscovery/ may never acquire curated HGSS
+-- source configuration, the imported/derived-cache reader, the cache build
 -- pipeline, or runtime game packages through a normal require, regardless
 -- of the ordinary romdump package rule above (which otherwise permits
 -- romdump -> romdump requires freely).
@@ -672,7 +672,7 @@ local APPDISCOVERY_PREFIX = "romdump/src/appdiscovery/"
 
 local APPDISCOVERY_FORBIDDEN_PREFIXES = {
   "romdump.src.config.",
-  "romdump.src.reference.",
+  "romdump.src.catalog.",
   "libs.hgss.",
   "game.",
   "app.",
@@ -719,7 +719,7 @@ end
 function T.appdiscovery_forbidden_import_fixtures_are_rejected_for_every_category()
   local forbiddenFixtures = {
     "romdump.src.config.BagSources",
-    "romdump.src.reference.SomeSourceReference",
+    "romdump.src.catalog.SomeSourceReference",
     "libs.hgss.src.field.FieldSession",
     "game.src.Game",
     "game.hgss.src.HgssGame",

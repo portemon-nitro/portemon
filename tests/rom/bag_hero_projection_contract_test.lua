@@ -2,11 +2,11 @@
 -- base-transform path projects real compiled hero geometry into the canonical
 -- 256x192 pane and requires the production hero renderer to agree there.
 --
--- Authority: pret/pokeheartgold src/camera.c (eye from target, distance,
--- pitch, yaw), src/gf_3d_render.c (G3_ViewPort(0,0,255,191) full-viewport
--- setup with base translation/rotation/scale), asm/overlay_15.s (Bag camera
+-- Authority: the retail ROM's camera (eye from target, distance, pitch,
+-- yaw), its full-viewport setup G3_ViewPort(0,0,255,191) with base
+-- translation/rotation/scale, the Bag camera
 -- target/distance/angle/perspective/clip facts and the static (0,-45,0) hero
--- base translation), and the NitroSDK MTX_LookAt convention
+-- base translation, and the NitroSDK MTX_LookAt convention
 -- (look = eye - target, right = up x look, up = look x right).
 --
 -- The expected path below never calls the production hero camera/model
@@ -509,9 +509,7 @@ end
 -- both genders) with the fixed-tick transition duration, normalized to
 -- finite semantic values.
 --
--- Authority: pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981
--- asm/overlay_15.s (ov15_02200790 framing table, ov15_021FDAF4 transition
--- duration).
+-- Authority: the retail ROM's Bag framing table and transition duration.
 function T.compiled_hero_carries_pocket_framing_for_both_genders(romFs)
   local bundle = compileBundle(romFs)
   local manifest = assert(bundle.manifest)
@@ -557,8 +555,7 @@ end
 -- baseline plus two pocket records per gender convert fixed-point
 -- lengths at 1/4096 into tile units and u16 angles over the full circle.
 --
--- Authority: pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981
--- asm/overlay_15.s (ov15_02200790 sixteen-byte records: u16 X/Y angles,
+-- Authority: the retail ROM's Bag framing table (sixteen-byte records: u16 X/Y angles,
 -- fixed-point distance, fixed-point model Y; record 0 baseline, records
 -- 1..8 canonical pockets, two gender groups of nine).
 function T.compiled_framing_matches_the_pinned_source_records(romFs)

@@ -15,8 +15,8 @@ local PhotoAlbumRenderer = {}
 PhotoAlbumRenderer.__index = PhotoAlbumRenderer
 
 local SOURCE_SPRITES = {
-  -- The five native templates are from pokeheartgold asm/overlay_109.s
-  -- ov109_021E7A58; viewer arrows and exit use application/view_photo.c.
+  -- The five native templates are from the retail ROM;
+  -- viewer arrows and exit are separate.
   { x = 28, y = 8, animation = 6 },
   { x = 28, y = 8, animation = 7 },
   { x = 16, y = 64, animation = 0 },

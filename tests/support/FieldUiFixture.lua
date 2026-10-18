@@ -976,7 +976,7 @@ end
 -- static control/slot visuals plus the animated subject/cursor records with
 -- their pulse masks, and the canonical anchors every visual draws from.
 -- Anchors below are the retail source positions the producer transcribes
--- (pret/pokeheartgold src/naming_screen.c): the entered name starts at
+-- (the retail naming screen): the entered name starts at
 -- (80,24) advancing 12px per glyph, entry slots start at (80,39) stepping
 -- 12px, the page overlay rests at x=11, home controls carry their
 -- post-parent-transform anchors, keyboard text starts at screen x=27, the

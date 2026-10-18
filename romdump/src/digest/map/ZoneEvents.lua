@@ -1,6 +1,6 @@
 -- Decodes an HGSS zone-event NARC member into complete background, object,
 -- warp, and coordinate event records. The binary layout follows
--- pret/pokeheartgold's fielddata event structures. This pure module performs
+-- the retail ROM's field-data event structures. This pure module performs
 -- checked, zero-based little-endian reads and preserves every source value.
 
 local BinaryReader = require("libs.codec.src.BinaryReader")

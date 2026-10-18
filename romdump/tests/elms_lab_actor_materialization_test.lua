@@ -61,7 +61,7 @@ function T.a_fresh_clear_hide_flag_materializes_and_draws_the_real_elm_actor(rom
   local assets = FieldActorAssetProvider.new(cache, { graphics = stubGraphics() })
 
   -- A genuinely fresh save: no flag has ever been written, so
-  -- FLAG_HIDE_ELMS_LAB_ELM reads clear exactly as pret/pokeheartgold defines
+  -- FLAG_HIDE_ELMS_LAB_ELM reads clear exactly as the retail ROM defines
   -- a fresh event-flag table.
   local eventState = FieldEventState.new()
   Assert.isFalse(

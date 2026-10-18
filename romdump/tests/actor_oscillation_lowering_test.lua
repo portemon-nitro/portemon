@@ -1,7 +1,6 @@
 -- Actor oscillation source lowering: ScrCmd_523 operand normalization.
--- Pinned retail oracle: pret/pokeheartgold src/scrcmd_c.c (ScrCmd_523 obtains
--- its five operands then starts the oscillation task) and asm/unk_0205BB1C.s
--- (sub_0205BED8 presentation-vector motion) at 0985e8718df4f25e64d6507d89c0c97c0d288981.
+-- Retail oracle: the retail ROM obtains its five operands then starts the
+-- oscillation task (presentation-vector motion).
 -- Raw source amplitudes are HGSS displacement units; the producer normalizes
 -- proven literal forms by dividing by 16 before semantic IR is produced.
 

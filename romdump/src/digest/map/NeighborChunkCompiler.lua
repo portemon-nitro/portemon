@@ -7,8 +7,7 @@
 --
 -- Using the cell's own area is a deliberate divergence. The engine binds every
 -- streamed cell against the single map TEX0 of the AreaDataManager built from the
--- entry map header (pret/pokeheartgold `InitGraphicsAndManagers`,
--- `ov01_021F4BE8`), and crossing a cell boundary does not rebuild it
+-- entry map header (the retail ROM's field setup), and crossing a cell boundary does not rebuild it
 -- (`FieldMap_ChangeZone`); binding is by name and non-fatal, and no HGSS material
 -- stores a texture format or address of its own, so a name the entry TEX0 lacks
 -- leaves that material untextured. Emulating that exactly would leave whole

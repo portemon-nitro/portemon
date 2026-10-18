@@ -77,7 +77,7 @@ end
 
 function T.seeds_wrap_to_sixteen_bits()
   -- Large keys and many messages must wrap mod 2^16 without losing the XOR
-  -- structure (Decrypt1/Decrypt2 use u16 arithmetic in src/msgdata.c).
+  -- structure (Decrypt1/Decrypt2 use u16 arithmetic).
   local messages = {}
   for i = 1, 40 do
     messages[i] = { 0x0121 + (i % 10), 0xFFFF }

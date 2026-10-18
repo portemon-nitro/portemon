@@ -107,7 +107,7 @@ function FieldSaveCoordinator:capture(allowMenu)
   -- publication starts: the world is mid-mutation and the record would
   -- describe neither the before nor the after state. Runtimes without
   -- the menu composition predate this gate and keep their old boundary.
-  local menu = runtime.pokemonMenu
+  local menu = runtime.partyMenu
   if
     type(menu) == "table"
     and type(menu.fieldMoves) == "table"

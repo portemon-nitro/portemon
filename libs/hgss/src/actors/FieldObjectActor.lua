@@ -1,6 +1,6 @@
 -- One runtime map object. The decoded zone-event record stays immutable source
 -- data; every value the runtime may change (facing, pose clock, visibility)
--- lives on the actor, mirroring pret/pokeheartgold's split between the event
+-- lives on the actor, mirroring the retail ROM's split between the event
 -- record and the `MapObject` it constructs. Actors are static:
 -- Semantic movement is resolved by the generated field-data contract. Pure
 -- domain module.
@@ -405,8 +405,8 @@ function FieldObjectActor:setPresentationScale(scale)
   self._presentationScale = scale
 end
 
--- Every facing assignment goes through here: a Pokemon actor's draw callback
--- (ov01_021F8D80) restarts its animation whenever the drawn facing changes.
+-- Every facing assignment goes through here: a mon actor's draw callback
+-- (retail ROM) restarts its animation whenever the drawn facing changes.
 local function assignFacing(actor, facing)
   if facing ~= actor.facing and actor._idlePresentation.mode == "animated" then
     actor:_numeric().poseTick = 0

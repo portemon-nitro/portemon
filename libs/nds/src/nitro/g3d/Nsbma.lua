@@ -1,7 +1,6 @@
 -- NSBMA (MAT0) material-color animation decoder and sampler.
 --
--- Authority: pokediamond arm9/asm/NNS_G3D_nsbma.s (pinned commit 038cccaed,
--- 2025-12-24), layout cross-verified against real HGSS field members.
+-- Authority: the retail ROM's NitroSystem code, layout cross-verified against real HGSS field members.
 -- Record layout (record-relative):
 --
 --   +0x00 u32 size      +0x04 u16 numFrame

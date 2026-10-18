@@ -1,6 +1,5 @@
 -- Compiles the fresh-game standard-init event initializer from the decoded
--- source `_std_init` standard script (pret/pokeheartgold
--- files/fielddata/script/scr_seq/scr_seq_0149.s): every `SetFlag` becomes a
+-- source `_std_init` standard script (retail ROM): every `SetFlag` becomes a
 -- `set_flag` event operation and `LotoIDSet` becomes a `roll_loto_id`
 -- lottery operation, both in source order under a single `operations` array.
 -- Any other side-effecting source command fails the build instead of being
@@ -10,7 +9,7 @@ local Errors = require("libs.errors.src.Errors")
 local NewGameInitCache = require("libs.assets.src.newgame.NewGameInitCache")
 local Hashing = require("romdump.src.digest.Hashing")
 local MapCatalog = require("romdump.src.digest.map.MapCatalog")
-local NewGameFacts = require("romdump.src.reference.hgss.new_game")
+local NewGameFacts = require("romdump.src.catalog.hgss.new_game")
 
 local NewGameInitCompiler = {}
 
@@ -142,13 +141,13 @@ function NewGameInitCompiler.compileFromRom(romFs, sha1hex, hashLua)
       "compileFromRom requires a RomFs-shaped object"
     )
     local ScriptBinaryDecoder = require("romdump.src.digest.script.ScriptBinaryDecoder")
-    local ScriptMembers = require("romdump.src.reference.hgss.script_members")
+    local ScriptMembers = require("romdump.src.catalog.hgss.script_members")
     local SourceCatalog = require("romdump.src.digest.script.SourceCatalog")
 
     local archiveInfo = assert(romFs:resolvedNarc("field_scripts"), "field_scripts NARC is unavailable")
     local archive = assert(romFs:openNarc("field_scripts"))
     local sourcePath = "romfs/" .. archiveInfo.path
-    local catalog = { flags = require("romdump.src.reference.hgss.flags").byId }
+    local catalog = { flags = require("romdump.src.catalog.hgss.flags").byId }
 
     local stdCatalog = SourceCatalog.catalog()
     local member = standardInitMember(stdCatalog)

@@ -1,24 +1,17 @@
 -- Producer-side semantic inventory of mon source constants, message banks,
--- and form/selection mappings. The tables below are generated from the pinned
--- pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981 headers
--- (include/constants/species.h, moves.h, abilities.h, items.h, pokemon.h,
--- follow_mon_idx.h, sprites.h; src/item.c sTMHMMoves; src/follow_mon.c
--- sModelIndexLUT/sFormMaxLUT/sFemaleFlagLUT; src/pokemon_icon_idx.c
--- sPokemonPalNoBySpeciesAndForm). Selection functions port
--- src/pokemon_icon_idx.c (GetMonIconNaixEx, GetMonIconPaletteEx),
--- src/pokemon.c (sub_02070438, ResolveMonForm,
--- GetMonSpriteCharAndPlttNarcIdsEx) and src/follow_mon.c
--- (SpeciesToOverworldModelIndexOffset, OverworldModelLookupFormCount,
--- OverworldModelLookupHasFemaleForm, FollowMon_GetSpriteID,
--- FollowMon_GetSizeParamBySpecies). Pure data and pure functions; no I/O.
+-- and form/selection mappings. The tables below are generated from the retail ROM's
+-- species, move, ability, item, and follower-model constants and lookup
+-- tables (TM/HM moves, follower model index, form-count and female-form
+-- tables, icon palette by species and form). Selection functions port the
+-- retail mon icon index/palette, form resolution, mon sprite NARC
+-- selection, and follower sprite/size lookups. Pure data and pure functions; no I/O.
 -- Never imported by runtime: libs/assets and game packages must not require
 -- this module (see tests/architecture/module_boundaries_test.lua).
 
 local MonSources = {}
 
 MonSources.provenance = {
-  repo = "pret/pokeheartgold",
-  commit = "0985e8718df4f25e64d6507d89c0c97c0d288981",
+  repo = "retail ROM",
   sources = {
     "include/pokemon_types_def.h",
     "include/constants/species.h",
@@ -45,8 +38,8 @@ MonSources.BAD_EGG_SPECIES = 495
 MonSources.NUM_MOVES = 467
 MonSources.NUM_ABILITIES = 123
 
--- Source member sizes and packing constants (include/pokemon_types_def.h
--- BASE_STATS/MoveTbl/Evolution; include/pokemon.h level-learnset masks).
+-- Source member sizes and packing constants
+-- (BASE_STATS/MoveTbl/Evolution; level-learnset masks).
 MonSources.PERSONAL_SIZE = 0x2C
 MonSources.EVO_SLOTS = 7
 MonSources.EVO_MEMBER_SIZE = 44
@@ -58,7 +51,7 @@ MonSources.GROWTH_ENTRY_COUNT = 101
 MonSources.PERFORMANCE_MEMBER_SIZE = 20
 MonSources.PERFORMANCE_MEMBER_COUNT = 554
 
--- Compressed directly from src/pokemon.c:sPokeathlonPerformanceArcIdxs.
+-- Compressed directly from the retail ROM's sPokeathlonPerformanceArcIdxs.
 -- Each interval maps speciesId to speciesId + offset; forms use base + form.
 local PERFORMANCE_MEMBER_RANGES = {
   { 0, 0, 0 },
@@ -75,11 +68,11 @@ local PERFORMANCE_MEMBER_RANGES = {
   { 493, 493, 43 },
 }
 
--- Authoritative message-bank selection from src/message_format.c call sites:
+-- Authoritative message-bank selection from the retail ROM call sites:
 -- BufferSpeciesName reads bank 237, BufferMoveName reads bank 750,
 -- BufferAbilityName reads bank 720, BufferItemName reads bank 222. Move
 -- descriptions (bank 749) and ability descriptions (bank 722) have no
--- decompiled call site at the pinned commit; both are verified by native-id
+-- known call site in the retail ROM; both are verified by native-id
 -- indexed content correspondence on supported dumps (move 33 is Tackle's
 -- description, ability 65 is Overgrow's).
 MonSources.messageBanks = {
@@ -106,7 +99,7 @@ MonSources.versionLanguages = {
   soulsilver = "english",
 }
 
--- Follower source sprite namespace (include/constants/sprites.h) and the
+-- Follower source sprite namespace and the
 -- deterministic runtime visual range. Runtime visual IDs live at
 -- FOLLOWER_VISUAL_ID_BASE + model offset, which cannot collide with generated
 -- map actor IDs (the live actor index stays below 1100; source follower
@@ -115,7 +108,7 @@ MonSources.FOLLOWER_SPRITE_BASE = 428
 MonSources.FOLLOWER_SPRITE_MAX = 993
 MonSources.FOLLOWER_VISUAL_ID_BASE = 20000
 
--- Type keys by TYPE_* id (include/constants/pokemon.h).
+-- Type keys by TYPE_* id.
 MonSources.typeKeys = {
   [0] = "normal",
   [1] = "fighting",
@@ -137,7 +130,7 @@ MonSources.typeKeys = {
   [17] = "dark",
 }
 
--- Egg-group keys by EGG_GROUP_* id (include/constants/pokemon.h).
+-- Egg-group keys by EGG_GROUP_* id.
 MonSources.eggGroupKeys = {
   [0] = "none",
   [1] = "monster",
@@ -157,7 +150,7 @@ MonSources.eggGroupKeys = {
   [15] = "undiscovered",
 }
 
--- Growth-curve keys by GROWTH_* id (include/constants/pokemon.h).
+-- Growth-curve keys by GROWTH_* id.
 MonSources.growthKeys = {
   [0] = "medium_fast",
   [1] = "erratic",
@@ -169,7 +162,7 @@ MonSources.growthKeys = {
   [7] = "unused_7",
 }
 
--- Evolution-method keys by EvoMethod id (include/constants/pokemon.h).
+-- Evolution-method keys by EvoMethod id.
 MonSources.evolutionMethods = {
   [0] = "none",
   [1] = "friendship",
@@ -200,7 +193,7 @@ MonSources.evolutionMethods = {
   [26] = "route217",
 }
 
--- Damage-category keys by MoveTbl category value (src/move.c MOVEATTR_CLASS;
+-- Damage-category keys by MoveTbl category value (MOVEATTR_CLASS;
 -- verified on ROM: Tackle is 0/physical, Ember is 1/special, Growl is
 -- 2/status).
 MonSources.damageCategories = {
@@ -210,7 +203,7 @@ MonSources.damageCategories = {
 }
 
 -- Runtime form counts by species id for the species handled by sub_02070438
--- (src/pokemon.c; counts from include/constants/pokemon.h *_FORM_MAX). Every
+-- (counts from the retail ROM's *_FORM_MAX constants). Every
 -- other species, including the reserved identities, has exactly form 0.
 MonSources.formMaxes = {
   [172] = 2, -- PICHU (spiky-ear)
@@ -3392,7 +3385,7 @@ function MonSources.speciesId(key)
   return speciesIds[key]
 end
 
--- Pseudo personal/learnset member bases for ResolveMonForm (src/pokemon.c):
+-- Pseudo personal/learnset member bases for ResolveMonForm:
 -- a nonzero form of these species reads the pseudo member, all base forms
 -- are form value 0.
 local FORM_PERSONAL_BASES = {
@@ -3403,7 +3396,7 @@ local FORM_PERSONAL_BASES = {
   [479] = 503, -- ROTOM
 }
 
--- Form clamp ported from sub_02070438 (src/pokemon.c). Out-of-range forms
+-- Form clamp ported from sub_02070438. Out-of-range forms
 -- fall back to 0 exactly as the source does.
 function MonSources.clampForm(speciesId, form)
   assert(type(speciesId) == "number" and type(form) == "number", "clampForm requires ids")
@@ -3459,8 +3452,7 @@ function MonSources.performanceMember(speciesId, form)
   return nil
 end
 
--- Personal/learnset member resolution ported from ResolveMonForm
--- (src/pokemon.c). Evolution members resolve by plain species id
+-- Personal/learnset member resolution ported from ResolveMonForm. Evolution members resolve by plain species id
 -- (LoadMonEvolutionTable); the pseudo evo members are byte-identical to
 -- their base members on supported dumps.
 function MonSources.resolvePersonalMember(speciesId, form)
@@ -3471,7 +3463,7 @@ function MonSources.resolvePersonalMember(speciesId, form)
   return speciesId
 end
 
--- Party-icon member ported from GetMonIconNaixEx (src/pokemon_icon_idx.c).
+-- Party-icon member ported from GetMonIconNaixEx.
 -- isEgg selects the egg members (Manaphy eggs use 502, all others 501).
 function MonSources.iconNaix(speciesId, isEgg, form)
   local SPECIES_MANAPHY = speciesIds["MANAPHY"]
@@ -3509,8 +3501,7 @@ function MonSources.iconNaix(speciesId, isEgg, form)
   return speciesId + 7
 end
 
--- Party-icon palette ported from GetMonIconPaletteEx
--- (src/pokemon_icon_idx.c): the computed slot indexes iconPalettes.
+-- Party-icon palette ported from GetMonIconPaletteEx: the computed slot indexes iconPalettes.
 function MonSources.iconPalette(speciesId, form, isEgg)
   local slot = speciesId
   if isEgg then
@@ -3548,7 +3539,7 @@ function MonSources.iconPalette(speciesId, form, isEgg)
 end
 
 -- Front-portrait character/palette member selection ported from
--- GetMonSpriteCharAndPlttNarcIdsEx (src/pokemon.c). gender is "male" or "female"; facing is 0 (back) or 2 (front); shiny is boolean. Returns the source NARC alias plus char/pal
+-- GetMonSpriteCharAndPlttNarcIdsEx. gender is "male" or "female"; facing is 0 (back) or 2 (front); shiny is boolean. Returns the source NARC alias plus char/pal
 -- member ids. The default (base-species) branch and the otherpoke branch
 -- mirror the source switch exactly, including the shared Deoxys/Unown
 -- palettes and the egg members.
@@ -3600,8 +3591,7 @@ function MonSources.portraitIds(speciesId, gender, facing, shiny, form)
   }
 end
 
--- Follower model-offset lookup ported from SpeciesToOverworldModelIndexOffset
--- (src/follow_mon.c). Species outside 0..493 have no follower model.
+-- Follower model-offset lookup ported from SpeciesToOverworldModelIndexOffset. Species outside 0..493 have no follower model.
 function MonSources.followerModelOffset(speciesId)
   if speciesId == nil or speciesId < 0 or speciesId > MonSources.MAX_SPECIES then
     return nil
@@ -3609,8 +3599,7 @@ function MonSources.followerModelOffset(speciesId)
   return MonSources.followerModelOffsets[speciesId]
 end
 
--- Follower sprite selection ported from FollowMon_GetSpriteID
--- (src/follow_mon.c). isFemale selects the female model where the source
+-- Follower sprite selection ported from FollowMon_GetSpriteID. isFemale selects the female model where the source
 -- female flag LUT provides one; otherwise the clamped form offset applies.
 -- Returns nil for identities without a follower model.
 function MonSources.followerSpriteId(speciesId, form, isFemale)
@@ -3638,8 +3627,8 @@ function MonSources.followerSpriteId(speciesId, form, isFemale)
 end
 
 -- Follower tp_param member index: the model offset plus the same female/form
--- adjustment the sprite selection applies (src/follow_mon.c
--- FollowMon_SetObjectForm/FieldSystem_UnkSub108 readers).
+-- adjustment the sprite selection applies
+-- (FollowMon_SetObjectForm/FieldSystem_UnkSub108 readers).
 function MonSources.followerParamIndex(speciesId, form, isFemale)
   local offset = MonSources.followerModelOffset(speciesId)
   if offset == nil then

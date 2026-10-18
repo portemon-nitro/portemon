@@ -1,5 +1,5 @@
 -- JointAnimBlend: Nitro-compatible combination of joint results, a bit-exact
--- transcription of NNSi_G3dAnmBlendJnt (pokediamond arm9/asm/NNS_G3D_anm.s
+-- transcription of NNSi_G3dAnmBlendJnt (retail ROM
 -- 0x020B86B0).
 
 local Assert = require("tests.support.Assert")

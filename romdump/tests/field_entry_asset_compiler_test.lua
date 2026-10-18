@@ -432,7 +432,7 @@ function T.banner_style_by_map_id_follows_the_area_icon_and_suppresses_zero()
   local romFs, sha1, hashLua = fixture()
   local bundle = assert(compile(romFs, sha1, hashLua))
   local mapStyle = bundle.manifest.bannerStyleByMapId
-  local maps = require("romdump.src.reference.hgss.maps").byId
+  local maps = require("romdump.src.catalog.hgss.maps").byId
   local count = 0
   for id, style in pairs(mapStyle) do
     count = count + 1
@@ -462,7 +462,7 @@ function T.banner_styles_exclude_buildings()
   local romFs, sha1, hashLua = fixture()
   local bundle = assert(compile(romFs, sha1, hashLua))
   local mapStyle = bundle.manifest.bannerStyleByMapId
-  local maps = require("romdump.src.reference.hgss.maps").byId
+  local maps = require("romdump.src.catalog.hgss.maps").byId
 
   local interiors = 0
   for id in pairs(mapStyle) do

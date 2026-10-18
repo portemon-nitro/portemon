@@ -1,5 +1,4 @@
--- Generation-IV stat derivation. Canonical sources: pret/pokeheartgold,
--- src/pokemon.c (CalcMonStats, ModifyStatByNature, gNatureStatMods).
+-- Generation-IV stat derivation. Source: the retail ROM (CalcMonStats, ModifyStatByNature, gNatureStatMods).
 -- Health follows the standard formula; the other stats apply the nature
 -- modifier from the source table, where +1 raises the stat to 110% and -1
 -- lowers it to 90%. Table columns are attack, defense, speed, special

@@ -1,6 +1,6 @@
 -- Producer-side source inventory contract: the mon compilers resolve every
 -- selection they need through MonSources, and the selection functions
--- reproduce the pinned decomp behavior for representative identities. Pure
+-- reproduce the retail ROM behavior for representative identities. Pure
 -- data and pure functions; no I/O and no runtime imports.
 
 local Assert = require("tests.support.Assert")

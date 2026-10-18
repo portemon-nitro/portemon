@@ -6,12 +6,11 @@
 -- policy, the cancel permission, the focus, and completion serialize;
 -- the live screen is rebuilt from value-only state on every poll.
 --
--- Source sentinel ownership (pret/pokeheartgold@0985e8718d): opcode 349
+-- Source sentinel ownership (retail ROM): opcode 349
 -- launches PARTY_MENU_CONTEXT_3, where confirming an occupied slot exits
 -- with that slot while B exits with partySlot 7
--- (PARTY_MON_SELECTION_CONFIRM, src/party_menu.c PartyMenu_HandleInput);
--- the companion result command writes 255 for slot 7
--- (src/scrcmd_c.c ScrCmd_GetPartySelection). The host only ever emits
+-- (PARTY_MON_SELECTION_CONFIRM);
+-- the companion result command writes 255 for slot 7. The host only ever emits
 -- the semantic selected/cancelled records; this task alone translates
 -- them to the script-visible slot-or-255 values.
 

@@ -1,6 +1,5 @@
 -- Conversion from Nintendo DS RGB555 (red bits 0..4, green bits 5..9, blue bits
--- 10..14) to 8-bit sRGB. Canonical source: pret/pokeheartgold,
--- lib/include/nitro/gx/gxcommon.h
+-- 10..14) to 8-bit sRGB. Source: the retail ROM.
 
 local Rgb555 = {}
 

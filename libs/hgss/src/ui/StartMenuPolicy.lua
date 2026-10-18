@@ -12,9 +12,7 @@
 -- canonical display positions) and returns source-present entries with
 -- source-enablement state, independent of implementation capability. The
 -- runtime composes this with implementation capability to set the final
--- enabled state. Pure domain module: no love, no I/O. Source evidence:
--- pret/pokeheartgold@008257708: src/start_menu.c (StartMenu_BuildActionLists,
--- FieldSystem_StartMenuActionIsAvailable) and src/sys_flags.c.
+-- enabled state. Pure domain module: no love, no I/O. Source evidence: the retail ROM.
 
 local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
 

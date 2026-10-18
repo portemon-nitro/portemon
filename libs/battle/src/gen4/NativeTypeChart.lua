@@ -2,7 +2,7 @@
 -- directed effectiveness matrix over the native semantic type set into the
 -- content builder, so the session chart resolves every pair with exact
 -- integer rationals. Values follow the Generation-IV matchups from
--- pret/pokeheartgold: steel resists ghost and dark, poison cannot touch
+-- the retail ROM: steel resists ghost and dark, poison cannot touch
 -- steel, and mystery stays neutral everywhere. Unlisted pairs are exactly
 -- neutral; nothing here invents a fallback, the builder still rejects an
 -- incomplete matrix at freeze.

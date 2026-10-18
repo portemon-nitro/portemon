@@ -277,7 +277,7 @@ end
 -- could never reproduce the source lists.
 function T.radio_reception_sets_agree_with_the_header_reference()
   local PokegearSources = require("romdump.src.config.PokegearSources")
-  local maps = require("romdump.src.reference.hgss.maps")
+  local maps = require("romdump.src.catalog.hgss.maps")
   local bySymbol, unlit = {}, {}
   for id = 0, maps.count - 1 do
     local record = assert(maps.byId[id], "header map " .. id .. " exists")

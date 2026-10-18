@@ -4,9 +4,8 @@
 -- HgssFieldLightProfile, and the runtime consumes only the parsed records.
 -- A record is active until its endHalfSeconds: the active record is the
 -- first that ends later than now, wrapping to the first record past the
--- final end (AreaLightManager_New and
--- AreaLightManager_UpdateActiveTemplate in pret/pokeheartgold
--- asm/overlay_01_021E90C0.s).
+-- final end (retail ROM AreaLightManager_New and
+-- AreaLightManager_UpdateActiveTemplate).
 -- Pure domain module: no love, no source text knowledge.
 
 local FieldLightProfile = {}

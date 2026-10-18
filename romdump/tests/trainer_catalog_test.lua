@@ -1,5 +1,5 @@
 -- Synthetic trainer-data projection: hand-built native trainer records for every
--- party-member variant (pret/pokeheartgold include/trainer_data.h TRDATA and
+-- party-member variant (the retail ROM's trainer data and
 -- the four TRPOKE shapes selected by constants/trainers.h TRTYPE_* bits)
 -- decode through the trainer compiler into ordered templates, custom moves
 -- survive exactly, default movesets stay unbuilt, the rival name stays an

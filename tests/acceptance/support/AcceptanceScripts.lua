@@ -86,12 +86,12 @@ return S.script({
   },
 })
 ]],
-  ["acceptance.pokemon_naming"] = [[
+  ["acceptance.mon_naming"] = [[
 local S = require("gen4.script")
 
 return S.script({
   api = 1,
-  id = "acceptance.pokemon_naming",
+  id = "acceptance.mon_naming",
   steps = {
     S.giveMon({ species = "MAREEP", level = 5, result = S.var("VAR_UNK_407C") }),
     S.pokemonNicknameInput({ slot = 0, result = S.var("VAR_UNK_407D") }),

@@ -14,7 +14,7 @@ local FieldSignpostTheme = require("libs.hgss.src.ui.FieldSignpostTheme")
 local T = {}
 
 -- The graphic kind keeps every full-width placement and inserts tile 8 as
--- the divider at the left of the text window: source sub_0200ECBC fills tile
+-- the divider at the left of the text window: the retail ROM fills tile
 -- base+8 at (windowX-9+8, windowY) spanning the window height, i.e. x=64 in
 -- reference pixels (box.x + 6 tiles of wayfinding graphic).
 function T.graphic_kind_adds_the_divider_tile_to_the_full_width_frame()

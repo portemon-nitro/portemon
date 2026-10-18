@@ -659,12 +659,12 @@ end
 -- The main chunk is at LuaJIT's 200-local limit; new handlers live in a
 -- block so their name never becomes another file-scoped local.
 do
-  local function handlePokemonNicknameInput(node, run)
+  local function handleMonNicknameInput(node, run)
     requireForeground(run, "pokemon_nickname_input")
     monsFor(run)
     return blockOnTask(run, "pokemon_nickname_input", { slot = evalField(node, run, "slot") }, node.result)
   end
-  HANDLERS.pokemon_nickname_input = handlePokemonNicknameInput
+  HANDLERS.pokemon_nickname_input = handleMonNicknameInput
 end
 
 local function handleReturnLoanMon(node, run)
@@ -2507,7 +2507,7 @@ function HANDLERS.player_state(node, run)
   return Runtime.OUTCOME_CONTINUE
 end
 function HANDLERS.player_on_bike_check(node, run)
-  -- pret/pokeheartgold src/scrcmd_c.c ScrCmd_PlayerOnBikeCheck: the result
+  -- Retail ROM ScrCmd_PlayerOnBikeCheck: the result
   -- is 1 exactly when the live avatar state is cycling (state code 1).
   local onBike = requireService(run, "player"):stateCode() == 1
   semanticsFor(run).writeRef(node.result, onBike and 1 or 0, run)

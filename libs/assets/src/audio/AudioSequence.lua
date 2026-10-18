@@ -83,7 +83,7 @@ local OPS = {
 }
 
 -- The SDK variable domain: vars 0..15 address the player-local variables,
--- 16..31 the shared global variables (the pokediamond decomp SND_work_shared
+-- 16..31 the shared global variables (the retail ROM's SND_work_shared
 -- layout: localVars[16] per player plus globalVars[16]).
 local VARIABLE_MAX = 31
 -- The SDK track domain: 16 tracks per player (the u16 FE track mask).

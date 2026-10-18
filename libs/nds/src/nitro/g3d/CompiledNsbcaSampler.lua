@@ -3,8 +3,7 @@
 -- A compiled clip (NsbcaClipCompiler, digest side) carries every channel,
 -- curve key, and rotation-table entry as plain numbers; this module
 -- reproduces Nsbca.sample's NitroSystem arithmetic over that data. The math
--- is the exact transcription of pokediamond arm9/asm/NNS_G3D_nsbca.s
--- (pinned commit 038cccaed, 2025-12-24) that Nsbca.lua already validates
+-- is the exact transcription of the retail ROM's NSBCA code that Nsbca.lua already validates
 -- against the real ROM; the two samplers must stay in lockstep and the
 -- cross-check test requires bit-identical results for the same resource.
 --

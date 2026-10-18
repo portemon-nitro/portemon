@@ -14,7 +14,7 @@ local RomSuite = require("tests.rom.support.RomSuite")
 
 local T = {}
 
-local SOURCE_REVISION = "0985e8718df4f25e64d6507d89c0c97c0d288981"
+local SOURCE_REVISION = "retail ROM"
 
 ---@param name string module path under test
 ---@param behavior string observable behavior the module owns
@@ -29,7 +29,7 @@ end
 -- Transcribed outputs of the exact generator recurrence
 -- (state * 1103515245 + 24691 mod 2^32, upper 16 bits returned) as pinned
 -- by the labeled-draw suite against the established generator owner
--- (libs/mons/src/gen4/Lcrng.lua, pret/pokeheartgold src/math_util.c
+-- (libs/mons/src/gen4/Lcrng.lua and the retail ROM's
 -- LCRandom). Fixed here by transcription, never produced by the battle
 -- stream under test.
 local DRAW_VECTORS = {
@@ -63,7 +63,7 @@ local function runDraws(Fixture, vector, versionId)
     provenance = {
       basis = "source-derived",
       sourceRevision = SOURCE_REVISION,
-      sourceLocation = "pret/pokeheartgold src/math_util.c (LCRandom)",
+      sourceLocation = "retail ROM (LCRandom)",
       evidenceIdentity = "transcribed generator vectors for seed " .. vector.seed .. " bound to " .. versionId,
       oracleMethod = "hand transcription of the exact recurrence with upper-16-bit output, cross-checked by the labeled-draw suite",
     },
@@ -119,7 +119,7 @@ end
 -- roll: floor(2*50/5+2) = 22; floor(22*80*120/90) = 2346;
 -- floor(2346/50)+2 = 48; every later stage holds 48. Hand-evaluated from
 -- the staged Generation-IV operation sequence
--- (pret/pokeheartgold src/battle/battle_command.c, staged damage
+-- (the retail ROM's staged damage
 -- application) and pinned by the staged damage vector suite, never read
 -- out of the implementation under test.
 local DAMAGE_CASE = {
@@ -154,7 +154,7 @@ function T.staged_damage_truncation_matches_hand_evaluated_stages(romFs, version
     provenance = {
       basis = "source-derived",
       sourceRevision = SOURCE_REVISION,
-      sourceLocation = "pret/pokeheartgold src/battle/battle_command.c (staged damage application)",
+      sourceLocation = "retail ROM (staged damage application)",
       evidenceIdentity = "hand-evaluated base truncation bound to " .. versionId,
       oracleMethod = "hand evaluation of the staged multiply/divide truncation order, cross-checked by the staged damage vector suite",
     },

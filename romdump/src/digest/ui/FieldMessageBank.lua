@@ -1,9 +1,9 @@
 -- Import-time decoder for one HGSS msgdata member (MAT table): validates the
 -- container and produces decrypted message code-unit arrays for the tokenizer
 -- (romdump digester; the runtime never sees raw ROM bytes). The container and
--- both decryption stages follow `src/msgdata.c` in the pinned
--- pret/pokeheartgold checkout (Decrypt1/Decrypt2, ReadMsgData_NewNarc_*); the
--- MAT_ENTRY struct shape is `include/msgdata.h`. Pure module: BinaryReader and
+-- both decryption stages follow the retail ROM's
+-- message decryption (Decrypt1/Decrypt2); the
+-- MAT_ENTRY struct shape is the retail ROM's. Pure module: BinaryReader and
 -- Errors only, no love dependency.
 
 local BinaryReader = require("libs.codec.src.BinaryReader")

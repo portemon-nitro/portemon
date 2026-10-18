@@ -22,7 +22,7 @@ local BattleRng = require("libs.battle.src.gen4.BattleRng")
 local CalledMoves = {}
 
 -- Moves metronome never draws, mirroring the source static ban table
--- sMetronomeUnuseableMoves (pret/pokeheartgold src/battle/overlay_12_0224E4FC.c).
+-- sMetronomeUnuseableMoves (retail ROM).
 -- The caller supplies the native-ordered roster (native identity to
 -- semantic key); each drawn identity maps through that roster before this
 -- table filters it, so every native entry stays reachable and struggle
@@ -58,7 +58,7 @@ CalledMoves.METRONOME_BANNED = {
 -- Moves metronome rejects while gravity holds the field, mirroring the
 -- source gravity table sGravityUnusableMoves beside
 -- BattleContext_CheckMoveUnuseableInGravity
--- (pret/pokeheartgold src/battle/overlay_12_0224E4FC.c).
+-- (retail ROM).
 CalledMoves.GRAVITY_ILLEGAL = {
   FLY = true,
   BOUNCE = true,
@@ -71,7 +71,7 @@ CalledMoves.GRAVITY_ILLEGAL = {
 -- Moves metronome rejects while heal block seals the user, mirroring the
 -- source heal-block table sHealBlockUnusableMoves beside
 -- BattleContext_CheckMoveHealBlocked
--- (pret/pokeheartgold src/battle/overlay_12_0224E4FC.c).
+-- (retail ROM).
 CalledMoves.HEALBLOCK_ILLEGAL = {
   RECOVER = true,
   SOFTBOILED = true,
@@ -105,8 +105,7 @@ local CALLING = {
 }
 
 -- Moves assist refuses to call. The native assist filter conjoins
--- CheckMoveCallsOtherMove with CheckLegalMetronomeMove (pret/pokeheartgold
--- src/battle/battle_command.c BtlCmd_TryAssist and src/battle/overlay_12_0224E4FC.c),
+-- CheckMoveCallsOtherMove with CheckLegalMetronomeMove (retail ROM BtlCmd_TryAssist),
 -- and every calling convolution refused by the former (sleep talk, copycat,
 -- assist, me first, mirror move, metronome) already sits in the ban table
 -- above, so the assist filter shares that one table rather than copying it.

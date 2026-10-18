@@ -43,7 +43,7 @@ end
 
 local function callStandard(ins, _, _, ctx)
   -- CallStd id: resolve the std catalog to the public `common.<name>` id
-  -- (decomp symbols and binary numeric ids both resolve); unknown ids stay
+  -- (symbolic names and binary numeric ids both resolve); unknown ids stay
   -- mechanical `common.std_<id>`.
   local id = Operands.operandValue(ins.operands[1])
   local target

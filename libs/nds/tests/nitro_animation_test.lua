@@ -1,7 +1,7 @@
 -- Synthetic tests for the four NitroSystem 3D animation formats.
 -- Fixtures mirror the verified real HGSS byte layouts (see the decoder
 -- headers); sampling tests assert the exact NitroSystem arithmetic from the
--- pinned pokediamond asm.
+-- retail ROM's code.
 
 local Assert = require("tests.support.Assert")
 local BinaryReader = require("libs.codec.src.BinaryReader")

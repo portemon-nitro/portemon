@@ -6,10 +6,8 @@
 -- creation generator, or the Dex revision. Real ROM-derived maps, the real
 -- field runtime, the real scheduler dispatch, and the real mon/Dex/save
 -- owners stay in the path; only host boundaries (audio, saves, clock) are
--- faked by the harness. Retail behavior follows
--- pret/pokeheartgold src/field/scrcmd_pokemon_misc.c ScrCmd_GiveSpikyEarPichu
--- (party-capacity refusal precedes creation) with UpdatePokedexWithReceivedSpecies
--- registering the received non-egg species as caught.
+-- faked by the harness. Retail behavior refuses
+-- the gift on a full party before creation and registers the received non-egg species as caught.
 
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")

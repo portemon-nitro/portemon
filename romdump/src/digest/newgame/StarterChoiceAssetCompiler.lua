@@ -12,8 +12,7 @@
 -- compiled here: the mon presentation pipeline owns portrait identity. All
 -- Nitro/text decoding reuses the existing digest helpers; this module owns
 -- only source selection, semantic role assignment, unit normalization, and
--- the dependency record. Source basis: pret/pokeheartgold
--- src/choose_starter_app.c and src/choose_starter.c.
+-- the dependency record. Source basis: the retail ROM.
 
 local Errors = require("libs.errors.src.Errors")
 local Hashing = require("romdump.src.digest.Hashing")
@@ -35,7 +34,7 @@ local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 local FieldMessageTokenizer = require("romdump.src.digest.ui.FieldMessageTokenizer")
 local FieldMessageCompiler = require("romdump.src.digest.ui.FieldMessageCompiler")
 local StarterChoiceAssetCache = require("libs.assets.src.StarterChoiceAssetCache")
-local charmap = require("romdump.src.reference.hgss.charmap")
+local charmap = require("romdump.src.catalog.hgss.charmap")
 
 local StarterChoiceAssetCompiler = {}
 
@@ -117,8 +116,7 @@ local INFO_BLEND = { overlayNumerator = 5, overlayDenominator = 16 }
 -- Chooser-owned window text palette: the retail choose-starter application
 -- loads this NCLR member for both chooser engines, and its text printer
 -- addresses foreground/shadow pairs inside it per COLOR field. Source basis:
--- pret/pokeheartgold src/choose_starter_app.c (makeAndDrawWindows) and
--- src/render_text.c (COLOR control handling).
+-- the retail ROM (chooser window drawing and COLOR control handling).
 local CHOOSER_WINDOW_PALETTE_MEMBER = 8
 
 -- Retail machine 3D rear-plane clear color channels from GX_RGB(31,31,16).

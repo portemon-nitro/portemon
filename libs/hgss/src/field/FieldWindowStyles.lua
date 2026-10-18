@@ -13,10 +13,9 @@
 -- descriptor registration.
 -- Signpost content geometry follows the HGSS signpost window: source types
 -- 0/1 reserve a seven-tile (56px) wayfinding graphic on the left of the
--- ordinary 27x4-tile window (`LoadMapSignpostFrameAndGraphic`,
--- asm/render_window.s at the pinned decomp commit), text then starts at
+-- ordinary 27x4-tile window (retail ROM), text then starts at
 -- x=72 with width 160; every other source type uses the full
--- 16,152,216,32 content rect (DIALOG_BOX_* constants, src/dialog_box.c,
+-- 16,152,216,32 content rect (DIALOG_BOX_* constants,
 -- 8px/tile).
 
 ---@class FieldWindowStyles

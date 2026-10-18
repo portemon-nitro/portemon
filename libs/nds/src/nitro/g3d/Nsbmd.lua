@@ -4,7 +4,7 @@
 -- per-shape geometry decoded through GxDisplayList (finite bounds + opcode
 -- counts). Animation sections (NSBCA/NSBTA/...) are out of scope.
 --
--- Layout (from pokeheartgold res_struct.h plus offsets verified against the
+-- Layout (as in the retail ROM's Nitro files plus offsets verified against the
 -- real HGSS Elm map model), all model-internal offsets relative to the model:
 --   NNSG3dResMdl:  +0x00 size, +0x04 ofsSbc, +0x08 ofsMat, +0x0C ofsShp,
 --                  +0x10 ofsEvpMtx, +0x14 info(0x2C), +0x40 node dict

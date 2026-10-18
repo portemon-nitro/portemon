@@ -1,5 +1,5 @@
--- follower_wait task implementation: the native-style wait behind
--- ScrCmd_WaitFollowingPokemonMovement. The task completes when the one
+-- follower_wait task implementation: the native-style wait behind the
+-- retail follower-movement wait command. The task completes when the one
 -- following controller reports settlement (no in-flight presentation and no
 -- source-required pending movement); a paused follower settles immediately
 -- so the wait never hangs on a paused queue. State is empty and therefore

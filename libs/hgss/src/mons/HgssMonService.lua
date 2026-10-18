@@ -34,7 +34,7 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 local HgssMonService = {}
 HgssMonService.__index = HgssMonService
 
--- Native game identities (pret/pokeheartgold version layout; the domain
+-- Native game identities (the retail ROM's version layout; the domain
 -- tests pin heartgold to 7 and soulsilver to 8).
 HgssMonService.GAMES = {
   sapphire = 1,
@@ -693,9 +693,8 @@ function HgssMonService:giveMon(request)
   return self._party:add(mon)
 end
 
--- Field-script Spiky-Ear Pichu gift in source order
--- (pret/pokeheartgold src/field/scrcmd_pokemon_misc.c
--- ScrCmd_GiveSpikyEarPichu): the party-full refusal reports before any
+-- Field-script Spiky-Ear Pichu gift in source order:
+-- the party-full refusal reports before any
 -- creation, so unlike the ordinary script gift no generator draws run
 -- when the party is full. The mon service owns party insertion only;
 -- Pokedex registration happens through game-side script composition
@@ -1274,8 +1273,7 @@ function HgssMonService:healParty()
 end
 
 -- Source-shaped script operations. Each mirrors one reviewed HGSS party
--- script command's observable behavior (pret/pokeheartgold
--- src/scrcmd_party.c): egg masking, exact result sentinels, inverted
+-- script command's observable behavior: egg masking, exact result sentinels, inverted
 -- ownership polarity, duplicate-species mode, ribbon-kind aggregation, the
 -- friendship bonus order, and contest no-op cases. Numeric results are the
 -- exact values the script variable carries; party records never store

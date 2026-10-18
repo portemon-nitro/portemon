@@ -461,7 +461,7 @@ function T.provenance_label_node_id_matches_its_emitted_node()
     metadata = {
       generated = true,
       source = {
-        repository = "pret/pokeheartgold",
+        repository = "retail ROM",
         commit = "c",
         path = "p",
         game = "heartgold",
@@ -590,7 +590,7 @@ function T.generated_node_ids_use_source_provenance()
     metadata = {
       generated = true,
       source = {
-        repository = "pret/pokeheartgold",
+        repository = "retail ROM",
         commit = "dfdbbdf3273545ca35456d69bcb0ee3403f76450",
         path = "files/fielddata/script/scr_seq/scr_seq_0843_T20R0101.s",
         game = "heartgold",
@@ -707,7 +707,7 @@ end
 local function generatedScript(overrides)
   overrides = overrides or {}
   local source = {
-    repository = "pret/pokeheartgold",
+    repository = "retail ROM",
     commit = "dfdb",
     path = "files/fielddata/script/scr_seq/scr_seq_0843_T20R0101.s",
     game = "heartgold",

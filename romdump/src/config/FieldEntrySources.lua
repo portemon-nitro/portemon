@@ -1,25 +1,19 @@
 -- Source-only member selection for the generated HGSS field-entry class: the
 -- nine map-name banner skins in the areawindow archive and the pinned
 -- destination/time selection over the ordered location-preview archive. The
--- 25 destination rows transcribe pret/pokeheartgold src/map_preview_graphic.c
--- `sMapPreviewGraphicData`; the preview archive is ordered as contiguous
+-- 25 destination rows transcribe the retail ROM's map preview graphic table; the preview archive is ordered as contiguous
 -- triples (NCLR member `base`, NCGR member `base + 1`, NSCR member
--- `base + 2`) per files/fielddata/graphic/preview_graphic/preview_graphic.order.
--- The banner skins follow src/field/draw_map_name.c `LoadAreaIconGraphics`:
+-- `base + 2`). The banner skins follow the retail ROM's area icon loader:
 -- char member `2 * style` and palette member `2 * style + 1`, composed into a
 -- 17x4 grid from source tiles 1..68. Every archive alias and member number
 -- lives here and in the compiler dependencies; the generated manifest never
 -- carries them. Member numbers are zero-based per the repository convention.
--- Source basis: pret/pokeheartgold at commit
--- d2355244ac42b3c6e40d8c36aa3564ee8706dea4.
-
 local MapCatalog = require("romdump.src.digest.map.MapCatalog")
 
 local FieldEntrySources = {}
 
 FieldEntrySources.provenance = {
-  repo = "pret/pokeheartgold",
-  commit = "d2355244ac42b3c6e40d8c36aa3564ee8706dea4",
+  repo = "retail ROM",
   sources = {
     "src/field/draw_map_name.c",
     "src/map_preview_graphic.c",

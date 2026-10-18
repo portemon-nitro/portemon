@@ -343,7 +343,7 @@ function FollowerInteractionEngine:_context(leadSlot)
       self.runtimeMap.effectiveWeatherId,
       "current runtime weather is required"
     )] or 0,
-    -- ov02_0224F64C: Field_GetTimeOfDay (morning 4-9, day 10-16, evening
+    -- Time of day (morning 4-9, day 10-16, evening
     -- 17-19, night 20-23, late night 0-3) plus one.
     timeClass = bucketClass(time.hour, TIME_CLASS_BUCKETS, 4),
     facingClass = ({ east = 1, west = 2, north = 3, south = 4 })[partner.facing],
@@ -426,9 +426,9 @@ function FollowerInteractionEngine:partnerMetatileBehavior()
   return partnerCell(self.runtimeMap, partnerState).behavior
 end
 
--- The grass a turning partner rustles (ov02_0224FE70): only a partner with a
+-- The grass a turning partner rustles: only a partner with a
 -- nonzero source state whose interaction-start facing was west or east, on
--- the tall-grass tile behind that facing (ov02_0224FF04).
+-- the tall-grass tile behind that facing.
 ---@param savedFacing string
 ---@return FollowerTurnGrass?
 function FollowerInteractionEngine:partnerTurnGrass(savedFacing)

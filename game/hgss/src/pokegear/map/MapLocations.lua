@@ -2,7 +2,7 @@
 -- (catalog.regionMap): the first covering location of a cell in table order,
 -- the hidden-location rules, the Johto/Kanto/Indigo region of a cell, and
 -- flypoint selection under the visited flags and the region test. Follows
--- pokegear_map.c and overlay_101_021E9270.c of pret/pokeheartgold. Rows of
+-- the retail ROM's Pokegear map. Rows of
 -- locations already include the source +2 offset; flypoints and matrix
 -- cells do not. Pure module: no love, no I/O.
 

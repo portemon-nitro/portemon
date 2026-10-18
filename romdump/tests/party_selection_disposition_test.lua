@@ -5,7 +5,7 @@
 -- without a disposition.
 
 local Assert = require("tests.support.Assert")
-local ScriptCommands = require("romdump.src.reference.hgss.script_commands")
+local ScriptCommands = require("romdump.src.catalog.hgss.script_commands")
 
 local T = {}
 

@@ -6,7 +6,7 @@
 local PokegearSources = {}
 
 PokegearSources.provenance = {
-  decompRevision = "pret/pokeheartgold@9d8b7591f09b65804da2fb2dfd56f320633e0d36",
+  romAudit = "retail ROM",
   symbols = {
     "src/application/pokegear/main/overlay_100_021E5900.c",
     "src/application/pokegear/main/overlay_100_021E6914.c",
@@ -46,7 +46,7 @@ PokegearSources.phonebook = { path = "tel/pmtel_book.dat", hgBytes = 1504, recor
 
 -- Native caller class labels use message bank 0730 for standard trainer
 -- classes and bank 0271 for the special phone-only classes. These values
--- follow overlay_101_021F1D74.c and message_format.c at the pinned source.
+-- follow overlay_101_021F1D74.c and message_format.c.
 PokegearSources.phoneClassLabels = {
   motherClass = 200,
   professorClass = 201,
@@ -366,7 +366,7 @@ PokegearSources.broadcastText = {
 -- carry a matrix anchor in world coordinates and no header coordinates;
 -- their world cell is the anchor divided by thirty-two. Indoor and cave
 -- maps carry their explicit header world coordinates verbatim from the
--- frozen map-header reference (romdump/src/reference/hgss/maps.lua); a
+-- frozen map-header reference (romdump/src/catalog/hgss/maps.lua); a
 -- map with both header coordinates zero resolves through the
 -- last-exterior fallback instead. The four special locations keep their
 -- tabled source coordinates: Mt Silver and Indigo resolve through the
@@ -591,7 +591,7 @@ end
 -- Per-contact conversation families in phonebook-id order: the closed
 -- caller-family disposition behind the foreground phone dispatch, in the
 -- same contact order as the message-bank table below. Special callers
--- name their decomp PHONE_CONTACT_* family (trailing names); every other
+-- name their PHONE_CONTACT_* family (trailing names); every other
 -- native contact follows the ordinary trainer conversation. Position
 -- i + 1 carries contact i's family. The runtime resolves programs from
 -- this generated type, never from key substrings.
@@ -674,7 +674,7 @@ PokegearSources.phoneContactFamilies = {
 }
 
 -- Per-contact phone message banks in phonebook-id order: the exact
--- sPhoneMessageGmm table behind GetPhoneMessageGmm (src/phonebook_dat.c),
+-- sPhoneMessageGmm table behind GetPhoneMessageGmm,
 -- mapping each phonebook contact to the message bank holding that
 -- caller's script messages. Position i + 1 carries contact i's bank.
 -- The per-contact greeting number beside it in the catalog record is the
@@ -683,7 +683,7 @@ PokegearSources.phoneContactFamilies = {
 -- each selector onto its bank message pair, so a greeting number only
 -- resolves as a direct bank entry where the script table maps it onto
 -- itself. Every bank falls in msg_0641..msg_0716; msg_0668 has no caller
--- and is absent. Trailing names are the decomp PHONE_CONTACT_*
+-- and is absent. Trailing names are the PHONE_CONTACT_*
 -- identities in table order.
 PokegearSources.phoneMessageBanks = {
   664, -- mother

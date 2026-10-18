@@ -1,7 +1,5 @@
--- Literal native trainer-AI program execution (pret/pokeheartgold
--- asm/overlay_10_trainer_ai.s ov10_02220AAC programs, ov10_0221C278
--- dispatcher, ov10_0222B0B4 handler table; src/battle/trainer_ai.c
--- ov10_0221BE20 scratch initialization).
+-- Literal native trainer-AI program execution (retail ROM trainer-AI programs, dispatcher,
+-- handler table, and scratch initialization).
 --
 -- WORDS holds the word stream shared by every program; ENTRY maps each
 -- supported native flag bit to its program entry word index. run executes

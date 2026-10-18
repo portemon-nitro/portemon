@@ -1,4 +1,4 @@
--- The emitted Box graphics retain pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981
+-- The emitted Box graphics retain the retail ROM's
 -- source geometry and bank 21 labels while carrying visible pixels.
 
 local Assert = require("tests.support.Assert")

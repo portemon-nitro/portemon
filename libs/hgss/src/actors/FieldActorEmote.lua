@@ -1,6 +1,5 @@
--- The overhead emote shared by pokeheartgold's movement emote
--- (ov01_02200614, asm/overlay_01_022001E4.s) and follower reaction
--- (ov01_02203CB8, asm/overlay_01_02203A18.s) field effects: both pin one icon
+-- The overhead emote shared by the retail ROM's movement emote
+-- and follower reaction field effects: both pin one icon
 -- above a map object's presented position and run the same entrance bounce
 -- before their own body. Progress ticks count effect updates, so tick 1 is
 -- the first presented update.

@@ -1,8 +1,7 @@
 -- wait_signpost task implementation : the native
 -- waiter for opcode 60 (WaitSignpost). It always blocks — there is no
 -- same-tick path — and completes on the source dismissal edges
--- (ScrCmd_WaitSignpost / NativeScript_WaitSignpost, src/scrcmd_c.c at the
--- pinned decomp commit): A/B close the window and complete 0 without turning
+-- (retail ROM): A/B close the window and complete 0 without turning
 -- the player; a directional edge additionally turns the player to the
 -- pressed direction, closes the window, and completes 0. The completion
 -- value flows through the scheduler result reference (node.result), never a

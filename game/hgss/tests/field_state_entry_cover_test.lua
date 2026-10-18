@@ -231,7 +231,7 @@ local function boot(withCover)
         end,
         cancelPointerCapture = function() end,
       },
-      pokemonNaming = {
+      monNaming = {
         isActive = function()
           return false
         end,

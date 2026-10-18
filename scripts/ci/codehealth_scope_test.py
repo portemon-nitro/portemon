@@ -121,7 +121,7 @@ class CandidateScopeTest(unittest.TestCase):
             {
                 "romdump/src/engine.lua": _function_body(),
                 "romdump/src/config/Table.lua": _function_body(),
-                "romdump/src/reference/Map.lua": _function_body(),
+                "romdump/src/catalog/Map.lua": _function_body(),
             }
         )
         self.addCleanup(
@@ -130,7 +130,7 @@ class CandidateScopeTest(unittest.TestCase):
         candidates = run_scope("candidates", repository)
         self.assertIn("romdump/src/engine.lua", candidates)
         self.assertNotIn("romdump/src/config/Table.lua", candidates)
-        self.assertNotIn("romdump/src/reference/Map.lua", candidates)
+        self.assertNotIn("romdump/src/catalog/Map.lua", candidates)
 
     def test_header_marker_excludes_data_module_with_helpers(self) -> None:
         repository = _init_repository(

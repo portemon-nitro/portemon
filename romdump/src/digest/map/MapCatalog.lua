@@ -1,9 +1,9 @@
--- Domain-facing accessor over the frozen pokeheartgold map-header reference.
+-- Domain-facing accessor over the retail ROM map-header reference.
 -- Pure domain module: no love dependency. Records are immutable by convention;
 -- callers must not mutate them.
 
 local Errors = require("libs.errors.src.Errors")
-local reference = require("romdump.src.reference.hgss.maps")
+local reference = require("romdump.src.catalog.hgss.maps")
 
 local MapCatalog = {}
 local COUNT = 540
@@ -13,7 +13,7 @@ local bySymbol = {}
 assert(reference.schema == 2, "unsupported HGSS map reference schema")
 assert(reference.count == COUNT, "HGSS map reference must contain 540 records")
 
-MapCatalog.VERSION = "hgss-map-catalog-v1:" .. reference.source.commit
+MapCatalog.VERSION = "hgss-map-catalog-v1:" .. reference.source.inputs[1].sha256
 
 for id = 0, COUNT - 1 do
   local source = assert(reference.byId[id], "missing HGSS map reference id " .. id)

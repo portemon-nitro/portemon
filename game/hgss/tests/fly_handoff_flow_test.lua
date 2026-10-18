@@ -25,7 +25,7 @@ local PartyCache = require("libs.assets.src.PartyCache")
 local RomImporter = require("romdump.src.source.RomImporter")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
-local PokemonMenuFlow = require("game.hgss.src.field.PokemonMenuFlow")
+local PartyMenuFlow = require("game.hgss.src.field.PartyMenuFlow")
 
 local T = {
   metadata = { capabilities = { "rom_dump", "derived_assets" }, derivedAssets = { "party:global" } },
@@ -240,7 +240,7 @@ local function activateMenuMove(flow, move)
 end
 
 local function liveComposition(versionId)
-  local Flow = PokemonMenuFlow
+  local Flow = PartyMenuFlow
   local bag = openBag()
   local mons = openMons(0xF1700001, extendedMonRoot(), bag:catalog())
   Assert.isTrue(

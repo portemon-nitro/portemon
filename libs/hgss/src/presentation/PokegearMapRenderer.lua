@@ -5,7 +5,7 @@
 -- location preview, the info frame with its text windows and the panel
 -- sprites. Marking mode swaps the lower pane for the slot panel and
 -- backdrop with their slide, and hides the upper panel. Layer and sprite
--- order follow the source (pret/pokeheartgold pokegear map): world layer,
+-- order follow the source (retail ROM Pokegear map): world layer,
 -- then objects, then the chrome frame. Consumes the card's detached view
 -- and the plan's resolved image paths; borrows prepared images and allocates
 -- none while drawing. Pure presentation: no love globals, the host graphics

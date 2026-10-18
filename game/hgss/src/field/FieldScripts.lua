@@ -36,8 +36,7 @@ local FollowerInteractionEngine = require("libs.hgss.src.field.FollowerInteracti
 local ScriptPlayerFacade = {}
 ScriptPlayerFacade.__index = ScriptPlayerFacade
 
--- Script-visible PLAYER_STATE_* values from pret/pokeheartgold's
--- include/constants/global_fieldmap.h. The value follows the live avatar's
+-- Script-visible PLAYER_STATE_* values from the retail ROM. The value follows the live avatar's
 -- visual state, including temporary field-action poses.
 local PLAYER_STATE_CODE = {
   walking = 0,
@@ -248,7 +247,7 @@ end
 ---@field mart table<string, unknown>|nil the script-owned mart child host (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field travel table<string, unknown>|nil the durable travel owner for spawn updates (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field fieldMoves table<string, unknown>|nil the field-move runtime for task execution (absent -> SCRIPT_SERVICE_MISSING on use)
----@field pokemonNaming table<string, unknown>|nil the script-owned Pokemon Naming Screen host
+---@field monNaming table<string, unknown>|nil the script-owned Pokemon Naming Screen host
 ---@field followingMon table<string, unknown>|nil the live following-mon controller for follower script operations (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field celebiCinematic table<string, unknown>|nil runtime-owned Celebi scene service used by the time-travel task
 ---@field followerTransition table<string, unknown>|nil the transient follower-transition owner the nonblocking transition command starts (absent -> SCRIPT_SERVICE_MISSING on use)
@@ -527,7 +526,7 @@ function FieldScripts.new(opts)
       mart = opts.mart,
       travel = opts.travel,
       fieldMoves = opts.fieldMoves,
-      pokemonNaming = opts.pokemonNaming,
+      monNaming = opts.monNaming,
       followingMon = opts.followingMon,
       celebiCinematic = opts.celebiCinematic,
       followerInteraction = followerInteractionEngine,

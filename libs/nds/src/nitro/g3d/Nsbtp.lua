@@ -1,7 +1,6 @@
 -- NSBTP (PAT0) texture/palette pattern animation decoder.
 --
--- Authority: pokediamond arm9/asm/NNS_G3D_nsbtp.s + NNS_G3D_res_struct_acce.s
--- (pinned commit 038cccaed, 2025-12-24), layout cross-verified against the
+-- Authority: the retail ROM's NitroSystem code; layout cross-verified against the
 -- 79 members of the real HGSS field archive (the stride and name-table
 -- offsets were verified against raw bytes). Record layout
 -- (record-relative):

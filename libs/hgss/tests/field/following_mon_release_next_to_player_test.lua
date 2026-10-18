@@ -1,5 +1,5 @@
--- FollowMonReleaseNextToPlayer at component scope (pret/pokeheartgold
--- src/scrcmd_c.c ScrCmd_FollowMonReleaseNextToPlayer): with an active
+-- FollowMonReleaseNextToPlayer at component scope (retail ROM script
+-- command): with an active
 -- follower permitted on the current map, the partner lands on the player
 -- tile facing south with its visibility left alone -- a visible partner
 -- stays visible through stationary ticks, a hidden partner stays hidden.

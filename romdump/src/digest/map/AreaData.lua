@@ -2,7 +2,7 @@
 -- building texture packs, the dynamic-texture animation type, and the
 -- indoor/outdoor area type plus light type. The area type is the asset-level
 -- source of truth for indoor vs outdoor building-model archive selection.
--- Layout recovered from pret/pokeheartgold field area-data handling.
+-- Layout recovered from the retail ROM field area-data handling.
 -- Pure domain module; decode() returns (area | nil, err).
 
 local Errors = require("libs.errors.src.Errors")

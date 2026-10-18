@@ -1,8 +1,7 @@
 -- Projection of native encounter members into version-specific semantic
 -- tables. Members follow the EncounterData layout in
--- include/wild_encounter.h with slot and replacement selection in
--- src/field/encounter_check.c
--- (pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981): per-method
+-- with slot and replacement selection in
+-- the retail ROM's encounter data: per-method
 -- ordered slots keep their level windows and native interval weights, equal
 -- species slots never merge, and radio/swarm/night-fishing replacements
 -- point at their original native slots with their supported game. Special

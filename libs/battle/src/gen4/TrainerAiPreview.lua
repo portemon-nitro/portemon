@@ -1,7 +1,7 @@
 -- Exact native preview arithmetic for the trainer interpreter:
 -- matchup and damage staging plus the rank and comparison routines the
--- opcode handlers call (pret/pokeheartgold ov10_0221F084 matchup core,
--- ov10_0221F47C type arms, ov12_02251D28 type pipeline). Damage and type
+-- opcode handlers call (the retail ROM's matchup core, type arms, and
+-- type pipeline). Damage and type
 -- estimates run in ordered native stages over a local numeric work
 -- record; nothing here reuses the live combat damage owner, draws random
 -- values outside the transcribed fixed-damage arms, or reaches into the

@@ -1,6 +1,6 @@
 -- Closed opcode dispatch for the trainer interpreter
--- (pret/pokeheartgold asm/overlay_10_trainer_ai.s ov10_0221C278 dispatcher
--- with table ov10_0222B0B4 over the word stream at ov10_02220AAC). One
+-- (the retail ROM's trainer-AI dispatcher and
+-- handler table over the word stream). One
 -- fixed table maps exactly the transcribed opcode set to small command
 -- functions; handlers consume operands in source order and return the
 -- original next word index, end-of-slot, or abort marker. Unknown

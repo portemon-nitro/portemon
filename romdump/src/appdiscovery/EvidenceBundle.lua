@@ -28,13 +28,13 @@ local README_TEXT = [[
 # Application evidence bundle
 
 This bundle was derived only from the supplied ROM's own bytes plus generic
-Nintendo DS/Nitro decoders. It contains no decompiled source and no
+Nintendo DS/Nitro decoders. It contains no source code and no
 implementation prescription.
 
 - All source IDs, member indices, and addresses in this bundle are
   zero-based.
 - Entrypoint and resource candidates are structural evidence, not confirmed
-  semantics. Cross-reference against a decomp is required before treating a
+  semantics. Cross-reference against the retail ROM's behavior is required before treating a
   candidate as a confirmed application root, callback, or resource
   composition.
 - Every gap record is intentional evidence of an unresolved instruction,

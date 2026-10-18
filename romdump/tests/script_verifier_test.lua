@@ -1,7 +1,6 @@
 -- Translation-verifier unit tests: the classification checks that pin the
 -- caller-signal fallthrough protocol (opcode 21) and the surrounding
--- stop/continue accounting on synthetic members. No ROM and no decomp
--- checkout required.
+-- stop/continue accounting on synthetic members. No ROM required.
 
 local Assert = require("tests.support.Assert")
 local ScriptFixture = require("tests.support.ScriptFixture")

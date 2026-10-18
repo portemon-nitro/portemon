@@ -1,18 +1,18 @@
 -- Icon and portrait selection plus deterministic atlas inputs. Party-icon
--- selection follows src/pokemon_icon_idx.c GetMonIconNaixEx (naix member) and
--- GetMonIconPaletteEx (palette bank member 0) at the pinned
--- pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981 commit: each
+-- selection follows GetMonIconNaixEx (naix member) and
+-- GetMonIconPaletteEx (palette bank member 0) in the
+-- retail ROM: each
 -- icon is a 32x32 two-frame NCGR addressed with the shared NCER cells and
--- NANR frame timing. Front portraits follow src/pokemon.c
+-- NANR frame timing. Front portraits follow
 -- GetMonSpriteCharAndPlttNarcIdsEx: base species read the pokegra archive,
 -- alternate forms and eggs read the otherpoke archive, and each character
 -- member carries two 80x80 frames. Front-picture character payloads are
--- stored scanned: src/pokepic.c UnscanPokepic_PtHGSS masks 3200
+-- stored scanned: the retail ROM unscrambles by masking 3200
 -- little-endian words with the 32-bit LCRNG seeded from word 0 before pixels
 -- are used, and the decoded surface is 80 rows of 80 bytes whose left and
 -- right 40-byte halves are the two authored frames
--- (src/pokepic.c UnscanPokepic_PtHGSS row addressing
--- pRawCharData[j * 80 + k]; src/unk_02013FDC.c portrait extraction; the
+-- (retail ROM row addressing
+-- j * 80 + k; portrait extraction; the
 -- second frame sits at an 80-pixel horizontal offset).
 -- Tiles, palettes, cells, and animations
 -- decode through the existing G2dDecoder primitives; this module only

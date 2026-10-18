@@ -1,7 +1,6 @@
 -- CompiledNsbtpSampler: the runtime sampler over a compiled NSBTP clip
 -- payload (NsbtpClipCompiler, digest side). The engine never touches NSBTP
--- bytes; this module reproduces NNSi_G3dGetTexPatAnmFV (pokediamond
--- NNS_G3D_res_struct_acce.s) over the compiled keys and must stay identical
+-- bytes; this module reproduces NNSi_G3dGetTexPatAnmFV (retail ROM) over the compiled keys and must stay identical
 -- to Nsbtp.keyAt -- the cross-check tests compare both paths on every
 -- fixture.
 --

@@ -157,7 +157,7 @@ end
 ---@param class string host layout class under test
 ---@return table<string, unknown> rig driving the production party flow
 local function openProductionPartyFlow(versionId, summaryManifest, class, species)
-  local PokemonMenuFlow = require("game.hgss.src.field.PokemonMenuFlow")
+  local PartyMenuFlow = require("game.hgss.src.field.PartyMenuFlow")
   local BagCursor = require("libs.hgss.src.items.BagCursor")
   local HgssBagService = require("libs.hgss.src.items.HgssBagService")
   local ItemFixture = require("libs.items.tests.item_fixture")
@@ -178,7 +178,7 @@ local function openProductionPartyFlow(versionId, summaryManifest, class, specie
   local PcPresentationFixture = require("tests.support.PcPresentationFixture")
   local mailbox = Mailbox.new()
   local pcManifest = PcPresentationFixture.manifest()
-  local flow = PokemonMenuFlow.new({
+  local flow = PartyMenuFlow.new({
     root = "party",
     mons = service,
     bag = bag,

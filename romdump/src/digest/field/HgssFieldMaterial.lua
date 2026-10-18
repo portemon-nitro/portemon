@@ -1,6 +1,6 @@
 -- HGSS field material policy layered on generic NNS G3D material semantics.
 --
--- Field references: the HGSS field initialization path (pret/pokeheartgold)
+-- Field references: the HGSS field initialization path (the retail ROM)
 -- for the field-model color policy and GBATEK "DS 3D" for register fields.
 
 local Material = require("libs.nds.src.gx.Material")

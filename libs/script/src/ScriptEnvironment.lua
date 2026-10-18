@@ -182,8 +182,8 @@ end
 
 -- `call_common` sets the caller's signal bit; a translated `signal_caller`
 -- inside a verified common child at slot N clears bit N - 1 (its parent),
--- matching the source CallStd protocol (pret/pokeheartgold src/scrcmd_c.c
--- ScrCmd_CallStd / ScrCmd_RestartCurrentScript).
+-- matching the source CallStd protocol (retail ROM ScrCmd_CallStd /
+-- ScrCmd_RestartCurrentScript).
 ---@param slot integer
 ---@param signaled boolean
 function ScriptEnvironment:setCallerSignal(slot, signaled)
@@ -231,8 +231,7 @@ end
 -- Release one lock for an owning instance; releasing a lock the instance does
 -- not own is a strict-mode error.
 --
--- Actor locks are the one exception (pret/pokeheartgold src/scrcmd_c.c
--- ScrCmd_Lock/ScrCmd_Release): the source command pair unconditionally
+-- Actor locks are the one exception (retail ROM ScrCmd_Lock/ScrCmd_Release): the source command pair unconditionally
 -- pauses/unpauses the named object's own movement and never tracks which
 -- script issued a prior Lock. A standalone `Release <actor>` with no
 -- matching `Lock <actor>` from this instance is source-valid and means

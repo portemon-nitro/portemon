@@ -1,6 +1,5 @@
 -- FieldCamera is the pure gameplay camera for ROM-derived HGSS profiles. It
--- implements the camera behavior recovered in pret/pokeheartgold's camera.c and
--- field overlay 1 while routing Y movement through the original history ring.
+-- implements the camera behavior recovered from the retail ROM while routing Y movement through the original history ring.
 -- Each fixed update keeps the previous eye/target so `view(alpha)` can
 -- interpolate between simulation states, matching the player's interpolated
 -- render position at lower simulation rates.
@@ -15,7 +14,7 @@ local CameraHistory = require("libs.hgss.src.field.CameraHistory")
 local Matrix4 = require("libs.math.src.Matrix4")
 
 -- HGSS renders billboards and field effects through a depth-biased copy of the
--- projection: pokeheartgold src/field/fieldmap.c ov01_021E6220 copies the
+-- projection: the retail ROM copies the
 -- active projection after drawing maps and props, bumps `_32` (the Z-row
 -- translation) by `_22` (the Z-row scale) times `fieldSystem->unk11C = 8`
 -- model units times cos(-camera.angle.x), draws FieldEffectManager_Render and

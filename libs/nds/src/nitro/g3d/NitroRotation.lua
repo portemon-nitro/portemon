@@ -1,8 +1,7 @@
 -- NSBCA rotation reconstruction: turns one rotation key value into the nine
 -- matrix cells NitroSystem uses.
 --
--- Authority: pokediamond arm9/asm/NNS_G3D_nsbca.s (pinned commit 038cccaed,
--- 2025-12-24) -- getRotDataByIdx_ (0x020BC500). A rotation key is a u16 with
+-- Authority: the retail ROM's NitroSystem code -- getRotDataByIdx_ (0x020BC500). A rotation key is a u16 with
 -- bit 15 selecting the form:
 --
 --   bit 15 set  -- pivot form: value & 0x7FFF indexes a table of 3 x u16

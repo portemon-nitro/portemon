@@ -14,7 +14,7 @@ local BagCacheWriter = require("romdump.src.digest.ui.BagCacheWriter")
 local BagCache = require("libs.assets.src.BagCache")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 local FieldMessageBank = require("romdump.src.digest.ui.FieldMessageBank")
-local charmap = require("romdump.src.reference.hgss.charmap")
+local charmap = require("romdump.src.catalog.hgss.charmap")
 local BagPresentationFixture = require("tests.support.BagPresentationFixture")
 
 local T = {}

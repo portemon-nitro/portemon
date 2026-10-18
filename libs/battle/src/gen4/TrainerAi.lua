@@ -1,12 +1,7 @@
 -- Private native trainer decision policy for the Generation IV session.
--- Execution follows the pinned opponent model (pret/pokeheartgold
--- src/battle/trainer_ai.c ov10_0221BE20 for scratch initialization,
--- asm/overlay_10_trainer_ai.s ov10_0221BF44 for the singles selector,
--- ov10_0221C038 for the doubles selector, ov10_0221C278 with table
--- ov10_0222B0B4 for program dispatch over the program data at
--- ov10_02220AAC, ov10_022205BC for action order, ov10_022203A4 with the
--- opponent-controller replacement at ov12_02258800 for switching, and
--- ov10_022206B0 for trainer items): usable move slots open at the native
+-- Execution follows the retail ROM's opponent model (scratch initialization,
+-- the singles and doubles selectors, program dispatch, action order, switching
+-- with the opponent-controller replacement, and trainer items): usable move slots open at the native
 -- baseline with slot-ordered initialization draws whose stored
 -- 100-(draw%16) thresholds later commands may read, enabled flag
 -- programs run in ascending bit order, doubles evaluates candidate

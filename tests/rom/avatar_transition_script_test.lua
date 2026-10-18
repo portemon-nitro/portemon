@@ -8,7 +8,7 @@
 
 local Assert = require("tests.support.Assert")
 local FieldScripts = require("tests.rom.support.FieldScripts")
-local PlayerAvatar = require("romdump.src.reference.hgss.player_avatar")
+local PlayerAvatar = require("romdump.src.catalog.hgss.player_avatar")
 
 local T = {}
 

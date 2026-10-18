@@ -134,7 +134,7 @@ has_declarative_marker() {
 admit() {
   local relative="$1" strict="$2" absolute=""
   case "$relative" in
-    romdump/src/config/* | romdump/src/reference/*) return 0 ;;
+    romdump/src/config/* | romdump/src/catalog/*) return 0 ;;
   esac
   absolute="$CANONICAL/$relative"
   if [ ! -r "$absolute" ]; then

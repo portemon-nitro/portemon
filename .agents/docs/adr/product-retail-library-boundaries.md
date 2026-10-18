@@ -38,7 +38,7 @@ upward dependencies. A caller's current directory is not evidence of ownership.
   mechanisms belong in `libs/ui`.
 - Repository-root reads belong in `libs/storage`, allowing product tooling to use the
   confined reader without depending on the game host.
-- `romdump` owns ROM/decomp interpretation and generated-artifact production.
+- `romdump` owns retail ROM interpretation and generated-artifact production.
 
 DPP should receive its own retail package if implemented. Extract shared mechanisms only
 when concrete duplication or a current shared contract establishes the need. Do not create a

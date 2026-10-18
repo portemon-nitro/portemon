@@ -1,7 +1,6 @@
 -- The coordinator-injected follower rejoin through production composition
--- (retail MapPreviewGraphic_RunPlayerDropIn states 4-5 in
--- pret/pokeheartgold src/map_preview_graphic.c and Task_WarpPanel state 5 in
--- src/field_warp_tasks.c): with a follower in the party, the transition the
+-- (retail map-preview player drop-in states 4-5 and warp-panel
+-- state 5): with a follower in the party, the transition the
 -- real FieldWorldSwapCoordinator builds must carry the follower collaborator,
 -- so a profile-8 preview arrival and a panel arrival each hand the follower
 -- back onto the committed player tile, hidden until its first step, exactly

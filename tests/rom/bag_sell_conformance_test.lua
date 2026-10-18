@@ -1,9 +1,7 @@
 -- Source-fidelity proof for the Bag sale presentation: retail Bag member 53
 -- supplies a sale-only background, while sale geometry and message roles
 -- compile into the strict Bag manifest. Source authority:
--- pret/pokeheartgold@9d8b7591f09b65804da2fb2dfd56f320633e0d36,
--- asm/overlay_15.s (ov15_021FD574, ov15_021FCDE4, ov15_02200300) and
--- files/msgdata/msg/msg_0010.gmm.
+-- the retail ROM's Bag sale code and message bank 10.
 
 local Assert = require("tests.support.Assert")
 local BagAssetSchema = require("libs.assets.src.BagAssetSchema")

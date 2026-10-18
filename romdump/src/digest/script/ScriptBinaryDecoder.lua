@@ -10,7 +10,7 @@
 
 local RawIr = require("romdump.src.digest.script.RawIr")
 local CommandCatalog = require("romdump.src.digest.script.CommandCatalog")
-local MovementCommands = require("romdump.src.reference.hgss.movement_commands")
+local MovementCommands = require("romdump.src.catalog.hgss.movement_commands")
 local BinaryView = require("libs.codec.src.BinaryView")
 local ffi = require("ffi")
 

@@ -942,7 +942,7 @@ function T.pokemon_subject_rejects_runtime_invalid_metadata()
     local manifest = validManifest()
     case[2](manifest.namingScreen.pokemonSubject)
     local ok, err = FieldUiAssetCache.validateManifest(manifest)
-    Assert.isFalse(ok, "invalid Pokemon subject metadata is rejected: " .. case[1])
+    Assert.isFalse(ok, "invalid mon subject metadata is rejected: " .. case[1])
     Assert.equal(assert(err).code, "FIELD_UI_MANIFEST_INVALID")
   end
 end

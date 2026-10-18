@@ -1,5 +1,5 @@
 -- Decoder for the HGSS field texture-animation table: the member-0
--- contents of `data/fldtanime.narc` in pret/pokeheartgold (dump alias
+-- contents of `data/fldtanime.narc` in the retail ROM (dump alias
 -- `field_texture_animations`). The member is a little-endian u32 record count
 -- followed by fixed 52-byte records of a NUL-padded 16-byte name and an
 -- 18-pair schedule; each record's replacement texture resource is archive

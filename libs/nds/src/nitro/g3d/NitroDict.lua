@@ -1,6 +1,5 @@
 -- Generic Nitro 3D resource dictionary (NNSG3dResDict): the name->data table
--- used by model, texture, palette, node, material and shape lists. Layout from
--- pokeheartgold res_struct.h / res_struct_accessor_inline.h:
+-- used by model, texture, palette, node, material and shape lists. Layout as in the retail ROM's Nitro files (see GBATEK where applicable):
 --
 --   +0x00 u8  revision
 --   +0x01 u8  numEntry (N)

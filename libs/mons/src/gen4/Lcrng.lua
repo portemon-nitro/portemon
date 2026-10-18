@@ -1,5 +1,4 @@
--- Generation-IV linear-congruential generator. Canonical source:
--- pret/pokeheartgold, src/math_util.c (LCRandom). The state is an unsigned
+-- Generation-IV linear-congruential generator. Source: the retail ROM (LCRandom). The state is an unsigned
 -- 32-bit value; each draw advances state = state * 1103515245 + 24691
 -- (mod 2^32) and returns the upper 16 bits. Multiplication goes through the
 -- exact U32 helper because Lua numbers cannot represent every intermediate

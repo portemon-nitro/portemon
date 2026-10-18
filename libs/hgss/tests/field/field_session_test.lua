@@ -1533,7 +1533,7 @@ end
 
 -- The facing-tile door: warp tile (4,14) is a blocked DOOR ahead of the idle
 -- player at (4,13) facing south. Behavior bytes come from MetatileBehavior's
--- TILE_BEHAVIOR_* table (pokeheartgold metatile_behavior.h).
+-- TILE_BEHAVIOR_* table.
 local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 local DOOR = MetatileBehavior.BEHAVIOR.DOOR
 local ENTRANCE_SOUTH = MetatileBehavior.BEHAVIOR.WARP_ENTRANCE_SOUTH
@@ -3167,7 +3167,7 @@ function T.a_successful_open_consumes_the_tick_without_stepping_the_world()
   Assert.equal(session.tick, 1)
 end
 
-function T.pokemon_naming_owns_normalized_ui_input_and_balances_capture_lifetime()
+function T.mon_naming_owns_normalized_ui_input_and_balances_capture_lifetime()
   local active = false
   local captured, cleared = 0, 0
   ---@type table<string, unknown>|nil
@@ -3196,7 +3196,7 @@ function T.pokemon_naming_owns_normalized_ui_input_and_balances_capture_lifetime
       active = false
     end
   end
-  local session = FieldSession.new(baseOptions({ input = input, pokemonNaming = naming, scriptScheduler = scheduler }))
+  local session = FieldSession.new(baseOptions({ input = input, monNaming = naming, scriptScheduler = scheduler }))
   session:updateFixed({ actionPressed = "a", cancelPressed = "b", pressedDirection = "north" })
   Assert.equal(captured, 1, "opening the naming modal begins UI capture once")
   session:updateFixed({ actionPressed = "a", cancelPressed = "b", pressedDirection = "north" })
@@ -3214,7 +3214,7 @@ function T.script_owned_field_modals_cannot_be_active_together()
       return true
     end,
   }
-  local session = FieldSession.new(baseOptions({ starterChoice = active, pokemonNaming = active }))
+  local session = FieldSession.new(baseOptions({ starterChoice = active, monNaming = active }))
   local ok, err = pcall(function()
     session:updateFixed({})
   end)

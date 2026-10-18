@@ -1,5 +1,5 @@
 -- Single canonical battle-stat projection for Generation-IV mons
--- (pret/pokeheartgold@0985e8718d src/pokemon.c CalcMonStats): level from
+-- (retail ROM CalcMonStats): level from
 -- the growth curve, stats from the exact stat formula, one health point
 -- for the single-health species, and source health adjustment across a
 -- recalculated maximum. This module composes the existing
@@ -47,7 +47,7 @@ function MonStats.derive(mon, catalog)
 end
 
 -- Source maximum-health adjustment for a recalculated mon
--- (pret/pokeheartgold@0985e8718d src/pokemon.c CalcMonStats tail): a
+-- (retail ROM CalcMonStats tail): a
 -- fainted mon keeps zero health; a living mon keeps its damage by gaining
 -- the maximum change, clamped down when the maximum shrinks.
 ---@param oldMaxHp integer

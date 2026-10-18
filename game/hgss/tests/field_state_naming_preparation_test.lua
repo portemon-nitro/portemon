@@ -19,11 +19,11 @@ local function stateFor(preparationResults)
     end,
   }
   local runtime = {
-    pokemonNaming = naming,
+    monNaming = naming,
     update = function(_) end,
   }
   local resources = {
-    preparePokemonNamingSubject = function(_, _)
+    prepareMonNamingSubject = function(_, _)
       calls.preparations = calls.preparations + 1
       local result = table.remove(preparationResults, 1)
       return result[1], result[2]

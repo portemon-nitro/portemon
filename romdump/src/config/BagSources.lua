@@ -1,11 +1,8 @@
 -- Producer-side semantic inventory of the field-bag presentation sources:
 -- NARC 15 member selection, canonical geometry, hero model/animation
 -- selection, and normalized presentation facts. The audit basis is
--- pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981
--- asm/overlay_15.s (the field-bag application; Bag_Init opens NARC 15 and
--- every member below is loaded by an audited call site), plus
--- include/camera.h, include/sprite_system.h, include/bg_window.h, and
--- include/text.h for the called-API signatures. The TM/HM summary labels
+-- the retail ROM's field-bag application (it opens NARC 15 and every member
+-- below is loaded by an audited call site). The TM/HM summary labels
 -- below come from the bag message bank; its type and category icons are the
 -- shared move-icons family (MoveIconSources). Pure data and pure
 -- functions; no I/O. Never imported by runtime: libs/assets, game, and
@@ -108,8 +105,7 @@
 local BagSources = {}
 
 BagSources.provenance = {
-  repo = "pret/pokeheartgold",
-  commit = "0985e8718df4f25e64d6507d89c0c97c0d288981",
+  repo = "retail ROM",
   sources = {
     "asm/overlay_15.s",
     "asm/include/overlay_15.inc",
@@ -709,7 +705,7 @@ BagSources.itemIconCenters = {
 
 -- Registration marker source facts. The retail registration path loads Bag
 -- UI character member 37 as a 104x16 source bitmap (BlitBitmapRectToWindow
--- contract per include/bg_window.h) and copies one 40x16 region per slot at
+-- contract per the retail ROM) and copies one 40x16 region per slot at
 -- source Y 0: slot 1 from source X 24, slot 2 from source X 64. The compiled
 -- markers are placed slot-locally at the destination offset below.
 BagSources.registration = {

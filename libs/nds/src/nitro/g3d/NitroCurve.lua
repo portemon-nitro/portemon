@@ -1,8 +1,7 @@
 -- NSBCA-style sampled curve: a (u32 flag, u32 ofs) channel record plus its
 -- fx16/fx32 key array, sampled exactly as NitroSystem samples it.
 --
--- Authority: pokediamond arm9/asm/NNS_G3D_nsbca.s (pinned commit
--- 038cccaed, 2025-12-24) -- getTransData_/getTransDataEx_/getScaleData_/
+-- Authority: the retail ROM's NitroSystem code -- getTransData_/getTransDataEx_/getScaleData_/
 -- getScaleDataEx_/getRotDataEx_ all share this machinery. Channel flag:
 --
 --   bits 16-28 (0x1FFF0000): limit -- the key count at full rate, always

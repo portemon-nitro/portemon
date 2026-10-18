@@ -1,34 +1,28 @@
 -- HGSS's steady-state global field-fog presets, one per `WeatherManager_New`
--- weather ID (0-13), recovered from pokeheartgold overlay 01's weather
--- dispatch table and its handler literal pools. Pinned to the same
--- pokeheartgold commit `romdump/src/reference/hgss/maps.lua` already cites
--- (7e25c842061d026f43fe6efbd7be0ec94c50839d); overlay 01's weather handlers
--- have not yet been converted from `asm/overlay_01_021EB1E8.s` to C at that
--- commit, so the citations below are overlay-01 virtual addresses rather
--- than decompiled symbol names.
+-- weather ID (0-13), recovered from the retail ROM weather
+-- dispatch table and its handler literal pools.
 --
--- The 14-record dispatch table lives at `ov01_022098B0` (overlay 01 .data);
--- each record's handler resolves to one of the groups below. Handler
--- addresses and their literal-pool constants:
+-- The 14-record dispatch table lives in overlay 01 .data;
+-- each record's handler resolves to one of the groups below. Literal-pool
+-- constants per group:
 --
---   weather  handler          offset literal   color literal   slope
---   0        ov01_021EC8F8    (no fog: Fog_New's disabled default)
---   1-3      ov01_021EC94C    0x726F            0x6B5A          3
---   4-6      ov01_021ECD08    0x726F            0x6318          3
---   7        ov01_021EC8F8    (no fog: shares weather 0's handler)
---   8        ov01_021ED0F0    0x716F            0x6B5A          3
---   9-10     ov01_021ED584    0x7555            0x7FFF          6
---   11-12    ov01_021ED710 /  0 (zero fog color/offset, FF-filled table)
---            ov01_021ED924
---   13       ov01_021EDA50    0x4B6F            0x0421          1
+--   weather      offset literal   color literal   slope
+--   0            (no fog: Fog_New's disabled default)
+--   1-3          0x726F            0x6B5A          3
+--   4-6          0x726F            0x6318          3
+--   7            (no fog: shares weather 0's handler)
+--   8            0x716F            0x6B5A          3
+--   9-10         0x7555            0x7FFF          6
+--   11-12        0 (zero fog color/offset, FF-filled table)
+--   13           0x4B6F            0x0421          1
 --
 -- For weathers 1-10 and 13, the 32-byte fog-density table is not stored in
--- the ROM at all: `ov01_021EC774`/`ov01_021EC828` procedurally generate the
+-- the ROM at all: two routines procedurally generate the
 -- ramp `[0, 4, 8, ..., 124]` on ordinary map load (rampTable below). Flash
 -- and Flash-2 (11-12) instead fill their table with 0xFF (flashTable below)
 -- and force enable=1, blend mode 0, slope 10, offset 0, color 0, alpha 0.
 --
--- `ov01_021EC678` is why every enabled preset shares blend mode 0
+-- the blend routine is why every enabled preset shares blend mode 0
 -- (GX_FOGBLEND_COLOR_ALPHA) and fog-color alpha 31 (except Flash/Flash-2,
 -- whose handler sets alpha 0 directly).
 --
@@ -47,7 +41,7 @@ local GREY_26 = rgb555(26, 26, 26)
 local GREY_24 = rgb555(24, 24, 24)
 local COLOR_1 = rgb555(1, 1, 1)
 
--- The common generated density ramp `ov01_021EC828` produces on ordinary map
+-- The common generated density ramp the generator produces on ordinary map
 -- load: 32 entries, 0, 4, 8, ..., 124.
 ---@return integer[]
 function HgssFieldFog.rampTable()
@@ -149,7 +143,7 @@ end
 -- The runtime-relevant subset of a resolved preset: `enabled`, `slope`,
 -- `offset`, `color`, `alpha`, and `table`. `blendMode` is never carried --
 -- every currently supported HGSS steady-state preset uses blend mode 0
--- (`GX_FOGBLEND_COLOR_ALPHA`, `ov01_021EC678`), so this asserts that
+-- (`GX_FOGBLEND_COLOR_ALPHA`), so this asserts that
 -- invariant instead of serializing a field with exactly one observed value.
 -- Takes the full resolved preset (not a weatherId) so a synthetic preset can
 -- exercise the blend-mode invariant directly; call sites that only have a

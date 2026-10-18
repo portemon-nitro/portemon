@@ -2,9 +2,8 @@
 -- the code units and control families, the control-name registry, and the
 -- three marker operations -- render a token stream to text (tokensToText),
 -- build a single marker (marker), and parse marker text back into a token
--- stream (parse). Code units follow include/constants/charcode.h and the
--- function-code names follow charmap.txt in the pinned pret/pokeheartgold
--- checkout; the registry is the published marker format, so it is verified
+-- stream (parse). Code units and function-code names follow the retail ROM's
+-- character map; the registry is the published marker format, so it is verified
 -- against the frozen charmap reference by the importer tests. Pure module:
 -- no love dependency.
 
@@ -67,7 +66,7 @@ FieldMessageText.COLOR_VARIANT_COUNT = 7
 
 -- The marker name registry: family bases for STRVAR families, plain codes
 -- otherwise. Names are exactly what the marker syntax accepts and must stay in
--- sync with romdump/src/reference/hgss/charmap.lua controlNames (verified by the
+-- sync with romdump/src/catalog/hgss/charmap.lua controlNames (verified by the
 -- importer tests).
 FieldMessageText.controlNames = {
   [0x0100] = "STRVAR_1",

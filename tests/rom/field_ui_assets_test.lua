@@ -2,8 +2,7 @@
 -- dump compiles the bundle (frames, signposts, Start Menu, Trainer Card),
 -- every indexed file passes FieldUiAssetCache.isReady, and the compile is
 -- deterministic. Asserts only non-copyright structural facts.
--- Yes/No frame extraction follows pret/pokeheartgold src/scrcmd_c.c and
--- LoadUserFrameGfx1 at commit 9d8b7591f09b65804da2fb2dfd56f320633e0d36.
+-- Yes/No frame extraction follows the retail ROM's user-frame graphics loading.
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
@@ -279,7 +278,7 @@ function T.dialogue_continue_cursor_local_ink_stays_within_its_generated_surface
 end
 
 -- The continuation cursor payload follows the source pixel-rectangle
--- preparation (pret/pokeheartgold sub_0200EA68 blits cursor source columns
+-- preparation (the retail ROM blits cursor source columns
 -- 3..15 onto destination columns 0..12 with palette index 0 transparent),
 -- so the visible arrow occupies surface columns 1..10 with the retail
 -- vertical bounce. Any backing corruption outside that box would extend the

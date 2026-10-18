@@ -364,7 +364,7 @@ local function choosePartyMenu(flow, kind)
 end
 
 local function composition(game)
-  return assert(game.runtime.pokemonMenu, "the production runtime owns the menu composition")
+  return assert(game.runtime.partyMenu, "the production runtime owns the menu composition")
 end
 
 function T.tests.production_medicine_give_take_round_trip(context)

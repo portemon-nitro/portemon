@@ -3,7 +3,7 @@
 -- packed movement value whose top bit (0x80) is the hard-block flag and whose
 -- low 7 bits (0x7F) are a terrain/footstep response id -- NOT a plain collision
 -- byte, so values like 4 and 6 are passable surface responses, not obstacles.
--- The split matches pret/pokeheartgold's field movement code, which tests bit
+-- The split matches the retail ROM's field movement code, which tests bit
 -- 15 of the u16 pair for blocking and masks the low 7 bits for the response.
 -- Records are indexed row-major z*32+x with no transpose or vertical flip,
 -- exactly as the field engine does. decode() returns a normalized

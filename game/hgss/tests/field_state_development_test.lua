@@ -7,7 +7,7 @@ local Assert = require("tests.support.Assert")
 local FieldState = require("game.hgss.src.field.FieldState")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
-local InactivePokemonNaming = require("tests.support.InactivePokemonNaming")
+local InactiveMonNaming = require("tests.support.InactiveMonNaming")
 
 local T = {}
 
@@ -42,7 +42,7 @@ local function drawableState(development)
     _fpsFrames = 0,
     _fps = 0,
     runtime = {
-      pokemonNaming = InactivePokemonNaming.new(),
+      monNaming = InactiveMonNaming.new(),
       runtimeMap = {
         mapId = 61,
         mapSymbol = "MAP_NEW_BARK",

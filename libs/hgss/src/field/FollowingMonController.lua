@@ -120,8 +120,7 @@ local DELTAS = {
 local OPPOSITE_FACING = { north = "south", south = "north", west = "east", east = "west" }
 
 -- The tower floors where the burrowing species stay unpublished even though
--- the map mode itself allows followers (pret/pokeheartgold
--- FollowMon_DiglettPermissionCheck). Keyed by semantic map symbol, never by
+-- the map mode itself allows followers. Keyed by semantic map symbol, never by
 -- display name.
 local BURROWING_BLOCKED_MAPS = {
   MAP_BELL_TOWER_1F = true,
@@ -385,8 +384,7 @@ function FollowingMonController:_reconcileLead(mapChanged)
   self._lead = lead
 end
 
--- The source follower permission (pret/pokeheartgold
--- FollowMon_GetPermissionBySpeciesAndMap): the burrowing check runs before
+-- The source follower permission: the burrowing check runs before
 -- the map mode, a prevented map publishes nothing, a height-restricted map
 -- admits only size-zero followers, and an allowed map admits every lead. A
 -- missing map record or an unknown follow mode is a hard generated-data
@@ -1562,8 +1560,7 @@ function FollowingMonController:rejoin(_)
   self._actors:hide(partnerId)
 end
 
--- Release-next-to-player behind ScrCmd_FollowMonReleaseNextToPlayer
--- (pret/pokeheartgold src/scrcmd_c.c): with an active follower permitted
+-- Release-next-to-player behind the retail ROM's script command: with an active follower permitted
 -- on the current map, copy the partner onto the player tile facing south
 -- and leave its visibility alone -- the opcode carries no hide or show, so
 -- a visible partner stays visible and a hidden one stays hidden. Unlike

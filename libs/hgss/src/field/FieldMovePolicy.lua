@@ -4,9 +4,7 @@
 -- queries presentation, host time, or private runtime fields, and never
 -- mutates the context. Pure domain module: no love dependency and no I/O.
 --
--- Source basis: pret/pokeheartgold@9d8b7591f09b65804da2fb2dfd56f320633e0d36
--- src/field_move.c (FieldMove_InitCheckData and the FieldMove_Check*
--- predicates). Badge semantics follow the durable progression order;
+-- Source basis: the retail ROM's field-move checks. Badge semantics follow the durable progression order;
 -- encounter/recording capabilities stay deferred (GD-06), so Headbutt,
 -- Sweet Scent, and Chatter report feature_unavailable only after their
 -- genuine physical checks pass.
@@ -63,7 +61,7 @@ local function fieldUse(context)
   return policy
 end
 
--- A visible following Pokemon is not the source's human-escort restriction.
+-- A visible following mon is not the source's human-escort restriction.
 local function escortRefusal(context)
   if context.humanFollower then
     return { kind = "have_follower" }

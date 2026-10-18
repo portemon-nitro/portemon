@@ -13,7 +13,7 @@ end
 
 function FieldServiceHandlers.celebiTimeTravel(_)
   -- ScrCmd_CelebiTimeTravel carries no operands: the source starts its
-  -- cutscene task and waits for it (pret/pokeheartgold src/scrcmd_c.c).
+  -- cutscene task and waits for it.
   return { op = "celebi_time_travel" }
 end
 

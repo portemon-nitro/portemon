@@ -1,5 +1,4 @@
--- The Box producer follows pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981:
--- overlay_59.s, touchscreen_list_menu.c, msg_0021.gmm and the source UI resources.
+-- The Box producer follows the retail ROM and the source UI resources.
 
 local Assert = require("tests.support.Assert")
 local ApricornBoxAssetCache = require("libs.assets.src.ApricornBoxAssetCache")

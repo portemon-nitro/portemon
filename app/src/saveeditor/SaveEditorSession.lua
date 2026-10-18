@@ -577,11 +577,11 @@ function SaveEditorSession:applyMonDraft(draft)
   end
   local metadata = self._drafts[draft]
   if metadata == nil then
-    return failure(VALUE_INVALID, "The Pokemon draft does not belong to this session.", {})
+    return failure(VALUE_INVALID, "The mon draft does not belong to this session.", {})
   end
   if metadata.revision ~= self._partyRevision then
     self._drafts[draft] = nil
-    return failure(STALE_DRAFT, "The party changed while this Pokemon draft was open.", {})
+    return failure(STALE_DRAFT, "The party changed while this mon draft was open.", {})
   end
   local canonical, validationError = draft:validate()
   if canonical == nil then
@@ -600,12 +600,12 @@ function SaveEditorSession:applyMonDraft(draft)
       { { slot = metadata.slot0, mon = canonical } }
     )
     if preparation == nil then
-      return failure(STALE_DRAFT, "The party changed before this Pokemon could be applied.", {
+      return failure(STALE_DRAFT, "The party changed before this mon could be applied.", {
         reason = preparationError,
       })
     end
     if not preparation.isCurrent() then
-      return failure(STALE_DRAFT, "The party changed before this Pokemon could be applied.", {})
+      return failure(STALE_DRAFT, "The party changed before this mon could be applied.", {})
     end
     preparation.publish()
   else
@@ -615,12 +615,12 @@ function SaveEditorSession:applyMonDraft(draft)
     local preparation, preparationError =
       candidate:preparePartyChanges(candidate:partyRevision(), { { slot = slot0, mon = canonical } })
     if preparation == nil then
-      return failure(STALE_DRAFT, "The generated Pokemon candidate is no longer current.", {
+      return failure(STALE_DRAFT, "The generated mon candidate is no longer current.", {
         reason = preparationError,
       })
     end
     if not preparation.isCurrent() then
-      return failure(STALE_DRAFT, "The generated Pokemon candidate is no longer current.", {})
+      return failure(STALE_DRAFT, "The generated mon candidate is no longer current.", {})
     end
     preparation.publish()
     self._monService = candidate
@@ -927,7 +927,7 @@ local function stagePresetParty(self, preset, options)
         date = copy(options.date),
       })
       if not added then
-        error(Errors.new(PRESET_INVALID, "The party could not accept the requested Pokemon.", {
+        error(Errors.new(PRESET_INVALID, "The party could not accept the requested mon.", {
           path = path,
           species = spec.species,
         }))
@@ -947,10 +947,10 @@ local function stagePresetParty(self, preset, options)
       context = self._monValidationContext,
     })
     if spec.level ~= nil and not draft:setLevel(spec.level) then
-      error(Errors.new(PRESET_INVALID, "The requested Pokemon level is invalid.", { path = path .. ".level" }))
+      error(Errors.new(PRESET_INVALID, "The requested mon level is invalid.", { path = path .. ".level" }))
     end
     if spec.form ~= nil and not draft:setForm(spec.form) then
-      error(Errors.new(PRESET_INVALID, "The requested Pokemon form is invalid.", { path = path .. ".form" }))
+      error(Errors.new(PRESET_INVALID, "The requested mon form is invalid.", { path = path .. ".form" }))
     end
     if spec.heldItem ~= nil and not draft:setScalar("heldItem", spec.heldItem) then
       error(Errors.new(PRESET_INVALID, "The requested held item is invalid.", { path = path .. ".heldItem" }))
@@ -966,7 +966,7 @@ local function stagePresetParty(self, preset, options)
     local valid, canonical = pcall(Mon.validate, updated, self._monValidationContext)
     if not valid then
       if Errors.is(canonical) then
-        error(Errors.new(PRESET_INVALID, "The requested Pokemon fields are invalid.", {
+        error(Errors.new(PRESET_INVALID, "The requested mon fields are invalid.", {
           path = path,
           reason = Errors.format(canonical),
         }))
@@ -976,7 +976,7 @@ local function stagePresetParty(self, preset, options)
     local legal, legality = pcall(NativeLegality.project, canonical, self._monValidationContext)
     if not legal then
       if Errors.is(legality) then
-        error(Errors.new(PRESET_INVALID, "The requested Pokemon is not representable.", {
+        error(Errors.new(PRESET_INVALID, "The requested mon is not representable.", {
           path = path,
           reason = Errors.format(legality),
         }))
@@ -1032,7 +1032,7 @@ function SaveEditorSession:applyPreset(preset, options)
     or not finiteInteger(options.metLocation)
     or type(options.date) ~= "table"
   then
-    return failure(PRESET_INVALID, "Preset Pokemon creation requires a valid location and date.", {})
+    return failure(PRESET_INVALID, "Preset mon creation requires a valid location and date.", {})
   end
   local requestLocation = preset.location
   if (requestLocation == nil) ~= (options.placement == nil) then

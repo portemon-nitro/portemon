@@ -1,6 +1,5 @@
 -- Shared source-operand normalization for script lowering handlers. Numeric
--- variable ranges follow the pinned pret/pokeheartgold
--- include/constants/vars.h definitions.
+-- variable ranges follow the retail ROM's variable definitions.
 local Operands = {}
 
 -- A variable-typed operand: symbols stay symbolic, numbers stay numbers.

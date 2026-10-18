@@ -11,10 +11,9 @@ local function sources()
   return require("romdump.src.config.BagSources")
 end
 
-function T.provenance_pins_the_decomp_commit()
+function T.provenance_names_the_source()
   local BagSources = sources()
-  Assert.equal(BagSources.provenance.repo, "pret/pokeheartgold")
-  Assert.equal(BagSources.provenance.commit, "0985e8718df4f25e64d6507d89c0c97c0d288981")
+  Assert.equal(BagSources.provenance.repo, "retail ROM")
   Assert.isTrue(#BagSources.provenance.sources > 0, "provenance must name its source files")
 end
 

@@ -590,7 +590,7 @@ function T.script_party_draw_reuses_the_pokemon_presenter_without_stepping()
   end
 end
 
-function T.pokemon_naming_renderer_is_prepared_lazily_and_borrows_shared_mon_icons()
+function T.mon_naming_renderer_is_prepared_lazily_and_borrows_shared_mon_icons()
   local sink, calls = {}, {}
   local savedLove = rawget(_G, "love")
   rawset(_G, "love", { graphics = require("tests.support.FakeGraphics").new({}) })
@@ -621,29 +621,29 @@ function T.pokemon_naming_renderer_is_prepared_lazily_and_borrows_shared_mon_ico
       Assert.isNil(calls.iconQuadCount, "ordinary field construction does not acquire naming quads")
 
       calls.iconPageReady = false
-      local ready, failure = resources:preparePokemonNamingSubject({ iconKey = "species:1:form:0" })
+      local ready, failure = resources:prepareMonNamingSubject({ iconKey = "species:1:form:0" })
       Assert.isFalse(ready, "pending mon icon pages keep naming preparation pending")
       Assert.isNil(failure, "pending mon icon pages have no failure")
       Assert.isNil(calls.namingConstructed, "pending preparation creates no naming renderer")
       Assert.isNil(calls.iconQuadCount, "pending preparation creates no icon quads")
 
       calls.iconPageFailure = "page failed"
-      ready, failure = resources:preparePokemonNamingSubject({ iconKey = "species:1:form:0" })
+      ready, failure = resources:prepareMonNamingSubject({ iconKey = "species:1:form:0" })
       Assert.isFalse(ready, "failed mon icon pages do not prepare naming")
       Assert.equal(failure, "page failed", "provider failure is returned unchanged")
       Assert.isNil(calls.namingConstructed, "failed preparation creates no naming renderer")
       Assert.isNil(calls.iconQuadCount, "failed preparation creates no icon quads")
 
       calls.iconPageReady = true
-      ready, failure = resources:preparePokemonNamingSubject({ iconKey = "species:1:form:0" })
+      ready, failure = resources:prepareMonNamingSubject({ iconKey = "species:1:form:0" })
       Assert.isTrue(ready, "a ready icon page prepares naming")
       Assert.isNil(failure, "ready preparation has no failure")
       Assert.equal(calls.namingConstructed, 1, "first ready preparation creates naming renderer once")
       Assert.equal(calls.iconDimensions, "species:1:form:0", "the naming subject resolves through shared mon icons")
-      resources:pokemonNamingRenderer()
+      resources:monNamingRenderer()
       Assert.equal(calls.namingConstructed, 1, "the renderer accessor is a pure read")
-      resources:preparePokemonNamingSubject({ iconKey = "species:1:form:0" })
-      resources:preparePokemonNamingSubject({ iconKey = "species:2:form:0" })
+      resources:prepareMonNamingSubject({ iconKey = "species:1:form:0" })
+      resources:prepareMonNamingSubject({ iconKey = "species:2:form:0" })
       Assert.equal(calls.namingConstructed, 1, "repeated and new icon demands reuse the renderer")
       Assert.equal(calls.iconQuadCount, 2, "each icon key prepares its borrowed semantic quad")
       local drawCalls = {}

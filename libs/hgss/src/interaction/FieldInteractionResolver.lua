@@ -1,8 +1,7 @@
 -- Discovers script-neutral facing interactions. Mirrors the original
--- normal-field action order (pret/pokeheartgold `src/field/field_control.c`
--- and `asm/unk_0203DB6C.s`): the facing object actor wins, then a compatible
+-- normal-field action order (retail ROM): the facing object actor wins, then a compatible
 -- background event on the facing tile, then nothing. The background direction
--- compatibility table is the pinned assembly's `BgEventDirectionIsCompatibleWithPlayerFacing`
+-- compatibility table is the retail ROM's
 -- (raw 4 is a wildcard; facing 0/1/2/3 accept {0,6}/{3,6}/{2,5}/{1,5}).
 --
 -- The session owns interaction eligibility timing:
@@ -78,7 +77,7 @@ FieldInteractionResolver.__index = FieldInteractionResolver
 FieldInteractionResolver.RAW_FACING = { north = 0, south = 1, west = 2, east = 3 }
 
 -- Raw background direction code that matches every player facing
--- (`BgEventDirectionIsCompatibleWithPlayerFacing`, asm/unk_0203DB6C.s).
+-- in the retail ROM.
 FieldInteractionResolver.BACKGROUND_DIRECTION_WILDCARD = 4
 
 -- Normalized event marker for the hidden-item family. Hidden items carry
@@ -92,8 +91,8 @@ function FieldInteractionResolver.isHiddenItem(event)
 end
 
 -- Player facing raw code -> background event raw direction codes that
--- resolve. Derived from `BgEventDirectionIsCompatibleWithPlayerFacing`
--- (asm/unk_0203DB6C.s); BACKGROUND_DIRECTION_WILDCARD is handled separately.
+-- resolve. Derived from the retail ROM's table;
+-- BACKGROUND_DIRECTION_WILDCARD is handled separately.
 local COMPATIBLE_DIRECTIONS = {
   [0] = { 0, 6 },
   [1] = { 3, 6 },

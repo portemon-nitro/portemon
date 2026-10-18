@@ -56,7 +56,7 @@ and storage libraries currently admitted by the architecture gate.
 Source-specific parsing belongs in `romdump`, even when pure. A structure
 belongs in `libs/assets` only when a custom producer or consumer can use it
 without understanding the source ROM. Runtime code consumes the resulting
-contract; it does not parse NARC members, ROM bytes, overlays, or decompilation
+contract; it does not parse NARC members, ROM bytes, overlays, or retail ROM
 references.
 
 Generic binary, storage, error, and mathematical primitives stay in their
@@ -132,7 +132,7 @@ GPU resources. Reusable field simulation and HGSS mechanisms remain in
 exposes those assets as stable, source-independent data: for example, message
 records carry display text, tokens, and metadata rather than code units or
 source offsets. The runtime renders and formats that contract. Physical IDs,
-paths, offsets, packing, and decompilation catalogs remain producer-side unless
+paths, offsets, packing, and retail ROM catalogs remain producer-side unless
 a product feature gives one semantic meaning.
 
 Derived assets are stored compactly but read back byte-identical, versioned
@@ -150,7 +150,7 @@ These indices are unrelated and must remain named by kind:
 
 | Name | Meaning |
 | --- | --- |
-| `narcId` | HGSS/decompilation NARC catalog index |
+| `narcId` | HGSS NARC catalog index (retail ROM) |
 | `fileId` | NDS cartridge FAT index |
 | `memberId` | NARC member FAT index |
 

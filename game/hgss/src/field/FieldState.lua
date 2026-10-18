@@ -285,19 +285,19 @@ function FieldState:update(dt)
     assert(self.presentationResources, "Kurt Box presentation resources are unavailable")
     kurtBoxHost:setPresentationReady(handle, true)
   end
-  local pokemonNaming = self.runtime.pokemonNaming
-  if pokemonNaming:isActive() then
-    local namingStatus = assert(pokemonNaming:status(), "an active Pokemon naming task publishes its status")
+  local monNaming = self.runtime.monNaming
+  if monNaming:isActive() then
+    local namingStatus = assert(monNaming:status(), "an active Pokemon naming task publishes its status")
     local ready, failure =
-      assert(self.presentationResources, "field presentation resources are unavailable"):preparePokemonNamingSubject(
+      assert(self.presentationResources, "field presentation resources are unavailable"):prepareMonNamingSubject(
         namingStatus.snapshot.subject
       )
     if failure ~= nil then
-      pokemonNaming:setPresentationReady(false)
+      monNaming:setPresentationReady(false)
       self._namingPresentationReady = false
       error("Pokemon naming presentation failed: " .. tostring(failure), 0)
     else
-      pokemonNaming:setPresentationReady(ready == true)
+      monNaming:setPresentationReady(ready == true)
       self._namingPresentationReady = ready == true
     end
   else
@@ -617,8 +617,8 @@ function FieldState:_worldParts(alpha)
   -- presentation-neutral records, which is the only place activeEmoteKind
   -- survives; FieldActorDraw's rendered items do not carry it. A movement
   -- emote composites in the same presentation sprite layer as the acting
-  -- actor's own billboard (matching pokeheartgold's shared depth-biased
-  -- BillboardLists_Draw/FieldEffectManager_Render pass): the bounded-
+  -- actor's own billboard (matching the retail ROM's shared depth-biased
+  -- billboard and field-effect render pass): the bounded-
   -- resolution world queue resolves first and the sprite layer composites
   -- unconditionally on top of it, so an emote left in the world queue could
   -- never win visibility against the actor it floats above.
@@ -1195,13 +1195,13 @@ function FieldState:draw()
       )
     end
   end
-  local pokemonNaming = self.runtime.pokemonNaming
+  local monNaming = self.runtime.monNaming
   assert(
-    starter == nil or not starter:isActive() or pokemonNaming == nil or not pokemonNaming:isActive(),
+    starter == nil or not starter:isActive() or monNaming == nil or not monNaming:isActive(),
     "script-owned field modals are mutually exclusive"
   )
-  if pokemonNaming ~= nil and pokemonNaming:isActive() and self._namingPresentationReady then
-    pokemonNaming:drawPresentation(resources:pokemonNamingRenderer())
+  if monNaming ~= nil and monNaming:isActive() and self._namingPresentationReady then
+    monNaming:drawPresentation(resources:monNamingRenderer())
   end
   if blackoutStatus ~= nil and blackoutStatus.coverAlpha ~= nil and blackoutStatus.coverAlpha > 0 then
     local color = blackoutStatus.coverColor == "white" and 1 or 0
@@ -1562,7 +1562,7 @@ end
 -- kinds they do not own, so text is never queued for them.
 ---@param text string
 function FieldState:textinput(text)
-  if not (self.runtime.pokemonNaming:isActive() or self.runtime.pcApplicationHost:acceptsText()) then
+  if not (self.runtime.monNaming:isActive() or self.runtime.pcApplicationHost:acceptsText()) then
     return
   end
   if self:_entryCoverActive() then
@@ -1638,9 +1638,9 @@ function FieldState:focus(focused)
     then
       starter:cancelPointerCapture()
     end
-    local pokemonNaming = assert(self.runtime.pokemonNaming, "field runtime Pokemon Naming Screen is unavailable")
-    if pokemonNaming:isActive() then
-      pokemonNaming:cancelPointerCapture()
+    local monNaming = assert(self.runtime.monNaming, "field runtime Pokemon Naming Screen is unavailable")
+    if monNaming:isActive() then
+      monNaming:cancelPointerCapture()
     end
   end
 end

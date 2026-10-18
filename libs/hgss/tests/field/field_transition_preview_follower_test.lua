@@ -1,5 +1,5 @@
--- Preview follower rejoin (retail MapPreviewGraphic_RunPlayerDropIn states
--- 4-5 in pret/pokeheartgold src/map_preview_graphic.c, generalized to
+-- Preview follower rejoin (retail ROM map-preview
+-- player drop-in states 4-5, generalized to
 -- Portemon's uniform preview): when the post-commit area preview runs and a
 -- partner is present, the transition rejoins the follower exactly once --
 -- the MoveToPlayer + hide-until-step equivalent -- after the preview-owned

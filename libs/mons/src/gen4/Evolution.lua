@@ -1,6 +1,5 @@
 -- Pure native evolution eligibility and candidate planning.
--- Canonical source: pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981
--- src/pokemon.c GetMonEvolution (ordered slot scan, first match wins) composed
+-- Source: the retail ROM GetMonEvolution (ordered slot scan, first match wins) composed
 -- with the existing Experience/MonStats/Personality owners. Level, trade, and
 -- bag-item uses each answer only their own trigger family, except the
 -- day/night-gated items, which answer both a matching bag use and a level-up

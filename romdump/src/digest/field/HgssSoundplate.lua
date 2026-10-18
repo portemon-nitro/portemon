@@ -1,5 +1,5 @@
 -- Decoder for the HGSS land BGS soundplate block (the engine's
--- SoundplateStruct, HGSS src/field/field_control.c): the 0x1234 BGS signature
+-- SoundplateStruct): the 0x1234 BGS signature
 -- bytes, a little-endian u16 recordBytes, then 8-byte Soundplate records.
 -- LandData validates the signature when it unpacks the block; this decoder
 -- only needs the record count and skips the signature. The ROM census proved

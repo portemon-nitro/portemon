@@ -43,7 +43,7 @@ end
 ---@return table runtime double with a stable session behind the active battle
 local function runtimeBehindBattle(battle)
   local runtime = {
-    pokemonMenu = nil,
+    partyMenu = nil,
     playerAvatar = nil,
     session = {
       player = { motion = "idle" },

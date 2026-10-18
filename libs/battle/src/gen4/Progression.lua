@@ -1,5 +1,5 @@
--- Resumable in-battle reward work. Native anchor: pret/pokeheartgold
--- src/battle/battle_command.c Task_GetExp (per-recipient experience and
+-- Resumable in-battle reward work. Native anchor:
+-- retail ROM Task_GetExp (per-recipient experience and
 -- effort, level-up stat recalculation with active-data reload, ordered
 -- learn prompts that suspend the battle until each decision is consumed).
 -- Experience and effort land once when the work opens; learning then

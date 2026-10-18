@@ -1790,7 +1790,7 @@ T["later poll raise leaves earlier completions intact"] = function()
 end
 
 -- 43. `friend_sprite_value` resolves the opposite-gender sprite constant
--- (pret/pokeheartgold src/scrcmd_c.c ScrCmd_GetFriendSprite): a male player
+-- (retail ROM ScrCmd_GetFriendSprite): a male player
 -- gets the heroine friend sprite and a female player gets the hero friend
 -- sprite.
 T["friend sprite value resolves the opposite-gender sprite"] = function()

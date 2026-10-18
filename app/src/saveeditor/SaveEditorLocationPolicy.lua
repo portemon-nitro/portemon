@@ -10,8 +10,7 @@ local TransitionTrigger = require("libs.hgss.src.transition.TransitionTrigger")
 
 local SaveEditorLocationPolicy = {}
 
--- Ice and sliding behavior values come from
--- pret/pokeheartgold/include/constants/metatile_behavior.h.
+-- Ice and sliding behavior values come from the retail ROM.
 local FORCED_MOVEMENT_BEHAVIORS = {
   [32] = true, -- TILE_BEHAVIOR_ICE
   [64] = true, -- TILE_BEHAVIOR_SLIDE_EAST

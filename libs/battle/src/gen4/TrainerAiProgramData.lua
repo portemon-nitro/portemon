@@ -1,5 +1,4 @@
--- Immutable literal trainer-AI program data (pret/pokeheartgold
--- asm/overlay_10_trainer_ai.s ov10_02220AAC word stream, ENTRY/BASE word
+-- Immutable literal trainer-AI program data (retail ROM trainer-AI word stream, ENTRY/BASE word
 -- numbering, ARITY call counts, and the transcribed ability, type, effect,
 -- weight, trapping, speed, boost, and punching lookup tables). Plain tables
 -- only: no imports, no behavior. The program facade re-exports these tables

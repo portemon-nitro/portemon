@@ -113,8 +113,8 @@ local function calledInputs(caller, seed)
   }
 end
 
---- Source-banned metronome identities from pret/pokeheartgold
---- sMetronomeUnuseableMoves (src/battle/overlay_12_0224E4FC.c): the static
+--- Source-banned metronome identities from the retail ROM
+--- sMetronomeUnuseableMoves: the static
 --- exclusion list applied on top of the gravity/heal-block dynamic checks.
 ---@return string[] every statically banned metronome identity in source order
 local function bannedMetronomeMoves()

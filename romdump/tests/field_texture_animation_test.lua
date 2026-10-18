@@ -1,5 +1,5 @@
 -- Parser tests for the HGSS field texture-animation table: the member-0
--- contents of `data/fldtanime.narc` in pret/pokeheartgold, a little-endian
+-- contents of `data/fldtanime.narc` in the retail ROM, a little-endian
 -- u32 record count followed by fixed 52-byte records of a NUL-padded 16-byte
 -- name and an 18-pair schedule. A schedule ends at the first pair whose
 -- textureIndex is 0xFF (the duration byte is irrelevant); pairs after it are

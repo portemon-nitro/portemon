@@ -1,12 +1,11 @@
 -- Mart script commands keep their retail operand widths and read/write
 -- distinctions through the real binary decoder and semantic lowerer.
--- Source references: pret/pokeheartgold@9d8b7591f09b65804da2fb2dfd56f320633e0d36,
--- src/scrcmd_mart.c, src/scrcmd_c.c, and src/field_system.c.
+-- Source references: the retail ROM.
 
 local Assert = require("tests.support.Assert")
 local CommandCatalog = require("romdump.src.digest.script.CommandCatalog")
 local ScriptBinaryDecoder = require("romdump.src.digest.script.ScriptBinaryDecoder")
-local ScriptCommands = require("romdump.src.reference.hgss.script_commands")
+local ScriptCommands = require("romdump.src.catalog.hgss.script_commands")
 local ScriptFixture = require("tests.support.ScriptFixture")
 local SemanticLowering = require("romdump.src.digest.script.SemanticLowering")
 local SourceCatalog = require("romdump.src.digest.script.SourceCatalog")

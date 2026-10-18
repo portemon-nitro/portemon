@@ -1,7 +1,5 @@
--- Source-faithful mon creation. Canonical sources: pret/pokeheartgold,
--- src/pokemon.c (CreateBoxMon, CreateMon), src/choose_starter.c
--- (CreateStarter), src/script_pokemon_util.c (GiveMon), and
--- src/trainer_memo.c (trainer memo assignment). Creation consumes exactly
+-- Source-faithful mon creation. Source: the retail ROM (CreateBoxMon, CreateMon, CreateStarter, GiveMon, and
+-- trainer memo assignment). Creation consumes exactly
 -- four generator draws in source order: two for the personality value (low
 -- draw first) and two for the six individual values. The factory never
 -- inserts into a party; the caller owns publication. Public creation methods
@@ -243,7 +241,7 @@ function MonFactory:createScriptGift(request)
 end
 
 -- The source Spiky-Ear Pichu distribution constants in distribution order
--- (pret/pokeheartgold src/field/scrcmd_pokemon_misc.c): Naughty is nature
+-- (retail ROM): Naughty is nature
 -- 4, and the ability parity must agree with it (source GF_ASSERT).
 local SPIKY_EAR_PICHU_MOVES = { "HELPING_HAND", "VOLT_TACKLE", "SWAGGER", "PAIN_SPLIT" }
 local SPIKY_EAR_NATURE = 4
@@ -251,8 +249,7 @@ local SPIKY_EAR_NATURE = 4
 -- The event-locked Spiky-Ear Pichu distribution: a fixed level-30 form-1
 -- Pichu holding the Zap Plate with the source moveset at full power
 -- points and an arithmetically forced Naughty female personality, exactly
--- like pret/pokeheartgold src/field/scrcmd_pokemon_misc.c
--- ScrCmd_GiveSpikyEarPichu. The forced personality consumes no generator
+-- like the retail ROM. The forced personality consumes no generator
 -- draws (only the two individual-value draws run); met location and date
 -- ride the request like any script gift. The caller owns party
 -- publication, including the source full-party refusal before creation.

@@ -1,7 +1,7 @@
 -- NSBTA (SRT0) texture-SRT animation decoder and sampler.
 --
--- Authority: pokediamond arm9/asm/NNS_G3D_nsbta.s (pinned commit 038cccaed,
--- 2025-12-24), layout cross-verified against real HGSS field members.
+-- Authority: the retail ROM's NitroSystem code,
+-- layout cross-verified against real HGSS field members.
 -- Record layout (record-relative):
 --
 --   +0x00 u32 size      +0x04 u16 numFrame
@@ -10,8 +10,8 @@
 --   stride table at record + 8 + ofsTargets: u16 stride, u16 ofsNameTable
 --   per-target records at record + 0x0C + ofsTargets + stride * i, five
 --   (u32 flag, u32 ofs) channels in the GetTexSRTAnm_ read order:
---   scaleS, scaleT, rot, transS, transT (pokediamond NNS_G3D_nsbta.s
---   0x020BE030 reads +0x18/+0x20 as the translation pair, +0x00/+0x08 as
+--   scaleS, scaleT, rot, transS, transT (retail ROM code
+--   at 0x020BE030 reads +0x18/+0x20 as the translation pair, +0x00/+0x08 as
 --   the scale pair)
 --   target names at stride table + ofsNameTable, 16 bytes each
 --

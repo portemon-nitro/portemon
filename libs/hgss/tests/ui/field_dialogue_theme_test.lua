@@ -101,7 +101,7 @@ function T.text_area_fits_two_lines_of_font_height()
 end
 
 -- The frame tilemap is the audited DrawFrameAndWindow2 composition
--- (asm/render_window.s sub_0200E6B4 at the pinned decomp commit): the
+-- (retail ROM): the
 -- window content box is 27x4 tiles at (2,19), and the frame fills the full
 -- 256x192 reference canvas around it -- one tile above and below, two tiles
 -- left, three right, all 18 strip tiles placed. Tiles are given in strip

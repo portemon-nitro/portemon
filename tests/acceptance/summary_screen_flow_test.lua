@@ -12,7 +12,7 @@ local BagCache = require("libs.assets.src.BagCache")
 local PartyActions = require("libs.hgss.src.field.PartyActions")
 local PartyCache = require("libs.assets.src.PartyCache")
 
-local FLOW_MODULE = "game.hgss.src.field.PokemonMenuFlow"
+local FLOW_MODULE = "game.hgss.src.field.PartyMenuFlow"
 
 local T = {
   metadata = {

@@ -11,7 +11,7 @@
 -- here; species portraits stay in the mon class and are referenced, never
 -- copied. The runtime consumes only the manifest and the generated
 -- files, never this module. Pure module: no love dependency.
--- Source basis: pret/pokeheartgold@9d8b7591f09b65804da2fb2dfd56f320633e0d36
+-- Source basis: the retail ROM
 -- (see SummarySources for the per-table provenance).
 
 local Errors = require("libs.errors.src.Errors")
@@ -29,7 +29,7 @@ local Lz10 = require("romdump.src.digest.Lz10")
 local MonSources = require("romdump.src.config.MonSources")
 local MonPresentationCompiler = require("romdump.src.digest.mons.MonPresentationCompiler")
 local UiMessageBank = require("romdump.src.digest.ui.UiMessageBank")
-local charmap = require("romdump.src.reference.hgss.charmap")
+local charmap = require("romdump.src.catalog.hgss.charmap")
 
 ---@class SummaryAssetCompiler
 local SummaryAssetCompiler = {}
@@ -1965,7 +1965,7 @@ local function compileBallIcons(archive, sharedArchive, dependencies, assets, vi
   end
   local icons = {}
   for ballId = 1, #facts.paletteSlots do
-    -- BallToItemId (src/item.c): balls 1..16 map to items 1..16, 17..24 to 492..499.
+    -- BallToItemId: balls 1..16 map to items 1..16, 17..24 to 492..499.
     local nativeId = ballId <= 16 and ballId or ballId - 17 + 492
     local itemKey = assert(ItemSources.itemKeys[nativeId], "ball items carry semantic keys")
     local role = "ball-" .. itemKey

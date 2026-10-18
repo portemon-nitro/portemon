@@ -1,7 +1,6 @@
 -- Script translation pipeline tests: decode a synthetic member, lower,
 -- structure, verify, and emit the DSL resource, with
--- deterministic emission and coverage accounting. No ROM and no decomp
--- checkout required.
+-- deterministic emission and coverage accounting. No ROM required.
 
 local Assert = require("tests.support.Assert")
 local ScriptFixture = require("tests.support.ScriptFixture")

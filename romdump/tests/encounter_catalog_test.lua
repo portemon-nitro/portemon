@@ -1,5 +1,5 @@
 -- Synthetic encounter-table projection: hand-built native encounter members
--- (pret/pokeheartgold include/wild_encounter.h EncounterData, 0xC4 bytes)
+-- (the retail ROM's 0xC4-byte encounter data)
 -- decode through the encounter compiler into version-specific semantic
 -- tables, ordered slots never merge, radio/swarm/night-fishing replacements
 -- keep pointing at their original native slots and game, and truncated or

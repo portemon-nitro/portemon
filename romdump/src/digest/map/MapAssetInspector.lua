@@ -531,7 +531,7 @@ function MapAssetInspector.inspect(romFs, idOrSymbol)
       behaviorValues = permissionGrid.usedBehaviorValues,
       -- Derived section offsets. The permission grid is NOT at a fixed 0x14: for
       -- ordinary maps a non-empty soundplate (BGS) block shifts it, matching the
-      -- decomp's dynamic field loader (the fixed-0x14 TerrainAttributes path
+      -- the retail ROM's dynamic field loader (the fixed-0x14 TerrainAttributes path
       -- serves only Battle Tower / dynamic-warp maps).
       offsets = {
         bgs = land.offsets.bgs,

@@ -13,7 +13,7 @@ local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
 local Hashing = require("romdump.src.digest.Hashing")
 local FieldMapDataCompiler = require("romdump.src.digest.field.FieldMapDataCompiler")
 local MapCatalog = require("romdump.src.digest.map.MapCatalog")
-local charmap = require("romdump.src.reference.hgss.charmap")
+local charmap = require("romdump.src.catalog.hgss.charmap")
 local MenuProtocol = require("libs.assets.src.MenuProtocol")
 local PngReader = require("tests.support.PngReader")
 

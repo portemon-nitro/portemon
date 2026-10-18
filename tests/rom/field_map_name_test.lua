@@ -12,8 +12,8 @@ local FieldMessageBank = require("romdump.src.digest.ui.FieldMessageBank")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 local FieldMessageTokenizer = require("romdump.src.digest.ui.FieldMessageTokenizer")
 local MapCatalog = require("romdump.src.digest.map.MapCatalog")
-local charmap = require("romdump.src.reference.hgss.charmap")
-local maps = require("romdump.src.reference.hgss.maps")
+local charmap = require("romdump.src.catalog.hgss.charmap")
+local maps = require("romdump.src.catalog.hgss.maps")
 
 local T = {}
 

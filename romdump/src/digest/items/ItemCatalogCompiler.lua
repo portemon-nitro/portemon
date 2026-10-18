@@ -1,14 +1,14 @@
 -- Source decode and semantic normalization of item data. item_data
--- members follow struct ItemData in include/item.h
--- (pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981): a u16
+-- members follow the retail ROM's item data:
+-- a u16
 -- price, the hold-effect byte, and the packed bitfield u16 at offset 8
 -- (naturalGiftType:5, prevent_toss:1, selectable:1, fieldPocket:4,
 -- battlePocket:5 from the least-significant bit). Member selection follows
--- the ITEMNARC_PARAM column of src/item.c sItemNarcIds. Display text comes
--- through the existing message decoder at the src/message_format.c and
--- src/item.c banks (descriptions 221, names 222, indefinite names 223,
+-- the ITEMNARC_PARAM column of the retail ROM's item NARC table. Display text comes
+-- through the existing message decoder at the retail ROM's
+-- banks (descriptions 221, names 222, indefinite names 223,
 -- plural names 224, pocket names 226, berry names 251). TM/HM mapping
--- follows src/item.c TMHMGetMove over sTMHMMoves. No LOVE objects or
+-- follows the retail ROM's TM/HM move table. No LOVE objects or
 -- filesystem writes; callers publish through ItemCacheWriter.
 
 local BinaryReader = require("libs.codec.src.BinaryReader")
@@ -21,7 +21,7 @@ local ItemCache = require("libs.assets.src.ItemCache")
 local FieldMessageBank = require("romdump.src.digest.ui.FieldMessageBank")
 local FieldMessageTokenizer = require("romdump.src.digest.ui.FieldMessageTokenizer")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
-local charmap = require("romdump.src.reference.hgss.charmap")
+local charmap = require("romdump.src.catalog.hgss.charmap")
 local Hashing = require("romdump.src.digest.Hashing")
 local PngWriter = require("libs.assets.src.PngWriter")
 local ItemPresentationCompiler = require("romdump.src.digest.items.ItemPresentationCompiler")
@@ -84,7 +84,7 @@ end
 -- naturalGiftPower@7, and naturalGiftType:5 at bits 0-4 of the bitfield u16
 -- at offset 8), the toss/selectability flags, the field pocket, and the
 -- party-use facts. The party parameter
--- bytes follow struct ItemPartyParam in include/item.h: flag bytes carry
+-- bytes follow struct ItemPartyParam: flag bytes carry
 -- slp/psn/brn/frz/prz/cfs/inf/guard_spec, revive/revive_all/level_up/evolve
 -- plus four-bit battle stages, pp_up/pp_max/pp_restore/pp_restore_all plus
 -- hp_restore and the six effort flags, then the three friendship band
@@ -317,7 +317,6 @@ end
 -- per stat. The native battle item law interprets nonzero stage flags
 -- as one stage (critical as focus energy), so values ride through
 -- unchanged. Source reference: BattleSystem_RecoverStatus in
--- src/battle/battle_system.c.
 ---@param party table<string, unknown>
 ---@return table<string, unknown>
 local function battleUseRecord(party)

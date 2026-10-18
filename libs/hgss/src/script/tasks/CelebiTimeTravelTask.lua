@@ -1,6 +1,6 @@
 -- Celebi time-travel cutscene task: the visible source-ordered fade
 -- timeline behind the shrine's CelebiTimeTravel command.
--- pret/pokeheartgold src/field/event_cutscene_celebi.c opens with a short
+-- The retail ROM cutscene opens with a short
 -- main-screen white fade-out and back in, holds a 30-tick model beat,
 -- then runs a 180-tick (0xB4) camera swirl whose own white fade starts 80
 -- ticks in and lasts 30 ticks, landing opaque white for the following

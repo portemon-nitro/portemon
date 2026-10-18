@@ -2474,7 +2474,7 @@ end
 
 -- HGSS initializes the clear/rear-plane polygon ID to the real, reachable DS
 -- polygon-id value 0x3F (63) -- it is not a value carved out of the 0..63
--- domain (pokeheartgold: the field renderer's clear-buffer setup; GBATEK
+-- domain (retail ROM: the field renderer's clear-buffer setup; GBATEK
 -- POLYGON_ATTR polygon ID is 6 bits wide, so 63 is the largest real id, not a
 -- sentinel outside it). GxRenderer must expose this as a named constant, not
 -- an invented out-of-domain value like the retired REAR_PLANE_ID (255).

@@ -4,8 +4,7 @@
 -- cadence is the controller's injected PlayerData authority; the task
 -- never chooses one). The poll reads only the fixed-tick input edges: a
 -- directional edge before the print completes is the source interruption
--- (ScrCmd_TrainerTips / NativeScript_WaitTrainerTips, src/scrcmd_c.c at the
--- pinned decomp commit) — the explicit cleanup cuts the print off and
+-- (retail ROM) — the explicit cleanup cuts the print off and
 -- closes the window, the player turns to that direction, and the task
 -- completes 0; A/B during the print follows the shared printer policy and
 -- leaves the task active until normal completion. On a live-print tick the

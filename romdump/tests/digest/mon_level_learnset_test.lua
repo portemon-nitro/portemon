@@ -1,6 +1,5 @@
 -- Level-up learnset decoding contract for the mon catalog compiler.
--- Fixture packing mirrors pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981
--- `InitBoxMonMoveset` entry interpretation: each u16le entry carries the move id
+-- Fixture packing mirrors the retail ROM's learnset entry interpretation: each u16le entry carries the move id
 -- in the low 9 bits and the level in the high 7 bits, terminated by 0xFFFF.
 -- Same-level source order is semantic (initial-moveset selection consumes it),
 -- so the compiler must preserve entry order exactly.

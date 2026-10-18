@@ -1,5 +1,5 @@
 -- JointAnimBlend: Nitro-compatible combination of joint animation results.
--- This is a bit-exact transcription of pokediamond arm9/asm/NNS_G3D_anm.s
+-- This is a bit-exact transcription of the retail ROM's
 -- NNSi_G3dAnmBlendJnt (0x020B86B0), which blends the NNSG3dAnmResult of every
 -- attachment with a positive ratio:
 --
@@ -19,8 +19,7 @@
 --
 -- After the loop the asm rebuilds the third row: row2 = cross(row0, row1),
 -- row0 and row2 are normalized, then row1 = cross(row2, row0). VEC_CrossProduct
--- and VEC_Normalize are linked from the precompiled libsys, which the
--- pokediamond decomp does not contain; as with the NSBCA reconstruction, a
+-- and VEC_Normalize are linked from the precompiled libsys, which are not available as source; as with the NSBCA reconstruction, a
 -- double-precision cross/normalize is used, which is within the established
 -- bind-pose equivalence tolerance (the rotation cells are bounded by the
 -- normalized reconstruction, so their products stay well within a double's

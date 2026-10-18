@@ -1,6 +1,5 @@
 -- VoiceMixer allocation, per-note control, LFO and sweep contract: the
--- ARM7 NitroSDK per-voice NNS channel state (tmp/refs/pokediamond/arm7/
--- lib/src/SND_exChannel.c, SND_util.c, SND_bank.c, SND_seq.c) and GBATEK
+-- ARM7 NitroSDK per-voice NNS channel state (retail ROM) and GBATEK
 -- ("DS Sound" chapter).
 --   * Allocation is SND_AllocExChannel: the fixed order
 --     {4,5,6,7,2,0,3,1,8,9,10,11,14,12,15,13} inside (generator range AND

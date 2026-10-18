@@ -153,7 +153,7 @@ local function requiredPaths(self, view)
     assert(type(visual) == "table" and type(visual.image) == "string", "Storage visuals carry image paths")
     set[visual.image] = true
   end
-  -- The top screen carries only the selected Pokémon's info panel.
+  -- The top screen carries only the selected mon's info panel.
   add(ui.infoPane)
   local focus = view.focus
   local selected = view.carry and view.carry.mon
@@ -471,7 +471,7 @@ end
 local BOX_ICON_SIZE = 32
 
 -- Box icons are 32x32 sprites centred four pixels above their slot's centre
--- (ov14_021F2F88).
+--.
 local CARRY_LIFT = 8
 
 local function drawBoxMon(self, resources, mon, slot, carried)
@@ -486,7 +486,7 @@ local function drawBoxMon(self, resources, mon, slot, carried)
   drawItemIcon(graphics, resources.itemIcons, mon.heldItem ~= "NONE" and mon.itemIconKey or nil, x + 20, y + 20, 12)
 end
 
--- Top-screen info text at the source window positions (ov14_021F84B4):
+-- Top-screen info text at the source window positions:
 -- message 87/88/89 label the Nature, Ability and Item values, 92 is "None"
 -- and 93 stands in for an egg's hidden values.
 local function drawInfo(self, info)
@@ -496,7 +496,7 @@ local function drawInfo(self, info)
     text:drawText(info.speciesName, 64, 40)
     text:drawText("Lv.", 32, 72)
     text:drawText(tostring(info.level), 48, 72)
-    -- A dex number of zero prints nothing (ov14_021F5190).
+    -- A dex number of zero prints nothing.
     if info.dexNumber ~= nil and info.dexNumber > 0 then
       text:drawText("No.", 8, 40)
       text:drawText(string.format("%03d", info.dexNumber), 24, 40)
@@ -514,8 +514,8 @@ local function drawInfo(self, info)
   text:drawText(info.itemName or sourceText(self, 92), 8, 168)
 end
 
--- The selected Pokémon's marks sit on the top-screen info panel, drawn into
--- BG5 at tile (15 + bit, 18) (ov14_021E895C).
+-- The selected mon's marks sit on the top-screen info panel, drawn into
+-- BG5 at tile (15 + bit, 18).
 local function drawSelectedMarkings(self, view)
   local focus = view.focus
   local mon = view.carry and view.carry.mon
@@ -602,7 +602,7 @@ local function drawEditor(self, view)
   graphics.setColor(1, 1, 1, 1)
 end
 
--- Party icons are 32x32 sprites centred in the open tray (ov14_021F32E0).
+-- Party icons are 32x32 sprites centred in the open tray.
 local function drawPartyMon(self, resources, mon, slot, side, carried)
   if type(mon) ~= "table" then
     return
@@ -675,7 +675,7 @@ function PcStorageRenderer:drawPane(view, resources, paneId, placement)
   LogicalSurface.draw(graphics, placement, function()
     local storage = self._manifest.storage
     if paneId == "upper" then
-      -- The top screen carries only the selected Pokémon's info panel.
+      -- The top screen carries only the selected mon's info panel.
       drawVisual(self, storage.ui.infoPane, 0, 0)
       -- The mode's header line, printed once at init on the top screen (F5620).
       self._text:drawText(sourceText(self, 50 + view.mode, 25), 8, 8)

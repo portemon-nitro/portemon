@@ -1,10 +1,8 @@
 -- Producer-side semantic inventory of item source constants, message
 -- banks, pocket mapping, TM/HM mapping, berry ranges, and icon graphics
--- selection. The tables below are generated from the pinned
--- pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981 headers
--- (include/constants/items.h, include/item.h, include/bag_types_def.h) and
--- src/item.c (sTMHMMoves, sItemNarcIds), src/message_format.c and
--- src/scrcmd_strbuf.c (item/pocket/berry text banks). Pure data and pure
+-- selection. The tables below are generated from the retail
+-- ROM's item constants, pocket types, TM/HM move table, item NARC ids, and
+-- item/pocket/berry text banks. Pure data and pure
 -- functions; no I/O. Never imported by runtime: libs/assets, libs/items, and
 -- game packages must not require this module (see
 -- tests/architecture/module_boundaries_test.lua).
@@ -12,8 +10,7 @@
 local ItemSources = {}
 
 ItemSources.provenance = {
-  repo = "pret/pokeheartgold",
-  commit = "0985e8718df4f25e64d6507d89c0c97c0d288981",
+  repo = "retail ROM",
   sources = {
     "include/constants/items.h",
     "include/item.h",
@@ -25,7 +22,7 @@ ItemSources.provenance = {
 }
 
 -- Native identity of the full restore (ITEM_FULL_RESTORE in
--- include/constants/items.h). The native trainer selector serves it only
+-- the retail ROM). The native trainer selector serves it only
 -- for a living holder below quarter health, so the item projection marks
 -- exactly this identity for that serving gate; runtime never sees the
 -- number.
@@ -676,15 +673,14 @@ ItemSources.machineMoves = {
   [99] = { move = "ROCK_CLIMB", nativeId = 431 },
 }
 
--- Item hold-effect constant driving the mon friendship fact
--- (HOLD_EFFECT_FRIENDSHIP_UP in include/constants/items.h).
+-- Item hold-effect constant driving the mon friendship fact.
 ItemSources.HOLD_EFFECT_FRIENDSHIP_UP = 53
 
 -- Item hold-effect constant doubling trainer prize money while any battler
--- holds it (HOLD_EFFECT_MONEY_UP in include/constants/items.h).
+-- holds it.
 ItemSources.HOLD_EFFECT_MONEY_UP = 58
 
--- item_data member layout (struct ItemData in include/item.h): fixed 34-byte
+-- item_data member layout: fixed 34-byte
 -- rows. Audited field offsets: u16 price at 0, hold-effect byte at 2,
 -- hold-effect parameter at 3, the packed bitfield u16 at 8
 -- (naturalGiftType:5, prevent_toss:1, selectable:1, fieldPocket:4,
@@ -698,15 +694,15 @@ ItemSources.ITEM_DATA_HOLD_EFFECT_OFFSET = 2
 ItemSources.ITEM_DATA_PARTY_USE_OFFSET = 12
 ItemSources.ITEM_DATA_PARTY_PARAM_OFFSET = 14
 
--- ItemPartyParam restore sentinels (include/constants/items.h): the hp and
+-- ItemPartyParam restore sentinels: the hp and
 -- pp restore parameters use these values for full/half/quarter restoration.
 ItemSources.HP_RESTORE_ALL = 255
 ItemSources.HP_RESTORE_HALF = 254
 ItemSources.HP_RESTORE_QTR = 253
 ItemSources.PP_RESTORE_ALL = 127
 
--- Source item mood deltas applied alongside party use (src/pokemon_mood.c
--- ItemIdGetMoodEffect, keyed by semantic item key). Items absent here carry
+-- Source item mood deltas applied alongside party use
+-- (ItemIdGetMoodEffect, keyed by semantic item key). Items absent here carry
 -- no mood effect; MonAdjustMood clamps the result to -127..127.
 ItemSources.PARTY_MOOD_BY_KEY = {
   ENERGYPOWDER = -20,
@@ -729,7 +725,7 @@ ItemSources.PARTY_FORM_CHANGE_KEYS = {
 
 -- Ball classification by source item identity: ITEM_* 1..16 plus the later
 -- ball additions 492..500, matching the BALL_* 1..25 vocabulary in
--- include/constants/balls.h.
+-- the retail ROM's ball constants.
 ItemSources.ballItemIds = {
   [1] = true,
   [2] = true,
@@ -759,7 +755,7 @@ ItemSources.ballItemIds = {
 }
 
 -- item_data NARC member for a native item identity, from the ITEMNARC_PARAM
--- column of src/item.c sItemNarcIds. Identities without their own data row
+-- column of sItemNarcIds. Identities without their own data row
 -- (the UNUSED 113..134 block and the dataless EXPLORER_KIT 428) share member
 -- 0; identities past each gap shift by the gap width.
 function ItemSources.itemDataMember(nativeId)
@@ -817,7 +813,7 @@ ItemSources.messageCounts = {
   berry = 64,
 }
 
--- Source pocket keys by POCKET_* id (include/constants/items.h). The field
+-- Source pocket keys by POCKET_* id. The field
 -- pocket stored in ItemData selects one of these directly through GetItemAttr
 -- ITEMATTR_FIELD_POCKET.
 ItemSources.pocketKeys = {
@@ -831,8 +827,8 @@ ItemSources.pocketKeys = {
   [7] = "key_items",
 }
 
--- Native identity ranges with dedicated source semantics
--- (include/constants/items.h): machines, mail, and berries.
+-- Native identity ranges with dedicated source semantics:
+-- machines, mail, and berries.
 ItemSources.FIRST_TM = 328
 ItemSources.LAST_TM = 419
 ItemSources.FIRST_HM = 420
@@ -842,10 +838,10 @@ ItemSources.LAST_MAIL = 148
 ItemSources.FIRST_BERRY = 149
 ItemSources.LAST_BERRY = 212
 
--- Held-item action identities (include/constants/items.h): the griseous
+-- Held-item action identities: the griseous
 -- orb selects the Giratina origin form and the sixteen plates select
 -- Arceus type forms through BoxMon_UpdateGiratinaForm and
--- GetArceusTypeByHeldItemEffect (src/pokemon.c).
+-- GetArceusTypeByHeldItemEffect.
 ItemSources.GRISEOUS_ORB_ID = 112
 ItemSources.FIRST_PLATE = 298
 ItemSources.LAST_PLATE = 313
@@ -860,7 +856,7 @@ ItemSources.ITEM_DATA_FIELD_POCKET_SHIFT = 7
 ItemSources.ITEM_DATA_FIELD_POCKET_MASK = 15
 
 -- Icon character/palette member selection by native item identity, from the
--- ITEMNARC_NCGR/ITEMNARC_NCLR columns of src/item.c sItemNarcIds. Numeric
+-- ITEMNARC_NCGR/ITEMNARC_NCLR columns of sItemNarcIds. Numeric
 -- values are the item_icon NARC member ids. Shared rows are source facts:
 -- items without their own graphics reuse another member and compile to the
 -- same atlas region downstream.

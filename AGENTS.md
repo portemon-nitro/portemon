@@ -27,7 +27,7 @@ Read the narrowest authoritative source instead of duplicating it:
 - `docs/architecture.md`: public architectural principles and stable code entrypoints.
 - `.agents/docs/defensive-patterns.md`: hard-won ownership, publication, cache, and failure rules.
 - `tests/AGENTS.md`: test design, runner, layers, capabilities, and ROM policy.
-- `romdump/AGENTS.md`: ROM/HGSS/decomp-source rules.
+- `romdump/AGENTS.md`: ROM/HGSS rules.
 - `libs/nds/AGENTS.md`: Nintendo DS/Nitro platform ownership and dependency direction.
 - `libs/script/AGENTS.md`: mod scripting platform ownership and injected game meaning.
 - `libs/hgss/AGENTS.md`: reusable HGSS runtime mechanism ownership.
@@ -104,7 +104,7 @@ package.
   it without upward dependencies; the current caller's directory is not proof of ownership.
   Portemon-created product behavior belongs in `app` unless it is reusable mechanism/domain
   logic. Retail-game observable behavior belongs in `game/<family>`. Reusable domain and
-  runtime mechanisms belong in `libs/<domain>`. ROM/decomp interpretation and generated
+  runtime mechanisms belong in `libs/<domain>`. retail ROM interpretation and generated
   artifact production belong in `romdump`.
 - `app/` owns the LÖVE process shell, launcher, startup Main Menu, product tooling, version
   selection, ROM provisioning, and process exit policy. It may consume reusable libraries
@@ -124,7 +124,7 @@ package.
 - Domain logic should remain independently testable from LÖVE. `libs/assets`, `libs/codec`,
   `libs/storage`, `libs/errors`, and `libs/math` must not `require` love.
 - Reusable Nintendo container and Nitro/NNS format mechanics belong in `libs/nds`.
-  HGSS/decomp-derived formats, NARC/member selection, source-specific overlay use, raw
+  HGSS ROM-derived formats, NARC/member selection, source-specific overlay use, raw
   bitfields, source catalogs, and build-only source manifests stay in `romdump`.
 - `libs/assets` owns only portemon-defined generated/mod-facing formats, paths, schemas,
   validation, and source-independent encoders/decoders. It must never import `romdump`.
@@ -133,7 +133,7 @@ package.
   details; direct imports of `libs.nds` from either game package are forbidden.
 - Normal `game/hgss` runtime consumes generated assets and HGSS-facing mechanisms; generic
   `game` owns only lifecycle and host adapters. Neither game package decodes ROM formats or
-  imports decomp-derived references. The `app` launcher/import UI is the sole provisioning
+  imports ROM-derived references. The `app` launcher/import UI is the sole provisioning
   exception that reaches `romdump`; runtime packages do not.
 - Producer test: if changing a module can change generated output for an unchanged raw dump
   without changing the shared asset contract, that implementation belongs under `romdump`.
@@ -210,7 +210,7 @@ Read `tests/AGENTS.md` for the test contract and runner mechanics.
 - Source offsets and source IDs are zero-based. Use semantic names such as `narcId`, `fileId`,
   and `memberId`, never a generic `id` when the kind matters.
 - Generic binary primitives belong in `libs/codec`; reusable Nintendo container and
-  Nitro/NNS packing belongs in `libs/nds`; interpreting HGSS/decomp-derived source packing
+  Nitro/NNS packing belongs in `libs/nds`; interpreting HGSS ROM-derived source packing
   belongs in `romdump`; project-owned generated binary formats belong in `libs/assets`.
 - A `_private` method is not an inter-module API. Expose a semantic public operation or move
   the responsibility instead of reaching across modules to an underscored helper.

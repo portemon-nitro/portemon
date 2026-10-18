@@ -567,8 +567,7 @@ function T.fanfare_pauses_the_bgm_player_and_resumes_its_timeline()
   Assert.isTrue(maxAbs(left(player:render(750), 750)) > 0, "the resumed bgm renders again")
 end
 
--- Fades follow the HGSS GF_SndStartFadeOutBGM model (asm/unk_02005D10.s +
--- Diamond's unk_020051F4.c): the level ramps linearly from the starting
+-- Fades follow the HGSS GF_SndStartFadeOutBGM model (retail ROM): the level ramps linearly from the starting
 -- level to the target over the requested ticks, the attenuation reaches
 -- the mixer as a dB-domain per-voice fader (clamped at -0x8000), the timer
 -- and the perceptual volume advance together, and the fade-out to 0

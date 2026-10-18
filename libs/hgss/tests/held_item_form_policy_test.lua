@@ -1,8 +1,8 @@
 -- Held-item form policy: pure source-shaped Arceus plate and Giratina orb
 -- effects on a copied mon. Plates select the fire/water/electric/grass/ice/
 -- fighting/poison/ground/flying/psychic/bug/rock/ghost/dragon/dark/steel
--- forms through the Multitype gate (pret/pokeheartgold
--- GetArceusTypeByHeldItemEffect, Gen-IV type order); the griseous orb
+-- forms through the Multitype gate
+-- (Gen-IV type order); the griseous orb
 -- selects the origin form, anything else restores the base form. Stat
 -- derivation stays with the real mon service; gated-out mons never touch it.
 

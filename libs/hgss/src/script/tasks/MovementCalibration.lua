@@ -13,8 +13,7 @@ MovementCalibration.SPEED_TICKS = {
   slightly_fast = 6,
   slightly_faster = 3,
   fastest = 2,
-  -- Source: pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981,
-  -- asm/unk_02062108.s commands 88-91 use a four-update run lifetime.
+  -- Source: the retail ROM: commands 88-91 use a four-update run lifetime.
   run = 4,
   hgss_96 = 16,
   hgss_97 = 8,
@@ -24,8 +23,7 @@ MovementCalibration.SPEED_TICKS = {
 
 -- Ticks per walk-in-place cycle (on-spot animation step), by speed.
 MovementCalibration.WALK_IN_PLACE_TICKS = {
-  -- Source: pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981,
-  -- asm/unk_02062108.s commands 24-39 use configured countdowns of 32,
+  -- Source: the retail ROM: commands 24-39 use configured countdowns of 32,
   -- 16, 8, and 4, plus one update before completing.
   slower = 33,
   slow = 17,
@@ -34,8 +32,7 @@ MovementCalibration.WALK_IN_PLACE_TICKS = {
   faster = 3,
 }
 
--- Source: pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981,
--- asm/unk_02062108.s: commands 44-47 are slow zero jumps (16 updates),
+-- Source: the retail ROM: commands 44-47 are slow zero jumps (16 updates),
 -- 48-51 are fast zero jumps (8), 52-55 are fast near jumps (8), and
 -- 56-59 are fast far jumps (16). Unsupported pairs are not assigned a
 -- plausible fallback.
@@ -70,16 +67,14 @@ local REVEAL_TRAINER_OFFSETS = {
   0.375,
   0,
 }
--- Source: pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981,
--- asm/overlay_01_022001E4.s, ov01_02200614: the exclamation effect's
+-- Source: the retail ROM: the exclamation effect's
 -- entrance and completion progression surrounds a 30-update hold.
 MovementCalibration.EMOTE_TICKS = 33
--- Source: pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981,
--- asm/unk_02062108.s and asm/unk_data_020FDB44.s: gesture commands
+-- Source: the retail ROM: gesture commands
 -- 67, 68, 100, 102, 104 map to semantic names warp_out, warp_in,
 -- nurse_bow, give, receive; lifetime counts the per-update state machine
 -- including whether setup and final steps chain in the same map-object
--- update via sub_02062400's nonzero chaining.
+-- update.
 local GESTURE_PROFILE = {
   warp_out = { durationTicks = 20 },
   warp_in = { durationTicks = 20 },
@@ -96,9 +91,8 @@ MovementCalibration.JUMP_HEIGHTS = {
   near = 0.9,
 }
 
--- Source: pret/pokeheartgold@9d8b7591f09b65804da2fb2dfd56f320633e0d36,
--- asm/unk_02062108.s command 56-59 setup (16-update far jump) and the
--- discrete table at _020FDA84 (raw fixed-point vertical values 0x4000,
+-- Source: the retail ROM: command 56-59 setup (16-update far jump) and the
+-- discrete table (raw fixed-point vertical values 0x4000,
 -- 0x6000, 0x8000, 0xA000, 0xB000, 0xC000, 0xC000, 0xC000, 0xB000, 0xA000,
 -- 0x9000, 0x8000, 0x6000, 0x4000, 0, 0), normalized by the 16-world-unit
 -- field tile to tile offsets peaking at 12/16 = 0.75.

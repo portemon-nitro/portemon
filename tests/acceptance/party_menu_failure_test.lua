@@ -33,7 +33,7 @@ local MonsSave = require("libs.mons.src.MonsSave")
 local PartyActions = require("libs.hgss.src.field.PartyActions")
 local PartyCache = require("libs.assets.src.PartyCache")
 
-local FLOW_MODULE = "game.hgss.src.field.PokemonMenuFlow"
+local FLOW_MODULE = "game.hgss.src.field.PartyMenuFlow"
 
 local T = {
   metadata = { capabilities = { "rom_dump" }, derivedAssets = { "field-runtime", "map:7" }, tags = { "party", "bag", "flow", "failure" } },
@@ -103,9 +103,9 @@ local function openFlow(game, root)
     bag = bag,
     bagCursor = assert(runtime.bagCursor, "field runtime owns the live bag cursor"),
     partyActions = actions,
-    mailActions = assert(runtime.pokemonMenu).mailActions,
+    mailActions = assert(runtime.partyMenu).mailActions,
     mailbox = assert(runtime.mailbox),
-    pcManifest = assert(runtime.pokemonMenu).pcManifest,
+    pcManifest = assert(runtime.partyMenu).pcManifest,
     fieldMoves = {
       check = function(_)
         return { kind = "ok" }

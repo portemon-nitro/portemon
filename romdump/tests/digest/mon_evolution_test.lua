@@ -1,6 +1,5 @@
 -- Evolution-member decoding contract for the mon catalog compiler.
--- Fixture slots mirror pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981
--- include/pokemon_types_def.h `struct Evolution` (u16 method/param/target,
+-- Fixture slots mirror the retail ROM's evolution data (u16 method/param/target,
 -- seven slots per member) with LoadMonEvolutionTable member selection. Zero
 -- slots are omitted; trailing reserved bytes must be zero.
 

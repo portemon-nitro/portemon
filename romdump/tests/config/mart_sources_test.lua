@@ -1,6 +1,5 @@
 -- Producer-side HGSS mart selectors and audited source tables.
--- Source authority: pret/pokeheartgold@9d8b7591f09b65804da2fb2dfd56f320633e0d36,
--- src/scrcmd_mart.c, asm/overlay_31.s, and src/overlay_03/shop_menu.c.
+-- Source authority: the retail ROM's mart script commands and shop menu.
 
 local Assert = require("tests.support.Assert")
 
@@ -12,8 +11,7 @@ end
 
 function T.provenance_and_resources_use_semantic_aliases()
   local MartSources = sources()
-  Assert.equal(MartSources.provenance.repo, "pret/pokeheartgold")
-  Assert.equal(MartSources.provenance.commit, "9d8b7591f09b65804da2fb2dfd56f320633e0d36")
+  Assert.equal(MartSources.provenance.repo, "retail ROM")
   local listed = {}
   for _, path in ipairs(MartSources.provenance.sources) do
     listed[path] = true

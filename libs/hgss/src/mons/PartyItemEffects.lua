@@ -2,12 +2,11 @@
 -- works on a private copy of the caller-supplied mon facts and returns
 -- candidate changes only: the caller (PartyActions) prepares and publishes
 -- through the owning services. Eligibility mirrors the source party-target
--- checks (pret/pokeheartgold@0985e8718d src/use_item_on_mon.c
--- CanUseItemOnPokemon, src/party_menu.c TransferHP): status cures need
+-- checks (retail ROM): status cures need
 -- their semantic condition records, revival needs zero HP, restoration needs injury but not
 -- fainting, power-point operations need a chosen occupied move, effort
 -- changes follow TryModEV order, and friendship-only reduction berries stay
--- usable. Source mutation order (src/use_item_on_mon.c UseItemOnPokemon)
+-- usable. Source mutation order
 -- applies status, health, power points, effort, then friendship/mood; a
 -- primary miss with an attempted effect consumes nothing and applies no
 -- friendship. The toxic record clears with poison; full-health
@@ -83,7 +82,7 @@ local function withoutEffects(effects, keys)
   return kept
 end
 
--- Source TryModEV order (src/use_item_on_mon.c): reject lowering zero,
+-- Source TryModEV order: reject lowering zero,
 -- reject raising past either budget, then add, clamp to 0..100, and fit the
 -- total budget. Returns nil when nothing may change.
 ---@param ev integer
@@ -122,7 +121,7 @@ local function evTotal(evs)
   return total
 end
 
--- Source friendship write (src/use_item_on_mon.c DoItemFriendshipMod):
+-- Source friendship write:
 -- positive deltas add the Luxury Ball and matching egg-location bonuses
 -- before the held friendship multiplier with integer flooring; negative
 -- deltas take no bonus. Clamps to 0..255.

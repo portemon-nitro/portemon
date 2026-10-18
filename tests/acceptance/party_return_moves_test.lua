@@ -24,7 +24,7 @@ local FieldMoveTask = require("libs.hgss.src.script.tasks.FieldMoveTask")
 local PartyActions = require("libs.hgss.src.field.PartyActions")
 local MailActions = require("libs.hgss.src.field.MailActions")
 local PlayerProgression = require("libs.hgss.src.save.PlayerProgression")
-local PokemonMenuFlow = require("game.hgss.src.field.PokemonMenuFlow")
+local PartyMenuFlow = require("game.hgss.src.field.PartyMenuFlow")
 local PartyCache = require("libs.assets.src.PartyCache")
 local PcCache = require("libs.assets.src.PcCache")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
@@ -473,7 +473,7 @@ local function openPartyFlow(game, checkDouble)
   local pcManifest = PcCache.loadManifest(CacheFs.forVersion(AcceptanceHarness.defaultVersion()))
   local actions = PartyActions.new({ mons = mons, bag = bag })
   local mailActions = MailActions.new({ mons = mons, mailbox = mailbox, bag = bag, manifest = pcManifest })
-  return PokemonMenuFlow.new({
+  return PartyMenuFlow.new({
     root = "party",
     mons = mons,
     bag = bag,

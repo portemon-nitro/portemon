@@ -1,5 +1,5 @@
 -- Compiles the HGSS mart source catalog and presentation into source-free
--- generated assets. Source resources follow the pinned pret/pokeheartgold
+-- generated assets. Source resources follow the retail ROM's
 -- mart command and shop overlay tables.
 
 local Errors = require("libs.errors.src.Errors")
@@ -16,7 +16,7 @@ local RgbaImage = require("romdump.src.digest.ui.RgbaImage")
 local FieldMessageBank = require("romdump.src.digest.ui.FieldMessageBank")
 local FieldMessageTokenizer = require("romdump.src.digest.ui.FieldMessageTokenizer")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
-local charmap = require("romdump.src.reference.hgss.charmap")
+local charmap = require("romdump.src.catalog.hgss.charmap")
 
 local MartAssetCompiler = {}
 

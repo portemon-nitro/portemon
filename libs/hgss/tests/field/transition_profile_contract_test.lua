@@ -1128,7 +1128,7 @@ end
 
 -- Nine-profile source dispatch census -------------------------------------
 
--- The complete source routine-family table, pinned to the pret/pokeheartgold
+-- The complete source routine-family table, pinned to the retail ROM's
 -- 9-entry exit/enter/camera/audio dispatch. This is the single frozen table the
 -- runtime dispatch is compared against; the lifecycle censuses below prove the
 -- runtime reaches exactly these routines.

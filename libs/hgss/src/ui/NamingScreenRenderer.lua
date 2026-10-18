@@ -302,9 +302,9 @@ function NamingScreenRenderer.new(options)
   assert(type(naming.cursor) == "table", "naming renderer requires the naming cursor")
   assert(type(naming.entrySlots) == "table", "naming renderer requires the naming entry slots")
   assert(type(naming.playerSubjects) == "table", "naming renderer requires the naming player subjects")
-  assert(type(naming.pokemonSubject) == "table", "naming renderer requires the Pokemon subject animation")
-  assert(type(naming.pokemonGenderMarkers) == "table", "naming renderer requires the Pokemon gender markers")
-  requireAnchor(naming.pokemonGenderMarkers.anchor, "Pokemon gender marker")
+  assert(type(naming.pokemonSubject) == "table", "naming renderer requires the mon subject animation")
+  assert(type(naming.pokemonGenderMarkers) == "table", "naming renderer requires the mon gender markers")
+  requireAnchor(naming.pokemonGenderMarkers.anchor, "mon gender marker")
   for _, key in ipairs(CONTROL_KEYS) do
     requireSprite(naming.controls, key, key .. " control")
   end
@@ -346,25 +346,25 @@ function NamingScreenRenderer.new(options)
     )
   end
   local pokemonSubject = naming.pokemonSubject
-  requireDenseArray(pokemonSubject.frames, "Pokemon subject frames")
-  requireAnchor(pokemonSubject.anchor, "Pokemon subject")
+  requireDenseArray(pokemonSubject.frames, "mon subject frames")
+  requireAnchor(pokemonSubject.anchor, "mon subject")
   assert(
     pokemonSubject.playMode == "forward"
       or pokemonSubject.playMode == "forward_loop"
       or pokemonSubject.playMode == "reverse"
       or pokemonSubject.playMode == "reverse_loop",
-    "naming renderer requires a supported Pokemon subject play mode"
+    "naming renderer requires a supported mon subject play mode"
   )
   assert(
     type(pokemonSubject.loopStartFrameIdx) == "number"
       and pokemonSubject.loopStartFrameIdx % 1 == 0
       and pokemonSubject.loopStartFrameIdx >= 0
       and pokemonSubject.loopStartFrameIdx < #pokemonSubject.frames,
-    "naming renderer requires a Pokemon subject loop start inside its frames"
+    "naming renderer requires a mon subject loop start inside its frames"
   )
   for _, frame in ipairs(pokemonSubject.frames) do
     assert(type(frame.duration) == "number" and frame.duration % 1 == 0 and frame.duration > 0)
-    requireDenseArray(frame.parts, "Pokemon subject parts")
+    requireDenseArray(frame.parts, "mon subject parts")
     for _, part in ipairs(frame.parts) do
       assert(
         type(part.iconFrame) == "number"
@@ -375,7 +375,7 @@ function NamingScreenRenderer.new(options)
           and part.offset.x % 1 == 0
           and type(part.offset.y) == "number"
           and part.offset.y % 1 == 0,
-        "naming renderer requires validated Pokemon subject part semantics"
+        "naming renderer requires validated mon subject part semantics"
       )
     end
   end
@@ -649,7 +649,7 @@ function NamingScreenRenderer:draw(view, layout)
         nil
       )
     else
-      assert(gender == "genderless", "Pokemon naming subject has an unsupported gender")
+      assert(gender == "genderless", "mon naming subject has an unsupported gender")
     end
   end
   -- The focus cursor composites last so it stays above the control it

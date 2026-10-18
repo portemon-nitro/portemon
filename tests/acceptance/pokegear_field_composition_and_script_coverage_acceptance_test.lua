@@ -241,7 +241,7 @@ local function settleScripting(game, budget)
     if game.runtime.errorText then
       error("production scripting faulted: " .. tostring(game.runtime.errorText), 0)
     end
-    local naming = game.runtime.pokemonNaming
+    local naming = game.runtime.monNaming
     local namingActive = naming ~= nil and naming:isActive()
     if game:contextChoiceStatus() ~= nil and not namingActive then
       pressActionEdge(game)

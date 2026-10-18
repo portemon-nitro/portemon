@@ -1,7 +1,6 @@
 -- Source geometry of the PC Storage box screen (touch screen, 256x192).
--- Authority: pret/pokeheartgold asm/overlay_14.s — the touch hit table
--- (_021F7BBC), the box icon sprite placement (ov14_021F2F88), and the wallpaper
--- tilemap writer (ov14_021E7808).
+-- Authority: the retail ROM — the touch hit table, the box icon sprite
+-- placement, and the wallpaper tilemap writer.
 
 local PcStorageGeometry = {}
 
@@ -23,7 +22,7 @@ end
 
 -- The party tray is an 88x144 strip that slides in at the left (x=16) or the
 -- right band (x=168) of the touch screen; its 32x32 icons are centred at these
--- offsets from its origin (ov14_021F32E0, table ov14_021F808C).
+-- offsets from its origin.
 PcStorageGeometry.PARTY_TRAY_SIZE = { width = 88, height = 144 }
 PcStorageGeometry.PARTY_TRAY_ORIGINS = { left = { x = 16, y = 48 }, right = { x = 168, y = 48 } }
 PcStorageGeometry.PARTY_ICON_SIZE = 32
@@ -45,8 +44,8 @@ function PcStorageGeometry.partySlotRect(slot, side)
 end
 
 -- Action buttons are 88x24 strips in the right panel; a list of n actions
--- fills the bottom n of its five slots (hit table _021F7BBC, lists
--- ov14_021F5EE4; the bottom alignment follows the window-id arithmetic).
+-- fills the bottom n of its five slots (the bottom alignment follows the
+-- retail window-id arithmetic).
 PcStorageGeometry.ACTION_SLOTS = 5
 
 ---@param count integer number of actions listed
@@ -65,7 +64,7 @@ function PcStorageGeometry.markingRect(bit)
   return { x = 188 + 32 * (bit % 2), y = 60 + 24 * math.floor(bit / 2), width = 16, height = 16 }
 end
 
--- Wallpaper chooser (ov14_021F44B4, ov14_021E8560, hit table _021F7BBC): a row
+-- Wallpaper chooser: a row
 -- of four swatch slots centred on x = 59 + 46k inside a 256x56 bar, page
 -- arrows at both edges, a confirm button strip and Cancel.
 PcStorageGeometry.WALLPAPER_PAGE_SIZE = 4
@@ -83,7 +82,7 @@ function PcStorageGeometry.wallpaperSlotRect(slot)
   return { x = 59 + 46 * slot - 12, y = 23, width = 24, height = 24 }
 end
 
--- Box title plate and box arrows (hit table _021F7BBC, ov14_021F44B4): the
+-- Box title plate and box arrows: the
 -- plate opens the Wallpaper / Name pair; the arrows step to the neighbour box.
 PcStorageGeometry.BOX_TITLE_RECT = { x = 26, y = 17, width = 116, height = 22 }
 PcStorageGeometry.BOX_ARROW_CENTERS = { left = { x = 12, y = 28 }, right = { x = 156, y = 28 } }
@@ -92,7 +91,7 @@ PcStorageGeometry.BOX_ARROW_RECTS = {
   right = { x = 145, y = 17, width = 22, height = 22 },
 }
 
--- Hand cursor nodes (nav tables ov14_021F8B10 family): the cursor sprite sits at
+-- Hand cursor nodes: the cursor sprite sits at
 -- the node anchor, which is 12 px above an icon's centre.
 ---@param slot integer zero-based box slot
 ---@return number x
@@ -136,7 +135,7 @@ end
 PcStorageGeometry.WALLPAPER_CONFIRM_CURSOR = { x = 212, y = 130 }
 PcStorageGeometry.WALLPAPER_CANCEL_CURSOR = { x = 212, y = 162 }
 
--- Message windows (ov14_021F84B4): W39 leaves the right panel free, W37 and W40
+-- Message windows: W39 leaves the right panel free, W37 and W40
 -- span the screen, and W38 sits at the top of the touch screen. The frame is the
 -- player's own window frame one tile outside the content box.
 PcStorageGeometry.MESSAGE_WINDOWS = {
@@ -150,7 +149,7 @@ PcStorageGeometry.MESSAGE_WINDOWS = {
 PcStorageGeometry.YES_RECT = { x = 200, y = 96, width = 48, height = 32 }
 PcStorageGeometry.NO_RECT = { x = 200, y = 128, width = 48, height = 32 }
 
--- The bottom buttons (y 168..191, ov14_021F6244 and neighbours) and the item
+-- The bottom buttons (y 168..191) and the item
 -- button above them, with the message ids (bank 24) and the event each press
 -- raises. PARTY opens the tray in modes 2 and 3; the right button is RETURN,
 -- or EXIT while the tray is open or a mon is picked or a list is up.

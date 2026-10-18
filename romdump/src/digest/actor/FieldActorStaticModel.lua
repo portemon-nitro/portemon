@@ -1,7 +1,7 @@
 -- Compiles the separate HGSS static map-object model class used by books,
 -- gates, and similar object events. These resources are self-contained NSBMDs
 -- with embedded TEX0 data and do not use the mmodel billboard descriptor table.
--- The original loader is `ov01_021FD2EC` / NARC 103 in pokeheartgold.
+-- The original loader reads NARC 103 of the retail ROM.
 
 local ffi = require("ffi")
 local Errors = require("libs.errors.src.Errors")

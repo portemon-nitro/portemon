@@ -1,8 +1,7 @@
 -- The region map's marking mode for one location: four icon slots, four word
 -- slots, the eight-icon pool, the trash can and the Back button, with the
 -- source's key cursor graph and touch drag-and-drop rules. Follows
--- overlay_101_021EB568.c (marking input) and overlay_101_021E7FF4.c (cursor
--- specs, slot geometry) of pret/pokeheartgold. The mode owns only its working
+-- the retail ROM's marking input, cursor specs and slot geometry. The mode owns only its working
 -- copy of the marking; the controller persists the copy after every edit.
 -- Slots are one-based here (source index plus one); icon values are the
 -- saved one-based icon identities with false for an empty slot, and words are

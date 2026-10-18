@@ -1,6 +1,6 @@
 -- RGB555 channel order tests. Tests decoding of Nintendo DS RGB555
 -- (red bits 0..4, green bits 5..9, blue bits 10..14) to 8-bit sRGB.
--- Canonical source: pret/pokeheartgold, lib/include/nitro/gx/gxcommon.h
+-- Source: the retail ROM.
 
 local Assert = require("tests.support.Assert")
 local Rgb555 = require("libs.codec.src.Rgb555")

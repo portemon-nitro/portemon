@@ -1,9 +1,9 @@
 -- HGSS's two real field edge-color tables and the per-area selector between
--- them, recovered from pret/pokeheartgold asm/overlay_01_021FB878.s.
+-- them, recovered from the retail ROM.
 --
 -- AreaDataManager_Load reads a byte at AreaDataManager+0x8B7 and calls
--- G3X_SetEdgeColorTable with ov01_02208BA0 (ROM 0x02208BA0) when that byte is
--- zero, or ov01_02208BB0 (ROM 0x02208BB0) otherwise. The same byte is read by
+-- G3X_SetEdgeColorTable with the table at ROM 0x02208BA0 when that byte is
+-- zero, or the one at ROM 0x02208BB0 otherwise. The same byte is read by
 -- AreaDataManager_GetAreaLightArchiveID as a small enum (0/1/2/other), which
 -- confirms it is a per-area "light pattern index", not a boolean; only
 -- zero-vs-non-zero matters for edge-color selection. The byte lives at offset
@@ -15,9 +15,9 @@
 -- Packing convention (matches HgssFieldLightProfile.rgb555): value = r + g*32
 -- + b*1024, each channel 0-31.
 --
--- Raw bytes transcribed from overlay_01_021FB878.s .rodata:
---   ov01_02208BA0: 00 00 84 10 84 10 84 10 84 10 84 10 84 10 84 10
---   ov01_02208BB0: 84 10 84 10 84 10 84 10 84 10 84 10 84 10 84 10
+-- Raw bytes transcribed from the overlay .rodata:
+--   0x02208BA0: 00 00 84 10 84 10 84 10 84 10 84 10 84 10 84 10
+--   0x02208BB0: 84 10 84 10 84 10 84 10 84 10 84 10 84 10 84 10
 -- 0x0000 decodes to (0,0,0); 0x1084 decodes to (4,4,4).
 
 local HgssFieldEdgeColors = {}
@@ -29,10 +29,10 @@ end
 local BLACK = rgb555(0, 0, 0)
 local GREY = rgb555(4, 4, 4)
 
--- ov01_02208BA0: index 0 is black, indices 1-7 are grey(4,4,4).
+-- 0x02208BA0: index 0 is black, indices 1-7 are grey(4,4,4).
 local TABLE_A = { [0] = BLACK, GREY, GREY, GREY, GREY, GREY, GREY, GREY }
 
--- ov01_02208BB0: all eight entries are grey(4,4,4).
+-- 0x02208BB0: all eight entries are grey(4,4,4).
 local TABLE_B = { [0] = GREY, GREY, GREY, GREY, GREY, GREY, GREY, GREY }
 
 HgssFieldEdgeColors.TABLE_A = TABLE_A

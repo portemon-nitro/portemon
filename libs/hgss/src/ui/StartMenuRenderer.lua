@@ -472,7 +472,7 @@ end
 -- window: windows are keyed by source position, never by presentation
 -- order, so a sparse action list still labels the right row. Labels arrive
 -- resolved (the dynamic player name is caller-resolved; static labels come
--- from the pinned source label bank); an action without a resolved label
+-- from the retail label bank); an action without a resolved label
 -- draws its icon alone. Every label draws through the palette-driven text
 -- path with the retail label roles, centered in its window as before.
 ---@param action table<string, unknown>

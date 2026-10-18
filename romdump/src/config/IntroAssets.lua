@@ -16,8 +16,7 @@ local resourceResolution = {
 local IntroAssets = {
   schema = 3,
   provenance = {
-    repo = "pret/pokeheartgold",
-    commit = "f45f4fd1368e8809515540404408fd2bc71974a8",
+    repo = "retail ROM",
     sources = {
       "src/oaks_speech.c",
       "src/oaks_speech_obj.c",

@@ -1,16 +1,13 @@
 -- Producer-side semantic inventory of the native party presentation
 -- sources: NARC member selection, canonical geometry, sprite/text/numeric/
 -- badge selection, and normalized presentation facts. The audit basis is
--- pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981
--- src/party_menu.c (the core-menu application; PartyMenu opens NARC 21 and
--- every member below is loaded by an audited call site),
--- src/party_menu_sprites.c (the 24-entry sprite template table and the
--- per-slot icon/ball/status/held/capsule creation),
--- src/party_context_menu.c (context window templates, button rects, and the
--- bank-300 action/field-move message selection), plus
--- files/data/resdat/resdat_00000085.json (the 45-entry party resource
--- header: graphics member, palette/cell/animation indices per resource set)
--- and files/data/resdat/resdat_00000084.json (the 12-entry sub-screen set).
+-- the retail ROM: the core party menu application (it opens NARC 21 and
+-- every member below is loaded by an audited call site), the 24-entry sprite
+-- template table and per-slot icon/ball/status/held/capsule creation, the
+-- context window templates, button rects, and bank-300 action/field-move
+-- message selection, plus the 45-entry party resource header (graphics
+-- member, palette/cell/animation indices per resource set) and the 12-entry
+-- sub-screen set.
 -- Pure data and pure functions; no I/O. Never imported by runtime:
 -- libs/assets, game, and script packages must not require this module.
 
@@ -18,7 +15,7 @@ local PartySources = {}
 
 PartySources.provenance = {
   repoPin = "0301aa5868b961e5c860477b9bc47300663a609d",
-  decompPin = "pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981",
+  romAudit = "retail ROM",
   symbols = {
     "src/party_menu.c",
     "src/party_menu_sprites.c",
@@ -273,8 +270,8 @@ PartySources.textRoles = {
 
 -- Lower-message palette selection: party message windows print through
 -- font 1 over fill color 15, so their ink comes from the loaded font
--- palette member 8 (LoadFontPal1 in src/font.c loads NARC_graphic_font
--- member 8; PartyMenu_PrintMessageOnWindowEx in src/party_context_menu.c
+-- palette member 8 (LoadFontPal1 loads NARC_graphic_font
+-- member 8; PartyMenu_PrintMessageOnWindowEx 
 -- fills with color index 15). Entries name { foreground, shadow,
 -- background } slots in that font palette member.
 PartySources.messageRole = { paletteMember = 8, foreground = 1, shadow = 2, background = 15 }
@@ -633,7 +630,7 @@ PartySources.panelWindows = {
 -- (party_context_menu.c): the nickname prints at name-window-local (0,0)
 -- and the gender mark at name-window-local (64,0), inside the 72px-wide
 -- name window. The compiler lowers this offset against each panel's
--- name-subrect origin; the decomp symbol name stays in this producer
+-- name-subrect origin; the source symbol name stays in this producer
 -- comment only and never reaches the runtime manifest.
 PartySources.genderOffset = { x = 64, y = 0 }
 

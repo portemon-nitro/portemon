@@ -1,9 +1,8 @@
 -- Renders the authentic HGSS Trainer Card front through one resolved
 -- logical placement: the generated card art (the manifest's
 -- `hgss.trainer_card.front` asset at its front rect) plus the audited front
--- text layout from ov51_021E6F18 in asm/overlay_trainer_card_main.s at the
--- pinned decomp commit 008257708 — the front windows created from the
--- template table at 0x021E7F48 (8px/tile) and the label/value prints of the
+-- text layout from the retail ROM — the front windows created from the
+-- template table (8px/tile) and the label/value prints of the
 -- source function. The front labels ("ID No.", "NAME", "MONEY", "SCORE",
 -- "TIME", "ADVENTURE STARTED") are the fixed card layout (msgdata bank 727
 -- messages 0..6); the player name is right-aligned to x=240 and the trainer
@@ -37,8 +36,8 @@ local TrainerCardRenderer = {}
 TrainerCardRenderer.__index = TrainerCardRenderer
 
 -- The audited front text anchors (canonical 256x192 reference space): the
--- label origin of each front window (template table 0x021E7F48) and the
--- right edge of each right-aligned value print in ov51_021E6F18.
+-- label origin of each front window and the
+-- right edge of each right-aligned value print.
 TrainerCardRenderer.LABEL_ANCHORS = {
   { text = "ID No.", x = 16, y = 24 },
   { text = "NAME", x = 136, y = 24 },

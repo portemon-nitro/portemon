@@ -4,7 +4,7 @@
 -- resource, verifies the translation accounting, and aggregates one corpus
 -- coverage record. The opcode names, operand widths, movement widths, std
 -- catalog, and member message banks all come from pinned in-repo references,
--- so translation has no dependency on any decomp checkout. Output is
+-- so translation has no dependency on any external source checkout. Output is
 -- deterministic: identical dumps produce identical resources. Pure domain
 -- module: no love dependency.
 
@@ -274,23 +274,23 @@ function ScriptCompiler.compile(romFs, sha1hex, hashLua)
 end
 
 local function sourceOf(module)
-  return module.source and module.source.commit .. ":" .. (module.source.inputs and #module.source.inputs or 0)
+  return module.source and module.source.inputs[1].sha256 .. ":" .. #module.source.inputs
 end
 
 function ScriptCompiler.commandCatalogVersion()
-  return sourceOf(require("romdump.src.reference.hgss.script_commands"))
+  return sourceOf(require("romdump.src.catalog.hgss.script_commands"))
 end
 
 function ScriptCompiler.movementCatalogVersion()
-  return sourceOf(require("romdump.src.reference.hgss.movement_commands"))
+  return sourceOf(require("romdump.src.catalog.hgss.movement_commands"))
 end
 
 function ScriptCompiler.stdCatalogVersion()
-  return sourceOf(require("romdump.src.reference.hgss.std_script_catalog"))
+  return sourceOf(require("romdump.src.catalog.hgss.std_script_catalog"))
 end
 
 function ScriptCompiler.memberBanksVersion()
-  return sourceOf(require("romdump.src.reference.hgss.script_members"))
+  return sourceOf(require("romdump.src.catalog.hgss.script_members"))
 end
 
 -- Emit the Lua text for one resource (the cache writer persists it).

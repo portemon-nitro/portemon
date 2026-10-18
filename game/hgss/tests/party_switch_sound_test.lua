@@ -88,7 +88,7 @@ end
 ---@param effect fun(sequence: string)?
 ---@return table rig with the live flow and recording ports
 local function openPartyFlow(service, effect)
-  local Flow = require("game.hgss.src.field.PokemonMenuFlow")
+  local Flow = require("game.hgss.src.field.PartyMenuFlow")
   local bag = HgssBagService.new({ catalog = ItemFixture.makeCatalog() })
   local mailbox = Mailbox.new()
   local pcManifest = require("tests.support.PcPresentationFixture").manifest()

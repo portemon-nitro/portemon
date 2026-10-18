@@ -9,7 +9,7 @@ local Assert = require("tests.support.Assert")
 local CommandCatalog = require("romdump.src.digest.script.CommandCatalog")
 local SemanticLowering = require("romdump.src.digest.script.SemanticLowering")
 local SourceCatalog = require("romdump.src.digest.script.SourceCatalog")
-local ScriptCommands = require("romdump.src.reference.hgss.script_commands")
+local ScriptCommands = require("romdump.src.catalog.hgss.script_commands")
 
 local T = {}
 

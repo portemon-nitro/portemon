@@ -21,7 +21,7 @@ local FieldStatePresentationFixture = require("tests.support.FieldStatePresentat
 local FieldTerrainEffectController = require("libs.hgss.src.world.FieldTerrainEffectController")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local HgssBagService = require("libs.hgss.src.items.HgssBagService")
-local InactivePokemonNaming = require("tests.support.InactivePokemonNaming")
+local InactiveMonNaming = require("tests.support.InactiveMonNaming")
 local ItemFixture = require("libs.items.tests.item_fixture")
 local MonCache = require("libs.assets.src.MonCache")
 local PngWriter = require("libs.assets.src.PngWriter")
@@ -283,7 +283,7 @@ local function stubPresentationRuntime(cache, audio, itemCatalog, monCatalog)
   local effects = FieldStatePresentationFixture.terrainEffects(cache)
   local measurement = dualMeasurement()
   return setmetatable({
-    pokemonNaming = InactivePokemonNaming.new(),
+    monNaming = InactiveMonNaming.new(),
     cacheFs = cache,
     derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
     -- The presented composition borrows its session image owner for the

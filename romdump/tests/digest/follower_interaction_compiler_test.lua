@@ -1,5 +1,4 @@
--- Source member layouts follow pret/pokeheartgold overlay_02_02248728.s and
--- unk_02026DE0.s at commit 9d8b7591f09b65804da2fb2dfd56f320633e0d36.
+-- Source member layouts follow the retail ROM.
 
 local Assert = require("tests.support.Assert")
 local Compiler = require("romdump.src.digest.field.FollowerInteractionCompiler")

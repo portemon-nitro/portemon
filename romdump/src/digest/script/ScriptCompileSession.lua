@@ -6,8 +6,8 @@ local ScriptBinaryDecoder = require("romdump.src.digest.script.ScriptBinaryDecod
 local ScriptCompiler = require("romdump.src.digest.script.ScriptCompiler")
 local Coverage = require("romdump.src.digest.script.Coverage")
 local SourceCatalog = require("romdump.src.digest.script.SourceCatalog")
-local ScriptMembers = require("romdump.src.reference.hgss.script_members")
-local ScriptAudioFacts = require("romdump.src.reference.hgss.script_audio")
+local ScriptMembers = require("romdump.src.catalog.hgss.script_members")
+local ScriptAudioFacts = require("romdump.src.catalog.hgss.script_audio")
 local Errors = require("libs.errors.src.Errors")
 
 local Session = {}
@@ -15,11 +15,11 @@ Session.__index = Session
 
 local function catalogs()
   return {
-    sounds = require("romdump.src.reference.hgss.sndseq").byId,
-    flags = require("romdump.src.reference.hgss.flags").byId,
-    vars = require("romdump.src.reference.hgss.vars").byId,
-    maps = require("romdump.src.reference.hgss.maps").byId,
-    spawns = require("romdump.src.reference.hgss.spawns").byId,
+    sounds = require("romdump.src.catalog.hgss.sndseq").byId,
+    flags = require("romdump.src.catalog.hgss.flags").byId,
+    vars = require("romdump.src.catalog.hgss.vars").byId,
+    maps = require("romdump.src.catalog.hgss.maps").byId,
+    spawns = require("romdump.src.catalog.hgss.spawns").byId,
   }
 end
 

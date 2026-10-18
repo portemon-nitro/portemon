@@ -9,7 +9,7 @@ local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
-local InactivePokemonNaming = require("tests.support.InactivePokemonNaming")
+local InactiveMonNaming = require("tests.support.InactiveMonNaming")
 local SummaryAcceptanceFixture = require("tests.support.SummaryAcceptanceFixture")
 
 local T = {}
@@ -572,7 +572,7 @@ local function fieldComposition(starter, queue, backend, images)
   end
   local draws = { field = 0, starter = 0 }
   local runtime = {
-    pokemonNaming = InactivePokemonNaming.new(),
+    monNaming = InactiveMonNaming.new(),
     starterChoice = starter,
     assetPreparation = queue,
     -- The field update borrows the session image owner for the hidden

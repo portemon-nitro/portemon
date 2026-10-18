@@ -10,7 +10,7 @@ local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
 local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
 local Mailbox = require("libs.hgss.src.save.Mailbox")
 local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
-local PokemonMenuComposition = require("game.hgss.src.field.PokemonMenuComposition")
+local PartyMenuComposition = require("game.hgss.src.field.PartyMenuComposition")
 local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local FieldActorAssetProvider = require("libs.hgss.src.presentation.FieldActorAssetProvider")
 local FieldActorDraw = require("libs.hgss.src.presentation.FieldActorDraw")
@@ -1033,7 +1033,7 @@ function T.production_album_viewer_borrows_the_live_loader_and_its_image_owner(s
     local stored = assert(album:prepareChanges(0, { { slot = 0, value = photo } }))
     stored.publish()
     local versionCache = CacheFs.forVersion(versionId)
-    local composition = PokemonMenuComposition.create({
+    local composition = PartyMenuComposition.create({
       mons = {
         partyCount = function()
           return 1

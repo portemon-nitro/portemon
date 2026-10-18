@@ -8,7 +8,7 @@
 -- open RomFs) but the raw Nitro formats stop here.
 
 local MapResolver = require("romdump.src.digest.map.MapResolver")
-local StarterLab = require("romdump.src.reference.hgss.starter_lab")
+local StarterLab = require("romdump.src.catalog.hgss.starter_lab")
 local AreaData = require("romdump.src.digest.map.AreaData")
 local LandData = require("romdump.src.digest.map.LandData")
 local HgssBdhc = require("romdump.src.digest.map.HgssBdhc")

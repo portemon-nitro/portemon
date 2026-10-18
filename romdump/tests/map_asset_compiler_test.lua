@@ -9,7 +9,7 @@
 -- The terrain-animation wiring tests pin the producer side of the scene
 -- contract: central and neighbour terrain materials carry the texture-matrix
 -- fields and fldtanime-matched textureSwap records (`data/fldtanime.narc` in
--- pret/pokeheartgold), the central scene owns the one area NSBTA clip (never a
+-- the retail ROM), the central scene owns the one area NSBTA clip (never a
 -- per-neighbour copy), placed buildings never gain a swap from a texture-name
 -- coincidence, and the animation source hashes ride the dependency record into
 -- the completion marker.
@@ -41,7 +41,7 @@ local PcSources = require("romdump.src.config.PcSources")
 local NB = require("tests.support.NitroBuilder")
 local NsbmdFixture = require("tests.support.NsbmdFixture")
 local PngWriter = require("libs.assets.src.PngWriter")
-local StarterLab = require("romdump.src.reference.hgss.starter_lab")
+local StarterLab = require("romdump.src.catalog.hgss.starter_lab")
 local TF = require("tests.support.TextureFixtures")
 local Tex0Fixture = require("tests.support.Tex0Fixture")
 local TerrainFixture = require("tests.support.TerrainFixture")
@@ -544,7 +544,7 @@ end
 -- edge-color table selected by the area's raw light-pattern byte
 -- (AreaData.lightTypeRaw at area-data offset 0x07), the exact byte
 -- AreaDataManager_Load reads at +0x8B7 to branch between the two real overlay
--- tables ov01_02208BA0 / ov01_02208BB0 (HgssFieldEdgeColors) -- the same byte
+-- tables (HgssFieldEdgeColors) -- the same byte
 -- HgssFieldLighting.resolve already reads to select the field-light profile.
 -- FieldRenderer must stop inventing a placeholder eight-grey table.
 function T.scene_edge_colors_follow_the_area_light_pattern_byte()

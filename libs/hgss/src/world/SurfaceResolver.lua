@@ -3,8 +3,7 @@
 -- ties raise instead of silently choosing highest/lowest. A crossing onto a
 -- new surface is allowed when the destination surface's height at the shared
 -- edge stays within the step-height limit of the current surface's height
--- there. The limit is the pinned movement collision's (asm/unk_02054648.s
--- `sub_02054954`: 5 << 14 in 16.16 tile units, i.e. 1.25 tiles): only steps
+-- there. The limit is the retail ROM's movement collision step check (5 << 14 in 16.16 tile units, i.e. 1.25 tiles): only steps
 -- changing height by 1.25 tiles or more are rejected. No plane-join epsilon
 -- is applied -- real ROM floors (e.g. MAP_NEW_BARK_PLAYER_HOUSE_1F) have
 -- quantized-height seams between adjacent plates. Pure domain module.
@@ -25,8 +24,7 @@ local SurfaceResolver = {}
 SurfaceResolver.__index = SurfaceResolver
 
 -- Maximum step-up height in world units (1 unit == 1 tile). Mirrors the
--- original movement collision's step check (asm/unk_02054648.s
--- `sub_02054954`), which rejects a destination surface whose height differs
+-- original movement collision's step check, which rejects a destination surface whose height differs
 -- from the current height by 5 << 14 in 16.16 fixed-point tile units.
 local STEP_HEIGHT_LIMIT = 5 * 2 ^ 14 / 2 ^ 16
 local HEIGHT_TIE_EPSILON = 1e-9

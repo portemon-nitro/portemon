@@ -1,6 +1,6 @@
 -- TerrainAnimationCompiler: contract tests for the map-scoped compiler that
 -- annotates fldtanime-matched terrain materials (`data/fldtanime.narc` in
--- pret/pokeheartgold, dump alias `field_texture_animations`) with
+-- the retail ROM, dump alias `field_texture_animations`) with
 -- textureSwap.steps records, decodes every referenced replacement frame from
 -- the replacement member's texels under the base material's palette, compiles
 -- the area NSBTA selected by the area record's dynamicTextureType (archive

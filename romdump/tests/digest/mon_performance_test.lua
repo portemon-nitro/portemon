@@ -1,7 +1,5 @@
--- Source layout follows PokeathlonBasePerformance in
--- pret/pokeheartgold@9d8b7591f09b65804da2fb2dfd56f320633e0d36/include/pokemon_types_def.h
--- and the performance index/category mappings in src/pokemon.c and
--- include/constants/pokemon.h.
+-- Source layout follows the retail ROM's Pokéathlon base performance
+-- data and its performance index/category mappings.
 
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")

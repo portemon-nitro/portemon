@@ -4,7 +4,7 @@
 -- HGSS's field animation manager steps 0x1000 per tick and reports done
 -- through the checked advance: Field3dModelAnimation_FrameAdvanceAndCheck
 -- clamps the positive terminal at numFrame << 12 and sets done there
--- (pokeheartgold overlay_01_021FB878.s), so a "once" clip finishes exactly
+-- in the retail ROM, so a "once" clip finishes exactly
 -- when frameFx reaches frameCount * FRAME_UNIT. The frame is always clamped
 -- to [0, frameCount * FRAME_UNIT] -- the checked advance stores numFrame <<
 -- 12 as a valid frame -- and a decoder fed an out-of-range frame from another

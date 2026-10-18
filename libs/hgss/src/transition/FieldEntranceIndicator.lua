@@ -18,7 +18,7 @@ local DELTAS = {
   east = { x = 1, z = 0 },
 }
 
--- Signed 12.4 source offsets from ov01_02209354, normalized to field units.
+-- Signed 12.4 source offsets from the retail ROM, normalized to field units.
 -- The table is indexed by source direction and phase, and is intentionally
 -- immutable through the public API.
 local PHASE_OFFSETS = {

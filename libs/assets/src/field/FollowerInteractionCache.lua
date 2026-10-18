@@ -1,4 +1,4 @@
--- Strict cache contract for source-independent following-Pokémon interactions.
+-- Strict cache contract for source-independent following-mon interactions.
 
 local Contract = require("libs.assets.src.DerivedAssetContract")
 local Errors = require("libs.errors.src.Errors")

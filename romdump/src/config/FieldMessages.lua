@@ -5,8 +5,7 @@
 return {
   schema = 1,
   provenance = {
-    repo = "pret/pokeheartgold",
-    commit = "1a7f2c301c954df2d19d7f9211529f6decc8dede",
+    repo = "retail ROM",
     sources = {
       { path = "include/msgdata.h" },
       { path = "src/msgdata.c" },
@@ -19,11 +18,11 @@ return {
     },
   },
   -- The current field-font consumers use font 0 for dialogue and font 4 for
-  -- Oak choice labels (src/font.c sFontArcParam[0] and [4]).
+  -- Oak choice labels.
   fontIds = { 0, 4 },
   fontGlyphMembers = { [0] = 0, [4] = 4 },
   -- Member 6 is the screen-focus indicator set the text printer blits next
-  -- to YESNO prompts (GfGfxLoader_GetCharData in src/font.c).
+  -- to YESNO prompts.
   fontFocusIndicatorMember = 6,
   fontPaletteMember = 7,
   -- Atlas packing: 16px glyphs in a fixed grid.

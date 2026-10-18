@@ -6,7 +6,7 @@
 -- propagate instead of pretending to roll back.
 --
 -- Door warps run the door choreography through the same lifecycle, ordered per
--- HGSS (ov01_021E8744.s): the source door opens at start, the ingress step
+-- HGSS: the source door opens at start, the ingress step
 -- begins only after the opening finished, the swap waits for the completed
 -- ingress at full black, the destination door opens at the swap, the egress
 -- begins only after the destination opening finished, the close begins only
@@ -240,8 +240,7 @@ local function invokeProfile(self, phase)
   end
 end
 
--- Retail panel-warp teleport spin (Task_WarpPanel with the warp_spin pair in
--- pret/pokeheartgold src/field/warp_spin.c): 20 fixed ticks per side, the
+-- Retail panel-warp teleport spin (the retail ROM's panel warp spin pair): 20 fixed ticks per side, the
 -- TELE2 cue at each spin start, quarter-turn beats across the departure, the
 -- quadratic height arc, the swap gated on spin completion, and the reversed
 -- arrival ending facing south. Beats run at frames 6/11/16 so the departure
@@ -936,7 +935,7 @@ end
 
 -- Advance the source stair step by one tick. The transition advances it like
 -- a walk, and the HGSS stair sound fires when the movement completes
--- (sub_0205613C plays SEQ_SE_DP_KAIDAN2 after the step finishes, before the
+-- (the retail ROM plays SEQ_SE_DP_KAIDAN2 after the step finishes, before the
 -- fade). Stair warps require a player (asserted at the source begin), so one
 -- is always bound here.
 local function finish(self)

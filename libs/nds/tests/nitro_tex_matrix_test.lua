@@ -1,5 +1,5 @@
 -- Synthetic tests for the texture-matrix convention (Maya, transcribed from
--- the pinned pokediamond asm). Only the Maya (mode 0) convention is
+-- the retail ROM's code). Only the Maya (mode 0) convention is
 -- supported; mode-1 materials raise at the evaluator. The raw static
 -- texture-SRT decode (NsbmdMaterialSrt) is tested in
 -- producer-side tests; this suite covers only the runtime matrix dispatch and

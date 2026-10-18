@@ -1,8 +1,7 @@
 -- Item-data decoding contract for the item catalog compiler. Fixture layout
--- mirrors pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981
--- include/item.h ItemData: a u16 price, the hold-effect byte, and the
+-- mirrors the retail ROM's item data: a u16 price, the hold-effect byte, and the
 -- remaining effect/pocket fields the catalog never consumes. Native identity
--- to member mapping mirrors the ITEMNARC_PARAM column of src/item.c
+-- to member mapping mirrors the ITEMNARC_PARAM column of the retail ROM's item NARC table.
 -- sItemNarcIds: identities without their own data row share member 0.
 
 local Assert = require("tests.support.Assert")

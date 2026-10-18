@@ -377,9 +377,8 @@ local function resolveMove(mon, moveSlot)
 end
 
 -- Native move-range law: the compiled numeric range selects the target
--- scope, never the move name or a guessed foe. Source reference:
--- include/constants/moves.h RANGE_* and the target-selection cases in
--- src/battle/overlay_12_0224E4FC.c (pret/pokeheartgold). The front range
+-- scope, never the move name or a guessed foe. Source: the retail ROM's
+-- move range and target-selection cases. The front range
 -- keeps the ordinary user-selected opposing target; the special called
 -- front/random distinction has no caller-mode input at this seam, so
 -- ordinary selection binds it like a single opposing target. Unknown

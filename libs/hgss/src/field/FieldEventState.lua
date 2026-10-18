@@ -1,8 +1,7 @@
 -- Numeric field event-flag and variable store. HGSS object events are created
--- only while their event flag is clear (pret/pokeheartgold `src/map_object.c`,
--- `MapObjectManager_CreateFromEventData`), so this store is the authority for
+-- only while their event flag is clear (retail ROM), so this store is the authority for
 -- actor visibility as well as for later script state. Keys and values are
--- unsigned 16-bit integers with clear/zero defaults; no symbolic decomp name is
+-- unsigned 16-bit integers with clear/zero defaults; no symbolic source name is
 -- required at runtime. Pure domain module: no love dependency.
 
 local Errors = require("libs.errors.src.Errors")

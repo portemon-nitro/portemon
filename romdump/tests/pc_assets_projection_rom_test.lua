@@ -1,6 +1,5 @@
 -- Source-projected PC geometry and timing from the canonical HGSS data.
--- Source: pret/pokeheartgold@9d8b7591f09b65804da2fb2dfd56f320633e0d36,
--- asm/overlay_14.s and asm/overlay_109.s.
+-- Source: the retail ROM.
 
 local Assert = require("tests.support.Assert")
 local PngReader = require("tests.support.PngReader")

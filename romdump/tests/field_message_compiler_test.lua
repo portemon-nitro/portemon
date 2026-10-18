@@ -12,7 +12,7 @@ local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
 local LuaWriter = require("libs.codec.src.LuaWriter")
 local MapCatalog = require("romdump.src.digest.map.MapCatalog")
-local ScriptMembers = require("romdump.src.reference.hgss.script_members")
+local ScriptMembers = require("romdump.src.catalog.hgss.script_members")
 local FieldMessages = require("romdump.src.config.FieldMessages")
 local PokegearSources = require("romdump.src.config.PokegearSources")
 local MenuProtocol = require("libs.assets.src.MenuProtocol")
@@ -40,7 +40,7 @@ local function sourceReferenceBankIds()
   ids[445] = true
   ids[40] = true
   ids[265] = true
-  -- The Apricorn Box source config addresses its labels in msg_0021.gmm.
+  -- The Apricorn Box source config addresses its labels in the retail ROM's Apricorn Box message file.
   ids[21] = true
   -- Retail blackout.c reads this global recovery message bank outside script
   -- bytecode; see FieldMessageCompiler's runtime-protocol bank set.
@@ -208,7 +208,7 @@ function T.source_references_form_one_sorted_bank_set()
   expected[445] = true
   expected[40] = true
   expected[265] = true
-  -- The Apricorn Box source config addresses its labels in msg_0021.gmm.
+  -- The Apricorn Box source config addresses its labels in the retail ROM's Apricorn Box message file.
   expected[21] = true
   -- Retail blackout.c reads this global recovery message bank outside script
   -- bytecode; see FieldMessageCompiler's runtime-protocol bank set.

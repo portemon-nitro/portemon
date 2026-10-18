@@ -4,36 +4,36 @@
 -- of complete per-tick visual samples with exact termination. Producer
 -- only; runtime code must never require this module.
 --
--- Source basis (every recurrence below transcribes the pinned decomp
+-- Source basis (every recurrence below transcribes the retail ROM
 -- rather than observed gameplay):
 -- * The 89-byte metadata record holds two 43-byte entries (three header
 --   bytes plus ten 4-byte frame records) and three trailing species
---   attributes. The entry layout transcribes src/pokemon.c
---   `NARC_ReadPokepicAnimScript` (the ten `PokepicAnimScript` records) and
---   `sub_0207294C` (front entry for animation mode 2, header byte 1 as the
+--   attributes. The entry layout transcribes
+--   the retail ROM's animation-script reader (the ten animation-script records) and
+--   its front-entry selection (front entry for animation mode 2, header byte 1 as the
 --   motion program, header byte 2 as the motion delay, header byte 0 as
 --   the cry delay).
 -- * Each frame record is `{ next, duration, xOffset, unk }` per
---   include/pokepic.h. The per-tick recurrence (step advance, delay
+--   the retail ROM's frame table. The per-tick recurrence (step advance, delay
 --   countdown, counted loop records, terminal record) transcribes
---   src/pokepic.c `Pokepic_RunAnimInternal` and the `Pokepic_StartAnim`
+--   the retail ROM's animation runner and its start
 --   initialization. Loop records repeat a bounded number of visits, so
 --   frame evaluation always terminates; anything outside the ten records
 --   is malformed.
--- * The motion program is a word stream over the 34-entry dispatch in
---   asm/unk_02016EDC.s (`_020F61F8`). The task recurrence transcribes
---   `sub_020170C4` (motion delay countdown, per-tick channel phase,
---   finish teardown) and `sub_020170FC` (restore/fade gating, the bounded
+-- * The motion program is a word stream over the 34-entry dispatch of
+--   the retail ROM. The task recurrence transcribes
+--   its motion delay countdown, per-tick channel phase,
+--   finish teardown, and restore/fade gating (the bounded
 --   per-tick opcode burst with its source 256-operation hang guard).
 --   Program indices at or above 143 fall back to program 0, transcribing
---   the `cmp r6, #0x8f` guard in `sub_02016F40`. Operand bytes that select
+--   the retail ROM's program-index guard. Operand bytes that select
 --   registers assert the eight-register file; the kind bytes that double
 --   as accumulator destinations land exactly where the source store
 --   address computes them.
 -- * Arithmetic is 32-bit two's-complement with C truncation division; the
 --   sine/cosine content matches the ROM `FX_SinCosTable_` entries (4096
 --   interleaved 4096-scale pairs, one full turn per 4096 indices) and
---   palette blending matches src/palette.c `BlendColor`.
+--   palette blending matches the retail ROM's `BlendColor`.
 -- Pure module: no love dependency.
 
 local Errors = require("libs.errors.src.Errors")
@@ -211,7 +211,7 @@ local function decodeRecord(member, species, role)
 end
 
 -- Attribute numbers transcribe the POKEPIC_* enum order in
--- include/pokepic.h: 0 X, 1 Y, 9 ZROT, 10 XPIVOT, 12 AFFINEW, 13 AFFINEH,
+-- Animation fields: 0 X, 1 Y, 9 ZROT, 10 XPIVOT, 12 AFFINEW, 13 AFFINEH,
 -- 14 VISIBLE, 30 FADE, 31 FADE_COLOR, 32 FADE_BLDY, 33 FADE_BLDY_TARGET,
 -- 34 FADE_SPEED.
 local ATTR_X = 0
@@ -344,7 +344,7 @@ local function addAttr(machine, attr, value)
 end
 
 -- Restores the affine/position attributes from the accumulators,
--- transcribing sub_020179D4 and sub_02017A1C, including the conditional
+-- transcribing the retail ROM, including the conditional
 -- Y nudge and its fade-state vocabulary.
 local function applyRestore(machine)
   if machine.sign ~= 0 then
@@ -373,7 +373,7 @@ local function applyRestore(machine)
   end
 end
 
--- Channel target binding transcribes sub_02017BF8: selector 0x23-0x27
+-- Channel target binding transcribes the retail ROM: selector 0x23-0x27
 -- binds one channel-local slot with one task accumulator.
 local CHANNEL_TARGETS = {
   [0x23] = { acc = 0x68 },
@@ -392,7 +392,7 @@ local CHANNEL_PARAMS = { 6, 6, 4, 3, 4 }
 local CHANNEL_TARGET_SECOND = { true, true, false, false, false }
 
 -- Combines one channel output into its accumulator, transcribing
--- sub_02017BC8: 0x18 replaces, 0x19 adds the bind-time snapshot, 0x1A
+-- the retail ROM: 0x18 replaces, 0x19 adds the bind-time snapshot, 0x1A
 -- accumulates.
 local function combineChannel(machine, channel)
   local mode = channel.mode
@@ -484,7 +484,7 @@ local function runChannelWorker(machine, channel)
   end
 end
 
--- Initializes one motion channel, transcribing sub_02017C78: two operand
+-- Initializes one motion channel, transcribing the retail ROM: two operand
 -- bytes, the worker parameter words, the accumulator binding, and the
 -- immediate first worker run when no start delay was given.
 local function initChannel(machine, kind)
@@ -952,7 +952,7 @@ local function executeOpcode(machine, opcode)
   handler(machine, opcode)
 end
 
--- One native tick of the motion task, transcribing sub_020170C4 with its
+-- One native tick of the motion task, transcribing the retail ROM with its
 -- channel phase, restore/fade gating, and finish teardown.
 local function motionTick(machine)
   if machine.destroyed then

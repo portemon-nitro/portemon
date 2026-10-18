@@ -381,7 +381,7 @@ function T.tests.elms_lab_starter_choice_adds_the_chosen_mon_and_continues_the_s
     -- prompt, and changed input must resume the source script to completion.
     local continued = (function()
       local function namingActive()
-        local naming = game.runtime.pokemonNaming
+        local naming = game.runtime.monNaming
         return naming ~= nil and naming:isActive()
       end
 
@@ -454,7 +454,7 @@ function T.tests.elms_lab_starter_choice_adds_the_chosen_mon_and_continues_the_s
             waitForNaming()
 
             Assert.equal(
-              game.runtime.pokemonNaming:status().text,
+              game.runtime.monNaming:status().text,
               "",
               "a fresh starter naming session opens with an empty editing buffer"
             )

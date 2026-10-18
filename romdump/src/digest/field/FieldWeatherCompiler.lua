@@ -16,7 +16,7 @@ FieldWeatherCompiler.ERROR = {
   SOURCE_INVALID = "FIELD_WEATHER_SOURCE_INVALID",
 }
 
--- The eight Diamond Dust calendar dates (HGSS src/field_system_rtc_weather.c).
+-- The eight Diamond Dust calendar dates (retail ROM).
 local DIAMOND_DUST_DATES = {
   { month = 1, day = 1 },
   { month = 1, day = 31 },

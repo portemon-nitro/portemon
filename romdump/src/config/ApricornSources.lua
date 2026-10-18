@@ -1,9 +1,7 @@
--- Tree colors come from pret/pokeheartgold src/apricorn_tree_sys.c at
--- 971a70c2d4af62aa508830e97d35ea50283d5e8a. Sprite identities come from
--- pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981:
--- include/constants/sprites.h defines SPRITE_BONGURI and SPRITE_BONMI_*;
--- asm/overlay_01_sprite_data.s maps them to MMODEL_BONGURI* and MMODEL_BONMI*;
--- src/field/apricorn_tree_anim.c creates fruit as SPRITE_BONMI_R + apricornType.
+-- Tree colors come from the retail ROM's apricorn tree system. Sprite
+-- identities also come from the retail ROM: SPRITE_BONGURI and SPRITE_BONMI_*
+-- map to MMODEL_BONGURI* and MMODEL_BONMI*, and the tree animation creates
+-- fruit as SPRITE_BONMI_R + apricornType.
 
 local ApricornSources = {}
 ApricornSources.depletedTreeSpriteId = 262

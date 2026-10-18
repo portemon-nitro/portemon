@@ -11,12 +11,12 @@ local ItemFixture = require("libs.items.tests.item_fixture")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local HgssInputBindings = require("libs.hgss.src.ui.HgssInputBindings")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
-local InactivePokemonNaming = require("tests.support.InactivePokemonNaming")
+local InactiveMonNaming = require("tests.support.InactiveMonNaming")
 
 local T = {}
 
-local function inactivePokemonNaming()
-  return InactivePokemonNaming.new()
+local function inactiveMonNaming()
+  return InactiveMonNaming.new()
 end
 
 local function stateWithInput(calls)
@@ -42,7 +42,7 @@ local function stateWithInput(calls)
       actionKeys = {},
       cancelKeys = {},
       menuKeys = { tab = true },
-      pokemonNaming = inactivePokemonNaming(),
+      monNaming = inactiveMonNaming(),
       pcApplicationHost = {
         acceptsText = function()
           return false
@@ -103,14 +103,14 @@ function T.typed_text_reaches_input_only_while_a_naming_screen_is_active()
   state:textinput("é")
   Assert.deepEqual(calls, {})
 
-  state.runtime.pokemonNaming.isActive = function()
+  state.runtime.monNaming.isActive = function()
     return true
   end
   state:textinput("é")
   Assert.deepEqual(calls, { { "textInput", "é" } })
 
   calls = {}
-  state.runtime.pokemonNaming.isActive = function()
+  state.runtime.monNaming.isActive = function()
     return false
   end
   state.runtime.pcApplicationHost.acceptsText = function()
@@ -269,7 +269,7 @@ function T.focus_loss_discards_stale_stick_axes_before_refocus()
       actionKeys = {},
       cancelKeys = {},
       menuKeys = {},
-      pokemonNaming = inactivePokemonNaming(),
+      monNaming = inactiveMonNaming(),
     },
   }, FieldState)
 
@@ -288,7 +288,7 @@ function T.focus_loss_does_not_leave_a_keyboard_direction_stuck_after_refocus()
       actionKeys = {},
       cancelKeys = {},
       menuKeys = {},
-      pokemonNaming = inactivePokemonNaming(),
+      monNaming = inactiveMonNaming(),
     },
   }, FieldState)
 
@@ -312,7 +312,7 @@ function T.open_bag_stays_controllable_across_window_blur()
       actionKeys = {},
       cancelKeys = {},
       menuKeys = {},
-      pokemonNaming = inactivePokemonNaming(),
+      monNaming = inactiveMonNaming(),
     },
   }, FieldState)
 
@@ -563,7 +563,7 @@ function T.focus_loss_clears_physical_input_and_cancels_presentation_capture()
           cancelled = cancelled + 1
         end,
       },
-      pokemonNaming = inactivePokemonNaming(),
+      monNaming = inactiveMonNaming(),
     },
   }, FieldState)
   state:focus(false)
@@ -578,7 +578,7 @@ function T.default_update_does_not_measure_display_or_resize_runtime()
   local updates, measureCalls, resizes = 0, 0, {}
   local state = setmetatable({
     runtime = {
-      pokemonNaming = inactivePokemonNaming(),
+      monNaming = inactiveMonNaming(),
       update = function()
         updates = updates + 1
         Assert.equal(#resizes, 0, "ordinary update does not publish display geometry")

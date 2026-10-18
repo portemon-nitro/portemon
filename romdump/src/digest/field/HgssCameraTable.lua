@@ -1,5 +1,5 @@
 -- Decodes the exact 36-byte HGSS field-camera records consumed by field
--- overlay 1. The layout follows pret/pokeheartgold's recovered camera assembly;
+-- overlay 1. The layout follows the retail ROM's camera code;
 -- raw Nitro fx32 and angle-index values are preserved beside runtime units.
 
 local BinaryReader = require("libs.codec.src.BinaryReader")

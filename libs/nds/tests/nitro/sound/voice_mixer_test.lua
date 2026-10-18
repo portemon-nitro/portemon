@@ -1,6 +1,5 @@
 -- VoiceMixer rendering-core contract: a deterministic 16-channel DS sound
--- engine per the ARM7 NitroSDK (tmp/refs/pokediamond/arm7/lib/src/
--- SND_exChannel.c, SND_util.c, SND_bank.c, SND_seq.c) and GBATEK ("DS
+-- engine per the ARM7 NitroSDK (retail ROM) and GBATEK ("DS
 -- Sound" chapter). The mixer owns per-voice NNS channel behavior and the
 -- physical host boundary; allocation, per-note control updates, LFO and
 -- sweep live in the sibling voice_mixer_alloc_test.lua suite.

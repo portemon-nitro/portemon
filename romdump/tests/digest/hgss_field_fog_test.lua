@@ -1,8 +1,7 @@
 -- Tests for HgssFieldFog, the steady-state HGSS weather-fog preset table,
--- recovered from pokeheartgold overlay 01's weather dispatch table and its
+-- recovered from the retail ROM weather dispatch table and its
 -- handler literal pools, cross-checked against GBATEK's "3D Display - Fog"
--- FOG_OFFSET/FOG_TABLE bit layout and GX_g3x.h's GXFogSlope enum, pinned to
--- pokeheartgold commit 7e25c842061d026f43fe6efbd7be0ec94c50839d. Scope is
+-- FOG_OFFSET/FOG_TABLE bit layout and GX_g3x.h's GXFogSlope enum. Scope is
 -- steady-state presets only -- no calendar-date, save-flag, Defog, or
 -- Flash-move override.
 
@@ -64,7 +63,7 @@ function T.rain_family_matches_the_ov01_021ec94c_literals()
 end
 
 -- Unknown-4 / Snow / Blizzard (4-6): same offset and slope as the rain
--- family, but a distinct color (24,24,24) -- ov01_021ECD08's own literal
+-- family, but a distinct color (24,24,24) -- its own literal
 -- pool, not a copy of the rain handler's.
 function T.unknown4_snow_blizzard_share_offset_and_slope_but_not_color()
   for _, weatherId in ipairs({ 4, 5, 6 }) do
@@ -76,7 +75,7 @@ function T.unknown4_snow_blizzard_share_offset_and_slope_but_not_color()
   end
 end
 
--- Diamond Dust (8): ov01_021ED0F0's own offset, the rain family's color.
+-- Diamond Dust (8): its own offset, the rain family's color.
 function T.diamond_dust_matches_ov01_021ed0f0()
   local preset = HgssFieldFog.resolve(8)
   Assert.isTrue(preset.enabled)
@@ -85,7 +84,7 @@ function T.diamond_dust_matches_ov01_021ed0f0()
   Assert.equal(preset.slope, 3)
 end
 
--- Unknown / mist-like (9-10): ov01_021ED584's offset, white color, slope 6.
+-- Unknown / mist-like (9-10): its offset, white color, slope 6.
 function T.mist_like_matches_ov01_021ed584()
   for _, weatherId in ipairs({ 9, 10 }) do
     local preset = HgssFieldFog.resolve(weatherId)
@@ -110,7 +109,7 @@ function T.flash_and_flash2_use_black_zero_offset_and_the_ff_table()
   end
 end
 
--- Low Light (13): ov01_021EDA50's traced color/offset, slope 1.
+-- Low Light (13): traced color/offset, slope 1.
 function T.low_light_matches_ov01_021eda50()
   local preset = HgssFieldFog.resolve(13)
   Assert.isTrue(preset.enabled)

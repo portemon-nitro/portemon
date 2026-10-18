@@ -10,8 +10,8 @@ local Assert = require("tests.support.Assert")
 local CommandCatalog = require("romdump.src.digest.script.CommandCatalog")
 local FieldScripts = require("tests.rom.support.FieldScripts")
 local RomSuite = require("tests.rom.support.RomSuite")
-local ItemScriptCommands = require("romdump.src.reference.hgss.item_script_commands")
-local ScriptCommands = require("romdump.src.reference.hgss.script_commands")
+local ItemScriptCommands = require("romdump.src.catalog.hgss.item_script_commands")
+local ScriptCommands = require("romdump.src.catalog.hgss.script_commands")
 
 local T = {}
 

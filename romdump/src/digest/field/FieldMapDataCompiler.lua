@@ -18,7 +18,7 @@ local MapMatrix = require("romdump.src.digest.map.MapMatrix")
 local LandData = require("romdump.src.digest.map.LandData")
 local HgssSoundplate = require("romdump.src.digest.field.HgssSoundplate")
 local Hashing = require("romdump.src.digest.Hashing")
-local fieldAudio = require("romdump.src.reference.hgss.field_audio")
+local fieldAudio = require("romdump.src.catalog.hgss.field_audio")
 local ScriptHeader = require("romdump.src.digest.script.ScriptHeader")
 local SourceCatalog = require("romdump.src.digest.script.SourceCatalog")
 local HgssObjectMovement = require("romdump.src.digest.field.HgssObjectMovement")
@@ -34,12 +34,12 @@ local STANDARD_SCRIPTS = SourceCatalog.catalog()
 -- marker. Generated field data uses zero as its single no-script value so
 -- runtime binding and interaction audits do not need to interpret ROM data.
 --
--- A raw event script id in a std-script sentinel range (`src/script_manager.c`
+-- A raw event script id in a std-script sentinel range (
 -- `sScriptBankMapping`, e.g. item balls, apricorn trees) addresses a global
 -- scr_seq member unrelated to this map's own scriptsMemberId. Canonicalizing
 -- it to its public `common.<name>` id here means runtime interaction binding
 -- never derives a script identity from a raw source number for these events,
--- and never needs the decomp-derived std-script catalog to resolve one.
+-- and never needs the std-script catalog to resolve one.
 local NO_SCRIPT_ID = 0xFFFF
 
 ---@param decoded table<string, unknown> decoded zone-event member
@@ -545,7 +545,7 @@ local function compileMap(romFs, map, source, headerSource, sha1hex, hashLua)
     -- traversal allowances, and source exceptions) projected from the
     -- frozen header facts above; see fieldUsePolicy.
     fieldUse = fieldUsePolicy(map, environment),
-    -- Map-header message/script associations (src/data/map_headers.h via the
+    -- Map-header message/script associations (via the
     -- frozen catalog). Runtime code must never branch on map IDs to choose a
     -- bank; it reads these fields.
     messageBankId = map.messageMemberId,

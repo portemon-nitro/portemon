@@ -4,10 +4,9 @@
 -- numeric source identities pinned here. Pure data plus small resolvers;
 -- no love dependency and no I/O.
 --
--- Source basis: pret/pokeheartgold@9d8b7591f09b65804da2fb2dfd56f320633e0d36
--- src/field_move.c (FieldMove_InitCheckData and the FieldMove_Check*
--- eligibility predicates) and src/save_local_field_data.c
--- (Save_LocalFieldData_Init, whose default lastSpawn is GetMomSpawnId).
+-- Source basis: the retail ROM's field-move check table and eligibility
+-- predicates and its local field data initializer (whose default lastSpawn is
+-- the mother's spawn id).
 -- The obstacle sprite table below starts empty: entries land only with a
 -- cited ROM correlation (the map object script invoking the matching
 -- field_* standard script), never from sprite-name heuristics.
@@ -88,7 +87,7 @@ FieldMoveSources.UNION_COLOSSEUM_SYMBOLS = {
 FieldMoveSources.MOTHER_SPAWN_ID = 1
 FieldMoveSources.MOTHER_SPAWN_NAME = "SPAWN_NEW_BARK"
 
--- Source numeric badge indexes (pret/pokeheartgold badge constants) in
+-- Source numeric badge indexes (retail ROM badge constants) in
 -- semantic order: Johto 0..7, Kanto 8..15. The lowering resolves numbers
 -- here so generic script code only ever sees semantic badge keys.
 FieldMoveSources.BADGE_KEYS = {
@@ -119,7 +118,7 @@ function FieldMoveSources.badgeKeyForIndex(index)
   return FieldMoveSources.BADGE_KEYS[index + 1]
 end
 -- Teleport landing table: spawn key -> outdoor arrival map plus
--- destination-global tiles, transcribed from asm/unk_0203BA5C.s
+-- destination-global tiles, transcribed from the retail ROM
 -- sSpawnMaps (30 rows; macro columns flagIdx, isBlackoutSpawn,
 -- isFlyPoint, deathSpawnMapNo, deathSpawnX, deathSpawnY,
 -- flyPointMapNo, flyPointX, flyPointY, specialWarpMapNo, specialWarpX,
@@ -132,7 +131,7 @@ end
 --
 -- Entries are keyed by location identity (the fly/death map columns),
 -- cross-checked name-by-name against the frozen spawn catalog
--- (romdump/src/reference/hgss/spawns.lua) and include/constants/spawns.h
+-- (romdump/src/catalog/hgss/spawns.lua) and the retail ROM's spawn constants
 -- (SPAWN_NEW_BARK = 1 .. SPAWN_ROCK_TUNNEL = 30): every row's fly map
 -- matches its spawn name except rows 5-8, where the file order reads
 -- CIANWOOD, GOLDENROD, OLIVINE, ECRUTEAK against catalog ids
@@ -213,7 +212,7 @@ FieldMoveSources.BLACKOUT_DESTINATIONS = {
 
 -- Retail sSpawnMaps special-warp destinations, keyed by the same semantic
 -- spawn identity as the outdoor and death tables. Transcribed from
--- asm/unk_0203BA5C.s sSpawnMaps (30 rows; the specialWarpMapNo/X/Y
+-- sSpawnMaps (30 rows; the specialWarpMapNo/X/Y
 -- columns): every row's special map matches its outdoor arrival except
 -- FRONTIER (special = MAP_ROUTE_40, 0xED, 0x10B) and POKEATHLON
 -- (special = MAP_ROUTE_35, 0x16A, 0x10B). Coordinates are
@@ -278,10 +277,9 @@ FieldMoveSources.OBSTACLE_KINDS = {
 -- Empty until the first cited entry: the compiler decorates only proven
 -- identities, and an undecorated actor fails obstacle checks loudly.
 --
--- Cited entries (pret/pokeheartgold@9d8b7591 src/field_move.c,
--- FieldMove_InitCheckData maps facing-object sprites to check flags:
--- SPRITE_TREE (86) -> TREE, SPRITE_ROCK (84) -> ROCK, SPRITE_BREAKROCK
--- (85) -> BREAKROCK; include/constants/sprites.h pins the numbers; the
+-- Cited entries (the retail ROM's field-move check table maps facing-object
+-- sprites to check flags: SPRITE_TREE (86) -> TREE, SPRITE_ROCK (84) -> ROCK,
+-- SPRITE_BREAKROCK (85) -> BREAKROCK; the
 -- menu entries std_menu_cut/strength/rock_smash consume the same facing
 -- object):
 -- ROM correlation on the canonical SoulSilver dump (540 maps, 2667 object

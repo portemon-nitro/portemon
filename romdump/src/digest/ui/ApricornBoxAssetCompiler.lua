@@ -1,5 +1,5 @@
 -- Compiles the two visible Apricorn Box panes loaded by HGSS overlay 59.
--- Source basis: pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981.
+-- Source basis: the retail ROM.
 
 local Errors = require("libs.errors.src.Errors")
 local Hashing = require("romdump.src.digest.Hashing")
@@ -7,7 +7,7 @@ local PngWriter = require("libs.assets.src.PngWriter")
 local DerivedAssetContract = require("libs.assets.src.DerivedAssetContract")
 local ApricornBoxAssetCache = require("libs.assets.src.ApricornBoxAssetCache")
 local ApricornBoxSources = require("romdump.src.config.ApricornBoxSources")
-local NarcCatalog = require("romdump.src.reference.hgss.narcs")
+local NarcCatalog = require("romdump.src.catalog.hgss.narcs")
 local Lz10 = require("romdump.src.digest.Lz10")
 local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
 local G2dRasterizer = require("romdump.src.digest.ui.G2dRasterizer")

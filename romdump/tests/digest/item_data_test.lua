@@ -1,9 +1,8 @@
 -- Item-data decoding contract for the item catalog compiler. Fixture layout
--- mirrors pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981
--- include/item.h ItemData: a u16 price, the hold-effect byte, and the packed
+-- mirrors the retail ROM's item data: a u16 price, the hold-effect byte, and the packed
 -- bitfield u16 at offset 8 (naturalGiftType:5, prevent_toss:1, selectable:1,
 -- fieldPocket:4, battlePocket:5 from the least-significant bit). Native
--- identity to member mapping mirrors the ITEMNARC_PARAM column of src/item.c
+-- identity to member mapping mirrors the ITEMNARC_PARAM column of the retail ROM's item NARC table.
 -- sItemNarcIds: identities without their own data row share member 0.
 
 local Assert = require("tests.support.Assert")
@@ -265,7 +264,7 @@ local function stubCatalogRom(overrides)
     members[ItemSources.itemDataMember(nativeId) + 1] = member
   end
   local FieldMessageBank = require("romdump.src.digest.ui.FieldMessageBank")
-  local charmap = require("romdump.src.reference.hgss.charmap")
+  local charmap = require("romdump.src.catalog.hgss.charmap")
   local codeForGlyph = {}
   for code, display in pairs(charmap.glyphs) do
     codeForGlyph[display] = code

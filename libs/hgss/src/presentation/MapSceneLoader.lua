@@ -527,7 +527,7 @@ local function buildScene(pool, cacheFs, scene, opts, checkpoint, task)
   --
   -- Ambient playback at load: the compiled playback policy decides -- a
   -- time-of-day banded model plays the current band's clip looping and swaps
-  -- on runtime:setTimeBand (HGSS ov01_022047DC); every clip of an
+  -- on runtime:setTimeBand; every clip of an
   -- ordinary-policy anim-list record carries the compiled ambientLoop role
   -- and plays looping (the field effects -- wind, machine, spring); other
   -- policy records (door pairs, interaction props) stay scripted through
@@ -659,7 +659,7 @@ local function buildScene(pool, cacheFs, scene, opts, checkpoint, task)
     refreshAnimatedItems()
   end
 
-  -- Switch the time-of-day band of every banded prop (HGSS ov01_022047DC):
+  -- Switch the time-of-day band of every banded prop:
   -- stop the previous band's clip, play the current band's clip looping.
   -- Re-setting the current band is a no-op. Unbanded instances are untouched.
   -- The swap does not mark the draw list dirty: the next scene tick rebuilds

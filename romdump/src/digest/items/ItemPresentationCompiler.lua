@@ -1,7 +1,6 @@
 -- Item icon selection plus deterministic atlas inputs. Icon graphics
--- selection follows the ITEMNARC_NCGR/ITEMNARC_NCLR columns of src/item.c
--- sItemNarcIds at the pinned pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981
--- commit: each icon is one 32x32 4bpp NCGR addressed with the shared NCER
+-- selection follows the ITEMNARC_NCGR/ITEMNARC_NCLR columns of the
+-- retail ROM's item NARC table: each icon is one 32x32 4bpp NCGR addressed with the shared NCER
 -- cell (member 1: one 32x32 OBJ at origin, palette slot 0) and the single
 -- NANR animation (member 0). Character and palette members decode through
 -- the existing G2dDecoder primitives; this module only rasterizes

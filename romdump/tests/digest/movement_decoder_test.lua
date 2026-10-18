@@ -1,8 +1,6 @@
 -- Compound beast movement trajectories (codes 105-112) normalized into
--- semantic trajectory segments. Expected values follow the pinned
--- pret/pokeheartgold movement setup functions (MapObjectMovementCmd105_Step0
--- and siblings in asm/unk_020632B0.s) and the step ordering in
--- asm/unk_data_020FDB44.s.
+-- semantic trajectory segments. Expected values follow the retail ROM's
+-- movement setup functions and step ordering.
 
 local Assert = require("tests.support.Assert")
 local MovementDecoder = require("romdump.src.digest.script.MovementDecoder")
@@ -88,8 +86,7 @@ end
 -- Source movement 94/95 (west/east farther jumps) normalizes to the semantic
 -- farther jump: direction, distance, speed, and count with no redundant
 -- displacement field and no leaked source opcode.
--- Source: pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981,
--- asm/unk_02062108.s commands 94-95 are the three-cell west/east jumps.
+-- Source: the retail ROM; commands 94-95 are the three-cell west/east jumps.
 function T.farther_jumps_normalize_to_semantic_distance_without_redundant_tiles()
   local cases = {
     { code = 94, direction = "west" },

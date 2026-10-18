@@ -1,11 +1,9 @@
 -- Private target test: the time-of-day field-prop policy on real data. Violet
 -- Gym's interior places the sky prop (indoor member 113, kk_sky) whose four
 -- NSBTA clips are named kk_sky_m/d/e/n -- the morning/day/evening/night band
--- set the decomp registers and swaps on RTC time-of-day changes
--- (pokeheartgold overlay_01_02204004.c ov01_022047DC with the band map
--- ov01_022095EC and sTimeOfDayByHour in gf_rtc.c). The compiled descriptor
+-- set the retail ROM registers and swaps on RTC time-of-day changes. The compiled descriptor
 -- must classify into the four bands, and swapping bands on a ModelInstance
--- must drive exactly the decomp's remove-and-add playback.
+-- must drive exactly the retail ROM's remove-and-add playback.
 
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
@@ -103,7 +101,7 @@ function T.violet_gym_sky_prop_is_banded_on_real_data(romFs, _)
   Assert.equal(plan.nite.name, "kk_sky_n")
 
   -- Swapping bands on a real instance plays exactly the band's clip and
-  -- advances it (the decomp's remove-and-add).
+  -- advances it (the retail remove-and-add).
   local instance = ModelInstance.new(definition)
   ---@cast instance TimeOfDayProps.Instance
   TimeOfDayProps.swap(instance, plan, nil, "morn")

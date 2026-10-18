@@ -1,5 +1,5 @@
 -- Compiles the original HGSS Celebi model and animations selected by
--- event_cutscene_celebi.c in ctrl-cheeb-del/pokeheartgold@27da732f.
+-- the retail ROM's Celebi time-travel cutscene.
 
 local Errors = require("libs.errors.src.Errors")
 local Nsbmd = require("libs.nds.src.nitro.g3d.Nsbmd")

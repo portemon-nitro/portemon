@@ -29,15 +29,14 @@
 -- Every other clip keeps its name as the addressable id (prop.play("wind")).
 -- Playback policy is compiled from the decoded anim-list header
 -- (BuildModelAnimList), never inferred at runtime. The ordinary registrar
--- (ov01_021E8F3C) registers and plays EVERY id slot of a record whose header
+-- registers and plays EVERY id slot of a record whose header
 -- is registration=1, policy=0 (both bits clear), control=0 (the
--- never-finishing forward loop state, ov01_022044C8(-1, 0, 0)), areaGate=0
+-- never-finishing forward loop state (-1, 0, 0)), areaGate=0
 -- -- so every clip of such a record is stamped clip.ambientLoop, and no clip
 -- of any other record is. A banded record (policy 0x08) carries up to four
--- clips in the game's band-slot order -- MORN=0, DAY=1, EVE=2, NITE=3 (band
--- map ov01_022095EC) -- and each clip is stamped with the time band of its
--- slot, exactly the array the game swaps on RTC time-of-day changes
--- (ov01_022047DC). Clip names are authoring labels, not band claims: banded
+-- clips in the game's band-slot order -- MORN=0, DAY=1, EVE=2, NITE=3 (the
+-- game's band map) -- and each clip is stamped with the time band of its
+-- slot, exactly the array the game swaps on RTC time-of-day changes. Clip names are authoring labels, not band claims: banded
 -- props name their states freely (kk_sky_m/d/e/n, si_light_m1/m2,
 -- time_anime1..4), so no name convention is consulted. The mapping is a
 -- compile-time policy decision, not a runtime assumption. Pure domain module.
@@ -82,7 +81,7 @@ function MapPropAnimCompiler.roleFor(name)
   return nil
 end
 
--- The four band slots in the game's band-map order (ov01_022095EC: MORN=0,
+-- The four band slots in the game's band-map order (MORN=0,
 -- DAY=1, EVE=2, NITE=3, LATE=3), owned by the animation contract: a banded
 -- anim-list record's ids are these slots in order; the slot, not the clip
 -- name, is the band.
@@ -144,8 +143,8 @@ local function annotatePolicy(clips, record)
       clip.timeBand = BAND_BY_SLOT[slot]
     end
   end
-  -- The ordinary registrar plays every id slot of an ordinary-policy record
-  -- (ov01_021E8F3C), so the ambient role covers the whole record -- not a
+  -- The ordinary registrar plays every id slot of an ordinary-policy record,
+  -- so the ambient role covers the whole record -- not a
   -- single-clip guess. Every other policy (door/interaction bit 0, load-only
   -- bit 1, the time-band special case) and a nonzero area gate keep the
   -- record off the ordinary registrar; those clips stay unmarked.

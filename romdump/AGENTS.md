@@ -5,7 +5,7 @@ and compilation into portemon assets.
 
 ## Source ownership
 
-- `romdump` owns HGSS/decomp-derived source structures and policy: source catalogs, member
+- `romdump` owns HGSS retail-ROM-derived source structures and policy: source catalogs, member
   selection, physical identities, packed game fields, and compilation semantics. Reusable
   Nintendo container and Nitro/NNS format mechanics belong in `libs/nds`.
 - Keep source-member selection, physical archive/file/member IDs, overlay addresses, packed
@@ -21,8 +21,7 @@ and compilation into portemon assets.
 ## Source evidence and vocabulary
 
 - Source-format modules and source-derived tests name the authoritative external/source
-  reference in their header comment: GBATEK, a pinned `pret/pokeheartgold` symbol/file and
-  commit, or another authoritative primary source. Do not use a checked-in focused research
+  reference in their header comment: GBATEK, a retail ROM structure or table, or another authoritative primary source. Do not use a checked-in focused research
   document or temporary implementation spec as the authority.
 - Distinguish verified ROM facts from inferred semantics. Use neutral names when gameplay
   meaning has not been traced yet; do not promote a guess into a durable asset field.
@@ -36,7 +35,7 @@ and compilation into portemon assets.
 - If an implementation change can alter generated output for the same ROM while the shared
   asset contract is unchanged, it is producer implementation and belongs under `romdump`.
 - Normalize source-specific structure before publication so runtime code does not need NARC,
-  Nitro, overlay, packed-bitfield, or decomp knowledge.
+  Nitro, overlay, packed-bitfield, or retail-ROM-layout knowledge.
 - Do not duplicate winner selection, schema validation, source resolution, or normalization in
   inspectors/debug tools. Inspection surfaces call the authoritative producer logic.
 - Development freshness follows the producer working-tree byte digest across

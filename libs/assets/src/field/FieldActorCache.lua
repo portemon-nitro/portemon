@@ -86,7 +86,7 @@ local FieldActorCache = {}
 ---@field spriteId integer
 ---@field render FieldActorCache.Render
 ---@field directions table<string, { idle: FieldActorCache.Pose, walk: FieldActorCache.Pose? }>
----@field idlePresentation { mode: "static"|"animated", cadence: integer, facingOffsets: table<string, { x: number, z: number }>? } animated Pokemon idles also shift their drawn position per facing, in tiles
+---@field idlePresentation { mode: "static"|"animated", cadence: integer, facingOffsets: table<string, { x: number, z: number }>? } animated mon idles also shift their drawn position per facing, in tiles
 ---@field gestures table<string, FieldActorCache.Gesture>
 
 local Validate = require("libs.assets.src.Validate")

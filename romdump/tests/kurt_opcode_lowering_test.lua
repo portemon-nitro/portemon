@@ -1,9 +1,9 @@
 -- Kurt's Apricorn script commands retain their source widths and lower to
--- semantic operations. Source reference: pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981.
+-- semantic operations. Source reference: the retail ROM.
 
 local Assert = require("tests.support.Assert")
 local ScriptBinaryDecoder = require("romdump.src.digest.script.ScriptBinaryDecoder")
-local ScriptCommands = require("romdump.src.reference.hgss.script_commands")
+local ScriptCommands = require("romdump.src.catalog.hgss.script_commands")
 local ScriptFixture = require("tests.support.ScriptFixture")
 local SemanticLowering = require("romdump.src.digest.script.SemanticLowering")
 local SourceCatalog = require("romdump.src.digest.script.SourceCatalog")

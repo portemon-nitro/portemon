@@ -1,5 +1,4 @@
--- Personality derivations. Canonical sources: pret/pokeheartgold,
--- src/pokemon.c (GetNatureFromPersonality, gender and ability selection).
+-- Personality derivations. Source: the retail ROM (nature, gender and ability selection).
 -- Nature is personality mod 25. Gender compares the low personality byte
 -- against the species ratio, with fixed-gender and genderless ratios
 -- short-circuiting. Shininess XORs the trainer and personality halves with
@@ -89,8 +88,7 @@ function Personality.shiny(trainerId, personality)
 end
 
 -- Forced personality convolution for event distributions.
--- pret/pokeheartgold src/pokemon.c
--- ChangePersonalityToNatureGenderAndAbility in its non-generator branch
+-- Retail ROM ChangePersonalityToNatureGenderAndAbility in its non-generator branch
 -- (the Spiky-Ear Pichu and Pokewalker path): the input doubles as the
 -- trainer ID, the high word is folded arithmetically (no generator
 -- draws), the low word is nudged to the requested nature, and the low

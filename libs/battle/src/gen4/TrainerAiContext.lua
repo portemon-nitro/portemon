@@ -1,5 +1,5 @@
 -- Shared stateless native readers for the trainer interpreter
--- (pret/pokeheartgold asm/overlay_10_trainer_ai.s word, signed, battler,
+-- (retail ROM trainer-AI word, signed, battler,
 -- score, and speed primitives). Every helper reads caller-provided words,
 -- facts, or scores and owns no mutable session or cached facts. The
 -- command and preview owners share these readers; nothing here reaches

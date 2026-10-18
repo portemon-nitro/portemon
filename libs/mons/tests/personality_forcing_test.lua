@@ -1,4 +1,4 @@
--- Forced personality vectors: the exact pret/pokeheartgold
+-- Forced personality vectors: the exact retail ROM
 -- ChangePersonalityToNatureGenderAndAbility convolution for the
 -- non-generator branch (the Spiky-Ear Pichu and Pokewalker path), where
 -- the input doubles as the trainer ID and no generator draws happen. The

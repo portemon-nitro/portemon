@@ -5,8 +5,7 @@
 -- convention and raise at the evaluator (no real HGSS field asset uses
 -- them).
 --
--- Authority: pokediamond arm9/asm/NNS_G3D_maya.s (pinned commit
--- 038cccaed, 2025-12-24), the texmtxCalc_* variants and the SendTexSRT
+-- Authority: the retail ROM's NitroSystem code, the texmtxCalc_* variants and the SendTexSRT
 -- shell. All HGSS field build models use mode 0 (Maya).
 --
 -- Correction over the earlier transcription: the anm result's scale and

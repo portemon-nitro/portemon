@@ -365,7 +365,7 @@ T["motion and dialogue preserve actor identity, offsets, facing, and substitutio
   Assert.deepEqual(seen.actor.offset, { x = 0, y = 0, z = 0 }, "finished motion clears presentation offset")
 end
 
--- ov02_0224F8FC/ov02_02250004 frame schedule, one poll per frame from the
+-- Retail ROM frame schedule, one poll per frame from the
 -- step's first frame: hand-off and setup frames before the first record, the
 -- last record held through the end-marker frame, restore, the balloon
 -- subtask's call and return frames, and a delay entered and left on frames of

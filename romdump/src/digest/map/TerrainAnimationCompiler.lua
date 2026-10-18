@@ -1,6 +1,6 @@
 -- Map-scoped terrain-animation compiler: owns every HGSS terrain-animation
 -- coordination step for one map bundle. It parses the `fldtanime` table
--- (member 0 of `data/fldtanime.narc` in pret/pokeheartgold, dump alias
+-- (member 0 of `data/fldtanime.narc` in the retail ROM, dump alias
 -- `field_texture_animations`) once, matches records against the decoded
 -- model materials' texture names, lazily reads and decodes only the
 -- replacement BTX0 members the central or neighbor terrain matched (cached

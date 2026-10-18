@@ -30,7 +30,7 @@ local CelebiTimeTravelScene = require("libs.hgss.src.field.CelebiTimeTravelScene
 ---@field mart table<string, unknown>? the script-owned mart child host
 ---@field travel table<string, unknown>? the durable travel owner for spawn updates
 ---@field fieldMoves table<string, unknown>? the field-move runtime for task execution
----@field pokemonNaming table<string, unknown> the script-owned Pokemon Naming Screen host
+---@field monNaming table<string, unknown> the script-owned Pokemon Naming Screen host
 ---@field followerTransition table<string, unknown>? the transient follower-transition owner the nonblocking transition command starts
 ---@field starterBalls table<string, unknown>? the Elm starter-ball runtime-prop controller
 ---@field followerInteractionCatalog table<string, unknown> validated generated interaction catalog
@@ -491,7 +491,7 @@ function FieldScriptComposition.compose(runtime, options)
     mart = options.mart,
     travel = options.travel,
     fieldMoves = options.fieldMoves,
-    pokemonNaming = options.pokemonNaming,
+    monNaming = options.monNaming,
     followerTransition = options.followerTransition,
     starterBalls = options.starterBalls,
     pcApplications = runtime.pcApplicationHost,

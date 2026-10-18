@@ -538,7 +538,7 @@ end
 ---@param summaryManifest table<string, unknown> validated Summary family
 ---@return table<string, unknown> rig driving the production party flow
 local function openProductionPartyFlow(versionId, summaryManifest)
-  local PokemonMenuFlow = require("game.hgss.src.field.PokemonMenuFlow")
+  local PartyMenuFlow = require("game.hgss.src.field.PartyMenuFlow")
   local BagCursor = require("libs.hgss.src.items.BagCursor")
   local CacheFs = require("libs.storage.src.CacheFs")
   local HgssBagService = require("libs.hgss.src.items.HgssBagService")
@@ -559,7 +559,7 @@ local function openProductionPartyFlow(versionId, summaryManifest)
   local mailbox = Mailbox.new()
   local pcManifest = PcPresentationFixture.manifest()
   local mailActions = MailActions.new({ mons = service, mailbox = mailbox, bag = bag, manifest = pcManifest })
-  local flow = PokemonMenuFlow.new({
+  local flow = PartyMenuFlow.new({
     root = "party",
     mons = service,
     bag = bag,

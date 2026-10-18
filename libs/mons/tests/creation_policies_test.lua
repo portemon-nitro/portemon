@@ -135,8 +135,7 @@ end
 -- The event-locked Spiky-Ear Pichu distribution: a fixed level-30 form-1
 -- Pichu with the source moveset at full power points, the Zap Plate, and
 -- an arithmetically forced Naughty female personality (no generator
--- draws), exactly like pret/pokeheartgold
--- src/field/scrcmd_pokemon_misc.c ScrCmd_GiveSpikyEarPichu.
+-- draws), exactly like the retail ROM.
 function T.spiky_ear_pichu_pins_the_event_distribution()
   local catalog = CatalogFixture.makeCatalog()
   local Personality = require("libs.mons.src.gen4.Personality")

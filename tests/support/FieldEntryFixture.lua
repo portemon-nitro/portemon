@@ -1,8 +1,6 @@
 -- Pinned retail location-preview source selectors for the generated
--- field-entry class. The rows transcribe pret/pokeheartgold
--- src/map_preview_graphic.c `sMapPreviewGraphicData` and
--- files/fielddata/graphic/preview_graphic/preview_graphic.order at commit
--- d2355244ac42b3c6e40d8c36aa3564ee8706dea4. Each base is a zero-based NCLR
+-- field-entry class. The rows transcribe the retail ROM's
+-- map-preview graphic data and order. Each base is a zero-based NCLR
 -- member id; the companion NCGR and NSCR members follow at base+1 and base+2.
 -- Slot order is morning, day, evening, night. A map whose evening base equals
 -- its day base aliases the daytime graphic.
@@ -59,8 +57,8 @@ function FieldEntryFixture.uniqueBases()
 end
 
 -- The nine areawindow banner members: char member 2*i and palette member
--- 2*i+1 for i = 0..8 (pret/pokeheartgold src/field/draw_map_name.c
--- LoadAreaIconGraphics). The banner composes source tiles 1..68 as a 17x4
+-- 2*i+1 for i = 0..8 (retail ROM area-icon
+-- loading). The banner composes source tiles 1..68 as a 17x4
 -- grid, so each char member carries at least 69 tiles.
 FieldEntryFixture.BANNER_STYLE_COUNT = 9
 

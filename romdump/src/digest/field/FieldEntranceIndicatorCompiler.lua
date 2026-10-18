@@ -367,7 +367,7 @@ local function compileFollowerReaction(narc, source, basePack, basePattern)
   for _, palette in ipairs(selectorPack.palettes) do
     paletteNames[#paletteNames + 1] = palette.name
   end
-  -- ov01_02203DF8 steps the reaction's own schedule: the source frame table
+  -- The retail ROM steps the reaction's own schedule: the source frame table
   -- holds per-texture durations, counted before comparison so that a zero
   -- duration still lasts one update.
   local keys = {}

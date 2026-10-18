@@ -986,7 +986,7 @@ end
 
 -- The standing metatile behavior selects the battle terrain ahead of the
 -- compiled map background default, in native standing-tile precedence
--- (pret/pokeheartgold FieldSystem_GetTerrainFromStandingTile): ice, tall
+-- (retail ROM behavior): ice, tall
 -- and very tall grass, sand, snow, marsh mud, cave floor, then the native
 -- surfable-water flag set. Every classified scene key passes the staged
 -- scene parser instead of falling back to the background default.
@@ -1557,7 +1557,7 @@ function T.modal_release_disposes_only_acquired_hosts_in_order()
   Assert.notNil(runtime.menuHost, "release keeps later-lifetime hosts")
   Assert.notNil(runtime.yesNoHost, "release keeps the choice host")
   Assert.notNil(runtime.starterChoice, "release keeps the starter host")
-  Assert.notNil(runtime.pokemonNaming, "release keeps the naming host")
+  Assert.notNil(runtime.monNaming, "release keeps the naming host")
   Assert.equal(runtime.input.calls.cleared, 1, "teardown releases the held menu input exactly once")
   composer:releaseModalHosts()
   Assert.deepEqual(released, { "dialogue", "signpost", "menu", "applicationHost" }, "repeated release stays a no-op")

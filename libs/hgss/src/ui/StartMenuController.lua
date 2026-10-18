@@ -292,7 +292,7 @@ function StartMenuController:_moveSelection(direction)
     "unknown UI direction"
   )
   -- Retail restarts the newly focused icon's one-shot wobble on every
-  -- directional focus change (ov27_0225B404): up/down play the vertical
+  -- directional focus change: up/down play the vertical
   -- shake, left/right the horizontal one. Touch selection never shakes.
   local wasShoesFocused = self._shoesFocused
   local beforePosition = self._selectedPosition
@@ -358,7 +358,7 @@ function StartMenuController:_activate(position)
     self._effect("SEQ_SE_DP_SELECT")
   end
   -- Retail hops the activated icon upward on successful activation
-  -- (ov27_0225A2CC arms it; the A320 loop restarts sequence 2 on the
+  -- (the loop restarts sequence 2 on the
   -- selected icon). Disabled, cancel, and shoes-toggle activation return
   -- before any result is recorded, so they never hop.
   if action.actionKind == "field_action" then

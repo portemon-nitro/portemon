@@ -116,8 +116,8 @@ local function clearMotion(state, svc, normalCompletion)
   state.cumulativeX, state.cumulativeY, state.cumulativeZ = 0, 0, 0
 end
 
--- The source spawns a reaction as a blocking subtask (ov02_0224FB54 ->
--- ov01_02203AB4), so the step's message waits for the partner's emote to
+-- The source spawns a reaction as a blocking subtask (the field
+-- script hands off to the effect), so the step's message waits for the partner's emote to
 -- finish. The subtask creates the balloon on the frame after the call and
 -- returns control on the frame after the balloon removes itself; reaction
 -- tick k is the balloon's k-th update. The partner action is derived
@@ -142,7 +142,7 @@ local function pollReaction(state, svc, step)
     return true
   end
   if state.reactionTick == 1 then
-    -- ov01_02203BB4 plays the balloon's pop sound when it is created.
+    -- The retail ROM plays the balloon's pop sound when it is created.
     svc.audio:play("SEQ_SE_DP_DECIDE")
   end
   if state.reactionTick == 1 or not svc.actors:isScriptedMoving(actorId) then
@@ -185,7 +185,7 @@ end
 local function stepPhase(state, ctx)
   beginStep(state, ctx)
   if state.phase == "motion" then
-    -- ov02_0224F8FC hands a motion step to ov02_02250004 on this frame, and
+    -- The retail ROM hands a motion step to the motion runner on this frame, and
     -- the motion saves its start state on the next; the first record plays
     -- on the frame after that.
     state.holdTicks = 1
@@ -204,14 +204,14 @@ local function motionPhase(state, ctx)
   while state.phase == "motion" do
     local record = motion[state.motionIndex]
     if record == nil then
-      -- ov02_02250004 finds the end marker one frame after the last record
+      -- The motion runner finds the end marker one frame after the last record
       -- and restores the partner on the next, which hands over to the
       -- reaction on the frame after that.
       clearMotion(state, svc, true)
       state.phase = "reaction"
       return "yield"
     end
-    -- ov02_0224FF5C counts a frame before comparing, so a zero-tick record
+    -- The retail ROM counts a frame before comparing, so a zero-tick record
     -- still holds one frame.
     local ticks = math.max(record.ticks, 1)
     if not state.motionStarted then
@@ -232,7 +232,7 @@ local function motionPhase(state, ctx)
         y = state.cumulativeY,
         z = state.cumulativeZ,
         ticks = ticks,
-        -- ov01_021F8F08: the drawn facing offset holds the interaction-start
+        -- The drawn facing offset holds the interaction-start
         -- facing for the whole motion while records turn the partner.
         heldOffsetFacing = state.savedFacing,
       })
@@ -260,7 +260,7 @@ local function motionPhase(state, ctx)
         y = state.cumulativeY,
         z = state.cumulativeZ,
         ticks = ticks,
-        -- ov01_021F8F08: the drawn facing offset holds the interaction-start
+        -- The drawn facing offset holds the interaction-start
         -- facing for the whole motion while records turn the partner.
         heldOffsetFacing = state.savedFacing,
       })
@@ -293,7 +293,7 @@ local function reactionPhase(state, ctx)
   if step.messageId ~= nil then
     local bindings = engine:bindings(state.leadSlot)
     -- The final message before a follow-up choice skips the input wait and
-    -- stays open under the choice (ov02_0224F8FC substate 6).
+    -- stays open under the choice.
     local holdsForChoice = program.continuation ~= nil and program.steps[state.stepIndex + 1] == nil
     state.dialogueState = message(ctx, 265, step.messageId, bindings, holdsForChoice and "message" or "say")
     state.phase = "dialogue"
@@ -323,7 +323,7 @@ local function delayPhase(state, ctx)
   local step = program.steps[state.stepIndex]
   local delay = step.delayTicks or 0
   if delay > 0 then
-    -- ov02_0224F8FC enters the delay on one frame, counts it over the next
+    -- The retail ROM enters the delay on one frame, counts it over the next
     -- `delay` frames, and advances the step on the frame after.
     local remaining = state.delayRemaining or (delay + 1)
     if remaining > 0 then

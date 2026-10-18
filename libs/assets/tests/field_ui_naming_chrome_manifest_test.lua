@@ -172,7 +172,7 @@ function T.stale_static_subject_and_cursor_records_are_rejected()
   end, "a static selected slot without animation frames must fail")
   reject(function(m)
     m.namingScreen.pokemonSubject = nil
-  end, "a missing Pokémon naming subject contract must fail")
+  end, "a missing mon naming subject contract must fail")
 end
 
 function T.malformed_animation_records_are_rejected()
@@ -202,10 +202,10 @@ function T.malformed_animation_records_are_rejected()
   end, "a cursor frame without its mask rect must fail")
   reject(function(m)
     m.namingScreen.pokemonSubject.frames[1].parts[1].iconFrame = 0
-  end, "a Pokémon frame outside the one-based icon atlas must fail")
+  end, "a mon frame outside the one-based icon atlas must fail")
   reject(function(m)
     m.namingScreen.pokemonSubject.frames[1].asset = "hgss.naming_screen.base"
-  end, "a Pokémon frame must not reference duplicated generated pixels")
+  end, "a mon frame must not reference duplicated generated pixels")
 end
 
 function T.pokemon_subject_parts_and_gender_markers_are_strict()

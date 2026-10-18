@@ -16,7 +16,7 @@ local MapResolver = require("romdump.src.digest.map.MapResolver")
 local MapUnits = require("romdump.src.digest.map.MapUnits")
 local FieldGrid = require("libs.hgss.src.world.FieldGrid")
 local RomSourcePath = require("tests.rom.support.RomSourcePath")
-local StarterLab = require("romdump.src.reference.hgss.starter_lab")
+local StarterLab = require("romdump.src.catalog.hgss.starter_lab")
 
 local T = {
   metadata = {

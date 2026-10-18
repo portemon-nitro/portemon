@@ -1,6 +1,6 @@
 -- The Naming Screen renderer owns player presentation from the generated
 -- manifest and delegates only non-player subjects to its host: one recording
--- callback proves the seam carries Pokemon subjects while player snapshots
+-- callback proves the seam carries mon subjects while player snapshots
 -- never reach it.
 
 local Assert = require("tests.support.Assert")
@@ -157,14 +157,14 @@ function T.tests.player_subjects_render_from_the_manifest_while_pokemon_delegate
   })
   local pokemonSubject = { kind = "pokemon", species = 25, form = 0, gender = "male" }
   renderer:draw(snapshot(pokemonSubject), layout)
-  Assert.equal(#seen, 1, "the visible semantic Pokemon part draws through the host callback")
+  Assert.equal(#seen, 1, "the visible semantic mon part draws through the host callback")
   Assert.deepEqual(seen[1].subject, pokemonSubject)
   Assert.deepEqual(seen[1].placement, { x = -15, y = 9, frameIndex = 1 })
   renderer:draw(
     snapshot(pokemonSubject, { subjectTick = 20, cursorTick = 0, entrySlotTick = 0, glowAngle = 180, pressTicks = {} }),
     layout
   )
-  Assert.equal(#seen, 2, "the animated Pokemon subject continues to draw one semantic part")
+  Assert.equal(#seen, 2, "the animated mon subject continues to draw one semantic part")
   Assert.deepEqual(seen[2].placement, { x = -6, y = -2, frameIndex = 1 }, "semantic placement follows its tick")
 
   local markers = manifest.namingScreen.pokemonGenderMarkers

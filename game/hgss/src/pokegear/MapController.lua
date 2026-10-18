@@ -1,7 +1,7 @@
 -- The gear region-map card: map mode with the source's scrolling, zoom,
 -- touch drag, location selection and information panel, and the marking
--- mode with its timed fade and panel slides. Follows the Pokegear map
--- application of pret/pokeheartgold (src/application/pokegear/map). World
+-- mode with its timed fade and panel slides. Follows the retail ROM's Pokegear map
+-- application. World
 -- motion lives in MapWorld, location queries in MapLocations, and the
 -- slot editor in MarkingMode; this controller sequences them, persists
 -- committed markings, and publishes the detached view the renderer draws.

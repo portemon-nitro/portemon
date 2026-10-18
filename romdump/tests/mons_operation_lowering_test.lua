@@ -8,7 +8,7 @@ local Assert = require("tests.support.Assert")
 local CommandCatalog = require("romdump.src.digest.script.CommandCatalog")
 local SemanticLowering = require("romdump.src.digest.script.SemanticLowering")
 local SourceCatalog = require("romdump.src.digest.script.SourceCatalog")
-local ScriptCommands = require("romdump.src.reference.hgss.script_commands")
+local ScriptCommands = require("romdump.src.catalog.hgss.script_commands")
 
 local T = {}
 
@@ -157,7 +157,7 @@ function T.loan_give_and_check_defer_to_the_trade_application()
 end
 
 -- Both buffer commands' party-slot operand is a ScriptGetVar-resolved value
--- (pret src/scrcmd_strbuf.c ScrCmd_BufferMonSpeciesName/ScrCmd_BufferPartyMonNick:
+-- (retail ROM ScrCmd_BufferMonSpeciesName/ScrCmd_BufferPartyMonNick:
 -- `u16 party_mon_idx = ScriptGetVar(ctx)`), so a variable-typed operand must
 -- stay a deferred variable read, exactly like every sibling buffer_text
 -- command's value/quantity operand.

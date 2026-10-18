@@ -110,7 +110,7 @@ function T.tests.ordinary_walking_behaviors_are_admitted()
   -- the two additional bytes come from HGSS TILE_BEHAVIOR_* source values.
   for _, behavior in ipairs({
     MetatileBehavior.BEHAVIOR.VERY_TALL_GRASS,
-    8, -- TILE_BEHAVIOR_CAVE_FLOOR in pret/pokeheartgold/include/constants/metatile_behavior.h
+    8, -- TILE_BEHAVIOR_CAVE_FLOOR
     7, -- an unclassified behavior is not a terrain refusal by itself
     0,
     MetatileBehavior.BEHAVIOR.TALL_GRASS,
@@ -152,10 +152,10 @@ function T.tests.unsafe_known_nonstanding_terrain_and_existing_failure_priority_
     behavior.JUMP_NORTH,
     behavior.WARP_PANEL,
     behavior.DOOR,
-    32, -- TILE_BEHAVIOR_ICE in pret/pokeheartgold/include/constants/metatile_behavior.h
-    66, -- TILE_BEHAVIOR_SLIDE_NORTH in the same source enum
-    77, -- TILE_BEHAVIOR_STOP_SLIDING in the same source enum
-    255, -- TILE_BEHAVIOR_NONE sentinel in the same source enum
+    32, -- TILE_BEHAVIOR_ICE
+    66, -- TILE_BEHAVIOR_SLIDE_NORTH
+    77, -- TILE_BEHAVIOR_STOP_SLIDING
+    255, -- TILE_BEHAVIOR_NONE sentinel
   }
   for _, code in ipairs(unsafe) do
     local result = LocationPolicy.classify(facts({

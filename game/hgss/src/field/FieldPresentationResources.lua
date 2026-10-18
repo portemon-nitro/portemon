@@ -662,7 +662,7 @@ end
 -- Creates naming chrome only after the shared icon provider reports readiness.
 ---@param owner FieldPresentationResources
 ---@return NamingScreenRenderer
-local function ensurePokemonNamingRenderer(owner)
+local function ensureMonNamingRenderer(owner)
   if owner.namingRenderer ~= nil then
     return owner.namingRenderer
   end
@@ -695,7 +695,7 @@ end
 ---@param subject table<string, unknown>
 ---@return boolean ready
 ---@return string? failure
-function FieldPresentationResources:preparePokemonNamingSubject(subject)
+function FieldPresentationResources:prepareMonNamingSubject(subject)
   local iconKey = assert(subject.iconKey, "Pokemon naming subject requires its icon key")
   local icons = assert(self.monIconProvider, "field presentation owns the mon icon provider")
   local ready, failure = icons:prepareKeys({ iconKey })
@@ -722,12 +722,12 @@ function FieldPresentationResources:preparePokemonNamingSubject(subject)
     end
     self.namingIconQuads[iconKey] = prepared
   end
-  ensurePokemonNamingRenderer(self)
+  ensureMonNamingRenderer(self)
   return true, nil
 end
 
 ---@return NamingScreenRenderer the renderer prepared by a successful naming preparation
-function FieldPresentationResources:pokemonNamingRenderer()
+function FieldPresentationResources:monNamingRenderer()
   return assert(self.namingRenderer, "field presentation owns no Pokemon naming renderer")
 end
 

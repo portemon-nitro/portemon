@@ -1,5 +1,5 @@
 -- Raw instruction IR : the mode-independent output of the
--- decomp parser and the binary decoder. Both producers emit exactly this
+-- symbolic parser and the binary decoder. Both producers emit exactly this
 -- shape so semantic lowering and verification never care where the bytes came
 -- from. Pure domain module: no love dependency.
 

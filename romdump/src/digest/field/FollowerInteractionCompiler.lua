@@ -1,6 +1,5 @@
--- Compiles the HGSS follower interaction tables in overlay_02_02248728.s and
--- the reaction selector table in overlay_01_02203A18.s from
--- pret/pokeheartgold@9d8b7591f09b65804da2fb2dfd56f320633e0d36.
+-- Compiles the HGSS follower interaction tables and
+-- the reaction selector table of the retail ROM.
 
 local BinaryReader = require("libs.codec.src.BinaryReader")
 local Errors = require("libs.errors.src.Errors")
@@ -16,7 +15,7 @@ local MonSources = require("romdump.src.config.MonSources")
 local FieldEffects = require("romdump.src.config.FieldEffects")
 local FieldEffectPatternAnimation = require("romdump.src.digest.field.FieldEffectPatternAnimation")
 local MapCatalog = require("romdump.src.digest.map.MapCatalog")
-local charmap = require("romdump.src.reference.hgss.charmap")
+local charmap = require("romdump.src.catalog.hgss.charmap")
 
 local Compiler = {}
 local SOUND_EFFECT_END = 2378
@@ -45,9 +44,7 @@ local function requireSize(bytes, expected, label, memberId)
 end
 
 local function decodeRule(bytes)
-  -- Matcher reads are in ov02_0224F108; the criteria helpers are in
-  -- ov02_0224F4BC, ov02_0224F5FC, ov02_0224F644, ov02_0224F64C,
-  -- ov02_0224F6AC, ov02_0224F728, and ov02_0224F76C.
+  -- The matcher reads and criteria helpers follow the retail ROM.
   local reader = BinaryReader.new(bytes, "follower-interaction-rule")
   assert(reader:length() == Sources.RULE_SIZE, "rule decoder requires one complete source row")
   local selector = reader:u16le(0x0A)
@@ -90,7 +87,7 @@ local function decodeRule(bytes)
 end
 
 local function decodeProgramMember(bytes)
-  -- Task_FollowMonInteract and ov02_0224F880 consume these DF records.
+  -- The retail ROM's interaction task consumes these DF records.
   requireSize(bytes, Sources.PROGRAM_SIZE, "program", -1)
   local reader = BinaryReader.new(bytes, "follower-interaction-program")
   local steps = {}
@@ -160,7 +157,7 @@ local function decodeProgramMember(bytes)
 end
 
 local function decodeMotionMember(bytes)
-  -- ov02_02250004 loads a 1-based motion selector from NARC a/2/2/2.
+  -- The retail ROM loads a 1-based motion selector from NARC a/2/2/2.
   requireSize(bytes, Sources.MOTION_SIZE, "motion", -1)
   local reader = BinaryReader.new(bytes, "follower-interaction-motion")
   local records = {}
@@ -183,7 +180,7 @@ local function decodeMotionMember(bytes)
 end
 
 local function decodeReactionDescriptor(bytes)
-  -- sub_02026E18 and sub_02026DE0 decode the companion selector table.
+  -- The retail ROM decodes a companion selector table here.
   requireSize(bytes, 20, "reaction descriptor", -1)
   local reader = BinaryReader.new(bytes, "follower-reaction-descriptor")
   local count = reader:u32le(0)
@@ -254,7 +251,7 @@ local function decodeRules(ruleNarc)
     end
   end
   local bySection = {}
-  -- ov02_0224EF94 reads a map section's rows from member MAPSEC + 1.
+  -- The retail ROM reads a map section's rows from member MAPSEC + 1.
   for sectionId = 0, Sources.MAP_SECTION_COUNT - 1 do
     local rows = {}
     local memberId = sectionId + 1
@@ -442,7 +439,7 @@ function Compiler.compile(romFs)
     error(err)
   end
   local provenance = {
-    source = "pret/pokeheartgold@9d8b7591f09b65804da2fb2dfd56f320633e0d36",
+    source = "the retail ROM",
     files = {
       "overlay_02_02248728.s",
       "overlay_01_02203A18.s",

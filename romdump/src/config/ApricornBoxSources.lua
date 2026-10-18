@@ -1,11 +1,10 @@
--- HGSS Apricorn Box sources traced in pret/pokeheartgold's overlay59 and
+-- HGSS Apricorn Box sources traced in the retail ROM's overlay 59 and
 -- resdat resource records. Source IDs stay in the ROM producer.
 
 local ApricornBoxSources = {}
 
 ApricornBoxSources.provenance = {
-  repo = "pret/pokeheartgold",
-  commit = "0985e8718df4f25e64d6507d89c0c97c0d288981",
+  repo = "retail ROM",
   sources = {
     "asm/overlay_59.s",
     "src/touchscreen_list_menu.c",

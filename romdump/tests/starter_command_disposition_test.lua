@@ -6,7 +6,7 @@
 
 local Assert = require("tests.support.Assert")
 local CommandCatalog = require("romdump.src.digest.script.CommandCatalog")
-local ScriptCommands = require("romdump.src.reference.hgss.script_commands")
+local ScriptCommands = require("romdump.src.catalog.hgss.script_commands")
 local SemanticLowering = require("romdump.src.digest.script.SemanticLowering")
 local SourceCatalog = require("romdump.src.digest.script.SourceCatalog")
 
@@ -72,7 +72,7 @@ function T.hgss_composition_registers_the_blocking_starter_task()
 end
 
 -- ScrCmd_SetStarterChoice stores its variable operand into VAR_PLAYER_STARTER
--- and continues in the same tick (pinned scrcmd_c.c ScrCmd_SetStarterChoice:
+-- and continues in the same tick (retail ROM ScrCmd_SetStarterChoice:
 -- ScriptGetVar, Save_VarsFlags_SetStarter, return FALSE). It needs no
 -- application: the starter scene already published the party, so the command
 -- is one existing variable store.
@@ -94,7 +94,7 @@ function T.starter_choice_store_lowers_to_the_starter_variable()
 end
 
 -- ScrCmd_GetStarterChoice reads VAR_PLAYER_STARTER into its result variable
--- and continues in the same tick (pinned scrcmd_c.c ScrCmd_GetStarterChoice,
+-- and continues in the same tick (retail ROM ScrCmd_GetStarterChoice,
 -- Save_VarsFlags_GetStarter). It is the read side of the choice store above.
 function T.starter_choice_read_is_supported_with_same_tick_timing()
   local tagged = entry(206)

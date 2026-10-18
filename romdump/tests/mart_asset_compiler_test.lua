@@ -1,6 +1,5 @@
 -- HGSS mart compiler failure contracts.
--- Source authority: pret/pokeheartgold@9d8b7591f09b65804da2fb2dfd56f320633e0d36,
--- src/scrcmd_mart.c, asm/overlay_31.s, and src/overlay_03/shop_menu.c.
+-- Source authority: the retail ROM.
 
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")

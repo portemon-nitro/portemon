@@ -20,7 +20,7 @@ local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local TerrainSurface = require("libs.hgss.src.world.TerrainSurface")
-local InactivePokemonNaming = require("tests.support.InactivePokemonNaming")
+local InactiveMonNaming = require("tests.support.InactiveMonNaming")
 
 local T = {}
 
@@ -283,7 +283,7 @@ local function presentationState(assets, actorIds)
     end
   end
   local runtime = {
-    pokemonNaming = InactivePokemonNaming.new(),
+    monNaming = InactiveMonNaming.new(),
     update = function() end,
     dispose = function() end,
     actors = actors,
@@ -1820,7 +1820,7 @@ local function gatedEntryState(renderer, options)
   end
   local runtime = {
     update = function() end,
-    pokemonNaming = InactivePokemonNaming.new(),
+    monNaming = InactiveMonNaming.new(),
     actors = actors,
     playerVisual = {
       spriteId = 99,

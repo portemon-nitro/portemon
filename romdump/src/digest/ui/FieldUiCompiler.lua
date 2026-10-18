@@ -157,8 +157,7 @@ local function newRgba(width, height)
 end
 
 -- Compose one 16x16 continuation phase the way the source window code
--- does (pret/pokeheartgold sub_0200EA68 -> sub_0200EA24 ->
--- BlitBitmapRect4Bit): frame tiles 10 and 11 supply the backing, then the
+-- does (retail ROM): frame tiles 10 and 11 supply the backing, then the
 -- cursor payload is blitted from source columns 3..15 onto destination
 -- columns 0..12 with palette index 0 transparent. The phase block holds
 -- its 2x2 tiles row-major, so source column 3 starts mid-tile.
@@ -378,7 +377,7 @@ local function compileStartMenuSub(sha1hex, deps, assets, manifestAssets, archiv
 end
 
 -- The retail icon wobble as source-independent translation tracks: the
--- configured one-shot sequences (ov27_0225B404 restarts the horizontal
+-- configured one-shot sequences (the retail ROM restarts the horizontal
 -- sequence on left/right moves, the vertical one on up/down moves, and the
 -- confirm sequence on successful activation) carry per-frame cells whose OBJ
 -- layouts shift the whole icon; each frame publishes its uniform shift
@@ -1772,48 +1771,43 @@ local function compileNamingScreen(romFs, sha1hex, deps, assets, manifestAssets)
   )
   subjectFemale.anchor = { x = cfg.objAnchors.subject.x, y = cfg.objAnchors.subject.y }
 
-  -- pret/pokeheartgold@9d8b7591f09b65804da2fb2dfd56f320633e0d36,
-  -- src/naming_screen.c::NamingScreen_LoadMonIcon uploads 0x200 bytes at
+  -- the retail ROM's naming-screen mon icon upload writes 0x200 bytes at
   -- OBJ address 0x57E0: one 32x32 icon at tile 703. Sequence 50's NCER
   -- cells both reference that tile; they animate the icon's placement, not
   -- its image frame.
   local pokemonIconTile = 0x57E0 / 32
   local pokemonAnimation = objAnim.anims[cfg.objAnims.pokemonSubject + 1]
   if pokemonAnimation == nil or #pokemonAnimation.frames == 0 then
-    Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "the naming Pokémon animation is missing frames", {
+    Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "the naming mon animation is missing frames", {
       anim = cfg.objAnims.pokemonSubject,
     })
   end
-  assert(pokemonAnimation ~= nil, "the naming Pokémon animation is present")
+  assert(pokemonAnimation ~= nil, "the naming mon animation is present")
   local pokemonSubjectFrames = {}
   for index, frame in ipairs(pokemonAnimation.frames) do
     if cfg.pokemonSubjectCells[index] ~= frame.cell then
-      Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "the naming Pokémon animation selects an unsupported cell", {
+      Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "the naming mon animation selects an unsupported cell", {
         anim = cfg.objAnims.pokemonSubject,
         cell = frame.cell,
       })
     end
     local cell = objCell.cells[frame.cell + 1]
     if cell == nil or #cell.objs ~= 2 then
-      Errors.raise(
-        FieldUiCompiler.ERROR.SOURCE_INVALID,
-        "the naming Pokémon cell does not carry its two source objects",
-        {
-          anim = cfg.objAnims.pokemonSubject,
-          sequence = cfg.objAnims.pokemonSubject,
-          cell = frame.cell,
-          objectCount = cell and #cell.objs or 0,
-        }
-      )
+      Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "the naming mon cell does not carry its two source objects", {
+        anim = cfg.objAnims.pokemonSubject,
+        sequence = cfg.objAnims.pokemonSubject,
+        cell = frame.cell,
+        objectCount = cell and #cell.objs or 0,
+      })
     end
-    assert(cell ~= nil, "the naming Pokémon cell is present")
+    assert(cell ~= nil, "the naming mon cell is present")
     if
       (frame.element ~= "none" and frame.element ~= "translate")
       or frame.scaleX ~= 1
       or frame.scaleY ~= 1
       or frame.rotation ~= 0
     then
-      Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "the naming Pokémon animation transform is unsupported", {
+      Errors.raise(FieldUiCompiler.ERROR.SOURCE_INVALID, "the naming mon animation transform is unsupported", {
         anim = cfg.objAnims.pokemonSubject,
         element = frame.element,
       })
@@ -1850,7 +1844,7 @@ local function compileNamingScreen(romFs, sha1hex, deps, assets, manifestAssets)
     if invalidObject ~= nil then
       Errors.raise(
         FieldUiCompiler.ERROR.SOURCE_INVALID,
-        "the naming Pokémon cell does not match the visible icon and palette underlay composition",
+        "the naming mon cell does not match the visible icon and palette underlay composition",
         {
           anim = cfg.objAnims.pokemonSubject,
           sequence = cfg.objAnims.pokemonSubject,

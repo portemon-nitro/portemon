@@ -1,11 +1,9 @@
 -- TimeOfDayProps: the time-of-day field-prop policy. HGSS registers up to
 -- four banded animations per field object -- morning, day, evening, night --
--- and swaps the active band when the RTC time-of-day changes (pokeheartgold
--- overlay_01_02204004.c ov01_022047DC, with the band map ov01_022095EC:
--- MORN=0, DAY=1, EVE=2, NITE=3, LATE=3, and the hour table sTimeOfDayByHour
--- in gf_rtc.c GF_RTC_GetTimeOfDayByHour). Band membership is compiled
+-- and swaps the active band when the RTC time-of-day changes (retail ROM
+-- band map: MORN=0, DAY=1, EVE=2, NITE=3, LATE=3, with a fixed hour table). Band membership is compiled
 -- metadata (clip.timeBand); the plan never infers policy from names or clip
--- counts. The swap mirrors the decomp's remove-and-add: stop the previous
+-- counts. The swap mirrors the retail ROM's remove-and-add: stop the previous
 -- band's clip, play the current band's clip looping. Pure domain module
 -- tests.
 

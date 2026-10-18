@@ -1,8 +1,7 @@
 -- Party-screen presentation semantics: the HP bar zone and the persistent
 -- status key/label consumed by the party view and renderer. The zone
--- replicates the source 48-pixel bar (pret/pokeheartgold@0985e8718d,
--- src/unk_0208805C.c CalculateHpBarPixelsLength/HpBar_GetColorIdx, with the
--- full-HP fast path of CalculateHpBarColor): pixels hp*48/maxHp (at least
+-- replicates the source 48-pixel bar (retail ROM, including the
+-- full-HP fast path): pixels hp*48/maxHp (at least
 -- one while HP remains), green above half the bar, yellow above a fifth,
 -- red otherwise, fainted at zero. The status key projects the semantic
 -- condition records to the source icon order (include/party_menu.h

@@ -4,9 +4,8 @@
 -- stairs/warps, standing ladders) and stepPath mirrors FieldSystem_CheckTransition
 -- (north/panel/ladder-down/escalator standing warps). Collision alone never
 -- infers a transition type; behavior classifies, while the facing-cell collision
--- gate applies only to the facing-door probe. Authoritative source: pret/pokeheartgold
--- src/field/field_control.c with TILE_BEHAVIOR_* values from
--- include/constants/metatile_behavior.h (sequential enum, NONE = 255).
+-- gate applies only to the facing-door probe. Authoritative source: the retail ROM,
+-- with TILE_BEHAVIOR_* values (sequential enum, NONE = 255).
 --
 -- The trigger paths return the minimum public record the session needs --
 -- the classification kind plus the attached warp; the full classification

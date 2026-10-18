@@ -11,8 +11,7 @@
 -- graphics resolve through the existing mon class and are never read here.
 -- The runtime consumes only the manifest and the generated files, never
 -- this module. Pure module: no love dependency.
--- Source basis: pret/pokeheartgold@0985e8718df4f25e64d6507d89c0c97c0d288981
--- src/party_menu.c, src/party_menu_sprites.c, src/party_context_menu.c.
+-- Source basis: the retail ROM.
 
 local Errors = require("libs.errors.src.Errors")
 local Hashing = require("romdump.src.digest.Hashing")
@@ -25,7 +24,7 @@ local PartyCache = require("libs.assets.src.PartyCache")
 local PartySources = require("romdump.src.config.PartySources")
 local UiMessageBank = require("romdump.src.digest.ui.UiMessageBank")
 local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
-local charmap = require("romdump.src.reference.hgss.charmap")
+local charmap = require("romdump.src.catalog.hgss.charmap")
 
 ---@class PartyAssetCompiler
 local PartyAssetCompiler = {}

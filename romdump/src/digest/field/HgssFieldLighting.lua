@@ -1,7 +1,7 @@
 -- Maps an HGSS area's raw light type to one of the five field-light profiles and
 -- its NitroFS source path. The profiles are plain-text tables the field engine
 -- reads to drive time-of-day lighting; HgssFieldLightProfile parses them. The
--- area light-type -> profile mapping is recovered from the pret/pokeheartgold
+-- area light-type -> profile mapping is recovered from the retail ROM
 -- field initialization path. Pure domain module: no love, no ROM access --
 -- callers read the returned path through RomFs:readSourcePath.
 

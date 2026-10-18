@@ -1,6 +1,5 @@
--- Profile-8 preview follower rejoin at component scope (retail
--- MapPreviewGraphic_RunPlayerDropIn states 4-5 in pret/pokeheartgold
--- src/map_preview_graphic.c): with a follower in the party, a ladder-down
+-- Profile-8 preview follower rejoin at component scope (retail ROM
+-- map-preview player drop-in states 4-5): with a follower in the party, a ladder-down
 -- warp that runs the post-commit area preview must hand the follower back
 -- onto the player tile, hidden until its first step, exactly once -- after
 -- the preview-owned arrival completes, before the transition completes. The

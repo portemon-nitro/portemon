@@ -31,8 +31,7 @@ local POKECENTER = "MAP_CHERRYGROVE_POKECENTER_1F"
 local PC_STANDARD_SCRIPT = "common.pokecenter_pc"
 local FLAG_HIDE_COMM_CLUB_CLOSED_LADIES = FieldScriptSymbols.flagsByName.FLAG_HIDE_COMM_CLUB_CLOSED_LADIES
 
--- TILE_BEHAVIOR_PC has source value 131 in
--- pret/pokeheartgold/include/constants/metatile_behavior.h.
+-- TILE_BEHAVIOR_PC has source value 131.
 local SOURCE_PC_METATILE_BEHAVIOR = 131
 
 local function withPlayerRoom(fn)
@@ -290,7 +289,7 @@ local function withPokecenter(fn)
   local createGame = harness.gameFactory
   harness.gameFactory = function(versionId, map)
     local game = createGame(versionId, map)
-    -- Source map spawn at the south entrance (pokeheartgold map spawn table).
+    -- Source map spawn at the south entrance (retail map spawn table).
     game.location = { mapSymbol = POKECENTER, fieldX = 8, fieldZ = 13, facing = "north" }
     -- Retail's closed Union Room ladies and its open receptionists share cells.
     game.worldState:setFlag(FLAG_HIDE_COMM_CLUB_CLOSED_LADIES)

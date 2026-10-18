@@ -11,7 +11,7 @@ local FieldEntryAssetCache = require("libs.assets.src.field.FieldEntryAssetCache
 local FieldEntryAssetCompiler = require("romdump.src.digest.ui.FieldEntryAssetCompiler")
 local FieldEntryFixture = require("tests.support.FieldEntryFixture")
 local MapCatalog = require("romdump.src.digest.map.MapCatalog")
-local maps = require("romdump.src.reference.hgss.maps")
+local maps = require("romdump.src.catalog.hgss.maps")
 
 local T = {}
 

@@ -262,7 +262,7 @@ end
 -- Source: overlay_07 asm settled-X and entry/base/Z tables, the
 -- opponent-controller construction and entry-to-settled move, the four
 -- doubled health-bar sprite templates, and the picture-center
--- semantics (pret/pokeheartgold@9d8b7591). Positions stay opaque: the
+-- semantics. Positions stay opaque: the
 -- first sorted slot of a side owns that side's left row, whatever
 -- screen side that row lands on. Entry coordinates and depths are
 -- source data, never 2D layering: paint order follows slot order.

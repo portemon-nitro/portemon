@@ -1,6 +1,5 @@
 -- Pinned HGSS interaction archive identities and record sizes. The decoder
--- follows the retail matcher and task routines in overlay_02_02248728.s
--- (pret/pokeheartgold@9d8b7591f09b65804da2fb2dfd56f320633e0d36).
+-- follows the retail matcher and task routines in overlay 2.
 
 local FollowerInteractionSources = {}
 

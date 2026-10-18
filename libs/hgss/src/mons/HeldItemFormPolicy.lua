@@ -1,6 +1,6 @@
 -- Pure source-shaped held-item form effects on a copied mon
--- (pret/pokeheartgold src/pokemon.c BoxMon_UpdateArceusForm and
--- BoxMon_UpdateGiratinaForm): an Arceus plate selects the plate type's form
+-- (retail ROM Arceus and Giratina
+-- form updates): an Arceus plate selects the plate type's form
 -- behind the Multitype gate, the griseous orb selects the origin form, and
 -- any other held item restores the base form. A form change recomputes the
 -- PID-selected ability for the new form and clamps current HP to the
