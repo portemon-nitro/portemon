@@ -1498,7 +1498,20 @@ function FieldMapLoader:beginLoad(idOrSymbol)
   end
   local ctx = prepareLoad(self, record)
   local sceneTask, sceneRuntime = startScene(self, ctx)
-  local neighborTask = startNeighbor(self, ctx)
+  local okNeighbor, neighborTaskOrErr = pcall(startNeighbor, self, ctx)
+  if not okNeighbor then
+    if sceneTask ~= nil then
+      pcall(function()
+        sceneTask:release()
+      end)
+    elseif sceneRuntime ~= nil then
+      pcall(function()
+        sceneRuntime:release()
+      end)
+    end
+    error(neighborTaskOrErr, 0)
+  end
+  local neighborTask = neighborTaskOrErr
   return setmetatable({
     _loader = self,
     _ctx = ctx,

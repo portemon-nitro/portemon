@@ -2900,4 +2900,111 @@ function T.staged_load_neighbor_failure_keeps_prior_map_and_stays_loud()
   loader:release()
 end
 
+-- A neighbor constructor that throws synchronously must not orphan the
+-- staged scene task already started by beginLoad: the scene build is
+-- released exactly once, nothing is published, and the loader stays
+-- usable for a later load.
+function T.staged_begin_neighbor_failure_releases_pending_scene_task_without_publishing()
+  local cache, world, _, _, files = fixture(2)
+  withNeighborCell(files, 1)
+  local sceneLoader, sceneBuilds = stagedSceneLoader(100)
+  local beginCalls = 0
+  local healthyNeighbor, _ = stagedNeighborLoader()
+  local neighborLoader = {}
+  function neighborLoader.begin(cacheFs, descriptors, options)
+    beginCalls = beginCalls + 1
+    if beginCalls == 1 then
+      error("injected neighbor begin failure", 0)
+    end
+    return healthyNeighbor.begin(cacheFs, descriptors, options)
+  end
+  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader, neighborLoader = neighborLoader })
+  local ok, err = pcall(loader.beginLoad, loader, 1)
+  Assert.isFalse(ok, "a throwing neighbor constructor fails the staged begin")
+  Assert.equal(tostring(err), "injected neighbor begin failure", "the original neighbor failure propagates")
+  Assert.isTrue(sceneBuilds[1].released, "the started scene task is released exactly once")
+  Assert.isNil(loader:get(1), "a failed begin publishes no entry")
+  Assert.equal(loader:residentCount(), 0, "a failed begin leaves no resident")
+  local map = loader:load(1)
+  Assert.notNil(map.neighborRuntime, "the loader stays usable for a later load")
+  Assert.isTrue(loader:get(1) == map, "the later load publishes its identity")
+  loader:release()
+end
+
+-- The synchronous scene path returns a finished runtime instead of a
+-- staged task; a throwing neighbor constructor must release that runtime
+-- exactly once, while a successful startup keeps it owned until the
+-- normal release path.
+function T.staged_begin_neighbor_failure_releases_ready_scene_runtime_without_publishing()
+  local cache, world, sceneLoader, releases, files = fixture(2)
+  withNeighborCell(files, 1)
+  local neighborLoader = {}
+  function neighborLoader.begin()
+    error("injected neighbor begin failure", 0)
+  end
+  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader, neighborLoader = neighborLoader })
+  local ok, err = pcall(loader.beginLoad, loader, 1)
+  Assert.isFalse(ok, "a throwing neighbor constructor fails the staged begin")
+  Assert.equal(tostring(err), "injected neighbor begin failure", "the original neighbor failure propagates")
+  Assert.equal(releases[1], 1, "the materialized scene runtime is released exactly once")
+  Assert.isNil(loader:get(1), "a failed begin publishes no entry")
+  Assert.equal(loader:residentCount(), 0, "a failed begin leaves no resident")
+  loader:release()
+  Assert.equal(releases[1], 1, "release stays exactly once")
+
+  local healthyCache, healthyWorld, healthyScene, healthyReleases, healthyFiles = fixture(2)
+  withNeighborCell(healthyFiles, 1)
+  local healthyNeighbor, healthyBuilds = stagedNeighborLoader()
+  local healthyLoader = FieldMapLoader.new(healthyCache, healthyWorld, {
+    sceneLoader = healthyScene,
+    neighborLoader = healthyNeighbor,
+  })
+  local task = healthyLoader:beginLoad(1)
+  Assert.isNil(healthyReleases[1], "a successful startup releases nothing up front")
+  healthyBuilds[1].held = false
+  task:advance(1)
+  Assert.isTrue(task:isReady(), "the staged map completes once the neighbor worker replies")
+  local map = task:takeResult()
+  Assert.notNil(map.sceneRuntime, "the published map owns its scene runtime")
+  Assert.notNil(map.neighborRuntime, "the published map owns its neighbor ring")
+  Assert.isTrue(healthyLoader:get(1) == map, "completion publishes the staged identity")
+  Assert.isNil(healthyReleases[1], "the owned scene runtime survives until its normal release path")
+  healthyLoader:release()
+  Assert.equal(healthyReleases[1], 1, "the normal release path releases the scene runtime once")
+end
+
+-- Cleanup is best-effort: if releasing the started scene task itself
+-- throws, the outward error stays the neighbor construction cause.
+function T.staged_begin_neighbor_failure_preserves_cause_when_scene_release_throws()
+  local cache, world, _, _, files = fixture(2)
+  withNeighborCell(files, 1)
+  local innerLoader, _ = stagedSceneLoader(100)
+  local releaseAttempts = 0
+  local sceneLoader = {}
+  function sceneLoader.begin(cacheFs, scene, options)
+    local inner = innerLoader.begin(cacheFs, scene, options)
+    return setmetatable({
+      release = function()
+        releaseAttempts = releaseAttempts + 1
+        error("injected scene release failure", 0)
+      end,
+    }, { __index = inner })
+  end
+  local neighborLoader = {}
+  function neighborLoader.begin()
+    error("injected neighbor begin failure", 0)
+  end
+  local loader = FieldMapLoader.new(cache, world, { sceneLoader = sceneLoader, neighborLoader = neighborLoader })
+  local ok, err = pcall(loader.beginLoad, loader, 1)
+  Assert.isFalse(ok, "the neighbor constructor failure still fails the staged begin")
+  Assert.equal(
+    tostring(err),
+    "injected neighbor begin failure",
+    "the original neighbor cause surfaces, not the cleanup failure"
+  )
+  Assert.equal(releaseAttempts, 1, "cleanup is attempted exactly once")
+  Assert.isNil(loader:get(1), "a failed begin publishes no entry")
+  loader:release()
+end
+
 return { tests = T }
