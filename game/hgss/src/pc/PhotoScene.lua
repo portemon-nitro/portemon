@@ -61,6 +61,8 @@ function PhotoScene.new(options)
     coverage = nil,
     actorAssets = nil,
     spriteIds = {},
+    _actorPlan = nil,
+    _actorIds = nil,
     view = nil,
     generation = 0,
     disposed = false,
@@ -83,6 +85,8 @@ local function releasePresentation(self)
     assets:dispose()
   end
   self.spriteIds = {}
+  self._actorPlan = nil
+  self._actorIds = nil
   local task = self.task
   self.task = nil
   if task then
@@ -142,19 +146,20 @@ local function avatarSprite(avatars, gender, state)
   return assert(avatar.states[state] or avatar.states.walking, "saved avatar state has no current-profile visual")
 end
 
-local function actors(self, localX, localZ)
+-- Saved-subject placement without image work: builds the same records and
+-- unique sprite ids the viewer publishes, so later advances can prepare
+-- each atlas before borrowing it.
+local function planSubjects(self, localX, localZ)
   local photo = assert(self.photo)
   local cacheFs = assert(self.cacheFs)
-  local imageAssets = assert(self.imageAssets, "presented photo scene requires the field image pool")
   local avatars = fieldActorConfig(cacheFs)
-  local assets = FieldActorAssetProvider.new(cacheFs, { imageAssets = imageAssets })
-  self.actorAssets = assets
-  local selected = {}
+  local records = {}
+  local orderedIds = {}
+  local seen = {}
   local function add(spriteId, actorId, x, z, pose)
-    if not selected[spriteId] then
-      assets:acquire(spriteId)
-      selected[spriteId] = true
-      self.spriteIds[#self.spriteIds + 1] = spriteId
+    if not seen[spriteId] then
+      seen[spriteId] = true
+      orderedIds[#orderedIds + 1] = spriteId
     end
     return {
       actorId = actorId,
@@ -165,7 +170,6 @@ local function actors(self, localX, localZ)
       poseTick = 0,
     }
   end
-  local records = {}
   local playerSprite = avatarSprite(avatars, self.profile.gender, photo.avatarState)
   records[#records + 1] = add(playerSprite, "photo-player", localX, localZ, photo.avatarState)
 
@@ -189,10 +193,7 @@ local function actors(self, localX, localZ)
       follower(mon, localX + offset[1], localZ + offset[2], "photo-party-" .. index)
     end
   end
-  local spriteItems = FieldActorDraw.items(records, function(spriteId)
-    return assert(assets:resident(spriteId), "photo actor visual is not resident")
-  end)
-  return spriteItems, records
+  return records, orderedIds
 end
 
 local function centralParts(runtimeMap)
@@ -224,6 +225,8 @@ function PhotoScene:_publish()
   local photo = assert(self.photo)
   local runtimeMap = assert(self.runtimeMap)
   local loader = assert(self.loader)
+  local subjects = assert(self._actorPlan, "saved subjects are planned before the view publishes")
+  local assets = assert(self.actorAssets, "saved subject visuals are staged before the view publishes")
   local localX, localZ = photo.fieldX, photo.fieldZ
   local sceneParts = centralParts(runtimeMap)
   if runtimeMap.scene.type == "outdoor" then
@@ -233,7 +236,9 @@ function PhotoScene:_publish()
   end
   local environment = copy(runtimeMap.renderEnvironment)
   environment.fieldTimeSeconds = photo.hour * 3600 + photo.minute * 60
-  local spriteItems, subjects = actors(self, localX, localZ)
+  local spriteItems = FieldActorDraw.items(subjects, function(spriteId)
+    return assert(assets:resident(spriteId), "photo actor visual is not resident")
+  end)
   local visibleParts = {}
   for index, lane in ipairs(sceneParts) do
     visibleParts[index] = withoutHidden(lane, photo.hiddenPropModels)
@@ -264,27 +269,57 @@ function PhotoScene:advance(_)
   local ok, err = pcall(function()
     local loader = assert(self.loader)
     local photo = assert(self.photo)
-    if self.task == nil then
-      if not self._locationReady then
-        local ready, failure =
-          loader:requestLocation(photo.mapSymbol, self._globalPosition.x, self._globalPosition.z, "required")
-        if failure then
-          error(failure, 0)
+    if self.runtimeMap == nil then
+      if self.task == nil then
+        if not self._locationReady then
+          local ready, failure =
+            loader:requestLocation(photo.mapSymbol, self._globalPosition.x, self._globalPosition.z, "required")
+          if failure then
+            error(failure, 0)
+          end
+          if not ready then
+            return
+          end
+          self._locationReady = true
         end
-        if not ready then
-          return
-        end
-        self._locationReady = true
+        self.task = loader:beginLoad(photo.mapSymbol)
       end
-      self.task = loader:beginLoad(photo.mapSymbol)
+      local task = assert(self.task)
+      task:advance(WORK_UNITS)
+      if not task:isReady() then
+        return
+      end
+      self.runtimeMap = task:takeResult()
+      self.task = nil
     end
-    local task = assert(self.task)
-    task:advance(WORK_UNITS)
-    if not task:isReady() then
+    if self._actorIds == nil then
+      local records, orderedIds = planSubjects(self, photo.fieldX, photo.fieldZ)
+      self._actorPlan = records
+      self._actorIds = orderedIds
+      local imageAssets = assert(self.imageAssets, "presented photo scene requires the field image pool")
+      self.actorAssets = FieldActorAssetProvider.new(assert(self.cacheFs), { imageAssets = imageAssets })
+    end
+    local assets = assert(self.actorAssets)
+    local wanted = assert(self._actorIds)
+    local owned = {}
+    for _, spriteId in ipairs(self.spriteIds) do
+      owned[spriteId] = true
+    end
+    local budget = 2
+    for _, spriteId in ipairs(wanted) do
+      if not owned[spriteId] then
+        local ready = assets:prepare(spriteId)
+        if ready and budget > 0 then
+          assets:acquire(spriteId)
+          self.spriteIds[#self.spriteIds + 1] = spriteId
+          owned[spriteId] = true
+          budget = budget - 1
+        end
+      end
+    end
+    if #self.spriteIds < #wanted then
       return
     end
-    self.runtimeMap = task:takeResult()
-    self.task = nil
     self:_publish()
   end)
   if not ok then

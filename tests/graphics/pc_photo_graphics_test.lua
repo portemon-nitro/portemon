@@ -1167,6 +1167,235 @@ function T.production_album_viewer_borrows_the_live_loader_and_its_image_owner(s
   end
 end
 
+-- A session image owner that withholds chosen atlas paths as worker-pending
+-- until the viewer path is exercised, then lends them normally. Request and
+-- cancellation counts stay visible so the viewer can prove bounded,
+-- exactly-once preparation without sleeping.
+local function stagedImagePool()
+  local inner = SharedImagePoolFake.new()
+  local pool = { _inner = inner, requests = 0, cancels = 0, _paths = {}, _pending = {} }
+  function pool:blockPath(path)
+    self._pending[path] = true
+  end
+  function pool:releasePaths()
+    for path in pairs(self._pending) do
+      self._pending[path] = nil
+    end
+  end
+  function pool:request(path, sampler, priority)
+    self.requests = self.requests + 1
+    local token = self._inner:request(path, sampler, priority)
+    self._paths[token] = path
+    return token
+  end
+  function pool:poll(token)
+    local path = self._paths[token]
+    if path ~= nil and self._pending[path] then
+      return "pending"
+    end
+    return self._inner:poll(token)
+  end
+  function pool:acquire(token)
+    self._paths[token] = nil
+    return self._inner:acquire(token)
+  end
+  function pool:cancel(token)
+    self.cancels = self.cancels + 1
+    self._paths[token] = nil
+    return self._inner:cancel(token)
+  end
+  function pool:release(lease)
+    return self._inner:release(lease)
+  end
+  function pool:seedPhysical(path, sampler, handle)
+    return self._inner:seedPhysical(path, sampler, handle)
+  end
+  function pool:stats()
+    return self._inner:stats()
+  end
+  function pool:findPhysical(path, sampler)
+    return self._inner:findPhysical(path, sampler)
+  end
+  function pool:prune()
+    return self._inner:prune()
+  end
+  function pool:dispose()
+    return self._inner:dispose()
+  end
+  function pool:uploadCount()
+    return self._inner.uploads
+  end
+  return pool
+end
+
+-- Withheld subject atlases keep every viewer advance responsive with no
+-- partial image; once staged, the viewer draws the exact source player,
+-- NPC subject, follower, camera, and hidden-model filtering.
+function T.slow_subject_atlases_keep_viewer_responsive_then_draw_source_scene(scope)
+  local versions = {}
+  for _, versionId in ipairs(GameVersion.ORDER) do
+    if RomImporter.isReady(versionId) then
+      versions[#versions + 1] = versionId
+    end
+  end
+  Assert.isTrue(#versions > 0, "a ready imported game version supplies real mon and field-actor assets")
+  for _, versionId in ipairs(versions) do
+    local pool = stagedImagePool()
+    local cacheFs, _, derivedAssets, loader = fixture(versionId, { imageAssets = pool })
+    local PhotoScene = photoScene()
+    local photo = photoRecord()
+    local catalog = MonBucket.openCatalogs(versionId)
+    local follower = assert(catalog:followerSelection(photo.party[1]), "the saved species has a field follower")
+    local actorIndex = assert(cacheFs:loadLua(FieldActorCache.indexPath()), "the ready cache has an actor index")
+    local avatarEntry = assert(actorIndex.runtime.avatars[1], "the ready cache has the player avatar")
+    local avatarSprite = assert(
+      avatarEntry.states[photo.avatarState] or avatarEntry.states.walking,
+      "the saved avatar state resolves to a sprite"
+    )
+    local npcSpriteId
+    do
+      local provider = FieldActorAssetProvider.new(cacheFs)
+      for _, spriteId in ipairs(provider:index().spriteIds) do
+        if spriteId > 0 and spriteId ~= avatarSprite and spriteId ~= follower.visualId then
+          npcSpriteId = spriteId
+          break
+        end
+      end
+      provider:dispose()
+    end
+    npcSpriteId = assert(npcSpriteId, "the real actor cache supplies a distinct nonzero NPC sprite")
+    photo.subjectSprite = tostring(npcSpriteId)
+    Assert.isTrue(avatarSprite ~= follower.visualId, "avatar and follower resolve distinct subject atlases")
+    local wanted = { avatarSprite, follower.visualId, npcSpriteId }
+    local seededPaths = {}
+    for _, spriteId in ipairs(wanted) do
+      seededPaths[#seededPaths + 1] = seedAtlas(pool, cacheFs, spriteId)
+    end
+    Assert.equal(pool:uploadCount(), 0, "seeding the shared owner stages atlases without an upload")
+    for _, path in ipairs(seededPaths) do
+      pool:blockPath(path)
+    end
+    local savedCopy = photoRecord()
+    savedCopy.subjectSprite = tostring(npcSpriteId)
+    local scene = PhotoScene.new({
+      versionId = versionId,
+      cacheFs = cacheFs,
+      derivedAssets = derivedAssets,
+      profile = { name = "GOLD", gender = 0 },
+      monCatalog = catalog,
+      fieldMapLoader = loader,
+      borrowFieldMapLoader = true,
+    })
+    scene:request(photo)
+    Assert.equal(scene:status().phase, "pending", "request starts private saved-map preparation")
+    for _ = 1, 4 do
+      scene:advance(16)
+      local status = scene:status()
+      Assert.equal(status.phase, "pending", "withheld subject atlases keep the viewer pending without failing")
+      Assert.isNil(status.failure, "pending preparation carries no failure")
+    end
+    Assert.equal(pool.requests, 3, "every distinct subject holds one outstanding atlas ticket while pending")
+    Assert.equal(#scene.spriteIds, 0, "no subject is published before its atlas is staged")
+    Assert.equal(pool:stats().outstandingLeases, 0, "no atlas lease is borrowed before readiness")
+    pool:releasePaths()
+    scene:advance(16)
+    Assert.equal(scene:status().phase, "pending", "staged subjects publish over bounded advances after readiness")
+    Assert.isTrue(
+      #scene.spriteIds >= 1 and #scene.spriteIds <= 2,
+      "one advance materializes at most two new subjects"
+    )
+    for _ = 1, 8 do
+      if scene:status().phase ~= "pending" then
+        break
+      end
+      scene:advance(16)
+    end
+    Assert.equal(scene:status().phase, "ready", "staged subjects reach a ready view")
+    Assert.isNil(scene:status().failure, "successful preparation carries no failure")
+    Assert.isTrue(
+      pool:stats().outstandingLeases >= 3,
+      "the ready viewer holds its subject atlases as pool leases"
+    )
+    Assert.equal(pool:uploadCount(), 0, "borrowed atlas identities resolve without a new upload")
+    local view = scene:takeReady()
+    Assert.isTrue(#view.subjects >= 3, "the snapshot carries the saved player, NPC subject and its Pokemon")
+
+    local calls = {}
+    local actualFieldRenderer = scope:own(FieldRenderer.new({ clearColor = { 0.04, 0.05, 0.06, 1 } }))
+    local photoTarget = scope:own(love.graphics.newCanvas(256, 192))
+    local fieldRenderer = {
+      draw = function(_, renderEnv, camera, worldParts, spriteItems, viewport, alpha, pixelScale)
+        calls[#calls + 1] = {
+          renderEnvironment = renderEnv,
+          camera = camera,
+          worldParts = worldParts,
+          spriteItems = spriteItems,
+          viewport = viewport,
+          alpha = alpha,
+        }
+        actualFieldRenderer:draw(
+          renderEnv,
+          camera,
+          renderableParts(worldParts),
+          spriteItems,
+          viewport,
+          alpha,
+          pixelScale
+        )
+      end,
+    }
+    love.graphics.setCanvas(photoTarget)
+    photoRenderer().draw(view, { photoViewport = view.viewport }, { fieldRenderer = fieldRenderer })
+    love.graphics.setCanvas()
+    Assert.equal(#calls, 1, "a ready saved view reaches the real renderer adapter once")
+    local call = assert(calls[1])
+    Assert.equal(call.renderEnvironment.fieldTimeSeconds, 67020, "saved hour and minute set only the private clock")
+    Assert.equal(call.camera.profile.projectionType, "perspective", "the source camera uses perspective projection")
+    Assert.near(call.camera.profile.distanceTiles, 666.922119140625 / 16, 1e-12)
+    Assert.equal(call.camera.profile.angleXRaw, 0xEE00, "camera X angle remains the source raw angle")
+    Assert.deepEqual(view.viewport, { x = 4, y = 3, width = 248, height = 185 })
+    local positions = {}
+    for _, item in ipairs(view.subjects) do
+      positions[item.world.x .. ":" .. item.world.z] = true
+      Assert.equal(item.facing, "south", "saved subjects face the source direction")
+    end
+    Assert.isTrue(positions["7.5:7.5"], "the NPC subject uses the source (+2,0) placement")
+    Assert.isTrue(positions["6.5:6.5"], "the NPC subject's Pokemon uses the source (+1,-1) placement")
+    Assert.isTrue(positions["5.5:7.5"], "the saved player remains at the photographed location")
+    local keys = {}
+    for _, lane in ipairs(view.worldParts) do
+      for _, draw in ipairs(lane) do
+        if type(draw.modelKey) == "string" then
+          keys[draw.modelKey] = true
+        end
+      end
+    end
+    Assert.isNil(keys["hidden-center"], "the saved first model selector filters the center model")
+    Assert.isNil(keys["hidden-coverage"], "the saved second selector filters a physical-coverage model")
+    Assert.isTrue(#call.worldParts >= 2, "outdoor snapshots combine central and physical-coverage draws")
+    local rendered = photoTarget:newImageData()
+    local changedPixels = 0
+    for y = 0, rendered:getHeight() - 1 do
+      for x = 0, rendered:getWidth() - 1 do
+        local r, g, b = rendered:getPixel(x, y)
+        if math.abs(r - 0.04) > 0.02 or math.abs(g - 0.05) > 0.02 or math.abs(b - 0.06) > 0.02 then
+          changedPixels = changedPixels + 1
+        end
+      end
+    end
+    rendered:release()
+    Assert.isTrue(changedPixels > 0, "the staged viewer produces visible saved-photo pixels")
+
+    scene:dispose()
+    scene:dispose()
+    Assert.isFalse(loader.released, "closing the viewer leaves the borrowed live loader alive")
+    Assert.equal(pool:stats().outstandingLeases, 0, "closing the viewer returns its image leases exactly once")
+    Assert.deepEqual(photo, savedCopy, "viewing leaves the persisted source record unchanged")
+    loader:release()
+    pool:dispose()
+  end
+end
+
 local suite = GraphicsSmoke.suite(T)
 suite.metadata.capabilities = { "graphics", "rom_dump" }
 suite.metadata.derivedAssets = {

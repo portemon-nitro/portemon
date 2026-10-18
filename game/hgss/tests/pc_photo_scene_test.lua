@@ -2,6 +2,7 @@
 -- seam, while cancellation prevents delayed work from becoming a ready view.
 
 local Assert = require("tests.support.Assert")
+local Errors = require("libs.errors.src.Errors")
 local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
@@ -433,6 +434,436 @@ function T.saved_subject_atlas_borrows_the_shared_image_owner()
   Assert.isFalse(loader.released, "closing the viewer leaves the borrowed live loader alive")
   Assert.equal(pool:stats().outstandingLeases, 0, "closing the viewer returns its image leases exactly once")
   Assert.deepEqual(album:get(0), before, "viewing leaves the persisted photo unchanged")
+end
+
+local function partyPhoto()
+  local photo = savedPhoto()
+  photo.party = {
+    { species = "CHIKORITA", form = 0, gender = 1, shiny = false },
+    { species = "CYNDAQUIL", form = 0, gender = 0, shiny = false },
+    { species = "TOTODILE", form = 0, gender = 1, shiny = false },
+    false,
+    false,
+    false,
+  }
+  photo.sourcePartyCount = 3
+  return photo
+end
+
+local function partyCatalog()
+  local visuals = { CHIKORITA = 21, CYNDAQUIL = 22, TOTODILE = 23 }
+  return {
+    followerSelection = function(_, mon)
+      local visualId = visuals[mon.species]
+      assert(visualId, "saved party species needs its follower visual")
+      return { visualId = visualId }
+    end,
+  }
+end
+
+local function multiSubjectCache()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  cache:writeLua(MapAssetCache.worldPath(), world())
+  cache:writeLua(FieldCellCache.indexPath(), {
+    schema = FieldCellCache.INDEX_SCHEMA,
+    matrices = {
+      {
+        matrixMemberId = 12,
+        width = 8,
+        height = 8,
+        cells = {
+          {
+            matrixMemberId = 12,
+            index = 0,
+            x = 0,
+            z = 0,
+            mapHeaderId = 41,
+            altitude = 0,
+            landDataMemberId = 1,
+            areaDataMemberId = 1,
+            file = FieldCellCache.cellPath(12, 0),
+          },
+        },
+      },
+    },
+  })
+  cache:writeLua(FieldMapDataCache.fieldPath(41), indoorFieldData())
+  cache:writeLua(MapAssetCache.mapDir(41) .. "/scene.lua", {
+    schema = MapAssetCache.SCENE_SCHEMA,
+    mapId = 41,
+    mapSymbol = "MAP_PHOTO_TEST",
+    type = "indoor",
+    cameraType = 0,
+    neighbors = {},
+    buildingInstances = {},
+    terrainAnimations = { textureSrt = false },
+    matrix = { worldOriginX = 100, worldOriginZ = 200 },
+    collision = { file = "test/indoor.collision" },
+  })
+  cache:writeLua(MapAssetCache.terrainPath(41), {
+    schema = MapAssetCache.TERRAIN_SCHEMA,
+    source = { bdhcSha1 = "photo-indoor-terrain" },
+    plates = {},
+  })
+  cache:write("test/indoor.collision", CollisionFixture.asset(32, 32))
+  local spriteIds = { AVATAR_SPRITE, 21, 22, 23 }
+  cache:writeLua(FieldActorCache.indexPath(), {
+    schema = FieldActorCache.INDEX_SCHEMA,
+    spriteIds = spriteIds,
+    runtime = {
+      avatars = {
+        [1] = { states = { normal = AVATAR_SPRITE, walking = AVATAR_SPRITE } },
+      },
+    },
+  })
+  for _, spriteId in ipairs(spriteIds) do
+    cache:writeLua(FieldActorCache.visualPath(spriteId), FieldActorFixture.visual(spriteId, { frameCount = 5 }))
+    cache:write(
+      FieldActorCache.atlasPath(spriteId),
+      PngWriter.encode(160, 32, string.rep(string.char(180, 60, 80, 255), 160 * 32))
+    )
+  end
+  return cache
+end
+
+-- A session image owner that withholds chosen atlas paths as worker-pending
+-- until the viewer path is exercised, then lends them normally. Request and
+-- cancellation counts stay visible so the viewer can prove bounded,
+-- exactly-once preparation without sleeping.
+local function delayedActorPool()
+  local inner = SharedImagePoolFake.new()
+  local pool = { _inner = inner, requests = 0, cancels = 0, _paths = {}, _pending = {} }
+  function pool:blockAtlas(spriteId)
+    self._pending[FieldActorCache.atlasPath(spriteId)] = true
+  end
+  function pool:blockAtlases(spriteIds)
+    for _, spriteId in ipairs(spriteIds) do
+      self:blockAtlas(spriteId)
+    end
+  end
+  function pool:releaseAtlases()
+    for path in pairs(self._pending) do
+      self._pending[path] = nil
+    end
+  end
+  function pool:request(path, sampler, priority)
+    self.requests = self.requests + 1
+    local token = self._inner:request(path, sampler, priority)
+    self._paths[token] = path
+    return token
+  end
+  function pool:poll(token)
+    local path = self._paths[token]
+    if path ~= nil and self._pending[path] then
+      return "pending"
+    end
+    return self._inner:poll(token)
+  end
+  function pool:acquire(token)
+    self._paths[token] = nil
+    return self._inner:acquire(token)
+  end
+  function pool:cancel(token)
+    self.cancels = self.cancels + 1
+    self._paths[token] = nil
+    return self._inner:cancel(token)
+  end
+  function pool:release(lease)
+    return self._inner:release(lease)
+  end
+  function pool:seedPhysical(path, sampler, handle)
+    return self._inner:seedPhysical(path, sampler, handle)
+  end
+  function pool:failAfterUploads(count, message)
+    return self._inner:failAfterUploads(count, message)
+  end
+  function pool:clearFailure()
+    return self._inner:clearFailure()
+  end
+  function pool:stats()
+    return self._inner:stats()
+  end
+  function pool:findPhysical(path, sampler)
+    return self._inner:findPhysical(path, sampler)
+  end
+  function pool:prune()
+    return self._inner:prune()
+  end
+  function pool:dispose()
+    return self._inner:dispose()
+  end
+  function pool:uploadCount()
+    return self._inner.uploads
+  end
+  return pool
+end
+
+local function seedSubjectAtlas(pool, cache, spriteId)
+  local sampler = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }
+  local visual = assert(cache:loadLua(FieldActorCache.visualPath(spriteId)))
+  local path = assert(visual.render.image)
+  local bytes = assert(cache:read(path))
+  local image = love.graphics.newImage(love.filesystem.newFileData(bytes, path))
+  pool:seedPhysical(path, sampler, { image = image, width = image:getWidth(), height = image:getHeight() })
+  return path
+end
+
+local function contains(list, value)
+  for _, entry in ipairs(list) do
+    if entry == value then
+      return true
+    end
+  end
+  return false
+end
+
+-- Withheld subject atlases keep every viewer advance responsive: the viewer
+-- stays pending with no partial image, then publishes the exact saved
+-- player and party subjects at their source offsets once staged.
+function T.pending_subject_atlases_keep_advance_responsive_until_ready()
+  local PhotoScene = sceneImplementation()
+  local cache = multiSubjectCache()
+  local pool = delayedActorPool()
+  local spriteIds = { AVATAR_SPRITE, 21, 22, 23 }
+  for _, spriteId in ipairs(spriteIds) do
+    seedSubjectAtlas(pool, cache, spriteId)
+  end
+  pool:blockAtlases(spriteIds)
+  local loader = indoorLoader(cache, pool)
+  local album = PhotoAlbum.new()
+  local stored = assert(album:prepareChanges(0, { { slot = 0, value = partyPhoto() } }))
+  stored.publish()
+  local before = album:get(0)
+  local scene = PhotoScene.new({
+    versionId = "heartgold",
+    cacheFs = cache,
+    derivedAssets = readyDerivedAssets(),
+    profile = { name = "GOLD", gender = 0 },
+    monCatalog = partyCatalog(),
+    fieldMapLoader = loader,
+    borrowFieldMapLoader = true,
+  })
+
+  scene:request(album:get(0))
+  Assert.equal(scene:status().phase, "pending", "the viewer waits while its saved map resolves")
+  for _ = 1, 6 do
+    scene:advance(16)
+    local status = scene:status()
+    Assert.equal(status.phase, "pending", "withheld subject atlases keep the viewer pending without failing")
+    Assert.isNil(status.failure, "pending preparation carries no failure")
+  end
+  Assert.equal(pool.requests, #spriteIds, "every distinct subject holds one outstanding atlas ticket while pending")
+  Assert.equal(#scene.spriteIds, 0, "no subject is published before its atlas is staged")
+  Assert.equal(pool:stats().outstandingLeases, 0, "no atlas lease is borrowed before readiness")
+  Assert.equal(pool:uploadCount(), 0, "withheld atlases stage no duplicate upload")
+  Assert.isFalse(loader.released, "pending work never releases the borrowed live loader")
+
+  pool:releaseAtlases()
+  scene:advance(16)
+  local mid = scene:status()
+  Assert.equal(mid.phase, "pending", "staged subjects publish over bounded advances after readiness")
+  Assert.isTrue(
+    #scene.spriteIds >= 1 and #scene.spriteIds <= 2,
+    "one advance materializes at most two new subjects"
+  )
+  for _ = 1, 8 do
+    if scene:status().phase ~= "pending" then
+      break
+    end
+    scene:advance(16)
+  end
+  local status = scene:status()
+  Assert.equal(status.phase, "ready", "staged subjects reach a ready view")
+  Assert.isNil(status.failure, "successful preparation carries no failure")
+  Assert.equal(#scene.spriteIds, 4, "every distinct subject is acquired exactly once")
+  for _, spriteId in ipairs(spriteIds) do
+    Assert.isTrue(contains(scene.spriteIds, spriteId), "the ready viewer owns every saved subject atlas")
+  end
+  Assert.isTrue(pool:stats().outstandingLeases >= 4, "the ready viewer holds its subject atlases as pool leases")
+  Assert.equal(pool:uploadCount(), 0, "borrowed atlas identities resolve without a new upload")
+
+  local view = scene:takeReady()
+  Assert.equal(#view.subjects, 4, "the ready view carries the saved player and party subjects")
+  local byActor = {}
+  for _, subject in ipairs(view.subjects) do
+    byActor[subject.actorId] = subject
+    Assert.equal(subject.facing, "south", "saved subjects face the source direction")
+  end
+  Assert.equal(byActor["photo-player"].spriteId, AVATAR_SPRITE, "the saved player resolves its avatar visual")
+  Assert.deepEqual({ byActor["photo-player"].world.x, byActor["photo-player"].world.z }, { 5.5, 7.5 })
+  Assert.equal(byActor["photo-party-1"].spriteId, 21, "party order determines the first follower visual")
+  Assert.deepEqual({ byActor["photo-party-1"].world.x, byActor["photo-party-1"].world.z }, { 7.5, 7.5 })
+  Assert.equal(byActor["photo-party-2"].spriteId, 22, "party order determines the second follower visual")
+  Assert.deepEqual({ byActor["photo-party-2"].world.x, byActor["photo-party-2"].world.z }, { 6.5, 6.5 })
+  Assert.equal(byActor["photo-party-3"].spriteId, 23, "party order determines the third follower visual")
+  Assert.deepEqual({ byActor["photo-party-3"].world.x, byActor["photo-party-3"].world.z }, { 4.5, 6.5 })
+  Assert.equal(view.mapSectionNativeId, 1, "the snapshot keeps its source map-section identity")
+  Assert.equal(view.renderEnvironment.fieldTimeSeconds, 67020, "saved hour and minute set only the private clock")
+  Assert.equal(view.camera.profile.projectionType, "perspective", "the source camera uses perspective projection")
+  Assert.near(view.camera.profile.distanceTiles, 666.922119140625 / 16, 1e-12)
+  Assert.equal(view.camera.profile.angleXRaw, 0xEE00, "camera X angle remains the source raw angle")
+  Assert.equal(view.camera.profile.angleYRaw, 0, "camera Y angle remains the source raw angle")
+  Assert.deepEqual(view.viewport, { x = 4, y = 3, width = 248, height = 185 })
+  Assert.isTrue(#view.spriteItems >= 4, "the snapshot carries a draw item per saved subject")
+  Assert.isTrue(#view.worldParts == 4, "the snapshot keeps the central scene lane layout")
+
+  scene:dispose()
+  scene:dispose()
+  Assert.isFalse(loader.released, "closing the viewer leaves the borrowed live loader alive")
+  Assert.equal(pool:stats().outstandingLeases, 0, "closing the viewer returns its image leases exactly once")
+  Assert.deepEqual(album:get(0), before, "viewing leaves the persisted photo unchanged")
+end
+
+-- Cancelling, replacing, or failing a photo whose subjects are still
+-- withheld returns every staged ticket and lease exactly once, never
+-- touches the borrowed loader, and never publishes a stale or partial view.
+function T.cancel_replacement_and_atlas_failure_return_staged_resources_once()
+  local PhotoScene = sceneImplementation()
+  local spriteIds = { AVATAR_SPRITE, 21, 22, 23 }
+
+  do
+    local cache = multiSubjectCache()
+    local pool = delayedActorPool()
+    for _, spriteId in ipairs(spriteIds) do
+      seedSubjectAtlas(pool, cache, spriteId)
+    end
+    pool:blockAtlases(spriteIds)
+    local loader = indoorLoader(cache, pool)
+    local album = PhotoAlbum.new()
+    local stored = assert(album:prepareChanges(0, { { slot = 0, value = partyPhoto() } }))
+    stored.publish()
+    local before = album:get(0)
+    local scene = PhotoScene.new({
+      versionId = "heartgold",
+      cacheFs = cache,
+      derivedAssets = readyDerivedAssets(),
+      profile = { name = "GOLD", gender = 0 },
+      monCatalog = partyCatalog(),
+      fieldMapLoader = loader,
+      borrowFieldMapLoader = true,
+    })
+    scene:request(album:get(0))
+    for _ = 1, 3 do
+      scene:advance(16)
+      Assert.equal(scene:status().phase, "pending", "withheld subjects keep the viewer pending before cancel")
+    end
+    Assert.equal(pool.requests, 4, "every distinct subject holds one outstanding ticket before cancel")
+    scene:cancel()
+    Assert.equal(scene:status().phase, "cancelled", "cancel between map and subject work stops the viewer")
+    scene:advance(16)
+    Assert.equal(scene:status().phase, "cancelled", "a cancelled viewer publishes nothing late")
+    Assert.equal(pool:stats().outstandingLeases, 0, "cancel borrows no atlas lease")
+    Assert.equal(pool.cancels, 4, "cancel returns every outstanding atlas ticket exactly once")
+    Assert.throws(function()
+      scene:takeReady()
+    end, "a cancelled viewer has no view to transfer")
+    scene:dispose()
+    scene:dispose()
+    Assert.isFalse(loader.released, "cancel leaves the borrowed live loader alive")
+    Assert.equal(pool:stats().outstandingLeases, 0, "cancelled cleanup holds no lease")
+    Assert.deepEqual(album:get(0), before, "cancel leaves the persisted photo unchanged")
+  end
+
+  do
+    local cache = multiSubjectCache()
+    local pool = delayedActorPool()
+    for _, spriteId in ipairs(spriteIds) do
+      seedSubjectAtlas(pool, cache, spriteId)
+    end
+    pool:blockAtlases(spriteIds)
+    local loader = indoorLoader(cache, pool)
+    local album = PhotoAlbum.new()
+    local first = partyPhoto()
+    local second = partyPhoto()
+    second.hour = 9
+    local stored = assert(album:prepareChanges(0, { { slot = 0, value = first } }))
+    stored.publish()
+    local scene = PhotoScene.new({
+      versionId = "heartgold",
+      cacheFs = cache,
+      derivedAssets = readyDerivedAssets(),
+      profile = { name = "GOLD", gender = 0 },
+      monCatalog = partyCatalog(),
+      fieldMapLoader = loader,
+      borrowFieldMapLoader = true,
+    })
+    scene:request(album:get(0))
+    for _ = 1, 3 do
+      scene:advance(16)
+      Assert.equal(scene:status().phase, "pending", "the first photo stays pending while its subjects are withheld")
+    end
+    Assert.equal(pool.requests, 4, "the first photo holds one ticket per subject before replacement")
+    scene:request(second)
+    Assert.equal(scene:status().phase, "pending", "replacement starts its own pending viewer")
+    Assert.equal(pool.cancels, 4, "replacement returns the superseded photo tickets exactly once")
+    Assert.equal(pool:stats().outstandingLeases, 0, "replacement borrows no lease for the superseded photo")
+    for _ = 1, 3 do
+      scene:advance(16)
+      Assert.equal(scene:status().phase, "pending", "the replacement stays pending while its subjects are withheld")
+    end
+    pool:releaseAtlases()
+    for _ = 1, 8 do
+      if scene:status().phase ~= "pending" then
+        break
+      end
+      scene:advance(16)
+    end
+    Assert.equal(scene:status().phase, "ready", "the replacement reaches a ready view")
+    local view = scene:takeReady()
+    Assert.equal(
+      view.renderEnvironment.fieldTimeSeconds,
+      9 * 3600 + 37 * 60,
+      "late completion of the superseded photo cannot publish into the new viewer"
+    )
+    Assert.equal(#view.subjects, 4, "the replacement view carries its own saved subjects")
+    scene:dispose()
+    Assert.isFalse(loader.released, "replacement leaves the borrowed live loader alive")
+    Assert.equal(pool:stats().outstandingLeases, 0, "closing the replacement viewer returns its leases exactly once")
+    Assert.deepEqual(album:get(0), first, "replacement leaves the persisted photo unchanged")
+  end
+
+  do
+    local cache = multiSubjectCache()
+    local pool = delayedActorPool()
+    for _, spriteId in ipairs(spriteIds) do
+      seedSubjectAtlas(pool, cache, spriteId)
+    end
+    pool:failAfterUploads(0, "injected atlas failure")
+    local loader = indoorLoader(cache, pool)
+    local album = PhotoAlbum.new()
+    local stored = assert(album:prepareChanges(0, { { slot = 0, value = partyPhoto() } }))
+    stored.publish()
+    local before = album:get(0)
+    local scene = PhotoScene.new({
+      versionId = "heartgold",
+      cacheFs = cache,
+      derivedAssets = readyDerivedAssets(),
+      profile = { name = "GOLD", gender = 0 },
+      monCatalog = partyCatalog(),
+      fieldMapLoader = loader,
+      borrowFieldMapLoader = true,
+    })
+    scene:request(album:get(0))
+    for _ = 1, 8 do
+      if scene:status().phase ~= "pending" then
+        break
+      end
+      scene:advance(16)
+    end
+    local status = scene:status()
+    Assert.equal(status.phase, "failed", "a missing subject atlas fails the viewer instead of publishing partially")
+    Assert.isTrue(Errors.is(status.failure), "a failed atlas surfaces its typed cause")
+    Assert.equal(status.failure.code, "FIELD_ACTOR_ATLAS_MISSING", "a failed atlas names its missing image cause")
+    Assert.throws(function()
+      scene:takeReady()
+    end, "a failed viewer has no view to transfer")
+    Assert.equal(pool:stats().outstandingLeases, 0, "failure borrows no atlas lease")
+    scene:dispose()
+    scene:dispose()
+    Assert.isFalse(loader.released, "failure leaves the borrowed live loader alive")
+    Assert.equal(pool:stats().outstandingLeases, 0, "failed cleanup holds no lease")
+    Assert.deepEqual(album:get(0), before, "failure leaves the persisted photo unchanged")
+  end
 end
 
 return { tests = T }
