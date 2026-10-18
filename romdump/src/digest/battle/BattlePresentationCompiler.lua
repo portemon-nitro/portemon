@@ -4357,7 +4357,19 @@ function BattlePresentationCompiler.compileEffect(romFs, opts, effectKey)
   for _, instruction in ipairs(effectProgram.instructions) do
     collectRequiredContext(instruction)
   end
-  for _, subprogram in pairs(effectProgram.subprograms) do
+  local subprograms = effectProgram.subprograms
+  if type(subprograms) ~= "table" then
+    return nil,
+      Errors.new("BATTLE_EFFECT_CLOSURE_UNRESOLVED", "effect program carries no subprogram closure", {
+        effectKey = effectKey,
+        archiveSymbol = route.archiveSymbol,
+        memberId = route.memberId,
+        resolvedSourceInputs = resolvedSourceInputs,
+        resourceDescriptors = resolvedResources,
+        resourcePayloads = resourcePayloads,
+      })
+  end
+  for _, subprogram in pairs(subprograms) do
     collectRequiredContext(subprogram)
   end
   local function addEffectResource(resourceKey, kind, contentIdentity, payload)
@@ -4594,7 +4606,9 @@ function BattlePresentationCompiler.compileEffect(romFs, opts, effectKey)
         local index = tonumber(instructionIndex)
         assert(index ~= nil, "schema instruction index parses as an integer")
         diagnosticContext.instructionIndex = index
-        diagnosticContext.sourceOffset = sourceOffsets[index]
+        if sourceOffsets ~= nil then
+          diagnosticContext.sourceOffset = sourceOffsets[index]
+        end
         local instruction = effectProgram.instructions[index]
         if instruction ~= nil then
           diagnosticContext.continuationSlot = instruction.continuationSlot
