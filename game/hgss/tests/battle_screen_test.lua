@@ -12,7 +12,8 @@
 -- owner, so the run stays red until that owner lands.
 
 local Assert = require("tests.support.Assert")
-local StubLease = require("tests.support.StubLease")
+local BattlePresentationManifestFixture = require("tests.support.BattlePresentationManifestFixture")
+local BattlePresentationSchema = require("libs.assets.src.battle.BattlePresentationSchema")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local FakeGraphics = require("tests.support.FakeGraphics")
 local HgssBagService = require("libs.hgss.src.items.HgssBagService")
@@ -34,7 +35,7 @@ local RUNTIME_MODULE = "game.hgss.src.battle.BattleRuntime"
 local SCENARIO_FACTORY_MODULE = "libs.hgss.src.battle.HgssBattleScenarioFactory"
 local PRESENTATION_CACHE_MODULE = "libs.assets.src.battle.BattlePresentationCache"
 
-local TICK = 1 / 60
+local TICK = 1 / 30
 
 ---@param behavior string the missing screen responsibility naming this red
 ---@param primary string the scenario's own missing owner, loaded first so the red names it
@@ -205,8 +206,10 @@ end
 ---@return table recording semantic sound boundary with per-name counts
 local function recordingAudio(muted)
   local audio = { plays = {}, muted = muted == true }
-  function audio.play(name)
-    audio.plays[#audio.plays + 1] = name
+  function audio.play(first, second)
+    -- The production voice subsystem dispatches sink ports colon-style,
+    -- so the recorded semantic cue is the second argument when present.
+    audio.plays[#audio.plays + 1] = second ~= nil and second or first
     return not audio.muted
   end
   function audio.count(name)
@@ -250,6 +253,43 @@ local function recordingText()
   return text
 end
 
+---@param image table fake image handle under inspection
+---@return integer staged image width
+local function fakeImageWidth(image)
+  return image.width
+end
+
+---@param image table fake image handle under inspection
+---@return integer staged image height
+local function fakeImageHeight(image)
+  return image.height
+end
+
+---@param image table fake image handle under inspection
+---@return integer, integer staged image dimensions
+local function fakeImageDimensions(image)
+  return image.width, image.height
+end
+
+local function fakeImageSetFilter() end
+
+---@param key string image identity under test preparation
+---@param width integer? staged image width, native default when absent
+---@param height integer? staged image height, native default when absent
+---@return table fake image handle carrying the renderer-required dimensions
+local function fakeDrawable(key, width, height)
+  local hudImage = key:match("^hud:") ~= nil
+  return {
+    handle = key,
+    width = width or (hudImage and 1648 or 80),
+    height = height or (hudImage and 8 or 80),
+    getWidth = fakeImageWidth,
+    getHeight = fakeImageHeight,
+    getDimensions = fakeImageDimensions,
+    setFilter = fakeImageSetFilter,
+  }
+end
+
 ---@param opts table? heldKeys: image keys reporting unavailable; failPrepare: preparation error; seedImages: pre-made handles
 ---@return table preparation double owning only the handles it hands out
 local function stubAssets(opts)
@@ -277,17 +317,9 @@ local function stubAssets(opts)
       return nil
     end
     if assets.images[key] == nil then
-      assets.images[key] = StubLease.new(key)
+      assets.images[key] = fakeDrawable(key)
     end
-    -- Portrait cells resolve the lease-plus-quad drawable shape
-    -- production draws; every other key resolves its bare lease.
-    -- Already-paired cells (test-overwritten demand portraits) pass
-    -- through instead of wrapping twice.
-    local stored = assets.images[key]
-    if key:sub(1, 4) == "mon:" and stored.lease == nil then
-      return { lease = stored, quad = { handle = "quad:" .. key } }
-    end
-    return stored
+    return assets.images[key]
   end
   function assets.release(key)
     assets.released[key] = (assets.released[key] or 0) + 1
@@ -307,6 +339,33 @@ local function planningManifest(sceneKey)
     verified = false,
     scenes = { { key = sceneKey } },
   }
+end
+
+---@param value unknown value under test preparation
+---@return unknown a detached copy sharing no table with the source
+local function deepCopy(value)
+  if type(value) ~= "table" then
+    return value
+  end
+  local copy = {}
+  for key, item in pairs(value) do
+    copy[deepCopy(key)] = deepCopy(item)
+  end
+  return copy
+end
+
+---@param sceneKey string semantic scene identity under test preparation
+---@return table detached schema-valid staged manifest carrying the requested scene
+local function screenManifest(sceneKey)
+  local background, terrain, time = sceneKey:match("^([^/]+)/([^/]+)/([^/]+)$")
+  assert(
+    background ~= nil and terrain ~= nil and time ~= nil,
+    "the screen fixture needs a background/terrain/time scene key"
+  )
+  local manifest = deepCopy(BattlePresentationManifestFixture.manifest())
+  manifest.scenes = { { key = sceneKey, background = background, terrain = terrain, time = time } }
+  BattlePresentationSchema.assertManifest(manifest)
+  return manifest
 end
 
 ---@return string a valid semantic scene key assembled from the real presentation inventory
@@ -329,9 +388,13 @@ local function openRig(modules, opts)
     text = opts.text or recordingText(),
     assets = opts.assets or stubAssets({}),
   }
+  local sceneKey = testSceneKey()
+  if opts.overrides ~= nil and opts.overrides.sceneKey ~= nil then
+    sceneKey = opts.overrides.sceneKey
+  end
   local screen = modules.state.new({
     launchId = opts.launchId,
-    manifest = opts.manifest or planningManifest(testSceneKey()),
+    manifest = opts.manifest or screenManifest(sceneKey),
     model = modules.model,
     submit = function(reply)
       rig.submits[#rig.submits + 1] = reply
@@ -420,7 +483,7 @@ local function driveToMode(rig, mode, budget)
     if status.mode == "failed" then
       error("the battle screen failed while driving to " .. mode .. ": " .. tostring(status.error), 0)
     end
-    if status.mode == mode then
+    if status.mode == mode and (mode ~= "command" and mode ~= "moves" or rig.screen:view().menuInputEnabled) then
       return status
     end
   end
@@ -594,10 +657,6 @@ function T.interactive_commands_reach_the_runtime_exactly_once()
   -- The settled command root keeps its framed select prompt: the
   -- top-screen narration names the acting lead while the command menu
   -- stays open over it, so the view never goes chrome-only mid-decision.
-  -- PENDING-VERIFICATION: this suite's planning-manifest rig cannot boot
-  -- at the current tip (the constructor requires staged manifest
-  -- sections), so this prompt expectation is proven at the command layer
-  -- until the suite's boot gap is fixed; residence here is not green proof.
   local openingView = rig.screen:view()
   Assert.equal(openingView.message, "What will EEVEE do?", "the settled command root keeps the framed select prompt")
   Assert.equal(openingView.selection, "fight", "the command prompt rests on the first command")
@@ -616,7 +675,6 @@ function T.interactive_commands_reach_the_runtime_exactly_once()
   rig.screen:input({ { type = "cancel" } })
   rig.pump(1)
   Assert.equal(rig.screen:status().mode, "command", "cancel from moves returns to command")
-  -- PENDING-VERIFICATION: same boot gap as above; proven at the command layer.
   Assert.equal(
     rig.screen:view().message,
     "What will EEVEE do?",
@@ -880,6 +938,9 @@ function T.paired_panes_use_source_regions_and_survive_redraw()
   tap(rig, 128, 175 + 192)
   rig.pump(1)
   Assert.equal(rig.screen:status().mode, "command", "the moves cancel anchor returns to command by pointer")
+  -- The re-entered prompt reveals before it arms: the press probes wait
+  -- for the production input gate instead of racing it.
+  driveToMode(rig, "command", 30)
   local released = drawNow()
   Assert.isTrue(#graphics.draws > 0, "the command composition draws through the recording boundary")
   rig.screen:input({ { type = "pointer_down", pointerId = "touch:3", x = 128, y = 83 + 192 } })
@@ -898,21 +959,16 @@ function T.paired_panes_use_source_regions_and_survive_redraw()
   -- Both battlers draw from their own images with narration framed by
   -- the selected window, redraws are inert, and borrowed graphics
   -- state returns exactly.
-  local playerBack = { handle = "battler:player-back" }
-  local enemyFront = { handle = "battler:enemy-front" }
+  local playerBack = fakeDrawable("battler:player-back")
+  local enemyFront = fakeDrawable("battler:enemy-front")
   -- Battlers draw their own exact canonical portraits, never the
   -- generic side keys: back selectors keep the back handle, front
   -- selectors the front handle, so each drawn image stays identifiable.
   for _, selector in ipairs(demandedPortraits(rig)) do
-    -- Portrait drawables pair their stub image with a stub cell quad,
-    -- matching the production image-plus-quad handle behind draws while
-    -- the drawn image stays the identifiable side handle.
     if selector:sub(-5) == "/back" then
-      rig.assets.images["mon:" .. selector] =
-        { lease = StubLease.over(playerBack), image = playerBack, quad = { handle = "quad:" .. selector } }
+      rig.assets.images["mon:" .. selector] = playerBack
     else
-      rig.assets.images["mon:" .. selector] =
-        { lease = StubLease.over(enemyFront), image = enemyFront, quad = { handle = "quad:" .. selector } }
+      rig.assets.images["mon:" .. selector] = enemyFront
     end
   end
   rig.pump(2)
@@ -1238,17 +1294,9 @@ function T.definitions_and_leases_follow_single_ownership()
   -- Selected content is actually drawn: the custom scene handle and
   -- the custom frame reach the recording boundary, vanilla handles
   -- never appear.
-  local customScene = { handle = "scene:custom-test" }
-  local vanillaScene = { handle = "scene:vanilla" }
-  -- Seeded drawables carry the lease surface over their stub image so the
-  -- scene draw records the seeded image through the sampler, exactly like
-  -- pooled production leases.
-  local assets = stubAssets({
-    seedImages = {
-      ["scene:custom"] = StubLease.over(customScene),
-      ["scene:vanilla"] = StubLease.over(vanillaScene),
-    },
-  })
+  local customScene = fakeDrawable("scene:custom", 512, 256)
+  local vanillaScene = fakeDrawable("scene:vanilla", 512, 256)
+  local assets = stubAssets({ seedImages = { ["scene:custom"] = customScene, ["scene:vanilla"] = vanillaScene } })
   local windows = recordingWindows()
   local rig = openWildRig(
     modules,
@@ -1425,6 +1473,59 @@ function T.definitions_and_leases_follow_single_ownership()
 
   rig.screen:dispose()
   rig.battle:dispose()
+end
+
+-- A malformed staged manifest never boots a runnable screen: with the
+-- required picture sections absent the real constructor fails naming
+-- the missing field, and the schema validator rejects the same copy,
+-- so no empty battle can pass as staged.
+function T.malformed_staged_manifest_fails_before_any_command_input()
+  local modules = battleScreenModules("strict staged manifest construction", STATE_MODULE)
+  local withoutPictures = screenManifest(testSceneKey())
+  withoutPictures.pictures = nil
+  local ok, err = pcall(modules.state.new, {
+    launchId = "launch-screen-malformed",
+    manifest = withoutPictures,
+    model = modules.model,
+    submit = function(_)
+      return true
+    end,
+    measureDisplay = dualMeasurement,
+    assets = stubAssets({}),
+    text = recordingText(),
+    windows = recordingWindows(),
+    audio = recordingAudio(false),
+  })
+  Assert.isFalse(ok, "a manifest without pictures never constructs a screen")
+  Assert.isTrue(
+    type(err) == "string" and err:find("pictures", 1) ~= nil,
+    "the constructor names its missing pictures section: " .. tostring(err)
+  )
+  local schemaOk = pcall(BattlePresentationSchema.assertManifest, withoutPictures)
+  Assert.isFalse(schemaOk, "the malformed copy also fails schema validation instead of reading as staged")
+end
+
+-- Detached scene selection never leaks between tests: retargeting one
+-- copied manifest leaves a second copy and the shared source on their
+-- own scenes, and every copy stays schema-valid.
+function T.detached_manifest_copies_keep_their_own_scene_key()
+  local Cache = require(PRESENTATION_CACHE_MODULE)
+  local otherKey = Cache.sceneKey(Cache.BACKGROUNDS[4], Cache.TERRAINS[3], Cache.TIMES[1])
+  local first = screenManifest(testSceneKey())
+  local second = screenManifest(otherKey)
+  Assert.equal(second.scenes[1].key, otherKey, "each copy carries its own requested scene")
+  second.scenes[1].key = testSceneKey()
+  second.scenes[1].background = Cache.BACKGROUNDS[1]
+  second.scenes[1].terrain = Cache.TERRAINS[1]
+  second.scenes[1].time = Cache.TIMES[1]
+  Assert.equal(first.scenes[1].key, testSceneKey(), "retargeting a sibling copy never touches this copy")
+  BattlePresentationSchema.assertManifest(first)
+  BattlePresentationSchema.assertManifest(second)
+  Assert.equal(
+    BattlePresentationManifestFixture.manifest().scenes[1].key,
+    "general/grass/day",
+    "per-test copies never mutate the shared source fixture"
+  )
 end
 
 return { tests = T }
