@@ -90,6 +90,9 @@ end
 ---@field _celebiRenderer table<string, unknown>? lazy field-scene model presenter
 ---@field _celebiBlur table<string, unknown>? lazy field-scene capture presenter
 ---@field actorPresentation FieldActorPresentation?
+---@field _actorDesiredReady boolean? whether the current world admission is complete for its map identity
+---@field _presentedRuntimeMap RuntimeFieldMap? borrowed identity of the runtime map already rendered successfully
+---@field _gameplayHoldEngaged boolean whether the gameplay input hold is currently engaged
 ---@field _lastGeometrySignature string? the structural presentation-geometry signature the last sync consumed
 ---@field _pollPresentationTopology boolean whether injected topology changes are polled during draw
 ---@field _surfPresentation { playerOffset: { x: number, y: number, z: number }, surf: { active: boolean, attachmentOffsetY: number } }
@@ -192,7 +195,9 @@ function FieldState.new(game, options)
     -- known.
     self:resize(width, height)
     self.actorPresentation = FieldActorPresentation.new(runtime --[[@as FieldActorPresentationRuntime]])
-    self.actorPresentation:sync()
+    self._actorDesiredReady = self.actorPresentation:sync()
+    self._presentedRuntimeMap = nil
+    self._gameplayHoldEngaged = false
     -- The field-local presented-battle envelope: borrows the field text
     -- and window renderers plus the player frame selection, carries the
     -- live host graphics namespace so battle drawables upload as real
@@ -301,7 +306,8 @@ function FieldState:update(dt)
   self:_advanceStarterPreparation()
   self:_syncStarterPresentationInput()
   self:_advanceEntryCover(dt)
-  assert(self.actorPresentation, "field actor presentation is unavailable"):sync()
+  self._actorDesiredReady = assert(self.actorPresentation, "field actor presentation is unavailable"):sync()
+  self:_updateGameplayHold()
   self:_sampleOverlayFps(dt)
 end
 
@@ -433,10 +439,103 @@ function FieldState:_advanceEntryCover(dt)
   end
 end
 
+-- Whether the current world is a new map that cannot be revealed yet: the
+-- map was never drawn successfully and either its actors have not entered
+-- or its desired sprite set is not admitted. An already presented same map
+-- keeps rendering during later pending revisions.
+---@return boolean
+function FieldState:_newWorldVisualHold()
+  local runtime = self.runtime
+  if runtime == nil then
+    return false
+  end
+  local currentMap = runtime.runtimeMap
+  if currentMap == nil then
+    return false
+  end
+  if self._presentedRuntimeMap == currentMap then
+    return false
+  end
+  local session = runtime.session
+  local stage = nil
+  if session ~= nil then
+    stage = session.mapEntryStage
+  end
+  if stage == "transition" or stage == "transition_running" or stage == "actors" then
+    return true
+  end
+  return not self._actorDesiredReady
+end
+
+-- Whether ordinary gameplay input is suppressed behind the world cover: the
+-- new world is held past actor entry, so invisible travel must not start.
+-- On-transition stages and live scripted modals keep their input routing.
+---@return boolean
+function FieldState:_isGameplayVisualHold()
+  if not self:_newWorldVisualHold() then
+    return false
+  end
+  local runtime = self.runtime
+  if runtime == nil then
+    return false
+  end
+  if type(runtime.destinationWorldPresentable) == "function" then
+    if not runtime:destinationWorldPresentable() then
+      return false
+    end
+  else
+    return false
+  end
+  local session = runtime.session
+  local stage = nil
+  if session ~= nil then
+    stage = session.mapEntryStage
+  end
+  if stage == "transition" or stage == "transition_running" or stage == "actors" then
+    return false
+  end
+  local dialogue = runtime.dialogue
+  if dialogue ~= nil and type(dialogue.isModal) == "function" and dialogue:isModal() then
+    return false
+  end
+  local yesNo = runtime.yesNoHost
+  if yesNo ~= nil and type(yesNo.isModal) == "function" and yesNo:isModal() then
+    return false
+  end
+  local signpost = runtime.signpost
+  if signpost ~= nil and type(signpost.isModal) == "function" and signpost:isModal() then
+    return false
+  end
+  return true
+end
+
 -- Single predicate for the covered-entry input gate: while the one-shot
--- reveal is active, new gameplay presses are ignored.
+-- reveal is active, new gameplay presses are ignored. A held new world past
+-- actor entry extends the same gate without blocking scripted modals.
 function FieldState:_entryCoverActive()
-  return self._entryFade ~= nil
+  if self._entryFade ~= nil then
+    return true
+  end
+  return self:_isGameplayVisualHold()
+end
+
+-- Drops stale held gameplay input once when the visual hold engages, so the
+-- player cannot drift invisibly behind the cover. Modal lifetimes survive:
+-- the clear preserves the modal channel and later modal presses flow.
+function FieldState:_updateGameplayHold()
+  local engaged = self:_isGameplayVisualHold()
+  if engaged and not self._gameplayHoldEngaged then
+    local runtime = self.runtime
+    local input = runtime ~= nil and runtime.input or nil
+    if input ~= nil then
+      if type(input.clearAll) == "function" then
+        input:clearAll()
+      elseif type(input.clearEdges) == "function" then
+        input:clearEdges()
+      end
+    end
+  end
+  self._gameplayHoldEngaged = engaged
 end
 
 -- Every actor the frame draws: the ROM-derived player billboard first, then the
@@ -948,6 +1047,10 @@ function FieldState:draw()
   -- keep the historical always-present behavior.
   local overworld = self.runtime.overworld
   local overworldPresent = overworld == nil or overworld:isPresent()
+  local visualHold = false
+  if overworldPresent then
+    visualHold = self:_newWorldVisualHold()
+  end
   local alpha = self.runtime.session:renderAlpha()
   local function drawFieldWorld()
     self:_drawBackdrop(width, height)
@@ -965,21 +1068,27 @@ function FieldState:draw()
     )
   end
   if overworldPresent then
-    local scene = self.runtime.celebiTimeTravelScene
-    local status = scene and scene:status() or nil
-    if status ~= nil and status.active and status.blurActive then
-      if self._celebiBlur == nil then
-        self._celebiBlur = CelebiTimeTravelBlur.new()
-      end
-      self._celebiBlur:draw(status, self.runtime.viewport, drawFieldWorld)
+    if visualHold then
+      lg.setColor(0, 0, 0, 1)
+      lg.rectangle("fill", 0, 0, width, height)
     else
-      if self._celebiBlur ~= nil then
-        self._celebiBlur:release()
-        self._celebiBlur = nil
+      local scene = self.runtime.celebiTimeTravelScene
+      local status = scene and scene:status() or nil
+      if status ~= nil and status.active and status.blurActive then
+        if self._celebiBlur == nil then
+          self._celebiBlur = CelebiTimeTravelBlur.new()
+        end
+        self._celebiBlur:draw(status, self.runtime.viewport, drawFieldWorld)
+      else
+        if self._celebiBlur ~= nil then
+          self._celebiBlur:release()
+          self._celebiBlur = nil
+        end
+        drawFieldWorld()
       end
-      drawFieldWorld()
+      self._presentedRuntimeMap = self.runtime.runtimeMap
+      self.runtime:acknowledgeDestinationPresentation()
     end
-    self.runtime:acknowledgeDestinationPresentation()
   end
   -- The retained Start Menu draws first and the foreground child second,
   -- with the paused world beneath both; no application transition overlay
@@ -1759,6 +1868,9 @@ function FieldState:dispose()
     self._battlePresentationBinding = nil
   end
   self._battleText, self._battleWindows = nil, nil
+  self._actorDesiredReady = nil
+  self._presentedRuntimeMap = nil
+  self._gameplayHoldEngaged = false
   self._starterUiSuspended = false
   self._dialogueGeometry = nil
   self._fadeCover = nil

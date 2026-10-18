@@ -128,6 +128,9 @@ local function drawState(topologyProvider, pollTopology)
   local rendererObservations = {}
   local state = setmetatable({
     runtime = runtime,
+    -- The depicted scene's actor visuals are ready, so draws present the
+    -- world instead of holding it behind the cover.
+    _actorDesiredReady = true,
     topologyProvider = topologyProvider,
     _pollPresentationTopology = pollTopology == true,
     presentationResources = {
@@ -760,6 +763,9 @@ function T.dialogue_layout_resolves_once_per_topology_scale_invalidation()
     }
     local state = setmetatable({
       runtime = runtime,
+      -- The depicted scene's actor visuals are ready, so every frame
+      -- renders the world instead of holding it behind the cover.
+      _actorDesiredReady = true,
       topologyProvider = function(width, height)
         return oneDisplay(width, height)
       end,

@@ -194,6 +194,9 @@ local function drawableState(options)
   }
   local state = setmetatable({
     development = options.development == true,
+    -- The depicted scene's actor visuals are ready, so the draw presents
+    -- the world instead of holding it behind the cover.
+    _actorDesiredReady = true,
     runtime = runtime,
     topologyProvider = function()
       return topology

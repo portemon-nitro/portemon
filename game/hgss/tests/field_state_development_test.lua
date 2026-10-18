@@ -34,6 +34,9 @@ end
 local function drawableState(development)
   return setmetatable({
     development = development == true,
+    -- The depicted scene's actor visuals are ready, so the draw presents
+    -- the world instead of holding it behind the cover.
+    _actorDesiredReady = true,
     _developmentOverlayVisible = false,
     _fpsElapsed = 0,
     _fpsFrames = 0,
@@ -237,7 +240,9 @@ local function overlayFixture(development)
   }
   state.runtime.input = input
   state.runtime.update = function() end
-  state.actorPresentation.sync = function() end
+  state.actorPresentation.sync = function()
+    return true
+  end
   return state
 end
 

@@ -131,6 +131,9 @@ local function drawableState(environment, worldViewport, windowWidth, windowHeig
   }
   local state = setmetatable({
     runtime = runtime,
+    -- The depicted scene's actor visuals are ready, so the draw presents
+    -- the world inside the viewport instead of holding it behind the cover.
+    _actorDesiredReady = true,
     topologyProvider = function()
       return topology
     end,

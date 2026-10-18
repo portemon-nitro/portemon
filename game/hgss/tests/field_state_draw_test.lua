@@ -13,6 +13,7 @@ local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
 local FieldState = require("game.hgss.src.field.FieldState")
 local FieldActorPresentation = require("game.hgss.src.field.FieldActorPresentation")
 local FieldSession = require("libs.hgss.src.field.FieldSession")
+local FieldInput = require("libs.hgss.src.field.FieldInput")
 local FieldActorFixture = require("tests.support.FieldActorFixture")
 local FieldActorManager = require("libs.hgss.src.actors.FieldActorManager")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
@@ -718,6 +719,7 @@ function T.draw_passes_the_render_environment_and_queries_the_menu_host()
     worldActorItems = {},
     spriteItems = {},
     actorPresentation = actorPresentationStub(),
+    _actorDesiredReady = true,
   }, FieldState)
   state:draw()
   Assert.equal(received.environment, renderEnvironment, "the renderer receives the runtime map's render environment")
@@ -846,6 +848,7 @@ function T.physical_coverage_draws_without_a_realized_scene()
     worldActorItems = {},
     spriteItems = {},
     actorPresentation = actorPresentationStub(),
+    _actorDesiredReady = true,
   }, FieldState)
   state:draw()
   Assert.notNil(received, "the draw reaches the renderer with coverage geometry")
@@ -994,6 +997,7 @@ function T.draw_sends_static_actor_models_to_world_and_billboards_to_presentatio
     worldActorItems = {},
     spriteItems = {},
     actorPresentation = actorPresentationStub(),
+    _actorDesiredReady = true,
   }, FieldState)
   state._actorDraws = function()
     return { staticModel, sprite }
@@ -1139,6 +1143,7 @@ function T.draw_sends_billboard_emote_items_to_presentation_not_world_queue()
     worldActorItems = {},
     spriteItems = {},
     actorPresentation = actorPresentationStub(),
+    _actorDesiredReady = true,
   }, FieldState)
   state._actorDraws = function()
     return {}
@@ -1596,6 +1601,367 @@ function T.destination_world_is_not_drawn_before_entry_presentation_is_ready()
   Assert.equal(draws, 0, "destination world presentation waits for load completion")
 end
 
+-- Shared synthetic map-entry scenario for first-destination reveal coverage: a
+-- real FieldSession entry controller, a real FieldActorPresentation over a
+-- deterministic staged provider, and the real FieldState draw boundary. The
+-- state is assembled through setmetatable exactly like the neighboring draw
+-- fixtures; no production seam is bypassed.
+local function gatedSessionOptions(input, lifecycles, enterMapActors)
+  return {
+    versionId = "heartgold",
+    currentMap = { fieldData = { events = { warps = {} } }, updateAnimated = function() end },
+    player = {
+      worldX = 0,
+      worldY = 0,
+      worldZ = 0,
+      motion = "idle",
+      updateFixed = function()
+        return false
+      end,
+      clearGesturePresentation = function() end,
+      presentationState = function(self)
+        local locomotionActive = self.motion == "walking" or self.motion == "turning" or self.motion == "jumping"
+        return {
+          locomotionActive = locomotionActive,
+          gesturePose = nil,
+          gestureTick = nil,
+          gestureOffsetY = 0,
+        }
+      end,
+      presentationStateInto = function(self, out)
+        out.locomotionActive = self.motion == "walking" or self.motion == "turning" or self.motion == "jumping"
+        out.gesturePose = nil
+        out.gestureTick = nil
+        out.gestureOffsetY = 0
+        return out
+      end,
+      collisionCandidatesInto = function(self, out)
+        local current = out[1]
+        if current == nil then
+          current = {}
+          out[1] = current
+        end
+        current.fieldX = self.fieldX
+        current.fieldZ = self.fieldZ
+        current.surfaceId = self.surfaceId
+        out[2] = nil
+        return out
+      end,
+    },
+    camera = { updateFixed = function() end },
+    transition = {
+      phase = "idle",
+      locked = false,
+      updateFixed = function() end,
+      start = function()
+        error("unexpected transition", 2)
+      end,
+    },
+    actors = { step = function() end },
+    input = input,
+    dialogue = {
+      isModal = function()
+        return false
+      end,
+    },
+    scripts = { dialogueHost = {
+      yesNoPresentation = function()
+        return nil
+      end,
+    } },
+    contextChoiceProvider = {
+      status = function()
+        return nil
+      end,
+    },
+    contextChoicePresentation = function()
+      return nil
+    end,
+    scriptScheduler = {
+      step = function() end,
+      playerInputLocked = function()
+        return false
+      end,
+      playerInputOwned = function()
+        return false
+      end,
+      foregroundEnvironmentId = function()
+        return nil
+      end,
+    },
+    scriptClient = { consume = function() end },
+    enterMapActors = enterMapActors,
+    initController = {
+      hasLifecycle = function(_, lifecycle)
+        return lifecycles[lifecycle] == true
+      end,
+      startLifecycle = function()
+        return true
+      end,
+      isLifecycleSettled = function()
+        return true
+      end,
+    },
+    menuHost = {
+      isModal = function()
+        return false
+      end,
+      advance = function() end,
+    },
+    yesNoHost = idleChoiceHost(),
+    contextChoice = {
+      isActive = function()
+        return false
+      end,
+    },
+    signpost = {
+      isModal = function()
+        return false
+      end,
+    },
+    applicationHost = {
+      isActive = function()
+        return false
+      end,
+      updateFixed = function() end,
+      requestOpen = function()
+        return false
+      end,
+      requestReopen = function() end,
+      takeReopen = function()
+        return false
+      end,
+    },
+    pcApplications = {
+      isActive = function()
+        return false
+      end,
+      cancelPointerCapture = function() end,
+    },
+    interactions = {
+      resolve = function()
+        return nil
+      end,
+    },
+    bagUnlocked = function()
+      return true
+    end,
+    fieldEntranceIndicator = {
+      updateFixed = function() end,
+    },
+    eventResolver = {
+      resolveCoordinate = function() end,
+      resolvePassiveSign = function() end,
+    },
+    eventState = {
+      getVar = function()
+        return 0
+      end,
+    },
+  }
+end
+
+local function gatedEntryScene()
+  return { mapDraws = {}, staticBuildingDraws = {}, animatedBuildingDraws = {} }
+end
+
+-- Builds a FieldState over a real session and a real actor presentation so
+-- reveal tests observe the production draw/acknowledge boundary. The actor
+-- set, provider stalls, and lifecycle surface stay under test control
+-- through the returned handles.
+local function gatedEntryState(renderer, options)
+  options = options or {}
+  local input = options.input
+    or {
+      snapshot = function()
+        return {}
+      end,
+      uiSnapshot = function()
+        return {}
+      end,
+      clearEdges = function() end,
+    }
+  local session = FieldSession.new(
+    gatedSessionOptions(input, options.lifecycles or { on_resume = true }, options.enterMapActors or function() end)
+  )
+  session:beginMapEntry()
+  local spriteList = options.sprites or { 99, 34, 35 }
+  local seedRecords = options.records or { actorRecord("map:61:object:1", 34), actorRecord("map:61:object:2", 35) }
+  local entries = {}
+  for _, spriteId in ipairs(spriteList) do
+    entries[spriteId] = presentationEntry(spriteId)
+  end
+  for _, record in ipairs(seedRecords) do
+    if entries[record.spriteId] == nil then
+      entries[record.spriteId] = presentationEntry(record.spriteId)
+    end
+  end
+  local assets = stagedPresentationAssets(entries, { pending = options.pending, failures = options.failures })
+  local playerFacts = { x = 0, z = 0, facing = "south", poseTick = 0 }
+  local actors = {
+    revision = 0,
+    spriteIds = {},
+    records = {},
+  }
+  for _, record in ipairs(seedRecords) do
+    actors.spriteIds[record.spriteId] = true
+  end
+  actors.records = seedRecords
+  function actors:visualRevision()
+    return self.revision
+  end
+  function actors:collectSpriteIds(out)
+    for spriteId in pairs(self.spriteIds) do
+      out[spriteId] = true
+    end
+  end
+  function actors:drawRecords()
+    return self.records
+  end
+  local runtime = {
+    update = function() end,
+    pokemonNaming = InactivePokemonNaming.new(),
+    actors = actors,
+    playerVisual = {
+      spriteId = 99,
+      drawRecord = function()
+        local record = actorRecord("field:player", 99)
+        record.world.x, record.world.z = playerFacts.x, playerFacts.z
+        record.facing, record.poseTick = playerFacts.facing, playerFacts.poseTick
+        return record
+      end,
+    },
+    runtimeMap = { mapId = 61, sceneRuntime = gatedEntryScene(), renderEnvironment = options.environment },
+    session = session,
+    overworld = {
+      isPresent = function()
+        return true
+      end,
+    },
+    destinationWorldPresentable = function(self)
+      return self.session:destinationWorldPresentable()
+    end,
+    acknowledgeDestinationPresentation = function(self)
+      self.session:acknowledgeDestinationPresentation()
+    end,
+    viewport = FieldViewport.new(640, 480, { mode = "expanded" }),
+    camera = { zoom = 1 },
+    transition = { fadeAlpha = 0 },
+    fieldPixelScale = {
+      resolvedScale = function()
+        return 3
+      end,
+    },
+    dialogue = {
+      isModal = function()
+        return false
+      end,
+    },
+    scripts = { dialogueHost = {
+      yesNoPresentation = function()
+        return nil
+      end,
+    } },
+    contextChoiceProvider = {
+      status = function()
+        return nil
+      end,
+    },
+    contextChoicePresentation = function()
+      return nil
+    end,
+    signpost = {
+      isModal = function()
+        return false
+      end,
+    },
+    applicationHost = {
+      isActive = function()
+        return false
+      end,
+      status = function()
+        return { phase = "closed", fadeAlpha = 0 }
+      end,
+    },
+    menuHost = {
+      presentation = function()
+        return nil
+      end,
+    },
+    yesNoHost = idleChoiceHost(),
+    pcApplicationHost = idlePcApplicationHost(),
+    actionKeys = options.actionKeys or {},
+    cancelKeys = options.cancelKeys or {},
+    menuKeys = options.menuKeys or {},
+    input = input,
+    resizePresentation = function() end,
+    fieldEntranceIndicator = {
+      status = function()
+        return { visible = false }
+      end,
+    },
+  }
+  local presentation = FieldActorPresentation.new(runtime --[[@as FieldActorPresentationRuntime]], {
+    assets = assets --[[@as FieldActorPresentationAssets]],
+  })
+  local state = setmetatable({
+    runtime = runtime,
+    _pollPresentationTopology = false,
+    presentationResources = presentationResourcesStub(renderer),
+    worldParts = {},
+    worldActorItems = {},
+    spriteItems = {},
+    actorPresentation = presentation,
+  }, FieldState)
+  return {
+    state = state,
+    session = session,
+    runtime = runtime,
+    actors = actors,
+    assets = assets,
+    playerFacts = playerFacts,
+  }
+end
+
+-- Records every world-renderer draw with the actor identities it carried,
+-- snapshotted before the retained parts arrays are reused.
+local function drawRecorder()
+  local calls = {}
+  local renderer = {
+    draw = function(_, environment, _, worldParts, spriteItems)
+      local identities = {}
+      for _, item in ipairs((worldParts or {})[6] or {}) do
+        identities[#identities + 1] = item.actorId
+      end
+      for _, item in ipairs(spriteItems or {}) do
+        identities[#identities + 1] = item.actorId
+      end
+      table.sort(identities)
+      calls[#calls + 1] = { environment = environment, actorIds = identities }
+    end,
+  }
+  return calls, renderer
+end
+
+-- Captures the opaque cover rectangles painted while a destination is held.
+-- The fixture draw path issues no other host-graphics rectangles, so every
+-- captured rectangle is a world-cover candidate.
+local function captureCover()
+  local lg = assert(love.graphics, "cover capture needs the host graphics namespace")
+  local realSetColor, realRectangle = lg.setColor, lg.rectangle
+  local calls = { colors = {}, rectangles = {} }
+  lg.setColor = function(r, g, b, a)
+    calls.colors[#calls.colors + 1] = { r = r, g = g, b = b, a = a }
+  end
+  lg.rectangle = function(mode, x, y, w, h)
+    calls.rectangles[#calls.rectangles + 1] = { mode = mode, x = x, y = y, width = w, height = h }
+  end
+  return calls, function()
+    lg.setColor = realSetColor
+    lg.rectangle = realRectangle
+  end
+end
+
 function T.destination_frames_draw_and_acknowledge_only_after_successful_presentation()
   local function makeState(renderer)
     local session = FieldSession.new({
@@ -1844,6 +2210,7 @@ function T.destination_frames_draw_and_acknowledge_only_after_successful_present
       worldActorItems = {},
       spriteItems = {},
       actorPresentation = actorPresentationStub(),
+      _actorDesiredReady = true,
     }, FieldState)
     return state, session
   end
@@ -1886,6 +2253,360 @@ function T.destination_frames_draw_and_acknowledge_only_after_successful_present
   end)
   Assert.equal(failedDraws, 1)
   Assert.equal(failedSession.mapEntryStage, "await_presentation")
+end
+
+-- A cold first destination holds three distinct sprites (player plus two
+-- map actors) against the two-new-acquisitions-per-update quota: no world
+-- frame renders and no acknowledgement fires until the final admission,
+-- and a failed first draw leaves the destination unacknowledged for retry.
+function T.first_destination_frame_waits_for_the_complete_actor_set()
+  local cover, restoreCover = captureCover()
+  local ok, err = pcall(function()
+    local drawCalls, renderer = drawRecorder()
+    local handles = gatedEntryState(renderer, { sprites = { 99, 34, 35 } })
+    local state, session = handles.state, handles.session
+    state:draw()
+    Assert.equal(#drawCalls, 0, "a hidden destination draws nothing before entry completes")
+    session.mapEntryController:advance(1)
+    session.mapEntryController:advance(2)
+    session.mapEntryController:advance(3)
+    session.mapEntryController:advance(4)
+    Assert.equal(session.mapEntryStage, "await_presentation")
+    state:update(0.016)
+    state:draw()
+    Assert.equal(#drawCalls, 0, "a partially admitted destination draws no world frame")
+    Assert.equal(
+      session.mapEntryStage,
+      "await_presentation",
+      "a held destination is never acknowledged"
+    )
+    Assert.equal(#cover.rectangles, 1, "the held destination paints one opaque cover")
+    local heldCover = cover.rectangles[1]
+    Assert.equal(heldCover.mode, "fill")
+    Assert.deepEqual(
+      { heldCover.x, heldCover.y, heldCover.width, heldCover.height },
+      { 0, 0, 640, 480 },
+      "the cover spans the current host viewport"
+    )
+    local heldColor = cover.colors[#cover.colors]
+    Assert.deepEqual({ heldColor.r, heldColor.g, heldColor.b, heldColor.a }, { 0, 0, 0, 1 })
+    state:update(0.016)
+    state:draw()
+    Assert.equal(#drawCalls, 1, "the admitted destination draws exactly one first frame")
+    Assert.deepEqual(
+      drawCalls[1].actorIds,
+      { "field:player", "map:61:object:1", "map:61:object:2" },
+      "the first frame admits the player and both map actors at once"
+    )
+    Assert.equal(session.mapEntryStage, "resume", "the first complete draw acknowledges the destination once")
+    Assert.equal(#cover.rectangles, 1, "the presented destination paints no further cover")
+    session.mapEntryController:advance(5)
+    state:draw()
+    session.mapEntryController:advance(6)
+    session.mapEntryController:advance(7)
+    state:draw()
+    Assert.equal(#drawCalls, 3, "settled frames keep drawing after acknowledgement")
+
+    local failedCalls, failedRenderer = drawRecorder()
+    local failedDraws = 0
+    failedRenderer.draw = function()
+      failedDraws = failedDraws + 1
+      error("destination renderer failed")
+    end
+    local failed = gatedEntryState(failedRenderer, { sprites = { 99, 34, 35 } })
+    failed.session.mapEntryController:advance(1)
+    failed.session.mapEntryController:advance(2)
+    failed.session.mapEntryController:advance(3)
+    failed.session.mapEntryController:advance(4)
+    failed.state:update(0.016)
+    failed.state:update(0.016)
+    Assert.throws(function()
+      failed.state:draw()
+    end)
+    Assert.equal(failedDraws, 1)
+    Assert.equal(
+      failed.session.mapEntryStage,
+      "await_presentation",
+      "a failed first draw leaves the destination unacknowledged"
+    )
+    Assert.equal(#failedCalls, 0, "a failed first draw publishes no world frame")
+    failed.state.presentationResources.renderer = { draw = function(_, environment, _, worldParts, spriteItems)
+      local identities = {}
+      for _, item in ipairs((worldParts or {})[6] or {}) do
+        identities[#identities + 1] = item.actorId
+      end
+      for _, item in ipairs(spriteItems or {}) do
+        identities[#identities + 1] = item.actorId
+      end
+      table.sort(identities)
+      failedCalls[#failedCalls + 1] = { environment = environment, actorIds = identities }
+    end }
+    failed.state:draw()
+    Assert.equal(#failedCalls, 1, "the retry presents the destination exactly once")
+    Assert.equal(failed.session.mapEntryStage, "resume", "the retry acknowledges the destination")
+  end)
+  restoreCover()
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- A seamless connection never reveals its new world before its actors have
+-- entered and every required atlas is admitted: every pre-activation stage
+-- and the delayed-atlas stall hold the world, the cover tracks the live
+-- viewport, and no old-map actor ever reaches the new scene's draw.
+function T.seamless_connection_holds_the_new_world_until_actors_enter_and_admit()
+  local cover, restoreCover = captureCover()
+  local ok, err = pcall(function()
+    local drawCalls, renderer = drawRecorder()
+    local handles = gatedEntryState(renderer, {
+      sprites = { 99, 34, 77, 78 },
+      lifecycles = { on_transition = true, on_resume = true },
+    })
+    local state, session, actors, runtime, assets = handles.state, handles.session, handles.actors, handles.runtime, handles.assets
+    local environmentA = { id = "A" }
+    runtime.runtimeMap.renderEnvironment = environmentA
+    session.mapEntryController:advance(1)
+    Assert.equal(session.mapEntryStage, "transition_running")
+    session.mapEntryController:advance(2)
+    Assert.equal(session.mapEntryStage, "actors")
+    session.mapEntryController:advance(3)
+    session.mapEntryController:advance(4)
+    session.mapEntryController:advance(5)
+    Assert.equal(session.mapEntryStage, "await_presentation")
+    state:update(0.016)
+    state:update(0.016)
+    state:draw()
+    Assert.equal(#drawCalls, 1, "the first map presents normally before the connection")
+    Assert.isTrue(drawCalls[1].environment == environmentA, "the first frame carries the first map environment")
+    Assert.deepEqual(drawCalls[1].actorIds, { "field:player", "map:61:object:1", "map:61:object:2" })
+    Assert.equal(session.mapEntryStage, "resume")
+
+    local environmentB = { id = "B" }
+    actors.revision = actors.revision + 1
+    actors.spriteIds = { [77] = true }
+    actors.records = { actorRecord("map:62:object:7", 77) }
+    assets.pending[77] = true
+    runtime.runtimeMap = { mapId = 62, sceneRuntime = gatedEntryScene(), renderEnvironment = environmentB }
+    session.mapEntryController:begin("connection")
+    Assert.equal(session.mapEntryStage, "transition")
+    state:update(0.016)
+    state:draw()
+    Assert.equal(#drawCalls, 1, "a connection holds its world before actor entry")
+    Assert.equal(session.mapEntryStage, "transition")
+    Assert.equal(#cover.rectangles, 1, "the held connection paints an opaque cover")
+    local heldCover = cover.rectangles[1]
+    Assert.equal(heldCover.mode, "fill")
+    Assert.deepEqual({ heldCover.x, heldCover.y, heldCover.width, heldCover.height }, { 0, 0, 640, 480 })
+    session.mapEntryController:advance(1)
+    Assert.equal(session.mapEntryStage, "transition_running")
+    state:update(0.016)
+    state:draw()
+    Assert.equal(#drawCalls, 1, "the running transition holds the new world")
+    runtime.viewport:resize(800, 600)
+    state:draw()
+    Assert.equal(#drawCalls, 1, "a resized stall still draws no world frame")
+    local resizedCover = cover.rectangles[#cover.rectangles]
+    Assert.equal(resizedCover.mode, "fill")
+    Assert.deepEqual(
+      { resizedCover.x, resizedCover.y, resizedCover.width, resizedCover.height },
+      { 0, 0, 800, 600 },
+      "the cover tracks the current viewport dimensions"
+    )
+    session.mapEntryController:advance(2)
+    Assert.equal(session.mapEntryStage, "actors")
+    state:update(0.016)
+    state:draw()
+    Assert.equal(#drawCalls, 1, "the actor stage holds the world while the atlas pends")
+    session.mapEntryController:advance(3)
+    Assert.equal(session.mapEntryStage, "ready")
+    state:update(0.016)
+    state:draw()
+    Assert.equal(#drawCalls, 1, "the ready stage still holds an unadmitted world")
+    for _, call in ipairs(drawCalls) do
+      Assert.isTrue(
+        call.environment ~= environmentB,
+        "no new-scene frame may render before activation and admission"
+      )
+    end
+    assets.pending[77] = nil
+    state:update(0.016)
+    state:draw()
+    Assert.equal(#drawCalls, 2, "the admitted connection draws in its next frame")
+    Assert.isTrue(drawCalls[2].environment == environmentB, "the admitted frame carries the new map environment")
+    Assert.deepEqual(drawCalls[2].actorIds, { "field:player", "map:62:object:7" })
+    Assert.equal(session.mapEntryStage, "ready")
+    for _, call in ipairs(drawCalls) do
+      if call.environment == environmentB then
+        for _, actorId in ipairs(call.actorIds) do
+          Assert.isTrue(
+            actorId ~= "map:61:object:1" and actorId ~= "map:61:object:2",
+            "no old-map actor reaches the new scene"
+          )
+        end
+      end
+    end
+
+    local environmentC = { id = "C" }
+    actors.revision = actors.revision + 1
+    actors.spriteIds = { [78] = true }
+    actors.records = { actorRecord("map:63:object:9", 78) }
+    runtime.runtimeMap = { mapId = 63, sceneRuntime = gatedEntryScene(), renderEnvironment = environmentC }
+    session.mapEntryController:begin("connection")
+    session.mapEntryController:advance(1)
+    session.mapEntryController:advance(2)
+    session.mapEntryController:advance(3)
+    Assert.equal(session.mapEntryStage, "ready")
+    state:update(0.016)
+    state:update(0.016)
+    state:draw()
+    Assert.equal(#drawCalls, 3, "a warmed connection draws without an extra hold")
+    Assert.isTrue(drawCalls[3].environment == environmentC, "the warmed frame carries the third map environment")
+    Assert.deepEqual(drawCalls[3].actorIds, { "field:player", "map:63:object:9" })
+  end)
+  restoreCover()
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- An already presented world keeps rendering live actor transforms while a
+-- same-map atlas revision pends, while a covered new destination keeps its
+-- scripted modal drawn and answerable, drops stale held gameplay input
+-- once, and resumes ordinary input only after its first revealed frame.
+function T.presented_world_keeps_rendering_while_new_destination_holds_gameplay_input()
+  local cover, restoreCover = captureCover()
+  local ok, err = pcall(function()
+    local input = FieldInput.new()
+    local drawCalls = {}
+    local drawPositions = {}
+    local renderer = {
+      draw = function(_, environment, _, worldParts, spriteItems)
+        local identities = {}
+        local positions = {}
+        local function note(item)
+          identities[#identities + 1] = item.actorId
+          if item.transform ~= nil then
+            positions[item.actorId] = item.transform[13]
+          end
+        end
+        for _, item in ipairs((worldParts or {})[6] or {}) do
+          note(item)
+        end
+        for _, item in ipairs(spriteItems or {}) do
+          note(item)
+        end
+        table.sort(identities)
+        drawCalls[#drawCalls + 1] = { environment = environment, actorIds = identities }
+        drawPositions[#drawPositions + 1] = positions
+      end,
+    }
+    local dialogueDraws = 0
+    local dialogueSeen = nil
+    local handles = gatedEntryState(renderer, {
+      sprites = { 99, 34, 77, 78 },
+      input = input,
+      actionKeys = { space = true },
+      lifecycles = { on_transition = true, on_resume = true },
+    })
+    local state, session, actors, runtime, assets =
+      handles.state, handles.session, handles.actors, handles.runtime, handles.assets
+    session.mapEntryController:advance(1)
+    session.mapEntryController:advance(2)
+    session.mapEntryController:advance(3)
+    session.mapEntryController:advance(4)
+    session.mapEntryController:advance(5)
+    Assert.equal(session.mapEntryStage, "await_presentation")
+    state:update(0.016)
+    state:update(0.016)
+    state:draw()
+    Assert.equal(#drawCalls, 1, "the first map presents before the pending revision")
+    Assert.equal(session.mapEntryStage, "resume")
+    state:keypressed("d")
+    Assert.equal(input:heldDirection(), "east", "gameplay input reaches the presented map")
+
+    actors.revision = actors.revision + 1
+    actors.spriteIds[77] = true
+    actors.records[#actors.records + 1] = actorRecord("map:61:object:7", 77)
+    actors.records[1].world.x = 9
+    assets.pending[77] = true
+    state:update(0.016)
+    state:draw()
+    Assert.equal(#drawCalls, 2, "the presented map keeps rendering while its revision pends")
+    Assert.equal(#cover.rectangles, 0, "a same-map revision never paints the world cover")
+    Assert.deepEqual(
+      drawCalls[2].actorIds,
+      { "field:player", "map:61:object:1", "map:61:object:2" },
+      "the pending newcomer stays out of the live frame"
+    )
+    Assert.equal(drawPositions[2]["map:61:object:1"], 9, "the admitted actor tracks live simulation")
+
+    local environmentB = { id = "B" }
+    actors.revision = actors.revision + 1
+    actors.spriteIds = { [78] = true }
+    actors.records = { actorRecord("map:62:object:7", 78) }
+    assets.pending[78] = true
+    runtime.runtimeMap = { mapId = 62, sceneRuntime = gatedEntryScene(), renderEnvironment = environmentB }
+    session.mapEntryController:begin("connection")
+    session.mapEntryController:advance(1)
+    session.mapEntryController:advance(2)
+    session.mapEntryController:advance(3)
+    Assert.equal(session.mapEntryStage, "ready")
+    state:update(0.016)
+    Assert.equal(input:heldDirection(), nil, "entering the visual hold drops stale held gameplay input")
+    state:draw()
+    Assert.equal(#drawCalls, 2, "the unadmitted destination draws no world frame")
+    Assert.equal(#cover.rectangles, 1, "the held destination paints its opaque cover")
+    state:keypressed("d")
+    Assert.equal(input:heldDirection(), nil, "gameplay presses are ignored behind the cover")
+    state:keypressed("space")
+    Assert.equal(input:heldDirection(), nil, "ordinary action presses are ignored without a modal")
+    Assert.isNil(input:snapshot().actionPressed, "no action edge survives the hold without a modal")
+    runtime.dialogue = {
+      isModal = function()
+        return true
+      end,
+    }
+    state._dialoguePresentation = function()
+      return {}
+    end
+    state.presentationResources.dialogueRenderer = {
+      draw = function(_, dialogue)
+        dialogueDraws = dialogueDraws + 1
+        dialogueSeen = dialogue
+      end,
+    }
+    state:draw()
+    Assert.equal(#drawCalls, 2, "a scripted modal never lifts the world hold")
+    Assert.equal(dialogueDraws, 1, "the scripted modal still draws above the cover")
+    Assert.isTrue(dialogueSeen == runtime.dialogue, "the drawn modal is the live scripted dialogue")
+    state:keypressed("space")
+    Assert.isTrue(input:snapshot().actionPressed == true, "modal action input stays answerable behind the cover")
+    state:keyreleased("space")
+    Assert.isNil(input:snapshot().actionPressed, "modal releases clear the answered edge")
+    runtime.dialogue = {
+      isModal = function()
+        return false
+      end,
+    }
+    state:keypressed("d")
+    Assert.equal(input:heldDirection(), nil, "gameplay stays held until the first revealed frame")
+    assets.pending[78] = nil
+    state:update(0.016)
+    state:update(0.016)
+    state:draw()
+    Assert.equal(#drawCalls, 3, "the admitted destination reveals exactly once")
+    Assert.isTrue(drawCalls[3].environment == environmentB, "the revealed frame carries the new map environment")
+    Assert.equal(input:heldDirection(), nil, "no phantom press survives the hold")
+    state:keypressed("d")
+    Assert.equal(input:heldDirection(), "east", "ordinary input resumes after the reveal")
+    state:keyreleased("d")
+    Assert.equal(input:heldDirection(), nil, "releases keep clearing after the reveal")
+  end)
+  restoreCover()
+  if not ok then
+    error(err, 0)
+  end
 end
 
 function T.avatar_sprite_change_acquires_before_releasing_without_churn()
@@ -2149,6 +2870,7 @@ function T.idle_field_draw_resolves_no_modal_status_or_layout()
         end,
       },
     })
+    state._actorDesiredReady = true
     state.presentationResources.renderer = {
       draw = function(_, _, _, worldParts)
         worldDraws = worldDraws + 1
