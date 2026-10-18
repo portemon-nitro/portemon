@@ -88,6 +88,11 @@ function CelebiTimeTravelTask.poll(state, ctx)
         scene:beginModel()
         state.sceneStarted = true
       else
+        assert(
+          type(scene) == "table" and type(scene.setAnimationFrame) == "function",
+          "Celebi scene service is missing"
+        )
+        scene:setAnimationFrame(1)
         state.phase = "beat"
       end
       state.elapsed = 0
@@ -118,7 +123,7 @@ function CelebiTimeTravelTask.poll(state, ctx)
   if state.phase == "beat" then
     state.elapsed = state.elapsed + 1
     assert(type(scene) == "table" and type(scene.setAnimationFrame) == "function", "Celebi scene service is missing")
-    scene:setAnimationFrame(state.elapsed)
+    scene:setAnimationFrame(1 + state.elapsed)
     if state.elapsed >= CelebiTimeTravelTask.BEAT_TICKS then
       assert(type(scene.beginSwirl) == "function", "Celebi scene swirl operation is missing")
       scene:beginSwirl()
@@ -129,7 +134,7 @@ function CelebiTimeTravelTask.poll(state, ctx)
   end
   state.elapsed = math.min(state.elapsed + 1, CelebiTimeTravelTask.SWIRL_TICKS)
   assert(type(scene) == "table" and type(scene.setAnimationFrame) == "function", "Celebi scene service is missing")
-  scene:setAnimationFrame(CelebiTimeTravelTask.BEAT_TICKS + state.elapsed)
+  scene:setAnimationFrame(1 + CelebiTimeTravelTask.BEAT_TICKS + state.elapsed)
   assert(type(scene.setSwirlFrame) == "function", "Celebi scene swirl operation is missing")
   scene:setSwirlFrame(state.elapsed)
   if state.elapsed == CelebiTimeTravelTask.CLOSING_START_TICK and not state.fadeStarted then

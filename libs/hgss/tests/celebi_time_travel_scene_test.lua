@@ -81,13 +81,20 @@ local function fixture()
       return map
     end,
   })
-  return scene, actors, follower, map, function(nextMap)
-    map = nextMap
-  end, function()
-    return cameraProviderCalls
-  end, camera, function(replacement)
-    currentCamera = replacement
-  end
+  return scene,
+    actors,
+    follower,
+    map,
+    function(nextMap)
+      map = nextMap
+    end,
+    function()
+      return cameraProviderCalls
+    end,
+    camera,
+    function(replacement)
+      currentCamera = replacement
+    end
 end
 
 function T.model_capture_hides_follower_without_repositioning_and_status_is_detached()
@@ -109,20 +116,54 @@ end
 
 function T.scene_rejects_bad_order_and_non_monotonic_frames()
   local scene = fixture()
-  Assert.isFalse(pcall(function()
-    scene:beginSwirl()
-  end), "swirl cannot begin before model")
+  Assert.isFalse(
+    pcall(function()
+      scene:beginSwirl()
+    end),
+    "swirl cannot begin before model"
+  )
   scene:beginModel()
-  Assert.isFalse(pcall(function()
-    scene:beginModel()
-  end), "a scene cannot be activated twice")
+  Assert.isFalse(
+    pcall(function()
+      scene:beginModel()
+    end),
+    "a scene cannot be activated twice"
+  )
   scene:setAnimationFrame(4)
-  Assert.isFalse(pcall(function()
-    scene:setAnimationFrame(3)
-  end), "animation source time cannot rewind")
-  Assert.isFalse(pcall(function()
-    scene:beginSwirl()
-  end), "swirl requires an animation beat")
+  Assert.isFalse(
+    pcall(function()
+      scene:setAnimationFrame(3)
+    end),
+    "animation source time cannot rewind"
+  )
+  Assert.isFalse(
+    pcall(function()
+      scene:beginSwirl()
+    end),
+    "swirl requires an animation beat"
+  )
+end
+
+function T.swirl_requires_the_completed_prelude_and_accepts_exact_animation_bounds()
+  local scene = fixture()
+  scene:beginModel()
+  scene:setAnimationFrame(30)
+  Assert.isFalse(
+    pcall(function()
+      scene:beginSwirl()
+    end),
+    "swirl cannot begin before all 31 prelude advances"
+  )
+  scene:setAnimationFrame(31)
+  scene:beginSwirl()
+  scene:setAnimationFrame(211)
+  Assert.equal(scene:status().animationFrame, 211, "the final source animation frame is accepted")
+  Assert.isFalse(
+    pcall(function()
+      scene:setAnimationFrame(212)
+    end),
+    "animation cannot advance beyond the final source frame"
+  )
 end
 
 function T.abort_restores_only_the_same_follower_on_the_same_map()
@@ -134,12 +175,22 @@ function T.abort_restores_only_the_same_follower_on_the_same_map()
 
   scene:beginModel()
   setMap({})
-  actors.actor = { visible = false, getWorldPosition = function() return { x = 1, y = 1, z = 1 } end }
+  actors.actor = {
+    visible = false,
+    getWorldPosition = function()
+      return { x = 1, y = 1, z = 1 }
+    end,
+  }
   scene:abort()
   Assert.isFalse(actors.actor.visible, "stale cleanup leaves replacement follower untouched")
 
   setMap({})
-  actors.actor = { visible = true, getWorldPosition = function() return { x = 1, y = 1, z = 1 } end }
+  actors.actor = {
+    visible = true,
+    getWorldPosition = function()
+      return { x = 1, y = 1, z = 1 }
+    end,
+  }
   scene:beginModel()
   scene:abort()
   Assert.isTrue(actors.actor.visible, "same-map cleanup restores the current captured follower")
@@ -149,7 +200,7 @@ function T.finished_scene_keeps_follower_hidden_until_next_step_and_reactivates_
   local scene, actors, follower = fixture()
   scene:beginModel()
   local firstSequence = scene:status().sequence
-  scene:setAnimationFrame(30)
+  scene:setAnimationFrame(31)
   scene:beginSwirl()
   scene:setSwirlFrame(1)
   scene:finish()
@@ -164,10 +215,11 @@ function T.swirl_rolls_camera_up_once_per_source_frame_without_changing_projecti
   local scene, _, _, _, _, _, camera = fixture()
   local originalUp = { x = camera.up.x, y = camera.up.y, z = camera.up.z }
   local perspective, zoom, aspect = camera:rawPerspective(), camera.zoom, camera.projectionAspect
-  local target, eye = { x = camera.target.x, y = camera.target.y, z = camera.target.z },
+  local target, eye =
+    { x = camera.target.x, y = camera.target.y, z = camera.target.z },
     { x = camera.eye.x, y = camera.eye.y, z = camera.eye.z }
   scene:beginModel()
-  scene:setAnimationFrame(30)
+  scene:setAnimationFrame(31)
   scene:beginSwirl()
   Assert.isFalse(scene:status().blurActive, "capture waits for the first source swirl tick")
   local samples = {
@@ -201,7 +253,7 @@ end
 function T.abort_restores_only_the_borrowed_camera_after_camera_replacement()
   local scene, _, _, _, _, _, camera, setCurrentCamera = fixture()
   scene:beginModel()
-  scene:setAnimationFrame(30)
+  scene:setAnimationFrame(31)
   scene:beginSwirl()
   Assert.isFalse(scene:status().blurActive, "capture waits for the first source swirl tick")
   scene:setSwirlFrame(1)

@@ -87,16 +87,16 @@ function CelebiTimeTravelScene:setAnimationFrame(frame)
   local state = assert(self._state, "Celebi scene is inactive")
   assert(type(frame) == "number" and frame % 1 == 0 and frame >= state.animationFrame, "invalid Celebi animation frame")
   if state.swirlFrame == nil then
-    assert(frame <= 30, "Celebi animation frame exceeds the beat")
+    assert(frame <= 31, "Celebi animation frame exceeds the beat")
   else
-    assert(frame <= 210, "Celebi animation frame exceeds the swirl")
+    assert(frame <= 211, "Celebi animation frame exceeds the swirl")
   end
   state.animationFrame = frame
 end
 
 function CelebiTimeTravelScene:beginSwirl()
   local state = assert(self._state, "Celebi scene is inactive")
-  assert(state.swirlFrame == nil and state.animationFrame >= 30, "Celebi swirl requires the completed model beat")
+  assert(state.swirlFrame == nil and state.animationFrame >= 31, "Celebi swirl requires the completed model beat")
   local camera = assert(self._currentCamera(), "Celebi swirl requires a live field camera")
   local up = assert(camera.up, "Celebi swirl requires a camera up vector")
   assert(finite(up.x) and finite(up.y) and finite(up.z), "Celebi camera up vector must be finite")

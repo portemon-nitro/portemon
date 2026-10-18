@@ -74,6 +74,39 @@ local function testScene()
   }
 end
 
+local function recordingScene()
+  local calls = {}
+  local scene = {}
+  function scene:beginModel()
+    calls[#calls + 1] = { method = "beginModel", frame = 0 }
+  end
+  function scene:setAnimationFrame(frame)
+    calls[#calls + 1] = { method = "setAnimationFrame", frame = frame }
+  end
+  function scene:beginSwirl()
+    calls[#calls + 1] = { method = "beginSwirl" }
+  end
+  function scene:setSwirlFrame(frame)
+    calls[#calls + 1] = { method = "setSwirlFrame", frame = frame }
+  end
+  function scene:finish()
+    calls[#calls + 1] = { method = "finish" }
+  end
+  function scene:abort()
+    calls[#calls + 1] = { method = "abort" }
+  end
+  return scene, calls
+end
+
+local function lastAnimationCall(calls)
+  for index = #calls, 1, -1 do
+    if calls[index].method == "setAnimationFrame" then
+      return calls[index]
+    end
+  end
+  error("no animation frame was assigned")
+end
+
 local function schedulerWith(screen)
   local registry = Registry.new()
   local composition = Composition.new(registry)
@@ -182,6 +215,90 @@ function T.opening_fades_run_out_then_in_and_clear_before_the_beat()
   Assert.isFalse(screen:isOpaque(), "the landed fade-in leaves the field visible")
   Assert.isNil(screen:status().overlay, "a clear screen lends no overlay")
   Assert.equal(#screen.starts, 2, "the opening never starts a third fade")
+end
+
+function T.animation_advances_on_the_exact_inbound_fade_completion_poll()
+  local screen = liveScreen()
+  local scene, calls = recordingScene()
+  local ctx = { services = { screen = screen, celebiCinematic = scene } }
+  local state = CelebiTimeTravelTask.create()
+  local _, _, nextState = drivePhase(screen, state, ctx, "opening_out", 30)
+  state = nextState
+  Assert.equal(state.phase, "opening_in", "the model opens behind the inbound fade")
+  local modelBeginCall = calls[#calls]
+  Assert.equal(modelBeginCall.method, "beginModel", "model capture starts at fade-in entry")
+  Assert.equal(modelBeginCall.frame, 0, "the captured model starts at source frame zero")
+
+  local polls = 0
+  while state.phase == "opening_in" do
+    local before = #calls
+    local fadeWasDone = screen:fadeDone()
+    local result
+    result, state = tick(screen, state, ctx)
+    polls = polls + 1
+    if not fadeWasDone then
+      Assert.equal(#calls, before, "incomplete inbound fade polls do not advance the model")
+      Assert.equal(state.phase, "opening_in", "incomplete inbound fade polls remain in opening")
+    else
+      Assert.equal(#calls, before + 1, "the completion poll performs exactly one model advance")
+      Assert.equal(calls[#calls].method, "setAnimationFrame", "the completion poll assigns animation")
+      Assert.equal(calls[#calls].frame, 1, "the completion poll assigns source frame one")
+      Assert.equal(state.phase, "beat", "fade completion enters the model beat")
+      Assert.equal(state.elapsed, 0, "fade completion does not consume a beat tick")
+      Assert.isFalse(result.complete, "fade completion does not settle the task")
+    end
+  end
+  Assert.equal(polls, OPENING_STEPS, "the completion poll follows four inbound fade source ticks")
+
+  local beforeBeat = #calls
+  local _, beat = tick(screen, state, ctx)
+  Assert.equal(#calls, beforeBeat + 1, "the first later beat poll advances exactly once")
+  Assert.equal(calls[#calls].frame, 2, "the first beat poll assigns source frame two")
+  Assert.equal(beat.phase, "beat", "the first model beat remains in the beat phase")
+  Assert.equal(beat.elapsed, 1, "the first model beat consumes exactly one beat tick")
+end
+
+function T.frame_indexing_preserves_exact_beat_swirl_cover_and_finish_timing()
+  local screen = liveScreen()
+  local scene, calls = recordingScene()
+  local ctx = { services = { screen = screen, celebiCinematic = scene } }
+  local state = CelebiTimeTravelTask.create()
+  local _, _, nextState = drivePhase(screen, state, ctx, "opening_out", 30)
+  state = nextState
+  _, _, state = drivePhase(screen, state, ctx, "opening_in", 30)
+  Assert.equal(state.phase, "beat", "the completed inbound fade enters the beat")
+  Assert.equal(calls[#calls].frame, 1, "the beat starts after the completion frame")
+
+  local _, _, beat = drivePhase(screen, state, ctx, "beat", 40)
+  state = beat
+  Assert.equal(state.phase, "swirl", "exactly 30 beat polls enter the swirl")
+  Assert.equal(state.elapsed, 0, "swirl elapsed resets at entry")
+  Assert.equal(lastAnimationCall(calls).frame, 1 + BEAT_TICKS, "the beat ends at animation frame 31")
+
+  local swirlTicks = 0
+  local result = nil
+  while swirlTicks < SWIRL_TICKS do
+    result, state = tick(screen, state, ctx)
+    swirlTicks = swirlTicks + 1
+    Assert.equal(
+      lastAnimationCall(calls).frame,
+      1 + BEAT_TICKS + swirlTicks,
+      "swirl animation follows source tick count"
+    )
+    if swirlTicks == CLOSING_START_TICK then
+      Assert.equal(#screen.starts, 3, "closing cover starts at swirl tick 80")
+      Assert.equal(state.elapsed, CLOSING_START_TICK, "closing cover preserves the swirl clock")
+      Assert.equal(screen.starts[3].screenScope, "both", "closing cover includes both screens")
+    end
+    if result.complete then
+      break
+    end
+  end
+  Assert.isTrue(result.complete, "the task finishes after the complete swirl")
+  Assert.equal(swirlTicks, SWIRL_TICKS, "frame correction preserves the 180 tick swirl")
+  Assert.equal(lastAnimationCall(calls).frame, 1 + BEAT_TICKS + SWIRL_TICKS, "the last dispatched frame is 211")
+  Assert.equal(calls[#calls].method, "finish", "scene finish follows the final frame assignment")
+  Assert.isTrue(screen:isOpaque(), "finish remains under the opaque warp cover")
 end
 
 function T.beat_and_early_swirl_stay_visible_until_the_late_closing_fade()
