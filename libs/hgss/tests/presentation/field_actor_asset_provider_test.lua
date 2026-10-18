@@ -338,6 +338,8 @@ end
 function T.pooled_branch_shares_one_leased_atlas_without_provider_side_png_read()
   local cache, pool, graphics = sharedAtlasSetup({ 0, 29 })
   local provider = FieldActorAssetProvider.new(cache, { graphics = graphics, imageAssets = pool })
+  Assert.isTrue(provider:prepare(0), "a staged atlas reports ready")
+  Assert.isTrue(provider:prepare(29), "every sprite holds its own staged ticket")
   local first = provider:acquire(0)
   local second = provider:acquire(29)
   Assert.isTrue(first.image == second.image, "sharing sprites resolve one physical atlas")
@@ -363,6 +365,7 @@ end
 function T.pooled_mesh_failure_returns_the_borrowed_lease_once()
   local cache, pool, graphics = sharedAtlasSetup({ 0 }, 1)
   local provider = FieldActorAssetProvider.new(cache, { graphics = graphics, imageAssets = pool })
+  Assert.isTrue(provider:prepare(0), "a staged atlas reports ready before the build")
   local err = Assert.throws(function()
     provider:acquire(0)
   end)
@@ -371,6 +374,268 @@ function T.pooled_mesh_failure_returns_the_borrowed_lease_once()
   Assert.notNil(pool:findPhysical(SHARED_TEST_ATLAS, POOLED_SAMPLER), "the pool-owned pair stays valid")
   Assert.equal(provider:stats().live, 0, "the failed entry publishes nothing")
   Assert.equal(provider:stats().loads, 0, "the failed load counts no completed load")
+end
+
+-- A session image owner whose worker-backed requests stay pending until the
+-- test releases them, so readiness polling can be observed without blocking.
+-- It counts every request and cancellation and otherwise behaves exactly
+-- like the shared fake.
+local function pendingImagePool()
+  local inner = SharedImagePoolFake.new()
+  local held = {} -- token -> true while the worker result is withheld
+  local holdNext = false
+  local pool = { requests = 0, cancels = 0 }
+  function pool:holdNextRequest()
+    holdNext = true
+  end
+  function pool:releasePending()
+    for token in pairs(held) do
+      held[token] = nil
+    end
+  end
+  function pool:request(path, sampler, priority)
+    self.requests = self.requests + 1
+    local token = inner:request(path, sampler, priority)
+    if holdNext then
+      holdNext = false
+      held[token] = true
+    end
+    return token
+  end
+  function pool:poll(token)
+    if held[token] then
+      return "pending"
+    end
+    return inner:poll(token)
+  end
+  function pool:acquire(token)
+    held[token] = nil
+    return inner:acquire(token)
+  end
+  function pool:cancel(token)
+    self.cancels = self.cancels + 1
+    held[token] = nil
+    return inner:cancel(token)
+  end
+  function pool:release(lease)
+    return inner:release(lease)
+  end
+  function pool:seedPhysical(path, sampler, handle)
+    return inner:seedPhysical(path, sampler, handle)
+  end
+  function pool:failAfterUploads(count, message)
+    return inner:failAfterUploads(count, message)
+  end
+  function pool:clearFailure()
+    return inner:clearFailure()
+  end
+  function pool:stats()
+    return inner:stats()
+  end
+  function pool:findPhysical(path, sampler)
+    return inner:findPhysical(path, sampler)
+  end
+  function pool:prune()
+    return inner:prune()
+  end
+  function pool:dispose()
+    return inner:dispose()
+  end
+  function pool:uploadCount()
+    return inner.uploads
+  end
+  return pool
+end
+
+-- Compiled sprites with per-sprite atlas paths, served by a pool whose
+-- worker timing the test controls. Any provider-side read of the atlas
+-- bytes fails loudly so the pooled path cannot hide behind a passing cache.
+---@return CacheFs cache, table pool, table graphics
+local function pendingAtlasSetup(spriteIds, failOnNewMesh)
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  cache:writeLua(FieldActorCache.indexPath(), {
+    schema = FieldActorCache.INDEX_SCHEMA,
+    romVersion = "heartgold",
+    spriteIds = spriteIds,
+    runtime = { avatars = {}, variableSprites = { first = 1, last = 1, variableBase = 0 } },
+    variableSprites = {},
+    recordCount = #spriteIds,
+  })
+  for _, spriteId in ipairs(spriteIds) do
+    cache:writeLua(FieldActorCache.visualPath(spriteId), FieldActorFixture.visual(spriteId, { frameCount = 2 }))
+    cache:write(FieldActorCache.atlasPath(spriteId), "png-bytes")
+  end
+  local prefix = FieldActorCache.assetDir() .. "/"
+  local innerRead = cache.read
+  function cache.read(self, path)
+    if path:sub(1, #prefix) == prefix then
+      error("redundant provider-side atlas read for " .. path, 0)
+    end
+    return innerRead(self, path)
+  end
+  return cache, pendingImagePool(), pooledTestGraphics(failOnNewMesh)
+end
+
+-- Readiness polling never waits on the image worker: repeated checks while
+-- the worker is stalled report not-ready at once, keep one outstanding
+-- ticket, build no GPU entry, and the later ready check acquires exactly
+-- one entry that releases exactly once.
+function T.pending_atlas_reports_not_ready_without_blocking_then_builds_exactly_one_entry()
+  local cache, pool, graphics = pendingAtlasSetup({ 0 })
+  local provider = FieldActorAssetProvider.new(cache, { graphics = graphics, imageAssets = pool })
+  pool:holdNextRequest()
+  Assert.isFalse(provider:prepare(0), "the stalled worker reports not-ready")
+  Assert.isFalse(provider:prepare(0), "a second check still returns at once")
+  Assert.isFalse(provider:prepare(0), "a third check still returns at once")
+  Assert.equal(pool.requests, 1, "repeated readiness checks reuse one outstanding ticket")
+  Assert.isNil(provider:resident(0), "a preparing sprite is not a referenced entry")
+  Assert.equal(provider:stats().live, 0, "no GPU entry is built before acquisition")
+  Assert.equal(pool:stats().outstandingLeases, 0, "no lease is borrowed before acquisition")
+  Assert.equal(pool:uploadCount(), 0, "the stalled worker stages nothing")
+  pool:releasePending()
+  Assert.isTrue(provider:prepare(0), "the completed worker reports ready")
+  Assert.equal(pool.requests, 1, "readiness still rides the original ticket")
+  local entry = provider:acquire(0)
+  Assert.notNil(entry.image, "acquisition hands out the borrowed atlas")
+  Assert.equal(#entry.quads, 2, "the leased atlas keeps stable quad geometry")
+  Assert.equal(entry.quads[2].x, 32, "the second frame still slides onto the shared strip")
+  Assert.equal(#entry.meshes, 2, "one world mesh per atlas frame")
+  Assert.isTrue(provider:resident(0) == entry, "acquisition publishes a referenced entry")
+  Assert.equal(pool:uploadCount(), 1, "one worker staging builds one physical pair")
+  provider:release(0)
+  Assert.equal(provider:stats().references, 0, "the release balances the acquire")
+  Assert.equal(pool:stats().outstandingLeases, 1, "the idle entry retains its lease until eviction or dispose")
+  provider:dispose()
+  Assert.equal(provider:stats().live, 0, "teardown publishes nothing")
+  Assert.equal(pool:stats().outstandingLeases, 0, "teardown returns every borrowed lease")
+  Assert.equal(pool:prune(), 1, "the idle physical is reclaimed exactly once by its owner")
+end
+
+-- Compiled sprites sharing one generated atlas, served by a pool whose
+-- worker timing the test controls. Any provider-side read of the atlas
+-- bytes fails loudly so the pooled path cannot hide behind a passing cache.
+---@return CacheFs cache, table pool, table graphics
+local function sharedPendingAtlasSetup(spriteIds)
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  cache:writeLua(FieldActorCache.indexPath(), {
+    schema = FieldActorCache.INDEX_SCHEMA,
+    romVersion = "heartgold",
+    spriteIds = spriteIds,
+    runtime = { avatars = {}, variableSprites = { first = 1, last = 1, variableBase = 0 } },
+    variableSprites = {},
+    recordCount = #spriteIds,
+  })
+  for _, spriteId in ipairs(spriteIds) do
+    local visual = FieldActorFixture.visual(spriteId, { frameCount = 2 })
+    visual.render.image = SHARED_TEST_ATLAS
+    cache:writeLua(FieldActorCache.visualPath(spriteId), visual)
+    cache:write(FieldActorCache.atlasPath(spriteId), "png-bytes")
+  end
+  local innerRead = cache.read
+  function cache.read(self, path)
+    if path == SHARED_TEST_ATLAS then
+      error("redundant provider-side atlas read for " .. path, 0)
+    end
+    return innerRead(self, path)
+  end
+  return cache, pendingImagePool(), pooledTestGraphics()
+end
+
+-- Pending and ready-but-unconsumed tickets never outlive their
+-- cancellation, and cancelling them never disturbs a live reference held
+-- on the same shared physical pair.
+function T.cancelled_preparations_return_their_tickets_without_touching_live_references()
+  local cache, pool, graphics = sharedPendingAtlasSetup({ 0, 29, 7 })
+  local provider = FieldActorAssetProvider.new(cache, { graphics = graphics, imageAssets = pool })
+  Assert.isTrue(provider:prepare(7), "an unstalled worker reports ready at once")
+  local live = provider:acquire(7)
+  Assert.isTrue(provider:resident(7) == live, "the independent sprite holds a live reference")
+  pool:holdNextRequest()
+  Assert.isFalse(provider:prepare(0), "the stalled ticket reports not-ready")
+  Assert.isTrue(provider:prepare(29), "the unstalled ticket reports ready")
+  Assert.equal(pool.requests, 3, "every sprite holds exactly one outstanding ticket")
+  Assert.isNil(provider:resident(0), "a preparing sprite is not a referenced entry")
+  Assert.isNil(provider:resident(29), "a ready-but-unconsumed ticket is not a referenced entry")
+  Assert.isTrue(provider:cancelPreparation(0), "cancelling the pending ticket drops it")
+  Assert.isFalse(provider:cancelPreparation(0), "cancelling twice reports nothing left to drop")
+  Assert.isTrue(provider:cancelPreparation(29), "cancelling the ready ticket returns it")
+  Assert.equal(pool.cancels, 2, "each dropped live ticket reaches the image owner exactly once; the false repeat forwards nothing")
+  pool:holdNextRequest()
+  Assert.isFalse(provider:prepare(0), "re-expressing interest after cancel starts one fresh ticket")
+  Assert.equal(pool.requests, 4, "the fresh interest is exactly one new request")
+  Assert.isTrue(provider:resident(7) == live, "cancellations never disturb the live reference")
+  Assert.equal(provider:stats().references, 1, "cancellations never mutate reference counts")
+  pool:releasePending()
+  Assert.isTrue(provider:prepare(0), "the completed worker reports ready")
+  local entry = provider:acquire(0)
+  Assert.isTrue(entry.image == live.image, "sharing sprites resolve one physical atlas")
+  Assert.equal(pool:stats().physicalImages, 1, "one physical pair for the shared source")
+  Assert.equal(pool:stats().outstandingLeases, 2, "each presented sprite holds its own lease")
+  provider:release(7)
+  provider:release(0)
+  provider:dispose()
+  provider:dispose()
+  Assert.equal(provider:stats().references, 0, "no presentation residency leaks")
+  Assert.equal(provider:stats().live, 0, "teardown publishes nothing")
+  Assert.equal(pool:stats().outstandingLeases, 0, "teardown returns every borrowed lease")
+  local physical = pool:findPhysical(SHARED_TEST_ATLAS, POOLED_SAMPLER)
+  Assert.notNil(physical, "the shared physical stays valid until its owner reclaims it")
+  Assert.equal(pool:prune(), 1, "the idle physical is reclaimed exactly once by its owner")
+  Assert.equal(physical.releaseCount, 1, "the physical pair is released exactly once")
+end
+
+-- A failed atlas staging or a failed mesh build publishes no entry, keeps
+-- no ticket, returns the borrowed image exactly once, and a fresh attempt
+-- after repairing the failure succeeds.
+function T.atlas_or_mesh_failure_leaves_no_entry_and_allows_a_clean_retry()
+  local cache, pool, graphics = pendingAtlasSetup({ 0 })
+  pool:failAfterUploads(0, "injected worker failure")
+  local provider = FieldActorAssetProvider.new(cache, { graphics = graphics, imageAssets = pool })
+  local atlasPath = FieldActorCache.atlasPath(0)
+  local atlasErr = Assert.throws(function()
+    provider:prepare(0)
+  end, "a failed worker staging must raise")
+  Assert.isTrue(Errors.is(atlasErr), "expected a typed failure, got " .. tostring(atlasErr))
+  Assert.equal(atlasErr.code, "FIELD_ACTOR_ATLAS_MISSING")
+  Assert.isTrue(
+    tostring(atlasErr.message):find(atlasPath, 1, true) ~= nil,
+    "the atlas failure names the offending path"
+  )
+  Assert.equal(pool:stats().outstandingLeases, 0, "the failed staging borrows no lease")
+  Assert.isNil(provider:resident(0), "the failed staging publishes no entry")
+  Assert.equal(provider:stats().live, 0, "the failed staging counts no live entry")
+  Assert.throws(function()
+    provider:acquire(0)
+  end, "acquiring without a ready staging must fail loudly instead of waiting")
+  pool:clearFailure()
+  Assert.isTrue(provider:prepare(0), "repairing the worker allows a fresh attempt")
+  local recovered = provider:acquire(0)
+  Assert.notNil(recovered.image, "the fresh attempt builds a valid entry")
+  provider:release(0)
+  provider:dispose()
+
+  local meshCache, meshPool, meshGraphics = pendingAtlasSetup({ 0 }, 1)
+  local meshProvider = FieldActorAssetProvider.new(meshCache, { graphics = meshGraphics, imageAssets = meshPool })
+  Assert.isTrue(meshProvider:prepare(0), "an unstalled worker reports ready at once")
+  local meshErr = Assert.throws(function()
+    meshProvider:acquire(0)
+  end, "a failed mesh build must raise")
+  Assert.isTrue(tostring(meshErr):find("injected newMesh failure", 1, true) ~= nil)
+  Assert.equal(meshPool:stats().outstandingLeases, 0, "the failed build returns its borrowed lease")
+  Assert.notNil(
+    meshPool:findPhysical(atlasPath, POOLED_SAMPLER),
+    "the pool-owned pair stays valid after the failed build"
+  )
+  Assert.isNil(meshProvider:resident(0), "the failed build publishes no entry")
+  Assert.equal(meshProvider:stats().live, 0, "the failed build counts no live entry")
+  Assert.equal(meshProvider:stats().loads, 0, "the failed build counts no completed load")
+  Assert.isTrue(meshProvider:prepare(0), "repairing the builder allows a fresh attempt")
+  local rebuilt = meshProvider:acquire(0)
+  Assert.notNil(rebuilt.image, "the fresh attempt builds a valid entry")
+  Assert.equal(#rebuilt.meshes, 2, "one world mesh per atlas frame")
+  meshProvider:release(0)
+  meshProvider:dispose()
+  Assert.equal(meshPool:stats().outstandingLeases, 0, "teardown returns every borrowed lease")
 end
 
 return { tests = T }

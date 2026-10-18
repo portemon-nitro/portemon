@@ -23,12 +23,15 @@ local BillboardTransform = require("libs.hgss.src.presentation.BillboardTransfor
 ---@field private _idleLimit integer
 ---@field private _entries table<integer, table<string, unknown>>
 ---@field private _idle integer[]
+---@field private _preparing table<integer, { visual: table<string, unknown>, token: integer, ready: boolean }>
 ---@field private _stats table<string, unknown>
 ---@field new fun(cacheFs: CacheFs, opts?: table<string, unknown>): FieldActorAssetProvider
 ---@field index fun(self: FieldActorAssetProvider): { spriteIds: integer[] }
 ---@field knows fun(self: FieldActorAssetProvider, spriteId: integer): boolean
 ---@field resident fun(self: FieldActorAssetProvider, spriteId: integer): table<string, unknown>?
 ---@field acquire fun(self: FieldActorAssetProvider, spriteId: integer): table<string, unknown>
+---@field prepare fun(self: FieldActorAssetProvider, spriteId: integer): boolean
+---@field cancelPreparation fun(self: FieldActorAssetProvider, spriteId: integer): boolean
 ---@field release fun(self: FieldActorAssetProvider, spriteId: integer)
 ---@field stats fun(self: FieldActorAssetProvider): table<string, unknown>
 ---@field dispose fun(self: FieldActorAssetProvider)
@@ -79,6 +82,7 @@ function FieldActorAssetProvider.new(cacheFs, opts)
     _idleLimit = opts.idleLimit or DEFAULT_IDLE_LIMIT,
     _entries = {},
     _idle = {}, -- least-recently-released first
+    _preparing = {}, -- spriteId -> validated visual plus outstanding atlas ticket
     _stats = { loads = 0, hits = 0, disposals = 0, evictions = 0 },
   }, FieldActorAssetProvider) --[[@as FieldActorAssetProvider]]
 end
@@ -97,6 +101,79 @@ end
 function FieldActorAssetProvider:resident(spriteId)
   local entry = self._entries[spriteId]
   return entry and entry.references > 0 and entry or nil
+end
+
+-- The validated generated record for one sprite. Compiled-index membership is
+-- prewarm advice, not an admission test: an unindexed sprite with a published
+-- visual still resolves through this same path.
+local function loadVisual(self, spriteId)
+  local visual = self._cacheFs:loadLua(FieldActorCache.visualPath(spriteId))
+  if type(visual) ~= "table" then
+    Errors.raise(
+      FieldErrors.FIELD_ACTOR_VISUAL_UNAVAILABLE,
+      "no " .. FieldActorCache.SCHEMA .. " definition for spriteId " .. spriteId,
+      { spriteId = spriteId, path = FieldActorCache.visualPath(spriteId) }
+    )
+  end
+  -- The guard raised for a non-table, so the published record is a table
+  -- here; the assert narrows the loadLua `table?` for LuaLS.
+  return assert(visual)
+end
+
+-- Enroll (or poll) one pooled atlas without waiting on the image worker.
+-- Returns true once the atlas is staged so a later acquire can build the
+-- entry at once; false while the worker result is still pending. One
+-- sprite holds at most one outstanding ticket, and an installed entry
+-- (referenced or idle) is already ready. Providers without a shared image
+-- owner stay synchronous and report ready without enrolling any work.
+function FieldActorAssetProvider:prepare(spriteId)
+  if self._imageAssets == nil then
+    return true
+  end
+  if self._entries[spriteId] ~= nil then
+    return true
+  end
+  local prep = self._preparing[spriteId]
+  if prep == nil then
+    local visual = loadVisual(self, spriteId)
+    local images = assert(self._imageAssets)
+    -- Actor atlases are point-sampled, clamped like the private path.
+    local token = images:request(
+      visual.render.image,
+      { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" },
+      "demand"
+    )
+    prep = { visual = visual, token = token, ready = false }
+    self._preparing[spriteId] = prep
+  end
+  local images = assert(self._imageAssets)
+  local status, failure = images:poll(prep.token)
+  if status == "pending" then
+    return false
+  end
+  if status ~= "ready" then
+    images:cancel(prep.token)
+    self._preparing[spriteId] = nil
+    Errors.raise(
+      FieldErrors.FIELD_ACTOR_ATLAS_MISSING,
+      "shared atlas missing for " .. prep.visual.render.image .. ": " .. tostring(failure),
+      { path = prep.visual.render.image }
+    )
+  end
+  prep.ready = true
+  return true
+end
+
+-- Drop one sprite's pending (or ready-but-unconsumed) ticket without
+-- touching any installed entry or reference count. Returns true when it
+-- dropped outstanding interest, false when there was none to drop.
+function FieldActorAssetProvider:cancelPreparation(spriteId)
+  local prep = self._preparing[spriteId]
+  if prep == nil then
+    return false
+  end
+  self._preparing[spriteId] = nil
+  return assert(self._imageAssets):cancel(prep.token)
 end
 
 local function removeIdle(self, spriteId)
@@ -149,55 +226,29 @@ local function billboardScales(visual)
   return scales
 end
 
--- Borrow one actor atlas from the session image owner under the atlas's
--- immutable sampler state (point-sampled, clamped like the private path).
--- Actor loads are synchronous, so a still-pending classification spins
--- here; predicted actor interest should already have warmed it.
-local function acquireSharedAtlas(images, path)
-  local token =
-    images:request(path, { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }, "demand")
-  local status, failure = images:poll(token)
-  while status == "pending" do
-    status, failure = images:poll(token)
-  end
-  if status ~= "ready" then
-    Errors.raise(
-      FieldErrors.FIELD_ACTOR_ATLAS_MISSING,
-      "shared atlas missing for " .. path .. ": " .. tostring(failure),
-      { path = path }
-    )
-  end
-  return images:acquire(token)
-end
-
 local function load(self, spriteId)
-  -- Published cache data is producer-validated before publication
-  -- (FieldActorCacheWriter readback); runtime uses the record directly
-  -- and fails at first use when it is absent.
-  local visual = self._cacheFs:loadLua(FieldActorCache.visualPath(spriteId))
-  if type(visual) ~= "table" then
-    Errors.raise(
-      FieldErrors.FIELD_ACTOR_VISUAL_UNAVAILABLE,
-      "no " .. FieldActorCache.SCHEMA .. " definition for spriteId " .. spriteId,
-      { spriteId = spriteId, path = FieldActorCache.visualPath(spriteId) }
-    )
-  end
-  -- The guard raised for a non-table, so the published record is a table
-  -- here; the assert narrows the loadLua `table?` for LuaLS.
-  visual = assert(visual)
-
-  local entry = {
-    spriteId = spriteId,
-    visual = visual,
-    billboardScales = billboardScales(visual),
-    references = 0,
-  }
   -- A session image owner lends the atlas Image for this visual identity:
   -- the entry holds the lease while it is referenced or idle-ringed and
-  -- returns it with the entry's meshes on eviction. Actor lookup,
-  -- reference, and idle-ring semantics are unchanged.
+  -- returns it with the entry's meshes on eviction. The pooled branch only
+  -- runs after a ready preparation staged the ticket below, so this never
+  -- waits on the image worker; actor lookup, reference, and idle-ring
+  -- semantics are unchanged.
   if self._imageAssets ~= nil then
-    local lease = acquireSharedAtlas(assert(self._imageAssets), visual.render.image)
+    local prep = self._preparing[spriteId]
+    assert(
+      prep ~= nil and prep.ready,
+      "pooled actor atlas for spriteId " .. tostring(spriteId) .. " needs a ready prepare before acquire"
+    )
+    self._preparing[spriteId] = nil
+    local images = assert(self._imageAssets)
+    local lease = images:acquire(prep.token)
+    local visual = prep.visual
+    local entry = {
+      spriteId = spriteId,
+      visual = visual,
+      billboardScales = billboardScales(visual),
+      references = 0,
+    }
     entry.imageLease = lease
     entry.image = lease.image
     local ok, err = pcall(function()
@@ -205,7 +256,7 @@ local function load(self, spriteId)
       entry.meshes = FieldActorMesh.build(self._graphics, visual)
     end)
     if not ok then
-      self._imageAssets:release(lease)
+      images:release(lease)
       entry.imageLease, entry.image = nil, nil
       FieldActorMesh.release(entry.meshes)
       error(err, 0)
@@ -213,6 +264,17 @@ local function load(self, spriteId)
     self._stats.loads = self._stats.loads + 1
     return entry
   end
+  -- Published cache data is producer-validated before publication
+  -- (FieldActorCacheWriter readback); runtime uses the record directly
+  -- and fails at first use when it is absent.
+  local visual = loadVisual(self, spriteId)
+
+  local entry = {
+    spriteId = spriteId,
+    visual = visual,
+    billboardScales = billboardScales(visual),
+    references = 0,
+  }
   local data = self._cacheFs:read(visual.render.image)
   if not data then
     Errors.raise(
@@ -304,6 +366,13 @@ function FieldActorAssetProvider:stats()
 end
 
 function FieldActorAssetProvider:dispose()
+  if self._imageAssets ~= nil then
+    local images = assert(self._imageAssets)
+    for _, prep in pairs(self._preparing) do
+      images:cancel(prep.token)
+    end
+  end
+  self._preparing = {}
   for _, entry in pairs(self._entries) do
     if entry.imageLease ~= nil then
       self._imageAssets:release(entry.imageLease)
