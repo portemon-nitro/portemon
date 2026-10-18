@@ -70,7 +70,7 @@ function CelebiTimeTravelRenderer:_build(sequence)
     end)
     local function resolveImage(path, materialId)
       local wrap = assert(wraps[materialId], "Celebi material wrap is missing")
-      return pool:imageFor(path, wrap.x, wrap.y)
+      return pool:sharedImage(path, wrap.x, wrap.y)
     end
     local instance = ModelInstance.new(definition, { resolveImage = resolveImage })
     instance.renderMeshesById = meshes

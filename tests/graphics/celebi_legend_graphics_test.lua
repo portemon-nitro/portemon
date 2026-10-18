@@ -252,6 +252,12 @@ local T = GraphicsSmoke.suite({
       local firstItems = presenter:drawItems(status(0))
       Assert.isTrue(#firstItems > 0, "the source model produces 3D draw items at frame zero")
       Assert.isTrue(firstItems[1].worldSpace, "the model enters the world render queue")
+      for _, item in ipairs(firstItems) do
+        local material = item.material
+        Assert.notNil(material.image, "every Celebi material carries its texture")
+        Assert.isTrue(material.indexed, "the Celebi textures are palette-indexed and must sample through their palette")
+        Assert.notNil(material.palette, "indexed Celebi materials bind their palette")
+      end
       Assert.equal(firstItems[1].fieldEffect, "celebi_time_travel", "draw items retain semantic diagnostics")
       local first = firstItems[1]
       local initial = {}
