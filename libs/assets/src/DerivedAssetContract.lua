@@ -399,8 +399,8 @@ DerivedAssetContract.trainerCatalog = {
 -- (portrait pages resolve through the mon class). The global manifest
 -- stages apart from scenes; one scene stages per demanded key.
 DerivedAssetContract.battlePresentation = {
-  cacheFormat = "battle-presentation-cache-v2",
-  schema = "g4-battle-presentation-v3",
+  cacheFormat = "battle-presentation-cache-v3",
+  schema = "g4-battle-presentation-v4",
   sceneSchema = "g4-battle-scene-v2",
   effectSchema = "g4-battle-effect-v1",
 }

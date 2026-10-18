@@ -182,4 +182,58 @@ function T.native_menu_feedback_patch_uses_source_tile_offset_inside_source_boun
   Assert.equal(string.byte(patch.pixels, 4), 255, "nonzero source tile pixels remain opaque")
 end
 
+function T.previously_waived_move_closes_through_its_selected_source_member()
+  local compiler = require("romdump.src.digest.battle.BattlePresentationCompiler")
+  local sources = require("romdump.src.config.BattleAnimationSources")
+  local effectKey = "CHARGE"
+  local route = assert(sources.resolveSemanticRoute(effectKey))
+  local plan = assert(sources.resolveBattleAnimationCallback({ 28, 0 }))
+  local previous = package.loaded["romdump.src.digest.battle.BattleAnimationCompiler"]
+  package.loaded["romdump.src.digest.battle.BattleAnimationCompiler"] = {
+    compile = function()
+      return {
+        entry = "main",
+        instructions = {
+          {
+            op = "invoke-battle-animation-callback",
+            callback = plan.callback,
+            taskKind = plan.taskKind,
+            taskContext = plan.context,
+            parameters = plan.parameters,
+          },
+        },
+        subprograms = {},
+        taskKinds = { plan.taskKind },
+      }
+    end,
+  }
+  local romFs = {
+    version = function()
+      return "heartgold"
+    end,
+    metadata = function()
+      return { sha1 = string.rep("a", 40) }
+    end,
+    openNarc = function(_, archiveSymbol)
+      Assert.equal(archiveSymbol, route.archiveSymbol)
+      return {
+        readMember = function(_, memberId)
+          Assert.equal(memberId, route.memberId)
+          return "source bytes are supplied to the normalized compiler"
+        end,
+      }
+    end,
+  }
+
+  local ok, effect, err = pcall(compiler.compileEffect, romFs, { versionId = "heartgold" }, effectKey)
+  package.loaded["romdump.src.digest.battle.BattleAnimationCompiler"] = previous
+
+  Assert.isTrue(ok, "producer compiles the selected source member: " .. tostring(effect))
+  Assert.notNil(effect, "a routed move closes instead of reporting an unavailable route: " .. tostring(err))
+  Assert.isNil(err)
+  Assert.equal(effect.key, effectKey)
+  Assert.equal(effect.provenance.archiveSymbol, route.archiveSymbol)
+  Assert.equal(effect.provenance.memberId, route.memberId)
+end
+
 return { tests = T }

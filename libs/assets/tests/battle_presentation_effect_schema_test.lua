@@ -102,7 +102,7 @@ function T.contract_identities_version_the_new_catalog_shapes()
   local Contract = assetContract()
   Assert.equal(
     Contract.battlePresentation.schema,
-    "g4-battle-presentation-v3",
+    "g4-battle-presentation-v4",
     "the shared contract versions the normalized global catalog"
   )
   Assert.equal(

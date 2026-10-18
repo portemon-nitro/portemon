@@ -10,7 +10,7 @@ local Validate = require("libs.assets.src.Validate")
 ---@class BattlePresentationSchema
 local BattlePresentationSchema = {}
 
-BattlePresentationSchema.MANIFEST_SCHEMA = "g4-battle-presentation-v3"
+BattlePresentationSchema.MANIFEST_SCHEMA = "g4-battle-presentation-v4"
 BattlePresentationSchema.SCENE_SCHEMA = "g4-battle-scene-v2"
 
 local fail = SchemaCheck.fail
@@ -170,21 +170,6 @@ local function checkCatalogTable(value, context, code, field)
   end
 end
 
-local UNAVAILABLE_CAUSE_KINDS = {
-  ["missing-selected-member"] = true,
-  ["unresolved-selected-branch"] = true,
-  ["missing-sound-sequence"] = true,
-}
-
-local function checkUnavailableCause(cause, context, code, field)
-  SchemaCheck.checkRecord(cause, { kind = true, detail = true }, context, code, field)
-  checkString(cause.kind, context, code, field .. ".kind")
-  if UNAVAILABLE_CAUSE_KINDS[cause.kind] ~= true then
-    fail(code, field .. ".kind is not an admitted unavailable cause", context)
-  end
-  checkString(cause.detail, context, code, field .. ".detail")
-end
-
 local function checkPrograms(programs, resources, context, code, field)
   checkCatalogTable(programs, context, code, field)
   for key, entry in pairs(programs) do
@@ -192,44 +177,36 @@ local function checkPrograms(programs, resources, context, code, field)
     local record = field .. "[" .. tostring(key) .. "]"
     SchemaCheck.checkRecord(
       entry,
-      { entry = true, taskKinds = true, dependencies = true, requiredContext = true, status = true, failure = true },
+      { entry = true, taskKinds = true, dependencies = true, requiredContext = true },
       context,
       code,
       record
     )
-    if entry.status == "unavailable" then
-      SchemaCheck.checkRecord(entry, { status = true, failure = true }, context, code, record)
-      checkUnavailableCause(entry.failure, context, code, record .. ".failure")
-    else
-      if entry.status ~= nil or entry.failure ~= nil then
-        fail(code, record .. " may only carry a failure for an unavailable route", context)
+    checkString(entry.entry, context, code, record .. ".entry")
+    if not Validate.isArray(entry.taskKinds) then
+      fail(code, record .. " must carry its task kinds in order", context)
+    end
+    for index, kind in ipairs(entry.taskKinds) do
+      checkString(kind, context, code, record .. ".taskKinds[" .. index .. "]")
+    end
+    if not Validate.isArray(entry.dependencies) then
+      fail(code, record .. ".dependencies must list the complete resource closure", context)
+    end
+    local seen = {}
+    for index, dependency in ipairs(entry.dependencies) do
+      checkString(dependency, context, code, record .. ".dependencies[" .. index .. "]")
+      if resources[dependency] == nil or seen[dependency] then
+        fail(code, record .. ".dependencies contains an unstaged or repeated resource", context)
       end
-      checkString(entry.entry, context, code, record .. ".entry")
-      if not Validate.isArray(entry.taskKinds) then
-        fail(code, record .. " must carry its task kinds in order", context)
-      end
-      for index, kind in ipairs(entry.taskKinds) do
-        checkString(kind, context, code, record .. ".taskKinds[" .. index .. "]")
-      end
-      if not Validate.isArray(entry.dependencies) then
-        fail(code, record .. ".dependencies must list the complete resource closure", context)
-      end
-      local seen = {}
-      for index, dependency in ipairs(entry.dependencies) do
-        checkString(dependency, context, code, record .. ".dependencies[" .. index .. "]")
-        if resources[dependency] == nil or seen[dependency] then
-          fail(code, record .. ".dependencies contains an unstaged or repeated resource", context)
-        end
-        seen[dependency] = true
-      end
-      if type(entry.requiredContext) ~= "table" then
-        fail(code, record .. ".requiredContext must declare typed runtime inputs", context)
-      end
-      for contextKey, descriptor in pairs(entry.requiredContext) do
-        checkString(contextKey, context, code, record .. ".requiredContext key")
-        if type(descriptor) ~= "table" or type(descriptor.type) ~= "string" or descriptor.type == "" then
-          fail(code, record .. ".requiredContext entries must carry semantic types", context)
-        end
+      seen[dependency] = true
+    end
+    if type(entry.requiredContext) ~= "table" then
+      fail(code, record .. ".requiredContext must declare typed runtime inputs", context)
+    end
+    for contextKey, descriptor in pairs(entry.requiredContext) do
+      checkString(contextKey, context, code, record .. ".requiredContext key")
+      if type(descriptor) ~= "table" or type(descriptor.type) ~= "string" or descriptor.type == "" then
+        fail(code, record .. ".requiredContext entries must carry semantic types", context)
       end
     end
   end
@@ -628,8 +605,6 @@ local function checkCoverage(coverage, programs, transitions, menus, messages, r
       assetBindings = true,
       requiredContext = true,
       programContext = true,
-      status = true,
-      failure = true,
     }, context, code, record)
     if entry.kind == "animation-program" then
       checkString(entry.program, context, code, record .. ".program")
@@ -638,49 +613,23 @@ local function checkCoverage(coverage, programs, transitions, menus, messages, r
         return
       end
       local program = programs[entry.program]
-      if program.status == "unavailable" then
-        if
-          entry.status ~= "unavailable"
-          or type(entry.failure) ~= "table"
-          or entry.failure.kind ~= program.failure.kind
-          or entry.failure.detail ~= program.failure.detail
-          or entry.closureIdentity ~= nil
-          or not Validate.isArray(entry.resources)
-          or #entry.resources ~= 0
-          or not Validate.isArray(entry.operations)
-          or #entry.operations ~= 1
-          or entry.operations[1] ~= "unavailable"
-        then
-          fail(code, record .. " must preserve the unavailable program cause without claiming a closure", context)
-        end
-      else
-        if entry.status ~= nil or entry.failure ~= nil then
-          fail(code, record .. " may only carry a failure for an unavailable program", context)
-        end
-        local programDependencies = program.dependencies
-        if not Validate.isArray(programDependencies) or #programDependencies ~= #entry.resources then
-          fail(code, record .. ".resources must exactly match its program dependency closure", context)
-        end
-        for index, dependency in ipairs(programDependencies) do
-          if entry.resources[index] ~= dependency then
-            fail(code, record .. ".resources must follow the program's ordered dependency receipt", context)
-          end
+      local programDependencies = program.dependencies
+      if not Validate.isArray(programDependencies) or #programDependencies ~= #entry.resources then
+        fail(code, record .. ".resources must exactly match its program dependency closure", context)
+      end
+      for index, dependency in ipairs(programDependencies) do
+        if entry.resources[index] ~= dependency then
+          fail(code, record .. ".resources must follow the program's ordered dependency receipt", context)
         end
       end
     elseif entry.kind == "transition-route" then
       checkString(entry.route, context, code, record .. ".route")
-      if entry.status ~= nil or entry.failure ~= nil then
-        fail(code, record .. " cannot carry animation program status", context)
-      end
       if transitions.routes[entry.route] == nil or entry.program ~= nil then
         fail(code, record .. " references an unknown transition route or mixes program coverage", context)
         return
       end
     elseif entry.kind == "menu-route" then
       checkString(entry.route, context, code, record .. ".route")
-      if entry.status ~= nil or entry.failure ~= nil then
-        fail(code, record .. " cannot carry animation program status", context)
-      end
       local menuRoute = menus.routes[entry.route]
       if menus.selectors[entry.route] == nil or menuRoute == nil or entry.program ~= nil then
         fail(code, record .. " references an unknown menu route or mixes program coverage", context)
@@ -781,9 +730,6 @@ local function checkCoverage(coverage, programs, transitions, menus, messages, r
       end
     elseif entry.kind == "message-route" then
       checkString(entry.route, context, code, record .. ".route")
-      if entry.status ~= nil or entry.failure ~= nil then
-        fail(code, record .. " cannot carry animation program status", context)
-      end
       if messages.sourceRoutes[entry.route] == nil and messages.routes[entry.route] == nil then
         fail(code, record .. " references an unknown message route or mixes program coverage", context)
         return
@@ -860,9 +806,7 @@ local function checkCoverage(coverage, programs, transitions, menus, messages, r
     else
       fail(code, record .. ".kind must identify a source route or animation program", context)
     end
-    if entry.status == "unavailable" then
-      checkUnavailableCause(entry.failure, context, code, record .. ".failure")
-    elseif
+    if
       type(entry.closureIdentity) ~= "string"
       or not entry.closureIdentity:match(
         "^%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x$"

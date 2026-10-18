@@ -2630,116 +2630,102 @@ function BattlePresentationCompiler.compileGlobal(romFs, opts)
     local audioPlan, audioPlanError = audioCompiler.planSource(romFs)
     local introMusic = compileIntroMusic(romFs, audioPlan, audioPlanError)
     for _, root in ipairs(animationRoots) do
-      local unavailableCause = versionId == "heartgold" and AnimationSources.HEARTGOLD_UNAVAILABLE_EFFECTS[root.key]
-        or nil
-      if unavailableCause ~= nil then
-        programs[root.key] = { status = "unavailable", failure = unavailableCause }
+      local effect, effectErr = BattlePresentationCompiler.compileEffect(
+        romFs,
+        { versionId = versionId, audioPlan = audioPlan, audioPlanError = audioPlanError },
+        root.key
+      )
+      if effect == nil then
+        local sourceError = nil ---@type Errors.Error?
+        if Errors.is(effectErr) then
+          ---@cast effectErr Errors.Error
+          sourceError = effectErr
+        end
+        local errorCode = sourceError and sourceError.code or "UNSTRUCTURED"
+        local errorMessage = sourceError and sourceError.message or tostring(effectErr)
+        programFailures[#programFailures + 1] = root.key .. ": " .. tostring(effectErr)
+        programFailureDiagnostics.total = programFailureDiagnostics.total + 1
+        local category = "source-resource-or-context"
+        if errorMessage:find("unknown dispatch opcode", 1, true) ~= nil then
+          category = "unimplemented-dispatch-opcode"
+        elseif errorMessage:find("operand", 1, true) ~= nil or errorMessage:find("truncated", 1, true) ~= nil then
+          category = "framing-or-operand"
+        elseif errorMessage:find("route", 1, true) ~= nil or errorMessage:find("semantic root", 1, true) ~= nil then
+          category = "source-route-resolution"
+        end
+        local diagnosticKey = errorCode .. "/" .. category
+        local diagnostic = programFailureDiagnostics.categories[diagnosticKey]
+        if diagnostic == nil then
+          diagnostic = { count = 0, examples = {} }
+          programFailureDiagnostics.categories[diagnosticKey] = diagnostic
+        end
+        diagnostic.count = diagnostic.count + 1
+        if #diagnostic.examples < 3 then
+          diagnostic.examples[#diagnostic.examples + 1] = {
+            key = root.key,
+            offset = sourceError and sourceError.context.offset or nil,
+            message = errorMessage,
+          }
+        end
+      else
+        for resourceKey, descriptor in pairs(effect.resources) do
+          local prior = resourceCatalog[resourceKey]
+          if
+            prior ~= nil and (prior.kind ~= descriptor.kind or prior.contentIdentity ~= descriptor.contentIdentity)
+          then
+            error(
+              Errors.new(
+                "BATTLE_EFFECT_RESOURCE_IDENTITY_CONFLICT",
+                "semantic effect resource has conflicting content",
+                {
+                  resourceKey = resourceKey,
+                  effectKey = root.key,
+                }
+              ),
+              0
+            )
+          end
+          if prior == nil then
+            local payload = effect.resourcePayloads[descriptor.payload]
+            local format = "battle-effect-resource-v1"
+            local geometry = {}
+            if descriptor.kind == "particle" then
+              format = "nitro-spl-aps-v1"
+              geometry = { emitterCount = #payload.emitters, resourceCount = #payload.resources }
+            elseif descriptor.kind == "texture" or descriptor.kind == "palette" then
+              local bytes = payload.bytes
+              if type(bytes) == "string" then
+                format = descriptor.kind == "texture" and "nitro-spl-texture-data-v1" or "nitro-spl-palette-data-v1"
+                geometry = { byteCount = #bytes }
+              end
+            end
+            resourceCatalog[resourceKey] = {
+              kind = descriptor.kind,
+              contentIdentity = descriptor.contentIdentity,
+              format = format,
+              geometry = geometry,
+              path = descriptor.payload,
+            }
+          end
+        end
+        local identityParts = { "animation-program", root.key, Hashing.hashLua(effect.program) }
+        for _, dependency in ipairs(effect.dependencies) do
+          identityParts[#identityParts + 1] = dependency .. "=" .. effect.resources[dependency].contentIdentity
+        end
+        identityParts[#identityParts + 1] = Hashing.hashLua(effect.requiredContext)
+        programs[root.key] = {
+          entry = effect.program.entry,
+          taskKinds = effect.program.taskKinds,
+          dependencies = effect.dependencies,
+          requiredContext = effect.requiredContext,
+        }
         transitionCoverage[root.key] = {
           kind = "animation-program",
           program = root.key,
-          status = "unavailable",
-          failure = unavailableCause,
-          resources = {},
-          operations = { "unavailable" },
+          closureIdentity = Hashing.sha1hex(table.concat(identityParts, "\n")),
+          resources = effect.dependencies,
+          operations = #effect.program.taskKinds > 0 and effect.program.taskKinds or { "animation-stream" },
         }
-      else
-        local effect, effectErr = BattlePresentationCompiler.compileEffect(
-          romFs,
-          { versionId = versionId, audioPlan = audioPlan, audioPlanError = audioPlanError },
-          root.key
-        )
-        if effect == nil then
-          local sourceError = nil ---@type Errors.Error?
-          if Errors.is(effectErr) then
-            ---@cast effectErr Errors.Error
-            sourceError = effectErr
-          end
-          local errorCode = sourceError and sourceError.code or "UNSTRUCTURED"
-          local errorMessage = sourceError and sourceError.message or tostring(effectErr)
-          programFailures[#programFailures + 1] = root.key .. ": " .. tostring(effectErr)
-          programFailureDiagnostics.total = programFailureDiagnostics.total + 1
-          local category = "source-resource-or-context"
-          if errorMessage:find("unknown dispatch opcode", 1, true) ~= nil then
-            category = "unimplemented-dispatch-opcode"
-          elseif errorMessage:find("operand", 1, true) ~= nil or errorMessage:find("truncated", 1, true) ~= nil then
-            category = "framing-or-operand"
-          elseif errorMessage:find("route", 1, true) ~= nil or errorMessage:find("semantic root", 1, true) ~= nil then
-            category = "source-route-resolution"
-          end
-          local diagnosticKey = errorCode .. "/" .. category
-          local diagnostic = programFailureDiagnostics.categories[diagnosticKey]
-          if diagnostic == nil then
-            diagnostic = { count = 0, examples = {} }
-            programFailureDiagnostics.categories[diagnosticKey] = diagnostic
-          end
-          diagnostic.count = diagnostic.count + 1
-          if #diagnostic.examples < 3 then
-            diagnostic.examples[#diagnostic.examples + 1] = {
-              key = root.key,
-              offset = sourceError and sourceError.context.offset or nil,
-              message = errorMessage,
-            }
-          end
-        else
-          for resourceKey, descriptor in pairs(effect.resources) do
-            local prior = resourceCatalog[resourceKey]
-            if
-              prior ~= nil and (prior.kind ~= descriptor.kind or prior.contentIdentity ~= descriptor.contentIdentity)
-            then
-              error(
-                Errors.new(
-                  "BATTLE_EFFECT_RESOURCE_IDENTITY_CONFLICT",
-                  "semantic effect resource has conflicting content",
-                  {
-                    resourceKey = resourceKey,
-                    effectKey = root.key,
-                  }
-                ),
-                0
-              )
-            end
-            if prior == nil then
-              local payload = effect.resourcePayloads[descriptor.payload]
-              local format = "battle-effect-resource-v1"
-              local geometry = {}
-              if descriptor.kind == "particle" then
-                format = "nitro-spl-aps-v1"
-                geometry = { emitterCount = #payload.emitters, resourceCount = #payload.resources }
-              elseif descriptor.kind == "texture" or descriptor.kind == "palette" then
-                local bytes = payload.bytes
-                if type(bytes) == "string" then
-                  format = descriptor.kind == "texture" and "nitro-spl-texture-data-v1" or "nitro-spl-palette-data-v1"
-                  geometry = { byteCount = #bytes }
-                end
-              end
-              resourceCatalog[resourceKey] = {
-                kind = descriptor.kind,
-                contentIdentity = descriptor.contentIdentity,
-                format = format,
-                geometry = geometry,
-                path = descriptor.payload,
-              }
-            end
-          end
-          local identityParts = { "animation-program", root.key, Hashing.hashLua(effect.program) }
-          for _, dependency in ipairs(effect.dependencies) do
-            identityParts[#identityParts + 1] = dependency .. "=" .. effect.resources[dependency].contentIdentity
-          end
-          identityParts[#identityParts + 1] = Hashing.hashLua(effect.requiredContext)
-          programs[root.key] = {
-            entry = effect.program.entry,
-            taskKinds = effect.program.taskKinds,
-            dependencies = effect.dependencies,
-            requiredContext = effect.requiredContext,
-          }
-          transitionCoverage[root.key] = {
-            kind = "animation-program",
-            program = root.key,
-            closureIdentity = Hashing.sha1hex(table.concat(identityParts, "\n")),
-            resources = effect.dependencies,
-            operations = #effect.program.taskKinds > 0 and effect.program.taskKinds or { "animation-stream" },
-          }
-        end
       end
     end
 
@@ -3624,14 +3610,6 @@ function BattlePresentationCompiler.compileEffect(romFs, opts, effectKey)
     return nil,
       Errors.new("BATTLE_EFFECT_UNKNOWN", "unknown battle effect key: " .. effectKey, {
         effectKey = effectKey,
-      })
-  end
-  local unavailableCause = versionId == "heartgold" and animationSources.HEARTGOLD_UNAVAILABLE_EFFECTS[effectKey] or nil
-  if unavailableCause ~= nil then
-    return nil,
-      Errors.new("BATTLE_EFFECT_ROUTE_UNAVAILABLE", "native battle effect route is unavailable", {
-        effectKey = effectKey,
-        cause = unavailableCause,
       })
   end
   assert(

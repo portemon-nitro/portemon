@@ -9,7 +9,7 @@
 
 local Assert = require("tests.support.Assert")
 local RomSuite = require("tests.rom.support.RomSuite")
-local RomFs = require("romdump.src.source.RomFs")
+local RomSourcePath = require("tests.rom.support.RomSourcePath")
 local RomImporter = require("romdump.src.source.RomImporter")
 local Errors = require("libs.errors.src.Errors")
 local Lz10 = require("romdump.src.digest.Lz10")
@@ -798,54 +798,55 @@ local function heartgoldSourceRoutesPublishCompleteGlobalCatalog(romFs, versionI
   Assert.isNil(manifest.programs.TACKLE.status, "ordinary TACKLE route remains available")
   Assert.isNil(manifest.programs.TACKLE.failure, "ordinary TACKLE route keeps its existing record shape")
   Assert.equal(assert(manifest.coverage.TACKLE).kind, "animation-program")
-  local unavailable = {}
   local ArtifactBattleJobs = require("romdump.src.build.ArtifactBattleJobs")
   for _, key in ipairs(UNAVAILABLE_HEARTGOLD_EFFECTS) do
-    unavailable[key] = true
     local program = assert(manifest.programs[key], key .. " remains an explicit catalog route")
-    Assert.equal(program.status, "unavailable", key .. " is explicitly unavailable")
+    Assert.isNil(program.status, key .. " publishes no waiver status")
+    Assert.isNil(program.failure, key .. " publishes no waiver cause")
+    Assert.notNil(program.entry, key .. " publishes an executable program entry")
+    Assert.isTrue(type(program.taskKinds) == "table", key .. " publishes its ordered task kinds")
     local admission = assert(manifest.coverage[key], key .. " remains represented in route coverage")
     Assert.equal(admission.kind, "animation-program")
-    Assert.equal(admission.status, "unavailable", key .. " coverage preserves unavailable status")
-    Assert.deepEqual(admission.failure, program.failure, key .. " coverage preserves its exact source cause")
+    Assert.isNil(admission.status, key .. " coverage carries no waiver status")
+    Assert.isNil(admission.failure, key .. " coverage carries no waiver cause")
+    Assert.isTrue(
+      type(admission.closureIdentity) == "string" and #admission.closureIdentity == 40,
+      key .. " coverage carries a real closure identity"
+    )
 
+    local staged = {}
     local artifact = {
       stageFs = function()
-        error(key .. " must fail before staging")
+        return {
+          write = function(_, path, bytes)
+            staged[path] = bytes
+          end,
+          writeLua = function(_, path, value)
+            staged[path] = value
+          end,
+        }
       end,
       addOwnedRoot = function()
-        error(key .. " must not claim a staged artifact")
       end,
     }
     local requestOk, requestErr = pcall(ArtifactBattleJobs.executeEffect, artifact, {
       romFs = romFs,
       versionId = versionId,
-    }, { key = key, generationId = "unavailable-route" })
-    Assert.isFalse(requestOk, key .. " lazy effect request rejects its unavailable route")
-    Assert.isTrue(Errors.is(requestErr), key .. " lazy failure remains structured")
-    Assert.equal(requestErr.code, "BATTLE_EFFECT_ROUTE_UNAVAILABLE")
-    Assert.equal(requestErr.context.effectKey, key, key .. " error identifies the requested route")
-    Assert.isTrue(
-      requestErr.context.cause ~= nil or requestErr.context.causeCode ~= nil,
-      key .. " error retains the selected source failure"
-    )
+    }, { key = key, generationId = "closed-route" })
+    Assert.isTrue(requestOk, key .. " lazy effect request stages its closed route: " .. tostring(requestErr))
   end
-  for programKey in pairs(manifest.programs) do
+  for programKey, program in pairs(manifest.programs) do
     Assert.isTrue(programKey:find("transition/", 1, true) ~= 1, "transition callbacks are not invented streams")
-    if unavailable[programKey] then
-      Assert.equal(manifest.programs[programKey].status, "unavailable")
-    else
-      Assert.isNil(manifest.programs[programKey].status, "every other published program has a complete source closure")
-    end
+    Assert.isNil(program.status, programKey .. " publishes a complete source closure without waiver status")
+    Assert.isNil(program.failure, programKey .. " publishes a complete source closure without waiver cause")
   end
   for _, root in ipairs(Sources.listSemanticRoots()) do
     local closure = assert(manifest.coverage[root.key], "every source semantic route has a closure: " .. root.key)
     Assert.equal(closure.kind, root.kind)
-    if unavailable[root.key] then
-      Assert.isNil(closure.closureIdentity, root.key .. " has no fabricated complete closure identity")
-    else
-      Assert.isTrue(type(closure.closureIdentity) == "string" and #closure.closureIdentity == 40)
-    end
+    Assert.isTrue(
+      type(closure.closureIdentity) == "string" and #closure.closureIdentity == 40,
+      root.key .. " carries a real closure identity"
+    )
   end
 
   local lastGoodMarker = "previous-global-marker"
@@ -944,39 +945,89 @@ function T.heartgold_source_routes_publish_a_complete_global_catalog(romFs, vers
   heartgoldSourceRoutesPublishCompleteGlobalCatalog(romFs, versionId)
 end
 
-function T.heartgold_unavailable_route_requests_return_their_structured_source_cause(romFs, versionId)
-  local ArtifactBattleJobs = require("romdump.src.build.ArtifactBattleJobs")
-  local cases = {
-    CHARGE = { kind = "missing-selected-member", detail = "native route selects an absent animation member" },
-    STRUGGLE = {
-      kind = "unresolved-selected-branch",
-      detail = "native control flow leaves the selected animation member",
-    },
-    BUG_BITE = { kind = "missing-sound-sequence", detail = "native animation requests an unavailable sound sequence" },
-  }
-  local artifact = {
-    stageFs = function()
-      error("unavailable effect requests must fail before staging")
-    end,
-    addOwnedRoot = function()
-      error("unavailable effect requests must not own artifacts")
-    end,
-  }
-  for effectKey, cause in pairs(cases) do
-    local ok, err = pcall(ArtifactBattleJobs.executeEffect, artifact, {
-      romFs = romFs,
-      versionId = versionId,
-    }, { key = effectKey, generationId = "unavailable-route" })
-    Assert.isFalse(ok, effectKey .. " request fails")
-    Assert.isTrue(Errors.is(err), effectKey .. " failure is structured")
-    Assert.equal(err.code, "BATTLE_EFFECT_ROUTE_UNAVAILABLE")
-    Assert.equal(err.context.effectKey, effectKey)
-    Assert.deepEqual(err.context.cause, cause)
+function T.heartgold_effect_routes_close_through_their_selected_source_member(romFs, versionId)
+  Assert.equal(versionId, "heartgold", "the source-root trace is pinned to the verified HeartGold dump")
+  local compiler = require("romdump.src.digest.battle.BattlePresentationCompiler")
+  for _, effectKey in ipairs(UNAVAILABLE_HEARTGOLD_EFFECTS) do
+    local effect, err = compiler.compileEffect(romFs, { versionId = versionId }, effectKey)
+    Assert.isNil(err, effectKey .. " closes without a source failure: " .. tostring(err))
+    Assert.notNil(effect, effectKey .. " closes through its selected source member")
+    Assert.equal(effect.key, effectKey, effectKey .. " closure carries its semantic key")
+    Assert.isTrue(
+      type(effect.program) == "table" and type(effect.program.taskKinds) == "table",
+      effectKey .. " closure carries its ordered program task kinds"
+    )
+    Assert.isTrue(type(effect.dependencies) == "table", effectKey .. " closure carries its dependencies")
+    Assert.isTrue(type(effect.resources) == "table", effectKey .. " closure carries its staged resources")
+    Assert.isTrue(
+      type(effect.requiredContext) == "table",
+      effectKey .. " closure declares its typed runtime inputs"
+    )
   end
+end
+
+---@param romFs table
+---@param archiveSymbol string
+---@param memberId integer
+---@return table reader
+local function missingMemberRomFs(romFs, archiveSymbol, memberId)
+  return {
+    version = function()
+      return romFs:version()
+    end,
+    metadata = function()
+      return romFs:metadata()
+    end,
+    readSourcePath = function(_, sourcePath)
+      return romFs:readSourcePath(sourcePath)
+    end,
+    fileIdForPath = function(_, sourcePath)
+      return romFs:fileIdForPath(sourcePath)
+    end,
+    openNarc = function(_, symbol)
+      local archive, err = romFs:openNarc(symbol)
+      if archive == nil then
+        return nil, err
+      end
+      if symbol ~= archiveSymbol then
+        return archive
+      end
+      return setmetatable({
+        readMember = function(_, requestedId)
+          if requestedId == memberId then
+            return nil, "synthetic missing selected effect member"
+          end
+          return archive:readMember(requestedId)
+        end,
+      }, { __index = archive })
+    end,
+  }
+end
+
+function T.global_compilation_reports_an_unresolved_source_member_without_publishing_coverage(romFs, versionId)
+  Assert.equal(versionId, "heartgold", "the source-root trace is pinned to the verified HeartGold dump")
+  local AnimationSources = require("romdump.src.config.BattleAnimationSources")
+  local Compiler = require("romdump.src.digest.battle.BattlePresentationCompiler")
+  local route = assert(
+    AnimationSources.resolveSemanticRoute("CHARGE"),
+    "the probed effect keeps a version-specific source archive and member"
+  )
+  Assert.isTrue(type(route.archiveSymbol) == "string", "the probed effect selects a source archive")
+  Assert.isTrue(type(route.memberId) == "number", "the probed effect selects a source member")
+  local incompleteFs = missingMemberRomFs(romFs, route.archiveSymbol, route.memberId)
+  local bundle, err = Compiler.compileGlobal(incompleteFs, { versionId = versionId })
+  Assert.isNil(bundle, "one unresolved source member publishes no partial catalog")
+  Assert.isTrue(Errors.is(err), "the unresolved source member remains a structured global import error")
+  Assert.equal(err.code, "BATTLE_MANIFEST_INCOMPLETE")
+  Assert.isTrue(type(err.context.blockers) == "table", "the global failure names its unresolved roots")
+  Assert.isTrue(
+    table.concat(err.context.blockers, "\n"):find("CHARGE", 1, true) ~= nil,
+    "the global failure identifies the effect whose selected member is missing"
+  )
 end
 
 return RomSuite.build({
   tests = T,
   readyVersions = RomImporter.isReady("heartgold") and { "heartgold" } or {},
-  open = RomFs.open,
+  open = RomSourcePath.openReader,
 })

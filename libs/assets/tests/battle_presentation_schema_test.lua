@@ -177,13 +177,13 @@ function T.coverage_requires_typed_program_and_semantic_menu_message_roots()
   Assert.isFalse(Schema.isValidManifest(missingMessage), "every semantic message route requires an admission closure")
 end
 
-function T.unavailable_programs_and_coverage_use_a_closed_cause_variant()
-  local valid = manifest()
-  valid.version.id = "heartgold"
+function T.programs_and_coverage_reject_unavailable_status_records()
+  local waived = manifest()
+  waived.version.id = "heartgold"
   local key = "CHARGE"
   local failure = { kind = "missing-selected-member", detail = "selected source dependency is absent" }
-  valid.programs[key] = { status = "unavailable", failure = failure }
-  valid.coverage[key] = {
+  waived.programs[key] = { status = "unavailable", failure = failure }
+  waived.coverage[key] = {
     kind = "animation-program",
     program = key,
     status = "unavailable",
@@ -191,7 +191,10 @@ function T.unavailable_programs_and_coverage_use_a_closed_cause_variant()
     resources = {},
     operations = { "unavailable" },
   }
-  Assert.isTrue(Schema.isValidManifest(valid), "an unavailable route preserves its source cause without a fake closure")
+  Assert.isFalse(
+    Schema.isValidManifest(waived),
+    "a waiver status is not a complete published program or coverage entry"
+  )
 
   local available = manifest()
   available.version.id = "heartgold"
@@ -204,7 +207,7 @@ function T.unavailable_programs_and_coverage_use_a_closed_cause_variant()
     "an unavailable program cannot retain executable content and claim a complete closure"
   )
 
-  local causeMismatch = valid
+  local causeMismatch = waived
   causeMismatch.coverage[key].failure = { kind = failure.kind, detail = "different source cause" }
   Assert.isFalse(Schema.isValidManifest(causeMismatch), "program and coverage causes must agree")
 

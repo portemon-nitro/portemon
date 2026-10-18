@@ -30,30 +30,6 @@ BattleAnimationSources.TRANSITION_NARC = "NARC_a_1_0_9"
 BattleAnimationSources.MOVE_NARC = "NARC_a_0_1_0"
 BattleAnimationSources.SUPPORTING_OVERLAYS = { 114, 115, 116, 117, 118, 119, 120 }
 
--- Explicit HeartGold native closure gaps retained as unavailable semantic
--- routes. Cause details carry no physical archive, member, or sequence IDs.
-BattleAnimationSources.HEARTGOLD_UNAVAILABLE_EFFECTS = {
-  CHARGE = { kind = "missing-selected-member", detail = "native route selects an absent animation member" },
-  STRUGGLE = {
-    kind = "unresolved-selected-branch",
-    detail = "native control flow leaves the selected animation member",
-  },
-  NEEDLE_ARM = {
-    kind = "unresolved-selected-branch",
-    detail = "native control flow leaves the selected animation member",
-  },
-  WING_ATTACK = { kind = "missing-sound-sequence", detail = "native animation requests an unavailable sound sequence" },
-  SKY_ATTACK = { kind = "missing-sound-sequence", detail = "native animation requests an unavailable sound sequence" },
-  EXPLOSION = { kind = "missing-sound-sequence", detail = "native animation requests an unavailable sound sequence" },
-  ROCK_SLIDE = { kind = "missing-sound-sequence", detail = "native animation requests an unavailable sound sequence" },
-  SPIT_UP = { kind = "missing-sound-sequence", detail = "native animation requests an unavailable sound sequence" },
-  POISON_FANG = { kind = "missing-sound-sequence", detail = "native animation requests an unavailable sound sequence" },
-  AIR_CUTTER = { kind = "missing-sound-sequence", detail = "native animation requests an unavailable sound sequence" },
-  CROSS_POISON = { kind = "missing-sound-sequence", detail = "native animation requests an unavailable sound sequence" },
-  STONE_EDGE = { kind = "missing-sound-sequence", detail = "native animation requests an unavailable sound sequence" },
-  BUG_BITE = { kind = "missing-sound-sequence", detail = "native animation requests an unavailable sound sequence" },
-}
-
 -- Named script categories from include/constants/battle_subscript.h. NONE is
 -- excluded because it is not an animation request category.
 local NON_MOVE_ANIMATION_ROOTS = {
