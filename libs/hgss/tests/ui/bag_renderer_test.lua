@@ -3977,7 +3977,7 @@ function T.state_visuals_follow_demand_through_churn_without_blank_stale_or_leak
   Assert.isTrue(#freshGraphics.draws > 0, "the superseding state draws its composition")
   -- Re-demanding the abandoned pocket uploads its visuals for the first
   -- time now, proving the stale interest never resolved them earlier.
-  Assert.isFalse(fresh:prepare(staleStatus), "the abandoned pocket re-enrolls after the swap")
+  Assert.isTrue(fresh:prepare(staleStatus), "the abandoned pocket reuses retained chrome and resolves its new visuals at once")
   Assert.isTrue(pumpReady(fresh, staleStatus), "the abandoned pocket resolves on re-demand")
   Assert.isTrue(
     freshInner.uploads > uploadsForQuantity,
@@ -4458,6 +4458,426 @@ function T.nested_prompt_borrows_the_shared_image_pool()
   Assert.isTrue(prompt._pool == pool, "the nested prompt renderer borrows the shared image owner")
   draw:release()
   Assert.equal(pool:stats().outstandingLeases, 0, "release returns the nested prompt leases")
+end
+
+-- Demand census pool: counts every enrollment and borrow effect while
+-- optionally holding back genuinely new demand art. Paths already
+-- enrolled as demand stay resolvable, so the hold models a slow worker
+-- for new visuals without disturbing the installed set.
+local function censusPool()
+  local inner = SharedImagePoolFake.new()
+  local seen = {}
+  local state = {
+    inner = inner,
+    holdUnseenDemand = false,
+    failedPaths = {},
+    requests = 0,
+    demandRequests = {},
+    acquires = 0,
+    releases = 0,
+    cancels = 0,
+    byToken = {},
+  }
+  local pool = {}
+  function pool:request(path, sampler, priority)
+    local token = inner:request(path, sampler, priority)
+    state.requests = state.requests + 1
+    state.byToken[token] = { path = path, priority = priority }
+    if priority == "demand" then
+      state.demandRequests[#state.demandRequests + 1] = path
+    end
+    return token
+  end
+  function pool:poll(token)
+    local record = assert(state.byToken[token], "every polled token was requested")
+    if state.failedPaths[record.path] then
+      return "failed", "injected new-art worker failure"
+    end
+    if state.holdUnseenDemand and record.priority == "demand" and not seen[record.path] then
+      return "pending"
+    end
+    return inner:poll(token)
+  end
+  function pool:acquire(token)
+    state.acquires = state.acquires + 1
+    return inner:acquire(token)
+  end
+  function pool:release(lease)
+    state.releases = state.releases + 1
+    return inner:release(lease)
+  end
+  function pool:cancel(token)
+    state.cancels = state.cancels + 1
+    state.byToken[token] = nil
+    return inner:cancel(token)
+  end
+  function pool:prune()
+    return inner:prune()
+  end
+  function pool:dispose()
+    return inner:dispose()
+  end
+  function pool:stats()
+    return inner:stats()
+  end
+  local function markSeen()
+    for _, path in ipairs(state.demandRequests) do
+      seen[path] = true
+    end
+  end
+  local function unseenDemand()
+    local missing = {}
+    for _, path in ipairs(state.demandRequests) do
+      if not seen[path] then
+        missing[#missing + 1] = path
+      end
+    end
+    return missing
+  end
+  return pool, state, markSeen, unseenDemand
+end
+
+local function censusRenderer(graphics, pool, content)
+  return BagRenderer.new({
+    cacheFs = seedCache(),
+    manifest = manifest(),
+    promptManifest = promptManifest(),
+    text = content or text(),
+    graphics = graphics,
+    heroRenderer = heroSpy(nil),
+    imagePool = pool,
+  })
+end
+
+-- Revisiting an admitted menu resolves in a single update: only the
+-- genuinely new background enrolls as demand, common chrome keeps its
+-- installed leases without re-requests or re-uploads, the next frame
+-- draws the new state instead of a blank pane, and returning draws the
+-- identical browsing composition again.
+function T.revisiting_an_admitted_menu_keeps_common_art_and_draws_at_once()
+  local pool, state = censusPool()
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local content = text()
+  local draw = censusRenderer(graphics, pool, content)
+  local browse = status()
+  local action = actionStatus()
+  Assert.isTrue(pumpReady(draw, browse), "the browsing menu resolves before the revisit probe")
+  -- Both states admit previously so the measured revisit reuses resident
+  -- art: the warm-transition setup draws its new-state background without
+  -- uploading anything again.
+  Assert.isTrue(pumpReady(draw, action), "the action menu admits previously so the revisit reuses resident art")
+  Assert.isTrue(pumpReady(draw, browse), "returning to browsing resolves before the revisit probe")
+  clearDraws(graphics)
+  draw:draw(browse, plan(true), { icons = icons() })
+  Assert.isTrue(#graphics.draws > 0, "the admitted browsing menu draws its composition")
+  local browseDigest = drawDigest(graphics, true)
+  local browseBackground = assert(
+    draw._images["background:browse:balls:2"],
+    "the browsing menu binds its pocket background"
+  )
+  local stripInstalled = assert(draw._images["strip:balls"], "the browsing menu binds its pocket strip")
+  local uploadsBefore = state.inner.uploads
+  local held = pool:stats().outstandingLeases
+  Assert.isTrue(held > 0, "the admitted menu holds its installed leases")
+  local requestsBefore = state.requests
+  local demandBefore = #state.demandRequests
+  local acquiresBefore = state.acquires
+
+  Assert.isTrue(draw:prepare(action), "the revisited menu resolves in one update")
+  local newDemand = {}
+  for index = demandBefore + 1, #state.demandRequests do
+    newDemand[#newDemand + 1] = state.demandRequests[index]
+  end
+  Assert.isTrue(
+    #newDemand <= 2,
+    "the revisit enrolls at most its genuinely new visuals as demand (" .. #newDemand .. ")"
+  )
+  Assert.isTrue(
+    state.acquires - acquiresBefore <= 2,
+    "the revisit acquires at most its genuinely new visuals"
+  )
+  Assert.equal(state.inner.uploads, uploadsBefore, "the revisit uploads no common art again")
+  Assert.isTrue(
+    draw._images["strip:balls"] == stripInstalled,
+    "the revisit keeps the installed strip lease instead of releasing and reborrowing it"
+  )
+  clearDraws(graphics)
+  draw:draw(action, plan(true), { icons = icons() })
+  Assert.isTrue(#graphics.draws > 0, "the revisited menu draws instead of a blank pane")
+  Assert.isTrue(
+    wasDrawn(graphics, draw._images["background:action:balls:2"]),
+    "the revisited menu draws its new-state background"
+  )
+  Assert.isFalse(
+    wasDrawn(graphics, browseBackground),
+    "the revisited menu no longer draws the previous background"
+  )
+  Assert.isTrue(
+    directlyBuiltCount(graphics, graphics.draws) == 0,
+    "the revisited composition borrows every visual"
+  )
+  Assert.isTrue(
+    state.requests - requestsBefore < 8,
+    "the revisit stays far below a full re-enrollment (" .. (state.requests - requestsBefore) .. ")"
+  )
+
+  Assert.isTrue(draw:prepare(browse), "returning to browsing resolves in one update")
+  clearDraws(graphics)
+  draw:draw(browse, plan(true), { icons = icons() })
+  Assert.isTrue(#graphics.draws > 0, "the returned menu draws its composition")
+  Assert.deepEqual(
+    drawDigest(graphics, true),
+    browseDigest,
+    "returning redraws the browsing composition with the same borrowed handles"
+  )
+  Assert.equal(
+    pool:stats().outstandingLeases,
+    held,
+    "the round trip holds exactly its installed leases"
+  )
+  draw:release()
+  Assert.equal(pool:stats().outstandingLeases, 0, "release returns every borrowed handle exactly once")
+end
+
+-- Stalled, superseded, and failed replacement art never disturbs the
+-- admitted view: pending states draw nothing, abandoned interest uploads
+-- nothing and stages no extra leases, a failed install surfaces loudly
+-- while the old menu stays drawable with its leases, and the valid
+-- revisit still resolves in one update once the worker unsticks.
+function T.stalled_superseded_and_failed_new_art_leaves_the_admitted_view_untouched()
+  local pool, state, markSeen, unseenDemand = censusPool()
+  local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+  local draw = censusRenderer(graphics, pool)
+  local browse = status()
+  Assert.isTrue(pumpReady(draw, browse), "the browsing menu resolves before the stall probe")
+  local held = pool:stats().outstandingLeases
+  Assert.isTrue(held > 0, "the admitted menu holds its installed leases")
+  local stripInstalled = assert(draw._images["strip:balls"], "the browsing menu binds its pocket strip")
+  local uploadsBefore = state.inner.uploads
+  markSeen()
+  state.holdUnseenDemand = true
+
+  local action = actionStatus()
+  Assert.isFalse(
+    draw:prepare(action),
+    "the action menu stays pending while its new background stalls"
+  )
+  clearDraws(graphics)
+  draw:draw(action, plan(true), { icons = icons() })
+  Assert.equal(#graphics.draws, 0, "the pending replacement draws nothing")
+  clearDraws(graphics)
+  draw:draw(browse, plan(true), { icons = icons() })
+  Assert.isTrue(#graphics.draws > 0, "the admitted menu stays drawable while the replacement stalls")
+
+  local itemsBrowse = status({ pocket = "items", tabFocusPocket = "items" })
+  Assert.isFalse(draw:prepare(itemsBrowse), "the superseding pocket starts pending")
+  local medicineBrowse = status({ pocket = "medicine", tabFocusPocket = "medicine" })
+  Assert.isFalse(draw:prepare(medicineBrowse), "the latest pocket starts pending too")
+  Assert.equal(state.inner.uploads, uploadsBefore, "superseded interest uploads nothing")
+  Assert.equal(
+    pool:stats().outstandingLeases,
+    held,
+    "stalled replacements stage no extra leases on top of the installed set"
+  )
+  clearDraws(graphics)
+  draw:draw(itemsBrowse, plan(true), { icons = icons() })
+  Assert.equal(#graphics.draws, 0, "the superseded pocket draws nothing")
+  clearDraws(graphics)
+  draw:draw(browse, plan(true), { icons = icons() })
+  Assert.isTrue(#graphics.draws > 0, "the admitted menu stays drawable across supersessions")
+
+  for _, path in ipairs(unseenDemand()) do
+    state.failedPaths[path] = true
+  end
+  local err = Assert.throws(function()
+    draw:prepare(medicineBrowse)
+  end, "the failed install surfaces from the preparation phase")
+  Assert.isTrue(
+    tostring(err):find("bag state image is not ready", 1, true) ~= nil,
+    "the install failure surfaces its named cause"
+  )
+  Assert.equal(
+    pool:stats().outstandingLeases,
+    held,
+    "the failed install returns its staged leases and keeps the installed set"
+  )
+  Assert.isTrue(
+    draw._images["strip:balls"] == stripInstalled,
+    "the failure keeps the installed strip lease"
+  )
+  clearDraws(graphics)
+  draw:draw(medicineBrowse, plan(true), { icons = icons() })
+  Assert.equal(#graphics.draws, 0, "the failed state draws nothing")
+  clearDraws(graphics)
+  draw:draw(browse, plan(true), { icons = icons() })
+  Assert.isTrue(#graphics.draws > 0, "the admitted menu stays drawable after the failure")
+
+  state.failedPaths = {}
+  state.holdUnseenDemand = false
+  Assert.isTrue(
+    draw:prepare(action),
+    "the valid revisit resolves in one update once its art unsticks"
+  )
+  Assert.isTrue(
+    draw._images["strip:balls"] == stripInstalled,
+    "the recovery keeps the installed strip lease instead of churning it"
+  )
+  clearDraws(graphics)
+  draw:draw(action, plan(true), { icons = icons() })
+  Assert.isTrue(#graphics.draws > 0, "the recovered menu draws its new state")
+  Assert.isTrue(
+    wasDrawn(graphics, draw._images["background:action:balls:2"]),
+    "the recovered menu draws its new-state background"
+  )
+  Assert.equal(
+    pool:stats().outstandingLeases,
+    held,
+    "the recovery swaps one obsolete background lease for one new lease"
+  )
+  draw:release()
+  Assert.equal(pool:stats().outstandingLeases, 0, "release returns every borrowed handle exactly once")
+  draw:release()
+  Assert.equal(pool:stats().outstandingLeases, 0, "repeat release stays a safe no-op")
+end
+
+-- Shared chrome survives the smaller lifecycle transitions: visual
+-- aliases share one borrow, the background-free sale state publishes
+-- without re-enrolling chrome, pocket overlap keeps shared focus art,
+-- and disposal after a pending update returns every handle.
+function T.shared_chrome_survives_alias_sale_pocket_and_dispose_transitions()
+  local rows = {
+    {
+      label = "aliases share one borrow",
+      run = function()
+        local pool, state = censusPool()
+        local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+        local draw = censusRenderer(graphics, pool)
+        Assert.isTrue(pumpReady(draw, status()), "the browsing menu resolves")
+        local confirmations = 0
+        for _, path in ipairs(state.demandRequests) do
+          if path == "bag/quantity-confirm.png" then
+            confirmations = confirmations + 1
+          end
+        end
+        Assert.equal(confirmations, 1, "the shared confirm path enrolls exactly once")
+        Assert.isTrue(
+          draw._visuals.saleConfirm.handle == draw._visuals.quantityConfirm.handle,
+          "the sale alias reuses the quantity borrow"
+        )
+        local cancels = 0
+        for _, path in ipairs(state.demandRequests) do
+          if path == "bag/quantity-cancel.png" then
+            cancels = cancels + 1
+          end
+        end
+        Assert.equal(cancels, 1, "the shared cancel path enrolls exactly once")
+        Assert.isTrue(
+          draw._visuals.saleCancel.handle == draw._visuals.quantityCancel.handle,
+          "the sale cancel alias reuses the quantity borrow"
+        )
+        draw:release()
+        Assert.equal(pool:stats().outstandingLeases, 0, "release returns every borrowed handle")
+      end,
+    },
+    {
+      label = "the background-free sale state releases its obsolete background",
+      run = function()
+        local pool, state = censusPool()
+        local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+        local draw = censusRenderer(graphics, pool)
+        local browse = status()
+        Assert.isTrue(pumpReady(draw, browse), "the browsing menu resolves")
+        local held = pool:stats().outstandingLeases
+        local requestsBefore = state.requests
+        local sale = status({
+          state = "sale_quantity",
+          quantity = 1,
+          quantityMax = 5,
+          saleBalance = 12345,
+          saleTotal = 2,
+        })
+        Assert.isTrue(draw:prepare(sale), "the sale state publishes without re-enrolling chrome")
+        Assert.equal(
+          state.requests,
+          requestsBefore,
+          "the background-free sale state enrolls no new demand"
+        )
+        Assert.isNil(
+          draw._images["background:browse:balls:2"],
+          "the sale state drops the obsolete background"
+        )
+        Assert.equal(
+          pool:stats().outstandingLeases,
+          held - 1,
+          "the sale state returns exactly the obsolete background lease"
+        )
+        clearDraws(graphics)
+        draw:draw(sale, plan(true), { icons = icons() })
+        Assert.isTrue(#graphics.draws > 0, "the sale state draws its chrome")
+        Assert.isTrue(
+          wasDrawn(graphics, draw._images.saleQuantityBackground),
+          "the sale state draws its own surface"
+        )
+        draw:release()
+        Assert.equal(pool:stats().outstandingLeases, 0, "release returns every borrowed handle")
+      end,
+    },
+    {
+      label = "pocket overlap keeps shared focus art",
+      run = function()
+        local pool, _ = censusPool()
+        local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+        local draw = censusRenderer(graphics, pool)
+        Assert.isTrue(pumpReady(draw, status()), "the browsing menu resolves")
+        local focusInstalled = assert(
+          draw._images["focus:tabs"],
+          "the browsing menu binds its shared tab focus"
+        )
+        local itemsBrowse = status({ pocket = "items", tabFocusPocket = "items" })
+        Assert.isTrue(pumpReady(draw, itemsBrowse), "the overlapping pocket resolves")
+        Assert.isTrue(
+          draw._images["focus:tabs"] == focusInstalled,
+          "the pocket swap keeps the shared focus lease"
+        )
+        clearDraws(graphics)
+        draw:draw(itemsBrowse, plan(true), { icons = icons() })
+        Assert.isTrue(#graphics.draws > 0, "the swapped pocket draws")
+        Assert.isTrue(
+          wasDrawn(graphics, draw._images["strip:items"]),
+          "the swapped pocket draws its own strip"
+        )
+        draw:release()
+        Assert.equal(pool:stats().outstandingLeases, 0, "release returns every borrowed handle")
+      end,
+    },
+    {
+      label = "dispose after a pending update returns every handle",
+      run = function()
+        local pool, state, markSeen = censusPool()
+        local graphics = FakeGraphics({ imageSizes = IMAGE_SIZES })
+        local draw = censusRenderer(graphics, pool)
+        Assert.isTrue(pumpReady(draw, status()), "the browsing menu resolves")
+        markSeen()
+        state.holdUnseenDemand = true
+        Assert.isFalse(
+          draw:prepare(actionStatus()),
+          "the stalled replacement starts pending"
+        )
+        draw:release()
+        Assert.equal(pool:stats().outstandingLeases, 0, "dispose after pending returns every handle")
+        draw:release()
+        Assert.equal(pool:stats().outstandingLeases, 0, "repeat release stays a safe no-op")
+      end,
+    },
+  }
+  local failures = {}
+  for _, row in ipairs(rows) do
+    local ok, err = pcall(row.run)
+    if not ok then
+      failures[#failures + 1] = row.label .. ": " .. tostring(err)
+    end
+  end
+  Assert.equal(#failures, 0, "every lifecycle row holds (" .. table.concat(failures, " | ") .. ")")
 end
 
 return { tests = T }

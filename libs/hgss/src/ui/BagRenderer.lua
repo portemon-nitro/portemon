@@ -52,6 +52,7 @@ local YesNoPromptRenderer = require("libs.hgss.src.ui.YesNoPromptRenderer")
 ---@field _paths table<string, BagPathEntry> the immutable semantic-key to generated-path map built at construction
 ---@field _readySignature string? the semantic demand key of the installed visual leases
 ---@field _readyLeases table<integer, table<string, unknown>> installed demand leases returned on swap or release
+---@field _readyLeaseByPath table<string, table<string, unknown>> installed demand leases by generated path; every value appears exactly once in _readyLeases
 ---@field _pending BagDemandPending? the enrolled demand resolving or draining its soft interest
 local BagRenderer = {}
 BagRenderer.__index = BagRenderer
@@ -366,6 +367,7 @@ function BagRenderer.new(opts)
     _paths = buildPathMap(manifest, moveIcons),
     _readySignature = nil,
     _readyLeases = {},
+    _readyLeaseByPath = {},
     _pending = nil,
   }, BagRenderer)
   local ok, err = pcall(function()
@@ -566,9 +568,9 @@ end
 
 ---@class BagDemandPending
 ---@field signature string the semantic demand key this enrollment resolves
----@field requiredTokens table<integer, integer> demand tokens for the current state in enrollment order
+---@field requiredTokens table<integer, integer> demand tokens for absent paths in enrollment order
 ---@field softTokens table<integer, integer> one-step-ahead prefetch tokens, never published
----@field tokenByPath table<string, integer> enrolled tokens by generated path
+---@field tokenByPath table<string, integer> enrolled tokens by generated path, only for paths absent from the installed set
 ---@field entries table<integer, BagDemandEntry> current-state visual keys in enrollment order
 ---@field stagedByToken table<integer, table<string, unknown>> acquired required leases by token
 ---@field acquiredRequired integer count of acquired required leases
@@ -650,12 +652,15 @@ end
 -- current pocket. A predicted path that duplicates a current path stays
 -- required. Mirrors the construction path map keys exactly; an unknown
 -- state/pocket/count fails here instead of borrowing another screen.
----@param self BagRenderer
+-- Collects the current-state visual keys one bag status draws, in a stable
+-- enrollment order, plus the bounded one-step-ahead pocket visuals as soft
+-- keys. Mirrors the construction path map keys exactly; an unknown
+-- state/pocket/count fails here instead of borrowing another screen.
+---@param paths table<string, BagPathEntry> the immutable construction path map
 ---@param presentation table<string, unknown>
----@param signature string
----@return BagDemandPending
-local function enrollDemand(self, presentation, signature)
-  local paths = assert(self._paths, "bag state preparation resolves its construction path map")
+---@return table<integer, BagDemandEntry> entries current-state visual keys in enrollment order
+---@return table<integer, string> softKeys one-step-ahead visual keys, never gating readiness
+local function collectEntries(paths, presentation)
   local pocket = assert(presentation.pocket, "the bag presentation names its pocket")
   local count = backgroundCount(presentation)
   local state = assert(presentation.state, "the bag presentation names its state")
@@ -749,11 +754,32 @@ local function enrollDemand(self, presentation, signature)
     add("moveType:" .. moveType)
     add("moveCategory:" .. category)
   end
+  return entries, softKeys
+end
+
+-- Enrolls one demand group: every required path already installed stays on
+-- its installed lease and receives no new token, so a warm transition
+-- publishes without re-borrowing common art; only absent paths enroll
+-- demand tokens and alone count toward the per-update acquisition quota.
+-- Soft prefetch skips installed and current-required paths and adopts
+-- carried soft interest the superseded group still owned, so continuing
+-- next-pocket curiosity costs no new request. Leftover carried interest
+-- the replacement no longer wants cancels here, keeping every token
+-- exactly-once owned.
+---@param self BagRenderer
+---@param presentation table<string, unknown>
+---@param signature string
+---@param carriedSoftByPath table<string, integer>? outstanding soft tokens by path, owned by the superseded group
+---@return BagDemandPending
+local function enrollDemand(self, presentation, signature, carriedSoftByPath)
+  local paths = assert(self._paths, "bag state preparation resolves its construction path map")
+  local installed = assert(self._readyLeaseByPath, "warm transitions resolve their installed leases")
+  local entries, softKeys = collectEntries(paths, presentation)
   local pool = assert(self._pool, "bag state preparation borrows its shared image owner")
   local requiredTokens = {} ---@type table<integer, integer>
   local tokenByPath = {} ---@type table<string, integer>
   for _, entry in ipairs(entries) do
-    if tokenByPath[entry.path] == nil then
+    if tokenByPath[entry.path] == nil and installed[entry.path] == nil then
       local token = pool:request(entry.path, POOLED_SAMPLER, "demand")
       tokenByPath[entry.path] = token
       requiredTokens[#requiredTokens + 1] = token
@@ -762,10 +788,22 @@ local function enrollDemand(self, presentation, signature)
   local softTokens = {} ---@type table<integer, integer>
   for _, key in ipairs(softKeys) do
     local pathEntry = assert(paths[key], "the demand resolves " .. key .. " through the construction path map")
-    if tokenByPath[pathEntry.path] == nil then
-      local token = pool:request(pathEntry.path, POOLED_SAMPLER, "prefetch")
-      tokenByPath[pathEntry.path] = token
-      softTokens[#softTokens + 1] = token
+    if tokenByPath[pathEntry.path] == nil and installed[pathEntry.path] == nil then
+      local carried = carriedSoftByPath and carriedSoftByPath[pathEntry.path]
+      if carried ~= nil then
+        carriedSoftByPath[pathEntry.path] = nil
+        tokenByPath[pathEntry.path] = carried
+        softTokens[#softTokens + 1] = carried
+      else
+        local token = pool:request(pathEntry.path, POOLED_SAMPLER, "prefetch")
+        tokenByPath[pathEntry.path] = token
+        softTokens[#softTokens + 1] = token
+      end
+    end
+  end
+  if carriedSoftByPath ~= nil then
+    for _, token in pairs(carriedSoftByPath) do
+      pool:cancel(token)
     end
   end
   return {
@@ -780,10 +818,62 @@ local function enrollDemand(self, presentation, signature)
   }
 end
 
--- Releases staged required leases and cancels every unconsumed token of
--- a pending group without touching installed state. Cancelling an already
--- consumed token is a harmless no-op; each staged lease returns exactly
--- once here. Used on failure, supersede, and release.
+-- Supersedes a pending group without disturbing the installed leases:
+-- staged new leases return, required-new tickets cancel, and outstanding
+-- soft interest the replacement still wants as prefetch carries over
+-- without a new request. Soft interest the replacement newly requires
+-- cancels here and re-enrolls as current demand below, never backing the
+-- new state without readiness validation.
+---@param self BagRenderer
+---@param pool table<string, unknown> the borrowed shared image owner
+---@param pending BagDemandPending the group a newer status supersedes
+---@param presentation table<string, unknown> the superseding status
+---@return table<string, integer> carried outstanding soft tokens by path, now owned by the replacement
+local function supersedePending(self, pool, pending, presentation)
+  local paths = assert(self._paths, "bag state preparation resolves its construction path map")
+  local installed = assert(self._readyLeaseByPath, "warm transitions resolve their installed leases")
+  local entries, softKeys = collectEntries(paths, presentation)
+  local requiredByPath = {}
+  for _, entry in ipairs(entries) do
+    requiredByPath[entry.path] = true
+  end
+  local wantedSoftByPath = {}
+  for _, key in ipairs(softKeys) do
+    local pathEntry = assert(paths[key], "the demand resolves " .. key .. " through the construction path map")
+    if requiredByPath[pathEntry.path] == nil and installed[pathEntry.path] == nil then
+      wantedSoftByPath[pathEntry.path] = true
+    end
+  end
+  local softTokenSet = {}
+  for _, token in ipairs(pending.softTokens) do
+    softTokenSet[token] = true
+  end
+  local carried = {}
+  for path, token in pairs(pending.tokenByPath) do
+    if softTokenSet[token] and wantedSoftByPath[path] then
+      carried[path] = token
+    elseif softTokenSet[token] then
+      pool:cancel(token)
+    end
+  end
+  for _, lease in pairs(pending.stagedByToken) do
+    pool:release(lease)
+  end
+  pending.stagedByToken = {}
+  pending.acquiredRequired = 0
+  for _, token in ipairs(pending.requiredTokens) do
+    pool:cancel(token)
+  end
+  return carried
+end
+
+-- Releases staged pending-owned leases and cancels every unconsumed token of
+-- a pending group without touching installed state. Reused installed leases
+-- never enter the pending group, so superseded or failed interest returns
+-- only pending-owned work. Cancelling an already consumed token is a
+-- harmless no-op; each staged lease returns exactly once here. Used on
+-- failure and release; supersede routes through supersedePending to carry
+-- still-wanted soft interest.
 ---@param pool table<string, unknown> the borrowed shared image owner
 ---@param pending BagDemandPending the group to forget
 local function abandonPending(pool, pending)
@@ -801,15 +891,19 @@ local function abandonPending(pool, pending)
   pending.softTokens = {}
 end
 
--- Installs the complete required group atomically once every required
--- lease is acquired: builds the visual map from staged leases, swaps it
--- in, and returns the previous installed leases exactly once. Ownership
--- of the staged leases moves to the installed group; the pending record
--- keeps only its soft interest afterwards.
+-- Installs the complete required group atomically once every newly
+-- requested lease is acquired: resolves each entry path from its reused
+-- installed lease or its staged new lease, validates the whole replacement
+-- before touching installed state, then installs the new maps together and
+-- returns only leases whose paths the replacement drops. Common paths keep
+-- their installed lease without release and re-borrow. Ownership of the
+-- staged new leases moves to the installed group; the pending record keeps
+-- only its soft interest afterwards.
 ---@param self BagRenderer
 ---@param pool table<string, unknown> the borrowed shared image owner
 ---@param pending BagDemandPending the fully acquired group to publish
 local function publishRequired(self, pool, pending)
+  local installed = assert(self._readyLeaseByPath, "warm transitions resolve their installed leases")
   local leaseByPath = {} ---@type table<string, table<string, unknown>>
   for path, token in pairs(pending.tokenByPath) do
     local lease = pending.stagedByToken[token]
@@ -817,37 +911,52 @@ local function publishRequired(self, pool, pending)
       leaseByPath[path] = lease
     end
   end
+  for _, entry in ipairs(pending.entries) do
+    if leaseByPath[entry.path] == nil then
+      leaseByPath[entry.path] = assert(installed[entry.path], "the resolved demand carries " .. entry.key)
+    end
+  end
   local visuals = {} ---@type table<string, BagDemandVisual>
   local images = {} ---@type table<string, unknown>
+  local pathMap = {} ---@type table<string, table<string, unknown>>
+  local leases = {} ---@type table<integer, table<string, unknown>>
   for _, entry in ipairs(pending.entries) do
     local lease = assert(leaseByPath[entry.path], "the resolved demand carries " .. entry.key)
     assert(lease.image, "shared leases carry their resolved image")
     visuals[entry.key] = { handle = lease, width = entry.width, height = entry.height, offset = entry.offset }
     images[entry.key] = lease.image
+    if pathMap[entry.path] == nil then
+      pathMap[entry.path] = lease
+      leases[#leases + 1] = lease
+    end
   end
   local aliases = { { "saleConfirm", "quantityConfirm" }, { "saleCancel", "quantityCancel" } }
   for _, alias in ipairs(aliases) do
     visuals[alias[1]] = assert(visuals[alias[2]], "the bag presentation names its quantity controls")
   end
-  local staged = {} ---@type table<integer, table<string, unknown>>
   for _, token in ipairs(pending.requiredTokens) do
-    staged[#staged + 1] = assert(pending.stagedByToken[token], "every required token staged its lease")
+    assert(pending.stagedByToken[token] ~= nil, "every required token staged its lease")
   end
   pending.stagedByToken = {}
   pending.acquiredRequired = 0
   pending.published = true
-  for _, lease in ipairs(self._readyLeases) do
-    pool:release(lease)
-  end
+  local obsolete = self._readyLeaseByPath
   self._visuals = visuals
   self._images = images --[[@as table<string, love.Image>]]
-  self._readyLeases = staged
+  self._readyLeaseByPath = pathMap
+  self._readyLeases = leases
   self._readySignature = pending.signature
+  for path, lease in pairs(obsolete) do
+    if pathMap[path] == nil then
+      pool:release(lease)
+    end
+  end
 end
 
--- Polls every required token once without blocking and acquires at most a
--- bounded batch of ready leases. Returns true once the whole current
--- demand installed. A failed required visual abandons the partial group
+-- Polls every newly requested token once without blocking and acquires at
+-- most a bounded batch of ready leases; reused installed paths hold no
+-- tokens and consume no quota. Returns true once the whole current demand
+-- installed, including immediately when no new token was needed. A failed required visual abandons the partial group
 -- loudly while the installed state stays drawable; optional work is never
 -- consulted here, so a stalled predicted pocket cannot delay readiness.
 -- Never enrolls: callers promote the pending group across rounds.
@@ -937,22 +1046,35 @@ local function advanceDemand(self, presentation)
   local pool = assert(self._pool, "bag state preparation borrows its shared image owner")
   local pending = self._pending
   if pending ~= nil and pending.signature ~= signature then
-    -- A superseded pending never publishes: its staged leases return and
-    -- its unconsumed tokens cancel, while the installed group stays
-    -- drawable until a complete replacement arrives.
-    abandonPending(pool, pending)
+    -- A superseded pending never publishes: its staged new leases return,
+    -- its required-new tickets cancel, and soft interest the replacement
+    -- still wants carries over without a new request, while the installed
+    -- group stays drawable until a complete replacement arrives.
+    local carried = supersedePending(self, pool, pending, presentation)
     self._pending = nil
     pending = nil
+    if self._readySignature == signature then
+      for _, token in pairs(carried) do
+        pool:cancel(token)
+      end
+      return true, false
+    end
+    -- A fresh enrollment resolves installed paths before the first
+    -- readiness probe, then falls through to the progress logic below
+    -- in the same call, so a fully warm hit publishes immediately
+    -- instead of idling one round.
+    pending = enrollDemand(self, presentation, signature, carried)
+    self._pending = pending
   end
   if pending == nil then
     if self._readySignature == signature then
       return true, false
     end
-    -- A fresh enrollment enrolls every required path before the first
+    -- A fresh enrollment resolves installed paths before the first
     -- readiness probe, then falls through to the progress logic below
     -- in the same call, so a fully warm hit publishes immediately
     -- instead of idling one round.
-    pending = enrollDemand(self, presentation, signature)
+    pending = enrollDemand(self, presentation, signature, nil)
     self._pending = pending
   end
   if pending.published then
@@ -1874,6 +1996,7 @@ function BagRenderer:release()
   end
   local leases = self._readyLeases
   self._readyLeases = {}
+  self._readyLeaseByPath = {}
   self._readySignature = nil
   for _, lease in ipairs(leases) do
     pool:release(lease)

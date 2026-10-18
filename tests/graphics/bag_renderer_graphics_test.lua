@@ -2772,6 +2772,66 @@ function T.field_entry_keeps_chrome_warm_while_bag_variants_follow_demand(scope,
   end
 end
 
+-- Draws one prepared presentation without driving readiness: the caller
+-- already admitted the state through exactly one update, so this only
+-- presents the next frame.
+local function renderPrepared(scope, owned, presentationRecord, layout)
+  local canvas = scope:own(love.graphics.newCanvas(CANVAS_WIDTH, CANVAS_HEIGHT))
+  love.graphics.setCanvas(canvas)
+  love.graphics.clear(0, 0, 0, 0)
+  owned.renderer:draw(presentationRecord, layout, { icons = owned.icons })
+  love.graphics.setCanvas()
+  return scope:own(canvas:newImageData())
+end
+
+-- A revisited menu paints its new state after one update: browsing and
+-- the action menu are both admitted first so every visual is resident,
+-- then returning to browsing must admit in a single preparation and
+-- present the identical browsing pixels instead of a blank pane.
+function T.revisiting_an_admitted_menu_paints_new_state_after_one_update(scope, context)
+  local versions = readyVersions()
+  if #versions == 0 then
+    context:skip("the bag smoke needs a ready user-owned ROM with a derived cache")
+  end
+  for _, versionId in ipairs(versions) do
+    local cacheFs, manifest = manifestFor(versionId)
+    local layout = twoPaneLayout(manifest)
+    local firstIcon, secondIcon = iconKeys(cacheFs, versionId)
+    local owned = owners(cacheFs, manifest, scope, versionId)
+    local pocket = twoPockets(manifest, versionId)
+    local heroStatus = heroStatusAt(manifest, pocket, 6)
+    local interactiveFrame = interactiveFrameOf(layout, versionId)
+    local browse = presentation(firstIcon, secondIcon, heroStatus)
+    local action = presentation(firstIcon, secondIcon, heroStatus, {
+      state = "action_menu",
+      actions = { { id = "toss", slot = 1 } },
+      actionNode = 1,
+    })
+    local browsing = render(scope, owned, browse, layout)
+    local menu = render(scope, owned, action, layout)
+    Assert.isTrue(
+      regionDistance(browsing, menu, interactiveFrame, 2) > 100,
+      versionId .. " the action menu is a distinct surface from browsing"
+    )
+    local physicalsBefore = owned.pool:stats().physicalImages
+    Assert.isTrue(
+      owned.renderer:prepare(browse),
+      versionId .. " the revisit admits browsing in one update"
+    )
+    Assert.equal(
+      owned.pool:stats().physicalImages,
+      physicalsBefore,
+      versionId .. " the revisit uploads no art again"
+    )
+    local revisit = renderPrepared(scope, owned, browse, layout)
+    Assert.equal(
+      regionDistance(revisit, browsing, { x = 0, y = 0, width = CANVAS_WIDTH, height = CANVAS_HEIGHT }, 1),
+      0,
+      versionId .. " the revisited frame matches the admitted browsing pixels exactly"
+    )
+  end
+end
+
 local suite = GraphicsSmoke.suite(T)
 suite.metadata.capabilities = { "graphics", "rom_dump" }
 suite.metadata.derivedAssets = { "move-icons:global", "bag:global", "items:global", "field-font:global", "field-ui:global" }
