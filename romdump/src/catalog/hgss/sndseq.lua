@@ -1375,13 +1375,4 @@ return {
     [2378] = "SEQ_SE_END",
   },
   schema = 1,
-  source = {
-    inputs = {
-      [1] = {
-        path = "include/constants/sndseq.h",
-        sha256 = "8d6b246a5eca81b8711a410aa260cf5d87f4c33286955f6d0d0155ef3f28dca1",
-      },
-    },
-    repo = "retail ROM",
-  },
 }

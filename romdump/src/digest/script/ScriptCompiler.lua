@@ -148,7 +148,6 @@ local function compilerDependencies(romFs, producerFingerprint, sha1hex)
     contract = ScriptCache.INDEX_SCHEMA,
     producerFingerprint = producerFingerprint,
     commandCatalog = ScriptCompiler.commandCatalogVersion(),
-    movementCatalog = ScriptCompiler.movementCatalogVersion(),
     stdCatalog = ScriptCompiler.stdCatalogVersion(),
     memberBanks = ScriptCompiler.memberBanksVersion(),
     version = version,
@@ -273,24 +272,16 @@ function ScriptCompiler.compile(romFs, sha1hex, hashLua)
   }
 end
 
-local function sourceOf(module)
-  return module.source and module.source.inputs[1].sha256 .. ":" .. #module.source.inputs
-end
-
 function ScriptCompiler.commandCatalogVersion()
-  return sourceOf(require("romdump.src.catalog.hgss.script_commands"))
-end
-
-function ScriptCompiler.movementCatalogVersion()
-  return sourceOf(require("romdump.src.catalog.hgss.movement_commands"))
+  return "hgss-script-command-catalog-v1"
 end
 
 function ScriptCompiler.stdCatalogVersion()
-  return sourceOf(require("romdump.src.catalog.hgss.std_script_catalog"))
+  return "hgss-std-script-catalog-v1"
 end
 
 function ScriptCompiler.memberBanksVersion()
-  return sourceOf(require("romdump.src.catalog.hgss.script_members"))
+  return "hgss-script-member-banks-v1"
 end
 
 -- Emit the Lua text for one resource (the cache writer persists it).

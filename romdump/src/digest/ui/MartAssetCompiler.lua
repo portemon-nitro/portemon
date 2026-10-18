@@ -648,7 +648,6 @@ local function _compile(romFs)
   }
   manifest.lower.yesNo = copyRecord(geometry.browse.yesNo)
   manifest.lower.quantity = copyRecord(geometry.quantity)
-  manifest.lower.quantity.source = nil
   manifest.lower.quantity.messages = nil
   local textColors = {
     foreground = rgba(controlPalette, 13),

@@ -440,12 +440,6 @@ function Compiler.compile(romFs)
   end
   local provenance = {
     source = "the retail ROM",
-    files = {
-      "overlay_02_02248728.s",
-      "overlay_01_02203A18.s",
-      "asm/unk_02026DE0.s",
-      "src/message_format.c",
-    },
     archives = {
       rules = Sources.ARCHIVES.rules,
       programs = Sources.ARCHIVES.programs,

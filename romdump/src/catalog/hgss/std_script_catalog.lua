@@ -4,16 +4,6 @@
 -- Pure data; no love dependency.
 return {
   schema = 1,
-  source = {
-    repo = "retail ROM",
-    inputs = {
-      {
-        path = "include/constants/std_script.h",
-        sha256 = "e64378af66fa6e2a20d7f326d9a1837459cbc3d5c5c36346c89f870635aa3efb",
-      },
-      { path = "src/script_manager.c", sha256 = "8397db7d5bae3a4e60e52b470342b9d2dd375fc0a7c985937113b607cd6e7c4d" },
-    },
-  },
   namesById = {
     [2000] = "signpost",
     [2001] = "hidden_item_fanfare",

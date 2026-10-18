@@ -106,20 +106,6 @@ local BagSources = {}
 
 BagSources.provenance = {
   repo = "retail ROM",
-  sources = {
-    "asm/overlay_15.s",
-    "asm/include/overlay_15.inc",
-    "include/camera.h",
-    "include/sprite_system.h",
-    "include/bg_window.h",
-    "include/text.h",
-    "files/msgdata/msg/msg_0010.gmm",
-    "asm/unk_02077678.s",
-    "files/data/resdat/resdat_00000024.json",
-    "files/data/resdat/resdat_00000025.json",
-    "files/data/resdat/resdat_00000026.json",
-    "files/data/resdat/resdat_00000055.json",
-  },
 }
 
 BagSources.archive = {

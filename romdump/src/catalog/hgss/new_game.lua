@@ -6,12 +6,6 @@
 -- module; producers publish only the normalized facing downstream.
 
 return {
-  repository = "retail ROM",
-  sourcePaths = {
-    "src/location_backup.c",
-    "include/constants/maps.h",
-    "include/constants/global_fieldmap.h",
-  },
   playerRoom = {
     mapSymbol = "MAP_NEW_BARK_PLAYER_HOUSE_2F",
     mapId = 64,

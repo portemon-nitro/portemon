@@ -5,7 +5,6 @@ local PcSources = {}
 
 PcSources.provenance = {
   romAudit = "retail ROM",
-  symbols = { "asm/overlay_14.s", "asm/overlay_103.s", "asm/overlay_109.s" },
 }
 
 PcSources.archives = {

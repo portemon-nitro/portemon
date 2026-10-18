@@ -8,24 +8,6 @@
 
 return {
   schema = 2,
-  source = {
-    repo = "retail ROM",
-    inputs = {
-      {
-        path = "include/constants/maps.h",
-        sha256 = "2e0fc9ed58b8e83935e80db1b8dad2309acf042537d9cfa689b15318ba3717ba",
-      },
-      {
-        path = "include/constants/map_sections.h",
-        sha256 = "1102c63c2637718fa28aeb57038c78c5d614f6c8cca0018ca1d199a07613431a",
-      },
-      {
-        path = "include/encounter_tables_narc.h",
-        sha256 = "6dc485c1a57b5d16697ba71af957ddbf94334b8b286bf1581f62ee21a12947d5",
-      },
-      { path = "src/data/map_headers.h", sha256 = "3bddcadc5569386a1b54b89252524038506e72717a61e9c36c8fef8093d8cbd3" },
-    },
-  },
   count = 540,
   byId = {
     [0] = {

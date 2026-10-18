@@ -14,18 +14,6 @@ local BattleSources = {}
 
 BattleSources.provenance = {
   repo = "retail ROM",
-  sources = {
-    "include/move.h",
-    "include/constants/move_effects.h",
-    "include/trainer_data.h",
-    "include/constants/trainers.h",
-    "include/constants/trainer_class.h",
-    "include/wild_encounter.h",
-    "src/move.c",
-    "src/trainer_data.c",
-    "src/field/encounter_check.c",
-    "src/battle/battle_command.c",
-  },
 }
 
 -- One semantic binding per usable native move, keyed by the MonSources move
@@ -136,7 +124,6 @@ BattleSources.weightSources = {
   narcId = 74,
   path = "a/0/7/4",
   memberId = 1,
-  reader = "src/battle/battle_command.c GetMonWeight",
   units = "hectograms",
   entrySize = 4,
   minSpecies = 0,

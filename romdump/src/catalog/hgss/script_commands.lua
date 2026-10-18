@@ -6352,17 +6352,4 @@ return {
     },
   },
   schema = 1,
-  source = {
-    inputs = {
-      [1] = {
-        path = "src/data/fieldmap/script_cmd_table.h",
-        sha256 = "62104e12b64cd52a089c257c21d438b306c4cc72e126d01ecfe1aa124b34d9a8",
-      },
-      [2] = {
-        path = "asm/macros/script.inc",
-        sha256 = "dfa7acaaaee22acece1c3850999e14fba442091d22f304cae57c43e12ec65b13",
-      },
-    },
-    repo = "retail ROM",
-  },
 }

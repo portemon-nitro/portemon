@@ -1,6 +1,6 @@
 -- Producer-inventory scenarios for the native party presentation sources.
 -- Asserts the audited archive/member selection, the transcribed source
--- geometry, and the provenance pins. No ROM access: every fact here is a
+-- geometry, and the provenance identity. No ROM access: every fact here is a
 -- static producer declaration the compiler consumes.
 
 local Assert = require("tests.support.Assert")
@@ -9,10 +9,8 @@ local PartyAssetCompiler = require("romdump.src.digest.ui.PartyAssetCompiler")
 
 local T = {}
 
-function T.provenance_records_both_pins()
-  Assert.isTrue(type(PartySources.provenance.repoPin) == "string", "the producer records the research commit")
-  Assert.isTrue(type(PartySources.provenance.romAudit) == "string", "the producer records the audited source")
-  Assert.isTrue(#PartySources.provenance.repoPin >= 7, "the research pin is a real commit prefix")
+function T.provenance_identifies_the_audited_source()
+  Assert.equal(PartySources.provenance.romAudit, "retail ROM")
 end
 
 function T.party_archive_selects_narc21()

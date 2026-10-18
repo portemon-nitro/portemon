@@ -14,15 +14,7 @@
 local PartySources = {}
 
 PartySources.provenance = {
-  repoPin = "0301aa5868b961e5c860477b9bc47300663a609d",
   romAudit = "retail ROM",
-  symbols = {
-    "src/party_menu.c",
-    "src/party_menu_sprites.c",
-    "src/party_context_menu.c",
-    "files/data/resdat/resdat_00000085.json",
-    "files/data/resdat/resdat_00000084.json",
-  },
 }
 
 -- Curated archive identities. NARC and NitroFS IDs are not interchangeable;

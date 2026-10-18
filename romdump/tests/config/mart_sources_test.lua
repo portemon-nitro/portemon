@@ -12,13 +12,6 @@ end
 function T.provenance_and_resources_use_semantic_aliases()
   local MartSources = sources()
   Assert.equal(MartSources.provenance.repo, "retail ROM")
-  local listed = {}
-  for _, path in ipairs(MartSources.provenance.sources) do
-    listed[path] = true
-  end
-  for _, path in ipairs({ "src/scrcmd_mart.c", "asm/overlay_31.s", "src/overlay_03/shop_menu.c" }) do
-    Assert.isTrue(listed[path], "provenance must name " .. path)
-  end
 
   Assert.equal(MartSources.archive.alias, "NARC_a_0_6_0")
   Assert.equal(MartSources.archive.symbol, "NARC_a_0_6_0")
@@ -36,12 +29,10 @@ function T.provenance_and_resources_use_semantic_aliases()
     seals = {
       bank = 434,
       indexOffset = -1,
-      source = "src/unk_02091054.c::sub_020910B8",
     },
     decorations = {
       bank = 737,
       indexOffset = 138,
-      source = "src/overlay_03/shop_menu.c::ov03_022573D4",
     },
   })
 
@@ -134,12 +125,10 @@ function T.source_stock_tables_keep_required_counts_and_pointer_order_sentinels(
   Assert.equal(#stock.sealStocks, stock.expectedCounts.seals)
   Assert.equal(#stock.decorationStocks, stock.expectedCounts.decorations)
 
-  Assert.equal(stock.normalTierSource, "src/scrcmd_mart.c::_020FBF22 via ScrCmd_MartBuy")
   Assert.deepEqual(stock.normalTiers[1], { itemKey = "POKE_BALL", minimumTier = 1 })
   Assert.deepEqual(stock.normalTiers[2], { itemKey = "GREAT_BALL", minimumTier = 3 })
   Assert.deepEqual(stock.normalTiers[19], { itemKey = "MAX_REPEL", minimumTier = 4 })
 
-  Assert.equal(stock.specialSourceOrder, "src/scrcmd_mart.c::_0210FA3C via ScrCmd_SpecialMartBuy")
   Assert.equal(stock.specialStocks[1][1], "AIR_MAIL")
   Assert.equal(stock.specialStocks[2][1], "TUNNEL_MAIL")
   Assert.equal(stock.specialStocks[4][1], "POTION")
@@ -148,7 +137,6 @@ function T.source_stock_tables_keep_required_counts_and_pointer_order_sentinels(
   Assert.equal(stock.specialStocks[21][1], "TM21")
   Assert.equal(stock.specialStocks[30][1], "GREAT_BALL")
 
-  Assert.equal(stock.athleteSourceOrder, "src/scrcmd_mart.c::_0210FA04")
   Assert.equal(stock.athleteStocks[1][4][1], "MOOMOO_MILK")
   Assert.equal(stock.athleteStocks[1][4][2], 100)
   Assert.equal(stock.athleteStocks[14][4][1], "MOOMOO_MILK")
@@ -157,7 +145,6 @@ function T.source_stock_tables_keep_required_counts_and_pointer_order_sentinels(
   Assert.equal(stock.athleteStocks[14][1][2], 200)
   Assert.equal(stock.dataCardStocks[5][3][1], "DATA_CARD_27")
   Assert.equal(stock.dataCardStocks[5][3][2], 9999)
-  Assert.equal(stock.dataCardSourceOrder, "src/scrcmd_mart.c::_0210F9D4")
   Assert.equal(stock.athleteWeekOrder, "Sunday..Saturday before National Dex, then after National Dex")
 
   -- Seal and decoration identifiers are separate source namespaces, even
@@ -233,7 +220,6 @@ end
 
 function T.count_patches_distinguish_every_visible_count_from_the_invisible_empty_state()
   local patches = sources().countPatches
-  Assert.equal(patches.source, "asm/overlay_31.s::ov31_0225E060/ov31_0225EF48")
   Assert.equal(patches.coordinateUnit, "tile")
   Assert.equal(patches.tileSize, 8)
 

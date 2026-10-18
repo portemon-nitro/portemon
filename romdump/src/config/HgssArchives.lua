@@ -11,12 +11,7 @@ local HgssArchives = {}
 HgssArchives.schema = 1
 
 HgssArchives.provenance = {
-  repo = catalog.source.repo,
-  sources = {
-    "include/filesystem_files_def.h",
-    "include/filesystem.h",
-    "src/filesystem.c",
-  },
+  repo = "retail ROM",
 }
 
 -- Friendly alias -> source symbol. Each symbol has one primary

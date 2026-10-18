@@ -4,13 +4,6 @@
 -- Pure data; no love dependency.
 return {
   schema = 1,
-  source = {
-    repo = "retail ROM",
-    inputs = {
-      { path = "src/data/map_headers.h", sha256 = "737c837b717749df464dde7e6989f2c1da98d94ce31072fa2ef7918476ec7b05" },
-      { path = "src/script_manager.c", sha256 = "8397db7d5bae3a4e60e52b470342b9d2dd375fc0a7c985937113b607cd6e7c4d" },
-    },
-  },
   banks = {
     [0] = 14,
     [1] = 20,

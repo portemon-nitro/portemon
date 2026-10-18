@@ -17,12 +17,6 @@ local IntroAssets = {
   schema = 3,
   provenance = {
     repo = "retail ROM",
-    sources = {
-      "src/oaks_speech.c",
-      "src/oaks_speech_obj.c",
-      "src/naming_screen.c",
-      "files/demo/intro/intro.mk",
-    },
   },
   archive = "intro",
   background = {

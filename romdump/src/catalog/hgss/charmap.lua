@@ -9,16 +9,6 @@
 
 return {
   schema = 1,
-  source = {
-    repo = "retail ROM",
-    inputs = {
-      { path = "charmap.txt", sha256 = "58861d34f40623fd2a9b29c10a79ee2ec872182285a288381759a3b251412ded" },
-      {
-        path = "include/constants/charcode.h",
-        sha256 = "82b62438a985729619e3be22bf2ae0c343449704bb7656f8d6c97b78c46e5fec",
-      },
-    },
-  },
   -- code unit -> UTF-8 display text. Widths live in the font, not here.
   glyphs = {
     [0x0000] = "\\x0000",

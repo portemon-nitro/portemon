@@ -11,14 +11,6 @@ local ItemSources = {}
 
 ItemSources.provenance = {
   repo = "retail ROM",
-  sources = {
-    "include/constants/items.h",
-    "include/item.h",
-    "include/bag_types_def.h",
-    "src/item.c",
-    "src/message_format.c",
-    "src/scrcmd_strbuf.c",
-  },
 }
 
 -- Native identity of the full restore (ITEM_FULL_RESTORE in

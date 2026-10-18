@@ -10,15 +10,6 @@ return {
 
   provenance = {
     repo = "retail ROM",
-    sources = {
-      "asm/overlay_01_sprite_data.s",
-      "asm/overlay_01_021F8D80.s",
-      "asm/overlay_01_021F944C.s",
-      "asm/overlay_01_021FD1B8.s",
-      "asm/unk_02023694.s",
-      "include/map_object.h",
-      "src/map_object.c",
-    },
   },
 
   -- Overlay 1 (ARM9) holds every field-actor table. Runtime addresses only.

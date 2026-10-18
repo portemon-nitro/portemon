@@ -79,10 +79,9 @@ local APRICORN_BOX_MESSAGE_BANK = 21
 
 local FieldMessageCompiler = {}
 
--- The charmap catalog identity: a source-input hash (input SHA-256), not an
--- implementation version. Implementation freshness belongs to the
+-- The charmap catalog identity. Implementation freshness belongs to the
 -- producer fingerprint.
-FieldMessageCompiler.CHARMAP_VERSION = "hgss-charmap-v1:" .. charmap.source.inputs[1].sha256
+FieldMessageCompiler.CHARMAP_VERSION = "hgss-charmap-v1"
 
 local function must(value, err)
   if value == nil then

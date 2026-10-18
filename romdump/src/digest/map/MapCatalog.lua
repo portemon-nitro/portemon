@@ -13,7 +13,7 @@ local bySymbol = {}
 assert(reference.schema == 2, "unsupported HGSS map reference schema")
 assert(reference.count == COUNT, "HGSS map reference must contain 540 records")
 
-MapCatalog.VERSION = "hgss-map-catalog-v1:" .. reference.source.inputs[1].sha256
+MapCatalog.VERSION = "hgss-map-catalog-v1"
 
 for id = 0, COUNT - 1 do
   local source = assert(reference.byId[id], "missing HGSS map reference id " .. id)

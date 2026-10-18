@@ -12,24 +12,6 @@ local MonSources = {}
 
 MonSources.provenance = {
   repo = "retail ROM",
-  sources = {
-    "include/pokemon_types_def.h",
-    "include/constants/species.h",
-    "include/constants/moves.h",
-    "include/constants/abilities.h",
-    "include/constants/items.h",
-    "include/constants/pokemon.h",
-    "include/constants/follow_mon_idx.h",
-    "include/constants/sprites.h",
-    "include/move.h",
-    "src/move.c",
-    "src/pokemon.c",
-    "src/pokemon_icon_idx.c",
-    "src/follow_mon.c",
-    "src/message_format.c",
-    "src/item.c",
-    "src/pokemon.c",
-  },
 }
 
 MonSources.MAX_SPECIES = 493

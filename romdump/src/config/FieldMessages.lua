@@ -6,16 +6,6 @@ return {
   schema = 1,
   provenance = {
     repo = "retail ROM",
-    sources = {
-      { path = "include/msgdata.h" },
-      { path = "src/msgdata.c" },
-      { path = "src/font.c" },
-      { path = "src/font_data.c" },
-      { path = "src/text.c" },
-      { path = "src/data/map_headers.h" },
-      { path = "files/msgdata/msg/msg_0542_T20.gmm" },
-      { path = "files/msgdata/msg/msg_0543_T20R0101.gmm" },
-    },
   },
   -- The current field-font consumers use font 0 for dialogue and font 4 for
   -- Oak choice labels.

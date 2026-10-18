@@ -8,14 +8,6 @@ local PokegearWordEntrySources = {}
 
 PokegearWordEntrySources.provenance = {
   romAudit = "retail ROM",
-  symbols = {
-    "asm/overlay_102.s",
-    "src/application/pokegear/main/pokegear_main.c",
-    "src/easy_chat.c",
-    "src/mail_misc.c",
-    "include/easy_chat.h",
-    "include/constants/easy_chat.h",
-  },
   rom = { version = "heartgold", sha1 = "4fcded0e2713dc03929845de631d0932ea2b5a37" },
 }
 

@@ -7,18 +7,6 @@ local PokegearSources = {}
 
 PokegearSources.provenance = {
   romAudit = "retail ROM",
-  symbols = {
-    "src/application/pokegear/main/overlay_100_021E5900.c",
-    "src/application/pokegear/main/overlay_100_021E6914.c",
-    "src/phonebook_dat.c",
-    "src/application/pokegear/phone/phone_script_defs.c",
-    "src/mom_gift.c",
-    "include/constants/phone_contacts.h",
-    "include/constants/items.h",
-    "src/application/pokegear/radio/overlay_101_021F57B8.c",
-    "src/application/pokegear/radio/pokegear_radio.c",
-    "src/map_header.c",
-  },
 }
 
 -- The five core graphics archives with their closed selected member sets.

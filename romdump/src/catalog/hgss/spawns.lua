@@ -1,15 +1,6 @@
 -- Pinned HGSS respawn catalog (id -> SPAWN_* name), normalized from the retail ROM.
 return {
   schema = 1,
-  source = {
-    repo = "retail ROM",
-    inputs = {
-      {
-        path = "include/constants/spawns.h",
-        sha256 = "f4b92a544d942fd53e315892b6369d4abc017ed89b6494ba9f8c3f7a005d002d",
-      },
-    },
-  },
   byId = {
     [0] = "SPAWN_NONE",
     [1] = "SPAWN_NEW_BARK",

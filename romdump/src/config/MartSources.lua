@@ -5,12 +5,6 @@ local MartSources = {}
 
 MartSources.provenance = {
   repo = "retail ROM",
-  sources = {
-    "src/scrcmd_mart.c",
-    "src/unk_02091054.c",
-    "asm/overlay_31.s",
-    "src/overlay_03/shop_menu.c",
-  },
 }
 
 -- Resolve these by their source symbols through RomFs. Physical NARC IDs are
@@ -51,11 +45,10 @@ MartSources.resdat = {
   members = { animation = 64, cell = 65, char = 66, palette = 67, header = 88 },
 }
 
--- Members 4-10 are registered main-screen sprite chrome. shop_menu.c hides
+-- Members 4-10 are registered main-screen sprite chrome. The shop menu hides
 -- its sprites at initialization and never re-enables them, so they remain
 -- provenance dependencies but are not visible manifest art.
 MartSources.retainedChrome = {
-  source = "src/overlay_03/shop_menu.c::ov03_022594F8/ov03_02258468",
   visibility = "hidden",
 }
 
@@ -126,17 +119,15 @@ MartSources.messages = {
   descriptionSources = {
     -- DecorationMart reads bank 737 at itemID + 138. SealMart reads bank
     -- 434 through sub_020910B8, which maps stocked source IDs 1..49 to 0..48.
-    seals = { bank = 434, indexOffset = -1, source = "src/unk_02091054.c::sub_020910B8" },
-    decorations = { bank = 737, indexOffset = 138, source = "src/overlay_03/shop_menu.c::ov03_022573D4" },
+    seals = { bank = 434, indexOffset = -1 },
+    decorations = { bank = 737, indexOffset = 138 },
   },
   transactionReceivedControl = 514,
 }
 
--- Normalized logical-pixel placement from shop_menu.c and overlay_31.s.
--- Source records are producer-only; the compiler publishes only their geometry.
+-- Normalized logical-pixel placement from the retail shop menu and mart overlays.
 MartSources.geometry = {
   upper = {
-    source = "src/overlay_03/shop_menu.c::ov03_022594F8",
     description = {
       items = {
         x = 40,
@@ -164,7 +155,6 @@ MartSources.geometry = {
     itemAnchor = { x = 22, y = 172 },
   },
   browse = {
-    source = "asm/overlay_31.s::ov31_0225DBD4/ov31_0225DCA8/ov31_0225EE88",
     slots = {
       {
         hitbox = { x = 0, y = 32, width = 128, height = 42 },
@@ -360,7 +350,6 @@ MartSources.geometry = {
     yesNo = { anchor = { x = 208, y = 48 }, shape = "compact", initialChoice = "yes" },
   },
   quantity = {
-    source = "asm/overlay_31.s::ov31_0225DBD4/ov31_0225EE88",
     selectedItemAnchor = { x = 86, y = 76 },
     itemBox = {
       x = 96,
@@ -496,7 +485,6 @@ MartSources.geometry = {
 }
 
 MartSources.stockTables = {
-  normalTierSource = "src/scrcmd_mart.c::_020FBF22 via ScrCmd_MartBuy",
   normalTiers = {
     { itemKey = "POKE_BALL", minimumTier = 1 },
     { itemKey = "GREAT_BALL", minimumTier = 3 },
@@ -600,8 +588,6 @@ MartSources.stockTables = {
     { "TINYMUSHROOM", "POKE_BALL", "POTION" },
     { "GREAT_BALL", "SUPER_POTION", "HYPER_POTION", "ANTIDOTE", "PARLYZ_HEAL", "SUPER_REPEL", "REVIVE", "AIR_MAIL" },
   },
-  specialSourceOrder = "src/scrcmd_mart.c::_0210FA3C via ScrCmd_SpecialMartBuy",
-  athleteSourceOrder = "src/scrcmd_mart.c::_0210FA04",
   athleteStocks = {
     {
       { "RED_APRICORN", 200 },
@@ -740,7 +726,6 @@ MartSources.stockTables = {
     },
   },
   athleteWeekOrder = "Sunday..Saturday before National Dex, then after National Dex",
-  dataCardSourceOrder = "src/scrcmd_mart.c::_0210F9D4",
   dataCardStocks = {
     {
       { "DATA_CARD_01", 500 },
@@ -776,7 +761,6 @@ MartSources.stockTables = {
     },
     { { "DATA_CARD_25", 2000 }, { "DATA_CARD_26", 3000 }, { "DATA_CARD_27", 9999 } },
   },
-  sealSourceOrder = "src/scrcmd_mart.c::_0210F9E8",
   sealStocks = {
     { "HEART_A", "STAR_B", "FIRE_A", "SONG_A", "LINE_C", "ELE_B", "PARTY_D" },
     { "HEART_B", "STAR_C", "FIRE_B", "FLORA_A", "SONG_B", "LINE_D", "ELE_C" },
@@ -786,7 +770,6 @@ MartSources.stockTables = {
     { "FOAMY_C", "PARTY_B", "FLORA_E", "SONG_F", "HEART_F", "LINE_A", "SMOKE_D" },
     { "STAR_A", "SONG_G", "FOAMY_D", "FLORA_F", "LINE_B", "ELE_A", "PARTY_C" },
   },
-  decorationSourceOrder = "src/scrcmd_mart.c::_0210F9CC",
   decorationStocks = {
     { "YELLOW_CUSHION", "CUPBOARD", "TV", "REFRIGERATOR", "PRETTY_SINK" },
     { "MUNCHLAX_DOLL", "BONSLY_DOLL", "MIME_JR__DOLL", "MANTYKE_DOLL", "BUIZEL_DOLL", "CHATOT_DOLL" },
@@ -888,7 +871,6 @@ MartSources.controls = {
 }
 
 MartSources.windows = {
-  source = "src/overlay_03/shop_menu.c::ov03_022594C6/ov03_02259464",
   coordinateUnit = "tile",
   tileSize = 8,
   screenWidthTiles = 32,
@@ -911,7 +893,6 @@ MartSources.windows = {
     baseTile = 253,
     appliesToMartTypes = { 1, 2 },
   },
-  auxiliarySource = "asm/overlay_31.s::ov31_0225DBD4/ov31_0225DCA8/ov31_0225EE88",
   auxiliary = {
     { bgId = 4, x = 2, y = 1, width = 27, height = 2, palette = 11, baseTile = 1 },
     { bgId = 4, x = 2, y = 1, width = 27, height = 4, palette = 11, baseTile = 29 },
@@ -934,7 +915,6 @@ MartSources.windows = {
 -- Type-zero slots are no-ops. The copy source/destination and fill rectangle
 -- coordinates are native 32x24 tile coordinates.
 MartSources.countPatches = {
-  source = "asm/overlay_31.s::ov31_0225E060/ov31_0225EF48",
   coordinateUnit = "tile",
   tileSize = 8,
   [0] = {

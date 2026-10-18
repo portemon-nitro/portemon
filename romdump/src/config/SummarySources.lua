@@ -13,21 +13,7 @@
 local SummarySources = {}
 
 SummarySources.provenance = {
-  repoPin = "0db201af99db913e5a90cdb9f372f4e0b63f4401",
   romAudit = "retail ROM",
-  symbols = {
-    "src/pokemon.c",
-    "src/pokepic.c",
-    "asm/unk_02016EDC.s",
-    "src/trainer_memo.c",
-    "src/ribbon.c",
-    "src/palette.c",
-    "src/message_format.c",
-    "asm/unk_02088288.s",
-    "asm/unk_0208B1AC.s",
-    "asm/unk_0208C3E4.s",
-    "asm/unk_0208DE40.s",
-  },
 }
 
 -- Curated archive identities. NARC and NitroFS IDs are not interchangeable;

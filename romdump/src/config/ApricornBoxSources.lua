@@ -5,19 +5,6 @@ local ApricornBoxSources = {}
 
 ApricornBoxSources.provenance = {
   repo = "retail ROM",
-  sources = {
-    "asm/overlay_59.s",
-    "src/touchscreen_list_menu.c",
-    "files/data/sbox_gra.mk",
-    "src/sprite_system.c",
-    "include/sprite_system.h",
-    "include/unk_02009D48.h",
-    "files/data/resdat/resdat_00000016.json",
-    "files/data/resdat/resdat_00000017.json",
-    "files/data/resdat/resdat_00000018.json",
-    "files/data/resdat/resdat_00000019.json",
-    "files/data/resdat/resdat_00000076.json",
-  },
 }
 
 ApricornBoxSources.backgroundArchive = {

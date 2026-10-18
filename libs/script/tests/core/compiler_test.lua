@@ -591,8 +591,8 @@ function T.generated_node_ids_use_source_provenance()
       generated = true,
       source = {
         repository = "retail ROM",
-        commit = "dfdbbdf3273545ca35456d69bcb0ee3403f76450",
-        path = "files/fielddata/script/scr_seq/scr_seq_0843_T20R0101.s",
+        commit = "c",
+        path = "romfs/a/0/1/2",
         game = "heartgold",
         archive = "scr_seq",
         member = 843,
@@ -708,8 +708,8 @@ local function generatedScript(overrides)
   overrides = overrides or {}
   local source = {
     repository = "retail ROM",
-    commit = "dfdb",
-    path = "files/fielddata/script/scr_seq/scr_seq_0843_T20R0101.s",
+    commit = "c",
+    path = "romfs/a/0/1/2",
     game = "heartgold",
     archive = "scr_seq",
     member = 843,

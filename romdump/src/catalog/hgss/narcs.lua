@@ -4,16 +4,6 @@
 
 return {
   schema = 1,
-  source = {
-    repo = "retail ROM",
-    inputs = {
-      {
-        path = "include/filesystem_files_def.h",
-        sha256 = "04110cac8df41aa13e93fb1536e93b43b0148ff836dac6637ba9d523763c493f",
-      },
-    },
-    normalization = "NarcId symbol and zero-based value paired with sNarcFileList path",
-  },
   count = 267,
   entries = {
     NARC_a_0_0_0 = { narcId = 0, path = "a/0/0/0" },

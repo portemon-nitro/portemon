@@ -14,11 +14,6 @@ local FieldEntrySources = {}
 
 FieldEntrySources.provenance = {
   repo = "retail ROM",
-  sources = {
-    "src/field/draw_map_name.c",
-    "src/map_preview_graphic.c",
-    "files/fielddata/graphic/preview_graphic/preview_graphic.order",
-  },
 }
 
 -- The four native time slots in selection order; a destination whose evening

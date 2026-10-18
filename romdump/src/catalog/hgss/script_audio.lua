@@ -7,13 +7,6 @@
 -- Producer-only reference data: the runtime must never require this module.
 
 return {
-  repository = "retail ROM",
-  sourcePaths = {
-    "files/fielddata/script/scr_seq/scr_seq_0148.s",
-    "src/scrcmd_sound.c",
-    "src/scrcmd_c.c",
-    "asm/unk_0205BB1C.s",
-  },
   variableFanfareMembers = { 148 },
   variableFanfareSequences = { "SEQ_ME_HYOUKA1", "SEQ_ME_HYOUKA6" },
 }

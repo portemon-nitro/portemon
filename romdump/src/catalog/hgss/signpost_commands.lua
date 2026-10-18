@@ -7,15 +7,6 @@
 
 local M = {
   schema = 1,
-  source = {
-    repo = "retail ROM",
-    inputs = {
-      {
-        path = "asm/signpost.s",
-        sha256 = "bdb17ae49d8332bcc472e7848a2ef5d08293b81707cd8aaaa92e119c3a5b0f43",
-      },
-    },
-  },
   byCode = {
     [0] = { sourceName = "MAPSIGNCOMMAND_NOP", semantic = "nop" },
     [1] = { sourceName = "MAPSIGNCOMMAND_SHOW", semantic = "show" },

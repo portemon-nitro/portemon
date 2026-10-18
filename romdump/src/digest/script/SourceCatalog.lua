@@ -9,8 +9,6 @@ local StdCatalog = require("romdump.src.catalog.hgss.std_script_catalog")
 
 local SourceCatalog = {}
 
-SourceCatalog.SOURCE = StdCatalog.source
-
 ---@return table<string, unknown> catalog
 function SourceCatalog.catalog()
   ---@param stdId integer

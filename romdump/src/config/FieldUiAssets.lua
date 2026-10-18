@@ -53,14 +53,6 @@ return {
   schema = 1,
   provenance = {
     repo = "retail ROM",
-    sources = {
-      { path = "src/start_menu.c" },
-      { path = "asm/overlay_27.s" },
-      { path = "asm/render_window.s" },
-      { path = "src/overlay_trainer_card_main.s" },
-      { path = "src/naming_screen.c" },
-      { path = "src/yes_no_prompt.c" },
-    },
   },
   startMenu = {
     alias = "start_menu",

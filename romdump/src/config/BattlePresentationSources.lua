@@ -12,10 +12,6 @@ local BattlePresentationSources = {}
 
 BattlePresentationSources.provenance = {
   repo = "retail ROM",
-  sources = {
-    "src/battle/battle_system.c",
-    "src/battle/battle_setup.c",
-  },
 }
 
 -- Version-filesystem NARC symbols behind the two battle archives. The
