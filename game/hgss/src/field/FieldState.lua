@@ -12,6 +12,7 @@ local PixelScale = require("libs.ui.src.PixelScale")
 local StandardFade = require("libs.hgss.src.presentation.StandardFade")
 local FieldBlackoutRenderer = require("game.hgss.src.field.FieldBlackoutRenderer")
 local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
+local CelebiTimeTravelRenderer = require("libs.hgss.src.presentation.CelebiTimeTravelRenderer")
 
 local KEY_DIRECTIONS =
   { w = "north", up = "north", s = "south", down = "south", a = "west", left = "west", d = "east", right = "east" }
@@ -81,6 +82,7 @@ end
 ---@field _battleWindows table<string, unknown>? borrowed battle window services
 ---@field _battlePresentationBinding integer? factory binding identity behind the envelope
 ---@field presentationResources FieldPresentationResources?
+---@field _celebiRenderer table<string, unknown>? lazy field-scene model presenter
 ---@field actorPresentation FieldActorPresentation?
 ---@field _lastGeometrySignature string? the structural presentation-geometry signature the last sync consumed
 ---@field _pollPresentationTopology boolean whether injected topology changes are polled during draw
@@ -528,6 +530,20 @@ function FieldState:_worldParts(alpha)
   local healFlow = self.runtime.pokemonCenterHeal
   local healRenderer = resources.pokemonCenterHealRenderer
   worldParts[11] = (healFlow and healRenderer) and healRenderer:drawItems(healFlow:status()) or NO_DRAWS
+  local celebiScene = self.runtime.celebiTimeTravelScene
+  local celebiStatus = celebiScene and celebiScene:status() or nil
+  if celebiStatus and celebiStatus.active and celebiStatus.modelVisible then
+    if self._celebiRenderer == nil then
+      self._celebiRenderer = CelebiTimeTravelRenderer.new(self.runtime.cacheFs)
+    end
+    worldParts[12] = self._celebiRenderer:drawItems(celebiStatus)
+  else
+    if self._celebiRenderer ~= nil then
+      self._celebiRenderer:dispose()
+      self._celebiRenderer = nil
+    end
+    worldParts[12] = NO_DRAWS
+  end
   return worldParts
 end
 
@@ -565,6 +581,10 @@ function FieldState:resize(width, height)
   local provider = assert(self.topologyProvider, "field presentation needs its topology provider")
   local topology = provider(width, height)
   self.runtime:resizePresentation(width, height, topology)
+  if self._celebiRenderer ~= nil then
+    self._celebiRenderer:dispose()
+    self._celebiRenderer = nil
+  end
   -- Atomic display changes cancel held pointer capture so a stale
   -- release can never activate after remeasure, in either owner.
   if self.battleEnvelope ~= nil then
@@ -1597,6 +1617,10 @@ function FieldState:touchreleased(id, x, y)
 end
 
 function FieldState:dispose()
+  if self._celebiRenderer ~= nil then
+    self._celebiRenderer:dispose()
+    self._celebiRenderer = nil
+  end
   self._entryFade = nil
   self._entryAccumulator = 0
   -- Borrowers release before their owner: the envelope drops its live

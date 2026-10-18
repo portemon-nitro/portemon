@@ -54,6 +54,7 @@ local T = {
       "map-data:50",
       "map-data:58",
       "script-member:212",
+      "field-effects:global",
     },
     tags = { "field", "shrine", "celebi", "acceptance" },
   },
@@ -302,8 +303,44 @@ local function driveUntilMap(game, mapSymbol, maxTicks, trace)
             taskId = task.taskId,
             phase = task.state.phase,
             elapsed = task.state.elapsed,
+            taskStatus = task.status,
             coefficient = fade.coefficient,
           }
+          if task.status == "active" and (task.state.phase == "opening_in" or task.state.phase == "beat" or task.state.phase == "swirl") then
+            local scene = assert(
+              game.runtime.celebiTimeTravelScene,
+              "the live Celebi task publishes its production scene owner"
+            )
+            local status = scene:status()
+            Assert.isTrue(status.active, "the source scene remains active through the visible task interval")
+            Assert.isTrue(status.modelVisible, "the original model replaces the follower under the inbound fade")
+            Assert.notNil(status.modelPosition, "the scene captures the follower's source world position")
+            local followingMon = assert(game.runtime.followingMon, "the composed field owns its follower")
+            local partnerId = assert(followingMon:partnerActorId(), "the staged lead has a follower actor")
+            local partner = assert(game.runtime.actors:getById(partnerId), "the source follower actor remains addressable")
+            local position = partner:getWorldPosition()
+            Assert.equal(status.modelPosition.x, position.x, "the legend keeps the follower's source world X")
+            Assert.equal(status.modelPosition.y, position.y, "the legend keeps the follower's source world Y")
+            Assert.equal(status.modelPosition.z, position.z, "the legend keeps the follower's source world Z")
+            Assert.isFalse(game.runtime.actors:isVisible(partnerId), "the ordinary follower stays hidden under the legend")
+            if task.state.phase == "beat" or task.state.phase == "swirl" then
+              trace.sceneFrames[#trace.sceneFrames + 1] = status.animationFrame
+            end
+          elseif task.status == "completed" then
+            local scene = assert(
+              game.runtime.celebiTimeTravelScene,
+              "the completed Celebi task retains its production scene owner"
+            )
+            local status = scene:status()
+            Assert.isFalse(status.active, "the source model is released at the opaque task handoff")
+            Assert.isFalse(status.modelVisible, "the source model is hidden before destination presentation")
+            local followingMon = assert(game.runtime.followingMon, "the composed field owns its follower")
+            local partnerId = assert(followingMon:partnerActorId(), "the staged lead has a follower actor")
+            Assert.isFalse(
+              game.runtime.actors:isVisible(partnerId),
+              "the source follower remains hidden through the covered handoff"
+            )
+          end
         end
       end
     end
@@ -386,7 +423,7 @@ function T.tests.celebi_branch_warps_to_route_22_with_progress_set()
     game:pressAction()
     Assert.equal(game.lastInteraction.kind, "background", "the shrine resolves as a background event")
 
-    local trace = { taskIds = {}, samples = {} }
+    local trace = { taskIds = {}, samples = {}, sceneFrames = {} }
     local route22 = driveUntilMap(game, "MAP_ROUTE_22", 20000, trace)
     Assert.equal(
       #journeyFaults(game),
@@ -410,9 +447,29 @@ function T.tests.celebi_branch_warps_to_route_22_with_progress_set()
     end
     local visibilityError = visibilityFailure(trace.samples, taskId)
     Assert.isNil(visibilityError, visibilityError or "the Celebi task visibility trace is valid")
+    Assert.isTrue(#trace.sceneFrames > 30, "the production scene advances through the visible beat and swirl")
+    for index = 2, #trace.sceneFrames do
+      Assert.equal(
+        trace.sceneFrames[index],
+        trace.sceneFrames[index - 1] + 1,
+        "the headless scene animation advances once per source frame"
+      )
+    end
     local world = assert(game.runtime.scripts.worldState, "field world state is available")
     Assert.equal(world:getVar(PROGRESS_40FE), 1, "the time travel advances the event progress")
     Assert.isTrue(world:isFlagSet(FRIEND_HIDDEN), "the departure hides the friend again")
+
+    -- The acceptance harness stops before graphics. It can prove that the
+    -- real task publishes a live, source-ticked model scene to presentation,
+    -- but actual model draw items and GPU lifetime belong to graphics tests.
+    local scene = assert(
+      game.runtime.celebiTimeTravelScene,
+      "the production field runtime publishes the Celebi scene owner"
+    )
+    local inactive = scene:status()
+    Assert.isFalse(inactive.active, "the covered map handoff releases the live Celebi scene")
+    Assert.isFalse(inactive.modelVisible, "the legend model is hidden after the covered handoff")
+    Assert.equal(inactive.animationFrame, 0, "the completed scene does not retain an active animation clock")
   end, { flags = { ROCKETS_BEATEN, FRIEND_HIDDEN }, leadSpecies = "CELEBI", fateful = true })
 end
 

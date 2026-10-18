@@ -9,6 +9,7 @@ local Errors = require("libs.errors.src.Errors")
 local ScriptErrors = require("libs.script.src.errors")
 local ApricornTreePresentation = require("game.hgss.src.apricorn.ApricornTreePresentation")
 local KurtConversions = require("game.hgss.src.apricorn.KurtConversions")
+local CelebiTimeTravelScene = require("libs.hgss.src.field.CelebiTimeTravelScene")
 
 ---@class FieldScriptCompositionResult
 ---@field scripts FieldScripts
@@ -396,6 +397,19 @@ function FieldScriptComposition.compose(runtime, options)
     "follower interaction services are required"
   )
   assert(runtime.fashionCase ~= nil, "Fashion Case state is required for follower interactions")
+  local function currentFieldMap()
+    return runtime.session and runtime.session.currentMap or runtime.runtimeMap
+  end
+  local function currentFieldCamera()
+    return runtime.camera
+  end
+  local celebiTimeTravelScene = CelebiTimeTravelScene.new({
+    actors = runtime.actors,
+    followingMon = options.followingMon,
+    currentCamera = currentFieldCamera,
+    currentMap = currentFieldMap,
+  })
+  runtime.celebiTimeTravelScene = celebiTimeTravelScene
   local function requestStartMenuReopen()
     runtime.applicationHost:requestReopen()
   end
@@ -466,6 +480,7 @@ function FieldScriptComposition.compose(runtime, options)
     items = options.items,
     itemCatalog = options.itemCatalog,
     followingMon = options.followingMon,
+    celebiCinematic = celebiTimeTravelScene,
     followerInteractionCatalog = options.followerInteractionCatalog,
     followerReactionTicks = options.followerReactionTicks,
     clock = options.clock,

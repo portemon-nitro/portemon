@@ -88,6 +88,7 @@ local DOMAINS = {
 local FIELD_COORDINATION = {
   "CameraHistory",
   "CivilDate",
+  "CelebiTimeTravelScene",
   "FieldApplicationHost",
   "FieldApplicationIds",
   "FieldApplicationRegistry",

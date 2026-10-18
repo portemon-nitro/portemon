@@ -63,6 +63,8 @@ FollowingMonController.__index = FollowingMonController
 ---@field isMovementSettled fun(self: FollowingMonController): boolean
 ---@field settleMovement fun(self: FollowingMonController)
 ---@field isPartnerVisible fun(self: FollowingMonController): boolean
+---@field hideUntilNextStep fun(self: FollowingMonController): table<string, unknown>
+---@field restoreCutsceneHide fun(self: FollowingMonController, lease: table<string, unknown>): boolean
 ---@field classifyRecallGeometry fun(self: FollowingMonController): { mirror: boolean, nextState: integer }
 ---@field startRecallMovement fun(self: FollowingMonController, kind: string)
 ---@field setRecallPresentationOffset fun(self: FollowingMonController, offset: { x: number, y: number, z: number })
@@ -1316,6 +1318,34 @@ function FollowingMonController:isPartnerVisible()
     return false
   end
   return self._actors:isVisible(partnerId)
+end
+
+-- Hide the installed follower in place while reusing the ordinary next-step
+-- reveal latch. The returned lease is valid only for the captured actor id.
+function FollowingMonController:hideUntilNextStep()
+  local actorId = assert(self:partnerActorId(), "hide-until-step requires an installed follower")
+  assert(self:isVisible(), "hide-until-step requires a permitted follower")
+  local visible = self:isPartnerVisible()
+  local previousLatch = self._rejoinHidden
+  self._rejoinHidden = true
+  self._actors:hide(actorId)
+  return { actorId = actorId, previousLatch = previousLatch, previousVisible = visible }
+end
+
+-- Cancellation restores only the exact still-installed follower captured by
+-- hideUntilNextStep; map replacement or actor replacement owns its own state.
+function FollowingMonController:restoreCutsceneHide(lease)
+  assert(type(lease) == "table", "follower hide lease is required")
+  if self:partnerActorId() ~= lease.actorId or self._actors:getById(lease.actorId) == nil then
+    return false
+  end
+  self._rejoinHidden = lease.previousLatch
+  if lease.previousVisible then
+    self._actors:show(lease.actorId)
+  else
+    self._actors:hide(lease.actorId)
+  end
+  return true
 end
 
 -- Classify the committed follower/player tile geometry for the recall

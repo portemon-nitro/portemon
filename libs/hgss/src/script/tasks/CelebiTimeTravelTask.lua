@@ -8,11 +8,8 @@
 -- service: opening_out (white out) -> opening_in (white in) -> beat (30
 -- clear polls) -> swirl (180 polls, closing white out at tick 80).
 -- Completion needs the full swirl and a landed opaque cover together.
--- The 3D model, camera roll, motion blur, and legend actors have no
--- presentation owner in this engine, so the visible interval stays an
--- unobscured field rather than a rendered effect. The source opens with
--- main-screen-only cover while the shared controller overlays the whole
--- field presentation; that targeting distinction is not reproduced here.
+-- The runtime-owned scene captures and hides the follower; its presentation
+-- renderer lazily realizes the original model from this task's source clock.
 -- The task never advances the fade itself: the field runtime owns the
 -- source-frame clock and the task only polls the backend state.
 
@@ -37,7 +34,7 @@ CelebiTimeTravelTask.CLOSING_FADE_STEPS = 30
 
 ---@return table<string, unknown> state
 local function initialState()
-  return { phase = "opening_out", elapsed = 0, fadeStarted = false, fadeLease = nil }
+  return { phase = "opening_out", elapsed = 0, fadeStarted = false, fadeLease = nil, sceneStarted = false }
 end
 
 -- Creation takes no input: the cutscene owns its fixed source schedule.
@@ -76,6 +73,7 @@ function CelebiTimeTravelTask.poll(state, ctx)
     })
   end
   local screenService = screen --[[@as CelebiTimeTravelScreen]]
+  local scene = services.celebiCinematic
   if state.phase == "opening_out" or state.phase == "opening_in" then
     if state.fadeStarted then
       if not screenService:fadeDone() then
@@ -83,6 +81,12 @@ function CelebiTimeTravelTask.poll(state, ctx)
       end
       if state.phase == "opening_out" then
         state.phase = "opening_in"
+        assert(
+          type(scene) == "table" and type(scene.beginModel) == "function",
+          "the Celebi cutscene requires its scene service"
+        )
+        scene:beginModel()
+        state.sceneStarted = true
       else
         state.phase = "beat"
       end
@@ -113,13 +117,21 @@ function CelebiTimeTravelTask.poll(state, ctx)
   )
   if state.phase == "beat" then
     state.elapsed = state.elapsed + 1
+    assert(type(scene) == "table" and type(scene.setAnimationFrame) == "function", "Celebi scene service is missing")
+    scene:setAnimationFrame(state.elapsed)
     if state.elapsed >= CelebiTimeTravelTask.BEAT_TICKS then
+      assert(type(scene.beginSwirl) == "function", "Celebi scene swirl operation is missing")
+      scene:beginSwirl()
       state.phase = "swirl"
       state.elapsed = 0
     end
     return { complete = false, state = state }
   end
   state.elapsed = math.min(state.elapsed + 1, CelebiTimeTravelTask.SWIRL_TICKS)
+  assert(type(scene) == "table" and type(scene.setAnimationFrame) == "function", "Celebi scene service is missing")
+  scene:setAnimationFrame(CelebiTimeTravelTask.BEAT_TICKS + state.elapsed)
+  assert(type(scene.setSwirlFrame) == "function", "Celebi scene swirl operation is missing")
+  scene:setSwirlFrame(state.elapsed)
   if state.elapsed == CelebiTimeTravelTask.CLOSING_START_TICK and not state.fadeStarted then
     assert(screenService:fadeDone(), "closing white fade cannot overlap an active fade")
     state.fadeLease = screenService:startFade({
@@ -136,6 +148,9 @@ function CelebiTimeTravelTask.poll(state, ctx)
       return { complete = false, state = state }
     end
     assert(state.fadeStarted and screenService:isOpaque(), "celebi warp requires finished opaque white cover")
+    assert(type(scene) == "table" and type(scene.finish) == "function", "Celebi scene service is missing")
+    scene:finish()
+    state.sceneStarted = false
     return { complete = true, state = state, result = nil }
   end
   return { complete = false, state = state }
@@ -148,17 +163,37 @@ function CelebiTimeTravelTask.cancel(state, reason, ctx)
   if state.cancelled ~= nil then
     return
   end
+  local services = ctx and ctx.services
+  local scene = type(services) == "table" and services.celebiCinematic or nil
+  local cleanupError = nil
+  if state.sceneStarted then
+    local ok, err = pcall(function()
+      assert(type(scene) == "table" and type(scene.abort) == "function", "Celebi cancellation requires its scene owner")
+      scene:abort()
+    end)
+    if not ok then
+      cleanupError = err
+    end
+    state.sceneStarted = false
+  end
   if state.fadeLease ~= nil then
-    local services = ctx and ctx.services
     local screen = type(services) == "table" and services.screen or nil
-    assert(
-      type(screen) == "table" and type(screen.clearIfCurrent) == "function",
-      "Celebi cancellation requires the screen fade owner"
-    )
-    screen:clearIfCurrent(state.fadeLease)
+    local ok, err = pcall(function()
+      assert(
+        type(screen) == "table" and type(screen.clearIfCurrent) == "function",
+        "Celebi cancellation requires the screen fade owner"
+      )
+      screen:clearIfCurrent(state.fadeLease)
+    end)
+    if not ok and cleanupError == nil then
+      cleanupError = err
+    end
     state.fadeLease = nil
   end
   state.cancelled = reason
+  if cleanupError ~= nil then
+    error(cleanupError, 0)
+  end
 end
 
 ---@param state table<string, unknown>
@@ -192,6 +227,9 @@ function CelebiTimeTravelTask.validate(state)
   if type(state.fadeStarted) ~= "boolean" then
     return invalid("celebi time travel fade progress must be a boolean")
   end
+  if type(state.sceneStarted) ~= "boolean" then
+    return invalid("celebi time travel scene progress must be a boolean")
+  end
   if
     state.fadeLease ~= nil and (type(state.fadeLease) ~= "number" or state.fadeLease % 1 ~= 0 or state.fadeLease <= 0)
   then
@@ -202,7 +240,13 @@ function CelebiTimeTravelTask.validate(state)
       if type(value) ~= "string" then
         return invalid("celebi time travel cancellation must be a string")
       end
-    elseif key ~= "phase" and key ~= "elapsed" and key ~= "fadeStarted" and key ~= "fadeLease" then
+    elseif
+      key ~= "phase"
+      and key ~= "elapsed"
+      and key ~= "fadeStarted"
+      and key ~= "fadeLease"
+      and key ~= "sceneStarted"
+    then
       return invalid("celebi time travel state contains an unexpected field")
     end
   end

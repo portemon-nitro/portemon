@@ -122,21 +122,29 @@ function ModelDefinition.new(definition)
   end
 
   -- Semantic animation lookup: by clip name first, then by any semantic role
-  -- (e.g. "door.open"). A role mapped twice is an authoring error, and a
+  -- (e.g. "door.open"). Nitro dictionaries can reuse a source name across
+  -- animation files, so those duplicates require unique semantic selectors.
+  -- A role mapped twice is an authoring error, and a
   -- clip name colliding with another clip's semantic role is ambiguous --
   -- both raise rather than making lookup precedence significant.
   local byName = {} ---@type table<string, table>
   local bySemantic = {} ---@type table<string, table>
   local animations = definition.animations ---@type table[]
   for _, clip in ipairs(animations) do
-    if byName[clip.name] then
-      Errors.raise(
-        FieldErrors.MODEL_DEF_DUPLICATE_ANIMATION,
-        "model " .. definition.key .. " has two clips named " .. clip.name,
-        { name = clip.name }
-      )
+    local previous = byName[clip.name]
+    if previous ~= nil then
+      local previousRoles = previous.semanticNames or {}
+      local currentRoles = clip.semanticNames or {}
+      if previous == clip or #previousRoles == 0 or #currentRoles == 0 then
+        Errors.raise(
+          FieldErrors.MODEL_DEF_DUPLICATE_ANIMATION,
+          "model " .. definition.key .. " has ambiguous clips named " .. clip.name,
+          { name = clip.name }
+        )
+      end
+    else
+      byName[clip.name] = clip
     end
-    byName[clip.name] = clip
   end
   for _, clip in ipairs(animations) do
     local semanticNames = clip.semanticNames ---@type string[]
@@ -308,8 +316,15 @@ end
 function ModelDefinition:binding(clip)
   local record = self.bindings[clip]
   if not record then
+    local isMember = false
+    for _, candidate in ipairs(self.animations) do
+      if candidate == clip then
+        isMember = true
+        break
+      end
+    end
     assert(
-      clip and self.animationByName[clip.name] == clip,
+      clip and isMember,
       "clip "
         .. tostring(clip and clip.id)
         .. " is not in the animations list of model "

@@ -212,6 +212,7 @@ end
 ---@field pokemonMenu table<string, unknown>? the owned menu composition (nil before composition / after teardown)
 ---@field menuLaneWarps table<string, unknown>? the long-lived menu-origin warp service (nil before composition / after teardown)
 ---@field followingMon FollowingMonController|nil the one derived follower controller (nil after teardown)
+---@field celebiTimeTravelScene table<string, unknown>|nil runtime-owned headless Celebi cutscene state
 ---@field followingMonTransition FollowingMonTransitionController|nil the one transient follower-transition owner (nil after teardown)
 ---@field followerTransitionDefinition table<string, unknown>? the compiled follower-transition definition behind the transient owner
 ---@field starterBalls table<string, unknown>? the Elm starter-ball runtime-prop controller (nil after teardown)
@@ -3435,6 +3436,10 @@ end
 -- dialogue -- and the field clearing means reset never leaves a hand-picked
 -- subset behind for its re-boot.
 function FieldRuntime:_releaseAll()
+  if self.celebiTimeTravelScene then
+    self.celebiTimeTravelScene:abort()
+    self.celebiTimeTravelScene = nil
+  end
   if self.session then
     self.session:dispose()
   end

@@ -63,6 +63,17 @@ local function liveScreen()
   return backend
 end
 
+local function testScene()
+  return {
+    beginModel = function() end,
+    setAnimationFrame = function() end,
+    beginSwirl = function() end,
+    setSwirlFrame = function() end,
+    finish = function() end,
+    abort = function() end,
+  }
+end
+
 local function schedulerWith(screen)
   local registry = Registry.new()
   local composition = Composition.new(registry)
@@ -74,7 +85,7 @@ local function schedulerWith(screen)
   taskRegistry:register(WaitTicksTask.type, WaitTicksTask.version, WaitTicksTask)
   local scheduler = Scheduler.new({
     semantics = RuntimeValues,
-    services = { screen = screen },
+    services = { screen = screen, celebiCinematic = testScene() },
     taskRegistry = taskRegistry,
     resolveComposition = function(id)
       return composition:effective(id)
@@ -87,7 +98,7 @@ local function schedulerWith(screen)
 end
 
 local function ctxWith(screen)
-  return { services = { screen = screen } }
+  return { services = { screen = screen, celebiCinematic = testScene() } }
 end
 
 -- One production tick: the scheduler polls the task first, then the
@@ -302,7 +313,7 @@ function T.a_done_but_clear_backend_is_a_loud_fault()
   function backend:isOpaque()
     return false
   end
-  local state = { phase = "swirl", elapsed = SWIRL_TICKS, fadeStarted = true }
+  local state = { phase = "swirl", elapsed = SWIRL_TICKS, fadeStarted = true, sceneStarted = false }
   local ok, result = pcall(CelebiTimeTravelTask.poll, state, { services = { screen = backend } })
   Assert.isFalse(ok, "a done-but-clear backend must not settle the cutscene")
   Assert.isFalse(ok and result.complete, "a done-but-clear backend must never report a covered warp")
@@ -320,7 +331,7 @@ function T.a_backend_without_opaque_status_is_an_attributed_fault()
     return true
   end
   local state = CelebiTimeTravelTask.create()
-  local ctx = { services = { screen = backend } }
+  local ctx = { services = { screen = backend, celebiCinematic = testScene() } }
   local fault = nil
   local settled = false
   for _ = 1, 600 do
@@ -361,6 +372,27 @@ function T.cancellation_settles_without_starting_another_fade()
   Assert.isTrue(result.complete, "cancellation settles the cutscene")
   Assert.equal(#screen.starts, 1, "cancellation starts no further fade")
   Assert.isNil(CelebiTimeTravelTask.validate(state), "the cancelled shape still validates")
+end
+
+function T.cancellation_releases_the_owned_fade_even_when_scene_abort_raises()
+  local screen = liveScreen()
+  local lease = screen:startFade({ direction = "out", color = "white", duration = 4, speed = 1 })
+  local scene = testScene()
+  function scene:abort()
+    error("injected scene cleanup failure")
+  end
+  local state = CelebiTimeTravelTask.create()
+  state.sceneStarted = true
+  state.fadeLease = lease
+  local ok = pcall(CelebiTimeTravelTask.cancel, state, "injected failure", {
+    services = { screen = screen, celebiCinematic = scene },
+  })
+  Assert.isFalse(ok, "scene cleanup failure propagates")
+  Assert.isNil(screen.fade:presentationOverlay(), "the task still clears its owned fade")
+  Assert.isFalse(screen:status().active, "the task leaves the shared controller idle")
+  Assert.isNil(state.fadeLease, "the attempted fade lease is relinquished")
+  Assert.isFalse(state.sceneStarted, "the attempted scene lease is relinquished")
+  Assert.equal(state.cancelled, "injected failure", "cancellation is settled after both cleanup attempts")
 end
 
 function T.cancellation_before_the_first_poll_needs_no_fade_owner()
@@ -435,16 +467,16 @@ end
 
 function T.only_the_documented_state_shape_validates()
   for _, state in ipairs({
-    { phase = "opening_out", elapsed = 0, fadeStarted = false },
-    { phase = "opening_out", elapsed = 0, fadeStarted = true },
-    { phase = "opening_in", elapsed = 0, fadeStarted = false },
-    { phase = "opening_in", elapsed = 0, fadeStarted = true },
-    { phase = "beat", elapsed = 0, fadeStarted = false },
-    { phase = "beat", elapsed = BEAT_TICKS, fadeStarted = false },
-    { phase = "swirl", elapsed = 0, fadeStarted = false },
-    { phase = "swirl", elapsed = CLOSING_START_TICK, fadeStarted = true },
-    { phase = "swirl", elapsed = SWIRL_TICKS, fadeStarted = true },
-    { phase = "beat", elapsed = 0, fadeStarted = false, cancelled = "operator request" },
+    { phase = "opening_out", elapsed = 0, fadeStarted = false, sceneStarted = false },
+    { phase = "opening_out", elapsed = 0, fadeStarted = true, sceneStarted = false },
+    { phase = "opening_in", elapsed = 0, fadeStarted = false, sceneStarted = true },
+    { phase = "opening_in", elapsed = 0, fadeStarted = true, sceneStarted = true },
+    { phase = "beat", elapsed = 0, fadeStarted = false, sceneStarted = true },
+    { phase = "beat", elapsed = BEAT_TICKS, fadeStarted = false, sceneStarted = true },
+    { phase = "swirl", elapsed = 0, fadeStarted = false, sceneStarted = true },
+    { phase = "swirl", elapsed = CLOSING_START_TICK, fadeStarted = true, sceneStarted = true },
+    { phase = "swirl", elapsed = SWIRL_TICKS, fadeStarted = true, sceneStarted = true },
+    { phase = "beat", elapsed = 0, fadeStarted = false, sceneStarted = false, cancelled = "operator request" },
   }) do
     Assert.isNil(CelebiTimeTravelTask.validate(state), "a documented shape must validate")
   end

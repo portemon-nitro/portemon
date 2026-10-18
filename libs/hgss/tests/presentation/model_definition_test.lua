@@ -195,6 +195,31 @@ end
 -- Bindings are precomputed at assembly for every listed clip -- node clips
 -- map node indices to themselves, material clips map material names and
 -- carry the material-index -> track-index table the evaluator consumes.
+function T.duplicate_nitro_names_resolve_through_distinct_semantic_roles()
+  local spec = definitionSpec()
+  local first = jointClip()
+  first.semanticNames = { "celebi.joint" }
+  local second = materialClip()
+  second.name = first.name
+  second.semanticNames = { "celebi.pattern" }
+  spec.animations = { first, second }
+  local definition = ModelDefinition.new(spec)
+  Assert.equal(animation(definition, "celebi.joint"), first, "the first semantic selector resolves")
+  Assert.equal(animation(definition, "celebi.pattern"), second, "the second semantic selector resolves")
+end
+
+function T.distinct_duplicate_nitro_names_without_semantic_roles_remain_ambiguous()
+  local spec = definitionSpec()
+  local first = jointClip()
+  first.semanticNames = {}
+  local second = materialClip()
+  second.name = first.name
+  spec.animations = { first, second }
+  throwsCode("MODEL_DEF_DUPLICATE_ANIMATION", function()
+    ModelDefinition.new(spec)
+  end)
+end
+
 function T.binding_is_precomputed_for_node_and_material_clips()
   local s = definitionSpec()
   s.animations = { jointClip(), materialClip() }
