@@ -108,6 +108,44 @@ function T.trainer_encounters_prefer_class_then_rival_then_default()
   Assert.equal(red.music, "SEQ_GS_VS_CHAMP", "the final challenge keeps the champion track")
 end
 
+function T.numeric_trainer_classes_resolve_through_the_source_identity_table()
+  local Sources = require("romdump.src.config.BattleSources")
+  for id = 0, 128 do
+    Assert.equal(
+      BattleMusicSelection.TRAINER_CLASS_KEYS[id],
+      Sources.trainerClassKeys[id],
+      "numeric class " .. id .. " keeps its pinned semantic identity"
+    )
+  end
+  Assert.equal(BattleMusicSelection.trainerClassName(66), "LEADER_FALKNER", "the first leader identity resolves")
+  Assert.equal(BattleMusicSelection.trainerClassName(23), "RIVAL", "the rival identity resolves")
+  Assert.isNil(BattleMusicSelection.trainerClassName(129), "identities outside the table stay unmapped")
+  Assert.isNil(BattleMusicSelection.trainerClassName(200), "phone aliases stay unmapped")
+end
+
+function T.numeric_trainer_classes_select_their_precise_two_hop_tracks()
+  local falkner = BattleMusicSelection.select({ kind = "trainer", trainerClass = 66 })
+  Assert.equal(falkner.param, 0, "the numeric leader keeps the leader parameter")
+  Assert.equal(falkner.music, "SEQ_GS_VS_GYMREADER", "the numeric leader keeps the leader track")
+  local rival = BattleMusicSelection.select({ kind = "trainer", trainerClass = 23 })
+  Assert.equal(rival.param, 21, "the numeric rival keeps the rival parameter")
+  Assert.equal(rival.music, "SEQ_GS_VS_RIVAL", "the numeric rival keeps the rival track")
+  local rocket = BattleMusicSelection.select({ kind = "trainer", trainerClass = 55 })
+  Assert.equal(rocket.param, 29, "the numeric grunt keeps the grunt parameter")
+  Assert.equal(rocket.music, "SEQ_GS_VS_ROCKET", "the numeric grunt keeps the rocket track")
+  local kimono = BattleMusicSelection.select({ kind = "trainer", trainerClass = 47 })
+  Assert.equal(kimono.param, 43, "the numeric kimono girl keeps her parameter")
+  local red = BattleMusicSelection.select({ kind = "trainer", trainerClass = 109 })
+  Assert.equal(red.param, 44, "the numeric final challenge keeps its parameter")
+  Assert.equal(red.music, "SEQ_GS_VS_CHAMP", "the numeric final challenge keeps the champion track")
+  local youngster = BattleMusicSelection.select({ kind = "trainer", trainerClass = 2 })
+  Assert.equal(youngster.param, 41, "ordinary numeric classes keep the trainer default")
+  Assert.equal(youngster.music, "SEQ_GS_VS_TRAINER", "ordinary numeric classes keep the trainer track")
+  local absent = BattleMusicSelection.select({ kind = "trainer", trainerClass = 129 })
+  Assert.equal(absent.param, BattleMusicSelection.TRAINER_DEFAULT, "absent numeric classes keep the unknown path")
+  Assert.equal(absent.music, "SEQ_GS_VS_TRAINER", "absent numeric classes keep the unknown track")
+end
+
 function T.kanto_region_remaps_only_the_recorded_tracks()
   local wildKanto = BattleMusicSelection.select({ kind = "wild", species = "CATERPIE", region = "KANTO" })
   Assert.equal(wildKanto.music, "SEQ_GS_VS_NORAPOKE_KANTO", "kanto wild encounters remap the wild track")

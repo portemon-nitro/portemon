@@ -172,6 +172,63 @@ function T.wild_roamer_and_special_setup_use_environment_fallbacks()
   Assert.equal(setupFallback.musicRole, "wild", "wild setup sentinel selects the source fallback music role")
 end
 
+function T.numeric_trainer_class_mirror_matches_the_pinned_producer_table()
+  local Sources = require("romdump.src.config.BattleSources")
+  for id = 0, 128 do
+    Assert.equal(
+      BattleEncounterSelector.trainerClassName(id),
+      Sources.trainerClassKeys[id],
+      "numeric class " .. id .. " keeps its pinned semantic identity"
+    )
+  end
+  Assert.isNil(BattleEncounterSelector.trainerClassName(129), "identities outside the table stay unmapped")
+  Assert.isNil(BattleEncounterSelector.trainerClassName(200), "phone aliases stay unmapped")
+end
+
+function T.numeric_trainer_classes_resolve_to_their_precise_source_routes()
+  local catalog = transitions()
+  local function selectTrainer(trainerClass)
+    return BattleEncounterSelector.resolve(catalog, {
+      kind = "trainer",
+      trainerClass = trainerClass,
+      terrain = "plain",
+      timeOfDay = "day",
+      doubleBattle = false,
+      specialBattle = false,
+      alternateTransition = false,
+    })
+  end
+  local falkner = selectTrainer(66)
+  Assert.equal(falkner.routeKey, "trainer/falkner", "the numeric leader keeps its precise route")
+  Assert.equal(falkner.musicRole, "gym-leader", "the numeric leader keeps its precise music role")
+  local rival = selectTrainer(23)
+  Assert.equal(rival.routeKey, "trainer/rival-or-passerby", "the numeric rival keeps its precise route")
+  Assert.equal(rival.musicRole, "rival", "the numeric rival keeps its precise music role")
+  local rocket = selectTrainer(55)
+  Assert.equal(rocket.routeKey, "trainer/team-rocket", "the numeric grunt keeps its precise route")
+  Assert.equal(rocket.musicRole, "rocket", "the numeric grunt keeps its precise music role")
+  local youngster = selectTrainer(2)
+  Assert.equal(
+    youngster.routeKey,
+    "fallback/plain/day/trainer",
+    "ordinary numeric classes keep the unknown path"
+  )
+  Assert.equal(youngster.musicRole, "trainer", "ordinary numeric classes keep the unknown music role")
+  local absent = selectTrainer(129)
+  Assert.equal(
+    absent.routeKey,
+    "fallback/plain/day/trainer",
+    "absent numeric classes keep the unknown path"
+  )
+  Assert.equal(absent.musicRole, "trainer", "absent numeric classes keep the unknown music role")
+  Assert.throws(function()
+    selectTrainer(nil)
+  end, "a missing class still fails loudly")
+  Assert.throws(function()
+    selectTrainer("")
+  end, "an empty class still fails loudly")
+end
+
 function T.elite_route_requires_and_preserves_semantic_profile_gender()
   local catalog = transitions()
   catalog.routes["trainer/falkner"].requiredContext = { "playerGender" }

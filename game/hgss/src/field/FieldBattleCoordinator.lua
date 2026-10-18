@@ -986,11 +986,13 @@ function FieldBattleCoordinator:_captureTransitionContext(request, environment)
     )
     if type(template.trainerClass) == "string" and template.trainerClass ~= "" then
       context.trainerClass = template.trainerClass
+    elseif type(template.trainerClass) == "number" then
+      -- Numeric native classes ride the context untouched: the encounter
+      -- selector resolves them through the pinned class table while
+      -- genuinely-absent identities keep the designed unknown route and
+      -- music role there.
+      context.trainerClass = template.trainerClass
     else
-      -- Numeric native classes carry no pinned semantic name yet, so
-      -- they resolve through the designed unknown-class route and music
-      -- role instead of guessing a name; class-name precision for special
-      -- classes is later producer work.
       context.trainerClass = "SOURCE_UNKNOWN_TRAINER"
     end
     context.doubleBattle = context.doubleBattle or template.doubleBattle == true
@@ -1148,12 +1150,30 @@ function FieldBattleCoordinator:_battleMusicRole(request)
   local rivalName = type(payload.rivalName) == "string" and payload.rivalName or nil
   local trainerClass = nil
   if request.kind ~= "wild" and (payload.trainer ~= nil or payload.trainerClass ~= nil) then
-    if type(payload.trainerClass) == "string" then
+    if type(payload.trainerClass) == "string" or type(payload.trainerClass) == "number" then
       trainerClass = payload.trainerClass
-    elseif fieldRuntime(self).trainerClassFor ~= nil then
-      local okClass, class = pcall(fieldRuntime(self).trainerClassFor, fieldRuntime(self), payload.trainer)
-      if okClass and type(class) == "string" then
-        trainerClass = class
+    else
+      if fieldRuntime(self).trainerClassFor ~= nil then
+        local okClass, class = pcall(fieldRuntime(self).trainerClassFor, fieldRuntime(self), payload.trainer)
+        if okClass and type(class) == "string" then
+          trainerClass = class
+        elseif okClass and type(class) == "number" then
+          trainerClass = class
+        end
+      end
+      if trainerClass == nil and payload.trainer ~= nil then
+        -- The runtime class lookup answers string classes only, so numeric
+        -- catalog classes resolve from the template the transition capture
+        -- reads; selection maps them precisely while genuinely-absent
+        -- identities keep the ordinary default there.
+        local catalog = fieldRuntime(self)._trainerCatalog
+        if catalog ~= nil then
+          local HgssTrainerCatalog = require("libs.hgss.src.battle.HgssTrainerCatalog")
+          local okTemplate, template = pcall(HgssTrainerCatalog.trainer, catalog, payload.trainer)
+          if okTemplate and type(template) == "table" and type(template.trainerClass) == "number" then
+            trainerClass = template.trainerClass
+          end
+        end
       end
     end
   end

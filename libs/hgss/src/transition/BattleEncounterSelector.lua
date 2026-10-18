@@ -5,9 +5,162 @@ local Errors = require("libs.errors.src.Errors")
 ---@class BattleEncounterSelector
 local BattleEncounterSelector = {}
 
+-- Numeric trainer-class identities behind the selector, derived from the
+-- pinned producer inventory (romdump/src/config/BattleSources.lua
+-- trainerClassKeys): the header byte of the native 20-byte trainer record
+-- behind each TRAINERCLASS_* symbol in include/constants/trainer_class.h
+-- (pret/pokeheartgold@9d8b7591f09b65804da2fb2dfd56f320633e0d36). Phone
+-- contact aliases never enter battles and stay out; Kanto variants keep
+-- their own distinct identities. A numeric class resolves to its semantic
+-- key before the route tables; an identity outside this table keeps the
+-- designed unknown route and music role.
+local TRAINER_CLASS_KEYS = {
+  [0] = "PKMN_TRAINER_ETHAN",
+  [1] = "PKMN_TRAINER_LYRA",
+  [2] = "YOUNGSTER",
+  [3] = "LASS",
+  [4] = "CAMPER",
+  [5] = "PICNICKER",
+  [6] = "BUG_CATCHER",
+  [7] = "AROMA_LADY",
+  [8] = "TWINS",
+  [9] = "HIKER",
+  [10] = "BATTLE_GIRL",
+  [11] = "FISHERMAN",
+  [12] = "CYCLIST_M",
+  [13] = "CYCLIST_F",
+  [14] = "BLACK_BELT",
+  [15] = "ARTIST",
+  [16] = "PKMN_BREEDER_M",
+  [17] = "PKMN_BREEDER_F",
+  [18] = "COWGIRL",
+  [19] = "JOGGER",
+  [20] = "POKEFAN_M",
+  [21] = "POKEFAN",
+  [22] = "POKE_KID",
+  [23] = "RIVAL",
+  [24] = "ACE_TRAINER_M",
+  [25] = "ACE_TRAINER_F",
+  [26] = "WAITRESS",
+  [27] = "VETERAN",
+  [28] = "NINJA_BOY",
+  [29] = "DRAGON_TAMER",
+  [30] = "BIRD_KEEPER",
+  [31] = "JUGGLER",
+  [32] = "RICH_BOY",
+  [33] = "LADY",
+  [34] = "GENTLEMAN",
+  [35] = "SOCIALITE",
+  [36] = "BEAUTY",
+  [37] = "COLLECTOR",
+  [38] = "POLICEMAN",
+  [39] = "PKMN_RANGER_M",
+  [40] = "PKMN_RANGER_F",
+  [41] = "SCIENTIST",
+  [42] = "SWIMMER_M",
+  [43] = "SWIMMER_F",
+  [44] = "TUBER_M",
+  [45] = "TUBER_F",
+  [46] = "SAILOR",
+  [47] = "KIMONO_GIRL",
+  [48] = "RUIN_MANIAC",
+  [49] = "PSYCHIC_M",
+  [50] = "PSYCHIC_F",
+  [51] = "PI",
+  [52] = "GUITARIST",
+  [53] = "ACE_TRAINER_M_GS",
+  [54] = "ACE_TRAINER_F_GS",
+  [55] = "TEAM_ROCKET",
+  [56] = "SKIER",
+  [57] = "ROUGHNECK",
+  [58] = "CLOWN",
+  [59] = "WORKER",
+  [60] = "SCHOOL_KID_M",
+  [61] = "SCHOOL_KID_F",
+  [62] = "TEAM_ROCKET_F",
+  [63] = "BURGLAR",
+  [64] = "FIREBREATHER",
+  [65] = "BIKER",
+  [66] = "LEADER_FALKNER",
+  [67] = "LEADER_BUGSY",
+  [68] = "POKE_MANIAC",
+  [69] = "BIRD_KEEPER_GS",
+  [70] = "LEADER_WHITNEY",
+  [71] = "RANCHER",
+  [72] = "LEADER_MORTY",
+  [73] = "LEADER_PRYCE",
+  [74] = "LEADER_JASMINE",
+  [75] = "LEADER_CHUCK",
+  [76] = "LEADER_CLAIR",
+  [77] = "TEACHER",
+  [78] = "SUPER_NERD",
+  [79] = "SAGE",
+  [80] = "PARASOL_LADY",
+  [81] = "WAITER",
+  [82] = "MEDIUM",
+  [83] = "CAMERAMAN",
+  [84] = "REPORTER",
+  [85] = "IDOL",
+  [86] = "CHAMPION",
+  [87] = "ELITE_FOUR_WILL",
+  [88] = "ELITE_FOUR_KAREN",
+  [89] = "ELITE_FOUR_KOGA",
+  [90] = "PKMN_TRAINER_CHERYL",
+  [91] = "PKMN_TRAINER_RILEY",
+  [92] = "PKMN_TRAINER_BUCK",
+  [93] = "PKMN_TRAINER_MIRA",
+  [94] = "PKMN_TRAINER_MARLEY",
+  [95] = "PKMN_TRAINER_FTR_LUCAS",
+  [96] = "PKMN_TRAINER_FTR_DAWN",
+  [97] = "TOWER_TYCOON",
+  [98] = "LEADER_BROCK",
+  [99] = "HALL_MATRON",
+  [100] = "FACTORY_HEAD",
+  [101] = "ARCADE_STAR",
+  [102] = "CASTLE_VALET",
+  [103] = "LEADER_MISTY",
+  [104] = "LEADER_LT_SURGE",
+  [105] = "LEADER_ERIKA",
+  [106] = "LEADER_JANINE",
+  [107] = "LEADER_SABRINA",
+  [108] = "LEADER_BLAINE",
+  [109] = "PKMN_TRAINER_RED",
+  [110] = "LEADER_BLUE",
+  [111] = "ELDER",
+  [112] = "ELITE_FOUR_BRUNO",
+  [113] = "SCIENTIST_GS",
+  [114] = "EXECUTIVE_ARIANA",
+  [115] = "BOARDER",
+  [116] = "EXECUTIVE_ARCHER",
+  [117] = "EXECUTIVE_PROTON",
+  [118] = "EXECUTIVE_PETREL",
+  [119] = "PASSERBY",
+  [120] = "MYSTERY_MAN",
+  [121] = "DOUBLE_TEAM",
+  [122] = "YOUNG_COUPLE",
+  [123] = "PKMN_TRAINER_LANCE",
+  [124] = "ROCKET_BOSS",
+  [125] = "PKMN_TRAINER_LUCAS_DP",
+  [126] = "PKMN_TRAINER_DAWN_DP",
+  [127] = "PKMN_TRAINER_LUCAS_PT",
+  [128] = "PKMN_TRAINER_DAWN_PT",
+}
+
+-- Resolves one numeric native trainer class to its semantic key behind the
+-- route tables. Identities outside the pinned table answer nil so the
+-- caller keeps the designed unknown path instead of guessing a name.
+---@param classId number? numeric native trainer class
+---@return string? semantic trainer class key, nil when genuinely absent
+function BattleEncounterSelector.trainerClassName(classId)
+  if type(classId) == "number" and classId % 1 == 0 then
+    return TRAINER_CLASS_KEYS[classId]
+  end
+  return nil
+end
+
 ---@class BattleEncounterSelector.Context
 ---@field kind "trainer"|"wild"
----@field trainerClass string? semantic trainer class for trainer encounters
+---@field trainerClass string|number? semantic trainer class or numeric native class for trainer encounters
 ---@field wildSpecies string? semantic first living opponent species for wild encounters
 ---@field doubleBattle boolean source doubles fact
 ---@field specialBattle boolean source special-battle fact
@@ -58,7 +211,17 @@ function BattleEncounterSelector.resolve(transitions, context)
   local musicRole
   if kind == "trainer" then
     local trainerClass = context.trainerClass
-    if type(trainerClass) ~= "string" or trainerClass == "" then
+    local unknownNumeric = false
+    if type(trainerClass) == "number" then
+      if trainerClass % 1 ~= 0 then
+        Errors.raise("BATTLE_TRANSITION_CONTEXT_INVALID", "trainer encounters name their source class", {
+          kind = kind,
+        })
+      end
+      trainerClass = BattleEncounterSelector.trainerClassName(trainerClass)
+      unknownNumeric = trainerClass == nil
+    end
+    if not unknownNumeric and (type(trainerClass) ~= "string" or trainerClass == "") then
       Errors.raise("BATTLE_TRANSITION_CONTEXT_INVALID", "trainer encounters name their source class", {
         kind = kind,
       })
@@ -67,8 +230,8 @@ function BattleEncounterSelector.resolve(transitions, context)
     local classMusicRoles = assert(selection.trainerClassMusicRoles, "selector carries trainer music roles")
     local trainerRules = assert(selection.trainerRules, "selector carries trainer precedence")
     local specialRules = assert(trainerRules.specialBattle, "selector carries special-trainer precedence")
-    routeKey = classRoutes[trainerClass] or trainerRules.unknownRoute
-    musicRole = classMusicRoles[trainerClass] or trainerRules.unknownMusicRole
+    routeKey = (type(trainerClass) == "string" and classRoutes[trainerClass]) or trainerRules.unknownRoute
+    musicRole = (type(trainerClass) == "string" and classMusicRoles[trainerClass]) or trainerRules.unknownMusicRole
     if context.specialBattle then
       if routeKey ~= specialRules.preserveRoute then
         if context.doubleBattle then
