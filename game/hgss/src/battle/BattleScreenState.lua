@@ -78,7 +78,45 @@ local COMMAND_NAV = {
   bag = { up = "fight", down = "bag", left = "bag", right = "run" },
   run = { up = "fight", down = "run", left = "bag", right = "pokemon" },
   pokemon = { up = "fight", down = "pokemon", left = "run", right = "pokemon" },
+  -- Special contexts keep the native four-slot touch topology with
+  -- swapped labels: every special identity navigates exactly like the
+  -- ordinary slot it replaces.
+  ["safari-ball"] = { up = "safari-ball", down = "run", left = "safari-ball", right = "safari-ball" },
+  ["pal-park-ball"] = { up = "pal-park-ball", down = "run", left = "pal-park-ball", right = "pal-park-ball" },
+  ["safari-bait"] = { up = "safari-ball", down = "safari-bait", left = "safari-bait", right = "run" },
+  ["safari-mud"] = { up = "safari-ball", down = "safari-mud", left = "run", right = "safari-mud" },
+  ["bug-contest-ball"] = { up = "fight", down = "bug-contest-ball", left = "bug-contest-ball", right = "run" },
 }
+
+-- Launch kind behind the staged menu mode: safari, pal-park, and
+-- bug-contest swap the native command labels; every other kind keeps
+-- the standard label family.
+local KIND_MENU_MODE = {
+  safari = "safari",
+  ["pal-park"] = "pal-park",
+  ["bug-contest"] = "bug-contest",
+}
+
+-- Launch kind behind the command identity surface. Ordinary kinds keep
+-- the four native commands. Safari and pal-park throw balls, bait, and
+-- mud instead of fighting with moves; bug-contest fights normally but
+-- throws contest balls from the bag slot. The catching tutorial only
+-- reaches its scripted fight-then-bag sequence, and frontier
+-- facilities disallow fleeing, so neither offers the full ordinary set.
+-- Unknown launch kinds keep the ordinary surface they always showed.
+local KIND_COMMANDS = {
+  safari = { "safari-ball", "safari-bait", "safari-mud", "run" },
+  ["pal-park"] = { "pal-park-ball", "safari-bait", "safari-mud", "run" },
+  ["bug-contest"] = { "fight", "bug-contest-ball", "pokemon", "run" },
+  tutorial = { "fight", "bag" },
+  frontier = { "fight", "bag", "pokemon" },
+}
+
+local ORDINARY_COMMANDS = { "fight", "bag", "pokemon", "run" }
+
+-- Surface slot behind the staged label key: the label family is keyed
+-- by ordinary slot even when the command identity is specialized.
+local SURFACE_LABEL_KEYS = { "fight", "bag", "pokemon", "run" }
 
 local MOVE_NAV = {
   ["move:0"] = { up = "move:0", down = "move:2", left = "move:0", right = "move:1" },
@@ -771,6 +809,9 @@ function BattleScreenState:_snapshot()
   local childView = self:_twoOptionChildView(copyValue(self._subflows:status().childView))
   return {
     battleKind = self._kind,
+    menuMode = self:_menuMode(),
+    menuLayoutVariant = self:_menuLayoutVariant(),
+    menuDynamicFields = self:_menuDynamicFields(),
     mode = self._mode,
     menuRevealEdge = type(menuWindows) == "table" and menuWindows.edge or nil,
     menuWindows = menuWindows,
@@ -859,6 +900,68 @@ function BattleScreenState:_actorOptions()
   return nil
 end
 
+---@return string staged menu mode behind the launch kind
+function BattleScreenState:_menuMode()
+  local mode = KIND_MENU_MODE[self._kind]
+  if type(mode) == "string" then
+    return mode
+  end
+  return "standard"
+end
+
+---@return string[] command identities offered by the launch kind in slot order
+function BattleScreenState:_surfaceIds()
+  local ids = KIND_COMMANDS[self._kind]
+  if type(ids) == "table" then
+    return ids
+  end
+  return ORDINARY_COMMANDS
+end
+
+---@return string first command identity behind the launch kind surface
+function BattleScreenState:_defaultCommandSelection()
+  local ids = self:_surfaceIds()
+  local first = ids[1]
+  if type(first) == "string" then
+    return first
+  end
+  return "fight"
+end
+
+---@return table<string, string> staged label keys by ordinary slot key for the launch kind
+function BattleScreenState:_menuLabels()
+  local manifest = self._manifest --[[@as table<string, unknown>]]
+  local menus = type(manifest) == "table" and manifest.menus --[[@as table<string, unknown>?]]
+  local modeRules = type(menus) == "table" and menus.modeRules --[[@as table<string, unknown>?]]
+  local rule = type(modeRules) == "table" and modeRules[self:_menuMode()] --[[@as table<string, unknown>?]]
+  local labels = type(rule) == "table" and rule.labels --[[@as table<string, string>?]]
+  if type(labels) ~= "table" then
+    return {}
+  end
+  return labels --[[@as table<string, string>]]
+end
+
+---@return string[] staged dynamic field names behind the launch kind menu mode
+function BattleScreenState:_menuDynamicFields()
+  local manifest = self._manifest --[[@as table<string, unknown>]]
+  local menus = type(manifest) == "table" and manifest.menus --[[@as table<string, unknown>?]]
+  local modeRules = type(menus) == "table" and menus.modeRules --[[@as table<string, unknown>?]]
+  local rule = type(modeRules) == "table" and modeRules[self:_menuMode()] --[[@as table<string, unknown>?]]
+  local dynamicFields = type(rule) == "table" and rule.dynamicFields --[[@as string[]?]]
+  if type(dynamicFields) ~= "table" then
+    return {}
+  end
+  return copyValue(dynamicFields) --[[@as string[] ]]
+end
+
+---@return string menu layout variant behind the launch kind
+function BattleScreenState:_menuLayoutVariant()
+  if self._kind == "frontier" then
+    return "frontier"
+  end
+  return "standard"
+end
+
 ---@return table<integer, table<string, unknown>> command facts with kernel refusal reasons
 function BattleScreenState:_commands()
   local runEnabled = true
@@ -874,16 +977,40 @@ function BattleScreenState:_commands()
       end
     end
   end
-  local commands = {
-    { id = "fight", enabled = true },
-    { id = "bag", enabled = true },
-    { id = "pokemon", enabled = true },
-    { id = "run", enabled = runEnabled },
-  }
-  if runReason ~= nil then
-    commands[4].reason = runReason
+  local labels = self:_menuLabels()
+  local commands = {} ---@type table<integer, table<string, unknown>>
+  for index, id in ipairs(self:_surfaceIds()) do
+    local fact = { id = id, enabled = true } ---@type table<string, unknown>
+    if id == "run" then
+      fact.enabled = runEnabled
+      if runReason ~= nil then
+        fact.reason = runReason
+      end
+    elseif id ~= "fight" and id ~= "bag" and id ~= "pokemon" then
+      -- Specialized identities carry their staged label key so every
+      -- consumer names the sourced control; ordinary identities keep
+      -- their exact long-standing shape.
+      local labelKey = SURFACE_LABEL_KEYS[index]
+      if type(labelKey) == "string" and type(labels[labelKey]) == "string" then
+        fact.label = labels[labelKey]
+      else
+        fact.label = id
+      end
+    end
+    commands[#commands + 1] = fact
   end
   return commands
+end
+
+---@param id string command identity under membership check
+---@return boolean true when the identity belongs to the current kind surface
+function BattleScreenState:_isOfferedCommand(id)
+  for _, offered in ipairs(self:_surfaceIds()) do
+    if offered == id then
+      return true
+    end
+  end
+  return false
 end
 
 ---@param actor table<string, unknown> option actor carrying the move fragments
@@ -973,6 +1100,10 @@ function BattleScreenState:view()
   end
   return {
     message = snapshot.message,
+    battleKind = snapshot.battleKind,
+    menuMode = snapshot.menuMode,
+    menuLayoutVariant = snapshot.menuLayoutVariant,
+    menuDynamicFields = copyValue(snapshot.menuDynamicFields),
     menuRevealEdge = snapshot.menuRevealEdge,
     menuWindows = copyValue(snapshot.menuWindows),
     menuInputEnabled = snapshot.menuInputEnabled,
@@ -1076,6 +1207,19 @@ local function selectorsOf(view)
   -- the view, so they stay undemanded until they actually arrive.
   local selectors = {}
   local seen = {}
+  -- Shiny state rides the picture demand key: a shiny battler demands
+  -- its shiny-variant selector even when it shares the plain canonical
+  -- selector, so plain and shiny pictures never collapse onto one
+  -- image. Non-shiny records demand their selector verbatim.
+  local function demandKey(record, selector)
+    if record.shiny == true then
+      local species, form, gender, variant, facing = selector:match("^([^/]+)/([^/]+)/([^/]+)/([^/]+)/([^/]+)$")
+      if species ~= nil and variant == "plain" then
+        return species .. "/" .. form .. "/" .. gender .. "/shiny/" .. facing
+      end
+    end
+    return selector
+  end
   local function add(record, activeOnly)
     if type(record) ~= "table" then
       return
@@ -1084,9 +1228,12 @@ local function selectorsOf(view)
       return
     end
     local selector = record.portraitSelector
-    if type(selector) == "string" and selector ~= "" and not seen[selector] then
-      seen[selector] = true
-      selectors[#selectors + 1] = selector
+    if type(selector) == "string" and selector ~= "" then
+      local key = demandKey(record, selector)
+      if not seen[key] then
+        seen[key] = true
+        selectors[#selectors + 1] = key
+      end
     end
   end
   if type(view.own) == "table" then
@@ -1558,7 +1705,7 @@ function BattleScreenState:_enterActorPrompt()
   if mode ~= "child" then
     self._subflows:closeChild()
     self._mode = "command"
-    self._selection = "fight"
+    self._selection = self:_defaultCommandSelection()
     self._menuRevealStep = 0
     self._menuGateTicks = 5
     self._child = nil
@@ -1775,6 +1922,13 @@ end
 
 ---@param id string command identity under activation
 function BattleScreenState:_activateCommand(id)
+  -- Commands outside the launch kind surface never act: pointer or
+  -- key input naming a phantom identity refuses instead of sealing an
+  -- unoffered choice.
+  if not self:_isOfferedCommand(id) then
+    self:_refuse(nil)
+    return
+  end
   if id == "fight" then
     local struggle = self:_struggleOnlyOption()
     if struggle ~= nil then
@@ -1794,6 +1948,12 @@ function BattleScreenState:_activateCommand(id)
     self._menuGateTicks = 1
     self._notice = nil
   elseif id == "bag" then
+    -- Frontier facilities refuse bag items natively, so the command
+    -- refuses at selection instead of opening a usable bag.
+    if self._kind == "frontier" then
+      self:_refuse(nil)
+      return
+    end
     self:_openVoluntaryChild("bag", "bag")
   elseif id == "pokemon" then
     self:_openVoluntaryChild("party", "switch")
@@ -1804,20 +1964,45 @@ function BattleScreenState:_activateCommand(id)
     else
       self:_seal(fragment)
     end
+  elseif id == "safari-ball" or id == "pal-park-ball" or id == "bug-contest-ball" then
+    self:_sealSpecialAction("ball")
+  elseif id == "safari-bait" then
+    self:_sealSpecialAction("bait")
+  elseif id == "safari-mud" then
+    self:_sealSpecialAction("mud")
   end
 end
 
----@return string? kernel refusal reason for flight, nil when flight is legal
-function BattleScreenState:_runReason()
+---@param role string kernel choice role under refusal lookup
+---@return string? kernel refusal reason for the role, nil when unoffered
+function BattleScreenState:_roleReason(role)
   local entry = self:_actorOptions()
   if type(entry) == "table" and type(entry.choices) == "table" then
     for _, choice in ipairs(entry.choices) do
-      if type(choice) == "table" and choice.role == "run" and type(choice.reason) == "string" then
+      if type(choice) == "table" and choice.role == role and type(choice.reason) == "string" then
         return choice.reason --[[@as string]]
       end
     end
   end
   return nil
+end
+
+---@return string? kernel refusal reason for flight, nil when flight is legal
+function BattleScreenState:_runReason()
+  return self:_roleReason("run")
+end
+
+-- Seals one special-context action through the kernel's matching role
+-- when the open request offers it; without an offered fragment the
+-- command refuses instead of inventing a choice.
+---@param role string kernel choice role behind the special action
+function BattleScreenState:_sealSpecialAction(role)
+  local fragment = self:_fragmentFor(role)
+  if fragment ~= nil then
+    self:_seal(fragment)
+    return
+  end
+  self:_refuse(self:_roleReason(role))
 end
 
 ---@return string first enabled move selection, falling back to the first slot
@@ -1835,7 +2020,7 @@ end
 function BattleScreenState:_activateMove(id, armed)
   if id == "cancel" then
     self._mode = "command"
-    self._selection = "fight"
+    self._selection = self:_defaultCommandSelection()
     self._notice = nil
     self:_playCancelFeedback()
     return
@@ -1881,7 +2066,7 @@ function BattleScreenState:_activateTarget(id, armed)
     if self._pendingMoveId == "move:struggle" then
       self._pendingMoveId = nil
       self._mode = "command"
-      self._selection = "fight"
+      self._selection = self:_defaultCommandSelection()
     else
       self._mode = "moves"
       if self._pendingMoveId ~= nil then
@@ -2200,7 +2385,7 @@ function BattleScreenState:_cancel()
     self:_activateTarget("cancel")
   elseif self._mode == "moves" then
     self._mode = "command"
-    self._selection = "fight"
+    self._selection = self:_defaultCommandSelection()
     self._notice = nil
     self:_playCancelFeedback()
   elseif self._mode == "command" then
@@ -2211,7 +2396,7 @@ function BattleScreenState:_cancel()
     if self._request ~= nil and self._actorIndex > 1 then
       self._actorIndex = self._actorIndex - 1
       self._mode = "command"
-      self._selection = "fight"
+      self._selection = self:_defaultCommandSelection()
       self._notice = nil
       self:cancelPointerCapture()
     end

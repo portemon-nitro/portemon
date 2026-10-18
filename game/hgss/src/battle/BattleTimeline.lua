@@ -193,9 +193,21 @@ local function displayedOf(record)
   -- Presentation-only picture facts ride the displayed record when the
   -- model answers them: gender and caught marks, the signed height
   -- displacement, and the substitute channel. Absent facts stay absent;
-  -- the renderer defaults them.
-  if record.gender == "male" or record.gender == "female" or record.gender == "genderless" then
+  -- the renderer defaults them. A present gender or form must be
+  -- source-meaningful: unknown genders and negative forms fail here
+  -- instead of rendering a plausible battler.
+  if record.gender ~= nil then
+    assert(
+      record.gender == "male" or record.gender == "female" or record.gender == "genderless",
+      "battle appearance carries a known gender for combatant " .. tostring(record.combatant)
+    )
     shown.gender = record.gender
+  end
+  if record.form ~= nil then
+    assert(
+      type(record.form) == "number" and record.form % 1 == 0 and record.form >= 0,
+      "battle appearance carries a non-negative form for combatant " .. tostring(record.combatant)
+    )
   end
   if type(record.caught) == "boolean" then
     shown.caught = record.caught
@@ -936,6 +948,15 @@ local function translateTransformed(self, event)
       shown.species = donor.species
       if type(donor.form) == "number" then
         shown.form = donor.form
+      end
+      -- The transformed battler draws the donor's picture, never the
+      -- stale pre-transform selector: the exact canonical selector
+      -- switches to the donor's alongside the species and form.
+      if type(donor.portraitSelector) == "string" and donor.portraitSelector ~= "" then
+        shown.portraitSelector = donor.portraitSelector
+      end
+      if donor.gender == "male" or donor.gender == "female" or donor.gender == "genderless" then
+        shown.gender = donor.gender
       end
     end
   end

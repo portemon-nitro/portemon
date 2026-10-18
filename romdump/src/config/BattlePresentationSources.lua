@@ -332,6 +332,17 @@ BattlePresentationSources.TERRAIN = {
   karen = { ordinal = 15, type0 = 159, type1 = 160, day = 43, evening = 44, night = 45 },
   lance = { ordinal = 16, type0 = 161, type1 = 162, day = 46, evening = 47, night = 48 },
   distortion_world = { ordinal = 17, type0 = 163, type1 = 164, day = 49, evening = 50, night = 51 },
+  -- Frontier facility and distortion terrains in native ordinal order:
+  -- the player-side cell member is the even file, the foe-side member
+  -- the odd file, and the three palette members follow the time of
+  -- day. Normalized semantic values only; no archive identities leak
+  -- past this catalog.
+  battle_tower = { ordinal = 18, type0 = 165, type1 = 166, day = 52, evening = 53, night = 54 },
+  battle_factory = { ordinal = 19, type0 = 167, type1 = 168, day = 55, evening = 56, night = 57 },
+  battle_arcade = { ordinal = 20, type0 = 169, type1 = 170, day = 58, evening = 59, night = 60 },
+  battle_castle = { ordinal = 21, type0 = 171, type1 = 172, day = 61, evening = 62, night = 63 },
+  battle_hall = { ordinal = 22, type0 = 173, type1 = 174, day = 64, evening = 65, night = 66 },
+  giratina = { ordinal = 23, type0 = 175, type1 = 176, day = 67, evening = 68, night = 69 },
 }
 
 -- Exact shared menu/HUD member roles. All numbers below are zero-based
@@ -2387,7 +2398,7 @@ function BattlePresentationSources.validate()
       end
     end
   end
-  if terrainCount ~= 18 then
+  if terrainCount ~= 24 then
     return false
   end
   if #BattlePresentationSources.SLOT_GEOMETRY ~= 6 then
@@ -2590,7 +2601,7 @@ function BattlePresentationSources.validate()
   then
     return false
   end
-  for ordinal = 0, 17 do
+  for ordinal = 0, 23 do
     if not ordinals[ordinal] then
       return false
     end
