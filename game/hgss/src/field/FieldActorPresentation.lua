@@ -14,12 +14,14 @@ local FieldActorDraw = require("libs.hgss.src.presentation.FieldActorDraw")
 ---@class FieldActorPresentationRuntime
 ---@field cacheFs CacheFs?
 ---@field imageAssets table<string, unknown>? the runtime-owned shared image owner borrowed by presented actors
+---@field runtimeMap RuntimeFieldMap the currently bound world instance; table identity is the admission identity
 ---@field actors FieldActorManager
 ---@field playerVisual FieldPlayerVisual
 ---@field apricornTreePresentation table<string, function>?
 
 ---@class FieldActorPendingStage
 ---@field manager FieldActorManager
+---@field runtimeMap RuntimeFieldMap the world instance the staged references are being admitted for
 ---@field revision integer
 ---@field playerSpriteId integer
 ---@field apricornRevision integer?
@@ -31,6 +33,7 @@ local FieldActorDraw = require("libs.hgss.src.presentation.FieldActorDraw")
 ---@field assets FieldActorPresentationAssets
 ---@field _presentationSpriteRefs table<integer, boolean>
 ---@field _lastActorManager FieldActorManager?
+---@field _lastRuntimeMap RuntimeFieldMap?
 ---@field _lastActorVisualRevision integer?
 ---@field _lastPlayerSpriteId integer?
 ---@field _lastApricornAssetRevision integer?
@@ -54,6 +57,7 @@ function FieldActorPresentation.new(runtime, options)
     _presentationSpriteRefs = {},
     _pending = nil,
     _lastActorManager = nil,
+    _lastRuntimeMap = nil,
     _lastActorVisualRevision = nil,
     _lastPlayerSpriteId = nil,
     _lastApricornAssetRevision = nil,
@@ -65,26 +69,30 @@ end
 
 ---@param runtime FieldActorPresentationRuntime
 ---@return FieldActorManager actors
+---@return RuntimeFieldMap runtimeMap
 ---@return integer actorRevision
 ---@return integer playerSpriteId
 ---@return integer? apricornAssetRevision
 local function sampleDesired(runtime)
   local actors = assert(runtime.actors, "field actor manager is unavailable")
+  local runtimeMap = assert(runtime.runtimeMap, "field actor presentation map is unavailable")
   local playerVisual = assert(runtime.playerVisual, "field player visual is unavailable")
   local actorRevision = actors:visualRevision()
   local playerSpriteId = assert(playerVisual.spriteId, "field player visual has no spriteId")
   local apricornTrees = runtime.apricornTreePresentation
   local apricornAssetRevision = apricornTrees ~= nil and apricornTrees:assetRevision() or nil
-  return actors, actorRevision, playerSpriteId, apricornAssetRevision
+  return actors, runtimeMap, actorRevision, playerSpriteId, apricornAssetRevision
 end
 
 ---@param actors FieldActorManager
+---@param runtimeMap RuntimeFieldMap
 ---@param actorRevision integer
 ---@param playerSpriteId integer
 ---@param apricornAssetRevision integer?
 ---@return boolean
-function FieldActorPresentation:_isCommitted(actors, actorRevision, playerSpriteId, apricornAssetRevision)
+function FieldActorPresentation:_isCommitted(actors, runtimeMap, actorRevision, playerSpriteId, apricornAssetRevision)
   return self._lastActorManager == actors
+    and self._lastRuntimeMap == runtimeMap
     and self._lastActorVisualRevision == actorRevision
     and self._lastPlayerSpriteId == playerSpriteId
     and self._lastApricornAssetRevision == apricornAssetRevision
@@ -111,8 +119,8 @@ end
 ---@return boolean installed true once the desired set is fully admitted
 function FieldActorPresentation:sync()
   local runtime = self.runtime
-  local actors, actorRevision, playerSpriteId, apricornAssetRevision = sampleDesired(runtime)
-  if self:_isCommitted(actors, actorRevision, playerSpriteId, apricornAssetRevision) then
+  local actors, runtimeMap, actorRevision, playerSpriteId, apricornAssetRevision = sampleDesired(runtime)
+  if self:_isCommitted(actors, runtimeMap, actorRevision, playerSpriteId, apricornAssetRevision) then
     self:_rollbackStage()
     return true
   end
@@ -120,11 +128,14 @@ function FieldActorPresentation:sync()
   local stage = self._pending
   local sameStage = stage ~= nil
     and stage.manager == actors
+    and stage.runtimeMap == runtimeMap
     and stage.revision == actorRevision
     and stage.playerSpriteId == playerSpriteId
     and stage.apricornRevision == apricornAssetRevision
+  local freshRebind = false
   if not sameStage then
     self:_rollbackStage()
+    freshRebind = self._lastRuntimeMap ~= nil and self._lastRuntimeMap ~= runtimeMap
     local neededSet = {}
     neededSet[playerSpriteId] = true
     actors:collectSpriteIds(neededSet)
@@ -139,6 +150,7 @@ function FieldActorPresentation:sync()
     table.sort(needed)
     stage = {
       manager = actors,
+      runtimeMap = runtimeMap,
       revision = actorRevision,
       playerSpriteId = playerSpriteId,
       apricornRevision = apricornAssetRevision,
@@ -165,6 +177,12 @@ function FieldActorPresentation:sync()
   if not ok then
     self:_rollbackStage()
     error(err, 0)
+  end
+  if freshRebind then
+    -- A newly bound world instance never inherits the prior map's committed
+    -- readiness: the enrolled stage reconciles first and publishes on a
+    -- later sync, even when every desired sprite is already installed.
+    return false
   end
 
   for _, spriteId in ipairs(stage.needed) do
@@ -193,6 +211,7 @@ function FieldActorPresentation:sync()
   end
   self._lastActorVisualRevision = actorRevision
   self._lastActorManager = actors
+  self._lastRuntimeMap = runtimeMap
   self._lastPlayerSpriteId = playerSpriteId
   self._lastApricornAssetRevision = apricornAssetRevision
   self._pending = nil
@@ -204,33 +223,17 @@ function FieldActorPresentation:_assetLookup(spriteId)
   --[[@as FieldActorDraw.Entry]]
 end
 
--- While a newer actor set is still being admitted, or the desired set has
--- diverged from the last admitted set (for example after a failed admission
--- left the committed set intact), draws keep serving the retained complete
--- set so no frame references an unadmitted sprite.
----@return boolean
-function FieldActorPresentation:_holdingCommitted()
-  if self._pending ~= nil then
-    return true
-  end
-  if self._lastActorManager == nil then
-    return false
-  end
-  local actors, actorRevision, playerSpriteId, apricornAssetRevision = sampleDesired(self.runtime)
-  return not self:_isCommitted(actors, actorRevision, playerSpriteId, apricornAssetRevision)
-end
-
+-- Samples the current player/actor records at the requested render alpha
+-- into the owner record array. Reads live values only, never GPU resources.
+---@param presentation FieldActorPresentation
+---@param records table[]
 ---@param alpha number
----@return table[]
-function FieldActorPresentation:drawItems(alpha)
-  if self:_holdingCommitted() then
-    local storage = assert(self._actorDrawStorage, "field actor draw storage is unavailable")
-    return storage.items
-  end
-  local records = assert(self._actorRecords, "field actor presentation is disposed")
-  records[1] = self.runtime.playerVisual:drawRecord(alpha)
-  local actorRecords = self.runtime.actors:drawRecords(alpha)
-  local apricornTrees = self.runtime.apricornTreePresentation
+---@return integer recordCount
+local function fillLiveRecords(presentation, records, alpha)
+  local runtime = presentation.runtime
+  records[1] = runtime.playerVisual:drawRecord(alpha)
+  local actorRecords = runtime.actors:drawRecords(alpha)
+  local apricornTrees = runtime.apricornTreePresentation
   if apricornTrees then
     apricornTrees:updateTreeSprites(actorRecords)
   end
@@ -248,7 +251,48 @@ function FieldActorPresentation:drawItems(alpha)
   for index = #records, recordCount + 1, -1 do
     records[index] = nil
   end
+  return recordCount
+end
+
+-- Draws always sample the current player/actor records at the requested
+-- render alpha. A committed scene draws every record; a pending or diverged
+-- same-map revision draws only records whose sprite is already installed;
+-- while a replacement map is still being admitted no old-map record is
+-- emitted. `records()` exposes exactly the filtered set for emotes.
+---@param alpha number
+---@return table[]
+function FieldActorPresentation:drawItems(alpha)
+  local records = assert(self._actorRecords, "field actor presentation is disposed")
   local storage = assert(self._actorDrawStorage, "field actor draw storage is unavailable")
+  if self._pending == nil and self._lastActorManager == nil then
+    -- Never admitted and no stage enrolled: draw the sampled set directly so
+    -- a missing residency still raises through the lookup below.
+    fillLiveRecords(self, records, alpha)
+  else
+    local actors, runtimeMap, actorRevision, playerSpriteId, apricornAssetRevision = sampleDesired(self.runtime)
+    local recordCount = fillLiveRecords(self, records, alpha)
+    local committed = self._pending == nil
+      and self:_isCommitted(actors, runtimeMap, actorRevision, playerSpriteId, apricornAssetRevision)
+    if not committed then
+      if self._lastRuntimeMap ~= runtimeMap then
+        for index = #records, 1, -1 do
+          records[index] = nil
+        end
+      else
+        local kept = 0
+        for index = 1, recordCount do
+          local record = records[index]
+          if self._presentationSpriteRefs[record.spriteId] then
+            kept = kept + 1
+            records[kept] = record
+          end
+        end
+        for index = #records, kept + 1, -1 do
+          records[index] = nil
+        end
+      end
+    end
+  end
   return FieldActorDraw.itemsInto(records, function(spriteId)
     return self:_assetLookup(spriteId)
   end, storage)
@@ -263,6 +307,8 @@ function FieldActorPresentation:dispose()
   self:_rollbackStage()
   self._actorRecords = nil
   self._actorDrawStorage = nil
+  self._lastActorManager = nil
+  self._lastRuntimeMap = nil
   for spriteId in pairs(self._presentationSpriteRefs) do
     self.assets:release(spriteId)
   end

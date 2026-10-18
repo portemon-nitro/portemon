@@ -105,6 +105,9 @@ local function stubPresentationRuntime(cache)
       end,
       collectSpriteIds = function() end,
     },
+    -- The currently bound world instance the actor presentation reconciles
+    -- its visuals against.
+    runtimeMap = {},
     playerVisual = { spriteId = 0 },
     resizePresentation = function() end,
     dispose = function() end,

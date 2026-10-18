@@ -221,6 +221,7 @@ local function stagedPresentationRuntime(spriteIds, records)
         return actorRecord("field:player", 99)
       end,
     },
+    runtimeMap = { mapId = 61 },
   }
   return runtime, actors
 end
@@ -1405,6 +1406,7 @@ function T.draw_rejects_a_sprite_without_presentation_residency()
     end,
   }
   local actorPresentation = FieldActorPresentation.new({
+    runtimeMap = { mapId = 61 },
     playerVisual = {
       drawRecord = function()
         return actorRecord("field:player", 99)
@@ -2035,6 +2037,7 @@ function T.actor_presentation_forwards_render_alpha_to_actor_records()
   }
   local assets = presentationAssets({ [99] = presentationEntry(99) })
   local presentation = FieldActorPresentation.new({
+    runtimeMap = { mapId = 61 },
     playerVisual = {
       drawRecord = function()
         return actorRecord("field:player", 99)
@@ -2312,61 +2315,112 @@ function T.actor_presentation_borrows_the_runtime_image_pool_by_default()
   end
 end
 
--- A stalled atlas revision must not pause the field: updates keep running,
--- the prior actor set keeps drawing, and the new set appears atomically
--- once every required atlas is admitted.
+-- Resident actors keep simulating while an unrelated atlas prepares: every draw
+-- and emote record follows the live simulation, the pending sprite stays
+-- absent, and the admitted set still appears atomically once it is ready.
 function T.stalled_actor_revision_keeps_prior_draws_until_atomic_admission()
-  local assets = stagedPresentationAssets({ [99] = presentationEntry(99), [34] = presentationEntry(34) }, {
-    pending = { [34] = true },
+  local assets = stagedPresentationAssets({
+    [99] = presentationEntry(99),
+    [34] = presentationEntry(34),
+    [77] = presentationEntry(77),
+  }, {
+    pending = { [77] = true },
   })
-  local state, actors = presentationState(assets, { [99] = true })
+  local state, actors = presentationState(assets, { [34] = true })
   local updates = 0
   local baseUpdate = state.runtime.update
   state.runtime.update = function(...)
     updates = updates + 1
     return baseUpdate(...)
   end
-  actors.records = {}
+  -- The producers hand out fresh records every draw, so stale snapshots are
+  -- observable as old values rather than aliasing the mutated facts.
+  local playerFacts = { x = 0, z = 0, facing = "south", poseTick = 0 }
+  state.runtime.playerVisual.drawRecord = function()
+    local record = actorRecord("field:player", 99)
+    record.world.x, record.world.z = playerFacts.x, playerFacts.z
+    record.facing, record.poseTick = playerFacts.facing, playerFacts.poseTick
+    return record
+  end
+  local npcFacts = { x = 3, z = 1, facing = "south", poseTick = 0, emoteTick = 0 }
+  local newcomerFacts = { x = 11, z = 2 }
+  local newcomerPresent = false
   function actors:drawRecords()
-    return self.records
+    local npc = actorRecord("map:61:object:1", 34)
+    npc.world.x, npc.world.z = npcFacts.x, npcFacts.z
+    npc.facing, npc.poseTick = npcFacts.facing, npcFacts.poseTick
+    npc.activeEmoteKind, npc.activeEmoteTick = "exclamation", npcFacts.emoteTick
+    if not newcomerPresent then
+      return { npc }
+    end
+    local newcomer = actorRecord("map:61:object:2", 77)
+    newcomer.world.x, newcomer.world.z = newcomerFacts.x, newcomerFacts.z
+    return { npc, newcomer }
+  end
+  local capturedEmoteRecords = nil
+  state.presentationResources.fieldEmoteRenderer.drawItems = function(_, records)
+    capturedEmoteRecords = records
+    return {}
   end
 
   state:update(0.016)
   local settled = state:_actorDraws(0.5)
-  Assert.isTrue(#settled > 0, "the committed player set draws before the revision arrives")
-  local settledIdentities = drawIdentities(settled)
+  Assert.deepEqual(
+    drawIdentities(settled),
+    { "field:player", "map:61:object:1" },
+    "the committed set draws before the revision arrives"
+  )
 
   actors.revision = actors.revision + 1
-  actors.spriteIds[34] = true
-  actors.records = { actorRecord("map:61:object:1", 34) }
+  actors.spriteIds[77] = true
+  newcomerPresent = true
 
-  for _ = 1, 4 do
-    state:update(0.016)
+  for cycle = 1, 3 do
+    playerFacts.x, playerFacts.z = cycle * 2, cycle
+    playerFacts.facing = (cycle % 2 == 1) and "north" or "south"
+    playerFacts.poseTick = cycle
+    npcFacts.x, npcFacts.z = 10 + cycle, 4 + cycle
+    npcFacts.facing = (cycle % 2 == 1) and "north" or "south"
+    npcFacts.poseTick = cycle * 2
+    npcFacts.emoteTick = cycle
+    state:update(1 / 30)
     local held = state:_actorDraws(0.5)
+    Assert.isTrue(held == settled, "a pending atlas reuses the established item array")
     Assert.deepEqual(
       drawIdentities(held),
-      settledIdentities,
-      "a pending atlas keeps the prior actor draw set with nothing partial"
+      { "field:player", "map:61:object:1" },
+      "a pending atlas keeps every admitted actor and adds nothing partial"
     )
+    local playerItem, npcItem = held[1], held[2]
+    Assert.equal(playerItem.transform[13], playerFacts.x, "the player draw tracks live simulation")
+    Assert.equal(playerItem.transform[15], playerFacts.z, "the player draw tracks live simulation")
+    Assert.equal(npcItem.transform[13], npcFacts.x, "the admitted actor draw tracks live simulation")
+    Assert.equal(npcItem.transform[15], npcFacts.z, "the admitted actor draw tracks live simulation")
+    local expectedFrame = (cycle % 2 == 1) and 1 or 2
+    Assert.equal(playerItem.frameIndex, expectedFrame, "the player frame tracks live facing")
+    Assert.equal(npcItem.frameIndex, expectedFrame, "the admitted actor frame tracks live facing")
     local heldRecords = state.actorPresentation:records()
-    Assert.equal(#heldRecords, 1, "emote consumers see the same committed snapshot")
-    Assert.equal(heldRecords[1].actorId, "field:player")
+    Assert.equal(#heldRecords, 2, "emote consumers see the live admitted snapshot")
+    Assert.equal(heldRecords[1].poseTick, cycle)
+    Assert.equal(heldRecords[2].activeEmoteTick, cycle)
+    Assert.equal(heldRecords[2].world.x, npcFacts.x)
+    state:_worldParts(0.5)
+    Assert.isTrue(capturedEmoteRecords == heldRecords, "the emote renderer sees the same live snapshot")
   end
-  Assert.isTrue(updates >= 5, "semantic updates keep running while admission is pending")
-  Assert.isNil(assets.acquisitions[34], "no reference is taken before the atlas is ready")
+  Assert.isTrue(updates >= 4, "semantic updates keep running while admission is pending")
+  Assert.isNil(assets.acquisitions[77], "no reference is taken before the atlas is ready")
 
-  assets.pending[34] = nil
+  assets.pending[77] = nil
+  newcomerFacts.x = 21
   state:update(0.016)
   local published = state:_actorDraws(0.5)
-  Assert.equal(#published, #settledIdentities + 1, "admission publishes the whole new set at once")
-  local arrived = false
-  for _, item in ipairs(published) do
-    if item.actorId == "map:61:object:1" then
-      arrived = true
-    end
-  end
-  Assert.isTrue(arrived, "the new actor appears after its atlas is admitted")
-  Assert.equal(assets.acquisitions[34], 1, "the admitted atlas is referenced exactly once")
+  Assert.deepEqual(
+    drawIdentities(published),
+    { "field:player", "map:61:object:1", "map:61:object:2" },
+    "admission publishes the whole new set at once"
+  )
+  Assert.equal(published[3].transform[13], 21, "the admitted actor draws its live position")
+  Assert.equal(assets.acquisitions[77], 1, "the admitted atlas is referenced exactly once")
   state:dispose()
 end
 
@@ -2389,6 +2443,8 @@ function T.superseded_revision_returns_only_staged_ownership()
     assets = assets --[[@as FieldActorPresentationAssets]],
   })
 
+  actors.records[1].activeEmoteKind = "exclamation"
+  actors.records[1].activeEmoteTick = 4
   presentation:sync()
   local committedIdentities = drawIdentities(presentation:drawItems(0.5))
   Assert.isTrue(#committedIdentities > 0, "the first revision commits before staging begins")
@@ -2399,9 +2455,12 @@ function T.superseded_revision_returns_only_staged_ownership()
   presentation:sync()
   Assert.deepEqual(
     drawIdentities(presentation:drawItems(0.5)),
-    committedIdentities,
-    "a half-ready revision never becomes visible"
+    { "field:player" },
+    "a half-ready revision draws only live records with installed sprites"
   )
+  local pendingRecords = presentation:records()
+  Assert.equal(#pendingRecords, 1, "emote consumers see the same filtered snapshot")
+  Assert.equal(pendingRecords[1].actorId, "field:player")
   Assert.equal(assets.acquisitions[35], 1, "the ready member is staged while its sibling pends")
   Assert.isNil(assets.acquisitions[36], "the pending member takes no reference yet")
 
@@ -2448,18 +2507,35 @@ function T.failed_revision_keeps_committed_draws_and_recovers()
   }, {
     failures = { [36] = "shared atlas missing for sprite 36" },
   })
-  local runtime, actors =
-    stagedPresentationRuntime({ [34] = true }, { actorRecord("map:61:object:1", 34) })
+  local firstNpc = actorRecord("map:61:object:1", 34)
+  firstNpc.activeEmoteKind = "exclamation"
+  firstNpc.activeEmoteTick = 2
+  local runtime, actors = stagedPresentationRuntime({ [34] = true }, {
+    firstNpc,
+    actorRecord("map:61:object:2", 34),
+  })
+  local playerFacts = { x = 0 }
+  runtime.playerVisual.drawRecord = function()
+    local record = actorRecord("field:player", 99)
+    record.world.x = playerFacts.x
+    return record
+  end
   local presentation = FieldActorPresentation.new(runtime --[[@as FieldActorPresentationRuntime]], {
     assets = assets --[[@as FieldActorPresentationAssets]],
   })
 
   presentation:sync()
-  local committedIdentities = drawIdentities(presentation:drawItems(0.5))
+  Assert.deepEqual(
+    drawIdentities(presentation:drawItems(0.5)),
+    { "field:player", "map:61:object:1", "map:61:object:2" },
+    "the first revision commits before the failing one begins"
+  )
 
   actors.revision = 1
   actors.spriteIds = { [35] = true, [36] = true }
-  actors.records = { actorRecord("map:61:object:2", 35), actorRecord("map:61:object:3", 36) }
+  local changedNpc = actorRecord("map:61:object:1", 36)
+  changedNpc.world.x = 8
+  actors.records = { changedNpc, actorRecord("map:61:object:3", 35) }
   local err = Assert.throws(function()
     presentation:sync()
   end)
@@ -2477,11 +2553,17 @@ function T.failed_revision_keeps_committed_draws_and_recovers()
   Assert.equal(released, acquired - 2, "only the two committed references stay held after the failure")
   Assert.isNil(assets.releases[34], "committed ownership survives the failure")
   Assert.isNil(assets.releases[99], "the player reference survives the failure")
+  playerFacts.x = 5
+  local keptItems = presentation:drawItems(0.5)
   Assert.deepEqual(
-    drawIdentities(presentation:drawItems(0.5)),
-    committedIdentities,
-    "the committed set stays drawable after the failure"
+    drawIdentities(keptItems),
+    { "field:player" },
+    "removed actors and unadmitted sprites leave no draw behind"
   )
+  Assert.equal(keptItems[1].transform[13], 5, "the retained player draw tracks live simulation")
+  local keptRecords = presentation:records()
+  Assert.equal(#keptRecords, 1, "emote consumers see the same filtered snapshot")
+  Assert.equal(keptRecords[1].actorId, "field:player")
 
   actors.revision = 2
   actors.spriteIds = { [35] = true }
@@ -2566,6 +2648,112 @@ function T.pending_initial_presentation_draws_empty_and_disposes_cleanly()
   presentation:dispose()
   presentation:dispose()
   Assert.isTrue(assets.disposed, "cleanup still releases the provider")
+end
+
+-- Rebinding the runtime map object, even to the same numeric map, retires
+-- the old admission: readiness is re-earned per map object and the
+-- unchanged sprite set reconciles without new acquisition.
+function T.rebound_runtime_map_with_same_id_is_not_covered_by_prior_admission()
+  local assets = stagedPresentationAssets({ [99] = presentationEntry(99), [34] = presentationEntry(34) })
+  local runtime, actors =
+    stagedPresentationRuntime({ [34] = true }, { actorRecord("map:61:object:1", 34) })
+  local presentation = FieldActorPresentation.new(runtime --[[@as FieldActorPresentationRuntime]], {
+    assets = assets --[[@as FieldActorPresentationAssets]],
+  })
+
+  runtime.runtimeMap = { mapId = 61 }
+  Assert.isTrue(presentation:sync())
+  local committedItems = presentation:drawItems(0.5)
+  Assert.deepEqual(drawIdentities(committedItems), { "field:player", "map:61:object:1" })
+
+  runtime.runtimeMap = { mapId = 61 }
+  Assert.isFalse(
+    presentation:sync(),
+    "a rebound map object with the same id earns admission anew"
+  )
+  Assert.isTrue(
+    presentation:sync(),
+    "the unchanged sprite set reconciles without new acquisition"
+  )
+  Assert.isNil(assets.prepares[36], "reconciliation requests no sprite that was never desired")
+  actors.records[1].world.x = 9
+  local rebound = presentation:drawItems(0.5)
+  Assert.deepEqual(drawIdentities(rebound), { "field:player", "map:61:object:1" })
+  Assert.equal(rebound[2].transform[13], 9, "the rebound map draws live records")
+  Assert.isTrue(rebound == committedItems, "reconciliation reuses the established item array")
+  presentation:dispose()
+  local acquired, released = 0, 0
+  for _, count in pairs(assets.acquisitions) do
+    acquired = acquired + count
+  end
+  for _, count in pairs(assets.releases) do
+    released = released + count
+  end
+  Assert.equal(released, acquired, "disposal leaves zero outstanding references")
+end
+
+-- While a new map's revision is still preparing, neither old-map draws nor
+-- old-map emote records leak into the new scene; admission still publishes
+-- the whole live set at once when it completes.
+function T.pending_new_map_revision_draws_no_old_map_records_or_emotes()
+  local assets = stagedPresentationAssets({
+    [99] = presentationEntry(99),
+    [34] = presentationEntry(34),
+    [36] = presentationEntry(36),
+  }, {
+    pending = { [36] = true },
+  })
+  local runtime, actors =
+    stagedPresentationRuntime({ [34] = true }, { actorRecord("map:61:object:1", 34) })
+  local presentation = FieldActorPresentation.new(runtime --[[@as FieldActorPresentationRuntime]], {
+    assets = assets --[[@as FieldActorPresentationAssets]],
+  })
+
+  runtime.runtimeMap = { mapId = 61 }
+  actors.records[1].activeEmoteKind = "exclamation"
+  actors.records[1].activeEmoteTick = 1
+  Assert.isTrue(presentation:sync())
+  Assert.deepEqual(
+    drawIdentities(presentation:drawItems(0.5)),
+    { "field:player", "map:61:object:1" },
+    "the old map commits before the swap"
+  )
+
+  runtime.runtimeMap = { mapId = 61 }
+  actors.revision = actors.revision + 1
+  actors.spriteIds[36] = true
+  actors.records = { actorRecord("map:61:object:2", 36) }
+  Assert.isFalse(presentation:sync())
+  Assert.equal(
+    #presentation:drawItems(0.5),
+    0,
+    "a pending new-map revision draws no old-map actors"
+  )
+  Assert.deepEqual(presentation:records(), {}, "no old-map emote records leak into the new scene")
+  Assert.isNil(assets.acquisitions[36], "no reference is taken before the atlas is ready")
+
+  assets.pending[36] = nil
+  local ready = presentation:sync()
+  local rounds = 1
+  while not ready and rounds < 3 do
+    ready = presentation:sync()
+    rounds = rounds + 1
+  end
+  Assert.isTrue(ready, "the new map admits once its atlas is ready")
+  Assert.deepEqual(
+    drawIdentities(presentation:drawItems(0.5)),
+    { "field:player", "map:61:object:2" },
+    "admission publishes the new map's live set exactly once"
+  )
+  presentation:dispose()
+  local acquired, released = 0, 0
+  for _, count in pairs(assets.acquisitions) do
+    acquired = acquired + count
+  end
+  for _, count in pairs(assets.releases) do
+    released = released + count
+  end
+  Assert.equal(released, acquired, "disposal leaves zero outstanding references")
 end
 
 return { tests = T }
