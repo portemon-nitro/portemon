@@ -68,6 +68,10 @@ end
 function CelebiTimeTravelBlur:draw(status, viewport, drawWorld)
   assert(status.active and status.blurActive, "Celebi capture requires an active swirl")
   assert(type(status.sequence) == "number" and type(status.swirlFrame) == "number", "Celebi capture frame is missing")
+  assert(
+    status.swirlFrame % 1 == 0 and status.swirlFrame >= 1 and status.swirlFrame <= 180,
+    "Celebi swirl source frame must be an integer from 1 through 180"
+  )
   assert(type(drawWorld) == "function", "Celebi capture requires the composed field draw")
   local graphics = love.graphics
   local width, height = viewport.width, viewport.height
@@ -165,7 +169,10 @@ function CelebiTimeTravelBlur:_capture(graphics, status, viewport, drawWorld)
     graphics.clear(0, 0, 0, 0)
     drawWorld()
 
-    local isNewFrame = self._frame ~= status.swirlFrame
+    local hadHistory = self._frame ~= nil
+    local skippedTicks = hadHistory and (status.swirlFrame - self._frame) or 0
+    assert(not hadHistory or skippedTicks >= 0, "Celebi swirl source frames must not rewind")
+    local isNewFrame = not hadHistory or skippedTicks > 0
     if isNewFrame then
       graphics.setCanvas(nextFrame)
       graphics.clear(0, 0, 0, 0)
@@ -180,7 +187,8 @@ function CelebiTimeTravelBlur:_capture(graphics, status, viewport, drawWorld)
         rect.width / self._width,
         rect.height / self._height,
       })
-      shader:send("hasPrevious", self._frame ~= nil)
+      shader:send("hasPrevious", hadHistory)
+      shader:send("historyWeight", hadHistory and ((13 / 16) ^ skippedTicks) or 0)
       graphics.draw(scene, assert(self._quad), 0, 0, 0, CAPTURE_WIDTH / rect.width, CAPTURE_HEIGHT / rect.height)
       self._previous, self._next = nextFrame, previous
       self._frame = status.swirlFrame
