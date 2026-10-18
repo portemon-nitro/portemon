@@ -187,7 +187,7 @@ local function measurement(configuration)
   local dimensions = {
     nativeLike = { width = 256, height = 192 },
     wide = { width = 512, height = 192 },
-    tall = { width = 192, height = 512 },
+    tall = { width = 384, height = 512 },
   }
   local size = dimensions[configuration]
   return {
@@ -2619,6 +2619,296 @@ function T.admitted_view_in_status_is_transient_and_read_only()
   state:dispose()
   renderer:dispose()
   Assert.equal(inner:stats().outstandingLeases, 0, "closing returns every visual lease")
+end
+
+function T.retained_parent_plan_reflows_to_the_current_display_without_moving_input()
+  local mons = monService()
+  local options = openOptions(mons, 1, "wide")
+  local current = measurement("wide")
+  options.measureDisplay = function()
+    return current
+  end
+  local state = PcStorageState.new(options)
+  local StorageInterface = require("game.hgss.src.pc.StorageInterface")
+  local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
+  local function referencePlan(view, measurement)
+    local session = ApplicationPresentation.new(StorageInterface.defaults(options.manifest))
+    local plan = session:resolve(measurement, view)
+    session:dispose()
+    return plan
+  end
+  local function assertFollowsCurrentTopology(plan, view, measurement, what)
+    local expected = referencePlan(view, measurement)
+    Assert.equal(#plan.panes, #expected.panes, what .. " keeps the current pane count")
+    Assert.equal(#plan.frames, #expected.frames, what .. " keeps the current frame count")
+    Assert.equal(plan.inputKey, expected.inputKey, what .. " keeps the current input key")
+    for index, pane in ipairs(plan.panes) do
+      local other = expected.panes[index]
+      Assert.equal(pane.id, other.id, what .. " keeps the current pane order")
+      Assert.equal(pane.interactive, other.interactive, what .. " keeps pane interaction")
+      local frame, otherFrame = pane.placement.frame, other.placement.frame
+      Assert.deepEqual(
+        { frame.x, frame.y, frame.width, frame.height },
+        { otherFrame.x, otherFrame.y, otherFrame.width, otherFrame.height },
+        what .. " follows the current pane placement"
+      )
+    end
+  end
+
+  state:status()
+  recordAdmittedParent(state)
+  local admittedView =
+    assert(state:status().admittedParentView, "the first admission records its parent view")
+  local widePlan = assert(state:presentationPlan(false), "admission publishes its parent plan")
+
+  -- Desired state advances while the parent lags: the live snapshot moves
+  -- on, the admitted pair stays behind.
+  state:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.deepEqual(state:status().focus, { domain = "box", slot = 1 })
+  Assert.isTrue(
+    state:status().admittedParentView == admittedView,
+    "desired advances keep the admitted view"
+  )
+
+  -- A tall display reflows the retained parent geometry without touching
+  -- the live input session or its content.
+  current = measurement("tall")
+  local advanced = state:status()
+  Assert.isTrue(
+    advanced.admittedParentView == admittedView,
+    "the resize keeps the admitted semantic view by identity"
+  )
+  Assert.deepEqual(advanced.focus, { domain = "box", slot = 1 }, "the resize keeps live focus")
+  local tallPlan = assert(state:presentationPlan(false), "the resize keeps a parent plan")
+  Assert.isTrue(tallPlan ~= widePlan, "the resize replaces the stale parent plan")
+  assertFollowsCurrentTopology(tallPlan, admittedView, current, "the reflowed parent")
+  Assert.isTrue(
+    tallPlan ~= state._session:plan(),
+    "the parent plan stays separate from the live input plan"
+  )
+  local steady = state:status()
+  Assert.isTrue(
+    state:presentationPlan(false) == tallPlan,
+    "a steady tall signature keeps the identical parent plan"
+  )
+  Assert.isTrue(steady.visualView ~= admittedView, "the live snapshot stays ahead of admission")
+
+  -- A held press keeps its existing cancellation rule: the stale release
+  -- is dropped and never activates another target.
+  local held = assert(state._session:plan().content.hitRegions.boxSlots[3])
+  local x, y = hostPointForRect(state, held.rect)
+  state:updateFixed({ { type = "pointer_down", pointerId = "held-press", x = x, y = y } })
+  Assert.deepEqual(state:status().focus, { domain = "box", slot = 2 })
+  current = measurement("wide")
+  state:status()
+  local wideAgain = assert(state:presentationPlan(false), "the return keeps a parent plan")
+  assertFollowsCurrentTopology(wideAgain, admittedView, current, "the returned parent")
+  state:updateFixed({ { type = "pointer_up", pointerId = "held-press", x = x, y = y } })
+  Assert.deepEqual(
+    state:status().focus,
+    { domain = "box", slot = 2 },
+    "the stale release activates nothing"
+  )
+
+  -- Fresh presses in the current topology still map through the live
+  -- session to the correct target.
+  local fresh = assert(state._session:plan().content.hitRegions.boxSlots[6])
+  local fx, fy = hostPointForRect(state, fresh.rect)
+  state:updateFixed({
+    { type = "pointer_down", pointerId = "fresh-press", x = fx, y = fy },
+    { type = "pointer_up", pointerId = "fresh-press", x = fx, y = fy },
+  })
+  Assert.deepEqual(state:status().focus, { domain = "box", slot = 5 })
+
+  -- Admitting the current view cuts over, and the next pending
+  -- replacement falls back to the newly admitted pair, not the older one.
+  recordAdmittedParent(state)
+  local cutoverView = assert(state:status().admittedParentView, "the cutover records its view")
+  Assert.isTrue(cutoverView ~= admittedView, "the cutover advances past the older parent")
+  Assert.isTrue(
+    state:presentationPlan(false) == state._session:plan(),
+    "the cutover serves the current live plan"
+  )
+  state:updateFixed({ { type = "navigate", direction = "down" } })
+  current = measurement("tall")
+  state:status()
+  Assert.isTrue(
+    state:status().admittedParentView == cutoverView,
+    "the next stall keeps the newly admitted view"
+  )
+  assertFollowsCurrentTopology(
+    assert(state:presentationPlan(false), "the next stall keeps a parent plan"),
+    cutoverView,
+    current,
+    "the next fallback"
+  )
+  state:dispose()
+  state:dispose()
+  Assert.isFalse(state:isActive(), "disposal closes the screen exactly once")
+end
+
+function T.unavailable_display_hides_the_retained_parent_without_changing_content()
+  local mons = monService()
+  local options = openOptions(mons, 3, "wide")
+  Assert.isTrue(options.bag:add("POTION", 1))
+  options.childFactories.heldItemPicker = function()
+    return {
+      updateFixed = function() end,
+      takeIntent = function()
+        return nil
+      end,
+      takeResult = function()
+        return nil
+      end,
+      status = function()
+        return {}
+      end,
+      dispose = function() end,
+    }
+  end
+  local current = measurement("wide")
+  options.measureDisplay = function()
+    return current
+  end
+  local state = PcStorageState.new(options)
+  local pool, inner, _ = stateImageOwner()
+  local renderer, graphics, manifest = stateRenderer(pool)
+  admitStateView(renderer, state:status().visualView)
+  recordAdmittedParent(state)
+  local admittedView =
+    assert(state:status().admittedParentView, "the first admission records its parent view")
+  local oldImage = assert(renderer._images[manifest.storage.wallpapers[0].image], "admission installs its wallpaper")
+  local resources = stateResources(renderer)
+  local savedLove = scopeStateLove(graphics)
+  local ok, err = pcall(function()
+    state:updateFixed({ { type = "action", action = "giveItem" } })
+    Assert.equal(state:status().childKind, "heldItemPicker", "Give Item opens the picker")
+    recordAdmittedParent(state)
+    Assert.isTrue(
+      state:status().admittedParentView == admittedView,
+      "a pending picker never overwrites the admitted parent"
+    )
+
+    -- A display with no drawable Storage placement publishes the inactive
+    -- plan instead of reusing the old wide rectangles.
+    current = {
+      width = 256,
+      height = 192,
+      topology = ScreenTopology.oneDisplay({
+        id = "main",
+        rect = { x = 0, y = 0, width = 256, height = 192 },
+        role = "world",
+        touch = true,
+        occupiedRegions = { { x = 0, y = 0, width = 256, height = 192 } },
+      }),
+      pixelRatio = 1,
+      signature = "pc-storage-test:blocked",
+    }
+    local blocked = state:status()
+    Assert.equal(blocked.childKind, "heldItemPicker", "the blocked display keeps the pending picker")
+    Assert.isTrue(
+      blocked.admittedParentView == admittedView,
+      "the blocked display keeps the admitted semantic view"
+    )
+    local inactive = assert(state:presentationPlan(false), "the blocked display keeps a parent plan")
+    Assert.equal(#inactive.panes, 0, "an unavailable display publishes no panes")
+    Assert.equal(#inactive.frames, 0, "an unavailable display publishes no outer frames")
+    Assert.equal(inactive.inputKey, "pc-storage-inactive", "an unavailable display publishes the inactive plan")
+    local drawsBefore = #graphics.draws
+    state:draw(resources, false)
+    Assert.equal(#graphics.draws, drawsBefore, "blocked frames paint no out-of-host panes")
+
+    -- A supported topology brings the same admitted view back under new
+    -- placements; the transient picker never draws as the parent.
+    current = measurement("tall")
+    local restored = state:status()
+    Assert.isTrue(
+      restored.admittedParentView == admittedView,
+      "the restore keeps the admitted semantic view"
+    )
+    local tallPlan = assert(state:presentationPlan(false), "the restore publishes a parent plan")
+    Assert.isTrue(#tallPlan.panes > 0, "the restored display places the admitted panes again")
+    drawsBefore = #graphics.draws
+    state:draw(resources, false)
+    Assert.isTrue(
+      drawsStateImageSince(graphics, drawsBefore, oldImage),
+      "restored frames paint the admitted wallpaper again"
+    )
+    state:dispose()
+    renderer:dispose()
+    Assert.equal(inner:stats().outstandingLeases, 0, "closing returns every visual lease")
+  end)
+  rawset(_G, "love", savedLove)
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.rejected_parent_reflow_keeps_the_last_valid_plan_and_recovers()
+  local mons = monService()
+  local manifest = PcPresentationFixture.manifest()
+  local options = openOptions(mons, 1, "wide")
+  options.manifest = manifest
+  local StorageInterface = require("game.hgss.src.pc.StorageInterface")
+  local base = StorageInterface.defaults(manifest)
+  local gate = { throwFor = nil }
+  options.overrides = {}
+  for _, case in ipairs({ "dualDisplay", "nativeLike", "wide", "tall" }) do
+    local baseline = base[case]
+    options.overrides[case] = function(context, view)
+      if gate.throwFor ~= nil and view == gate.throwFor then
+        error("admitted reflow rejected", 0)
+      end
+      return baseline(context, view)
+    end
+  end
+  local current = measurement("wide")
+  options.measureDisplay = function()
+    return current
+  end
+  local state = PcStorageState.new(options)
+  state:status()
+  recordAdmittedParent(state)
+  local admittedView =
+    assert(state:status().admittedParentView, "the first admission records its parent view")
+  local widePlan = assert(state:presentationPlan(false), "admission publishes its parent plan")
+
+  -- Desired state advances so only the retained parent hits the rejected
+  -- override; the live session keeps resolving normally.
+  state:updateFixed({ { type = "navigate", direction = "down" } })
+  gate.throwFor = admittedView
+  current = measurement("tall")
+  local published, failure = pcall(function()
+    return state:status()
+  end)
+  Assert.isFalse(published, "a rejected parent reflow propagates instead of publishing")
+  Assert.isTrue(
+    tostring(failure):find("admitted reflow rejected", 1, true) ~= nil,
+    "the failure carries the reflow cause"
+  )
+  Assert.isTrue(
+    state:presentationPlan(false) == widePlan,
+    "the failed reflow keeps the last valid plan"
+  )
+  gate.throwFor = nil
+  local recovered = state:status()
+  Assert.isTrue(
+    recovered.admittedParentView == admittedView,
+    "the failed reflow never replaces the admitted view"
+  )
+  Assert.isTrue(
+    state:presentationPlan(false) ~= widePlan,
+    "recovery replaces the stale parent plan"
+  )
+  local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
+  local session = ApplicationPresentation.new(StorageInterface.defaults(manifest))
+  local expected = session:resolve(current, admittedView)
+  session:dispose()
+  local plan = assert(state:presentationPlan(false), "recovery publishes a parent plan")
+  Assert.equal(#plan.panes, #expected.panes, "recovery keeps the current pane count")
+  Assert.equal(plan.inputKey, expected.inputKey, "recovery keeps the current input key")
+  state:dispose()
+  state:dispose()
 end
 
 return { tests = T }

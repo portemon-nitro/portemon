@@ -15,6 +15,9 @@ local Personality = require("libs.mons.src.gen4.Personality")
 ---@field _manifest table<string, unknown>
 ---@field _measureDisplay fun(): DisplayMeasurement
 ---@field _session ApplicationPresentation
+---@field _admittedLayoutSession ApplicationPresentation?
+---@field _publishedMeasurementSignature string?
+---@field _admittedParentSignature string?
 ---@field _activeBox integer
 ---@field _contents table<string, unknown>?
 ---@field _publishedView table<string, unknown>?
@@ -113,8 +116,10 @@ function StorageScreenState.new(options)
     _contents = nil,
     _publishedView = nil,
     _publishedKey = nil,
+    _publishedMeasurementSignature = nil,
     _admittedParentView = nil,
     _admittedParentPlan = nil,
+    _admittedParentSignature = nil,
     _focus = { domain = options.mode == 1 and "box" or "party", slot = 0 },
     _dexNumber = assert(options.dexNumber, "Storage needs its dex number reader"),
     -- The party tray starts open at the left only in Deposit mode; the other
@@ -139,7 +144,21 @@ function StorageScreenState.new(options)
     _state = "browse",
   }, StorageScreenState)
   self._session = ApplicationPresentation.new(StorageInterface.defaults(manifest), options.overrides)
-  self:_resolve()
+  local fallbackBuilt, fallbackSession =
+    pcall(ApplicationPresentation.new, StorageInterface.defaults(manifest), options.overrides)
+  if not fallbackBuilt then
+    self._session:dispose()
+    error(fallbackSession, 0)
+  end
+  self._admittedLayoutSession = fallbackSession
+  local resolved, resolveError = pcall(function()
+    self:_resolve()
+  end)
+  if not resolved then
+    self._session:dispose()
+    assert(self._admittedLayoutSession):dispose()
+    error(resolveError, 0)
+  end
   return self
 end
 
@@ -791,8 +810,14 @@ function StorageScreenState:_resolve()
   local view = self:_buildView()
   local measurement = self._measureDisplay()
   self._session:resolve(measurement, view)
+  -- The fallback session tracks the same classification history from the
+  -- start so a later resize reflows the admitted view to the same case
+  -- the live session would select. Nothing is admitted until the host
+  -- says ready, so the plan is synchronized here but never stored.
+  assert(self._admittedLayoutSession):resolve(measurement, view)
   self._publishedView = view
   self._publishedKey = self:_publishKey(measurement)
+  self._publishedMeasurementSignature = measurement.signature
 end
 
 -- Identifies everything the published pair was built from: the measured
@@ -837,8 +862,23 @@ function StorageScreenState:_ensurePublished()
   end
   local view = self:_buildView()
   self._session:resolve(measurement, view)
+  -- A changed display signature reflows only the retained parent: the
+  -- live session keeps its current view for input while the fallback
+  -- session resolves the admitted view under the same measurement. The
+  -- new parent plan and its signature publish together only after the
+  -- fallback resolve returns a valid plan, so a rejected measurement
+  -- keeps the last valid pair and retries on the next refresh.
+  if measurement.signature ~= self._publishedMeasurementSignature then
+    local fallbackView = self._admittedParentView or view
+    local fallbackPlan = assert(self._admittedLayoutSession):resolve(measurement, fallbackView)
+    if self._admittedParentView ~= nil then
+      self._admittedParentPlan = fallbackPlan
+      self._admittedParentSignature = measurement.signature
+    end
+  end
   self._publishedView = view
   self._publishedKey = key
+  self._publishedMeasurementSignature = measurement.signature
   return view
 end
 
@@ -1158,6 +1198,9 @@ function StorageScreenState:admitParentPresentation()
   self:_ensurePublished()
   self._admittedParentView = self._publishedView
   self._admittedParentPlan = self._session:plan()
+  -- The signature belongs to the measurement that built the live plan,
+  -- sampled once per refresh rather than re-sampled after the fact.
+  self._admittedParentSignature = assert(self._publishedMeasurementSignature)
 end
 
 function StorageScreenState:draw(resources, presentationReady)
@@ -1253,10 +1296,16 @@ function StorageScreenState:dispose()
   self._contents = nil
   self._publishedView = nil
   self._publishedKey = nil
+  self._publishedMeasurementSignature = nil
   self._admittedParentView = nil
   self._admittedParentPlan = nil
+  self._admittedParentSignature = nil
   self:_disposeChild()
   self._session:dispose()
+  local fallback = self._admittedLayoutSession
+  if fallback ~= nil then
+    fallback:dispose()
+  end
 end
 
 return StorageScreenState
