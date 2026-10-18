@@ -836,6 +836,23 @@ function FieldState:draw()
       self:_recordGeometrySignature(width, height, topology)
     end
   end
+  if self._celebiRenderer ~= nil or self._celebiBlur ~= nil then
+    local scene = self.runtime.celebiTimeTravelScene
+    local inactive = scene == nil or not scene:status().active
+    if inactive then
+      if self._celebiRenderer ~= nil then
+        self._celebiRenderer:dispose()
+        self._celebiRenderer = nil
+      end
+      if self._celebiBlur ~= nil then
+        self._celebiBlur:release()
+        self._celebiBlur = nil
+      end
+      if self.worldParts ~= nil then
+        self.worldParts[12] = NO_DRAWS
+      end
+    end
+  end
   if not self.runtime:destinationWorldPresentable() then
     -- The committed but not-yet-presentable destination must not expose an
     -- incomplete world: a selected preview (or its black fade) still covers

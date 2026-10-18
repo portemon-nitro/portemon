@@ -10,6 +10,7 @@ local FieldState = require("game.hgss.src.field.FieldState")
 local FieldYesNoHost = require("libs.hgss.src.ui.FieldYesNoHost")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
+local FakeGraphics = require("tests.support.FakeGraphics")
 local PixelScale = require("libs.ui.src.PixelScale")
 
 local T = {}
@@ -947,6 +948,165 @@ function T.screen_fade_cover_rects_reused_until_topology_changes()
   end)
   lg.rectangle = originalRectangle
   lg.setColor = originalSetColor
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- Inactive Celebi presenters are owned by FieldState even while a covered
+-- destination cannot be drawn. The cover remains the only visible output.
+function T.inactive_celebi_presenters_retire_before_covered_return()
+  local state, runtime = drawState()
+  local topology = oneDisplay(800, 600)
+  runtime.destinationWorldPresentable = function()
+    return false
+  end
+  runtime.screenTopology = topology
+  runtime.viewport.worldViewport = { x = 0, y = 0, width = 800, height = 600 }
+  runtime.celebiTimeTravelScene = {
+    status = function()
+      return { active = false }
+    end,
+  }
+  runtime.screenFade = {
+    presentationOverlay = function()
+      return { r = 1, g = 1, b = 1, a = 1, screenScope = "both" }
+    end,
+  }
+  local disposed, released, rendererDraws = 0, 0, 0
+  state._celebiRenderer = {
+    dispose = function()
+      disposed = disposed + 1
+    end,
+  }
+  state._celebiBlur = {
+    release = function()
+      released = released + 1
+    end,
+  }
+  local staleItem = { "stale Celebi draw item" }
+  state.worldParts[12] = staleItem
+  local ordinaryParts = {}
+  for index = 1, 11 do
+    ordinaryParts[index] = { index }
+    state.worldParts[index] = ordinaryParts[index]
+  end
+  state.presentationResources.renderer.draw = function()
+    rendererDraws = rendererDraws + 1
+  end
+  local graphics = FakeGraphics.new()
+  local originalGraphics = love.graphics
+  rawset(love, "graphics", graphics)
+  local ok, err = pcall(function()
+    state:draw()
+    state:draw()
+
+    Assert.equal(disposed, 1, "the cutscene model presenter retires once")
+    Assert.equal(released, 1, "the blur presenter retires once")
+    Assert.equal(state._celebiRenderer, nil)
+    Assert.equal(state._celebiBlur, nil)
+    Assert.isTrue(state.worldParts[12] ~= staleItem, "released draw records are not retained")
+    Assert.equal(#state.worldParts[12], 0, "the retired Celebi draw slot is empty")
+    for index = 1, 11 do
+      Assert.equal(state.worldParts[index], ordinaryParts[index], "unrelated field parts stay untouched")
+    end
+    Assert.equal(rendererDraws, 0, "the covered return does not draw the destination world")
+    Assert.deepEqual(graphics.rectangles[1], {
+      mode = "fill",
+      x = 0,
+      y = 0,
+      w = 800,
+      h = 600,
+      rx = nil,
+      ry = nil,
+      color = { 1, 1, 1, 1 },
+      lineWidth = 1,
+    }, "the opaque script cover remains visible")
+
+    local modelOnly = drawState()
+    local blurOnly = drawState()
+    local modelOnlyItem = { "stale model item" }
+    modelOnly.runtime.destinationWorldPresentable = function()
+      return false
+    end
+    modelOnly.runtime.celebiTimeTravelScene = runtime.celebiTimeTravelScene
+    modelOnly._celebiRenderer = {
+      dispose = function()
+        disposed = disposed + 1
+      end,
+    }
+    modelOnly.worldParts[12] = modelOnlyItem
+    blurOnly.runtime.destinationWorldPresentable = function()
+      return false
+    end
+    blurOnly.runtime.celebiTimeTravelScene = runtime.celebiTimeTravelScene
+    blurOnly._celebiBlur = {
+      release = function()
+        released = released + 1
+      end,
+    }
+    modelOnly:draw()
+    blurOnly:draw()
+    Assert.equal(disposed, 2, "model-only ownership retires without a blur owner")
+    Assert.equal(released, 2, "blur-only ownership retires without a model owner")
+    Assert.isTrue(modelOnly.worldParts[12] ~= modelOnlyItem)
+  end)
+  rawset(love, "graphics", originalGraphics)
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- Readiness alone does not end an active scene's presentation ownership.
+function T.active_celebi_presenters_survive_covered_return()
+  local state, runtime = drawState()
+  runtime.destinationWorldPresentable = function()
+    return false
+  end
+  runtime.screenTopology = oneDisplay(800, 600)
+  runtime.viewport.worldViewport = { x = 0, y = 0, width = 800, height = 600 }
+  local active = true
+  runtime.celebiTimeTravelScene = {
+    status = function()
+      return { active = active }
+    end,
+  }
+  runtime.screenFade = {
+    presentationOverlay = function()
+      return { r = 1, g = 1, b = 1, a = 1, screenScope = "both" }
+    end,
+  }
+  local disposed, released = 0, 0
+  state._celebiRenderer = {
+    dispose = function()
+      disposed = disposed + 1
+    end,
+  }
+  state._celebiBlur = {
+    release = function()
+      released = released + 1
+    end,
+  }
+  local activeDrawItem = { "active Celebi draw item" }
+  state.worldParts[12] = activeDrawItem
+  local graphics = FakeGraphics.new()
+  local originalGraphics = love.graphics
+  rawset(love, "graphics", graphics)
+  local ok, err = pcall(function()
+    state:draw()
+    Assert.equal(disposed, 0, "an active scene keeps its model presenter")
+    Assert.equal(released, 0, "an active scene keeps its blur presenter")
+    Assert.equal(state.worldParts[12], activeDrawItem, "active scene draw records remain owned")
+
+    active = false
+    state:draw()
+    Assert.equal(disposed, 1, "the first post-finish covered draw retires the model")
+    Assert.equal(released, 1, "the first post-finish covered draw retires the blur")
+    Assert.isTrue(state.worldParts[12] ~= activeDrawItem, "retired draw records are cleared")
+    Assert.equal(#state.worldParts[12], 0, "the retired Celebi draw slot is empty")
+    Assert.equal(#graphics.rectangles, 2, "both covered draws still paint the white warp cover")
+  end)
+  rawset(love, "graphics", originalGraphics)
   if not ok then
     error(err, 0)
   end
