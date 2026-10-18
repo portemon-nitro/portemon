@@ -15,6 +15,11 @@ local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldState = require("game.hgss.src.field.FieldState")
 local FieldStatePresentationFixture = require("tests.support.FieldStatePresentationFixture")
 local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
+local FieldFontLoader = require("libs.hgss.src.ui.FieldFontLoader")
+local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
+local MonCache = require("libs.assets.src.MonCache")
+local MonBucket = require("tests.support.MonBucket")
+local MonsSave = require("libs.mons.src.MonsSave")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
 
 local function readyVersions()
@@ -40,6 +45,24 @@ local function status(frame)
 end
 
 local function freshGame(versionId)
+  local cache = CacheFs.forVersion(versionId)
+  local fontDef = FieldFontLoader.load(cache)
+  local service = HgssMonService.new({
+    catalog = MonBucket.openCatalogs(versionId),
+    bucket = MonsSave.empty(7),
+    profile = { name = "GOLD", gender = 0, trainerId = 1 },
+    game = versionId,
+    language = MonCache.loadCatalog(cache).version.language,
+    charmap = assert(fontDef.charmap, "production font carries the charmap"),
+    mapSection = function()
+      return 60
+    end,
+    date = { year = 2000, month = 1, day = 1 },
+  })
+  Assert.isTrue(
+    service:giveMon({ species = "CYNDAQUIL", level = 5, location = 60 }),
+    "the field starts with a production-created follower"
+  )
   return {
     saveId = "save-00000001",
     versionId = versionId,
@@ -61,10 +84,51 @@ local function freshGame(versionId)
     fashionCase = FashionCaseState.empty(),
     playTime = PlayTime.new(),
     worldState = FieldEventState.new(),
-    mons = require("tests.support.MonBucket").emptyForVersion(versionId),
+    mons = service:capture(),
     bag = require("libs.hgss.src.save.BagSave").empty(),
     mart = require("libs.hgss.src.save.MartSave").empty(),
   }
+end
+
+local function detachedStatus(source, modelVisible)
+  return {
+    active = source.active,
+    modelVisible = modelVisible,
+    animationFrame = source.animationFrame,
+    swirlFrame = source.swirlFrame,
+    modelPosition = { x = source.modelPosition.x, y = source.modelPosition.y, z = source.modelPosition.z },
+    blurActive = source.blurActive,
+    sequence = source.sequence,
+  }
+end
+
+local function capture(state, scope)
+  local graphics = love.graphics
+  local viewport = state.runtime.viewport
+  local target = scope:own(graphics.newCanvas(viewport.width, viewport.height, {
+    format = "rgba8",
+    readable = true,
+    dpiscale = 1,
+  }))
+  graphics.setCanvas(target)
+  graphics.clear(0, 0, 0, 1)
+  state:draw()
+  graphics.setCanvas()
+  return scope:own(target:newImageData())
+end
+
+local function pixelDifferenceCount(a, b, bounds, threshold)
+  local different = 0
+  for y = bounds.y, bounds.y + bounds.height - 1 do
+    for x = bounds.x, bounds.x + bounds.width - 1 do
+      local ar, ag, ab = a:getPixel(x, y)
+      local br, bg, bb = b:getPixel(x, y)
+      if math.abs(ar - br) > threshold or math.abs(ag - bg) > threshold or math.abs(ab - bb) > threshold then
+        different = different + 1
+      end
+    end
+  end
+  return different
 end
 
 local T = GraphicsSmoke.suite({
@@ -79,31 +143,72 @@ local T = GraphicsSmoke.suite({
     scope:own({
       release = function()
         scene.status = originalSceneStatus
-        state:dispose()
+        local aborted, abortError = pcall(function()
+          if scene:status().active then
+            scene:abort()
+          end
+        end)
+        local disposed, disposeError = pcall(function()
+          state:dispose()
+        end)
+        if not aborted then
+          error(abortError, 0)
+        end
+        if not disposed then
+          error(disposeError, 0)
+        end
       end,
     })
     for _ = 1, 120 do
-      if state.runtime.session.mapEntryStage == nil then
+      local followingMon = state.runtime.followingMon
+      if
+        state.runtime.session.mapEntryStage == nil
+        and followingMon:partnerActorId() ~= nil
+        and followingMon:isPartnerVisible()
+      then
         break
       end
       state:draw()
-      state:update(1 / 60)
+      state:update(1 / 30)
     end
     Assert.isNil(state.runtime.session.mapEntryStage, "production field entry settles before capture")
-    local sceneStatus = status(30)
-    sceneStatus.blurActive = true
-    sceneStatus.swirlFrame = 1
-    scene.status = function()
-      return sceneStatus
+    Assert.notNil(state.runtime.followingMon:partnerActorId(), "production field entry installs the gifted follower")
+    Assert.isTrue(state.runtime.followingMon:isPartnerVisible(), "the installed follower is visible before replacement")
+    local followerId = assert(state.runtime.followingMon:partnerActorId(), "the field installs the gifted follower")
+    local follower = assert(state.runtime.actors:getById(followerId), "the installed follower actor remains live")
+    scene:beginModel()
+    scene:setAnimationFrame(31)
+    local liveStatus = scene:status()
+    local followerPosition = follower:getWorldPosition()
+    Assert.equal(liveStatus.modelPosition.x, followerPosition.x, "the replacement captures follower world X")
+    Assert.equal(liveStatus.modelPosition.y, followerPosition.y, "the replacement captures follower world Y")
+    Assert.equal(liveStatus.modelPosition.z, followerPosition.z, "the replacement captures follower world Z")
+    Assert.isFalse(
+      state.runtime.followingMon:isPartnerVisible(),
+      "the scene hides the real follower during replacement"
+    )
+    local function captureModelState(visible)
+      scene.status = function()
+        return detachedStatus(liveStatus, visible)
+      end
+      return capture(state, scope)
     end
+    local baselineBefore = captureModelState(false)
+    local modelVisible = captureModelState(true)
+    local baselineAfter = captureModelState(false)
+    scene.status = originalSceneStatus
 
-    local graphics = love.graphics
-    local width, height = state.runtime.viewport.width, state.runtime.viewport.height
-    local target = scope:own(graphics.newCanvas(width, height, { format = "rgba8", readable = true, dpiscale = 1 }))
-    graphics.setCanvas(target)
-    graphics.clear(0, 0, 0, 1)
-    state:draw()
-    graphics.setCanvas()
+    local viewport = state.runtime.viewport
+    local world = viewport.worldViewport
+    local fullViewport = { x = 0, y = 0, width = viewport.width, height = viewport.height }
+    local stablePixels = pixelDifferenceCount(baselineBefore, baselineAfter, fullViewport, 1 / 255)
+    local modelPixels = pixelDifferenceCount(baselineBefore, modelVisible, world, 2 / 255)
+    Assert.equal(stablePixels, 0, "model-off captures bracket an unchanged production frame")
+    Assert.isTrue(modelPixels > 0, "the source model contributes visible RGB pixels inside the main world viewport")
+
+    scene:beginSwirl()
+    scene:setSwirlFrame(1)
+    local composed = capture(state, scope)
 
     Assert.notNil(state._celebiBlur, "the production field draw enters its capture presenter")
     Assert.notNil(state._celebiBlur._scene, "FieldState captures into its transient scene target")
@@ -115,15 +220,12 @@ local T = GraphicsSmoke.suite({
       "the real field renderer submits captured world geometry"
     )
 
-    local pixels = target:newImageData()
     local varied = false
-    local first = { pixels:getPixel(128, 96) }
+    local first = { composed:getPixel(world.x + 128, world.y + 96) }
     for _, point in ipairs({ { 32, 32 }, { 128, 64 }, { 224, 160 } }) do
-      local pixel = { pixels:getPixel(point[1], point[2]) }
+      local pixel = { composed:getPixel(world.x + point[1], world.y + point[2]) }
       varied = varied or pixel[1] ~= first[1] or pixel[2] ~= first[2] or pixel[3] ~= first[3]
     end
-    pixels:release()
-    graphics.setCanvas()
     Assert.isTrue(varied, "the production-composed field capture reaches the framebuffer")
   end,
   ["original Celebi model draws with three source-clocked clips"] = function(scope)
@@ -157,7 +259,7 @@ local T = GraphicsSmoke.suite({
       Assert.equal(repeatedItems[1].transform[13], first.transform[13], "repeated draw does not advance X")
 
       local changed = false
-      for frame = 1, 210 do
+      for frame = 1, 211 do
         local frameItems = presenter:drawItems(status(frame))
         Assert.isTrue(#frameItems > 0, "the model remains drawable during its beat")
         for itemIndex, item in ipairs(frameItems) do
@@ -200,7 +302,7 @@ local T = GraphicsSmoke.suite({
       renderer:draw({
         edgeColors = edgeColors,
         fog = { enabled = false, color = 0, offset = 0, slope = 0, alpha = 0, table = fogTable },
-      }, camera, { presenter:drawItems(status(210)) }, nil, viewport, 0, 3)
+      }, camera, { presenter:drawItems(status(211)) }, nil, viewport, 0, 3)
       love.graphics.setCanvas()
       Assert.isTrue(renderer.stats.geometrySubmissions > 0, "Celebi reaches the real field graphics draw")
     end
