@@ -1139,6 +1139,42 @@ function T.fight_with_no_usable_move_refuses_without_spending()
   rig.screen:dispose()
 end
 
+-- The settled command root keeps its framed select prompt: the
+-- top-screen narration names the acting lead while the command menu
+-- stays open over it, so the view never goes chrome-only mid-decision.
+function T.command_root_keeps_the_framed_select_prompt()
+  local rig = openRig({})
+  driveToMode(rig, "command")
+  Assert.equal(
+    rig.screen:view().message,
+    "What will EEVEE do?",
+    "the settled command root keeps the framed select prompt"
+  )
+  rig.screen:dispose()
+  rig.battle:dispose()
+end
+
+-- A command actor with no displayed battler still fails loudly: the
+-- resolver never invents a fallback actor, so a genuinely dangling
+-- entry trips the integer-slot binding instead of painting over
+-- corrupt display facts.
+function T.dangling_command_actor_still_trips_the_slot_assert()
+  local rig = openRig({})
+  driveToMode(rig, "command")
+  rig.screen._request.actors[1].combatant = 999
+  rig.screen._menuGateTicks = 1
+  local ok, err = pcall(function()
+    return rig.screen:_snapshot()
+  end)
+  Assert.isFalse(ok, "the dangling actor never resolves into a snapshot")
+  Assert.isTrue(
+    tostring(err):find("integer source battle slot", 1, true) ~= nil,
+    "the failure names the slot binding: " .. tostring(err)
+  )
+  rig.screen:dispose()
+  rig.battle:dispose()
+end
+
 -- Complete projected intents seal unchanged: side-wide and field-wide
 -- fragments never open a picker and never rewrite their target.
 function T.projected_side_and_field_targets_seal_unchanged()

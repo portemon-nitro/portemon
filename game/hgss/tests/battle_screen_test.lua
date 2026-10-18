@@ -591,7 +591,15 @@ function T.interactive_commands_reach_the_runtime_exactly_once()
 
   -- Fight opens the true slots: one known move with its PP facts, the
   -- remaining slots visibly empty, and cancel returns to command.
+  -- The settled command root keeps its framed select prompt: the
+  -- top-screen narration names the acting lead while the command menu
+  -- stays open over it, so the view never goes chrome-only mid-decision.
+  -- PENDING-VERIFICATION: this suite's planning-manifest rig cannot boot
+  -- at the current tip (the constructor requires staged manifest
+  -- sections), so this prompt expectation is proven at the command layer
+  -- until the suite's boot gap is fixed; residence here is not green proof.
   local openingView = rig.screen:view()
+  Assert.equal(openingView.message, "What will EEVEE do?", "the settled command root keeps the framed select prompt")
   Assert.equal(openingView.selection, "fight", "the command prompt rests on the first command")
   local commands = assert(openingView.commands, "the command prompt lists its four commands")
   Assert.equal(#commands, 4, "Fight, Bag, Pokemon and Run stay reachable")
@@ -608,6 +616,12 @@ function T.interactive_commands_reach_the_runtime_exactly_once()
   rig.screen:input({ { type = "cancel" } })
   rig.pump(1)
   Assert.equal(rig.screen:status().mode, "command", "cancel from moves returns to command")
+  -- PENDING-VERIFICATION: same boot gap as above; proven at the command layer.
+  Assert.equal(
+    rig.screen:view().message,
+    "What will EEVEE do?",
+    "returning to command restores the framed select prompt"
+  )
   Assert.equal(#rig.submits, 0, "cancelling spends no turn")
 
   -- One accepted move seals exactly one reply: selecting the slot and

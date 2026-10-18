@@ -717,6 +717,35 @@ function BattleScreenState:_twoOptionChildView(child)
   return child
 end
 
+---@param names table<integer, table<string, unknown>> displayed battlers by combatant identity
+---@return string? retained select prompt while the command menu is open, nil otherwise
+function BattleScreenState:_commandPrompt(names)
+  -- The framed top-screen narration keeps the select prompt through
+  -- command root: the menu opens over the printed question instead of
+  -- clearing it, so the settled command view carries the wording while
+  -- the cue player stays settled behind the open decision. The prompt
+  -- names the acting entry only; an unresolvable actor keeps the cue
+  -- wording so the slot binding below still guards the resolution.
+  if self._mode ~= "command" then
+    return nil
+  end
+  if self._request == nil or type(self._request.actors) ~= "table" then
+    return nil
+  end
+  local actors = self._request.actors --[[@as table<integer, table<string, unknown>>]]
+  local addressed = actors[self._actorIndex]
+  if type(addressed) ~= "table" or type(addressed.combatant) ~= "number" then
+    return nil
+  end
+  local battler = names[
+    addressed.combatant --[[@as integer]]
+  ]
+  if type(battler) ~= "table" or type(battler.name) ~= "string" or battler.name == "" then
+    return nil
+  end
+  return "What will " .. battler.name --[[@as string]] .. " do?"
+end
+
 ---@return table<string, unknown> internal semantic snapshot for resolvers and renderers
 function BattleScreenState:_snapshot()
   local battlers = self._timeline:battlers()
@@ -744,6 +773,7 @@ function BattleScreenState:_snapshot()
       names[battler.combatant] = battler
     end
   end
+  local commandPrompt = self:_commandPrompt(names)
   local acting = nil
   if self._request ~= nil and type(self._request.actors) == "table" then
     local actors = self._request.actors --[[@as table<integer, table<string, unknown>>]]
@@ -819,7 +849,7 @@ function BattleScreenState:_snapshot()
     selection = self._selection,
     armed = self._armed ~= nil and { scope = self._armed.scope, id = self._armed.id } or nil,
     requestId = self._request ~= nil and self._request.requestId or 0,
-    message = self._notice or self._timeline:message(),
+    message = self._notice or commandPrompt or self._timeline:message(),
     battlers = battlers,
     bgScroll = self._scene:scroll(),
     backgroundRaster = self._scene:hasBackground() and self._scene:backgroundRaster() or nil,
