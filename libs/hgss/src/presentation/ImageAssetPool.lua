@@ -64,6 +64,7 @@ local DEFAULT_IDLE_IMAGE_BYTES = 64 * 1024 * 1024
 ---@field payload ImageAssetPoolPayload? unuploaded worker result held only by a prepared ticket
 ---@field physicalKey string?
 ---@field failure string?
+---@field residentReservation ResidentAssetCacheLease? kernel borrow held while a cached ticket stays unconsumed
 
 ---@class ImageAssetPoolPayload
 ---@field sourceHash string|love.ByteData
@@ -637,6 +638,13 @@ function ImageAssetPool:request(logicalPath, sampler, priority)
   if mapped ~= nil then
     local resident = self._images:find(mapped)
     if resident ~= nil then
+      local reservationOk, reservationOrErr = pcall(function()
+        return self._images:borrow(mapped)
+      end)
+      if not reservationOk then
+        dropStaleAlias(self, logicalKey, mapped)
+        error(reservationOrErr, 0)
+      end
       self._nextToken = self._nextToken + 1
       local token = self._nextToken
       self._requests[token] = {
@@ -646,6 +654,7 @@ function ImageAssetPool:request(logicalPath, sampler, priority)
         priority = level,
         state = "cached",
         physicalKey = mapped,
+        residentReservation = reservationOrErr,
       }
       return token
     end
@@ -705,9 +714,19 @@ function ImageAssetPool:poll(token)
   ---@cast physicalKey string
   local resident = self._images:find(physicalKey)
   if resident ~= nil then
+    local reservationOk, reservationOrErr = pcall(function()
+      return self._images:borrow(physicalKey)
+    end)
+    if not reservationOk then
+      request.payload = nil
+      request.physicalKey = nil
+      self._requests[token] = nil
+      error(reservationOrErr, 0)
+    end
     request.payload = nil
     request.physicalKey = physicalKey
     request.state = "cached"
+    request.residentReservation = reservationOrErr
     return "ready"
   end
   request.payload = payload --[[@as ImageAssetPoolPayload]]
@@ -739,7 +758,13 @@ function ImageAssetPool:acquire(token)
   if found ~= nil then
     local physical = found --[[@as ImageAssetPoolPhysical]]
     request.payload = nil
-    local borrowed = self._images:borrow(key)
+    local borrowed = request.residentReservation
+    request.residentReservation = nil
+    if borrowed == nil then
+      borrowed = self._images:borrow(key)
+    else
+      assert(borrowed._key == key, "cached ticket reservation key mismatch")
+    end
     physical.liveLeases = physical.liveLeases + 1
     if physical.liveLeases > 1 then
       physical.shared = true
@@ -759,8 +784,16 @@ function ImageAssetPool:acquire(token)
     }, Lease)
   end
   if request.state == "cached" then
-    dropStaleAlias(self, request.logicalKey, key)
+    local reservation = request.residentReservation
+    request.residentReservation = nil
+    request.payload = nil
     self._requests[token] = nil
+    if reservation ~= nil then
+      pcall(function()
+        self._images:returnLease(reservation)
+      end)
+    end
+    dropStaleAlias(self, request.logicalKey, key)
     error("physical image left the pool under its request", 0)
   end
   local payload = assert(request.payload, "prepared image request has no payload")
@@ -844,8 +877,13 @@ function ImageAssetPool:cancel(token)
     end)
     request.job = nil
   end
+  local reservation = request.residentReservation
+  request.residentReservation = nil
   request.payload = nil
   self._requests[token] = nil
+  if reservation ~= nil then
+    self._images:returnLease(reservation)
+  end
   return true
 end
 
@@ -901,6 +939,10 @@ function ImageAssetPool:dispose()
         self._queue:cancel(request.job)
       end)
       request.job = nil
+    end
+    if request.residentReservation ~= nil then
+      self._images:returnLease(request.residentReservation)
+      request.residentReservation = nil
     end
     request.payload = nil
   end

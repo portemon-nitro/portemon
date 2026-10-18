@@ -970,6 +970,9 @@ function T.tests.image_idle_budget_trims_oldest_first_and_reuse_shields_the_pred
         "ready",
         "resident reuse resolves its cached ticket without worker work for " .. path
       )
+      -- A ready cached ticket reserves its physical pair until consumed,
+      -- so terminate the enrollment-only interest once readiness is shown.
+      Assert.isTrue(pool:cancel(token), "reuse releases its cached ticket for " .. path)
     else
       replyTo(host, job, imageDerivativeReply(2, 1, tag))
     end

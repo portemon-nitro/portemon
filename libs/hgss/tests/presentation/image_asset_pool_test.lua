@@ -634,9 +634,11 @@ function T.concurrent_identical_content_publishes_a_single_physical_pair()
   end)
 end
 
--- Eviction invalidates every reference to the evicted pair: the consumed
--- ticket never reports ready again, while a fresh ticket for the same path
--- misses cleanly and uploads a new pair.
+-- Eviction invalidates every reference to the evicted pair for a ticket
+-- that was already consumed: the consumed ticket never reports ready
+-- again and never produces a second lease, while a fresh ticket for the
+-- same path misses cleanly and uploads a new pair. Tickets that are still
+-- held without an acquire are covered separately below.
 function T.evicted_entries_leave_no_stale_ready_tickets()
   withPool("no-stale-ready", { ["sprites/icon.png"] = fixturePng() }, function(pool, graphics)
     local sampler = matchingSampler()
@@ -648,6 +650,9 @@ function T.evicted_entries_leave_no_stale_ready_tickets()
     Assert.isTrue(evictedImage.released, "the returned idle pair is evicted by the prune")
     local pollOk, pollStatus = pcall(pool.poll, pool, token)
     Assert.isTrue(not pollOk or pollStatus ~= "ready", "a consumed ticket never reports a pruned pair ready")
+    Assert.throws(function()
+      pool:acquire(token)
+    end, "a consumed ticket never produces a second lease")
     local fresh = pool:request("sprites/icon.png", sampler)
     awaitReady(pool, fresh)
     local renewed = pool:acquire(fresh)
@@ -656,6 +661,161 @@ function T.evicted_entries_leave_no_stale_ready_tickets()
     pool:release(renewed)
     pool:prune()
     Assert.equal(#liveImages(graphics), 0, "reuse after eviction leaves no resident pair behind")
+  end)
+end
+
+-- A revisit of a released-but-still-resident pair through the same path
+-- and sampler stays borrowable across a prune that would otherwise evict
+-- it: the live ready ticket keeps its backing alive until its own
+-- acquire, which reuses the original pair with no new decode or upload.
+-- The same lifecycle runs for the indexed source-plus-palette form and
+-- the straight fallback form.
+function T.a_released_resident_revisit_stays_borrowable_across_prune()
+  local cases = {
+    { label = "indexed", formats = { r8 = true } },
+    { label = "straight", formats = {} },
+  }
+  for _, case in ipairs(cases) do
+    local cache = freshCache("held-ready-" .. case.label)
+    cache:write("sprites/icon.png", fixturePng())
+    local graphics = fakeGraphics({ formats = case.formats })
+    local pool = owner().new(cache, { graphics = graphics, idleByteLimit = 0 })
+    local ok, err = pcall(function()
+      local sampler = matchingSampler()
+      local seed = pool:acquire(requestReady(pool, "sprites/icon.png", sampler))
+      local originalImage = seed.image
+      local originalPalette = seed.palette
+      local uploadsAfterSeed = #graphics.created
+      pool:release(seed)
+      local revisit = pool:request("sprites/icon.png", sampler)
+      Assert.equal(pool:poll(revisit), "ready", "a resident revisit is ready without new work")
+      Assert.equal(#graphics.created, uploadsAfterSeed, "the revisit uploads nothing before prune")
+      pool:prune()
+      -- The prune above must not free the pair behind the live ticket;
+      -- that is proved by the acquire below reusing the original image.
+      local lease = pool:acquire(revisit)
+      Assert.isFalse(originalImage.released, "pruning kept the pair behind the live ready ticket")
+      Assert.equal(lease.image, originalImage, "acquire after prune reuses the original image")
+      Assert.equal(#graphics.created, uploadsAfterSeed, "acquire after prune uploads no new pair")
+      if case.label == "indexed" then
+        Assert.equal(lease.palette, originalPalette, "the indexed revisit keeps its palette")
+      else
+        Assert.equal(lease.kind, "rgba8", "the fallback revisit stays straight")
+      end
+      pool:release(lease)
+      pool:prune()
+      Assert.isTrue(originalImage.released, "balanced release plus prune frees the pair")
+      Assert.equal(originalImage.releaseCount, 1, "the pair is released exactly once")
+      Assert.equal(#liveImages(graphics), 0, "no resident pair is left behind")
+    end)
+    local disposeOk, disposeErr = pcall(pool.dispose, pool)
+    local removeOk, removeErr = pcall(cache.removeTree, cache, "")
+    if not ok then
+      error(err, 0)
+    end
+    Assert.isTrue(disposeOk, "disposal must succeed: " .. tostring(disposeErr))
+    Assert.isTrue(removeOk, "fixture cleanup must succeed: " .. tostring(removeErr))
+  end
+end
+
+-- A worker result that resolves to an already-resident physical identity
+-- adopts that pair instead of uploading a duplicate, and the adopting
+-- ticket keeps it alive across a prune that would otherwise evict it. A
+-- later adopting ticket that is cancelled instead leaves no record behind.
+function T.a_worker_result_adopting_a_resident_pair_stays_borrowable_across_prune()
+  local cache = freshCache("adopt-resident")
+  local graphics = fakeGraphics()
+  local function hashForPath(path)
+    if path == "sprites/first.png" or path == "sprites/second.png" then
+      return "shared-adopted-pixels"
+    end
+    return "pixels-for-" .. path
+  end
+  local pool = owner().new(cache, {
+    graphics = graphics,
+    queue = stubDerivativeQueue(hashForPath),
+    idleByteLimit = 0,
+  })
+  local ok, err = pcall(function()
+    local sampler = matchingSampler()
+    local seedToken = pool:request("sprites/first.png", sampler, "demand")
+    Assert.equal(pool:poll(seedToken), "ready", "synchronous preparation resolves without blocking")
+    local seed = pool:acquire(seedToken)
+    local originalImage = seed.image
+    local uploadsAfterSeed = #graphics.created
+    pool:release(seed)
+    local adopter = pool:request("sprites/second.png", sampler, "demand")
+    Assert.equal(pool:poll(adopter), "ready", "adoption of the resident pair is ready without new work")
+    Assert.equal(#graphics.created, uploadsAfterSeed, "adoption uploads no second pair")
+    pool:prune()
+    -- The prune above must not free the adopted pair; the acquire below
+    -- reusing the original image proves it.
+    local lease = pool:acquire(adopter)
+    Assert.isFalse(originalImage.released, "pruning kept the adopted pair behind the live ticket")
+    Assert.equal(lease.image, originalImage, "acquire after prune reuses the adopted pair")
+    Assert.equal(#graphics.created, uploadsAfterSeed, "acquire after prune still uploads no second pair")
+    pool:release(lease)
+    pool:prune()
+    Assert.isTrue(originalImage.released, "balanced release plus prune frees the adopted pair")
+    Assert.equal(originalImage.releaseCount, 1, "the adopted pair is released exactly once")
+    local doomed = pool:request("sprites/second.png", sampler, "demand")
+    Assert.equal(pool:poll(doomed), "ready", "a second adoption resolves its pair")
+    Assert.isTrue(pool:cancel(doomed), "the second adoption cancels")
+    Assert.isFalse(pool:cancel(doomed), "a cancelled adoption cancels only once")
+    local stats = pool:stats()
+    Assert.equal(stats.ready, 0, "no ready record survives cancellation")
+    pool:prune()
+  end)
+  local disposeOk, disposeErr = pcall(pool.dispose, pool)
+  local removeOk, removeErr = pcall(cache.removeTree, cache, "")
+  if not ok then
+    error(err, 0)
+  end
+  Assert.isTrue(disposeOk, "disposal must succeed: " .. tostring(disposeErr))
+  Assert.isTrue(removeOk, "fixture cleanup must succeed: " .. tostring(removeErr))
+end
+
+-- Two ready tickets for one physical pair plus a live lease keep that
+-- pair alive through cancellation, release, and prune in any order:
+-- cancelling one ticket never disturbs the other, returning the lease
+-- never evicts under the surviving ticket, and disposal after balanced
+-- release frees the pair exactly once with no outstanding interest.
+function T.two_ready_tickets_and_a_live_lease_balance_across_cancel_and_dispose()
+  local otherPng =
+    PngWriter.encode(FIXTURE_WIDTH, FIXTURE_HEIGHT, string.char(201, 10, 20, 255) .. string.sub(fixturePixels(), 5))
+  withPool("held-pair-balance", {
+    ["sprites/shared.png"] = fixturePng(),
+    ["sprites/other.png"] = otherPng,
+  }, function(pool, graphics)
+    local sampler = matchingSampler()
+    local seed = pool:acquire(requestReady(pool, "sprites/shared.png", sampler))
+    local originalImage = seed.image
+    local uploadsAfterSeed = #graphics.created
+    local first = pool:request("sprites/shared.png", sampler)
+    Assert.equal(pool:poll(first), "ready", "the first held ticket is ready without new work")
+    local second = pool:request("sprites/shared.png", sampler)
+    Assert.equal(pool:poll(second), "ready", "the second held ticket is ready without new work")
+    local pending = pool:request("sprites/other.png", sampler, "prefetch")
+    Assert.isTrue(pool:cancel(first), "the first held ticket cancels")
+    Assert.isFalse(pool:cancel(first), "a cancelled ticket cancels only once")
+    pool:release(seed)
+    pool:prune()
+    -- The prune above must not free the pair behind the surviving ticket;
+    -- the acquire below reusing the original image proves it.
+    local lease = pool:acquire(second)
+    Assert.isFalse(originalImage.released, "pruning kept the pair behind the surviving ticket")
+    Assert.equal(lease.image, originalImage, "the surviving ticket reuses the original image")
+    Assert.equal(#graphics.created, uploadsAfterSeed, "no new upload across the hold window")
+    pool:release(lease)
+    pool:prune()
+    Assert.isTrue(originalImage.released, "balanced release plus prune frees the pair")
+    Assert.equal(originalImage.releaseCount, 1, "the pair is released exactly once")
+    Assert.isTrue(pool:cancel(pending), "the unrelated pending interest cancels")
+    Assert.equal(countKeys(pool._requests), 0, "no ticket record survives the settled window")
+    local stats = pool:stats()
+    Assert.equal(stats.ready, 0, "no ready record survives the settled window")
+    Assert.equal(stats.staged, 0, "no staged payload survives the settled window")
+    Assert.equal(#liveImages(graphics), 0, "no resident pair is left behind")
   end)
 end
 
