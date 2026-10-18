@@ -81,7 +81,7 @@ local INTRO_ROLE_BY_SEQUENCE = {
 
 local TRANSITION_FALLBACK_ROWS = { [23] = true, [24] = true, [25] = true, [42] = true, [43] = true }
 
-local UNAVAILABLE_HEARTGOLD_EFFECTS = {
+local PREVIOUSLY_WAIVED_HEARTGOLD_EFFECTS = {
   "CHARGE",
   "STRUGGLE",
   "NEEDLE_ARM",
@@ -799,7 +799,7 @@ local function heartgoldSourceRoutesPublishCompleteGlobalCatalog(romFs, versionI
   Assert.isNil(manifest.programs.TACKLE.failure, "ordinary TACKLE route keeps its existing record shape")
   Assert.equal(assert(manifest.coverage.TACKLE).kind, "animation-program")
   local ArtifactBattleJobs = require("romdump.src.build.ArtifactBattleJobs")
-  for _, key in ipairs(UNAVAILABLE_HEARTGOLD_EFFECTS) do
+  for _, key in ipairs(PREVIOUSLY_WAIVED_HEARTGOLD_EFFECTS) do
     local program = assert(manifest.programs[key], key .. " remains an explicit catalog route")
     Assert.isNil(program.status, key .. " publishes no waiver status")
     Assert.isNil(program.failure, key .. " publishes no waiver cause")
@@ -948,7 +948,7 @@ end
 function T.heartgold_effect_routes_close_through_their_selected_source_member(romFs, versionId)
   Assert.equal(versionId, "heartgold", "the source-root trace is pinned to the verified HeartGold dump")
   local compiler = require("romdump.src.digest.battle.BattlePresentationCompiler")
-  for _, effectKey in ipairs(UNAVAILABLE_HEARTGOLD_EFFECTS) do
+  for _, effectKey in ipairs(PREVIOUSLY_WAIVED_HEARTGOLD_EFFECTS) do
     local effect, err = compiler.compileEffect(romFs, { versionId = versionId }, effectKey)
     Assert.isNil(err, effectKey .. " closes without a source failure: " .. tostring(err))
     Assert.notNil(effect, effectKey .. " closes through its selected source member")

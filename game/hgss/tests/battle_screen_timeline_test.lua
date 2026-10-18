@@ -1545,4 +1545,401 @@ function T.source_capture_text_uses_the_battle_printer_timeline()
   Assert.isTrue(timeline:message():sub(1, 1) == "A", "the source template feeds the paced battle printer")
 end
 
+-- Live native-effect cue coverage: the cue player routes an effect-keyed
+-- source event through a task-aware recording collaborator backed by the
+-- real player/factory/scene path, never a synthesized completion. The
+-- selected program starts before its health checkpoint with no duplicate
+-- generic voices, progresses identically under every host partition, starts
+-- once per action across hits/spread/redelivery, and never settles silently
+-- without its collaborator.
+-- Native mechanism: the single 30 Hz source tick drives cue admission, the
+-- player occurrence, and the scene exactly once; narration, hit, and HP
+-- cues wait behind native completion.
+-- Headless: hand-built struck events carrying the accepted semantic effect
+-- key, action, and hit identity drive the real cue player; the recording
+-- collaborator runs the exact compiled program through the real factory.
+
+---@param value integer unsigned word under staging
+---@return string four little-endian bytes staging one command word
+local function nativeU32(value)
+  return string.char(
+    value % 256,
+    math.floor(value / 256) % 256,
+    math.floor(value / 65536) % 256,
+    math.floor(value / 16777216) % 256
+  )
+end
+
+---@param list table<integer, integer> command words under staging
+---@return string staged byte stream lowering one program
+local function nativeStreamOf(list)
+  local parts = {}
+  for _, word in ipairs(list) do
+    parts[#parts + 1] = nativeU32(word)
+  end
+  return table.concat(parts)
+end
+
+---@return table<string, unknown> compiled resourceless native program completing in three source ticks
+local function nativeProbeProgram()
+  local BattleAnimationCompiler = require("romdump.src.digest.battle.BattleAnimationCompiler")
+  return assert(
+    BattleAnimationCompiler.compile({ key = "TACKLE", stream = nativeStreamOf({ 34, 1, 2, 3, 29, 50, 4 }) })
+  )
+end
+
+---@param program table<string, unknown> exact compiled program the collaborator admits
+---@return table task-aware recording native-effect collaborator over the real player path
+local function taskAwareEffects(program)
+  local Player = require("libs.hgss.src.presentation.BattleAnimationPlayer")
+  local Factory = require("libs.hgss.src.presentation.BattleEffectTasks")
+  local BattleScene = require("libs.hgss.src.presentation.BattleScene")
+  local scene = BattleScene.new()
+  scene:observe({
+    { combatant = 1, activation = 1, visible = true },
+    { combatant = 3, activation = 3, visible = true },
+  })
+  local audio = { played = {} }
+  function audio.play(name)
+    audio.played[#audio.played + 1] = name
+  end
+  function audio.stop(_name) end
+  function audio.isFinished(_name)
+    return true
+  end
+  local resources = { acquired = {}, released = {} }
+  function resources.resolve(key)
+    resources.acquired[#resources.acquired + 1] = key
+    return { key = key, lease = key }
+  end
+  function resources.release(lease)
+    resources.released[#resources.released + 1] = lease
+  end
+  local player = assert(Player.new({ scene = scene, audio = audio, resources = resources, tasks = Factory }))
+  local rec = { starts = {}, player = player, audio = audio, resources = resources, scene = scene }
+  function rec.start(cue)
+    Assert.isTrue(type(cue) == "table", "native cues carry their cue record with launch and effect identity")
+    rec.starts[#rec.starts + 1] = cue
+    local occurrence = { sequence = cue.eventSequence, effectKey = cue.effectKey }
+    if type(cue.event) == "table" then
+      for field, value in pairs(cue.event --[[@as table<string, unknown>]]) do
+        if occurrence[field] == nil then
+          occurrence[field] = value
+        end
+      end
+    end
+    if occurrence.actionId == nil then
+      occurrence.actionId = cue.actionId
+    end
+    if occurrence.hitOrdinal == nil and cue.hitOrdinal ~= nil then
+      occurrence.hitOrdinal = cue.hitOrdinal
+    end
+    return player:start({
+      launchId = cue.launchId or "timeline-probe",
+      packetId = cue.packetId or 1,
+      event = occurrence,
+      visualSeed = cue.visualSeed or 1,
+      topology = {
+        attacker = { combatant = 1, activation = 1, slot = "solo-player", sideType = 0 },
+        targets = { { combatant = 3, activation = 3, slot = "solo-enemy", sideType = 1 } },
+      },
+    }, program)
+  end
+  function rec.status(handle)
+    -- The double models the locked one-tick-advances-all contract:
+    -- every status poll advances the wrapped occurrence exactly once,
+    -- mirroring the screen's single-tick loop (cue, player, scene).
+    -- No catch-up loops: one poll steps one quantum.
+    player:stepSourceTick({ tick = 1 })
+    return player:status(handle)
+  end
+  function rec.cancel(handle, reason)
+    return player:cancel(handle, reason)
+  end
+  return rec
+end
+
+---@param sequence integer event sequence under test driving
+---@param actionId integer native action identity under test driving
+---@param hitIndex integer hit ordinal under test driving
+---@param effectKey string accepted semantic effect key under test driving
+---@param foeHp integer foe health after the checkpoint under test driving
+---@return table one struck event carrying its accepted native playback identity
+local function effectStrike(sequence, actionId, hitIndex, effectKey, foeHp)
+  local combatants = {
+    [1] = checkpoint(1, 52, 52),
+    [3] = checkpoint(3, foeHp, 57),
+  }
+  return {
+    sequence = sequence,
+    kind = "struck",
+    cause = { key = "TACKLE" },
+    audience = "public",
+    actors = { { combatant = 1, activation = 1 } },
+    targets = { { combatant = 3, activation = 3 } },
+    move = { executed = "TACKLE" },
+    actionId = actionId,
+    hitIndex = hitIndex,
+    effectKey = effectKey,
+    payload = { target = 3, damage = 57 - foeHp, hitIndex = hitIndex },
+    after = { hp = { [1] = 52, [3] = foeHp }, combatants = combatants },
+  }
+end
+
+-- The selected native program starts through the real player before its
+-- health checkpoint: the start carries the accepted semantic key, the
+-- checkpoint waits for real completion, the running program owns a visible
+-- scene change, and the generic impact/effectiveness voices stay silent
+-- while the native program owns audio timing.
+function T.native_effect_starts_its_selected_program_before_health_without_duplicate_voices()
+  local BattleAudio = require("libs.hgss.src.audio.BattleAudio")
+  local sounds = sink()
+  local fx = taskAwareEffects(nativeProbeProgram())
+  local timeline = BattleTimeline.new({
+    sound = function(cue)
+      sounds.sound(cue)
+    end,
+    effects = fx,
+  })
+  timeline:reset(openingView())
+  local after = openingView()
+  after.foes[1].hp = 43
+  Assert.isTrue(
+    timeline:present(packet(1, { effectStrike(11, 21, 1, "TACKLE", 43) }, after)),
+    "the effect-keyed strike is accepted"
+  )
+  Assert.isFalse(timeline:settled(), "the native cue leaves work pending")
+  for _ = 1, 5 do
+    if #fx.starts > 0 then
+      break
+    end
+    advance(timeline, TICK)
+  end
+  Assert.equal(#fx.starts, 1, "the selected native program starts through the real player")
+  Assert.equal(fx.starts[1].effectKey, "TACKLE", "the start carries the accepted semantic effect key")
+  Assert.equal(fx.starts[1].actionId, 21, "the start carries the accepted action identity")
+  Assert.equal(battler(timeline:battlers(), 3).hp, 57, "health waits for native completion instead of leaking early")
+  Assert.isFalse(timeline:settled(), "the running program holds the cue open")
+  Assert.equal(
+    #fx.scene:effectViews(),
+    0,
+    "state-only visual work publishes no drawable picture while running"
+  )
+  Assert.equal(
+    sounds.countEffect(BattleAudio.SINK_SOUNDS.impact),
+    0,
+    "the native program owns impact timing: no duplicate generic voice"
+  )
+  Assert.equal(
+    sounds.countEffect(BattleAudio.SINK_SOUNDS.effectiveness),
+    0,
+    "the native program owns effectiveness timing: no duplicate generic voice"
+  )
+  for _ = 1, 600 do
+    advance(timeline, TICK)
+    if timeline:settled() then
+      break
+    end
+  end
+  Assert.isTrue(timeline:settled(), "the native cue settles after real completion")
+  Assert.equal(battler(timeline:battlers(), 3).hp, 43, "the exact checkpoint applies after native completion")
+  Assert.isTrue(
+    #fx.audio.played > 0,
+    "the completed program played its source-timed voice instead of staying silent"
+  )
+end
+
+-- One accepted source tick reads the same on every host schedule while a
+-- native program runs: 30 Hz and 60 Hz host slicing start the program once
+-- each, land the same checkpoint, drain the same voices, and expose the
+-- same per-tick scene frames.
+function T.native_effect_progress_agrees_across_host_partitions()
+  ---@param schedule number[] host frame durations under test driving
+  ---@return table played cue player behind the schedule
+  ---@return table drained voices behind the schedule
+  ---@return table recording collaborator behind the schedule
+  ---@return integer[] scene frame counts at each host step
+  local function runOver(schedule)
+    local sounds = sink()
+    local fx = taskAwareEffects(nativeProbeProgram())
+    local played = BattleTimeline.new({
+      sound = function(cue)
+        sounds.sound(cue)
+      end,
+      effects = fx,
+    })
+    played:reset(openingView())
+    local after = openingView()
+    after.foes[1].hp = 43
+    played:present(packet(1, { effectStrike(11, 21, 1, "TACKLE", 43) }, after))
+    local views = {}
+    for _, dt in ipairs(schedule) do
+      played:update(dt, function(_)
+        return true
+      end)
+      views[#views + 1] = #fx.scene:effectViews()
+    end
+    return played, sounds, fx, views
+  end
+  -- Four accepted seconds per schedule: the strike cue chain alone
+  -- needs 94 source ticks (paced narration, hit recoil, health
+  -- interpolation), so 90 ticks can never settle with or without a
+  -- native program. The budgets below cover the full chain with
+  -- margin while keeping the 30 Hz to 60 Hz two-to-one ratio.
+  local at30, at60 = {}, {}
+  for _ = 1, 120 do
+    at30[#at30 + 1] = 1 / 30
+  end
+  for _ = 1, 240 do
+    at60[#at60 + 1] = 1 / 60
+  end
+  local first, firstSounds, firstFx, firstViews = runOver(at30)
+  local second, secondSounds, secondFx, secondViews = runOver(at60)
+  Assert.equal(#firstFx.starts, 1, "the 30 Hz schedule starts the native program once")
+  Assert.equal(#secondFx.starts, 1, "the 60 Hz schedule starts the native program once")
+  Assert.isTrue(first:settled(), "the 30 Hz schedule settles the native cue")
+  Assert.isTrue(second:settled(), "the 60 Hz schedule settles the native cue")
+  Assert.equal(
+    battler(second:battlers(), 3).hp,
+    battler(first:battlers(), 3).hp,
+    "partitions land the same checkpoint"
+  )
+  Assert.deepEqual(secondSounds.played, firstSounds.played, "partitions drain the same voices")
+  local firstBoundaries, secondBoundaries = {}, {}
+  for _, count in ipairs(firstViews) do
+    firstBoundaries[#firstBoundaries + 1] = count
+  end
+  for index = 2, #secondViews, 2 do
+    secondBoundaries[#secondBoundaries + 1] = secondViews[index]
+  end
+  Assert.deepEqual(secondBoundaries, firstBoundaries, "partitions expose the same scene frame per source tick")
+end
+
+-- One action plays its full move animation once: a two-hit turn with one
+-- action identity starts a single occurrence, redelivery starts nothing
+-- new, and only a distinct action identity starts its own occurrence.
+function T.native_effect_starts_once_per_action_across_hits_spread_and_redelivery()
+  local sounds = sink()
+  local fx = taskAwareEffects(nativeProbeProgram())
+  local timeline = BattleTimeline.new({
+    sound = function(cue)
+      sounds.sound(cue)
+    end,
+    effects = fx,
+  })
+  timeline:reset(openingView())
+  local after = openingView()
+  after.foes[1].hp = 30
+  local first = packet(1, {
+    effectStrike(11, 21, 1, "TACKLE", 43),
+    effectStrike(12, 21, 2, "TACKLE", 30),
+  }, after)
+  Assert.isTrue(timeline:present(first), "the two-hit turn is accepted")
+  for _ = 1, 900 do
+    advance(timeline, TICK)
+    if timeline:settled() then
+      break
+    end
+  end
+  Assert.isTrue(timeline:settled(), "the two-hit turn drains")
+  Assert.equal(#fx.starts, 1, "one action plays its full move animation once, never once per hit")
+  Assert.isFalse(timeline:present(first), "redelivery of the same packet queues nothing new")
+  Assert.equal(#fx.starts, 1, "redelivery starts nothing new")
+  local later = openingView()
+  later.foes[1].hp = 10
+  Assert.isTrue(
+    timeline:present(packet(2, { effectStrike(13, 22, 1, "TACKLE", 10) }, later)),
+    "the next action is accepted"
+  )
+  for _ = 1, 900 do
+    advance(timeline, TICK)
+    if timeline:settled() then
+      break
+    end
+  end
+  Assert.isTrue(timeline:settled(), "the next action drains")
+  Assert.equal(#fx.starts, 2, "a distinct action identity starts its own occurrence")
+end
+
+-- A real source cue with no animation collaborator never counts as shown:
+-- without its player the cue must hold or diagnose, never settle as a
+-- silent generic success.
+function T.effect_keyed_source_cue_without_a_collaborator_never_settles_silently()
+  local sounds = sink()
+  local timeline = BattleTimeline.new({
+    sound = function(cue)
+      sounds.sound(cue)
+    end,
+  })
+  timeline:reset(openingView())
+  local after = openingView()
+  after.foes[1].hp = 43
+  timeline:present(packet(1, { effectStrike(11, 21, 1, "TACKLE", 43) }, after))
+  for _ = 1, 600 do
+    advance(timeline, TICK)
+  end
+  local settledQuietly = timeline:settled() and #timeline:diagnostics() == 0
+  Assert.isFalse(settledQuietly, "a real source cue with no animation collaborator never counts as shown")
+end
+
+---@param sequence integer event sequence under test driving
+---@param kind string kernel event kind under test driving
+---@param phase string occurrence move phase under test driving
+---@param foeHp integer foe health after the checkpoint under test driving
+---@return table one effect-keyed two-turn event carrying its native phase identity
+local function phaseEvent(sequence, kind, phase, foeHp)
+  local combatants = {
+    [1] = checkpoint(1, 52, 52),
+    [3] = checkpoint(3, foeHp, 57),
+  }
+  return {
+    sequence = sequence,
+    kind = kind,
+    cause = { key = "FLY" },
+    audience = "public",
+    actors = { { combatant = 1, activation = 1 } },
+    targets = { { combatant = 3, activation = 3 } },
+    move = { selected = "FLY", executed = "FLY", phase = phase },
+    actionId = 77,
+    effectKey = "FLY",
+    payload = { target = 3 },
+    after = { hp = { [1] = 52, [3] = foeHp }, combatants = combatants },
+  }
+end
+
+-- A two-turn action admits one native-effect cue per phase occurrence:
+-- the charged (charge) and struck (strike) halves of the same action are
+-- distinct occurrences, so each executes exactly once through the real
+-- player instead of the strike half collapsing onto the charge cue.
+function T.two_turn_phases_of_one_action_each_execute_their_own_cue()
+  local sounds = sink()
+  local fx = taskAwareEffects(nativeProbeProgram())
+  local timeline = BattleTimeline.new({
+    sound = function(cue)
+      sounds.sound(cue)
+    end,
+    effects = fx,
+  })
+  timeline:reset(openingView())
+  local after = openingView()
+  after.foes[1].hp = 50
+  local first = packet(1, {
+    phaseEvent(11, "charged", "charge", 57),
+    phaseEvent(12, "struck", "direct", 50),
+  }, after)
+  Assert.isTrue(timeline:present(first), "the two-phase action is accepted")
+  for _ = 1, 900 do
+    advance(timeline, TICK)
+    if timeline:settled() then
+      break
+    end
+  end
+  Assert.isTrue(timeline:settled(), "both phase halves drain")
+  Assert.equal(#fx.starts, 2, "the charged and struck halves each start their own occurrence")
+  Assert.equal(fx.starts[1].event.kind, "charged", "the charge half leads")
+  Assert.equal(fx.starts[2].event.kind, "struck", "the strike half follows")
+  Assert.isFalse(timeline:present(first), "redelivery of the same packet queues nothing new")
+  Assert.equal(#fx.starts, 2, "redelivery starts no further occurrence")
+end
+
 return { tests = T }

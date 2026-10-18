@@ -1493,6 +1493,400 @@ function T.equal_source_time_paints_the_same_arrow_cell_on_every_schedule(scope,
   end
 end
 
+-- Records one selected-game effect demand per call for the graphics
+-- effect coverage: programmable pending/ready answers, no worker.
+local function recordingGraphicsEffectHost()
+  local host = { asks = {}, answers = {} }
+  local derived = {}
+  function derived.requestBattleEffect(key, urgency)
+    host.asks[#host.asks + 1] = { key = key, urgency = urgency }
+    local answer = host.answers[key]
+    if type(answer) == "table" and answer.failure ~= nil then
+      return false, answer.failure
+    end
+    if answer == "ready" then
+      return true
+    end
+    return nil
+  end
+  host.derivedAssets = derived
+  return host
+end
+
+local function graphicsEffectEnvelope(cache, host, graphics)
+  local text = {}
+  function text.measure(content)
+    return { width = 8 * #tostring(content), height = 16 }
+  end
+  function text.drawText(_) end
+  local windows = {}
+  function windows.drawWindow(_, _, _) end
+  return FieldBattlePresentation.new({
+    cacheFs = cache,
+    windows = windows,
+    text = text,
+    measureDisplay = function()
+      return {
+        width = 256,
+        height = 192,
+        topology = ScreenTopology.oneDisplay({
+          id = "main",
+          rect = { x = 0, y = 0, width = 256, height = 192 },
+          touch = true,
+          role = "world",
+        }),
+        pixelRatio = 1,
+        signature = "graphics-effect:compact",
+      }
+    end,
+    graphics = graphics,
+    derivedAssets = host.derivedAssets,
+  })
+end
+
+local function stagedGraphicsSpark(cache, key, width, height)
+  local EffectStagingFixture = require("tests.support.EffectStagingFixture")
+  local Hashing = require("romdump.src.digest.Hashing")
+  local textureBytes = EffectStagingFixture.rgba(width, height)
+  local textureIdentity = Hashing.sha1hex(textureBytes)
+  local textureKey = "battle/particle/texture/" .. textureIdentity
+  local texturePath = BattlePresentationCache.globalResourcePath("effect/content/" .. textureIdentity)
+  local record = EffectStagingFixture.effectRecord(key, {
+    { key = textureKey, kind = "texture", payload = texturePath, contentIdentity = textureIdentity },
+  })
+  cache:writeLua(BattlePresentationCache.effectPath(key), record)
+  return textureKey, texturePath, textureBytes
+end
+
+local function graphicsEffectHolder(services, launchId)
+  local BattlePresentationAssets = require("game.hgss.src.battle.BattlePresentationAssets")
+  return BattlePresentationAssets.new({
+    assets = services,
+    launchId = launchId,
+    sceneKey = "probe/plain/day",
+    shadowRegions = BattlePresentationManifestFixture.manifest().pictures.shadow.regions,
+  })
+end
+
+-- A staged effect texture paints native pixels through the production
+-- chain: real field services upload the staged RGBA descriptor into one
+-- owned LÖVE image, the holder resolves it under its semantic key, and
+-- the production renderer paints the source pixel at native coordinates
+-- with no fabricated registry.
+function T.staged_effect_texture_paints_native_pixels_through_production_services(scope, context)
+  local FakeCache = require("tests.support.FakeCache")
+  local BattleRenderer = require("game.hgss.src.battle.BattleRenderer")
+  local BattleScene = require("libs.hgss.src.presentation.BattleScene")
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local cache = CacheFs.forVersion("probe-effect-pixels", FakeCache.new())
+  local textureKey, texturePath, textureBytes = stagedGraphicsSpark(cache, "TACKLE", 8, 8)
+  local host = recordingGraphicsEffectHost()
+  local envelope = graphicsEffectEnvelope(cache, host, love.graphics)
+  local services = envelope:_preparationServices()
+  local assets = graphicsEffectHolder(services, "probe-pixels")
+  Assert.equal(assets:demandEffect("TACKLE"), false, "the unstaged effect polls pending without failing")
+  host.answers["TACKLE"] = "ready"
+  Assert.equal(assets:demandEffect("TACKLE"), false, "a ready worker without staged closure stays pending")
+  cache:write(BattlePresentationCache.effectMarkerPath("TACKLE"), "probe-marker")
+  cache:writeLua(texturePath, { width = 8, height = 8, rgba8888 = textureBytes })
+  Assert.equal(assets:demandEffect("TACKLE"), true, "the closed staged effect reads ready")
+  local effect = assets:loadEffect("TACKLE")
+  Assert.notNil(effect, "the ready effect loads")
+  Assert.equal(effect.key, "TACKLE", "the loaded record names the selected effect")
+  local lease = assets:resolveEffectResource(effect, textureKey)
+  Assert.notNil(lease, "the staged texture admits")
+  Assert.equal(lease.width, 8, "the admitted lease carries its staged width")
+  Assert.equal(lease.height, 8, "the admitted lease carries its staged height")
+  Assert.equal(lease.rgba8888, textureBytes, "the admitted lease shares its exact staged bytes")
+  local image = assets:drawable(textureKey)
+  Assert.notNil(image, "the admitted texture resolves to a real image")
+  Assert.equal(image:getWidth(), 8, "the uploaded image keeps its staged width")
+  Assert.equal(image:getHeight(), 8, "the uploaded image keeps its staged height")
+  Assert.isNil(
+    assets:drawable("battle/effect-background/blend"),
+    "invented proxy keys never resolve to a fabricated image"
+  )
+  local scene = BattleScene.new()
+  scene:observe({
+    { combatant = 1, activation = 1, visible = true },
+    { combatant = 3, activation = 3, visible = true },
+  })
+  local slot = scene:allocEffect("pixel-paint-probe")
+  scene:setEffectPicture(slot.id, {
+    assetKey = textureKey,
+    selector = "spark",
+    centerX = 32,
+    centerY = 24,
+    zCenter = 0,
+    width = 8,
+    height = 8,
+    alpha = 1,
+  })
+  local canvas = scope:own(love.graphics.newCanvas(256, 192, { format = "rgba8", readable = true }))
+  love.graphics.setCanvas(canvas)
+  love.graphics.clear(0, 0, 0, 0)
+  BattleRenderer.drawPane({
+    graphics = love.graphics,
+    text = {},
+    windows = {},
+    assets = assets,
+    frameKey = "default",
+    sceneImageKey = "scene:probe",
+  }, {
+    battlers = {},
+    effectInstances = scene:effectViews(),
+    hudPatchSpans = {},
+    hudSections = {},
+  }, "detail", {})
+  love.graphics.setCanvas()
+  local data = scope:own(canvas:newImageData())
+  Assert.equal(
+    countColor(data, { x = 28, y = 20, width = 8, height = 8 }, { 255, 0, 0 }),
+    1,
+    "the staged source pixel paints at its native coordinates"
+  )
+  local _, _, _, farAlpha = data:getPixel(200, 150)
+  Assert.equal(quantize(farAlpha), 0, "no effect ink leaks outside the staged region")
+  assets:dispose()
+  local stale, staleErr = assets:demandEffect("TACKLE")
+  Assert.isNil(stale, "a disposed launch publishes no stale readiness")
+  Assert.isTrue(type(staleErr) == "string" and staleErr ~= "", "the stale demand fails with context")
+  envelope:dispose()
+end
+
+-- A routine-move visual program runs through the real player, factory,
+-- scene, holder, and renderer without publishing proxy pictures. Visual
+-- task bodies that only move scene state (picture offsets, scrolls,
+-- palette fades) publish no drawable of their own: the production
+-- renderer rejects unknown picture keys, so a published proxy would fail
+-- the draw instead of painting. The program below is lowered through the
+-- real animation compiler from real source words (a parameterized picture
+-- offset callback, the shape routine contact moves use for their visual
+-- strike), executes against a real scene, and draws twice through the
+-- production renderer to canvas: completion comes from the compiled
+-- duration, the owned picture patch applies mid-run and restores on
+-- completion, no transient picture is ever published, and both frames
+-- settle to identical settled pixels.
+function T.routine_visual_task_program_paints_no_proxy_pictures_and_settles(scope, context)
+  local _ = context
+  local BattleAnimationCompiler = require("romdump.src.digest.battle.BattleAnimationCompiler")
+  local BattleAnimationSources = require("romdump.src.config.BattleAnimationSources")
+  local BattleAnimationPlayer = require("libs.hgss.src.presentation.BattleAnimationPlayer")
+  local BattleEffectTasks = require("libs.hgss.src.presentation.BattleEffectTasks")
+  local BattleRenderer = require("game.hgss.src.battle.BattleRenderer")
+  local BattleScene = require("libs.hgss.src.presentation.BattleScene")
+  local FakeCache = require("tests.support.FakeCache")
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local function u32(value)
+    return string.char(
+      value % 256,
+      math.floor(value / 256) % 256,
+      math.floor(value / 65536) % 256,
+      math.floor(value / 16777216) % 256
+    )
+  end
+  local words = { 45, 51, 3, 10, 0xFFF0, 258, 50, 4 }
+  local stream = {}
+  for _, word in ipairs(words) do
+    stream[#stream + 1] = u32(word)
+  end
+  local program = assert(BattleAnimationCompiler.compile({
+    key = "probe-routine-visual",
+    stream = table.concat(stream),
+    resolveSourceInput = function(role, operands)
+      Assert.equal(role, "battle-animation-callback", "the visual word asks for its source callback")
+      return BattleAnimationSources.resolveBattleAnimationCallback(operands)
+    end,
+  }))
+  Assert.equal(
+    program.instructions[1].taskKind,
+    "pokemon-picture-selected-horizontal-offset-transition",
+    "the lowered program keeps its source visual task kind"
+  )
+  local cache = CacheFs.forVersion("probe-routine-visual", FakeCache.new())
+  local _, texturePath, textureBytes = stagedGraphicsSpark(cache, "TACKLE", 8, 8)
+  cache:write(BattlePresentationCache.effectMarkerPath("TACKLE"), "probe-marker")
+  cache:writeLua(texturePath, { width = 8, height = 8, rgba8888 = textureBytes })
+  local host = recordingGraphicsEffectHost()
+  host.answers["TACKLE"] = "ready"
+  local envelope = graphicsEffectEnvelope(cache, host, love.graphics)
+  local services = envelope:_preparationServices()
+  local assets = graphicsEffectHolder(services, "probe-routine-visual")
+  Assert.equal(assets:demandEffect("TACKLE"), true, "the staged closure reads ready")
+  local scene = BattleScene.new()
+  scene:observe({
+    { combatant = 1, activation = 1, visible = true },
+    { combatant = 3, activation = 3, visible = true },
+  })
+  local audio = {}
+  function audio.play(_name) end
+  function audio.stop(_name) end
+  function audio.isFinished(_name)
+    return true
+  end
+  local resources = {}
+  function resources.resolve(key)
+    error("state-only visual tasks stage no leases: " .. tostring(key), 0)
+  end
+  function resources.release(_lease)
+    error("state-only visual tasks release no leases", 0)
+  end
+  local player = assert(BattleAnimationPlayer.new({
+    scene = scene,
+    audio = audio,
+    resources = resources,
+    tasks = BattleEffectTasks,
+  }))
+  local packet = {
+    launchId = "probe-routine-visual",
+    packetId = 1,
+    event = { sequence = 1, actionId = 1, hitIndex = 1, effectKey = "probe-routine-visual" },
+    visualSeed = 4242,
+    topology = {
+      attacker = { combatant = 1, activation = 1, slot = "solo-player", sideType = 0 },
+      targets = { { combatant = 3, activation = 3, slot = "solo-enemy", sideType = 1 } },
+    },
+  }
+  local handle = assert(player:start(packet, program))
+  player:stepSourceTick({ tick = 1 })
+  local firstPhase = player:status(handle)
+  Assert.isTrue(
+    firstPhase ~= "complete" and firstPhase ~= "failed",
+    "the visual run stays alive past its first tick, got " .. tostring(firstPhase)
+  )
+  Assert.equal(#scene:effectViews(), 0, "spawning the callback publishes no drawable picture")
+  player:stepSourceTick({ tick = 2 })
+  Assert.isTrue(
+    scene:pictureState({ combatant = 1, activation = 1 }) ~= nil,
+    "the running callback owns its activation picture patch"
+  )
+  Assert.equal(#scene:effectViews(), 0, "the running callback still publishes no drawable picture")
+  for _ = 1, 120 do
+    if player:status(handle) == "complete" then
+      break
+    end
+    player:stepSourceTick({ tick = 1 })
+  end
+  Assert.equal(player:status(handle), "complete", "the visual run reaches its compiled completion")
+  Assert.isNil(
+    scene:pictureState({ combatant = 1, activation = 1 }),
+    "completion restores the owned activation exactly"
+  )
+  Assert.equal(#scene:effectViews(), 0, "completion publishes no lingering drawable")
+  local function drawFrame()
+    local canvas = scope:own(love.graphics.newCanvas(256, 192, { format = "rgba8", readable = true }))
+    love.graphics.setCanvas(canvas)
+    love.graphics.clear(0, 0, 0, 0)
+    BattleRenderer.drawPane({
+      graphics = love.graphics,
+      text = {},
+      windows = {},
+      assets = assets,
+      frameKey = "default",
+      sceneImageKey = "scene:probe",
+    }, {
+      battlers = {},
+      effectInstances = scene:effectViews(),
+      hudPatchSpans = {},
+      hudSections = {},
+    }, "detail", {})
+    love.graphics.setCanvas()
+    return scope:own(canvas:newImageData())
+  end
+  local first = drawFrame()
+  local second = drawFrame()
+  Assert.equal(
+    imageDataDigest(first),
+    imageDataDigest(second),
+    "settled visual state paints identical pixels on every frame"
+  )
+  Assert.equal(
+    countInk(first, { x = 0, y = 0, width = 256, height = 192 }),
+    0,
+    "no proxy picture inks the settled frame"
+  )
+  player:dispose()
+  assets:dispose()
+  envelope:dispose()
+end
+
+-- Corrupt staged media and driver failures are terminal with context:
+-- a truncated payload and a failing GPU upload both fail the selected
+-- effect with its launch, effect, and resource identity, never hang as
+-- pending, and leave the field recoverable for other effects.
+function T.failed_effect_upload_reports_context_and_leaves_no_held_handles(scope, context)
+  local FakeCache = require("tests.support.FakeCache")
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local cache = CacheFs.forVersion("probe-effect-failure", FakeCache.new())
+  local textureKey, texturePath = stagedGraphicsSpark(cache, "TACKLE", 8, 8)
+  local host = recordingGraphicsEffectHost()
+  host.answers["TACKLE"] = "ready"
+  local envelope = graphicsEffectEnvelope(cache, host, love.graphics)
+  local services = envelope:_preparationServices()
+  local assets = graphicsEffectHolder(services, "probe-failure")
+  cache:write(BattlePresentationCache.effectMarkerPath("TACKLE"), "probe-marker")
+  cache:writeLua(texturePath, { width = 8, height = 8, rgba8888 = "short" })
+  Assert.equal(assets:demandEffect("TACKLE"), true, "marker and payload presence read ready before decoding")
+  local effect = assets:loadEffect("TACKLE")
+  Assert.notNil(effect, "the ready effect loads before admission")
+  local lease, failure = assets:resolveEffectResource(effect, textureKey)
+  Assert.isNil(lease, "the truncated payload hands out no image")
+  Assert.isTrue(type(failure) == "string" and failure ~= "", "the corrupt payload fails terminally")
+  local reason = failure --[[@as string]]
+  Assert.isTrue(reason:find(textureKey, 1, true) ~= nil, "the failure names its resource: " .. reason)
+  Assert.isTrue(reason:find("TACKLE", 1, true) ~= nil, "the failure names its effect: " .. reason)
+  Assert.isTrue(reason:find("probe-failure", 1, true) ~= nil, "the failure names its launch: " .. reason)
+  local again, againErr = assets:demandEffect("TACKLE")
+  Assert.isNil(again, "the failed effect never reads ready again")
+  Assert.isTrue(
+    type(againErr) == "string" and againErr:find(textureKey, 1, true) ~= nil,
+    "the terminal failure replays instead of hanging pending"
+  )
+  Assert.isNil(assets:drawable(textureKey), "the failed texture hands out nothing")
+  local splashKey, splashPath, splashBytes = stagedGraphicsSpark(cache, "SPLASH", 2, 2)
+  cache:write(BattlePresentationCache.effectMarkerPath("SPLASH"), "probe-marker")
+  cache:writeLua(splashPath, { width = 2, height = 2, rgba8888 = splashBytes })
+  host.answers["SPLASH"] = "ready"
+  local fresh = graphicsEffectHolder(services, "probe-failure-recovery")
+  Assert.equal(fresh:demandEffect("SPLASH"), true, "the field stays recoverable for other effects")
+  local splash = fresh:loadEffect("SPLASH")
+  Assert.notNil(splash, "the other effect loads")
+  Assert.notNil(fresh:resolveEffectResource(splash, splashKey), "the other effect admits")
+  Assert.notNil(fresh:drawable(splashKey), "the other effect uploads")
+  fresh:dispose()
+  assets:dispose()
+  envelope:dispose()
+  local failingGraphics = setmetatable({
+    newImage = function(_pixels)
+      error("probe gpu boom")
+    end,
+  }, { __index = love.graphics })
+  local gpuCache = CacheFs.forVersion("probe-effect-gpu-failure", FakeCache.new())
+  local gpuTextureKey, gpuTexturePath, gpuTextureBytes = stagedGraphicsSpark(gpuCache, "TACKLE", 8, 8)
+  gpuCache:write(BattlePresentationCache.effectMarkerPath("TACKLE"), "probe-marker")
+  gpuCache:writeLua(gpuTexturePath, { width = 8, height = 8, rgba8888 = gpuTextureBytes })
+  local gpuHost = recordingGraphicsEffectHost()
+  gpuHost.answers["TACKLE"] = "ready"
+  local gpuEnvelope = graphicsEffectEnvelope(gpuCache, gpuHost, failingGraphics)
+  local gpuServices = gpuEnvelope:_preparationServices()
+  local gpuAssets = graphicsEffectHolder(gpuServices, "probe-gpu-failure")
+  Assert.equal(gpuAssets:demandEffect("TACKLE"), true, "the staged closure reads ready before the driver fails")
+  local gpuEffect = gpuAssets:loadEffect("TACKLE")
+  Assert.notNil(gpuEffect, "the ready effect loads before the driver fails")
+  local gpuLease, gpuFailure = gpuAssets:resolveEffectResource(gpuEffect, gpuTextureKey)
+  Assert.isNil(gpuLease, "the driver failure hands out no image")
+  Assert.isTrue(type(gpuFailure) == "string" and gpuFailure ~= "", "the driver failure is terminal with context")
+  Assert.isTrue(
+    (gpuFailure --[[@as string]]):find(gpuTextureKey, 1, true) ~= nil,
+    "the driver failure names its resource"
+  )
+  local gpuAgain, gpuAgainErr = gpuAssets:demandEffect("TACKLE")
+  Assert.isNil(gpuAgain, "the driver-failed effect never reads ready again")
+  Assert.isTrue(type(gpuAgainErr) == "string" and gpuAgainErr ~= "", "the driver failure replays")
+  gpuAssets:dispose()
+  gpuEnvelope:dispose()
+end
+
 local suite = GraphicsSmoke.suite(T)
 suite.metadata.capabilities = { "graphics", "rom_dump" }
 suite.metadata.derivedAssets = {

@@ -245,4 +245,73 @@ function T.message_only_stand_in_is_rejected_for_non_damage_programs()
   )
 end
 
+function T.submitted_sound_actions_run_through_real_factory_tasks()
+  local program = lowered("run-submitted-sound", { 24, 1, 0, 0, 0, 0, 50, 4 })
+  Assert.equal(program.instructions[1].op, "submit-sound-action", "the word keeps its sound submission")
+  Assert.equal(
+    program.instructions[1].taskKind,
+    "positioned-sound-motion",
+    "the submission keeps its source sound task kind"
+  )
+  local Player = playerModule()
+  local Factory = effectFactoryModule()
+  local scene = sceneWithSolo()
+  local audio = { played = {}, stopped = {}, done = {}, queried = {} }
+  function audio.play(name)
+    audio.played[#audio.played + 1] = name
+    return name
+  end
+  function audio.playEffect(symbol)
+    audio.played[#audio.played + 1] = symbol
+    return { voice = symbol }
+  end
+  function audio.playFanfare(symbol)
+    audio.played[#audio.played + 1] = symbol
+    return { voice = symbol }
+  end
+  function audio.stop(name)
+    audio.stopped[#audio.stopped + 1] = name
+  end
+  function audio.stopVoice(handle)
+    audio.stopped[#audio.stopped + 1] = handle
+    return true
+  end
+  function audio.isFinished(name)
+    audio.queried[#audio.queried + 1] = name
+    return audio.done[name] == true
+  end
+  local resources = {}
+  function resources.resolve(key)
+    return { key = key, lease = key }
+  end
+  function resources.release(_lease) end
+  local player = assert(Player.new({
+    scene = scene,
+    audio = audio,
+    resources = resources,
+    tasks = Factory,
+  }))
+  local handle = assert(player:start(playbackPacket(), program))
+  for _ = 1, 10 do
+    player:stepSourceTick({ tick = 1 })
+  end
+  Assert.equal(
+    player:status(handle),
+    "waiting",
+    "the submitted sound waits on its unfinished voice instead of failing or timing out"
+  )
+  Assert.isTrue(#audio.queried > 0, "the run polls real voice completion while it waits")
+  for _, key in ipairs(audio.queried) do
+    audio.done[key] = true
+  end
+  for _ = 1, 120 do
+    player:stepSourceTick({ tick = 1 })
+    if player:status(handle) == "complete" then
+      break
+    end
+  end
+  Assert.equal(player:status(handle), "complete", "the finished voice completes the submitted sound")
+  Assert.isTrue(#audio.played > 0, "the submission stages a real voice instead of a silent timer")
+end
+
 return { tests = T }

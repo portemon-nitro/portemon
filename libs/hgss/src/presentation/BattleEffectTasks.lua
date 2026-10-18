@@ -5,10 +5,20 @@
 -- SysTask_CreateOnMainQueue directly and stays outside both counters.
 -- The player schedules work through this factory as
 -- Factory.create(kind, args, context, services); unknown kinds fail here
--- instead of returning a timer stand-in. Voice monitoring, background
--- blend transitions, battler particle continuations, and animated
--- picture reveals have bodies in this lane; every other native task kind
--- still fails closed until its implementation lands.
+-- instead of returning a timer stand-in. Voice monitoring, sound actions
+-- with real voice completion, background blend transitions, battler
+-- particle continuations, picture reveals, and one source-parameterized
+-- visual body per remaining nonparticle task kind have bodies in this
+-- lane; only kinds outside the emitted producer vocabulary still fail
+-- closed. Visual, blend, and picture bodies mutate only scene state
+-- (owned picture patches, scroll sweeps, palette overlays) and publish
+-- no drawable picture of their own: only particle tasks draw, and only
+-- from staged dependency textures. Completion boundaries come only from
+-- compiled source timing operands; well-formed spawns without one
+-- retire synchronously as validated markers, and malformed shapes fail
+-- closed. No fixed budget stands in for source timing anywhere.
+-- BattleEffectTasks.supportsKind is the narrow admission view over this
+-- same dispatch.
 
 ---@class BattleEffectTasks
 local BattleEffectTasks = {}
@@ -50,40 +60,10 @@ local EMITTER_POSITIONS = {
   ["enemy-side-slot-2"] = true,
 }
 
--- Source-tick budgets behind completion: every body finishes well inside
--- the player's bounded waits (the battler-effects wait escapes after
--- sixteen parked ticks) so completion is the body's own boundary, never
--- the wait backstop.
-local BLEND_DURATION_TICKS = 8
-local PARTICLE_DURATION_TICKS = 12
-local PICTURE_DURATION_TICKS = 6
-
--- Particle visual draws per source tick and their native coefficient
--- bound. The count stays fixed so the same seed always draws the same
--- sequence at any host schedule.
-local PARTICLE_DRAWS_PER_TICK = 2
-local PARTICLE_DRAW_BOUND = 256
-
--- Occurrence-scoped resource keys staged by bodies whose spawning
--- instruction carries no producer selection of its own. The services seam
--- owns these keys; the factory only holds and releases them exactly
--- once per occurrence.
-local BLEND_CHARACTER_KEY = "battle/effect-background/character"
-local BLEND_PALETTE_KEY = "battle/effect-background/palette"
-local PICTURE_ANIMATION_KEY = "battle/pokemon-picture/animation"
-
--- Fallback selections behind direct (player-bypass) construction, which
--- carries no spawning instruction. Player-spawned continuations always
--- carry their own resource and emitter; the fallback only keeps the
--- argless construction path runnable and deterministic.
-local DEFAULT_PARTICLE_RESOURCE = "battle/particle/tackle"
-local DEFAULT_PARTICLE_EMITTER = "solo-enemy"
-
--- Temporary picture offset behind animated reveals. The first
--- application saves the presented values and completion, cancellation,
--- and disposal restore that exact snapshot, so no stale change reaches a
--- replacement activation.
-local PICTURE_OFFSET_NUDGE = 8
+-- Sound actions retire on their staged voice; the escape mirrors the
+-- player's own voice escape so a voice that never reports cannot park
+-- the occurrence past the native sound-wait horizon.
+local SOUND_ESCAPE_TICKS = 90
 
 -- Particle emitter centers in explicit scene coordinates, one per native
 -- effect slot. Ally emissions stage over the player side and enemy
@@ -241,9 +221,289 @@ local function releaseStaged(staged)
   end
 end
 
+-- Source operand helpers shared by the parameterized bodies. Every
+-- helper reads only compiled producer operands; nothing here consults
+-- combat mechanics, the host wallclock, or ROM tables.
+---@param value unknown candidate tick count under validation
+---@return boolean positive true for a usable positive integer tick count
+local function isPositiveInt(value)
+  return type(value) == "number" and value % 1 == 0 and value >= 1
+end
+
+-- Clips a native blend coefficient into its register range instead of
+-- rejecting source extremes: the hardware saturates.
+---@param value number raw blend coefficient under clipping
+---@return integer saturated coefficient in 0..16
+local function clipBlendCoefficient(value)
+  local floored = math.floor(value)
+  if floored < 0 then
+    return 0
+  end
+  if floored > 16 then
+    return 16
+  end
+  return floored
+end
+
+-- Wraps a signed native picture offset into the unsigned byte the
+-- visible crop field carries, preserving native quantization.
+---@param value number signed native pixel offset under wrapping
+---@return integer wrapped offset byte in 0..255
+local function wrapPictureByte(value)
+  return (math.floor(value) % 256 + 256) % 256
+end
+
+---@param value number signed native pixel offset under clamping
+---@return integer clamped offset in -32768..32767
+local function clampPictureOffset(value)
+  local floored = math.floor(value)
+  if floored < -32768 then
+    return -32768
+  end
+  if floored > 32767 then
+    return 32767
+  end
+  return floored
+end
+
+---@param value number native rotation angle index under clamping
+---@return integer clamped angle index in 0..65535
+local function clampRotationAngle(value)
+  local floored = math.floor(value)
+  if floored < 0 then
+    return 0
+  end
+  if floored > 65535 then
+    return 65535
+  end
+  return floored
+end
+
+---@param value number native RGB555 color under clamping
+---@return integer clamped color in 0..32767
+local function clampPaletteColor(value)
+  local floored = math.floor(value)
+  if floored < 0 then
+    return 0
+  end
+  if floored > 32767 then
+    return 32767
+  end
+  return floored
+end
+
+-- Resolves the source-tick boundary from compiled timing operands.
+-- Explicit durations win, then two-phase sums, then per-step products,
+-- then approach/settle sums and single-tick fields. Well-formed spawns
+-- whose instruction carries no compiled timing operand resolve to no
+-- boundary: the caller retires those synchronously instead of
+-- inventing a fixed budget. Completion times come only from the source
+-- parameters the producer emitted, never from a fixed budget.
+---@param parameters table<string, unknown> compiled task parameters
+---@return integer? source ticks behind completion, absent for timing-less spawns
+local function visualDuration(parameters)
+  if isPositiveInt(parameters.durationTicks) then
+    return parameters.durationTicks
+  end
+  local first = isPositiveInt(parameters.firstDurationTicks) and parameters.firstDurationTicks or 0
+  local second = isPositiveInt(parameters.returnDurationTicks) and parameters.returnDurationTicks or 0
+  if isPositiveInt(parameters.secondDurationTicks) then
+    second = second + parameters.secondDurationTicks
+  end
+  if first > 0 or second > 0 then
+    local delay = isPositiveInt(parameters.phaseDelayTicks) and parameters.phaseDelayTicks or 0
+    return first + second + delay
+  end
+  local perStep, count = nil, nil
+  if isPositiveInt(parameters.ticksPerStep) and isPositiveInt(parameters.steps) then
+    perStep, count = parameters.ticksPerStep, parameters.steps
+  elseif isPositiveInt(parameters.framesPerStep) and isPositiveInt(parameters.repeatCount) then
+    perStep, count = parameters.framesPerStep, parameters.repeatCount
+  elseif isPositiveInt(parameters.ticksPerDirection) and isPositiveInt(parameters.directionChanges) then
+    perStep, count = parameters.ticksPerDirection, parameters.directionChanges
+  elseif isPositiveInt(parameters.toggleCount) and isPositiveInt(parameters.intervalTicks) then
+    perStep, count = parameters.toggleCount, parameters.intervalTicks
+  end
+  if perStep ~= nil and count ~= nil then
+    return perStep * count
+  end
+  local approach = isPositiveInt(parameters.approachTicks) and parameters.approachTicks or 0
+  local settle = isPositiveInt(parameters.settleTicks) and parameters.settleTicks or 0
+  if approach > 0 or settle > 0 then
+    return approach + settle
+  end
+  if isPositiveInt(parameters.frameTicks) then
+    return parameters.frameTicks
+  end
+  if isPositiveInt(parameters.positionTransitionTicks) then
+    return parameters.positionTransitionTicks
+  end
+  if
+    type(parameters.startCoefficient) == "number"
+    and type(parameters.endCoefficient) == "number"
+    and type(parameters.wait) == "number"
+  then
+    local travel =
+      math.abs(clipBlendCoefficient(parameters.endCoefficient) - clipBlendCoefficient(parameters.startCoefficient))
+    return math.max(1, travel * math.max(1, math.floor(parameters.wait)))
+  end
+  return nil
+end
+
+-- Semantic picture targets resolving to the occurrence attacker side.
+local ATTACKER_PICTURE_NAMES = {
+  attacker = true,
+  ["active-battler"] = true,
+  ["active-battler-pair-when-enabled"] = true,
+  ["all-battler-positions"] = true,
+  ["attacker-related-position-when-paired"] = true,
+}
+
+-- Semantic picture targets resolving to the first occurrence target.
+local TARGET_PICTURE_NAMES = {
+  target = true,
+  ["opposing-battler"] = true,
+  ["opposing-battler-pair-when-enabled"] = true,
+  ["other-battler-positions"] = true,
+  ["target-related-position-when-paired"] = true,
+}
+
+-- Resolves the activation a picture body owns: the explicit spawning
+-- argument first, then the semantic battler or picture target through
+-- the detached occurrence topology. Tasks without a resolvable target
+-- own no picture patch and only hold their transient effect record.
+---@param args table<string, unknown> instruction-derived construction arguments
+---@param context table<string, unknown> occurrence-bound playback context
+---@return table<string, unknown>? combatant and activation pair behind the owned picture
+local function plannedActivation(args, context)
+  local activation = args.activation
+  if type(activation) == "table" then
+    return { combatant = activation.combatant, activation = activation.activation }
+  end
+  local topology = type(context) == "table" and context.topology or nil
+  if type(topology) ~= "table" then
+    return nil
+  end
+  local name = args.battlerTarget
+  local parameters = args.parameters
+  if type(name) ~= "string" and type(parameters) == "table" and type(parameters.pictureTarget) == "string" then
+    name = parameters.pictureTarget
+  end
+  if type(name) ~= "string" then
+    return nil
+  end
+  if ATTACKER_PICTURE_NAMES[name] == true then
+    local attacker = topology.attacker --[[@as table<string, unknown>?]]
+    if type(attacker) == "table" and type(attacker.combatant) == "number" then
+      return { combatant = attacker.combatant, activation = attacker.activation }
+    end
+    return nil
+  end
+  if TARGET_PICTURE_NAMES[name] == true then
+    local targets = topology.targets --[[@as table<integer, table<string, unknown>>?]]
+    if type(targets) == "table" and type(targets[1]) == "table" and type(targets[1].combatant) == "number" then
+      local first = targets[1]
+      return { combatant = first.combatant, activation = first.activation }
+    end
+    return nil
+  end
+  return nil
+end
+
+-- Plans the owned picture overlay from compiled placement operands.
+-- Palette fades carry their clipped source coefficients, rotations
+-- interpolate their angle pair, and offsets interpolate from their
+-- source origin; operands naming no placement plan no overlay.
+---@param parameters table<string, unknown>|nil compiled task parameters
+---@return table<string, unknown>? picture overlay plan behind per-tick writes
+local function picturePlanFor(parameters)
+  if type(parameters) ~= "table" then
+    return nil
+  end
+  if
+    type(parameters.paletteTarget) == "string"
+    and type(parameters.startCoefficient) == "number"
+    and type(parameters.endCoefficient) == "number"
+  then
+    return {
+      kind = "palette",
+      start = clipBlendCoefficient(parameters.startCoefficient),
+      finish = clipBlendCoefficient(parameters.endCoefficient),
+      framesPer = isPositiveInt(parameters.wait) and parameters.wait or 1,
+      targetColor = type(parameters.nextColor) == "number" and clampPaletteColor(parameters.nextColor) or 0,
+    }
+  end
+  if type(parameters.startAngle) == "number" and type(parameters.targetAngle) == "number" then
+    return {
+      kind = "rotation",
+      from = clampRotationAngle(parameters.startAngle),
+      to = clampRotationAngle(parameters.targetAngle),
+    }
+  end
+  local fromX, toX, fromY, toY = 0, 0, 0, 0
+  local hasX, hasY = false, false
+  if type(parameters.startX) == "number" and type(parameters.endX) == "number" then
+    fromX, toX, hasX = clampPictureOffset(parameters.startX), clampPictureOffset(parameters.endX), true
+  elseif type(parameters.offsetX) == "number" and parameters.offsetX ~= 0 then
+    toX, hasX = clampPictureOffset(parameters.offsetX), true
+  elseif type(parameters.signedOffset) == "number" and parameters.signedOffset ~= 0 then
+    toX, hasX = clampPictureOffset(parameters.signedOffset), true
+  elseif type(parameters.endpointX) == "number" and parameters.endpointX ~= 0 then
+    toX, hasX = clampPictureOffset(parameters.endpointX), true
+  end
+  if type(parameters.startY) == "number" and type(parameters.endY) == "number" then
+    fromY, toY, hasY = clampPictureOffset(parameters.startY), clampPictureOffset(parameters.endY), true
+  elseif type(parameters.offsetY) == "number" and parameters.offsetY ~= 0 then
+    toY, hasY = clampPictureOffset(parameters.offsetY), true
+  elseif type(parameters.endpointY) == "number" and parameters.endpointY ~= 0 then
+    toY, hasY = clampPictureOffset(parameters.endpointY), true
+  elseif type(parameters.offsetStep) == "number" and parameters.offsetStep ~= 0 then
+    toY, hasY = clampPictureOffset(parameters.offsetStep), true
+  end
+  if not hasX and not hasY then
+    return nil
+  end
+  return { kind = "offset", fromX = fromX, toX = toX, fromY = fromY, toY = toY }
+end
+
+-- Plans the background scroll sweep from compiled scroll operands. The
+-- sweep stays relative to the scroll saved at construction; teardown
+-- restores that snapshot only while the task still owns the viewport.
+---@param parameters table<string, unknown>|nil compiled task parameters
+---@param duration integer source ticks behind the sweep
+---@return table<string, integer>? scroll sweep totals behind per-tick writes
+local function scrollSweepFor(parameters, duration)
+  if type(parameters) ~= "table" then
+    return nil
+  end
+  local function num(value)
+    return (type(value) == "number" and value == value) and value or nil
+  end
+  local sweepX = num(parameters.offsetX) or num(parameters.horizontalOffset) or num(parameters.deltaX)
+  local sweepY = num(parameters.offsetY) or num(parameters.verticalOffset) or num(parameters.deltaY)
+  local stepX = num(parameters.horizontalStep)
+  local stepY = num(parameters.verticalStep)
+  if stepX ~= nil or stepY ~= nil then
+    sweepX = (sweepX or 0) + (stepX or 0) * duration
+    sweepY = (sweepY or 0) + (stepY or 0) * duration
+  end
+  if sweepX == nil and sweepY == nil then
+    local startX = num(parameters.startX)
+    local startY = num(parameters.startY)
+    if startX ~= nil or startY ~= nil then
+      sweepX = (startX or 0) + (num(parameters.deltaX) or 0)
+      sweepY = (startY or 0) + (num(parameters.deltaY) or 0)
+    end
+  end
+  if sweepX == nil and sweepY == nil then
+    return nil
+  end
+  return { x = math.floor(sweepX or 0), y = math.floor(sweepY or 0) }
+end
+
 ---@param services table<string, unknown>? collaborators under validation
 ---@param kind string task kind under construction
----@return table<string, unknown> scene behind transient effect records
+---@return table<string, unknown> scene behind visual state
 local function checkScene(services, kind)
   if type(services) ~= "table" then
     error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " constructs without its services record", 0)
@@ -252,12 +512,20 @@ local function checkScene(services, kind)
   if type(scene) ~= "table" then
     error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " constructs without its scene", 0)
   end
+  return scene --[[@as table<string, unknown>]]
+end
+
+-- Requires the transient sprite-record seam behind particle tasks, the
+-- only family that publishes drawable pictures from staged dependency
+-- textures. State-only families never consult this seam.
+---@param scene table<string, unknown> scene under validation
+---@param kind string task kind under construction
+local function checkEffectScene(scene, kind)
   for _, method in ipairs({ "allocEffect", "setEffectPicture", "releaseEffect" }) do
     if type(scene[method]) ~= "function" then
       error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " constructs without scene effect ownership", 0)
     end
   end
-  return scene --[[@as table<string, unknown>]]
 end
 
 -- Deterministic fallback behind direct construction without an
@@ -317,13 +585,33 @@ local function stagedPicture(assetKey, selector, centerX, centerY, alpha)
   }
 end
 
+-- Resolves the blend completion boundary from compiled timing operands:
+-- an explicit duration wins, then the compiled per-step product.
+-- Well-formed spawns without compiled timing resolve to no boundary:
+-- the caller retires those synchronously instead of inventing a fixed
+-- budget.
+---@param args table<string, unknown> instruction-derived construction arguments
+---@return integer? source ticks behind blend completion, absent for timing-less spawns
+local function blendDuration(args)
+  local parameters = args.parameters
+  if type(parameters) == "table" then
+    if isPositiveInt(parameters.durationTicks) then
+      return parameters.durationTicks
+    end
+    if isPositiveInt(parameters.ticksPerStep) and isPositiveInt(parameters.steps) then
+      return parameters.ticksPerStep * parameters.steps
+    end
+  end
+  return nil
+end
+
 ---@class BattleBlendTransition
----@field _scene table<string, unknown> scene behind the transient effect record
----@field _staged table<integer, BattleEffectLeaseRecord> occurrence leases behind exactly-once release
----@field _effectId integer? live effect identity, when published
----@field _effectReleased boolean transient record has been released
+---@field _scene table<string, unknown> scene behind the background scroll sweep
+---@field _sweep table<string, integer>? compiled scroll totals behind per-tick writes
+---@field _scrollSaved table<string, number> viewport snapshot behind owned-only restoration
+---@field _lastScroll table<string, number>? last applied viewport behind owned-only restoration
 ---@field _ticks integer source ticks advanced
----@field _duration integer source ticks behind completion
+---@field _duration integer? source ticks behind completion, absent for synchronous markers
 ---@field _state string pending, running, complete, or cancelled
 ---@field _cancelReason string? last cancellation cause under diagnosis
 ---@field _disposed boolean release has run
@@ -344,43 +632,70 @@ local function newBlendTransition(args, context, services)
       0
     )
   end
+  if args.parameters ~= nil and type(args.parameters) ~= "table" then
+    error(
+      "BATTLE_EFFECT_TASK_MALFORMED: kind "
+        .. BattleEffectTasks.BLEND_TRANSITION_KIND
+        .. " carries its placement operands as a record",
+      0
+    )
+  end
   local scene = checkScene(services, BattleEffectTasks.BLEND_TRANSITION_KIND)
-  local staged = {}
-  stageLease(BattleEffectTasks.BLEND_TRANSITION_KIND, BLEND_CHARACTER_KEY, services, staged)
-  stageLease(BattleEffectTasks.BLEND_TRANSITION_KIND, BLEND_PALETTE_KEY, services, staged)
-  local effectId = publishEffect(
-    scene,
-    BattleEffectTasks.BLEND_TRANSITION_KIND,
-    stagedPicture("battle/effect-background/blend", "blend-transition", 128, 80, 1)
-  )
+  if type(scene.scroll) ~= "function" or type(scene.applyScrollPatch) ~= "function" then
+    error(
+      "BATTLE_EFFECT_TASK_MALFORMED: kind "
+        .. BattleEffectTasks.BLEND_TRANSITION_KIND
+        .. " constructs without the scene scroll seam",
+      0
+    )
+  end
+  local duration = blendDuration(args)
+  local parameters = args.parameters
+  if parameters == nil then
+    parameters = {}
+  end
+  -- Timing-less spawns carry a compiled scroll shape but no boundary:
+  -- those retire synchronously as validated markers instead of
+  -- sweeping on an invented budget. Only the source retail census
+  -- gates this path: timed spawns always take the sweep below.
+  local sweep = nil
+  if duration ~= nil then
+    sweep = scrollSweepFor(parameters, duration)
+  end
+  local saved = scene.scroll(scene)
   return setmetatable({
     _scene = scene,
-    _staged = staged,
-    _effectId = effectId,
-    _effectReleased = false,
+    _sweep = sweep,
+    _scrollSaved = { x = saved.x, y = saved.y },
+    _lastScroll = nil,
     _ticks = 0,
-    _duration = BLEND_DURATION_TICKS,
+    _duration = duration,
     _state = "pending",
     _cancelReason = nil,
     _disposed = false,
   }, BattleBlendTransition)
 end
 
--- Releases the transient record and every staged lease exactly once.
+-- Restores the viewport only while no newer sweep has moved it since:
+-- the task owns its scroll interpolation for its whole lifetime, so a
+-- finished blend never strands the viewport over the next effect. The
+-- task stages no leases and publishes no drawable picture.
 ---@param self BattleBlendTransition
 local function teardownBlend(self)
-  if not self._effectReleased then
-    self._effectReleased = true
-    if self._effectId ~= nil then
-      self._scene.releaseEffect(self._scene, self._effectId)
+  if self._lastScroll ~= nil then
+    local current = self._scene.scroll(self._scene)
+    if current.x == self._lastScroll.x and current.y == self._lastScroll.y then
+      self._scene.applyScrollPatch(self._scene, self._scrollSaved.x, self._scrollSaved.y)
     end
+    self._lastScroll = nil
   end
-  releaseStaged(self._staged)
 end
 
--- Advances one source tick toward the blend boundary. The task holds its
--- effect-background staging for its whole lifetime and releases it on
--- completion, so a finished blend never lingers over the next effect.
+-- Advances one source tick toward the blend boundary: the background
+-- viewport follows the compiled sweep while the task holds it, and
+-- completion restores the exact snapshot it saved at construction.
+-- Timing-less markers retire on their first tick: the validated spawn
+-- carries no boundary to interpolate, so there is nothing to sweep.
 ---@param self BattleBlendTransition
 ---@param tick table<string, unknown>? source tick under advancement
 function BattleBlendTransition:stepSourceTick(tick)
@@ -390,6 +705,21 @@ function BattleBlendTransition:stepSourceTick(tick)
   end
   self._state = "running"
   self._ticks = self._ticks + 1
+  if self._duration == nil then
+    self._state = "complete"
+    teardownBlend(self)
+    return
+  end
+  local progress = self._ticks / self._duration
+  if progress > 1 then
+    progress = 1
+  end
+  if self._sweep ~= nil then
+    local x = self._scrollSaved.x + self._sweep.x * progress
+    local y = self._scrollSaved.y + self._sweep.y * progress
+    self._scene.applyScrollPatch(self._scene, x, y)
+    self._lastScroll = { x = x, y = y }
+  end
   if self._ticks >= self._duration then
     self._state = "complete"
     teardownBlend(self)
@@ -417,7 +747,7 @@ function BattleBlendTransition:cancel(reason)
   teardownBlend(self)
 end
 
--- Releases the transient record and every staged lease exactly once.
+-- Restores the owned viewport exactly once; the blend stages nothing else.
 ---@param self BattleBlendTransition
 function BattleBlendTransition:dispose()
   if self._disposed then
@@ -484,7 +814,8 @@ local function newParticleContinuation(args, context, services)
       0
     )
   end
-  local scene = checkScene(services, BattleEffectTasks.PARTICLE_CONTINUATION_KIND)
+  local scene = checkScene(services, kind)
+  checkEffectScene(scene, kind)
   local staged = {}
   stageLease(BattleEffectTasks.PARTICLE_CONTINUATION_KIND, resource, services, staged)
   local random = checkRandom(context, BattleEffectTasks.PARTICLE_CONTINUATION_KIND)
@@ -581,14 +912,12 @@ function BattleParticleContinuation:dispose()
 end
 
 ---@class BattlePictureAnimation
----@field _scene table<string, unknown> scene behind the transient effect record
----@field _staged table<integer, BattleEffectLeaseRecord> occurrence leases behind exactly-once release
+---@field _scene table<string, unknown> scene behind the owned picture change
 ---@field _activation table<string, unknown>? combatant and activation pair behind the picture change
 ---@field _applied boolean temporary picture change is active
----@field _effectId integer? live effect identity, when published
----@field _effectReleased boolean transient record has been released
+---@field _signedOffset number compiled signed horizontal offset behind the reveal
 ---@field _ticks integer source ticks advanced
----@field _duration integer source ticks behind completion
+---@field _duration integer? source ticks behind completion, absent for synchronous show markers
 ---@field _state string pending, running, complete, or cancelled
 ---@field _cancelReason string? last cancellation cause under diagnosis
 ---@field _disposed boolean release has run
@@ -601,63 +930,88 @@ local function validActivation(value)
   return type(value) == "table" and type(value.combatant) == "number"
 end
 
+-- Semantic battler-picture targets behind show-picture spawns, in the
+-- runtime's normalized vocabulary. The factory validates membership
+-- here and never imports the producer tables; an unknown target fails
+-- closed with its kind identity.
+local PICTURE_SPAWN_TARGETS = {
+  ["active-position-first"] = true,
+  ["active-position-second"] = true,
+  ["first-battler-for-active-position-first"] = true,
+  ["first-battler-for-active-position-second"] = true,
+  ["first-battler-state-zero-or-two"] = true,
+  ["first-battler-state-one-or-three"] = true,
+  ["first-battler-state-four"] = true,
+  ["first-battler-state-five"] = true,
+}
+
 ---@param args table<string, unknown> instruction-derived construction arguments
 ---@param context table<string, unknown> occurrence-bound playback context
 ---@param services table<string, unknown> scene, audio, and resource collaborators
 ---@return BattlePictureAnimation runnable picture task
 local function newPictureAnimation(args, context, services)
   local _ = context
+  local kind = BattleEffectTasks.PICTURE_ANIMATION_KIND
   if args.battlerSelector ~= nil and type(args.battlerSelector) ~= "number" then
-    error(
-      "BATTLE_EFFECT_TASK_MALFORMED: kind "
-        .. BattleEffectTasks.PICTURE_ANIMATION_KIND
-        .. " addresses its battler with a numeric selector",
-      0
-    )
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " addresses its battler with a numeric selector", 0)
   end
   if args.mode ~= nil and type(args.mode) ~= "number" then
-    error(
-      "BATTLE_EFFECT_TASK_MALFORMED: kind "
-        .. BattleEffectTasks.PICTURE_ANIMATION_KIND
-        .. " carries its picture mode numerically",
-      0
-    )
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " carries its picture mode numerically", 0)
+  end
+  if args.parameters ~= nil and type(args.parameters) ~= "table" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " carries its placement operands as a record", 0)
+  end
+  if args.values ~= nil and type(args.values) ~= "table" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " carries its operands as a record", 0)
+  end
+  if args.battlerTarget ~= nil then
+    if type(args.battlerTarget) ~= "string" or PICTURE_SPAWN_TARGETS[args.battlerTarget] ~= true then
+      error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " names a known battler picture target", 0)
+    end
+  end
+  if args.runtimeSelection ~= nil and type(args.runtimeSelection) ~= "string" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " names its runtime selection semantically", 0)
   end
   local activation = args.activation
   if activation ~= nil and not validActivation(activation) then
-    error(
-      "BATTLE_EFFECT_TASK_MALFORMED: kind "
-        .. BattleEffectTasks.PICTURE_ANIMATION_KIND
-        .. " pictures a combatant activation pair",
-      0
-    )
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " pictures a combatant activation pair", 0)
   end
-  local scene = checkScene(services, BattleEffectTasks.PICTURE_ANIMATION_KIND)
-  local staged = {}
-  stageLease(BattleEffectTasks.PICTURE_ANIMATION_KIND, PICTURE_ANIMATION_KEY, services, staged)
-  local owned = nil
-  local applied = false
-  if activation ~= nil then
-    owned = { combatant = activation.combatant, activation = activation.activation }
-    if type(scene.applyPictureState) == "function" and type(scene.restorePictureState) == "function" then
-      scene.applyPictureState(scene, owned, { pictureXOffset2 = PICTURE_OFFSET_NUDGE })
-      applied = true
+  if activation == nil and args.battlerTarget == nil and args.battlerSelector == nil then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " addresses a battler to picture", 0)
+  end
+  local scene = checkScene(services, kind)
+  if type(scene.applyPictureState) ~= "function" or type(scene.restorePictureState) ~= "function" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " constructs without the scene picture seam", 0)
+  end
+  local parameters = args.parameters
+  local duration = nil
+  local signedOffset = 0
+  if type(parameters) == "table" then
+    -- A compiled duration drives the animated reveal; a well-formed
+    -- spawn without one retires synchronously as a validated marker.
+    -- Only the source retail census gates that path: timed reveals
+    -- always interpolate below.
+    if isPositiveInt(parameters.durationTicks) then
+      duration = parameters.durationTicks
+    end
+    if parameters.signedOffset ~= nil then
+      if type(parameters.signedOffset) ~= "number" then
+        error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " carries its signed offset numerically", 0)
+      end
+      signedOffset = parameters.signedOffset
     end
   end
-  local effectId = publishEffect(
-    scene,
-    BattleEffectTasks.PICTURE_ANIMATION_KIND,
-    stagedPicture("battle/pokemon-picture/reveal", "picture-animation", 128, 80, 1)
-  )
+  local owned = nil
+  if activation ~= nil then
+    owned = { combatant = activation.combatant, activation = activation.activation }
+  end
   return setmetatable({
     _scene = scene,
-    _staged = staged,
     _activation = owned,
-    _applied = applied,
-    _effectId = effectId,
-    _effectReleased = false,
+    _applied = false,
+    _signedOffset = signedOffset,
     _ticks = 0,
-    _duration = PICTURE_DURATION_TICKS,
+    _duration = duration,
     _state = "pending",
     _cancelReason = nil,
     _disposed = false,
@@ -665,8 +1019,8 @@ local function newPictureAnimation(args, context, services)
 end
 
 -- Restores the exact pre-effect picture snapshot (only when this
--- occurrence still owns the activation), then releases the transient
--- record and every staged lease exactly once.
+-- occurrence still owns the activation). The reveal stages no leases
+-- and publishes no drawable picture.
 ---@param self BattlePictureAnimation
 local function teardownPicture(self)
   if self._applied then
@@ -675,19 +1029,18 @@ local function teardownPicture(self)
       self._scene.restorePictureState(self._scene, self._activation)
     end
   end
-  if not self._effectReleased then
-    self._effectReleased = true
-    if self._effectId ~= nil then
-      self._scene.releaseEffect(self._scene, self._effectId)
-    end
-  end
-  releaseStaged(self._staged)
 end
 
--- Advances one source tick toward the picture boundary. The temporary
--- change stays owned by this occurrence's activation, so withdrawing or
--- replacing the activation never lets a stale restore reach the new
--- owner: withdrawal drops the stored patch with the old activation.
+-- Advances one source tick toward the picture boundary. The reveal
+-- interpolates its compiled signed offset onto the owned activation; a
+-- zero source offset applies no shift at all. Show-marker spawns carry
+-- no compiled timing at all: the native show applies synchronously and
+-- program-level waits own the timing, so the validated marker retires
+-- on its first tick instead of inventing a duration or pixels. The
+-- temporary change stays owned by this occurrence's activation, so
+-- withdrawing or replacing the activation never lets a stale restore
+-- reach the new owner: withdrawal drops the stored patch with the old
+-- activation.
 ---@param self BattlePictureAnimation
 ---@param tick table<string, unknown>? source tick under advancement
 function BattlePictureAnimation:stepSourceTick(tick)
@@ -697,6 +1050,21 @@ function BattlePictureAnimation:stepSourceTick(tick)
   end
   self._state = "running"
   self._ticks = self._ticks + 1
+  if self._duration == nil then
+    self._state = "complete"
+    teardownPicture(self)
+    return
+  end
+  if self._signedOffset ~= 0 and self._activation ~= nil then
+    local progress = self._ticks / self._duration
+    if progress > 1 then
+      progress = 1
+    end
+    self._scene.applyPictureState(self._scene, self._activation, {
+      pictureXOffset2 = wrapPictureByte(self._signedOffset * progress),
+    })
+    self._applied = true
+  end
   if self._ticks >= self._duration then
     self._state = "complete"
     teardownPicture(self)
@@ -724,8 +1092,8 @@ function BattlePictureAnimation:cancel(reason)
   teardownPicture(self)
 end
 
--- Releases the picture snapshot, the transient record, and every staged
--- lease exactly once.
+-- Releases the owned picture snapshot exactly once; the reveal stages
+-- nothing else.
 ---@param self BattlePictureAnimation
 function BattlePictureAnimation:dispose()
   if self._disposed then
@@ -733,6 +1101,549 @@ function BattlePictureAnimation:dispose()
   end
   self._disposed = true
   teardownPicture(self)
+end
+
+---@class BattleSoundTask
+---@field _audio table<string, unknown> semantic voice collaborator behind play and completion
+---@field _voice string staged voice identity behind completion
+---@field _armed boolean run has observed its voice unfinished at least once
+---@field _ticks integer source ticks advanced without voice completion
+---@field _escape integer bounded ticks behind the native voice escape
+---@field _state string pending, running, complete, or cancelled
+---@field _cancelReason string? last cancellation cause under diagnosis
+---@field _stopped boolean staged voice has been stopped
+---@field _disposed boolean release has run
+local BattleSoundTask = {}
+BattleSoundTask.__index = BattleSoundTask
+
+---@param self BattleSoundTask
+local function stopSoundVoice(self)
+  if self._stopped then
+    return
+  end
+  self._stopped = true
+  local audio = self._audio --[[@as table<string, unknown>]]
+  if type(audio.stop) == "function" then
+    pcall(audio.stop, self._voice)
+  elseif type(audio.stopVoice) == "function" then
+    pcall(audio.stopVoice, self._voice)
+  end
+end
+
+---@param kind string task kind under construction
+---@param args table<string, unknown> instruction-derived construction arguments
+---@param context table<string, unknown> occurrence-bound playback context
+---@param services table<string, unknown> scene, audio, and resource collaborators
+---@return BattleSoundTask runnable sound task
+local function newSoundTask(kind, args, context, services)
+  local _ = context
+  local sound = args.sound
+  if type(sound) ~= "string" or sound == "" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " stages a named semantic voice", 0)
+  end
+  if args.values ~= nil and type(args.values) ~= "table" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " carries its voice operands as a record", 0)
+  end
+  if type(services) ~= "table" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " constructs without its services record", 0)
+  end
+  local audio = services.audio
+  if type(audio) ~= "table" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " constructs without its audio collaborator", 0)
+  end
+  local stageVoice = audio.playEffect or audio.play
+  if type(stageVoice) ~= "function" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " stages its voice through a semantic audio port", 0)
+  end
+  if type(audio.isFinished) ~= "function" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " reads its voice through an audio completion query", 0)
+  end
+  local ok, staged = pcall(stageVoice, sound, args.values)
+  if not ok then
+    error(
+      "BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " stages no voice for " .. sound .. ": " .. tostring(staged),
+      0
+    )
+  end
+  local _ = staged
+  return setmetatable({
+    _audio = audio,
+    _voice = sound,
+    _armed = false,
+    _ticks = 0,
+    _escape = SOUND_ESCAPE_TICKS,
+    _state = "pending",
+    _cancelReason = nil,
+    _stopped = false,
+    _disposed = false,
+  }, BattleSoundTask)
+end
+
+-- Advances one source tick: completion is the staged voice ending.
+-- The run arms on its first unfinished observation and completes on
+-- the first finished observation after that, so a voice that never
+-- reports alive cannot fake-complete the run; the bounded escape
+-- retires such runs instead, so a silent voice cannot park the
+-- occurrence past the native horizon. Audio failures propagate so
+-- the player fails the owning occurrence.
+---@param self BattleSoundTask
+---@param tick table<string, unknown>? source tick under advancement
+function BattleSoundTask:stepSourceTick(tick)
+  local _ = tick
+  if self._disposed or self._state == "complete" or self._state == "cancelled" then
+    return
+  end
+  self._state = "running"
+  self._ticks = self._ticks + 1
+  local audio = self._audio --[[@as table<string, fun(string): boolean>]]
+  if audio.isFinished(self._voice) then
+    if self._armed then
+      self._state = "complete"
+      return
+    end
+  else
+    self._armed = true
+  end
+  if self._ticks >= self._escape then
+    self._state = "complete"
+    stopSoundVoice(self)
+  end
+end
+
+-- Reports the sound run state for the player's retirement accounting.
+---@param self BattleSoundTask
+---@return string
+function BattleSoundTask:status()
+  assert(VALID_TASK_STATES[self._state] == true, "sound tasks report a known run state")
+  return self._state
+end
+
+-- Cancels the sound run and stops the staged voice; completion and
+-- cancellation stay separate, so a completed voice keeps its completion.
+---@param self BattleSoundTask
+---@param reason string cancellation cause under diagnosis
+function BattleSoundTask:cancel(reason)
+  if self._state == "complete" then
+    return
+  end
+  self._state = "cancelled"
+  self._cancelReason = reason
+  stopSoundVoice(self)
+end
+
+-- Releases the staged voice exactly once; the sound run holds no lease
+-- or scene mutation of its own.
+---@param self BattleSoundTask
+function BattleSoundTask:dispose()
+  if self._disposed then
+    return
+  end
+  self._disposed = true
+  if self._state ~= "complete" then
+    stopSoundVoice(self)
+  end
+end
+
+-- Emitted nonparticle visual task kinds with real bodies in this lane.
+-- The blend, picture, and sound families above come first; every other
+-- spelling here routes to the source-parameterized body below. Only
+-- the producer vocabulary is admitted: the particle emitter family
+-- stays out until its own lane lands, and unknown kinds fail closed.
+local NATIVE_VISUAL_KINDS = {
+  ["battle-background-alpha-scroll-transition"] = true,
+  ["battle-background-alternating-scroll-transition"] = true,
+  ["battle-background-four-picture-move-power-transition"] = true,
+  ["battle-background-picture-coordinate-sweep"] = true,
+  ["battle-background-picture-palette-scroll"] = true,
+  ["battle-background-picture-scroll-oscillation"] = true,
+  ["battle-background-picture-wipe-transition"] = true,
+  ["battle-background-pokepic-slide"] = true,
+  ["battle-background-position-transition"] = true,
+  ["battle-background-resource-load"] = true,
+  ["battle-background-scanline-sine-wave-transition"] = true,
+  ["battle-background-sprite-slide-transition"] = true,
+  ["battle-display-window-palette-transition"] = true,
+  ["battle-palette-fade"] = true,
+  ["battle-presentation-resource-cleanup"] = true,
+  ["battle-presentation-state-reset"] = true,
+  ["battle-sprite-affine-appearance-transition"] = true,
+  ["battle-sprite-blend-alpha-transition"] = true,
+  ["battle-sprite-mosaic-transition"] = true,
+  ["battle-sprite-panel-slide"] = true,
+  ["battle-sprite-priority-appearance-transition"] = true,
+  ["battle-sprite-sinusoidal-position-animation"] = true,
+  ["managed-sprite-draw-loop"] = true,
+  ["multi-sprite-battler-animation"] = true,
+  ["multi-sprite-picture-animation"] = true,
+  ["multi-sprite-position-tick"] = true,
+  ["multi-sprite-position-transition"] = true,
+  ["pokemon-picture-affine-blend-palette-transition"] = true,
+  ["pokemon-picture-affine-sprite-entry-transition"] = true,
+  ["pokemon-picture-affine-transition"] = true,
+  ["pokemon-picture-and-battle-palette-fade"] = true,
+  ["pokemon-picture-and-battle-palette-fade-cycle"] = true,
+  ["pokemon-picture-animation-palette-fade"] = true,
+  ["pokemon-picture-animation-position-transition"] = true,
+  ["pokemon-picture-animation-speed-transition"] = true,
+  ["pokemon-picture-battle-palette-fade-cycle"] = true,
+  ["pokemon-picture-battler-pair-scale-transition"] = true,
+  ["pokemon-picture-cyclic-two-phase-position-transition"] = true,
+  ["pokemon-picture-double-sprite-scale-settle"] = true,
+  ["pokemon-picture-entry-offset-transition"] = true,
+  ["pokemon-picture-five-phase-affine-size-transition"] = true,
+  ["pokemon-picture-four-sprite-wave-transition"] = true,
+  ["pokemon-picture-height-position-transition"] = true,
+  ["pokemon-picture-managed-sprite-affine-pair-transition"] = true,
+  ["pokemon-picture-managed-sprite-scale-pulse"] = true,
+  ["pokemon-picture-multi-sprite-animation"] = true,
+  ["pokemon-picture-oam-animation-transition"] = true,
+  ["pokemon-picture-oscillating-axis-motion"] = true,
+  ["pokemon-picture-paired-position-interpolation"] = true,
+  ["pokemon-picture-palette-fade"] = true,
+  ["pokemon-picture-palette-fade-position-transition"] = true,
+  ["pokemon-picture-palette-pulse-position-transition"] = true,
+  ["pokemon-picture-position-offset-transition"] = true,
+  ["pokemon-picture-position-path-transition"] = true,
+  ["pokemon-picture-priority-motion"] = true,
+  ["pokemon-picture-randomized-position-motion"] = true,
+  ["pokemon-picture-reciprocal-position-palette-transition"] = true,
+  ["pokemon-picture-relative-sprite-path-transition"] = true,
+  ["pokemon-picture-repeated-palette-fade"] = true,
+  ["pokemon-picture-repeated-scale-position-transition"] = true,
+  ["pokemon-picture-repeated-vanish-transition"] = true,
+  ["pokemon-picture-scale-position-transition"] = true,
+  ["pokemon-picture-selected-horizontal-offset-transition"] = true,
+  ["pokemon-picture-selected-pair-transition"] = true,
+  ["pokemon-picture-selected-position-offset-transition"] = true,
+  ["pokemon-picture-selected-position-transition"] = true,
+  ["pokemon-picture-sinusoidal-position-motion"] = true,
+  ["pokemon-picture-sprite-position-transition"] = true,
+  ["pokemon-picture-table-driven-position-transition"] = true,
+  ["pokemon-picture-target-background-slide"] = true,
+  ["pokemon-picture-target-priority-transition"] = true,
+  ["pokemon-picture-three-sprite-affine-transition"] = true,
+  ["pokemon-picture-three-sprite-position-wave-transition"] = true,
+  ["pokemon-picture-two-battler-crossing-motion"] = true,
+  ["pokemon-picture-two-phase-entry-motion"] = true,
+  ["pokemon-picture-two-phase-scale-transition"] = true,
+  ["pokemon-picture-vanish-affine-transition"] = true,
+  ["pokemon-picture-vanish-and-restore-transition"] = true,
+  ["pokemon-picture-vertical-offset-visibility-transition"] = true,
+  ["pokemon-picture-z-rotation-transition"] = true,
+  ["sprite-affine-animation"] = true,
+  ["sprite-affine-animation-lifecycle"] = true,
+  ["sprite-affine-rotation-motion"] = true,
+  ["sprite-affine-rotation-transition"] = true,
+  ["sprite-affine-scale-and-blend-transition"] = true,
+  ["sprite-affine-scale-draw-transition"] = true,
+  ["sprite-affine-transform-motion"] = true,
+  ["sprite-alpha-transition"] = true,
+  ["sprite-animation-affine-scale-transition"] = true,
+  ["sprite-animation-completion"] = true,
+  ["sprite-animation-lifecycle"] = true,
+  ["sprite-animation-palette-offset"] = true,
+  ["sprite-animation-position-transition"] = true,
+  ["sprite-brightness-transition"] = true,
+  ["sprite-flip-and-offset-transition"] = true,
+  ["sprite-flip-animation-transition"] = true,
+  ["sprite-position-offset"] = true,
+  ["sprite-randomized-affine-motion"] = true,
+}
+
+-- Sound task kinds with real voice bodies in this lane.
+local SOUND_TASK_KINDS = {
+  ["positioned-sound-motion"] = true,
+  ["repeated-sound-playback"] = true,
+  ["delayed-sound-playback"] = true,
+}
+
+---@class BattleNativeVisualTask
+---@field _scene table<string, unknown> scene behind owned visual state
+---@field _kind string emitted task kind behind the run
+---@field _activation table<string, unknown>? combatant and activation pair behind the owned picture
+---@field _picturePlan table<string, unknown>? compiled placement plan behind per-tick writes
+---@field _canPatch boolean scene carries the task-owned overlay seam
+---@field _patchActive boolean task-owned overlay is applied
+---@field _paletteApplied boolean palette overlay applied once, never reset by stepping
+---@field _scrollSweep table<string, integer>? compiled scroll totals behind per-tick writes
+---@field _canScroll boolean scene carries the scroll seam
+---@field _scrollSaved table<string, number> viewport snapshot behind owned-only restoration
+---@field _lastScroll table<string, number>? last applied viewport behind owned-only restoration
+---@field _scrollApplied boolean sweep has written the viewport
+---@field _random unknown occurrence-local visual draw behind a positive bound
+---@field _jitter boolean run carries occurrence-local visual jitter
+---@field _ticks integer source ticks advanced
+---@field _duration integer? source ticks behind completion, absent for synchronous markers
+---@field _state string pending, running, complete, or cancelled
+---@field _cancelReason string? last cancellation cause under diagnosis
+---@field _disposed boolean release has run
+local BattleNativeVisualTask = {}
+BattleNativeVisualTask.__index = BattleNativeVisualTask
+
+---@param args table<string, unknown> instruction-derived construction arguments
+---@param kind string task kind under construction
+local function checkVisualArgs(args, kind)
+  if args.parameters ~= nil then
+    if type(args.parameters) ~= "table" or args.parameters[1] ~= nil then
+      error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " carries its parameters as a record", 0)
+    end
+  end
+  if args.values ~= nil and type(args.values) ~= "table" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " carries its operands as a record", 0)
+  end
+  if args.battlerTarget ~= nil and type(args.battlerTarget) ~= "string" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " names its battler target semantically", 0)
+  end
+  if args.taskContext ~= nil and type(args.taskContext) ~= "string" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " names its task context semantically", 0)
+  end
+  if args.resourceKeys ~= nil and type(args.resourceKeys) ~= "table" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " carries its resource keys as a record", 0)
+  end
+  if args.callback ~= nil and type(args.callback) ~= "string" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " names its source callback semantically", 0)
+  end
+  if args.runtimeSelection ~= nil and type(args.runtimeSelection) ~= "string" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " names its runtime selection semantically", 0)
+  end
+  if args.activation ~= nil and not validActivation(args.activation) then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " pictures a combatant activation pair", 0)
+  end
+end
+
+---@param kind string task kind under construction
+---@param args table<string, unknown> instruction-derived construction arguments
+---@param context table<string, unknown> occurrence-bound playback context
+---@param services table<string, unknown> scene, audio, and resource collaborators
+---@return BattleNativeVisualTask runnable visual task
+local function newNativeVisualTask(kind, args, context, services)
+  checkVisualArgs(args, kind)
+  local scene = checkScene(services, kind)
+  local parameters = args.parameters
+  if parameters == nil then
+    parameters = {}
+  end
+  local duration = visualDuration(parameters)
+  local activation = plannedActivation(args, context or {})
+  local canPatch = type(scene.applyTaskPicturePatch) == "function" and type(scene.removeTaskPicturePatch) == "function"
+  local picturePlan = nil
+  local canScroll = type(scene.scroll) == "function" and type(scene.applyScrollPatch) == "function"
+  local scrollSweep = nil
+  local jitter = false
+  -- Timing-less spawns retire synchronously as validated markers:
+  -- without a source boundary there is no owned interpolation
+  -- lifetime, so the run owns no patch or sweep. Only the source
+  -- retail census gates this path: timed spawns always interpolate
+  -- below.
+  if duration ~= nil then
+    if activation ~= nil and canPatch then
+      picturePlan = picturePlanFor(parameters)
+    end
+    if picturePlan == nil and canScroll then
+      scrollSweep = scrollSweepFor(parameters, duration)
+    end
+    jitter = string.find(kind, "randomized", 1, true) ~= nil
+  end
+  local random = checkRandom(context or {}, kind)
+  local scrollSaved = { x = 0, y = 0 }
+  if canScroll then
+    local saved = scene.scroll(scene)
+    scrollSaved = { x = saved.x, y = saved.y }
+  end
+  return setmetatable({
+    _scene = scene,
+    _kind = kind,
+    _activation = activation,
+    _picturePlan = picturePlan,
+    _canPatch = canPatch,
+    _patchActive = false,
+    _paletteApplied = false,
+    _scrollSweep = scrollSweep,
+    _canScroll = canScroll,
+    _scrollSaved = scrollSaved,
+    _lastScroll = nil,
+    _scrollApplied = false,
+    _random = random,
+    _jitter = jitter,
+    _ticks = 0,
+    _duration = duration,
+    _state = "pending",
+    _cancelReason = nil,
+    _disposed = false,
+  }, BattleNativeVisualTask)
+end
+
+-- Writes one tick of owned visual state: the scroll sweep interpolates
+-- its compiled totals, the picture overlay interpolates its compiled
+-- placement, and randomized runs draw their jitter from the
+-- occurrence-local stream. Palette overlays apply once: the scene steps
+-- them natively afterward. The run publishes no drawable picture.
+---@param self BattleNativeVisualTask
+---@param progress number completed fraction in 0..1
+local function writeVisualTick(self, progress)
+  local scene = self._scene
+  if self._scrollSweep ~= nil and self._canScroll then
+    local x = self._scrollSaved.x + self._scrollSweep.x * progress
+    local y = self._scrollSaved.y + self._scrollSweep.y * progress
+    scene.applyScrollPatch(scene, x, y)
+    self._scrollApplied = true
+    self._lastScroll = { x = x, y = y }
+  end
+  local plan = self._picturePlan
+  if plan ~= nil and self._activation ~= nil and self._canPatch then
+    if plan.kind == "palette" then
+      if not self._paletteApplied then
+        self._paletteApplied = true
+        scene.applyTaskPicturePatch(scene, self, self._activation, {
+          paletteFade = {
+            start = plan.start,
+            finish = plan.finish,
+            framesPer = plan.framesPer,
+            targetColor = plan.targetColor,
+          },
+        })
+        self._patchActive = true
+      end
+    elseif plan.kind == "rotation" then
+      scene.applyTaskPicturePatch(scene, self, self._activation, {
+        rotationZ = clampRotationAngle(plan.from + (plan.to - plan.from) * progress),
+      })
+      self._patchActive = true
+    else
+      local patch = {}
+      if plan.fromX ~= 0 or plan.toX ~= 0 then
+        patch.pictureXOffset2 = wrapPictureByte(plan.fromX + (plan.toX - plan.fromX) * progress)
+      end
+      if plan.fromY ~= 0 or plan.toY ~= 0 then
+        patch.pictureYOffset = clampPictureOffset(plan.fromY + (plan.toY - plan.fromY) * progress)
+      end
+      if next(patch) ~= nil then
+        scene.applyTaskPicturePatch(scene, self, self._activation, patch)
+        self._patchActive = true
+      end
+    end
+  end
+  if self._jitter then
+    local random = self._random --[[@as fun(bound: integer): integer]]
+    random(65)
+    random(65)
+  end
+end
+
+-- Restores only still-owned visual state: the picture overlay drops
+-- exactly when this task still owns its slot, and the viewport restores
+-- only while no newer sweep has moved it since. The run stages no leases
+-- and publishes no drawable picture, so teardown owns patches only.
+---@param self BattleNativeVisualTask
+local function teardownNativeVisual(self)
+  if self._patchActive then
+    self._patchActive = false
+    if self._activation ~= nil and self._canPatch then
+      self._scene.removeTaskPicturePatch(self._scene, self, self._activation)
+    end
+  end
+  if self._scrollApplied then
+    self._scrollApplied = false
+    if self._canScroll and self._lastScroll ~= nil then
+      local current = self._scene.scroll(self._scene)
+      if current.x == self._lastScroll.x and current.y == self._lastScroll.y then
+        self._scene.applyScrollPatch(self._scene, self._scrollSaved.x, self._scrollSaved.y)
+      end
+    end
+    self._lastScroll = nil
+  end
+end
+
+-- Advances one source tick toward the compiled boundary. Mid-task scene
+-- failures restore the task's own partial visuals before the failure
+-- reaches the player, so a withdrawn activation never strands a patch.
+-- Timing-less markers retire on their first tick: the validated spawn
+-- carries no boundary to interpolate, so there is nothing to write.
+---@param self BattleNativeVisualTask
+---@param tick table<string, unknown>? source tick under advancement
+function BattleNativeVisualTask:stepSourceTick(tick)
+  local _ = tick
+  if self._disposed or self._state == "complete" or self._state == "cancelled" then
+    return
+  end
+  self._state = "running"
+  self._ticks = self._ticks + 1
+  if self._duration == nil then
+    self._state = "complete"
+    teardownNativeVisual(self)
+    return
+  end
+  local progress = self._ticks / self._duration
+  if progress > 1 then
+    progress = 1
+  end
+  local ok, err = pcall(writeVisualTick, self, progress)
+  if not ok then
+    teardownNativeVisual(self)
+    error(err, 0)
+  end
+  if self._ticks >= self._duration then
+    self._state = "complete"
+    teardownNativeVisual(self)
+  end
+end
+
+-- Reports the visual run state for the player's retirement accounting.
+---@param self BattleNativeVisualTask
+---@return string
+function BattleNativeVisualTask:status()
+  assert(VALID_TASK_STATES[self._state] == true, "native visual tasks report a known run state")
+  return self._state
+end
+
+-- Cancels the visual run; completion and cancellation stay separate, so
+-- a completed run keeps its completion.
+---@param self BattleNativeVisualTask
+---@param reason string cancellation cause under diagnosis
+function BattleNativeVisualTask:cancel(reason)
+  if self._state == "complete" then
+    return
+  end
+  self._state = "cancelled"
+  self._cancelReason = reason
+  teardownNativeVisual(self)
+end
+
+-- Releases the transient record and any owned scene patch exactly once.
+---@param self BattleNativeVisualTask
+function BattleNativeVisualTask:dispose()
+  if self._disposed then
+    return
+  end
+  self._disposed = true
+  teardownNativeVisual(self)
+end
+
+-- Reports whether the factory constructs a real task for a kind. The
+-- predicate is a direct view of the constructor dispatch below: only
+-- emitted producer kinds with implemented bodies are admitted.
+---@param kind unknown task kind under admission
+---@return boolean admitted true for kinds with real constructor bodies
+function BattleEffectTasks.supportsKind(kind)
+  if type(kind) ~= "string" or kind == "" then
+    return false
+  end
+  if kind == BattleEffectTasks.VOICE_MONITOR_KIND then
+    return true
+  end
+  if kind == BattleEffectTasks.BLEND_TRANSITION_KIND then
+    return true
+  end
+  if kind == BattleEffectTasks.PARTICLE_CONTINUATION_KIND then
+    return true
+  end
+  if kind == BattleEffectTasks.PICTURE_ANIMATION_KIND then
+    return true
+  end
+  if SOUND_TASK_KINDS[kind] == true then
+    return true
+  end
+  return NATIVE_VISUAL_KINDS[kind] == true
 end
 
 -- Constructs one runnable task for a normalized task kind. The player
@@ -766,6 +1677,14 @@ function BattleEffectTasks.create(kind, args, context, services)
   if kind == BattleEffectTasks.PICTURE_ANIMATION_KIND then
     assert(type(services) == "table", "picture animations require their services record")
     return newPictureAnimation(args or {}, context or {}, services)
+  end
+  if SOUND_TASK_KINDS[kind] == true then
+    assert(type(services) == "table", "sound tasks require their services record")
+    return newSoundTask(kind, args or {}, context or {}, services)
+  end
+  if NATIVE_VISUAL_KINDS[kind] == true then
+    assert(type(services) == "table", "native visual tasks require their services record")
+    return newNativeVisualTask(kind, args or {}, context or {}, services)
   end
   error("BATTLE_EFFECT_TASK_UNKNOWN: no native task implementation for kind " .. tostring(kind), 0)
 end

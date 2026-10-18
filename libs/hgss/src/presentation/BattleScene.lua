@@ -24,6 +24,7 @@
 ---@field _backgroundLayers table<integer, BattleScene.BackgroundLayer> replacement BG3 states, newest active until removed
 ---@field _pictureAnimations table<string, table<string, unknown>> native Pokepic tasks by activation
 ---@field _pictureStates table<string, { base: table<string, unknown>, current: table<string, unknown>, animation?: table<string, unknown> }> activation-scoped appearance, transform and animation snapshot
+---@field _taskPicturePatches table<string, { owner: integer|table<string, unknown>, patch: table<string, unknown> }> task-owned transient picture overlays by activation
 ---@field _gaugeTasks table<string, table<string, unknown>> source-ticked displayed gauge tasks
 ---@field _healthBoxModes table<string, { sideType: integer, mode: string }> double-player native health-box mode by activation
 ---@field _effects table<integer, { id: integer, sourceKey: string, age: integer, picture?: table<string, unknown> }> live transient effect records
@@ -78,6 +79,7 @@ function BattleScene.new()
     _backgroundLayers = {},
     _pictureAnimations = {},
     _pictureStates = {},
+    _taskPicturePatches = {},
     _gaugeTasks = {},
     _healthBoxModes = {},
     _effects = {},
@@ -610,30 +612,13 @@ local function pictureStateFrom(record)
   return state
 end
 
--- Applies source-authored appearance and affine facts to one activation.
--- The first application saves its presented values so a later restore
--- can return to that exact appearance without changing simulation state.
----@param battler table<string, unknown> activation receiving source presentation data
----@param patch table<string, unknown> source picture attributes to apply
----@return table<string, unknown> detached immutable presentation view
-function BattleScene:applyPictureState(battler, patch)
-  assert(not self._released, "released scenes apply no picture state")
-  assert(type(battler) == "table" and type(battler.combatant) == "number", "picture state uses an activation identity")
-  assert(type(patch) == "table", "picture state reads source attributes")
-  local key = entryKey(battler)
-  assert(self._entries[key] ~= nil, "picture attributes target an installed activation")
-  local owned = self._pictureStates[key]
-  if owned == nil then
-    local base = pictureStateFrom(battler)
-    local animation = self._pictureAnimations[key]
-    owned = {
-      base = base,
-      current = copyPictureState(base),
-      animation = animation ~= nil and copyPictureTask(animation) or nil,
-    }
-    self._pictureStates[key] = owned
-  end
-  local current = copyPictureState(owned.current)
+-- Validates source picture attributes and converts the palette fade
+-- into its stepped scene form, shared by saved appearance patches and
+-- task-owned transient overlays.
+---@param patch table<string, unknown> source picture attributes under validation
+---@return table<string, unknown> validated converted overlay copy
+local function checkedPicturePatch(patch)
+  local overlay = {}
   for field, value in pairs(patch) do
     assert(PICTURE_STATE_FIELDS[field] == true, "picture state accepts only rendered appearance attributes")
     if field == "portraitSelector" then
@@ -750,11 +735,98 @@ function BattleScene:applyPictureState(battler, patch)
         applied = false,
       }
     end
-    current[field] = (field == "pictureTint" or field == "shadowTint") and copyPictureState({ [field] = value })[field]
+    overlay[field] = (field == "pictureTint" or field == "shadowTint") and copyPictureState({ [field] = value })[field]
       or value
+  end
+  return overlay
+end
+
+-- Applies source-authored appearance and affine facts to one activation.
+-- The first application saves its presented values so a later restore
+-- can return to that exact appearance without changing simulation state.
+---@param battler table<string, unknown> activation receiving source presentation data
+---@param patch table<string, unknown> source picture attributes to apply
+---@return table<string, unknown> detached immutable presentation view
+function BattleScene:applyPictureState(battler, patch)
+  assert(not self._released, "released scenes apply no picture state")
+  assert(type(battler) == "table" and type(battler.combatant) == "number", "picture state uses an activation identity")
+  assert(type(patch) == "table", "picture state reads source attributes")
+  local key = entryKey(battler)
+  assert(self._entries[key] ~= nil, "picture attributes target an installed activation")
+  local owned = self._pictureStates[key]
+  if owned == nil then
+    local base = pictureStateFrom(battler)
+    local animation = self._pictureAnimations[key]
+    owned = {
+      base = base,
+      current = copyPictureState(base),
+      animation = animation ~= nil and copyPictureTask(animation) or nil,
+    }
+    self._pictureStates[key] = owned
+  end
+  local overlay = checkedPicturePatch(patch)
+  local current = copyPictureState(owned.current)
+  for field, value in pairs(overlay) do
+    current[field] = value
   end
   owned.current = current
   return copyPictureState(current)
+end
+
+-- Applies one task-owned transient picture overlay for an activation.
+-- Unlike saved appearance patches, the overlay never becomes the
+-- activation's appearance: removal drops it exactly, which lets short
+-- native picture tasks own their whole visible lifetime. The overlay
+-- merges over the saved appearance in pictureState reads; removal
+-- clears only the slot still owned by the same task identity, so a
+-- newer overlay is never restored away by an older task.
+---@param owner integer|table<string, unknown> transient effect identity or the owning imageless task behind the overlay
+---@param battler table<string, unknown> activation receiving the overlay
+---@param patch table<string, unknown> source picture attributes under overlay
+function BattleScene:applyTaskPicturePatch(owner, battler, patch)
+  assert(not self._released, "released scenes apply no picture overlay")
+  assert(
+    (type(owner) == "number" and owner % 1 == 0 and owner >= 1) or type(owner) == "table",
+    "picture overlays name their owning task"
+  )
+  assert(
+    type(battler) == "table" and type(battler.combatant) == "number",
+    "picture overlays use an activation identity"
+  )
+  assert(type(patch) == "table", "picture overlays read source attributes")
+  local key = entryKey(battler)
+  assert(self._entries[key] ~= nil, "picture overlays target an installed activation")
+  local overlay = checkedPicturePatch(patch)
+  local slot = self._taskPicturePatches[key]
+  if slot == nil then
+    slot = {}
+    self._taskPicturePatches[key] = slot
+  end
+  slot.owner = owner
+  slot.patch = overlay
+end
+
+-- Removes one task-owned overlay only while the same task still owns
+-- the slot; a newer overlay or an empty slot stays untouched. Silent
+-- by design: teardown paths call this after completion, cancellation,
+-- and failure alike.
+---@param owner integer|table<string, unknown> transient effect identity or the owning imageless task behind the overlay
+---@param battler table<string, unknown> activation behind the overlay
+function BattleScene:removeTaskPicturePatch(owner, battler)
+  if self._released then
+    return
+  end
+  if type(owner) ~= "number" and type(owner) ~= "table" then
+    return
+  end
+  if type(battler) ~= "table" or type(battler.combatant) ~= "number" then
+    return
+  end
+  local key = entryKey(battler)
+  local slot = self._taskPicturePatches[key]
+  if slot ~= nil and slot.owner == owner then
+    self._taskPicturePatches[key] = nil
+  end
 end
 
 -- Returns a detached per-activation presentation view, if one is active.
@@ -763,8 +835,20 @@ end
 function BattleScene:pictureState(battler)
   assert(not self._released, "released scenes expose no picture state")
   assert(type(battler) == "table" and type(battler.combatant) == "number", "picture state uses an activation identity")
-  local owned = self._pictureStates[entryKey(battler)]
-  return owned ~= nil and copyPictureState(owned.current) or nil
+  local key = entryKey(battler)
+  local owned = self._pictureStates[key]
+  local slot = self._taskPicturePatches[key]
+  if owned == nil and slot == nil then
+    return nil
+  end
+  local merged = owned ~= nil and copyPictureState(owned.current) or {}
+  if slot ~= nil then
+    local overlay = copyPictureState(slot.patch)
+    for field, value in pairs(overlay) do
+      merged[field] = value
+    end
+  end
+  return merged
 end
 
 -- Restores the presentation snapshot captured by the first source patch.
@@ -957,6 +1041,12 @@ function BattleScene:stepSourceTick()
   end
   for _, state in pairs(self._pictureStates) do
     local fade = state.current.paletteFade
+    if fade ~= nil then
+      stepPaletteFade(fade)
+    end
+  end
+  for _, slot in pairs(self._taskPicturePatches) do
+    local fade = slot.patch.paletteFade
     if fade ~= nil then
       stepPaletteFade(fade)
     end
@@ -1558,46 +1648,6 @@ function BattleScene:remove(combatant, activation)
   self._healthBoxModes[tostring(combatant) .. ":" .. tostring(activation)] = nil
 end
 
--- Resolves a native battler selector to an observed activation in sorted
--- entry order. Recorded playback packets carry explicit topology and stay
--- first; this covers headless or recorded packets over an already
--- observed scene. Selectors past the observed entries resolve to nothing
--- instead of inventing a combatant.
----@param selector integer native battler selector under resolution
----@return table<string, unknown>? combatant and activation pair, when observed
-function BattleScene:resolveObservedActivation(selector)
-  assert(not self._released, "released scenes resolve nothing")
-  assert(
-    type(selector) == "number" and selector % 1 == 0 and selector >= 0,
-    "battler selectors are non-negative integers"
-  )
-  local keys = {}
-  for key in pairs(self._entries) do
-    keys[#keys + 1] = key
-  end
-  table.sort(keys)
-  local key = keys[selector + 1]
-  if key == nil then
-    return nil
-  end
-  local combatantText, activationText = key:match("^([^:]+):(.*)$")
-  if type(combatantText) ~= "string" or type(activationText) ~= "string" then
-    return nil
-  end
-  local combatant = tonumber(combatantText)
-  if combatant == nil then
-    return nil
-  end
-  local activationNumber = tonumber(activationText)
-  if activationNumber ~= nil then
-    return { combatant = combatant, activation = activationNumber }
-  end
-  if activationText ~= "" then
-    return { combatant = combatant, activation = activationText }
-  end
-  return nil
-end
-
 -- Allocates one launch-scoped transient effect instance behind a
 -- concrete record. Effect visuals stay with their kind owner; the scene
 -- only tracks the lifetime.
@@ -1699,6 +1749,7 @@ function BattleScene:release()
   self._backgroundLayers = {}
   self._pictureAnimations = {}
   self._pictureStates = {}
+  self._taskPicturePatches = {}
   self._gaugeTasks = {}
   self._healthBoxModes = {}
 end

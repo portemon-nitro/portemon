@@ -16,6 +16,7 @@
 local Assert = require("tests.support.Assert")
 local BattleAnimationCompiler = require("romdump.src.digest.battle.BattleAnimationCompiler")
 local BattleAnimationSchema = require("libs.assets.src.battle.BattleAnimationSchema")
+local BattleAnimationSources = require("romdump.src.config.BattleAnimationSources")
 local BattlePresentationModel = require("game.hgss.src.battle.BattlePresentationModel")
 local BattleScene = require("libs.hgss.src.presentation.BattleScene")
 
@@ -240,6 +241,88 @@ function T.effect_runs_over_each_layer_class_restore_the_clean_scene_exactly()
     "the restored scene matches the clean raster exactly"
   )
   Assert.deepEqual(poisoned:background(), pristine:background(), "no poisoned color survives restoration")
+end
+
+function T.callback_program_mutates_scene_and_completes_at_its_source_boundary()
+  local program = assert(BattleAnimationCompiler.compile({
+    key = "layer-callback-run",
+    stream = streamOf({ 45, 51, 3, 10, 0xFFF0, 258, 50, 4 }),
+    resolveSourceInput = function(role, operands)
+      Assert.equal(role, "battle-animation-callback", "the picture word asks for its source callback")
+      return BattleAnimationSources.resolveBattleAnimationCallback(operands)
+    end,
+  }))
+  Assert.isTrue(
+    BattleAnimationSchema.assertProgram({
+      entry = program.entry,
+      instructions = program.instructions,
+      subprograms = program.subprograms,
+      taskKinds = program.taskKinds,
+    }),
+    "the lowered program validates against the shared program shape"
+  )
+  Assert.equal(program.instructions[1].op, "invoke-battle-animation-callback", "the word keeps its callback operation")
+  Assert.equal(
+    program.instructions[1].taskKind,
+    "pokemon-picture-selected-horizontal-offset-transition",
+    "the word keeps its source task kind"
+  )
+  local Player = playerModule()
+  local Factory = effectFactoryModule()
+  local scene = sceneWithPair()
+  local audio = {}
+  function audio.play(_name) end
+  function audio.stop(_name) end
+  function audio.isFinished(_name)
+    return true
+  end
+  local resources = {}
+  function resources.resolve(key)
+    return { key = key, lease = key }
+  end
+  function resources.release(_lease) end
+  local player = assert(Player.new({
+    scene = scene,
+    audio = audio,
+    resources = resources,
+    tasks = Factory,
+  }))
+  local packet = playbackPacket()
+  packet.event = { sequence = 1, actionId = 1, hitIndex = 1, effectKey = "layer-callback-run" }
+  packet.visualSeed = 4242
+  packet.topology = {
+    attacker = { combatant = 1, activation = 1, slot = "solo-player", sideType = 0 },
+    targets = { { combatant = 3, activation = 3, slot = "solo-enemy", sideType = 1 } },
+  }
+  local handle = assert(player:start(packet, program))
+  player:stepSourceTick({ tick = 1 })
+  local held = player:status(handle)
+  Assert.isTrue(
+    held ~= "complete" and held ~= "failed",
+    "the source-timed picture run stays alive past its first tick"
+  )
+  Assert.equal(#scene:effectViews(), 0, "spawning the callback publishes no drawable picture")
+  player:stepSourceTick({ tick = 2 })
+  local mutated = scene:pictureState({ combatant = 1, activation = 1 }) ~= nil
+  Assert.isTrue(mutated, "the running callback owns its activation picture patch")
+  Assert.equal(#scene:effectViews(), 0, "the running callback still publishes no drawable picture")
+  local ticks = 2
+  for _ = 1, 120 do
+    if player:status(handle) == "complete" then
+      break
+    end
+    player:stepSourceTick({ tick = 1 })
+    ticks = ticks + 1
+  end
+  Assert.equal(player:status(handle), "complete", "the callback run reaches its own completion")
+  Assert.isTrue(ticks >= 10, "the run honors its compiled duration instead of an early fixed budget")
+  Assert.isTrue(ticks <= 14, "the run completes at its source boundary instead of stalling")
+  Assert.isNil(
+    scene:pictureState({ combatant = 1, activation = 1 }),
+    "completion restores the activation it moved"
+  )
+  Assert.equal(#scene:effectViews(), 0, "no transient picture survives the callback run")
+  player:dispose()
 end
 
 return { tests = T }

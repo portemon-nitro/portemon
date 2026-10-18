@@ -119,9 +119,14 @@ function T.jumps_into_operand_bytes_never_lower()
 end
 
 function T.mid_run_resource_and_voice_failures_fail_loudly_and_stay_live()
-  local program = lowered("run-failing-effect", { 34, 1, 2, 3, 29, 50, 4 })
-  Assert.equal(program.instructions[1].op, "schedule-battle-task", "the failing run schedules its work first")
-  Assert.equal(program.instructions[2].op, "wait-for-sound", "a voice wait follows the scheduled work")
+  -- Particle tasks are the only family staging dependency leases now
+  -- that visual, blend, and picture bodies run imageless, so the
+  -- mid-run resource failure is proven through the particle staging
+  -- path: the first acquisition attempt fails and rolls back exactly
+  -- once instead of completing silently.
+  local program = lowered("run-failing-effect", { 51, 0, 27, 50, 4 })
+  Assert.equal(program.instructions[1].op, "create-battler-effect", "the failing run stages its work first")
+  Assert.equal(program.instructions[2].op, "wait-for-battler-effects", "an effects wait follows the staged work")
   local Player = playerModule()
   local Factory = effectFactoryModule()
   Assert.isTrue(Factory ~= nil, "the production factory joins the failing run")
@@ -137,13 +142,22 @@ function T.mid_run_resource_and_voice_failures_fail_loudly_and_stay_live()
   function audio.isFinished(_name)
     return not audio.stuck
   end
-  local resources = { failAfter = 1 }
+  local resources = {}
   function resources.resolve(key)
     journal.acquired[#journal.acquired + 1] = key
-    if #journal.acquired > resources.failAfter then
-      error({ code = "TEXTURE_MISSING", key = key }, 0)
+    if key == "battle/particle/asleep" then
+      local params = {}
+      for index = 1, 42 do
+        params[index] = 0
+      end
+      params[29], params[30], params[24], params[32] = 12, 12, 0, 1
+      return {
+        emitters = {
+          { features = { "alpha" }, params = params, textureKey = "battle/particle/texture/missing" },
+        },
+      }
     end
-    return { key = key, lease = key .. ":" .. key }
+    error({ code = "TEXTURE_MISSING", key = key }, 0)
   end
   function resources.release(lease)
     journal.released[#journal.released + 1] = lease
