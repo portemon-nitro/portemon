@@ -29,7 +29,9 @@ rules for the repository; exact behavior remains in the test runner and its suit
 - When a high-level scenario finds a bug that can be isolated at a lower owner, put the
   regression at that lower layer unless the high-level composition also failed independently.
 - Required production collaborators remain required. Improve a fake or inject failure at a
-  real boundary instead of adding test-only production fallbacks.
+  real boundary instead of adding test-only production fallbacks. When a lifecycle or error
+  contract tightens, update its fakes to mirror the new semantics so they catch consumer
+  violations, not just happy-path borrows.
 
 ## Failure and lifecycle evidence
 
