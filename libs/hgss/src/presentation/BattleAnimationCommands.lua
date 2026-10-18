@@ -945,10 +945,103 @@ local function handleCreateBattlerEffect(exec, instruction, index)
 end
 Handlers["create-battler-effect"] = handleCreateBattlerEffect
 
+-- Names the effect behind a position-pair diagnostic: the admitted
+-- event effect key when the occurrence carries one, otherwise the
+-- normalized program identity already recorded on the failure detail.
+---@param exec BattleAnimationExec player capability facade behind one occurrence
+---@return string effect identity behind pair diagnostics
+local function pairEffectName(exec)
+  if type(exec.eventIdentity) == "function" then
+    local ok, event = pcall(exec.eventIdentity)
+    if ok and type(event) == "table" and type(event.effectKey) == "string" then
+      return event.effectKey
+    end
+  end
+  return "unknown effect"
+end
+
 local function handleCreateParameterizedBattlerEffect(exec, instruction, index)
   if instruction.resourceCases ~= nil then
-    exec.fail("runtime-selected particle resources need an emitter topology the packet does not carry")
-    return "done"
+    -- Same parked-resumption guard as the plain battler effect: the
+    -- held staging wait already owns this visit's dependency and child.
+    local parked = exec.wait()
+    if parked ~= nil and parked.kind == "staging" and parked.index == index then
+      return executeStagingWait(exec, instruction, index)
+    end
+    local topology = nil
+    if type(exec.topology) == "function" then
+      local ok, resolved = pcall(exec.topology)
+      if ok and type(resolved) == "table" then
+        topology = resolved --[[@as table<string, unknown>]]
+      end
+    end
+    if type(topology) ~= "table" then
+      exec.fail("runtime-selected particle resources need an emitter topology the packet does not carry")
+      return "done"
+    end
+    local attacker = topology.attacker --[[@as table<string, unknown>?]]
+    if type(attacker) ~= "table" or type(attacker.slot) ~= "string" then
+      exec.fail("runtime-selected particle resources need an attacker slot the packet does not carry")
+      return "done"
+    end
+    local targets = topology.targets --[[@as table<integer, table<string, unknown>>?]]
+    if type(targets) ~= "table" or #targets == 0 then
+      exec.fail("runtime-selected particle resources need an event target the packet does not carry")
+      return "done"
+    end
+    local target = nil ---@type table<string, unknown>?
+    if #targets == 1 then
+      target = targets[1]
+    else
+      local ordinal = nil ---@type integer?
+      if type(instruction.targetOrdinal) == "number" then
+        ordinal = instruction.targetOrdinal --[[@as integer]]
+      elseif type(instruction.battlerTarget) == "number" then
+        ordinal = instruction.battlerTarget --[[@as integer]]
+      end
+      if type(ordinal) == "number" and targets[ordinal + 1] ~= nil then
+        target = targets[ordinal + 1]
+      else
+        exec.fail(
+          "runtime-selected particle resources need one event target but the packet carries " .. tostring(#targets)
+        )
+        return "done"
+      end
+    end
+    if type(target) ~= "table" or type(target.slot) ~= "string" then
+      exec.fail("runtime-selected particle resources need a target slot the packet does not carry")
+      return "done"
+    end
+    local pairKey = attacker.slot .. "/" .. target.slot
+    local effectName = pairEffectName(exec)
+    local selected = instruction.resourceCases[pairKey]
+    if selected == nil then
+      exec.fail("native position pair " .. pairKey .. " for effect " .. effectName .. " has no published resource")
+      return "done"
+    end
+    if selected == "source-assert" then
+      exec.fail("native position pair " .. pairKey .. " for effect " .. effectName .. " is a source assertion")
+      return "done"
+    end
+    if type(selected) ~= "string" or selected == "" then
+      exec.fail("native position pair " .. pairKey .. " for effect " .. effectName .. " has no published resource")
+      return "done"
+    end
+    if exec.lease(selected) == nil then
+      return "done"
+    end
+    local record = exec.spawn(instruction.taskKind, "particle", {
+      actionProfile = instruction.actionProfile,
+      emitterPosition = instruction.emitterPosition,
+      resource = selected,
+      continuationSlot = instruction.continuationSlot,
+      values = instruction.values,
+    })
+    if record == nil then
+      return "done"
+    end
+    exec.note({ op = "create-parameterized-battler-effect", index = index, task = instruction.taskKind })
+    return executeStagingWait(exec, instruction, index)
   end
   if type(instruction.resource) ~= "string" or instruction.resource == "" then
     exec.fail("parameterized battler effects stage a semantic particle resource")

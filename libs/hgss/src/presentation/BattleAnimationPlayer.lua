@@ -327,83 +327,22 @@ local function failOccurrence(self, occurrence, reason)
   })
 end
 
----@param packet table<string, unknown> playback packet under scanning
----@return table<integer, table<string, unknown>> views behind topology resolution
-local function packetViews(packet)
-  local views = {}
-  for _, view in ipairs({ packet.after, packet.before }) do
-    if type(view) == "table" then
-      views[#views + 1] = view
-    end
-  end
-  return views
-end
-
----@param view table<string, unknown> detached view under scanning
----@param combatantId integer combatant identity under resolution
----@return table<string, unknown>? identity combatant and activation pair, when carried
-local function scanView(view, combatantId)
-  local combatants = view.combatants
-  if type(combatants) ~= "table" then
-    return nil
-  end
-  for _, record in pairs(combatants) do
-    if type(record) == "table" and record.combatant == combatantId and type(record.activation) == "number" then
-      return { combatant = combatantId, activation = record.activation }
-    end
-  end
-  return nil
-end
-
----@param scene table<string, unknown> presentation scene behind the fallback
----@param selector integer native battler selector under resolution
----@return table<string, unknown>? identity combatant and activation pair, when observed
-local function resolveObservedFallback(scene, selector)
-  if type(scene) ~= "table" then
-    return nil
-  end
-  local resolve = scene.resolveObservedActivation
-  if type(resolve) ~= "function" then
-    return nil
-  end
-  local ok, identity = pcall(resolve, scene, selector)
-  if not ok then
-    return nil
-  end
-  if type(identity) ~= "table" then
-    return nil
-  end
-  return identity
-end
-
----@param packet table<string, unknown> playback packet under resolution
----@param selector integer native battler selector under resolution
----@return table<string, unknown>? identity combatant and activation pair, when carried
-local function resolveSelector(packet, selector)
-  for _, view in ipairs(packetViews(packet)) do
-    local order = view.combatantOrder
-    if type(order) == "table" and type(order[selector + 1]) == "number" then
-      local identity = scanView(view, order[selector + 1])
-      if identity ~= nil then
-        return identity
-      end
-    end
-  end
-  return nil
-end
-
 ---@param occurrence BattleAnimationOccurrence occurrence behind task construction
 ---@return table<string, unknown> occurrence-bound factory context
 local function taskContext(occurrence)
-  local actors = {}
-  for _, view in ipairs(packetViews(occurrence.packet)) do
-    local combatants = view.combatants
-    if type(combatants) == "table" then
-      for _, record in pairs(combatants) do
-        if type(record) == "table" and type(record.combatant) == "number" then
-          actors[#actors + 1] = { combatant = record.combatant, activation = record.activation }
-        end
-      end
+  local packet = occurrence.packet --[[@as table<string, unknown>]]
+  local topology = nil ---@type table<string, unknown>?
+  local event = nil ---@type table<string, unknown>?
+  local visualSeed = nil ---@type integer?
+  if type(packet) == "table" then
+    if type(packet.topology) == "table" then
+      topology = packet.topology --[[@as table<string, unknown>]]
+    end
+    if type(packet.event) == "table" then
+      event = packet.event --[[@as table<string, unknown>]]
+    end
+    if type(packet.visualSeed) == "number" then
+      visualSeed = packet.visualSeed --[[@as integer]]
     end
   end
   local function occurrenceRandom(bound)
@@ -417,7 +356,9 @@ local function taskContext(occurrence)
     programKey = occurrence.programKey,
     seed = occurrence.seed,
     random = occurrenceRandom,
-    actors = actors,
+    topology = topology,
+    event = event,
+    visualSeed = visualSeed,
   }
 end
 
@@ -731,21 +672,32 @@ function BattleAnimationPlayer:_exec(occurrence)
     return phase --[[@as string]]
   end
   function exec.activationFor(selector)
-    if type(selector) ~= "number" then
+    if type(selector) ~= "number" or selector % 1 ~= 0 or selector < 0 then
       return nil
     end
     local packet = occurrence.packet
-    if type(packet) ~= "table" then
+    if type(packet) ~= "table" or type(packet.topology) ~= "table" then
       return nil
     end
-    -- Recorded packets carry explicit topology and stay first; headless
-    -- or recorded packets over an already observed scene fall back to
-    -- the scene's observed activations instead of failing the picture.
-    local identity = resolveSelector(packet, selector)
-    if identity ~= nil then
-      return identity
+    local topology = packet.topology --[[@as table<string, unknown>]]
+    -- Selector zero names the event attacker; any other selector names
+    -- the event target at that ordinal. Anything unaddressed stays
+    -- unresolved instead of guessing from scene entries.
+    if selector == 0 then
+      local attacker = topology.attacker --[[@as table<string, unknown>?]]
+      if type(attacker) == "table" and type(attacker.combatant) == "number" and attacker.activation ~= nil then
+        return { combatant = attacker.combatant, activation = attacker.activation }
+      end
+      return nil
     end
-    return resolveObservedFallback(player._scene, selector)
+    local targets = topology.targets --[[@as table<integer, table<string, unknown>>?]]
+    if type(targets) == "table" then
+      local target = targets[selector] --[[@as table<string, unknown>?]]
+      if type(target) == "table" and type(target.combatant) == "number" and target.activation ~= nil then
+        return { combatant = target.combatant, activation = target.activation }
+      end
+    end
+    return nil
   end
   function exec.note(entry)
     occurrence.journal[#occurrence.journal + 1] = entry

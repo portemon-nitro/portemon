@@ -80,6 +80,12 @@ local function playbackPacket()
     packetId = 1,
   })
   Assert.equal(packet.launchId, "move-shapes-probe", "the playback input carries its launch identity")
+  packet.event = { sequence = 1, actionId = 1, hitIndex = 1, effectKey = "move-shapes-probe" }
+  packet.visualSeed = 1
+  packet.topology = {
+    attacker = { combatant = 1, activation = 1, slot = "solo-player", sideType = 0 },
+    targets = { { combatant = 3, activation = 3, slot = "solo-enemy", sideType = 1 } },
+  }
   return packet
 end
 
@@ -247,6 +253,152 @@ function T.shapes_execute_with_source_order_targets_completion_and_audio()
   end
   Assert.isTrue(sounded >= 2, "the sounded shapes keep their audio usage in the run")
   Assert.isTrue(#audio.played >= 1, "at least one sounded shape played its voice during the run")
+end
+
+local PAIR_POSITIONS = {
+  "solo-player",
+  "solo-enemy",
+  "player-side-slot-1",
+  "enemy-side-slot-1",
+  "player-side-slot-2",
+  "enemy-side-slot-2",
+}
+
+local function pairCases()
+  local cases = {}
+  for _, attacker in ipairs(PAIR_POSITIONS) do
+    for _, target in ipairs(PAIR_POSITIONS) do
+      cases[attacker .. "/" .. target] = "battle/particle-emitter/standby"
+    end
+  end
+  cases["solo-player/solo-enemy"] = "battle/particle-emitter/candidate-1"
+  cases["solo-enemy/solo-player"] = "battle/particle-emitter/candidate-4"
+  return cases
+end
+
+local function pairProgram(key)
+  return {
+    key = key,
+    entry = "main",
+    instructions = {
+      {
+        op = "create-parameterized-battler-effect",
+        taskKind = "battler-effect-continuation",
+        actionProfile = "particle-emitter-target-battler-relative",
+        emitterPosition = "solo-enemy",
+        runtimeSelection = "battler-particle-position-pair",
+        resourceCases = pairCases(),
+      },
+      { op = "wait-for-battler-effects" },
+    },
+    subprograms = {},
+    taskKinds = {},
+  }
+end
+
+local function pairPlayback(packetId, attackerSlot, attackerType, targetSlot, targetType)
+  return {
+    launchId = "pair-selection-probe",
+    packetId = packetId,
+    event = { sequence = 11, actionId = 3, hitIndex = 1, effectKey = "pair-selection-probe" },
+    visualSeed = 777,
+    topology = {
+      attacker = { combatant = 1, activation = 7, slot = attackerSlot, sideType = attackerType },
+      targets = { { combatant = 2, activation = 9, slot = targetSlot, sideType = targetType } },
+    },
+  }
+end
+
+local function runToCompletion(player, handle)
+  for _ = 1, 30 do
+    player:stepSourceTick({ tick = 1 })
+    if player:status(handle) == "complete" or player:status(handle) == "failed" then
+      break
+    end
+  end
+end
+
+-- Position-pair emitters resolve through the event-time topology: the
+-- occurrence leases only the resource published for its own attacker and
+-- target slots, spawns its emitter exactly once across parked ticks, and
+-- a second occurrence with the reverse pair leases only its own
+-- resource without touching the first.
+-- Native mechanism: the attacker/target particle lookup tables select
+-- the emitter by position pair, with one semantic resource per pair.
+-- Headless: a synthetic pair table with two distinct resources; the
+-- recorder doubles count leases and spawns.
+function T.position_pair_selects_only_its_matching_emitter_resource()
+  local Player = playerModule()
+  local scene = sceneWithPair()
+  local leased = {}
+  local spawned = {}
+  local audio = { played = {}, stopped = {}, done = {} }
+  function audio.play(name)
+    audio.played[#audio.played + 1] = name
+  end
+  function audio.stop(name)
+    audio.stopped[#audio.stopped + 1] = name
+  end
+  function audio.isFinished(name)
+    return audio.done[name] == true
+  end
+  local tasks = {}
+  function tasks.create(kind, args, _context, _services)
+    spawned[#spawned + 1] = { kind = kind, resource = args.resource }
+    local task = { _state = "running" }
+    function task.stepSourceTick(_tick)
+      task._state = "complete"
+    end
+    function task.status()
+      return task._state
+    end
+    function task.cancel(_reason)
+      task._state = "cancelled"
+    end
+    function task.dispose() end
+    return task
+  end
+  local resources = {}
+  function resources.resolve(key)
+    leased[#leased + 1] = key
+    return { key = key }
+  end
+  function resources.release(_lease) end
+  local player = assert(Player.new({
+    scene = scene,
+    audio = audio,
+    resources = resources,
+    tasks = tasks,
+  }))
+  local first =
+    assert(player:start(pairPlayback(1, "solo-player", 0, "solo-enemy", 1), pairProgram("pair-selection-first")))
+  runToCompletion(player, first)
+  Assert.equal(player:status(first), "complete", "the matching pair case runs to its own completion")
+  Assert.deepEqual(
+    leased,
+    { "battle/particle-emitter/candidate-1" },
+    "only the selected pair resource is leased"
+  )
+  Assert.equal(#spawned, 1, "the selected pair spawns exactly once across parked ticks")
+  Assert.equal(
+    spawned[1].resource,
+    "battle/particle-emitter/candidate-1",
+    "the spawned emitter carries the selected resource"
+  )
+  local second =
+    assert(player:start(pairPlayback(2, "solo-enemy", 1, "solo-player", 0), pairProgram("pair-selection-second")))
+  runToCompletion(player, second)
+  Assert.equal(player:status(second), "complete", "the reverse pair runs to its own completion")
+  Assert.deepEqual(leased, {
+    "battle/particle-emitter/candidate-1",
+    "battle/particle-emitter/candidate-4",
+  }, "each pair leases only its own resource")
+  Assert.equal(#spawned, 2, "the reverse pair spawns without re-leasing the first pair")
+  Assert.equal(
+    spawned[2].resource,
+    "battle/particle-emitter/candidate-4",
+    "the reverse emitter carries its own selected resource"
+  )
 end
 
 return { tests = T }
