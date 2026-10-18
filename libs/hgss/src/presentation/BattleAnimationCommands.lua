@@ -44,6 +44,9 @@
 ---@field loopAdvance fun(): string advance the innermost active loop
 ---@field loopStart fun(): integer rewind destination behind the innermost active loop
 ---@field activationFor fun(selector: integer): table<string, unknown>? resolve one battler identity
+---@field movePhase fun(): string? admitted occurrence move phase ("charge" or "direct"), when carried
+---@field topology fun(): table<string, unknown>? event-time semantic slots behind pair selection, when carried
+---@field eventIdentity fun(): table<string, unknown>? event identity behind pair diagnostics, when carried
 ---@field note fun(entry: table<string, unknown>) journal one visual intent under ownership
 
 ---@class BattleAnimationCommands
@@ -508,9 +511,32 @@ local function handleBranchOnBattleField(exec, instruction, index)
 end
 Handlers["branch-on-battle-field"] = handleBranchOnBattleField
 
+-- Charge/strike dispatch behind native opcode 13 (ov07_0221D148 at
+-- pret/pokeheartgold asm/overlay_07.s:2712-2737, dispatch index 13 at
+-- asm/overlay_07.s:51439-51453): the handler tests bit 0 of the
+-- battle-flag halfword and reads the first script word (the
+-- compiler-lowered alternateTarget) when the bit is clear, the second
+-- word (the branchTarget) when the bit is set. Charge-turn executions
+-- observe the bit clear and strike-turn executions observe it set, so
+-- the charge occurrence advances through the fallthrough charge half
+-- and the direct (strike) occurrence jumps to the strike half. Any
+-- other operand, or a missing or malformed move phase, fails closed
+-- with provenance instead of guessing a presentation path.
 local function handleBranchOnBattleFlag(exec, instruction, index)
-  local _ = instruction
   local _ = index
+  local values = instruction.values --[[@as table<integer, integer>?]]
+  if type(values) == "table" and #values == 1 and values[1] == 1 then
+    local phase = exec.movePhase()
+    if phase == nil then
+      return failContextField(exec, "battle-flag branches")
+    end
+    if phase == "charge" then
+      exec.advance()
+    else
+      exec.jump(instruction.branchTarget)
+    end
+    return "continue"
+  end
   return failContextField(exec, "battle-flag branches")
 end
 Handlers["branch-on-battle-flag"] = handleBranchOnBattleFlag
@@ -522,17 +548,134 @@ local function handleBranchOnSideMask(exec, instruction, index)
 end
 Handlers["branch-on-side-mask"] = handleBranchOnSideMask
 
+-- Native side classes behind ov07_0223192C: an even native battler
+-- position (the player side) reads class 3, an odd position (the foe
+-- side) reads class 4. The locked event topology already carries the
+-- native sideType 0..5 per battler, so the class follows sideType
+-- parity; the semantic slot name covers records that carry no type.
+local PLAYER_SIDE_SLOTS = {
+  ["solo-player"] = true,
+  ["player-side-slot-1"] = true,
+  ["player-side-slot-2"] = true,
+}
+local ENEMY_SIDE_SLOTS = {
+  ["solo-enemy"] = true,
+  ["enemy-side-slot-1"] = true,
+  ["enemy-side-slot-2"] = true,
+}
+
+---@param record table<string, unknown>? topology battler entry under classification
+---@return string? side native side class: "player" (class 3) or "enemy" (class 4)
+local function sideClassOf(record)
+  if type(record) ~= "table" then
+    return nil
+  end
+  local sideType = record.sideType
+  if sideType ~= nil then
+    if type(sideType) == "number" and sideType % 1 == 0 and sideType >= 0 and sideType <= 5 then
+      if sideType % 2 == 0 then
+        return "player"
+      end
+      return "enemy"
+    end
+    return nil
+  end
+  if PLAYER_SIDE_SLOTS[record.slot] then
+    return "player"
+  end
+  if ENEMY_SIDE_SLOTS[record.slot] then
+    return "enemy"
+  end
+  return nil
+end
+
+---@param exec BattleAnimationExec player capability facade behind one occurrence
+---@return table<string, unknown>? topology event-time semantic slots behind side branches, when carried
+local function lockedTopology(exec)
+  if type(exec.topology) ~= "function" then
+    return nil
+  end
+  local ok, resolved = pcall(exec.topology)
+  if ok and type(resolved) == "table" then
+    return resolved --[[@as table<string, unknown>]]
+  end
+  return nil
+end
+
 local function handleBranchOnSidePredicate(exec, instruction, index)
-  local _ = instruction
   local _ = index
-  return failContextField(exec, "side-predicate branches")
+  local values = instruction.values --[[@as table<integer, integer>?]]
+  if type(values) ~= "table" or type(values[1]) ~= "number" then
+    exec.fail("side-predicate branches carry no side selector")
+    return "done"
+  end
+  -- ov07_0221D174 tests the attacker side on selector zero and the
+  -- target side on any other selector, then takes its special branch
+  -- target only on the enemy side class.
+  local topology = lockedTopology(exec)
+  local side = nil ---@type string?
+  local targetCount = 0
+  if type(topology) == "table" then
+    if values[1] == 0 then
+      side = sideClassOf(topology.attacker --[[@as table<string, unknown>?]])
+    else
+      local targets = topology.targets --[[@as table<integer, table<string, unknown>>?]]
+      if type(targets) == "table" then
+        targetCount = #targets
+        if targetCount == 1 then
+          side = sideClassOf(targets[1])
+        end
+      end
+    end
+  end
+  if side == nil then
+    if targetCount > 1 then
+      exec.fail("side-predicate branches need one event target but the packet carries " .. tostring(targetCount))
+    else
+      exec.fail("side-predicate branches read a battle side the playback packet does not carry")
+    end
+    return "done"
+  end
+  if side == "enemy" then
+    exec.jump(instruction.branchTarget)
+  else
+    exec.jump(instruction.alternateTarget)
+  end
+  return "continue"
 end
 Handlers["branch-on-side-predicate"] = handleBranchOnSidePredicate
 
 local function handleBranchOnSideEquality(exec, instruction, index)
-  local _ = instruction
   local _ = index
-  return failContextField(exec, "side-equality branches")
+  -- ov07_0221D270 compares the attacker side class against the target
+  -- side class: equal sides take the count-derived branch target,
+  -- mixed sides fall through to the alternate target. A spread names
+  -- no single native target, so it fails instead of guessing one.
+  local topology = lockedTopology(exec)
+  local attackerSide = sideClassOf(type(topology) == "table" and topology.attacker or nil)
+  local targetSide = nil ---@type string?
+  local targetCount = 0
+  if type(topology) == "table" and type(topology.targets) == "table" then
+    local targets = topology.targets --[[@as table<integer, table<string, unknown>>]]
+    targetCount = #targets
+    if targetCount == 1 then
+      targetSide = sideClassOf(targets[1])
+    end
+  end
+  if attackerSide == nil or targetSide == nil then
+    if targetCount > 1 then
+      exec.fail("side-equality branches need one event target but the packet carries " .. tostring(targetCount))
+    else
+      exec.fail("side-equality branches read a battle side the playback packet does not carry")
+    end
+    return "done"
+  end
+  if attackerSide == targetSide then
+    exec.jump(instruction.branchTarget)
+  else
+    exec.jump(instruction.alternateTarget)
+  end
+  return "continue"
 end
 Handlers["branch-on-side-equality"] = handleBranchOnSideEquality
 
@@ -779,6 +922,14 @@ end
 Handlers["replace-parameters-and-call"] = handleReplaceParametersAndCall
 
 local function handleCreateBattlerEffect(exec, instruction, index)
+  -- A parked staging wait means this instruction already staged its
+  -- dependency and child on its first visit: resume the wait instead
+  -- of acquiring a second time. A real loop revisit after the wait
+  -- cleared stages anew because no wait is held then.
+  local parked = exec.wait()
+  if parked ~= nil and parked.kind == "staging" and parked.index == index then
+    return executeStagingWait(exec, instruction, index)
+  end
   if exec.lease(instruction.resource) == nil then
     return "done"
   end
@@ -802,6 +953,12 @@ local function handleCreateParameterizedBattlerEffect(exec, instruction, index)
   if type(instruction.resource) ~= "string" or instruction.resource == "" then
     exec.fail("parameterized battler effects stage a semantic particle resource")
     return "done"
+  end
+  -- Same parked-resumption guard as the plain battler effect: the
+  -- held staging wait already owns this visit's dependency and child.
+  local parked = exec.wait()
+  if parked ~= nil and parked.kind == "staging" and parked.index == index then
+    return executeStagingWait(exec, instruction, index)
   end
   if exec.lease(instruction.resource) == nil then
     return "done"

@@ -539,4 +539,457 @@ function T.stuck_voices_escape_bounded_instead_of_hanging()
   Assert.equal(#helpers.log.played, 1, "the wait reuses the already playing voice")
 end
 
+function T.particle_creation_parks_without_reacquiring_across_ticks()
+  local player, handle, helpers = startNew(programOf({
+    { op = "create-battler-effect", taskKind = "battle-particle-emitter-battler-path", resource = "battle/particle-emitter/probe-effect", emitterPosition = "solo-enemy" },
+    { op = "play-sound", sound = "after-create-cue" },
+    { op = "reset-blend-alpha" },
+  }))
+  player:stepSourceTick({ tick = 1 })
+  Assert.equal(player:status(handle), "waiting", "the fresh creation parks on its staging wait")
+  Assert.equal(#helpers.log.acquired, 1, "the first visit stages exactly one dependency")
+  Assert.equal(#helpers.log.created, 1, "the first visit constructs exactly one child")
+  for _ = 1, 3 do
+    Assert.equal(player:status(handle), "waiting", "status reads hold the parked phase")
+    Assert.isNil(player:failure(handle), "parked occurrences carry no failure")
+  end
+  Assert.equal(#helpers.log.acquired, 1, "status reads stage nothing more")
+  Assert.equal(#helpers.log.created, 1, "status reads construct nothing more")
+  player:stepSourceTick({ tick = 2 })
+  player:stepSourceTick({ tick = 3 })
+  player:stepSourceTick({ tick = 4 })
+  Assert.equal(#helpers.log.acquired, 1, "parked ticks never restage the dependency")
+  Assert.equal(#helpers.log.created, 1, "parked ticks never reconstruct the child")
+  Assert.equal(#helpers.log.played, 1, "the stream advances past the drained wait in source order")
+  Assert.equal(player:status(handle), "waiting", "the still-running child holds the stream end")
+end
+
+function T.particle_creation_repeats_once_per_loop_visit()
+  local helpers = collaborators()
+  function helpers.tasks.create(kind, _args, _context, _services)
+    helpers.log.created[#helpers.log.created + 1] = kind
+    local task = { _state = "running" }
+    function task.stepSourceTick(_tick)
+      task._state = "complete"
+    end
+    function task.status()
+      return task._state
+    end
+    function task.cancel(_reason)
+      task._state = "cancelled"
+      helpers.log.cancelled[#helpers.log.cancelled + 1] = kind
+    end
+    function task.dispose()
+      helpers.log.disposed[#helpers.log.disposed + 1] = kind
+    end
+    return task
+  end
+  local player = assert(BattleAnimationPlayer.new({
+    scene = {},
+    audio = helpers.audio,
+    resources = helpers.resources,
+    tasks = helpers.tasks,
+  }))
+  local handle = assert(player:start(packet(), programOf({
+    { op = "reserve-loop-slot", values = { 2 }, branchTarget = 2, resumeTarget = 2 },
+    { op = "create-battler-effect", taskKind = "battle-particle-emitter-battler-path", resource = "battle/particle-emitter/loop-effect", emitterPosition = "solo-enemy" },
+    { op = "advance-loop-slot" },
+    { op = "reset-blend-alpha" },
+  })))
+  for _ = 1, 10 do
+    player:stepSourceTick({ tick = 1 })
+    if player:status(handle) == "complete" then
+      break
+    end
+  end
+  Assert.equal(player:status(handle), "complete", "both loop visits drain to completion")
+  Assert.equal(#helpers.log.acquired, 2, "each real loop visit stages exactly once")
+  Assert.equal(#helpers.log.created, 2, "each real loop visit constructs exactly once")
+  Assert.equal(#helpers.log.released, 2, "each staged lease releases exactly once")
+end
+
+function T.parked_creation_cancels_and_fails_without_leaking()
+  local player, handle, helpers = startNew(programOf({
+    { op = "create-battler-effect", taskKind = "battle-particle-emitter-battler-path", resource = "battle/particle-emitter/cancel-effect", emitterPosition = "solo-enemy" },
+    { op = "reset-blend-alpha" },
+  }))
+  player:stepSourceTick({ tick = 1 })
+  Assert.equal(player:status(handle), "waiting", "the creation parks before cancellation")
+  local second = assert(player:start(packet("second-occurrence"), programOf({
+    { op = "reset-blend-alpha" },
+  })))
+  player:cancel(handle, "withdrawn")
+  Assert.equal(player:status(handle), "cancelled", "cancellation lands on cancelled")
+  player:cancel(handle, "repeated")
+  player:stepSourceTick({ tick = 2 })
+  player:stepSourceTick({ tick = 3 })
+  Assert.equal(player:status(handle), "cancelled", "terminal phases never move again")
+  Assert.equal(#helpers.log.acquired, 1, "the cancelled visit staged exactly once")
+  Assert.equal(#helpers.log.created, 1, "the cancelled visit constructed exactly once")
+  Assert.equal(#helpers.log.released, 1, "the cancelled lease releases exactly once")
+  Assert.equal(#helpers.log.cancelled, 1, "the cancelled child cancels exactly once")
+  Assert.equal(#helpers.log.disposed, 1, "the cancelled child disposes exactly once")
+  Assert.equal(player:status(second), "complete", "the independent occurrence still runs normally")
+
+  local throwing = collaborators()
+  function throwing.resources.resolve(_key)
+    error("synthetic staging failure")
+  end
+  local failPlayer = assert(BattleAnimationPlayer.new({
+    scene = {},
+    audio = throwing.audio,
+    resources = throwing.resources,
+    tasks = throwing.tasks,
+  }))
+  local failed = assert(failPlayer:start(packet(), programOf({
+    { op = "create-battler-effect", taskKind = "battle-particle-emitter-battler-path", resource = "battle/particle-emitter/failing-effect", emitterPosition = "solo-enemy" },
+    { op = "reset-blend-alpha" },
+  })))
+  failPlayer:stepSourceTick({ tick = 1 })
+  Assert.equal(failPlayer:status(failed), "failed", "a throwing stage fails the occurrence")
+  Assert.equal(#throwing.log.created, 0, "failed staging constructs no child")
+  local fault = failPlayer:failure(failed)
+  Assert.notNil(fault, "the failure carries its provenance")
+  Assert.equal(fault.op, "create-battler-effect", "the detail names the failing instruction")
+
+  local exploding = collaborators()
+  function exploding.tasks.create(_kind, _args, _context, _services)
+    error("synthetic child construction failure")
+  end
+  local burstPlayer = assert(BattleAnimationPlayer.new({
+    scene = {},
+    audio = exploding.audio,
+    resources = exploding.resources,
+    tasks = exploding.tasks,
+  }))
+  local burst = assert(burstPlayer:start(packet(), programOf({
+    { op = "create-battler-effect", taskKind = "battle-particle-emitter-battler-path", resource = "battle/particle-emitter/burst-effect", emitterPosition = "solo-enemy" },
+    { op = "reset-blend-alpha" },
+  })))
+  burstPlayer:stepSourceTick({ tick = 1 })
+  Assert.equal(burstPlayer:status(burst), "failed", "a throwing construction fails the occurrence")
+  Assert.equal(#exploding.log.acquired, 1, "the failed visit staged once before constructing")
+  Assert.equal(#exploding.log.released, 1, "the earlier lease releases exactly once")
+
+  local hollow = collaborators()
+  function hollow.resources.resolve(_key)
+    return nil
+  end
+  local hollowPlayer = assert(BattleAnimationPlayer.new({
+    scene = {},
+    audio = hollow.audio,
+    resources = hollow.resources,
+    tasks = hollow.tasks,
+  }))
+  local hollowHandle = assert(hollowPlayer:start(packet(), programOf({
+    { op = "create-battler-effect", taskKind = "battle-particle-emitter-battler-path", resource = "battle/particle-emitter/hollow-effect", emitterPosition = "solo-enemy" },
+    { op = "reset-blend-alpha" },
+  })))
+  hollowPlayer:stepSourceTick({ tick = 1 })
+  Assert.equal(hollowPlayer:status(hollowHandle), "failed", "an empty stage fails instead of registering")
+  Assert.equal(#hollow.log.created, 0, "an empty stage constructs no child")
+  Assert.equal(#hollow.log.released, 0, "nothing acquired means nothing released")
+end
+
+local function sideBattler(slot, sideType, combatant, activation)
+  return { combatant = combatant or 1, activation = activation or 1, slot = slot, sideType = sideType }
+end
+
+local function sidePacket(attacker, targets)
+  return {
+    launchId = "side-branch-probe",
+    packetId = 7,
+    event = { sequence = 1, effectKey = "side-branch-probe" },
+    visualSeed = 11,
+    topology = { attacker = attacker, targets = targets },
+  }
+end
+
+local function startWithSides(program, attacker, targets)
+  local helpers = collaborators()
+  local player = assert(BattleAnimationPlayer.new({
+    scene = {},
+    audio = helpers.audio,
+    resources = helpers.resources,
+    tasks = helpers.tasks,
+  }))
+  local handle = assert(player:start(sidePacket(attacker, targets), program))
+  return player, handle, helpers
+end
+
+function T.side_equality_takes_the_equal_target_on_matching_sides()
+  local player, handle, helpers = startWithSides(programOf({
+    { op = "branch-on-side-equality", values = {}, branchTarget = 4, alternateTarget = 2 },
+    { op = "play-sound", sound = "cross-side-cue" },
+    { op = "skip-words", target = 5 },
+    { op = "play-sound", sound = "equal-side-cue" },
+  }), sideBattler("solo-player", 0), { sideBattler("player-side-slot-2", 4, 5, 8) })
+  player:stepSourceTick({ tick = 1 })
+  Assert.equal(player:status(handle), "waiting", "matching sides take the equal branch without failing")
+  Assert.deepEqual(helpers.log.played, { "equal-side-cue" }, "the equal-side path sounds")
+end
+
+function T.side_equality_falls_through_on_opposite_sides()
+  local player, handle, helpers = startWithSides(programOf({
+    { op = "branch-on-side-equality", values = {}, branchTarget = 4, alternateTarget = 2 },
+    { op = "play-sound", sound = "cross-side-cue" },
+    { op = "skip-words", target = 5 },
+    { op = "play-sound", sound = "equal-side-cue" },
+  }), sideBattler("solo-player", 0), { sideBattler("solo-enemy", 1, 2, 9) })
+  player:stepSourceTick({ tick = 1 })
+  Assert.equal(player:status(handle), "waiting", "opposite sides take the alternate branch without failing")
+  Assert.deepEqual(helpers.log.played, { "cross-side-cue" }, "the cross-side path sounds")
+end
+
+function T.side_predicate_selector_zero_reads_the_attacker_side()
+  local player, handle, helpers = startWithSides(programOf({
+    { op = "branch-on-side-predicate", values = { 0 }, branchTarget = 4, alternateTarget = 2 },
+    { op = "play-sound", sound = "user-player-cue" },
+    { op = "skip-words", target = 5 },
+    { op = "play-sound", sound = "user-foe-cue" },
+  }), sideBattler("solo-enemy", 1, 2, 9), { sideBattler("solo-player", 0) })
+  player:stepSourceTick({ tick = 1 })
+  Assert.equal(player:status(handle), "waiting", "selector zero follows the attacker without failing")
+  Assert.deepEqual(helpers.log.played, { "user-foe-cue" }, "a foe-side user takes the special branch")
+end
+
+function T.side_predicate_other_selectors_read_the_single_target_side()
+  local player, handle, helpers = startWithSides(programOf({
+    { op = "branch-on-side-predicate", values = { 1 }, branchTarget = 4, alternateTarget = 2 },
+    { op = "play-sound", sound = "target-player-cue" },
+    { op = "skip-words", target = 5 },
+    { op = "play-sound", sound = "target-foe-cue" },
+  }), sideBattler("solo-player", 0), { sideBattler("solo-enemy", 1, 2, 9) })
+  player:stepSourceTick({ tick = 1 })
+  Assert.equal(player:status(handle), "waiting", "a nonzero selector follows the target without failing")
+  Assert.deepEqual(helpers.log.played, { "target-foe-cue" }, "a foe-side target takes the special branch")
+end
+
+function T.side_branches_fail_closed_on_ambiguous_or_missing_topology()
+  local spread = {
+    sideBattler("enemy-side-slot-1", 3, 2, 9),
+    sideBattler("enemy-side-slot-2", 5, 4, 10),
+  }
+  local equalitySpread, equalitySpreadHandle = startWithSides(programOf({
+    { op = "branch-on-side-equality", values = {}, branchTarget = 3, alternateTarget = 2 },
+    { op = "reset-blend-alpha" },
+    { op = "reset-blend-alpha" },
+  }), sideBattler("player-side-slot-1", 2), spread)
+  equalitySpread:stepSourceTick({ tick = 1 })
+  Assert.equal(equalitySpread:status(equalitySpreadHandle), "failed", "equality never guesses across a spread")
+  Assert.equal(equalitySpread:failure(equalitySpreadHandle).op, "branch-on-side-equality", "the spread failure names its branch")
+
+  local predicateSpread, predicateSpreadHandle = startWithSides(programOf({
+    { op = "branch-on-side-predicate", values = { 1 }, branchTarget = 3, alternateTarget = 2 },
+    { op = "reset-blend-alpha" },
+    { op = "reset-blend-alpha" },
+  }), sideBattler("player-side-slot-1", 2), spread)
+  predicateSpread:stepSourceTick({ tick = 1 })
+  Assert.equal(predicateSpread:status(predicateSpreadHandle), "failed", "target predicates never take the first foe")
+
+  local bare, bareHandle = startNew(programOf({
+    { op = "branch-on-side-equality", values = {}, branchTarget = 2, alternateTarget = 2 },
+    { op = "reset-blend-alpha" },
+  }))
+  bare:stepSourceTick({ tick = 1 })
+  Assert.equal(bare:status(bareHandle), "failed", "equality without topology stays loud")
+
+  local barePredicate, barePredicateHandle = startNew(programOf({
+    { op = "branch-on-side-predicate", values = { 0 }, branchTarget = 2, alternateTarget = 2 },
+    { op = "reset-blend-alpha" },
+  }))
+  barePredicate:stepSourceTick({ tick = 1 })
+  Assert.equal(barePredicate:status(barePredicateHandle), "failed", "predicates without topology stay loud")
+end
+
+function T.side_predicate_selector_zero_ignores_spread_targets()
+  local player, handle, helpers = startWithSides(programOf({
+    { op = "branch-on-side-predicate", values = { 0 }, branchTarget = 4, alternateTarget = 2 },
+    { op = "play-sound", sound = "user-player-cue" },
+    { op = "skip-words", target = 5 },
+    { op = "play-sound", sound = "user-foe-cue" },
+  }), sideBattler("player-side-slot-1", 2), {
+    sideBattler("enemy-side-slot-1", 3, 2, 9),
+    sideBattler("enemy-side-slot-2", 5, 4, 10),
+  })
+  player:stepSourceTick({ tick = 1 })
+  Assert.equal(player:status(handle), "waiting", "selector zero needs only the attacker")
+  Assert.deepEqual(helpers.log.played, { "user-player-cue" }, "a player-side user takes the ordinary branch")
+end
+
+function T.side_classes_follow_side_type_parity_without_slot_names()
+  local player, handle, helpers = startWithSides(programOf({
+    { op = "branch-on-side-equality", values = {}, branchTarget = 4, alternateTarget = 2 },
+    { op = "play-sound", sound = "cross-side-cue" },
+    { op = "skip-words", target = 5 },
+    { op = "play-sound", sound = "equal-side-cue" },
+  }), { combatant = 1, activation = 1, sideType = 1 }, { { combatant = 2, activation = 2, sideType = 3 } })
+  player:stepSourceTick({ tick = 1 })
+  Assert.equal(player:status(handle), "waiting", "odd side types share the foe-side class without slot names")
+  Assert.deepEqual(helpers.log.played, { "equal-side-cue" }, "the foe-side pair takes the equal branch")
+end
+
+-- The charge/strike dispatch behind opcode 13 (native ov07_0221D148 at
+-- pret/pokeheartgold asm/overlay_07.s:2712-2737): the handler tests bit 0
+-- of the battle-flag halfword and takes the first script word (the
+-- compiler-lowered alternateTarget) when clear, the second word (the
+-- branchTarget) when set. The charge-turn execution observes the bit
+-- clear and the strike-turn execution observes it set, so the occurrence
+-- move phase selects the charge half through the fallthrough and the
+-- strike half through the branch.
+local function playbackWithPhase(phase, withMove)
+  local move = nil
+  if withMove ~= false then
+    move = { selected = "FLY", executed = "FLY", phase = phase }
+  end
+  return {
+    launchId = "flag-probe",
+    packetId = 1,
+    event = { sequence = 1, effectKey = "FLY", move = move },
+    visualSeed = 1,
+  }
+end
+
+local function flagProgram()
+  return programOf({
+    { op = "branch-on-battle-flag", values = { 1 }, branchTarget = 4, alternateTarget = 2 },
+    { op = "play-sound", sound = "charge-half" },
+    { op = "skip-words", target = 5 },
+    { op = "play-sound", sound = "strike-half" },
+  })
+end
+
+local function startFlagged(program, playback)
+  local helpers = collaborators()
+  helpers.audio.done["charge-half"] = true
+  helpers.audio.done["strike-half"] = true
+  local player = assert(BattleAnimationPlayer.new({
+    scene = {},
+    audio = helpers.audio,
+    resources = helpers.resources,
+    tasks = helpers.tasks,
+  }))
+  local handle = assert(player:start(playback, program))
+  for _ = 1, 3 do
+    player:stepSourceTick({ tick = 1 })
+    if player:status(handle) == "complete" or player:status(handle) == "failed" then
+      break
+    end
+  end
+  return player, handle, helpers
+end
+
+function T.battle_flag_charge_phase_advances_to_the_charge_half()
+  local player, handle, helpers = startFlagged(flagProgram(), playbackWithPhase("charge"))
+  Assert.equal(player:status(handle), "complete", "the charge phase completes through the charge half")
+  Assert.deepEqual(helpers.log.played, { "charge-half" }, "the charge phase plays only the charge half")
+  Assert.equal(#helpers.log.created, 0, "the branch constructs no child")
+end
+
+function T.battle_flag_strike_phase_jumps_to_the_strike_half()
+  local player, handle, helpers = startFlagged(flagProgram(), playbackWithPhase("direct"))
+  Assert.equal(player:status(handle), "complete", "the strike phase completes through the strike half")
+  Assert.deepEqual(helpers.log.played, { "strike-half" }, "the strike phase plays only the strike half")
+  Assert.equal(#helpers.log.created, 0, "the branch constructs no child")
+end
+
+function T.battle_flag_other_operands_and_malformed_phases_fail_loud()
+  local cases = {
+    { values = { 2 }, playback = playbackWithPhase("charge"), name = "values {2}" },
+    { values = { 1 }, playback = { launchId = "flag-probe", packetId = 1 }, name = "missing event" },
+    {
+      values = { 1 },
+      playback = { launchId = "flag-probe", packetId = 1, event = { sequence = 1 } },
+      name = "missing move",
+    },
+    { values = { 1 }, playback = playbackWithPhase("spinning", true), name = "unknown phase" },
+    { values = { 1 }, playback = playbackWithPhase(7, true), name = "non-string phase" },
+    { values = {}, playback = playbackWithPhase("charge"), name = "empty values" },
+    { values = { 1, 2 }, playback = playbackWithPhase("charge"), name = "two values" },
+  }
+  for _, case in ipairs(cases) do
+    local program = programOf({
+      { op = "branch-on-battle-flag", values = case.values, branchTarget = 3, alternateTarget = 2 },
+      { op = "play-sound", sound = "charge-half" },
+      { op = "play-sound", sound = "strike-half" },
+    })
+    local player, handle, helpers = startFlagged(program, case.playback)
+    Assert.equal(
+      player:status(handle),
+      "failed",
+      case.name .. " fails instead of guessing a battle context"
+    )
+    local fault = player:failure(handle)
+    Assert.notNil(fault, case.name .. " carries its failure provenance")
+    Assert.equal(fault.op, "branch-on-battle-flag", case.name .. " names the failing instruction")
+    Assert.equal(#helpers.log.created, 0, case.name .. " constructs no child")
+    Assert.equal(#helpers.log.acquired, 0, case.name .. " stages no lease")
+  end
+end
+
+function T.carved_out_context_families_stay_loud_on_any_phase()
+  -- Compiler-faithful shapes (see BattleAnimationCompiler lowering): the
+  -- no-values interpreter-state form never admits through the strict
+  -- program schema, while every admitted context branch fails at its
+  -- handler with provenance even when the move phase is well-formed.
+  local refused = programOf({
+    { op = "branch-on-interpreter-state", branchTarget = 2 },
+    { op = "reset-blend-alpha" },
+  })
+  local helpers = collaborators()
+  local player = assert(BattleAnimationPlayer.new({
+    scene = {},
+    audio = helpers.audio,
+    resources = helpers.resources,
+    tasks = helpers.tasks,
+  }))
+  Assert.isNil(
+    player:start(playbackWithPhase("charge"), refused),
+    "the no-values interpreter-state form never admits"
+  )
+  local ops = {
+    {
+      op = "branch-on-interpreter-state",
+      values = { 1 },
+      branchTarget = 2,
+      alternateTarget = 1,
+    },
+    {
+      op = "branch-on-battle-field",
+      values = { 3 },
+      branchTarget = 2,
+      alternateTarget = nil,
+    },
+    {
+      op = "branch-on-side-mask",
+      branchCases = { { sideMask = 3, target = 2 }, { otherwise = true, target = 2 } },
+    },
+    {
+      op = "branch-on-picture-state",
+      values = { 0 },
+      branchTarget = 2,
+      alternateTarget = nil,
+    },
+  }
+  for _, probe in ipairs(ops) do
+    local instruction = { op = probe.op, branchTarget = probe.branchTarget, alternateTarget = probe.alternateTarget }
+    if probe.values ~= nil then
+      instruction.values = probe.values
+    end
+    if probe.branchCases ~= nil then
+      instruction.branchCases = probe.branchCases
+    end
+    local player, handle, helpers = startFlagged(programOf({ instruction }), playbackWithPhase("charge"))
+    Assert.equal(
+      player:status(handle),
+      "failed",
+      probe.op .. " stays loud even with a well-formed move phase"
+    )
+    local fault = player:failure(handle)
+    Assert.notNil(fault, probe.op .. " carries its failure provenance")
+    Assert.equal(fault.op, probe.op, probe.op .. " names the failing instruction")
+    Assert.equal(#helpers.log.created, 0, probe.op .. " constructs no child")
+  end
+end
+
 return { tests = T }

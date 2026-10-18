@@ -502,6 +502,12 @@ function BattleAnimationPlayer:_exec(occurrence)
       failOccurrence(player, occurrence, "required resource failure: " .. tostring(lease))
       return nil
     end
+    -- An empty acquisition stages nothing: only a genuine lease joins
+    -- the occurrence journal, so there is nothing to release later.
+    if lease == nil then
+      failOccurrence(player, occurrence, "required resource failure: no lease staged for key " .. key)
+      return nil
+    end
     local record = { key = key, lease = lease, released = false }
     occurrence.leases[#occurrence.leases + 1] = record
     return record
@@ -690,6 +696,39 @@ function BattleAnimationPlayer:_exec(occurrence)
       end
     end
     return occurrence.pc + 1
+  end
+  function exec.topology()
+    local packet = occurrence.packet
+    if type(packet) == "table" and type(packet.topology) == "table" then
+      return packet.topology
+    end
+    return nil
+  end
+  function exec.eventIdentity()
+    local packet = occurrence.packet
+    if type(packet) == "table" and type(packet.event) == "table" then
+      return packet.event
+    end
+    return nil
+  end
+  -- Reports the admitted occurrence move phase behind charge/strike
+  -- dispatch. Only the two kernel-emitted phases select a half; a
+  -- missing move record or any other phase value stays unresolved so
+  -- the caller fails closed instead of guessing a presentation path.
+  function exec.movePhase()
+    local packet = occurrence.packet
+    if type(packet) ~= "table" or type(packet.event) ~= "table" then
+      return nil
+    end
+    local move = packet.event.move --[[@as unknown]]
+    if type(move) ~= "table" then
+      return nil
+    end
+    local phase = (move --[[@as table<string, unknown>]]).phase
+    if phase ~= "charge" and phase ~= "direct" then
+      return nil
+    end
+    return phase --[[@as string]]
   end
   function exec.activationFor(selector)
     if type(selector) ~= "number" then
