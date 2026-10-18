@@ -80,6 +80,13 @@ local function presentationAssets(entries)
     acquisitions = {},
     releases = {},
     active = {},
+    prepare = function(self, spriteId)
+      assert(self.entries[spriteId], "no compiled visual for spriteId " .. tostring(spriteId))
+      return true
+    end,
+    cancelPreparation = function(self, _)
+      return false
+    end,
     acquire = function(self, spriteId)
       self.acquisitions[spriteId] = (self.acquisitions[spriteId] or 0) + 1
       self.active[spriteId] = true
@@ -96,6 +103,134 @@ local function presentationAssets(entries)
       self.disposed = true
     end,
   }
+end
+
+-- A pooled-provider-shaped fake: atlas interest must be enrolled and polled
+-- through `prepare` before `acquire` hands out the entry, and superseded or
+-- abandoned interest is dropped through `cancelPreparation`. Entries named in
+-- `pending` stay pending until the test clears them; entries named in
+-- `failures` raise their named cause when polled. This mirrors the pooled
+-- actor provider's nonblocking contract so the presentation transaction can
+-- be exercised without the image worker.
+local function stagedPresentationAssets(entries, options)
+  options = options or {}
+  local pendingIds = {}
+  for spriteId in pairs(options.pending or {}) do
+    pendingIds[spriteId] = true
+  end
+  local assets = {
+    entries = entries,
+    acquisitions = {},
+    releases = {},
+    prepares = {},
+    cancels = {},
+    tickets = {},
+    refCounts = {},
+    pending = pendingIds,
+    failures = options.failures or {},
+  }
+  function assets:prepare(spriteId)
+    self.prepares[spriteId] = (self.prepares[spriteId] or 0) + 1
+    if self.failures[spriteId] ~= nil then
+      error(self.failures[spriteId], 0)
+    end
+    assert(self.entries[spriteId], "no compiled visual for spriteId " .. tostring(spriteId))
+    if (self.refCounts[spriteId] or 0) > 0 then
+      return true
+    end
+    if self.pending[spriteId] then
+      return false
+    end
+    self.tickets[spriteId] = true
+    return true
+  end
+  function assets:acquire(spriteId)
+    if (self.refCounts[spriteId] or 0) == 0 then
+      assert(self.entries[spriteId], "no compiled visual for spriteId " .. tostring(spriteId))
+      assert(
+        self.tickets[spriteId],
+        "pooled actor atlas for spriteId " .. tostring(spriteId) .. " needs a ready prepare before acquire"
+      )
+      self.tickets[spriteId] = nil
+    end
+    self.acquisitions[spriteId] = (self.acquisitions[spriteId] or 0) + 1
+    self.refCounts[spriteId] = (self.refCounts[spriteId] or 0) + 1
+    return assert(self.entries[spriteId])
+  end
+  function assets:resident(spriteId)
+    if (self.refCounts[spriteId] or 0) > 0 then
+      return self.entries[spriteId]
+    end
+    return nil
+  end
+  function assets:release(spriteId)
+    local count = assert(self.refCounts[spriteId], "released spriteId " .. tostring(spriteId) .. " is not held")
+    assert(count > 0, "released spriteId " .. tostring(spriteId) .. " more times than it was acquired")
+    self.releases[spriteId] = (self.releases[spriteId] or 0) + 1
+    if count == 1 then
+      self.refCounts[spriteId] = nil
+    else
+      self.refCounts[spriteId] = count - 1
+    end
+  end
+  function assets:cancelPreparation(spriteId)
+    self.cancels[spriteId] = (self.cancels[spriteId] or 0) + 1
+    if self.tickets[spriteId] then
+      self.tickets[spriteId] = nil
+      return true
+    end
+    return false
+  end
+  function assets:dispose()
+    if self.disposed then
+      return
+    end
+    self.disposed = true
+    for spriteId in pairs(self.tickets) do
+      self:cancelPreparation(spriteId)
+    end
+    for spriteId, count in pairs(self.refCounts) do
+      for _ = 1, count do
+        self:release(spriteId)
+      end
+    end
+  end
+  return assets
+end
+
+-- A minimal presentation runtime whose actor set the test drives directly:
+-- the revision and sprite set advance only when the test mutates them.
+local function stagedPresentationRuntime(spriteIds, records)
+  local actors = { revision = 0, spriteIds = spriteIds, records = records or {} }
+  function actors:visualRevision()
+    return self.revision
+  end
+  function actors:collectSpriteIds(out)
+    for spriteId in pairs(self.spriteIds) do
+      out[spriteId] = true
+    end
+  end
+  function actors:drawRecords()
+    return self.records
+  end
+  local runtime = {
+    actors = actors,
+    playerVisual = {
+      spriteId = 99,
+      drawRecord = function()
+        return actorRecord("field:player", 99)
+      end,
+    },
+  }
+  return runtime, actors
+end
+
+local function drawIdentities(items)
+  local identities = {}
+  for _, item in ipairs(items) do
+    identities[#identities + 1] = item.actorId
+  end
+  return identities
 end
 
 local function actorPresentationStub()
@@ -2175,6 +2310,262 @@ function T.actor_presentation_borrows_the_runtime_image_pool_by_default()
   if not ok then
     error(err, 0)
   end
+end
+
+-- A stalled atlas revision must not pause the field: updates keep running,
+-- the prior actor set keeps drawing, and the new set appears atomically
+-- once every required atlas is admitted.
+function T.stalled_actor_revision_keeps_prior_draws_until_atomic_admission()
+  local assets = stagedPresentationAssets({ [99] = presentationEntry(99), [34] = presentationEntry(34) }, {
+    pending = { [34] = true },
+  })
+  local state, actors = presentationState(assets, { [99] = true })
+  local updates = 0
+  local baseUpdate = state.runtime.update
+  state.runtime.update = function(...)
+    updates = updates + 1
+    return baseUpdate(...)
+  end
+  actors.records = {}
+  function actors:drawRecords()
+    return self.records
+  end
+
+  state:update(0.016)
+  local settled = state:_actorDraws(0.5)
+  Assert.isTrue(#settled > 0, "the committed player set draws before the revision arrives")
+  local settledIdentities = drawIdentities(settled)
+
+  actors.revision = actors.revision + 1
+  actors.spriteIds[34] = true
+  actors.records = { actorRecord("map:61:object:1", 34) }
+
+  for _ = 1, 4 do
+    state:update(0.016)
+    local held = state:_actorDraws(0.5)
+    Assert.deepEqual(
+      drawIdentities(held),
+      settledIdentities,
+      "a pending atlas keeps the prior actor draw set with nothing partial"
+    )
+    local heldRecords = state.actorPresentation:records()
+    Assert.equal(#heldRecords, 1, "emote consumers see the same committed snapshot")
+    Assert.equal(heldRecords[1].actorId, "field:player")
+  end
+  Assert.isTrue(updates >= 5, "semantic updates keep running while admission is pending")
+  Assert.isNil(assets.acquisitions[34], "no reference is taken before the atlas is ready")
+
+  assets.pending[34] = nil
+  state:update(0.016)
+  local published = state:_actorDraws(0.5)
+  Assert.equal(#published, #settledIdentities + 1, "admission publishes the whole new set at once")
+  local arrived = false
+  for _, item in ipairs(published) do
+    if item.actorId == "map:61:object:1" then
+      arrived = true
+    end
+  end
+  Assert.isTrue(arrived, "the new actor appears after its atlas is admitted")
+  Assert.equal(assets.acquisitions[34], 1, "the admitted atlas is referenced exactly once")
+  state:dispose()
+end
+
+-- A superseding revision retires only staged (never committed) ownership:
+-- the committed set stays visible, stale interest returns exactly once, and
+-- a late stale completion never publishes.
+function T.superseded_revision_returns_only_staged_ownership()
+  local assets = stagedPresentationAssets({
+    [99] = presentationEntry(99),
+    [34] = presentationEntry(34),
+    [35] = presentationEntry(35),
+    [36] = presentationEntry(36),
+    [37] = presentationEntry(37),
+  }, {
+    pending = { [36] = true },
+  })
+  local runtime, actors =
+    stagedPresentationRuntime({ [34] = true }, { actorRecord("map:61:object:1", 34) })
+  local presentation = FieldActorPresentation.new(runtime --[[@as FieldActorPresentationRuntime]], {
+    assets = assets --[[@as FieldActorPresentationAssets]],
+  })
+
+  presentation:sync()
+  local committedIdentities = drawIdentities(presentation:drawItems(0.5))
+  Assert.isTrue(#committedIdentities > 0, "the first revision commits before staging begins")
+
+  actors.revision = 1
+  actors.spriteIds = { [35] = true, [36] = true }
+  actors.records = { actorRecord("map:61:object:2", 35), actorRecord("map:61:object:3", 36) }
+  presentation:sync()
+  Assert.deepEqual(
+    drawIdentities(presentation:drawItems(0.5)),
+    committedIdentities,
+    "a half-ready revision never becomes visible"
+  )
+  Assert.equal(assets.acquisitions[35], 1, "the ready member is staged while its sibling pends")
+  Assert.isNil(assets.acquisitions[36], "the pending member takes no reference yet")
+
+  actors.revision = 2
+  actors.spriteIds = { [37] = true }
+  actors.records = { actorRecord("map:61:object:4", 37) }
+  presentation:sync()
+  Assert.equal(assets.releases[35], 1, "supersede returns the staged reference exactly once")
+  Assert.equal(assets.cancels[36], 1, "supersede drops the pending interest")
+  Assert.equal(assets.releases[34], 1, "publication retires the obsolete committed sprite")
+  Assert.equal(assets.acquisitions[37], 1, "the superseding sprite is admitted")
+  local publishedIdentities = drawIdentities(presentation:drawItems(0.5))
+  Assert.deepEqual(publishedIdentities, { "field:player", "map:61:object:4" })
+
+  assets.pending[36] = nil
+  presentation:sync()
+  Assert.isNil(assets.acquisitions[36], "a late stale completion is never adopted")
+  Assert.deepEqual(
+    drawIdentities(presentation:drawItems(0.5)),
+    publishedIdentities,
+    "stale work cannot disturb the committed set"
+  )
+
+  presentation:dispose()
+  presentation:dispose()
+  local acquired, released = 0, 0
+  for _, count in pairs(assets.acquisitions) do
+    acquired = acquired + count
+  end
+  for _, count in pairs(assets.releases) do
+    released = released + count
+  end
+  Assert.equal(released, acquired, "disposal leaves zero outstanding references")
+end
+
+-- A failing new sprite propagates its named cause, returns staged
+-- ownership, keeps the committed set drawable, and leaves the next valid
+-- revision free to complete.
+function T.failed_revision_keeps_committed_draws_and_recovers()
+  local assets = stagedPresentationAssets({
+    [99] = presentationEntry(99),
+    [34] = presentationEntry(34),
+    [35] = presentationEntry(35),
+  }, {
+    failures = { [36] = "shared atlas missing for sprite 36" },
+  })
+  local runtime, actors =
+    stagedPresentationRuntime({ [34] = true }, { actorRecord("map:61:object:1", 34) })
+  local presentation = FieldActorPresentation.new(runtime --[[@as FieldActorPresentationRuntime]], {
+    assets = assets --[[@as FieldActorPresentationAssets]],
+  })
+
+  presentation:sync()
+  local committedIdentities = drawIdentities(presentation:drawItems(0.5))
+
+  actors.revision = 1
+  actors.spriteIds = { [35] = true, [36] = true }
+  actors.records = { actorRecord("map:61:object:2", 35), actorRecord("map:61:object:3", 36) }
+  local err = Assert.throws(function()
+    presentation:sync()
+  end)
+  Assert.isTrue(
+    tostring(err):find("shared atlas missing for sprite 36", 1, true) ~= nil,
+    "the original failure propagates unwrapped"
+  )
+  local acquired, released = 0, 0
+  for _, count in pairs(assets.acquisitions) do
+    acquired = acquired + count
+  end
+  for _, count in pairs(assets.releases) do
+    released = released + count
+  end
+  Assert.equal(released, acquired - 2, "only the two committed references stay held after the failure")
+  Assert.isNil(assets.releases[34], "committed ownership survives the failure")
+  Assert.isNil(assets.releases[99], "the player reference survives the failure")
+  Assert.deepEqual(
+    drawIdentities(presentation:drawItems(0.5)),
+    committedIdentities,
+    "the committed set stays drawable after the failure"
+  )
+
+  actors.revision = 2
+  actors.spriteIds = { [35] = true }
+  actors.records = { actorRecord("map:61:object:4", 35) }
+  presentation:sync()
+  local recoveredIdentities = drawIdentities(presentation:drawItems(0.5))
+  Assert.deepEqual(recoveredIdentities, { "field:player", "map:61:object:4" })
+  presentation:dispose()
+end
+
+-- Admission is bounded per update: with three ready new sprites, one sync
+-- adopts at most two, the draw still holds the old set, and the next sync
+-- finishes the atomic publication.
+function T.ready_revision_admits_at_most_two_sprites_per_sync()
+  local assets = stagedPresentationAssets({
+    [99] = presentationEntry(99),
+    [40] = presentationEntry(40),
+    [41] = presentationEntry(41),
+    [42] = presentationEntry(42),
+  })
+  local runtime, actors = stagedPresentationRuntime({}, {})
+  local presentation = FieldActorPresentation.new(runtime --[[@as FieldActorPresentationRuntime]], {
+    assets = assets --[[@as FieldActorPresentationAssets]],
+  })
+
+  presentation:sync()
+  local committedIdentities = drawIdentities(presentation:drawItems(0.5))
+
+  actors.revision = 1
+  actors.spriteIds = { [40] = true, [41] = true, [42] = true }
+  actors.records = {
+    actorRecord("map:61:object:1", 40),
+    actorRecord("map:61:object:2", 41),
+    actorRecord("map:61:object:3", 42),
+  }
+  presentation:sync()
+  local firstPass = 0
+  for _, spriteId in ipairs({ 40, 41, 42 }) do
+    firstPass = firstPass + (assets.acquisitions[spriteId] or 0)
+  end
+  Assert.isTrue(firstPass <= 2, "one sync adopts at most two new sprites")
+  for _, spriteId in ipairs({ 40, 41, 42 }) do
+    Assert.isTrue(
+      (assets.prepares[spriteId] or 0) >= 1,
+      "every desired sprite is polled even after the admission budget is spent"
+    )
+  end
+  Assert.deepEqual(
+    drawIdentities(presentation:drawItems(0.5)),
+    committedIdentities,
+    "the set publishes only once every member is admitted"
+  )
+
+  presentation:sync()
+  for _, spriteId in ipairs({ 40, 41, 42 }) do
+    Assert.equal(assets.acquisitions[spriteId], 1, "each admitted sprite is referenced exactly once")
+  end
+  Assert.equal(assets.acquisitions[99], 1, "the unchanged player sprite never churns")
+  Assert.isNil(assets.releases[99], "the unchanged player sprite is never released")
+  Assert.equal(#presentation:drawItems(0.5), #committedIdentities + 3, "the whole new set appears at once")
+  presentation:dispose()
+end
+
+-- A presentation constructed but never admitted draws a safe empty actor
+-- set and still cleans up: no wait, no missing-residency failure.
+function T.pending_initial_presentation_draws_empty_and_disposes_cleanly()
+  local assets = stagedPresentationAssets({ [99] = presentationEntry(99) }, {
+    pending = { [99] = true },
+  })
+  local runtime, _ = stagedPresentationRuntime({}, {})
+  local presentation = FieldActorPresentation.new(runtime --[[@as FieldActorPresentationRuntime]], {
+    assets = assets --[[@as FieldActorPresentationAssets]],
+  })
+
+  presentation:sync()
+  Assert.isTrue((assets.prepares[99] or 0) >= 1, "the first sync polls instead of spinning")
+  Assert.isNil(assets.acquisitions[99], "nothing is referenced before readiness")
+  local items = presentation:drawItems(0.5)
+  Assert.isTrue(type(items) == "table", "the pending first draw returns an actor-item list")
+  Assert.equal(#items, 0, "the pending first draw is an empty complete set")
+  Assert.deepEqual(presentation:records(), {}, "records match the pending empty draw")
+  presentation:dispose()
+  presentation:dispose()
+  Assert.isTrue(assets.disposed, "cleanup still releases the provider")
 end
 
 return { tests = T }
