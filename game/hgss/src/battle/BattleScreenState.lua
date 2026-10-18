@@ -1449,6 +1449,7 @@ function BattleScreenState:_playCryCue(cue)
   local defaults = BattleAudio.DEFAULT_CRY
   self._battleAudio:playCry({
     species = species,
+    speciesKey = speciesKey,
     pattern = defaults.pattern,
     form = form,
     mode = defaults.mode,

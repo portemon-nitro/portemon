@@ -661,7 +661,7 @@ function T.rejecting_cue_audio_fails_the_launch_with_context()
   local context = tostring(status.error)
   Assert.isTrue(context:find("launch-production-audio", 1, true) ~= nil, "the failure names its launch: " .. context)
   Assert.isTrue(
-    context:find("cry:" .. LEAD_SPECIES, 1, true) ~= nil or context:find("SEQ_", 1, true) ~= nil,
+    context:find("cry:" .. FOE_SPECIES, 1, true) ~= nil or context:find("SEQ_", 1, true) ~= nil,
     "the failure names its cue role: " .. context
   )
   local callsAtFailure = #audio.calls

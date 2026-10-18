@@ -279,9 +279,19 @@ function BattleAudio:playCry(spec)
   checkRange(volume, "volume", 0, 127)
   assert(type(pitch) == "number" and pitch % 1 == 0, "battle cries carry their pitch as an integer offset")
   local species = spec.species --[[@as integer]]
-  self:_dispatch("cry-start", "playCry", "cry:" .. tostring(species), species, pattern, form, mode, pan, volume, pitch)
+  -- The role identity names the catalog species, never the numeric
+  -- engine identity: the screen threads the view-carried SPECIES key
+  -- beside the resolved numeric, while numeric-only adapter callers
+  -- keep the established numeric fallback.
+  local role = "cry:" .. tostring(species)
+  local speciesKey = spec.speciesKey
+  if type(speciesKey) == "string" and speciesKey ~= "" then
+    role = "cry:" .. speciesKey
+  end
+  self:_dispatch("cry-start", "playCry", role, species, pattern, form, mode, pan, volume, pitch)
   return self:_handle("cry", {
     species = species,
+    speciesKey = speciesKey,
     pattern = pattern,
     form = form,
     mode = mode,
@@ -339,7 +349,11 @@ function BattleAudio:voiceComplete(handle)
   end
   local detail = handle.detail --[[@as table<string, unknown>]]
   if handle.kind == "cry" then
-    return self:_query("voice-query", "isCryFinished", "cry:" .. tostring(detail.species))
+    local key = detail.speciesKey
+    if type(key) ~= "string" or key == "" then
+      key = detail.species
+    end
+    return self:_query("voice-query", "isCryFinished", "cry:" .. tostring(key))
   end
   if handle.kind == "fanfare" then
     return not self:_query("voice-query", "isFanfarePlaying", tostring(detail.symbol))
