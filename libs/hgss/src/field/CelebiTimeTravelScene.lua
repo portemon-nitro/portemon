@@ -23,6 +23,19 @@ local function finite(value)
   return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
 end
 
+local function restoreCamera(state, currentCamera)
+  local lease = state.cameraLease
+  if lease == nil then
+    return
+  end
+  local camera, up = lease.camera, lease.up
+  if currentCamera() == camera then
+    camera.up.x, camera.up.y, camera.up.z = up.x, up.y, up.z
+  end
+  state.cameraLease = nil
+  state.blurActive = false
+end
+
 ---@param options table<string, unknown>
 ---@return CelebiTimeTravelScene
 function CelebiTimeTravelScene.new(options)
@@ -84,21 +97,43 @@ end
 function CelebiTimeTravelScene:beginSwirl()
   local state = assert(self._state, "Celebi scene is inactive")
   assert(state.swirlFrame == nil and state.animationFrame >= 30, "Celebi swirl requires the completed model beat")
+  local camera = assert(self._currentCamera(), "Celebi swirl requires a live field camera")
+  local up = assert(camera.up, "Celebi swirl requires a camera up vector")
+  assert(finite(up.x) and finite(up.y) and finite(up.z), "Celebi camera up vector must be finite")
+  assert(type(camera.rawPerspective) == "function", "Celebi swirl requires a field camera perspective")
+  local perspective = camera:rawPerspective()
+  assert(finite(perspective), "Celebi camera perspective must be finite")
+  state.cameraLease = {
+    camera = camera,
+    up = { x = up.x, y = up.y, z = up.z },
+    perspective = perspective,
+  }
   state.swirlFrame = 0
+  state.blurActive = false
 end
 
 function CelebiTimeTravelScene:setSwirlFrame(frame)
   local state = assert(self._state, "Celebi scene is inactive")
   assert(state.swirlFrame ~= nil, "Celebi swirl has not started")
   assert(type(frame) == "number" and frame % 1 == 0 and frame >= 1 and frame <= 180, "invalid Celebi swirl frame")
-  assert(frame >= state.swirlFrame, "Celebi swirl frame cannot rewind")
+  assert(frame == state.swirlFrame + 1, "Celebi swirl must advance once per source frame")
+  local lease = assert(state.cameraLease, "Celebi swirl camera lease is missing")
+  assert(self._currentCamera() == lease.camera, "Celebi swirl camera ownership changed")
+  assert(lease.camera:rawPerspective() == lease.perspective, "Celebi swirl perspective changed")
+  local rawIndex = math.ceil((-0x10000 * frame) / 180) % 0x10000
+  local angle = (rawIndex / 0x10000) * (2 * math.pi)
+  lease.camera.up.x = -math.sin(angle)
+  lease.camera.up.y = math.cos(angle)
+  lease.camera.up.z = 0
   state.swirlFrame = frame
+  state.blurActive = true
 end
 
 function CelebiTimeTravelScene:finish()
   if self._state == nil then
     return
   end
+  restoreCamera(self._state, self._currentCamera)
   self._state = nil
 end
 
@@ -110,6 +145,7 @@ function CelebiTimeTravelScene:abort()
   if self._actors.currentMapId == state.actorMapId and self._currentMap() == state.map then
     self._followingMon:restoreCutsceneHide(state.followerLease)
   end
+  restoreCamera(state, self._currentCamera)
   self._state = nil
 end
 

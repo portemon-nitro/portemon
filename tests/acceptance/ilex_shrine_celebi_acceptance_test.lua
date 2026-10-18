@@ -306,6 +306,33 @@ local function driveUntilMap(game, mapSymbol, maxTicks, trace)
             taskStatus = task.status,
             coefficient = fade.coefficient,
           }
+          local camera = assert(game.runtime.camera, "the composed field owns its live camera")
+          local cameraSample = {
+            taskId = task.taskId,
+            phase = task.state.phase,
+            elapsed = task.state.elapsed,
+            taskStatus = task.status,
+            scene = game.runtime.celebiTimeTravelScene and game.runtime.celebiTimeTravelScene:status() or nil,
+            camera = camera,
+            up = { x = camera.up.x, y = camera.up.y, z = camera.up.z },
+            rawPerspective = camera:rawPerspective(),
+            zoom = camera.zoom,
+            projectionAspect = camera.projectionAspect,
+            target = { x = camera.target.x, y = camera.target.y, z = camera.target.z },
+            eye = { x = camera.eye.x, y = camera.eye.y, z = camera.eye.z },
+            screenScope = fade.screenScope,
+            coefficient = fade.coefficient,
+          }
+          trace.cinematicSamples[#trace.cinematicSamples + 1] = cameraSample
+          if trace.initialCamera == nil then
+            trace.initialCamera = camera
+            trace.initialUp = cameraSample.up
+            trace.initialRawPerspective = cameraSample.rawPerspective
+            trace.initialZoom = cameraSample.zoom
+            trace.initialProjectionAspect = cameraSample.projectionAspect
+            trace.initialTarget = cameraSample.target
+            trace.initialEye = cameraSample.eye
+          end
           if task.status == "active" and (task.state.phase == "opening_in" or task.state.phase == "beat" or task.state.phase == "swirl") then
             local scene = assert(
               game.runtime.celebiTimeTravelScene,
@@ -340,6 +367,7 @@ local function driveUntilMap(game, mapSymbol, maxTicks, trace)
               game.runtime.actors:isVisible(partnerId),
               "the source follower remains hidden through the covered handoff"
             )
+            cameraSample.sceneInactiveAtHandoff = true
           end
         end
       end
@@ -416,14 +444,14 @@ end
 -- past scene stays outside this contract: its principals stand on
 -- pocket tiles our generated terrain does not cover yet (see the
 -- terrain gap below), so it cannot run to its Tohjo warp here. This
--- acceptance stops before GPU rendering and asserts only the composed
--- fade timeline and covered warp.
+-- acceptance stops before GPU rendering and observes the composed camera,
+-- scene and fade state through the covered warp.
 function T.tests.celebi_branch_warps_to_route_22_with_progress_set()
   withShrineGame(function(game)
     game:pressAction()
     Assert.equal(game.lastInteraction.kind, "background", "the shrine resolves as a background event")
 
-    local trace = { taskIds = {}, samples = {}, sceneFrames = {} }
+    local trace = { taskIds = {}, samples = {}, sceneFrames = {}, cinematicSamples = {} }
     local route22 = driveUntilMap(game, "MAP_ROUTE_22", 20000, trace)
     Assert.equal(
       #journeyFaults(game),
@@ -455,13 +483,60 @@ function T.tests.celebi_branch_warps_to_route_22_with_progress_set()
         "the headless scene animation advances once per source frame"
       )
     end
+    local function swirlSample(frame)
+      for _, sample in ipairs(trace.cinematicSamples) do
+        if sample.phase == "swirl" and sample.scene and sample.scene.swirlFrame == frame then
+          return sample
+        end
+      end
+      return nil
+    end
+    local quarterTurns = {
+      { frame = 45, x = 1, y = 0 },
+      { frame = 90, x = 0, y = -1 },
+      { frame = 135, x = -1, y = 0 },
+    }
+    for _, turn in ipairs(quarterTurns) do
+      local sample = assert(
+        swirlSample(turn.frame),
+        string.format("the composed scene must publish camera state at swirl frame %d", turn.frame)
+      )
+      Assert.isTrue(sample.scene.blurActive, "the visible swirl activates main-scene capture")
+      Assert.equal(sample.camera, trace.initialCamera, "the swirl borrows the active field camera")
+      Assert.near(sample.up.x, turn.x, 1e-9, "the camera up vector follows the source roll horizontally")
+      Assert.near(sample.up.y, turn.y, 1e-9, "the camera up vector follows the source roll vertically")
+      Assert.near(sample.up.z, 0, 1e-9, "the camera up vector stays in the field camera plane")
+    end
+    local opaqueClosing = false
+    local handoff
+    for _, sample in ipairs(trace.cinematicSamples) do
+      if sample.phase == "swirl" and sample.scene and sample.scene.swirlFrame ~= nil then
+        Assert.equal(sample.camera, trace.initialCamera, "camera ownership stays with the active map during the swirl")
+        Assert.equal(sample.rawPerspective, trace.initialRawPerspective, "camera perspective stays fixed during the roll")
+        Assert.equal(sample.zoom, trace.initialZoom, "camera zoom stays fixed during the roll")
+        Assert.equal(sample.projectionAspect, trace.initialProjectionAspect, "camera layout aspect stays fixed during the roll")
+        Assert.deepEqual(sample.target, trace.initialTarget, "the roll leaves the camera target unchanged")
+        Assert.deepEqual(sample.eye, trace.initialEye, "the roll leaves the camera eye unchanged")
+        if sample.elapsed >= 110 and sample.coefficient == 16 and sample.screenScope == "both" then
+          opaqueClosing = true
+        end
+      elseif sample.taskStatus == "completed" and sample.sceneInactiveAtHandoff then
+        handoff = sample
+      end
+    end
+    Assert.isTrue(opaqueClosing, "the both-screen white cover remains opaque after its closing fade")
+    Assert.notNil(handoff, "the production scene releases camera and capture state at the covered handoff")
+    Assert.isFalse(handoff.scene.active, "the scene is inactive before the destination becomes visible")
+    Assert.isFalse(handoff.scene.blurActive, "capture is inactive at the covered handoff")
+    Assert.equal(handoff.camera, trace.initialCamera, "the borrowed camera is restored before the map warp")
+    Assert.deepEqual(handoff.up, trace.initialUp, "the original camera up vector is restored at completion")
     local world = assert(game.runtime.scripts.worldState, "field world state is available")
     Assert.equal(world:getVar(PROGRESS_40FE), 1, "the time travel advances the event progress")
     Assert.isTrue(world:isFlagSet(FRIEND_HIDDEN), "the departure hides the friend again")
 
-    -- The acceptance harness stops before graphics. It can prove that the
-    -- real task publishes a live, source-ticked model scene to presentation,
-    -- but actual model draw items and GPU lifetime belong to graphics tests.
+    -- The acceptance harness stops before graphics. Source-camera motion and
+    -- capture activation are semantic scene state; rendered pixels and GPU
+    -- lifetime belong to graphics tests.
     local scene = assert(
       game.runtime.celebiTimeTravelScene,
       "the production field runtime publishes the Celebi scene owner"

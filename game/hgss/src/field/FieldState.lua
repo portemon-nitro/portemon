@@ -13,6 +13,7 @@ local StandardFade = require("libs.hgss.src.presentation.StandardFade")
 local FieldBlackoutRenderer = require("game.hgss.src.field.FieldBlackoutRenderer")
 local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
 local CelebiTimeTravelRenderer = require("libs.hgss.src.presentation.CelebiTimeTravelRenderer")
+local CelebiTimeTravelBlur = require("libs.hgss.src.presentation.CelebiTimeTravelBlur")
 
 local KEY_DIRECTIONS =
   { w = "north", up = "north", s = "south", down = "south", a = "west", left = "west", d = "east", right = "east" }
@@ -83,6 +84,7 @@ end
 ---@field _battlePresentationBinding integer? factory binding identity behind the envelope
 ---@field presentationResources FieldPresentationResources?
 ---@field _celebiRenderer table<string, unknown>? lazy field-scene model presenter
+---@field _celebiBlur table<string, unknown>? lazy field-scene capture presenter
 ---@field actorPresentation FieldActorPresentation?
 ---@field _lastGeometrySignature string? the structural presentation-geometry signature the last sync consumed
 ---@field _pollPresentationTopology boolean whether injected topology changes are polled during draw
@@ -585,6 +587,9 @@ function FieldState:resize(width, height)
     self._celebiRenderer:dispose()
     self._celebiRenderer = nil
   end
+  if self._celebiBlur ~= nil then
+    self._celebiBlur:release()
+  end
   -- Atomic display changes cancel held pointer capture so a stale
   -- release can never activate after remeasure, in either owner.
   if self.battleEnvelope ~= nil then
@@ -855,11 +860,9 @@ function FieldState:draw()
   -- keep the historical always-present behavior.
   local overworld = self.runtime.overworld
   local overworldPresent = overworld == nil or overworld:isPresent()
-  if overworldPresent then
-    self:_drawBackdrop(width, height)
-  end
   local alpha = self.runtime.session:renderAlpha()
-  if overworldPresent then
+  local function drawFieldWorld()
+    self:_drawBackdrop(width, height)
     -- Rendering consumes the active logical map's render environment
     -- independently from geometry: physical coverage owns outdoor world
     -- parts while the environment carries lighting, edge, and fog state.
@@ -872,6 +875,22 @@ function FieldState:draw()
       alpha,
       self.runtime.fieldPixelScale:resolvedScale()
     )
+  end
+  if overworldPresent then
+    local scene = self.runtime.celebiTimeTravelScene
+    local status = scene and scene:status() or nil
+    if status ~= nil and status.active and status.blurActive then
+      if self._celebiBlur == nil then
+        self._celebiBlur = CelebiTimeTravelBlur.new()
+      end
+      self._celebiBlur:draw(status, self.runtime.viewport, drawFieldWorld)
+    else
+      if self._celebiBlur ~= nil then
+        self._celebiBlur:release()
+        self._celebiBlur = nil
+      end
+      drawFieldWorld()
+    end
     self.runtime:acknowledgeDestinationPresentation()
   end
   -- The retained Start Menu draws first and the foreground child second,
@@ -1620,6 +1639,10 @@ function FieldState:dispose()
   if self._celebiRenderer ~= nil then
     self._celebiRenderer:dispose()
     self._celebiRenderer = nil
+  end
+  if self._celebiBlur ~= nil then
+    self._celebiBlur:release()
+    self._celebiBlur = nil
   end
   self._entryFade = nil
   self._entryAccumulator = 0
