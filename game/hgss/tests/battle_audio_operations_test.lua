@@ -1280,7 +1280,7 @@ function T.missing_or_rejected_sounds_fail_the_launch_with_their_identity()
           )
           check(
             problems,
-            failureText:find("cry:CHIKORITA", 1, true) ~= nil or failureText:find("SEQ_", 1, true) ~= nil,
+            failureText:find("cry:CATERPIE", 1, true) ~= nil or failureText:find("SEQ_", 1, true) ~= nil,
             "the cue failure names its cue role on " .. versionId .. ": " .. failureText
           )
         else
