@@ -55,6 +55,8 @@ local DOMAINS = {
   },
   transition = {
     "FieldAreaPreview",
+    "BattleEncounterSelector",
+    "BattleEncounterTransition",
     "DoorSound",
     "DoorTiles",
     "FieldCoveredSwap",
@@ -63,6 +65,7 @@ local DOMAINS = {
     "FieldTransition",
     "FieldTransitionFade",
     "FieldTransitionProfile",
+    "TransitionFamilyFactory",
     "TransitionTrigger",
     "WarpSystem",
   },
@@ -122,6 +125,14 @@ local FIELD_COORDINATION = {
 
 local PRESENTATION = { "BillboardTransform" }
 
+local TRANSITION_BATTLE = {
+  "Overlay114Effect",
+  "Overlay114Sprites",
+  "Overlay115Effect",
+  "Overlay116CameraProgram",
+  "Overlay116Effect",
+}
+
 local EXISTING_SIBLINGS = {
   audio = "libs.hgss.src.audio.AudioRuntime",
   items = "libs.hgss.src.items.HgssBagService",
@@ -166,6 +177,9 @@ local function expectedFiles()
   end
   for _, moduleName in ipairs(PRESENTATION) do
     expected[HGSS_SOURCE_ROOT .. "/presentation/" .. moduleName .. ".lua"] = true
+  end
+  for _, moduleName in ipairs(TRANSITION_BATTLE) do
+    expected[HGSS_SOURCE_ROOT .. "/transition/battle/" .. moduleName .. ".lua"] = true
   end
   for sibling in pairs(EXISTING_SIBLINGS) do
     for _, path in ipairs(luaFilesUnder(HGSS_SOURCE_ROOT .. "/" .. sibling)) do

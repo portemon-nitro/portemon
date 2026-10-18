@@ -57,6 +57,7 @@ local DOMAINS = {
     "NewGameInitCache",
   },
   battle = {
+    "BattleAnimationSchema",
     "BattleDataCache",
     "BattleDataSchema",
     "BattlePresentationCache",

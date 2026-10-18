@@ -256,6 +256,26 @@ function T.fully_staged_demands_read_ready_and_breakages_do_not()
   )
 end
 
+function T.missing_scenes_fail_closed_naming_the_requested_key()
+  local cache = staging()
+  local missing, missingErr = BattlePresentationCache.loadScene(cache, "general/grass/night")
+  Assert.isNil(missing, "an unstaged scene never resolves")
+  Assert.isTrue(
+    type(missingErr) == "string" and missingErr:find("general/grass/night", 1, true) ~= nil,
+    "the missing scene names its requested key: " .. tostring(missingErr)
+  )
+  Assert.isTrue(
+    missingErr:find("general-grass-night", 1, true) ~= nil,
+    "the missing scene preserves its file identity: " .. tostring(missingErr)
+  )
+  local corrupt, corruptErr = BattlePresentationCache.loadScene(cache, "not-a-scene")
+  Assert.isNil(corrupt, "a corrupt scene key never resolves")
+  Assert.isTrue(
+    type(corruptErr) == "string" and corruptErr:find("not-a-scene", 1, true) ~= nil,
+    "the corrupt key fails with context: " .. tostring(corruptErr)
+  )
+end
+
 function T.delayed_pages_keep_readiness_pending()
   local selector = MonCache.portraitSelector("CHIKORITA", 0, "male", false, "back")
   local manifest = validManifest()

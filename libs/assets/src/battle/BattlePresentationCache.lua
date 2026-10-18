@@ -327,7 +327,8 @@ function BattlePresentationCache.loadScene(cacheFs, sceneKey)
   end
   local record, loadErr = cacheFs:loadLua(BattlePresentationCache.scenePath(sceneKey))
   if record == nil then
-    return nil, loadErr or ("no staged battle scene for " .. sceneKey)
+    local reason = loadErr == nil and "no staged battle scene file" or tostring(loadErr)
+    return nil, "no staged battle scene for " .. tostring(sceneKey) .. ": " .. reason
   end
   local ok, schemaErr = pcall(BattlePresentationSchema.assertScene, record)
   if not ok then
