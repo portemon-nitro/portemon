@@ -676,6 +676,211 @@ function T.A46_selected_transition_resource_failure_keeps_launch_identity(scope)
   end
 end
 
+local FieldRenderer = require("libs.hgss.src.presentation.FieldRenderer")
+local GxRenderer = require("libs.nds.src.love.GxRenderer")
+local CacheFs = require("libs.storage.src.CacheFs")
+
+-- Semantic roles installed by the transition-callback lane. Trainer routes
+-- without an intro task are the rocket family; the fallback roles split
+-- by wild and trainer usage. No numeric callback identities appear here.
+local NEW_FAMILY_FALLBACK_ROLES = {
+  ["plain-wild-fallback"] = true,
+  ["water-wild-fallback"] = true,
+  ["cave-wild-fallback"] = true,
+  ["plain-trainer-fallback"] = true,
+  ["water-trainer-fallback"] = true,
+  ["cave-trainer-fallback"] = true,
+}
+
+---@param transitions table<string, unknown> validated generated transition catalog
+---@return string[] semantic route keys installed by the transition-callback lane, in order
+local function newFamilyRouteKeys(transitions)
+  local keys = {}
+  for routeKey, route in pairs(transitions.routes) do
+    if NEW_FAMILY_FALLBACK_ROLES[route.role] == true then
+      keys[#keys + 1] = routeKey
+    elseif route.role == "trainer-transition" and route.task == nil then
+      keys[#keys + 1] = routeKey
+    elseif route.role == "background-transition" or route.role == "red-trainer-transition" then
+      keys[#keys + 1] = routeKey
+    end
+  end
+  table.sort(keys)
+  return keys
+end
+
+---@param manifest table<string, unknown> validated generated presentation manifest
+---@param cacheFs table<string, unknown> versioned derived cache behind demand validation
+---@param routeKey string selected semantic transition route
+---@param context table<string, unknown> immutable semantic launch context
+---@return table<string, unknown> running production transition through the installed family
+---@return table<string, unknown> recorded typed audio operations
+local function startProductionRoute(manifest, cacheFs, routeKey, context)
+  local audioOperations = {}
+  local transition = BattleEncounterTransition.new({
+    manifest = manifest,
+    cacheFs = cacheFs,
+    battleAssets = {
+      requestBattleScene = function()
+        return true
+      end,
+    },
+    sceneKey = assert(manifest.scenes[1]).key,
+    audioOperations = {
+      emit = function(_, operation)
+        audioOperations[#audioOperations + 1] = operation
+      end,
+    },
+    effectFactory = function(route, resources, launchContext)
+      return TransitionFamilyFactory.new(route, resources, love.graphics, {}, launchContext)
+    end,
+  })
+  Assert.equal(transition:prepare(context), "ready", routeKey .. " prepares its staged route resources")
+  Assert.equal(transition:start(), "running", routeKey .. " starts its installed family")
+  return transition, audioOperations
+end
+
+function T.A43_new_family_routes_complete_with_music_and_release_without_field_boot(scope)
+  Assert.isTrue(RomImporter.isReady(VERSION), "HeartGold dump and derived cache are required")
+  local cacheFs = CacheFs.forVersion(VERSION)
+  local manifest = assert(BattlePresentationCache.load(cacheFs))
+  local routeKeys = newFamilyRouteKeys(manifest.transitions)
+  Assert.isTrue(#routeKeys > 0, "the compiled catalog carries the installed families")
+  local contexts = sourceSelectorContexts(manifest.transitions)
+  local failures = {}
+  for _, routeKey in ipairs(routeKeys) do
+    local routeContexts = contexts[routeKey]
+    if routeContexts == nil then
+      failures[#failures + 1] = routeKey .. ": no source-normalized selector context reaches this compiled route"
+    else
+      for _, context in ipairs(routeContexts) do
+        local ok, routeError = pcall(function()
+          local transition, audioOperations = startProductionRoute(manifest, cacheFs, routeKey, context)
+          scope:own({
+            release = function()
+              transition:dispose()
+            end,
+          })
+          local status = transition:status()
+          for _ = 1, 5000 do
+            if status.phase ~= "running" then
+              break
+            end
+            transition:stepSourceTick()
+            status = transition:status()
+          end
+          if status.phase ~= "complete" then
+            error("native callback did not reach completion within the source-tick bound", 0)
+          end
+          local selected = BattleEncounterSelector.resolve(manifest.transitions, context)
+          local operation = audioOperations[1]
+          if operation == nil or operation.kind ~= "start-battle-music" or operation.role ~= selected.musicRole then
+            error("callback did not emit its selected typed battle-music identity", 0)
+          end
+          transition:dispose()
+          if transition._resources ~= nil then
+            error("transition disposal retained decoded route resources", 0)
+          end
+          if transition._effect ~= nil then
+            error("transition disposal retained its native callback task", 0)
+          end
+        end)
+        if not ok then
+          failures[#failures + 1] = routeKey .. " (" .. tostring(context.playerGender) .. "): " .. tostring(routeError)
+        end
+      end
+    end
+  end
+  Assert.equal(
+    #failures,
+    0,
+    "every installed route completes through the production family with music and release: "
+      .. table.concat(failures, " | ")
+  )
+end
+
+function T.A44_new_family_frames_compose_pixels_or_record_their_seam(scope)
+  Assert.isTrue(RomImporter.isReady(VERSION), "HeartGold dump and derived cache are required")
+  local cacheFs = CacheFs.forVersion(VERSION)
+  local manifest = assert(BattlePresentationCache.load(cacheFs))
+  local renderer = FieldRenderer.new({ gxRenderer = GxRenderer.new(), graphics = love.graphics })
+  scope:own(renderer.gxRenderer)
+  local world = scope:own(love.graphics.newCanvas(256, 192, { format = "rgba8", dpiscale = 1 }))
+  love.graphics.push("all")
+  love.graphics.setCanvas(world)
+  love.graphics.clear(0, 0.5, 0, 1)
+  love.graphics.setCanvas()
+  love.graphics.pop()
+  local target = scope:own(love.graphics.newCanvas(256, 192, { format = "rgba8", dpiscale = 1 }))
+  local contexts = sourceSelectorContexts(manifest.transitions)
+  local failures = {}
+  for _, routeKey in ipairs(newFamilyRouteKeys(manifest.transitions)) do
+    for _, context in ipairs(assert(contexts[routeKey], routeKey .. " has a selector context")) do
+      local ok, routeError = pcall(function()
+        local transition = startProductionRoute(manifest, cacheFs, routeKey, context)
+        scope:own({
+          release = function()
+            transition:dispose()
+          end,
+        })
+        local effect = assert(transition._effect, routeKey .. " retains its installed family")
+        local seen = {}
+        local seenCount = 0
+        local lastFrame = nil
+        local ticks = 0
+        while transition:status().phase == "running" and ticks < 1000 do
+          if ticks % 2 == 0 then
+            lastFrame = effect:frame()
+            love.graphics.push("all")
+            love.graphics.setCanvas({ target, stencil = true })
+            love.graphics.clear(0, 0, 0, 1)
+            renderer:drawTransition({ world = world }, lastFrame, { x = 0, y = 0, width = 256, height = 192 })
+            love.graphics.setCanvas()
+            love.graphics.pop()
+            local hash = digest(scope:own(target:newImageData()))
+            if seen[hash] == nil then
+              seen[hash] = true
+              seenCount = seenCount + 1
+            end
+          end
+          transition:stepSourceTick()
+          ticks = ticks + 1
+        end
+        if transition:status().phase ~= "complete" then
+          error(routeKey .. " did not complete within the source-tick bound", 0)
+        end
+        if manifest.transitions.routes[routeKey].role == "background-transition" then
+          -- The pure background scroll has no renderer consumer: the
+          -- native path moves only background registers, so the composed
+          -- frame is intentionally static here. The missing seam is
+          -- FieldRenderer.drawTransition support for frame.backgroundScroll.
+          if seenCount ~= 1 then
+            error(routeKey .. " composed " .. tostring(seenCount) .. " distinct frames without a scroll consumer", 0)
+          end
+          local scroll = lastFrame ~= nil and lastFrame.backgroundScroll or nil
+          if scroll == nil or scroll.bg1 == nil or scroll.bg3 == nil then
+            error(routeKey .. " lost its background scroll state", 0)
+          end
+          if lastFrame.paletteFade ~= nil or lastFrame.wipe ~= nil or lastFrame.sprites ~= nil then
+            error(routeKey .. " carries a fade, wipe, or sprite layer the native path never runs", 0)
+          end
+        elseif seenCount < 2 then
+          error(routeKey .. " composed no intermediate pixel change", 0)
+        end
+        transition:dispose()
+      end)
+      if not ok then
+        failures[#failures + 1] = routeKey .. ": " .. tostring(routeError)
+      end
+    end
+  end
+  Assert.equal(
+    #failures,
+    0,
+    "every installed family composes pixels or records its exact seam: " .. table.concat(failures, " | ")
+  )
+end
+
 local suite = GraphicsSmoke.suite(T)
 suite.metadata.capabilities = { "graphics", "rom_dump", "derived_assets" }
 suite.metadata.derivedAssets = {

@@ -3,6 +3,23 @@
 local Overlay114Effect = require("libs.hgss.src.transition.battle.Overlay114Effect")
 local Overlay115Effect = require("libs.hgss.src.transition.battle.Overlay115Effect")
 local Overlay116Effect = require("libs.hgss.src.transition.battle.Overlay116Effect")
+local Overlay117Effect = require("libs.hgss.src.transition.battle.Overlay117Effect")
+local Overlay118Effect = require("libs.hgss.src.transition.battle.Overlay118Effect")
+local Overlay119Effect = require("libs.hgss.src.transition.battle.Overlay119Effect")
+local Overlay120FallbackEffect = require("libs.hgss.src.transition.battle.Overlay120FallbackEffect")
+local Overlay120RedEffect = require("libs.hgss.src.transition.battle.Overlay120RedEffect")
+
+local FALLBACK_WILD_ROLES = {
+  ["plain-wild-fallback"] = true,
+  ["water-wild-fallback"] = true,
+  ["cave-wild-fallback"] = true,
+}
+
+local FALLBACK_TRAINER_ROLES = {
+  ["plain-trainer-fallback"] = true,
+  ["water-trainer-fallback"] = true,
+  ["cave-trainer-fallback"] = true,
+}
 
 local TransitionFamilyFactory = {}
 
@@ -30,6 +47,19 @@ function TransitionFamilyFactory.new(route, resources, graphics, services, conte
     effect:prepareGraphics(graphics)
   elseif route.role == "camera-and-fade-transition" then
     effect = Overlay116Effect.new(route, assert(services, "overlay 116 requires field transition services"))
+  elseif FALLBACK_WILD_ROLES[route.role] == true then
+    effect = Overlay120FallbackEffect.new(route, resources, context)
+  elseif FALLBACK_TRAINER_ROLES[route.role] == true then
+    effect = Overlay119Effect.new(route, resources)
+    effect:prepareGraphics(graphics)
+  elseif route.role == "trainer-transition" and route.task == nil then
+    effect = Overlay117Effect.new(route, resources)
+    effect:prepareGraphics(graphics)
+  elseif route.role == "background-transition" then
+    effect = Overlay118Effect.new(route, resources)
+  elseif route.role == "red-trainer-transition" then
+    effect = Overlay120RedEffect.new(route, resources)
+    effect:prepareGraphics(graphics)
   else
     error("no source family is installed for transition role " .. tostring(route.role), 2)
   end

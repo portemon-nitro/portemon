@@ -86,6 +86,47 @@ function Overlay114Sprites.renderCell(charData, paletteData, cell, mapping)
   return { width = width, height = height, pixels = table.concat(bytes), origin = { x = minX, y = minY } }
 end
 
+---@param graphics table<string, function> host graphics namespace enabling GPU upload
+---@param records table[] distinct decoded image records behind the caller-owned sprites
+---@return table<unknown, unknown> uploaded handle per decoded record
+---@return unknown[] owned handles in upload order for single-pass release
+function Overlay114Sprites.uploadImages(graphics, records)
+  assert(type(graphics.newImage) == "function" and love.image ~= nil, "overlay sprites require LÖVE image upload")
+  local uploaded = {}
+  local handles = {}
+  local ok, result = pcall(function()
+    for _, record in ipairs(records) do
+      if uploaded[record] == nil then
+        local imageData = love.image.newImageData(record.width, record.height)
+        for y = 0, record.height - 1 do
+          for x = 0, record.width - 1 do
+            local offset = (y * record.width + x) * 4
+            imageData:setPixel(
+              x,
+              y,
+              string.byte(record.pixels, offset + 1) / 255,
+              string.byte(record.pixels, offset + 2) / 255,
+              string.byte(record.pixels, offset + 3) / 255,
+              string.byte(record.pixels, offset + 4) / 255
+            )
+          end
+        end
+        local image = assert(graphics.newImage(imageData), "graphics driver returns an overlay sprite image")
+        image:setFilter("nearest", "nearest")
+        uploaded[record] = image
+        handles[#handles + 1] = image
+      end
+    end
+  end)
+  if not ok then
+    for _, image in ipairs(handles) do
+      image:release()
+    end
+    error(result, 0)
+  end
+  return uploaded, handles
+end
+
 ---@param role string semantic selector role from C03
 ---@param resources { palette: { colors: { r: integer, g: integer, b: integer }[] }, characters: { depth: integer, tiles: string }, cells: { cells: { objs: { tile: integer, width: integer, height: integer, x: integer, y: integer, palette: integer, flipH: boolean?, flipV: boolean? }[] }[] }, animation: { anims: { frames: { cell: integer, translateX: number, translateY: number, scaleX: number, scaleY: number, rotation: number, duration: integer }[] }[] } } decoded source assets
 ---@return { image: { width: integer, height: integer, pixels: string, origin: { x: integer, y: integer } }, affine: { translateX: number, translateY: number, scaleX: number, scaleY: number, rotation: number }, duration: integer, position: { x: integer, y: integer } }[]
@@ -136,7 +177,7 @@ function Overlay114Sprites.createForRoute(route, loadedResources)
   local group = assert(route.assetGroups and route.assetGroups.sprite, "overlay 114 route selects its sprite resources")
   local resources = {
     palette = assert(loadedResources[group.palette], "selected sprite palette is loaded"),
-    characters = assert(loadedResources[group.characters], "selected sprite characters are loaded"),
+    characters = assert(loadedResources[group.character], "selected sprite characters are loaded"),
     cells = assert(loadedResources[group.cell], "selected sprite cells are loaded"),
     animation = assert(loadedResources[group.animation], "selected sprite animation is loaded"),
   }

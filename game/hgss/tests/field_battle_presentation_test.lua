@@ -125,9 +125,14 @@ local function runtimeOptions()
 end
 
 ---@param versionId string
+---@param location table? map entry overriding the house interior
 ---@return FieldRuntime live headless production runtime with a stocked party
-local function bootRuntime(versionId)
-  local runtime = FieldRuntime.new(validEntry(versionId), runtimeOptions())
+local function bootRuntime(versionId, location)
+  local entry = validEntry(versionId)
+  if location ~= nil then
+    entry.location = location
+  end
+  local runtime = FieldRuntime.new(entry, runtimeOptions())
   Assert.isTrue(runtime.monService:giveMon({ species = "CHIKORITA", level = 9 }), "the route needs its lead")
   Assert.isTrue(runtime.monService:giveMon({ species = "CHIKORITA", level = 9 }), "the route needs its reserve")
   return runtime
@@ -162,10 +167,11 @@ end
 ---@param versionId string
 ---@param measurement table
 ---@param graphics table? borrowed graphics namespace staging pixels behind explicit draws
+---@param transition table? native transition collaborators behind effect initialization
 ---@return table envelope
 ---@return integer binding
 ---@return table doubles
-local function bindEnvelope(runtime, versionId, measurement, graphics)
+local function bindEnvelope(runtime, versionId, measurement, graphics, transition)
   local doubles = { audio = recordingAudio(), windows = recordingWindows(), text = recordingText() }
   local envelope = FieldBattlePresentation.new({
     cacheFs = CacheFs.forVersion(versionId),
@@ -173,6 +179,9 @@ local function bindEnvelope(runtime, versionId, measurement, graphics)
     text = doubles.text,
     audio = doubles.audio,
     graphics = graphics,
+    derivedAssets = transition ~= nil and transition.derivedAssets or nil,
+    fieldRenderer = transition ~= nil and transition.fieldRenderer or nil,
+    captureFieldLayers = transition ~= nil and transition.captureFieldLayers or nil,
     measureDisplay = function()
       return measurement
     end,
@@ -502,8 +511,23 @@ end
 -- deferred until an emergency black cover reaches full opacity.
 function T.encounter_music_starts_with_transition_before_full_cover()
   for _, versionId in ipairs(readyVersions()) do
-    local runtime = bootRuntime(versionId)
-    local envelope, binding = bindEnvelope(runtime, versionId, dualMeasurement("encounter-transition:dual"))
+    -- The ordering intent needs an outdoor fallback route: the compiled
+    -- catalog carries no indoor fallback, so the house interior fails
+    -- selection closed by design. Route selection itself is unchanged.
+    local runtime = bootRuntime(versionId, { mapSymbol = "MAP_NEW_BARK", fieldX = 10, fieldZ = 10, facing = "south" })
+    local envelope, binding = bindEnvelope(runtime, versionId, dualMeasurement("encounter-transition:dual"), love.graphics, {
+      derivedAssets = {
+        requestBattleScene = function()
+          return true
+        end,
+      },
+      fieldRenderer = {},
+      captureFieldLayers = function()
+        return {
+          dispose = function() end,
+        }
+      end,
+    })
     local ok, failure = xpcall(function()
       runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
 

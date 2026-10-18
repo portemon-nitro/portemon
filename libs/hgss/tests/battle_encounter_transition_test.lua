@@ -297,7 +297,7 @@ function T.generic_trainer_source_task_renders_then_completes_after_owned_sprite
     role = "generic-trainer-transition",
     resources = { "paletteKey", "characterKey", "cellKey", "animationKey" },
     assetGroups = {
-      sprite = { palette = "paletteKey", characters = "characterKey", cell = "cellKey", animation = "animationKey" },
+      sprite = { palette = "paletteKey", character = "characterKey", cell = "cellKey", animation = "animationKey" },
     },
   }
   local transition = BattleEncounterTransition.new({
@@ -580,6 +580,136 @@ function T.scene_receipt_failure_is_terminal_without_loading_or_starting()
   Assert.equal(transition:status().phase, "failed", "failed scene readiness is observable")
   Assert.equal(loads, 0, "failed global publication never opens resource payloads")
   Assert.equal(starts, 0, "failed global publication never starts a native task")
+  transition:dispose()
+end
+
+-- The native encounter task loads its overlay, spawns its effect, and
+-- starts scene battle music synchronously at initialization, strictly
+-- before the first source tick, the native done condition, and teardown.
+function T.effect_init_emits_music_before_ticks_done_and_unload_exactly_once()
+  local events = {}
+  local manifest = {
+    transitions = {
+      routes = {
+        ["trainer/scout"] = { role = "generic-trainer-transition", resources = { "sprite" } },
+      },
+      selection = {
+        trainerClassRoutes = { SCOUT = "trainer/scout" },
+        trainerClassMusicRoles = { SCOUT = "trainer" },
+        trainerRules = {
+          specialBattle = {
+            preserveRoute = "trainer/scout",
+            defaultRoute = "trainer/scout",
+            defaultMusicRole = "trainer",
+            doublesRoute = "trainer/scout",
+            doublesMusicRole = "trainer",
+          },
+          preserveRoutes = { "trainer/scout" },
+          unknownRoute = "trainer/scout",
+          unknownMusicRole = "trainer",
+          doublesRoute = "trainer/scout",
+          doublesMusicRole = "trainer",
+          alternateTransitionRoute = "trainer/scout",
+          alternateMusicRole = "trainer",
+        },
+        wildRules = {},
+        fallbackRoutes = {},
+      },
+    },
+    resources = { sprite = { path = "sprite.lua" } },
+  }
+  local transition = BattleEncounterTransition.new({
+    manifest = manifest,
+    cacheFs = {
+      loadLua = function(_, path)
+        events[#events + 1] = "resource:" .. tostring(path)
+        return { decoded = true }
+      end,
+    },
+    battleAssets = {
+      requestBattleScene = function(_, _, _)
+        events[#events + 1] = "scene-demand"
+        return true
+      end,
+    },
+    sceneKey = "general/plain/day",
+    audioOperations = {
+      emit = function(_, operation)
+        events[#events + 1] = operation.kind .. ":" .. tostring(operation.role)
+      end,
+    },
+    effectFactory = function(_, _)
+      events[#events + 1] = "effect-spawn"
+      local ticks = 0
+      return {
+        start = function()
+          events[#events + 1] = "effect-start"
+        end,
+        stepSourceTick = function()
+          ticks = ticks + 1
+          events[#events + 1] = "tick:" .. tostring(ticks)
+          return ticks == 2
+        end,
+        frame = function()
+          return {}
+        end,
+        dispose = function()
+          events[#events + 1] = "effect-unload"
+        end,
+      }
+    end,
+  })
+  local context = {
+    kind = "trainer",
+    trainerClass = "SCOUT",
+    doubleBattle = false,
+    specialBattle = false,
+    alternateTransition = false,
+  }
+  Assert.equal(transition:prepare(context), "ready", "overlay load completes preparation")
+  Assert.equal(transition:start(), "running", "spawned effect starts")
+  local musicAt = nil
+  local firstTickAt = nil
+  for index, event in ipairs(events) do
+    if event == "start-battle-music:trainer" and musicAt == nil then
+      musicAt = index
+    end
+    if tostring(event):match("^tick:") ~= nil and firstTickAt == nil then
+      firstTickAt = index
+    end
+  end
+  Assert.notNil(musicAt, "battle music starts synchronously at effect initialization")
+  Assert.isNil(firstTickAt, "no source tick runs before music starts")
+  transition:stepSourceTick()
+  transition:stepSourceTick()
+  Assert.equal(transition:status().phase, "complete", "native done completes the task")
+  transition:dispose()
+  local musicCount = 0
+  local unloadAt = nil
+  local doneAt = nil
+  for index, event in ipairs(events) do
+    if event == "start-battle-music:trainer" then
+      musicCount = musicCount + 1
+    end
+    if event == "tick:2" then
+      doneAt = index
+    end
+    if event == "effect-unload" then
+      unloadAt = index
+    end
+  end
+  Assert.equal(musicCount, 1, "battle music starts exactly once per launch")
+  Assert.isTrue(unloadAt ~= nil and doneAt ~= nil and unloadAt > doneAt, "unload follows the native done")
+  Assert.deepEqual(events, {
+    "scene-demand",
+    "resource:sprite.lua",
+    "effect-spawn",
+    "start-battle-music:trainer",
+    "effect-start",
+    "tick:1",
+    "tick:2",
+    "effect-unload",
+  }, "init, music, ticks, done, and unload keep the source order")
   transition:dispose()
 end
 

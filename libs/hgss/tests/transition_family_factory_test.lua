@@ -116,26 +116,185 @@ function T.factory_routes_elite_callbacks_with_the_captured_trainer_gender()
   Assert.equal(ok, false, "elite intro without captured gender fails closed")
 end
 
+function T.factory_routes_fallback_and_rocket_and_red_roles_through_their_source_families()
+  local function backgroundRoute(role, key)
+    return {
+      key = key,
+      role = role,
+      assetGroups = {
+        sceneAssets = {
+          palette = "bg-palette",
+          characters = { "bg-character" },
+          maps = { "bg-map" },
+          transitionBackground = { palette = "bg-palette", character = "bg-character", map = "bg-map" },
+        },
+      },
+    }
+  end
+  local backgroundResources = {
+    ["bg-palette"] = { colors = {} },
+    ["bg-character"] = { tiles = "" },
+    ["bg-map"] = { tiles = {} },
+  }
+  local wild = TransitionFamilyFactory.new(
+    backgroundRoute("plain-wild-fallback", "fallback/plain/day/wild"),
+    backgroundResources,
+    love.graphics,
+    {},
+    { kind = "wild", terrain = "plain", timeOfDay = "day" }
+  )
+  wild:start()
+  wild:stepSourceTick()
+  Assert.equal(wild:frame().family, "wild-fallback", "wild fallback routes run the window/mosaic worker")
+  Assert.equal(wild:frame().polarity, 0x10, "day fallback routes carry the opening polarity")
+  wild:dispose()
+
+  local trainerWipe = TransitionFamilyFactory.new(
+    {
+      key = "fallback/plain/day/trainer",
+      role = "water-trainer-fallback",
+      assetGroups = {
+        sprite = {
+          palette = "wipe-palette",
+          character = "wipe-character",
+          cell = "wipe-cell",
+          animation = "wipe-animation",
+        },
+      },
+    },
+    {
+      ["wipe-palette"] = { colors = { { r = 0, g = 0, b = 0 }, { r = 240, g = 220, b = 40 } } },
+      ["wipe-character"] = { depth = 3, tiles = string.rep(string.char(0x11), 32) },
+      ["wipe-cell"] = {
+        cells = { { objs = { { tile = 0, width = 8, height = 8, x = -4, y = -4, palette = 0 } } } },
+      },
+      ["wipe-animation"] = {
+        anims = {
+          {
+            frames = { { cell = 0, duration = 1, translateX = 0, translateY = 0, scaleX = 1, scaleY = 1, rotation = 0 } },
+          },
+        },
+      },
+    },
+    love.graphics,
+    {},
+    {}
+  )
+  trainerWipe:start()
+  trainerWipe:stepSourceTick()
+  Assert.equal(trainerWipe:frame().family, "trainer-fallback", "trainer fallback routes run the affine worker")
+  Assert.equal(#trainerWipe:frame().sprites, 2, "trainer fallback routes own two wipe sprites")
+  trainerWipe:dispose()
+end
+
+function T.factory_routes_rocket_kimono_and_red_roles_through_their_source_families()
+  local function gruntSet()
+    return {
+      ["grunt-palette"] = { colors = { { r = 0, g = 0, b = 0 }, { r = 250, g = 30, b = 20 } } },
+      ["grunt-character"] = { depth = 3, tiles = string.rep(string.char(0x11), 32) },
+      ["grunt-cell"] = {
+        cells = { { objs = { { tile = 0, width = 8, height = 8, x = -4, y = -4, palette = 0 } } } },
+      },
+      ["grunt-animation"] = {
+        anims = {
+          {
+            frames = { { cell = 0, duration = 1, translateX = 0, translateY = 0, scaleX = 1, scaleY = 1, rotation = 0 } },
+          },
+        },
+      },
+    }
+  end
+  local intro = TransitionFamilyFactory.new(
+    {
+      key = "trainer/team-rocket",
+      role = "trainer-transition",
+      assetGroups = {
+        sprite = {
+          palette = "grunt-palette",
+          character = "grunt-character",
+          cell = "grunt-cell",
+          animation = "grunt-animation",
+        },
+      },
+    },
+    gruntSet(),
+    love.graphics,
+    {},
+    {}
+  )
+  intro:start()
+  intro:stepSourceTick()
+  Assert.equal(intro:frame().shape, "intro", "sprite-only trainer routes run the rocket intro")
+  intro:dispose()
+
+  local kimono = TransitionFamilyFactory.new(
+    {
+      key = "trainer/kimono-girl",
+      role = "background-transition",
+      assetGroups = {
+        background = { palette = "kimono-palette", character = "kimono-character", map = "kimono-map" },
+      },
+    },
+    {
+      ["kimono-palette"] = { colors = {} },
+      ["kimono-character"] = { tiles = "" },
+      ["kimono-map"] = { tiles = {} },
+    },
+    love.graphics,
+    {},
+    {}
+  )
+  kimono:start()
+  kimono:stepSourceTick()
+  Assert.equal(kimono:frame().family, "kimono", "background routes run the pure scroll worker")
+  Assert.isNil(kimono:frame().paletteFade, "background routes carry no fade layer")
+  kimono:dispose()
+
+  local red = TransitionFamilyFactory.new(
+    {
+      key = "trainer/red",
+      role = "red-trainer-transition",
+      assetGroups = {
+        sprite = {
+          palette = "grunt-palette",
+          character = "grunt-character",
+          cell = "grunt-cell",
+          animation = "grunt-animation",
+        },
+        background = { palette = "kimono-palette", character = "kimono-character", map = "kimono-map" },
+      },
+    },
+    (function()
+      local resources = gruntSet()
+      resources["kimono-palette"] = { colors = {} }
+      resources["kimono-character"] = { tiles = "" }
+      resources["kimono-map"] = { tiles = {} }
+      return resources
+    end)(),
+    love.graphics,
+    {},
+    {}
+  )
+  red:start()
+  red:stepSourceTick()
+  Assert.equal(red:frame().family, "red", "Red routes run the window and sprite intro")
+  red:dispose()
+end
+
 function T.factory_fails_closed_for_roles_without_an_installed_source_family()
   local route, resources = gymFixture()
-  for _, role in ipairs({
-    "red-trainer-transition",
-    "background-transition",
-    "plain-wild-fallback",
-  }) do
-    route.role = role
-    local ok = pcall(function()
-      TransitionFamilyFactory.new(route, resources, love.graphics, {}, { playerGender = "male" })
-    end)
-    Assert.equal(ok, false, "uninstalled role " .. role .. " has no silent fallback")
-  end
-  local taskless, tasklessResources = gymFixture()
-  taskless.key = "trainer/team-rocket"
-  taskless.task = nil
-  local taskOk = pcall(function()
-    TransitionFamilyFactory.new(taskless, tasklessResources, love.graphics, {}, { playerGender = "male" })
+  route.role = "unknown-transition-role"
+  local ok = pcall(function()
+    TransitionFamilyFactory.new(route, resources, love.graphics, {}, { playerGender = "male" })
   end)
-  Assert.equal(taskOk, false, "trainer routes without an overlay 115 task stay uninstalled")
+  Assert.equal(ok, false, "uninstalled roles have no silent fallback")
+  local tasked, taskedResources = gymFixture()
+  tasked.key = "trainer/scout"
+  tasked.task = { kind = "overlay-unknown-probe" }
+  local taskOk = pcall(function()
+    TransitionFamilyFactory.new(tasked, taskedResources, love.graphics, {}, { playerGender = "male" })
+  end)
+  Assert.equal(taskOk, false, "trainer routes with an unknown intro task stay uninstalled")
 end
 
 return { tests = T }

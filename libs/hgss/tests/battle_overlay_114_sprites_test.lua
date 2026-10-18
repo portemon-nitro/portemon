@@ -45,13 +45,13 @@ function T.generic_callbacks_keep_one_versus_four_real_source_cells()
   local trainer = Overlay114Sprites.createForRoute({
     role = "generic-trainer-transition",
     assetGroups = {
-      sprite = { palette = "paletteKey", characters = "charsKey", cell = "cellKey", animation = "animKey" },
+      sprite = { palette = "paletteKey", character = "charsKey", cell = "cellKey", animation = "animKey" },
     },
   }, loaded)
   local wild = Overlay114Sprites.createForRoute({
     role = "generic-wild-transition",
     assetGroups = {
-      sprite = { palette = "paletteKey", characters = "charsKey", cell = "cellKey", animation = "animKey" },
+      sprite = { palette = "paletteKey", character = "charsKey", cell = "cellKey", animation = "animKey" },
     },
   }, loaded)
   Assert.equal(#trainer, 1, "trainer callback creates one sprite")
@@ -89,7 +89,7 @@ function T.generic_wild_callback_keeps_four_sprites_through_affine_task_and_disp
   }
   local effect = Overlay114Effect.new({
     role = "generic-wild-transition",
-    assetGroups = { sprite = { palette = "p", characters = "c", cell = "n", animation = "a" } },
+    assetGroups = { sprite = { palette = "p", character = "c", cell = "n", animation = "a" } },
   }, { p = resources.palette, c = resources.characters, n = resources.cells, a = resources.animation })
   effect:start()
   Assert.equal(effect:stepSourceTick(), false, "wild callback state zero creates sprites")

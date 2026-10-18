@@ -372,7 +372,7 @@ function T.overlay_114_upload_renders_real_cell_pixels_and_disposes_images(scope
   }
   local effect = Overlay114Effect.new({
     role = "generic-wild-transition",
-    assetGroups = { sprite = { palette = "p", characters = "c", cell = "n", animation = "a" } },
+    assetGroups = { sprite = { palette = "p", character = "c", cell = "n", animation = "a" } },
   }, { p = resources.palette, c = resources.characters, n = resources.cells, a = resources.animation })
   effect:prepareGraphics(lg)
   effect:start()
@@ -471,7 +471,7 @@ function T.overlay_114_source_circle_and_sector_wipes_clip_field_pixels(scope)
   local function effectFor(role)
     local effect = Overlay114Effect.new({
       role = role,
-      assetGroups = { sprite = { palette = "p", characters = "c", cell = "n", animation = "a" } },
+      assetGroups = { sprite = { palette = "p", character = "c", cell = "n", animation = "a" } },
     }, { p = resources.palette, c = resources.characters, n = resources.cells, a = resources.animation })
     effect:prepareGraphics(lg)
     effect:start()
