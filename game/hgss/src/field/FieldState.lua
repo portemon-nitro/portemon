@@ -669,7 +669,7 @@ function FieldState:_worldParts(alpha)
   local celebiStatus = celebiScene and celebiScene:status() or nil
   if celebiStatus and celebiStatus.active and celebiStatus.modelVisible then
     if self._celebiRenderer == nil then
-      self._celebiRenderer = CelebiTimeTravelRenderer.new(self.runtime.cacheFs)
+      self._celebiRenderer = CelebiTimeTravelRenderer.new(self.runtime.cacheFs, self.runtime.imageAssets)
     end
     worldParts[12] = self._celebiRenderer:drawItems(celebiStatus)
   else

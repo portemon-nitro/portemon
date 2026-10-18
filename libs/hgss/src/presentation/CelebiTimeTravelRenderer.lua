@@ -9,12 +9,13 @@ local SceneDescriptor = require("libs.hgss.src.presentation.SceneDescriptor")
 
 ---@class CelebiTimeTravelRenderer
 ---@field cacheFs CacheFs?
+---@field imageAssets table<string, unknown>
 ---@field pool table<string, unknown>?
 ---@field instance table<string, unknown>?
 ---@field renderMeshesById table<string, unknown>?
 ---@field sequence integer?
 ---@field lastAppliedFrame integer
----@field new fun(cacheFs: CacheFs): CelebiTimeTravelRenderer
+---@field new fun(cacheFs: CacheFs, imageAssets: table<string, unknown>): CelebiTimeTravelRenderer
 ---@field drawItems fun(self: CelebiTimeTravelRenderer, status: table<string, unknown>): table<string, unknown>[]
 ---@field release fun(self: CelebiTimeTravelRenderer)
 ---@field dispose fun(self: CelebiTimeTravelRenderer)
@@ -26,11 +27,14 @@ CelebiTimeTravelRenderer.__index = CelebiTimeTravelRenderer
 ---@field fieldEffect string
 
 ---@param cacheFs CacheFs
+---@param imageAssets table<string, unknown> session-scoped shared image owner the model textures are borrowed from
 ---@return CelebiTimeTravelRenderer
-function CelebiTimeTravelRenderer.new(cacheFs)
+function CelebiTimeTravelRenderer.new(cacheFs, imageAssets)
   assert(cacheFs and cacheFs.loadLua, "Celebi renderer requires the generated cache")
+  assert(imageAssets, "Celebi renderer requires the shared image owner")
   return setmetatable({
     cacheFs = cacheFs,
+    imageAssets = imageAssets,
     pool = nil,
     instance = nil,
     renderMeshesById = nil,
@@ -52,7 +56,7 @@ function CelebiTimeTravelRenderer:_build(sequence)
     assert(clip.kind == kind, "Celebi clip has an unexpected animation kind: " .. role)
   end
   assert(#definition.animations == 3, "Celebi model must have exactly three animation clips")
-  local pool = GpuAssetPool.new(self.cacheFs)
+  local pool = GpuAssetPool.new(self.cacheFs, { imageAssets = self.imageAssets })
   local function buildInstance()
     local wraps = SceneDescriptor.wrapByMaterial(descriptor.materials)
     local meshes = {}

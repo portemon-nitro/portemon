@@ -228,6 +228,7 @@ local function drawableState(order, bannerStatus)
     mapNameBanner = { status = function() return bannerStatus end },
   }
   return setmetatable({
+    _actorDesiredReady = true,
     runtime = runtime,
     topologyProvider = function() return topology end,
     worldParts = {},

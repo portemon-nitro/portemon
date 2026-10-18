@@ -298,6 +298,7 @@ local function drawableState(order, previewStatus, presentable, ui)
     },
   }
   return setmetatable({
+    _actorDesiredReady = true,
     runtime = runtime,
     topologyProvider = function() return topology end,
     worldParts = {},

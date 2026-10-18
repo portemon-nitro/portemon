@@ -17,6 +17,7 @@ local FieldStatePresentationFixture = require("tests.support.FieldStatePresentat
 local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
 local FieldFontLoader = require("libs.hgss.src.ui.FieldFontLoader")
 local HgssMonService = require("libs.hgss.src.mons.HgssMonService")
+local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
 local MonCache = require("libs.assets.src.MonCache")
 local MonBucket = require("tests.support.MonBucket")
 local MonsSave = require("libs.mons.src.MonsSave")
@@ -241,7 +242,13 @@ local T = GraphicsSmoke.suite({
       local srt = assert(definition:animation("celebi.srt"))
       Assert.equal(pattern.name, joint.name, "pattern clip retains the shared Nitro dictionary name")
       Assert.equal(srt.name, joint.name, "SRT clip retains the shared Nitro dictionary name")
-      local presenter = scope:own(CelebiTimeTravelRenderer.new(cache))
+      local imageAssets = ImageAssetPool.new(cache)
+      scope:own({
+        release = function()
+          imageAssets:dispose()
+        end,
+      })
+      local presenter = scope:own(CelebiTimeTravelRenderer.new(cache, imageAssets))
       local firstItems = presenter:drawItems(status(0))
       Assert.isTrue(#firstItems > 0, "the source model produces 3D draw items at frame zero")
       Assert.isTrue(firstItems[1].worldSpace, "the model enters the world render queue")
