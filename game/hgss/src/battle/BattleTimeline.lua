@@ -288,7 +288,8 @@ end
 
 ---@param text string narration wording under presentation
 ---@param ackable boolean true when the page waits for acknowledgement instead of holding
-local function enqueueMessage(self, text, ackable)
+---@param holdTicks integer? explicit post-text hold in internal ticks, defaulting to the narration hold
+local function enqueueMessage(self, text, ackable, holdTicks)
   self._messageSeq = self._messageSeq + 1
   enqueue(self, {
     kind = "message",
@@ -298,6 +299,7 @@ local function enqueueMessage(self, text, ackable)
     page = 1,
     revealed = 0,
     hold = 0,
+    holdTicks = holdTicks,
     ackable = ackable == true,
   })
 end
@@ -1132,7 +1134,11 @@ local function tickMessage(self, cue)
     return cue.acknowledged == true
   end
   cue.hold = (cue.hold or 0) + 1
-  return cue.hold >= BattleTimeline.MESSAGE_HOLD_TICKS
+  local need = cue.holdTicks --[[@as integer?]]
+  if type(need) ~= "number" then
+    need = BattleTimeline.MESSAGE_HOLD_TICKS
+  end
+  return cue.hold >= need
 end
 
 ---@param self BattleTimeline
@@ -1338,7 +1344,13 @@ function BattleTimeline:ack()
     current.acknowledged = true
     return true, true
   end
-  current.hold = BattleTimeline.MESSAGE_HOLD_TICKS
+  -- An edge on a fully revealed non-acknowledged message with an
+  -- explicit hold consumes without touching the timer: it neither
+  -- shortens the wait to the default nor restarts it. Ordinary
+  -- no-override narration keeps its exact previous fast-forward.
+  if current.holdTicks == nil then
+    current.hold = BattleTimeline.MESSAGE_HOLD_TICKS
+  end
   return true, false
 end
 
@@ -1399,9 +1411,16 @@ end
 -- the opening encounter, send-out, and terminal result texts.
 ---@param text string narration wording under presentation
 ---@param ackable boolean true when the page waits for acknowledgement instead of holding
+---@param holdTicks integer? explicit post-text hold in internal ticks, defaulting to the narration hold
 ---@return integer stable narration identity
-function BattleTimeline:announce(text, ackable)
+function BattleTimeline:announce(text, ackable, holdTicks)
   assert(type(text) == "string" and text ~= "", "announced narration carries its wording")
+  if holdTicks ~= nil then
+    assert(
+      type(holdTicks) == "number" and holdTicks % 1 == 0 and holdTicks >= 0,
+      "announced holds stay finite nonnegative integers"
+    )
+  end
   self._messageSeq = self._messageSeq + 1
   local id = self._messageSeq
   enqueue(self, {
@@ -1412,6 +1431,7 @@ function BattleTimeline:announce(text, ackable)
     page = 1,
     revealed = 0,
     hold = 0,
+    holdTicks = holdTicks,
     ackable = ackable == true,
   })
   return id

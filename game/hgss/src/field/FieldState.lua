@@ -228,6 +228,7 @@ function FieldState.new(game, options)
       audio = runtime.audio,
       derivedAssets = runtime.derivedAssets,
       imagePool = runtime.imageAssets,
+      pokedex = self.presentationResources:pokedex(),
       itemCatalog = assert(runtime.itemCatalog, "the presented battle envelope borrows its item catalog"),
       monCatalog = assert(runtime.monCatalog, "the presented battle envelope borrows its mon catalog"),
       measureDisplay = battleDisplay,

@@ -112,6 +112,15 @@ local PlayerData = require("libs.hgss.src.save.PlayerData")
 ---@field _runTicks integer
 ---@field _partyRevision integer?
 ---@field _bagRevision integer?
+---@field _dexPlayerSide integer?
+---@field _dexOpened boolean
+---@field _dexIdentities table<integer, table<string, unknown>>
+---@field _dexArrivals table<string, boolean>
+---@field _dexObservations table<integer, table<string, unknown>>
+---@field _dexPendingCaught table<string, boolean>
+---@field _dexProcessedCaptures table<integer, boolean>
+---@field _dexRegistration table<string, unknown>?
+---@field _dexEligibilityRevision integer?
 ---@field _error string?
 ---@field _disposed boolean
 local BattleRuntime = {}
@@ -357,6 +366,15 @@ function BattleRuntime.new(args)
     _postTicks = 0,
     _runTicks = 0,
     _partyRevision = nil,
+    _dexPlayerSide = nil,
+    _dexOpened = false,
+    _dexIdentities = {},
+    _dexArrivals = {},
+    _dexObservations = {},
+    _dexPendingCaught = {},
+    _dexProcessedCaptures = {},
+    _dexRegistration = nil,
+    _dexEligibilityRevision = nil,
     _error = nil,
     _disposed = false,
   }, BattleRuntime)
@@ -451,6 +469,7 @@ end
 -- request is never republished, and the terminal outcome ships once.
 ---@param frame table<string, unknown> kernel frame at an atomic boundary
 ---@param exposed table<string, unknown>? newly exposed external request
+---@return boolean projected true unless projection failed or the lifetime ended inside the port
 function BattleRuntime:_publishFrame(frame, exposed)
   local events = {}
   if type(frame.events) == "table" then
@@ -459,8 +478,18 @@ function BattleRuntime:_publishFrame(frame, exposed)
   local key = exposedKey(exposed)
   local freshRequest = key ~= nil and key ~= self._publishedRequest
   local terminal = frame.status == "ended" and not self._terminalSent
+  if self._dex ~= nil and self._session ~= nil then
+    local okProject, projectErr = pcall(BattleRuntime._projectDexFacts, self, frame)
+    if not okProject then
+      self:_fail(tostring(projectErr))
+      return false
+    end
+    if self._disposed or self._phase == "failed" then
+      return false
+    end
+  end
   if #events == 0 and not freshRequest and not terminal then
-    return
+    return true
   end
   self._packetId = self._packetId + 1
   local snapshot = assert(self._session, "delivery packets read a live session"):capture()
@@ -489,11 +518,15 @@ function BattleRuntime:_publishFrame(frame, exposed)
   end
   if terminal then
     context.result = { word = self:_mapOutcome() }
+    if self._dexRegistration ~= nil then
+      context.result.registration = copyValue(self._dexRegistration)
+    end
     self._terminalSent = true
   end
   local packet = BattlePresentationModel.packet(beforeView, { events = events }, afterView, context)
   self._lastView = afterView
   self._presentation.present(packet)
+  return true
 end
 
 ---@param message string
@@ -944,6 +977,9 @@ function BattleRuntime:_updateEntering()
     self._outcome = frame.outcome
   end
   self:_publishFrame(frame, nil)
+  if self._disposed or self._phase == "failed" then
+    return
+  end
   if frame.status == "ended" then
     self._openRequest = nil
     self._phase = "resolving"
@@ -1032,6 +1068,9 @@ function BattleRuntime:_updateRunning()
       self._outcome = frame.outcome
     end
     self:_publishFrame(frame, exposed --[[@as table<string, unknown>?]])
+    if self._disposed or self._phase == "failed" then
+      return
+    end
     if frame.status == "ended" then
       self._openRequest = nil
       self._phase = "resolving"
@@ -1262,38 +1301,304 @@ function BattleRuntime:_partyUpdates()
   return updates
 end
 
----@param playerSide boolean true for the player side, false for the enemy sides
----@return string[] species in scenario order, deduplicated
-function BattleRuntime:_sideSpecies(playerSide)
-  local scenario = assert(self._scenario, "consequences read the detached scenario")
-  local keys = {} ---@type string[]
-  local seen = {} ---@type table<string, boolean>
-  for _, participant in
-    ipairs(scenario.participants --[[@as table<integer, unknown>]])
-  do
-    local entry = participant --[[@as table<string, unknown>]]
-    if (entry.controller == BattleRuntime.PLAYER_CONTROLLER) == playerSide then
-      for _, seed in
-        ipairs(entry.roster --[[@as table<integer, unknown>]])
-      do
-        local mon = (seed --[[@as table<string, unknown>]]).mon --[[@as table<string, unknown>]]
-        if type(mon) ~= "table" or type(mon.species) ~= "string" or mon.species == "" then
-          error("battle consequence staging names every combatant species", 0)
-        end
-        if
-          not seen[
-            mon.species --[[@as string]]
-          ]
-        then
-          seen[
-            mon.species --[[@as string]]
-          ] = true
-          keys[#keys + 1] = mon.species
+-- Describes one trusted private combatant mon through the live dex
+-- knowledge owner. Description failures are attributed here so the
+-- resolution fails explicitly instead of publishing partial history.
+---@param combatantId integer battle combatant identity under description
+---@param mon table<string, unknown> trusted private combatant mon
+---@return table<string, unknown> detached specimen descriptor
+function BattleRuntime:_describeDexMon(combatantId, mon)
+  local dex = assert(self._dex, "dex facts describe through the live knowledge owner")
+  local describe = dex.describe --[[@as fun(self: table<string, unknown>, mon: table<string, unknown>): table<string, unknown>]]
+  local ok, specimen = pcall(describe, dex, mon)
+  if not ok then
+    error("battle dex description failed for combatant " .. tostring(combatantId) .. ": " .. tostring(specimen), 0)
+  end
+  if type(specimen) ~= "table" then
+    error("battle dex description failed for combatant " .. tostring(combatantId), 0)
+  end
+  return specimen --[[@as table<string, unknown>]]
+end
+
+-- Records one actual appearance for an occupied combatant: opponents
+-- contribute their sighting in encounter order, the player's own Burmy
+-- contributes its registration as a caught observation, and every other
+-- own-side appearance contributes nothing. Eggs never contribute.
+-- Arrivals deduplicate by combatant plus activation, never by species.
+---@param snapshot table<string, unknown> detached live battle snapshot
+---@param combatantId integer arriving combatant identity
+function BattleRuntime:_recordDexArrival(snapshot, combatantId)
+  local combatants = snapshot.combatants --[[@as table<integer, table<string, unknown>>]]
+  local combatant = combatants[combatantId]
+  if type(combatant) ~= "table" then
+    error("battle dex arrival names an unknown combatant " .. tostring(combatantId), 0)
+  end
+  local active = combatant.active --[[@as table<string, unknown>?]]
+  if type(active) ~= "table" or type(active.activation) ~= "number" then
+    error("battle dex arrival needs its active entry " .. tostring(combatantId), 0)
+  end
+  local key = tostring(combatantId) .. ":" .. tostring(active.activation --[[@as integer]])
+  if self._dexArrivals[key] == true then
+    return
+  end
+  self._dexArrivals[key] = true
+  local participants = snapshot.participants --[[@as table<integer, table<string, unknown>>]]
+  local participant = participants[
+    combatant.participant --[[@as integer]]
+  ]
+  if type(participant) ~= "table" then
+    error("battle dex arrival names an unknown participant " .. tostring(combatantId), 0)
+  end
+  local mon = combatant.mon --[[@as table<string, unknown>?]]
+  local species = nil
+  if type(mon) == "table" and type(mon.species) == "string" then
+    species = mon.species --[[@as string]]
+  end
+  if participant.side == self._dexPlayerSide then
+    -- Only the player's own Burmy registers on appearance; every other
+    -- own-side combatant is already possessed, never newly observed, and
+    -- stays undescribed.
+    if species ~= "BURMY" then
+      return
+    end
+  end
+  if type(mon) ~= "table" then
+    error("battle dex arrival names an unknown combatant " .. tostring(combatantId), 0)
+  end
+  local descriptor = self._dexIdentities[combatantId]
+  if type(descriptor) ~= "table" then
+    descriptor = self:_describeDexMon(combatantId, mon)
+    self._dexIdentities[combatantId] = descriptor
+  end
+  local record = descriptor --[[@as table<string, unknown>]]
+  if record.isEgg == true then
+    return
+  end
+  if participant.side == self._dexPlayerSide then
+    self._dexObservations[#self._dexObservations + 1] = { kind = "caught", specimen = copyValue(record) }
+    self._dexPendingCaught[
+      record.species --[[@as string]]
+    ] = true
+    return
+  end
+  self._dexObservations[#self._dexObservations + 1] = { kind = "seen", specimen = copyValue(record) }
+end
+
+-- Resolves the player side from the declared participant facts and
+-- visits the occupied opening positions in declared order. Each occupant
+-- contributes its actual appearance; only observed combatants are
+-- described through the knowledge owner.
+---@param snapshot table<string, unknown> detached live battle snapshot at construction
+function BattleRuntime:_projectDexOpening(snapshot)
+  local combatants = snapshot.combatants --[[@as table<integer, table<string, unknown>>]]
+  if type(combatants) ~= "table" then
+    error("battle dex facts read their live combatants", 0)
+  end
+  local participants = snapshot.participants --[[@as table<integer, table<string, unknown>>]]
+  if type(participants) ~= "table" then
+    error("battle dex facts read their declared participants", 0)
+  end
+  local playerSide = nil
+  for _, entry in pairs(participants) do
+    local record = entry --[[@as table<string, unknown>]]
+    if record.controller == BattleRuntime.PLAYER_CONTROLLER then
+      playerSide = record.side
+    end
+  end
+  if type(playerSide) ~= "number" then
+    error("battle dex facts need their declared player side", 0)
+  end
+  self._dexPlayerSide = playerSide --[[@as integer]]
+  local positions = snapshot.positions --[[@as table<integer, table<string, unknown>>?]]
+  local order = snapshot.positionOrder --[[@as table<integer, integer>?]]
+  if type(positions) ~= "table" or type(order) ~= "table" then
+    error("battle dex facts read their declared positions", 0)
+  end
+  for _, positionId in ipairs(order) do
+    local position = positions[
+      positionId --[[@as integer]]
+    ] --[[@as table<string, unknown>?]]
+    if type(position) == "table" and type(position.occupant) == "number" then
+      self:_recordDexArrival(snapshot, position.occupant --[[@as integer]])
+    end
+  end
+end
+
+-- Consumes one raw switch event's incoming checkpoint in event order:
+-- the incoming combatant must be active with the selected identity,
+-- and its checkpoint form applies to the immutable descriptor.
+---@param snapshot table<string, unknown> detached live battle snapshot
+---@param event table<string, unknown> raw kernel switch event
+function BattleRuntime:_projectDexSwitch(snapshot, event)
+  local payload = event.payload --[[@as table<string, unknown>?]]
+  if type(payload) ~= "table" or type(payload.to) ~= "number" then
+    error("battle dex switches carry their incoming combatant", 0)
+  end
+  local incoming = payload.to --[[@as integer]]
+  local checkpoint = event.observation --[[@as table<string, unknown>?]]
+  if type(checkpoint) ~= "table" then
+    error("battle dex switches carry their event-time checkpoint", 0)
+  end
+  local entries = checkpoint.combatants --[[@as table<integer, table<string, unknown>>?]]
+  if type(entries) ~= "table" then
+    error("battle dex switches carry their event-time checkpoint", 0)
+  end
+  local active = entries[incoming] --[[@as table<string, unknown>?]]
+  if type(active) ~= "table" then
+    error("battle dex switches activate their incoming combatant " .. tostring(incoming), 0)
+  end
+  -- The incoming checkpoint must carry the selected identity: the live
+  -- combatant mon species, never a transformed display species.
+  local combatants = snapshot.combatants --[[@as table<integer, table<string, unknown>>?]]
+  local combatant = type(combatants) == "table" and combatants[incoming] or nil --[[@as table<string, unknown>?]]
+  local mon = type(combatant) == "table" and combatant.mon or nil --[[@as table<string, unknown>?]]
+  if type(mon) ~= "table" or type(mon.species) ~= "string" then
+    error("battle dex switches name a described combatant " .. tostring(incoming), 0)
+  end
+  if active.species ~= mon.species then
+    error(
+      "battle dex arrival mismatches its selected identity " .. tostring(incoming) .. ": " .. tostring(active.species),
+      0
+    )
+  end
+  if type(active.activation) ~= "number" then
+    error("battle dex switches carry their incoming activation " .. tostring(incoming), 0)
+  end
+  -- The checkpoint form applies to the immutable descriptor before the
+  -- arrival records, so the selected mon keeps its actual form.
+  local descriptor = self._dexIdentities[incoming]
+  if type(descriptor) == "table" and type(active.form) == "number" then
+    local record = copyValue(descriptor --[[@as table<string, unknown>]])
+    record.form = active.form
+    self._dexIdentities[incoming] = record
+  elseif type(active.form) == "number" then
+    local fresh = self:_describeDexMon(incoming, mon)
+    fresh.form = active.form
+    self._dexIdentities[incoming] = fresh
+  end
+  self:_recordDexArrival(snapshot, incoming)
+end
+
+-- Freezes the detached first-catch eligibility from one successful
+-- native ledger entry: the stable capture identity, the actual capture
+-- mode, the live national-mode snapshot, the catalog display name, and
+-- the described specimen. Already-caught species still enrich history
+-- without a card; tutorial and pal-park captures never present one.
+---@param entry table<string, unknown> successful native ledger record
+function BattleRuntime:_projectDexCapture(entry)
+  local dex = assert(self._dex, "dex facts freeze through the live knowledge owner")
+  local mon = entry.mon --[[@as table<string, unknown>?]]
+  if type(mon) ~= "table" then
+    error("battle captures carry their caught mon", 0)
+  end
+  local specimen = self:_describeDexMon(entry.id --[[@as integer]], mon)
+  if specimen.isEgg == true then
+    return
+  end
+  local context = entry.context --[[@as table<string, unknown>?]]
+  local mode = "wild"
+  if type(context) == "table" and type(context.mode) == "string" and context.mode ~= "" then
+    mode = context.mode --[[@as string]]
+  end
+  local species = specimen.species --[[@as string]]
+  local known = self._dexPendingCaught[species] == true
+  if not known then
+    local isCaught = dex.isCaught --[[@as fun(self: table<string, unknown>, key: string): boolean]]
+    local ok, caught = pcall(isCaught, dex, species)
+    if not ok then
+      error("battle capture eligibility failed for " .. tostring(species) .. ": " .. tostring(caught), 0)
+    end
+    known = caught == true
+  end
+  if not known and mode ~= "tutorial" and mode ~= "pal_park" then
+    if self._dexRegistration ~= nil then
+      error("battle captures present one native first catch", 0)
+    end
+    local catalog = self:_factCatalog()
+    if type(catalog) ~= "table" then
+      error("battle capture naming needs its mon catalog", 0)
+    end
+    local Mon = require("libs.mons.src.Mon")
+    local okName, displayName = pcall(Mon.displayName, mon, catalog)
+    if not okName or type(displayName) ~= "string" or displayName == "" then
+      error("battle capture naming failed for " .. tostring(species), 0)
+    end
+    local national = dex.hasNationalDex --[[@as fun(self: table<string, unknown>): boolean]]
+    local okDex, hasNational = pcall(national, dex)
+    if not okDex then
+      error("battle capture eligibility failed for " .. tostring(species) .. ": " .. tostring(hasNational), 0)
+    end
+    self._dexRegistration = {
+      captureId = entry.id,
+      mode = mode,
+      dexMode = hasNational == true and "national" or "johto",
+      displayName = displayName,
+      specimen = copyValue(specimen),
+    }
+    local revisionOf = dex.revision --[[@as fun(self: table<string, unknown>): integer]]
+    local okRev, revision = pcall(revisionOf, dex)
+    if not okRev or type(revision) ~= "number" then
+      error("battle capture eligibility failed for " .. tostring(species) .. ": " .. tostring(revision), 0)
+    end
+    self._dexEligibilityRevision = revision --[[@as integer]]
+  end
+  self._dexObservations[#self._dexObservations + 1] = { kind = "caught", specimen = copyValue(specimen) }
+  self._dexPendingCaught[species] = true
+end
+
+-- Projects private dex facts for one mechanics frame before public
+-- projection: the opening occupants once in declared order, then every
+-- raw switch arrival and successful native capture in event order.
+---@param frame table<string, unknown> kernel frame at an atomic boundary
+function BattleRuntime:_projectDexFacts(frame)
+  if self._dex == nil or self._session == nil then
+    return
+  end
+  local session = self._session --[[@as table<string, unknown>]]
+  local capture = session.capture --[[@as fun(self: table<string, unknown>): table<string, unknown>]]
+  local snapshot = capture(session)
+  if type(snapshot) ~= "table" then
+    error("battle dex facts read their live snapshot", 0)
+  end
+  if not self._dexOpened then
+    self._dexOpened = true
+    self:_projectDexOpening(snapshot)
+  end
+  local events = frame.events
+  if type(events) == "table" then
+    for _, item in
+      ipairs(events --[[@as table<integer, unknown>]])
+    do
+      if type(item) == "table" then
+        local event = item --[[@as table<string, unknown>]]
+        if event.kind == "switch" then
+          self:_projectDexSwitch(snapshot, event)
         end
       end
     end
   end
-  return keys
+  local ledger = snapshot.captures
+  if type(ledger) == "table" then
+    for _, item in
+      ipairs(ledger --[[@as table<integer, unknown>]])
+    do
+      if type(item) == "table" then
+        local entry = item --[[@as table<string, unknown>]]
+        if
+          entry.success == true
+          and entry.id ~= nil
+          and self._dexProcessedCaptures[
+            entry.id --[[@as integer]]
+          ] ~= true
+        then
+          self._dexProcessedCaptures[
+            entry.id --[[@as integer]]
+          ] = true
+          self:_projectDexCapture(entry)
+        end
+      end
+    end
+  end
 end
 
 ---@param mon table<string, unknown> combatant mon carrying either its level or its record
@@ -1647,24 +1952,48 @@ function BattleRuntime:_prepareCommit()
     end
   end
   if self._dex ~= nil then
-    local seen = self:_sideSpecies(false)
-    local caught = {} ---@type string[]
-    for _, entry in ipairs(captures) do
-      if entry.success == true then
-        local mon = entry.mon --[[@as table<string, unknown>]]
-        local key = entry.species
-        if type(mon) == "table" and type(mon.species) == "string" then
-          key = mon.species
-        end
-        if type(key) == "string" then
-          caught[#caught + 1] = key --[[@as string]]
+    -- A frozen first catch pairs its eligibility revision with the
+    -- snapshot: a live revision moved since eligibility fails here,
+    -- before any candidate publishes over changed facts.
+    if self._dexRegistration ~= nil then
+      local dex = self._dex --[[@as table<string, unknown>]]
+      local revisionOf = dex.revision --[[@as fun(self: table<string, unknown>): integer]]
+      local okRev, revision = pcall(revisionOf, dex)
+      if not okRev or revision ~= self._dexEligibilityRevision then
+        error("battle dex moved since its capture eligibility", 0)
+      end
+    end
+    local observations = {} ---@type table<integer, table<string, unknown>>
+    for _, staged in ipairs(self._dexObservations) do
+      local record = staged --[[@as table<string, unknown>]]
+      observations[#observations + 1] = { kind = record.kind, specimen = copyValue(record.specimen) }
+    end
+    -- Explicitly injected capture drivers contribute their full rich
+    -- observations once during preparation, without native popup
+    -- inference: only successful records describe, and eggs stay out.
+    for _, entry in ipairs(self._captures or {}) do
+      if type(entry) == "table" then
+        local injected = entry --[[@as table<string, unknown>]]
+        if injected.success == true then
+          local mon = injected.mon --[[@as table<string, unknown>?]]
+          if type(mon) ~= "table" then
+            error("battle captures carry their caught mon", 0)
+          end
+          local specimen = self:_describeDexMon(injected.captureId --[[@as integer]] or -1, mon)
+          if specimen.isEgg ~= true then
+            observations[#observations + 1] = { kind = "caught", specimen = copyValue(specimen) }
+          end
         end
       end
     end
-    if #seen > 0 or #caught > 0 then
+    if #observations > 0 then
       local dex = self._dex --[[@as table<string, unknown>]]
       local stage = dex.prepareChanges --[[@as fun(self: table<string, unknown>, changes: table<string, unknown>): table<string, unknown>]]
-      args.dex = stage(dex, { seen = seen, caught = caught })
+      local okStage, candidate = pcall(stage, dex, { observations = observations })
+      if not okStage then
+        error(tostring(candidate), 0)
+      end
+      args.dex = candidate
     end
   end
   -- Native session consumption reaches the live bag exactly once: player
@@ -1746,6 +2075,11 @@ function BattleRuntime:_updateResolving()
       return
     end
     self._prepared = prepared --[[@as table<string, unknown>]]
+  end
+  -- The registration card precedes the final prepared commit: a held
+  -- presentation readiness waits here without publishing anything.
+  if self._presentation.ready() ~= true then
+    return
   end
   local okCommit, receipt = pcall(HgssBattleCommitter.commit, self._prepared)
   if not okCommit then
@@ -1927,6 +2261,16 @@ function BattleRuntime:dispose()
   end
   unregisterActive(self)
   self._disposed = true
+  -- Failed or disposed lifetimes discard their pending dex facts; they
+  -- never salvage a subset of history into the live save.
+  self._dexIdentities = {}
+  self._dexArrivals = {}
+  self._dexObservations = {}
+  self._dexPendingCaught = {}
+  self._dexProcessedCaptures = {}
+  self._dexRegistration = nil
+  self._dexEligibilityRevision = nil
+  self._prepared = nil
   if self._session ~= nil then
     self._session:dispose()
     self._session = nil

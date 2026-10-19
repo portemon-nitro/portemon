@@ -25,6 +25,7 @@ local InactiveMonNaming = require("tests.support.InactiveMonNaming")
 local ItemFixture = require("libs.items.tests.item_fixture")
 local MonCache = require("libs.assets.src.MonCache")
 local PngWriter = require("libs.assets.src.PngWriter")
+local PokedexDexFixture = require("libs.hgss.tests.mons.pokedex_dex_fixture")
 local ScreenTopology = require("libs.ui.src.ScreenTopology")
 local SummaryAcceptanceFixture = require("tests.support.SummaryAcceptanceFixture")
 
@@ -295,6 +296,12 @@ local function stubPresentationRuntime(cache, audio, itemCatalog, monCatalog)
     audio = audio,
     itemCatalog = itemCatalog,
     monCatalog = monCatalog,
+    -- The field battle envelope borrows the field-owned pokedex
+    -- preparation leaf, so the stub carries the synthetic generated dex
+    -- catalog exactly like production carries its derived one. The audio
+    -- legs never prepare through it; construction alone keeps the
+    -- composition honest without a ROM dump.
+    pokedexCatalog = PokedexDexFixture.buildPokedexCatalog(),
     presentationDisplay = measurement,
     bindPartyIconPreparation = function(_, _, _)
       return 1

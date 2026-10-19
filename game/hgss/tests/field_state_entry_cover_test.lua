@@ -18,6 +18,7 @@ local FieldTerrainEffectController = require("libs.hgss.src.world.FieldTerrainEf
 local FieldStatePresentationFixture = require("tests.support.FieldStatePresentationFixture")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local SummaryAcceptanceFixture = require("tests.support.SummaryAcceptanceFixture")
+local PokedexDexFixture = require("libs.hgss.tests.mons.pokedex_dex_fixture")
 
 local T = {}
 
@@ -70,6 +71,7 @@ local function boot(withCover)
       uiManifest = FieldUiFixture.fieldStateManifest(),
       itemCatalog = ItemFixture.makeCatalog(),
       monCatalog = CatalogFixture.makeCatalog(),
+      pokedexCatalog = PokedexDexFixture.buildPokedexCatalog(),
       bindPartyIconPreparation = function(_, _, _)
         return 1
       end,

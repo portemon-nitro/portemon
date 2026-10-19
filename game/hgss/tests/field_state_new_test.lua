@@ -17,6 +17,7 @@ local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldState = require("game.hgss.src.field.FieldState")
 local InactiveMonNaming = require("tests.support.InactiveMonNaming")
 local SummaryAcceptanceFixture = require("tests.support.SummaryAcceptanceFixture")
+local PokedexDexFixture = require("libs.hgss.tests.mons.pokedex_dex_fixture")
 
 local T = {}
 
@@ -38,6 +39,7 @@ local function stubPresentationRuntime(cache)
     uiManifest = FieldUiFixture.fieldStateManifest(),
     itemCatalog = ItemFixture.makeCatalog(),
     monCatalog = CatalogFixture.makeCatalog(),
+    pokedexCatalog = PokedexDexFixture.buildPokedexCatalog(),
     bindPartyIconPreparation = function(_, _, _)
       return 1
     end,

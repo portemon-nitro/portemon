@@ -1439,6 +1439,196 @@ function T.draw_performs_no_realization_work()
   owner:release()
 end
 
+-- The battle-owned registration card runs its complete source sequence
+-- through the real child and the shared renderer: the announcement holds
+-- its sixty internal ticks, entry and card fades follow their separate
+-- recurrences, the cry plays once with its fixed pattern, fresh dismissal
+-- starts the ordinary departure, and the picture policy moves exactly
+-- twenty steps from 48 to 128 before the black terminal cover freezes the
+-- centered card. No battle runtime contributes: the detached registration
+-- is frozen before any publication.
+function T.registration_child_runs_source_phases_with_fades_and_departure(scope)
+  local Renderer = requireRenderer("registration phase rasterization")
+  local Interface = requireInterface("registration phase layout resolution")
+  requireOwner("registration phase bundles")
+  local okChild, Child = pcall(require, "game.hgss.src.pokedex.PokedexRegistrationState")
+  Assert.isTrue(okChild, "missing battle-owned first-catch presentation (game.hgss.src.pokedex.PokedexRegistrationState)")
+  assert(Child ~= nil, "the registration child loads")
+  local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
+  local versionId = readyVersion()
+  local pool = SharedImagePoolFake.new()
+  withPool(pool, function()
+    local rig = graphicsRig(versionId, pool)
+    local dexOwner = Fixture.ownerWithHistory(rig.monCatalog, rig.catalog)
+    local snapshot = Fixture.registrationSnapshot(dexOwner, rig.monCatalog, "TOTODILE", 0)
+    local registration = {
+      captureId = 7,
+      mode = "wild",
+      dexMode = snapshot.dexMode,
+      displayName = snapshot.displayName,
+      specimen = snapshot.specimen,
+    }
+    local demand = Fixture.registrationDemand(snapshot, "card-phases")
+    local cardPaths = seedPortraits(pool, rig.cacheFs, rig.monCatalog, demand, false)
+    local lease = rig.owner:acquire({ purpose = "registration" })
+    local assets = prepareReady(rig, lease, demand)
+    local audio = { calls = {}, cryDone = false }
+    function audio.playCry(species, pattern, form)
+      audio.calls[#audio.calls + 1] = { species = species, pattern = pattern, form = form }
+      return true
+    end
+    function audio.isCryFinished()
+      return audio.cryDone
+    end
+    function audio.select() end
+    local timeline = BattleTimeline.new({ textSpeed = "fastest" })
+    local measurement = measurementFor("nativeLike")
+    local child = Child.new({
+      registration = registration,
+      pokedex = rig.owner,
+      timeline = timeline,
+      audio = audio,
+      measureDisplay = function()
+        return measurement
+      end,
+    })
+    local function tick()
+      timeline:update(1 / 60, function(_)
+        return true
+      end)
+      child:updateFixed(1 / 30)
+    end
+    local function driveUntil(predicate, budget, complaint)
+      for _ = 1, budget do
+        if predicate() then
+          return
+        end
+        tick()
+      end
+      error(complaint, 0)
+    end
+    driveUntil(function()
+      return child:status().phase ~= "preparing"
+    end, 400, "whole-demand readiness gates the card announcement")
+    Assert.equal(#audio.calls, 0, "no cry plays before whole-demand readiness")
+    local announcedAt = 0
+    local counted = 0
+    while child:status().phase == "announcement" and counted < 400 do
+      tick()
+      counted = counted + 1
+    end
+    announcedAt = counted
+    Assert.isTrue(child:status().phase ~= "announcement", "the borrowed clock settles the announcement")
+    Assert.isTrue(announcedAt >= 60, "the announcement holds its sixty internal ticks after reveal")
+    Assert.equal(#audio.calls, 0, "no cry plays during the announcement")
+    -- Entry fades publish their separate recurrences: the palette
+    -- alternates publish and wait in steps of two, the picture publishes
+    -- every update in steps of one.
+    Assert.equal(child:status().phase, "entryFade", "the settled announcement enters the fade")
+    local entryPalette, entryPicture = {}, {}
+    while child:status().phase == "entryFade" and #entryPalette < 60 do
+      tick()
+      local view = child:view()
+      entryPalette[#entryPalette + 1] = view.paletteFade
+      entryPicture[#entryPicture + 1] = view.pictureFade
+    end
+    Assert.isTrue(child:status().phase ~= "entryFade", "the entry fade completes into the card")
+    Assert.deepEqual(
+      entryPalette,
+      { 2, 2, 4, 4, 6, 6, 8, 8, 10, 10, 12, 12, 14, 14, 16, 16, 16 },
+      "the entry palette alternates publish and wait in steps of two"
+    )
+    Assert.deepEqual(
+      entryPicture,
+      { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 },
+      "the entry picture publishes every update in steps of one"
+    )
+    -- Card fades run the same recurrences back toward zero.
+    Assert.equal(child:status().phase, "waitCardFade", "the card initializes before its fade waits")
+    local cardPalette, cardPicture = {}, {}
+    while child:status().phase == "waitCardFade" and #cardPalette < 60 do
+      tick()
+      local view = child:view()
+      cardPalette[#cardPalette + 1] = view.paletteFade
+      cardPicture[#cardPicture + 1] = view.pictureFade
+    end
+    Assert.isTrue(child:status().phase ~= "waitCardFade", "the card fade completes into the cry")
+    Assert.deepEqual(
+      cardPalette,
+      { 14, 14, 12, 12, 10, 10, 8, 8, 6, 6, 4, 4, 2, 2, 0, 0, 0 },
+      "the card palette alternates publish and wait back to zero"
+    )
+    Assert.deepEqual(
+      cardPicture,
+      { 16, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0 },
+      "the card picture publishes every update back to zero"
+    )
+    local function drawCard(view)
+      local plan = resolvePlan(Interface.registration(), measurement, view)
+      local resources = { graphics = love.graphics, renderer = assets.renderer }
+      return drawPlan(scope, plan, resources, { view = view, assets = assets }, 256, 192)
+    end
+    local card = assert(assets.pictures.registration, "the ready bundle carries its card picture")
+    local cardSelector = portraitSelectorFor(rig.monCatalog, snapshot.specimen, "front", false)
+    local baseData = decodePage(rig.cacheFs, assert(cardPaths[cardSelector], "the card base resolves its page"))
+    local qx, qy = card.quad:getViewport()
+    local er, eg, eb = pixel(baseData, qx + 40, qy + 40)
+    local backdrop = Renderer.backdropOf(rig.manifest, "registration", "information")
+    -- The ready card covers departing art with the fixed unfaded picture.
+    -- The finished cry releases fresh dismissal; the card still waits for
+    -- the fresh edge below instead of departing on its own.
+    audio.cryDone = true
+    driveUntil(function()
+      return child:status().acceptsDismissal == true or child:status().complete == true
+    end, 400, "the card becomes dismissible after its fades and cry")
+    local readyImage = drawCard(child:view())
+    assertPixel(readyImage, 2, 2, backdrop.r, backdrop.g, backdrop.b, "the ready card cover is opaque")
+    assertPixel(readyImage, 128, 72, er, eg, eb, "the ready card paints the captured specimen")
+    Assert.equal(#audio.calls, 1, "the card cry plays exactly once")
+    Assert.equal(audio.calls[1].species, "TOTODILE", "the card cry names the captured species")
+    Assert.equal(audio.calls[1].pattern, 14, "the card cry always uses its fixed pattern")
+    Assert.equal(audio.calls[1].form, 0, "the card cry always uses the base form")
+    -- Cancellation never dismisses; only a fresh confirmation does.
+    child:input({ { type = "cancel" } })
+    for _ = 1, 5 do
+      tick()
+    end
+    Assert.isTrue(child:status().complete == false, "cancellation never dismisses the card")
+    Assert.isTrue(child:status().acceptsDismissal == true, "the ignored cancellation keeps the card dismissible")
+    child:input({ { type = "confirm" } })
+    tick()
+    Assert.equal(child:status().phase, "departure", "a fresh confirmation starts the ordinary departure")
+    -- The ordinary departure moves the picture exactly twenty steps
+    -- from 48 to 128 while the cover fades back to black; the renderer
+    -- keeps the fixed card rect, so the policy values carry the motion.
+    -- The twentieth step reaches 128 and freezes the centered exit in
+    -- the same update, so the samples below observe the climb and the
+    -- completion gate proves the 128 arrival.
+    local moves = {}
+    while child:status().phase == "departure" and #moves < 40 do
+      moves[#moves + 1] = child:view().pictureX
+      tick()
+    end
+    Assert.isTrue(child:status().complete == true, "the departure completes into the frozen exit")
+    Assert.equal(#moves, 20, "the ordinary departure moves exactly twenty source steps")
+    Assert.equal(moves[1], 48, "the departure starts centered")
+    Assert.equal(moves[20], 124, "the twentieth step climbs to the 128 gate")
+    for index, value in ipairs(moves) do
+      Assert.equal(value, 48 + 4 * (index - 1), "departure step " .. tostring(index) .. " keeps the source pace")
+    end
+    local midImage = drawCard(child:view())
+    local fr, fg, fb = pixel(midImage, 128, 72)
+    Assert.equal(fr, er, "the frozen exit keeps its red channel")
+    Assert.equal(fg, eg, "the frozen exit keeps its green channel")
+    Assert.equal(fb, eb, "the frozen exit keeps its blue channel")
+    assertPixel(midImage, 2, 2, 0, 0, 0, "the frozen exit holds the terminal cover")
+    Assert.equal(child:view().pictureX, 48, "completion refreezes the centered picture")
+    child:dispose()
+    lease:release()
+    rig.owner:release()
+  end)
+end
+
 function T.heartgold_graphics_legs_stay_blocked_without_a_dump(_, context)
   if not RomImporter.isReady("heartgold") then
     assert(context ~= nil, "blocked-version reporting needs its runner context")

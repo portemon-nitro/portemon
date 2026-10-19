@@ -43,6 +43,11 @@ local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
 ---@field _pendingFinal table<string, unknown>? retained final view behind playing cues
 ---@field _pendingRequest table<string, unknown>? retained request behind playing cues
 ---@field _pendingResult table<string, unknown>? retained terminal result behind playing cues
+---@field _pendingRegistration table<string, unknown>? detached frozen first-catch facts behind the card
+---@field _registrationChild table<string, unknown>? open battle-owned registration presentation
+---@field _registrationComplete boolean true once the card completes its terminal return
+---@field _pokedex table<string, unknown>? borrowed field presentation resource owner behind the card
+---@field _registrationAudio table<string, unknown>? borrowed registration audio adapter behind the card
 ---@field _introBuilt boolean opening cues queued
 ---@field _kind string battle kind wording for the opening narration
 ---@field _queue table<integer, table<string, unknown>> queued raw input batches
@@ -118,6 +123,8 @@ end
 ---@field text table<string, unknown> borrowed text services
 ---@field windows table<string, unknown> borrowed window services
 ---@field audio table<string, unknown> semantic sound boundary
+---@field pokedex table<string, unknown>? borrowed field presentation resource owner behind the card
+---@field registrationAudio table<string, unknown>? borrowed registration audio adapter behind the card
 ---@field itemCatalog table<string, unknown>? borrowed immutable item catalog for battle bag grouping
 ---@field monCatalog table<string, unknown>? borrowed immutable mon catalog for machine display facts
 ---@field textSpeed string? narration pace for this launch, defaulting to the middle pace
@@ -185,6 +192,11 @@ function BattleScreenState.new(opts)
     _pendingFinal = nil,
     _pendingRequest = nil,
     _pendingResult = nil,
+    _pendingRegistration = nil,
+    _registrationChild = nil,
+    _registrationComplete = false,
+    _pokedex = opts.pokedex,
+    _registrationAudio = opts.registrationAudio,
     _introBuilt = false,
     _kind = "wild",
     _queue = {},
@@ -509,6 +521,15 @@ function BattleScreenState:_ready()
   if self._child ~= nil then
     return false
   end
+  -- A retained terminal registration holds the ready barrier from packet
+  -- acceptance through card completion: pending or active cards block,
+  -- while a completed card keeps its static exit and releases the hold.
+  if self._pendingRegistration ~= nil then
+    return false
+  end
+  if self._registrationChild ~= nil and self._registrationComplete ~= true then
+    return false
+  end
   return self._timeline:settled()
 end
 
@@ -689,6 +710,10 @@ function BattleScreenState:_portPresent(packet)
   end
   if packet.result ~= nil then
     self._pendingResult = copyValue(packet.result)
+    local registration = packet.result.registration --[[@as table<string, unknown>?]]
+    if type(registration) == "table" then
+      self._pendingRegistration = copyValue(registration)
+    end
   end
   if type(packet.party) == "table" then
     self._partySnapshot = copyValue(packet.party)
@@ -741,12 +766,28 @@ function BattleScreenState:input(events)
       self:cancelPointerCapture()
       self._signature = signature
     end
+    -- An open registration card owns its input exclusively: the raw host
+    -- batch routes straight to the child, never through the stale battle
+    -- plan. Layout remeasure and pointer cancellation above still apply.
+    if self._registrationChild ~= nil then
+      local card = self._registrationChild --[[@as table<string, unknown>]]
+      local takeInput = card.input --[[@as fun(self: table<string, unknown>, events: table<integer, table<string, unknown>>)?]]
+      if type(takeInput) == "function" then
+        takeInput(card, events)
+      end
+      return
+    end
     pcall(function()
       self._session:resolve(measurement, self:_snapshot())
     end)
     local converted = self._session:mapInput(events, self:_snapshot())
     for _, event in ipairs(converted) do
       self:_consume(event)
+      -- Constructing the card consumes its creating edge and drops the
+      -- rest of the batch so no stale choice seals behind it.
+      if self._registrationChild ~= nil then
+        break
+      end
     end
     pcall(function()
       self._session:resolve(measurement, self:_snapshot())
@@ -762,6 +803,9 @@ function BattleScreenState:cancelPointerCapture()
     local _ = ok
   end
   self._armed = nil
+  if self._registrationChild ~= nil then
+    pcall(self._registrationChild.cancelPointerCapture, self._registrationChild)
+  end
   if self._subflows ~= nil then
     self._subflows:cancelPointerCapture()
   end
@@ -1307,6 +1351,60 @@ end
 -- accepted-choice boundary, a permitted cancellation returns to the
 -- mirrored request, and a stale identity discards without sealing. A
 -- refused seal keeps the child open for another selection.
+-- Polls the open registration card after the parent timeline: a card
+-- failure fails the screen exactly once, completion sets the terminal
+-- acknowledgment once and releases the readiness hold, and the active
+-- card steps on accepted time. Never replays the creating edge into the
+-- card and never advances battle choices behind it.
+---@param dt number accepted presentation seconds
+function BattleScreenState:_pollRegistrationChild(dt)
+  local child = self._registrationChild --[[@as table<string, unknown>?]]
+  if child == nil then
+    return
+  end
+  local statusOf = child.status --[[@as fun(self: table<string, unknown>)?]]
+  local stepChild = child.updateFixed --[[@as fun(self: table<string, unknown>, dt: number)?]]
+  if type(statusOf) ~= "function" or type(stepChild) ~= "function" then
+    self._mode = "failed"
+    self._error = "battle registration failed for launch " .. self._launchId .. ": missing card operations"
+    return
+  end
+  local okStatus, status = pcall(statusOf, child)
+  if not okStatus or type(status) ~= "table" then
+    self._mode = "failed"
+    self._error = "battle registration failed for launch " .. self._launchId .. ": " .. tostring(status)
+    return
+  end
+  if type(status.error) == "string" then
+    self._mode = "failed"
+    self._error = "battle registration failed for launch " .. self._launchId .. ": " .. status.error
+    return
+  end
+  if status.complete == true then
+    if self._registrationComplete ~= true then
+      self._outcomeAcked = true
+      self._registrationComplete = true
+    end
+    return
+  end
+  local okStep, stepErr = pcall(stepChild, child, dt)
+  if not okStep then
+    self._mode = "failed"
+    self._error = "battle registration failed for launch " .. self._launchId .. ": " .. tostring(stepErr)
+    return
+  end
+  local okDone, done = pcall(statusOf, child)
+  if okDone and type(done) == "table" and type(done.error) == "string" then
+    self._mode = "failed"
+    self._error = "battle registration failed for launch " .. self._launchId .. ": " .. done.error
+    return
+  end
+  if okDone and type(done) == "table" and done.complete == true and self._registrationComplete ~= true then
+    self._outcomeAcked = true
+    self._registrationComplete = true
+  end
+end
+
 function BattleScreenState:_pollChild()
   local result = self._subflows:takeResult()
   if result == nil then
@@ -1476,7 +1574,10 @@ function BattleScreenState:_consume(event)
         if type(control) == "table" and control.scope == self._mode then
           local _, completedFinalPage = self._timeline:ack()
           if self._mode == "outcome" and completedFinalPage == true then
-            self._outcomeAcked = true
+            self:_acknowledgeOutcomeFinal()
+            if self._registrationChild ~= nil then
+              return
+            end
           end
         end
       else
@@ -1527,9 +1628,67 @@ function BattleScreenState:_confirm()
   elseif self._mode == "outcome" then
     local _, completedFinalPage = self._timeline:ack()
     if completedFinalPage == true then
-      self._outcomeAcked = true
+      self:_acknowledgeOutcomeFinal()
     end
   end
+end
+
+-- Applies one consumed terminal-page acknowledgment: with no registration
+-- it sets the current outcome acknowledgment as before, while a retained
+-- registration consumes the edge, cancels pointers, drops the rest of the
+-- batch, and constructs the battle-owned card exactly once. The creating
+-- edge never also dismisses the card.
+function BattleScreenState:_acknowledgeOutcomeFinal()
+  if self._pendingRegistration ~= nil and self._registrationChild == nil then
+    self:cancelPointerCapture()
+    self:_openRegistrationChild()
+    return
+  end
+  if self._pendingRegistration == nil and self._registrationChild == nil then
+    self._outcomeAcked = true
+  end
+end
+
+-- Releases the registration card exactly once, converging normal, failure,
+-- and disposal paths on one idempotent release.
+function BattleScreenState:_disposeRegistrationChild()
+  local child = self._registrationChild
+  self._registrationChild = nil
+  if child ~= nil then
+    pcall(child.dispose, child)
+  end
+end
+
+-- Constructs the battle-owned registration card once from the retained
+-- terminal facts. Missing presentation capability fails explicitly
+-- instead of faking a card or silently dropping the registration.
+function BattleScreenState:_openRegistrationChild()
+  if self._registrationChild ~= nil or self._pendingRegistration == nil then
+    return
+  end
+  local registration = assert(self._pendingRegistration, "registration children open from retained facts")
+  self._pendingRegistration = nil
+  local pokedex = self._pokedex
+  local audio = self._registrationAudio
+  if type(pokedex) ~= "table" or type(audio) ~= "table" then
+    self._mode = "failed"
+    self._error = "battle registration needs its presentation resources for launch " .. self._launchId
+    return
+  end
+  local RegistrationState = require("game.hgss.src.pokedex.PokedexRegistrationState")
+  local ok, child = pcall(RegistrationState.new, {
+    registration = registration,
+    pokedex = pokedex,
+    timeline = self._timeline,
+    audio = audio,
+    measureDisplay = self._measureDisplay,
+  })
+  if not ok or type(child) ~= "table" then
+    self._mode = "failed"
+    self._error = "battle registration failed to open for launch " .. self._launchId .. ": " .. tostring(child)
+    return
+  end
+  self._registrationChild = child --[[@as table<string, unknown>]]
 end
 
 ---@param entry table<string, unknown> accepted move option under sealing
@@ -1837,6 +1996,17 @@ function BattleScreenState:updateFixed(dt)
     self._subflows:tick()
     self:_pollChild()
   end
+  -- The parent timeline advances exactly once above before the card is
+  -- polled or stepped; no battle choice or other subflow advances while
+  -- the card is open. Completion sets the terminal acknowledgment once
+  -- and releases the readiness hold, keeping the static final view and
+  -- its lease until disposal. A card failure fails the screen once.
+  if self._registrationChild ~= nil and self._mode ~= "failed" then
+    self:_pollRegistrationChild(dt)
+  end
+  if self._mode == "failed" then
+    self:_disposeRegistrationChild()
+  end
   if self._mode == "command" or self._mode == "moves" then
     self._arrowTick = self._arrowTick + 1
   else
@@ -1885,6 +2055,25 @@ function BattleScreenState:draw(resources)
     self._mode = "failed"
     self._error = "battle render failed for launch " .. self._launchId .. ": " .. tostring(renderErr)
   end
+  -- The retained parent view draws first; the card draws its own phase
+  -- over it without advancing any state. The completed card keeps its
+  -- static final view and terminal cover so the old foe cannot reappear.
+  if self._mode ~= "failed" and self._mode ~= "disposed" and self._registrationChild ~= nil then
+    local child = self._registrationChild --[[@as table<string, unknown>]]
+    local drawFn = child.draw --[[@as fun(self: table<string, unknown>, resources: table<string, unknown>)?]]
+    if type(drawFn) ~= "function" then
+      self._mode = "failed"
+      self._error = "battle registration draw failed for launch " .. self._launchId .. ": missing card draw"
+      self:_disposeRegistrationChild()
+    else
+      local cardOk, cardErr = pcall(drawFn, child, resources)
+      if not cardOk then
+        self._mode = "failed"
+        self._error = "battle registration draw failed for launch " .. self._launchId .. ": " .. tostring(cardErr)
+        self:_disposeRegistrationChild()
+      end
+    end
+  end
 end
 
 -- Idempotent release of the launch lifetime: owned handles release
@@ -1898,6 +2087,9 @@ function BattleScreenState:dispose()
   self._mode = "disposed"
   self:cancelPointerCapture()
   self._queue = {}
+  -- The card releases before the borrowed presentation context: one
+  -- idempotent release on the normal, failure, and disposal paths.
+  self:_disposeRegistrationChild()
   if self._subflows ~= nil then
     self._subflows:dispose()
   end

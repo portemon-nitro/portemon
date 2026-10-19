@@ -193,6 +193,7 @@ local ItemFixture = require("libs.items.tests.item_fixture")
 local FieldUiFixture = require("tests.support.FieldUiFixture")
 local FieldTerrainEffectController = require("libs.hgss.src.world.FieldTerrainEffectController")
 local InactiveMonNaming = require("tests.support.InactiveMonNaming")
+local PokedexDexFixture = require("libs.hgss.tests.mons.pokedex_dex_fixture")
 
 -- Drives a production-composed Oak state through profile selection into
 -- the shrink animation using semantic input only.
@@ -329,6 +330,7 @@ local function bootCoveredField(scope)
       monNaming = InactiveMonNaming.new(),
       itemCatalog = ItemFixture.makeCatalog(),
       monCatalog = CatalogFixture.makeCatalog(),
+      pokedexCatalog = PokedexDexFixture.buildPokedexCatalog(),
       bindPartyIconPreparation = function(_, _, _)
         return 1
       end,
