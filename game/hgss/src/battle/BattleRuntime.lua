@@ -1320,68 +1320,83 @@ function BattleRuntime:_describeDexMon(combatantId, mon)
   return specimen --[[@as table<string, unknown>]]
 end
 
--- Records one actual appearance for an occupied combatant: opponents
+-- Arrival facts pin one actual appearance to its event time: the
+-- combatant identity, the activation token issued at entry, the visible
+-- physical form, the battle side, and the immutable combatant mon. Both
+-- callers build the record from a single temporal source -- the opening
+-- snapshot for initial occupants, the switch event's checkpoint for
+-- later entrants -- so a combatant that already departed by frame end
+-- still records exactly the appearance it made.
+---@class DexArrivalFacts
+---@field combatantId integer arriving combatant identity
+---@field activation integer entry token issued for this appearance
+---@field form integer|nil visible physical form at event time
+---@field side integer battle side of the appearance
+---@field mon table<string, unknown> immutable combatant mon under description
+
+-- Records one actual appearance from its event-time facts: opponents
 -- contribute their sighting in encounter order, the player's own Burmy
 -- contributes its registration as a caught observation, and every other
 -- own-side appearance contributes nothing. Eggs never contribute.
 -- Arrivals deduplicate by combatant plus activation, never by species.
----@param snapshot table<string, unknown> detached live battle snapshot
----@param combatantId integer arriving combatant identity
-function BattleRuntime:_recordDexArrival(snapshot, combatantId)
-  local combatants = snapshot.combatants --[[@as table<integer, table<string, unknown>>]]
-  local combatant = combatants[combatantId]
-  if type(combatant) ~= "table" then
+-- The dedup key commits only after the arrival is verified and staged
+-- (or deliberately skipped under a source rule), so a malformed event
+-- never suppresses its own correction.
+---@param facts DexArrivalFacts event-time appearance under arrival projection
+function BattleRuntime:_recordDexArrival(facts)
+  local combatantId = facts.combatantId
+  if type(combatantId) ~= "number" then
+    error("battle dex arrivals name their combatant", 0)
+  end
+  if type(facts.activation) ~= "number" then
+    error("battle dex arrivals carry their entry activation " .. tostring(combatantId), 0)
+  end
+  local mon = facts.mon
+  if type(mon) ~= "table" or type(mon.species) ~= "string" then
     error("battle dex arrival names an unknown combatant " .. tostring(combatantId), 0)
   end
-  local active = combatant.active --[[@as table<string, unknown>?]]
-  if type(active) ~= "table" or type(active.activation) ~= "number" then
-    error("battle dex arrival needs its active entry " .. tostring(combatantId), 0)
+  if type(facts.side) ~= "number" then
+    error("battle dex arrivals carry their battle side " .. tostring(combatantId), 0)
   end
-  local key = tostring(combatantId) .. ":" .. tostring(active.activation --[[@as integer]])
+  local key = tostring(combatantId) .. ":" .. tostring(facts.activation --[[@as integer]])
   if self._dexArrivals[key] == true then
     return
   end
-  self._dexArrivals[key] = true
-  local participants = snapshot.participants --[[@as table<integer, table<string, unknown>>]]
-  local participant = participants[
-    combatant.participant --[[@as integer]]
-  ]
-  if type(participant) ~= "table" then
-    error("battle dex arrival names an unknown participant " .. tostring(combatantId), 0)
-  end
-  local mon = combatant.mon --[[@as table<string, unknown>?]]
-  local species = nil
-  if type(mon) == "table" and type(mon.species) == "string" then
-    species = mon.species --[[@as string]]
-  end
-  if participant.side == self._dexPlayerSide then
+  if facts.side == self._dexPlayerSide then
     -- Only the player's own Burmy registers on appearance; every other
     -- own-side combatant is already possessed, never newly observed, and
     -- stays undescribed.
-    if species ~= "BURMY" then
+    if mon.species ~= "BURMY" then
+      self._dexArrivals[key] = true
       return
     end
-  end
-  if type(mon) ~= "table" then
-    error("battle dex arrival names an unknown combatant " .. tostring(combatantId), 0)
   end
   local descriptor = self._dexIdentities[combatantId]
   if type(descriptor) ~= "table" then
     descriptor = self:_describeDexMon(combatantId, mon)
     self._dexIdentities[combatantId] = descriptor
   end
-  local record = descriptor --[[@as table<string, unknown>]]
+  -- The staged copy carries the event-time form while the cached base
+  -- identity stays form-free, so a later appearance never rewrites an
+  -- already staged sighting.
+  local record = copyValue(descriptor --[[@as table<string, unknown>]])
+  if type(facts.form) == "number" then
+    record.form = facts.form
+  end
   if record.isEgg == true then
+    self._dexArrivals[key] = true
     return
   end
-  if participant.side == self._dexPlayerSide then
+  if facts.side == self._dexPlayerSide then
     self._dexObservations[#self._dexObservations + 1] = { kind = "caught", specimen = copyValue(record) }
     self._dexPendingCaught[
       record.species --[[@as string]]
     ] = true
+    self._dexArrivals[key] = true
     return
   end
   self._dexObservations[#self._dexObservations + 1] = { kind = "seen", specimen = copyValue(record) }
+  self._dexArrivals[key] = true
 end
 
 -- Resolves the player side from the declared participant facts and
@@ -1419,14 +1434,44 @@ function BattleRuntime:_projectDexOpening(snapshot)
       positionId --[[@as integer]]
     ] --[[@as table<string, unknown>?]]
     if type(position) == "table" and type(position.occupant) == "number" then
-      self:_recordDexArrival(snapshot, position.occupant --[[@as integer]])
+      local occupant = position.occupant --[[@as integer]]
+      local combatant = combatants[occupant] --[[@as table<string, unknown>?]]
+      if type(combatant) ~= "table" then
+        error("battle dex arrival names an unknown combatant " .. tostring(occupant), 0)
+      end
+      local active = combatant.active --[[@as table<string, unknown>?]]
+      if type(active) ~= "table" or type(active.activation) ~= "number" then
+        error("battle dex arrival needs its active entry " .. tostring(occupant), 0)
+      end
+      local participant = participants[
+        combatant.participant --[[@as integer]]
+      ] --[[@as table<string, unknown>?]]
+      if type(participant) ~= "table" or type(participant.side) ~= "number" then
+        error("battle dex arrival names an unknown participant " .. tostring(occupant), 0)
+      end
+      local mon = combatant.mon --[[@as table<string, unknown>?]]
+      if type(mon) ~= "table" then
+        error("battle dex arrival names an unknown combatant " .. tostring(occupant), 0)
+      end
+      local form = nil
+      if type(mon.form) == "number" then
+        form = mon.form --[[@as integer]]
+      end
+      self:_recordDexArrival({
+        combatantId = occupant,
+        activation = active.activation,
+        form = form,
+        side = participant.side,
+        mon = mon,
+      })
     end
   end
 end
 
 -- Consumes one raw switch event's incoming checkpoint in event order:
--- the incoming combatant must be active with the selected identity,
--- and its checkpoint form applies to the immutable descriptor.
+-- the arrival identity, activation, form, and side all come from the
+-- event-time checkpoint, never from the later frame snapshot whose
+-- active entry may already describe another activation or be gone.
 ---@param snapshot table<string, unknown> detached live battle snapshot
 ---@param event table<string, unknown> raw kernel switch event
 function BattleRuntime:_projectDexSwitch(snapshot, event)
@@ -1443,40 +1488,43 @@ function BattleRuntime:_projectDexSwitch(snapshot, event)
   if type(entries) ~= "table" then
     error("battle dex switches carry their event-time checkpoint", 0)
   end
-  local active = entries[incoming] --[[@as table<string, unknown>?]]
-  if type(active) ~= "table" then
+  local observed = entries[incoming] --[[@as table<string, unknown>?]]
+  if type(observed) ~= "table" then
     error("battle dex switches activate their incoming combatant " .. tostring(incoming), 0)
   end
   -- The incoming checkpoint must carry the selected identity: the live
-  -- combatant mon species, never a transformed display species.
+  -- combatant mon species, never a transformed display species. Only
+  -- the immutable mon is read from the later snapshot; the active entry
+  -- there may already be absent or reissued.
   local combatants = snapshot.combatants --[[@as table<integer, table<string, unknown>>?]]
   local combatant = type(combatants) == "table" and combatants[incoming] or nil --[[@as table<string, unknown>?]]
   local mon = type(combatant) == "table" and combatant.mon or nil --[[@as table<string, unknown>?]]
   if type(mon) ~= "table" or type(mon.species) ~= "string" then
     error("battle dex switches name a described combatant " .. tostring(incoming), 0)
   end
-  if active.species ~= mon.species then
+  if observed.species ~= mon.species then
     error(
-      "battle dex arrival mismatches its selected identity " .. tostring(incoming) .. ": " .. tostring(active.species),
+      "battle dex arrival mismatches its selected identity " .. tostring(incoming) .. ": " .. tostring(observed.species),
       0
     )
   end
-  if type(active.activation) ~= "number" then
+  if type(observed.activation) ~= "number" then
     error("battle dex switches carry their incoming activation " .. tostring(incoming), 0)
   end
-  -- The checkpoint form applies to the immutable descriptor before the
-  -- arrival records, so the selected mon keeps its actual form.
-  local descriptor = self._dexIdentities[incoming]
-  if type(descriptor) == "table" and type(active.form) == "number" then
-    local record = copyValue(descriptor --[[@as table<string, unknown>]])
-    record.form = active.form
-    self._dexIdentities[incoming] = record
-  elseif type(active.form) == "number" then
-    local fresh = self:_describeDexMon(incoming, mon)
-    fresh.form = active.form
-    self._dexIdentities[incoming] = fresh
+  if type(observed.side) ~= "number" then
+    error("battle dex switches carry their incoming side " .. tostring(incoming), 0)
   end
-  self:_recordDexArrival(snapshot, incoming)
+  local form = nil
+  if type(observed.form) == "number" then
+    form = observed.form --[[@as integer]]
+  end
+  self:_recordDexArrival({
+    combatantId = incoming,
+    activation = observed.activation,
+    form = form,
+    side = observed.side,
+    mon = mon,
+  })
 end
 
 -- Freezes the detached first-catch eligibility from one successful
