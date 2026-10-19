@@ -672,7 +672,6 @@ function PcStorageRenderer:drawPane(view, resources, paneId, placement)
   assert(not self._disposed, "disposed Storage renderer draws nothing")
   local graphics = self._graphics
   resources = resources or {}
-  self._paneTouch = {}
   LogicalSurface.draw(graphics, placement, function()
     local storage = self._manifest.storage
     if paneId == "upper" then
@@ -786,9 +785,6 @@ function PcStorageRenderer:drawPane(view, resources, paneId, placement)
       end
     end
   end)
-  self._requiredByPane[paneId] = assert(self._paneTouch, "the drawn pane records its demand")
-  self._paneTouch = nil
-  dropUnrequired(self)
 end
 
 function PcStorageRenderer:draw(view, plan)
