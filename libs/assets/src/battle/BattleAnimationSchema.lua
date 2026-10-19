@@ -12,7 +12,7 @@ local Validate = require("libs.assets.src.Validate")
 ---@class BattleAnimationSchema
 local BattleAnimationSchema = {}
 
-BattleAnimationSchema.EFFECT_SCHEMA = "g4-battle-effect-v1"
+BattleAnimationSchema.EFFECT_SCHEMA = "g4-battle-effect-v2"
 
 local CODE_EFFECT = "BATTLE_EFFECT_INVALID"
 

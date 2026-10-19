@@ -1395,7 +1395,50 @@ function T.move_effect_reads_its_source_selected_native_member(romFs, versionId)
   )
   Assert.equal(effect.resources["battle/particle/tackle"].kind, "particle")
   local particlePayload = effect.resourcePayloads[effect.resources["battle/particle/tackle"].payload]
-  Assert.equal(particlePayload.format, "APS12_1", versionId .. ": staged particle payload is decoded APS data")
+  local tackleSource = assert(
+    animationSources.resolveParticleSource("battle/particle/tackle"),
+    versionId .. ": TACKLE particle keeps its producer source route"
+  )
+  local tackleArchive = assert(
+    romFs:openNarc(tackleSource.archiveSymbol),
+    versionId .. ": the TACKLE particle archive resolves"
+  )
+  local tackleBytes = assert(tackleArchive:readMember(tackleSource.memberId))
+  local tackleDecoded = assert(Spl.decode(tackleBytes))
+  Assert.equal(
+    #particlePayload.emitters,
+    #tackleDecoded.emitters,
+    versionId .. ": staged particle payload carries every decoded emitter"
+  )
+  Assert.equal(
+    #particlePayload.resources,
+    #tackleDecoded.resources,
+    versionId .. ": staged particle payload carries every decoded texture entry"
+  )
+  for _, entry in ipairs(particlePayload.resources) do
+    if entry.textureKey ~= nil then
+      local texture = assert(
+        effect.resources[entry.textureKey],
+        versionId .. ": staged texture entry resolves in the effect closure"
+      )
+      Assert.equal(texture.kind, "texture", versionId .. ": staged texture entry has a texture kind")
+      Assert.notNil(
+        effect.resourcePayloads[texture.payload],
+        versionId .. ": staged texture entry payload is staged"
+      )
+    end
+    if entry.paletteKey ~= nil then
+      local palette = assert(
+        effect.resources[entry.paletteKey],
+        versionId .. ": staged palette entry resolves in the effect closure"
+      )
+      Assert.equal(palette.kind, "palette", versionId .. ": staged palette entry has a palette kind")
+      Assert.notNil(
+        effect.resourcePayloads[palette.payload],
+        versionId .. ": staged palette entry payload is staged"
+      )
+    end
+  end
   local particleAction
   for _, instruction in ipairs(effect.program.instructions) do
     if instruction.op == "create-parameterized-battler-effect" and instruction.resource ~= nil then
@@ -1409,7 +1452,29 @@ function T.move_effect_reads_its_source_selected_native_member(romFs, versionId)
   Assert.equal(emitterDescriptor.kind, "particle-emitter")
   local emitterPayload = effect.resourcePayloads[emitterDescriptor.payload]
   Assert.isTrue(type(emitterPayload) == "table", versionId .. ": the selected emitter payload is staged")
-  Assert.isTrue(type(emitterPayload.baseRecord) == "string", versionId .. ": the emitter is decoded semantic APS data")
+  Assert.isTrue(
+    type(emitterPayload.features) == "table",
+    versionId .. ": the emitter carries normalized source features"
+  )
+  Assert.isTrue(
+    type(emitterPayload.params) == "table",
+    versionId .. ": the emitter carries normalized source parameters"
+  )
+  Assert.isTrue(
+    type(emitterPayload.textureKey) == "string",
+    versionId .. ": the emitter resolves its staged drawable"
+  )
+  local emitterTexture = assert(
+    effect.resources[emitterPayload.textureKey],
+    versionId .. ": the emitter drawable is part of the effect closure"
+  )
+  Assert.equal(emitterTexture.kind, "texture", versionId .. ": the emitter drawable has a texture kind")
+  local emitterPixels = assert(effect.resourcePayloads[emitterTexture.payload])
+  Assert.equal(
+    #emitterPixels.rgba8888,
+    emitterPixels.width * emitterPixels.height * 4,
+    versionId .. ": the emitter drawable carries exact RGBA bytes"
+  )
   Assert.equal(
     table.concat(effect.dependencies, ","),
     table.concat((function()
@@ -1904,7 +1969,18 @@ function T.effect_producer_decodes_source_selected_sprite_character_member(romFs
       math.floor(value / 16777216) % 256
     )
   end
-  local moveStream = u32(74) .. u32(0) .. u32(0) .. u32(54)
+  -- A lone character load cannot close: the staged tiles must pair with
+  -- their palette through a creating instruction that carries both keys.
+  -- The synthetic stream therefore loads the full managed-sprite set and
+  -- creates the sprite from the same member selections real streams use.
+  local moveStream = table.concat({
+    u32(74), u32(0), u32(0),
+    u32(75), u32(0), u32(0), u32(0),
+    u32(76), u32(0), u32(0),
+    u32(77), u32(0), u32(0),
+    u32(79), u32(0), u32(0), u32(0), u32(0), u32(0), u32(0), u32(0xffffffff), u32(0xffffffff),
+    u32(54),
+  })
   local syntheticMoveArchive = {
     readMember = function(_, memberId)
       Assert.equal(memberId, route.memberId, versionId .. ": producer asks for the resolved move member")
@@ -1931,8 +2007,17 @@ function T.effect_producer_decodes_source_selected_sprite_character_member(romFs
   Assert.notNil(effect, versionId .. ": source-selected sprite data closes its resource dependency")
   Assert.isNil(err)
   local resolved = assert(effect.provenance.resolvedSourceInputs, "source-selected sprite data is normalized")
-  Assert.equal(#resolved, 1, versionId .. ": one sprite resource is selected")
+  Assert.equal(#resolved, 5, versionId .. ": character, palette, cell, animation, and template selections all close")
   Assert.equal(resolved[1].role, "sprite-character", versionId .. ": role names the source field")
+  Assert.equal(resolved[2].role, "sprite-palette", versionId .. ": palette selection is retained")
+  Assert.equal(resolved[3].role, "sprite-cell", versionId .. ": cell selection is retained")
+  Assert.equal(resolved[4].role, "sprite-animation", versionId .. ": animation selection is retained")
+  Assert.equal(resolved[5].role, "managed-sprite-template", versionId .. ": creating instruction pairs the staged set")
+  Assert.equal(
+    resolved[5].resourceKeys.character,
+    resolved[1].resourceKeys.character,
+    versionId .. ": the creating instruction pairs the selected character"
+  )
   Assert.keySet(resolved[1].resourceKeys, "character", versionId .. ": runtime sees one semantic slot")
   Assert.equal(
     effect.provenance.sourceInputs[1].selections.character.archiveSymbol,
@@ -2257,7 +2342,35 @@ function T.effect_producer_stages_fixed_and_context_selected_battler_particle_em
   Assert.notNil(effect.resources[genericParticle.resourceKeys.particle])
   Assert.equal(effect.resources[genericParticle.resourceKeys.particle].kind, "particle")
   local genericPayload = effect.resourcePayloads[effect.resources[genericParticle.resourceKeys.particle].payload]
-  Assert.equal(genericPayload.format, "APS12_1")
+  local genericDecoded = assert(Spl.decode(particleBytes))
+  Assert.equal(
+    #genericPayload.emitters,
+    #genericDecoded.emitters,
+    "generic particle payload carries every decoded emitter"
+  )
+  Assert.equal(
+    #genericPayload.resources,
+    #genericDecoded.resources,
+    "generic particle payload carries every decoded texture entry"
+  )
+  for _, entry in ipairs(genericPayload.resources) do
+    if entry.textureKey ~= nil then
+      local texture = assert(
+        effect.resources[entry.textureKey],
+        "staged generic texture entry resolves in the effect closure"
+      )
+      Assert.equal(texture.kind, "texture")
+      Assert.notNil(effect.resourcePayloads[texture.payload])
+    end
+    if entry.paletteKey ~= nil then
+      local palette = assert(
+        effect.resources[entry.paletteKey],
+        "staged generic palette entry resolves in the effect closure"
+      )
+      Assert.equal(palette.kind, "palette")
+      Assert.notNil(effect.resourcePayloads[palette.payload])
+    end
+  end
   local genericSelection
   for _, input in ipairs(effect.provenance.sourceInputs) do
     if input.role == "battler-particle-resource" and input.operands[2] == 13 then

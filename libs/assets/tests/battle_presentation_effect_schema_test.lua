@@ -29,7 +29,7 @@ end
 
 local function effectArtifact()
   return {
-    schema = "g4-battle-effect-v1",
+    schema = "g4-battle-effect-v2",
     key = "synthetic-effect-probe",
     catalogIdentity = "synthetic-catalog",
     program = {
@@ -113,6 +113,41 @@ function T.contract_identities_version_the_new_catalog_shapes()
   Assert.isTrue(
     type(Contract.battlePresentation.effectSchema) == "string" and Contract.battlePresentation.effectSchema ~= "",
     "the shared contract versions independently requested effect artifacts"
+  )
+end
+
+function T.effect_schema_versions_the_normalized_particle_contract()
+  local Schema = animationSchema()
+  Assert.isTrue(Schema ~= nil, "the effect schema owns the executable program contract")
+  assert(Schema ~= nil, "the effect schema is available")
+  Assert.equal(
+    Schema.EFFECT_SCHEMA,
+    "g4-battle-effect-v2",
+    "the effect schema carries the normalized particle contract identity"
+  )
+  local Contract = assetContract()
+  Assert.equal(
+    Contract.battlePresentation.effectSchema,
+    "g4-battle-effect-v2",
+    "the generated contract mirrors the normalized effect schema"
+  )
+  Assert.equal(
+    Contract.battlePresentation.effectSchema,
+    Schema.EFFECT_SCHEMA,
+    "the validator and the generated contract agree on one effect identity"
+  )
+end
+
+function T.stale_effect_artifacts_never_validate()
+  local Schema = animationSchema()
+  Assert.isTrue(Schema ~= nil, "the effect schema owns the executable program contract")
+  assert(Schema ~= nil, "the effect schema is available")
+  local stale = effectArtifact()
+  stale.schema = "g4-battle-effect-v1"
+  Assert.equal(stale.schema, "g4-battle-effect-v1", "the stale fixture predates normalization")
+  Assert.isFalse(
+    Schema.isValidEffect(stale),
+    "the previous raw-emitter artifact no longer validates and regenerates lazily"
   )
 end
 

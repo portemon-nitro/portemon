@@ -1026,6 +1026,98 @@ function T.global_compilation_reports_an_unresolved_source_member_without_publis
   )
 end
 
+function T.normalized_particle_state_matches_the_selected_source_member(romFs, versionId)
+  Assert.equal(versionId, "heartgold", "the source-root trace is pinned to the verified HeartGold dump")
+  local Compiler = require("romdump.src.digest.battle.BattlePresentationCompiler")
+  local Spl = require("libs.nds.src.nitro.particle.Spl")
+  local effect, err = Compiler.compileEffect(romFs, { versionId = versionId }, "TACKLE")
+  Assert.isNil(err, "the striking effect closes without a source failure: " .. tostring(err))
+  Assert.notNil(effect, "the striking effect stages its normalized particle archive")
+  local archiveKey = "battle/particle/tackle"
+  local descriptor = assert(effect.resources[archiveKey], "the staged effect keeps its particle archive")
+  Assert.equal(descriptor.kind, "particle", "the striking archive keeps its resource kind")
+  local staged = assert(
+    effect.resourcePayloads[descriptor.payload],
+    "the staged archive carries its normalized payload"
+  )
+  local archive = assert(romFs:openNarc("NARC_a_0_2_9"))
+  local raw = assert(archive:readMember(64))
+  local decoded = assert(Spl.decode(raw))
+  Assert.equal(#staged.emitters, #decoded.emitters, "every source emitter normalizes")
+  local selectors = { [8] = true, [9] = true, [10] = true, [11] = true, [16] = true, [24] = true, [25] = true, [26] = true, [27] = true, [28] = true, [29] = true }
+  for index, emitter in ipairs(staged.emitters) do
+    local source = decoded.emitters[index]
+    Assert.isNil(emitter.baseRecord, "staged emitter " .. index .. " carries no opaque base record")
+    Assert.isNil(emitter.sections, "staged emitter " .. index .. " carries no opaque sections")
+    Assert.isNil(emitter.calculations, "staged emitter " .. index .. " carries no opaque calculations")
+    Assert.isTrue(type(emitter.flags) ~= "number", "staged emitter " .. index .. " carries no raw flag word")
+    local remainder = source.flags
+    for bit in pairs(selectors) do
+      if math.floor(remainder / 2 ^ bit) % 2 == 1 then
+        remainder = remainder - 2 ^ bit
+      end
+    end
+    Assert.equal(emitter.variant, remainder, "staged emitter " .. index .. " preserves its inline parameters")
+    Assert.equal(#emitter.params, 42, "staged emitter " .. index .. " carries its full control block")
+    for position = 1, 42 do
+      local expected = string.byte(source.baseRecord, 5 + (position - 1) * 2)
+        + string.byte(source.baseRecord, 6 + (position - 1) * 2) * 256
+      Assert.equal(
+        emitter.params[position],
+        expected,
+        "staged emitter " .. index .. " control value " .. position .. " matches its source bytes"
+      )
+    end
+    local roles = {}
+    for _, section in ipairs(source.sections) do
+      roles[#roles + 1] = section.role
+      local words = emitter[section.role]
+      Assert.equal(type(words), "table", "staged emitter " .. index .. " carries " .. section.role)
+      Assert.equal(#words * 4, #section.data, "staged " .. section.role .. " keeps its source length")
+      for wordIndex = 1, #words do
+        local expected = string.byte(section.data, (wordIndex - 1) * 4 + 1)
+          + string.byte(section.data, (wordIndex - 1) * 4 + 2) * 256
+          + string.byte(section.data, (wordIndex - 1) * 4 + 3) * 65536
+          + string.byte(section.data, (wordIndex - 1) * 4 + 4) * 16777216
+        Assert.equal(
+          words[wordIndex],
+          expected,
+          "staged emitter " .. index .. " " .. section.role .. " word " .. wordIndex .. " matches source"
+        )
+      end
+    end
+    for _, calculation in ipairs(source.calculations) do
+      roles[#roles + 1] = calculation.role
+    end
+    table.sort(roles)
+    Assert.deepEqual(emitter.features, roles, "staged emitter " .. index .. " names its source behaviors")
+    Assert.equal(
+      type(emitter.textureKey),
+      "string",
+      "staged emitter " .. index .. " resolves its drawable"
+    )
+  end
+  for key, resource in pairs(effect.resources) do
+    if resource.kind == "texture" and key:find("^battle/particle/texture/", 1) ~= nil then
+      local drawable = effect.resourcePayloads[resource.payload]
+      Assert.equal(type(drawable.width), "number", "staged texture " .. key .. " declares its width")
+      Assert.equal(type(drawable.height), "number", "staged texture " .. key .. " declares its height")
+      Assert.equal(
+        #drawable.rgba8888,
+        drawable.width * drawable.height * 4,
+        "staged texture " .. key .. " carries exactly one RGBA quadruple per pixel"
+      )
+    end
+  end
+  local repeatEffect, repeatErr = Compiler.compileEffect(romFs, { versionId = versionId }, "TACKLE")
+  Assert.isNil(repeatErr, "the striking effect recompiles deterministically")
+  Assert.deepEqual(
+    repeatEffect.resourcePayloads,
+    effect.resourcePayloads,
+    "the same source bytes stage identical normalized payloads"
+  )
+end
+
 return RomSuite.build({
   tests = T,
   readyVersions = RomImporter.isReady("heartgold") and { "heartgold" } or {},

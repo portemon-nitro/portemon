@@ -200,8 +200,12 @@ function T.reachable_task_kinds_construct_through_the_production_factory()
   local services = { scene = scene, audio = audio, resources = resources }
   local built = {}
   for _, kind in ipairs(kinds) do
+    local args = {}
+    if kind == Factory.PARTICLE_CONTINUATION_KIND then
+      args = { resource = "battle/particle/tackle", emitterPosition = "solo-enemy" }
+    end
     local task = assert(
-      Factory.create(kind, {}, context, services),
+      Factory.create(kind, args, context, services),
       "the production factory constructs the reachable kind " .. kind
     )
     Assert.equal(type(task.stepSourceTick), "function", kind .. " advances on the source tick")

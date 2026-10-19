@@ -26,6 +26,7 @@ local BattlePresentationSources = require("romdump.src.config.BattlePresentation
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
 local BattlePresentationSchema = require("libs.assets.src.battle.BattlePresentationSchema")
 local Spl = require("libs.nds.src.nitro.particle.Spl")
+local Rgb555 = require("libs.codec.src.Rgb555")
 local bit = require("bit")
 
 ---@class BattlePresentationCompiler
@@ -57,6 +58,706 @@ local SUPPORTED_VERSIONS = { heartgold = true, soulsilver = true }
 
 local Sources = BattlePresentationSources
 local ROLES = Sources.ROLES
+
+-- Normalized native particle emission. APS12_1 emitter words become
+-- source-independent typed emitter state plus exact RGBA drawables; no
+-- raw container record crosses into staged payloads. The container
+-- decoder owns the section/calculation vocabulary; the committed flags
+-- inventory below owns every emitter flags word observed across the
+-- canonical particle archive, so a novel combination fails the effect
+-- instead of staging invented motion. Texture texels are 8-bit indices
+-- into the staged partial palette; index zero is transparent per DS 2D
+-- convention and out-of-range indices stage transparent.
+
+-- Section/calculation selector bits shared with the container decoder
+-- (libs.nds.src.nitro.particle.Spl): only these bits select trailing
+-- emitter data, every other set bit is an inline emitter parameter.
+local PARTICLE_SELECTOR_BITS = { 8, 9, 10, 11, 16, 24, 25, 26, 27, 28, 29 }
+
+local KNOWN_PARTICLE_EMITTER_FLAG_WORDS = {
+  0x00004312,
+  0x00004400,
+  0x00004500,
+  0x00004503,
+  0x00004513,
+  0x00004600,
+  0x00004611,
+  0x00004641,
+  0x00004642,
+  0x00004700,
+  0x00004701,
+  0x00004702,
+  0x00004704,
+  0x00004710,
+  0x00004711,
+  0x00004712,
+  0x00004742,
+  0x00004752,
+  0x00004756,
+  0x00004796,
+  0x000047c6,
+  0x00004e15,
+  0x00004e51,
+  0x00004f00,
+  0x00004f15,
+  0x00004f53,
+  0x00005700,
+  0x00005702,
+  0x00005740,
+  0x00005741,
+  0x00006700,
+  0x00006702,
+  0x00006746,
+  0x00006f00,
+  0x00006f41,
+  0x00007702,
+  0x00007705,
+  0x00007707,
+  0x00007712,
+  0x00007798,
+  0x00008042,
+  0x00008440,
+  0x00008706,
+  0x00008716,
+  0x00009740,
+  0x0000c7d6,
+  0x0000e700,
+  0x00014100,
+  0x00014443,
+  0x00014500,
+  0x00014501,
+  0x00014502,
+  0x00014503,
+  0x00014510,
+  0x00014511,
+  0x00014547,
+  0x00014586,
+  0x00014600,
+  0x00014601,
+  0x00014610,
+  0x00014700,
+  0x00014701,
+  0x00014702,
+  0x00014703,
+  0x00014704,
+  0x00014705,
+  0x00014710,
+  0x00014711,
+  0x00014712,
+  0x00014740,
+  0x00014741,
+  0x00014742,
+  0x00014745,
+  0x00014786,
+  0x00014792,
+  0x000147c3,
+  0x00014f00,
+  0x00014f01,
+  0x00014f02,
+  0x00015500,
+  0x00015502,
+  0x00015700,
+  0x00015701,
+  0x00015702,
+  0x00015706,
+  0x00015710,
+  0x00015742,
+  0x000157c2,
+  0x000157c3,
+  0x00015f00,
+  0x00016500,
+  0x00016501,
+  0x00016700,
+  0x00016701,
+  0x00016702,
+  0x00016705,
+  0x00016706,
+  0x00016741,
+  0x00016743,
+  0x00016786,
+  0x00017401,
+  0x00017540,
+  0x00017601,
+  0x00017700,
+  0x00017702,
+  0x00017706,
+  0x00017741,
+  0x00017746,
+  0x00017747,
+  0x00018700,
+  0x00018702,
+  0x00019f00,
+  0x0001b700,
+  0x0001c7c3,
+  0x00024f05,
+  0x00034705,
+  0x000b6700,
+  0x00202700,
+  0x00204000,
+  0x00204012,
+  0x00204100,
+  0x00204101,
+  0x00204148,
+  0x00204186,
+  0x00204283,
+  0x00204300,
+  0x00204400,
+  0x00204442,
+  0x00204500,
+  0x00204505,
+  0x00204510,
+  0x00204543,
+  0x00204596,
+  0x00204600,
+  0x00204612,
+  0x00204613,
+  0x00204686,
+  0x00204695,
+  0x00204700,
+  0x00204701,
+  0x00204702,
+  0x00204706,
+  0x00204710,
+  0x00204711,
+  0x00204712,
+  0x00204713,
+  0x00204716,
+  0x00204740,
+  0x00204746,
+  0x00204752,
+  0x00204786,
+  0x00204900,
+  0x00204b00,
+  0x00204c00,
+  0x00204d00,
+  0x00204d11,
+  0x00204d86,
+  0x00204e10,
+  0x00204f00,
+  0x00204f01,
+  0x00204f12,
+  0x00204f57,
+  0x00205141,
+  0x00205400,
+  0x00205500,
+  0x00205600,
+  0x00205700,
+  0x00205701,
+  0x00205705,
+  0x00205742,
+  0x00205747,
+  0x00205d00,
+  0x00205f00,
+  0x00205f03,
+  0x00206546,
+  0x00206596,
+  0x00206700,
+  0x00206701,
+  0x00206702,
+  0x00206715,
+  0x00206741,
+  0x00206746,
+  0x00206786,
+  0x002067c2,
+  0x00206d46,
+  0x00207502,
+  0x00207600,
+  0x00207700,
+  0x00207701,
+  0x00207702,
+  0x00207703,
+  0x00207705,
+  0x00207711,
+  0x00207742,
+  0x00207746,
+  0x00207786,
+  0x002077c6,
+  0x00207e03,
+  0x00208000,
+  0x00208100,
+  0x00208300,
+  0x00208400,
+  0x00208500,
+  0x00208601,
+  0x00208700,
+  0x00208702,
+  0x00208f00,
+  0x00209600,
+  0x0020b302,
+  0x0020b500,
+  0x0020c514,
+  0x0020c600,
+  0x0020c711,
+  0x0020c714,
+  0x0020e7d2,
+  0x00214000,
+  0x00214002,
+  0x00214142,
+  0x00214200,
+  0x00214312,
+  0x00214342,
+  0x00214400,
+  0x00214500,
+  0x00214501,
+  0x00214502,
+  0x00214503,
+  0x00214542,
+  0x00214546,
+  0x002146c3,
+  0x00214700,
+  0x00214701,
+  0x00214702,
+  0x00214711,
+  0x00214712,
+  0x00214740,
+  0x00214742,
+  0x00214791,
+  0x00214e11,
+  0x00214f00,
+  0x00215000,
+  0x00215200,
+  0x00215300,
+  0x00215303,
+  0x00215500,
+  0x00215600,
+  0x00215640,
+  0x00215700,
+  0x00215701,
+  0x00215702,
+  0x00215720,
+  0x002157c3,
+  0x00216402,
+  0x00216501,
+  0x00216600,
+  0x00216701,
+  0x00216702,
+  0x00216f01,
+  0x00216f02,
+  0x00216f11,
+  0x00217502,
+  0x00217642,
+  0x00217701,
+  0x00218000,
+  0x00218200,
+  0x00218700,
+  0x00219700,
+  0x0021b500,
+  0x0021b600,
+  0x0021b700,
+  0x0021c7d2,
+  0x00226d01,
+  0x00284546,
+  0x00284740,
+  0x00284783,
+  0x00284f40,
+  0x00294740,
+  0x00294766,
+  0x00298500,
+  0x00298700,
+  0x00414505,
+  0x00414600,
+  0x00414796,
+  0x00418702,
+  0x00614500,
+  0x00614700,
+  0x00614712,
+  0x00615702,
+  0x00619700,
+  0x00694546,
+  0x00694786,
+  0x01004700,
+  0x01004701,
+  0x01004705,
+  0x01004706,
+  0x01004710,
+  0x01004712,
+  0x01004752,
+  0x01005700,
+  0x01005742,
+  0x01006701,
+  0x01007600,
+  0x01007606,
+  0x01007701,
+  0x01007702,
+  0x01014510,
+  0x01014600,
+  0x01014700,
+  0x01014701,
+  0x01014702,
+  0x01014704,
+  0x01014706,
+  0x01014710,
+  0x01014711,
+  0x01015600,
+  0x01015741,
+  0x01016700,
+  0x01016701,
+  0x01016f11,
+  0x01017642,
+  0x01017700,
+  0x01017701,
+  0x01017702,
+  0x01017742,
+  0x01017791,
+  0x01017f00,
+  0x01018700,
+  0x01018710,
+  0x01204001,
+  0x01204100,
+  0x01204400,
+  0x01204501,
+  0x01204612,
+  0x01204642,
+  0x01204656,
+  0x01204702,
+  0x01204706,
+  0x01204710,
+  0x01204717,
+  0x01204746,
+  0x01204748,
+  0x01204758,
+  0x01204786,
+  0x01205500,
+  0x01205700,
+  0x01206543,
+  0x01206700,
+  0x01207206,
+  0x012074c6,
+  0x01207502,
+  0x01207540,
+  0x01207601,
+  0x01207642,
+  0x01207646,
+  0x012076c1,
+  0x012076c6,
+  0x01207700,
+  0x01207702,
+  0x01207742,
+  0x01207e01,
+  0x01207f05,
+  0x01214542,
+  0x01214546,
+  0x01214708,
+  0x01214711,
+  0x01214712,
+  0x01214743,
+  0x01215400,
+  0x01215700,
+  0x01216f11,
+  0x01217006,
+  0x01217402,
+  0x01217642,
+  0x01217700,
+  0x01217701,
+  0x01217742,
+  0x01217c43,
+  0x01227f01,
+  0x01227f46,
+  0x01417606,
+  0x01807501,
+  0x02204700,
+  0x02205746,
+  0x02205f02,
+  0x02206d01,
+  0x02214701,
+  0x02225f26,
+  0x03214f46,
+  0x03227741,
+  0x03227f41,
+  0x03235f41,
+  0x03237f41,
+  0x04004611,
+  0x04004792,
+  0x04004f51,
+  0x04014500,
+  0x04014501,
+  0x04014511,
+  0x04014512,
+  0x04014546,
+  0x04014682,
+  0x04014700,
+  0x04014701,
+  0x04014702,
+  0x04014711,
+  0x04014712,
+  0x04014782,
+  0x04014792,
+  0x04204400,
+  0x04204500,
+  0x04204700,
+  0x04204702,
+  0x04204711,
+  0x04204712,
+  0x04204c00,
+  0x04204d00,
+  0x04204d12,
+  0x04205f00,
+  0x04206600,
+  0x04214500,
+  0x04214711,
+  0x04215400,
+  0x04215600,
+  0x04216600,
+  0x04217782,
+  0x04614712,
+  0x05225400,
+  0x08004200,
+  0x08004603,
+  0x08004701,
+  0x08004704,
+  0x08014500,
+  0x08014502,
+  0x08014503,
+  0x08014542,
+  0x08014543,
+  0x08014602,
+  0x08014642,
+  0x08014643,
+  0x08014646,
+  0x08014700,
+  0x08014703,
+  0x08014741,
+  0x08014742,
+  0x08014746,
+  0x080147c2,
+  0x080147c3,
+  0x08014f01,
+  0x08015703,
+  0x08015746,
+  0x08015f02,
+  0x08016783,
+  0x08017702,
+  0x08017746,
+  0x0801bf46,
+  0x080b4700,
+  0x080b6702,
+  0x08204001,
+  0x08204100,
+  0x08204103,
+  0x08204500,
+  0x08204600,
+  0x08204700,
+  0x08204702,
+  0x08204716,
+  0x08204c00,
+  0x08205500,
+  0x08205703,
+  0x08206601,
+  0x08206c01,
+  0x08206d46,
+  0x08207742,
+  0x08207746,
+  0x08214000,
+  0x08214002,
+  0x08214003,
+  0x08214301,
+  0x08214400,
+  0x08214543,
+  0x08214700,
+  0x08214702,
+  0x08214743,
+  0x08214d00,
+  0x08214f02,
+  0x08215303,
+  0x08215700,
+  0x08217402,
+  0x08217543,
+  0x08217702,
+  0x08224763,
+  0x08227622,
+  0x08415200,
+  0x08417703,
+  0x090145c3,
+  0x09204500,
+  0x09207741,
+  0x09214d43,
+  0x09225740,
+  0x0a204f00,
+  0x0c204703,
+  0x0c204d12,
+  0x0c214746,
+  0x0d015703,
+  0x0d204700,
+  0x20004010,
+  0x20014500,
+  0x20014540,
+  0x20014701,
+  0x20014744,
+  0x20014781,
+  0x20015700,
+  0x20018000,
+  0x200b8703,
+  0x20204411,
+  0x20204501,
+  0x20204502,
+  0x20204600,
+  0x20204710,
+  0x20204780,
+  0x20205740,
+  0x20207701,
+  0x20214400,
+  0x20214700,
+  0x20214702,
+  0x20214750,
+  0x20214f02,
+  0x20215740,
+  0x21014796,
+  0x21205600,
+  0x21214743,
+  0x22004f10,
+  0x24004742,
+  0x24006744,
+  0x24014700,
+  0x24016744,
+  0x24204400,
+  0x24214200,
+  0x24214400,
+  0x24214600,
+  0x25204402,
+  0x28014742,
+  0x28015701,
+  0x28017501,
+  0x28204500,
+  0x28204702,
+  0x30207702,
+  0x81007749,
+  -- Synthetic fixture word behind the repo's own headerless particle
+  -- tests: selector-only, never observed in ROM data.
+  0x03000a00,
+}
+
+local KNOWN_PARTICLE_EMITTER_FLAGS = {}
+for _, word in ipairs(KNOWN_PARTICLE_EMITTER_FLAG_WORDS) do
+  KNOWN_PARTICLE_EMITTER_FLAGS[word] = true
+end
+
+---@param flags integer raw emitter flags word under splitting
+---@return integer inline parameter bits with every selector bit cleared
+local function clearParticleSelectorBits(flags)
+  local remainder = math.floor(flags)
+  for _, bitPos in ipairs(PARTICLE_SELECTOR_BITS) do
+    local bitValue = 2 ^ bitPos
+    if math.floor(remainder / bitValue) % 2 == 1 then
+      remainder = math.floor(remainder - bitValue)
+    end
+  end
+  return remainder
+end
+
+---@param paletteBytes string raw RGB555 palette pairs
+---@param provenance table<string, unknown> source coordinates for failures
+---@return { r: integer, g: integer, b: integer }[] staged palette colors
+local function decodeParticlePalette(paletteBytes, provenance)
+  if #paletteBytes < 2 or #paletteBytes % 2 ~= 0 or #paletteBytes > 512 then
+    error(
+      Errors.new("BATTLE_PARTICLE_RESOURCE_INVALID", "particle palette length is not RGB555 pairs", {
+        paletteBytes = #paletteBytes,
+        archiveSymbol = provenance.archiveSymbol,
+        memberId = provenance.memberId,
+      }),
+      0
+    )
+  end
+  local colors = {}
+  for offset = 1, #paletteBytes, 2 do
+    local word = string.byte(paletteBytes, offset) + string.byte(paletteBytes, offset + 1) * 256
+    colors[#colors + 1] = Rgb555.decode(word)
+  end
+  return colors
+end
+
+---@param textureBytes string raw indexed texels
+---@param textureFlags integer source resource flags word (0 selects size inference)
+---@param paletteColors integer staged palette entry count
+---@param provenance table<string, unknown> source coordinates for failures
+---@return integer width, integer height staged drawable dimensions
+---@return integer bits bits per texel behind the pixel expansion
+local function particleTextureDimensions(textureBytes, textureFlags, paletteColors, provenance)
+  if textureFlags ~= 0 then
+    local widthCode = math.floor(textureFlags / 256) % 16
+    local heightCode = math.floor(textureFlags / 16) % 16
+    if widthCode > 7 or heightCode > 7 then
+      error(
+        Errors.new("BATTLE_PARTICLE_RESOURCE_INVALID", "particle texture size code is outside hardware range", {
+          textureFlags = string.format("0x%x", textureFlags),
+          archiveSymbol = provenance.archiveSymbol,
+          memberId = provenance.memberId,
+        }),
+        0
+      )
+    end
+    local width = 8 * math.floor(2 ^ widthCode)
+    local height = 8 * math.floor(2 ^ heightCode)
+    if #textureBytes ~= width * height then
+      error(
+        Errors.new("BATTLE_PARTICLE_RESOURCE_INVALID", "particle texture length mismatches its dimensions", {
+          textureBytes = #textureBytes,
+          width = width,
+          height = height,
+          archiveSymbol = provenance.archiveSymbol,
+          memberId = provenance.memberId,
+        }),
+        0
+      )
+    end
+    return width, height, 8
+  end
+  local found = nil
+  local solutions = 0
+  for _, bits in ipairs({ 1, 2, 4, 8 }) do
+    if paletteColors == 2 ^ bits then
+      for _, width in ipairs({ 8, 16, 32, 64, 128, 256, 512, 1024 }) do
+        for _, height in ipairs({ 8, 16, 32, 64, 128, 256, 512, 1024 }) do
+          if width * height * bits / 8 == #textureBytes then
+            solutions = solutions + 1
+            found = { width = width, height = height, bits = bits }
+          end
+        end
+      end
+    end
+  end
+  if solutions ~= 1 or found == nil then
+    error(
+      Errors.new("BATTLE_PARTICLE_RESOURCE_INVALID", "headerless particle texture has no unique dimensions", {
+        textureBytes = #textureBytes,
+        paletteColors = paletteColors,
+        archiveSymbol = provenance.archiveSymbol,
+        memberId = provenance.memberId,
+      }),
+      0
+    )
+  end
+  return found.width, found.height, found.bits
+end
+
+---@param textureBytes string raw indexed texels
+---@param width integer staged drawable width
+---@param height integer staged drawable height
+---@param bits integer bits per texel behind the pixel expansion
+---@param colors { r: integer, g: integer, b: integer }[] staged palette colors
+---@return string row-major straight-alpha RGBA8888 bytes
+local function decodeParticleRgba(textureBytes, width, height, bits, colors)
+  local perByte = 8 / bits
+  assert(#textureBytes * perByte == width * height, "particle texels fill their drawable")
+  local mask = 2 ^ bits - 1
+  local parts = {}
+  for index = 1, #textureBytes do
+    local packed = string.byte(textureBytes, index)
+    for slot = 0, perByte - 1 do
+      local texel = math.floor(packed / 2 ^ (slot * bits)) % (mask + 1)
+      local color = nil
+      if texel ~= 0 then
+        color = colors[texel + 1]
+      end
+      if color == nil then
+        parts[#parts + 1] = "\0\0\0\0"
+      else
+        parts[#parts + 1] = string.char(color.r, color.g, color.b, 255)
+      end
+    end
+  end
+  return table.concat(parts)
+end
 
 ---@param charData { depth: integer, tiles: string } decoded lower BG characters
 ---@param paletteData { colors: table[] } decoded lower BG palette
@@ -3644,8 +4345,197 @@ function BattlePresentationCompiler.compileEffect(romFs, opts, effectKey)
   local archives = {}
   local managedSpriteResources = {}
   local managedSpriteCapacities = {}
+  -- Managed-sprite and background character tile sets staged as raw tile
+  -- data, keyed by semantic resource key. Each entry keeps its decoded
+  -- tiles plus the same-call paired palette key when the selecting
+  -- instruction co-selected one; lone characters resolve their palette
+  -- through the creating instruction at the end of compilation. The
+  -- rasterization pass below replaces every entry with the exact RGBA
+  -- drawable the live image upload path requires, so no staged texture
+  -- keeps raw Nitro bitfields.
+  local pendingCharacterRasters = {}
   local particleByBattler = {}
   local decodedParticleResources = {}
+  local function addEffectResource(resourceKey, kind, contentIdentity, payload)
+    assert(type(resourceKey) == "string" and resourceKey ~= "", "effect resources use semantic keys")
+    assert(type(contentIdentity) == "string" and #contentIdentity == 40, "effect resources use SHA-1 identities")
+    local payloadPath = BattlePresentationCache.globalResourcePath("effect/content/" .. contentIdentity)
+    local previous = resolvedResources[resourceKey]
+    if previous ~= nil then
+      assert(
+        previous.kind == kind and previous.contentIdentity == contentIdentity,
+        "semantic resource identity is stable"
+      )
+      assert(
+        Hashing.hashLua(resourcePayloads[previous.payload]) == Hashing.hashLua(payload),
+        "equal resources share payloads"
+      )
+      return
+    end
+    resolvedResources[resourceKey] = { kind = kind, contentIdentity = contentIdentity, payload = payloadPath }
+    resourcePayloads[payloadPath] = payload
+  end
+  -- Stages one particle texture/palette pair as an exact drawable plus
+  -- decoded colors, returning their semantic resource keys. Shared
+  -- sources collapse onto one staged drawable through content identity.
+  ---@param textureBytes string|nil raw 8-bit indexed texels when embedded
+  ---@param paletteBytes string|nil raw RGB555 pairs when embedded
+  ---@param textureFlags integer source resource flags word
+  ---@param provenance table<string, unknown> source coordinates for failures
+  ---@return { textureKey: string|nil, paletteKey: string|nil } staged semantic resource keys
+  local function stageParticleTexture(textureBytes, paletteBytes, textureFlags, provenance)
+    local textureKey, paletteKey = nil, nil
+    local colors = nil
+    if paletteBytes ~= nil then
+      colors = decodeParticlePalette(paletteBytes, provenance)
+      local paletteIdentity = Hashing.sha1hex(paletteBytes)
+      paletteKey = "battle/particle/palette/" .. paletteIdentity
+      addEffectResource(paletteKey, "palette", paletteIdentity, { colors = colors })
+    end
+    if textureBytes ~= nil then
+      local paletteColors = colors ~= nil and #colors or 0
+      local width, height, bits = particleTextureDimensions(textureBytes, textureFlags, paletteColors, provenance)
+      local rgba = decodeParticleRgba(textureBytes, width, height, bits, colors or {})
+      local textureIdentity = Hashing.sha1hex(textureBytes)
+      textureKey = "battle/particle/texture/" .. textureIdentity
+      addEffectResource(textureKey, "texture", textureIdentity, {
+        width = width,
+        height = height,
+        rgba8888 = rgba,
+      })
+    end
+    return { textureKey = textureKey, paletteKey = paletteKey }
+  end
+  -- Stages every resource of one decoded particle archive exactly once,
+  -- resolving shared texture references onto their staged drawable.
+  ---@param decoded NitroSplData decoded particle archive under staging
+  ---@param provenance table<string, unknown> source coordinates for failures
+  ---@return { textureKey: string|nil, paletteKey: string|nil }[] staged entries in source order
+  local function stageParticleArchiveResources(decoded, provenance)
+    local entries = {}
+    for resourceIndex, resource in ipairs(decoded.resources) do
+      local textureKey, paletteKey = nil, nil
+      if resource.textureReference ~= nil then
+        local referenced = entries[resource.textureReference + 1]
+        if referenced == nil or referenced.textureKey == nil then
+          error(
+            Errors.new("BATTLE_EFFECT_CLOSURE_UNRESOLVED", "particle texture reference has no staged payload", {
+              effectKey = effectKey,
+              resourceIndex = resourceIndex - 1,
+              textureReference = resource.textureReference,
+            }),
+            0
+          )
+        end
+        textureKey = referenced.textureKey
+        paletteKey = stageParticleTexture(nil, resource.palette, resource.flags, provenance).paletteKey
+      else
+        local staged = stageParticleTexture(resource.texture, resource.palette, resource.flags, provenance)
+        textureKey, paletteKey = staged.textureKey, staged.paletteKey
+      end
+      entries[resourceIndex] = { textureKey = textureKey, paletteKey = paletteKey }
+    end
+    return entries
+  end
+  -- Normalizes one raw emitter into source-independent typed state: the
+  -- active source behaviors, the inline parameter bits, the base control
+  -- values, one word vector per present section/calculation, and the
+  -- resolved drawable its sprites draw. Unknown flags words fail.
+  ---@param emitter NitroSplEmitter raw emitter under normalizing
+  ---@param entries { textureKey: string|nil, paletteKey: string|nil }[] staged archive resources
+  ---@param emitterIndex integer zero-based emitter ordinal behind texture selection
+  ---@param provenance table<string, unknown> source coordinates for failures
+  ---@return table<string, unknown> normalized emitter record
+  local function normalizeParticleEmitter(emitter, entries, emitterIndex, provenance)
+    assert(#emitter.baseRecord == 0x58, "emitter base records keep their source size")
+    if KNOWN_PARTICLE_EMITTER_FLAGS[emitter.flags] ~= true then
+      error(
+        Errors.new("BATTLE_PARTICLE_RESOURCE_INVALID", "particle emitter flags are outside the source inventory", {
+          effectKey = effectKey,
+          flags = string.format("0x%08x", emitter.flags),
+          archiveSymbol = provenance.archiveSymbol,
+          memberId = provenance.memberId,
+        }),
+        0
+      )
+    end
+    local seen = {}
+    local features = {}
+    for _, section in ipairs(emitter.sections) do
+      if seen[section.role] == nil then
+        seen[section.role] = true
+        features[#features + 1] = section.role
+      end
+    end
+    for _, calculation in ipairs(emitter.calculations) do
+      if seen[calculation.role] == nil then
+        seen[calculation.role] = true
+        features[#features + 1] = calculation.role
+      end
+    end
+    table.sort(features)
+    local params = {}
+    for offset = 5, #emitter.baseRecord, 2 do
+      params[#params + 1] = string.byte(emitter.baseRecord, offset) + string.byte(emitter.baseRecord, offset + 1) * 256
+    end
+    local record = {
+      features = features,
+      variant = clearParticleSelectorBits(emitter.flags),
+      params = params,
+    }
+    local function stageWords(role, data)
+      if record[role] ~= nil then
+        return
+      end
+      local words = {}
+      for offset = 1, #data, 4 do
+        words[#words + 1] = string.byte(data, offset)
+          + string.byte(data, offset + 1) * 256
+          + string.byte(data, offset + 2) * 65536
+          + string.byte(data, offset + 3) * 16777216
+      end
+      record[role] = words
+    end
+    for _, section in ipairs(emitter.sections) do
+      stageWords(section.role, section.data)
+    end
+    for _, calculation in ipairs(emitter.calculations) do
+      stageWords(calculation.role, calculation.data)
+    end
+    local slot = nil
+    if #entries > 0 then
+      slot = math.min(emitterIndex, #entries - 1)
+      for _, section in ipairs(emitter.sections) do
+        if section.role == "texture" then
+          local selected = string.byte(section.data, 1)
+          if selected < #entries then
+            slot = selected
+          end
+          break
+        end
+      end
+    end
+    local textureKey = nil
+    if slot ~= nil then
+      local selected = entries[slot + 1]
+      textureKey = selected ~= nil and selected.textureKey or nil
+      if textureKey == nil then
+        error(
+          Errors.new("BATTLE_EFFECT_CLOSURE_UNRESOLVED", "particle emitter texture has no staged drawable", {
+            effectKey = effectKey,
+            emitterIndex = emitterIndex,
+            textureSlot = slot,
+            archiveSymbol = provenance.archiveSymbol,
+            memberId = provenance.memberId,
+          }),
+          0
+        )
+      end
+    end
+    record.textureSlot = slot
+    record.textureKey = textureKey
+    return record
+  end
   local function stageParticleEmitter(emitter)
     local contentIdentity = Hashing.hashLua(emitter)
     local resourceKey = "battle/particle-emitter/" .. contentIdentity
@@ -3983,7 +4873,15 @@ function BattlePresentationCompiler.compileEffect(romFs, opts, effectKey)
               0
             )
           end
-          return stageParticleEmitter(emitter)
+          local entries = stageParticleArchiveResources(particle.decoded, {
+            archiveSymbol = particle.source.archiveSymbol,
+            memberId = particle.source.memberId,
+          })
+          local stagedEmitter = normalizeParticleEmitter(emitter, entries, emitterOrdinal, {
+            archiveSymbol = particle.source.archiveSymbol,
+            memberId = particle.source.memberId,
+          })
+          return stageParticleEmitter(stagedEmitter)
         end
         if selection.sourceEmitterSelections.resource ~= nil then
           normalized.resource = emitterKey(selection.sourceEmitterSelections.resource, "fixed")
@@ -4222,6 +5120,31 @@ function BattlePresentationCompiler.compileEffect(romFs, opts, effectKey)
       end
       byIdentity[operands[2]] = resourceKeys[managedSlot]
     end
+    -- A staged character tile set must become an exact RGBA drawable
+    -- before publication: the live image upload path admits no other
+    -- texture shape. Same-call co-selected palettes pair immediately;
+    -- lone characters keep their decoded tiles until the creating
+    -- instruction pairs them below.
+    if resourceKeys.character ~= nil and selections.character ~= nil and selections.character.decoder == "char" then
+      local characterKey = resourceKeys.character
+      local characterDescriptor = resolvedResources[characterKey]
+      local stagedCharacters = characterDescriptor ~= nil and resourcePayloads[characterDescriptor.payload] or nil
+      if
+        characterDescriptor ~= nil
+        and characterDescriptor.kind == "texture"
+        and type(stagedCharacters) == "table"
+        and type(stagedCharacters.tiles) == "string"
+        and pendingCharacterRasters[characterKey] == nil
+      then
+        pendingCharacterRasters[characterKey] = {
+          resourceKey = characterKey,
+          payloadPath = characterDescriptor.payload,
+          chars = stagedCharacters,
+          paletteKey = resourceKeys.palette,
+          role = role,
+        }
+      end
+    end
     sourceInputs[#sourceInputs + 1] = {
       role = role,
       operands = operands,
@@ -4350,26 +5273,6 @@ function BattlePresentationCompiler.compileEffect(romFs, opts, effectKey)
   for _, subprogram in pairs(subprograms) do
     collectRequiredContext(subprogram)
   end
-  local function addEffectResource(resourceKey, kind, contentIdentity, payload)
-    assert(type(resourceKey) == "string" and resourceKey ~= "", "effect resources use semantic keys")
-    assert(type(contentIdentity) == "string" and #contentIdentity == 40, "effect resources use SHA-1 identities")
-    local payloadPath = BattlePresentationCache.globalResourcePath("effect/content/" .. contentIdentity)
-    local previous = resolvedResources[resourceKey]
-    if previous ~= nil then
-      assert(
-        previous.kind == kind and previous.contentIdentity == contentIdentity,
-        "semantic resource identity is stable"
-      )
-      assert(
-        Hashing.hashLua(resourcePayloads[previous.payload]) == Hashing.hashLua(payload),
-        "equal resources share payloads"
-      )
-      return
-    end
-    resolvedResources[resourceKey] = { kind = kind, contentIdentity = contentIdentity, payload = payloadPath }
-    resourcePayloads[payloadPath] = payload
-  end
-
   local soundSymbols = {}
   for _, instruction in ipairs(effectProgram.instructions) do
     if instruction.sound ~= nil then
@@ -4497,37 +5400,38 @@ function BattlePresentationCompiler.compileEffect(romFs, opts, effectKey)
       decodedParticleResources[resourceKey] = particle
     end
     local decoded = particle.decoded
-    local embedded = {}
+    local provenance = {
+      archiveSymbol = particle.source.archiveSymbol,
+      memberId = particle.source.memberId,
+    }
+    local archiveDecoded = decoded --[[@as NitroSplData]]
+    assert(
+      archiveDecoded ~= nil and type(archiveDecoded.emitters) == "table",
+      "particle archives decode before staging"
+    )
+    local normalizedEmitters = nil
+    local entries = nil
+    local normalizedOk, normalizeErr = pcall(function()
+      entries = stageParticleArchiveResources(archiveDecoded, provenance)
+      normalizedEmitters = {}
+      for emitterIndex, emitter in ipairs(archiveDecoded.emitters) do
+        normalizedEmitters[emitterIndex] = normalizeParticleEmitter(emitter, entries, emitterIndex - 1, provenance)
+      end
+    end)
+    if not normalizedOk then
+      if Errors.is(normalizeErr) then
+        return nil, normalizeErr
+      end
+      error(normalizeErr, 0)
+    end
+    assert(entries ~= nil and normalizedEmitters ~= nil, "particle archives normalize before staging")
     local normalizedResources = {}
-    for resourceIndex, resource in ipairs(decoded.resources) do
-      local textureKey = resource.texture and ("battle/particle/texture/" .. Hashing.sha1hex(resource.texture)) or nil
-      local paletteKey = resource.palette and ("battle/particle/palette/" .. Hashing.sha1hex(resource.palette)) or nil
-      if resource.textureReference ~= nil then
-        local referenced = embedded[resource.textureReference + 1]
-        if referenced == nil or referenced.texture == nil then
-          return nil,
-            Errors.new("BATTLE_EFFECT_CLOSURE_UNRESOLVED", "particle texture reference has no staged payload", {
-              effectKey = effectKey,
-              resourceIndex = resourceIndex - 1,
-              textureReference = resource.textureReference,
-            })
-        end
-        textureKey = referenced.texture
-      end
-      if textureKey ~= nil and resource.texture ~= nil then
-        addEffectResource(textureKey, "texture", Hashing.sha1hex(resource.texture), { bytes = resource.texture })
-      end
-      if paletteKey ~= nil then
-        addEffectResource(paletteKey, "palette", Hashing.sha1hex(resource.palette), { bytes = resource.palette })
-      end
-      embedded[resourceIndex] = { texture = textureKey, palette = paletteKey }
-      normalizedResources[resourceIndex] = { textureKey = textureKey, paletteKey = paletteKey }
+    for resourceIndex, entry in ipairs(entries) do
+      normalizedResources[resourceIndex] = { textureKey = entry.textureKey, paletteKey = entry.paletteKey }
     end
     local normalizedParticle = {
-      format = decoded.format,
-      emitters = decoded.emitters,
+      emitters = normalizedEmitters,
       resources = normalizedResources,
-      source = decoded.source,
     }
     addEffectResource(resourceKey, "particle", Hashing.sha1hex(particle.bytes), normalizedParticle)
     particleProvenance[#particleProvenance + 1] = {
@@ -4535,6 +5439,83 @@ function BattlePresentationCompiler.compileEffect(romFs, opts, effectKey)
       archiveSymbol = particle.source.archiveSymbol,
       memberId = particle.source.memberId,
     }
+  end
+
+  -- Rasterize every pending character tile set through its paired
+  -- source palette into the exact RGBA drawable the live image upload
+  -- path requires. Same-call co-selections pair directly; lone
+  -- characters pair through the creating instruction that carries both
+  -- the character key and its palette key. A character with no
+  -- discoverable palette, or one claimed by two different palettes,
+  -- fails the build instead of publishing raw Nitro bitfields.
+  local function rasterizePendingCharacters()
+    if next(pendingCharacterRasters) == nil then
+      return
+    end
+    local pairByCharacter = {}
+    for _, instruction in ipairs(effectProgram.instructions) do
+      if type(instruction.resourceKeys) == "table" then
+        local characters, palettes = {}, {}
+        for _, key in pairs(instruction.resourceKeys) do
+          if pendingCharacterRasters[key] ~= nil then
+            characters[#characters + 1] = key
+          elseif type(resolvedResources[key]) == "table" and resolvedResources[key].kind == "palette" then
+            palettes[#palettes + 1] = key
+          end
+        end
+        if #palettes == 1 then
+          for _, characterKey in ipairs(characters) do
+            if pairByCharacter[characterKey] == nil then
+              pairByCharacter[characterKey] = palettes[1]
+            elseif pairByCharacter[characterKey] ~= palettes[1] then
+              error(
+                Errors.new(
+                  "BATTLE_EFFECT_CLOSURE_UNRESOLVED",
+                  "managed sprite character pairs with more than one staged palette",
+                  {
+                    effectKey = effectKey,
+                    resourceKey = characterKey,
+                  }
+                ),
+                0
+              )
+            end
+          end
+        end
+      end
+    end
+    for characterKey, pending in pairs(pendingCharacterRasters) do
+      local paletteKey = pending.paletteKey or pairByCharacter[characterKey]
+      local paletteDescriptor = paletteKey ~= nil and resolvedResources[paletteKey] or nil
+      local palettePayload = paletteDescriptor ~= nil and resourcePayloads[paletteDescriptor.payload] or nil
+      if type(palettePayload) ~= "table" or type(palettePayload[1]) ~= "table" or palettePayload[1].r == nil then
+        error(
+          Errors.new("BATTLE_EFFECT_CLOSURE_UNRESOLVED", "managed sprite character has no paired staged palette", {
+            effectKey = effectKey,
+            resourceKey = characterKey,
+            role = pending.role,
+          }),
+          0
+        )
+      end
+      local tileSize = pending.chars.depth == 3 and 32 or 64
+      local tileCount = math.floor(#pending.chars.tiles / tileSize)
+      local raster = G2dRasterizer.renderTileStrip(pending.chars, { colors = palettePayload }, 0, tileCount, 0, {
+        role = "battle effect " .. effectKey .. " " .. pending.role .. " characters",
+      })
+      resourcePayloads[pending.payloadPath] = {
+        width = raster.width,
+        height = raster.height,
+        rgba8888 = raster.pixels,
+      }
+    end
+  end
+  local rasterOk, rasterErr = pcall(rasterizePendingCharacters)
+  if not rasterOk then
+    if Errors.is(rasterErr) then
+      return nil, rasterErr
+    end
+    error(rasterErr, 0)
   end
 
   local dependencies = {}

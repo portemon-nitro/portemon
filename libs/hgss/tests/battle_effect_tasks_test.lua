@@ -795,11 +795,15 @@ function T.admission_predicate_covers_only_implemented_kinds()
     Assert.isTrue(BattleEffectTasks.supportsKind(kind), "the visual body is admitted: " .. kind)
   end
   for _, kind in ipairs({
+    BattleEffectTasks.EMITTER_BATTLER_PATH_KIND,
+    BattleEffectTasks.EMITTER_CURVED_PATH_KIND,
+  }) do
+    Assert.isTrue(BattleEffectTasks.supportsKind(kind), "the emitter path body is admitted: " .. kind)
+  end
+  for _, kind in ipairs({
     "",
     "no-such-native-kind",
     "message-only-narration",
-    "battle-particle-emitter-battler-path",
-    "battle-particle-emitter-curved-battler-path",
   }) do
     Assert.isFalse(BattleEffectTasks.supportsKind(kind), "unimplemented kinds are never admitted: " .. tostring(kind))
   end
@@ -814,6 +818,81 @@ function T.malformed_visual_arguments_fail_before_side_effects()
   Assert.isFalse(ok, "non-record parameters never yield a runnable task")
   Assert.equal(#scene:effectViews(), 0, "the rejected construction publishes nothing")
   Assert.equal(#journal.released, #journal.acquired, "the rejected construction leaks no lease")
+end
+
+local function emitterPathParameters(selector)
+  local Sources = require("romdump.src.config.BattleAnimationSources")
+  local resolved
+  if selector == 65 then
+    resolved = assert(Sources.resolveBattleAnimationCallback({ 65, 9, 0, 10, 20, 5, 8, 100, 0, 0x00020003, 2 }))
+  else
+    resolved = assert(Sources.resolveBattleAnimationCallback({ 66, 9, 0, 10, 20, 30, 40, 256, 0, 0x00020005, 1 }))
+  end
+  Assert.notNil(resolved.taskKind, "the emitter path callback resolves its task kind")
+  return resolved
+end
+
+function T.emitter_path_tasks_complete_on_their_compiled_boundary()
+  for _, selector in ipairs({ 65, 66 }) do
+    local plan = emitterPathParameters(selector)
+    local scene = sceneWithPair()
+    local services, journal = journalServices(scene)
+    local task = assert(
+      BattleEffectTasks.create(plan.taskKind, {
+        callback = plan.callback,
+        taskContext = plan.context,
+        parameters = plan.parameters,
+      }, occurrenceContext(), services),
+      "the emitter path body constructs from compiled parameters"
+    )
+    Assert.equal(task:status(), "pending", "emitter path tasks open pending")
+    local bound = plan.parameters.interpolationDurationTicks or plan.parameters.durationTicks
+    Assert.isTrue(type(bound) == "number" and bound > 0, "the compiled boundary is positive")
+    for _ = 1, bound - 1 do
+      task:stepSourceTick({ tick = 1 })
+      Assert.isTrue(task:status() ~= "complete", "the path boundary is not reached early")
+    end
+    task:stepSourceTick({ tick = 1 })
+    Assert.equal(task:status(), "complete", "the path retires on its compiled boundary")
+    Assert.equal(#scene:effectViews(), 0, "path drivers publish no transient records")
+    Assert.equal(#journal.acquired, 0, "path drivers stage no leases")
+    Assert.equal(#journal.released, 0, "path drivers release nothing")
+    task:dispose()
+    task:dispose()
+    task:cancel("late")
+    Assert.equal(task:status(), "complete", "completion survives late cancellation")
+  end
+end
+
+function T.emitter_path_tasks_cancel_without_side_effects()
+  local plan = emitterPathParameters(65)
+  local scene = sceneWithPair()
+  local services, journal = journalServices(scene)
+  local task = assert(BattleEffectTasks.create(plan.taskKind, {
+    callback = plan.callback,
+    taskContext = plan.context,
+    parameters = plan.parameters,
+  }, occurrenceContext(), services))
+  task:stepSourceTick({ tick = 1 })
+  task:cancel("superseded")
+  Assert.equal(task:status(), "cancelled", "cancellation stays distinct from completion")
+  Assert.equal(#scene:effectViews(), 0, "cancellation publishes nothing")
+  task:dispose()
+  Assert.equal(#journal.released, #journal.acquired, "the cancelled path leaks no lease")
+end
+
+function T.emitter_path_tasks_refuse_missing_parameters()
+  local scene = sceneWithPair()
+  local services, journal = journalServices(scene)
+  for _, kind in ipairs({
+    BattleEffectTasks.EMITTER_BATTLER_PATH_KIND,
+    BattleEffectTasks.EMITTER_CURVED_PATH_KIND,
+  }) do
+    local ok = pcall(BattleEffectTasks.create, kind, {}, occurrenceContext(), services)
+    Assert.isFalse(ok, "an emitter path without its source profile never constructs")
+    Assert.equal(#scene:effectViews(), 0, "the refused construction publishes nothing")
+    Assert.equal(#journal.released, #journal.acquired, "the refused construction leaks no lease")
+  end
 end
 
 return { tests = T }

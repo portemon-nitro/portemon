@@ -141,7 +141,7 @@ function T.contract_pins_the_current_asset_identities()
       cacheFormat = "battle-presentation-cache-v3",
       schema = "g4-battle-presentation-v4",
       sceneSchema = "g4-battle-scene-v2",
-      effectSchema = "g4-battle-effect-v1",
+      effectSchema = "g4-battle-effect-v2",
     },
     encounterCatalog = {
       cacheFormat = "encounter-catalog-cache-v1",

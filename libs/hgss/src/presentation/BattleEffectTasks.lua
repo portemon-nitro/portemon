@@ -37,6 +37,8 @@ BattleEffectTasks.VOICE_MONITOR_KIND = "voice-completion-monitor"
 -- spelling per behavior.
 BattleEffectTasks.BLEND_TRANSITION_KIND = "battle-background-blend-transition"
 BattleEffectTasks.PARTICLE_CONTINUATION_KIND = "battler-effect-continuation"
+BattleEffectTasks.EMITTER_BATTLER_PATH_KIND = "battle-particle-emitter-battler-path"
+BattleEffectTasks.EMITTER_CURVED_PATH_KIND = "battle-particle-emitter-curved-battler-path"
 BattleEffectTasks.PICTURE_ANIMATION_KIND = "pokemon-picture-animation"
 
 local VALID_TASK_STATES = {
@@ -571,16 +573,18 @@ end
 ---@param centerX integer explicit scene horizontal center
 ---@param centerY integer explicit scene vertical center
 ---@param alpha number normalized transient picture alpha
+---@param width integer? staged drawable width behind the picture, 32 when absent
+---@param height integer? staged drawable height behind the picture, 32 when absent
 ---@return table<string, unknown> staged picture state
-local function stagedPicture(assetKey, selector, centerX, centerY, alpha)
+local function stagedPicture(assetKey, selector, centerX, centerY, alpha, width, height)
   return {
     assetKey = assetKey,
     selector = selector,
     centerX = centerX,
     centerY = centerY,
     zCenter = 0,
-    width = 32,
-    height = 32,
+    width = width or 32,
+    height = height or 32,
     alpha = alpha,
   }
 end
@@ -757,32 +761,151 @@ function BattleBlendTransition:dispose()
   teardownBlend(self)
 end
 
+-- Native particle emitter simulation. One normalized staged emitter
+-- drives one sprite stream: emission cadence and bounds come from its
+-- staged control values, motion from its staged fixed-point words plus
+-- occurrence-local jitter, retirement from its own completion boundary.
+-- Structural control positions inside the staged u16 params (1-based):
+-- activeTicks [29], spriteLife [30], spawnEvery [24], spawnCount [32].
+-- Kinematics read staged 12.20 fixed-point pairs: spawn offset from
+-- params[1..4], velocity from params[17..18] and params[21..22], gravity
+-- from the gravity calculation words when the feature is present.
+-- Positions quantize to integer pixels per native fixed-point rounding.
+-- Only emitters carrying the random feature draw from the
+-- occurrence-local stream, two draws per source tick shared by the
+-- emitter's sprites, so grouped and split host reads stay identical.
+
+-- Jitter bound behind seeded placement divergence: draws name 0..8 and
+-- center to visible pixel offsets without drowning the source drift.
+local PARTICLE_JITTER_BOUND = 9
+
+-- Draw bound preserved by the direct-construction probe path, which
+-- keeps the established visual draw shape while staged records exist
+-- only behind real producer bundles.
+local PARTICLE_PROBE_DRAW_BOUND = 256
+
+---@param value unknown candidate fixed-point word under signing
+---@return integer signed 32-bit value
+local function signed32(value)
+  assert(type(value) == "number", "fixed-point words decode numerically")
+  if value >= 2 ^ 31 then
+    return value - 2 ^ 32
+  end
+  return value
+end
+
+---@param record table<string, unknown> normalized staged emitter under reading
+---@param feature string source behavior under probing
+---@return boolean active true when the source behavior is present
+local function emitterHasFeature(record, feature)
+  local features = record.features
+  if type(features) ~= "table" then
+    return false
+  end
+  for _, name in ipairs(features) do
+    if name == feature then
+      return true
+    end
+  end
+  return false
+end
+
 ---@class BattleParticleContinuation
----@field _scene table<string, unknown> scene behind the transient effect record
+---@field _scene table<string, unknown> scene behind the transient sprite records
 ---@field _staged table<integer, BattleEffectLeaseRecord> occurrence leases behind exactly-once release
 ---@field _resource string semantic particle resource behind the emission
 ---@field _emitter string normalized battler effect slot behind the emission
 ---@field _random unknown occurrence-local visual draw behind a positive bound
----@field _effectId integer? live effect identity, when published
----@field _effectReleased boolean transient record has been released
----@field _ticks integer source ticks advanced
----@field _duration integer source ticks behind completion
+---@field _center table<string, integer> slot anchor behind spawned sprites
+---@field _streams table<integer, table<string, unknown>> emitter streams under simulating
+---@field _probeDraws boolean direct-construction probe draws behind the established bound
+---@field _effectIds table<integer, boolean> live sprite identities behind exactly-once release
 ---@field _state string pending, running, complete, or cancelled
 ---@field _cancelReason string? last cancellation cause under diagnosis
 ---@field _disposed boolean release has run
 local BattleParticleContinuation = {}
 BattleParticleContinuation.__index = BattleParticleContinuation
 
----@param scene table<string, unknown> scene behind the transient effect record
----@param resource string semantic particle resource behind the emission
----@param emitter string normalized battler effect slot behind the emission
----@param alpha number normalized transient picture alpha
----@return table<string, unknown> staged picture state
-local function particlePicture(scene, resource, emitter, alpha)
-  local _ = scene
-  local center = EMITTER_CENTERS[emitter]
-  assert(center ~= nil, "particle emissions stage over a known effect slot")
-  return stagedPicture(resource, emitter, center.x, center.y, alpha)
+---@param record table<string, unknown> staged borrowed record under classifying
+---@return boolean native true for normalized emitter state staged by the producer
+local function isNormalizedEmitter(record)
+  return type(record) == "table" and type(record.features) == "table" and type(record.params) == "table"
+end
+
+---@param record table<string, unknown> staged borrowed record under classifying
+---@return boolean archive true for a normalized particle archive staged by the producer
+local function isNormalizedArchive(record)
+  return type(record) == "table" and type(record.emitters) == "table"
+end
+
+---@param record table<string, unknown> staged borrowed record under classifying
+---@return boolean probe true for the direct-construction unit stub shape
+local function isProbeRecord(record)
+  return type(record) == "table"
+    and type(record.key) == "string"
+    and record.emitters == nil
+    and record.features == nil
+    and record.width == nil
+    and record.rgba8888 == nil
+    and record.colors == nil
+end
+
+---@param value unknown candidate drawable field under validating
+---@param what string drawable identity behind diagnostics
+local function checkDrawableField(value, what)
+  if type(value) ~= "number" or value % 1 ~= 0 or value < 1 then
+    error(
+      "BATTLE_EFFECT_TASK_MALFORMED: kind "
+        .. BattleEffectTasks.PARTICLE_CONTINUATION_KIND
+        .. " draws staged drawables with positive integer extents: "
+        .. what,
+      0
+    )
+  end
+end
+
+-- Builds one emitter stream from normalized staged state. Control values
+-- read the documented structural positions; kinematics read staged
+-- 12.20 fixed-point words.
+---@param record table<string, unknown> normalized staged emitter behind the stream
+---@param drawable table<string, unknown>? staged drawable behind its sprites
+---@param center table<string, integer> slot anchor behind spawned sprites
+---@return table<string, unknown> emitter stream under simulating
+local function particleStream(record, drawable, center)
+  local params = record.params --[[@as table<integer, number>]]
+  assert(#params == 42, "normalized emitters carry their full control block")
+  local gravity = record.gravity
+  local gravityX, gravityY = 0, 0
+  if emitterHasFeature(record, "gravity") and type(gravity) == "table" then
+    gravityX = signed32(gravity[1] or 0) / 1048576
+    gravityY = signed32(gravity[2] or 0) / 1048576
+  end
+  local function fixedPair(lowIndex)
+    local word = params[lowIndex] + params[lowIndex + 1] * 65536
+    return signed32(word) / 1048576
+  end
+  return {
+    record = record,
+    drawable = drawable,
+    assetKey = record.textureKey,
+    center = center,
+    active = params[29],
+    life = params[30],
+    every = params[24],
+    count = params[32],
+    offsetX = fixedPair(1),
+    offsetY = fixedPair(3),
+    velocityX = fixedPair(17),
+    velocityY = fixedPair(21),
+    gravityX = gravityX,
+    gravityY = gravityY,
+    jitter = emitterHasFeature(record, "random"),
+    fade = emitterHasFeature(record, "alpha"),
+    age = 0,
+    jitterX = 0,
+    jitterY = 0,
+    sprites = {},
+  }
 end
 
 ---@param args table<string, unknown> instruction-derived construction arguments
@@ -790,68 +913,149 @@ end
 ---@param services table<string, unknown> scene, audio, and resource collaborators
 ---@return BattleParticleContinuation runnable particle task
 local function newParticleContinuation(args, context, services)
+  local kind = BattleEffectTasks.PARTICLE_CONTINUATION_KIND
   local resource = args.resource
-  if resource == nil then
-    resource = DEFAULT_PARTICLE_RESOURCE
-  end
   if type(resource) ~= "string" or resource == "" then
-    error(
-      "BATTLE_EFFECT_TASK_MALFORMED: kind "
-        .. BattleEffectTasks.PARTICLE_CONTINUATION_KIND
-        .. " stages a named semantic particle resource",
-      0
-    )
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " stages a named semantic particle resource", 0)
   end
   local emitter = args.emitterPosition
-  if emitter == nil then
-    emitter = DEFAULT_PARTICLE_EMITTER
-  end
   if type(emitter) ~= "string" or EMITTER_POSITIONS[emitter] ~= true then
-    error(
-      "BATTLE_EFFECT_TASK_MALFORMED: kind "
-        .. BattleEffectTasks.PARTICLE_CONTINUATION_KIND
-        .. " emits from a known battler effect slot",
-      0
-    )
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " emits from a known battler effect slot", 0)
   end
   local scene = checkScene(services, kind)
   checkEffectScene(scene, kind)
   local staged = {}
-  stageLease(BattleEffectTasks.PARTICLE_CONTINUATION_KIND, resource, services, staged)
-  local random = checkRandom(context, BattleEffectTasks.PARTICLE_CONTINUATION_KIND)
-  local effectId = publishEffect(scene, resource, particlePicture(scene, resource, emitter, 1))
+  stageLease(kind, resource, services, staged)
+  local random = checkRandom(context, kind)
+  local payload = staged[1].lease
+  local center = EMITTER_CENTERS[emitter]
+  assert(center ~= nil, "particle emissions stage over a known effect slot")
+  local streams = {}
+  local probeDraws = false
+  if isNormalizedArchive(payload) then
+    for _, record in ipairs(payload.emitters) do
+      if not isNormalizedEmitter(record) then
+        releaseStaged(staged)
+        error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " simulates normalized emitters", 0)
+      end
+      local drawable = nil
+      if type(record.textureKey) == "string" then
+        stageLease(kind, record.textureKey, services, staged)
+        drawable = staged[#staged].lease
+      end
+      if drawable ~= nil then
+        checkDrawableField(drawable.width, tostring(record.textureKey))
+        checkDrawableField(drawable.height, tostring(record.textureKey))
+        if type(drawable.rgba8888) ~= "string" or #drawable.rgba8888 ~= drawable.width * drawable.height * 4 then
+          releaseStaged(staged)
+          error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " draws exact staged drawables", 0)
+        end
+      end
+      streams[#streams + 1] = particleStream(record, drawable, center)
+    end
+  elseif isNormalizedEmitter(payload) then
+    local drawable = nil
+    if type(payload.textureKey) == "string" then
+      stageLease(kind, payload.textureKey, services, staged)
+      drawable = staged[#staged].lease
+    end
+    if drawable ~= nil then
+      checkDrawableField(drawable.width, tostring(payload.textureKey))
+      checkDrawableField(drawable.height, tostring(payload.textureKey))
+      if type(drawable.rgba8888) ~= "string" or #drawable.rgba8888 ~= drawable.width * drawable.height * 4 then
+        releaseStaged(staged)
+        error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " draws exact staged drawables", 0)
+      end
+    end
+    streams[#streams + 1] = particleStream(payload, drawable, center)
+  elseif isProbeRecord(payload) then
+    probeDraws = true
+    local params = {}
+    for index = 1, 42 do
+      params[index] = 0
+    end
+    params[29], params[30], params[24], params[32] = 12, 12, 0, 1
+    streams[#streams + 1] = {
+      record = { features = { "alpha" }, params = params },
+      drawable = nil,
+      assetKey = resource,
+      center = center,
+      active = 12,
+      life = 12,
+      every = 0,
+      count = 1,
+      offsetX = 0,
+      offsetY = 0,
+      velocityX = 0,
+      velocityY = 0,
+      gravityX = 0,
+      gravityY = 0,
+      jitter = false,
+      fade = true,
+      age = 0,
+      jitterX = 0,
+      jitterY = 0,
+      sprites = {},
+    }
+  else
+    releaseStaged(staged)
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " simulates staged particle records", 0)
+  end
   return setmetatable({
     _scene = scene,
     _staged = staged,
     _resource = resource,
     _emitter = emitter,
     _random = random,
-    _effectId = effectId,
-    _effectReleased = false,
-    _ticks = 0,
-    _duration = PARTICLE_DURATION_TICKS,
+    _center = center,
+    _streams = streams,
+    _probeDraws = probeDraws,
+    _effectIds = {},
     _state = "pending",
     _cancelReason = nil,
     _disposed = false,
   }, BattleParticleContinuation)
 end
 
--- Releases the transient record and every staged lease exactly once.
+-- Releases every owned sprite record and every staged lease exactly once.
 ---@param self BattleParticleContinuation
 local function teardownParticle(self)
-  if not self._effectReleased then
-    self._effectReleased = true
-    if self._effectId ~= nil then
-      self._scene.releaseEffect(self._scene, self._effectId)
-    end
+  for id in pairs(self._effectIds) do
+    self._effectIds[id] = nil
+    self._scene.releaseEffect(self._scene, id)
   end
   releaseStaged(self._staged)
 end
 
--- Advances one source tick: a fixed visual draw count runs every tick so
--- the same seed draws the same sequence at any host schedule, then the
--- staged alpha follows the remaining lifetime. Reads never advance: only
--- this entry point consumes the occurrence-local stream.
+---@param self BattleParticleContinuation
+---@param stream table<string, unknown> emitter stream behind spawning
+local function spawnParticleSprites(self, stream)
+  local drawable = stream.drawable --[[@as table<string, unknown>?]]
+  local assetKey = nil
+  local width, height = 32, 32
+  if drawable ~= nil then
+    assetKey = stream.assetKey
+    width = drawable.width --[[@as integer]]
+    height = drawable.height --[[@as integer]]
+  else
+    assetKey = self._resource
+  end
+  for _ = 1, stream.count do
+    local id = publishEffect(
+      self._scene,
+      self._resource,
+      stagedPicture(assetKey, self._emitter, stream.center.x, stream.center.y, 1, width, height)
+    )
+    self._effectIds[id] = true
+    stream.sprites[#stream.sprites + 1] = { id = id, born = stream.age }
+  end
+end
+
+-- Advances one source tick: every emitter draws its fixed visual count
+-- so the same seed draws the same sequence at any host schedule, then
+-- spawns, moves, and retires its sprites on the native completion
+-- boundary. Reads never advance: only this entry point consumes the
+-- occurrence-local stream.
 ---@param self BattleParticleContinuation
 ---@param tick table<string, unknown>? source tick under advancement
 function BattleParticleContinuation:stepSourceTick(tick)
@@ -860,21 +1064,73 @@ function BattleParticleContinuation:stepSourceTick(tick)
     return
   end
   self._state = "running"
-  self._ticks = self._ticks + 1
   local random = self._random --[[@as fun(bound: integer): integer]]
-  random(PARTICLE_DRAW_BOUND)
-  random(PARTICLE_DRAW_BOUND)
-  assert(PARTICLE_DRAWS_PER_TICK == 2, "particle ticks draw a fixed visual count")
-  local remaining = self._duration - self._ticks
-  if remaining < 0 then
-    remaining = 0
+  local done = true
+  for _, stream in ipairs(self._streams) do
+    stream.age = stream.age + 1
+    if stream.jitter then
+      stream.jitterX = random(PARTICLE_JITTER_BOUND) - 4
+      stream.jitterY = random(PARTICLE_JITTER_BOUND) - 4
+    elseif self._probeDraws then
+      random(PARTICLE_PROBE_DRAW_BOUND)
+      random(PARTICLE_PROBE_DRAW_BOUND)
+    end
+    if stream.age <= stream.active and (stream.age - 1) % (stream.every + 1) == 0 then
+      if stream.drawable ~= nil or self._probeDraws then
+        spawnParticleSprites(self, stream)
+      end
+    end
+    local sprites = {}
+    for _, sprite in ipairs(stream.sprites) do
+      local age = stream.age - sprite.born
+      if age >= stream.life then
+        self._effectIds[sprite.id] = nil
+        self._scene.releaseEffect(self._scene, sprite.id)
+      else
+        local alpha = 1
+        if stream.fade then
+          alpha = (stream.life - age) / stream.life
+        end
+        local width, height = 32, 32
+        local drawable = stream.drawable --[[@as table<string, unknown>?]]
+        if drawable ~= nil then
+          width = drawable.width --[[@as integer]]
+          height = drawable.height --[[@as integer]]
+        end
+        self._scene.setEffectPicture(
+          self._scene,
+          sprite.id,
+          stagedPicture(
+            stream.drawable ~= nil and stream.assetKey or self._resource,
+            self._emitter,
+            math.floor(
+              stream.center.x
+                + stream.offsetX
+                + stream.velocityX * age
+                + stream.gravityX * age * age / 2
+                + stream.jitterX
+            ),
+            math.floor(
+              stream.center.y
+                + stream.offsetY
+                + stream.velocityY * age
+                + stream.gravityY * age * age / 2
+                + stream.jitterY
+            ),
+            alpha,
+            width,
+            height
+          )
+        )
+        sprites[#sprites + 1] = sprite
+      end
+    end
+    stream.sprites = sprites
+    if stream.age <= stream.active or #stream.sprites > 0 then
+      done = false
+    end
   end
-  self._scene.setEffectPicture(
-    self._scene,
-    self._effectId,
-    particlePicture(self._scene, self._resource, self._emitter, remaining / self._duration)
-  )
-  if self._ticks >= self._duration then
+  if done then
     self._state = "complete"
     teardownParticle(self)
   end
@@ -909,6 +1165,104 @@ function BattleParticleContinuation:dispose()
   end
   self._disposed = true
   teardownParticle(self)
+end
+
+-- Invisible emitter path driver behind the battler-path particle
+-- callbacks: the visible sprites for these paths come from the
+-- continuation family, while this task owns only the compiled
+-- interpolation timing and retires on its own completion boundary.
+-- It publishes no scene records and holds no leases, so cancellation
+-- and disposal only move its run state.
+---@class BattleEmitterPathTask
+---@field _kind string emitter path kind behind the run
+---@field _duration integer source ticks behind completion
+---@field _ticks integer source ticks advanced
+---@field _state string pending, running, complete, or cancelled
+---@field _cancelReason string? last cancellation cause under diagnosis
+---@field _disposed boolean release has run
+local BattleEmitterPathTask = {}
+BattleEmitterPathTask.__index = BattleEmitterPathTask
+
+---@param kind string emitter path kind under construction
+---@param args table<string, unknown> instruction-derived construction arguments
+---@return integer source ticks behind completion
+local function emitterPathDuration(kind, args)
+  local parameters = args.parameters
+  if type(parameters) ~= "table" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " carries its path operands as a record", 0)
+  end
+  local completionLimit = parameters.completionLimit
+  if type(completionLimit) ~= "number" or completionLimit % 1 ~= 0 or completionLimit < 1 then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " completes on a positive completion limit", 0)
+  end
+  if kind == BattleEffectTasks.EMITTER_BATTLER_PATH_KIND then
+    local interpolation = parameters.interpolationDurationTicks
+    if type(interpolation) == "number" and interpolation % 1 == 0 and interpolation > 0 then
+      return math.floor(interpolation)
+    end
+    return math.floor(completionLimit)
+  end
+  local duration = parameters.durationTicks
+  if type(duration) == "number" and duration % 1 == 0 and duration > 0 then
+    return math.floor(duration)
+  end
+  return math.floor(completionLimit)
+end
+
+---@param kind string emitter path kind under construction
+---@param args table<string, unknown> instruction-derived construction arguments
+---@param context table<string, unknown> occurrence-bound playback context
+---@param services table<string, unknown> scene, audio, and resource collaborators
+---@return BattleEmitterPathTask runnable emitter path task
+local function newEmitterPathTask(kind, args, context, services)
+  local _ = context
+  if type(services) ~= "table" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " constructs without its services record", 0)
+  end
+  return setmetatable({
+    _kind = kind,
+    _duration = emitterPathDuration(kind, args),
+    _ticks = 0,
+    _state = "pending",
+    _cancelReason = nil,
+    _disposed = false,
+  }, BattleEmitterPathTask)
+end
+
+---@param self BattleEmitterPathTask
+---@param tick table<string, unknown>? source tick under advancement
+function BattleEmitterPathTask:stepSourceTick(tick)
+  local _ = tick
+  if self._disposed or self._state == "complete" or self._state == "cancelled" then
+    return
+  end
+  self._state = "running"
+  self._ticks = self._ticks + 1
+  if self._ticks >= self._duration then
+    self._state = "complete"
+  end
+end
+
+---@param self BattleEmitterPathTask
+---@return string
+function BattleEmitterPathTask:status()
+  assert(VALID_TASK_STATES[self._state] == true, "emitter path tasks report a known run state")
+  return self._state
+end
+
+---@param self BattleEmitterPathTask
+---@param reason string cancellation cause under diagnosis
+function BattleEmitterPathTask:cancel(reason)
+  if self._state == "complete" then
+    return
+  end
+  self._state = "cancelled"
+  self._cancelReason = reason
+end
+
+---@param self BattleEmitterPathTask
+function BattleEmitterPathTask:dispose()
+  self._disposed = true
 end
 
 ---@class BattlePictureAnimation
@@ -1247,8 +1601,8 @@ end
 -- Emitted nonparticle visual task kinds with real bodies in this lane.
 -- The blend, picture, and sound families above come first; every other
 -- spelling here routes to the source-parameterized body below. Only
--- the producer vocabulary is admitted: the particle emitter family
--- stays out until its own lane lands, and unknown kinds fail closed.
+-- the producer vocabulary is admitted, and unknown kinds fail closed.
+-- Particle emitter families carry their own bodies above.
 local NATIVE_VISUAL_KINDS = {
   ["battle-background-alpha-scroll-transition"] = true,
   ["battle-background-alternating-scroll-transition"] = true,
@@ -1637,6 +1991,12 @@ function BattleEffectTasks.supportsKind(kind)
   if kind == BattleEffectTasks.PARTICLE_CONTINUATION_KIND then
     return true
   end
+  if kind == BattleEffectTasks.EMITTER_BATTLER_PATH_KIND then
+    return true
+  end
+  if kind == BattleEffectTasks.EMITTER_CURVED_PATH_KIND then
+    return true
+  end
   if kind == BattleEffectTasks.PICTURE_ANIMATION_KIND then
     return true
   end
@@ -1673,6 +2033,10 @@ function BattleEffectTasks.create(kind, args, context, services)
   if kind == BattleEffectTasks.PARTICLE_CONTINUATION_KIND then
     assert(type(services) == "table", "particle continuations require their services record")
     return newParticleContinuation(args or {}, context or {}, services)
+  end
+  if kind == BattleEffectTasks.EMITTER_BATTLER_PATH_KIND or kind == BattleEffectTasks.EMITTER_CURVED_PATH_KIND then
+    assert(type(services) == "table", "emitter path tasks require their services record")
+    return newEmitterPathTask(kind, args or {}, context or {}, services)
   end
   if kind == BattleEffectTasks.PICTURE_ANIMATION_KIND then
     assert(type(services) == "table", "picture animations require their services record")
