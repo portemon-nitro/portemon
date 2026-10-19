@@ -4,6 +4,7 @@
 -- second host and never a Start Menu round trip.
 
 local Assert = require("tests.support.Assert")
+local HoOhAppearanceFixture = require("tests.support.HoOhAppearanceFixture")
 
 local T = {}
 
@@ -108,7 +109,11 @@ local function stubOptions(partySelection, mart)
   }
   assert(InteractionCache.validateCatalog(followerInteractionCatalog))
   return {
-    cacheFs = {},
+    cacheFs = {
+      loadLua = function()
+        return HoOhAppearanceFixture.definition()
+      end,
+    },
     layoutMessage = function(message)
       return message
     end,

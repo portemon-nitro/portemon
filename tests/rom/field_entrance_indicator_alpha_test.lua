@@ -84,12 +84,24 @@ local function testMember85Alpha(romFs)
       compiledByName[material.name] = material
     end
   end
-  for _, texture in pairs(bundle.textures) do
+  -- The Ho-Oh leaf overlay frames are screen-space images no model material
+  -- samples, so they carry no material alpha classification.
+  local overlayFrames = {}
+  for _, layer in pairs(bundle.effects.ho_oh_appearance.leaves or {}) do
+    for _, frame in ipairs(layer.frames) do
+      overlayFrames[assert(frame.path:match("/([^/]+)%.png$"))] = true
+    end
+  end
+  for textureKey, texture in pairs(bundle.textures) do
+    if overlayFrames[textureKey] then
+      goto continue
+    end
     Assert.notNil(texture.alphaUsage, "compiled effect texture must classify decoded alpha")
     if texture.alphaUsage.hasZero then
       transparentOutput = true
       Assert.isTrue(hasZeroAlpha(texture), "compiled zero-alpha usage must have alpha-zero pixels")
     end
+    ::continue::
   end
   Assert.isTrue(transparentOutput, "member 85 transparent coverage must survive compilation")
 

@@ -218,6 +218,7 @@ end
 ---@field taskRegistry TaskRegistry
 ---@field scheduler Scheduler
 ---@field audio FakeAudioBackend|nil
+---@field fieldAudio { processSoundplate: fun(self: table) }|nil forced field soundplate processing, a service separate from script audio
 ---@field camera FakeCameraBackend|nil
 ---@field screen FakeScreenBackend|nil
 ---@field maps FakeMapsBackend|nil
@@ -231,7 +232,9 @@ local function harness(opts)
   local camera = opts.camera and FakeCameraBackend.new() or nil
   local screen = opts.screen and FakeScreenBackend.new() or nil
   local maps = opts.maps and FakeMapsBackend.new(opts.mapsOrigin) or nil
+  local fieldAudio = opts.fieldAudio and { processSoundplate = function() end } or nil
   services.audio = audio
+  services.fieldAudio = fieldAudio
   services.camera = camera
   services.screen = screen
   services.maps = maps
@@ -268,6 +271,7 @@ local function harness(opts)
     taskRegistry = taskRegistry,
     scheduler = scheduler,
     audio = audio,
+    fieldAudio = fieldAudio,
     camera = camera,
     screen = screen,
     maps = maps,
@@ -1002,9 +1006,9 @@ T["audio handlers evaluate value references before the service call"] = function
 end
 
 T["process soundplate calls forced processing once and continues same tick"] = function()
-  local h = harness({ audio = true })
+  local h = harness({ fieldAudio = true })
   local processCalls = 0
-  h.audio.processSoundplate = function(_)
+  h.fieldAudio.processSoundplate = function(_)
     processCalls = processCalls + 1
   end
   local resource = script("test.soundplate", {
@@ -1021,9 +1025,9 @@ T["process soundplate calls forced processing once and continues same tick"] = f
 end
 
 T["consecutive process soundplate calls run twice in one tick"] = function()
-  local h = harness({ audio = true })
+  local h = harness({ fieldAudio = true })
   local processCalls = 0
-  h.audio.processSoundplate = function(_)
+  h.fieldAudio.processSoundplate = function(_)
     processCalls = processCalls + 1
   end
   local resource = script("test.double", {
@@ -1038,8 +1042,8 @@ T["consecutive process soundplate calls run twice in one tick"] = function()
   Assert.equal(h.services.world:getVar("VAR_AFTER"), 1)
 end
 
-T["process soundplate without audio service faults with attribution"] = function()
-  local h = harness({ audio = false })
+T["process soundplate without the field audio service faults with attribution"] = function()
+  local h = harness({ audio = true })
   local resource = script("test.missingsoundplate", {
     S.processSoundplate(),
     S.stop(),
@@ -1050,9 +1054,9 @@ T["process soundplate without audio service faults with attribution"] = function
 end
 
 T["process soundplate after flag change sees updated event state"] = function()
-  local h = harness({ audio = true })
+  local h = harness({ fieldAudio = true })
   local seenFlag = nil
-  h.audio.processSoundplate = function(_)
+  h.fieldAudio.processSoundplate = function(_)
     seenFlag = h.services.world:isFlagSet("FLAG_WATERFALL_DONE")
   end
   local resource = script("test.flagbefore", {

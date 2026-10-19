@@ -11,6 +11,7 @@ local FakeCache = require("tests.support.FakeCache")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldScripts = require("game.hgss.src.field.FieldScripts")
 local FieldTravelState = require("libs.hgss.src.field.FieldTravelState")
+local HoOhAppearanceFixture = require("tests.support.HoOhAppearanceFixture")
 local ScriptCache = require("libs.assets.src.ScriptCache")
 local ScriptOverrides = require("libs.assets.src.ScriptOverrides")
 
@@ -344,7 +345,11 @@ function T.tests.production_trainer_card_service_counts_no_frontier_star()
       fashionCase = {},
     }
     local result = compose(runtime, {
-      cacheFs = {},
+      cacheFs = {
+        loadLua = function()
+          return HoOhAppearanceFixture.definition()
+        end,
+      },
       layoutMessage = function(message)
         return message
       end,

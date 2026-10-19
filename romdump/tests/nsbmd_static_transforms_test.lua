@@ -282,18 +282,23 @@ function T.matrix_restore_after_billboard_returns_to_static()
   assertMatrixAtPoint(draws[2].matrix, 0, 0, 0, 2, 0, 0, "static draw back on the joint matrix")
 end
 
--- Moving a billboard matrix through the matrix stack cannot be expressed by a
--- per-shape compiled transform; no BB in the target world uses the operands.
-function T.rejects_billboard_with_matrix_slot_operands()
-  local nodeDict, nodeData = identityNodeDictAndData()
+-- BB's store option moves the captured billboard matrix through the matrix
+-- stack: restoring that slot later makes a static draw on the stored matrix.
+function T.billboard_store_option_keeps_the_captured_matrix_in_its_slot()
+  local nodeData = transformedNodeData(2, 0, 0, 1, 1, 1)
+  local nodeDict0 = NB.dict({ { name = "root", data = u32(0) } })
+  local nodeDict = NB.dict({ { name = "root", data = u32(#nodeDict0) } })
   local sbc = string.char(0x06, 0, 0, 0)
     .. string.char(0x27, 0, 1) -- BB with the store option, storing into slot 1
+    .. string.char(0x05, 0) -- SHP 0 (billboard)
+    .. string.char(0x03, 1) -- MTX restore slot 1
+    .. string.char(0x05, 0) -- SHP 0 (static on the stored matrix)
     .. string.char(0x01)
-  local model = decodeModel(nodeDict, nodeData, sbc)
-  local err = Assert.throws(function()
-    NsbmdStaticTransforms.evaluate(model)
-  end)
-  Assert.equal(err.code, "NSBMD_SBC_BILLBOARD_MATRIX_SLOT_UNSUPPORTED")
+  local draws = NsbmdStaticTransforms.evaluate(decodeModel(nodeDict, nodeData, sbc))
+  Assert.equal(#draws, 2)
+  Assert.equal(draws[1].transformMode, "billboard")
+  Assert.equal(draws[2].transformMode, "static")
+  assertMatrixAtPoint(draws[2].matrix, 0, 0, 0, 2, 0, 0, "the stored slot holds the captured billboard matrix")
 end
 
 -- No model in the target world issues BBY, so its yaw-only semantics are

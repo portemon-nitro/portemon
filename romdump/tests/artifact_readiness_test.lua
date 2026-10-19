@@ -963,6 +963,37 @@ local function publishEffectFamily(cache)
     model.animations = { joint, pattern, srt }
     return model
   end
+  local function hoOhAppearance()
+    local specs = {
+      { "bellRising", 6 },
+      { "bellShimmer", 2 },
+      { "cornerBells", 1 },
+      { "birdApproach", 3 },
+      { "wavesEffect", 2 },
+      { "cinematic.first.0", 4 },
+      { "cinematic.first.1", 4 },
+      { "cinematic.first.2", 4 },
+      { "cinematic.second.0", 3 },
+      { "cinematic.second.1", 3 },
+      { "cinematic.second.2", 3 },
+    }
+    local models = {}
+    for index, spec in ipairs(specs) do
+      local model = dynamicModel("field-effect:ho-oh-appearance:" .. spec[1])
+      local template = model.animations[1]
+      model.animations = {}
+      for clip = 1, spec[2] do
+        local animation = {}
+        for field, value in pairs(template) do
+          animation[field] = value
+        end
+        animation.id = "ho-oh." .. index .. "." .. clip
+        model.animations[clip] = animation
+      end
+      models[index] = model
+    end
+    return { models = models }
+  end
   local marker = EffectCache.marker("test-rom", "test-dep")
   local bundle = {
     marker = marker,
@@ -1007,6 +1038,11 @@ local function publishEffectFamily(cache)
         celebi_time_travel = {
           path = EffectCache.definitionPath("celebi_time_travel"),
           definition = "celebi_time_travel",
+          kind = "cinematic",
+        },
+        ho_oh_appearance = {
+          path = EffectCache.definitionPath("ho_oh_appearance"),
+          definition = "ho_oh_appearance",
           kind = "cinematic",
         },
       },
@@ -1063,6 +1099,7 @@ local function publishEffectFamily(cache)
         fanfare = "SEQ_ME_ASA",
       },
       celebi_time_travel = { model = celebiTimeTravelModel() },
+      ho_oh_appearance = hoOhAppearance(),
     },
     meshes = { ["mesh-key"] = {} },
     textures = { ["texture-key"] = { width = 1, height = 1, data = PngWriter.encode(1, 1, "rgba") } },

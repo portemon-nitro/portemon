@@ -6,7 +6,7 @@ local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCac
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 
 local T = { tests = {} }
-local EXPECTED_MARKER = "field-effect-cache-v12:rom:dep"
+local EXPECTED_MARKER = "field-effect-cache-v14:rom:dep"
 
 local function validModel()
   return {
@@ -189,6 +189,40 @@ local function validCelebiDefinition()
   return { model = model }
 end
 
+local HOOH_MODEL_CLIPS = {
+  { key = "bellRising", clips = 6 },
+  { key = "bellShimmer", clips = 2 },
+  { key = "cornerBells", clips = 1 },
+  { key = "birdApproach", clips = 3 },
+  { key = "wavesEffect", clips = 2 },
+  { key = "cinematic.first.0", clips = 4 },
+  { key = "cinematic.first.1", clips = 4 },
+  { key = "cinematic.first.2", clips = 4 },
+  { key = "cinematic.second.0", clips = 3 },
+  { key = "cinematic.second.1", clips = 3 },
+  { key = "cinematic.second.2", clips = 3 },
+}
+
+local function validHoOhDefinition()
+  local models = {}
+  for index, spec in ipairs(HOOH_MODEL_CLIPS) do
+    local model = validDynamicModel()
+    model.key = "field-effect:ho-oh-appearance:" .. spec.key
+    local template = model.animations[1]
+    model.animations = {}
+    for clip = 1, spec.clips do
+      local animation = {}
+      for field, value in pairs(template) do
+        animation[field] = value
+      end
+      animation.id = "hooh." .. index .. "." .. clip
+      model.animations[clip] = animation
+    end
+    models[index] = model
+  end
+  return { models = models }
+end
+
 local function cache(model, present, marker, omitLifecycle, omitPlacement, extra)
   extra = extra or {}
   local index = {
@@ -204,12 +238,13 @@ local function cache(model, present, marker, omitLifecycle, omitPlacement, extra
     "follower_transition",
     "pokemon_center_heal",
     "celebi_time_travel",
+    "ho_oh_appearance",
   }) do
     index.effects[kind] = {
       kind = (kind == "warp_entrance" or kind == "surf_attachment") and "model"
         or kind == "follower_transition" and "transition"
         or kind == "pokemon_center_heal" and "healing"
-        or kind == "celebi_time_travel" and "cinematic"
+        or (kind == "celebi_time_travel" or kind == "ho_oh_appearance") and "cinematic"
         or "animated_model",
       definition = kind,
       path = FieldEffectAssetCache.definitionPath(kind),
@@ -331,6 +366,9 @@ local function cache(model, present, marker, omitLifecycle, omitPlacement, extra
       end
       if kind == "celebi_time_travel" then
         return extra.celebiDefinition or validCelebiDefinition()
+      end
+      if kind == "ho_oh_appearance" then
+        return extra.hoOhDefinition or validHoOhDefinition()
       end
       if kind == "trainer_reveal" then
         if extra.unknownLifecycleMode then
@@ -581,7 +619,7 @@ T.tests["rejects trainer reveal with missing or malformed placement"] = function
   Assert.isFalse(malformed, "trainer reveal with non-finite placement must not be ready")
 end
 
-local SURF_MARKER = "field-effect-cache-v12:rom:dep"
+local SURF_MARKER = "field-effect-cache-v14:rom:dep"
 local SURF_INDEX_SCHEMA = "g4-field-effect-index-v4"
 T.tests["requires the complete generated Pokémon Center healing definition"] = function()
   local present = {
@@ -691,6 +729,11 @@ local function surfCache(surfDefinition, mutateIndex)
         definition = "celebi_time_travel",
         path = FieldEffectAssetCache.definitionPath("celebi_time_travel"),
       },
+      ho_oh_appearance = {
+        kind = "cinematic",
+        definition = "ho_oh_appearance",
+        path = FieldEffectAssetCache.definitionPath("ho_oh_appearance"),
+      },
     },
   }
   for selector = 1, 14 do
@@ -721,6 +764,9 @@ local function surfCache(surfDefinition, mutateIndex)
       end
       if kind == "celebi_time_travel" then
         return validCelebiDefinition()
+      end
+      if kind == "ho_oh_appearance" then
+        return validHoOhDefinition()
       end
       if kind == "follower_transition" then
         return {

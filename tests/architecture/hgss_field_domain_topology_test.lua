@@ -89,6 +89,7 @@ local FIELD_COORDINATION = {
   "CameraHistory",
   "CivilDate",
   "CelebiTimeTravelScene",
+  "HoOhAppearanceScene",
   "FieldApplicationHost",
   "FieldApplicationIds",
   "FieldApplicationRegistry",

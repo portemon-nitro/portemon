@@ -4,37 +4,10 @@
 local Assert = require("tests.support.Assert")
 local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
 local HoOhAppearanceScene = require("libs.hgss.src.field.HoOhAppearanceScene")
+local HoOhAppearanceFixture = require("tests.support.HoOhAppearanceFixture")
 
 local FX32_PER_TILE = 4096 * 16
 local FIELD_CAMERA_DISTANCE_FX32 = 0x29AEC1
-
-local function definition()
-  local clips = {
-    "bell.rise.joint",
-    "bell.rise.pattern",
-    "bell.rise.srt",
-    "bell.shimmer.joint",
-    "bell.shimmer.srt",
-    "corner_bells.srt",
-    "bird.joint",
-    "bird.color",
-    "bird.pattern",
-  }
-  local animations = {}
-  for index, id in ipairs(clips) do
-    animations[index] = { id = id, frameCount = 10 }
-  end
-  local models = { { key = "field-effect:ho-oh-appearance:bellRising", animations = animations } }
-  for _, shot in ipairs({ "first", "second" }) do
-    for variant = 0, 2 do
-      models[#models + 1] = {
-        key = "field-effect:ho-oh-appearance:cinematic." .. shot .. "." .. variant,
-        animations = { { id = "cinematic." .. shot .. "." .. variant .. ".trs", frameCount = 20 } },
-      }
-    end
-  end
-  return { models = models }
-end
 
 local function newCamera()
   local camera = {
@@ -66,7 +39,7 @@ local function newScene(versionId, camera, birdHeights)
   local cacheFs = {
     loadLua = function(_, path)
       Assert.equal(path, FieldEffectAssetCache.definitionPath("ho_oh_appearance"), "scene loads its model definition")
-      return definition()
+      return HoOhAppearanceFixture.definition()
     end,
   }
   return HoOhAppearanceScene.new({

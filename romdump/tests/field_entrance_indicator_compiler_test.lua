@@ -101,10 +101,24 @@ local function installCelebiCompilerMock()
   }
 end
 
+local function installHoOhCompilerMock()
+  package.loaded["romdump.src.digest.field.HoOhAppearanceAssetCompiler"] = {
+    compile = function()
+      return {
+        definition = { models = {} },
+        meshes = {},
+        textures = {},
+        memberHashes = { { memberId = 1, sha1 = "ho-oh-model" } },
+      }
+    end,
+  }
+end
+
 T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
   local names = {
     "romdump.src.digest.field.FieldEntranceIndicatorCompiler",
     "romdump.src.digest.field.CelebiTimeTravelAssetCompiler",
+    "romdump.src.digest.field.HoOhAppearanceAssetCompiler",
     "libs.nds.src.nitro.g3d.Nsbmd",
     "libs.nds.src.nitro.g3d.Nsbtx",
     "libs.nds.src.nitro.g3d.NitroAnimation",
@@ -194,6 +208,7 @@ T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
   }
   installCenterHealingMocks()
   installCelebiCompilerMock()
+  installHoOhCompilerMock()
   package.loaded["libs.nds.src.nitro.g3d.Nsbmd"] = {
     decode = function(_, context)
       assert(context and context.section, "Nsbmd.decode context.section is required")
@@ -470,6 +485,7 @@ T.tests["rewrites compiled geometry and texture references into the effect root"
   local names = {
     "romdump.src.digest.field.FieldEntranceIndicatorCompiler",
     "romdump.src.digest.field.CelebiTimeTravelAssetCompiler",
+    "romdump.src.digest.field.HoOhAppearanceAssetCompiler",
     "libs.nds.src.nitro.g3d.Nsbmd",
     "libs.nds.src.nitro.g3d.Nsbtx",
     "libs.nds.src.nitro.g3d.NitroAnimation",
@@ -583,6 +599,7 @@ T.tests["rewrites compiled geometry and texture references into the effect root"
   }
   installCenterHealingMocks()
   installCelebiCompilerMock()
+  installHoOhCompilerMock()
   package.loaded["romdump.src.digest.field.FieldEntranceIndicatorCompiler"] = nil
 
   local ok, result = pcall(function()
