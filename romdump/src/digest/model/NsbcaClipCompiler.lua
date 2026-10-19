@@ -19,7 +19,9 @@
 --   }
 --
 -- where each channel is
---   { source = "model" }
+--   { source = "model" }                            -- the model's bind value
+--   { source = "identity" }                         -- zero translation, identity
+--                                                   -- rotation, or scale one
 --   { source = "constant", value = <raw u32> }       -- scale adds inverse
 --   { source = "curve", rate, limit, storage, keys = { ... } }
 --     -- keys hold the raw words exactly as the decoders read them: fx16
@@ -46,6 +48,7 @@ local function s16(value)
 end
 
 local MODEL = "model"
+local IDENTITY = "identity"
 local CONSTANT = "constant"
 local CURVE = "curve"
 
@@ -152,8 +155,8 @@ local function copyChannel(chan, reader, bounds, isRot, numFrame, ctx)
   if not chan then
     return nil
   end
-  if chan.source == MODEL then
-    return { source = MODEL }
+  if chan.source == MODEL or chan.source == IDENTITY then
+    return { source = chan.source }
   end
   if chan.source == CONSTANT then
     local out = { source = CONSTANT, value = chan.value }

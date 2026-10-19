@@ -18,6 +18,11 @@ function RecordingScriptHosts.new(options)
   local effects = {}
   local audio = { current = nil, fadeActive = false, fanfarePollsRemaining = 0 }
   local events = { records = {} }
+  local fieldAudio = { processed = 0 }
+
+  function fieldAudio:processSoundplate()
+    self.processed = self.processed + 1
+  end
 
   function audio:play(sound)
     self.current = sound
@@ -73,7 +78,7 @@ function RecordingScriptHosts.new(options)
     self.records[#self.records + 1] = { name = name, payload = payload }
   end
 
-  local hosts = { effects = effects, events = events }
+  local hosts = { effects = effects, events = events, fieldAudio = fieldAudio }
   if options.audio ~= false then
     hosts.audio = audio
   end

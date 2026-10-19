@@ -120,6 +120,7 @@ function NitroJointState.srtFromBlendInto(scratch, result, bindSrt)
     srt.scale.x = bindSrt.scale.x
     srt.scale.y = bindSrt.scale.y
     srt.scale.z = bindSrt.scale.z
+    srt.scaleOne = bindSrt.scaleOne
     if bindSrt.inverseScale then
       inv.x = bindSrt.inverseScale.x
       inv.y = bindSrt.inverseScale.y
@@ -132,6 +133,7 @@ function NitroJointState.srtFromBlendInto(scratch, result, bindSrt)
     srt.scale.x = fxToFloat(result.scale[1])
     srt.scale.y = fxToFloat(result.scale[2])
     srt.scale.z = fxToFloat(result.scale[3])
+    srt.scaleOne = false
     if result.scaleEx then
       inv.x = fxToFloat(result.scaleEx[1])
       inv.y = fxToFloat(result.scaleEx[2])
@@ -144,7 +146,6 @@ function NitroJointState.srtFromBlendInto(scratch, result, bindSrt)
 
   srt.transZero = false
   srt.rotZero = false
-  srt.scaleOne = false
   srt.matrixStackIndex = bindSrt.matrixStackIndex
   return srt
 end

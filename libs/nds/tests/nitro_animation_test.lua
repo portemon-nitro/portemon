@@ -66,9 +66,10 @@ function T.jnt_pivot_rotation_samples()
   -- Frame 0: pivot entry 0 (control 0x24, A=1, B=0) -> identity matrix.
   local s = jnt(res, r, 0, 0)
   Assert.isFalse(s.rotFromModel)
-  Assert.isTrue(s.transFromModel, "trans comes from the model")
-  Assert.isTrue(s.scaleFromModel)
-  Assert.equal(s.trans, nil)
+  Assert.isFalse(s.transFromModel, "translation zero is the identity, not the model's")
+  Assert.equal(s.trans.x, 0)
+  Assert.isFalse(s.scaleFromModel, "scale one is the identity, not the model's")
+  Assert.equal(s.scale.x, 0x1000)
   Assert.equal(s.rot[1], 0x1000) -- A at pivotUtil cell 0
   Assert.equal(s.rot[5], 0x1000) -- pivot cell (index 4)
   Assert.equal(s.rot[9], 0x1000) -- A at cell 8 (signD clear)
@@ -92,24 +93,36 @@ function T.jnt_frame_clamps_to_range()
   Assert.equal(sNeg.rot[1], 0x1000) -- same as frame 0
 end
 
-function T.jnt_constants_and_model_channels()
+function T.jnt_constants_identity_and_model_channels()
   local res, r = decodeOne(AnimationFixture.jntConstants())
   Assert.equal(res.numAnm, 5)
+  local IDENTITY_ROT = { 0x1000, 0, 0, 0, 0x1000, 0, 0, 0, 0x1000 }
 
-  -- Target 0: constant translation, model rotation and scale.
+  -- Target 0: constant translation; rotation zero and scale one are the
+  -- identity values, not the model's bind pose.
   local s0 = jnt(res, r, 0, 0)
   Assert.isFalse(s0.transFromModel)
   Assert.equal(s0.trans.x, 10 * 0x1000)
   Assert.equal(s0.trans.y, 20 * 0x1000)
   Assert.equal(s0.trans.z, 30 * 0x1000)
-  Assert.isTrue(s0.rotFromModel)
-  Assert.isTrue(s0.scaleFromModel)
+  Assert.isFalse(s0.rotFromModel)
+  for i = 1, 9 do
+    Assert.equal(s0.rot[i], IDENTITY_ROT[i], "identity rotation cell " .. i)
+  end
+  Assert.isFalse(s0.scaleFromModel)
+  Assert.equal(s0.scale.x, 0x1000)
+  Assert.equal(s0.scale.z, 0x1000)
+  Assert.equal(s0.inverseScale.y, 0x1000)
 
-  -- Target 1: constant rotation (pivot entry 1: A=0, B=1).
+  -- Target 1: constant rotation (pivot entry 1: A=0, B=1); translation zero.
   local s1 = jnt(res, r, 1, 0)
   Assert.isFalse(s1.rotFromModel)
   Assert.equal(s1.rot[3], 0x1000)
   Assert.equal(s1.rot[7], -0x1000)
+  Assert.isFalse(s1.transFromModel)
+  Assert.equal(s1.trans.x, 0)
+  Assert.equal(s1.trans.y, 0)
+  Assert.equal(s1.trans.z, 0)
 
   -- Target 2: constant scale pairs with inverse scales.
   local s2 = jnt(res, r, 2, 0)
@@ -119,19 +132,18 @@ function T.jnt_constants_and_model_channels()
   Assert.equal(s2.scale.z, 4 * 0x1000)
   Assert.equal(s2.inverseScale.z, math.floor(0.25 * 0x1000))
 
-  -- Target 3: whole joint from the model.
+  -- Target 3: a whole joint with no animation is the identity transform.
   local s3 = jnt(res, r, 3, 0)
-  Assert.isTrue(s3.transFromModel and s3.rotFromModel and s3.scaleFromModel)
-  Assert.equal(s3.trans, nil)
+  Assert.isFalse(s3.transFromModel or s3.rotFromModel or s3.scaleFromModel)
+  Assert.equal(s3.trans.x, 0)
+  Assert.equal(s3.rot[1], 0x1000)
+  Assert.equal(s3.rot[2], 0)
+  Assert.equal(s3.scale.y, 0x1000)
 
-  -- Target 4: bit 7 set, bit 6 clear, bit 8 set -- the rot-mode gate is the
-  -- asm's fromModel bit (0x40), not the full 0xC0 mode mask, so the channel
-  -- is a constant, not from-model (pins the bit-6-only decode).
+  -- Target 4: the model flags without the zero/one flags use the bind pose.
   local s4 = jnt(res, r, 4, 0)
-  Assert.isFalse(s4.rotFromModel)
-  Assert.equal(s4.rot[1], 0x1000) -- pivot entry 0 (A=1)
-  Assert.equal(s4.rot[3], 0) -- B=0
   Assert.isTrue(s4.transFromModel)
+  Assert.isTrue(s4.rotFromModel)
   Assert.isTrue(s4.scaleFromModel)
 end
 

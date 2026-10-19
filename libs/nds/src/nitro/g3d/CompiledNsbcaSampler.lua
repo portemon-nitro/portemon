@@ -510,6 +510,8 @@ function CompiledNsbcaSampler.sampleInto(scratch, clip, targetIndex, frameFx)
     if c.source == "model" then
       transFromModel = true
       result.trans[i] = 0
+    elseif c.source == "identity" then
+      result.trans[i] = 0
     elseif c.source == "constant" then
       result.trans[i] = c.value
     else
@@ -527,6 +529,11 @@ function CompiledNsbcaSampler.sampleInto(scratch, clip, targetIndex, frameFx)
     for i = 1, 9 do
       result.rot[i] = 0
     end
+  elseif rc.source == "identity" then
+    for i = 1, 9 do
+      result.rot[i] = 0
+    end
+    result.rot[1], result.rot[5], result.rot[9] = FX_UNIT, FX_UNIT, FX_UNIT
   elseif rc.source == "constant" then
     reconstructFinalInto(clip, rc.value, result.rot)
   else
@@ -543,6 +550,9 @@ function CompiledNsbcaSampler.sampleInto(scratch, clip, targetIndex, frameFx)
       scaleFromModel = true
       result.scale[i] = 0
       result.scaleEx[i] = 0
+    elseif s.source == "identity" then
+      result.scale[i] = FX_UNIT
+      result.scaleEx[i] = FX_UNIT
     elseif s.source == "constant" then
       result.scale[i] = s.value
       result.scaleEx[i] = s.inverse or 0

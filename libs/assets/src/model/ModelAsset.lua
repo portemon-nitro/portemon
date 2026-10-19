@@ -404,13 +404,14 @@ for _, kind in pairs(AnimationClip.KINDS) do
   KIND_STRINGS[kind] = true
 end
 
--- Channel source vocabularies: the full set (NSBCA's model/constant/curve)
--- and the material-animation set (constant/curve -- NSBTA/NSBMA have no
--- model source, and the samplers reject one).
-local SOURCES_WITH_MODEL = { model = true, constant = true, curve = true }
+-- Channel source vocabularies: the full set (NSBCA's
+-- model/identity/constant/curve) and the material-animation set
+-- (constant/curve -- NSBTA/NSBMA have no model or identity source, and the
+-- samplers reject one).
+local SOURCES_WITH_MODEL = { model = true, identity = true, constant = true, curve = true }
 local SOURCES_PLAIN = { constant = true, curve = true }
 local SOURCE_LISTS = {
-  withModel = { "model", "constant", "curve" },
+  withModel = { "model", "identity", "constant", "curve" },
   plain = { "constant", "curve" },
 }
 

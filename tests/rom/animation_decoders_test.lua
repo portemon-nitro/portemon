@@ -16,7 +16,7 @@ local Nsbma = require("libs.nds.src.nitro.g3d.Nsbma")
 local T = {}
 
 -- The real door_op member: node 0, rotation animated through 8 pivot keys,
--- translation and scale from the model.
+-- translation zero and scale one (identity).
 function T.door_op_rotation_sweeps(romFs)
   local narc = assert(romFs:openNarc("build_anim"))
   local bytes = assert(narc:readMember(1)) -- door_op
@@ -26,7 +26,8 @@ function T.door_op_rotation_sweeps(romFs)
   Assert.equal(#res.targets, 1)
   local target = res.targets[1]
   Assert.equal(target.nodeIndex, 0)
-  Assert.isTrue(target.channels.trans.x.source == "model", "door translation from model")
+  Assert.isTrue(target.channels.trans.x.source == "identity", "door translation is the identity")
+  Assert.isTrue(target.channels.scale.x.source == "identity", "door scale is the identity")
   Assert.isTrue(target.channels.rot.source == "curve", "door rotation animated")
 
   local r = BinaryReader.new(decoded.bytes, "sec")

@@ -39,6 +39,7 @@ local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 ---@class GpuAssetPool.SamplingHandle
 ---@field image GpuAssetPool.Image bound source image (index bytes or straight RGBA)
 ---@field palette GpuAssetPool.Image? exact RGBA palette, present only for indexed sources
+---@field kind "r8"|"rgba8" source image representation used by exact 2D sampling
 ---@field indexed boolean true when the material must sample through the palette
 ---@class GpuAssetPool
 ---@field cacheFs table<string, unknown>
@@ -257,7 +258,7 @@ function GpuAssetPool:sharedImage(path, wrapX, wrapY, wait)
   -- fields. The handle is stable per path/wrap identity, so repeated
   -- acquisitions of one texture share it.
   ---@type GpuAssetPool.SamplingHandle
-  local handle = { image = lease.image, palette = lease.palette, indexed = lease.kind == "r8" }
+  local handle = { image = lease.image, palette = lease.palette, kind = lease.kind, indexed = lease.kind == "r8" }
   self._pooledByKey[key] = handle
   self._imageLeases[#self._imageLeases + 1] = lease
   return handle

@@ -62,6 +62,7 @@ FollowingMonController.__index = FollowingMonController
 ---@field setMovementPaused fun(self: FollowingMonController, paused: boolean)
 ---@field isMovementSettled fun(self: FollowingMonController): boolean
 ---@field settleMovement fun(self: FollowingMonController)
+---@field resetMovement fun(self: FollowingMonController)
 ---@field isPartnerVisible fun(self: FollowingMonController): boolean
 ---@field hideUntilNextStep fun(self: FollowingMonController): table<string, unknown>
 ---@field restoreCutsceneHide fun(self: FollowingMonController, lease: table<string, unknown>): boolean
@@ -1260,6 +1261,14 @@ function FollowingMonController:settleMovement()
     self._actors:cancelScriptedMovement(partnerId)
   end
   self._action = nil
+end
+
+function FollowingMonController:resetMovement()
+  self:settleMovement()
+  self._queue = {}
+  self._lastFollowerCommand = nil
+  self._consumedStep = nil
+  self._ledgeLanding = nil
 end
 
 -- Select the persistent follower movement mode. An accepted set is a reset

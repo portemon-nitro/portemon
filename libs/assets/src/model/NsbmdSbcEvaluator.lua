@@ -556,17 +556,13 @@ function NsbmdSbcEvaluator.evaluateInto(program, poseProvider, scratch)
       currentNode = cmd.nodeIndex
       hasBillboard = false
     elseif op == 0x07 then -- BB
-      -- The store/restore option operands would move a billboard matrix through
-      -- the matrix stack, which the compiled per-shape contract cannot express.
-      -- Every BB in the target world is option 0.
-      if cmd.option ~= 0 then
-        Errors.raise(
-          "NSBMD_SBC_BILLBOARD_MATRIX_SLOT_UNSUPPORTED",
-          "BB with store/restore option bits is not supported",
-          { optionBits = cmd.optionBits, offset = cmd.offset, model = program.name }
-        )
+      if cmd.restoreSlot ~= nil then
+        copyInto(currentMatrix, slotAt(program, matrixSlots, cmd.restoreSlot, cmd))
       end
       copyInto(billboardWork, currentMatrix)
+      if cmd.storeSlot ~= nil then
+        storeSlotVersion(scratch, matrixSlots, cmd.storeSlot, billboardWork)
+      end
       hasBillboard = true
       identityInto(currentMatrix)
       currentNode = cmd.nodeIndex

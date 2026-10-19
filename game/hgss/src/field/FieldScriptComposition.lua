@@ -10,6 +10,7 @@ local ScriptErrors = require("libs.script.src.errors")
 local ApricornTreePresentation = require("game.hgss.src.apricorn.ApricornTreePresentation")
 local KurtConversions = require("game.hgss.src.apricorn.KurtConversions")
 local CelebiTimeTravelScene = require("libs.hgss.src.field.CelebiTimeTravelScene")
+local HoOhAppearanceScene = require("libs.hgss.src.field.HoOhAppearanceScene")
 
 ---@class FieldScriptCompositionResult
 ---@field scripts FieldScripts
@@ -410,6 +411,33 @@ function FieldScriptComposition.compose(runtime, options)
     currentMap = currentFieldMap,
   })
   runtime.celebiTimeTravelScene = celebiTimeTravelScene
+  local function currentPlayerPosition()
+    local player = runtime.session and runtime.session.player or runtime.player
+    if player == nil then
+      return nil
+    end
+    return { x = player.worldX, y = player.worldY, z = player.worldZ }
+  end
+  local function currentTimeOfDay()
+    return currentTimeOfDayCode(runtime)
+  end
+  -- The legend flies in above its tile as a map actor: on both versions it is
+  -- the fifth object of its map.
+  local LEGEND_ACTOR_OBJECT_INDEX = 5
+  local function setLegendActorHeight(tiles)
+    local actors = assert(runtime.actors, "Ho-Oh scene requires the field actors")
+    local actorId = assert(actors:actorIdForMapIndex(LEGEND_ACTOR_OBJECT_INDEX), "Ho-Oh scene legend actor is missing")
+    actors:setPresentationOffset(actorId, { x = 0, y = tiles, z = 0 })
+  end
+  local legendCutscene = HoOhAppearanceScene.new({
+    versionId = runtime.versionId,
+    playerPosition = currentPlayerPosition,
+    currentCamera = currentFieldCamera,
+    timeOfDayCode = currentTimeOfDay,
+    setBirdHeight = setLegendActorHeight,
+    cacheFs = options.cacheFs,
+  })
+  runtime.hoOhAppearanceScene = legendCutscene
   local function requestStartMenuReopen()
     runtime.applicationHost:requestReopen()
   end
@@ -466,6 +494,7 @@ function FieldScriptComposition.compose(runtime, options)
     seedText = runtime.versionId .. ":" .. runtime.runtimeMap.mapId,
     effects = runtime.fieldTerrainEffectController,
     audio = options.audioService,
+    fieldAudio = runtime.audio or (runtime.scriptHosts and runtime.scriptHosts.fieldAudio),
     weather = { change = changeWeather },
     camera = runtime.scriptHosts and runtime.scriptHosts.camera,
     screen = runtime.screenFade,
@@ -481,6 +510,7 @@ function FieldScriptComposition.compose(runtime, options)
     itemCatalog = options.itemCatalog,
     followingMon = options.followingMon,
     celebiCinematic = celebiTimeTravelScene,
+    legendCutscene = legendCutscene,
     followerInteractionCatalog = options.followerInteractionCatalog,
     followerReactionTicks = options.followerReactionTicks,
     clock = options.clock,

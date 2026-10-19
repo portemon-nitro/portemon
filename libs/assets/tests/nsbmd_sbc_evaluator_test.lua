@@ -731,20 +731,31 @@ function T.matrix_restore_after_billboard_returns_to_static()
   assertMatrixAtPoint(draws[2].matrix, 0, 0, 0, 2, 0, 0, "static draw back on the joint matrix")
 end
 
-function T.rejects_billboard_with_matrix_slot_operands()
-  local p = program({ commands = billboardCommands() })
-  p.commands[3] = { opcode = 0x07, option = 1, optionBits = 0x20 }
-  local err = Assert.throws(function()
-    NsbmdSbcEvaluator.evaluate(
-      p,
-      provider({
-        nodeSRT = function()
-          return p.nodes[1]
-        end,
-      })
-    )
-  end)
-  Assert.equal(err.code, "NSBMD_SBC_BILLBOARD_MATRIX_SLOT_UNSUPPORTED")
+function T.billboard_store_and_restore_options_preserve_the_captured_pose()
+  local p = program({
+    nodes = {
+      srt(0, { translation = { x = 2, y = 5, z = 0 } }),
+      srt(1, { translation = { x = 9, y = 0, z = 0 } }),
+    },
+    commands = {
+      cmdNodedesc(0, 0, 0, 3),
+      { opcode = 0x07, option = 3, storeSlot = 4, restoreSlot = 3, optionBits = 0x60 },
+      cmdMat(0),
+      cmdShp(0),
+      { opcode = 0x01 },
+    },
+  })
+  local result = NsbmdSbcEvaluator.evaluate(
+    p,
+    provider({
+      nodeSRT = function()
+        return p.nodes[1]
+      end,
+    })
+  )
+  Assert.equal(result.draws[1].transformMode, "billboard")
+  assertMatrixAtPoint(result.draws[1].baseTransform, 0, 0, 0, 2, 5, 0, "restored billboard pose")
+  assertMatrixAtPoint(result.matrixSlots[4], 0, 0, 0, 2, 5, 0, "stored billboard pose")
 end
 
 function T.rejects_y_billboard_command()

@@ -209,6 +209,31 @@ function FieldCamera:updateFixed(playerTarget)
   self.cameraAppliedY = target.y - self.profile.targetOffsetTiles.y
 end
 
+-- Applies a retail field cutscene camera pose while leaving the normal field
+-- camera profile intact for restoration when the scene releases its lease.
+function FieldCamera:setCutscenePose(target, distance, angleXRaw, perspectiveRaw, playerTarget, angleYRaw, near, far)
+  assertVectorComponents(target, "cutscene camera target")
+  assertVectorComponents(playerTarget, "cutscene camera player target")
+  assert(type(distance) == "number" and distance > 0, "cutscene camera distance must be positive")
+  assert(type(angleXRaw) == "number" and type(perspectiveRaw) == "number", "cutscene camera angles are required")
+  copyComponents(self.previousTarget, self.target)
+  copyComponents(self.previousEye, self.eye)
+  copyComponents(self.target, target)
+  self.distance = distance
+  self.near, self.far = near or (150 / 16), far or (1700 / 16)
+  local angleX = angleIndexToRadians(angleXRaw)
+  local yaw = angleIndexToRadians(angleYRaw or self.profile.angleYRaw)
+  local horizontalDistance = distance * math.cos(angleX)
+  self.eye.x = target.x + math.sin(yaw) * horizontalDistance
+  self.eye.y = target.y + math.sin(-angleX) * distance
+  self.eye.z = target.z + math.cos(yaw) * horizontalDistance
+  copyComponents(self.sourceTarget, playerTarget)
+  self.cameraSourceY = playerTarget.y
+  self.cameraAppliedY = target.y - self.profile.targetOffsetTiles.y
+  self._rawPerspective = perspectiveRaw
+  self._projectionDirty = true
+end
+
 -- Translate the local coordinate frame after physical coverage changes. This
 -- is a coordinate-system event, not terrain motion, so it never writes the Y
 -- history ring.

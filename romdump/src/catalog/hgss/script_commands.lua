@@ -5681,18 +5681,22 @@ return {
       },
     },
     [755] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_LegendCutsceneClearBellAnimBegin",
       widths = {},
     },
     [756] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_LegendCutsceneClearBellAnimEnd",
       widths = {},
     },
     [757] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_LegendCutsceneClearBellRiseFromBag",
       widths = {},
     },
     [758] = {
+      classification = "yield_next_tick",
       name = "ScrCmd_LegendCutsceneClearBellShimmer",
       widths = {
         [1] = 2,
@@ -5707,30 +5711,36 @@ return {
       widths = {},
     },
     [761] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_LegendCutsceneMoveCameraTo",
       widths = {
         [1] = 2,
       },
     },
     [762] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_LegendCutscenePanCameraTo",
       widths = {
         [1] = 2,
       },
     },
     [763] = {
+      classification = "yield_to_task",
       name = "ScrCmd_LegendCutsceneWaitCameraPan",
       widths = {},
     },
     [764] = {
+      classification = "yield_to_task",
       name = "ScrCmd_LegendCutsceneBirdFinalApproach",
       widths = {},
     },
     [765] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_LegendCutsceneWavesOrLeavesEffectBegin",
       widths = {},
     },
     [766] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_LegendCutsceneWavesOrLeavesEffectEnd",
       widths = {},
     },
@@ -5767,6 +5777,7 @@ return {
       widths = {},
     },
     [773] = {
+      classification = "yield_to_task",
       name = "ScrCmd_Cinematic",
       widths = {
         [1] = 2,
@@ -6004,7 +6015,8 @@ return {
       },
     },
     [805] = {
-      name = "ScrCmd_805",
+      classification = "continue_same_tick",
+      name = "ScrCmd_FollowMonResetMovement",
       widths = {},
     },
     [806] = {

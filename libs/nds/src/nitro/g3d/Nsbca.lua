@@ -10,15 +10,21 @@
 --   +0x10 u32 ofsPivotData compressed-rotation table (5 x u16 entries)
 --   +0x14 u16 ofsTarget[numAnm]
 --
--- Target flag word (per-target record at record + ofsTarget[i]):
+-- Target flag word (per-target record at record + ofsTarget[i]); the bit
+-- meanings follow NitroSystem's getJntSRTAnmResult_ (g3d_anm_bca.c):
 --
---   bit  0: whole joint uses the model bind SRT (no channel data follows)
---   bits 1-2: translation mode (set: from model)
+--   bit  0: no animation, the whole joint is the identity transform (no
+--           channel data follows)
+--   bit  1: translation zero (identity); bit 2: translation from the model
 --   bits 3-5: transX/Y/Z constant (u32 fx32 each)
---   bits 6-7: rotation mode (set: from model)
+--   bit  6: rotation identity; bit 7: rotation from the model
 --   bit  8:   rotation constant (one u32 key value)
---   bits 9-10: scale mode (set: from model)
+--   bit  9: scale one (identity); bit 10: scale from the model
 --   bits 11-13: scaleX/Y/Z constant (u32 scale + u32 inverse each)
+--
+-- A zero/one (identity) flag wins over the matching model flag, and either
+-- one means no channel data follows for that component. Identity is the
+-- transform value itself, not the model's bind pose.
 --   bits 16-23: raw, unnamed (preserved; zero in every field member)
 --   bits 24-31: node index (0xFF = unused target)
 --
@@ -45,39 +51,24 @@ local NitroRotation = require("libs.nds.src.nitro.g3d.NitroRotation")
 local Nsbca = {}
 
 local MODEL = "model"
+local IDENTITY = "identity"
 local CONSTANT = "constant"
 local CURVE = "curve"
 
-local F_WHOLE_MODEL = 0x001
-local F_TRANS_MODE = 0x006
+local F_WHOLE_IDENTITY = 0x001
+local F_TRANS_ZERO = 0x002
+local F_TRANS_MODEL = 0x004
 local F_TRANS_CONST = { 0x008, 0x010, 0x020 }
-local F_ROT_FROM_MODEL = 0x040 -- rot fromModel gate: asm `ands r5, #0x40`; the 0x0C0 mode field is NOT the gate
+local F_ROT_ZERO = 0x040
+local F_ROT_MODEL = 0x080
 local F_ROT_CONST = 0x100
-local F_SCALE_MODE = 0x600
+local F_SCALE_ONE = 0x200
+local F_SCALE_MODEL = 0x400
 local F_SCALE_CONST = { 0x800, 0x1000, 0x2000 }
 local AXES = { "x", "y", "z" }
 
 local function bitSet(value, bit)
   return math.floor(value / bit) % 2 == 1
-end
-
--- Any bit of `mask` set in `value`: the asm's ands mode gates. `mask` must
--- be a nonzero contiguous run of set bits (bitSet above is single-bit only
--- and must not be called with the mode masks).
-local function maskAny(value, mask)
-  assert(mask > 0, "mode mask must be nonzero")
-  local shift = 1
-  while mask % 2 == 0 do
-    mask = math.floor(mask / 2)
-    shift = shift * 2
-  end
-  local width = 2
-  while math.floor(mask / 2) % 2 == 1 do
-    width = width * 2
-    mask = math.floor(mask / 2)
-  end
-  assert(mask == 1, "mode mask must span contiguous bits")
-  return math.floor(value / shift) % width ~= 0
 end
 
 -- Cross product for the third row (cells 6-8 = row 0 x row 1), as the asm
@@ -115,21 +106,20 @@ end
 local function decodeChannels(r, flag, at, context)
   local channels = { trans = {}, rot = nil, scale = {} }
 
-  if bitSet(flag, F_WHOLE_MODEL) then
+  if bitSet(flag, F_WHOLE_IDENTITY) then
     for _, axis in ipairs(AXES) do
-      channels.trans[axis] = { source = MODEL }
-      channels.scale[axis] = { source = MODEL }
+      channels.trans[axis] = { source = IDENTITY }
+      channels.scale[axis] = { source = IDENTITY }
     end
-    channels.rot = { source = MODEL }
+    channels.rot = { source = IDENTITY }
     return channels
   end
 
+  local transSource = (bitSet(flag, F_TRANS_ZERO) and IDENTITY) or (bitSet(flag, F_TRANS_MODEL) and MODEL) or nil
   for i = 1, 3 do
     local axis = AXES[i]
-    -- Mode bits win over the constant bits, exactly like the asm (the
-    -- encoder sets both for model-sourced channels).
-    if maskAny(flag, F_TRANS_MODE) then
-      channels.trans[axis] = { source = MODEL }
+    if transSource then
+      channels.trans[axis] = { source = transSource }
     elseif bitSet(flag, F_TRANS_CONST[i]) then
       r:assertRange(at, 4, "anm-const-trans")
       channels.trans[axis] = { source = CONSTANT, value = r:u32le(at) }
@@ -141,7 +131,9 @@ local function decodeChannels(r, flag, at, context)
     end
   end
 
-  if bitSet(flag, F_ROT_FROM_MODEL) then
+  if bitSet(flag, F_ROT_ZERO) then
+    channels.rot = { source = IDENTITY }
+  elseif bitSet(flag, F_ROT_MODEL) then
     channels.rot = { source = MODEL }
   elseif bitSet(flag, F_ROT_CONST) then
     r:assertRange(at, 4, "anm-const-rot")
@@ -153,22 +145,19 @@ local function decodeChannels(r, flag, at, context)
     channels.rot = { source = CURVE, curve = curve }
   end
 
-  if maskAny(flag, F_SCALE_MODE) then
-    for _, axis in ipairs(AXES) do
-      channels.scale[axis] = { source = MODEL }
-    end
-  else
-    for i = 1, 3 do
-      local axis = AXES[i]
-      if bitSet(flag, F_SCALE_CONST[i]) then
-        r:assertRange(at, 8, "anm-const-scale")
-        channels.scale[axis] = { source = CONSTANT, value = r:u32le(at), inverse = r:u32le(at + 4) }
-        at = at + 8
-      else
-        local curve = NitroCurve.decode(r, at, 2, context)
-        at = at + 8
-        channels.scale[axis] = { source = CURVE, curve = curve }
-      end
+  local scaleSource = (bitSet(flag, F_SCALE_ONE) and IDENTITY) or (bitSet(flag, F_SCALE_MODEL) and MODEL) or nil
+  for i = 1, 3 do
+    local axis = AXES[i]
+    if scaleSource then
+      channels.scale[axis] = { source = scaleSource }
+    elseif bitSet(flag, F_SCALE_CONST[i]) then
+      r:assertRange(at, 8, "anm-const-scale")
+      channels.scale[axis] = { source = CONSTANT, value = r:u32le(at), inverse = r:u32le(at + 4) }
+      at = at + 8
+    else
+      local curve = NitroCurve.decode(r, at, 2, context)
+      at = at + 8
+      channels.scale[axis] = { source = CURVE, curve = curve }
     end
   end
 
@@ -399,6 +388,8 @@ function Nsbca.sample(r, res, targetIndex, frameFx)
     local c = ch.trans[axis]
     if c.source == MODEL then
       transModel = true
+    elseif c.source == IDENTITY then
+      trans[axis] = 0
     elseif c.source == CONSTANT then
       trans[axis] = c.value
     else
@@ -414,6 +405,8 @@ function Nsbca.sample(r, res, targetIndex, frameFx)
   local rot = ch.rot
   if rot.source == MODEL then
     result.rotFromModel = true
+  elseif rot.source == IDENTITY then
+    result.rot = { 0x1000, 0, 0, 0, 0x1000, 0, 0, 0, 0x1000 }
   elseif rot.source == CONSTANT then
     result.rot = reconstructFinal(r, res.record + res.ofsRotData, res.record + res.ofsPivotData, rot.value, res.source)
   else
@@ -425,6 +418,10 @@ function Nsbca.sample(r, res, targetIndex, frameFx)
     local c = ch.scale[axis]
     if c.source == MODEL then
       scaleModel = true
+    elseif c.source == IDENTITY then
+      scale[axis] = 0x1000
+      inverseScale = inverseScale or {}
+      inverseScale[axis] = 0x1000
     elseif c.source == CONSTANT then
       scale[axis] = c.value
       inverseScale = inverseScale or {}

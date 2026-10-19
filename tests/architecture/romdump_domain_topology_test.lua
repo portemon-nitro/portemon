@@ -192,7 +192,7 @@ local EXISTING_DOMAINS = {
   },
 }
 
-local ROOT_UTILITIES = { "Hashing", "Lz10" }
+local ROOT_UTILITIES = { "Hashing", "Lz10", "Lz11" }
 
 local function pathExists(path)
   local handle = io.open(BASE .. "/" .. path, "r")
@@ -233,6 +233,7 @@ local function expectedDigestFiles()
   end
   expected[DIGEST_SOURCE_ROOT .. "/field/FollowerInteractionCacheWriter.lua"] = true
   expected[DIGEST_SOURCE_ROOT .. "/field/FollowerInteractionCompiler.lua"] = true
+  expected[DIGEST_SOURCE_ROOT .. "/field/HoOhAppearanceAssetCompiler.lua"] = true
   return expected
 end
 

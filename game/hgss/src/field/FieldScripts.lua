@@ -233,6 +233,7 @@ end
 ---@field sourceMap RuntimeFieldMap
 ---@field seedText string|nil
 ---@field audio table<string, unknown>|nil optional audio backend (absent -> SCRIPT_SERVICE_MISSING on use)
+---@field fieldAudio table<string, unknown>|nil field audio policy owner
 ---@field weather table<string, unknown>|nil optional live-weather backend
 ---@field camera table<string, unknown>|nil optional camera backend
 ---@field screen table<string, unknown>|nil optional screen backend
@@ -258,6 +259,7 @@ end
 ---@field monNaming table<string, unknown>|nil the script-owned Pokemon Naming Screen host
 ---@field followingMon table<string, unknown>|nil the live following-mon controller for follower script operations (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field celebiCinematic table<string, unknown>|nil runtime-owned Celebi scene service used by the time-travel task
+---@field legendCutscene table<string, unknown>|nil runtime-owned legend cutscene command state
 ---@field followerTransition table<string, unknown>|nil the transient follower-transition owner the nonblocking transition command starts (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field pokemonCenterHeal table<string, unknown>|nil runtime-owned Pokémon Center choreography
 ---@field starterBalls table<string, unknown>|nil the Elm starter-ball runtime-prop controller (absent -> SCRIPT_SERVICE_MISSING on use)
@@ -511,6 +513,7 @@ function FieldScripts.new(opts)
       -- The production game wires real audio/camera/screen/events here when
       -- those subsystems land; tests inject deterministic fakes.
       audio = opts.audio,
+      fieldAudio = opts.fieldAudio,
       weather = opts.weather,
       camera = opts.camera,
       screen = opts.screen,
@@ -537,6 +540,7 @@ function FieldScripts.new(opts)
       monNaming = opts.monNaming,
       followingMon = opts.followingMon,
       celebiCinematic = opts.celebiCinematic,
+      legendCutscene = opts.legendCutscene,
       followerInteraction = followerInteractionEngine,
       followerTransition = opts.followerTransition,
       pokemonCenterHeal = opts.pokemonCenterHeal,

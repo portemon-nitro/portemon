@@ -37,7 +37,6 @@ function BillboardTransform.componentsInto(centerOut, scaleOut, base)
   scaleOut[1] = columnMagnitude(base, 0)
   scaleOut[2] = columnMagnitude(base, 1)
   scaleOut[3] = columnMagnitude(base, 2)
-  assert(scaleOut[1] > 0 and scaleOut[2] > 0 and scaleOut[3] > 0, "billboard scale must be non-zero")
   centerOut[1], centerOut[2], centerOut[3] = base[13], base[14], base[15]
   return centerOut, scaleOut
 end
@@ -60,6 +59,7 @@ function BillboardTransform.resolve(base, viewMatrix)
   assert(#base == 16 and #viewMatrix == 16, "resolve needs two 4x4 matrices")
   local center, scale = BillboardTransform.components(base)
   local sx, sy, sz = scale[1], scale[2], scale[3]
+  assert(sx > 0 and sy > 0 and sz > 0, "a resolved billboard needs non-zero scale for its normal matrix")
 
   -- transpose(view rotation) scaled per column, then the base translation. Column
   -- j of the rotation transpose is row j of the rotation, i.e. viewMatrix[j+1],

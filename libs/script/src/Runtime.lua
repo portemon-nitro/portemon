@@ -1617,7 +1617,7 @@ local function handleFadeMusicIn(node, run)
   return blockOnTask(run, "music_fade", { node = node })
 end
 local function handleProcessSoundplate(_, run)
-  requireService(run, "audio"):processSoundplate()
+  requireService(run, "fieldAudio"):processSoundplate()
   return Runtime.OUTCOME_CONTINUE
 end
 local function handleShakeCamera(node, run)
@@ -2485,6 +2485,37 @@ function HANDLERS.whiteout(node, run)
 end
 function HANDLERS.celebi_time_travel(_, run)
   return blockOnTask(run, "celebi_time_travel", {})
+end
+local LEGEND_CUTSCENE_TASKS = {
+  legend_cutscene_bell_shimmer = true,
+  legend_cutscene_camera_wait = true,
+  legend_cutscene_bird_approach = true,
+  legend_cinematic = true,
+}
+local function handleLegendCutscene(node, run)
+  requireForeground(run, node.op)
+  local scene = assert(requireService(run, "legendCutscene"))
+  scene:command(node.op, node.destination)
+  if LEGEND_CUTSCENE_TASKS[node.op] then
+    local ticks = scene:taskTicks(node.op)
+    return blockOnTask(run, "wait_ticks", { ticks = ticks })
+  end
+  return Runtime.OUTCOME_CONTINUE
+end
+HANDLERS.legend_cutscene_bell_begin = handleLegendCutscene
+HANDLERS.legend_cutscene_bell_end = handleLegendCutscene
+HANDLERS.legend_cutscene_bell_rise = handleLegendCutscene
+HANDLERS.legend_cutscene_bell_shimmer = handleLegendCutscene
+HANDLERS.legend_cutscene_camera_move = handleLegendCutscene
+HANDLERS.legend_cutscene_camera_pan = handleLegendCutscene
+HANDLERS.legend_cutscene_camera_wait = handleLegendCutscene
+HANDLERS.legend_cutscene_bird_approach = handleLegendCutscene
+HANDLERS.legend_cutscene_effect_begin = handleLegendCutscene
+HANDLERS.legend_cutscene_effect_end = handleLegendCutscene
+HANDLERS.legend_cinematic = handleLegendCutscene
+function HANDLERS.follower_reset_movement(_, run)
+  requireService(run, "followingMon"):resetMovement()
+  return Runtime.OUTCOME_CONTINUE
 end
 function HANDLERS.give_spiky_ear_pichu(_, run)
   requireService(run, "specialMonGifts"):giveSpikyEarPichu()

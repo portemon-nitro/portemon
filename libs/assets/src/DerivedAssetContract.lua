@@ -308,9 +308,8 @@ DerivedAssetContract.newGameInit = {
 }
 
 DerivedAssetContract.fieldEffects = {
-  -- v12 adds the normalized three-clip Celebi time-travel model to the
-  -- required field-effect inventory; prior caches rebuild through readiness.
-  cacheFormat = "field-effect-cache-v12",
+  -- v14 adds the source models and animation clips used by both Ho-Oh cinematic shots.
+  cacheFormat = "field-effect-cache-v14",
   indexSchema = "g4-field-effect-index-v4",
 }
 

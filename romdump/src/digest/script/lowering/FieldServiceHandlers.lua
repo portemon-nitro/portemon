@@ -17,6 +17,52 @@ function FieldServiceHandlers.celebiTimeTravel(_)
   return { op = "celebi_time_travel" }
 end
 
+function FieldServiceHandlers.legendCutscene(op, ins)
+  local step = { op = op }
+  if ins.operands[1] ~= nil then
+    step.destination = Operands.operandValue(ins.operands[1])
+  end
+  return step
+end
+
+function FieldServiceHandlers.legendCutsceneBellBegin(ins)
+  return FieldServiceHandlers.legendCutscene("legend_cutscene_bell_begin", ins)
+end
+function FieldServiceHandlers.legendCutsceneBellEnd(ins)
+  return FieldServiceHandlers.legendCutscene("legend_cutscene_bell_end", ins)
+end
+function FieldServiceHandlers.legendCutsceneBellRise(ins)
+  return FieldServiceHandlers.legendCutscene("legend_cutscene_bell_rise", ins)
+end
+function FieldServiceHandlers.legendCutsceneBellShimmer(ins)
+  return FieldServiceHandlers.legendCutscene("legend_cutscene_bell_shimmer", ins)
+end
+function FieldServiceHandlers.legendCutsceneCameraMove(ins)
+  return FieldServiceHandlers.legendCutscene("legend_cutscene_camera_move", ins)
+end
+function FieldServiceHandlers.legendCutsceneCameraPan(ins)
+  return FieldServiceHandlers.legendCutscene("legend_cutscene_camera_pan", ins)
+end
+function FieldServiceHandlers.legendCutsceneCameraWait(ins)
+  return FieldServiceHandlers.legendCutscene("legend_cutscene_camera_wait", ins)
+end
+function FieldServiceHandlers.legendCutsceneBirdApproach(ins)
+  return FieldServiceHandlers.legendCutscene("legend_cutscene_bird_approach", ins)
+end
+function FieldServiceHandlers.legendCutsceneEffectBegin(ins)
+  return FieldServiceHandlers.legendCutscene("legend_cutscene_effect_begin", ins)
+end
+function FieldServiceHandlers.legendCutsceneEffectEnd(ins)
+  return FieldServiceHandlers.legendCutscene("legend_cutscene_effect_end", ins)
+end
+function FieldServiceHandlers.legendCinematic(ins)
+  return FieldServiceHandlers.legendCutscene("legend_cinematic", ins)
+end
+
+function FieldServiceHandlers.followMonResetMovement(_)
+  return { op = "follower_reset_movement" }
+end
+
 function FieldServiceHandlers.processSoundplate()
   return { op = "process_soundplate" }
 end

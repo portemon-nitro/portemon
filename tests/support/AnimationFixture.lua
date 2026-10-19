@@ -284,14 +284,16 @@ function AnimationFixture.jntFull(rateFlag, keyCount, numFrame, limit, anmFlags)
 end
 
 -- Constant-track targets: trans and rot constants, scale constants with
--- inverse pairs, and a whole-model target.
+-- inverse pairs, identity channels (the translation-zero, rotation-zero, and
+-- scale-one flags), model-sourced channels, and whole-joint targets. Channels
+-- marked "model" carry no data bytes whatever their flag semantics.
 function AnimationFixture.jntConstants()
   local record = buildJntRecord({
     numFrame = 2,
     targets = {
       {
         nodeIndex = 1,
-        flag = 0x000006F8, -- trans consts, rot+scale from model
+        flag = 0x00000278, -- trans consts, rot zero, scale one
         channels = {
           trans = { x = { const = fx32(10) }, y = { const = fx32(20) }, z = { const = fx32(30) } },
           rot = "model",
@@ -300,7 +302,7 @@ function AnimationFixture.jntConstants()
       },
       {
         nodeIndex = 2,
-        flag = 0x00000706, -- rot const, trans+scale from model
+        flag = 0x00000302, -- rot const, trans zero, scale one
         channels = {
           trans = { x = "model", y = "model", z = "model" },
           rot = { const = 0x8001 },
@@ -309,7 +311,7 @@ function AnimationFixture.jntConstants()
       },
       {
         nodeIndex = 4,
-        flag = 0x000038C6, -- scale consts, trans+rot from model
+        flag = 0x00003842, -- scale consts, trans zero, rot zero
         channels = {
           trans = { x = "model", y = "model", z = "model" },
           rot = "model",
@@ -321,17 +323,14 @@ function AnimationFixture.jntConstants()
         },
       },
       { nodeIndex = 5, flag = 0x00000001, channels = {} },
-      -- Rot constant with bit 7 set but bit 6 clear: the decoder's rot-mode
-      -- gate tests bit 6 only (the asm's fromModel bit, `ands r5, #0x40`),
-      -- NOT the full 0xC0 mode field, so this decodes as a constant, not
-      -- from the model. The encoder sets both bits for model-sourced
-      -- rotation, so no real member exercises this corner.
+      -- Translation, rotation, and scale taken from the model's bind pose
+      -- (the model flags without the zero/one flags).
       {
         nodeIndex = 6,
-        flag = 0x00000786, -- trans mode + rot const (bit 7, no bit 6) + scale mode
+        flag = 0x00000484,
         channels = {
           trans = { x = "model", y = "model", z = "model" },
-          rot = { const = 0x8000 },
+          rot = "model",
           scale = { x = "model", y = "model", z = "model" },
         },
       },

@@ -379,6 +379,87 @@ local function validCelebiTimeTravelDefinition(definition, _)
   return true
 end
 
+local HOOH_MODELS = {
+  { key = "field-effect:ho-oh-appearance:bellRising", clips = 6 },
+  { key = "field-effect:ho-oh-appearance:bellShimmer", clips = 2 },
+  { key = "field-effect:ho-oh-appearance:cornerBells", clips = 1 },
+  { key = "field-effect:ho-oh-appearance:birdApproach", clips = 3 },
+  { key = "field-effect:ho-oh-appearance:wavesEffect", clips = 2 },
+  { key = "field-effect:ho-oh-appearance:cinematic.first.0", clips = 4 },
+  { key = "field-effect:ho-oh-appearance:cinematic.first.1", clips = 4 },
+  { key = "field-effect:ho-oh-appearance:cinematic.first.2", clips = 4 },
+  { key = "field-effect:ho-oh-appearance:cinematic.second.0", clips = 3 },
+  { key = "field-effect:ho-oh-appearance:cinematic.second.1", clips = 3 },
+  { key = "field-effect:ho-oh-appearance:cinematic.second.2", clips = 3 },
+}
+
+local function validHoOhAppearanceDefinition(definition, _)
+  if type(definition) ~= "table" or type(definition.models) ~= "table" or #definition.models ~= #HOOH_MODELS then
+    return false
+  end
+  for key in pairs(definition) do
+    if key ~= "models" and key ~= "leaves" then
+      return false
+    end
+  end
+  for index, expected in ipairs(HOOH_MODELS) do
+    local model = definition.models[index]
+    if
+      type(model) ~= "table"
+      or model.kind ~= "nitro-dynamic"
+      or model.key ~= expected.key
+      or type(model.animations) ~= "table"
+      or #model.animations ~= expected.clips
+    then
+      return false
+    end
+    for _, clip in ipairs(model.animations) do
+      if type(clip) ~= "table" or type(clip.id) ~= "string" or type(clip.frameCount) ~= "number" then
+        return false
+      end
+    end
+  end
+  if definition.leaves ~= nil then
+    local leaves = definition.leaves
+    if type(leaves) ~= "table" then
+      return false
+    end
+    for key in pairs(leaves) do
+      if key ~= "bg2" and key ~= "bg3" then
+        return false
+      end
+    end
+    for _, layerName in ipairs({ "bg2", "bg3" }) do
+      local layer = leaves[layerName]
+      if type(layer) ~= "table" or type(layer.frames) ~= "table" or #layer.frames ~= 6 then
+        return false
+      end
+      for key in pairs(layer) do
+        if key ~= "frames" then
+          return false
+        end
+      end
+      for _, frame in ipairs(layer.frames) do
+        if
+          type(frame) ~= "table"
+          or type(frame.path) ~= "string"
+          or not frame.path:match("^assets/generated/field/effects/textures/[%da-f]+%.png$")
+          or frame.width ~= 256
+          or frame.height ~= 256
+        then
+          return false
+        end
+        for key in pairs(frame) do
+          if key ~= "path" and key ~= "width" and key ~= "height" then
+            return false
+          end
+        end
+      end
+    end
+  end
+  return true
+end
+
 local function validWarpDefinition(definition, _)
   return type(definition.lifetime) == "number" and definition.lifetime > 0
 end
@@ -406,6 +487,7 @@ local FIELD_EFFECT_INVENTORY = {
   { key = "follower_transition", entryKind = "transition", validator = validTransitionDefinition },
   { key = "pokemon_center_heal", entryKind = "healing", validator = validPokemonCenterHealDefinition },
   { key = "celebi_time_travel", entryKind = "cinematic", validator = validCelebiTimeTravelDefinition },
+  { key = "ho_oh_appearance", entryKind = "cinematic", validator = validHoOhAppearanceDefinition },
 }
 for selector = 1, 14 do
   FIELD_EFFECT_INVENTORY[#FIELD_EFFECT_INVENTORY + 1] = followerReactionEntry(selector)
@@ -472,7 +554,12 @@ function FieldEffectAssetCache.isReady(cacheFs, expectedMarker)
       return false
     end
     local descriptors = definition.models or { definition.model }
-    if kind ~= "follower_transition" and kind ~= "pokemon_center_heal" and definition.models ~= nil then
+    if
+      kind ~= "follower_transition"
+      and kind ~= "pokemon_center_heal"
+      and kind ~= "ho_oh_appearance"
+      and definition.models ~= nil
+    then
       return false
     end
     local descriptorCount = 0
@@ -494,6 +581,15 @@ function FieldEffectAssetCache.isReady(cacheFs, expectedMarker)
       for _, path in ipairs(paths) do
         if not cacheFs:exists(path) then
           return false
+        end
+      end
+    end
+    if kind == "ho_oh_appearance" and definition.leaves ~= nil then
+      for _, layer in pairs(definition.leaves) do
+        for _, frame in ipairs(layer.frames) do
+          if not cacheFs:exists(frame.path) then
+            return false
+          end
         end
       end
     end

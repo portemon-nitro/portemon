@@ -156,9 +156,15 @@ function T.rejects_a_matrix_of_the_wrong_size()
   end)
 end
 
-function T.rejects_a_zero_billboard_scale_before_shader_use()
+function T.components_preserve_a_zero_animation_scale()
+  local center, scale = BillboardTransform.components(Matrix4.scale(0, 1, 1))
+  Assert.deepEqual(center, { 0, 0, 0 })
+  Assert.deepEqual(scale, { 0, 1, 1 })
+end
+
+function T.rejects_a_zero_scale_when_resolving_the_normal_matrix()
   Assert.throws(function()
-    BillboardTransform.components(Matrix4.scale(0, 1, 1))
+    BillboardTransform.resolve(Matrix4.scale(0, 1, 1), Matrix4.identity())
   end)
 end
 
@@ -187,10 +193,9 @@ function T.components_into_matches_components()
   end
 end
 
-function T.components_into_rejects_a_zero_billboard_scale()
-  Assert.throws(function()
-    BillboardTransform.componentsInto({ 0, 0, 0 }, { 0, 0, 0 }, Matrix4.scale(0, 1, 1))
-  end)
+function T.components_into_preserves_a_zero_animation_scale()
+  local _, scale = BillboardTransform.componentsInto({ 0, 0, 0 }, { 0, 0, 0 }, Matrix4.scale(0, 1, 1))
+  Assert.deepEqual(scale, { 0, 1, 1 })
 end
 
 return { tests = T }

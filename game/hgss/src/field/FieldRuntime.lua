@@ -476,6 +476,7 @@ end
 ---@field saveStore FieldRuntimeSaveStore? global publication owner
 
 ---@class FieldRuntimeScriptHosts
+---@field fieldAudio table<string, unknown>? field map audio policy test adapter
 ---@field audio table<string, unknown>?
 ---@field camera table<string, unknown>?
 ---@field screen table<string, unknown>?
@@ -538,6 +539,7 @@ end
 ---@field menuLaneWarps table<string, unknown>? the long-lived menu-origin warp service (nil before composition / after teardown)
 ---@field followingMon FollowingMonController|nil the one derived follower controller (nil after teardown)
 ---@field celebiTimeTravelScene table<string, unknown>|nil runtime-owned headless Celebi cutscene state
+---@field hoOhAppearanceScene table<string, unknown>? runtime-owned Bell Tower cutscene state
 ---@field followingMonTransition FollowingMonTransitionController|nil the one transient follower-transition owner (nil after teardown)
 ---@field followerTransitionDefinition table<string, unknown>? the compiled follower-transition definition behind the transient owner
 ---@field starterBalls table<string, unknown>? the Elm starter-ball runtime-prop controller (nil after teardown)
@@ -1958,6 +1960,9 @@ function FieldRuntime:update(dt)
       self.mapNameBanner:updateFixed()
     end
     self.session:updateFixed()
+    if self.hoOhAppearanceScene then
+      self.hoOhAppearanceScene:updateFixed()
+    end
     fieldExecuted = fieldExecuted + 1
     -- One committed step is considered per fixed tick, before another
     -- catch-up tick can start a step: an accepted encounter claims the
