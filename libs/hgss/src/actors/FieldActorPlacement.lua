@@ -107,6 +107,33 @@ function FieldActorPlacement.samePhysicalCandidate(runtimeMap, left, right)
   return FieldActorPlacement.sameSurfaceIdentity(leftKind, leftFirst, leftSecond, rightKind, rightFirst, rightSecond)
 end
 
+-- True when a terrain-bearing map has no walkable plate under the tile
+-- centre. Retail keeps an object's own height on such tiles instead of
+-- placing it on a surface, so an uncovered tile is placement without a
+-- surface, never a fault. Out-of-coverage tiles still raise.
+---@param runtimeMap RuntimeFieldMap
+---@param fieldX integer
+---@param fieldZ integer
+---@return boolean
+function FieldActorPlacement.isUncovered(runtimeMap, fieldX, fieldZ)
+  if runtimeMap.collision == nil or runtimeMap.terrain == nil then
+    return false
+  end
+  local localX, localZ = FieldCoordinates.fieldToLocal(runtimeMap, fieldX, fieldZ)
+  local candidates = runtimeMap.terrain:candidatesAt(
+    localX + FieldCoordinates.TILE_CENTER_OFFSET,
+    localZ + FieldCoordinates.TILE_CENTER_OFFSET
+  )
+  return #candidates == 0
+end
+
+-- The runtime height of a source object event, kept where no plate exists.
+---@param event FieldActorEvent
+---@return number
+function FieldActorPlacement.eventHeight(event)
+  return event.y / OBJECT_EVENT_Y_UNITS
+end
+
 ---@param runtimeMap RuntimeFieldMap
 ---@param fieldX integer
 ---@param fieldZ integer
@@ -182,6 +209,22 @@ function FieldActorPlacement.projectEndpoint(runtimeMap, point)
       worldY = point.worldY,
       worldZ = worldZ,
       resident = false,
+    }
+  end
+  if FieldActorPlacement.isUncovered(runtimeMap, fieldX, fieldZ) then
+    local world = FieldCoordinates.fieldToWorld(
+      runtimeMap,
+      fieldX,
+      fieldZ,
+      point.worldY or FieldActorPlacement.eventHeight(point.sourceEvent)
+    )
+    return {
+      fieldX = fieldX,
+      fieldZ = fieldZ,
+      worldX = world.x,
+      worldY = world.y,
+      worldZ = world.z,
+      resident = true,
     }
   end
   local localX, localZ = FieldCoordinates.fieldToLocal(runtimeMap, fieldX, fieldZ)
@@ -282,6 +325,23 @@ function FieldActorPlacement.resolveAdjacentDestination(
   local fieldX, fieldZ = state.fieldX + delta.x, state.fieldZ + delta.z
   local localX, localZ = FieldCoordinates.fieldToLocal(runtimeMap, fieldX, fieldZ)
   local centerX, centerZ = localX + FieldCoordinates.TILE_CENTER_OFFSET, localZ + FieldCoordinates.TILE_CENTER_OFFSET
+  if
+    FieldActorPlacement.isResident(runtimeMap, fieldX, fieldZ)
+    and FieldActorPlacement.isUncovered(runtimeMap, fieldX, fieldZ)
+  then
+    local blocked = runtimeMap.collision.isBlockedLocal ~= nil and runtimeMap.collision:isBlockedLocal(localX, localZ)
+    local worldY = state.hasWorldPosition == 1 and state.worldY or FieldActorPlacement.eventHeight(actor.sourceEvent)
+    local world = FieldCoordinates.fieldToWorld(runtimeMap, fieldX, fieldZ, worldY)
+    return {
+      fieldX = fieldX,
+      fieldZ = fieldZ,
+      worldX = world.x,
+      worldY = world.y,
+      worldZ = world.z,
+      resident = FieldActorPlacement.isResident(runtimeMap, fieldX, fieldZ),
+    },
+      blocked
+  end
   local sample
   local blocked = false
   if

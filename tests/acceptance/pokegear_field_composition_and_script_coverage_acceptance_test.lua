@@ -1081,11 +1081,11 @@ end
 -- the Pokecenter pocket proves the card locks hold and registers nothing,
 -- the tower second floor runs Buena's password service through its gate,
 -- and the seeded gear opens every tab over real backing data. Maps that
--- cannot load (the tower first floor with its surfaceless actor, the
--- outdoor spawn with no walkable tile, Route 35 with its missing map
--- data) fail attributed through the real production entry path instead of
--- faked. The Radio Card itself stays unearned while its giver's floor
--- cannot load: its giver script lives on the unloadable first floor.
+-- cannot load (the outdoor spawn with no walkable tile, Route 35 with its
+-- missing map data) fail attributed through the real production entry path
+-- instead of faked. The tower first floor loads with its actor on a tile
+-- without a terrain plate; the Radio Card itself stays unearned here
+-- because this scenario never runs its giver script.
 function T.tests.goldenrod_bootable_maps_cover_tabs_and_mark_unloadable_maps()
   -- The Pokecenter pocket boots, but its spawn tile never moves: every
   -- cardinal step resolves in place, so the heal counter (with its
@@ -1249,34 +1249,26 @@ function T.tests.goldenrod_bootable_maps_cover_tabs_and_mark_unloadable_maps()
 
   -- Unloadable maps, attributed with production-identical evidence. Each
   -- boot below runs the real production entry path and fails before any
-  -- state exists, so every failure lands pre-mutation with no fabrication:
-  -- the tower first floor (with the Radio Card giver script) places an
-  -- actor with no single terrain surface, which is a world-data defect for
-  -- the map owner and out of scope here.
+  -- state exists, so every failure lands pre-mutation with no fabrication.
+  -- The tower first floor (with the Radio Card giver script) places an
+  -- actor on a tile without a terrain plate: it keeps its event height and
+  -- carries no surface, and the map loads.
   do
-    local booted = nil
+    local booted = AcceptanceHarness.new():boot({
+      versionId = AcceptanceHarness.defaultVersion(),
+      map = "MAP_GOLDENROD_RADIO_TOWER_1F",
+      save = "fresh",
+      fieldOptions = { recordingScriptHosts = true },
+    })
     local ok, err = pcall(function()
-      booted = AcceptanceHarness.new():boot({
-        versionId = AcceptanceHarness.defaultVersion(),
-        map = "MAP_GOLDENROD_RADIO_TOWER_1F",
-        save = "fresh",
-        fieldOptions = { recordingScriptHosts = true },
-      })
       booted:waitForFieldEntry()
+      local actor = assert(booted.runtime.actors:getById("map:112:object:5"), "the tower actor is admitted")
+      Assert.isNil(actor:getSurfaceId(), "the tower actor stands on a tile without a plate")
     end)
-    if booted ~= nil then
-      booted:close()
+    booted:close()
+    if not ok then
+      error(err, 0)
     end
-    Assert.isFalse(ok, "the tower first floor must stay unloadable while its actor has no surface")
-    local text = tostring(err)
-    Assert.isTrue(
-      text:find("map:112:object:5", 1, true) ~= nil,
-      "the tower failure must attribute the surfaceless actor"
-    )
-    Assert.isTrue(
-      text:find("TERRAIN_SURFACE_NOT_FOUND", 1, true) ~= nil,
-      "the tower failure must name the missing surface"
-    )
   end
   -- Goldenrod's outdoor spawn has no walkable tile through the same
   -- production entry path.

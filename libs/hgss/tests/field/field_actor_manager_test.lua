@@ -4,6 +4,7 @@
 
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
+local FieldCoordinates = require("libs.hgss.src.field.FieldCoordinates")
 local FieldActorManager = require("libs.hgss.src.actors.FieldActorManager")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldObjectSave = require("libs.hgss.src.save.FieldObjectSave")
@@ -759,10 +760,28 @@ function T.reprojection_uses_the_raw_event_y_hint_when_the_surface_is_stale()
   mgr:dispose()
 end
 
-function T.actor_off_the_terrain_is_fatal()
-  throwsCode("ACTOR_SURFACE_MISSING", function()
-    manager({ object({ x = 35, z = 3 }) })
-  end)
+-- A resident tile with no terrain plate keeps the event's own height and
+-- carries no surface, as the retail height lookup does when no plate exists.
+function T.actor_on_an_uncovered_tile_keeps_its_event_height_without_a_surface()
+  local mgr, _, _, map = manager({ object({ x = 35, z = 3, y = rawObjectEventY(2) }) })
+  local actor = assert(mgr:getById("map:61:object:0"))
+  local expected = FieldCoordinates.fieldToWorld(map, 35, 3, 2)
+  Assert.isTrue(actor:isResident(), "the uncovered tile is inside permission coverage")
+  Assert.isNil(actor:getSurfaceId(), "no plate means no surface")
+  Assert.equal(actor:getWorldPosition().y, 2, "the event height is kept")
+  Assert.equal(actor:getWorldPosition().x, expected.x, "the world position still follows the tile")
+  Assert.equal(actor:getWorldPosition().z, expected.z, "the world position still follows the tile")
+  mgr:dispose()
+end
+
+function T.uncovered_actor_survives_reprojection_and_stepping()
+  local mgr = manager({ object({ x = 35, z = 3, y = rawObjectEventY(2) }) })
+  local actor = assert(mgr:getById("map:61:object:0"))
+  mgr:reconcilePhysicalWorld()
+  mgr:step(1)
+  Assert.isNil(actor:getSurfaceId())
+  Assert.equal(actor:getWorldPosition().y, 2)
+  mgr:dispose()
 end
 
 function T.incomplete_source_surface_identity_is_fatal()
@@ -1749,16 +1768,21 @@ function T.script_set_position_conversion_failure_keeps_occupancy()
   Assert.equal(assert(getAt(mgr, 61, 2, 3, 0), "the mover kept its old cell").actorId, "map:61:object:0")
 end
 
--- A destination inside the permission coverage but without terrain (or with
--- an unresolvable surface) is equally transactional.
-function T.script_set_position_surface_failure_keeps_occupancy()
+-- A destination inside the permission coverage but without terrain keeps the
+-- actor's height, drops its surface and occupancy, and a later move back onto
+-- covered terrain restores both.
+function T.script_set_position_onto_an_uncovered_tile_keeps_height_and_drops_the_surface()
   local mgr = manager({ object({ objectEventId = 0, x = 2, z = 3 }) })
   local actor = assert(mgr:getById("map:61:object:0"))
-  throwsCode("TERRAIN_SURFACE_NOT_FOUND", function()
-    mgr:setPosition("map:61:object:0", { fieldX = 35, fieldZ = 3 })
-  end)
-  Assert.equal(actor:getFieldPosition().fieldX, 2, "the actor keeps its old position")
-  Assert.equal(assert(getAt(mgr, 61, 2, 3, 0), "the mover kept its old cell").actorId, "map:61:object:0")
+  mgr:setPosition("map:61:object:0", { fieldX = 35, fieldZ = 3 })
+  Assert.equal(actor:getFieldPosition().fieldX, 35)
+  Assert.isNil(actor:getSurfaceId(), "no plate means no surface")
+  Assert.equal(actor:getWorldPosition().y, 0, "the actor keeps its height")
+  Assert.isNil(getAt(mgr, 61, 2, 3, 0), "the old cell is vacated")
+  mgr:setPosition("map:61:object:0", { fieldX = 3, fieldZ = 3 })
+  Assert.equal(actor:getSurfaceId(), 0, "covered terrain restores the surface")
+  Assert.equal(assert(getAt(mgr, 61, 3, 3, 0), "occupancy follows the restored surface").actorId, "map:61:object:0")
+  mgr:dispose()
 end
 
 -- A move onto a different terrain plate updates the surface used by occupancy

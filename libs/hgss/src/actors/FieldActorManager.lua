@@ -477,7 +477,7 @@ local function publishResolvedPosition(entry, actor, position)
     oldKey = entry.occupancy:key(candidateForActor(actor))
   end
   local newKey
-  if position.resident and state.solid == 1 then
+  if position.resident and position.surfaceId ~= nil and state.solid == 1 then
     newKey = entry.occupancy:key(position --[[@as FieldOccupancyCandidate]])
   end
   if oldKey and newKey and oldKey == newKey then
@@ -501,6 +501,8 @@ local cellKeyFor = FieldActorPlacement.cellKeyFor
 local resolveSurface = FieldActorPlacement.resolveSurface
 local currentSurfaceFor = FieldActorPlacement.currentSurfaceFor
 local resolveSurfaceAt = FieldActorPlacement.resolveSurfaceAt
+local isUncovered = FieldActorPlacement.isUncovered
+local eventHeight = FieldActorPlacement.eventHeight
 
 -- Physical surface/endpoint projection lives in FieldActorPlacement; the
 -- manager keeps lifecycle, collision and reservation policy. These locals
@@ -558,8 +560,10 @@ function FieldActorManager:_instantiate(entry, event, eventState)
     )
   end
   local resident = isResident(runtimeMap, event.x, event.z)
-  local surface = resident and resolveSurface(runtimeMap, event, actorId) or nil
-  local world = surface and FieldCoordinates.fieldToWorld(runtimeMap, event.x, event.z, surface.worldY) or nil
+  local uncovered = resident and isUncovered(runtimeMap, event.x, event.z)
+  local surface = resident and not uncovered and resolveSurface(runtimeMap, event, actorId) or nil
+  local worldY = uncovered and eventHeight(event) or surface and surface.worldY or nil
+  local world = worldY and FieldCoordinates.fieldToWorld(runtimeMap, event.x, event.z, worldY) or nil
   local plate = surface and runtimeMap.terrain:plate(surface.surfaceId) or nil
   local plateCellKey, plateSourceSurfaceId
   if plate then
@@ -590,7 +594,7 @@ function FieldActorManager:_instantiate(entry, event, eventState)
       solid = event.solid,
       fieldX = event.x,
       fieldZ = event.z,
-      cellKey = plateCellKey or (resident and cellKeyFor(event.x, event.z) or nil),
+      cellKey = plateCellKey or (resident and not uncovered and cellKeyFor(event.x, event.z) or nil),
       sourceSurfaceId = plateSourceSurfaceId,
       surfaceId = surface and surface.surfaceId or nil,
       worldX = world and world.x or nil,
@@ -875,6 +879,8 @@ local function savedProjection(entry, actor, record)
     worldY = runtimeMap.terrain:sampleHeight(surfaceId, centerX, centerZ)
     cellKey = record.cellKey
     sourceSurfaceId = record.sourceSurfaceId
+  elseif isUncovered(runtimeMap, record.fieldX, record.fieldZ) then
+    worldY = eventHeight(actor.sourceEvent)
   else
     local sample = resolveSurfaceAt(runtimeMap, record.fieldX, record.fieldZ, actor.sourceEvent.y, actor.actorId)
     local plate = assert(runtimeMap.terrain:plate(sample.surfaceId), "saved actor surface is missing")
@@ -1049,7 +1055,7 @@ function FieldActorManager:_restoreEntry(entry, eventState, snapshot)
       cellKey = projection.cellKey,
       sourceSurfaceId = projection.sourceSurfaceId,
     }
-    if state.solid == 1 and projection.resident ~= false then
+    if state.solid == 1 and projection.resident ~= false and projection.surfaceId ~= nil then
       occupancy:claim(actor, candidate)
     end
   end
@@ -1876,7 +1882,7 @@ function FieldActorManager:reconcilePhysicalWorld()
       local reconcileState = actor:numericState()
       if isResident(runtimeMap, reconcileState.fieldX, reconcileState.fieldZ) then
         local projection = projectionFor(runtimeMap, actor)
-        if reconcileState.solid == 1 then
+        if reconcileState.solid == 1 and projection.surfaceId ~= nil then
           stagedOccupancy:claim(actor, {
             fieldX = reconcileState.fieldX,
             fieldZ = reconcileState.fieldZ,
@@ -2487,7 +2493,14 @@ function FieldActorManager:setPosition(actorId, position, options)
   local plateCellKey
   local world
   local sourceSurfaceId = resident and actorSourceSurfaceId or nil
-  if resident then
+  local keptWorldY
+  if resident and isUncovered(entry.runtimeMap, position.fieldX, position.fieldZ) then
+    -- No plate under the destination: the actor keeps its height and
+    -- leaves its surface and stable cell identity behind.
+    keptWorldY = position.worldY or actorWorldY or eventHeight(actor.sourceEvent)
+    world = FieldCoordinates.fieldToWorld(entry.runtimeMap, position.fieldX, position.fieldZ, keptWorldY)
+    sourceSurfaceId = nil
+  elseif resident then
     local resolved, resolvedWorld, plate, sampledCellKey, plateSourceSurfaceId = destinationSample(entry, {
       fieldX = position.fieldX,
       fieldZ = position.fieldZ,
@@ -2539,11 +2552,11 @@ function FieldActorManager:setPosition(actorId, position, options)
   publishResolvedPosition(entry, actor, {
     fieldX = position.fieldX,
     fieldZ = position.fieldZ,
-    worldY = sample and sample.worldY or nil,
+    worldY = sample and sample.worldY or keptWorldY,
     worldX = world and world.x or nil,
     worldZ = world and world.z or nil,
     surfaceId = sample and sample.surfaceId or nil,
-    cellKey = plateCellKey or cellKey,
+    cellKey = keptWorldY == nil and (plateCellKey or cellKey) or nil,
     sourceSurfaceId = sourceSurfaceId,
     resident = resident,
   })

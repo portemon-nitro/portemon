@@ -483,6 +483,33 @@ function T.malformed_terrain_failure_is_not_a_blocked_step()
   end)
 end
 
+-- A scripted walk onto a tile without a plate keeps the player's height and
+-- carries no surface, as retail does where its height lookup finds no plate;
+-- a later scripted walk back onto covered terrain resolves a surface again.
+function T.scripted_walk_over_an_uncovered_tile_keeps_height_without_a_surface()
+  local map = runtimeMap(nil, {
+    flatPlate(0, 0, 1, 3),
+    flatPlate(1, 2, 32, 3),
+  })
+  local p = player(map, 0, 4, 0)
+  local startY = p.worldY
+  p:beginScriptedAction({ action = "walk", direction = "east", speed = "normal" })
+  for _ = 1, FieldPlayer.WALK_STEP_TICKS do
+    p:updateFixed({})
+  end
+  p:commitScriptedAction()
+  Assert.equal(p.fieldX, 1)
+  Assert.isNil(p.surfaceId, "no plate means no surface")
+  Assert.equal(p.worldY, startY, "the player keeps its height")
+  p:beginScriptedAction({ action = "walk", direction = "east", speed = "normal" })
+  for _ = 1, FieldPlayer.WALK_STEP_TICKS do
+    p:updateFixed({})
+  end
+  p:commitScriptedAction()
+  Assert.equal(p.fieldX, 2)
+  Assert.equal(p.surfaceId, 1, "covered terrain resolves a surface again")
+end
+
 function T.ambiguous_terrain_failure_is_not_a_blocked_step()
   -- Two equally-near surfaces cover the destination: ambiguous terrain must
   -- propagate instead of being swallowed as an ordinary collision.

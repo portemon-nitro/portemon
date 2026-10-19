@@ -374,6 +374,9 @@ local function driveUntilMap(game, mapSymbol, maxTicks, trace)
     end
     if snapshot.mapSymbol == mapSymbol then
       arrived = snapshot
+      for _ = 1, 600 do
+        game:step()
+      end
       break
     end
     if #journeyFaults(game) > 0 then
@@ -440,12 +443,12 @@ end
 -- friend appears, the time-travel beat completes, and the field warps to
 -- Route 22 with progress set and the friend hidden again. The task-scoped
 -- trace must show opening white, a clear beat and early swirl, then the
--- closing white cover; earlier friend fades do not count. The auto-started
--- past scene stays outside this contract: its principals stand on
--- pocket tiles our generated terrain does not cover yet (see the
--- terrain gap below), so it cannot run to its Tohjo warp here. This
--- acceptance stops before GPU rendering and observes the composed camera,
--- scene and fade state through the covered warp.
+-- closing white cover; earlier friend fades do not count. After arrival the
+-- field settles for 600 source ticks so Route 22 map entry admits its
+-- principals, including those on tiles without a terrain plate, which keep
+-- their event height. The auto-started past scene's later dialogue stays
+-- outside this contract. This acceptance stops before GPU rendering and
+-- observes the composed camera, scene and fade state through the covered warp.
 function T.tests.celebi_branch_warps_to_route_22_with_progress_set()
   withShrineGame(function(game)
     game:pressAction()

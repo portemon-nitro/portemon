@@ -9,6 +9,7 @@
 
 local Errors = require("libs.errors.src.Errors")
 local FieldCoordinates = require("libs.hgss.src.field.FieldCoordinates")
+local FieldActorPlacement = require("libs.hgss.src.actors.FieldActorPlacement")
 local FieldGrid = require("libs.hgss.src.world.FieldGrid")
 local SurfaceResolver = require("libs.hgss.src.world.SurfaceResolver")
 local FieldTraversal = require("libs.hgss.src.world.FieldTraversal")
@@ -331,6 +332,24 @@ function FieldPlayer:_resolveStep(direction, bypassBlocking, planned, tiles)
         if self.currentMap.collision:isBlockedLocal(destinationLocalX, destinationLocalZ) then
           return nil
         end
+      end
+      if
+        bypassBlocking
+        and FieldActorPlacement.isResident(self.currentMap, destinationX, destinationZ)
+        and FieldActorPlacement.isUncovered(self.currentMap, destinationX, destinationZ)
+      then
+        -- A scripted step onto a tile without a plate keeps the current
+        -- height and carries no surface or stable source identity.
+        local point = FieldCoordinates.fieldToWorld(self.currentMap, destinationX, destinationZ, self.worldY)
+        return {
+          fieldX = destinationX,
+          fieldZ = destinationZ,
+          localX = destinationLocalX,
+          localZ = destinationLocalZ,
+          worldX = point.x,
+          worldY = point.y,
+          worldZ = point.z,
+        }
       end
       if mode == "surfing" then
         -- Swimming resolves by height continuity without a shore-anchored
