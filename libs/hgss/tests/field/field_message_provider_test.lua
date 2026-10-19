@@ -441,7 +441,14 @@ function T.unsupported_printer_controls_are_typed_rejections()
   local provider = assert(FieldMessageProvider.new(cacheWith({})))
   local cases = {
     { kind = "wait", control = 0x0202, name = "WAIT", args = {}, raw = { 0xFFFE, 0x0202, 0 }, label = "PAUSE/WAIT" },
-    { kind = "style", control = 0xFF01, name = "SIZE", args = { 2 }, raw = { 0xFFFE, 0xFF01, 1, 2 }, label = "SIZE" },
+    {
+      kind = "style",
+      control = 0xFF02,
+      name = "UNK_FF02",
+      args = { 1, 0 },
+      raw = { 0xFFFE, 0xFF02, 2, 1, 0 },
+      label = "UNK_FF02",
+    },
     {
       kind = "unsupported_control",
       control = 0x0203,
@@ -478,6 +485,43 @@ function T.unsupported_printer_controls_are_typed_rejections()
     Assert.equal(err.context.kind, spec.kind)
     Assert.equal(err.context.name, spec.name)
     Assert.deepEqual(err.context.args, spec.args)
+  end
+end
+
+local function size(args)
+  return { kind = "style", control = 0xFF01, name = "SIZE", args = args, raw = { 0xFFFE, 0xFF01, #args, table.unpack(args) } }
+end
+
+-- SIZE 200 stretches the glyphs after it until SIZE 100 restores them.
+function T.size_controls_toggle_glyph_stretching()
+  local provider = assert(FieldMessageProvider.new(cacheWith({})))
+  local formatted = provider:format(
+    template(14, {
+      glyph(0x0121, "A"),
+      size({ 200 }),
+      glyph(0x0122, "B"),
+      size({ 100 }),
+      glyph(0x0123, "C"),
+      eos(),
+    }),
+    {}
+  )
+  local stretched = {}
+  for _, token in ipairs(formatted.tokens) do
+    if token.kind == "glyph" then
+      stretched[#stretched + 1] = token.stretched == true
+    end
+  end
+  Assert.deepEqual(stretched, { false, true, false })
+end
+
+function T.size_controls_reject_unknown_arguments()
+  local provider = assert(FieldMessageProvider.new(cacheWith({})))
+  for _, args in ipairs({ {}, { 150 }, { 100, 1 } }) do
+    local err = Assert.throws(function()
+      provider:format(template(15, { size(args), glyph(0x0121, "A"), eos() }), {})
+    end)
+    Assert.equal(err.code, FieldMessageProvider.MESSAGE_CONTROL_ARGUMENT_INVALID)
   end
 end
 

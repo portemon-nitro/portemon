@@ -100,6 +100,29 @@ function T.drawing_the_same_text_in_two_colors_preserves_x_advances()
   Assert.deepEqual(coloredXs(6), coloredXs(0), "the color variant never changes the x advances")
 end
 
+-- SIZE 200 glyphs print with every row below the first two doubled
+-- (the source's 0xFFFC row table): the top rows 1:1, the rest at twice the
+-- height, and the advance is unchanged.
+function T.stretched_glyphs_double_every_row_below_the_first_two()
+  local lg = fakeGraphics({ imageSizes = imageSizes() })
+  local text = textRenderer(lg)
+  local glyph = FieldDialogueFixture.fontDef().glyphs[1]
+  local token = glyphToken(1, 0)
+  token.stretched = true
+  text:drawLine({ token, glyphToken(2, 0) }, 10, 20)
+  Assert.equal(#lg.draws, 3)
+  local top, bottom, after = lg.draws[1], lg.draws[2], lg.draws[3]
+  Assert.equal(top.quad.h, 2)
+  Assert.equal(top.y, 20)
+  Assert.equal(bottom.quad.y, glyph.y + 2)
+  Assert.equal(bottom.quad.h, glyph.h - 2)
+  Assert.equal(bottom.y, 22)
+  Assert.equal(bottom.sy, 2)
+  Assert.equal(bottom.x, 10)
+  Assert.equal(after.x, 10 + glyph.advance, "stretching never changes the advance")
+  text:release()
+end
+
 -- Plain drawText stays on color 0 (the base band), so unstyled callers
 -- like the Trainer Card are visually unchanged.
 function T.plain_draw_text_stays_on_color_zero()

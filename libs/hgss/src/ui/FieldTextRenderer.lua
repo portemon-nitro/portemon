@@ -71,6 +71,7 @@ end
 ---@field _leases table<integer, table<string, unknown>>? installed atlas leases returned on release
 ---@field _quads table<integer, table<integer, love.Quad>>? glyph quads per color band, band 0 built eagerly
 ---@field _maskQuads table<integer, love.Quad>? mask-atlas glyph quads, built lazily
+---@field _stretchQuads table<string, table<integer, love.Quad[]>> SIZE 200 top/bottom quad pairs by atlas band
 ---@field _focusQuads table<integer, table<integer, love.Quad>>? focus-indicator layer quads, built lazily
 local FieldTextRenderer = {}
 FieldTextRenderer.__index = FieldTextRenderer
@@ -142,6 +143,7 @@ function FieldTextRenderer.new(opts)
     _paletteShader = nil,
     _quads = nil,
     _maskQuads = nil,
+    _stretchQuads = {},
     _focusImage = nil,
     _focusQuads = nil,
     _pool = opts.imagePool,
@@ -277,6 +279,54 @@ function FieldTextRenderer:_quad(colorIndex, code)
   return quad
 end
 
+-- Rows printed 1:1 at the top of a SIZE 200 glyph; every row below them is
+-- printed twice (the source's 0xFFFC glyph row table).
+local STRETCH_SINGLE_ROWS = 2
+
+-- The top/bottom quads of one stretched glyph over the given atlas band,
+-- built lazily and cached per (cache key, code).
+---@param self FieldTextRenderer
+---@param atlas love.Image
+---@param key string
+---@param bandY number
+---@param code integer
+---@return love.Quad top
+---@return love.Quad bottom
+local function stretchQuads(self, atlas, key, bandY, code)
+  local byKey = self._stretchQuads[key]
+  if not byKey then
+    byKey = {}
+    self._stretchQuads[key] = byKey
+  end
+  local pair = byKey[code]
+  if not pair then
+    local lg = assert(self._graphics)
+    local glyph = self.fontDef.glyphs[code] or self.fontDef.glyphs[0]
+    local width, height = atlas:getWidth(), atlas:getHeight()
+    pair = {
+      lg.newQuad(glyph.x, glyph.y + bandY, glyph.w, STRETCH_SINGLE_ROWS, width, height),
+      lg.newQuad(glyph.x, glyph.y + bandY + STRETCH_SINGLE_ROWS, glyph.w, glyph.h - STRETCH_SINGLE_ROWS, width, height),
+    }
+    byKey[code] = pair
+  end
+  return pair[1], pair[2]
+end
+
+-- Draws a SIZE 200 glyph as its two row bands through `draw(quad, x, y, sy)`.
+---@param self FieldTextRenderer
+---@param atlas love.Image
+---@param key string
+---@param bandY number
+---@param code integer
+---@param x number
+---@param y number
+---@param draw fun(quad: love.Quad, x: number, y: number, sy: number?)
+local function drawStretched(self, atlas, key, bandY, code, x, y, draw)
+  local top, bottom = stretchQuads(self, atlas, key, bandY, code)
+  draw(top, x, y)
+  draw(bottom, x, y + STRETCH_SINGLE_ROWS, 2)
+end
+
 -- Draws one page line at the reference-canvas position: glyphs through the
 -- atlas band named by the prepared colorIndex at identity tint (the
 -- compiled ink/shadow/background colors are baked). Control tokens draw
@@ -301,11 +351,32 @@ function FieldTextRenderer:drawLine(tokens, x, y)
   lg.setColor(1, 1, 1, 1)
   for _, token in ipairs(tokens) do
     if token.kind == "glyph" then
-      local quad = self:_quad(token.colorIndex or 0, token.code)
-      if lease ~= nil then
-        ImageSampling.draw(lg, lease, quad, x, y)
+      local colorIndex = token.colorIndex or 0
+      if token.stretched then
+        self:_quad(colorIndex, token.code) -- validates the color index
+        drawStretched(
+          self,
+          atlas,
+          "color" .. colorIndex,
+          colorIndex * def.colorVariants.strideY,
+          token.code,
+          x,
+          y,
+          function(quad, qx, qy, sy)
+            if lease ~= nil then
+              ImageSampling.draw(lg, lease, quad, qx, qy, 0, 1, sy)
+            else
+              lg.draw(atlas, quad, qx, qy, 0, 1, sy)
+            end
+          end
+        )
       else
-        lg.draw(atlas, quad, x, y)
+        local quad = self:_quad(colorIndex, token.code)
+        if lease ~= nil then
+          ImageSampling.draw(lg, lease, quad, x, y)
+        else
+          lg.draw(atlas, quad, x, y)
+        end
       end
       local glyph = def.glyphs[token.code] or def.glyphs[0]
       x = x + glyph.advance + letterSpacing
@@ -352,6 +423,24 @@ local function sendMaskSampling(self, shader)
   })
 end
 
+-- Draws one glyph token from the mask atlas through the active palette
+-- shader, honoring the SIZE 200 row doubling.
+---@param self FieldTextRenderer
+---@param atlas love.Image
+---@param token MessageToken
+---@param x number
+---@param y number
+local function drawMaskGlyph(self, atlas, token, x, y)
+  local lg = assert(self._graphics)
+  if token.stretched then
+    drawStretched(self, atlas, "mask", 0, token.code, x, y, function(quad, qx, qy, sy)
+      lg.draw(atlas, quad, qx, qy, 0, 1, sy)
+    end)
+  else
+    lg.draw(atlas, self:_maskQuad(token.code), x, y)
+  end
+end
+
 local function normalizePaletteColor(color)
   local alpha = color.a
   if alpha == nil then
@@ -390,8 +479,7 @@ function FieldTextRenderer:drawLineWithPalette(tokens, x, y, palette)
   lg.setColor(1, 1, 1, 1)
   for _, token in ipairs(tokens) do
     if token.kind == "glyph" then
-      local quad = self:_maskQuad(token.code)
-      lg.draw(atlas, quad, x, y)
+      drawMaskGlyph(self, atlas, token, x, y)
       local glyph = def.glyphs[token.code] or def.glyphs[0]
       x = x + glyph.advance + letterSpacing
     end
@@ -445,8 +533,7 @@ function FieldTextRenderer:drawLineWithColorVariants(tokens, x, y, variants, bac
         shader:send("u_shadow", normalizePaletteColor(variant.shadow))
         active = variant
       end
-      local quad = self:_maskQuad(token.code)
-      lg.draw(atlas, quad, x, y)
+      drawMaskGlyph(self, atlas, token, x, y)
       local glyph = def.glyphs[token.code] or def.glyphs[0]
       x = x + glyph.advance + letterSpacing
     end
@@ -681,7 +768,7 @@ function FieldTextRenderer:release()
   end
   self._atlas, self._quads = nil, nil
   self._atlasLease = nil
-  self._maskAtlas, self._maskQuads = nil, nil
+  self._maskAtlas, self._maskQuads, self._stretchQuads = nil, nil, {}
   self._maskLease = nil
   self._paletteShader = nil
   self._focusLease = nil

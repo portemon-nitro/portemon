@@ -33,6 +33,7 @@ FieldMessageProvider.MESSAGE_CONTROL_ARGUMENT_INVALID = "MESSAGE_CONTROL_ARGUMEN
 ---@field control integer?
 ---@field name string?
 ---@field args integer[]?
+---@field stretched boolean? runtime-prepared: glyph drawn with the SIZE 200 row doubling
 ---@field colorIndex integer? runtime-prepared presentation metadata on glyph tokens; not part of the raw ROM message format
 
 ---@class FieldMessageProvider.FormattedMessage
@@ -56,6 +57,8 @@ local DEFAULT_MAX_CACHED_BANKS = 4
 -- (handled in the prepareControls pass below).
 local COLOR_SAVE_BASE = 100
 local COLOR_SWAP = 0xFF
+local SIZE_NORMAL = 100
+local SIZE_STRETCHED = 200
 
 ---@param cacheFs table<string, unknown> CacheFs-shaped
 ---@param opts table<string, unknown>|nil
@@ -226,8 +229,9 @@ end
 -- Prepares printer-control state on an expanded runtime token stream: a pure
 -- left-to-right pass that annotates every glyph with the effective colorIndex
 -- (default 0; COLOR 0..6 selects a variant, 100..106 saves one for later, and
--- 0xFF swaps the active and saved colors). focus_indicator tokens must carry
--- one valid frame argument. Every other control -- wait, size/unknown style
+-- 0xFF swaps the active and saved colors) and with stretched = true between
+-- SIZE 200 and SIZE 100. focus_indicator tokens must carry
+-- one valid frame argument. Every other control -- wait, unknown style
 -- families, and unsupported controls -- is a typed fault at this playback
 -- boundary instead of a silent renderer no-op. Non-glyph tokens are kept by
 -- reference: the prepared stream stays lossless for diagnostics and marker
@@ -238,6 +242,7 @@ end
 local function prepareControls(template, tokens)
   local currentColor = 0
   local savedColor = nil
+  local stretched = false
   local out = {}
   for _, token in ipairs(tokens) do
     if token.kind == "glyph" then
@@ -246,6 +251,9 @@ local function prepareControls(template, tokens)
         prepared[key] = value
       end
       prepared.colorIndex = currentColor
+      if stretched then
+        prepared.stretched = true
+      end
       out[#out + 1] = prepared
     elseif token.kind == "focus_indicator" then
       local args = token.args or {}
@@ -318,6 +326,19 @@ local function prepareControls(template, tokens)
             .. string.format("0x%02X", COLOR_SWAP)
         )
       end
+      out[#out + 1] = token
+    elseif token.kind == "style" and token.control == FieldMessageText.SIZE then
+      local args = token.args or {}
+      local value = args[1]
+      if #args ~= 1 or (value ~= SIZE_NORMAL and value ~= SIZE_STRETCHED) then
+        controlFault(
+          FieldMessageProvider.MESSAGE_CONTROL_ARGUMENT_INVALID,
+          template,
+          token,
+          "SIZE must take exactly one argument, " .. SIZE_NORMAL .. " or " .. SIZE_STRETCHED
+        )
+      end
+      stretched = value == SIZE_STRETCHED
       out[#out + 1] = token
     elseif token.kind == "style" then
       controlFault(
