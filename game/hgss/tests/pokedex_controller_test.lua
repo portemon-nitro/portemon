@@ -105,7 +105,7 @@ end
 function T.cover_opens_the_sparse_grid_and_blank_slots_stay_selectable()
   local PokedexController = requirePresent("cover, sparse numbered grid, and resume")
   local monCatalog, catalog = catalogs()
-  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true })
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
   observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 })
   observe(owner, monCatalog, { species = "WORMADAM", personality = 0 })
   observe(owner, monCatalog, { species = "ROTOM", personality = 0 })
@@ -114,7 +114,7 @@ function T.cover_opens_the_sparse_grid_and_blank_slots_stay_selectable()
   openGrid(controller)
   local view = controller:view()
   Assert.equal(view.page, "grid", "cover confirm opens the regular grid")
-  Assert.equal(view.mode, "johto", "unset resume without national capability defaults to johto")
+  Assert.equal(view.mode, "national", "unset resume with national capability defaults to national")
   Assert.notNil(view.grid, "the grid projection is present")
   Assert.equal(#view.grid.buffers[1].entries, 30, "the staged buffer carries thirty semantic entries")
   local slots = view.grid.buffers[1].entries
@@ -187,7 +187,7 @@ end
 function T.grid_crossings_page_and_selected_cry_uses_first_physical_form()
   local PokedexController = requirePresent("cover, sparse numbered grid, and resume")
   local monCatalog, catalog = catalogs()
-  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true })
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
   observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 })
   observe(owner, monCatalog, { species = "WORMADAM", personality = 0 })
   observe(owner, monCatalog, { species = "ROTOM", personality = 0 })
@@ -355,7 +355,8 @@ end
 function T.acquired_languages_cycle_and_seen_only_hides_protected_details()
   local PokedexController = requirePresent("acquired language disclosure and caught-only details")
   local monCatalog, catalog = catalogs()
-  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, enabledInternational = true })
+  local owner =
+    ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true, enabledInternational = true })
   observe(owner, monCatalog, { species = "EEVEE", personality = 31, language = "french" }, "caught")
   observe(owner, monCatalog, { species = "EEVEE", personality = 32, language = "german" }, "caught")
   observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 })
@@ -430,6 +431,351 @@ function T.unexpected_knowledge_revision_rebuilds_without_inventing_history()
   tick(controller, {})
   Assert.equal(controller:view().selection.species, "CHIKORITA", "capture cancellation keeps a coherent view")
   controller:dispose()
+end
+
+function T.johto_mode_lists_only_regional_members_with_regional_numbers()
+  local PokedexController = requirePresent("regional ordering, selection, and mode switching")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true })
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 })
+  observe(owner, monCatalog, { species = "TOTODILE", personality = 0 })
+  observe(owner, monCatalog, { species = "EEVEE", personality = 0 })
+  observe(owner, monCatalog, { species = "CUSTOM_IN", personality = 0 })
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  Assert.equal(controller:view().mode, "johto", "unset resume without national capability defaults to johto")
+  openGrid(controller)
+  local view = controller:view()
+  Assert.equal(view.grid.lastPage, 0, "three regional members fit on a single johto page")
+  local slots = view.grid.buffers[1].entries
+  Assert.equal(slots[1].species, "CHIKORITA", "the johto list starts with chikorita")
+  Assert.equal(slots[1].dexNumber, 1, "chikorita carries its johto number")
+  Assert.equal(slots[2].species, "TOTODILE", "the johto list continues in johto order")
+  Assert.equal(slots[2].dexNumber, 2, "totodile carries its johto number")
+  Assert.equal(slots[3].species, "CUSTOM_IN", "the johto list ends with its third member")
+  Assert.equal(slots[3].dexNumber, 3, "the third member carries its johto number")
+  for _, entry in ipairs(slots) do
+    Assert.isTrue(entry.species ~= "EEVEE", "a national-only species never leaks into the johto grid")
+  end
+  Assert.equal(view.selection.dexNumber, 1, "the initial selection carries its johto number")
+  Assert.equal(view.counts.seen, 3, "johto counts exclude national-only sightings")
+  press(controller, { { type = "navigate", direction = "left" } })
+  Assert.equal(controller:view().mode, "johto", "cover directions never unlock the national list")
+  controller:dispose()
+end
+
+function T.mode_switch_reconciles_selection_without_touching_history()
+  local PokedexController = requirePresent("regional ordering, selection, and mode switching")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 })
+  observe(owner, monCatalog, { species = "EEVEE", personality = 0 })
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  Assert.equal(controller:view().mode, "national", "an unlocked dex defaults to the national list")
+  openGrid(controller)
+  for _ = 1, 3 do
+    press(controller, { { type = "navigate", direction = "right" } })
+  end
+  Assert.equal(controller:view().selection.species, "EEVEE", "the cursor reaches the national-only species")
+  press(controller, { { type = "cancel" } })
+  idle(controller, 40)
+  Assert.notNil(controller:takeResult(), "closing the grid captures the national resume")
+  local switched = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  press(switched, { { type = "navigate", direction = "right" } })
+  Assert.equal(switched:view().mode, "johto", "cover right selects the johto list")
+  openGrid(switched)
+  local view = switched:view()
+  for _, entry in ipairs(view.grid.buffers[1].entries) do
+    Assert.isTrue(entry.species ~= "EEVEE", "switching to johto drops the national-only selection")
+  end
+  Assert.equal(view.selection.species, "CHIKORITA", "an ineligible resume falls back to the first johto member")
+  Assert.equal(view.selection.dexNumber, 1, "the fallback carries its johto number")
+  press(switched, { { type = "cancel" } })
+  idle(switched, 40)
+  local effects = switched:drainEffects()
+  local resume = nil
+  for _, effect in ipairs(effects) do
+    if effect.kind == "resume" then
+      resume = effect
+    end
+  end
+  Assert.notNil(resume, "johto close still emits its resume")
+  Assert.equal(resume.mode, "johto", "the resume records the active regional mode")
+  Assert.isTrue(owner:isSeen("EEVEE"), "mode switching invents no history change")
+  controller:dispose()
+  switched:dispose()
+end
+
+function T.knowledge_revision_keeps_regional_cursor()
+  local PokedexController = requirePresent("regional ordering, selection, and mode switching")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true })
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 })
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  observe(owner, monCatalog, { species = "CUSTOM_IN", personality = 0 })
+  tick(controller, {})
+  local view = controller:view()
+  Assert.equal(view.selection.species, "CHIKORITA", "the rebuild preserves the eligible johto selection")
+  Assert.equal(view.selection.dexNumber, 1, "the rebuilt selection keeps its johto number")
+  Assert.equal(view.grid.lastPage, 0, "the rebuilt johto list still fits on one page")
+  controller:dispose()
+end
+
+---@param controller table browser under test
+local function reachEmptyWait(controller)
+  openGrid(controller)
+  press(controller, { { type = "y" } })
+  press(controller, {
+    { type = "activate", action = "criterion", value = "letter" },
+    { type = "activate", action = "editor-choice", value = "Z" },
+  })
+  idle(controller, 5)
+  press(controller, { { type = "activate", action = "editor-ok" } })
+  idle(controller, 5)
+  press(controller, { { type = "start" } })
+  for _ = 1, 300 do
+    local search = controller:view().search
+    if search ~= nil and search.feedback ~= nil and search.feedback.phase == "wait" then
+      return
+    end
+    tick(controller, {})
+  end
+  Assert.isTrue(false, "the empty search reaches its dismissible wait")
+end
+
+function T.empty_wait_answers_fresh_a_b_and_touch_but_ignores_held_and_timeout()
+  local PokedexController = requirePresent("empty search dismissal and timeout")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true })
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 })
+  local confirmCase = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  reachEmptyWait(confirmCase)
+  press(confirmCase, { { type = "confirm" } })
+  idle(confirmCase, 10)
+  Assert.equal(confirmCase:view().page, "search", "a fresh A press dismisses the empty wait")
+  Assert.isNil(confirmCase:view().search.feedback, "dismissal clears the feedback sequence")
+  confirmCase:dispose()
+  local cancelCase = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  reachEmptyWait(cancelCase)
+  press(cancelCase, { { type = "cancel" } })
+  idle(cancelCase, 10)
+  Assert.equal(cancelCase:view().page, "search", "a fresh B press dismisses the empty wait")
+  Assert.isNil(cancelCase:takeResult(), "dismissing with B never closes the application")
+  cancelCase:dispose()
+  local touchCase = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  reachEmptyWait(touchCase)
+  press(touchCase, { { type = "drag", target = "cover", phase = "begin", value = 0 } })
+  idle(touchCase, 10)
+  Assert.equal(touchCase:view().page, "search", "a fresh touch dismisses the empty wait")
+  touchCase:dispose()
+  local heldCase = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  reachEmptyWait(heldCase)
+  press(heldCase, { { type = "held", left = true, right = false, touch = false } })
+  tick(heldCase, {})
+  Assert.notNil(heldCase:view().search.feedback, "a held key never dismisses the empty wait")
+  press(heldCase, { { type = "navigate", direction = "right" } })
+  tick(heldCase, {})
+  Assert.notNil(heldCase:view().search.feedback, "navigation never dismisses the empty wait")
+  heldCase:dispose()
+  local timeoutCase = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  reachEmptyWait(timeoutCase)
+  idle(timeoutCase, 70)
+  Assert.equal(timeoutCase:view().page, "search", "the untouched wait returns to criteria at its timeout")
+  timeoutCase:dispose()
+end
+
+---@param controller table browser under test
+---@param species string entry to open through the grid
+local function openEntry(controller, species)
+  local entries = controller:view().grid.buffers[1].entries
+  local cursor = controller:view().grid.cursor
+  local target = nil
+  for index, entry in ipairs(entries) do
+    if entry.species == species then
+      target = index - 1
+    end
+  end
+  assert(target ~= nil, "the fixture species is on the grid")
+  local moves = target - cursor
+  local direction = moves > 0 and "right" or "left"
+  for _ = 1, math.abs(moves) do
+    press(controller, { { type = "navigate", direction = direction } })
+  end
+  press(controller, { { type = "confirm" } })
+  idle(controller, 40)
+  Assert.equal(controller:view().page, "area", "the entry opens on its area page")
+end
+
+function T.entry_tabs_cycle_through_back_and_skip_missing_size()
+  local PokedexController = requirePresent("four-tab entry cycling")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
+  observe(owner, monCatalog, { species = "EEVEE", personality = 31 }, "caught")
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 })
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  openEntry(controller, "EEVEE")
+  press(controller, { { type = "navigate", direction = "right" } })
+  Assert.equal(controller:view().page, "size", "the caught entry cycles area into size")
+  press(controller, { { type = "navigate", direction = "right" } })
+  Assert.equal(controller:view().page, "forms", "size cycles into forms")
+  press(controller, { { type = "navigate", direction = "right" } })
+  Assert.equal(controller:view().page, "return", "forms cycles into the fourth back tab")
+  press(controller, { { type = "navigate", direction = "right" } })
+  Assert.equal(controller:view().page, "area", "the fourth tab wraps back to area")
+  press(controller, { { type = "navigate", direction = "left" } })
+  Assert.equal(controller:view().page, "return", "reverse cycling reaches the fourth tab from area")
+  press(controller, { { type = "confirm" } })
+  idle(controller, 40)
+  Assert.equal(controller:view().page, "grid", "confirming back restores the originating grid")
+  controller:dispose()
+  local seenOnly = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(seenOnly)
+  openEntry(seenOnly, "CHIKORITA")
+  press(seenOnly, { { type = "navigate", direction = "right" } })
+  Assert.equal(seenOnly:view().page, "forms", "a seen-only entry skips its unavailable size tab")
+  press(seenOnly, { { type = "navigate", direction = "right" } })
+  Assert.equal(seenOnly:view().page, "return", "cycling still reaches back without size")
+  press(seenOnly, { { type = "activate", action = "return-list" } })
+  idle(seenOnly, 40)
+  Assert.equal(seenOnly:view().page, "grid", "the back action restores the grid by touch")
+  seenOnly:dispose()
+end
+
+local TEXT_KINDS = { ui = true, species_name = true, category = true, flavor = true, height = true, weight = true, numeric = true }
+
+---@param view table detached browser projection
+local function checkTextSlots(view)
+  Assert.isTrue(type(view.text) == "table", "the projection carries its semantic text slots")
+  local roles = {}
+  for _, slot in ipairs(view.text) do
+    Assert.isTrue(type(slot.role) == "string", "every text slot names its visible window role")
+    Assert.isTrue(TEXT_KINDS[slot.kind] == true, "every text slot uses the shared kind union")
+    Assert.isNil(roles[slot.role], "text roles stay unique within a view")
+    roles[slot.role] = true
+    if slot.kind == "ui" then
+      Assert.isTrue(type(slot.messageId) == "number", "interface slots reference their source message")
+    elseif slot.kind == "numeric" then
+      Assert.isTrue(type(slot.value) == "string" and slot.value:find("^%d+$") ~= nil, "count slots carry formatted digits")
+    else
+      Assert.isTrue(type(slot.species) == "string", "species slots name their specimen")
+      if slot.kind == "species_name" or slot.kind == "category" or slot.kind == "flavor" then
+        Assert.isTrue(type(slot.language) == "string", "entry bank slots name their language binding")
+      end
+    end
+  end
+  return roles
+end
+
+function T.browser_text_slots_reference_semantic_bank_roles()
+  local PokedexController = requirePresent("semantic text slot projection")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
+  observe(owner, monCatalog, { species = "EEVEE", personality = 31 }, "caught")
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 })
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  local gridRoles = checkTextSlots(controller:view())
+  Assert.notNil(gridRoles["grid.seen-count"], "the grid counts its seen members")
+  Assert.notNil(gridRoles["grid.caught-count"], "the grid counts its caught members")
+  Assert.notNil(gridRoles["grid.selected-number"], "the grid numbers its regional selection")
+  Assert.notNil(gridRoles["grid.selected-name"], "the grid names its selection")
+  openEntry(controller, "EEVEE")
+  local entryRoles = checkTextSlots(controller:view())
+  Assert.notNil(entryRoles["entry.species-name"], "the entry names its specimen")
+  Assert.notNil(entryRoles["entry.dex-number"], "the entry numbers its specimen")
+  Assert.notNil(entryRoles["entry.category"], "a caught entry classifies its specimen")
+  Assert.notNil(entryRoles["entry.flavor"], "a caught entry describes its specimen")
+  Assert.notNil(entryRoles["entry.height"], "a caught entry measures its specimen")
+  Assert.notNil(entryRoles["entry.weight"], "a caught entry weighs its specimen")
+  controller:dispose()
+  local seenOnly = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(seenOnly)
+  openEntry(seenOnly, "CHIKORITA")
+  local seenRoles = checkTextSlots(seenOnly:view())
+  Assert.notNil(seenRoles["entry.species-name"], "a seen-only entry still names its specimen")
+  Assert.isNil(seenRoles["entry.flavor"], "a seen-only entry hides its protected description")
+  seenOnly:dispose()
+end
+
+function T.area_pan_starts_settled_on_the_johto_scroll()
+  local PokedexController = requirePresent("area map pan projection")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
+  observe(owner, monCatalog, { species = "EEVEE", personality = 31 }, "caught")
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  local cover = controller:view().areaPan
+  Assert.notNil(cover, "the projection carries its area pan state")
+  Assert.equal(cover.region, 0, "the pan starts on the johto region")
+  Assert.equal(cover.offset, -72, "the pan starts on the settled johto scroll")
+  openGrid(controller)
+  openEntry(controller, "EEVEE")
+  local area = controller:view().areaPan
+  Assert.notNil(area, "the entry projection carries its area pan state")
+  Assert.equal(area.region, 0, "the area page starts on the johto region")
+  Assert.equal(area.offset, -72, "the area page starts on the settled johto scroll")
+  controller:dispose()
+end
+
+function T.area_pan_travels_eight_pixels_per_frame_to_kanto()
+  local PokedexController = requirePresent("area map pan projection")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
+  observe(owner, monCatalog, { species = "EEVEE", personality = 31 }, "caught")
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  openEntry(controller, "EEVEE")
+  press(controller, { { type = "r" } })
+  Assert.equal(controller:view().area.region, "kanto", "the kanto selector travels with national unlocked")
+  local switched = controller:view().areaPan
+  Assert.equal(switched.region, 1, "the pan follows the kanto region at once")
+  Assert.equal(switched.offset, -72, "the travel starts from the johto scroll without snapping")
+  press(controller, {})
+  Assert.equal(controller:view().areaPan.offset, -64, "the first travel frame advances eight pixels")
+  press(controller, {})
+  Assert.equal(controller:view().areaPan.offset, -56, "the second travel frame advances eight more pixels")
+  idle(controller, 20)
+  local settled = controller:view().areaPan
+  Assert.equal(settled.region, 1, "the settled pan stays on the kanto region")
+  Assert.equal(settled.offset, 104, "twenty-two travel frames settle on the kanto scroll")
+  idle(controller, 10)
+  Assert.equal(controller:view().areaPan.offset, 104, "the settled kanto scroll holds")
+  controller:dispose()
+end
+
+function T.area_pan_returns_to_johto_and_pins_without_national()
+  local PokedexController = requirePresent("area map pan projection")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
+  observe(owner, monCatalog, { species = "EEVEE", personality = 31 }, "caught")
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  openEntry(controller, "EEVEE")
+  press(controller, { { type = "r" } })
+  idle(controller, 22)
+  Assert.equal(controller:view().areaPan.offset, 104, "the kanto leg settles before returning")
+  press(controller, { { type = "l" } })
+  Assert.equal(controller:view().area.region, "johto", "the johto selector travels back")
+  local switched = controller:view().areaPan
+  Assert.equal(switched.region, 0, "the pan follows the johto region at once")
+  Assert.equal(switched.offset, 104, "the return starts from the kanto scroll without snapping")
+  press(controller, {})
+  Assert.equal(controller:view().areaPan.offset, 96, "the first return frame retreats eight pixels")
+  idle(controller, 21)
+  Assert.equal(controller:view().areaPan.offset, -72, "twenty-two return frames settle on the johto scroll")
+  controller:dispose()
+  local locked = ownerWithFlags(monCatalog, catalog, { dexEnabled = true })
+  observe(locked, monCatalog, { species = "CHIKORITA", personality = 0 })
+  local johtoOnly = PokedexController.new(baseArgs(locked, monCatalog, catalog))
+  openGrid(johtoOnly)
+  openEntry(johtoOnly, "CHIKORITA")
+  press(johtoOnly, { { type = "r" } })
+  idle(johtoOnly, 10)
+  Assert.equal(johtoOnly:view().area.region, "johto", "the kanto selector stays inert before the national unlock")
+  local pinned = johtoOnly:view().areaPan
+  Assert.equal(pinned.region, 0, "the johto-only pan pins the johto region")
+  Assert.equal(pinned.offset, -72, "the johto-only pan pins the settled johto scroll")
+  johtoOnly:dispose()
 end
 
 return { tests = T }

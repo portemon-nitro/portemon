@@ -42,6 +42,8 @@ local PokedexSize = require("game.hgss.src.pokedex.PokedexSize")
 ---@field _effects table[] pending one-shot effects
 ---@field _result { kind: string }? terminal close result
 ---@field _closing boolean close sequence running
+---@field _areaPanRegion integer viewed map region driving the scroll, 0 johto or 1 kanto
+---@field _areaPanOffset integer current SUB BG0 X scroll in native pixels
 ---@field _disposed boolean teardown flag
 ---@field _coverOffset integer cover slide position
 ---@field _coverDrag { from: number, preOffset: integer }? in-progress cover drag
@@ -65,6 +67,11 @@ PokedexController.SCROLL_THRESHOLDS = { 15, 45, 90, 135, 180, 225, 270, 315, 360
 PokedexController.SCROLL_LENGTHS = { 110, 102, 94, 86, 78, 70, 62, 54, 46, 38, 30, 22 }
 PokedexController.SCROLL_TOP = 21
 PokedexController.SCROLL_BOTTOM = 131
+-- The area map rides SUB BG0: settled native X scroll per region with an
+-- eight-pixel per-frame travel between the two settled positions.
+PokedexController.AREA_PAN_STEP = 8
+PokedexController.AREA_PAN_JOHTO = -72
+PokedexController.AREA_PAN_KANTO = 104
 
 -- Compact result paging reserves the return slot alongside the matches.
 PokedexController.RESULT_SLOTS = 15
@@ -266,6 +273,8 @@ function PokedexController.new(args)
     _effects = {},
     _result = nil,
     _closing = false,
+    _areaPanRegion = 0,
+    _areaPanOffset = PokedexController.AREA_PAN_JOHTO,
     _disposed = false,
     _coverOffset = 0,
     _coverDrag = nil,
@@ -281,14 +290,32 @@ function PokedexController.new(args)
   return self
 end
 
+---@return string[] the active regional order backing every numbered operation
+function PokedexController:_activeOrder()
+  local orders = self._catalog.dexOrders
+  assert(type(orders) == "table", "the browser reads its dex orders")
+  local order = assert(orders[self._mode], "the browser reads the active dex order")
+  assert(type(order) == "table", "the browser reads the active dex order")
+  return order
+end
+
+---@return boolean whether the cursor addresses the single global search-return slot
+function PokedexController:_isSearchReturnSlot()
+  return self._pageIndex == 0 and self._cursor == 0
+end
+
 ---@param speciesKey string?
 function PokedexController:_restoreSelection(speciesKey)
   local dex = self._dex
-  local order = self._catalog.dexOrders.national
-  assert(type(order) == "table", "the browser reads the national order")
+  local order = self:_activeOrder()
   local target = nil
   if type(speciesKey) == "string" and tryDex(dex, "isSeen", speciesKey) == true then
-    target = speciesKey
+    for _, key in ipairs(order) do
+      if key == speciesKey then
+        target = speciesKey
+        break
+      end
+    end
   end
   if target == nil then
     for _, key in ipairs(order) do
@@ -332,8 +359,7 @@ function PokedexController:_select(speciesKey)
   if language ~= self._nativeLanguage and not self:_languageAcquired(speciesKey, language) then
     language = self._nativeLanguage
   end
-  local order = self._catalog.dexOrders.national
-  assert(type(order) == "table", "the browser reads the national order")
+  local order = self:_activeOrder()
   local dexNumber = nil
   for index, key in ipairs(order) do
     if key == speciesKey then
@@ -342,6 +368,25 @@ function PokedexController:_select(speciesKey)
   end
   self._selection = { species = speciesKey, dexNumber = dexNumber, seen = true, caught = caught, language = language }
   self._resumeSelection = speciesKey
+end
+
+-- After a regional mode change the cursor keeps its eligible selection in
+-- the new order, or falls back to the first member of the new order.
+-- Dex history is never touched: only the ephemeral cursor moves.
+function PokedexController:_reconcileModeSelection()
+  local order = self:_activeOrder()
+  local species = self._selection.species
+  if type(species) == "string" and tryDex(self._dex, "isSeen", species) == true then
+    for index, key in ipairs(order) do
+      if key == species then
+        self:_select(species)
+        self._pageIndex = math.floor((index - 1) / PokedexController.RESULT_SLOTS)
+        self._cursor = (index - 1) % PokedexController.RESULT_SLOTS
+        return
+      end
+    end
+  end
+  self:_restoreSelection(nil)
 end
 
 ---@param speciesKey string
@@ -385,10 +430,9 @@ function PokedexController:_isReady(preparation)
   return type(preparation) == "table" and preparation.readyKey == self._key
 end
 
----@return integer highest seen national number, zero when empty
+---@return integer highest seen active-mode number, zero when empty
 function PokedexController:_sparseLength()
-  local order = self._catalog.dexOrders.national
-  assert(type(order) == "table", "the browser reads the national order")
+  local order = self:_activeOrder()
   local length = 0
   for index, key in ipairs(order) do
     if tryDex(self._dex, "isSeen", key) == true then
@@ -472,8 +516,7 @@ end
 
 ---@return { firstIndex: integer, yOffset: integer, entries: { index: integer, dexNumber: integer?, species: string?, seen: boolean, caught: boolean, returnToSearch: boolean }[] } detached grid buffer of thirty semantic entries
 function PokedexController:_gridBuffer()
-  local order = self._catalog.dexOrders.national
-  assert(type(order) == "table", "the browser reads the national order")
+  local order = self:_activeOrder()
   local firstIndex = self._pageIndex * PokedexController.RESULT_SLOTS
   local entries = {}
   for position = 1, 30 do
@@ -511,7 +554,7 @@ function PokedexController:_resultsBuffer()
       if type(key) == "string" then
         entries[#entries + 1] = {
           index = global,
-          dexNumber = self:_nationalNumber(key),
+          dexNumber = self:_activeNumber(key),
           species = key,
           seen = true,
           caught = tryDex(self._dex, "isCaught", key) == true,
@@ -526,10 +569,9 @@ function PokedexController:_resultsBuffer()
 end
 
 ---@param speciesKey string
----@return integer? national number
-function PokedexController:_nationalNumber(speciesKey)
-  local order = self._catalog.dexOrders.national
-  assert(type(order) == "table", "the browser reads the national order")
+---@return integer? active-mode number
+function PokedexController:_activeNumber(speciesKey)
+  local order = self:_activeOrder()
   for index, key in ipairs(order) do
     if key == speciesKey then
       return index
@@ -609,8 +651,7 @@ end
 ---@param global integer zero-based grid slot
 ---@return string? seen species at the slot
 function PokedexController:_gridSlotSpecies(global)
-  local order = self._catalog.dexOrders.national
-  assert(type(order) == "table", "the browser reads the national order")
+  local order = self:_activeOrder()
   local key = order[global + 1]
   if type(key) == "string" and tryDex(self._dex, "isSeen", key) == true then
     return key
@@ -629,7 +670,7 @@ end
 
 function PokedexController:_refreshResultsSelection()
   local global = self._pageIndex * PokedexController.RESULT_SLOTS + self._cursor
-  if self._cursor == 0 then
+  if self:_isSearchReturnSlot() then
     self._selection = { seen = false, caught = false, language = self._nativeLanguage }
     return
   end
@@ -692,14 +733,18 @@ function PokedexController:_rebuildFromKnowledge()
     end
   else
     if type(selectionSpecies) == "string" then
-      self:_select(selectionSpecies)
-      local order = self._catalog.dexOrders.national
-      assert(type(order) == "table", "the browser reads the national order")
+      local order = self:_activeOrder()
+      local positioned = false
       for index, key in ipairs(order) do
         if key == selectionSpecies then
+          self:_select(selectionSpecies)
           self._pageIndex = math.floor((index - 1) / PokedexController.RESULT_SLOTS)
           self._cursor = (index - 1) % PokedexController.RESULT_SLOTS
+          positioned = true
         end
+      end
+      if positioned ~= true then
+        self:_restoreSelection(nil)
       end
     else
       self:_restoreSelection(nil)
@@ -709,6 +754,21 @@ function PokedexController:_rebuildFromKnowledge()
   if type(revision) == "number" then
     self._revision = revision
   end
+end
+
+-- A fresh A/B/touch edge may end the empty-result wait: new confirms
+-- and cancels plus fresh touch-down (an activate edge or the start of a
+-- pointer drag). Held keys, navigation, and drag motion never dismiss.
+---@param event table<string, unknown>
+---@return boolean whether a fresh edge may end the empty wait
+local function isFreshEdge(event)
+  if type(event) ~= "table" then
+    return false
+  end
+  if event.type == "confirm" or event.type == "cancel" or event.type == "activate" then
+    return true
+  end
+  return event.type == "drag" and event.phase == "begin"
 end
 
 ---@param events table<integer, table<string, unknown>> batch for one fixed update
@@ -772,6 +832,16 @@ function PokedexController:updateFixed(events, preparation)
   local revision = tryDex(self._dex, "revision")
   if type(revision) == "number" and revision ~= self._revision then
     self:_rebuildFromKnowledge()
+  end
+  if self._feedback ~= nil and self._feedback.phase == "wait" then
+    for _, event in ipairs(events) do
+      if isFreshEdge(event) then
+        self._feedback = nil
+        self._page = "search"
+        self:_bumpKey()
+        return
+      end
+    end
   end
   local cancel = findCancel(events)
   if cancel ~= nil then
@@ -962,19 +1032,52 @@ function PokedexController:_advanceFeedback()
   end
 end
 
----@param event table<string, unknown> input edge record
----@return boolean whether a fresh edge may end the empty wait
-local function isFreshEdge(event)
-  if type(event) ~= "table" then
-    return false
+-- Reads the controller's current area-region state into the pan region:
+-- kanto only while national travel is unlocked, johto otherwise. Kept in
+-- one helper so region switches, entry opens, and per-tick updates agree.
+function PokedexController:_syncAreaPanRegion()
+  local region = 0
+  if self._area ~= nil then
+    local area = self._area:view()
+    if area.region == "kanto" and self._nationalUnlocked == true then
+      region = 1
+    end
   end
-  return event.type == "confirm" or event.type == "cancel" or event.type == "activate" or event.type == "drag"
+  self._areaPanRegion = region
+end
+
+---@param region string viewed map region
+function PokedexController:_setAreaRegion(region)
+  if self._area == nil then
+    return
+  end
+  self._area:setRegion(region)
+  self:_syncAreaPanRegion()
+end
+
+-- Eases the area scroll eight pixels per fixed update toward the settled
+-- position of the currently viewed region. The renderer only reads the
+-- published offset; it never advances the travel itself.
+function PokedexController:_advanceAreaPan()
+  self:_syncAreaPanRegion()
+  local target = PokedexController.AREA_PAN_JOHTO
+  if self._areaPanRegion == 1 then
+    target = PokedexController.AREA_PAN_KANTO
+  end
+  local offset = self._areaPanOffset
+  if offset < target then
+    offset = math.min(offset + PokedexController.AREA_PAN_STEP, target)
+  elseif offset > target then
+    offset = math.max(offset - PokedexController.AREA_PAN_STEP, target)
+  end
+  self._areaPanOffset = offset
 end
 
 function PokedexController:_advancePhases()
   if self._feedback ~= nil then
     self:_advanceFeedback()
   end
+  self:_advanceAreaPan()
   if self._area ~= nil and (self._page == "area" or self._page == "size" or self._page == "forms") then
     self._area:update()
   end
@@ -1144,11 +1247,13 @@ function PokedexController:_handleCover(event)
     if event.direction == "left" then
       if self._nationalUnlocked == true and self._mode ~= "national" then
         self._mode = "national"
+        self:_reconcileModeSelection()
         self:_bumpKey()
       end
     elseif event.direction == "right" then
       if self._mode ~= "johto" then
         self._mode = "johto"
+        self:_reconcileModeSelection()
         self:_bumpKey()
       end
     end
@@ -1157,9 +1262,11 @@ function PokedexController:_handleCover(event)
   elseif event.type == "activate" and event.action == "mode" then
     if event.value == "national" and self._nationalUnlocked == true then
       self._mode = "national"
+      self:_reconcileModeSelection()
       self:_bumpKey()
     elseif event.value == "johto" then
       self._mode = "johto"
+      self:_reconcileModeSelection()
       self:_bumpKey()
     end
   end
@@ -1370,7 +1477,7 @@ function PokedexController:_handleResults(event)
   elseif event.type == "confirm" then
     self:_activateResultsSlot()
   elseif event.type == "menu" then
-    if self._cursor ~= 0 then
+    if self:_isSearchReturnSlot() ~= true then
       local key = self._results[self._pageIndex * PokedexController.RESULT_SLOTS + self._cursor]
       if type(key) == "string" then
         self:_emitCry(key, self:_cryForm(key))
@@ -1406,7 +1513,7 @@ function PokedexController:_handleResults(event)
 end
 
 function PokedexController:_activateResultsSlot()
-  if self._cursor == 0 then
+  if self:_isSearchReturnSlot() then
     self._page = "search"
     self:_bumpKey()
     return
@@ -1434,16 +1541,16 @@ function PokedexController:_handleArea(event)
     self:_bumpKey()
   elseif event.type == "select" then
     if self._area:view().region == "johto" then
-      self._area:setRegion("kanto")
+      self:_setAreaRegion("kanto")
     else
-      self._area:setRegion("johto")
+      self:_setAreaRegion("johto")
     end
     self:_bumpKey()
   elseif event.type == "l" then
-    self._area:setRegion("johto")
+    self:_setAreaRegion("johto")
     self:_bumpKey()
   elseif event.type == "r" then
-    self._area:setRegion("kanto")
+    self:_setAreaRegion("kanto")
     self:_bumpKey()
   elseif event.type == "navigate" then
     if event.direction == "up" then
@@ -1458,7 +1565,7 @@ function PokedexController:_handleArea(event)
       self._area:setTime(event.value)
       self:_bumpKey()
     elseif event.action == "area-region" then
-      self._area:setRegion(event.value)
+      self:_setAreaRegion(event.value)
       self:_bumpKey()
     elseif event.action == "area-row" then
       self._area:goRow(event.value)
@@ -1618,7 +1725,7 @@ end
 
 ---@param direction integer -1 or 1 tab cycle
 function PokedexController:_cycleEntryTab(direction)
-  local tabs = { "area", "size", "forms" }
+  local tabs = { "area", "size", "forms", "return" }
   local current = 1
   for index, name in ipairs(tabs) do
     if name == self._page then
@@ -1665,19 +1772,21 @@ function PokedexController:_entryPictures()
     local comparison = self._forms:comparison()
     if comparison ~= nil then
       local variants = self._forms:variants()
+      local facing = comparison.facing
+      local facePersonality = 0
+      if facing == "front" then
+        local firstPersonality = tryDex(self._dex, "firstPersonality", self._entrySpecies)
+        if type(firstPersonality) == "number" then
+          facePersonality = firstPersonality
+        end
+      end
       for side = 0, 1 do
         local variant = variants[comparison.indices[side + 1] + 1]
         if variant ~= nil then
           pictures[#pictures + 1] = {
-            slot = side * 2,
-            specimen = self:_specimen(variant.form, variant.gender, 0),
-            facing = "front",
-            mode = mode,
-          }
-          pictures[#pictures + 1] = {
-            slot = side * 2 + 1,
-            specimen = self:_specimen(variant.form, variant.gender, 0),
-            facing = "back",
+            slot = side,
+            specimen = self:_specimen(variant.form, variant.gender, facePersonality),
+            facing = facing,
             mode = mode,
           }
         end
@@ -1699,6 +1808,69 @@ function PokedexController:_entryPictures()
     mode = mode,
   }
   return pictures
+end
+
+---@param number integer dex number in the active order
+---@return string zero-padded display digits
+local function padNumber(number)
+  return string.format("%03d", number)
+end
+
+-- Detached semantic text requests for the visible page: counts, the
+-- regional selection identity, and the open specimen facts the prepared
+-- renderer resolves through its message banks. Only fact-derived slots
+-- are published here; interface labels without a verified source message
+-- reference stay out so preparation never fetches an invented bank entry.
+---@return table[] detached semantic text slot requests for the visible page
+function PokedexController:_textSlots()
+  local slots = {}
+  if self._page == "grid" then
+    local seen = tryDex(self._dex, "countSeen", self._mode)
+    local caught = tryDex(self._dex, "countCaught", self._mode)
+    slots[#slots + 1] =
+      { role = "grid.seen-count", kind = "numeric", value = tostring(type(seen) == "number" and seen or 0) }
+    slots[#slots + 1] = {
+      role = "grid.caught-count",
+      kind = "numeric",
+      value = tostring(type(caught) == "number" and caught or 0),
+    }
+    local selection = self._selection
+    if selection.seen == true and type(selection.species) == "string" and type(selection.dexNumber) == "number" then
+      slots[#slots + 1] = { role = "grid.selected-number", kind = "numeric", value = padNumber(selection.dexNumber) }
+      slots[#slots + 1] = {
+        role = "grid.selected-name",
+        kind = "species_name",
+        species = selection.species,
+        language = selection.language,
+      }
+    end
+  elseif self._page == "search" then
+    if self._feedback ~= nil then
+      slots[#slots + 1] = { role = "search.feedback", kind = "ui", messageId = 9, language = self._nativeLanguage }
+    end
+  elseif self._page == "results" then
+    slots[#slots + 1] = { role = "search.results", kind = "numeric", value = tostring(#self._results) }
+  elseif self._page == "area" or self._page == "size" or self._page == "forms" or self._page == "return" then
+    local species = self._entrySpecies
+    if type(species) == "string" and tryDex(self._dex, "isSeen", species) == true then
+      local language = self._selection.language
+      if type(language) ~= "string" then
+        language = self._nativeLanguage
+      end
+      local dexNumber = self:_activeNumber(species)
+      if type(dexNumber) == "number" then
+        slots[#slots + 1] = { role = "entry.dex-number", kind = "numeric", value = padNumber(dexNumber) }
+      end
+      slots[#slots + 1] = { role = "entry.species-name", kind = "species_name", species = species, language = language }
+      if tryDex(self._dex, "isCaught", species) == true then
+        slots[#slots + 1] = { role = "entry.category", kind = "category", species = species, language = language }
+        slots[#slots + 1] = { role = "entry.flavor", kind = "flavor", species = species, language = language }
+        slots[#slots + 1] = { role = "entry.height", kind = "height", species = species }
+        slots[#slots + 1] = { role = "entry.weight", kind = "weight", species = species }
+      end
+    end
+  end
+  return slots
 end
 
 ---@return { species: string?, dexNumber: integer?, seen: boolean, caught: boolean, language: string } detached selection snapshot
@@ -1731,7 +1903,7 @@ function PokedexController:_blendView()
   return { information = information, controls = controls }
 end
 
----@return { key: integer, mode: string, page: string, origin: string, selection: { species: string?, dexNumber: integer?, seen: boolean, caught: boolean, language: string }, counts: { seen: integer, caught: integer }, visual: { coverOffset: integer, barOffset: integer, paletteFades: table[], blend: table<string, unknown>, flash: table<string, unknown>, transition: table<string, unknown> }, pictures: table[], text: table[], controls: table<string, unknown>, grid: table<string, unknown>?, search: table<string, unknown>?, area: table<string, unknown>?, size: table<string, unknown>?, forms: table<string, unknown>?, returnPanel: table<string, unknown>? } detached semantic snapshot for presentation
+---@return { key: integer, mode: string, page: string, origin: string, selection: { species: string?, dexNumber: integer?, seen: boolean, caught: boolean, language: string }, counts: { seen: integer, caught: integer }, visual: { coverOffset: integer, barOffset: integer, paletteFades: table[], blend: table<string, unknown>, flash: table<string, unknown>, transition: table<string, unknown> }, areaPan: { region: integer, offset: integer }, pictures: table[], text: table[], controls: table<string, unknown>, grid: table<string, unknown>?, search: table<string, unknown>?, area: table<string, unknown>?, size: table<string, unknown>?, forms: table<string, unknown>?, returnPanel: table<string, unknown>? } detached semantic snapshot for presentation
 function PokedexController:view()
   local seen = tryDex(self._dex, "countSeen", self._mode)
   local caught = tryDex(self._dex, "countCaught", self._mode)
@@ -1753,8 +1925,8 @@ function PokedexController:view()
       flash = { active = false, tick = 0 },
       transition = { phase = self._transition.phase, tick = self._transition.tick },
     },
+    areaPan = { region = self._areaPanRegion, offset = self._areaPanOffset },
     pictures = {},
-    text = {},
     controls = {},
   }
   if self._page == "grid" then
@@ -1789,7 +1961,6 @@ function PokedexController:view()
         holdTick = self._feedback.tick,
         offset = 0,
       }
-      snapshot.text = { { role = "message", messageId = 9, visible = true, language = self._nativeLanguage } }
     end
   elseif self._page == "results" then
     snapshot.grid = {
@@ -1812,6 +1983,7 @@ function PokedexController:view()
     snapshot.returnPanel = { focused = true }
     snapshot.pictures = self:_entryPictures()
   end
+  snapshot.text = self:_textSlots()
   return snapshot
 end
 

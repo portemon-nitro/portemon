@@ -465,13 +465,14 @@ function PokedexSearch:beginDrag(criterion, endpoint, value)
   self._editor.endpoint = endpoint
   local bounds = self._criteria[criterion]
   assert(type(bounds) == "table", "search reads its slider bounds")
+  local preDrag = bounds[endpoint]
   if value < PokedexSearch.SLIDER_MIN then
     value = PokedexSearch.SLIDER_MIN
   end
   if value > PokedexSearch.SLIDER_MAX then
     value = PokedexSearch.SLIDER_MAX
   end
-  self._drag = { criterion = criterion, endpoint = endpoint, preDrag = value }
+  self._drag = { criterion = criterion, endpoint = endpoint, preDrag = preDrag }
   bounds[endpoint] = value
   self._sliderOpCount = 0
   self._sliderAnim = 0
@@ -573,7 +574,12 @@ function PokedexSearch:run()
   assert(type(catalog) == "table", "search reads its borrowed catalog")
   local dex = self._dex
   local orders = checkTable(catalog.dexOrders, "dex orders")
-  local membership = checkTable(orders.national, "the national membership")
+  local activeOrder = orders[self._mode]
+  if type(activeOrder) ~= "table" then
+    fail("search membership names an unknown mode", { mode = self._mode })
+  end
+  assert(type(activeOrder) == "table", "search reads the active regional membership")
+  local membership = activeOrder
   local criteriaLists = checkTable(catalog.criteria, "criteria lists")
   local orderName = self._criteria.order
   local orderArray

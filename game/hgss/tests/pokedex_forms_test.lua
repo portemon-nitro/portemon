@@ -301,15 +301,44 @@ function T.wide_comparison_cycles_sides_while_skipping_the_other_index()
   tick(controller, { { type = "activate", action = "compare-side", value = 1 } })
   idle(controller, 10)
   Assert.equal(formsOf(controller).comparison.activeSide, 1, "side selection switches the active side")
-  local fronts, backs = 0, 0
-  for _, picture in ipairs(controller:view().pictures) do
-    if picture.facing == "front" then
-      fronts = fronts + 1
-    elseif picture.facing == "back" then
-      backs = backs + 1
-    end
-  end
-  Assert.isTrue(fronts >= 1 and backs >= 1, "comparison carries authored front and back pictures")
+  local pictures = controller:view().pictures
+  Assert.equal(#pictures, 2, "comparison projects exactly two picture slots")
+  Assert.deepEqual({ pictures[1].slot, pictures[2].slot }, { 0, 1 }, "comparison slots run left then right")
+  local variants = formsOf(controller).variants
+  local indices = formsOf(controller).comparison.indices
+  Assert.equal(pictures[1].specimen.form, variants[indices[1] + 1].form, "the left slot shows its selected variant")
+  Assert.equal(pictures[2].specimen.form, variants[indices[2] + 1].form, "the right slot shows its selected variant")
+  Assert.equal(pictures[1].facing, "front", "both slots share the selected facing")
+  Assert.equal(pictures[2].facing, "front", "both slots share the selected facing")
+  local keyBefore = controller:view().key
+  tick(controller, { { type = "activate", action = "compare-flip" } })
+  idle(controller, 10)
+  local flippedPictures = controller:view().pictures
+  Assert.equal(#flippedPictures, 2, "flipping keeps exactly two picture slots")
+  Assert.equal(flippedPictures[1].facing, "back", "flipping turns the left slot")
+  Assert.equal(flippedPictures[2].facing, "back", "flipping turns the right slot in synchrony")
+  Assert.isTrue(controller:view().key ~= keyBefore, "flipping advances the picture generation")
+  controller:dispose()
+end
+
+function T.two_variant_comparison_projects_one_picture_per_side()
+  local PokedexController = requirePresent("ordered variants and form comparison")
+  local monCatalog, catalog = catalogs()
+  local owner = enabledOwner(monCatalog, catalog)
+  record(owner, monCatalog, "SHELLOS", 0, 0, "seen")
+  record(owner, monCatalog, "SHELLOS", 0, 1, "seen")
+  local controller = newBrowser(PokedexController, owner, monCatalog, catalog)
+  openForms(controller, "SHELLOS")
+  tick(controller, { { type = "activate", action = "compare" } })
+  idle(controller, 20)
+  local pictures = controller:view().pictures
+  Assert.equal(#pictures, 2, "comparison projects one picture per selected side")
+  Assert.deepEqual({ pictures[1].slot, pictures[2].slot }, { 0, 1 }, "comparison slots run left then right")
+  Assert.deepEqual(
+    { pictures[1].specimen.form, pictures[2].specimen.form },
+    { 0, 1 },
+    "comparison slots show their selected physical forms"
+  )
   controller:dispose()
 end
 
