@@ -49,6 +49,7 @@ local MovementCalibration = require("libs.hgss.src.script.tasks.MovementCalibrat
 ---@field commitScriptedAction fun(self: FieldObjectActor): table<string, unknown>?
 ---@field cancelScriptedAction fun(self: FieldObjectActor)
 ---@field isScriptedMoving fun(self: FieldObjectActor): boolean
+---@field heldOffsetFacing fun(self: FieldObjectActor): FieldDirection? facing whose draw offset an active presentation offset pins
 ---@field advancePresentationTick fun(self: FieldObjectActor)
 ---@field settlePresentation fun(self: FieldObjectActor)
 ---@field currentAction fun(self: FieldObjectActor): string?
