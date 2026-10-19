@@ -1118,6 +1118,196 @@ function T.normalized_particle_state_matches_the_selected_source_member(romFs, v
   )
 end
 
+-- Every compiled task kind across the closed catalog is admitted by the
+-- live factory, and one representative program per exercised seam runs
+-- its native ticks through the real player, factory, and scene: a
+-- direct-damage strike, a particle-route special, a no-damage status
+-- program, and an appearance-changing program. Headless lease and voice
+-- doubles stand in only for GPU upload and audio output; pixels and
+-- completion are owned by the real scene and task bodies.
+local function traceResources()
+  local resources = {}
+  function resources.resolve(key)
+    return { key = key, lease = key }
+  end
+  function resources.release(_lease) end
+  return resources
+end
+
+local function traceAudio()
+  local audio = { played = {} }
+  function audio.play(name)
+    audio.played[#audio.played + 1] = name
+  end
+  function audio.stop(_name) end
+  function audio.isFinished(_name)
+    return true
+  end
+  return audio
+end
+
+local function traceScene()
+  local BattleScene = require("libs.hgss.src.presentation.BattleScene")
+  local scene = BattleScene.new()
+  scene:observe({
+    { combatant = 1, activation = 1, visible = true },
+    { combatant = 3, activation = 3, visible = true },
+  })
+  return scene
+end
+
+local function observedActivity(scene, audio)
+  if #scene:effectViews() > 0 then
+    return true
+  end
+  if #audio.played > 0 then
+    return true
+  end
+  for _, activation in ipairs({ { combatant = 1, activation = 1 }, { combatant = 3, activation = 3 } }) do
+    if scene:pictureState(activation) ~= nil then
+      return true
+    end
+  end
+  return false
+end
+
+local function traceTopology(target)
+  return {
+    attacker = { combatant = 1, activation = 1, slot = "solo-player", sideType = 0 },
+    targets = { { combatant = target, activation = target, slot = "solo-enemy", sideType = 1 } },
+  }
+end
+
+---@param program table<string, unknown> closed source-backed effect program under trace
+---@param key string semantic effect key under trace
+---@return table<string, boolean> task kinds the traced program exercised
+local function traceProgramThroughNativeTicks(program, key)
+  local Player = require("libs.hgss.src.presentation.BattleAnimationPlayer")
+  local Factory = require("libs.hgss.src.presentation.BattleEffectTasks")
+  for _, kind in ipairs(program.taskKinds --[[@as table<integer, string>]]) do
+    Assert.isTrue(Factory.supportsKind(kind), "the traced run admits only real factory bodies: " .. tostring(kind))
+  end
+  local scene = traceScene()
+  local audio = traceAudio()
+  local player = assert(
+    Player.new({ scene = scene, audio = audio, resources = traceResources(), tasks = Factory }),
+    "the native player opens behind its real collaborators"
+  )
+  local target = key == "TRANSFORM" and 3 or 3
+  local handle = assert(
+    player:start({
+      launchId = "task-kind-gate",
+      packetId = 1,
+      event = { sequence = 1, actionId = 31, effectKey = key },
+      visualSeed = 4242,
+      topology = traceTopology(target),
+    }, program),
+    "the player admits the selected source-backed program: " .. key
+  )
+  player:stepSourceTick({ tick = 1 })
+  local held = player:status(handle)
+  Assert.isTrue(held ~= "complete" and held ~= "failed", "the source-timed run stays alive past its first tick: " .. key)
+  local active = observedActivity(scene, audio)
+  local completed = false
+  for _ = 1, 600 do
+    if player:status(handle) == "complete" then
+      completed = true
+      break
+    end
+    Assert.isTrue(
+      player:status(handle) ~= "failed",
+      "the source-backed run never fails its occurrence: " .. key
+    )
+    player:stepSourceTick({ tick = 1 })
+    active = observedActivity(scene, audio) or active
+  end
+  Assert.isTrue(completed, "the source-backed program reaches its own completion: " .. key)
+  Assert.isTrue(active, "the traced program owns observable scene or voice state: " .. key)
+  local exercised = {}
+  for _, kind in ipairs(program.taskKinds --[[@as table<integer, string>]]) do
+    exercised[kind] = true
+  end
+  return exercised
+end
+
+function T.compiled_task_kinds_are_admitted_with_sampled_native_traces(romFs, versionId)
+  Assert.equal(versionId, "heartgold", "the task-kind gate is pinned to the verified HeartGold dump")
+  local Compiler = require("romdump.src.digest.battle.BattlePresentationCompiler")
+  local Factory = require("libs.hgss.src.presentation.BattleEffectTasks")
+  local startedAt = os.clock()
+  local bundle, err = Compiler.compileGlobal(romFs, { versionId = versionId })
+  Assert.isNil(err, "the closed catalog compiles for the task-kind gate: " .. tostring(err))
+  local manifest = assert(bundle and bundle.manifest, "global compilation publishes a manifest")
+  local programs = assert(manifest.programs, "the closed catalog publishes animation programs")
+  local routeCount = 0
+  local kinds = {}
+  for programKey, program in pairs(programs) do
+    routeCount = routeCount + 1
+    Assert.isTrue(type(program.taskKinds) == "table", programKey .. " publishes its ordered task kinds")
+    for _, kind in ipairs(program.taskKinds) do
+      kinds[kind] = true
+      Assert.isTrue(Factory.supportsKind(kind), "compiled task kind is admitted by the factory: " .. kind)
+    end
+  end
+  local kindCount = 0
+  for _ in pairs(kinds) do
+    kindCount = kindCount + 1
+  end
+  Assert.isTrue(routeCount > 400, "the gate spans the retail route extent, not a sample")
+  Assert.isTrue(kindCount > 0, "the closed catalog exercises at least one native task kind")
+  local elapsed = os.clock() - startedAt
+  collectgarbage("collect")
+  print(
+    string.format(
+      "TASKKIND-GATE routes=%d kinds=%d seconds=%.1f peakkb=%.0f",
+      routeCount,
+      kindCount,
+      elapsed,
+      collectgarbage("count")
+    )
+  )
+  local exercised = {}
+  -- CHARGE_BEAM cannot serve as the particle-route representative: its
+  -- program keeps fail-closed battle-context branches (opcodes 71/72)
+  -- that no playback packet may satisfy, so the occurrence fails loudly
+  -- instead of guessing. SUPERSONIC is the proven emitter-route program
+  -- that completes through the same player path.
+  for _, key in ipairs({ "TACKLE", "SUPERSONIC", "TAIL_WHIP", "TRANSFORM" }) do
+    local effect, effectErr = Compiler.compileEffect(romFs, { versionId = versionId }, key)
+    Assert.isNil(effectErr, key .. " closes for its native trace: " .. tostring(effectErr))
+    Assert.notNil(effect, key .. " stages its source-backed program")
+    for kind in pairs(traceProgramThroughNativeTicks(assert(effect).program, key)) do
+      exercised[kind] = true
+    end
+  end
+  local function covers(predicate)
+    for kind in pairs(exercised) do
+      if predicate(kind) then
+        return true
+      end
+    end
+    return false
+  end
+  Assert.isTrue(
+    covers(function(kind)
+      return kind:find("sound", 1, true) ~= nil or kind == "voice-monitor"
+    end),
+    "the sampled traces exercise source-timed sound"
+  )
+  Assert.isTrue(
+    covers(function(kind)
+      return kind:find("emitter", 1, true) or kind:find("particle", 1, true)
+    end),
+    "the sampled traces exercise the particle route"
+  )
+  Assert.isTrue(
+    covers(function(kind)
+      return kind:find("managed-sprite", 1, true) or kind:find("sprite", 1, true)
+    end),
+    "the sampled traces exercise sprite tasks"
+  )
+end
+
 return RomSuite.build({
   tests = T,
   readyVersions = RomImporter.isReady("heartgold") and { "heartgold" } or {},
