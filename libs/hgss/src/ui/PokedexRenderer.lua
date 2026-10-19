@@ -37,7 +37,12 @@ PokedexRenderer.SURFACE_NAMES = { "bg0", "bg1", "bg2", "bg3", "objColor", "objMe
 
 -- Authored native geometry, in half-open pane pixels.
 PokedexRenderer.SELECTED_PICTURE_RECT = { x = 8, y = 32, width = 80, height = 80 }
-PokedexRenderer.REGISTRATION_PICTURE_RECT = { x = 88, y = 32, width = 80, height = 80 }
+-- The registration picture is an 80x80 specimen quad addressed by its
+-- source center: top-left is (pictureX - 40, 32), sliding from center 48
+-- to center 128 over departure.
+PokedexRenderer.REGISTRATION_PICTURE_SIZE = 80
+PokedexRenderer.REGISTRATION_PICTURE_Y = 32
+PokedexRenderer.REGISTRATION_PICTURE_HOME = 48
 PokedexRenderer.FORMS_FRONT_RECT = { x = 24, y = 80, width = 80, height = 80 }
 PokedexRenderer.FORMS_BACK_RECT = { x = 152, y = 80, width = 80, height = 80 }
 PokedexRenderer.COMPARE_LEFT_RECT = { x = 24, y = 24, width = 80, height = 80 }
@@ -151,9 +156,13 @@ vec4 effect(vec4 color, Image tex, vec2 uv, vec2 screenCoords) {
       bgColor = layers[layer].rgb;
     }
   }
-  vec3 objBytes = Texel(u_obj, uv).rgb;
+  vec4 objSample = Texel(u_obj, uv);
+  vec3 objBytes = objSample.rgb;
   vec4 meta = Texel(u_meta, uv);
-  float objPresent = step(0.5, meta.a * 255.0);
+  // A rectangle metadata mark never confers presence by itself: the
+  // pixel is an OBJ candidate only when its actual sampled texel is
+  // opaque as well.
+  float objPresent = step(0.5, meta.a * 255.0) * step(0.003, objSample.a);
   float objClass = floor(meta.r * 255.0 + 0.5);
   float objPri = floor(meta.g * 255.0 + 0.5);
   bool insideWindow = u_winActive > 0.5
@@ -358,7 +367,7 @@ function PokedexRenderer.resolvePageRole(view, paneId)
     if type(search) == "table" and type(search.editor) == "table" then
       local kinds = {
         order = "search.order",
-        name = "search.name",
+        letter = "search.name",
         type = "search.type",
         height = "search.height",
         weight = "search.weight",
@@ -433,11 +442,17 @@ end
 
 -- Resolves the winning BG priority per layer from the compiled
 -- backgrounds: the lowest authored priority number paints in front, and
--- an undrawn layer never wins.
+-- a layer with no staged background keeps the native priority of its
+-- pane and layer, read from any role that stages it. Every producer
+-- entry for one pane/layer shares the same source priority, so the
+-- borrowed value is exact. A pane/layer staged nowhere falls back to
+-- the pane minimum: with first-layer-wins ties that reproduces the
+-- native order exactly for the imageless text layers, which must still
+-- beat the backdrop wherever no staged layer covers them.
 ---@param manifest table<string, unknown> compiled presentation manifest
 ---@param role string manifest page role
 ---@param paneId string browser pane identity
----@return number[] four layer priorities, undrawn layers stay behind every OBJ
+---@return number[] four layer priorities, undrawn layers keep their native order
 function PokedexRenderer.layerPrioritiesOf(manifest, role, paneId)
   local priorities = { 255, 255, 255, 255 }
   if type(manifest) ~= "table" then
@@ -448,24 +463,51 @@ function PokedexRenderer.layerPrioritiesOf(manifest, role, paneId)
     return priorities
   end
   local page = pages[role]
-  if type(page) ~= "table" then
-    return priorities
-  end
-  local backgrounds = page.backgrounds
-  if type(backgrounds) ~= "table" then
-    return priorities
-  end
-  local entries = backgrounds[paneId]
-  if type(entries) ~= "table" then
-    return priorities
-  end
-  for _, entry in ipairs(entries) do
-    if type(entry) == "table" and type(entry.layer) == "number" then
-      local layer = entry.layer + 1
-      if layer >= 1 and layer <= 4 and type(entry.priority) == "number" then
-        if entry.priority < priorities[layer] then
-          priorities[layer] = entry.priority
+  if type(page) == "table" and type(page.backgrounds) == "table" then
+    local entries = page.backgrounds[paneId]
+    if type(entries) == "table" then
+      for _, entry in ipairs(entries) do
+        if type(entry) == "table" and type(entry.layer) == "number" then
+          local layer = entry.layer + 1
+          if layer >= 1 and layer <= 4 and type(entry.priority) == "number" then
+            if entry.priority < priorities[layer] then
+              priorities[layer] = entry.priority
+            end
+          end
         end
+      end
+    end
+  end
+  local staged = { 255, 255, 255, 255 }
+  for _, other in pairs(pages) do
+    if type(other) == "table" and type(other.backgrounds) == "table" then
+      local entries = other.backgrounds[paneId]
+      if type(entries) == "table" then
+        for _, entry in ipairs(entries) do
+          if type(entry) == "table" and type(entry.layer) == "number" then
+            local layer = entry.layer + 1
+            if layer >= 1 and layer <= 4 and type(entry.priority) == "number" then
+              if entry.priority < staged[layer] then
+                staged[layer] = entry.priority
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+  local paneMinimum = 255
+  for layer = 1, 4 do
+    if staged[layer] < paneMinimum then
+      paneMinimum = staged[layer]
+    end
+  end
+  for layer = 1, 4 do
+    if priorities[layer] == 255 then
+      if staged[layer] < 255 then
+        priorities[layer] = staged[layer]
+      else
+        priorities[layer] = paneMinimum
       end
     end
   end
@@ -676,6 +718,218 @@ local function markObjRect(graphics, meta, rect, blendClass)
   graphics.rectangle("fill", rect.x, rect.y, rect.width, rect.height)
 end
 
+-- Reads the published SUB BG0 X scroll behind one background entry:
+-- only the entry-area information layer 0 rides the pannable scroll
+-- plane, so its chrome shifts by the published native-pixel offset
+-- while every other background paints at its authored offset. The draw
+-- never advances the travel: the controller eases the offset eight
+-- pixels per fixed update toward its settled region scroll, and the
+-- committed view carries the current value.
+---@param view table<string, unknown> detached projection carrying the published pan
+---@param role string manifest page role behind the pane
+---@param paneId string browser pane identity
+---@param layer number native BG layer behind the entry
+---@return number horizontal shift in native pixels behind the entry
+local function areaPanShift(view, role, paneId, layer)
+  if role ~= "entry.area" or paneId ~= "information" or layer ~= 0 then
+    return 0
+  end
+  local pan = view.areaPan
+  if type(pan) ~= "table" or type(pan.offset) ~= "number" then
+    return 0
+  end
+  return pan.offset
+end
+
+-- Draws one page background entry onto its declared BG layer: the
+-- prepared chrome image paints whole at its authored offset, so source
+-- RGBA including palette index0 alpha survives without subrect quads.
+-- A missing prepared handle in a ready bundle fails the draw instead of
+-- painting an empty fake page.
+---@param graphics table<string, unknown> host graphics namespace
+---@param chrome table<string, unknown> prepared role-keyed chrome handles
+---@param entry table<string, unknown> authored background record
+---@param surfaces table[] six realized serial surfaces in compositor order
+---@param dx number horizontal scroll-plane shift in native pixels
+local function drawBackgroundEntry(graphics, chrome, entry, surfaces, dx)
+  assert(type(entry.layer) == "number", "background entries name their BG layer")
+  local handle = assert(chrome[entry.chrome], "prepared bundles carry background chrome " .. tostring(entry.chrome))
+  assert(type(handle) == "table", "prepared chrome handles stay records")
+  local surface = assert(surfaces[entry.layer + 1], "background layers address their serial surface")
+  graphics.setCanvas(surface.canvas)
+  drawSampled(graphics, handle, nil, (entry.x or 0) + (dx or 0), entry.y or 0)
+end
+
+-- Paints every authored background of one pane onto its declared BG
+-- layer 0..3, in manifest order, so later entries cover earlier ones on
+-- a shared layer. The registration card reads the staged information
+-- backgrounds behind its battle Main/top placement.
+---@param graphics table<string, unknown> host graphics namespace
+---@param assets table<string, unknown> prepared bundle with chrome and the manifest
+---@param view table<string, unknown> detached projection carrying the published pan
+---@param role string manifest page role behind the pane
+---@param paneId string browser pane identity
+---@param surfaces table[] six realized serial surfaces in compositor order
+local function drawPageBackgrounds(graphics, assets, view, role, paneId, surfaces)
+  local manifest = assert(assets.manifest, "prepared bundles carry their compiled manifest")
+  assert(type(manifest) == "table", "compiled manifests stay records")
+  local pages = assert(manifest.pages, "the compiled manifest carries its page roles")
+  local page = assert(pages[role], "the compiled manifest carries the drawn page role " .. tostring(role))
+  local contentPane = paneId
+  if paneId == "registration" then
+    contentPane = "information"
+  end
+  local backgrounds = page.backgrounds
+  if type(backgrounds) ~= "table" then
+    return
+  end
+  local entries = backgrounds[contentPane]
+  if type(entries) ~= "table" then
+    return
+  end
+  local chrome = assert(assets.chrome, "prepared bundles carry their chrome handles")
+  for _, entry in ipairs(entries) do
+    local layer = entry.layer
+    assert(type(layer) == "number", "background entries name their BG layer")
+    drawBackgroundEntry(graphics, chrome, entry, surfaces, areaPanShift(view, role, contentPane, layer))
+  end
+end
+
+-- Converts one authored 0..255 window color to the 0..1 triple the
+-- palette text path consumes.
+---@param color table<string, unknown> authored window color
+---@return table<string, unknown> palette color triple
+local function paletteColor(color)
+  assert(type(color) == "table", "window colors stay records")
+  local alpha = color.a
+  if alpha == nil then
+    alpha = 1
+  else
+    alpha = alpha / 255
+  end
+  return { r = color.r, g = color.g, b = color.b, a = alpha }
+end
+
+-- Resolves the authored window font from the prepared pair: font 0 reads
+-- the borrowed body renderer, font 4 the owned header renderer.
+---@param assets table<string, unknown> prepared bundle with the font pair
+---@param window table<string, unknown> authored window record
+---@param key string authored window key behind the attribution
+---@return table<string, unknown> prepared font renderer behind the window
+local function windowFont(assets, window, key)
+  local fonts = assert(assets.fonts, "prepared bundles carry their font pair")
+  assert(type(fonts) == "table", "prepared font pairs stay records")
+  if window.font == 4 then
+    return assert(fonts.header, "prepared bundles carry the header font for " .. tostring(key))
+  end
+  return assert(fonts.body, "prepared bundles carry the body font for " .. tostring(key))
+end
+
+-- Maps prepared messages onto their authored window keys. The
+-- registration announcement rides its header window, whose key differs
+-- from the prepared message role; every other message already names its
+-- window. Windows without a prepared string stay blank: missing
+-- optional content is absent, never guessed.
+---@param messages table<string, unknown> prepared message record
+---@return table<string, string> message by authored window key
+local function textByWindow(messages)
+  local mapped = {}
+  for key, value in pairs(messages) do
+    mapped[key] = value
+  end
+  if mapped["registration.header"] == nil and type(messages.registrationAnnouncement) == "string" then
+    mapped["registration.header"] = messages.registrationAnnouncement
+  end
+  return mapped
+end
+
+-- Paints one authored window and its prepared text into the window's
+-- assigned BG layer at source logical coordinates: an opaque window
+-- background fills first, then up to one 16px line per 16px of window
+-- height honors the authored alignment and palette triple. Draws the
+-- prepared strings verbatim; no runtime bank lookup happens here.
+---@param graphics table<string, unknown> host graphics namespace
+---@param assets table<string, unknown> prepared bundle with fonts and messages
+---@param window table<string, unknown> authored window record
+---@param key string authored window key behind the text
+---@param text string prepared string behind the window
+---@param surfaces table[] six realized serial surfaces in compositor order
+local function drawWindowText(graphics, assets, window, key, text, surfaces)
+  local surface = assert(surfaces[window.layer + 1], "window layers address their serial surface")
+  graphics.setCanvas(surface.canvas)
+  local background = window.background
+  if type(background) == "table" and (background.a or 0) > 0 then
+    assert(type(graphics.setColor) == "function", "window passes paint their background")
+    assert(type(graphics.rectangle) == "function", "window passes paint their background")
+    graphics.setColor(background.r / 255, background.g / 255, background.b / 255, background.a / 255)
+    graphics.rectangle("fill", window.x, window.y, window.width, window.height)
+    graphics.setColor(1, 1, 1, 1)
+  end
+  local font = windowFont(assets, window, key)
+  assert(type(font.textWidth) == "function", "window fonts measure their advances")
+  assert(type(font.drawTextWithPalette) == "function", "window fonts draw through their palette path")
+  local palette = {
+    foreground = paletteColor(assert(window.foreground, "windows carry their foreground")),
+    shadow = paletteColor(assert(window.shadow, "windows carry their shadow")),
+    background = paletteColor(assert(window.background, "windows carry their background")),
+  }
+  local maxLines = math.max(1, math.floor(window.height / 16))
+  local drawn = 0
+  for line in (text .. "\n"):gmatch("([^\n]*)\n") do
+    if drawn >= maxLines then
+      break
+    end
+    local width = font:textWidth(line)
+    local x = window.x
+    if window.align == "center" then
+      x = window.x + math.floor((window.width - width) / 2)
+    elseif window.align == "right" then
+      x = window.x + window.width - width
+    end
+    font:drawTextWithPalette(line, x, window.y + drawn * 16, palette)
+    drawn = drawn + 1
+  end
+end
+
+-- Paints the page-local window inventory of one pane plus every prepared
+-- string behind it, into each window's assigned BG layer. Page
+-- inventories mix panes, so only windows authored for the drawn pane
+-- paint here.
+---@param graphics table<string, unknown> host graphics namespace
+---@param assets table<string, unknown> prepared bundle with fonts, messages, and the manifest
+---@param role string manifest page role behind the pane
+---@param paneId string browser pane identity
+---@param surfaces table[] six realized serial surfaces in compositor order
+local function drawPageWindowsAndText(graphics, assets, role, paneId, surfaces)
+  local manifest = assert(assets.manifest, "prepared bundles carry their compiled manifest")
+  assert(type(manifest) == "table", "compiled manifests stay records")
+  local pages = assert(manifest.pages, "the compiled manifest carries its page roles")
+  local page = assert(pages[role], "the compiled manifest carries the drawn page role " .. tostring(role))
+  local contentPane = paneId
+  if paneId == "registration" then
+    contentPane = "information"
+  end
+  local keys = page.windows
+  if type(keys) ~= "table" then
+    return
+  end
+  local inventory = assert(manifest.windows, "the compiled manifest carries its window inventory")
+  local messages = assert(assets.messages, "prepared bundles carry their messages")
+  assert(type(messages) == "table", "prepared messages stay records")
+  local byWindow = textByWindow(messages)
+  for _, key in ipairs(keys) do
+    local window = assert(inventory[key], "the window inventory carries " .. tostring(key))
+    assert(type(window) == "table", "window records stay records")
+    if window.pane == contentPane then
+      local text = byWindow[key]
+      if text ~= nil then
+        assert(type(text) == "string", "prepared window strings stay strings")
+        drawWindowText(graphics, assets, window, key, text, surfaces)
+      end
+    end
+  end
+end
+
 -- Draws the controls icon grid into the OBJ pair: caught icons opaque,
 -- seen-only icons marked for the locked seen blend, blanks untouched.
 -- Only the first fifteen staged slots are visible.
@@ -728,7 +982,9 @@ end
 
 -- Selects the authored information rectangle for one picture slot: the
 -- selected portrait on ordinary pages, the forms pair on the forms page,
--- and the comparison pair on the comparison page.
+-- and the comparison pair strictly by slot side, never by facing. Facing
+-- selects which prepared portrait handle the bundle carries, not which
+-- side receives the image.
 ---@param role string manifest page role behind the pane
 ---@param slot string|integer picture slot behind the record
 ---@param facing string front or back facing behind the record
@@ -739,7 +995,7 @@ local function informationRectFor(role, slot, facing, backYOffset)
     return nil
   end
   if role == "entry.compare" then
-    if facing == "back" or slot == 1 or slot == 3 then
+    if slot == 1 then
       return PokedexRenderer.COMPARE_RIGHT_RECT
     end
     return PokedexRenderer.COMPARE_LEFT_RECT
@@ -764,8 +1020,10 @@ end
 -- Draws the information picture slots into the OBJ pair through their
 -- authored rectangles: prepared portrait quads, owned Spinda canvases, or
 -- the fixed unknown silhouette policy the projection already selected.
--- Silhouette slots without prepared art stay undrawn; a missing required
--- portrait handle fails the draw instead of substituting another species.
+-- Comparison slots iterate in slot order so the left record always
+-- paints before the right one. Silhouette slots without prepared art
+-- stay undrawn; a missing required portrait handle fails the draw
+-- instead of substituting another species.
 ---@param graphics table<string, unknown> host graphics namespace
 ---@param assets table<string, unknown> prepared bundle with pictures and the manifest
 ---@param pictures table<string, unknown> prepared picture records by slot
@@ -775,7 +1033,18 @@ local function drawInformationPictures(graphics, assets, pictures, role, surface
   local _ = assets
   local color, meta = surfaces[5], surfaces[6]
   assert(type(graphics.setCanvas) == "function", "picture passes target their surfaces")
-  for slot, record in pairs(pictures) do
+  local slots = {}
+  for slot in pairs(pictures) do
+    slots[#slots + 1] = slot
+  end
+  table.sort(slots, function(left, right)
+    if type(left) == "number" and type(right) == "number" then
+      return left < right
+    end
+    return tostring(left) < tostring(right)
+  end)
+  for _, slot in ipairs(slots) do
+    local record = pictures[slot]
     if type(record) == "table" then
       local facing = record.facing
       if facing ~= "front" and facing ~= "back" then
@@ -808,9 +1077,11 @@ end
 
 -- Runs the serial passes for one pane on the identity transform: every
 -- pass clears then paints exactly one preallocated lease surface, and the
--- previous target returns before the composite reads them.
+-- previous target returns before the composite reads them. Backgrounds
+-- and windows/text paint first so OBJ art composites above them; the
+-- registration card reads its staged information content the same way.
 ---@param graphics table<string, unknown> host graphics namespace
----@param assets table<string, unknown> prepared bundle with icons, pictures, and chrome
+---@param assets table<string, unknown> prepared bundle with icons, pictures, chrome, and text
 ---@param view table<string, unknown> detached projection selecting content
 ---@param role string manifest page role behind the pane
 ---@param paneId string browser pane identity
@@ -828,9 +1099,11 @@ local function runSerialPasses(graphics, assets, view, role, paneId, surfaces)
     if type(graphics.getCanvas) == "function" then
       previous = graphics.getCanvas()
     end
+    drawPageBackgrounds(graphics, assets, view, role, paneId, surfaces)
+    drawPageWindowsAndText(graphics, assets, role, paneId, surfaces)
     if paneId == "controls" then
       drawControlIcons(graphics, assets, view.grid, surfaces)
-    else
+    elseif paneId == "information" then
       local pictures = assets.pictures
       if type(pictures) == "table" then
         drawInformationPictures(graphics, assets, pictures, role, surfaces)
@@ -966,10 +1239,14 @@ function PokedexRenderer:drawBrowser(prepared, plan)
   end
 end
 
--- The registration raster pass: one opaque card cover over the departing
--- battle art with the fixed 80x80 captured picture unfaded, driven by the
--- independently published palette and picture coefficients. Draws only
--- already prepared values and restores the borrowed graphics state.
+-- The registration raster pass: the staged card backgrounds, windows,
+-- and announcement plus the 80x80 captured picture at its published
+-- source center, all unfaded except through the independently published
+-- palette and picture coefficients. The picture center starts at 48
+-- (top-left 8,32) and slides to 128 (top-left 88,32); once the departure
+-- hides the sprites the picture leaves while the card layers remain.
+-- Draws only already prepared values and restores the borrowed graphics
+-- state.
 ---@param prepared { view: table<string, unknown>, assets: table<string, unknown> }
 ---@param plan table<string, unknown> the resolved application plan
 function PokedexRenderer:drawRegistration(prepared, plan)
@@ -991,6 +1268,11 @@ function PokedexRenderer:drawRegistration(prepared, plan)
   if type(pictureFade) ~= "number" then
     pictureFade = 0
   end
+  local pictureX = view.pictureX
+  if type(pictureX) ~= "number" then
+    pictureX = PokedexRenderer.REGISTRATION_PICTURE_HOME
+  end
+  local spritesHidden = view.spritesHidden == true
   assert(type(graphics.push) == "function", "registration drawing requires its host state stack")
   graphics.push("all")
   local ok, err = pcall(function()
@@ -998,31 +1280,37 @@ function PokedexRenderer:drawRegistration(prepared, plan)
       if type(pane) == "table" and pane.id == "registration" then
         local placement = assert(pane.placement, "registration panes carry their placement")
         runSerialPasses(graphics, assets, view, "registration", "registration", surfaces)
-        local pictures = assets.pictures
-        if type(pictures) == "table" then
-          local card = pictures.registration
-          if type(card) == "table" then
-            local color = surfaces[5]
-            local meta = surfaces[6]
-            local rect = PokedexRenderer.REGISTRATION_PICTURE_RECT
-            graphics.push("all")
-            graphics.origin()
-            local spinda = card.spinda
-            if type(spinda) == "table" and spinda.canvas ~= nil then
-              graphics.setCanvas(color.canvas)
-              assert(type(graphics.setColor) == "function", "registration draws reset their tint")
-              assert(type(graphics.draw) == "function", "registration draws its captured picture")
-              graphics.setColor(1, 1, 1, 1)
-              graphics.draw(spinda.canvas, rect.x, rect.y)
-            else
-              local handle = assert(card.handle, "prepared card slots carry their handle")
-              graphics.setCanvas(color.canvas)
-              drawSampled(graphics, handle, card.quad, rect.x, rect.y)
-            end
-            markObjRect(graphics, meta, rect, 0)
-            graphics.setCanvas(nil)
-            graphics.pop()
+        if not spritesHidden then
+          local pictures = assets.pictures
+          assert(type(pictures) == "table", "prepared card bundles carry their pictures")
+          local card = assert(pictures.registration, "prepared card bundles carry their captured picture")
+          assert(type(card) == "table", "prepared card slots stay records")
+          local color = surfaces[5]
+          local meta = surfaces[6]
+          local rect = {
+            x = pictureX - PokedexRenderer.REGISTRATION_PICTURE_SIZE / 2,
+            y = PokedexRenderer.REGISTRATION_PICTURE_Y,
+            width = PokedexRenderer.REGISTRATION_PICTURE_SIZE,
+            height = PokedexRenderer.REGISTRATION_PICTURE_SIZE,
+          }
+          local previous = nil
+          if type(graphics.getCanvas) == "function" then
+            previous = graphics.getCanvas()
           end
+          local spinda = card.spinda
+          if type(spinda) == "table" and spinda.canvas ~= nil then
+            graphics.setCanvas(color.canvas)
+            assert(type(graphics.setColor) == "function", "registration draws reset their tint")
+            assert(type(graphics.draw) == "function", "registration draws its captured picture")
+            graphics.setColor(1, 1, 1, 1)
+            graphics.draw(spinda.canvas, rect.x, rect.y)
+          else
+            local handle = assert(card.handle, "prepared card slots carry their handle")
+            graphics.setCanvas(color.canvas)
+            drawSampled(graphics, handle, card.quad, rect.x, rect.y)
+          end
+          markObjRect(graphics, meta, rect, 0)
+          graphics.setCanvas(previous)
         end
         local blend = { first = {}, second = {}, eva = 0, evb = 0 }
         local black = { r = 0, g = 0, b = 0 }
