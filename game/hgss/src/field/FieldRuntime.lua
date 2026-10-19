@@ -525,6 +525,7 @@ end
 ---@field _trainerFactory table<string, unknown>? composed native trainer party materializer (nil before composition)
 ---@field _battleHost table<string, unknown>? narrow battle host for script battle tasks
 ---@field roamerState table<string, unknown>? the owned roamer and encounter persistence
+---@field pokedexCatalog table<string, unknown>? the borrowed generated dex catalog behind knowledge (nil after teardown)
 ---@field dexKnowledge table<string, unknown>? the owned dex knowledge
 ---@field pokegearState table<string, unknown> the owned companion state, calendar checkpoint, and persisted draw seeds
 ---@field pokegearRandom table<string, unknown>? the live companion draw pair (nil after teardown)
@@ -1398,6 +1399,11 @@ function FieldRuntime:_composeFieldServices(boot)
     local now = self.localClock:nowLocal()
     return { year = now.year, month = now.month, day = now.day }
   end
+  self:_composePokedex(
+    boot.loadedGame,
+    assert(boot.monRoot, "mon catalog root is required for dex knowledge"),
+    boot.cacheFs
+  )
   self.monService = HgssMonService.new({
     catalog = self.monCatalog,
     bucket = monBucket,
@@ -2457,17 +2463,55 @@ function FieldRuntime:_captureManualSaveFromMenu()
   return assert(self.saveCoordinator, "field runtime has no save coordinator"):captureManual()
 end
 
--- Composes the battle-era persistent owners: roamer and encounter state
--- plus dex knowledge, restored from the loaded battle-era buckets or
--- started fresh. Reference sets come from the same mon root and world
--- catalog the runtime boots from, so selected custom content resolves
--- exactly as validation sees it.
+-- Composes the one authoritative dex owner before the mon service: the
+-- generated catalog loads from the already-ready data scope, then Continue
+-- restores the nested bucket (even when absent) with story flag 107 and
+-- profile seeds while a new game starts empty. The profile National
+-- compatibility value reconciles from the owner before dependent services
+-- compose; valid v2 flags stay authoritative and never rewrite the story
+-- flag. A failed construction or migration fails the boot instead of
+-- leaving a partially composed field.
+---@param loadedGame table<string, unknown>?
+---@param monRoot table<string, unknown>
+---@param cacheFs table<string, unknown> CacheFs-shaped
+function FieldRuntime:_composePokedex(loadedGame, monRoot, cacheFs)
+  local PokedexCache = require("libs.assets.src.PokedexCache")
+  local PokedexKnowledge = require("libs.hgss.src.mons.PokedexKnowledge")
+  local catalog = PokedexCache.loadCatalog(cacheFs)
+  self.pokedexCatalog = catalog
+  local speciesRefs = {}
+  for key in pairs(assert(monRoot.species, "mon catalog root carries its species")) do
+    speciesRefs[key] = true
+  end
+  local refs = {
+    species = speciesRefs,
+    monCatalog = self.monCatalog,
+    pokedexCatalog = catalog,
+    nativeLanguage = self.monLanguage,
+  }
+  if loadedGame ~= nil then
+    refs.legacyFlags = {
+      dexEnabled = self.eventState:isFlagSet(FieldScriptSymbols.flagsByName.FLAG_GOT_POKEDEX),
+      nationalDex = self.playerData.profile.nationalDex == true,
+      enabledInternational = false,
+      canDetectForms = false,
+    }
+    self.dexKnowledge = PokedexKnowledge.restore(loadedGame.pokedex, refs)
+  else
+    self.dexKnowledge = PokedexKnowledge.new(refs)
+  end
+  self.playerData.profile.nationalDex = self.dexKnowledge:hasNationalDex()
+end
+
+-- Composes the battle-era persistent owners: roamer and encounter state,
+-- restored from the loaded battle-era buckets or started fresh. Reference
+-- sets come from the same mon root and world catalog the runtime boots
+-- from, so selected custom content resolves exactly as validation sees it.
 ---@param loadedGame table<string, unknown>?
 ---@param monRoot table<string, unknown>
 ---@param world table<string, unknown>
 function FieldRuntime:_composeBattleState(loadedGame, monRoot, world)
   local HgssRoamerState = require("libs.hgss.src.encounters.HgssRoamerState")
-  local PokedexKnowledge = require("libs.hgss.src.mons.PokedexKnowledge")
   local speciesRefs = {}
   for key in pairs(assert(monRoot.species, "mon catalog root carries its species")) do
     speciesRefs[key] = true
@@ -2480,11 +2524,6 @@ function FieldRuntime:_composeBattleState(loadedGame, monRoot, world)
     self.roamerState = HgssRoamerState.restore(loadedGame.encounters, { species = speciesRefs, maps = mapRefs })
   else
     self.roamerState = HgssRoamerState.new({ records = {}, species = speciesRefs, maps = mapRefs })
-  end
-  if loadedGame ~= nil and loadedGame.pokedex ~= nil then
-    self.dexKnowledge = PokedexKnowledge.restore(loadedGame.pokedex, { species = speciesRefs })
-  else
-    self.dexKnowledge = PokedexKnowledge.new({ species = speciesRefs })
   end
   self.battleCoordinator = FieldBattleCoordinator.new(self)
   self.pendingEncounterId = nil
@@ -3900,6 +3939,7 @@ function FieldRuntime:_releaseAll()
   self.playerAvatar = nil
   self.windowStyles, self.uiManifest, self.fontDef, self.weatherCatalog = nil, nil, nil, nil
   self.monCatalog, self.monLanguage, self.monService = nil, nil, nil
+  self.pokedexCatalog, self.dexKnowledge = nil, nil
   self.bagService, self.bagCursor = nil, nil
   self.martService = nil
   self.mailbox, self.photoAlbum = nil, nil

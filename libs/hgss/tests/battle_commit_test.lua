@@ -180,7 +180,8 @@ end
 
 function T.dex_knowledge_publishes_through_the_committer()
   local PokedexKnowledge = require("libs.hgss.src.mons.PokedexKnowledge")
-  local dex = PokedexKnowledge.new({ species = { CHIKORITA = true, EEVEE = true } })
+  local PokedexDexFixture = require("libs.hgss.tests.mons.pokedex_dex_fixture")
+  local dex = PokedexKnowledge.new(PokedexDexFixture.refsForSpecies({ "CHIKORITA", "EEVEE" }))
   local staged = dex:capture("EEVEE")
   local Committer = requirePresent(COMMITTER_MODULE, "cross-owner result publication")
   local prepared = Committer.prepare({ outcome = { id = "outcome-dex-through-commit", result = "win" }, dex = staged })

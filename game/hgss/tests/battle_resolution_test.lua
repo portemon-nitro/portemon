@@ -89,7 +89,8 @@ end
 ---@return table dex knowledge over the resolution species set
 local function newDexOwner()
   local PokedexKnowledge = require("libs.hgss.src.mons.PokedexKnowledge")
-  return PokedexKnowledge.new({ species = { CHIKORITA = true, TOTODILE = true, EEVEE = true } })
+  local PokedexDexFixture = require("libs.hgss.tests.mons.pokedex_dex_fixture")
+  return PokedexKnowledge.new(PokedexDexFixture.refsForSpecies({ "CHIKORITA", "TOTODILE", "EEVEE" }))
 end
 
 ---@return table roamer state with one roaming record
@@ -456,7 +457,8 @@ function T.unstaged_dex_reference_fails_the_resolution()
   local PokedexKnowledge = require("libs.hgss.src.mons.PokedexKnowledge")
 
   local party = newPartyOwner()
-  local dex = PokedexKnowledge.new({ species = { CHIKORITA = true } })
+  local PokedexDexFixture = require("libs.hgss.tests.mons.pokedex_dex_fixture")
+  local dex = PokedexKnowledge.new(PokedexDexFixture.refsForSpecies({ "CHIKORITA" }))
   local foe = tackleOnly(foeRecord("TOTODILE", 4, 0xAAAA0006))
   local launch = { id = "launch-unstaged-dex", kind = "wild", payload = { species = "TOTODILE", level = 4, mon = foe } }
   local scenario = ScenarioFactory.fromEncounter(
