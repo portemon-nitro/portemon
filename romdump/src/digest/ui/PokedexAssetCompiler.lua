@@ -190,7 +190,7 @@ local function _compile(romFs, versionId, catalog, sink)
   }
 
   -- Decode every application member by container magic.
-  ---@type table<integer, { tiles: string, depth: integer, tileCount: number }>
+  ---@type table<integer, { tiles: string, depth: integer, tileCount: integer }>
   local chars = {}
   ---@type table<integer, { r: integer, g: integer, b: integer }[]>
   local palettes = {}
@@ -198,6 +198,8 @@ local function _compile(romFs, versionId, catalog, sink)
   local cellsByMember = {}
   ---@type table<integer, { anims: table<integer, unknown> }>
   local animsByMember = {}
+  ---@type table<integer, { width: integer, height: integer, entries: { tile: integer, flipH: boolean, flipV: boolean, palette: integer }[] }>
+  local screensByMember = {}
   local rawCount, compressedCount = 0, 0
   for member = 0, PokedexSources.archives.graphics.memberCount - 1 do
     local packed = gfxArchive:readMember(member)
@@ -215,7 +217,7 @@ local function _compile(romFs, versionId, catalog, sink)
     local magic = #raw >= 4 and raw:sub(1, 4) or ""
     if magic == "RGCN" then
       local char = decodeKind("decodeChar", raw, "graphics-char-" .. member)
-      chars[member] = { tiles = char.tiles, depth = char.depth, tileCount = #char.tiles / TILE_BYTES }
+      chars[member] = { tiles = char.tiles, depth = char.depth, tileCount = math.floor(#char.tiles / TILE_BYTES) }
       if chars[member].tileCount % 1 ~= 0 then
         error("pokedex character member carries partial tiles: " .. member, 0)
       end
@@ -227,7 +229,7 @@ local function _compile(romFs, versionId, catalog, sink)
     elseif magic == "RNAN" then
       animsByMember[member] = decodeKind("decodeAnimation", raw, "graphics-animation-" .. member)
     elseif magic == "RCSN" then
-      decodeKind("decodeScreen", raw, "graphics-screen-" .. member)
+      screensByMember[member] = decodeKind("decodeScreen", raw, "graphics-screen-" .. member)
     else
       error("pokedex application member has an unknown container: " .. member, 0)
     end
@@ -242,68 +244,242 @@ local function _compile(romFs, versionId, catalog, sink)
     error("pokedex application archive carries no palettes", 0)
   end
 
-  local function nearestPalette(member)
-    local best, bestDistance = paletteMembers[1], math.huge
-    for _, candidate in ipairs(paletteMembers) do
-      local distance = math.abs(candidate - member)
-      if distance < bestDistance then
-        best, bestDistance = candidate, distance
-      end
-    end
-    return palettes[best]
-  end
+  -- Exact NSCR rasterization: each screen entry addresses its tile in the
+  -- paired NCGR payload (with two-axis flips) and its 16-color bank in
+  -- the paired NCLR payload. Index 0 stays transparent; tile overruns,
+  -- unknown palette banks and non-4bpp character data fail loudly.
 
-  local largestPalette = palettes[paletteMembers[1]]
-  for _, member in ipairs(paletteMembers) do
-    if #palettes[member] > #largestPalette then
-      largestPalette = palettes[member]
-    end
-  end
-
-  -- Rendered application chrome: one tile-grid PNG per character member.
+  -- Rendered source art. OBJ tile grids are ordinal-named so no native
+  -- member id crosses the runtime boundary; composed BG roles are named
+  -- by page family, pane and layer, with content dedup across pages that
+  -- share a native triple.
   local chrome = {}
   local charMembers = {}
   for member in pairs(chars) do
     charMembers[#charMembers + 1] = member
   end
   table.sort(charMembers)
-  for _, member in ipairs(charMembers) do
-    local record = chars[member]
-    local palette = record.depth == 3 and nearestPalette(member) or largestPalette
-    local pixels, width, height = renderTileGrid(record.tiles, palette)
-    local role = "gfx-" .. member
+  if #charMembers == 0 then
+    error("pokedex application archive carries no character pages", 0)
+  end
+  local charOrdinal = {}
+  for ordinal, member in ipairs(charMembers) do
+    charOrdinal[member] = ordinal
+  end
+
+  ---@param charTiles string
+  ---@param tileCount integer
+  ---@param paletteColors { r: integer, g: integer, b: integer }[]
+  ---@param screen { width: integer, height: integer, entries: { tile: integer, flipH: boolean, flipV: boolean, palette: integer }[] }
+  ---@param label string
+  ---@return string pixels RGBA bytes
+  ---@return integer width
+  ---@return integer height
+  local function renderScreenMap(charTiles, tileCount, paletteColors, screen, label)
+    local tilesWide = math.floor(screen.width / 8)
+    for index, entry in ipairs(screen.entries) do
+      if entry.tile >= tileCount then
+        error("pokedex screen tile overruns its character payload: " .. label .. " entry " .. index, 0)
+      end
+      if (entry.palette + 1) * 16 > #paletteColors then
+        error("pokedex screen palette bank exceeds its palette: " .. label .. " entry " .. index, 0)
+      end
+    end
+    local out = {}
+    for row = 0, math.floor(screen.height / 8) - 1 do
+      for py = 0, 7 do
+        local parts = {}
+        for col = 0, tilesWide - 1 do
+          for px = 0, 7 do
+            local entry = screen.entries[row * tilesWide + col + 1]
+            local sx = entry.flipH and (7 - px) or px
+            local sy = entry.flipV and (7 - py) or py
+            local byte = string.byte(charTiles, entry.tile * TILE_BYTES + sy * 4 + math.floor(sx / 2) + 1)
+            local nibble = (sx % 2 == 0) and byte % 16 or math.floor(byte / 16)
+            if nibble == 0 then
+              parts[#parts + 1] = "\0\0\0\0"
+            else
+              local color = paletteColors[entry.palette * 16 + nibble + 1]
+              parts[#parts + 1] = string.char(color.r, color.g, color.b, 255)
+            end
+          end
+        end
+        out[#out + 1] = table.concat(parts)
+      end
+    end
+    return table.concat(out), screen.width, screen.height
+  end
+
+  ---@param tileBytes string exactly 32 bytes of 4bpp tile data
+  ---@param bank0 { r: integer, g: integer, b: integer }[] sixteen palette colors
+  ---@return string pixels RGBA bytes of the 256x192 tile-0 fill
+  ---@return integer width
+  ---@return integer height
+  local function renderTileFill(tileBytes, bank0)
+    local rows = {}
+    for py = 0, 7 do
+      local row = {}
+      for px = 0, 7 do
+        local byte = string.byte(tileBytes, py * 4 + math.floor(px / 2) + 1)
+        local nibble = (px % 2 == 0) and byte % 16 or math.floor(byte / 16)
+        if nibble == 0 then
+          row[#row + 1] = "\0\0\0\0"
+        else
+          local color = bank0[nibble + 1]
+          row[#row + 1] = string.char(color.r, color.g, color.b, 255)
+        end
+      end
+      rows[#rows + 1] = table.concat(row)
+    end
+    local out = {}
+    for _ = 1, 24 do
+      for py = 1, 8 do
+        local line = {}
+        for _ = 1, 32 do
+          line[#line + 1] = rows[py]
+        end
+        out[#out + 1] = table.concat(line)
+      end
+    end
+    return table.concat(out), 256, 192
+  end
+
+  ---@param role string
+  ---@param pixels string
+  ---@param width integer
+  ---@param height integer
+  ---@return nil
+  local function stageImage(role, pixels, width, height)
     local path = PokedexCache.assetDir() .. "/" .. role .. ".png"
     assets[path] = PngWriter.encode(width, height, pixels)
     chrome[role] = { path = path, width = width, height = height }
   end
-  if #charMembers == 0 then
-    error("pokedex application archive carries no character pages", 0)
+
+  ---@param pageRole string
+  ---@return string
+  local function pageSlug(pageRole)
+    return (pageRole:gsub("%.", "-"))
   end
-  local firstChrome = "gfx-" .. charMembers[1]
+
+  local bgRoleByTriple = {}
+  local fillRoleByPair = {}
+
+  ---@param pageRole string first page binding this triple, for role naming
+  ---@param pane string
+  ---@param layer integer
+  ---@param charMember integer
+  ---@param screenMember integer
+  ---@param paletteMember integer
+  ---@return string
+  local function composedRole(pageRole, pane, layer, charMember, screenMember, paletteMember)
+    local key = charMember .. ":" .. screenMember .. ":" .. paletteMember
+    local role = bgRoleByTriple[key]
+    if role == nil then
+      role = "bg-" .. pageSlug(pageRole) .. "-" .. pane .. "-l" .. layer
+      local charRecord = chars[charMember]
+      if charRecord == nil then
+        error("pokedex page references an unknown character member: " .. pageRole, 0)
+      end
+      if charRecord.depth ~= 3 then
+        error("pokedex page character member is not 4bpp: " .. pageRole, 0)
+      end
+      local screenRecord = screensByMember[screenMember]
+      if screenRecord == nil then
+        error("pokedex page references an unknown screen member: " .. pageRole, 0)
+      end
+      local paletteRecord = palettes[paletteMember]
+      if paletteRecord == nil then
+        error("pokedex page references an unknown palette member: " .. pageRole, 0)
+      end
+      stageImage(role, renderScreenMap(charRecord.tiles, charRecord.tileCount, paletteRecord, screenRecord, pageRole))
+      bgRoleByTriple[key] = role
+    end
+    return role
+  end
+
+  ---@param pageRole string first page binding this fill, for role naming
+  ---@param pane string
+  ---@param layer integer
+  ---@param charMember integer
+  ---@param paletteMember integer
+  ---@return string
+  local function fillRole(pageRole, pane, layer, charMember, paletteMember)
+    local key = charMember .. ":" .. paletteMember
+    local role = fillRoleByPair[key]
+    if role == nil then
+      role = "bg-" .. pageSlug(pageRole) .. "-" .. pane .. "-l" .. layer .. "-fill"
+      local charRecord = chars[charMember]
+      if charRecord == nil or charRecord.depth ~= 3 or charRecord.tileCount < 1 then
+        error("pokedex fill references an unusable character member: " .. pageRole, 0)
+      end
+      local paletteRecord = palettes[paletteMember]
+      if paletteRecord == nil or #paletteRecord < 16 then
+        error("pokedex fill references an unusable palette member: " .. pageRole, 0)
+      end
+      local bank0 = {}
+      for index = 1, 16 do
+        bank0[index] = paletteRecord[index]
+      end
+      stageImage(role, renderTileFill(charRecord.tiles:sub(1, TILE_BYTES), bank0))
+      fillRoleByPair[key] = role
+    end
+    return role
+  end
+
+  -- Stage a source triple under an explicit role without referencing it
+  -- from any page: separately selectable variants (such as the
+  -- national-mode area map) stay available to later mode-aware selection.
+  ---@param role string explicit staged role, referenced by no page
+  ---@param charMember integer
+  ---@param screenMember integer
+  ---@param paletteMember integer
+  ---@return nil
+  local function stageVariantImage(role, charMember, screenMember, paletteMember)
+    local charRecord = chars[charMember]
+    if charRecord == nil or charRecord.depth ~= 3 then
+      error("pokedex variant references an unusable character member: " .. role, 0)
+    end
+    local screenRecord = screensByMember[screenMember]
+    if screenRecord == nil then
+      error("pokedex variant references an unknown screen member: " .. role, 0)
+    end
+    local paletteRecord = palettes[paletteMember]
+    if paletteRecord == nil then
+      error("pokedex variant references an unknown palette member: " .. role, 0)
+    end
+    stageImage(role, renderScreenMap(charRecord.tiles, charRecord.tileCount, paletteRecord, screenRecord, role))
+  end
 
   local function chromeForCell(cellMember, maxTile)
-    local best, bestMember = nil, nil
+    local bestMember = nil
     for _, member in ipairs(charMembers) do
       if member < cellMember and chars[member].tileCount > maxTile then
         if bestMember == nil or member > bestMember then
-          best, bestMember = member, member
+          bestMember = member
         end
       end
     end
-    if best == nil then
+    if bestMember == nil then
       error("pokedex cell member has no covering character page: " .. cellMember, 0)
     end
-    return "gfx-" .. best
+    return bestMember
   end
 
   -- Normalized cells: bounds over OBJ extents, source rects on the
-  -- 32-tiles-per-row character layout the chrome renders use.
+  -- 32-tiles-per-row character layout the chrome renders use. Cell roles
+  -- are ordinal-named; each covering tile grid stages through its
+  -- explicit OBJ palette (bank 0).
   local cells = {}
   local cellMembers = {}
   for member in pairs(cellsByMember) do
     cellMembers[#cellMembers + 1] = member
   end
   table.sort(cellMembers)
+  ---@type table<integer, string[]>
+  local cellRolesByMember = {}
+  ---@type table<integer, integer>
+  local cellOrdinalByMember = {}
+  local tilesRoleByChar = {}
   local function maxTileOf(decoded)
     local maxTile = 0
     for _, cell in ipairs(decoded.cells) do
@@ -316,10 +492,32 @@ local function _compile(romFs, versionId, catalog, sink)
     return maxTile
   end
 
-  for _, member in ipairs(cellMembers) do
+  for ordinal, member in ipairs(cellMembers) do
+    cellOrdinalByMember[member] = ordinal
     local decoded = cellsByMember[member]
-    local chromeRole = chromeForCell(member, maxTileOf(decoded))
-    local chromeRecord = chrome[chromeRole]
+    local coverMember = chromeForCell(member, maxTileOf(decoded))
+    local tilesRole = tilesRoleByChar[coverMember]
+    if tilesRole == nil then
+      local paletteMember = PokedexSources.objPalettes[coverMember]
+      if paletteMember == nil then
+        error("pokedex OBJ character member names no palette: " .. coverMember, 0)
+      end
+      local paletteRecord = palettes[paletteMember]
+      if paletteRecord == nil or #paletteRecord < 16 then
+        error("pokedex OBJ palette member is unusable: " .. coverMember, 0)
+      end
+      local bank0 = {}
+      for index = 1, 16 do
+        bank0[index] = paletteRecord[index]
+      end
+      local coverRecord = chars[coverMember]
+      tilesRole = string.format("tiles-%02d", charOrdinal[coverMember])
+      local pixels, width, height = renderTileGrid(coverRecord.tiles, bank0)
+      stageImage(tilesRole, pixels, width, height)
+      tilesRoleByChar[coverMember] = tilesRole
+    end
+    local chromeRecord = chrome[tilesRole]
+    local roles = {}
     for index, cell in ipairs(decoded.cells) do
       local x0, y0, x1, y1 = math.huge, math.huge, -math.huge, -math.huge
       for _, obj in ipairs(cell.objs) do
@@ -348,7 +546,7 @@ local function _compile(romFs, versionId, catalog, sink)
           error("pokedex cell part reads outside its character page: member " .. member, 0)
         end
         parts[#parts + 1] = {
-          chrome = chromeRole,
+          chrome = tilesRole,
           source = source,
           x = obj.x,
           y = obj.y,
@@ -358,28 +556,38 @@ local function _compile(romFs, versionId, catalog, sink)
           paletteGroup = "cell",
         }
       end
-      cells["cell-" .. member .. "-" .. index] = {
+      local cellRole = string.format("cell-%02d-%d", ordinal, index)
+      cells[cellRole] = {
         bounds = { x = x0, y = y0, width = x1 - x0, height = y1 - y0 },
         parts = parts,
       }
+      roles[#roles + 1] = cellRole
     end
+    cellRolesByMember[member] = roles
   end
 
   -- Normalized animations: preserved frame order, durations, source
   -- transforms, and one-based loop indices. Ping-pong play modes have no
   -- presentation spelling here and fail rather than mislabeling.
   local animations = {}
+  ---@type table<integer, string[]>
+  local animRolesByMember = {}
   local animMembers = {}
   for member in pairs(animsByMember) do
     animMembers[#animMembers + 1] = member
   end
   table.sort(animMembers)
-  for _, member in ipairs(animMembers) do
+  for ordinal, member in ipairs(animMembers) do
     local cellMember = member - 1
     local decoded = cellsByMember[cellMember]
     if decoded == nil then
       error("pokedex animation member has no preceding cell member: " .. member, 0)
     end
+    local cellOrdinal = cellOrdinalByMember[cellMember]
+    if cellOrdinal == nil then
+      error("pokedex animation member has no indexed cell member: " .. member, 0)
+    end
+    local roles = {}
     for sequence, sequenceRecord in ipairs(animsByMember[member].anims) do
       local frames = {}
       for _, frame in ipairs(sequenceRecord.frames) do
@@ -387,7 +595,7 @@ local function _compile(romFs, versionId, catalog, sink)
           error("pokedex animation frame references an unknown cell: member " .. member, 0)
         end
         frames[#frames + 1] = {
-          cell = "cell-" .. cellMember .. "-" .. (frame.cell + 1),
+          cell = string.format("cell-%02d-%d", cellOrdinal, frame.cell + 1),
           duration = frame.duration,
           offsetX = frame.translateX,
           offsetY = frame.translateY,
@@ -404,89 +612,139 @@ local function _compile(romFs, versionId, catalog, sink)
       else
         error("pokedex animation member uses an unsupported play mode: " .. member, 0)
       end
-      animations["anim-" .. member .. "-" .. sequence] = {
+      local animRole = string.format("anim-%02d-%d", ordinal, sequence)
+      animations[animRole] = {
         frames = frames,
         loopFrom = sequenceRecord.loopStartFrameIdx + 1,
         direction = "forward",
         once = once,
       }
+      roles[#roles + 1] = animRole
     end
+    animRolesByMember[member] = roles
   end
   if #animMembers == 0 then
     error("pokedex application archive carries no animations", 0)
   end
 
-  local windows = {
-    ["body-window"] = {
-      pane = "information",
-      layer = 0,
-      x = 0,
-      y = 0,
-      width = 256,
-      height = 192,
-      font = 0,
-      foreground = rgba(255, 255, 255, 255),
-      shadow = rgba(0, 0, 0, 255),
-      background = rgba(0, 0, 0, 0),
-      align = "left",
-      paletteGroup = "window",
-    },
-    ["header-window"] = {
-      pane = "information",
-      layer = 1,
-      x = 0,
-      y = 0,
-      width = 256,
-      height = 32,
-      font = 4,
-      foreground = rgba(255, 255, 255, 255),
-      shadow = rgba(0, 0, 0, 255),
-      background = rgba(0, 0, 0, 0),
-      align = "center",
-      paletteGroup = "window",
-    },
-  }
-
-  local sprites = {}
-  local animRoles = {}
-  for role in pairs(animations) do
-    animRoles[#animRoles + 1] = role
-  end
-  table.sort(animRoles)
-  for drawPriority, role in ipairs(animRoles) do
-    sprites["sprite-" .. role] = {
-      pane = "information",
-      animation = role,
-      x = 0,
-      y = 0,
-      priority = 0,
-      drawPriority = drawPriority,
-      paletteGroup = "sprite",
+  -- Authored window inventory: the contracted text slots owned by the
+  -- producer table, copied verbatim into the generated manifest.
+  local windows = {}
+  for key, record in pairs(PokedexSources.windows) do
+    windows[key] = {
+      pane = record.pane,
+      layer = record.layer,
+      x = record.x,
+      y = record.y,
+      width = record.width,
+      height = record.height,
+      font = record.font,
+      foreground = rgba(record.foreground.r, record.foreground.g, record.foreground.b, record.foreground.a),
+      shadow = rgba(record.shadow.r, record.shadow.g, record.shadow.b, record.shadow.a),
+      background = rgba(record.background.r, record.background.g, record.background.b, record.background.a),
+      align = record.align,
+      paletteGroup = record.paletteGroup,
     }
   end
 
-  local cellRoles = {}
-  for role in pairs(cells) do
-    cellRoles[#cellRoles + 1] = role
-  end
-  table.sort(cellRoles)
-  local spriteRoles = {}
-  for role in pairs(sprites) do
-    spriteRoles[#spriteRoles + 1] = role
-  end
-  table.sort(spriteRoles)
+  -- Page-local sprite roles: one sprite per referenced animation, owned by
+  -- its page, so role identities never leak across pages.
+  local sprites = {}
 
+  -- Assembled pages: native per-layer backgrounds (composed screens or
+  -- exact tile-0 fills), page-owned cell/sprite/window inventories, and
+  -- the shared backdrop pair. A layer with no native binding carries an
+  -- empty list.
+  local isJapanese = catalog.nativeLanguage == "japanese"
   local pages = {}
   for _, role in ipairs(REQUIRED_PAGES) do
+    local layerEntries = PokedexSources.pageLayers[role]
+    if layerEntries == nil then
+      error("pokedex source map misses the " .. role .. " page", 0)
+    end
+    local objPairs = PokedexSources.pageObjs[role]
+    if objPairs == nil then
+      error("pokedex OBJ map misses the " .. role .. " page", 0)
+    end
+    local windowKeys = PokedexSources.pageWindows[role]
+    if windowKeys == nil then
+      error("pokedex window map misses the " .. role .. " page", 0)
+    end
+    local backgrounds = { information = {}, controls = {} }
+    for _, entry in ipairs(layerEntries) do
+      if entry.pane ~= "information" and entry.pane ~= "controls" then
+        error("pokedex source map names an unknown pane: " .. role, 0)
+      end
+      if type(entry.layer) ~= "number" or entry.layer < 0 or entry.layer > 3 then
+        error("pokedex source map names an invalid BG layer: " .. role, 0)
+      end
+      local pagePriority = PokedexSources.pagePriorities[role]
+      local panePriority = (pagePriority and pagePriority[entry.pane]) or PokedexSources.bgPriority[entry.pane]
+      local priority = panePriority[entry.layer]
+      local chromeRole
+      if entry.screen == nil then
+        chromeRole = fillRole(role, entry.pane, entry.layer, entry.char, entry.palette)
+      else
+        local screenMember = entry.screen
+        if isJapanese and entry.screenJapanese ~= nil then
+          screenMember = entry.screenJapanese
+        end
+        chromeRole = composedRole(role, entry.pane, entry.layer, entry.char, screenMember, entry.palette)
+      end
+      backgrounds[entry.pane][#backgrounds[entry.pane] + 1] =
+        { chrome = chromeRole, layer = entry.layer, x = 0, y = 0, priority = priority, paletteGroup = "chrome" }
+      if entry.screen ~= nil and entry.screenNational ~= nil then
+        stageVariantImage(
+          "bg-" .. pageSlug(role) .. "-" .. entry.pane .. "-l" .. entry.layer .. "-national",
+          entry.char,
+          entry.screenNational,
+          entry.palette
+        )
+      end
+    end
+    local pageCells = {}
+    local pageSprites = {}
+    for _, pair in ipairs(objPairs) do
+      local pairCells = cellRolesByMember[pair.cells]
+      if pairCells == nil then
+        error("pokedex OBJ map references an unknown cell member: " .. role, 0)
+      end
+      for _, cellRole in ipairs(pairCells) do
+        pageCells[#pageCells + 1] = cellRole
+      end
+      local pairAnims = animRolesByMember[pair.anims]
+      if pairAnims == nil then
+        error("pokedex OBJ map references an unknown animation member: " .. role, 0)
+      end
+      for _, animRole in ipairs(pairAnims) do
+        local spriteRole = "sprite-" .. pageSlug(role) .. "-" .. (#pageSprites + 1)
+        sprites[spriteRole] = {
+          pane = "information",
+          animation = animRole,
+          x = 0,
+          y = 0,
+          priority = 0,
+          drawPriority = #pageSprites + 1,
+          paletteGroup = "sprite",
+        }
+        pageSprites[#pageSprites + 1] = spriteRole
+      end
+    end
+    for _, key in ipairs(windowKeys) do
+      if windows[key] == nil then
+        error("pokedex window map references an unknown window: " .. role, 0)
+      end
+    end
+    local pageWindows = {}
+    for _, key in ipairs(windowKeys) do
+      pageWindows[#pageWindows + 1] = key
+    end
     pages[role] = {
       backdrop = { information = rgba(0, 0, 0, 255), controls = rgba(16, 16, 16, 255) },
-      backgrounds = {
-        information = { { chrome = firstChrome, layer = 0, x = 0, y = 0, priority = 0, paletteGroup = "chrome" } },
-        controls = {},
-      },
-      cells = cellRoles,
-      sprites = spriteRoles,
-      windows = { "body-window", "header-window" },
+      backgrounds = backgrounds,
+      cells = pageCells,
+      sprites = pageSprites,
+      windows = pageWindows,
     }
   end
 

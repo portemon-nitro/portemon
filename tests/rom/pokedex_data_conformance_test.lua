@@ -293,6 +293,400 @@ function T.presentation_scope_closes_all_roles(romFs, versionId)
   end
 end
 
+-- Pixel-fidelity legs: compiled page backgrounds reproduce their
+-- native NSCR tilemaps (flips, 4bpp palette banks, transparency) instead
+-- of a shared synthetic grid; every page binds its own native loader
+-- family; and an invalid source association aborts compilation without
+-- publishing. The pixel oracle below re-implements tile mapping locally:
+-- it shares only the container decoders (the required G2D primitives)
+-- with the producer, so a full-image match proves the rasterizer.
+local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
+local PngReader = require("tests.support.PngReader")
+
+local GRAPHICS_PATH = "a/0/6/8"
+
+local function openGraphicsArchive(romFs, versionId)
+  local bytes = romFs:readSourcePath(GRAPHICS_PATH)
+  Assert.notNil(bytes, versionId .. " must expose the pokedex graphics archive")
+  return assert(Narc.open(assert(bytes), GRAPHICS_PATH))
+end
+
+local function unpackMember(archive, member, versionId)
+  local packed = assert(archive:readMember(member), versionId .. " exposes graphics member " .. member)
+  if #packed >= 1 and string.byte(packed, 1) == 0x10 then
+    local Lz10 = require("romdump.src.digest.Lz10")
+    local plain, plainErr = Lz10.decode(packed)
+    Assert.notNil(plain, versionId .. " decompresses member " .. member .. ": " .. tostring(plainErr))
+    return plain
+  end
+  return packed
+end
+
+local function decodedTriple(archive, charMember, screenMember, paletteMember, versionId)
+  local char = assert(
+    G2dDecoder.decodeChar(unpackMember(archive, charMember, versionId), { label = "oracle-char" }),
+    versionId .. " decodes NCGR member " .. charMember
+  )
+  local screen = assert(
+    G2dDecoder.decodeScreen(unpackMember(archive, screenMember, versionId), { label = "oracle-screen" }),
+    versionId .. " decodes NSCR member " .. screenMember
+  )
+  local palette = assert(
+    G2dDecoder.decodePalette(unpackMember(archive, paletteMember, versionId), { label = "oracle-palette" }),
+    versionId .. " decodes NCLR member " .. paletteMember
+  )
+  return char, screen, palette
+end
+
+---@param honorFlips boolean
+local function oracleRgba(charTiles, paletteColors, screen, honorFlips)
+  local tilesWide = math.floor(screen.width / 8)
+  local parts = {}
+  for row = 0, math.floor(screen.height / 8) - 1 do
+    for py = 0, 7 do
+      for col = 0, tilesWide - 1 do
+        for px = 0, 7 do
+          local entry = screen.entries[row * tilesWide + col + 1]
+          local sx = (honorFlips and entry.flipH) and (7 - px) or px
+          local sy = (honorFlips and entry.flipV) and (7 - py) or py
+          local byte = string.byte(charTiles, entry.tile * 32 + sy * 4 + math.floor(sx / 2) + 1)
+          Assert.notNil(byte, "the oracle tile stays inside its character payload")
+          local nibble = (sx % 2 == 0) and byte % 16 or math.floor(byte / 16)
+          if nibble == 0 then
+            parts[#parts + 1] = "\0\0\0\0"
+          else
+            local color = paletteColors[entry.palette * 16 + nibble + 1]
+            Assert.notNil(color, "the oracle palette bank covers its screen reference")
+            parts[#parts + 1] = string.char(color.r, color.g, color.b, 255)
+          end
+        end
+      end
+    end
+  end
+  return table.concat(parts)
+end
+
+local function compiledChrome(romFs, versionId)
+  local PokedexCatalogCompiler, PokedexAssetCompiler = requireProducer()
+  local catalog = compileCatalog(romFs, versionId, PokedexCatalogCompiler)
+  local sink = {}
+  local manifest, err = PokedexAssetCompiler.compile(romFs, versionId, catalog, sink)
+  Assert.notNil(manifest, versionId .. " must compile its presentation manifest")
+  Assert.isNil(err, versionId .. " compiles its presentation without error")
+  Assert.notNil(sink.assets, versionId .. " stages its generated images")
+  return manifest, sink
+end
+
+local function backgroundPng(manifest, sink, role, pane, layer, versionId)
+  local page = assert(manifest.pages[role], versionId .. " closes the " .. role .. " page")
+  for _, background in ipairs(assert(page.backgrounds[pane], versionId .. " binds the " .. pane .. " pane")) do
+    if background.layer == layer then
+      local record = assert(
+        manifest.chrome[background.chrome],
+        versionId .. " resolves the " .. role .. " layer " .. layer .. " chrome"
+      )
+      local bytes =
+        assert(sink.assets[record.path], versionId .. " stages the " .. role .. " layer " .. layer .. " image")
+      return bytes, record
+    end
+  end
+  error(versionId .. " binds no " .. pane .. " layer " .. layer .. " on " .. role, 0)
+end
+
+function T.presentation_backgrounds_reproduce_source_screen_maps(romFs, versionId)
+  local archive = openGraphicsArchive(romFs, versionId)
+  local manifest, sink = compiledChrome(romFs, versionId)
+  -- Representative triples across both engines: search MAIN (banks 0+2,
+  -- flipped), area SUB (banks 0+1+8, flipped), list SUB (bank 1, flipped).
+  local cases = {
+    { role = "search.criteria", pane = "controls", layer = 2, char = 58, screen = 57, palette = 2 },
+    { role = "entry.area", pane = "information", layer = 3, char = 85, screen = 84, palette = 18 },
+    { role = "cover", pane = "information", layer = 0, char = 17, screen = 16, palette = 18 },
+  }
+  for _, case in ipairs(cases) do
+    local char, screen, palette = decodedTriple(archive, case.char, case.screen, case.palette, versionId)
+    local bytes, record = backgroundPng(manifest, sink, case.role, case.pane, case.layer, versionId)
+    local width, height, rgba = PngReader.rgba(bytes)
+    Assert.equal(width, screen.width, case.role .. " keeps its native screen width")
+    Assert.equal(height, screen.height, case.role .. " keeps its native screen height")
+    Assert.equal(record.width, screen.width, case.role .. " records its native width")
+    Assert.equal(record.height, screen.height, case.role .. " records its native height")
+    Assert.equal(
+      rgba,
+      oracleRgba(char.tiles, palette.colors, screen, true),
+      case.role .. " reproduces its NSCR tilemap, flips and palette banks"
+    )
+    Assert.isTrue(
+      rgba ~= oracleRgba(char.tiles, palette.colors, screen, false),
+      case.role .. " honors flipped tiles (an unflipped render differs)"
+    )
+  end
+  -- At least one composed screen preserves transparent palette-index
+  -- pixels end to end (individual screens may be fully opaque source
+  -- art, so the property is asserted over the family, not per screen).
+  do
+    local transparent = 0
+    for _, case in ipairs(cases) do
+      local bytes = backgroundPng(manifest, sink, case.role, case.pane, case.layer, versionId)
+      local _, _, rgba = PngReader.rgba(bytes)
+      for index = 4, #rgba, 4 do
+        if string.byte(rgba, index) == 0 then
+          transparent = transparent + 1
+        end
+      end
+    end
+    Assert.isTrue(transparent > 0, "composed screens preserve transparent palette-index pixels")
+  end
+  local searchBytes = backgroundPng(manifest, sink, "search.criteria", "controls", 2, versionId)
+  local areaBytes = backgroundPng(manifest, sink, "entry.area", "controls", 0, versionId)
+  Assert.isTrue(searchBytes ~= areaBytes, "two source-distinct screens produce distinct images")
+end
+
+-- Compositing leg: the grid information pane binds no layer-0 composition,
+-- so faithful priority compositing (lower number in front) leaves the native
+-- layer-1 number/name windows visible. The windowless cover keeps the loaded
+-- dial art, proving the correction is page-local rather than wholesale art
+-- deletion.
+function T.presentation_grid_windows_clear_their_foreground_layer(romFs, versionId)
+  local manifest, sink = compiledChrome(romFs, versionId)
+  local grid = assert(manifest.pages.grid, versionId .. " closes the grid page")
+  for _, background in
+    ipairs(assert(grid.backgrounds.information, versionId .. " binds the grid information pane"))
+  do
+    Assert.isTrue(
+      background.layer ~= 0,
+      versionId .. " binds no grid information foreground over the layer-1 text windows"
+    )
+  end
+  local bytes, record = backgroundPng(manifest, sink, "cover", "information", 0, versionId)
+  local archive = openGraphicsArchive(romFs, versionId)
+  local char, screen, palette = decodedTriple(archive, 17, 16, 18, versionId)
+  local _, _, rgba = PngReader.rgba(bytes)
+  Assert.equal(record.width, screen.width, versionId .. " cover keeps its native foreground width")
+  Assert.equal(
+    rgba,
+    oracleRgba(char.tiles, palette.colors, screen, true),
+    versionId .. " cover keeps the native dial composition"
+  )
+  for _, key in ipairs({ "grid.selected-number", "grid.selected-name" }) do
+    local window = assert(manifest.windows[key], versionId .. " inventories " .. key)
+    Assert.equal(window.pane, "information", versionId .. " " .. key .. " stays on the information pane")
+    Assert.equal(window.layer, 1, versionId .. " " .. key .. " stays on its native layer")
+  end
+end
+
+-- Compositing leg: the entry.area information pane binds the full pannable
+-- SUB BG0 area map (char 87 + screen 86) on layer 0 with the native
+-- area-view priority (BG0 pri 3 back vs BG1 pri 0 front), so the layer-1
+-- entry windows stay visible while the renderer shifts the map by the
+-- published pan offset. The staged composition keeps the full native
+-- scroll width (settled endpoints -72 Johto / +104 Kanto over a 256-wide
+-- viewport) with real map pixels in the panned region.
+function T.presentation_area_map_pans_behind_its_entry_windows(romFs, versionId)
+  local manifest, sink = compiledChrome(romFs, versionId)
+  local area = assert(manifest.pages["entry.area"], versionId .. " closes the entry.area page")
+  local map = nil
+  for _, background in ipairs(assert(area.backgrounds.information, versionId .. " binds the entry.area information pane")) do
+    if background.layer == 0 then
+      map = background
+    end
+  end
+  Assert.notNil(map, versionId .. " binds the entry.area information map on layer 0")
+  Assert.equal(map.priority, 3, versionId .. " renders the area map behind its entry windows")
+  local archive = openGraphicsArchive(romFs, versionId)
+  local char, screen, palette = decodedTriple(archive, 87, 86, 18, versionId)
+  local bytes = assert(
+    sink.assets[assert(manifest.chrome[map.chrome], versionId .. " resolves the area map chrome").path],
+    versionId .. " stages the area map image"
+  )
+  local record = manifest.chrome[map.chrome]
+  local width, height, rgba = PngReader.rgba(bytes)
+  Assert.equal(record.width, screen.width, versionId .. " area map keeps its native scroll width")
+  Assert.equal(record.height, screen.height, versionId .. " area map keeps its native scroll height")
+  Assert.equal(width, screen.width, versionId .. " area map stages its full native width")
+  Assert.isTrue(
+    width >= (104 - (-72)) + 256,
+    versionId .. " area map spans both settled region pans (-72/+104 over a 256 viewport)"
+  )
+  Assert.equal(
+    rgba,
+    oracleRgba(char.tiles, palette.colors, screen, true),
+    versionId .. " area map reproduces its NSCR tilemap, flips and palette banks"
+  )
+  -- Columns past the X=0 viewport appear at a settled pan under either
+  -- scroll-sign convention (Kanto +104 reveals up to 360; Johto -72
+  -- reveals 72..328 reversed), so opaque pixels there prove panned-region
+  -- map art rather than cleared padding.
+  local revealed = 0
+  local pixels = math.floor(#rgba / 4)
+  for index = 0, pixels - 1 do
+    local x = index % width
+    if x >= 256 and x < 328 and string.byte(rgba, index * 4 + 4) ~= 0 then
+      revealed = revealed + 1
+    end
+  end
+  Assert.isTrue(revealed > 0, versionId .. " area map carries panned-region map pixels")
+  for _, key in ipairs({ "entry.species-name", "entry.dex-number" }) do
+    local window = assert(manifest.windows[key], versionId .. " inventories " .. key)
+    Assert.equal(window.pane, "information", versionId .. " " .. key .. " stays on the information pane")
+    Assert.equal(window.layer, 1, versionId .. " " .. key .. " stays on its native layer")
+  end
+end
+
+function T.presentation_pages_bind_distinct_source_families(romFs, versionId)
+  local archive = openGraphicsArchive(romFs, versionId)
+  void(archive)
+  local manifest, sink = compiledChrome(romFs, versionId)
+  local function chromeRoles(role, pane)
+    local page = assert(manifest.pages[role], versionId .. " closes the " .. role .. " page")
+    local roles = {}
+    for _, background in ipairs(assert(page.backgrounds[pane])) do
+      roles[#roles + 1] = background.chrome
+    end
+    table.sort(roles)
+    return roles
+  end
+  -- The list loader family serves cover and results identically; grid
+  -- depicts the scrolled entry-view state, so its information pane carries
+  -- no foreground composition over the layer-1 text windows.
+  Assert.deepEqual(
+    chromeRoles("results", "information"),
+    chromeRoles("cover", "information"),
+    "results and cover share their native loader family"
+  )
+  Assert.deepEqual(
+    chromeRoles("results", "controls"),
+    chromeRoles("grid", "controls"),
+    "results and grid share their native loader family"
+  )
+  -- Search, area, size, forms, compare and back each resolve their own
+  -- loader family: no search *composed* chrome role appears on the area
+  -- page. Tile-0 fills are content-deduped across pages by design, so
+  -- the disjointness check covers composed roles only.
+  local searchRoles = chromeRoles("search.criteria", "controls")
+  local areaRoles = chromeRoles("entry.area", "controls")
+  local areaSet = {}
+  for _, role in ipairs(areaRoles) do
+    areaSet[role] = true
+  end
+  for _, role in ipairs(searchRoles) do
+    if not role:find("-fill$", 1) then
+      Assert.isNil(areaSet[role], "search and area pages use distinct source compositions: " .. role)
+    end
+  end
+  -- The registration card uses the battle-owned popup composition on its
+  -- own layer, never a browsing Main/controls background.
+  local registration = assert(manifest.pages.registration, versionId .. " closes the registration page")
+  Assert.equal(#registration.backgrounds.controls, 0, "the popup owns no browsing controls background")
+  local popupBytes, popupRecord = backgroundPng(manifest, sink, "registration", "information", 2, versionId)
+  local char, screen, palette = decodedTriple(archive, 19, 20, 18, versionId)
+  local width, _, rgba = PngReader.rgba(popupBytes)
+  Assert.equal(width, screen.width, "the popup keeps its native screen width")
+  Assert.equal(popupRecord.width, screen.width, "the popup records its native width")
+  Assert.equal(
+    rgba,
+    oracleRgba(char.tiles, palette.colors, screen, true),
+    "the registration card reproduces the popup screen composition"
+  )
+  -- No controls pane stays empty where the native loader draws a BG, and
+  -- no page silently reuses one synthetic role for every background.
+  for _, role in ipairs({ "grid", "search.criteria", "entry.area", "entry.size", "entry.forms", "entry.return" }) do
+    Assert.isTrue(#manifest.pages[role].backgrounds.controls > 0, role .. " keeps its native controls backgrounds")
+  end
+  local distinct = {}
+  for _, role in ipairs({
+    "cover",
+    "grid",
+    "results",
+    "search.criteria",
+    "entry.area",
+    "entry.size",
+    "entry.forms",
+    "entry.compare",
+    "entry.return",
+    "registration",
+  }) do
+    for _, pane in ipairs({ "information", "controls" }) do
+      for _, chrome in ipairs(chromeRoles(role, pane)) do
+        distinct[chrome] = true
+      end
+    end
+  end
+  local count = 0
+  for _ in pairs(distinct) do
+    count = count + 1
+  end
+  Assert.isTrue(count > 5, "compiled pages use many distinct source compositions, not one synthetic role")
+  -- Page-local inventories resolve and differ per family.
+  Assert.isTrue(
+    #manifest.pages.grid.windows > 0 and #manifest.pages.registration.windows > 0,
+    "browser and registration pages carry their own window inventories"
+  )
+  Assert.isTrue(
+    table.concat(manifest.pages.grid.windows, ",") ~= table.concat(manifest.pages.registration.windows, ","),
+    "browser and registration window inventories differ"
+  )
+end
+
+-- Sprite-family legs: every page binds exactly the OBJ cell families its
+-- native screen setup loads. Shared families resolve to identical cell
+-- roles, so subset and difference checks over page inventories prove the
+-- page-to-family assignment without freezing source catalog counts.
+function T.presentation_pages_bind_exact_sprite_families(romFs, versionId)
+  local manifest = compiledChrome(romFs, versionId)
+  local function cellSet(role)
+    local page = assert(manifest.pages[role], versionId .. " closes the " .. role .. " page")
+    local set = {}
+    for _, cell in ipairs(assert(page.cells, versionId .. " inventories the " .. role .. " cells")) do
+      set[cell] = true
+    end
+    return set
+  end
+  local function assertSubset(inner, outer, label)
+    for cell in pairs(cellSet(inner)) do
+      Assert.isTrue(cellSet(outer)[cell] ~= nil, label .. ": " .. inner .. " cell " .. cell .. " resolves on " .. outer)
+    end
+  end
+  local function assertDiffers(role, other, label)
+    local mine, theirs = cellSet(role), cellSet(other)
+    local extra = false
+    for cell in pairs(mine) do
+      if theirs[cell] == nil then
+        extra = true
+      end
+    end
+    Assert.isTrue(extra, label .. ": " .. role .. " binds a sprite family " .. other .. " lacks")
+  end
+  -- The registration popup binds banner, type-icon and footprint
+  -- families; the tab cursor and form screens bind the main OBJ family
+  -- they share with the list screen.
+  local registration = assert(manifest.pages.registration, versionId .. " closes the registration page")
+  Assert.isTrue(#registration.cells > 0, "the popup binds its banner, type-icon and footprint families")
+  Assert.isTrue(#registration.sprites > 0, "the popup sprites resolve through its OBJ families")
+  assertSubset("entry.return", "grid", versionId)
+  assertSubset("entry.forms", "grid", versionId)
+  assertSubset("entry.compare", "grid", versionId)
+  assertSubset("registration", "grid", versionId)
+  -- Area markers, the size scale and the search menu/body-type families
+  -- appear only on their own pages.
+  assertDiffers("entry.area", "grid", versionId)
+  assertDiffers("entry.size", "grid", versionId)
+  assertDiffers("search.criteria", "grid", versionId)
+end
+
+function T.presentation_rejects_invalid_source_association(romFs, versionId)
+  local PokedexCatalogCompiler, PokedexAssetCompiler = requireProducer()
+  local PokedexSources = require("romdump.src.config.PokedexSources")
+  local catalog = compileCatalog(romFs, versionId, PokedexCatalogCompiler)
+  local saved = PokedexSources.pageLayers.grid
+  PokedexSources.pageLayers.grid = { { pane = "controls", layer = 2, char = 9999, screen = 57, palette = 2 } }
+  local sink = {}
+  local ok, manifest = pcall(PokedexAssetCompiler.compile, romFs, versionId, catalog, sink)
+  PokedexSources.pageLayers.grid = saved
+  Assert.isTrue(not (ok and manifest), "an unknown source association must abort compilation")
+  Assert.isNil(sink.assets, "a failed compilation stages no images")
+end
+
 local suite = RomSuite.fromFacts(T)
 suite.metadata.capabilities = { "rom_dump" }
 suite.metadata.tags = { "pokedex" }

@@ -577,4 +577,225 @@ function T.spinda_masks_accept_semantic_slots_and_reject_native_residue()
   Assert.equal(#residue, 0, "the semantic spinda record carries no PID-keyed residue")
 end
 
+-- Producer contract: the page/layer source map covers every required
+-- role with native pane/layer bindings, and the window inventory covers
+-- every text slot the controller projects and presentation consumes. Both
+-- tables are the sole native-identity owners; the manifest carries only
+-- generated roles.
+local CONTRACTED_WINDOWS = {
+  "grid.seen-count",
+  "grid.caught-count",
+  "grid.selected-number",
+  "grid.selected-name",
+  "entry.species-name",
+  "entry.dex-number",
+  "entry.category",
+  "entry.flavor",
+  "entry.height",
+  "entry.weight",
+  "search.criteria",
+  "search.feedback",
+  "search.results",
+  "area.time",
+  "area.location",
+  "size.title",
+  "forms.selected",
+  "forms.compare-left",
+  "forms.compare-right",
+  "return.title",
+  "registration.header",
+  "registration.dex-number",
+  "registration.species-name",
+  "registration.category",
+  "registration.flavor",
+  "registration.height",
+  "registration.weight",
+}
+
+function T.producer_page_layers_cover_every_required_role()
+  local PokedexSources = assert(require("romdump.src.config.PokedexSources"))
+  Assert.notNil(PokedexSources.pageLayers, "the producer must publish its page/layer source map")
+  for _, role in ipairs(REQUIRED_PAGES) do
+    local layers = PokedexSources.pageLayers[role]
+    Assert.notNil(layers, "the source map must bind the " .. role .. " page")
+    Assert.isTrue(#layers > 0, "the " .. role .. " page must bind at least one layer")
+    for _, entry in ipairs(layers) do
+      Assert.isTrue(
+        entry.pane == "information" or entry.pane == "controls",
+        "the " .. role .. " layer must target a native pane"
+      )
+      Assert.isTrue(
+        type(entry.layer) == "number" and entry.layer >= 0 and entry.layer <= 3,
+        "the " .. role .. " layer must be a native BG layer"
+      )
+      Assert.isTrue(
+        type(entry.char) == "number" and type(entry.palette) == "number",
+        "the " .. role .. " layer must name its character and palette members"
+      )
+    end
+  end
+end
+
+-- Native scroll state: the grid page depicts the scrolled entry view, where
+-- SUB BG0 sits on its cleared half, so the grid information pane carries no
+-- opaque layer-0 composition over the layer-1 text windows. The windowless
+-- cover keeps the loaded dial art.
+function T.producer_grid_information_layer_matches_scrolled_native_state()
+  local PokedexSources = assert(require("romdump.src.config.PokedexSources"))
+  local function bindsInformationLayer0(role)
+    for _, entry in ipairs(assert(PokedexSources.pageLayers[role], "the source map must bind " .. role)) do
+      if entry.pane == "information" and entry.layer == 0 then
+        return true
+      end
+    end
+    return false
+  end
+  Assert.isFalse(
+    bindsInformationLayer0("grid"),
+    "the grid information pane carries no foreground composition over its layer-1 text windows"
+  )
+  Assert.isTrue(
+    bindsInformationLayer0("cover"),
+    "the windowless cover keeps its native foreground art"
+  )
+end
+
+-- Native area view: SetupScreen case 1 loads the area graphics and
+-- installs SetAreaBgPriorities (MAIN 1/0/2/3, SUB 3/0/1/2), so the SUB
+-- BG0 area map (char 87 + screen 86, staged on the 512-wide SUB BG0
+-- scroll plane and panned to the -72/+104 settled region offsets)
+-- composites behind the SUB BG1 entry windows (BG0 pri 3 back vs BG1
+-- pri 0 front). The area information pane therefore binds the full
+-- pannable map on layer 0 with the native area-view priority, never a
+-- dropped layer or the list-browse priority that would bury the windows.
+function T.producer_area_information_layer_carries_pannable_map_behind_windows()
+  local PokedexSources = assert(require("romdump.src.config.PokedexSources"))
+  local map = nil
+  for _, entry in ipairs(assert(PokedexSources.pageLayers["entry.area"], "the source map must bind entry.area")) do
+    if entry.pane == "information" and entry.layer == 0 then
+      map = entry
+    end
+  end
+  Assert.notNil(map, "the area information pane binds its layer-0 map composition")
+  Assert.equal(map.char, 87, "the area map keeps its native character data")
+  Assert.equal(map.screen, 86, "the area map keeps its native full-width scroll map")
+  local priorities = assert(
+    PokedexSources.pagePriorities and PokedexSources.pagePriorities["entry.area"],
+    "the producer records the native area-view priorities"
+  )
+  Assert.equal(priorities.information[0], 3, "the area map renders behind its entry windows")
+  Assert.equal(priorities.information[1], 0, "the area entry windows render in front of the map")
+  Assert.equal(priorities.information[2], 1, "the area information layer 2 keeps its native priority")
+  Assert.equal(priorities.information[3], 2, "the area information layer 3 keeps its native priority")
+  Assert.equal(priorities.controls[0], 1, "the area controls layer 0 keeps its native priority")
+  Assert.equal(priorities.controls[1], 0, "the area controls layer 1 keeps its native priority")
+  Assert.equal(priorities.controls[2], 2, "the area controls layer 2 keeps its native priority")
+  Assert.equal(priorities.controls[3], 3, "the area controls layer 3 keeps its native priority")
+end
+
+function T.producer_window_inventory_covers_contracted_text_slots()
+  local PokedexSources = assert(require("romdump.src.config.PokedexSources"))
+  Assert.notNil(PokedexSources.windows, "the producer must publish its window inventory")
+  for _, key in ipairs(CONTRACTED_WINDOWS) do
+    local record = PokedexSources.windows[key]
+    Assert.notNil(record, "the window inventory must declare " .. key)
+    Assert.isTrue(record.pane == "information" or record.pane == "controls", key .. " must target a native pane")
+    Assert.isTrue(record.font == 0 or record.font == 4, key .. " must use the body or header font")
+    Assert.isTrue(
+      type(record.paletteGroup) == "string" and record.paletteGroup ~= "",
+      key .. " must name a non-empty palette group"
+    )
+  end
+end
+
+-- Native window geometry: every contracted text slot carries the tile
+-- coordinates (in logical pixels), BG layer, body/header font role,
+-- alignment and text palette slot of the native window template that
+-- draws it, not a placeholder rect.
+local NATIVE_WINDOWS = {
+  ["grid.seen-count"] = { pane = "controls", layer = 0, x = 88, y = 88, width = 24, height = 16, font = 0, align = "left", paletteGroup = "window-9" },
+  ["grid.caught-count"] = { pane = "controls", layer = 0, x = 216, y = 88, width = 24, height = 16, font = 0, align = "left", paletteGroup = "window-9" },
+  ["grid.selected-number"] = { pane = "information", layer = 1, x = 120, y = 24, width = 32, height = 16, font = 4, align = "left", paletteGroup = "window-0" },
+  ["grid.selected-name"] = { pane = "information", layer = 1, x = 152, y = 24, width = 72, height = 16, font = 4, align = "left", paletteGroup = "window-0" },
+  ["entry.species-name"] = { pane = "information", layer = 1, x = 0, y = 128, width = 72, height = 16, font = 0, align = "center", paletteGroup = "window-1" },
+  ["entry.dex-number"] = { pane = "information", layer = 1, x = 120, y = 24, width = 32, height = 16, font = 4, align = "left", paletteGroup = "window-0" },
+  ["entry.category"] = { pane = "information", layer = 1, x = 104, y = 40, width = 144, height = 16, font = 4, align = "right", paletteGroup = "window-0" },
+  ["entry.flavor"] = { pane = "information", layer = 1, x = 16, y = 136, width = 224, height = 48, font = 0, align = "left", paletteGroup = "window-1" },
+  ["entry.height"] = { pane = "information", layer = 1, x = 56, y = 168, width = 64, height = 16, font = 0, align = "center", paletteGroup = "window-2" },
+  ["entry.weight"] = { pane = "controls", layer = 1, x = 56, y = 184, width = 64, height = 16, font = 0, align = "center", paletteGroup = "window-1" },
+  ["search.criteria"] = { pane = "controls", layer = 0, x = 128, y = 8, width = 88, height = 16, font = 4, align = "center", paletteGroup = "window-2" },
+  ["search.feedback"] = { pane = "information", layer = 1, x = 16, y = 152, width = 224, height = 40, font = 0, align = "center", paletteGroup = "window-2" },
+  ["search.results"] = { pane = "information", layer = 1, x = 16, y = 0, width = 64, height = 16, font = 4, align = "left", paletteGroup = "window-2" },
+  ["area.time"] = { pane = "information", layer = 1, x = 8, y = 24, width = 56, height = 16, font = 0, align = "center", paletteGroup = "window-1" },
+  ["area.location"] = { pane = "controls", layer = 2, x = 80, y = 40, width = 144, height = 16, font = 4, align = "center", paletteGroup = "window-1" },
+  ["size.title"] = { pane = "information", layer = 1, x = 16, y = 0, width = 72, height = 16, font = 4, align = "left", paletteGroup = "window-2" },
+  ["forms.selected"] = { pane = "information", layer = 1, x = 104, y = 40, width = 120, height = 16, font = 0, align = "center", paletteGroup = "window-1" },
+  ["forms.compare-left"] = { pane = "controls", layer = 1, x = 0, y = 96, width = 128, height = 16, font = 0, align = "center", paletteGroup = "window-1" },
+  ["forms.compare-right"] = { pane = "controls", layer = 1, x = 128, y = 96, width = 128, height = 16, font = 0, align = "center", paletteGroup = "window-1" },
+  ["return.title"] = { pane = "information", layer = 1, x = 16, y = 0, width = 72, height = 16, font = 4, align = "left", paletteGroup = "window-2" },
+  ["registration.header"] = { pane = "information", layer = 1, x = 16, y = 0, width = 224, height = 16, font = 4, align = "center", paletteGroup = "window-2" },
+  ["registration.dex-number"] = { pane = "information", layer = 1, x = 120, y = 24, width = 32, height = 16, font = 4, align = "left", paletteGroup = "window-0" },
+  ["registration.species-name"] = { pane = "information", layer = 1, x = 152, y = 24, width = 72, height = 16, font = 4, align = "left", paletteGroup = "window-0" },
+  ["registration.category"] = { pane = "information", layer = 1, x = 104, y = 40, width = 144, height = 16, font = 4, align = "right", paletteGroup = "window-0" },
+  ["registration.flavor"] = { pane = "information", layer = 1, x = 16, y = 136, width = 224, height = 48, font = 0, align = "left", paletteGroup = "window-1" },
+  ["registration.height"] = { pane = "information", layer = 1, x = 184, y = 88, width = 64, height = 16, font = 0, align = "left", paletteGroup = "window-1" },
+  ["registration.weight"] = { pane = "information", layer = 1, x = 184, y = 104, width = 64, height = 16, font = 0, align = "left", paletteGroup = "window-1" },
+}
+
+function T.producer_windows_match_native_templates()
+  local PokedexSources = assert(require("romdump.src.config.PokedexSources"))
+  for _, key in ipairs(CONTRACTED_WINDOWS) do
+    local record = assert(
+      PokedexSources.windows[key],
+      "the window inventory must declare " .. key
+    )
+    local expected = assert(NATIVE_WINDOWS[key], "the native oracle must cover " .. key)
+    for _, field in ipairs(
+      { "pane", "layer", "x", "y", "width", "height", "font", "align", "paletteGroup" }
+    ) do
+      Assert.equal(
+        record[field],
+        expected[field],
+        key .. " carries the native template " .. field
+      )
+    end
+  end
+end
+
+-- Native sprite bindings: every page binds exactly the OBJ cell/animation
+-- families its screen setup loads, never a nearest-member approximation.
+local NATIVE_PAGE_OBJS = {
+  cover = {},
+  grid = { { 13, 14 }, { 27, 28 }, { 30, 31 }, { 33, 34 }, { 54, 55 }, { 78, 79 } },
+  results = { { 13, 14 }, { 24, 25 }, { 27, 28 }, { 30, 31 }, { 33, 34 }, { 54, 55 }, { 73, 74 }, { 78, 79 } },
+  ["search.criteria"] = { { 13, 14 }, { 24, 25 }, { 54, 55 }, { 73, 74 } },
+  ["search.order"] = { { 13, 14 }, { 24, 25 }, { 54, 55 }, { 73, 74 } },
+  ["search.name"] = { { 13, 14 }, { 24, 25 }, { 54, 55 }, { 73, 74 } },
+  ["search.type"] = { { 13, 14 }, { 24, 25 }, { 54, 55 }, { 73, 74 } },
+  ["search.height"] = { { 13, 14 }, { 24, 25 }, { 54, 55 }, { 73, 74 } },
+  ["search.weight"] = { { 13, 14 }, { 24, 25 }, { 54, 55 }, { 73, 74 } },
+  ["search.area"] = { { 13, 14 }, { 24, 25 }, { 54, 55 }, { 73, 74 } },
+  ["search.shape"] = { { 13, 14 }, { 24, 25 }, { 54, 55 }, { 73, 74 } },
+  ["entry.area"] = { { 13, 14 }, { 116, 117 }, { 120, 121 } },
+  ["entry.size"] = { { 13, 14 }, { 106, 107 }, { 112, 113 } },
+  ["entry.forms"] = { { 13, 14 } },
+  ["entry.compare"] = { { 13, 14 } },
+  ["entry.return"] = { { 13, 14 } },
+  registration = { { 30, 31 }, { 33, 34 }, { 78, 79 } },
+}
+
+function T.producer_page_objs_bind_exact_sprite_families()
+  local PokedexSources = assert(require("romdump.src.config.PokedexSources"))
+  Assert.notNil(PokedexSources.pageObjs, "the producer must publish its page OBJ map")
+  for _, role in ipairs(REQUIRED_PAGES) do
+    local pairs = assert(PokedexSources.pageObjs[role], "the OBJ map must bind the " .. role .. " page")
+    local expected = assert(NATIVE_PAGE_OBJS[role], "the native oracle must cover the " .. role .. " page")
+    Assert.equal(#pairs, #expected, "the " .. role .. " page binds its native OBJ family count")
+    for index, pair in ipairs(expected) do
+      Assert.equal(pairs[index].cells, pair[1], "the " .. role .. " page binds its native cell family")
+      Assert.equal(pairs[index].anims, pair[2], "the " .. role .. " page binds its native animation family")
+    end
+  end
+end
+
 return { tests = T }

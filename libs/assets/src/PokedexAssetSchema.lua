@@ -1334,6 +1334,13 @@ local function checkWindows(manifest)
         return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "window carries a non-integer " .. field, { role = role })
       end
     end
+    if record.layer < 0 or record.layer > 3 then
+      return fail(
+        PokedexAssetSchema.ERROR.SHAPE_INVALID,
+        "window layer must be a native BG layer 0..3",
+        { role = role }
+      )
+    end
     if record.width <= 0 or record.height <= 0 then
       return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "window carries a non-positive size", { role = role })
     end
@@ -1425,7 +1432,14 @@ local function checkPages(manifest)
             { role = role }
           )
         end
-        if not isInteger(background.layer) or not isInteger(background.x) or not isInteger(background.y) then
+        if not isInteger(background.layer) or background.layer < 0 or background.layer > 3 then
+          return fail(
+            PokedexAssetSchema.ERROR.SHAPE_INVALID,
+            "page background layer must be a native BG layer 0..3",
+            { role = role }
+          )
+        end
+        if not isInteger(background.x) or not isInteger(background.y) then
           return fail(
             PokedexAssetSchema.ERROR.SHAPE_INVALID,
             "page background carries invalid geometry",
@@ -1437,6 +1451,7 @@ local function checkPages(manifest)
           or background.priority < 0
           or background.priority > 3
           or type(background.paletteGroup) ~= "string"
+          or background.paletteGroup == ""
         then
           return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "page background carries invalid blend", { role = role })
         end

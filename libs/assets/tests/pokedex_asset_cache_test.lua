@@ -492,4 +492,35 @@ function T.failed_presentation_replacement_preserves_both_valid_scopes_without_f
   end
 end
 
+function T.page_backgrounds_reject_non_native_layers_and_empty_palette_groups()
+  local PokedexCacheWriter, PokedexCache = requireProduction()
+  assert(PokedexCacheWriter ~= nil and PokedexCache ~= nil)
+  local PokedexAssetSchema = assert(require("libs.assets.src.PokedexAssetSchema"))
+  local catalog = fixtureCatalog()
+
+  -- The abstract page contract only knows the four native DS background
+  -- layers: a fifth layer has no source meaning and must not validate.
+  local badLayer = fixtureManifest(catalog)
+  badLayer.pages.grid.backgrounds.information[1].layer = 5
+  Assert.isNil(PokedexAssetSchema.validateManifest(badLayer, catalog), "a page background on layer 5 must not validate")
+
+  -- Palette groups steer presentation leases; an empty group resolves to
+  -- no lease and must not validate.
+  local badGroup = fixtureManifest(catalog)
+  badGroup.pages.grid.backgrounds.information[1].paletteGroup = ""
+  Assert.isNil(
+    PokedexAssetSchema.validateManifest(badGroup, catalog),
+    "a page background with an empty palette group must not validate"
+  )
+
+  -- A dangling page cell reference must not validate either: page
+  -- inventories close over generated roles only.
+  local badCell = fixtureManifest(catalog)
+  badCell.pages.grid.cells = { "missing-cell" }
+  Assert.isNil(
+    PokedexAssetSchema.validateManifest(badCell, catalog),
+    "a page referencing an unknown cell must not validate"
+  )
+end
+
 return { tests = T }
