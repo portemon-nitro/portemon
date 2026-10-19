@@ -429,6 +429,9 @@ function T.indoor_occupancy_uses_the_current_map_actor_index()
   end
 
   local actors = { currentMapId = "indoor" }
+  function actors:holdsMap(mapId)
+    return mapId == self.currentMapId
+  end
   function actors:getCollisionAt(mapId, candidate)
     calls.getCollisionAt = calls.getCollisionAt + 1
     Assert.equal(mapId, "indoor")
@@ -471,6 +474,9 @@ function T.outdoor_seam_occupancy_preflights_destination_actors()
   end
 
   local actors = {}
+  function actors:holdsMap()
+    return false
+  end
   function actors:getAt()
     calls.getAt = calls.getAt + 1
     error("an outdoor seam must probe the destination map", 0)
@@ -539,6 +545,9 @@ function T.outdoor_seam_occupancy_probes_a_resident_destination_without_prefligh
   end
 
   local actors = { currentMapId = "source" }
+  function actors:holdsMap(mapId)
+    return mapId == self.currentMapId
+  end
   function actors:getAt()
     calls.getAt = calls.getAt + 1
     error("an inactive destination must not be read from the live occupancy index", 0)

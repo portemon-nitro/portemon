@@ -48,7 +48,7 @@ function T.uses_source_ripe_and_depleted_tree_sprites()
   local actor = treeActor()
   local presentation = ApricornTreePresentation.new({
     actors = {
-      actorsOf = function()
+      heldActors = function()
         return { actor }
       end,
     },
@@ -70,6 +70,29 @@ function T.uses_source_ripe_and_depleted_tree_sprites()
   presentation:collectSpriteIds(spriteIds)
   Assert.isTrue(spriteIds[898], "the generated depleted-tree sprite is prepared")
   Assert.isNil(spriteIds[262], "the presentation does not embed a source sprite ID")
+end
+
+-- A depleted tree on a held neighbor draws once that neighbor is crossed into,
+-- so its generated sprite is prepared with the active map's.
+function T.depleted_neighbor_trees_prepare_their_sprite_ahead_of_the_crossing()
+  local neighborTree = treeActor()
+  local presentation = ApricornTreePresentation.new({
+    actors = {
+      heldActors = function()
+        return { neighborTree }
+      end,
+    },
+    runtimeMap = { mapId = 1 },
+    actorConfig = { apricorn = apricornAssets() },
+    martService = {
+      treeAvailable = function()
+        return false
+      end,
+    },
+  })
+  local spriteIds = {}
+  presentation:collectSpriteIds(spriteIds)
+  Assert.isTrue(spriteIds[898], "a held neighbor's depleted tree is prepared")
 end
 
 function T.draws_the_color_fruit_along_the_source_jump_curve()

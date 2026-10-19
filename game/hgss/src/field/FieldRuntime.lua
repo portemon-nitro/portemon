@@ -648,14 +648,15 @@ local function avatarForGender(avatars, gender)
 end
 
 -- The one actor lookup shared by movement collision and interaction
--- discovery: live occupancy for the active actor map, and a read-only source
--- event probe for any other logical map, resident or preflight. The probe
--- never publishes an actor map or acquires an actor visual.
+-- discovery: live occupancy for any map the actor manager holds (active or
+-- frozen neighbor), and a read-only source event probe for any other logical
+-- map, resident or preflight. The probe never publishes an actor map or
+-- acquires an actor visual.
 ---@param mapId integer
 ---@param candidate FieldOccupancyCandidate
 ---@return FieldActorManager.Actor|FieldActorManager.ProbeResult|nil
 function FieldRuntime:_actorAt(mapId, candidate)
-  if self.actors.currentMapId == mapId then
+  if self.actors:holdsMap(mapId) then
     return self.actors:getAt(mapId, candidate)
   end
   local residency = assert(self.residency, "inactive actor lookup requires logical residency")
@@ -674,7 +675,7 @@ function FieldRuntime:_playerOccupantAt(candidate)
       or currentMap.mapId
   end
   local occupant
-  if self.actors.currentMapId == targetMapId then
+  if self.actors:holdsMap(targetMapId) then
     occupant = self.actors:getCollisionAt(targetMapId, candidate)
   else
     occupant = self:_actorAt(targetMapId, candidate)

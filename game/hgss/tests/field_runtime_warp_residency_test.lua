@@ -134,15 +134,20 @@ local function fixture(options)
     self.protections[mapId] = protected and true or nil
   end
 
-  -- Logical residency owns no actor state: physical reprojection of the
-  -- already-active entry is its only legitimate actor collaboration, so
-  -- reaching any other actor operation from a warp transaction fails here.
+  -- Logical residency owns no actor state: physical reprojection and the
+  -- resident-view membership it publishes are its only legitimate actor
+  -- collaboration, so reaching any other actor operation from a warp
+  -- transaction fails here.
   local actors = setmetatable({}, {
     __index = function(_, key)
       error("logical residency must not reach FieldActorManager." .. tostring(key), 0)
     end,
   })
   function actors:reconcilePhysicalWorld() end
+  function actors:retainMaps() end
+  function actors:admitRetainedMap()
+    return false
+  end
 
   local coordinator = FieldResidencyCoordinator.new({
     coverage = sourceCoverage,

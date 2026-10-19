@@ -2,9 +2,10 @@
 -- physical coverage. Map loading, actor lifetime, and physical-cell ownership
 -- remain with their existing owners; this module only coordinates membership
 -- and transaction order. Object actors belong to FieldActorManager alone: a
--- logical resident never implies a live actor entry, and the only actor
--- collaboration here is reprojecting the already-active entry when committed
--- physical coverage recenters.
+-- logical resident never implies a live actor entry. The actor collaboration
+-- here is publishing the resident views the manager may hold frozen
+-- neighbor entries for, offering it one admission per prefetch tick, and
+-- reprojecting its entries when committed physical coverage recenters.
 
 ---@class FieldResidencyCoordinator
 ---@field coverage FieldCoverage?
@@ -22,6 +23,7 @@
 ---@field _livePrefetchAnchorZ integer?
 ---@field _livePrefetchIds integer[]
 ---@field _livePrefetchSatisfied boolean
+---@field _publishedViews RuntimeFieldMap[]
 local FieldResidencyCoordinator = {}
 FieldResidencyCoordinator.__index = FieldResidencyCoordinator
 
@@ -111,6 +113,7 @@ function FieldResidencyCoordinator.new(options)
     _livePrefetchAnchorZ = nil,
     _livePrefetchIds = {},
     _livePrefetchSatisfied = false,
+    _publishedViews = {},
   }, FieldResidencyCoordinator)
 end
 
@@ -118,7 +121,32 @@ function FieldResidencyCoordinator:_protect(mapId, protected)
   self.mapLoader:protectMap(mapId, protected)
 end
 
-function FieldResidencyCoordinator:_acquireResident(mapId)
+-- Publishes the served resident views to the actor owner when their
+-- membership or identity changed since the last publication.
+function FieldResidencyCoordinator:_publishResidentViews()
+  local mapIds = {}
+  for mapId in pairs(self.residents) do
+    mapIds[#mapIds + 1] = mapId
+  end
+  table.sort(mapIds)
+  local views = {}
+  local changed = #mapIds ~= #self._publishedViews
+  for index, mapId in ipairs(mapIds) do
+    local view = self.residents[mapId].runtimeMap
+    views[index] = view
+    if self._publishedViews[index] ~= view then
+      changed = true
+    end
+  end
+  if changed then
+    self._publishedViews = views
+    self.actors:retainMaps(views)
+  end
+end
+
+---@param mapId integer
+---@param activeView (RuntimeFieldMap|LogicalFieldMap)? the already-composed view of the active map
+function FieldResidencyCoordinator:_acquireResident(mapId, activeView)
   assert(not self.residents[mapId], "logical map is already resident")
   local logicalMap = self.mapLoader:loadLogical(mapId)
   local protected = false
@@ -129,7 +157,7 @@ function FieldResidencyCoordinator:_acquireResident(mapId)
   local ok, result = pcall(function()
     self:_protect(mapId, true)
     protected = true
-    composedMap = self.composeMap(logicalMap, self.coverage)
+    composedMap = activeView or self.composeMap(logicalMap, self.coverage)
     if self.onPreparedMap then
       self.onPreparedMap(assert(composedMap))
     end
@@ -239,10 +267,14 @@ end
 ---@return FieldResidencyCoordinator
 function FieldResidencyCoordinator:initialize()
   assert(not self.disposed and not self.initialized, "field residency coordinator is not initializable")
+  -- The active zone already serves a composed view of its own map; the
+  -- resident reuses it so actor entries keep one view identity per map.
+  local activeMap = self.zoneController.currentMap
   for _, mapId in ipairs(self:_committedMapIds()) do
-    self:_acquireResident(mapId)
+    self:_acquireResident(mapId, activeMap.mapId == mapId and activeMap or nil)
   end
   self.initialized = true
+  self:_publishResidentViews()
   return self
 end
 
@@ -281,6 +313,7 @@ end
 ---@param _ integer? legacy caller budget, intentionally ignored
 function FieldResidencyCoordinator:updatePrefetch(_)
   assert(not self.disposed and self.initialized, "field residency coordinator is not ready")
+  self.actors:admitRetainedMap()
   local mapIds = self:_prefetchMapIds()
   local coverage = self.coverage
   if self._livePrefetchSatisfied then
@@ -301,6 +334,7 @@ function FieldResidencyCoordinator:updatePrefetch(_)
         return completed
       end
       self:_acquireResident(mapId)
+      self:_publishResidentViews()
       return completed + 1
     end
   end
@@ -550,6 +584,7 @@ function FieldResidencyCoordinator:commitTransition(transaction)
   if self.coverage then
     self.coverage:queuePrefetch()
   end
+  self:_publishResidentViews()
   transaction.state = "committed"
   return transaction.targetResidents[transaction.destinationMapId].runtimeMap
 end
@@ -593,6 +628,7 @@ function FieldResidencyCoordinator:afterCommittedMove(player, context)
       end
     end
   end
+  self:_publishResidentViews()
   return result or self:status()
 end
 

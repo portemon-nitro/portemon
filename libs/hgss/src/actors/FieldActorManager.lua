@@ -180,6 +180,8 @@ end
 ---@field pendingFlags FieldActorFlagChange[]
 ---@field removedOverrides table<string, boolean>
 ---@field currentMapId integer|nil
+---@field retained table<integer, RuntimeFieldMap> resident neighbor views allowed to hold frozen entries
+---@field _mapOrder integer[]? held map ids in ascending order; nil while stale
 ---@field cameraFocus table<string, unknown>? the script camera focus presence; nil while the camera follows the player
 ---@field _visualRevision integer
 ---@field _drawRecords FieldActorManager.DrawRecord[]
@@ -196,6 +198,10 @@ end
 ---@field _instantiate fun(self: FieldActorManager, entry: FieldActorManager.Entry, event: FieldActorEvent, eventState: FieldEventState?): FieldActorManager.Actor
 ---@field _destroy fun(self: FieldActorManager, entry: FieldActorManager.Entry, actor: FieldActorManager.Actor)
 ---@field leaveMap fun(self: FieldActorManager, mapId: integer)
+---@field holdsMap fun(self: FieldActorManager, mapId: integer): boolean
+---@field heldActors fun(self: FieldActorManager): FieldActorManager.Actor[]
+---@field retainMaps fun(self: FieldActorManager, views: RuntimeFieldMap[])
+---@field admitRetainedMap fun(self: FieldActorManager): boolean
 ---@field removePresence fun(self: FieldActorManager, actorId: string, recordRemoval: boolean)
 ---@field materializeObject fun(self: FieldActorManager, objectEventId: integer): string
 ---@field enterMap fun(self: FieldActorManager, runtimeMap: RuntimeFieldMap, eventState: FieldEventState, restoredObjects: table<string, unknown>?)
@@ -371,6 +377,8 @@ function FieldActorManager.new(opts)
     -- snapshot so an explicit reset flows through like any save content.
     removedOverrides = {},
     currentMapId = nil,
+    retained = {},
+    _mapOrder = nil,
     cameraFocus = nil,
     _visualRevision = 0,
     _drawRecords = {},
@@ -1165,6 +1173,7 @@ local function retireEntry(self, entry)
   local mapId = entry.runtimeMap.mapId
   if self.maps[mapId] == entry then
     self.maps[mapId] = nil
+    self._mapOrder = nil
     if self.currentMapId == mapId then
       self.currentMapId = nil
     end
@@ -1173,6 +1182,22 @@ local function retireEntry(self, entry)
     self._visualRevision = self._visualRevision + 1
   end
   destroyEntry(self, entry)
+end
+
+-- Releases the entry that stops being active: retired unless it is a retained
+-- neighbor, which freezes as source-event actors only. The dynamic partner
+-- follows the active map and is reinstalled there.
+---@param self FieldActorManager
+---@param entry FieldActorManager.Entry
+local function demoteEntry(self, entry)
+  if self.retained[entry.runtimeMap.mapId] ~= entry.runtimeMap then
+    retireEntry(self, entry)
+    return
+  end
+  local partner = entry.store:getActor(PARTNER_ACTOR_ID)
+  if partner then
+    self:_destroy(entry, partner)
+  end
 end
 
 -- The one production activation seam: the destination entry is built and
@@ -1192,7 +1217,14 @@ function FieldActorManager:enterMap(runtimeMap, eventState, restoredObjects)
   if existing and existing.runtimeMap == runtimeMap then
     assert(restoredObjects == nil, "restored objects cannot be applied to an active map")
     bindEventState(self, eventState)
+    local previous = self.currentMapId ~= nil and self.currentMapId ~= mapId and self.maps[self.currentMapId] or nil
     self.currentMapId = mapId
+    if self.cameraFocus ~= nil and self.cameraFocus.mapId ~= mapId then
+      self.cameraFocus = nil
+    end
+    if previous then
+      demoteEntry(self, previous)
+    end
     return
   end
   local entry = newEntry(runtimeMap)
@@ -1214,6 +1246,7 @@ function FieldActorManager:enterMap(runtimeMap, eventState, restoredObjects)
 
   local previous = self.currentMapId and self.maps[self.currentMapId] or nil
   self.maps[mapId] = entry
+  self._mapOrder = nil
   self.currentMapId = mapId
   -- The source focus object dies with its map: entering a different map
   -- releases the focus so the camera falls back to the player.
@@ -1227,8 +1260,88 @@ function FieldActorManager:enterMap(runtimeMap, eventState, restoredObjects)
     retireEntry(self, existing)
   end
   if previous and previous ~= existing then
-    retireEntry(self, previous)
+    demoteEntry(self, previous)
   end
+end
+
+-- Declares the resident neighbor views allowed to hold frozen entries and
+-- retires every non-active entry that is no longer one of them, including an
+-- entry built on a superseded view of the same map. The active entry stays
+-- until its replacement enters. Membership only; admitRetainedMap builds.
+---@param views RuntimeFieldMap[]
+---@param self FieldActorManager
+function FieldActorManager:retainMaps(views)
+  local retained = {}
+  for _, view in ipairs(views) do
+    retained[view.mapId] = view
+  end
+  self.retained = retained
+  local stale = {}
+  for mapId, entry in pairs(self.maps) do
+    if mapId ~= self.currentMapId and retained[mapId] ~= entry.runtimeMap then
+      stale[#stale + 1] = entry
+    end
+  end
+  for _, entry in ipairs(stale) do
+    retireEntry(self, entry)
+  end
+end
+
+-- Whether a live entry (active or frozen neighbor) answers for the map.
+---@param mapId integer
+---@return boolean
+---@param self FieldActorManager
+function FieldActorManager:holdsMap(mapId)
+  return self.maps[mapId] ~= nil
+end
+
+-- Every live actor of every held map, in ascending map order.
+---@return FieldActorManager.Actor[]
+---@param self FieldActorManager
+function FieldActorManager:heldActors()
+  local mapIds = {}
+  for mapId in pairs(self.maps) do
+    mapIds[#mapIds + 1] = mapId
+  end
+  table.sort(mapIds)
+  local actors = {}
+  for _, mapId in ipairs(mapIds) do
+    for _, actor in ipairs(self.maps[mapId].store:orderedActorsView()) do
+      actors[#actors + 1] = actor
+    end
+  end
+  return actors
+end
+
+-- Builds the frozen entry of one retained neighbor from its source events.
+-- Neighbors are drawn, collidable, and saved nowhere: they never step, and
+-- the active map's snapshot is the only persisted actor state. A view that
+-- cannot yet resolve surfaces waits for a later call.
+---@return boolean admitted true when an entry was built
+---@param self FieldActorManager
+function FieldActorManager:admitRetainedMap()
+  local eventState = self.eventState
+  if eventState == nil or self.currentMapId == nil then
+    return false
+  end
+  local mapIds = {}
+  for mapId, view in pairs(self.retained) do
+    if self.maps[mapId] == nil and view.terrain ~= nil and view.collision ~= nil then
+      mapIds[#mapIds + 1] = mapId
+    end
+  end
+  if #mapIds == 0 then
+    return false
+  end
+  table.sort(mapIds)
+  local entry = newEntry(self.retained[mapIds[1]])
+  populateEntry(self, entry, eventState, {})
+  self.maps[entry.runtimeMap.mapId] = entry
+  self._mapOrder = nil
+  if entry.store:actorCount() > 0 then
+    self._visualRevision = self._visualRevision + 1
+  end
+  return true
 end
 
 local function captureAutonomousAction(entry, actor)
@@ -1316,7 +1429,11 @@ function FieldActorManager:captureObjects()
     end
     return ordered
   end
-  local bucket = self.persistence:capture(self.maps, persistableActors, captureController, captureAction, captureRng)
+  local active = {}
+  if self.currentMapId ~= nil then
+    active[self.currentMapId] = self.maps[self.currentMapId]
+  end
+  local bucket = self.persistence:capture(active, persistableActors, captureController, captureAction, captureRng)
   local removed = capturedRemovals(self)
   if removed ~= nil then
     bucket.removed = removed
@@ -1934,9 +2051,17 @@ end
 function FieldActorManager:drawRecords(alpha)
   local records = self._drawRecords
   local count = 0
-  local entry = self.currentMapId and assert(self.maps[self.currentMapId], "current actor map entry is missing")
-  if entry then
-    for _, actor in ipairs(entry.store:orderedActorsView()) do
+  local mapOrder = self._mapOrder
+  if mapOrder == nil then
+    mapOrder = {}
+    for mapId in pairs(self.maps) do
+      mapOrder[#mapOrder + 1] = mapId
+    end
+    table.sort(mapOrder)
+    self._mapOrder = mapOrder
+  end
+  for _, mapId in ipairs(mapOrder) do
+    for _, actor in ipairs(self.maps[mapId].store:orderedActorsView()) do
       local state = actor:numericState()
       if state.resident == 0 then
         goto continue
@@ -2591,9 +2716,11 @@ function FieldActorManager:setMovementType(actorId, movementType)
   self.autonomy:setMovementType(actorId, movementType)
 end
 
+-- Only the active map simulates: an action frozen on a kept neighbor never
+-- completes, so it cannot hold a pause.
 function FieldActorManager:isPausable(actorId)
   local actor = self:getById(actorId)
-  if actor == nil then
+  if actor == nil or actor.mapId ~= self.currentMapId then
     return true
   end
   local entry = assert(self.maps[actor.mapId], "actor map entry missing")
@@ -2601,11 +2728,13 @@ function FieldActorManager:isPausable(actorId)
 end
 
 function FieldActorManager:allPausable()
-  for _, entry in pairs(self.maps) do
-    for actorId in pairs(entry.autonomousActions) do
-      if not self:isPausable(actorId) then
-        return false
-      end
+  local entry = self.currentMapId ~= nil and self.maps[self.currentMapId] or nil
+  if entry == nil then
+    return true
+  end
+  for actorId in pairs(entry.autonomousActions) do
+    if not self:isPausable(actorId) then
+      return false
     end
   end
   return true

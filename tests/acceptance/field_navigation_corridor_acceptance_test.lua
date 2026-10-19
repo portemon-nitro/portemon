@@ -85,9 +85,9 @@ local function assertSeam(game, expectedMapId, expectedMapSymbol, label)
 
   -- The seam settles into one coherent active-map identity: the map-scoped
   -- script context and the live actor world both follow the destination, and
-  -- the source map no longer owns a published actor entry. The destination's
-  -- own entry lifecycle owns actor activation, so the settled boundary is
-  -- reached before those observations.
+  -- the source map keeps a frozen actor entry only while it remains a
+  -- resident neighbor. The destination's own entry lifecycle owns actor
+  -- activation, so the settled boundary is reached before those observations.
   game:waitForFieldReady()
   freezeAutonomousActors(game)
   Assert.equal(
@@ -100,9 +100,10 @@ local function assertSeam(game, expectedMapId, expectedMapSymbol, label)
     expectedMapId,
     label .. " the active actor map must follow the destination"
   )
-  Assert.isNil(
-    game.runtime.actors.maps[source.mapId],
-    label .. " the source actor entry must not remain active/published after the seam settles"
+  Assert.equal(
+    game.runtime.actors:holdsMap(source.mapId),
+    game.runtime.residency:mapForId(source.mapId) ~= nil,
+    label .. " the source actor entry stays held exactly while its map is a resident neighbor"
   )
 
   local origin =

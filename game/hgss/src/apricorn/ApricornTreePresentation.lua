@@ -77,7 +77,7 @@ end
 ---@param spriteIds table<integer, boolean>
 function ApricornTreePresentation:collectSpriteIds(spriteIds)
   local runtime = self.runtime
-  for _, actor in ipairs(runtime.actors:actorsOf(runtime.runtimeMap.mapId)) do
+  for _, actor in ipairs(runtime.actors:heldActors()) do
     local source = actor.sourceEvent.apricorn
     if source ~= nil then
       local gesture = actor:presentationState().gesturePose

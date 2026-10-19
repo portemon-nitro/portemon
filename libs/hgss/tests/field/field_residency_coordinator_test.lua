@@ -1,7 +1,8 @@
 -- Field residency tests use counting owner doubles to observe logical map
 -- preparation, promotion, eviction, and fallback ownership. Object-actor
 -- construction, publication, and activation belong to FieldActorManager
--- alone, so the actor double here answers nothing but physical reprojection.
+-- alone, so the actor double here answers nothing but physical reprojection
+-- and the resident-view membership the coordinator publishes to it.
 
 local Assert = require("tests.support.Assert")
 local FieldAudioController = require("libs.hgss.src.audio.FieldAudioController")
@@ -179,6 +180,23 @@ local function logicalOwners(coverage)
   })
   function actors:reconcilePhysicalWorld()
     self.reconciles = self.reconciles + 1
+  end
+  actors.retainedViews = {}
+  actors.admissions = 0
+  function actors:retainMaps(views)
+    self.retainedViews = views
+  end
+  function actors:admitRetainedMap()
+    self.admissions = self.admissions + 1
+    return false
+  end
+  function actors:retainedIds()
+    local ids = {}
+    for _, view in ipairs(self.retainedViews) do
+      ids[#ids + 1] = view.mapId
+    end
+    table.sort(ids)
+    return ids
   end
 
   local zoneCalls = {}
@@ -518,6 +536,44 @@ local function active_zone_switches_while_the_overlapping_resident_stays_until_i
   coverage.destinationMapId = 20
   coordinator:afterCommittedMove({ fieldX = 64, fieldZ = 0, currentMap = map(10) })
   Assert.isNil(coordinator:mapForId(10), "the resident releases after its last committed cell leaves")
+  coordinator:dispose()
+end
+
+-- Resident views publish to the actor owner so neighbors hold frozen entries
+-- under the exact view identity residency serves; the active map's resident
+-- is the zone controller's own view, so the entry survives a crossing.
+local function resident_views_publish_to_the_actor_owner_as_residency_changes()
+  local coordinator, coverage, _, actors, zone = coordinatorFixture()
+  coordinator:initialize()
+  Assert.deepEqual(actors:retainedIds(), { 10, 20 })
+  Assert.isTrue(coordinator:mapForId(10) == zone.currentMap, "the active resident is the active zone view")
+  for _, view in ipairs(actors.retainedViews) do
+    Assert.isTrue(coordinator:mapForId(view.mapId) == view, "published views are the served views")
+  end
+
+  local admissions = actors.admissions
+  coordinator:updatePrefetch(1)
+  Assert.deepEqual(actors:retainedIds(), { 10, 20, 30 }, "an acquired halo map joins the retained views")
+  Assert.isTrue(actors.admissions > admissions, "prefetch ticks offer actor admission")
+
+  coverage.committed = { { cellKey = "1:0", mapHeaderId = 20 } }
+  coverage.footprint = coverage.committed
+  coverage.destinationMapId = 20
+  coordinator:afterCommittedMove({ fieldX = 64, fieldZ = 0, currentMap = map(10) })
+  Assert.deepEqual(actors:retainedIds(), { 20 }, "released residents leave the retained views")
+  coordinator:dispose()
+end
+
+local function committed_transition_publishes_its_residents_before_activation()
+  local coordinator, _, loader, actors = coordinatorFixture()
+  coordinator:initialize()
+  local destination = map(20)
+  loader.maps[20] = destination
+  local transaction = coordinator:prepareTransition(destination, nil)
+  Assert.deepEqual(actors:retainedIds(), { 10, 20 }, "preparing publishes nothing")
+  coordinator:commitTransition(transaction)
+  Assert.deepEqual(actors:retainedIds(), { 20 })
+  Assert.isTrue(actors.retainedViews[1] == destination)
   coordinator:dispose()
 end
 
@@ -1021,6 +1077,8 @@ return {
   metadata = { capabilities = {} },
   tests = {
     halo_map_survives_same_anchor_movement = halo_map_survives_same_anchor_movement,
+    resident_views_publish_to_the_actor_owner_as_residency_changes = resident_views_publish_to_the_actor_owner_as_residency_changes,
+    committed_transition_publishes_its_residents_before_activation = committed_transition_publishes_its_residents_before_activation,
     prefetched_logical_map_is_reused_on_boundary_promotion = prefetched_logical_map_is_reused_on_boundary_promotion,
     physical_prefetch_error_does_not_block_logical_readiness = physical_prefetch_error_does_not_block_logical_readiness,
     active_zone_switches_while_the_overlapping_resident_stays_until_its_last_cell_leaves = active_zone_switches_while_the_overlapping_resident_stays_until_its_last_cell_leaves,

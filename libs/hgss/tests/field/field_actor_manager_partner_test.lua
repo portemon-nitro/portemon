@@ -220,4 +220,23 @@ function T.saved_actor_snapshots_never_carry_the_partner()
   mgr:dispose()
 end
 
+-- The partner is dynamic follower presentation: when the active map changes
+-- to a held neighbor, the source entry stays but its partner does not, so the
+-- controller can reinstall it on the destination.
+function T.entering_a_retained_neighbor_drops_the_partner_from_the_kept_source()
+  local mgr, assets, source = manager(61)
+  local neighbor = runtimeMap(62)
+  mgr:retainMaps({ source, neighbor })
+  Assert.isTrue(mgr:admitRetainedMap())
+  mgr:installPartner(spec(61))
+  local referenced = assets.references[20153]
+
+  mgr:enterMap(neighbor, mgr.eventState)
+  Assert.isNil(mgr:partnerId(), "the partner leaves the kept source entry")
+  Assert.equal(assets.references[20153], referenced - 1, "its visual is released exactly once ")
+  Assert.notNil(mgr.maps[61], "the source entry itself stays held")
+  Assert.equal(mgr:installPartner(spec(62)), "field:partner", "the partner reinstalls on the destination")
+  mgr:dispose()
+end
+
 return { tests = T }

@@ -3645,4 +3645,135 @@ function T.failed_scripted_trajectory_leaves_no_partial_occupancy()
   mgr:dispose()
 end
 
+-- Retained neighbors: the surrounding resident maps keep frozen actor entries
+-- so their visuals are admitted before the player crosses into them.
+local function retainedPair()
+  local assets = fakeAssets({ [99] = true, [34] = true })
+  local eventState = FieldEventState.new()
+  local mgr = FieldActorManager.new({ assets = assets, policy = POLICY })
+  local current = runtimeMap({ object({}) }, 61)
+  local neighbor = runtimeMap({ object({ spriteId = 34 }) }, 62)
+  mgr:enterMap(current, eventState)
+  return mgr, assets, current, neighbor
+end
+
+function T.retained_neighbors_are_drawn_and_collidable_but_never_stepped()
+  local mgr, assets, current, neighbor = retainedPair()
+  local revision = mgr:visualRevision()
+  mgr:retainMaps({ current, neighbor })
+  Assert.isNil(mgr.maps[62], "retaining only records membership")
+  Assert.isTrue(mgr:admitRetainedMap(), "one neighbor entry is admitted")
+  Assert.isFalse(mgr:admitRetainedMap(), "nothing is left to admit")
+  Assert.isTrue(mgr:holdsMap(62))
+  Assert.isFalse(mgr:holdsMap(63))
+  local held = {}
+  for _, actor in ipairs(mgr:heldActors()) do
+    held[#held + 1] = actor.actorId
+  end
+  Assert.deepEqual(held, { "map:61:object:0", "map:62:object:0" }, "held actors span every held map in order")
+  Assert.equal(mgr.currentMapId, 61, "admission never changes the active map")
+  Assert.isTrue(mgr:visualRevision() > revision, "a new neighbor changes the visual requirements")
+  Assert.equal(assets:total(), 2)
+
+  local neighborActor = assert(mgr:getById("map:62:object:0"))
+  local advances = 0
+  local advance = neighborActor.advancePresentationTick
+  neighborActor.advancePresentationTick = function(self, ...)
+    advances = advances + 1
+    return advance(self, ...)
+  end
+  mgr:beginFixedStep()
+  mgr:step(1)
+  Assert.equal(advances, 0, "neighbor actors stay frozen")
+
+  local ids = {}
+  for _, record in ipairs(mgr:drawRecords()) do
+    ids[#ids + 1] = record.actorId
+  end
+  Assert.deepEqual(ids, { "map:61:object:0", "map:62:object:0" }, "neighbors draw in map order")
+  Assert.equal(getAt(mgr, 62, 2, 3, 0), neighborActor, "neighbor actors stay collidable")
+  mgr:dispose()
+  Assert.equal(assets:total(), 0)
+end
+
+function T.entering_a_retained_neighbor_reuses_its_entry_and_keeps_the_source()
+  local mgr, assets, current, neighbor = retainedPair()
+  local eventState = mgr.eventState
+  mgr:retainMaps({ current, neighbor })
+  mgr:admitRetainedMap()
+  local neighborActor = assert(mgr:getById("map:62:object:0"))
+  local sourceActor = assert(mgr:getById("map:61:object:0"))
+  local revision = mgr:visualRevision()
+
+  mgr:enterMap(neighbor, eventState)
+  Assert.equal(mgr.currentMapId, 62)
+  Assert.equal(mgr:getById("map:62:object:0"), neighborActor, "the held entry is activated, not rebuilt")
+  Assert.equal(mgr:getById("map:61:object:0"), sourceActor, "a retained source stays held")
+  Assert.equal(mgr:visualRevision(), revision, "a connection changes no visual requirement")
+  Assert.equal(assets:total(), 2)
+
+  mgr:retainMaps({ neighbor })
+  Assert.isNil(mgr.maps[61], "a map that leaves the retained set is retired")
+  Assert.equal(assets:total(), 1)
+  mgr:dispose()
+end
+
+function T.destination_outside_the_retained_set_retires_every_other_entry()
+  local mgr, assets, current, neighbor = retainedPair()
+  local eventState = mgr.eventState
+  mgr:retainMaps({ current, neighbor })
+  mgr:admitRetainedMap()
+  local warpTarget = runtimeMap({ object({}) }, 70)
+  mgr:retainMaps({ warpTarget })
+  Assert.isNil(mgr.maps[62], "a stale neighbor retires at once")
+  Assert.notNil(mgr.maps[61], "the active map stays until its replacement enters")
+  mgr:enterMap(warpTarget, eventState)
+  Assert.isNil(mgr.maps[61])
+  Assert.equal(assets:total(), 1)
+  mgr:dispose()
+end
+
+function T.a_recomposed_view_of_a_held_neighbor_rebuilds_it_on_admission()
+  local mgr, assets, current, neighbor = retainedPair()
+  mgr:retainMaps({ current, neighbor })
+  mgr:admitRetainedMap()
+  local recomposed = runtimeMap({ object({ spriteId = 34 }) }, 62)
+  mgr:retainMaps({ current, recomposed })
+  Assert.isNil(mgr.maps[62], "an entry built on a superseded view retires")
+  Assert.isTrue(mgr:admitRetainedMap())
+  Assert.isTrue(mgr.maps[62].runtimeMap == recomposed)
+  Assert.equal(assets:total(), 2)
+  mgr:dispose()
+end
+
+function T.save_capture_covers_only_the_active_map()
+  local mgr, _, current, neighbor = retainedPair()
+  mgr:retainMaps({ current, neighbor })
+  mgr:admitRetainedMap()
+  local captured = mgr:captureObjects()
+  Assert.notNil(captured.actors["map:61:object:0"])
+  Assert.isNil(captured.actors["map:62:object:0"], "frozen neighbors are rebuilt from source, never saved")
+  mgr:dispose()
+end
+
+-- Only the active map simulates, so an action frozen mid-walk on a kept
+-- neighbor must never hold a movement pause open.
+function T.a_frozen_neighbor_action_never_blocks_pausing()
+  local objects = { object({ movementType = "wander_around", xRange = -1, yRange = -1 }) }
+  local mgr, eventState, _, source = manager(objects, { autonomyRng = deterministicRng({ 3, 0 }) })
+  local actorId = "map:61:object:0"
+  mgr:step(1)
+  Assert.isFalse(mgr:isPausable(actorId), "the active map's walking actor is not pausable")
+  Assert.isFalse(mgr:allPausable())
+
+  local neighbor = runtimeMap({}, 62)
+  mgr:retainMaps({ source, neighbor })
+  mgr:admitRetainedMap()
+  mgr:enterMap(neighbor, eventState)
+  Assert.notNil(mgr.maps[61], "the walking actor's map is kept as a frozen neighbor")
+  Assert.isTrue(mgr:isPausable(actorId), "a frozen action cannot hold a pause")
+  Assert.isTrue(mgr:allPausable())
+  mgr:dispose()
+end
+
 return { tests = T }
