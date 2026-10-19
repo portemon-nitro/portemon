@@ -49,6 +49,8 @@ local AnimationClip = require("libs.assets.src.model.AnimationClip")
 ---@field backend table<string, unknown>?
 ---@field sourceBackend unknown?
 ---@field animationByName table<string, table<string, unknown>>
+---@field ambiguousNames table<string, true>
+---@field animationById table<string, table<string, unknown>>
 ---@field animationBySemantic table<string, table<string, unknown>>
 ---@field bindings table<table<string, unknown>, table<string, unknown>>
 ---@field node fun(self: ModelDefinition, index: integer): table<string, unknown>?
@@ -121,27 +123,30 @@ function ModelDefinition.new(definition)
     Errors.raise(FieldErrors.MODEL_DEF_BAD_BACKEND, "backend payload must be a table or nil", {})
   end
 
-  -- Semantic animation lookup: by clip name first, then by any semantic role
-  -- (e.g. "door.open"). Nitro dictionaries can reuse a source name across
-  -- animation files, so those duplicates require unique semantic selectors.
-  -- A role mapped twice is an authoring error, and a
-  -- clip name colliding with another clip's semantic role is ambiguous --
-  -- both raise rather than making lookup precedence significant.
+  -- Animation lookup: by clip name first, then by any semantic role (e.g.
+  -- "door.open"), then by unique clip id. Nitro dictionaries reuse a source
+  -- name across animation files (the source addresses record slots, not
+  -- names), so a repeated name is ambiguous: it resolves only through a
+  -- semantic role or the clip id, and a bare-name lookup raises. A role
+  -- mapped twice is an authoring error, and a clip name colliding with
+  -- another clip's semantic role is ambiguous -- both raise at assembly
+  -- rather than making lookup precedence significant.
   local byName = {} ---@type table<string, table>
+  local ambiguousNames = {} ---@type table<string, true>
+  local byId = {} ---@type table<string, table>
   local bySemantic = {} ---@type table<string, table>
   local animations = definition.animations ---@type table[]
   for _, clip in ipairs(animations) do
-    local previous = byName[clip.name]
-    if previous ~= nil then
-      local previousRoles = previous.semanticNames or {}
-      local currentRoles = clip.semanticNames or {}
-      if previous == clip or #previousRoles == 0 or #currentRoles == 0 then
-        Errors.raise(
-          FieldErrors.MODEL_DEF_DUPLICATE_ANIMATION,
-          "model " .. definition.key .. " has ambiguous clips named " .. clip.name,
-          { name = clip.name }
-        )
-      end
+    if byId[clip.id] then
+      Errors.raise(
+        FieldErrors.MODEL_DEF_DUPLICATE_ANIMATION,
+        "model " .. definition.key .. " lists clip " .. clip.id .. " twice",
+        { name = clip.name }
+      )
+    end
+    byId[clip.id] = clip
+    if byName[clip.name] ~= nil then
+      ambiguousNames[clip.name] = true
     else
       byName[clip.name] = clip
     end
@@ -176,6 +181,8 @@ function ModelDefinition.new(definition)
     doorSoundType = definition.doorSoundType,
     backend = definition.backend,
     animationByName = byName,
+    ambiguousNames = ambiguousNames,
+    animationById = byId,
     animationBySemantic = bySemantic,
     bindings = {},
   } ---@type ModelDefinition
@@ -192,12 +199,21 @@ function ModelDefinition.new(definition)
   return self --[[@as ModelDefinition]]
 end
 
--- Resolve a clip by name or semantic role (e.g. "door.open"), or nil.
+-- Resolve a clip by name, semantic role (e.g. "door.open") or clip id, or nil.
 ---@param self ModelDefinition
 ---@param nameOrSemantic string
 ---@return table<string, unknown>?
 function ModelDefinition:animation(nameOrSemantic)
-  return self.animationByName[nameOrSemantic] or self.animationBySemantic[nameOrSemantic]
+  if self.ambiguousNames[nameOrSemantic] then
+    Errors.raise(
+      FieldErrors.MODEL_DEF_DUPLICATE_ANIMATION,
+      "model " .. self.key .. " has ambiguous clips named " .. nameOrSemantic,
+      { name = nameOrSemantic }
+    )
+  end
+  return self.animationByName[nameOrSemantic]
+    or self.animationBySemantic[nameOrSemantic]
+    or self.animationById[nameOrSemantic]
 end
 
 -- The model node for a node index, or nil.

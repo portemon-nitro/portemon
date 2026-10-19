@@ -582,12 +582,12 @@ local function buildScene(pool, cacheFs, scene, opts, checkpoint, task)
       if timeBandClips then
         local clip = timeBandClips[timeBand]
         if clip then
-          instance:play(clip.name, { loopMode = "loop" })
+          instance:play(clip.id, { loopMode = "loop" })
         end
       else
         for _, clip in ipairs(modelResource.definition.animations) do
           if clip.ambientLoop then
-            instance:play(clip.name, { loopMode = "loop" })
+            instance:play(clip.id, { loopMode = "loop" })
           end
         end
       end

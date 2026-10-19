@@ -20,7 +20,7 @@ local AnimationClip = require("libs.assets.src.model.AnimationClip")
 local TimeOfDayProps = {}
 
 ---@class TimeOfDayProps.Clip
----@field name string
+---@field id string
 ---@field timeBand string?
 
 ---@class TimeOfDayProps.Instance: ModelInstance
@@ -133,10 +133,10 @@ function TimeOfDayProps.swap(instance, plan, fromBand, toBand)
   local from = fromBand and plan[fromBand]
   local to = toBand and plan[toBand]
   if from and from ~= to then
-    instance:stop(from.name)
+    instance:stop(from.id)
   end
   if to and to ~= from then
-    instance:play(to.name, { loopMode = "loop" })
+    instance:play(to.id, { loopMode = "loop" })
   end
 end
 

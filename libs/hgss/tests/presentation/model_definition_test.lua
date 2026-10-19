@@ -208,15 +208,22 @@ function T.duplicate_nitro_names_resolve_through_distinct_semantic_roles()
   Assert.equal(animation(definition, "celebi.pattern"), second, "the second semantic selector resolves")
 end
 
-function T.distinct_duplicate_nitro_names_without_semantic_roles_remain_ambiguous()
+-- Nitro animation files of different kinds can share a dictionary name (the
+-- source registers each record slot, never a name), so the model assembles
+-- and every clip stays addressable by its unique id; only the bare name is
+-- ambiguous.
+function T.duplicate_nitro_names_without_semantic_roles_resolve_by_clip_id()
   local spec = definitionSpec()
   local first = jointClip()
   first.semanticNames = {}
   local second = materialClip()
   second.name = first.name
   spec.animations = { first, second }
+  local definition = ModelDefinition.new(spec)
+  Assert.equal(animation(definition, first.id), first)
+  Assert.equal(animation(definition, second.id), second)
   throwsCode("MODEL_DEF_DUPLICATE_ANIMATION", function()
-    ModelDefinition.new(spec)
+    definition:animation(first.name)
   end)
 end
 
