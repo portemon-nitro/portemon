@@ -287,6 +287,172 @@ function T.heartgold_continue_leg_stays_blocked_without_a_dump(context)
   runCurrentJourney("heartgold")
 end
 
+local COMPOSITION_MODULE = "game.hgss.src.pokedex.PokedexComposition"
+
+---@param behavior string missing factory behavior under test
+---@return table the loaded field factory
+local function requireComposition(behavior)
+  local ok, loaded = pcall(require, COMPOSITION_MODULE)
+  Assert.isTrue(ok, "missing field pokedex factory: " .. behavior .. " (" .. COMPOSITION_MODULE .. ")")
+  assert(loaded ~= nil, "the field pokedex factory loads")
+  return loaded --[[@as table]]
+end
+
+---@return table stub lease standing in for prepared presentation at the documented binding seam
+local function stubLease()
+  local lease = {}
+  function lease:prepare(demand)
+    assert(type(demand) == "table" and demand.key ~= nil, "the screen prepares keyed demands")
+    return { kind = "pending" }
+  end
+  function lease:release() end
+  return lease
+end
+
+local function findPokedexDescriptor(runtime)
+  local Coordinator = require("game.hgss.src.field.FieldMenuCompositionCoordinator")
+  local descriptors = Coordinator.new(runtime):applicationDescriptors()
+  for _, descriptor in ipairs(descriptors) do
+    if descriptor.id == "pokedex" then
+      return descriptor
+    end
+  end
+  return nil
+end
+
+-- These legs boot on a phone-covered outdoor map: the shared save fixture house
+-- interior has no compiled phone location, so the existing read-only map
+-- context raises its missing-context failure there instead of resolving
+-- the browser cell. New Bark town keeps the same town with a location.
+local COVERED_MAP = "MAP_NEW_BARK"
+
+local function withUnlockedRuntime(versionId, fn)
+  local entry = validEntry(versionId)
+  entry.location.mapSymbol = COVERED_MAP
+  local booted = FieldRuntime.new(entry, runtimeOptions())
+  local ok, err = xpcall(function()
+    booted.eventState:setFlag(107)
+    settleCapture(booted)
+    fn(booted)
+  end, debug.traceback)
+  local closeOk, closeErr = pcall(function()
+    booted:dispose()
+  end)
+  if ok and not closeOk then
+    ok, err = false, closeErr
+  end
+  if not ok then
+    error(err, 0)
+  end
+end
+
+function T.factory_routes_through_the_existing_destination_descriptor(context)
+  requireComposition("reachable application destination")
+  for _, versionId in ipairs(requireVersions(context)) do
+    withUnlockedRuntime(versionId, function(runtime)
+      local descriptor = findPokedexDescriptor(runtime)
+      Assert.notNil(descriptor, versionId .. " the existing catalogue routes the pokedex destination")
+      Assert.isTrue(
+        type(descriptor.factory) == "function",
+        versionId .. " the pokedex destination carries its delegating factory"
+      )
+      Assert.isTrue(
+        type(runtime.bindPokedexPreparation) == "function",
+        versionId .. " the runtime carries the explicit preparation binding seam"
+      )
+      local binding = runtime:bindPokedexPreparation(function(_)
+        return stubLease()
+      end)
+      local child = nil
+      local ok, err = xpcall(function()
+        child = descriptor.factory()
+      end, debug.traceback)
+      if ok then
+        Assert.isTrue(type(child.updateFixed) == "function", versionId .. " the child ticks with the host")
+        Assert.isTrue(type(child.status) == "function", versionId .. " the child exposes its status")
+        Assert.isTrue(type(child.takeResult) == "function", versionId .. " the child yields its result")
+        child:dispose()
+      end
+      runtime:unbindPokedexPreparation(binding)
+      Assert.isTrue(ok, versionId .. " the delegating factory constructs its screen: " .. tostring(err))
+    end)
+  end
+end
+
+function T.map_context_reaches_the_browser_from_the_existing_authority(context)
+  requireComposition("shared player-location authority")
+  local MapProjection = require("game.hgss.src.pokegear.MapProjection")
+  for _, versionId in ipairs(requireVersions(context)) do
+    withUnlockedRuntime(versionId, function(runtime)
+      local pokegear = assert(runtime.pokegear, versionId .. " the runtime composes its gear feature")
+      Assert.isTrue(
+        type(pokegear.mapContext) == "function",
+        versionId .. " the composed feature exposes its read-only map context"
+      )
+      local facts = pokegear.mapContext()
+      Assert.equal(type(facts), "table", versionId .. " the context resolves its location facts afresh")
+      local cell = MapProjection.contextCell(facts)
+      Assert.isTrue(
+        type(cell.x) == "number" and type(cell.y) == "number",
+        versionId .. " the existing projection resolves numeric block coordinates"
+      )
+    end)
+  end
+end
+
+function T.closing_publishes_resume_without_touching_history(context)
+  requireComposition("resume publication without history mutation")
+  for _, versionId in ipairs(requireVersions(context)) do
+    withUnlockedRuntime(versionId, function(runtime)
+      local descriptor = findPokedexDescriptor(runtime)
+      Assert.notNil(descriptor, versionId .. " the existing catalogue routes the pokedex destination")
+      local binding = runtime:bindPokedexPreparation(function(_)
+        return stubLease()
+      end)
+      local seenBefore = runtime.dexKnowledge:countSeen("johto") + runtime.dexKnowledge:countSeen("national")
+      local caughtBefore = runtime.dexKnowledge:countCaught("johto") + runtime.dexKnowledge:countCaught("national")
+      local child = descriptor.factory()
+      child:updateFixed({ { type = "confirm" } })
+      for _ = 1, 40 do
+        child:updateFixed({})
+      end
+      child:updateFixed({ { type = "cancel" } })
+      for _ = 1, 40 do
+        child:updateFixed({})
+      end
+      Assert.notNil(child:takeResult(), versionId .. " the driven child reaches its terminal result")
+      local resume = runtime.dexKnowledge:resume()
+      Assert.equal(type(resume), "table", versionId .. " closing persists the browser resume")
+      Assert.isTrue(
+        resume.mode == "johto" or resume.mode == "national",
+        versionId .. " the persisted resume keeps its browser mode"
+      )
+      Assert.equal(
+        runtime.dexKnowledge:countSeen("johto") + runtime.dexKnowledge:countSeen("national"),
+        seenBefore,
+        versionId .. " closing records no new seen history"
+      )
+      Assert.equal(
+        runtime.dexKnowledge:countCaught("johto") + runtime.dexKnowledge:countCaught("national"),
+        caughtBefore,
+        versionId .. " closing records no new caught history"
+      )
+      child:dispose()
+      runtime:unbindPokedexPreparation(binding)
+    end)
+  end
+end
+
+function T.heartgold_factory_legs_stay_blocked_without_a_dump(context)
+  if not RomImporter.isReady("heartgold") then
+    assert(context ~= nil, "blocked-version reporting needs its runner context")
+    context:skip("heartgold dump not owned; the heartgold factory legs stay blocked")
+    return
+  end
+  requireComposition("blocked-version factory reporting")
+  withUnlockedRuntime("heartgold", function() end)
+end
+
 return {
   tests = T,
   metadata = {

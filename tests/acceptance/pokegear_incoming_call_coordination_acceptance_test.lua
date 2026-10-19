@@ -480,6 +480,9 @@ local function makeFieldSession(opts)
         return "menu"
       end,
       updateFixed = function() end,
+      activeUiInput = function()
+        return nil
+      end,
       requestOpen = function()
         controls.menuRequests = controls.menuRequests + 1
         return false

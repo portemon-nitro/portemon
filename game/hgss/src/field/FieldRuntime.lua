@@ -2261,6 +2261,31 @@ function FieldRuntime:unbindSummaryPreparation(binding)
   end
 end
 
+-- Installs the field pokedex preparation factory for the presented
+-- lifetime: the logical composition resolves it per pokedex open because
+-- presentation resources postdate the menu factories. The runtime owns no
+-- graphics here, only the acquire callback plus its binding identity.
+---@param acquire fun(options: table<string, unknown>): table<string, unknown> per-open pokedex lease factory
+---@return integer binding identity for the presented lifetime
+function FieldRuntime:bindPokedexPreparation(acquire)
+  assert(type(acquire) == "function", "pokedex preparation binding requires its acquire function")
+  assert(self._pokedexPreparation == nil, "one pokedex preparation binding owns the presented lifetime")
+  self._pokedexBindingId = (self._pokedexBindingId or 0) + 1
+  self._pokedexPreparation = { id = self._pokedexBindingId, acquire = acquire }
+  return self._pokedexBindingId
+end
+
+-- Removes only the matching binding: a stale unbind never drops a
+-- replacement owner, and pokedex factories created after disposal fail
+-- at launch instead of presenting without preparation.
+---@param binding integer binding identity from bindPokedexPreparation
+function FieldRuntime:unbindPokedexPreparation(binding)
+  local current = self._pokedexPreparation
+  if current ~= nil and current.id == binding then
+    self._pokedexPreparation = nil
+  end
+end
+
 ---@param rememberedActionId string?
 ---@return StartMenuState? nil when the source has no present actions
 function FieldRuntime:_composeStartMenu(rememberedActionId)

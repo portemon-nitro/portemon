@@ -118,6 +118,19 @@ function FieldApplicationHost:phase()
   return self._phase
 end
 
+--- The active modal child's published input profile, if any. Reads the
+--- child's published field directly so fixed-tick arbitration never builds
+--- an application snapshot; nil selects the default input cadence.
+---@return table<string, unknown>? profile or nil when no child publishes one
+function FieldApplicationHost:activeUiInput()
+  local application = self._applicationController
+  if application == nil or self._phase ~= FieldApplicationHost.PHASES.application then
+    return nil
+  end
+  local published = application.uiInput
+  return type(published) == "table" and published or nil
+end
+
 -- Whether the host owns the tick: while active, the field session steps no
 -- world simulation and the save gate stays closed.
 ---@return boolean

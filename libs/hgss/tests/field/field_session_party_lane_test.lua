@@ -409,6 +409,9 @@ function T.registered_slot_edge_is_consumed_while_an_application_modal_owns_the_
       return "menu"
     end,
     updateFixed = function() end,
+    activeUiInput = function()
+      return nil
+    end,
     requestOpen = function()
       return false
     end,

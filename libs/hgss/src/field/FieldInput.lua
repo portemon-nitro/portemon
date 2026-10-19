@@ -37,6 +37,8 @@
 ---@field uiPointerEvents table[]
 ---@field lastUiSample table<string, unknown>? most recent uiSnapshot navigation observation (read-only copy source)
 ---@field uiPointers table<string, { x: number, y: number, startX: number, startY: number, dragged: boolean }>
+---@field uiExtraButtons table<string, { sources: table<string, boolean>, fresh: boolean, admitted: boolean, repeatStart: integer? }>
+---@field uiExtraSignature string? normalized effective profile behind admitted extra-button edges
 ---@field stickDirections table<string, string?>
 ---@field stickAxes table<string, { x: number, y: number }>
 ---@field uiActive boolean
@@ -56,6 +58,12 @@ local VALID = { north = true, south = true, west = true, east = true }
 local UI_DIRECTIONS = { up = true, down = true, left = true, right = true }
 local TO_UI_DIRECTION = { north = "up", south = "down", west = "left", east = "right" }
 local UI_TO_FIELD_DIRECTION = { up = "north", down = "south", left = "west", right = "east" }
+
+-- The finite extra-button vocabulary a modal child may request: only the
+-- requesting profile receives these edges, and only shoulder buttons
+-- repeat after their admitted fresh press.
+local UI_EXTRA_BUTTONS = { y = true, l = true, r = true, start = true, select = true, inspect = true }
+local UI_EXTRA_REPEATERS = { l = true, r = true }
 
 ---@param direction string
 local function requireDirection(direction)
@@ -79,6 +87,11 @@ end
 ---@param direction string
 local function requireUiDirection(direction)
   assert(UI_DIRECTIONS[direction], "unknown UI direction " .. tostring(direction))
+end
+
+---@param button string
+local function requireUiButton(button)
+  assert(UI_EXTRA_BUTTONS[button], "unknown extra UI button " .. tostring(button))
 end
 
 ---@param value unknown
@@ -140,6 +153,8 @@ function FieldInput.new(options)
     uiRepeatInterval = uiRepeatInterval,
     uiPointerEvents = {},
     uiPointers = {},
+    uiExtraButtons = {},
+    uiExtraSignature = nil,
     uiActive = false,
     stickDirections = {},
     stickAxes = {},
@@ -556,6 +571,86 @@ local function observeUiNavigation(input, tick, active)
   input.lastUiSample = sample
 end
 
+-- Records one finite extra-button press from its physical source. Only a
+-- press that arrives while the modal lifetime owns input can become a
+-- fresh edge: a previously held key never synthesizes one on open.
+---@param button string one of the six finite extra buttons
+---@param source string physical source identity holding the button
+function FieldInput:pressUiButton(button, source)
+  requireUiButton(button)
+  requireSource(source)
+  local state = self.uiExtraButtons[button]
+  if state == nil then
+    state = { sources = {}, fresh = false, admitted = false }
+    self.uiExtraButtons[button] = state
+  end
+  if state.sources[source] then
+    return
+  end
+  state.sources[source] = true
+  if self.uiActive then
+    state.fresh = true
+  end
+end
+
+-- Releases one named physical source behind an extra button. The button
+-- stays held until its last source releases; a full release retires the
+-- admitted edge so the next press is a new edge, never a repeat.
+---@param button string one of the six finite extra buttons
+---@param source string physical source identity leaving the button
+function FieldInput:releaseUiButton(button, source)
+  requireUiButton(button)
+  requireSource(source)
+  local state = self.uiExtraButtons[button]
+  if state == nil then
+    return
+  end
+  state.sources[source] = nil
+  if next(state.sources) == nil then
+    self.uiExtraButtons[button] = nil
+  end
+end
+
+---@param profile table<string, unknown>? optional finite modal input profile
+---@return string? signature nil without a profile, content-derived otherwise
+---@return table<string, boolean> requested extra buttons
+---@return integer repeat delay
+---@return integer repeat interval
+---@return boolean heldDirections
+local function normalizeUiProfile(profile)
+  if profile == nil then
+    return nil, {}, FieldInput.UI_REPEAT_DELAY_TICKS, FieldInput.UI_REPEAT_INTERVAL_TICKS, false
+  end
+  assert(type(profile) == "table", "UI input profiles arrive as records")
+  local buttons = {}
+  if profile.buttons ~= nil then
+    assert(type(profile.buttons) == "table", "UI profiles name their finite buttons")
+    for button in pairs(profile.buttons) do
+      requireUiButton(button)
+      buttons[button] = true
+    end
+  end
+  local delay = profile.repeatDelay or FieldInput.UI_REPEAT_DELAY_TICKS
+  local interval = profile.repeatInterval or FieldInput.UI_REPEAT_INTERVAL_TICKS
+  requirePositiveInteger(delay, "UI repeat delay")
+  requirePositiveInteger(interval, "UI repeat interval")
+  local held = profile.heldDirections == true
+  local names = {}
+  for button in pairs(buttons) do
+    names[#names + 1] = button
+  end
+  table.sort(names)
+  local signature = "buttons:"
+    .. table.concat(names, ",")
+    .. ";delay:"
+    .. delay
+    .. ";interval:"
+    .. interval
+    .. ";held:"
+    .. tostring(held)
+  return signature, buttons, delay, interval, held
+end
+
 ---@param tick integer
 function FieldInput:beginUi(tick)
   requireNonNegativeInteger(tick, "UI tick")
@@ -572,10 +667,67 @@ function FieldInput:beginUi(tick)
 end
 
 ---@param tick integer
+---@param profile table<string, unknown>? optional finite modal input profile
 ---@return table[]
-function FieldInput:uiSnapshot(tick)
+function FieldInput:uiSnapshot(tick, profile)
   requireNonNegativeInteger(tick, "UI tick")
   local events = {}
+  local signature, requested, repeatDelay, repeatInterval, heldDirections = normalizeUiProfile(profile)
+  if signature ~= self.uiExtraSignature then
+    -- An effective profile change resets admitted extra-button repeat
+    -- state: shoulder repetition needs a fresh press actually delivered
+    -- under the active requested profile. Fresh edges survive the change
+    -- itself; snapshots without a profile discard them below as
+    -- unrequested, so a previously held key never becomes a fresh press.
+    self.uiExtraSignature = signature
+    for _, state in pairs(self.uiExtraButtons) do
+      state.admitted = false
+      state.repeatStart = nil
+    end
+  end
+  if profile == nil then
+    for _, state in pairs(self.uiExtraButtons) do
+      state.fresh = false
+    end
+  else
+    for button, state in pairs(self.uiExtraButtons) do
+      if not requested[button] then
+        state.fresh = false
+      end
+    end
+    for button in pairs(requested) do
+      local state = self.uiExtraButtons[button]
+      if state ~= nil and state.fresh then
+        state.fresh = false
+        state.admitted = true
+        state.repeatStart = tick
+        events[#events + 1] = { type = "button", button = button }
+      elseif
+        state ~= nil
+        and state.admitted
+        and UI_EXTRA_REPEATERS[button]
+        and next(state.sources) ~= nil
+        and tick - (state.repeatStart or tick) >= repeatDelay
+        and (tick - (state.repeatStart or tick) - repeatDelay) % repeatInterval == 0
+      then
+        -- Continuous shoulder repetition is a pure cadence of the
+        -- admitted tick: the initial delay then every interval while
+        -- held, with no consumption, so a repeat gap never releases.
+        events[#events + 1] = { type = "button", button = button }
+      end
+    end
+    if heldDirections then
+      events[#events + 1] = {
+        type = "held",
+        directions = {
+          up = self.uiDirections.up ~= nil,
+          down = self.uiDirections.down ~= nil,
+          left = self.uiDirections.left ~= nil,
+          right = self.uiDirections.right ~= nil,
+        },
+      }
+    end
+  end
   if not self.uiActive then
     -- An inactive modal owns no semantic input: hidden edges queued while
     -- suspended are discarded here so they can never replay, while held
@@ -625,7 +777,9 @@ function FieldInput:uiSnapshot(tick)
 end
 
 -- Closing a modal UI drops its queued physical events and pointer capture
--- without releasing the field's held movement controls.
+-- without releasing the field's held movement controls. Held extra-button
+-- sources survive like held directions, but their edges and repeat state
+-- retire so a later lifetime never replays them.
 local function clearTransientUi(input)
   input.uiPressedDirection = nil
   input.uiRepeatStartedAt = nil
@@ -635,6 +789,12 @@ local function clearTransientUi(input)
   input.uiPointerEvents = {}
   input.uiPointers = {}
   input.lastUiSample = nil
+  for _, state in pairs(input.uiExtraButtons) do
+    state.fresh = false
+    state.admitted = false
+    state.repeatStart = nil
+    state.repeatLast = nil
+  end
 end
 
 function FieldInput:clearUi()
@@ -705,6 +865,7 @@ function FieldInput:clearAll()
   self.registeredSources = { [1] = {}, [2] = {} }
   self.uiDirections = {}
   clearTransientUi(self)
+  self.uiExtraButtons = {}
   self.stickDirections = {}
   self.stickAxes = {}
   self.uiActive = uiWasActive

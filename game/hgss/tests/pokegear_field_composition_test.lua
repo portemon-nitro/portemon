@@ -231,11 +231,12 @@ function T.tests.composition_exposes_its_closed_bundle()
   Assert.notNil(bundle.incoming, "the bundle carries its incoming owner")
   Assert.notNil(bundle.radioEffects, "the bundle carries its radio reader")
   Assert.notNil(bundle.dispose, "the bundle carries its disposal")
+  Assert.isTrue(type(bundle.mapContext) == "function", "the bundle carries its read-only live map context")
   local count = 0
   for _ in pairs(bundle) do
     count = count + 1
   end
-  Assert.equal(count, 5, "the bundle stays closed")
+  Assert.equal(count, 6, "the bundle stays closed")
 end
 
 function T.tests.screen_factory_builds_a_usable_phone_screen()

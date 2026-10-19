@@ -21,6 +21,13 @@ local KEY_DIRECTIONS =
   { w = "north", up = "north", s = "south", down = "south", a = "west", left = "west", d = "east", right = "east" }
 local GAMEPAD_DIRECTIONS = { dpup = "north", dpdown = "south", dpleft = "west", dpright = "east" }
 
+-- The finite modal extra-button producers: keyboard Tab stays X/cry and the
+-- existing registered y/u bindings stay intact, so only these six keys and
+-- six gamepad buttons feed the optional per-application input profile.
+local KEY_UI_BUTTONS = { y = "y", q = "l", u = "r", home = "start", ["end"] = "select", i = "inspect" }
+local GAMEPAD_UI_BUTTONS =
+  { y = "y", leftshoulder = "l", rightshoulder = "r", start = "start", back = "select", leftstick = "inspect" }
+
 -- Companion chrome samples with the host default filtering, matching the
 -- retired direct construction which kept the default filter and clamp.
 local POKEGEAR_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "linear", magFilter = "linear" }
@@ -1621,6 +1628,10 @@ function FieldState:keypressed(key, _, _)
   elseif key == "u" then
     self.runtime.input:pressRegisteredSlot(2, "key:u")
   end
+  local uiButton = KEY_UI_BUTTONS[key]
+  if uiButton then
+    self.runtime.input:pressUiButton(uiButton, "key:" .. key)
+  end
   local direction = KEY_DIRECTIONS[key]
   if direction then
     self.runtime.input:pressDirection(direction, "key:" .. key)
@@ -1662,6 +1673,10 @@ function FieldState:keyreleased(key, _)
     self.runtime.input:releaseRegisteredSlot(1, "key:y")
   elseif key == "u" then
     self.runtime.input:releaseRegisteredSlot(2, "key:u")
+  end
+  local uiButton = KEY_UI_BUTTONS[key]
+  if uiButton then
+    self.runtime.input:releaseUiButton(uiButton, "key:" .. key)
   end
   local direction = KEY_DIRECTIONS[key]
   if direction then
@@ -1745,6 +1760,10 @@ function FieldState:gamepadpressed(joystick, button)
   elseif button == "rightshoulder" then
     self.runtime.input:pressRegisteredSlot(2, source)
   end
+  local uiButton = GAMEPAD_UI_BUTTONS[button]
+  if uiButton then
+    self.runtime.input:pressUiButton(uiButton, source)
+  end
   local direction = GAMEPAD_DIRECTIONS[button]
   if direction then
     self.runtime.input:pressDirection(direction, source)
@@ -1768,6 +1787,10 @@ function FieldState:gamepadreleased(joystick, button)
     self.runtime.input:releaseRegisteredSlot(1, source)
   elseif button == "rightshoulder" then
     self.runtime.input:releaseRegisteredSlot(2, source)
+  end
+  local uiButton = GAMEPAD_UI_BUTTONS[button]
+  if uiButton then
+    self.runtime.input:releaseUiButton(uiButton, source)
   end
   local direction = GAMEPAD_DIRECTIONS[button]
   if direction then

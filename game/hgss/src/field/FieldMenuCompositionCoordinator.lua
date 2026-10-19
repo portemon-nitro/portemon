@@ -154,6 +154,13 @@ function FieldMenuCompositionCoordinator:applicationDescriptors()
     local composition = assert(runtime.pokegear, "the gear application requires the composed feature")
     return composition.screenFactory({ kind = "browse" })
   end
+  local function pokedexFactory()
+    -- The pokedex factory delegates immediately to the leaf composition:
+    -- no browser state lives in this upper module and no graphics load
+    -- eagerly here; the authoritative dex visibility policy still gates the
+    -- destination before the registry ever dispatches it.
+    return require("game.hgss.src.pokedex.PokedexComposition").open(runtime)
+  end
   return {
     {
       id = FieldApplicationIds.TRAINER_CARD,
@@ -170,6 +177,10 @@ function FieldMenuCompositionCoordinator:applicationDescriptors()
     {
       id = FieldApplicationIds.POKEGEAR,
       factory = pokegearFactory,
+    },
+    {
+      id = FieldApplicationIds.POKEDEX,
+      factory = pokedexFactory,
     },
   }
 end

@@ -108,6 +108,9 @@ local function applicationHostFake(overrides)
   function host:requestReopen()
     self.reopenRequests = self.reopenRequests + 1
   end
+  function host:activeUiInput()
+    return nil
+  end
   function host:takeReopen(tick)
     if self.reopenRequests > 0 then
       self.reopenRequests = self.reopenRequests - 1
