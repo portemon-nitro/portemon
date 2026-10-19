@@ -156,6 +156,7 @@ function T.party_application_frame_cycle_leaves_no_stale_modal(scope)
             nationalDex = false,
             runningShoes = false,
             runningShoesLock = false,
+            rivalName = "Silver",
           },
           options = { textSpeed = "fastest", textFrame = 0 },
         },

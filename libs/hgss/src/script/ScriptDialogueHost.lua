@@ -29,7 +29,7 @@ local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 local ScriptDialogueHost = {}
 ScriptDialogueHost.__index = ScriptDialogueHost
 
--- Text-value descriptor resolvers for the implemented forms: player name,
+-- Text-value descriptor resolvers for the implemented forms: player and rival names,
 -- the opposite protagonist's canonical name from the generated name bank,
 -- and integers backed by a variable. Any other form is a fault: the
 -- resolver contract never leaves a marker visible in the stream.
@@ -253,6 +253,8 @@ local function resolveTextValue(descriptor, player, fontDef, world, provider, mo
   local value = descriptor.value
   if kind == "player_name" then
     return FieldMessageProvider.asciiGlyphTokens(player:name(), fontDef)
+  elseif kind == "rival_name" then
+    return FieldMessageProvider.asciiGlyphTokens(player:rivalName(), fontDef)
   elseif kind == "friend_name" then
     local gender = player:gender()
     return scopedNameGlyphs(provider, FRIEND_NAME_BANK_ID, gender == 0 and 1 or 0, fontDef)

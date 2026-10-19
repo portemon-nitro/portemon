@@ -73,9 +73,10 @@ local function finalizedCandidate()
       nationalDex = false,
       runningShoes = false,
       runningShoesLock = false,
+      rivalName = "Silver",
     },
     options = PlayerData.defaultOptions(),
-  }, { charmap = { G = 1, O = 2, L = 3, D = 4 }, frameIndexes = { [0] = true } }))
+  }, { charmap = { G = 1, O = 2, L = 3, D = 4, S = 5, i = 6, l = 7, v = 8, e = 9, r = 10 }, frameIndexes = { [0] = true } }))
   return {
     saveId = "save-00000001",
     versionId = "heartgold",

@@ -55,6 +55,7 @@ function T.multibyte_player_name_validates_against_the_fixture_charmap()
       nationalDex = false,
       runningShoes = false,
       runningShoesLock = false,
+      rivalName = "Silver",
     },
     options = { textFrame = 0, textSpeed = "mid" },
   }
@@ -70,6 +71,7 @@ function T.multibyte_player_name_validates_against_the_fixture_charmap()
       nationalDex = false,
       runningShoes = false,
       runningShoesLock = false,
+      rivalName = "Silver",
     },
     options = { textFrame = 0, textSpeed = "fast" },
   }

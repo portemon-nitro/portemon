@@ -38,6 +38,12 @@ CatalogFixture.CHARMAP = {
   X = 0x142,
   Y = 0x143,
   Z = 0x144,
+  -- The lowercase glyphs of the default rival name.
+  i = 0x159,
+  l = 0x15C,
+  v = 0x16B,
+  e = 0x14F,
+  r = 0x16A,
   ["0"] = 0x121,
   ["1"] = 0x122,
   ["2"] = 0x123,

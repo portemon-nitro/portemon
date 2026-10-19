@@ -103,6 +103,7 @@ local function harness()
             nationalDex = false,
             runningShoes = false,
             runningShoesLock = false,
+            rivalName = "Silver",
           },
           options = { textSpeed = "fastest", textFrame = 0 },
         },

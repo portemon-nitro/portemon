@@ -6,6 +6,7 @@
 local Errors = require("libs.errors.src.Errors")
 local GameSaveErrors = require("libs.hgss.src.save.GameSaveErrors")
 local FieldTravelState = require("libs.hgss.src.field.FieldTravelState")
+local PlayerData = require("libs.hgss.src.save.PlayerData")
 
 local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
 local MartSave = require("libs.hgss.src.save.MartSave")
@@ -14,7 +15,8 @@ local PhotoAlbum = require("libs.hgss.src.save.PhotoAlbum")
 
 local GameSave = {}
 
-GameSave.SCHEMA = "g4-game-save-v9"
+GameSave.SCHEMA = "g4-game-save-v10"
+GameSave.LEGACY_V9_SCHEMA = "g4-game-save-v9"
 GameSave.LEGACY_V8_SCHEMA = "g4-game-save-v8"
 GameSave.LEGACY_V7_SCHEMA = "g4-game-save-v7"
 GameSave.LEGACY_V5_SCHEMA = "g4-game-save-v5"
@@ -370,7 +372,7 @@ function GameSave.migrateV8(record)
     Errors.raise(GameSaveErrors.GAME_SAVE_BUCKET_INVALID, "v8 player profile is required for migration", {})
   end
   local migrated = deepCopy(record)
-  migrated.schema = GameSave.SCHEMA
+  migrated.schema = GameSave.LEGACY_V9_SCHEMA
   migrated.playerData.profile.runningShoes = false
   migrated.playerData.profile.runningShoesLock = false
   local PokegearState = require("libs.hgss.src.save.PokegearState")
@@ -379,6 +381,22 @@ function GameSave.migrateV8(record)
     gear:registerCard("radio")
   end
   migrated.pokegear = gear:capture()
+  return migrated
+end
+
+-- v9 profiles predate the saved rival name: the step gives them the
+-- default a new game carries and leaves every other field and bucket as it
+-- was. Malformed profiles are reported, never repaired.
+---@param record table<string, unknown> a v9 save record
+---@return table<string, unknown> the migrated v10 record
+function GameSave.migrateV9(record)
+  assert(type(record) == "table" and record.schema == GameSave.LEGACY_V9_SCHEMA, "GameSave.migrateV9 requires v9")
+  if type(record.playerData) ~= "table" or type(record.playerData.profile) ~= "table" then
+    Errors.raise(GameSaveErrors.GAME_SAVE_BUCKET_INVALID, "v9 player profile is required for migration", {})
+  end
+  local migrated = deepCopy(record)
+  migrated.schema = GameSave.SCHEMA
+  migrated.playerData.profile.rivalName = PlayerData.DEFAULT_RIVAL_NAME
   return migrated
 end
 
@@ -412,6 +430,7 @@ function GameSave.metadata(record)
     assert(type(record) == "table")
     if
       record.schema ~= GameSave.SCHEMA
+      and record.schema ~= GameSave.LEGACY_V9_SCHEMA
       and record.schema ~= GameSave.LEGACY_V8_SCHEMA
       and record.schema ~= GameSave.LEGACY_V7_SCHEMA
       and record.schema ~= GameSave.LEGACY_V6_SCHEMA
@@ -495,6 +514,7 @@ function GameSave.normalize(record)
     local schema = record.schema
     if
       schema ~= GameSave.SCHEMA
+      and schema ~= GameSave.LEGACY_V9_SCHEMA
       and schema ~= GameSave.LEGACY_V8_SCHEMA
       and schema ~= GameSave.LEGACY_V7_SCHEMA
       and schema ~= GameSave.LEGACY_V6_SCHEMA
@@ -522,6 +542,9 @@ function GameSave.normalize(record)
     end
     if current.schema == GameSave.LEGACY_V8_SCHEMA then
       current = GameSave.migrateV8(current)
+    end
+    if current.schema == GameSave.LEGACY_V9_SCHEMA then
+      current = GameSave.migrateV9(current)
     end
     return canonicalizeCurrent(current)
   end)

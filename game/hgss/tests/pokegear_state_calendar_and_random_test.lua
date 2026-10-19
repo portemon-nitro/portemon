@@ -244,7 +244,7 @@ end
 
 function T.tests.old_saves_keep_their_domains_and_gain_no_invented_contact_history()
   Assert.equal(
-    GameSave.SCHEMA,
+    GameSave.LEGACY_V9_SCHEMA,
     "g4-game-save-v9",
     "the durable envelope must advance to v9 once the companion bucket migrates"
   )

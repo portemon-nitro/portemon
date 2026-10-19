@@ -25,6 +25,12 @@ local CHARMAP = {
   Q = 315,
   U = 321,
   R = 316,
+  S = 322,
+  e = 335,
+  i = 339,
+  l = 342,
+  r = 346,
+  v = 347,
 }
 
 local FRAME_INDEXES = { [0] = true, [1] = true, [2] = true }

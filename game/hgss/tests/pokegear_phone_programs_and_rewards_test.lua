@@ -1340,6 +1340,7 @@ function T.tests.trainer_win_commits_mom_savings_with_the_prize()
       nationalDex = false,
       runningShoes = false,
       runningShoesLock = false,
+      rivalName = "Silver",
     },
     options = { textFrame = 0, textSpeed = "fastest" },
   }

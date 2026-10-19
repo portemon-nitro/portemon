@@ -117,6 +117,7 @@ local function playerFacts(money)
       nationalDex = false,
       runningShoes = false,
       runningShoesLock = false,
+      rivalName = "Silver",
     },
     options = { textFrame = 0, textSpeed = "fastest" },
   }

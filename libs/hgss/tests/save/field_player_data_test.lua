@@ -40,6 +40,7 @@ local function record(overrides)
   local value = {
     profile = {
       name = "GOLD",
+      rivalName = "HIKARI",
       gender = 0,
       trainerId = 0,
       money = 3000,
@@ -90,6 +91,7 @@ function T.unknown_keys_are_discarded_by_canonicalization()
   local input = {
     profile = {
       name = "GOLD",
+      rivalName = "HIKARI",
       gender = 0,
       trainerId = 7,
       money = 3000,
@@ -116,7 +118,7 @@ function T.unknown_keys_are_discarded_by_canonicalization()
   Assert.keySet(validated, "options,profile", "canonicalization must drop the extra top-level key")
   Assert.keySet(
     validated.profile,
-    "badges,gender,money,name,nationalDex,runningShoes,runningShoesLock,trainerId",
+    "badges,gender,money,name,nationalDex,rivalName,runningShoes,runningShoesLock,trainerId",
     "canonicalization must drop profile.transientThing"
   )
   Assert.keySet(validated.options, "battleStyle,textFrame,textSpeed", "canonicalization must drop options.futureThing")
@@ -202,6 +204,21 @@ function T.over_length_names_report_the_glyph_bound_even_when_unencodable()
   )
   Assert.equal(err and err.code, "PLAYER_DATA_NAME_INVALID")
   Assert.equal(err and err.context.glyphs, 8, "the glyph-count bound must fire for over-length names")
+end
+
+-- The rival name is a second saved name under the same glyph rules as the
+-- player name: present, 1..7 encodable glyphs.
+function T.rival_name_is_required_and_follows_the_player_name_rules()
+  local validated = assert(PlayerData.validate(record(), context()))
+  Assert.equal(validated.profile.rivalName, "HIKARI")
+  for _, invalid in ipairs({ "", "ABCDEFGH", "GO\226\130\172D", "gold" }) do
+    local _, err = PlayerData.validate(record({ profile = { rivalName = invalid } }), context())
+    Assert.equal(err and err.code, "PLAYER_DATA_NAME_INVALID", "rival name " .. invalid .. " must be rejected")
+  end
+  local missing = record()
+  missing.profile.rivalName = nil
+  local _, err = PlayerData.validate(missing, context())
+  Assert.equal(err and err.code, "PLAYER_DATA_NAME_INVALID", "a missing rival name must be rejected")
 end
 
 function T.gender_is_restricted_to_the_gendered_message_values()

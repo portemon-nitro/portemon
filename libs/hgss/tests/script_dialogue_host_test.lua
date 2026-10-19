@@ -155,6 +155,9 @@ local function host(opts)
       name = function()
         return "Gold"
       end,
+      rivalName = function()
+        return "Eland"
+      end,
       gender = function()
         return gender
       end,
@@ -250,7 +253,7 @@ function T.unsupported_text_form_faults()
   local h = host({ world = world })
   h:openMessage({})
   local err = Assert.throws(function()
-    h:startPrint("msg.hgss.0542.00000", { [0] = { text = "rival_name" } })
+    h:startPrint("msg.hgss.0542.00000", { [0] = { text = "mystery_form" } })
   end)
   Assert.isTrue(Errors.is(err))
   Assert.equal(err.code, "SCRIPT_UNSUPPORTED_REACHABLE")
@@ -303,6 +306,14 @@ function T.unresolved_substitution_fails_explicitly()
   Assert.equal(err.code, "SCRIPT_INVALID_REFERENCE")
   Assert.equal(err.context.bankId, 542)
   Assert.equal(err.context.messageId, 0)
+end
+
+-- The rival's name is the saved profile name, never a bank message.
+function T.rival_name_resolves_to_the_saved_rival_name()
+  local h = host()
+  local formatted = h:resolveMessage("msg.hgss.0542.00000", { [0] = { text = "rival_name" } }, {})
+  Assert.equal(formatted.text, "Eland")
+  Assert.isFalse(formatted.hadUnresolvedSubstitutions)
 end
 
 -- The opposite-protagonist name comes from the generated name bank selected

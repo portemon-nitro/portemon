@@ -117,6 +117,7 @@ local function withGame(fn, options)
           nationalDex = false,
           runningShoes = false,
           runningShoesLock = false,
+          rivalName = "Silver",
         },
         options = { textSpeed = "fastest", textFrame = 0 },
       },

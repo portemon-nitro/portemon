@@ -93,6 +93,7 @@ local function harness()
             nationalDex = false,
             runningShoes = false,
             runningShoesLock = false,
+            rivalName = "Silver",
           },
           options = { textSpeed = "fastest", textFrame = 0 },
         },
@@ -195,6 +196,7 @@ local function playerFacts(money)
       nationalDex = false,
       runningShoes = false,
       runningShoesLock = false,
+      rivalName = "Silver",
     },
     options = { textFrame = 0, textSpeed = "fastest" },
   }

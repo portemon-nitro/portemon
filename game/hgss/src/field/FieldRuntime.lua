@@ -3021,22 +3021,14 @@ function FieldRuntime:_trainerPayload(payload)
   local world = self.scripts ~= nil and self.scripts.worldState or nil
   local stream = world ~= nil and world.rng or nil
   assert(type(stream) == "table", "trainer materialization threads the world stream untouched")
-  -- The rival display name stays an indirection: an explicit staged-launch
-  -- override wins, otherwise the script world supplies it when it models
-  -- one. Bracket reads mark both as optional open-record fields rather
-  -- than specified payload shape.
+  -- The rival display name is the saved profile's rival name; an explicit
+  -- staged-launch override wins.
   local rivalName = nil
   local payloadRival = payload["rivalName"]
   if type(payloadRival) == "string" and payloadRival ~= "" then
     rivalName = payloadRival
-  elseif type(world) == "table" then
-    local worldRival = (world --[[@as table<string, unknown>]])["rivalName"]
-    if type(worldRival) == "function" then
-      local named = worldRival(world)
-      if type(named) == "string" and named ~= "" then
-        rivalName = named
-      end
-    end
+  else
+    rivalName = self.playerData ~= nil and self.playerData.profile.rivalName or nil
   end
   local resolved = {}
   for _, entry in ipairs(source) do

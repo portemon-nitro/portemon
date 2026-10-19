@@ -160,6 +160,7 @@ function NewGame.finalize(candidate, confirmation, options)
       nationalDex = false,
       runningShoes = false,
       runningShoesLock = false,
+      rivalName = PlayerData.DEFAULT_RIVAL_NAME,
     },
     options = candidate.options,
   }, options.playerDataContext)
@@ -185,6 +186,7 @@ function NewGame.finalize(candidate, confirmation, options)
       nationalDex = false,
       runningShoes = false,
       runningShoesLock = false,
+      rivalName = draft.profile.rivalName,
     },
     options = draft.options,
   }, options.playerDataContext)

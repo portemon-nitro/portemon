@@ -225,6 +225,7 @@ local function playerRecord(money)
       nationalDex = false,
       runningShoes = false,
       runningShoesLock = false,
+      rivalName = "Silver",
     },
     options = { textFrame = 0, textSpeed = "fastest" },
   }, { charmap = CatalogFixture.CHARMAP, frameIndexes = { [0] = true } }

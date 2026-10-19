@@ -49,6 +49,7 @@ local function withGame(topology, fn)
             nationalDex = false,
             runningShoes = false,
             runningShoesLock = false,
+            rivalName = "Silver",
           },
           options = { textSpeed = "fastest", textFrame = 1 },
         },

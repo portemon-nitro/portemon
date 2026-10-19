@@ -65,6 +65,7 @@ local function harness(spawnKey, map, textSpeed)
             nationalDex = false,
             runningShoes = false,
             runningShoesLock = false,
+            rivalName = "Silver",
           },
           options = { textSpeed = textSpeed or "fastest", textFrame = 0 },
         },

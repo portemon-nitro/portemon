@@ -38,6 +38,7 @@ local function record(overrides)
         nationalDex = false,
         runningShoes = false,
         runningShoesLock = false,
+        rivalName = "Silver",
       },
       options = { textFrame = 0, textSpeed = "mid" },
     },
@@ -117,7 +118,7 @@ end
 function T.routing_identity_stays_strict_while_domain_state_passes_through()
   Assert.notNil(GameSave.normalize(record()))
   returnsCode("GAME_SAVE_SCHEMA_UNSUPPORTED", function()
-    return GameSave.normalize(record({ schema = "g4-game-save-v10" }))
+    return GameSave.normalize(record({ schema = "g4-game-save-v11" }))
   end)
   returnsCode("GAME_SAVE_SCHEMA_UNSUPPORTED", function()
     return GameSave.normalize(record({ schema = "g4-field-save-v3" }))

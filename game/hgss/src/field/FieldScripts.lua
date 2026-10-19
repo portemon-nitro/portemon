@@ -30,7 +30,7 @@ local FollowerInteractionEngine = require("libs.hgss.src.field.FollowerInteracti
 -- FieldPlayer by reference so map swaps can rebind it.
 ---@class ScriptPlayerFacade
 ---@field private _player FieldPlayer|nil
----@field private _profile table<string, unknown>|nil { gender: integer, name: string }
+---@field private _profile table<string, unknown>|nil { gender: integer, name: string, rivalName: string }
 ---@field private _avatarState table<string, unknown>|nil avatar transition owner for queue/apply consumers
 ---@field private _avatarApplier fun(): table<string, unknown>|nil materializes pending transitions through the owning runtime composition
 local ScriptPlayerFacade = {}
@@ -117,10 +117,10 @@ function ScriptPlayerFacade:applyAvatarTransitions()
   Errors.raise(ScriptErrors.SCRIPT_SERVICE_MISSING, "player facade has no avatar transition materializer", {})
 end
 
--- Wire the real player profile (gender and name) when the game owns one;
+-- Wire the real player profile (gender and names) when the game owns one;
 -- until then profile-dependent operations fault instead of fabricating
 -- values.
----@param profile table<string, unknown> { gender: integer, name: string }
+---@param profile table<string, unknown> { gender: integer, name: string, rivalName: string }
 function ScriptPlayerFacade:setProfile(profile)
   self._profile = profile
 end
@@ -153,6 +153,14 @@ function ScriptPlayerFacade:name()
     Errors.raise(ScriptErrors.SCRIPT_SERVICE_MISSING, "no player profile is wired; player-name text cannot resolve", {})
   end
   return profile --[[@as { gender: integer, name: string }]].name
+end
+
+function ScriptPlayerFacade:rivalName()
+  local profile = self._profile
+  if profile == nil or profile.rivalName == nil then
+    Errors.raise(ScriptErrors.SCRIPT_SERVICE_MISSING, "no player profile is wired; rival-name text cannot resolve", {})
+  end
+  return profile --[[@as { rivalName: string }]].rivalName
 end
 
 function ScriptPlayerFacade:stateCode()

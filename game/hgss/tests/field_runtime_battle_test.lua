@@ -1182,6 +1182,7 @@ local function validEntry(versionId)
         nationalDex = false,
         runningShoes = false,
         runningShoesLock = false,
+        rivalName = "Silver",
       },
       options = { textSpeed = "mid", textFrame = 0 },
     },
@@ -1287,13 +1288,13 @@ function T.boot_resolves_a_generated_trainer_identity(context)
       local compiled = BattleDataCache.loadTrainers(CacheFs.forVersion(versionId))
       local key = firstTrainerKey(compiled)
       -- The smallest generated identity is a rival template, which resolves
-      -- its display name from the saved rival name (non-rival templates
-      -- ignore it); the suite supplies the canonical default.
+      -- its display name from the saved profile's rival name (non-rival
+      -- templates ignore it).
       battle = runtime:startBattle({
         request = {
           id = "launch-boot-trainer",
           kind = "trainer",
-          payload = { trainer = key, rivalName = "SILVER" },
+          payload = { trainer = key },
         },
       })
       Assert.notNil(battle, "the public launch owns its battle lifetime")

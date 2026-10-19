@@ -259,7 +259,7 @@ function T.v3_migrates_through_v4_v5_and_both_v6_layout_steps()
   local v8 = GameSave.migrateV7(v7)
   Assert.equal(v8.schema, GameSave.LEGACY_V8_SCHEMA, "v7 layout cleanup remains an explicit intermediate step")
   local current = GameSave.migrateV8(v8)
-  Assert.equal(current.schema, GameSave.SCHEMA)
+  Assert.equal(current.schema, GameSave.LEGACY_V9_SCHEMA)
   Assert.equal(current.playerData.profile.nationalDex, false)
   Assert.equal(current.playerData.profile.runningShoes, false)
   Assert.equal(current.playerData.profile.runningShoesLock, false)
@@ -284,11 +284,11 @@ end
 function T.future_schemas_reject_while_known_envelopes_stay_listable()
   returnsCode("GAME_SAVE_SCHEMA_UNSUPPORTED", function()
     local value = currentRecord()
-    value.schema = "g4-game-save-v10"
+    value.schema = "g4-game-save-v11"
     return GameSave.normalize(value)
   end)
   local envelope, envelopeErr = GameSave.metadata({
-    schema = "g4-game-save-v10",
+    schema = "g4-game-save-v11",
     saveId = "save-00000001",
     versionId = "heartgold",
     playTimeSeconds = 0,
@@ -387,7 +387,7 @@ function T.unrelated_extension_metadata_survives_legacy_migration_steps()
   Assert.equal(migrated.schema, GameSave.LEGACY_V8_SCHEMA)
   Assert.deepEqual(migrated.modState, { marker = "kept" })
   local latest = GameSave.migrateV8(migrated)
-  Assert.equal(latest.schema, GameSave.SCHEMA)
+  Assert.equal(latest.schema, GameSave.LEGACY_V9_SCHEMA)
   Assert.deepEqual(latest.modState, { marker = "kept" }, "the v8 step preserves unrelated top-level state")
   Assert.notNil(latest.pokegear, "the v8 step adds the companion bucket")
   -- The same legacy payload normalizes end-to-end with its extension intact.
@@ -536,7 +536,7 @@ function T.v8_migrates_to_v9_with_running_shoes_unset()
   Assert.equal(v8.schema, GameSave.LEGACY_V8_SCHEMA)
   Assert.isNil(v8.playerData.profile.runningShoes)
   local migrated = GameSave.migrateV8(v8)
-  Assert.equal(migrated.schema, GameSave.SCHEMA)
+  Assert.equal(migrated.schema, GameSave.LEGACY_V9_SCHEMA)
   Assert.equal(migrated.playerData.profile.runningShoes, false)
   Assert.equal(migrated.playerData.profile.runningShoesLock, false)
   Assert.deepEqual(migrated.world, v8.world, "unrelated top-level state is preserved")
@@ -591,11 +591,34 @@ local function companionRefs()
   }
 end
 
+-- The v9 step only adds the rival name the profile now carries: every other
+-- field and bucket passes through untouched, and the source is not mutated.
+function T.v9_migration_adds_only_the_default_rival_name()
+  local PlayerData = require("libs.hgss.src.save.PlayerData")
+  local source = v8record({ schema = GameSave.LEGACY_V9_SCHEMA })
+  source.playerData.profile.runningShoes = true
+  source.playerData.profile.runningShoesLock = false
+  local migrated = GameSave.migrateV9(source)
+  Assert.equal(migrated.schema, GameSave.SCHEMA, "the v9 step advances the envelope")
+  Assert.equal(source.schema, GameSave.LEGACY_V9_SCHEMA, "migration leaves its input untouched")
+  Assert.isNil(source.playerData.profile.rivalName, "migration never mutates its source record")
+  Assert.equal(migrated.playerData.profile.rivalName, PlayerData.DEFAULT_RIVAL_NAME)
+  Assert.equal(migrated.playerData.profile.name, "GOLD")
+  Assert.equal(migrated.playerData.profile.runningShoes, true)
+  Assert.deepEqual(migrated.world, source.world, "migration preserves world state exactly")
+  Assert.deepEqual(migrated.party, source.party, "migration preserves the party exactly")
+  local normalized = assert(GameSave.normalize(v8record()))
+  Assert.equal(normalized.schema, GameSave.SCHEMA, "normalization chains v8 through the rival-name step")
+  Assert.equal(normalized.playerData.profile.rivalName, PlayerData.DEFAULT_RIVAL_NAME)
+  local _, err = GameSave.normalize(v8record({ schema = GameSave.LEGACY_V9_SCHEMA, playerData = {} }))
+  Assert.equal(err and err.code, "GAME_SAVE_BUCKET_INVALID", "a v9 save without a profile is not repaired")
+end
+
 function T.v8_migration_adds_only_the_companion_bucket()
   local PokegearState = require("libs.hgss.src.save.PokegearState")
   local source = v8record()
   local migrated = GameSave.migrateV8(source)
-  Assert.equal(migrated.schema, GameSave.SCHEMA, "the v8 step advances the envelope")
+  Assert.equal(migrated.schema, GameSave.LEGACY_V9_SCHEMA, "the v8 step advances the envelope")
   Assert.equal(source.schema, GameSave.LEGACY_V8_SCHEMA, "migration leaves its input untouched")
   Assert.isNil(source.pokegear, "migration never mutates its source record")
   local expectedProfile = { runningShoes = false, runningShoesLock = false }
@@ -637,7 +660,7 @@ function T.v8_migration_reconstructs_only_the_proven_radio_card()
   local PokegearState = require("libs.hgss.src.save.PokegearState")
   local source = v8record({ world = { flags = { [138] = true }, variables = {} } })
   local migrated = GameSave.migrateV8(source)
-  Assert.equal(migrated.schema, GameSave.SCHEMA)
+  Assert.equal(migrated.schema, GameSave.LEGACY_V9_SCHEMA)
   Assert.isTrue(
     migrated.pokegear.registeredCards.radio == true,
     "the radio acquisition flag proves the radio card"

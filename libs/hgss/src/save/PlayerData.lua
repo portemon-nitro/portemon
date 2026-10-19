@@ -24,6 +24,8 @@ PlayerData.MIN_NAME_GLYPHS = 1
 PlayerData.MAX_NAME_GLYPHS = 7
 PlayerData.MAX_TRAINER_ID = 0xFFFFFFFF
 PlayerData.MAX_MONEY = 999999
+-- The rival name a new game carries until the player names the rival.
+PlayerData.DEFAULT_RIVAL_NAME = "Silver"
 
 local function isFiniteInteger(value)
   return type(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge and value % 1 == 0
@@ -37,26 +39,23 @@ function PlayerData.ticksPerGlyph(textSpeed)
   return cadence
 end
 
-local function validate(record, context)
-  if type(record) ~= "table" then
-    Errors.raise(FieldErrors.PLAYER_DATA_INVALID, "player data must be a table", {})
-  end
-  local profile = record.profile
-  if type(profile) ~= "table" then
-    Errors.raise(FieldErrors.PLAYER_DATA_INVALID, "player profile must be a table", {})
-  end
-  if type(profile.name) ~= "string" then
-    Errors.raise(FieldErrors.PLAYER_DATA_NAME_INVALID, "player name must be a string", { name = profile.name })
+-- One saved name: a string of 1..7 glyphs the generated field font encodes.
+---@param name unknown
+---@param owner string "player" or "rival", for the diagnostic
+---@param context table<string, unknown>
+local function validateName(name, owner, context)
+  if type(name) ~= "string" then
+    Errors.raise(FieldErrors.PLAYER_DATA_NAME_INVALID, owner .. " name must be a string", { name = name })
   end
   local glyphs = 0
   local unencodableGlyph
-  for glyph in Utf8Glyphs.iter(profile.name) do
+  for glyph in Utf8Glyphs.iter(name) do
     glyphs = glyphs + 1
     if glyphs > PlayerData.MAX_NAME_GLYPHS then
       Errors.raise(
         FieldErrors.PLAYER_DATA_NAME_INVALID,
-        "player name must be 1..7 glyphs",
-        { name = profile.name, glyphs = glyphs }
+        owner .. " name must be 1..7 glyphs",
+        { name = name, glyphs = glyphs }
       )
     end
     if context.charmap[glyph] == nil then
@@ -66,16 +65,28 @@ local function validate(record, context)
   if unencodableGlyph ~= nil then
     Errors.raise(
       FieldErrors.PLAYER_DATA_NAME_INVALID,
-      "player name contains a character the generated field font cannot encode",
+      owner .. " name contains a character the generated field font cannot encode",
       { character = unencodableGlyph }
     )
   end
   if glyphs < PlayerData.MIN_NAME_GLYPHS then
-    Errors.raise(FieldErrors.PLAYER_DATA_NAME_INVALID, "player name must be 1..7 glyphs", {
-      name = profile.name,
+    Errors.raise(FieldErrors.PLAYER_DATA_NAME_INVALID, owner .. " name must be 1..7 glyphs", {
+      name = name,
       glyphs = glyphs,
     })
   end
+end
+
+local function validate(record, context)
+  if type(record) ~= "table" then
+    Errors.raise(FieldErrors.PLAYER_DATA_INVALID, "player data must be a table", {})
+  end
+  local profile = record.profile
+  if type(profile) ~= "table" then
+    Errors.raise(FieldErrors.PLAYER_DATA_INVALID, "player profile must be a table", {})
+  end
+  validateName(profile.name, "player", context)
+  validateName(profile.rivalName, "rival", context)
   if PlayerData.GENDERS[profile.gender] ~= true then
     Errors.raise(FieldErrors.PLAYER_DATA_GENDER_INVALID, "player gender must be one of the gendered-message values", {
       gender = profile.gender,
@@ -150,6 +161,7 @@ local function validate(record, context)
   return {
     profile = {
       name = profile.name,
+      rivalName = profile.rivalName,
       gender = profile.gender,
       trainerId = trainerId,
       money = money,

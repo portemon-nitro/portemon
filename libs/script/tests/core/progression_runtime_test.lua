@@ -23,6 +23,7 @@ local function progression()
     badges = 0,
     runningShoes = false,
     runningShoesLock = false,
+    rivalName = "Silver",
   })
 end
 
@@ -81,6 +82,7 @@ function T.award_running_shoes_sets_the_profile_flag_through_the_service()
     badges = 0,
     runningShoes = false,
     runningShoesLock = false,
+    rivalName = "Silver",
   }
   local run = runWith(PlayerProgression.new(profile))
   Assert.equal(Runtime.executeNode({ op = "award_running_shoes" }, run), Runtime.OUTCOME_CONTINUE)
@@ -98,6 +100,7 @@ function T.check_running_shoes_writes_one_or_zero_from_the_profile_flag()
     badges = 0,
     runningShoes = false,
     runningShoesLock = false,
+    rivalName = "Silver",
   }
   local run = runWith(PlayerProgression.new(profile))
   local node = { op = "check_running_shoes", result = var("V_SHOES") }

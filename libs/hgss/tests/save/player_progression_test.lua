@@ -17,6 +17,7 @@ local function profile(badges)
     badges = badges,
     runningShoes = false,
     runningShoesLock = false,
+    rivalName = "Silver",
   }
 end
 

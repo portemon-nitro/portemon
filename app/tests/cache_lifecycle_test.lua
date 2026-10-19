@@ -81,6 +81,7 @@ local function record(saveId, overrides)
         nationalDex = false,
         runningShoes = false,
         runningShoesLock = false,
+        rivalName = "Silver",
       },
       options = { textFrame = 0, textSpeed = "mid" },
     },

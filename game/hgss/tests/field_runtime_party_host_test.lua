@@ -52,6 +52,7 @@ local function validEntry(versionId, withBuckets)
         nationalDex = false,
         runningShoes = false,
         runningShoesLock = false,
+        rivalName = "Silver",
       },
       options = { textSpeed = "mid", textFrame = 0 },
     },

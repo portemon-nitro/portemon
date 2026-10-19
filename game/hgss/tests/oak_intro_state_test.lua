@@ -704,7 +704,7 @@ local SHRINK_MANIFEST = {
 }
 
 local SHRINK_PLAYER_DATA_CONTEXT = {
-  charmap = { A = 1, B = 2, C = 3, D = 4, E = 5, F = 6, G = 7, O = 8, L = 9, [" "] = 10 },
+  charmap = { A = 1, B = 2, C = 3, D = 4, E = 5, F = 6, G = 7, O = 8, L = 9, [" "] = 10, S = 11, e = 12, i = 13, l = 14, r = 15, v = 16 },
   frameIndexes = { [0] = true },
 }
 

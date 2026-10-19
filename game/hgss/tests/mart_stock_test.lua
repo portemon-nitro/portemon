@@ -58,6 +58,7 @@ local function context(overrides)
     nationalDex = false,
     runningShoes = false,
     runningShoesLock = false,
+    rivalName = "Silver",
     weekday = 0,
     dayOrdinal = 1,
     cardPrefix = 0,
@@ -96,6 +97,7 @@ function T.standard_stock_uses_all_six_badge_tiers_and_filters_only_pokeball()
         nationalDex = false,
         runningShoes = false,
         runningShoesLock = false,
+        rivalName = "Silver",
         readFlag = function()
           return false
         end,
@@ -108,6 +110,7 @@ function T.standard_stock_uses_all_six_badge_tiers_and_filters_only_pokeball()
         nationalDex = false,
         runningShoes = false,
         runningShoesLock = false,
+        rivalName = "Silver",
         readFlag = function()
           return true
         end,

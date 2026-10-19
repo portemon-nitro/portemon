@@ -52,6 +52,7 @@ function T.tests.action_facing_filler_stays_in_the_current_logical_map()
             nationalDex = false,
             runningShoes = false,
             runningShoesLock = false,
+            rivalName = "Silver",
           },
           options = { textSpeed = "fastest", textFrame = 0 },
         },

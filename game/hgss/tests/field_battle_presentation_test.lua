@@ -104,6 +104,7 @@ local function validEntry(versionId)
         nationalDex = false,
         runningShoes = false,
         runningShoesLock = false,
+        rivalName = "Silver",
       },
       options = { textSpeed = "mid", textFrame = 0 },
     },
