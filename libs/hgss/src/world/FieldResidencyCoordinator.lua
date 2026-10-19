@@ -328,15 +328,26 @@ function FieldResidencyCoordinator:updatePrefetch(_)
     completed = coverage:updatePrefetch(1)
     hasPhysicalWork = coverage:hasPrefetchWork()
   end
+  -- Every pending map is demanded in the same pass so none waits behind
+  -- another for its request; at most one ready map is acquired per call.
+  local readyMapId
+  local pendingDemand = false
   for _, mapId in ipairs(mapIds) do
     if not self.residents[mapId] then
-      if not self:_demandPrefetchMap(mapId) then
-        return completed
+      if self:_demandPrefetchMap(mapId) then
+        readyMapId = readyMapId or mapId
+      else
+        pendingDemand = true
       end
-      self:_acquireResident(mapId)
-      self:_publishResidentViews()
-      return completed + 1
     end
+  end
+  if readyMapId then
+    self:_acquireResident(readyMapId)
+    self:_publishResidentViews()
+    return completed + 1
+  end
+  if pendingDemand then
+    return completed
   end
   if not hasPhysicalWork then
     self._livePrefetchSatisfied = true

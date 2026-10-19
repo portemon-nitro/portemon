@@ -371,6 +371,45 @@ function T.generation_token_grants_no_rights_to_stale_or_retired_epochs()
   service:shutdown()
 end
 
+-- A semantic acquisition prefetch missed blocks the caller on the transport
+-- until the controller answers instead of raising for an unrequested field.
+function T.logical_field_emergency_ensure_blocks_until_the_controller_answers()
+  local DerivedAssetProvisioner = require("app.src.DerivedAssetProvisioner")
+  local requests, updates, answerAt = {}, 0, 3
+  local service = {
+    select = function()
+      return 1
+    end,
+    request = function(_, epoch, selector)
+      requests[#requests + 1] = selector.urgency
+      return epoch
+    end,
+    observe = function()
+      if updates >= answerAt then
+        return true, nil
+      end
+      return nil, nil
+    end,
+    update = function()
+      updates = updates + 1
+      return { ordinary = 0 }
+    end,
+  }
+  local provisioner = DerivedAssetProvisioner.new({ versionId = "heartgold", service = service })
+  local host = provisioner:gameHost()
+  Assert.isTrue(host.ensureLogicalField(48), "the emergency ensure returns once the controller answers")
+  Assert.equal(updates, answerAt, "the transport is pumped until the answer arrives")
+  Assert.equal(requests[1], "required", "the emergency demand is required")
+
+  answerAt = math.huge
+  service.observe = function()
+    return nil, "producer failed"
+  end
+  local ok, err = pcall(host.ensureLogicalField, 48)
+  Assert.isFalse(ok, "a controller failure still raises")
+  Assert.equal(err, "producer failed", "the failure carries its cause")
+end
+
 function T.provisioner_exposes_the_selection_generation_without_scanning()
   local Service = requireService()
   local DerivedAssetProvisioner = require("app.src.DerivedAssetProvisioner")

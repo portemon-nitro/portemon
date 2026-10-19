@@ -1073,6 +1073,37 @@ local function supplied_destination_map_is_used_without_reacquiring()
   coordinator:dispose()
 end
 
+-- A pending map never delays the request of the maps behind it: every
+-- non-resident prefetch map is demanded in one pass, and a ready map is
+-- acquired even while an earlier one is still pending.
+local function live_prefetch_demands_every_pending_map_in_one_pass()
+  local coverage = coverageFixture()
+  coverage.footprint[#coverage.footprint + 1] = { cellKey = "3:0", mapHeaderId = 40 }
+  local loader, actors, zone = logicalOwners(coverage)
+  local demanded = {}
+  loader.derivedAssets = {
+    requestLogicalField = function(mapId, _)
+      demanded[mapId] = true
+      return mapId == 40, nil
+    end,
+    requestField = function()
+      return false
+    end,
+  }
+  local coordinator = coordinatorClass().new({
+    coverage = coverage,
+    mapLoader = loader,
+    actors = actors,
+    zoneController = zone,
+  })
+  coordinator:initialize()
+  coordinator:updatePrefetch(1)
+  Assert.isTrue(demanded[30] and demanded[40], "both pending maps are demanded in the first pass")
+  Assert.notNil(coordinator:mapForId(40), "the ready map is acquired while the earlier map is pending")
+  Assert.isNil(coordinator:mapForId(30), "the pending map stays non-resident")
+  coordinator:dispose()
+end
+
 return {
   metadata = { capabilities = {} },
   tests = {
@@ -1101,6 +1132,7 @@ return {
     supplied_destination_map_is_used_without_reacquiring = supplied_destination_map_is_used_without_reacquiring,
     live_prefetch_holds_logical_acquisition_until_near_demand_is_ready = live_prefetch_holds_logical_acquisition_until_near_demand_is_ready,
     live_prefetch_logical_failure_fails_loudly = live_prefetch_logical_failure_fails_loudly,
+    live_prefetch_demands_every_pending_map_in_one_pass = live_prefetch_demands_every_pending_map_in_one_pass,
     live_prefetch_reuses_the_current_descriptor_and_logical_plan = live_prefetch_reuses_the_current_descriptor_and_logical_plan,
     satisfied_live_prefetch_is_idle_until_the_anchor_changes = satisfied_live_prefetch_is_idle_until_the_anchor_changes,
     transition_staging_skips_halo_residents_with_pending_logical_closures = transition_staging_skips_halo_residents_with_pending_logical_closures,

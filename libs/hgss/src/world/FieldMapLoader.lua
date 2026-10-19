@@ -1692,6 +1692,23 @@ function FieldMapLoader:requestLocation(idOrSymbol, fieldX, fieldZ, urgency)
       end
     end
   end
+  -- The ring beyond the committed footprint is the next step's residency:
+  -- enroll its logical closures as near demand so the first moves after
+  -- arrival never reach an unrequested map. Never gates the destination.
+  if type(matrix) == "table" and type(matrix.memberId) == "number" then
+    local anchorX, anchorZ = math.floor(fieldX / 32), math.floor(fieldZ / 32)
+    for _, descriptor in
+      ipairs(FieldCoverage.footprintDescriptorsAt(self.fieldCellIndex, matrix.memberId, anchorX, anchorZ))
+    do
+      local header = descriptor.mapHeaderId
+      if type(header) == "number" and header % 1 == 0 and not seen[header] then
+        local headerId = math.floor(header)
+        if headerId ~= record.id and self:definesMap(headerId) then
+          host.requestLogicalField(headerId, "near")
+        end
+      end
+    end
+  end
   -- Warp exits are one level of required-logical demand beyond the
   -- represented set: an indoor footprint can never represent the outdoor
   -- map its door reaches, yet ENVIRONMENT-mode warps read the destination

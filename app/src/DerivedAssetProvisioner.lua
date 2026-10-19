@@ -97,9 +97,27 @@ function DerivedAssetProvisioner.new(options)
       assert(type(mapId) == "number" and mapId % 1 == 0 and mapId >= 0, "logical field request requires its map")
       return ask("logical-field", urgency, { mapId = mapId })
     end,
+    -- Emergency path for a semantic acquisition that prefetch did not
+    -- cover: promote to required and block this thread, pumping the
+    -- transport, until the controller answers.
     ensureLogicalField = function(mapId)
       assert(type(mapId) == "number" and mapId % 1 == 0 and mapId >= 0, "logical field readiness requires its map")
-      return assertion("logical-field", { mapId = mapId }, "logical field " .. tostring(mapId))
+      local active = guard()
+      local selector = { requestKind = "logical-field", urgency = "required", mapId = mapId }
+      while true do
+        if active.service:request(active.epoch, selector) == nil then
+          error("logical field " .. tostring(mapId) .. " is not ready", 0)
+        end
+        local ready, failure = active.service:observe(active.epoch, selector)
+        if ready then
+          return true
+        end
+        if failure ~= nil then
+          error(failure, 0)
+        end
+        active.service:update()
+        love.timer.sleep(0.001)
+      end
     end,
     requestCell = function(descriptor, urgency)
       assert(type(descriptor) == "table", "cell request requires its descriptor")

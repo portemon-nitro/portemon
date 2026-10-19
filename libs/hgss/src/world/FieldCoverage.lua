@@ -509,14 +509,7 @@ local function buildWorldParts(cells, origin)
 end
 
 local function descriptorsAtAnchor(self, anchorX, anchorZ)
-  local result = {}
-  for _, position in ipairs(footprint(anchorX, anchorZ)) do
-    local descriptor = FieldCellCache.find(self.index, self.matrixMemberId, position.x, position.z)
-    if descriptor then
-      result[#result + 1] = descriptor
-    end
-  end
-  return result
+  return FieldCoverage.footprintDescriptorsAt(self.index, self.matrixMemberId, anchorX, anchorZ)
 end
 
 ---@param options table<string, unknown> staged or blocking construction options
@@ -960,6 +953,24 @@ function FieldCoverage.descriptorsAt(index, matrixMemberId, anchorX, anchorZ)
   assert(type(anchorZ) == "number" and anchorZ % 1 == 0, "anchor z must be an integer")
   local result = {}
   for _, position in ipairs(desired(anchorX, anchorZ)) do
+    local descriptor = FieldCellCache.find(index, matrixMemberId, position.x, position.z)
+    if descriptor then
+      result[#result + 1] = descriptor
+    end
+  end
+  return result
+end
+
+-- The radius-2 prefetch footprint around an anchor, holes excluded. Pure
+-- over the given index.
+---@param index table<string, unknown>
+---@param matrixMemberId integer
+---@param anchorX integer
+---@param anchorZ integer
+---@return table[]
+function FieldCoverage.footprintDescriptorsAt(index, matrixMemberId, anchorX, anchorZ)
+  local result = {}
+  for _, position in ipairs(footprint(anchorX, anchorZ)) do
     local descriptor = FieldCellCache.find(index, matrixMemberId, position.x, position.z)
     if descriptor then
       result[#result + 1] = descriptor
