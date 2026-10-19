@@ -132,6 +132,7 @@ local MetatileBehavior = require("libs.hgss.src.world.MetatileBehavior")
 ---@field audio { updateField: fun(self: table<string, unknown>), play: fun(self: table<string, unknown>, idOrSymbol: string) }?
 ---@field initController table<string, unknown>|nil
 ---@field mapEntryStage FieldMapEntryStage? read-only view of mapEntryController state
+---@field mapEntryMode FieldMapEntryMode? read-only mode of the most recent map entry, kept after it completes
 ---@field mapEntryController FieldMapEntryController
 ---@field private fieldMoves FieldSession.FieldMoves? validated push/disembark port; absent sessions bump boulders
 ---@field private overworld table<string, unknown>|nil
@@ -156,6 +157,9 @@ local FieldSession = {}
 local function fieldSessionIndex(self, key)
   if key == "mapEntryStage" then
     return self.mapEntryController:currentStage()
+  end
+  if key == "mapEntryMode" then
+    return self.mapEntryController:lastEntryMode()
   end
   return FieldSession[key]
 end

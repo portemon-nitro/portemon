@@ -38,6 +38,7 @@ local FieldActorDraw = require("libs.hgss.src.presentation.FieldActorDraw")
 ---@field _lastPlayerSpriteId integer?
 ---@field _lastApricornAssetRevision integer?
 ---@field _pending FieldActorPendingStage?
+---@field _continuesWorld boolean whether the latest sync continues the presented world across a map rebind
 ---@field _actorRecords table[]?
 ---@field _actorDrawStorage FieldActorDrawStorage?
 local FieldActorPresentation = {}
@@ -56,6 +57,7 @@ function FieldActorPresentation.new(runtime, options)
     ),
     _presentationSpriteRefs = {},
     _pending = nil,
+    _continuesWorld = false,
     _lastActorManager = nil,
     _lastRuntimeMap = nil,
     _lastActorVisualRevision = nil,
@@ -116,8 +118,15 @@ function FieldActorPresentation:_rollbackStage()
   end
 end
 
+-- `continuesWorld` marks a rebind that keeps the presented world, such as a
+-- seamless connection whose neighbor actors were held and admitted before the
+-- crossing; only then may a changed map identity keep drawing and publish
+-- immediately. Any other rebind is a new world that earns admission anew.
+---@param continuesWorld boolean?
 ---@return boolean installed true once the desired set is fully admitted
-function FieldActorPresentation:sync()
+function FieldActorPresentation:sync(continuesWorld)
+  continuesWorld = continuesWorld == true
+  self._continuesWorld = continuesWorld
   local runtime = self.runtime
   local actors, runtimeMap, actorRevision, playerSpriteId, apricornAssetRevision = sampleDesired(runtime)
   if self:_isCommitted(actors, runtimeMap, actorRevision, playerSpriteId, apricornAssetRevision) then
@@ -135,7 +144,7 @@ function FieldActorPresentation:sync()
   local freshRebind = false
   if not sameStage then
     self:_rollbackStage()
-    freshRebind = self._lastRuntimeMap ~= nil and self._lastRuntimeMap ~= runtimeMap
+    freshRebind = not continuesWorld and self._lastRuntimeMap ~= nil and self._lastRuntimeMap ~= runtimeMap
     local neededSet = {}
     neededSet[playerSpriteId] = true
     actors:collectSpriteIds(neededSet)
@@ -274,7 +283,7 @@ function FieldActorPresentation:drawItems(alpha)
     local committed = self._pending == nil
       and self:_isCommitted(actors, runtimeMap, actorRevision, playerSpriteId, apricornAssetRevision)
     if not committed then
-      if self._lastRuntimeMap ~= runtimeMap then
+      if self._lastRuntimeMap ~= runtimeMap and not self._continuesWorld then
         for index = #records, 1, -1 do
           records[index] = nil
         end

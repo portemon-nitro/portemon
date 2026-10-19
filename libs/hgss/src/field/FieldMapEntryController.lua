@@ -32,6 +32,7 @@
 ---@field private autoAcknowledgePresentation boolean
 ---@field private stageName FieldMapEntryStage?
 ---@field private mode FieldMapEntryMode|nil
+---@field private lastMode FieldMapEntryMode|nil the mode of the most recent entry, kept after it completes
 ---@field private connectionArrivalPending boolean
 ---@field private prePresentationResume boolean
 local FieldMapEntryController = {}
@@ -68,6 +69,7 @@ function FieldMapEntryController.new(options)
     autoAcknowledgePresentation = options.autoAcknowledgePresentation,
     stageName = nil,
     mode = nil,
+    lastMode = nil,
     connectionArrivalPending = false,
     prePresentationResume = false,
   }, FieldMapEntryController)
@@ -79,9 +81,15 @@ function FieldMapEntryController:begin(mode)
   assert(type(self.enterMapActors) == "function", "map actor entry capability required")
   assert(self.initController and self.initController.startLifecycle, "map lifecycle controller required")
   self.mode = mode
+  self.lastMode = mode
   self.stageName = "transition"
   self.connectionArrivalPending = mode == "connection"
   self.prePresentationResume = false
+end
+
+---@return FieldMapEntryMode?
+function FieldMapEntryController:lastEntryMode()
+  return self.lastMode
 end
 
 ---@return FieldMapEntryStage?

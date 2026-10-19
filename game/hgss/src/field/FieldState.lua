@@ -308,7 +308,8 @@ function FieldState:update(dt)
   self:_advanceStarterPreparation()
   self:_syncStarterPresentationInput()
   self:_advanceEntryCover(dt)
-  self._actorDesiredReady = assert(self.actorPresentation, "field actor presentation is unavailable"):sync()
+  self._actorDesiredReady =
+    assert(self.actorPresentation, "field actor presentation is unavailable"):sync(self:_continuesWorld())
   self:_updateGameplayHold()
   self:_sampleOverlayFps(dt)
 end
@@ -441,10 +442,20 @@ function FieldState:_advanceEntryCover(dt)
   end
 end
 
+-- Whether the latest map entry was a seamless connection: the presented world
+-- continues across the crossing, so nothing is held or re-admitted for it.
+---@return boolean
+function FieldState:_continuesWorld()
+  local session = self.runtime ~= nil and self.runtime.session or nil
+  return session ~= nil and session.mapEntryMode == "connection"
+end
+
 -- Whether the current world is a new map that cannot be revealed yet: the
 -- map was never drawn successfully and either its actors have not entered
 -- or its desired sprite set is not admitted. An already presented same map
--- keeps rendering during later pending revisions.
+-- keeps rendering during later pending revisions. A seamless connection
+-- continues the presented world: its neighbor actors were held and admitted
+-- before the crossing, so it is never held.
 ---@return boolean
 function FieldState:_newWorldVisualHold()
   local runtime = self.runtime
@@ -456,6 +467,9 @@ function FieldState:_newWorldVisualHold()
     return false
   end
   if self._presentedRuntimeMap == currentMap then
+    return false
+  end
+  if self:_continuesWorld() then
     return false
   end
   local session = runtime.session

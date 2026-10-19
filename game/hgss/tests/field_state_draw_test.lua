@@ -2351,118 +2351,75 @@ function T.first_destination_frame_waits_for_the_complete_actor_set()
   end
 end
 
--- A seamless connection never reveals its new world before its actors have
--- entered and every required atlas is admitted: every pre-activation stage
--- and the delayed-atlas stall hold the world, the cover tracks the live
--- viewport, and no old-map actor ever reaches the new scene's draw.
-function T.seamless_connection_holds_the_new_world_until_actors_enter_and_admit()
+-- A seamless connection never leaves the world: the neighbor's actors are
+-- already held and admitted before the crossing, so the destination draws in
+-- its first frame under no cover, whatever entry stage its lifecycle is in. A
+-- neighbor actor whose atlas is still pending only delays that actor.
+function T.seamless_connection_keeps_the_world_drawn_through_its_entry()
   local cover, restoreCover = captureCover()
   local ok, err = pcall(function()
     local drawCalls, renderer = drawRecorder()
     local handles = gatedEntryState(renderer, {
       sprites = { 99, 34, 77, 78 },
+      records = { actorRecord("map:61:object:1", 34), actorRecord("map:62:object:7", 77) },
       lifecycles = { on_transition = true, on_resume = true },
     })
     local state, session, actors, runtime, assets = handles.state, handles.session, handles.actors, handles.runtime, handles.assets
     local environmentA = { id = "A" }
     runtime.runtimeMap.renderEnvironment = environmentA
-    session.mapEntryController:advance(1)
-    Assert.equal(session.mapEntryStage, "transition_running")
-    session.mapEntryController:advance(2)
-    Assert.equal(session.mapEntryStage, "actors")
-    session.mapEntryController:advance(3)
-    session.mapEntryController:advance(4)
-    session.mapEntryController:advance(5)
+    for tick = 1, 5 do
+      session.mapEntryController:advance(tick)
+    end
     Assert.equal(session.mapEntryStage, "await_presentation")
     state:update(0.016)
     state:update(0.016)
     state:draw()
     Assert.equal(#drawCalls, 1, "the first map presents normally before the connection")
-    Assert.isTrue(drawCalls[1].environment == environmentA, "the first frame carries the first map environment")
-    Assert.deepEqual(drawCalls[1].actorIds, { "field:player", "map:61:object:1", "map:61:object:2" })
-    Assert.equal(session.mapEntryStage, "resume")
+    Assert.deepEqual(drawCalls[1].actorIds, { "field:player", "map:61:object:1", "map:62:object:7" })
 
     local environmentB = { id = "B" }
-    actors.revision = actors.revision + 1
-    actors.spriteIds = { [77] = true }
-    actors.records = { actorRecord("map:62:object:7", 77) }
-    assets.pending[77] = true
     runtime.runtimeMap = { mapId = 62, sceneRuntime = gatedEntryScene(), renderEnvironment = environmentB }
     session.mapEntryController:begin("connection")
-    Assert.equal(session.mapEntryStage, "transition")
-    state:update(0.016)
-    state:draw()
-    Assert.equal(#drawCalls, 1, "a connection holds its world before actor entry")
-    Assert.equal(session.mapEntryStage, "transition")
-    Assert.equal(#cover.rectangles, 1, "the held connection paints an opaque cover")
-    local heldCover = cover.rectangles[1]
-    Assert.equal(heldCover.mode, "fill")
-    Assert.deepEqual({ heldCover.x, heldCover.y, heldCover.width, heldCover.height }, { 0, 0, 640, 480 })
-    session.mapEntryController:advance(1)
-    Assert.equal(session.mapEntryStage, "transition_running")
-    state:update(0.016)
-    state:draw()
-    Assert.equal(#drawCalls, 1, "the running transition holds the new world")
+    local expected = 1
+    for tick = 1, 3 do
+      state:update(0.016)
+      state:draw()
+      expected = expected + 1
+      Assert.equal(#drawCalls, expected, "the connection draws in every entry stage")
+      Assert.isTrue(drawCalls[expected].environment == environmentB, "the frame carries the new map environment")
+      Assert.deepEqual(drawCalls[expected].actorIds, { "field:player", "map:61:object:1", "map:62:object:7" })
+      session.mapEntryController:advance(tick)
+    end
+    Assert.equal(session.mapEntryStage, "ready")
     runtime.viewport:resize(800, 600)
     state:draw()
-    Assert.equal(#drawCalls, 1, "a resized stall still draws no world frame")
-    local resizedCover = cover.rectangles[#cover.rectangles]
-    Assert.equal(resizedCover.mode, "fill")
-    Assert.deepEqual(
-      { resizedCover.x, resizedCover.y, resizedCover.width, resizedCover.height },
-      { 0, 0, 800, 600 },
-      "the cover tracks the current viewport dimensions"
-    )
-    session.mapEntryController:advance(2)
-    Assert.equal(session.mapEntryStage, "actors")
-    state:update(0.016)
-    state:draw()
-    Assert.equal(#drawCalls, 1, "the actor stage holds the world while the atlas pends")
-    session.mapEntryController:advance(3)
-    Assert.equal(session.mapEntryStage, "ready")
-    state:update(0.016)
-    state:draw()
-    Assert.equal(#drawCalls, 1, "the ready stage still holds an unadmitted world")
-    for _, call in ipairs(drawCalls) do
-      Assert.isTrue(
-        call.environment ~= environmentB,
-        "no new-scene frame may render before activation and admission"
-      )
-    end
-    assets.pending[77] = nil
-    state:update(0.016)
-    state:draw()
-    Assert.equal(#drawCalls, 2, "the admitted connection draws in its next frame")
-    Assert.isTrue(drawCalls[2].environment == environmentB, "the admitted frame carries the new map environment")
-    Assert.deepEqual(drawCalls[2].actorIds, { "field:player", "map:62:object:7" })
-    Assert.equal(session.mapEntryStage, "ready")
-    for _, call in ipairs(drawCalls) do
-      if call.environment == environmentB then
-        for _, actorId in ipairs(call.actorIds) do
-          Assert.isTrue(
-            actorId ~= "map:61:object:1" and actorId ~= "map:61:object:2",
-            "no old-map actor reaches the new scene"
-          )
-        end
-      end
-    end
+    Assert.equal(#cover.rectangles, 0, "a connection never paints a world cover")
 
     local environmentC = { id = "C" }
     actors.revision = actors.revision + 1
-    actors.spriteIds = { [78] = true }
-    actors.records = { actorRecord("map:63:object:9", 78) }
+    actors.spriteIds[78] = true
+    actors.records = {
+      actorRecord("map:61:object:1", 34),
+      actorRecord("map:62:object:7", 77),
+      actorRecord("map:63:object:9", 78),
+    }
+    assets.pending[78] = true
     runtime.runtimeMap = { mapId = 63, sceneRuntime = gatedEntryScene(), renderEnvironment = environmentC }
     session.mapEntryController:begin("connection")
-    session.mapEntryController:advance(1)
-    session.mapEntryController:advance(2)
-    session.mapEntryController:advance(3)
-    Assert.equal(session.mapEntryStage, "ready")
-    state:update(0.016)
     state:update(0.016)
     state:draw()
-    Assert.equal(#drawCalls, 3, "a warmed connection draws without an extra hold")
-    Assert.isTrue(drawCalls[3].environment == environmentC, "the warmed frame carries the third map environment")
-    Assert.deepEqual(drawCalls[3].actorIds, { "field:player", "map:63:object:9" })
+    local last = drawCalls[#drawCalls]
+    Assert.isTrue(last.environment == environmentC, "an unadmitted neighbor atlas does not hold the world")
+    Assert.deepEqual(last.actorIds, { "field:player", "map:61:object:1", "map:62:object:7" })
+    assets.pending[78] = nil
+    state:update(0.016)
+    state:draw()
+    Assert.deepEqual(
+      drawCalls[#drawCalls].actorIds,
+      { "field:player", "map:61:object:1", "map:62:object:7", "map:63:object:9" },
+      "the late actor joins once its atlas is admitted"
+    )
+    Assert.equal(#cover.rectangles, 0)
   end)
   restoreCover()
   if not ok then
@@ -2547,11 +2504,11 @@ function T.presented_world_keeps_rendering_while_new_destination_holds_gameplay_
     actors.records = { actorRecord("map:62:object:7", 78) }
     assets.pending[78] = true
     runtime.runtimeMap = { mapId = 62, sceneRuntime = gatedEntryScene(), renderEnvironment = environmentB }
-    session.mapEntryController:begin("connection")
-    session.mapEntryController:advance(1)
-    session.mapEntryController:advance(2)
-    session.mapEntryController:advance(3)
-    Assert.equal(session.mapEntryStage, "ready")
+    session.mapEntryController:begin("full")
+    for tick = 1, 5 do
+      session.mapEntryController:advance(tick)
+    end
+    Assert.equal(session.mapEntryStage, "await_presentation")
     state:update(0.016)
     Assert.equal(input:heldDirection(), nil, "entering the visual hold drops stale held gameplay input")
     state:draw()
