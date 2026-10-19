@@ -371,6 +371,78 @@ local function uploadStaged(graphics, key, path, bytes)
   return nil, "battle image " .. tostring(key) .. " upload failed: " .. tostring(path) .. ": " .. cause
 end
 
+-- Uploads one staged effect texture descriptor through the host graphics
+-- namespace: validate the exact typed RGBA payload dimensions and byte
+-- length, expand the bytes into one nearest-filtered image, and answer
+-- the owned handle. Anything short of an exact payload, a missing
+-- graphics namespace, or a driver failure answers a terminal failure
+-- naming the effect, resource, and payload path so the caller fails
+-- closed instead of holding forever on a deterministic corrupt image.
+---@param graphics table<string, unknown>? host graphics namespace enabling GPU upload
+---@param effectKey string selected semantic effect key behind diagnostics
+---@param resourceKey string semantic texture resource key behind diagnostics
+---@param path string cache-relative staged payload path behind diagnostics
+---@param payload table<string, unknown> staged typed texture payload under upload
+---@return table<string, unknown>? owned image handle, nil on terminal failure
+---@return string? terminal failure naming effect, resource, and path, nil on success
+local function uploadEffectTexture(graphics, effectKey, resourceKey, path, payload)
+  local function invalid(cause)
+    return nil,
+      "battle effect image "
+        .. tostring(resourceKey)
+        .. " failed for effect "
+        .. tostring(effectKey)
+        .. ": "
+        .. tostring(path)
+        .. ": "
+        .. tostring(cause)
+  end
+  local width = type(payload) == "table" and payload.width or nil
+  local height = type(payload) == "table" and payload.height or nil
+  local rgba = type(payload) == "table" and payload.rgba8888 or nil
+  if
+    type(width) ~= "number"
+    or width % 1 ~= 0
+    or width < 1
+    or type(height) ~= "number"
+    or height % 1 ~= 0
+    or height < 1
+    or type(rgba) ~= "string"
+    or #rgba ~= width * height * 4
+  then
+    return invalid("staged texture has no exact dimensions and bytes")
+  end
+  if graphics == nil then
+    return invalid("no graphics namespace stages effect images")
+  end
+  local textureWidth = width --[[@as integer]]
+  local textureHeight = height --[[@as integer]]
+  local textureBytes = rgba --[[@as string]]
+  local ok, imageOrErr = pcall(function()
+    local pixels = love.image.newImageData(textureWidth, textureHeight)
+    local at = 1
+    for y = 0, textureHeight - 1 do
+      for x = 0, textureWidth - 1 do
+        local red, green, blue, alpha = string.byte(textureBytes, at, at + 3)
+        assert(
+          red ~= nil and green ~= nil and blue ~= nil and alpha ~= nil,
+          "the staged texture bytes cover every pixel"
+        )
+        pixels:setPixel(x, y, red / 255, green / 255, blue / 255, alpha / 255)
+        at = at + 4
+      end
+    end
+    local uploaded = graphics.newImage(pixels)
+    assert(uploaded ~= nil, "the graphics driver handed out no image")
+    uploaded:setFilter("nearest", "nearest")
+    return uploaded
+  end)
+  if ok and imageOrErr ~= nil then
+    return imageOrErr
+  end
+  return invalid(ok and "empty image handle" or tostring(imageOrErr))
+end
+
 -- Uploads one staged portrait cell for a canonical portrait selector:
 -- decode the owning atlas page, crop exactly the staged cell, then
 -- build and configure the owned image. Success answers the owned
@@ -723,6 +795,7 @@ function FieldBattlePresentation:_preparationServices()
   local stagedSceneLayer = nil
   local backgroundPixels = nil
   local backgroundImage = nil
+  local effectRefs = {} ---@type table<string, integer> outstanding texture leases by semantic resource key
   local services = {}
   function services.prepare(demand)
     if type(demand) ~= "table" then
@@ -879,6 +952,12 @@ function FieldBattlePresentation:_preparationServices()
     -- legitimate nils with no error.
     local sceneKey = tostring(key):match("^scene:(.+)$")
     if sceneKey ~= nil then
+      -- A scene key without staged naming resolves to nothing, like any
+      -- unknown decorative key: path construction below asserts staged
+      -- naming, and a probe or foreign key must poll instead of raising.
+      if BattlePresentationCache.parseSceneKey(sceneKey) == nil then
+        return nil
+      end
       local path = BattlePresentationCache.sceneImagePath(sceneKey)
       -- Manifest-declared battle art borrows the shared owner when the
       -- host provides one; without a pool the envelope uploads and owns
@@ -973,6 +1052,150 @@ function FieldBattlePresentation:_preparationServices()
       backgroundPixels = nil
     end
     images[key] = nil
+  end
+  -- Demands one lazily staged battle effect through the borrowed
+  -- selected-game host at the current generation: the exact flat key is
+  -- requested, then the staged record, marker, and full dependency
+  -- closure must validate before readiness. Pending stays a bare false
+  -- wait; worker, schema, and key-mismatch failures are terminal with
+  -- the effect key and cause. Nothing compiles or parses source here.
+  function services.requestEffect(key)
+    if type(key) ~= "string" or key == "" or key:find("/", 1, true) ~= nil then
+      return nil, "unknown battle effect key: " .. tostring(key)
+    end
+    if envelope._disposed then
+      return nil, "battle effect " .. key .. " is not staged: the presented battle envelope is disposed"
+    end
+    local host = envelope._derivedAssets
+    local requestBattleEffect = type(host) == "table" and host.requestBattleEffect or nil
+    if type(requestBattleEffect) == "function" then
+      local ready, failure = requestBattleEffect(key, "required")
+      if failure ~= nil then
+        return nil, "battle effect " .. key .. " failed: " .. tostring(failure)
+      end
+      if ready ~= true then
+        return false
+      end
+    end
+    if cacheFs:loadLua(BattlePresentationCache.effectPath(key)) == nil then
+      return false
+    end
+    local record, recordErr = BattlePresentationCache.loadEffect(cacheFs, key)
+    if record == nil then
+      return nil, tostring(recordErr or ("battle effect " .. key .. " is not staged"))
+    end
+    if not BattlePresentationCache.isEffectReady(cacheFs, { key = key, resources = record.dependencies }) then
+      return false
+    end
+    return true
+  end
+  -- Loads the exact staged effect record once ready: schema and key
+  -- identity validate through the shared cache loader. A missing
+  -- record never fabricates a fallback effect.
+  function services.loadEffect(key)
+    if type(key) ~= "string" or key == "" or key:find("/", 1, true) ~= nil then
+      return nil, "unknown battle effect key: " .. tostring(key)
+    end
+    if envelope._disposed then
+      return nil, "battle effect " .. key .. " is not staged: the presented battle envelope is disposed"
+    end
+    return BattlePresentationCache.loadEffect(cacheFs, key)
+  end
+  -- Resolves one dependency of a loaded effect into a semantic lease.
+  -- Texture descriptors validate exact dimensions and bytes, upload
+  -- once through the host graphics namespace, and share the one owned
+  -- image across duplicate resolves; other kinds arrive as immutable
+  -- typed descriptors with no pixels. Malformed payloads and driver
+  -- failures are terminal naming effect, resource, and path; nothing
+  -- is cached on failure so a retry never observes a half upload.
+  function services.resolveEffectResource(effect, resourceKey)
+    if envelope._disposed then
+      return nil, "battle effect resources are released: the presented battle envelope is disposed"
+    end
+    if type(effect) ~= "table" or type(effect.key) ~= "string" or effect.key == "" then
+      return nil, "effect leases resolve from a loaded effect"
+    end
+    local effectKey = effect.key --[[@as string]]
+    if type(resourceKey) ~= "string" or resourceKey == "" then
+      return nil, "unknown battle effect resource " .. tostring(resourceKey) .. " for effect " .. effectKey
+    end
+    local resources = effect.resources
+    local descriptor = type(resources) == "table" and resources[resourceKey] or nil
+    if type(descriptor) ~= "table" then
+      return nil, "unknown battle effect resource " .. tostring(resourceKey) .. " for effect " .. effectKey
+    end
+    if descriptor.kind ~= "texture" then
+      if type(descriptor.payload) ~= "string" or not cacheFs:exists(descriptor.payload, "file") then
+        return nil, "battle effect resource " .. tostring(resourceKey) .. " is not staged for effect " .. effectKey
+      end
+      return {
+        key = resourceKey,
+        kind = descriptor.kind,
+        payload = descriptor.payload,
+        contentIdentity = descriptor.contentIdentity,
+      }
+    end
+    local payload = cacheFs:loadLua(descriptor.payload)
+    if type(payload) ~= "table" then
+      return nil,
+        "battle effect image " .. tostring(resourceKey) .. " failed for effect " .. effectKey .. ": " .. tostring(
+          descriptor.payload
+        ) .. ": staged texture is not staged"
+    end
+    -- Without a graphics namespace there is no GPU to upload through:
+    -- the validated staged payload still answers a handle-less descriptor
+    -- lease (like every non-texture kind), so headless presentation can
+    -- complete its audio and timing contract without inventing pixels.
+    local image = images[resourceKey]
+    if image == nil and graphics ~= nil then
+      local uploaded, failure = uploadEffectTexture(
+        graphics,
+        effectKey,
+        resourceKey,
+        descriptor.payload,
+        payload --[[@as table<string, unknown>]]
+      )
+      if uploaded == nil then
+        assert(type(failure) == "string", "effect upload failures carry their reason")
+        return nil, failure
+      end
+      image = uploaded
+      images[resourceKey] = image
+    end
+    effectRefs[resourceKey] = (effectRefs[resourceKey] or 0) + 1
+    local staged = payload --[[@as table<string, unknown>]]
+    return {
+      key = resourceKey,
+      kind = "texture",
+      width = staged.width,
+      height = staged.height,
+      rgba8888 = staged.rgba8888,
+      payload = descriptor.payload,
+      contentIdentity = descriptor.contentIdentity,
+      handle = image,
+    }
+  end
+  -- Returns one effect lease: texture refcounts drop the shared image
+  -- at the last release, other kinds validate only. A release the
+  -- holder already returned reports its double release instead of
+  -- freeing a foreign handle.
+  function services.releaseEffectResource(lease)
+    if type(lease) ~= "table" or type(lease.key) ~= "string" or lease.key == "" then
+      return nil, "effect releases name their lease"
+    end
+    local resourceKey = lease.key --[[@as string]]
+    if lease.kind ~= nil and lease.kind ~= "texture" then
+      return true
+    end
+    local left = (effectRefs[resourceKey] or 0) - 1
+    if left < 0 then
+      return nil, "effect lease " .. resourceKey .. " is already released"
+    end
+    effectRefs[resourceKey] = left
+    if left == 0 then
+      images[resourceKey] = nil
+    end
+    return true
   end
   return services
 end

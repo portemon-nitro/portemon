@@ -8,6 +8,7 @@
 
 local Assert = require("tests.support.Assert")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
+local BattlePresentationManifestFixture = require("tests.support.BattlePresentationManifestFixture")
 local BattlePresentationSchema = require("libs.assets.src.battle.BattlePresentationSchema")
 local BattlePresentationModel = require("game.hgss.src.battle.BattlePresentationModel")
 local CacheFs = require("libs.storage.src.CacheFs")

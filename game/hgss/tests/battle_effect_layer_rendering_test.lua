@@ -325,4 +325,120 @@ function T.callback_program_mutates_scene_and_completes_at_its_source_boundary()
   player:dispose()
 end
 
+local function stagedEffectHolder(launchId, staging)
+  local BattlePresentationAssets = require("game.hgss.src.battle.BattlePresentationAssets")
+  local BattlePresentationManifestFixture = require("tests.support.BattlePresentationManifestFixture")
+  return BattlePresentationAssets.new({
+    assets = staging.services,
+    launchId = launchId,
+    sceneKey = "probe/plain/day",
+    shadowRegions = BattlePresentationManifestFixture.manifest().pictures.shadow.regions,
+  })
+end
+
+local function stagedSparkEffect(staging, key, width, height)
+  local EffectStagingFixture = require("tests.support.EffectStagingFixture")
+  local Hashing = require("romdump.src.digest.Hashing")
+  local textureBytes = EffectStagingFixture.rgba(width, height)
+  local textureIdentity = Hashing.sha1hex(textureBytes)
+  staging:stageEffect(
+    key,
+    EffectStagingFixture.effectRecord(key, {
+      { key = "probe-spark", kind = "texture", payload = "effects/probe-spark.lua", contentIdentity = textureIdentity },
+    }),
+    { ["effects/probe-spark.lua"] = { width = width, height = height, rgba8888 = textureBytes } }
+  )
+  return textureBytes
+end
+
+local function effectDetailView(scene)
+  return {
+    battlers = {},
+    effectInstances = scene:effectViews(),
+    hudPatchSpans = {},
+    hudSections = {},
+  }
+end
+
+local function effectDetailResources(graphics, assets)
+  return {
+    graphics = graphics,
+    text = {},
+    windows = {},
+    assets = assets,
+    frameKey = "default",
+    sceneImageKey = "scene:probe",
+  }
+end
+
+-- A staged effect texture reaches the production renderer through the
+-- holder: the admitted picture draws through the real scene and render
+-- boundary instead of failing on an unknown key.
+function T.staged_effect_texture_paints_through_production_renderer()
+  local EffectStagingFixture = require("tests.support.EffectStagingFixture")
+  local FakeGraphics = require("tests.support.FakeGraphics")
+  local BattleRenderer = require("game.hgss.src.battle.BattleRenderer")
+  local staging = EffectStagingFixture.new({ launchId = "probe-layer-paint" })
+  stagedSparkEffect(staging, "TACKLE", 4, 4)
+  local assets = stagedEffectHolder("probe-layer-paint", staging)
+  Assert.equal(assets:demandEffect("TACKLE"), true, "the staged closure reads ready")
+  local effect = assets:loadEffect("TACKLE")
+  Assert.notNil(effect, "the ready effect loads before painting")
+  local lease = assets:resolveEffectResource(effect, "probe-spark")
+  Assert.notNil(lease, "the texture admits before painting")
+  Assert.notNil(assets:drawable("probe-spark"), "the admitted texture resolves to a drawable")
+  local scene = sceneWithPair()
+  local slot = scene:allocEffect("layer-paint-probe")
+  scene:setEffectPicture(slot.id, {
+    assetKey = "probe-spark",
+    selector = "spark",
+    centerX = 64,
+    centerY = 48,
+    zCenter = 0,
+    width = 4,
+    height = 4,
+    alpha = 1,
+  })
+  local graphics = FakeGraphics.new()
+  BattleRenderer.drawPane(effectDetailResources(graphics, assets), effectDetailView(scene), "detail", {})
+  Assert.isTrue(#graphics.draws >= 1, "the staged effect picture composes through the production renderer")
+  assets:dispose()
+end
+
+-- An effect picture whose asset key has no staged drawable fails loudly
+-- at the production render boundary: no substitute image is ever drawn.
+function T.unknown_effect_image_keys_fail_loudly_without_substitutes()
+  local EffectStagingFixture = require("tests.support.EffectStagingFixture")
+  local FakeGraphics = require("tests.support.FakeGraphics")
+  local BattleRenderer = require("game.hgss.src.battle.BattleRenderer")
+  local staging = EffectStagingFixture.new({ launchId = "probe-layer-unknown" })
+  stagedSparkEffect(staging, "TACKLE", 4, 4)
+  local assets = stagedEffectHolder("probe-layer-unknown", staging)
+  Assert.equal(assets:demandEffect("TACKLE"), true, "the staged closure reads ready")
+  Assert.isNil(assets:drawable("battle/effect-background/blend"), "invented proxy keys never resolve")
+  Assert.isNil(assets:drawable("battle/pokemon-picture/reveal"), "invented reveal keys never resolve")
+  local scene = sceneWithPair()
+  local slot = scene:allocEffect("layer-unknown-probe")
+  scene:setEffectPicture(slot.id, {
+    assetKey = "battle/effect-background/blend",
+    selector = "blend-transition",
+    centerX = 128,
+    centerY = 80,
+    zCenter = 0,
+    width = 4,
+    height = 4,
+    alpha = 1,
+  })
+  local graphics = FakeGraphics.new()
+  local failure = Assert.throws(function()
+    BattleRenderer.drawPane(effectDetailResources(graphics, assets), effectDetailView(scene), "detail", {})
+  end, "an unstaged effect picture fails instead of drawing a substitute")
+  Assert.isTrue(
+    tostring(failure):find("transient effect drawables", 1, true) ~= nil,
+    "the loud failure names the render boundary: " .. tostring(failure)
+  )
+  Assert.equal(#graphics.draws, 0, "the rejected picture draws nothing")
+  assets:dispose()
+end
+
 return { tests = T }

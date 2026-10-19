@@ -233,4 +233,40 @@ function T.nested_task_closure_stages_before_ready_while_unrelated_effects_stay_
   Assert.isFalse(Cache.isEffectReady(cache, unrelated), "an unrelated effect stays lazy beside staged work")
 end
 
+-- The selected-game effect host keeps its flat-key contract and one
+-- selector identity per demanded effect: non-flat keys are rejected
+-- loudly instead of pending silently, and repeated demands never
+-- register duplicate or sibling jobs.
+function T.effect_demands_keep_flat_keys_and_single_selector_identities()
+  local service, provisioner = selectGame()
+  local epoch = assert(provisioner.epoch, "selection borrows an epoch")
+  local gameHost = provisioner:gameHost()
+  local slashedOk = pcall(function()
+    return gameHost.requestBattleEffect("HAS/SLASH", "required")
+  end)
+  Assert.isFalse(slashedOk, "a non-flat effect key never reaches the worker queue")
+  local emptyOk = pcall(function()
+    return gameHost.requestBattleEffect("", "required")
+  end)
+  Assert.isFalse(emptyOk, "an empty effect key never reaches the worker queue")
+  gameHost.requestBattleEffect("synthetic-probe", "required")
+  gameHost.requestBattleEffect("synthetic-probe", "required")
+  gameHost.requestBattleEffect("synthetic-other", "required")
+  local selectors = {}
+  for key in pairs(service._byKey) do
+    if tostring(key):find(":battle-effect:", 1, true) ~= nil then
+      selectors[#selectors + 1] = key
+    end
+  end
+  table.sort(selectors)
+  Assert.equal(#selectors, 2, "two demanded effects register exactly two selector identities")
+  Assert.isTrue(
+    selectors[1] == tostring(epoch) .. ":battle-effect:synthetic-other"
+      and selectors[2] == tostring(epoch) .. ":battle-effect:synthetic-probe",
+    "each selector names exactly its demanded flat key"
+  )
+  provisioner:dispose()
+  service:shutdown()
+end
+
 return { tests = T }

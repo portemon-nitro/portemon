@@ -1509,4 +1509,302 @@ function T.unstaged_and_undecodable_pages_fail_closed_without_standins()
   stagedEnvelope:dispose()
 end
 
+-- Only the selected effect is requested and consumed through the real
+-- preparation services: a recording derived host plus a versioned cache
+-- holding a synthetic schema-valid staged effect. The demand stays pending
+-- while the marker or any dependency payload is missing, turns ready only
+-- with the complete staged closure, and never enqueues a sibling effect.
+local function recordingEffectHost()
+  local host = { asks = {}, answers = {} }
+  local derived = {}
+  function derived.requestBattleEffect(key, urgency)
+    host.asks[#host.asks + 1] = { key = key, urgency = urgency }
+    local answer = host.answers[key]
+    if type(answer) == "table" and answer.failure ~= nil then
+      return false, answer.failure
+    end
+    if answer == "ready" then
+      return true
+    end
+    return nil
+  end
+  host.derivedAssets = derived
+  return host
+end
+
+local function effectStagingEnvelope(cache, host)
+  local FieldBattlePresentation = require("game.hgss.src.field.FieldBattlePresentation")
+  local ScreenTopology = require("libs.ui.src.ScreenTopology")
+  local text = {}
+  function text.measure(content)
+    return { width = 8 * #tostring(content), height = 16 }
+  end
+  function text.drawText(_) end
+  local windows = {}
+  function windows.drawWindow(_, _, _) end
+  return FieldBattlePresentation.new({
+    cacheFs = cache,
+    windows = windows,
+    text = text,
+    measureDisplay = function()
+      return {
+        width = 256,
+        height = 384,
+        topology = ScreenTopology.dualDisplay(
+          { id = "main", rect = { x = 0, y = 0, width = 256, height = 192 }, touch = false, role = "world" },
+          { id = "lower", rect = { x = 0, y = 192, width = 256, height = 192 }, touch = true, role = "auxiliary" }
+        ),
+        pixelRatio = 1,
+        signature = "effect-staging:dual",
+      }
+    end,
+    derivedAssets = host.derivedAssets,
+  })
+end
+
+function T.selected_effect_demand_reaches_ready_only_through_staged_closure()
+  local FakeCache = require("tests.support.FakeCache")
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
+  local EffectStagingFixture = require("tests.support.EffectStagingFixture")
+  local Hashing = require("romdump.src.digest.Hashing")
+  local cache = CacheFs.forVersion("probe-effect-staging", FakeCache.new())
+  local host = recordingEffectHost()
+  local envelope = effectStagingEnvelope(cache, host)
+  local services = envelope:_preparationServices()
+  local textureBytes = EffectStagingFixture.rgba(4, 4)
+  local textureIdentity = Hashing.sha1hex(textureBytes)
+  local texturePath = BattlePresentationCache.globalResourcePath("effect/content/" .. textureIdentity)
+  local record = EffectStagingFixture.effectRecord("TACKLE", {
+    { key = "probe-spark", kind = "texture", payload = texturePath, contentIdentity = textureIdentity },
+  })
+  cache:writeLua(BattlePresentationCache.effectPath("TACKLE"), record)
+  local owned = BattlePresentationAssets.new({
+    assets = services,
+    launchId = "probe-staging",
+    sceneKey = "probe/plain/day",
+    shadowRegions = SHADOW_REGIONS,
+  })
+  Assert.equal(owned:demandEffect("TACKLE"), false, "the unstaged effect polls pending without failing")
+  host.answers["TACKLE"] = "ready"
+  Assert.equal(owned:demandEffect("TACKLE"), false, "a ready worker without marker and payloads stays pending")
+  cache:write(BattlePresentationCache.effectMarkerPath("TACKLE"), "probe-marker")
+  Assert.equal(owned:demandEffect("TACKLE"), false, "a marker without dependency payloads stays pending")
+  cache:writeLua(texturePath, { width = 4, height = 4, rgba8888 = textureBytes })
+  Assert.equal(owned:demandEffect("TACKLE"), true, "the closed staged effect reads ready")
+  for _, ask in ipairs(host.asks) do
+    Assert.equal(ask.key, "TACKLE", "every host request names the selected effect, never a sibling")
+  end
+  Assert.isTrue(#host.asks >= 1, "the selected effect is actually requested through the host")
+  local effect = owned:loadEffect("TACKLE")
+  Assert.notNil(effect, "the ready effect loads")
+  Assert.equal(effect.key, "TACKLE", "the loaded record names the selected effect")
+  local missing, missingErr = owned:loadEffect("SPLASH")
+  Assert.isNil(missing, "an undemanded effect never loads a guess")
+  Assert.isTrue(type(missingErr) == "string" and missingErr ~= "", "the undemanded load fails with context")
+  local slashed, slashedErr = owned:demandEffect("HAS/SLASH")
+  Assert.isNil(slashed, "a non-flat effect key never reads ready")
+  Assert.isTrue(type(slashedErr) == "string" and slashedErr ~= "", "the non-flat key fails with context")
+  owned:dispose()
+  envelope:dispose()
+end
+
+-- An unconfigured production effect service fails loudly when used: no
+-- fake ready value, no silent pending, no guessed record or lease.
+function T.unconfigured_effect_service_fails_instead_of_reporting_ready()
+  local owned = holder(nil, stubAssets({}))
+  local ready, readyErr = owned:demandEffect("TACKLE")
+  Assert.isNil(ready, "an unconfigured effect service never reports ready")
+  Assert.isTrue(type(readyErr) == "string" and readyErr ~= "", "the unconfigured demand fails with context")
+  local record, recordErr = owned:loadEffect("TACKLE")
+  Assert.isNil(record, "nothing loads without a configured effect service")
+  Assert.isTrue(type(recordErr) == "string" and recordErr ~= "", "the unconfigured load fails with context")
+  local lease, leaseErr = owned:resolveEffectResource({ key = "TACKLE" }, "probe-spark")
+  Assert.isNil(lease, "nothing resolves without a configured effect service")
+  Assert.isTrue(type(leaseErr) == "string" and leaseErr ~= "", "the unconfigured resolve fails with context")
+  owned:dispose()
+end
+
+-- Two overlapping occurrences share one immutable texture: one cancel
+-- never releases the shared handle early, the last release withdraws it,
+-- launch disposal frees it exactly once, and a stale resolve after
+-- disposal publishes nothing.
+function T.overlapping_effect_leases_share_one_handle_and_release_exactly_once()
+  local EffectStagingFixture = require("tests.support.EffectStagingFixture")
+  local Hashing = require("romdump.src.digest.Hashing")
+  local staging = EffectStagingFixture.new({ launchId = "probe-overlap" })
+  local textureBytes = EffectStagingFixture.rgba(4, 4)
+  local textureIdentity = Hashing.sha1hex(textureBytes)
+  staging:stageEffect(
+    "TACKLE",
+    EffectStagingFixture.effectRecord("TACKLE", {
+      { key = "probe-spark", kind = "texture", payload = "effects/probe-spark.lua", contentIdentity = textureIdentity },
+    }),
+    { ["effects/probe-spark.lua"] = { width = 4, height = 4, rgba8888 = textureBytes } }
+  )
+  local owned = BattlePresentationAssets.new({
+    assets = staging.services,
+    launchId = "probe-overlap",
+    sceneKey = "probe/plain/day",
+    shadowRegions = SHADOW_REGIONS,
+  })
+  Assert.equal(owned:demandEffect("TACKLE"), true, "the staged closure reads ready")
+  local effect = owned:loadEffect("TACKLE")
+  Assert.notNil(effect, "the ready effect loads before resolving")
+  local first = owned:resolveEffectResource(effect, "probe-spark")
+  Assert.notNil(first, "the first occurrence resolves its texture")
+  Assert.equal(first.width, 4, "the texture lease carries its staged width")
+  Assert.equal(first.height, 4, "the texture lease carries its staged height")
+  Assert.equal(first.rgba8888, textureBytes, "the texture lease shares its exact staged bytes")
+  local second = owned:resolveEffectResource(effect, "probe-spark")
+  Assert.notNil(second, "the overlapping occurrence resolves the same texture")
+  Assert.equal(staging.uploads, 1, "duplicate semantic requests upload once and share")
+  Assert.notNil(owned:drawable("probe-spark"), "the shared texture resolves through drawables")
+  Assert.isTrue(owned:drawable("probe-spark") == owned:drawable("probe-spark"), "drawables stay stable")
+  owned:releaseEffectResource(first)
+  Assert.notNil(owned:drawable("probe-spark"), "one cancel never releases the shared texture early")
+  owned:releaseEffectResource(second)
+  Assert.isNil(owned:drawable("probe-spark"), "only the last release withdraws the shared texture")
+  owned:dispose()
+  local stale, staleErr = owned:resolveEffectResource(effect, "probe-spark")
+  Assert.isNil(stale, "a stale resolve after disposal publishes nothing")
+  Assert.isTrue(type(staleErr) == "string" and staleErr ~= "", "the stale resolve names its disposal")
+  Assert.equal(staging.drops["probe-spark"], 1, "the shared handle frees exactly once")
+  owned:dispose()
+  Assert.equal(staging.drops["probe-spark"], 1, "a second disposal never frees again")
+end
+
+-- A texture that fails upload after an earlier success is terminal with
+-- launch, effect, and resource context: previously acquired handles
+-- release once, the failure replays identically instead of hanging as
+-- pending, and the failed upload is never retried.
+function T.effect_upload_failure_releases_acquired_handles_and_stays_failed()
+  local EffectStagingFixture = require("tests.support.EffectStagingFixture")
+  local Hashing = require("romdump.src.digest.Hashing")
+  local staging = EffectStagingFixture.new({ launchId = "probe-upload-failure" })
+  local firstBytes = EffectStagingFixture.rgba(4, 4)
+  local secondBytes = EffectStagingFixture.rgba(2, 2)
+  local firstIdentity = Hashing.sha1hex(firstBytes)
+  local secondIdentity = Hashing.sha1hex(secondBytes)
+  staging:stageEffect(
+    "TACKLE",
+    EffectStagingFixture.effectRecord("TACKLE", {
+      { key = "probe-first", kind = "texture", payload = "effects/probe-first.lua", contentIdentity = firstIdentity },
+      {
+        key = "probe-second",
+        kind = "texture",
+        payload = "effects/probe-second.lua",
+        contentIdentity = secondIdentity,
+      },
+    }),
+    {
+      ["effects/probe-first.lua"] = { width = 4, height = 4, rgba8888 = firstBytes },
+      ["effects/probe-second.lua"] = { width = 2, height = 2, rgba8888 = secondBytes },
+    }
+  )
+  staging:failUploadFor("probe-second", "probe decode boom")
+  local owned = BattlePresentationAssets.new({
+    assets = staging.services,
+    launchId = "probe-upload-failure",
+    sceneKey = "probe/plain/day",
+    shadowRegions = SHADOW_REGIONS,
+  })
+  Assert.equal(owned:demandEffect("TACKLE"), true, "both payloads staged, so the effect reads ready")
+  local effect = owned:loadEffect("TACKLE")
+  Assert.notNil(effect, "the ready effect loads before resolving")
+  Assert.notNil(owned:resolveEffectResource(effect, "probe-first"), "the first texture resolves")
+  local lease, failure = owned:resolveEffectResource(effect, "probe-second")
+  Assert.isNil(lease, "the failed upload hands out no image")
+  Assert.isTrue(type(failure) == "string" and failure ~= "", "the failed upload is terminal with context")
+  local reason = failure --[[@as string]]
+  Assert.isTrue(reason:find("probe-second", 1, true) ~= nil, "the failure names its resource: " .. reason)
+  Assert.isTrue(reason:find("TACKLE", 1, true) ~= nil, "the failure names its effect: " .. reason)
+  Assert.isTrue(
+    reason:find("probe-upload-failure", 1, true) ~= nil,
+    "the failure names its launch: " .. reason
+  )
+  Assert.equal(staging.drops["probe-first"], 1, "handles acquired before the failure release once")
+  Assert.isNil(owned:drawable("probe-first"), "the rolled-back texture hands out nothing")
+  local again, againErr = owned:demandEffect("TACKLE")
+  Assert.isNil(again, "the failed effect never reads ready again")
+  Assert.equal(againErr, reason, "the terminal failure replays identically instead of hanging pending")
+  local third, thirdErr = owned:demandEffect("TACKLE")
+  Assert.isNil(third, "the failed effect stays failed across polls")
+  Assert.equal(thirdErr, reason, "no held queue loops forever")
+  owned:dispose()
+  Assert.equal(staging.drops["probe-first"], 1, "disposal never frees the rolled-back handle twice")
+  Assert.isNil(staging.drops["probe-second"], "the never-uploaded texture never releases")
+end
+
+-- Readiness probes never instantiate images: repeated pending and ready
+-- demands plus loads create nothing; only admission uploads.
+function T.readiness_probes_create_no_images()
+  local EffectStagingFixture = require("tests.support.EffectStagingFixture")
+  local Hashing = require("romdump.src.digest.Hashing")
+  local staging = EffectStagingFixture.new({ launchId = "probe-no-upload" })
+  local owned = BattlePresentationAssets.new({
+    assets = staging.services,
+    launchId = "probe-no-upload",
+    sceneKey = "probe/plain/day",
+    shadowRegions = SHADOW_REGIONS,
+  })
+  Assert.equal(owned:demandEffect("TACKLE"), false, "the unstaged effect polls pending")
+  Assert.equal(owned:demandEffect("TACKLE"), false, "repeated probes poll without uploading")
+  local missing, missingErr = owned:loadEffect("TACKLE")
+  Assert.isNil(missing, "nothing loads before readiness")
+  Assert.isTrue(type(missingErr) == "string" and missingErr ~= "", "the early load fails with context")
+  Assert.equal(staging.uploads, 0, "pending probes create no images")
+  local textureBytes = EffectStagingFixture.rgba(4, 4)
+  local textureIdentity = Hashing.sha1hex(textureBytes)
+  staging:stageEffect(
+    "TACKLE",
+    EffectStagingFixture.effectRecord("TACKLE", {
+      { key = "probe-spark", kind = "texture", payload = "effects/probe-spark.lua", contentIdentity = textureIdentity },
+    }),
+    { ["effects/probe-spark.lua"] = { width = 4, height = 4, rgba8888 = textureBytes } }
+  )
+  Assert.equal(owned:demandEffect("TACKLE"), true, "the staged effect reads ready")
+  Assert.equal(staging.uploads, 0, "a ready answer still creates no images")
+  local effect = owned:loadEffect("TACKLE")
+  Assert.notNil(effect, "the ready effect loads")
+  Assert.equal(staging.uploads, 0, "loads create no images")
+  Assert.notNil(owned:resolveEffectResource(effect, "probe-spark"), "admission resolves the texture")
+  Assert.equal(staging.uploads, 1, "only admission uploads")
+  owned:dispose()
+end
+
+-- A source-only effect with sound but no texture is ready without dummy
+-- pixels: the sound descriptor arrives as an immutable lease, never an
+-- invented image.
+function T.sound_only_effect_readies_without_texture()
+  local EffectStagingFixture = require("tests.support.EffectStagingFixture")
+  local Hashing = require("romdump.src.digest.Hashing")
+  local staging = EffectStagingFixture.new({ launchId = "probe-audio-only" })
+  local cryIdentity = Hashing.sha1hex("probe-effect-cry")
+  staging:stageEffect(
+    "GROWL",
+    EffectStagingFixture.effectRecord("GROWL", {
+      { key = "probe-cry", kind = "sound", payload = "effects/probe-cry.lua", contentIdentity = cryIdentity },
+    }),
+    { ["effects/probe-cry.lua"] = { format = "probe-sequence", steps = {} } }
+  )
+  local owned = BattlePresentationAssets.new({
+    assets = staging.services,
+    launchId = "probe-audio-only",
+    sceneKey = "probe/plain/day",
+    shadowRegions = SHADOW_REGIONS,
+  })
+  Assert.equal(owned:demandEffect("GROWL"), true, "the audio-only closure reads ready")
+  local effect = owned:loadEffect("GROWL")
+  Assert.notNil(effect, "the audio-only effect loads")
+  local lease = owned:resolveEffectResource(effect, "probe-cry")
+  Assert.notNil(lease, "the sound dependency resolves")
+  Assert.equal(lease.kind, "sound", "the sound lease keeps its kind")
+  Assert.equal(lease.payload, "effects/probe-cry.lua", "the sound lease names its staged payload")
+  Assert.isNil(lease.rgba8888, "the sound lease carries no pixels")
+  Assert.equal(staging.uploads, 0, "no dummy texture is invented for an audio-only effect")
+  Assert.isNil(owned:drawable("probe-cry"), "sound dependencies never resolve to a drawable")
+  owned:dispose()
+end
+
 return { tests = T }

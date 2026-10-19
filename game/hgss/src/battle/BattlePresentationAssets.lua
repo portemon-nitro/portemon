@@ -13,6 +13,16 @@
 ---@field release fun(key: string)
 ---@field sceneLayer? fun(): table<string, unknown>?, string?
 ---@field background? fun(raster: table<string, unknown>): table<string, unknown>?, string?
+---@field requestEffect? fun(key: string): boolean?, string?
+---@field loadEffect? fun(key: string): table<string, unknown>?, string?
+---@field resolveEffectResource? fun(effect: table<string, unknown>, resourceKey: string): table<string, unknown>?, string?
+---@field releaseEffectResource? fun(lease: table<string, unknown>): boolean?, string?
+
+---@class BattlePresentationAssets.EffectState
+---@field ready boolean true once the staged closure validated
+---@field record table<string, unknown>? loaded schema-valid effect record
+---@field leases table<integer, table<string, unknown>> outstanding admitted resource leases
+---@field failed string? terminal effect failure, latched without retry
 
 ---@class BattlePresentationAssets
 ---@field _assets BattlePresentationAssets.Services preparation services carrying prepare/drawable/release
@@ -31,6 +41,8 @@
 ---@field _selectors string[] portrait selectors named so far
 ---@field _owned table<string, boolean> image keys acquired through this holder
 ---@field _imageErrors table<string, string> terminal upload failures by key, latched without retry
+---@field _effects table<string, BattlePresentationAssets.EffectState> per-effect demand/load/lease state by flat effect key
+---@field _effectDrawables table<string, boolean> staged semantic texture keys admitted through effect leases
 ---@field _picturePass table<string, unknown>? per-screen Pokepic color/depth renderer
 ---@field _released boolean release guard
 local BattlePresentationAssets = {}
@@ -89,6 +101,8 @@ function BattlePresentationAssets.new(opts)
     _selectors = {},
     _owned = {},
     _imageErrors = {},
+    _effects = {},
+    _effectDrawables = {},
     _picturePass = nil,
     _released = false,
   }, BattlePresentationAssets)
@@ -100,6 +114,44 @@ local function frameDeclared(self)
     return true
   end
   return type(self._frames) == "table" and type(self._frames[self._frameKey]) == "table"
+end
+
+---@param key unknown semantic effect key under validation
+---@return boolean flat true only for non-empty slash-free keys
+local function flatEffectKey(key)
+  return type(key) == "string" and key ~= "" and key:find("/", 1, true) == nil
+end
+
+---@param self BattlePresentationAssets holder owning the per-effect state
+---@param key string flat semantic effect key
+---@return BattlePresentationAssets.EffectState mutable per-effect demand/load/lease state
+local function effectState(self, key)
+  local state = self._effects[key]
+  if state == nil then
+    state = { ready = false, record = nil, leases = {}, failed = nil }
+    self._effects[key] = state
+  end
+  return state
+end
+
+-- Returns every outstanding lease of one effect through the configured
+-- release callback, ignoring results: rollback after a terminal upload
+-- and launch disposal free exactly what this holder admitted without
+-- touching handles owned elsewhere.
+---@param self BattlePresentationAssets holder owning the per-effect state
+---@param effectKey string flat semantic effect key under release
+local function rollbackEffectLeases(self, effectKey)
+  local state = self._effects[effectKey]
+  if state == nil then
+    return
+  end
+  local releaser = self._assets.releaseEffectResource
+  if type(releaser) == "function" then
+    for _, lease in ipairs(state.leases) do
+      releaser(lease)
+    end
+  end
+  state.leases = {}
 end
 
 ---@return table<string, unknown> exact launch demand for the preparation services
@@ -255,6 +307,16 @@ function BattlePresentationAssets:drawable(key)
   if self._imageErrors[key] ~= nil then
     return nil, self._imageErrors[key]
   end
+  -- Admitted effect textures resolve verbatim through the services:
+  -- an effect-scoped terminal stays scoped to its effect instead of
+  -- failing the whole holder and its already-ready scene resources.
+  if self._effectDrawables[key] then
+    local admitted, admittedFailure = self._assets.drawable(key)
+    if admitted ~= nil then
+      self._owned[key] = true
+    end
+    return admitted, admittedFailure
+  end
   if self._state == "failed" then
     return nil, self._error
   end
@@ -269,6 +331,201 @@ function BattlePresentationAssets:drawable(key)
     self._owned[key] = true
   end
   return handle
+end
+
+-- Carries the launch identity into an effect failure once: service
+-- reasons already naming this launch pass through verbatim so terminal
+-- causes replay identically across demand, load, and resolve probes.
+---@param reason unknown service cause under diagnosing
+---@return string terminal failure naming the launch exactly once
+function BattlePresentationAssets:_withLaunch(reason)
+  local text = tostring(reason)
+  if text:find(self._launchId, 1, true) ~= nil then
+    return text
+  end
+  return text .. " for launch " .. self._launchId
+end
+
+-- Demands one lazily staged battle effect by flat semantic key: true
+-- only with a schema-valid complete staged closure, false while the
+-- worker or any dependency payload is still staging, nil plus a
+-- terminal reason on flat-key violations, worker failures, corrupt
+-- records, or a latched earlier terminal. Probes never instantiate
+-- images; sibling effects stay lazy.
+---@param key string flat semantic effect key under demand
+---@return boolean? ready true when fully staged, false while pending, nil on terminal failure
+---@return string? terminal failure naming effect and launch, nil while pending or ready
+function BattlePresentationAssets:demandEffect(key)
+  if not flatEffectKey(key) then
+    return nil, "unknown battle effect key: " .. tostring(key)
+  end
+  local effectKey = key --[[@as string]]
+  if self._released then
+    return nil,
+      "battle effect "
+        .. effectKey
+        .. " is not staged for launch "
+        .. self._launchId
+        .. ": the battle assets are released"
+  end
+  local state = effectState(self, effectKey)
+  if state.failed ~= nil then
+    return nil, state.failed
+  end
+  if type(self._assets.requestEffect) ~= "function" then
+    state.failed = "battle effect "
+      .. effectKey
+      .. " cannot stage for launch "
+      .. self._launchId
+      .. ": no configured effect service"
+    return nil, state.failed
+  end
+  local ready, failure = self._assets.requestEffect(effectKey)
+  if failure ~= nil then
+    state.failed = self:_withLaunch(failure)
+    return nil, state.failed
+  end
+  if ready == true then
+    state.ready = true
+    return true
+  end
+  return false
+end
+
+-- Loads the exact staged effect record, but only after this holder
+-- observed readiness: schema and key identity validate through the
+-- configured loader, and a load racing a corrupt publication latches
+-- the effect failed instead of handing out a half record.
+---@param key string flat semantic effect key under loading
+---@return table<string, unknown>? schema-valid effect record, nil unless ready
+---@return string? terminal failure naming effect and launch, nil on success
+function BattlePresentationAssets:loadEffect(key)
+  if not flatEffectKey(key) then
+    return nil, "unknown battle effect key: " .. tostring(key)
+  end
+  local effectKey = key --[[@as string]]
+  if self._released then
+    return nil,
+      "battle effect "
+        .. effectKey
+        .. " is not staged for launch "
+        .. self._launchId
+        .. ": the battle assets are released"
+  end
+  local state = effectState(self, effectKey)
+  if state.failed ~= nil then
+    return nil, state.failed
+  end
+  if type(self._assets.loadEffect) ~= "function" then
+    state.failed = "battle effect "
+      .. effectKey
+      .. " cannot stage for launch "
+      .. self._launchId
+      .. ": no configured effect service"
+    return nil, state.failed
+  end
+  if not state.ready then
+    return nil, "battle effect " .. effectKey .. " is not ready for launch " .. self._launchId
+  end
+  local record, failure = self._assets.loadEffect(effectKey)
+  if record == nil then
+    state.failed = self:_withLaunch(failure or ("battle effect " .. effectKey .. " is not staged"))
+    return nil, state.failed
+  end
+  state.record = record
+  return record
+end
+
+-- Resolves one dependency of a loaded effect into a semantic lease:
+-- texture leases share one immutable uploaded image across duplicate
+-- resolves, other kinds arrive as immutable typed descriptors with no
+-- pixels. An upload failure rolls back every handle this holder
+-- admitted for the effect and latches it failed; the failure replays
+-- identically instead of hanging as pending.
+---@param effect table<string, unknown> loaded schema-valid effect record
+---@param resourceKey string semantic dependency key under resolving
+---@return table<string, unknown>? admitted resource lease, nil on terminal failure
+---@return string? terminal failure naming launch, effect, and resource, nil on success
+function BattlePresentationAssets:resolveEffectResource(effect, resourceKey)
+  if self._released then
+    return nil, "battle effect resources are released for launch " .. self._launchId
+  end
+  if type(effect) ~= "table" or not flatEffectKey(effect.key) then
+    return nil, "effect leases resolve from a loaded effect for launch " .. self._launchId
+  end
+  local effectKey = effect.key --[[@as string]]
+  local state = effectState(self, effectKey)
+  if state.failed ~= nil then
+    return nil, state.failed
+  end
+  if type(resourceKey) ~= "string" or resourceKey == "" then
+    return nil,
+      "unknown battle effect resource "
+        .. tostring(resourceKey)
+        .. " for effect "
+        .. effectKey
+        .. " for launch "
+        .. self._launchId
+  end
+  if type(self._assets.resolveEffectResource) ~= "function" then
+    state.failed = "battle effect "
+      .. effectKey
+      .. " cannot stage for launch "
+      .. self._launchId
+      .. ": no configured effect service"
+    return nil, state.failed
+  end
+  if not state.ready or state.record == nil then
+    return nil, "battle effect " .. effectKey .. " is not ready for launch " .. self._launchId
+  end
+  local lease, failure = self._assets.resolveEffectResource(effect, resourceKey)
+  if lease == nil then
+    rollbackEffectLeases(self, effectKey)
+    state.failed = self:_withLaunch(failure or ("battle effect resource " .. resourceKey .. " is not staged"))
+    return nil, state.failed
+  end
+  state.leases[#state.leases + 1] = lease
+  if lease.handle ~= nil then
+    self._owned[resourceKey] = true
+    self._effectDrawables[resourceKey] = true
+  end
+  return lease
+end
+
+-- Returns one admitted effect lease exactly once: the configured
+-- service frees the shared image at its last release. Unknown leases
+-- and releases without a configured service fail with context.
+---@param lease table<string, unknown> admitted resource lease under release
+---@return boolean? released true once returned
+---@return string? terminal release failure, nil on success
+function BattlePresentationAssets:releaseEffectResource(lease)
+  if self._released then
+    return nil, "battle effect resources are released for launch " .. self._launchId
+  end
+  if type(lease) ~= "table" or type(lease.key) ~= "string" or lease.key == "" then
+    return nil, "effect releases name their lease for launch " .. self._launchId
+  end
+  if type(self._assets.releaseEffectResource) ~= "function" then
+    return nil,
+      "battle effect "
+        .. tostring(lease.key)
+        .. " cannot stage for launch "
+        .. self._launchId
+        .. ": no configured effect service"
+  end
+  for _, state in pairs(self._effects) do
+    for index, held in ipairs(state.leases) do
+      if held == lease then
+        table.remove(state.leases, index)
+        break
+      end
+    end
+  end
+  local released, failure = self._assets.releaseEffectResource(lease)
+  if released == nil then
+    return nil, self:_withLaunch(failure or ("effect lease " .. tostring(lease.key) .. " is already released"))
+  end
+  return true
 end
 
 ---@return string selected scene image key
@@ -340,13 +597,17 @@ function BattlePresentationAssets:error()
   return self._error
 end
 
--- Releases each owned handle exactly once. Borrowed text and window
+-- Releases each owned handle exactly once, including outstanding
+-- effect leases admitted through this holder. Borrowed text and window
 -- services are never touched here.
 function BattlePresentationAssets:dispose()
   if self._released then
     return
   end
   self._released = true
+  for effectKey in pairs(self._effects) do
+    rollbackEffectLeases(self, effectKey)
+  end
   if self._picturePass ~= nil then
     self._picturePass:release()
     self._picturePass = nil
