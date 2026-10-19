@@ -1,0 +1,377 @@
+-- Search criteria, editor transactions, ordered filtering, nonuniform
+-- sliders, and result membership: every search editor through the public
+-- fixed-update projection. Real knowledge owner and compact synthetic
+-- catalogs with deliberate order ties; only readiness is stubbed. No
+-- renderer, GPU, audio device, ROM, or worker is touched.
+
+local Assert = require("tests.support.Assert")
+local PokedexDexFixture = require("libs.hgss.tests.mons.pokedex_dex_fixture")
+local PokedexKnowledge = require("libs.hgss.src.mons.PokedexKnowledge")
+
+local CONTROLLER_MODULE = "game.hgss.src.pokedex.PokedexController"
+
+local T = {}
+
+---@param behavior string missing browser behavior under test
+---@return table the loaded browser controller owner
+local function requirePresent(behavior)
+  local ok, loaded = pcall(require, CONTROLLER_MODULE)
+  Assert.isTrue(ok, "missing browser state owner: " .. behavior .. " (" .. CONTROLLER_MODULE .. ")")
+  assert(loaded ~= nil, "the browser module loads")
+  return loaded --[[@as table]]
+end
+
+local function catalogs()
+  local monCatalog = PokedexDexFixture.makeCatalog()
+  local catalog = PokedexDexFixture.buildPokedexCatalog()
+  return monCatalog, catalog
+end
+
+local function enabledOwner(monCatalog, catalog)
+  local owner = PokedexKnowledge.new(PokedexDexFixture.refs(monCatalog, catalog))
+  owner:prepareChanges({ flags = { dexEnabled = true, nationalDex = true } }):publish()
+  return owner
+end
+
+---@param owner table knowledge owner under test
+---@param monCatalog table resolved mon catalog
+---@param fields table specimen fields
+---@param kind string|nil observation kind
+local function observe(owner, monCatalog, fields, kind)
+  local specimen = owner:describe(PokedexDexFixture.makeMon(monCatalog, fields))
+  owner:prepareChanges({ observations = { { kind = kind or "caught", specimen = specimen } } }):publish()
+end
+
+local function newBrowser(PokedexController, owner, monCatalog, catalog)
+  return PokedexController.new({
+    catalog = catalog,
+    monCatalog = monCatalog,
+    dex = owner,
+    playerGender = "male",
+    playerPosition = { mapX = 10, mapY = 10 },
+    nativeLanguage = "english",
+  })
+end
+
+---@param controller table browser under test
+---@return table preparation carrying the currently demanded ready key
+local function readyPrep(controller)
+  return { readyKey = controller:view().key }
+end
+
+---@param controller table browser under test
+---@param events table|nil semantic batch for one fixed update
+local function tick(controller, events)
+  controller:updateFixed(events or {}, readyPrep(controller))
+end
+
+---@param controller table browser under test
+---@param count integer fixed updates to advance with no input
+local function idle(controller, count)
+  for _ = 1, count do
+    tick(controller)
+  end
+end
+
+local function openSearch(controller)
+  tick(controller, { { type = "confirm" } })
+  idle(controller, 40)
+  Assert.equal(controller:view().page, "grid", "cover confirm opens the grid before searching")
+  tick(controller, { { type = "y" } })
+  idle(controller, 10)
+  Assert.equal(controller:view().page, "search", "the criteria root opens from the grid")
+end
+
+---@param controller table browser under test
+local function runSearch(controller)
+  tick(controller, { { type = "start" } })
+  idle(controller, 250)
+end
+
+---@param controller table browser under test
+---@return table result entries in slot order
+local function resultEntries(controller)
+  Assert.equal(controller:view().page, "results", "the search completes onto the result grid")
+  return controller:view().grid.buffers[1].entries
+end
+
+---@param entries table result entries in slot order
+---@return string[] species keys excluding the return slot
+local function resultSpecies(entries)
+  local species = {}
+  for _, entry in ipairs(entries) do
+    if entry.returnToSearch ~= true then
+      species[#species + 1] = entry.species
+    end
+  end
+  return species
+end
+
+local function catchAllDisplayed(owner, monCatalog)
+  for _, key in ipairs(PokedexDexFixture.DISPLAY_ORDER) do
+    observe(owner, monCatalog, { species = key, personality = 31 })
+  end
+end
+
+function T.numerical_search_preserves_dex_order_through_ties()
+  local PokedexController = requirePresent("complete search and editor behavior")
+  local monCatalog, catalog = catalogs()
+  local owner = enabledOwner(monCatalog, catalog)
+  catchAllDisplayed(owner, monCatalog)
+  local controller = newBrowser(PokedexController, owner, monCatalog, catalog)
+  openSearch(controller)
+  runSearch(controller)
+  local species = resultSpecies(resultEntries(controller))
+  Assert.deepEqual(species, PokedexDexFixture.DISPLAY_ORDER, "numerical search keeps the source dex order")
+  controller:dispose()
+end
+
+function T.seen_only_members_survive_permitted_filters_and_vanish_from_caught_only_filters()
+  local PokedexController = requirePresent("complete search and editor behavior")
+  local monCatalog, catalog = catalogs()
+  local owner = enabledOwner(monCatalog, catalog)
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 }, "seen")
+  observe(owner, monCatalog, { species = "TOTODILE", personality = 31 }, "caught")
+  local controller = newBrowser(PokedexController, owner, monCatalog, catalog)
+  openSearch(controller)
+  runSearch(controller)
+  local species = resultSpecies(resultEntries(controller))
+  Assert.deepEqual(species, { "CHIKORITA", "TOTODILE" }, "numerical search admits seen-only members")
+  controller:dispose()
+  local narrowed = newBrowser(PokedexController, owner, monCatalog, catalog)
+  openSearch(narrowed)
+  tick(narrowed, { { type = "activate", action = "criterion", value = "order" } })
+  idle(narrowed, 5)
+  tick(narrowed, { { type = "activate", action = "editor-choice", value = "heaviest" } })
+  idle(narrowed, 5)
+  tick(narrowed, { { type = "activate", action = "editor-ok" } })
+  idle(narrowed, 5)
+  runSearch(narrowed)
+  Assert.deepEqual(resultSpecies(resultEntries(narrowed)), { "TOTODILE" }, "measurement orders require caught members")
+  narrowed:dispose()
+end
+
+function T.type_criteria_match_either_original_type_without_slot_bias()
+  local PokedexController = requirePresent("complete search and editor behavior")
+  local monCatalog, catalog = catalogs()
+  catalog.criteria.types = {
+    dual = { "CHIKORITA", "TOTODILE", "EEVEE" },
+    single = { "TOTODILE", "PICHU" },
+  }
+  local owner = enabledOwner(monCatalog, catalog)
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 31 })
+  observe(owner, monCatalog, { species = "TOTODILE", personality = 31 })
+  observe(owner, monCatalog, { species = "EEVEE", personality = 31 })
+  observe(owner, monCatalog, { species = "PICHU", personality = 31 })
+  local controller = newBrowser(PokedexController, owner, monCatalog, catalog)
+  openSearch(controller)
+  tick(controller, { { type = "activate", action = "criterion", value = "type" } })
+  idle(controller, 5)
+  tick(controller, { { type = "activate", action = "editor-choice", value = "dual" } })
+  idle(controller, 5)
+  tick(controller, { { type = "activate", action = "editor-ok" } })
+  idle(controller, 5)
+  runSearch(controller)
+  Assert.deepEqual(
+    resultSpecies(resultEntries(controller)),
+    { "CHIKORITA", "TOTODILE", "EEVEE" },
+    "a constrained type matches either original type in dex order"
+  )
+  controller:dispose()
+end
+
+function T.type_editor_shifts_full_slots_and_treats_second_as_noop()
+  local PokedexController = requirePresent("complete search and editor behavior")
+  local monCatalog, catalog = catalogs()
+  catalog.criteria.types = {
+    first = { "CHIKORITA" },
+    second = { "TOTODILE" },
+    third = { "EEVEE" },
+  }
+  local owner = enabledOwner(monCatalog, catalog)
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 31 })
+  local controller = newBrowser(PokedexController, owner, monCatalog, catalog)
+  openSearch(controller)
+  tick(controller, { { type = "activate", action = "criterion", value = "type" } })
+  idle(controller, 5)
+  tick(controller, { { type = "activate", action = "editor-choice", value = "first" } })
+  idle(controller, 5)
+  tick(controller, { { type = "activate", action = "editor-choice", value = "second" } })
+  idle(controller, 5)
+  tick(controller, { { type = "activate", action = "editor-choice", value = "third" } })
+  idle(controller, 5)
+  local editor = controller:view().search.editor
+  Assert.deepEqual(editor.types, { "second", "third" }, "a full editor shifts first out before placing the new type")
+  tick(controller, { { type = "activate", action = "editor-choice", value = "third" } })
+  idle(controller, 5)
+  Assert.deepEqual(
+    controller:view().search.editor.types,
+    { "second", "third" },
+    "selecting the already-second type is a no-op"
+  )
+  tick(controller, { { type = "activate", action = "editor-cancel" } })
+  idle(controller, 5)
+  Assert.isNil(controller:view().search.editor, "cancel leaves the type editor")
+  runSearch(controller)
+  Assert.deepEqual(
+    resultSpecies(resultEntries(controller)),
+    { "CHIKORITA" },
+    "cancelled editor choices never reach the submitted criteria"
+  )
+  controller:dispose()
+end
+
+function T.editor_ok_retains_and_cancel_restores_the_backup()
+  local PokedexController = requirePresent("complete search and editor behavior")
+  local monCatalog, catalog = catalogs()
+  local owner = enabledOwner(monCatalog, catalog)
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 31 })
+  local controller = newBrowser(PokedexController, owner, monCatalog, catalog)
+  openSearch(controller)
+  tick(controller, { { type = "activate", action = "criterion", value = "order" } })
+  idle(controller, 5)
+  tick(controller, { { type = "activate", action = "editor-choice", value = "tallest" } })
+  idle(controller, 5)
+  tick(controller, { { type = "activate", action = "editor-ok" } })
+  idle(controller, 5)
+  Assert.equal(controller:view().search.criteria.order, "tallest", "editor-ok retains its choice")
+  tick(controller, { { type = "activate", action = "criterion", value = "order" } })
+  idle(controller, 5)
+  tick(controller, { { type = "activate", action = "editor-choice", value = "shortest" } })
+  idle(controller, 5)
+  tick(controller, { { type = "activate", action = "editor-cancel" } })
+  idle(controller, 5)
+  Assert.equal(controller:view().search.criteria.order, "tallest", "editor cancel restores the exact pre-entry backup")
+  controller:dispose()
+end
+
+function T.unknown_area_matches_kanto_or_unknown_without_johto_before_national()
+  local PokedexController = requirePresent("complete search and editor behavior")
+  local monCatalog, catalog = catalogs()
+  catalog.criteria.areas = { johto = { "CHIKORITA" }, kanto = { "TOTODILE" }, unknown = { "EEVEE" } }
+  local owner = PokedexKnowledge.new(PokedexDexFixture.refs(monCatalog, catalog))
+  owner:prepareChanges({ flags = { dexEnabled = true } }):publish()
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 31 })
+  observe(owner, monCatalog, { species = "TOTODILE", personality = 31 })
+  observe(owner, monCatalog, { species = "EEVEE", personality = 31 })
+  local controller = newBrowser(PokedexController, owner, monCatalog, catalog)
+  openSearch(controller)
+  tick(controller, { { type = "activate", action = "criterion", value = "area" } })
+  idle(controller, 5)
+  local editor = controller:view().search.editor
+  Assert.isFalse(editor.choices.kanto.enabled, "kanto stays disabled before the national unlock")
+  tick(controller, { { type = "activate", action = "editor-choice", value = "unknown" } })
+  idle(controller, 5)
+  tick(controller, { { type = "activate", action = "editor-ok" } })
+  idle(controller, 5)
+  runSearch(controller)
+  Assert.deepEqual(
+    resultSpecies(resultEntries(controller)),
+    { "TOTODILE", "EEVEE" },
+    "unknown matches kanto or unknown members without johto ones"
+  )
+  controller:dispose()
+end
+
+function T.slider_arrow_operations_accelerate_and_reset_on_release()
+  local PokedexController = requirePresent("complete search and editor behavior")
+  local monCatalog, catalog = catalogs()
+  local owner = enabledOwner(monCatalog, catalog)
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 31 })
+  local controller = newBrowser(PokedexController, owner, monCatalog, catalog)
+  openSearch(controller)
+  tick(controller, { { type = "activate", action = "criterion", value = "height" } })
+  idle(controller, 5)
+  tick(controller, {
+    { type = "activate", action = "slider-step", criterion = "height", endpoint = "min", direction = 1 },
+  })
+  idle(controller, 30)
+  local first = controller:view().search.slider
+  Assert.equal(first.value, 1, "the first arrow operation steps by one")
+  for _ = 2, 8 do
+    tick(controller, {
+      { type = "activate", action = "slider-step", criterion = "height", endpoint = "min", direction = 1 },
+    })
+    idle(controller, 30)
+  end
+  local eighth = controller:view().search.slider
+  Assert.equal(eighth.value - first.value, 14, "the eighth consecutive operation steps by eight")
+  tick(controller, { { type = "held", left = false, right = false, touch = false } })
+  idle(controller, 5)
+  tick(controller, {
+    { type = "activate", action = "slider-step", criterion = "height", endpoint = "min", direction = 1 },
+  })
+  idle(controller, 30)
+  Assert.equal(
+    controller:view().search.slider.value - eighth.value,
+    1,
+    "a genuinely released idle poll resets the acceleration"
+  )
+  tick(controller, { { type = "activate", action = "editor-cancel" } })
+  idle(controller, 5)
+  Assert.equal(
+    controller:view().search.criteria.height.min,
+    0,
+    "cancelling the slider editor restores the full-range endpoint"
+  )
+  controller:dispose()
+end
+
+function T.slider_drag_may_cross_but_invalid_release_restores_its_endpoint()
+  local PokedexController = requirePresent("complete search and editor behavior")
+  local monCatalog, catalog = catalogs()
+  local owner = enabledOwner(monCatalog, catalog)
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 31 })
+  local controller = newBrowser(PokedexController, owner, monCatalog, catalog)
+  openSearch(controller)
+  tick(controller, { { type = "activate", action = "criterion", value = "weight" } })
+  idle(controller, 5)
+  tick(controller, { { type = "drag", target = "weight-min", phase = "begin", value = 10 } })
+  tick(controller, { { type = "drag", target = "weight-min", phase = "move", value = 140 } })
+  Assert.equal(controller:view().search.slider.value, 140, "a drag may cross the other endpoint while held")
+  tick(controller, { { type = "drag", target = "weight-min", phase = "cancel", value = 140 } })
+  idle(controller, 5)
+  Assert.equal(controller:view().search.slider.value, 10, "capture cancellation restores the pre-drag endpoint")
+  controller:dispose()
+end
+
+function T.simultaneous_start_wins_over_touch_and_grid_edges()
+  local PokedexController = requirePresent("complete search and editor behavior")
+  local monCatalog, catalog = catalogs()
+  local owner = enabledOwner(monCatalog, catalog)
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 31 })
+  local controller = newBrowser(PokedexController, owner, monCatalog, catalog)
+  openSearch(controller)
+  tick(controller, {
+    { type = "start" },
+    { type = "drag", target = "cover", phase = "begin", value = 0 },
+  })
+  idle(controller, 250)
+  Assert.equal(controller:view().page, "results", "the fresh-start shortcut runs the search ahead of touch handling")
+  controller:dispose()
+end
+
+function T.fifteen_results_gain_a_return_page_and_keep_filtered_origin()
+  local PokedexController = requirePresent("complete search and editor behavior")
+  local monCatalog, catalog = catalogs()
+  local owner = enabledOwner(monCatalog, catalog)
+  for index, key in ipairs(PokedexDexFixture.DISPLAY_ORDER) do
+    if index <= 15 then
+      observe(owner, monCatalog, { species = key, personality = 31 })
+    end
+  end
+  local controller = newBrowser(PokedexController, owner, monCatalog, catalog)
+  openSearch(controller)
+  runSearch(controller)
+  local view = controller:view()
+  Assert.equal(view.page, "results", "fifteen matches complete onto the result grid")
+  Assert.equal(view.grid.lastPage, 1, "fifteen matches plus the return slot need an extra page")
+  tick(controller, { { type = "r" } })
+  Assert.equal(controller:view().grid.page, 1, "page-next reaches the return-slot page")
+  tick(controller, { { type = "confirm" } })
+  idle(controller, 40)
+  Assert.equal(controller:view().page, "search", "the trailing return slot restores criteria")
+  controller:dispose()
+end
+
+return { tests = T }

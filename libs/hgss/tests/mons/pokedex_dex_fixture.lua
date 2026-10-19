@@ -118,6 +118,15 @@ end
 
 local seedCounter = 0
 
+--- Dex-local charmap: the shared fixture charmap plus the underscore
+--- the CUSTOM_IN specimen key requires. Used only by makeMon so no
+--- shared fixture or product file changes.
+local DEX_CHARMAP = {}
+for glyph, code in pairs(CatalogFixture.CHARMAP) do
+  DEX_CHARMAP[glyph] = code
+end
+DEX_CHARMAP["_"] = 0x1DF
+
 --- Builds one admitted mon with a pinned personality so gender and shiny
 --- outcomes are deterministic.
 ---@param monCatalog table<string, unknown>
@@ -130,7 +139,7 @@ function PokedexDexFixture.makeMon(monCatalog, fields)
   local factory = MonFactory.new({
     catalog = monCatalog,
     rng = Lcrng.new(seedCounter),
-    charmap = CatalogFixture.CHARMAP,
+    charmap = DEX_CHARMAP,
     games = PokedexDexFixture.GAMES,
     languages = PokedexDexFixture.LANGUAGES,
     items = CatalogFixture.ITEMS,
