@@ -21,7 +21,21 @@ local function stubRuntime()
     end,
     _setLiveWeather = function() end,
     overrideFs = {},
-    eventState = {},
+    eventState = {
+      setFlag = function() end,
+    },
+    dexKnowledge = {
+      countSeen = function()
+        return 0
+      end,
+      countCaught = function()
+        return 0
+      end,
+      prepareChanges = function()
+        error("the wiring stub never stages dex changes", 0)
+      end,
+    },
+    pokedexCatalog = {},
     actors = {},
     player = {},
     playerAvatar = nil,

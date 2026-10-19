@@ -775,6 +775,14 @@ local function dexOwner(seenCount, caughtCount)
     isNationalDexComplete = function()
       return false
     end,
+    -- Phone dex facts read the live owner counts, never the serialized
+    -- bucket arrays: the fixture answers the same narrow query surface.
+    countSeen = function()
+      return seenCount
+    end,
+    countCaught = function()
+      return caughtCount
+    end,
   }
 end
 

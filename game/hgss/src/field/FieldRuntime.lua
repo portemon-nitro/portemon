@@ -1413,6 +1413,7 @@ function FieldRuntime:_composeFieldServices(boot)
     charmap = boot.fontDef.charmap,
     mapSection = monMetMapSection,
     date = monMetDate,
+    dex = assert(self.dexKnowledge, "field runtime composes dex knowledge before the mon service"),
   })
   self.mailbox = Mailbox.new(boot.loadedGame and boot.loadedGame.mailbox or nil)
   self.photoAlbum = PhotoAlbum.new(boot.loadedGame and boot.loadedGame.photoAlbum or nil)

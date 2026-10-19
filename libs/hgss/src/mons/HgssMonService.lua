@@ -31,6 +31,7 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 ---@field private _language string
 ---@field private _mapSection integer|fun(): integer|nil
 ---@field private _date MonDate|(fun(): MonDate)|nil
+---@field private _dex table<string, unknown>|nil borrowed authoritative dex knowledge behind receipt and form registration (nil on headless seams; receipt and registration operations fail without it)
 local HgssMonService = {}
 HgssMonService.__index = HgssMonService
 
@@ -151,6 +152,7 @@ end
 ---@field mapSection? integer|fun(): integer|nil
 ---@field date? MonDate|(fun(): MonDate)|nil
 ---@field dateProvider? (fun(): MonDate)|nil
+---@field dex? table<string, unknown> borrowed authoritative dex knowledge behind receipt and form registration (required in production; absent only on headless seams)
 ---@param opts HgssMonServiceOptions
 ---@return HgssMonService
 function HgssMonService.new(opts)
@@ -190,6 +192,13 @@ function HgssMonService.new(opts)
     game = opts.game,
     language = opts.language,
   })
+  local dex = opts.dex
+  if dex ~= nil then
+    assert(type(dex) == "table", "mon service dex must be the knowledge owner")
+    assert(type(dex.describe) == "function", "mon service dex must describe admitted mons")
+    assert(type(dex.prepareChanges) == "function", "mon service dex must stage history changes")
+    assert(type(dex.isSeen) == "function", "mon service dex must answer sightings")
+  end
   local service = setmetatable({
     _catalog = opts.catalog,
     _context = context,
@@ -202,6 +211,7 @@ function HgssMonService.new(opts)
     _language = opts.language,
     _mapSection = opts.mapSection,
     _date = opts.date ~= nil and opts.date or opts.dateProvider,
+    _dex = dex,
   }, HgssMonService)
   return service
 end
@@ -611,6 +621,265 @@ function HgssMonService:addMon(mon)
   return self._party:add(self:_checked(mon))
 end
 
+-- The borrowed dex owner behind receipt and form registration. The
+-- production composition always wires one; headless seams without it
+-- fail loudly instead of publishing a party without its history.
+---@return table<string, unknown> borrowed dex knowledge owner
+function HgssMonService:_dexOwner()
+  local dex = self._dex
+  if type(dex) ~= "table" then
+    MonsErrors.raise(MonsErrors.SAVE_INVALID, "mon service requires pokedex knowledge for this operation", {})
+  end
+  assert(type(dex) == "table", "mon service dex is the knowledge owner")
+  return dex
+end
+
+-- Publishes one staged party preparation together with its staged dex
+-- preparation after rechecking both currencies. The checks and the
+-- stores run synchronously with no yield between them, so a stale
+-- candidate on either side publishes neither party nor history. This is
+-- a private staging helper, not a public transaction abstraction.
+---@param partyPrep PartyPreparation
+---@param dexPrep table<string, unknown>|nil staged dex candidate, or nil when the change carries no history
+local function publishStaged(partyPrep, dexPrep)
+  assert(partyPrep.isCurrent(), "party changed during staged publication")
+  if dexPrep ~= nil then
+    assert(dexPrep.isCurrent(), "dex changed during staged publication")
+  end
+  partyPrep.publish()
+  if dexPrep ~= nil then
+    dexPrep.publish()
+  end
+end
+
+-- Explicit successful receipt of one factory-admitted record: refuses a
+-- full party without touching either owner, and otherwise publishes the
+-- exact party append together with one non-egg caught observation in a
+-- single synchronous step. Skips validation because the factory already
+-- admitted the record; public receiveMon validates arbitrary input.
+-- Headless seams without a wired dex owner keep the legacy party-only
+-- behavior so existing structural tests stay independent of history.
+---@param mon table<string, unknown> already-validated record the factory admitted
+---@return boolean false on a full party, without publication
+function HgssMonService:_receiveAdmitted(mon)
+  assert(type(mon) == "table", "explicit receipt requires an admitted mon record")
+  if self._party:count() >= Party.MAX then
+    return false
+  end
+  local partyRevision = self._party:revision()
+  local dexPrep = nil
+  if self._dex ~= nil and mon.isEgg ~= true then
+    local dex = self:_dexOwner()
+    dexPrep = dex:prepareChanges({
+      observations = { { kind = "caught", specimen = dex:describe(mon) } },
+    })
+  end
+  local partyPrep, stale = self:preparePartyBatch(partyRevision, {}, { mon })
+  if partyPrep == nil then
+    assert(stale == "stale", "party preparation reports its staleness")
+    MonsErrors.raise(MonsErrors.SAVE_INVALID, "party changed during explicit receipt", {})
+  end
+  assert(partyPrep ~= nil, "explicit receipt stages its party append")
+  publishStaged(partyPrep, dexPrep)
+  return true
+end
+
+-- Explicit successful receipt: validates the admitted record, returns
+-- false on a full party with neither party nor dex publication, and
+-- otherwise publishes the exact party append plus one non-egg caught
+-- observation together. Receipt itself draws nothing. Requires the wired
+-- dex owner; eggs and previews never reach this operation.
+---@param mon table<string, unknown>
+---@return boolean
+function HgssMonService:receiveMon(mon)
+  self:_dexOwner()
+  return self:_receiveAdmitted(self:_checked(mon))
+end
+
+-- Synthetic sighting of one semantic species: creates the normal
+-- level-50 form-zero temporary specimen through the exact generation
+-- (four draws, no insertion) and records its seen fact only, keeping
+-- the first specimen personality and gender. Reads no history for the
+-- query path; the query below consumes no draws.
+---@param species string|integer semantic species key or native identity
+function HgssMonService:markSpeciesSeen(species)
+  local key = self:_speciesKey(species)
+  local dex = self:_dexOwner()
+  local mon = self._factory:createNormal({
+    species = key,
+    level = 50,
+    form = 0,
+    profile = self._profile,
+    ball = "POKE_BALL",
+    location = self:_metLocation({}),
+    terrain = 4,
+    date = self:_metDate({}),
+  })
+  local prep = dex:prepareChanges({
+    observations = { { kind = "seen", specimen = dex:describe(mon) } },
+  })
+  assert(prep.isCurrent(), "dex changed during synthetic observation")
+  prep.publish()
+end
+
+-- Answers whether the dex owner holds the species sighting. Resolves
+-- the key exactly like receipt and consumes no generator draws.
+---@param species string|integer semantic species key or native identity
+---@return boolean
+function HgssMonService:hasSeenSpecies(species)
+  return self:_dexOwner():isSeen(self:_speciesKey(species))
+end
+
+-- Specialized Deoxys form change: restages every matching party mon in
+-- party order with the requested form, the form ability, and refreshed
+-- stats, then registers their final non-egg specimens together. No
+-- match is a noop. Every staged mon validates before either
+-- publication, so a failure leaves all earlier matches untouched.
+---@param form integer requested deoxys form
+function HgssMonService:setPartyDeoxysForm(form)
+  if type(form) ~= "number" or form % 1 ~= 0 or form < 0 then
+    MonsErrors.raise(MonsErrors.RECORD_INVALID, "deoxys form must be a non-negative integer", { form = form })
+  end
+  self._catalog:form("DEOXYS", form)
+  local dex = self:_dexOwner()
+  local matches = {}
+  for slot = 0, self._party:count() - 1 do
+    if self._party:get(slot).species == "DEOXYS" then
+      matches[#matches + 1] = slot
+    end
+  end
+  if #matches == 0 then
+    return
+  end
+  local abilities = self._catalog:form("DEOXYS", form).abilities
+  local updates = {}
+  local observations = {}
+  for _, slot in ipairs(matches) do
+    local staged = self._party:get(slot)
+    local oldMax = self:derive(staged).maxHp
+    staged.form = form
+    staged.ability = abilities[Personality.abilitySlot(#abilities, staged.personality)]
+    self:refreshStagedHp(staged, oldMax)
+    updates[#updates + 1] = { slot = slot, mon = staged }
+    if staged.isEgg ~= true then
+      observations[#observations + 1] = { kind = "caught", specimen = dex:describe(staged) }
+    end
+  end
+  local partyPrep, stale = self:preparePartyBatch(self._party:revision(), updates, {})
+  if partyPrep == nil then
+    assert(stale == "stale", "party preparation reports its staleness")
+    MonsErrors.raise(MonsErrors.SAVE_INVALID, "party changed during deoxys form change", {})
+  end
+  assert(partyPrep ~= nil, "deoxys change stages its party updates")
+  publishStaged(partyPrep, dex:prepareChanges({ observations = observations }))
+end
+
+-- Source appliance moves per requested Rotom form; form zero is the
+-- base with no appliance move.
+local ROTOM_APPLIANCE_BY_FORM = {
+  [1] = "OVERHEAT",
+  [2] = "HYDRO_PUMP",
+  [3] = "BLIZZARD",
+  [4] = "AIR_SLASH",
+  [5] = "LEAF_STORM",
+}
+
+local ROTOM_APPLIANCE_MOVES = {
+  OVERHEAT = true,
+  HYDRO_PUMP = true,
+  BLIZZARD = true,
+  AIR_SLASH = true,
+  LEAF_STORM = true,
+}
+
+-- Specialized Rotom form change on one party slot: replaces the first
+-- appliance move with the requested move at base power points without
+-- boosts, deletes later appliance moves and compacts, appends through
+-- the default slot on a full moveset, and repairs an emptied moveset
+-- with the base move. Refreshes the form ability and stats while a
+-- fainted mon stays fainted. A selected non-Rotom keeps its content
+-- but still registers the unchanged non-egg specimen, matching the
+-- source caller. Failures publish neither party nor history.
+---@param slot0 integer zero-based party slot
+---@param defaultMoveSlot0 integer zero-based replacement slot, read only when a full moveset gains its appliance move
+---@param _ unknown the source spare operand, carried for call-shape fidelity and ignored
+---@param form integer requested rotom form
+function HgssMonService:updateRotomForm(slot0, defaultMoveSlot0, _, form)
+  checkSlotNumber(slot0, "party")
+  if type(form) ~= "number" or form % 1 ~= 0 or form < 0 then
+    MonsErrors.raise(MonsErrors.RECORD_INVALID, "rotom form must be a non-negative integer", { form = form })
+  end
+  self._catalog:form("ROTOM", form)
+  local staged = self:_liveMon(slot0)
+  local dex = self:_dexOwner()
+  if staged.species ~= "ROTOM" then
+    if staged.isEgg ~= true then
+      local unchanged = dex:prepareChanges({
+        observations = { { kind = "caught", specimen = dex:describe(staged) } },
+      })
+      assert(unchanged.isCurrent(), "dex changed during rotom registration")
+      unchanged.publish()
+    end
+    return
+  end
+  local requested = ROTOM_APPLIANCE_BY_FORM[form]
+  local kept = {}
+  local placed = false
+  for _, entry in ipairs(staged.moves) do
+    if ROTOM_APPLIANCE_MOVES[entry.move] then
+      if requested ~= nil and not placed then
+        local definition = self._catalog:move(requested)
+        kept[#kept + 1] = { move = requested, pp = definition.basePp, ppUps = 0 }
+        placed = true
+      end
+    else
+      kept[#kept + 1] = { move = entry.move, pp = entry.pp, ppUps = entry.ppUps }
+    end
+  end
+  if requested ~= nil and not placed then
+    local definition = self._catalog:move(requested)
+    local appliance = { move = requested, pp = definition.basePp, ppUps = 0 }
+    if #kept < 4 then
+      kept[#kept + 1] = appliance
+    else
+      if
+        type(defaultMoveSlot0) ~= "number"
+        or defaultMoveSlot0 % 1 ~= 0
+        or defaultMoveSlot0 < 0
+        or defaultMoveSlot0 > 3
+      then
+        MonsErrors.raise(
+          MonsErrors.RECORD_INVALID,
+          "rotom default move slot must be an integer in 0..3",
+          { slot = defaultMoveSlot0 }
+        )
+      end
+      kept[defaultMoveSlot0 + 1] = appliance
+    end
+  end
+  if #kept == 0 then
+    local repair = self._catalog:move("THUNDER_SHOCK")
+    kept[1] = { move = "THUNDER_SHOCK", pp = repair.basePp, ppUps = 0 }
+  end
+  local oldMax = self:derive(staged).maxHp
+  staged.moves = kept
+  staged.form = form
+  local abilities = self._catalog:form("ROTOM", form).abilities
+  staged.ability = abilities[Personality.abilitySlot(#abilities, staged.personality)]
+  self:refreshStagedHp(staged, oldMax)
+  local partyPrep, stale = self:preparePartyBatch(self._party:revision(), { { slot = slot0, mon = staged } }, {})
+  if partyPrep == nil then
+    assert(stale == "stale", "party preparation reports its staleness")
+    MonsErrors.raise(MonsErrors.SAVE_INVALID, "party changed during rotom form change", {})
+  end
+  assert(partyPrep ~= nil, "rotom change stages its party update")
+  local observations = {}
+  if staged.isEgg ~= true then
+    observations[1] = { kind = "caught", specimen = dex:describe(staged) }
+  end
+  publishStaged(partyPrep, dex:prepareChanges({ observations = observations }))
+end
+
 ---@param slot0 integer
 ---@return table<string, unknown>
 function HgssMonService:removeMon(slot0)
@@ -657,16 +926,16 @@ function HgssMonService:createStarter(speciesKey, metContext)
   assert(type(speciesKey) == "string", "starter creation requires a species key")
   assert(type(metContext) == "table", "starter creation requires a met context")
   local mon = self:buildStarter(speciesKey, metContext)
-  local added = self._party:add(mon)
-  assert(added, "starter selection requires a free party slot")
+  local received = self:_receiveAdmitted(mon)
+  assert(received, "starter creation requires a free party slot")
   return self._party:get(self._party:count() - 1)
 end
 
 -- Field-script gift in source order: the current map section resolves
 -- first, creation consumes its exact generator draws even when the party
--- is full, then insertion reports the source boolean result. Only the
--- Pokedex update is omitted, because no Pokedex owner exists. Invalid
--- identity data fails explicitly without adding a mon.
+-- is full, then explicit receipt reports the source boolean result and
+-- registers the caught fact when a dex owner is wired. Invalid identity
+-- data fails explicitly without adding a mon.
 ---@param request { species: string|integer, level: integer, heldItem?: string|integer, form?: integer, ability?: string|integer, location?: integer, date?: MonDate|(fun(): MonDate) }
 ---@return boolean
 function HgssMonService:giveMon(request)
@@ -690,7 +959,7 @@ function HgssMonService:giveMon(request)
     form = form,
     ability = self:_abilityKeyOrNil(request.ability),
   })
-  return self._party:add(mon)
+  return self:_receiveAdmitted(mon)
 end
 
 -- Field-script Spiky-Ear Pichu gift in source order:

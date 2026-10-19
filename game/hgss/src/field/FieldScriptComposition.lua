@@ -477,6 +477,17 @@ function FieldScriptComposition.compose(runtime, options)
   local gearHost = type(gear) == "table" and gear.scriptHost or nil
   local gearRadio = type(gear) == "table" and gear.radioEffects or nil
   local gearCatalog = runtime.pokegearCatalog
+  -- The narrow dex count and grant service over the single composed
+  -- knowledge owner, the generated dex catalog, and the live profile
+  -- and event owners. Production composition always wires it; isolated
+  -- script fixtures without one keep the missing-service fault on use.
+  local PokedexScriptService = require("game.hgss.src.pokedex.PokedexScriptService")
+  local pokedex = PokedexScriptService.new({
+    dex = assert(runtime.dexKnowledge, "field scripts require the composed dex knowledge"),
+    catalog = assert(runtime.pokedexCatalog, "field scripts require the generated dex catalog"),
+    profile = assert(runtime.playerData.profile, "field scripts require the player profile"),
+    eventState = assert(runtime.eventState, "field scripts require the field event state"),
+  })
   -- The Spiky-Ear Pichu gift couples two already-live owners: the party
   -- service inserts the event mon and Pokedex knowledge records the
   -- received species. The catch stages before insertion and publishes
@@ -524,6 +535,7 @@ function FieldScriptComposition.compose(runtime, options)
     yesNoHost = runtime.yesNoHost,
     startMenuReopen = { request = requestStartMenuReopen },
     mons = options.mons,
+    pokedex = pokedex,
     specialMonGifts = specialMonGifts,
     items = options.items,
     itemCatalog = options.itemCatalog,

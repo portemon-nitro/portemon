@@ -188,10 +188,11 @@ function FieldMenuCompositionCoordinator:composeStartMenu(rememberedActionId)
   local runtime = self.runtime
   local world = runtime.scripts.worldState
   local flags = FieldScriptSymbols.flagsByName
+  local dex = assert(runtime.dexKnowledge, "the start menu requires the composed dex knowledge")
 
   -- Source policy: returns all present actions (regardless of implementation)
   local sourceEntries = StartMenuPolicy.actions({
-    hasPokedex = world:isFlagSet(flags.FLAG_GOT_POKEDEX),
+    hasPokedex = dex:hasPokedex() == true,
     hasStarter = world:isFlagSet(flags.FLAG_GOT_STARTER),
     bagUnlocked = world:isFlagSet(flags.FLAG_GOT_BAG),
     hasPokegear = world:isFlagSet(flags.FLAG_GOT_POKEGEAR),
@@ -329,9 +330,18 @@ function FieldMenuCompositionCoordinator:composeBag(activeGame, loadedGame)
   runtime.bagCursor = BagCursor.new()
 end
 
--- The dex numbering every dex-showing surface uses until a national-dex flag is
--- wired.
-local DEX_MODE = "regional"
+-- The dex numbering every dex-showing surface uses: the live owner selects
+-- national once unlocked, regional otherwise. Providers read it at each
+-- projection so an unlock after composition shows without rebuilding.
+---@param innerRuntime table<string, unknown> the live field runtime
+---@return string "regional" or "national"
+local function currentDexMode(innerRuntime)
+  local dex = assert(innerRuntime.dexKnowledge, "dex surfaces require the composed dex knowledge")
+  if dex:hasNationalDex() == true then
+    return "national"
+  end
+  return "regional"
+end
 
 -- Builds the explicit read-only Summary display context per open: the
 -- trainer profile identity, the captured civil day, regional Dex mode
@@ -381,7 +391,7 @@ local function summaryContextProvider(innerRuntime, manifest)
     return {
       profile = { trainerId = profile.trainerId, name = profile.name, gender = profile.gender },
       dayOfMonth = day,
-      dexMode = DEX_MODE,
+      dexMode = currentDexMode(innerRuntime),
       performanceEnabled = performanceEnabled,
       aprijuiceBySlot = rows,
       specialRibbonDescriptions = specials,
@@ -520,6 +530,12 @@ function FieldMenuCompositionCoordinator:composePartyMenu(cacheFs)
   local function readSummaryNavigation()
     return assert(runtime.input, "summary navigation needs the field input"):lastUiNavigation()
   end
+  -- The live dex mode behind the Box info panel: read at each
+  -- projection so a national unlock after composition shows without
+  -- rebuilding the menu composition.
+  local function readLiveDexMode()
+    return currentDexMode(runtime)
+  end
   local apricornBoxManifest
   local function makeApricornBox(mode)
     if apricornBoxManifest == nil then
@@ -543,7 +559,7 @@ function FieldMenuCompositionCoordinator:composePartyMenu(cacheFs)
     textPolicy = bagTextPolicy,
     summaryManifest = summaryManifest,
     summaryContext = summaryContextProvider(runtime, summaryManifest),
-    dexMode = DEX_MODE,
+    dexMode = readLiveDexMode,
     readSummaryNavigation = readSummaryNavigation,
     acquireSummaryPreparation = acquireSummaryPreparation,
     makeApricornBox = makeApricornBox,

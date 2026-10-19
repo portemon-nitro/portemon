@@ -104,8 +104,21 @@ local function composeSelf(overrides)
     pixelRatio = 1,
     signature = "composition",
   }
+  local worldState = overrides.worldState or worldWith(ALL_FLAGS)
+  -- Test-only dex owner behind the production owner query: mirrors the
+  -- fake world flags so existing flag-driven cases keep their meaning
+  -- while the composed menu reads the owner like production.
+  local dexKnowledge = overrides.dexKnowledge or {
+    hasPokedex = function()
+      return worldState:isFlagSet(FieldScriptSymbols.flagsByName.FLAG_GOT_POKEDEX)
+    end,
+    hasNationalDex = function()
+      return false
+    end,
+  }
   return {
-    scripts = { worldState = overrides.worldState or worldWith(ALL_FLAGS) },
+    scripts = { worldState = worldState },
+    dexKnowledge = dexKnowledge,
     uiManifest = overrides.uiManifest or manifestWithIcons(),
     playerData = { profile = { name = "PLAYER", badges = 0, runningShoes = false, runningShoesLock = false } },
     playerAvatar = {

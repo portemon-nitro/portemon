@@ -282,7 +282,10 @@ function T.tests.production_trainer_card_service_counts_no_frontier_star()
       end,
       _setLiveWeather = function() end,
       overrideFs = {},
-      eventState = {},
+      eventState = {
+        setFlag = function() end,
+      },
+      pokedexCatalog = {},
       actors = {},
       player = {},
       playerAvatar = nil,
@@ -333,6 +336,15 @@ function T.tests.production_trainer_card_service_counts_no_frontier_star()
       dexKnowledge = {
         isNationalDexComplete = function()
           return true
+        end,
+        countSeen = function()
+          return 0
+        end,
+        countCaught = function()
+          return 0
+        end,
+        prepareChanges = function()
+          error("the star-count stub never stages dex changes", 0)
         end,
       },
       scripts = {
