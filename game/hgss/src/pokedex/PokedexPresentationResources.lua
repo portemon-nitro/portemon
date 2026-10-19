@@ -8,6 +8,7 @@
 -- resident; obsolete keys never publish. Neither the owner nor its leases
 -- dispose borrowed pool, message, font0, or audio owners.
 
+local FieldTextRenderer = require("libs.hgss.src.ui.FieldTextRenderer")
 local MonCache = require("libs.assets.src.MonCache")
 local PokedexCache = require("libs.assets.src.PokedexCache")
 local PokedexRenderer = require("libs.hgss.src.ui.PokedexRenderer")
@@ -20,6 +21,7 @@ local PokedexRenderer = require("libs.hgss.src.ui.PokedexRenderer")
 ---@field _graphics table<string, unknown>? host graphics namespace behind canvases and font warmup
 ---@field _derivedAssets table<string, unknown> semantic compilation seam
 ---@field _text table<string, unknown>? borrowed font0 text renderer
+---@field _headerFont table<string, unknown>? owned font4 header renderer, created once on first font4 demand
 ---@field _messages table<string, unknown>? borrowed field message provider
 ---@field _audio table<string, unknown>? borrowed field audio owner
 ---@field _renderer table<string, unknown> the one shared prepared rasterizer
@@ -87,6 +89,7 @@ function PokedexPresentationResources.new(opts)
     _graphics = opts.graphics,
     _derivedAssets = derived,
     _text = opts.text,
+    _headerFont = nil,
     _messages = opts.messages,
     _audio = opts.audio,
     _renderer = nil,
@@ -156,6 +159,9 @@ local function checkDemand(demand, purpose)
   )
   assert(demand.dexMode == "johto" or demand.dexMode == "national", "demands name their dex mode")
   assert(type(demand.language) == "string" and demand.language ~= "", "demands name their UI language")
+  if demand.profile ~= nil then
+    assert(type(demand.profile) == "string" and demand.profile ~= "", "demands name their measurement profile")
+  end
   assert(type(demand.iconKeys) == "table", "demands carry their icon keys")
   for _, key in ipairs(demand.iconKeys) do
     assert(type(key) == "string" and key ~= "", "icon keys arrive as strings")
@@ -608,50 +614,402 @@ local function prepareCry(lease, demand)
   return ready == true
 end
 
+-- The closed page-local chrome closure: backgrounds, cell parts, and
+-- sprite animation cells behind one generated page role. Footprints and
+-- every other role enter only when the page references them through one
+-- of those inventories; the whole-manifest union never stages.
+---@param manifest table<string, unknown> loaded presentation manifest
+---@param pageRole string generated page role under preparation
+---@return string[]? sorted unique chrome roles behind the page
+---@return string? failure nonempty cause when the page or one of its references is unknown
+local function requiredChromeRoles(manifest, pageRole)
+  local pages = manifest.pages
+  if type(pages) ~= "table" then
+    return nil, "the pokedex manifest carries no pages table"
+  end
+  local page = pages[pageRole]
+  if type(page) ~= "table" then
+    return nil, "the pokedex manifest carries no page " .. tostring(pageRole)
+  end
+  local cells = manifest.cells
+  if type(cells) ~= "table" then
+    cells = {}
+  end
+  local sprites = manifest.sprites
+  if type(sprites) ~= "table" then
+    sprites = {}
+  end
+  local animations = manifest.animations
+  if type(animations) ~= "table" then
+    animations = {}
+  end
+  local seen, roles = {}, {}
+  ---@param role unknown referenced chrome role
+  ---@return string? failure nonempty cause when the reference names no role
+  local function add(role)
+    if type(role) ~= "string" or role == "" then
+      return "a page reference names no chrome role"
+    end
+    if not seen[role] then
+      seen[role] = true
+      roles[#roles + 1] = role
+    end
+    return nil
+  end
+  ---@param cellRole unknown referenced cell role
+  ---@return string? failure nonempty cause when the cell or one of its parts is unknown
+  local function addCellParts(cellRole)
+    local cell = cells[cellRole]
+    if type(cell) ~= "table" then
+      return "the " .. pageRole .. " page references an unknown cell " .. tostring(cellRole)
+    end
+    if type(cell.parts) ~= "table" then
+      return "cell " .. tostring(cellRole) .. " carries no parts"
+    end
+    for _, part in ipairs(cell.parts) do
+      if type(part) ~= "table" then
+        return "cell " .. tostring(cellRole) .. " carries no part record"
+      end
+      local failure = add(part.chrome)
+      if failure ~= nil then
+        return failure
+      end
+    end
+    return nil
+  end
+  if type(page.backgrounds) == "table" then
+    for _, pane in ipairs({ "information", "controls" }) do
+      local entries = page.backgrounds[pane]
+      if type(entries) == "table" then
+        for _, entry in ipairs(entries) do
+          if type(entry) ~= "table" then
+            return nil, "the " .. pageRole .. " page carries no background record"
+          end
+          local failure = add(entry.chrome)
+          if failure ~= nil then
+            return nil, failure
+          end
+        end
+      end
+    end
+  end
+  if type(page.cells) == "table" then
+    for _, cellRole in ipairs(page.cells) do
+      local failure = addCellParts(cellRole)
+      if failure ~= nil then
+        return nil, failure
+      end
+    end
+  end
+  if type(page.sprites) == "table" then
+    for _, spriteRole in ipairs(page.sprites) do
+      local sprite = sprites[spriteRole]
+      if type(sprite) ~= "table" then
+        return nil, "the " .. pageRole .. " page references an unknown sprite " .. tostring(spriteRole)
+      end
+      if type(sprite.animation) ~= "string" or sprite.animation == "" then
+        return nil, "sprite " .. tostring(spriteRole) .. " names no animation"
+      end
+      local animation = animations[sprite.animation]
+      if type(animation) ~= "table" then
+        return nil, "sprite " .. tostring(spriteRole) .. " references an unknown animation"
+      end
+      if type(animation.frames) ~= "table" then
+        return nil, "animation " .. tostring(sprite.animation) .. " carries no frames"
+      end
+      for _, frame in ipairs(animation.frames) do
+        if type(frame) ~= "table" or type(frame.cell) ~= "string" then
+          return nil, "animation " .. tostring(sprite.animation) .. " names no cell"
+        end
+        local failure = addCellParts(frame.cell)
+        if failure ~= nil then
+          return nil, failure
+        end
+      end
+    end
+  end
+  table.sort(roles)
+  return roles
+end
+
+---@param owner PokedexPresentationResources
+---@param speciesKey string
+---@return integer? stable catalog numeric species identity
+---@return string? failure nonempty cause when the species is unknown
+local function nativeSpeciesId(owner, speciesKey)
+  local speciesOf = owner._monCatalog.species
+  if type(speciesOf) ~= "function" then
+    return nil, "prepared text needs the resolved mon catalog"
+  end
+  local ok, record = pcall(speciesOf, owner._monCatalog, speciesKey)
+  if not ok or type(record) ~= "table" or type(record.nativeId) ~= "number" then
+    return nil, "prepared text names an unknown species " .. tostring(speciesKey)
+  end
+  return record.nativeId
+end
+
+-- Resolves the source bank and entry behind one bank-backed text slot.
+-- Species names, categories, and flavors read the requested language
+-- entry bank by stable catalog species identity, never by display
+-- number; heights and weights read the demanded measurement profile.
+-- Unknown kinds, languages, profiles, or species fail instead of
+-- falling back to another bank.
+---@param manifest table<string, unknown> loaded presentation manifest
+---@param owner PokedexPresentationResources
+---@param slot table<string, unknown> one semantic text request
+---@param profile string demanded measurement profile
+---@return integer? source bank identity
+---@return integer? source entry identity
+---@return string? failure nonempty cause when the slot has no source bank
+local function messageBankEntry(manifest, owner, slot, profile)
+  local kind = slot.kind
+  if kind == "ui" then
+    local bindings = manifest.text
+    if type(bindings) ~= "table" or type(bindings.ui) ~= "table" then
+      return nil, nil, "the pokedex manifest carries no UI text bindings"
+    end
+    if type(bindings.ui.bankId) ~= "number" then
+      return nil, nil, "the pokedex manifest carries no UI bank"
+    end
+    if type(slot.messageId) ~= "number" then
+      return nil, nil, "ui text slot " .. tostring(slot.role) .. " names no message"
+    end
+    return bindings.ui.bankId, slot.messageId
+  end
+  if kind == "species_name" or kind == "category" or kind == "flavor" then
+    local bindings = manifest.text
+    if type(bindings) ~= "table" or type(bindings.entryByLanguage) ~= "table" then
+      return nil, nil, "the pokedex manifest carries no entry text bindings"
+    end
+    if type(slot.language) ~= "string" or slot.language == "" then
+      return nil, nil, "text slot " .. tostring(slot.role) .. " names no language"
+    end
+    local banks = bindings.entryByLanguage[slot.language]
+    if type(banks) ~= "table" then
+      return nil, nil, "prepared text names an unknown language " .. tostring(slot.language)
+    end
+    local bankKey = "nameBankId"
+    if kind == "category" then
+      bankKey = "categoryBankId"
+    elseif kind == "flavor" then
+      bankKey = "flavorBankId"
+    end
+    if type(banks[bankKey]) ~= "number" then
+      return nil, nil, "prepared text names an unbound " .. tostring(kind) .. " bank"
+    end
+    if type(slot.species) ~= "string" or slot.species == "" then
+      return nil, nil, "text slot " .. tostring(slot.role) .. " names no species"
+    end
+    local nativeId, failure = nativeSpeciesId(owner, slot.species)
+    if nativeId == nil then
+      return nil, nil, failure
+    end
+    return banks[bankKey], nativeId
+  end
+  if kind == "height" or kind == "weight" then
+    local bindings = manifest.text
+    if type(bindings) ~= "table" or type(bindings.measureByProfile) ~= "table" then
+      return nil, nil, "the pokedex manifest carries no measure text bindings"
+    end
+    local measures = bindings.measureByProfile[profile]
+    if type(measures) ~= "table" then
+      return nil, nil, "prepared text names an unknown measure profile " .. tostring(profile)
+    end
+    local bankKey = "heightBankId"
+    if kind == "weight" then
+      bankKey = "weightBankId"
+    end
+    if type(measures[bankKey]) ~= "number" then
+      return nil, nil, "prepared text names an unbound " .. tostring(kind) .. " bank"
+    end
+    if type(slot.species) ~= "string" or slot.species == "" then
+      return nil, nil, "text slot " .. tostring(slot.role) .. " names no species"
+    end
+    local nativeId, failure = nativeSpeciesId(owner, slot.species)
+    if nativeId == nil then
+      return nil, nil, failure
+    end
+    return measures[bankKey], nativeId
+  end
+  return nil, nil, "text slot " .. tostring(slot.role) .. " names an unknown kind " .. tostring(kind)
+end
+
+-- Acquires one message bank behind the lease membership, exactly once no
+-- matter how many visible slots share it. Already-held banks answer
+-- immediately without touching the provider again.
+---@param lease table<string, unknown>
+---@param bankId integer source bank identity
+---@return string? failure nonempty cause when the bank cannot be prepared
+local function acquireMessageBank(lease, bankId)
+  if lease._messageBanks[bankId] == true then
+    return nil
+  end
+  local provider = lease._owner._messages
+  if provider == nil or type(provider.acquireBank) ~= "function" then
+    return "prepared text needs its borrowed message provider for bank " .. tostring(bankId)
+  end
+  local ok, bank, acquireError = pcall(provider.acquireBank, provider, bankId)
+  if not ok then
+    return tostring(bank)
+  end
+  if bank == nil then
+    return tostring(acquireError)
+  end
+  lease._messageBanks[bankId] = true
+  return nil
+end
+
+---@param lease table<string, unknown>
+---@param bankId integer acquired source bank identity
+---@param entryId integer source entry identity
+---@return string? prepared immutable message string
+---@return string? failure nonempty cause when the entry carries no source string
+local function readMessageEntry(lease, bankId, entryId)
+  local provider = lease._owner._messages
+  local get = provider ~= nil and provider.get or nil
+  if type(get) ~= "function" then
+    return nil, "prepared text needs its borrowed message provider for bank " .. tostring(bankId)
+  end
+  local ok, template, templateError = pcall(get, provider, bankId, entryId)
+  if not ok then
+    return nil, tostring(template)
+  end
+  if type(template) ~= "table" or type(template.text) ~= "string" or template.text == "" then
+    local cause = "message " .. tostring(entryId) .. " in bank " .. tostring(bankId) .. " carries no string"
+    if templateError ~= nil then
+      cause = cause .. ": " .. tostring(templateError)
+    end
+    return nil, cause
+  end
+  return template.text
+end
+
+-- Whether the demanded page draws any source header window: only then the
+-- owner lazily prepares its one owned font4 renderer.
+---@param manifest table<string, unknown> loaded presentation manifest
+---@param pageRole string generated page role under preparation
+---@return boolean demanded true while a font4 window is behind the page
+local function needsHeaderFont(manifest, pageRole)
+  local pages = manifest.pages
+  if type(pages) ~= "table" then
+    return false
+  end
+  local page = pages[pageRole]
+  if type(page) ~= "table" or type(page.windows) ~= "table" then
+    return false
+  end
+  local windows = manifest.windows
+  if type(windows) ~= "table" then
+    return false
+  end
+  for _, role in ipairs(page.windows) do
+    local record = windows[role]
+    if type(record) == "table" and record.font == 4 then
+      return true
+    end
+  end
+  return false
+end
+
 ---@param lease table<string, unknown>
 ---@param demand table<string, unknown> validated demand under preparation
----@return table<string, string> messages prepared message record
----@return string? failure nonempty cause when a required bank cannot be read
+---@return table<string, string>? messages prepared message record
+---@return table<integer, boolean>? banks source bank identities behind the messages
+---@return string? failure nonempty cause when a required bank cannot be prepared
+-- Resolves every visible text slot to an immutable prepared string: ui
+-- slots by their UI bank and message, species slots by the requested
+-- language entry bank and stable species identity, heights and weights
+-- by the demanded measurement profile, and numeric slots by their
+-- preformatted value. Banks join the lease membership once and stay
+-- until a successful replacement retires them; the registration card
+-- keeps its producer-authoritative announcement.
 local function prepareMessages(lease, demand)
   local owner = lease._owner
-  if demand.purpose ~= "registration" then
-    return {}
-  end
-  local snapshot = demand.text.registration
-  if type(snapshot) ~= "table" or type(snapshot.displayName) ~= "string" then
-    return {}, "registration demands carry their immutable announcement snapshot"
-  end
-  local provider = owner._messages
-  if provider == nil or type(provider.acquireBank) ~= "function" then
-    return { registrationAnnouncement = snapshot.displayName }
-  end
-  -- The announcement bank joins the lease membership once; the release
-  -- path returns it exactly once beside the pooled interests.
-  if lease._messageBanks[197] ~= true then
-    local okAcquire, acquireFailure = pcall(provider.acquireBank, provider, 197)
-    if not okAcquire then
-      return {}, tostring(acquireFailure)
+  local manifest = assert(owner._manifest, "prepared messages read their manifest")
+  if demand.purpose == "registration" then
+    local snapshot = demand.text.registration
+    if type(snapshot) ~= "table" or type(snapshot.displayName) ~= "string" then
+      return nil, nil, "registration demands carry their immutable announcement snapshot"
     end
-    lease._messageBanks[197] = true
+    local bankId, messageId = 197, 871
+    local bindings = manifest.text
+    if type(bindings) == "table" and type(bindings.registrationAnnouncement) == "table" then
+      bankId = bindings.registrationAnnouncement.bankId
+      messageId = bindings.registrationAnnouncement.messageId
+    end
+    if type(bankId) ~= "number" or bankId % 1 ~= 0 or type(messageId) ~= "number" or messageId % 1 ~= 0 then
+      return nil, nil, "the pokedex manifest carries no registration announcement binding"
+    end
+    local provider = lease._owner._messages
+    if provider == nil or type(provider.acquireBank) ~= "function" then
+      return { registrationAnnouncement = snapshot.displayName }, {}
+    end
+    local acquireFailure = acquireMessageBank(lease, bankId --[[@as integer]])
+    if acquireFailure ~= nil then
+      return nil, nil, acquireFailure
+    end
+    local announcement, readFailure = readMessageEntry(lease, bankId --[[@as integer]], messageId --[[@as integer]])
+    if announcement == nil then
+      return nil, nil, readFailure
+    end
+    local formatted = announcement
+    if formatted:find("{name}", 1, true) ~= nil then
+      formatted = formatted:gsub("{name}", snapshot.displayName)
+    elseif formatted:find("%%s") ~= nil then
+      formatted = formatted:gsub("%%s", snapshot.displayName)
+    end
+    if formatted == "" then
+      return nil, nil, "the registration announcement formats to an empty string"
+    end
+    return { registrationAnnouncement = formatted }, { [bankId] = true }
   end
-  local get = provider.get
-  if type(get) ~= "function" then
-    return { registrationAnnouncement = snapshot.displayName }
+  local text = demand.text
+  if type(text) ~= "table" then
+    return nil, nil, "browser demands carry their semantic text"
   end
-  local okGet, template = pcall(get, provider, 197, 871)
-  if not okGet or type(template) ~= "table" or type(template.text) ~= "string" or template.text == "" then
-    return {}, "the registration announcement bank carries no source 197:871 string"
+  local profile = demand.profile
+  if type(profile) ~= "string" or profile == "" then
+    profile = "base"
   end
-  local formatted = template.text
-  if formatted:find("{name}", 1, true) ~= nil then
-    formatted = formatted:gsub("{name}", snapshot.displayName)
-  elseif formatted:find("%%s") ~= nil then
-    formatted = formatted:gsub("%%s", snapshot.displayName)
+  local messages = {}
+  local bankSet = {}
+  local pending = {}
+  for _, slot in ipairs(text) do
+    if type(slot) ~= "table" then
+      return nil, nil, "browser text slots arrive as records"
+    end
+    if type(slot.role) ~= "string" or slot.role == "" then
+      return nil, nil, "text slots name their role"
+    end
+    if slot.kind == "numeric" then
+      if type(slot.value) ~= "string" or slot.value == "" then
+        return nil, nil, "numeric text slot " .. slot.role .. " carries no preformatted value"
+      end
+      messages[slot.role] = slot.value
+    else
+      local bankId, entryId, failure = messageBankEntry(manifest, owner, slot, profile)
+      if bankId == nil then
+        return nil, nil, failure
+      end
+      assert(type(entryId) == "number", "prepared text resolves its entry")
+      bankSet[bankId] = true
+      pending[#pending + 1] = { role = slot.role, bankId = bankId, entryId = entryId }
+    end
   end
-  if formatted == "" then
-    return {}, "the registration announcement formats to an empty string"
+  for bankId in pairs(bankSet) do
+    local failure = acquireMessageBank(lease, bankId)
+    if failure ~= nil then
+      return nil, nil, failure
+    end
   end
-  return { registrationAnnouncement = formatted }
+  for _, item in ipairs(pending) do
+    local resolved, failure = readMessageEntry(lease, item.bankId, item.entryId)
+    if resolved == nil then
+      return nil, nil, failure
+    end
+    messages[item.role] = resolved
+  end
+  return messages, bankSet
 end
 
 ---@param owner PokedexPresentationResources
@@ -867,7 +1225,7 @@ local function prepareSpindaPictures(owner, lease, demand, allowance)
             return false, tostring(record)
           end
           if type(stored) == "table" and type(stored.record) == "table" then
-            stored.record:release()
+            lease._spindaRetired[#lease._spindaRetired + 1] = stored.record
           end
           lease._spindaCanvases[picture.slot] = { specKey = specKey, record = record }
           allowance.remaining = allowance.remaining - 1
@@ -878,8 +1236,9 @@ local function prepareSpindaPictures(owner, lease, demand, allowance)
   return ready
 end
 
--- Releases Spinda records the given demand no longer watches. The
--- committed bundle keeps its own records until adoption replaces them.
+-- Retires Spinda records the given demand no longer watches. Retired
+-- records stay alive until the replacement publishes, so the committed
+-- bundle never points at a released canvas.
 ---@param owner PokedexPresentationResources
 ---@param lease table<string, unknown>
 ---@param demand table<string, unknown> demand selecting the retained slots
@@ -894,9 +1253,26 @@ local function pruneSpindaCanvases(owner, lease, demand)
   for slot, stored in pairs(lease._spindaCanvases) do
     if not keep[slot] then
       if type(stored) == "table" and type(stored.record) == "table" then
-        stored.record:release()
+        lease._spindaRetired[#lease._spindaRetired + 1] = stored.record
       end
       lease._spindaCanvases[slot] = nil
+    end
+  end
+end
+
+-- Returns banks the failed generation acquired without touching the
+-- committed set: a doomed generation never grows the lease membership.
+---@param lease table<string, unknown>
+---@param preBanks table<integer, boolean> membership before the failed call
+local function unwindNewBanks(lease, preBanks)
+  local committed = lease._committedBanks
+  local provider = lease._owner._messages
+  for bankId in pairs(lease._messageBanks) do
+    if not preBanks[bankId] and (committed == nil or committed[bankId] ~= true) then
+      if provider ~= nil and type(provider.releaseBank) == "function" then
+        provider:releaseBank(bankId)
+      end
+      lease._messageBanks[bankId] = nil
     end
   end
 end
@@ -906,6 +1282,8 @@ end
 ---@param demand table<string, unknown> validated demand under preparation
 ---@return table<string, unknown>? bundle borrowed read-only ready bundle
 ---@return string? failure nonempty cause when the demand cannot become ready
+---@return table<string, boolean>? chromePaths adopted paths behind the staged bundle
+---@return table<integer, boolean>? bankSet source banks behind the staged messages
 local function prepareBundle(owner, lease, demand)
   local manifestReady, manifestFailure = ensureManifest(owner)
   if not manifestReady then
@@ -920,37 +1298,52 @@ local function prepareBundle(owner, lease, demand)
   if surfacesFailure ~= nil then
     return nil, surfacesFailure
   end
-  -- The chrome group enrolls its paths under the same single admission
-  -- budget before any portrait or canvas work runs. Roles enroll in
-  -- sorted order so staged preparation stays deterministic.
+  -- The chrome group stages only the current page closure under the
+  -- same single admission budget before any portrait or canvas work
+  -- runs. Roles enroll in sorted order so staged preparation stays
+  -- deterministic; pending tokens the new generation no longer watches
+  -- cancel before any new enrollment.
+  local wantedRoles, closureFailure = requiredChromeRoles(manifest, demand.pageRole)
+  if wantedRoles == nil then
+    return nil, closureFailure
+  end
+  local chromeInventory = manifest.chrome
+  if type(chromeInventory) ~= "table" then
+    return nil, "prepared bundles carry their chrome inventory"
+  end
+  local rolePath, wantedPaths = {}, {}
+  for _, role in ipairs(wantedRoles) do
+    local record = chromeInventory[role]
+    if type(record) ~= "table" then
+      return nil, "chrome role " .. tostring(role) .. " is not a record"
+    end
+    local path = record.path
+    if type(path) ~= "string" or path == "" then
+      return nil, "chrome role " .. tostring(role) .. " carries no path"
+    end
+    rolePath[role] = path
+    wantedPaths[path] = true
+  end
   local chromeReady = true
   do
     local pool = owner._pool
-    local chrome = manifest.chrome
-    assert(type(chrome) == "table", "prepared bundles carry their chrome inventory")
-    local roles = {}
-    for role in pairs(chrome) do
-      roles[#roles + 1] = role
-    end
-    table.sort(roles, function(a, b)
-      return tostring(a) < tostring(b)
-    end)
-    for _, role in ipairs(roles) do
-      local record = chrome[role]
-      assert(type(record) == "table", "chrome records stay records")
-      local path = record.path
-      if type(path) ~= "string" or path == "" then
-        return nil, "chrome role " .. tostring(role) .. " carries no path"
+    for path, token in pairs(lease._chromeTokens) do
+      if not wantedPaths[path] then
+        pool:cancel(token)
+        lease._chromeTokens[path] = nil
       end
+    end
+    for _, role in ipairs(wantedRoles) do
+      local path = rolePath[role]
+      assert(type(path) == "string", "prepared chrome resolves its path")
       if lease._chromeLeases[path] == nil and lease._chromeTokens[path] == nil and allowance.remaining > 0 then
         lease._chromeTokens[path] = pool:request(path, POOLED_SAMPLER, "demand")
         allowance.remaining = allowance.remaining - 1
       end
     end
-    for _, role in ipairs(roles) do
-      local record = chrome[role]
-      assert(type(record) == "table", "chrome records stay records")
-      local path = record.path --[[@as string]]
+    for _, role in ipairs(wantedRoles) do
+      local path = rolePath[role]
+      assert(type(path) == "string", "prepared chrome polls its path")
       if lease._chromeLeases[path] == nil then
         local token = lease._chromeTokens[path]
         if token == nil then
@@ -1008,15 +1401,43 @@ local function prepareBundle(owner, lease, demand)
   end
   -- Messages resolve through the borrowed provider membership; the
   -- detached registration snapshot already carries its display facts.
-  local messages, messagesFailure = prepareMessages(lease, demand)
+  -- Banks acquired below unwind when a later family fails, so a doomed
+  -- generation never grows the lease membership.
+  local preBanks = {}
+  for bankId in pairs(lease._messageBanks) do
+    preBanks[bankId] = true
+  end
+  local messages, messageBanks, messagesFailure = prepareMessages(lease, demand)
   if messagesFailure ~= nil then
+    unwindNewBanks(lease, preBanks)
     return nil, messagesFailure
+  end
+  assert(type(messageBanks) == "table", "prepared text names its banks")
+  -- The header font prepares once per owner lifetime, only while a
+  -- demanded font4 window waits and the admission budget stays open.
+  local fonts = { body = owner._text, header = owner._headerFont or owner._text }
+  if needsHeaderFont(manifest, demand.pageRole) then
+    if owner._headerFont == nil then
+      if allowance.remaining <= 0 then
+        return nil, nil
+      end
+      local ok, header =
+        pcall(FieldTextRenderer.new, { cacheFs = owner._cacheFs, fontId = 4, graphics = owner._graphics })
+      if not ok or header == nil then
+        unwindNewBanks(lease, preBanks)
+        return nil, "the pokedex header font cannot be prepared: " .. tostring(header)
+      end
+      owner._headerFont = header
+      allowance.remaining = 0
+    end
+    fonts = { body = owner._text, header = owner._headerFont }
   end
   -- Spinda canvases compose after portraits adopt their bases, at most
   -- one new canvas per call, and gate readiness wherever host canvases
   -- back the seam.
   local spindaReady, spindaFailure = prepareSpindaPictures(owner, lease, demand, allowance)
   if spindaFailure ~= nil then
+    unwindNewBanks(lease, preBanks)
     return nil, spindaFailure
   end
   -- Prepared icon quads warm during preparation so the draw pass only
@@ -1062,17 +1483,32 @@ local function prepareBundle(owner, lease, demand)
       spinda = spinda,
     }
   end
+  -- The published chrome maps exact required roles to adopted handles:
+  -- a fresh immutable table per generation, never an alias of the
+  -- working membership, so pending work cannot mutate the displayed
+  -- generation.
+  local chromeByRole = {}
+  for _, role in ipairs(wantedRoles) do
+    local path = rolePath[role]
+    assert(type(path) == "string", "published chrome resolves its path")
+    local adopted = lease._chromeLeases[path]
+    assert(type(adopted) == "table", "published chrome holds its adopted lease")
+    chromeByRole[role] = adopted
+  end
   return {
     renderer = owner._renderer,
     manifest = manifest,
     animations = manifest.animations,
-    fonts = { body = owner._text, header = owner._text },
+    fonts = fonts,
     messages = messages,
-    chrome = lease._chromeLeases,
+    chrome = chromeByRole,
     pictures = pictures,
     icons = icons,
     surfaces = lease._surfaces,
-  }
+  },
+    nil,
+    wantedPaths,
+    messageBanks
 end
 
 ---@param owner PokedexPresentationResources
@@ -1101,6 +1537,14 @@ local function releaseLeaseInterests(owner, lease)
     end
   end
   lease._spindaCanvases = {}
+  for _, record in ipairs(lease._spindaRetired) do
+    if type(record) == "table" and type(record.release) == "function" then
+      record:release()
+    end
+  end
+  lease._spindaRetired = {}
+  lease._committedPaths = nil
+  lease._committedBanks = nil
   if type(lease._surfaces) == "table" then
     for _, surface in ipairs(lease._surfaces) do
       if type(surface) == "table" and surface.canvas ~= nil then
@@ -1154,15 +1598,22 @@ local function prepareLease(owner, lease, demand)
         pool:cancel(token)
       end
       lease._portraitTokens = {}
+      for _, token in pairs(lease._chromeTokens) do
+        pool:cancel(token)
+      end
+      lease._chromeTokens = {}
     end
     lease._pending = demand
     deferAdoption = true
     pruneSpindaCanvases(owner, lease, demand)
   end
-  local bundle, failure = prepareBundle(owner, lease, demand)
+  local bundle, failure, stagedPaths, stagedBanks = prepareBundle(owner, lease, demand)
   if failure ~= nil then
     -- Failure unwinds pending interests and leaves the committed bundle
     -- internally consistent; the error carries its original cause.
+    -- Message banks the failed generation acquired already unwound
+    -- inside the bundle; only pooled chrome and portrait interests
+    -- remain here.
     local pool = owner._pool
     for _, token in pairs(lease._portraitTokens) do
       pool:cancel(token)
@@ -1183,6 +1634,17 @@ local function prepareLease(owner, lease, demand)
         lease._portraitLeases[path] = nil
       end
     end
+    for _, token in pairs(lease._chromeTokens) do
+      pool:cancel(token)
+    end
+    lease._chromeTokens = {}
+    local committedPaths = lease._committedPaths or {}
+    for path, adopted in pairs(lease._chromeLeases) do
+      if not committedPaths[path] then
+        pool:release(adopted)
+        lease._chromeLeases[path] = nil
+      end
+    end
     return { kind = "failed", error = failure }
   end
   if bundle == nil then
@@ -1195,13 +1657,45 @@ local function prepareLease(owner, lease, demand)
     return { kind = "pending" }
   end
   -- Whole-bundle adoption: only the keyed generation publishes, then the
-  -- icon union retires to the committed set and stale portrait interests
-  -- return to the shared owner. The same demand resolved its portraits
-  -- above, so adoption cannot observe a new selector absence.
+  -- icon union retires to the committed set and stale portrait and
+  -- chrome interests return to the shared owner. The same demand
+  -- resolved its portraits and chrome above, so adoption cannot observe
+  -- a new absence. Stale message banks and retired Spinda records
+  -- release only now that the replacement owns the display.
+  assert(type(stagedPaths) == "table", "adopted bundles carry their staged closure")
+  assert(type(stagedBanks) == "table", "adopted bundles carry their staged banks")
   local wantedPortraits = wantedPortraitPaths(lease, demand)
   assert(wantedPortraits ~= nil, "adopted demands carry their portrait paths")
   commitPortraits(lease, wantedPortraits)
   pruneSpindaCanvases(owner, lease, demand)
+  do
+    local pool = owner._pool
+    for path, adopted in pairs(lease._chromeLeases) do
+      if not stagedPaths[path] then
+        pool:release(adopted)
+        lease._chromeLeases[path] = nil
+      end
+    end
+  end
+  lease._committedPaths = stagedPaths
+  do
+    local provider = owner._messages
+    for bankId in pairs(lease._messageBanks) do
+      if not stagedBanks[bankId] then
+        if provider ~= nil and type(provider.releaseBank) == "function" then
+          provider:releaseBank(bankId)
+        end
+        lease._messageBanks[bankId] = nil
+      end
+    end
+  end
+  lease._committedBanks = stagedBanks
+  for _, record in ipairs(lease._spindaRetired) do
+    if type(record) == "table" and type(record.release) == "function" then
+      record:release()
+    end
+  end
+  lease._spindaRetired = {}
   local icons = assert(lease._icons, "preparation leases own their icon demand")
   icons:commit(demand.iconKeys)
   lease._committed = demand
@@ -1232,8 +1726,11 @@ function PokedexPresentationResources:acquire(opts)
     _portraitLeases = {},
     _chromeTokens = {},
     _chromeLeases = {},
+    _committedPaths = nil,
     _spindaCanvases = {},
+    _spindaRetired = {},
     _messageBanks = {},
+    _committedBanks = nil,
     _surfaces = {},
   }
   -- The six serial compositor surfaces start bound-only; prepare
@@ -1280,6 +1777,11 @@ function PokedexPresentationResources:release()
     releaseLeaseInterests(self, lease)
   end
   self._leases = {}
+  local header = self._headerFont
+  self._headerFont = nil
+  if header ~= nil and type(header.release) == "function" then
+    header:release()
+  end
   local renderer = self._renderer
   self._renderer = nil
   if renderer ~= nil then

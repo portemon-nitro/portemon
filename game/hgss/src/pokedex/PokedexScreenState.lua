@@ -17,8 +17,9 @@ local PokedexInterface = require("game.hgss.src.pokedex.PokedexInterface")
 ---@field _playCry fun(species: string, pattern: integer, form: integer) borrowed cry sink
 ---@field _commitResume fun(resume: table<string, unknown>): boolean composed one-use resume publication
 ---@field _session table<string, unknown> owned presentation session
----@field _readyKey integer last matching resource generation behind admitted motion
----@field _view table<string, unknown> last complete detached projection
+---@field _readyKey integer? last matching resource generation behind admitted motion
+---@field _view table<string, unknown> latest detached projection from the model
+---@field _presentedView table<string, unknown>? last committed printable projection paired with the bundle
 ---@field _assets table<string, unknown>? last committed whole ready bundle
 ---@field _phase string active, failed
 ---@field _preparationError string? nonempty cause behind the failed phase
@@ -43,18 +44,50 @@ local UI_INPUT_PROFILE = {
   heldDirections = true,
 }
 
+-- Maps the live browser projection to its exact generated page role:
+-- each open search editor names its own criteria page and an active
+-- forms comparison names the compare page, never the generic parents.
 ---@param view table<string, unknown> detached browser projection
 ---@return string page role key for the demand
 local function pageRoleFor(view)
   local page = view.page
-  if page == "grid" or page == "cover" or page == "results" or page == "search" then
-    if page == "search" then
-      return "search.criteria"
-    end
+  if page == "grid" or page == "cover" or page == "results" then
     return page
   end
-  if page == "area" or page == "size" or page == "forms" or page == "return" then
+  if page == "search" then
+    local search = view.search
+    if type(search) == "table" and type(search.editor) == "table" then
+      local kind = search.editor.kind or search.editor.criterion
+      if kind == "letter" then
+        return "search.name"
+      elseif kind == "order" then
+        return "search.order"
+      elseif kind == "type" then
+        return "search.type"
+      elseif kind == "height" then
+        return "search.height"
+      elseif kind == "weight" then
+        return "search.weight"
+      elseif kind == "area" then
+        return "search.area"
+      elseif kind == "shape" then
+        return "search.shape"
+      end
+    end
+    return "search.criteria"
+  end
+  if page == "area" or page == "size" then
     return "entry." .. page
+  end
+  if page == "forms" then
+    local forms = view.forms
+    if type(forms) == "table" and forms.comparison ~= nil then
+      return "entry.compare"
+    end
+    return "entry.forms"
+  end
+  if page == "return" then
+    return "entry.return"
   end
   return "grid"
 end
@@ -103,12 +136,21 @@ local function buildDemand(view)
   if dexMode ~= "national" then
     dexMode = "johto"
   end
+  local language = "native"
+  if
+    type(view.selection) == "table"
+    and type(view.selection.language) == "string"
+    and view.selection.language ~= ""
+  then
+    language = view.selection.language
+  end
   return {
     key = "pokedex-" .. tostring(view.key),
     purpose = "browser",
     pageRole = pageRoleFor(view),
     dexMode = dexMode,
-    language = "native",
+    language = language,
+    profile = "base",
     iconKeys = iconKeys,
     pictures = pictures,
     text = text,
@@ -219,14 +261,24 @@ local function consumeBatch(self, mapped)
 end
 
 ---@param self PokedexScreenState
+---@return table<string, unknown> presented projection paired with the committed bundle
+local function presentedView(self)
+  return self._presentedView or self._view
+end
+
+---@param self PokedexScreenState
 ---@param demand table<string, unknown> finite demand for the current projection
 local function advanceLease(self, demand)
   local outcome = self._lease:prepare(demand)
   assert(type(outcome) == "table" and type(outcome.kind) == "string", "leases answer pending, ready, or failed")
   if outcome.kind == "ready" then
     if outcome.key == demand.key then
+      -- A matching generation commits view, key, and bundle together;
+      -- the same key with refreshed presentation values simply refreshes
+      -- the presented projection without new acquisitions.
       self._assets = assert(outcome.assets, "ready outcomes carry their whole bundle")
       self._readyKey = self._view.key
+      self._presentedView = self._view
     end
   elseif outcome.kind == "failed" then
     if self._phase ~= "failed" then
@@ -281,6 +333,9 @@ function PokedexScreenState.new(args)
   assert(type(args.effect) == "function", "the presented screen sinks its sound effects")
   assert(type(args.playCry) == "function", "the presented screen sinks its cry effects")
   assert(type(args.commitResume) == "function", "the presented screen publishes its resume through the owner")
+  -- A fresh screen holds no matching readiness: the first whole bundle
+  -- commits view, key, and assets together before any motion is
+  -- admitted.
   local self = setmetatable({
     _controller = controller,
     _lease = lease,
@@ -289,8 +344,9 @@ function PokedexScreenState.new(args)
     _playCry = args.playCry,
     _commitResume = args.commitResume,
     _session = ApplicationPresentation.new(PokedexInterface.browser(args.overrides)),
-    _readyKey = controller:view().key,
+    _readyKey = nil,
     _view = controller:view(),
+    _presentedView = nil,
     _assets = nil,
     _phase = "active",
     _preparationError = nil,
@@ -329,6 +385,10 @@ function PokedexScreenState:updateFixed(events)
   resolvePlan(self)
   local mapped = mapBatch(self, events)
   local model = consumeBatch(self, mapped)
+  -- Before the first whole bundle commits the ready key stays nil, so
+  -- the model withholds every non-cancel transition; afterwards the
+  -- committed key admits motion while a newer pending generation holds
+  -- the last presented pair.
   local preparation
   if self._assets ~= nil then
     preparation = { readyKey = self._readyKey, animations = self._assets.animations }
@@ -337,28 +397,31 @@ function PokedexScreenState:updateFixed(events)
   end
   self._controller:updateFixed(model, preparation)
   self._view = self._controller:view()
-  self.page = self._view.page
-  self.view = self._view
+  if self._phase ~= "failed" then
+    advanceLease(self, buildDemand(self._view))
+  end
+  local presented = presentedView(self)
+  self.page = presented.page
+  self.view = presented
   dispatchEffects(self)
   local terminal = self._controller:takeResult()
   if terminal ~= nil then
     self._terminal = terminal
   end
-  if self._phase ~= "failed" then
-    advanceLease(self, buildDemand(self._view))
-  end
   resolvePlan(self)
 end
 
--- The host-facing presentation snapshot: open lifetime, the detached browser
--- projection, the optional committed bundle, the private compact record,
--- the resolved plan, the terminal failure cause, and the finite modal
--- input profile. Fresh tables per call.
+-- The host-facing presentation snapshot: open lifetime, the detached
+-- browser projection paired with the committed bundle, the private
+-- compact record, the resolved plan, the terminal failure cause, and
+-- the finite modal input profile. The exposed view and assets always
+-- belong to one matching generation; while the first bundle is pending
+-- the view stays live with no assets attached. Fresh tables per call.
 ---@return table<string, unknown>
 function PokedexScreenState:status()
   local status = {
     open = self._terminal == nil,
-    view = self._view,
+    view = presentedView(self),
     phase = self._phase,
     compact = self._compact,
     uiInput = UI_INPUT_PROFILE,

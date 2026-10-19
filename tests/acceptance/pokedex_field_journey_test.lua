@@ -60,23 +60,40 @@ end
 -- model, and factory, but no GPU may realize. The lease stays pending
 -- like an unready worker while the retained host cover owns the tick, so
 -- the browser still advances its first motion and closes normally.
+-- The most recently bound preparation gate, so journeys can stage
+-- delayed first readiness: closed while the screen must stay inert, opened
+-- once the test models staged worker completion.
+local boundGate = nil
+
 ---@param game table<string, unknown> booted acceptance game
+---@return table gate with open/releases behind the bound lease double
 local function bindPokedexLease(game)
   local runtime = assert(game.runtime, "the journey binds the field preparation seam")
-  local releases = 0
+  local gate = { open = false, releases = 0 }
+  -- Headless preparation double: the journey proves production
+  -- composition, pause/return ownership, and resume with the real catalog,
+  -- model, and factory, but no GPU may realize. The lease stays pending
+  -- until the journey opens the gate, then commits one imageless whole
+  -- bundle whose animations record alone admits further motion.
+  local bundle = { animations = {}, chrome = {}, pictures = {}, surfaces = {}, fonts = {}, messages = {} }
   runtime:bindPokedexPreparation(function(_)
     local lease = {}
-    function lease:prepare(_)
+    function lease:prepare(demand)
+      if gate.open and type(demand) == "table" and demand.key ~= nil then
+        return { kind = "ready", key = demand.key, assets = bundle }
+      end
       return { kind = "pending" }
     end
     function lease:release()
-      releases = releases + 1
+      gate.releases = gate.releases + 1
     end
     function lease:releases()
-      return releases
+      return gate.releases
     end
     return lease
   end)
+  boundGate = gate
+  return gate
 end
 
 local function withGame(versionId, fn)
@@ -292,12 +309,59 @@ local function runLaunchJourney(versionId)
   end)
 end
 
+local function browserLeaf(game)
+  local status = game.runtime.applicationHost:status()
+  local live = assert(status.application, "the open application exposes its live child")
+  return live.child or live
+end
+
+local function runFirstReadinessJourney(versionId)
+  requireComposition("first-open readiness gating")
+  withGame(versionId, function(game)
+    local state = hostCallbacks(game)
+    seedUnlockedDex(game)
+    openPokedex(game, state)
+    local leaf = browserLeaf(game)
+    local firstPage = assert(leaf.page or (leaf.view and leaf.view.page), "the browser exposes its page")
+    Assert.equal(firstPage, "cover", "the pokedex opens on its cover")
+    local firstKey = assert(leaf.view, "the browser exposes its detached projection").key
+    for _ = 1, 5 do
+      confirm(game, state)
+    end
+    leaf = browserLeaf(game)
+    Assert.equal(
+      leaf.page or (leaf.view and leaf.view.page),
+      "cover",
+      "confirming the cover before readiness advances nothing"
+    )
+    Assert.equal(leaf.view.key, firstKey, "pending ticks publish no new generation")
+    local gate = assert(boundGate, "the journey binds the preparation gate")
+    gate.open = true
+    game:step()
+    game:step()
+    confirm(game, state)
+    game:advanceUntil("the committed cover admits its confirm", function()
+      local live = browserLeaf(game)
+      return (live.page or (live.view and live.view.page)) == "grid"
+    end, 240)
+    closePokedex(game, state)
+    cancel(game, state)
+    game:advanceUntil("the readiness journey closes back to the field", function(snapshot)
+      return hostPhase(game) == FieldApplicationHost.PHASES.closed and not snapshot.fieldLocked
+    end, 120)
+  end)
+end
+
 local function runBrowserJourney(versionId)
   requireComposition("every advertised page presented and interactive")
   withGame(versionId, function(game)
     local state = hostCallbacks(game)
     seedUnlockedDex(game)
     openPokedex(game, state)
+    local gate = assert(boundGate, "the journey binds the preparation gate")
+    gate.open = true
+    game:step()
+    game:step()
     local status = game.runtime.applicationHost:status()
     local child = assert(status.application, "the open application exposes its live child")
     local leaf = child.child or child
@@ -369,6 +433,12 @@ end
 function T.field_launch_pauses_field_and_returns_through_the_retained_menu(context)
   for _, versionId in ipairs(requireVersions(context)) do
     runLaunchJourney(versionId)
+  end
+end
+
+function T.first_open_withholds_motion_until_preparation_commits(context)
+  for _, versionId in ipairs(requireVersions(context)) do
+    runFirstReadinessJourney(versionId)
   end
 end
 

@@ -33,7 +33,35 @@ local function ownerArgs(pool)
     catalog = catalog,
     cacheFs = {
       loadLua = function(_)
-        return { schema = PokedexCache.SCHEMA, animations = {}, chrome = {} }
+        -- The synthetic manifest mirrors the generated page contract:
+        -- empty per-role inventories behind the exercised roles plus
+        -- the producer text bindings, so strict page closure validates
+        -- without staging any chrome.
+        local emptyPage = function()
+          return {
+            backgrounds = { information = {}, controls = {} },
+            cells = {},
+            sprites = {},
+            windows = {},
+          }
+        end
+        return {
+          schema = PokedexCache.SCHEMA,
+          animations = {},
+          chrome = {},
+          cells = {},
+          sprites = {},
+          windows = {},
+          pages = { grid = emptyPage(), registration = emptyPage() },
+          text = {
+            ui = { bankId = 802 },
+            entryByLanguage = {
+              native = { nameBankId = 237, categoryBankId = 816, flavorBankId = 803 },
+            },
+            measureByProfile = { base = { heightBankId = 815, weightBankId = 813 } },
+            registrationAnnouncement = { bankId = 197, messageId = 871 },
+          },
+        }
       end,
     },
     derivedAssets = {
@@ -246,6 +274,403 @@ function T.surfaces_realize_across_separate_prepares_under_one_allowance()
   for _, surface in ipairs(surfaces) do
     Assert.isTrue(surface.canvas == nil, "lease release returns every serial surface")
   end
+end
+
+-- Two disjoint authored page closures over the shared pool: every
+-- background/cell/sprite role resolves to a distinct chrome path so the
+-- admitted set proves page closure instead of whole-manifest borrowing.
+local function closureManifest()
+  local PokedexCache = require("libs.assets.src.PokedexCache")
+  local function background(chrome)
+    return { chrome = chrome, layer = 0, x = 0, y = 0, priority = 0, paletteGroup = "group" }
+  end
+  local function cell(chrome)
+    return {
+      bounds = { x = 0, y = 0, width = 8, height = 8 },
+      parts = { { chrome = chrome, source = { x = 0, y = 0, width = 8, height = 8 }, x = 0, y = 0 } },
+    }
+  end
+  local function sprite(animation)
+    return {
+      pane = "controls",
+      animation = animation,
+      x = 0,
+      y = 0,
+      priority = 0,
+      drawPriority = 0,
+      paletteGroup = "group",
+    }
+  end
+  local function page(bgRole, cellRole, spriteRole)
+    return {
+      backdrop = {
+        information = { r = 0, g = 0, b = 0, a = 255 },
+        controls = { r = 0, g = 0, b = 0, a = 255 },
+      },
+      backgrounds = { information = { background(bgRole) }, controls = {} },
+      cells = { cellRole },
+      sprites = { spriteRole },
+      windows = {},
+    }
+  end
+  return {
+    schema = PokedexCache.SCHEMA,
+    fonts = { body = 0, header = 4 },
+    chrome = {
+      ["grid.bg"] = { path = "pokedex/chrome/grid-bg", width = 256, height = 192 },
+      ["grid.cell.art"] = { path = "pokedex/chrome/grid-cell", width = 8, height = 8 },
+      ["results.bg"] = { path = "pokedex/chrome/results-bg", width = 256, height = 192 },
+      ["results.cell.art"] = { path = "pokedex/chrome/results-cell", width = 8, height = 8 },
+    },
+    cells = {
+      ["grid.cursor"] = cell("grid.cell.art"),
+      ["results.cursor"] = cell("results.cell.art"),
+    },
+    animations = {
+      ["grid.cursor.anim"] = { frames = { { cell = "grid.cursor", duration = 1 } } },
+      ["results.cursor.anim"] = { frames = { { cell = "results.cursor", duration = 1 } } },
+    },
+    sprites = {
+      ["grid.cursor.sprite"] = sprite("grid.cursor.anim"),
+      ["results.cursor.sprite"] = sprite("results.cursor.anim"),
+    },
+    windows = {},
+    text = {
+      ui = { bankId = 802 },
+      entryByLanguage = { native = { nameBankId = 237, categoryBankId = 816, flavorBankId = 803 } },
+      measureByProfile = { base = { heightBankId = 815, weightBankId = 813 } },
+      registrationAnnouncement = { bankId = 197, messageId = 871 },
+    },
+    pages = {
+      grid = page("grid.bg", "grid.cursor", "grid.cursor.sprite"),
+      results = page("results.bg", "results.cursor", "results.cursor.sprite"),
+    },
+  }
+end
+
+---@param pool table shared image pool double under test
+---@return table owner construction arguments over the two-page closure manifest
+local function closureOwnerArgs(pool)
+  local args = ownerArgs(pool)
+  local manifest = closureManifest()
+  args.cacheFs = {
+    loadLua = function(_)
+      return manifest
+    end,
+  }
+  return args
+end
+
+---@param role string authored page role under test
+---@param key string demand generation key
+---@return table demand one imageless browser demand for the page role
+local function pageDemand(role, key)
+  return {
+    key = key,
+    purpose = "browser",
+    pageRole = role,
+    dexMode = "johto",
+    language = "native",
+    iconKeys = {},
+    pictures = {},
+    text = {},
+  }
+end
+
+---@param chrome table<string, unknown> committed chrome mapping under test
+---@return string[] sorted adopted chrome roles
+local function chromeRoles(chrome)
+  local roles = {}
+  for role in pairs(chrome) do
+    roles[#roles + 1] = role
+  end
+  table.sort(roles)
+  return roles
+end
+
+-- Each new page holds only its current source asset closure. The
+-- grid bundle adopts exactly the grid background/cell/sprite roles; a
+-- pending replacement never mutates the displayed generation; after the
+-- results generation publishes only its own roles remain adopted.
+function T.page_change_adopts_only_the_current_source_closure()
+  local Owner = requirePresent("page-closed chrome adoption")
+  local pool = SharedImagePoolFake.new()
+  local owner = Owner.new(closureOwnerArgs(pool))
+  local lease = owner:acquire({ purpose = "browser" })
+  local first = nil
+  for _ = 1, 64 do
+    local outcome = lease:prepare(pageDemand("grid", "pokedex-grid"))
+    if outcome.kind == "ready" then
+      first = outcome
+      break
+    end
+    Assert.equal(outcome.kind, "pending", "partial page readiness never publishes")
+  end
+  Assert.notNil(first, "the current page converges on a complete bundle")
+  Assert.deepEqual(
+    chromeRoles(first.assets.chrome),
+    { "grid.bg", "grid.cell.art" },
+    "the grid bundle holds only the grid closure"
+  )
+  local stepped = lease:prepare(pageDemand("results", "pokedex-results"))
+  Assert.equal(stepped.kind, "pending", "a fresh generation never adopts on its enrollment call")
+  Assert.deepEqual(
+    chromeRoles(first.assets.chrome),
+    { "grid.bg", "grid.cell.art" },
+    "pending work leaves the committed bundle untouched"
+  )
+  local second = nil
+  for _ = 1, 64 do
+    local outcome = lease:prepare(pageDemand("results", "pokedex-results"))
+    if outcome.kind == "ready" then
+      second = outcome
+      break
+    end
+    Assert.equal(outcome.kind, "pending", "partial replacement never publishes")
+  end
+  Assert.notNil(second, "the replacement page converges on a complete bundle")
+  Assert.deepEqual(
+    chromeRoles(second.assets.chrome),
+    { "results.bg", "results.cell.art" },
+    "the results bundle holds only the results closure"
+  )
+  Assert.isTrue(second.assets ~= first.assets, "replacement publishes a new bundle identity")
+  lease:release()
+  lease:release()
+  owner:release()
+  Assert.equal(pool:stats().outstandingLeases, 0, "close returns every adopted image interest")
+end
+
+-- A replacement that fails after adopting its first image cannot
+-- publish, the previous committed bundle survives byte-identical, and
+-- failure plus repeated disposal return every owned interest exactly once.
+function T.failed_replacement_preserves_the_committed_bundle()
+  local Owner = requirePresent("failure-after-partial-acquisition rollback")
+  local pool = SharedImagePoolFake.new()
+  local owner = Owner.new(closureOwnerArgs(pool))
+  local lease = owner:acquire({ purpose = "browser" })
+  local first = nil
+  for _ = 1, 64 do
+    local outcome = lease:prepare(pageDemand("grid", "pokedex-grid"))
+    if outcome.kind == "ready" then
+      first = outcome
+      break
+    end
+  end
+  Assert.notNil(first, "the grid page commits before the failing replacement")
+  pool:failAfterUploads(1, "synthetic chrome upload failure")
+  local failed = nil
+  local published = nil
+  for _ = 1, 64 do
+    local outcome = lease:prepare(pageDemand("results", "pokedex-results"))
+    if outcome.kind == "failed" then
+      failed = outcome
+      break
+    end
+    if outcome.kind == "ready" then
+      published = outcome
+      break
+    end
+    Assert.equal(outcome.kind, "pending", "the doomed generation stays pending until its failure surfaces")
+  end
+  Assert.isNil(published, "a generation with an unready image never publishes")
+  Assert.notNil(failed, "the replacement reports its attributed failure")
+  Assert.isTrue(
+    type(failed.error) == "string" and failed.error ~= "",
+    "the failure carries its original cause"
+  )
+  Assert.deepEqual(
+    chromeRoles(first.assets.chrome),
+    { "grid.bg", "grid.cell.art" },
+    "the failed generation never mutates the committed bundle"
+  )
+  pool:clearFailure()
+  local again = lease:prepare(pageDemand("grid", "pokedex-grid"))
+  Assert.equal(again.kind, "ready", "the committed generation answers without new work")
+  Assert.isTrue(again.assets == first.assets, "the committed bundle survives the failed replacement")
+  lease:release()
+  lease:release()
+  owner:release()
+  Assert.equal(pool:stats().outstandingLeases, 0, "failure and disposal return every owned interest")
+end
+
+-- A scripted message bank double behind the borrowed provider seam: banks
+-- resolve canned source strings by entry, every acquisition and release
+-- is counted, and unknown banks fail instead of inventing text.
+---@param canned table<integer, table<integer, string>> source strings by bank and entry
+---@return table provider double with an acquisition census
+local function stubMessageProvider(canned)
+  local provider = { acquires = {}, releases = {}, banks = canned }
+  function provider:acquireBank(bankId)
+    self.acquires[bankId] = (self.acquires[bankId] or 0) + 1
+    if self.banks[bankId] == nil then
+      return nil, "message bank " .. tostring(bankId) .. " is unavailable in the generated cache"
+    end
+    return { bankId = bankId }
+  end
+  function provider:get(bankId, messageId)
+    local bank = self.banks[bankId]
+    if bank == nil then
+      return nil, "message bank " .. tostring(bankId) .. " is not acquired"
+    end
+    local text = bank[messageId]
+    if text == nil then
+      return nil, "message " .. tostring(messageId) .. " not in bank " .. tostring(bankId)
+    end
+    return { bankId = bankId, messageId = messageId, text = text }
+  end
+  function provider:releaseBank(bankId)
+    self.releases[bankId] = (self.releases[bankId] or 0) + 1
+  end
+  return provider
+end
+
+-- Browser text resolves through borrowed banks: species slots by stable
+-- catalog identity, measures by the demanded profile, numerics verbatim;
+-- every shared bank joins the membership exactly once and a replacement
+-- that drops text returns its banks exactly once.
+function T.browser_text_resolves_through_borrowed_banks_once_per_bank()
+  local Owner = requirePresent("borrowed message bank ownership")
+  local pool = SharedImagePoolFake.new()
+  local monCatalog = Fixture.catalogs()
+  local speciesRecord = assert(monCatalog:species("CHIKORITA"), "the fixture catalog names its species")
+  local nativeId = assert(speciesRecord.nativeId, "the fixture species carries its numeric identity")
+  assert(type(nativeId) == "number", "the fixture species identity resolves numerically")
+  local provider = stubMessageProvider({
+    [237] = { [nativeId] = "CHIKORITA" },
+    [816] = { [nativeId] = "Leaf" },
+    [815] = { [nativeId] = "0.9m" },
+  })
+  local args = closureOwnerArgs(pool)
+  args.messages = provider
+  local owner = Owner.new(args)
+  local lease = owner:acquire({ purpose = "browser" })
+  local demand = pageDemand("grid", "pokedex-text")
+  demand.text = {
+    { role = "grid.seen-count", kind = "numeric", value = "2" },
+    { role = "grid.selected-name", kind = "species_name", species = "CHIKORITA", language = "native" },
+    { role = "entry.category", kind = "category", species = "CHIKORITA", language = "native" },
+    { role = "entry.height", kind = "height", species = "CHIKORITA" },
+  }
+  local ready = nil
+  for _ = 1, 64 do
+    local outcome = lease:prepare(demand)
+    if outcome.kind == "ready" then
+      ready = outcome
+      break
+    end
+    Assert.isTrue(
+      outcome.kind ~= "failed",
+      "sourced text never fails its banks: " .. tostring(outcome.error)
+    )
+  end
+  Assert.notNil(ready, "sourced text converges on a complete bundle")
+  Assert.deepEqual(ready.assets.messages, {
+    ["grid.seen-count"] = "2",
+    ["grid.selected-name"] = "CHIKORITA",
+    ["entry.category"] = "Leaf",
+    ["entry.height"] = "0.9m",
+  }, "every visible slot resolves its prepared string")
+  for _, bankId in ipairs({ 237, 815, 816 }) do
+    Assert.equal(provider.acquires[bankId], 1, "bank " .. bankId .. " joins the membership exactly once")
+    Assert.isNil(provider.releases[bankId], "committed banks stay held while watched")
+  end
+  local second = nil
+  for _ = 1, 64 do
+    local outcome = lease:prepare(pageDemand("results", "pokedex-results-text"))
+    if outcome.kind == "ready" then
+      second = outcome
+      break
+    end
+    Assert.isTrue(
+      outcome.kind ~= "failed",
+      "the textless replacement never fails: " .. tostring(outcome.error)
+    )
+  end
+  Assert.notNil(second, "the textless replacement converges on a complete bundle")
+  Assert.deepEqual(second.assets.messages, {}, "a demand without slots publishes no messages")
+  for _, bankId in ipairs({ 237, 815, 816 }) do
+    Assert.equal(provider.releases[bankId], 1, "a replacement with no slots returns bank " .. bankId .. " once")
+  end
+  lease:release()
+  owner:release()
+  Assert.equal(pool:stats().outstandingLeases, 0, "text and chrome return every image interest")
+end
+
+-- An unknown source text bank fails preparation instead of silently
+-- substituting another language: the doomed generation publishes
+-- nothing, acquires nothing, and returns every interest it staged.
+function T.unknown_text_bank_fails_without_silent_fallback()
+  local Owner = requirePresent("unknown text bank attribution")
+  local pool = SharedImagePoolFake.new()
+  local args = closureOwnerArgs(pool)
+  local provider = stubMessageProvider({})
+  args.messages = provider
+  local owner = Owner.new(args)
+  local lease = owner:acquire({ purpose = "browser" })
+  local demand = pageDemand("grid", "pokedex-foreign")
+  demand.text = {
+    { role = "grid.selected-name", kind = "species_name", species = "CHIKORITA", language = "english" },
+  }
+  local failed = nil
+  for _ = 1, 64 do
+    local outcome = lease:prepare(demand)
+    if outcome.kind == "failed" then
+      failed = outcome
+      break
+    end
+    Assert.isTrue(outcome.kind == "pending", "the doomed generation never publishes")
+  end
+  Assert.notNil(failed, "an unbound language bank cannot publish")
+  Assert.isTrue(
+    type(failed.error) == "string" and failed.error:find("english", 1, true) ~= nil,
+    "the failure names its unknown language"
+  )
+  local acquired = 0
+  for _ in pairs(provider.acquires) do
+    acquired = acquired + 1
+  end
+  Assert.equal(acquired, 0, "a failed bank validation acquires nothing")
+  Assert.equal(pool:stats().outstandingLeases, 0, "the failed generation returns its staged chrome")
+  lease:release()
+  owner:release()
+  Assert.equal(pool:stats().outstandingLeases, 0, "failure and disposal return every owned interest")
+end
+
+-- A demanded header window attempts the owned font4 renderer instead of
+-- silently borrowing body text: without host graphics the demand fails
+-- with attribution and publishes nothing.
+function T.header_font_demand_fails_without_host_graphics()
+  local Owner = requirePresent("header font demand ownership")
+  local pool = SharedImagePoolFake.new()
+  local args = closureOwnerArgs(pool)
+  local manifest = closureManifest()
+  manifest.windows = { ["grid.selected-name"] = { font = 4 } }
+  manifest.pages.grid.windows = { "grid.selected-name" }
+  args.cacheFs = {
+    loadLua = function(_)
+      return manifest
+    end,
+  }
+  local owner = Owner.new(args)
+  local lease = owner:acquire({ purpose = "browser" })
+  local failed = nil
+  for _ = 1, 64 do
+    local outcome = lease:prepare(pageDemand("grid", "pokedex-font"))
+    if outcome.kind == "failed" then
+      failed = outcome
+      break
+    end
+    Assert.isTrue(outcome.kind == "pending", "font readiness never publishes a body-font bundle")
+  end
+  Assert.notNil(failed, "a font4 demand without host graphics cannot publish")
+  Assert.isTrue(
+    type(failed.error) == "string" and failed.error:find("header font", 1, true) ~= nil,
+    "the failure names its header font cause"
+  )
+  lease:release()
+  owner:release()
+  Assert.equal(pool:stats().outstandingLeases, 0, "font failure returns every image interest")
 end
 
 return { tests = T }

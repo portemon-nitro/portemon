@@ -80,18 +80,40 @@ end
 function T.matching_readiness_admits_motion_while_stale_keys_retain_the_view()
   local ScreenState = requirePresent("matching readiness gating")
   local args = screenArgs()
+  local gate = { open = false }
+  local bundle = { animations = {}, chrome = {}, pictures = {}, surfaces = {}, fonts = {}, messages = {} }
+  local lease = { prepared = {}, released = 0 }
+  function lease:prepare(demand)
+    assert(type(demand) == "table" and demand.key ~= nil, "the screen prepares keyed demands")
+    self.prepared[#self.prepared + 1] = demand
+    if gate.open then
+      return { kind = "ready", key = demand.key, assets = bundle }
+    end
+    return { kind = "pending" }
+  end
+  function lease:release()
+    self.released = self.released + 1
+  end
+  args.lease = lease
   local screen = ScreenState.new(args)
-  local firstView = screen:status().view
+  local firstKey = screen:status().view.key
   screen:updateFixed({ { type = "navigate", direction = "right" } })
-  local movedView = screen:status().view
-  Assert.isTrue(movedView.key ~= firstView.key, "an admitted update advances the generation key")
-  local frozenSelection = movedView.selection
+  Assert.equal(screen:status().view.key, firstKey, "an update without matching readiness retains the view")
+  Assert.isNil(screen:status().assets, "pending ticks publish no half bundle")
+  gate.open = true
+  screen:updateFixed({})
+  Assert.notNil(screen:status().assets, "the matching ready outcome publishes the whole bundle")
   screen:updateFixed({ { type = "navigate", direction = "right" } })
-  Assert.deepEqual(
-    screen:status().view.selection,
-    frozenSelection,
-    "an update without matching readiness retains the last complete view"
+  local movedKey = screen:status().view.key
+  Assert.isTrue(movedKey ~= firstKey, "an admitted update advances the generation key")
+  gate.open = false
+  screen:updateFixed({ { type = "navigate", direction = "right" } })
+  Assert.equal(
+    screen:status().view.key,
+    movedKey,
+    "a newer pending generation retains the last committed view"
   )
+  Assert.notNil(screen:status().assets, "the retained pair keeps its committed bundle")
   screen:dispose()
 end
 
@@ -112,6 +134,47 @@ function T.drained_effects_reach_their_sinks_exactly_once()
   end
   Assert.isTrue(sounded + cried >= 0, "effect sinks stay owned by the screen while browsing")
   Assert.isNil(screen:takeResult(), "browsing without closing yields no terminal result")
+  screen:dispose()
+end
+
+-- Opening the screen cannot advance or accept user actions before
+-- its initial bundle is genuinely ready. A gateable lease holds every
+-- preparation pending while queued navigation must not move the browser;
+-- only after the matching ready outcome may fresh input transition, and the
+-- committed view pairs with its own generation key.
+function T.first_open_withholds_motion_until_its_bundle_commits()
+  local ScreenState = requirePresent("first-open readiness gating")
+  local args = screenArgs()
+  local gate = { open = false }
+  local bundle = { animations = {}, chrome = {}, pictures = {}, surfaces = {}, fonts = {}, messages = {} }
+  local lease = { prepared = {}, released = 0 }
+  function lease:prepare(demand)
+    assert(type(demand) == "table" and demand.key ~= nil, "the screen prepares keyed demands")
+    self.prepared[#self.prepared + 1] = demand
+    if gate.open then
+      return { kind = "ready", key = demand.key, assets = bundle }
+    end
+    return { kind = "pending" }
+  end
+  function lease:release()
+    self.released = self.released + 1
+  end
+  args.lease = lease
+  local screen = ScreenState.new(args)
+  local firstKey = screen:status().view.key
+  Assert.isNil(screen:status().assets, "no bundle is committed before the first ready outcome")
+  for _ = 1, 20 do
+    screen:updateFixed({ { type = "navigate", direction = "right" } })
+  end
+  Assert.equal(screen:status().view.key, firstKey, "pending ticks admit no browser motion")
+  Assert.isNil(screen:status().assets, "pending ticks publish no half bundle")
+  gate.open = true
+  screen:updateFixed({})
+  local committed = screen:status()
+  Assert.notNil(committed.assets, "the matching ready outcome publishes the whole bundle")
+  Assert.equal(committed.view.key, firstKey, "the committed view pairs with its own generation")
+  screen:updateFixed({ { type = "navigate", direction = "right" } })
+  Assert.isTrue(screen:status().view.key ~= firstKey, "fresh input advances only after readiness")
   screen:dispose()
 end
 
@@ -174,6 +237,105 @@ function T.size_presentation_toggle_keeps_the_source_clock_running()
     screen:status().view.key == firstKey or screen:status().view.key ~= nil,
     "toggling the size presentation keeps a coherent browser view"
   )
+  screen:dispose()
+end
+
+-- Every search editor and the forms comparison demand their own exact
+-- source page role, never the generic parents: a scripted controller
+-- walks the browser through each projection while an always-ready
+-- lease records the demanded roles.
+function T.search_editors_and_comparison_resolve_their_own_page_roles()
+  local ScreenState = requirePresent("exact page role demand")
+  local editorKinds = {
+    { kind = "letter", role = "search.name" },
+    { kind = "order", role = "search.order" },
+    { kind = "type", role = "search.type" },
+    { kind = "height", role = "search.height" },
+    { kind = "weight", role = "search.weight" },
+    { kind = "area", role = "search.area" },
+    { kind = "shape", role = "search.shape" },
+  }
+  local views, expected = {}, {}
+  ---@param page string browser page behind the view
+  ---@param extra table<string, unknown>? page-specific projection fields
+  ---@param role string exact source page role behind the view
+  local function scriptView(page, extra, role)
+    local view = {
+      key = #views + 1,
+      mode = "johto",
+      page = page,
+      selection = { language = "english" },
+      pictures = {},
+      text = {},
+    }
+    if extra ~= nil then
+      for key, value in pairs(extra) do
+        view[key] = value
+      end
+    end
+    views[#views + 1] = view
+    expected[#expected + 1] = role
+  end
+  scriptView("cover", nil, "cover")
+  scriptView("grid", nil, "grid")
+  scriptView("search", { search = { criteria = {} } }, "search.criteria")
+  for _, editor in ipairs(editorKinds) do
+    scriptView("search", {
+      search = { criteria = {}, editor = { criterion = editor.kind, focus = nil, previousColumn = "criteria" } },
+    }, editor.role)
+  end
+  scriptView("results", nil, "results")
+  scriptView("area", nil, "entry.area")
+  scriptView("size", nil, "entry.size")
+  scriptView("forms", { forms = { variants = {}, row = 0, scrollbar = {} } }, "entry.forms")
+  scriptView("forms", {
+    forms = {
+      variants = {},
+      row = 0,
+      scrollbar = {},
+      comparison = { indices = { 0, 1 }, activeSide = 0, facing = "front" },
+    },
+  }, "entry.compare")
+  scriptView("return", nil, "entry.return")
+  local controller = { index = 1, views = views }
+  function controller:view()
+    return self.views[self.index]
+  end
+  function controller:updateFixed(events, _)
+    assert(type(events) == "table", "the presented screen steps its controller with a batch")
+    if self.index < #self.views then
+      self.index = self.index + 1
+    end
+  end
+  function controller:takeResult()
+    return nil
+  end
+  function controller:dispose()
+  end
+  local lease = { prepared = {}, released = 0 }
+  function lease:prepare(demand)
+    assert(type(demand) == "table" and demand.key ~= nil, "the screen prepares keyed demands")
+    self.prepared[#self.prepared + 1] = demand
+    return { kind = "ready", key = demand.key, assets = {} }
+  end
+  function lease:release()
+    self.released = self.released + 1
+  end
+  local args = screenArgs({ controller = controller, lease = lease })
+  local screen = ScreenState.new(args)
+  for _ = 2, #views do
+    screen:updateFixed({})
+  end
+  Assert.equal(#lease.prepared, #views, "every projection prepares exactly one demand")
+  for index, demand in ipairs(lease.prepared) do
+    Assert.equal(
+      demand.pageRole,
+      expected[index],
+      "projection " .. index .. " demands its own source page role"
+    )
+    Assert.equal(demand.language, "english", "the demand carries the selected language")
+    Assert.equal(demand.profile, "base", "the demand carries its measurement profile")
+  end
   screen:dispose()
 end
 
