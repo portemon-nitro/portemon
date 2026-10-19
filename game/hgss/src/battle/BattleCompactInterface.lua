@@ -651,6 +651,7 @@ local function childContent(child)
           width = 240,
           height = 20,
           label = box.label,
+          sub = box.sub,
           detail = box.detail,
           enabled = box.enabled,
           empty = box.empty,

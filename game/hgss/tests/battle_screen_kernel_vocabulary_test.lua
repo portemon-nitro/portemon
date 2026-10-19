@@ -484,7 +484,20 @@ function T.ordinary_production_turns_never_show_the_placeholder()
   Assert.isTrue(seenKinds["struck"] == true, "the vocabulary battle really strikes")
   Assert.isTrue(seenKinds["move-used"] == true, "the foe really uses its stage move")
   Assert.isTrue(seenKinds["stage"] == true, "the stage move really stages")
-  local timeline = BattleTimeline.new({})
+  -- The closing production packets carry selected native effects, so the
+  -- cue player requires its animation collaborator. This vocabulary
+  -- scenario owns message wording rather than native playback, so effects
+  -- settle at once here; the live screen suite owns real completion.
+  local settledEffects = {}
+  function settledEffects.start(cue)
+    assert(type(cue) == "table" and cue.effectKey ~= nil, "native cues carry their selected key")
+    return { effectKey = cue.effectKey }
+  end
+  function settledEffects.status(_handle)
+    return "complete"
+  end
+  function settledEffects.cancel(_handle) end
+  local timeline = BattleTimeline.new({ effects = settledEffects })
   timeline:reset(record.packets[1].before)
   local messages = {}
   local last = nil

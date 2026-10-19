@@ -196,4 +196,382 @@ function T.mid_run_resource_and_voice_failures_fail_loudly_and_stay_live()
   Assert.equal(#scene:effectViews(), 0, "no failed effect record lingers in the live scene")
 end
 
+-- Live-screen failure containment for selected native effects: a
+-- terminal worker/producer failure and a mid-closure image upload failure
+-- each fail the screen with launch/effect/packet provenance, apply no
+-- health early, expose no new decision, leave no orphaned scene record,
+-- and stay failed across disposal and stale deliveries.
+-- Native mechanism: the overlay-7 resource-opening teardown live-state
+-- check stays terminal through the screen envelope, and partial
+-- acquisitions release exactly once.
+-- Headless: the real screen, timeline, holder, and scene over a failing
+-- staged-effect double; no dump capability is needed.
+
+---@param launchId string owning launch identity under test preparation
+---@return table preparation services serving portraits plus the fixture services
+local function failingScreenServices(staging)
+  local portraits = {
+    images = {},
+  }
+  function portraits.prepare(_demand)
+    return true
+  end
+  function portraits.drawable(key)
+    if portraits.images[key] == nil then
+      portraits.images[key] = {
+        handle = key,
+        width = 80,
+        height = 80,
+        getWidth = function()
+          return 80
+        end,
+        getHeight = function()
+          return 80
+        end,
+        getDimensions = function()
+          return 80, 80
+        end,
+        setFilter = function() end,
+      }
+    end
+    return portraits.images[key]
+  end
+  function portraits.release(_key) end
+  local services = {}
+  function services.prepare(demand)
+    return portraits.prepare(demand)
+  end
+  function services.drawable(key)
+    local staged = staging.services.drawable(key)
+    if staged ~= nil then
+      return staged
+    end
+    return portraits.drawable(key)
+  end
+  function services.release(key)
+    portraits.release(key)
+    return staging.services.release(key)
+  end
+  function services.requestEffect(key)
+    return staging.services.requestEffect(key)
+  end
+  function services.loadEffect(key)
+    return staging.services.loadEffect(key)
+  end
+  function services.resolveEffectResource(effect, resourceKey)
+    return staging.services.resolveEffectResource(effect, resourceKey)
+  end
+  function services.releaseEffectResource(lease)
+    return staging.services.releaseEffectResource(lease)
+  end
+  return services
+end
+
+---@param hp integer foe health under test driving
+---@return table detached foe record under test driving
+local function failingFoeRecord(hp)
+  return {
+    combatant = 3,
+    participant = 3,
+    side = 2,
+    controller = "wild",
+    active = true,
+    hp = hp,
+    maxHp = 57,
+    species = "EEVEE",
+    form = 0,
+    name = "FOE",
+    level = 20,
+    selector = "front",
+  }
+end
+
+---@return table detached own lead record under test driving
+local function failingOwnRecord()
+  return {
+    combatant = 1,
+    participant = 1,
+    side = 1,
+    controller = "player",
+    active = true,
+    hp = 52,
+    maxHp = 52,
+    species = "EEVEE",
+    form = 0,
+    name = "LEAD",
+    level = 20,
+    selector = "back",
+    moves = { { move = "TACKLE", name = "Tackle", pp = 35, maxPp = 35 } },
+  }
+end
+
+---@param foeHp integer foe health after the view under test driving
+---@return table detached dynamic view under test driving
+local function failingView(foeHp)
+  return { own = { failingOwnRecord() }, foes = { failingFoeRecord(foeHp) } }
+end
+
+---@param launchId string owning launch identity under test driving
+---@param staging table staged-effect fixture under test driving
+---@return table live screen behind the failing effect services plus its port
+local function openFailingScreen(launchId, staging)
+  local BattleScreenState = require("game.hgss.src.battle.BattleScreenState")
+  local Model = require("game.hgss.src.battle.BattlePresentationModel")
+  local ManifestFixture = require("tests.support.BattlePresentationManifestFixture")
+  local ScreenTopology = require("libs.ui.src.ScreenTopology")
+  local manifest = ManifestFixture.manifest()
+  manifest.scenes = { { key = "general/plain/day" } }
+  local measurement = {
+    width = 256,
+    height = 384,
+    topology = ScreenTopology.dualDisplay(
+      { id = "main", rect = { x = 0, y = 0, width = 256, height = 192 }, touch = false, role = "world" },
+      { id = "lower", rect = { x = 0, y = 192, width = 256, height = 192 }, touch = true, role = "auxiliary" }
+    ),
+    pixelRatio = 1,
+    signature = "failure-containment:dual",
+  }
+  local text = {}
+  function text.measure(content)
+    return { width = 8 * #tostring(content), height = 16 }
+  end
+  function text.drawText(_content, _x, _y) end
+  local windows = { calls = {} }
+  function windows.drawWindow(box, frameKey, background)
+    windows.calls[#windows.calls + 1] = { box = box, frame = frameKey, background = background }
+  end
+  local audio = { plays = {} }
+  function audio.play(name)
+    audio.plays[#audio.plays + 1] = name
+    return true
+  end
+  local screen = BattleScreenState.new({
+    launchId = launchId,
+    manifest = manifest,
+    model = Model,
+    submit = function(_reply)
+      return true
+    end,
+    measureDisplay = function()
+      return measurement
+    end,
+    assets = failingScreenServices(staging),
+    text = text,
+    windows = windows,
+    audio = audio,
+  })
+  return screen
+end
+
+---@param screen table live screen under test driving
+---@param launchId string owning launch identity under test driving
+local function presentFailingStrike(screen, launchId)
+  local port = screen:presentationPort()
+  port.present({
+    launchId = launchId,
+    packetId = 1,
+    events = {},
+    before = failingView(57),
+    after = failingView(57),
+  })
+  port.present({
+    launchId = launchId,
+    packetId = 2,
+    events = {
+      {
+        sequence = 1,
+        kind = "struck",
+        cause = { key = "TACKLE" },
+        audience = "public",
+        actors = { { combatant = 1 } },
+        targets = { { combatant = 3 } },
+        move = { executed = "TACKLE" },
+        actionId = 61,
+        hitIndex = 1,
+        effectKey = "TACKLE",
+        payload = { target = 3, damage = 14, hitIndex = 1 },
+        after = { hp = { [1] = 52, [3] = 43 } },
+      },
+    },
+    before = failingView(57),
+    after = failingView(43),
+  })
+end
+
+---@param view table displayed screen view under inspection
+---@return integer displayed foe health
+local function failingDisplayedFoeHp(view)
+  for _, entry in ipairs(view.battlers or {}) do
+    if entry.side == 2 then
+      return entry.hp
+    end
+  end
+  error("the displayed view names its foe", 0)
+end
+
+-- A terminal worker failure for the selected effect fails the live
+-- screen with provenance instead of settling a generic hit: the failed
+-- state names the launch and effect, applies no health early, exposes
+-- no new decision, and stays failed across disposal and stale
+-- deliveries.
+function T.missing_native_effect_request_fails_the_live_screen_with_provenance()
+  local EffectStagingFixture = require("tests.support.EffectStagingFixture")
+  local launchId = "launch-effect-worker-failure"
+  local staging = EffectStagingFixture.new({ launchId = launchId })
+  staging:failEffect("TACKLE", "worker exploded")
+  local screen = openFailingScreen(launchId, staging)
+  presentFailingStrike(screen, launchId)
+  for _ = 1, 600 do
+    screen:updateFixed(1 / 30)
+  end
+  local status = screen:status()
+  Assert.equal(status.mode, "failed", "the missing native dependency fails the screen, never a silent hit")
+  Assert.isTrue(
+    tostring(status.error):find("TACKLE", 1, true) ~= nil,
+    "the failure names its selected effect: " .. tostring(status.error)
+  )
+  Assert.isTrue(
+    tostring(status.error):find(launchId, 1, true) ~= nil,
+    "the failure names its launch: " .. tostring(status.error)
+  )
+  Assert.equal(
+    failingDisplayedFoeHp(screen:view()),
+    57,
+    "the failed cue applies no health early"
+  )
+  Assert.isNil(status.request, "the failed screen exposes no new decision")
+  Assert.isFalse(status.ready, "the failed screen reports unready, never settled")
+  Assert.equal(#screen:view().effectInstances, 0, "no failed effect record lingers in the live scene")
+  screen:dispose()
+  Assert.equal(screen:status().mode, "failed", "disposal keeps the diagnosed failure")
+  local ok = pcall(presentFailingStrike, screen, launchId)
+  Assert.isTrue(ok, "a stale delivery after disposal raises nothing")
+  Assert.equal(screen:status().mode, "failed", "a stale delivery never revives the failed screen")
+end
+
+-- A terminal image upload inside the selected effect closure fails the
+-- live screen without orphans: partial acquisitions release exactly
+-- once, no failed picture lingers, and no health is applied early.
+function T.failed_effect_image_upload_releases_partial_leases_without_orphans()
+  local EffectStagingFixture = require("tests.support.EffectStagingFixture")
+  local Hashing = require("romdump.src.digest.Hashing")
+  local launchId = "launch-effect-upload-failure"
+  local staging = EffectStagingFixture.new({ launchId = launchId })
+  local textureBytes = EffectStagingFixture.rgba(4, 4)
+  staging:stageEffect(
+    "TACKLE",
+    EffectStagingFixture.effectRecord("TACKLE", {
+      { key = "probe-spark", kind = "texture", payload = "effects/probe-spark.lua", contentIdentity = Hashing.sha1hex(textureBytes) },
+    }),
+    { ["effects/probe-spark.lua"] = { width = 4, height = 4, rgba8888 = textureBytes } }
+  )
+  staging:failUploadFor("probe-spark", "gpu exploded")
+  local screen = openFailingScreen(launchId, staging)
+  presentFailingStrike(screen, launchId)
+  for _ = 1, 600 do
+    screen:updateFixed(1 / 30)
+  end
+  local status = screen:status()
+  Assert.equal(status.mode, "failed", "the upload failure fails the screen, never a silent hit")
+  Assert.isTrue(
+    tostring(status.error):find("probe-spark", 1, true) ~= nil,
+    "the failure names its resource: " .. tostring(status.error)
+  )
+  Assert.equal(
+    failingDisplayedFoeHp(screen:view()),
+    57,
+    "the failed closure applies no health early"
+  )
+  Assert.isNil(status.request, "the failed screen exposes no new decision")
+  Assert.equal(#screen:view().effectInstances, 0, "no failed effect record lingers in the live scene")
+  screen:dispose()
+  Assert.equal(screen:status().mode, "failed", "disposal keeps the diagnosed failure")
+end
+
+-- A program naming a task kind without a real factory body never
+-- starts: the live screen fails with launch, effect, and kind
+-- provenance instead of admitting an unrunnable occurrence.
+function T.unknown_program_task_kind_fails_the_live_screen_with_provenance()
+  local EffectStagingFixture = require("tests.support.EffectStagingFixture")
+  local launchId = "launch-effect-unknown-kind"
+  local staging = EffectStagingFixture.new({ launchId = launchId })
+  local record = EffectStagingFixture.effectRecord("TACKLE", {})
+  local probe = lowered("TACKLE", { 34, 1, 2, 3, 29, 50, 4 })
+  record.program = {
+    entry = probe.entry,
+    instructions = probe.instructions,
+    subprograms = probe.subprograms,
+    taskKinds = { "bogus-kind" },
+  }
+  staging:stageEffect("TACKLE", record, {})
+  local screen = openFailingScreen(launchId, staging)
+  presentFailingStrike(screen, launchId)
+  for _ = 1, 600 do
+    screen:updateFixed(1 / 30)
+  end
+  local status = screen:status()
+  Assert.equal(status.mode, "failed", "the unrunnable program fails the screen, never a silent hit")
+  Assert.isTrue(
+    tostring(status.error):find("bogus-kind", 1, true) ~= nil,
+    "the failure names its task kind: " .. tostring(status.error)
+  )
+  Assert.isTrue(
+    tostring(status.error):find("TACKLE", 1, true) ~= nil,
+    "the failure names its selected effect: " .. tostring(status.error)
+  )
+  Assert.isTrue(
+    tostring(status.error):find(launchId, 1, true) ~= nil,
+    "the failure names its launch: " .. tostring(status.error)
+  )
+  Assert.equal(failingDisplayedFoeHp(screen:view()), 57, "the rejected program applies no health early")
+  Assert.isNil(status.request, "the failed screen exposes no new decision")
+  Assert.isFalse(status.ready, "the failed screen reports unready, never settled")
+  Assert.equal(#screen:view().effectInstances, 0, "no rejected effect record lingers in the live scene")
+  screen:dispose()
+  Assert.equal(screen:status().mode, "failed", "disposal keeps the diagnosed failure")
+end
+
+-- A still-staging effect parks instead of failing or settling: once the
+-- worker closure validates, the same cue admits and runs its program
+-- to the exact checkpoint with no new decision sealed.
+function T.pending_effect_stages_and_runs_once_ready_without_new_demands()
+  local EffectStagingFixture = require("tests.support.EffectStagingFixture")
+  local launchId = "launch-effect-pending-promotion"
+  local staging = EffectStagingFixture.new({ launchId = launchId })
+  local screen = openFailingScreen(launchId, staging)
+  presentFailingStrike(screen, launchId)
+  for _ = 1, 30 do
+    screen:updateFixed(1 / 30)
+  end
+  Assert.isTrue(screen:status().mode ~= "failed", "pending staging never fails fast")
+  Assert.equal(failingDisplayedFoeHp(screen:view()), 57, "the parked cue applies no health early")
+  Assert.isFalse(screen:status().ready, "the parked cue reports unready, never settled")
+  local program = lowered("TACKLE", { 34, 1, 2, 3, 29, 50, 4 })
+  local record = EffectStagingFixture.effectRecord("TACKLE", {})
+  record.program = {
+    entry = program.entry,
+    instructions = program.instructions,
+    subprograms = program.subprograms,
+    taskKinds = program.taskKinds,
+  }
+  staging:stageEffect("TACKLE", record, {})
+  local settledHp = nil
+  for _ = 1, 1200 do
+    screen:updateFixed(1 / 30)
+    if failingDisplayedFoeHp(screen:view()) == 43 and screen:status().ready then
+      settledHp = 43
+      break
+    end
+  end
+  Assert.equal(settledHp, 43, "the staged effect runs to its checkpoint once ready")
+  Assert.isTrue(#staging.requests >= 1, "the selected effect is demanded")
+  for _, key in ipairs(staging.requests) do
+    Assert.equal(key, "TACKLE", "promotion demands nothing beyond the selected effect")
+  end
+  screen:dispose()
+  for _, key in ipairs(staging.requests) do
+    Assert.equal(key, "TACKLE", "disposal starts no late effect work")
+  end
+end
+
 return { tests = T }

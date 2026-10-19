@@ -267,7 +267,20 @@ function T.production_deliveries_replay_exactly_once_end_to_end()
     end
   end
   Assert.isTrue(#held.packets > 0, "the answered turn delivers its packets")
-  local player = BattleTimeline.new({})
+  -- The answered production packets carry selected native effects, so the
+  -- cue player requires its animation collaborator. This exactly-once
+  -- scenario owns delivery identity rather than native playback, so effects
+  -- settle at once here; the live screen suite owns real completion.
+  local settledEffects = {}
+  function settledEffects.start(cue)
+    assert(type(cue) == "table" and cue.effectKey ~= nil, "native cues carry their selected key")
+    return { effectKey = cue.effectKey }
+  end
+  function settledEffects.status(_handle)
+    return "complete"
+  end
+  function settledEffects.cancel(_handle) end
+  local player = BattleTimeline.new({ effects = settledEffects })
   local function cueCount()
     local queue = player._queue --[[@as table<integer, unknown>]]
     local active = player._active

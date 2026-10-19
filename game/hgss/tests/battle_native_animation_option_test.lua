@@ -18,6 +18,112 @@ local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
 local T = {}
 local TICK = 1 / 30
 
+---@param value integer unsigned word under staging
+---@return string four little-endian bytes staging one command word
+local function optionU32(value)
+  return string.char(
+    value % 256,
+    math.floor(value / 256) % 256,
+    math.floor(value / 65536) % 256,
+    math.floor(value / 16777216) % 256
+  )
+end
+
+---@param list table<integer, integer> command words under staging
+---@return string staged byte stream lowering one program
+local function optionStreamOf(list)
+  local parts = {}
+  for _, word in ipairs(list) do
+    parts[#parts + 1] = optionU32(word)
+  end
+  return table.concat(parts)
+end
+
+---@return table<string, unknown> compiled resourceless native program completing in three source ticks
+local function optionProbeProgram()
+  local BattleAnimationCompiler = require("romdump.src.digest.battle.BattleAnimationCompiler")
+  return assert(
+    BattleAnimationCompiler.compile({ key = "TACKLE", stream = optionStreamOf({ 34, 1, 2, 3, 29, 50, 4 }) })
+  )
+end
+
+---@param program table<string, unknown> exact compiled program the collaborator admits
+---@return table task-aware recording native-effect collaborator over the real player path
+local function optionTaskAwareEffects(program)
+  local Player = require("libs.hgss.src.presentation.BattleAnimationPlayer")
+  local Factory = require("libs.hgss.src.presentation.BattleEffectTasks")
+  local BattleScene = require("libs.hgss.src.presentation.BattleScene")
+  local scene = BattleScene.new()
+  scene:observe({
+    { combatant = 1, activation = 1, visible = true },
+    { combatant = 3, activation = 3, visible = true },
+  })
+  local audio = { played = {} }
+  function audio.play(name)
+    audio.played[#audio.played + 1] = name
+  end
+  function audio.stop(_name) end
+  function audio.isFinished(_name)
+    return true
+  end
+  local resources = {}
+  function resources.resolve(key)
+    return { key = key, lease = key }
+  end
+  function resources.release(_lease) end
+  local player = assert(Player.new({ scene = scene, audio = audio, resources = resources, tasks = Factory }))
+  local rec = { starts = {}, player = player, audio = audio, scene = scene }
+  function rec.status(handle)
+    -- The double models the locked one-tick-advances-all contract:
+    -- every status poll advances the wrapped occurrence exactly once,
+    -- mirroring the screen's single-tick loop (cue, player, scene).
+    -- No catch-up loops: one poll steps one quantum.
+    player:stepSourceTick({ tick = 1 })
+    return player:status(handle)
+  end
+  function rec.start(cue)
+    Assert.isTrue(type(cue) == "table", "native cues carry their cue record with launch and effect identity")
+    rec.starts[#rec.starts + 1] = cue
+    return player:start({
+      launchId = cue.launchId or "animation-option-probe",
+      packetId = cue.packetId or 1,
+      event = type(cue.event) == "table" and cue.event
+        or { sequence = cue.eventSequence, actionId = cue.actionId, effectKey = cue.effectKey },
+      visualSeed = cue.visualSeed or 1,
+      topology = {
+        attacker = { combatant = 1, activation = 1, slot = "solo-player", sideType = 0 },
+        targets = { { combatant = 3, activation = 3, slot = "solo-enemy", sideType = 1 } },
+      },
+    }, program)
+  end
+  function rec.cancel(handle, reason)
+    return player:cancel(handle, reason)
+  end
+  return rec
+end
+
+---@param sequence integer event sequence under test driving
+---@param effectKey string accepted semantic effect key under test driving
+---@param damage integer dealt damage under test driving
+---@param foeHp integer foe health after the checkpoint under test driving
+---@return table one struck event carrying its accepted native playback identity
+local function optionStrikeEvent(sequence, effectKey, damage, foeHp)
+  return {
+    sequence = sequence,
+    kind = "struck",
+    cause = { key = "TACKLE" },
+    audience = "public",
+    actors = { { combatant = 1 } },
+    targets = { { combatant = 3 } },
+    move = { executed = "TACKLE" },
+    actionId = 31,
+    hitIndex = 1,
+    effectKey = effectKey,
+    payload = { target = 3, damage = damage },
+    after = { hp = { [1] = 52, [3] = foeHp } },
+  }
+end
+
 ---@return table detached dynamic view with a live lead and a foe
 local function openingView()
   local function entry(combatant, species, name, own)

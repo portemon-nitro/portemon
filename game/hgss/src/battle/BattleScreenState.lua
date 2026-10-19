@@ -10,8 +10,11 @@
 -- applied.
 
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
+local BattleAnimationPlayer = require("libs.hgss.src.presentation.BattleAnimationPlayer")
 local BattleAudio = require("libs.hgss.src.audio.BattleAudio")
+local BattleEffectTasks = require("libs.hgss.src.presentation.BattleEffectTasks")
 local BattlePresentationAssets = require("game.hgss.src.battle.BattlePresentationAssets")
+local BattlePresentationFlow = require("game.hgss.src.battle.BattlePresentationFlow")
 local BattleScene = require("libs.hgss.src.presentation.BattleScene")
 local BattleScreenInterface = require("game.hgss.src.battle.BattleScreenInterface")
 local BattleSubflows = require("game.hgss.src.battle.BattleSubflows")
@@ -31,6 +34,13 @@ local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 ---@field _monCatalog table<string, unknown>? borrowed immutable mon catalog behind cry identities, move names, and experience spans
 ---@field _assets BattlePresentationAssets per-launch preparation leases
 ---@field _timeline BattleTimeline ordered visible-cue player
+---@field _player table<string, unknown> battle-private native animation interpreter over the live scene
+---@field _nativeHandles table<table<string, unknown>, table<string, unknown>> native occurrence tracks by player handle or pending token
+---@field _nativeVoices table<string, table<string, unknown>> staged player voices by name behind launch-owned stops
+---@field _nativeRouting boolean true while the effects collaborator routes native cues
+---@field _liveEffectHandle table<string, unknown>? player handle behind the running occurrence
+---@field _liveEffectRecord table<string, unknown>? loaded effect record behind the running occurrence
+---@field _syntheticLeases table<table<string, unknown>, boolean> occurrence-scoped journal tokens never owned by the holder
 ---@field _session ApplicationPresentation per-open presentation session
 ---@field _subflows BattleSubflows battle-local child coordinator
 ---@field _partySnapshot table<integer, table<string, unknown>>? latest detached own-party facts
@@ -199,6 +209,490 @@ end
 ---@field musicBanks integer[]? chosen track bank identities behind the demand
 ---@field overrides table<string, unknown>? per-instance scene/frame/case inputs
 
+-- The battle screen owns one animation player and its per-launch
+-- effect services behind the live cue clock. The timeline sequences
+-- native-effect cues, the player runs the selected programs on the
+-- live scene, and this owner demands and loads exact selected
+-- effects, maps accepted packets onto frozen visual-topology playback, polls real
+-- completion or failure, and retires every handle exactly once. The
+-- player, task factory, and asset holder are injected collaborators,
+-- never clones; there is no second scheduler and no gameplay event
+-- field.
+
+---@param screen BattleScreenState owning screen behind voice routing
+---@param name unknown staged voice identity under playback
+---@param extra unknown? voice operands behind playback
+---@return string staged voice key under monitoring
+local function nativeVoicePlay(screen, name, extra)
+  local _ = extra
+  assert(type(name) == "string" and name ~= "", "player voices play by name")
+  local handle = screen._battleAudio:playEffect(name)
+  screen._nativeVoices[name] = handle
+  return name
+end
+
+---@param screen BattleScreenState owning screen behind voice routing
+---@param name unknown staged voice identity under release
+local function nativeVoiceStop(screen, name)
+  local handle = screen._nativeVoices[name]
+  if handle == nil then
+    return
+  end
+  screen._nativeVoices[name] = nil
+  -- Best effort over launch-owned handles only: a sink without a
+  -- stop port simply keeps its shared player.
+  pcall(function()
+    screen._battleAudio:stopVoice(handle)
+  end)
+end
+
+---@param screen BattleScreenState owning screen behind voice routing
+---@param name unknown staged voice identity under query
+---@return boolean complete true once the owned voice needs no further wait
+local function nativeVoiceFinished(screen, name)
+  local handle = screen._nativeVoices[name]
+  if handle == nil then
+    return true
+  end
+  -- An unanswerable completion query never fails the occurrence and
+  -- never fakes completion: the wait parks until the native voice
+  -- escape retires the run, so legacy sinks without query ports still
+  -- terminate instead of hanging.
+  local ok, done = pcall(function()
+    return screen._battleAudio:voiceComplete(handle)
+  end)
+  if not ok then
+    return false
+  end
+  return done == true
+end
+
+---@param screen BattleScreenState owning screen behind voice routing
+---@return table<string, unknown> narrow player voice collaborator over the launch battle audio
+local function nativeVoiceAdapter(screen)
+  ---@param name unknown staged voice identity under playback
+  ---@param extra unknown? voice operands behind playback
+  ---@return string staged voice key under monitoring
+  local function play(name, extra)
+    return nativeVoicePlay(screen, name, extra)
+  end
+  ---@param name unknown staged voice identity under release
+  local function stop(name)
+    nativeVoiceStop(screen, name)
+  end
+  ---@param name unknown staged voice identity under query
+  ---@return boolean complete true once the owned voice needs no further wait
+  local function isFinished(name)
+    return nativeVoiceFinished(screen, name)
+  end
+  return { play = play, stop = stop, isFinished = isFinished }
+end
+
+---@param screen BattleScreenState owning screen behind lease routing
+---@return table<string, unknown> narrow player resource collaborator behind resolve and release
+local function nativeResourceAdapter(screen)
+  local adapter = {}
+  ---@param key unknown semantic resource key under resolving
+  ---@return table<string, unknown>? occurrence lease, nil when the holder refuses
+  function adapter.resolve(key)
+    assert(type(key) == "string" and key ~= "", "effect leases resolve by key")
+    local record = screen._liveEffectRecord
+    if record ~= nil and type(record.resources) == "table" and record.resources[key] ~= nil then
+      -- Declared dependencies resolve through the effect-asset holder:
+      -- textures upload with refcounted ownership and failures latch
+      -- loud with launch, effect, and resource provenance.
+      local lease = screen._assets:resolveEffectResource(record, key)
+      return lease
+    end
+    -- Staging invariant: only keys declared by the live effect closure
+    -- resolve through the holder. Anything else (keys staged at
+    -- construction outside any effect closure) resolves as an
+    -- occurrence-scoped journal token: the player tracks it for
+    -- exactly-once release, and teardown is a no-op because no holder
+    -- handle was admitted. State-only visual task bodies stage no such
+    -- keys; they borrow player-held dependencies or touch scene state
+    -- directly, so this branch stays a construction-time fallback, never
+    -- a per-tick resource path.
+    local token = { key = key, lease = key }
+    screen._syntheticLeases[token] = true
+    return token
+  end
+  ---@param lease unknown occurrence lease under release
+  ---@return boolean? released
+  function adapter.release(lease)
+    if type(lease) ~= "table" then
+      return true
+    end
+    if screen._syntheticLeases[lease] == true then
+      screen._syntheticLeases[lease] = nil
+      return true
+    end
+    local ok, released = pcall(function()
+      return screen._assets:releaseEffectResource(lease)
+    end)
+    if not ok then
+      return nil
+    end
+    return released
+  end
+  return adapter
+end
+
+---@param screen BattleScreenState owning screen behind failure reporting
+---@param reason string terminal failure context under latching
+local function failNative(screen, reason)
+  if screen._mode == "failed" then
+    return
+  end
+  screen._mode = "failed"
+  screen._error = reason
+end
+
+---@param fault unknown player failure detail under rendering
+---@return string readable provenance behind the failed occurrence
+local function renderFault(fault)
+  if type(fault) ~= "table" then
+    return tostring(fault)
+  end
+  local detail = fault --[[@as table<string, unknown>]]
+  return "instruction "
+    .. tostring(detail.instructionIndex)
+    .. " ("
+    .. tostring(detail.op)
+    .. "): "
+    .. tostring(detail.reason)
+end
+
+---@param view table<string, unknown>? event-time view under copying
+---@return table<string, unknown>? view copy with defaulted activation and position facts
+local function enrichedViewForTopology(view)
+  if type(view) ~= "table" then
+    return nil
+  end
+  local out = {}
+  for _, group in ipairs({ "own", "foes" }) do
+    local records = view[group]
+    if type(records) == "table" then
+      local filled = {}
+      for index, record in ipairs(records) do
+        if type(record) == "table" then
+          local copy = copyValue(record) --[[@as table<string, unknown>]]
+          -- Legacy emissions predate activation and position facts;
+          -- default to the native combatant identity so the
+          -- visual-topology resolver still binds the event-time slot.
+          -- Records carrying real facts pass through untouched.
+          -- Explicitly benched reserves keep no slot facts: inventing
+          -- positions from combatant identities would pollute the live
+          -- side order (the full own roster pictures bench) with phantom
+          -- slots, failing singles playback or misresolving it as
+          -- doubles. Records predating the active flag read as active.
+          if copy.active ~= false then
+            if copy.activation == nil then
+              copy.activation = copy.combatant
+            end
+            if copy.position == nil then
+              copy.position = copy.combatant
+            end
+          end
+          filled[index] = copy
+        end
+      end
+      out[group] = filled
+    end
+  end
+  return out
+end
+
+---@param event table<string, unknown> accepted event carrying its playback facts
+---@param visualSeed integer deterministic visual seed behind the occurrence
+---@return table<string, unknown> detached event with defaulted actor, target, and seed facts
+local function enrichedEventForTopology(event, visualSeed)
+  local out = copyValue(event) --[[@as table<string, unknown>]]
+  for _, group in ipairs({ "actors", "targets" }) do
+    local entries = out[group]
+    if type(entries) == "table" then
+      for _, entry in
+        ipairs(entries --[[@as table<integer, table<string, unknown>>]])
+      do
+        if type(entry) == "table" and entry.activation == nil then
+          entry.activation = entry.combatant
+        end
+      end
+    end
+  end
+  if out.visualSeed == nil then
+    out.visualSeed = visualSeed
+  end
+  return out
+end
+
+---@param screen BattleScreenState owning screen behind effect admission
+---@param cue table<string, unknown> native-effect cue carrying accepted event/packet identity and semantic effect key
+---@param effectKey string flat semantic effect key under admission
+---@return table<string, unknown>? player handle behind the running occurrence, nil on terminal refusal
+local function nativeEffectAdmit(screen, cue, effectKey)
+  local record, loadFailure = screen._assets:loadEffect(effectKey)
+  if record == nil then
+    failNative(
+      screen,
+      "battle effect " .. effectKey .. " failed for launch " .. screen._launchId .. ": " .. tostring(loadFailure)
+    )
+    return nil
+  end
+  local program = record.program --[[@as table<string, unknown>?]]
+  if type(program) ~= "table" then
+    failNative(
+      screen,
+      "battle effect " .. effectKey .. " failed for launch " .. screen._launchId .. ": no compiled program"
+    )
+    return nil
+  end
+  -- C05 consumer obligation: reject any program whose task kind
+  -- lacks a real factory body before anything stages.
+  for _, kind in ipairs(program.taskKinds or {}) do
+    if not BattleEffectTasks.supportsKind(kind) then
+      failNative(
+        screen,
+        "battle effect "
+          .. effectKey
+          .. " failed for launch "
+          .. screen._launchId
+          .. ": task kind "
+          .. tostring(kind)
+          .. " has no real factory body"
+      )
+      return nil
+    end
+  end
+  -- Admission probe: every declared staged texture must upload
+  -- before the occurrence starts, so a terminal driver or payload
+  -- failure names its resource instead of failing mid-run. The probe
+  -- releases immediately; the run stages its own leases.
+  local declared = record.resources
+  if type(declared) == "table" then
+    for resourceKey, descriptor in pairs(declared) do
+      if type(descriptor) == "table" and descriptor.kind == "texture" then
+        local lease, resolveFailure = screen._assets:resolveEffectResource(record, resourceKey)
+        if lease == nil then
+          failNative(
+            screen,
+            "battle effect "
+              .. effectKey
+              .. " failed for launch "
+              .. screen._launchId
+              .. ": "
+              .. tostring(resolveFailure)
+          )
+          return nil
+        end
+        screen._assets:releaseEffectResource(lease)
+      end
+    end
+  end
+  local slots = screen._manifest.battlefield.slots
+  local enriched = enrichedEventForTopology(cue.event, cue.visualSeed)
+  local ok, playback = pcall(BattlePresentationFlow.animationPlayback, {
+    launchId = cue.launchId,
+    packetId = cue.packetId,
+    before = enrichedViewForTopology(cue.before),
+    after = enrichedViewForTopology(cue.after),
+  }, enriched, slots)
+  if not ok then
+    failNative(
+      screen,
+      "battle effect "
+        .. effectKey
+        .. " failed for launch "
+        .. screen._launchId
+        .. ": bad source topology: "
+        .. tostring(playback)
+    )
+    return nil
+  end
+  screen._liveEffectRecord = record
+  local handle = screen._player:start(playback, program)
+  if handle == nil then
+    screen._liveEffectRecord = nil
+    failNative(
+      screen,
+      "battle effect " .. effectKey .. " failed for launch " .. screen._launchId .. ": program refused admission"
+    )
+    return nil
+  end
+  screen._liveEffectHandle = handle
+  screen._nativeHandles[handle] = { handle = handle, effectKey = effectKey }
+  return handle
+end
+
+---@param screen BattleScreenState owning screen behind effect admission
+---@param cue table<string, unknown> native-effect cue carrying accepted event/packet identity and semantic effect key
+---@return table<string, unknown>? player handle or pending token, nil on terminal refusal
+local function nativeEffectStart(screen, cue)
+  if screen._disposed or screen._mode == "failed" then
+    return nil
+  end
+  local effectKey = cue.effectKey
+  if type(effectKey) ~= "string" or effectKey == "" then
+    return nil
+  end
+  local ready, demandFailure = screen._assets:demandEffect(effectKey)
+  if demandFailure ~= nil then
+    failNative(
+      screen,
+      "battle effect " .. effectKey .. " failed for launch " .. screen._launchId .. ": " .. tostring(demandFailure)
+    )
+    return nil
+  end
+  if ready ~= true then
+    -- Still staging: park behind a pending token; status promotes
+    -- once the worker closure validates, so pending stalls only
+    -- presentation, never mechanics.
+    local token = { pending = true }
+    screen._nativeHandles[token] = { token = token, pending = true, effectKey = effectKey, cue = cue }
+    return token
+  end
+  return nativeEffectAdmit(screen, cue, effectKey)
+end
+
+---@param screen BattleScreenState owning screen behind occurrence polling
+---@param handleOrToken table<string, unknown> player handle or pending token under query
+---@return string phase behind the hold: pending, running, waiting, complete, failed, or cancelled
+local function nativeEffectStatus(screen, handleOrToken)
+  local track = screen._nativeHandles[handleOrToken]
+  if track == nil then
+    -- Unknown or retired handles never settle silently: polling a
+    -- handle the screen does not track fails the launch with provenance
+    -- instead of parking the cue behind a pending that can never clear.
+    failNative(
+      screen,
+      "battle effect handle for launch " .. screen._launchId .. " is unknown or retired; it never settles silently"
+    )
+    return "failed"
+  end
+  if track.pending == true then
+    local ready, demandFailure = screen._assets:demandEffect(track.effectKey)
+    if demandFailure ~= nil then
+      track.pending = false
+      track.failed = true
+      failNative(
+        screen,
+        "battle effect "
+          .. track.effectKey
+          .. " failed for launch "
+          .. screen._launchId
+          .. ": "
+          .. tostring(demandFailure)
+      )
+      return "failed"
+    end
+    if ready ~= true then
+      return "pending"
+    end
+    track.pending = false
+    local handle = nativeEffectAdmit(screen, track.cue, track.effectKey)
+    if handle == nil then
+      track.failed = true
+      return "failed"
+    end
+    -- The token stays the stable track identity so every collaborator
+    -- poll keeps resolving: the admitted handle rides the same track.
+    track.handle = handle
+  end
+  if track.failed == true then
+    return "failed"
+  end
+  if track.handle == nil then
+    return "pending"
+  end
+  local phase = screen._player:status(track.handle)
+  if phase == nil then
+    return "pending"
+  end
+  if phase == "failed" then
+    -- A failed program never counts as a completed invisible
+    -- animation: the screen fails with launch, effect, packet, and
+    -- instruction provenance and releases through disposal.
+    local fault = screen._player:failure(track.handle)
+    local holderError = screen._assets:error()
+    local context = "battle effect "
+      .. track.effectKey
+      .. " failed for launch "
+      .. screen._launchId
+      .. ": "
+      .. renderFault(fault)
+    if type(holderError) == "string" and holderError ~= "" then
+      context = context .. "; assets: " .. holderError
+    end
+    failNative(screen, context)
+    return "failed"
+  end
+  return phase
+end
+
+---@param screen BattleScreenState owning screen behind occurrence polling
+---@param handleOrToken table<string, unknown> player handle or pending token under cancellation
+---@param reason string cancellation cause under diagnosis
+local function nativeEffectCancel(screen, handleOrToken, reason)
+  local track = screen._nativeHandles[handleOrToken]
+  if track == nil then
+    return
+  end
+  screen._nativeHandles[handleOrToken] = nil
+  if track.handle ~= nil then
+    screen._player:cancel(track.handle, reason)
+    if screen._liveEffectHandle == track.handle then
+      screen._liveEffectHandle = nil
+      screen._liveEffectRecord = nil
+    end
+  end
+end
+
+-- Polls every tracked native occurrence once: pending tokens promote
+-- when staged, failed programs fail the screen with provenance, and
+-- the live record clears once its occurrence settles so a later
+-- effect admits against its own closure.
+---@param screen BattleScreenState owning screen behind occurrence polling
+local function pollNativeEffects(screen)
+  local keys = {}
+  for key in pairs(screen._nativeHandles) do
+    keys[#keys + 1] = key
+  end
+  for _, key in ipairs(keys) do
+    if screen._nativeHandles[key] ~= nil then
+      nativeEffectStatus(screen, key)
+    end
+  end
+  local live = screen._liveEffectHandle
+  if live ~= nil then
+    local phase = screen._player:status(live)
+    if phase ~= "preparing" and phase ~= "running" and phase ~= "waiting" then
+      screen._liveEffectHandle = nil
+      screen._liveEffectRecord = nil
+    end
+  end
+end
+
+---@param screen BattleScreenState owning screen behind effect admission
+---@return table<string, unknown> battle-private native-effect collaborator behind start/status/cancel
+local function nativeEffectsFor(screen)
+  ---@param cue table<string, unknown> native-effect cue carrying accepted event/packet identity and semantic effect key
+  ---@return table<string, unknown>? player handle or pending token, nil on terminal refusal
+  local function start(cue)
+    return nativeEffectStart(screen, cue)
+  end
+  ---@param handleOrToken table<string, unknown> player handle or pending token under query
+  ---@return string phase behind the hold
+  local function status(handleOrToken)
+    return nativeEffectStatus(screen, handleOrToken)
+  end
+  ---@param handleOrToken table<string, unknown> player handle or pending token under cancellation
+  ---@param reason string cancellation cause under diagnosis
+  local function cancel(handleOrToken, reason)
+    nativeEffectCancel(screen, handleOrToken, reason)
+  end
+  return { start = start, status = status, cancel = cancel }
+end
+
 ---@param opts BattleScreenState.Options
 ---@return BattleScreenState
 function BattleScreenState.new(opts)
@@ -247,6 +741,13 @@ function BattleScreenState.new(opts)
       frames = overrides.frames --[[@as table<string, table<string, unknown>>?]],
     }),
     _timeline = nil,
+    _player = nil,
+    _nativeRouting = false,
+    _nativeHandles = {},
+    _nativeVoices = {},
+    _liveEffectHandle = nil,
+    _liveEffectRecord = nil,
+    _syntheticLeases = {},
     _session = nil,
     _subflows = BattleSubflows.new({
       launchId = opts.launchId,
@@ -302,9 +803,39 @@ function BattleScreenState.new(opts)
     end
     moveNameOf = resolveMoveName
   end
+  -- One animation player per battle screen over the live scene: the
+  -- real task factory, a semantic voice adapter over the existing
+  -- battle audio path, and a selected-effect resource adapter over the
+  -- selected effect record and its dependencies. These are the real
+  -- collaborators, not fake task or voice doubles.
+  self._player = BattleAnimationPlayer.new({
+    scene = self._scene,
+    audio = nativeVoiceAdapter(self),
+    resources = nativeResourceAdapter(self),
+    tasks = BattleEffectTasks,
+  })
+  -- Native-effect routing engages only when the injected preparation
+  -- services expose the lazy effect staging callbacks; legacy rigs without
+  -- them keep the established generic cue vocabulary untouched.
+  local assetServices = opts.assets
+  local effects = nil
+  if
+    type(assetServices.requestEffect) == "function"
+    and type(assetServices.loadEffect) == "function"
+    and type(assetServices.resolveEffectResource) == "function"
+    and type(assetServices.releaseEffectResource) == "function"
+  then
+    effects = nativeEffectsFor(self)
+  end
+  -- Without lazy effect staging callbacks the screen cannot admit
+  -- native occurrences, so it presents the established generic cue
+  -- vocabulary instead of wedging effect-keyed cues behind a
+  -- collaborator that will never arrive.
+  self._nativeRouting = effects ~= nil
   self._timeline = BattleTimeline.new({
     moveName = moveNameOf,
     textSpeed = opts.textSpeed or "mid",
+    effects = effects,
   })
   local cases = nil
   if type(overrides.cases) == "table" then
@@ -780,6 +1311,22 @@ function BattleScreenState:_snapshot()
     local addressed = actors[self._actorIndex]
     if type(addressed) == "table" then
       local activeBattler = type(addressed.combatant) == "number" and names[addressed.combatant] or nil
+      if activeBattler == nil and type(addressed.combatant) ~= "number" then
+        -- A command actor that names no combatant still acts for the
+        -- near side: resolve the lead live player-side record so the
+        -- menu slide keeps its source slot instead of vanishing. A
+        -- combatant that names no displayed battler stays dangling
+        -- and trips the slot binding below.
+        local lead = nil
+        for _, id in ipairs(self._timeline:order()) do
+          local shown = names[id]
+          if type(shown) == "table" and shown.side == 1 and shown.visible ~= false then
+            lead = shown
+            break
+          end
+        end
+        activeBattler = lead
+      end
       acting = {
         index = self._actorIndex,
         total = #actors,
@@ -1137,6 +1684,7 @@ function BattleScreenState:view()
     menuRevealEdge = snapshot.menuRevealEdge,
     menuWindows = copyValue(snapshot.menuWindows),
     menuInputEnabled = snapshot.menuInputEnabled,
+    effectInstances = copyValue(snapshot.effectInstances),
     messageId = self._timeline:messageId(),
     selection = self._selection,
     commands = copyValue(snapshot.commands),
@@ -1308,6 +1856,35 @@ function BattleScreenState:_portPresent(packet)
       if self._mode == "preparing" then
         self._mode = "intro"
       end
+    end
+  end
+  if not self._nativeRouting and type(packet.events) == "table" then
+    -- No effect staging callbacks means no native occurrences: present
+    -- the established generic cues by withholding the source effect
+    -- routing fact. Narration, checkpoints, and packet identity read
+    -- nothing else from the withheld key, so the generic path is
+    -- exact. The delivery packet itself is never mutated.
+    local generic = nil
+    for index, event in ipairs(packet.events) do
+      if type(event) == "table" and event.effectKey ~= nil then
+        if generic == nil then
+          generic = {}
+          for position, entry in ipairs(packet.events) do
+            generic[position] = entry
+          end
+        end
+        local detached = copyValue(event) --[[@as table<string, unknown>]]
+        detached.effectKey = nil
+        generic[index] = detached
+      end
+    end
+    if generic ~= nil then
+      local routed = {}
+      for field, value in pairs(packet) do
+        routed[field] = value
+      end
+      routed.events = generic
+      packet = routed --[[@as table<string, unknown>]]
     end
   end
   local sourceMessages = {}
@@ -2665,6 +3242,19 @@ function BattleScreenState:updateFixed(dt)
   if self._session ~= nil and self._mode ~= "failed" then
     self._session:resolve(measurement, self:_snapshot())
   end
+  -- One accepted 30 Hz source tick advances the cue player, the
+  -- native animation player, and the visual scene exactly once,
+  -- with the menu reveal gate and the selection arrow riding the same
+  -- quantum. Phase order per tick is stable: cue admission (a native
+  -- start runs here), drained voices, one player step, one scene
+  -- step, then completion observation before the next ordered cue.
+  -- Draws and polls never advance any of them.
+  self._sourceAccum = self._sourceAccum + dt
+  local sourceTicks = 0
+  while self._sourceAccum + SOURCE_TICK_EPSILON >= BattleScreenState.SOURCE_FRAME do
+    self._sourceAccum = self._sourceAccum - BattleScreenState.SOURCE_FRAME
+    sourceTicks = sourceTicks + 1
+  end
   if self._mode ~= "failed" then
     ---@param key string image key under availability probe
     ---@return boolean available true while the preparation services resolve the key
@@ -2672,12 +3262,29 @@ function BattleScreenState:updateFixed(dt)
       return self._assets:drawable(key) ~= nil
     end
     local hadCues = self._timeline:busy()
-    self._timeline:update(dt, isAvailable)
-    for _, name in ipairs(self._timeline:drainSounds()) do
-      if not self:_playCue(name) then
+    for _ = 1, sourceTicks do
+      if self._mode == "failed" then
         break
       end
+      self._timeline:update(BattleScreenState.SOURCE_FRAME, isAvailable)
+      for _, name in ipairs(self._timeline:drainSounds()) do
+        if not self:_playCue(name) then
+          break
+        end
+      end
+      if self._mode == "failed" then
+        break
+      end
+      self._player:stepSourceTick({ tick = 1 })
+      self._scene:stepSourceTick()
+      if menuGateAtStart > 0 and self._menuGateTicks > 0 then
+        self._menuGateTicks = self._menuGateTicks - 1
+        if self._menuRevealStep < 4 then
+          self._menuRevealStep = self._menuRevealStep + 1
+        end
+      end
     end
+    pollNativeEffects(self)
     self:_drain(not hadCues and self._timeline:settled())
     if self._mode == "intro" and self._introBuilt and self._timeline:settled() and self._pendingRequest == nil then
       self._mode = "narration"
@@ -2699,28 +3306,11 @@ function BattleScreenState:updateFixed(dt)
   -- whole ticks advance the cycle while a frame carrying less than one
   -- tick banks its fraction, and the frame mapping already skips
   -- zero-duration cells.
-  self._sourceAccum = self._sourceAccum + dt
-  local arrowTicks = 0
-  while self._sourceAccum + SOURCE_TICK_EPSILON >= BattleScreenState.SOURCE_FRAME do
-    self._sourceAccum = self._sourceAccum - BattleScreenState.SOURCE_FRAME
-    arrowTicks = arrowTicks + 1
-  end
-  for _ = 1, arrowTicks do
-    if menuGateAtStart > 0 and self._menuGateTicks > 0 then
-      self._menuGateTicks = self._menuGateTicks - 1
-      if self._menuRevealStep < 4 then
-        self._menuRevealStep = self._menuRevealStep + 1
-      end
-    end
-  end
   if self._mode == "command" or self._mode == "moves" then
-    self._arrowTick = self._arrowTick + arrowTicks
+    self._arrowTick = self._arrowTick + sourceTicks
   else
     self._arrowTick = 0
   end
-  -- Entry travel consumes the same accepted source ticks through the
-  -- visual scene owner; draws and polls never advance it.
-  self._scene:advance(dt)
   if self._session ~= nil then
     pcall(function()
       self._session:resolve(measurement, self:_snapshot())
@@ -2820,15 +3410,37 @@ function BattleScreenState:draw(resources)
   end
 end
 
--- Idempotent release of the launch lifetime: owned handles release
--- exactly once, queued input is discarded, and borrowed field services
+-- Idempotent release of the launch lifetime: owned native handles
+-- cancel and retire only their own occurrence, every staged effect media lease
+-- releases exactly once, queued input is discarded, and a diagnosed
+-- failure persists so late deliveries and stale worker returns stay
+-- ignored under the stale launch identity. Borrowed field services
 -- stay usable.
 function BattleScreenState:dispose()
   if self._disposed then
     return
   end
   self._disposed = true
-  self._mode = "disposed"
+  local wasFailed = self._mode == "failed"
+  if self._player ~= nil then
+    local keys = {}
+    for key in pairs(self._nativeHandles) do
+      keys[#keys + 1] = key
+    end
+    for _, key in ipairs(keys) do
+      nativeEffectCancel(self, key, "screen released")
+    end
+    self._player:dispose()
+  end
+  self._nativeHandles = {}
+  self._liveEffectHandle = nil
+  self._liveEffectRecord = nil
+  -- A diagnosed failure persists through teardown: disposal keeps the
+  -- reported launch, effect, and instruction provenance instead of
+  -- reviving the screen or masking it as a clean release.
+  if not wasFailed then
+    self._mode = "disposed"
+  end
   self:cancelPointerCapture()
   self._queue = {}
   if self._subflows ~= nil then

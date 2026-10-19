@@ -17,8 +17,10 @@ local Assert = require("tests.support.Assert")
 local BattleAnimationCompiler = require("romdump.src.digest.battle.BattleAnimationCompiler")
 local BattleAnimationSchema = require("libs.assets.src.battle.BattleAnimationSchema")
 local BattleAnimationSources = require("romdump.src.config.BattleAnimationSources")
+local BattlePresentationFlow = require("game.hgss.src.battle.BattlePresentationFlow")
 local BattlePresentationModel = require("game.hgss.src.battle.BattlePresentationModel")
 local BattleScene = require("libs.hgss.src.presentation.BattleScene")
+local ManifestFixture = require("tests.support.BattlePresentationManifestFixture")
 
 local T = {}
 
@@ -115,6 +117,37 @@ local function playbackPacket()
   })
   Assert.equal(packet.launchId, "layer-rendering-probe", "the playback input carries its launch identity")
   return packet
+end
+
+-- Builds the picture program's playback through the production event-time
+-- topology constructor: the live screen admits picture shows only with
+-- the frozen semantic slots behind the accepted event, never a bare
+-- packet. The selected program and the scene-restoration assertions
+-- below are unchanged; only the packet carries what production builds.
+---@param key string selected effect key under playback
+---@return table<string, unknown> detached playback packet with production-built topology
+local function topologyPlayback(key)
+  local views = {
+    own = { { combatant = 1, activation = 1, side = 1, position = 1 } },
+    foes = { { combatant = 3, activation = 3, side = 2, position = 2 } },
+  }
+  local packet = {
+    launchId = "layer-rendering-probe",
+    packetId = 1,
+    before = views,
+    after = views,
+  }
+  local event = {
+    sequence = 1,
+    actionId = 1,
+    hitIndex = 1,
+    effectKey = key,
+    actors = { { combatant = 1, activation = 1 } },
+    targets = { { combatant = 3, activation = 3 } },
+    visualSeed = 4242,
+  }
+  local geometry = ManifestFixture.manifest().battlefield.slots
+  return BattlePresentationFlow.animationPlayback(packet, event, geometry)
 end
 
 local function playerModule()
@@ -222,7 +255,11 @@ function T.effect_runs_over_each_layer_class_restore_the_clean_scene_exactly()
     tasks = Factory,
   }))
   for _, program in ipairs(programs) do
-    local handle = assert(player:start(playbackPacket(), program))
+    local packet = playbackPacket()
+    if program.key == "layer-picture-run" then
+      packet = topologyPlayback(program.key)
+    end
+    local handle = assert(player:start(packet, program))
     for _ = 1, 120 do
       player:stepSourceTick({ tick = 1 })
       if player:status(handle) == "complete" then

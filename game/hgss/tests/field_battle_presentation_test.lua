@@ -9,6 +9,7 @@
 
 local SourceTick = require("libs.hgss.src.field.SourceTick")
 local Assert = require("tests.support.Assert")
+local BattleAnimationSchema = require("libs.assets.src.battle.BattleAnimationSchema")
 local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
 local CacheFs = require("libs.storage.src.CacheFs")
@@ -171,10 +172,100 @@ end
 ---@return table envelope
 ---@return integer binding
 ---@return table doubles
+-- Synthetic battle-effect staging for scheduled headless battles. The
+-- versioned cache stages no battle effects and no derived worker runs
+-- in these tests, so every demanded effect key resolves to the same
+-- closed probe program through a cacheFs overlay while every other
+-- cache path delegates verbatim with zero real-cache writes. The probe
+-- runs the real player, factory, and scene path (resourceless and
+-- source-timed) so strikes complete natively instead of wedging
+-- behind effects that will never stage here.
+---@param realFs table<string, unknown> versioned derived cache behind delegation
+---@return table<string, unknown> cache filesystem overlay serving synthetic closed effects
+local function syntheticEffectCacheFs(realFs)
+  local BattleAnimationCompiler = require("romdump.src.digest.battle.BattleAnimationCompiler")
+  local effectPrefix = BattlePresentationCache.effectPath("EFFECTKEY"):gsub("EFFECTKEY%.lua$", "")
+  local markerPrefix = BattlePresentationCache.effectMarkerPath("EFFECTKEY"):gsub("EFFECTKEY%.complete$", "")
+  local function effectKeyOfLua(path)
+    if type(path) ~= "string" then
+      return nil
+    end
+    return path:match("^" .. effectPrefix .. "([^/]+)%.lua$")
+  end
+  local function effectKeyOfMarker(path)
+    if type(path) ~= "string" then
+      return nil
+    end
+    return path:match("^" .. markerPrefix .. "([^/]+)%.complete$")
+  end
+  local probeProgram = nil
+  ---@param key string flat semantic effect key under staging
+  ---@return table<string, unknown> schema-valid closed synthetic effect record
+  local function syntheticRecord(key)
+    if probeProgram == nil then
+      local function u32(value)
+        return string.char(
+          value % 256,
+          math.floor(value / 256) % 256,
+          math.floor(value / 65536) % 256,
+          math.floor(value / 16777216) % 256
+        )
+      end
+      local stream = u32(34) .. u32(1) .. u32(2) .. u32(3) .. u32(29) .. u32(50) .. u32(4)
+      probeProgram = assert(BattleAnimationCompiler.compile({ key = key, stream = stream }))
+    end
+    return {
+      schema = BattleAnimationSchema.EFFECT_SCHEMA,
+      key = key,
+      catalogIdentity = "synthetic-scheduled-effect",
+      program = {
+        entry = probeProgram.entry,
+        instructions = probeProgram.instructions,
+        subprograms = probeProgram.subprograms,
+        taskKinds = probeProgram.taskKinds,
+      },
+      dependencies = {},
+      resources = {},
+      requiredContext = {},
+    }
+  end
+  local wrapper = {}
+  function wrapper.loadLua(_, path)
+    local key = effectKeyOfLua(path)
+    if key ~= nil then
+      return syntheticRecord(key)
+    end
+    return realFs:loadLua(path)
+  end
+  function wrapper.read(_, path)
+    if effectKeyOfMarker(path) ~= nil then
+      return "synthetic-scheduled-marker"
+    end
+    return realFs:read(path)
+  end
+  function wrapper.exists(_, path, expectedType)
+    if effectKeyOfLua(path) ~= nil or effectKeyOfMarker(path) ~= nil then
+      return true
+    end
+    return realFs:exists(path, expectedType)
+  end
+  return setmetatable(wrapper, {
+    __index = function(_, key)
+      local value = realFs[key]
+      if type(value) == "function" then
+        return function(_, ...)
+          return value(realFs, ...)
+        end
+      end
+      return value
+    end,
+  })
+end
+
 local function bindEnvelope(runtime, versionId, measurement, graphics, transition)
   local doubles = { audio = recordingAudio(), windows = recordingWindows(), text = recordingText() }
   local envelope = FieldBattlePresentation.new({
-    cacheFs = CacheFs.forVersion(versionId),
+    cacheFs = syntheticEffectCacheFs(CacheFs.forVersion(versionId)),
     windows = doubles.windows,
     text = doubles.text,
     audio = doubles.audio,
@@ -3020,7 +3111,7 @@ local function bindScheduledEnvelope(runtime, versionId, measurement, graphicsOv
     return worker.ready, worker.failure
   end
   local envelope = FieldBattlePresentation.new({
-    cacheFs = CacheFs.forVersion(versionId),
+    cacheFs = syntheticEffectCacheFs(CacheFs.forVersion(versionId)),
     windows = doubles.windows,
     text = doubles.text,
     audio = doubles.audio,

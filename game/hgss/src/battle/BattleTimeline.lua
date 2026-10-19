@@ -16,6 +16,8 @@ local TextSpeedPolicy = require("libs.hgss.src.ui.TextSpeedPolicy")
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 
 ---@class BattleTimeline
+---@field _effects table<string, unknown>? battle-private native-effect collaborator behind start/status/cancel
+---@field _nativeSeen table<string, boolean> emitted native-effect identities by launch, action, effect key, and event kind
 ---@field _pendingSounds table<integer, table<string, unknown>> queued one-shot sound cues for the screen drain
 ---@field _battlers table<integer, table<string, unknown>> displayed facts by combatant identity
 ---@field _order integer[] player-first combatant identities for view order
@@ -90,6 +92,7 @@ end
 ---@field sound (fun(cue: table<string, unknown>))? sound-cue sink, drained immediately when supplied
 ---@field moveName (fun(move: string): string?)? display-name resolver for move identities the views never name
 ---@field textSpeed string? narration pace for this launch, defaulting to the middle pace
+---@field effects table<string, unknown>? battle-private native-effect collaborator behind start/status/cancel, absent without a screen owner
 
 ---@param opts BattleTimeline.Options?
 ---@return BattleTimeline
@@ -101,6 +104,8 @@ function BattleTimeline.new(opts)
     _sound = opts.sound,
     _moveName = opts.moveName,
     _revealPolicy = revealPolicy,
+    _effects = opts.effects,
+    _nativeSeen = {},
     _pendingSounds = {},
     _names = {},
     _ownMoves = {},
@@ -349,6 +354,141 @@ local function cryCue(species, form, foe)
   return { kind = "cry", species = species, form = form, foe = foe == true }
 end
 
+---@param sequence unknown event sequence ordinal under visual seeding
+---@return integer deterministic visual seed scoped to the event identity
+local function visualSeedFor(sequence)
+  local ordinal = 0
+  if type(sequence) == "number" and sequence % 1 == 0 and sequence >= 0 then
+    ordinal = sequence --[[@as integer]]
+  end
+  -- The canonical stream lives in PresentationFacts.visualSeedFor;
+  -- this mirrors its arithmetic so cue identities stay deterministic
+  -- without pulling the mechanics package into the cue player.
+  return (ordinal * 1103515245 + 12345) % 2147483648
+end
+
+---@param event table<string, unknown> sanitized kernel event under inspection
+---@return string? accepted semantic effect key, nil when the source names no effect
+local function nativeEffectKeyOf(event)
+  local key = event.effectKey
+  if type(key) == "string" and key ~= "" then
+    return key --[[@as string]]
+  end
+  return nil
+end
+
+---@param launch string owning launch identity under emission
+---@param event table<string, unknown> sanitized kernel event under emission
+---@return string action-scoped native identity behind exactly-once emission
+local function nativeIdentityOf(launch, event)
+  -- One action plays its full move animation once per hit of each phase:
+  -- every hit of a multi-hit sequence and every recipient of a spread
+  -- move shares the source action identity, while a distinct action
+  -- identity (or a distinct event sequence without one) starts its own
+  -- occurrence. The charged and struck phases of a two-turn action are
+  -- distinct occurrences (native opcode 13 selects the charge half on a
+  -- clear battle flag and the strike half on a set one), so the event
+  -- kind joins the identity: same-phase duplicates still collapse, but
+  -- the strike half never collapses onto the charge cue.
+  local action = event.actionId
+  if type(action) ~= "number" and type(action) ~= "string" then
+    action = event.sequence
+  end
+  return launch .. "\0" .. tostring(action) .. "\0" .. tostring(event.effectKey) .. "\0" .. tostring(event.kind)
+end
+
+-- Demands the exact selected effect the first time its source event is
+-- admitted, overlapping staging with narration. The cue itself stays
+-- ordered behind the event narration and ahead of its hit and health
+-- work, and still holds every later cue until the player occurrence
+-- actually completes. Emission is exactly once per launch, action,
+-- effect key, and event kind: later hits, spread recipients, and
+-- redeliveries of the same action queue nothing new. Generic impact and effectiveness
+-- voices stay silent on this path because the selected program owns
+-- audio timing.
+---@param self BattleTimeline
+---@param cue table<string, unknown> native-effect cue under admission
+local function beginNativeEffect(self, cue)
+  if cue.startAttempted == true then
+    return
+  end
+  cue.startAttempted = true
+  if self._effects == nil then
+    if cue.collaboratorMissing ~= true then
+      cue.collaboratorMissing = true
+      self._diagnostics[#self._diagnostics + 1] = "native effect "
+        .. tostring(cue.effectKey)
+        .. " for launch "
+        .. tostring(cue.launchId)
+        .. " has no animation collaborator"
+    end
+    return
+  end
+  local starter = self._effects.start --[[@as fun(cue: table<string, unknown>): table<string, unknown>?]]
+  if type(starter) ~= "function" then
+    if cue.collaboratorMissing ~= true then
+      cue.collaboratorMissing = true
+      self._diagnostics[#self._diagnostics + 1] = "native effect "
+        .. tostring(cue.effectKey)
+        .. " for launch "
+        .. tostring(cue.launchId)
+        .. " has no animation start"
+    end
+    return
+  end
+  local ok, handle = pcall(starter, cue)
+  if ok then
+    cue.handle = handle
+  elseif cue.startNoted ~= true then
+    cue.startNoted = true
+    self._diagnostics[#self._diagnostics + 1] = "native effect "
+      .. tostring(cue.effectKey)
+      .. " for launch "
+      .. tostring(cue.launchId)
+      .. " start failed: "
+      .. tostring(handle)
+  end
+end
+
+-- Queues one native-effect cue for an effect-keyed source event behind
+-- the current narration and ahead of the event's hit and health work.
+---@param self BattleTimeline
+---@param event table<string, unknown> sanitized kernel event carrying its accepted playback facts
+---@param packet table<string, unknown> delivery carrying launch identity and event-time views
+local function enqueueNativeEffect(self, event, packet)
+  local launch = type(packet.launchId) == "string" and packet.launchId or ""
+  local identity = nativeIdentityOf(launch, event)
+  if self._nativeSeen[identity] == true then
+    return
+  end
+  self._nativeSeen[identity] = true
+  local hitOrdinal = event.hitIndex
+  if type(hitOrdinal) ~= "number" then
+    local payload = event.payload --[[@as table<string, unknown>?]]
+    if type(payload) == "table" and type(payload.hitIndex) == "number" then
+      hitOrdinal = payload.hitIndex
+    end
+  end
+  local seed = event.visualSeed
+  if type(seed) ~= "number" then
+    seed = visualSeedFor(event.sequence)
+  end
+  local cue = {
+    kind = "native-effect",
+    launchId = packet.launchId,
+    packetId = packet.packetId,
+    eventSequence = event.sequence,
+    actionId = event.actionId,
+    hitOrdinal = hitOrdinal,
+    effectKey = event.effectKey,
+    event = event,
+    visualSeed = seed,
+    before = packet.before,
+    after = packet.after,
+  }
+  enqueue(self, cue)
+end
+
 ---@param text string narration wording under presentation
 ---@param ackable boolean true when the page waits for acknowledgement instead of holding
 local function enqueueMessage(self, text, ackable)
@@ -573,8 +713,9 @@ end
 
 ---@param self BattleTimeline
 ---@param event table<string, unknown> sanitized kernel event under translation
+---@param packet table<string, unknown> delivery carrying launch identity and event-time views
 ---@param narrated table<string, boolean>? attack keys already narrated in this delivery
-local function translateStruck(self, event, narrated)
+local function translateStruck(self, event, packet, narrated)
   local payload = event.payload --[[@as table<string, unknown>]]
   -- Explicit playback facts name the true attacker and recipient;
   -- only legacy emissions without them fall back to display order.
@@ -597,6 +738,15 @@ local function translateStruck(self, event, narrated)
   end
   local moveKey = explicitMove(event)
   local attackerName = attacker ~= nil and combatName(self, attacker) or "The foe"
+  -- An effect-keyed strike leads with its selected native program so
+  -- the player occurrence is already stepping on its first tick: the
+  -- cue player holds every later cue until the exact program
+  -- completes. EffectKey-less strikes keep the legacy generic voices
+  -- exactly as before.
+  local nativeKey = nativeEffectKeyOf(event)
+  if nativeKey ~= nil then
+    enqueueNativeEffect(self, event, packet)
+  end
   -- One attack occurrence narrates once across its hits: the first
   -- strike voices the attack while later hits keep their impact,
   -- sound, and checkpoint motion in native order.
@@ -614,20 +764,22 @@ local function translateStruck(self, event, narrated)
     duration = BattleTimeline.HIT_TICKS,
     requiresImage = self:_imageKeyFor(target),
   })
-  -- Each damaging turn records its impact and effectiveness voices at
-  -- the hit moment: the exact per-move route arrives with the native
-  -- animation programs through this same sink, while the timing and
-  -- ownership proof rides these staged battle-domain cues.
-  enqueue(self, {
-    kind = "sound",
-    cue = effectCue(BattleAudio.SINK_SOUNDS.impact),
-    duration = 0,
-  })
-  enqueue(self, {
-    kind = "sound",
-    cue = effectCue(BattleAudio.SINK_SOUNDS.effectiveness),
-    duration = 0,
-  })
+  if nativeKey == nil then
+    -- Each damaging turn records its impact and effectiveness voices at
+    -- the hit moment: the exact per-move route arrives with the native
+    -- animation programs through this same sink, while the timing and
+    -- ownership proof rides these staged battle-domain cues.
+    enqueue(self, {
+      kind = "sound",
+      cue = effectCue(BattleAudio.SINK_SOUNDS.impact),
+      duration = 0,
+    })
+    enqueue(self, {
+      kind = "sound",
+      cue = effectCue(BattleAudio.SINK_SOUNDS.effectiveness),
+      duration = 0,
+    })
+  end
   local after = event.after --[[@as table<string, unknown>]]
   local hp = after.hp --[[@as table<string, unknown>?]]
   if type(hp) == "table" and type(hp[target]) == "number" then
@@ -927,7 +1079,15 @@ end
 
 ---@param self BattleTimeline
 ---@param event table<string, unknown>
-local function translateTransformed(self, event)
+---@param packet table<string, unknown> delivery carrying launch identity and event-time views
+local function translateTransformed(self, event, packet)
+  -- An effect-keyed Transform leads with its selected native program
+  -- while the essential appearance below still applies synchronously:
+  -- the visual update is never silenced, even on paths where optional
+  -- artwork is suppressed.
+  if nativeEffectKeyOf(event) ~= nil then
+    enqueueNativeEffect(self, event, packet)
+  end
   local payload = event.payload --[[@as table<string, unknown>]]
   local who = nameOrBattler(self, payload.target)
   local copied = payload.copiedFrom
@@ -1241,8 +1401,30 @@ local OTHER_TRANSLATORS = {
 
 ---@param self BattleTimeline
 ---@param event table<string, unknown> sanitized kernel event under translation
-local function translateOther(self, event)
+---@param packet table<string, unknown> delivery carrying launch identity and event-time views
+local function translateOther(self, event, packet)
   local kind = event.kind --[[@as string]]
+  if kind == "move-used" then
+    -- The use announcement never spends the action's single native
+    -- occurrence: the action's struck counterpart owns the visual, so
+    -- the program still runs after its use narration instead of ahead
+    -- of it.
+    translateMoveUsed(self, event)
+    return
+  end
+  if kind == "transformed" then
+    translateTransformed(self, event, packet)
+    return
+  end
+  -- Any other effect-keyed source event leads with its selected native
+  -- program: missed, protected, charged, delayed, and future
+  -- source-attributed kinds visualize where the source names an
+  -- effect instead of collapsing onto a generic hit. The cue leads
+  -- so the occurrence steps from its first tick; later cues still
+  -- wait for real completion.
+  if nativeEffectKeyOf(event) ~= nil then
+    enqueueNativeEffect(self, event, packet)
+  end
   local translate = OTHER_TRANSLATORS[kind]
   if translate == nil then
     self._diagnostics[#self._diagnostics + 1] = "unrepresentable effect: " .. kind
@@ -1340,7 +1522,7 @@ function BattleTimeline:present(packet, sourceMessages)
     if type(event.kind) == "string" then
       local kind = event.kind --[[@as string]]
       if kind == "struck" then
-        translateStruck(self, event, narrated)
+        translateStruck(self, event, packet, narrated)
       elseif kind == "faint" then
         translateFaint(self, event)
       elseif kind == "exp" then
@@ -1348,7 +1530,7 @@ function BattleTimeline:present(packet, sourceMessages)
       elseif kind == "stats" then
         translateStats(self, event, packet)
       else
-        translateOther(self, event)
+        translateOther(self, event, packet)
       end
     end
   end
@@ -1478,6 +1660,51 @@ local function cueReady(cue, isAvailable)
 end
 
 ---@param self BattleTimeline
+---@param cue table<string, unknown> native-effect cue under advancement
+---@return boolean finished true only after the player occurrence actually completed
+local function pollNativeEffect(self, cue)
+  if cue.collaboratorMissing == true then
+    return false
+  end
+  local handle = cue.handle
+  if handle == nil then
+    -- The collaborator refused admission: the owning screen already
+    -- latched its failure with provenance, so this cue holds instead
+    -- of settling silently or replaying generic voices.
+    return false
+  end
+  local poller = type(self._effects) == "table" and self._effects.status or nil
+  if type(poller) ~= "function" then
+    return false
+  end
+  local ok, phase = pcall(poller, handle)
+  if not ok then
+    if cue.pollNoted ~= true then
+      cue.pollNoted = true
+      self._diagnostics[#self._diagnostics + 1] = "native effect "
+        .. tostring(cue.effectKey)
+        .. " for launch "
+        .. tostring(cue.launchId)
+        .. " status query failed: "
+        .. tostring(phase)
+    end
+    return false
+  end
+  if phase == "complete" then
+    return true
+  end
+  if phase == "failed" and cue.failureNoted ~= true then
+    cue.failureNoted = true
+    self._diagnostics[#self._diagnostics + 1] = "native effect "
+      .. tostring(cue.effectKey)
+      .. " for launch "
+      .. tostring(cue.launchId)
+      .. " failed; the owning screen reports with provenance"
+  end
+  return false
+end
+
+---@param self BattleTimeline
 ---@param cue table<string, unknown> cue consuming its first tick
 local function startCue(self, cue)
   cue.started = true
@@ -1503,6 +1730,10 @@ local function startCue(self, cue)
     cue.duration = BattleTimeline.EXP_TICKS_PER_SEGMENT * segments
   elseif cue.kind == "reveal" then
     self:_installReveal(cue.combatant --[[@as integer]])
+  elseif cue.kind == "native-effect" then
+    -- Admission already demanded the effect; the first visit only
+    -- retries the demand when admission never ran it.
+    beginNativeEffect(self, cue)
   end
 end
 
@@ -1623,7 +1854,11 @@ end
 ---@param cue table<string, unknown> active cue under advancement
 ---@return boolean finished
 local function tickCue(self, cue)
-  if cue.kind == "message" then
+  if cue.kind == "native-effect" then
+    -- Only the player occurrence's real completion releases the cue;
+    -- every other phase holds without consuming invented timers.
+    return pollNativeEffect(self, cue)
+  elseif cue.kind == "message" then
     return tickMessage(self, cue)
   elseif cue.kind == "sound" then
     return true

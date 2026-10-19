@@ -202,15 +202,18 @@ local function tinyMeasurement()
   }
 end
 
----@param muted boolean? when true playback reports unavailable while still recording
+---@param muted boolean? when true playback stays silent while still recording
 ---@return table recording semantic sound boundary with per-name counts
 local function recordingAudio(muted)
   local audio = { plays = {}, muted = muted == true }
   function audio.play(first, second)
     -- The production voice subsystem dispatches sink ports colon-style,
     -- so the recorded semantic cue is the second argument when present.
+    -- Muted playback still accepts every voice (silently): unavailability
+    -- is modeled by absent ports, never by a muted answer, so muted
+    -- cues drain instead of failing the screen.
     audio.plays[#audio.plays + 1] = second ~= nil and second or first
-    return not audio.muted
+    return true
   end
   function audio.count(name)
     local total = 0
@@ -928,6 +931,22 @@ function T.paired_panes_use_source_regions_and_survive_redraw()
   -- interaction drawing, releasing elsewhere cancels, hovering alone
   -- seals nothing, and the sealed command still needs its release.
   local graphics = FakeGraphics.new({})
+  -- The picture pass reuses one mesh for every portrait, so a recorded
+  -- mesh always shows the last submitted texture: journal every texture
+  -- the renderer submits to prove each battler draws its own image.
+  local meshTextures = {}
+  do
+    local realNewMesh = graphics.newMesh
+    graphics.newMesh = function(...)
+      local mesh = realNewMesh(...)
+      local realSetTexture = mesh.setTexture
+      mesh.setTexture = function(self, texture)
+        meshTextures[#meshTextures + 1] = texture
+        return realSetTexture(self, texture)
+      end
+      return mesh
+    end
+  end
   local function drawNow()
     for key in pairs(graphics.draws) do
       graphics.draws[key] = nil
@@ -976,6 +995,11 @@ function T.paired_panes_use_source_regions_and_survive_redraw()
   local function wasDrawn(image)
     for _, entry in ipairs(graphics.draws) do
       if entry.image == image then
+        return true
+      end
+    end
+    for _, texture in ipairs(meshTextures) do
+      if texture == image then
         return true
       end
     end
@@ -1251,26 +1275,44 @@ function T.visible_cues_drain_in_order_without_host_clock_effects()
   end
   local sounding = narratedOutcome(recordingAudio(false))
   Assert.isTrue(#sounding.audio.plays > 0, "cue starts play their sounds once each")
-  local cryCounts = {}
+  local cryPlays = {}
+  local otherCounts = {}
   for _, played in ipairs(sounding.audio.plays) do
-    cryCounts[played] = (cryCounts[played] or 0) + 1
+    if type(played) == "string" and played:sub(1, 4) == "cry:" then
+      cryPlays[#cryPlays + 1] = played
+    else
+      otherCounts[played] = (otherCounts[played] or 0) + 1
+    end
   end
-  for name, total in pairs(cryCounts) do
-    Assert.equal(total, 1, "every cue sound plays exactly once: " .. tostring(name))
+  for name, total in pairs(otherCounts) do
+    Assert.equal(total, 1, "every non-cry cue sound plays exactly once: " .. tostring(name))
   end
+  -- Retail voices all three: the wild foe send-out, the player
+  -- send-out, and the fainted foe. A same-species matchup keys all
+  -- three identically, so the exact ordered triple is the source
+  -- truth: a missing or extra cry fails.
+  Assert.deepEqual(
+    cryPlays,
+    { "cry:EEVEE", "cry:EEVEE", "cry:EEVEE" },
+    "the win voices exactly its three send-out and faint cries in order"
+  )
   local liveHp = sounding.party:partyMon(0).condition.currentHp
   Assert.equal(
     sounding.screen:view().battlers[1].hp,
     liveHp,
     "the drained view carries the exact final health, not an interpolation residue"
   )
+  -- Capture the terminal wording before teardown: a disposed screen
+  -- releases its scene, so the muted twin compares against the
+  -- retained copy instead of a released view.
+  local soundingMessage = sounding.screen:view().message
   sounding.screen:dispose()
   sounding.battle:dispose()
   local muted = narratedOutcome(recordingAudio(true))
   Assert.equal(muted.battle:status().phase, "complete", "muted playback never deadlocks a cue")
   Assert.equal(
     muted.screen:view().message,
-    sounding.screen:view().message,
+    soundingMessage,
     "muted playback narrates the same terminal result"
   )
   muted.screen:dispose()
