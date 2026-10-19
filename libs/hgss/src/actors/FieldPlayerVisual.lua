@@ -24,8 +24,8 @@ local RUN_POSE_DELTA = MovementCalibration.poseProgressTicks({ action = "walk", 
 ---@class FieldPlayerVisual.Source
 ---@field facing string
 ---@field animationPaused boolean
----@field presentationStateInto fun(self: unknown, out: { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number, ordinaryStepSpeed: "normal"|"run"|nil }): { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number, ordinaryStepSpeed: "normal"|"run"|nil }
----@field presentationState fun(self: unknown): { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number, ordinaryStepSpeed: "normal"|"run"|nil }
+---@field presentationStateInto fun(self: unknown, out: { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number, ordinaryStepSpeed: "normal"|"run"|nil, scriptedPoseDelta: integer? }): { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number, ordinaryStepSpeed: "normal"|"run"|nil, scriptedPoseDelta: integer? }
+---@field presentationState fun(self: unknown): { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number, ordinaryStepSpeed: "normal"|"run"|nil, scriptedPoseDelta: integer? }
 ---@field clearGesturePresentation fun(self: unknown)
 ---@field renderPositionInto fun(self: unknown, out: { x: number, y: number, z: number }, alpha: number?): { x: number, y: number, z: number }
 ---@field renderPosition fun(self: unknown, alpha: number?): { x: number, y: number, z: number }
@@ -33,7 +33,7 @@ local RUN_POSE_DELTA = MovementCalibration.poseProgressTicks({ action = "walk", 
 ---@class FieldPlayerVisual.SourceInput
 ---@field facing string?
 ---@field animationPaused boolean?
----@field presentationState fun(self: FieldPlayerVisual.SourceInput): { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number, ordinaryStepSpeed: "normal"|"run"|nil }?
+---@field presentationState fun(self: FieldPlayerVisual.SourceInput): { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number, ordinaryStepSpeed: "normal"|"run"|nil, scriptedPoseDelta: integer? }?
 ---@field clearGesturePresentation fun(self: FieldPlayerVisual.SourceInput)
 ---@field renderPosition fun(self: FieldPlayerVisual.SourceInput, alpha: number?): { x: number, y: number, z: number }
 
@@ -128,7 +128,9 @@ function FieldPlayerVisual:updateFixed(locomotionAtTickStart, ordinaryStepSpeedA
       ordinaryStepSpeed = snapshot.ordinaryStepSpeed
     end
     local poseDelta = NORMAL_POSE_DELTA
-    if ordinaryStepSpeed ~= nil then
+    if snapshot.scriptedPoseDelta ~= nil then
+      poseDelta = snapshot.scriptedPoseDelta
+    elseif ordinaryStepSpeed ~= nil then
       assert(ordinaryStepSpeed == "normal" or ordinaryStepSpeed == "run", "ordinary step has unsupported speed")
       if ordinaryStepSpeed == "run" then
         poseDelta = RUN_POSE_DELTA

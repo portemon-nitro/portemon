@@ -212,7 +212,7 @@ end
 ---@field entranceInput { map: RuntimeFieldMap, player: FieldPlayer, transition: { ownsField: boolean } }
 ---@field coordinateProbe { fieldX: integer, fieldZ: integer, facing: string }
 ---@field terrainResponseInput table<string, unknown>
----@field playerPresentation { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number, ordinaryStepSpeed: ("normal"|"run")? }
+---@field playerPresentation { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number, ordinaryStepSpeed: ("normal"|"run")?, scriptedPoseDelta: integer? }
 ---@field carriedMovementInput table<string, unknown>
 ---@field interactionSnapshot table<string, unknown>
 ---@field actorContext table<string, unknown>
@@ -255,6 +255,7 @@ local function newTickScratch(actorLocked)
       gestureTick = nil,
       gestureOffsetY = 0,
       ordinaryStepSpeed = nil,
+      scriptedPoseDelta = nil,
     },
     carriedMovementInput = {},
     interactionSnapshot = {},

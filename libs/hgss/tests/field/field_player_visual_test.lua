@@ -8,6 +8,7 @@ local FieldActorFixture = require("tests.support.FieldActorFixture")
 local FieldActorPose = require("libs.hgss.src.presentation.FieldActorPose")
 local FieldPlayer = require("libs.hgss.src.actors.FieldPlayer")
 local FieldPlayerVisual = require("libs.hgss.src.actors.FieldPlayerVisual")
+local MovementCalibration = require("libs.hgss.src.script.tasks.MovementCalibration")
 local TerrainSurface = require("libs.hgss.src.world.TerrainSurface")
 
 ---@class TestPlayerStub : FieldPlayerVisual.Source
@@ -407,6 +408,49 @@ function T.presentation_snapshot_clears_stale_ordinary_speed_after_commit_and_sc
   presentation:updateFixed(true)
   Assert.equal(presentation.poseTick, poseBeforeScript + 1, "scripted walking retains its existing one-tick cadence")
   subject:cancelScriptedMovement()
+end
+
+-- Retail steps an actor's billboard by the same per-tick amounts for the same
+-- animation code whether the object is an NPC or the player
+-- (gPlayerWalk*FrameSteps match gWalk*FrameSteps), so a scripted player walk
+-- follows the speed's cadence, including on the committing tick.
+local function scriptedPoseTicks(speed)
+  local subject = movingPlayer()
+  local presentation = visual(subject)
+  local duration = MovementCalibration.actionTicks({ action = "walk", speed = speed })
+  subject:beginScriptedAction({ action = "walk", direction = "east", speed = speed })
+  local ticks = {}
+  for progress = 1, duration do
+    subject:advanceScriptedAction(progress, duration)
+    if progress == duration then
+      subject:commitScriptedAction()
+    end
+    presentation:updateFixed(true)
+    ticks[progress] = presentation.poseTick
+  end
+  return ticks
+end
+
+local function cumulative(pattern, count)
+  local total, out = 0, {}
+  for tick = 1, count do
+    total = total + pattern[(tick - 1) % #pattern + 1]
+    out[tick] = total
+  end
+  return out
+end
+
+function T.scripted_walk_advances_the_pose_clock_at_the_speeds_cadence()
+  local fast = scriptedPoseTicks("fast")
+  Assert.deepEqual(fast, cumulative({ 2 }, #fast), "fast steps advance two pose ticks per update")
+  local slightlyFast = scriptedPoseTicks("slightly_fast")
+  Assert.deepEqual(
+    slightlyFast,
+    cumulative({ 1, 1, 2, 1, 1, 2 }, #slightlyFast),
+    "slightly fast steps follow the retail frame-step pattern"
+  )
+  local slow = scriptedPoseTicks("slow")
+  Assert.deepEqual(slow, cumulative({ 0, 1 }, #slow), "slow steps advance every other update")
 end
 
 function T.visual_rejects_an_invalid_explicit_ordinary_step_speed()

@@ -73,6 +73,7 @@ end
 ---@field private _gestureTick integer?
 ---@field private _gestureOffsetY number
 ---@field private _scriptedMotion table<string, unknown>?
+---@field private _scriptedPoseDelta integer? pose ticks the last scripted locomotion tick advanced; kept through its commit tick, cleared by the next ordinary update, scripted begin, or cancel
 ---@field private _movementRevision integer committed tile commits observed by followers
 ---@field private _lastTraversalKind string traversal kind of the last committed tile
 ---@field private _movementStartRevision integer resolved translation starts observed by followers
@@ -866,6 +867,7 @@ end
 ---@return boolean stepCompleted
 function FieldPlayer:updateFixed(input, run)
   input = input or {}
+  self._scriptedPoseDelta = nil
   self.previousWorldX, self.previousWorldY, self.previousWorldZ = self.worldX, self.worldY, self.worldZ
 
   if self.motion == "walking" then
@@ -1061,6 +1063,7 @@ function FieldPlayer:beginScriptedAction(action)
   end
   assert(self.motion == "idle", "cannot begin scripted action while moving")
   assert(type(action) == "table" and type(action.action) == "string", "scripted action required")
+  self._scriptedPoseDelta = nil
   local MovementCalibration = require("libs.hgss.src.script.tasks.MovementCalibration")
   local durationTicks
   if kind == "traverse" then
@@ -1218,6 +1221,13 @@ function FieldPlayer:advanceScriptedAction(progressTicks, durationTicks)
     self._gestureTick = presentation.poseTick
     self._gestureOffsetY = presentation.offsetY
   end
+  if m.action == "walk" or m.action == "walk_in_place" or m.action == "jump" or m.action == "traverse" then
+    local MovementCalibration = require("libs.hgss.src.script.tasks.MovementCalibration")
+    -- Traversal reuses the ordinary walk cadence of its speed.
+    local cadence = { action = m.action == "traverse" and "walk" or m.action, speed = m.speed }
+    self._scriptedPoseDelta = MovementCalibration.poseProgressTicks(cadence, progressTicks)
+      - MovementCalibration.poseProgressTicks(cadence, progressTicks - 1)
+  end
   self.progressTicks = progressTicks
   self.durationTicks = durationTicks
 end
@@ -1253,6 +1263,7 @@ end
 
 function FieldPlayer:cancelScriptedMovement()
   local m = self._scriptedMotion
+  self._scriptedPoseDelta = nil
   if m and self.from then
     self.worldX, self.worldY, self.worldZ = self.from.worldX, self.from.worldY, self.from.worldZ
   end
@@ -1268,8 +1279,8 @@ function FieldPlayer:cancelScriptedMovement()
   self.previousWorldX, self.previousWorldY, self.previousWorldZ = self.worldX, self.worldY, self.worldZ
 end
 
----@param out { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number, ordinaryStepSpeed: "normal"|"run"|nil }
----@return { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number, ordinaryStepSpeed: "normal"|"run"|nil }
+---@param out { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number, ordinaryStepSpeed: "normal"|"run"|nil, scriptedPoseDelta: integer? }
+---@return { locomotionActive: boolean, gesturePose: string?, gestureTick: integer?, gestureOffsetY: number, ordinaryStepSpeed: "normal"|"run"|nil, scriptedPoseDelta: integer? }
 function FieldPlayer:presentationStateInto(out)
   assert(type(out) == "table", "presentation state output required")
   local scripted = self._scriptedMotion
@@ -1291,6 +1302,7 @@ function FieldPlayer:presentationStateInto(out)
   out.gestureTick = self._gestureTick
   out.gestureOffsetY = self._gestureOffsetY
   out.ordinaryStepSpeed = ordinaryStepSpeed
+  out.scriptedPoseDelta = self._scriptedPoseDelta
   return out
 end
 
