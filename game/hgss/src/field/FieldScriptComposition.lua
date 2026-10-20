@@ -456,6 +456,11 @@ function FieldScriptComposition.compose(runtime, options)
     local scheduler = runtime.scripts.scheduler
     scheduler:createBackground(assert(scheduler:resolveComposition(scriptId)), nil, runtime.session.tick)
   end
+
+  local function allowLegendActorAnimation(allowed)
+    local actors, actorId = legendActorId()
+    actors:setPresentationTickAllowedWhileLocked(actorId, allowed)
+  end
   local legendCutscene = HoOhAppearanceScene.new({
     versionId = runtime.versionId,
     playerPosition = currentPlayerPosition,
@@ -465,6 +470,7 @@ function FieldScriptComposition.compose(runtime, options)
     revealBird = revealLegendActor,
     setBirdFlap = setLegendActorFlap,
     resumeField = resumeField,
+    setBirdAnimationAllowance = allowLegendActorAnimation,
     audio = options.audioService,
     cacheFs = options.cacheFs,
   })

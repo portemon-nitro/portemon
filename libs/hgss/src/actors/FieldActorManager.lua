@@ -178,6 +178,7 @@ end
 ---@field eventState FieldEventState?
 ---@field unsubscribe fun()?
 ---@field pendingFlags FieldActorFlagChange[]
+---@field presentationTickAllowedWhileLocked table<string, boolean>
 ---@field removedOverrides table<string, boolean>
 ---@field currentMapId integer|nil
 ---@field retained table<integer, RuntimeFieldMap> resident neighbor views allowed to hold frozen entries
@@ -223,6 +224,7 @@ end
 ---@field setMovementType fun(self: FieldActorManager, actorId: string, movementType: string)
 ---@field setAnimationPaused fun(self: FieldActorManager, actorId: string, paused: boolean)
 ---@field setPresentationOffset fun(self: FieldActorManager, actorId: string, offset: { x: number, y: number, z: number })
+---@field setPresentationTickAllowedWhileLocked fun(self: FieldActorManager, actorId: string, allowed: boolean)
 ---@field clearPresentationOffset fun(self: FieldActorManager, actorId: string)
 ---@field setGesturePresentation fun(self: FieldActorManager, actorId: string, pose: string, tick: integer)
 ---@field clearGesturePresentation fun(self: FieldActorManager, actorId: string)
@@ -371,6 +373,7 @@ function FieldActorManager.new(opts)
     eventState = nil,
     unsubscribe = nil,
     pendingFlags = {},
+    presentationTickAllowedWhileLocked = {},
     -- Sparse source-scoped logical removals by "mapId:objectEventId":
     -- flag-less obstacles destroyed through removePresence with recording.
     -- Honored at map entry and restore; refreshed from each incoming
@@ -1210,6 +1213,7 @@ end
 ---@param restoredObjects table<string, unknown>?
 ---@param self FieldActorManager
 function FieldActorManager:enterMap(runtimeMap, eventState, restoredObjects)
+  self.presentationTickAllowedWhileLocked = {}
   assert(runtimeMap and runtimeMap.fieldData, "enterMap requires a runtime map")
   assert(eventState, "enterMap requires a field event state")
   local mapId = runtimeMap.mapId
@@ -1828,7 +1832,11 @@ function FieldActorManager:step(tick, context)
       if not movementLocked and context.actorLocked then
         movementLocked = context.actorLocked(actor.actorId) == true
       end
-      if not movementLocked or actor:idleRunsWhileLocked() then
+      if
+        not movementLocked
+        or actor:idleRunsWhileLocked()
+        or self.presentationTickAllowedWhileLocked[actor.actorId] == true
+      then
         actor:advancePresentationTick()
       end
       local autonomousAction = entry.autonomousActions[actor.actorId]
@@ -1869,6 +1877,17 @@ function FieldActorManager:step(tick, context)
         end
       end
     end
+  end
+end
+
+-- A source-timed cutscene may keep one actor's idle clock moving while script
+-- locks hold ordinary actors. The actor still owns pause and action semantics.
+function FieldActorManager:setPresentationTickAllowedWhileLocked(actorId, allowed)
+  assert(type(allowed) == "boolean", "locked presentation allowance must be explicit")
+  if allowed then
+    self.presentationTickAllowedWhileLocked[actorId] = true
+  else
+    self.presentationTickAllowedWhileLocked[actorId] = nil
   end
 end
 
@@ -3298,6 +3317,7 @@ end
 
 ---@param self FieldActorManager
 function FieldActorManager:dispose()
+  self.presentationTickAllowedWhileLocked = {}
   local mapIds = {}
   for mapId in pairs(self.maps) do
     mapIds[#mapIds + 1] = mapId

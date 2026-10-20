@@ -10,9 +10,16 @@ local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCac
 ---@field riseTicks integer
 ---@field shimmerTicks integer
 
+---@class HoOhAppearanceScene.Status: table<string, unknown>
+---@field active boolean
+---@field backdropRetained boolean
+---@field versionId string?
+
 ---@class HoOhAppearanceScene
 ---@field cacheFs CacheFs
 ---@field summary HoOhAppearanceScene.Summary?
+---@field backdropRetained boolean
+---@field setBirdAnimationAllowance fun(self: HoOhAppearanceScene, allowed: boolean)
 ---@field new fun(options: table<string, unknown>): HoOhAppearanceScene
 ---@field command fun(self: HoOhAppearanceScene, op: string, destination: integer?)
 ---@field cameraPanTicks fun(self: HoOhAppearanceScene): integer
@@ -23,7 +30,7 @@ local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCac
 ---@field birdRingFrame fun(self: HoOhAppearanceScene, state: table<string, unknown>): integer?
 ---@field taskTicks fun(self: HoOhAppearanceScene, op: string): integer
 ---@field updateFixed fun(self: HoOhAppearanceScene)
----@field status fun(self: HoOhAppearanceScene): table<string, unknown>
+---@field status fun(self: HoOhAppearanceScene): HoOhAppearanceScene.Status
 ---@field currentVariant fun(self: HoOhAppearanceScene): integer
 
 local HG_CORNER_OFFSETS = {
@@ -115,6 +122,7 @@ function HoOhAppearanceScene.new(options)
   assert(type(options.setBirdHeight) == "function", "Ho-Oh scene requires the legend actor height writer")
   assert(type(options.revealBird) == "function", "Ho-Oh scene requires the legend actor reveal")
   assert(type(options.setBirdFlap) == "function", "Ho-Oh scene requires the legend actor flap writer")
+  assert(type(options.setBirdAnimationAllowance) == "function", "Ho-Oh scene requires the legend animation allowance")
   assert(
     options.audio and options.audio.play and options.audio.playMusic and options.audio.playCry,
     "Ho-Oh scene requires the field audio"
@@ -129,6 +137,8 @@ function HoOhAppearanceScene.new(options)
     audio = options.audio,
     revealBird = options.revealBird,
     setBirdFlap = options.setBirdFlap,
+    setBirdAnimationAllowance = options.setBirdAnimationAllowance,
+    backdropRetained = false,
     cacheFs = options.cacheFs,
     summary = nil,
     sequence = 0,
@@ -296,6 +306,7 @@ function HoOhAppearanceScene:command(op, destination)
       birdFrame = nil,
       cinematicFrame = nil,
     }
+    self.backdropRetained = true
     self.state.cameraLease = snapshotCamera(self.state.cameraLease.camera)
     self.state.cameraLease.camera = self.currentCamera()
     self.fieldCamera = snapshotCamera(self.state.cameraLease.camera)
@@ -356,11 +367,13 @@ function HoOhAppearanceScene:command(op, destination)
       cinematicFrame = nil,
       effectsActive = false,
     }
+    self.setBirdAnimationAllowance(true)
     self.revealBird()
     self.setBirdHeight(BIRD_DESCENT_TICKS[self.versionId] / BIRD_APPROACH_SOURCE_UNITS_PER_TILE)
   elseif op == "legend_cinematic" then
     assert(state == nil, "Ho-Oh bird approach is still active")
     assert(destination == 0, "unsupported Ho-Oh cinematic scene")
+    self.backdropRetained = false
     local player = assert(self.playerPosition(), "Ho-Oh cinematic requires a live player")
     local camera = assert(self.currentCamera(), "Ho-Oh cinematic requires a live camera")
     local variant = self:currentVariant()
@@ -510,6 +523,9 @@ function HoOhAppearanceScene:updateFixed()
         end
         state.flapSoundCooldown = state.flapSoundCooldown - 1
       end
+      if state.birdFrame == descentTicks then
+        self.setBirdAnimationAllowance(false)
+      end
     end
     local flapStart = descentTicks + BIRD_LAND_TO_FLAP_TICKS
     local ringFrame = self:birdRingFrame(state)
@@ -606,14 +622,16 @@ function HoOhAppearanceScene:birdRingFrame(state)
   return frame
 end
 
+---@return HoOhAppearanceScene.Status
 function HoOhAppearanceScene:status()
   local state = self.state
   if state == nil then
-    return { active = false, sequence = self.sequence }
+    return { active = false, sequence = self.sequence, backdropRetained = self.backdropRetained }
   end
   local offsets = self.versionId == "heartgold" and HG_CORNER_OFFSETS or SS_CORNER_OFFSETS
   return {
     active = state.active,
+    backdropRetained = self.backdropRetained,
     sequence = state.sequence,
     versionId = self.versionId,
     origin = copyPosition(state.origin),
@@ -638,6 +656,10 @@ function HoOhAppearanceScene:status()
     cinematicFadeColor = state.cinematicFade and state.cinematicFade.color or nil,
     cinematicFadeAlpha = state.cinematicFade and state.cinematicFade.alpha or nil,
   }
+end
+
+function HoOhAppearanceScene:retireBackdrop()
+  self.backdropRetained = false
 end
 
 return HoOhAppearanceScene
