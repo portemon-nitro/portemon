@@ -32,6 +32,7 @@ local Errors = require("libs.errors.src.Errors")
 ---@field private _versions table<string, unknown>?
 ---@field private _cacheFactory (fun(versionId: string): table<string, unknown>)?
 ---@field private _now (fun(): number)?
+---@field private _expectedVersionId string? edition required by a targeted import
 ---@field private _verified table<string, unknown>? one-shot validated buffer for the controller handoff
 local RomImporter = {}
 RomImporter.__index = RomImporter
@@ -91,6 +92,10 @@ end
 -- a static `now` (which disables yielding, so one update() runs to completion).
 function RomImporter.new(opts)
   opts = opts or {}
+  local expectedVersionId = opts.expectedVersionId
+  if expectedVersionId ~= nil then
+    assert(GameVersion.VERSIONS[expectedVersionId], "unknown expected game version")
+  end
   return setmetatable({
     _onComplete = opts.onComplete,
     _versions = opts.versions or GameVersion,
@@ -98,6 +103,7 @@ function RomImporter.new(opts)
       return CacheFs.forVersion(id)
     end,
     _now = opts.now or defaultNow,
+    _expectedVersionId = expectedVersionId,
     state = RomImporter.STATES.IDLE,
     progress = 0,
   }, RomImporter)
@@ -204,6 +210,15 @@ function RomImporter:_beginWork()
     end
 
     local info = rom:versionInfo()
+    if self._expectedVersionId ~= nil and info.id ~= self._expectedVersionId then
+      return self:_fail(
+        Errors.new(
+          "ROM_VERSION_MISMATCH",
+          "selected ROM does not match the requested game version",
+          { expectedVersionId = self._expectedVersionId, actualVersionId = info.id }
+        )
+      )
+    end
     self._versionId = info.id
     self._displayName = info.displayName
     self._sourceName = source:displayName()

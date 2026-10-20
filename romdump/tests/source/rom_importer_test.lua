@@ -109,6 +109,30 @@ function T.imports_synthetic_rom_to_completion()
   Assert.equal(h.events[1], "heartgold")
 end
 
+function T.targeted_import_rejects_a_different_recognized_edition_before_binding()
+  local h = harness()
+  h.backend.files[HG .. "existing-binding"] = "KEEP"
+  local importer = RomImporter.new({
+    versions = h.versions,
+    expectedVersionId = "soulsilver",
+    now = function()
+      return 0
+    end,
+    cacheFactory = function(id)
+      return CacheFs.forVersion(id, h.backend)
+    end,
+  })
+
+  importer:startSource(RomSource.fromString(h.data, "heartgold.nds"))
+  runToTerminal(importer)
+
+  Assert.equal(importer.state, "error")
+  Assert.equal(importer:status().errorCode, "ROM_VERSION_MISMATCH")
+  Assert.equal(h.backend.files[HG .. "existing-binding"], "KEEP")
+  Assert.isNil(h.backend.files["soulsilver/rom-binding.lua"])
+  Assert.equal(#h.events, 0)
+end
+
 -- Validation (SHA-1/header) must fully precede any cache write (E8-S1), and
 -- nothing in the import lifecycle may touch the persistent save namespace.
 function T.validation_precedes_cache_cleanup()
@@ -219,11 +243,7 @@ function T.reimport_reregisters_the_source_binding()
   runToTerminal(again)
   Assert.equal(again.state, "complete")
   Assert.notNil(again:status().report, "a fresh registration always completes")
-  Assert.deepEqual(
-    cache:loadLua("rom-source.lua"),
-    first,
-    "re-registering the same ROM keeps its binding"
-  )
+  Assert.deepEqual(cache:loadLua("rom-source.lua"), first, "re-registering the same ROM keeps its binding")
   for path in pairs(h.backend.files) do
     Assert.isFalse(
       path:find(HG .. "romfs/", 1, true) == 1 or path:find(HG .. "system/", 1, true) == 1,
