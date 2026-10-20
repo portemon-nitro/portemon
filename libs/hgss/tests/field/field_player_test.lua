@@ -469,18 +469,28 @@ local function flatPlate(id, minX, maxX, distance)
   }
 end
 
-function T.malformed_terrain_failure_is_not_a_blocked_step()
-  -- The destination cell is inside permission coverage but no walkable
-  -- surface covers it: malformed terrain must propagate, not silently read
-  -- as a blocked step.
+-- Retail leaves some walkable tiles without any terrain plate (stair gaps
+-- such as the Whirl Islands Lugia approach, where permission-free tiles
+-- have no BDHC floor): an ordinary step onto a resident tile with no
+-- walkable surface keeps the player's height and carries no surface,
+-- exactly like the scripted path, instead of faulting.
+function T.step_onto_a_tile_without_a_plate_keeps_height()
   local map = runtimeMap(nil, {
-    flatPlate(0, 0, 1, 0),
-    flatPlate(1, 2, 32, 0),
+    flatPlate(0, 0, 1, 1),
+    flatPlate(1, 3, 32, 5),
   })
-  local p = player(map, 0, 4, 0)
-  throwsCode("TERRAIN_SURFACE_NOT_FOUND", function()
-    p:tryStep("east")
-  end)
+  local p = player(map, 0, 4, 0, "east")
+  local startY = p.worldY
+  tick(p, "east", "east")
+  Assert.equal(p.motion, "walking")
+  for _ = 2, 8 do
+    tick(p, "east")
+  end
+  Assert.equal(p.fieldX, 1)
+  Assert.equal(p.fieldZ, 4)
+  Assert.equal(p.motion, "idle")
+  Assert.isNil(p.surfaceId, "no plate means no surface")
+  Assert.equal(p.worldY, startY, "the player keeps its height")
 end
 
 -- A scripted walk onto a tile without a plate keeps the player's height and
@@ -674,11 +684,19 @@ function T.wrong_direction_and_invalid_ledge_landings_do_not_displace()
   Assert.equal(outOfCoverage.fieldZ, 4)
   Assert.equal(outOfCoverage.motion, "idle")
 
-  local malformedLanding = behaviorMap(NAVIGATION_BEHAVIORS.jumpEast, { flatPlate(0, 0, 1, 0), flatPlate(1, 3, 32, 0) })
-  local malformedPlayer = player(malformedLanding, 0, 4, 0, "east")
-  throwsCode("TERRAIN_SURFACE_NOT_FOUND", function()
-    malformedPlayer:tryStep("east")
-  end)
+  local uncoveredLanding = behaviorMap(NAVIGATION_BEHAVIORS.jumpEast, { flatPlate(0, 0, 2, 1), flatPlate(1, 3, 32, 5) })
+  local uncoveredJumper = player(uncoveredLanding, 0, 4, 0, "east")
+  local startY = uncoveredJumper.worldY
+  Assert.isTrue(uncoveredJumper:tryStep("east"))
+  Assert.equal(uncoveredJumper.motion, "jumping")
+  for _ = 1, FieldPlayer.LEDGE_JUMP_TICKS do
+    uncoveredJumper:updateFixed({})
+  end
+  Assert.equal(uncoveredJumper.fieldX, 2)
+  Assert.equal(uncoveredJumper.fieldZ, 4)
+  Assert.equal(uncoveredJumper.motion, "idle")
+  Assert.isNil(uncoveredJumper.surfaceId, "no plate means no surface")
+  Assert.equal(uncoveredJumper.worldY, startY, "the player keeps its height")
 end
 
 function T.field_move_behaviors_do_not_start_ordinary_walking()
@@ -991,18 +1009,183 @@ local function flatPlate2(id, minX, maxX, distance)
   }
 end
 
-function T.malformed_terrain_failure_is_not_a_blocked_step()
-  -- The destination cell is inside permission coverage but no walkable
-  -- surface covers it: malformed terrain must propagate, not silently read
-  -- as a blocked step.
+-- Retail leaves some walkable tiles without any terrain plate (stair gaps
+-- such as the Whirl Islands Lugia approach, where permission-free tiles
+-- have no BDHC floor): an ordinary step onto a resident tile with no
+-- walkable surface keeps the player's height and carries no surface,
+-- exactly like the scripted path, instead of faulting.
+function T.step_onto_a_tile_without_a_plate_keeps_height()
   local map = runtimeMap(nil, {
-    flatPlate2(0, 0, 1, 0),
-    flatPlate2(1, 2, 32, 0),
+    flatPlate2(0, 0, 1, 1),
+    flatPlate2(1, 3, 32, 5),
   })
-  local p = player(map, 0, 4, 0)
-  throwsCode("TERRAIN_SURFACE_NOT_FOUND", function()
-    p:tryStep("east")
-  end)
+  local p = player(map, 0, 4, 0, "east")
+  local startY = p.worldY
+  tick(p, "east", "east")
+  Assert.equal(p.motion, "walking")
+  for _ = 2, 8 do
+    tick(p, "east")
+  end
+  Assert.equal(p.fieldX, 1)
+  Assert.equal(p.fieldZ, 4)
+  Assert.equal(p.motion, "idle")
+  Assert.isNil(p.surfaceId, "no plate means no surface")
+  Assert.equal(p.worldY, startY, "the player keeps its height")
+end
+
+function T.consecutive_steps_over_tiles_without_plates_keep_height()
+  local map = runtimeMap(nil, {
+    flatPlate2(0, 0, 1, 1),
+    flatPlate2(1, 3, 32, 5),
+  })
+  local p = player(map, 0, 4, 0, "east")
+  local startY = p.worldY
+  for _ = 1, 8 do
+    tick(p, "east", _ == 1 and "east" or nil)
+  end
+  Assert.equal(p.fieldX, 1)
+  Assert.isNil(p.surfaceId)
+  for _ = 1, 8 do
+    tick(p, "east", _ == 1 and "east" or nil)
+  end
+  Assert.equal(p.fieldX, 2)
+  Assert.equal(p.fieldZ, 4)
+  Assert.equal(p.motion, "idle")
+  Assert.isNil(p.surfaceId, "still no plate under the second tile")
+  Assert.equal(p.worldY, startY)
+end
+
+function T.scripted_walks_across_consecutive_plateless_tiles_keep_height()
+  -- Scripted motion chained from a plateless tile (no committed surface)
+  -- keeps height across further plateless tiles, as forced cutscene walks
+  -- over stair gaps do.
+  local map = runtimeMap(nil, {
+    flatPlate2(0, 0, 1, 1),
+    flatPlate2(1, 3, 32, 5),
+  })
+  local p = player(map, 0, 4, 0, "east")
+  local startY = p.worldY
+  for _ = 1, 2 do
+    p:beginScriptedAction({ action = "walk", direction = "east", speed = "normal" })
+    for _ = 1, FieldPlayer.WALK_STEP_TICKS do
+      p:updateFixed({})
+    end
+    p:commitScriptedAction()
+  end
+  Assert.equal(p.fieldX, 2)
+  Assert.isNil(p.surfaceId, "still no plate under the second tile")
+  Assert.equal(p.worldY, startY)
+end
+
+function T.step_from_a_plateless_tile_back_onto_covered_terrain_resolves_a_surface()
+  local map = runtimeMap(nil, {
+    flatPlate2(0, 0, 1, 1),
+    flatPlate2(1, 3, 32, 5),
+  })
+  local p = player(map, 0, 4, 0, "east")
+  for _ = 1, 16 do
+    tick(p, "east", _ == 1 and "east" or nil)
+  end
+  Assert.equal(p.fieldX, 2)
+  Assert.isNil(p.surfaceId)
+  for _ = 1, 8 do
+    tick(p, "east", _ == 1 and "east" or nil)
+  end
+  Assert.equal(p.fieldX, 3)
+  Assert.equal(p.surfaceId, 1, "covered terrain resolves a surface again")
+  near(p.worldY, 5)
+end
+
+function T.blocked_permission_on_a_plateless_tile_stays_blocked()
+  local map = runtimeMap({ ["1:4"] = true }, {
+    flatPlate2(0, 0, 1, 1),
+    flatPlate2(1, 3, 32, 5),
+  })
+  local p = player(map, 0, 4, 0, "east")
+  tick(p, "east", "east")
+  Assert.equal(p.fieldX, 0)
+  Assert.equal(p.fieldZ, 4)
+  Assert.equal(p.motion, "idle")
+end
+
+function T.occupancy_is_not_consulted_for_steps_onto_plateless_tiles()
+  -- Surfaceless positions never enter the occupancy index, so permission
+  -- alone governs plateless steps; consulting it would fault on the missing
+  -- surface identity.
+  local map = runtimeMap(nil, {
+    flatPlate2(0, 0, 1, 1),
+    flatPlate2(1, 3, 32, 5),
+  })
+  local p = FieldPlayer.new({
+    currentMap = map,
+    fieldX = 0,
+    fieldZ = 4,
+    surfaceId = 0,
+    facing = "east",
+    occupancy = function()
+      error("occupancy must not govern plateless steps")
+    end,
+  })
+  for _ = 1, 8 do
+    tick(p, "east", _ == 1 and "east" or nil)
+  end
+  Assert.equal(p.fieldX, 1)
+  Assert.isNil(p.surfaceId)
+end
+
+-- A player standing on a plateless tile carries no stable source surface,
+-- so there is no cross-cell continuity for the physical probe to follow:
+-- in-window steps resolve locally, and the probe is never consulted.
+function T.surfaceless_steps_stay_on_the_local_path_under_coverage()
+  local map = runtimeMap(nil, {
+    flatPlate2(0, 0, 1, 1),
+    flatPlate2(1, 3, 32, 5),
+  })
+  map.coverage = {
+    containsGlobal = function()
+      return true
+    end,
+  }
+  map.probePhysicalCell = function()
+    error("surfaceless steps must not consult the physical probe")
+  end
+  local p = player(map, 0, 4, 0, "east")
+  local startY = p.worldY
+  for _ = 1, 16 do
+    tick(p, "east", _ == 1 and "east" or nil)
+  end
+  Assert.equal(p.fieldX, 2)
+  Assert.isNil(p.surfaceId)
+  Assert.equal(p.worldY, startY)
+end
+
+-- Past the coverage window there is nothing local to resolve either: the
+-- step stays blocked instead of faulting on the missing source identity.
+function T.surfaceless_step_past_the_coverage_window_stays_blocked()
+  local map = runtimeMap(nil, {
+    flatPlate2(0, 0, 1, 1),
+    flatPlate2(1, 2, 32, 1),
+  })
+  map.collision.containsLocal = function(_, x, z)
+    return x >= 0 and x < 2 and z >= 0 and z < 32
+  end
+  map.coverage = {
+    containsGlobal = function(_, fieldX)
+      return fieldX < 2
+    end,
+  }
+  map.probePhysicalCell = function()
+    error("surfaceless steps must not consult the physical probe")
+  end
+  local p = player(map, 0, 4, 0, "east")
+  for _ = 1, 8 do
+    tick(p, "east", _ == 1 and "east" or nil)
+  end
+  Assert.equal(p.fieldX, 1)
+  Assert.isNil(p.surfaceId)
+  tick(p, "east", "east")
+  Assert.equal(p.fieldX, 1)
+  Assert.equal(p.motion, "idle")
 end
 
 function T.ambiguous_terrain_failure_is_not_a_blocked_step()
@@ -1169,12 +1352,20 @@ function T.wrong_direction_and_invalid_ledge_landings_do_not_displace()
   Assert.equal(outOfCoverage.fieldZ, 4)
   Assert.equal(outOfCoverage.motion, "idle")
 
-  local malformedLanding =
-    behaviorMap2(NAVIGATION_BEHAVIORS2.jumpEast, { flatPlate2(0, 0, 1, 0), flatPlate2(1, 3, 32, 0) })
-  local malformedPlayer = player(malformedLanding, 0, 4, 0, "east")
-  throwsCode("TERRAIN_SURFACE_NOT_FOUND", function()
-    malformedPlayer:tryStep("east")
-  end)
+  local uncoveredLanding =
+    behaviorMap2(NAVIGATION_BEHAVIORS2.jumpEast, { flatPlate2(0, 0, 2, 1), flatPlate2(1, 3, 32, 5) })
+  local uncoveredJumper = player(uncoveredLanding, 0, 4, 0, "east")
+  local startY = uncoveredJumper.worldY
+  Assert.isTrue(uncoveredJumper:tryStep("east"))
+  Assert.equal(uncoveredJumper.motion, "jumping")
+  for _ = 1, FieldPlayer.LEDGE_JUMP_TICKS do
+    uncoveredJumper:updateFixed({})
+  end
+  Assert.equal(uncoveredJumper.fieldX, 2)
+  Assert.equal(uncoveredJumper.fieldZ, 4)
+  Assert.equal(uncoveredJumper.motion, "idle")
+  Assert.isNil(uncoveredJumper.surfaceId, "no plate means no surface")
+  Assert.equal(uncoveredJumper.worldY, startY, "the player keeps its height")
 end
 
 function T.field_move_behaviors_do_not_start_ordinary_walking()
@@ -1216,6 +1407,24 @@ function T.direction_matching_ledge_commits_a_two_tile_sixteen_tick_jump()
   Assert.equal(p.fieldX, startX + 2)
   Assert.equal(p.fieldZ, startZ)
   Assert.equal(p.motion, "idle")
+end
+
+function T.ledge_landing_onto_a_plateless_tile_keeps_height()
+  local map = behaviorMap2(NAVIGATION_BEHAVIORS2.jumpEast, { flatPlate2(0, 0, 2, 1), flatPlate2(1, 3, 32, 5) })
+  local p = player(map, 0, 4, 0, "east")
+  local startY = p.worldY
+  tick(p, "east", "east")
+  Assert.equal(p.motion, "jumping")
+  for _ = 1, 14 do
+    tick(p, "east")
+    Assert.equal(p.motion, "jumping")
+  end
+  Assert.isTrue(p:updateFixed({ heldDirection = "east" }))
+  Assert.equal(p.fieldX, 2)
+  Assert.equal(p.fieldZ, 4)
+  Assert.equal(p.motion, "idle")
+  Assert.isNil(p.surfaceId, "no plate means no surface")
+  Assert.equal(p.worldY, startY, "the player keeps its height")
 end
 
 function T.normal_steps_preserve_source_surface_identity_for_effects()

@@ -528,16 +528,14 @@ function T.facing_outside_coverage_returns_nil()
   Assert.isNil(r:resolve(baseSnapshot({ runtimeMap = m, fieldZ = 0, facing = "north" })))
 end
 
-function T.malformed_terrain_failure_propagates_instead_of_nothing_there()
-  -- The facing cell has permission coverage but no walkable surface: that is
-  -- malformed terrain, not "nothing interactable there".
+function T.facing_a_tile_without_a_plate_resolves_to_nothing_there()
+  -- The facing cell has permission coverage but no walkable surface
+  -- (retail stair gaps): that is nothing interactable there, not a fault.
   local m = terrainMap({
     flatPlate(0, 14, 32, 0),
   })
   local r = resolver()
-  throwsCode("TERRAIN_SURFACE_NOT_FOUND", function()
-    r:resolve(baseSnapshot({ runtimeMap = m }))
-  end)
+  Assert.isNil(r:resolve(baseSnapshot({ runtimeMap = m })))
 end
 
 function T.ambiguous_terrain_failure_propagates_instead_of_nothing_there()

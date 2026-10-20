@@ -244,10 +244,17 @@ end
 -- composite collision/terrain, whenever it falls outside the resident
 -- coverage window or the player's own current surface plate does not reach
 -- the tile it is standing on (a plate boundary inside the same resident
--- cell). `tryStep`'s traversal classification and `_resolveStep`'s full
--- resolution must agree on this or one will accept a step the other rejects.
+-- cell). A player standing on a plateless tile carries no stable source
+-- surface, so there is no cross-cell continuity for the probe to follow:
+-- such steps resolve locally, and local resolution already rejects tiles
+-- past the coverage window. `tryStep`'s traversal classification and
+-- `_resolveStep`'s full resolution must agree on this or one will accept a
+-- step the other rejects.
 function FieldPlayer:_crossesToPhysicalProbe(destinationX, destinationZ)
   if not self.currentMap.coverage then
+    return false
+  end
+  if self.committedSourceCellKey == nil or self.committedSourceSurfaceId == nil then
     return false
   end
   local currentSurfaceCoversSource = self.currentMap.terrain:contains(
@@ -335,12 +342,15 @@ function FieldPlayer:_resolveStep(direction, bypassBlocking, planned, tiles)
         end
       end
       if
-        bypassBlocking
-        and FieldActorPlacement.isResident(self.currentMap, destinationX, destinationZ)
+        FieldActorPlacement.isResident(self.currentMap, destinationX, destinationZ)
         and FieldActorPlacement.isUncovered(self.currentMap, destinationX, destinationZ)
       then
-        -- A scripted step onto a tile without a plate keeps the current
-        -- height and carries no surface or stable source identity.
+        -- A step onto a resident tile without a walkable plate keeps the
+        -- current height and carries no surface or stable source identity.
+        -- Retail leaves such stair-gap tiles plateless; surfaceless
+        -- positions never enter the occupancy index, so permission (checked
+        -- above for ordinary steps, bypassed for scripted ones) alone
+        -- governs them.
         local point = FieldCoordinates.fieldToWorld(self.currentMap, destinationX, destinationZ, self.worldY)
         return {
           fieldX = destinationX,
@@ -649,6 +659,24 @@ function FieldPlayer:_resolveLedgeLanding(direction)
     if self.currentMap.collision:isBlockedLocal(landingLocalX, landingLocalZ) then
       return nil
     end
+    if
+      FieldActorPlacement.isResident(self.currentMap, landingX, landingZ)
+      and FieldActorPlacement.isUncovered(self.currentMap, landingX, landingZ)
+    then
+      -- A ledge landing on a resident tile without a walkable plate keeps
+      -- the current height and carries no surface, like any other step
+      -- onto a plateless tile.
+      local point = FieldCoordinates.fieldToWorld(self.currentMap, landingX, landingZ, self.worldY)
+      return {
+        fieldX = landingX,
+        fieldZ = landingZ,
+        localX = landingLocalX,
+        localZ = landingLocalZ,
+        worldX = point.x,
+        worldY = point.y,
+        worldZ = point.z,
+      }
+    end
     local landingCenterX = landingLocalX + FieldCoordinates.TILE_CENTER_OFFSET
     local landingCenterZ = landingLocalZ + FieldCoordinates.TILE_CENTER_OFFSET
     local sample = self.resolver:resolve({
@@ -809,7 +837,10 @@ function FieldPlayer:_advanceStep()
   local progress = self.progressTicks / self.durationTicks
   self.worldX = self.from.worldX + (self.to.worldX - self.from.worldX) * progress
   self.worldZ = self.from.worldZ + (self.to.worldZ - self.from.worldZ) * progress
-  if not self.to.sourceCellKey and self.from.surfaceId == self.to.surfaceId then
+  -- Sampling glides along one continuous plate; without a destination
+  -- surface (a step onto or across plateless tiles) height interpolates
+  -- linearly instead.
+  if self.to.surfaceId ~= nil and not self.to.sourceCellKey and self.from.surfaceId == self.to.surfaceId then
     local localX = self.from.localX
       + FieldCoordinates.TILE_CENTER_OFFSET
       + (self.to.localX - self.from.localX) * progress
@@ -1194,7 +1225,10 @@ function FieldPlayer:advanceScriptedAction(progressTicks, durationTicks)
     assert(self.from and self.to, "walking endpoints required")
     self.worldX = self.from.worldX + (self.to.worldX - self.from.worldX) * t
     self.worldZ = self.from.worldZ + (self.to.worldZ - self.from.worldZ) * t
-    if self.from.surfaceId == self.to.surfaceId then
+    -- Sampling glides along one continuous plate; without a destination
+    -- surface (scripted motion onto or across plateless tiles) height
+    -- interpolates linearly instead.
+    if self.to.surfaceId ~= nil and self.from.surfaceId == self.to.surfaceId then
       local localX = self.from.localX + FieldCoordinates.TILE_CENTER_OFFSET + (self.to.localX - self.from.localX) * t
       local localZ = self.from.localZ + FieldCoordinates.TILE_CENTER_OFFSET + (self.to.localZ - self.from.localZ) * t
       self.worldY = self.currentMap.terrain:sampleHeight(self.to.surfaceId, localX, localZ)
@@ -1384,6 +1418,34 @@ function FieldPlayer:rebindCoverage(runtimeMap, deltaX, deltaY, deltaZ, cellKey,
   self.previousWorldZ = self.previousWorldZ + deltaZ
   self.committedSourceCellKey = cellKey
   self.committedSourceSurfaceId = sourceSurfaceId
+end
+
+-- Rebinds the player to a (possibly recentered) physical window while it
+-- carries no surface: local coordinates re-derive arithmetically from the
+-- new origin, height and the absent surface persist, and there is no
+-- stable source identity to refresh. The caller owns deciding that no
+-- surface projection applies.
+function FieldPlayer:rebindCoverageSurfaceless(runtimeMap, deltaX, deltaY, deltaZ)
+  assert(runtimeMap and runtimeMap.coordinateOrigin, "coverage runtime map required")
+  assert(
+    type(deltaX) == "number" and type(deltaY) == "number" and type(deltaZ) == "number",
+    "coverage rebase delta required"
+  )
+  assert(self.surfaceId == nil, "surfaceless rebind requires no committed surface")
+  self.currentMap = runtimeMap
+  self.resolver = SurfaceResolver.new(runtimeMap.terrain)
+  local projectedLocalX = self.fieldX - runtimeMap.coordinateOrigin.x
+  local projectedLocalZ = self.fieldZ - runtimeMap.coordinateOrigin.z
+  assert(projectedLocalX % 1 == 0 and projectedLocalZ % 1 == 0, "projected local coordinates must be integers")
+  self.localX, self.localZ = projectedLocalX, projectedLocalZ
+  self.worldX = self.worldX + deltaX
+  self.worldY = self.worldY + deltaY
+  self.worldZ = self.worldZ + deltaZ
+  self.previousWorldX = self.previousWorldX + deltaX
+  self.previousWorldY = self.previousWorldY + deltaY
+  self.previousWorldZ = self.previousWorldZ + deltaZ
+  self.committedSourceCellKey = nil
+  self.committedSourceSurfaceId = nil
 end
 
 function FieldPlayer:status()

@@ -54,14 +54,27 @@ function FieldNavigationBoundary:afterCommittedMove(runtimeMap, player, camera)
   local targetZ = math.floor(player.fieldZ / 32)
   local sourceCellKey = player.committedSourceCellKey
   local sourceSurfaceId = player.committedSourceSurfaceId
-  if sourceCellKey == nil or sourceSurfaceId == nil then
+  -- A commit onto a tile without a walkable plate carries no surface and
+  -- no stable source identity to re-project through: it settles through an
+  -- arithmetic frame rebind instead. A commit whose source identity went
+  -- missing for any other reason still re-derives it from the current
+  -- surface below.
+  local surfaceless = player.surfaceId == nil
+  if (sourceCellKey == nil or sourceSurfaceId == nil) and not surfaceless then
     local plate = assert(runtimeMap.terrain:plate(player.surfaceId), "player surface is missing after movement")
     sourceCellKey = assert(plate.cellKey, "player stable source cell identity is missing")
     sourceSurfaceId =
       assert(plate.sourceSurfaceId ~= nil and plate.sourceSurfaceId, "player stable source id is missing")
   end
+  local function rebind(map, deltaX, deltaY, deltaZ)
+    if surfaceless then
+      player:rebindCoverageSurfaceless(map, deltaX, deltaY, deltaZ)
+    else
+      player:rebindCoverage(map, deltaX, deltaY, deltaZ, sourceCellKey, sourceSurfaceId)
+    end
+  end
   if coverage.anchorX == targetX and coverage.anchorZ == targetZ then
-    player:rebindCoverage(runtimeMap, 0, 0, 0, sourceCellKey, sourceSurfaceId)
+    rebind(runtimeMap, 0, 0, 0)
     if self.residencyCoordinator then
       return self.residencyCoordinator:afterCommittedMove(player)
     end
@@ -91,7 +104,7 @@ function FieldNavigationBoundary:afterCommittedMove(runtimeMap, player, camera)
     local deltaX = oldOrigin.x - newOrigin.x
     local deltaY = oldOrigin.y - newOrigin.y
     local deltaZ = oldOrigin.z - newOrigin.z
-    player:rebindCoverage(runtimeMap, deltaX, deltaY, deltaZ, sourceCellKey, sourceSurfaceId)
+    rebind(runtimeMap, deltaX, deltaY, deltaZ)
     camera:rebase(deltaX, deltaY, deltaZ)
   end
   if self.residencyCoordinator then

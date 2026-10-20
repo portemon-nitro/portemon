@@ -7,10 +7,11 @@
 -- The session owns interaction eligibility timing:
 -- calling resolve means the player is idle, the Action edge is present, and
 -- no transition or modal is active. This module answers only what is in front
--- of the player. A facing cell outside coverage or beyond the reachable step
--- height is an expected boundary and resolves to nothing; malformed,
--- ambiguous, or current-inconsistent terrain propagates instead of reading
--- as a miss.
+-- of the player. A facing cell outside coverage, beyond the reachable step
+-- height, or without any walkable plate (retail stair gaps keep their own
+-- height and hold no interactable surface) is an expected boundary and
+-- resolves to nothing; malformed, ambiguous, or current-inconsistent
+-- terrain propagates instead of reading as a miss.
 --
 -- The resolver never turns an actor, locks the player, selects a message, or
 -- touches presentation: it returns an immutable InteractionIntent (fresh
@@ -148,12 +149,19 @@ function FieldInteractionResolver.new(opts)
 end
 
 -- Expected boundary failures mean "nothing interactable there": the facing
--- cell outside permission coverage, or its terrain beyond the reachable step
--- height. Malformed or ambiguous terrain, and a current surface inconsistent
+-- cell outside permission coverage, its terrain beyond the reachable step
+-- height, or no walkable plate under a resident cell. Retail leaves such
+-- stair-gap tiles plateless, so an uncovered facing cell is a miss, never a
+-- fault. Malformed or ambiguous terrain, and a current surface inconsistent
 -- with the player's position, are corrupted state and propagate instead of
 -- reading as a miss.
 local function isBoundaryFailure(err)
-  return Errors.is(err) and (err.code == "FIELD_COORDINATES_OUT_OF_COVERAGE" or SurfaceResolver.isStepRejection(err))
+  return Errors.is(err)
+    and (
+      err.code == "FIELD_COORDINATES_OUT_OF_COVERAGE"
+      or err.code == FieldErrors.TERRAIN_SURFACE_NOT_FOUND
+      or SurfaceResolver.isStepRejection(err)
+    )
 end
 
 -- The facing tile is one cardinal field cell from the player's logical

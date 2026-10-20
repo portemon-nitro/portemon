@@ -281,4 +281,166 @@ function T.tests.refreshes_same_anchor_surface_without_rebasing()
   coverage:release()
 end
 
+function T.tests.settles_a_surfaceless_commit_inside_the_resident_window()
+  -- A step onto a tile without a walkable plate commits with no surface
+  -- and no stable source identity (retail stair gaps). Settling that
+  -- commit inside the resident window must keep the player's frame and
+  -- height instead of faulting on the missing surface.
+  local coverage = FieldCoverage.new({
+    matrixMemberId = 1,
+    index = physicalIndex(),
+    anchorX = 0,
+    anchorZ = 0,
+    loadCell = function(descriptor)
+      local cell = loadCell(descriptor)
+      if descriptor.x == 0 then
+        cell.terrain = TerrainSurface.new({
+          source = { bdhcSha1 = "holed-cell-0-0" },
+          plates = {
+            {
+              id = 1,
+              minX = 0,
+              minZ = 0,
+              maxX = 31,
+              maxZ = 32,
+              normal = { x = 0, y = 1, z = 0 },
+              distance = 0,
+              slopeClass = "flat",
+            },
+          },
+        })
+      end
+      return cell
+    end,
+  })
+  local runtimeMap = newOutdoorMap(coverage)
+  local player = FieldPlayer.new({
+    currentMap = runtimeMap,
+    fieldX = 30,
+    fieldZ = 0,
+    surfaceId = assert(coverage:sourceSurface("0:0", 1)),
+    facing = "east",
+  })
+  Assert.isTrue(player:tryStep("east"))
+  for _ = 1, FieldPlayer.WALK_STEP_TICKS do
+    player:updateFixed({})
+  end
+  Assert.equal(player.fieldX, 31)
+  Assert.isNil(player.surfaceId, "no plate means no surface")
+  local rebaseCalls = 0
+  local camera = {
+    rebase = function()
+      rebaseCalls = rebaseCalls + 1
+    end,
+  }
+  local boundary = FieldNavigationBoundary.new({
+    coverageProvider = function()
+      return coverage
+    end,
+  })
+  local result = boundary:afterCommittedMove(runtimeMap, player, camera)
+
+  Assert.equal(result.anchorX, 0)
+  Assert.equal(result.anchorZ, 0)
+  Assert.equal(player.fieldX, 31)
+  Assert.equal(player.fieldZ, 0)
+  Assert.equal(player.localX, 31)
+  Assert.equal(player.localZ, 0)
+  Assert.equal(player.worldY, 0)
+  Assert.isNil(player.surfaceId)
+  Assert.isNil(player.committedSourceCellKey)
+  Assert.isNil(player.committedSourceSurfaceId)
+  Assert.equal(rebaseCalls, 0)
+  coverage:release()
+end
+
+function T.tests.recenters_a_surfaceless_commit_across_the_window_edge()
+  -- A surfaceless commit across a cell boundary still recenters the
+  -- physical window; the player keeps its height through an arithmetic
+  -- rebind instead of a surface projection.
+  local coverage = FieldCoverage.new({
+    matrixMemberId = 1,
+    index = physicalIndex(),
+    anchorX = 0,
+    anchorZ = 0,
+    loadCell = function(descriptor)
+      local cell = loadCell(descriptor)
+      if descriptor.x == 0 then
+        cell.terrain = TerrainSurface.new({
+          source = { bdhcSha1 = "holed-cell-0-0" },
+          plates = {
+            {
+              id = 1,
+              minX = 0,
+              minZ = 0,
+              maxX = 31,
+              maxZ = 32,
+              normal = { x = 0, y = 1, z = 0 },
+              distance = 0,
+              slopeClass = "flat",
+            },
+          },
+        })
+      else
+        cell.terrain = TerrainSurface.new({
+          source = { bdhcSha1 = "holed-cell-1-0" },
+          plates = {
+            {
+              id = 1,
+              minX = 1,
+              minZ = 0,
+              maxX = 32,
+              maxZ = 32,
+              normal = { x = 0, y = 1, z = 0 },
+              distance = 0,
+              slopeClass = "flat",
+            },
+          },
+        })
+      end
+      return cell
+    end,
+  })
+  local runtimeMap = newOutdoorMap(coverage)
+  local player = FieldPlayer.new({
+    currentMap = runtimeMap,
+    fieldX = 30,
+    fieldZ = 0,
+    surfaceId = assert(coverage:sourceSurface("0:0", 1)),
+    facing = "east",
+  })
+  for _ = 1, 2 do
+    Assert.isTrue(player:tryStep("east"))
+    for _ = 1, FieldPlayer.WALK_STEP_TICKS do
+      player:updateFixed({})
+    end
+  end
+  Assert.equal(player.fieldX, 32)
+  Assert.isNil(player.surfaceId, "no plate means no surface")
+  local rebased = {}
+  local camera = {
+    rebase = function(_, deltaX, deltaY, deltaZ)
+      rebased = { x = deltaX, y = deltaY, z = deltaZ }
+    end,
+  }
+  local boundary = FieldNavigationBoundary.new({
+    coverageProvider = function()
+      return coverage
+    end,
+  })
+  local result = boundary:afterCommittedMove(runtimeMap, player, camera)
+
+  Assert.equal(result.anchorX, 1)
+  Assert.equal(result.anchorZ, 0)
+  Assert.equal(runtimeMap.physicalOrigin.x, 32)
+  Assert.equal(player.fieldX, 32)
+  Assert.equal(player.fieldZ, 0)
+  Assert.equal(player.localX, 0)
+  Assert.equal(player.localZ, 0)
+  Assert.equal(player.worldY, 0)
+  Assert.isNil(player.surfaceId)
+  Assert.deepEqual(rebased, { x = -32, y = 0, z = 0 })
+  coverage:release()
+end
+
 return T
