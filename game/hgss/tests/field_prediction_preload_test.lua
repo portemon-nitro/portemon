@@ -1066,6 +1066,7 @@ end
 
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local AssetNeedsRegistry = require("libs.hgss.src.field.AssetNeedsRegistry")
+local ScriptCache = require("libs.assets.src.ScriptCache")
 
 -- A minimal production-shaped runtime for the private prediction driver:
 -- fixed map, music, audio round, day band, coverage anchor, and stable
@@ -1259,14 +1260,32 @@ end
 local function assetNeedsRuntime(spec)
   local runtime = holdPredictionRuntime(false)
   local log = {}
+  -- The published layout: a small active selector names the generation whose
+  -- index carries the per-member closures.
+  local generation, marker = string.rep("a", 40), "script-cache-v6:rom:dep"
   local index = {
-    schema = "g4-script-index-v5",
+    schema = ScriptCache.INDEX_SCHEMA,
+    generation = generation,
+    marker = marker,
     memberAssetNeeds = spec.memberAssetNeeds,
+    memberAudioSequences = spec.memberAudioSequences,
     resources = spec.resources or {},
   }
   runtime.cacheFs = {
-    loadLua = function()
-      return index
+    read = function(_, path)
+      if path == ScriptCache.markerPath() or path == ScriptCache.generationMarkerPath(generation) then
+        return marker
+      end
+      return nil
+    end,
+    loadLua = function(_, path)
+      if path == ScriptCache.activeIndexPath() then
+        return { schema = ScriptCache.INDEX_SCHEMA, generation = generation, marker = marker }
+      end
+      if path == ScriptCache.generationIndexPath(generation) then
+        return index
+      end
+      return nil
     end,
   }
   runtime.residency.mapForId = function(_, mapId)
@@ -1303,6 +1322,24 @@ function T.tests.commit_enrolls_the_current_maps_member_needs()
   runtime.session.currentMap = { mapId = 11 }
   runtime:_refreshPrediction()
   Assert.deepEqual(log, { "start:a" }, "an unchanged map enrolls nothing again")
+end
+
+-- The closures live in the active generation's index, not in the small
+-- selector the cache publishes next to it: the commit reads the script audio
+-- closure of the current map's member from there.
+function T.tests.commit_reads_closures_through_the_active_generation()
+  local runtime = assetNeedsRuntime({
+    memberAssetNeeds = { ["5"] = {} },
+    memberAudioSequences = { ["5"] = { "SEQ_CLOSURE" } },
+    memberByMap = { [11] = 5 },
+  })
+  local captured
+  runtime.audio.predictedBanksFor = function(_, _, symbols)
+    captured = captured or symbols
+    return {}
+  end
+  runtime:_refreshPrediction()
+  Assert.deepEqual(captured, { "SEQ_CLOSURE" }, "the current member's audio closure reaches the bank prediction")
 end
 
 function T.tests.commit_unions_override_needs_for_member_resources()

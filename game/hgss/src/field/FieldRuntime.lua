@@ -196,14 +196,16 @@ function PredictionDriver:_scriptIndex(runtime)
     return nil
   end
   if self.scriptIndex == false then
-    local ok, index = pcall(function()
+    -- The per-member closures live in the active generation's index; the
+    -- active selector next to it only names that generation.
+    local ok, active = pcall(function()
       local ScriptCache = require("libs.assets.src.ScriptCache")
-      return cacheFs:loadLua(ScriptCache.activeIndexPath())
+      return ScriptCache.loadActive(cacheFs)
     end)
-    if not ok or type(index) ~= "table" then
+    if not ok or type(active) ~= "table" then
       self.scriptIndex = nil
     else
-      self.scriptIndex = index
+      self.scriptIndex = active.index
     end
   end
   return self.scriptIndex or nil
