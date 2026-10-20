@@ -17,6 +17,7 @@ local CelebiTimeTravelRenderer = require("libs.hgss.src.presentation.CelebiTimeT
 local CelebiTimeTravelBlur = require("libs.hgss.src.presentation.CelebiTimeTravelBlur")
 local HoOhAppearanceRenderer = require("libs.hgss.src.presentation.HoOhAppearanceRenderer")
 local LugiaAppearanceRenderer = require("libs.hgss.src.presentation.LugiaAppearanceRenderer")
+local HoOhAssetPreparer = require("game.hgss.src.field.HoOhAssetPreparer")
 
 local KEY_DIRECTIONS =
   { w = "north", up = "north", s = "south", down = "south", a = "west", left = "west", d = "east", right = "east" }
@@ -238,6 +239,16 @@ function FieldState.new(game, options)
     if type(runtime.bindBattlePresentation) == "function" then
       self._battlePresentationBinding = runtime:bindBattlePresentation(self.battleEnvelope:factory())
     end
+    -- The Ho-Oh scene renderer exists for the whole session so its models can
+    -- be prepared in the background from map entry.
+    self._hoOhAppearanceRenderer = HoOhAppearanceRenderer.new(runtime.cacheFs, runtime.imageAssets)
+    runtime.assetNeeds:register(
+      "field-effect",
+      HoOhAssetPreparer.new(
+        runtime --[[@as HoOhAssetPreparer.Runtime]],
+        self._hoOhAppearanceRenderer --[[@as HoOhAssetPreparer.Renderer]]
+      )
+    )
   end)
   if not ok then
     self:dispose()
@@ -2021,6 +2032,8 @@ function FieldState:dispose()
     self.worldParts[15] = nil
   end
   if self._hoOhAppearanceRenderer then
+    -- The registry cancels the preparer's jobs before the renderer goes.
+    self.runtime.assetNeeds:unregister("field-effect")
     self._hoOhAppearanceRenderer:dispose()
     self._hoOhAppearanceRenderer = nil
   end

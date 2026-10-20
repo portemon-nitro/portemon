@@ -3,6 +3,7 @@
 
 local Assert = require("tests.support.Assert")
 local GameSave = require("libs.hgss.src.save.GameSave")
+local FieldRuntimeFixture = require("tests.support.FieldRuntimeFixture")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldSaveCoordinator = require("game.hgss.src.field.FieldSaveCoordinator")
 local FieldBattleCoordinator = require("game.hgss.src.field.FieldBattleCoordinator")
@@ -378,6 +379,7 @@ function T.warp_completion_does_not_request_an_implicit_save()
       advance = function() end,
     },
   }, FieldRuntime)
+  FieldRuntimeFixture.withApricornDateOwner(runtime)
   runtime.battleCoordinator = FieldBattleCoordinator.new(runtime)
   runtime:update(0)
 

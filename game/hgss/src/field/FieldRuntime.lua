@@ -47,6 +47,7 @@ local FieldScriptSymbols = require("libs.assets.src.field.FieldScriptSymbols")
 local FieldSession = require("libs.hgss.src.field.FieldSession")
 local FieldOverworldLifecycle = require("libs.hgss.src.field.FieldOverworldLifecycle")
 local FieldScriptPropAnimations = require("libs.hgss.src.field.FieldScriptPropAnimations")
+local AssetNeedsRegistry = require("libs.hgss.src.field.AssetNeedsRegistry")
 local TextSpeedPolicy = require("libs.hgss.src.ui.TextSpeedPolicy")
 local FieldUiAssetCache = require("libs.assets.src.field.FieldUiAssetCache")
 local FieldWindowStyles = require("libs.hgss.src.field.FieldWindowStyles")
@@ -106,6 +107,10 @@ end
 -- a single entry; steady-state updates only adopt ready payloads.
 local PredictionDriver = {}
 PredictionDriver.__index = PredictionDriver
+
+-- CPU seconds one host update may spend preparing enrolled assets; a single
+-- unit of work may overshoot it.
+local ASSET_NEEDS_STEP_SECONDS = 0.006
 
 ---@class PredictionDriver
 ---@field epoch integer
@@ -184,13 +189,8 @@ end
 -- entry for the runtime lifetime; an unavailable index simply contributes
 -- no script banks.
 ---@param runtime FieldRuntime
----@param fieldData table<string, unknown>?
----@return string[]?
-function PredictionDriver:_scriptSymbols(runtime, fieldData)
-  local memberId = type(fieldData) == "table" and fieldData.scriptBankId or nil
-  if type(memberId) ~= "number" then
-    return nil
-  end
+---@return table<string, unknown>? index the published script index, nil when unavailable
+function PredictionDriver:_scriptIndex(runtime)
   local cacheFs = runtime.cacheFs
   if cacheFs == nil or type(cacheFs.loadLua) ~= "function" then
     return nil
@@ -206,7 +206,18 @@ function PredictionDriver:_scriptSymbols(runtime, fieldData)
       self.scriptIndex = index
     end
   end
-  if self.scriptIndex == nil then
+  return self.scriptIndex or nil
+end
+
+---@param runtime FieldRuntime
+---@param fieldData table<string, unknown>?
+---@return string[]?
+function PredictionDriver:_scriptSymbols(runtime, fieldData)
+  local memberId = type(fieldData) == "table" and fieldData.scriptBankId or nil
+  if type(memberId) ~= "number" then
+    return nil
+  end
+  if self:_scriptIndex(runtime) == nil then
     return nil
   end
   local ok, closure = pcall(function()
@@ -329,6 +340,31 @@ function PredictionDriver:_commit(runtime, currentId, orderedIds)
       runtime.imageAssets:prune()
     end)
   end
+  self:_commitAssetNeeds(runtime, currentFieldData)
+end
+
+-- Enrolls the assets the current map's scripts need (the published index
+-- closure plus any override-layer resource of that script member) with the
+-- registry, which prepares them in the background, and drops every other
+-- need. Maps without a script member need nothing.
+---@param runtime FieldRuntime
+---@param fieldData table<string, unknown>?
+function PredictionDriver:_commitAssetNeeds(runtime, fieldData)
+  local memberId = type(fieldData) == "table" and fieldData.scriptBankId or nil
+  local needs = {} ---@type table<string, true>
+  if type(memberId) == "number" then
+    local index = self:_scriptIndex(runtime)
+    if index ~= nil then
+      local scriptRegistry = runtime.scripts ~= nil and runtime.scripts.registry or nil
+      needs = AssetNeedsRegistry.needsForMember(index, memberId, function(id)
+        return scriptRegistry ~= nil and scriptRegistry:overrideAssetNeeds(id) or nil
+      end)
+    end
+  end
+  for key in pairs(needs) do
+    runtime.assetNeeds:enroll(key)
+  end
+  runtime.assetNeeds:retain(needs)
 end
 
 -- Advances the soft epoch when its fingerprint changed; steady-state
@@ -582,6 +618,7 @@ end
 ---@field derivedAssets table<string, function>?
 ---@field audio FieldAudioController? production-composed audio service (absent when only a recording script adapter is injected, without an audio-output host)
 ---@field mapMusicDayNight (fun(): string)? production-composed day/night band source for the map-music lookup (present whenever the production composition exists)
+---@field assetNeeds AssetNeedsRegistry the script-declared asset preparation registry
 ---@field audioSink LoveAudioSink? production-composed LÖVE output sink (absent without an audio-output host)
 ---@field screenFade FieldScriptScreenFade the production semantic script screen-fade controller (fade_screen/wait_fade); always composed, advanced once after each field tick
 ---@field localClock LocalClock the shared host-local civil-time boundary
@@ -1891,6 +1928,7 @@ function FieldRuntime.new(game, options)
     fieldPixelScale = FieldPixelScale.new(options.fieldScaleConfig or FieldPresentation.fieldScale),
     overworld = FieldOverworldLifecycle.new(),
     propAnimations = FieldScriptPropAnimations.new(),
+    assetNeeds = AssetNeedsRegistry.new(),
   }, FieldRuntime)
   -- The actual-display measurement owner: shared when the product root
   -- supplies one, otherwise a runtime-owned context whose provider tracks
@@ -2065,6 +2103,9 @@ function FieldRuntime:update(dt)
   -- commit. Steady-state updates only adopt ready payloads; drawing never
   -- prunes.
   self:_refreshPrediction()
+  -- Background asset preparation: one bounded slice of the jobs the
+  -- prediction round enrolled, once per host update.
+  self.assetNeeds:step(ASSET_NEEDS_STEP_SECONDS)
   -- The audio output clock: pump PCM from the engine into the host sink once
   -- per runtime update, separate from the field fixed tick (the sink never
   -- advances game-semantic audio state).
@@ -3852,6 +3893,9 @@ end
 -- dialogue -- and the field clearing means reset never leaves a hand-picked
 -- subset behind for its re-boot.
 function FieldRuntime:_releaseAll()
+  if self.assetNeeds then
+    self.assetNeeds:dispose()
+  end
   if self.celebiTimeTravelScene then
     self.celebiTimeTravelScene:abort()
     self.celebiTimeTravelScene = nil

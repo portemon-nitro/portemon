@@ -5,6 +5,7 @@
 -- runtime directly, so a disposed state is a programming error, never a
 -- silent no-op.
 
+local AssetNeedsRegistry = require("libs.hgss.src.field.AssetNeedsRegistry")
 local Assert = require("tests.support.Assert")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local Errors = require("libs.errors.src.Errors")
@@ -30,6 +31,7 @@ local function stubPresentationRuntime(cache)
   return setmetatable({
     monNaming = InactiveMonNaming.new(),
     cacheFs = cache or FieldStatePresentationFixture.cache(),
+    assetNeeds = AssetNeedsRegistry.new(),
     derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
     -- The presented composition borrows its session image owner for
     -- icons, Summary, and PC visuals: the sized pool keeps real

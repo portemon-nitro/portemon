@@ -214,6 +214,32 @@ function T.tests.application_host_failure_propagates_from_the_field_update()
   )
 end
 
+function T.tests.asset_needs_advance_once_per_host_update_after_the_field_ticks()
+  local calls = {}
+  local runtime = runtimeWithoutAudio(calls)
+  runtime.session.accumulator = 0
+  runtime.assetNeeds = {
+    step = function(_, budget)
+      calls[#calls + 1] = "asset_needs"
+      Assert.isTrue(budget > 0, "the slice has a positive budget")
+    end,
+  }
+
+  runtime:update(2 * FieldSession.FIXED_DT)
+
+  local steps, fieldTicks, lastStep, lastField = 0, 0, 0, 0
+  for index, call in ipairs(calls) do
+    if call == "asset_needs" then
+      steps, lastStep = steps + 1, index
+    elseif call == "field" then
+      fieldTicks, lastField = fieldTicks + 1, index
+    end
+  end
+  Assert.equal(fieldTicks, 2, "both caught-up ticks ran")
+  Assert.equal(steps, 1, "the registry steps once per host update, not per tick")
+  Assert.isTrue(lastStep > lastField, "the registry steps after the field ticks")
+end
+
 function T.tests.audio_follows_post_field_presentation_stage()
   local calls = {}
   local runtime = runtimeWithAudio(calls)
@@ -299,7 +325,7 @@ end
 
 function T.tests.zero_delta_does_not_advance_any_clock()
   local calls = {}
-  local runtime = runtimeWithNoBattle({
+  local runtime = FieldRuntimeFixture.withApricornDateOwner(runtimeWithNoBattle({
     session = {
       accumulator = 0,
       setBattleActive = function() end,
@@ -322,7 +348,7 @@ function T.tests.zero_delta_does_not_advance_any_clock()
         return nil
       end,
     },
-  })
+  }))
 
   runtime:update(0)
   Assert.deepEqual(calls, {})
