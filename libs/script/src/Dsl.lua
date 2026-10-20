@@ -621,6 +621,9 @@ end
 function M.hideObject(spec)
   return op("hide_object", spec)
 end
+function M.setObjectHidden(spec)
+  return op("set_object_hidden", spec)
+end
 function M.setObjectPosition(spec)
   return op("set_object_position", spec)
 end

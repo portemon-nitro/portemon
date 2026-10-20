@@ -696,6 +696,12 @@ local CASES = {
     end,
     { op = "hide_object", actor = "elm" },
   },
+  set_object_hidden = {
+    function()
+      return S.setObjectHidden({ actor = "elm", hidden = true })
+    end,
+    { op = "set_object_hidden", actor = "elm", hidden = true },
+  },
   set_object_position = {
     function()
       return S.setObjectPosition({ actor = "elm", fieldX = 4, fieldZ = 5 })

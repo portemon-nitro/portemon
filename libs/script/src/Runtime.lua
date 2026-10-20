@@ -1290,6 +1290,16 @@ local function handleHideObject(node, run)
   return Runtime.OUTCOME_CONTINUE
 end
 
+function HANDLERS.set_object_hidden(node, run)
+  local actorId = semanticsFor(run).requireActor(node.actor, run)
+  if node.hidden then
+    run.services.actors:hide(actorId)
+  else
+    run.services.actors:show(actorId)
+  end
+  return Runtime.OUTCOME_CONTINUE
+end
+
 local function handleSetObjectPosition(node, run)
   local actorId = semanticsFor(run).requireActor(node.actor, run)
   run.services.actors:setPosition(actorId, {

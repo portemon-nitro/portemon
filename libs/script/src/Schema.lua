@@ -791,6 +791,12 @@ Schema.OPERATIONS = {
   },
   show_object = { fields = { actor = { type = "actor", required = true } } },
   hide_object = { fields = { actor = { type = "actor", required = true } } },
+  set_object_hidden = {
+    fields = {
+      actor = { type = "actor", required = true },
+      hidden = { type = "boolean", required = true },
+    },
+  },
   set_object_position = {
     fields = {
       actor = { type = "actor", required = true },
@@ -1925,6 +1931,11 @@ Schema.CONSTRUCTORS = {
       },
       { signature = "S.showObject(spec)", canonical = "op=show_object", notes = "spec={actor}." },
       { signature = "S.hideObject(spec)", canonical = "op=hide_object", notes = "spec={actor}." },
+      {
+        signature = "S.setObjectHidden(spec)",
+        canonical = "op=set_object_hidden",
+        notes = "spec={actor,hidden}; toggles the object's draw-hidden flag without removing it.",
+      },
       {
         signature = "S.setObjectPosition(spec)",
         canonical = "op=set_object_position",

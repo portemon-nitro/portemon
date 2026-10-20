@@ -2725,7 +2725,8 @@ return {
       },
     },
     [374] = {
-      name = "ScrCmd_374",
+      classification = "continue_same_tick",
+      name = "ScrCmd_MakeObjectInvisible",
       widths = {
         [1] = 2,
       },

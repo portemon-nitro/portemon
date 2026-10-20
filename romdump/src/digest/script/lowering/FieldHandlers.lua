@@ -1401,8 +1401,16 @@ local function waitInputOrTicks(ins)
   return { op = "wait_input_or_ticks", ticks = Operands.operandValue(ins.operands[1]) }
 end
 
-local function showObjectAt(ins)
-  return { op = "show_object", actor = actorRef(ins.operands[1]) }
+-- The retail draw flag is named for its setter: MakeObjectVisible sets the
+-- hidden bit and MakeObjectInvisible clears it.
+local ObjectDrawFlag = {}
+
+function ObjectDrawFlag.makeVisible(ins)
+  return { op = "set_object_hidden", actor = actorRef(ins.operands[1]), hidden = true }
+end
+
+function ObjectDrawFlag.makeInvisible(ins)
+  return { op = "set_object_hidden", actor = actorRef(ins.operands[1]), hidden = false }
 end
 
 local function waitButton()
@@ -1861,7 +1869,8 @@ local FieldHandlers = {
   [616] = countPcPhotos,
   [617] = openPcPhotoAlbum,
   [706] = pcHallOfFameStatus,
-  [375] = showObjectAt,
+  [374] = ObjectDrawFlag.makeInvisible,
+  [375] = ObjectDrawFlag.makeVisible,
   [438] = waitButton,
   [439] = externalMessage,
   [440] = externalMessageWait,
