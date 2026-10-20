@@ -186,7 +186,7 @@ function FollowingMonTransitionRenderer:newInstance(part)
       assert(type(animations) == "table", "transition animated part requires its clip")
       local clip = animations[1]
       assert(type(clip) == "table" and type(clip.name) == "string", "transition animated part requires its clip")
-      handle = instance:play(clip.name, { loopMode = "once" })
+      handle = instance:play(clip.id, { loopMode = "once" })
     end
     return assert(handle)
   end

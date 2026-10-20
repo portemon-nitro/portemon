@@ -71,7 +71,7 @@ local WAIT = {}
 ---@field batches MapSceneLoader.Batch[]?
 ---@field dynamic { nodes: ModelDefinition.NodeSource[], transformProgram: table<string, unknown>, batches: MapSceneLoader.Batch[] }?
 ---@field materials table[]
----@field animations table[]?
+---@field animations AnimationClip.Data[]?
 
 ---@class MapSceneLoader.Batch
 ---@field geometry string

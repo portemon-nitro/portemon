@@ -1339,6 +1339,66 @@ function T.ambient_clip_advances_once_per_session_tick_and_through_dialogue()
   runtime:release()
 end
 
+-- Retail reuses one Nitro dict name across slots of a single model
+-- (outdoor:144's pattern "wfall" over wfall_c/d plus the texsrt "wfall"
+-- over wfall_wave/e*): both ordinary-policy clips autoplay at load, each
+-- addressed by its stable id.
+function T.same_named_ambient_clips_both_autoplay_at_load()
+  local desc = ambientDescriptor()
+  desc.key = "outdoor:144:wfall"
+  local pattern = patternClip()
+  pattern.id = "build_anim-84"
+  pattern.name = "wfall"
+  pattern.ambientLoop = true
+  local scroll = {
+    id = "build_anim-85",
+    name = "wfall",
+    category = "material",
+    kind = "texsrt",
+    frameCount = 8,
+    tracks = { { target = "wall", targetIndex = 0 } },
+    semanticNames = {},
+    source = { type = "nitro", format = "NSBTA", archive = "build_anim", memberId = 85 },
+    compiled = {
+      targets = {
+        {
+          index = 0,
+          name = "wall",
+          channels = {
+            scaleS = { source = "constant", value = 0x1000 },
+            scaleT = { source = "constant", value = 0x1000 },
+            rot = { source = "constant", value = 0x10000000 },
+            transS = { source = "constant", value = 0 },
+            transT = { source = "constant", value = 0 },
+          },
+        },
+      },
+    },
+  }
+  scroll.ambientLoop = true
+  desc.animations = { pattern, scroll }
+  desc.materials[1].variants = { { name = "v1" } }
+  local cache = sceneWith({
+    {
+      placementIndex = 0,
+      modelKey = desc.key,
+      transform = identityMatrix(),
+    },
+  }, { [desc.key] = desc })
+  local runtime = MapSceneLoader.load(
+    cache,
+    assert(cache:loadLua(MapAssetCache.mapDir(61) .. "/scene.lua")),
+    { meshBuilder = fakeMeshBuilder }
+  )
+  local instance = runtime.animatedInstances[1]
+  Assert.equal(
+    #instance.animationState:attachments("material"),
+    2,
+    "both same-named ambient clips autoplay"
+  )
+  runtime:release()
+end
+
 function T.load_rejects_an_unknown_initial_band()
   local desc = skyDescriptor()
   local cache = sceneWith({
