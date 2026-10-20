@@ -714,6 +714,12 @@ function App.filedropped(file)
 end
 
 function App.keypressed(key, scancode, isrepeat)
+  if key == "f11" then
+    if not isrepeat then
+      love.window.setFullscreen(not love.window.getFullscreen())
+    end
+    return
+  end
   if App.state and App.state.keypressed then
     App.state:keypressed(key, scancode, isrepeat)
     return
