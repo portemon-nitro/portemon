@@ -749,8 +749,14 @@ end
 function T.registration_announcement_substitutes_the_capture_name()
   local Owner = requirePresent("registration formatter substitution")
   local pool = SharedImagePoolFake.new()
-  local provider =
-    stubMessageProvider({ [197] = { [871] = "{STRVAR_1 1, 0, 0}'s data was added." } })
+  local provider = stubMessageProvider({
+    [197] = { [871] = "{STRVAR_1 1, 0, 0}'s data was added." },
+    [237] = { [158] = "Totodile" },
+    [816] = { [158] = "Big Jaw" },
+    [803] = { [158] = "It bites." },
+    [815] = { [158] = "0.6m" },
+    [813] = { [158] = "9.5kg" },
+  })
   local args = ownerArgs(pool)
   args.messages = provider
   local owner = Owner.new(args)
@@ -779,6 +785,97 @@ function T.registration_announcement_substitutes_the_capture_name()
   lease:release()
   owner:release()
   Assert.equal(pool:stats().outstandingLeases, 0, "the announcement returns every image interest")
+end
+
+-- The registration card resolves its caught-specimen slots through the
+-- borrowed banks: the dex number from the demanded order, the name,
+-- category, flavor, height, and weight by stable catalog identity, plus
+-- the producer-authoritative announcement.
+function T.registration_slots_resolve_through_the_borrowed_banks()
+  local Owner = requirePresent("registration species text slots")
+  local pool = SharedImagePoolFake.new()
+  local provider = stubMessageProvider({
+    [197] = { [871] = "{STRVAR_1 1, 0, 0}'s data was added." },
+    [237] = { [158] = "Totodile" },
+    [816] = { [158] = "Big Jaw" },
+    [803] = { [158] = "It bites." },
+    [815] = { [158] = "0.6m" },
+    [813] = { [158] = "9.5kg" },
+  })
+  local args = ownerArgs(pool)
+  args.messages = provider
+  local owner = Owner.new(args)
+  local monCatalog, catalog = Fixture.catalogs()
+  local dexOwner = Fixture.ownerWithHistory(monCatalog, catalog)
+  local snapshot = Fixture.registrationSnapshot(dexOwner, monCatalog, "TOTODILE", 0)
+  local expectedNumber = nil
+  for index, key in ipairs(catalog.dexOrders[snapshot.dexMode]) do
+    if key == "TOTODILE" then
+      expectedNumber = string.format("%03d", index)
+    end
+  end
+  Assert.notNil(expectedNumber, "the fixture catalog orders the caught species")
+  local lease = owner:acquire({ purpose = "registration" })
+  local ready = nil
+  for _ = 1, 64 do
+    local outcome = lease:prepare(Fixture.registrationDemand(snapshot, "card-slots"))
+    if outcome.kind == "ready" then
+      ready = outcome
+      break
+    end
+    Assert.isTrue(
+      outcome.kind ~= "failed",
+      "sourced card text never fails its banks: " .. tostring(outcome.error)
+    )
+  end
+  Assert.notNil(ready, "the card slots converge on a complete bundle")
+  Assert.deepEqual(ready.assets.messages, {
+    registrationAnnouncement = "TOTODILE's data was added.",
+    ["registration.dex-number"] = expectedNumber,
+    ["registration.species-name"] = "Totodile",
+    ["registration.category"] = "Big Jaw",
+    ["registration.flavor"] = "It bites.",
+    ["registration.height"] = "0.6m",
+    ["registration.weight"] = "9.5kg",
+  }, "every card window resolves its prepared string")
+  lease:release()
+  owner:release()
+  Assert.equal(pool:stats().outstandingLeases, 0, "card text returns every image interest")
+end
+
+-- A registration slot naming an unknown species fails instead of
+-- substituting another entry: the doomed card publishes nothing.
+function T.registration_slot_with_unknown_species_fails_loudly()
+  local Owner = requirePresent("unknown registration species attribution")
+  local pool = SharedImagePoolFake.new()
+  local args = ownerArgs(pool)
+  args.messages = stubMessageProvider({})
+  local owner = Owner.new(args)
+  local monCatalog, catalog = Fixture.catalogs()
+  local dexOwner = Fixture.ownerWithHistory(monCatalog, catalog)
+  local snapshot = Fixture.registrationSnapshot(dexOwner, monCatalog, "TOTODILE", 0)
+  local demand = Fixture.registrationDemand(snapshot, "card-unknown")
+  demand.text.slots = {
+    { role = "registration.species-name", kind = "species_name", species = "MISSINGNO", language = "native" },
+  }
+  local lease = owner:acquire({ purpose = "registration" })
+  local failed = nil
+  for _ = 1, 64 do
+    local outcome = lease:prepare(demand)
+    if outcome.kind == "failed" then
+      failed = outcome
+      break
+    end
+    Assert.isTrue(outcome.kind == "pending", "the doomed card never publishes")
+  end
+  Assert.notNil(failed, "an unknown card species cannot publish")
+  Assert.isTrue(
+    type(failed.error) == "string" and failed.error:find("MISSINGNO", 1, true) ~= nil,
+    "the failure names its unknown species"
+  )
+  lease:release()
+  owner:release()
+  Assert.equal(pool:stats().outstandingLeases, 0, "the failed card returns its staged chrome")
 end
 
 return { tests = T }

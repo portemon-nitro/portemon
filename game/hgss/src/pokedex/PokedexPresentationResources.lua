@@ -748,6 +748,34 @@ local function nativeSpeciesId(owner, speciesKey)
   return record.nativeId
 end
 
+-- Resolves the display number behind one dex-number slot: the position
+-- of the species in the demanded order of the borrowed generated
+-- catalog, matching the controller's active-number projection.
+---@param owner PokedexPresentationResources
+---@param dexMode string demanded number mode
+---@param slot table<string, unknown> one semantic text request
+---@return integer? one-based display number
+---@return string? failure nonempty cause when the number has no source order
+local function dexDisplayNumber(owner, dexMode, slot)
+  if type(slot.species) ~= "string" or slot.species == "" then
+    return nil, "text slot " .. tostring(slot.role) .. " names no species"
+  end
+  local catalog = owner._catalog
+  if type(catalog) ~= "table" or type(catalog.dexOrders) ~= "table" then
+    return nil, "prepared text needs its generated dex catalog"
+  end
+  local order = catalog.dexOrders[dexMode]
+  if type(order) ~= "table" then
+    return nil, "prepared text names an unknown dex mode " .. tostring(dexMode)
+  end
+  for index, key in ipairs(order) do
+    if key == slot.species then
+      return index
+    end
+  end
+  return nil, "prepared text names a species outside the " .. tostring(dexMode) .. " order: " .. tostring(slot.species)
+end
+
 -- Resolves the source bank and entry behind one bank-backed text slot.
 -- Species names, categories, and flavors read the requested language
 -- entry bank by stable catalog species identity, never by display
@@ -943,78 +971,25 @@ local function expandStrvarMarkers(text, fields, identity)
 end
 
 ---@param lease table<string, unknown>
----@param demand table<string, unknown> validated demand under preparation
+---@param manifest table<string, unknown> loaded presentation manifest
+---@param owner PokedexPresentationResources
+---@param dexMode string demanded number mode behind dex-number slots
+---@param slots table[] detached semantic text slot requests
+---@param profile string demanded measurement profile
 ---@return table<string, string>? messages prepared message record
 ---@return table<integer, boolean>? banks source bank identities behind the messages
----@return string? failure nonempty cause when a required bank cannot be prepared
--- Resolves every visible text slot to an immutable prepared string: ui
--- slots by their UI bank and message with demand-field formatter
--- substitution, species slots by the requested
--- language entry bank and stable species identity, heights and weights
--- by the demanded measurement profile, and numeric slots by their
--- preformatted value. Banks join the lease membership once and stay
--- until a successful replacement retires them; the registration card
--- keeps its producer-authoritative announcement with the capture name
--- substituted into the native field-0 marker.
-local function prepareMessages(lease, demand)
-  local owner = lease._owner
-  local manifest = assert(owner._manifest, "prepared messages read their manifest")
-  if demand.purpose == "registration" then
-    local snapshot = demand.text.registration
-    if type(snapshot) ~= "table" or type(snapshot.displayName) ~= "string" then
-      return nil, nil, "registration demands carry their immutable announcement snapshot"
-    end
-    local bankId, messageId = 197, 871
-    local bindings = manifest.text
-    if type(bindings) == "table" and type(bindings.registrationAnnouncement) == "table" then
-      bankId = bindings.registrationAnnouncement.bankId
-      messageId = bindings.registrationAnnouncement.messageId
-    end
-    if type(bankId) ~= "number" or bankId % 1 ~= 0 or type(messageId) ~= "number" or messageId % 1 ~= 0 then
-      return nil, nil, "the pokedex manifest carries no registration announcement binding"
-    end
-    local provider = lease._owner._messages
-    if provider == nil or type(provider.acquireBank) ~= "function" then
-      return { registrationAnnouncement = snapshot.displayName }, {}
-    end
-    local acquireFailure = acquireMessageBank(lease, bankId --[[@as integer]])
-    if acquireFailure ~= nil then
-      return nil, nil, acquireFailure
-    end
-    local announcement, readFailure = readMessageEntry(lease, bankId --[[@as integer]], messageId --[[@as integer]])
-    if announcement == nil then
-      return nil, nil, readFailure
-    end
-    -- The announcement template carries the native field-0 marker for
-    -- the capture name (a wild first catch has no nickname yet, so the
-    -- detached display name is the battle field-0 fact).
-    local formatted, expandFailure = expandStrvarMarkers(
-      announcement,
-      { [0] = snapshot.displayName },
-      "bank " .. tostring(bankId) .. " entry " .. tostring(messageId) .. " (registrationAnnouncement)"
-    )
-    if formatted == nil then
-      return nil, nil, expandFailure
-    end
-    if formatted == "" then
-      return nil, nil, "the registration announcement formats to an empty string"
-    end
-    return { registrationAnnouncement = formatted }, { [bankId] = true }
-  end
-  local text = demand.text
-  if type(text) ~= "table" then
-    return nil, nil, "browser demands carry their semantic text"
-  end
-  local profile = demand.profile
-  if type(profile) ~= "string" or profile == "" then
-    profile = "base"
-  end
+---@return string? failure nonempty cause when a slot has no source string
+-- Resolves one array of text slots through the shared bank/acquire
+-- path: numeric slots verbatim, dex-number slots from the demanded
+-- catalog order, ui slots with demand-field formatter substitution, and
+-- every other slot by its source bank and stable species identity.
+local function prepareSlotMessages(lease, manifest, owner, dexMode, slots, profile)
   local messages = {}
   local bankSet = {}
   local pending = {}
-  for _, slot in ipairs(text) do
+  for _, slot in ipairs(slots) do
     if type(slot) ~= "table" then
-      return nil, nil, "browser text slots arrive as records"
+      return nil, nil, "text slots arrive as records"
     end
     if type(slot.role) ~= "string" or slot.role == "" then
       return nil, nil, "text slots name their role"
@@ -1024,6 +999,12 @@ local function prepareMessages(lease, demand)
         return nil, nil, "numeric text slot " .. slot.role .. " carries no preformatted value"
       end
       messages[slot.role] = slot.value
+    elseif slot.kind == "dex_number" then
+      local number, failure = dexDisplayNumber(owner, dexMode, slot)
+      if number == nil then
+        return nil, nil, failure
+      end
+      messages[slot.role] = string.format("%03d", number)
     elseif slot.kind == "ui" and slot.fields ~= nil and type(slot.fields) ~= "table" then
       return nil, nil, "ui text slot " .. slot.role .. " carries malformed fields"
     else
@@ -1066,6 +1047,87 @@ local function prepareMessages(lease, demand)
     end
   end
   return messages, bankSet
+end
+
+---@param lease table<string, unknown>
+---@param demand table<string, unknown> validated demand under preparation
+---@return table<string, string>? messages prepared message record
+---@return table<integer, boolean>? banks source bank identities behind the messages
+---@return string? failure nonempty cause when a required bank cannot be prepared
+-- Resolves every visible text slot to an immutable prepared string: ui
+-- slots by their UI bank and message with demand-field formatter
+-- substitution, species slots by the requested
+-- language entry bank and stable species identity, heights and weights
+-- by the demanded measurement profile, and numeric slots by their
+-- preformatted value. Banks join the lease membership once and stay
+-- until a successful replacement retires them; the registration card
+-- keeps its producer-authoritative announcement with the capture name
+-- substituted into the native field-0 marker.
+local function prepareMessages(lease, demand)
+  local owner = lease._owner
+  local manifest = assert(owner._manifest, "prepared messages read their manifest")
+  local profile = demand.profile
+  if type(profile) ~= "string" or profile == "" then
+    profile = "base"
+  end
+  if demand.purpose == "registration" then
+    local snapshot = demand.text.registration
+    if type(snapshot) ~= "table" or type(snapshot.displayName) ~= "string" then
+      return nil, nil, "registration demands carry their immutable announcement snapshot"
+    end
+    local cardSlots = demand.text.slots
+    if type(cardSlots) ~= "table" then
+      return nil, nil, "registration demands carry their card text slots"
+    end
+    local bankId, messageId = 197, 871
+    local bindings = manifest.text
+    if type(bindings) == "table" and type(bindings.registrationAnnouncement) == "table" then
+      bankId = bindings.registrationAnnouncement.bankId
+      messageId = bindings.registrationAnnouncement.messageId
+    end
+    if type(bankId) ~= "number" or bankId % 1 ~= 0 or type(messageId) ~= "number" or messageId % 1 ~= 0 then
+      return nil, nil, "the pokedex manifest carries no registration announcement binding"
+    end
+    local provider = lease._owner._messages
+    if provider == nil or type(provider.acquireBank) ~= "function" then
+      return { registrationAnnouncement = snapshot.displayName }, {}
+    end
+    local slotMessages, slotBanks, slotFailure =
+      prepareSlotMessages(lease, manifest, owner, demand.dexMode, cardSlots, profile)
+    if slotMessages == nil then
+      return nil, nil, slotFailure
+    end
+    local acquireFailure = acquireMessageBank(lease, bankId --[[@as integer]])
+    if acquireFailure ~= nil then
+      return nil, nil, acquireFailure
+    end
+    local announcement, readFailure = readMessageEntry(lease, bankId --[[@as integer]], messageId --[[@as integer]])
+    if announcement == nil then
+      return nil, nil, readFailure
+    end
+    -- The announcement template carries the native field-0 marker for
+    -- the capture name (a wild first catch has no nickname yet, so the
+    -- detached display name is the battle field-0 fact).
+    local formatted, expandFailure = expandStrvarMarkers(
+      announcement,
+      { [0] = snapshot.displayName },
+      "bank " .. tostring(bankId) .. " entry " .. tostring(messageId) .. " (registrationAnnouncement)"
+    )
+    if formatted == nil then
+      return nil, nil, expandFailure
+    end
+    if formatted == "" then
+      return nil, nil, "the registration announcement formats to an empty string"
+    end
+    slotMessages.registrationAnnouncement = formatted
+    slotBanks[bankId] = true
+    return slotMessages, slotBanks
+  end
+  local text = demand.text
+  if type(text) ~= "table" then
+    return nil, nil, "browser demands carry their semantic text"
+  end
+  return prepareSlotMessages(lease, manifest, owner, demand.dexMode, text, profile)
 end
 
 ---@param owner PokedexPresentationResources

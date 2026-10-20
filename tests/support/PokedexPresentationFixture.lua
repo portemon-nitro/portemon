@@ -121,12 +121,21 @@ end
 ---@param key string|nil resource generation key for the demand
 ---@return table demand immutable registration demand
 function PokedexPresentationFixture.registrationDemand(snapshot, key)
+  -- The card text slots mirror the battle-owned demand: the dex number
+  -- resolves in preparation from the demanded order, every other slot
+  -- through its source bank by stable species identity.
+  local species = assert(snapshot.specimen.species, "the registration demand names its species")
+  local profile = "base"
+  if species == "GIRATINA" and type(snapshot.specimen.form) == "number" and snapshot.specimen.form ~= 0 then
+    profile = "giratina_origin"
+  end
   return {
     key = key or "registration-generation",
     purpose = "registration",
     pageRole = "registration",
     dexMode = snapshot.dexMode,
     language = "native",
+    profile = profile,
     iconKeys = {},
     pictures = {
       {
@@ -136,7 +145,17 @@ function PokedexPresentationFixture.registrationDemand(snapshot, key)
         mode = "registration",
       },
     },
-    text = { registration = snapshot },
+    text = {
+      registration = snapshot,
+      slots = {
+        { role = "registration.dex-number", kind = "dex_number", species = species },
+        { role = "registration.species-name", kind = "species_name", species = species, language = "native" },
+        { role = "registration.category", kind = "category", species = species, language = "native" },
+        { role = "registration.flavor", kind = "flavor", species = species, language = "native" },
+        { role = "registration.height", kind = "height", species = species },
+        { role = "registration.weight", kind = "weight", species = species },
+      },
+    },
     cry = { species = snapshot.specimen.species, form = 0 },
   }
 end

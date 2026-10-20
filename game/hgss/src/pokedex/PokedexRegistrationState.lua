@@ -105,12 +105,23 @@ end
 ---@return table<string, unknown> immutable whole registration demand
 local function buildDemand(registration)
   local specimen = registration.specimen --[[@as table<string, unknown>]]
+  local species = specimen.species --[[@as string]]
+  -- The card text slots mirror the browser controller's slot union for
+  -- the caught specimen: the dex number resolves in preparation from
+  -- the frozen number mode, every other slot through its source bank.
+  -- Only the origin Giratina measures on its own profile, matching the
+  -- native battle-selected measure banks.
+  local profile = "base"
+  if species == "GIRATINA" and type(specimen.form) == "number" and specimen.form ~= 0 then
+    profile = "giratina_origin"
+  end
   return {
     key = "registration-" .. tostring(registration.captureId),
     purpose = "registration",
     pageRole = "registration",
     dexMode = registration.dexMode,
     language = "native",
+    profile = profile,
     iconKeys = {},
     pictures = {
       {
@@ -120,7 +131,17 @@ local function buildDemand(registration)
         mode = "registration",
       },
     },
-    text = { registration = registration },
+    text = {
+      registration = registration,
+      slots = {
+        { role = "registration.dex-number", kind = "dex_number", species = species },
+        { role = "registration.species-name", kind = "species_name", species = species, language = "native" },
+        { role = "registration.category", kind = "category", species = species, language = "native" },
+        { role = "registration.flavor", kind = "flavor", species = species, language = "native" },
+        { role = "registration.height", kind = "height", species = species },
+        { role = "registration.weight", kind = "weight", species = species },
+      },
+    },
     cry = { species = specimen.species, form = CRY_FORM },
   }
 end

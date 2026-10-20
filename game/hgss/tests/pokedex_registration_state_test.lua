@@ -266,6 +266,30 @@ local function checkLockedDemand(demands, registration)
     Assert.equal(picture.mode, "registration", "the picture uses the registration mode")
     Assert.deepEqual(picture.specimen, registration.specimen, "the picture freezes the actual specimen")
     Assert.deepEqual(demand.text.registration, registration, "the demand text freezes the terminal facts")
+    Assert.equal(demand.profile, "base", "a non-Giratina capture measures on the base profile")
+    Assert.deepEqual(demand.text.slots, {
+      { role = "registration.dex-number", kind = "dex_number", species = registration.specimen.species },
+      {
+        role = "registration.species-name",
+        kind = "species_name",
+        species = registration.specimen.species,
+        language = "native",
+      },
+      {
+        role = "registration.category",
+        kind = "category",
+        species = registration.specimen.species,
+        language = "native",
+      },
+      {
+        role = "registration.flavor",
+        kind = "flavor",
+        species = registration.specimen.species,
+        language = "native",
+      },
+      { role = "registration.height", kind = "height", species = registration.specimen.species },
+      { role = "registration.weight", kind = "weight", species = registration.specimen.species },
+    }, "the demand publishes the caught specimen's card text slots")
     Assert.equal(demand.cry.species, registration.specimen.species, "the cry names the captured species")
     Assert.equal(demand.cry.form, 0, "the cry always uses the base form")
   end
