@@ -221,4 +221,62 @@ T["buildRegistry returns a sealed registry"] = function()
   end)
 end
 
+local HO_OH = "field-effect:ho_oh_appearance"
+
+local function resource(id, steps, needs)
+  return { kind = "field_script", api = 1, id = id, steps = steps, needs = needs }
+end
+
+function T.override_asset_needs_come_from_the_override_resource()
+  local registry = Registry.new()
+  registry:installBase("a.b", resource("a.b", { { op = "stop" } }), "generated")
+  registry:installBase("a.b", resource("a.b", { { op = "legend_cutscene_bell_begin" }, { op = "stop" } }), "override")
+  Assert.deepEqual(registry:overrideAssetNeeds("a.b"), { HO_OH })
+end
+
+function T.generated_only_id_has_no_override_asset_needs()
+  local registry = Registry.new()
+  registry:installBase("a.b", resource("a.b", { { op = "legend_cutscene_bell_begin" } }), "generated")
+  Assert.isNil(registry:overrideAssetNeeds("a.b"))
+  Assert.isNil(registry:overrideAssetNeeds("unknown.id"))
+end
+
+function T.override_that_drops_a_need_reports_an_empty_list()
+  local registry = Registry.new()
+  registry:installBase("a.b", resource("a.b", { { op = "legend_cutscene_bell_begin" } }), "generated")
+  registry:installBase("a.b", resource("a.b", { { op = "stop" } }), "override")
+  Assert.deepEqual(registry:overrideAssetNeeds("a.b"), {})
+end
+
+function T.override_needs_hint_is_honored()
+  local registry = Registry.new()
+  registry:installBase(
+    "a.b",
+    resource("a.b", { { op = "stop" } }, { { kind = "custom", id = "thing" } }),
+    "override"
+  )
+  Assert.deepEqual(registry:overrideAssetNeeds("a.b"), { "custom:thing" })
+end
+
+function T.deferred_override_is_decoded_to_report_its_needs()
+  local registry = Registry.new({
+    loadResource = function(id)
+      return resource(id, { { op = "legend_cinematic", destination = 0 } })
+    end,
+  })
+  registry:installBaseDeferred("a.b", "override")
+  Assert.deepEqual(registry:overrideAssetNeeds("a.b"), { HO_OH })
+end
+
+function T.override_asset_needs_are_memoized_until_the_registry_mutates()
+  local registry = Registry.new()
+  local override = resource("a.b", { { op = "legend_cutscene_bell_begin" } })
+  registry:installBase("a.b", override, "override")
+  Assert.deepEqual(registry:overrideAssetNeeds("a.b"), { HO_OH })
+  override.steps = { { op = "stop" } }
+  Assert.deepEqual(registry:overrideAssetNeeds("a.b"), { HO_OH }, "unchanged registry serves the memo")
+  registry:installBase("c.d", resource("c.d", { { op = "stop" } }), "generated")
+  Assert.deepEqual(registry:overrideAssetNeeds("a.b"), {}, "a mutation recomputes")
+end
+
 return { tests = T }
