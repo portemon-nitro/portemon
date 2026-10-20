@@ -981,9 +981,13 @@ function Compiler.compile(romFs, hashLua)
     follower_transition = transition,
     pokemon_center_heal = centerHeal,
     celebi_time_travel = celebi.definition,
-    ho_oh_appearance = hoOhAppearance.definition,
     lugia_appearance = lugiaAppearance.definition,
   }
+  -- The Ho-Oh appearance record is published in parts (core, and per
+  -- cinematic shot a shared part plus per-variant overlays).
+  for kind, definition in pairs(hoOhAppearance.definitions) do
+    effects[kind] = definition
+  end
   local reactionMeshes, reactionTextures, reactionSha1s = {}, {}, {}
   for _, source in ipairs(FieldEffects.followerReactions) do
     local descriptor, reactionSourceMeshes, reactionSourceTextures, modelSha1, textureSha1, patternSha1 =
@@ -1046,11 +1050,6 @@ function Compiler.compile(romFs, hashLua)
         definition = "celebi_time_travel",
         path = FieldEffectAssetCache.definitionPath("celebi_time_travel"),
       },
-      ho_oh_appearance = {
-        kind = "cinematic",
-        definition = "ho_oh_appearance",
-        path = FieldEffectAssetCache.definitionPath("ho_oh_appearance"),
-      },
       lugia_appearance = {
         kind = "cinematic",
         definition = "lugia_appearance",
@@ -1058,6 +1057,13 @@ function Compiler.compile(romFs, hashLua)
       },
     },
   }
+  for kind in pairs(hoOhAppearance.definitions) do
+    index.effects[kind] = {
+      kind = "cinematic",
+      definition = kind,
+      path = FieldEffectAssetCache.definitionPath(kind),
+    }
+  end
   for _, source in ipairs(FieldEffects.followerReactions) do
     index.effects[source.key] = {
       kind = "reaction",

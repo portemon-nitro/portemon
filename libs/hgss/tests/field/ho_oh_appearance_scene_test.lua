@@ -53,11 +53,14 @@ local function newAudio()
   return audio
 end
 
-local function newScene(versionId, camera, birdHeights, audio, bird)
+local loadLog = {}
+
+local function newScene(versionId, camera, birdHeights, audio, bird, rtcCode)
+  loadLog = {}
   local cacheFs = {
     loadLua = function(_, path)
-      Assert.equal(path, FieldEffectAssetCache.definitionPath("ho_oh_appearance"), "scene loads its model definition")
-      return HoOhAppearanceFixture.definition()
+      loadLog[#loadLog + 1] = path
+      return HoOhAppearanceFixture.core()
     end,
   }
   return HoOhAppearanceScene.new({
@@ -69,7 +72,7 @@ local function newScene(versionId, camera, birdHeights, audio, bird)
       return camera
     end,
     timeOfDayCode = function()
-      return 2
+      return rtcCode or 2
     end,
     setBirdHeight = function(tiles)
       if birdHeights then
@@ -94,6 +97,26 @@ local function newScene(versionId, camera, birdHeights, audio, bird)
 end
 
 local T = { tests = {} }
+
+function T.tests.construction_loads_nothing_and_first_use_loads_only_the_core()
+  local scene = newScene("heartgold", newCamera())
+  Assert.equal(#loadLog, 0, "building the scene reads no record")
+  scene:command("legend_cutscene_bell_begin")
+  scene:command("legend_cutscene_bell_rise")
+  Assert.equal(#loadLog, 0, "commands that need no clip length read nothing")
+  scene:updateFixed()
+  Assert.deepEqual(loadLog, { FieldEffectAssetCache.definitionPath("ho_oh_appearance") }, "one load, of the core only")
+  scene:taskTicks("legend_cutscene_bell_shimmer")
+  scene:updateFixed()
+  Assert.equal(#loadLog, 1, "later use serves the loaded summary")
+end
+
+function T.tests.current_variant_follows_the_rtc_code()
+  for code, expected in pairs({ [0] = 0, [1] = 0, [2] = 1, [3] = 2, [4] = 2 }) do
+    local scene = newScene("heartgold", newCamera(), nil, nil, nil, code)
+    Assert.equal(scene:currentVariant(), expected, "RTC code " .. code)
+  end
+end
 
 function T.tests.camera_move_places_the_eye_inside_the_far_plane()
   for _, versionId in ipairs({ "heartgold", "soulsilver" }) do

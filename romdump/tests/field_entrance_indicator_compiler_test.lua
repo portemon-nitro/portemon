@@ -105,7 +105,11 @@ local function installHoOhCompilerMock()
   package.loaded["romdump.src.digest.field.HoOhAppearanceAssetCompiler"] = {
     compile = function()
       return {
-        definition = { models = {} },
+        definitions = {
+          ho_oh_appearance = { models = {} },
+          ho_oh_cinematic_first_shared = { shot = "first" },
+          ho_oh_cinematic_first_0 = { shot = "first", variant = 0 },
+        },
         meshes = {},
         textures = {},
         memberHashes = { { memberId = 1, sha1 = "ho-oh-model" } },
@@ -402,6 +406,14 @@ T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
   Assert.equal(result.effects.tall_grass.model.kind, "nitro-dynamic")
   Assert.equal(result.effects.tall_grass.lifecycle.mode, "hold_until_owner_moves")
   Assert.equal(result.effects.tall_grass.lifecycle.holdFrame, 12)
+  for _, kind in ipairs({ "ho_oh_appearance", "ho_oh_cinematic_first_shared", "ho_oh_cinematic_first_0" }) do
+    Assert.notNil(result.effects[kind], kind .. " is published as an effect definition")
+    Assert.deepEqual(
+      result.index.effects[kind],
+      { kind = "cinematic", definition = kind, path = FieldEffectAssetCache.definitionPath(kind) },
+      kind .. " is indexed as a cinematic definition"
+    )
+  end
   Assert.isNil(result.effects.tall_grass.source)
   Assert.isNil(result.effects.tall_grass.animationSourceSha1)
   Assert.isNil(result.effects.tall_grass.lifetime)

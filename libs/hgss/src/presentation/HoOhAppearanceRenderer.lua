@@ -1,8 +1,12 @@
 -- Lazily realizes the original Ho-Oh cutscene models and draws their live scene poses.
 
+local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
+local GpuAssetPool = require("libs.hgss.src.presentation.GpuAssetPool")
+local Matrix4 = require("libs.math.src.Matrix4")
+local ModelDefinition = require("libs.hgss.src.presentation.ModelDefinition")
+local ModelInstance = require("libs.hgss.src.presentation.ModelInstance")
+local SceneDescriptor = require("libs.hgss.src.presentation.SceneDescriptor")
 local ImageSampling = require("libs.nds.src.love.ImageSampling")
-
-local LegendCutsceneModels = require("libs.hgss.src.presentation.LegendCutsceneModels")
 
 local HoOhAppearanceRenderer = {}
 HoOhAppearanceRenderer.__index = HoOhAppearanceRenderer
@@ -16,7 +20,7 @@ HoOhAppearanceRenderer.__index = HoOhAppearanceRenderer
 ---@field sequence integer?
 ---@field versionId string?
 ---@field lastFrames table<string, integer>?
----@field _cinematicEnvironment table<string, unknown>?
+---@field _cinematicEnvironment { base: table<string, unknown>, environment: table<string, unknown> }?
 ---@field leafHandles table<string, table<integer, table<string, unknown>>>?
 ---@field new fun(cacheFs: CacheFs, imageAssets: table<string, unknown>): HoOhAppearanceRenderer
 ---@field drawItems fun(self: HoOhAppearanceRenderer, status: table<string, unknown>): table<string, unknown>[]
@@ -33,45 +37,7 @@ local CINEMATIC_EDGE_COLORS = { [0] = 0x0000, 0x1084, 0x1084, 0x1084, 0x1084, 0x
 -- it once to each side.
 local BACKDROP_WALLS = { heartgold = { modelKeyPrefix = "outdoor:187:", width = 68 } }
 
-local MODEL_KEYS = {
-  "bellRising",
-  "bellShimmer",
-  "cornerBells",
-  "birdApproach",
-  "wavesEffect",
-  "cinematic.first.0",
-  "cinematic.first.1",
-  "cinematic.first.2",
-  "cinematic.second.0",
-  "cinematic.second.1",
-  "cinematic.second.2",
-}
-
----@param versionId string
----@return table<integer, table<string, unknown>>
-local function instanceSpecs(versionId)
-  local specs = {
-    { name = "bellRising", roles = { "bell.rise.joint", "bell.rise.pattern", "bell.rise.srt" }, loopMode = "once" },
-    { name = "bellShimmer", roles = { "bell.shimmer.joint", "bell.shimmer.srt" } },
-    { name = "birdApproach", roles = { "bird.joint", "bird.color", "bird.pattern" } },
-    { name = "wavesEffect", roles = { "waves.joint", "waves.srt" } },
-  }
-  for index = 1, (versionId == "heartgold" and 4 or 2) do
-    specs[#specs + 1] = { name = "cornerBells" .. index, source = "cornerBells", roles = { "corner_bells.srt" } }
-  end
-  for variant = 0, 2 do
-    local first = "cinematic.first." .. variant
-    specs[#specs + 1] = {
-      name = first,
-      roles = { first .. ".trs", first .. ".color", first .. ".pattern", first .. ".texsrt" },
-      loopMode = "once",
-    }
-    local second = "cinematic.second." .. variant
-    specs[#specs + 1] =
-      { name = second, roles = { second .. ".trs", second .. ".color", second .. ".texsrt" }, loopMode = "once" }
-  end
-  return specs
-end
+local MODEL_ORDER = { "bellRising", "bellShimmer", "cornerBells", "birdApproach", "wavesEffect" }
 
 ---@param cacheFs CacheFs
 ---@param imageAssets table<string, unknown>
@@ -83,14 +49,46 @@ function HoOhAppearanceRenderer.new(cacheFs, imageAssets)
 end
 
 function HoOhAppearanceRenderer:_build(sequence, versionId)
-  local set = LegendCutsceneModels.buildSet(self.cacheFs, self.imageAssets, {
-    definitionKind = "ho_oh_appearance",
-    keyPrefix = "field%-effect:ho%-oh%-appearance:",
-    definitionKeyPrefix = "field-effect:ho-oh:",
-    modelKeys = MODEL_KEYS,
-    label = "Ho-Oh",
-  })
-  local pool, definitions, record = set.pool, set.definitions, set.record
+  local record = FieldEffectAssetCache.loadHoOhCore(self.cacheFs)
+  local descriptors = {}
+  for _, descriptor in ipairs(assert(record.models, "Ho-Oh appearance record has no models")) do
+    descriptors[#descriptors + 1] = descriptor
+  end
+  for _, shot in ipairs({ "first", "second" }) do
+    for variant = 0, 2 do
+      descriptors[#descriptors + 1] = FieldEffectAssetCache.loadHoOhCinematic(self.cacheFs, shot, variant)
+    end
+  end
+  assert(#descriptors == #MODEL_ORDER + 6, "Ho-Oh model role list changed")
+  local pool = GpuAssetPool.new(self.cacheFs, { imageAssets = self.imageAssets })
+  local definitions, meshes = {}, {}
+  local function buildModels()
+    for index, descriptor in ipairs(descriptors) do
+      local name = assert(
+        descriptor.key:match("field%-effect:ho%-oh%-appearance:(.+)$"),
+        "Ho-Oh model descriptor has no semantic key"
+      )
+      local definition = ModelDefinition.fromNitroDescriptor(descriptor, { key = "field-effect:ho-oh:" .. name })
+      local modelMeshes = {}
+      for _, mesh in ipairs(definition.meshes) do
+        local resource = pool:meshFor(mesh.geometry)
+        mesh.center = resource.center
+        modelMeshes[mesh.id] = resource.mesh
+      end
+      definitions[name] = { descriptor = descriptor, definition = definition, meshes = modelMeshes }
+      if index <= #MODEL_ORDER then
+        assert(name == MODEL_ORDER[index], "Ho-Oh field model role order changed")
+      end
+    end
+    return meshes
+  end
+  local ok, err = pcall(function()
+    pool:build(buildModels)
+  end)
+  if not ok then
+    pool:release()
+    error(err, 0)
+  end
 
   local leafHandles = {}
   local leavesOk, leavesErr = pcall(function()
@@ -111,8 +109,48 @@ function HoOhAppearanceRenderer:_build(sequence, versionId)
     error(leavesErr, 0)
   end
 
-  local instances =
-    LegendCutsceneModels.buildInstances({ pool = pool, definitions = definitions }, instanceSpecs(versionId), "Ho-Oh")
+  local instances = {}
+  local function resolveFor(model)
+    local wraps = SceneDescriptor.wrapByMaterial(model.descriptor.materials)
+    local function resolveImage(path, materialId)
+      local wrap = assert(wraps[materialId], "Ho-Oh material wrap is missing")
+      return pool:sharedImage(path, wrap.x, wrap.y)
+    end
+    return resolveImage
+  end
+  local function buildInstance(name, roles, loopMode, sourceName)
+    local model = assert(definitions[sourceName or name])
+    local instance = ModelInstance.new(model.definition, { resolveImage = resolveFor(model) })
+    instance.renderMeshesById = model.meshes
+    for _, role in ipairs(roles) do
+      instance:play(role, { loopMode = loopMode })
+    end
+    instances[name] = instance
+  end
+  local instanceOk, instanceErr = pcall(function()
+    buildInstance("bellRising", { "bell.rise.joint", "bell.rise.pattern", "bell.rise.srt" }, "once")
+    buildInstance("bellShimmer", { "bell.shimmer.joint", "bell.shimmer.srt" })
+    for index = 1, (versionId == "heartgold" and 4 or 2) do
+      buildInstance("cornerBells" .. index, { "corner_bells.srt" }, nil, "cornerBells")
+    end
+    buildInstance("birdApproach", { "bird.joint", "bird.color", "bird.pattern" })
+    buildInstance("wavesEffect", { "waves.joint", "waves.srt" })
+    for variant = 0, 2 do
+      local first = "cinematic.first." .. variant
+      buildInstance(first, {
+        first .. ".trs",
+        first .. ".color",
+        first .. ".pattern",
+        first .. ".texsrt",
+      }, "once")
+      local second = "cinematic.second." .. variant
+      buildInstance(second, { second .. ".trs", second .. ".color", second .. ".texsrt" }, "once")
+    end
+  end)
+  if not instanceOk then
+    pool:release()
+    error(instanceErr, 0)
+  end
   self.pool, self.definitions, self.instances, self.leafHandles = pool, definitions, instances, leafHandles
   self.sequence, self.versionId, self.lastFrames =
     sequence, versionId, { bell = 0, loop = 0, shimmer = 0, corners = 0, bird = 0, waves = 0 }
@@ -158,6 +196,29 @@ function HoOhAppearanceRenderer:drawLeaves(status, viewport)
   graphics.pop()
 end
 
+local function advance(instance, frames, count)
+  for _ = frames + 1, count do
+    instance:updateFixed()
+  end
+end
+
+local function addDraws(output, instance, position, role)
+  instance.transform = Matrix4.translate(position.x, position.y, position.z)
+  instance:evaluatePose()
+  for _, item in ipairs(instance:drawItems(assert(instance.renderMeshesById))) do
+    -- The source animations hide unrevealed particles at polygon alpha zero,
+    -- which the GX renderer would otherwise outline as wireframes.
+    if item.polygonAlpha == 0 then
+      goto continue
+    end
+    item.worldSpace = true
+    item.fieldEffect = "ho_oh_appearance"
+    item.fieldEffectRole = role
+    output[#output + 1] = item
+    ::continue::
+  end
+end
+
 ---@param status table<string, unknown>
 ---@return table<string, unknown>[]
 function HoOhAppearanceRenderer:drawItems(status)
@@ -171,8 +232,6 @@ function HoOhAppearanceRenderer:drawItems(status)
   end
   local output, origin = {}, assert(status.origin)
   local instances, frames = assert(self.instances), assert(self.lastFrames)
-  local advance, addDraws = LegendCutsceneModels.advance, LegendCutsceneModels.addDraws
-  local effectTag = "ho_oh_appearance"
   if status.bellStage ~= nil then
     local bellFrame = assert(status.bellFrame)
     local rising = assert(instances.bellRising)
@@ -194,20 +253,20 @@ function HoOhAppearanceRenderer:drawItems(status)
       frames.loop = loopFrame
     end
     if status.bellVisible == true and status.shimmerFrame == nil then
-      addDraws(output, rising, origin, "clear_bell_rising", effectTag)
+      addDraws(output, rising, origin, "clear_bell_rising")
     end
     if status.shimmerFrame ~= nil then
       local shimmerFrame = assert(status.shimmerFrame)
       advance(assert(instances.bellShimmer), frames.shimmer, shimmerFrame)
       frames.shimmer = shimmerFrame
-      addDraws(output, instances.bellShimmer, origin, "clear_bell_shimmer", effectTag)
+      addDraws(output, instances.bellShimmer, origin, "clear_bell_shimmer")
       if status.shimmerClearBellOnly ~= true then
         local offsets = assert(status.cornerOffsets)
         for index, offset in ipairs(offsets) do
           local corners = assert(instances["cornerBells" .. index])
           advance(corners, frames.corners, shimmerFrame)
           local position = { x = origin.x + offset[1], y = origin.y + offset[2], z = origin.z + offset[3] }
-          addDraws(output, corners, position, "corner_bells_" .. index, effectTag)
+          addDraws(output, corners, position, "corner_bells_" .. index)
         end
         frames.corners = shimmerFrame
       end
@@ -225,10 +284,11 @@ function HoOhAppearanceRenderer:drawItems(status)
         y = origin.y + (versionId == "heartgold" and 2.5 or 0),
         z = origin.z - (versionId == "heartgold" and 1 or 17.5),
       }
-      addDraws(output, bird, ringPosition, "ho_oh_approach", effectTag)
+      addDraws(output, bird, ringPosition, "ho_oh_approach")
     end
-  elseif status.cinematicShot == "first" or status.cinematicShot == "second" then
+  elseif status.cinematicShot ~= nil then
     local shot = assert(status.cinematicShot)
+    assert(shot == "first" or shot == "second", "Ho-Oh cinematic shot is invalid")
     local variant = assert(status.cinematicVariant)
     assert(variant >= 0 and variant <= 2 and variant % 1 == 0, "Ho-Oh cinematic variant is invalid")
     local name = "cinematic." .. shot .. "." .. variant
@@ -237,14 +297,14 @@ function HoOhAppearanceRenderer:drawItems(status)
     local modelFrame = assert(status.cinematicModelFrame)
     advance(instance, frames[frameKey] or 0, modelFrame)
     frames[frameKey] = modelFrame
-    addDraws(output, instance, origin, "ho_oh_cinematic_" .. shot, effectTag)
+    addDraws(output, instance, origin, "ho_oh_cinematic_" .. shot)
   end
   if status.effectsActive == true and status.versionId == "soulsilver" then
     local effectFrame = assert(status.effectFrame)
     local waves = assert(instances.wavesEffect)
     advance(waves, frames.waves, effectFrame)
     frames.waves = effectFrame
-    addDraws(output, waves, origin, "waves", effectTag)
+    addDraws(output, waves, origin, "waves")
   end
   return output
 end
@@ -282,8 +342,20 @@ end
 ---@param base table<string, unknown>
 ---@return table<string, unknown>
 function HoOhAppearanceRenderer:cinematicEnvironment(base)
-  self._cinematicEnvironment = self._cinematicEnvironment or {}
-  return LegendCutsceneModels.cinematicEnvironment(self._cinematicEnvironment, base, CINEMATIC_EDGE_COLORS)
+  local cached = self._cinematicEnvironment
+  if cached ~= nil and cached.base == base then
+    return cached.environment
+  end
+  local fogTable = {}
+  for index = 1, 32 do
+    fogTable[index] = 0
+  end
+  local environment = setmetatable({
+    edgeColors = CINEMATIC_EDGE_COLORS,
+    fog = { enabled = false, color = 0, offset = 0, slope = 0, alpha = 0, table = fogTable },
+  }, { __index = base })
+  self._cinematicEnvironment = { base = base, environment = environment }
+  return environment
 end
 
 function HoOhAppearanceRenderer:release()

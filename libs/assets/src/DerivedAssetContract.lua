@@ -313,7 +313,10 @@ DerivedAssetContract.newGameInit = {
 }
 
 DerivedAssetContract.fieldEffects = {
-  -- v15 adds the Whirl Islands eye glimmer and single-shot Lugia cinematic models.
+  -- v15 publishes the Ho-Oh appearance record in parts: a core with a clip
+  -- summary, and per cinematic shot one shared part plus one overlay per
+  -- time-of-day variant.
+  -- v14 adds the source models and animation clips used by both Ho-Oh cinematic shots.
   cacheFormat = "field-effect-cache-v15",
   indexSchema = "g4-field-effect-index-v4",
 }

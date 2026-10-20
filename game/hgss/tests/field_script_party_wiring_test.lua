@@ -125,7 +125,7 @@ local function stubOptions(partySelection, mart)
   return {
     cacheFs = {
       loadLua = function()
-        return HoOhAppearanceFixture.definition()
+        return HoOhAppearanceFixture.core()
       end,
     },
     layoutMessage = function(message)

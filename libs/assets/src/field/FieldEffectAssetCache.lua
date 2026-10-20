@@ -1,6 +1,7 @@
 -- Strict cache contract for the normalized field-effect model and its assets.
 
 local Contract = require("libs.assets.src.DerivedAssetContract")
+local HoOhCinematicParts = require("libs.assets.src.field.HoOhCinematicParts")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 
 local FieldEffectAssetCache = {}
@@ -379,41 +380,129 @@ local function validCelebiTimeTravelDefinition(definition, _)
   return true
 end
 
-local HOOH_MODELS = {
+-- The Ho-Oh appearance record is published in parts so a phase loads only
+-- what it uses: a core (the five non-cinematic models, the leaf overlay, and
+-- a clip summary), and per cinematic shot one shared part plus one overlay
+-- per time-of-day variant (see HoOhCinematicParts).
+local HOOH_CORE_MODELS = {
   { key = "field-effect:ho-oh-appearance:bellRising", clips = 6 },
   { key = "field-effect:ho-oh-appearance:bellShimmer", clips = 2 },
   { key = "field-effect:ho-oh-appearance:cornerBells", clips = 1 },
   { key = "field-effect:ho-oh-appearance:birdApproach", clips = 3 },
   { key = "field-effect:ho-oh-appearance:wavesEffect", clips = 2 },
-  { key = "field-effect:ho-oh-appearance:cinematic.first.0", clips = 4 },
-  { key = "field-effect:ho-oh-appearance:cinematic.first.1", clips = 4 },
-  { key = "field-effect:ho-oh-appearance:cinematic.first.2", clips = 4 },
-  { key = "field-effect:ho-oh-appearance:cinematic.second.0", clips = 3 },
-  { key = "field-effect:ho-oh-appearance:cinematic.second.1", clips = 3 },
-  { key = "field-effect:ho-oh-appearance:cinematic.second.2", clips = 3 },
 }
-
--- The Whirl Islands eye glimmer plus the single-shot Lugia cinematic. The
--- role ids are asserted by the field scene; only the role list and clip
--- counts are pinned here.
+local HOOH_SHOT_CLIPS = { first = 4, second = 3 }
+local HOOH_SHOTS = { "first", "second" }
+local HOOH_VARIANT_COUNT = 3
 local LUGIA_MODELS = {
   { key = "field-effect:lugia-appearance:eyeGlimmer", clips = 3 },
   { key = "field-effect:lugia-appearance:cinematic.lugia.0", clips = 4 },
   { key = "field-effect:lugia-appearance:cinematic.lugia.1", clips = 1 },
 }
 
-local function validModelList(definition, expected)
-  if type(definition) ~= "table" or type(definition.models) ~= "table" or #definition.models ~= #expected then
+---@param shot string "first" or "second"
+---@param variant integer? 0..2, or nil for the shot's shared part
+---@return string kind the field-effect inventory key of that part
+function FieldEffectAssetCache.hoOhCinematicKind(shot, variant)
+  assert(HOOH_SHOT_CLIPS[shot] ~= nil, "unknown Ho-Oh cinematic shot")
+  if variant == nil then
+    return "ho_oh_cinematic_" .. shot .. "_shared"
+  end
+  assert(
+    type(variant) == "number" and variant % 1 == 0 and variant >= 0 and variant < HOOH_VARIANT_COUNT,
+    "unknown Ho-Oh cinematic variant"
+  )
+  return "ho_oh_cinematic_" .. shot .. "_" .. variant
+end
+
+---@return string[] kinds every cinematic part kind, shared parts and overlays
+function FieldEffectAssetCache.hoOhPartKinds()
+  local kinds = {}
+  for _, shot in ipairs(HOOH_SHOTS) do
+    kinds[#kinds + 1] = FieldEffectAssetCache.hoOhCinematicKind(shot)
+    for variant = 0, HOOH_VARIANT_COUNT - 1 do
+      kinds[#kinds + 1] = FieldEffectAssetCache.hoOhCinematicKind(shot, variant)
+    end
+  end
+  return kinds
+end
+
+local function hasExactKeys(value, keys, optionalKeys)
+  if type(value) ~= "table" then
     return false
   end
-  for index, spec in ipairs(expected) do
+  local allowed = {}
+  for _, key in ipairs(keys) do
+    allowed[key] = true
+  end
+  for _, key in ipairs(optionalKeys or {}) do
+    allowed[key] = true
+  end
+  for key in pairs(value) do
+    if not allowed[key] then
+      return false
+    end
+  end
+  for _, key in ipairs(keys) do
+    if value[key] == nil then
+      return false
+    end
+  end
+  return true
+end
+
+local function validClipSummary(clips, models)
+  if not hasExactKeys(clips, { "frames", "cinematic" }) then
+    return false
+  end
+  local expected = 0
+  for _, model in ipairs(models) do
+    for _, clip in ipairs(model.animations) do
+      expected = expected + 1
+      if clips.frames[clip.id] ~= clip.frameCount then
+        return false
+      end
+    end
+  end
+  local count = 0
+  for _ in pairs(clips.frames) do
+    count = count + 1
+  end
+  if count ~= expected or not hasExactKeys(clips.cinematic, HOOH_SHOTS) then
+    return false
+  end
+  for _, shot in ipairs(HOOH_SHOTS) do
+    local frames = clips.cinematic[shot]
+    if type(frames) ~= "table" or #frames ~= HOOH_VARIANT_COUNT then
+      return false
+    end
+    for _, shotFrames in ipairs(frames) do
+      if not finiteNumber(shotFrames) or shotFrames <= 0 then
+        return false
+      end
+    end
+  end
+  return true
+end
+
+local function validHoOhAppearanceDefinition(definition, _)
+  if
+    not hasExactKeys(definition, { "models", "clips" })
+    and not hasExactKeys(definition, { "models", "clips", "leaves" })
+  then
+    return false
+  end
+  if type(definition.models) ~= "table" or #definition.models ~= #HOOH_CORE_MODELS then
+    return false
+  end
+  for index, expected in ipairs(HOOH_CORE_MODELS) do
     local model = definition.models[index]
     if
       type(model) ~= "table"
       or model.kind ~= "nitro-dynamic"
-      or model.key ~= spec.key
+      or model.key ~= expected.key
       or type(model.animations) ~= "table"
-      or #model.animations ~= spec.clips
+      or #model.animations ~= expected.clips
     then
       return false
     end
@@ -423,16 +512,7 @@ local function validModelList(definition, expected)
       end
     end
   end
-  return true
-end
-
-local function validHoOhAppearanceDefinition(definition, _)
-  for key in pairs(definition) do
-    if key ~= "models" and key ~= "leaves" then
-      return false
-    end
-  end
-  if not validModelList(definition, HOOH_MODELS) then
+  if not validClipSummary(definition.clips, definition.models) then
     return false
   end
   if definition.leaves ~= nil then
@@ -477,15 +557,83 @@ local function validHoOhAppearanceDefinition(definition, _)
 end
 
 local function validLugiaAppearanceDefinition(definition, _)
-  if type(definition) ~= "table" then
+  if not hasExactKeys(definition, { "models" }) or type(definition.models) ~= "table" then
     return false
   end
-  for key in pairs(definition) do
-    if key ~= "models" then
+  if #definition.models ~= #LUGIA_MODELS then
+    return false
+  end
+  for index, expected in ipairs(LUGIA_MODELS) do
+    local model = definition.models[index]
+    if
+      type(model) ~= "table"
+      or model.kind ~= "nitro-dynamic"
+      or model.key ~= expected.key
+      or type(model.animations) ~= "table"
+      or #model.animations ~= expected.clips
+    then
       return false
     end
+    for _, clip in ipairs(model.animations) do
+      if type(clip) ~= "table" or type(clip.id) ~= "string" or not finiteNumber(clip.frameCount) then
+        return false
+      end
+    end
   end
-  return validModelList(definition, LUGIA_MODELS)
+  return true
+end
+
+local function validHoOhSharedPart(shot)
+  local function validate(definition, _)
+    if not hasExactKeys(definition, { "shot", "kind", "schema", "animations", "materials" }) then
+      return false
+    end
+    if definition.shot ~= shot or definition.kind ~= "nitro-dynamic" then
+      return false
+    end
+    if type(definition.animations) ~= "table" or #definition.animations ~= HOOH_SHOT_CLIPS[shot] then
+      return false
+    end
+    for _, clip in ipairs(definition.animations) do
+      if type(clip) ~= "table" or type(clip.frameCount) ~= "number" then
+        return false
+      end
+    end
+    return type(definition.materials) == "table"
+  end
+  return validate
+end
+
+local function validHoOhOverlayPart(shot, variant)
+  local function validate(definition, _)
+    if
+      not hasExactKeys(
+        definition,
+        { "shot", "variant", "key", "dynamic", "clipStrings", "materialTextures" },
+        { "memberId" }
+      )
+    then
+      return false
+    end
+    if
+      definition.shot ~= shot
+      or definition.variant ~= variant
+      or definition.key ~= string.format("field-effect:ho-oh-appearance:cinematic.%s.%d", shot, variant)
+      or type(definition.dynamic) ~= "table"
+      or type(definition.clipStrings) ~= "table"
+      or #definition.clipStrings ~= HOOH_SHOT_CLIPS[shot]
+      or type(definition.materialTextures) ~= "table"
+    then
+      return false
+    end
+    for _, strings in ipairs(definition.clipStrings) do
+      if type(strings) ~= "table" or type(strings.id) ~= "string" then
+        return false
+      end
+    end
+    return true
+  end
+  return validate
 end
 
 local function validWarpDefinition(definition, _)
@@ -521,6 +669,22 @@ local FIELD_EFFECT_INVENTORY = {
 for selector = 1, 14 do
   FIELD_EFFECT_INVENTORY[#FIELD_EFFECT_INVENTORY + 1] = followerReactionEntry(selector)
 end
+for _, shot in ipairs(HOOH_SHOTS) do
+  FIELD_EFFECT_INVENTORY[#FIELD_EFFECT_INVENTORY + 1] = {
+    key = FieldEffectAssetCache.hoOhCinematicKind(shot),
+    entryKind = "cinematic",
+    validator = validHoOhSharedPart(shot),
+    part = true,
+  }
+  for variant = 0, HOOH_VARIANT_COUNT - 1 do
+    FIELD_EFFECT_INVENTORY[#FIELD_EFFECT_INVENTORY + 1] = {
+      key = FieldEffectAssetCache.hoOhCinematicKind(shot, variant),
+      entryKind = "cinematic",
+      validator = validHoOhOverlayPart(shot, variant),
+      part = true,
+    }
+  end
+end
 
 function FieldEffectAssetCache.indexPath()
   return INDEX
@@ -531,6 +695,54 @@ function FieldEffectAssetCache.definitionPath(kind)
 end
 function FieldEffectAssetCache.markerPath()
   return MARKER
+end
+
+---@param cacheFs CacheFs
+---@param kind string
+---@return table<string, unknown> definition
+local function requireDefinition(cacheFs, kind)
+  local definition, err = cacheFs:loadLua(FieldEffectAssetCache.definitionPath(kind))
+  assert(definition ~= nil, "field-effect definition is missing from the cache: " .. kind .. " " .. tostring(err))
+  return definition
+end
+
+-- The Ho-Oh core: the non-cinematic models, the leaf overlay and the clip summary.
+---@param cacheFs CacheFs
+---@return table<string, unknown> core
+function FieldEffectAssetCache.loadHoOhCore(cacheFs)
+  return requireDefinition(cacheFs, "ho_oh_appearance")
+end
+
+-- One cinematic shot's variant as the full model descriptor it was published
+-- from (shared part merged with the variant's overlay).
+---@param cacheFs CacheFs
+---@param shot string "first" or "second"
+---@param variant integer 0..2
+---@return table<string, unknown> descriptor
+function FieldEffectAssetCache.loadHoOhCinematic(cacheFs, shot, variant)
+  assert(variant ~= nil, "a cinematic variant is required")
+  local sharedKind = FieldEffectAssetCache.hoOhCinematicKind(shot)
+  local overlayKind = FieldEffectAssetCache.hoOhCinematicKind(shot, variant)
+  return HoOhCinematicParts.merge(requireDefinition(cacheFs, sharedKind), requireDefinition(cacheFs, overlayKind))
+end
+
+-- The full model descriptors one definition carries, for validation and
+-- referenced-asset checks: a shared cinematic part carries none, an overlay
+-- is merged with its shared part (found through `definitionOf(kind)`), and
+-- every other definition names its own `models` or `model`.
+---@param kind string
+---@param definition table<string, unknown>
+---@param definitionOf fun(kind: string): table<string, unknown>
+---@return table<string, unknown>[] descriptors
+function FieldEffectAssetCache.modelDescriptors(kind, definition, definitionOf)
+  local shot, variant = kind:match("^ho_oh_cinematic_(%a+)_(%w+)$")
+  if shot == nil then
+    return definition.models or { definition.model }
+  end
+  if variant == "shared" then
+    return {}
+  end
+  return { HoOhCinematicParts.merge(definitionOf(FieldEffectAssetCache.hoOhCinematicKind(shot)), definition) }
 end
 function FieldEffectAssetCache.geometryPath(sha1)
   return ASSET_DIR .. "/geometry/" .. sha1 .. ".g4mesh"
@@ -563,6 +775,8 @@ function FieldEffectAssetCache.isReady(cacheFs, expectedMarker)
   if effectCount ~= #FIELD_EFFECT_INVENTORY then
     return false
   end
+  local core ---@type table?
+  local sharedParts = {} ---@type table<string, table>
   for _, spec in ipairs(FIELD_EFFECT_INVENTORY) do
     local kind = spec.key
     local entry = index.effects and index.effects[kind]
@@ -582,22 +796,40 @@ function FieldEffectAssetCache.isReady(cacheFs, expectedMarker)
     if (spec.entryKind == "reaction" or spec.entryKind == "cinematic") and not spec.validator(definition, kind) then
       return false
     end
-    local descriptors = definition.models or { definition.model }
-    if
-      kind ~= "follower_transition"
-      and kind ~= "pokemon_center_heal"
-      and kind ~= "ho_oh_appearance"
-      and kind ~= "lugia_appearance"
-      and definition.models ~= nil
-    then
-      return false
+    local descriptors
+    if spec.part then
+      local assembled, result = pcall(FieldEffectAssetCache.modelDescriptors, kind, definition, function(partKind)
+        return requireDefinition(cacheFs, partKind)
+      end)
+      if not assembled then
+        return false
+      end
+      descriptors = result
+    else
+      descriptors = definition.models or { definition.model }
+      if
+        kind ~= "follower_transition"
+        and kind ~= "pokemon_center_heal"
+        and kind ~= "ho_oh_appearance"
+        and kind ~= "lugia_appearance"
+        and definition.models ~= nil
+      then
+        return false
+      end
+      local descriptorCount = 0
+      for _ in ipairs(descriptors) do
+        descriptorCount = descriptorCount + 1
+      end
+      if descriptorCount == 0 then
+        return false
+      end
     end
-    local descriptorCount = 0
-    for _ in ipairs(descriptors) do
-      descriptorCount = descriptorCount + 1
+    if kind == "ho_oh_appearance" then
+      core = definition
     end
-    if descriptorCount == 0 then
-      return false
+    local sharedShot = kind:match("^ho_oh_cinematic_(%a+)_shared$")
+    if sharedShot ~= nil then
+      sharedParts[sharedShot] = definition
     end
     for _, descriptor in ipairs(descriptors) do
       local valid, err = pcall(ModelAsset.validate, descriptor)
@@ -625,6 +857,19 @@ function FieldEffectAssetCache.isReady(cacheFs, expectedMarker)
     end
     if spec.entryKind ~= "reaction" and not spec.validator(definition, kind) then
       return false
+    end
+  end
+  -- The core's clip summary names each shot's length: the longest clip of the
+  -- shared part, for every variant.
+  for _, shot in ipairs(HOOH_SHOTS) do
+    local longest = 0
+    for _, clip in ipairs(sharedParts[shot].animations) do
+      longest = math.max(longest, clip.frameCount)
+    end
+    for variant = 1, HOOH_VARIANT_COUNT do
+      if core.clips.cinematic[shot][variant] ~= longest then
+        return false
+      end
     end
   end
   return true

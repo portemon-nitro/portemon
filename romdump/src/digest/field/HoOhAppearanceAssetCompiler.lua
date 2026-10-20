@@ -3,6 +3,9 @@
 
 local Errors = require("libs.errors.src.Errors")
 local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
+local HoOhCinematicParts = require("libs.assets.src.field.HoOhCinematicParts")
+local DynamicModelCompiler = require("romdump.src.digest.model.DynamicModelCompiler")
+local MapPropAnimCompiler = require("romdump.src.digest.model.MapPropAnimCompiler")
 local Hashing = require("romdump.src.digest.Hashing")
 local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
 local G2dRasterizer = require("romdump.src.digest.ui.G2dRasterizer")
@@ -193,6 +196,43 @@ local function compileLeaves(archive, textures, hashes)
   return layers
 end
 
+-- Publishes the eleven compiled models in parts: the core (five models, the
+-- leaf overlay and the clip summary), and per cinematic shot one shared part
+-- plus one overlay per variant. Variants that differ beyond the stored
+-- strings fail the build (HoOhCinematicParts.split).
+local function buildParts(models, leaves)
+  local coreModels, frames = {}, {}
+  for index = 1, #MODELS do
+    coreModels[index] = models[index]
+    for _, clip in ipairs(models[index].animations) do
+      frames[clip.id] = clip.frameCount
+    end
+  end
+  local definitions, cinematic = {}, {}
+  local cursor = #MODELS
+  for _, scene in ipairs(CINEMATIC_MODELS) do
+    local variantModels = {}
+    for variant = 1, #scene.modelMembers do
+      cursor = cursor + 1
+      variantModels[variant] = models[cursor]
+    end
+    local shared, overlays = HoOhCinematicParts.split(scene.scene, variantModels)
+    definitions[FieldEffectAssetCache.hoOhCinematicKind(scene.scene)] = shared
+    local longest = 0
+    for _, clip in ipairs(shared.animations) do
+      longest = math.max(longest, clip.frameCount)
+    end
+    cinematic[scene.scene] = {}
+    for variant, overlay in ipairs(overlays) do
+      definitions[FieldEffectAssetCache.hoOhCinematicKind(scene.scene, variant - 1)] = overlay
+      cinematic[scene.scene][variant] = longest
+    end
+  end
+  definitions.ho_oh_appearance =
+    { models = coreModels, leaves = leaves, clips = { frames = frames, cinematic = cinematic } }
+  return definitions
+end
+
 function Compiler.compile(romFs)
   assert(romFs and romFs.openNarc, "Ho-Oh appearance compiler requires RomFs")
   local models, meshes, textures, hashes = LegendAppearanceCompiler.compileModels(romFs, {
@@ -213,7 +253,7 @@ function Compiler.compile(romFs)
   local leaves = romFs.version and romFs:version() == "heartgold" and compileLeaves(assert(archive), textures, hashes)
     or nil
   return {
-    definition = { models = models, leaves = leaves },
+    definitions = buildParts(models, leaves),
     meshes = meshes,
     textures = textures,
     memberHashes = hashes,

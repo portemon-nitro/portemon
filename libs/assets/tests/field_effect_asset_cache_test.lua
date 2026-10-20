@@ -3,6 +3,7 @@
 
 local Assert = require("tests.support.Assert")
 local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
+local HoOhCinematicParts = require("libs.assets.src.field.HoOhCinematicParts")
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 
 local T = { tests = {} }
@@ -189,38 +190,68 @@ local function validCelebiDefinition()
   return { model = model }
 end
 
-local HOOH_MODEL_CLIPS = {
+local HOOH_CORE_MODELS = {
   { key = "bellRising", clips = 6 },
   { key = "bellShimmer", clips = 2 },
   { key = "cornerBells", clips = 1 },
   { key = "birdApproach", clips = 3 },
   { key = "wavesEffect", clips = 2 },
-  { key = "cinematic.first.0", clips = 4 },
-  { key = "cinematic.first.1", clips = 4 },
-  { key = "cinematic.first.2", clips = 4 },
-  { key = "cinematic.second.0", clips = 3 },
-  { key = "cinematic.second.1", clips = 3 },
-  { key = "cinematic.second.2", clips = 3 },
 }
+local HOOH_SHOT_CLIPS = { first = 4, second = 3 }
 
-local function validHoOhDefinition()
-  local models = {}
-  for index, spec in ipairs(HOOH_MODEL_CLIPS) do
-    local model = validDynamicModel()
-    model.key = "field-effect:ho-oh-appearance:" .. spec.key
-    local template = model.animations[1]
-    model.animations = {}
-    for clip = 1, spec.clips do
-      local animation = {}
-      for field, value in pairs(template) do
-        animation[field] = value
-      end
-      animation.id = "hooh." .. index .. "." .. clip
-      model.animations[clip] = animation
+local function hoOhModel(key, clips, idPrefix)
+  local model = validDynamicModel()
+  model.key = "field-effect:ho-oh-appearance:" .. key
+  local template = model.animations[1]
+  model.animations = {}
+  for clip = 1, clips do
+    local animation = {}
+    for field, value in pairs(template) do
+      animation[field] = value
     end
-    models[index] = model
+    animation.id = idPrefix .. "." .. clip
+    animation.name = idPrefix .. ".name." .. clip
+    animation.semanticNames = { animation.id }
+    model.animations[clip] = animation
   end
-  return { models = models }
+  return model
+end
+
+-- The published parts of the Ho-Oh record by effect kind: the core with its
+-- clip summary, and per shot one shared part plus one overlay per variant.
+local function validHoOhParts()
+  local parts = {}
+  local models, frames = {}, {}
+  for index, spec in ipairs(HOOH_CORE_MODELS) do
+    models[index] = hoOhModel(spec.key, spec.clips, "hooh." .. spec.key)
+    for _, clip in ipairs(models[index].animations) do
+      frames[clip.id] = clip.frameCount
+    end
+  end
+  local cinematic = {}
+  for shot, clips in pairs(HOOH_SHOT_CLIPS) do
+    local variantModels = {}
+    cinematic[shot] = {}
+    for variant = 0, 2 do
+      variantModels[variant + 1] = hoOhModel("cinematic." .. shot .. "." .. variant, clips, "hooh.cin." .. shot .. "." .. variant)
+      local longest = 0
+      for _, clip in ipairs(variantModels[variant + 1].animations) do
+        longest = math.max(longest, clip.frameCount)
+      end
+      cinematic[shot][variant + 1] = longest
+    end
+    local shared, overlays = HoOhCinematicParts.split(shot, variantModels)
+    parts[FieldEffectAssetCache.hoOhCinematicKind(shot)] = shared
+    for variant = 0, 2 do
+      parts[FieldEffectAssetCache.hoOhCinematicKind(shot, variant)] = overlays[variant + 1]
+    end
+  end
+  parts.ho_oh_appearance = { models = models, clips = { frames = frames, cinematic = cinematic } }
+  return parts
+end
+
+local function isHoOhKind(kind)
+  return kind == "ho_oh_appearance" or kind:match("^ho_oh_cinematic_") ~= nil
 end
 
 local LUGIA_MODEL_CLIPS = {
@@ -276,6 +307,9 @@ local function cache(model, present, marker, omitLifecycle, omitPlacement, extra
       definition = kind,
       path = FieldEffectAssetCache.definitionPath(kind),
     }
+  end
+  for _, kind in ipairs(FieldEffectAssetCache.hoOhPartKinds()) do
+    index.effects[kind] = { kind = "cinematic", definition = kind, path = FieldEffectAssetCache.definitionPath(kind) }
   end
   for selector = 1, 14 do
     local kind = "follower_reaction_" .. selector
@@ -394,8 +428,8 @@ local function cache(model, present, marker, omitLifecycle, omitPlacement, extra
       if kind == "celebi_time_travel" then
         return extra.celebiDefinition or validCelebiDefinition()
       end
-      if kind == "ho_oh_appearance" then
-        return extra.hoOhDefinition or validHoOhDefinition()
+      if isHoOhKind(kind) then
+        return (extra.hoOhParts or validHoOhParts())[kind]
       end
       if kind == "lugia_appearance" then
         return extra.lugiaDefinition or validLugiaDefinition()
@@ -811,6 +845,9 @@ local function surfCache(surfDefinition, mutateIndex)
       },
     },
   }
+  for _, kind in ipairs(FieldEffectAssetCache.hoOhPartKinds()) do
+    index.effects[kind] = { kind = "cinematic", definition = kind, path = FieldEffectAssetCache.definitionPath(kind) }
+  end
   for selector = 1, 14 do
     local kind = "follower_reaction_" .. selector
     index.effects[kind] = {
@@ -840,8 +877,8 @@ local function surfCache(surfDefinition, mutateIndex)
       if kind == "celebi_time_travel" then
         return validCelebiDefinition()
       end
-      if kind == "ho_oh_appearance" then
-        return validHoOhDefinition()
+      if isHoOhKind(kind) then
+        return validHoOhParts()[kind]
       end
       if kind == "lugia_appearance" then
         return validLugiaDefinition()
@@ -1102,6 +1139,97 @@ T.tests["rejects mismatched or duplicated index entries"] = function()
     readyWithEntry("follower_reaction_3", entryFor("follower_reaction_3", "transition", "follower_reaction_3")),
     "a reaction entry with the wrong entry kind must not be ready"
   )
+end
+
+local PRESENT = {
+  ["mesh-a"] = true,
+  ["texture-a"] = true,
+  ["texture-variant"] = true,
+  ["grass.mesh"] = true,
+}
+
+local function readyWithHoOhParts(parts)
+  return FieldEffectAssetCache.isReady(cache(validModel(), PRESENT, nil, nil, nil, { hoOhParts = parts }), EXPECTED_MARKER)
+end
+
+T.tests["the published Ho-Oh parts make the cache ready"] = function()
+  local ready, err = readyWithHoOhParts(validHoOhParts())
+  Assert.isTrue(ready, tostring(err))
+  Assert.equal(#FieldEffectAssetCache.hoOhPartKinds(), 8, "two shots, each with a shared part and three variants")
+end
+
+T.tests["requires every Ho-Oh part"] = function()
+  for _, kind in ipairs(FieldEffectAssetCache.hoOhPartKinds()) do
+    local parts = validHoOhParts()
+    parts[kind] = nil
+    Assert.isFalse(readyWithHoOhParts(parts), kind .. " is required")
+  end
+end
+
+T.tests["rejects Ho-Oh parts that do not describe their shot"] = function()
+  local variantKey = FieldEffectAssetCache.hoOhCinematicKind("first", 1)
+  local sharedKey = FieldEffectAssetCache.hoOhCinematicKind("second")
+  local parts = validHoOhParts()
+  parts[variantKey].key = "field-effect:ho-oh-appearance:cinematic.first.2"
+  Assert.isFalse(readyWithHoOhParts(parts), "a variant overlay keeps its own key")
+  parts = validHoOhParts()
+  parts[sharedKey].animations[3] = nil
+  Assert.isFalse(readyWithHoOhParts(parts), "a shared part keeps the shot's clip count")
+  parts = validHoOhParts()
+  parts[FieldEffectAssetCache.hoOhCinematicKind("first", 0)].clipStrings[1] = nil
+  Assert.isFalse(readyWithHoOhParts(parts), "an overlay keeps one string record per shared clip")
+  parts = validHoOhParts()
+  parts.ho_oh_appearance.clips.frames["hooh.bellRising.1"] = 999
+  Assert.isFalse(readyWithHoOhParts(parts), "the clip summary matches the core models")
+  parts = validHoOhParts()
+  parts.ho_oh_appearance.clips.cinematic.second = { 1, 2 }
+  Assert.isFalse(readyWithHoOhParts(parts), "the summary carries all three variants of each shot")
+  parts = validHoOhParts()
+  parts.ho_oh_appearance.models[6] = parts.ho_oh_appearance.models[1]
+  Assert.isFalse(readyWithHoOhParts(parts), "the core holds exactly the five non-cinematic models")
+end
+
+local function partsCacheFs(parts)
+  return {
+    loadLua = function(_, path)
+      local kind = path:match("/([^/]+)%.lua$")
+      return parts[kind]
+    end,
+  }
+end
+
+T.tests["loads the Ho-Oh core record"] = function()
+  local parts = validHoOhParts()
+  Assert.deepEqual(FieldEffectAssetCache.loadHoOhCore(partsCacheFs(parts)), parts.ho_oh_appearance)
+end
+
+T.tests["reassembles one Ho-Oh cinematic variant to its full model"] = function()
+  local fs = partsCacheFs(validHoOhParts())
+  for variant = 0, 2 do
+    local expected = hoOhModel("cinematic.first." .. variant, 4, "hooh.cin.first." .. variant)
+    local model = FieldEffectAssetCache.loadHoOhCinematic(fs, "first", variant)
+    Assert.deepEqual(model, expected, "first shot variant " .. variant)
+    ModelAsset.validate(model)
+  end
+  local second = FieldEffectAssetCache.loadHoOhCinematic(fs, "second", 2)
+  Assert.deepEqual(second, hoOhModel("cinematic.second.2", 3, "hooh.cin.second.2"))
+end
+
+T.tests["refuses an unknown Ho-Oh shot or variant and a missing part"] = function()
+  local fs = partsCacheFs(validHoOhParts())
+  for _, args in ipairs({ { "third", 0 }, { "first", 3 }, { "first", -1 }, { "first", 1.5 } }) do
+    Assert.throws(function()
+      FieldEffectAssetCache.loadHoOhCinematic(fs, args[1], args[2])
+    end, "shot " .. tostring(args[1]) .. " variant " .. tostring(args[2]))
+  end
+  local parts = validHoOhParts()
+  parts[FieldEffectAssetCache.hoOhCinematicKind("first", 1)] = nil
+  Assert.throws(function()
+    FieldEffectAssetCache.loadHoOhCinematic(partsCacheFs(parts), "first", 1)
+  end, "a missing overlay is a fault")
+  Assert.throws(function()
+    FieldEffectAssetCache.loadHoOhCore(partsCacheFs({}))
+  end, "a missing core is a fault")
 end
 
 return T

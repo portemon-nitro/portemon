@@ -1,14 +1,18 @@
--- Owns the Bell Tower and Whirl Islands legend appearance scene state and its
--- source-tick clocks. The Bell Tower dance (both versions), the bird approach
--- (Ho-Oh in HeartGold, Lugia in SoulSilver), and both legend cinematics run
--- here because the field scripts drive them through one command surface.
+-- Owns the Bell Tower appearance scene state and its source-tick clocks.
 
 local HoOhAppearanceScene = {}
 HoOhAppearanceScene.__index = HoOhAppearanceScene
 local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
-local LegendCutsceneRig = require("libs.hgss.src.field.LegendCutsceneRig")
+
+---@class HoOhAppearanceScene.Summary
+---@field frames table<string, integer> frame count by clip id
+---@field cinematic table<string, integer[]> shot length by variant (0..2) for each shot
+---@field riseTicks integer
+---@field shimmerTicks integer
 
 ---@class HoOhAppearanceScene
+---@field cacheFs CacheFs
+---@field summary HoOhAppearanceScene.Summary?
 ---@field new fun(options: table<string, unknown>): HoOhAppearanceScene
 ---@field command fun(self: HoOhAppearanceScene, op: string, destination: integer?)
 ---@field cameraPanTicks fun(self: HoOhAppearanceScene): integer
@@ -20,6 +24,7 @@ local LegendCutsceneRig = require("libs.hgss.src.field.LegendCutsceneRig")
 ---@field taskTicks fun(self: HoOhAppearanceScene, op: string): integer
 ---@field updateFixed fun(self: HoOhAppearanceScene)
 ---@field status fun(self: HoOhAppearanceScene): table<string, unknown>
+---@field currentVariant fun(self: HoOhAppearanceScene): integer
 
 local HG_CORNER_OFFSETS = {
   { 12.5, -4.5625, 9 },
@@ -65,6 +70,7 @@ local BIRD_FIRST_FLAP_SOUND_TICK = { heartgold = 0, soulsilver = 18 }
 local BIRD_FLAP_SOUND = { heartgold = "SEQ_SE_GS_HOUOU_HABATAKI", soulsilver = "SEQ_SE_GS_RUGIA_HABATAKI" }
 local BIRD_SPECIES = { heartgold = 250, soulsilver = 249 }
 local BIRD_POST_RING_TICKS = 30
+local FIELD_CAMERA_DISTANCE = 0x29AEC1 / 4096 / 16
 local CINEMATIC_CAMERA = {
   first = {
     target = { x = 0x0025A7F4 / 65536, y = 0x0024282F / 65536, z = -0x0025CE83 / 65536 },
@@ -97,49 +103,7 @@ local CINEMATIC_FADE = {
   firstOut = { color = "black", direction = "out", duration = 6 },
   secondIn = { color = "black", direction = "in", duration = 6 },
   secondOut = { color = "white", direction = "out", duration = 10 },
-  lugiaIn = { color = "black", direction = "in", duration = 6 },
-  lugiaOut = { color = "black", direction = "out", duration = 6 },
 }
--- The Whirl Islands eye glimmer: model 28 of the legend archive with its
--- three material clips, drawn above and behind the player. Retail sounds
--- its cue on the second tick and runs the clips to completion.
-local EYE_ANIMATION_IDS = { "eye.color", "eye.pattern", "eye.joint" }
-local EYE_SOUND_FRAME = 2
-local EYE_SOUND = "SEQ_SE_GS_RUGIA_MENOHIKARI"
--- The Lugia-arrives platform-framing pose: the fifth retail camera entry.
--- Retail only runs it on SoulSilver; HeartGold has no fifth entry, so the
--- SoulSilver pose doubles for both versions if a mod ever invokes it there.
-local ARRIVES_CAMERA_INDEX = 4
-local ARRIVES_PAN_TICKS = 30
-local ARRIVES_NEAR = 150 / 16
-local ARRIVES_FAR = 1700 / 16
--- The retail Lugia cinematic camera, in tiles.
-local LUGIA_CINEMATIC_CAMERA = {
-  target = { x = 0x00004DEC / 65536, y = 0x000803CD / 65536, z = 0x0002B2F5 / 65536 },
-  distance = 0x00153B51 / 4096 / 16,
-  angleX = 0x0982,
-  angleY = 0x1E20,
-  perspective = 0x0A01,
-  near = 0x0007B000 / 4096 / 16,
-  far = 0x006A4000 / 4096 / 16,
-}
--- The retail Lugia cinematic's own sound cues, by frame of its single shot.
--- Frame 0 starts the waterfall loop at zero volume and ramps it to 30 over
--- the first ten frames (frame * 0x300 / 0x100, then 30); the scene drives
--- that schedule through the field-audio volume contract. Frame 145 also
--- starts the display-capture motion blur, which the software renderer does
--- not reproduce: the cue timing stays exact, only the trails are missing.
-local LUGIA_WATERFALL = "SEQ_SE_GS_TAKI_RUGIADEMO"
-local LUGIA_WATERFALL_START_VOLUME = 0
-local LUGIA_WATERFALL_FULL_VOLUME = 30
-local LUGIA_WATERFALL_RAMP_FRAMES = 10
-local LUGIA_CUES = {
-  [0] = { LUGIA_WATERFALL },
-  [115] = { "SEQ_SE_GS_RUGIA_TAKISHUTUGEN" },
-  [145] = { "cry" },
-}
-local LUGIA_CRY_SPECIES = 249
-local LUGIA_FADE_OUT_FRAME = 232
 ---@param options table<string, unknown>
 ---@return HoOhAppearanceScene
 function HoOhAppearanceScene.new(options)
@@ -151,46 +115,11 @@ function HoOhAppearanceScene.new(options)
   assert(type(options.setBirdHeight) == "function", "Ho-Oh scene requires the legend actor height writer")
   assert(type(options.revealBird) == "function", "Ho-Oh scene requires the legend actor reveal")
   assert(type(options.setBirdFlap) == "function", "Ho-Oh scene requires the legend actor flap writer")
-  assert(type(options.resumeField) == "function", "Ho-Oh scene requires the field resume")
   assert(
-    options.audio
-      and options.audio.play
-      and options.audio.playMusic
-      and options.audio.playCry
-      and options.audio.stop
-      and options.audio.moveSequenceVolume,
+    options.audio and options.audio.play and options.audio.playMusic and options.audio.playCry,
     "Ho-Oh scene requires the field audio"
   )
   assert(options.cacheFs and options.cacheFs.loadLua, "Ho-Oh scene requires the generated model cache")
-  local definition = assert(
-    options.cacheFs:loadLua(FieldEffectAssetCache.definitionPath("ho_oh_appearance")),
-    "Ho-Oh appearance model asset is missing from the field-effect cache"
-  )
-  local clipsById = {}
-  local cinematicFrames = { first = {}, second = {} }
-  for _, model in ipairs(assert(definition.models)) do
-    for _, clip in ipairs(model.animations) do
-      clipsById[clip.id] = clip.frameCount
-    end
-    local scene, variant = model.key:match("cinematic%.([%a]+)%.(%d+)$")
-    if scene ~= nil then
-      local count = 0
-      for _, clip in ipairs(model.animations) do
-        count = math.max(count, clip.frameCount)
-      end
-      cinematicFrames[scene][tonumber(variant)] = count
-    end
-  end
-  local riseTicks = math.max(
-    assert(clipsById["bell.rise.joint"]),
-    assert(clipsById["bell.rise.pattern"]),
-    assert(clipsById["bell.rise.srt"])
-  )
-  local shimmerTicks = math.max(
-    assert(clipsById["bell.shimmer.joint"]),
-    assert(clipsById["bell.shimmer.srt"]),
-    assert(clipsById["corner_bells.srt"])
-  )
   return setmetatable({
     versionId = options.versionId,
     playerPosition = options.playerPosition,
@@ -200,81 +129,94 @@ function HoOhAppearanceScene.new(options)
     audio = options.audio,
     revealBird = options.revealBird,
     setBirdFlap = options.setBirdFlap,
-    resumeField = options.resumeField,
     cacheFs = options.cacheFs,
-    clipsById = clipsById,
-    cinematicFrames = cinematicFrames,
-    riseTicks = riseTicks,
-    shimmerTicks = shimmerTicks,
-    lugiaClipsById = nil,
-    lugiaAnimationFrames = nil,
-    eyeGlimmer = nil,
-    arrives = nil,
+    summary = nil,
     sequence = 0,
     state = nil,
   }, HoOhAppearanceScene)
 end
 
--- Loads the Whirl Islands model clocks on first use: the Bell Tower dance
--- never needs the Lugia bytes.
----@return table<string, integer> clipsById
----@return integer lugiaAnimationFrames
-function HoOhAppearanceScene:lugiaClips()
-  if self.lugiaClipsById == nil then
-    local definition = assert(
-      self.cacheFs:loadLua(FieldEffectAssetCache.definitionPath("lugia_appearance")),
-      "Lugia appearance model asset is missing from the field-effect cache"
-    )
-    local clipsById = {}
-    for _, model in ipairs(assert(definition.models)) do
-      for _, clip in ipairs(model.animations) do
-        clipsById[clip.id] = clip.frameCount
+-- The core record's clip summary, loaded on first use: building the scene on
+-- every field boot reads nothing, and a scene that never plays costs nothing.
+---@param self HoOhAppearanceScene
+---@return HoOhAppearanceScene.Summary
+local function summaryOf(self)
+  local summary = self.summary
+  if summary == nil then
+    local clips = FieldEffectAssetCache.loadHoOhCore(self.cacheFs).clips
+    local frames = clips.frames
+    local cinematic = { first = {}, second = {} }
+    for shot, perVariant in pairs(cinematic) do
+      for variant = 0, 2 do
+        perVariant[variant] = assert(clips.cinematic[shot][variant + 1])
       end
     end
-    self.lugiaClipsById = clipsById
-    self.lugiaAnimationFrames = math.max(
-      assert(clipsById["lugia.joint"]),
-      assert(clipsById["lugia.color"]),
-      assert(clipsById["lugia.srt"]),
-      assert(clipsById["lugia.pattern"]),
-      assert(clipsById["lugia.far.joint"])
-    )
+    summary = {
+      frames = frames,
+      cinematic = cinematic,
+      riseTicks = math.max(
+        assert(frames["bell.rise.joint"]),
+        assert(frames["bell.rise.pattern"]),
+        assert(frames["bell.rise.srt"])
+      ),
+      shimmerTicks = math.max(
+        assert(frames["bell.shimmer.joint"]),
+        assert(frames["bell.shimmer.srt"]),
+        assert(frames["corner_bells.srt"])
+      ),
+    }
+    self.summary = summary
   end
-  return self.lugiaClipsById, assert(self.lugiaAnimationFrames)
+  return summary
 end
 
--- Ticks the eye-glimmer effect runs: its clips play to completion.
---@return integer
-function HoOhAppearanceScene:eyeGlimmerTicks()
-  local clipsById = self:lugiaClips()
-  local ticks = 0
-  for _, id in ipairs(EYE_ANIMATION_IDS) do
-    ticks = math.max(ticks, assert(clipsById[id]))
-  end
-  return ticks
+local function copyPosition(position)
+  return { x = position.x, y = position.y, z = position.z }
 end
 
-local function cameraPose(scene, state, index)
-  local data = CAMERA_DATA[scene.versionId]
-  local offset = assert(data.offsets[index + 1], "Ho-Oh camera offset is unavailable")
-  local base = state.cameraLease.target
+local function offsetPosition(position, offset)
+  return { x = position.x + offset.x, y = position.y + offset.y, z = position.z + offset.z }
+end
+
+local function snapshotCamera(camera)
   return {
-    target = { x = base.x + offset[1], y = base.y + offset[2], z = base.z + offset[3] },
-    angle = data.angles[index + 1],
-    perspective = data.perspective[index + 1],
+    target = copyPosition(camera.target),
+    distance = camera.distance,
+    rawPerspective = camera:rawPerspective(),
+    near = camera.near,
+    far = camera.far,
   }
 end
 
+local function cameraTarget(scene, state, index)
+  local camera = assert(state.cameraLease and state.cameraLease.camera)
+  local data = CAMERA_DATA[scene.versionId]
+  local offset = assert(data.offsets[index + 1], "Ho-Oh camera offset is unavailable")
+  local base = state.cameraLease.target
+  return { x = base.x + offset[1], y = base.y + offset[2], z = base.z + offset[3] },
+    data.angles[index + 1],
+    data.perspective[index + 1],
+    camera
+end
+
 local function applyCameraPose(scene, state, index, progress)
-  local camera = assert(state.cameraLease and state.cameraLease.camera, "Ho-Oh camera lease is missing")
-  local pose = cameraPose(scene, state, index)
+  local target, angle, perspective, camera = cameraTarget(scene, state, index)
   local transition = state.cameraTransition
-  local target, angle, perspective = pose.target, pose.angle, pose.perspective
   if transition ~= nil then
-    target, angle, perspective = LegendCutsceneRig.interpolatePose(transition.start, pose, progress)
+    local start = transition.start
+    target = {
+      x = start.target.x + (target.x - start.target.x) * progress,
+      y = start.target.y + (target.y - start.target.y) * progress,
+      z = start.target.z + (target.z - start.target.z) * progress,
+    }
+    -- Angles are 16-bit turns: the profile pitch is signed, the pose table's is
+    -- not, so take the short way round.
+    local delta = (angle - start.angle + 0x8000) % 0x10000 - 0x8000
+    angle = math.floor(start.angle + delta * progress + 0.5) % 0x10000
+    perspective = math.floor(start.perspective + (perspective - start.perspective) * progress + 0.5)
   end
   local player = assert(scene.playerPosition(), "Ho-Oh camera requires a live player")
-  LegendCutsceneRig.applyPose(camera, player, target, angle, perspective)
+  camera:setCutscenePose(target, FIELD_CAMERA_DISTANCE, angle, perspective, player)
   state.cameraAngle = angle
 end
 
@@ -289,7 +231,13 @@ local function timeOfDayVariant(code)
 end
 
 local function startCinematicFade(state, fade)
-  state.cinematicFade = LegendCutsceneRig.startFade(fade)
+  state.cinematicFade = {
+    color = fade.color,
+    direction = fade.direction,
+    duration = fade.duration,
+    frame = 0,
+    alpha = fade.direction == "in" and 1 or 0,
+  }
 end
 
 local function restoreCinematicCamera(scene, state)
@@ -300,19 +248,17 @@ local function restoreCinematicCamera(scene, state)
   local camera = assert(scene.currentCamera())
   local player = assert(scene.playerPosition(), "Ho-Oh cinematic requires a live player to restore its camera")
   scene.fieldCamera = nil
-  LegendCutsceneRig.applyPose(camera, player, saved.target, camera.profile.angleXRaw, saved.rawPerspective, {
-    distance = saved.distance,
-    angleY = camera.profile.angleYRaw,
-    near = saved.near,
-    far = saved.far,
-  })
-end
-
--- The retail cinematic is its own application: the field resumes (its map
--- on_resume script runs) when it exits.
-local function exitCinematic(scene, state)
-  restoreCinematicCamera(scene, state)
-  scene.resumeField()
+  camera:setCutscenePose(
+    saved.target,
+    saved.distance,
+    camera.profile.angleXRaw,
+    saved.rawPerspective,
+    player,
+    camera.profile.angleYRaw,
+    saved.near,
+    saved.far
+  )
+  camera:collapseRenderInterpolation()
 end
 
 local function startQueuedShimmer(state)
@@ -335,7 +281,7 @@ function HoOhAppearanceScene:command(op, destination)
     self.state = {
       active = true,
       sequence = self.sequence,
-      origin = LegendCutsceneRig.copyPosition(player),
+      origin = copyPosition(player),
       cameraLease = { camera = assert(self.currentCamera(), "Ho-Oh scene requires a live camera") },
       bellFrame = 0,
       bellStage = "idle",
@@ -350,9 +296,9 @@ function HoOhAppearanceScene:command(op, destination)
       birdFrame = nil,
       cinematicFrame = nil,
     }
-    self.state.cameraLease = LegendCutsceneRig.snapshotCamera(self.state.cameraLease.camera)
+    self.state.cameraLease = snapshotCamera(self.state.cameraLease.camera)
     self.state.cameraLease.camera = self.currentCamera()
-    self.fieldCamera = LegendCutsceneRig.snapshotCamera(self.state.cameraLease.camera)
+    self.fieldCamera = snapshotCamera(self.state.cameraLease.camera)
     self.state.cameraAngle = self.state.cameraLease.camera.profile.angleXRaw
   elseif op == "legend_cutscene_bell_end" then
     assert(state ~= nil and not state.effectsActive, "Ho-Oh bell scene is not ready to end")
@@ -382,12 +328,13 @@ function HoOhAppearanceScene:command(op, destination)
     state.cameraDestination = destination
     state.cameraTransition = nil
     applyCameraPose(self, state, destination, 1)
+    assert(self.currentCamera()):collapseRenderInterpolation()
   elseif op == "legend_cutscene_camera_pan" then
     assert(state ~= nil and (destination == 0 or destination == 1), "invalid Ho-Oh camera pan destination")
     state.cameraDestination = destination == 0 and 0 or 3
     state.cameraTransition = {
       start = {
-        target = LegendCutsceneRig.copyPosition(assert(self.currentCamera()).target),
+        target = copyPosition(assert(self.currentCamera()).target),
         angle = state.cameraAngle or self.currentCamera().profile.angleXRaw,
         perspective = self.currentCamera():rawPerspective(),
       },
@@ -403,7 +350,7 @@ function HoOhAppearanceScene:command(op, destination)
     self.state = {
       active = true,
       sequence = self.sequence,
-      origin = LegendCutsceneRig.copyPosition(player),
+      origin = copyPosition(player),
       birdFrame = 0,
       flapSoundCooldown = 0,
       cinematicFrame = nil,
@@ -411,126 +358,20 @@ function HoOhAppearanceScene:command(op, destination)
     }
     self.revealBird()
     self.setBirdHeight(BIRD_DESCENT_TICKS[self.versionId] / BIRD_APPROACH_SOURCE_UNITS_PER_TILE)
-  elseif op == "legend_cutscene_lugia_eye_glimmer" then
-    assert(self.eyeGlimmer == nil, "Lugia eye glimmer is already active")
-    local player = assert(self.playerPosition(), "Lugia eye glimmer requires a live player")
-    self:lugiaClips()
-    self.eyeGlimmer = { frame = 0, origin = LegendCutsceneRig.copyPosition(player) }
-  elseif op == "legend_cutscene_lugia_arrives_begin" then
-    assert(state == nil, "Lugia arrives cannot begin while the bell scene is active")
-    assert(self.arrives == nil, "Lugia arrives effect is already active")
-    local player = assert(self.playerPosition(), "Lugia arrives requires a live player")
-    local camera = assert(self.currentCamera(), "Lugia arrives requires a live camera")
-    local data = CAMERA_DATA.soulsilver
-    local offset = assert(data.offsets[ARRIVES_CAMERA_INDEX + 1], "Lugia arrives camera offset is unavailable")
-    local lease = LegendCutsceneRig.snapshotCamera(camera)
-    self.arrives = {
-      camera = camera,
-      snapshot = lease,
-      -- The pan home shares the snapshot target: the transition only reads
-      -- its destination, and the snapshot target never moves after capture.
-      home = {
-        target = lease.target,
-        angle = camera.profile.angleXRaw,
-        perspective = lease.rawPerspective,
-      },
-      pose = {
-        target = {
-          x = lease.target.x + offset[1],
-          y = lease.target.y + offset[2],
-          z = lease.target.z + offset[3],
-        },
-        angle = data.angles[ARRIVES_CAMERA_INDEX + 1],
-        perspective = data.perspective[ARRIVES_CAMERA_INDEX + 1],
-      },
-      transition = nil,
-      origin = LegendCutsceneRig.copyPosition(player),
-    }
-    LegendCutsceneRig.applyPose(
-      camera,
-      player,
-      self.arrives.pose.target,
-      self.arrives.pose.angle,
-      self.arrives.pose.perspective,
-      {
-        near = ARRIVES_NEAR,
-        far = ARRIVES_FAR,
-      }
-    )
-  elseif op == "legend_cutscene_lugia_arrives_camera_pan" then
-    local arrives = assert(self.arrives, "Lugia arrives effect has not begun")
-    assert(arrives.transition == nil, "Lugia arrives camera is already panning")
-    arrives.transition = {
-      -- The pan starts from the applied arrives pose, not the field
-      -- profile the pose overrode.
-      start = {
-        target = LegendCutsceneRig.copyPosition(assert(self.currentCamera()).target),
-        angle = arrives.pose.angle,
-        perspective = arrives.camera:rawPerspective(),
-      },
-      frame = 0,
-      duration = ARRIVES_PAN_TICKS,
-    }
-  elseif op == "legend_cutscene_lugia_arrives_end" then
-    local arrives = assert(self.arrives, "Lugia arrives effect has not begun")
-    assert(arrives.transition == nil, "Lugia arrives camera is still panning")
-    local player = assert(self.playerPosition(), "Lugia arrives requires a live player")
-    local snapshot = arrives.snapshot
-    LegendCutsceneRig.applyPose(arrives.camera, player, snapshot.target, arrives.home.angle, snapshot.rawPerspective, {
-      distance = snapshot.distance,
-      near = snapshot.near,
-      far = snapshot.far,
-    })
-    self.arrives = nil
   elseif op == "legend_cinematic" then
     assert(state == nil, "Ho-Oh bird approach is still active")
-    assert(destination == 0 or destination == 1, "unsupported legend cinematic scene")
+    assert(destination == 0, "unsupported Ho-Oh cinematic scene")
     local player = assert(self.playerPosition(), "Ho-Oh cinematic requires a live player")
     local camera = assert(self.currentCamera(), "Ho-Oh cinematic requires a live camera")
-    if destination == 1 then
-      local _, lugiaFrames = self:lugiaClips()
-      self.sequence = self.sequence + 1
-      self.state = {
-        active = true,
-        sequence = self.sequence,
-        origin = LegendCutsceneRig.copyPosition(player),
-        cinematicPhase = "lugia_fade_in",
-        cinematicShot = "lugia",
-        cinematicVariant = nil,
-        cinematicFrame = nil,
-        cinematicModelFrame = 0,
-        lugiaAnimationFrames = lugiaFrames,
-        motionBlur = false,
-        -- The retail cinematic is its own application: the field comes back
-        -- with its ordinary camera, not the cutscene pose the script left.
-        cameraRestore = self.fieldCamera or LegendCutsceneRig.snapshotCamera(camera),
-        effectsActive = false,
-      }
-      startCinematicFade(self.state, CINEMATIC_FADE.lugiaIn)
-      local pose = LUGIA_CINEMATIC_CAMERA
-      LegendCutsceneRig.applyPose(
-        camera,
-        player,
-        LegendCutsceneRig.offsetPosition(player, pose.target),
-        pose.angleX,
-        pose.perspective,
-        {
-          distance = pose.distance,
-          angleY = pose.angleY,
-          near = pose.near,
-          far = pose.far,
-        }
-      )
-      return
-    end
-    local variant = timeOfDayVariant(self.timeOfDayCode())
-    local firstFrames = assert(self.cinematicFrames.first[variant], "Ho-Oh first-shot model animation is missing")
-    local secondFrames = assert(self.cinematicFrames.second[variant], "Ho-Oh second-shot model animation is missing")
+    local variant = self:currentVariant()
+    local cinematic = summaryOf(self).cinematic
+    local firstFrames = assert(cinematic.first[variant], "Ho-Oh first-shot model animation is missing")
+    local secondFrames = assert(cinematic.second[variant], "Ho-Oh second-shot model animation is missing")
     self.sequence = self.sequence + 1
     self.state = {
       active = true,
       sequence = self.sequence,
-      origin = LegendCutsceneRig.copyPosition(player),
+      origin = copyPosition(player),
       cinematicPhase = "first_fade_in",
       cinematicShot = "first",
       cinematicVariant = variant,
@@ -539,27 +380,31 @@ function HoOhAppearanceScene:command(op, destination)
       cinematicAnimationFrames = { first = firstFrames, second = secondFrames },
       -- The retail cinematic is its own application: the field comes back with
       -- its ordinary camera, not the cutscene pose the script left behind.
-      cameraRestore = self.fieldCamera or LegendCutsceneRig.snapshotCamera(camera),
+      cameraRestore = self.fieldCamera or snapshotCamera(camera),
       effectsActive = false,
     }
     startCinematicFade(self.state, CINEMATIC_FADE.firstIn)
     local pose = CINEMATIC_CAMERA.first
-    LegendCutsceneRig.applyPose(
-      camera,
-      player,
-      LegendCutsceneRig.offsetPosition(player, pose.target),
+    camera:setCutscenePose(
+      offsetPosition(player, pose.target),
+      pose.distance,
       pose.angleX,
       pose.perspective,
-      {
-        distance = pose.distance,
-        angleY = pose.angleY,
-        near = pose.near,
-        far = pose.far,
-      }
+      player,
+      pose.angleY,
+      pose.near,
+      pose.far
     )
+    camera:collapseRenderInterpolation()
   else
     error("unknown Ho-Oh scene command: " .. tostring(op))
   end
+end
+
+-- The time-of-day variant of the cinematic for the live RTC code.
+---@return integer variant 0, 1 or 2
+function HoOhAppearanceScene:currentVariant()
+  return timeOfDayVariant(self.timeOfDayCode())
 end
 
 function HoOhAppearanceScene:cameraPanTicks()
@@ -576,7 +421,9 @@ function HoOhAppearanceScene:shimmerWaitTicks()
   local state = assert(self.state, "Ho-Oh bell scene is not active")
   local ticks = 0
   if state.queuedShimmer ~= nil then
-    ticks = state.bellStage == "rise" and self.riseTicks - state.bellFrame or self.shimmerTicks - state.shimmerFrame
+    local summary = summaryOf(self)
+    ticks = state.bellStage == "rise" and summary.riseTicks - state.bellFrame
+      or summary.shimmerTicks - state.shimmerFrame
   end
   return math.max(1, ticks)
 end
@@ -593,12 +440,8 @@ function HoOhAppearanceScene:birdApproachTicks()
 end
 
 function HoOhAppearanceScene:birdRingTicks()
-  return math.max(
-    assert(self.clipsById["bird.joint"]),
-    assert(self.clipsById["bird.color"]),
-    assert(self.clipsById["bird.pattern"]),
-    65
-  )
+  local frames = summaryOf(self).frames
+  return math.max(assert(frames["bird.joint"]), assert(frames["bird.color"]), assert(frames["bird.pattern"]), 65)
 end
 
 function HoOhAppearanceScene:taskTicks(op)
@@ -608,48 +451,21 @@ function HoOhAppearanceScene:taskTicks(op)
     return math.max(1, self.state and self.state.cameraTransition and self:cameraPanRemainingTicks() or 0)
   elseif op == "legend_cutscene_bird_approach" then
     return self:birdApproachTicks()
-  elseif op == "legend_cutscene_lugia_eye_glimmer" then
-    return self:eyeGlimmerTicks()
-  elseif op == "legend_cutscene_lugia_arrives_camera_pan" then
-    assert(self.arrives, "Lugia arrives effect has not begun")
-    return ARRIVES_PAN_TICKS
   elseif op == "legend_cinematic" then
-    local state = assert(self.state, "legend cinematic has not started")
-    if state.cinematicShot == "lugia" then
-      -- The waterfall fades the single shot out six ticks after frame 232.
-      return math.max(assert(state.lugiaAnimationFrames), LUGIA_FADE_OUT_FRAME + CINEMATIC_FADE.lugiaOut.duration)
-    end
-    local frames = assert(state.cinematicAnimationFrames, "Ho-Oh cinematic has not started")
-    return math.max(frames.first, 141) + math.max(frames.second, 206)
+    local state = assert(self.state and self.state.cinematicAnimationFrames, "Ho-Oh cinematic has not started")
+    return math.max(state.first, 141) + math.max(state.second, 206)
   end
   error("Ho-Oh scene has no blocking task for " .. op)
 end
 
 function HoOhAppearanceScene:updateFixed()
-  if self.eyeGlimmer ~= nil then
-    local eye = self.eyeGlimmer
-    eye.frame = eye.frame + 1
-    if eye.frame == EYE_SOUND_FRAME then
-      self.audio:play(EYE_SOUND)
-    end
-    if eye.frame >= self:eyeGlimmerTicks() then
-      self.eyeGlimmer = nil
-    end
-  end
-  if self.arrives ~= nil and self.arrives.transition ~= nil then
-    local arrives = self.arrives
-    local player = assert(self.playerPosition(), "Lugia arrives requires a live player")
-    if LegendCutsceneRig.tickTransition(arrives.camera, player, arrives.transition, arrives.home) then
-      arrives.transition = nil
-    end
-  end
   local state = self.state
   if state == nil then
     return
   end
   if state.bellStage == "rise" then
     state.bellFrame = state.bellFrame + 1
-    if state.bellFrame >= self.riseTicks then
+    if state.bellFrame >= summaryOf(self).riseTicks then
       state.bellStage = "idle"
       state.loopFrame = 0
       state.bellVisible = true
@@ -657,7 +473,7 @@ function HoOhAppearanceScene:updateFixed()
   elseif state.bellStage == "shimmer" then
     state.loopFrame = assert(state.loopFrame) + 1
     state.shimmerFrame = state.shimmerFrame + 1
-    if state.shimmerFrame >= self.shimmerTicks then
+    if state.shimmerFrame >= summaryOf(self).shimmerTicks then
       state.bellStage = "idle"
       state.shimmerFrame = nil
       state.bellVisible = true
@@ -675,10 +491,10 @@ function HoOhAppearanceScene:updateFixed()
     end
   end
   if state.cameraTransition ~= nil then
-    local pose = cameraPose(self, state, state.cameraDestination)
-    local camera = assert(state.cameraLease and state.cameraLease.camera, "Ho-Oh camera lease is missing")
-    local player = assert(self.playerPosition(), "Ho-Oh camera requires a live player")
-    if LegendCutsceneRig.tickTransition(camera, player, state.cameraTransition, pose) then
+    local transition = state.cameraTransition
+    transition.frame = transition.frame + 1
+    applyCameraPose(self, state, state.cameraDestination, math.min(1, transition.frame / transition.duration))
+    if transition.frame >= transition.duration then
       state.cameraTransition = nil
     end
   end
@@ -713,8 +529,13 @@ function HoOhAppearanceScene:updateFixed()
   if state.cinematicPhase ~= nil then
     state.cinematicModelFrame = state.cinematicModelFrame + 1
     local fade = state.cinematicFade
-    if fade ~= nil and LegendCutsceneRig.tickFade(fade) then
-      state.cinematicFade = nil
+    if fade ~= nil then
+      fade.frame = fade.frame + 1
+      local progress = math.min(1, fade.frame / fade.duration)
+      fade.alpha = fade.direction == "in" and (1 - progress) or progress
+      if fade.frame >= fade.duration then
+        state.cinematicFade = nil
+      end
     end
     if state.cinematicPhase == "first_fade_in" and state.cinematicFade == nil then
       state.cinematicPhase = "first"
@@ -729,19 +550,17 @@ function HoOhAppearanceScene:updateFixed()
         local camera = assert(self.currentCamera())
         local player = assert(self.playerPosition())
         local pose = CINEMATIC_CAMERA.second
-        LegendCutsceneRig.applyPose(
-          camera,
-          player,
-          LegendCutsceneRig.offsetPosition(player, pose.target),
+        camera:setCutscenePose(
+          offsetPosition(player, pose.target),
+          pose.distance,
           pose.angleX,
           pose.perspective,
-          {
-            distance = pose.distance,
-            angleY = pose.angleY,
-            near = pose.near,
-            far = pose.far,
-          }
+          player,
+          pose.angleY,
+          pose.near,
+          pose.far
         )
+        camera:collapseRenderInterpolation()
       else
         for _, symbol in ipairs(FIRST_SHOT_CUES[state.cinematicFrame] or {}) do
           if symbol == "SEQ_GS_E_HOUOU" then
@@ -755,37 +574,12 @@ function HoOhAppearanceScene:updateFixed()
           startCinematicFade(state, CINEMATIC_FADE.firstOut)
         end
       end
-    elseif state.cinematicPhase == "lugia_fade_in" and state.cinematicFade == nil then
-      state.cinematicPhase = "lugia"
-      state.cinematicFrame = 0
-    elseif state.cinematicPhase == "lugia" then
-      if state.cinematicModelFrame >= state.lugiaAnimationFrames and state.cinematicFade == nil then
-        self.audio:stop(LUGIA_WATERFALL)
-        exitCinematic(self, state)
-        self.state = nil
-      else
-        for _, symbol in ipairs(LUGIA_CUES[state.cinematicFrame] or {}) do
-          if symbol == "cry" then
-            self.audio:playCry(LUGIA_CRY_SPECIES, 0)
-            state.motionBlur = true
-          elseif symbol == LUGIA_WATERFALL then
-            self.audio:play(symbol, LUGIA_WATERFALL_START_VOLUME)
-            self.audio:moveSequenceVolume(symbol, LUGIA_WATERFALL_FULL_VOLUME, LUGIA_WATERFALL_RAMP_FRAMES)
-          else
-            self.audio:play(symbol)
-          end
-        end
-        state.cinematicFrame = state.cinematicFrame + 1
-        if state.cinematicFrame == LUGIA_FADE_OUT_FRAME then
-          startCinematicFade(state, CINEMATIC_FADE.lugiaOut)
-        end
-      end
     elseif state.cinematicPhase == "second_fade_in" and state.cinematicFade == nil then
       state.cinematicPhase = "second"
       state.cinematicFrame = 0
     elseif state.cinematicPhase == "second" then
       if state.cinematicModelFrame >= state.cinematicAnimationFrames.second and state.cinematicFade == nil then
-        exitCinematic(self, state)
+        restoreCinematicCamera(self, state)
         self.state = nil
       else
         if state.cinematicFrame % 64 == 0 then
@@ -814,42 +608,35 @@ end
 
 function HoOhAppearanceScene:status()
   local state = self.state
-  -- The eye glimmer and the arrives camera run beside the bell state, never
-  -- inside it: the glimmer starts before the bell scene ends, and the
-  -- arrives effect brackets the bird approach.
-  local eye, arrives = self.eyeGlimmer, self.arrives
-  if state == nil and eye == nil and arrives == nil then
+  if state == nil then
     return { active = false, sequence = self.sequence }
   end
   local offsets = self.versionId == "heartgold" and HG_CORNER_OFFSETS or SS_CORNER_OFFSETS
-  local origin = state and state.origin or eye and eye.origin or assert(arrives).origin
   return {
-    active = true,
-    sequence = self.sequence,
+    active = state.active,
+    sequence = state.sequence,
     versionId = self.versionId,
-    origin = LegendCutsceneRig.copyPosition(origin),
-    bellStage = state and state.bellStage or nil,
-    bellVisible = state and state.bellVisible or nil,
-    bellFrame = state and state.bellFrame or nil,
-    loopFrame = state and state.loopFrame or nil,
-    shimmerFrame = state and state.shimmerFrame or nil,
-    shimmerClearBellOnly = state and state.shimmerClearBellOnly or nil,
+    origin = copyPosition(state.origin),
+    bellStage = state.bellStage,
+    bellVisible = state.bellVisible,
+    bellFrame = state.bellFrame,
+    loopFrame = state.loopFrame,
+    shimmerFrame = state.shimmerFrame,
+    shimmerClearBellOnly = state.shimmerClearBellOnly,
     cornerOffsets = offsets,
-    effectsActive = state and state.effectsActive or false,
-    effectFrame = state and state.effectFrame or nil,
-    leavesActive = (state and state.effectsActive or false) and self.versionId == "heartgold",
-    leafFrame = state and state.leafFrame or nil,
-    cameraDestination = state and state.cameraDestination or nil,
-    birdFrame = state and state.birdFrame or nil,
-    birdRingFrame = state and self:birdRingFrame(state) or nil,
-    cinematicFrame = state and state.cinematicFrame or nil,
-    cinematicShot = state and state.cinematicShot or nil,
-    cinematicVariant = state and state.cinematicVariant or nil,
-    cinematicModelFrame = state and state.cinematicModelFrame or nil,
-    cinematicFadeColor = state and state.cinematicFade and state.cinematicFade.color or nil,
-    cinematicFadeAlpha = state and state.cinematicFade and state.cinematicFade.alpha or nil,
-    eyeGlimmerFrame = eye and eye.frame or nil,
-    arrivesActive = arrives ~= nil,
+    effectsActive = state.effectsActive,
+    effectFrame = state.effectFrame,
+    leavesActive = state.effectsActive and self.versionId == "heartgold",
+    leafFrame = state.leafFrame,
+    cameraDestination = state.cameraDestination,
+    birdFrame = state.birdFrame,
+    birdRingFrame = self:birdRingFrame(state),
+    cinematicFrame = state.cinematicFrame,
+    cinematicShot = state.cinematicShot,
+    cinematicVariant = state.cinematicVariant,
+    cinematicModelFrame = state.cinematicModelFrame,
+    cinematicFadeColor = state.cinematicFade and state.cinematicFade.color or nil,
+    cinematicFadeAlpha = state.cinematicFade and state.cinematicFade.alpha or nil,
   }
 end
 
