@@ -732,11 +732,6 @@ function FieldState:_worldParts(alpha)
     self._hoOhBackdropRuntimeMap = nil
     hoOhStatus = assert(hoOhScene):status()
   end
-  if hoOhStatus and hoOhStatus["backdropRetained"] and self.runtime.screenFade:isOpaque() then
-    assert(hoOhScene):retireBackdrop()
-    self._hoOhBackdropRuntimeMap = nil
-    hoOhStatus = assert(hoOhScene):status()
-  end
   local hoOhContent = hoOhStatus ~= nil
     and hoOhStatus["active"] == true
     and (
