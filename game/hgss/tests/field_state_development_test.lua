@@ -3,6 +3,7 @@
 -- with the overlay hidden and F3 toggles it. The zoom keys are product
 -- camera controls and stay available in both modes.
 
+local AssetNeedsRegistry = require("libs.hgss.src.field.AssetNeedsRegistry")
 local Assert = require("tests.support.Assert")
 local FieldState = require("game.hgss.src.field.FieldState")
 local FieldViewport = require("libs.hgss.src.presentation.FieldViewport")
@@ -42,6 +43,7 @@ local function drawableState(development)
     _fpsFrames = 0,
     _fps = 0,
     runtime = {
+      assetNeeds = AssetNeedsRegistry.new(),
       monNaming = InactiveMonNaming.new(),
       runtimeMap = {
         mapId = 61,
@@ -343,6 +345,35 @@ function T.product_mode_f3_leaves_the_developer_overlay_hidden()
   end)
   Assert.equal(counts.print, 0, "product mode never renders the overlay")
   Assert.equal(#inputCalls(state), 0, "product F3 reaches no gameplay input")
+end
+
+-- A background asset preparation that failed is surfaced where a developer
+-- looks, instead of being swallowed.
+function T.dev_mode_overlay_lists_failed_asset_needs()
+  local state = overlayFixture(true)
+  local assetNeeds = state.runtime.assetNeeds
+  assetNeeds:register("probe", {
+    start = function()
+      return {
+        step = function()
+          error("boom", 0)
+        end,
+        cancel = function() end,
+      }
+    end,
+  })
+  assetNeeds:enroll("probe:x")
+  assetNeeds:step(1)
+  state:keypressed("f3")
+  local spy = withHudTextSpy(function()
+    state:draw()
+  end)
+  Assert.equal(#spy.texts, 5, "the overlay adds one line for the failed need")
+  local listed = false
+  for _, line in ipairs(spy.texts) do
+    listed = listed or (line:find("asset need failed", 1, true) ~= nil and line:find("probe:x", 1, true) ~= nil and line:find("boom", 1, true) ~= nil)
+  end
+  Assert.isTrue(listed, "the line names the need and its failure")
 end
 
 -- The overlay reports a 500 ms sampled frame rate and drops save status.

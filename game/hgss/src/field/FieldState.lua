@@ -1515,7 +1515,8 @@ function FieldState:_drawEntryCoverIfNeeded(width, height)
 end
 
 -- The developer overlay: map identity, the player's field state, the
--- sampled frame rate, and the controls. The overlay is a dev-only,
+-- sampled frame rate, the controls, and any failed background asset
+-- preparation. The overlay is a dev-only,
 -- F3-toggled diagnostic; save status stays out of the frame.
 function FieldState:_drawHud()
   local lg = love.graphics
@@ -1533,6 +1534,11 @@ function FieldState:_drawHud()
     string.format("fps %.1f", self._fps),
     "WASD/arrows move   Space/Return/Enter action   Backspace/Delete/Escape cancel   Tab menu   F3 overlay   -/= zoom   0 reset zoom",
   }
+  -- A background asset preparation that failed is isolated from play, so the
+  -- overlay is where it shows.
+  for _, failure in ipairs(self.runtime.assetNeeds:failures()) do
+    lines[#lines + 1] = string.format("asset need failed: %s: %s", failure.key, failure.message)
+  end
   lg.setColor(0, 0, 0, 0.55)
   lg.rectangle("fill", 12, 12, 900, 20 * #lines + 12)
   lg.setColor(0.9, 0.95, 1)

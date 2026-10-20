@@ -4,9 +4,13 @@
 
 local HoOhAssetPreparer = {}
 
+---@class HoOhAssetPreparer.Scene
+---@field currentVariant fun(self: HoOhAssetPreparer.Scene): integer
+---@field status fun(self: HoOhAssetPreparer.Scene): table<string, unknown>
+
 ---@class HoOhAssetPreparer.Runtime
 ---@field versionId string
----@field hoOhAppearanceScene { currentVariant: fun(self: table<string, unknown>): integer }?
+---@field hoOhAppearanceScene HoOhAssetPreparer.Scene?
 
 ---@class HoOhAssetPreparer.Renderer
 ---@field prepareStep fun(self: HoOhAssetPreparer.Renderer, versionId: string, variant: integer): boolean
@@ -27,6 +31,11 @@ function HoOhAssetPreparer.new(runtime, renderer)
     end
     local job = {}
     function job.step()
+      -- The scene draws from what the renderer holds: preparation never
+      -- replaces it mid-run.
+      if scene:status().active == true then
+        return true
+      end
       return renderer:prepareStep(runtime.versionId, scene:currentVariant())
     end
     function job.cancel()

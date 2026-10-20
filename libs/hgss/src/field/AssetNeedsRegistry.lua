@@ -35,7 +35,7 @@ AssetNeedsRegistry.__index = AssetNeedsRegistry
 ---@field enroll fun(self: AssetNeedsRegistry, key: string): boolean
 ---@field retain fun(self: AssetNeedsRegistry, wanted: table<string, true>)
 ---@field step fun(self: AssetNeedsRegistry, budget: number)
----@field failure fun(self: AssetNeedsRegistry, key: string): string?
+---@field failures fun(self: AssetNeedsRegistry): { key: string, message: string }[]
 ---@field dispose fun(self: AssetNeedsRegistry)
 
 ---@param options { clock: (fun(): number)? }? clock defaults to os.clock
@@ -150,36 +150,49 @@ function AssetNeedsRegistry:retain(wanted)
   end
 end
 
--- Runs live jobs in enrollment order, one unit at a time, until the budget
--- (in the clock's units) is spent; at least one unit runs when any job is live.
--- A job that raises is cancelled and marked failed; its siblings still run.
+-- Steps every job in enrollment order, one unit at a time, until the budget
+-- (in the clock's units) is spent; at least one unit runs when any job is
+-- unfinished. A finished job is polled once per call, so one whose conditions
+-- changed (it then reports unfinished) resumes. A job that raises is
+-- cancelled and marked failed; its siblings still run.
 ---@param budget number
 function AssetNeedsRegistry:step(budget)
   local started = self._clock()
   local order = { table.unpack(self._order) }
   for _, key in ipairs(order) do
     local entry = self._entries[key]
-    while entry ~= nil and entry.state == "live" do
+    while entry ~= nil and entry.state ~= "failed" do
       local job = assert(entry.job)
       local ok, done = pcall(job.step)
       if not ok then
         cancelEntry(entry)
         entry.state, entry.error = "failed", tostring(done)
-      elseif done then
-        entry.state = "done"
+      else
+        entry.state = done and "done" or "live"
       end
       if self._clock() - started >= budget then
         return
+      end
+      if entry.state ~= "live" then
+        break
       end
     end
   end
 end
 
----@param key string
----@return string? message why the need's job failed, nil when it has not
-function AssetNeedsRegistry:failure(key)
-  local entry = self._entries[key]
-  return entry ~= nil and entry.error or nil
+-- The needs whose jobs failed, by key, until their need is dropped.
+---@return { key: string, message: string }[]
+function AssetNeedsRegistry:failures()
+  local list = {}
+  for key, entry in pairs(self._entries) do
+    if entry.state == "failed" then
+      list[#list + 1] = { key = key, message = entry.error or "" }
+    end
+  end
+  table.sort(list, function(a, b)
+    return a.key < b.key
+  end)
+  return list
 end
 
 -- Cancels every job; the registry stays usable.

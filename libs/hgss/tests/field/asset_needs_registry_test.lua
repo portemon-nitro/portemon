@@ -112,14 +112,36 @@ function T.tests.step_runs_jobs_in_enrollment_order_within_the_budget()
   )
 end
 
-function T.tests.finished_jobs_are_not_stepped_again()
+function T.tests.finished_jobs_are_polled_once_per_step_and_can_resume()
   local clock, log = newClock(), {}
   local registry = AssetNeedsRegistry.new({ clock = clock.read })
-  registry:register("a", newPreparer(clock, 1, log))
+  local ready = true
+  registry:register("a", {
+    start = function(id)
+      local job = {}
+      function job.step()
+        clock.now = clock.now + 1
+        log[#log + 1] = "step:" .. id
+        if ready then
+          return true
+        end
+        ready = true
+        return false
+      end
+      function job.cancel()
+        log[#log + 1] = "cancel:" .. id
+      end
+      return job
+    end,
+  })
   registry:enroll("a:x")
   registry:step(10)
+  Assert.equal(count(log, "step:x"), 1, "a job that is ready after one unit is done")
   registry:step(10)
-  Assert.equal(count(log, "step:x"), 1)
+  Assert.equal(count(log, "step:x"), 2, "a finished job is polled exactly once per step")
+  ready = false
+  registry:step(10)
+  Assert.equal(count(log, "step:x"), 4, "a finished job that reports unfinished resumes until it is ready again")
   Assert.equal(count(log, "cancel:x"), 0, "a finished job is kept until its need goes away")
 end
 
@@ -184,14 +206,14 @@ function T.tests.a_failing_job_is_isolated_and_reported()
   registry:enroll("bad:x")
   registry:enroll("a:ok")
   registry:step(10)
-  Assert.equal(registry:failure("bad:x"), "boom x")
+  Assert.deepEqual(registry:failures(), { { key = "bad:x", message = "boom x" } })
   Assert.equal(count(log, "cancel:x"), 1, "the failed job is cancelled once")
   Assert.equal(count(log, "step:ok"), 1, "other jobs still run")
   registry:step(10)
   Assert.equal(count(log, "cancel:x"), 1, "a failed job is not retried")
   Assert.isFalse(registry:enroll("bad:x"), "a failed need is not restarted until it is dropped")
   registry:retain({})
-  Assert.isNil(registry:failure("bad:x"), "dropping the need clears the failure")
+  Assert.deepEqual(registry:failures(), {}, "dropping the need clears the failure")
 end
 
 function T.tests.a_failing_start_is_isolated_and_reported()
@@ -202,7 +224,7 @@ function T.tests.a_failing_start_is_isolated_and_reported()
     end,
   })
   Assert.isFalse(registry:enroll("a:x"))
-  Assert.equal(registry:failure("a:x"), "no start")
+  Assert.deepEqual(registry:failures(), { { key = "a:x", message = "no start" } })
 end
 
 local function indexWith(memberNeeds, resources)

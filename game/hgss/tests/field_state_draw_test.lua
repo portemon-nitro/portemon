@@ -5,6 +5,7 @@
 -- runtime-level actor and runtime aliases are gone, so these reads must not
 -- depend on them.
 
+local AssetNeedsRegistry = require("libs.hgss.src.field.AssetNeedsRegistry")
 local SourceTick = require("libs.hgss.src.field.SourceTick")
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
@@ -1158,6 +1159,7 @@ end
 
 function T.draw_hud_reads_the_player_state()
   local state = stateWith({
+    assetNeeds = AssetNeedsRegistry.new(),
     runtimeMap = { mapId = 61, mapSymbol = "MAP_NEW_BARK" },
     player = { fieldX = 3, fieldZ = 7, worldY = 1.5, surfaceId = 0, facing = "east", motion = "idle" },
   })

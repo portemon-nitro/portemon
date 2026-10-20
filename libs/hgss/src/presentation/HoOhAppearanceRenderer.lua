@@ -28,6 +28,10 @@ HoOhAppearanceRenderer.__index = HoOhAppearanceRenderer
 ---@field definitions table<string, HoOhAppearanceRenderer.Entry>? built models by role name
 ---@field leafHandles table<string, table<integer, table<string, unknown>>>?
 ---@field done table<string, true>? preparation units already run
+---@field prepared boolean? every preparation unit has run for the held version and variant
+---@field ready table<string, true>? draw groups known complete
+---@field building table<string, table<string, unknown>>? models whose meshes are still being built, by role name
+---@field leafWork table<string, unknown>? the leaf overlay frames still to load
 ---@field cinematicDescriptors table<string, table<string, unknown>>? loaded cinematic descriptors by shot
 ---@field sequence integer? the scene run whose animation state is held
 ---@field instances table<string, unknown>? per-run model instances by name
@@ -55,6 +59,11 @@ local BACKDROP_WALLS = { heartgold = { modelKeyPrefix = "outdoor:187:", width = 
 local CORE_MODEL_NAMES = { "bellRising", "bellShimmer", "cornerBells", "birdApproach", "wavesEffect" }
 local SHOTS = { "first", "second" }
 
+-- The most work one preparation step does in a heavy unit: meshes built for a
+-- model, and leaf overlay images decoded.
+HoOhAppearanceRenderer.MESHES_PER_STEP = 32
+HoOhAppearanceRenderer.LEAF_IMAGES_PER_STEP = 1
+
 ---@param cacheFs CacheFs
 ---@param imageAssets table<string, unknown>
 ---@return HoOhAppearanceRenderer
@@ -71,27 +80,48 @@ local function modelName(descriptor)
   )
 end
 
--- Builds one model's definition and render meshes into `pool`.
+-- Builds one model's definition and render meshes into `pool`, one slice of
+-- MESHES_PER_STEP meshes per call. True once the model is complete and
+-- published in `self.definitions`; false while slices remain.
+---@param self HoOhAppearanceRenderer
 ---@param pool table<string, unknown>
 ---@param descriptor table<string, unknown>
----@return HoOhAppearanceRenderer.Entry
-local function buildEntry(pool, descriptor)
-  local definition =
-    ModelDefinition.fromNitroDescriptor(descriptor, { key = "field-effect:ho-oh:" .. modelName(descriptor) })
-  local meshes = {}
-  for _, mesh in ipairs(definition.meshes) do
+---@return boolean complete
+local function buildSlice(self, pool, descriptor)
+  local name = modelName(descriptor)
+  self.building = self.building or {}
+  local work = self.building[name]
+  if work == nil then
+    work = {
+      definition = ModelDefinition.fromNitroDescriptor(descriptor, { key = "field-effect:ho-oh:" .. name }),
+      meshes = {},
+      next = 1,
+    }
+    self.building[name] = work
+  end
+  local list = work.definition.meshes
+  local last = math.min(#list, work.next + HoOhAppearanceRenderer.MESHES_PER_STEP - 1)
+  for index = work.next, last do
+    local mesh = list[index]
     local resource = pool:meshFor(mesh.geometry)
     mesh.center = resource.center
-    meshes[mesh.id] = resource.mesh
+    work.meshes[mesh.id] = resource.mesh
   end
-  return { descriptor = descriptor, definition = definition, meshes = meshes, pool = pool }
+  work.next = last + 1
+  if work.next <= #list then
+    return false
+  end
+  self.building[name] = nil
+  assert(self.definitions)[name] =
+    { descriptor = descriptor, definition = work.definition, meshes = work.meshes, pool = pool }
+  return true
 end
 
 -- The preparation units, in order. Each is idempotent through `self.done`, so
 -- background preparation and a synchronous draw share one completion state.
 ---@param self HoOhAppearanceRenderer
 ---@param versionId string
----@return { name: string, run: fun() }[]
+---@return { name: string, run: fun(): boolean? }[]
 local function unitsFor(self, versionId)
   local units = {}
   local function add(name, run)
@@ -105,23 +135,38 @@ local function unitsFor(self, versionId)
       local pool = assert(self.corePool)
       local descriptor = assert(assert(self.core).models[index], "Ho-Oh core model is missing: " .. name)
       assert(modelName(descriptor) == name, "Ho-Oh core model role order changed")
-      assert(self.definitions)[name] = buildEntry(pool, descriptor)
+      return buildSlice(self, pool, descriptor)
     end)
   end
   if versionId == "heartgold" then
     add("core.leaves", function()
       local pool = assert(self.corePool)
-      local leaves = assert(assert(self.core).leaves, "HeartGold Ho-Oh record has no leaf overlay")
-      local handles = {}
-      for _, layerName in ipairs({ "bg3", "bg2" }) do
-        local layer = assert(leaves[layerName], "Ho-Oh leaf layer is missing: " .. layerName)
-        local layerHandles = {}
-        for frameIndex, frame in ipairs(layer.frames) do
-          layerHandles[frameIndex] = assert(pool:sharedImage(frame.path, "repeat", "repeat"))
+      local work = self.leafWork
+      if work == nil then
+        local leaves = assert(assert(self.core).leaves, "HeartGold Ho-Oh record has no leaf overlay")
+        work = { handles = { bg3 = {}, bg2 = {} }, queue = {}, next = 1 }
+        for _, layerName in ipairs({ "bg3", "bg2" }) do
+          local layer = assert(leaves[layerName], "Ho-Oh leaf layer is missing: " .. layerName)
+          for frameIndex, frame in ipairs(layer.frames) do
+            work.queue[#work.queue + 1] = { layerName = layerName, frameIndex = frameIndex, path = frame.path }
+          end
         end
-        handles[layerName] = layerHandles
+        self.leafWork = work
       end
-      self.leafHandles = handles
+      for _ = 1, HoOhAppearanceRenderer.LEAF_IMAGES_PER_STEP do
+        local item = work.queue[work.next]
+        if item == nil then
+          break
+        end
+        work.handles[item.layerName][item.frameIndex] = assert(pool:sharedImage(item.path, "repeat", "repeat"))
+        work.next = work.next + 1
+      end
+      if work.next <= #work.queue then
+        return false
+      end
+      self.leafHandles = work.handles
+      self.leafWork = nil
+      return true
     end)
   end
   for _, shot in ipairs(SHOTS) do
@@ -134,8 +179,11 @@ local function unitsFor(self, versionId)
     add("cinematic." .. shot .. ".build", function()
       local pool = assert(self.cinematicPool)
       local descriptor = assert(assert(self.cinematicDescriptors)[shot])
-      assert(self.definitions)[modelName(descriptor)] = buildEntry(pool, descriptor)
-      self.cinematicDescriptors[shot] = nil
+      local complete = buildSlice(self, pool, descriptor)
+      if complete then
+        self.cinematicDescriptors[shot] = nil
+      end
+      return complete
     end)
   end
   return units
@@ -177,6 +225,12 @@ local function dropCinematic(self)
   end
   self.cinematicDescriptors = nil
   self.variant = nil
+  self.prepared, self.ready = nil, nil
+  for name in pairs(self.building or {}) do
+    if name:find("^cinematic%.") then
+      self.building[name] = nil
+    end
+  end
   -- Instances built from the dropped models cannot outlive them.
   if self.instances ~= nil then
     for name in pairs(self.instances) do
@@ -204,51 +258,78 @@ local function align(self, versionId, variant)
   ensurePools(self)
 end
 
+-- Runs one unit until it is complete, or for a single slice when `single`.
+-- A unit reports false while it has slices left; anything else is complete.
 ---@param self HoOhAppearanceRenderer
----@param unit { name: string, run: fun() }
-local function runOnce(self, unit)
-  if not assert(self.done)[unit.name] then
-    local ok, err = pcall(unit.run)
+---@param unit { name: string, run: fun(): boolean? }
+---@param single boolean? stop after one slice
+---@return boolean complete
+local function runOnce(self, unit, single)
+  if assert(self.done)[unit.name] then
+    return true
+  end
+  repeat
+    local ok, result = pcall(unit.run)
     if not ok then
       -- A failed unit leaves partial pool contents: drop everything so the
       -- renderer is consistent (unprepared) again.
       self:release()
-      error(err, 0)
+      error(result, 0)
     end
-    self.done[unit.name] = true
-  end
+    if result ~= false then
+      self.done[unit.name] = true
+      return true
+    end
+  until single
+  return false
 end
 
--- Runs the units for the core group, or the cinematic group of one shot (nil:
--- both shots), that have not run yet.
+-- Runs the units for the core group, or the cinematic group of one shot, that
+-- have not run yet; a group known complete costs nothing.
 ---@param self HoOhAppearanceRenderer
 ---@param group string "core" or "cinematic"
 ---@param shot string?
 local function ensureGroup(self, group, shot)
+  local key = group .. (shot or "")
+  if self.ready ~= nil and self.ready[key] then
+    return
+  end
   for _, unit in ipairs(unitsFor(self, assert(self.versionId))) do
     local inGroup = unit.name:find("^" .. group .. "%.") ~= nil
     local forShot = shot == nil or group == "core" or unit.name:find("^cinematic%." .. shot .. "%.") ~= nil
     if inGroup and forShot then
-      runOnce(self, unit)
+      runOnce(self, unit, false)
     end
   end
+  self.ready = self.ready or {}
+  self.ready[key] = true
 end
 
--- Runs one preparation unit for the given game version and cinematic variant
--- and reports whether everything is prepared. The caller owns the time budget
--- by calling this as long as its budget lasts; a failed unit releases the
--- pools it touched and raises.
+-- Runs one slice of preparation for the given game version and cinematic
+-- variant and reports whether everything is prepared. The caller owns the time
+-- budget by calling this as long as its budget lasts; a finished preparation
+-- answers at once. A failed unit releases the pools it touched and raises.
 ---@param versionId string
 ---@param variant integer
 ---@return boolean complete
 function HoOhAppearanceRenderer:prepareStep(versionId, variant)
   align(self, versionId, variant)
-  for _, unit in ipairs(unitsFor(self, versionId)) do
+  if self.prepared then
+    return true
+  end
+  local units = unitsFor(self, versionId)
+  for index, unit in ipairs(units) do
     if not self.done[unit.name] then
-      runOnce(self, unit)
-      return false
+      runOnce(self, unit, true)
+      for rest = index, #units do
+        if not self.done[units[rest].name] then
+          return false
+        end
+      end
+      break
     end
   end
+  self.prepared = true
   return true
 end
 
@@ -524,6 +605,7 @@ function HoOhAppearanceRenderer:release()
   local core, cinematic = self.corePool, self.cinematicPool
   self.corePool, self.cinematicPool = nil, nil
   self.core, self.definitions, self.leafHandles, self.done, self.cinematicDescriptors = nil, nil, nil, nil, nil
+  self.prepared, self.ready, self.building, self.leafWork = nil, nil, nil, nil
   self.versionId, self.variant = nil, nil
   if cinematic ~= nil then
     cinematic:release()

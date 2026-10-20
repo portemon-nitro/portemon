@@ -8,6 +8,7 @@
 -- the child draws second, covering menu pixels only where its own panes
 -- and frames draw.
 
+local AssetNeedsRegistry = require("libs.hgss.src.field.AssetNeedsRegistry")
 local Assert = require("tests.support.Assert")
 local FieldState = require("game.hgss.src.field.FieldState")
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
@@ -94,6 +95,7 @@ local function drawableState(options)
   local viewport = FieldViewport.new(640, 480, { mode = "expanded" })
   viewport.worldViewport = worldViewport
   local runtime = {
+    assetNeeds = AssetNeedsRegistry.new(),
     playerData = { profile = { name = "TEST", gender = 0 } },
     uiManifest = {
       dialogueFrames = { continueCursor = { placement = { x = 240, y = 168, width = 16, height = 16 } } },
