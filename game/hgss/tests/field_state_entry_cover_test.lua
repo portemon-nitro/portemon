@@ -5,6 +5,7 @@
 -- track resizes, gate gameplay input until complete, and leave ordinary
 -- entries (and post-reveal input) untouched.
 
+local SourceTick = require("libs.hgss.src.field.SourceTick")
 local Assert = require("tests.support.Assert")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
 local ItemFixture = require("libs.items.tests.item_fixture")
@@ -359,7 +360,7 @@ function T.covered_entry_starts_black_and_reveals_through_the_shared_steps()
 
     local observed = { 1 }
     for _ = 1, 6 do
-      state:update(1 / 30)
+      state:update(SourceTick.DT)
       local stepSink = {}
       restore = spyRectangles(stepSink)
       drawOk, drawErr = pcall(function()
@@ -383,7 +384,7 @@ function T.covered_entry_starts_black_and_reveals_through_the_shared_steps()
     end
     Assert.equal(probe.worlds(), 7, "every reveal step keeps the constructed world drawing beneath")
 
-    state:update(1 / 30)
+    state:update(SourceTick.DT)
     local settledSink = {}
     restore = spyRectangles(settledSink)
     drawOk, drawErr = pcall(function()
@@ -434,7 +435,7 @@ function T.resize_mid_reveal_covers_the_resized_surface()
       error(drawErr, 0)
     end
     assertCoversViewport(sink, probe.viewport, 1)
-    state:update(1 / 30)
+    state:update(SourceTick.DT)
     state:resize(probe.dims.width + 160, probe.dims.height + 120)
     local resizedSink = {}
     restore = spyRectangles(resizedSink)
@@ -511,7 +512,7 @@ function T.gameplay_presses_are_gated_until_the_reveal_completes()
     state:touchreleased(9, 5, 6)
     state:focus(false)
     for _ = 1, 7 do
-      state:update(1 / 30)
+      state:update(SourceTick.DT)
     end
     local afterCalls = #calls
     state:keypressed("down")
@@ -538,7 +539,7 @@ function T.no_stale_edge_survives_keys_held_under_the_cover()
     state:keyreleased("down")
     state:focus(false)
     for _ = 1, 7 do
-      state:update(1 / 30)
+      state:update(SourceTick.DT)
     end
     local settled = probe.input:snapshot()
     Assert.isNil(settled.pressedDirection, "releasing under the cover leaves no stale edge after the reveal")

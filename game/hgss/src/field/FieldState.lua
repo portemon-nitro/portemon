@@ -1,5 +1,6 @@
 -- Interactive presentation over the non-rendering field runtime.
 
+local SourceTick = require("libs.hgss.src.field.SourceTick")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
 local FieldBattlePresentation = require("game.hgss.src.field.FieldBattlePresentation")
 local DisplayContext = require("libs.ui.src.DisplayContext")
@@ -127,7 +128,7 @@ local NO_DRAWS = {}
 
 -- The presentation-only covered-entry cadence: one shared-fade step per
 -- source frame, isolated from field simulation timing.
-local ENTRY_SOURCE_FRAME = 1 / 30
+local ENTRY_SOURCE_FRAME = SourceTick.DT
 local ENTRY_EPSILON = 1e-12
 local ENTRY_MAX_CATCH_UP = 6
 

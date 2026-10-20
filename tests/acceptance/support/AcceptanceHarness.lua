@@ -2,6 +2,7 @@
 -- isolated save namespace and a temporary graphics trap around each runtime,
 -- while FieldRuntime remains the sole owner of maps, scripts, actors, and saves.
 
+local SourceTick = require("libs.hgss.src.field.SourceTick")
 local SaveFs = require("libs.storage.src.SaveFs")
 local GameSaveStore = require("libs.hgss.src.save.GameSaveStore")
 local GameVersion = require("romdump.src.source.GameVersion")
@@ -629,7 +630,7 @@ function Game:step(input)
   if input and input.direction then
     self.runtime:press(input.direction)
   end
-  self.runtime:update((self.runtime.session and self.runtime.session.FIXED_DT) or (1 / 30))
+  self.runtime:update(SourceTick.DT)
   if input and input.direction then
     self.runtime:release(input.direction)
   end

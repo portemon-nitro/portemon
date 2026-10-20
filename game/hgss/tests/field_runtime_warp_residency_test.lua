@@ -2,6 +2,7 @@
 -- physical coverage doubles are deterministic; logical membership still runs
 -- through the real residency coordinator and the runtime commit boundary.
 
+local SourceTick = require("libs.hgss.src.field.SourceTick")
 local Assert = require("tests.support.Assert")
 local FieldRuntimeFixture = require("tests.support.FieldRuntimeFixture")
 local FieldResidencyCoordinator = require("libs.hgss.src.world.FieldResidencyCoordinator")
@@ -258,7 +259,7 @@ function T.replacement_warp_keeps_runtime_and_logical_owner_together()
   Assert.equal(f.coordinator.coverage, destinationCoverage)
   Assert.equal(f.sourceCoverage.releases, 1)
   Assert.deepEqual(f.coordinator:status().residentMapIds, { 20 })
-  f.runtime:update(1 / 30)
+  f.runtime:update(SourceTick.DT)
   Assert.equal(destinationCoverage.updates, 1, "the next runtime update uses the destination owner")
 end
 
@@ -315,7 +316,7 @@ function T.indoor_and_outdoor_round_trip_keeps_each_owner_valid()
 
   Assert.isNil(f.coordinator.coverage)
   Assert.equal(f.runtime.physicalCoverage, f.sourceCoverage)
-  f.runtime:update(1 / 30)
+  f.runtime:update(SourceTick.DT)
   Assert.equal(f.sourceCoverage.updates, 0, "indoor maintenance does not consult outdoor coverage")
 
   local destinationCoverage = coverage("destination", { { mapHeaderId = 20 } }, 20)
@@ -336,7 +337,7 @@ function T.indoor_and_outdoor_round_trip_keeps_each_owner_valid()
   Assert.equal(f.coordinator.coverage, destinationCoverage)
   Assert.equal(f.runtime.physicalCoverage, destinationCoverage)
   Assert.equal(f.sourceCoverage.releases, 1)
-  f.runtime:update(1 / 30)
+  f.runtime:update(SourceTick.DT)
   Assert.equal(destinationCoverage.updates, 1, "outdoor maintenance resumes on the new owner")
   Assert.deepEqual(f.coordinator:status().residentMapIds, { 20 })
 end

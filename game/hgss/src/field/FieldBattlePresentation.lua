@@ -7,6 +7,7 @@
 -- and the blackout flow owns defeat recovery. Draw calls are read-only;
 -- the fixed clock is the only thing that advances presentation.
 
+local SourceTick = require("libs.hgss.src.field.SourceTick")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
 local BattlePresentationModel = require("game.hgss.src.battle.BattlePresentationModel")
 local BattleScreenState = require("game.hgss.src.battle.BattleScreenState")
@@ -50,7 +51,7 @@ FieldBattlePresentation.__index = FieldBattlePresentation
 FieldBattlePresentation.COVER_MAX = 16
 FieldBattlePresentation.COVER_STEP = 2
 FieldBattlePresentation.COVER_COLOR = 0
-FieldBattlePresentation.SOURCE_FRAME = 1 / 30
+FieldBattlePresentation.SOURCE_FRAME = SourceTick.DT
 FieldBattlePresentation.SOURCE_EPSILON = 1e-12
 FieldBattlePresentation.MAX_CATCH_UP = 6
 

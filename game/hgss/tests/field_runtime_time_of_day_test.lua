@@ -2,6 +2,7 @@
 -- continuously from the injected local clock, independently from the
 -- event-driven weather clock (see field_runtime_weather_application_test).
 
+local SourceTick = require("libs.hgss.src.field.SourceTick")
 local Assert = require("tests.support.Assert")
 local FieldRuntimeFixture = require("tests.support.FieldRuntimeFixture")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
@@ -46,7 +47,7 @@ end
 function T.tests.update_advances_field_time_seconds_from_the_injected_clock()
   local environment = { lighting = { records = {} }, fieldTimeSeconds = 0 }
   local runtime = runtimeWithEnvironment(clockAt(14, 30, 15), environment)
-  runtime:update(1 / 30)
+  runtime:update(SourceTick.DT)
   Assert.equal(environment.fieldTimeSeconds, 14 * 3600 + 30 * 60 + 15)
 end
 
@@ -60,14 +61,14 @@ function T.tests.update_swaps_the_scene_time_band_to_match_the_clock()
     end,
   }
   local runtime = runtimeWithEnvironment(clockAt(22, 0, 0), environment, sceneRuntime)
-  runtime:update(1 / 30)
+  runtime:update(SourceTick.DT)
   Assert.deepEqual(bands, { "nite" })
 end
 
 function T.tests.update_leaves_an_environment_without_live_time_state_untouched()
   local environment = { lighting = { records = {} } } -- no fieldTimeSeconds: not a live time-of-day environment
   local runtime = runtimeWithEnvironment(clockAt(8, 0, 0), environment)
-  runtime:update(1 / 30)
+  runtime:update(SourceTick.DT)
   Assert.isNil(environment.fieldTimeSeconds)
 end
 

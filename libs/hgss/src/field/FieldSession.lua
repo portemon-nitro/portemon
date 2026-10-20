@@ -1,5 +1,5 @@
--- Runs the authoritative field simulation at 30 fixed ticks per second, the
--- DS field cadence (the fixed-step accumulator is render-delta independent).
+-- Runs the authoritative field simulation on the fixed source tick (the
+-- fixed-step accumulator is render-delta independent).
 -- Player movement advances before the camera so both consume the same
 -- continuous XYZ. A modal dialogue owns the tick: once the fade/transition
 -- phase (which cannot be active while a dialogue is open) has advanced, the
@@ -24,6 +24,7 @@
 -- semantic effects from field traversal. FieldRuntime composes global sound
 -- frame work after each fixed field tick.
 
+local SourceTick = require("libs.hgss.src.field.SourceTick")
 local TransitionTrigger = require("libs.hgss.src.transition.TransitionTrigger")
 local WarpSystem = require("libs.hgss.src.transition.WarpSystem")
 local ScriptInteractionClient = require("libs.hgss.src.script.ScriptInteractionClient")
@@ -166,9 +167,9 @@ end
 
 FieldSession.__index = fieldSessionIndex
 
--- The DS field cadence: 30 fixed ticks per second, owned here.
-FieldSession.FIXED_HZ = 30
-FieldSession.FIXED_DT = 1 / FieldSession.FIXED_HZ
+-- The field simulation advances on the HGSS source tick.
+FieldSession.FIXED_HZ = SourceTick.HZ
+FieldSession.FIXED_DT = SourceTick.DT
 FieldSession.MAX_CATCH_UP_TICKS = 5
 
 -- Float slack so a render delta that lands exactly on a tick boundary does

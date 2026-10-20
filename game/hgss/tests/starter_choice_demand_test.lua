@@ -4,6 +4,7 @@
 -- selection changes acquire no resources, the field graphics backend is
 -- borrowed rather than rebuilt, and turntable/ball timing is preserved.
 
+local SourceTick = require("libs.hgss.src.field.SourceTick")
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
@@ -620,8 +621,8 @@ function T.demand_preparation_begins_only_after_the_chooser_opens()
   Assert.equal(queue:requestCount(), 0, "no demand exists while the chooser is idle")
 
   local state = fieldComposition(host, queue, backend, images)
-  state:update(1 / 30)
-  state:update(1 / 30)
+  state:update(SourceTick.DT)
+  state:update(SourceTick.DT)
   Assert.equal(queue:requestCount(), 0, "field updates without an open chooser prepare nothing")
 
   openTrio(host, service)
@@ -632,7 +633,7 @@ function T.demand_preparation_begins_only_after_the_chooser_opens()
   host:update()
   Assert.isTrue(host:status().done == false, "headless open and update work without graphics or a queue")
 
-  state:update(1 / 30)
+  state:update(SourceTick.DT)
   demandPrioritiesOnly(queue, "the first field update after the actual open")
 end
 
@@ -667,7 +668,7 @@ function T.pending_preparation_keeps_the_field_visible_and_inputs_frozen()
   end
   Assert.isFalse(host:isPresentationReady(), "the chooser stays invisible while the worker is pending")
 
-  state:update(1 / 30)
+  state:update(SourceTick.DT)
   Assert.isTrue(fieldDraws >= 0, "the field update path stays responsive while preparation pends")
 
   local before = host:status()

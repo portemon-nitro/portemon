@@ -113,6 +113,7 @@ local FIELD_COORDINATION = {
   "PokemonCenterHealFlow",
   "PartyActions",
   "PcStorageActions",
+  "SourceTick",
   -- The shared byte-counted idle lease kernel behind the audio and image
   -- pools: a field-coordination mechanism with no narrower domain owner.
   "ResidentAssetCache",

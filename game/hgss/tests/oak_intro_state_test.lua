@@ -2,6 +2,7 @@
 -- and disposal. The controller/renderer are conforming test doubles so this
 -- suite isolates the LÖVE callback adapter.
 
+local SourceTick = require("libs.hgss.src.field.SourceTick")
 local Assert = require("tests.support.Assert")
 local OakIntroState = require("game.hgss.src.newgame.OakIntroState")
 local OakIntroController = require("game.hgss.src.newgame.OakIntroController")
@@ -870,7 +871,7 @@ function T.source_timed_update_draw_cadence_preserves_full_art_hold_and_shrink_f
   state:draw()
 
   for _ = 1, 30 + 9 * 4 + 6 do
-    state:update(1 / 30)
+    state:update(SourceTick.DT)
     state:draw()
   end
 
@@ -901,7 +902,7 @@ function T.source_timed_update_draw_cadence_preserves_full_art_hold_and_shrink_f
 
   -- The loop above ends with the presented full-black draw, so exactly one
   -- more update acknowledges that presentation and completes the handoff.
-  state:update(1 / 30)
+  state:update(SourceTick.DT)
   Assert.equal(controller:view().phase, "complete")
 end
 
@@ -910,12 +911,12 @@ function T.thirty_source_frame_hold_uses_one_second_host_time()
   local holdStart = controller:view().sourceFrames
 
   for _ = 1, 29 do
-    state:update(1 / 30)
+    state:update(SourceTick.DT)
     Assert.equal(controller:view().phase, "final_full_art_hold")
   end
   Assert.equal(controller:view().sourceFrames - holdStart, 29)
 
-  state:update(1 / 30)
+  state:update(SourceTick.DT)
 
   Assert.equal(controller:view().sourceFrames - holdStart, 30)
   Assert.equal(controller:view().phase, "shrink_animation")
@@ -940,7 +941,7 @@ function T.large_host_update_matches_equivalent_source_ticks()
   local state, controller = stateAtFreshFullArtHold(9, 4)
   local referenceState, referenceController = stateAtFreshFullArtHold(9, 4)
 
-  state:update(52 / 30)
+  state:update(52 * SourceTick.DT)
   referenceState:tick(52)
 
   Assert.deepEqual(
@@ -954,7 +955,7 @@ function T.sub_source_frame_update_does_not_advance_the_controller()
   local state, controller = stateAtFreshFullArtHold(9, 4)
   local sourceFrames = controller:view().sourceFrames
 
-  state:update(1 / 30 - 1e-13)
+  state:update(SourceTick.DT - 1e-13)
 
   Assert.equal(controller:view().sourceFrames, sourceFrames)
 end
@@ -962,7 +963,7 @@ end
 function T.two_half_source_frame_updates_drain_one_controller_tick()
   local state, controller = stateAtFreshFullArtHold(9, 4)
   local sourceFrames = controller:view().sourceFrames
-  local halfSourceFrame = (1 / 30) / 2
+  local halfSourceFrame = SourceTick.DT / 2
 
   state:update(halfSourceFrame)
   Assert.equal(controller:view().sourceFrames, sourceFrames)
@@ -1063,13 +1064,13 @@ function T.large_host_update_stops_at_full_black_without_a_draw()
     completions = completions + 1
   end
 
-  state:update(10 / 30)
+  state:update(10 * SourceTick.DT)
   Assert.near(controller:view().finalFadeAlpha, 1, 1e-9, "the large update must still reach full black")
   Assert.isTrue(controller:view().phase ~= "complete", "a large host update must stop at the full-black wait")
   Assert.isNil(controller:result(), "the candidate must stay unpublished without a presented draw")
   Assert.equal(completions, 0)
 
-  state:update(10 / 30)
+  state:update(10 * SourceTick.DT)
   Assert.isTrue(controller:view().phase ~= "complete", "repeated updates without a draw must keep waiting")
   Assert.isNil(controller:result())
   Assert.equal(completions, 0)
@@ -1130,7 +1131,7 @@ function T.black_presentation_gates_completion_independent_of_prior_draw_cadence
   drawnState:draw()
   Assert.deepEqual(semanticSnapshot(drawnController), initial, "drawing must not advance the controller source clock")
 
-  for _, dt in ipairs({ 1, 43 / 30 }) do
+  for _, dt in ipairs({ 1, 43 * SourceTick.DT }) do
     drawnState:update(dt)
     undrawnState:update(dt)
     Assert.deepEqual(
@@ -1148,15 +1149,15 @@ function T.black_presentation_gates_completion_independent_of_prior_draw_cadence
   -- Presenting the black frame on only the drawn path unlocks only that path.
   drawnState:draw()
   Assert.equal(drawnCompletions, 0, "drawing must not itself complete the handoff")
-  drawnState:update(1 / 30)
-  undrawnState:update(1 / 30)
+  drawnState:update(SourceTick.DT)
+  undrawnState:update(SourceTick.DT)
   Assert.equal(drawnController:view().phase, "complete")
   Assert.equal(drawnCompletions, 1)
   Assert.isTrue(undrawnController:view().phase ~= "complete", "no presented draw means no completion")
   Assert.equal(undrawnCompletions, 0)
 
   undrawnState:draw()
-  undrawnState:update(1 / 30)
+  undrawnState:update(SourceTick.DT)
   Assert.equal(undrawnController:view().phase, "complete")
   Assert.equal(undrawnCompletions, 1)
 end
@@ -1748,9 +1749,9 @@ function T.injected_prepared_entry_is_polled_once_per_update_without_gating_prog
     controllerTicks = controllerTicks + 1
     return baseTick(self, frames)
   end
-  state:update(1 / 60)
+  state:update(SourceTick.DT)
   Assert.equal(entry.polls, 1, "one update polls the entry coordinator exactly once")
-  state:update(1 / 60)
+  state:update(SourceTick.DT)
   Assert.equal(entry.polls, 2, "every update re-polls while the intro runs")
   Assert.isTrue(controllerTicks >= 1, "controller progress never waits on the coordinator")
   state:dispose()
@@ -1782,8 +1783,8 @@ function T.oak_state_without_a_prepared_entry_updates_and_disposes_cleanly()
     controllerTicks = controllerTicks + 1
     return baseTick(self, frames)
   end
-  state:update(1 / 60)
-  state:update(1 / 60)
+  state:update(SourceTick.DT)
+  state:update(SourceTick.DT)
   Assert.isTrue(controllerTicks >= 1, "updates need no coordinator")
   state:tick(1)
   state:dispose()

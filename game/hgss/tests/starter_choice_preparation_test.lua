@@ -4,6 +4,7 @@
 -- and neutral cleanup still reaches gameplay input, zoom controls stay live,
 -- and disposal ends preparation safely.
 
+local SourceTick = require("libs.hgss.src.field.SourceTick")
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
@@ -664,7 +665,7 @@ function T.activation_stays_suppressed_while_cleanup_reaches_input_when_hidden()
   local images = SummaryAcceptanceFixture.sizedImagePool()
   local state, inputCalls = fieldComposition(host, queue, backend, images)
   openTrio(host, service)
-  state:update(1 / 30)
+  state:update(SourceTick.DT)
   Assert.isFalse(host:isPresentationReady(), "the chooser stays hidden while preparation is outstanding")
 
   local before = host:status()
@@ -716,7 +717,7 @@ function T.hidden_keyboard_release_clears_held_direction_before_visible_repeat()
   input:beginUi(0)
   openTrio(host, service)
   local before = host:status()
-  state:update(1 / 30)
+  state:update(SourceTick.DT)
   Assert.isFalse(host:isPresentationReady(), "the chooser stays hidden while preparation is outstanding")
 
   state:keyreleased("w")
@@ -733,7 +734,7 @@ function T.hidden_keyboard_release_clears_held_direction_before_visible_repeat()
     "the chooser prepares through bounded steps"
   )
   state.runtime.session.tick = delay + 3
-  state:update(1 / 30)
+  state:update(SourceTick.DT)
   Assert.isFalse(input:isHeld("north"), "readiness does not resurrect the released source")
   Assert.deepEqual(
     input:uiSnapshot(state.runtime.session.tick),
@@ -764,7 +765,7 @@ function T.hidden_stick_neutral_clears_stick_ownership_before_readiness()
   state:gamepadaxis(joystick, "leftx", -0.75)
   input:beginUi(0)
   openTrio(host, service)
-  state:update(1 / 30)
+  state:update(SourceTick.DT)
   Assert.isFalse(host:isPresentationReady(), "the chooser stays hidden while preparation is outstanding")
   Assert.isTrue(input:isHeld("west"), "the deflected stick holds its direction before neutralization")
 
@@ -783,7 +784,7 @@ function T.hidden_stick_neutral_clears_stick_ownership_before_readiness()
     "the chooser prepares through bounded steps"
   )
   state.runtime.session.tick = delay + 3
-  state:update(1 / 30)
+  state:update(SourceTick.DT)
   Assert.isFalse(input:isHeld("west"), "readiness does not resurrect the neutralized stick")
   Assert.deepEqual(
     input:uiSnapshot(state.runtime.session.tick),
@@ -801,7 +802,7 @@ function T.zoom_controls_stay_live_while_the_chooser_is_hidden()
   local images = SummaryAcceptanceFixture.sizedImagePool()
   local state, inputCalls, zoomCalls = fieldComposition(host, queue, backend, images)
   openTrio(host, service)
-  state:update(1 / 30)
+  state:update(SourceTick.DT)
   Assert.isFalse(host:isPresentationReady(), "the chooser stays hidden while preparation is outstanding")
 
   state:keypressed("=")

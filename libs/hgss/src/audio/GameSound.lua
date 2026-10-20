@@ -124,7 +124,7 @@ GameSound.__index = GameSound
 
 -- The post-fanfare wait interval in ordinary source frames: HGSS PlayFanfare
 -- sets a u16 timer to 0x0F and the fanfare stays "playing" until it counts
--- down after the fanfare player stops. At 30 Hz, 15 frames is about 500 ms.
+-- down after the fanfare player stops. At the source tick, 15 frames is about 500 ms.
 local FANFARE_POST_WAIT_FRAMES = 15
 
 -- The strict handle fader domain (SequencePlayer:setHandleFader asserts 0..127)

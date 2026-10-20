@@ -2,6 +2,7 @@
 -- receives only semantic operations, while App owns producer progress and
 -- teardown ordering.
 
+local SourceTick = require("libs.hgss.src.field.SourceTick")
 local Assert = require("tests.support.Assert")
 local App = require("app.src.App")
 local HgssGame = require("game.hgss.src.HgssGame")
@@ -137,7 +138,7 @@ T.tests["the selected game receives only the semantic provisioning host"] = func
     function service:retire(_) end
     App.service = service
     App._bootMainMenu({ "heartgold" })
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
     Assert.equal(#result.launches, 0, "selection installs the product menu before launching retail")
     local menuOptions = assert(result.menuOptions)
     menuOptions.onResult({ kind = "new_game" })
@@ -174,7 +175,7 @@ T.tests["process cache progress runs before the running game update"] = function
         order[#order + 1] = "game:update"
       end,
     }
-    App.update(1 / 30)
+    App.update(SourceTick.DT)
     Assert.deepEqual(order, { "service:update", "game:update" })
     Assert.deepEqual(result.events, {})
   end)

@@ -30,7 +30,7 @@ local T = {}
 
 ---@class FieldSessionTest.Module : FieldSession
 ---@field FIXED_DT number
----@field FIXED_HZ integer
+---@field FIXED_HZ number
 ---@field MAX_CATCH_UP_TICKS integer
 ---@field new fun(options: table): FieldSession
 local FieldSession = {
@@ -819,26 +819,26 @@ end
 
 function T.fixed_ticks_are_render_cadence_independent()
   local a = fixedSession()
-  a:update(1 / 30)
+  a:update(FieldSession.FIXED_DT)
   local b = fixedSession()
-  b:update(1 / 60)
-  b:update(1 / 60)
+  b:update(FieldSession.FIXED_DT / 2)
+  b:update(FieldSession.FIXED_DT / 2)
   Assert.equal(a.tick, 1)
   Assert.equal(b.tick, 1)
 end
 
 function T.excess_backlog_is_discarded_after_max_catch_up()
   local s = fixedSession()
-  s:update(10 / 30)
+  s:update(10 * FieldSession.FIXED_DT)
   Assert.equal(s.tick, 5)
   -- The 5 excess ticks were dropped, not deferred to the next frame.
-  s:update(1 / 30)
+  s:update(FieldSession.FIXED_DT)
   Assert.equal(s.tick, 6)
 end
 
 function T.camera_follows_the_player_xyz_each_fixed_tick()
   local s, targets = fixedSession()
-  s:update(1 / 30)
+  s:update(FieldSession.FIXED_DT)
   Assert.deepEqual(targets[1], { x = 1.25, y = 2.5, z = 3.75 })
 end
 

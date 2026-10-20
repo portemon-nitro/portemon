@@ -7,6 +7,7 @@
 -- and the normal update/draw ordering; no synthetic actor definition and no
 -- direct mutation of follower state appear anywhere in the path.
 
+local SourceTick = require("libs.hgss.src.field.SourceTick")
 local Assert = require("tests.support.Assert")
 local BagSave = require("libs.hgss.src.save.BagSave")
 local CacheFs = require("libs.storage.src.CacheFs")
@@ -33,7 +34,7 @@ local T = {}
 
 local HOUSE_1F = "MAP_NEW_BARK_PLAYER_HOUSE_1F"
 local HOUSE_SPAWN = { fieldX = 4, fieldZ = 5, facing = "south" }
-local FIXED_DT = 1 / 30
+local FIXED_DT = SourceTick.DT
 local PARTNER_ACTOR_ID = "field:partner"
 
 local function readyVersions()

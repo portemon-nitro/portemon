@@ -2,6 +2,7 @@
 -- semantic controller, owns text-input mode and intro images, and hands one
 -- finalized unpublished candidate to its caller.
 
+local SourceTick = require("libs.hgss.src.field.SourceTick")
 local HgssInputBindings = require("libs.hgss.src.ui.HgssInputBindings")
 local ApplicationPresentation = require("libs.ui.src.ApplicationPresentation")
 local DisplayContext = require("libs.ui.src.DisplayContext")
@@ -182,8 +183,7 @@ local OakIntroState = {}
 OakIntroState.__index = OakIntroState
 
 -- Float slack keeps an exact source-frame boundary from losing a source tick.
-local SOURCE_FRAME_HZ = 30
-local SOURCE_FRAME_DURATION = 1 / SOURCE_FRAME_HZ
+local SOURCE_FRAME_DURATION = SourceTick.DT
 local SOURCE_FRAME_EPSILON = 1e-14
 
 local function resolvePixelSurface(width, height)

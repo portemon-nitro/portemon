@@ -3,6 +3,7 @@
 -- one real draw presents the full-black frame before the next tick may
 -- finalize it.
 
+local SourceTick = require("libs.hgss.src.field.SourceTick")
 local Assert = require("tests.support.Assert")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
 local FieldBattleCoordinator = require("game.hgss.src.field.FieldBattleCoordinator")
@@ -625,7 +626,7 @@ T.covered_handoff_keeps_black_between_intro_and_field = function(scope)
   Assert.equal(firstAlpha, 1, "the first field-owned frame is fully black")
   local alphas = { 1 }
   for _ = 1, 6 do
-    field:update(1 / 30)
+    field:update(SourceTick.DT)
     local stepSink = {}
     restore = spyRectangles(stepSink)
     drawOk, drawErr = pcall(function()

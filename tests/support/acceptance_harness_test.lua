@@ -1,6 +1,7 @@
 -- Acceptance movement helpers must preserve route and stop-map behavior while
 -- avoiding a full route search after every successful tile step.
 
+local SourceTick = require("libs.hgss.src.field.SourceTick")
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
 local TerrainSurface = require("libs.hgss.src.world.TerrainSurface")
@@ -87,7 +88,7 @@ local function fakeRuntime(metrics, changeMapAt)
   local runtime = {
     player = player,
     runtimeMap = map,
-    session = { FIXED_DT = 1 / 30 },
+    session = { FIXED_DT = SourceTick.DT },
     pendingDirection = nil,
     eventState = {
       getVar = function()

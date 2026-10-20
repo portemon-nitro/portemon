@@ -1,6 +1,7 @@
 -- FieldRuntime scheduling coverage uses recording collaborators at the
 -- coordinator boundary, without constructing a cache-backed field session.
 
+local SourceTick = require("libs.hgss.src.field.SourceTick")
 local Assert = require("tests.support.Assert")
 local FieldRuntimeFixture = require("tests.support.FieldRuntimeFixture")
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
@@ -203,7 +204,7 @@ function T.tests.application_host_failure_propagates_from_the_field_update()
   end
 
   local ok, err = pcall(function()
-    runtime:update(1 / 30)
+    runtime:update(SourceTick.DT)
   end)
 
   Assert.isFalse(ok, "a fatal application failure must reach LÖVE's callback error handler")

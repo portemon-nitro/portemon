@@ -1,6 +1,7 @@
 -- Runtime weather tests exercise activation-time sampling and fog selection
 -- through FieldRuntime methods without constructing a cache-backed session.
 
+local SourceTick = require("libs.hgss.src.field.SourceTick")
 local Assert = require("tests.support.Assert")
 local FieldRuntimeFixture = require("tests.support.FieldRuntimeFixture")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
@@ -229,9 +230,9 @@ function T.runtime_samples_weather_on_activation_and_selects_the_matching_fog()
   Assert.equal(overrideMap.effectiveWeatherId, 8)
   Assert.equal(overrideMap.renderEnvironment.fog, catalog.presets[8])
   Assert.equal(calls.prepareTransition, 1)
-  runtime:update(1 / 30)
-  runtime:update(1 / 30)
-  runtime:update(1 / 30)
+  runtime:update(SourceTick.DT)
+  runtime:update(SourceTick.DT)
+  runtime:update(SourceTick.DT)
   Assert.equal(calls.today, 1, "ordinary updates must not resample the weather date")
   Assert.equal(calls.penalty, 1, "ordinary updates must not resample the penalty state")
   local preparedAgain =

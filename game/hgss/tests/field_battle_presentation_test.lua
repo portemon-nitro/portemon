@@ -7,6 +7,7 @@
 -- (through direct runtime boots). Weak staged foes keep each leg fast and
 -- deterministic; timing-sensitive frozen acceptance owns the long walks.
 
+local SourceTick = require("libs.hgss.src.field.SourceTick")
 local Assert = require("tests.support.Assert")
 local BattleDataCache = require("libs.assets.src.battle.BattleDataCache")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
@@ -196,7 +197,7 @@ end
 ---@param ticks integer fixed ticks to advance under test driving
 local function pump(runtime, envelope, ticks)
   for _ = 1, ticks do
-    runtime:update(1 / 30)
+    runtime:update(SourceTick.DT)
     envelope:updateFixed(TICK)
   end
 end
@@ -206,7 +207,7 @@ end
 local function waitConstructed(runtime, envelope)
   local ticks = 0
   while runtime.battleCoordinator:activeBattle() == nil and ticks < 900 do
-    runtime:update(1 / 30)
+    runtime:update(SourceTick.DT)
     envelope:updateFixed(TICK)
     ticks = ticks + 1
   end
@@ -246,7 +247,7 @@ local function settle(runtime, envelope, choose, budget)
         envelope:input({ { type = "confirm" } })
       end
     end
-    runtime:update(1 / 30)
+    runtime:update(SourceTick.DT)
     envelope:updateFixed(TICK)
     ticks = ticks + 1
   end
@@ -300,7 +301,7 @@ local function driveDefeatToRecovery(runtime, envelope, choose, budget)
         envelope:input({ { type = "confirm" } })
       end
     end
-    runtime:update(1 / 30)
+    runtime:update(SourceTick.DT)
     envelope:updateFixed(TICK)
     ticks = ticks + 1
   end
@@ -330,7 +331,7 @@ local function reachBlackoutPhase(runtime, envelope, wanted, budget)
     if runtime.overworld:phase() == "present" then
       return false
     end
-    runtime:update(1 / 30)
+    runtime:update(SourceTick.DT)
     envelope:updateFixed(TICK)
     ticks = ticks + 1
   end
@@ -396,7 +397,7 @@ function T.presented_win_returns_through_cover_and_receipt()
       local coveredAt, leftAt, coverAtLeave = nil, nil, nil
       local ticks = 0
       while runtime.battleCoordinator:activeBattle() == nil and ticks < 900 do
-        runtime:update(1 / 30)
+        runtime:update(SourceTick.DT)
         envelope:updateFixed(TICK)
         ticks = ticks + 1
         if coveredAt == nil and envelope:cover().coefficient == 16 then
@@ -563,7 +564,7 @@ function T.automatic_defeat_recovers_once_and_returns_safely()
       envelope:input({ { type = "confirm" } })
       local ticks = 0
       while runtime.overworld:phase() ~= "present" and ticks < 1500 do
-        runtime:update(1 / 30)
+        runtime:update(SourceTick.DT)
         envelope:updateFixed(TICK)
         ticks = ticks + 1
       end
@@ -658,14 +659,14 @@ function T.recovery_message_answers_only_a_matched_genuine_edge()
       envelope:input({ { type = "pointer_up", pointerId = "touch:7", x = 128, y = 96 } })
       local advanced = 0
       while blackout:status().phase == "message_wait" and advanced < 60 do
-        runtime:update(1 / 30)
+        runtime:update(SourceTick.DT)
         envelope:updateFixed(TICK)
         advanced = advanced + 1
       end
       Assert.isTrue(blackout:status().phase ~= "message_wait", "a matched tap advances the waiting message")
       local ticks = 0
       while runtime.overworld:phase() ~= "present" and ticks < 1500 do
-        runtime:update(1 / 30)
+        runtime:update(SourceTick.DT)
         envelope:updateFixed(TICK)
         ticks = ticks + 1
       end
@@ -869,7 +870,7 @@ function T.battle_input_reaches_the_screen_before_field_controls()
       waitConstructed(runtime, envelope)
       local ticks = 0
       while ticks < 900 do
-        runtime:update(1 / 30)
+        runtime:update(SourceTick.DT)
         envelope:updateFixed(TICK)
         ticks = ticks + 1
         local screen = envelope:liveScreen()
@@ -941,7 +942,7 @@ function T.continuing_receipts_wait_for_the_reveal()
             envelope:input({ { type = "confirm" } })
           end
         end
-        runtime:update(1 / 30)
+        runtime:update(SourceTick.DT)
         envelope:updateFixed(TICK)
         ticks = ticks + 1
         local launch = runtime.battleCoordinator._battleLaunch
@@ -1006,7 +1007,7 @@ function T.schedules_and_layouts_settle_identically()
         end
       end
       for _ = 1, stepsPerPump do
-        runtime:update(1 / 30)
+        runtime:update(SourceTick.DT)
       end
       envelope:updateFixed(stepsPerPump * TICK)
       ticks = ticks + 1
@@ -1183,7 +1184,7 @@ function T.host_updates_never_advance_presented_launches()
     local ok, failure = xpcall(function()
       runtime:launchBattle({ kind = "wild", details = { species = "CATERPIE", level = 3 } })
       for _ = 1, 10 do
-        runtime:update(1 / 30)
+        runtime:update(SourceTick.DT)
       end
       Assert.equal(runtime.overworld:phase(), "present", "host updates never request leave")
       Assert.isNil(runtime.battleCoordinator:activeBattle(), "host updates never construct")
@@ -1191,7 +1192,7 @@ function T.host_updates_never_advance_presented_launches()
       waitConstructed(runtime, envelope)
       local phaseBefore = runtime.battleCoordinator:activeBattle():status().phase
       for _ = 1, 10 do
-        runtime:update(1 / 30)
+        runtime:update(SourceTick.DT)
       end
       Assert.equal(
         runtime.battleCoordinator:activeBattle():status().phase,
@@ -1266,7 +1267,7 @@ local function driveLaunchToPhase(runtime, envelope, wanted, budget)
         envelope:input({ { type = "confirm" } })
       end
     end
-    runtime:update(1 / 30)
+    runtime:update(SourceTick.DT)
     envelope:updateFixed(TICK)
     ticks = ticks + 1
   end
@@ -1289,7 +1290,7 @@ function T.failed_screen_before_commit_restores_the_field_without_a_result()
         if point == "leaving" then
           local ticks = 0
           while runtime.overworld:phase() ~= "leaving" and ticks < 900 do
-            runtime:update(1 / 30)
+            runtime:update(SourceTick.DT)
             envelope:updateFixed(TICK)
             ticks = ticks + 1
           end
@@ -1308,7 +1309,7 @@ function T.failed_screen_before_commit_restores_the_field_without_a_result()
           return realRestore(self)
         end
         failLiveScreen(envelope, "probe render failure at " .. point)
-        runtime:update(1 / 30)
+        runtime:update(SourceTick.DT)
         envelope:updateFixed(TICK)
         Assert.notNil(
           runtime.battleCoordinator._battleLaunch,
@@ -1318,7 +1319,7 @@ function T.failed_screen_before_commit_restores_the_field_without_a_result()
         Assert.notNil(busyReason, "the save gate stays closed before the field returns at " .. point)
         local ticks = 0
         while runtime.battleCoordinator._battleLaunch ~= nil and ticks < 900 do
-          runtime:update(1 / 30)
+          runtime:update(SourceTick.DT)
           envelope:updateFixed(TICK)
           ticks = ticks + 1
         end
@@ -1343,7 +1344,7 @@ function T.failed_screen_before_commit_restores_the_field_without_a_result()
           if reason == nil then
             break
           end
-          runtime:update(1 / 30)
+          runtime:update(SourceTick.DT)
           envelope:updateFixed(TICK)
           settled = settled + 1
         end
@@ -1434,7 +1435,7 @@ function T.committed_win_survives_a_lost_renderer_through_cover_and_reveal()
         end
         local ticks = 0
         while runtime.battleCoordinator._battleLaunch ~= nil and ticks < 900 do
-          runtime:update(1 / 30)
+          runtime:update(SourceTick.DT)
           envelope:updateFixed(TICK)
           ticks = ticks + 1
         end
@@ -1514,7 +1515,7 @@ function T.defeat_and_unrecoverable_field_keep_their_return_when_the_renderer_is
         failLiveScreen(envelope, "probe render failure before terminal cover")
         local ticks = 0
         while runtime.overworld:phase() ~= "present" and ticks < 1500 do
-          runtime:update(1 / 30)
+          runtime:update(SourceTick.DT)
           envelope:updateFixed(TICK)
           local launch = runtime.battleCoordinator._battleLaunch
           if launch ~= nil and launch.phase == "recovering" then
@@ -1646,7 +1647,7 @@ function T.lost_renderer_handoff_keeps_the_launch_until_the_safe_field()
         Assert.notNil(envelope._descriptor, "the envelope keeps its descriptor through the abort")
         local ticks = 0
         while runtime.battleCoordinator._battleLaunch ~= nil and ticks < 900 do
-          runtime:update(1 / 30)
+          runtime:update(SourceTick.DT)
           envelope:updateFixed(TICK)
           ticks = ticks + 1
         end
@@ -1704,7 +1705,7 @@ function T.lost_renderer_handoff_keeps_the_launch_until_the_safe_field()
         failLiveScreen(envelope, "probe render failure on the committed return")
         local ticks = 0
         while runtime.battleCoordinator._battleLaunch ~= nil and ticks < 900 do
-          runtime:update(1 / 30)
+          runtime:update(SourceTick.DT)
           envelope:updateFixed(TICK)
           ticks = ticks + 1
         end
@@ -2488,7 +2489,7 @@ end
 local function driveToCommandMode(runtime, envelope)
   local ticks = 0
   while ticks < 900 do
-    runtime:update(1 / 30)
+    runtime:update(SourceTick.DT)
     envelope:updateFixed(TICK)
     ticks = ticks + 1
     local screen = envelope:liveScreen()
@@ -2513,7 +2514,7 @@ function T.fixed_updates_paint_nothing_without_an_explicit_draw()
       doubles.windows.calls = {}
       local audioBefore = #doubles.audio.plays
       for _ = 1, 5 do
-        envelope:updateFixed(1 / 30)
+        envelope:updateFixed(SourceTick.DT)
       end
       Assert.equal(#doubles.text.draws, 0, "fixed updates paint no text without a draw")
       Assert.equal(#doubles.windows.calls, 0, "fixed updates paint no windows without a draw")
@@ -2525,7 +2526,7 @@ function T.fixed_updates_paint_nothing_without_an_explicit_draw()
       Assert.isTrue(spy.paint > 0, "the explicit draw reaches host graphics")
       local texts, frames = #doubles.text.draws, #doubles.windows.calls
       for _ = 1, 2 do
-        envelope:updateFixed(1 / 30)
+        envelope:updateFixed(SourceTick.DT)
       end
       Assert.equal(#doubles.text.draws, texts, "later updates paint no further text")
       Assert.equal(#doubles.windows.calls, frames, "later updates paint no further windows")
@@ -2575,7 +2576,7 @@ function T.explicit_draws_stay_stable_and_route_render_failures_through_the_host
       Assert.isTrue(first.texts > 0, "the command view prints its wording")
       Assert.isTrue(first.frames > 0, "the command view frames its windows")
       for _ = 1, 3 do
-        envelope:updateFixed(1 / 30)
+        envelope:updateFixed(SourceTick.DT)
       end
       Assert.equal(#doubles.text.draws, first.texts, "updates between draws paint no extra text")
       Assert.equal(#doubles.windows.calls, first.frames, "updates between draws frame no extra windows")
@@ -2597,12 +2598,12 @@ function T.explicit_draws_stay_stable_and_route_render_failures_through_the_host
       Assert.isTrue(envelope:drawBattle({ graphics = spy }), "the failing draw still reaches the live screen")
       local failed = assert(envelope:liveScreen(), "the failed screen stays observable for its handoff")
       Assert.equal(failed:status().mode, "failed", "a genuine render failure marks the screen")
-      envelope:updateFixed(1 / 30)
+      envelope:updateFixed(SourceTick.DT)
       Assert.isNil(envelope:liveScreen(), "the next tick releases the failed screen to its host")
       Assert.notNil(runtime.battleCoordinator._battleLaunch, "the launch survives for the safe return")
       local texts, frames = #doubles.text.draws, #doubles.windows.calls
       for _ = 1, 3 do
-        envelope:updateFixed(1 / 30)
+        envelope:updateFixed(SourceTick.DT)
       end
       Assert.equal(#doubles.text.draws, texts, "updates after the failure paint nothing further")
       Assert.equal(#doubles.windows.calls, frames, "updates after the failure frame nothing further")

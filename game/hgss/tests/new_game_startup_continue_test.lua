@@ -2,6 +2,7 @@
 -- transition: the HGSS game entry must invoke it on the Oak completion handoff
 -- and must never invoke it on Continue.
 
+local SourceTick = require("libs.hgss.src.field.SourceTick")
 local Assert = require("tests.support.Assert")
 local HgssGame = require("game.hgss.src.HgssGame")
 local FieldState = require("game.hgss.src.field.FieldState")
@@ -669,7 +670,7 @@ function T.presented_oak_black_draw_precedes_field_construction()
     end
     driveToFreshFullArtHold(oakState, oakController)
     for _ = 1, 300 do
-      game:update(1 / 30)
+      game:update(SourceTick.DT)
       game:draw()
       if timelineKindCount(timeline, "field_draw") >= 1 then
         break

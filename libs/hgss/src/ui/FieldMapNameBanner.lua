@@ -1,6 +1,6 @@
 -- Pure fixed-tick controller for the transient top-left area-name banner:
 -- one eligible request at a time, one latest pending request, and
--- source-equivalent enter/hold/exit elapsed timing on the field's 30 Hz tick.
+-- source-equivalent enter/hold/exit elapsed timing on the field's source tick.
 -- Compiled style eligibility and the native section title arrive through
 -- injected selectors, so the controller owns no message cache or presentation
 -- dependency and never re-reads either in draw.
@@ -27,7 +27,7 @@ local FieldMapNameBanner = {}
 FieldMapNameBanner.__index = FieldMapNameBanner
 
 -- The source BG3 scroll: 38 logical pixels in, a one-second hold, and 38 back
--- out. The 30 Hz field tick advances two retail display-frame steps, so the
+-- out. The field source tick advances two retail display-frame steps, so the
 -- entry and exit each span five ticks and the hold spans thirty.
 FieldMapNameBanner.ENTER_DISPLACEMENT = 38
 local SCROLL_STEP = 8

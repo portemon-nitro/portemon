@@ -1,5 +1,6 @@
 -- Exercises the generated Celebi model through its real GPU model path.
 
+local SourceTick = require("libs.hgss.src.field.SourceTick")
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FieldCamera = require("libs.hgss.src.field.FieldCamera")
@@ -171,7 +172,7 @@ local T = GraphicsSmoke.suite({
         break
       end
       state:draw()
-      state:update(1 / 30)
+      state:update(SourceTick.DT)
     end
     Assert.isNil(state.runtime.session.mapEntryStage, "production field entry settles before capture")
     Assert.notNil(state.runtime.followingMon:partnerActorId(), "production field entry installs the gifted follower")

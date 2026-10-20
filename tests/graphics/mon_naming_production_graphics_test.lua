@@ -1,6 +1,7 @@
 -- Renders the retail Elm starter naming flow through FieldState's production
 -- runtime and presentation ownership.
 
+local SourceTick = require("libs.hgss.src.field.SourceTick")
 local Assert = require("tests.support.Assert")
 local BagSave = require("libs.hgss.src.save.BagSave")
 local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
@@ -19,7 +20,7 @@ local RomImporter = require("romdump.src.source.RomImporter")
 local T = {}
 
 local LAB = "MAP_NEW_BARK_ELMS_LAB_1F"
-local FIXED_DT = 1 / 30
+local FIXED_DT = SourceTick.DT
 local PREVENT_ESCAPE = FieldScriptSymbols.flagsByName.FLAG_ELMS_LAB_PREVENT_PLAYER_ESCAPE
 
 local function readyVersions()

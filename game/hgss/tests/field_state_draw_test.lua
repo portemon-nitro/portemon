@@ -5,6 +5,7 @@
 -- runtime-level actor and runtime aliases are gone, so these reads must not
 -- depend on them.
 
+local SourceTick = require("libs.hgss.src.field.SourceTick")
 local Assert = require("tests.support.Assert")
 local CacheFs = require("libs.storage.src.CacheFs")
 local FakeCache = require("tests.support.FakeCache")
@@ -3062,7 +3063,7 @@ function T.stalled_actor_revision_keeps_prior_draws_until_atomic_admission()
     npcFacts.facing = (cycle % 2 == 1) and "north" or "south"
     npcFacts.poseTick = cycle * 2
     npcFacts.emoteTick = cycle
-    state:update(1 / 30)
+    state:update(SourceTick.DT)
     local held = state:_actorDraws(0.5)
     Assert.isTrue(held == settled, "a pending atlas reuses the established item array")
     Assert.deepEqual(

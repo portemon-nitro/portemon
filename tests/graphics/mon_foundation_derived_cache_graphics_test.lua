@@ -2,6 +2,7 @@
 -- portrait/icon selectors against the real atlases, and a real
 -- party-application frame cycle through the production menu.
 
+local SourceTick = require("libs.hgss.src.field.SourceTick")
 local Assert = require("tests.support.Assert")
 local BagSave = require("libs.hgss.src.save.BagSave")
 local FashionCaseState = require("libs.hgss.src.save.FashionCaseState")
@@ -213,7 +214,7 @@ function T.party_application_frame_cycle_leaves_no_stale_modal(scope)
       local ok, err = xpcall(function()
         local runtime = assert(state.runtime)
         local function step()
-          state:update(1 / 30)
+          state:update(SourceTick.DT)
         end
         local function waitFor(label, predicate, bound)
           for _ = 1, bound do

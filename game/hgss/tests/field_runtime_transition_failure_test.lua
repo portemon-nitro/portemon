@@ -5,6 +5,7 @@
 -- warm-up slice: script readiness comes from published hashes, not a
 -- background corpus pass.
 
+local SourceTick = require("libs.hgss.src.field.SourceTick")
 local Assert = require("tests.support.Assert")
 local FieldRuntimeFixture = require("tests.support.FieldRuntimeFixture")
 local S = require("gen4.script")
@@ -90,7 +91,7 @@ function T.transition_failure_propagates_after_the_session_tick()
   local runtime, calls = runtimeWithTransitionError(transitionError)
 
   local ok, err = pcall(function()
-    runtime:update(1 / 30)
+    runtime:update(SourceTick.DT)
   end)
   Assert.isFalse(ok, "transition failures reach LÖVE's callback error handler")
   Assert.equal(tostring(err), "destination preparation failed\nsource map 61 warp 0 -> map 60 warp 0")
