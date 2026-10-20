@@ -798,4 +798,90 @@ function T.producer_page_objs_bind_exact_sprite_families()
   end
 end
 
+-- Native static OBJ anchors: per-page, per-animation-family, per-sequence
+-- screen centers for sprites whose art, position, and page visibility
+-- are all fixed (verified against the decomp sprite setup at the pinned
+-- snapshot, not invented from cell extents). The shape choice grid shows
+-- choice art k at grid slot k while the shape editor is open
+-- (CreateSearchSprites body-type loop: x = 32 + 48 * (choice % 5),
+-- y = 56 + 40 * (choice / 5) on the MAIN engine); the registration
+-- banner emblem sits at (112, 32) on the popup card
+-- (PokedexEntryPopup_CreateBannerSprite, staged on the information
+-- surface). Every other page sprite stays origin-anchored: cursors,
+-- arrows, scrollbars, tab cursors, digits, type/footprint/mon-picture art
+-- and language icons all vary art, position, or visibility by live
+-- state, so no static anchor can place them.
+local NATIVE_SPRITE_ANCHORS = {
+  ["search.shape"] = {
+    [74] = {
+      [1] = { x = 32, y = 56, pane = "controls" },
+      [2] = { x = 80, y = 56, pane = "controls" },
+      [3] = { x = 128, y = 56, pane = "controls" },
+      [4] = { x = 176, y = 56, pane = "controls" },
+      [5] = { x = 224, y = 56, pane = "controls" },
+      [6] = { x = 32, y = 96, pane = "controls" },
+      [7] = { x = 80, y = 96, pane = "controls" },
+      [8] = { x = 128, y = 96, pane = "controls" },
+      [9] = { x = 176, y = 96, pane = "controls" },
+      [10] = { x = 224, y = 96, pane = "controls" },
+      [11] = { x = 32, y = 136, pane = "controls" },
+      [12] = { x = 80, y = 136, pane = "controls" },
+      [13] = { x = 128, y = 136, pane = "controls" },
+      [14] = { x = 176, y = 136, pane = "controls" },
+    },
+  },
+  registration = {
+    [31] = {
+      [1] = { x = 112, y = 32, pane = "information" },
+    },
+  },
+}
+
+function T.producer_static_sprites_carry_authored_screen_anchors()
+  local PokedexSources = assert(require("romdump.src.config.PokedexSources"))
+  local anchors = assert(
+    PokedexSources.spriteAnchors,
+    "the producer must publish its static sprite anchor map"
+  )
+  for role, families in pairs(NATIVE_SPRITE_ANCHORS) do
+    local bound = assert(anchors[role], "the anchor map must bind the " .. role .. " page")
+    for member, sequences in pairs(families) do
+      local boundSequences = assert(
+        bound[member],
+        "the anchor map must bind animation family " .. member .. " on " .. role
+      )
+      for index, expected in pairs(sequences) do
+        local record = assert(
+          boundSequences[index],
+          "the anchor map must bind sequence " .. index .. " of family " .. member .. " on " .. role
+        )
+        Assert.equal(record.x, expected.x, role .. " sequence " .. index .. " keeps its native x")
+        Assert.equal(record.y, expected.y, role .. " sequence " .. index .. " keeps its native y")
+        Assert.equal(record.pane, expected.pane, role .. " sequence " .. index .. " keeps its native pane")
+      end
+    end
+  end
+  local anchored = 0
+  for _, families in pairs(anchors) do
+    for _, sequences in pairs(families) do
+      for _, record in pairs(sequences) do
+        anchored = anchored + 1
+        Assert.isTrue(
+          record.x ~= 0 or record.y ~= 0,
+          "anchors never sit on the unplaced origin sentinel"
+        )
+      end
+    end
+  end
+  local wanted = 0
+  for _, families in pairs(NATIVE_SPRITE_ANCHORS) do
+    for _, sequences in pairs(families) do
+      for _ in pairs(sequences) do
+        wanted = wanted + 1
+      end
+    end
+  end
+  Assert.equal(anchored, wanted, "the anchor map binds exactly the verified static subset")
+end
+
 return { tests = T }

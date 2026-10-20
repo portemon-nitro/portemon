@@ -255,6 +255,45 @@ PokedexSources.pageObjs = {
   },
 }
 
+-- Producer-only static OBJ anchors: per-page, per-animation-family,
+-- per-sequence screen centers for sprites whose art, position, and page
+-- visibility are all fixed. The shape choice grid shows choice art k at
+-- grid slot k while the shape editor is open (CreateSearchSprites
+-- body-type loop in pokedex_sprites.c: x = 32 + 48 * (choice % 5),
+-- y = 56 + 40 * (choice / 5), MAIN engine via SpriteSystem_NewSprite;
+-- the menu art family is cells 73/animations 74 through
+-- sPokedexBodyTypeIconSpriteTemplate). The registration banner emblem
+-- sits at (112, 32) on the popup card
+-- (PokedexEntryPopup_CreateBannerSprite in pokedex_entry_popup.c, banner
+-- cells 30/animations 31, staged on the information surface). Anchors
+-- reuse the sprite record's own x/y/pane fields, so the manifest shape
+-- is unchanged; the origin (0, 0) stays the unplaced sentinel and no
+-- anchor may sit on it. Every other page sprite stays origin-anchored:
+-- cursors, arrows, scrollbars, tab cursors, digits, type/footprint/
+-- mon-picture art and language icons all vary art, position, or
+-- visibility by live state (cursor slots, page arrows, scrollbar sync,
+-- per-species icons, caught languages), so no static anchor can place
+-- them without inventing content.
+local shapeAnchors = {}
+for slot = 0, 13 do
+  shapeAnchors[slot + 1] = {
+    x = 32 + 48 * (slot % 5),
+    y = 56 + 40 * math.floor(slot / 5),
+    pane = "controls",
+  }
+end
+
+PokedexSources.spriteAnchors = {
+  ["search.shape"] = {
+    [74] = shapeAnchors,
+  },
+  registration = {
+    [31] = {
+      [1] = { x = 112, y = 32, pane = "information" },
+    },
+  },
+}
+
 -- Producer-only OBJ character palettes: the tile grids backing cell art
 -- render through the palette member adjacent to each OBJ character run
 -- (bank 0; multi-bank OBJ records have no manifest spelling and keep

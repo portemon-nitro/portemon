@@ -732,6 +732,52 @@ function T.fixture_policy_identities_resolve_within_rom_bank_ranges(romFs, versi
   provider:dispose()
 end
 
+-- Sprite placement closure: the compiler binds exactly the authored
+-- static anchors (the fourteen shape-grid slots on their editor page
+-- plus the registration banner emblem) and leaves every other page
+-- sprite on the unplaced origin sentinel, so the renderer never
+-- invents positions for state-driven art.
+function T.presentation_sprites_bind_only_the_authored_static_anchors(romFs, versionId)
+  local PokedexCatalogCompiler, PokedexAssetCompiler = requireProducer()
+  local catalog = compileCatalog(romFs, versionId, PokedexCatalogCompiler)
+  local manifest, err = PokedexAssetCompiler.compile(romFs, versionId, catalog)
+  Assert.notNil(manifest, versionId .. " must compile its presentation manifest")
+  Assert.isNil(err, versionId .. " compiles its presentation without error")
+  local expected = {}
+  for slot = 0, 13 do
+    expected["sprite-search-shape-" .. (87 + slot)] =
+      { x = 32 + 48 * (slot % 5), y = 56 + 40 * math.floor(slot / 5), pane = "controls" }
+  end
+  expected["sprite-registration-1"] = { x = 112, y = 32, pane = "information" }
+  local placed = 0
+  for role, record in pairs(manifest.sprites) do
+    Assert.isTrue(type(record.x) == "number" and type(record.y) == "number", versionId .. " anchors " .. role)
+    if record.x ~= 0 or record.y ~= 0 then
+      placed = placed + 1
+      local wanted = assert(
+        expected[role],
+        versionId .. " places no sprite outside the authored subset: " .. role
+      )
+      Assert.equal(record.x, wanted.x, versionId .. " " .. role .. " keeps its native x")
+      Assert.equal(record.y, wanted.y, versionId .. " " .. role .. " keeps its native y")
+      Assert.equal(record.pane, wanted.pane, versionId .. " " .. role .. " keeps its native pane")
+      local animation = assert(
+        manifest.animations[record.animation],
+        versionId .. " " .. role .. " resolves its animation"
+      )
+      Assert.isTrue(
+        type(animation.frames) == "table" and #animation.frames >= 1,
+        versionId .. " " .. role .. " carries art to place"
+      )
+    end
+  end
+  local wantedCount = 0
+  for _ in pairs(expected) do
+    wantedCount = wantedCount + 1
+  end
+  Assert.equal(placed, wantedCount, versionId .. " places exactly the authored static subset")
+end
+
 local suite = RomSuite.fromFacts(T)
 suite.metadata.capabilities = { "rom_dump" }
 suite.metadata.tags = { "pokedex" }

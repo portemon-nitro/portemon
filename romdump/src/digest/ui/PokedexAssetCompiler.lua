@@ -716,13 +716,19 @@ local function _compile(romFs, versionId, catalog, sink)
       if pairAnims == nil then
         error("pokedex OBJ map references an unknown animation member: " .. role, 0)
       end
-      for _, animRole in ipairs(pairAnims) do
+      local anchors = (PokedexSources.spriteAnchors[role] or {})[pair.anims] or {}
+      for seqIndex, animRole in ipairs(pairAnims) do
         local spriteRole = "sprite-" .. pageSlug(role) .. "-" .. (#pageSprites + 1)
+        local anchor = anchors[seqIndex]
+        local x, y, pane = 0, 0, "information"
+        if anchor ~= nil then
+          x, y, pane = anchor.x, anchor.y, anchor.pane
+        end
         sprites[spriteRole] = {
-          pane = "information",
+          pane = pane,
           animation = animRole,
-          x = 0,
-          y = 0,
+          x = x,
+          y = y,
           priority = 0,
           drawPriority = #pageSprites + 1,
           paletteGroup = "sprite",

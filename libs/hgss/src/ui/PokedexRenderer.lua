@@ -374,7 +374,10 @@ function PokedexRenderer.resolvePageRole(view, paneId)
         area = "search.area",
         shape = "search.shape",
       }
-      local role = kinds[search.editor.kind]
+      -- The editor view names its criterion; either spelling resolves,
+      -- matching the demand-side role projection.
+      local editorKind = search.editor.kind or search.editor.criterion
+      local role = kinds[editorKind]
       if role ~= nil then
         return role
       end
@@ -680,17 +683,20 @@ end
 -- exact sampler. Indexed pages bind their palette before the draw;
 -- straight pages sample unchanged. Sampling draws always run at opaque
 -- white so metadata marks elsewhere in the serial passes never tint art.
+-- Extra placement arguments (rotation, scale, origin for flipped parts)
+-- forward to the sampled draw.
 ---@param graphics table<string, unknown> host graphics namespace
 ---@param handle table<string, unknown> pooled sampling handle behind the art
 ---@param quad table<string, unknown>? prepared source viewport
 ---@param x number logical left
 ---@param y number logical top
-local function drawSampled(graphics, handle, quad, x, y)
+---@param ... number optional extra placement arguments forwarded to the sampled draw
+local function drawSampled(graphics, handle, quad, x, y, ...)
   assert(type(handle) == "table", "sampling draws carry their prepared handle")
   assert(handle.image ~= nil, "sampling handles carry their borrowed image")
   assert(type(graphics.setColor) == "function", "sampling draws reset their tint")
   graphics.setColor(1, 1, 1, 1)
-  ImageSampling.draw(graphics, handle, quad, x, y)
+  ImageSampling.draw(graphics, handle, quad, x, y, ...)
 end
 
 ---@param graphics table<string, unknown> host graphics namespace
@@ -925,6 +931,85 @@ local function drawPageWindowsAndText(graphics, assets, role, paneId, surfaces)
       if text ~= nil then
         assert(type(text) == "string", "prepared window strings stay strings")
         drawWindowText(graphics, assets, window, key, text, surfaces)
+      end
+    end
+  end
+end
+
+-- Draws the page-local placed sprites into the OBJ pair: records
+-- anchored off the unplaced origin sentinel paint their animation's
+-- resting frame at the authored center through the shared exact sampler,
+-- with per-part flips and one opaque metadata mark per painted part so
+-- transparent art corners never confer coverage. Records without an
+-- authored anchor stay undrawn: state-driven art (cursors, arrows,
+-- scrollbars, tab cursors, digits, type/footprint/mon-picture art,
+-- language icons) has no static placement and must never pile at the
+-- origin. Native panes only; the compact reflow keeps its own chrome
+-- scheme and draws no page sprites.
+---@param graphics table<string, unknown> host graphics namespace
+---@param assets table<string, unknown> prepared bundle with chrome and the manifest
+---@param role string manifest page role behind the pane
+---@param paneId string browser pane identity
+---@param surfaces table[] six realized serial surfaces in compositor order
+local function drawPageSprites(graphics, assets, role, paneId, surfaces)
+  local manifest = assert(assets.manifest, "prepared bundles carry their compiled manifest")
+  assert(type(manifest) == "table", "compiled manifests stay records")
+  local pages = assert(manifest.pages, "the compiled manifest carries its page roles")
+  local page = assert(pages[role], "the compiled manifest carries the drawn page role " .. tostring(role))
+  local contentPane = paneId
+  if paneId == "registration" then
+    contentPane = "information"
+  end
+  local keys = page.sprites
+  if type(keys) ~= "table" then
+    return
+  end
+  local inventory = assert(manifest.sprites, "the compiled manifest carries its sprite inventory")
+  local animations = assert(manifest.animations, "the compiled manifest carries its animations")
+  local cells = assert(manifest.cells, "the compiled manifest carries its cells")
+  local chrome = assert(assets.chrome, "prepared bundles carry their chrome handles")
+  local color, meta = surfaces[5], surfaces[6]
+  assert(type(graphics.setCanvas) == "function", "sprite passes target their surfaces")
+  assert(type(graphics.newQuad) == "function", "sprite passes cut their source viewports")
+  for _, key in ipairs(keys) do
+    local sprite = assert(inventory[key], "the sprite inventory carries " .. tostring(key))
+    assert(type(sprite) == "table", "sprite records stay records")
+    if (sprite.x ~= 0 or sprite.y ~= 0) and sprite.pane == contentPane then
+      local animation =
+        assert(animations[sprite.animation], "placed sprites resolve their animation: " .. tostring(key))
+      assert(type(animation) == "table", "animation records stay records")
+      local frames = assert(animation.frames, "placed sprites carry art: " .. tostring(key))
+      assert(#frames >= 1, "placed sprites carry art: " .. tostring(key))
+      local cell = assert(cells[frames[1].cell], "placed sprites resolve their resting cell: " .. tostring(key))
+      assert(type(cell) == "table", "cell records stay records")
+      assert(type(cell.parts) == "table", "placed cells carry their parts")
+      for _, part in ipairs(cell.parts) do
+        assert(type(part) == "table", "cell parts stay records")
+        local source = assert(part.source, "placed parts carry their source viewport")
+        local handle = assert(chrome[part.chrome], "prepared bundles carry sprite chrome " .. tostring(part.chrome))
+        assert(type(handle) == "table", "prepared chrome handles stay records")
+        local image = assert(handle.image, "sampling handles carry their borrowed image")
+        assert(
+          type(image.getWidth) == "function" and type(image.getHeight) == "function",
+          "chrome images measure their viewports"
+        )
+        local viewport =
+          graphics.newQuad(source.x, source.y, source.width, source.height, image:getWidth(), image:getHeight())
+        local dx, dy = sprite.x + part.x, sprite.y + part.y
+        graphics.setCanvas(color.canvas)
+        if part.flipX == true or part.flipY == true then
+          local sx, sy, ox, oy = 1, 1, 0, 0
+          if part.flipX == true then
+            sx, ox = -1, source.width
+          end
+          if part.flipY == true then
+            sy, oy = -1, source.height
+          end
+          drawSampled(graphics, handle, viewport, dx, dy, 0, sx, sy, ox, oy)
+        else
+          drawSampled(graphics, handle, viewport, dx, dy)
+        end
+        markObjRect(graphics, meta, { x = dx, y = dy, width = source.width, height = source.height }, 0)
       end
     end
   end
@@ -1303,9 +1388,10 @@ local function runCompactPasses(graphics, assets, view, role, paneId, surfaces, 
 end
 
 -- Runs the serial passes for one pane on the identity transform: every
--- previous target returns before the composite reads them. Backgrounds
--- and windows/text paint first so OBJ art composites above them; the
--- registration card reads its staged information content the same way.
+-- previous target returns before the composite reads them. Backgrounds,
+-- windows/text, and placed page sprites paint first so OBJ art composites
+-- above them; the registration card reads its staged information content
+-- the same way.
 ---@param graphics table<string, unknown> host graphics namespace
 ---@param assets table<string, unknown> prepared bundle with icons, pictures, chrome, and text
 ---@param view table<string, unknown> detached projection selecting content
@@ -1327,6 +1413,7 @@ local function runSerialPasses(graphics, assets, view, role, paneId, surfaces)
     end
     drawPageBackgrounds(graphics, assets, view, role, paneId, surfaces)
     drawPageWindowsAndText(graphics, assets, role, paneId, surfaces)
+    drawPageSprites(graphics, assets, role, paneId, surfaces)
     if paneId == "controls" then
       drawControlIcons(graphics, assets, view.grid, surfaces)
     elseif paneId == "information" then

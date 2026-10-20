@@ -2904,6 +2904,176 @@ function T.registration_picture_slides_and_hides_on_departure(scope)
   end)
 end
 
+-- Placed page sprites ink their authored art at their authored centers:
+-- the shape editor's fourteen choice icons paint over the criteria
+-- background on the controls pane, one resting frame per sprite, while
+-- every state-driven record stays off the origin pile-up.
+function T.search_shape_grid_paints_placed_choice_art(scope)
+  local Renderer = requireRenderer("placed page-sprite rasterization")
+  local Interface = requireInterface("paired native layout resolution")
+  requireOwner("prepared bundles behind the shape editor")
+  local versionId = readyVersion()
+  local pool = SharedImagePoolFake.new()
+  withPool(pool, function()
+    local rig = graphicsRig(versionId, pool, scope)
+    local dexOwner = Fixture.ownerWithHistory(rig.monCatalog, rig.catalog)
+    local controller = Fixture.openController(dexOwner, rig.monCatalog, rig.catalog)
+    openGrid(controller)
+    press(controller, { { type = "y" } })
+    idle(controller, 2)
+    Assert.equal(controller:view().page, "search", "the grid opens its search criteria")
+    press(controller, { { type = "activate", action = "criterion", value = "shape" } })
+    idle(controller, 2)
+    local view = controller:view()
+    Assert.equal(
+      Renderer.resolvePageRole(view, "information"),
+      "search.shape",
+      "the shape editor reads its own page role"
+    )
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "search.shape")
+    local demand = browserDemandFor(Renderer, view)
+    seedDemandPortraitsOnce(pool, rig.cacheFs, rig.monCatalog, demand, true, {})
+    local lease = rig.owner:acquire({ purpose = "browser" })
+    local assets = prepareReady(rig, lease, demand)
+    local page = assert(rig.manifest.pages["search.shape"], "the manifest closes the shape page")
+    local placed = {}
+    for _, spriteRole in ipairs(assert(page.sprites, "the shape page inventories its sprites")) do
+      local record = assert(rig.manifest.sprites[spriteRole], "the sprite inventory carries " .. spriteRole)
+      if record.x ~= 0 or record.y ~= 0 then
+        placed[#placed + 1] = { role = spriteRole, record = record }
+      end
+    end
+    Assert.equal(#placed, 14, "the shape page places its fourteen choice sprites")
+    local decoded = {}
+    local function chromeData(role)
+      if decoded[role] == nil then
+        local entry = assert(rig.manifest.chrome[role], "the manifest stages " .. role)
+        decoded[role] = decodePage(rig.cacheFs, entry.path)
+      end
+      return decoded[role]
+    end
+    local measurement = measurementFor("dualDisplay")
+    local plan = resolvePlan(Interface.browser(), measurement, planViewOf(view))
+    local resources = { graphics = love.graphics, renderer = assets.renderer }
+    local data = drawPlan(
+      scope,
+      plan,
+      resources,
+      preparedBrowserView(view, assets),
+      measurement.width,
+      measurement.height
+    )
+    local controlsPane = placementOf(plan, "controls")
+    for _, entry in ipairs(placed) do
+      local animation = assert(
+        rig.manifest.animations[entry.record.animation],
+        entry.role .. " resolves its animation"
+      )
+      local cell = assert(
+        rig.manifest.cells[animation.frames[1].cell],
+        entry.role .. " resolves its resting cell"
+      )
+      local part = assert(cell.parts[1], entry.role .. " carries its first part")
+      local baseData = chromeData(part.chrome)
+      local dx, dy =
+        opaqueOffset(baseData, part.source.x, part.source.y, part.source.width, part.source.height)
+      local er, eg, eb = pixel(baseData, part.source.x + dx, part.source.y + dy)
+      assertPixel(
+        data,
+        controlsPane.origin.x + entry.record.x + part.x + dx,
+        controlsPane.origin.y + entry.record.y + part.y + dy,
+        er,
+        eg,
+        eb,
+        entry.role .. " inks its authored art at its authored center"
+      )
+    end
+    lease:release()
+    controller:dispose()
+    rig.owner:release()
+    Assert.equal(pool:stats().outstandingLeases, 0, "the shape journey returns every borrowed interest")
+  end)
+end
+
+-- The registration banner emblem inks at its authored center on the
+-- card and survives the cover fade through the OBJ fade routing while
+-- the dynamic type and footprint records stay undrawn.
+function T.registration_card_paints_placed_banner_art(scope)
+  local Renderer = requireRenderer("placed registration rasterization")
+  local Interface = requireInterface("registration layout resolution")
+  requireOwner("prepared registration bundles")
+  local versionId = readyVersion()
+  local pool = SharedImagePoolFake.new()
+  withPool(pool, function()
+    local rig = graphicsRig(versionId, pool, scope)
+    local dexOwner = Fixture.ownerWithHistory(rig.monCatalog, rig.catalog)
+    local snapshot = Fixture.registrationSnapshot(dexOwner, rig.monCatalog, "TOTODILE", 0)
+    local demand = Fixture.registrationDemand(snapshot, "card-banner")
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "registration")
+    seedDemandPortraitsOnce(pool, rig.cacheFs, rig.monCatalog, demand, false, {})
+    local lease = rig.owner:acquire({ purpose = "registration" })
+    local assets = prepareReady(rig, lease, demand)
+    local page = assert(rig.manifest.pages.registration, "the manifest closes the registration page")
+    local placed = {}
+    for _, spriteRole in ipairs(assert(page.sprites, "the card inventories its sprites")) do
+      local record = assert(rig.manifest.sprites[spriteRole], "the sprite inventory carries " .. spriteRole)
+      if record.x ~= 0 or record.y ~= 0 then
+        placed[#placed + 1] = { role = spriteRole, record = record }
+      end
+    end
+    Assert.equal(#placed, 1, "the card places only its banner emblem")
+    local entry = placed[1]
+    local animation =
+      assert(rig.manifest.animations[entry.record.animation], entry.role .. " resolves its animation")
+    local cell = assert(rig.manifest.cells[animation.frames[1].cell], entry.role .. " resolves its resting cell")
+    local part = assert(cell.parts[1], entry.role .. " carries its first part")
+    local chromeEntry = assert(rig.manifest.chrome[part.chrome], "the manifest stages " .. part.chrome)
+    local baseData = decodePage(rig.cacheFs, chromeEntry.path)
+    local dx, dy = opaqueOffset(baseData, part.source.x, part.source.y, part.source.width, part.source.height)
+    local er, eg, eb = pixel(baseData, part.source.x + dx, part.source.y + dy)
+    local measurement = measurementFor("nativeLike")
+    local plan = resolvePlan(Interface.registration(), measurement, {})
+    local resources = { graphics = love.graphics, renderer = assets.renderer }
+    local unfaded = drawPlan(
+      scope,
+      plan,
+      resources,
+      { view = { pictureX = 48, paletteFade = 0, pictureFade = 0 }, assets = assets },
+      256,
+      192
+    )
+    assertPixel(
+      unfaded,
+      entry.record.x + part.x + dx,
+      entry.record.y + part.y + dy,
+      er,
+      eg,
+      eb,
+      "the banner emblem inks at its authored center"
+    )
+    local faded = drawPlan(
+      scope,
+      plan,
+      resources,
+      { view = { pictureX = 48, paletteFade = 16, pictureFade = 0 }, assets = assets },
+      256,
+      192
+    )
+    assertPixel(
+      faded,
+      entry.record.x + part.x + dx,
+      entry.record.y + part.y + dy,
+      er,
+      eg,
+      eb,
+      "the banner emblem survives the cover fade unfaded"
+    )
+    lease:release()
+    rig.owner:release()
+    Assert.equal(pool:stats().outstandingLeases, 0, "the banner journey returns every borrowed interest")
+  end)
+end
+
 function T.heartgold_graphics_legs_stay_blocked_without_a_dump(_, context)
   if not RomImporter.isReady("heartgold") then
     assert(context ~= nil, "blocked-version reporting needs its runner context")
