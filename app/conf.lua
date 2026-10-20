@@ -44,7 +44,7 @@ function love.conf(t)
     t.window.depth = 24 -- the render-target smoke tests need a depth buffer
     t.window.stencil = 8
   else
-    t.window.title = "portemon"
+    t.window.title = "Portémon Nitro - Pre-alpha"
     t.window.width = WindowConfig.REFERENCE_WIDTH
     t.window.height = WindowConfig.REFERENCE_HEIGHT
     t.window.resizable = true
