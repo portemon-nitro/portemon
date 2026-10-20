@@ -295,6 +295,9 @@ local function checkSidecar(plan, memberId, memberMarker, sidecar)
     if not isSortedUniqueStrings(record.scriptTargets) then
       return nil, "script member " .. tostring(memberId) .. " script dependency metadata is malformed"
     end
+    if not isSortedUniqueStrings(record.assetNeeds) then
+      return nil, "script member " .. tostring(memberId) .. " asset need metadata is malformed"
+    end
     byId[record.id] = record.resourceHash
   end
   return byId
@@ -350,6 +353,7 @@ local function persistMember(stage, plan, member)
       type(direct) ~= "table"
       or not isSortedUniqueStrings(direct.audioSequences)
       or not isSortedUniqueStrings(direct.scriptTargets)
+      or not isSortedUniqueStrings(direct.assetNeeds)
     then
       Errors.raise("SCRIPT_MEMBER_INVALID", "script member resource dependency metadata is missing", {
         memberId = member.memberId,
@@ -362,6 +366,7 @@ local function persistMember(stage, plan, member)
       resourceHash = canonicalResourceHash(resource),
       audioSequences = direct.audioSequences,
       scriptTargets = direct.scriptTargets,
+      assetNeeds = direct.assetNeeds,
     }
   end
   table.sort(hashes, function(a, b)
@@ -509,8 +514,63 @@ local function checkPlan(plan)
   return expectedIndex
 end
 
+-- The transitive union of per-script symbol sets over the script-target
+-- graph (a fixed point, so cycles converge), aggregated per member as sorted
+-- unique arrays keyed by decimal member id. Members with no symbols carry an
+-- explicit empty array.
+---@param plan table<string, unknown>
+---@param memberOf table<string, integer> member id by resource id
+---@param resourceIds string[] sorted resource ids
+---@param directById table<string, string[]> direct symbols by resource id
+---@param directTargets table<string, string[]> direct script targets by resource id
+---@return table<string, string[]>
+local function memberClosure(plan, memberOf, resourceIds, directById, directTargets)
+  local closure = {}
+  for _, id in ipairs(resourceIds) do
+    local seen = {}
+    for _, symbol in ipairs(directById[id]) do
+      seen[symbol] = true
+    end
+    closure[id] = seen
+  end
+  local changed = true
+  while changed do
+    changed = false
+    for _, id in ipairs(resourceIds) do
+      local seen = closure[id]
+      for _, target in ipairs(directTargets[id]) do
+        for symbol in pairs(closure[target]) do
+          if seen[symbol] == nil then
+            seen[symbol] = true
+            changed = true
+          end
+        end
+      end
+    end
+  end
+  local byMember = {}
+  for _, member in ipairs(orderedMembers(plan)) do
+    byMember[tostring(member.memberId)] = {}
+  end
+  for _, id in ipairs(resourceIds) do
+    local union = byMember[tostring(memberOf[id])]
+    for symbol in pairs(closure[id]) do
+      union[symbol] = true
+    end
+  end
+  for key, union in pairs(byMember) do
+    local list = {}
+    for symbol in pairs(union) do
+      list[#list + 1] = symbol
+    end
+    table.sort(list)
+    byMember[key] = list
+  end
+  return byMember
+end
+
 -- Join every planned resource's published canonical hash and the
--- transitive script-audio closure into the generation index in one member
+-- transitive script-audio and asset-need closures into the generation index in one member
 -- sidecar traversal: each current member's sidecar must attest exactly its
 -- planned resources, so the published index describes precisely the current
 -- member bodies with no missing, extra, or duplicate records, and every
@@ -522,7 +582,7 @@ end
 -- array. Loads each already-required member sidecar exactly once; never
 -- resource bodies.
 local function joinMemberMetadata(liveFs, plan, expectedIndex)
-  local directAudio, directTargets, memberOf = {}, {}, {}
+  local directAudio, directNeeds, directTargets, memberOf = {}, {}, {}, {}
   for _, entry in ipairs(plan.resources) do
     memberOf[entry.id] = entry.member
   end
@@ -549,6 +609,7 @@ local function joinMemberMetadata(liveFs, plan, expectedIndex)
     hashesByMember[member.memberId] = hashes
     for _, record in ipairs(sidecar.resources) do
       directAudio[record.id] = record.audioSequences
+      directNeeds[record.id] = record.assetNeeds
       directTargets[record.id] = record.scriptTargets
     end
   end
@@ -578,48 +639,8 @@ local function joinMemberMetadata(liveFs, plan, expectedIndex)
       end
     end
   end
-  local closure = {}
-  for _, id in ipairs(resourceIds) do
-    local seen = {}
-    for _, symbol in ipairs(directAudio[id]) do
-      seen[symbol] = true
-    end
-    closure[id] = seen
-  end
-  local changed = true
-  while changed do
-    changed = false
-    for _, id in ipairs(resourceIds) do
-      local seen = closure[id]
-      for _, target in ipairs(directTargets[id]) do
-        for symbol in pairs(closure[target]) do
-          if seen[symbol] == nil then
-            seen[symbol] = true
-            changed = true
-          end
-        end
-      end
-    end
-  end
-  local memberAudioSequences = {}
-  for _, member in ipairs(orderedMembers(plan)) do
-    memberAudioSequences[tostring(member.memberId)] = {}
-  end
-  for _, id in ipairs(resourceIds) do
-    local union = memberAudioSequences[tostring(memberOf[id])]
-    for symbol in pairs(closure[id]) do
-      union[symbol] = true
-    end
-  end
-  for key, union in pairs(memberAudioSequences) do
-    local list = {}
-    for symbol in pairs(union) do
-      list[#list + 1] = symbol
-    end
-    table.sort(list)
-    memberAudioSequences[key] = list
-  end
-  expectedIndex.memberAudioSequences = memberAudioSequences
+  expectedIndex.memberAudioSequences = memberClosure(plan, memberOf, resourceIds, directAudio, directTargets)
+  expectedIndex.memberAssetNeeds = memberClosure(plan, memberOf, resourceIds, directNeeds, directTargets)
 end
 
 local function memberIsComplete(liveFs, plan, member)

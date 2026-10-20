@@ -49,7 +49,7 @@ local function memberResource(memberId, id, scriptIndex)
     member = memberId,
     scriptIndex = scriptIndex,
     sourceHash = SOURCE_HASH,
-    directDependencies = { audioSequences = {}, scriptTargets = {} },
+    directDependencies = { audioSequences = {}, scriptTargets = {}, assetNeeds = {} },
     resource = {
       api = 1,
       id = id,
@@ -542,6 +542,7 @@ T["a member hash record with the wrong marker is not ready"] = function()
         resourceHash = Sha256.hex(LuaWriter.encode(resource)),
         audioSequences = {},
         scriptTargets = {},
+        assetNeeds = {},
       },
     },
   })
@@ -570,6 +571,7 @@ T["a hand-published hash record attests its member"] = function()
         resourceHash = Sha256.hex(LuaWriter.encode(resource)),
         audioSequences = {},
         scriptTargets = {},
+        assetNeeds = {},
       },
     },
   })
@@ -618,6 +620,7 @@ T["member sidecar carries direct script audio and cross-script targets"] = funct
     stagedWithSteps(3, "common.signpost", 0, steps, GENERATION_A, {
       audioSequences = { "SEQ_GS_NAMINORI", "SEQ_GS_TITLE", "SEQ_ME_HYOUKA1", "SEQ_SE_GS_N_SESERAGI" },
       scriptTargets = { "common.other", "common.third" },
+      assetNeeds = {},
     }),
     "deps-member-3",
     "outer-a"
@@ -652,6 +655,61 @@ T["staging without compiler dependency metadata fails and publishes no marker"] 
   Assert.isNil(cache:read(ScriptCache.markerPath()))
 end
 
+-- Asset needs are mandatory compiler facts like the audio and target lists:
+-- a record without them, or with an unsorted list, never reaches the stage.
+T["staging without or with malformed asset needs fails and publishes no marker"] = function()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local marker = "script-cache-v5:rom-sha:dep-sha"
+  local currentPlan = plan(GENERATION_A, marker)
+  local missing = stagedWithSteps(3, "common.signpost", 0, { { op = "stop" } }, GENERATION_A, {
+    audioSequences = {},
+    scriptTargets = {},
+  })
+  local first = preparation(cache, "3", "missing-needs", "outer-a")
+  Assert.throws(function()
+    ScriptCacheWriter.stageMember(first, currentPlan, missing)
+  end, "a record without asset needs must fail staging")
+  first:abort()
+  local unsorted = stagedWithSteps(3, "common.signpost", 0, { { op = "stop" } }, GENERATION_A, {
+    audioSequences = {},
+    scriptTargets = {},
+    assetNeeds = { "field-effect:b", "field-effect:a" },
+  })
+  local second = preparation(cache, "3", "unsorted-needs", "outer-a")
+  Assert.throws(function()
+    ScriptCacheWriter.stageMember(second, currentPlan, unsorted)
+  end, "an unsorted asset need list must fail staging")
+  second:abort()
+  Assert.isNil(cache:read(ScriptCache.memberMarkerPath(GENERATION_A, 3)))
+end
+
+-- A sidecar whose asset needs are unsorted cannot attest its member.
+T["a member sidecar with unsorted asset needs is not ready"] = function()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local marker = "script-cache-v5:rom-sha:dep-sha"
+  local currentPlan = publishGeneration(cache, GENERATION_A, marker, "unsorted-needs", "outer-a")
+  local resource = assert(cache:loadModule(ScriptCache.scriptPath(GENERATION_A, 3, "common.signpost")))
+  cache:writeLua(ScriptCache.memberDir(GENERATION_A, 3) .. "/resource-hashes.lua", {
+    schema = ScriptCache.HASHES_SCHEMA,
+    generation = GENERATION_A,
+    memberId = 3,
+    marker = GENERATION_A .. ":member:3",
+    resources = {
+      {
+        id = "common.signpost",
+        scriptIndex = 0,
+        resourceHash = Sha256.hex(LuaWriter.encode(resource)),
+        audioSequences = {},
+        scriptTargets = {},
+        assetNeeds = { "field-effect:b", "field-effect:a" },
+      },
+    },
+  })
+  local ready, reason = ScriptCacheWriter.isMemberReady(cache, currentPlan, 3)
+  Assert.isFalse(ready, "an unsorted asset need list must not attest its member")
+  Assert.isTrue(type(reason) == "string" and reason ~= "", "the refusal names its cause")
+end
+
 -- Staging with malformed dependency metadata fails before any marker
 -- lands: unsorted arrays and non-array fields are not dependency facts.
 T["staging with malformed dependency metadata fails and publishes no marker"] = function()
@@ -661,6 +719,7 @@ T["staging with malformed dependency metadata fails and publishes no marker"] = 
   local unsorted = stagedWithSteps(3, "common.signpost", 0, { { op = "stop" } }, GENERATION_A, {
     audioSequences = { "SEQ_GS_TITLE", "SEQ_GS_NAMINORI" },
     scriptTargets = {},
+    assetNeeds = {},
   })
   local first = preparation(cache, "3", "unsorted-deps", "outer-a")
   Assert.throws(function()
@@ -670,6 +729,7 @@ T["staging with malformed dependency metadata fails and publishes no marker"] = 
   local mistyped = stagedWithSteps(3, "common.signpost", 0, { { op = "stop" } }, GENERATION_A, {
     audioSequences = {},
     scriptTargets = "common.other",
+    assetNeeds = {},
   })
   local second = preparation(cache, "3", "mistyped-deps", "outer-a")
   Assert.throws(function()
@@ -699,7 +759,7 @@ T["cyclic script graphs converge to the same transitive closure"] = function()
           { op = "call", target = "alpha.second" },
           { op = "stop" },
         },
-        deps = { audioSequences = { "SEQ_GS_TITLE" }, scriptTargets = { "alpha.second" } },
+        deps = { audioSequences = { "SEQ_GS_TITLE" }, scriptTargets = { "alpha.second" }, assetNeeds = {} },
       },
       {
         id = "alpha.second",
@@ -708,7 +768,7 @@ T["cyclic script graphs converge to the same transitive closure"] = function()
           { op = "call_common", target = "beta.third" },
           { op = "stop" },
         },
-        deps = { audioSequences = {}, scriptTargets = { "beta.third" } },
+        deps = { audioSequences = {}, scriptTargets = { "beta.third" }, assetNeeds = {} },
       },
     }, GENERATION_A),
     "cycle-member-0",
@@ -726,7 +786,11 @@ T["cyclic script graphs converge to the same transitive closure"] = function()
           { op = "call", target = "alpha.second" },
           { op = "stop" },
         },
-        deps = { audioSequences = { "SEQ_GS_NAMINORI" }, scriptTargets = { "alpha.second" } },
+        deps = {
+          audioSequences = { "SEQ_GS_NAMINORI" },
+          scriptTargets = { "alpha.second" },
+          assetNeeds = { "field-effect:ho_oh_appearance" },
+        },
       },
     }, GENERATION_A),
     "cycle-member-1",
@@ -738,6 +802,11 @@ T["cyclic script graphs converge to the same transitive closure"] = function()
     index.memberAudioSequences,
     { ["0"] = { "SEQ_GS_NAMINORI", "SEQ_GS_TITLE" }, ["1"] = { "SEQ_GS_NAMINORI" } },
     "transitive closure converges through the cycle with sorted unique sequences"
+  )
+  Assert.deepEqual(
+    index.memberAssetNeeds,
+    { ["0"] = { "field-effect:ho_oh_appearance" }, ["1"] = { "field-effect:ho_oh_appearance" } },
+    "asset needs reach every member that can reach the declaring script, through the same cycle"
   )
 end
 
@@ -760,6 +829,7 @@ T["a member sidecar with unsorted dependencies is not ready"] = function()
         resourceHash = Sha256.hex(LuaWriter.encode(resource)),
         audioSequences = { "SEQ_GS_TITLE", "SEQ_GS_NAMINORI" },
         scriptTargets = {},
+        assetNeeds = {},
       },
     },
   })
@@ -784,6 +854,7 @@ T["a silent resource publishes explicit empty dependencies"] = function()
   local record = sidecarRecord(cache, GENERATION_A, 3, "common.signpost")
   Assert.deepEqual(record.audioSequences, {}, "silence carries an explicit empty audio set")
   Assert.deepEqual(record.scriptTargets, {}, "silence reaches no other script")
+  Assert.deepEqual(record.assetNeeds, {}, "silence needs no assets")
 end
 
 -- A declared cross-script target that resolves to no planned resource
@@ -799,7 +870,7 @@ T["a summary over an unknown script target is refused"] = function()
     stagedWithSteps(843, "new_bark.lab_sign", 9, {
       { op = "call_common", target = "nope.missing" },
       { op = "stop" },
-    }, GENERATION_A, { audioSequences = {}, scriptTargets = { "nope.missing" } }),
+    }, GENERATION_A, { audioSequences = {}, scriptTargets = { "nope.missing" }, assetNeeds = {} }),
     "dangling-member-843",
     "outer-a"
   )
@@ -830,7 +901,7 @@ T["a self-targeting resource converges to its own audio"] = function()
           { op = "call", target = "alpha.first" },
           { op = "stop" },
         },
-        deps = { audioSequences = { "SEQ_GS_TITLE" }, scriptTargets = { "alpha.first" } },
+        deps = { audioSequences = { "SEQ_GS_TITLE" }, scriptTargets = { "alpha.first" }, assetNeeds = {} },
       },
       {
         id = "alpha.second",

@@ -8,6 +8,7 @@ local Coverage = require("romdump.src.digest.script.Coverage")
 local SourceCatalog = require("romdump.src.digest.script.SourceCatalog")
 local ScriptMembers = require("romdump.src.catalog.hgss.script_members")
 local ScriptAudioFacts = require("romdump.src.catalog.hgss.script_audio")
+local AssetNeeds = require("libs.script.src.AssetNeeds")
 local Errors = require("libs.errors.src.Errors")
 
 local Session = {}
@@ -205,7 +206,7 @@ end
 ---@param steps table[] final structured resource steps
 ---@param sounds table<number, string> pinned numeric-to-symbol sequence catalog
 ---@param context { memberId: integer, id: string } source identity of the resource under inspection
----@return { audioSequences: string[], scriptTargets: string[] }
+---@return { audioSequences: string[], scriptTargets: string[], assetNeeds: string[] }
 function Session.directDependencies(steps, sounds, context)
   assert(type(steps) == "table", "dependency extraction requires resource steps")
   assert(type(sounds) == "table", "dependency extraction requires the pinned sound catalog")
@@ -223,7 +224,7 @@ function Session.directDependencies(steps, sounds, context)
   collectSteps(steps, sounds, localLabels, audioSet, audioList, targetSet, targetList, source)
   table.sort(audioList)
   table.sort(targetList)
-  return { audioSequences = audioList, scriptTargets = targetList }
+  return { audioSequences = audioList, scriptTargets = targetList, assetNeeds = AssetNeeds.forSteps(steps) }
 end
 
 local function memberPlan(plan, memberId)
