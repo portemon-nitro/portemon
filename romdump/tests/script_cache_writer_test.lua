@@ -683,6 +683,32 @@ T["staging without or with malformed asset needs fails and publishes no marker"]
   Assert.isNil(cache:read(ScriptCache.memberMarkerPath(GENERATION_A, 3)))
 end
 
+-- A need key is `kind:id`; a sorted list of anything else is not a need list.
+T["a member sidecar with a malformed asset need key is not ready"] = function()
+  local cache = CacheFs.forVersion("heartgold", FakeCache.new())
+  local marker = "script-cache-v5:rom-sha:dep-sha"
+  local currentPlan = publishGeneration(cache, GENERATION_A, marker, "keyless-needs", "outer-a")
+  local resource = assert(cache:loadModule(ScriptCache.scriptPath(GENERATION_A, 3, "common.signpost")))
+  cache:writeLua(ScriptCache.memberDir(GENERATION_A, 3) .. "/resource-hashes.lua", {
+    schema = ScriptCache.HASHES_SCHEMA,
+    generation = GENERATION_A,
+    memberId = 3,
+    marker = GENERATION_A .. ":member:3",
+    resources = {
+      {
+        id = "common.signpost",
+        scriptIndex = 0,
+        resourceHash = Sha256.hex(LuaWriter.encode(resource)),
+        audioSequences = {},
+        scriptTargets = {},
+        assetNeeds = { "no-separator" },
+      },
+    },
+  })
+  local ready = ScriptCacheWriter.isMemberReady(cache, currentPlan, 3)
+  Assert.isFalse(ready, "a need without kind:id shape must not attest its member")
+end
+
 -- A sidecar whose asset needs are unsorted cannot attest its member.
 T["a member sidecar with unsorted asset needs is not ready"] = function()
   local cache = CacheFs.forVersion("heartgold", FakeCache.new())

@@ -92,6 +92,16 @@ function AssetNeeds.forResource(resource)
   local set = {}
   collect(resource.steps, set)
   for _, need in ipairs(resource.needs or {}) do
+    if
+      type(need) ~= "table"
+      or type(need.kind) ~= "string"
+      or need.kind == ""
+      or need.kind:find(":", 1, true)
+      or type(need.id) ~= "string"
+      or need.id == ""
+    then
+      Errors.raise(ScriptErrors.SCRIPT_SCHEMA_INVALID, "malformed asset needs hint", { resource = resource.id })
+    end
     set[AssetNeeds.key(need)] = true
   end
   return sorted(set)

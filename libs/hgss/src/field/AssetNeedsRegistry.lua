@@ -6,7 +6,6 @@
 -- nothing about any particular asset: composition registers the preparers.
 
 local AssetNeeds = require("libs.script.src.AssetNeeds")
-local ScriptCache = require("libs.assets.src.ScriptCache")
 
 local AssetNeedsRegistry = {}
 AssetNeedsRegistry.__index = AssetNeedsRegistry
@@ -202,30 +201,6 @@ function AssetNeedsRegistry:dispose()
     cancelEntry(self._entries[key])
     removeEntry(self, key)
   end
-end
-
--- The needs of one script member: the published index closure plus the needs
--- of any override-layer resource of that member. A malformed index
--- contributes nothing; the synchronous path raises if it ever needs the asset.
----@param index table<string, unknown> the published script index
----@param memberId integer
----@param overrideNeeds fun(id: string): string[]? needs of an id's override resource, nil when it has none
----@return table<string, true> needs set of `kind:id` keys
-function AssetNeedsRegistry.needsForMember(index, memberId, overrideNeeds)
-  local needs = {}
-  for _, key in ipairs(ScriptCache.assetNeedsForMember(index, memberId) or {}) do
-    needs[key] = true
-  end
-  if type(index) == "table" and type(index.resources) == "table" then
-    for _, entry in ipairs(index.resources) do
-      if entry.member == memberId then
-        for _, key in ipairs(overrideNeeds(entry.id) or {}) do
-          needs[key] = true
-        end
-      end
-    end
-  end
-  return needs
 end
 
 return AssetNeedsRegistry

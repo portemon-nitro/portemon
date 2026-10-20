@@ -636,21 +636,34 @@ local FIELD_EFFECT_INVENTORY = {
 for selector = 1, 14 do
   FIELD_EFFECT_INVENTORY[#FIELD_EFFECT_INVENTORY + 1] = followerReactionEntry(selector)
 end
+-- Cinematic parts by kind: `variant` is nil for a shot's shared part.
+local PART_SPECS = {} ---@type table<string, {shot: string, variant: integer?}>
 for _, shot in ipairs(HOOH_SHOTS) do
+  local sharedKind = FieldEffectAssetCache.hoOhCinematicKind(shot)
+  PART_SPECS[sharedKind] = { shot = shot }
   FIELD_EFFECT_INVENTORY[#FIELD_EFFECT_INVENTORY + 1] = {
-    key = FieldEffectAssetCache.hoOhCinematicKind(shot),
+    key = sharedKind,
     entryKind = "cinematic",
     validator = validHoOhSharedPart(shot),
     part = true,
   }
   for variant = 0, HOOH_VARIANT_COUNT - 1 do
+    local overlayKind = FieldEffectAssetCache.hoOhCinematicKind(shot, variant)
+    PART_SPECS[overlayKind] = { shot = shot, variant = variant }
     FIELD_EFFECT_INVENTORY[#FIELD_EFFECT_INVENTORY + 1] = {
-      key = FieldEffectAssetCache.hoOhCinematicKind(shot, variant),
+      key = overlayKind,
       entryKind = "cinematic",
       validator = validHoOhOverlayPart(shot, variant),
       part = true,
     }
   end
+end
+
+-- True for a cinematic part kind (a shot's shared part or one variant overlay).
+---@param kind string
+---@return boolean
+function FieldEffectAssetCache.isPartKind(kind)
+  return PART_SPECS[kind] ~= nil
 end
 
 function FieldEffectAssetCache.indexPath()
@@ -702,14 +715,14 @@ end
 ---@param definitionOf fun(kind: string): table<string, unknown>
 ---@return table<string, unknown>[] descriptors
 function FieldEffectAssetCache.modelDescriptors(kind, definition, definitionOf)
-  local shot, variant = kind:match("^ho_oh_cinematic_(%a+)_(%w+)$")
-  if shot == nil then
+  local part = PART_SPECS[kind]
+  if part == nil then
     return definition.models or { definition.model }
   end
-  if variant == "shared" then
+  if part.variant == nil then
     return {}
   end
-  return { HoOhCinematicParts.merge(definitionOf(FieldEffectAssetCache.hoOhCinematicKind(shot)), definition) }
+  return { HoOhCinematicParts.merge(definitionOf(FieldEffectAssetCache.hoOhCinematicKind(part.shot)), definition) }
 end
 function FieldEffectAssetCache.geometryPath(sha1)
   return ASSET_DIR .. "/geometry/" .. sha1 .. ".g4mesh"
@@ -765,8 +778,9 @@ function FieldEffectAssetCache.isReady(cacheFs, expectedMarker)
     end
     local descriptors
     if spec.part then
+      -- Shared parts precede their overlays in the inventory, so they are loaded already.
       local assembled, result = pcall(FieldEffectAssetCache.modelDescriptors, kind, definition, function(partKind)
-        return requireDefinition(cacheFs, partKind)
+        return sharedParts[PART_SPECS[partKind].shot]
       end)
       if not assembled then
         return false
@@ -793,9 +807,9 @@ function FieldEffectAssetCache.isReady(cacheFs, expectedMarker)
     if kind == "ho_oh_appearance" then
       core = definition
     end
-    local sharedShot = kind:match("^ho_oh_cinematic_(%a+)_shared$")
-    if sharedShot ~= nil then
-      sharedParts[sharedShot] = definition
+    local part = PART_SPECS[kind]
+    if part ~= nil and part.variant == nil then
+      sharedParts[part.shot] = definition
     end
     for _, descriptor in ipairs(descriptors) do
       local valid, err = pcall(ModelAsset.validate, descriptor)

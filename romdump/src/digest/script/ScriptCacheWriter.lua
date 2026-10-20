@@ -10,6 +10,7 @@
 -- failure never triggers writer-level stage cleanup that could delete the
 -- last remaining copy of the previous artifact.
 
+local AssetNeeds = require("libs.script.src.AssetNeeds")
 local ScriptCache = require("libs.assets.src.ScriptCache")
 local ScriptCompiler = require("romdump.src.digest.script.ScriptCompiler")
 local ArtifactPublisher = require("libs.storage.src.ArtifactPublisher")
@@ -251,6 +252,19 @@ local function isSortedUniqueStrings(value)
   return true
 end
 
+-- A sorted unique list whose entries are all `kind:id` asset need keys.
+local function isAssetNeedKeys(value)
+  if not isSortedUniqueStrings(value) then
+    return false
+  end
+  for _, key in ipairs(value) do
+    if not pcall(AssetNeeds.parse, key) then
+      return false
+    end
+  end
+  return true
+end
+
 -- Validate a staged or published hash sidecar against its planned member:
 -- current schema, generation, member identity and marker, plus an exact
 -- bijection between the sidecar records and the planned member resources.
@@ -295,7 +309,7 @@ local function checkSidecar(plan, memberId, memberMarker, sidecar)
     if not isSortedUniqueStrings(record.scriptTargets) then
       return nil, "script member " .. tostring(memberId) .. " script dependency metadata is malformed"
     end
-    if not isSortedUniqueStrings(record.assetNeeds) then
+    if not isAssetNeedKeys(record.assetNeeds) then
       return nil, "script member " .. tostring(memberId) .. " asset need metadata is malformed"
     end
     byId[record.id] = record.resourceHash
@@ -353,7 +367,7 @@ local function persistMember(stage, plan, member)
       type(direct) ~= "table"
       or not isSortedUniqueStrings(direct.audioSequences)
       or not isSortedUniqueStrings(direct.scriptTargets)
-      or not isSortedUniqueStrings(direct.assetNeeds)
+      or not isAssetNeedKeys(direct.assetNeeds)
     then
       Errors.raise("SCRIPT_MEMBER_INVALID", "script member resource dependency metadata is missing", {
         memberId = member.memberId,
