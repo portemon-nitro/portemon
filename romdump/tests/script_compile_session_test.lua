@@ -199,4 +199,17 @@ function T.compile_member_attaches_direct_dependency_facts_to_every_resource()
   Assert.deepEqual(direct.scriptTargets, {})
 end
 
+function T.direct_dependencies_include_asset_needs()
+  local deps = Session.directDependencies({
+    { op = "legend_cutscene_bell_begin" },
+    { op = "stop" },
+  }, {}, context(3, "common.signpost"))
+  Assert.deepEqual(deps.assetNeeds, { "field-effect:ho_oh_appearance" })
+end
+
+function T.silent_resources_carry_an_explicit_empty_asset_need_list()
+  local deps = Session.directDependencies({ { op = "stop" } }, {}, context(3, "common.signpost"))
+  Assert.deepEqual(deps.assetNeeds, {})
+end
+
 return { metadata = { capabilities = {} }, tests = T }

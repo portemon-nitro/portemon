@@ -111,7 +111,7 @@ end
 -- Canonical per-resource hashes published alongside one member: the writer
 -- stages this sidecar (validated there) before the member marker lands, so
 -- a member without it is an incompatible older artifact, never a ready one.
-ScriptCache.HASHES_SCHEMA = "g4-script-resource-hashes-v2"
+ScriptCache.HASHES_SCHEMA = "g4-script-resource-hashes-v3"
 
 function ScriptCache.memberHashesPath(generation, memberId)
   assert(isSafeGeneration(generation), "generation key must be lowercase hexadecimal")
@@ -163,13 +163,13 @@ function ScriptCache.loadGenerationIndex(cacheFs, generation)
   return index
 end
 
-local function isSortedUniqueStrings(value)
+local function isSortedUniqueStrings(value, accepts)
   if not Validate.isArray(value) then
     return false
   end
   local previous
   for _, entry in ipairs(value) do
-    if type(entry) ~= "string" or entry == "" then
+    if type(entry) ~= "string" or entry == "" or (accepts ~= nil and not accepts(entry)) then
       return false
     end
     if previous ~= nil and previous >= entry then
@@ -180,9 +180,14 @@ local function isSortedUniqueStrings(value)
   return true
 end
 
--- True when the value is a well-formed per-member audio closure mapping:
--- decimal member-id keys to sorted unique canonical sequence arrays.
-local function isMemberAudioMapping(value)
+-- An asset need is a `kind:id` key, both halves non-empty.
+local function isNeedKey(entry)
+  return entry:match("^[^:]+:.+$") ~= nil
+end
+
+-- True when the value is a well-formed per-member closure mapping: decimal
+-- member-id keys to sorted unique arrays whose entries `accepts` (when given).
+local function isMemberClosureMapping(value, accepts)
   if type(value) ~= "table" then
     return false
   end
@@ -194,11 +199,19 @@ local function isMemberAudioMapping(value)
     if memberId == nil or memberId < 0 or memberId % 1 ~= 0 then
       return false
     end
-    if not isSortedUniqueStrings(list) then
+    if not isSortedUniqueStrings(list, accepts) then
       return false
     end
   end
   return true
+end
+
+local function isMemberAudioMapping(value)
+  return isMemberClosureMapping(value)
+end
+
+local function isMemberAssetNeedsMapping(value)
+  return isMemberClosureMapping(value, isNeedKey)
 end
 
 local function resourceFilesReady(cacheFs, generation, index)
@@ -209,6 +222,11 @@ local function resourceFilesReady(cacheFs, generation, index)
   -- empty) under its decimal id; a mapping without it belongs to an
   -- incompatible older index, and a malformed list can never attest audio.
   if not isMemberAudioMapping(index.memberAudioSequences) then
+    return false
+  end
+  -- Asset needs follow the same rule: every planned member carries its
+  -- transitive closure (possibly empty).
+  if not isMemberAssetNeedsMapping(index.memberAssetNeeds) then
     return false
   end
   local seenIds = {}
@@ -238,6 +256,10 @@ local function resourceFilesReady(cacheFs, generation, index)
     if not isSortedUniqueStrings(closure) then
       return false
     end
+    local needs = index.memberAssetNeeds[tostring(member)]
+    if not isSortedUniqueStrings(needs, isNeedKey) then
+      return false
+    end
   end
   return true
 end
@@ -263,6 +285,26 @@ function ScriptCache.audioSequencesForMember(index, memberId)
     return nil, "script member " .. tostring(memberId) .. " audio closure is malformed"
   end
   return closure
+end
+
+-- The transitive asset needs for one script member: sorted unique `kind:id`
+-- keys, possibly empty. Returns the list, or nil plus a cause when the index
+-- carries no usable closure for the member. No IO.
+---@param index table<string, unknown>
+---@param memberId integer
+---@return string[]|nil, string|nil
+function ScriptCache.assetNeedsForMember(index, memberId)
+  if type(index) ~= "table" or not isMemberAssetNeedsMapping(index.memberAssetNeeds) then
+    return nil, "script member asset needs metadata is malformed"
+  end
+  if type(memberId) ~= "number" or memberId < 0 or memberId % 1 ~= 0 then
+    return nil, "script member identity is invalid: " .. tostring(memberId)
+  end
+  local needs = index.memberAssetNeeds[tostring(memberId)]
+  if needs == nil then
+    return nil, "script member " .. tostring(memberId) .. " has no published asset needs"
+  end
+  return needs
 end
 
 -- True only if the marker is exact, the index loads with the expected schema,

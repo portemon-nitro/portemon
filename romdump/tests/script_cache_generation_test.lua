@@ -65,7 +65,7 @@ local function member(memberId, id, generation)
         sourceHash = SOURCE_HASH,
         resource = resource(id, generation),
         report = { complete = true, unsupportedCount = 0 },
-        directDependencies = { audioSequences = {}, scriptTargets = {} },
+        directDependencies = { audioSequences = {}, scriptTargets = {}, assetNeeds = {} },
       },
     },
   }

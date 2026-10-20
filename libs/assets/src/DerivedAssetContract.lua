@@ -276,6 +276,10 @@ DerivedAssetContract.font = {
 }
 
 DerivedAssetContract.scripts = {
+  -- v8 adds the per-member transitive script asset-need closure
+  -- (memberAssetNeeds, sorted `kind:id` keys keyed by decimal member id,
+  -- possibly empty) and per-resource direct needs in the member attestation
+  -- sidecar (v3); older generated script data rebuilds.
   -- v7 carries the deterministic per-member transitive script-audio closure
   -- (memberAudioSequences, keyed by decimal member id, possibly empty) and
   -- the v2 member attestation sidecar with per-resource direct audio and
@@ -291,8 +295,8 @@ DerivedAssetContract.scripts = {
   -- metadata directory plus the active selector without replacing members.
   -- v4 shards the generated corpus into immutable generations and member
   -- roots. The active selector is separate from the generation contents.
-  cacheFormat = "script-cache-v5",
-  indexSchema = "g4-script-index-v4",
+  cacheFormat = "script-cache-v6",
+  indexSchema = "g4-script-index-v5",
   provenanceSchema = "g4-script-provenance-v2",
 }
 

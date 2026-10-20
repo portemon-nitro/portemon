@@ -410,15 +410,18 @@ local function writeFieldObjectRecord(c, object)
   })
 end
 
-local function writeGenerationIndex(c, generation, marker, resources, memberAudioSequences)
+local function writeGenerationIndex(c, generation, marker, resources, memberAudioSequences, memberAssetNeeds)
   local closures = memberAudioSequences
-  if closures == nil then
-    closures = {}
+  local needs = memberAssetNeeds
+  if closures == nil or needs == nil then
+    local empty = {}
     for _, entry in ipairs(resources) do
       if type(entry) == "table" and type(entry.member) == "number" then
-        closures[tostring(entry.member)] = {}
+        empty[tostring(entry.member)] = {}
       end
     end
+    closures = closures or empty
+    needs = needs or empty
   end
   c:write(ScriptCache.generationMarkerPath(generation), marker)
   c:writeLua(ScriptCache.generationIndexPath(generation), {
@@ -427,6 +430,7 @@ local function writeGenerationIndex(c, generation, marker, resources, memberAudi
     marker = marker,
     resources = resources,
     memberAudioSequences = closures,
+    memberAssetNeeds = needs,
   })
 end
 
@@ -766,6 +770,63 @@ function T.script_member_audio_lookup_returns_the_published_closure()
   Assert.isNil(ScriptCache.audioSequencesForMember(index, 2))
   Assert.isNil(ScriptCache.audioSequencesForMember({ memberAudioSequences = { ["1"] = { "B", "A" } } }, 1))
   Assert.isNil(ScriptCache.audioSequencesForMember({}, 1))
+end
+
+function T.script_generation_without_member_asset_needs_is_not_ready()
+  local c = cache()
+  local resources = { { id = "a.b", member = 1, scriptIndex = 0, resourceHash = string.rep("3", 64) } }
+  c:write(ScriptCache.generationMarkerPath(SCRIPT_GENERATION), "m")
+  c:writeLua(ScriptCache.generationIndexPath(SCRIPT_GENERATION), {
+    schema = ScriptCache.INDEX_SCHEMA,
+    generation = SCRIPT_GENERATION,
+    marker = "m",
+    resources = resources,
+    memberAudioSequences = { ["1"] = {} },
+  })
+  writeGenerationResource(c, SCRIPT_GENERATION, 1, "a.b")
+  Assert.isFalse(
+    ScriptCache.isGenerationReady(c, SCRIPT_GENERATION, "m"),
+    "every generation member requires its published asset needs"
+  )
+end
+
+function T.script_generation_with_unsorted_member_asset_needs_is_not_ready()
+  local c = cache()
+  local resources = { { id = "a.b", member = 1, scriptIndex = 0, resourceHash = string.rep("3", 64) } }
+  writeGenerationIndex(
+    c,
+    SCRIPT_GENERATION,
+    "m",
+    resources,
+    nil,
+    { ["1"] = { "field-effect:b", "field-effect:a" } }
+  )
+  writeGenerationResource(c, SCRIPT_GENERATION, 1, "a.b")
+  Assert.isFalse(ScriptCache.isGenerationReady(c, SCRIPT_GENERATION, "m"), "unsorted needs can never attest a member")
+end
+
+function T.script_member_asset_needs_lookup_returns_the_published_closure()
+  local index = {
+    schema = ScriptCache.INDEX_SCHEMA,
+    memberAssetNeeds = { ["1"] = { "field-effect:a", "field-effect:b" }, ["7"] = {} },
+  }
+  Assert.deepEqual(ScriptCache.assetNeedsForMember(index, 1), { "field-effect:a", "field-effect:b" })
+  Assert.deepEqual(ScriptCache.assetNeedsForMember(index, 7), {})
+end
+
+function T.script_member_asset_needs_lookup_reports_a_cause_for_bad_data()
+  local index = { memberAssetNeeds = { ["1"] = { "field-effect:b", "field-effect:a" }, ["2"] = { "nocolon" } } }
+  for label, args in pairs({
+    unknownMember = { index, 9 },
+    unsorted = { index, 1 },
+    malformedKey = { index, 2 },
+    noMapping = { {}, 1 },
+    badMemberId = { index, -1 },
+  }) do
+    local list, cause = ScriptCache.assetNeedsForMember(args[1], args[2])
+    Assert.isNil(list, label)
+    Assert.isTrue(type(cause) == "string" and cause ~= "", label .. " names its cause")
+  end
 end
 
 function T.actor_valid_atlas_and_static_renders_are_ready()
