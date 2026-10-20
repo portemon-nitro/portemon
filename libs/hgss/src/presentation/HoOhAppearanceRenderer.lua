@@ -49,11 +49,16 @@ function HoOhAppearanceRenderer.new(cacheFs, imageAssets)
 end
 
 function HoOhAppearanceRenderer:_build(sequence, versionId)
-  local record = assert(
-    self.cacheFs:loadLua(FieldEffectAssetCache.definitionPath("ho_oh_appearance")),
-    "Ho-Oh appearance model asset is missing from the field-effect cache"
-  )
-  local descriptors = assert(record.models, "Ho-Oh appearance record has no models")
+  local record = FieldEffectAssetCache.loadHoOhCore(self.cacheFs)
+  local descriptors = {}
+  for _, descriptor in ipairs(assert(record.models, "Ho-Oh appearance record has no models")) do
+    descriptors[#descriptors + 1] = descriptor
+  end
+  for _, shot in ipairs({ "first", "second" }) do
+    for variant = 0, 2 do
+      descriptors[#descriptors + 1] = FieldEffectAssetCache.loadHoOhCinematic(self.cacheFs, shot, variant)
+    end
+  end
   assert(#descriptors == #MODEL_ORDER + 6, "Ho-Oh model role list changed")
   local pool = GpuAssetPool.new(self.cacheFs, { imageAssets = self.imageAssets })
   local definitions, meshes = {}, {}

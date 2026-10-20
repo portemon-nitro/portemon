@@ -16,6 +16,7 @@ local FieldCameraCache = require("libs.assets.src.field.FieldCameraCache")
 local FieldFontCache = require("libs.assets.src.field.FieldFontCache")
 local FieldMapDataCache = require("libs.assets.src.field.FieldMapDataCache")
 local FieldMessageCache = require("libs.assets.src.field.FieldMessageCache")
+local HoOhCinematicParts = require("libs.assets.src.field.HoOhCinematicParts")
 local MapAssetCache = require("libs.assets.src.MapAssetCache")
 local ScriptCache = require("libs.assets.src.ScriptCache")
 local MonCache = require("libs.assets.src.MonCache")
@@ -963,36 +964,56 @@ local function publishEffectFamily(cache)
     model.animations = { joint, pattern, srt }
     return model
   end
+  -- The published Ho-Oh parts by kind: the core with its clip summary, and
+  -- per cinematic shot one shared part plus one overlay per variant.
   local function hoOhAppearance()
-    local specs = {
+    local function build(name, clips, idPrefix)
+      local model = dynamicModel("field-effect:ho-oh-appearance:" .. name)
+      local template = model.animations[1]
+      model.animations = {}
+      for clip = 1, clips do
+        local animation = {}
+        for field, value in pairs(template) do
+          animation[field] = value
+        end
+        animation.id = idPrefix .. "." .. clip
+        model.animations[clip] = animation
+      end
+      return model
+    end
+    local coreSpecs = {
       { "bellRising", 6 },
       { "bellShimmer", 2 },
       { "cornerBells", 1 },
       { "birdApproach", 3 },
       { "wavesEffect", 2 },
-      { "cinematic.first.0", 4 },
-      { "cinematic.first.1", 4 },
-      { "cinematic.first.2", 4 },
-      { "cinematic.second.0", 3 },
-      { "cinematic.second.1", 3 },
-      { "cinematic.second.2", 3 },
     }
-    local models = {}
-    for index, spec in ipairs(specs) do
-      local model = dynamicModel("field-effect:ho-oh-appearance:" .. spec[1])
-      local template = model.animations[1]
-      model.animations = {}
-      for clip = 1, spec[2] do
-        local animation = {}
-        for field, value in pairs(template) do
-          animation[field] = value
-        end
-        animation.id = "ho-oh." .. index .. "." .. clip
-        model.animations[clip] = animation
+    local models, frames = {}, {}
+    for index, spec in ipairs(coreSpecs) do
+      models[index] = build(spec[1], spec[2], "ho-oh." .. spec[1])
+      for _, clip in ipairs(models[index].animations) do
+        frames[clip.id] = clip.frameCount
       end
-      models[index] = model
     end
-    return { models = models }
+    local definitions, cinematic = {}, {}
+    for shot, clips in pairs({ first = 4, second = 3 }) do
+      local variants = {}
+      for variant = 0, 2 do
+        variants[variant + 1] = build("cinematic." .. shot .. "." .. variant, clips, "ho-oh." .. shot .. "." .. variant)
+      end
+      local shared, overlays = HoOhCinematicParts.split(shot, variants)
+      definitions[EffectCache.hoOhCinematicKind(shot)] = shared
+      local longest = 0
+      for _, clip in ipairs(shared.animations) do
+        longest = math.max(longest, clip.frameCount)
+      end
+      cinematic[shot] = { longest, longest, longest }
+      for variant = 0, 2 do
+        definitions[EffectCache.hoOhCinematicKind(shot, variant)] = overlays[variant + 1]
+      end
+    end
+    definitions.ho_oh_appearance = { models = models, clips = { frames = frames, cinematic = cinematic } }
+    return definitions
   end
   local marker = EffectCache.marker("test-rom", "test-dep")
   local bundle = {
@@ -1038,11 +1059,6 @@ local function publishEffectFamily(cache)
         celebi_time_travel = {
           path = EffectCache.definitionPath("celebi_time_travel"),
           definition = "celebi_time_travel",
-          kind = "cinematic",
-        },
-        ho_oh_appearance = {
-          path = EffectCache.definitionPath("ho_oh_appearance"),
-          definition = "ho_oh_appearance",
           kind = "cinematic",
         },
       },
@@ -1099,11 +1115,14 @@ local function publishEffectFamily(cache)
         fanfare = "SEQ_ME_ASA",
       },
       celebi_time_travel = { model = celebiTimeTravelModel() },
-      ho_oh_appearance = hoOhAppearance(),
     },
     meshes = { ["mesh-key"] = {} },
     textures = { ["texture-key"] = { width = 1, height = 1, data = PngWriter.encode(1, 1, "rgba") } },
   }
+  for kind, definition in pairs(hoOhAppearance()) do
+    bundle.effects[kind] = definition
+    bundle.index.effects[kind] = { path = EffectCache.definitionPath(kind), definition = kind, kind = "cinematic" }
+  end
   for selector = 1, 14 do
     local kind = "follower_reaction_" .. selector
     bundle.index.effects[kind] = {

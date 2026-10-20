@@ -4,7 +4,15 @@ local HoOhAppearanceScene = {}
 HoOhAppearanceScene.__index = HoOhAppearanceScene
 local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
 
+---@class HoOhAppearanceScene.Summary
+---@field frames table<string, integer> frame count by clip id
+---@field cinematic table<string, integer[]> shot length by variant (0..2) for each shot
+---@field riseTicks integer
+---@field shimmerTicks integer
+
 ---@class HoOhAppearanceScene
+---@field cacheFs CacheFs
+---@field summary HoOhAppearanceScene.Summary?
 ---@field new fun(options: table<string, unknown>): HoOhAppearanceScene
 ---@field command fun(self: HoOhAppearanceScene, op: string, destination: integer?)
 ---@field cameraPanTicks fun(self: HoOhAppearanceScene): integer
@@ -16,6 +24,7 @@ local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCac
 ---@field taskTicks fun(self: HoOhAppearanceScene, op: string): integer
 ---@field updateFixed fun(self: HoOhAppearanceScene)
 ---@field status fun(self: HoOhAppearanceScene): table<string, unknown>
+---@field currentVariant fun(self: HoOhAppearanceScene): integer
 
 local HG_CORNER_OFFSETS = {
   { 12.5, -4.5625, 9 },
@@ -111,35 +120,6 @@ function HoOhAppearanceScene.new(options)
     "Ho-Oh scene requires the field audio"
   )
   assert(options.cacheFs and options.cacheFs.loadLua, "Ho-Oh scene requires the generated model cache")
-  local definition = assert(
-    options.cacheFs:loadLua(FieldEffectAssetCache.definitionPath("ho_oh_appearance")),
-    "Ho-Oh appearance model asset is missing from the field-effect cache"
-  )
-  local clipsById = {}
-  local cinematicFrames = { first = {}, second = {} }
-  for _, model in ipairs(assert(definition.models)) do
-    for _, clip in ipairs(model.animations) do
-      clipsById[clip.id] = clip.frameCount
-    end
-    local scene, variant = model.key:match("cinematic%.([%a]+)%.(%d+)$")
-    if scene ~= nil then
-      local count = 0
-      for _, clip in ipairs(model.animations) do
-        count = math.max(count, clip.frameCount)
-      end
-      cinematicFrames[scene][tonumber(variant)] = count
-    end
-  end
-  local riseTicks = math.max(
-    assert(clipsById["bell.rise.joint"]),
-    assert(clipsById["bell.rise.pattern"]),
-    assert(clipsById["bell.rise.srt"])
-  )
-  local shimmerTicks = math.max(
-    assert(clipsById["bell.shimmer.joint"]),
-    assert(clipsById["bell.shimmer.srt"]),
-    assert(clipsById["corner_bells.srt"])
-  )
   return setmetatable({
     versionId = options.versionId,
     playerPosition = options.playerPosition,
@@ -149,13 +129,45 @@ function HoOhAppearanceScene.new(options)
     audio = options.audio,
     revealBird = options.revealBird,
     setBirdFlap = options.setBirdFlap,
-    clipsById = clipsById,
-    cinematicFrames = cinematicFrames,
-    riseTicks = riseTicks,
-    shimmerTicks = shimmerTicks,
+    cacheFs = options.cacheFs,
+    summary = nil,
     sequence = 0,
     state = nil,
   }, HoOhAppearanceScene)
+end
+
+-- The core record's clip summary, loaded on first use: building the scene on
+-- every field boot reads nothing, and a scene that never plays costs nothing.
+---@param self HoOhAppearanceScene
+---@return HoOhAppearanceScene.Summary
+local function summaryOf(self)
+  local summary = self.summary
+  if summary == nil then
+    local clips = FieldEffectAssetCache.loadHoOhCore(self.cacheFs).clips
+    local frames = clips.frames
+    local cinematic = { first = {}, second = {} }
+    for shot, perVariant in pairs(cinematic) do
+      for variant = 0, 2 do
+        perVariant[variant] = assert(clips.cinematic[shot][variant + 1])
+      end
+    end
+    summary = {
+      frames = frames,
+      cinematic = cinematic,
+      riseTicks = math.max(
+        assert(frames["bell.rise.joint"]),
+        assert(frames["bell.rise.pattern"]),
+        assert(frames["bell.rise.srt"])
+      ),
+      shimmerTicks = math.max(
+        assert(frames["bell.shimmer.joint"]),
+        assert(frames["bell.shimmer.srt"]),
+        assert(frames["corner_bells.srt"])
+      ),
+    }
+    self.summary = summary
+  end
+  return summary
 end
 
 local function copyPosition(position)
@@ -351,9 +363,10 @@ function HoOhAppearanceScene:command(op, destination)
     assert(destination == 0, "unsupported Ho-Oh cinematic scene")
     local player = assert(self.playerPosition(), "Ho-Oh cinematic requires a live player")
     local camera = assert(self.currentCamera(), "Ho-Oh cinematic requires a live camera")
-    local variant = timeOfDayVariant(self.timeOfDayCode())
-    local firstFrames = assert(self.cinematicFrames.first[variant], "Ho-Oh first-shot model animation is missing")
-    local secondFrames = assert(self.cinematicFrames.second[variant], "Ho-Oh second-shot model animation is missing")
+    local variant = self:currentVariant()
+    local cinematic = summaryOf(self).cinematic
+    local firstFrames = assert(cinematic.first[variant], "Ho-Oh first-shot model animation is missing")
+    local secondFrames = assert(cinematic.second[variant], "Ho-Oh second-shot model animation is missing")
     self.sequence = self.sequence + 1
     self.state = {
       active = true,
@@ -388,6 +401,12 @@ function HoOhAppearanceScene:command(op, destination)
   end
 end
 
+-- The time-of-day variant of the cinematic for the live RTC code.
+---@return integer variant 0, 1 or 2
+function HoOhAppearanceScene:currentVariant()
+  return timeOfDayVariant(self.timeOfDayCode())
+end
+
 function HoOhAppearanceScene:cameraPanTicks()
   local destination = assert(self.state and self.state.cameraDestination, "Ho-Oh camera pan has not started")
   if self.versionId == "heartgold" then
@@ -402,7 +421,9 @@ function HoOhAppearanceScene:shimmerWaitTicks()
   local state = assert(self.state, "Ho-Oh bell scene is not active")
   local ticks = 0
   if state.queuedShimmer ~= nil then
-    ticks = state.bellStage == "rise" and self.riseTicks - state.bellFrame or self.shimmerTicks - state.shimmerFrame
+    local summary = summaryOf(self)
+    ticks = state.bellStage == "rise" and summary.riseTicks - state.bellFrame
+      or summary.shimmerTicks - state.shimmerFrame
   end
   return math.max(1, ticks)
 end
@@ -419,12 +440,8 @@ function HoOhAppearanceScene:birdApproachTicks()
 end
 
 function HoOhAppearanceScene:birdRingTicks()
-  return math.max(
-    assert(self.clipsById["bird.joint"]),
-    assert(self.clipsById["bird.color"]),
-    assert(self.clipsById["bird.pattern"]),
-    65
-  )
+  local frames = summaryOf(self).frames
+  return math.max(assert(frames["bird.joint"]), assert(frames["bird.color"]), assert(frames["bird.pattern"]), 65)
 end
 
 function HoOhAppearanceScene:taskTicks(op)
@@ -448,7 +465,7 @@ function HoOhAppearanceScene:updateFixed()
   end
   if state.bellStage == "rise" then
     state.bellFrame = state.bellFrame + 1
-    if state.bellFrame >= self.riseTicks then
+    if state.bellFrame >= summaryOf(self).riseTicks then
       state.bellStage = "idle"
       state.loopFrame = 0
       state.bellVisible = true
@@ -456,7 +473,7 @@ function HoOhAppearanceScene:updateFixed()
   elseif state.bellStage == "shimmer" then
     state.loopFrame = assert(state.loopFrame) + 1
     state.shimmerFrame = state.shimmerFrame + 1
-    if state.shimmerFrame >= self.shimmerTicks then
+    if state.shimmerFrame >= summaryOf(self).shimmerTicks then
       state.bellStage = "idle"
       state.shimmerFrame = nil
       state.bellVisible = true

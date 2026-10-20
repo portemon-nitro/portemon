@@ -32,12 +32,13 @@ local function persist(stage, bundle)
   end
   for kind, definition in pairs(bundle.effects) do
     stage:writeLua(FieldEffectAssetCache.definitionPath(kind), definition)
-    local descriptors = definition.models
-    if descriptors == nil then
-      local single = assert(definition.model, "field-effect definition has no model")
-      descriptors = { single }
-    end
-    assert(#descriptors >= 1, "field-effect definition carries no model")
+    local descriptors = FieldEffectAssetCache.modelDescriptors(kind, definition, function(partKind)
+      return assert(bundle.effects[partKind], "field-effect part is missing from the bundle: " .. partKind)
+    end)
+    assert(
+      #descriptors >= 1 or kind:match("^ho_oh_cinematic_%a+_shared$") ~= nil,
+      "field-effect definition carries no model"
+    )
     for _, descriptor in ipairs(descriptors) do
       ModelAsset.validate(descriptor)
       for _, path in ipairs(ModelAsset.referencedPaths(descriptor)) do

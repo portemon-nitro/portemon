@@ -50,6 +50,7 @@ local DOMAINS = {
     "FieldUiNamingValidation",
     "FieldUiStartMenuValidation",
     "FieldWeatherCache",
+    "HoOhCinematicParts",
   },
   newgame = {
     "IntroAssetCache",

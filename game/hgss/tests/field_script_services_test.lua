@@ -347,7 +347,7 @@ function T.tests.production_trainer_card_service_counts_no_frontier_star()
     local result = compose(runtime, {
       cacheFs = {
         loadLua = function()
-          return HoOhAppearanceFixture.definition()
+          return HoOhAppearanceFixture.core()
         end,
       },
       layoutMessage = function(message)
