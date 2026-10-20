@@ -445,6 +445,10 @@ function FieldScriptComposition.compose(runtime, options)
       actors:setGesturePresentation(actorId, "legend_flap", tick)
     end
   end
+  local function allowLegendActorAnimation(allowed)
+    local actors, actorId = legendActorId()
+    actors:setPresentationTickAllowedWhileLocked(actorId, allowed)
+  end
   local legendCutscene = HoOhAppearanceScene.new({
     versionId = runtime.versionId,
     playerPosition = currentPlayerPosition,
@@ -453,6 +457,7 @@ function FieldScriptComposition.compose(runtime, options)
     setBirdHeight = setLegendActorHeight,
     revealBird = revealLegendActor,
     setBirdFlap = setLegendActorFlap,
+    setBirdAnimationAllowance = allowLegendActorAnimation,
     audio = options.audioService,
     cacheFs = options.cacheFs,
   })

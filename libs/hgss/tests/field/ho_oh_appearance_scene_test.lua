@@ -4,6 +4,7 @@
 local Assert = require("tests.support.Assert")
 local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
 local HoOhAppearanceScene = require("libs.hgss.src.field.HoOhAppearanceScene")
+local FieldScriptScreenFade = require("libs.hgss.src.transition.FieldScriptScreenFade")
 local HoOhAppearanceFixture = require("tests.support.HoOhAppearanceFixture")
 
 local FX32_PER_TILE = 4096 * 16
@@ -85,6 +86,11 @@ local function newScene(versionId, camera, birdHeights, audio, bird, rtcCode)
     setBirdFlap = function(tick)
       if bird then
         bird.flaps[#bird.flaps + 1] = tick == nil and "clear" or tick
+      end
+    end,
+    setBirdAnimationAllowance = function(allowed)
+      if bird then
+        bird.animationAllowance = allowed
       end
     end,
     cacheFs = cacheFs,
@@ -286,19 +292,41 @@ end
 function T.tests.legend_descends_to_its_tile_then_the_ring_plays()
   for versionId, descent in pairs({ heartgold = 120, soulsilver = 160 }) do
     local heights = {}
-    local scene = newScene(versionId, newCamera(), heights)
+    local bird = { flaps = {} }
+    local scene = newScene(versionId, newCamera(), heights, nil, bird)
     scene:command("legend_cutscene_bird_approach")
+    Assert.isTrue(bird.animationAllowance, versionId .. " idle animation is allowed through the descent lock")
     Assert.equal(heights[1], descent / 16, versionId .. " the legend starts above its tile")
     for _ = 1, descent do
       scene:updateFixed()
     end
     Assert.equal(heights[#heights], 0, versionId .. " the legend lands on its tile")
+    Assert.isFalse(bird.animationAllowance, versionId .. " the animation allowance ends at landing")
     Assert.isNil(scene:status().birdRingFrame, versionId .. " the cry ring waits for the landing")
     for _ = 1, 110 do
       scene:updateFixed()
     end
     Assert.equal(scene:status().birdRingFrame, 0, versionId .. " the cry ring starts after the landing delays")
   end
+end
+
+function T.tests.backdrop_lifetime_outlives_the_clear_bell_scene_until_handoff()
+  local scene = newScene("heartgold", newCamera())
+  local fade = FieldScriptScreenFade.new()
+  scene:command("legend_cutscene_bell_begin")
+  scene:command("legend_cutscene_bell_end")
+  Assert.isFalse(scene:status().active, "Clear Bell effects end")
+  Assert.isTrue(scene:status().backdropRetained, "the backdrop survives the outgoing fade")
+  fade:startFade({ direction = "out", color = "white", duration = 6, speed = 1 })
+  for _ = 1, 5 do
+    fade:updateSourceFrame()
+    Assert.isFalse(fade:isOpaque(), "the outgoing white fade has uncovered pixels")
+    Assert.isTrue(scene:status().backdropRetained, "the backdrop stays through the incomplete fade")
+  end
+  fade:updateSourceFrame()
+  Assert.isTrue(fade:isOpaque(), "the outgoing white fade now covers the field")
+  scene:retireBackdrop()
+  Assert.isFalse(scene:status().backdropRetained, "presentation can retire the backdrop at full coverage")
 end
 
 function T.tests.cinematic_returns_the_ordinary_field_camera_not_the_script_pose()

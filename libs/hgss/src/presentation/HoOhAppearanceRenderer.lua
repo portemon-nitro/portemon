@@ -593,10 +593,13 @@ function HoOhAppearanceRenderer:cinematicEnvironment(base)
   return environment
 end
 
--- The scene is no longer drawn: its per-run animation state goes, the built
--- models stay for the next run.
+-- The scene is no longer drawn: release its cinematic model pool while the
+-- core and its leaf textures remain available to field presentation.
 function HoOhAppearanceRenderer:endScene()
-  self.sequence, self.instances, self.lastFrames, self.bellAnimationSet = nil, nil, nil, nil
+  if self.sequence ~= nil then
+    self.sequence, self.instances, self.lastFrames, self.bellAnimationSet = nil, nil, nil, nil
+    dropCinematic(self)
+  end
 end
 
 -- Drops every built model and pool, each released exactly once.

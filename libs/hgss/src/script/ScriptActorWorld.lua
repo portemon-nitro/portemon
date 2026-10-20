@@ -36,6 +36,7 @@
 ---@field clearCameraTarget fun(self: ScriptActorManager)
 ---@field setPresentationOffset fun(self: ScriptActorManager, actorId: string, offset: { x: number, y: number, z: number })
 ---@field clearPresentationOffset fun(self: ScriptActorManager, actorId: string)
+---@field setPresentationTickAllowedWhileLocked fun(self: ScriptActorManager, actorId: string, allowed: boolean)
 
 -- The manager methods the actor world calls; every one must be present.
 -- `syncEventStateChanges` is forwarded only when the manager provides it, so
@@ -387,6 +388,11 @@ function ScriptActorWorld:clearPresentationOffset(actorId)
     })
   end
   self._manager:clearPresentationOffset(actorId)
+end
+
+function ScriptActorWorld:setPresentationTickAllowedWhileLocked(actorId, allowed)
+  assert(type(allowed) == "boolean", "locked presentation allowance must be explicit")
+  self._manager:setPresentationTickAllowedWhileLocked(actorId, allowed)
 end
 
 ---@param actorId string

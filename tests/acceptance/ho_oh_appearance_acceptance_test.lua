@@ -61,14 +61,21 @@ function T.tests.bell_tower_coordinate_runs_ho_oh_opening_without_script_fault()
     game:pressAction()
     local completed
     local cinematicShots = {}
-    local legendFirstY, legendLastY, legendFlapped
+    local legendFirstY, legendLastY, legendFlapped, legendFirstX, legendFirstZ, descentAnimationAdvanced
     local legendActorId = "map:340:object:5"
     for _ = 1, 4000 do
       for _, record in ipairs(game.runtime.actors:drawRecords()) do
         if record.actorId == legendActorId and record.visible then
           legendFirstY = legendFirstY or record.world.y
+          legendFirstX = legendFirstX or record.world.x
+          legendFirstZ = legendFirstZ or record.world.z
           legendLastY = record.world.y
           legendFlapped = legendFlapped or record.gesturePose == "legend_flap"
+          if legendFirstY ~= record.world.y then
+            descentAnimationAdvanced = descentAnimationAdvanced or record.poseTick > 0
+          end
+          Assert.equal(record.world.x, legendFirstX, "descent changes presentation height without moving horizontally")
+          Assert.equal(record.world.z, legendFirstZ, "descent preserves the logical depth coordinate")
         end
       end
       local cinematicScene = game.runtime.hoOhAppearanceScene
@@ -115,6 +122,7 @@ function T.tests.bell_tower_coordinate_runs_ho_oh_opening_without_script_fault()
       "the legend object first appears at its descent height, never lowered (first " .. legendFirstY .. ", landed " .. legendLastY .. ")"
     )
     Assert.isTrue(legendFlapped == true, "the legend object plays its flap sequence")
+    Assert.isTrue(descentAnimationAdvanced == true, "the legend idle animation advances while it descends")
     Assert.equal(game:renderAttempts(), 0, "the cutscene acceptance stops before GPU rendering")
   end, debug.traceback)
   game:close()

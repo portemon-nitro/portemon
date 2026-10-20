@@ -93,6 +93,7 @@ end
 ---@field _celebiRenderer table<string, unknown>? lazy field-scene model presenter
 ---@field _celebiBlur table<string, unknown>? lazy field-scene capture presenter
 ---@field _hoOhAppearanceRenderer table<string, unknown>? lazy Bell Tower cutscene model presenter
+---@field _hoOhBackdropRuntimeMap RuntimeFieldMap? map identity owning the retained widescreen backdrop
 ---@field actorPresentation FieldActorPresentation?
 ---@field _actorDesiredReady boolean? whether the current world admission is complete for its map identity
 ---@field _presentedRuntimeMap RuntimeFieldMap? borrowed identity of the runtime map already rendered successfully
@@ -710,11 +711,33 @@ function FieldState:_worldParts(alpha)
   local hoOhScene = self.runtime.hoOhAppearanceScene
   local hoOhStatus = hoOhScene and hoOhScene:status() or nil
   if hoOhStatus and hoOhStatus["active"] == true then
+    self._hoOhBackdropRuntimeMap = self.runtime.runtimeMap
+  elseif
+    hoOhStatus
+    and hoOhStatus["backdropRetained"] == true
+    and self._hoOhBackdropRuntimeMap ~= nil
+    and self._hoOhBackdropRuntimeMap ~= self.runtime.runtimeMap
+  then
+    assert(hoOhScene):retireBackdrop()
+    self._hoOhBackdropRuntimeMap = nil
+    hoOhStatus = assert(hoOhScene):status()
+  end
+  if hoOhStatus and hoOhStatus["backdropRetained"] and self.runtime.screenFade:isOpaque() then
+    assert(hoOhScene):retireBackdrop()
+    self._hoOhBackdropRuntimeMap = nil
+    hoOhStatus = assert(hoOhScene):status()
+  end
+  if hoOhStatus and hoOhStatus["active"] == true then
     if self._hoOhAppearanceRenderer == nil then
       self._hoOhAppearanceRenderer = HoOhAppearanceRenderer.new(self.runtime.cacheFs, self.runtime.imageAssets)
     end
     worldParts[13] = self._hoOhAppearanceRenderer:drawItems(hoOhStatus)
     worldParts[14] = self._hoOhAppearanceRenderer:backdropCopies(worldParts[1], hoOhStatus["versionId"])
+  elseif hoOhStatus and hoOhStatus["backdropRetained"] == true then
+    local versionId = self.runtime.versionId
+    assert(self._hoOhAppearanceRenderer):endScene()
+    worldParts[13] = NO_DRAWS
+    worldParts[14] = assert(self._hoOhAppearanceRenderer):backdropCopies(worldParts[1], versionId)
   else
     if self._hoOhAppearanceRenderer ~= nil then
       self._hoOhAppearanceRenderer:endScene()
@@ -1959,6 +1982,7 @@ function FieldState:dispose()
   self._gameplayHoldEngaged = false
   self._starterUiSuspended = false
   self._dialogueGeometry = nil
+  self._hoOhBackdropRuntimeMap = nil
   self._fadeCover = nil
   self._terrainItems = nil
   self._transitionItems = nil
