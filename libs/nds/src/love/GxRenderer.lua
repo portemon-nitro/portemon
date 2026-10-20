@@ -23,8 +23,10 @@
 -- lower-pixel coverage). Both candidates share the center state's single
 -- depth/fog state; fog alpha is resolved before the mix.
 --
--- A straddling draw is presented as a whole resident mesh under its current
--- transform. Resource
+-- A straddling draw (a primitive whose vertices were submitted under different
+-- matrices) draws its resident mesh once; the vertex shader bends the first
+-- `straddle.count` vertices by the item's per-vertex bend matrices, so nothing
+-- is read back or rebuilt per frame. Resource
 -- construction is transactional: a failed shader,
 -- canvas allocation, or target configuration releases everything already
 -- created, and a canvas recreation keeps the previous target set usable until
@@ -41,6 +43,9 @@ local FixedPoint = require("libs.math.src.FixedPoint")
 local ImageSampling = require("libs.nds.src.love.ImageSampling")
 
 local IDENTITY_TEXTURE_MATRIX = { 1, 0, 0, 0, 1, 0, 0, 0, 1 }
+
+-- The most leading vertices one segment can bend (map.glsl u_straddleBend).
+local MAX_STRADDLE_VERTICES = 3
 
 ---@class GxRenderer.Canvas : love.Canvas
 ---@field setFilter fun(self: GxRenderer.Canvas, min: string, mag: string)
@@ -464,17 +469,24 @@ function GxRenderer.new(opts)
     -- The map source carries a marker where the one shared generated-image
     -- sampling rule is substituted; sources without the marker keep their
     -- exact construction contract.
-    local colorSource = ImageSampling.withSharedSampling(readSource(SHADER_SOURCE_PATHS.color))
-    renderer.shader = graphics.newShader(colorSource)
-    renderer._spriteShaderSource = "#define PRESENTATION_SPRITE\n#define PRESENTATION_SPRITE_LAYER\n" .. colorSource
+    local mapSource = ImageSampling.withSharedSampling(readSource(SHADER_SOURCE_PATHS.color))
+    -- map.glsl needs GLSL 3 (gl_VertexID); LÖVE reads the language pragma only
+    -- ahead of the defines each variant prepends.
+    ---@param defines string
+    ---@return string
+    local function colorSource(defines)
+      return "#pragma language glsl3\n" .. defines .. mapSource
+    end
+    renderer.shader = graphics.newShader(colorSource(""))
+    renderer._spriteShaderSource = colorSource("#define PRESENTATION_SPRITE\n#define PRESENTATION_SPRITE_LAYER\n")
     local exact = translucencyMode == GxRenderer.TRANSLUCENCY_EXACT
     renderer.edgeShader =
       graphics.newShader((exact and "#define EXACT_FOG_STATE\n" or "") .. readSource(SHADER_SOURCE_PATHS.resolve))
-    renderer.worldShader = graphics.newShader("#define WORLD_MRT\n" .. colorSource)
+    renderer.worldShader = graphics.newShader(colorSource("#define WORLD_MRT\n"))
     if exact then
       renderer.wireframeResetShader =
-        graphics.newShader("#define WORLD_MRT\n#define WORLD_MRT_EXACT_RESET\n" .. colorSource)
-      renderer.exactSourceShader = graphics.newShader("#define EXACT_SOURCE\n" .. colorSource)
+        graphics.newShader(colorSource("#define WORLD_MRT\n#define WORLD_MRT_EXACT_RESET\n"))
+      renderer.exactSourceShader = graphics.newShader(colorSource("#define EXACT_SOURCE\n"))
       renderer.compositeShader = graphics.newShader(readSource(SHADER_SOURCE_PATHS.composite))
     end
     renderer._spriteCompositeShaderSource = readSource(SHADER_SOURCE_PATHS.spriteComposite)
@@ -894,18 +906,45 @@ local function effectiveMaterialColor(value, colorsAnimated, profileColor)
 end
 
 -- Bind the model/normal matrices or billboard placement common to both the
--- filled and wireframe draw bodies (_drawMesh, _drawWireframeMesh).
-local function sendTransformUniforms(shader, projection, modelMatrix, modelNormal, billboardCenter, billboardScale)
+-- filled and wireframe draw bodies (_drawMesh, _drawWireframeMesh). A
+-- straddling item (`straddle = { count, bends }`) sends the bend matrices of
+-- its first `count` mesh vertices, which the vertex shader applies before the
+-- model matrix; every other draw resets the count so no bend leaks between
+-- draws.
+local function sendTransformUniforms(
+  shader,
+  projection,
+  modelMatrix,
+  modelNormal,
+  billboardCenter,
+  billboardScale,
+  straddle
+)
   shader:send("u_proj", "column", projection)
   local isBillboard = billboardCenter ~= nil
   shader:send("u_billboard", isBillboard)
   if isBillboard then
     assert(billboardScale, "billboard draw requires billboardScale")
+    assert(straddle == nil, "billboard draws are fully baked and cannot straddle")
     shader:send("u_billboardCenter", billboardCenter)
     shader:send("u_billboardScale", billboardScale)
   else
     shader:send("u_model", "column", modelMatrix)
     shader:send("u_modelNormal", "column", modelNormal)
+  end
+  if straddle == nil then
+    shader:send("u_straddleCount", 0)
+    return
+  end
+  local count, bends = straddle.count, straddle.bends
+  assert(count >= 1 and count <= MAX_STRADDLE_VERTICES, "straddle bends one to three leading vertices")
+  shader:send("u_straddleCount", count)
+  if count == 1 then
+    shader:send("u_straddleBend", "column", bends[1])
+  elseif count == 2 then
+    shader:send("u_straddleBend", "column", bends[1], bends[2])
+  else
+    shader:send("u_straddleBend", "column", bends[1], bends[2], bends[3])
   end
 end
 
@@ -923,7 +962,8 @@ function GxRenderer:_drawItem(item, projection, fragmentPass)
     item.mesh,
     fragmentPass,
     item.billboardCenter,
-    item.billboardScale
+    item.billboardScale,
+    item.straddle
   )
 end
 
@@ -938,13 +978,14 @@ function GxRenderer:_drawMesh(
   mesh,
   fragmentPass,
   billboardCenter,
-  billboardScale
+  billboardScale,
+  straddle
 )
   local lg = assert(self._graphics)
   local mat = item.material
   local shader = self._activeShader or self.shader
 
-  sendTransformUniforms(shader, projection, modelMatrix, modelNormal, billboardCenter, billboardScale)
+  sendTransformUniforms(shader, projection, modelMatrix, modelNormal, billboardCenter, billboardScale, straddle)
 
   -- The effective DS material registers: the field profile's colors, with
   -- any playing NSBMA color clip's sampled colors replacing them (see
@@ -1013,7 +1054,8 @@ function GxRenderer:_drawWireframe(item, projection)
     item.billboardCenter and IDENTITY_MODEL_NORMAL or assert(item.modelNormal, "render item requires modelNormal"),
     item.mesh,
     item.billboardCenter,
-    item.billboardScale
+    item.billboardScale,
+    item.straddle
   )
 end
 
@@ -1029,12 +1071,13 @@ function GxRenderer:_drawWireframeMesh(
   modelNormal,
   mesh,
   billboardCenter,
-  billboardScale
+  billboardScale,
+  straddle
 )
   local lg = assert(self._graphics)
   local shader = self._activeShader or self.shader
 
-  sendTransformUniforms(shader, projection, modelMatrix, modelNormal, billboardCenter, billboardScale)
+  sendTransformUniforms(shader, projection, modelMatrix, modelNormal, billboardCenter, billboardScale, straddle)
   -- Wireframe polygons are static field geometry: the effective registers
   -- are the field profile's.
   local profileColors = self._lightMaterialColors

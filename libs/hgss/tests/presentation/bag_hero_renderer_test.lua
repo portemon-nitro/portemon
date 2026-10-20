@@ -91,7 +91,7 @@ local function heroDescriptor(gender)
   end
   clips[#clips + 1] = trsClip(gender .. ".material", "bag.material")
   return {
-    schema = "g4-model-v5",
+    schema = "g4-model-v6",
     kind = "nitro-dynamic",
     dynamic = { nodes = {}, transformProgram = {}, batches = {} },
     materials = { dynamicMaterial() },

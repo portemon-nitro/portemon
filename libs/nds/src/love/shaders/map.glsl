@@ -11,6 +11,13 @@
 // multiplication remains. This shader owns no DS render
 // state (polygon ID, quantized depth, fog gate) outside WORLD_MRT mode.
 //
+// A mesh whose first vertices were submitted under other matrices than the
+// rest (u_straddleCount > 0) bends those vertices by u_straddleBend[] before
+// the model matrix. Meshes are drawn through their vertex map in segment
+// vertex order, so gl_VertexID is the segment-local vertex number. gl_VertexID
+// needs GLSL 3, so GxRenderer prepends the language pragma (it must precede
+// every #define) when it builds this source.
+//
 // The vertex-lighting algebra below (computeDsLighting, dsLightContribution,
 // quantizeVectorFx, signExtend, dotDiscardingPerComponent) is a direct GLSL
 // transcription of tests/support/DsLighting.lua -- see that module's
@@ -63,6 +70,8 @@ uniform mat4 u_view;
 uniform mat4 u_model;
 uniform mat3 u_modelNormal;
 uniform bool u_billboard;
+uniform int u_straddleCount;
+uniform mat4 u_straddleBend[3];
 uniform vec3 u_billboardCenter;
 uniform vec3 u_billboardScale;
 
@@ -215,14 +224,21 @@ vec4 position(mat4 transform_projection, vec4 vertex_position)
   vec3 normal;
   vec4 viewPosition;
   vec3 viewCenter = vec3(0.0);
+  vec4 localPosition = vertex_position;
+  vec3 localNormal = VertexNormal;
+  if (gl_VertexID < u_straddleCount) {
+    mat4 bend = u_straddleBend[gl_VertexID];
+    localPosition = bend * vertex_position;
+    localNormal = mat3(bend) * VertexNormal;
+  }
   if (u_billboard) {
     modelNormal = VertexNormal / u_billboardScale;
     viewCenter = (u_view * vec4(u_billboardCenter, 1.0)).xyz;
     viewPosition = vec4(viewCenter + vertex_position.xyz * u_billboardScale, 1.0);
     normal = normalize(modelNormal);
   } else {
-    modelNormal = u_modelNormal * VertexNormal;
-    viewPosition = u_view * u_model * vertex_position;
+    modelNormal = u_modelNormal * localNormal;
+    viewPosition = u_view * u_model * localPosition;
     normal = normalize(mat3(u_view) * modelNormal);
   }
   int src = int(floor(VertexColorSource + 0.5));

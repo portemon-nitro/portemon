@@ -34,11 +34,13 @@
 -- the transform at vertex submission: the complete primitives before it keep
 -- their segment, and the primitive that would straddle the two transforms has
 -- its leading vertices carried into the next segment. The receiving segment
--- records the per-vertex provenance -- `straddle = { leading, source }` with
--- the pre-boundary source -- so the runtime resolves the leading vertices
--- under the old matrix and the trailing ones under the segment's own source,
--- reproducing the DS's per-vertex bend (the count is reported for the
--- caller). Static decode (the default) is unchanged.
+-- records the per-vertex provenance -- `straddle = { sources }`, one
+-- DrawSource per leading vertex in vertex order, each the matrix active at
+-- that vertex's submission (a primitive spanning several matrices keeps every
+-- carried vertex's own source) -- so the runtime resolves the leading
+-- vertices under their old matrices and the trailing ones under the
+-- segment's own source, reproducing the DS's per-vertex bend (the count is
+-- reported for the caller). Static decode (the default) is unchanged.
 
 local Errors = require("libs.errors.src.Errors")
 local BinaryReader = require("libs.codec.src.BinaryReader")
@@ -326,7 +328,7 @@ end
 -- resolves the segment's draw matrix.
 ---@class GxDynamicGeometrySlice: G4GxGeometrySlice
 ---@field positionSource DrawSource
----@field straddle { leading: integer, source: DrawSource }?
+---@field straddle { sources: DrawSource[] }? -- one source per leading vertex
 
 ---@param arena GxGeometryBuffer
 ---@param positionSource DrawSource
@@ -470,10 +472,11 @@ end
 -- stay in the current segment, the primitive that would straddle the two
 -- transforms has its leading vertices carried into the next segment, and the
 -- trailing vertices continue the run in the new segment. The receiving
--- segment records `straddle = { leading, source = <the pre-boundary source> }`
--- so the runtime resolves the leading vertices under the matrix active at
--- their submission and the rest under the segment's own source -- the DS's
--- per-vertex bend, not a rigid re-home (counted for the caller to report).
+-- segment records `straddle = { sources }`, the source each leading vertex
+-- was submitted under, so the runtime resolves the leading vertices under
+-- the matrix active at their submission and the rest under the segment's own
+-- source -- the DS's per-vertex bend, not a rigid re-home (counted for the
+-- caller to report).
 -- Triangle strips carry the winding parity across the split so the sequence
 -- stays continuous.
 ---@param positionSource DrawSource
@@ -481,6 +484,7 @@ end
 function Decoder:dynamicBoundary(positionSource, offset)
   assert(self.dynamic, "dynamicBoundary outside dynamic mode")
   local previousSource = self.positionSource
+  local previousStraddle = self.currentSegment.straddle
   local carried = 0
   if self.runOpen then
     local count = self.runCount
@@ -511,17 +515,21 @@ function Decoder:dynamicBoundary(positionSource, offset)
   if carried > 0 then
     local numeric = self.arena.numeric
     local attrib = self.arena.attrib
+    local sources = {} ---@type DrawSource[]
     for i = 0, self.carryCount - 1 do
-      local source = oldSegment.vertexOffset + self.carry[i]
+      -- A vertex carried into the old segment keeps the source it was
+      -- submitted under; the others were submitted under the old segment's.
+      local localIndex = self.carry[i]
+      local leading = previousStraddle and previousStraddle.sources
+      sources[i + 1] = leading and leading[localIndex + 1] or previousSource
+      local source = oldSegment.vertexOffset + localIndex
       local destination = self.arena.vertexCount
       ffi.copy(numeric[destination], numeric[source], GxGeometryBuffer.vertexNumericSize)
       ffi.copy(attrib[destination], attrib[source], GxGeometryBuffer.vertexAttribSize)
       self.arena.vertexCount = destination + 1
       self.run[i] = i
     end
-  end
-  if carried > 0 then
-    self.currentSegment.straddle = { leading = carried, source = previousSource }
+    self.currentSegment.straddle = { sources = sources }
   end
 end
 

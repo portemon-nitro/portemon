@@ -36,6 +36,30 @@ local function checkDescriptor(bundle, descriptor, name, version)
   end
 end
 
+-- Ho-Oh's cinematic models are skinned per vertex: their display lists change
+-- matrix between the vertices of one primitive. Every such segment publishes
+-- one draw source per leading vertex, and some primitives span three matrices,
+-- so their carried vertices keep differing sources.
+local function checkCinematicStraddles(descriptor, name, version)
+  local straddling, chained = 0, 0
+  for _, batch in ipairs(descriptor.dynamic.batches) do
+    local straddle = batch.straddle
+    if straddle ~= nil then
+      straddling = straddling + 1
+      Assert.notNil(batch.positionSource, version .. " " .. name .. " " .. batch.id .. " straddles under a position source")
+      local first = straddle.sources[1]
+      for _, source in ipairs(straddle.sources) do
+        if source ~= first and (source == "draw" or first == "draw" or source.slot ~= first.slot) then
+          chained = chained + 1
+          break
+        end
+      end
+    end
+  end
+  Assert.isTrue(straddling > 0, version .. " " .. name .. " has per-vertex skinned primitives")
+  Assert.isTrue(chained > 0, version .. " " .. name .. " has primitives spanning several matrices")
+end
+
 local function testHoOhLegendModels(romFs, version)
   local bundle = assert(FieldEntranceIndicatorCompiler.compile(romFs))
   local effect = assert(bundle.effects.ho_oh_appearance, "field effects include the original Ho-Oh cutscene core")
@@ -55,6 +79,7 @@ local function testHoOhLegendModels(romFs, version)
       local name = "cinematic." .. shot .. "." .. variant
       Assert.equal(descriptor.key, "field-effect:ho-oh-appearance:" .. name)
       checkDescriptor(bundle, descriptor, name, version)
+      checkCinematicStraddles(descriptor, name, version)
       for _, clip in ipairs(descriptor.animations) do
         Assert.isTrue(clip.id:find("^cinematic%." .. shot .. "%." .. variant .. "%.") ~= nil, "clip ids keep their variant")
       end

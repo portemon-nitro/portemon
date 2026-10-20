@@ -1608,7 +1608,7 @@ function T.new_reads_shader_sources_through_the_injected_reader()
   Assert.isTrue(calls[#calls] == "libs/nds/src/love/shaders/sprite_composite.glsl")
   local exactSourceUsesMap = false
   for _, shader in ipairs(lg.shaders) do
-    if shader.source == "#define EXACT_SOURCE\nsource:libs/nds/src/love/shaders/map.glsl" then
+    if shader.source == "#pragma language glsl3\n#define EXACT_SOURCE\nsource:libs/nds/src/love/shaders/map.glsl" then
       exactSourceUsesMap = true
     end
   end
@@ -2780,26 +2780,78 @@ local function straddleDrawItem(mesh)
     polygonId = 0,
     lightMask = 0,
     center = { 0, 0, 0 },
-    straddle = { leading = 2, transform = Matrix4.translate(10, 0, 0) },
+    straddle = { count = 2, bends = { Matrix4.translate(10, 0, 0), Matrix4.translate(0, 5, 0) } },
   }
+end
+
+-- The sends the bound shader received for one uniform name, in order.
+local function sendsOf(shader, name)
+  local out = {}
+  for _, send in ipairs(shader.sends) do
+    if send.name == name then
+      out[#out + 1] = send.values
+    end
+  end
+  return out
+end
+
+-- The straddle uniforms reach every shader the draw bound: the leading-vertex
+-- count and exactly that many bend matrices.
+local function assertStraddleSent(shader, item)
+  local counts = sendsOf(shader, "u_straddleCount")
+  Assert.equal(counts[#counts][1], 2, "the leading-vertex count is sent")
+  local bends = sendsOf(shader, "u_straddleBend")
+  Assert.equal(#bends, 1)
+  Assert.equal(bends[1][1], "column")
+  Assert.equal(bends[1][2], item.straddle.bends[1])
+  Assert.equal(bends[1][3], item.straddle.bends[2])
+  Assert.equal(bends[1][4], nil, "only the published bends are sent")
 end
 
 function T.straddle_filled_draw_uses_resident_mesh_without_readback_or_allocation()
   local fake = straddleGraphics()
   local renderer = GxRenderer.new({ graphics = fake })
   local resident = sourceMesh()
-  renderer:_drawItem(straddleDrawItem(resident), Matrix4.identity(), 0)
+  local item = straddleDrawItem(resident)
+  renderer:_drawItem(item, Matrix4.identity(), 0)
   Assert.equal(fake.drawCalls[1], resident)
+  assertStraddleSent(renderer.shader, item)
+end
+
+function T.a_draw_without_straddle_resets_the_leading_vertex_count()
+  local fake = straddleGraphics()
+  local renderer = GxRenderer.new({ graphics = fake })
+  local straddling = straddleDrawItem(sourceMesh())
+  local plain = straddleDrawItem(sourceMesh())
+  plain.straddle = nil
+  renderer:_drawItem(straddling, Matrix4.identity(), 0)
+  renderer:_drawItem(plain, Matrix4.identity(), 0)
+  local counts = sendsOf(renderer.shader, "u_straddleCount")
+  Assert.equal(counts[#counts][1], 0)
+  Assert.equal(#sendsOf(renderer.shader, "u_straddleBend"), 1, "no bends are sent for a plain draw")
+end
+
+function T.a_billboard_draw_cannot_straddle()
+  local fake = straddleGraphics()
+  local renderer = GxRenderer.new({ graphics = fake })
+  local item = straddleDrawItem(sourceMesh())
+  item.billboardCenter = { 0, 0, 0 }
+  item.billboardScale = { 1, 1, 1 }
+  Assert.throws(function()
+    renderer:_drawItem(item, Matrix4.identity(), 0)
+  end)
 end
 
 function T.straddle_wireframe_draw_uses_resident_mesh_without_readback_or_allocation()
   local fake = straddleGraphics()
   local renderer = GxRenderer.new({ graphics = fake })
   local resident = sourceMesh()
+  local item = straddleDrawItem(resident)
   renderer._activeShader = renderer.worldShader
-  renderer:_drawWireframe(straddleDrawItem(resident), Matrix4.identity())
+  renderer:_drawWireframe(item, Matrix4.identity())
   renderer._activeShader = nil
   Assert.equal(fake.drawCalls[1], resident)
+  assertStraddleSent(renderer.worldShader, item)
 end
 
 function T.exact_source_meta_straddle_draw_uses_resident_mesh_without_readback_or_allocation()
@@ -2812,6 +2864,7 @@ function T.exact_source_meta_straddle_draw_uses_resident_mesh_without_readback_o
 
   renderer:_drawSourceItem(item, Matrix4.identity(), 1, Matrix4.identity(), 0, 1, 1)
   Assert.equal(fake.drawCalls[1], resident)
+  assertStraddleSent(renderer.exactSourceShader, item)
 end
 
 -- ---- wireframe polygon-id/opaque-classification semantics ----

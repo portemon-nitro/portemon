@@ -394,12 +394,10 @@ function T.restore_slot_sources_resolve_from_the_draw_snapshot()
   Assert.equal(draw.position[14], 2)
 end
 
--- Compiled straddle provenance is dormant presentation data. Evaluation must
--- not resolve it when the current draw source is valid.
-function T.dormant_straddle_source_is_not_resolved()
-  -- Draw 0 carries node 0's matrix (16,0,0 model units -> 1,0,0 tiles) via
-  -- the MTX slot reselect, and the restoreStack snapshot keeps node 1's
-  -- matrix in slot 1 (0,32,0 -> 0,2,0 tiles).
+-- A straddling mesh publishes one bend matrix per leading vertex:
+-- M_post^-1 * M_source_i, so the draw's own position matrix maps the bent
+-- vertex to where its pre-boundary matrix put it.
+local function straddleDefinition(straddle, positionSource)
   local commands = {
     { opcode = 0x06, nodeIndex = 0, parentIndex = 0, flags = 0 },
     { opcode = 0x06, nodeIndex = 1, parentIndex = 1, flags = 0 },
@@ -409,93 +407,108 @@ function T.dormant_straddle_source_is_not_resolved()
     { opcode = 0x01 },
   }
   local p = program({
-    bindNode(0, { matrixStackIndex = 0, translation = { x = 16, y = 0, z = 0 }, transZero = false }),
+    bindNode(0, {
+      matrixStackIndex = 0,
+      translation = { x = 16, y = 0, z = 0 },
+      transZero = false,
+      rotation = { 0, 1, 0, -1, 0, 0, 0, 0, 1 },
+      rotZero = false,
+      scale = { x = 2, y = 3, z = 4 },
+      scaleOne = false,
+    }),
     bindNode(1, { matrixStackIndex = 1, translation = { x = 0, y = 32, z = 0 }, transZero = false }),
   }, commands)
-  local def = ModelDefinition.new({
-    key = "fixture:nitro-straddle",
-    nodes = {
-      {
-        index = 0,
-        name = "a",
-        translation = { x = 0, y = 0, z = 0 },
-        rotation = identity9(),
-        scale = { x = 1, y = 1, z = 1 },
-      },
-      {
-        index = 1,
-        name = "b",
-        translation = { x = 0, y = 0, z = 0 },
-        rotation = identity9(),
-        scale = { x = 1, y = 1, z = 1 },
-      },
-    },
-    meshes = {
-      {
-        id = "m",
-        nodeIndex = 0,
-        materialIndex = 0,
-        geometry = "fixtures/draw0.seg0.g4mesh",
-        center = { 1, 0, 1 },
-      },
-    },
-    materials = {
-      {
-        id = 0,
-        name = "mat0",
-        baseColor = { r = 255, g = 255, b = 255, a = 255 },
-        alphaMode = "opaque",
-        doubleSided = false,
-        polygonAlpha = 31,
-        texMtxMode = 0,
-        texWidth = 0,
-        texHeight = 0,
-      },
-    },
-    skins = {},
+  local def = singleMeshDefinition({
+    program = p,
     animations = {},
-    backend = {
-      program = p,
-      meshes = {
-        m = {
-          drawIndex = 0,
-          positionSource = "draw",
-          straddle = { leading = 2, source = { slot = 9 } },
-          transformMode = "static",
-          cullMode = "back",
-          polygonMode = "modulation",
-          polygonId = 0,
-          lightMask = 5,
-          translucentDepthWrite = false,
-          depthEqual = false,
-          polygonAlpha = 31,
-        },
+    meshes = {
+      m = {
+        drawIndex = 0,
+        positionSource = positionSource or "draw",
+        straddle = straddle,
+        transformMode = "static",
+        cullMode = "back",
+        polygonMode = "modulation",
+        polygonId = 0,
+        lightMask = 5,
+        translucentDepthWrite = false,
+        depthEqual = false,
+        polygonAlpha = 31,
       },
     },
   })
+  def.meshes[1].id = "m"
+  return def
+end
+
+local function transformPoint(m, x, y, z)
+  return m[1] * x + m[5] * y + m[9] * z + m[13],
+    m[2] * x + m[6] * y + m[10] * z + m[14],
+    m[3] * x + m[7] * y + m[11] * z + m[15]
+end
+
+function T.straddling_mesh_publishes_per_vertex_bends_to_the_pre_boundary_matrices()
+  local def = straddleDefinition({ sources = { { slot = 1 }, "draw", { slot = 0 } } })
   local instance = newInstance(def)
   instance:evaluatePose()
-  local draw = instance.poseState.drawMatrices["m"]
-  -- The mesh's own source resolves the draw matrix (node 0: 16,0,0 -> 1,0,0
-  -- tiles).
-  Assert.equal(draw.position[13], 1)
-  Assert.isNil(rawget(draw, "straddle"))
-  Assert.isTrue(def.backend.meshes.m.straddle ~= nil, "compiled provenance remains")
+  local pose = instance.poseState
+  local draw = pose.drawMatrices["m"]
+  Assert.equal(draw.straddle.count, 3)
+  local sources = { pose.matrixSlots[1], draw.position, pose.matrixSlots[0] }
+  for i = 1, 3 do
+    for _, v in ipairs({ { 0.3, -0.4, 0.5 }, { 1, 2, 3 } }) do
+      local bx, by, bz = transformPoint(draw.straddle.bends[i], v[1], v[2], v[3])
+      local wx, wy, wz = transformPoint(draw.position, bx, by, bz)
+      local ex, ey, ez = transformPoint(sources[i], v[1], v[2], v[3])
+      Assert.near(wx, ex, 1e-9, "bend " .. i .. " x")
+      Assert.near(wy, ey, 1e-9, "bend " .. i .. " y")
+      Assert.near(wz, ez, 1e-9, "bend " .. i .. " z")
+    end
+  end
+  -- A source equal to the mesh's own matrix needs no bend.
+  for k = 1, 16 do
+    Assert.near(draw.straddle.bends[2][k], (k - 1) % 5 == 0 and 1 or 0, 1e-9, "own-source bend is identity")
+  end
   local items = instance:drawItems({ m = {} })
-  Assert.equal(items[1].transform[13], 1)
-  Assert.deepEqual(items[1].modelNormal, identity9())
-  local nextItems = instance:drawItems({ m = {} })
-  Assert.equal(items[1].modelNormal, nextItems[1].modelNormal, "translation-only draws share the identity normal")
+  Assert.equal(items[1].straddle, draw.straddle, "the draw item carries the pose bends")
+end
 
-  -- With valid dormant provenance, the evaluated contract remains the same:
-  -- current pose data is present, but no per-frame split is published.
-  def.backend.meshes.m.straddle.source = { slot = 1 }
-  local validInstance = newInstance(def)
-  validInstance:evaluatePose()
-  local validDraw = validInstance.poseState.drawMatrices["m"]
-  Assert.equal(validDraw.position[13], 1)
-  Assert.isNil(rawget(validDraw, "straddle"))
-  Assert.isTrue(def.backend.meshes.m.straddle ~= nil, "compiled provenance remains")
+function T.straddle_bends_reuse_scratch_storage_across_evaluations()
+  local def = straddleDefinition({ sources = { { slot = 1 }, "draw" } })
+  local instance = newInstance(def)
+  instance:evaluatePose()
+  local straddle = instance.poseState.drawMatrices["m"].straddle
+  local first = straddle.bends[1]
+  instance:evaluatePose()
+  Assert.equal(instance.poseState.drawMatrices["m"].straddle, straddle)
+  Assert.equal(straddle.bends[1], first)
+  Assert.equal(straddle.count, 2)
+end
+
+function T.non_straddling_meshes_publish_no_bends()
+  local instance = newInstance(singleMeshDefinition())
+  instance:evaluatePose()
+  Assert.isNil(instance.poseState.drawMatrices["draw0.seg0"].straddle)
+  Assert.isNil(instance:drawItems({ ["draw0.seg0"] = {} })[1].straddle)
+end
+
+function T.a_straddle_naming_a_missing_slot_raises()
+  local instance = newInstance(straddleDefinition({ sources = { { slot = 9 } } }))
+  local ok, err = pcall(function()
+    instance:evaluatePose()
+  end)
+  Assert.isTrue(not ok, "a missing matrix-stack slot must raise")
+  Assert.equal(tostring(rawget(err, "code")), ErrorCodes.POSE_NITRO_SLOT_NOT_FOUND)
+end
+
+function T.a_snapshot_pose_copies_the_straddle_bends()
+  local instance = newInstance(straddleDefinition({ sources = { { slot = 1 } } }))
+  local snapshot = NitroPoseBackend.evaluate(instance)
+  local live = NitroPoseBackend.evaluateInto(instance, NitroPoseBackend.newScratch(instance.definition))
+  local copy = snapshot.drawMatrices["m"].straddle
+  Assert.equal(copy.count, 1)
+  Assert.deepEqual(copy.bends[1], live.drawMatrices["m"].straddle.bends[1])
+  Assert.isTrue(copy ~= live.drawMatrices["m"].straddle, "the snapshot is independent storage")
 end
 
 -- The pose guard is defense in depth: the artifact gate rejects a serialized

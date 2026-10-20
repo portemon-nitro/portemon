@@ -478,6 +478,7 @@ end
 ---@field billboardBase number[]|nil
 ---@field billboardCenter number[]|nil
 ---@field billboardScale number[]|nil
+---@field straddle PoseDrawMatrix.Straddle|nil -- bends of the mesh's leading vertices (the pose's own storage)
 
 -- Draw items in the field renderer item shape, one per visible definition
 -- mesh, with the current pose. `renderMeshesById` maps mesh id -> built
@@ -557,6 +558,7 @@ function ModelInstance:drawItems(renderMeshesById)
         item.billboardScale = nil
         writeNormalInto(item.modelNormal, item.transform)
       end
+      item.straddle = draw and draw.straddle or nil
       local meshState = backendMeshes[mesh.id]
       local material = self:effectiveMaterial(mesh.materialIndex)
       item.mesh = renderMeshesById[mesh.id]

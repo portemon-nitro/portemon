@@ -26,7 +26,7 @@ end
 
 local function descriptor(gender)
   return {
-    schema = "g4-model-v5",
+    schema = "g4-model-v6",
     kind = "nitro-dynamic",
     dynamic = { nodes = {}, transformProgram = {}, batches = {} },
     materials = {

@@ -1168,15 +1168,21 @@ function FieldState:draw()
         and assert(self._lugiaAppearanceRenderer, "Lugia scene renderer is ready before drawing its layers")
       or assert(self._hoOhAppearanceRenderer, "Ho-Oh scene renderer is ready before drawing its layers")
     local environment = renderer:cinematicEnvironment(self.runtime.runtimeMap.renderEnvironment)
+    -- The cinematic is framed by the source projection (zoom 1), not the
+    -- field camera zoom. The field zoom returns after the draw.
+    local camera = self.runtime.camera
+    local fieldZoom = camera.zoom
+    camera:setZoom(1)
     resources.renderer:draw(
       environment,
-      self.runtime.camera,
+      camera,
       { worldParts[lugiaShot and 15 or 13] },
       nil,
       self.runtime.viewport,
       alpha,
       self.runtime.fieldPixelScale:resolvedScale()
     )
+    camera:setZoom(fieldZoom)
     return status
   end
   local function drawFieldWorld()

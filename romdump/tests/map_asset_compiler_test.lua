@@ -902,7 +902,7 @@ function T.animated_straddling_primitives_serialize_per_vertex_sources()
 
   -- A quad display list with MTX_RESTORE slot 3 after the first two
   -- vertices: the quad straddles the boundary, so the descriptor batch must
-  -- carry { leading = 2, source = "draw" } -- the pre-restore source.
+  -- carry { sources = { "draw", "draw" } } -- the pre-restore sources.
   local vtx16xy = NB.vtx16xy
   local pack = NB.gxPack
   local straddlingQuad = pack({
@@ -941,7 +941,7 @@ function T.animated_straddling_primitives_serialize_per_vertex_sources()
     end
   end
   Assert.equal(#straddles, 1)
-  Assert.deepEqual(straddles[1].straddle, { leading = 2, source = "draw" })
+  Assert.deepEqual(straddles[1].straddle, { sources = { "draw", "draw" } })
 end
 
 -- The animated cache round trip: compile one animated building model, write
@@ -970,7 +970,7 @@ function T.animated_bundle_round_trips_through_writer_readiness_and_loader()
   })
   local bundle = assert(MapAssetCompiler.compile(romFs, MapRomFixture.MAP_SYMBOL))
   local model = onlyModel(bundle)
-  Assert.equal(model.schema, "g4-model-v5")
+  Assert.equal(model.schema, "g4-model-v6")
   Assert.equal(model.kind, "nitro-dynamic")
   Assert.equal(#model.animations, 1)
   Assert.equal(model.animations[1].name, "door_op")

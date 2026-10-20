@@ -30,13 +30,18 @@ PoseContract.BILLBOARD = "billboard"
 PoseContract.DRAW = "draw"
 
 -- The per-mesh draw record of a Nitro pose (PoseState.drawMatrices): the
--- tile-space matrix, its linear part, the transform mode, and the captured
--- billboard base. Compiled source-boundary provenance remains in backend
--- mesh records, but is not part of the evaluated pose.
+-- tile-space matrix, its linear part, the transform mode, the captured
+-- billboard base, and, for a mesh whose first vertices were submitted under
+-- other matrices, their bends.
+---@class PoseDrawMatrix.Straddle
+---@field count integer -- the number of leading vertices bent
+---@field bends number[][] -- [i] = tile-space matrix applied to leading vertex i before the mesh's own position matrix
+
 ---@class PoseDrawMatrix
 ---@field position number[]
 ---@field direction number[]
 ---@field transformMode TransformMode
 ---@field baseTransform number[]|nil
+---@field straddle PoseDrawMatrix.Straddle|nil
 
 return PoseContract

@@ -82,7 +82,7 @@ function BundleFixture.minimal(mapId)
     },
     models = {
       [modelKey] = {
-        schema = "g4-model-v5",
+        schema = "g4-model-v6",
         key = modelKey,
         memberId = 1,
         kind = "static",

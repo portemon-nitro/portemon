@@ -274,9 +274,9 @@ end
 --  state the static path rides on each batch: cull mode, polygon mode, id,
 --  depth flags, polygon alpha
 ---@field batch G4GxGeometrySlice
----@field straddle { leading: integer, source: DrawSource }|nil -- the segment
---  received `leading` vertices submitted under `source` (the pre-boundary
---  matrix) before its own; absent: the whole segment resolves under
+---@field straddle { sources: DrawSource[] }|nil -- the segment's first
+--  #sources vertices were submitted under those sources (one each, in vertex
+--  order) before its own; absent: the whole segment resolves under
 --  positionSource
 
 -- Transform-preserving compile: the same draw replay as
@@ -369,6 +369,13 @@ function MeshCompiler.compileDynamic(model, context)
       -- transform to their position source.
       local positionSource
       if draw.transformMode == PoseContract.BILLBOARD then
+        if segment.straddle then
+          Errors.raise(
+            "MESH_BILLBOARD_STRADDLE",
+            "a billboard draw's display list changes matrix mid-primitive",
+            { drawIndex = drawIndex - 1, shape = shp.name }
+          )
+        end
         positionSource = nil
       else
         positionSource = segment.positionSource
@@ -390,9 +397,9 @@ function MeshCompiler.compileDynamic(model, context)
           indexCount = slice.indexCount,
         },
       }
-      -- A run split at a mid-run matrix boundary: the first `leading`
-      -- vertices of this segment were submitted under the PRE-boundary
-      -- source, so the record carries the split for the runtime to bend
+      -- A run split at a mid-run matrix boundary: the first #sources
+      -- vertices of this segment were submitted under their own
+      -- PRE-boundary sources, so the record carries the split for the runtime to bend
       -- per-vertex exactly like the geometry engine (the DS transforms each
       -- vertex under the then-current matrix). The straddle report counts
       -- these compiled records, so every reported straddle is represented

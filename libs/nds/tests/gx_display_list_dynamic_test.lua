@@ -203,7 +203,7 @@ function T.splits_a_run_at_a_matrix_boundary()
   Assert.equal(geom.segments[2].vertexCount, 3)
   Assert.equal(geom.segments[2].indexCount, 3)
   assertVertex(geom.segments[2], 0, 0, 0, 0)
-  Assert.deepEqual(geom.segments[2].straddle, { leading = 1, source = "draw" })
+  Assert.deepEqual(geom.segments[2].straddle, { sources = { "draw" } })
   Assert.equal(geom.straddlingPrimitives, 1)
 end
 
@@ -248,9 +248,9 @@ function T.straddle_source_is_the_prior_source_under_a_pop_boundary()
   -- straddling triangle keeps the slot as the leading source, and the
   -- segment after the pop resolves under the popped "draw" source.
   Assert.equal(geom.segments[2].indexCount, 3)
-  Assert.deepEqual(geom.segments[2].straddle, { leading = 1, source = "draw" })
+  Assert.deepEqual(geom.segments[2].straddle, { sources = { "draw" } })
   Assert.equal(geom.segments[3].positionSource, "draw")
-  Assert.deepEqual(geom.segments[3].straddle, { leading = 1, source = { slot = 3 } })
+  Assert.deepEqual(geom.segments[3].straddle, { sources = { { slot = 3 } } })
   Assert.equal(geom.straddlingPrimitives, 2)
 end
 
@@ -300,8 +300,8 @@ function T.each_boundary_of_a_multi_split_run_carries_its_own_straddle()
   -- Segment 2 emitted its complete quad (6 indices) before the second
   -- boundary and carries the first straddle's leading pair.
   Assert.equal(geom.segments[2].indexCount, 6)
-  Assert.deepEqual(geom.segments[2].straddle, { leading = 2, source = "draw" })
-  Assert.deepEqual(geom.segments[3].straddle, { leading = 2, source = { slot = 3 } })
+  Assert.deepEqual(geom.segments[2].straddle, { sources = { "draw", "draw" } })
+  Assert.deepEqual(geom.segments[3].straddle, { sources = { { slot = 3 }, { slot = 3 } } })
   Assert.equal(geom.straddlingPrimitives, 2)
 end
 
@@ -331,8 +331,33 @@ function T.straddling_quads_are_carried_into_the_new_segment()
   Assert.equal(second.indexCount, 6)
   assertVertex(second, 0, 2, 0, 0)
   assertVertex(second, 1, 3, 0, 0)
-  Assert.deepEqual(second.straddle, { leading = 2, source = "draw" })
+  Assert.deepEqual(second.straddle, { sources = { "draw", "draw" } })
   Assert.equal(geom.straddlingPrimitives, 1)
+end
+
+function T.carried_vertices_keep_their_own_source_across_chained_boundaries()
+  -- BEGIN(quads), VTX under "draw", RESTORE slot 3, VTX, RESTORE slot 4,
+  -- VTX x2, END: one quad whose vertices span three matrices. The middle
+  -- segment completes no primitive and re-carries both leading vertices, so
+  -- the final segment must still attribute the first to "draw" and the
+  -- second to slot 3.
+  local dl = pack({
+    { { 0x40, 0x23 }, { 1, vtx16xy(0, 0), 0 } },
+    MTX_RESTORE,
+    { { 0x23 }, { vtx16xy(1, 0), 0 } },
+    { { 0x14 }, { 4 } },
+    { { 0x23, 0x23 }, { vtx16xy(1, 1), 0, vtx16xy(0, 1), 0 } },
+    { { 0x41 } },
+  })
+  local geom = decode(dl, { dynamic = true })
+  Assert.equal(#geom.segments, 3)
+  Assert.deepEqual(geom.segments[2].straddle, { sources = { "draw" } })
+  local last = geom.segments[3]
+  Assert.equal(last.positionSource.slot, 4)
+  Assert.equal(last.indexCount, 6)
+  assertVertex(last, 0, 0, 0, 0)
+  assertVertex(last, 1, 1, 0, 0)
+  Assert.deepEqual(last.straddle, { sources = { "draw", { slot = 3 } } })
 end
 
 function T.triangle_strip_winding_continues_across_a_boundary()
@@ -358,7 +383,7 @@ function T.triangle_strip_winding_continues_across_a_boundary()
   -- the pre-boundary source; the trailing vertices resolve under the slot.
   Assert.equal(second.vertexCount, 5)
   Assert.deepEqual(indexValues(second), { 1, 0, 2, 1, 2, 3, 3, 2, 4 })
-  Assert.deepEqual(second.straddle, { leading = 2, source = "draw" })
+  Assert.deepEqual(second.straddle, { sources = { "draw", "draw" } })
   Assert.equal(geom.straddlingPrimitives, 1)
 end
 

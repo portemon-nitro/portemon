@@ -152,9 +152,9 @@ function T.draw_items_carry_pose_transforms()
   Assert.equal(items[1].lightMask, 5)
 end
 
--- Compiled source provenance does not alter the renderer-facing current
--- transform or ordinary normal calculation.
-function T.straddle_origin_items_use_the_current_transform_and_normal()
+-- A mesh without straddle provenance renders under the current transform
+-- and ordinary normal, with no bends on its item.
+function T.non_straddling_items_use_the_current_transform_and_normal()
   local def = NitroModelFixture.doorDefinition()
   local instance = ModelInstance.new(def)
   instance:evaluatePose()
@@ -168,7 +168,7 @@ function T.straddle_origin_items_use_the_current_transform_and_normal()
   Assert.equal(items[1].mesh, residentMesh)
   Assert.deepEqual(items[1].transform, current)
   Assert.deepEqual(items[1].modelNormal, Matrix3.modelNormal(current))
-  Assert.isNil(rawget(items[1], "straddle"), "renderer items do not carry the discarded split")
+  Assert.isNil(items[1].straddle, "a non-straddling item carries no bends")
 end
 
 -- The effective material reads the record's optional colors block (the four

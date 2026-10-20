@@ -705,6 +705,42 @@ function T.validate_rejects_a_dynamic_batch_with_an_out_of_range_material_index(
   end)
 end
 
+-- ---- the straddle provenance contract ----
+
+function T.validate_accepts_per_vertex_straddle_sources()
+  local desc = emittedDynamicDescriptor()
+  desc.dynamic.batches[1].straddle = { sources = { "draw", { slot = 3 }, { slot = 0 } } }
+  Assert.equal(ModelAsset.validate(desc), desc)
+end
+
+function T.validate_rejects_malformed_straddle_provenance()
+  local cases = {
+    { leading = 2, source = "draw" }, -- the retired single-source shape
+    { sources = {} },
+    { sources = { "draw", "draw", "draw", "draw" } },
+    { sources = { "back" } },
+    { sources = { { slot = -1 } } },
+    { sources = { { slot = 1.5 } } },
+    { sources = { "draw" }, extra = true },
+  }
+  for _, straddle in ipairs(cases) do
+    local desc = emittedDynamicDescriptor()
+    desc.dynamic.batches[1].straddle = straddle
+    throwsCode(ModelAsset.ERROR_INVALID, function()
+      ModelAsset.validate(desc)
+    end)
+  end
+end
+
+function T.validate_rejects_a_straddle_on_a_baked_batch()
+  local desc = emittedDynamicDescriptor()
+  desc.dynamic.batches[1].positionSource = nil
+  desc.dynamic.batches[1].straddle = { sources = { "draw" } }
+  throwsCode(ModelAsset.ERROR_INVALID, function()
+    ModelAsset.validate(desc)
+  end)
+end
+
 -- ---- the strict material contract ----
 
 -- The static path emits the scene-form material record; a record missing a

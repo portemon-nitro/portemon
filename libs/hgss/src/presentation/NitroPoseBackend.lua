@@ -17,7 +17,11 @@
 --
 -- The output is the PoseState: per-node matrices and visibility plus
 -- per-mesh draw transforms -- a Nitro draw is not one node matrix, so every
--- dynamic mesh carries the matrix its transform source resolves to.
+-- dynamic mesh carries the matrix its transform source resolves to. A mesh
+-- whose compiled provenance records straddling vertices (a primitive whose
+-- vertices were submitted under different matrices) also carries one bend
+-- matrix per leading vertex, the transform that moves the vertex from the
+-- mesh's own matrix to the matrix it was submitted under.
 --
 -- Geometry is compiled once; only these matrices change per frame. Pure
 -- domain module.
@@ -51,6 +55,8 @@ local NitroPoseBackend = {}
 ---@field _nodePool table<integer, number[]> -- retained node-matrix tables
 ---@field _slotPool table<integer, number[]> -- retained matrix-slot tables
 ---@field _bases table<string, number[]> -- retained billboard-base tables by mesh id
+---@field _inverse number[] -- scratch inverse of the current mesh's position matrix
+---@field _source number[] -- scratch pre-boundary matrix of the current leading vertex
 ---@field _nodeByMesh table<string, integer> -- mesh id to node index, fixed by the definition
 ---@field _jointAttachments table<integer, unknown> -- reusable joint attachment list
 ---@field _jointSampler table<string, unknown> -- reusable compiled-sampler storage
@@ -178,6 +184,74 @@ local function resolvePositionInto(draw, source, tileScale, modelKey, out)
   return toTilesInto(out, slot, tileScale)
 end
 
+-- The affine inverse of `m` (linear part plus translation) into `out`.
+-- Returns false, leaving `out` unspecified, when the linear part is singular.
+---@param out number[]
+---@param m number[]
+---@return boolean
+local function invertAffineInto(out, m)
+  local a, b, c = m[1], m[5], m[9]
+  local d, e, f = m[2], m[6], m[10]
+  local g, h, i = m[3], m[7], m[11]
+  local det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
+  if math.abs(det) < 1e-12 then
+    return false
+  end
+  out[1], out[2], out[3], out[4] = (e * i - f * h) / det, -(d * i - f * g) / det, (d * h - e * g) / det, 0
+  out[5], out[6], out[7], out[8] = -(b * i - c * h) / det, (a * i - c * g) / det, -(a * h - b * g) / det, 0
+  out[9], out[10], out[11], out[12] = (b * f - c * e) / det, -(a * f - c * d) / det, (a * e - b * d) / det, 0
+  local tx, ty, tz = m[13], m[14], m[15]
+  out[13] = -(out[1] * tx + out[5] * ty + out[9] * tz)
+  out[14] = -(out[2] * tx + out[6] * ty + out[10] * tz)
+  out[15] = -(out[3] * tx + out[7] * ty + out[11] * tz)
+  out[16] = 1
+  return true
+end
+
+-- out = a * b for affine column-major 4x4 tables (bottom row 0,0,0,1).
+---@param out number[]
+---@param a number[]
+---@param b number[]
+local function multiplyAffineInto(out, a, b)
+  for col = 0, 3 do
+    local bx, by, bz = b[col * 4 + 1], b[col * 4 + 2], b[col * 4 + 3]
+    out[col * 4 + 1] = a[1] * bx + a[5] * by + a[9] * bz
+    out[col * 4 + 2] = a[2] * bx + a[6] * by + a[10] * bz
+    out[col * 4 + 3] = a[3] * bx + a[7] * by + a[11] * bz
+    out[col * 4 + 4] = 0
+  end
+  out[13] = out[13] + a[13]
+  out[14] = out[14] + a[14]
+  out[15] = out[15] + a[15]
+  out[16] = 1
+end
+
+-- The bend of each leading vertex of a straddling mesh into `straddle.bends`:
+-- M_position^-1 * M_source_i. The mesh's geometry is drawn under its own
+-- position matrix, so applying the bend first places the vertex exactly where
+-- its pre-boundary matrix put it. A singular position matrix collapses the
+-- whole segment to a plane, so there is nothing to bend and the bends stay
+-- identity.
+---@param straddle PoseDrawMatrix.Straddle
+---@param sources DrawSource[]
+---@param draw SbcDraw
+---@param position number[]
+---@param tileScale number
+---@param modelKey string
+---@param scratch NitroPoseBackend.Scratch
+local function resolveBendsInto(straddle, sources, draw, position, tileScale, modelKey, scratch)
+  local invertible = invertAffineInto(scratch._inverse, position)
+  for i, source in ipairs(sources) do
+    local bend = straddle.bends[i]
+    resolvePositionInto(draw, source, tileScale, modelKey, scratch._source)
+    if invertible then
+      multiplyAffineInto(bend, scratch._inverse, scratch._source)
+    else
+      toTilesInto(bend, IDENTITY_MATRIX, 1)
+    end
+  end
+end
+
 -- The definition's program, or raise the missing-program diagnostic.
 ---@param definition table<string, unknown>
 ---@return table<string, unknown>
@@ -191,6 +265,28 @@ local function requireProgram(definition)
     )
   end
   return backend.program
+end
+
+-- A mesh's retained draw record. Straddling meshes own their bend matrices.
+---@param mesh table<string, unknown>
+---@return PoseDrawMatrix
+local function newDrawRecord(mesh)
+  local record = {
+    position = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 },
+    direction = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 },
+    transformMode = mesh.transformMode,
+    baseTransform = nil,
+  }
+  local provenance = mesh.straddle
+  if provenance then
+    assert(mesh.positionSource ~= nil, "a straddling mesh resolves under a position source")
+    local bends = {}
+    for i = 1, #provenance.sources do
+      bends[i] = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 }
+    end
+    record.straddle = { count = #provenance.sources, bends = bends }
+  end
+  return record
 end
 
 -- Owner-held reusable pose storage for one model definition: compiled-
@@ -221,6 +317,8 @@ function NitroPoseBackend.newScratch(definition)
     _nodePool = {},
     _slotPool = {},
     _bases = {},
+    _inverse = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 },
+    _source = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 },
     _nodeByMesh = {},
     _jointAttachments = {},
     _jointSampler = CompiledNsbcaSampler.newScratch(),
@@ -242,12 +340,7 @@ function NitroPoseBackend.newScratch(definition)
     scratch._nodeByMesh[mesh.id] = mesh.nodeIndex
   end
   for meshId, mesh in pairs(backend.meshes or {}) do
-    scratch.pose.drawMatrices[meshId] = {
-      position = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 },
-      direction = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 },
-      transformMode = mesh.transformMode,
-      baseTransform = nil,
-    }
+    scratch.pose.drawMatrices[meshId] = newDrawRecord(mesh)
   end
   return scratch
 end
@@ -316,17 +409,23 @@ function NitroPoseBackend.evaluateInto(instance, scratch)
     end
     local record = pose.drawMatrices[meshId]
     if not record then
-      record = {
-        position = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 },
-        direction = { 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1 },
-        transformMode = mesh.transformMode,
-        baseTransform = nil,
-      }
+      record = newDrawRecord(mesh)
       pose.drawMatrices[meshId] = record
     end
     if draw then
       resolvePositionInto(draw, mesh.positionSource, tileScale, def.key, record.position)
       linearInto(record.direction, record.position)
+      if mesh.straddle then
+        resolveBendsInto(
+          assert(record.straddle),
+          mesh.straddle.sources,
+          draw,
+          record.position,
+          tileScale,
+          def.key,
+          scratch
+        )
+      end
     else
       toTilesInto(record.position, IDENTITY_MATRIX, tileScale)
       linearInto(record.direction, record.position)
@@ -385,11 +484,20 @@ function NitroPoseBackend.evaluate(instance)
   end
   local drawMatrices = {}
   for meshId, record in pairs(live.drawMatrices) do
+    local straddle
+    if record.straddle then
+      local bends = {}
+      for i = 1, record.straddle.count do
+        bends[i] = snapshotMatrix(record.straddle.bends[i])
+      end
+      straddle = { count = record.straddle.count, bends = bends }
+    end
     drawMatrices[meshId] = {
       position = snapshotMatrix(record.position),
       direction = snapshotMatrix(record.direction),
       transformMode = record.transformMode,
       baseTransform = record.baseTransform and snapshotMatrix(record.baseTransform) or nil,
+      straddle = straddle,
     }
   end
   local matrixSlots = {}

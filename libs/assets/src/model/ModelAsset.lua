@@ -36,7 +36,10 @@ local ModelAsset = {}
 -- v4: every dynamic material record carries polygonMode (the real decoded DS
 -- polygon mode), so the runtime evaluator can classify final alpha
 -- (AlphaClassifier v2) without a placeholder mode.
-ModelAsset.SCHEMA = "g4-model-v5"
+--
+-- v6: a dynamic batch's straddle record is `{ sources }` (one draw source per
+-- leading vertex), replacing the single-source `{ leading, source }`.
+ModelAsset.SCHEMA = "g4-model-v6"
 ModelAsset.KINDS = { static = true, ["nitro-dynamic"] = true }
 
 -- Structured error code owned by this module.
@@ -808,10 +811,63 @@ local function checkBatch(b, where, desc)
   end
 end
 
+-- The most vertices of one primitive that can precede a matrix boundary
+-- (a quad's first three).
+local MAX_STRADDLE_VERTICES = 3
+
+---@param source unknown
+---@return boolean
+local function isDrawSource(source)
+  if source == "draw" then
+    return true
+  end
+  if type(source) ~= "table" then
+    return false
+  end
+  local keys = 0
+  for _ in pairs(source) do
+    keys = keys + 1
+  end
+  return keys == 1 and Validate.isNonNegativeInteger(source.slot)
+end
+
+-- A straddle record is `{ sources }`: one draw source per leading vertex of
+-- the batch's segment, in vertex order. Batches fully baked at compile time
+-- (billboards, no positionSource) never straddle.
+---@param b table<string, unknown>
+---@param desc table<string, unknown>
+local function checkStraddle(b, desc)
+  local straddle = b.straddle
+  if straddle == nil then
+    return
+  end
+  local where = "dynamic batch " .. tostring(b.id) .. " straddle"
+  if b.positionSource == nil then
+    invalid(where .. " requires a positionSource", desc.key)
+  end
+  local keys = 0
+  local sources
+  if type(straddle) == "table" then
+    for _ in pairs(straddle) do
+      keys = keys + 1
+    end
+    sources = straddle.sources
+  end
+  if keys ~= 1 or not Validate.isArray(sources) or #sources < 1 or #sources > MAX_STRADDLE_VERTICES then
+    invalid(where .. " must be { sources } with 1 to " .. MAX_STRADDLE_VERTICES .. " draw sources", desc.key)
+  end
+  for _, source in ipairs(sources) do
+    if not isDrawSource(source) then
+      invalid(where .. " carries a malformed draw source", desc.key)
+    end
+  end
+end
+
 ---@param b table<string, unknown>
 ---@param desc table<string, unknown>
 local function checkDynamicBatch(b, desc)
   checkBatch(b, "dynamic", desc)
+  checkStraddle(b, desc)
   if type(b.id) ~= "string" or #b.id == 0 then
     invalid("dynamic batch requires a non-empty id", desc.key)
   end

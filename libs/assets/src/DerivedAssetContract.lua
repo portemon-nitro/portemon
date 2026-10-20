@@ -162,6 +162,12 @@
 -- completion; the family summary owns only exhaustive provenance and
 -- completion.
 --
+-- revision 13 / model schema 6 / map scene schema 13 / field-effect cache
+-- v16: a dynamic model batch's straddle record carries one draw source per
+-- leading vertex (`{ sources }`), so a primitive spanning several matrices
+-- keeps every vertex's own provenance. Map scenes and field effects embed
+-- the model descriptors and rebuild.
+--
 -- world schema 1: the world manifest is a structural catalog derived from
 -- source analysis alone. Membership means the source map is structurally
 -- loadable, never that its scene geometry compiled; every record carries the
@@ -169,7 +175,7 @@
 
 local DerivedAssetContract = {}
 
-DerivedAssetContract.revision = 12
+DerivedAssetContract.revision = 13
 
 DerivedAssetContract.map = {
   cacheFormat = "map-cache-v7",
@@ -181,7 +187,8 @@ DerivedAssetContract.map = {
   -- carry the map's base weather ID plus its resolved global HGSS fog preset
   -- (scene.weatherId, scene.fog). v12 names each field-light record's
   -- threshold endHalfSeconds: a record is active until that time.
-  sceneSchema = "g4-map-scene-v12",
+  -- v13 carries per-vertex straddle sources in dynamic building models.
+  sceneSchema = "g4-map-scene-v13",
   terrainSchema = "g4-terrain-surfaces-v1",
   collisionVersion = 1,
 }
@@ -313,11 +320,12 @@ DerivedAssetContract.newGameInit = {
 }
 
 DerivedAssetContract.fieldEffects = {
+  -- v16 carries per-vertex straddle sources in dynamic model batches.
   -- v15 publishes the Ho-Oh appearance record in parts: a core with a clip
   -- summary, and per cinematic shot one shared part plus one overlay per
   -- time-of-day variant.
   -- v14 adds the source models and animation clips used by both Ho-Oh cinematic shots.
-  cacheFormat = "field-effect-cache-v15",
+  cacheFormat = "field-effect-cache-v16",
   indexSchema = "g4-field-effect-index-v4",
 }
 

@@ -292,8 +292,8 @@ function ModelDefinition.fromNitroDescriptor(desc, opts)
     backendRecord.drawIndex = mesh.drawIndex
     backendRecord.positionSource = mesh.positionSource
     backendRecord.transformMode = mesh.transformMode
-    -- Preserve source-side matrix-boundary provenance in the compiled backend
-    -- record; runtime presentation draws the resident batch as one mesh.
+    -- The per-vertex matrix-boundary provenance the pose backend resolves
+    -- into the bends of the segment's leading vertices.
     if mesh.straddle then
       backendRecord.straddle = mesh.straddle
     end

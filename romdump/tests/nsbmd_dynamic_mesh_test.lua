@@ -349,12 +349,12 @@ function T.straddling_quad_carries_per_vertex_sources_and_matches_the_static_bak
   -- One SBC draw, one straddle mesh (the leading-only segment is dropped: no
   -- indices to draw).
   Assert.equal(#descriptor.meshes, 1)
-  ---@type { positionSource: table|string, drawIndex: integer, straddle?: { leading: integer, source: table|string }, batch: G4GxGeometrySlice }
+  ---@type { positionSource: table|string, drawIndex: integer, straddle?: { sources: (table|string)[] }, batch: G4GxGeometrySlice }
   local mesh = descriptor.meshes[1]
   Assert.equal(mesh.positionSource.slot, 3)
   -- The per-vertex provenance: the first two vertices resolve under the
   -- pre-restore "draw" source, the trailing two under the slot.
-  Assert.deepEqual(mesh.straddle, { leading = 2, source = "draw" })
+  Assert.deepEqual(mesh.straddle, { sources = { "draw", "draw" } })
   Assert.equal(mesh.batch.vertexCount, 4)
 
   -- Bind-pose oracle: resolve each vertex under the source active at its
@@ -379,7 +379,7 @@ function T.straddling_quad_carries_per_vertex_sources_and_matches_the_static_bak
   end
   local draw = draws[mesh.drawIndex + 1]
   for i, v in ipairs(vertices(mesh.batch)) do
-    local src = i <= mesh.straddle.leading and mesh.straddle.source or mesh.positionSource
+    local src = mesh.straddle.sources[i] or mesh.positionSource
     local position = resolveSource(src, draw)
     local x = position[1] * v.x + position[5] * v.y + position[9] * v.z + position[13]
     local y = position[2] * v.x + position[6] * v.y + position[10] * v.z + position[14]

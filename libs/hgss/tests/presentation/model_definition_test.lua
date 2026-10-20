@@ -317,12 +317,12 @@ function T.from_nitro_descriptor_assembles_the_runtime_definition()
 end
 
 -- Source-boundary provenance of a descriptor batch survives assembly onto the
--- compiled backend mesh record for asset-level inspection and future tooling.
+-- compiled backend mesh record the pose backend bends the leading vertices by.
 function T.from_nitro_descriptor_carries_the_straddle_provenance()
   local desc = nitroDescriptor()
-  desc.dynamic.batches[1].straddle = { leading = 2, source = "draw" }
+  desc.dynamic.batches[1].straddle = { sources = { "draw", { slot = 3 } } }
   local def = ModelDefinition.fromNitroDescriptor(desc, { key = desc.key })
-  Assert.deepEqual(def.backend.meshes["draw0.seg0"].straddle, { leading = 2, source = "draw" })
+  Assert.deepEqual(def.backend.meshes["draw0.seg0"].straddle, { sources = { "draw", { slot = 3 } } })
 end
 
 -- A generated descriptor that omits the key must fail at the load boundary

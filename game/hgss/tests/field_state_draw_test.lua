@@ -598,6 +598,96 @@ function T.world_parts_refresh_replaced_scene_neighbor_and_actor_draws()
   Assert.equal(refreshed[6][1], nextActorDraws[1])
 end
 
+-- A runtime whose every draw-time collaborator is idle; tests override the
+-- parts they exercise.
+local function idleDrawRuntime(sceneRuntime, renderEnvironment, menuPresentation)
+  return {
+    pcApplicationHost = idlePcApplicationHost(),
+    runtimeMap = {
+      mapId = 61,
+      mapSymbol = "MAP_NEW_BARK",
+      sceneRuntime = sceneRuntime,
+      renderEnvironment = renderEnvironment,
+    },
+    player = { fieldX = 3, fieldZ = 7, worldY = 1.5, surfaceId = 0, facing = "east", motion = "idle" },
+    playerVisual = {
+      drawRecord = function()
+        return { visible = false }
+      end,
+    },
+    fieldEntranceIndicator = {
+      status = function()
+        return { visible = false }
+      end,
+    },
+    actors = {
+      drawRecords = function()
+        return {}
+      end,
+    },
+    session = {
+      renderAlpha = function()
+        return 0.5
+      end,
+    },
+    overworld = {
+      isPresent = function()
+        return true
+      end,
+    },
+    destinationWorldPresentable = function()
+      return true
+    end,
+    acknowledgeDestinationPresentation = function() end,
+    viewport = FieldViewport.new(640, 480, { mode = "expanded" }),
+    camera = { zoom = 1 },
+    transition = { fadeAlpha = 0 },
+    fieldPixelScale = {
+      resolvedScale = function()
+        return 3
+      end,
+    },
+    dialogue = {
+      isModal = function()
+        return false
+      end,
+    },
+    scripts = { dialogueHost = {
+      yesNoPresentation = function()
+        return nil
+      end,
+    } },
+    contextChoiceProvider = {
+      status = function()
+        return nil
+      end,
+    },
+    contextChoicePresentation = function()
+      return nil
+    end,
+    signpost = {
+      isModal = function()
+        return false
+      end,
+    },
+    applicationHost = {
+      isActive = function()
+        return false
+      end,
+      status = function()
+        return { phase = "closed", fadeAlpha = 0 }
+      end,
+    },
+    menuHost = {
+      presentation = function()
+        return menuPresentation()
+      end,
+    },
+    yesNoHost = idleChoiceHost(),
+    resizePresentation = function() end,
+  }
+end
+
 -- A live presentation runtime always carries the transition, dialogue, and
 -- menu host; draw consults all three unconditionally, and the renderer
 -- receives the runtime map's render environment.
@@ -617,92 +707,10 @@ function T.draw_passes_the_render_environment_and_queries_the_menu_host()
   local presentations = 0
   local received
   local state = setmetatable({
-    runtime = {
-      pcApplicationHost = idlePcApplicationHost(),
-      runtimeMap = {
-        mapId = 61,
-        mapSymbol = "MAP_NEW_BARK",
-        sceneRuntime = sceneRuntime,
-        renderEnvironment = renderEnvironment,
-      },
-      player = { fieldX = 3, fieldZ = 7, worldY = 1.5, surfaceId = 0, facing = "east", motion = "idle" },
-      playerVisual = {
-        drawRecord = function()
-          return { visible = false }
-        end,
-      },
-      fieldEntranceIndicator = {
-        status = function()
-          return { visible = false }
-        end,
-      },
-      actors = {
-        drawRecords = function()
-          return {}
-        end,
-      },
-      session = {
-        renderAlpha = function()
-          return 0.5
-        end,
-      },
-      overworld = {
-        isPresent = function()
-          return true
-        end,
-      },
-      destinationWorldPresentable = function()
-        return true
-      end,
-      acknowledgeDestinationPresentation = function() end,
-      viewport = FieldViewport.new(640, 480, { mode = "expanded" }),
-      camera = { zoom = 1 },
-      transition = { fadeAlpha = 0 },
-      fieldPixelScale = {
-        resolvedScale = function()
-          return 3
-        end,
-      },
-      dialogue = {
-        isModal = function()
-          return false
-        end,
-      },
-      scripts = { dialogueHost = {
-        yesNoPresentation = function()
-          return nil
-        end,
-      } },
-      contextChoiceProvider = {
-        status = function()
-          return nil
-        end,
-      },
-      contextChoicePresentation = function()
-        return nil
-      end,
-      signpost = {
-        isModal = function()
-          return false
-        end,
-      },
-      applicationHost = {
-        isActive = function()
-          return false
-        end,
-        status = function()
-          return { phase = "closed", fadeAlpha = 0 }
-        end,
-      },
-      menuHost = {
-        presentation = function()
+    runtime = idleDrawRuntime(sceneRuntime, renderEnvironment, function()
           presentations = presentations + 1
           return nil
-        end,
-      },
-      yesNoHost = idleChoiceHost(),
-      resizePresentation = function() end,
-    },
+        end),
     _pollPresentationTopology = true,
     topologyProvider = function()
       return ScreenTopology.oneDisplay({
@@ -733,6 +741,54 @@ function T.draw_passes_the_render_environment_and_queries_the_menu_host()
   Assert.deepEqual(received.worldParts[4], {})
   Assert.deepEqual(received.worldParts[5], {})
   Assert.equal(presentations, 1, "draw always queries the menu host presentation")
+end
+
+-- The Ho-Oh cinematic is its own application with the source projection:
+-- it draws at camera zoom 1 whatever the field pixel scale resolves to, and
+-- the field camera keeps its own zoom afterwards.
+function T.ho_oh_cinematic_draws_at_source_zoom_and_restores_the_field_zoom()
+  local FieldPixelScale = require("libs.hgss.src.presentation.FieldPixelScale")
+  local function drawAt(width, height)
+    local runtime = idleDrawRuntime({}, { edgeColors = { [0] = 0 } }, function()
+      return nil
+    end)
+    runtime.viewport = FieldViewport.new(width, height, { mode = "strict" })
+    runtime.fieldPixelScale = FieldPixelScale.new()
+    runtime.fieldPixelScale:resize(runtime.viewport.referenceFrame.height)
+    runtime.camera = {
+      zoom = runtime.fieldPixelScale:cameraZoom(),
+      setZoom = function(self, zoom)
+        self.zoom = zoom
+      end,
+    }
+    runtime.hoOhAppearanceScene = {
+      status = function()
+        return { cinematicShot = "first" }
+      end,
+    }
+    local fieldZoom = runtime.camera.zoom
+    local drawn = {}
+    local state = stateWith(runtime)
+    state._hoOhAppearanceRenderer = {
+      cinematicEnvironment = function(_, environment)
+        return environment
+      end,
+      endScene = function() end,
+    }
+    state.presentationResources = presentationResourcesStub({
+      draw = function(_, _, camera)
+        drawn[#drawn + 1] = camera.zoom
+      end,
+    })
+    state:draw()
+    return drawn, fieldZoom, runtime.camera.zoom
+  end
+  for _, size in ipairs({ { 1280, 720 }, { 1920, 1080 } }) do
+    local drawn, fieldZoom, afterZoom = drawAt(size[1], size[2])
+    Assert.deepEqual(drawn, { 1 }, "the cinematic uses the source projection at " .. size[2] .. "p")
+    Assert.isTrue(fieldZoom ~= 1, "the field zoom differs from the source projection")
+    Assert.equal(afterZoom, fieldZoom, "the field zoom is restored after the cinematic draw")
+  end
 end
 
 -- A physical-coverage map whose active logical map has no realized scene
