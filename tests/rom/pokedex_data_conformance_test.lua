@@ -525,9 +525,7 @@ end
 function T.presentation_grid_windows_clear_their_foreground_layer(romFs, versionId)
   local manifest, sink = compiledChrome(romFs, versionId)
   local grid = assert(manifest.pages.grid, versionId .. " closes the grid page")
-  for _, background in
-    ipairs(assert(grid.backgrounds.information, versionId .. " binds the grid information pane"))
-  do
+  for _, background in ipairs(assert(grid.backgrounds.information, versionId .. " binds the grid information pane")) do
     Assert.isTrue(
       background.layer ~= 0,
       versionId .. " binds no grid information foreground over the layer-1 text windows"
@@ -561,7 +559,9 @@ function T.presentation_area_map_pans_behind_its_entry_windows(romFs, versionId)
   local manifest, sink = compiledChrome(romFs, versionId)
   local area = assert(manifest.pages["entry.area"], versionId .. " closes the entry.area page")
   local map = nil
-  for _, background in ipairs(assert(area.backgrounds.information, versionId .. " binds the entry.area information pane")) do
+  for _, background in
+    ipairs(assert(area.backgrounds.information, versionId .. " binds the entry.area information pane"))
+  do
     if background.layer == 0 then
       map = background
     end
@@ -580,7 +580,7 @@ function T.presentation_area_map_pans_behind_its_entry_windows(romFs, versionId)
   Assert.equal(record.height, screen.height, versionId .. " area map keeps its native scroll height")
   Assert.equal(width, screen.width, versionId .. " area map stages its full native width")
   Assert.isTrue(
-    width >= (104 - (-72)) + 256,
+    width >= (104 - -72) + 256,
     versionId .. " area map spans both settled region pans (-72/+104 over a 256 viewport)"
   )
   Assert.equal(
@@ -794,10 +794,7 @@ function T.fixture_policy_identities_resolve_within_rom_bank_ranges(romFs, versi
     for _, bankId in ipairs(banks) do
       Assert.isTrue(provider:acquireBank(bankId), versionId .. " acquires bank " .. bankId)
       local template = provider:get(bankId, nativeId)
-      Assert.notNil(
-        template,
-        versionId .. " resolves " .. key .. " in bank " .. bankId .. " entry " .. nativeId
-      )
+      Assert.notNil(template, versionId .. " resolves " .. key .. " in bank " .. bankId .. " entry " .. nativeId)
       Assert.isTrue(
         type(template.text) == "string" and template.text ~= "",
         versionId .. " carries source text for " .. key .. " in bank " .. bankId
@@ -829,17 +826,12 @@ function T.presentation_sprites_bind_only_the_authored_static_anchors(romFs, ver
     Assert.isTrue(type(record.x) == "number" and type(record.y) == "number", versionId .. " anchors " .. role)
     if record.x ~= 0 or record.y ~= 0 then
       placed = placed + 1
-      local wanted = assert(
-        expected[role],
-        versionId .. " places no sprite outside the authored subset: " .. role
-      )
+      local wanted = assert(expected[role], versionId .. " places no sprite outside the authored subset: " .. role)
       Assert.equal(record.x, wanted.x, versionId .. " " .. role .. " keeps its native x")
       Assert.equal(record.y, wanted.y, versionId .. " " .. role .. " keeps its native y")
       Assert.equal(record.pane, wanted.pane, versionId .. " " .. role .. " keeps its native pane")
-      local animation = assert(
-        manifest.animations[record.animation],
-        versionId .. " " .. role .. " resolves its animation"
-      )
+      local animation =
+        assert(manifest.animations[record.animation], versionId .. " " .. role .. " resolves its animation")
       Assert.isTrue(
         type(animation.frames) == "table" and #animation.frames >= 1,
         versionId .. " " .. role .. " carries art to place"
@@ -851,6 +843,134 @@ function T.presentation_sprites_bind_only_the_authored_static_anchors(romFs, ver
     wantedCount = wantedCount + 1
   end
   Assert.equal(placed, wantedCount, versionId .. " places exactly the authored static subset")
+end
+
+-- Live subject bindings: every configured subject choice resolves to a
+-- page-local sprite role with prepared animation art, and identical
+-- source triples on different pages never share a role.
+function T.presentation_subject_bindings_resolve_to_page_local_sprite_roles(romFs, versionId)
+  local PokedexCatalogCompiler, PokedexAssetCompiler = requireProducer()
+  local catalog = compileCatalog(romFs, versionId, PokedexCatalogCompiler)
+  local manifest, err = PokedexAssetCompiler.compile(romFs, versionId, catalog)
+  Assert.notNil(manifest, versionId .. " must compile its presentation manifest")
+  Assert.isNil(err, versionId .. " compiles its presentation without error")
+  local function resolve(pageRole, subject, choice)
+    local page = assert(manifest.pages[pageRole], versionId .. " closes the " .. pageRole .. " page")
+    local subjects = assert(page.spriteSubjects, versionId .. " binds live subjects on " .. pageRole)
+    local subjectMap = assert(subjects[subject], versionId .. " binds " .. subject .. " on " .. pageRole)
+    local binding = assert(subjectMap[choice], versionId .. " binds " .. subject .. "/" .. choice)
+    Assert.isTrue(binding.pane == "information" or binding.pane == "controls", versionId .. " panes " .. subject)
+    local sprite = assert(manifest.sprites[binding.sprite], versionId .. " resolves " .. binding.sprite)
+    local animation = assert(manifest.animations[sprite.animation], versionId .. " resolves " .. sprite.animation)
+    Assert.isTrue(#animation.frames >= 1, versionId .. " stages art for " .. subject .. "/" .. choice)
+    return binding
+  end
+  local cursor = resolve("grid", "cursor", "active")
+  Assert.equal(cursor.pane, "controls", versionId .. " focuses on the touch pane")
+  resolve("grid", "arrow-up", "disabled")
+  resolve("grid", "arrow-down", "enabled")
+  resolve("grid", "scrollbar", "size0")
+  resolve("grid", "scrollbar", "size11")
+  resolve("search.shape", "body-icon", "quadruped")
+  resolve("search.height", "slider-max", "height")
+  resolve("search.height", "digit-max-1", "d0")
+  resolve("search.height", "limit-max-left", "at-min")
+  resolve("search.criteria", "feedback", "label")
+  resolve("search.criteria", "feedback", "rise")
+  resolve("search.criteria", "feedback", "retract")
+  resolve("entry.area", "tab-cursor", "active")
+  resolve("entry.area", "player", "male")
+  resolve("entry.area", "player", "female-here")
+  resolve("entry.area", "marker", "shape0")
+  resolve("entry.area", "marker", "shape11")
+  resolve("entry.area", "time-cursor", "active")
+  resolve("entry.size", "pan-left", "active")
+  resolve("entry.size", "trainer", "male")
+  resolve("entry.size", "trainer", "female")
+  resolve("entry.forms", "compare-side", "left")
+  resolve("entry.compare", "compare-frame", "tl")
+  resolve("registration", "type-1", "water")
+  resolve("registration", "type-2", "flying")
+  -- Page-local roles: the shared entry tab triple names a distinct
+  -- role per entry page.
+  local tabs = {}
+  for _, pageRole in ipairs({ "entry.area", "entry.size", "entry.forms", "entry.compare", "entry.return" }) do
+    tabs[#tabs + 1] = resolve(pageRole, "tab-cursor", "active").sprite
+  end
+  local seen = {}
+  for _, role in ipairs(tabs) do
+    Assert.isNil(seen[role], versionId .. " shares no sprite role across pages: " .. role)
+    seen[role] = true
+  end
+end
+
+-- Type and trainer art: every source type class and both trainer
+-- genders resolve through staged per-class tiles with their source
+-- palettes, and an unknown source association aborts compilation
+-- instead of publishing a dangling binding.
+function T.presentation_type_and_trainer_art_resolve_through_source_palettes(romFs, versionId)
+  local PokedexCatalogCompiler, PokedexAssetCompiler, PokedexAssetSchema = requireProducer()
+  local catalog = compileCatalog(romFs, versionId, PokedexCatalogCompiler)
+  local sink = {}
+  local manifest, err = PokedexAssetCompiler.compile(romFs, versionId, catalog, sink)
+  Assert.notNil(manifest, versionId .. " must compile its presentation manifest")
+  Assert.isNil(err, versionId .. " compiles its presentation without error")
+  local PokedexSources = require("romdump.src.config.PokedexSources")
+  for _, typeName in ipairs(PokedexSources.typeOrder) do
+    for _, pageRole in ipairs({ "grid", "results", "registration" }) do
+      local page = assert(manifest.pages[pageRole], versionId .. " closes the " .. pageRole .. " page")
+      local first = assert(page.spriteSubjects["type-1"], versionId .. pageRole .. " binds its first type")
+      local binding = assert(first[typeName], versionId .. pageRole .. " binds the " .. typeName .. " icon")
+      local sprite = assert(manifest.sprites[binding.sprite], versionId .. " resolves " .. binding.sprite)
+      local animation = assert(manifest.animations[sprite.animation], versionId .. " stages " .. typeName .. " art")
+      Assert.isTrue(#animation.frames >= 1, versionId .. " stages frames for " .. typeName)
+    end
+  end
+  for _, gender in ipairs({ "male", "female" }) do
+    local page = assert(manifest.pages["entry.size"], versionId .. " closes the size page")
+    local trainer = assert(page.spriteSubjects.trainer, versionId .. " binds its trainer")
+    local binding = assert(trainer[gender], versionId .. " binds the " .. gender .. " trainer")
+    Assert.notNil(manifest.sprites[binding.sprite], versionId .. " resolves the " .. gender .. " trainer role")
+  end
+  local record, schemaErr = PokedexAssetSchema.validateManifest(manifest, catalog)
+  Assert.notNil(record, versionId .. " publishes a schema-valid manifest")
+  Assert.isNil(schemaErr, versionId .. " manifest carries no schema error")
+  local saved = PokedexSources.nativeSpriteSubjects.grid.cursor.active
+  PokedexSources.nativeSpriteSubjects.grid.cursor.active = { cells = 13, anims = 14, seq = 9999, pane = "controls" }
+  local badSink = {}
+  local ok, badManifest = pcall(PokedexAssetCompiler.compile, romFs, versionId, catalog, badSink)
+  PokedexSources.nativeSpriteSubjects.grid.cursor.active = saved
+  Assert.isTrue(not (ok and badManifest), "an unknown source association must abort compilation")
+  Assert.isNil(badSink.assets, "a failed compilation stages no images")
+end
+
+-- Search feedback timing: the label, rise, and retract sequences carry
+-- the authored frame counts and dwell totals behind the controller
+-- phase gates, so animation frames selected by accepted age finish
+-- with their phase.
+function T.presentation_feedback_sequences_carry_their_authored_timing(romFs, versionId)
+  local PokedexCatalogCompiler, PokedexAssetCompiler = requireProducer()
+  local catalog = compileCatalog(romFs, versionId, PokedexCatalogCompiler)
+  local manifest, err = PokedexAssetCompiler.compile(romFs, versionId, catalog)
+  Assert.notNil(manifest, versionId .. " must compile its presentation manifest")
+  Assert.isNil(err, versionId .. " compiles its presentation without error")
+  local function total(name, frames)
+    local animation = assert(manifest.animations[name], versionId .. " stages " .. name)
+    Assert.equal(#animation.frames, frames, versionId .. " " .. name .. " keeps its frame count")
+    local dwell = 0
+    for _, frame in ipairs(animation.frames) do
+      dwell = dwell + assert(frame.duration, versionId .. " " .. name .. " dwells per frame")
+    end
+    return dwell
+  end
+  local subjects = assert(manifest.pages["search.criteria"].spriteSubjects, versionId .. " binds feedback")
+  local feedback = assert(subjects.feedback, versionId .. " binds the feedback family")
+  local function roleFor(choice)
+    return assert(manifest.sprites[feedback[choice].sprite], versionId .. " resolves feedback " .. choice)
+  end
+  Assert.equal(total(roleFor("label").animation, 9), 28, versionId .. " the label matches its gate")
+  Assert.equal(total(roleFor("rise").animation, 14), 52, versionId .. " the rise matches its gate")
+  Assert.equal(total(roleFor("retract").animation, 5), 20, versionId .. " the retract matches its gate")
 end
 
 local suite = RomSuite.fromFacts(T)

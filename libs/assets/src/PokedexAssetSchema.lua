@@ -1667,6 +1667,68 @@ local function checkPages(manifest)
         end
       end
     end
+    -- Live sprite subjects: every page except the spriteless cover
+    -- binds at least one semantic subject, each choice naming its
+    -- page-local prepared sprite role and authored pane. The inventory
+    -- owns the roles; this map only selects among them.
+    local subjects = page.spriteSubjects
+    if role == "cover" then
+      if subjects ~= nil then
+        return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "the cover page carries no live subjects", { role = role })
+      end
+    else
+      if type(subjects) ~= "table" then
+        return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "page misses its live sprite subjects", { role = role })
+      end
+      local bound = false
+      for subject, choices in pairs(subjects) do
+        if type(subject) ~= "string" or subject == "" then
+          return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "page names no live subject", { role = role })
+        end
+        if type(choices) ~= "table" then
+          return fail(
+            PokedexAssetSchema.ERROR.SHAPE_INVALID,
+            "live subject carries no choices",
+            { role = role, subject = subject }
+          )
+        end
+        for choice, binding in pairs(choices) do
+          if type(choice) ~= "string" or choice == "" then
+            return fail(
+              PokedexAssetSchema.ERROR.SHAPE_INVALID,
+              "live subject names no choice",
+              { role = role, subject = subject }
+            )
+          end
+          if type(binding) ~= "table" then
+            return fail(
+              PokedexAssetSchema.ERROR.SHAPE_INVALID,
+              "live subject choice carries no binding",
+              { role = role, subject = subject, choice = choice }
+            )
+          end
+          local sprite = manifest.sprites[binding.sprite]
+          if sprite == nil then
+            return fail(
+              PokedexAssetSchema.ERROR.DANGLING_REFERENCE,
+              "live subject choice references an unknown sprite",
+              { role = role, subject = subject, choice = choice }
+            )
+          end
+          if binding.pane ~= "information" and binding.pane ~= "controls" then
+            return fail(
+              PokedexAssetSchema.ERROR.SHAPE_INVALID,
+              "live subject choice names an unknown pane",
+              { role = role, subject = subject, choice = choice }
+            )
+          end
+          bound = true
+        end
+      end
+      if not bound then
+        return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "page binds no live sprite subject", { role = role })
+      end
+    end
   end
   return nil
 end

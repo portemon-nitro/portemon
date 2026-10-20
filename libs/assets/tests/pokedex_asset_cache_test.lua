@@ -202,6 +202,11 @@ local function fixtureManifest(catalog)
       sprites = { "panel-sprite" },
       windows = { "body-window" },
     }
+    if role ~= "cover" then
+      pages[role].spriteSubjects = {
+        probe = { active = { sprite = "panel-sprite", pane = "information" } },
+      }
+    end
   end
   local spindaRows = {}
   for _ = 1, 80 do
@@ -210,7 +215,7 @@ local function fixtureManifest(catalog)
   local pictures = { backYOffset = {} }
   pictures.backYOffset[MonCache.portraitSelector("custom.alpha", 0, "male", false, "back")] = 4
   return {
-    schema = "g4-pokedex-assets-v1",
+    schema = "g4-pokedex-assets-v2",
     versionId = "heartgold",
     fonts = { body = 0, header = 4 },
     pages = pages,
@@ -341,7 +346,7 @@ function T.separate_data_and_presentation_scopes_publish_and_read_independently(
   local PokedexCacheWriter, PokedexCache, DerivedAssetContract = requireProduction()
   Assert.deepEqual(
     DerivedAssetContract.pokedex,
-    { cacheFormat = "pokedex-cache-v1", catalogSchema = "g4-pokedex-catalog-v1", schema = "g4-pokedex-assets-v1" },
+    { cacheFormat = "pokedex-cache-v1", catalogSchema = "g4-pokedex-catalog-v1", schema = "g4-pokedex-assets-v2" },
     "the contract names the exact pokedex family identities"
   )
   Assert.equal(PokedexCache.dir(), "data/generated/pokedex", "the pokedex data directory is stable")
@@ -396,7 +401,7 @@ function T.separate_data_and_presentation_scopes_publish_and_read_independently(
   )
   Assert.equal(
     PokedexCache.loadManifest(cacheFs).schema,
-    "g4-pokedex-assets-v1",
+    "g4-pokedex-assets-v2",
     "the loaded manifest keeps its schema identity"
   )
 end

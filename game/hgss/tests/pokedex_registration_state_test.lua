@@ -82,10 +82,7 @@ function T.acknowledgment_during_explicit_hold_never_resets_the_timer()
   advanceTimeline(timeline, 32)
   timeline:ack()
   advanceTimeline(timeline, 20)
-  Assert.isFalse(
-    timeline:settled(),
-    "an edge during the explicit hold consumes without resetting it to the default"
-  )
+  Assert.isFalse(timeline:settled(), "an edge during the explicit hold consumes without resetting it to the default")
   advanceTimeline(timeline, 60)
   Assert.isTrue(timeline:settled(), "the explicit hold still completes after its full wait")
 end
@@ -96,9 +93,12 @@ local function newPokedexFake(script)
   local releases = 0
   local demands = {}
   local rendererCalls = 0
-  local fake = { releases = function()
-    return releases
-  end, demands = demands }
+  local fake = {
+    releases = function()
+      return releases
+    end,
+    demands = demands,
+  }
   local lease = {}
   function lease:prepare(demand)
     demands[#demands + 1] = demand
@@ -132,6 +132,16 @@ local function newPokedexFake(script)
   function fake:acquire(_options)
     return lease
   end
+  function fake:typesFor(species, form)
+    local monCatalog = Fixture.catalogs()
+    local okForm, record = pcall(monCatalog.form, monCatalog, species, form)
+    if okForm and type(record) == "table" and type(record.types) == "table" then
+      return record.types
+    end
+    local definition = monCatalog:species(species)
+    assert(type(definition.types) == "table", "the fixture species carries its types")
+    return definition.types
+  end
   function fake:rendererCalls()
     return rendererCalls
   end
@@ -148,8 +158,7 @@ local function newAudioFake()
   function audio.isCryFinished()
     return audio.cryDone
   end
-  function audio.select()
-  end
+  function audio.select() end
   return audio
 end
 
@@ -360,10 +369,7 @@ function T.registration_child_runs_source_phases_on_a_thirty_hz_clock()
     end)
     child:updateFixed(1 / 30)
   end
-  Assert.isTrue(
-    child:status().complete == false,
-    "no banner timer departs the card without a fresh edge"
-  )
+  Assert.isTrue(child:status().complete == false, "no banner timer departs the card without a fresh edge")
   Assert.isTrue(
     child:status().acceptsDismissal == true,
     "the finished cry keeps the card dismissible across the banner cycle"
@@ -407,10 +413,7 @@ function T.only_fresh_confirm_edges_dismiss_the_ready_card()
       child:updateFixed(1 / 30)
     end
     Assert.isTrue(child:status().complete == false, "cancellation never dismisses the card")
-    Assert.isTrue(
-      child:status().acceptsDismissal == true,
-      "the ignored cancellation keeps the card dismissible"
-    )
+    Assert.isTrue(child:status().acceptsDismissal == true, "the ignored cancellation keeps the card dismissible")
     child:input({ { type = "confirm" } })
     Assert.isTrue(pump(child, timeline, 1200), "a fresh confirmation dismisses the ready card")
     Assert.isNil(child:status().error, "the dismissed card reports no error")
@@ -441,10 +444,7 @@ function T.only_fresh_confirm_edges_dismiss_the_ready_card()
       end)
       child:updateFixed(1 / 30)
     end
-    Assert.isTrue(
-      child:status().complete == false,
-      "the early edge never crosses the readiness boundary"
-    )
+    Assert.isTrue(child:status().complete == false, "the early edge never crosses the readiness boundary")
     child:input({ { type = "confirm" } })
     Assert.isTrue(pump(child, timeline, 1200), "a fresh confirmation after readiness dismisses")
     child:dispose()
@@ -491,10 +491,7 @@ function T.slow_cry_holds_the_banner_and_blocks_early_dismissal()
   Assert.equal(#audio.calls, 1, "the cry plays once on the way to the ready card")
   Assert.equal(child:status().phase, "readyCard", "the slow cry still reaches the ready card")
   Assert.isTrue(child:status().complete == false, "the unfinished cry never completes the card")
-  Assert.isTrue(
-    child:status().acceptsDismissal == false,
-    "the unfinished cry never releases dismissal"
-  )
+  Assert.isTrue(child:status().acceptsDismissal == false, "the unfinished cry never releases dismissal")
   child:input({ { type = "confirm" } })
   for _ = 1, 120 do
     timeline:update(TICK, function(_)
@@ -503,15 +500,9 @@ function T.slow_cry_holds_the_banner_and_blocks_early_dismissal()
     child:updateFixed(1 / 30)
   end
   Assert.isTrue(child:status().complete == false, "a fresh edge never hurries the unfinished cry")
-  Assert.isTrue(
-    child:status().acceptsDismissal == false,
-    "a fresh edge never releases dismissal early"
-  )
+  Assert.isTrue(child:status().acceptsDismissal == false, "a fresh edge never releases dismissal early")
   audio.cryDone = true
-  Assert.isTrue(
-    driveToDismissal(child, timeline, 1200),
-    "the finished cry releases the ready card"
-  )
+  Assert.isTrue(driveToDismissal(child, timeline, 1200), "the finished cry releases the ready card")
   child:input({ { type = "confirm" } })
   Assert.isTrue(pump(child, timeline, 1200), "a fresh confirmation dismisses after the cry")
   Assert.isNil(child:status().error, "the cry-gated dismissal reports no error")
@@ -588,10 +579,7 @@ function T.failure_and_disposal_release_the_child_lease_once()
     Assert.equal(pokedex:releases(), 1, "draining the borrowed clock never touches the released lease")
     timeline:announce("aftermath", false)
     advanceTimeline(timeline, 120)
-    Assert.isTrue(
-      timeline:settled(),
-      "the borrowed timeline still accepts and advances new work after child disposal"
-    )
+    Assert.isTrue(timeline:settled(), "the borrowed timeline still accepts and advances new work after child disposal")
   end
   do
     local registration = frozenRegistration()
@@ -621,6 +609,48 @@ function T.failure_and_disposal_release_the_child_lease_once()
       "the borrowed timeline still accepts and advances new work after mid-run disposal"
     )
   end
+end
+
+---@param objects table[] detached card intents under test
+---@param subject string intent subject under test
+---@return table? the first intent naming the subject
+local function findCardObject(objects, subject)
+  Assert.isTrue(type(objects) == "table", "the card carries its sprite intents")
+  for _, intent in ipairs(objects) do
+    if type(intent) == "table" and intent.subject == subject then
+      return intent
+    end
+  end
+  return nil
+end
+
+-- The ready card projects its captured type art and footprint: the
+-- first type names the frozen specimen type, a single-type capture
+-- projects no second icon, the footprint names the species, all three
+-- sit at the native card origins, and departure hides them together.
+function T.ready_card_projects_type_and_footprint_intents()
+  local Child = requirePresent("card sprite intents")
+  local registration = frozenRegistration()
+  local pokedex = newPokedexFake({ "ready" })
+  local audio = newAudioFake()
+  audio.cryDone = true
+  local child, timeline = newChild(Child, registration, pokedex, audio)
+  Assert.isTrue(driveToDismissal(child, timeline, 2000), "the card reaches its ready phase")
+  local view = child:view()
+  local first = assert(findCardObject(view.objects, "type-1"), "the ready card projects its first type")
+  Assert.equal(first.choice, "water", "the totodile card names its captured type")
+  Assert.equal(first.x, 168, "the first type keeps its native column")
+  Assert.equal(first.y, 72, "the first type keeps its native row")
+  Assert.isNil(findCardObject(view.objects, "type-2"), "a single-type capture projects no second icon")
+  local foot = assert(findCardObject(view.objects, "footprint"), "the ready card projects its footprint")
+  Assert.equal(foot.choice, "TOTODILE", "the footprint names the frozen species")
+  Assert.equal(foot.x, 120, "the footprint keeps its native column")
+  Assert.equal(foot.y, 80, "the footprint keeps its native row")
+  Assert.isTrue(first.age >= 0, "card intents carry their accepted age")
+  child:updateFixed(1 / 30)
+  local later = assert(findCardObject(child:view().objects, "type-1"), "the card keeps its types across ticks")
+  Assert.isTrue(later.age >= first.age, "accepted ticks never rewind card ages")
+  child:dispose()
 end
 
 return { tests = T }

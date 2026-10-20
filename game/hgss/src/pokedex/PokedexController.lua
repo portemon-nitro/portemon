@@ -279,6 +279,9 @@ function PokedexController.new(args)
     _originGrid = { page = 0, cursor = 0 },
     _originResults = nil,
     _key = 1,
+    _spriteTick = 0,
+    _objectAges = {},
+    _objectPage = nil,
     _revision = 0,
     _effects = {},
     _result = nil,
@@ -999,6 +1002,7 @@ end
 function PokedexController:_runSearch()
   self._feedback = { phase = "label", tick = 0, wait = 0 }
   self:_emitSound("SEQ_SE_DP_Z_SEARCH")
+  self:_bumpKey()
 end
 
 function PokedexController:_advanceFeedback()
@@ -1102,9 +1106,19 @@ function PokedexController:_advanceAreaPan()
   self._areaPanOffset = offset
 end
 
+-- The accepted source clock behind live sprite intents: bumped once per
+-- accepted fixed update, never on projections or draws. A feedback phase
+-- change installs new animation art, so it advances the demand key while
+-- pure animation ticks keep the key quiet.
 function PokedexController:_advancePhases()
+  self._spriteTick = self._spriteTick + 1
   if self._feedback ~= nil then
+    local phase = self._feedback.phase
     self:_advanceFeedback()
+    local next = self._feedback ~= nil and self._feedback.phase or nil
+    if next ~= phase then
+      self:_bumpKey()
+    end
   end
   self:_advanceAreaPan()
   if self._area ~= nil and (self._page == "area" or self._page == "size" or self._page == "forms") then
@@ -1711,9 +1725,13 @@ function PokedexController:_handleArea(event)
     self:_bumpKey()
   elseif event.type == "navigate" then
     if event.direction == "up" then
-      self._area:moveRow(-1)
+      if self._area:moveRow(-1) then
+        self:_bumpKey()
+      end
     elseif event.direction == "down" then
-      self._area:moveRow(1)
+      if self._area:moveRow(1) then
+        self:_bumpKey()
+      end
     elseif event.direction == "left" or event.direction == "right" then
       self:_cycleEntryTab(event.direction == "left" and -1 or 1)
     end
@@ -1725,7 +1743,9 @@ function PokedexController:_handleArea(event)
       self:_setAreaRegion(event.value)
       self:_bumpKey()
     elseif event.action == "area-row" then
-      self._area:goRow(event.value)
+      if self._area:goRow(event.value) then
+        self:_bumpKey()
+      end
     elseif event.action == "entry-tab" then
       self:_switchEntryTab(event.value)
     elseif event.action == "compare-back" then
@@ -1768,9 +1788,13 @@ function PokedexController:_handleForms(event)
   end
   if event.type == "navigate" then
     if event.direction == "up" then
-      self._forms:moveRow(-1)
+      if self._forms:moveRow(-1) then
+        self:_bumpKey()
+      end
     elseif event.direction == "down" then
-      self._forms:moveRow(1)
+      if self._forms:moveRow(1) then
+        self:_bumpKey()
+      end
     elseif event.direction == "left" or event.direction == "right" then
       self:_cycleEntryTab(event.direction == "left" and -1 or 1)
     end
@@ -2622,7 +2646,495 @@ function PokedexController:_blendView()
   return { information = information, controls = controls }
 end
 
----@return { key: integer, mode: string, page: string, origin: string, selection: { species: string?, dexNumber: integer?, seen: boolean, caught: boolean, language: string }, counts: { seen: integer, caught: integer }, visual: { coverOffset: integer, barOffset: integer, paletteFades: table[], blend: table<string, unknown>, flash: table<string, unknown>, transition: table<string, unknown> }, areaPan: { region: integer, offset: integer }, pictures: table[], text: table[], controls: table<string, unknown>, grid: table<string, unknown>?, search: table<string, unknown>?, area: table<string, unknown>?, size: table<string, unknown>?, forms: table<string, unknown>?, returnPanel: table<string, unknown>? } detached semantic snapshot for presentation
+-- Native area marker silhouettes: the twelve width/height pairs behind
+-- shape selection (sPokedexAreaMarkerSizes in pokedex_rodata.s), kept
+-- beside the shape projection so the player overlap test uses the exact
+-- source extents without a producer round trip.
+local AREA_MARKER_SIZES = {
+  { 8, 8 },
+  { 16, 8 },
+  { 24, 8 },
+  { 32, 8 },
+  { 40, 8 },
+  { 48, 8 },
+  { 8, 16 },
+  { 8, 24 },
+  { 8, 32 },
+  { 8, 40 },
+  { 16, 16 },
+  { 24, 16 },
+}
+
+-- Area scrollbar family: the source size steps over the row count with
+-- the shared scrollbar lengths around center 96 on a track of 86
+-- (sPokedexAreaScrollbarSizeSteps, sPokedexScrollbarLengths and the
+-- SyncAreaScrollbar center/track in the pinned sources).
+local AREA_SCROLL_THRESHOLDS = { 1, 4, 7, 10, 13, 16, 20, 24, 255 }
+local AREA_SCROLL_LENGTHS = { 86, 78, 70, 62, 54, 46, 38, 30, 22 }
+local AREA_SCROLL_CENTER = 96
+local AREA_SCROLL_TRACK = 86
+
+---@param objects table[] intent list under projection
+---@param subject string semantic subject behind the intent
+---@param choice string selected animation choice behind the intent
+---@param pane string authored engine pane behind the intent
+---@param x integer native horizontal origin behind the intent
+---@param y integer native vertical origin behind the intent
+---@param age integer accepted ticks since the choice was installed
+---@param instance integer? repeated-marker index behind the intent
+local function emitIntent(objects, subject, choice, pane, x, y, age, instance)
+  local record = { subject = subject, choice = choice, pane = pane, x = x, y = y, age = age, visible = true }
+  if instance ~= nil then
+    record.instance = instance
+  end
+  objects[#objects + 1] = record
+end
+
+---@param pageKey integer demand generation behind the projection
+---@param key string per-generation object identity
+---@param choice string selected animation choice behind the object
+---@return integer accepted ticks since the choice was installed
+function PokedexController:_trackObjectAge(pageKey, key, choice)
+  if self._objectPage ~= pageKey then
+    self._objectAges = {}
+    self._objectPage = pageKey
+  end
+  local slot = self._objectAges[key]
+  if slot == nil or slot.choice ~= choice then
+    slot = { choice = choice, since = self._spriteTick }
+    self._objectAges[key] = slot
+  end
+  return self._spriteTick - slot.since
+end
+
+---@param thresholds integer[] ascending count thresholds behind the bucket
+---@param count integer ranked count behind the bucket
+---@return integer 1-based bucket position behind the count
+local function bucketIndex(thresholds, count)
+  for position, threshold in ipairs(thresholds) do
+    if count <= threshold then
+      return position
+    end
+  end
+  return #thresholds
+end
+
+---@param species string selected species behind the art
+---@return string[]? ordered type names behind the selected specimen
+function PokedexController:_selectionTypes(species)
+  local form = self:_cryForm(species)
+  local okForm, formRecord = pcall(self._monCatalog.form, self._monCatalog, species, form)
+  if okForm and type(formRecord) == "table" and type(formRecord.types) == "table" then
+    return formRecord.types
+  end
+  local okSpecies, definition = pcall(self._monCatalog.species, self._monCatalog, species)
+  if okSpecies and type(definition) == "table" and type(definition.types) == "table" then
+    return definition.types
+  end
+  return nil
+end
+
+---@param mapKey string? habitat map key behind the marker
+---@param kind string? habitat row kind behind the marker
+---@return integer 0-based native marker shape behind the row
+function PokedexController:_areaMarkerShape(mapKey, kind)
+  if kind == "dungeon" then
+    return 0
+  end
+  local geometry = self._catalog.areaGeometry
+  if type(geometry) ~= "table" or type(mapKey) ~= "string" then
+    return 0
+  end
+  local geo = geometry[mapKey]
+  if type(geo) ~= "table" or geo.kind ~= "outdoor" or type(geo.rect) ~= "table" then
+    return 0
+  end
+  local width, height = geo.rect.width, geo.rect.height
+  if width == 1 then
+    if height == 1 then
+      return 0
+    elseif height == 2 then
+      return 6
+    elseif height == 3 then
+      return 7
+    elseif height == 4 then
+      return 8
+    elseif height == 5 then
+      return 9
+    end
+  elseif width == 2 then
+    if height == 1 then
+      return 1
+    else
+      return 10
+    end
+  elseif width == 3 then
+    if height == 1 then
+      return 2
+    else
+      return 11
+    end
+  elseif width == 4 then
+    return 3
+  elseif width == 5 then
+    return 4
+  elseif width == 6 then
+    return 5
+  end
+  return 0
+end
+
+---@param objects table[] intent list under projection
+---@param pageKey integer demand generation behind the projection
+local function projectGridObjects(self, objects, pageKey)
+  local function ageOf(key, choice)
+    return self:_trackObjectAge(pageKey, key, choice)
+  end
+  local cursor = self._cursor
+  emitIntent(
+    objects,
+    "cursor",
+    "active",
+    "controls",
+    48 + 40 * (cursor % 5),
+    24 + 40 * math.floor(cursor / 5),
+    ageOf("cursor", "active")
+  )
+  local lastPage = self:_gridLastPage()
+  local length = self:_sparseLength()
+  if self._page == "results" then
+    lastPage = self:_resultsLastPage()
+    length = #self._results + 1
+  end
+  local upChoice = self._pageIndex > 0 and "enabled" or "disabled"
+  local downChoice = self._pageIndex < lastPage and "enabled" or "disabled"
+  emitIntent(objects, "arrow-up", upChoice, "controls", 242, 12, ageOf("arrow-up", upChoice))
+  emitIntent(objects, "arrow-down", downChoice, "controls", 242, 140, ageOf("arrow-down", downChoice))
+  local bucket = bucketIndex(PokedexController.SCROLL_THRESHOLDS, length)
+  local scroll = self:_scrollbar(length, lastPage, self._pageIndex)
+  emitIntent(
+    objects,
+    "scrollbar",
+    "size" .. (bucket - 1),
+    "controls",
+    242,
+    scroll.position,
+    ageOf("scrollbar", "size" .. (bucket - 1))
+  )
+  local selection = self:_selectionView()
+  if selection.caught == true and type(selection.species) == "string" then
+    local species = selection.species
+    local types = self:_selectionTypes(species)
+    if type(types) == "table" and type(types[1]) == "string" then
+      emitIntent(objects, "type-1", types[1], "information", 168, 72, ageOf("type-1", types[1]))
+      if type(types[2]) == "string" and types[2] ~= types[1] then
+        emitIntent(objects, "type-2", types[2], "information", 217, 72, ageOf("type-2", types[2]))
+      end
+    end
+    local originHidden = species == "GIRATINA" and self:_cryForm(species) == 1
+    if not originHidden then
+      emitIntent(objects, "footprint", species, "information", 120, 80, ageOf("footprint", species))
+    end
+    emitIntent(objects, "caught-mark", "shown", "information", 112, 32, ageOf("caught-mark", "shown"))
+  end
+end
+
+---@param value integer height decimetres behind the handle
+---@return integer[] four decimal digits behind the height readout
+local function heightDigits(value)
+  local inches = value == 999 and 1188 or math.floor((10000 * value / 254 + 5) / 10)
+  local feet = math.floor(inches / 12)
+  local remainder = inches % 12
+  return {
+    feet >= 10 and math.floor(feet / 10) or nil,
+    feet % 10,
+    math.floor(remainder / 10),
+    remainder % 10,
+  }
+end
+
+---@param value integer weight hectograms behind the handle
+---@return (integer?)[] five decimal digits behind the weight readout, nil for hidden leading zeroes
+local function weightDigits(value)
+  local shown = value == 9999 and 99990 or math.floor((value * 220462 + 50000) / 100000)
+  local digits = {}
+  local started, divisor = false, 10000
+  for position = 1, 5 do
+    local digit = math.floor(shown / divisor)
+    if digit ~= 0 or started or position == 3 then
+      started = true
+      digits[position] = digit
+    else
+      digits[position] = nil
+    end
+    shown = shown % divisor
+    divisor = math.floor(divisor / 10)
+  end
+  return digits
+end
+
+---@param bound integer slider bound behind the limit arrows
+---@return string limit arrow choice behind the bound
+local function limitChoice(bound)
+  if bound == 0 then
+    return "at-min"
+  elseif bound == 152 then
+    return "at-max"
+  end
+  return "mid"
+end
+
+---@param objects table[] intent list under projection
+---@param pageKey integer demand generation behind the projection
+---@param kind string height or weight editor kind behind the handles
+---@param bounds { min: integer, max: integer } published slider bounds behind the handles
+local function projectSliderObjects(self, objects, pageKey, kind, bounds)
+  local function ageOf(key, choice)
+    return self:_trackObjectAge(pageKey, key, choice)
+  end
+  local maxX = 52 + bounds.max
+  local minX = 52 + bounds.min
+  emitIntent(objects, "slider-cursor", "active", "controls", maxX, 16, ageOf("slider-cursor", "active"))
+  emitIntent(objects, "slider-max", kind, "controls", maxX, 68, ageOf("slider-max", kind))
+  emitIntent(objects, "slider-min", kind, "controls", minX, 132, ageOf("slider-min", kind))
+  local maxDigits = kind == "height" and heightDigits(bounds.max) or weightDigits(bounds.max)
+  local minDigits = kind == "height" and heightDigits(bounds.min) or weightDigits(bounds.min)
+  local offsets = kind == "height" and { -20, -12, 4, 12 } or { -20, -12, -4, 4, 20 }
+  for position, digit in ipairs(maxDigits) do
+    if digit ~= nil then
+      local key = "digit-max-" .. position
+      emitIntent(objects, key, "d" .. digit, "controls", maxX + offsets[position], 64, ageOf(key, "d" .. digit))
+    end
+  end
+  for position, digit in ipairs(minDigits) do
+    if digit ~= nil then
+      local key = "digit-min-" .. position
+      emitIntent(objects, key, "d" .. digit, "controls", minX + offsets[position], 136, ageOf(key, "d" .. digit))
+    end
+  end
+  local maxChoice, minChoice = limitChoice(bounds.max), limitChoice(bounds.min)
+  emitIntent(objects, "limit-max-left", maxChoice, "controls", 18, 60, ageOf("limit-max-left", maxChoice))
+  emitIntent(objects, "limit-max-right", maxChoice, "controls", 238, 60, ageOf("limit-max-right", maxChoice))
+  emitIntent(objects, "limit-min-left", minChoice, "controls", 18, 132, ageOf("limit-min-left", minChoice))
+  emitIntent(objects, "limit-min-right", minChoice, "controls", 238, 132, ageOf("limit-min-right", minChoice))
+end
+
+---@param objects table[] intent list under projection
+---@param pageKey integer demand generation behind the projection
+local function projectSearchObjects(self, objects, pageKey)
+  if self._feedback ~= nil and self._feedback.phase ~= "wait" then
+    local phase = self._feedback.phase
+    local choice = phase == "label" and "label" or (phase == "retract" and "retract" or "rise")
+    emitIntent(objects, "feedback", choice, "information", 128, 80, self:_trackObjectAge(pageKey, "feedback", choice))
+  end
+  local shape = self._search:criteria().shape
+  if shape ~= nil then
+    local editor = self._search:editorView()
+    local onShapePage = type(editor) == "table" and editor.kind == "shape"
+    local x, y = 224, 72
+    if onShapePage then
+      x, y = 152, 20
+    end
+    emitIntent(objects, "body-icon", shape, "controls", x, y, self:_trackObjectAge(pageKey, "body-icon", shape))
+  end
+  local editor = self._search:editorView()
+  if type(editor) == "table" and (editor.kind == "height" or editor.kind == "weight") then
+    local slider = editor.slider
+    if type(slider) == "table" and type(slider.bounds) == "table" then
+      projectSliderObjects(self, objects, pageKey, editor.kind, slider.bounds)
+    end
+  end
+end
+
+---@param area table<string, unknown> detached area projection behind the intents
+---@return boolean whether the player stands inside a visible habitat marker
+local function areaPlayerHit(self, area)
+  local px, py = area.player.x * 8 + 68, area.player.y * 8 + 44
+  local rows = area.rows
+  local markers = area.markers
+  for position = 2, #rows do
+    local marker = markers[position - 1]
+    local row = rows[position]
+    if
+      type(marker) == "table"
+      and marker.visible == true
+      and (area.row == 0 or area.row == position - 1)
+      and type(row) == "table"
+    then
+      local shape = self:_areaMarkerShape(row.mapKey, row.kind)
+      local size = AREA_MARKER_SIZES[shape + 1]
+      if size ~= nil and type(marker.position) == "table" then
+        local halfWidth, halfHeight = size[1] / 2, size[2] / 2
+        if px >= marker.position.x - halfWidth and px < marker.position.x + halfWidth then
+          if py >= marker.position.y - halfHeight and py < marker.position.y + halfHeight then
+            return true
+          end
+        end
+      end
+    end
+  end
+  return false
+end
+
+---@param objects table[] intent list under projection
+---@param pageKey integer demand generation behind the projection
+---@param area table<string, unknown> detached area projection behind the intents
+local function projectAreaObjects(self, objects, pageKey, area)
+  local function ageOf(key, choice)
+    return self:_trackObjectAge(pageKey, key, choice)
+  end
+  local gender = self._playerGender == "female" and "female" or "male"
+  local choice = gender
+  if areaPlayerHit(self, area) then
+    choice = gender .. "-here"
+  end
+  local record = {
+    subject = "player",
+    choice = choice,
+    pane = "information",
+    x = area.player.x * 8 + 68,
+    y = area.player.y * 8 + 44,
+    age = ageOf("player", choice),
+    visible = area.player.visible == true,
+  }
+  objects[#objects + 1] = record
+  emitIntent(objects, "time-cursor", "active", "information", 32, 76 + 32 * area.time, ageOf("time-cursor", "active"))
+  local instance = 0
+  for position = 2, #area.rows do
+    local marker = area.markers[position - 1]
+    local row = area.rows[position]
+    if type(marker) == "table" and type(row) == "table" and (area.row == 0 or area.row == position - 1) then
+      instance = instance + 1
+      local shape = self:_areaMarkerShape(row.mapKey, row.kind)
+      local shapeChoice = "shape" .. shape
+      local markerRecord = {
+        subject = "marker",
+        choice = shapeChoice,
+        pane = "information",
+        x = marker.position.x,
+        y = marker.position.y,
+        age = self:_trackObjectAge(pageKey, "marker-" .. instance, shapeChoice),
+        visible = marker.visible == true,
+        instance = instance,
+      }
+      objects[#objects + 1] = markerRecord
+    end
+  end
+  local count = #area.rows
+  local bucket = bucketIndex(AREA_SCROLL_THRESHOLDS, count)
+  local length = AREA_SCROLL_LENGTHS[bucket]
+  local half = math.floor(length / 2)
+  local minY = AREA_SCROLL_CENTER - math.floor(AREA_SCROLL_TRACK / 2) + half
+  local maxY = AREA_SCROLL_CENTER + math.floor(AREA_SCROLL_TRACK / 2) - half
+  local y = maxY
+  local last = count - 1
+  if last > 0 and area.row ~= last then
+    local step = math.floor((maxY - minY) * 256 / last)
+    y = minY + math.floor(step * area.row / 256)
+  end
+  local scrollChoice = "size" .. (bucket - 1)
+  emitIntent(objects, "scrollbar", scrollChoice, "controls", 242, y, ageOf("scrollbar", scrollChoice))
+  local upChoice = area.row > 0 and "enabled" or "disabled"
+  local downChoice = area.row < last and "enabled" or "disabled"
+  emitIntent(objects, "arrow-up", upChoice, "controls", 242, 44, ageOf("arrow-up", upChoice))
+  emitIntent(objects, "arrow-down", downChoice, "controls", 242, 148, ageOf("arrow-down", downChoice))
+end
+
+---@param objects table[] intent list under projection
+---@param pageKey integer demand generation behind the projection
+local function projectEntryObjects(self, objects, pageKey)
+  local function ageOf(key, choice)
+    return self:_trackObjectAge(pageKey, key, choice)
+  end
+  local tabIndex = 0
+  if self._page == "size" then
+    tabIndex = 1
+  elseif self._page == "forms" then
+    tabIndex = 2
+  elseif self._page == "return" then
+    tabIndex = 3
+  end
+  emitIntent(objects, "tab-cursor", "active", "controls", 32 + 64 * tabIndex, 176, ageOf("tab-cursor", "active"))
+  if self._page == "area" and self._area ~= nil then
+    projectAreaObjects(self, objects, pageKey, self._area:view())
+  elseif self._page == "size" and self._size ~= nil then
+    local size = self._size:view()
+    if type(size.pans) == "table" and size.pans[1] ~= nil and size.pans[2] ~= nil then
+      emitIntent(objects, "pan-left", "active", "controls", size.pans[1].x, size.pans[1].y, ageOf("pan-left", "active"))
+      emitIntent(
+        objects,
+        "pan-right",
+        "active",
+        "controls",
+        size.pans[2].x,
+        size.pans[2].y,
+        ageOf("pan-right", "active")
+      )
+    end
+    emitIntent(objects, "beam-top", "active", "controls", 128, 104, ageOf("beam-top", "active"))
+    emitIntent(objects, "beam-bottom", "active", "controls", 128, 104, ageOf("beam-bottom", "active"))
+    local gender = self._playerGender == "female" and "female" or "male"
+    local yOffset = 0
+    if type(size.height) == "table" and type(size.height.trainer) == "table" then
+      yOffset = size.height.trainer.yOffset or 0
+    end
+    emitIntent(objects, "trainer", gender, "information", 184, 112 + yOffset, ageOf("trainer", gender))
+  elseif self._page == "forms" and self._forms ~= nil then
+    local forms = self._forms:view()
+    local comparison = self._forms:comparison()
+    if comparison ~= nil then
+      local variants = forms.variants
+      if type(variants) == "table" and #variants >= 3 then
+        local corners = {
+          { choice = "tl", x = 64, y = 56 },
+          { choice = "tr", x = 192, y = 56 },
+          { choice = "bl", x = 64, y = 128 },
+          { choice = "br", x = 192, y = 128 },
+        }
+        for _, corner in ipairs(corners) do
+          emitIntent(
+            objects,
+            "compare-frame",
+            corner.choice,
+            "controls",
+            corner.x,
+            corner.y,
+            ageOf("compare-frame-" .. corner.choice, corner.choice)
+          )
+        end
+      end
+      local side = comparison.activeSide == 0 and "left" or "right"
+      emitIntent(
+        objects,
+        "compare-side",
+        side,
+        "controls",
+        side == "left" and 64 or 192,
+        88,
+        ageOf("compare-side", side)
+      )
+    else
+      local count = type(forms.variants) == "table" and #forms.variants or 0
+      local bucket = bucketIndex(PokedexForms.SCROLLBAR_THRESHOLDS, count)
+      local scrollChoice = "size" .. (bucket - 1)
+      emitIntent(
+        objects,
+        "scrollbar",
+        scrollChoice,
+        "controls",
+        242,
+        forms.scrollbar.position,
+        ageOf("scrollbar", scrollChoice)
+      )
+      local upChoice = forms.row > 0 and "enabled" or "disabled"
+      local downChoice = forms.row < count - 1 and "enabled" or "disabled"
+      emitIntent(objects, "arrow-up", upChoice, "controls", 242, 12, ageOf("arrow-up", upChoice))
+      emitIntent(objects, "arrow-down", downChoice, "controls", 242, 116, ageOf("arrow-down", downChoice))
+    end
+  end
+end
+
+---@return { key: integer, mode: string, page: string, origin: string, selection: { species: string?, dexNumber: integer?, seen: boolean, caught: boolean, language: string }, counts: { seen: integer, caught: integer }, visual: { coverOffset: integer, barOffset: integer, paletteFades: table[], blend: table<string, unknown>, flash: table<string, unknown>, transition: table<string, unknown>, spriteTick: integer }, areaPan: { region: integer, offset: integer }, pictures: table[], text: table[], controls: table<string, unknown>, objects: table[]?, grid: table<string, unknown>?, search: table<string, unknown>?, area: table<string, unknown>?, size: table<string, unknown>?, forms: table<string, unknown>?, returnPanel: table<string, unknown>? } detached semantic snapshot for presentation
 function PokedexController:view()
   local seen = tryDex(self._dex, "countSeen", self._mode)
   local caught = tryDex(self._dex, "countCaught", self._mode)
@@ -2643,6 +3155,7 @@ function PokedexController:view()
       blend = self:_blendView(),
       flash = { active = false, tick = 0 },
       transition = { phase = self._transition.phase, tick = self._transition.tick },
+      spriteTick = self._spriteTick,
     },
     areaPan = { region = self._areaPanRegion, offset = self._areaPanOffset },
     pictures = {},
@@ -2707,6 +3220,17 @@ function PokedexController:view()
     snapshot.pictures = self:_entryPictures()
   end
   snapshot.text = self:_textSlots()
+  local objects = {}
+  if self._page == "grid" or self._page == "results" then
+    projectGridObjects(self, objects, self._key)
+  elseif self._page == "search" then
+    projectSearchObjects(self, objects, self._key)
+  elseif self._page == "area" or self._page == "size" or self._page == "forms" or self._page == "return" then
+    projectEntryObjects(self, objects, self._key)
+  end
+  if #objects > 0 then
+    snapshot.objects = objects
+  end
   return snapshot
 end
 

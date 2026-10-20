@@ -104,12 +104,17 @@ local function fixtureManifest(catalog)
       sprites = { "panel-sprite" },
       windows = { "body-window" },
     }
+    if role ~= "cover" then
+      pages[role].spriteSubjects = {
+        probe = { active = { sprite = "panel-sprite", pane = "information" } },
+      }
+    end
   end
   pages.results.sprites = { "panel-sprite", "pressed-sprite" }
   local pictures = { backYOffset = {} }
   pictures.backYOffset[MonCache.portraitSelector("custom.alpha", 0, "male", false, "back")] = 4
   return {
-    schema = "g4-pokedex-assets-v1",
+    schema = "g4-pokedex-assets-v2",
     versionId = "heartgold",
     fonts = { body = 0, header = 4 },
     pages = pages,
@@ -655,10 +660,7 @@ function T.producer_grid_information_layer_matches_scrolled_native_state()
     bindsInformationLayer0("grid"),
     "the grid information pane carries no foreground composition over its layer-1 text windows"
   )
-  Assert.isTrue(
-    bindsInformationLayer0("cover"),
-    "the windowless cover keeps its native foreground art"
-  )
+  Assert.isTrue(bindsInformationLayer0("cover"), "the windowless cover keeps its native foreground art")
 end
 
 -- Native area view: SetupScreen case 1 loads the area graphics and
@@ -747,19 +749,10 @@ local NATIVE_WINDOWS = {
 function T.producer_windows_match_native_templates()
   local PokedexSources = assert(require("romdump.src.config.PokedexSources"))
   for _, key in ipairs(CONTRACTED_WINDOWS) do
-    local record = assert(
-      PokedexSources.windows[key],
-      "the window inventory must declare " .. key
-    )
+    local record = assert(PokedexSources.windows[key], "the window inventory must declare " .. key)
     local expected = assert(NATIVE_WINDOWS[key], "the native oracle must cover " .. key)
-    for _, field in ipairs(
-      { "pane", "layer", "x", "y", "width", "height", "font", "align", "paletteGroup" }
-    ) do
-      Assert.equal(
-        record[field],
-        expected[field],
-        key .. " carries the native template " .. field
-      )
+    for _, field in ipairs({ "pane", "layer", "x", "y", "width", "height", "font", "align", "paletteGroup" }) do
+      Assert.equal(record[field], expected[field], key .. " carries the native template " .. field)
     end
   end
 end
@@ -841,17 +834,12 @@ local NATIVE_SPRITE_ANCHORS = {
 
 function T.producer_static_sprites_carry_authored_screen_anchors()
   local PokedexSources = assert(require("romdump.src.config.PokedexSources"))
-  local anchors = assert(
-    PokedexSources.spriteAnchors,
-    "the producer must publish its static sprite anchor map"
-  )
+  local anchors = assert(PokedexSources.spriteAnchors, "the producer must publish its static sprite anchor map")
   for role, families in pairs(NATIVE_SPRITE_ANCHORS) do
     local bound = assert(anchors[role], "the anchor map must bind the " .. role .. " page")
     for member, sequences in pairs(families) do
-      local boundSequences = assert(
-        bound[member],
-        "the anchor map must bind animation family " .. member .. " on " .. role
-      )
+      local boundSequences =
+        assert(bound[member], "the anchor map must bind animation family " .. member .. " on " .. role)
       for index, expected in pairs(sequences) do
         local record = assert(
           boundSequences[index],
@@ -868,10 +856,7 @@ function T.producer_static_sprites_carry_authored_screen_anchors()
     for _, sequences in pairs(families) do
       for _, record in pairs(sequences) do
         anchored = anchored + 1
-        Assert.isTrue(
-          record.x ~= 0 or record.y ~= 0,
-          "anchors never sit on the unplaced origin sentinel"
-        )
+        Assert.isTrue(record.x ~= 0 or record.y ~= 0, "anchors never sit on the unplaced origin sentinel")
       end
     end
   end

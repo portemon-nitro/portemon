@@ -352,6 +352,14 @@ local function browserDemandFor(Renderer, view)
       end
     end
   end
+  local objects = {}
+  if type(view.objects) == "table" then
+    for _, intent in ipairs(view.objects) do
+      if type(intent) == "table" then
+        objects[#objects + 1] = intent
+      end
+    end
+  end
   local dexMode = view.mode
   if dexMode ~= "national" then
     dexMode = "johto"
@@ -365,6 +373,7 @@ local function browserDemandFor(Renderer, view)
     iconKeys = iconKeys,
     pictures = pictures,
     text = view.text or {},
+    objects = objects,
   }
 end
 
@@ -769,6 +778,254 @@ function T.native_panes_draw_both_information_and_controls_at_source_size(scope)
   end)
 end
 
+-- Counts pixels inside one native box that differ from the authored
+-- background oracle: a nonzero count proves live art over the
+-- background rather than an empty backdrop-colored region.
+---@param data table 8-bit pixel buffer behind the composed target
+---@param origin table placement origin behind the pane
+---@param box table native box behind the probe
+---@param layers table authored background layers behind the pane
+---@param priorities table authored priorities behind the pane
+---@param backdrop table authored backdrop behind the pane
+---@param pan table? scrolled layer behind the entry area
+---@return integer pixels differing from the authored background
+local function boxInk(data, origin, box, layers, priorities, backdrop, pan)
+  local ink = 0
+  for y = box.y, box.y + box.height - 1 do
+    for x = box.x, box.x + box.width - 1 do
+      local er, eg, eb = expectedBackground(layers, priorities, backdrop, x, y, pan)
+      local ar, ag, ab = pixel(data, origin.x + x, origin.y + y)
+      if math.abs(ar - er) + math.abs(ag - eg) + math.abs(ab - eb) > 0 then
+        ink = ink + 1
+      end
+    end
+  end
+  return ink
+end
+
+-- Resolves the painted rectangles behind one live intent from the
+-- prepared bundle: the union over every frame of its bound animation,
+-- so ink probes never guess art extents.
+---@param intent table detached sprite intent behind the probe
+---@param assets table ready bundle behind the draw
+---@param role string manifest page role behind the pane
+---@return table[] native boxes behind the intent
+local function intentBoxes(intent, assets, role)
+  local rects = {}
+  if intent.subject == "footprint" then
+    rects[#rects + 1] = { x = intent.x, y = intent.y, width = 16, height = 16 }
+    return rects
+  end
+  local manifest = assert(assets.manifest, "the ready bundle carries its compiled manifest")
+  local page = manifest.pages[role]
+  local subjects = page ~= nil and page.spriteSubjects or nil
+  if type(subjects) ~= "table" then
+    return rects
+  end
+  local subjectMap = subjects[intent.subject]
+  local binding = type(subjectMap) == "table" and subjectMap[intent.choice] or nil
+  if type(binding) ~= "table" then
+    return rects
+  end
+  local sprite = manifest.sprites[binding.sprite]
+  local animation = type(sprite) == "table" and manifest.animations[sprite.animation] or nil
+  if animation == nil then
+    return rects
+  end
+  for _, frame in ipairs(animation.frames) do
+    local cell = manifest.cells[frame.cell]
+    if type(cell) == "table" then
+      for _, part in ipairs(cell.parts) do
+        rects[#rects + 1] = {
+          x = intent.x + part.x,
+          y = intent.y + part.y,
+          width = part.source.width,
+          height = part.source.height,
+        }
+      end
+    end
+  end
+  return rects
+end
+
+-- Counts pixels inside one native box that differ between two composed
+-- frames: a nonzero count proves motion between the draws.
+---@param first table 8-bit pixel buffer behind the earlier frame
+---@param second table 8-bit pixel buffer behind the later frame
+---@param origin table placement origin behind the pane
+---@param box table native box behind the probe
+---@return integer pixels differing between the frames
+local function boxMotion(first, second, origin, box)
+  local moved = 0
+  for y = box.y, box.y + box.height - 1 do
+    for x = box.x, box.x + box.width - 1 do
+      local r1, g1, b1 = pixel(first, origin.x + x, origin.y + y)
+      local r2, g2, b2 = pixel(second, origin.x + x, origin.y + y)
+      if math.abs(r1 - r2) + math.abs(g1 - g2) + math.abs(b1 - b2) > 0 then
+        moved = moved + 1
+      end
+    end
+  end
+  return moved
+end
+
+-- The grid focus, arrows, and thumb paint at their native origins and
+-- the focus tracks the cursor: identical draws except for the moved
+-- cursor differ exactly inside the old and new focus boxes while the
+-- static arrows and thumb keep ink over their background.
+function T.grid_focus_arrows_and_scrollbar_paint_their_native_origins(scope)
+  local Renderer = requireRenderer("live grid sprite pixels")
+  local Interface = requireInterface("paired native hit resolution")
+  requireOwner("prepared bundles behind the live leg")
+  local versionId = readyVersion()
+  local pool = SharedImagePoolFake.new()
+  withPool(pool, function()
+    local rig = graphicsRig(versionId, pool, scope)
+    seedIcon(pool, "CHIKORITA/f0", 1, 1, 1)
+    seedIcon(pool, "EEVEE/f0", 0, 0, 0)
+    seedIcon(pool, "TOTODILE/f0", 1, 0, 0)
+    seedIcon(pool, "SPINDA/f0", 0, 1, 0)
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "grid")
+    local dexOwner = Fixture.ownerWithHistory(rig.monCatalog, rig.catalog)
+    local controller = Fixture.openController(dexOwner, rig.monCatalog, rig.catalog)
+    openGrid(controller)
+    local measurement = measurementFor("dualDisplay")
+    local function drawGrid(view)
+      local demand = browserDemandFor(Renderer, view)
+      seedPortraits(pool, rig.cacheFs, rig.monCatalog, demand, true)
+      local lease = rig.owner:acquire({ purpose = "browser" })
+      local assets = prepareReady(rig, lease, demand)
+      local plan = resolvePlan(Interface.browser(), measurement, planViewOf(view))
+      local data = drawPlan(
+        scope,
+        plan,
+        { graphics = love.graphics, renderer = assets.renderer },
+        preparedBrowserView(view, assets),
+        measurement.width,
+        measurement.height
+      )
+      lease:release()
+      return data, assets
+    end
+    local first, firstAssets = drawGrid(controller:view())
+    Assert.notNil(firstAssets.spriteParts["sprite-grid-2"], "the grid bundle stages its focus art")
+    press(controller, { { type = "navigate", direction = "right" } })
+    idle(controller, 2)
+    local second, _ = drawGrid(controller:view())
+    local placement =
+      placementOf(resolvePlan(Interface.browser(), measurement, planViewOf(controller:view())), "controls")
+    local layers = bgLayersFor(rig.cacheFs, rig.manifest, "grid", "controls")
+    local priorities = Renderer.layerPrioritiesOf(rig.manifest, "grid", "controls")
+    local backdrop = Renderer.backdropOf(rig.manifest, "grid", "controls")
+    local oldBox = { x = 48, y = 24, width = 48, height = 48 }
+    local newBox = { x = 88, y = 24, width = 48, height = 48 }
+    Assert.isTrue(boxMotion(first, second, placement.origin, oldBox) > 0, "the focus leaves its old slot")
+    Assert.isTrue(boxMotion(first, second, placement.origin, newBox) > 0, "the focus reaches its new slot")
+    Assert.isTrue(
+      boxInk(second, placement.origin, { x = 232, y = 0, width = 24, height = 30 }, layers, priorities, backdrop) > 0,
+      "the up arrow paints over its background"
+    )
+    Assert.isTrue(
+      boxInk(second, placement.origin, { x = 232, y = 128, width = 24, height = 32 }, layers, priorities, backdrop) > 0,
+      "the down arrow paints over its background"
+    )
+    Assert.isTrue(
+      boxInk(second, placement.origin, { x = 232, y = 30, width = 24, height = 130 }, layers, priorities, backdrop) > 0,
+      "the thumb paints over its background"
+    )
+    controller:dispose()
+    rig.owner:release()
+    Assert.equal(pool:stats().outstandingLeases, 0, "the journey returns every borrowed interest")
+  end)
+end
+
+-- The size pans track the published beam and swing with it: the
+-- bundle stages the beam, pan, and trainer art, the pans paint ink at
+-- their published positions, and two frames across a moving phase
+-- differ inside the scale region while the anchors stay fixed.
+function T.size_pans_track_the_published_beam(scope)
+  local Renderer = requireRenderer("live size sprite pixels")
+  local Interface = requireInterface("paired native hit resolution")
+  requireOwner("prepared bundles behind the live leg")
+  local versionId = readyVersion()
+  local pool = SharedImagePoolFake.new()
+  withPool(pool, function()
+    local rig = graphicsRig(versionId, pool, scope)
+    seedIcon(pool, "CHIKORITA/f0", 1, 1, 1)
+    seedIcon(pool, "EEVEE/f0", 0, 0, 0)
+    seedIcon(pool, "TOTODILE/f0", 1, 0, 0)
+    seedIcon(pool, "SPINDA/f0", 0, 1, 0)
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "entry.size")
+    local dexOwner = Fixture.ownerWithHistory(rig.monCatalog, rig.catalog)
+    local controller = Fixture.openController(dexOwner, rig.monCatalog, rig.catalog)
+    openGrid(controller)
+    selectSpecies(controller, "TOTODILE")
+    openEntry(controller)
+    openTab(controller, "size")
+    local measurement = measurementFor("dualDisplay")
+    local portraitsSeeded = false
+    local function drawSize(view)
+      local demand = browserDemandFor(Renderer, view)
+      if not portraitsSeeded then
+        portraitsSeeded = true
+        seedPortraits(pool, rig.cacheFs, rig.monCatalog, demand, true)
+      end
+      local lease = rig.owner:acquire({ purpose = "browser" })
+      local assets = prepareReady(rig, lease, demand)
+      local plan = resolvePlan(Interface.browser(), measurement, planViewOf(view))
+      local data = drawPlan(
+        scope,
+        plan,
+        { graphics = love.graphics, renderer = assets.renderer },
+        preparedBrowserView(view, assets),
+        measurement.width,
+        measurement.height
+      )
+      lease:release()
+      return data, assets
+    end
+    local first, firstAssets = drawSize(controller:view())
+    Assert.notNil(firstAssets.spriteParts["sprite-entry-size-trainer-male"], "the size bundle stages its trainer")
+    for _ = 1, 500 do
+      local phase = controller:view().size.weight.phase
+      if phase == "tilt" or phase == "beam" or phase == "thrown" then
+        break
+      end
+      idle(controller, 1)
+    end
+    local moving = controller:view().size.weight.phase
+    Assert.isTrue(moving == "tilt" or moving == "beam" or moving == "thrown", "the scale reaches its moving phase")
+    idle(controller, 6)
+    local second, _ = drawSize(controller:view())
+    local placement =
+      placementOf(resolvePlan(Interface.browser(), measurement, planViewOf(controller:view())), "controls")
+    Assert.isTrue(
+      boxMotion(first, second, placement.origin, { x = 40, y = 40, width = 176, height = 120 }) > 0,
+      "the pans swing between accepted updates"
+    )
+    local layers = bgLayersFor(rig.cacheFs, rig.manifest, "entry.size", "controls")
+    local priorities = Renderer.layerPrioritiesOf(rig.manifest, "entry.size", "controls")
+    local backdrop = Renderer.backdropOf(rig.manifest, "entry.size", "controls")
+    local pans = controller:view().size.pans
+    for _, pan in ipairs(pans) do
+      Assert.isTrue(
+        boxInk(
+          second,
+          placement.origin,
+          { x = pan.x - 16, y = pan.y - 16, width = 32, height = 32 },
+          layers,
+          priorities,
+          backdrop
+        ) > 0,
+        "a pan paints at its published position"
+      )
+    end
+    controller:dispose()
+    rig.owner:release()
+    Assert.equal(pool:stats().outstandingLeases, 0, "the journey returns every borrowed interest")
+  end)
+end
+
 function T.grid_icon_pixels_share_their_generation_with_hit_targets(scope)
   local Renderer = requireRenderer("paired icon pixel and hit pairing")
   local Interface = requireInterface("paired native hit resolution")
@@ -837,13 +1094,16 @@ function T.grid_icon_pixels_share_their_generation_with_hit_targets(scope)
     Assert.notNil(footer, "the footer band maps to a command")
     assert(footer ~= nil, "the footer band maps to a command")
     Assert.equal(footer.action, "page-prev", "the footer band pages back")
-    Assert.isNil(plan.mapInput({
-      type = "pointer_down",
-      x = 20,
-      y = 188,
-      paneId = "controls",
-      pointerId = 3,
-    }, planViewOf(view), plan), "below the footer band nothing maps")
+    Assert.isNil(
+      plan.mapInput({
+        type = "pointer_down",
+        x = 20,
+        y = 188,
+        paneId = "controls",
+        pointerId = 3,
+      }, planViewOf(view), plan),
+      "below the footer band nothing maps"
+    )
     lease:release()
     controller:dispose()
     rig.owner:release()
@@ -913,7 +1173,13 @@ function T.compact_single_display_paints_fifteen_icons_portrait_and_footer(scope
         else
           local infoLayers = bgLayersFor(rig.cacheFs, rig.manifest, "grid", "information")
           local infoPri = Renderer.layerPrioritiesOf(rig.manifest, "grid", "information")
-          local br, bg, bb = expectedBackground(infoLayers, infoPri, Renderer.backdropOf(rig.manifest, "grid", "information"), rect.x + 16, rect.y + 16)
+          local br, bg, bb = expectedBackground(
+            infoLayers,
+            infoPri,
+            Renderer.backdropOf(rig.manifest, "grid", "information"),
+            rect.x + 16,
+            rect.y + 16
+          )
           assertPixel(
             data,
             info.origin.x + rect.x + 16,
@@ -927,7 +1193,13 @@ function T.compact_single_display_paints_fifteen_icons_portrait_and_footer(scope
       else
         local infoLayers = bgLayersFor(rig.cacheFs, rig.manifest, "grid", "information")
         local infoPri = Renderer.layerPrioritiesOf(rig.manifest, "grid", "information")
-        local er, eg, eb = expectedBackground(infoLayers, infoPri, Renderer.backdropOf(rig.manifest, "grid", "information"), rect.x + 16, rect.y + 16)
+        local er, eg, eb = expectedBackground(
+          infoLayers,
+          infoPri,
+          Renderer.backdropOf(rig.manifest, "grid", "information"),
+          rect.x + 16,
+          rect.y + 16
+        )
         assertPixel(
           data,
           info.origin.x + rect.x + 16,
@@ -1448,7 +1720,7 @@ function T.registration_card_covers_departing_art_with_its_fixed_picture(scope)
     local rig = graphicsRig(versionId, pool, scope)
     local dexOwner = Fixture.ownerWithHistory(rig.monCatalog, rig.catalog)
     local snapshot = Fixture.registrationSnapshot(dexOwner, rig.monCatalog, "TOTODILE", 0)
-    local demand = Fixture.registrationDemand(snapshot, "card-final")
+    local demand = Fixture.registrationDemand(snapshot, "card-final", rig.monCatalog)
     seedChromeFor(pool, rig.cacheFs, rig.manifest, "registration")
     Assert.equal(demand.pictures[1].mode, "registration", "the card demand carries the actual specimen picture")
     Assert.equal(demand.text.registration.displayName, "TOTODILE", "the card announcement names the capture")
@@ -1631,13 +1903,16 @@ function T.draw_performs_no_realization_work()
   local monCatalog, catalog = Fixture.catalogs()
   local dexOwner = Fixture.ownerWithHistory(monCatalog, catalog)
   local cacheFs = CacheFs.forVersion(readyVersion())
+  local censusPool = SharedImagePoolFake.new()
+  local PokedexCache = require("libs.assets.src.PokedexCache")
+  seedChromeFor(censusPool, cacheFs, PokedexCache.loadManifest(cacheFs), "grid")
   -- Whole-view preparation resolves visible text through its source
   -- banks, so even the headless counting leg borrows the real message
   -- provider; its body font draws into the same fake namespace so the
   -- realization census stays exact. Glyph proof lives in the ROM-gated
   -- legs, not in this census.
   local owner = Owner.new({
-    imagePool = SharedImagePoolFake.new(),
+    imagePool = censusPool,
     monCatalog = monCatalog,
     catalog = catalog,
     cacheFs = cacheFs,
@@ -1734,6 +2009,142 @@ end
 -- twenty steps from 48 to 128 before the black terminal cover freezes the
 -- centered card. No battle runtime contributes: the detached registration
 -- is frozen before any publication.
+-- The ready card paints its captured type and footprint at the native
+-- origins while a single-type capture leaves the second icon blank:
+-- type, footprint, and departure visibility all follow the frozen
+-- specimen and the accepted card phase instead of invented art.
+function T.registration_type_and_footprint_paint_at_native_origins(scope)
+  local Renderer = requireRenderer("live card sprite pixels")
+  local Interface = requireInterface("registration phase layout resolution")
+  requireOwner("prepared card bundles")
+  local okChild, Child = pcall(require, "game.hgss.src.pokedex.PokedexRegistrationState")
+  Assert.isTrue(okChild, "missing battle-owned first-catch presentation")
+  local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
+  local versionId = readyVersion()
+  local pool = SharedImagePoolFake.new()
+  withPool(pool, function()
+    local rig = graphicsRig(versionId, pool, scope)
+    local dexOwner = Fixture.ownerWithHistory(rig.monCatalog, rig.catalog)
+    local snapshot = Fixture.registrationSnapshot(dexOwner, rig.monCatalog, "TOTODILE", 0)
+    local demand = Fixture.registrationDemand(snapshot, "card-icons", rig.monCatalog)
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "registration")
+    seedPortraits(pool, rig.cacheFs, rig.monCatalog, demand, false)
+    local lease = rig.owner:acquire({ purpose = "registration" })
+    local assets = prepareReady(rig, lease, demand)
+    Assert.notNil(assets.spriteParts["sprite-registration-type-water"], "the card bundle stages its captured type art")
+    Assert.notNil(assets.footprintParts["TOTODILE"], "the card bundle stages its captured footprint")
+    local audio = { calls = {}, cryDone = true }
+    function audio.playCry(species, pattern, form)
+      audio.calls[#audio.calls + 1] = { species = species, pattern = pattern, form = form }
+      return true
+    end
+    function audio.isCryFinished()
+      return audio.cryDone
+    end
+    function audio.select() end
+    local timeline = BattleTimeline.new({ textSpeed = "fastest" })
+    local measurement = measurementFor("nativeLike")
+    local child = Child.new({
+      registration = {
+        captureId = 7,
+        mode = "wild",
+        dexMode = snapshot.dexMode,
+        displayName = snapshot.displayName,
+        specimen = snapshot.specimen,
+      },
+      pokedex = rig.owner,
+      timeline = timeline,
+      audio = audio,
+      measureDisplay = function()
+        return measurement
+      end,
+    })
+    local plan = resolvePlan(Interface.registration(), measurement, {})
+    local resources = { graphics = love.graphics, renderer = assets.renderer }
+    local layers = bgLayersFor(rig.cacheFs, rig.manifest, "registration", "information")
+    local priorities = Renderer.layerPrioritiesOf(rig.manifest, "registration", "information")
+    local backdrop = Renderer.backdropOf(rig.manifest, "registration", "information")
+    local placement = placementOf(plan, "registration")
+    local function drawCard(view)
+      return drawPlan(scope, plan, resources, { view = view, assets = assets }, 256, 192)
+    end
+    local function tick()
+      timeline:update(1 / 60, function(_)
+        return true
+      end)
+      child:updateFixed(1 / 30)
+    end
+    for _ = 1, 2000 do
+      if child:status().acceptsDismissal then
+        break
+      end
+      tick()
+    end
+    Assert.isTrue(child:status().acceptsDismissal, "the card reaches its ready phase")
+    local ready = drawCard(child:view())
+    local cardObjects = assert(child:view().objects, "the ready card carries its intents")
+    local function findCardIntent(objects, subject)
+      for _, intent in ipairs(objects) do
+        if type(intent) == "table" and intent.subject == subject then
+          return intent
+        end
+      end
+      return nil
+    end
+    local function inkFor(subject)
+      local ink = 0
+      for _, intent in ipairs(cardObjects) do
+        if intent.subject == subject then
+          for _, box in ipairs(intentBoxes(intent, assets, "registration")) do
+            ink = ink + boxInk(ready, placement.origin, box, layers, priorities, backdrop)
+          end
+        end
+      end
+      return ink
+    end
+    Assert.isTrue(inkFor("type-1") > 0, "the first type paints at its native origin")
+    Assert.isTrue(inkFor("footprint") > 0, "the footprint paints at its native origin")
+    Assert.isNil(findCardIntent(cardObjects, "type-2"), "a single-type capture projects no second icon")
+    Assert.equal(
+      boxInk(ready, placement.origin, { x = 217, y = 72, width = 32, height = 16 }, layers, priorities, backdrop),
+      0,
+      "a single-type capture leaves the second icon blank"
+    )
+    child:input({ { type = "confirm" } })
+    for _ = 1, 2000 do
+      if child:status().complete then
+        break
+      end
+      tick()
+    end
+    Assert.isTrue(child:status().complete, "departure completes into the frozen exit")
+    local departed = drawCard(child:view())
+    local function maxChannel(boxes)
+      local peak = 0
+      for _, box in ipairs(boxes) do
+        for y = box.y, box.y + box.height - 1 do
+          for x = box.x, box.x + box.width - 1 do
+            local r, g, b = pixel(departed, placement.origin.x + x, placement.origin.y + y)
+            peak = math.max(peak, r, g, b)
+          end
+        end
+      end
+      return peak
+    end
+    local retired = {}
+    for _, intent in ipairs(cardObjects) do
+      for _, box in ipairs(intentBoxes(intent, assets, "registration")) do
+        retired[#retired + 1] = box
+      end
+    end
+    Assert.equal(maxChannel(retired), 0, "the terminal cover retires every card sprite")
+    child:dispose()
+    lease:release()
+    rig.owner:release()
+    Assert.equal(pool:stats().outstandingLeases, 0, "the journey returns every borrowed interest")
+  end)
+end
+
 function T.registration_child_runs_source_phases_with_fades_and_departure(scope)
   local Renderer = requireRenderer("registration phase rasterization")
   local Interface = requireInterface("registration phase layout resolution")
@@ -1758,7 +2169,7 @@ function T.registration_child_runs_source_phases_with_fades_and_departure(scope)
       displayName = snapshot.displayName,
       specimen = snapshot.specimen,
     }
-    local demand = Fixture.registrationDemand(snapshot, "card-phases")
+    local demand = Fixture.registrationDemand(snapshot, "card-phases", rig.monCatalog)
     seedChromeFor(pool, rig.cacheFs, rig.manifest, "registration")
     local cardPaths = seedPortraits(pool, rig.cacheFs, rig.monCatalog, demand, false)
     local lease = rig.owner:acquire({ purpose = "registration" })
@@ -2179,6 +2590,32 @@ seedChromeFor = function(pool, cacheFs, manifest, role)
       end
     end
   end
+  -- Live subjects resolve outside the static sprite list: seed every
+  -- page-local binding plus the shared footprint atlas so the demanded
+  -- selection stages behind real bytes, never synthetic pool output.
+  if type(page.spriteSubjects) == "table" then
+    for _, choices in pairs(page.spriteSubjects) do
+      for _, binding in pairs(choices) do
+        local sprite =
+          assert(manifest.sprites[binding.sprite], "the sprite inventory carries " .. tostring(binding.sprite))
+        local animation = assert(
+          manifest.animations[sprite.animation],
+          "the animation inventory carries " .. tostring(sprite.animation)
+        )
+        for _, frame in ipairs(animation.frames) do
+          seedCell(frame.cell)
+        end
+      end
+    end
+  end
+  if type(manifest.footprints) == "table" then
+    for _, record in pairs(manifest.footprints) do
+      if type(record) == "table" and type(record.chrome) == "string" then
+        seedRole(record.chrome)
+        break
+      end
+    end
+  end
 end
 
 -- Finds the first opaque pixel of one decoded portrait quad, scanning
@@ -2316,10 +2753,7 @@ local function assertAreaMapPan(Renderer, rig, view, assets, plan, data)
       break
     end
   end
-  Assert.isTrue(
-    #probes == 4,
-    "the shifted area map exposes pannable content at offset " .. tostring(dx)
-  )
+  Assert.isTrue(#probes == 4, "the shifted area map exposes pannable content at offset " .. tostring(dx))
   for _, probe in ipairs(probes) do
     assertPixel(
       data,
@@ -2343,6 +2777,55 @@ end
 ---@param assets table ready bundle behind the draw
 ---@param role string manifest page role under test
 ---@param plan table resolved application plan
+---@param view table detached browser projection behind the draw
+---@param assets table ready bundle behind the draw
+---@param role string manifest page role behind the pane
+---@param paneId string browser pane identity
+---@return table[] exclusion rectangles behind the live sprite intents
+local function dynamicExclusions(view, assets, role, paneId)
+  local rects = {}
+  local objects = view.objects
+  if type(objects) ~= "table" then
+    return rects
+  end
+  local manifest = assert(assets.manifest, "the ready bundle carries its compiled manifest")
+  local page = assert(manifest.pages[role], "the compiled manifest carries the drawn page role")
+  local subjects = page.spriteSubjects
+  if type(subjects) ~= "table" then
+    return rects
+  end
+  for _, intent in ipairs(objects) do
+    if type(intent) == "table" and intent.visible ~= false and intent.pane == paneId then
+      if intent.subject == "footprint" then
+        rects[#rects + 1] = { x = intent.x, y = intent.y, width = 16, height = 16 }
+      else
+        local subjectMap = subjects[intent.subject]
+        local binding = type(subjectMap) == "table" and subjectMap[intent.choice] or nil
+        if type(binding) == "table" then
+          local sprite = manifest.sprites[binding.sprite]
+          local animation = type(sprite) == "table" and manifest.animations[sprite.animation] or nil
+          if animation ~= nil then
+            for _, frame in ipairs(animation.frames) do
+              local cell = manifest.cells[frame.cell]
+              if type(cell) == "table" then
+                for _, part in ipairs(cell.parts) do
+                  rects[#rects + 1] = {
+                    x = intent.x + part.x,
+                    y = intent.y + part.y,
+                    width = part.source.width,
+                    height = part.source.height,
+                  }
+                end
+              end
+            end
+          end
+        end
+      end
+    end
+  end
+  return rects
+end
+
 ---@param data table 8-bit pixel buffer behind the composed target
 local function assertNativeBackgrounds(Renderer, scope, rig, view, assets, role, plan, data)
   local _ = scope
@@ -2365,6 +2848,9 @@ local function assertNativeBackgrounds(Renderer, scope, rig, view, assets, role,
       for slot = 0, Renderer.ICON_SLOTS - 1 do
         exclusions[#exclusions + 1] = Renderer.iconSlotRect(slot)
       end
+    end
+    for _, rect in ipairs(dynamicExclusions(view, assets, role, paneId)) do
+      exclusions[#exclusions + 1] = rect
     end
     if paneId == "information" and assets.pictures ~= nil then
       for _, record in pairs(assets.pictures) do
@@ -2624,11 +3110,7 @@ function T.area_map_paints_settled_and_travelling_region_scrolls(scope)
       Assert.equal(view.areaPan.offset, 104, "the travel settles on the kanto scroll")
     end
     idle(controller, 4)
-    Assert.equal(
-      controller:view().areaPan.offset,
-      104,
-      "the settled kanto scroll holds across further ticks"
-    )
+    Assert.equal(controller:view().areaPan.offset, 104, "the settled kanto scroll holds across further ticks")
     controller:dispose()
     rig.owner:release()
     Assert.equal(pool:stats().outstandingLeases, 0, "the journey returns every borrowed interest")
@@ -2854,7 +3336,7 @@ function T.registration_card_paints_source_card_content(scope)
     local rig = graphicsRig(versionId, pool, scope)
     local dexOwner = Fixture.ownerWithHistory(rig.monCatalog, rig.catalog)
     local snapshot = Fixture.registrationSnapshot(dexOwner, rig.monCatalog, "TOTODILE", 0)
-    local demand = Fixture.registrationDemand(snapshot, "card-content")
+    local demand = Fixture.registrationDemand(snapshot, "card-content", rig.monCatalog)
     seedChromeFor(pool, rig.cacheFs, rig.manifest, "registration")
     local seeded = {}
     seedDemandPortraitsOnce(pool, rig.cacheFs, rig.monCatalog, demand, false, seeded)
@@ -2928,7 +3410,7 @@ function T.registration_picture_slides_and_hides_on_departure(scope)
     local rig = graphicsRig(versionId, pool, scope)
     local dexOwner = Fixture.ownerWithHistory(rig.monCatalog, rig.catalog)
     local snapshot = Fixture.registrationSnapshot(dexOwner, rig.monCatalog, "TOTODILE", 0)
-    local demand = Fixture.registrationDemand(snapshot, "card-motion")
+    local demand = Fixture.registrationDemand(snapshot, "card-motion", rig.monCatalog)
     seedChromeFor(pool, rig.cacheFs, rig.manifest, "registration")
     seedDemandPortraitsOnce(pool, rig.cacheFs, rig.monCatalog, demand, false, {})
     local lease = rig.owner:acquire({ purpose = "registration" })
@@ -3037,28 +3519,15 @@ function T.search_shape_grid_paints_placed_choice_art(scope)
     local measurement = measurementFor("dualDisplay")
     local plan = resolvePlan(Interface.browser(), measurement, planViewOf(view))
     local resources = { graphics = love.graphics, renderer = assets.renderer }
-    local data = drawPlan(
-      scope,
-      plan,
-      resources,
-      preparedBrowserView(view, assets),
-      measurement.width,
-      measurement.height
-    )
+    local data =
+      drawPlan(scope, plan, resources, preparedBrowserView(view, assets), measurement.width, measurement.height)
     local controlsPane = placementOf(plan, "controls")
     for _, entry in ipairs(placed) do
-      local animation = assert(
-        rig.manifest.animations[entry.record.animation],
-        entry.role .. " resolves its animation"
-      )
-      local cell = assert(
-        rig.manifest.cells[animation.frames[1].cell],
-        entry.role .. " resolves its resting cell"
-      )
+      local animation = assert(rig.manifest.animations[entry.record.animation], entry.role .. " resolves its animation")
+      local cell = assert(rig.manifest.cells[animation.frames[1].cell], entry.role .. " resolves its resting cell")
       local part = assert(cell.parts[1], entry.role .. " carries its first part")
       local baseData = chromeData(part.chrome)
-      local dx, dy =
-        opaqueOffset(baseData, part.source.x, part.source.y, part.source.width, part.source.height)
+      local dx, dy = opaqueOffset(baseData, part.source.x, part.source.y, part.source.width, part.source.height)
       local er, eg, eb = pixel(baseData, part.source.x + dx, part.source.y + dy)
       assertPixel(
         data,
@@ -3090,7 +3559,7 @@ function T.registration_card_paints_placed_banner_art(scope)
     local rig = graphicsRig(versionId, pool, scope)
     local dexOwner = Fixture.ownerWithHistory(rig.monCatalog, rig.catalog)
     local snapshot = Fixture.registrationSnapshot(dexOwner, rig.monCatalog, "TOTODILE", 0)
-    local demand = Fixture.registrationDemand(snapshot, "card-banner")
+    local demand = Fixture.registrationDemand(snapshot, "card-banner", rig.monCatalog)
     seedChromeFor(pool, rig.cacheFs, rig.manifest, "registration")
     seedDemandPortraitsOnce(pool, rig.cacheFs, rig.monCatalog, demand, false, {})
     local lease = rig.owner:acquire({ purpose = "registration" })
@@ -3105,8 +3574,7 @@ function T.registration_card_paints_placed_banner_art(scope)
     end
     Assert.equal(#placed, 1, "the card places only its banner emblem")
     local entry = placed[1]
-    local animation =
-      assert(rig.manifest.animations[entry.record.animation], entry.role .. " resolves its animation")
+    local animation = assert(rig.manifest.animations[entry.record.animation], entry.role .. " resolves its animation")
     local cell = assert(rig.manifest.cells[animation.frames[1].cell], entry.role .. " resolves its resting cell")
     local part = assert(cell.parts[1], entry.role .. " carries its first part")
     local chromeEntry = assert(rig.manifest.chrome[part.chrome], "the manifest stages " .. part.chrome)
@@ -3189,7 +3657,7 @@ function T.prepared_page_sprites_draw_without_realizing_new_objects(scope)
     local seeded = {}
     seedDemandPortraitsOnce(pool, rig.cacheFs, rig.monCatalog, demand, true, seeded)
     local snapshot = Fixture.registrationSnapshot(dexOwner, rig.monCatalog, "TOTODILE", 0)
-    local cardDemand = Fixture.registrationDemand(snapshot, "prepared-sprite-parts")
+    local cardDemand = Fixture.registrationDemand(snapshot, "prepared-sprite-parts", rig.monCatalog)
     seedChromeFor(pool, rig.cacheFs, rig.manifest, "registration")
     seedDemandPortraitsOnce(pool, rig.cacheFs, rig.monCatalog, cardDemand, false, seeded)
     local realQuad = love.graphics.newQuad
@@ -3269,12 +3737,10 @@ function T.prepared_page_sprites_draw_without_realizing_new_objects(scope)
         for _, entry in ipairs(placed) do
           local animation =
             assert(rig.manifest.animations[entry.record.animation], entry.role .. " resolves its animation")
-          local cell =
-            assert(rig.manifest.cells[animation.frames[1].cell], entry.role .. " resolves its resting cell")
+          local cell = assert(rig.manifest.cells[animation.frames[1].cell], entry.role .. " resolves its resting cell")
           local part = assert(cell.parts[1], entry.role .. " carries its first part")
           local baseData = chromeData(part.chrome)
-          local dx, dy =
-            opaqueOffset(baseData, part.source.x, part.source.y, part.source.width, part.source.height)
+          local dx, dy = opaqueOffset(baseData, part.source.x, part.source.y, part.source.width, part.source.height)
           local er, eg, eb = pixel(baseData, part.source.x + dx, part.source.y + dy)
           assertPixel(
             data,
@@ -3312,8 +3778,7 @@ function T.prepared_page_sprites_draw_without_realizing_new_objects(scope)
         bannerPart.source.width,
         bannerPart.source.height
       )
-      local ber, beg, beb =
-        pixel(bannerData, bannerPart.source.x + bannerDx, bannerPart.source.y + bannerDy)
+      local ber, beg, beb = pixel(bannerData, bannerPart.source.x + bannerDx, bannerPart.source.y + bannerDy)
       local cardParts = assert(cardAssets.spriteParts, "the card bundle publishes its prepared sprite parts")
       local bannerResting = assert(
         assert(cardParts[banner.role], "the banner publishes its prepared frame")[1],
@@ -3333,21 +3798,25 @@ function T.prepared_page_sprites_draw_without_realizing_new_objects(scope)
         )
       end
       checkShapeArt(renderTo(shapeTarget, shapePlan, shapeResources, preparedBrowserView(view, shapeAssets)))
-      checkCardArt(renderTo(
-        cardTarget,
-        cardPlan,
-        cardResources,
-        { view = { pictureX = 48, paletteFade = 0, pictureFade = 0 }, assets = cardAssets }
-      ))
-      local before = { quad = counts.quad, canvas = counts.canvas, image = counts.image, shader = counts.shader }
-      for _ = 1, 3 do
-        checkShapeArt(renderTo(shapeTarget, shapePlan, shapeResources, preparedBrowserView(view, shapeAssets)))
-        checkCardArt(renderTo(
+      checkCardArt(
+        renderTo(
           cardTarget,
           cardPlan,
           cardResources,
           { view = { pictureX = 48, paletteFade = 0, pictureFade = 0 }, assets = cardAssets }
-        ))
+        )
+      )
+      local before = { quad = counts.quad, canvas = counts.canvas, image = counts.image, shader = counts.shader }
+      for _ = 1, 3 do
+        checkShapeArt(renderTo(shapeTarget, shapePlan, shapeResources, preparedBrowserView(view, shapeAssets)))
+        checkCardArt(
+          renderTo(
+            cardTarget,
+            cardPlan,
+            cardResources,
+            { view = { pictureX = 48, paletteFade = 0, pictureFade = 0 }, assets = cardAssets }
+          )
+        )
       end
       Assert.equal(counts.quad, before.quad, "steady draws create no viewports")
       Assert.equal(counts.canvas, before.canvas, "steady draws create no canvases")

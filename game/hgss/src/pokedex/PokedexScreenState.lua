@@ -131,6 +131,14 @@ local function buildDemand(view)
       end
     end
   end
+  local objects = {}
+  if type(view.objects) == "table" then
+    for _, intent in ipairs(view.objects) do
+      if type(intent) == "table" then
+        objects[#objects + 1] = intent
+      end
+    end
+  end
   local text = {}
   if type(view.text) == "table" then
     text = view.text
@@ -157,6 +165,7 @@ local function buildDemand(view)
     iconKeys = iconKeys,
     pictures = pictures,
     text = text,
+    objects = objects,
   }
 end
 

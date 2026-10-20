@@ -91,6 +91,7 @@ end
 local function checkPokedex(pokedex)
   assert(type(pokedex) == "table", "the registration child borrows its presentation owner")
   assert(type(pokedex.acquire) == "function", "the borrowed owner acquires registration leases")
+  assert(type(pokedex.typesFor) == "function", "the borrowed owner resolves frozen specimen types")
 end
 
 ---@param audio unknown borrowed registration audio adapter under validation
@@ -101,9 +102,59 @@ local function checkAudio(audio)
   assert(type(audio.select) == "function", "the audio adapter keeps its select role")
 end
 
----@param registration table<string, unknown> detached frozen first-catch facts
+---@param self PokedexRegistrationState
+---@param shown boolean whether the card sprites are currently visible
+---@return table[] detached card sprite intents behind the demand and the view
+local function cardObjects(self, shown)
+  local specimen = self._registration.specimen --[[@as table<string, unknown>]]
+  local okTypes, types = pcall(self._pokedex.typesFor, self._pokedex, specimen.species, specimen.form)
+  if not okTypes or type(types) ~= "table" then
+    error("the registration card resolves no types: " .. tostring(types), 0)
+  end
+  local objects = {}
+  if type(types[1]) == "string" and types[1] ~= "" then
+    objects[#objects + 1] = {
+      subject = "type-1",
+      choice = types[1],
+      pane = "information",
+      x = 168,
+      y = 72,
+      age = self._spriteTick,
+      visible = shown,
+    }
+    if type(types[2]) == "string" and types[2] ~= "" and types[2] ~= types[1] then
+      objects[#objects + 1] = {
+        subject = "type-2",
+        choice = types[2],
+        pane = "information",
+        x = 217,
+        y = 72,
+        age = self._spriteTick,
+        visible = shown,
+      }
+    end
+  end
+  if type(specimen.species) == "string" and specimen.species ~= "" then
+    local originHidden = specimen.species == "GIRATINA" and specimen.form == 1
+    if not originHidden then
+      objects[#objects + 1] = {
+        subject = "footprint",
+        choice = specimen.species,
+        pane = "information",
+        x = 120,
+        y = 80,
+        age = self._spriteTick,
+        visible = shown,
+      }
+    end
+  end
+  return objects
+end
+
+---@param self PokedexRegistrationState live card behind the demand
 ---@return table<string, unknown> immutable whole registration demand
-local function buildDemand(registration)
+local function buildDemand(self)
+  local registration = self._registration --[[@as table<string, unknown>]]
   local specimen = registration.specimen --[[@as table<string, unknown>]]
   local species = specimen.species --[[@as string]]
   -- The card text slots mirror the browser controller's slot union for
@@ -143,6 +194,11 @@ local function buildDemand(registration)
       },
     },
     cry = { species = specimen.species, form = CRY_FORM },
+    -- The demand stages the whole card sprite closure up front: the
+    -- generation key never changes across card phases, so art that
+    -- appears after the cry must already be resident. Drawing still
+    -- follows the live view visibility.
+    objects = cardObjects(self, true),
   }
 end
 
@@ -265,6 +321,7 @@ function PokedexRegistrationState.new(opts)
     _dismissible = false,
     _dismissRequested = false,
     _spritesHidden = false,
+    _spriteTick = 0,
     _departKind = "ordinary",
     _complete = false,
     _error = nil,
@@ -291,6 +348,11 @@ function PokedexRegistrationState:_cardView()
     banner = self._banner,
     spritesHidden = self._spritesHidden,
     dismissible = self._dismissible,
+    spriteTick = self._spriteTick,
+    -- The completed card retires its sprites with the popup: native
+    -- teardown deletes every sprite, so the frozen exit carries only
+    -- the centered picture under the terminal cover.
+    objects = cardObjects(self, not self._spritesHidden and not self._complete),
   }
 end
 
@@ -466,7 +528,7 @@ function PokedexRegistrationState:updateFixed(dt)
     if lease == nil then
       return
     end
-    local outcome = lease:prepare(buildDemand(self._registration))
+    local outcome = lease:prepare(buildDemand(self))
     assert(type(outcome) == "table" and type(outcome.kind) == "string", "leases answer pending, ready, or failed")
     if outcome.kind == "ready" then
       self._bundle = assert(outcome.assets, "ready outcomes carry their whole bundle")
@@ -502,6 +564,7 @@ function PokedexRegistrationState:updateFixed(dt)
     if self._accumulator < 0 then
       self._accumulator = 0
     end
+    self._spriteTick = self._spriteTick + 1
     stepSource(self)
     if self._complete or self._error ~= nil then
       self._accumulator = 0

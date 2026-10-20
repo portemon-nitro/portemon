@@ -185,6 +185,30 @@ local function checkDemand(demand, purpose)
     )
   end
   assert(type(demand.text) == "table", "demands carry their semantic text")
+  if demand.objects ~= nil then
+    assert(type(demand.objects) == "table", "object intents arrive as a list")
+    for _, intent in ipairs(demand.objects) do
+      assert(type(intent) == "table", "object intents arrive as records")
+      assert(type(intent.subject) == "string" and intent.subject ~= "", "object intents name their subject")
+      assert(type(intent.choice) == "string" and intent.choice ~= "", "object intents name their choice")
+      assert(intent.pane == "information" or intent.pane == "controls", "object intents name their authored pane")
+      assert(type(intent.x) == "number" and intent.x % 1 == 0, "object intents carry integer x")
+      assert(type(intent.y) == "number" and intent.y % 1 == 0, "object intents carry integer y")
+      assert(
+        type(intent.age) == "number" and intent.age % 1 == 0 and intent.age >= 0,
+        "object intents carry their accepted age"
+      )
+      if intent.instance ~= nil then
+        assert(
+          type(intent.instance) == "number" and intent.instance % 1 == 0 and intent.instance >= 1,
+          "repeated object intents carry their instance"
+        )
+      end
+      if intent.visible ~= nil then
+        assert(type(intent.visible) == "boolean", "object intents carry their visibility")
+      end
+    end
+  end
   if demand.cry ~= nil then
     assert(type(demand.cry) == "table", "cry demand arrives as a record")
     assert(type(demand.cry.species) == "string", "cry demand names its species")
@@ -620,6 +644,136 @@ local function prepareCry(lease, demand)
   return ready == true
 end
 
+-- Frozen specimen type names for live card intents: form-aware first,
+-- species-level second, attributed failure otherwise. The card owns no
+-- catalog; the borrowed preparation owner lends its resolved one.
+---@param species string selected species behind the art
+---@param form integer physical form behind the art
+---@return string[] ordered type names behind the frozen specimen
+function PokedexPresentationResources:typesFor(species, form)
+  assert(type(species) == "string" and species ~= "", "type lookups name their species")
+  assert(type(form) == "number" and form % 1 == 0 and form >= 0, "type lookups name their physical form")
+  local catalog = assert(self._monCatalog, "type lookups borrow the resolved mon catalog")
+  local formOf = assert(catalog.form, "type lookups read the resolved mon catalog")
+  local okForm, record = pcall(formOf, catalog, species, form)
+  if okForm and type(record) == "table" and type(record.types) == "table" then
+    return record.types
+  end
+  local speciesOf = assert(catalog.species, "type lookups read the resolved mon catalog")
+  local okSpecies, definition = pcall(speciesOf, catalog, species)
+  if okSpecies and type(definition) == "table" and type(definition.types) == "table" then
+    return definition.types
+  end
+  error("pokedex preparation resolves no types for " .. species .. " form " .. form, 0)
+end
+
+-- Resolves the demanded object intents against the page-local subject
+-- bindings: every intent names exactly one prepared sprite role, while
+-- footprint intents name an atlas species staged through the shared
+-- viewport ledger. Art stages regardless of the intent visibility so a
+-- blink-off commit still covers the blink-on draw; a missing subject,
+-- choice, or atlas entry fails the whole candidate.
+---@param manifest table<string, unknown> loaded presentation manifest
+---@param demand table<string, unknown> validated demand under preparation
+---@return string[]? dynamicRoles ordered demanded sprite roles
+---@return string[]? footprintSpecies ordered demanded footprint species
+---@return string? failure nonempty cause when an intent cannot resolve
+local function resolveDynamicDemands(manifest, demand)
+  local objects = demand.objects
+  if objects == nil or #objects == 0 then
+    return {}, {}
+  end
+  local pages = manifest.pages
+  if type(pages) ~= "table" then
+    return nil, nil, "the pokedex manifest carries no pages table"
+  end
+  local page = pages[demand.pageRole]
+  if type(page) ~= "table" then
+    return nil, nil, "the pokedex manifest carries no page " .. tostring(demand.pageRole)
+  end
+  local subjects = page.spriteSubjects
+  if type(subjects) ~= "table" then
+    return nil, nil, "the " .. tostring(demand.pageRole) .. " page binds no live subjects"
+  end
+  local dynamicRoles, seenRoles = {}, {}
+  local footprintSpecies, seenSpecies = {}, {}
+  for _, intent in ipairs(objects) do
+    if intent.subject == "footprint" then
+      local footprints = manifest.footprints
+      if type(footprints) ~= "table" or footprints[intent.choice] == nil then
+        return nil, nil, "the footprint atlas carries no " .. tostring(intent.choice)
+      end
+      if not seenSpecies[intent.choice] then
+        seenSpecies[intent.choice] = true
+        footprintSpecies[#footprintSpecies + 1] = intent.choice
+      end
+    else
+      local subjectMap = subjects[intent.subject]
+      if type(subjectMap) ~= "table" then
+        return nil, nil, "the " .. tostring(demand.pageRole) .. " page binds no subject " .. tostring(intent.subject)
+      end
+      local binding = subjectMap[intent.choice]
+      if type(binding) ~= "table" then
+        return nil, nil, "the " .. tostring(intent.subject) .. " subject binds no choice " .. tostring(intent.choice)
+      end
+      if binding.pane ~= intent.pane then
+        return nil, nil, "the " .. tostring(intent.subject) .. " intent disagrees with its authored pane"
+      end
+      if type(binding.sprite) ~= "string" or binding.sprite == "" then
+        return nil, nil, "the " .. tostring(intent.subject) .. " choice names no sprite"
+      end
+      if not seenRoles[binding.sprite] then
+        seenRoles[binding.sprite] = true
+        dynamicRoles[#dynamicRoles + 1] = binding.sprite
+      end
+    end
+  end
+  return dynamicRoles, footprintSpecies
+end
+
+-- Collects the chrome roles behind dynamically demanded sprite roles:
+-- the staged closure stays demand-driven instead of admitting every
+-- page sprite family at once.
+---@param manifest table<string, unknown> loaded presentation manifest
+---@param roles string[] demanded dynamic sprite roles behind the closure
+---@return string[]? chromeRoles ordered demanded chrome roles
+---@return string? failure nonempty cause when a role cannot resolve
+local function dynamicChromeRoles(manifest, roles)
+  local cells = manifest.cells
+  local sprites = manifest.sprites
+  local animations = manifest.animations
+  if type(cells) ~= "table" or type(sprites) ~= "table" or type(animations) ~= "table" then
+    return nil, "the pokedex manifest carries no sprite inventory"
+  end
+  local chromeRoles, seen = {}, {}
+  for _, spriteRole in ipairs(roles) do
+    local sprite = sprites[spriteRole]
+    if type(sprite) ~= "table" then
+      return nil, "dynamic art references an unknown sprite " .. tostring(spriteRole)
+    end
+    local animation = animations[sprite.animation]
+    if type(animation) ~= "table" then
+      return nil, "dynamic art references an unknown animation " .. tostring(spriteRole)
+    end
+    for _, frame in ipairs(assert(animation.frames, "dynamic animations carry their frames")) do
+      local cell = cells[frame.cell]
+      if type(cell) ~= "table" then
+        return nil, "dynamic art references an unknown cell " .. tostring(spriteRole)
+      end
+      for _, part in ipairs(assert(cell.parts, "dynamic cells carry their parts")) do
+        if type(part.chrome) ~= "string" or part.chrome == "" then
+          return nil, "dynamic art names no chrome role " .. tostring(spriteRole)
+        end
+        if not seen[part.chrome] then
+          seen[part.chrome] = true
+          chromeRoles[#chromeRoles + 1] = part.chrome
+        end
+      end
+    end
+  end
+  return chromeRoles
+end
+
 -- The closed page-local chrome closure: backgrounds, cell parts, and
 -- sprite animation cells behind one generated page role. Footprints and
 -- every other role enter only when the page references them through one
@@ -847,7 +1001,28 @@ local function wantedSpriteRoles(manifest, pageRole, dynamicRoles)
   end
   for _, spriteRole in ipairs(dynamicRoles) do
     if not onPage[spriteRole] then
-      return nil, "the demand names a sprite role outside page " .. pageRole .. ": " .. tostring(spriteRole)
+      -- Dynamic live subjects resolve through the page-local subject
+      -- bindings without joining the static sprite list, so the static
+      -- closure stays demand-driven.
+      local bound = false
+      if type(page.spriteSubjects) == "table" then
+        for _, choices in pairs(page.spriteSubjects) do
+          if type(choices) == "table" then
+            for _, binding in pairs(choices) do
+              if type(binding) == "table" and binding.sprite == spriteRole then
+                bound = true
+                break
+              end
+            end
+          end
+          if bound then
+            break
+          end
+        end
+      end
+      if not bound then
+        return nil, "the demand names a sprite role outside page " .. pageRole .. ": " .. tostring(spriteRole)
+      end
     end
     if dynamic[spriteRole] == nil then
       dynamic[spriteRole] = true
@@ -1032,6 +1207,115 @@ local function prepareSpriteParts(owner, lease, manifest, demand, rolePath, allo
     spriteKeys[key] = true
   end
   return true, nil, spriteParts, spriteKeys
+end
+
+-- Prepares the demanded footprint viewports from the compiled atlas:
+-- one 16x16 source rectangle per shown species, borrowed through the
+-- shared chrome leases and realized under the same single admission
+-- budget as every other viewport. The published map carries the
+-- adopted handle beside its quad; retirement rides the shared
+-- viewport membership.
+---@param owner PokedexPresentationResources
+---@param lease table<string, unknown> preparation lease owning the viewports
+---@param manifest table<string, unknown> loaded presentation manifest
+---@param footprintSpecies string[] demanded footprint species behind the closure
+---@param rolePath table<string, string> page chrome role to pooled path
+---@param allowance { remaining: integer } shared per-prepare admission budget
+---@return boolean ready
+---@return string? failure nonempty cause when a demanded rectangle cannot be prepared
+---@return table<string, unknown>? footprintParts immutable map when whole
+---@return table<string, boolean>? footprintKeys owned viewport membership when whole
+local function prepareFootprintParts(owner, lease, manifest, footprintSpecies, rolePath, allowance)
+  if #footprintSpecies == 0 then
+    return true, nil, {}, {}
+  end
+  local graphics = owner._graphics
+  local footprints = manifest.footprints
+  if type(footprints) ~= "table" then
+    return false, "the pokedex manifest carries no footprints table"
+  end
+  if type(graphics) ~= "table" or type(graphics.newQuad) ~= "function" then
+    return true, nil, {}, {}
+  end
+  local needed, seen, keyOrder = {}, {}, {}
+  for _, species in ipairs(footprintSpecies) do
+    local record = footprints[species]
+    if type(record) ~= "table" then
+      return false, "the footprint atlas carries no " .. tostring(species)
+    end
+    local source = record.source
+    if type(source) ~= "table" then
+      return false, "footprint " .. tostring(species) .. " carries no source rectangle"
+    end
+    local path = rolePath[record.chrome]
+    if type(path) ~= "string" then
+      return false, "footprint " .. tostring(species) .. " watches chrome outside its page"
+    end
+    local handle = lease._chromeLeases[path]
+    if handle == nil then
+      return false, nil
+    end
+    local image = handle.image
+    if image == nil or type(image.getWidth) ~= "function" or type(image.getHeight) ~= "function" then
+      return false, "footprint " .. tostring(species) .. " watches chrome without a measurable image"
+    end
+    local imageWidth, imageHeight = image:getWidth(), image:getHeight()
+    if
+      type(source.x) ~= "number"
+      or type(source.y) ~= "number"
+      or type(source.width) ~= "number"
+      or type(source.height) ~= "number"
+      or source.x < 0
+      or source.y < 0
+      or source.width <= 0
+      or source.height <= 0
+      or source.x + source.width > imageWidth
+      or source.y + source.height > imageHeight
+    then
+      return false, "footprint " .. tostring(species) .. " references a viewport outside its chrome image"
+    end
+    local key = table.concat({
+      path,
+      tostring(source.x),
+      tostring(source.y),
+      tostring(source.width),
+      tostring(source.height),
+    }, "|")
+    if not seen[key] then
+      seen[key] = true
+      keyOrder[#keyOrder + 1] = key
+      needed[key] = { species = species, handle = handle, source = source }
+    end
+  end
+  for _, key in ipairs(keyOrder) do
+    if lease._spritePartQuads[key] == nil then
+      if allowance.remaining <= 0 then
+        return false, nil
+      end
+      local item = needed[key]
+      local source = item.source
+      local image = item.handle.image
+      local ok, quad =
+        pcall(graphics.newQuad, source.x, source.y, source.width, source.height, image:getWidth(), image:getHeight())
+      if not ok then
+        return false, "footprint " .. item.species .. " cannot realize its viewport: " .. tostring(quad)
+      end
+      lease._spritePartQuads[key] = quad
+      allowance.remaining = allowance.remaining - 1
+    end
+  end
+  local footprintParts = {}
+  for _, key in ipairs(keyOrder) do
+    local item = needed[key]
+    local quad = lease._spritePartQuads[key]
+    assert(quad ~= nil, "admitted viewports resolve their quad")
+    footprintParts[item.species] = { handle = item.handle, quad = quad }
+  end
+  local footprintKeys = {}
+  for _, key in ipairs(keyOrder) do
+    footprintKeys[key] = true
+  end
+  return true, nil, footprintParts, footprintKeys
 end
 
 ---@param owner PokedexPresentationResources
@@ -1829,6 +2113,38 @@ local function prepareBundle(owner, lease, demand)
   if type(chromeInventory) ~= "table" then
     return nil, "prepared bundles carry their chrome inventory"
   end
+  -- Live subjects resolve to their prepared roles before any chrome
+  -- enrolls: dynamic art joins the same single-budget closure under
+  -- the demanded selection only, and a missing binding fails the
+  -- candidate with its page, subject, and choice.
+  local dynamicRoles, footprintSpecies, dynamicFailure = resolveDynamicDemands(manifest, demand)
+  if dynamicFailure ~= nil then
+    return nil, dynamicFailure
+  end
+  assert(type(dynamicRoles) == "table" and type(footprintSpecies) == "table", "dynamic demands resolve")
+  local dynamicChrome, dynamicChromeFailure = dynamicChromeRoles(manifest, dynamicRoles)
+  if dynamicChrome == nil then
+    return nil, dynamicChromeFailure
+  end
+  local seenWanted = {}
+  for _, role in ipairs(wantedRoles) do
+    seenWanted[role] = true
+  end
+  for _, role in ipairs(dynamicChrome) do
+    if not seenWanted[role] then
+      seenWanted[role] = true
+      wantedRoles[#wantedRoles + 1] = role
+    end
+  end
+  if #footprintSpecies > 0 then
+    local footprints = assert(manifest.footprints, "footprint demands carry their atlas")
+    local first = assert(footprints[footprintSpecies[1]], "footprint demands resolve their atlas entry")
+    local footprintChrome = assert(first.chrome, "footprint atlas entries name their chrome")
+    if not seenWanted[footprintChrome] then
+      seenWanted[footprintChrome] = true
+      wantedRoles[#wantedRoles + 1] = footprintChrome
+    end
+  end
   local rolePath, wantedPaths = {}, {}
   for _, role in ipairs(wantedRoles) do
     local record = chromeInventory[role]
@@ -1960,12 +2276,20 @@ local function prepareBundle(owner, lease, demand)
   end
   -- Page sprite viewports realize after every other budgeted family, at most
   -- one new viewport per call, and gate readiness wherever host viewports
-  -- back the seam.
+  -- back the seam. Live subjects resolve through their page-local
+  -- bindings; footprints ride the same admission through the atlas.
+  demand.spriteRoles = dynamicRoles
   local spriteReady, spriteFailure, spriteParts, spriteKeys =
     prepareSpriteParts(owner, lease, manifest, demand, rolePath, allowance)
   if spriteFailure ~= nil then
     unwindNewBanks(lease, preBanks)
     return nil, spriteFailure
+  end
+  local footReady, footFailure, footprintParts, footprintKeys =
+    prepareFootprintParts(owner, lease, manifest, footprintSpecies, rolePath, allowance)
+  if footFailure ~= nil then
+    unwindNewBanks(lease, preBanks)
+    return nil, footFailure
   end
   -- Prepared icon quads warm during preparation so the draw pass only
   -- hits the provider cache and realizes nothing.
@@ -1978,6 +2302,7 @@ local function prepareBundle(owner, lease, demand)
     or not surfacesReady
     or not spindaReady
     or not spriteReady
+    or not footReady
   then
     return nil, nil
   end
@@ -2024,7 +2349,11 @@ local function prepareBundle(owner, lease, demand)
     chromeByRole[role] = adopted
   end
   assert(type(spriteParts) == "table", "published bundles carry their sprite parts")
-  assert(type(spriteKeys) == "table", "published bundles carry their sprite membership")
+  assert(type(footprintParts) == "table", "published bundles carry their footprint parts")
+  assert(type(spriteKeys) == "table" and type(footprintKeys) == "table", "prepared parts carry their membership")
+  for key in pairs(footprintKeys) do
+    spriteKeys[key] = true
+  end
   return {
     renderer = owner._renderer,
     manifest = manifest,
@@ -2036,6 +2365,7 @@ local function prepareBundle(owner, lease, demand)
     icons = icons,
     surfaces = lease._surfaces,
     spriteParts = spriteParts,
+    footprintParts = footprintParts,
   },
     nil,
     wantedPaths,

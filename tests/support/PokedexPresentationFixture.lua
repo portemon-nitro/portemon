@@ -119,8 +119,9 @@ end
 
 ---@param snapshot table detached registration facts from registrationSnapshot
 ---@param key string|nil resource generation key for the demand
+---@param monCatalog table? resolved mon catalog behind the card sprite intents
 ---@return table demand immutable registration demand
-function PokedexPresentationFixture.registrationDemand(snapshot, key)
+function PokedexPresentationFixture.registrationDemand(snapshot, key, monCatalog)
   -- The card text slots mirror the battle-owned demand: the dex number
   -- resolves in preparation from the demanded order, every other slot
   -- through its source bank by stable species identity.
@@ -128,6 +129,34 @@ function PokedexPresentationFixture.registrationDemand(snapshot, key)
   local profile = "base"
   if species == "GIRATINA" and type(snapshot.specimen.form) == "number" and snapshot.specimen.form ~= 0 then
     profile = "giratina_origin"
+  end
+  -- The card sprite closure stages with the demand under its frozen
+  -- specimen types, exactly like the battle-owned demand: callers that
+  -- draw the card pass the catalog so the bundle carries the icon and
+  -- footprint art the live view resolves.
+  local objects = {}
+  if type(monCatalog) == "table" then
+    local form = snapshot.specimen.form
+    local types = nil
+    local okForm, formRecord = pcall(monCatalog.form, monCatalog, species, form)
+    if okForm and type(formRecord) == "table" and type(formRecord.types) == "table" then
+      types = formRecord.types
+    else
+      types = assert(monCatalog:species(species).types, "the fixture species carries its types")
+    end
+    if type(types[1]) == "string" then
+      objects[#objects + 1] =
+        { subject = "type-1", choice = types[1], pane = "information", x = 168, y = 72, age = 0, visible = true }
+      if type(types[2]) == "string" and types[2] ~= types[1] then
+        objects[#objects + 1] =
+          { subject = "type-2", choice = types[2], pane = "information", x = 217, y = 72, age = 0, visible = true }
+      end
+    end
+    local originHidden = species == "GIRATINA" and form == 1
+    if not originHidden then
+      objects[#objects + 1] =
+        { subject = "footprint", choice = species, pane = "information", x = 120, y = 80, age = 0, visible = true }
+    end
   end
   return {
     key = key or "registration-generation",
@@ -157,6 +186,7 @@ function PokedexPresentationFixture.registrationDemand(snapshot, key)
       },
     },
     cry = { species = snapshot.specimen.species, form = 0 },
+    objects = objects,
   }
 end
 

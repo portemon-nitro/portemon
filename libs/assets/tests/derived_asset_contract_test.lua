@@ -185,7 +185,7 @@ function T.contract_pins_the_current_asset_identities()
     pokedex = {
       cacheFormat = "pokedex-cache-v1",
       catalogSchema = "g4-pokedex-catalog-v1",
-      schema = "g4-pokedex-assets-v1",
+      schema = "g4-pokedex-assets-v2",
     },
     summary = {
       cacheFormat = "g4-summary-cache-v2",

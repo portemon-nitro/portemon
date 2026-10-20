@@ -807,6 +807,7 @@ function PokedexSearch:editorView()
       criterion = kind,
       endpoint = self._editor.endpoint or "min",
       value = bounds[self._editor.endpoint or "min"],
+      bounds = { min = bounds.min, max = bounds.max },
       min = PokedexSearch.SLIDER_MIN,
       max = PokedexSearch.SLIDER_MAX,
       operationCount = self._sliderOpCount,

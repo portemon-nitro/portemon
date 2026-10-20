@@ -294,6 +294,44 @@ PokedexSources.spriteAnchors = {
   },
 }
 
+-- Producer-only per-type icon character files: the type icon character
+-- member per internal type id with its palette bank in member 35
+-- (sTypeIconCharFiles/sTypeIconPaletteNums in pokedex_rodata.s;
+-- PokedexApp_GetTypeIconCharFile/PokedexApp_GetTypeIconPalette in
+-- pokedex_text_util.c). Both list type icons and popup card icons draw
+-- geometry from cells 33/animations 34 while the character payload
+-- swaps per type. Member ids stop here and never reach the runtime.
+PokedexSources.typeIconArt = {
+  normal = { char = 36, paletteBank = 0 },
+  fighting = { char = 42, paletteBank = 2 },
+  flying = { char = 50, paletteBank = 0 },
+  poison = { char = 46, paletteBank = 3 },
+  ground = { char = 44, paletteBank = 1 },
+  rock = { char = 41, paletteBank = 1 },
+  bug = { char = 47, paletteBank = 3 },
+  ghost = { char = 43, paletteBank = 2 },
+  steel = { char = 45, paletteBank = 0 },
+  fire = { char = 37, paletteBank = 2 },
+  water = { char = 39, paletteBank = 2 },
+  grass = { char = 38, paletteBank = 1 },
+  electric = { char = 40, paletteBank = 1 },
+  psychic = { char = 51, paletteBank = 1 },
+  ice = { char = 49, paletteBank = 0 },
+  dragon = { char = 52, paletteBank = 2 },
+  dark = { char = 48, paletteBank = 3 },
+}
+
+-- Producer-only size-trainer character files: the gender-specific
+-- trainer payload with its palette member
+-- (PokedexApp_LoadSizeCheckResources in pokedex_size_check.c: male
+-- members 105/108, female members 109/110; geometry stays cells 106
+-- with animations 107 for both). Member ids stop here and never reach
+-- the runtime.
+PokedexSources.trainerArt = {
+  male = { char = 105, palette = 108 },
+  female = { char = 109, palette = 110 },
+}
+
 -- Producer-only OBJ character palettes: the tile grids backing cell art
 -- render through the palette member adjacent to each OBJ character run
 -- (bank 0; multi-bank OBJ records have no manifest spelling and keep
@@ -1251,6 +1289,295 @@ PokedexSources.pageWindows = {
     "registration.height",
     "registration.weight",
   },
+}
+
+-- Producer-only live-sprite subject map: the actually instantiated
+-- native OBJ subjects per page with their animation choice bindings.
+-- Each entry names the source NCER/NANR member pair, the 1-based
+-- sequence within the animation member (decomp SetSpriteAnim index +
+-- 1), and the authored engine pane (source MAIN drives the touch
+-- controls pane, source SUB the upper information pane, the battle
+-- MAIN popup card the information pane). Positions and visibility live
+-- in the runtime projection; only sequence selection stays here.
+--
+-- Sequence evidence (ctrl-cheeb-del/pokeheartgold, pinned revision):
+-- list cursor/arrows/scrollbar in pokedex_sprites.c
+-- (MoveSpriteToListCursor, UpdateListPageArrows with anims 7/5 and
+-- 10/8, GetListScrollbarSizeAnim with anims 11+i); caught mark in
+-- UpdateCaughtMarkSprite; body-type icon in UpdateBodyTypeSprite and
+-- SetBodyTypeSpriteLayout (sprite 28, anim = criterion); slider
+-- handles/digits/limits in UpdateSliderSprites, DrawHeightDigits,
+-- DrawWeightDigits and UpdateSliderLimitSprites (anims 67/68, 41/42,
+-- digit + 43, limit anims 58/53, 56/55); search feedback in
+-- pokedex_main_seq.c MAINSEQ_26 (sprite 27 anim 2, sprite 26 anim 1,
+-- retract anim 3); entry tab cursor in MoveEntryTabCursor (anim 3);
+-- area player/time/scrollbar/arrows in pokedex_area_sprites.c
+-- (SetPlayerMarkerAnim male 0/female 1/inside +2, UpdateTimeOfDayCursor,
+-- SetScrollbarSizeAnim base 14, UpdateScrollArrows) with marker shapes
+-- 0..11 from GetOverworldMarkerPos/GetDungeonMarkerPos; size pans and
+-- beam in UpdateScalePans (sprites 8/9, fixed sprites 6/7);
+-- forms/compare selector in UpdateFormCompareSelector with the frame
+-- sprites 9..13 and scrollbar/arrows in ShowFormListSprites;
+-- popup type icons and footprint in pokedex_entry_popup.c
+-- (type sprites at (168,72)/(217,72), footprint at (120,80)).
+local gridSubjects = {
+  cursor = {
+    active = { cells = 13, anims = 14, seq = 2, pane = "controls" },
+  },
+  ["arrow-up"] = {
+    enabled = { cells = 13, anims = 14, seq = 6, pane = "controls" },
+    disabled = { cells = 13, anims = 14, seq = 8, pane = "controls" },
+  },
+  ["arrow-down"] = {
+    enabled = { cells = 13, anims = 14, seq = 9, pane = "controls" },
+    disabled = { cells = 13, anims = 14, seq = 11, pane = "controls" },
+  },
+  scrollbar = {
+    size0 = { cells = 13, anims = 14, seq = 12, pane = "controls" },
+    size1 = { cells = 13, anims = 14, seq = 13, pane = "controls" },
+    size2 = { cells = 13, anims = 14, seq = 14, pane = "controls" },
+    size3 = { cells = 13, anims = 14, seq = 15, pane = "controls" },
+    size4 = { cells = 13, anims = 14, seq = 16, pane = "controls" },
+    size5 = { cells = 13, anims = 14, seq = 17, pane = "controls" },
+    size6 = { cells = 13, anims = 14, seq = 18, pane = "controls" },
+    size7 = { cells = 13, anims = 14, seq = 19, pane = "controls" },
+    size8 = { cells = 13, anims = 14, seq = 20, pane = "controls" },
+    size9 = { cells = 13, anims = 14, seq = 21, pane = "controls" },
+    size10 = { cells = 13, anims = 14, seq = 22, pane = "controls" },
+    size11 = { cells = 13, anims = 14, seq = 23, pane = "controls" },
+  },
+  ["caught-mark"] = {
+    shown = { cells = 30, anims = 31, seq = 1, pane = "information" },
+  },
+}
+
+-- Shared digit choices: height and weight editors spell their handle
+-- values with digit sprites (DrawHeightDigits, DrawWeightDigits: digit
+-- sprite anim = digit + 43, i.e. 1-based sequence 44 + digit).
+local function digitChoices()
+  local choices = {}
+  for digit = 0, 9 do
+    choices["d" .. digit] = { cells = 13, anims = 14, seq = 44 + digit, pane = "controls" }
+  end
+  return choices
+end
+
+-- Shared limit-arrow choices: sprite 1/3 carry the near arrow, sprites
+-- 2/4 the far arrow (UpdateSliderLimitSprites: value 0 selects anims
+-- 58/53, value 152 selects anims 56/55, anything else 56/53).
+local nearLimitChoices = {
+  ["at-min"] = { cells = 13, anims = 14, seq = 59, pane = "controls" },
+  mid = { cells = 13, anims = 14, seq = 57, pane = "controls" },
+  ["at-max"] = { cells = 13, anims = 14, seq = 57, pane = "controls" },
+}
+local farLimitChoices = {
+  ["at-min"] = { cells = 13, anims = 14, seq = 54, pane = "controls" },
+  mid = { cells = 13, anims = 14, seq = 54, pane = "controls" },
+  ["at-max"] = { cells = 13, anims = 14, seq = 56, pane = "controls" },
+}
+
+-- Shared slider subjects for the height and weight editors: the cursor
+-- follows the max handle, handle art differs per editor
+-- (SetSpriteAnim 67/68 on height, 41/42 on weight), digits ride the
+-- handle columns and limits reflect the slider ends.
+local function sliderSubjects(digitCount)
+  local subjects = {
+    ["slider-cursor"] = {
+      active = { cells = 13, anims = 14, seq = 40, pane = "controls" },
+    },
+    ["slider-max"] = {
+      height = { cells = 13, anims = 14, seq = 68, pane = "controls" },
+      weight = { cells = 13, anims = 14, seq = 42, pane = "controls" },
+    },
+    ["slider-min"] = {
+      height = { cells = 13, anims = 14, seq = 69, pane = "controls" },
+      weight = { cells = 13, anims = 14, seq = 43, pane = "controls" },
+    },
+    ["limit-max-left"] = nearLimitChoices,
+    ["limit-max-right"] = farLimitChoices,
+    ["limit-min-left"] = nearLimitChoices,
+    ["limit-min-right"] = farLimitChoices,
+  }
+  for _, handle in ipairs({ "digit-max-", "digit-min-" }) do
+    for position = 1, digitCount do
+      subjects[handle .. position] = digitChoices()
+    end
+  end
+  return subjects
+end
+
+-- Shared list chrome: the result grid reuses the list cursor, arrows
+-- and thumb bindings (MAINSEQ_57 drives cursor sprite 0 with anim 1
+-- and scrollbar/arrows sprites 18..20 like the list sprites 1..3).
+-- Shared body-type icon: sprite 28 shows the current shape class
+-- wherever the criterion is set (UpdateBodyTypeSprite on the menu,
+-- SetBodyTypeSpriteLayout on the shape page). The choice sprites share
+-- the menu art family, whose fourteen sequences match the fourteen
+-- shape classes one for one.
+local function bodyIconSubjects()
+  local choices = {}
+  for index, name in ipairs(PokedexSources.shapeOrder) do
+    choices[name] = { cells = 73, anims = 74, seq = index, pane = "controls" }
+  end
+  return { ["body-icon"] = choices }
+end
+
+local function tabCursorSubjects()
+  return {
+    ["tab-cursor"] = {
+      active = { cells = 13, anims = 14, seq = 4, pane = "controls" },
+    },
+  }
+end
+
+local function smallScrollbarSubjects()
+  local choices = {}
+  for bucket = 0, 8 do
+    choices["size" .. bucket] = { cells = 13, anims = 14, seq = 15 + bucket, pane = "controls" }
+  end
+  return { scrollbar = choices }
+end
+
+-- Shared type icon choices: one semantic choice per source type class
+-- resolved to the page-local synthesized type role by the compiler.
+local function typeIconSubjects()
+  local first, second = {}, {}
+  for _, name in ipairs(PokedexSources.typeOrder) do
+    first[name] = { typeIcon = name, pane = "information" }
+    second[name] = { typeIcon = name, pane = "information" }
+  end
+  return { ["type-1"] = first, ["type-2"] = second }
+end
+
+-- Area marker shape choices: the twelve overworld/dungeon silhouettes
+-- (UpdateAreaMarkers selects SetSpriteAnim shape, 0..11).
+local function areaMarkerSubjects()
+  local choices = {}
+  for shape = 0, 11 do
+    choices["shape" .. shape] = { cells = 120, anims = 121, seq = shape + 1, pane = "information" }
+  end
+  return { marker = choices }
+end
+
+local areaSubjects = {
+  ["tab-cursor"] = {
+    active = { cells = 13, anims = 14, seq = 4, pane = "controls" },
+  },
+  player = {
+    male = { cells = 116, anims = 117, seq = 1, pane = "information" },
+    female = { cells = 116, anims = 117, seq = 2, pane = "information" },
+    ["male-here"] = { cells = 116, anims = 117, seq = 3, pane = "information" },
+    ["female-here"] = { cells = 116, anims = 117, seq = 4, pane = "information" },
+  },
+  ["time-cursor"] = {
+    active = { cells = 13, anims = 14, seq = 28, pane = "information" },
+  },
+  ["arrow-up"] = gridSubjects["arrow-up"],
+  ["arrow-down"] = gridSubjects["arrow-down"],
+  scrollbar = smallScrollbarSubjects().scrollbar,
+  marker = areaMarkerSubjects().marker,
+}
+
+local sizeSubjects = {
+  ["tab-cursor"] = {
+    active = { cells = 13, anims = 14, seq = 4, pane = "controls" },
+  },
+  ["pan-left"] = {
+    active = { cells = 13, anims = 14, seq = 33, pane = "controls" },
+  },
+  ["pan-right"] = {
+    active = { cells = 13, anims = 14, seq = 33, pane = "controls" },
+  },
+  ["beam-top"] = {
+    active = { cells = 13, anims = 14, seq = 34, pane = "controls" },
+  },
+  ["beam-bottom"] = {
+    active = { cells = 13, anims = 14, seq = 32, pane = "controls" },
+  },
+  trainer = {
+    male = { trainer = "male", pane = "information" },
+    female = { trainer = "female", pane = "information" },
+  },
+}
+
+local formsSubjects = {
+  ["tab-cursor"] = {
+    active = { cells = 13, anims = 14, seq = 4, pane = "controls" },
+  },
+  ["arrow-up"] = gridSubjects["arrow-up"],
+  ["arrow-down"] = gridSubjects["arrow-down"],
+  scrollbar = smallScrollbarSubjects().scrollbar,
+  ["compare-frame"] = {
+    tl = { cells = 13, anims = 14, seq = 65, pane = "controls" },
+    tr = { cells = 13, anims = 14, seq = 65, pane = "controls" },
+    bl = { cells = 13, anims = 14, seq = 66, pane = "controls" },
+    br = { cells = 13, anims = 14, seq = 66, pane = "controls" },
+  },
+  ["compare-side"] = {
+    left = { cells = 13, anims = 14, seq = 67, pane = "controls" },
+    right = { cells = 13, anims = 14, seq = 67, pane = "controls" },
+  },
+}
+
+local compareSubjects = {
+  ["tab-cursor"] = tabCursorSubjects()["tab-cursor"],
+  ["compare-frame"] = formsSubjects["compare-frame"],
+  ["compare-side"] = formsSubjects["compare-side"],
+}
+
+local feedbackSubjects = {
+  feedback = {
+    label = { cells = 24, anims = 25, seq = 3, pane = "information" },
+    rise = { cells = 24, anims = 25, seq = 2, pane = "information" },
+    retract = { cells = 24, anims = 25, seq = 4, pane = "information" },
+  },
+}
+
+local function searchSubjects(extra)
+  local subjects = {
+    feedback = feedbackSubjects.feedback,
+  }
+  for subject, choices in pairs(extra) do
+    subjects[subject] = choices
+  end
+  return subjects
+end
+
+local heightSubjects = searchSubjects(sliderSubjects(4))
+local weightSubjects = searchSubjects(sliderSubjects(5))
+local shapeSubjects = searchSubjects(bodyIconSubjects())
+local criteriaSubjects = searchSubjects(bodyIconSubjects())
+
+local gridTypes = typeIconSubjects()
+gridSubjects["type-1"] = gridTypes["type-1"]
+gridSubjects["type-2"] = gridTypes["type-2"]
+local resultTypes = typeIconSubjects()
+local registrationTypes = typeIconSubjects()
+
+PokedexSources.nativeSpriteSubjects = {
+  grid = gridSubjects,
+  results = {
+    cursor = gridSubjects.cursor,
+    ["arrow-up"] = gridSubjects["arrow-up"],
+    ["arrow-down"] = gridSubjects["arrow-down"],
+    scrollbar = gridSubjects.scrollbar,
+    ["type-1"] = resultTypes["type-1"],
+    ["type-2"] = resultTypes["type-2"],
+  },
+  ["search.criteria"] = criteriaSubjects,
+  ["search.order"] = searchSubjects({}),
+  ["search.name"] = searchSubjects({}),
+  ["search.type"] = searchSubjects({}),
+  ["search.height"] = heightSubjects,
+  ["search.weight"] = weightSubjects,
+  ["search.area"] = searchSubjects({}),
+  ["search.shape"] = shapeSubjects,
+  ["entry.area"] = areaSubjects,
+  ["entry.size"] = sizeSubjects,
+  ["entry.forms"] = formsSubjects,
+  ["entry.compare"] = compareSubjects,
+  ["entry.return"] = tabCursorSubjects(),
+  registration = registrationTypes,
 }
 
 return PokedexSources

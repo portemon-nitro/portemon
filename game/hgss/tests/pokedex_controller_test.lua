@@ -787,7 +787,6 @@ function T.area_pan_returns_to_johto_and_pins_without_national()
   johtoOnly:dispose()
 end
 
-
 function T.active_slider_drag_settles_while_new_generation_is_pending()
   local PokedexController = requirePresent("slider transaction readiness exception")
   local monCatalog, catalog = catalogs()
@@ -929,11 +928,7 @@ function T.search_feedback_publishes_the_result_count_once_resolved()
   end
   Assert.isNil(feedbackSlot(controller:view()), "the label phase publishes no count it has not run")
   idle(controller, 30)
-  Assert.equal(
-    controller:view().search.feedback.phase,
-    "rise",
-    "the completed run rises with its result list"
-  )
+  Assert.equal(controller:view().search.feedback.phase, "rise", "the completed run rises with its result list")
   local slot = feedbackSlot(controller:view())
   Assert.notNil(slot, "the rise phase publishes its result count")
   Assert.equal(slot.kind, "ui", "the count rides the native UI template")
@@ -1358,6 +1353,338 @@ function T.empty_search_publishes_no_feedback_count()
       break
     end
   end
+  controller:dispose()
+end
+
+---@param objects table[] detached sprite intents under test
+---@param subject string intent subject under test
+---@return table? the first intent naming the subject
+local function findObject(objects, subject)
+  Assert.isTrue(type(objects) == "table", "the projection carries its sprite intents")
+  for _, intent in ipairs(objects) do
+    if type(intent) == "table" and intent.subject == subject then
+      return intent
+    end
+  end
+  return nil
+end
+
+---@param intent table sprite intent under test
+local function checkIntentShape(intent)
+  Assert.isTrue(type(intent.subject) == "string" and intent.subject ~= "", "intents name their subject")
+  Assert.isTrue(type(intent.choice) == "string" and intent.choice ~= "", "intents name their choice")
+  Assert.isTrue(intent.pane == "controls" or intent.pane == "information", "intents name their pane")
+  Assert.isTrue(type(intent.x) == "number" and intent.x % 1 == 0, "intents carry integer x")
+  Assert.isTrue(type(intent.y) == "number" and intent.y % 1 == 0, "intents carry integer y")
+  Assert.isTrue(type(intent.age) == "number" and intent.age % 1 == 0 and intent.age >= 0, "intents carry their age")
+end
+
+-- The grid cursor tracks the selected slot while the arrows and the
+-- thumb follow the page: the focus sits at the native slot origin, the
+-- up arrow dims on the first page, the thumb bucket and y follow the
+-- sparse length, and repeated projections without accepted steps move
+-- nothing while the demand key stays quiet across pure animation ticks.
+function T.grid_cursor_arrows_and_scrollbar_follow_selection_and_pages()
+  local PokedexController = requirePresent("grid sprite intents")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 })
+  observe(owner, monCatalog, { species = "EEVEE", personality = 31 }, "caught")
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  local key = controller:view().key
+  local view = controller:view()
+  Assert.equal(view.selection.species, "CHIKORITA", "the cursor starts on the first slot")
+  Assert.isNil(findObject(view.objects, "type-1"), "no art projects before the cursor moves")
+  local cursor = assert(findObject(view.objects, "cursor"), "the grid projects its focus")
+  checkIntentShape(cursor)
+  Assert.equal(cursor.pane, "controls", "the focus paints on the touch pane")
+  Assert.equal(cursor.x, 48 + 40 * (view.grid.cursor % 5), "the focus tracks its column")
+  Assert.equal(cursor.y, 24 + 40 * math.floor(view.grid.cursor / 5), "the focus tracks its row")
+  local up = assert(findObject(view.objects, "arrow-up"), "the grid projects its up arrow")
+  Assert.equal(up.choice, "disabled", "the up arrow dims on the first page")
+  Assert.equal(up.x, 242, "the up arrow keeps its native column")
+  Assert.equal(up.y, 12, "the up arrow keeps its native row")
+  local down = assert(findObject(view.objects, "arrow-down"), "the grid projects its down arrow")
+  Assert.equal(down.choice, "disabled", "a single page dims the down arrow too")
+  local thumb = assert(findObject(view.objects, "scrollbar"), "the grid projects its thumb")
+  Assert.equal(thumb.x, 242, "the thumb keeps its native column")
+  Assert.equal(thumb.y, view.grid.scrollbar.position, "the thumb y follows the scrolled page")
+  local firstAge = cursor.age
+  view = controller:view()
+  local again = assert(findObject(view.objects, "cursor"), "repeated projections keep the focus")
+  Assert.equal(again.age, firstAge, "no accepted step advances no intent age")
+  Assert.equal(again.x, cursor.x, "no accepted step moves no intent")
+  Assert.equal(controller:view().key, key, "projections never bump the demand key")
+  idle(controller, 3)
+  Assert.equal(controller:view().key, key, "pure animation ticks keep the demand key quiet")
+  view = controller:view()
+  local ticked = assert(findObject(view.objects, "cursor"), "animation ticks keep the focus")
+  Assert.isTrue(ticked.age > firstAge, "accepted ticks age the installed choice")
+  press(controller, { { type = "navigate", direction = "right" } })
+  view = controller:view()
+  local moved = assert(findObject(view.objects, "cursor"), "navigation keeps a focus")
+  Assert.equal(moved.age, 0, "moving the cursor restarts its age")
+  Assert.equal(moved.x, 48 + 40 * (view.grid.cursor % 5), "the moved focus tracks its column")
+  controller:dispose()
+end
+
+-- The caught selection shows its type art and footprint while a
+-- seen-only selection hides every protected sprite: the type choices
+-- name the catalog types, the footprint names the species, and the
+-- caught mark follows the caught flag.
+function T.caught_selection_shows_type_and_footprint_art()
+  local PokedexController = requirePresent("selection sprite intents")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
+  observe(owner, monCatalog, { species = "EEVEE", personality = 31 }, "caught")
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 })
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  for _ = 1, 8 do
+    if controller:view().selection.species == "EEVEE" then
+      break
+    end
+    press(controller, { { type = "navigate", direction = "right" } })
+  end
+  local view = controller:view()
+  Assert.equal(view.selection.species, "EEVEE", "the cursor reaches the caught selection")
+  local first = assert(findObject(view.objects, "type-1"), "the caught selection projects its first type")
+  checkIntentShape(first)
+  Assert.equal(first.choice, "normal", "the first type names the catalog type")
+  Assert.equal(first.x, 168, "the first type keeps its native column")
+  Assert.equal(first.y, 72, "the first type keeps its native row")
+  Assert.isNil(findObject(view.objects, "type-2"), "a single-type selection projects no second type")
+  local foot = assert(findObject(view.objects, "footprint"), "the caught selection projects its footprint")
+  Assert.equal(foot.choice, "EEVEE", "the footprint names the selected species")
+  Assert.equal(foot.x, 120, "the footprint keeps its native column")
+  Assert.equal(foot.y, 80, "the footprint keeps its native row")
+  local mark = assert(findObject(view.objects, "caught-mark"), "the caught selection projects its mark")
+  Assert.equal(mark.x, 112, "the caught mark keeps its native column")
+  Assert.equal(mark.y, 32, "the caught mark keeps its native row")
+  for _ = 1, 40 do
+    if controller:view().selection.species == "CHIKORITA" then
+      break
+    end
+    press(controller, { { type = "navigate", direction = "right" } })
+  end
+  view = controller:view()
+  Assert.equal(view.selection.species, "CHIKORITA", "the cursor reaches the seen-only selection")
+  Assert.isNil(findObject(view.objects, "type-1"), "a seen-only selection hides its types")
+  Assert.isNil(findObject(view.objects, "footprint"), "a seen-only selection hides its footprint")
+  Assert.isNil(findObject(view.objects, "caught-mark"), "a seen-only selection hides its mark")
+  controller:dispose()
+end
+
+-- The entry tab cursor names the active tab: area, size, forms and the
+-- back panel each carry the cursor at the native tab origin while the
+-- demand key stays quiet on pure time steps.
+function T.entry_tab_cursor_tracks_the_active_tab()
+  local PokedexController = requirePresent("entry sprite intents")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
+  observe(owner, monCatalog, { species = "EEVEE", personality = 31 }, "caught")
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  for _ = 1, 40 do
+    if controller:view().selection.species == "EEVEE" then
+      break
+    end
+    press(controller, { { type = "navigate", direction = "right" } })
+  end
+  press(controller, { { type = "confirm" } })
+  idle(controller, 40)
+  local pages = { area = 0, size = 1, forms = 2, ["return"] = 3 }
+  for _, page in ipairs({ "area", "size", "forms", "return" }) do
+    local view = controller:view()
+    Assert.equal(view.page, page, "the entry sits on " .. page)
+    local tab = assert(findObject(view.objects, "tab-cursor"), page .. " projects its tab cursor")
+    checkIntentShape(tab)
+    Assert.equal(tab.pane, "controls", "the tab cursor paints on the touch pane")
+    Assert.equal(tab.x, 32 + 64 * pages[page], "the " .. page .. " tab keeps its native column")
+    Assert.equal(tab.y, 176, "the tab cursor keeps its native row")
+    press(controller, { { type = "navigate", direction = "right" } })
+    idle(controller, 2)
+  end
+  controller:dispose()
+end
+
+-- The area page projects its player, time cursor and habitat markers:
+-- the player follows the captured cell with the regional shift, the
+-- time cursor rides its daypart row, and every visible row marker
+-- arrives as a separate instance at the native map position.
+function T.area_subjects_project_player_time_and_markers()
+  local PokedexController = requirePresent("area sprite intents")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
+  observe(owner, monCatalog, { species = "EEVEE", personality = 7 }, "caught")
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  for _ = 1, 8 do
+    if controller:view().selection.species == "EEVEE" then
+      break
+    end
+    press(controller, { { type = "navigate", direction = "right" } })
+  end
+  press(controller, { { type = "confirm" } })
+  idle(controller, 40)
+  local view = controller:view()
+  Assert.equal(view.page, "area", "confirming a caught entry opens its area")
+  local player = assert(findObject(view.objects, "player"), "the area projects its player marker")
+  checkIntentShape(player)
+  Assert.equal(player.pane, "information", "the player paints on the upper pane")
+  Assert.equal(player.x, view.area.player.x * 8 + 68, "the player tracks the captured column")
+  Assert.equal(player.y, view.area.player.y * 8 + 44, "the player tracks the captured row")
+  local time = assert(findObject(view.objects, "time-cursor"), "the area projects its time cursor")
+  Assert.equal(time.x, 32, "the time cursor keeps its native column")
+  Assert.equal(time.y, 76 + 32 * view.area.time, "the time cursor rides its daypart row")
+  local markers = {}
+  for _, intent in ipairs(assert(view.objects, "the area carries its intents")) do
+    if intent.subject == "marker" then
+      checkIntentShape(intent)
+      markers[#markers + 1] = intent
+    end
+  end
+  Assert.isTrue(#markers >= 1, "the area projects its visible habitat markers")
+  local instances = {}
+  for _, marker in ipairs(markers) do
+    Assert.isTrue(type(marker.instance) == "number", "repeated markers carry their instance")
+    Assert.isNil(instances[marker.instance], "marker instances stay distinct")
+    instances[marker.instance] = true
+  end
+  local scroll = assert(findObject(view.objects, "scrollbar"), "the area projects its scrollbar")
+  Assert.equal(scroll.x, 242, "the area thumb keeps its native column")
+  controller:dispose()
+end
+
+-- The size page projects its pans, beam and trainer: both pans ride
+-- the published beam positions, the beam anchors stay fixed, and the
+-- trainer names the captured gender while motion advances the figures.
+function T.size_subjects_follow_figures_and_pans()
+  local PokedexController = requirePresent("size sprite intents")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
+  observe(owner, monCatalog, { species = "EEVEE", personality = 31 }, "caught")
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  for _ = 1, 40 do
+    if controller:view().selection.species == "EEVEE" then
+      break
+    end
+    press(controller, { { type = "navigate", direction = "right" } })
+  end
+  press(controller, { { type = "confirm" } })
+  idle(controller, 40)
+  press(controller, { { type = "navigate", direction = "right" } })
+  idle(controller, 40)
+  local view = controller:view()
+  Assert.equal(view.page, "size", "the caught entry reaches its size")
+  local left = assert(findObject(view.objects, "pan-left"), "the size projects its left pan")
+  checkIntentShape(left)
+  Assert.equal(left.pane, "controls", "the pans paint on the touch pane")
+  Assert.equal(left.x, view.size.pans[1].x, "the left pan tracks the published beam")
+  local right = assert(findObject(view.objects, "pan-right"), "the size projects its right pan")
+  Assert.equal(right.x, view.size.pans[2].x, "the right pan tracks the published beam")
+  local trainer = assert(findObject(view.objects, "trainer"), "the size projects its trainer")
+  Assert.equal(trainer.choice, "male", "the trainer names the captured gender")
+  local figures = assert(view.size.figures, "the size projects its figures")
+  local y0 = assert(figures[1], "the size projects its mon figure").y
+  idle(controller, 25)
+  local dropped = controller:view()
+  local y1 = assert(assert(dropped.size.figures, "the figures persist")[1], "the mon figure persists").y
+  Assert.isTrue(y1 > y0, "accepted ticks drop the published figures")
+  controller:dispose()
+end
+
+-- The forms page projects its scrollbar and arrows while the compare
+-- screen swaps in its frame and side selector: the selector follows
+-- the published active side and the frame appears only in compare.
+function T.forms_subjects_follow_row_and_comparison()
+  local PokedexController = requirePresent("forms sprite intents")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
+  observe(owner, monCatalog, { species = "UNOWN", personality = 0 }, "caught")
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  for _ = 1, 60 do
+    if controller:view().selection.species == "UNOWN" then
+      break
+    end
+    press(controller, { { type = "navigate", direction = "right" } })
+  end
+  press(controller, { { type = "confirm" } })
+  idle(controller, 40)
+  press(controller, { { type = "navigate", direction = "right" } })
+  idle(controller, 5)
+  press(controller, { { type = "navigate", direction = "right" } })
+  idle(controller, 40)
+  local view = controller:view()
+  Assert.equal(view.page, "forms", "the entry reaches its forms")
+  local scroll = assert(findObject(view.objects, "scrollbar"), "the forms project their scrollbar")
+  Assert.equal(scroll.y, view.forms.scrollbar.position, "the thumb y follows the row")
+  Assert.isNil(findObject(view.objects, "compare-side"), "the list hides the compare selector")
+  controller:dispose()
+end
+
+-- The height editor projects both slider handles with their digits and
+-- limits: the handles ride the published bounds, the digits spell the
+-- converted values, and the limit arrows reflect the slider ends.
+function T.search_slider_subjects_follow_both_handles_and_digits()
+  local PokedexController = requirePresent("slider sprite intents")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true })
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 })
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  press(controller, { { type = "y" } })
+  press(controller, { { type = "activate", action = "criterion", value = "height" } })
+  local view = controller:view()
+  Assert.notNil(view.search.editor, "the height editor opens")
+  local maxHandle = assert(findObject(view.objects, "slider-max"), "the editor projects its max handle")
+  checkIntentShape(maxHandle)
+  Assert.equal(maxHandle.choice, "height", "the max handle names its editor")
+  Assert.equal(maxHandle.x, 52 + view.search.criteria.height.max, "the max handle rides its published bound")
+  local minHandle = assert(findObject(view.objects, "slider-min"), "the editor projects its min handle")
+  Assert.equal(minHandle.x, 52 + view.search.criteria.height.min, "the min handle rides its bound")
+  local digits = {}
+  for _, intent in ipairs(assert(view.objects, "the editor carries its intents")) do
+    if intent.subject == "digit-max-1" then
+      digits[#digits + 1] = intent
+    end
+  end
+  Assert.isTrue(#digits >= 1, "the max handle spells its value in digits")
+  local cursor = assert(findObject(view.objects, "slider-cursor"), "the editor projects its cursor")
+  Assert.equal(cursor.x, maxHandle.x, "the cursor follows the max handle")
+  controller:dispose()
+end
+
+-- The search feedback projects its phased subjects: the label art
+-- shows while the gate holds, the rise follows, and the intents carry
+-- their accepted phase age instead of wall-clock time.
+function T.search_feedback_projects_phased_subjects()
+  local PokedexController = requirePresent("feedback sprite intents")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true })
+  for _, key in ipairs({ "CHIKORITA", "TOTODILE" }) do
+    observe(owner, monCatalog, { species = key, personality = 0 })
+  end
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  press(controller, { { type = "y" } })
+  press(controller, { { type = "start" } })
+  local view = controller:view()
+  Assert.notNil(view.search.feedback, "search start enters the feedback sequence")
+  local label = assert(findObject(view.objects, "feedback"), "the feedback projects its art")
+  checkIntentShape(label)
+  Assert.equal(label.choice, "label", "the gate phase shows the label art")
+  Assert.equal(label.x, 128, "the feedback keeps its native column")
+  Assert.equal(label.y, 80, "the feedback keeps its native row")
+  Assert.equal(label.pane, "information", "the feedback paints on the upper pane")
+  idle(controller, 30)
+  view = controller:view()
+  local rise = assert(findObject(view.objects, "feedback"), "the rise phase keeps its art")
+  Assert.equal(rise.choice, "rise", "the rise phase shows the rise art")
+  Assert.isTrue(rise.age < label.age + 40, "the phase change restarts the intent age")
   controller:dispose()
 end
 

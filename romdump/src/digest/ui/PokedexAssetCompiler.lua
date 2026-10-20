@@ -657,6 +657,9 @@ local function _compile(romFs, versionId, catalog, sink)
   -- empty list.
   local isJapanese = catalog.nativeLanguage == "japanese"
   local pages = {}
+  -- Page-local (cells, anims, sequence) to sprite role index behind
+  -- the semantic subject bindings below.
+  local roleByTriple = {}
   for _, role in ipairs(REQUIRED_PAGES) do
     local layerEntries = PokedexSources.pageLayers[role]
     if layerEntries == nil then
@@ -704,6 +707,7 @@ local function _compile(romFs, versionId, catalog, sink)
     end
     local pageCells = {}
     local pageSprites = {}
+    local tripleRoles = {}
     for _, pair in ipairs(objPairs) do
       local pairCells = cellRolesByMember[pair.cells]
       if pairCells == nil then
@@ -734,8 +738,10 @@ local function _compile(romFs, versionId, catalog, sink)
           paletteGroup = "sprite",
         }
         pageSprites[#pageSprites + 1] = spriteRole
+        tripleRoles[pair.cells .. ":" .. pair.anims .. ":" .. seqIndex] = spriteRole
       end
     end
+    roleByTriple[role] = tripleRoles
     for _, key in ipairs(windowKeys) do
       if windows[key] == nil then
         error("pokedex window map references an unknown window: " .. role, 0)
@@ -754,8 +760,290 @@ local function _compile(romFs, versionId, catalog, sink)
     }
   end
 
-  -- Footprints: the source 16x16 assembly of unpacked pixels, two 64-byte
-  -- halves from offsets 0x80 and 0x00, through palette bank 0.
+  -- Semantic type and trainer art: per-class tile grids staged under
+  -- their source palettes with copied cell geometry, so live type and
+  -- trainer subjects resolve through ordinary sprite roles instead of
+  -- runtime member arithmetic. The synthesized roles stay out of the
+  -- page sprite lists; the subject bindings below are their only
+  -- authority, keeping the static page closure demand-driven.
+  local synthesizedRoles = {}
+  ---@param name string semantic art name behind the role
+  ---@param charMember integer source character member behind the tiles
+  ---@param paletteColors table<integer, { r: integer, g: integer, b: integer }> sixteen staged palette entries
+  ---@param geometryMember integer source cell member behind the copied geometry
+  ---@param sequenceRole string source animation role behind the copied timing
+  ---@return string tilesRole staged chrome role behind the art
+  ---@return table<string, string> copiedCellRoles new cell role per source cell index
+  ---@return string copiedAnimRole new animation role carrying the copied timing
+  local function synthesizeArt(name, charMember, paletteColors, geometryMember, sequenceRole)
+    local charRecord = chars[charMember]
+    if charRecord == nil then
+      error("pokedex subject art references an unknown character member: " .. charMember, 0)
+    end
+    if charRecord.depth ~= 3 then
+      error("pokedex subject art member is not 4bpp: " .. charMember, 0)
+    end
+    if #paletteColors < 16 then
+      error("pokedex subject art needs a sixteen-color bank: " .. name, 0)
+    end
+    local tilesRole = name .. "-tiles"
+    local pixels, width, height = renderTileGrid(charRecord.tiles, paletteColors)
+    stageImage(tilesRole, pixels, width, height)
+    local sourceCells = cellRolesByMember[geometryMember]
+    if sourceCells == nil then
+      error("pokedex subject art references an unknown cell member: " .. geometryMember, 0)
+    end
+    local sourceAnimation = animations[sequenceRole]
+    if sourceAnimation == nil then
+      error("pokedex subject art references an unknown animation: " .. sequenceRole, 0)
+    end
+    local copiedCells = {}
+    for index, sourceCellRole in ipairs(sourceCells) do
+      local sourceCell = cells[sourceCellRole]
+      if sourceCell == nil then
+        error("pokedex subject art references an unknown cell: " .. sourceCellRole, 0)
+      end
+      local copiedRole = name .. "-cell-" .. index
+      local parts = {}
+      for _, part in ipairs(assert(sourceCell.parts, "subject cells carry their parts")) do
+        parts[#parts + 1] = {
+          chrome = tilesRole,
+          source = part.source,
+          x = part.x,
+          y = part.y,
+          flipX = part.flipX,
+          flipY = part.flipY,
+          priority = part.priority,
+          paletteGroup = part.paletteGroup,
+        }
+      end
+      cells[copiedRole] = { bounds = sourceCell.bounds, parts = parts }
+      copiedCells[#copiedCells + 1] = copiedRole
+    end
+    local copiedBySource = {}
+    for index, sourceCellRole in ipairs(sourceCells) do
+      copiedBySource[sourceCellRole] = copiedCells[index]
+    end
+    local copiedFrames = {}
+    for _, frame in ipairs(assert(sourceAnimation.frames, "subject animations carry their frames")) do
+      copiedFrames[#copiedFrames + 1] = {
+        cell = assert(copiedBySource[frame.cell], "subject frames resolve their copied cell"),
+        duration = frame.duration,
+        offsetX = frame.offsetX,
+        offsetY = frame.offsetY,
+        rotation = frame.rotation,
+        scaleX = frame.scaleX,
+        scaleY = frame.scaleY,
+      }
+    end
+    local copiedAnimRole = name .. "-anim"
+    animations[copiedAnimRole] = {
+      frames = copiedFrames,
+      loopFrom = sourceAnimation.loopFrom,
+      direction = sourceAnimation.direction,
+      once = sourceAnimation.once,
+    }
+    return tilesRole, copiedCells, copiedAnimRole
+  end
+
+  -- One sixteen-color bank from a decoded palette member; type icons
+  -- select their source bank while all other staged subject art keeps
+  -- the pre-existing bank-0 spelling.
+  ---@param member integer source palette member behind the bank
+  ---@param bank integer zero-based sixteen-color bank behind the art
+  ---@param label string art name behind failure attribution
+  ---@return table<integer, { r: integer, g: integer, b: integer }> sixteen staged palette entries
+  local function paletteBank(member, bank, label)
+    local record = palettes[member]
+    if record == nil or #record < (bank + 1) * 16 then
+      error("pokedex subject art needs palette bank " .. bank .. " of member " .. member .. ": " .. label, 0)
+    end
+    local bankEntries = {}
+    for index = 1, 16 do
+      bankEntries[#bankEntries + 1] = record[bank * 16 + index]
+    end
+    return bankEntries
+  end
+
+  local typeGeometryAnims = animRolesByMember[34]
+  if typeGeometryAnims == nil or #typeGeometryAnims ~= 1 then
+    error("pokedex type icon geometry needs its single animation sequence", 0)
+  end
+  local trainerGeometryAnims = animRolesByMember[107]
+  if trainerGeometryAnims == nil or #trainerGeometryAnims ~= 1 then
+    error("pokedex trainer geometry needs its single animation sequence", 0)
+  end
+  local typePages = { grid = true, results = true, registration = true }
+  for _, typeName in ipairs(PokedexSources.typeOrder) do
+    local art = PokedexSources.typeIconArt[typeName]
+    if art == nil then
+      error("pokedex type icon art misses the " .. typeName .. " class", 0)
+    end
+    local bank = paletteBank(35, art.paletteBank, typeName)
+    local _, _, animRole = synthesizeArt("type-" .. typeName, art.char, bank, 33, typeGeometryAnims[1])
+    for pageRole in pairs(typePages) do
+      local spriteRole = "sprite-" .. pageSlug(pageRole) .. "-type-" .. typeName
+      sprites[spriteRole] = {
+        pane = "information",
+        animation = animRole,
+        x = 0,
+        y = 0,
+        priority = 0,
+        drawPriority = 0,
+        paletteGroup = "sprite",
+      }
+      synthesizedRoles[pageRole] = synthesizedRoles[pageRole] or {}
+      for _, subject in ipairs({ "type-1", "type-2" }) do
+        synthesizedRoles[pageRole][subject] = synthesizedRoles[pageRole][subject] or {}
+        synthesizedRoles[pageRole][subject][typeName] = spriteRole
+      end
+    end
+  end
+  for gender, art in pairs(PokedexSources.trainerArt) do
+    if gender ~= "male" and gender ~= "female" then
+      error("pokedex trainer art names an unknown gender: " .. tostring(gender), 0)
+    end
+    local bank = paletteBank(art.palette, 0, gender)
+    local _, _, animRole = synthesizeArt("trainer-" .. gender, art.char, bank, 106, trainerGeometryAnims[1])
+    local spriteRole = "sprite-entry-size-trainer-" .. gender
+    sprites[spriteRole] = {
+      pane = "information",
+      animation = animRole,
+      x = 0,
+      y = 0,
+      priority = 0,
+      drawPriority = 0,
+      paletteGroup = "sprite",
+    }
+    synthesizedRoles["entry.size"] = synthesizedRoles["entry.size"] or {}
+    synthesizedRoles["entry.size"].trainer = synthesizedRoles["entry.size"].trainer or {}
+    synthesizedRoles["entry.size"].trainer[gender] = spriteRole
+  end
+
+  -- Semantic subject bindings: every configured subject choice names
+  -- its page-local sprite role. Plain entries resolve through the
+  -- page-local (cells, anims, sequence) role index; type and trainer
+  -- entries resolve through the synthesized role map. Unknown pages,
+  -- sequences outside the page closure, and non-semantic entry shapes
+  -- abort the whole compilation instead of publishing a dangling map.
+  for pageRole, subjects in pairs(PokedexSources.nativeSpriteSubjects) do
+    local page = pages[pageRole]
+    if page == nil then
+      error("pokedex subject map names an unknown page: " .. tostring(pageRole), 0)
+    end
+    if type(subjects) ~= "table" then
+      error("pokedex subject map carries no subjects for page " .. tostring(pageRole), 0)
+    end
+    local triples = roleByTriple[pageRole]
+    if triples == nil then
+      error("pokedex subject map names a page without sprite roles: " .. tostring(pageRole), 0)
+    end
+    local bound = {}
+    for subject, choices in pairs(subjects) do
+      if type(subject) ~= "string" or subject == "" then
+        error("pokedex subject map names no subject on page " .. tostring(pageRole), 0)
+      end
+      if type(choices) ~= "table" then
+        error("pokedex subject map carries no choices for " .. tostring(subject) .. " on " .. tostring(pageRole), 0)
+      end
+      local boundChoices = {}
+      for choice, entry in pairs(choices) do
+        if type(choice) ~= "string" or choice == "" then
+          error("pokedex subject map names no choice for " .. tostring(subject) .. " on " .. tostring(pageRole), 0)
+        end
+        if type(entry) ~= "table" then
+          error(
+            "pokedex subject map carries no binding for "
+              .. tostring(subject)
+              .. "/"
+              .. tostring(choice)
+              .. " on "
+              .. tostring(pageRole),
+            0
+          )
+        end
+        local role, pane
+        if entry.typeIcon ~= nil then
+          local pageSynthesized = synthesizedRoles[pageRole] or {}
+          local subjectSynthesized = pageSynthesized[subject] or {}
+          role = subjectSynthesized[entry.typeIcon]
+          pane = entry.pane
+          if role == nil then
+            error(
+              "pokedex subject map names an unsynthesized type icon "
+                .. tostring(entry.typeIcon)
+                .. " for "
+                .. tostring(subject)
+                .. " on "
+                .. tostring(pageRole),
+              0
+            )
+          end
+        elseif entry.trainer ~= nil then
+          local pageSynthesized = synthesizedRoles[pageRole] or {}
+          local subjectSynthesized = pageSynthesized[subject] or {}
+          role = subjectSynthesized[entry.trainer]
+          pane = entry.pane
+          if role == nil then
+            error(
+              "pokedex subject map names an unsynthesized trainer "
+                .. tostring(entry.trainer)
+                .. " for "
+                .. tostring(subject)
+                .. " on "
+                .. tostring(pageRole),
+              0
+            )
+          end
+        else
+          if type(entry.cells) ~= "number" or type(entry.anims) ~= "number" or type(entry.seq) ~= "number" then
+            error(
+              "pokedex subject map carries no source triple for "
+                .. tostring(subject)
+                .. "/"
+                .. tostring(choice)
+                .. " on "
+                .. tostring(pageRole),
+              0
+            )
+          end
+          role = triples[entry.cells .. ":" .. entry.anims .. ":" .. entry.seq]
+          pane = entry.pane
+          if role == nil then
+            error(
+              "pokedex subject map references an unplaced sequence ("
+                .. tostring(entry.cells)
+                .. "/"
+                .. tostring(entry.anims)
+                .. "/"
+                .. tostring(entry.seq)
+                .. ") for "
+                .. tostring(subject)
+                .. "/"
+                .. tostring(choice)
+                .. " on "
+                .. tostring(pageRole),
+              0
+            )
+          end
+        end
+        if pane ~= "information" and pane ~= "controls" then
+          error(
+            "pokedex subject map names an unknown pane for "
+              .. tostring(subject)
+              .. "/"
+              .. tostring(choice)
+              .. " on "
+              .. tostring(pageRole),
+            0
+          )
+        end
+        boundChoices[choice] = { sprite = role, pane = pane }
+      end
+      bound[subject] = boundChoices
+    end
+    page.spriteSubjects = bound
+  end
   local footPaletteBytes = readFootprintMember(footArchive, 0)
   local footPalette = decodeKind("decodePalette", footPaletteBytes, "footprints-palette")
   if #footPalette.colors < 16 then

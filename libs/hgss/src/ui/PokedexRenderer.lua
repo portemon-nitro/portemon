@@ -1011,6 +1011,163 @@ local function drawPageSprites(graphics, assets, role, paneId, surfaces)
   end
 end
 
+-- Selects the visible animation frame for an accepted source age: a
+-- single frame stays put, a one-shot rests on its last frame, and a
+-- loop runs its prefix once before cycling from the authored loop
+-- origin. Ages count accepted fixed updates, never wall-clock time or
+-- draw calls.
+---@param animation table<string, unknown> generated animation descriptor behind the subject
+---@param age integer non-negative accepted age behind the intent
+---@return integer 1-based visible frame index behind the age
+local function frameAtOwner(animation, age)
+  assert(type(age) == "number" and age % 1 == 0 and age >= 0, "animation ages stay non-negative")
+  local frames = assert(animation.frames, "animations carry their frames")
+  assert(type(frames) == "table" and #frames >= 1, "animations carry at least one frame")
+  if #frames == 1 then
+    return 1
+  end
+  if animation.once == true then
+    local elapsed = age --[[@as number]]
+    for index, frame in ipairs(frames) do
+      assert(type(frame) == "table", "animation frames stay records")
+      local duration = assert(frame.duration, "animation frames carry their duration")
+      assert(type(duration) == "number" and duration >= 0, "animation durations stay non-negative")
+      if elapsed < duration then
+        return index
+      end
+      elapsed = elapsed - duration
+    end
+    return #frames
+  end
+  local loopFrom = animation.loopFrom or 1
+  assert(
+    type(loopFrom) == "number" and loopFrom % 1 == 0 and loopFrom >= 1 and loopFrom <= #frames,
+    "loop origins address a frame"
+  )
+  local elapsed = age --[[@as number]]
+  for index = 1, loopFrom - 1 do
+    local duration = assert(frames[index].duration, "animation frames carry their duration")
+    assert(type(duration) == "number" and duration >= 0, "animation durations stay non-negative")
+    if elapsed < duration then
+      return index
+    end
+    elapsed = elapsed - duration
+  end
+  local loopDuration = 0
+  for index = loopFrom, #frames do
+    loopDuration = loopDuration + assert(frames[index].duration, "loop frames carry their duration")
+  end
+  if loopDuration <= 0 then
+    return #frames
+  end
+  elapsed = elapsed % loopDuration
+  for index = loopFrom, #frames do
+    local duration = assert(frames[index].duration, "loop frames carry their duration")
+    if elapsed < duration then
+      return index
+    end
+    elapsed = elapsed - duration
+  end
+  return #frames
+end
+
+-- Draws the detached live sprite intents into the OBJ pair: each visible
+-- intent resolves its page-local subject binding, selects the source
+-- frame by its accepted age, and paints the prepared parts at the
+-- native origin with per-part flips. Area markers keep their source
+-- translucency class; every other subject paints opaque. Footprint
+-- intents sample the prepared atlas rectangle. No constructor runs on
+-- this path; a missing prepared frame is a preparation failure.
+---@param graphics table<string, unknown> host graphics namespace
+---@param assets table<string, unknown> prepared bundle with the manifest and parts
+---@param view table<string, unknown> detached projection carrying the intents
+---@param role string manifest page role behind the pane
+---@param paneId string browser pane identity
+---@param surfaces table[] six realized serial surfaces in compositor order
+local function drawDynamicSprites(graphics, assets, view, role, paneId, surfaces)
+  local objects = view.objects
+  if type(objects) ~= "table" then
+    return
+  end
+  local manifest = assert(assets.manifest, "prepared bundles carry their compiled manifest")
+  local pages = assert(manifest.pages, "the compiled manifest carries its page roles")
+  local page = assert(pages[role], "the compiled manifest carries the drawn page role " .. tostring(role))
+  local subjects = page.spriteSubjects
+  if subjects == nil then
+    if #objects > 0 then
+      error("the drawn page binds no live subjects: " .. tostring(role), 0)
+    end
+    return
+  end
+  local contentPane = paneId
+  if paneId == "registration" then
+    contentPane = "information"
+  end
+  local inventory = assert(manifest.sprites, "the compiled manifest carries its sprite inventory")
+  local animations = assert(manifest.animations, "the compiled manifest carries its animations")
+  local cells = assert(manifest.cells, "the compiled manifest carries its cells")
+  local prepared = assert(assets.spriteParts, "prepared bundles carry their sprite parts")
+  local footprintParts = assert(assets.footprintParts, "prepared bundles carry their footprint parts")
+  local color, meta = surfaces[5], surfaces[6]
+  assert(type(graphics.setCanvas) == "function", "dynamic sprite passes target their surfaces")
+  for _, intent in ipairs(objects) do
+    if type(intent) == "table" and intent.visible ~= false and intent.pane == contentPane then
+      local subject = assert(intent.subject, "dynamic intents name their subject")
+      if subject == "footprint" then
+        local choice = assert(intent.choice, "footprint intents name their species")
+        local part = assert(footprintParts[choice], "prepared bundles carry footprints for " .. tostring(choice))
+        graphics.setCanvas(color.canvas)
+        drawSampled(
+          graphics,
+          assert(part.handle, "footprint parts carry their handle"),
+          assert(part.quad, "footprint parts carry their quad"),
+          intent.x,
+          intent.y
+        )
+        markObjRect(graphics, meta, { x = intent.x, y = intent.y, width = 16, height = 16 }, 0)
+      else
+        local subjectMap = assert(subjects[subject], "the drawn page binds the subject " .. tostring(subject))
+        local binding =
+          assert(subjectMap[intent.choice], "the drawn subject binds the choice " .. tostring(intent.choice))
+        assert(binding.pane == intent.pane, "drawn intents keep their authored pane")
+        local sprite = assert(inventory[binding.sprite], "the sprite inventory carries " .. tostring(binding.sprite))
+        local animation = assert(animations[sprite.animation], "drawn subjects resolve their animation")
+        local frameIndex = frameAtOwner(animation, intent.age)
+        local roleParts =
+          assert(prepared[binding.sprite], "prepared bundles carry parts for " .. tostring(binding.sprite))
+        local frameParts = assert(roleParts[frameIndex], "prepared parts cover the drawn frame")
+        local cell = assert(cells[animation.frames[frameIndex].cell], "drawn frames resolve their cell")
+        assert(#frameParts == #cell.parts, "prepared parts match the drawn cell")
+        for index, part in ipairs(cell.parts) do
+          local entry = assert(frameParts[index], "prepared parts cover the drawn cell")
+          local viewport = assert(entry.quad, "prepared parts carry their viewport")
+          local handle = assert(entry.handle, "prepared parts carry their chrome handle")
+          local dx = intent.x + part.x
+          local dy = intent.y + part.y
+          local source = assert(part.source, "drawn parts carry their source viewport")
+          graphics.setCanvas(color.canvas)
+          if entry.flipX == true or entry.flipY == true then
+            local sx, sy, ox, oy = 1, 1, 0, 0
+            if entry.flipX == true then
+              sx, ox = -1, source.width
+            end
+            if entry.flipY == true then
+              sy, oy = -1, source.height
+            end
+            drawSampled(graphics, handle, viewport, dx, dy, 0, sx, sy, ox, oy)
+          else
+            drawSampled(graphics, handle, viewport, dx, dy)
+          end
+          -- Area markers blink through their source translucency; every
+          -- other live subject covers opaquely like its static anchor.
+          local blendClass = subject == "marker" and 1 or 0
+          markObjRect(graphics, meta, { x = dx, y = dy, width = source.width, height = source.height }, blendClass)
+        end
+      end
+    end
+  end
+end
+
 -- Draws one prepared icon at an explicit rectangle: the sampled art on
 -- the OBJ color surface and its seen/caught blend class on metadata.
 ---@param graphics table<string, unknown> host graphics namespace
@@ -1410,6 +1567,7 @@ local function runSerialPasses(graphics, assets, view, role, paneId, surfaces)
     drawPageBackgrounds(graphics, assets, view, role, paneId, surfaces)
     drawPageWindowsAndText(graphics, assets, role, paneId, surfaces)
     drawPageSprites(graphics, assets, role, paneId, surfaces)
+    drawDynamicSprites(graphics, assets, view, role, paneId, surfaces)
     if paneId == "controls" then
       drawControlIcons(graphics, assets, view.grid, surfaces)
     elseif paneId == "information" then
