@@ -458,4 +458,27 @@ function T.slider_drag_restores_the_committed_bound_on_cancel_and_invalid_releas
   controller:dispose()
 end
 
+-- The projected editor view names its kind behind one spelling: the
+-- touch interface, compact rows, and role projections all read `kind`
+-- while criteria transactions read `criterion`, so an editor missing
+-- either spelling silently misroutes one consumer family.
+function T.open_editors_project_their_kind_alongside_the_criterion()
+  local PokedexController = requirePresent("editor view spelling")
+  local monCatalog, catalog = catalogs()
+  local owner = enabledOwner(monCatalog, catalog)
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 31 })
+  local controller = newBrowser(PokedexController, owner, monCatalog, catalog)
+  openSearch(controller)
+  tick(controller, { { type = "activate", action = "criterion", value = "height" } })
+  idle(controller, 5)
+  local editor = controller:view().search.editor
+  Assert.notNil(editor, "activating a criterion opens its editor")
+  Assert.equal(editor.criterion, "height", "the projected editor keeps its criterion spelling")
+  Assert.equal(editor.kind, "height", "the projected editor names its kind spelling")
+  tick(controller, { { type = "activate", action = "editor-cancel" } })
+  idle(controller, 5)
+  Assert.isNil(controller:view().search.editor, "cancel leaves the height editor")
+  controller:dispose()
+end
+
 return { tests = T }

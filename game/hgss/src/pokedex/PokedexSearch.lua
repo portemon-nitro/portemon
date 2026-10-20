@@ -763,7 +763,11 @@ function PokedexSearch:editorView()
   end
   assert(type(self._editor) == "table", "search reads its open editor")
   local kind = self._editor.kind
-  local view = { criterion = kind, focus = self._editor.focus, previousColumn = self._editor.previousColumn }
+  -- The projection carries both spellings: criteria transactions read
+  -- `criterion` while the touch interface, compact rows, and role
+  -- projections read `kind`.
+  local view =
+    { kind = kind, criterion = kind, focus = self._editor.focus, previousColumn = self._editor.previousColumn }
   if kind == "type" then
     local pending = self._editor.types
     assert(type(pending) == "table", "the type editor keeps its pending slots")
