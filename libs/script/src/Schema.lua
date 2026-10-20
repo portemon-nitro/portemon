@@ -114,6 +114,8 @@ Schema.SCRIPT = {
     locals = { type = "locals" },
     replaces = { type = "string" },
     steps = { type = "steps", required = true },
+    -- Optional assets the scanner cannot see from ops (see AssetNeeds).
+    needs = { type = "asset_needs" },
     metadata = { type = "serializable" },
   },
 }
@@ -288,6 +290,10 @@ Schema.MOVEMENT_ACTIONS = {
 
 -- Canonical operations . Every step is a table with `op` set
 -- to one of these names and the declared fields; unknown fields are rejected.
+-- The one asset the Bell Tower / Whirl Islands appearance scene needs; every
+-- legend cutscene op declares it (see AssetNeeds).
+local LEGEND_SCENE_ASSETS = { kind = "field-effect", id = "ho_oh_appearance" }
+
 Schema.OPERATIONS = {
   noop = { fields = {} },
   stop = { fields = {} },
@@ -904,17 +910,26 @@ Schema.OPERATIONS = {
   give_spiky_ear_pichu = { fields = {} },
   follower_release_next_to_player = { fields = {} },
   follower_reset_movement = { fields = {} },
-  legend_cutscene_bell_begin = { fields = {} },
-  legend_cutscene_bell_end = { fields = {} },
-  legend_cutscene_bell_rise = { fields = {} },
-  legend_cutscene_bell_shimmer = { fields = { destination = { type = "integer", required = true } } },
-  legend_cutscene_camera_move = { fields = { destination = { type = "integer", required = true } } },
-  legend_cutscene_camera_pan = { fields = { destination = { type = "integer", required = true } } },
-  legend_cutscene_camera_wait = { fields = {} },
-  legend_cutscene_bird_approach = { fields = {} },
-  legend_cutscene_effect_begin = { fields = {} },
-  legend_cutscene_effect_end = { fields = {} },
-  legend_cinematic = { fields = { destination = { type = "integer", required = true } } },
+  legend_cutscene_bell_begin = { fields = {}, assets = LEGEND_SCENE_ASSETS },
+  legend_cutscene_bell_end = { fields = {}, assets = LEGEND_SCENE_ASSETS },
+  legend_cutscene_bell_rise = { fields = {}, assets = LEGEND_SCENE_ASSETS },
+  legend_cutscene_bell_shimmer = {
+    fields = { destination = { type = "integer", required = true } },
+    assets = LEGEND_SCENE_ASSETS,
+  },
+  legend_cutscene_camera_move = {
+    fields = { destination = { type = "integer", required = true } },
+    assets = LEGEND_SCENE_ASSETS,
+  },
+  legend_cutscene_camera_pan = {
+    fields = { destination = { type = "integer", required = true } },
+    assets = LEGEND_SCENE_ASSETS,
+  },
+  legend_cutscene_camera_wait = { fields = {}, assets = LEGEND_SCENE_ASSETS },
+  legend_cutscene_bird_approach = { fields = {}, assets = LEGEND_SCENE_ASSETS },
+  legend_cutscene_effect_begin = { fields = {}, assets = LEGEND_SCENE_ASSETS },
+  legend_cutscene_effect_end = { fields = {}, assets = LEGEND_SCENE_ASSETS },
+  legend_cinematic = { fields = { destination = { type = "integer", required = true } }, assets = LEGEND_SCENE_ASSETS },
   current_map_id = { fields = { result = { type = "id_or_var", required = true } } },
   player_state = { fields = { result = { type = "id_or_var", required = true } } },
   player_on_bike_check = { fields = { result = { type = "id_or_var", required = true } } },

@@ -655,6 +655,21 @@ local function checkScalarList(context, v, path, field)
     end
   end
 end
+local function checkAssetNeeds(context, v, path, field)
+  local count = checkArray(context, v, path, field)
+  for i = 1, count do
+    local need = v[i]
+    local valid = type(need) == "table"
+      and type(need.kind) == "string"
+      and need.kind ~= ""
+      and not need.kind:find(":", 1, true)
+      and type(need.id) == "string"
+      and need.id ~= ""
+    if not valid then
+      fail(context, ScriptErrors.SCRIPT_SCHEMA_INVALID, path, "asset need requires a kind and an id", { field = field })
+    end
+  end
+end
 local function checkMenuItems(context, v, path, field)
   local count = checkArray(context, v, path, field)
   if count == 0 then
@@ -748,6 +763,7 @@ CHECKERS.buffer_slot = checkBufferSlot
 CHECKERS.buttons = checkButtons
 CHECKERS.scalar_list = checkScalarList
 CHECKERS.menu_items = checkMenuItems
+CHECKERS.asset_needs = checkAssetNeeds
 CHECKERS.source_provenance = checkSourceProvenance
 CHECKERS.params = checkDeclarationMap
 CHECKERS.locals = checkDeclarationMap
