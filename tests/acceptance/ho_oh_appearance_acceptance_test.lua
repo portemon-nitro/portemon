@@ -40,6 +40,8 @@ function T.tests.bell_tower_coordinate_runs_ho_oh_opening_without_script_fault()
   })
   local ok, err = xpcall(function()
     game:waitForFieldEntry()
+    -- The legend object starts hidden by its event flag until the script shows it.
+    game:setActorRemovalFlag("map:340:object:5")
     game:setWorldState({ variable = HO_OH_TRIGGER_VAR, value = 1 })
     game:move("north")
 
@@ -59,7 +61,16 @@ function T.tests.bell_tower_coordinate_runs_ho_oh_opening_without_script_fault()
     game:pressAction()
     local completed
     local cinematicShots = {}
+    local legendFirstY, legendLastY, legendFlapped
+    local legendActorId = "map:340:object:5"
     for _ = 1, 4000 do
+      for _, record in ipairs(game.runtime.actors:drawRecords()) do
+        if record.actorId == legendActorId and record.visible then
+          legendFirstY = legendFirstY or record.world.y
+          legendLastY = record.world.y
+          legendFlapped = legendFlapped or record.gesturePose == "legend_flap"
+        end
+      end
       local cinematicScene = game.runtime.hoOhAppearanceScene
       local cinematicStatus = cinematicScene and cinematicScene:status() or nil
       if cinematicStatus and cinematicStatus.cinematicShot then
@@ -98,6 +109,12 @@ function T.tests.bell_tower_coordinate_runs_ho_oh_opening_without_script_fault()
       game.runtime.scripts.worldState:isFlagSet(HO_OH_APPEARANCE_FLAG),
       "the event sets the post-appearance story flag"
     )
+    Assert.notNil(legendFirstY, "the legend object is drawn during the approach")
+    Assert.isTrue(
+      legendFirstY >= legendLastY + 7,
+      "the legend object first appears at its descent height, never lowered (first " .. legendFirstY .. ", landed " .. legendLastY .. ")"
+    )
+    Assert.isTrue(legendFlapped == true, "the legend object plays its flap sequence")
     Assert.equal(game:renderAttempts(), 0, "the cutscene acceptance stops before GPU rendering")
   end, debug.traceback)
   game:close()

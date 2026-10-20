@@ -424,10 +424,26 @@ function FieldScriptComposition.compose(runtime, options)
   -- The legend flies in above its tile as a map actor: on both versions it is
   -- the fifth object of its map.
   local LEGEND_ACTOR_OBJECT_INDEX = 5
-  local function setLegendActorHeight(tiles)
+  local function legendActorId()
     local actors = assert(runtime.actors, "Ho-Oh scene requires the field actors")
-    local actorId = assert(actors:actorIdForMapIndex(LEGEND_ACTOR_OBJECT_INDEX), "Ho-Oh scene legend actor is missing")
+    return actors, assert(actors:actorIdForMapIndex(LEGEND_ACTOR_OBJECT_INDEX), "Ho-Oh scene legend actor is missing")
+  end
+  local function setLegendActorHeight(tiles)
+    local actors, actorId = legendActorId()
     actors:setPresentationOffset(actorId, { x = 0, y = tiles, z = 0 })
+  end
+  local function revealLegendActor()
+    local actors, actorId = legendActorId()
+    actors:show(actorId)
+  end
+  -- The legend object's second looping sequence; nil returns it to its idle loop.
+  local function setLegendActorFlap(tick)
+    local actors, actorId = legendActorId()
+    if tick == nil then
+      actors:clearGesturePresentation(actorId)
+    else
+      actors:setGesturePresentation(actorId, "legend_flap", tick)
+    end
   end
   local legendCutscene = HoOhAppearanceScene.new({
     versionId = runtime.versionId,
@@ -435,6 +451,9 @@ function FieldScriptComposition.compose(runtime, options)
     currentCamera = currentFieldCamera,
     timeOfDayCode = currentTimeOfDay,
     setBirdHeight = setLegendActorHeight,
+    revealBird = revealLegendActor,
+    setBirdFlap = setLegendActorFlap,
+    audio = options.audioService,
     cacheFs = options.cacheFs,
   })
   runtime.hoOhAppearanceScene = legendCutscene

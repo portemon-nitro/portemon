@@ -53,7 +53,13 @@ local CAMERA_DATA = {
 -- The legend actor drops one source unit per tick; sixteen units make a tile.
 local BIRD_DESCENT_TICKS = { heartgold = 120, soulsilver = 160 }
 local BIRD_APPROACH_SOURCE_UNITS_PER_TILE = 16
-local BIRD_PRE_RING_TICKS = 60 + 50
+-- The legend object hovers 60 ticks after landing, then flaps until its cry ring ends.
+local BIRD_LAND_TO_FLAP_TICKS = 60
+local BIRD_PRE_RING_TICKS = BIRD_LAND_TO_FLAP_TICKS + 50
+local BIRD_FLAP_SOUND_INTERVAL = 24
+local BIRD_FIRST_FLAP_SOUND_TICK = { heartgold = 0, soulsilver = 18 }
+local BIRD_FLAP_SOUND = { heartgold = "SEQ_SE_GS_HOUOU_HABATAKI", soulsilver = "SEQ_SE_GS_RUGIA_HABATAKI" }
+local BIRD_SPECIES = { heartgold = 250, soulsilver = 249 }
 local BIRD_POST_RING_TICKS = 30
 local FIELD_CAMERA_DISTANCE = 0x29AEC1 / 4096 / 16
 local CINEMATIC_CAMERA = {
@@ -76,6 +82,13 @@ local CINEMATIC_CAMERA = {
     far = 0x006A4000 / 4096 / 16,
   },
 }
+-- The retail cinematic's own sound cues, by frame of its first shot.
+local FIRST_SHOT_CUES = {
+  [0] = { "SEQ_SE_GS_SUZUNOONPA_APRI" },
+  [40] = { "SEQ_SE_GS_HAKKOUTAI_SYUTUGEN" },
+  [78] = { "SEQ_GS_E_HOUOU", "SEQ_SE_GS_HAKKOUTAI_HIROGARI2" },
+  [98] = { "SEQ_SE_GS_HAKKOUTAI_HIROGARI" },
+}
 local CINEMATIC_FADE = {
   firstIn = { color = "white", direction = "in", duration = 6 },
   firstOut = { color = "black", direction = "out", duration = 6 },
@@ -91,6 +104,12 @@ function HoOhAppearanceScene.new(options)
   assert(type(options.currentCamera) == "function", "Ho-Oh scene requires the live field camera")
   assert(type(options.timeOfDayCode) == "function", "Ho-Oh scene requires the live RTC time-of-day code")
   assert(type(options.setBirdHeight) == "function", "Ho-Oh scene requires the legend actor height writer")
+  assert(type(options.revealBird) == "function", "Ho-Oh scene requires the legend actor reveal")
+  assert(type(options.setBirdFlap) == "function", "Ho-Oh scene requires the legend actor flap writer")
+  assert(
+    options.audio and options.audio.play and options.audio.playMusic and options.audio.playCry,
+    "Ho-Oh scene requires the field audio"
+  )
   assert(options.cacheFs and options.cacheFs.loadLua, "Ho-Oh scene requires the generated model cache")
   local definition = assert(
     options.cacheFs:loadLua(FieldEffectAssetCache.definitionPath("ho_oh_appearance")),
@@ -127,6 +146,9 @@ function HoOhAppearanceScene.new(options)
     currentCamera = options.currentCamera,
     timeOfDayCode = options.timeOfDayCode,
     setBirdHeight = options.setBirdHeight,
+    audio = options.audio,
+    revealBird = options.revealBird,
+    setBirdFlap = options.setBirdFlap,
     clipsById = clipsById,
     cinematicFrames = cinematicFrames,
     riseTicks = riseTicks,
@@ -175,7 +197,10 @@ local function applyCameraPose(scene, state, index, progress)
       y = start.target.y + (target.y - start.target.y) * progress,
       z = start.target.z + (target.z - start.target.z) * progress,
     }
-    angle = math.floor(start.angle + (angle - start.angle) * progress + 0.5) % 0x10000
+    -- Angles are 16-bit turns: the profile pitch is signed, the pose table's is
+    -- not, so take the short way round.
+    local delta = (angle - start.angle + 0x8000) % 0x10000 - 0x8000
+    angle = math.floor(start.angle + delta * progress + 0.5) % 0x10000
     perspective = math.floor(start.perspective + (perspective - start.perspective) * progress + 0.5)
   end
   local player = assert(scene.playerPosition(), "Ho-Oh camera requires a live player")
@@ -315,9 +340,11 @@ function HoOhAppearanceScene:command(op, destination)
       sequence = self.sequence,
       origin = copyPosition(player),
       birdFrame = 0,
+      flapSoundCooldown = 0,
       cinematicFrame = nil,
       effectsActive = false,
     }
+    self.revealBird()
     self.setBirdHeight(BIRD_DESCENT_TICKS[self.versionId] / BIRD_APPROACH_SOURCE_UNITS_PER_TILE)
   elseif op == "legend_cinematic" then
     assert(state == nil, "Ho-Oh bird approach is still active")
@@ -459,6 +486,24 @@ function HoOhAppearanceScene:updateFixed()
     local descentTicks = BIRD_DESCENT_TICKS[self.versionId]
     if state.birdFrame <= descentTicks then
       self.setBirdHeight((descentTicks - state.birdFrame) / BIRD_APPROACH_SOURCE_UNITS_PER_TILE)
+      if state.birdFrame >= BIRD_FIRST_FLAP_SOUND_TICK[self.versionId] then
+        if state.flapSoundCooldown == 0 then
+          self.audio:play(BIRD_FLAP_SOUND[self.versionId])
+          state.flapSoundCooldown = BIRD_FLAP_SOUND_INTERVAL
+        end
+        state.flapSoundCooldown = state.flapSoundCooldown - 1
+      end
+    end
+    local flapStart = descentTicks + BIRD_LAND_TO_FLAP_TICKS
+    local ringFrame = self:birdRingFrame(state)
+    if ringFrame == 0 then
+      self.audio:playCry(BIRD_SPECIES[self.versionId], 0)
+    end
+    if state.birdFrame > flapStart and (ringFrame ~= nil or state.birdFrame <= descentTicks + BIRD_PRE_RING_TICKS) then
+      self.setBirdFlap(state.birdFrame - flapStart - 1)
+    elseif state.birdFrame > flapStart and not state.flapEnded then
+      state.flapEnded = true
+      self.setBirdFlap(nil)
     end
     if state.birdFrame >= self:birdApproachTicks() then
       self.state = nil
@@ -500,6 +545,13 @@ function HoOhAppearanceScene:updateFixed()
         )
         camera:collapseRenderInterpolation()
       else
+        for _, symbol in ipairs(FIRST_SHOT_CUES[state.cinematicFrame] or {}) do
+          if symbol == "SEQ_GS_E_HOUOU" then
+            self.audio:playMusic(symbol)
+          else
+            self.audio:play(symbol)
+          end
+        end
         state.cinematicFrame = state.cinematicFrame + 1
         if state.cinematicFrame == 129 then
           startCinematicFade(state, CINEMATIC_FADE.firstOut)
@@ -513,6 +565,9 @@ function HoOhAppearanceScene:updateFixed()
         restoreCinematicCamera(self, state)
         self.state = nil
       else
+        if state.cinematicFrame % 64 == 0 then
+          self.audio:play("SEQ_SE_GS_HOUOUHABATAKI_APRI")
+        end
         state.cinematicFrame = state.cinematicFrame + 1
         if state.cinematicFrame == 190 then
           startCinematicFade(state, CINEMATIC_FADE.secondOut)

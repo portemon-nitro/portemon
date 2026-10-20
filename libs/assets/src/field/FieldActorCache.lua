@@ -192,6 +192,7 @@ local VALID_GESTURES = {
   nurse_bow = true,
   give = true,
   receive = true,
+  legend_flap = true,
 }
 
 local function isValidPolygon(record)

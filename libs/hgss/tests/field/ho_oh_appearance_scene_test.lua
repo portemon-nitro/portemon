@@ -35,7 +35,21 @@ local function newCamera()
   return camera
 end
 
-local function newScene(versionId, camera, birdHeights)
+local function newAudio()
+  local audio = { cues = {} }
+  function audio:play(symbol)
+    self.cues[#self.cues + 1] = { kind = "se", symbol = symbol }
+  end
+  function audio:playMusic(symbol)
+    self.cues[#self.cues + 1] = { kind = "bgm", symbol = symbol }
+  end
+  function audio:playCry(species, pattern)
+    self.cues[#self.cues + 1] = { kind = "cry", symbol = tostring(species) .. ":" .. tostring(pattern), tick = self.tick }
+  end
+  return audio
+end
+
+local function newScene(versionId, camera, birdHeights, audio, bird)
   local cacheFs = {
     loadLua = function(_, path)
       Assert.equal(path, FieldEffectAssetCache.definitionPath("ho_oh_appearance"), "scene loads its model definition")
@@ -56,6 +70,18 @@ local function newScene(versionId, camera, birdHeights)
     setBirdHeight = function(tiles)
       if birdHeights then
         birdHeights[#birdHeights + 1] = tiles
+      end
+    end,
+    audio = audio or newAudio(),
+    revealBird = function()
+      if bird then
+        bird.revealed = (bird.revealed or 0) + 1
+        bird.heightsAtReveal = #(birdHeights or {})
+      end
+    end,
+    setBirdFlap = function(tick)
+      if bird then
+        bird.flaps[#bird.flaps + 1] = tick == nil and "clear" or tick
       end
     end,
     cacheFs = cacheFs,
@@ -93,6 +119,88 @@ function T.tests.camera_pan_keeps_the_eye_inside_the_far_plane_every_tick()
     for _, pose in ipairs(camera.poses) do
       Assert.isTrue(pose.distance < pose.far, versionId .. " pan eye is inside the far plane")
     end
+  end
+end
+
+-- Field profiles carry a signed pitch while the pan targets are unsigned raw
+-- angles; the pan must take the short way round, never a full revolution.
+function T.tests.camera_pan_takes_the_short_arc_from_a_signed_profile_pitch()
+  local camera = newCamera()
+  camera.profile.angleXRaw = -0x0A00
+  local pitches = {}
+  function camera:setCutscenePose(target, distance, angleX)
+    self.target = target
+    pitches[#pitches + 1] = angleX
+  end
+  local scene = newScene("heartgold", camera)
+  scene:command("legend_cutscene_bell_begin")
+  scene:command("legend_cutscene_camera_pan", 0)
+  for _ = 1, scene:cameraPanTicks() do
+    scene:updateFixed()
+  end
+  for _, angleX in ipairs(pitches) do
+    local signed = (angleX + 0x8000) % 0x10000 - 0x8000
+    Assert.isTrue(signed >= -0x0A00 - 0x400 and signed <= -0x0A00 + 0x400, "pitch " .. angleX .. " stays on the short arc")
+  end
+end
+
+function T.tests.cinematic_plays_its_own_effects_and_music_on_source_frames()
+  for _, versionId in ipairs({ "heartgold", "soulsilver" }) do
+    local audio = newAudio()
+    local scene = newScene(versionId, newCamera(), nil, audio)
+    scene:command("legend_cinematic", 0)
+    local ticks = scene:taskTicks("legend_cinematic")
+    for _ = 1, ticks + 40 do
+      scene:updateFixed()
+    end
+    local symbols = {}
+    for _, cue in ipairs(audio.cues) do
+      symbols[#symbols + 1] = cue.kind .. ":" .. cue.symbol
+    end
+    Assert.equal(symbols[1], "se:SEQ_SE_GS_SUZUNOONPA_APRI", versionId .. " first shot opens with the bell tone")
+    Assert.equal(symbols[2], "se:SEQ_SE_GS_HAKKOUTAI_SYUTUGEN", versionId .. " light appears")
+    Assert.equal(symbols[3], "bgm:SEQ_GS_E_HOUOU", versionId .. " Ho-Oh music starts")
+    Assert.equal(symbols[4], "se:SEQ_SE_GS_HAKKOUTAI_HIROGARI2", versionId .. " light spreads with the music")
+    Assert.equal(symbols[5], "se:SEQ_SE_GS_HAKKOUTAI_HIROGARI", versionId .. " light spreads again")
+    Assert.equal(symbols[6], "se:SEQ_SE_GS_HOUOUHABATAKI_APRI", versionId .. " second shot starts the wing beats")
+    Assert.isTrue(#symbols >= 7, versionId .. " wing beats repeat every 64 frames")
+  end
+end
+
+function T.tests.bird_approach_reveals_before_it_lowers_flaps_and_cries()
+  for versionId, expected in pairs({
+    heartgold = { descent = 120, flapSound = "SEQ_SE_GS_HOUOU_HABATAKI", firstSound = 1, species = "250:0" },
+    soulsilver = { descent = 160, flapSound = "SEQ_SE_GS_RUGIA_HABATAKI", firstSound = 18, species = "249:0" },
+  }) do
+    local audio, bird, heights = newAudio(), { flaps = {} }, {}
+    local scene = newScene(versionId, newCamera(), heights, audio, bird)
+    scene:command("legend_cutscene_bird_approach")
+    Assert.equal(bird.revealed, 1, versionId .. " reveals the legend object when the approach begins")
+    Assert.equal(heights[1], expected.descent / 16, versionId .. " starts at the full descent height")
+    Assert.equal(bird.heightsAtReveal, 0, versionId .. " is revealed before its first height write")
+    local flapSoundTicks, cryTicks = {}, {}
+    for tick = 1, scene:birdApproachTicks() do
+      audio.tick = tick
+      local before = #audio.cues
+      scene:updateFixed()
+      for index = before + 1, #audio.cues do
+        local cue = audio.cues[index]
+        if cue.symbol == expected.flapSound then
+          flapSoundTicks[#flapSoundTicks + 1] = tick
+        elseif cue.kind == "cry" then
+          Assert.equal(cue.symbol, expected.species, versionId .. " cries as its own species")
+          cryTicks[#cryTicks + 1] = tick
+        end
+      end
+    end
+    Assert.equal(flapSoundTicks[1], expected.firstSound, versionId .. " flaps from its first flap tick")
+    Assert.equal(flapSoundTicks[2] - flapSoundTicks[1], 24, versionId .. " flaps every 24 ticks")
+    Assert.isTrue(flapSoundTicks[#flapSoundTicks] <= expected.descent, versionId .. " flaps only while descending")
+    Assert.equal(#cryTicks, 1, versionId .. " cries once")
+    Assert.equal(cryTicks[1], expected.descent + 110, versionId .. " cries when the ring begins")
+    Assert.equal(bird.flaps[1], 0, versionId .. " the flap sequence restarts at tick 0")
+    Assert.equal(bird.flaps[#bird.flaps], "clear", versionId .. " returns to the idle loop after the ring")
+    Assert.isNil(scene:status().birdFrame, versionId .. " the scene is over")
   end
 end
 

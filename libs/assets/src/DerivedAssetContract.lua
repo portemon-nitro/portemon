@@ -204,7 +204,8 @@ DerivedAssetContract.fieldCells = {
 DerivedAssetContract.fieldActors = {
   cacheFormat = "field-actor-cache-v2",
   -- v5 adds Apricorn tree gesture clips and guarantees their colored source sprites.
-  schema = "g4-field-actor-v5",
+  -- v6 loops the legendary-bird idle sequence and adds their flap gesture.
+  schema = "g4-field-actor-v6",
   indexSchema = "g4-field-actor-index-v4",
 }
 

@@ -1,5 +1,5 @@
 -- Compiles every field-actor sprite referenced by the map catalog into normalized
--- `g4-field-actor-v5`
+-- `g4-field-actor-v6`
 -- visual definitions plus one private RGBA atlas each.
 --
 -- Ordinary actors use a shared camera-facing billboard and timeline. Static
@@ -55,7 +55,14 @@ local BANZAI_DISPLAY_OFFSET_Z = BANZAI_FACING_Z_FX32 / (SOURCE_MODEL_UNITS_PER_T
 -- selects animation 4). Family 10 + descriptor 13
 -- (SPRITE_BANZAIHERO/HEROINE, 200/201 via PLAYER_STATE_HEAL)
 -- ranges 1 and 2 are give/receive (states 0/1 select animations 0/1, single-level).
+-- Family 13 + descriptor 17 (SPRITE_HOU_OBJ01/LUG_OBJ01, the legendary-bird
+-- objects) holds two looping sequences picked by the object's animation
+-- number: range 1 is the idle loop, range 2 the flap.
+local LEGEND_BIRD_KEY = "13:17"
 local GESTURE_BINDINGS = {
+  [LEGEND_BIRD_KEY] = {
+    { rangeIndex = 2, name = "legend_flap", displayOffset = { x = 0, y = 0, z = 0 } },
+  },
   -- The 32-frame shake interval matches the looping 16-frame descriptor range;
   -- the 8-frame expel samples the following one-shot range. The source's
   -- numeric action parameters are opaque and are not used as clip identities.
@@ -279,7 +286,7 @@ local FACING_SHIFT_UNITS = {
   standard = { north = { x = 0, z = 0 }, south = { x = 0, z = 0 }, west = { x = 2, z = 0 }, east = { x = -2, z = 0 } },
 }
 
-local function idlePresentation(mode, modelKey)
+local function idlePresentation(mode, modelKey, looping)
   local profile = {
     mode = mode,
     cadence = mode == "animated" and 1 or 0,
@@ -288,7 +295,9 @@ local function idlePresentation(mode, modelKey)
     local units = FACING_SHIFT_UNITS[modelKey == LARGE_POKEMON_MODEL_KEY and "large" or "standard"]
     local offsets = {}
     for direction, shift in pairs(units) do
-      offsets[direction] = { x = shift.x / SOURCE_MODEL_UNITS_PER_TILE, z = shift.z / SOURCE_MODEL_UNITS_PER_TILE }
+      -- A looping idle only runs the sequence: no follower bob or facing shift.
+      offsets[direction] = looping and { x = 0, z = 0 }
+        or { x = shift.x / SOURCE_MODEL_UNITS_PER_TILE, z = shift.z / SOURCE_MODEL_UNITS_PER_TILE }
     end
     profile.facingOffsets = offsets
   end
@@ -302,8 +311,11 @@ local function idleDisplayOffset(phase)
   return 0
 end
 
-local function buildAnimatedPose(sourcePose, context)
-  if sourcePose.durationTicks ~= 20 then
+-- `looping` marks a plain sequence loop (the legendary-bird objects): any
+-- source duration, no display offsets. Follower idles are exactly 20 ticks and
+-- carry the bob.
+local function buildAnimatedPose(sourcePose, context, looping)
+  if not looping and sourcePose.durationTicks ~= 20 then
     Errors.raise(
       "FIELD_ACTOR_IDLE_DURATION_UNEXPECTED",
       "animated source duration must be 20, got " .. tostring(sourcePose.durationTicks),
@@ -316,7 +328,7 @@ local function buildAnimatedPose(sourcePose, context)
     for _ = 1, segment.ticks do
       samples[#samples + 1] = {
         frameIndex = segment.frameIndex,
-        displayOffsetY = idleDisplayOffset(tickIndex),
+        displayOffsetY = looping and 0 or idleDisplayOffset(tickIndex),
       }
       tickIndex = tickIndex + 1
     end
@@ -348,7 +360,7 @@ end
 -- (three separate callbacks) with no single generic runtime meaning, so
 -- unclaimed ranges remain producer-private and only named semantic poses are
 -- published.
-local function buildPoses(perRange, ranges, idleMode, modelKey)
+local function buildPoses(perRange, ranges, idleMode, modelKey, looping)
   local order = manifest.directionOrder
 
   local function poseFor(index)
@@ -372,7 +384,7 @@ local function buildPoses(perRange, ranges, idleMode, modelKey)
     for _, direction in ipairs(order) do
       local idle
       if idleMode == "animated" then
-        idle = buildAnimatedPose(pose, { direction = direction, pose = "idle" })
+        idle = buildAnimatedPose(pose, { direction = direction, pose = "idle" }, looping)
       else
         idle = {
           frames = { { frameIndex = pose.frames[1].frameIndex, ticks = 1, displayOffsetY = 0 } },
@@ -382,16 +394,17 @@ local function buildPoses(perRange, ranges, idleMode, modelKey)
       end
       directions[direction] = {
         idle = idle,
-        walk = idleMode == "animated" and buildAnimatedPose(pose, { direction = direction, pose = "walk" }) or pose,
+        walk = idleMode == "animated" and buildAnimatedPose(pose, { direction = direction, pose = "walk" }, looping)
+          or pose,
       }
     end
-    return directions, idlePresentation(idleMode, modelKey)
+    return directions, idlePresentation(idleMode, modelKey, looping)
   end
   for i, direction in ipairs(order) do
     local walk = poseFor(i)
     local idle
     if idleMode == "animated" then
-      idle = buildAnimatedPose(walk, { direction = direction, pose = "idle" })
+      idle = buildAnimatedPose(walk, { direction = direction, pose = "idle" }, looping)
     else
       -- Ordinary actors hold the first displayed frame of their facing range.
       idle = {
@@ -402,10 +415,11 @@ local function buildPoses(perRange, ranges, idleMode, modelKey)
     end
     directions[direction] = {
       idle = idle,
-      walk = idleMode == "animated" and buildAnimatedPose(walk, { direction = direction, pose = "walk" }) or walk,
+      walk = idleMode == "animated" and buildAnimatedPose(walk, { direction = direction, pose = "walk" }, looping)
+        or walk,
     }
   end
-  return directions, idlePresentation(idleMode, modelKey)
+  return directions, idlePresentation(idleMode, modelKey, looping)
 end
 
 local function staticDirections()
@@ -518,7 +532,8 @@ local function compileSprite(romFs, spriteId, graphics, archive, staticArchive)
     return compileStaticModel(spriteId, resolved.staticModelMemberId, staticArchive, context)
   end
   local descriptor = resolved.descriptor
-  local idleMode = IDLE_MODE_BY_ACTOR_FAMILY[record.actorFamily]
+  local looping = record.actorFamily .. ":" .. record.visualDescriptor == LEGEND_BIRD_KEY
+  local idleMode = looping and "animated" or IDLE_MODE_BY_ACTOR_FAMILY[record.actorFamily]
   if not idleMode then
     Errors.raise(
       "FIELD_ACTOR_ACTOR_FAMILY_UNSUPPORTED",
@@ -576,7 +591,7 @@ local function compileSprite(romFs, spriteId, graphics, archive, staticArchive)
   local frameSet = FieldActorFrames.collect(timeline, ranges, #pack.textures, #pack.palettes, context)
   local frames, perRange = frameSet.frames, frameSet.perRange
   local atlas = decodeAtlas(pack, frames, context)
-  local directions, idleProfile = buildPoses(perRange, ranges, idleMode, descriptor.modelKey)
+  local directions, idleProfile = buildPoses(perRange, ranges, idleMode, descriptor.modelKey, looping)
   local gestures = RIPE_APRICORN_TREE_SPRITES[spriteId] and {} or buildGestures(record, perRange, ranges, context)
 
   local placement = {

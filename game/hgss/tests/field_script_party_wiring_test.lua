@@ -118,7 +118,7 @@ local function stubOptions(partySelection, mart)
       return message
     end,
     fontDef = {},
-    audioService = nil,
+    audioService = { play = function() end, playMusic = function() end, playCry = function() end },
     loadedGame = nil,
     mons = {},
     itemCatalog = {},

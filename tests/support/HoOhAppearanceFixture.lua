@@ -25,7 +25,7 @@ function HoOhAppearanceFixture.definition()
     for variant = 0, 2 do
       models[#models + 1] = {
         key = "field-effect:ho-oh-appearance:cinematic." .. shot .. "." .. variant,
-        animations = { { id = "cinematic." .. shot .. "." .. variant .. ".trs", frameCount = 20 } },
+        animations = { { id = "cinematic." .. shot .. "." .. variant .. ".trs", frameCount = shot == "first" and 141 or 206 } },
       }
     end
   end
