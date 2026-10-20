@@ -62,6 +62,10 @@ PokedexController.FEED_MOVE_TICKS = 24
 PokedexController.FEED_RETRACT_TICKS = 20
 PokedexController.FEED_TIMEOUT_TICKS = 60
 
+-- Ordered keyboard/gamepad focus graph across the search root: the
+-- seven source criteria followed by the run and reset actions.
+local SEARCH_FOCUSABLES = { "order", "letter", "type", "shape", "area", "height", "weight", "run", "reset" }
+
 -- Scrollbar families: source thresholds map to authored thumb lengths.
 PokedexController.SCROLL_THRESHOLDS = { 15, 45, 90, 135, 180, 225, 270, 315, 360, 405, 450, 495 }
 PokedexController.SCROLL_LENGTHS = { 110, 102, 94, 86, 78, 70, 62, 54, 46, 38, 30, 22 }
@@ -262,6 +266,7 @@ function PokedexController.new(args)
     _search = PokedexSearch.new({ catalog = args.catalog, dex = dex }),
     _feedback = nil,
     _results = {},
+    _searchFocus = "order",
     _area = nil,
     _size = nil,
     _forms = nil,
@@ -950,6 +955,7 @@ function PokedexController:_handleStart()
   if self._search:isEditorOpen() then
     self._search:closeEditor(true)
     self:_bumpKey()
+    self:_runSearch()
     return
   end
   self:_runSearch()
@@ -957,6 +963,7 @@ end
 
 function PokedexController:_openSearch()
   self._search:reset()
+  self._searchFocus = "order"
   self._search:setContext({
     mode = self._mode,
     profileName = self._profileName,
@@ -1414,6 +1421,92 @@ function PokedexController:_cycleLanguage()
   end
 end
 
+---@param direction string navigate direction
+---@return integer focus step across the search graph
+local function searchFocusStep(direction)
+  if direction == "up" or direction == "left" then
+    return -1
+  end
+  return 1
+end
+
+---@param delta integer signed focus step
+function PokedexController:_moveSearchFocus(delta)
+  local index = 1
+  for position, name in ipairs(SEARCH_FOCUSABLES) do
+    if name == self._searchFocus then
+      index = position
+    end
+  end
+  index = (index + delta - 1) % #SEARCH_FOCUSABLES + 1
+  self._searchFocus = SEARCH_FOCUSABLES[index]
+  self:_bumpKey()
+end
+
+-- Moves the open editor focus one step without staging anything: option
+-- editors walk their projected option list, skipping the locked Kanto
+-- scope, while slider editors switch endpoint on up/down.
+---@param delta integer signed focus step
+---@param direction string navigate direction
+function PokedexController:_moveEditorFocus(delta, direction)
+  local editor = self._search:editorView()
+  if editor == nil then
+    return
+  end
+  local kind = editor.criterion
+  if kind == "height" or kind == "weight" then
+    if direction == "up" then
+      self._search:setSliderEndpoint("min")
+      self:_bumpKey()
+    elseif direction == "down" then
+      self._search:setSliderEndpoint("max")
+      self:_bumpKey()
+    elseif direction == "left" or direction == "right" then
+      local endpoint = editor.endpoint
+      if endpoint ~= "min" and endpoint ~= "max" then
+        endpoint = "min"
+      end
+      self._search:stepSlider(kind, endpoint, searchFocusStep(direction))
+      self:_bumpKey()
+    end
+    return
+  end
+  local options = self._search:editorOptions(kind)
+  if #options == 0 then
+    return
+  end
+  local index = 1
+  for position, option in ipairs(options) do
+    if option == editor.focus then
+      index = position
+    end
+  end
+  for _ = 1, #options do
+    index = (index + delta - 1) % #options + 1
+    local choice = options[index]
+    if choice ~= "kanto" or kind ~= "area" or self._nationalUnlocked == true then
+      self._search:focusOption(choice)
+      self:_bumpKey()
+      return
+    end
+  end
+end
+
+function PokedexController:_confirmSearchFocus()
+  local focus = self._searchFocus
+  if focus == "run" then
+    self:_runSearch()
+    return
+  end
+  if focus == "reset" then
+    self._search:reset()
+    self:_bumpKey()
+    return
+  end
+  self._search:openEditor(focus)
+  self:_bumpKey()
+end
+
 ---@param event table<string, unknown>
 function PokedexController:_handleSearch(event)
   if self._search:isEditorOpen() then
@@ -1421,19 +1514,55 @@ function PokedexController:_handleSearch(event)
     return
   end
   if event.type == "navigate" then
-    return
+    self:_moveSearchFocus(searchFocusStep(event.direction))
+  elseif event.type == "confirm" then
+    self:_confirmSearchFocus()
   elseif event.type == "activate" and event.action == "criterion" then
     if type(event.value) == "string" then
-      self._search:openEditor(event.value)
-      self:_bumpKey()
+      local known = false
+      for _, name in ipairs(SEARCH_FOCUSABLES) do
+        if name == event.value then
+          known = true
+        end
+      end
+      if known then
+        self._searchFocus = event.value
+        self._search:openEditor(event.value)
+        self:_bumpKey()
+      end
     end
   elseif event.type == "activate" and (event.action == "search-run" or event.action == "editor-ok") then
     self:_runSearch()
+  elseif event.type == "activate" and event.action == "search-reset" then
+    self._search:reset()
+    self:_bumpKey()
   end
 end
 
 ---@param event table<string, unknown>
 function PokedexController:_handleEditor(event)
+  local editor = self._search:editorView()
+  if editor == nil then
+    return
+  end
+  local kind = editor.criterion
+  if event.type == "navigate" then
+    self:_moveEditorFocus(searchFocusStep(event.direction), event.direction)
+    return
+  end
+  if event.type == "confirm" then
+    if kind == "height" or kind == "weight" then
+      self._search:closeEditor(true)
+      self:_bumpKey()
+    else
+      local focus = editor.focus
+      if type(focus) == "string" then
+        self._search:choose(focus)
+        self:_bumpKey()
+      end
+    end
+    return
+  end
   if event.type == "activate" and event.action == "editor-choice" then
     if type(event.value) == "string" then
       self._search:choose(event.value)
@@ -1940,11 +2069,15 @@ function PokedexController:view()
   elseif self._page == "search" then
     snapshot.search = {
       criteria = self._search:criteria(),
-      focus = "order",
+      focus = self._searchFocus,
       previousColumn = "criteria",
     }
     local editor = self._search:editorView()
     if editor ~= nil then
+      local kind = editor.criterion
+      if kind ~= "height" and kind ~= "weight" then
+        editor.options = self._search:editorOptions(kind)
+      end
       snapshot.search.editor = editor
       snapshot.search.focus = editor.focus
       snapshot.search.previousColumn = editor.previousColumn

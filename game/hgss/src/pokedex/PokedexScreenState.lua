@@ -25,6 +25,9 @@ local PokedexInterface = require("game.hgss.src.pokedex.PokedexInterface")
 ---@field _preparationError string? nonempty cause behind the failed phase
 ---@field _compact { inspect: boolean, prosePage: integer, size: string } private compact presentation record
 ---@field _compactMode boolean true while the measured display uses the compact arrangement
+---@field _pointerHeld boolean true while an in-flight drag holds touch across ticks
+---@field _activeDragTarget string? in-flight drag target behind transactional cancel
+---@field _lastInputKey string? last published plan input geometry behind resize clears
 ---@field _terminal table<string, unknown>? observed one-use close result
 ---@field _disposed boolean
 ---@field page string current top-level page mirrored for host readers
@@ -186,6 +189,16 @@ local function resolvePlan(self)
   if not ok then
     return
   end
+  local planOk, currentPlan = pcall(self._session.plan, self._session)
+  if planOk and type(currentPlan) == "table" and type(currentPlan.inputKey) == "string" then
+    -- A geometry change drops the held gesture before it can act on
+    -- stale coordinates; the session already queued the cancellation.
+    if self._lastInputKey ~= nil and currentPlan.inputKey ~= self._lastInputKey then
+      self._pointerHeld = false
+      self._activeDragTarget = nil
+    end
+    self._lastInputKey = currentPlan.inputKey
+  end
 end
 
 ---@param self PokedexScreenState
@@ -209,7 +222,7 @@ end
 local function consumeBatch(self, mapped)
   local model = {}
   local held = { left = false, right = false, touch = false }
-  local captureTouch = false
+  local touchNow = false
   for _, event in ipairs(mapped) do
     if type(event) == "table" and event.type == "held" and type(event.directions) == "table" then
       local directions = event.directions
@@ -233,29 +246,59 @@ local function consumeBatch(self, mapped)
     elseif type(event) == "table" and event.type == "cancel" and self._compact.inspect then
       self._compact.inspect = false
       self._compact.prosePage = 1
-    elseif type(event) == "table" and event.type == "pointer_down" then
-      captureTouch = true
+    elseif type(event) == "table" and event.type == "pointer_cancel" then
+      -- A lost capture ends the in-flight gesture transactionally: the
+      -- controller restores the pre-drag bound instead of keeping a
+      -- stale drag, then observes the cancellation itself.
+      if self._activeDragTarget ~= nil then
+        model[#model + 1] = { type = "drag", target = self._activeDragTarget, phase = "cancel" }
+        self._activeDragTarget = nil
+      end
+      self._pointerHeld = false
       model[#model + 1] = event
-    elseif type(event) == "table" and (event.type == "pointer_up" or event.type == "pointer_cancel") then
-      captureTouch = false
+    elseif type(event) == "table" and event.type == "drag" then
+      if event.phase == "begin" or event.phase == "move" then
+        self._pointerHeld = true
+        if type(event.target) == "string" then
+          self._activeDragTarget = event.target
+        end
+        touchNow = true
+      else
+        if self._activeDragTarget == nil or self._activeDragTarget == event.target then
+          self._activeDragTarget = nil
+        end
+        self._pointerHeld = false
+      end
+      model[#model + 1] = event
+    elseif type(event) == "table" and event.type == "activate" then
+      -- A tap reports its momentary touch for this tick only: only an
+      -- in-flight drag latches the held press across frame boundaries.
+      touchNow = true
       model[#model + 1] = event
     else
       model[#model + 1] = event
     end
   end
   if self._compact.inspect then
-    -- The expanded information panel owns all input while open: source
-    -- navigation, selection, search, and resume stay unchanged and hidden
-    -- content stays inert.
+    -- The expanded information panel owns all input while open: every
+    -- background command stays inert and only the toggle, the close,
+    -- the capture lifecycle, and the held record flow through.
     local shielded = {}
     for _, event in ipairs(model) do
-      if type(event) ~= "table" or (event.type ~= "navigate" and event.type ~= "confirm") then
+      if type(event) ~= "table" then
+        shielded[#shielded + 1] = event
+      elseif
+        event.type == "inspect"
+        or event.type == "cancel"
+        or event.type == "pointer_cancel"
+        or event.type == "held"
+      then
         shielded[#shielded + 1] = event
       end
     end
     model = shielded
   end
-  held.touch = captureTouch
+  held.touch = touchNow or self._pointerHeld
   model[#model + 1] = { type = "held", left = held.left, right = held.right, touch = held.touch }
   return model
 end
@@ -352,6 +395,9 @@ function PokedexScreenState.new(args)
     _preparationError = nil,
     _compact = { inspect = false, prosePage = 1, size = "weight" },
     _compactMode = false,
+    _pointerHeld = false,
+    _activeDragTarget = nil,
+    _lastInputKey = nil,
     _terminal = nil,
     _disposed = false,
   }, PokedexScreenState)
@@ -453,6 +499,8 @@ end
 -- activates.
 function PokedexScreenState:cancelPointerCapture()
   local ok, _ = pcall(self._session.cancelPointers, self._session)
+  self._pointerHeld = false
+  self._activeDragTarget = nil
   if not ok then
     return
   end
@@ -468,6 +516,8 @@ function PokedexScreenState:dispose()
   end
   self._disposed = true
   self._terminal = nil
+  self._pointerHeld = false
+  self._activeDragTarget = nil
   self._session:dispose()
   self._controller:dispose()
   self._lease:release()

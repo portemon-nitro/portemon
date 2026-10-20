@@ -339,4 +339,149 @@ function T.search_editors_and_comparison_resolve_their_own_page_roles()
   screen:dispose()
 end
 
+
+-- Wraps a live browser controller while recording the exact model batch
+-- each fixed update admits: the held record and gesture edges stay
+-- observable without replacing the production policy owner.
+---@param controller table live browser controller under test
+---@return table spy wrapper, table recorded batches
+local function spyController(controller)
+  local batches = {}
+  local spy = {}
+  function spy:updateFixed(events, preparation)
+    batches[#batches + 1] = events
+    return controller:updateFixed(events, preparation)
+  end
+  function spy:view()
+    return controller:view()
+  end
+  function spy:drainEffects()
+    return controller:drainEffects()
+  end
+  function spy:takeResult()
+    return controller:takeResult()
+  end
+  function spy:cancelPointerCapture()
+    return controller:cancelPointerCapture()
+  end
+  function spy:dispose()
+    return controller:dispose()
+  end
+  return spy, batches
+end
+
+---@param batches table recorded model batches
+---@return table? the most recent held record
+local function lastHeld(batches)
+  for index = #batches, 1, -1 do
+    for _, event in ipairs(batches[index]) do
+      if type(event) == "table" and event.type == "held" then
+        return event
+      end
+    end
+  end
+  return nil
+end
+
+function T.held_touch_survives_frame_boundaries_until_the_gesture_ends()
+  local ScreenState = requirePresent("stable held pointer tracking")
+  local monCatalog, catalog = Fixture.catalogs()
+  local owner = Fixture.ownerWithHistory(monCatalog, catalog)
+  local live = Fixture.openController(owner, monCatalog, catalog)
+  local controller, batches = spyController(live)
+  local ScreenTopology = require("libs.ui.src.ScreenTopology")
+  local args = screenArgs({
+    controller = controller,
+    measureDisplay = function()
+      return {
+        width = 512,
+        height = 384,
+        topology = ScreenTopology.dualDisplay({
+          id = "main",
+          rect = { x = 0, y = 0, width = 256, height = 192 },
+          touch = true,
+          role = "world",
+        }, {
+          id = "lower",
+          rect = { x = 0, y = 192, width = 256, height = 192 },
+          touch = true,
+          role = "auxiliary",
+        }),
+        pixelRatio = 1,
+        signature = "pokedex-screen-held-test:dual",
+      }
+    end,
+  })
+  local screen = ScreenState.new(args)
+  -- The cover drag is the observable held gesture: down begins it on the
+  -- controls pane of the wide layout.
+  local status = screen:status()
+  local plan = assert(status.presentation, "the screen publishes its resolved plan")
+  local origin = nil
+  for _, pane in ipairs(plan.panes) do
+    if pane.id == "controls" then
+      local placement = assert(pane.placement, "browser panes carry their placement")
+      origin = placement.origin or placement.frame
+    end
+  end
+  Assert.notNil(origin, "the resolved plan carries the controls pane")
+  screen:updateFixed({ { type = "pointer_down", x = origin.x + 100, y = origin.y + 100, pointerId = 7 } })
+  local held = lastHeld(batches)
+  Assert.notNil(held, "the gesture tick carries its held record")
+  Assert.isTrue(held.touch, "the drag begin reports its held touch")
+  screen:updateFixed({})
+  held = lastHeld(batches)
+  Assert.notNil(held, "the following tick carries its held record")
+  Assert.isTrue(held.touch, "held touch survives frame boundaries while captured")
+  screen:updateFixed({ { type = "pointer_up", x = origin.x + 190, y = origin.y + 100, pointerId = 7 } })
+  screen:updateFixed({})
+  held = lastHeld(batches)
+  Assert.notNil(held, "the release tick carries its held record")
+  Assert.isFalse(held.touch, "the gesture end clears the held touch")
+  screen:dispose()
+end
+
+function T.compact_inspector_shields_every_background_input()
+  local ScreenState = requirePresent("comprehensive inspector shielding")
+  local gate = { open = false }
+  local bundle = { animations = {}, chrome = {}, pictures = {}, surfaces = {}, fonts = {}, messages = {} }
+  local lease = { prepared = {}, released = 0 }
+  function lease:prepare(demand)
+    assert(type(demand) == "table" and demand.key ~= nil, "the screen prepares keyed demands")
+    self.prepared[#self.prepared + 1] = demand
+    if gate.open then
+      return { kind = "ready", key = demand.key, assets = bundle }
+    end
+    return { kind = "pending" }
+  end
+  function lease:release()
+    self.released = self.released + 1
+  end
+  local args = screenArgs({
+    lease = lease,
+    measureDisplay = function()
+      return { width = 256, height = 192, layout = "compact" }
+    end,
+  })
+  local screen = ScreenState.new(args)
+  gate.open = true
+  screen:updateFixed({})
+  screen:updateFixed({ { type = "confirm" } })
+  Assert.equal(screen:status().view.page, "grid", "the committed cover admits its confirm")
+  screen:updateFixed({ { type = "inspect" } })
+  Assert.isTrue(screen:status().compact.inspect, "the inspect action opens the panel")
+  local key = screen:status().view.key
+  screen:updateFixed({ { type = "activate", action = "grid-slot", value = 0 } })
+  Assert.equal(screen:status().view.key, key, "grid taps never act through the inspector")
+  Assert.equal(screen:status().view.page, "grid", "grid taps never leave through the inspector")
+  screen:updateFixed({ { type = "activate", action = "search" } })
+  Assert.equal(screen:status().view.page, "grid", "search actions never act through the inspector")
+  screen:updateFixed({ { type = "navigate", direction = "right" } })
+  Assert.equal(screen:status().view.key, key, "navigation never acts through the inspector")
+  screen:updateFixed({ { type = "cancel" } })
+  Assert.isFalse(screen:status().compact.inspect, "cancelling closes the panel")
+  Assert.equal(screen:status().view.page, "grid", "closing the panel is not a screen close")
+  screen:dispose()
+end
+
 return { tests = T }

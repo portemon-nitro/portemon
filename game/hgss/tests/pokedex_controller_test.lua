@@ -778,4 +778,75 @@ function T.area_pan_returns_to_johto_and_pins_without_national()
   johtoOnly:dispose()
 end
 
+
+function T.search_keyboard_focus_traverses_criteria_and_confirms()
+  local PokedexController = requirePresent("source search keyboard focus")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true })
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 })
+  observe(owner, monCatalog, { species = "TOTODILE", personality = 0 })
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  press(controller, { { type = "y" } })
+  Assert.equal(controller:view().page, "search", "grid Y reaches the criteria root")
+  Assert.equal(controller:view().search.focus, "order", "search focus starts on the order criterion")
+  press(controller, { { type = "navigate", direction = "down" } })
+  Assert.equal(controller:view().search.focus, "letter", "search focus steps to the letter criterion")
+  press(controller, { { type = "confirm" } })
+  local editorView = controller:view().search.editor
+  Assert.notNil(editorView, "confirm opens the focused criterion editor")
+  Assert.equal(editorView.criterion, "letter", "confirm opens the focused letter editor")
+  local firstOption = controller:view().search.editor.focus
+  press(controller, { { type = "navigate", direction = "down" } })
+  Assert.isTrue(
+    controller:view().search.editor.focus ~= firstOption,
+    "search focus steps within the open editor options"
+  )
+  press(controller, { { type = "confirm" } })
+  press(controller, { { type = "cancel" } })
+  Assert.isNil(controller:view().search.editor, "cancelling closes the editor without running")
+  Assert.equal(controller:view().page, "search", "cancelling the editor returns to criteria")
+  press(controller, { { type = "start" } })
+  Assert.notNil(controller:view().search.feedback, "search start enters the feedback sequence")
+  controller:dispose()
+end
+
+function T.search_reset_restores_criteria_without_leaving_search()
+  local PokedexController = requirePresent("search reset action")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true })
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 })
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  press(controller, { { type = "y" } })
+  press(controller, {
+    { type = "activate", action = "criterion", value = "letter" },
+    { type = "activate", action = "editor-choice", value = "C" },
+    { type = "activate", action = "editor-ok" },
+  })
+  idle(controller, 2)
+  Assert.equal(controller:view().search.criteria.letter, "c", "the editor choice stages its criterion")
+  press(controller, { { type = "activate", action = "search-reset" } })
+  Assert.equal(controller:view().page, "search", "reset stays on the criteria root")
+  Assert.isNil(controller:view().search.criteria.letter, "reset clears the staged letter")
+  controller:dispose()
+end
+
+function T.search_editor_projects_its_option_list_for_touch_selection()
+  local PokedexController = requirePresent("search editor option projection")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true })
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 })
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  press(controller, { { type = "y" } })
+  press(controller, { { type = "activate", action = "criterion", value = "letter" } })
+  local editor = controller:view().search.editor
+  Assert.notNil(editor, "the letter editor opens")
+  Assert.notNil(editor.options, "the editor projects its touch option list")
+  Assert.equal(editor.options[1], "unrestricted", "the option list starts unrestricted")
+  Assert.equal(editor.options[2], "A", "the option list carries the source letters")
+  controller:dispose()
+end
+
 return { tests = T }

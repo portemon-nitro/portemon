@@ -384,6 +384,52 @@ function PokedexSearch:choose(choice)
   fail("search choices need an option editor", { editor = kind })
 end
 
+-- Moves the open editor focus without staging anything: keyboard and
+-- gamepad navigation walk the projected option list while touch chooses
+-- directly. The locked Kanto scope never takes focus.
+---@param choice string option to focus
+function PokedexSearch:focusOption(choice)
+  if self._editor == nil then
+    fail("search focuses inside an open editor", {})
+  end
+  assert(type(self._editor) == "table", "search reads its open editor")
+  local kind = self._editor.kind
+  if kind == "height" or kind == "weight" then
+    fail("search slider editors focus their endpoint instead", { editor = kind })
+  end
+  local known = false
+  for _, option in ipairs(self:editorOptions(kind)) do
+    if option == choice then
+      known = true
+    end
+  end
+  if not known then
+    fail("search focuses a projected option", { editor = kind })
+  end
+  if kind == "area" and choice == "kanto" and self._nationalUnlocked ~= true then
+    return
+  end
+  self._editor.focus = choice
+end
+
+-- Switches the open slider endpoint without moving its bound: up/down
+-- navigation selects which bound arrows and drags adjust.
+---@param endpoint string min or max endpoint
+function PokedexSearch:setSliderEndpoint(endpoint)
+  if self._editor == nil then
+    fail("search endpoints switch inside an open slider editor", {})
+  end
+  assert(type(self._editor) == "table", "search reads its open editor")
+  local kind = self._editor.kind
+  if kind ~= "height" and kind ~= "weight" then
+    fail("search endpoints switch inside a slider editor", { editor = kind })
+  end
+  if endpoint ~= "min" and endpoint ~= "max" then
+    fail("search sliders name a min or max endpoint", { endpoint = endpoint })
+  end
+  self._editor.endpoint = endpoint
+end
+
 ---@param count integer completed operations including the new one
 ---@return integer authored step for that operation
 local function arrowStep(count)

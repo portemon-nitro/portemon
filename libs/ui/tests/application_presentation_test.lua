@@ -985,4 +985,35 @@ function T.tests.a_clip_only_reflow_cancels_the_held_press_once()
   Assert.isTrue(leafCalls >= 2, "the fresh press reaches the leaf mapper")
 end
 
+function T.tests.content_pointer_edges_carry_their_known_pane_identity()
+  local session = stubSession()
+  local view = {}
+  session:resolve(stubMeasurement(256, 192), view)
+  local down = session:mapInput({ { type = "pointer_down", pointerId = "touch:1", x = 10, y = 10 } }, view)
+  Assert.equal(#down, 1, "the down reaches the leaf mapper")
+  Assert.equal(down[1].paneId, "content", "content edges carry their known pane identity")
+  Assert.equal(down[1].x, 10, "the pane identity never moves the converted x")
+  Assert.equal(down[1].y, 10, "the pane identity never moves the converted y")
+  local move = session:mapInput({ { type = "pointer_move", pointerId = "touch:1", x = 12, y = 14 } }, view)
+  Assert.equal(#move, 1, "the captured move reaches the leaf mapper")
+  Assert.equal(move[1].paneId, "content", "captured moves carry their known pane identity")
+  Assert.equal(move[1].x, 12, "captured moves keep their converted x")
+  Assert.equal(move[1].y, 14, "captured moves keep their converted y")
+  local up = session:mapInput({ { type = "pointer_up", pointerId = "touch:1", x = 12, y = 14 } }, view)
+  Assert.equal(#up, 1, "the release reaches the leaf mapper")
+  Assert.equal(up[1].paneId, "content", "releases carry their known pane identity")
+end
+
+function T.tests.outside_and_cancel_paths_gain_no_pane_identity()
+  local session = stubSession()
+  local view = {}
+  session:resolve(stubMeasurement(256, 192), view)
+  local outside = session:mapInput({ { type = "pointer_down", pointerId = "touch:9", x = 400, y = 400 } }, view)
+  Assert.equal(#outside, 1, "outside presses still reach the leaf mapper")
+  Assert.isNil(outside[1].paneId, "outside presses carry no pane identity")
+  local cancel = session:mapInput({ { type = "pointer_cancel", pointerId = "touch:9" } }, view)
+  Assert.equal(#cancel, 1, "cancellations still flow")
+  Assert.isNil(cancel[1].paneId, "cancellations carry no pane identity")
+end
+
 return T

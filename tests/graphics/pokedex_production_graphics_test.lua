@@ -769,6 +769,139 @@ function T.native_panes_draw_both_information_and_controls_at_source_size(scope)
   end)
 end
 
+function T.compact_single_display_paints_fifteen_icons_portrait_and_footer(scope)
+  local Renderer = requireRenderer("compact single-display reflow")
+  local Interface = requireInterface("compact plan geometry")
+  requireOwner("prepared bundles behind the compact panes")
+  local versionId = readyVersion()
+  local pool = SharedImagePoolFake.new()
+  withPool(pool, function()
+    local rig = graphicsRig(versionId, pool, scope)
+    local dexOwner = Fixture.ownerWithHistory(rig.monCatalog, rig.catalog)
+    local controller = Fixture.openController(dexOwner, rig.monCatalog, rig.catalog)
+    openGrid(controller)
+    selectSpecies(controller, "TOTODILE")
+    local view = controller:view()
+    local demand = browserDemandFor(Renderer, view)
+    -- Every staged seen icon gets a distinct solid color so all fifteen
+    -- compact centers are attributable without blending ambiguity.
+    local staged = {}
+    for _, entry in ipairs(view.grid.buffers[1].entries) do
+      if type(entry) == "table" and entry.seen == true and type(entry.species) == "string" then
+        staged[#staged + 1] = entry.species
+      end
+    end
+    Assert.isTrue(#staged >= 4, "the grid stages seen species for the compact pass")
+    for index, species in ipairs(staged) do
+      local shade = (index * 37) % 200 + 55
+      seedIcon(pool, species .. "/f0", shade / 255, 0, 0)
+    end
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "grid")
+    local lease = rig.owner:acquire({ purpose = "browser" })
+    local assets = prepareReady(rig, lease, demand)
+    local measurement = measurementFor("nativeLike")
+    local plan = resolvePlan(Interface.browser(), measurement, planViewOf(view))
+    local compact = assert(plan.content.pokedexCompact, "the compact plan publishes its geometry record")
+    local resources = { graphics = love.graphics, renderer = assets.renderer }
+    local data = drawPlan(scope, plan, resources, preparedBrowserView(view, assets), 256, 192)
+    local info = placementOf(plan, "information")
+    local controls = placementOf(plan, "controls")
+    local grid = assert(compact.grid, "the compact record carries its grid")
+    for slot = 0, 14 do
+      local rect = assert(grid.iconRects[slot + 1], "the compact grid stages slot " .. slot)
+      local entry = view.grid.buffers[1].entries[slot + 1]
+      if type(entry) == "table" and entry.seen == true and type(entry.species) == "string" then
+        local expected = nil
+        for index, species in ipairs(staged) do
+          if species == entry.species then
+            expected = (index * 37) % 200 + 55
+          end
+        end
+        Assert.notNil(expected, "the staged species carries its seeded color")
+        if entry.caught == true then
+          assertPixel(
+            data,
+            info.origin.x + rect.x + 16,
+            info.origin.y + rect.y + 16,
+            expected,
+            0,
+            0,
+            "compact slot " .. slot .. " paints its caught icon"
+          )
+        else
+          local infoLayers = bgLayersFor(rig.cacheFs, rig.manifest, "grid", "information")
+          local infoPri = Renderer.layerPrioritiesOf(rig.manifest, "grid", "information")
+          local br, bg, bb = expectedBackground(infoLayers, infoPri, Renderer.backdropOf(rig.manifest, "grid", "information"), rect.x + 16, rect.y + 16)
+          assertPixel(
+            data,
+            info.origin.x + rect.x + 16,
+            info.origin.y + rect.y + 16,
+            blendByteOracle(expected, br, 6, 10),
+            blendByteOracle(0, bg, 6, 10),
+            blendByteOracle(0, bb, 6, 10),
+            "compact slot " .. slot .. " blends its seen-only icon"
+          )
+        end
+      else
+        local infoLayers = bgLayersFor(rig.cacheFs, rig.manifest, "grid", "information")
+        local infoPri = Renderer.layerPrioritiesOf(rig.manifest, "grid", "information")
+        local er, eg, eb = expectedBackground(infoLayers, infoPri, Renderer.backdropOf(rig.manifest, "grid", "information"), rect.x + 16, rect.y + 16)
+        assertPixel(
+          data,
+          info.origin.x + rect.x + 16,
+          info.origin.y + rect.y + 16,
+          er,
+          eg,
+          eb,
+          "compact slot " .. slot .. " paints no icon over its blank cell"
+        )
+      end
+    end
+    local portrait = assert(compact.portraitRect, "the compact record carries its portrait")
+    local selectedSlot = nil
+    for index, entry in ipairs(view.grid.buffers[1].entries) do
+      if type(entry) == "table" and entry.species == view.selection.species then
+        selectedSlot = index
+      end
+    end
+    Assert.notNil(selectedSlot, "the selection stages on the visible grid")
+    local selectedSpecies = assert(view.selection.species, "the compact portrait selects a species")
+    local expectedPortrait = nil
+    for index, species in ipairs(staged) do
+      if species == selectedSpecies then
+        expectedPortrait = (index * 37) % 200 + 55
+      end
+    end
+    Assert.notNil(expectedPortrait, "the selected species carries its seeded color")
+    assertPixel(
+      data,
+      info.origin.x + portrait.x + 40,
+      info.origin.y + portrait.y + 40,
+      expectedPortrait,
+      0,
+      0,
+      "the compact portrait paints the selected specimen"
+    )
+    local footer = assert(compact.footer, "the compact record carries its footer")
+    Assert.isTrue(#footer.buttons >= 2, "the compact footer exposes its actions")
+    for _, button in ipairs(footer.buttons) do
+      assertPixel(
+        data,
+        controls.origin.x + button.x + math.floor(button.width / 2),
+        controls.origin.y + math.floor(button.height / 2),
+        88,
+        140,
+        196,
+        "the compact footer button " .. button.id .. " paints its action chrome"
+      )
+    end
+    lease:release()
+    controller:dispose()
+    rig.owner:release()
+    Assert.equal(pool:stats().outstandingLeases, 0, "the compact journey returns every borrowed interest")
+  end)
+end
+
 function T.all_layouts_resolve_prepared_browser_pixels(scope)
   local Renderer = requireRenderer("paired and compact layout rasterization")
   local Interface = requireInterface("all four layout cases")
