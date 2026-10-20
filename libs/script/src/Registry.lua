@@ -9,6 +9,7 @@
 -- bases through the private `_load` memoization stays live.
 -- Pure domain module: no love dependency.
 
+local AssetNeeds = require("libs.script.src.AssetNeeds")
 local Errors = require("libs.errors.src.Errors")
 local ScriptErrors = require("libs.script.src.errors")
 
@@ -16,6 +17,7 @@ local ScriptErrors = require("libs.script.src.errors")
 ---@field private _bases table<string, table<string, unknown>> id -> layer -> script
 ---@field private _version integer
 ---@field private _sealed boolean
+---@field private _overrideNeeds { version: integer, byId: table<string, string[]> }? override-layer asset needs memoized per mutation version
 ---@field private _loadResource fun(id: string, layer: string): table<string, unknown>|nil, unknown?|nil
 local Registry = {}
 Registry.__index = Registry
@@ -159,6 +161,35 @@ function Registry:base(id)
     script = self:_load(id, layer)
   end
   return script
+end
+
+-- The asset needs of an id's override-layer resource, or nil when the id has
+-- no override. The published index closure only describes the generated
+-- scripts; an override replaces one after the fact, so its own ops decide
+-- what it needs. A deferred override decodes through the resource loader;
+-- the result is memoized until the registry mutates.
+---@param id string
+---@return string[]?
+function Registry:overrideAssetNeeds(id)
+  local layers = self._bases[id]
+  if layers == nil or layers.override == nil then
+    return nil
+  end
+  local memo = self._overrideNeeds
+  if memo == nil or memo.version ~= self._version then
+    memo = { version = self._version, byId = {} }
+    self._overrideNeeds = memo
+  end
+  local needs = memo.byId[id]
+  if needs == nil then
+    local resource = layers.override
+    if resource == PENDING then
+      resource = self:_load(id, "override")
+    end
+    needs = AssetNeeds.forResource(resource)
+    memo.byId[id] = needs
+  end
+  return needs
 end
 
 -- All ids with any installed base, sorted.
