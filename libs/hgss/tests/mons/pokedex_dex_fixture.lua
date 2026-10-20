@@ -56,9 +56,16 @@ PokedexDexFixture.COMPLETION_JOHTO = { "CHIKORITA", "CUSTOM_IN" }
 PokedexDexFixture.COMPLETION_NATIONAL = { "CHIKORITA", "TOTODILE", "EEVEE", "CUSTOM_IN" }
 PokedexDexFixture.OUTSIDE_KEYS = { "CUSTOM_OUT_A", "CUSTOM_OUT_B" }
 
+-- Policy-family identities use their true ROM species identities (decomp
+-- species.h at the pinned pokeheartgold snapshot, mirrored by the
+-- producer MonSources table): ROM-gated legs resolve entry text, cries,
+-- and portraits behind these numbers, so synthetic 901+ identities would
+-- fall outside every owned bank range. Coverage intent is unchanged:
+-- personalities, forms, and policies below carry the test meaning, and
+-- the CUSTOM_* boundary keys keep synthetic out-of-range identities.
 local EXTRA_SPECIES = {
-  { name = "SPINDA", nativeId = 901, genderRatio = 127, forms = 1 },
-  { name = "UNOWN", nativeId = 902, genderRatio = 255, forms = 28 },
+  { name = "SPINDA", nativeId = 327, genderRatio = 127, forms = 1 },
+  { name = "UNOWN", nativeId = 201, genderRatio = 255, forms = 28 },
   { name = "CASTFORM", nativeId = 903, genderRatio = 127, forms = 4 },
   { name = "CHERRIM", nativeId = 904, genderRatio = 127, forms = 2 },
   { name = "SHELLOS", nativeId = 905, genderRatio = 127, forms = 2 },

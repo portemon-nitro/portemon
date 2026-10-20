@@ -1207,10 +1207,9 @@ function T.spinda_spots_match_the_authored_masks(scope)
     openEntry(controller)
     local view = controller:view()
     local demand = browserDemandFor(Renderer, view)
-    -- The spot contract needs no text: the fixture Spinda identity sits
-    -- outside the real ROM bank range, so entry strings stay out of this
-    -- demand instead of failing preparation on an unrelated owner.
-    demand.text = {}
+    -- Entry strings resolve through the real banks behind the
+    -- fixture's ROM identities, so the demand keeps its text: dropping
+    -- it would hide bank-range failures on an unrelated owner.
     local pageBySelector = seedPortraits(pool, rig.cacheFs, rig.monCatalog, demand, true)
     -- The shared base stays bit-identical behind every composition: the
     -- renderer samples it without mutation, disk, or PID keying.

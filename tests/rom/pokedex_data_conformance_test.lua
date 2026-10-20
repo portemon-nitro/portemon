@@ -687,6 +687,51 @@ function T.presentation_rejects_invalid_source_association(romFs, versionId)
   Assert.isNil(sink.assets, "a failed compilation stages no images")
 end
 
+-- Fixture policy identities stay within the ROM bank ranges: the
+-- synthetic dex fixture names Spinda and Unown for spot-boundary and
+-- form-exhaustiveness coverage, so their stable catalog identities must
+-- resolve real name, category, flavor, height, and weight entries on
+-- every owned dump instead of failing ROM-gated preparation.
+function T.fixture_policy_identities_resolve_within_rom_bank_ranges(romFs, versionId)
+  local PokedexCatalogCompiler = requireProducer()
+  local catalog = compileCatalog(romFs, versionId, PokedexCatalogCompiler)
+  local DexFixture = require("libs.hgss.tests.mons.pokedex_dex_fixture")
+  local monCatalog = DexFixture.makeCatalog()
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local FieldMessageProvider = require("libs.hgss.src.interaction.FieldMessageProvider")
+  local cacheFs = CacheFs.forVersion(versionId)
+  Assert.notNil(cacheFs, versionId .. " exposes its prepared cache")
+  local provider = FieldMessageProvider.new(cacheFs)
+  local bindings = assert(catalog.textBindings, versionId .. " binds its text roles")
+  local native = assert(bindings.entryByLanguage.native, versionId .. " binds its native entry banks")
+  local base = assert(bindings.measureByProfile.base, versionId .. " binds its base measure banks")
+  local banks = {
+    native.nameBankId,
+    native.categoryBankId,
+    native.flavorBankId,
+    base.heightBankId,
+    base.weightBankId,
+  }
+  for _, key in ipairs({ "SPINDA", "UNOWN" }) do
+    local species = monCatalog:species(key)
+    Assert.notNil(species, "the fixture catalog names " .. key)
+    local nativeId = assert(species.nativeId, "the fixture " .. key .. " carries its stable identity")
+    for _, bankId in ipairs(banks) do
+      Assert.isTrue(provider:acquireBank(bankId), versionId .. " acquires bank " .. bankId)
+      local template = provider:get(bankId, nativeId)
+      Assert.notNil(
+        template,
+        versionId .. " resolves " .. key .. " in bank " .. bankId .. " entry " .. nativeId
+      )
+      Assert.isTrue(
+        type(template.text) == "string" and template.text ~= "",
+        versionId .. " carries source text for " .. key .. " in bank " .. bankId
+      )
+    end
+  end
+  provider:dispose()
+end
+
 local suite = RomSuite.fromFacts(T)
 suite.metadata.capabilities = { "rom_dump" }
 suite.metadata.tags = { "pokedex" }
