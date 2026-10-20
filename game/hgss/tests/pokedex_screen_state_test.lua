@@ -12,8 +12,103 @@ local SCREEN_MODULE = "game.hgss.src.pokedex.PokedexScreenState"
 
 local T = {}
 
----@param behavior string missing screen behavior under test
----@return table the loaded per-open screen owner
+---@param gate table open flag behind the gateable lease
+---@param template table committed bundle fields behind ready outcomes
+---@return table lease gateable preparation lease double minting one fresh bundle per ready demand
+local function gateableLease(gate, template)
+  local lease = { prepared = {}, released = 0 }
+  function lease:prepare(demand)
+    assert(type(demand) == "table" and demand.key ~= nil, "the screen prepares keyed demands")
+    self.prepared[#self.prepared + 1] = demand
+    if gate.open then
+      local assets = { generation = demand.key }
+      if type(template) == "table" then
+        for key, value in pairs(template) do
+          assets[key] = value
+        end
+      end
+      assets.generation = demand.key
+      return { kind = "ready", key = demand.key, assets = assets }
+    end
+    return { kind = "pending" }
+  end
+  function lease:release()
+    self.released = self.released + 1
+  end
+  return lease
+end
+
+-- Wraps a live browser controller while recording the exact model batch
+-- each fixed update admits: the held record and gesture edges stay
+-- observable without replacing the production policy owner.
+---@param controller table live browser controller under test
+---@return table spy wrapper, table recorded batches
+local function spyController(controller)
+  local batches = {}
+  local spy = {}
+  function spy:updateFixed(events, preparation)
+    batches[#batches + 1] = events
+    return controller:updateFixed(events, preparation)
+  end
+  function spy:view()
+    return controller:view()
+  end
+  function spy:drainEffects()
+    return controller:drainEffects()
+  end
+  function spy:takeResult()
+    return controller:takeResult()
+  end
+  function spy:cancelPointerCapture()
+    return controller:cancelPointerCapture()
+  end
+  function spy:dispose()
+    return controller:dispose()
+  end
+  return spy, batches
+end
+
+---@param batches table recorded model batches
+---@return table? the most recent held record
+local function lastHeld(batches)
+  for index = #batches, 1, -1 do
+    for _, event in ipairs(batches[index]) do
+      if type(event) == "table" and event.type == "held" then
+        return event
+      end
+    end
+  end
+  return nil
+end
+
+---@param plan table<string, unknown> resolved application plan
+---@return string[] ordered footer button identities behind the plan
+local function footerIds(plan)
+  local compact = assert(plan.content.pokedexCompact, "the browser plan carries its compact record")
+  local footer = assert(compact.footer, "the compact record carries its footer")
+  local ids = {}
+  for _, button in ipairs(assert(footer.buttons, "the footer carries its buttons")) do
+    ids[#ids + 1] = button.id
+  end
+  return ids
+end
+
+---@return table single-display compact measurement facts with a real touch surface
+local function compactMeasurement(signature)
+  local ScreenTopology = require("libs.ui.src.ScreenTopology")
+  return {
+    width = 256,
+    height = 192,
+    topology = ScreenTopology.oneDisplay({
+      id = "main",
+      rect = { x = 0, y = 0, width = 256, height = 192 },
+      touch = true,
+      role = "world",
+    }),
+    pixelRatio = 1,
+    signature = signature or "single-compact",
+  }
+end
 local function requirePresent(behavior)
   local ok, loaded = pcall(require, SCREEN_MODULE)
   Assert.isTrue(ok, "missing per-open presented screen owner: " .. behavior .. " (" .. SCREEN_MODULE .. ")")
@@ -79,41 +174,92 @@ end
 
 function T.matching_readiness_admits_motion_while_stale_keys_retain_the_view()
   local ScreenState = requirePresent("matching readiness gating")
-  local args = screenArgs()
-  local gate = { open = false }
+  local gate = { open = true }
   local bundle = { animations = {}, chrome = {}, pictures = {}, surfaces = {}, fonts = {}, messages = {} }
-  local lease = { prepared = {}, released = 0 }
-  function lease:prepare(demand)
-    assert(type(demand) == "table" and demand.key ~= nil, "the screen prepares keyed demands")
-    self.prepared[#self.prepared + 1] = demand
-    if gate.open then
-      return { kind = "ready", key = demand.key, assets = bundle }
+  local monCatalog, catalog = Fixture.catalogs()
+  local owner = Fixture.ownerWithHistory(monCatalog, catalog)
+  local live = Fixture.openController(owner, monCatalog, catalog)
+  local controller, batches = spyController(live)
+  local screen = ScreenState.new({
+    controller = controller,
+    lease = gateableLease(gate, bundle),
+    measureDisplay = function()
+      return compactMeasurement()
+    end,
+    effect = function()
+    end,
+    playCry = function()
+    end,
+    commitResume = function()
+      return true
+    end,
+  })
+  screen:updateFixed({ { type = "confirm" } })
+  local committed = screen:status()
+  Assert.equal(committed.view.page, "grid", "the open cover admits its confirm once ready")
+  Assert.notNil(committed.assets, "the grid demand commits its whole bundle")
+  local gridKey = committed.view.key
+  local gridPlan = assert(committed.presentation, "the committed grid publishes its resolved plan")
+  local gridInputKey = assert(gridPlan.inputKey, "the grid plan carries its input geometry identity")
+  local gridFooter = footerIds(gridPlan)
+  local gridRows =
+    #(assert(gridPlan.content.pokedexCompact, "the grid plan carries its compact record").rows)
+  -- The search demand stays pending behind the gate while the live
+  -- browser already advanced: every pending tick must keep the
+  -- displayed grid triplet together.
+  gate.open = false
+  screen:updateFixed({ { type = "y" } })
+  local candidateKey = live:view().key
+  Assert.isTrue(candidateKey ~= gridKey, "the search request advances the live browser generation")
+  for _ = 1, 4 do
+    screen:updateFixed({})
+    local pending = screen:status()
+    Assert.equal(pending.view.page, "grid", "a pending search keeps displaying the committed grid")
+    Assert.equal(pending.view.key, gridKey, "a pending search keeps the committed generation key")
+    Assert.notNil(pending.assets, "a pending search keeps the committed bundle")
+    local pendingPlan = assert(pending.presentation, "a pending search keeps a resolved plan")
+    Assert.equal(pendingPlan.inputKey, gridInputKey, "a pending search keeps the displayed grid geometry")
+    Assert.deepEqual(footerIds(pendingPlan), gridFooter, "a pending search keeps the displayed footer")
+    Assert.equal(
+      #(assert(pendingPlan.content.pokedexCompact, "the pending plan carries its compact record").rows),
+      gridRows,
+      "a pending search keeps the displayed rows"
+    )
+  end
+  -- A tap where the future search shows its first criterion row has no
+  -- grid meaning there; it must not map to a hidden search command.
+  local tapStart = #batches
+  screen:updateFixed({ { type = "pointer_down", x = 20, y = 17, pointerId = 9 } })
+  Assert.equal(screen:status().view.page, "grid", "a tap on the old frame keeps the displayed grid")
+  local sawCriterion = false
+  for index = tapStart + 1, #batches do
+    for _, event in ipairs(batches[index]) do
+      if type(event) == "table" and event.type == "activate" and event.action == "criterion" then
+        sawCriterion = true
+      end
     end
-    return { kind = "pending" }
   end
-  function lease:release()
-    self.released = self.released + 1
-  end
-  args.lease = lease
-  local screen = ScreenState.new(args)
-  local firstKey = screen:status().view.key
-  screen:updateFixed({ { type = "navigate", direction = "right" } })
-  Assert.equal(screen:status().view.key, firstKey, "an update without matching readiness retains the view")
-  Assert.isNil(screen:status().assets, "pending ticks publish no half bundle")
+  Assert.isFalse(sawCriterion, "a tap on the old frame maps to no hidden search command")
+  Assert.equal(live:view().key, candidateKey, "a tap on the old frame opens no hidden editor")
+  screen:updateFixed({ { type = "pointer_up", x = 20, y = 17, pointerId = 9 } })
+  -- Releasing readiness publishes the view, the bundle, and the plan
+  -- together on the same tick.
   gate.open = true
   screen:updateFixed({})
-  Assert.notNil(screen:status().assets, "the matching ready outcome publishes the whole bundle")
-  screen:updateFixed({ { type = "navigate", direction = "right" } })
-  local movedKey = screen:status().view.key
-  Assert.isTrue(movedKey ~= firstKey, "an admitted update advances the generation key")
-  gate.open = false
-  screen:updateFixed({ { type = "navigate", direction = "right" } })
-  Assert.equal(
-    screen:status().view.key,
-    movedKey,
-    "a newer pending generation retains the last committed view"
+  local published = screen:status()
+  Assert.equal(published.view.page, "search", "readiness publishes the search view")
+  Assert.notNil(published.assets, "readiness publishes the search bundle")
+  local searchPlan = assert(published.presentation, "readiness publishes the search plan")
+  Assert.isTrue(searchPlan.inputKey ~= gridInputKey, "readiness publishes the search geometry")
+  Assert.deepEqual(
+    footerIds(searchPlan),
+    { "search-run", "search-reset", "back" },
+    "readiness publishes the search footer"
   )
-  Assert.notNil(screen:status().assets, "the retained pair keeps its committed bundle")
+  Assert.isTrue(
+    #(assert(searchPlan.content.pokedexCompact, "the search plan carries its compact record").rows) > gridRows,
+    "readiness publishes the search rows"
+  )
   screen:dispose()
 end
 
@@ -160,6 +306,9 @@ function T.first_open_withholds_motion_until_its_bundle_commits()
     self.released = self.released + 1
   end
   args.lease = lease
+  args.measureDisplay = function()
+    return compactMeasurement()
+  end
   local screen = ScreenState.new(args)
   local firstKey = screen:status().view.key
   Assert.isNil(screen:status().assets, "no bundle is committed before the first ready outcome")
@@ -321,7 +470,13 @@ function T.search_editors_and_comparison_resolve_their_own_page_roles()
   function lease:release()
     self.released = self.released + 1
   end
-  local args = screenArgs({ controller = controller, lease = lease })
+  local args = screenArgs({
+    controller = controller,
+    lease = lease,
+    measureDisplay = function()
+      return compactMeasurement()
+    end,
+  })
   local screen = ScreenState.new(args)
   for _ = 2, #views do
     screen:updateFixed({})
@@ -339,49 +494,6 @@ function T.search_editors_and_comparison_resolve_their_own_page_roles()
   screen:dispose()
 end
 
-
--- Wraps a live browser controller while recording the exact model batch
--- each fixed update admits: the held record and gesture edges stay
--- observable without replacing the production policy owner.
----@param controller table live browser controller under test
----@return table spy wrapper, table recorded batches
-local function spyController(controller)
-  local batches = {}
-  local spy = {}
-  function spy:updateFixed(events, preparation)
-    batches[#batches + 1] = events
-    return controller:updateFixed(events, preparation)
-  end
-  function spy:view()
-    return controller:view()
-  end
-  function spy:drainEffects()
-    return controller:drainEffects()
-  end
-  function spy:takeResult()
-    return controller:takeResult()
-  end
-  function spy:cancelPointerCapture()
-    return controller:cancelPointerCapture()
-  end
-  function spy:dispose()
-    return controller:dispose()
-  end
-  return spy, batches
-end
-
----@param batches table recorded model batches
----@return table? the most recent held record
-local function lastHeld(batches)
-  for index = #batches, 1, -1 do
-    for _, event in ipairs(batches[index]) do
-      if type(event) == "table" and event.type == "held" then
-        return event
-      end
-    end
-  end
-  return nil
-end
 
 function T.held_touch_survives_frame_boundaries_until_the_gesture_ends()
   local ScreenState = requirePresent("stable held pointer tracking")
@@ -460,7 +572,7 @@ function T.compact_inspector_shields_every_background_input()
   local args = screenArgs({
     lease = lease,
     measureDisplay = function()
-      return { width = 256, height = 192, layout = "compact" }
+      return compactMeasurement()
     end,
   })
   local screen = ScreenState.new(args)
@@ -481,6 +593,126 @@ function T.compact_inspector_shields_every_background_input()
   screen:updateFixed({ { type = "cancel" } })
   Assert.isFalse(screen:status().compact.inspect, "cancelling closes the panel")
   Assert.equal(screen:status().view.page, "grid", "closing the panel is not a screen close")
+  screen:dispose()
+end
+
+function T.held_input_cancels_once_across_a_display_reflow()
+  local ScreenState = requirePresent("reflow pointer cancellation")
+  local ScreenTopology = require("libs.ui.src.ScreenTopology")
+  local gate = { open = true }
+  local template = { animations = {}, chrome = {}, pictures = {}, surfaces = {}, fonts = {}, messages = {} }
+  local monCatalog, catalog = Fixture.catalogs()
+  local owner = Fixture.ownerWithHistory(monCatalog, catalog)
+  local live = Fixture.openController(owner, monCatalog, catalog)
+  local controller, batches = spyController(live)
+  local display = { mode = "single" }
+  local screen = ScreenState.new({
+    controller = controller,
+    lease = gateableLease(gate, template),
+    measureDisplay = function()
+      if display.mode == "dual" then
+        return {
+          width = 512,
+          height = 384,
+          topology = ScreenTopology.dualDisplay({
+            id = "main",
+            rect = { x = 0, y = 0, width = 256, height = 192 },
+            touch = true,
+            role = "world",
+          }, {
+            id = "lower",
+            rect = { x = 0, y = 192, width = 256, height = 192 },
+            touch = true,
+            role = "auxiliary",
+          }),
+          pixelRatio = 1,
+          signature = "dual-resized",
+        }
+      end
+      return compactMeasurement()
+    end,
+    effect = function()
+    end,
+    playCry = function()
+    end,
+    commitResume = function()
+      return true
+    end,
+  })
+  screen:updateFixed({ { type = "confirm" } })
+  Assert.equal(screen:status().view.page, "grid", "the open cover admits its confirm once ready")
+  local gridBundle = assert(screen:status().assets, "the grid demand commits its whole bundle")
+  -- Hold the search candidate pending, then capture a press on the
+  -- displayed grid before the display reflows underneath it.
+  gate.open = false
+  screen:updateFixed({ { type = "y" } })
+  Assert.equal(live:view().page, "search", "the search request advances the live browser")
+  screen:updateFixed({ { type = "pointer_down", x = 40, y = 30, pointerId = 3 } })
+  display.mode = "dual"
+  local reflowStart = #batches
+  screen:updateFixed({})
+  local reflowed = screen:status()
+  Assert.equal(reflowed.view.page, "grid", "a reflow never presents the pending page")
+  Assert.isTrue(reflowed.assets == gridBundle, "a reflow keeps the committed bundle")
+  local reflowPlan = assert(reflowed.presentation, "a reflow keeps a resolved plan")
+  Assert.isTrue(
+    string.find(reflowPlan.inputKey, ":grid:", 1, true) ~= nil,
+    "a reflow keeps the displayed grid geometry"
+  )
+  Assert.isTrue(
+    string.find(reflowPlan.inputKey, ":search:", 1, true) == nil,
+    "a reflow publishes no search geometry"
+  )
+  screen:updateFixed({})
+  local cancels = 0
+  for index = reflowStart + 1, #batches do
+    for _, event in ipairs(batches[index]) do
+      if type(event) == "table" and event.type == "pointer_cancel" then
+        cancels = cancels + 1
+      end
+    end
+  end
+  Assert.equal(cancels, 1, "a reflow cancels the held press exactly once")
+  local held = lastHeld(batches)
+  Assert.notNil(held, "the reflow ticks carry their held record")
+  Assert.isFalse(held.touch, "the reflow leaves no held touch behind")
+  screen:dispose()
+end
+
+function T.failed_candidate_plans_keep_the_last_ready_triplet()
+  local ScreenState = requirePresent("failed candidate plan retention")
+  local PokedexInterface = require("game.hgss.src.pokedex.PokedexInterface")
+  local defaults = PokedexInterface.browser()
+  local gate = { open = true }
+  local template = { animations = {}, chrome = {}, pictures = {}, surfaces = {}, fonts = {}, messages = {} }
+  local args = screenArgs({
+    lease = gateableLease(gate, template),
+    measureDisplay = function()
+      return compactMeasurement()
+    end,
+    overrides = {
+      nativeLike = function(context, view)
+        if type(view) == "table" and view.page == "search" then
+          error("injected plan failure")
+        end
+        return defaults.nativeLike(context, view)
+      end,
+    },
+  })
+  local screen = ScreenState.new(args)
+  screen:updateFixed({ { type = "confirm" } })
+  Assert.equal(screen:status().view.page, "grid", "the open cover admits its confirm once ready")
+  local gridBundle = assert(screen:status().assets, "the grid demand commits its whole bundle")
+  local gridKey = screen:status().view.key
+  -- The search bundle turns ready on the same tick its plan fails to
+  -- resolve: the failed candidate must not replace the published grid.
+  screen:updateFixed({ { type = "y" } })
+  local failed = screen:status()
+  Assert.equal(failed.view.page, "grid", "a failed candidate keeps the displayed grid")
+  Assert.equal(failed.view.key, gridKey, "a failed candidate never advances the committed key")
+  Assert.isTrue(failed.assets == gridBundle, "a failed candidate keeps the committed bundle")
+  Assert.equal(failed.phase, "failed", "a failed candidate reports through the failure phase")
+  Assert.notNil(failed.preparationError, "a failed candidate attributes its cause")
   screen:dispose()
 end
 

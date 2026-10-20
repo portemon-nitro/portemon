@@ -161,21 +161,38 @@ local function buildDemand(view)
 end
 
 ---@param self PokedexScreenState
+---@return table<string, unknown> presented projection paired with the committed bundle
+local function presentedView(self)
+  return self._presentedView or self._view
+end
+
+---@param view table<string, unknown> detached browser projection
+---@param compact table<string, unknown> private compact presentation record
 ---@return table<string, unknown> merged plan view with the private compact record
-local function planView(self)
+local function planViewFor(view, compact)
   local merged = {}
-  for key, value in pairs(self._view) do
+  for key, value in pairs(view) do
     merged[key] = value
   end
-  merged.compact = self._compact
+  merged.compact = compact
   return merged
 end
 
 ---@param self PokedexScreenState
-local function resolvePlan(self)
-  local okMeasurement, measurement = pcall(self._measureDisplay)
-  if not okMeasurement or type(measurement) ~= "table" then
-    return
+---@param specificView table<string, unknown>? explicit projection, defaulting to the published one
+---@return table<string, unknown> merged plan view with the private compact record
+local function planView(self, specificView)
+  return planViewFor(specificView or presentedView(self), self._compact)
+end
+
+---@param self PokedexScreenState
+---@param specificView table<string, unknown>? projection to resolve, defaulting to the published one
+---@param measurement table<string, unknown>? fresh host display facts; without them the plan is retained
+---@return boolean ok true when the session plan matches the projection
+---@return string? cause resolution failure attribution when ok is false
+local function resolvePlan(self, specificView, measurement)
+  if measurement == nil then
+    return true
   end
   self._compactMode = measurement.layout == "compact"
   if self._compactMode ~= true and type(measurement.width) == "number" then
@@ -185,9 +202,13 @@ local function resolvePlan(self)
       self._compactMode = true
     end
   end
-  local ok, _ = pcall(self._session.resolve, self._session, measurement, planView(self))
+  -- The session validates its candidate before publishing, so a failed
+  -- resolve keeps the previous plan: the caller decides whether the
+  -- retained plan stays coherent (published reflow) or the failed
+  -- candidate must surface (pending replacement).
+  local ok, cause = pcall(self._session.resolve, self._session, measurement, planView(self, specificView))
   if not ok then
-    return
+    return false, tostring(cause)
   end
   local planOk, currentPlan = pcall(self._session.plan, self._session)
   if planOk and type(currentPlan) == "table" and type(currentPlan.inputKey) == "string" then
@@ -199,6 +220,7 @@ local function resolvePlan(self)
     end
     self._lastInputKey = currentPlan.inputKey
   end
+  return true
 end
 
 ---@param self PokedexScreenState
@@ -304,21 +326,30 @@ local function consumeBatch(self, mapped)
 end
 
 ---@param self PokedexScreenState
----@return table<string, unknown> presented projection paired with the committed bundle
-local function presentedView(self)
-  return self._presentedView or self._view
-end
-
----@param self PokedexScreenState
 ---@param demand table<string, unknown> finite demand for the current projection
-local function advanceLease(self, demand)
+---@param measurement table<string, unknown>? fresh host display facts; without them the plan is retained
+local function advanceLease(self, demand, measurement)
   local outcome = self._lease:prepare(demand)
   assert(type(outcome) == "table" and type(outcome.kind) == "string", "leases answer pending, ready, or failed")
   if outcome.kind == "ready" then
     if outcome.key == demand.key then
-      -- A matching generation commits view, key, and bundle together;
-      -- the same key with refreshed presentation values simply refreshes
-      -- the presented projection without new acquisitions.
+      -- A matching generation commits view, key, and bundle together
+      -- only after its own plan validates against the same display
+      -- facts: the commit and the plan swap share one synchronous
+      -- update, so no reader observes a mixed triplet. The same key
+      -- with refreshed presentation values simply refreshes the
+      -- presented projection without new acquisitions.
+      if measurement == nil then
+        return
+      end
+      local planOk, cause = resolvePlan(self, self._view, measurement)
+      if not planOk then
+        if self._phase ~= "failed" then
+          self._phase = "failed"
+          self._preparationError = tostring(cause)
+        end
+        return
+      end
       self._assets = assert(outcome.assets, "ready outcomes carry their whole bundle")
       self._readyKey = self._view.key
       self._presentedView = self._view
@@ -405,15 +436,24 @@ function PokedexScreenState.new(args)
   self.view = self._view
   self.uiInput = UI_INPUT_PROFILE
   local demand = buildDemand(self._view)
-  advanceLease(self, demand)
-  resolvePlan(self)
+  local okDisplay, measured = pcall(self._measureDisplay)
+  ---@type table<string, unknown>?
+  local displayFacts
+  if okDisplay and type(measured) == "table" then
+    displayFacts = measured
+  end
+  advanceLease(self, demand, displayFacts)
+  resolvePlan(self, presentedView(self), displayFacts)
   return self
 end
 
--- Advances the per-open screen once per host fixed tick: resolve fresh
--- display facts, map events through the current plan, consume private
--- compact actions, advance the model once with matching readiness, and
--- prepare at most one finite demand for the new projection. Effects drain
+-- Advances the per-open screen once per host fixed tick: resolve the
+-- published plan against fresh display facts, map events through that
+-- published plan, consume private compact actions, advance the model
+-- once with matching readiness, and prepare at most one finite demand
+-- for the new projection. A pending candidate never feeds the session:
+-- only a ready candidate whose own plan validates replaces the
+-- published view, bundle, and plan in the same update. Effects drain
 -- exactly once; sound and cry use the borrowed audio while normal-close
 -- resume publishes once through the composed owner.
 ---@param events table<integer, table<string, unknown>> fixed-tick batch for the screen
@@ -428,7 +468,15 @@ function PokedexScreenState:updateFixed(events)
   if self._phase == "failed" then
     error(self._preparationError, 0)
   end
-  resolvePlan(self)
+  local okDisplay, measured = pcall(self._measureDisplay)
+  ---@type table<string, unknown>?
+  local displayFacts
+  if okDisplay and type(measured) == "table" then
+    displayFacts = measured
+  end
+  -- The published projection owns the plan and the input map for the
+  -- whole tick; the live candidate staged below cannot move them.
+  resolvePlan(self, presentedView(self), displayFacts)
   local mapped = mapBatch(self, events)
   local model = consumeBatch(self, mapped)
   -- Before the first whole bundle commits the ready key stays nil, so
@@ -444,7 +492,7 @@ function PokedexScreenState:updateFixed(events)
   self._controller:updateFixed(model, preparation)
   self._view = self._controller:view()
   if self._phase ~= "failed" then
-    advanceLease(self, buildDemand(self._view))
+    advanceLease(self, buildDemand(self._view), displayFacts)
   end
   local presented = presentedView(self)
   self.page = presented.page
@@ -454,7 +502,6 @@ function PokedexScreenState:updateFixed(events)
   if terminal ~= nil then
     self._terminal = terminal
   end
-  resolvePlan(self)
 end
 
 -- The host-facing presentation snapshot: open lifetime, the detached
