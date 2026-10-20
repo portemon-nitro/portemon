@@ -16,11 +16,12 @@ local VERSION = "heartgold"
 -- Counts the loads, mesh builds, pool constructions and pool releases the
 -- renderer performs; the wrappers are removed by the returned restore.
 local function counting()
-  local counts = { core = 0, cinematic = {}, meshes = 0, pools = 0, releases = 0 }
+  local counts = { core = 0, cinematic = {}, meshes = 0, images = 0, pools = 0, releases = 0 }
   local originals = {
     core = FieldEffectAssetCache.loadHoOhCore,
     cinematic = FieldEffectAssetCache.loadHoOhCinematic,
     meshFor = GpuAssetPool.meshFor,
+    sharedImage = GpuAssetPool.sharedImage,
     new = GpuAssetPool.new,
     release = GpuAssetPool.release,
   }
@@ -37,6 +38,10 @@ local function counting()
     counts.meshes = counts.meshes + 1
     return originals.meshFor(self, path)
   end
+  GpuAssetPool.sharedImage = function(self, ...)
+    counts.images = counts.images + 1
+    return originals.sharedImage(self, ...)
+  end
   GpuAssetPool.new = function(...)
     counts.pools = counts.pools + 1
     return originals.new(...)
@@ -49,6 +54,7 @@ local function counting()
     FieldEffectAssetCache.loadHoOhCore = originals.core
     FieldEffectAssetCache.loadHoOhCinematic = originals.cinematic
     GpuAssetPool.meshFor = originals.meshFor
+    GpuAssetPool.sharedImage = originals.sharedImage
     GpuAssetPool.new = originals.new
     GpuAssetPool.release = originals.release
   end
@@ -194,6 +200,37 @@ local function testDrawBeforePreparationMatchesPreparedOutput(scope)
   end
 end
 
+local function testPreparationSlicesItsHeavyUnits(scope)
+  withCounts(function(counts)
+    local renderer = newRenderer(scope)
+    local steps, maxMeshes, maxImages = 0, 0, 0
+    repeat
+      local meshes, images = counts.meshes, counts.images
+      local done = renderer:prepareStep(VERSION, 1)
+      steps = steps + 1
+      maxMeshes = math.max(maxMeshes, counts.meshes - meshes)
+      maxImages = math.max(maxImages, counts.images - images)
+      assert(steps < 400, "preparation never finished")
+    until done
+    Assert.isTrue(maxMeshes <= HoOhAppearanceRenderer.MESHES_PER_STEP, "a step builds a bounded number of meshes")
+    Assert.isTrue(maxImages <= HoOhAppearanceRenderer.LEAF_IMAGES_PER_STEP, "a step loads a bounded number of images")
+    Assert.isTrue(counts.meshes > HoOhAppearanceRenderer.MESHES_PER_STEP, "the models really are larger than one slice")
+    Assert.isTrue(steps > 20, "the heavy units are spread over many steps (" .. steps .. ")")
+  end)
+end
+
+local function testDrawDrivenVariantChangeReleasesTheStaleVariant(scope)
+  withCounts(function(counts)
+    local renderer = newRenderer(scope)
+    prepareFully(renderer, 1)
+    local core = counts.core
+    renderer:drawItems(cinematic(1, "second", 2))
+    Assert.equal(counts.releases, 1, "the prepared variant is released once when the scene needs another")
+    Assert.equal(counts.cinematic.second2, 1, "the scene's variant is built once")
+    Assert.equal(counts.core, core, "the core is not rebuilt")
+  end)
+end
+
 local function testCancelMidPreparationReleasesOnce(scope)
   withCounts(function(counts)
     local renderer = newRenderer(scope)
@@ -253,6 +290,8 @@ local T = GraphicsSmoke.suite({
   ["Ho-Oh models are built once across scene sequences"] = testBuildsOnceAcrossSequences,
   ["Ho-Oh preparation is incremental and complete"] = testPreparationIsIncrementalAndComplete,
   ["a Ho-Oh draw before preparation matches the prepared output"] = testDrawBeforePreparationMatchesPreparedOutput,
+  ["Ho-Oh preparation slices its heavy units"] = testPreparationSlicesItsHeavyUnits,
+  ["a scene that needs another variant releases the prepared one"] = testDrawDrivenVariantChangeReleasesTheStaleVariant,
   ["cancelling a Ho-Oh preparation releases every pool once"] = testCancelMidPreparationReleasesOnce,
   ["a new time-of-day variant releases the stale one"] = testVariantChangeReleasesTheStaleVariant,
   ["starting the scene mid-preparation never builds twice"] = testSceneStartMidwayDoesNotDoubleBuild,
