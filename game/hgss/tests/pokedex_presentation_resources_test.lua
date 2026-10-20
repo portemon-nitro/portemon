@@ -673,4 +673,112 @@ function T.header_font_demand_fails_without_host_graphics()
   Assert.equal(pool:stats().outstandingLeases, 0, "font failure returns every image interest")
 end
 
+-- Source formatter markers expand at prepare time from demand fields: the
+-- UI bank entry carries the native `{STRVAR_1 selector, slot}` template
+-- (soulsilver bank 802 entry 9) and the demand binds slot 0 to its
+-- preformatted count, so the prepared string is source text, never raw.
+function T.ui_text_expands_strvar_markers_from_demand_fields()
+  local Owner = requirePresent("UI formatter substitution")
+  local pool = SharedImagePoolFake.new()
+  local provider = stubMessageProvider({ [802] = { [9] = "RESULTS {STRVAR_1 52, 0, 0}" } })
+  local args = closureOwnerArgs(pool)
+  args.messages = provider
+  local owner = Owner.new(args)
+  local lease = owner:acquire({ purpose = "browser" })
+  local demand = pageDemand("grid", "pokedex-strvar")
+  demand.text = {
+    { role = "search.feedback", kind = "ui", messageId = 9, language = "native", fields = { [0] = "007" } },
+  }
+  local ready = nil
+  for _ = 1, 64 do
+    local outcome = lease:prepare(demand)
+    if outcome.kind == "ready" then
+      ready = outcome
+      break
+    end
+    Assert.isTrue(
+      outcome.kind ~= "failed",
+      "sourced text never fails its banks: " .. tostring(outcome.error)
+    )
+  end
+  Assert.notNil(ready, "field-bound text converges on a complete bundle")
+  Assert.equal(ready.assets.messages["search.feedback"], "RESULTS 007", "the marker expands from its demand field")
+  lease:release()
+  owner:release()
+  Assert.equal(pool:stats().outstandingLeases, 0, "substituted text returns every image interest")
+end
+
+-- A UI template whose marker slot has no demand field fails instead of
+-- painting a raw control code: the doomed generation publishes nothing.
+function T.ui_text_with_an_unbound_strvar_slot_fails_loudly()
+  local Owner = requirePresent("unbound formatter attribution")
+  local pool = SharedImagePoolFake.new()
+  local provider = stubMessageProvider({ [802] = { [9] = "{STRVAR_1 52, 0, 0}" } })
+  local args = closureOwnerArgs(pool)
+  args.messages = provider
+  local owner = Owner.new(args)
+  local lease = owner:acquire({ purpose = "browser" })
+  local demand = pageDemand("grid", "pokedex-unbound")
+  demand.text = {
+    { role = "search.feedback", kind = "ui", messageId = 9, language = "native" },
+  }
+  local failed = nil
+  for _ = 1, 64 do
+    local outcome = lease:prepare(demand)
+    if outcome.kind == "failed" then
+      failed = outcome
+      break
+    end
+    Assert.isTrue(outcome.kind == "pending", "the doomed generation never publishes")
+  end
+  Assert.notNil(failed, "an unbound formatter slot cannot publish")
+  Assert.isTrue(
+    type(failed.error) == "string" and failed.error:find("search.feedback", 1, true) ~= nil,
+    "the failure names its window role"
+  )
+  lease:release()
+  owner:release()
+  Assert.equal(pool:stats().outstandingLeases, 0, "the failed generation returns its staged chrome")
+end
+
+-- The registration announcement substitutes the capture name into the
+-- native field-0 marker (soulsilver bank 197 entry 871:
+-- "{STRVAR_1 1, 0, 0}'s data was added to the Pokédex."): the detached
+-- display name is the battle field-0 fact, a wild first catch having no
+-- nickname yet.
+function T.registration_announcement_substitutes_the_capture_name()
+  local Owner = requirePresent("registration formatter substitution")
+  local pool = SharedImagePoolFake.new()
+  local provider =
+    stubMessageProvider({ [197] = { [871] = "{STRVAR_1 1, 0, 0}'s data was added." } })
+  local args = ownerArgs(pool)
+  args.messages = provider
+  local owner = Owner.new(args)
+  local monCatalog, catalog = Fixture.catalogs()
+  local dexOwner = Fixture.ownerWithHistory(monCatalog, catalog)
+  local snapshot = Fixture.registrationSnapshot(dexOwner, monCatalog, "TOTODILE", 0)
+  local lease = owner:acquire({ purpose = "registration" })
+  local ready = nil
+  for _ = 1, 64 do
+    local outcome = lease:prepare(Fixture.registrationDemand(snapshot, "card-strvar"))
+    if outcome.kind == "ready" then
+      ready = outcome
+      break
+    end
+    Assert.isTrue(
+      outcome.kind ~= "failed",
+      "the announcement never fails its bank: " .. tostring(outcome.error)
+    )
+  end
+  Assert.notNil(ready, "the announcement converges on a complete bundle")
+  Assert.equal(
+    ready.assets.messages.registrationAnnouncement,
+    "TOTODILE's data was added.",
+    "the announcement carries the capture name instead of the raw marker"
+  )
+  lease:release()
+  owner:release()
+  Assert.equal(pool:stats().outstandingLeases, 0, "the announcement returns every image interest")
+end
+
 return { tests = T }

@@ -1974,8 +1974,18 @@ function PokedexController:_textSlots()
       }
     end
   elseif self._page == "search" then
-    if self._feedback ~= nil then
-      slots[#slots + 1] = { role = "search.feedback", kind = "ui", messageId = 9, language = self._nativeLanguage }
+    -- The feedback count follows the native result-count template (bank
+    -- 802 entry 15, field 0 bound to the completed count, shown while
+    -- the results rise). While the count is unknown the slot stays
+    -- unpublished and its window stays absent, never a raw marker.
+    if self._feedback ~= nil and self._feedback.list ~= nil then
+      slots[#slots + 1] = {
+        role = "search.feedback",
+        kind = "ui",
+        messageId = 15,
+        fields = { [0] = padNumber(#self._feedback.list) },
+        language = self._nativeLanguage,
+      }
     end
   elseif self._page == "results" then
     slots[#slots + 1] = { role = "search.results", kind = "numeric", value = tostring(#self._results) }

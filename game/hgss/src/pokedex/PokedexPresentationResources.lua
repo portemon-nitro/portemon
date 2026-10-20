@@ -911,18 +911,51 @@ local function needsHeaderFont(manifest, pageRole)
   return false
 end
 
+-- Expands `{STRVAR_1 selector, slot, ...}` formatter markers from the
+-- demand's preformatted fields: the buffer slot is each marker's own
+-- first argument, the same slot rule the script dialogue host resolves
+-- by. Values arrive preformatted by the demand owner (counts padded,
+-- names detached), so preparation stays a verbatim projection of source
+-- text plus owned facts. Unbound slots fail instead of painting raw
+-- control codes (decomp reference at the pinned snapshot: the popup and
+-- dex-number windows expand msgFormat field 0 behind `{STRVAR_1 52, 0,
+-- 0}`, the registration announcement behind `{STRVAR_1 1, 0, 0}`).
+---@param text string source message text behind the slot
+---@param fields table<integer, string>? preformatted demand values by buffer slot
+---@param identity string bank/entry/role attribution behind the slot
+---@return string? expanded text
+---@return string? failure naming the unbound slot when a marker has no field
+local function expandStrvarMarkers(text, fields, identity)
+  local unbound = nil
+  local expanded = text:gsub("{STRVAR_1%s+(%d+)%s*,%s*(%d+)[^}]*}", function(_, slot)
+    local index = tonumber(slot)
+    local value = type(fields) == "table" and index ~= nil and fields[index] or nil
+    if type(value) ~= "string" or value == "" then
+      unbound = "prepared text " .. identity .. " names an unbound STRVAR slot " .. tostring(slot)
+      return nil
+    end
+    return value
+  end)
+  if unbound ~= nil then
+    return nil, unbound
+  end
+  return expanded
+end
+
 ---@param lease table<string, unknown>
 ---@param demand table<string, unknown> validated demand under preparation
 ---@return table<string, string>? messages prepared message record
 ---@return table<integer, boolean>? banks source bank identities behind the messages
 ---@return string? failure nonempty cause when a required bank cannot be prepared
 -- Resolves every visible text slot to an immutable prepared string: ui
--- slots by their UI bank and message, species slots by the requested
+-- slots by their UI bank and message with demand-field formatter
+-- substitution, species slots by the requested
 -- language entry bank and stable species identity, heights and weights
 -- by the demanded measurement profile, and numeric slots by their
 -- preformatted value. Banks join the lease membership once and stay
 -- until a successful replacement retires them; the registration card
--- keeps its producer-authoritative announcement.
+-- keeps its producer-authoritative announcement with the capture name
+-- substituted into the native field-0 marker.
 local function prepareMessages(lease, demand)
   local owner = lease._owner
   local manifest = assert(owner._manifest, "prepared messages read their manifest")
@@ -952,11 +985,16 @@ local function prepareMessages(lease, demand)
     if announcement == nil then
       return nil, nil, readFailure
     end
-    local formatted = announcement
-    if formatted:find("{name}", 1, true) ~= nil then
-      formatted = formatted:gsub("{name}", snapshot.displayName)
-    elseif formatted:find("%%s") ~= nil then
-      formatted = formatted:gsub("%%s", snapshot.displayName)
+    -- The announcement template carries the native field-0 marker for
+    -- the capture name (a wild first catch has no nickname yet, so the
+    -- detached display name is the battle field-0 fact).
+    local formatted, expandFailure = expandStrvarMarkers(
+      announcement,
+      { [0] = snapshot.displayName },
+      "bank " .. tostring(bankId) .. " entry " .. tostring(messageId) .. " (registrationAnnouncement)"
+    )
+    if formatted == nil then
+      return nil, nil, expandFailure
     end
     if formatted == "" then
       return nil, nil, "the registration announcement formats to an empty string"
@@ -986,6 +1024,8 @@ local function prepareMessages(lease, demand)
         return nil, nil, "numeric text slot " .. slot.role .. " carries no preformatted value"
       end
       messages[slot.role] = slot.value
+    elseif slot.kind == "ui" and slot.fields ~= nil and type(slot.fields) ~= "table" then
+      return nil, nil, "ui text slot " .. slot.role .. " carries malformed fields"
     else
       local bankId, entryId, failure = messageBankEntry(manifest, owner, slot, profile)
       if bankId == nil then
@@ -993,7 +1033,8 @@ local function prepareMessages(lease, demand)
       end
       assert(type(entryId) == "number", "prepared text resolves its entry")
       bankSet[bankId] = true
-      pending[#pending + 1] = { role = slot.role, bankId = bankId, entryId = entryId }
+      pending[#pending + 1] =
+        { role = slot.role, kind = slot.kind, bankId = bankId, entryId = entryId, fields = slot.fields }
     end
   end
   for bankId in pairs(bankSet) do
@@ -1007,7 +1048,22 @@ local function prepareMessages(lease, demand)
     if resolved == nil then
       return nil, nil, failure
     end
-    messages[item.role] = resolved
+    -- UI templates may carry formatter markers over demand fields;
+    -- species, category, flavor, height, and weight entries read
+    -- verbatim, exactly as the native getters return them.
+    if item.kind == "ui" then
+      local expanded, expandFailure = expandStrvarMarkers(
+        resolved,
+        item.fields,
+        "bank " .. tostring(item.bankId) .. " entry " .. tostring(item.entryId) .. " (" .. tostring(item.role) .. ")"
+      )
+      if expanded == nil then
+        return nil, nil, expandFailure
+      end
+      messages[item.role] = expanded
+    else
+      messages[item.role] = resolved
+    end
   end
   return messages, bankSet
 end

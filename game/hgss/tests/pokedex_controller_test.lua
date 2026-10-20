@@ -849,4 +849,89 @@ function T.search_editor_projects_its_option_list_for_touch_selection()
   controller:dispose()
 end
 
+-- The search feedback text follows the native result-count template
+-- (bank 802 entry 15, field 0 bound to the completed count) once the
+-- run resolves, and stays unpublished while the count is unknown, so no
+-- raw formatter marker ever reaches preparation.
+function T.search_feedback_publishes_the_result_count_once_resolved()
+  local PokedexController = requirePresent("search feedback text demand")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true })
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 })
+  observe(owner, monCatalog, { species = "TOTODILE", personality = 0 })
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  press(controller, { { type = "y" } })
+  press(controller, { { type = "start" } })
+  Assert.notNil(controller:view().search.feedback, "search start enters the feedback sequence")
+  local function feedbackSlot(view)
+    for _, slot in ipairs(view.text) do
+      if type(slot) == "table" and slot.role == "search.feedback" then
+        return slot
+      end
+    end
+    return nil
+  end
+  Assert.isNil(feedbackSlot(controller:view()), "the label phase publishes no count it has not run")
+  idle(controller, 30)
+  Assert.equal(
+    controller:view().search.feedback.phase,
+    "rise",
+    "the completed run rises with its result list"
+  )
+  local slot = feedbackSlot(controller:view())
+  Assert.notNil(slot, "the rise phase publishes its result count")
+  Assert.equal(slot.kind, "ui", "the count rides the native UI template")
+  Assert.equal(slot.messageId, 15, "the count uses the native result-count entry")
+  idle(controller, 200)
+  local view = controller:view()
+  Assert.equal(view.page, "results", "the completed search lands on the result grid")
+  local results = nil
+  for _, result in ipairs(view.text) do
+    if type(result) == "table" and result.role == "search.results" then
+      results = result
+    end
+  end
+  Assert.notNil(results, "the results page publishes its count")
+  Assert.equal(
+    slot.fields ~= nil and slot.fields[0] or nil,
+    string.format("%03d", tonumber(results.value)),
+    "the feedback count matches the published result count"
+  )
+  controller:dispose()
+end
+
+-- An empty run retracts without ever publishing a count: the feedback
+-- window stays absent instead of painting an unbound template.
+function T.empty_search_publishes_no_feedback_count()
+  local PokedexController = requirePresent("empty search feedback text demand")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true })
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 })
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  press(controller, { { type = "y" } })
+  press(controller, {
+    { type = "activate", action = "criterion", value = "letter" },
+    { type = "activate", action = "editor-choice", value = "Z" },
+  })
+  idle(controller, 5)
+  press(controller, { { type = "activate", action = "editor-ok" } })
+  idle(controller, 5)
+  press(controller, { { type = "start" } })
+  for _ = 1, 90 do
+    tick(controller, {})
+    for _, slot in ipairs(controller:view().text) do
+      Assert.isTrue(
+        type(slot) ~= "table" or slot.role ~= "search.feedback",
+        "no feedback phase publishes a count for zero results"
+      )
+    end
+    if controller:view().page ~= "search" then
+      break
+    end
+  end
+  controller:dispose()
+end
+
 return { tests = T }
