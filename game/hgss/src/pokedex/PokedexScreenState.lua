@@ -27,7 +27,7 @@ local PokedexInterface = require("game.hgss.src.pokedex.PokedexInterface")
 ---@field _compactMode boolean true while the measured display uses the compact arrangement
 ---@field _pointerHeld boolean true while an in-flight drag holds touch across ticks
 ---@field _activeDragTarget string? in-flight drag target behind transactional cancel
----@field _lastInputKey string? last published plan input geometry behind resize clears
+---@field _lastInputKey string? last published plan input geometry
 ---@field _terminal table<string, unknown>? observed one-use close result
 ---@field _disposed boolean
 ---@field page string current top-level page mirrored for host readers
@@ -168,13 +168,15 @@ end
 
 ---@param view table<string, unknown> detached browser projection
 ---@param compact table<string, unknown> private compact presentation record
+---@param capturedTarget string? in-flight captured slider target
 ---@return table<string, unknown> merged plan view with the private compact record
-local function planViewFor(view, compact)
+local function planViewFor(view, compact, capturedTarget)
   local merged = {}
   for key, value in pairs(view) do
     merged[key] = value
   end
   merged.compact = compact
+  merged.capturedSliderTarget = capturedTarget
   return merged
 end
 
@@ -182,7 +184,7 @@ end
 ---@param specificView table<string, unknown>? explicit projection, defaulting to the published one
 ---@return table<string, unknown> merged plan view with the private compact record
 local function planView(self, specificView)
-  return planViewFor(specificView or presentedView(self), self._compact)
+  return planViewFor(specificView or presentedView(self), self._compact, self._activeDragTarget)
 end
 
 ---@param self PokedexScreenState
@@ -212,12 +214,11 @@ local function resolvePlan(self, specificView, measurement)
   end
   local planOk, currentPlan = pcall(self._session.plan, self._session)
   if planOk and type(currentPlan) == "table" and type(currentPlan.inputKey) == "string" then
-    -- A geometry change drops the held gesture before it can act on
-    -- stale coordinates; the session already queued the cancellation.
-    if self._lastInputKey ~= nil and currentPlan.inputKey ~= self._lastInputKey then
-      self._pointerHeld = false
-      self._activeDragTarget = nil
-    end
+    -- A geometry change drops the held host capture, and the session
+    -- already queued its pointer_cancel: the queued event carries the
+    -- exactly-once transactional drag cancellation through consumeBatch,
+    -- so the in-flight target is retained here until that event clears
+    -- it. Eagerly clearing it would swallow the rollback.
     self._lastInputKey = currentPlan.inputKey
   end
   return true

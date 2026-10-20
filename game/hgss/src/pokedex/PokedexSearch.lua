@@ -575,6 +575,19 @@ function PokedexSearch:isDragging()
   return self._drag ~= nil
 end
 
+-- Names the captured slider endpoint behind the active drag, if any.
+-- The mapper routes every continuation of the gesture to this target;
+-- a continuation naming any other endpoint is stale and must not move
+-- the bound.
+---@return string? captured criterion-endpoint target behind the active drag
+function PokedexSearch:dragTarget()
+  if self._drag == nil then
+    return nil
+  end
+  assert(type(self._drag) == "table", "search reads its active drag")
+  return self._drag.criterion .. "-" .. self._drag.endpoint
+end
+
 function PokedexSearch:tick()
   if self._sliderAnim > 0 then
     self._sliderAnim = self._sliderAnim - 1

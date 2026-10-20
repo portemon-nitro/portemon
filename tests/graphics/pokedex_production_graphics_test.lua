@@ -769,6 +769,88 @@ function T.native_panes_draw_both_information_and_controls_at_source_size(scope)
   end)
 end
 
+function T.grid_icon_pixels_share_their_generation_with_hit_targets(scope)
+  local Renderer = requireRenderer("paired icon pixel and hit pairing")
+  local Interface = requireInterface("paired native hit resolution")
+  requireOwner("prepared bundles behind the paired leg")
+  local versionId = readyVersion()
+  local pool = SharedImagePoolFake.new()
+  withPool(pool, function()
+    local rig = graphicsRig(versionId, pool, scope)
+    seedIcon(pool, "CHIKORITA/f0", 1, 1, 1)
+    seedIcon(pool, "EEVEE/f0", 0, 0, 0)
+    seedIcon(pool, "TOTODILE/f0", 1, 0, 0)
+    seedIcon(pool, "SPINDA/f0", 0, 1, 0)
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "grid")
+    local dexOwner = Fixture.ownerWithHistory(rig.monCatalog, rig.catalog)
+    local controller = Fixture.openController(dexOwner, rig.monCatalog, rig.catalog)
+    openGrid(controller)
+    local view = controller:view()
+    local demand = browserDemandFor(Renderer, view)
+    seedPortraits(pool, rig.cacheFs, rig.monCatalog, demand, true)
+    local lease = rig.owner:acquire({ purpose = "browser" })
+    local assets = prepareReady(rig, lease, demand)
+    local measurement = measurementFor("dualDisplay")
+    local plan = resolvePlan(Interface.browser(), measurement, planViewOf(view))
+    local controls = placementOf(plan, "controls")
+    local data = drawPlan(
+      scope,
+      plan,
+      { graphics = love.graphics, renderer = assets.renderer },
+      preparedBrowserView(view, assets),
+      measurement.width,
+      measurement.height
+    )
+    -- The caught icon draws its prepared art opaque at its visible slot.
+    local slot = gridSlotOf(view, "TOTODILE")
+    local rect = Renderer.iconSlotRect(slot)
+    assertPixel(
+      data,
+      controls.origin.x + rect.x + 16,
+      controls.origin.y + rect.y + 16,
+      255,
+      0,
+      0,
+      "the caught icon draws its prepared art opaque"
+    )
+    -- The same generation maps the icon center back to its slot and the
+    -- footer band to its bottom action; below the band nothing maps.
+    local tapped = plan.mapInput({
+      type = "pointer_down",
+      x = rect.x + 16,
+      y = rect.y + 16,
+      paneId = "controls",
+      pointerId = 1,
+    }, planViewOf(view), plan)
+    Assert.notNil(tapped, "the icon center maps to a command")
+    assert(tapped ~= nil, "the icon center maps to a command")
+    Assert.equal(tapped.type, "activate", "the icon center activates")
+    Assert.equal(tapped.action, "grid-slot", "the icon center selects its slot")
+    Assert.equal(tapped.value, slot, "the icon center selects its own slot")
+    local footer = plan.mapInput({
+      type = "pointer_down",
+      x = 20,
+      y = 160,
+      paneId = "controls",
+      pointerId = 2,
+    }, planViewOf(view), plan)
+    Assert.notNil(footer, "the footer band maps to a command")
+    assert(footer ~= nil, "the footer band maps to a command")
+    Assert.equal(footer.action, "page-prev", "the footer band pages back")
+    Assert.isNil(plan.mapInput({
+      type = "pointer_down",
+      x = 20,
+      y = 188,
+      paneId = "controls",
+      pointerId = 3,
+    }, planViewOf(view), plan), "below the footer band nothing maps")
+    lease:release()
+    controller:dispose()
+    rig.owner:release()
+    Assert.equal(pool:stats().outstandingLeases, 0, "the journey returns every borrowed interest")
+  end)
+end
+
 function T.compact_single_display_paints_fifteen_icons_portrait_and_footer(scope)
   local Renderer = requireRenderer("compact single-display reflow")
   local Interface = requireInterface("compact plan geometry")

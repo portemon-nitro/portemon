@@ -857,6 +857,23 @@ function PokedexController:updateFixed(events, preparation)
     return
   end
   if self:_isReady(preparation) ~= true then
+    -- A captured slider gesture is a lifetime event, not newly admitted
+    -- navigation: its move/end/cancel settles the owned search
+    -- transaction even while the bumped visual generation is pending.
+    -- Every unrelated edge stays gated until readiness returns.
+    local activeTarget = self._search:dragTarget()
+    if activeTarget ~= nil then
+      for _, event in ipairs(events) do
+        if
+          type(event) == "table"
+          and event.type == "drag"
+          and (event.phase == "move" or event.phase == "end" or event.phase == "cancel")
+          and event.target == activeTarget
+        then
+          self:_handleDrag(event)
+        end
+      end
+    end
     return
   end
   self:_advancePhases()
@@ -1147,6 +1164,12 @@ function PokedexController:_handleDrag(event)
     return
   end
   if target == "height-min" or target == "height-max" or target == "weight-min" or target == "weight-max" then
+    -- Only the captured endpoint moves: a continuation naming any other
+    -- endpoint is stale and must neither mutate the bound nor clear the
+    -- owned transaction.
+    if target ~= self._search:dragTarget() and phase ~= "begin" then
+      return
+    end
     local criterion = "height"
     if target == "weight-min" or target == "weight-max" then
       criterion = "weight"

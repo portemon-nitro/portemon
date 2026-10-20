@@ -779,6 +779,52 @@ function T.area_pan_returns_to_johto_and_pins_without_national()
 end
 
 
+function T.active_slider_drag_settles_while_new_generation_is_pending()
+  local PokedexController = requirePresent("slider transaction readiness exception")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true })
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 })
+  observe(owner, monCatalog, { species = "TOTODILE", personality = 0 })
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  press(controller, { { type = "y" } })
+  Assert.equal(controller:view().page, "search", "grid Y reaches the search root")
+  press(controller, { { type = "activate", action = "criterion", value = "height" } })
+  Assert.notNil(controller:view().search.editor, "the height editor opens")
+  local committed = controller:view().key
+  tick(controller, { { type = "drag", target = "height-min", phase = "begin", value = 10 } })
+  Assert.isTrue(controller:view().search.slider.captured, "the begin captures the drag")
+  local bumped = controller:view().key
+  Assert.isTrue(bumped ~= committed, "the begin advances the visual generation")
+  local stale = { readyKey = committed }
+  -- A mismatched endpoint never mutates the captured bound.
+  tick(controller, { { type = "drag", target = "height-max", phase = "move", value = 120 } }, stale)
+  Assert.equal(controller:view().search.criteria.height.min, 10, "a mismatched move keeps the captured bound")
+  Assert.isTrue(controller:view().search.slider.captured, "a mismatched move keeps the drag")
+  -- The captured continuation settles even though the new generation is
+  -- still unready; unrelated navigation stays gated.
+  tick(controller, { { type = "drag", target = "height-min", phase = "move", value = 78 } }, stale)
+  Assert.equal(controller:view().search.criteria.height.min, 78, "a pending move stages the captured bound")
+  local beforeNavigate = controller:view().key
+  tick(controller, { { type = "navigate", direction = "down" } }, stale)
+  Assert.equal(controller:view().key, beforeNavigate, "navigation stays gated while assets are pending")
+  tick(controller, { { type = "drag", target = "height-min", phase = "end", value = 78 } }, stale)
+  Assert.isFalse(controller:view().search.slider.captured, "a pending end clears the drag")
+  Assert.equal(controller:view().search.criteria.height.min, 78, "a pending end commits the captured bound")
+  Assert.equal(controller:view().search.criteria.height.max, 152, "a pending end leaves the other bound alone")
+  -- Cancellation under a stale key restores the pre-drag bound.
+  tick(controller, { { type = "drag", target = "height-min", phase = "begin", value = 40 } })
+  local secondBump = controller:view().key
+  tick(controller, { { type = "drag", target = "height-min", phase = "move", value = 100 } }, {
+    readyKey = secondBump,
+  })
+  Assert.equal(controller:view().search.criteria.height.min, 100, "the second move stages the bound")
+  tick(controller, { { type = "drag", target = "height-min", phase = "cancel" } }, { readyKey = committed })
+  Assert.isFalse(controller:view().search.slider.captured, "a pending cancel clears the drag")
+  Assert.equal(controller:view().search.criteria.height.min, 78, "a pending cancel restores the pre-drag bound")
+  controller:dispose()
+end
+
 function T.search_keyboard_focus_traverses_criteria_and_confirms()
   local PokedexController = requirePresent("source search keyboard focus")
   local monCatalog, catalog = catalogs()

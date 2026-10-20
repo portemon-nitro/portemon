@@ -495,6 +495,189 @@ function T.search_editors_and_comparison_resolve_their_own_page_roles()
 end
 
 
+---@param status table<string, unknown> host-facing presentation snapshot
+---@return table controls pane origin for host-space pointer events
+local function controlsOrigin(status)
+  local plan = assert(status.presentation, "the screen publishes its resolved plan")
+  for _, pane in ipairs(plan.panes) do
+    if pane.id == "controls" then
+      local placement = assert(pane.placement, "browser panes carry their placement")
+      return placement.origin or placement.frame
+    end
+  end
+  error("the resolved plan carries no controls pane", 0)
+end
+
+---@param screen table<string, unknown> presented screen under test
+---@param origin table controls pane origin
+---@param eventType string pointer edge type
+---@param lx number pane-local x
+---@param ly number pane-local y
+---@param pointerId integer stable pointer identity
+local function poke(screen, origin, eventType, lx, ly, pointerId)
+  screen:updateFixed({ { type = eventType, x = origin.x + lx, y = origin.y + ly, pointerId = pointerId } })
+end
+
+function T.captured_slider_release_outside_bands_settles_under_pending_assets()
+  local ScreenState = requirePresent("transactional slider completion")
+  local ScreenTopology = require("libs.ui.src.ScreenTopology")
+  local gate = { open = true }
+  local template = { animations = {}, chrome = {}, pictures = {}, surfaces = {}, fonts = {}, messages = {} }
+  local monCatalog, catalog = Fixture.catalogs()
+  local owner = Fixture.ownerWithHistory(monCatalog, catalog)
+  local live = Fixture.openController(owner, monCatalog, catalog)
+  local controller, batches = spyController(live)
+  local screen = ScreenState.new({
+    controller = controller,
+    lease = gateableLease(gate, template),
+    measureDisplay = function()
+      return {
+        width = 512,
+        height = 384,
+        topology = ScreenTopology.dualDisplay({
+          id = "main",
+          rect = { x = 0, y = 0, width = 256, height = 192 },
+          touch = true,
+          role = "world",
+        }, {
+          id = "lower",
+          rect = { x = 0, y = 192, width = 256, height = 192 },
+          touch = true,
+          role = "auxiliary",
+        }),
+        pixelRatio = 1,
+        signature = "slider-release-test:dual",
+      }
+    end,
+    effect = function()
+    end,
+    playCry = function()
+    end,
+    commitResume = function()
+      return true
+    end,
+  })
+  screen:updateFixed({ { type = "confirm" } })
+  Assert.equal(screen:status().view.page, "grid", "the open cover admits its confirm")
+  screen:updateFixed({ { type = "y" } })
+  Assert.equal(live:view().page, "search", "grid Y reaches the search root")
+  screen:updateFixed({ { type = "activate", action = "criterion", value = "height" } })
+  Assert.notNil(live:view().search.editor, "the height editor opens")
+  local origin = controlsOrigin(screen:status())
+  -- The press captures the minimum endpoint; the following generation
+  -- stays pending behind the closed gate.
+  poke(screen, origin, "pointer_down", 20, 48, 9)
+  Assert.isTrue(live:view().search.slider.captured, "the press captures the slider drag")
+  gate.open = false
+  -- Across the other track band and into empty space the gesture keeps
+  -- its captured minimum; the release lands at empty y120.
+  poke(screen, origin, "pointer_move", 100, 88, 9)
+  poke(screen, origin, "pointer_up", 100, 120, 9)
+  screen:updateFixed({})
+  local criteria = live:view().search.criteria
+  Assert.equal(criteria.height.min, 78, "the release settles the captured minimum")
+  Assert.equal(criteria.height.max, 152, "the release leaves the other bound alone")
+  Assert.isFalse(live:view().search.slider.captured, "the release clears the active drag")
+  local held = lastHeld(batches)
+  Assert.notNil(held, "the release ticks carry their held record")
+  Assert.isFalse(held.touch, "the settled gesture leaves no held touch")
+  -- A later cancellation cannot reopen or duplicate the settled drag.
+  screen:updateFixed({ { type = "pointer_cancel", pointerId = 9 } })
+  Assert.equal(live:view().search.criteria.height.min, 78, "a late cancel keeps the committed bound")
+  Assert.isFalse(live:view().search.slider.captured, "a late cancel starts no new drag")
+  -- Readiness restores the ordinary path: a fresh press captures again.
+  gate.open = true
+  screen:updateFixed({})
+  poke(screen, origin, "pointer_down", 20, 48, 11)
+  Assert.isTrue(live:view().search.slider.captured, "a fresh press captures again after readiness")
+  poke(screen, origin, "pointer_up", 100, 120, 11)
+  screen:updateFixed({})
+  Assert.isFalse(live:view().search.slider.captured, "the fresh gesture settles too")
+  screen:dispose()
+end
+
+function T.display_reflow_cancels_the_active_drag_exactly_once()
+  local ScreenState = requirePresent("transactional slider cancellation")
+  local ScreenTopology = require("libs.ui.src.ScreenTopology")
+  local gate = { open = true }
+  local template = { animations = {}, chrome = {}, pictures = {}, surfaces = {}, fonts = {}, messages = {} }
+  local monCatalog, catalog = Fixture.catalogs()
+  local owner = Fixture.ownerWithHistory(monCatalog, catalog)
+  local live = Fixture.openController(owner, monCatalog, catalog)
+  local controller, batches = spyController(live)
+  local display = { mode = "dual" }
+  local screen = ScreenState.new({
+    controller = controller,
+    lease = gateableLease(gate, template),
+    measureDisplay = function()
+      if display.mode == "dual" then
+        return {
+          width = 512,
+          height = 384,
+          topology = ScreenTopology.dualDisplay({
+            id = "main",
+            rect = { x = 0, y = 0, width = 256, height = 192 },
+            touch = true,
+            role = "world",
+          }, {
+            id = "lower",
+            rect = { x = 0, y = 192, width = 256, height = 192 },
+            touch = true,
+            role = "auxiliary",
+          }),
+          pixelRatio = 1,
+          signature = "slider-cancel-test:dual",
+        }
+      end
+      return compactMeasurement()
+    end,
+    effect = function()
+    end,
+    playCry = function()
+    end,
+    commitResume = function()
+      return true
+    end,
+  })
+  screen:updateFixed({ { type = "confirm" } })
+  screen:updateFixed({ { type = "y" } })
+  screen:updateFixed({ { type = "activate", action = "criterion", value = "height" } })
+  Assert.notNil(live:view().search.editor, "the height editor opens")
+  local origin = controlsOrigin(screen:status())
+  gate.open = false
+  poke(screen, origin, "pointer_down", 20, 88, 9)
+  Assert.isTrue(live:view().search.slider.captured, "the press captures the maximum drag")
+  poke(screen, origin, "pointer_move", 150, 88, 9)
+  Assert.equal(live:view().search.criteria.height.max, 120, "the move stages the maximum bound")
+  local cancelStart = #batches
+  -- The reflow drops the held press: the open transaction must roll
+  -- back to its pre-drag bound exactly once.
+  display.mode = "single"
+  screen:updateFixed({})
+  screen:updateFixed({})
+  Assert.equal(live:view().search.criteria.height.max, 152, "the reflow restores the pre-drag bound")
+  Assert.equal(live:view().search.criteria.height.min, 0, "the reflow leaves the other bound alone")
+  Assert.isFalse(live:view().search.slider.captured, "the reflow clears the active drag")
+  local cancels = 0
+  for index = cancelStart + 1, #batches do
+    for _, event in ipairs(batches[index]) do
+      if type(event) == "table" and event.type == "drag" and event.phase == "cancel" then
+        cancels = cancels + 1
+        Assert.equal(event.target, "height-max", "the cancellation names the captured endpoint")
+      end
+    end
+  end
+  Assert.equal(cancels, 1, "the reflow cancels the active drag exactly once")
+  local held = lastHeld(batches)
+  Assert.notNil(held, "the reflow ticks carry their held record")
+  Assert.isFalse(held.touch, "the reflow leaves no held touch behind")
+  -- Unrelated navigation stays gated while the generation is pending.
+  local key = live:view().key
+  screen:updateFixed({ { type = "navigate", direction = "down" } })
+  Assert.equal(live:view().key, key, "navigation stays gated while assets are pending")
+  screen:dispose()
+end
+
 function T.held_touch_survives_frame_boundaries_until_the_gesture_ends()
   local ScreenState = requirePresent("stable held pointer tracking")
   local monCatalog, catalog = Fixture.catalogs()

@@ -256,19 +256,28 @@ function T.layout_or_pointer_identity_changes_cancel_captured_input()
   Assert.equal(mapped[1].pointerId, 7, "cancellation names the captured pointer")
 end
 
-function T.registration_layout_draws_on_down_without_matched_release()
+function T.registration_touch_reports_one_down_edge_and_no_up_action()
   local Interface = requirePresent("registration touch layout")
-  local set = Interface.registration()
-  local session = ApplicationPresentation.new(set)
+  local names = { dual = true, wide = true, tall = true, compact = true }
   for _, class in ipairs({ "dual", "wide", "tall", "compact" }) do
+    Assert.isTrue(names[class] == true, "the registration layout covers the " .. class .. " case")
+    local set = Interface.registration()
+    local session = ApplicationPresentation.new(set)
     local plan = session:resolve(measurementFor(class), { view = { key = "card" }, assets = {} })
     Assert.notNil(plan, class .. " resolves a registration plan")
+    local down = session:mapInput(
+      { { type = "pointer_down", x = 128, y = 96, pointerId = 3 } },
+      { view = { key = "card" }, assets = {} }
+    )
+    Assert.equal(#down, 1, class .. " registration down reports exactly one edge")
+    Assert.equal(down[1].type, "touch_new", class .. " registration down opens the card")
+    Assert.equal(down[1].pointerId, 3, class .. " registration down names its pointer")
+    local up = session:mapInput(
+      { { type = "pointer_up", x = 128, y = 96, pointerId = 3 } },
+      { view = { key = "card" }, assets = {} }
+    )
+    Assert.equal(#up, 0, class .. " registration up reports no second activation")
   end
-  local mapped = session:mapInput(
-    { { type = "pointer_down", x = 128, y = 96, pointerId = 3 } },
-    { view = { key = "card" }, assets = {} }
-  )
-  Assert.isTrue(#mapped >= 0, "registration pointer-down maps without raising")
 end
 
 function T.native_fifth_column_selects_through_translated_host_coordinates()
@@ -344,36 +353,185 @@ function T.cover_pointer_sequence_drives_the_source_drag_phases()
   Assert.equal(up[1].target, "cover", "the release stays on the cover")
 end
 
-function T.native_search_rows_and_slider_map_without_host_reinterpretation()
-  local Interface = requirePresent("native search controls")
+function T.native_search_menu_hitboxes_follow_source_order_and_edges()
+  local Interface = requirePresent("native search hitboxes")
   local set = Interface.browser()
   local session = ApplicationPresentation.new(set)
   local criteria = viewOn(stubView(), "search")
   criteria.search = { criteria = {}, focus = "order", previousColumn = "criteria" }
   local plan = session:resolve(measurementFor("wide"), sessionView(criteria))
-  local picked = session:mapInput({ hostTap(plan, "controls", "pointer_down", 20, 19, 30) }, sessionView(criteria))
-  Assert.equal(#picked, 1, "the first criteria row maps to exactly one command")
-  Assert.equal(picked[1].type, "activate", "the criteria row activates")
-  Assert.equal(picked[1].action, "criterion", "the criteria row opens its criterion")
-  Assert.equal(picked[1].value, "order", "the first criteria row opens the order criterion")
-  session:mapInput({ hostTap(plan, "controls", "pointer_up", 20, 19, 30) }, sessionView(criteria))
-  local run = session:mapInput({ hostTap(plan, "controls", "pointer_down", 226, 23, 31) }, sessionView(criteria))
-  session:mapInput({ hostTap(plan, "controls", "pointer_up", 226, 23, 31) }, sessionView(criteria))
+  local function tapDown(lx, ly, pointerId)
+    local mapped =
+      session:mapInput({ hostTap(plan, "controls", "pointer_down", lx, ly, pointerId) }, sessionView(criteria))
+    session:mapInput({ hostTap(plan, "controls", "pointer_up", lx, ly, pointerId) }, sessionView(criteria))
+    return mapped
+  end
+  Assert.equal(#tapDown(20, 19, 30), 0, "the point outside every menu box opens no criterion")
+  Assert.equal(#tapDown(120, 15, 31), 0, "the gap left of the first box opens no criterion")
+  local first = tapDown(150, 15, 32)
+  Assert.equal(#first, 1, "the first menu box maps to exactly one command")
+  Assert.equal(first[1].type, "activate", "the first menu box activates")
+  Assert.equal(first[1].action, "criterion", "the first menu box opens its criterion")
+  Assert.equal(first[1].value, "order", "the first menu box opens the order criterion")
+  local second = tapDown(90, 40, 33)
+  Assert.equal(#second, 1, "the second menu box maps to exactly one command")
+  Assert.equal(second[1].value, "letter", "the second menu box opens the letter criterion")
+  local edge = tapDown(128, 8, 34)
+  Assert.equal(#edge, 1, "the inclusive top-left edge still belongs to the first box")
+  Assert.equal(edge[1].value, "order", "the inclusive edge keeps the first criterion")
+  local bottomEdge = tapDown(215, 23, 35)
+  Assert.equal(#bottomEdge, 1, "the inclusive bottom-right edge still belongs to the first box")
+  Assert.equal(bottomEdge[1].value, "order", "the inclusive edge keeps the first criterion")
+  Assert.equal(#tapDown(128, 24, 36), 0, "the row just below the first box opens no criterion")
+  local run = tapDown(226, 23, 37)
   Assert.equal(#run, 1, "the run button maps to exactly one command")
   Assert.equal(run[1].action, "search-run", "the run button starts the search")
+  local grid = viewOn(stubView(), "grid")
+  local gridPlan = session:resolve(measurementFor("wide"), sessionView(grid))
+  local function gridTap(lx, ly, pointerId)
+    local mapped =
+      session:mapInput({ hostTap(gridPlan, "controls", "pointer_down", lx, ly, pointerId) }, sessionView(grid))
+    session:mapInput({ hostTap(gridPlan, "controls", "pointer_up", lx, ly, pointerId) }, sessionView(grid))
+    return mapped
+  end
+  local footer = gridTap(20, 160, 38)
+  Assert.equal(#footer, 1, "the list footer band maps to exactly one command")
+  Assert.equal(footer[1].action, "page-prev", "the left footer box pages back")
+  local footerEdge = gridTap(20, 187, 39)
+  Assert.equal(#footerEdge, 1, "the inclusive footer bottom still pages")
+  Assert.equal(footerEdge[1].action, "page-prev", "the inclusive edge keeps the footer action")
+  Assert.equal(#gridTap(20, 188, 40), 0, "the row below the footer band stays inert")
+  Assert.equal(#gridTap(65, 160, 41), 0, "the gap between footer boxes stays inert")
+  Assert.equal(#gridTap(200, 160, 42), 1, "the right footer box maps to exactly one command")
+end
+
+function T.native_entry_tabs_use_narrow_source_bands()
+  local Interface = requirePresent("native entry tabs")
+  local set = Interface.browser()
+  local session = ApplicationPresentation.new(set)
+  local view = viewOn(stubView(), "area")
+  local plan = session:resolve(measurementFor("wide"), sessionView(view))
+  local function tapDown(lx, ly, pointerId)
+    local mapped =
+      session:mapInput({ hostTap(plan, "controls", "pointer_down", lx, ly, pointerId) }, sessionView(view))
+    session:mapInput({ hostTap(plan, "controls", "pointer_up", lx, ly, pointerId) }, sessionView(view))
+    return mapped
+  end
+  local cases = {
+    { lx = 30, value = "area" },
+    { lx = 100, value = "size" },
+    { lx = 160, value = "forms" },
+    { lx = 220, value = "return" },
+  }
+  for _, case in ipairs(cases) do
+    local mapped = tapDown(case.lx, 180, 50)
+    Assert.equal(#mapped, 1, "the tab at " .. case.lx .. " maps to exactly one command")
+    Assert.equal(mapped[1].action, "entry-tab", "the tab strip switches tabs")
+    Assert.equal(mapped[1].value, case.value, "the tab at " .. case.lx .. " selects its own page")
+  end
+  Assert.equal(#tapDown(7, 168, 51), 1, "the inclusive tab corner still switches")
+  Assert.equal(#tapDown(57, 191, 52), 1, "the inclusive tab edge still switches")
+  for _, lx in ipairs({ 60, 130, 190, 252 }) do
+    Assert.equal(#tapDown(lx, 180, 53), 0, "the gap at " .. lx .. " switches no tab")
+  end
+  Assert.equal(#tapDown(100, 191, 54), 1, "the inclusive tab bottom still switches")
+end
+
+function T.native_area_circles_and_letter_cells_match_source_selection()
+  local Interface = requirePresent("native area and letter hitboxes")
+  local set = Interface.browser()
+  local session = ApplicationPresentation.new(set)
+  local area = viewOn(stubView(), "area")
+  local areaPlan = session:resolve(measurementFor("wide"), sessionView(area))
+  local function areaTap(lx, ly, pointerId)
+    local mapped = session:mapInput(
+      { hostTap(areaPlan, "controls", "pointer_down", lx, ly, pointerId) },
+      sessionView(area)
+    )
+    session:mapInput({ hostTap(areaPlan, "controls", "pointer_up", lx, ly, pointerId) }, sessionView(area))
+    return mapped
+  end
+  local circles = { { cx = 40, value = 0 }, { cx = 80, value = 1 }, { cx = 120, value = 2 } }
+  for _, circle in ipairs(circles) do
+    local mapped = areaTap(circle.cx, 32, 60)
+    Assert.equal(#mapped, 1, "the daypart at " .. circle.cx .. " maps to exactly one command")
+    Assert.equal(mapped[1].action, "area-time", "the daypart selects its time")
+    Assert.equal(mapped[1].value, circle.value, "the daypart at " .. circle.cx .. " selects its own time")
+    local edge = areaTap(circle.cx + 14, 32, 61)
+    Assert.equal(#edge, 1, "the inclusive circle edge still selects its time")
+    Assert.equal(edge[1].value, circle.value, "the circle edge keeps its own time")
+  end
+  Assert.equal(#areaTap(40 + 15, 32, 62), 0, "the pixel past the circle radius selects no time")
   local editor = viewOn(stubView(), "search")
   editor.search = {
     criteria = {},
-    focus = "B",
+    focus = "A",
     previousColumn = "criteria",
-    editor = { criterion = "letter", kind = "letter", focus = "B", options = { "A", "B", "C" } },
+    editor = { criterion = "letter", kind = "letter", focus = "A" },
   }
   local editorPlan = session:resolve(measurementFor("wide"), sessionView(editor))
-  local choice = session:mapInput({ hostTap(editorPlan, "controls", "pointer_down", 20, 35, 32) }, sessionView(editor))
-  session:mapInput({ hostTap(editorPlan, "controls", "pointer_up", 20, 35, 32) }, sessionView(editor))
-  Assert.equal(#choice, 1, "the editor row maps to exactly one command")
-  Assert.equal(choice[1].action, "editor-choice", "the editor row chooses")
-  Assert.equal(choice[1].value, "B", "the editor row chooses its own option")
+  local function editorTap(lx, ly, pointerId)
+    local mapped = session:mapInput(
+      { hostTap(editorPlan, "controls", "pointer_down", lx, ly, pointerId) },
+      sessionView(editor)
+    )
+    session:mapInput({ hostTap(editorPlan, "controls", "pointer_up", lx, ly, pointerId) }, sessionView(editor))
+    return mapped
+  end
+  local unrestricted = editorTap(8 + 16, 8 + 8, 63)
+  Assert.equal(#unrestricted, 1, "the first letter cell maps to exactly one command")
+  Assert.equal(unrestricted[1].action, "editor-choice", "the letter grid chooses")
+  Assert.equal(unrestricted[1].value, "unrestricted", "the first letter cell clears the filter")
+  local seventhColumn = editorTap(8 + 6 * 32 + 16, 8 + 8, 64)
+  Assert.equal(#seventhColumn, 1, "the seventh letter column maps to exactly one command")
+  Assert.equal(seventhColumn[1].value, "F", "the seventh column of the first row holds F")
+  local lastRow = editorTap(8 + 5 * 32 + 16, 8 + 3 * 16 + 8, 65)
+  Assert.equal(#lastRow, 1, "the last letter cell maps to exactly one command")
+  Assert.equal(lastRow[1].value, "Z", "the last letter cell holds Z")
+end
+
+function T.native_option_editors_map_their_own_source_boxes()
+  local Interface = requirePresent("native option editor hitboxes")
+  local set = Interface.browser()
+  local session = ApplicationPresentation.new(set)
+  local function editorTap(kind, lx, ly, pointerId)
+    local view = viewOn(stubView(), "search")
+    view.search = {
+      criteria = {},
+      focus = kind,
+      previousColumn = "criteria",
+      editor = {
+        criterion = kind,
+        kind = kind,
+        focus = nil,
+        options = { "unrestricted", "normal", "fire" },
+      },
+    }
+    local plan = session:resolve(measurementFor("wide"), sessionView(view))
+    local mapped =
+      session:mapInput({ hostTap(plan, "controls", "pointer_down", lx, ly, pointerId) }, sessionView(view))
+    session:mapInput({ hostTap(plan, "controls", "pointer_up", lx, ly, pointerId) }, sessionView(view))
+    return mapped
+  end
+  local orderFirst = editorTap("order", 150, 15, 70)
+  Assert.equal(#orderFirst, 1, "the order editor maps its first box")
+  Assert.equal(orderFirst[1].value, "numerical", "the first order box holds the numerical sort")
+  Assert.equal(#editorTap("order", 20, 19, 71), 0, "the order editor leaves the menu gap inert")
+  local typeFirst = editorTap("type", 40, 16, 72)
+  Assert.equal(#typeFirst, 1, "the type editor maps its first box")
+  Assert.equal(typeFirst[1].action, "editor-choice", "the type editor chooses")
+  local shapeFirst = editorTap("shape", 52, 72, 73)
+  Assert.equal(#shapeFirst, 1, "the shape editor maps its first cell")
+  Assert.equal(shapeFirst[1].action, "editor-choice", "the shape editor chooses")
+  local areaFirst = editorTap("area", 90, 16, 74)
+  Assert.equal(#areaFirst, 1, "the area editor maps its first box")
+  Assert.equal(areaFirst[1].action, "editor-choice", "the area editor chooses")
+end
+
+function T.captured_slider_target_survives_moves_outside_its_band()
+  local Interface = requirePresent("captured slider routing")
+  local set = Interface.browser()
+  local session = ApplicationPresentation.new(set)
   local slider = viewOn(stubView(), "search")
   slider.search = {
     criteria = {},
@@ -381,12 +539,37 @@ function T.native_search_rows_and_slider_map_without_host_reinterpretation()
     previousColumn = "criteria",
     editor = { criterion = "height", kind = "height", endpoint = "min" },
   }
-  local sliderPlan = session:resolve(measurementFor("wide"), sessionView(slider))
-  local drag = session:mapInput({ hostTap(sliderPlan, "controls", "pointer_down", 20, 48, 33) }, sessionView(slider))
-  Assert.equal(#drag, 1, "the slider press begins exactly one gesture")
-  Assert.equal(drag[1].type, "drag", "the slider press drags")
-  Assert.equal(drag[1].target, "height-min", "the upper track drags the minimum endpoint")
-  Assert.equal(drag[1].phase, "begin", "the slider press begins the drag")
+  slider.capturedSliderTarget = "height-min"
+  local plan = session:resolve(measurementFor("wide"), sessionView(slider))
+  local function send(eventType, lx, ly, pointerId)
+    return session:mapInput(
+      { hostTap(plan, "controls", eventType, lx, ly, pointerId) },
+      sessionView(slider)
+    )
+  end
+  local begin = send("pointer_down", 20, 48, 80)
+  Assert.equal(#begin, 1, "the press on the minimum track begins exactly one gesture")
+  Assert.equal(begin[1].target, "height-min", "the press captures the minimum endpoint")
+  Assert.equal(begin[1].phase, "begin", "the press begins the drag")
+  local otherBand = send("pointer_move", 100, 88, 80)
+  Assert.equal(#otherBand, 1, "a move over the other band still reports the gesture")
+  Assert.equal(otherBand[1].target, "height-min", "the move keeps the captured minimum")
+  Assert.equal(otherBand[1].phase, "move", "the move keeps the move phase")
+  local emptyBand = send("pointer_move", 100, 120, 80)
+  Assert.equal(#emptyBand, 1, "a move over empty space still reports the gesture")
+  Assert.equal(emptyBand[1].target, "height-min", "empty space keeps the captured minimum")
+  local release = send("pointer_up", 100, 120, 80)
+  Assert.equal(#release, 1, "a release over empty space ends exactly one gesture")
+  Assert.equal(release[1].target, "height-min", "the release ends the captured minimum")
+  Assert.equal(release[1].phase, "end", "the release ends the drag")
+  local fresh = viewOn(stubView(), "search")
+  fresh.search = slider.search
+  local freshPlan = session:resolve(measurementFor("wide"), sessionView(fresh))
+  local stray = session:mapInput(
+    { hostTap(freshPlan, "controls", "pointer_up", 100, 120, 81) },
+    sessionView(fresh)
+  )
+  Assert.equal(#stray, 0, "a release with no capture maps to nothing")
 end
 
 function T.events_without_a_known_pane_identity_map_to_no_command()
@@ -403,21 +586,6 @@ function T.events_without_a_known_pane_identity_map_to_no_command()
     plan.mapInput({ type = "pointer_down", x = 30, y = 10, paneId = "unknown" }, view, plan),
     "a pointer with an unknown pane maps to no command"
   )
-end
-
-function T.registration_layout_draws_on_down_without_matched_release()
-  local Interface = requirePresent("registration touch layout")
-  local set = Interface.registration()
-  local session = ApplicationPresentation.new(set)
-  for _, class in ipairs({ "dual", "wide", "tall", "compact" }) do
-    local plan = session:resolve(measurementFor(class), { view = { key = "card" }, assets = {} })
-    Assert.notNil(plan, class .. " resolves a registration plan")
-  end
-  local mapped = session:mapInput(
-    { { type = "pointer_down", x = 128, y = 96, pointerId = 3 } },
-    { view = { key = "card" }, assets = {} }
-  )
-  Assert.isTrue(#mapped >= 0, "registration pointer-down maps without raising")
 end
 
 return { tests = T }
