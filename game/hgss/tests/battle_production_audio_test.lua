@@ -8,6 +8,7 @@
 -- cache, fixture catalogs, and a method-faithful audio controller stand in
 -- for the derived dump and the host sound backend. No ROM required.
 
+local AssetNeedsRegistry = require("libs.hgss.src.field.AssetNeedsRegistry")
 local Assert = require("tests.support.Assert")
 local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
 local BattleRuntime = require("game.hgss.src.battle.BattleRuntime")
@@ -285,6 +286,7 @@ local function stubPresentationRuntime(cache, audio, itemCatalog, monCatalog)
   return setmetatable({
     monNaming = InactiveMonNaming.new(),
     cacheFs = cache,
+    assetNeeds = AssetNeedsRegistry.new(),
     derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
     -- The presented composition borrows its session image owner for the
     -- battle envelope and menu chrome: the sized pool keeps real

@@ -1065,6 +1065,7 @@ function T.tests.image_idle_budget_trims_oldest_first_and_reuse_shields_the_pred
 end
 
 local FieldRuntime = require("game.hgss.src.field.FieldRuntime")
+local AssetNeedsRegistry = require("libs.hgss.src.field.AssetNeedsRegistry")
 
 -- A minimal production-shaped runtime for the private prediction driver:
 -- fixed map, music, audio round, day band, coverage anchor, and stable
@@ -1118,6 +1119,7 @@ local function holdPredictionRuntime(initialHold)
   end
   local runtime = setmetatable({
     assetPreparation = {},
+    assetNeeds = AssetNeedsRegistry.new(),
     audio = audio,
     residency = residency,
     runtimeMap = { mapId = 11 },
@@ -1250,6 +1252,112 @@ function T.tests.steady_hold_preserves_other_prediction_signals()
     runtime:_refreshPrediction()
   end)
   Assert.isTrue(ok, "a pre-composition runtime without a session still predicts (got " .. tostring(err) .. ")")
+end
+
+-- A runtime whose current map's script member carries asset needs through the
+-- published script index, with a recording preparer for the "probe" kind.
+local function assetNeedsRuntime(spec)
+  local runtime = holdPredictionRuntime(false)
+  local log = {}
+  local index = {
+    schema = "g4-script-index-v5",
+    memberAssetNeeds = spec.memberAssetNeeds,
+    resources = spec.resources or {},
+  }
+  runtime.cacheFs = {
+    loadLua = function()
+      return index
+    end,
+  }
+  runtime.residency.mapForId = function(_, mapId)
+    return { fieldData = { scriptBankId = spec.memberByMap[mapId] } }
+  end
+  runtime.scripts = { registry = { overrideAssetNeeds = spec.overrideAssetNeeds or function() end } }
+  if spec.withPreparer ~= false then
+    runtime.assetNeeds:register("probe", {
+      start = function(id)
+        log[#log + 1] = "start:" .. id
+        return {
+          step = function()
+            return true
+          end,
+          cancel = function()
+            log[#log + 1] = "cancel:" .. id
+          end,
+        }
+      end,
+    })
+  end
+  return runtime, log
+end
+
+-- The prediction commit enrolls the current map's script member needs from
+-- the published index with the asset-needs registry.
+function T.tests.commit_enrolls_the_current_maps_member_needs()
+  local runtime, log = assetNeedsRuntime({
+    memberAssetNeeds = { ["5"] = { "probe:a" }, ["6"] = { "probe:b" } },
+    memberByMap = { [11] = 5 },
+  })
+  runtime:_refreshPrediction()
+  Assert.deepEqual(log, { "start:a" })
+  runtime.session.currentMap = { mapId = 11 }
+  runtime:_refreshPrediction()
+  Assert.deepEqual(log, { "start:a" }, "an unchanged map enrolls nothing again")
+end
+
+function T.tests.commit_unions_override_needs_for_member_resources()
+  local runtime, log = assetNeedsRuntime({
+    memberAssetNeeds = { ["5"] = { "probe:a" } },
+    memberByMap = { [11] = 5 },
+    resources = { { id = "s.in", member = 5 }, { id = "s.out", member = 6 } },
+    overrideAssetNeeds = function(_, id)
+      if id == "s.in" then
+        return { "probe:override" }
+      end
+      return { "probe:elsewhere" }
+    end,
+  })
+  runtime:_refreshPrediction()
+  table.sort(log)
+  Assert.deepEqual(log, { "start:a", "start:override" }, "only the member's own override resources count")
+end
+
+function T.tests.map_change_retains_only_the_new_maps_needs()
+  local runtime, log = assetNeedsRuntime({
+    memberAssetNeeds = { ["5"] = { "probe:a" }, ["6"] = { "probe:b" } },
+    memberByMap = { [11] = 5, [12] = 6 },
+  })
+  runtime:_refreshPrediction()
+  runtime.session.currentMap = { mapId = 12 }
+  runtime.runtimeMap = { mapId = 12 }
+  runtime:_refreshPrediction()
+  table.sort(log)
+  Assert.deepEqual(log, { "cancel:a", "start:a", "start:b" }, "the old map's need is dropped, the new one starts")
+end
+
+function T.tests.malformed_index_needs_are_skipped_without_error()
+  local runtime, log = assetNeedsRuntime({
+    memberAssetNeeds = { ["5"] = { "probe:b", "probe:a" } },
+    memberByMap = { [11] = 5 },
+  })
+  local ok, err = pcall(function()
+    runtime:_refreshPrediction()
+  end)
+  Assert.isTrue(ok, tostring(err))
+  Assert.deepEqual(log, {})
+end
+
+function T.tests.a_runtime_without_preparers_enrolls_nothing()
+  local runtime, log = assetNeedsRuntime({
+    memberAssetNeeds = { ["5"] = { "probe:a" } },
+    memberByMap = { [11] = 5 },
+    withPreparer = false,
+  })
+  local ok, err = pcall(function()
+    runtime:_refreshPrediction()
+  end)
+  Assert.isTrue(ok, tostring(err))
+  Assert.deepEqual(log, {})
 end
 
 return { tests = T.tests }

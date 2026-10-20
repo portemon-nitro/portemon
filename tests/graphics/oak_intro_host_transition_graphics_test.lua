@@ -3,6 +3,7 @@
 -- one real draw presents the full-black frame before the next tick may
 -- finalize it.
 
+local AssetNeedsRegistry = require("libs.hgss.src.field.AssetNeedsRegistry")
 local SourceTick = require("libs.hgss.src.field.SourceTick")
 local Assert = require("tests.support.Assert")
 local FieldEventState = require("libs.hgss.src.field.FieldEventState")
@@ -322,6 +323,7 @@ local function bootCoveredField(scope)
   FieldRuntime.new = function(_, _)
     local runtime = setmetatable({
       cacheFs = cache,
+      assetNeeds = AssetNeedsRegistry.new(),
       assetPreparation = assetPreparation,
       imageAssets = imageAssets,
       derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,

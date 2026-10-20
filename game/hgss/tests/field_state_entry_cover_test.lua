@@ -5,6 +5,7 @@
 -- track resizes, gate gameplay input until complete, and leave ordinary
 -- entries (and post-reveal input) untouched.
 
+local AssetNeedsRegistry = require("libs.hgss.src.field.AssetNeedsRegistry")
 local SourceTick = require("libs.hgss.src.field.SourceTick")
 local Assert = require("tests.support.Assert")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
@@ -61,6 +62,7 @@ local function boot(withCover)
   FieldRuntime.new = function(_, _)
     return setmetatable({
       cacheFs = cache,
+      assetNeeds = AssetNeedsRegistry.new(),
       derivedAssets = FieldStatePresentationFixture.iconHost().derivedAssets,
       -- The presented composition borrows its session image owner for
       -- icons, Summary, and PC visuals: the sized pool keeps real

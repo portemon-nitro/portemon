@@ -86,6 +86,7 @@ local DOMAINS = {
 }
 
 local FIELD_COORDINATION = {
+  "AssetNeedsRegistry",
   "CameraHistory",
   "CivilDate",
   "CelebiTimeTravelScene",
