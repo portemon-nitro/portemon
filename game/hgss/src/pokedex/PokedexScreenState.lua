@@ -23,7 +23,7 @@ local PokedexInterface = require("game.hgss.src.pokedex.PokedexInterface")
 ---@field _assets table<string, unknown>? last committed whole ready bundle
 ---@field _phase string active, failed
 ---@field _preparationError string? nonempty cause behind the failed phase
----@field _compact { inspect: boolean, prosePage: integer, size: string } private compact presentation record
+---@field _compact { inspect: boolean, size: string } private compact presentation record
 ---@field _compactMode boolean true while the measured display uses the compact arrangement
 ---@field _pointerHeld boolean true while an in-flight drag holds touch across ticks
 ---@field _activeDragTarget string? in-flight drag target behind transactional cancel
@@ -116,6 +116,17 @@ local function buildDemand(view)
       if #iconKeys >= 30 then
         break
       end
+    end
+  end
+  -- The compact portrait falls back to the selected species icon when the
+  -- bundle carries no entry picture, so the selection icon stays wanted
+  -- even when the selection stages off the visible buffer or the page
+  -- stages no grid at all.
+  if type(view.selection) == "table" and type(view.selection.species) == "string" then
+    local key = view.selection.species .. "/f0"
+    if not seenIcons[key] and #iconKeys < 30 then
+      seenIcons[key] = true
+      iconKeys[#iconKeys + 1] = key
     end
   end
   local pictures = {}
@@ -267,7 +278,6 @@ local function consumeBatch(self, mapped)
     elseif type(event) == "table" and event.type == "inspect" then
       if self._compactMode then
         self._compact.inspect = not self._compact.inspect
-        self._compact.prosePage = 1
       end
     elseif type(event) == "table" and event.type == "toggleSize" then
       if self._compact.size == "weight" then
@@ -277,7 +287,6 @@ local function consumeBatch(self, mapped)
       end
     elseif type(event) == "table" and event.type == "cancel" and self._compact.inspect then
       self._compact.inspect = false
-      self._compact.prosePage = 1
     elseif type(event) == "table" and event.type == "pointer_cancel" then
       -- A lost capture ends the in-flight gesture transactionally: the
       -- controller restores the pre-drag bound instead of keeping a
@@ -434,7 +443,7 @@ function PokedexScreenState.new(args)
     _assets = nil,
     _phase = "active",
     _preparationError = nil,
-    _compact = { inspect = false, prosePage = 1, size = "weight" },
+    _compact = { inspect = false, size = "weight" },
     _compactMode = false,
     _pointerHeld = false,
     _activeDragTarget = nil,

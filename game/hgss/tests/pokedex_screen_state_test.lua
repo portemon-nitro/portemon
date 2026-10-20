@@ -899,4 +899,168 @@ function T.failed_candidate_plans_keep_the_last_ready_triplet()
   screen:dispose()
 end
 
+---@param screen table<string, unknown> live presented screen under test
+---@param species string expected selected species key
+local function driveSelectionTo(screen, species)
+  for _ = 1, 40 do
+    if screen:status().view.selection.species == species then
+      return
+    end
+    screen:updateFixed({ { type = "navigate", direction = "right" } })
+  end
+  error("the grid never selects " .. species, 0)
+end
+
+---@param slots table[] detached semantic text slot requests behind the view
+---@return table<string, boolean> prepared role presence by role name
+local function slotRoles(slots)
+  local roles = {}
+  if type(slots) == "table" then
+    for _, slot in ipairs(slots) do
+      if type(slot) == "table" and type(slot.role) == "string" then
+        roles[slot.role] = true
+      end
+    end
+  end
+  return roles
+end
+
+---@param plan table<string, unknown> resolved application plan
+---@param paneId string browser pane identity
+---@return table pane origin, number pane scale
+local function screenPaneOrigin(plan, paneId)
+  for _, pane in ipairs(plan.panes or {}) do
+    if type(pane) == "table" and pane.id == paneId then
+      local placement = assert(pane.placement, "browser panes carry their placement")
+      return placement.origin or placement.frame, placement.scale or 1
+    end
+  end
+  error("the resolved plan carries no " .. paneId .. " pane", 0)
+end
+
+function T.inspector_binds_only_eligible_details_and_closes_without_side_effects()
+  local ScreenState = requirePresent("inspector detail eligibility")
+  local gate = { open = true }
+  local template = { animations = {}, chrome = {}, pictures = {}, surfaces = {}, fonts = {}, messages = {} }
+  local monCatalog, catalog = Fixture.catalogs()
+  local owner = Fixture.ownerWithHistory(monCatalog, catalog)
+  local live = Fixture.openController(owner, monCatalog, catalog)
+  local controller, _ = spyController(live)
+  local screen = ScreenState.new({
+    controller = controller,
+    lease = gateableLease(gate, template),
+    measureDisplay = function()
+      return compactMeasurement()
+    end,
+    effect = function()
+    end,
+    playCry = function()
+    end,
+    commitResume = function()
+      return true
+    end,
+  })
+  screen:updateFixed({ { type = "confirm" } })
+  Assert.equal(screen:status().view.page, "grid", "the open cover admits its confirm once ready")
+  driveSelectionTo(screen, "TOTODILE")
+  screen:updateFixed({ { type = "inspect" } })
+  Assert.isTrue(screen:status().compact.inspect, "the inspect action opens the panel")
+  local caught = slotRoles(screen:status().view.text)
+  Assert.isTrue(caught["compact.detail-number"], "a caught selection prepares its number")
+  Assert.isTrue(caught["compact.detail-name"], "a caught selection prepares its name")
+  Assert.isTrue(caught["compact.detail-category"], "a caught selection prepares its category")
+  Assert.isTrue(caught["compact.detail-flavor"], "a caught selection prepares its flavor")
+  Assert.isTrue(caught["compact.detail-height"], "a caught selection prepares its height")
+  Assert.isTrue(caught["compact.detail-weight"], "a caught selection prepares its weight")
+  local before = screen:status().view
+  screen:updateFixed({ { type = "cancel" } })
+  Assert.isFalse(screen:status().compact.inspect, "cancelling closes the panel")
+  Assert.equal(
+    screen:status().view.selection.species,
+    before.selection.species,
+    "closing the panel keeps the selected species"
+  )
+  Assert.equal(screen:status().view.key, before.key, "closing the panel keeps the generation key")
+  driveSelectionTo(screen, "CHIKORITA")
+  screen:updateFixed({ { type = "inspect" } })
+  local seenOnly = slotRoles(screen:status().view.text)
+  Assert.isTrue(seenOnly["compact.detail-number"], "a seen-only selection prepares its number")
+  Assert.isTrue(seenOnly["compact.detail-name"], "a seen-only selection prepares its name")
+  Assert.isFalse(seenOnly["compact.detail-category"], "a seen-only selection hides its category")
+  Assert.isFalse(seenOnly["compact.detail-flavor"], "a seen-only selection hides its flavor")
+  Assert.isFalse(seenOnly["compact.detail-height"], "a seen-only selection hides its height")
+  Assert.isFalse(seenOnly["compact.detail-weight"], "a seen-only selection hides its weight")
+  screen:updateFixed({ { type = "cancel" } })
+  screen:dispose()
+end
+
+function T.inspector_close_maps_at_its_drawn_rectangle_without_click_through()
+  local ScreenState = requirePresent("mapped inspector close")
+  local gate = { open = true }
+  local template = { animations = {}, chrome = {}, pictures = {}, surfaces = {}, fonts = {}, messages = {} }
+  local monCatalog, catalog = Fixture.catalogs()
+  local owner = Fixture.ownerWithHistory(monCatalog, catalog)
+  local live = Fixture.openController(owner, monCatalog, catalog)
+  local controller, batches = spyController(live)
+  local screen = ScreenState.new({
+    controller = controller,
+    lease = gateableLease(gate, template),
+    measureDisplay = function()
+      return compactMeasurement()
+    end,
+    effect = function()
+    end,
+    playCry = function()
+    end,
+    commitResume = function()
+      return true
+    end,
+  })
+  screen:updateFixed({ { type = "confirm" } })
+  driveSelectionTo(screen, "TOTODILE")
+  screen:updateFixed({ { type = "inspect" } })
+  Assert.isTrue(screen:status().compact.inspect, "the inspect action opens the panel")
+  local plan = assert(screen:status().presentation, "the open inspector publishes its plan")
+  local compact = assert(plan.content.pokedexCompact, "the plan publishes its compact record")
+  local toggle = assert(compact.inspectRect, "the compact record carries its close toggle")
+  local origin, scale = screenPaneOrigin(plan, "information")
+  local key = screen:status().view.key
+  screen:updateFixed({
+    {
+      type = "pointer_down",
+      x = origin.x + (toggle.x + toggle.width / 2) * scale,
+      y = origin.y + (toggle.y + toggle.height / 2) * scale,
+      pointerId = 11,
+    },
+  })
+  screen:updateFixed({
+    {
+      type = "pointer_up",
+      x = origin.x + (toggle.x + toggle.width / 2) * scale,
+      y = origin.y + (toggle.y + toggle.height / 2) * scale,
+      pointerId = 11,
+    },
+  })
+  Assert.isFalse(screen:status().compact.inspect, "tapping the drawn toggle closes the panel")
+  Assert.equal(screen:status().view.key, key, "closing through the toggle keeps the generation key")
+  screen:updateFixed({ { type = "inspect" } })
+  Assert.isTrue(screen:status().compact.inspect, "the inspect action reopens the panel")
+  local bundle = assert(screen:status().assets, "the open inspector keeps its committed bundle")
+  gate.open = false
+  screen:updateFixed({ { type = "pointer_up", x = 8, y = 8, pointerId = 77 } })
+  Assert.isTrue(screen:status().assets == bundle, "a pending generation keeps the open bundle")
+  Assert.isTrue(screen:status().compact.inspect, "a stale release never closes the panel")
+  Assert.equal(screen:status().view.key, key, "a stale release never activates the background")
+  local activations = 0
+  for _, batch in ipairs(batches) do
+    for _, event in ipairs(batch) do
+      if type(event) == "table" and event.type == "activate" then
+        activations = activations + 1
+      end
+    end
+  end
+  Assert.equal(activations, 0, "no background activation flows while the panel stays open")
+  screen:dispose()
+end
+
 return { tests = T }

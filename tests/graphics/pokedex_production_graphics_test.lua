@@ -339,6 +339,13 @@ local function browserDemandFor(Renderer, view)
       end
     end
   end
+  if type(view.selection) == "table" and type(view.selection.species) == "string" then
+    local key = view.selection.species .. "/f0"
+    if not seen[key] and #iconKeys < 30 then
+      seen[key] = true
+      iconKeys[#iconKeys + 1] = key
+    end
+  end
   local pictures = {}
   if type(view.pictures) == "table" then
     for _, picture in ipairs(view.pictures) do
@@ -567,7 +574,7 @@ end
 ---@param assets table ready bundle behind the draw
 ---@return table presenter-shaped prepared view behind the draw
 local function preparedBrowserView(view, assets)
-  return { view = view, assets = assets, compact = { inspect = false, prosePage = 1, size = "weight" } }
+  return { view = view, assets = assets, compact = { inspect = false, size = "weight" } }
 end
 
 ---@param view table detached browser projection
@@ -577,7 +584,7 @@ local function planViewOf(view)
   for key, value in pairs(view) do
     merged[key] = value
   end
-  merged.compact = { inspect = false, prosePage = 1, size = "weight" }
+  merged.compact = { inspect = false, size = "weight" }
   return merged
 end
 
@@ -1239,15 +1246,15 @@ function T.compact_single_display_paints_fifteen_icons_portrait_and_footer(scope
     local footer = assert(compact.footer, "the compact record carries its footer")
     Assert.isTrue(#footer.buttons >= 2, "the compact footer exposes its actions")
     for _, button in ipairs(footer.buttons) do
-      assertPixel(
-        data,
-        controls.origin.x + button.x + math.floor(button.width / 2),
-        controls.origin.y + math.floor(button.height / 2),
-        88,
-        140,
-        196,
-        "the compact footer button " .. button.id .. " paints its action chrome"
-      )
+      -- Every footer action paints its full body: visible source marks
+      -- now cover the button center, so coverage asserts opacity rather
+      -- than blank chrome. Distinct marks stay with the dedicated
+      -- compact action legs.
+      local _, _, _, centerAlpha =
+        pixel(data, controls.origin.x + button.x + math.floor(button.width / 2), controls.origin.y + math.floor(button.height / 2))
+      Assert.equal(centerAlpha, 255, "the compact footer button " .. button.id .. " paints its action body")
+      local _, _, _, cornerAlpha = pixel(data, controls.origin.x + button.x, controls.origin.y + button.y)
+      Assert.equal(cornerAlpha, 255, "the compact footer button " .. button.id .. " paints its action corner")
     end
     lease:release()
     controller:dispose()
@@ -1326,7 +1333,10 @@ function T.all_layouts_resolve_prepared_browser_pixels(scope)
       pixelRatio = 1,
       signature = "pokedex-production-graphics:small",
     }
-    local unavailable = Interface.browser().nativeLike({ measurement = small }, planViewOf(view))
+    -- The too-small display resolves through the production session path,
+    -- which centers the single-display fitter against the usable safe
+    -- bounds and fails closed to the unavailable plan.
+    local unavailable = resolvePlan(Interface.browser(), small, planViewOf(view))
     Assert.equal(#unavailable.panes, 0, "the below-minimum plan carries no interactive panes")
     local cleared = drawPlan(scope, unavailable, resources, preparedView, small.width, small.height)
     local r, g, b, a = pixel(cleared, 100, 50)
@@ -4033,6 +4043,181 @@ function T.native_search_and_entry_text_paints_source_glyphs(scope)
       )
     end
     rig.owner:release()
+  end)
+end
+
+---@param data table 8-bit pixel buffer behind the composed target
+---@param rect { x: integer, y: integer, width: integer, height: integer } logical region in pane space
+---@param ox number pane origin x in host pixels
+---@param oy number pane origin y in host pixels
+---@param scale number pane integer scale
+---@param r integer matte red byte
+---@param g integer matte green byte
+---@param b integer matte blue byte
+---@return integer pixels inside the region differing from the matte triple
+local function countNonMatte(data, rect, ox, oy, scale, r, g, b)
+  local count = 0
+  for y = rect.y, rect.y + rect.height - 1 do
+    for x = rect.x, rect.x + rect.width - 1 do
+      local pr, pg, pb, _ = pixel(data, ox + x * scale, oy + y * scale)
+      if pr ~= r or pg ~= g or pb ~= b then
+        count = count + 1
+      end
+    end
+  end
+  return count
+end
+
+function T.compact_inspector_paints_eligible_details_above_its_matte(scope)
+  local Renderer = requireRenderer("compact inspector readability")
+  local Interface = requireInterface("compact inspector geometry")
+  requireOwner("prepared bundles behind the inspector")
+  local versionId = readyVersion()
+  local pool = SharedImagePoolFake.new()
+  withPool(pool, function()
+    local rig = graphicsRig(versionId, pool, scope)
+    seedIcon(pool, "CHIKORITA/f0", 1, 1, 1)
+    seedIcon(pool, "EEVEE/f0", 0, 0, 0)
+    seedIcon(pool, "TOTODILE/f0", 1, 0, 0)
+    seedIcon(pool, "SPINDA/f0", 0, 1, 0)
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "grid")
+    local dexOwner = Fixture.ownerWithHistory(rig.monCatalog, rig.catalog)
+    local controller = Fixture.openController(dexOwner, rig.monCatalog, rig.catalog)
+    openGrid(controller)
+    selectSpecies(controller, "TOTODILE")
+    local view = controller:view()
+    local demand = browserDemandFor(Renderer, view)
+    seedDemandPortraitsOnce(pool, rig.cacheFs, rig.monCatalog, demand, true, {})
+    local lease = rig.owner:acquire({ purpose = "browser" })
+    local assets = prepareReady(rig, lease, demand)
+    for _, key in ipairs({
+      "compact.detail-number",
+      "compact.detail-name",
+      "compact.detail-category",
+      "compact.detail-flavor",
+      "compact.detail-height",
+      "compact.detail-weight",
+    }) do
+      Assert.isTrue((assets.messages[key] or "") ~= "", "the caught bundle carries its detail " .. key)
+    end
+    local measurement = measurementFor("nativeLike")
+    local plan = resolvePlan(Interface.browser(), measurement, planViewOf(view))
+    local compact = assert(plan.content.pokedexCompact, "the compact plan publishes its geometry record")
+    local info = placementOf(plan, "information")
+    local resources = { graphics = love.graphics, renderer = assets.renderer }
+    local showing = { view = view, assets = assets, compact = { inspect = true, size = "weight" } }
+    local data = drawPlan(scope, plan, resources, showing, 256, 192)
+    local body = { x = 8, y = 8, width = 240, height = 120 }
+    local ink = countNonMatte(data, body, info.origin.x, info.origin.y, info.scale, 16, 16, 24)
+    Assert.isTrue(ink >= 20, "the open inspector paints readable detail glyphs above its matte")
+    local toggle = assert(compact.inspectRect, "the compact record carries its close toggle")
+    local closeInk = countNonMatte(data, toggle, info.origin.x, info.origin.y, info.scale, 88, 140, 196)
+    Assert.isTrue(closeInk >= 4, "the close affordance paints its mark above its chrome")
+    local again = drawPlan(scope, plan, resources, showing, 256, 192)
+    Assert.equal(
+      byteSum(again, 256, 192),
+      byteSum(data, 256, 192),
+      "repeated inspector draws settle identical pixels"
+    )
+    lease:release()
+    controller:dispose()
+    rig.owner:release()
+    Assert.equal(pool:stats().outstandingLeases, 0, "the inspector journey returns every interest")
+  end)
+end
+
+function T.compact_footer_and_rows_show_distinct_marks_without_new_realizations(scope)
+  local Renderer = requireRenderer("compact action marks")
+  local Interface = requireInterface("compact action geometry")
+  requireOwner("prepared bundles behind compact actions")
+  local versionId = readyVersion()
+  local pool = SharedImagePoolFake.new()
+  withPool(pool, function()
+    local rig = graphicsRig(versionId, pool, scope)
+    seedIcon(pool, "CHIKORITA/f0", 1, 1, 1)
+    seedIcon(pool, "EEVEE/f0", 0, 0, 0)
+    seedIcon(pool, "TOTODILE/f0", 1, 0, 0)
+    seedIcon(pool, "SPINDA/f0", 0, 1, 0)
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "grid")
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "search.criteria")
+    local dexOwner = Fixture.ownerWithHistory(rig.monCatalog, rig.catalog)
+    local controller = Fixture.openController(dexOwner, rig.monCatalog, rig.catalog)
+    openGrid(controller)
+    selectSpecies(controller, "TOTODILE")
+    local view = controller:view()
+    local demand = browserDemandFor(Renderer, view)
+    seedDemandPortraitsOnce(pool, rig.cacheFs, rig.monCatalog, demand, true, {})
+    local lease = rig.owner:acquire({ purpose = "browser" })
+    local assets = prepareReady(rig, lease, demand)
+    local measurement = measurementFor("nativeLike")
+    local plan = resolvePlan(Interface.browser(), measurement, planViewOf(view))
+    local compact = assert(plan.content.pokedexCompact, "the compact plan publishes its geometry record")
+    local info = placementOf(plan, "information")
+    local controls = placementOf(plan, "controls")
+    local resources = { graphics = love.graphics, renderer = assets.renderer }
+    local data = drawPlan(scope, plan, resources, preparedBrowserView(view, assets), 256, 192)
+    local footer = assert(compact.footer, "the compact record carries its footer")
+    local marked = 0
+    local dimmed = 0
+    for _, button in ipairs(footer.buttons) do
+      local varied = 0
+      for y = button.y, button.y + button.height - 1 do
+        for x = button.x, button.x + button.width - 1 do
+          local pr, pg, pb, _ = pixel(
+            data,
+            controls.origin.x + x * controls.scale,
+            controls.origin.y + y * controls.scale
+          )
+          if pr ~= 88 or pg ~= 140 or pb ~= 196 then
+            varied = varied + 1
+          end
+        end
+      end
+      if button.enabled == true then
+        Assert.isTrue(varied >= 4, "enabled footer action " .. button.id .. " shows its mark")
+        marked = marked + 1
+      else
+        dimmed = dimmed + 1
+      end
+    end
+    Assert.isTrue(marked >= 1, "the grid footer marks its enabled actions")
+    Assert.isTrue(dimmed >= 1, "the first grid page visibly disables its previous-page action")
+    press(controller, { { type = "y" } })
+    idle(controller, 2)
+    local searchView = controller:view()
+    Assert.equal(searchView.page, "search", "the grid opens its search criteria")
+    local searchDemand = browserDemandFor(Renderer, searchView)
+    seedDemandPortraitsOnce(pool, rig.cacheFs, rig.monCatalog, searchDemand, true, {})
+    local searchLease = rig.owner:acquire({ purpose = "browser" })
+    local searchAssets = prepareReady(rig, searchLease, searchDemand)
+    local searchPlan = resolvePlan(Interface.browser(), measurement, planViewOf(searchView))
+    local searchCompact = assert(searchPlan.content.pokedexCompact, "the search plan publishes its record")
+    local searchData = drawPlan(
+      scope,
+      searchPlan,
+      { graphics = love.graphics, renderer = searchAssets.renderer },
+      preparedBrowserView(searchView, searchAssets),
+      256,
+      192
+    )
+    local searchInfo = placementOf(searchPlan, "information")
+    local rowInk = 0
+    for _, row in ipairs(searchCompact.rows) do
+      for y = row.rect.y, row.rect.y + row.rect.height - 1 do
+        for x = row.rect.x, row.rect.x + row.rect.width - 1 do
+          local pr, pg, pb, _ = pixel(searchData, searchInfo.origin.x + x, searchInfo.origin.y + y)
+          if pr == 255 and pg == 255 and pb == 255 then
+            rowInk = rowInk + 1
+          end
+        end
+      end
+    end
+    Assert.isTrue(rowInk >= 10, "search criterion rows paint source glyph pixels")
+    searchLease:release()
+    lease:release()
+    controller:dispose()
+    rig.owner:release()
+    Assert.equal(pool:stats().outstandingLeases, 0, "the action journey returns every interest")
   end)
 end
 

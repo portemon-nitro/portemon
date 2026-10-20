@@ -112,13 +112,13 @@ end
 ---@param view table<string, unknown> detached browser projection
 ---@return table<string, unknown> production-shaped session view with the private compact record
 local function sessionView(view)
-  local merged = { compact = { inspect = false, prosePage = 1, size = "weight" } }
+  local merged = { compact = { inspect = false, size = "weight" } }
   if type(view) == "table" then
     for key, value in pairs(view) do
       merged[key] = value
     end
     if type(merged.compact) ~= "table" then
-      merged.compact = { inspect = false, prosePage = 1, size = "weight" }
+      merged.compact = { inspect = false, size = "weight" }
     end
   end
   return merged
@@ -570,6 +570,320 @@ function T.captured_slider_target_survives_moves_outside_its_band()
     sessionView(fresh)
   )
   Assert.equal(#stray, 0, "a release with no capture maps to nothing")
+end
+
+---@param width number host width behind the single-display measurement
+---@param height number host height behind the single-display measurement
+---@param safe table<string, number>? safe rectangle inside the surface, defaulting to the full rect
+---@param pixelRatio number? framebuffer pixels per host unit, defaulting to 1
+---@return table<string, unknown> measured single-display facts for compact fitting
+local function fittedMeasurement(width, height, safe, pixelRatio)
+  local rect = { x = 0, y = 0, width = width, height = height }
+  local surface = {
+    id = "main",
+    rect = rect,
+    touch = true,
+    role = "world",
+  }
+  if safe ~= nil then
+    surface.safeRect = { x = safe.x, y = safe.y, width = safe.width, height = safe.height }
+  end
+  return {
+    width = width,
+    height = height,
+    topology = ScreenTopology.oneDisplay(surface),
+    pixelRatio = pixelRatio or 1,
+    signature = "pokedex-interface-test:fitted-" .. width .. "x" .. height,
+  }
+end
+
+---@return table<string, unknown> grid projection with paging, cursor, and seen states
+local function gridFixture()
+  local entries = {}
+  for slot = 1, 15 do
+    entries[slot] = { species = "SEEN" .. slot, seen = true, caught = slot <= 4 }
+  end
+  return {
+    key = "fitted-generation",
+    mode = "johto",
+    page = "grid",
+    selection = { species = "SEEN1", dexNumber = 1, seen = true, caught = true, language = "english" },
+    counts = { seen = 15, caught = 4 },
+    grid = {
+      page = 0,
+      lastPage = 3,
+      cursor = 0,
+      buffers = { { entries = entries } },
+    },
+  }
+end
+
+---@param plan table<string, unknown> resolved application plan
+---@param paneId string browser pane identity
+---@return table pane placement behind the plan
+local function placementOf(plan, paneId)
+  for _, pane in ipairs(plan.panes or {}) do
+    if type(pane) == "table" and pane.id == paneId then
+      return assert(pane.placement, "browser panes carry their placement")
+    end
+  end
+  error("the resolved plan carries no " .. paneId .. " pane", 0)
+end
+
+function T.compact_parent_centers_at_the_largest_integer_scale()
+  local Interface = requirePresent("centered integer compact fitting")
+  local set = Interface.browser()
+  local session = ApplicationPresentation.new(set)
+  local view = sessionView(gridFixture())
+  local filling = session:resolve(fittedMeasurement(512, 384), view)
+  local fillingInfo = placementOf(filling, "information")
+  local fillingControls = placementOf(filling, "controls")
+  Assert.equal(fillingInfo.scale, 2, "a 512x384 display fits the compact parent at 2x")
+  Assert.equal(fillingInfo.frame.x, 0, "a filling 2x parent starts at the left edge")
+  Assert.equal(fillingInfo.frame.y, 0, "a filling 2x parent starts at the top edge")
+  Assert.equal(fillingInfo.frame.width, 512, "a filling 2x information pane spans the display width")
+  Assert.equal(fillingInfo.frame.height, 336, "a filling 2x information pane keeps 168 logical rows")
+  Assert.equal(fillingControls.scale, 2, "the footer shares the parent integer scale")
+  Assert.equal(fillingControls.frame.x, 0, "the footer shares the parent horizontal offset")
+  Assert.equal(
+    fillingControls.frame.y,
+    336,
+    "the footer starts exactly below the information pane"
+  )
+  Assert.equal(fillingControls.frame.height, 48, "the footer keeps 24 logical rows")
+  local letterboxed = session:resolve(fittedMeasurement(640, 480), view)
+  local boxedInfo = placementOf(letterboxed, "information")
+  local boxedControls = placementOf(letterboxed, "controls")
+  Assert.equal(boxedInfo.scale, 2, "a 640x480 display still fits the compact parent at 2x")
+  Assert.equal(boxedInfo.frame.x, 64, "a 640x480 parent centers with horizontal margins")
+  Assert.equal(boxedInfo.frame.y, 48, "a 640x480 parent centers with vertical margins")
+  Assert.equal(boxedControls.scale, 2, "the letterboxed footer shares the parent scale")
+  Assert.equal(boxedControls.frame.x, 64, "the letterboxed footer shares the parent offset")
+  Assert.equal(boxedControls.frame.y, 48 + 336, "the letterboxed footer stays below information")
+  local compact = assert(
+    letterboxed.content.pokedexCompact,
+    "the fitted plan publishes its one shared geometry record"
+  )
+  local footer = assert(compact.footer, "the compact record carries its footer")
+  local middle = nil
+  for _, button in ipairs(footer.buttons) do
+    if type(button) == "table" and button.x <= 128 and 128 < button.x + button.width then
+      middle = button
+    end
+  end
+  local center = assert(middle, "the footer exposes its center action")
+  local tapped = session:mapInput(
+    { hostTap(letterboxed, "controls", "pointer_down", center.x + center.width / 2, center.y + 1, 300) },
+    view
+  )
+  session:mapInput(
+    { hostTap(letterboxed, "controls", "pointer_up", center.x + center.width / 2, center.y + 1, 300) },
+    view
+  )
+  Assert.equal(#tapped, 1, "a tap at the drawn footer center maps through the shared record")
+  local missed = session:mapInput({ { type = "pointer_down", x = 10, y = 10, pointerId = 301 } }, view)
+  Assert.equal(#missed, 0, "a host press outside the centered content maps to no control")
+end
+
+function T.compact_parent_honors_safe_area_and_unfit_selects_no_controls()
+  local Interface = requirePresent("safe-area compact fitting")
+  local set = Interface.browser()
+  local session = ApplicationPresentation.new(set)
+  local view = sessionView(gridFixture())
+  local offset = session:resolve(fittedMeasurement(340, 264, { x = 20, y = 12, width = 300, height = 240 }), view)
+  local info = placementOf(offset, "information")
+  local controls = placementOf(offset, "controls")
+  Assert.equal(info.scale, 1, "a 300x240 safe area fits the compact parent at 1x")
+  Assert.equal(info.frame.x, 42, "the parent centers inside the safe horizontal bounds")
+  Assert.equal(info.frame.y, 36, "the parent centers inside the safe vertical bounds")
+  Assert.equal(controls.frame.x, 42, "the safe-area footer shares the parent offset")
+  Assert.equal(controls.frame.y, 36 + 168, "the safe-area footer stays below information")
+  local tiny = session:resolve(fittedMeasurement(240, 200, { x = 20, y = 20, width = 200, height = 160 }), view)
+  Assert.notNil(tiny, "an unfit display still resolves a plan")
+  Assert.equal(#(tiny.panes or {}), 0, "an unfit display publishes no interactive panes")
+  local mapped = session:mapInput({ { type = "pointer_down", x = 100, y = 80, pointerId = 302 } }, view)
+  Assert.equal(#mapped, 0, "an unfit display exposes no active controls")
+  for _, class in ipairs({ "dual", "wide", "tall" }) do
+    local native = session:resolve(measurementFor(class), sessionView(gridFixture()))
+    Assert.isNil(
+      native.content.pokedexCompact,
+      class .. " keeps native geometry without a compact record"
+    )
+    Assert.notNil(native.panes, class .. " keeps its paired panes")
+    Assert.equal(#native.panes, 2, class .. " keeps both native panes")
+  end
+end
+
+function T.compact_footer_buttons_carry_one_shared_visible_record()
+  local Interface = requirePresent("single-record compact actions")
+  local set = Interface.browser()
+  local session = ApplicationPresentation.new(set)
+  local view = sessionView(gridFixture())
+  local plan = session:resolve(measurementFor("compact"), view)
+  local compact = assert(plan.content.pokedexCompact, "the compact plan publishes its geometry record")
+  local footer = assert(compact.footer, "the compact record carries its footer")
+  Assert.isTrue(#footer.buttons >= 7, "the grid footer exposes every grid action")
+  local seenIds = {}
+  for _, button in ipairs(footer.buttons) do
+    Assert.isTrue(button.enabled ~= nil, "footer action " .. button.id .. " declares its enablement")
+    Assert.isTrue(
+      button.labelRole ~= nil or button.iconRole ~= nil,
+      "footer action " .. button.id .. " names its visible mark"
+    )
+    Assert.isTrue(seenIds[button.id] == nil, "footer action " .. button.id .. " appears once")
+    seenIds[button.id] = true
+    local tapped = session:mapInput(
+      { hostTap(plan, "controls", "pointer_down", button.x + 1, button.y + 1, 400) },
+      view
+    )
+    session:mapInput(
+      { hostTap(plan, "controls", "pointer_up", button.x + 1, button.y + 1, 400) },
+      view
+    )
+    if button.enabled == true then
+      Assert.equal(#tapped, 1, "enabled footer action " .. button.id .. " maps at its drawn rectangle")
+    else
+      Assert.equal(#tapped, 0, "disabled footer action " .. button.id .. " maps to no command")
+    end
+  end
+  local firstPage = sessionView(gridFixture())
+  local firstPlan = session:resolve(measurementFor("compact"), firstPage)
+  local firstCompact = assert(firstPlan.content.pokedexCompact, "the first page publishes its record")
+  local prevButton = nil
+  for _, button in ipairs(firstCompact.footer.buttons) do
+    if button.id == "page-prev" then
+      prevButton = button
+    end
+  end
+  Assert.notNil(prevButton, "the grid footer exposes its previous-page action")
+  Assert.isFalse(prevButton.enabled, "the previous-page action is disabled on page zero")
+  local prevTap = session:mapInput(
+    { hostTap(firstPlan, "controls", "pointer_down", prevButton.x + 1, prevButton.y + 1, 401) },
+    firstPage
+  )
+  session:mapInput(
+    { hostTap(firstPlan, "controls", "pointer_up", prevButton.x + 1, prevButton.y + 1, 401) },
+    firstPage
+  )
+  Assert.equal(#prevTap, 0, "the disabled previous-page action stays semantically inert")
+end
+
+function T.compact_rows_stay_inside_the_information_pane()
+  local Interface = requirePresent("bounded compact rows")
+  local set = Interface.browser()
+  local session = ApplicationPresentation.new(set)
+  local search = gridFixture()
+  search.page = "search"
+  search.search = { criteria = {}, focus = "order", previousColumn = "criteria" }
+  local plan = session:resolve(measurementFor("compact"), sessionView(search))
+  local compact = assert(plan.content.pokedexCompact, "the search plan publishes its geometry record")
+  Assert.isTrue(#compact.rows >= 7, "the search plan exposes every criterion row")
+  for _, row in ipairs(compact.rows) do
+    Assert.isTrue(row.enabled ~= nil, "search row declares its enablement")
+    Assert.isTrue(
+      row.rect.y + row.rect.height <= 168,
+      "search row stays inside the 168px information pane"
+    )
+    Assert.isTrue(
+      row.labelRole ~= nil or row.iconRole ~= nil or row.valueRole ~= nil,
+      "search row names its visible content"
+    )
+    local tapped = session:mapInput(
+      {
+        hostTap(
+          plan,
+          "information",
+          "pointer_down",
+          row.rect.x + 1,
+          row.rect.y + 1,
+          500
+        ),
+      },
+      sessionView(search)
+    )
+    session:mapInput(
+      { hostTap(plan, "information", "pointer_up", row.rect.x + 1, row.rect.y + 1, 500) },
+      sessionView(search)
+    )
+    if row.enabled == true then
+      Assert.equal(#tapped, 1, "an enabled search row maps at its drawn rectangle")
+    else
+      Assert.equal(#tapped, 0, "a disabled search row maps to no command")
+    end
+  end
+  local below = session:mapInput(
+    { hostTap(plan, "information", "pointer_down", 20, 165, 501) },
+    sessionView(search)
+  )
+  session:mapInput({ hostTap(plan, "information", "pointer_up", 20, 165, 501) }, sessionView(search))
+  local covered = false
+  for _, row in ipairs(compact.rows) do
+    if 165 >= row.rect.y and 165 < row.rect.y + row.rect.height then
+      covered = true
+    end
+  end
+  if not covered then
+    Assert.equal(#below, 0, "an information tap below every row maps to no command")
+  end
+end
+
+function T.compact_disabled_editor_choice_row_maps_to_no_command()
+  local Interface = requirePresent("disabled editor-choice inertness")
+  local set = Interface.browser()
+  local session = ApplicationPresentation.new(set)
+  local search = viewOn(gridFixture(), "search")
+  search.search = {
+    criteria = {},
+    focus = "area",
+    previousColumn = "criteria",
+    editor = {
+      criterion = "area",
+      kind = "area",
+      focus = nil,
+      options = { "unrestricted", "johto", "kanto", "unknown" },
+      choices = {
+        unrestricted = { enabled = true },
+        johto = { enabled = true },
+        kanto = { enabled = false },
+        unknown = { enabled = true },
+      },
+    },
+  }
+  local plan = session:resolve(measurementFor("compact"), sessionView(search))
+  local compact = assert(plan.content.pokedexCompact, "the editor plan publishes its geometry record")
+  local locked, open = nil, nil
+  for _, row in ipairs(compact.rows) do
+    if type(row) == "table" and row.action == "editor-choice" then
+      if row.value == "kanto" then
+        locked = row
+      elseif row.value == "johto" then
+        open = row
+      end
+    end
+  end
+  Assert.notNil(locked, "the locked kanto scope stages its editor row")
+  Assert.isFalse(locked.enabled, "the locked kanto scope stages disabled")
+  Assert.notNil(open, "an unlocked scope stages its editor row")
+  local lockedTap = session:mapInput(
+    { hostTap(plan, "information", "pointer_down", locked.rect.x + 1, locked.rect.y + 1, 510) },
+    sessionView(search)
+  )
+  session:mapInput(
+    { hostTap(plan, "information", "pointer_up", locked.rect.x + 1, locked.rect.y + 1, 510) },
+    sessionView(search)
+  )
+  Assert.equal(#lockedTap, 0, "a disabled editor-choice row maps to no command")
+  local openTap = session:mapInput(
+    { hostTap(plan, "information", "pointer_down", open.rect.x + 1, open.rect.y + 1, 511) },
+    sessionView(search)
+  )
+  session:mapInput(
+    { hostTap(plan, "information", "pointer_up", open.rect.x + 1, open.rect.y + 1, 511) },
+    sessionView(search)
+  )
+  Assert.equal(#openTap, 1, "an enabled editor-choice row still maps at its drawn rectangle")
+  Assert.equal(openTap[1].action, "editor-choice", "the enabled row keeps its editor choice")
+  Assert.equal(openTap[1].value, "johto", "the enabled row keeps its own scope")
 end
 
 function T.events_without_a_known_pane_identity_map_to_no_command()

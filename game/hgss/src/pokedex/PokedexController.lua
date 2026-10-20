@@ -2103,6 +2103,30 @@ local function appendCompactDetails(controller, slots)
   slots[#slots + 1] = { role = "compact.detail-weight", kind = "weight", species = selection.species }
 end
 
+-- Compact-only inspector close caption: the BACK word behind the close
+-- toggle on every page, so a carried-open overlay never draws an
+-- unlabeled control. The id is an already-bound bank-802 entry
+-- reached through the existing kind="ui" path.
+---@param controller PokedexController browser controller under construction of its text slots
+---@param slots table[] detached semantic text slot requests under construction
+local function appendCompactClose(controller, slots)
+  local searchText = searchTextBindings(controller)
+  appendUiSlot(slots, "compact.action-back", searchText.buttons.back, controller._nativeLanguage)
+end
+
+-- Compact-only action captions for the grid/results footer: the SEARCH
+-- word and the return-to-title word behind the cover/search buttons.
+-- Every id is an already-bound bank-802 entry reached through the
+-- existing kind="ui" path, so no producer or schema change is needed.
+---@param controller PokedexController browser controller under construction of its text slots
+---@param slots table[] detached semantic text slot requests under construction
+local function appendCompactListActions(controller, slots)
+  local searchText = searchTextBindings(controller)
+  local language = controller._nativeLanguage
+  appendUiSlot(slots, "compact.action-search", searchText.buttons.run, language)
+  appendUiSlot(slots, "compact.action-cover", searchText.returnCancel, language)
+end
+
 ---@param controller PokedexController browser controller under construction of its text slots
 ---@return table<string, unknown> bound entry-page text bindings
 local function entryTextBindings(controller)
@@ -2518,7 +2542,13 @@ end
 ---@return table[] detached semantic text slot requests for the visible page
 function PokedexController:_textSlots()
   local slots = {}
-  if self._page == "grid" then
+  if self._page == "cover" then
+    local coverText = searchTextBindings(self)
+    local coverLanguage = self._nativeLanguage
+    appendUiSlot(slots, "compact.action-search", coverText.buttons.run, coverLanguage)
+    appendUiSlot(slots, "compact.action-open", coverText.returnAction, coverLanguage)
+    appendCompactClose(self, slots)
+  elseif self._page == "grid" then
     local seen = tryDex(self._dex, "countSeen", self._mode)
     local caught = tryDex(self._dex, "countCaught", self._mode)
     slots[#slots + 1] =
@@ -2530,6 +2560,8 @@ function PokedexController:_textSlots()
     }
     appendHighlightedIdentity(slots, self._selection)
     appendCompactDetails(self, slots)
+    appendCompactListActions(self, slots)
+    appendCompactClose(self, slots)
   elseif self._page == "search" then
     -- The feedback count follows the native result-count template (bank
     -- 802 entry 15, field 0 bound to the completed count, shown while
@@ -2545,10 +2577,13 @@ function PokedexController:_textSlots()
       }
     end
     appendSearchSlots(self, slots)
+    appendCompactClose(self, slots)
   elseif self._page == "results" then
     slots[#slots + 1] = { role = "search.results", kind = "numeric", value = tostring(#self._results) }
     appendHighlightedIdentity(slots, self._selection)
     appendCompactDetails(self, slots)
+    appendCompactListActions(self, slots)
+    appendCompactClose(self, slots)
     -- The leading return slot shows the criteria recap the species
     -- highlight replaces: same staged values in the summary rects.
     if self._selection.species == nil then
@@ -2612,6 +2647,14 @@ function PokedexController:_textSlots()
       appendUiSlot(slots, "return.title", searchText.returnCancel, self._nativeLanguage)
       appendUiSlot(slots, "return.action", searchText.returnAction, self._nativeLanguage)
     end
+    local tabText = searchTextBindings(self)
+    local tabEntry = entryTextBindings(self)
+    local tabLanguage = self._nativeLanguage
+    appendUiSlot(slots, "compact.tab-area", tabEntry.areaTitle, tabLanguage)
+    appendUiSlot(slots, "compact.tab-size", tabEntry.sizeTitle, tabLanguage)
+    appendUiSlot(slots, "compact.tab-forms", tabEntry.formsTitle, tabLanguage)
+    appendUiSlot(slots, "compact.tab-return", tabText.returnCancel, tabLanguage)
+    appendCompactClose(self, slots)
   end
   return slots
 end

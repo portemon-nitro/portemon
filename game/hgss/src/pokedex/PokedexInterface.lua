@@ -8,6 +8,7 @@
 -- objects, and mapInput never touches mutable game state.
 
 local ApplicationLayout = require("libs.ui.src.ApplicationLayout")
+local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
 local PokedexSearch = require("game.hgss.src.pokedex.PokedexSearch")
 
 ---@class PokedexInterface
@@ -21,26 +22,10 @@ local CONTROLS_NATIVE = { id = "controls", width = NATIVE_WIDTH, height = NATIVE
 local REGISTRATION_NATIVE = { id = "registration", width = NATIVE_WIDTH, height = NATIVE_HEIGHT }
 local REGISTRATION_TOUCH_NATIVE = { id = "registrationTouch", width = NATIVE_WIDTH, height = NATIVE_HEIGHT }
 
--- Compact footer buttons: half-open rectangles in the 256x24 footer strip.
-local COMPACT_FOOTER = {
-  { id = "page-prev", x = 0, width = 24 },
-  { id = "page-next", x = 24, width = 24 },
-  { id = "cover", x = 48, width = 48 },
-  { id = "search", x = 96, width = 48 },
-  { id = "cry", x = 144, width = 32 },
-  { id = "language", x = 176, width = 40 },
-  { id = "exit", x = 216, width = 40 },
-}
-
--- Compact cover footer: SEARCH, OPEN, EXIT thirds.
-local COMPACT_COVER_FOOTER = {
-  { id = "search", x = 0, width = 80 },
-  { id = "open", x = 80, width = 96 },
-  { id = "exit", x = 176, width = 80 },
-}
-
--- Compact entry tabs: four 64px tabs across the footer.
-local COMPACT_TABS = { "area", "size", "forms", "return" }
+-- Compact footer geometry: one 256x24 controls-pane strip shared by the
+-- drawn record and the hit mapper. Button records carry their own
+-- enabled/selected state plus the source-backed visible mark behind
+-- each action, so no parallel hit table exists.
 
 -- Source list geometry on the controls pane: five 40px columns from x27
 -- and three 40px rows from y4, transcribed from the native list hitboxes.
@@ -244,48 +229,6 @@ local function insideCircle(x, y, circle)
   return dx * dx + dy * dy <= circle.radius * circle.radius
 end
 
--- Maps one pane-local browser footer segment to its finite action: page
--- paging, cover, search, cry, language, or exit. Exit cancels; cry plays
--- through the menu edge like its keyboard source.
----@param x number pane-local x
----@param y number pane-local y
----@param footerY number strip top in pane-local coordinates
----@return table<string, unknown>? finite model command
-local function footerCommand(x, y, footerY)
-  if y < footerY or y >= footerY + 24 then
-    return nil
-  end
-  for _, button in ipairs(COMPACT_FOOTER) do
-    if x >= button.x and x < button.x + button.width then
-      if button.id == "exit" then
-        return { type = "cancel" }
-      elseif button.id == "cry" then
-        return { type = "menu" }
-      else
-        return { type = "activate", action = button.id }
-      end
-    end
-  end
-  return nil
-end
-
--- Maps one pane-local entry tab strip to its finite tab command.
----@param x number pane-local x
----@param y number pane-local y
----@param footerY number strip top in pane-local coordinates
----@return table<string, unknown>? finite model command
-local function tabCommand(x, y, footerY)
-  if y < footerY or y >= footerY + 24 then
-    return nil
-  end
-  local slot = math.floor(x / 64)
-  local tab = COMPACT_TABS[slot + 1]
-  if tab ~= nil then
-    return { type = "activate", action = "entry-tab", value = tab }
-  end
-  return nil
-end
-
 -- Maps one pane-local tap to the native entry tabs: four 51px source
 -- bands matched in source order. Gaps between the bands switch nothing.
 ---@param x number pane-local x
@@ -439,10 +382,10 @@ local function sliderEditorInput(event, editor, minTrack, maxTrack, okRect, canc
 end
 
 -- Maps pointer edges on an option editor: one row per projected option
--- plus the commit/cancel pair.
+-- plus the commit/cancel pair. Disabled options stay semantically inert.
 ---@param event table<string, unknown> pane-local pointer event
 ---@param editor table<string, unknown> open option editor with its options
----@param rows { rect: { x: number, y: number, width: number, height: number }, value: string }[] option rows
+---@param rows { rect: { x: number, y: number, width: number, height: number }, value: string, enabled: boolean? }[] option rows
 ---@param okRect { x: number, y: number, width: number, height: number } commit button
 ---@param cancelRect { x: number, y: number, width: number, height: number } cancel button
 ---@return table<string, unknown>? finite model command
@@ -453,7 +396,7 @@ local function optionEditorInput(event, editor, rows, okRect, cancelRect)
   local _ = editor
   local x, y = event.x, event.y
   for _, row in ipairs(rows) do
-    if inside(x, y, row.rect) then
+    if row.enabled ~= false and inside(x, y, row.rect) then
       return { type = "activate", action = "editor-choice", value = row.value }
     end
   end
@@ -794,64 +737,257 @@ local function compactIconGrid()
   return { columns = 5, rows = 3, iconRects = iconRects, cursorRects = cursorRects }
 end
 
+-- Reads the grid paging behind the projection: page and last page default
+-- to zero when the projection stages no grid buffer.
+---@param view table<string, unknown>? detached browser projection
+---@return integer page zero-based grid page
+---@return integer lastPage zero-based final grid page
+local function gridPagingOf(view)
+  local page, lastPage = 0, 0
+  if type(view) == "table" and type(view.grid) == "table" then
+    if type(view.grid.page) == "number" then
+      page = math.floor(view.grid.page)
+    end
+    if type(view.grid.lastPage) == "number" then
+      lastPage = math.floor(view.grid.lastPage)
+    end
+  end
+  return page, lastPage
+end
+
+-- Reads the staged cursor entry behind the projection, if any.
+---@param view table<string, unknown>? detached browser projection
+---@return table<string, unknown>? staged grid entry with species/seen/caught
+local function gridCursorEntryOf(view)
+  if type(view) ~= "table" or type(view.grid) ~= "table" then
+    return nil
+  end
+  local grid = view.grid
+  local cursor = 0
+  if type(grid.cursor) == "number" then
+    cursor = math.floor(grid.cursor)
+  end
+  local buffers = grid.buffers
+  if type(buffers) ~= "table" then
+    return nil
+  end
+  local first = buffers[1]
+  if type(first) ~= "table" or type(first.entries) ~= "table" then
+    return nil
+  end
+  local entry = first.entries[cursor + 1]
+  if type(entry) == "table" then
+    return entry
+  end
+  return nil
+end
+
+-- Reads the selection behind the projection, if any.
+---@param view table<string, unknown>? detached browser projection
+---@return table<string, unknown>? detached selection with species/seen/caught
+local function selectionOf(view)
+  if type(view) == "table" and type(view.selection) == "table" then
+    return view.selection
+  end
+  return nil
+end
+
 -- Lists the compact footer buttons behind one page: the cover triple,
 -- the browser actions, the search run/reset/back triple (or the editor
 -- commit/cancel pair while an editor stays open), or the four entry
--- tabs. Coordinates are controls-pane-local.
+-- tabs. Every button carries its enabled/selected state plus the
+-- source-backed visible mark the renderer paints and the mapper gates:
+-- labelRole names a ready prepared message, iconRole names a prepared
+-- pictogram (source arrow subject or selected species icon).
+-- Coordinates are controls-pane-local.
 ---@param view table<string, unknown>? detached browser projection
 ---@param page string? top-level page behind the plan
----@return { id: string, x: number, y: number, width: number, height: number }[] footer buttons
+---@return table[] footer buttons with enablement and visible marks
 local function compactFooterButtons(view, page)
   local buttons = {}
-  local function add(id, x, width)
-    buttons[#buttons + 1] = { id = id, x = x, y = COMPACT_FOOTER_Y, width = width, height = COMPACT_FOOTER_HEIGHT }
+  local function add(id, x, width, mark)
+    local button = {
+      id = id,
+      x = x,
+      y = COMPACT_FOOTER_Y,
+      width = width,
+      height = COMPACT_FOOTER_HEIGHT,
+      enabled = true,
+      selected = false,
+    }
+    if type(mark) == "table" then
+      for key, value in pairs(mark) do
+        button[key] = value
+      end
+    end
+    buttons[#buttons + 1] = button
   end
   if page == "cover" then
-    add("search", 0, 80)
-    add("open", 80, 96)
-    add("exit", 176, 80)
+    add("search", 0, 80, { labelRole = "compact.action-search" })
+    add("open", 80, 96, { labelRole = "compact.action-open" })
+    add("exit", 176, 80, { labelRole = "compact.action-back" })
   elseif page == "search" and openEditorOf(view) ~= nil then
-    add("editor-ok", 0, 128)
-    add("editor-cancel", 128, 128)
+    add("editor-ok", 0, 128, { labelRole = "search.button-ok" })
+    add("editor-cancel", 128, 128, { labelRole = "search.button-cancel" })
   elseif page == "search" then
-    add("search-run", 0, 80)
-    add("search-reset", 80, 80)
-    add("back", 160, 96)
+    add("search-run", 0, 80, { labelRole = "search.button-run" })
+    add("search-reset", 80, 80, { labelRole = "search.button-reset" })
+    add("back", 160, 96, { labelRole = "search.button-back" })
   elseif page == "area" or page == "size" or page == "forms" or page == "return" then
-    add("area", 0, 64)
-    add("size", 64, 64)
-    add("forms", 128, 64)
-    add("return", 192, 64)
-  else
-    for _, button in ipairs(COMPACT_FOOTER) do
-      add(button.id, button.x, button.width)
+    local tabs = {
+      { id = "area", labelRole = "compact.tab-area" },
+      { id = "size", labelRole = "compact.tab-size" },
+      { id = "forms", labelRole = "compact.tab-forms" },
+      { id = "return", labelRole = "compact.tab-return" },
+    }
+    for index, tab in ipairs(tabs) do
+      add(tab.id, (index - 1) * 64, 64, { labelRole = tab.labelRole, selected = page == tab.id })
     end
+  else
+    local gridPage, gridLast = gridPagingOf(view)
+    add("page-prev", 0, 24, {
+      enabled = gridPage > 0,
+      iconRole = "arrow-up",
+      iconChoice = gridPage > 0 and "enabled" or "disabled",
+    })
+    add("page-next", 24, 24, {
+      enabled = gridPage < gridLast,
+      iconRole = "arrow-down",
+      iconChoice = gridPage < gridLast and "enabled" or "disabled",
+    })
+    add("cover", 48, 48, { labelRole = "compact.action-cover" })
+    add("search", 96, 48, { labelRole = "compact.action-search" })
+    local entry = gridCursorEntryOf(view)
+    local crySpecies = nil
+    if type(entry) == "table" and type(entry.species) == "string" and entry.seen == true then
+      crySpecies = entry.species
+    end
+    local cryOn = crySpecies ~= nil
+    add("cry", 144, 32, { enabled = cryOn, iconRole = "species-icon", iconSpecies = crySpecies })
+    local selection = selectionOf(view)
+    local languageOn = type(selection) == "table" and type(selection.species) == "string" and selection.seen == true
+    add("language", 176, 40, { enabled = languageOn, labelRole = "compact.detail-name" })
+    add("exit", 216, 40, { labelRole = "compact.action-back" })
   end
   return buttons
 end
 
+-- Names the staged value roles behind one search criterion for the compact
+-- row: order/letter/area paint one staged word, type and the slider
+-- criteria paint their staged pair, and shape stages no value role.
+---@param criterion string staged criterion behind the row
+---@return string|string[]? prepared value role or roles behind the row
+local function stagedValueRole(criterion)
+  if criterion == "order" then
+    return "search.value-order"
+  elseif criterion == "letter" then
+    return "search.value-letter"
+  elseif criterion == "type" then
+    return { "search.value-type-1", "search.value-type-2" }
+  elseif criterion == "height" then
+    return { "search.value-height-min", "search.value-height-max" }
+  elseif criterion == "weight" then
+    return { "search.value-weight-min", "search.value-weight-max" }
+  elseif criterion == "area" then
+    return "search.value-area"
+  end
+  return nil
+end
+
+-- Tests whether one editor option carries the staged choice: the focused
+-- option for single-value editors, the pending type pair for the type
+-- editor. Unknown editor shapes never claim a selection.
+---@param editor table<string, unknown>? open editor projection
+---@param kind string editor criterion
+---@param option string candidate option key
+---@return boolean true when the option stages the current choice
+local function editorOptionSelected(editor, kind, option)
+  if type(editor) ~= "table" then
+    return false
+  end
+  if type(editor.focus) == "string" and editor.focus == option then
+    return true
+  end
+  if kind == "type" and type(editor.types) == "table" then
+    for _, staged in ipairs(editor.types) do
+      if staged == option then
+        return true
+      end
+    end
+  end
+  return false
+end
+
+-- Reads the enabled flag behind one editor option: the area editor
+-- publishes per-scope flags (a locked scope stays blank like its native
+-- window); every other editor enables all its options.
+---@param editor table<string, unknown>? open editor projection
+---@param kind string editor criterion
+---@param option string candidate option key
+---@return boolean true when the option stays selectable
+local function editorOptionEnabled(editor, kind, option)
+  if kind == "area" and type(editor) == "table" and type(editor.choices) == "table" then
+    local scope = editor.choices[option]
+    if type(scope) == "table" then
+      return scope.enabled == true
+    end
+  end
+  return true
+end
+
 -- Builds the page-dependent compact rows on the information pane:
 -- criteria or editor options on search, selectable habitat/form rows on
--- area/forms, entry actions, and the Return confirmation.
+-- area/forms, entry actions, and the Return confirmation. Every visible
+-- row carries its enabled/selected state plus the source-backed label
+-- and value roles the renderer paints; the same records drive the hit
+-- mapper, so no invisible active row exists. The area/forms list rows
+-- mirror the controller's six-row window around the cursor so their
+-- label roles match the published slots.
 ---@param view table<string, unknown>? detached browser projection
 ---@param page string? top-level page behind the plan
----@return { action: string, value: string|integer?, rect: { x: number, y: number, width: number, height: number } }[] action rows
+---@return table[] action rows with enablement and visible roles
 local function compactRowsFor(view, page)
   local rows = {}
   if page == "search" then
     local editor = openEditorOf(view)
     if editor ~= nil then
-      if editor.kind == "height" or editor.kind == "weight" then
-        return rows
+      local kind = editor.kind
+      if type(kind) ~= "string" then
+        kind = editor.criterion
       end
-      if type(editor.options) == "table" then
+      if type(kind) == "string" and kind ~= "height" and kind ~= "weight" and type(editor.options) == "table" then
         local options =
           optionRowsFor(editor.options, COMPACT_ROW.x, COMPACT_ROW.firstY, COMPACT_ROW.width, COMPACT_ROW.height)
         for _, option in ipairs(options) do
-          rows[#rows + 1] = { action = "editor-choice", value = option.value, rect = option.rect }
+          rows[#rows + 1] = {
+            action = "editor-choice",
+            value = option.value,
+            rect = option.rect,
+            enabled = editorOptionEnabled(editor, kind, option.value),
+            selected = editorOptionSelected(editor, kind, option.value),
+            labelRole = "search.option-" .. kind .. "-" .. tostring(option.value),
+          }
         end
       end
+      rows[#rows + 1] = {
+        action = "editor-ok",
+        rect = COMPACT_DIALOG.ok,
+        enabled = true,
+        selected = false,
+        labelRole = "search.button-ok",
+      }
+      rows[#rows + 1] = {
+        action = "editor-cancel",
+        rect = COMPACT_DIALOG.cancel,
+        enabled = true,
+        selected = false,
+        labelRole = "search.button-cancel",
+      }
       return rows
+    end
+    local focus = nil
+    if type(view) == "table" and type(view.search) == "table" then
+      focus = view.search.focus
     end
     for index, criterion in ipairs(PokedexSearch.CRITERIA) do
       rows[#rows + 1] = {
@@ -863,24 +999,62 @@ local function compactRowsFor(view, page)
           width = COMPACT_ROW.width,
           height = COMPACT_ROW.height,
         },
+        enabled = true,
+        selected = focus == criterion,
+        labelRole = "search.caption-" .. criterion,
+        valueRole = stagedValueRole(criterion),
       }
     end
     return rows
   end
   if page == "area" then
-    for row = 0, math.min(entryRowCount(view, page), 10) - 1 do
-      rows[#rows + 1] = {
-        action = "area-row",
-        value = row,
-        rect = { x = 8, y = 8 + row * 14, width = 160, height = 14 },
-      }
+    local area = nil
+    if type(view) == "table" then
+      area = view.area
     end
-    rows[#rows + 1] = { action = "confirm", rect = COMPACT_ACTIONS.primary }
-    rows[#rows + 1] = { action = "select", rect = COMPACT_ACTIONS.secondary }
+    local cursor = 0
+    if type(area) == "table" and type(area.row) == "number" then
+      cursor = math.floor(area.row)
+    end
+    local areaCount = entryRowCount(view, page)
+    for position = 1, 6 do
+      local index = cursor + position - 2
+      if index >= 0 and index < areaCount then
+        local labelRole = position == 1 and "area.location" or ("area.row-" .. position)
+        rows[#rows + 1] = {
+          action = "area-row",
+          value = index,
+          rect = { x = 8, y = 8 + (position - 1) * 14, width = 160, height = 14 },
+          enabled = true,
+          selected = index == cursor,
+          labelRole = labelRole,
+        }
+      end
+    end
+    rows[#rows + 1] = {
+      action = "confirm",
+      rect = COMPACT_ACTIONS.primary,
+      enabled = true,
+      selected = false,
+      labelRole = "area.time",
+    }
+    rows[#rows + 1] = {
+      action = "select",
+      rect = COMPACT_ACTIONS.secondary,
+      enabled = true,
+      selected = false,
+      labelRole = "area.caption",
+    }
     return rows
   end
   if page == "size" then
-    rows[#rows + 1] = { action = "size-restart", rect = COMPACT_ACTIONS.primary }
+    rows[#rows + 1] = {
+      action = "size-restart",
+      rect = COMPACT_ACTIONS.primary,
+      enabled = true,
+      selected = false,
+      labelRole = "size.title",
+    }
     return rows
   end
   if page == "forms" then
@@ -889,49 +1063,124 @@ local function compactRowsFor(view, page)
       forms = view.forms
     end
     if type(forms) == "table" and forms.comparison ~= nil then
-      rows[#rows + 1] = { action = "compare-side", value = 0, rect = COMPACT_COMPARE[1] }
-      rows[#rows + 1] = { action = "compare-side", value = 1, rect = COMPACT_COMPARE[2] }
-      rows[#rows + 1] = { action = "compare-flip", rect = COMPACT_COMPARE[3] }
-      rows[#rows + 1] = { action = "compare-back", rect = COMPACT_COMPARE[4] }
+      local compareRows = {
+        { action = "compare-side", value = 0, labelRole = "forms.compare-label-left" },
+        { action = "compare-side", value = 1, labelRole = "forms.compare-label-right" },
+        { action = "compare-flip", labelRole = "forms.compare-caption" },
+        { action = "compare-back", labelRole = "forms.title" },
+      }
+      for index, row in ipairs(compareRows) do
+        rows[#rows + 1] = {
+          action = row.action,
+          value = row.value,
+          rect = COMPACT_COMPARE[index],
+          enabled = true,
+          selected = false,
+          labelRole = row.labelRole,
+        }
+      end
       return rows
     end
-    for row = 0, math.min(entryRowCount(view, page), 10) - 1 do
-      rows[#rows + 1] = {
-        action = "forms-row",
-        value = row,
-        rect = { x = 8, y = 8 + row * 14, width = 160, height = 14 },
-      }
+    local cursor = 0
+    if type(forms) == "table" and type(forms.row) == "number" then
+      cursor = math.floor(forms.row)
     end
-    rows[#rows + 1] = { action = "compare", rect = COMPACT_ACTIONS.primary }
+    local formsCount = entryRowCount(view, page)
+    for position = 1, 6 do
+      local index = cursor + position - 2
+      if index >= 0 and index < formsCount then
+        rows[#rows + 1] = {
+          action = "forms-row",
+          value = index,
+          rect = { x = 8, y = 8 + (position - 1) * 14, width = 160, height = 14 },
+          enabled = true,
+          selected = index == cursor,
+          labelRole = "forms.row-" .. position,
+        }
+      end
+    end
+    rows[#rows + 1] = {
+      action = "compare",
+      rect = COMPACT_ACTIONS.primary,
+      enabled = true,
+      selected = false,
+      labelRole = "forms.title",
+    }
     return rows
   end
   if page == "return" then
     rows[#rows + 1] = {
       action = "return-list",
       rect = { x = 8, y = 8, width = 160, height = 20 },
+      enabled = true,
+      selected = true,
+      labelRole = "return.action",
     }
     return rows
   end
   return rows
 end
 
--- Builds the compact slider tracks behind a height/weight editor.
+-- Builds the compact slider tracks behind a height/weight editor with the
+-- source-backed caption and staged bound roles the renderer paints.
 ---@param view table<string, unknown>? detached browser projection
----@return { target: string, rect: { x: number, y: number, width: number, height: number } }[] slider tracks
+---@return table[] slider tracks with visible roles
 local function compactSlidersFor(view)
   local editor = openEditorOf(view)
   if editor == nil or (editor.kind ~= "height" and editor.kind ~= "weight") then
     return {}
   end
+  local kind = editor.kind --[[@as string]]
   return {
-    { target = editor.kind .. "-min", rect = COMPACT_SLIDERS.min },
-    { target = editor.kind .. "-max", rect = COMPACT_SLIDERS.max },
+    {
+      target = kind .. "-min",
+      rect = COMPACT_SLIDERS.min,
+      captionRole = "search.title-" .. kind,
+      valueRole = "search.current-" .. kind .. "-min",
+    },
+    {
+      target = kind .. "-max",
+      rect = COMPACT_SLIDERS.max,
+      captionRole = "search.title-" .. kind,
+      valueRole = "search.current-" .. kind .. "-max",
+    },
   }
+end
+
+-- Names the inspector detail roles behind one page: the compact
+-- selection family on the list pages, the entry specimen family on the
+-- entry pages, and no detail roles elsewhere. The renderer paints only
+-- the roles the ready bundle actually carries.
+---@param page string? top-level page behind the plan
+---@return table<string, string> named detail roles behind the inspector body
+local function inspectorDetailRoles(page)
+  if page == "grid" or page == "results" then
+    return {
+      number = "compact.detail-number",
+      name = "compact.detail-name",
+      category = "compact.detail-category",
+      flavor = "compact.detail-flavor",
+      height = "compact.detail-height",
+      weight = "compact.detail-weight",
+    }
+  end
+  if page == "area" or page == "size" or page == "forms" or page == "return" then
+    return {
+      number = "entry.dex-number",
+      name = "entry.species-name",
+      category = "entry.category",
+      flavor = "entry.flavor",
+      height = "entry.height",
+      weight = "entry.weight",
+    }
+  end
+  return {}
 end
 
 -- Builds the one feature-local compact geometry record shared by the
 -- mapper and the renderer: grid, portrait, inspection toggle, footer,
--- page rows, and slider tracks. Native plans carry no record.
+-- page rows, slider tracks, and the inspector role inventory. Native
+-- plans carry no record.
 ---@param view table<string, unknown>? detached browser projection selecting the page
 ---@return table<string, unknown> shared compact geometry record
 local function buildCompactRecord(view)
@@ -946,58 +1195,111 @@ local function buildCompactRecord(view)
     footer = { buttons = compactFooterButtons(view, page) },
     rows = compactRowsFor(view, page),
     sliders = compactSlidersFor(view),
+    inspection = { closeRole = "compact.action-back", roles = inspectorDetailRoles(page) },
   }
 end
 
--- Maps one compact footer button by the page behind the plan.
----@param event table<string, unknown> pane-local pointer event
----@param view table<string, unknown>? detached browser projection
+-- Maps one drawn footer button to its finite command, preserving the
+-- established per-page shapes: cover opens/confirms/cancels, search
+-- runs/resets/cancels (or commits/cancels an editor), entry buttons
+-- switch tabs, and the list footer pages, covers, searches, cries
+-- through the menu edge, re-languages, or cancels.
+---@param id string drawn button identity
 ---@param page string? top-level page behind the plan
+---@return table<string, unknown> finite model command
+local function footerButtonCommand(id, page)
+  if page == "cover" then
+    if id == "open" then
+      return { type = "confirm" }
+    elseif id == "exit" then
+      return { type = "cancel" }
+    else
+      return { type = "activate", action = id }
+    end
+  end
+  if page == "search" then
+    if id == "back" then
+      return { type = "cancel" }
+    else
+      return { type = "activate", action = id }
+    end
+  end
+  if page == "area" or page == "size" or page == "forms" or page == "return" then
+    return { type = "activate", action = "entry-tab", value = id }
+  end
+  if id == "exit" then
+    return { type = "cancel" }
+  elseif id == "cry" then
+    return { type = "menu" }
+  else
+    return { type = "activate", action = id }
+  end
+end
+
+-- Maps one compact footer press through the one shared button record:
+-- only an enabled button inside its drawn rectangle produces its finite
+-- command. Disabled buttons stay semantically inert.
+---@param event table<string, unknown> pane-local pointer event
+---@param page string? top-level page behind the plan
+---@param compact table<string, unknown> shared compact geometry record
 ---@return table<string, unknown>? finite model command
-local function compactFooter(event, view, page)
+local function compactFooter(event, page, compact)
   if event.type ~= "pointer_down" then
     return nil
   end
   local x, y = event.x, event.y
-  if page == "cover" then
-    for _, button in ipairs(COMPACT_COVER_FOOTER) do
-      if x >= button.x and x < button.x + button.width and y >= 0 and y < 24 then
-        if button.id == "open" then
-          return { type = "confirm" }
-        elseif button.id == "exit" then
-          return { type = "cancel" }
-        else
-          return { type = "activate", action = button.id }
+  local footer = compact.footer
+  if type(footer) ~= "table" or type(footer.buttons) ~= "table" then
+    return nil
+  end
+  for _, button in ipairs(footer.buttons) do
+    if type(button) == "table" and button.enabled ~= false and inside(x, y, button) then
+      return footerButtonCommand(button.id, page)
+    end
+  end
+  return nil
+end
+
+-- Reads the slider tracks behind the shared record for one editor kind.
+---@param compact table<string, unknown> shared compact geometry record
+---@param kind string height or weight editor kind
+---@return table<string, unknown>? minimum track rectangle
+---@return table<string, unknown>? maximum track rectangle
+local function sliderTracksOf(compact, kind)
+  local minTrack, maxTrack = nil, nil
+  if type(compact.sliders) == "table" then
+    for _, slider in ipairs(compact.sliders) do
+      if type(slider) == "table" and type(slider.rect) == "table" then
+        if slider.target == kind .. "-min" then
+          minTrack = slider.rect
+        elseif slider.target == kind .. "-max" then
+          maxTrack = slider.rect
         end
       end
     end
-    return nil
   end
-  if page == "search" then
-    if y < 0 or y >= 24 then
-      return nil
-    end
-    if openEditorOf(view) ~= nil then
-      if x >= 0 and x < 128 then
-        return { type = "activate", action = "editor-ok" }
-      elseif x >= 128 and x < 256 then
-        return { type = "activate", action = "editor-cancel" }
+  return minTrack, maxTrack
+end
+
+-- Reads the editor commit/cancel rectangles behind the shared record.
+---@param compact table<string, unknown> shared compact geometry record
+---@return table<string, unknown> commit rectangle
+---@return table<string, unknown> cancel rectangle
+local function dialogRectsOf(compact)
+  local okRect, cancelRect = nil, nil
+  if type(compact.rows) == "table" then
+    for _, row in ipairs(compact.rows) do
+      if type(row) == "table" and type(row.rect) == "table" then
+        if row.action == "editor-ok" then
+          okRect = row.rect
+        elseif row.action == "editor-cancel" then
+          cancelRect = row.rect
+        end
       end
-      return nil
     end
-    if x >= 0 and x < 80 then
-      return { type = "activate", action = "search-run" }
-    elseif x >= 80 and x < 160 then
-      return { type = "activate", action = "search-reset" }
-    elseif x >= 160 and x < 256 then
-      return { type = "cancel" }
-    end
-    return nil
   end
-  if page == "area" or page == "size" or page == "forms" or page == "return" then
-    return tabCommand(x, y, COMPACT_FOOTER_Y)
-  end
-  return footerCommand(x, y, COMPACT_FOOTER_Y)
+  return assert(okRect, "the compact record carries its editor commit"),
+    assert(cancelRect, "the compact record carries its editor cancel")
 end
 
 -- Maps one compact row tap to its finite command. Confirm/select rows
@@ -1030,7 +1332,7 @@ local function mapCompactInput(event, view, page, compact)
     return nil
   end
   if paneId == "controls" then
-    return compactFooter(event, view, page)
+    return compactFooter(event, page, compact)
   end
   if paneId ~= "information" then
     return nil
@@ -1038,15 +1340,11 @@ local function mapCompactInput(event, view, page, compact)
   if event.type == "pointer_move" or event.type == "pointer_up" then
     local editor = openEditorOf(view)
     if editor ~= nil and (editor.kind == "height" or editor.kind == "weight") then
-      return sliderEditorInput(
-        event,
-        editor,
-        COMPACT_SLIDERS.min,
-        COMPACT_SLIDERS.max,
-        COMPACT_DIALOG.ok,
-        COMPACT_DIALOG.cancel,
-        capturedTargetOf(view)
-      )
+      local minTrack, maxTrack = sliderTracksOf(compact, editor.kind)
+      assert(minTrack ~= nil, "the compact record carries the slider minimum")
+      assert(maxTrack ~= nil, "the compact record carries the slider maximum")
+      local okRect, cancelRect = dialogRectsOf(compact)
+      return sliderEditorInput(event, editor, minTrack, maxTrack, okRect, cancelRect, capturedTargetOf(view))
     end
     return nil
   end
@@ -1071,25 +1369,24 @@ local function mapCompactInput(event, view, page, compact)
   if page == "search" then
     local editor = openEditorOf(view)
     if editor ~= nil and (editor.kind == "height" or editor.kind == "weight") then
-      return sliderEditorInput(
-        event,
-        editor,
-        COMPACT_SLIDERS.min,
-        COMPACT_SLIDERS.max,
-        COMPACT_DIALOG.ok,
-        COMPACT_DIALOG.cancel,
-        capturedTargetOf(view)
-      )
+      local minTrack, maxTrack = sliderTracksOf(compact, editor.kind)
+      assert(minTrack ~= nil, "the compact record carries the slider minimum")
+      assert(maxTrack ~= nil, "the compact record carries the slider maximum")
+      local okRect, cancelRect = dialogRectsOf(compact)
+      return sliderEditorInput(event, editor, minTrack, maxTrack, okRect, cancelRect, capturedTargetOf(view))
     end
     if editor ~= nil then
       local rows = {}
       for _, option in ipairs(compact.rows) do
-        rows[#rows + 1] = { rect = option.rect, value = option.value }
+        if type(option) == "table" and option.action == "editor-choice" and type(option.rect) == "table" then
+          rows[#rows + 1] = { rect = option.rect, value = option.value, enabled = option.enabled }
+        end
       end
-      return optionEditorInput(event, editor, rows, COMPACT_DIALOG.ok, COMPACT_DIALOG.cancel)
+      local okRect, cancelRect = dialogRectsOf(compact)
+      return optionEditorInput(event, editor, rows, okRect, cancelRect)
     end
     for _, row in ipairs(compact.rows) do
-      if inside(x, y, row.rect) then
+      if row.enabled ~= false and inside(x, y, row.rect) then
         return compactRowCommand(row)
       end
     end
@@ -1097,7 +1394,7 @@ local function mapCompactInput(event, view, page, compact)
   end
   if page == "area" or page == "size" or page == "forms" or page == "return" then
     for _, row in ipairs(compact.rows) do
-      if inside(x, y, row.rect) then
+      if row.enabled ~= false and inside(x, y, row.rect) then
         return compactRowCommand(row)
       end
     end
@@ -1211,26 +1508,36 @@ local function belowMinimum(measurement)
   return false
 end
 
--- Builds the compact information plus controls panes over the single
--- 256x192 surface: the information region carries the grid, portrait,
--- and metadata while the footer strip carries the finite buttons.
----@return { information: table<string, unknown>, controls: table<string, unknown> } placements
-local function compactPlacements()
-  local information = {
-    frame = { x = 0, y = 0, width = NATIVE_WIDTH, height = 168 },
-    origin = { x = 0, y = 0 },
-    scale = 1,
-    logicalWidth = NATIVE_WIDTH,
-    logicalHeight = 168,
-  }
-  local controls = {
-    frame = { x = 0, y = 168, width = NATIVE_WIDTH, height = 24 },
-    origin = { x = 0, y = 168 },
-    scale = 1,
-    logicalWidth = NATIVE_WIDTH,
-    logicalHeight = 24,
-  }
-  return { information = information, controls = controls }
+-- Resolves the one compact browser plan: a single 256x192 logical parent
+-- centered at the largest integer scale inside the selected display's
+-- usable safe bounds, split into the 256x168 information and 256x24
+-- controls children that share the parent scale, offset, and clipping.
+-- When no integer 1x parent fits, the plan stays non-interactive instead
+-- of publishing a clipped or fractionally scaled fallback.
+---@param context table<string, unknown> layout context with the selected surfaces
+---@param view table<string, unknown> detached projection owning the page and compact record
+---@param inputKey string stable input-geometry identity for the browser plan
+---@param suffix string input-key suffix behind the resolved plan
+---@return table<string, unknown> complete application plan
+local function fitCompactPlan(context, inputKey, view, suffix)
+  local key = inputKey
+  local geometry =
+    ApplicationLayout.centered(context, { id = "pokedexCompact", width = NATIVE_WIDTH, height = NATIVE_HEIGHT })
+  local parent = nil
+  if type(geometry) == "table" and type(geometry.placements) == "table" then
+    parent = geometry.placements.pokedexCompact
+  end
+  if parent == nil then
+    return unavailablePlan(key .. ":unavailable")
+  end
+  local information = LayoutGeometry.subPlacement(parent, { x = 0, y = 0, width = NATIVE_WIDTH, height = 168 })
+  assert(information ~= nil, "the fitted parent contains its information child")
+  local controls = LayoutGeometry.subPlacement(parent, { x = 0, y = 168, width = NATIVE_WIDTH, height = 24 })
+  assert(controls ~= nil, "the fitted parent contains its controls child")
+  return browserPlan({
+    { id = "information", placement = information, interactive = true },
+    { id = "controls", placement = controls, interactive = true },
+  }, key .. suffix, buildCompactRecord(view))
 end
 
 ---@param view table<string, unknown> detached projection selecting the page
@@ -1275,16 +1582,10 @@ end
 ---@param view table<string, unknown> detached projection owning the page and compact record
 ---@return table<string, unknown> complete application plan
 local function pairedBrowserPlan(context, measurement, upper, lower, pair, view)
-  if belowMinimum(measurement) then
-    return unavailablePlan(browserInputKey(view) .. ":unavailable")
-  end
+  local _ = measurement
   local geometry = pair(context, upper, lower)
   if geometry == nil then
-    local placements = compactPlacements()
-    return browserPlan({
-      { id = "information", placement = placements.information, interactive = true },
-      { id = "controls", placement = placements.controls, interactive = true },
-    }, browserInputKey(view) .. ":compact-fallback", buildCompactRecord(view))
+    return fitCompactPlan(context, browserInputKey(view), view, ":compact-fallback")
   end
   return browserPlan(panesFrom(geometry, { "information", "controls" }, true), browserInputKey(view) .. ":paired")
 end
@@ -1364,17 +1665,8 @@ function PokedexInterface.browser(overrides)
   ---@param view table<string, unknown>
   ---@return table<string, unknown> complete application plan
   local function nativeLike(context, view)
-    local measurement = assert(context.measurement, "browser plans measure their display")
     assert(type(view) == "table", "browser plans place their projection")
-    local _ = context
-    if belowMinimum(measurement) then
-      return unavailablePlan(browserInputKey(view) .. ":unavailable")
-    end
-    local placements = compactPlacements()
-    return browserPlan({
-      { id = "information", placement = placements.information, interactive = true },
-      { id = "controls", placement = placements.controls, interactive = true },
-    }, browserInputKey(view) .. ":compact", buildCompactRecord(view))
+    return fitCompactPlan(context, browserInputKey(view), view, ":compact")
   end
   local interfaces = { dualDisplay = dualDisplay, nativeLike = nativeLike, wide = wide, tall = tall }
   if overrides ~= nil then

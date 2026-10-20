@@ -1365,6 +1365,236 @@ local function fillChromeRect(graphics, rect, surfaces)
   markObjRect(graphics, meta, rect, 0)
 end
 
+-- Dark inspector/row panel bytes behind compact glyphs.
+local COMPACT_MATTE = { r = 16, g = 16, b = 24 }
+local COMPACT_INK = { r = 255, g = 255, b = 255 }
+local COMPACT_DIM = { r = 128, g = 128, b = 128 }
+local COMPACT_SHADOW = { r = 0, g = 0, b = 0 }
+
+-- Resolves the compact text palette over one painted background: white
+-- glyphs with a dark shadow when enabled, dim gray when disabled. The
+-- background class matches the painted surface so glyph boxes blend in
+-- instead of stamping a visible text box.
+---@param background table<string, integer> painted surface color behind the glyphs
+---@param disabled boolean true for dimmed disabled actions
+---@return table<string, table<string, number>> palette triple for the glyph renderer
+local function compactPalette(background, disabled)
+  local ink = COMPACT_INK
+  if disabled then
+    ink = COMPACT_DIM
+  end
+  return {
+    foreground = { r = ink.r, g = ink.g, b = ink.b, a = 1 },
+    shadow = { r = COMPACT_SHADOW.r, g = COMPACT_SHADOW.g, b = COMPACT_SHADOW.b, a = 1 },
+    background = { r = background.r, g = background.g, b = background.b, a = 1 },
+  }
+end
+
+-- Reads one prepared message role for a compact control: a missing role
+-- on an enabled control fails with control attribution instead of
+-- leaving a blank control; a disabled control skips silently absent
+-- text like its blank native window.
+---@param assets table<string, unknown> prepared bundle with the lease-owned messages
+---@param role string prepared message role behind the control
+---@param required boolean true when the control needs its visible mark
+---@param what string control attribution behind the lookup
+---@return string? prepared message behind the control
+local function compactRoleText(assets, role, required, what)
+  local messages = assert(assets.messages, "compact controls borrow the prepared messages")
+  assert(type(messages) == "table", "prepared messages stay a record")
+  local text = messages[role]
+  if text == nil then
+    if not required then
+      return nil
+    end
+    error(what .. " needs its prepared message: " .. tostring(role), 0)
+  end
+  assert(type(text) == "string", "prepared messages stay strings: " .. tostring(role))
+  return text
+end
+
+-- Paints one prepared line through the body font at its aligned offset
+-- inside the caller-clipped region. The caller owns the canvas target,
+-- the scissor, and the palette.
+---@param font table<string, unknown> prepared body font renderer
+---@param text string prepared line behind the glyphs
+---@param x integer region left in pane-local coordinates
+---@param y integer baseline top in pane-local coordinates
+---@param maxWidth integer region width bounding the alignment
+---@param align string left, center, or right alignment behind the offset
+---@param palette table<string, table<string, number>> glyph palette triple
+local function drawCompactLine(font, text, x, y, maxWidth, align, palette)
+  assert(type(font.textWidth) == "function", "compact text measures its advances")
+  assert(type(font.drawTextWithPalette) == "function", "compact text draws through its palette path")
+  local width = font:textWidth(text)
+  local dx = x
+  if align == "center" then
+    dx = x + math.floor((maxWidth - width) / 2)
+  elseif align == "right" then
+    dx = x + maxWidth - width
+  end
+  font:drawTextWithPalette(text, dx, y, palette)
+end
+
+-- Wraps one prepared paragraph to the fixed region width on space
+-- boundaries: overlong single words keep their own line and clip at the
+-- caller scissor instead of cutting multibyte characters.
+---@param font table<string, unknown> prepared body font renderer
+---@param text string prepared paragraph behind the lines
+---@param maxWidth integer region width bounding the wrap
+---@return string[] wrapped lines behind the paragraph
+local function wrapCompactText(font, text, maxWidth)
+  assert(type(font.textWidth) == "function", "compact wrapping measures its advances")
+  local lines = {}
+  for paragraph in (text .. "\n"):gmatch("([^\n]*)\n") do
+    if paragraph == "" then
+      lines[#lines + 1] = ""
+    else
+      local current = ""
+      for word in paragraph:gmatch("%S+") do
+        local trial = word
+        if current ~= "" then
+          trial = current .. " " .. word
+        end
+        if font:textWidth(trial) <= maxWidth then
+          current = trial
+        else
+          if current ~= "" then
+            lines[#lines + 1] = current
+          end
+          current = word
+        end
+      end
+      if current ~= "" then
+        lines[#lines + 1] = current
+      end
+    end
+  end
+  return lines
+end
+
+-- Runs one compact paint step clipped to its rectangle, restoring the
+-- previous scissor even when the step fails.
+---@param graphics table<string, unknown> host graphics namespace
+---@param rect { x: integer, y: integer, width: integer, height: integer } clip rectangle
+---@param body fun() paint step behind the clip
+local function withCompactClip(graphics, rect, body)
+  assert(type(graphics.getScissor) == "function", "compact clipping reads its scissor")
+  assert(type(graphics.setScissor) == "function", "compact clipping writes its scissor")
+  local saveX, saveY, saveWidth, saveHeight = graphics.getScissor()
+  graphics.setScissor(rect.x, rect.y, rect.width, rect.height)
+  local ok, err = pcall(body)
+  graphics.setScissor(saveX, saveY, saveWidth, saveHeight)
+  if not ok then
+    error(err, 0)
+  end
+end
+
+-- Strokes a 1px white inset border inside a selected rectangle so the
+-- focused row or tab reads distinctly without covering its glyphs.
+---@param graphics table<string, unknown> host graphics namespace
+---@param rect { x: integer, y: integer, width: integer, height: integer } selected rectangle
+---@param surfaces table[] six realized serial surfaces in compositor order
+local function strokeCompactSelection(graphics, rect, surfaces)
+  local color = surfaces[5]
+  assert(type(graphics.setCanvas) == "function", "compact selection targets its surface")
+  assert(type(graphics.setColor) == "function", "compact selection sets its tint")
+  assert(type(graphics.rectangle) == "function", "compact selection strokes its border")
+  graphics.setCanvas(color.canvas)
+  graphics.setColor(1, 1, 1, 1)
+  graphics.rectangle("fill", rect.x, rect.y, rect.width, 1)
+  graphics.rectangle("fill", rect.x, rect.y + rect.height - 1, rect.width, 1)
+  graphics.rectangle("fill", rect.x, rect.y + 1, 1, rect.height - 2)
+  graphics.rectangle("fill", rect.x + rect.width - 1, rect.y + 1, 1, rect.height - 2)
+  graphics.setColor(1, 1, 1, 1)
+end
+
+-- Draws one bound source subject at an explicit compact position: the
+-- page-local sprite binding resolves its animation frame by the live
+-- intent age when the view projects one, and the authored parts paint
+-- centered on the destination.
+---@param graphics table<string, unknown> host graphics namespace
+---@param assets table<string, unknown> prepared bundle with the manifest and parts
+---@param view table<string, unknown> detached projection carrying the live intents
+---@param role string manifest page role behind the pane
+---@param subject string semantic subject behind the pictogram
+---@param choice string selected animation choice behind the pictogram
+---@param rect { x: integer, y: integer, width: integer, height: integer } destination rectangle
+---@param surfaces table[] six realized serial surfaces in compositor order
+local function drawSubjectAt(graphics, assets, view, role, subject, choice, rect, surfaces)
+  local manifest = assert(assets.manifest, "compact pictograms borrow the compiled manifest")
+  assert(type(manifest) == "table", "compiled manifests stay records")
+  local pages = assert(manifest.pages, "the compiled manifest carries its page roles")
+  local page = assert(pages[role], "compact pictograms resolve their page role " .. tostring(role))
+  assert(type(page) == "table", "page roles stay records")
+  local subjects = assert(page.spriteSubjects, "the drawn page binds its subjects: " .. tostring(role))
+  local subjectMap = assert(subjects[subject], "the drawn page binds the subject " .. tostring(subject))
+  local binding =
+    assert(subjectMap[choice], "the drawn subject binds the choice " .. tostring(subject .. "/" .. choice))
+  local age = 0
+  if type(view.objects) == "table" then
+    for _, intent in ipairs(view.objects) do
+      if type(intent) == "table" and intent.subject == subject and type(intent.age) == "number" then
+        age = intent.age
+        break
+      end
+    end
+  end
+  local inventory = assert(manifest.sprites, "the compiled manifest carries its sprite inventory")
+  local animations = assert(manifest.animations, "the compiled manifest carries its animations")
+  local cells = assert(manifest.cells, "the compiled manifest carries its cells")
+  local prepared = assert(assets.spriteParts, "prepared bundles carry their sprite parts")
+  local sprite = assert(inventory[binding.sprite], "the sprite inventory carries " .. tostring(binding.sprite))
+  local animation = assert(animations[sprite.animation], "drawn subjects resolve their animation")
+  local frameParts = assert(prepared[binding.sprite], "prepared parts cover " .. tostring(binding.sprite))
+  local frameIndex = frameAtOwner(animation, age)
+  local parts = assert(frameParts[frameIndex], "prepared parts cover the drawn frame")
+  local cell = assert(cells[animation.frames[frameIndex].cell], "drawn frames resolve their cell")
+  assert(#parts == #cell.parts, "prepared parts match the drawn cell")
+  local minX, minY, maxX, maxY = nil, nil, nil, nil
+  for _, part in ipairs(cell.parts) do
+    local source = assert(part.source, "drawn parts carry their source viewport")
+    if minX == nil or part.x < minX then
+      minX = part.x
+    end
+    if minY == nil or part.y < minY then
+      minY = part.y
+    end
+    if maxX == nil or part.x + source.width > maxX then
+      maxX = part.x + source.width
+    end
+    if maxY == nil or part.y + source.height > maxY then
+      maxY = part.y + source.height
+    end
+  end
+  assert(minX ~= nil, "compact pictograms span their parts")
+  local artWidth, artHeight = maxX - minX, maxY - minY
+  local dx = rect.x + math.floor((rect.width - artWidth) / 2) - minX
+  local dy = rect.y + math.floor((rect.height - artHeight) / 2) - minY
+  local color, meta = surfaces[5], surfaces[6]
+  assert(type(graphics.setCanvas) == "function", "compact pictograms target their surfaces")
+  for index, part in ipairs(cell.parts) do
+    local entry = assert(parts[index], "prepared parts cover the drawn cell")
+    local quad = assert(entry.quad, "prepared parts carry their viewport")
+    local handle = assert(entry.handle, "prepared parts carry their chrome handle")
+    local source = assert(part.source, "drawn parts carry their source viewport")
+    graphics.setCanvas(color.canvas)
+    if entry.flipX == true or entry.flipY == true then
+      local sx, sy, ox, oy = 1, 1, 0, 0
+      if entry.flipX == true then
+        sx, ox = -1, source.width
+      end
+      if entry.flipY == true then
+        sy, oy = -1, source.height
+      end
+      drawSampled(graphics, handle, quad, dx + part.x, dy + part.y, 0, sx, sy, ox, oy)
+    else
+      drawSampled(graphics, handle, quad, dx + part.x, dy + part.y)
+    end
+    markObjRect(graphics, meta, { x = dx + part.x, y = dy + part.y, width = source.width, height = source.height }, 0)
+  end
+end
+
 -- Draws the fifteen compact icons into the information region plus the
 -- focus ring around the cursor cell as a border that never covers
 -- neighboring cells.
@@ -1476,6 +1706,276 @@ local function drawCompactPortrait(graphics, assets, view, compact, surfaces)
   end
 end
 
+-- Paints one footer button from the shared record: chrome, then the
+-- source mark clipped inside it -- a bound arrow pictogram with its
+-- truthful enabled/disabled choice, the selected species icon, or the
+-- prepared message centered in the button. Disabled buttons dim their
+-- available mark and skip silently absent marks; enabled buttons fail
+-- with role attribution instead of staying blank.
+---@param graphics table<string, unknown> host graphics namespace
+---@param assets table<string, unknown> prepared bundle with messages, icons, and parts
+---@param view table<string, unknown> detached projection carrying the live intents
+---@param role string manifest page role behind the pane
+---@param button table<string, unknown> drawn footer record with its visible mark
+---@param surfaces table[] six realized serial surfaces in compositor order
+local function drawCompactButton(graphics, assets, view, role, button, surfaces)
+  local rect = { x = button.x, y = button.y, width = button.width, height = button.height }
+  fillChromeRect(graphics, rect, surfaces)
+  local color = surfaces[5]
+  assert(type(graphics.setCanvas) == "function", "compact buttons target their surface")
+  graphics.setCanvas(color.canvas)
+  local disabled = button.enabled == false
+  withCompactClip(graphics, rect, function()
+    if button.iconRole == "arrow-up" or button.iconRole == "arrow-down" then
+      local choice = button.iconChoice
+      if choice ~= "enabled" and choice ~= "disabled" then
+        choice = "enabled"
+      end
+      drawSubjectAt(graphics, assets, view, role, button.iconRole, choice, rect, surfaces)
+    elseif button.iconRole == "species-icon" then
+      if not disabled and type(button.iconSpecies) == "string" then
+        local icons = assert(assets.icons, "compact buttons borrow the lease-owned provider")
+        assert(type(icons.handleFor) == "function", "compact buttons resolve prepared handles")
+        local key = button.iconSpecies .. "/f0"
+        local handle = icons:handleFor(key)
+        assert(type(handle) == "table", "prepared icon keys resolve their handle: " .. key)
+        local quad = nil
+        if type(icons.quadFor) == "function" then
+          quad = icons:quadFor(key)
+        end
+        graphics.setCanvas(color.canvas)
+        drawSampled(graphics, handle, quad, rect.x, rect.y - 4)
+        markObjRect(graphics, surfaces[6], rect, 0)
+      end
+    elseif button.labelRole ~= nil then
+      local message = compactRoleText(assets, button.labelRole, not disabled, "compact button " .. tostring(button.id))
+      if message ~= nil and message ~= "" then
+        local fonts = assert(assets.fonts, "compact buttons borrow the prepared fonts")
+        local font = assert(fonts.body, "compact buttons borrow the prepared body font")
+        drawCompactLine(
+          font,
+          message,
+          rect.x,
+          rect.y + 4,
+          rect.width,
+          "center",
+          compactPalette(COMPACT_CHROME, disabled)
+        )
+      end
+    end
+  end)
+  if button.selected == true then
+    strokeCompactSelection(graphics, rect, surfaces)
+  end
+end
+
+-- Paints one compact action row from the shared record: a dark panel
+-- with the source label left-aligned and staged values right-aligned,
+-- plus a white inset border while selected. Invisible option rows stay
+-- blank like their native windows; enabled rows fail with role
+-- attribution instead of staying blank.
+---@param graphics table<string, unknown> host graphics namespace
+---@param assets table<string, unknown> prepared bundle with the lease-owned messages
+---@param row table<string, unknown> drawn row record with its visible roles
+---@param surfaces table[] six realized serial surfaces in compositor order
+local function drawCompactRow(graphics, assets, row, surfaces)
+  local rect = assert(row.rect, "compact rows carry their rectangle")
+  local color = surfaces[5]
+  assert(type(graphics.setCanvas) == "function", "compact rows target their surface")
+  assert(type(graphics.setColor) == "function", "compact rows paint their panel")
+  assert(type(graphics.rectangle) == "function", "compact rows paint their panel")
+  graphics.setCanvas(color.canvas)
+  graphics.setColor(COMPACT_MATTE.r / 255, COMPACT_MATTE.g / 255, COMPACT_MATTE.b / 255, 1)
+  graphics.rectangle("fill", rect.x, rect.y, rect.width, rect.height)
+  graphics.setColor(1, 1, 1, 1)
+  markObjRect(graphics, surfaces[6], rect, 0)
+  local disabled = row.enabled == false
+  withCompactClip(graphics, rect, function()
+    local fonts = assert(assets.fonts, "compact rows borrow the prepared fonts")
+    local font = assert(fonts.body, "compact rows borrow the prepared body font")
+    local palette = compactPalette(COMPACT_MATTE, disabled)
+    if row.labelRole ~= nil then
+      local label = compactRoleText(assets, row.labelRole, not disabled, "compact row")
+      if label ~= nil and label ~= "" then
+        drawCompactLine(font, label, rect.x + 2, rect.y + 1, rect.width - 4, "left", palette)
+      end
+    end
+    local valueRole = row.valueRole
+    if valueRole ~= nil then
+      local values = {}
+      if type(valueRole) == "table" then
+        for _, nested in ipairs(valueRole) do
+          values[#values + 1] = nested
+        end
+      else
+        values[#values + 1] = valueRole
+      end
+      local staged = {}
+      for _, nested in ipairs(values) do
+        local value = compactRoleText(assets, nested, not disabled, "compact row value")
+        if value ~= nil and value ~= "" then
+          staged[#staged + 1] = value
+        end
+      end
+      if #staged > 0 then
+        drawCompactLine(font, table.concat(staged, " "), rect.x + 2, rect.y + 1, rect.width - 4, "right", palette)
+      end
+    end
+  end)
+  if row.selected == true then
+    strokeCompactSelection(graphics, rect, surfaces)
+  end
+end
+
+-- Paints one compact slider track from the shared record: the staged
+-- caption and current bound plus a white thumb at the staged position.
+-- Bounds read the published criteria through the same view the mapper
+-- gates, so the painted thumb and the captured drag agree.
+---@param graphics table<string, unknown> host graphics namespace
+---@param assets table<string, unknown> prepared bundle with the lease-owned messages
+---@param view table<string, unknown> detached projection carrying the staged bounds
+---@param slider table<string, unknown> drawn slider record with its visible roles
+---@param surfaces table[] six realized serial surfaces in compositor order
+local function drawCompactSlider(graphics, assets, view, slider, surfaces)
+  local rect = assert(slider.rect, "compact sliders carry their rectangle")
+  local color = surfaces[5]
+  assert(type(graphics.setCanvas) == "function", "compact sliders target their surface")
+  assert(type(graphics.setColor) == "function", "compact sliders paint their track")
+  assert(type(graphics.rectangle) == "function", "compact sliders paint their track")
+  local caption = compactRoleText(assets, slider.captionRole, true, "compact slider")
+  assert(type(caption) == "string", "compact sliders paint their caption")
+  local value = compactRoleText(assets, slider.valueRole, true, "compact slider bound")
+  assert(type(value) == "string", "compact sliders paint their bound")
+  local fonts = assert(assets.fonts, "compact sliders borrow the prepared fonts")
+  local font = assert(fonts.body, "compact sliders borrow the prepared body font")
+  withCompactClip(graphics, { x = rect.x, y = rect.y - 18, width = rect.width, height = 18 }, function()
+    local palette = compactPalette(COMPACT_MATTE, false)
+    drawCompactLine(font, caption, rect.x, rect.y - 18, rect.width, "left", palette)
+    drawCompactLine(font, value, rect.x, rect.y - 18, rect.width, "right", palette)
+  end)
+  graphics.setCanvas(color.canvas)
+  graphics.setColor(COMPACT_MATTE.r / 255, COMPACT_MATTE.g / 255, COMPACT_MATTE.b / 255, 1)
+  graphics.rectangle("fill", rect.x, rect.y, rect.width, rect.height)
+  graphics.setColor(1, 1, 1, 1)
+  markObjRect(graphics, surfaces[6], rect, 0)
+  local bound = nil
+  if type(view.search) == "table" and type(view.search.criteria) == "table" then
+    local criteria = view.search.criteria
+    local kind = slider.target:gsub("%-min$", ""):gsub("%-max$", "")
+    local staged = criteria[kind]
+    if type(staged) == "table" then
+      if slider.target:sub(-4) == "-min" then
+        bound = staged.min
+      else
+        bound = staged.max
+      end
+    end
+  end
+  assert(type(bound) == "number", "compact sliders read their staged bound")
+  local thumbWidth = 4
+  local travel = math.max(rect.width - thumbWidth, 1)
+  local thumbX = rect.x + math.floor(bound / 152 * travel + 0.5)
+  graphics.setCanvas(color.canvas)
+  graphics.setColor(1, 1, 1, 1)
+  graphics.rectangle("fill", thumbX, rect.y, thumbWidth, rect.height)
+  graphics.setColor(1, 1, 1, 1)
+end
+
+-- Paints the inspector close mark centered in its toggle rectangle.
+---@param graphics table<string, unknown> host graphics namespace
+---@param assets table<string, unknown> prepared bundle with the lease-owned messages
+---@param closeRect { x: integer, y: integer, width: integer, height: integer } close toggle rectangle
+---@param closeRole string? prepared message role behind the close mark
+---@param background table<string, integer> painted surface color behind the glyphs
+local function drawInspectorClose(graphics, assets, closeRect, closeRole, background)
+  if closeRole == nil then
+    return
+  end
+  local message = compactRoleText(assets, closeRole, true, "compact inspector close")
+  if message == nil or message == "" then
+    return
+  end
+  local fonts = assert(assets.fonts, "compact inspector borrows the prepared fonts")
+  local font = assert(fonts.body, "compact inspector borrows the prepared body font")
+  withCompactClip(graphics, closeRect, function()
+    drawCompactLine(
+      font,
+      message,
+      closeRect.x,
+      closeRect.y + 2,
+      closeRect.width,
+      "center",
+      compactPalette(background, false)
+    )
+  end)
+end
+
+-- Collects the inspector body lines behind the published roles: number
+-- and name, the caught-only category, wrapped source flavor, and the
+-- measurements. Only roles the ready bundle actually carries produce
+-- lines, so unseen selections never leak previously seen details.
+---@param assets table<string, unknown> prepared bundle with the lease-owned messages
+---@param roles table<string, string?> named detail roles behind the inspector
+---@return string[] body lines behind the published selection
+local function inspectorBodyLines(assets, roles)
+  local messages = assert(assets.messages, "compact inspector borrows the prepared messages")
+  assert(type(messages) == "table", "prepared messages stay a record")
+  local fonts = assert(assets.fonts, "compact inspector borrows the prepared fonts")
+  local font = assert(fonts.body, "compact inspector borrows the prepared body font")
+  local lines = {}
+  local number = type(roles.number) == "string" and messages[roles.number] or nil
+  local name = type(roles.name) == "string" and messages[roles.name] or nil
+  if type(number) == "string" and number ~= "" and type(name) == "string" and name ~= "" then
+    local joined = number .. " " .. name
+    if font:textWidth(joined) <= 240 then
+      lines[#lines + 1] = joined
+    else
+      lines[#lines + 1] = number
+      lines[#lines + 1] = name
+    end
+  elseif type(number) == "string" and number ~= "" then
+    lines[#lines + 1] = number
+  elseif type(name) == "string" and name ~= "" then
+    lines[#lines + 1] = name
+  end
+  if type(roles.category) == "string" then
+    local category = messages[roles.category]
+    if type(category) == "string" and category ~= "" then
+      lines[#lines + 1] = category
+    end
+  end
+  if type(roles.flavor) == "string" then
+    local flavor = messages[roles.flavor]
+    if type(flavor) == "string" and flavor ~= "" then
+      for _, wrapped in ipairs(wrapCompactText(font, flavor, 240)) do
+        lines[#lines + 1] = wrapped
+      end
+    end
+  end
+  local measures = {}
+  for _, key in ipairs({ "height", "weight" }) do
+    local role = roles[key]
+    if type(role) == "string" then
+      local measure = messages[role]
+      if type(measure) == "string" and measure ~= "" then
+        measures[#measures + 1] = measure
+      end
+    end
+  end
+  if #measures == 2 then
+    local joined = measures[1] .. "  " .. measures[2]
+    if font:textWidth(joined) <= 240 then
+      lines[#lines + 1] = joined
+    else
+      lines[#lines + 1] = measures[1]
+      lines[#lines + 1] = measures[2]
+    end
+  elseif #measures == 1 then
+    lines[#lines + 1] = measures[1]
+  end
+  return lines
+end
+
 -- Runs the compact passes for one pane on the identity transform: the
 -- same committed backgrounds, windows, and text as native, then the
 -- reflowed icons, portrait, inspection toggle, footer actions, and the
@@ -1511,23 +2011,68 @@ local function runCompactPasses(graphics, assets, view, role, paneId, surfaces, 
       end
       drawCompactIcons(graphics, assets, view.grid, cursor, geometry.iconRects, geometry.cursorRects, surfaces)
       drawCompactPortrait(graphics, assets, view, compact, surfaces)
-      fillChromeRect(graphics, assert(compact.inspectRect, "the compact record carries its toggle"), surfaces)
+      if type(compact.rows) == "table" then
+        for _, row in ipairs(compact.rows) do
+          if type(row) == "table" and type(row.rect) == "table" then
+            drawCompactRow(graphics, assets, row, surfaces)
+          end
+        end
+      end
+      if type(compact.sliders) == "table" then
+        for _, slider in ipairs(compact.sliders) do
+          if type(slider) == "table" then
+            drawCompactSlider(graphics, assets, view, slider, surfaces)
+          end
+        end
+      end
+      local toggle = assert(compact.inspectRect, "the compact record carries its toggle")
+      local inspection = compact.inspection
+      if type(inspection) ~= "table" then
+        inspection = {}
+      end
+      local color = surfaces[5]
+      local meta = surfaces[6]
+      assert(type(graphics.setCanvas) == "function", "compact overlays target their surface")
+      fillChromeRect(graphics, toggle, surfaces)
+      graphics.setCanvas(color.canvas)
+      drawInspectorClose(graphics, assets, toggle, inspection.closeRole, COMPACT_CHROME)
       if inspectOn then
-        local color = surfaces[5]
-        local meta = surfaces[6]
         assert(type(graphics.setColor) == "function", "compact overlays paint their panel")
         assert(type(graphics.rectangle) == "function", "compact overlays paint their panel")
         graphics.setCanvas(color.canvas)
-        graphics.setColor(16 / 255, 16 / 255, 24 / 255, 1)
+        graphics.setColor(COMPACT_MATTE.r / 255, COMPACT_MATTE.g / 255, COMPACT_MATTE.b / 255, 1)
         graphics.rectangle("fill", 0, 0, 256, 168)
         graphics.setColor(1, 1, 1, 1)
         markObjRect(graphics, meta, { x = 0, y = 0, width = 256, height = 168 }, 0)
+        local roles = inspection.roles
+        if type(roles) ~= "table" then
+          roles = {}
+        end
+        local fonts = assert(assets.fonts, "compact inspector borrows the prepared fonts")
+        local font = assert(fonts.body, "compact inspector borrows the prepared body font")
+        local palette = compactPalette(COMPACT_MATTE, false)
+        local lines = inspectorBodyLines(assets, roles)
+        withCompactClip(graphics, { x = 0, y = 0, width = 256, height = 168 }, function()
+          local y = 8
+          for _, line in ipairs(lines) do
+            if y + 16 > 128 or line == nil then
+              break
+            end
+            if line ~= "" then
+              drawCompactLine(font, line, 8, y, 240, "left", palette)
+            end
+            y = y + 16
+          end
+        end)
+        graphics.setCanvas(color.canvas)
+        drawInspectorClose(graphics, assets, toggle, inspection.closeRole, COMPACT_MATTE)
       end
     elseif paneId == "controls" then
       local footer = assert(compact.footer, "the compact record carries its footer")
       assert(type(footer.buttons) == "table", "compact footers carry their buttons")
       for _, button in ipairs(footer.buttons) do
-        fillChromeRect(graphics, button, surfaces)
+        assert(type(button) == "table", "compact footers carry their button records")
+        drawCompactButton(graphics, assets, view, role, button, surfaces)
       end
     end
     graphics.setCanvas(previous)
