@@ -294,7 +294,7 @@ Schema.MOVEMENT_ACTIONS = {
   },
 }
 
--- Canonical operations . Every step is a table with `op` set
+-- Canonical operations: every step is a table with `op` set
 -- to one of these names and the declared fields; unknown fields are rejected.
 -- The one asset the Bell Tower / Whirl Islands appearance scene needs; every
 -- legend cutscene op declares it (see AssetNeeds).

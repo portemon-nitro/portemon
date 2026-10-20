@@ -87,6 +87,20 @@ function T.argument_dependent_declaration_reads_the_step()
   assert(ok, err)
 end
 
+function T.for_resource_reports_a_malformed_needs_hint_as_a_schema_error()
+  local resource = S.script({ api = 1, id = "test.asset_needs_bad_hint", steps = { S.stop() } })
+  resource.needs = { { kind = "bad:kind", id = "thing" } }
+  local err = Assert.throws(function()
+    AssetNeeds.forResource(resource)
+  end)
+  Assert.equal(err.code, "SCRIPT_SCHEMA_INVALID")
+  resource.needs = { "field-effect:thing" }
+  err = Assert.throws(function()
+    AssetNeeds.forResource(resource)
+  end)
+  Assert.equal(err.code, "SCRIPT_SCHEMA_INVALID")
+end
+
 function T.for_resource_unions_the_optional_needs_hint()
   local resource = S.script({
     api = 1,

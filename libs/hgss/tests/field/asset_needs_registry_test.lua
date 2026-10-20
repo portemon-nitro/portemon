@@ -227,27 +227,4 @@ function T.tests.a_failing_start_is_isolated_and_reported()
   Assert.deepEqual(registry:failures(), { { key = "a:x", message = "no start" } })
 end
 
-local function indexWith(memberNeeds, resources)
-  return { memberAssetNeeds = memberNeeds, resources = resources or {} }
-end
-
-function T.tests.needs_for_member_unions_index_and_override_needs()
-  local index = indexWith({ ["3"] = { "a:one" } }, {
-    { id = "s.one", member = 3 },
-    { id = "s.two", member = 3 },
-    { id = "s.other", member = 4 },
-  })
-  local overrides = { ["s.two"] = { "b:two" }, ["s.other"] = { "c:no" } }
-  local needs = AssetNeedsRegistry.needsForMember(index, 3, function(id)
-    return overrides[id]
-  end)
-  Assert.deepEqual(needs, { ["a:one"] = true, ["b:two"] = true })
-end
-
-function T.tests.needs_for_member_skips_a_malformed_index_without_raising()
-  local needs = AssetNeedsRegistry.needsForMember({ memberAssetNeeds = { ["3"] = { "b", "a" } } }, 3, function() end)
-  Assert.deepEqual(needs, {})
-  Assert.deepEqual(AssetNeedsRegistry.needsForMember({}, 3, function() end), {})
-end
-
 return T

@@ -345,6 +345,31 @@ function PredictionDriver:_commit(runtime, currentId, orderedIds)
   self:_commitAssetNeeds(runtime, currentFieldData)
 end
 
+-- The needs of one script member: the published index closure plus the needs
+-- of any override-layer resource of that member. A malformed index
+-- contributes nothing; the synchronous path raises if it ever needs the asset.
+---@param index table<string, unknown> the published script index
+---@param memberId integer
+---@param overrideNeeds fun(id: string): string[]? needs of an id's override resource, nil when it has none
+---@return table<string, true> needs set of `kind:id` keys
+local function needsForMember(index, memberId, overrideNeeds)
+  local ScriptCache = require("libs.assets.src.ScriptCache")
+  local needs = {}
+  for _, key in ipairs(ScriptCache.assetNeedsForMember(index, memberId) or {}) do
+    needs[key] = true
+  end
+  if type(index.resources) == "table" then
+    for _, entry in ipairs(index.resources) do
+      if entry.member == memberId then
+        for _, key in ipairs(overrideNeeds(entry.id) or {}) do
+          needs[key] = true
+        end
+      end
+    end
+  end
+  return needs
+end
+
 -- Enrolls the assets the current map's scripts need (the published index
 -- closure plus any override-layer resource of that script member) with the
 -- registry, which prepares them in the background, and drops every other
@@ -358,7 +383,7 @@ function PredictionDriver:_commitAssetNeeds(runtime, fieldData)
     local index = self:_scriptIndex(runtime)
     if index ~= nil then
       local scriptRegistry = runtime.scripts ~= nil and runtime.scripts.registry or nil
-      needs = AssetNeedsRegistry.needsForMember(index, memberId, function(id)
+      needs = needsForMember(index, memberId, function(id)
         return scriptRegistry ~= nil and scriptRegistry:overrideAssetNeeds(id) or nil
       end)
     end
