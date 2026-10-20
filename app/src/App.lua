@@ -12,6 +12,8 @@ local DerivedAssetProvisioner = require("app.src.DerivedAssetProvisioner")
 local CachePreparationState = require("app.src.launcher.CachePreparationState")
 local ImportState = require("app.src.launcher.ImportState")
 local VersionSelectState = require("app.src.launcher.VersionSelectState")
+local NativeRomPicker = require("app.src.launcher.NativeRomPicker")
+local EditionPreference = require("app.src.launcher.EditionPreference")
 
 ---@class App
 ---@field opts AppOptions
@@ -24,6 +26,8 @@ local VersionSelectState = require("app.src.launcher.VersionSelectState")
 ---@field selectedVersionId string? currently selected game version
 ---@field _rebindVersionId string? version a pending raw drop is expected to supply back
 ---@field _bootBlockedVersionId string? version a blocked boot refuses to switch away from
+---@field importPickerError string? latest recoverable picker or preference detail
+---@field preferenceError string? last-played preference write diagnostic
 ---@field drawableWidth number?
 ---@field drawableHeight number?
 ---@field pixelRatio number?
@@ -175,11 +179,17 @@ function App._launchGameWithProvisioner(versionId, entry)
     error(gameOrError, 0)
   end
   App.setState(assert(gameOrError))
+  local recorded, recordError = EditionPreference.recordPlayed(versionId)
+  if not recorded then
+    App.preferenceError = tostring(recordError)
+    print("Could not save the last played edition: " .. App.preferenceError)
+  end
 end
 
 function App._showVersionSelector()
   App._rebindVersionId = nil
   App._bootBlockedVersionId = nil
+  App.importPickerError = nil
   App._retireSelection()
   local ready = readyVersions()
   if #ready == 0 then
@@ -426,6 +436,7 @@ function App.load(opts)
   App.selectedVersionId = nil
   App._rebindVersionId = nil
   App._bootBlockedVersionId = nil
+  App.importPickerError = nil
   App.setState(nil)
   love.graphics.setBackgroundColor(unpack(WindowConfig.BACKGROUND_COLOR))
   App.saveDir = love.filesystem.getSaveDirectory()
@@ -444,12 +455,147 @@ function App.setState(nextState)
   end
 end
 
-function App._startImport()
+function App._startImport(expectedVersionId)
   local function onComplete(versionId)
     App._onImported(versionId)
   end
-  App.importer = RomImporter.new({ onComplete = onComplete })
-  App.setState(ImportState.new(App.importer, App.saveDir))
+  App.importer = RomImporter.new({ onComplete = onComplete, expectedVersionId = expectedVersionId })
+  App.setState(ImportState.new(App.importer, App.saveDir, {
+    targetVersion = expectedVersionId,
+    pickerError = App.importPickerError,
+    onPick = function()
+      local result = NativeRomPicker.openSingle()
+      if result.kind == "path" then
+        App._beginImportPath(result.path, expectedVersionId)
+      elseif result.kind == "error" then
+        App.importPickerError = result.message
+        if App.state and getmetatable(App.state) == ImportState then
+          App.state.pickerError = result.message
+        end
+      end
+    end,
+    onSwitchEdition = function()
+      local target = expectedVersionId == "soulsilver" and "heartgold" or "soulsilver"
+      App._switchEdition(target)
+    end,
+  }))
+end
+
+function App._switchEdition(versionId)
+  assert(GameVersion.VERSIONS[versionId], "unknown edition")
+  local ready = readyVersions()
+  for _, readyId in ipairs(ready) do
+    if readyId == versionId then
+      App._selectVersion(versionId)
+      return
+    end
+  end
+  if App.importer and App.importer:isBusy() then
+    return
+  end
+  local function showTargetImport()
+    App._startImport(versionId)
+  end
+  if App.service ~= nil and App.selectedVersionId ~= nil then
+    App._retireSelection()
+    local epoch = App.epoch or 0
+    local barrier = App.service:quiesce(epoch)
+    if barrier ~= nil then
+      App.pendingQuiesce = { epoch = epoch, barrier = barrier }
+      App.setState(CachePreparationState.new({
+        kind = "quiescence",
+        epoch = epoch,
+        service = App.service,
+        barrier = barrier,
+        isCurrent = function(_)
+          return App.pendingQuiesce ~= nil and App.pendingQuiesce.barrier == barrier
+        end,
+        onReady = function()
+          App.pendingQuiesce = nil
+          if App.service:importSource(epoch, barrier) then
+            showTargetImport()
+          end
+        end,
+        onCancel = function()
+          App.pendingQuiesce = nil
+          App._showVersionSelector()
+        end,
+      }))
+      return
+    end
+  end
+  showTargetImport()
+end
+
+function App._beginImportPath(path, expectedVersionId)
+  if type(path) ~= "string" or (not path:lower():match("%.nds$") and not path:lower():match("%.zip$")) then
+    App.importPickerError = "Choose a file ending in .nds or .zip, or drag and drop a ROM."
+    if App.state and getmetatable(App.state) == ImportState then
+      App.state.pickerError = App.importPickerError
+    end
+    return
+  end
+  App._beginImportAttempt("path", path, expectedVersionId)
+end
+
+function App._beginImportAttempt(kind, value, expectedVersionId)
+  local currentState = App.state
+  if kind == "drop" and currentState ~= nil and type(currentState.onImportAttempt) == "function" then
+    currentState:onImportAttempt()
+    return
+  end
+  if App.importer and App.importer:isBusy() then
+    return
+  end
+  local waiting = App.state
+  if waiting ~= nil and getmetatable(waiting) == CachePreparationState and waiting.kind == "quiescence" then
+    return
+  end
+  expectedVersionId = expectedVersionId or (currentState and currentState.targetVersion)
+  local begin = function()
+    App._startImport(expectedVersionId)
+    if App.importer then
+      if kind == "path" then
+        App.importer:startPath(value)
+      else
+        App.importer:filedropped(value)
+      end
+    end
+  end
+  if App.service ~= nil then
+    local wasBootBlocked = currentState ~= nil
+      and getmetatable(currentState) == CachePreparationState
+      and currentState.kind == "boot-source"
+    App._bootBlockedVersionId = wasBootBlocked and App.selectedVersionId or nil
+    App._rebindVersionId = App.selectedVersionId
+    App._retireSelection()
+    local epoch = App.epoch or 0
+    local barrier = App.service:quiesce(epoch)
+    if barrier ~= nil then
+      App.pendingQuiesce = { epoch = epoch, barrier = barrier }
+      App.setState(CachePreparationState.new({
+        kind = "quiescence",
+        epoch = epoch,
+        service = App.service,
+        barrier = barrier,
+        isCurrent = function(_)
+          return App.pendingQuiesce ~= nil and App.pendingQuiesce.barrier == barrier
+        end,
+        onReady = function()
+          App.pendingQuiesce = nil
+          if App.service:importSource(epoch, barrier) then
+            begin()
+          end
+        end,
+        onCancel = function()
+          App.pendingQuiesce = nil
+          App._showVersionSelector()
+        end,
+      }))
+      return
+    end
+  end
+  begin()
 end
 
 ---@param versionId string
@@ -577,13 +723,14 @@ function App._bootExisting()
     App._startImport()
     return
   end
-  if #ready == 1 then
-    App._selectVersion(ready[1])
-    return
+  local remembered = EditionPreference.read()
+  for _, versionId in ipairs(ready) do
+    if versionId == remembered then
+      App._selectVersion(versionId)
+      return
+    end
   end
-  App.setState(VersionSelectState.new(ready, function(versionId)
-    App._selectVersion(versionId)
-  end))
+  App._selectVersion(ready[1])
 end
 
 function App.update(dt)
@@ -648,70 +795,7 @@ function App.filedropped(file)
       return
     end
   end
-  if currentState ~= nil and type(currentState.onImportAttempt) == "function" then
-    currentState:onImportAttempt()
-    return
-  end
-  if App.importer and App.importer:isBusy() then
-    return
-  end
-  local waiting = App.state
-  if waiting ~= nil and getmetatable(waiting) == CachePreparationState and waiting.kind == "quiescence" then
-    -- A replacement dropped while waiting stays queued behind quiescence;
-    -- reentering import here would retire the selection under the wait.
-    return
-  end
-  if App.service ~= nil then
-    -- Retire selected interest before the barrier so no new admission can
-    -- enter the quiescing controller, then wait visibly for actual source
-    -- closure. The import starts exactly once from successful barrier
-    -- completion, on every raw path including the selector with no
-    -- attached provisioner. Progress and input keep pumping while the
-    -- readers drain. The retired version is remembered so supplying the
-    -- same ROM back resumes it instead of restarting it as a fresh import.
-    -- A drop out of a blocked boot additionally remembers the expected
-    -- version, so a wrong ROM cannot switch the selection away from it.
-    local wasBootBlocked = currentState ~= nil
-      and getmetatable(currentState) == CachePreparationState
-      and currentState.kind == "boot-source"
-    App._bootBlockedVersionId = nil
-    if wasBootBlocked then
-      App._bootBlockedVersionId = App.selectedVersionId
-    end
-    App._rebindVersionId = App.selectedVersionId
-    App._retireSelection()
-    local epoch = App.epoch or 0
-    local barrier = App.service:quiesce(epoch)
-    if barrier ~= nil then
-      App.pendingQuiesce = { epoch = epoch, barrier = barrier }
-      App.setState(CachePreparationState.new({
-        kind = "quiescence",
-        epoch = epoch,
-        service = App.service,
-        barrier = barrier,
-        isCurrent = function(_)
-          return App.pendingQuiesce ~= nil and App.pendingQuiesce.barrier == barrier
-        end,
-        onReady = function()
-          App.pendingQuiesce = nil
-          local ok = App.service:importSource(epoch, barrier)
-          if ok then
-            App._startImport()
-            if App.importer then
-              App.importer:filedropped(file)
-            end
-          end
-        end,
-        onCancel = function()
-          App.pendingQuiesce = nil
-          App._showVersionSelector()
-        end,
-      }))
-      return
-    end
-  end
-  App._startImport()
-  App.importer:filedropped(file)
+  App._beginImportAttempt("drop", file)
 end
 
 function App.keypressed(key, scancode, isrepeat)

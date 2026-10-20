@@ -128,6 +128,8 @@ end
 ---@param fn fun(result: AppStateHarness)
 ---@return AppStateHarness
 local function withAppHarness(opts, ready, fn)
+  love.filesystem.remove("app-edition.lua")
+  love.filesystem.remove("app-edition.lua.tmp")
   fresh()
   local originalOpts = App.opts
   local originalIsReady = RomImporter.isReady
@@ -268,6 +270,8 @@ local function withAppHarness(opts, ready, fn)
   love.event.quit = originalQuit
   ProducerFingerprint.appBackend = harnessAppBackend
   ProducerFingerprint.checkoutBackend = harnessCheckoutBackend
+  love.filesystem.remove("app-edition.lua")
+  love.filesystem.remove("app-edition.lua.tmp")
   if not ok then
     error(err, 0)
   end
@@ -652,6 +656,189 @@ function T.boot_existing_with_no_ready_version_starts_an_import()
   end)
 end
 
+function T.boot_existing_selects_the_persisted_last_played_edition()
+  local preferencePath = "app-edition.lua"
+  withAppHarness({ dev = false }, function()
+    return true
+  end, function()
+    local wrote, err = love.filesystem.write(preferencePath, 'return { schema = 1, versionId = "soulsilver" }\n')
+    Assert.isTrue(wrote, tostring(err))
+    App._bootExisting()
+    Assert.equal(App.selectedVersionId, "soulsilver", "last-played edition boots without a preview screen")
+  end)
+end
+
+function T.boot_falls_back_when_the_persisted_edition_is_not_ready()
+  withAppHarness({ dev = false }, function(versionId)
+    return versionId == "heartgold"
+  end, function()
+    local wrote = love.filesystem.write("app-edition.lua", 'return { schema = 1, versionId = "soulsilver" }\n')
+    Assert.isTrue(wrote)
+    currentOnlyFor("heartgold")
+    App._bootExisting()
+    Assert.equal(App.selectedVersionId, "heartgold", "an unavailable preference falls back to the first ready edition")
+  end)
+end
+
+function T.native_picker_path_waits_for_quiescence_before_importing()
+  local NativeRomPicker = require("app.src.launcher.NativeRomPicker")
+  local originalOpen = NativeRomPicker.openSingle
+  local originalNew = RomImporter.new
+  local starts = { path = 0, drop = 0 }
+  NativeRomPicker.openSingle = function()
+    return { kind = "path", path = "/user/heartgold.nds" }
+  end
+  RomImporter.new = function()
+    local importer = { state = "idle" }
+    function importer:isBusy()
+      return false
+    end
+    function importer:startPath(path)
+      Assert.equal(path, "/user/heartgold.nds")
+      starts.path = starts.path + 1
+    end
+    function importer:filedropped(_)
+      starts.drop = starts.drop + 1
+    end
+    function importer:update() end
+    function importer:status()
+      return { state = self.state }
+    end
+    return importer
+  end
+  local ok, failure = pcall(function()
+    withAppHarness({}, function()
+      return false
+    end, function(result)
+      result.firstPlayCurrent = false
+      result.firstPlayStored = false
+      App._bootExisting()
+      result.service.barrierStatus = function()
+        return "ready"
+      end
+      result.service.importSource = function()
+        result.importAuthorized = (result.importAuthorized or 0) + 1
+        return true
+      end
+      App.state:mousepressed(400, 300, 1)
+      Assert.equal(result.importAuthorized, nil, "path import waits for barrier polling")
+      App.update(0.016)
+      Assert.equal(result.importAuthorized, 1, "source ownership is authorized after quiescence")
+      Assert.equal(starts.path, 1, "picker path enters the importer exactly once")
+      Assert.equal(starts.drop, 0, "native selection does not masquerade as a dropped file")
+    end)
+  end)
+  NativeRomPicker.openSingle = originalOpen
+  RomImporter.new = originalNew
+  if not ok then
+    error(failure, 0)
+  end
+end
+
+function T.picker_cancel_does_not_start_a_barrier_or_import()
+  local NativeRomPicker = require("app.src.launcher.NativeRomPicker")
+  local originalOpen = NativeRomPicker.openSingle
+  NativeRomPicker.openSingle = function()
+    return { kind = "cancel" }
+  end
+  local ok, failure = pcall(function()
+    withAppHarness({}, function()
+      return false
+    end, function(result)
+      result.firstPlayCurrent = false
+      result.firstPlayStored = false
+      App._bootExisting()
+      App.state:mousepressed(400, 300, 1)
+      Assert.equal(App.state.onImportAttempt, nil)
+      Assert.equal(App.pendingQuiesce, nil, "cancel does not authorize source replacement")
+      Assert.equal(App.importer.state, "idle", "cancel leaves the importer idle")
+    end)
+  end)
+  NativeRomPicker.openSingle = originalOpen
+  if not ok then
+    error(failure, 0)
+  end
+end
+
+function T.switching_to_a_missing_edition_waits_for_quiescence_and_targets_its_import()
+  local originalNew = RomImporter.new
+  local importerOptions
+  RomImporter.new = function(options)
+    importerOptions = options
+    local importer = { state = "idle" }
+    function importer:isBusy()
+      return false
+    end
+    function importer:update() end
+    function importer:status()
+      return { state = self.state }
+    end
+    function importer:filedropped(_) end
+    function importer:startPath(_) end
+    return importer
+  end
+  local ok, failure = pcall(function()
+    withAppHarness({ dev = false }, function(versionId)
+      return versionId == "heartgold"
+    end, function(result)
+      currentOnlyFor("heartgold")
+      App._bootExisting()
+      Assert.equal(App.selectedVersionId, "heartgold")
+      result.service.barrierStatus = function()
+        return "ready"
+      end
+      result.service.importSource = function()
+        result.importAuthorized = (result.importAuthorized or 0) + 1
+        return true
+      end
+      App._switchEdition("soulsilver")
+      Assert.isNil(importerOptions, "no importer starts while source readers are quiescing")
+      App.update(0.016)
+      Assert.equal(result.importAuthorized, 1)
+      Assert.equal(importerOptions.expectedVersionId, "soulsilver")
+      Assert.equal(App.state.targetVersion, "soulsilver")
+      Assert.equal(App.selectedVersionId, "heartgold", "a missing edition is only an import target until verified")
+    end)
+  end)
+  RomImporter.new = originalNew
+  if not ok then
+    error(failure, 0)
+  end
+end
+
+function T.last_played_preference_changes_only_after_successful_game_install()
+  local EditionPreference = require("app.src.launcher.EditionPreference")
+  withAppHarness({ dev = false }, function(versionId)
+    return versionId == "heartgold"
+  end, function()
+    currentOnlyFor("heartgold")
+    App._bootExisting()
+    App.update(0.016)
+    Assert.isNil(EditionPreference.read(), "selecting the installed edition is only a preview")
+    App._launchGameWithProvisioner("heartgold", { kind = "new_game" })
+    Assert.equal(EditionPreference.read(), "heartgold", "successful game-state installation records play")
+  end)
+end
+
+function T.failed_game_composition_does_not_change_last_played_preference()
+  local EditionPreference = require("app.src.launcher.EditionPreference")
+  withAppHarness({ dev = false }, function(versionId)
+    return versionId == "heartgold"
+  end, function()
+    currentOnlyFor("heartgold")
+    App._bootExisting()
+    App.update(0.016)
+    local originalNew = HgssGame.new
+    HgssGame.new = function()
+      error("injected game composition failure")
+    end
+    local ok = pcall(App._launchGameWithProvisioner, "heartgold", { kind = "new_game" })
+    HgssGame.new = originalNew
+    Assert.isFalse(ok, "composition failure remains visible to the caller")
+    Assert.isNil(EditionPreference.read(), "failed game construction does not record play")
+  end)
+end
+
 function T.boot_existing_with_one_ready_version_enters_the_main_menu()
   withAppHarness({ dev = false }, function(id)
     return id == "heartgold"
@@ -739,20 +926,16 @@ function T.cancelled_retail_entries_restore_the_product_menu_on_the_same_selecti
   end)
 end
 
-function T.boot_existing_with_two_ready_versions_offers_the_selector_over_the_ready_array()
+function T.boot_existing_with_two_ready_versions_uses_the_deterministic_first_edition()
   withAppHarness({ dev = true }, function(id)
     return id == "heartgold" or id == "soulsilver"
   end, function(result)
     App._bootExisting()
-    local selector = App.state
-    ---@cast selector table
-    Assert.equal(getmetatable(selector).__index, VersionSelectState)
-    Assert.deepEqual(selector.ready, { "heartgold", "soulsilver" })
-    selector.onPick("soulsilver")
+    Assert.equal(App.selectedVersionId, "heartgold")
     -- The boot gate answers first: readiness continues into the menu.
     App.update(0.016)
     Assert.equal(#result.launches, 0, "selecting a version installs the product menu")
-    Assert.equal(result.menus[1].options.versionId, "soulsilver")
+    Assert.equal(result.menus[1].options.versionId, "heartgold")
     Assert.equal(App.state, result.menus[1])
   end)
 end
