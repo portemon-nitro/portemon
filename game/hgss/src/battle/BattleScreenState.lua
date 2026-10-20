@@ -40,7 +40,6 @@ local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 ---@field _nativeRouting boolean true while the effects collaborator routes native cues
 ---@field _liveEffectHandle table<string, unknown>? player handle behind the running occurrence
 ---@field _liveEffectRecord table<string, unknown>? loaded effect record behind the running occurrence
----@field _syntheticLeases table<table<string, unknown>, boolean> occurrence-scoped journal tokens never owned by the holder
 ---@field _session ApplicationPresentation per-open presentation session
 ---@field _subflows BattleSubflows battle-local child coordinator
 ---@field _partySnapshot table<integer, table<string, unknown>>? latest detached own-party facts
@@ -305,26 +304,26 @@ local function nativeResourceAdapter(screen)
       return lease
     end
     -- Staging invariant: only keys declared by the live effect closure
-    -- resolve through the holder. Anything else (keys staged at
-    -- construction outside any effect closure) resolves as an
-    -- occurrence-scoped journal token: the player tracks it for
-    -- exactly-once release, and teardown is a no-op because no holder
-    -- handle was admitted. State-only visual task bodies stage no such
-    -- keys; they borrow player-held dependencies or touch scene state
-    -- directly, so this branch stays a construction-time fallback, never
-    -- a per-tick resource path.
-    local token = { key = key, lease = key }
-    screen._syntheticLeases[token] = true
-    return token
+    -- resolve through the holder. Anything else fails closed with launch,
+    -- effect, and resource provenance instead of minting a synthetic
+    -- journal token: an undeclared key is a broken closure, never a
+    -- plumbable dependency. State-only visual task bodies stage no keys;
+    -- they borrow player-held dependencies or touch scene state directly.
+    local effectKey = type(record) == "table" and record.key or "no-live-effect"
+    error(
+      "unknown battle effect resource "
+        .. key
+        .. " for effect "
+        .. tostring(effectKey)
+        .. " for launch "
+        .. tostring(screen._launchId),
+      0
+    )
   end
   ---@param lease unknown occurrence lease under release
   ---@return boolean? released
   function adapter.release(lease)
     if type(lease) ~= "table" then
-      return true
-    end
-    if screen._syntheticLeases[lease] == true then
-      screen._syntheticLeases[lease] = nil
       return true
     end
     local ok, released = pcall(function()
@@ -747,7 +746,6 @@ function BattleScreenState.new(opts)
     _nativeVoices = {},
     _liveEffectHandle = nil,
     _liveEffectRecord = nil,
-    _syntheticLeases = {},
     _session = nil,
     _subflows = BattleSubflows.new({
       launchId = opts.launchId,

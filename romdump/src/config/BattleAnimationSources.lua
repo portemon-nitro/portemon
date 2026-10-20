@@ -614,6 +614,19 @@ local function signed8(value)
   return value >= 0x80 and value - 0x100 or value
 end
 
+-- Native battler-role flags behind the linear-slide and position-reset
+-- selectors (battle_anim_funcs.c: the attacker/defender role switch):
+-- only these four name a picture target, anything else asserts natively.
+local function linearRoleTargets(role)
+  local targets = {
+    [2] = "attacker",
+    [4] = "attacker-related-position-when-paired",
+    [8] = "target",
+    [16] = "target-related-position-when-paired",
+  }
+  return targets[role]
+end
+
 ---@param operands integer[] selector, declared count, then source callback words
 ---@return table<string, unknown>|nil semantic callback plan
 ---@return string|nil unresolved selection reason
@@ -1581,6 +1594,86 @@ function BattleAnimationSources.resolveBattleAnimationCallback(operands)
       taskKind = "pokemon-picture-height-position-transition",
       context = "pokemon-picture",
       parameters = {},
+    }
+  elseif selector == 48 then
+    -- DefenderKnockback (battle_anim_effects.c) reads no source words:
+    -- a four-tick linear displacement, a sixteen-tick shake
+    -- (InitShake interval 1, count 4: four phases per count), and a
+    -- four-tick return plus the snap tick run 26 ticks. The generic
+    -- visual body holds that boundary with no patch: the side-directed
+    -- jolt has no static expression, so the run stays timing-accurate
+    -- instead of inventing motion.
+    if count ~= 0 then
+      return nil, "defender knockback callback follows its source assertion path"
+    end
+    return {
+      callback = "pokemon-picture-defender-knockback",
+      taskKind = "pokemon-picture-defender-knockback",
+      context = "pokemon-picture",
+      battlerTarget = "target",
+      parameters = { durationTicks = 26 },
+    }
+  elseif selector == 59 then
+    -- AttackerDashAfterimages (battle_anim_move_effects.c) never reads
+    -- its single source word; the out leg (eight ticks: the slowest of
+    -- the 3/6/8 motions) and the back leg (nine ticks: 3/6/9) plus the
+    -- two dispatch ticks run 20 ticks. The afterimage sprites and blend
+    -- have no scene expression, so the run holds the boundary.
+    if count ~= 1 then
+      return nil, "attacker dash callback follows its source assertion path"
+    end
+    return {
+      callback = "pokemon-picture-attacker-dash-afterimages",
+      taskKind = "pokemon-picture-attacker-dash-afterimages",
+      context = "pokemon-picture",
+      battlerTarget = "attacker",
+      parameters = { durationTicks = 20 },
+    }
+  elseif selector == 61 then
+    -- MoveBattlerLinear (battle_anim_funcs.c) slides the role's pictures
+    -- to the offscreen edge of its side over its duration word. The exit
+    -- direction resolves at runtime from the occurrence side type
+    -- (player-side battlers exit left, foe-side battlers exit right);
+    -- the 144-pixel run lands the solo foe exactly on the native 336
+    -- edge and clears every other slot offscreen. Roles outside the
+    -- native attacker/defender flag set stay loud. The target travels
+    -- in parameters (like the palette-pulse selector): one callback
+    -- profile cannot pin a varying battler target.
+    if count ~= 2 then
+      return nil, "linear offscreen callback follows its source assertion path"
+    end
+    local linearTarget = linearRoleTargets(operands[3])
+    if linearTarget == nil then
+      return nil, "linear offscreen callback follows its source assertion path"
+    end
+    return {
+      callback = "pokemon-picture-linear-offscreen-transition",
+      taskKind = "pokemon-picture-linear-offscreen-transition",
+      context = "pokemon-picture",
+      parameters = {
+        durationTicks = operands[4],
+        offscreenDistance = 144,
+        exitOwnSide = true,
+        pictureTarget = linearTarget,
+      },
+    }
+  elseif selector == 62 then
+    -- ResetBattlerPosition (battle_anim_funcs.c) snaps the role's picture
+    -- home at once. The slide task's teardown already restores the base
+    -- position, so the reset lowers as a validated marker with no timing
+    -- boundary; every native role maps to its picture target.
+    if count ~= 1 then
+      return nil, "reset position callback follows its source assertion path"
+    end
+    local resetTarget = linearRoleTargets(operands[3])
+    if resetTarget == nil then
+      return nil, "reset position callback follows its source assertion path"
+    end
+    return {
+      callback = "pokemon-picture-reset-position-transition",
+      taskKind = "pokemon-picture-reset-position-transition",
+      context = "pokemon-picture",
+      parameters = { pictureTarget = resetTarget },
     }
   elseif selector == 55 then
     return {

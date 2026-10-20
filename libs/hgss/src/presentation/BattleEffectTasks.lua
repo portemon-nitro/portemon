@@ -337,6 +337,13 @@ local function visualDuration(parameters)
   if isPositiveInt(parameters.frameTicks) then
     return parameters.frameTicks
   end
+  -- Paired-interpolation carries no durationTicks, but its step operands
+  -- bound the run: initialSteps at stepIntervalTicks each (producer-packed
+  -- word 8; the native emitter-motion task runs its own duration the same
+  -- way). Without this product the FLY glide markers a tick-1 retire.
+  if isPositiveInt(parameters.initialSteps) and isPositiveInt(parameters.stepIntervalTicks) then
+    return parameters.initialSteps * parameters.stepIntervalTicks
+  end
   if isPositiveInt(parameters.positionTransitionTicks) then
     return parameters.positionTransitionTicks
   end
@@ -779,11 +786,6 @@ end
 -- center to visible pixel offsets without drowning the source drift.
 local PARTICLE_JITTER_BOUND = 9
 
--- Draw bound preserved by the direct-construction probe path, which
--- keeps the established visual draw shape while staged records exist
--- only behind real producer bundles.
-local PARTICLE_PROBE_DRAW_BOUND = 256
-
 ---@param value unknown candidate fixed-point word under signing
 ---@return integer signed 32-bit value
 local function signed32(value)
@@ -818,7 +820,6 @@ end
 ---@field _random unknown occurrence-local visual draw behind a positive bound
 ---@field _center table<string, integer> slot anchor behind spawned sprites
 ---@field _streams table<integer, table<string, unknown>> emitter streams under simulating
----@field _probeDraws boolean direct-construction probe draws behind the established bound
 ---@field _effectIds table<integer, boolean> live sprite identities behind exactly-once release
 ---@field _state string pending, running, complete, or cancelled
 ---@field _cancelReason string? last cancellation cause under diagnosis
@@ -836,18 +837,6 @@ end
 ---@return boolean archive true for a normalized particle archive staged by the producer
 local function isNormalizedArchive(record)
   return type(record) == "table" and type(record.emitters) == "table"
-end
-
----@param record table<string, unknown> staged borrowed record under classifying
----@return boolean probe true for the direct-construction unit stub shape
-local function isProbeRecord(record)
-  return type(record) == "table"
-    and type(record.key) == "string"
-    and record.emitters == nil
-    and record.features == nil
-    and record.width == nil
-    and record.rgba8888 == nil
-    and record.colors == nil
 end
 
 ---@param value unknown candidate drawable field under validating
@@ -931,7 +920,6 @@ local function newParticleContinuation(args, context, services)
   local center = EMITTER_CENTERS[emitter]
   assert(center ~= nil, "particle emissions stage over a known effect slot")
   local streams = {}
-  local probeDraws = false
   if isNormalizedArchive(payload) then
     for _, record in ipairs(payload.emitters) do
       if not isNormalizedEmitter(record) then
@@ -968,35 +956,6 @@ local function newParticleContinuation(args, context, services)
       end
     end
     streams[#streams + 1] = particleStream(payload, drawable, center)
-  elseif isProbeRecord(payload) then
-    probeDraws = true
-    local params = {}
-    for index = 1, 42 do
-      params[index] = 0
-    end
-    params[29], params[30], params[24], params[32] = 12, 12, 0, 1
-    streams[#streams + 1] = {
-      record = { features = { "alpha" }, params = params },
-      drawable = nil,
-      assetKey = resource,
-      center = center,
-      active = 12,
-      life = 12,
-      every = 0,
-      count = 1,
-      offsetX = 0,
-      offsetY = 0,
-      velocityX = 0,
-      velocityY = 0,
-      gravityX = 0,
-      gravityY = 0,
-      jitter = false,
-      fade = true,
-      age = 0,
-      jitterX = 0,
-      jitterY = 0,
-      sprites = {},
-    }
   else
     releaseStaged(staged)
     error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " simulates staged particle records", 0)
@@ -1009,7 +968,6 @@ local function newParticleContinuation(args, context, services)
     _random = random,
     _center = center,
     _streams = streams,
-    _probeDraws = probeDraws,
     _effectIds = {},
     _state = "pending",
     _cancelReason = nil,
@@ -1071,12 +1029,9 @@ function BattleParticleContinuation:stepSourceTick(tick)
     if stream.jitter then
       stream.jitterX = random(PARTICLE_JITTER_BOUND) - 4
       stream.jitterY = random(PARTICLE_JITTER_BOUND) - 4
-    elseif self._probeDraws then
-      random(PARTICLE_PROBE_DRAW_BOUND)
-      random(PARTICLE_PROBE_DRAW_BOUND)
     end
     if stream.age <= stream.active and (stream.age - 1) % (stream.every + 1) == 0 then
-      if stream.drawable ~= nil or self._probeDraws then
+      if stream.drawable ~= nil then
         spawnParticleSprites(self, stream)
       end
     end
@@ -1639,14 +1594,17 @@ local NATIVE_VISUAL_KINDS = {
   ["pokemon-picture-animation-palette-fade"] = true,
   ["pokemon-picture-animation-position-transition"] = true,
   ["pokemon-picture-animation-speed-transition"] = true,
+  ["pokemon-picture-attacker-dash-afterimages"] = true,
   ["pokemon-picture-battle-palette-fade-cycle"] = true,
   ["pokemon-picture-battler-pair-scale-transition"] = true,
   ["pokemon-picture-cyclic-two-phase-position-transition"] = true,
+  ["pokemon-picture-defender-knockback"] = true,
   ["pokemon-picture-double-sprite-scale-settle"] = true,
   ["pokemon-picture-entry-offset-transition"] = true,
   ["pokemon-picture-five-phase-affine-size-transition"] = true,
   ["pokemon-picture-four-sprite-wave-transition"] = true,
   ["pokemon-picture-height-position-transition"] = true,
+  ["pokemon-picture-linear-offscreen-transition"] = true,
   ["pokemon-picture-managed-sprite-affine-pair-transition"] = true,
   ["pokemon-picture-managed-sprite-scale-pulse"] = true,
   ["pokemon-picture-multi-sprite-animation"] = true,
@@ -1665,6 +1623,7 @@ local NATIVE_VISUAL_KINDS = {
   ["pokemon-picture-repeated-palette-fade"] = true,
   ["pokemon-picture-repeated-scale-position-transition"] = true,
   ["pokemon-picture-repeated-vanish-transition"] = true,
+  ["pokemon-picture-reset-position-transition"] = true,
   ["pokemon-picture-scale-position-transition"] = true,
   ["pokemon-picture-selected-horizontal-offset-transition"] = true,
   ["pokemon-picture-selected-pair-transition"] = true,
@@ -1734,6 +1693,70 @@ local SOUND_TASK_KINDS = {
 local BattleNativeVisualTask = {}
 BattleNativeVisualTask.__index = BattleNativeVisualTask
 
+-- Own-side exit signs behind directed offscreen motion: player-side
+-- battlers (even source side types) exit left, foe-side battlers (odd
+-- source side types) exit right, matching the fixed product layout the
+-- emitter centers already assume.
+local OWN_SIDE_SIGNS = {
+  [0] = -1,
+  [2] = -1,
+  [4] = -1,
+  [1] = 1,
+  [3] = 1,
+  [5] = 1,
+}
+
+-- Resolves a directed offscreen offset from the occurrence side type:
+-- the run slides its activation away from the battlefield center over
+-- the compiled distance. Anything unaddressed stays loud instead of
+-- guessing an exit direction from a missing topology.
+---@param parameters table<string, unknown> compiled task parameters carrying the offscreen distance
+---@param activation table<string, unknown>? combatant and activation pair behind the owned picture
+---@param context table<string, unknown> occurrence-bound playback context carrying the visual topology
+---@param kind string task kind under construction
+---@return table<string, unknown> effective parameters with the directed offset
+local function directedOffscreenParameters(parameters, activation, context, kind)
+  local distance = parameters.offscreenDistance
+  if not isPositiveInt(distance) then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " directs its offscreen run by a positive distance", 0)
+  end
+  if type(activation) ~= "table" or type(activation.combatant) ~= "number" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " exits the side of a resolved activation", 0)
+  end
+  local topology = context.topology
+  if type(topology) ~= "table" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " exits the side of the occurrence topology", 0)
+  end
+  local candidates = {}
+  if type(topology.attacker) == "table" then
+    candidates[#candidates + 1] = topology.attacker
+  end
+  if type(topology.targets) == "table" then
+    for _, target in ipairs(topology.targets) do
+      candidates[#candidates + 1] = target
+    end
+  end
+  local sign = nil
+  for _, candidate in ipairs(candidates) do
+    if type(candidate) == "table" and candidate.combatant == activation.combatant then
+      local sideType = candidate.sideType
+      if type(sideType) == "number" and OWN_SIDE_SIGNS[sideType] ~= nil then
+        sign = OWN_SIDE_SIGNS[sideType]
+      end
+      break
+    end
+  end
+  if sign == nil then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " exits the side of a known occurrence side type", 0)
+  end
+  local directed = {}
+  for field, value in pairs(parameters) do
+    directed[field] = value
+  end
+  directed.offsetX = sign * distance
+  return directed
+end
+
 ---@param args table<string, unknown> instruction-derived construction arguments
 ---@param kind string task kind under construction
 local function checkVisualArgs(args, kind)
@@ -1779,6 +1802,9 @@ local function newNativeVisualTask(kind, args, context, services)
   end
   local duration = visualDuration(parameters)
   local activation = plannedActivation(args, context or {})
+  if parameters.exitOwnSide == true then
+    parameters = directedOffscreenParameters(parameters, activation, context or {}, kind)
+  end
   local canPatch = type(scene.applyTaskPicturePatch) == "function" and type(scene.removeTaskPicturePatch) == "function"
   local picturePlan = nil
   local canScroll = type(scene.scroll) == "function" and type(scene.applyScrollPatch) == "function"

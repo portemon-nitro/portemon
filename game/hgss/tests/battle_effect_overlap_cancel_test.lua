@@ -153,7 +153,12 @@ function T.overlapping_tasks_cancel_and_replace_without_stale_restores()
     local resources = {}
     function resources.resolve(name)
       journal.acquired[#journal.acquired + 1] = name
-      return { key = name, lease = key .. ":" .. key }
+      local params = {}
+      for index = 1, 42 do
+        params[index] = 0
+      end
+      params[29], params[30], params[24], params[32] = 12, 12, 0, 1
+      return { features = { "alpha", "random" }, params = params }
     end
     function resources.release(lease)
       journal.released[#journal.released + 1] = lease

@@ -164,7 +164,13 @@ function T.particle_spawn_lifetime_and_render_match_source_measurements_under_a_
   }
   local services = { scene = scene, audio = {}, resources = {} }
   function services.resolve(key)
-    return { key = key, lease = key }
+    local _ = key
+    local params = {}
+    for index = 1, 42 do
+      params[index] = 0
+    end
+    params[29], params[30], params[24], params[32] = 12, 12, 0, 1
+    return { features = { "alpha", "random" }, params = params }
   end
   function services.release(_lease) end
   local task = assert(
@@ -185,7 +191,13 @@ function T.particle_spawn_lifetime_and_render_match_source_measurements_under_a_
   local rerunScene = sceneWithPair()
   local rerunServices = { scene = rerunScene, audio = {}, resources = {} }
   function rerunServices.resolve(key)
-    return { key = key, lease = key }
+    local _ = key
+    local params = {}
+    for index = 1, 42 do
+      params[index] = 0
+    end
+    params[29], params[30], params[24], params[32] = 12, 12, 0, 1
+    return { features = { "alpha", "random" }, params = params }
   end
   function rerunServices.release(_lease) end
   local rerunDraws = {}

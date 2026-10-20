@@ -939,8 +939,75 @@ function T.randomized_picture_motion_selects_the_source_attacker_or_target()
   Assert.isNil(program.instructions[1].values, "native selector operands do not escape into runtime IR")
 end
 
-function T.battle_sprite_panel_callbacks_lower_to_typed_offsets()
+function T.battler_motion_callbacks_lower_to_their_native_tasks()
   local Sources = require("romdump.src.config.BattleAnimationSources")
+  -- DefenderKnockback (MEGAHORN) reads no source words: a four-tick
+  -- linear displacement, a sixteen-tick shake, and a four-tick return
+  -- plus the snap tick keep the defender's picture busy for 26 ticks.
+  local knockback = Sources.resolveBattleAnimationCallback({ 48, 0 })
+  Assert.deepEqual(knockback, {
+    callback = "pokemon-picture-defender-knockback",
+    taskKind = "pokemon-picture-defender-knockback",
+    context = "pokemon-picture",
+    battlerTarget = "target",
+    parameters = { durationTicks = 26 },
+  })
+  -- AttackerDashAfterimages (SHADOW_PUNCH) carries one source word the
+  -- native body never reads; its out leg (eight ticks) and back leg
+  -- (nine ticks) plus the two dispatch ticks run 20 ticks.
+  local dash = Sources.resolveBattleAnimationCallback({ 59, 1, 0 })
+  Assert.deepEqual(dash, {
+    callback = "pokemon-picture-attacker-dash-afterimages",
+    taskKind = "pokemon-picture-attacker-dash-afterimages",
+    context = "pokemon-picture",
+    battlerTarget = "attacker",
+    parameters = { durationTicks = 20 },
+  })
+  -- MoveBattlerLinear (WHIRLWIND, ROAR) slides the defender offscreen
+  -- over its duration word; the foe exits toward its own side.
+  local linear = Sources.resolveBattleAnimationCallback({ 61, 2, 8, 20 })
+  Assert.deepEqual(linear, {
+    callback = "pokemon-picture-linear-offscreen-transition",
+    taskKind = "pokemon-picture-linear-offscreen-transition",
+    context = "pokemon-picture",
+    parameters = {
+      durationTicks = 20,
+      offscreenDistance = 144,
+      exitOwnSide = true,
+      pictureTarget = "target",
+    },
+  })
+  local linearAttacker = Sources.resolveBattleAnimationCallback({ 61, 2, 2, 20 })
+  Assert.equal(
+    linearAttacker.parameters.pictureTarget,
+    "attacker",
+    "attacker roles slide their own side too"
+  )
+  -- ResetBattlerPosition (WHIRLWIND, ROAR) snaps the role home at once:
+  -- a validated marker with no timing boundary.
+  local reset = Sources.resolveBattleAnimationCallback({ 62, 1, 8 })
+  Assert.deepEqual(reset, {
+    callback = "pokemon-picture-reset-position-transition",
+    taskKind = "pokemon-picture-reset-position-transition",
+    context = "pokemon-picture",
+    parameters = { pictureTarget = "target" },
+  })
+  local badLinear, badLinearReason = Sources.resolveBattleAnimationCallback({ 61, 2, 0, 20 })
+  Assert.isNil(badLinear, "a role outside the native flag set slides nowhere")
+  Assert.equal(
+    badLinearReason,
+    "linear offscreen callback follows its source assertion path",
+    "the unhandled role stays loud"
+  )
+  local badKnockback, _ = Sources.resolveBattleAnimationCallback({ 48, 1, 0 })
+  Assert.isNil(badKnockback, "knockback reads no source words")
+  local badDash, _ = Sources.resolveBattleAnimationCallback({ 59, 0 })
+  Assert.isNil(badDash, "the dash trailer word is mandatory framing")
+  local badReset, _ = Sources.resolveBattleAnimationCallback({ 62, 2, 8, 0 })
+  Assert.isNil(badReset, "reset reads exactly its role word")
+end
+
+function T.battle_sprite_panel_callbacks_lower_to_typed_offsets()  local Sources = require("romdump.src.config.BattleAnimationSources")
   local cases = {
     { selector = 80, callback = "battle-sprite-panel-slide-down", offsetY = 3 },
     { selector = 81, callback = "battle-sprite-panel-slide-up", offsetY = -3 },
@@ -2838,6 +2905,92 @@ function T.battler_particle_effects_lower_to_typed_profiles_and_position_pair_ca
   )
 end
 
+function T.configure_from_script_callbacks_consume_their_inline_config()
+  -- Callback 17 (ConfigureFromScript) reads a [skip, count, count words]
+  -- trailer inline during dispatch (BattleAnimSystem_ReadScriptArgs via
+  -- BattleAnimEmitterCb_ConfigureFromScript). The trailer words are cursor
+  -- framing, never opcodes: without consuming them the decoder dispatches
+  -- the skip word (55, Invalid55) as a source assertion and truncates the
+  -- member, abandoning the real continuation (GUST member 16 repeats this
+  -- shape twice; every retail callback-17 instance carries skip=55,
+  -- count=6). The trailer values never enter the action plan; per-emitter
+  -- placement refinement stays future work.
+  local words = { u32(46), u32(0), u32(0), u32(17), u32(55), u32(6) }
+  for _ = 1, 6 do
+    words[#words + 1] = u32(0)
+  end
+  words[#words + 1] = u32(4)
+  local program = assert(compiler().compile({
+    key = "configure-from-script-trailer",
+    stream = table.concat(words),
+    resolveSourceInput = function(role, operands)
+      Assert.equal(role, "battler-particle-action", "the emitter word asks for its particle plan")
+      Assert.deepEqual(operands, { 0, 0, 17 }, "only the three base operands enter the plan")
+      return {
+        actionProfile = "particle-emitter-default",
+        taskKind = "battler-effect-continuation",
+        resource = "battle/particle-emitter/configured",
+      }
+    end,
+  }))
+  Assert.equal(#program.instructions, 2, "the trailer words never become instructions")
+  Assert.equal(
+    program.instructions[1].op,
+    "create-parameterized-battler-effect",
+    "the emitter word keeps its own operation"
+  )
+  Assert.equal(
+    program.instructions[2].op,
+    "reset-battle-presentation",
+    "the continuation past the trailer stays reachable"
+  )
+  local badWords = { u32(46), u32(0), u32(0), u32(17), u32(55), u32(7) }
+  for _ = 1, 7 do
+    badWords[#badWords + 1] = u32(0)
+  end
+  local ok, err = pcall(compiler().compile, {
+    key = "configure-from-script-bad-count",
+    stream = table.concat(badWords),
+    resolveSourceInput = function()
+      return {
+        actionProfile = "particle-emitter-default",
+        taskKind = "battler-effect-continuation",
+        resource = "battle/particle-emitter/configured",
+      }
+    end,
+  })
+  Assert.isFalse(ok, "a config count the source reader rejects never lowers")
+  Assert.isTrue(
+    tostring(err):find("disagrees with the source reader", 1, true) ~= nil,
+    "the rejected count names its reader"
+  )
+end
+
+function T.clear_background_plane_with_trailing_45_keeps_cursor_aligned()
+  -- ClearBattlerBg normally takes one source word, but a trailing 45
+  -- extends the frame by one word (observed once: EXTRASENSORY member 326
+  -- lowers [32,0,45] with the third word consumed). Without consuming it
+  -- the decoder misreads the 45 as an opcode and desyncs into its
+  -- operands; the following interpreter-state branch (JumpIfContextField01
+  -- reads an uninitialized field, so its taken arm is never evaluated and
+  -- discovery follows only the fall-through) then queues a garbage target
+  -- and the member fails to compile.
+  local words = { u32(32), u32(0), u32(45), u32(33), u32(5), u32(4) }
+  local program = assert(compiler().compile({ key = "clear-plane-trailing-45", stream = table.concat(words) }))
+  Assert.equal(#program.instructions, 3, "every word lands on an instruction boundary")
+  Assert.equal(program.instructions[1].op, "clear-background-plane", "the plane word keeps its operation")
+  Assert.equal(
+    program.instructions[2].op,
+    "branch-on-interpreter-state",
+    "the following branch decodes in place"
+  )
+  Assert.equal(
+    program.instructions[3].op,
+    "reset-battle-presentation",
+    "the continuation past the branch stays reachable"
+  )
+end
+
 function T.every_dispatch_entry_has_a_source_framed_decode_or_a_source_failure()
   local cases = {
     { 21, { 0 }, "unresolved battle background resource" },
@@ -2923,7 +3076,11 @@ function T.assert_only_dispatch_preserves_its_nonadvancing_source_handler()
   }))
   Assert.equal(#program.instructions, 1, "the nonadvancing source handler makes following words unreachable")
   Assert.equal(program.instructions[1].op, "source-assertion", "dispatch 55 remains an explicit diagnostic operation")
-  Assert.equal(program.instructions[1].target, 1, "a returned assertion service redispatches the same word")
+  Assert.equal(
+    program.instructions[1].target,
+    2,
+    "a tripped assertion service terminates past the stream end"
+  )
   Assert.equal(
     program.instructions[1].cursorRule,
     "invoke-assert-service; redispatch-current-word-if-it-returns",
@@ -3223,7 +3380,12 @@ function T.parameter_and_state_branches_normalize_targets_without_source_offsets
     stream = table.concat({ u32(33), u32(8), u32(54) }),
   }))
   Assert.equal(stateProgram.instructions[1].op, "branch-on-interpreter-state", "state predicate is explicit")
-  Assert.equal(stateProgram.instructions[1].branchTarget, 2, "state branch target is normalized")
+  Assert.isNil(
+    stateProgram.instructions[1].branchTarget,
+    "the untaken interpreter-state arm stages no discovery destination"
+  )
+  Assert.deepEqual(stateProgram.instructions[1].values, {}, "the state branch carries no operands")
+  Assert.equal(#stateProgram.instructions, 2, "discovery continues past the state branch")
 end
 
 function T.battle_field_branch_decodes_the_source_count_target_and_fallthrough()

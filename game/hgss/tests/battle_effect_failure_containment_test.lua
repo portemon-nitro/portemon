@@ -449,6 +449,53 @@ function T.missing_native_effect_request_fails_the_live_screen_with_provenance()
   Assert.equal(screen:status().mode, "failed", "a stale delivery never revives the failed screen")
 end
 
+-- A program staging a key its live effect closure never declared fails
+-- the live screen at admission with instruction and resource provenance:
+-- the schema closure check rejects undeclared references before anything
+-- stages, so the screen adapter never needs to mint a synthetic journal
+-- token for them. A particle creation names the undeclared semantic
+-- resource so the failure below names it.
+function T.undeclared_program_resources_fail_the_live_screen_with_provenance()
+  local EffectStagingFixture = require("tests.support.EffectStagingFixture")
+  local launchId = "launch-undeclared-resource"
+  local staging = EffectStagingFixture.new({ launchId = launchId })
+  local program = lowered("undeclared-lease-probe", { 51, 1, 64, 50, 4 })
+  Assert.equal(
+    program.instructions[1].resource,
+    "battle/particle/tackle",
+    "the probe stages its semantic particle resource"
+  )
+  local record = EffectStagingFixture.effectRecord("TACKLE", {})
+  record.program = {
+    entry = program.entry,
+    instructions = program.instructions,
+    subprograms = program.subprograms,
+    taskKinds = program.taskKinds,
+  }
+  staging:stageEffect("TACKLE", record, {})
+  local screen = openFailingScreen(launchId, staging)
+  presentFailingStrike(screen, launchId)
+  for _ = 1, 600 do
+    screen:updateFixed(1 / 30)
+  end
+  local status = screen:status()
+  Assert.equal(status.mode, "failed", "the undeclared reference fails the screen, never a silent hit")
+  Assert.isTrue(
+    tostring(status.error):find("references an unstaged resource", 1, true) ~= nil,
+    "the failure names the closure violation: " .. tostring(status.error)
+  )
+  Assert.isTrue(
+    tostring(status.error):find("battle/particle/tackle", 1, true) ~= nil,
+    "the failure names its undeclared resource: " .. tostring(status.error)
+  )
+  Assert.isTrue(
+    tostring(status.error):find(launchId, 1, true) ~= nil,
+    "the failure names its launch: " .. tostring(status.error)
+  )
+  screen:dispose()
+  Assert.equal(screen:status().mode, "failed", "disposal keeps the diagnosed failure")
+end
+
 -- A terminal image upload inside the selected effect closure fails the
 -- live screen without orphans: partial acquisitions release exactly
 -- once, no failed picture lingers, and no health is applied early.

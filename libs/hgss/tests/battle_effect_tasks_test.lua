@@ -176,9 +176,34 @@ function T.blend_transition_completes_and_releases_everything_once()
   Assert.equal(#journal.released, 0, "teardown releases nothing it never staged")
 end
 
+-- Stages one normalized emitter record shaped like the producer output:
+-- sorted source behavior flags with the full 42-word control block and no
+-- texture selection, matching an imageless retail emitter.
+local function normalizedEmitterFixture()
+  local params = {}
+  for index = 1, 42 do
+    params[index] = 0
+  end
+  params[29], params[30], params[24], params[32] = 12, 12, 0, 1
+  return { features = { "alpha", "random" }, params = params }
+end
+
+local function particleFixtureServices(scene)
+  local journal = { acquired = {}, released = {} }
+  local resources = {}
+  function resources.resolve(key)
+    journal.acquired[#journal.acquired + 1] = key
+    return normalizedEmitterFixture()
+  end
+  function resources.release(lease)
+    journal.released[#journal.released + 1] = lease
+  end
+  return { scene = scene, audio = {}, resources = resources }, journal
+end
+
 function T.particle_continuation_draws_deterministically_from_the_occurrence_stream()
   local firstScene = sceneWithPair()
-  local firstServices, firstJournal = journalServices(firstScene)
+  local firstServices, firstJournal = particleFixtureServices(firstScene)
   local firstDraws = {}
   local first = assert(
     BattleEffectTasks.create(
@@ -196,7 +221,7 @@ function T.particle_continuation_draws_deterministically_from_the_occurrence_str
   Assert.equal(first:status(), "complete", "the particle run reaches its own completion boundary")
   Assert.isTrue(#firstDraws > 0, "the run draws its visual randomness from the occurrence-local stream")
   local secondScene = sceneWithPair()
-  local secondServices, _ = journalServices(secondScene)
+  local secondServices, _ = particleFixtureServices(secondScene)
   local secondDraws = {}
   local second = assert(
     BattleEffectTasks.create(
@@ -229,6 +254,20 @@ function T.particle_continuation_rejects_unknown_emitters()
       services
     )
   end, "unknown emitters fail closed instead of staging a collapsed emission")
+  Assert.equal(#scene:effectViews(), 0, "the rejected construction publishes nothing")
+end
+
+function T.particle_continuation_rejects_direct_construction_stubs()
+  local scene = sceneWithPair()
+  local services, _ = journalServices(scene)
+  Assert.throws(function()
+    BattleEffectTasks.create(
+      BattleEffectTasks.PARTICLE_CONTINUATION_KIND,
+      { resource = "battle/particle/tackle", emitterPosition = "solo-enemy" },
+      {},
+      services
+    )
+  end, "direct-construction stubs fail closed instead of drawing probe pictures")
   Assert.equal(#scene:effectViews(), 0, "the rejected construction publishes nothing")
 end
 
@@ -304,7 +343,7 @@ end
 
 function T.cancelled_bodies_release_and_stay_silent()
   local scene = sceneWithPair()
-  local services, journal = journalServices(scene)
+  local services, journal = particleFixtureServices(scene)
   local task = assert(BattleEffectTasks.create(BattleEffectTasks.PARTICLE_CONTINUATION_KIND, {
     resource = "battle/particle/asleep",
     emitterPosition = "solo-player",
@@ -600,6 +639,30 @@ function T.voice_failure_during_sound_task_fails_loud_without_leaking()
   Assert.equal(#journal.released, #journal.acquired, "the failed run leaks no lease")
 end
 
+function T.paired_interpolation_completes_on_its_compiled_step_product()
+  -- Selector-73 paired-interpolation carries no durationTicks, but its
+  -- step operands bound the run: initialSteps at stepIntervalTicks each
+  -- (producer-packed word 8; the native emitter-motion task runs its own
+  -- duration the same way). A 3x4 interpolation completes at 12 ticks,
+  -- never as a tick-1 marker.
+  local scene = sceneWithPair()
+  local services, journal = journalServices(scene)
+  local activation = { combatant = 1, activation = 1 }
+  local task = assert(BattleEffectTasks.create("pokemon-picture-paired-position-interpolation", {
+    battlerTarget = "attacker",
+    activation = activation,
+    parameters = { endpointX = 40, endpointY = -72, initialSteps = 3, stepIntervalTicks = 4 },
+  }, occurrenceContext(), services))
+  for _ = 1, 11 do
+    task:stepSourceTick({ tick = 1 })
+    Assert.isTrue(task:status() ~= "complete", "the step product outlives its prefix")
+  end
+  task:stepSourceTick({ tick = 1 })
+  Assert.equal(task:status(), "complete", "the interpolation completes at steps times interval")
+  task:dispose()
+  Assert.equal(#journal.released, #journal.acquired, "the interpolation stages no leases")
+end
+
 function T.visual_duration_prefers_compiled_ticks_over_the_fallback()
   local scene = sceneWithPair()
   local services, journal = journalServices(scene)
@@ -893,6 +956,134 @@ function T.emitter_path_tasks_refuse_missing_parameters()
     Assert.equal(#scene:effectViews(), 0, "the refused construction publishes nothing")
     Assert.equal(#journal.released, #journal.acquired, "the refused construction leaks no lease")
   end
+end
+
+function T.directed_offscreen_motion_exits_each_side_away_from_center()
+  -- MoveBattlerLinear resolves its exit direction from the occurrence
+  -- side type: the foe-side target slides right while a player-side
+  -- attacker slides left, both over the compiled distance and duration.
+  local scene = sceneWithPair()
+  local services, journal = journalServices(scene)
+  local foe = { combatant = 3, activation = 3 }
+  local foeTask = assert(BattleEffectTasks.create("pokemon-picture-linear-offscreen-transition", {
+    activation = foe,
+    parameters = {
+      durationTicks = 20,
+      offscreenDistance = 144,
+      exitOwnSide = true,
+      pictureTarget = "target",
+    },
+  }, occurrenceContext(), services))
+  for _ = 1, 10 do
+    foeTask:stepSourceTick({ tick = 1 })
+  end
+  local midFoe = assert(scene:pictureState(foe), "the running slide stages its offscreen patch")
+  Assert.equal(midFoe.pictureXOffset2, 72, "the foe slides toward its own side at half time")
+  for _ = 1, 9 do
+    foeTask:stepSourceTick({ tick = 1 })
+    Assert.isTrue(foeTask:status() ~= "complete", "the offscreen run outlives its prefix")
+  end
+  foeTask:stepSourceTick({ tick = 1 })
+  Assert.equal(foeTask:status(), "complete", "the run completes at its compiled duration")
+  Assert.isNil(scene:pictureState(foe), "completion restores the base position")
+  local friend = { combatant = 1, activation = 1 }
+  local friendTask = assert(BattleEffectTasks.create("pokemon-picture-linear-offscreen-transition", {
+    activation = friend,
+    parameters = {
+      durationTicks = 20,
+      offscreenDistance = 144,
+      exitOwnSide = true,
+      pictureTarget = "attacker",
+    },
+  }, occurrenceContext(), services))
+  for _ = 1, 10 do
+    friendTask:stepSourceTick({ tick = 1 })
+  end
+  local midFriend = assert(scene:pictureState(friend), "the player-side run stages its own patch")
+  Assert.equal(
+    midFriend.pictureXOffset2,
+    (256 - 72) % 256,
+    "the player-side battler exits left"
+  )
+  for _ = 1, 10 do
+    friendTask:stepSourceTick({ tick = 1 })
+  end
+  Assert.equal(friendTask:status(), "complete", "the player-side run completes at its duration")
+  friendTask:dispose()
+  Assert.equal(#journal.released, #journal.acquired, "directed runs stage no leases")
+end
+
+function T.directed_offscreen_motion_without_a_known_side_stays_loud()
+  local scene = sceneWithPair()
+  local services, _ = journalServices(scene)
+  local args = {
+    activation = { combatant = 3, activation = 3 },
+    parameters = {
+      durationTicks = 20,
+      offscreenDistance = 144,
+      exitOwnSide = true,
+      pictureTarget = "target",
+    },
+  }
+  Assert.throws(function()
+    BattleEffectTasks.create("pokemon-picture-linear-offscreen-transition", args, {}, services)
+  end, "an offscreen run without its occurrence topology never constructs")
+  local context = occurrenceContext()
+  context.topology.targets[1].sideType = 7
+  Assert.throws(function()
+    BattleEffectTasks.create("pokemon-picture-linear-offscreen-transition", args, context, services)
+  end, "an offscreen run with an unknown side type never constructs")
+  Assert.isNil(
+    scene:pictureState({ combatant = 3, activation = 3 }),
+    "the refused construction publishes nothing"
+  )
+end
+
+function T.battler_motion_holds_keep_source_timing_without_invented_motion()
+  -- DefenderKnockback and AttackerDashAfterimages end where they start
+  -- (the knockback returns, the dash legs cancel), so their runs hold
+  -- the native boundary with no patch instead of inventing motion the
+  -- source never describes; ResetBattlerPosition snaps home at once and
+  -- retires as a validated marker.
+  local scene = sceneWithPair()
+  local services, journal = journalServices(scene)
+  local knockback = assert(BattleEffectTasks.create("pokemon-picture-defender-knockback", {
+    battlerTarget = "target",
+    activation = { combatant = 3, activation = 3 },
+    parameters = { durationTicks = 26 },
+  }, occurrenceContext(), services))
+  for _ = 1, 25 do
+    knockback:stepSourceTick({ tick = 1 })
+    Assert.isTrue(knockback:status() ~= "complete", "the knockback boundary outlives its prefix")
+  end
+  knockback:stepSourceTick({ tick = 1 })
+  Assert.equal(knockback:status(), "complete", "the knockback completes at its native 26 ticks")
+  Assert.isNil(
+    scene:pictureState({ combatant = 3, activation = 3 }),
+    "the hold stages no patch"
+  )
+  knockback:dispose()
+  local dash = assert(BattleEffectTasks.create("pokemon-picture-attacker-dash-afterimages", {
+    battlerTarget = "attacker",
+    activation = { combatant = 1, activation = 1 },
+    parameters = { durationTicks = 20 },
+  }, occurrenceContext(), services))
+  for _ = 1, 19 do
+    dash:stepSourceTick({ tick = 1 })
+  end
+  Assert.isTrue(dash:status() ~= "complete", "the dash boundary outlives its prefix")
+  dash:stepSourceTick({ tick = 1 })
+  Assert.equal(dash:status(), "complete", "the dash completes at its native 20 ticks")
+  dash:dispose()
+  local reset = assert(BattleEffectTasks.create("pokemon-picture-reset-position-transition", {
+    activation = { combatant = 3, activation = 3 },
+    parameters = { pictureTarget = "target" },
+  }, occurrenceContext(), services))
+  Assert.equal(reset:status(), "pending", "markers open pending")
+  reset:stepSourceTick({ tick = 1 })
+  Assert.equal(reset:status(), "complete", "the reset retires on its first tick")
+  reset:dispose()
+  Assert.equal(#journal.released, #journal.acquired, "holds and markers stage no leases")
 end
 
 return { tests = T }

@@ -52,6 +52,11 @@ local function defaultCharmap()
   return map
 end
 
+-- Silent naming sound boundary while battle threads no audio through
+-- child services: naming still composes (the controller requires a
+-- boundary) until battle provides its own effect function.
+local function silentNamingEffect() end
+
 ---@param value unknown
 ---@return unknown detached copy without shared mutable state
 local function copyValue(value)
@@ -973,6 +978,10 @@ local function openNamingChild(intent, services)
     charmap = defaultCharmap()
   end
   assert(type(charmap) == "table", "capture naming maps its keyboard glyphs")
+  local effect = services.effect
+  if effect == nil then
+    effect = silentNamingEffect
+  end
   local namingSubject = { kind = "pokemon", species = subject.species }
   if subject.form ~= nil then
     namingSubject.form = subject.form
@@ -983,6 +992,7 @@ local function openNamingChild(intent, services)
     initialText = "",
     charmap = charmap,
     subject = namingSubject,
+    effect = effect,
   })
   if not ok then
     return nil, tostring(controller)
@@ -1188,6 +1198,7 @@ end
 ---@field itemCatalog table<string, unknown>? borrowed immutable item catalog
 ---@field monCatalog table<string, unknown>? borrowed immutable mon catalog
 ---@field charmap table<string, integer>? injected generated font charmap for naming
+---@field effect fun(sequence: string)? injected sound boundary for naming; silent when the host provides none
 
 -- Opens the concrete child application for one barrier identity over
 -- battle-local data and command adapters. The initiating input terminates

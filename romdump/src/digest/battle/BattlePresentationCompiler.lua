@@ -5246,6 +5246,8 @@ function BattlePresentationCompiler.compileEffect(romFs, opts, effectKey)
       requiredContext.battlerTopology = { type = "battle-animation-battler-topology" }
     elseif instruction.callback == "pokemon-picture-cyclic-two-phase-position-transition" then
       requiredContext.battlerTopology = { type = "battle-animation-battler-topology" }
+    elseif instruction.callback == "pokemon-picture-linear-offscreen-transition" then
+      requiredContext.battlerTopology = { type = "battle-animation-battler-topology" }
     elseif instruction.callback == "battle-background-four-picture-move-power-transition" then
       requiredContext.movePower = { type = "battle-animation-move-power-u16" }
     end

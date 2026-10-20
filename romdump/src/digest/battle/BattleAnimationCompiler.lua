@@ -371,10 +371,19 @@ local function decodeNativeStream(key, stream, callbacks, sounds, resolveSourceI
       instruction = { op = "skip-words" }
       targetOffsets[#targetOffsets + 1] = { instruction = #instructions + 1, offset = offset }
     elseif opcode == 32 then
+      -- ClearBattlerBg normally takes one source word, but a trailing 45
+      -- extends the frame by one word (observed once: EXTRASENSORY member
+      -- 326 lowers [32,0,45] with the third word consumed, landing the next
+      -- decode on the following opcode instead of misreading the 45 as one
+      -- and desyncing into its operands).
+      local advance = 8
+      if offset + 12 <= #stream and readWord(stream, key, offset + 8) == 45 then
+        advance = 12
+      end
       readWord(stream, key, offset)
       readWord(stream, key, offset + 4)
       instruction = { op = "clear-background-plane", values = { 2 } }
-      offset = offset + 8
+      offset = offset + advance
     elseif opcode == 4 then
       instruction = { op = "reset-battle-presentation" }
     elseif opcode == 56 then
@@ -556,6 +565,23 @@ local function decodeNativeStream(key, stream, callbacks, sounds, resolveSourceI
         instruction.resourceCases = resolved.resourceCases
       end
       offset = offset + #operands * 4
+      -- Emitter callbacks that configure from the script (ConfigureFromScript,
+      -- index 17) read a [skip, count, count words] trailer inline during
+      -- dispatch (BattleAnimSystem_ReadScriptArgs via
+      -- BattleAnimEmitterCb_ConfigureFromScript): consume it for cursor
+      -- framing so its words never decode as opcodes. The count must agree
+      -- with the reader exactly as production asserts it; anything else is
+      -- a malformed source route, never a guessed operation. The trailer
+      -- values never enter the action plan; per-emitter placement
+      -- refinement stays future work.
+      local callbackIndex = operands[definition.callbackOperand]
+      if callbackIndex == 17 then
+        local configCount = readWord(stream, key, offset + 4)
+        if configCount ~= 6 then
+          error(decodeError(key, offset, "emitter config count disagrees with the source reader"), 0)
+        end
+        offset = offset + 8 + configCount * 4
+      end
     elseif opcode == 50 then
       instruction = { op = "wait-for-battler-effects", cursorRule = "advance-when-effects-finish" }
     elseif opcode == 51 then
@@ -652,10 +678,14 @@ local function decodeNativeStream(key, stream, callbacks, sounds, resolveSourceI
       end
       offset = offset + 8
     elseif opcode == 33 then
-      local targetOffset = readWord(stream, key, offset)
-      instruction = { op = "branch-on-interpreter-state" }
-      targetOffsets[#targetOffsets + 1] =
-        { instruction = #instructions + 1, offset = targetOffset, field = "branchTarget" }
+      -- JumpIfContextField01 reads an uninitialized context field (see the
+      -- player handler, which always fails it closed): its taken arm is
+      -- never evaluated, so discovery follows only the fall-through path
+      -- and queues no target. Following the raw target word desyncs the
+      -- cursor (it lands mid-prologue and the member fails to compile,
+      -- e.g. EXTRASENSORY member 326 whose target word points at byte 5).
+      -- values stays an empty array: the handler takes no operands.
+      instruction = { op = "branch-on-interpreter-state", values = {} }
       offset = offset + 4
     elseif opcode == 14 then
       local expected = readWord(stream, key, offset)
@@ -1324,6 +1354,15 @@ local function decodeNativeStream(key, stream, callbacks, sounds, resolveSourceI
       instructions[branch.instruction].branchCases[branch.caseIndex].target = target
     else
       instructions[branch.instruction][branch.field or "target"] = target
+    end
+  end
+  -- Source assertions terminate past the stream end (see the player
+  -- handler): retarget every one from its decode-time self index to the
+  -- final stream-end boundary so reaching it drains and completes instead
+  -- of redispatching the current word.
+  for _, instruction in ipairs(instructions) do
+    if instruction.op == "source-assertion" then
+      instruction.target = #instructions + 1
     end
   end
   return instructions, instructionOffsets

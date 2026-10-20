@@ -544,9 +544,11 @@ function BattleAnimationPlayer:_exec(occurrence)
   function exec.stageVoice(index)
     occurrence.voiceSeq = occurrence.voiceSeq + 1
     local key = "battle-animation-wait-voice-" .. index .. "-" .. occurrence.voiceSeq
-    if exec.lease(key) == nil then
-      return nil
-    end
+    -- Voice waits stage no resource lease: the key is player-synthesized
+    -- per wait (never a declared closure dependency) and the monitor task
+    -- owns the voice by name, so there is nothing for the holder to admit
+    -- or release. Leasing it would force the holder to mint tokens for
+    -- keys no closure can declare.
     if exec.play(key) == nil then
       return nil
     end

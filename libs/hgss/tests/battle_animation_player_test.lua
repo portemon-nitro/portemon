@@ -256,19 +256,72 @@ function T.return_without_a_call_falls_through()
   Assert.equal(player:status(handle), "complete", "empty returns fall through")
 end
 
-function T.source_assertions_fail_loudly()
+function T.source_assertions_terminate_the_stream()
+  -- A tripped native source assertion ends the occurrence instead of
+  -- failing it: retail Invalid55 never advances (silent assert without
+  -- comm state, or reset with it), yet retail programs that reach one
+  -- play on and their battles continue, so the occurrence drains through
+  -- the stream-end boundary and completes. The trip stays journaled with
+  -- instruction provenance instead of passing silently.
   local player, handle = startNew(programOf({
-    { op = "source-assertion", target = 2 },
+    { op = "source-assertion", target = 3 },
     { op = "reset-blend-alpha" },
   }))
-  player:stepSourceTick({ tick = 1 })
-  Assert.equal(player:status(handle), "failed", "tripped source assertions fail")
+  for _ = 1, 5 do
+    player:stepSourceTick({ tick = 1 })
+    if player:status(handle) == "complete" then
+      break
+    end
+  end
+  Assert.equal(player:status(handle), "complete", "tripped source assertions terminate past the stream end")
+  Assert.isNil(player:failure(handle), "terminated assertions carry no failure")
+end
+
+function T.battle_phase_waits_release_without_background_work()
+  -- Native op19/20 poll the background-switch task state (bgSwitchState == 2
+  -- / == 0, battle_anim_system.c WaitForBackgroundLoaded/Switch): with no
+  -- unretired raw work the awaited switch phase already passed, so the
+  -- occurrence advances through the same drain a battler-effects wait uses
+  -- instead of failing on a condition the packet never carries.
+  for _, values in ipairs({ { 2 }, { 0 } }) do
+    local player, handle = startNew(programOf({
+      { op = "wait-for-battle-phase", values = values },
+      { op = "reset-blend-alpha" },
+    }))
+    for _ = 1, 5 do
+      player:stepSourceTick({ tick = 1 })
+      if player:status(handle) == "complete" then
+        break
+      end
+    end
+    Assert.equal(
+      player:status(handle),
+      "complete",
+      "background waits advance with no background work pending: " .. tostring(values[1])
+    )
+    Assert.isNil(player:failure(handle), "released background waits carry no failure")
+  end
+end
+
+function T.stuck_background_work_escapes_bounded_instead_of_hanging()
+  local player, handle, helpers = startNew(programOf({
+    { op = "schedule-battle-task", taskKind = "battle-background-blend-transition", taskInputRule = "raw-rule", values = { 1 } },
+    { op = "wait-for-battle-phase", values = { 0 } },
+    { op = "reset-blend-alpha" },
+  }))
+  for _ = 1, 40 do
+    player:stepSourceTick({ tick = 1 })
+    if player:status(handle) == "complete" then
+      break
+    end
+  end
+  Assert.equal(player:status(handle), "complete", "the background escape bounds stuck switch waits")
+  Assert.equal(#helpers.log.created, 1, "the stuck switch task still constructs once")
 end
 
 function T.missing_context_reads_fail_before_side_effects()
   local ops = {
     { op = "wait-for-confirm-input", values = { 1 } },
-    { op = "wait-for-battle-phase", values = { 2 } },
     { op = "branch-on-battle-flag", values = { 2 }, branchTarget = 2, alternateTarget = 1 },
     { op = "show-pokemon-picture", values = { 0, 0 } },
   }
@@ -412,8 +465,8 @@ function T.construction_failures_release_every_acquisition_once()
   Assert.equal(fault.op, "schedule-battle-task", "the detail names the failing instruction")
   Assert.equal(#helpers.log.played, 1, "the staged voice starts once")
   Assert.equal(#helpers.log.stopped, 1, "the staged voice stops once")
-  Assert.equal(#helpers.log.acquired, 1, "the staged voice stages one lease")
-  Assert.equal(#helpers.log.released, 1, "the staged lease releases once")
+  Assert.equal(#helpers.log.acquired, 0, "the staged voice stages no holder lease")
+  Assert.equal(#helpers.log.released, 0, "unstaged voices release nothing")
 end
 
 function T.task_step_failures_fail_the_occurrence()
@@ -504,12 +557,18 @@ function T.resource_failures_fail_before_side_effects()
     tasks = helpers.tasks,
   }))
   local handle = assert(player:start(packet(), programOf({
-    { op = "wait-for-sound", values = { 90 } },
+    {
+      op = "create-battler-effect",
+      taskKind = "battle-particle-emitter-battler-path",
+      resource = "battle/particle-emitter/probe-effect",
+      emitterPosition = "solo-enemy",
+    },
     { op = "reset-blend-alpha" },
   })))
   player:stepSourceTick({ tick = 1 })
   Assert.equal(player:status(handle), "failed", "resource staging failures fail loudly")
   Assert.equal(#helpers.log.played, 0, "failed staging starts no voice")
+  Assert.equal(#helpers.log.created, 0, "failed staging constructs no child")
 end
 
 function T.stuck_voices_escape_bounded_instead_of_hanging()

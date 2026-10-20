@@ -245,7 +245,13 @@ function T.effect_runs_over_each_layer_class_restore_the_clean_scene_exactly()
   end
   local resources = {}
   function resources.resolve(key)
-    return { key = key, lease = key }
+    local _ = key
+    local params = {}
+    for index = 1, 42 do
+      params[index] = 0
+    end
+    params[29], params[30], params[24], params[32] = 12, 12, 0, 1
+    return { features = { "alpha", "random" }, params = params }
   end
   function resources.release(_lease) end
   local player = assert(Player.new({
@@ -315,7 +321,13 @@ function T.callback_program_mutates_scene_and_completes_at_its_source_boundary()
   end
   local resources = {}
   function resources.resolve(key)
-    return { key = key, lease = key }
+    local _ = key
+    local params = {}
+    for index = 1, 42 do
+      params[index] = 0
+    end
+    params[29], params[30], params[24], params[32] = 12, 12, 0, 1
+    return { features = { "alpha", "random" }, params = params }
   end
   function resources.release(_lease) end
   local player = assert(Player.new({

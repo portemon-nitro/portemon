@@ -66,11 +66,8 @@ function T.noop_and_assertion_handlers_preserve_their_distinct_source_behavior()
   Assert.equal(noop.instructions[1].op, "noop", "only the source-confirmed empty handler lowers as no-op")
   local assertion = assert(compiler().compile({ key = "source-assert", stream = u32(55) }))
   Assert.equal(assertion.instructions[1].op, "source-assertion")
-  Assert.equal(assertion.instructions[1].target, 1, "a returning assert service redispatches the current word")
-  Assert.equal(
-    assertion.instructions[1].cursorRule,
-    "invoke-assert-service; redispatch-current-word-if-it-returns"
-  )
+  Assert.equal(assertion.instructions[1].target, 2, "a tripped assert service terminates past the stream end")
+  Assert.equal(assertion.instructions[1].cursorRule, "invoke-assert-service; redispatch-current-word-if-it-returns")
   Assert.isFalse(assertion.instructions[1].op == noop.instructions[1].op, "assertion remains distinct from no-op")
 end
 

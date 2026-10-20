@@ -454,9 +454,36 @@ Handlers["wait-for-confirm-input"] = handleWaitForConfirmInput
 
 local function handleWaitForBattlePhase(exec, instruction, index)
   local _ = instruction
-  local _ = index
-  exec.fail("battle-phase waits need a playback phase context the packet does not carry")
-  return "done"
+  local function released(wait)
+    if wait ~= nil and wait.kind == "background" and wait.index == index then
+      exec.clearWait()
+    end
+  end
+  -- Native op19/20 poll the background-switch task state (bgSwitchState ==
+  -- 2 for loaded, == 0 for complete): with no unretired raw work the
+  -- awaited switch phase already passed, so the occurrence advances through
+  -- the same drain a battler-effects wait uses instead of failing on a
+  -- condition the packet never carries. A genuinely pending switch parks
+  -- boundedly instead of hanging.
+  if exec.count("raw") == 0 or exec.rawCompleted() then
+    released(exec.wait())
+    exec.advance()
+    return "continue"
+  end
+  local wait = exec.wait()
+  if wait == nil or wait.kind ~= "background" or wait.index ~= index then
+    local parked = { kind = "background", index = index, parked = 0 }
+    exec.setWait(parked)
+    return exec.park(parked)
+  end
+  wait.parked = wait.parked + 1
+  if wait.parked > EFFECTS_ESCAPE_TICKS then
+    exec.note({ op = "wait-for-battle-phase", index = index, escape = "background-wait backstop" })
+    exec.clearWait()
+    exec.advance()
+    return "continue"
+  end
+  return exec.park(wait)
 end
 Handlers["wait-for-battle-phase"] = handleWaitForBattlePhase
 
@@ -744,10 +771,22 @@ end
 Handlers["skip-words"] = handleSkipWords
 
 local function handleSourceAssertion(exec, instruction, index)
-  local _ = instruction
-  local _ = index
-  exec.fail("the native source assertion tripped")
-  return "done"
+  -- A dispatched native source assertion terminates the occurrence past
+  -- the stream end instead of failing it. Retail Invalid55 never advances
+  -- past itself, yet the retail programs that contain one play and their
+  -- battles complete, so failing the occurrence would stop battles retail
+  -- finishes: the occurrence drains through the normal stream-end boundary
+  -- and completes without inventing playback for words past the trip. The
+  -- trip is journaled with instruction provenance instead of passing
+  -- silently; a malformed assertion without a stream-end target still
+  -- fails closed.
+  if type(instruction.target) ~= "number" then
+    exec.fail("the native source assertion tripped")
+    return "done"
+  end
+  exec.note({ op = "source-assertion", index = index })
+  exec.jump(instruction.target)
+  return "continue"
 end
 Handlers["source-assertion"] = handleSourceAssertion
 

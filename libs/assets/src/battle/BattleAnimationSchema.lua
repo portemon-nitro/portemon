@@ -179,12 +179,15 @@ local TASK_KINDS = {
   ["battle-sprite-sinusoidal-position-animation"] = true,
   ["battle-sprite-priority-appearance-transition"] = true,
   ["pokemon-picture-cyclic-two-phase-position-transition"] = true,
+  ["pokemon-picture-defender-knockback"] = true,
   ["pokemon-picture-palette-fade-position-transition"] = true,
   ["pokemon-picture-sinusoidal-position-motion"] = true,
   ["pokemon-picture-affine-sprite-entry-transition"] = true,
   ["pokemon-picture-height-position-transition"] = true,
+  ["pokemon-picture-linear-offscreen-transition"] = true,
   ["pokemon-picture-vanish-affine-transition"] = true,
   ["pokemon-picture-repeated-vanish-transition"] = true,
+  ["pokemon-picture-reset-position-transition"] = true,
   ["pokemon-picture-target-priority-transition"] = true,
   ["pokemon-picture-selected-position-offset-transition"] = true,
   ["pokemon-picture-target-background-slide"] = true,
@@ -213,6 +216,7 @@ local TASK_KINDS = {
   ["pokemon-picture-relative-sprite-path-transition"] = true,
   ["sprite-brightness-transition"] = true,
   ["pokemon-picture-animation-speed-transition"] = true,
+  ["pokemon-picture-attacker-dash-afterimages"] = true,
   ["sprite-affine-animation"] = true,
   ["pokemon-picture-oam-animation-transition"] = true,
   ["pokemon-picture-animation-position-transition"] = true,
@@ -1132,6 +1136,56 @@ local ANIMATION_CALLBACKS = {
     taskKind = "pokemon-picture-height-position-transition",
     taskContext = "pokemon-picture",
     parameters = {},
+  },
+  ["pokemon-picture-defender-knockback"] = {
+    taskKind = "pokemon-picture-defender-knockback",
+    taskContext = "pokemon-picture",
+    battlerTarget = "target",
+    parameters = {
+      durationTicks = { min = 0, max = 0xFFFF },
+    },
+  },
+  ["pokemon-picture-attacker-dash-afterimages"] = {
+    taskKind = "pokemon-picture-attacker-dash-afterimages",
+    taskContext = "pokemon-picture",
+    battlerTarget = "attacker",
+    parameters = {
+      durationTicks = { min = 0, max = 0xFFFF },
+    },
+  },
+  ["pokemon-picture-linear-offscreen-transition"] = {
+    taskKind = "pokemon-picture-linear-offscreen-transition",
+    taskContext = "pokemon-picture",
+    requiresBattlerTopology = true,
+    parameters = {
+      durationTicks = { min = 0, max = 0xFFFF },
+      offscreenDistance = { min = 1, max = 0x7FFF },
+      exitOwnSide = { type = "boolean" },
+      pictureTarget = {
+        type = "enum",
+        values = {
+          attacker = true,
+          target = true,
+          ["attacker-related-position-when-paired"] = true,
+          ["target-related-position-when-paired"] = true,
+        },
+      },
+    },
+  },
+  ["pokemon-picture-reset-position-transition"] = {
+    taskKind = "pokemon-picture-reset-position-transition",
+    taskContext = "pokemon-picture",
+    parameters = {
+      pictureTarget = {
+        type = "enum",
+        values = {
+          attacker = true,
+          target = true,
+          ["attacker-related-position-when-paired"] = true,
+          ["target-related-position-when-paired"] = true,
+        },
+      },
+    },
   },
   ["pokemon-picture-vanish-affine-transition"] = {
     taskKind = "pokemon-picture-vanish-affine-transition",

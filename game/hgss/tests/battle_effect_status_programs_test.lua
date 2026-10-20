@@ -235,7 +235,13 @@ function T.status_weather_item_and_restoration_effects_keep_their_own_traces()
   end
   local resources = {}
   function resources.resolve(key)
-    return { key = key, lease = key }
+    local _ = key
+    local params = {}
+    for index = 1, 42 do
+      params[index] = 0
+    end
+    params[29], params[30], params[24], params[32] = 12, 12, 0, 1
+    return { features = { "alpha", "random" }, params = params }
   end
   function resources.release(_lease) end
   local player = assert(Player.new({
