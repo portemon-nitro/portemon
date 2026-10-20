@@ -179,12 +179,6 @@ local function runVersion(scope, versionId)
   local cinematicClear = { 0.3, 0.3, 0.3, 1 }
   fieldRenderer.clearColor = cinematicClear
   local visibleShots = {}
-  local firstProgram = renderer.definitions["cinematic.first.0"].descriptor.dynamic.transformProgram
-  for _, node in ipairs(firstProgram.nodes) do
-    if not node.scaleOne then
-      Assert.notNil(node.inverseScale, "cached cinematic model retains each Maya inverse scale")
-    end
-  end
   for _, shot in ipairs({ "first", "second" }) do
     for variant = 0, 2 do
       local cinematicItems = renderer:drawItems({
@@ -197,6 +191,14 @@ local function runVersion(scope, versionId)
         cinematicModelFrame = shot == "first" and 129 or 1,
       })
       Assert.isTrue(#cinematicItems > 0, versionId .. " Ho-Oh " .. shot .. " shot creates model draws")
+      if shot == "first" and variant == 0 then
+        local firstProgram = renderer.definitions["cinematic.first.0"].descriptor.dynamic.transformProgram
+        for _, node in ipairs(firstProgram.nodes) do
+          if not node.scaleOne then
+            Assert.notNil(node.inverseScale, "cached cinematic model retains each Maya inverse scale")
+          end
+        end
+      end
       camera:setCutscenePose(
         shot == "first" and { x = 0x0025A7F4 / 65536, y = 0x0024282F / 65536, z = -0x0025CE83 / 65536 }
           or { x = -75511 / 65536, y = -134660 / 65536, z = 241555 / 65536 },
