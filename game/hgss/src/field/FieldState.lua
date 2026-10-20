@@ -728,7 +728,7 @@ function FieldState:_worldParts(alpha)
     worldParts[14] = self._hoOhAppearanceRenderer:backdropCopies(worldParts[1], status["versionId"])
   else
     if self._hoOhAppearanceRenderer ~= nil then
-      self._hoOhAppearanceRenderer:release()
+      self._hoOhAppearanceRenderer:endScene()
     end
     worldParts[13] = NO_DRAWS
     worldParts[14] = NO_DRAWS
