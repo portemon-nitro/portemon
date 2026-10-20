@@ -19,6 +19,11 @@ local MovementTask = {}
 MovementTask.type = "movement"
 MovementTask.version = 1
 
+-- Source: the retail ROM: after an object's final update its movement script
+-- machine reports finished one update later, and the movement watcher task
+-- drops the script's outstanding-movement counter one update after that.
+local MOVEMENT_SETTLE_TICKS = 2
+
 -- Source-proven automatic movement-emote sounds: HGSS spawns the shared
 -- exclamation/question field-effect object with a "play sound" flag set for
 -- both MapObjectMovementCmd075 (exclamation) and MapObjectMovementCmd103
@@ -327,6 +332,13 @@ end
 ---@param ctx table<string, unknown>
 ---@return table<string, unknown>
 function MovementTask.poll(state, ctx)
+  if state.settleTicks ~= nil then
+    state.settleTicks = state.settleTicks - 1
+    if state.settleTicks == 0 then
+      ctx.scheduler:completeMovementTask(ctx.taskId, ctx.tick)
+    end
+    return { complete = false, state = state }
+  end
   if not state.completed then
     local done = MovementTask._advancePlan(state, ctx)
     if done then
@@ -337,14 +349,15 @@ function MovementTask.poll(state, ctx)
         ctx.environment:unregisterMovementTask(ctx.taskId)
         return { complete = true, state = state, result = { completed = true } }
       end
-      ctx.scheduler:completeMovementTask(ctx.taskId, ctx.tick)
+      -- The actor is already free; only the script-visible completion lags.
+      state.settleTicks = MOVEMENT_SETTLE_TICKS
     end
   end
   return { complete = false, state = state }
 end
 
 function MovementTask.cancel(state, _, ctx)
-  if state == nil or ctx == nil or ctx.services == nil or ctx.services.actors == nil then
+  if state == nil or state.settleTicks ~= nil or ctx == nil or ctx.services == nil or ctx.services.actors == nil then
     return
   end
   local actors = ctx.services.actors

@@ -258,18 +258,21 @@ T["apply movement and barrier"] = function()
     "the movement task owns the actor after its first poll"
   )
   -- Each poll advances one plan tick: face (1) + 2 walk tiles x 8 ticks = 17
-  -- plan ticks. The barrier completes on the poll after the generation
-  -- empties, and continuation follows one tick later.
+  -- plan ticks. The generation empties two ticks after the final plan tick
+  -- (the retail movement hand-off), the barrier completes in that poll loop,
+  -- and continuation follows one tick later.
   for tick = 102, 117 do
     h.scheduler:step(tick, nil)
   end
   -- The last plan tick lands at 117's poll: the actor reaches its
-  -- destination and the generation empties; the barrier polls after the
-  -- movement task in the same loop, observes the empty generation, and
-  -- completes (resume_pending for 118). Continuation follows at 118.
+  -- destination but the script still sees outstanding movement.
   Assert.equal(elm.fieldX, 6, "the actor reaches its destination after 17 plan ticks")
   Assert.equal(elm.facing, "east")
-  h.scheduler:step(118, nil)
+  for tick = 118, 119 do
+    h.scheduler:step(tick, nil)
+    Assert.equal(h.services.world:getVar("VAR_AFTER"), 0, "the script waits out the movement hand-off at " .. tick)
+  end
+  h.scheduler:step(120, nil)
   Assert.equal(
     h.services.world:getVar("VAR_AFTER"),
     1,
@@ -295,10 +298,14 @@ T["multiple actors before one barrier"] = function()
     h.scheduler:step(tick, nil)
   end
   -- Both actors move in parallel: 4 plan ticks (fast walk) from 101..104.
-  -- The barrier's poll at 104 observes the emptied generation (it polls
-  -- after the movement tasks in the same loop) and marks the owner
-  -- resume_pending; continuation follows at 105.
-  h.scheduler:step(105, nil)
+  -- The generation empties at 106 (two ticks after the final plan tick); the
+  -- barrier polls after the movement tasks in the same loop and marks the
+  -- owner resume_pending; continuation follows at 107.
+  for tick = 105, 106 do
+    h.scheduler:step(tick, nil)
+    Assert.equal(h.services.world:getVar("VAR_AFTER"), 0, "the script waits out the movement hand-off at " .. tick)
+  end
+  h.scheduler:step(107, nil)
   Assert.equal(h.services.actors.actors.a.fieldX, 1)
   Assert.equal(h.services.actors.actors.b.fieldZ, -1)
   Assert.equal(h.services.world:getVar("VAR_AFTER"), 1)
@@ -378,10 +385,14 @@ T["actor scoped barrier"] = function()
   for tick = 101, 104 do
     h.scheduler:step(tick, nil)
   end
-  -- a finished at 104's poll (4 plan ticks); the scoped barrier completes
-  -- at 105's poll; continuation at 106 while b still moves.
-  h.scheduler:step(105, nil)
-  h.scheduler:step(106, nil)
+  -- a finished at 104's poll (4 plan ticks) and reports complete two ticks
+  -- later, like an unscoped barrier; the scoped barrier completes at 106's
+  -- poll; continuation at 107 while b still moves.
+  for tick = 105, 106 do
+    h.scheduler:step(tick, nil)
+    Assert.equal(h.services.world:getVar("VAR_AFTER"), 0, "the script waits out the movement hand-off at " .. tick)
+  end
+  h.scheduler:step(107, nil)
   Assert.equal(h.services.world:getVar("VAR_AFTER"), 1)
   Assert.equal(h.services.actors.actors.b.fieldX, 0)
 end
@@ -623,14 +634,14 @@ T["actor scoped barrier with canonical refs"] = function()
   })
   startForeground(h, resource, 100)
   h.scheduler:step(100, nil)
-  -- a finishes its fast walk at 104's poll; the scoped barrier resumes at
-  -- 105 and continues at 106 while b still walks.
-  for tick = 101, 103 do
+  -- a finishes its fast walk at 104's poll and reports complete two ticks
+  -- later; the scoped barrier resumes at 106 and continues at 107 while b
+  -- still walks.
+  for tick = 101, 106 do
     h.scheduler:step(tick, nil)
   end
-  h.scheduler:step(104, nil)
-  h.scheduler:step(105, nil)
-  h.scheduler:step(106, nil)
+  Assert.equal(h.services.world:getVar("VAR_AFTER"), 0, "the script waits out the movement hand-off")
+  h.scheduler:step(107, nil)
   Assert.equal(h.services.world:getVar("VAR_AFTER"), 1)
   Assert.equal(h.services.actors.actors.b.fieldX, 0, "b is not watched by the barrier")
 end

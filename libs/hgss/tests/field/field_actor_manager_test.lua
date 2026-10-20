@@ -2616,7 +2616,7 @@ function T.blocked_pattern_hold_round_trips_and_reprojects_without_a_reservation
   Assert.isTrue(actor:isResident())
   Assert.equal(mgr:getAt(61, candidate(2, 2, actor:getSurfaceId())), actor)
 
-  mgr:beginScriptedAction(actorId, { action = "delay", speed = "normal" })
+  mgr:beginScriptedAction(actorId, { action = "delay", ticks = 8 })
   Assert.equal(actor:currentAction(), "delay", "scripted ownership cancels the reservationless autonomous hold")
   Assert.isTrue(mgr:isPausable(actorId))
   mgr:dispose()

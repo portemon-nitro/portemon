@@ -2508,6 +2508,10 @@ local function handleLegendCutscene(node, run)
   scene:command(node.op, node.destination)
   if LEGEND_CUTSCENE_TASKS[node.op] then
     local ticks = scene:taskTicks(node.op)
+    if node.op == "legend_cutscene_bell_shimmer" and ticks == 1 then
+      -- The source command only yields; there is no task to wait on.
+      return Runtime.OUTCOME_YIELD_TICK
+    end
     return blockOnTask(run, "wait_ticks", { ticks = ticks })
   end
   return Runtime.OUTCOME_CONTINUE

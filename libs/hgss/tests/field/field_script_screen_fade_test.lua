@@ -36,9 +36,14 @@ function T.opening_fade_out_follows_the_standard_six_frame_coefficients()
     Assert.equal(status.coefficient, expected, "coefficient after update " .. index)
     Assert.equal(status.direction, "out")
     Assert.equal(status.color, "black")
-    Assert.equal(fade:fadeDone(), index == #ACTIVE_COEFFICIENTS, "fade completes only at the final source frame")
+    Assert.isFalse(fade:fadeDone(), "the fade is not done on a stepping frame")
   end
-  Assert.isTrue(fade:isOpaque(), "a completed fade-out must be fully opaque")
+  Assert.isTrue(fade:isOpaque(), "the fade-out is fully opaque after its final step")
+  -- Source: the retail ROM: a palette fade spends one clean-up update after its
+  -- final step before it reports finished.
+  fade:updateSourceFrame()
+  Assert.isTrue(fade:fadeDone(), "the fade completes on the update after its final step")
+  Assert.isTrue(fade:isOpaque(), "a completed fade-out stays opaque")
 end
 
 function T.opening_fade_in_reverses_to_clear()
@@ -50,6 +55,8 @@ function T.opening_fade_in_reverses_to_clear()
     fade:updateSourceFrame()
     Assert.equal(fade:status().coefficient, want, "fade-in coefficient after update " .. index)
   end
+  Assert.isFalse(fade:fadeDone(), "the fade-in waits one clean-up update")
+  fade:updateSourceFrame()
   Assert.isTrue(fade:fadeDone())
   Assert.isFalse(fade:isOpaque(), "a completed fade-in must be fully clear")
   Assert.equal(fade:status().coefficient, 0)
@@ -195,7 +202,7 @@ function T.active_presentation_borrows_one_retained_overlay()
   local advanced = assert(fade:presentationOverlay(), "the advancing fade still borrows its overlay")
   Assert.isTrue(rawequal(first, advanced), "advancement reuses the overlay storage in place")
   Assert.isTrue(advanced.a < 1, "the borrowed overlay tracks the new coefficient before draw")
-  for _ = 1, 5 do
+  for _ = 1, 6 do
     fade:updateSourceFrame()
   end
   Assert.isTrue(fade:fadeDone())

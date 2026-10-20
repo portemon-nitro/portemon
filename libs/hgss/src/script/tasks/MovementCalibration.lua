@@ -1,5 +1,5 @@
 -- Source-backed movement lifetimes and pose cadences at the HGSS engine's
--- 30 Hz fixed tick. Pure domain module: no love dependency.
+-- source tick. Pure domain module: no love dependency.
 
 local MovementCalibration = {}
 
@@ -266,7 +266,9 @@ function MovementCalibration.actionTicks(action)
       "unknown jump distance/speed " .. tostring(action.distance) .. " " .. tostring(action.speed)
     )
   elseif kind == "delay" then
-    return action.ticks
+    -- Source: the retail ROM: commands 60-66 count the delay down over
+    -- `ticks` updates, then spend one more update completing.
+    return action.ticks + 1
   elseif kind == "emote" then
     -- Script movement emotes share the exclamation timing; a follower
     -- reaction carries the duration derived from its pattern clip.

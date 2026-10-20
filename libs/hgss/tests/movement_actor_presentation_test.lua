@@ -603,7 +603,7 @@ end
 function T.follower_idle_presentation_advances_during_delay_without_double_advancing()
   local h = harness({ visual = followerVisual() })
   local actor = assert(h.mgr:getById(ACTOR_ID))
-  h.mgr:beginScriptedAction(ACTOR_ID, { action = "delay" })
+  h.mgr:beginScriptedAction(ACTOR_ID, { action = "delay", ticks = 32 })
   local initialPoseTick = actor:getPoseTick()
 
   h.mgr:advanceScriptedAction(ACTOR_ID, 1, 32)
@@ -1369,21 +1369,24 @@ function T.normal_and_fast_locomotion_keep_independent_pose_cadence()
   Assert.isTrue(normalSawBob, "normal walk-in-place retains its bob during the calibrated action")
   Assert.equal(actor:getPresentationOffset().y, 0, "normal walk-in-place bob ends at its calibrated duration")
 
-  h.scheduler:step(110, nil)
-  Assert.equal(actor.pose, "idle", "the delay uses the visual idle presentation")
-  Assert.equal(actor:getPoseTick(), 9, "the delay does not advance static idle")
+  -- A one-count delay spends two updates: the count, then the completing one.
+  for tick = 110, 111 do
+    h.scheduler:step(tick, nil)
+    Assert.equal(actor.pose, "idle", "the delay uses the visual idle presentation")
+    Assert.equal(actor:getPoseTick(), 9, "the delay does not advance static idle")
+  end
 
   local fastSawBob = false
-  for tick = 111, 115 do
+  for tick = 112, 116 do
     h.scheduler:step(tick, nil)
-    if tick < 115 then
+    if tick < 116 then
       Assert.equal(actor:currentAction(), "walk_in_place", "fast walk-in-place remains active")
     else
       Assert.isNil(actor:currentAction(), "the fast action commits on its final fixed tick")
     end
     Assert.equal(
       actor:getPoseTick(),
-      9 + 2 * (tick - 110),
+      9 + 2 * (tick - 111),
       "fast locomotion advances the pose clock at 2x (got " .. actor:getPoseTick() .. ")"
     )
     fastFrames[#fastFrames + 1] =
@@ -1406,7 +1409,9 @@ function T.normal_and_fast_locomotion_keep_independent_pose_cadence()
   end
   Assert.isTrue(fastSawBob, "fast walk-in-place retains its bob during the calibrated action")
   Assert.equal(actor:getPresentationOffset().y, 0, "fast walk-in-place bob ends at its calibrated duration")
-  h.scheduler:step(116, nil)
+  h.scheduler:step(117, nil)
+  Assert.equal(actor:currentAction(), "delay", "the trailing delay still holds its completing update")
+  h.scheduler:step(118, nil)
   Assert.isNil(actor:currentAction(), "the trailing delay completes at its calibrated boundary")
 end
 
@@ -1857,6 +1862,44 @@ function T.draw_alpha_leaves_occupancy_unchanged()
   Assert.isTrue(occupantAt(2) == before, "draw alpha keeps the committed occupancy")
   Assert.isNil(occupantAt(3), "draw alpha does not publish the uncommitted destination")
   Assert.equal(actor:getFieldPosition().fieldX, 2, "draw alpha leaves logical fieldX fixed until commit")
+end
+
+-- Source: the retail ROM: an object's final update marks its movement script
+-- machine finished one update later; the movement watcher task then drops the
+-- script's outstanding-movement counter one update after that; the WaitMovement
+-- poll that sees zero ends the frame, and the next script command runs on the
+-- update after it. The scripted object itself starts on the ApplyMovement tick;
+-- here the actor's first action tick follows the script tick.
+function T.wait_movement_resumes_three_ticks_after_the_final_action_tick()
+  local cases = {
+    { name = "face", movement = { S.m.face({ direction = "east" }) }, actionTicks = 1 },
+    { name = "slow walk", movement = { S.m.walk({ direction = "south", speed = "slow" }) }, actionTicks = 16 },
+    { name = "delay", movement = { S.m.delay({ ticks = 2 }) }, actionTicks = 3 },
+  }
+  for _, case in ipairs(cases) do
+    local h = harness()
+    local resource = S.script({
+      api = 1,
+      id = "test.wait_movement_handoff_" .. case.name,
+      steps = {
+        S.applyMovement({ actor = ACTOR_ID, movement = case.movement }),
+        S.waitMovement(),
+        S.stop(),
+      },
+    })
+    local id = startForeground(h, resource, 100)
+    local resumedAt
+    for tick = 100, 140 do
+      h.scheduler:step(tick, nil)
+      local instance = h.scheduler:instance(id)
+      if resumedAt == nil and (instance == nil or instance.status == "completed") then
+        resumedAt = tick
+      end
+    end
+    -- The actor runs its first action on tick 101, so the final action tick is
+    -- 100 + actionTicks.
+    Assert.equal(resumedAt, 100 + case.actionTicks + 3, case.name .. " resumes after the retail movement hand-off")
+  end
 end
 
 return { tests = T }

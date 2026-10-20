@@ -8,6 +8,7 @@
 ---@field private _overlay { r: number, g: number, b: number, a: number, screenScope: "main"|"both" }? retained borrowed overlay (read-only/ephemeral)
 ---@field private _overlayRecord { r: number, g: number, b: number, a: number, screenScope: "main"|"both" } reusable overlay storage
 ---@field private _active boolean
+---@field private _cleanupPending boolean the final step ran; completion lands on the next update
 ---@field private _completed boolean
 ---@field private _direction string|nil
 ---@field private _color string|nil
@@ -36,6 +37,7 @@ function FieldScriptScreenFade.new()
     _overlay = nil,
     _overlayRecord = { r = 0, g = 0, b = 0, a = 0 },
     _active = false,
+    _cleanupPending = false,
     _completed = true,
     _direction = nil,
     _color = nil,
@@ -91,6 +93,7 @@ function FieldScriptScreenFade:startFade(spec)
   self._generation = self._generation + 1
   self._screenScope = screenScope
   self._completed = false
+  self._cleanupPending = false
   self._direction = spec.direction
   self._color = spec.color
   self._brightnessFx = start * 128
@@ -115,6 +118,7 @@ function FieldScriptScreenFade:clearIfCurrent(lease)
   end
   self._generation = self._generation + 1
   self._active = false
+  self._cleanupPending = false
   self._completed = true
   self._direction = nil
   self._color = nil
@@ -145,9 +149,17 @@ function FieldScriptScreenFade:isOpaque()
 end
 
 -- Advance exactly one source-frame tick. A no-op before any fade started or
--- once it has completed; rendering must never call this.
+-- once it has completed; rendering must never call this. Source: the retail
+-- ROM: after its final step a fade spends one clean-up update before it
+-- reports finished.
 function FieldScriptScreenFade:updateSourceFrame()
   if not self._active or self._completed then
+    return
+  end
+  if self._cleanupPending then
+    self._cleanupPending = false
+    self._completed = true
+    self:_refreshOverlay()
     return
   end
   self._framesIntoStep = self._framesIntoStep + 1
@@ -162,7 +174,7 @@ function FieldScriptScreenFade:updateSourceFrame()
   else
     self._brightnessFx = self._target * 128
     self._coefficient = math.abs(self._target)
-    self._completed = true
+    self._cleanupPending = true
   end
   self:_refreshOverlay()
 end

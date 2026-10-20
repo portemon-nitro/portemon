@@ -21,13 +21,16 @@ local T = { tests = {} }
 -- Source: the retail ROM: run commands 88-91 use a four-update movement countdown;
 -- commands 24-39 store the configured count plus one for walk-in-place;
 -- commands 44-59 use sixteen updates for slow/on-spot and far jumps and
--- eight updates for fast/on-spot and near jumps.
+-- eight updates for fast/on-spot and near jumps; delay commands hold their
+-- configured count and then spend one more update completing.
 local SOURCE_TIMINGS = {
   { action = { action = "walk_in_place", speed = "slower" }, ticks = 33 },
   { action = { action = "walk_in_place", speed = "slow" }, ticks = 17 },
   { action = { action = "walk_in_place", speed = "normal" }, ticks = 9 },
   { action = { action = "walk_in_place", speed = "fast" }, ticks = 5 },
   { action = { action = "walk", speed = "run" }, ticks = 4 },
+  { action = { action = "delay", ticks = 2 }, ticks = 3 },
+  { action = { action = "delay", ticks = 32 }, ticks = 33 },
   { action = { action = "jump", distance = "zero", speed = "slow" }, ticks = 16 },
   { action = { action = "jump", distance = "zero", speed = "fast" }, ticks = 8 },
   { action = { action = "jump", distance = "near", speed = "fast" }, ticks = 8 },
@@ -202,6 +205,34 @@ function T.tests.far_jump_uses_the_retail_vertical_profile()
     MovementCalibration.jumpOffsetAt(action, 1, 8)
   end)
   Assert.isFalse(badOk, "far jump rejects a duration outside its calibrated sixteen updates")
+end
+
+-- Source: the retail ROM: the bell shimmer command returns to the script
+-- machine without a task, so the script continues on the next update.
+function T.tests.bell_shimmer_command_yields_exactly_one_tick()
+  local h = timingHarness()
+  h.services.legendCutscene = {
+    command = function() end,
+    taskTicks = function()
+      return 1
+    end,
+  }
+  local resource = S.script({
+    api = 1,
+    id = "test.bell_shimmer_yield",
+    steps = { { op = "legend_cutscene_bell_shimmer", destination = 1 }, S.stop() },
+  })
+  h.registry:installBase(resource.id, resource, "generated")
+  local id = h.scheduler:createForeground(assert(h.composition:effective(resource.id)), nil, 100)
+  local resumedAt
+  for tick = 100, 110 do
+    h.scheduler:step(tick, nil)
+    local instance = h.scheduler:instance(id)
+    if resumedAt == nil and (instance == nil or instance.status == "completed") then
+      resumedAt = tick
+    end
+  end
+  Assert.equal(resumedAt, 101, "the script continues on the update after the shimmer command")
 end
 
 return T

@@ -1353,6 +1353,7 @@ function Scheduler:activeMovementForActor(environmentId, actorId)
       and task.taskType == "movement"
       and task.state ~= nil
       and task.state.actor == actorId
+      and task.state.settleTicks == nil
     then
       return task.taskId
     end

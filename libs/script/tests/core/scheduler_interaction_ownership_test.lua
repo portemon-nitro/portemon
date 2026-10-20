@@ -231,7 +231,11 @@ function T.map_init_lifecycle_waits_for_nonblocking_movement_started_by_root()
 
   h.scheduler:step(351, nil)
   Assert.equal(h.services.actors.actors.elm.facing, "east")
-  Assert.isTrue(h.client:isInitLifecycleSettled(), "readiness follows the movement commit")
+  Assert.isFalse(h.client:isInitLifecycleSettled(), "the movement hand-off still holds readiness after the commit")
+  h.scheduler:step(352, nil)
+  Assert.isFalse(h.client:isInitLifecycleSettled(), "the movement hand-off spans two ticks")
+  h.scheduler:step(353, nil)
+  Assert.isTrue(h.client:isInitLifecycleSettled(), "readiness follows the movement hand-off")
 end
 
 function T.map_init_lifecycle_settlement_tracks_each_sequential_identity()
@@ -297,14 +301,20 @@ function T.map_init_lifecycle_retains_common_child_movement_owner()
   Assert.isFalse(h.client:isInitLifecycleSettled(), "a multi-tick movement remains part of the lifecycle")
   Assert.equal(h.services.actors.actors.elm.facing, "north", "the movement has not committed yet")
 
+  local committedAt
   for tick = 402, 410 do
     h.scheduler:step(tick, nil)
     if h.services.actors.actors.elm.facing == "east" then
+      committedAt = tick
       break
     end
   end
   Assert.equal(h.services.actors.actors.elm.facing, "east", "the retained task must commit its movement")
-  Assert.isTrue(h.client:isInitLifecycleSettled(), "readiness follows the final movement poll")
+  Assert.isFalse(h.client:isInitLifecycleSettled(), "the movement hand-off still holds readiness after the commit")
+  h.scheduler:step(assert(committedAt) + 1, nil)
+  Assert.isFalse(h.client:isInitLifecycleSettled(), "the movement hand-off spans two ticks")
+  h.scheduler:step(committedAt + 2, nil)
+  Assert.isTrue(h.client:isInitLifecycleSettled(), "readiness follows the movement hand-off")
   Assert.isNil(h.scheduler:foregroundEnvironmentId(), "settlement tears down the map-init environment")
   Assert.equal(#h.scheduler:tasks(), 0, "settlement leaves no movement task behind")
 end
