@@ -11,7 +11,7 @@
 --       diffuse, ambient, specular, emission, alpha } } } }
 --
 -- where each channel is
---   { source = "constant", value = n }    -- value = (flag >> 16) & 0xFFFF
+--   { source = "constant", value = n }    -- value = flag & 0xFFFF
 --   { source = "curve", rate = 1|2|4, limit, keys = { ... } }
 --     -- color keys raw u16 RGB555, alpha keys raw u8 (0..31)
 --

@@ -620,10 +620,10 @@ function AnimationFixture.matFade()
   bw:u16(1)
   bw:u16(stride) -- stride table at record + 8 + ofsTargets
   bw:u16(0x18) -- name table offset
-  bw:u32(0x203C * 0x10000) -- constant diffuse (bit 13 of the value = const bit)
-  bw:u32(0x203C * 0x10000) -- constant ambient
-  bw:u32(0x203C * 0x10000) -- constant specular
-  bw:u32(0x203C * 0x10000) -- constant emission
+  bw:u32(0x20000000 + numFrame * 0x10000 + 0x2D6B) -- constant diffuse (low 16 bits are the color; bits 16-28 still hold the last frame)
+  bw:u32(0x20000000 + numFrame * 0x10000 + 0x2D6B) -- constant ambient
+  bw:u32(0x20000000 + numFrame * 0x10000 + 0x2D6B) -- constant specular
+  bw:u32(0x20000000 + numFrame * 0x10000 + 0x2D6B) -- constant emission
   bw:u32(numFrame * 0x10000 + ofsAlpha) -- alpha curve
   bw:bytes(name16("yuka2_lm3"))
   for _, b in ipairs(alphaKeys) do

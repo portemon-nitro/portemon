@@ -11,9 +11,9 @@
 --   u32 channel flags: diffuse, ambient, specular, emission, alpha
 --   target names at stride table + ofsNameTable, 16 bytes each
 --
--- A channel flag is self-contained: bits 0-15 hold the key-array offset,
--- bits 16-28 the limit (or the constant value when bit 29 is set), bit 29
--- marks a constant (value = (flag >> 16) & 0xFFFF), bits 30-31 the rate.
+-- A channel flag is self-contained: bits 0-15 hold the key-array offset (or
+-- the constant value when bit 29 is set), bits 16-28 the limit, bit 29 marks
+-- a constant (value = flag & 0xFFFF), bits 30-31 the rate.
 -- Color keys are u16 RGB555 values; alpha keys are u8 (0-31). Odd frames
 -- average neighboring keys channel-wise (the 0x7C1F/0x3E0 masks keep the
 -- R/G/B channels from bleeding into each other); quarter-rate odd frames
@@ -67,7 +67,7 @@ end
 local function decodeChannel(flag, isAlpha)
   return {
     source = bitSet(flag, BIT_CONST) and "constant" or "curve",
-    value = math.floor(flag / 65536) % 65536,
+    value = flag % 65536,
     limit = math.floor(flag / 65536) % 8192,
     rate = bitSet(flag, BIT_HALF) and 2 or bitSet(flag, 0x80000000) and 4 or 1,
     ofs = flag % 65536,
