@@ -891,6 +891,7 @@ function FieldBattleCoordinator:launchPresentedBattle(launchId, request, method)
     textSpeed = launchSpeed,
     audio = fieldRuntime(self).audio,
     musicRole = self:_battleMusicRole(request),
+    trainerClass = self:_battleTrainerClass(request),
     host = {
       status = presentedStatus,
       advance = presentedAdvance,
@@ -1127,27 +1128,12 @@ end
 -- resolve through the normalized audio catalog at playback; a launch
 -- without staged roles selects no music instead of guessing.
 ---@param request table<string, unknown> launch request carrying its kind and payload
----@return string? normalized battle-music sequence symbol
-function FieldBattleCoordinator:_battleMusicRole(request)
-  if fieldRuntime(self).cacheFs == nil then
-    return nil
-  end
-  local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
-  local okManifest, manifest = pcall(BattlePresentationCache.load, fieldRuntime(self).cacheFs)
-  if not okManifest or type(manifest) ~= "table" then
-    return nil
-  end
-  local roles = manifest.audioRoles
-  if type(roles) ~= "table" then
-    return nil
-  end
-  local BattleMusicSelection = require("game.hgss.src.battle.BattleMusicSelection")
+---@return string|number? resolved trainer class key or numeric native class, nil for wild launches
+function FieldBattleCoordinator:_battleTrainerClass(request)
   local payload = request.payload
   if type(payload) ~= "table" then
     payload = {}
   end
-  local species = type(payload.species) == "string" and payload.species or nil
-  local rivalName = type(payload.rivalName) == "string" and payload.rivalName or nil
   local trainerClass = nil
   if request.kind ~= "wild" and (payload.trainer ~= nil or payload.trainerClass ~= nil) then
     if type(payload.trainerClass) == "string" or type(payload.trainerClass) == "number" then
@@ -1177,6 +1163,32 @@ function FieldBattleCoordinator:_battleMusicRole(request)
       end
     end
   end
+  return trainerClass
+end
+
+---@param request table<string, unknown> launch request carrying its kind and payload
+---@return string? normalized battle-music sequence symbol
+function FieldBattleCoordinator:_battleMusicRole(request)
+  if fieldRuntime(self).cacheFs == nil then
+    return nil
+  end
+  local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
+  local okManifest, manifest = pcall(BattlePresentationCache.load, fieldRuntime(self).cacheFs)
+  if not okManifest or type(manifest) ~= "table" then
+    return nil
+  end
+  local roles = manifest.audioRoles
+  if type(roles) ~= "table" then
+    return nil
+  end
+  local BattleMusicSelection = require("game.hgss.src.battle.BattleMusicSelection")
+  local payload = request.payload
+  if type(payload) ~= "table" then
+    payload = {}
+  end
+  local species = type(payload.species) == "string" and payload.species or nil
+  local rivalName = type(payload.rivalName) == "string" and payload.rivalName or nil
+  local trainerClass = self:_battleTrainerClass(request)
   local okSelect, selected = pcall(BattleMusicSelection.select, {
     kind = request.kind,
     species = species,

@@ -160,4 +160,56 @@ function T.kanto_region_remaps_only_the_recorded_tracks()
   Assert.equal(wildHome.music, "SEQ_GS_VS_NORAPOKE", "other regions keep the recorded track")
 end
 
+function T.victory_music_follows_the_native_trainer_class_routing()
+  -- Native battle victory is a plain BGM swap (PlayBGM): wild wins voice
+  -- SEQ_GS_WIN2 (battle_command.c exp-gain and capture-gotcha paths),
+  -- regular trainer wins SEQ_GS_WIN1, gym leaders/champion/elite-four
+  -- SEQ_GS_WIN3, and frontier brains SEQ_GS_WINBRAIN
+  -- (battle_controller_player.c class switch). The old wild->WIN1 /
+  -- trainer->WIN2 fanfare mapping was transposed on both axes.
+  local select = BattleMusicSelection.victoryMusicSymbol
+  Assert.equal(select("wild", nil), "SEQ_GS_WIN2", "wild wins keep the wild-win BGM")
+  Assert.equal(select("trainer", nil), "SEQ_GS_WIN1", "trainers default to WIN1")
+  Assert.equal(select("trainer", "YOUNGSTER"), "SEQ_GS_WIN1", "ordinary classes keep WIN1")
+  Assert.equal(select("trainer", "RIVAL"), "SEQ_GS_WIN1", "the rival is not a WIN3 class")
+  Assert.equal(select("trainer", "PKMN_TRAINER_RED"), "SEQ_GS_WIN1", "Red keeps the native default")
+  Assert.equal(select("trainer", 2), "SEQ_GS_WIN1", "numeric ordinary classes keep WIN1")
+  Assert.equal(select("trainer", 99999), "SEQ_GS_WIN1", "unresolvable classes keep the default")
+  for _, leader in ipairs({
+    "LEADER_FALKNER",
+    "LEADER_BUGSY",
+    "LEADER_WHITNEY",
+    "LEADER_MORTY",
+    "LEADER_PRYCE",
+    "LEADER_JASMINE",
+    "LEADER_CHUCK",
+    "LEADER_CLAIR",
+    "LEADER_BROCK",
+    "LEADER_MISTY",
+    "LEADER_LT_SURGE",
+    "LEADER_ERIKA",
+    "LEADER_JANINE",
+    "LEADER_SABRINA",
+    "LEADER_BLAINE",
+    "LEADER_BLUE",
+    "CHAMPION",
+    "ELITE_FOUR_WILL",
+    "ELITE_FOUR_KAREN",
+    "ELITE_FOUR_KOGA",
+    "ELITE_FOUR_BRUNO",
+  }) do
+    Assert.equal(select("trainer", leader), "SEQ_GS_WIN3", leader .. " voices the leader victory BGM")
+  end
+  for _, brain in ipairs({
+    "TOWER_TYCOON",
+    "HALL_MATRON",
+    "FACTORY_HEAD",
+    "ARCADE_STAR",
+    "CASTLE_VALET",
+  }) do
+    Assert.equal(select("trainer", brain), "SEQ_GS_WINBRAIN", brain .. " voices the frontier-brain victory BGM")
+  end
+  Assert.equal(select("trainer", 66), "SEQ_GS_WIN3", "numeric leader classes route by identity")
+end
+
 return { tests = T }

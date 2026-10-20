@@ -342,6 +342,15 @@ local function effectCue(symbol)
   return { kind = "effect", symbol = symbol }
 end
 
+-- One staged victory-music cue behind terminal results. Unlike effect
+-- cues it swaps the battle BGM instead of firing the sound machine.
+---@param symbol string staged victory BGM symbol
+---@return table<string, unknown> typed music cue
+local function musicCue(symbol)
+  assert(type(symbol) == "string" and symbol ~= "", "music cues name their staged symbol")
+  return { kind = "music", symbol = symbol }
+end
+
 -- One send-out cry cue for a battler: the view-carried species and
 -- form with its player/foe side. The screen resolves the numeric cry
 -- identity and the side mix convention at dispatch.
@@ -584,9 +593,9 @@ local function queueResult(self, packet)
     end
   end
   enqueueMessage(self, BattlePresentationFlow.resultText(word, foeName), false)
-  local fanfare = BattlePresentationFlow.resultFanfare(word, wild)
-  if type(fanfare) == "string" and fanfare ~= "" then
-    enqueue(self, { kind = "sound", cue = effectCue(fanfare), duration = 0 })
+  local victory = BattlePresentationFlow.resultMusicSymbol(word, wild)
+  if type(victory) == "string" and victory ~= "" then
+    enqueue(self, { kind = "sound", cue = musicCue(victory), duration = 0 })
   end
 end
 

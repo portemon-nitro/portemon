@@ -17,6 +17,7 @@ local BattleScreenState = require("game.hgss.src.battle.BattleScreenState")
 local MonCache = require("libs.assets.src.MonCache")
 local PngWriter = require("libs.assets.src.PngWriter")
 local BattleEncounterTransition = require("libs.hgss.src.transition.BattleEncounterTransition")
+local BattleMusicSelection = require("game.hgss.src.battle.BattleMusicSelection")
 local TransitionFamilyFactory = require("libs.hgss.src.transition.TransitionFamilyFactory")
 
 ---@class FieldBattlePresentation
@@ -49,7 +50,7 @@ local TransitionFamilyFactory = require("libs.hgss.src.transition.TransitionFami
 ---@field _musicStarted boolean true once battle music was attempted for the launch
 ---@field _musicNote string? battle-music start note, set once the staged track voices
 ---@field _musicRole string? chosen battle-music symbol behind the exact demand closure
----@field _fanfarePlayed boolean true once the result fanfare was attempted for the launch
+---@field _resultMusicPlayed boolean true once the result music swap was attempted for the launch
 ---@field _pool table<string, unknown>? borrowed shared generated-image owner, required once graphics resolve pixels
 ---@field _leases table<string, FieldBattlePresentation.PooledHandle> shared-owner leases by drawable key
 ---@field _fieldRenderer table<string, unknown>? field-local native plane compositor
@@ -256,7 +257,7 @@ function FieldBattlePresentation.new(opts)
     _musicStarted = false,
     _musicNote = nil,
     _musicRole = nil,
-    _fanfarePlayed = false,
+    _resultMusicPlayed = false,
     _fieldRenderer = opts.fieldRenderer,
     _fieldCamera = opts.fieldCamera,
     _captureFieldLayers = opts.captureFieldLayers,
@@ -1255,7 +1256,7 @@ function FieldBattlePresentation:_admitLaunch(descriptor)
   self._musicStarted = false
   self._musicNote = nil
   self._musicRole = descriptor.musicRole
-  self._fanfarePlayed = false
+  self._resultMusicPlayed = false
   self._transition = nil
   self._transitionCapture = nil
   self._transitionFailed = false
@@ -1940,7 +1941,7 @@ function FieldBattlePresentation:updateFixed(dt)
     if self._launchId ~= nil and host ~= nil then
       host.advance()
     end
-    self:_maybePlayResultFanfare()
+    self:_maybePlayResultMusic()
     local screen = self._screen
     if screen ~= nil then
       screen:updateFixed(FieldBattlePresentation.SOURCE_FRAME)
@@ -2138,36 +2139,48 @@ function FieldBattlePresentation:_failMusic(reason)
   self:_failPendingLaunch(reason)
 end
 
--- Voices the victory fanfare once behind the committed win words: the
--- wild track answers ordinary encounters, the trainer track answers
--- trainer victories. The fanfare rides the launch voice operations so
--- a rejected start fails through the host with its identity while the
--- committed words survive through the existing committed path. A
--- launch without a fanfare port keeps its headless test-sink contract.
-function FieldBattlePresentation:_maybePlayResultFanfare()
-  if self._fanfarePlayed then
+-- Swaps the victory BGM once behind the committed terminal words: wins
+-- voice the class-routed victory track, captures voice the wild-win track
+-- at the gotcha beat, losses/flees/draws voice nothing (native BGM swaps
+-- at battle_command.c exp-gain/gotcha and battle_controller_player.c
+-- class switch; battle exit fades the BGM instead). The swap rides the
+-- launch voice operations so a rejected start fails through the host with
+-- its identity while the committed words survive through the existing
+-- committed path. A launch without a music port keeps its headless
+-- test-sink contract.
+function FieldBattlePresentation:_maybePlayResultMusic()
+  if self._resultMusicPlayed then
     return
   end
   local status = self._lastStatus
-  if type(status) ~= "table" or status.result ~= "win" then
+  if type(status) ~= "table" then
     return
   end
-  self._fanfarePlayed = true
   local descriptor = self._descriptor
+  local kind = type(descriptor) == "table" and descriptor.kind or nil
+  local symbol = nil
+  if status.result == "win" then
+    local trainerClass = type(descriptor) == "table" and descriptor.trainerClass or nil
+    symbol = BattleMusicSelection.victoryMusicSymbol(kind == "trainer" and "trainer" or "wild", trainerClass)
+  elseif status.result == "capture" then
+    -- The gotcha beat voices the wild victory even though captures never
+    -- route by class; victoryMusicSymbol("wild") is that track by
+    -- construction.
+    symbol = BattleMusicSelection.victoryMusicSymbol("wild", nil)
+  else
+    return
+  end
+  self._resultMusicPlayed = true
   local audio = descriptor ~= nil and descriptor.audio or nil
-  if audio == nil or type(audio.playFanfare) ~= "function" then
+  if audio == nil or type(audio.playMusic) ~= "function" then
     return
   end
   local launchId = self._launchId
   if type(launchId) ~= "string" or launchId == "" then
     return
   end
-  local symbol = BattleAudio.VICTORY_FANFARES.wild
-  if type(descriptor) == "table" and descriptor.kind == "trainer" then
-    symbol = BattleAudio.VICTORY_FANFARES.trainer
-  end
   local voice = BattleAudio.new({ sink = audio, launchId = launchId })
-  local ok, err = pcall(voice.playFanfare, voice, symbol)
+  local ok, err = pcall(voice.startMusic, voice, symbol)
   if not ok then
     self:_failMusic(tostring(err))
   end
@@ -2237,7 +2250,7 @@ function FieldBattlePresentation:_dropLaunch()
   self._musicStarted = false
   self._musicNote = nil
   self._musicRole = nil
-  self._fanfarePlayed = false
+  self._resultMusicPlayed = false
   self._transitionFailed = false
 end
 

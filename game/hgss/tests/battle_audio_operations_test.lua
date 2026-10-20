@@ -935,7 +935,7 @@ end
 -- known audible fixtures render non-silent samples while a legitimate
 -- silent control stays silent, the accepted menu reply plays its staged
 -- role, both battlers cry exactly once in source order, damaging turns
--- record effect operations, and victory records its fanfare.
+-- record effect operations, and victory swaps to the wild-win BGM.
 function T.heard_battle_cases_trace_their_cues_and_render_audible_samples()
   local problems = {}
   for _, versionId in ipairs(readyVersions()) do
@@ -1014,7 +1014,13 @@ function T.heard_battle_cases_trace_their_cues_and_render_audible_samples()
           countEffectOps(log, selectSymbol) >= 2,
           "damaging turns record move and impact effect operations on " .. versionId
         )
-        check(problems, #trace.fanfares == 1, "victory records its fanfare exactly once on " .. versionId)
+        check(problems, #trace.fanfares == 0, "victory voices no fanfare on " .. versionId)
+        local lastStart = trace.starts[#trace.starts]
+        check(
+          problems,
+          lastStart ~= nil and lastStart.symbol == "SEQ_GS_WIN2",
+          "victory swaps to the wild-win BGM on " .. versionId
+        )
       end, debug.traceback)
       pcall(function()
         runtime:unbindBattlePresentation(binding)
@@ -1401,9 +1407,9 @@ end
 
 -- Every outcome hands music back exactly once without retiring the
 -- engine: the field policy suspends at admission, the battle track
--- starts once, victory records its fanfare, the win and the escape both
--- restore the field track exactly once, and the shared service and sink
--- stay usable after the battle disposes.
+-- starts once, victory swaps to the wild-win BGM instead of pausing for a
+-- fanfare, the escape restores the field track exactly once, and the
+-- shared service and sink stay usable after the battle disposes.
 function T.every_outcome_hands_music_back_exactly_once_without_retiring_the_engine()
   local problems = {}
   for _, versionId in ipairs(readyVersions()) do
@@ -1432,12 +1438,21 @@ function T.every_outcome_hands_music_back_exactly_once_without_retiring_the_engi
         Assert.isTrue(turns > 0, "the win handoff answers decisions to its committed words")
         Assert.equal(runtime:lastBattleResult().result, "win", "the win handoff reports its exact word")
         check(problems, trace.suspends == 1, "the field policy suspends once at admission on " .. versionId)
-        check(problems, #trace.starts == 1, "the battle track starts exactly once on " .. versionId)
+        check(
+          problems,
+          #trace.starts == 2,
+          "the battle track starts once and victory swaps once on " .. versionId
+        )
         if trace.starts[1] ~= nil then
           check(
             problems,
             trace.starts[1].cover == FULL_COVER,
             "the battle track starts on the exact cover tick on " .. versionId
+          )
+          check(
+            problems,
+            trace.starts[1].symbol ~= "SEQ_GS_WIN2",
+            "the opening start keeps the battle track on " .. versionId
           )
         end
         local demands = envelope:preparedDemands()
@@ -1449,9 +1464,14 @@ function T.every_outcome_hands_music_back_exactly_once_without_retiring_the_engi
           end
         end
         check(problems, banked, "the win demand stages the chosen track bank on " .. versionId)
-        check(problems, #trace.fanfares == 1, "victory records its fanfare exactly once on " .. versionId)
-        check(problems, trace.resumes == 1, "the win restores the field policy exactly once on " .. versionId)
-        check(problems, trace.lastRestore == true, "the win restores the field track on " .. versionId)
+        check(problems, #trace.fanfares == 0, "victory voices no fanfare on " .. versionId)
+        local lastWinStart = trace.starts[#trace.starts]
+        check(
+          problems,
+          lastWinStart ~= nil and lastWinStart.symbol == "SEQ_GS_WIN2",
+          "victory swaps to the wild-win BGM on " .. versionId
+        )
+        check(problems, trace.resumes == 0, "the win performs no field-policy resume without a fanfare pause")
         check(
           problems,
           runtime.audio:currentMusic() == runtime.audio:effectiveMusic(),
@@ -1537,7 +1557,7 @@ end
 
 -- Quiet visual modes keep the mandatory cues and no substitutes: with
 -- move effects disabled the battle dispatches the identical mandatory
--- set as the ordinary path, every send-out cry and the victory fanfare
+-- set as the ordinary path, every send-out cry and the wild-win BGM swap
 -- included, every dispatched operation names a staged role or a
 -- cataloged battler cry, and no invented stand-in ever appears.
 function T.quiet_visual_modes_keep_the_mandatory_cues_and_no_substitutes()
@@ -1580,7 +1600,12 @@ function T.quiet_visual_modes_keep_the_mandatory_cues_and_no_substitutes()
         pump(runtime, envelope, 2)
         settle(runtime, envelope, sparringChoose, 6000)
         Assert.equal(runtime:lastBattleResult().result, "win", "the " .. journey.name .. " wins its words")
-        local observed = { lead = 0, foe = 0, selects = 0, staged = 0, fanfares = #trace.fanfares, unknown = {} }
+        local observed = { lead = 0, foe = 0, selects = 0, staged = 0, winMusic = 0, unknown = {} }
+        for _, start in ipairs(trace.starts) do
+          if type(start) == "table" and start.symbol == "SEQ_GS_WIN2" then
+            observed.winMusic = observed.winMusic + 1
+          end
+        end
         for _, entry in ipairs(log) do
           if entry.method == "playCry" and entry.species == leadCry then
             observed.lead = observed.lead + 1
@@ -1605,7 +1630,7 @@ function T.quiet_visual_modes_keep_the_mandatory_cues_and_no_substitutes()
           observed.selects >= 1,
           "the " .. journey.name .. " keeps its interface feedback on " .. versionId
         )
-        check(problems, observed.fanfares == 1, "the " .. journey.name .. " keeps its victory fanfare on " .. versionId)
+        check(problems, observed.winMusic == 1, "the " .. journey.name .. " swaps its wild-win BGM on " .. versionId)
         check(
           problems,
           #observed.unknown == 0,
@@ -1634,7 +1659,7 @@ function T.quiet_visual_modes_keep_the_mandatory_cues_and_no_substitutes()
       local quiet = counts["quiet path"]
       check(
         problems,
-        quiet.lead == ordinary.lead and quiet.foe == ordinary.foe and quiet.fanfares == ordinary.fanfares,
+        quiet.lead == ordinary.lead and quiet.foe == ordinary.foe and quiet.winMusic == ordinary.winMusic,
         "quiet modes keep the identical mandatory set as the ordinary path on " .. versionId
       )
     end

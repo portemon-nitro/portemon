@@ -43,14 +43,6 @@ BattleAudio.SINK_SOUNDS = {
   levelUp = "SEQ_ME_LVUP",
 }
 
--- Wild and trainer victory fanfares behind the result handoff. The wild
--- track answers ordinary encounters; the trainer track answers trainer
--- victories.
-BattleAudio.VICTORY_FANFARES = {
-  wild = "SEQ_GS_WIN1",
-  trainer = "SEQ_GS_WIN2",
-}
-
 -- Cry voice defaults behind send-out dispatch: the plain pattern the
 -- cry subsystem voices without variant cleanup, the species bank, the
 -- centered track pan, and the subsystem primary volume.

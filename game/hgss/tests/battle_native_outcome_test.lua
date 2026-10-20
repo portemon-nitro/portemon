@@ -170,7 +170,17 @@ function T.won_result_plays_its_ordered_terminal_sequence_once()
   local texts = collectMessages(timeline)
   Assert.isTrue(timeline:settled(), "the result sequence drains fully")
   Assert.isTrue(#texts >= 1, "the native result message plays through ordered playback")
-  Assert.isTrue(#sounds.played >= 1, "the result fanfare plays through the ordered audio sink")
+  -- Native victory is a plain BGM swap (PlayBGM SEQ_GS_WIN2 for wild wins,
+  -- battle_controller_player.c / battle_command.c), never a fanfare: the
+  -- wild win voices its victory music through a music cue.
+  local music = nil
+  for _, played in ipairs(sounds.played) do
+    if type(played) == "table" and played.kind == "music" then
+      music = played
+    end
+  end
+  Assert.notNil(music, "the wild win voices its victory music cue")
+  Assert.equal(music.symbol, "SEQ_GS_WIN2", "the wild victory keeps its native wild-win symbol")
   Assert.isFalse(timeline:present(resultPacket(1, {}, { word = "win" })), "the same result never plays twice")
 end
 

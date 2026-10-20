@@ -12,6 +12,7 @@
 -- BtlCmd_PlayMoveAnimation).
 
 local BattleScene = require("libs.hgss.src.presentation.BattleScene")
+local BattleMusicSelection = require("game.hgss.src.battle.BattleMusicSelection")
 
 ---@class BattlePresentationFlow
 local BattlePresentationFlow = {}
@@ -161,15 +162,15 @@ end
 
 ---@param word string terminal result word carried by the committed receipt
 ---@param wild boolean true while the victory answers a wild encounter
----@return string? staged victory fanfare symbol for wins, nil when the word carries no fanfare
-function BattlePresentationFlow.resultFanfare(word, wild)
+---@return string? staged victory BGM symbol for wins, nil when the word carries no music
+function BattlePresentationFlow.resultMusicSymbol(word, wild)
   if word ~= "win" then
     return nil
   end
-  if wild then
-    return "SEQ_GS_WIN1"
-  end
-  return "SEQ_GS_WIN2"
+  -- Native victory is a plain BGM swap (PlayBGM SEQ_GS_WIN2 for wild wins).
+  -- Direct timeline drivers carry no trainer class, so trainer wins keep
+  -- the kind-level default here; the field leg refines by class.
+  return BattleMusicSelection.victoryMusicSymbol(wild and "wild" or "trainer", nil)
 end
 
 ---@param list table<integer, table<string, unknown>>? detached active records from one side

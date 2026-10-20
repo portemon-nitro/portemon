@@ -336,4 +336,68 @@ function BattleMusicSelection.select(inputs)
   return { music = music, transition = row.transition, param = param }
 end
 
+-- Victory BGM behind the result handoff: native battle victory is a plain
+-- BGM swap (PlayBGM), never a fanfare. Wild wins voice SEQ_GS_WIN2
+-- (battle_command.c exp-gain and capture-gotcha paths); regular trainer
+-- wins SEQ_GS_WIN1; gym leaders, the champion, and the elite four voice
+-- SEQ_GS_WIN3; frontier brains voice SEQ_GS_WINBRAIN
+-- (battle_controller_player.c class switch). The class sets below name
+-- the native TRAINERCLASS_* identities behind those switch arms.
+BattleMusicSelection.VICTORY_LEADER_CLASSES = {
+  LEADER_FALKNER = true,
+  LEADER_BUGSY = true,
+  LEADER_WHITNEY = true,
+  LEADER_MORTY = true,
+  LEADER_PRYCE = true,
+  LEADER_JASMINE = true,
+  LEADER_CHUCK = true,
+  LEADER_CLAIR = true,
+  LEADER_BROCK = true,
+  LEADER_MISTY = true,
+  LEADER_LT_SURGE = true,
+  LEADER_ERIKA = true,
+  LEADER_JANINE = true,
+  LEADER_SABRINA = true,
+  LEADER_BLAINE = true,
+  LEADER_BLUE = true,
+  CHAMPION = true,
+  ELITE_FOUR_WILL = true,
+  ELITE_FOUR_KAREN = true,
+  ELITE_FOUR_KOGA = true,
+  ELITE_FOUR_BRUNO = true,
+}
+
+BattleMusicSelection.VICTORY_BRAIN_CLASSES = {
+  TOWER_TYCOON = true,
+  HALL_MATRON = true,
+  FACTORY_HEAD = true,
+  ARCADE_STAR = true,
+  CASTLE_VALET = true,
+}
+
+-- Selects the victory BGM symbol behind one result: wild launches voice
+-- the wild win; trainer launches route by native class (leaders WIN3,
+-- brains WINBRAIN, everything else — including the rival and Red — the
+-- WIN1 default). Numeric classes resolve through the pinned key table;
+-- unresolvable classes keep the default instead of guessing a track.
+---@param kind string "wild" or "trainer" launch kind behind the lookup
+---@param trainerClass string|number? trainer class key or numeric native class
+---@return string victory BGM sequence symbol
+function BattleMusicSelection.victoryMusicSymbol(kind, trainerClass)
+  if kind ~= "trainer" then
+    return "SEQ_GS_WIN2"
+  end
+  local name = trainerClass
+  if type(name) == "number" then
+    name = BattleMusicSelection.trainerClassName(name)
+  end
+  if type(name) == "string" and BattleMusicSelection.VICTORY_LEADER_CLASSES[name] == true then
+    return "SEQ_GS_WIN3"
+  end
+  if type(name) == "string" and BattleMusicSelection.VICTORY_BRAIN_CLASSES[name] == true then
+    return "SEQ_GS_WINBRAIN"
+  end
+  return "SEQ_GS_WIN1"
+end
+
 return BattleMusicSelection
