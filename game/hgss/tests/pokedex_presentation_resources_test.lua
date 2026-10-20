@@ -878,4 +878,253 @@ function T.registration_slot_with_unknown_species_fails_loudly()
   Assert.equal(pool:stats().outstandingLeases, 0, "the failed card returns its staged chrome")
 end
 
+-- A page closure with genuinely placed sprites: page A stages one
+-- two-part arrow plus a second role sharing its animation (so one
+-- realized viewport serves both), page B stages its own two-part
+-- arrow. Every part viewport fits the 64x32 fake pool images; the
+-- arrow animation carries a second frame no static demand selects.
+local function placedQuadManifest()
+  local PokedexCache = require("libs.assets.src.PokedexCache")
+  local function background(chrome)
+    return { chrome = chrome, layer = 0, x = 0, y = 0, priority = 0, paletteGroup = "group" }
+  end
+  local function part(chrome, x, y, width, height, px, py)
+    return {
+      chrome = chrome,
+      source = { x = x, y = y, width = width, height = height },
+      x = px or 0,
+      y = py or 0,
+    }
+  end
+  local function cell(parts)
+    return { bounds = { x = 0, y = 0, width = 32, height = 8 }, parts = parts }
+  end
+  local function sprite(animation, x, y)
+    return {
+      pane = "controls",
+      animation = animation,
+      x = x,
+      y = y,
+      priority = 0,
+      drawPriority = 0,
+      paletteGroup = "group",
+    }
+  end
+  local function page(bgRole, spriteRoles)
+    return {
+      backdrop = {
+        information = { r = 0, g = 0, b = 0, a = 255 },
+        controls = { r = 0, g = 0, b = 0, a = 255 },
+      },
+      backgrounds = { information = { background(bgRole) }, controls = {} },
+      cells = {},
+      sprites = spriteRoles,
+      windows = {},
+    }
+  end
+  return {
+    schema = PokedexCache.SCHEMA,
+    fonts = { body = 0, header = 4 },
+    chrome = {
+      ["quad.a.bg"] = { path = "pokedex/chrome/quad-a-bg", width = 256, height = 192 },
+      ["quad.a.art"] = { path = "pokedex/chrome/quad-a-art", width = 64, height = 32 },
+      ["quad.b.bg"] = { path = "pokedex/chrome/quad-b-bg", width = 256, height = 192 },
+      ["quad.b.art"] = { path = "pokedex/chrome/quad-b-art", width = 64, height = 32 },
+    },
+    cells = {
+      ["quad.a.cell"] = cell({
+        part("quad.a.art", 0, 0, 8, 8, 0, 0),
+        part("quad.a.art", 8, 0, 8, 8, 8, 0),
+      }),
+      ["quad.a.cell.alt"] = cell({ part("quad.a.art", 16, 0, 8, 8, 0, 0) }),
+      ["quad.b.cell"] = cell({
+        part("quad.b.art", 0, 0, 8, 8, 0, 0),
+        part("quad.b.art", 8, 0, 8, 8, 8, 0),
+      }),
+    },
+    animations = {
+      ["quad.a.anim"] = {
+        frames = { { cell = "quad.a.cell", duration = 1 }, { cell = "quad.a.cell.alt", duration = 1 } },
+      },
+      ["quad.b.anim"] = { frames = { { cell = "quad.b.cell", duration = 1 } } },
+    },
+    sprites = {
+      ["quad.a.arrow"] = sprite("quad.a.anim", 8, 8),
+      ["quad.a.echo"] = sprite("quad.a.anim", 24, 8),
+      ["quad.b.arrow"] = sprite("quad.b.anim", 8, 8),
+    },
+    windows = {},
+    text = {
+      ui = { bankId = 802 },
+      entryByLanguage = { native = { nameBankId = 237, categoryBankId = 816, flavorBankId = 803 } },
+      measureByProfile = { base = { heightBankId = 815, weightBankId = 813 } },
+      registrationAnnouncement = { bankId = 197, messageId = 871 },
+    },
+    pages = {
+      grid = page("quad.a.bg", { "quad.a.arrow", "quad.a.echo" }),
+      results = page("quad.b.bg", { "quad.b.arrow" }),
+    },
+  }
+end
+
+---@param pool table shared image pool double under test
+---@param graphics table fake graphics namespace behind viewport realization
+---@param manifest table<string, unknown> placed-sprite page closure under test
+---@return table owner construction arguments over the placed closure
+local function quadOwnerArgs(pool, graphics, manifest)
+  local args = ownerArgs(pool)
+  args.graphics = graphics
+  args.cacheFs = {
+    loadLua = function(_)
+      return manifest
+    end,
+  }
+  return args
+end
+
+---@param role string authored page role under test
+---@param key string demand generation key
+---@return table demand one imageless browser demand with no dynamic sprite roles
+local function quadDemand(role, key)
+  local demand = pageDemand(role, key)
+  demand.spriteRoles = {}
+  return demand
+end
+
+-- A pending replacement that fails its viewport realization cannot
+-- publish: the committed page keeps its identical prepared viewports,
+-- the next page completes once the failure clears, and adoption retires
+-- every viewport the displayed generation no longer watches. The lease
+-- viewport ledger below is read only to prove exact-once retirement,
+-- the ownership contract under test.
+function T.pending_and_failed_sprite_viewport_preparation_preserves_the_committed_page()
+  local Owner = requirePresent("page-local sprite viewport ownership")
+  local FakeGraphics = require("tests.support.FakeGraphics")
+  local pool = SharedImagePoolFake.new()
+  local graphics = FakeGraphics.new()
+  local quadAttempts = 0
+  local failQuads = false
+  local realQuad = graphics.newQuad
+  graphics.newQuad = function(...)
+    quadAttempts = quadAttempts + 1
+    if failQuads then
+      error("injected sprite viewport failure")
+    end
+    return realQuad(...)
+  end
+  local owner = Owner.new(quadOwnerArgs(pool, graphics, placedQuadManifest()))
+  local lease = owner:acquire({ purpose = "browser" })
+  local first = nil
+  for _ = 1, 64 do
+    local before = quadAttempts
+    local outcome = lease:prepare(quadDemand("grid", "quad-a"))
+    Assert.isTrue(quadAttempts - before <= 1, "one preparation admits at most one viewport")
+    if outcome.kind == "ready" then
+      first = outcome
+      break
+    end
+    Assert.equal(outcome.kind, "pending", "partial sprite readiness never publishes")
+  end
+  Assert.notNil(first, "the placed page converges on a complete bundle")
+  Assert.equal(quadAttempts, 2, "the shared animation realizes exactly its two resting viewports")
+  local parts = assert(first.assets.spriteParts, "the ready bundle carries its sprite parts")
+  local arrow = assert(parts["quad.a.arrow"], "the arrow role publishes its prepared frame")
+  Assert.equal(#arrow, 1, "static roles prepare only their resting frame")
+  Assert.equal(#arrow[1], 2, "the resting cell prepares both parts")
+  Assert.isTrue(arrow[1][1].quad ~= nil, "the first resting part carries its realized viewport")
+  Assert.isTrue(arrow[1][2].quad ~= nil, "the second resting part carries its realized viewport")
+  Assert.isTrue(arrow[1][1].quad ~= arrow[1][2].quad, "distinct source rectangles realize distinct viewports")
+  local echo = assert(parts["quad.a.echo"], "the echo role shares its animation closure")
+  Assert.isTrue(echo[1][1].quad == arrow[1][1].quad, "identical chrome rectangles share one viewport")
+  Assert.isTrue(echo[1][2].quad == arrow[1][2].quad, "shared parts stay identical across roles")
+  local stepped = lease:prepare(quadDemand("results", "quad-b"))
+  Assert.equal(stepped.kind, "pending", "a fresh key never adopts on its enrollment call")
+  failQuads = true
+  local failed = nil
+  for _ = 1, 64 do
+    local outcome = lease:prepare(quadDemand("results", "quad-b"))
+    if outcome.kind == "failed" then
+      failed = outcome
+      break
+    end
+    Assert.equal(outcome.kind, "pending", "the doomed generation stays pending until its failure surfaces")
+  end
+  Assert.notNil(failed, "the failed viewport reports instead of publishing")
+  Assert.isTrue(
+    type(failed.error) == "string" and failed.error:find("quad.b.arrow", 1, true) ~= nil,
+    "the failure names its sprite role"
+  )
+  local kept = lease:prepare(quadDemand("grid", "quad-a"))
+  Assert.equal(kept.kind, "ready", "the committed generation answers without new work")
+  Assert.isTrue(kept.assets == first.assets, "the failed generation never mutates the committed bundle")
+  Assert.isTrue(
+    kept.assets.spriteParts["quad.a.arrow"][1][1].quad == arrow[1][1].quad,
+    "committed viewports survive the failed replacement"
+  )
+  failQuads = false
+  local second = nil
+  for _ = 1, 64 do
+    local before = quadAttempts
+    local outcome = lease:prepare(quadDemand("results", "quad-c"))
+    Assert.isTrue(quadAttempts - before <= 1, "the replacement admits at most one viewport per call")
+    if outcome.kind == "ready" then
+      second = outcome
+      break
+    end
+    Assert.isTrue(outcome.kind == "pending", "the replacement stays pending until its closure is whole")
+  end
+  Assert.notNil(second, "the replacement page converges once its failure clears")
+  local card = assert(second.assets.spriteParts["quad.b.arrow"], "the replacement publishes its own arrow")
+  Assert.equal(#card[1], 2, "the replacement prepares both of its parts")
+  Assert.isTrue(card[1][1].quad ~= arrow[1][1].quad, "the replacement realizes its own viewports")
+  local held = assert(lease._spritePartQuads, "the lease owns its viewport ledger")
+  local heldCount, sawNew, sawOld = 0, false, false
+  for _, quad in pairs(held) do
+    heldCount = heldCount + 1
+    if quad == card[1][1].quad or quad == card[1][2].quad then
+      sawNew = true
+    end
+    if quad == arrow[1][1].quad then
+      sawOld = true
+    end
+  end
+  Assert.equal(heldCount, 2, "adoption retires every viewport the displayed page no longer watches")
+  Assert.isTrue(sawNew, "the displayed viewports stay owned")
+  Assert.isTrue(not sawOld, "the superseded arrow leaves the lease exactly once")
+  lease:release()
+  lease:release()
+  owner:release()
+  Assert.equal(pool:stats().outstandingLeases, 0, "disposal returns every borrowed image interest")
+end
+
+-- A part viewport outside its adopted image cannot publish: preparation
+-- fails with the sprite role instead of realizing a malformed quad.
+function T.out_of_bounds_sprite_viewports_fail_with_attribution()
+  local Owner = requirePresent("attributed sprite viewport failure")
+  local FakeGraphics = require("tests.support.FakeGraphics")
+  local pool = SharedImagePoolFake.new()
+  local graphics = FakeGraphics.new()
+  local manifest = placedQuadManifest()
+  manifest.cells["quad.a.cell"].parts[1].source = { x = 60, y = 0, width = 8, height = 8 }
+  local owner = Owner.new(quadOwnerArgs(pool, graphics, manifest))
+  local lease = owner:acquire({ purpose = "browser" })
+  local failed = nil
+  for _ = 1, 64 do
+    local outcome = lease:prepare(quadDemand("grid", "quad-bad"))
+    if outcome.kind == "failed" then
+      failed = outcome
+      break
+    end
+    Assert.equal(outcome.kind, "pending", "the invalid generation never publishes")
+  end
+  Assert.notNil(failed, "an out-of-bounds viewport cannot publish")
+  Assert.isTrue(
+    type(failed.error) == "string" and failed.error:find("quad.a.arrow", 1, true) ~= nil,
+    "the failure names its sprite role"
+  )
+  lease:release()
+  owner:release()
+  Assert.equal(pool:stats().outstandingLeases, 0, "failure and disposal return every owned interest")
+end
+
 return { tests = T }

@@ -166,6 +166,12 @@ local function checkDemand(demand, purpose)
   for _, key in ipairs(demand.iconKeys) do
     assert(type(key) == "string" and key ~= "", "icon keys arrive as strings")
   end
+  if demand.spriteRoles ~= nil then
+    assert(type(demand.spriteRoles) == "table", "sprite role demand arrives as a list")
+    for _, role in ipairs(demand.spriteRoles) do
+      assert(type(role) == "string" and role ~= "", "demanded sprite roles arrive as strings")
+    end
+  end
   assert(type(demand.pictures) == "table", "demands carry their picture slots")
   assert(#demand.pictures <= MAX_PICTURES, "picture demand stays within the current plus pending slots")
   for _, picture in ipairs(demand.pictures) do
@@ -730,6 +736,302 @@ local function requiredChromeRoles(manifest, pageRole)
   end
   table.sort(roles)
   return roles
+end
+
+-- Releases one owned sprite viewport: realized viewports release their GPU
+-- handle; doubles without one simply leave the ownership ledger.
+---@param quad table<string, unknown> owned prepared viewport
+local function releaseSpriteQuad(quad)
+  if type(quad) == "table" and type(quad.release) == "function" then
+    quad:release()
+  end
+end
+
+-- Resolves one demanded sprite role to its selected frame cells: the resting
+-- frame for statically placed roles, the full active sequence for explicit
+-- dynamic roles. Every manifest reference failure names its cause.
+---@param manifest table<string, unknown> loaded presentation manifest
+---@param pageRole string generated page role under preparation
+---@param spriteRole string demanded sprite role
+---@param dynamic boolean true when the demand names the role explicitly
+---@return table[]? selected ordered frame cells with their parts
+---@return string? failure nonempty cause when the role cannot resolve
+local function resolveSpriteCells(manifest, pageRole, spriteRole, dynamic)
+  local inventory = manifest.sprites
+  if type(inventory) ~= "table" then
+    return nil, "the pokedex manifest carries no sprite inventory"
+  end
+  local sprite = inventory[spriteRole]
+  if type(sprite) ~= "table" then
+    return nil, "the " .. pageRole .. " page references an unknown sprite " .. tostring(spriteRole)
+  end
+  if type(sprite.animation) ~= "string" or sprite.animation == "" then
+    return nil, "sprite " .. tostring(spriteRole) .. " names no animation"
+  end
+  local animations = manifest.animations
+  if type(animations) ~= "table" then
+    return nil, "the pokedex manifest carries no animations table"
+  end
+  local animation = animations[sprite.animation]
+  if type(animation) ~= "table" then
+    return nil, "sprite " .. tostring(spriteRole) .. " references an unknown animation"
+  end
+  if type(animation.frames) ~= "table" or #animation.frames < 1 then
+    return nil, "animation " .. tostring(sprite.animation) .. " carries no frames"
+  end
+  local cells = manifest.cells
+  if type(cells) ~= "table" then
+    return nil, "the pokedex manifest carries no cells table"
+  end
+  local selected = {}
+  for index, frame in ipairs(animation.frames) do
+    if dynamic or index == 1 then
+      if type(frame) ~= "table" or type(frame.cell) ~= "string" then
+        return nil, "animation " .. tostring(sprite.animation) .. " names no cell"
+      end
+      local cell = cells[frame.cell]
+      if type(cell) ~= "table" then
+        return nil, "sprite " .. tostring(spriteRole) .. " references an unknown cell " .. tostring(frame.cell)
+      end
+      if type(cell.parts) ~= "table" then
+        return nil, "cell " .. tostring(frame.cell) .. " carries no parts"
+      end
+      selected[#selected + 1] = { frame = index, parts = cell.parts }
+    end
+  end
+  return selected
+end
+
+-- The finite page-local sprite viewport closure: every genuinely placed
+-- sprite role on the demanded page (anchored off the unplaced origin
+-- sentinel, exactly the renderer predicate) resolves its resting frame,
+-- while the bounded explicit dynamic roles the demand names resolve their
+-- full active sequence. Records parked at the origin stay out; the renderer
+-- never draws them. Returns the ordered role entries or a failure.
+---@param manifest table<string, unknown> loaded presentation manifest
+---@param pageRole string generated page role under preparation
+---@param dynamicRoles string[] explicit demanded sprite roles
+---@return table[]? ordered role entries with their dynamic selection
+---@return string? failure nonempty cause when the closure cannot resolve
+local function wantedSpriteRoles(manifest, pageRole, dynamicRoles)
+  local pages = manifest.pages
+  if type(pages) ~= "table" then
+    return nil, "the pokedex manifest carries no pages table"
+  end
+  local page = pages[pageRole]
+  if type(page) ~= "table" then
+    return nil, "the pokedex manifest carries no page " .. tostring(pageRole)
+  end
+  local inventory = manifest.sprites
+  if type(inventory) ~= "table" then
+    return nil, "the pokedex manifest carries no sprite inventory"
+  end
+  local order, dynamic, onPage = {}, {}, {}
+  if type(page.sprites) == "table" then
+    for _, spriteRole in ipairs(page.sprites) do
+      if type(spriteRole) ~= "string" or spriteRole == "" then
+        return nil, "the " .. pageRole .. " page names no sprite role"
+      end
+      local sprite = inventory[spriteRole]
+      if type(sprite) ~= "table" then
+        return nil, "the " .. pageRole .. " page references an unknown sprite " .. tostring(spriteRole)
+      end
+      onPage[spriteRole] = true
+      if sprite.x ~= 0 or sprite.y ~= 0 then
+        if dynamic[spriteRole] == nil then
+          dynamic[spriteRole] = false
+          order[#order + 1] = spriteRole
+        end
+      end
+    end
+  end
+  for _, spriteRole in ipairs(dynamicRoles) do
+    if not onPage[spriteRole] then
+      return nil, "the demand names a sprite role outside page " .. pageRole .. ": " .. tostring(spriteRole)
+    end
+    if dynamic[spriteRole] == nil then
+      dynamic[spriteRole] = true
+      order[#order + 1] = spriteRole
+    else
+      dynamic[spriteRole] = true
+    end
+  end
+  local entries = {}
+  for _, spriteRole in ipairs(order) do
+    entries[#entries + 1] = { role = spriteRole, dynamic = dynamic[spriteRole] == true }
+  end
+  return entries
+end
+
+-- Prepares the finite page-local sprite viewports before any raster draw:
+-- every required source rectangle resolves against its adopted chrome image,
+-- validates inside the image bounds, and realizes at most the remaining
+-- admission budget, one viewport per call. Identical chrome rectangles share
+-- one viewport even across roles. Returns readiness plus, when whole, the
+-- immutable role/frame/part map and its owned viewport membership.
+---@param owner PokedexPresentationResources
+---@param lease table<string, unknown> preparation lease owning the viewports
+---@param manifest table<string, unknown> loaded presentation manifest
+---@param demand table<string, unknown> validated demand under preparation
+---@param rolePath table<string, string> page chrome role to pooled path
+---@param allowance { remaining: integer } shared per-prepare admission budget
+---@return boolean ready
+---@return string? failure nonempty cause when a required viewport cannot be prepared
+---@return table<string, unknown>? spriteParts immutable map when whole
+---@return table<string, boolean>? spriteKeys owned viewport membership when whole
+local function prepareSpriteParts(owner, lease, manifest, demand, rolePath, allowance)
+  local dynamicRoles = demand.spriteRoles or {}
+  local wanted, closureFailure = wantedSpriteRoles(manifest, demand.pageRole, dynamicRoles)
+  if wanted == nil then
+    return false, closureFailure
+  end
+  local graphics = owner._graphics
+  if type(graphics) ~= "table" or type(graphics.newQuad) ~= "function" then
+    -- Seams without viewport realization publish no parts; only a
+    -- graphics-backed draw can consume them.
+    return true, nil, {}, {}
+  end
+  -- Resolve every required viewport before admitting any: bounds validate
+  -- against the adopted chrome image, so a malformed rectangle fails with
+  -- its sprite role instead of realizing.
+  local needed, seen, keyOrder, roleFrames = {}, {}, {}, {}
+  for _, entry in ipairs(wanted) do
+    local cells, cellsFailure = resolveSpriteCells(manifest, demand.pageRole, entry.role, entry.dynamic)
+    if cells == nil then
+      return false, cellsFailure
+    end
+    local frames = {}
+    roleFrames[entry.role] = frames
+    for _, selected in ipairs(cells) do
+      local frameKeys = {}
+      frames[selected.frame] = frameKeys
+      for _, part in ipairs(selected.parts) do
+        if type(part) ~= "table" then
+          return false, "sprite " .. entry.role .. " carries no part record"
+        end
+        if type(part.chrome) ~= "string" or part.chrome == "" then
+          return false, "sprite " .. entry.role .. " names no chrome role"
+        end
+        local source = part.source
+        if type(source) ~= "table" then
+          return false, "sprite " .. entry.role .. " carries no source viewport"
+        end
+        local path = rolePath[part.chrome]
+        if type(path) ~= "string" then
+          return false, "sprite " .. entry.role .. " watches chrome outside its page: " .. tostring(part.chrome)
+        end
+        local handle = lease._chromeLeases[path]
+        if handle == nil then
+          return false, nil
+        end
+        local image = handle.image
+        if image == nil or type(image.getWidth) ~= "function" or type(image.getHeight) ~= "function" then
+          return false, "sprite " .. entry.role .. " watches chrome without a measurable image"
+        end
+        local imageWidth, imageHeight = image:getWidth(), image:getHeight()
+        if
+          type(source.x) ~= "number"
+          or type(source.y) ~= "number"
+          or type(source.width) ~= "number"
+          or type(source.height) ~= "number"
+        then
+          return false, "sprite " .. entry.role .. " carries no source viewport"
+        end
+        if
+          source.x < 0
+          or source.y < 0
+          or source.width <= 0
+          or source.height <= 0
+          or source.x + source.width > imageWidth
+          or source.y + source.height > imageHeight
+        then
+          return false,
+            "sprite "
+              .. entry.role
+              .. " references a viewport outside its chrome image (x="
+              .. tostring(source.x)
+              .. ",y="
+              .. tostring(source.y)
+              .. ",w="
+              .. tostring(source.width)
+              .. ",h="
+              .. tostring(source.height)
+              .. " on "
+              .. tostring(imageWidth)
+              .. "x"
+              .. tostring(imageHeight)
+              .. ")"
+        end
+        local key = table.concat({
+          path,
+          tostring(source.x),
+          tostring(source.y),
+          tostring(source.width),
+          tostring(source.height),
+        }, "|")
+        if not seen[key] then
+          seen[key] = true
+          keyOrder[#keyOrder + 1] = key
+          needed[key] = { role = entry.role, handle = handle, source = source }
+        end
+        frameKeys[#frameKeys + 1] = { key = key, part = part }
+      end
+    end
+  end
+  -- Admit at most the remaining budget; anything still missing keeps the
+  -- generation pending without publishing a partial map.
+  for _, key in ipairs(keyOrder) do
+    if lease._spritePartQuads[key] == nil then
+      if allowance.remaining <= 0 then
+        return false, nil
+      end
+      local item = needed[key]
+      local source = item.source
+      local image = item.handle.image
+      local ok, quad =
+        pcall(graphics.newQuad, source.x, source.y, source.width, source.height, image:getWidth(), image:getHeight())
+      if not ok then
+        return false,
+          "sprite " .. item.role .. " cannot realize its viewport (x=" .. tostring(source.x) .. ",y=" .. tostring(
+            source.y
+          ) .. ",w=" .. tostring(source.width) .. ",h=" .. tostring(source.height) .. ") on page " .. tostring(
+            demand.pageRole
+          ) .. ": " .. tostring(quad)
+      end
+      lease._spritePartQuads[key] = quad
+      allowance.remaining = allowance.remaining - 1
+    end
+  end
+  -- Publish a fresh immutable map per generation, never an alias of the
+  -- working ledger, so pending work cannot mutate the displayed bundle.
+  -- Roles sharing one animation closure reference the same viewport.
+  local spriteParts = {}
+  for _, entry in ipairs(wanted) do
+    local frames = {}
+    spriteParts[entry.role] = frames
+    for frameIndex, frameKeys in pairs(roleFrames[entry.role]) do
+      local parts = {}
+      frames[frameIndex] = parts
+      for _, frameKey in ipairs(frameKeys) do
+        local item = needed[frameKey.key]
+        local quad = lease._spritePartQuads[frameKey.key]
+        assert(quad ~= nil, "admitted viewports resolve their quad")
+        parts[#parts + 1] = {
+          handle = item.handle,
+          quad = quad,
+          partOffsetX = frameKey.part.x or 0,
+          partOffsetY = frameKey.part.y or 0,
+          flipX = frameKey.part.flipX == true,
+          flipY = frameKey.part.flipY == true,
+        }
+      end
+    end
+  end
+  local spriteKeys = {}
+  for _, key in ipairs(keyOrder) do
+    spriteKeys[key] = true
+  end
+  return true, nil, spriteParts, spriteKeys
 end
 
 ---@param owner PokedexPresentationResources
@@ -1402,6 +1704,7 @@ end
 ---@return string? failure nonempty cause when the demand cannot become ready
 ---@return table<string, boolean>? chromePaths adopted paths behind the staged bundle
 ---@return table<integer, boolean>? bankSet source banks behind the staged messages
+---@return table<string, boolean>? spriteKeys owned viewports behind the staged sprite parts
 local function prepareBundle(owner, lease, demand)
   local manifestReady, manifestFailure = ensureManifest(owner)
   if not manifestReady then
@@ -1558,6 +1861,15 @@ local function prepareBundle(owner, lease, demand)
     unwindNewBanks(lease, preBanks)
     return nil, spindaFailure
   end
+  -- Page sprite viewports realize after every other budgeted family, at most
+  -- one new viewport per call, and gate readiness wherever host viewports
+  -- back the seam.
+  local spriteReady, spriteFailure, spriteParts, spriteKeys =
+    prepareSpriteParts(owner, lease, manifest, demand, rolePath, allowance)
+  if spriteFailure ~= nil then
+    unwindNewBanks(lease, preBanks)
+    return nil, spriteFailure
+  end
   -- Prepared icon quads warm during preparation so the draw pass only
   -- hits the provider cache and realizes nothing.
   warmProviderQuads(lease, demand.iconKeys)
@@ -1568,6 +1880,7 @@ local function prepareBundle(owner, lease, demand)
     or not cryReady
     or not surfacesReady
     or not spindaReady
+    or not spriteReady
   then
     return nil, nil
   end
@@ -1613,6 +1926,8 @@ local function prepareBundle(owner, lease, demand)
     assert(type(adopted) == "table", "published chrome holds its adopted lease")
     chromeByRole[role] = adopted
   end
+  assert(type(spriteParts) == "table", "published bundles carry their sprite parts")
+  assert(type(spriteKeys) == "table", "published bundles carry their sprite membership")
   return {
     renderer = owner._renderer,
     manifest = manifest,
@@ -1623,10 +1938,12 @@ local function prepareBundle(owner, lease, demand)
     pictures = pictures,
     icons = icons,
     surfaces = lease._surfaces,
+    spriteParts = spriteParts,
   },
     nil,
     wantedPaths,
-    messageBanks
+    messageBanks,
+    spriteKeys
 end
 
 ---@param owner PokedexPresentationResources
@@ -1649,6 +1966,11 @@ local function releaseLeaseInterests(owner, lease)
     pool:release(adopted)
   end
   lease._chromeLeases = {}
+  for _, quad in pairs(lease._spritePartQuads) do
+    releaseSpriteQuad(quad)
+  end
+  lease._spritePartQuads = {}
+  lease._committedSpriteKeys = nil
   for _, stored in pairs(lease._spindaCanvases) do
     if type(stored) == "table" and type(stored.record) == "table" then
       stored.record:release()
@@ -1720,12 +2042,21 @@ local function prepareLease(owner, lease, demand)
         pool:cancel(token)
       end
       lease._chromeTokens = {}
+      -- A superseded generation never publishes, so viewports its pending
+      -- work realized retire now; the committed bundle keeps its own.
+      local committedSpriteKeys = lease._committedSpriteKeys or {}
+      for key, quad in pairs(lease._spritePartQuads) do
+        if not committedSpriteKeys[key] then
+          releaseSpriteQuad(quad)
+          lease._spritePartQuads[key] = nil
+        end
+      end
     end
     lease._pending = demand
     deferAdoption = true
     pruneSpindaCanvases(owner, lease, demand)
   end
-  local bundle, failure, stagedPaths, stagedBanks = prepareBundle(owner, lease, demand)
+  local bundle, failure, stagedPaths, stagedBanks, stagedSpriteKeys = prepareBundle(owner, lease, demand)
   if failure ~= nil then
     -- Failure unwinds pending interests and leaves the committed bundle
     -- internally consistent; the error carries its original cause.
@@ -1763,6 +2094,15 @@ local function prepareLease(owner, lease, demand)
         lease._chromeLeases[path] = nil
       end
     end
+    -- Pending-only viewports retire with the doomed generation; the
+    -- committed bundle keeps the viewports it still watches.
+    local committedSpriteKeys = lease._committedSpriteKeys or {}
+    for key, quad in pairs(lease._spritePartQuads) do
+      if not committedSpriteKeys[key] then
+        releaseSpriteQuad(quad)
+        lease._spritePartQuads[key] = nil
+      end
+    end
     return { kind = "failed", error = failure }
   end
   if bundle == nil then
@@ -1782,6 +2122,16 @@ local function prepareLease(owner, lease, demand)
   -- release only now that the replacement owns the display.
   assert(type(stagedPaths) == "table", "adopted bundles carry their staged closure")
   assert(type(stagedBanks) == "table", "adopted bundles carry their staged banks")
+  assert(type(stagedSpriteKeys) == "table", "adopted bundles carry their staged sprite membership")
+  -- Whole-bundle adoption retires viewports the displayed generation no
+  -- longer watches exactly once, only now that the replacement owns them.
+  for key, quad in pairs(lease._spritePartQuads) do
+    if not stagedSpriteKeys[key] then
+      releaseSpriteQuad(quad)
+      lease._spritePartQuads[key] = nil
+    end
+  end
+  lease._committedSpriteKeys = stagedSpriteKeys
   local wantedPortraits = wantedPortraitPaths(lease, demand)
   assert(wantedPortraits ~= nil, "adopted demands carry their portrait paths")
   commitPortraits(lease, wantedPortraits)
@@ -1844,6 +2194,8 @@ function PokedexPresentationResources:acquire(opts)
     _portraitLeases = {},
     _chromeTokens = {},
     _chromeLeases = {},
+    _spritePartQuads = {},
+    _committedSpriteKeys = nil,
     _committedPaths = nil,
     _spindaCanvases = {},
     _spindaRetired = {},

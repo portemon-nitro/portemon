@@ -967,10 +967,9 @@ local function drawPageSprites(graphics, assets, role, paneId, surfaces)
   local inventory = assert(manifest.sprites, "the compiled manifest carries its sprite inventory")
   local animations = assert(manifest.animations, "the compiled manifest carries its animations")
   local cells = assert(manifest.cells, "the compiled manifest carries its cells")
-  local chrome = assert(assets.chrome, "prepared bundles carry their chrome handles")
+  local prepared = assert(assets.spriteParts, "prepared bundles carry their sprite parts")
   local color, meta = surfaces[5], surfaces[6]
   assert(type(graphics.setCanvas) == "function", "sprite passes target their surfaces")
-  assert(type(graphics.newQuad) == "function", "sprite passes cut their source viewports")
   for _, key in ipairs(keys) do
     local sprite = assert(inventory[key], "the sprite inventory carries " .. tostring(key))
     assert(type(sprite) == "table", "sprite records stay records")
@@ -983,18 +982,15 @@ local function drawPageSprites(graphics, assets, role, paneId, surfaces)
       local cell = assert(cells[frames[1].cell], "placed sprites resolve their resting cell: " .. tostring(key))
       assert(type(cell) == "table", "cell records stay records")
       assert(type(cell.parts) == "table", "placed cells carry their parts")
-      for _, part in ipairs(cell.parts) do
+      local resting = assert(prepared[key], "prepared bundles carry sprite parts for placed sprite " .. tostring(key))
+      local restingParts = assert(resting[1], "placed sprites carry their prepared resting frame: " .. tostring(key))
+      assert(#restingParts == #cell.parts, "prepared parts match the resting cell: " .. tostring(key))
+      for index, part in ipairs(cell.parts) do
         assert(type(part) == "table", "cell parts stay records")
         local source = assert(part.source, "placed parts carry their source viewport")
-        local handle = assert(chrome[part.chrome], "prepared bundles carry sprite chrome " .. tostring(part.chrome))
-        assert(type(handle) == "table", "prepared chrome handles stay records")
-        local image = assert(handle.image, "sampling handles carry their borrowed image")
-        assert(
-          type(image.getWidth) == "function" and type(image.getHeight) == "function",
-          "chrome images measure their viewports"
-        )
-        local viewport =
-          graphics.newQuad(source.x, source.y, source.width, source.height, image:getWidth(), image:getHeight())
+        local entry = assert(restingParts[index], "prepared parts cover the resting cell: " .. tostring(key))
+        local viewport = assert(entry.quad, "prepared parts carry their viewport: " .. tostring(key))
+        local handle = assert(entry.handle, "prepared parts carry their chrome handle: " .. tostring(key))
         local dx, dy = sprite.x + part.x, sprite.y + part.y
         graphics.setCanvas(color.canvas)
         if part.flipX == true or part.flipY == true then

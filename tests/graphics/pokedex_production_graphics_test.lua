@@ -3074,6 +3074,219 @@ function T.registration_card_paints_placed_banner_art(scope)
   end)
 end
 
+-- Prepared page sprites never realize graphics objects while drawing:
+-- after whole-view preparation of the shape editor and the
+-- registration card, repeated draws of both pages paint their placed
+-- art while the viewport, image, canvas, and shader constructor counts
+-- stay flat. The shared one-realization preparation budget is proven at
+-- the owning lease boundary, where no font warmup pollutes the census.
+function T.prepared_page_sprites_draw_without_realizing_new_objects(scope)
+  local Renderer = requireRenderer("prepared page-sprite drawing")
+  local Interface = requireInterface("paired native layout resolution")
+  requireOwner("prepared bundles behind the shape editor")
+  local versionId = readyVersion()
+  local pool = SharedImagePoolFake.new()
+  withPool(pool, function()
+    local rig = graphicsRig(versionId, pool, scope)
+    local dexOwner = Fixture.ownerWithHistory(rig.monCatalog, rig.catalog)
+    local controller = Fixture.openController(dexOwner, rig.monCatalog, rig.catalog)
+    openGrid(controller)
+    press(controller, { { type = "y" } })
+    idle(controller, 2)
+    Assert.equal(controller:view().page, "search", "the grid opens its search criteria")
+    press(controller, { { type = "activate", action = "criterion", value = "shape" } })
+    idle(controller, 2)
+    local view = controller:view()
+    Assert.equal(
+      Renderer.resolvePageRole(view, "information"),
+      "search.shape",
+      "the shape editor reads its own page role"
+    )
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "search.shape")
+    local demand = browserDemandFor(Renderer, view)
+    local seeded = {}
+    seedDemandPortraitsOnce(pool, rig.cacheFs, rig.monCatalog, demand, true, seeded)
+    local snapshot = Fixture.registrationSnapshot(dexOwner, rig.monCatalog, "TOTODILE", 0)
+    local cardDemand = Fixture.registrationDemand(snapshot, "prepared-sprite-parts")
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "registration")
+    seedDemandPortraitsOnce(pool, rig.cacheFs, rig.monCatalog, cardDemand, false, seeded)
+    local realQuad = love.graphics.newQuad
+    local realCanvas = love.graphics.newCanvas
+    local realImage = love.graphics.newImage
+    local realShader = love.graphics.newShader
+    local counts = { quad = 0, canvas = 0, image = 0, shader = 0 }
+    love.graphics.newQuad = function(...)
+      counts.quad = counts.quad + 1
+      return realQuad(...)
+    end
+    love.graphics.newCanvas = function(...)
+      counts.canvas = counts.canvas + 1
+      return realCanvas(...)
+    end
+    love.graphics.newImage = function(...)
+      counts.image = counts.image + 1
+      return realImage(...)
+    end
+    love.graphics.newShader = function(...)
+      counts.shader = counts.shader + 1
+      return realShader(...)
+    end
+    local ok, err = xpcall(function()
+      local shapeLease = rig.owner:acquire({ purpose = "browser" })
+      local shapeAssets = prepareReady(rig, shapeLease, demand)
+      local cardLease = rig.owner:acquire({ purpose = "registration" })
+      local cardAssets = prepareReady(rig, cardLease, cardDemand)
+      local shapeMeasurement = measurementFor("dualDisplay")
+      local shapePlan = resolvePlan(Interface.browser(), shapeMeasurement, planViewOf(view))
+      local cardPlan = resolvePlan(Interface.registration(), measurementFor("nativeLike"), {})
+      local shapeResources = { graphics = love.graphics, renderer = shapeAssets.renderer }
+      local cardResources = { graphics = love.graphics, renderer = cardAssets.renderer }
+      local shapeTarget = scope:own(realCanvas(shapeMeasurement.width, shapeMeasurement.height))
+      local cardTarget = scope:own(realCanvas(256, 192))
+      ---@param target table owned offscreen target behind the composed pane
+      ---@param plan table resolved application plan behind the draw
+      ---@param resources table borrowed draw resources with the renderer
+      ---@param preparedView table prepared view behind the draw
+      ---@return table 8-bit pixel buffer behind the composed target
+      local function renderTo(target, plan, resources, preparedView)
+        love.graphics.setCanvas(target)
+        love.graphics.clear(0, 0, 0, 0)
+        plan.render(resources, preparedView, plan)
+        love.graphics.setCanvas()
+        return target:newImageData()
+      end
+      local shapePage = assert(rig.manifest.pages["search.shape"], "the manifest closes the shape page")
+      local placed = {}
+      for _, spriteRole in ipairs(assert(shapePage.sprites, "the shape page inventories its sprites")) do
+        local record = assert(rig.manifest.sprites[spriteRole], "the sprite inventory carries " .. spriteRole)
+        if record.x ~= 0 or record.y ~= 0 then
+          placed[#placed + 1] = { role = spriteRole, record = record }
+        end
+      end
+      Assert.equal(#placed, 14, "the shape page places its fourteen choice sprites")
+      local shapeParts = assert(shapeAssets.spriteParts, "the shape bundle publishes its prepared sprite parts")
+      for _, entry in ipairs(placed) do
+        local frames = assert(shapeParts[entry.role], entry.role .. " publishes its prepared frame")
+        local resting = assert(frames[1], entry.role .. " publishes its resting frame")
+        Assert.isTrue(#resting >= 1, entry.role .. " prepares its resting parts")
+        for _, prepared in ipairs(resting) do
+          Assert.notNil(prepared.quad, entry.role .. " prepares its viewport before drawing")
+        end
+      end
+      local decoded = {}
+      local function chromeData(role)
+        if decoded[role] == nil then
+          local entry = assert(rig.manifest.chrome[role], "the manifest stages " .. role)
+          decoded[role] = decodePage(rig.cacheFs, entry.path)
+        end
+        return decoded[role]
+      end
+      local controlsPane = placementOf(shapePlan, "controls")
+      ---@param data table 8-bit pixel buffer behind the composed shape page
+      local function checkShapeArt(data)
+        for _, entry in ipairs(placed) do
+          local animation =
+            assert(rig.manifest.animations[entry.record.animation], entry.role .. " resolves its animation")
+          local cell =
+            assert(rig.manifest.cells[animation.frames[1].cell], entry.role .. " resolves its resting cell")
+          local part = assert(cell.parts[1], entry.role .. " carries its first part")
+          local baseData = chromeData(part.chrome)
+          local dx, dy =
+            opaqueOffset(baseData, part.source.x, part.source.y, part.source.width, part.source.height)
+          local er, eg, eb = pixel(baseData, part.source.x + dx, part.source.y + dy)
+          assertPixel(
+            data,
+            controlsPane.origin.x + entry.record.x + part.x + dx,
+            controlsPane.origin.y + entry.record.y + part.y + dy,
+            er,
+            eg,
+            eb,
+            entry.role .. " inks its authored art at its authored center"
+          )
+        end
+      end
+      local cardPage = assert(rig.manifest.pages.registration, "the manifest closes the registration page")
+      local banner = nil
+      for _, spriteRole in ipairs(assert(cardPage.sprites, "the card inventories its sprites")) do
+        local record = assert(rig.manifest.sprites[spriteRole], "the sprite inventory carries " .. spriteRole)
+        if record.x ~= 0 or record.y ~= 0 then
+          Assert.isNil(banner, "the card places only its banner emblem")
+          banner = { role = spriteRole, record = record }
+        end
+      end
+      Assert.notNil(banner, "the card places its banner emblem")
+      assert(banner ~= nil, "the card places its banner emblem")
+      local bannerAnimation =
+        assert(rig.manifest.animations[banner.record.animation], banner.role .. " resolves its animation")
+      local bannerCell =
+        assert(rig.manifest.cells[bannerAnimation.frames[1].cell], banner.role .. " resolves its resting cell")
+      local bannerPart = assert(bannerCell.parts[1], banner.role .. " carries its first part")
+      local bannerEntry = assert(rig.manifest.chrome[bannerPart.chrome], "the manifest stages " .. bannerPart.chrome)
+      local bannerData = decodePage(rig.cacheFs, bannerEntry.path)
+      local bannerDx, bannerDy = opaqueOffset(
+        bannerData,
+        bannerPart.source.x,
+        bannerPart.source.y,
+        bannerPart.source.width,
+        bannerPart.source.height
+      )
+      local ber, beg, beb =
+        pixel(bannerData, bannerPart.source.x + bannerDx, bannerPart.source.y + bannerDy)
+      local cardParts = assert(cardAssets.spriteParts, "the card bundle publishes its prepared sprite parts")
+      local bannerResting = assert(
+        assert(cardParts[banner.role], "the banner publishes its prepared frame")[1],
+        "the banner publishes its resting frame"
+      )
+      Assert.isTrue(#bannerResting >= 1, "the banner prepares its resting parts")
+      ---@param data table 8-bit pixel buffer behind the composed card
+      local function checkCardArt(data)
+        assertPixel(
+          data,
+          banner.record.x + bannerPart.x + bannerDx,
+          banner.record.y + bannerPart.y + bannerDy,
+          ber,
+          beg,
+          beb,
+          "the banner emblem inks at its authored center"
+        )
+      end
+      checkShapeArt(renderTo(shapeTarget, shapePlan, shapeResources, preparedBrowserView(view, shapeAssets)))
+      checkCardArt(renderTo(
+        cardTarget,
+        cardPlan,
+        cardResources,
+        { view = { pictureX = 48, paletteFade = 0, pictureFade = 0 }, assets = cardAssets }
+      ))
+      local before = { quad = counts.quad, canvas = counts.canvas, image = counts.image, shader = counts.shader }
+      for _ = 1, 3 do
+        checkShapeArt(renderTo(shapeTarget, shapePlan, shapeResources, preparedBrowserView(view, shapeAssets)))
+        checkCardArt(renderTo(
+          cardTarget,
+          cardPlan,
+          cardResources,
+          { view = { pictureX = 48, paletteFade = 0, pictureFade = 0 }, assets = cardAssets }
+        ))
+      end
+      Assert.equal(counts.quad, before.quad, "steady draws create no viewports")
+      Assert.equal(counts.canvas, before.canvas, "steady draws create no canvases")
+      Assert.equal(counts.image, before.image, "steady draws create no images")
+      Assert.equal(counts.shader, before.shader, "steady draws create no shaders")
+      shapeLease:release()
+      cardLease:release()
+      controller:dispose()
+      rig.owner:release()
+      Assert.equal(pool:stats().outstandingLeases, 0, "the sprite journey returns every borrowed interest")
+    end, debug.traceback)
+    love.graphics.newQuad = realQuad
+    love.graphics.newCanvas = realCanvas
+    love.graphics.newImage = realImage
+    love.graphics.newShader = realShader
+    if not ok then
+      error(err, 0)
+    end
+  end)
+end
+
 function T.heartgold_graphics_legs_stay_blocked_without_a_dump(_, context)
   if not RomImporter.isReady("heartgold") then
     assert(context ~= nil, "blocked-version reporting needs its runner context")
