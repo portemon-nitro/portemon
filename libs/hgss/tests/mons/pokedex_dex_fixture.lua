@@ -7,6 +7,7 @@
 -- composes.
 
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+local PokedexSources = require("romdump.src.config.PokedexSources")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
 local MonCatalog = require("libs.mons.src.MonCatalog")
 local MonFactory = require("libs.mons.src.gen4.MonFactory")
@@ -397,7 +398,7 @@ function PokedexDexFixture.buildPokedexCatalog()
         kind = "outdoor",
         region = "johto",
         mapKey = "custom.route-29",
-        name = { bankId = 1, messageId = 1 },
+        name = { bankId = 802, messageId = 65 },
         rect = { x = 0, y = 0, width = 8, height = 8 },
         markerMask = {},
       },
@@ -405,7 +406,7 @@ function PokedexDexFixture.buildPokedexCatalog()
         kind = "dungeon",
         region = "johto",
         mapKey = "custom.dark-cave",
-        name = { bankId = 1, messageId = 2 },
+        name = { bankId = 802, messageId = 66 },
         position = { x = 3, y = 4 },
       },
     },
@@ -442,7 +443,11 @@ function PokedexDexFixture.buildPokedexCatalog()
         giratina_origin = { heightBankId = 814, weightBankId = 812 },
       },
       registrationAnnouncement = { bankId = 197, messageId = 871 },
+      landmarks = { bankId = 279, fallbackBankId = 280, fallbackMessageId = 2 },
     },
+    searchText = PokedexSources.searchText(),
+    entryText = PokedexSources.entryText(),
+    formNames = PokedexSources.formNameMessages(),
   }
 end
 

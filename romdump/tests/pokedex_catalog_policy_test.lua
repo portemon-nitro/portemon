@@ -283,7 +283,7 @@ end
 function T.message_bank_closure_covers_every_named_role()
   local PokedexSources = require("romdump.src.config.PokedexSources")
   local ids = PokedexSources.messageBankIds()
-  Assert.equal(#ids, 28, "the presentation closure names every fixed bank once")
+  Assert.equal(#ids, 30, "the presentation closure names every fixed bank once: 28 pre-existing plus the landmarks name/fallback banks behind AREA location rows")
   local wanted = {
     [802] = true,
     [237] = true,

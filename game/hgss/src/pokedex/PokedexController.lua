@@ -17,6 +17,7 @@ local PokedexSize = require("game.hgss.src.pokedex.PokedexSize")
 ---@field _monCatalog table<string, unknown> borrowed resolved mon catalog
 ---@field _dex table<string, unknown> borrowed authoritative knowledge owner
 ---@field _playerGender string trainer gender selecting height records
+---@field _playerName string? trainer display name behind the size page
 ---@field _playerPosition table<string, integer> captured global block cell
 ---@field _nativeLanguage string selected game language key
 ---@field _mode string active dex mode
@@ -186,7 +187,7 @@ local function tryDex(dex, method, argument)
   return result
 end
 
----@param args { catalog: table<string, unknown>, monCatalog: table<string, unknown>, dex: table<string, unknown>, playerGender: string, playerPosition: table<string, unknown>, nativeLanguage: string }
+---@param args { catalog: table<string, unknown>, monCatalog: table<string, unknown>, dex: table<string, unknown>, playerGender: string, playerPosition: table<string, unknown>, playerName: string?, nativeLanguage: string }
 ---@return PokedexController
 function PokedexController.new(args)
   if type(args) ~= "table" then
@@ -202,6 +203,9 @@ function PokedexController.new(args)
   end
   if args.playerGender ~= "male" and args.playerGender ~= "female" then
     fail("browser needs the trainer gender", {})
+  end
+  if args.playerName ~= nil and (type(args.playerName) ~= "string" or args.playerName == "") then
+    fail("browser needs a nonempty trainer name when one travels", {})
   end
   local position = checkTable(args.playerPosition, "the captured player cell")
   if type(position.mapX) ~= "number" or type(position.mapY) ~= "number" then
@@ -252,6 +256,7 @@ function PokedexController.new(args)
     _monCatalog = args.monCatalog,
     _dex = dex,
     _playerGender = args.playerGender,
+    _playerName = args.playerName,
     _playerPosition = { mapX = position.mapX, mapY = position.mapY },
     _nativeLanguage = args.nativeLanguage,
     _mode = mode,
@@ -1968,11 +1973,524 @@ local function padNumber(number)
   return string.format("%03d", number)
 end
 
+-- Ordered search criteria behind the native criteria root. The editor
+-- projection names its criterion under either spelling; both resolve to
+-- the same contracted slots.
+local SEARCH_CRITERIA = { "order", "letter", "type", "height", "weight", "area", "shape" }
+
+---@param controller PokedexController browser controller under construction of its text slots
+---@return table<string, unknown> bound search text bindings
+local function searchTextBindings(controller)
+  local catalog = controller._catalog
+  if type(catalog) ~= "table" then
+    fail("search text needs its generated catalog", {})
+  end
+  assert(type(catalog) == "table", "search text reads its generated catalog")
+  return checkTable(catalog.searchText, "search text bindings")
+end
+
+---@param records table<string, integer> bound message ids by option key
+---@param key string? staged option key
+---@param what string attribution behind the lookup
+---@return integer bound source message identity
+local function searchMessageId(records, key, what)
+  if type(records) ~= "table" then
+    fail("search text names no " .. what .. " table", {})
+  end
+  local id = type(key) == "string" and records[key] or nil
+  if type(id) ~= "number" then
+    fail("search text names no " .. what, { key = key })
+  end
+  assert(type(id) == "number", "search text binds its message")
+  return id
+end
+
+-- Lenient variant for catalog-driven type keys: a synthetic catalog may
+-- stage a key with no native bank entry, in which case there is no
+-- source-backed label and the caller skips the slot instead of failing
+-- the whole page. Real catalogs only carry native keys.
+---@param records table<string, integer>? bound message ids by option key
+---@param key string? staged option key
+---@return integer? bound source message identity, or nil without a native entry
+local function searchMessageIdOrNil(records, key)
+  if type(records) ~= "table" then
+    return nil
+  end
+  local id = type(key) == "string" and records[key] or nil
+  if type(id) ~= "number" then
+    return nil
+  end
+  return id
+end
+
+---@param slots table[] detached semantic text slot requests under construction
+---@param role string contracted window role
+---@param messageId integer source UI bank entry
+---@param language string selected game language key
+local function appendUiSlot(slots, role, messageId, language)
+  slots[#slots + 1] = { role = role, kind = "ui", messageId = messageId, language = language }
+end
+
+---@param slots table[] detached semantic text slot requests under construction
+---@param selection { species: string?, dexNumber: integer?, seen: boolean, caught: boolean, language: string } live browser selection record
+local function appendHighlightedIdentity(slots, selection)
+  if selection.seen == true and type(selection.species) == "string" and type(selection.dexNumber) == "number" then
+    slots[#slots + 1] = { role = "grid.selected-number", kind = "numeric", value = padNumber(selection.dexNumber) }
+    slots[#slots + 1] = {
+      role = "grid.selected-name",
+      kind = "species_name",
+      species = selection.species,
+      language = selection.language,
+    }
+  end
+end
+
+-- Bounded selected-detail family for the adapted inspector: number and
+-- name for seen-only highlights, plus the caught-protected category,
+-- flavor, height, and weight once caught. Unseen slots publish nothing.
+---@param controller PokedexController browser controller under construction of its text slots
+---@param slots table[] detached semantic text slot requests under construction
+local function appendCompactDetails(controller, slots)
+  local selection = controller._selection
+  if selection.seen ~= true or type(selection.species) ~= "string" then
+    return
+  end
+  if type(selection.dexNumber) == "number" then
+    slots[#slots + 1] = { role = "compact.detail-number", kind = "numeric", value = padNumber(selection.dexNumber) }
+  end
+  slots[#slots + 1] = {
+    role = "compact.detail-name",
+    kind = "species_name",
+    species = selection.species,
+    language = selection.language,
+  }
+  if selection.caught ~= true then
+    return
+  end
+  slots[#slots + 1] = {
+    role = "compact.detail-category",
+    kind = "category",
+    species = selection.species,
+    language = selection.language,
+  }
+  slots[#slots + 1] =
+    { role = "compact.detail-flavor", kind = "flavor", species = selection.species, language = selection.language }
+  slots[#slots + 1] = { role = "compact.detail-height", kind = "height", species = selection.species }
+  slots[#slots + 1] = { role = "compact.detail-weight", kind = "weight", species = selection.species }
+end
+
+---@param controller PokedexController browser controller under construction of its text slots
+---@return table<string, unknown> bound entry-page text bindings
+local function entryTextBindings(controller)
+  local catalog = controller._catalog
+  if type(catalog) ~= "table" then
+    fail("entry text needs its generated catalog", {})
+  end
+  assert(type(catalog) == "table", "entry text reads its generated catalog")
+  return checkTable(catalog.entryText, "entry text bindings")
+end
+
+---@param controller PokedexController browser controller under construction of its text slots
+---@return table<string, unknown> bound form-name policy bindings
+local function formNameBindings(controller)
+  local catalog = controller._catalog
+  if type(catalog) ~= "table" then
+    fail("form names need their generated catalog", {})
+  end
+  assert(type(catalog) == "table", "form names read their generated catalog")
+  return checkTable(catalog.formNames, "form name bindings")
+end
+
+-- Species-specific form-name message behind one list/compare row,
+-- transcribed from the native form-name policy: fixed Unown names, the
+-- Shellos/Gastrodon, Burmy/Wormadam, Deoxys, Shaymin, Giratina, Rotom,
+-- Castform and Cherrim runs indexed by form id, the Pichu mapping, the
+-- gendered male/female rows, and the generic species-named entry. A
+-- form id outside its native run fails instead of inventing a label,
+-- and a raw numeric index is never shown.
+---@param formNames table<string, unknown> bound form-name policy bindings
+---@param species string entry species key
+---@param variant { form: integer, gender: string } visible list variant
+---@return integer bound source UI message identity
+---@return boolean whether the message names the species through the native field
+local function formNameMessageId(formNames, species, variant)
+  local fixed = type(formNames.fixed) == "table" and formNames.fixed[species] or nil
+  if type(fixed) == "number" then
+    ---@cast fixed integer
+    return fixed, false
+  end
+  if species == "PICHU" then
+    local pichu = checkTable(formNames.pichu, "pichu form names")
+    local entry = pichu[variant.form]
+    if type(entry) == "number" then
+      ---@cast entry integer
+      return entry, false
+    end
+    return searchMessageId({ other = pichu.other }, "other", "pichu form"), false
+  end
+  local base = type(formNames.base) == "table" and formNames.base[species] or nil
+  if type(base) == "number" then
+    local count = type(formNames.count) == "table" and formNames.count[species] or nil
+    if type(count) ~= "number" or variant.form < 0 or variant.form >= count then
+      fail("form names cover no such variant", { species = species, form = variant.form })
+    end
+    assert(type(count) == "number", "form names bound their run length")
+    ---@cast base integer
+    return base + variant.form, false
+  end
+  if variant.gender == "male" then
+    return searchMessageId(formNames, "male", "gendered form"), false
+  end
+  if variant.gender == "female" then
+    return searchMessageId(formNames, "female", "gendered form"), false
+  end
+  return searchMessageId(formNames, "generic", "gendered form"), true
+end
+
+-- One form-name row behind a list, selected, or compare slot: plain UI
+-- bank entries resolve directly while the generic species-named entry
+-- travels as a species-templated slot for preparation to expand.
+---@param slots table[] detached semantic text slot requests under construction
+---@param role string contracted window role
+---@param species string entry species key
+---@param variant { form: integer, gender: string } visible list variant
+---@param language string selected game language key
+---@param formNames table<string, unknown> bound form-name policy bindings
+local function appendFormNameSlot(slots, role, species, variant, language, formNames)
+  local messageId, namesSpecies = formNameMessageId(formNames, species, variant)
+  if namesSpecies then
+    slots[#slots + 1] =
+      { role = role, kind = "named_ui", messageId = messageId, species = species, language = language }
+    return
+  end
+  appendUiSlot(slots, role, messageId, language)
+end
+
+-- Shared staged search values behind a role prefix: the menu prefix
+-- paints the main-screen value windows while the summary prefix paints
+-- the return-slot recap on the results screen from the same staged
+-- criteria and message bindings.
+---@param controller PokedexController browser controller under construction of its text slots
+---@param slots table[] detached semantic text slot requests under construction
+---@param prefix string window role prefix behind the staged values
+local function appendStagedValueSlots(controller, slots, prefix)
+  local searchText = searchTextBindings(controller)
+  local language = controller._nativeLanguage
+  local criteria = controller._search:criteria()
+  appendUiSlot(slots, prefix .. "order", searchMessageId(searchText.orders, criteria.order, "sort"), language)
+  local letterKey = type(criteria.letter) == "string" and criteria.letter:upper() or "unrestricted"
+  appendUiSlot(slots, prefix .. "letter", searchMessageId(searchText.letters, letterKey, "letter"), language)
+  local typeGroup = searchText.types
+  for index, valueRole in ipairs({ prefix .. "type-1", prefix .. "type-2" }) do
+    local staged = index == 1 and criteria.type1 or criteria.type2
+    local typeId = searchMessageIdOrNil(typeGroup, staged or "unrestricted")
+    if typeId ~= nil then
+      appendUiSlot(slots, valueRole, typeId, language)
+    end
+  end
+  for _, measure in ipairs({ "height", "weight" }) do
+    local bounds = criteria[measure]
+    assert(type(bounds) == "table", "search reads its slider bounds")
+    slots[#slots + 1] = { role = prefix .. measure .. "-min", kind = "numeric", value = tostring(bounds.min) }
+    slots[#slots + 1] = { role = prefix .. measure .. "-max", kind = "numeric", value = tostring(bounds.max) }
+  end
+  appendUiSlot(
+    slots,
+    prefix .. "area",
+    searchMessageId(searchText.areas, criteria.area or "unrestricted", "area scope"),
+    language
+  )
+end
+
+-- One option row per editor choice: six sorts, 27 letter marks, the
+-- catalog type set with its empty mark, area scopes honoring their
+-- enabled flags, and integer slider bounds stay with the value slots.
+---@param controller PokedexController browser controller under construction of its text slots
+---@param slots table[] detached semantic text slot requests under construction
+---@param kind string open editor criterion
+---@param language string selected game language key
+---@param searchText table<string, unknown> bound search text bindings
+local function appendEditorOptions(controller, slots, kind, language, searchText)
+  local enabled = nil
+  local editor = controller._search:editorView()
+  if kind == "area" and type(editor) == "table" and type(editor.choices) == "table" then
+    local areaChoices = editor.choices.area
+    if type(areaChoices) == "table" then
+      enabled = {}
+      for name, record in pairs(areaChoices) do
+        if type(record) == "table" and record.enabled == true then
+          enabled[name] = true
+        end
+      end
+    end
+  end
+  local group = searchText[kind .. "s"]
+  for _, option in ipairs(controller._search:editorOptions(kind)) do
+    if enabled ~= nil and enabled[option] ~= true then
+      -- A disabled scope keeps its blank native window.
+    elseif kind == "type" then
+      local optionId = searchMessageIdOrNil(type(group) == "table" and group or nil, option)
+      if optionId ~= nil then
+        appendUiSlot(slots, "search.option-" .. kind .. "-" .. option, optionId, language)
+      end
+    else
+      appendUiSlot(slots, "search.option-" .. kind .. "-" .. option, searchMessageId(group, option, kind), language)
+    end
+  end
+end
+
+-- Source-backed search text: menu captions with staged values and
+-- run/reset/back on the root; each editor carries its own title and
+-- current-value windows plus one option row per choice and the commit
+-- buttons. The shape editor publishes its title and buttons only: the
+-- source prints no option labels and the silhouettes are sprite art.
+-- Disabled scopes (the Kanto scope before the national unlock) publish
+-- no label, matching the blank native window.
+---@param controller PokedexController browser controller under construction of its text slots
+---@param slots table[] detached semantic text slot requests under construction
+local function appendSearchSlots(controller, slots)
+  local searchText = searchTextBindings(controller)
+  local language = controller._nativeLanguage
+  local criteria = controller._search:criteria()
+  local editor = controller._search:editorView()
+  if editor == nil then
+    for _, name in ipairs(SEARCH_CRITERIA) do
+      appendUiSlot(slots, "search.caption-" .. name, searchMessageId(searchText.criteria, name, "caption"), language)
+    end
+    appendStagedValueSlots(controller, slots, "search.value-")
+    appendUiSlot(slots, "search.button-run", searchMessageId(searchText.buttons, "run", "button"), language)
+    appendUiSlot(slots, "search.button-reset", searchMessageId(searchText.buttons, "reset", "button"), language)
+    appendUiSlot(slots, "search.button-back", searchMessageId(searchText.buttons, "back", "button"), language)
+    return
+  end
+  local kind = editor.criterion
+  if type(kind) ~= "string" then
+    kind = editor.kind
+  end
+  assert(type(kind) == "string", "search editors name their criterion")
+  appendUiSlot(slots, "search.title-" .. kind, searchMessageId(searchText.criteria, kind, "caption"), language)
+  if kind == "height" or kind == "weight" then
+    local bounds = criteria[kind]
+    assert(type(bounds) == "table", "search reads its slider bounds")
+    slots[#slots + 1] = { role = "search.current-" .. kind .. "-min", kind = "numeric", value = tostring(bounds.min) }
+    slots[#slots + 1] = { role = "search.current-" .. kind .. "-max", kind = "numeric", value = tostring(bounds.max) }
+  elseif kind == "type" then
+    local typeGroup = searchText.types
+    local current1 = searchMessageIdOrNil(typeGroup, criteria.type1 or "unrestricted")
+    if current1 ~= nil then
+      appendUiSlot(slots, "search.current-type-1", current1, language)
+    end
+    local current2 = searchMessageIdOrNil(typeGroup, criteria.type2 or "unrestricted")
+    if current2 ~= nil then
+      appendUiSlot(slots, "search.current-type-2", current2, language)
+    end
+    appendEditorOptions(controller, slots, kind, language, searchText)
+  elseif kind == "area" then
+    appendUiSlot(
+      slots,
+      "search.current-area",
+      searchMessageId(searchText.areas, criteria.area or "unrestricted", "area scope"),
+      language
+    )
+    appendEditorOptions(controller, slots, kind, language, searchText)
+  elseif kind ~= "shape" then
+    if kind == "letter" then
+      local letterKey = type(criteria.letter) == "string" and criteria.letter:upper() or "unrestricted"
+      appendUiSlot(slots, "search.current-letter", searchMessageId(searchText.letters, letterKey, "letter"), language)
+    elseif kind == "order" then
+      appendUiSlot(slots, "search.current-order", searchMessageId(searchText.orders, criteria.order, "sort"), language)
+    end
+    appendEditorOptions(controller, slots, kind, language, searchText)
+  end
+  appendUiSlot(slots, "search.button-ok", searchMessageId(searchText.editorButtons, "ok", "button"), language)
+  appendUiSlot(slots, "search.button-cancel", searchMessageId(searchText.editorButtons, "cancel", "button"), language)
+end
+
+-- The six visible area rows around the list cursor: the region row
+-- names the viewed region while habitat rows resolve their landmark
+-- names through the compiled map-section bindings. Positions outside the
+-- list stay unpublished so their windows stay blank; a habitat row with
+-- no compiled name binding fails instead of inventing a label.
+---@param controller PokedexController browser controller under construction of its text slots
+---@param slots table[] detached semantic text slot requests under construction
+---@param entryText table<string, unknown> bound entry-page text bindings
+---@param areaView { row: integer, region: string, rows: { kind: string, mapKey: string? }[] } detached area projection
+local function appendAreaRows(controller, slots, entryText, areaView)
+  local language = controller._nativeLanguage
+  local geometry = checkTable(controller._catalog.areaGeometry, "area geometry")
+  for position = 1, 6 do
+    local row = areaView.rows[areaView.row + position - 2]
+    if row ~= nil then
+      local role = position == 1 and "area.location" or "area.row-" .. position
+      if row.kind == "all" then
+        if areaView.region == "johto" then
+          appendUiSlot(slots, role, entryText.areaRegionJohto, language)
+        elseif areaView.region == "kanto" then
+          appendUiSlot(slots, role, entryText.areaRegionKanto, language)
+        else
+          fail("area text names a known region", { region = areaView.region })
+        end
+      else
+        local record = geometry[row.mapKey]
+        if type(record) ~= "table" then
+          fail("area text names a mapped habitat row", { mapKey = row.mapKey })
+        end
+        assert(type(record) == "table", "area rows read their compiled geometry")
+        local name = record.name
+        if type(name) ~= "table" or name.bankId == 0 then
+          fail("area text names a mapped habitat row", { mapKey = row.mapKey })
+        end
+        assert(type(name.bankId) == "number", "area names bind their bank")
+        assert(type(name.messageId) == "number", "area names bind their entry")
+        slots[#slots + 1] = { role = role, kind = "area_name", bankId = name.bankId, messageId = name.messageId }
+      end
+    end
+  end
+end
+
+-- Area screen text: title, daypart, region tabs, the unknown banner when
+-- the list holds only the region entry, and the six scrolled rows.
+---@param controller PokedexController browser controller under construction of its text slots
+---@param slots table[] detached semantic text slot requests under construction
+---@param entryText table<string, unknown> bound entry-page text bindings
+local function appendAreaSlots(controller, slots, entryText)
+  local area = controller._area
+  assert(area ~= nil, "area text reads the open area helper")
+  local areaView = area:view()
+  if type(areaView.time) ~= "number" or areaView.time < 0 or areaView.time > 2 then
+    fail("area text names a known daypart", { time = areaView.time })
+  end
+  assert(type(areaView.region) == "string", "area reads its viewed region")
+  local searchText = searchTextBindings(controller)
+  local language = controller._nativeLanguage
+  appendUiSlot(slots, "area.title", entryText.areaTitle, language)
+  slots[#slots + 1] = {
+    role = "area.time",
+    kind = "ui",
+    messageId = searchText.timeBase + areaView.time,
+    language = language,
+  }
+  appendUiSlot(slots, "area.caption", entryText.areaCaption, language)
+  if controller._nationalUnlocked == true then
+    appendUiSlot(slots, "area.tab-johto", searchText.areas.johto, language)
+    appendUiSlot(slots, "area.tab-kanto", searchText.areas.kanto, language)
+  else
+    appendUiSlot(slots, "area.tab-johto-solo", searchText.areas.johto, language)
+  end
+  if #areaView.rows <= 1 then
+    appendUiSlot(slots, "area.unknown", entryText.areaUnknown, language)
+  end
+  appendAreaRows(controller, slots, entryText, areaView)
+end
+
+-- Size screen text: title, species and trainer names, height/weight
+-- captions, unit marks and trainer-gender words. Measurements stay
+-- with the caught-gated entry slots; seen-only pages leave them blank.
+---@param controller PokedexController browser controller under construction of its text slots
+---@param slots table[] detached semantic text slot requests under construction
+---@param entryText table<string, unknown> bound entry-page text bindings
+---@param species string entry species key
+---@param language string selected game language key
+local function appendSizeSlots(controller, slots, entryText, species, language)
+  local native = controller._nativeLanguage
+  appendUiSlot(slots, "size.title", entryText.sizeTitle, native)
+  slots[#slots + 1] = { role = "size.species-name", kind = "species_name", species = species, language = language }
+  if type(controller._playerName) == "string" and controller._playerName ~= "" then
+    slots[#slots + 1] = { role = "size.player-name", kind = "player_name", value = controller._playerName }
+  end
+  appendUiSlot(slots, "size.caption-height", entryText.sizeCaptionHeight, native)
+  appendUiSlot(slots, "size.mark-height-left", entryText.sizeMarkHeight, native)
+  appendUiSlot(slots, "size.mark-height-right", entryText.sizeMarkHeight, native)
+  if controller._playerGender == "male" then
+    appendUiSlot(slots, "size.gender-height", entryText.sizeMaleHeight, native)
+  else
+    appendUiSlot(slots, "size.gender-height", entryText.sizeFemaleHeight, native)
+  end
+  appendUiSlot(slots, "size.caption-weight", entryText.sizeCaptionWeight, native)
+  appendUiSlot(slots, "size.mark-weight-left", entryText.sizeMarkWeight, native)
+  appendUiSlot(slots, "size.mark-weight-right", entryText.sizeMarkWeight, native)
+  if controller._playerGender == "male" then
+    appendUiSlot(slots, "size.gender-weight", entryText.sizeMaleWeight, native)
+  else
+    appendUiSlot(slots, "size.gender-weight", entryText.sizeFemaleWeight, native)
+  end
+  if tryDex(controller._dex, "isCaught", species) == true then
+    slots[#slots + 1] = { role = "size.species-weight", kind = "weight", species = species }
+  end
+end
+
+-- Forms screen text: title, species header, selected form name and the
+-- six visible form rows around the cursor, plus the multi-form caption.
+-- The compare pairing replaces the list with both compared names and
+-- labels on both sides.
+---@param controller PokedexController browser controller under construction of its text slots
+---@param slots table[] detached semantic text slot requests under construction
+---@param entryText table<string, unknown> bound entry-page text bindings
+---@param formNames table<string, unknown> bound form-name policy bindings
+---@param species string entry species key
+---@param language string selected game language key
+local function appendFormsSlots(controller, slots, entryText, formNames, species, language)
+  local forms = controller._forms
+  assert(forms ~= nil, "forms text reads the open forms helper")
+  local formsView = forms:view()
+  local native = controller._nativeLanguage
+  appendUiSlot(slots, "forms.title", entryText.formsTitle, native)
+  local comparison = formsView.comparison
+  if comparison ~= nil then
+    slots[#slots + 1] = {
+      role = "forms.compare-header",
+      kind = "named_ui",
+      messageId = entryText.formsCompareHeader,
+      species = species,
+      language = language,
+    }
+    appendUiSlot(slots, "forms.compare-caption", entryText.formsTitle, native)
+    appendUiSlot(slots, "forms.compare-label-left", entryText.formsCompareLeft, native)
+    appendUiSlot(slots, "forms.compare-label-right", entryText.formsCompareRight, native)
+    local indices = comparison.indices
+    assert(type(indices) == "table", "forms comparisons pair two variants")
+    for side = 1, 2 do
+      local variant = formsView.variants[indices[side] + 1]
+      if variant == nil then
+        fail("forms comparisons pair known variants", { side = side })
+      end
+      assert(type(variant) == "table", "forms comparisons pair known variants")
+      local role = side == 1 and "forms.compare-left" or "forms.compare-right"
+      appendFormNameSlot(slots, role, species, variant, language, formNames)
+    end
+    return
+  end
+  slots[#slots + 1] = {
+    role = "forms.header",
+    kind = "named_ui",
+    messageId = entryText.formsHeader,
+    species = species,
+    language = language,
+  }
+  local selected = formsView.variants[formsView.row + 1]
+  if selected == nil then
+    fail("forms text names the selected variant", { species = species })
+  end
+  assert(type(selected) == "table", "forms text names the selected variant")
+  appendFormNameSlot(slots, "forms.selected", species, selected, language, formNames)
+  if #formsView.variants > 1 then
+    appendUiSlot(slots, "forms.caption", entryText.formsCaption, native)
+  end
+  for position = 1, 6 do
+    local variant = formsView.variants[formsView.row + position - 2]
+    if variant ~= nil then
+      appendFormNameSlot(slots, "forms.row-" .. position, species, variant, language, formNames)
+    end
+  end
+end
+
 -- Detached semantic text requests for the visible page: counts, the
--- regional selection identity, and the open specimen facts the prepared
--- renderer resolves through its message banks. Only fact-derived slots
--- are published here; interface labels without a verified source message
--- reference stay out so preparation never fetches an invented bank entry.
+-- regional selection identity, source-backed search captions/values and
+-- per-editor options, area daypart/region, return actions, the selected
+-- form name, bounded selected-detail strings, and the open specimen
+-- facts the prepared renderer resolves through its message banks. Only
+-- fact-derived slots with a verified source message reference are
+-- published here, so preparation never fetches an invented bank entry.
 ---@return table[] detached semantic text slot requests for the visible page
 function PokedexController:_textSlots()
   local slots = {}
@@ -1986,16 +2504,8 @@ function PokedexController:_textSlots()
       kind = "numeric",
       value = tostring(type(caught) == "number" and caught or 0),
     }
-    local selection = self._selection
-    if selection.seen == true and type(selection.species) == "string" and type(selection.dexNumber) == "number" then
-      slots[#slots + 1] = { role = "grid.selected-number", kind = "numeric", value = padNumber(selection.dexNumber) }
-      slots[#slots + 1] = {
-        role = "grid.selected-name",
-        kind = "species_name",
-        species = selection.species,
-        language = selection.language,
-      }
-    end
+    appendHighlightedIdentity(slots, self._selection)
+    appendCompactDetails(self, slots)
   elseif self._page == "search" then
     -- The feedback count follows the native result-count template (bank
     -- 802 entry 15, field 0 bound to the completed count, shown while
@@ -2010,8 +2520,26 @@ function PokedexController:_textSlots()
         language = self._nativeLanguage,
       }
     end
+    appendSearchSlots(self, slots)
   elseif self._page == "results" then
     slots[#slots + 1] = { role = "search.results", kind = "numeric", value = tostring(#self._results) }
+    appendHighlightedIdentity(slots, self._selection)
+    appendCompactDetails(self, slots)
+    -- The leading return slot shows the criteria recap the species
+    -- highlight replaces: same staged values in the summary rects.
+    if self._selection.species == nil then
+      local summaryText = searchTextBindings(self)
+      local summaryLanguage = self._nativeLanguage
+      for _, name in ipairs(SEARCH_CRITERIA) do
+        appendUiSlot(
+          slots,
+          "search.summary-caption-" .. name,
+          searchMessageId(summaryText.criteria, name, "caption"),
+          summaryLanguage
+        )
+      end
+      appendStagedValueSlots(self, slots, "search.summary-value-")
+    end
   elseif self._page == "area" or self._page == "size" or self._page == "forms" or self._page == "return" then
     local species = self._entrySpecies
     if type(species) == "string" and tryDex(self._dex, "isSeen", species) == true then
@@ -2028,8 +2556,37 @@ function PokedexController:_textSlots()
         slots[#slots + 1] = { role = "entry.category", kind = "category", species = species, language = language }
         slots[#slots + 1] = { role = "entry.flavor", kind = "flavor", species = species, language = language }
         slots[#slots + 1] = { role = "entry.height", kind = "height", species = species }
-        slots[#slots + 1] = { role = "entry.weight", kind = "weight", species = species }
+        -- The size page paints weight through its own lower-pane window;
+        -- the entry-page rect would overflow that screen.
+        if self._page ~= "size" then
+          slots[#slots + 1] = { role = "entry.weight", kind = "weight", species = species }
+        end
       end
+    end
+    if self._page == "area" and self._area ~= nil then
+      appendAreaSlots(self, slots, entryTextBindings(self))
+    elseif self._page == "size" then
+      local sizeSpecies = self._entrySpecies
+      if type(sizeSpecies) == "string" then
+        local sizeLanguage = self._selection.language
+        if type(sizeLanguage) ~= "string" then
+          sizeLanguage = self._nativeLanguage
+        end
+        appendSizeSlots(self, slots, entryTextBindings(self), sizeSpecies, sizeLanguage)
+      end
+    elseif self._page == "forms" and self._forms ~= nil then
+      local formsSpecies = self._entrySpecies
+      if type(formsSpecies) == "string" then
+        local formsLanguage = self._selection.language
+        if type(formsLanguage) ~= "string" then
+          formsLanguage = self._nativeLanguage
+        end
+        appendFormsSlots(self, slots, entryTextBindings(self), formNameBindings(self), formsSpecies, formsLanguage)
+      end
+    elseif self._page == "return" then
+      local searchText = searchTextBindings(self)
+      appendUiSlot(slots, "return.title", searchText.returnCancel, self._nativeLanguage)
+      appendUiSlot(slots, "return.action", searchText.returnAction, self._nativeLanguage)
     end
   end
   return slots

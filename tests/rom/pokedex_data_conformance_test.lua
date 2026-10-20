@@ -158,6 +158,7 @@ function T.numeric_giratina_slider_and_text_bindings_conform(romFs, versionId)
       base = { heightBankId = 815, weightBankId = 813 },
       giratina_origin = { heightBankId = 814, weightBankId = 812 },
     },
+    landmarks = { bankId = 279, fallbackBankId = 280, fallbackMessageId = 2 },
     registrationAnnouncement = { bankId = 197, messageId = 871 },
   }, versionId .. " binds the exact message roles")
 end
@@ -247,6 +248,80 @@ function T.back_height_selectors_resolve_through_valid_slots(romFs, versionId)
     string.byte(slot, 1),
     versionId .. " compiled back height matches its source slot"
   )
+end
+
+-- Every native UI entry the search/entry text bindings reference exists
+-- in the source UI bank with a nonempty tokenized string, and option
+-- groups stay mutually distinct, so no compiled window can resolve to a
+-- missing or shared label.
+function T.search_text_bindings_resolve_through_the_native_ui_bank(romFs, versionId)
+  local PokedexSources = require("romdump.src.config.PokedexSources")
+  local FieldMessageBank = require("romdump.src.digest.ui.FieldMessageBank")
+  local FieldMessageTokenizer = require("romdump.src.digest.ui.FieldMessageTokenizer")
+  local charmap = require("romdump.src.catalog.hgss.charmap")
+  local searchText = assert(
+    PokedexSources.searchText,
+    versionId .. " publishes its search text bindings"
+  )()
+  assert(type(searchText) == "table", "the search text bindings stay records")
+  local groups = {
+    criteria = searchText.criteria,
+    orders = searchText.orders,
+    letters = searchText.letters,
+    types = searchText.types,
+    areas = searchText.areas,
+  }
+  local singles = {
+    { group = "buttons.run", id = searchText.buttons.run },
+    { group = "buttons.reset", id = searchText.buttons.reset },
+    { group = "editorButtons.ok", id = searchText.editorButtons.ok },
+    { group = "return.cancel", id = searchText.returnCancel },
+    { group = "return.action", id = searchText.returnAction },
+    { group = "time.morning", id = searchText.timeBase },
+    { group = "time.day", id = searchText.timeBase + 1 },
+    { group = "time.night", id = searchText.timeBase + 2 },
+  }
+  local archive = assert(romFs:openNarc("messages"), versionId .. " exposes its message archive")
+  local bank = assert(
+    FieldMessageBank.decode(assert(archive:readMember(802)), { label = versionId .. "-ui-802" }),
+    versionId .. " decodes its UI bank"
+  )
+  local function labelOf(id, group)
+    local message = bank.messages[id + 1]
+    Assert.notNil(message, versionId .. " UI bank carries entry " .. id .. " (" .. group .. ")")
+    local tokens = FieldMessageTokenizer.tokenize(message.raw, charmap, { bankId = 802, messageId = id })
+    local text = {}
+    for _, token in ipairs(tokens) do
+      if token.text ~= nil then
+        text[#text + 1] = token.text
+      end
+    end
+    local joined = table.concat(text)
+    Assert.isTrue(joined ~= "", versionId .. " entry " .. id .. " (" .. group .. ") is nonempty")
+    return joined
+  end
+  local counts = {}
+  for group, records in pairs(groups) do
+    local seen = {}
+    local count = 0
+    for name, id in pairs(records) do
+      Assert.isTrue(type(id) == "number", versionId .. " binds a numeric entry for " .. group .. "." .. name)
+      local label = labelOf(id, group .. "." .. name)
+      Assert.isNil(seen[label], versionId .. " " .. group .. " shares no label (" .. name .. ")")
+      seen[label] = true
+      count = count + 1
+    end
+    counts[group] = count
+  end
+  Assert.equal(counts.criteria, 7, versionId .. " binds all seven criterion captions")
+  Assert.equal(counts.orders, 6, versionId .. " binds all six sort labels")
+  Assert.equal(counts.letters, 27, versionId .. " binds all 27 letter marks")
+  Assert.equal(counts.types, 18, versionId .. " binds all 18 type marks")
+  Assert.equal(counts.areas, 4, versionId .. " binds all four area scopes")
+  for _, entry in ipairs(singles) do
+    Assert.isTrue(type(entry.id) == "number", versionId .. " binds a numeric entry for " .. entry.group)
+    labelOf(entry.id, entry.group)
+  end
 end
 
 function T.presentation_scope_closes_all_roles(romFs, versionId)

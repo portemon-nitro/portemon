@@ -38,6 +38,9 @@ local CATALOG_FIELDS = {
   evaluation = true,
   pictures = true,
   textBindings = true,
+  searchText = true,
+  entryText = true,
+  formNames = true,
 }
 
 local MANIFEST_FIELDS = {
@@ -1013,6 +1016,175 @@ end
 
 local BINDING_LANGUAGES = { "native", "japanese", "english", "french", "german", "italian", "spanish" }
 
+-- Validates the projected search text bindings: every criterion caption,
+-- sort label, letter mark, type mark, area scope, button, and the
+-- daypart/return anchors must name a non-negative bank-802 entry id.
+-- Counts are exact so a dropped option fails instead of painting a
+-- partially labeled editor.
+---@param search unknown
+---@return Errors.Error?
+local function checkSearchText(search)
+  if type(search) ~= "table" then
+    return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "catalog carries no search text", {})
+  end
+  local groups = {
+    { name = "criteria", expected = 7 },
+    { name = "orders", expected = 6 },
+    { name = "letters", expected = 27 },
+    { name = "types", expected = 18 },
+    { name = "areas", expected = 4 },
+    { name = "buttons", expected = 3 },
+    { name = "editorButtons", expected = 2 },
+  }
+  for _, group in ipairs(groups) do
+    local records = search[group.name]
+    if type(records) ~= "table" then
+      return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "search text misses its " .. group.name, {})
+    end
+    local count = 0
+    for key, id in pairs(records) do
+      if type(key) ~= "string" or key == "" or not isNonNegativeInteger(id) then
+        return fail(
+          PokedexAssetSchema.ERROR.SHAPE_INVALID,
+          "search text carries a malformed " .. group.name .. " entry",
+          {}
+        )
+      end
+      count = count + 1
+    end
+    if count ~= group.expected then
+      return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "search text carries an incomplete " .. group.name, {})
+    end
+  end
+  for _, field in ipairs({ "timeBase", "returnCancel", "returnAction" }) do
+    if not isNonNegativeInteger(search[field]) then
+      return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "search text misses its " .. field, {})
+    end
+  end
+  for field in pairs(search) do
+    if
+      field ~= "criteria"
+      and field ~= "orders"
+      and field ~= "letters"
+      and field ~= "types"
+      and field ~= "areas"
+      and field ~= "buttons"
+      and field ~= "editorButtons"
+      and field ~= "timeBase"
+      and field ~= "returnCancel"
+      and field ~= "returnAction"
+    then
+      return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "search text carries an unexpected field", {})
+    end
+  end
+  return nil
+end
+
+---@param entry unknown
+---@return Errors.Error?
+local function checkEntryText(entry)
+  if type(entry) ~= "table" then
+    return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "catalog carries no entry text", {})
+  end
+  local count = 0
+  for key, id in pairs(entry) do
+    if type(key) ~= "string" or key == "" or not isNonNegativeInteger(id) then
+      return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "entry text carries a malformed entry", {})
+    end
+    count = count + 1
+  end
+  if count ~= 20 then
+    return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "entry text carries an incomplete entry set", {})
+  end
+  for _, field in ipairs({
+    "areaTitle",
+    "areaCaption",
+    "areaUnknown",
+    "areaRegionJohto",
+    "areaRegionKanto",
+    "sizeTitle",
+    "sizeCaptionHeight",
+    "sizeMarkHeight",
+    "sizeMaleHeight",
+    "sizeFemaleHeight",
+    "sizeCaptionWeight",
+    "sizeMarkWeight",
+    "sizeMaleWeight",
+    "sizeFemaleWeight",
+    "formsTitle",
+    "formsHeader",
+    "formsCaption",
+    "formsCompareHeader",
+    "formsCompareLeft",
+    "formsCompareRight",
+  }) do
+    if not isNonNegativeInteger(entry[field]) then
+      return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "entry text misses its " .. field, {})
+    end
+  end
+  return nil
+end
+
+---@param names unknown
+---@return Errors.Error?
+local function checkFormNames(names)
+  if type(names) ~= "table" then
+    return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "catalog carries no form names", {})
+  end
+  if type(names.fixed) ~= "table" or not isNonNegativeInteger(names.fixed.UNOWN) then
+    return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "form names miss the unown entry", {})
+  end
+  for _, group in ipairs({ "base", "count" }) do
+    local records = names[group]
+    if type(records) ~= "table" then
+      return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "form names miss their " .. group, {})
+    end
+    for _, species in ipairs({
+      "SHELLOS",
+      "GASTRODON",
+      "BURMY",
+      "WORMADAM",
+      "DEOXYS",
+      "SHAYMIN",
+      "GIRATINA",
+      "ROTOM",
+      "CASTFORM",
+      "CHERRIM",
+    }) do
+      if not isNonNegativeInteger(records[species]) then
+        return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "form names miss " .. species .. " " .. group, {})
+      end
+    end
+  end
+  if type(names.pichu) ~= "table" then
+    return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "form names miss the pichu entries", {})
+  end
+  for _, field in ipairs({ 0, 1, "other" }) do
+    if not isNonNegativeInteger(names.pichu[field]) then
+      return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "form names miss a pichu entry", {})
+    end
+  end
+  for _, field in ipairs({ "male", "female", "generic" }) do
+    if not isNonNegativeInteger(names[field]) then
+      return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "form names miss their " .. field, {})
+    end
+  end
+  for field in pairs(names) do
+    if
+      field ~= "fixed"
+      and field ~= "base"
+      and field ~= "count"
+      and field ~= "pichu"
+      and field ~= "male"
+      and field ~= "female"
+      and field ~= "generic"
+    then
+      return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "form names carry an unexpected field", {})
+    end
+  end
+  return nil
+end
+
 ---@param bindings unknown
 ---@return Errors.Error?
 local function checkTextBindings(bindings)
@@ -1068,11 +1240,21 @@ local function checkTextBindings(bindings)
   then
     return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "text bindings carry no registration announcement", {})
   end
+  local landmarks = bindings.landmarks
+  if
+    type(landmarks) ~= "table"
+    or not isNonNegativeInteger(landmarks.bankId)
+    or not isNonNegativeInteger(landmarks.fallbackBankId)
+    or not isNonNegativeInteger(landmarks.fallbackMessageId)
+  then
+    return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "text bindings carry no landmark banks", {})
+  end
   for field in pairs(bindings) do
     if
       field ~= "ui"
       and field ~= "entryByLanguage"
       and field ~= "measureByProfile"
+      and field ~= "landmarks"
       and field ~= "registrationAnnouncement"
     then
       return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "text bindings carry an unexpected field", {})
@@ -1137,6 +1319,18 @@ function PokedexAssetSchema.validateCatalog(catalog, monCatalog)
   local bindingsErr = checkTextBindings(catalog.textBindings)
   if bindingsErr then
     return nil, bindingsErr
+  end
+  local searchErr = checkSearchText(catalog.searchText)
+  if searchErr then
+    return nil, searchErr
+  end
+  local entryErr = checkEntryText(catalog.entryText)
+  if entryErr then
+    return nil, entryErr
+  end
+  local formErr = checkFormNames(catalog.formNames)
+  if formErr then
+    return nil, formErr
   end
   return catalog --[[@as table<string, unknown>]]
 end

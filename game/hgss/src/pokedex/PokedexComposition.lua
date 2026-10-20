@@ -57,6 +57,8 @@ function PokedexComposition.open(runtime)
   local profile = assert(playerData.profile, "the pokedex factory reads the validated player profile")
   local playerGender = ({ [0] = "male", [1] = "female" })[profile.gender]
   assert(playerGender == "male" or playerGender == "female", "the pokedex factory needs a known player gender")
+  local playerName = profile.name
+  assert(type(playerName) == "string" and playerName ~= "", "the pokedex factory needs the player name")
   local cell = resolvePlayerCell(runtime)
   local controller = PokedexController.new({
     catalog = catalog,
@@ -64,6 +66,7 @@ function PokedexComposition.open(runtime)
     dex = dex,
     playerGender = playerGender,
     playerPosition = cell,
+    playerName = playerName,
     nativeLanguage = nativeLanguage,
   })
   local binding = runtime._pokedexPreparation

@@ -1078,6 +1078,61 @@ local function dexDisplayNumber(owner, dexMode, slot)
   return nil, "prepared text names a species outside the " .. tostring(dexMode) .. " order: " .. tostring(slot.species)
 end
 
+-- Resolves the entry bank and species entry behind one species-named
+-- slot: the requested language entry bank by stable catalog species
+-- identity, never by display number.
+---@param manifest table<string, unknown> loaded presentation manifest
+---@param owner PokedexPresentationResources
+---@param slot table<string, unknown> one semantic text request
+---@param bankKey string entry bank selector behind the slot kind
+---@return integer? source bank identity
+---@return integer? source entry identity
+---@return string? failure nonempty cause when the slot has no source bank
+local function speciesBankEntry(manifest, owner, slot, bankKey)
+  local bindings = manifest.text
+  local kind = slot.kind
+  if type(bindings) ~= "table" or type(bindings.entryByLanguage) ~= "table" then
+    return nil, nil, "the pokedex manifest carries no entry text bindings"
+  end
+  if type(slot.language) ~= "string" or slot.language == "" then
+    return nil, nil, "text slot " .. tostring(slot.role) .. " names no language"
+  end
+  local banks = bindings.entryByLanguage[slot.language]
+  if type(banks) ~= "table" then
+    return nil, nil, "prepared text names an unknown language " .. tostring(slot.language)
+  end
+  if type(banks[bankKey]) ~= "number" then
+    return nil, nil, "prepared text names an unbound " .. tostring(kind) .. " bank"
+  end
+  if type(slot.species) ~= "string" or slot.species == "" then
+    return nil, nil, "text slot " .. tostring(slot.role) .. " names no species"
+  end
+  local nativeId, failure = nativeSpeciesId(owner, slot.species)
+  if nativeId == nil then
+    return nil, nil, failure
+  end
+  return banks[bankKey], nativeId
+end
+
+-- Resolves the source UI bank behind one UI-templated slot.
+---@param manifest table<string, unknown> loaded presentation manifest
+---@param slot table<string, unknown> one semantic text request
+---@return integer? source bank identity
+---@return string? failure nonempty cause when the manifest carries no UI bank
+local function uiBankEntry(manifest, slot)
+  local bindings = manifest.text
+  if type(bindings) ~= "table" or type(bindings.ui) ~= "table" then
+    return nil, "the pokedex manifest carries no UI text bindings"
+  end
+  if type(bindings.ui.bankId) ~= "number" then
+    return nil, "the pokedex manifest carries no UI bank"
+  end
+  if type(slot.messageId) ~= "number" then
+    return nil, "ui text slot " .. tostring(slot.role) .. " names no message"
+  end
+  return bindings.ui.bankId
+end
+
 -- Resolves the source bank and entry behind one bank-backed text slot.
 -- Species names, categories, and flavors read the requested language
 -- entry bank by stable catalog species identity, never by display
@@ -1094,47 +1149,26 @@ end
 local function messageBankEntry(manifest, owner, slot, profile)
   local kind = slot.kind
   if kind == "ui" then
-    local bindings = manifest.text
-    if type(bindings) ~= "table" or type(bindings.ui) ~= "table" then
-      return nil, nil, "the pokedex manifest carries no UI text bindings"
+    local bankId, failure = uiBankEntry(manifest, slot)
+    if bankId == nil then
+      return nil, nil, failure
     end
-    if type(bindings.ui.bankId) ~= "number" then
-      return nil, nil, "the pokedex manifest carries no UI bank"
-    end
-    if type(slot.messageId) ~= "number" then
-      return nil, nil, "ui text slot " .. tostring(slot.role) .. " names no message"
-    end
-    return bindings.ui.bankId, slot.messageId
+    return bankId, slot.messageId
   end
   if kind == "species_name" or kind == "category" or kind == "flavor" then
-    local bindings = manifest.text
-    if type(bindings) ~= "table" or type(bindings.entryByLanguage) ~= "table" then
-      return nil, nil, "the pokedex manifest carries no entry text bindings"
-    end
-    if type(slot.language) ~= "string" or slot.language == "" then
-      return nil, nil, "text slot " .. tostring(slot.role) .. " names no language"
-    end
-    local banks = bindings.entryByLanguage[slot.language]
-    if type(banks) ~= "table" then
-      return nil, nil, "prepared text names an unknown language " .. tostring(slot.language)
-    end
     local bankKey = "nameBankId"
     if kind == "category" then
       bankKey = "categoryBankId"
     elseif kind == "flavor" then
       bankKey = "flavorBankId"
     end
-    if type(banks[bankKey]) ~= "number" then
-      return nil, nil, "prepared text names an unbound " .. tostring(kind) .. " bank"
+    return speciesBankEntry(manifest, owner, slot, bankKey)
+  end
+  if kind == "area_name" then
+    if type(slot.bankId) ~= "number" or type(slot.messageId) ~= "number" then
+      return nil, nil, "area text slot " .. tostring(slot.role) .. " names no source name entry"
     end
-    if type(slot.species) ~= "string" or slot.species == "" then
-      return nil, nil, "text slot " .. tostring(slot.role) .. " names no species"
-    end
-    local nativeId, failure = nativeSpeciesId(owner, slot.species)
-    if nativeId == nil then
-      return nil, nil, failure
-    end
-    return banks[bankKey], nativeId
+    return slot.bankId, slot.messageId
   end
   if kind == "height" or kind == "weight" then
     local bindings = manifest.text
@@ -1288,6 +1322,7 @@ end
 local function prepareSlotMessages(lease, manifest, owner, dexMode, slots, profile)
   local messages = {}
   local bankSet = {}
+  local bankRoles = {}
   local pending = {}
   for _, slot in ipairs(slots) do
     if type(slot) ~= "table" then
@@ -1301,12 +1336,44 @@ local function prepareSlotMessages(lease, manifest, owner, dexMode, slots, profi
         return nil, nil, "numeric text slot " .. slot.role .. " carries no preformatted value"
       end
       messages[slot.role] = slot.value
+    elseif slot.kind == "player_name" then
+      if type(slot.value) ~= "string" or slot.value == "" then
+        return nil, nil, "player text slot " .. slot.role .. " carries no trainer name"
+      end
+      messages[slot.role] = slot.value
     elseif slot.kind == "dex_number" then
       local number, failure = dexDisplayNumber(owner, dexMode, slot)
       if number == nil then
         return nil, nil, failure
       end
       messages[slot.role] = string.format("%03d", number)
+    elseif slot.kind == "named_ui" then
+      local uiBankId, uiFailure = uiBankEntry(manifest, slot)
+      if uiBankId == nil then
+        return nil, nil, uiFailure
+      end
+      local speciesBankId, speciesEntryId, speciesFailure = speciesBankEntry(manifest, owner, slot, "nameBankId")
+      if speciesBankId == nil then
+        return nil, nil, speciesFailure
+      end
+      bankSet[uiBankId] = true
+      bankSet[speciesBankId] = true
+      for _, enrolled in ipairs({ { uiBankId, slot.role }, { speciesBankId, slot.role } }) do
+        local roles = bankRoles[enrolled[1]]
+        if roles == nil then
+          roles = {}
+          bankRoles[enrolled[1]] = roles
+        end
+        roles[#roles + 1] = enrolled[2]
+      end
+      pending[#pending + 1] = {
+        role = slot.role,
+        kind = slot.kind,
+        bankId = uiBankId,
+        entryId = slot.messageId,
+        speciesBankId = speciesBankId,
+        speciesEntryId = speciesEntryId,
+      }
     elseif slot.kind == "ui" and slot.fields ~= nil and type(slot.fields) ~= "table" then
       return nil, nil, "ui text slot " .. slot.role .. " carries malformed fields"
     else
@@ -1316,6 +1383,12 @@ local function prepareSlotMessages(lease, manifest, owner, dexMode, slots, profi
       end
       assert(type(entryId) == "number", "prepared text resolves its entry")
       bankSet[bankId] = true
+      local roles = bankRoles[bankId]
+      if roles == nil then
+        roles = {}
+        bankRoles[bankId] = roles
+      end
+      roles[#roles + 1] = slot.role
       pending[#pending + 1] =
         { role = slot.role, kind = slot.kind, bankId = bankId, entryId = entryId, fields = slot.fields }
     end
@@ -1323,7 +1396,16 @@ local function prepareSlotMessages(lease, manifest, owner, dexMode, slots, profi
   for bankId in pairs(bankSet) do
     local failure = acquireMessageBank(lease, bankId)
     if failure ~= nil then
-      return nil, nil, failure
+      local roles = bankRoles[bankId] or {}
+      table.sort(roles)
+      return nil,
+        nil,
+        "prepared text cannot acquire bank "
+          .. tostring(bankId)
+          .. " for "
+          .. table.concat(roles, ", ")
+          .. ": "
+          .. failure
     end
   end
   for _, item in ipairs(pending) do
@@ -1332,12 +1414,27 @@ local function prepareSlotMessages(lease, manifest, owner, dexMode, slots, profi
       return nil, nil, failure
     end
     -- UI templates may carry formatter markers over demand fields;
-    -- species, category, flavor, height, and weight entries read
-    -- verbatim, exactly as the native getters return them.
+    -- species-templated UI entries expand the selected species name
+    -- into field 0; species, category, flavor, height, weight, and area
+    -- names read verbatim, exactly as the native getters return them.
     if item.kind == "ui" then
       local expanded, expandFailure = expandStrvarMarkers(
         resolved,
         item.fields,
+        "bank " .. tostring(item.bankId) .. " entry " .. tostring(item.entryId) .. " (" .. tostring(item.role) .. ")"
+      )
+      if expanded == nil then
+        return nil, nil, expandFailure
+      end
+      messages[item.role] = expanded
+    elseif item.kind == "named_ui" then
+      local speciesName, speciesFailure = readMessageEntry(lease, item.speciesBankId, item.speciesEntryId)
+      if speciesName == nil then
+        return nil, nil, speciesFailure
+      end
+      local expanded, expandFailure = expandStrvarMarkers(
+        resolved,
+        { [0] = speciesName },
         "bank " .. tostring(item.bankId) .. " entry " .. tostring(item.entryId) .. " (" .. tostring(item.role) .. ")"
       )
       if expanded == nil then

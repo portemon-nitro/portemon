@@ -642,7 +642,7 @@ function T.entry_tabs_cycle_through_back_and_skip_missing_size()
   seenOnly:dispose()
 end
 
-local TEXT_KINDS = { ui = true, species_name = true, category = true, flavor = true, height = true, weight = true, numeric = true }
+local TEXT_KINDS = { ui = true, species_name = true, category = true, flavor = true, height = true, weight = true, numeric = true, area_name = true, named_ui = true, player_name = true }
 
 ---@param view table detached browser projection
 local function checkTextSlots(view)
@@ -657,6 +657,15 @@ local function checkTextSlots(view)
       Assert.isTrue(type(slot.messageId) == "number", "interface slots reference their source message")
     elseif slot.kind == "numeric" then
       Assert.isTrue(type(slot.value) == "string" and slot.value:find("^%d+$") ~= nil, "count slots carry formatted digits")
+    elseif slot.kind == "area_name" then
+      Assert.isTrue(type(slot.bankId) == "number", "area slots name their source bank")
+      Assert.isTrue(type(slot.messageId) == "number", "area slots name their source entry")
+    elseif slot.kind == "named_ui" then
+      Assert.isTrue(type(slot.messageId) == "number", "named interface slots reference their source message")
+      Assert.isTrue(type(slot.species) == "string", "named interface slots name their specimen")
+      Assert.isTrue(type(slot.language) == "string", "named interface slots name their language binding")
+    elseif slot.kind == "player_name" then
+      Assert.isTrue(type(slot.value) == "string" and slot.value ~= "", "player slots carry their trainer name")
     else
       Assert.isTrue(type(slot.species) == "string", "species slots name their specimen")
       if slot.kind == "species_name" or slot.kind == "category" or slot.kind == "flavor" then
@@ -945,6 +954,378 @@ function T.search_feedback_publishes_the_result_count_once_resolved()
     "the feedback count matches the published result count"
   )
   controller:dispose()
+end
+
+-- The criteria root publishes every source caption, the current staged value
+-- behind each one, and the run/reset/back buttons through the native UI
+-- bank, so no selectable row stays unlabeled.
+function T.search_criteria_page_lists_real_captions_values_and_buttons()
+  local PokedexController = requirePresent("search criteria text demand")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true })
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 })
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  press(controller, { { type = "y" } })
+  Assert.equal(controller:view().page, "search", "grid Y reaches the criteria root")
+  checkTextSlots(controller:view())
+  local slots = {}
+  for _, slot in ipairs(controller:view().text) do
+    slots[slot.role] = slot
+  end
+  local captions = {
+    ["search.caption-order"] = 26,
+    ["search.caption-letter"] = 27,
+    ["search.caption-type"] = 28,
+    ["search.caption-height"] = 29,
+    ["search.caption-weight"] = 30,
+    ["search.caption-area"] = 31,
+    ["search.caption-shape"] = 32,
+  }
+  for role, messageId in pairs(captions) do
+    local slot = slots[role]
+    Assert.notNil(slot, "the criteria root captions " .. role)
+    Assert.equal(slot.kind, "ui", role .. " rides the native UI bank")
+    Assert.equal(slot.messageId, messageId, role .. " keeps its source entry")
+  end
+  Assert.equal(slots["search.value-order"].messageId, 41, "the default order stages its sort label")
+  Assert.equal(slots["search.value-letter"].messageId, 113, "the unset letter stages the empty mark")
+  Assert.equal(slots["search.value-type-1"].messageId, 64, "the unset first type stages the empty mark")
+  Assert.equal(slots["search.value-type-2"].messageId, 64, "the unset second type stages the empty mark")
+  Assert.equal(slots["search.value-area"].messageId, 68, "the unset area stages the empty mark")
+  Assert.equal(slots["search.value-height-min"].value, "0", "the height editor opens on its floor")
+  Assert.equal(slots["search.value-height-max"].value, "152", "the height editor opens on its ceiling")
+  Assert.equal(slots["search.button-run"].messageId, 36, "the run button keeps its source entry")
+  Assert.equal(slots["search.button-reset"].messageId, 35, "the reset button keeps its source entry")
+  Assert.equal(slots["search.button-back"].messageId, 37, "the back button keeps its source entry")
+  controller:dispose()
+end
+
+-- Every option editor publishes one source label per choice plus the
+-- commit/cancel pair: six sorts, 27 letter marks, the catalog type set
+-- with its empty mark, four scopes, and integer slider bounds. The shape
+-- editor publishes its caption and buttons only; its choices are art.
+function T.search_option_editors_list_their_source_choices()
+  local PokedexController = requirePresent("search editor text demand")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true })
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 })
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  press(controller, { { type = "y" } })
+  local function openEditor(kind)
+    press(controller, { { type = "activate", action = "criterion", value = kind } })
+    Assert.equal(
+      controller:view().search.editor.criterion,
+      kind,
+      "the " .. kind .. " editor opens"
+    )
+    local slots = {}
+    for _, slot in ipairs(controller:view().text) do
+      slots[slot.role] = slot
+    end
+    return slots
+  end
+  local function closeEditor()
+    press(controller, { { type = "cancel" } })
+    Assert.isNil(controller:view().search.editor, "cancelling closes the editor")
+  end
+  local order = openEditor("order")
+  Assert.equal(order["search.option-order-numerical"].messageId, 41, "the numerical sort keeps its entry")
+  Assert.equal(order["search.option-order-alphabetical"].messageId, 42, "the alphabetical sort keeps its entry")
+  Assert.equal(order["search.button-ok"].messageId, 39, "the order editor commits through its source entry")
+  Assert.equal(order["search.button-cancel"].messageId, 40, "the order editor cancels through its source entry")
+  closeEditor()
+  local letter = openEditor("letter")
+  Assert.equal(letter["search.option-letter-A"].messageId, 69, "the A mark keeps its source entry")
+  Assert.equal(letter["search.option-letter-Z"].messageId, 94, "the Z mark keeps its source entry")
+  Assert.equal(
+    letter["search.option-letter-unrestricted"].messageId,
+    113,
+    "the letter empty mark keeps its source entry"
+  )
+  local letterMarks = 0
+  for role in pairs(letter) do
+    if role:find("^search%.option%-letter%-", 1) ~= nil then
+      letterMarks = letterMarks + 1
+    end
+  end
+  Assert.equal(letterMarks, 27, "the letter editor publishes all 27 marks")
+  closeEditor()
+  local kind = openEditor("type")
+  Assert.equal(kind["search.option-type-normal"].messageId, 58, "the normal type keeps its source entry")
+  Assert.equal(
+    kind["search.option-type-unrestricted"].messageId,
+    64,
+    "the type empty mark keeps its source entry"
+  )
+  closeEditor()
+  local area = openEditor("area")
+  Assert.equal(area["search.option-area-johto"].messageId, 65, "the johto scope keeps its source entry")
+  Assert.equal(area["search.option-area-kanto"].messageId, 66, "the kanto scope keeps its source entry")
+  Assert.equal(area["search.option-area-unknown"].messageId, 67, "the unknown scope keeps its source entry")
+  Assert.equal(
+    area["search.option-area-unrestricted"].messageId,
+    68,
+    "the area empty mark keeps its source entry"
+  )
+  closeEditor()
+  local height = openEditor("height")
+  Assert.equal(height["search.current-height-min"].kind, "numeric", "the height floor stays an integer")
+  Assert.equal(height["search.current-height-max"].value, "152", "the height ceiling stays an integer")
+  Assert.equal(height["search.button-ok"].messageId, 39, "the slider editor commits through its source entry")
+  closeEditor()
+  local weight = openEditor("weight")
+  Assert.equal(weight["search.current-weight-min"].value, "0", "the weight floor stays an integer")
+  Assert.equal(weight["search.current-weight-max"].value, "152", "the weight ceiling stays an integer")
+  closeEditor()
+  local shape = openEditor("shape")
+  Assert.notNil(shape["search.title-shape"], "the shape editor keeps its caption")
+  Assert.notNil(shape["search.button-ok"], "the shape editor keeps its commit button")
+  local shapeOptions = 0
+  for role in pairs(shape) do
+    if role:find("^search%.option%-shape%-", 1) ~= nil then
+      shapeOptions = shapeOptions + 1
+    end
+  end
+  Assert.equal(shapeOptions, 0, "the shape editor publishes no invented option labels")
+  closeEditor()
+  controller:dispose()
+end
+
+-- The results page renames the highlighted seen species exactly like the
+-- grid does; the leading return slot clears the selection and publishes
+-- neither number nor name.
+function T.results_page_keeps_the_highlighted_identity_and_hides_the_return_slot()
+  local PokedexController = requirePresent("results identity text demand")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true })
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 })
+  observe(owner, monCatalog, { species = "TOTODILE", personality = 0 })
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  press(controller, { { type = "y" } })
+  press(controller, { { type = "start" } })
+  idle(controller, 200)
+  Assert.equal(controller:view().page, "results", "the completed search lands on the result grid")
+  -- Landing highlights the leading return slot, so step onto the first
+  -- result before asserting its identity; the committed return-slot
+  -- landing behavior stands.
+  press(controller, { { type = "navigate", direction = "right" } })
+  local function roles()
+    local found = {}
+    for _, slot in ipairs(controller:view().text) do
+      found[slot.role] = slot
+    end
+    return found
+  end
+  local highlighted = roles()
+  Assert.notNil(highlighted["search.results"], "the results page publishes its count")
+  Assert.notNil(highlighted["grid.selected-name"], "the highlighted result keeps its name")
+  Assert.notNil(highlighted["grid.selected-number"], "the highlighted result keeps its number")
+  for _ = 1, 35 do
+    if controller:view().selection.species == nil then
+      break
+    end
+    press(controller, { { type = "navigate", direction = "left" } })
+  end
+  Assert.isNil(controller:view().selection.species, "the walk ends on the leading return slot")
+  local cleared = roles()
+  Assert.isNil(cleared["grid.selected-name"], "the return slot names no species")
+  Assert.isNil(cleared["grid.selected-number"], "the return slot numbers no species")
+  controller:dispose()
+end
+
+-- The area page reports its daypart and viewed region through the native
+-- UI bank; the return tab names its cancel and return-to-list actions.
+function T.entry_area_reports_its_daypart_region_and_return_actions()
+  local PokedexController = requirePresent("area and return text demand")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
+  observe(owner, monCatalog, { species = "EEVEE", personality = 31 }, "caught")
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  openEntry(controller, "EEVEE")
+  local area = {}
+  for _, slot in ipairs(controller:view().text) do
+    area[slot.role] = slot
+  end
+  Assert.notNil(area["area.time"], "the area page reports its daypart")
+  Assert.equal(area["area.time"].kind, "ui", "the daypart rides the native UI bank")
+  Assert.equal(area["area.time"].messageId, 129, "the fresh entry opens on the morning mark")
+  Assert.isNil(area["area.location"], "the fresh entry leaves the first row window blank like the source")
+  press(controller, { { type = "navigate", direction = "down" } })
+  press(controller, { { type = "navigate", direction = "down" } })
+  local scrolled = {}
+  for _, slot in ipairs(controller:view().text) do
+    scrolled[slot.role] = slot
+  end
+  Assert.equal(
+    scrolled["area.location"].messageId,
+    134,
+    "the scrolled region row keeps its source entry"
+  )
+  press(controller, { { type = "activate", action = "area-time", value = 2 } })
+  local night = {}
+  for _, slot in ipairs(controller:view().text) do
+    night[slot.role] = slot
+  end
+  Assert.equal(night["area.time"].messageId, 131, "the night selector moves to the night mark")
+  press(controller, { { type = "navigate", direction = "right" } })
+  press(controller, { { type = "navigate", direction = "right" } })
+  press(controller, { { type = "navigate", direction = "right" } })
+  Assert.equal(controller:view().page, "return", "cycling reaches the back tab")
+  local back = {}
+  for _, slot in ipairs(controller:view().text) do
+    back[slot.role] = slot
+  end
+  Assert.equal(back["return.title"].messageId, 173, "the back tab keeps its cancel entry")
+  Assert.equal(back["return.action"].messageId, 174, "the back tab keeps its return-to-list entry")
+  controller:dispose()
+end
+
+-- The forms page reports its title, species header, selected form name
+-- and visible rows through the species-specific form-name policy, and
+-- the comparison pairs both sides with their source labels.
+function T.entry_forms_reports_selected_rows_and_comparison_names()
+  local PokedexController = requirePresent("forms text demand")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
+  local function recordForm(species, personality, form, kind)
+    local specimen = owner:describe(PokedexDexFixture.makeMon(monCatalog, {
+      species = species,
+      personality = personality,
+      form = form,
+    }))
+    owner:prepareChanges({ observations = { { kind = kind, specimen = specimen } } }):publish()
+  end
+  recordForm("PICHU", 127, 0, "seen")
+  recordForm("PICHU", 0, 0, "seen")
+  recordForm("PICHU", 0, 1, "caught")
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  openEntry(controller, "PICHU")
+  press(controller, { { type = "activate", action = "entry-tab", value = "forms" } })
+  Assert.equal(controller:view().page, "forms", "the entry tab reaches the forms page")
+  local function roles()
+    checkTextSlots(controller:view())
+    local found = {}
+    for _, slot in ipairs(controller:view().text) do
+      found[slot.role] = slot
+    end
+    return found
+  end
+  local resting = roles()
+  Assert.equal(resting["forms.title"].messageId, 170, "the forms page keeps its title")
+  Assert.equal(resting["forms.header"].kind, "named_ui", "the species header names its specimen")
+  Assert.equal(resting["forms.selected"].messageId, 114, "the first variant names the spiky-eared mark")
+  Assert.equal(resting["forms.caption"].messageId, 168, "the multi-form list keeps its caption")
+  Assert.equal(resting["forms.row-3"].messageId, 114, "the centered cursor row names its variant")
+  Assert.equal(resting["forms.row-4"].messageId, 114, "the row below names the second variant")
+  Assert.equal(resting["forms.row-5"].messageId, 115, "the next row names the other form")
+  Assert.isNil(resting["forms.row-6"], "rows past the last variant stay blank")
+  press(controller, { { type = "navigate", direction = "down" } })
+  press(controller, { { type = "navigate", direction = "down" } })
+  local moved = roles()
+  Assert.equal(moved["forms.selected"].messageId, 115, "the moved cursor names the other form")
+  Assert.equal(moved["forms.row-3"].messageId, 115, "the centered row follows the cursor")
+  press(controller, { { type = "activate", action = "compare" } })
+  local compared = roles()
+  Assert.equal(compared["forms.compare-caption"].messageId, 170, "the comparison keeps its title")
+  Assert.equal(compared["forms.compare-label-left"].messageId, 171, "the comparison labels its left side")
+  Assert.equal(compared["forms.compare-label-right"].messageId, 172, "the comparison labels its right side")
+  Assert.equal(compared["forms.compare-left"].messageId, 115, "the comparison names the selected variant")
+  Assert.equal(compared["forms.compare-right"].messageId, 114, "the comparison names the other variant")
+  controller:dispose()
+end
+
+-- The size page reports its title, species and trainer names plus the
+-- gendered measurement rows; without a trainer name the player slot is
+-- omitted rather than invented.
+function T.entry_size_reports_trainer_backed_measurements()
+  local PokedexController = requirePresent("size text demand")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
+  observe(owner, monCatalog, { species = "EEVEE", personality = 31 }, "caught")
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog, { playerName = "GOLD" }))
+  openGrid(controller)
+  openEntry(controller, "EEVEE")
+  press(controller, { { type = "activate", action = "entry-tab", value = "size" } })
+  Assert.equal(controller:view().page, "size", "the entry tab reaches the size page")
+  checkTextSlots(controller:view())
+  local sized = {}
+  for _, slot in ipairs(controller:view().text) do
+    sized[slot.role] = slot
+  end
+  Assert.equal(sized["size.title"].messageId, 143, "the size page keeps its title")
+  Assert.equal(sized["size.species-name"].species, "EEVEE", "the size page names its specimen")
+  Assert.equal(sized["size.player-name"].value, "GOLD", "the size page names its trainer")
+  Assert.equal(sized["size.caption-height"].messageId, 136, "the height pane keeps its caption")
+  Assert.equal(sized["size.gender-height"].messageId, 138, "the male profile keeps its height word")
+  Assert.equal(sized["size.caption-weight"].messageId, 137, "the weight pane keeps its caption")
+  Assert.equal(sized["size.gender-weight"].messageId, 140, "the male profile keeps its weight word")
+  Assert.notNil(sized["size.species-weight"], "the size page weighs its specimen in its own window")
+  controller:dispose()
+  local unnamed = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(unnamed)
+  openEntry(unnamed, "EEVEE")
+  press(unnamed, { { type = "activate", action = "entry-tab", value = "size" } })
+  checkTextSlots(unnamed:view())
+  local anonymous = {}
+  for _, slot in ipairs(unnamed:view().text) do
+    anonymous[slot.role] = slot
+  end
+  Assert.isNil(anonymous["size.player-name"], "a missing trainer name publishes no player slot")
+  Assert.notNil(anonymous["size.title"], "the size page still titles without a trainer name")
+  unnamed:dispose()
+end
+
+-- The selected species carries one bounded bank-backed detail family for
+-- the adapted inspector: number and name for seen-only highlights, plus
+-- category, flavor, height, and weight for caught ones. Unseen slots
+-- publish no detail at all.
+function T.grid_selection_carries_compact_detail_strings_for_caught_species()
+  local PokedexController = requirePresent("selected detail text demand")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
+  observe(owner, monCatalog, { species = "EEVEE", personality = 31 }, "caught")
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 })
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  local details = {}
+  for _, slot in ipairs(controller:view().text) do
+    details[slot.role] = slot
+  end
+  Assert.notNil(details["compact.detail-number"], "the selection numbers its detail")
+  Assert.notNil(details["compact.detail-name"], "the selection names its detail")
+  controller:dispose()
+  local caughtOnly = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(caughtOnly)
+  for _ = 1, 35 do
+    if caughtOnly:view().selection.species == "EEVEE" then
+      break
+    end
+    press(caughtOnly, { { type = "navigate", direction = "right" } })
+  end
+  Assert.equal(caughtOnly:view().selection.species, "EEVEE", "the cursor reaches the caught species")
+  local caught = {}
+  for _, slot in ipairs(caughtOnly:view().text) do
+    caught[slot.role] = slot
+  end
+  Assert.notNil(caught["compact.detail-category"], "a caught selection classifies its detail")
+  Assert.notNil(caught["compact.detail-flavor"], "a caught selection describes its detail")
+  Assert.notNil(caught["compact.detail-height"], "a caught selection measures its detail")
+  Assert.notNil(caught["compact.detail-weight"], "a caught selection weighs its detail")
+  caughtOnly:dispose()
+  local seenOnly = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(seenOnly)
+  local seen = {}
+  for _, slot in ipairs(seenOnly:view().text) do
+    seen[slot.role] = slot
+  end
+  Assert.notNil(seen["compact.detail-name"], "a seen-only selection still names its detail")
+  Assert.isNil(seen["compact.detail-flavor"], "a seen-only selection hides its protected description")
+  seenOnly:dispose()
 end
 
 -- An empty run retracts without ever publishing a count: the feedback

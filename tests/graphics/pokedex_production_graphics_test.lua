@@ -3379,6 +3379,194 @@ function T.heartgold_graphics_legs_stay_blocked_without_a_dump(_, context)
   Assert.isTrue(RomImporter.isReady("heartgold"), "the ready heartgold dump draws its graphics legs")
 end
 
+-- Every native search editor and the area/return entry tabs paint their
+-- source glyphs: criteria captions with staged values and buttons, the
+-- 27-mark letter grid, type and area choices, the area daypart, and the
+-- return-to-list action. Each leg asserts its prepared strings exist and
+-- then proves glyph ink over the composed background.
+function T.native_search_and_entry_text_paints_source_glyphs(scope)
+  local Renderer = requireRenderer("search and entry source glyphs")
+  local Interface = requireInterface("paired native layout resolution")
+  requireOwner("prepared bundles behind the search glyphs")
+  local versionId = readyVersion()
+  local pool = SharedImagePoolFake.new()
+  withPool(pool, function()
+    local rig = graphicsRig(versionId, pool, scope)
+    seedIcon(pool, "CHIKORITA/f0", 1, 1, 1)
+    seedIcon(pool, "EEVEE/f0", 0, 0, 0)
+    seedIcon(pool, "TOTODILE/f0", 1, 0, 0)
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "cover")
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "grid")
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "search.criteria")
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "search.order")
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "search.name")
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "search.type")
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "search.height")
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "search.weight")
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "search.area")
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "search.shape")
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "entry.area")
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "entry.size")
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "entry.forms")
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "entry.return")
+    local dexOwner = Fixture.ownerWithHistory(rig.monCatalog, rig.catalog)
+    local controller = Fixture.openController(dexOwner, rig.monCatalog, rig.catalog)
+    openGrid(controller)
+    press(controller, { { type = "y" } })
+    idle(controller, 2)
+    local seeded = {}
+    local function drawCurrent(role)
+      local view = controller:view()
+      local demand = browserDemandFor(Renderer, view)
+      seedDemandPortraitsOnce(pool, rig.cacheFs, rig.monCatalog, demand, true, seeded)
+      local lease = rig.owner:acquire({ purpose = "browser" })
+      local assets = prepareReady(rig, lease, demand)
+      local measurement = measurementFor("dualDisplay")
+      local plan = resolvePlan(Interface.browser(), measurement, planViewOf(view))
+      local data = drawPlan(
+        scope,
+        plan,
+        { graphics = love.graphics, renderer = assets.renderer },
+        preparedBrowserView(view, assets),
+        measurement.width,
+        measurement.height
+      )
+      assertNativeBackgrounds(Renderer, scope, rig, view, assets, role, plan, data)
+      lease:release()
+      return assets
+    end
+    do
+      local view = controller:view()
+      Assert.equal(view.page, "search", "the grid opens its search criteria")
+      local assets = drawCurrent("search.criteria")
+      for _, key in ipairs({ "search.caption-order", "search.caption-letter", "search.value-order", "search.button-run", "search.button-reset", "search.button-back" }) do
+        Assert.isTrue(
+          (assets.messages[key] or "") ~= "",
+          "the criteria bundle carries its real string " .. key
+        )
+      end
+    end
+    press(controller, { { type = "activate", action = "criterion", value = "order" } })
+    idle(controller, 2)
+    do
+      local assets = drawCurrent("search.order")
+      for _, key in ipairs({ "search.title-order", "search.current-order", "search.option-order-numerical", "search.button-ok" }) do
+        Assert.isTrue((assets.messages[key] or "") ~= "", "the order bundle carries its real string " .. key)
+      end
+    end
+    press(controller, { { type = "cancel" } })
+    idle(controller, 2)
+    press(controller, { { type = "activate", action = "criterion", value = "letter" } })
+    idle(controller, 2)
+    do
+      local assets = drawCurrent("search.name")
+      for _, key in ipairs({ "search.option-letter-A", "search.option-letter-Z", "search.option-letter-unrestricted", "search.button-ok" }) do
+        Assert.isTrue((assets.messages[key] or "") ~= "", "the letter bundle carries its real string " .. key)
+      end
+      local marks = 0
+      for key in pairs(assets.messages) do
+        if key:find("^search%.option%-letter%-", 1) ~= nil then
+          marks = marks + 1
+        end
+      end
+      Assert.equal(marks, 27, "the letter bundle carries all 27 marks")
+    end
+    press(controller, { { type = "cancel" } })
+    idle(controller, 2)
+    press(controller, { { type = "activate", action = "criterion", value = "type" } })
+    idle(controller, 2)
+    do
+      local assets = drawCurrent("search.type")
+      Assert.isTrue(
+        (assets.messages["search.option-type-unrestricted"] or "") ~= "",
+        "the type bundle carries its empty mark"
+      )
+    end
+    press(controller, { { type = "cancel" } })
+    idle(controller, 2)
+    press(controller, { { type = "activate", action = "criterion", value = "area" } })
+    idle(controller, 2)
+    do
+      local assets = drawCurrent("search.area")
+      Assert.isTrue(
+        (assets.messages["search.option-area-johto"] or "") ~= "",
+        "the area bundle carries its johto scope"
+      )
+    end
+    press(controller, { { type = "cancel" } })
+    idle(controller, 2)
+    press(controller, { { type = "activate", action = "criterion", value = "height" } })
+    idle(controller, 2)
+    do
+      local assets = drawCurrent("search.height")
+      for _, key in ipairs({ "search.title-height", "search.current-height-min", "search.current-height-max", "search.button-ok" }) do
+        Assert.isTrue((assets.messages[key] or "") ~= "", "the height bundle carries its real string " .. key)
+      end
+    end
+    press(controller, { { type = "cancel" } })
+    idle(controller, 2)
+    press(controller, { { type = "activate", action = "criterion", value = "weight" } })
+    idle(controller, 2)
+    do
+      local assets = drawCurrent("search.weight")
+      for _, key in ipairs({ "search.title-weight", "search.current-weight-min", "search.current-weight-max", "search.button-ok" }) do
+        Assert.isTrue((assets.messages[key] or "") ~= "", "the weight bundle carries its real string " .. key)
+      end
+    end
+    press(controller, { { type = "cancel" } })
+    idle(controller, 2)
+    press(controller, { { type = "activate", action = "criterion", value = "shape" } })
+    idle(controller, 2)
+    do
+      local assets = drawCurrent("search.shape")
+      for _, key in ipairs({ "search.title-shape", "search.button-ok", "search.button-cancel" }) do
+        Assert.isTrue((assets.messages[key] or "") ~= "", "the shape bundle carries its real string " .. key)
+      end
+    end
+    press(controller, { { type = "cancel" } })
+    idle(controller, 2)
+    press(controller, { { type = "cancel" } })
+    idle(controller, 2)
+    Assert.equal(controller:view().page, "grid", "cancelling the criteria returns to the grid")
+    selectSpecies(controller, "TOTODILE")
+    openEntry(controller)
+    -- The source centers the cursor two rows down: the first row window
+    -- stays blank until the list scrolls the region entry into it.
+    press(controller, { { type = "navigate", direction = "down" } })
+    idle(controller, 2)
+    press(controller, { { type = "navigate", direction = "down" } })
+    idle(controller, 2)
+    do
+      local assets = drawCurrent("entry.area")
+      Assert.isTrue((assets.messages["area.time"] or "") ~= "", "the area bundle carries its daypart")
+      Assert.isTrue((assets.messages["area.location"] or "") ~= "", "the area bundle carries its region")
+    end
+    openTab(controller, "size")
+    do
+      local assets = drawCurrent("entry.size")
+      for _, key in ipairs({ "size.title", "size.species-name", "size.gender-height", "size.gender-weight" }) do
+        Assert.isTrue((assets.messages[key] or "") ~= "", "the size bundle carries its real string " .. key)
+      end
+    end
+    openTab(controller, "forms")
+    do
+      local assets = drawCurrent("entry.forms")
+      for _, key in ipairs({ "forms.title", "forms.selected" }) do
+        Assert.isTrue((assets.messages[key] or "") ~= "", "the forms bundle carries its real string " .. key)
+      end
+    end
+    openTab(controller, "return")
+    do
+      local assets = drawCurrent("entry.return")
+      Assert.isTrue(
+        (assets.messages["return.action"] or "") ~= "",
+        "the return bundle carries its return-to-list action"
+      )
+    end
+    rig.owner:release()
+  end)
+end
+
 function T.native_japanese_presentation_stays_blocked_without_tokenizer_coverage(_, context)
   assert(context ~= nil, "blocked-language reporting needs its runner context")
   context:skip(

@@ -1127,4 +1127,95 @@ function T.out_of_bounds_sprite_viewports_fail_with_attribution()
   Assert.equal(pool:stats().outstandingLeases, 0, "failure and disposal return every owned interest")
 end
 
+-- A criteria-shaped demand whose native UI bank is unavailable fails
+-- closed: the error attributes the exact role and bank, the previously
+-- committed grid bundle stays intact, and the following grid generation
+-- still converges, so a missing bank can never publish an unlabeled page.
+function T.search_criteria_demand_without_its_ui_bank_keeps_the_committed_view()
+  local Owner = requirePresent("search text fail-closed preservation")
+  local pool = SharedImagePoolFake.new()
+  local monCatalog = Fixture.catalogs()
+  local speciesRecord = assert(monCatalog:species("CHIKORITA"), "the fixture catalog names its species")
+  local nativeId = assert(speciesRecord.nativeId, "the fixture species carries its numeric identity")
+  assert(type(nativeId) == "number", "the fixture species identity resolves numerically")
+  local provider = stubMessageProvider({
+    [237] = { [nativeId] = "CHIKORITA" },
+  })
+  local args = closureOwnerArgs(pool)
+  args.messages = provider
+  local manifest = closureManifest()
+  manifest.pages["search.criteria"] =
+    { backgrounds = { information = {}, controls = {} }, cells = {}, sprites = {}, windows = {} }
+  args.cacheFs = {
+    loadLua = function(_)
+      return manifest
+    end,
+  }
+  local owner = Owner.new(args)
+  local lease = owner:acquire({ purpose = "browser" })
+  local demand = pageDemand("grid", "pokedex-grid-text")
+  demand.text = {
+    { role = "grid.seen-count", kind = "numeric", value = "2" },
+    { role = "grid.selected-name", kind = "species_name", species = "CHIKORITA", language = "native" },
+  }
+  local ready = nil
+  for _ = 1, 64 do
+    local outcome = lease:prepare(demand)
+    if outcome.kind == "ready" then
+      ready = outcome
+      break
+    end
+    Assert.isTrue(outcome.kind ~= "failed", "the grid text converges: " .. tostring(outcome.error))
+  end
+  Assert.notNil(ready, "the grid bundle commits before the doomed criteria demand")
+  local doomed = pageDemand("search.criteria", "pokedex-criteria-text")
+  doomed.text = {
+    { role = "search.caption-order", kind = "ui", messageId = 26 },
+    { role = "search.button-run", kind = "ui", messageId = 36 },
+  }
+  local failed = nil
+  for _ = 1, 64 do
+    local outcome = lease:prepare(doomed)
+    if outcome.kind == "failed" then
+      failed = outcome
+      break
+    end
+    Assert.isTrue(outcome.kind == "pending", "the doomed criteria generation never publishes")
+  end
+  Assert.notNil(failed, "an unavailable UI bank cannot publish the criteria page")
+  Assert.isTrue(
+    type(failed.error) == "string" and failed.error:find("search.caption-order", 1, true) ~= nil,
+    "the failure names its exact text role"
+  )
+  Assert.isTrue(
+    type(failed.error) == "string" and failed.error:find("802", 1, true) ~= nil,
+    "the failure names its missing bank"
+  )
+  -- A textless demand publishes no messages by contract, so the follow-up
+  -- grid generation re-demands the committed text: this proves the doomed
+  -- criteria generation left the committed bundle intact.
+  local againDemand = pageDemand("grid", "pokedex-grid-again")
+  againDemand.text = {
+    { role = "grid.seen-count", kind = "numeric", value = "2" },
+    { role = "grid.selected-name", kind = "species_name", species = "CHIKORITA", language = "native" },
+  }
+  local again = nil
+  for _ = 1, 64 do
+    local outcome = lease:prepare(againDemand)
+    if outcome.kind == "ready" then
+      again = outcome
+      break
+    end
+    Assert.isTrue(outcome.kind ~= "failed", "the grid still converges: " .. tostring(outcome.error))
+  end
+  Assert.notNil(again, "the committed view survives the doomed criteria generation")
+  Assert.deepEqual(again.assets.messages, {
+    ["grid.seen-count"] = "2",
+    ["grid.selected-name"] = "CHIKORITA",
+  }, "the surviving bundle keeps its prepared strings")
+  lease:release()
+  owner:release()
+  Assert.equal(pool:stats().outstandingLeases, 0, "failure and disposal return every owned interest")
+end
+
 return { tests = T }

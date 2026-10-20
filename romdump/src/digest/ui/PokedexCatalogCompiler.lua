@@ -8,6 +8,7 @@
 
 local Errors = require("libs.errors.src.Errors")
 local Hashing = require("romdump.src.digest.Hashing")
+local MapCatalog = require("romdump.src.digest.map.MapCatalog")
 local MonCache = require("libs.assets.src.MonCache")
 local MonSources = require("romdump.src.config.MonSources")
 local PokedexAssetSchema = require("libs.assets.src.PokedexAssetSchema")
@@ -445,6 +446,46 @@ local function _compile(romFs, versionId, monCatalog, sink)
     return "dex-dungeon-" .. id
   end
 
+  local areaMapSymbols = PokedexSources.areaMapSymbols()
+  local landmarkBanks = PokedexSources.textBindings(versionId).landmarks
+  -- Names one habitat geometry through the retail map-section naming
+  -- path (`BufferLandmarkName` over the overworld/dungeon id tables and
+  -- `MapHeader_GetMapSec`): the map symbol resolves to its header
+  -- record, whose map-section id selects bank 279, or the bank-280
+  -- fallback when the section id is zero. Area ids with no retail map
+  -- keep the zero placeholder and never invent a label. The bank-279
+  -- range side of the native fallback is guarded by ROM conformance
+  -- over the compiled catalog instead of a second message-archive read.
+  local function resolveAreaName(kind, id, label)
+    local symbols = areaMapSymbols[kind]
+    local symbol = type(symbols) == "table" and symbols[id] or nil
+    if symbol == nil then
+      return { bankId = 0, messageId = 0 }
+    end
+    local headerId = MapCatalog.idForSymbol(symbol)
+    if headerId == nil then
+      raise(
+        PokedexCatalogCompiler.ERROR.UNMAPPED_SPECIES,
+        "pokedex " .. label .. " names an unknown retail map " .. symbol,
+        { kind = kind, id = id, symbol = symbol }
+      )
+    end
+    assert(headerId ~= nil, "unmapped retail maps fail above")
+    local record = MapCatalog.get(headerId)
+    if record == nil then
+      raise(
+        PokedexCatalogCompiler.ERROR.UNMAPPED_SPECIES,
+        "pokedex " .. label .. " resolves no map record for " .. symbol,
+        { kind = kind, id = id, symbol = symbol }
+      )
+    end
+    assert(type(record) == "table", "unmapped retail maps fail above")
+    local sectionId = record.mapSectionNativeId
+    if type(sectionId) ~= "number" or sectionId % 1 ~= 0 or sectionId == 0 then
+      return { bankId = landmarkBanks.fallbackBankId, messageId = landmarkBanks.fallbackMessageId }
+    end
+    return { bankId = landmarkBanks.bankId, messageId = sectionId }
+  end
   for id = 1, 70 do
     local baseOffset = (id - 1) * 36 + 1
     local x = byteAt(outdoorGeometry, baseOffset)
@@ -457,7 +498,7 @@ local function _compile(romFs, versionId, monCatalog, sink)
       kind = "outdoor",
       region = x < 22 and "johto" or "kanto",
       mapKey = outdoorKey(id),
-      name = { bankId = 0, messageId = 0 },
+      name = resolveAreaName("outdoor", id, outdoorKey(id)),
       rect = {
         x = x,
         y = y,
@@ -475,7 +516,7 @@ local function _compile(romFs, versionId, monCatalog, sink)
       kind = "dungeon",
       region = x < 22 and "johto" or "kanto",
       mapKey = dungeonKey(id),
-      name = { bankId = 0, messageId = 0 },
+      name = resolveAreaName("dungeon", id, dungeonKey(id)),
       position = { x = x, y = y },
     }
   end
@@ -912,6 +953,9 @@ local function _compile(romFs, versionId, monCatalog, sink)
     },
     pictures = { backYOffset = backYOffset },
     textBindings = PokedexSources.textBindings(versionId),
+    searchText = PokedexSources.searchText(),
+    entryText = PokedexSources.entryText(),
+    formNames = PokedexSources.formNameMessages(),
   }
 
   local validated, schemaErr = PokedexAssetSchema.validateCatalog(catalog, monCatalog)
