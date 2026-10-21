@@ -7,13 +7,14 @@
 -- Factory.create(kind, args, context, services); unknown kinds fail here
 -- instead of returning a timer stand-in. Voice monitoring, sound actions
 -- with real voice completion, background blend transitions, battler
--- particle continuations, picture reveals, and one source-parameterized
--- visual body per remaining nonparticle task kind have bodies in this
--- lane; only kinds outside the emitted producer vocabulary still fail
--- closed. Visual, blend, and picture bodies mutate only scene state
--- (owned picture patches, scroll sweeps, palette overlays) and publish
--- no drawable picture of their own: only particle tasks draw, and only
--- from staged dependency textures. Completion boundaries come only from
+-- particle continuations, picture reveals, configured-sprite cell frames,
+-- and one source-parameterized visual body per remaining nonparticle
+-- task kind have bodies in this lane; only kinds outside the emitted
+-- producer vocabulary still fail closed. Visual, blend, and picture
+-- bodies mutate only scene state (owned picture patches, scroll sweeps,
+-- palette overlays) and publish no drawable picture of their own: only
+-- particle tasks and configured-sprite cell tasks draw, and only from
+-- staged dependency textures. Completion boundaries come only from
 -- compiled source timing operands; well-formed spawns without one
 -- retire synchronously as validated markers, and malformed shapes fail
 -- closed. No fixed budget stands in for source timing anywhere.
@@ -2039,6 +2040,396 @@ function BattleNativeVisualTask:dispose()
   teardownNativeVisual(self)
 end
 
+-- Required per-occurrence roles behind one configured sprite: the
+-- normalized semantic slots the producer lowers for its sprite setup
+-- word. Multi-cell resources stay manager-owned through their loader
+-- opcodes, so this lane stages exactly the four roles it draws from.
+local CONFIGURED_SPRITE_REQUIRED_ROLES = { "character", "palette", "cell", "animation" }
+
+---@param args table<string, unknown> instruction-derived construction arguments
+---@return boolean configured true when the spawn carries the full sprite role map
+local function isConfiguredSpriteSpawn(args)
+  if type(args) ~= "table" then
+    return false
+  end
+  local resourceKeys = args.resourceKeys
+  if type(resourceKeys) ~= "table" then
+    return false
+  end
+  for _, role in ipairs(CONFIGURED_SPRITE_REQUIRED_ROLES) do
+    if type(resourceKeys[role]) ~= "string" or resourceKeys[role] == "" then
+      return false
+    end
+  end
+  return true
+end
+
+---@class BattleConfiguredSpriteTask
+---@field _scene table<string, unknown> scene behind owned transient records
+---@field _kind string configured sprite kind behind the run
+---@field _staged table<integer, BattleEffectLeaseRecord> staged occurrence leases
+---@field _characterKey string staged texture role behind picture submissions
+---@field _stripWidth integer staged strip width in pixels behind tile crops
+---@field _anchor table<string, integer> native slot center behind object placement
+---@field _frames table<integer, { cell: integer, duration: integer }> authored display frames
+---@field _total integer authored source ticks behind completion
+---@field _cells table<integer, table<string, unknown>> normalized NCER cells
+---@field _effectIds table<integer, integer> live transient identities behind the shown frame
+---@field _shown integer last published display frame, 0 before the first tick
+---@field _ticks integer source ticks advanced
+---@field _state string pending, running, complete, or cancelled
+---@field _cancelReason string? last cancellation cause under diagnosis
+---@field _disposed boolean release has run
+local BattleConfiguredSpriteTask = {}
+BattleConfiguredSpriteTask.__index = BattleConfiguredSpriteTask
+
+-- Names the staged lease behind one owned role: leases are occurrence
+-- journals in acquisition order, so the role key selects deterministically.
+---@param staged table<integer, BattleEffectLeaseRecord> staged occurrence leases
+---@param key string owned resource key behind lookup
+---@param kind string task kind under diagnosis
+---@return table<string, unknown> staged lease behind the role
+local function configuredLease(staged, key, kind)
+  for _, record in ipairs(staged) do
+    local lease = record.lease
+    if type(lease) == "table" and lease.key == key then
+      return lease --[[@as table<string, unknown>]]
+    end
+  end
+  error("BATTLE_EFFECT_TASK_RESOURCE: kind " .. kind .. " stages no lease for resource " .. key, 0)
+end
+
+-- Validates one enabled NCER object for the picture-layer path: only
+-- axis-aligned integer geometry with a staged tile origin is
+-- representable, so affine objects fail here instead of drawing
+-- unrotated stand-ins.
+---@param obj table<string, unknown> normalized cell object under validation
+---@param kind string task kind under diagnosis
+---@param key string sprite cell resource key behind provenance
+local function checkSpriteObject(obj, kind, key)
+  if obj.affine == true then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " draws no affine sprite object from " .. key, 0)
+  end
+  for _, field in ipairs({ "x", "y", "tile", "width", "height", "priority" }) do
+    if type(obj[field]) ~= "number" or obj[field] % 1 ~= 0 then
+      error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " pictures integer sprite geometry from " .. key, 0)
+    end
+  end
+  local width = obj.width --[[@as integer]]
+  local height = obj.height --[[@as integer]]
+  if width < 8 or width > 64 or width % 8 ~= 0 or height < 8 or height > 64 or height % 8 ~= 0 then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " pictures native sprite geometry from " .. key, 0)
+  end
+  if obj.tile < 0 then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " pictures staged sprite tiles from " .. key, 0)
+  end
+end
+
+-- Selects the sprite anchor from the frozen occurrence topology: the
+-- attacker slot center, shared with the emitter slot anchors so
+-- attacker and target sides resolve without inventing coordinates.
+---@param context table<string, unknown> occurrence-bound playback context
+---@param kind string task kind under diagnosis
+---@return table<string, integer> native slot center behind object placement
+local function configuredAnchor(context, kind)
+  local topology = type(context) == "table" and context.topology or nil
+  local attacker = type(topology) == "table" and topology.attacker or nil
+  local slot = type(attacker) == "table" and attacker.slot or nil
+  local center = type(slot) == "string" and EMITTER_CENTERS[slot] or nil
+  if type(center) ~= "table" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " anchors its sprite on the occurrence attacker slot", 0)
+  end
+  return { x = center.x, y = center.y }
+end
+
+-- Builds the display walk from the authored NANR frames: zero-duration
+-- frames are skipped, and an all-zero animation shows its first frame
+-- for exactly one tick. No fixed budget stands in for authored timing.
+---@param frames table<integer, table<string, unknown>> authored animation frames
+---@param kind string task kind under diagnosis
+---@param key string sprite animation resource key behind provenance
+---@return table<integer, { cell: integer, duration: integer }> display frames in order
+local function displayFrames(frames, kind, key)
+  local walk = {}
+  for _, frame in ipairs(frames) do
+    if type(frame.cell) ~= "number" or frame.cell % 1 ~= 0 or frame.cell < 0 then
+      error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " advances normalized sprite frames from " .. key, 0)
+    end
+    local duration = frame.duration
+    if type(duration) ~= "number" or duration % 1 ~= 0 or duration < 0 then
+      error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " advances authored sprite durations from " .. key, 0)
+    end
+    if duration >= 1 then
+      walk[#walk + 1] = { cell = frame.cell, duration = duration }
+    end
+  end
+  if #walk == 0 and #frames >= 1 then
+    walk[1] = { cell = frames[1].cell, duration = 1 }
+  end
+  return walk
+end
+
+-- Owns one source-cell sprite occurrence over its decoded leases: the
+-- task stages each role once, walks authored NANR frames over NCER
+-- objects, and publishes transient strip-band pictures through the
+-- existing scene/renderer path.
+---@param kind string configured sprite kind under construction
+---@param args table<string, unknown> instruction-derived construction arguments
+---@param context table<string, unknown> occurrence-bound playback context
+---@param services table<string, unknown> scene, audio, and resource collaborators
+---@return table<string, unknown> runnable sprite task
+local function newConfiguredSpriteTask(kind, args, context, services)
+  checkVisualArgs(args, kind)
+  local scene = checkScene(services, kind)
+  checkEffectScene(scene, kind)
+  local resourceKeys = args.resourceKeys --[[@as table<string, string>]]
+  local staged = {}
+  for _, role in ipairs(CONFIGURED_SPRITE_REQUIRED_ROLES) do
+    stageLease(kind, resourceKeys[role], services, staged)
+  end
+  local characterKey = resourceKeys.character
+  local failurePrefix = "BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind
+  local texture = configuredLease(staged, characterKey, kind)
+  if texture.kind ~= "texture" then
+    releaseStaged(staged)
+    error(failurePrefix .. " draws sprite strips from a staged texture, not " .. tostring(texture.kind), 0)
+  end
+  if type(texture.width) ~= "number" or texture.width % 1 ~= 0 or texture.width < 8 then
+    releaseStaged(staged)
+    error(failurePrefix .. " draws sprite strips from a sized staged texture", 0)
+  end
+  local palette = configuredLease(staged, resourceKeys.palette, kind)
+  local paletteData = type(palette) == "table" and palette.data or nil
+  if palette.kind == "texture" or type(paletteData) ~= "table" or type(paletteData.colors) ~= "table" then
+    releaseStaged(staged)
+    error(failurePrefix .. " stages decoded palette records for resource " .. resourceKeys.palette, 0)
+  end
+  local cellLease = configuredLease(staged, resourceKeys.cell, kind)
+  local cellData = type(cellLease) == "table" and cellLease.data or nil
+  if cellLease.kind == "texture" or type(cellData) ~= "table" or type(cellData.cells) ~= "table" then
+    releaseStaged(staged)
+    error(failurePrefix .. " stages decoded cell records for resource " .. resourceKeys.cell, 0)
+  end
+  local animationLease = configuredLease(staged, resourceKeys.animation, kind)
+  local animationData = type(animationLease) == "table" and animationLease.data or nil
+  if animationLease.kind == "texture" or type(animationData) ~= "table" or type(animationData.anims) ~= "table" then
+    releaseStaged(staged)
+    error(failurePrefix .. " stages decoded animation records for resource " .. resourceKeys.animation, 0)
+  end
+  local cells = cellData.cells --[[@as table<integer, table<string, unknown>>]]
+  if #cells < 1 then
+    releaseStaged(staged)
+    error(failurePrefix .. " pictures staged sprite cells from " .. resourceKeys.cell, 0)
+  end
+  local anims = animationData.anims --[[@as table<integer, table<string, unknown>>]]
+  if #anims < 1 or type(anims[1].frames) ~= "table" or #anims[1].frames < 1 then
+    releaseStaged(staged)
+    error(failurePrefix .. " advances normalized sprite frames from " .. resourceKeys.animation, 0)
+  end
+  local ok, walk = pcall(displayFrames, anims[1].frames, kind, resourceKeys.animation)
+  if not ok then
+    releaseStaged(staged)
+    error(walk, 0)
+  end
+  assert(type(walk) == "table" and #walk >= 1, "the display walk keeps at least one authored frame")
+  for _, frame in ipairs(walk) do
+    local cell = cells[frame.cell + 1]
+    if type(cell) ~= "table" or type(cell.objs) ~= "table" then
+      releaseStaged(staged)
+      error(failurePrefix .. " pictures staged sprite cell " .. frame.cell .. " from " .. resourceKeys.cell, 0)
+    end
+    for _, obj in
+      ipairs(cell.objs --[[@as table<integer, table<string, unknown>>]])
+    do
+      if type(obj) == "table" and obj.disabled ~= true then
+        local valid, cause = pcall(checkSpriteObject, obj, kind, resourceKeys.cell)
+        if not valid then
+          releaseStaged(staged)
+          error(cause, 0)
+        end
+      end
+    end
+  end
+  local total = 0
+  for _, frame in ipairs(walk) do
+    total = total + frame.duration
+  end
+  local anchorOk, anchor = pcall(configuredAnchor, context, kind)
+  if not anchorOk then
+    releaseStaged(staged)
+    error(anchor, 0)
+  end
+  assert(type(anchor) == "table", "the sprite anchor resolves before the first tick")
+  return setmetatable({
+    _scene = scene,
+    _kind = kind,
+    _staged = staged,
+    _characterKey = characterKey,
+    _stripWidth = texture.width,
+    _anchor = anchor,
+    _frames = walk,
+    _total = total,
+    _cells = cells,
+    _effectIds = {},
+    _shown = 0,
+    _ticks = 0,
+    _state = "pending",
+    _cancelReason = nil,
+    _disposed = false,
+  }, BattleConfiguredSpriteTask)
+end
+
+-- Releases owned transient identities without touching the persistent
+-- battler scene: unknown or repeated identities stay silent.
+---@param self BattleConfiguredSpriteTask
+local function teardownConfiguredSprite(self)
+  if #self._effectIds > 0 then
+    local scene = self._scene
+    for _, id in ipairs(self._effectIds) do
+      scene.releaseEffect(scene, id)
+    end
+    self._effectIds = {}
+  end
+  self._shown = 0
+end
+
+-- Releases owned transient records and staged leases exactly once:
+-- teardown clears scene state while the staged journal guards the
+-- double release, so complete, cancel, and dispose share this path.
+---@param self BattleConfiguredSpriteTask
+local function retireConfiguredSprite(self)
+  teardownConfiguredSprite(self)
+  releaseStaged(self._staged)
+end
+
+-- Selects the display frame behind a source tick count over the
+-- authored cumulative durations.
+---@param self BattleConfiguredSpriteTask
+---@param tick integer source ticks advanced
+---@return integer display frame behind the tick
+local function frameAt(self, tick)
+  local elapsed = 0
+  for index, frame in ipairs(self._frames) do
+    elapsed = elapsed + frame.duration
+    if tick <= elapsed then
+      return index
+    end
+  end
+  return #self._frames
+end
+
+-- Publishes one authored cell as transient strip-band pictures: each
+-- 8-pixel object row crops its staged tile band through the existing
+-- scene record, ordered by NCER object order with native offsets,
+-- flips, and priority depth.
+---@param self BattleConfiguredSpriteTask
+---@param cellIndex integer zero-based authored cell behind publishing
+local function publishConfiguredCell(self, cellIndex)
+  teardownConfiguredSprite(self)
+  local scene = self._scene
+  local cell = self._cells[cellIndex + 1]
+  assert(type(cell) == "table", "published cells stay in the staged range")
+  local objs = cell.objs --[[@as table<integer, table<string, unknown>>]]
+  assert(type(objs) == "table", "published cells carry their staged objects")
+  local anchor = self._anchor --[[@as table<string, integer>]]
+  for _, obj in ipairs(objs) do
+    if type(obj) == "table" and obj.disabled ~= true then
+      local width = obj.width --[[@as integer]]
+      local height = obj.height --[[@as integer]]
+      local tilesPerRow = math.floor(width / 8)
+      local rows = math.floor(height / 8)
+      for band = 0, rows - 1 do
+        local origin = (obj.tile + band * tilesPerRow) * 8
+        if origin < 0 or origin + width > self._stripWidth then
+          teardownConfiguredSprite(self)
+          error(
+            "BATTLE_EFFECT_TASK_RESOURCE: kind "
+              .. self._kind
+              .. " crops staged sprite tiles from "
+              .. self._characterKey,
+            0
+          )
+        end
+        local record = scene.allocEffect(scene, "configured-sprite")
+        local id = record.id --[[@as integer]]
+        scene.setEffectPicture(scene, id, {
+          assetKey = self._characterKey,
+          selector = self._kind .. "/cell-" .. cellIndex .. "/band-" .. band,
+          centerX = anchor.x + obj.x,
+          centerY = anchor.y + obj.y + band * 8,
+          zCenter = -obj.priority,
+          width = width,
+          height = 8,
+          alpha = 1,
+          xOffset2 = origin,
+          yOffset2 = 0,
+          flipH = obj.flipH == true,
+          flipV = obj.flipV == true,
+        })
+        self._effectIds[#self._effectIds + 1] = id
+      end
+    end
+  end
+end
+
+-- Advances one source tick toward the authored animation boundary.
+-- Mid-task scene failures restore the task's own partial visuals
+-- before the failure reaches the player.
+---@param self BattleConfiguredSpriteTask
+---@param tick table<string, unknown>? source tick under advancement
+function BattleConfiguredSpriteTask:stepSourceTick(tick)
+  local _ = tick
+  if self._disposed or self._state == "complete" or self._state == "cancelled" then
+    return
+  end
+  self._state = "running"
+  self._ticks = self._ticks + 1
+  local index = frameAt(self, self._ticks)
+  if index ~= self._shown then
+    local ok, err = pcall(publishConfiguredCell, self, self._frames[index].cell)
+    if not ok then
+      retireConfiguredSprite(self)
+      error(err, 0)
+    end
+    self._shown = index
+  end
+  if self._ticks >= self._total then
+    self._state = "complete"
+    retireConfiguredSprite(self)
+  end
+end
+
+-- Reports the sprite run state for the player's retirement accounting.
+---@param self BattleConfiguredSpriteTask
+---@return string
+function BattleConfiguredSpriteTask:status()
+  assert(VALID_TASK_STATES[self._state] == true, "configured sprite tasks report a known run state")
+  return self._state
+end
+
+-- Cancels the sprite run; completion and cancellation stay separate, so
+-- a completed run keeps its completion.
+---@param self BattleConfiguredSpriteTask
+---@param reason string cancellation cause under diagnosis
+function BattleConfiguredSpriteTask:cancel(reason)
+  if self._state == "complete" then
+    return
+  end
+  self._state = "cancelled"
+  self._cancelReason = reason
+  retireConfiguredSprite(self)
+end
+
+-- Releases owned transient records and staged leases exactly once.
+---@param self BattleConfiguredSpriteTask
+function BattleConfiguredSpriteTask:dispose()
+  if self._disposed then
+    return
+  end
+  self._disposed = true
+  retireConfiguredSprite(self)
+end
+
 -- Reports whether the factory constructs a real task for a kind. The
 -- predicate is a direct view of the constructor dispatch below: only
 -- emitted producer kinds with implemented bodies are admitted.
@@ -2111,6 +2502,10 @@ function BattleEffectTasks.create(kind, args, context, services)
   if SOUND_TASK_KINDS[kind] == true then
     assert(type(services) == "table", "sound tasks require their services record")
     return newSoundTask(kind, args or {}, context or {}, services)
+  end
+  if isConfiguredSpriteSpawn(args or {}) then
+    assert(type(services) == "table", "configured sprite tasks require their services record")
+    return newConfiguredSpriteTask(kind, args or {}, context or {}, services)
   end
   if NATIVE_VISUAL_KINDS[kind] == true then
     assert(type(services) == "table", "native visual tasks require their services record")

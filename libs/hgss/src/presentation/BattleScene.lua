@@ -1666,7 +1666,7 @@ end
 -- producer owns its animation policy and chooses the staged resource;
 -- this scene only carries native placement and appearance into rendering.
 ---@param id integer live effect identity under updating
----@param picture { assetKey: string, selector: string, centerX: number, centerY: number, zCenter: number, width: number, height: number, alpha: number, rotationX?: integer, rotationY?: integer, rotationZ?: integer, tintR?: number, tintG?: number, tintB?: number, paletteFade?: table<string, unknown> } staged picture state
+---@param picture { assetKey: string, selector: string, centerX: number, centerY: number, zCenter: number, width: number, height: number, alpha: number, rotationX?: integer, rotationY?: integer, rotationZ?: integer, tintR?: number, tintG?: number, tintB?: number, paletteFade?: table<string, unknown>, xOffset2?: integer, yOffset2?: integer, flipH?: boolean, flipV?: boolean } staged picture state
 function BattleScene:setEffectPicture(id, picture)
   assert(not self._released, "released scenes update no effects")
   assert(type(picture) == "table", "transient pictures carry staged state")
@@ -1681,6 +1681,25 @@ function BattleScene:setEffectPicture(id, picture)
   end
   assert(picture.width > 0 and picture.height > 0, "transient pictures have visible dimensions")
   assert(picture.alpha >= 0 and picture.alpha <= 1, "transient picture alpha is normalized")
+  -- Source cell bands crop their staged tile strip through an exact
+  -- pixel origin; flips mirror the crop. Both stay absent for pictures
+  -- that draw their whole staged image.
+  if picture.xOffset2 ~= nil or picture.yOffset2 ~= nil then
+    assert(
+      type(picture.xOffset2) == "number" and picture.xOffset2 % 1 == 0 and picture.xOffset2 >= 0,
+      "transient pictures crop from an integral strip origin"
+    )
+    assert(
+      type(picture.yOffset2) == "number" and picture.yOffset2 % 1 == 0 and picture.yOffset2 >= 0,
+      "transient pictures crop from an integral strip row"
+    )
+  end
+  if picture.flipH ~= nil then
+    assert(type(picture.flipH) == "boolean", "transient pictures flip horizontally by flag")
+  end
+  if picture.flipV ~= nil then
+    assert(type(picture.flipV) == "boolean", "transient pictures flip vertically by flag")
+  end
   local copy = {}
   for key, value in pairs(picture) do
     if type(value) == "table" then

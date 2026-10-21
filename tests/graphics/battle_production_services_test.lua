@@ -43,7 +43,11 @@ local function readyVersions()
 end
 
 local function assertStagedManifest(manifest, context)
-  Assert.equal(manifest.schema, BattlePresentationSchema.MANIFEST_SCHEMA, context .. " stages the current catalog schema")
+  Assert.equal(
+    manifest.schema,
+    BattlePresentationSchema.MANIFEST_SCHEMA,
+    context .. " stages the current catalog schema"
+  )
   Assert.isTrue(
     type(manifest.battlefield.slots) == "table" and #manifest.battlefield.slots == 6,
     context .. " stages all source side-type geometry"
@@ -144,7 +148,8 @@ end
 ---@return table text services
 ---@return table window services
 local function productionDrawServices(scope, cacheFs, versionId)
-  local uiManifest = assert(cacheFs:loadLua(FieldUiAssetCache.manifestPath()), versionId .. " loads its field-UI manifest")
+  local uiManifest =
+    assert(cacheFs:loadLua(FieldUiAssetCache.manifestPath()), versionId .. " loads its field-UI manifest")
   Assert.isTrue(FieldUiAssetCache.validateManifest(uiManifest), versionId .. " carries a valid field-UI manifest")
   local textRenderer = scope:own(FieldTextRenderer.new({ cacheFs = cacheFs }))
   local windowRenderer = scope:own(FieldWindowRenderer.new({ cacheFs = cacheFs, manifest = uiManifest }))
@@ -270,10 +275,8 @@ end
 ---@param facing string "back" for own sprites, "front" for foes
 ---@return string exact canonical portrait selector with a ready staged page
 local function stagedPortraitSelector(cacheFs, species, facing)
-  local portraits = assert(
-    cacheFs:loadLua(MonCache.portraitManifestPath()),
-    "the staged cache carries its portrait manifest"
-  )
+  local portraits =
+    assert(cacheFs:loadLua(MonCache.portraitManifestPath()), "the staged cache carries its portrait manifest")
   local entries = assert(portraits.entries, "the staged cache plans its portrait entries")
   local fallback = nil
   local keys = {}
@@ -398,8 +401,12 @@ local function driveToEnter(envelope, port, launchId, versionId)
   local screen = envelope:liveScreen()
   local status = screen ~= nil and screen:status() or nil
   error(
-    versionId .. " enters its staged launch (mode=" .. tostring(status ~= nil and status.mode)
-      .. " err=" .. tostring(status ~= nil and status.error) .. ")",
+    versionId
+      .. " enters its staged launch (mode="
+      .. tostring(status ~= nil and status.mode)
+      .. " err="
+      .. tostring(status ~= nil and status.error)
+      .. ")",
     0
   )
 end
@@ -720,10 +727,7 @@ function T.cold_global_and_scene_build_one_staged_screen(scope, context)
       worker.ready = true
       driveToEnter(envelope, port, launchId, versionId)
       Assert.equal(#constructions, 1, versionId .. " constructs exactly one screen")
-      Assert.isTrue(
-        type(constructions[1]) == "table",
-        versionId .. " backs its screen with the staged global"
-      )
+      Assert.isTrue(type(constructions[1]) == "table", versionId .. " backs its screen with the staged global")
       assertStagedManifest(constructions[1], versionId .. " screen")
       local demands = envelope:preparedDemands()
       Assert.isTrue(#demands >= 1, versionId .. " prepares its exact launch demand")
@@ -799,10 +803,7 @@ function T.missing_scene_image_fails_closed_with_context(scope, context)
     context:skip("the production battle coverage needs a ready user-owned ROM with a derived cache")
   end
   for _, versionId in ipairs(versions) do
-    local cacheFs = hidingCacheFs(
-      CacheFs.forVersion(versionId),
-      BattlePresentationCache.sceneImagePath(SAD_SCENE_KEY)
-    )
+    local cacheFs = hidingCacheFs(CacheFs.forVersion(versionId), BattlePresentationCache.sceneImagePath(SAD_SCENE_KEY))
     local envelope = FieldBattlePresentation.new({
       cacheFs = cacheFs,
       graphics = love.graphics,
@@ -962,12 +963,15 @@ function T.hostile_incoming_graphics_state_never_reaches_battle_pixels(scope, co
     neutralize()
     love.graphics.setColor(1, 1, 1, 0.45)
     checkDigest(renderCleared(), "partial-alpha incoming tint")
-    local shaderOk, foreign = pcall(love.graphics.newShader, [[
+    local shaderOk, foreign = pcall(
+      love.graphics.newShader,
+      [[
       vec4 effect(vec4 color, Image texture, vec2 texture_coords, vec2 screen_coords) {
         vec4 px = Texel(texture, texture_coords);
         return vec4(1.0 - px.rgb, px.a) * color;
       }
-    ]])
+    ]]
+    )
     if not shaderOk or foreign == nil then
       context:skip(versionId .. " cannot compile a foreign test shader")
     end
@@ -1090,12 +1094,15 @@ function T.battle_draw_preserves_caller_graphics_state(scope, context)
     drawAndCheck("on the neutral leg")
     love.graphics.setColor(0, 0, 0, 1)
     drawAndCheck("under a black incoming tint")
-    local shaderOk, foreign = pcall(love.graphics.newShader, [[
+    local shaderOk, foreign = pcall(
+      love.graphics.newShader,
+      [[
       vec4 effect(vec4 color, Image texture, vec2 texture_coords, vec2 screen_coords) {
         vec4 px = Texel(texture, texture_coords);
         return vec4(1.0 - px.rgb, px.a) * color;
       }
-    ]])
+    ]]
+    )
     if not shaderOk or foreign == nil then
       context:skip(versionId .. " cannot compile a foreign test shader")
     end
@@ -1154,12 +1161,15 @@ function T.failed_battle_draw_reports_and_leaves_no_graphics_behind(scope, conte
       foeFront = stagedPortraitSelector(cacheFs, FOE_SPECIES, "front"),
     }
     driveToCommand(envelope, port, launchId, versionId, portraits)
-    local shaderOk, foreign = pcall(love.graphics.newShader, [[
+    local shaderOk, foreign = pcall(
+      love.graphics.newShader,
+      [[
       vec4 effect(vec4 color, Image texture, vec2 texture_coords, vec2 screen_coords) {
         vec4 px = Texel(texture, texture_coords);
         return vec4(1.0 - px.rgb, px.a) * color;
       }
-    ]])
+    ]]
+    )
     if not shaderOk or foreign == nil then
       context:skip(versionId .. " cannot compile a foreign test shader")
     end
@@ -1320,11 +1330,21 @@ function T.failed_battle_draw_reports_and_leaves_no_graphics_behind(scope, conte
     Assert.equal(
       matched,
       compared,
-      versionId .. " paints its unmasked doomed prefix exactly as the neutral control (" .. tostring(compared - matched) .. " poisoned)"
+      versionId
+        .. " paints its unmasked doomed prefix exactly as the neutral control ("
+        .. tostring(compared - matched)
+        .. " poisoned)"
     )
     Assert.deepEqual(afterState.color, beforeState.color, versionId .. " restores the caller tint after a draw failure")
-    Assert.isTrue(afterState.shader == beforeState.shader, versionId .. " restores the caller shader after a draw failure")
-    Assert.deepEqual(afterState.blend, beforeState.blend, versionId .. " restores the caller blend after a draw failure")
+    Assert.isTrue(
+      afterState.shader == beforeState.shader,
+      versionId .. " restores the caller shader after a draw failure"
+    )
+    Assert.deepEqual(
+      afterState.blend,
+      beforeState.blend,
+      versionId .. " restores the caller blend after a draw failure"
+    )
     Assert.deepEqual(
       afterState.scissor,
       beforeState.scissor,
@@ -1468,10 +1488,7 @@ function T.equal_source_time_paints_the_same_arrow_cell_on_every_schedule(scope,
     local digestA = imageDataDigest(renderOver(envelopeA, textA, windowsA, at30))
     local digestLater = imageDataDigest(renderOver(envelopeA, textA, windowsA, later))
     envelopeA:dispose()
-    Assert.isTrue(
-      digestLater ~= digestA,
-      versionId .. " animates its command arrow across seventeen source ticks"
-    )
+    Assert.isTrue(digestLater ~= digestA, versionId .. " animates its command arrow across seventeen source ticks")
     local textB, windowsB = productionDrawServices(scope, cacheFs, versionId)
     local envelopeB = bootToCommand(cacheFs, textB, windowsB, "battle-arrow-60")
     local digestB = imageDataDigest(renderOver(envelopeB, textB, windowsB, at60zero))
@@ -1480,16 +1497,8 @@ function T.equal_source_time_paints_the_same_arrow_cell_on_every_schedule(scope,
     local envelopeC = bootToCommand(cacheFs, textC, windowsC, "battle-arrow-irregular")
     local digestC = imageDataDigest(renderOver(envelopeC, textC, windowsC, irregular))
     envelopeC:dispose()
-    Assert.equal(
-      digestB,
-      digestA,
-      versionId .. " paints the same arrow cell on 60 Hz with zero-step calls as on 30 Hz"
-    )
-    Assert.equal(
-      digestC,
-      digestA,
-      versionId .. " paints the same arrow cell on irregular frames as on 30 Hz"
-    )
+    Assert.equal(digestB, digestA, versionId .. " paints the same arrow cell on 60 Hz with zero-step calls as on 30 Hz")
+    Assert.equal(digestC, digestA, versionId .. " paints the same arrow cell on irregular frames as on 30 Hz")
     love.graphics.setCanvas()
   end
 end
@@ -1652,6 +1661,127 @@ function T.staged_effect_texture_paints_native_pixels_through_production_service
   local stale, staleErr = assets:demandEffect("TACKLE")
   Assert.isNil(stale, "a disposed launch publishes no stale readiness")
   Assert.isTrue(type(staleErr) == "string" and staleErr ~= "", "the stale demand fails with context")
+  envelope:dispose()
+end
+
+-- A staged sprite strip crops through the production chain: the real
+-- field services upload the staged strip, the scene carries an exact
+-- tile-band crop origin with an authored flip, and the production
+-- renderer paints only the cropped texels at native coordinates with
+-- the flip mirrored.
+function T.staged_sprite_cell_crop_paints_native_pixels_through_production_services(scope, context)
+  local _ = context
+  local BattleRenderer = require("game.hgss.src.battle.BattleRenderer")
+  local BattleScene = require("libs.hgss.src.presentation.BattleScene")
+  local EffectStagingFixture = require("tests.support.EffectStagingFixture")
+  local FakeCache = require("tests.support.FakeCache")
+  local Hashing = require("romdump.src.digest.Hashing")
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local width, height = 16, 8
+  local parts = {}
+  for y = 0, height - 1 do
+    for x = 0, width - 1 do
+      if x == 8 and y == 0 then
+        parts[#parts + 1] = string.char(0, 255, 0, 255)
+      elseif x == 0 and y == 0 then
+        parts[#parts + 1] = string.char(255, 0, 0, 255)
+      else
+        parts[#parts + 1] = string.char(0, 0, 0, 0)
+      end
+    end
+  end
+  local stripBytes = table.concat(parts)
+  local stripIdentity = Hashing.sha1hex(stripBytes)
+  local stripKey = "battle/sprite/strip/" .. stripIdentity
+  local stripPath = BattlePresentationCache.globalResourcePath("effect/content/" .. stripIdentity)
+  local cache = CacheFs.forVersion("probe-sprite-cell-pixels", FakeCache.new())
+  cache:writeLua(
+    BattlePresentationCache.effectPath("TACKLE"),
+    EffectStagingFixture.effectRecord("TACKLE", {
+      { key = stripKey, kind = "texture", payload = stripPath, contentIdentity = stripIdentity },
+    })
+  )
+  local host = recordingGraphicsEffectHost()
+  local envelope = graphicsEffectEnvelope(cache, host, love.graphics)
+  local services = envelope:_preparationServices()
+  local assets = graphicsEffectHolder(services, "probe-sprite-cell-pixels")
+  host.answers["TACKLE"] = "ready"
+  cache:write(BattlePresentationCache.effectMarkerPath("TACKLE"), "probe-marker")
+  cache:writeLua(stripPath, { width = width, height = height, rgba8888 = stripBytes })
+  Assert.equal(assets:demandEffect("TACKLE"), true, "the closed staged effect reads ready")
+  local effect = assets:loadEffect("TACKLE")
+  Assert.notNil(effect, "the ready effect loads")
+  local lease = assets:resolveEffectResource(effect, stripKey)
+  Assert.notNil(lease, "the staged strip admits")
+  local scene = BattleScene.new()
+  scene:observe({
+    { combatant = 1, activation = 1, visible = true },
+    { combatant = 3, activation = 3, visible = true },
+  })
+  local first = scene:allocEffect("sprite-crop-probe")
+  scene:setEffectPicture(first.id, {
+    assetKey = stripKey,
+    selector = "sprite-crop",
+    centerX = 32,
+    centerY = 24,
+    zCenter = 0,
+    width = 8,
+    height = 8,
+    alpha = 1,
+    xOffset2 = 8,
+    yOffset2 = 0,
+    flipH = false,
+    flipV = false,
+  })
+  local second = scene:allocEffect("sprite-flip-probe")
+  scene:setEffectPicture(second.id, {
+    assetKey = stripKey,
+    selector = "sprite-flip",
+    centerX = 64,
+    centerY = 24,
+    zCenter = -1,
+    width = 8,
+    height = 8,
+    alpha = 1,
+    xOffset2 = 8,
+    yOffset2 = 0,
+    flipH = true,
+    flipV = false,
+  })
+  local canvas = scope:own(love.graphics.newCanvas(256, 192, { format = "rgba8", readable = true }))
+  love.graphics.setCanvas(canvas)
+  love.graphics.clear(0, 0, 0, 0)
+  BattleRenderer.drawPane({
+    graphics = love.graphics,
+    text = {},
+    windows = {},
+    assets = assets,
+    frameKey = "default",
+    sceneImageKey = "scene:probe",
+  }, {
+    battlers = {},
+    effectInstances = scene:effectViews(),
+    hudPatchSpans = {},
+    hudSections = {},
+  }, "detail", {})
+  love.graphics.setCanvas()
+  local data = scope:own(canvas:newImageData())
+  Assert.equal(
+    countColor(data, { x = 28, y = 20, width = 8, height = 8 }, { 0, 255, 0 }),
+    1,
+    "the cropped band paints its staged texel at native coordinates"
+  )
+  Assert.equal(
+    countColor(data, { x = 28, y = 20, width = 8, height = 8 }, { 255, 0, 0 }),
+    0,
+    "the crop excludes the uncropped strip origin"
+  )
+  local _, flippedGreen, _, flippedAlpha = data:getPixel(67, 20)
+  Assert.equal(quantize(flippedGreen), 255, "the authored flip mirrors the texel to the far edge")
+  Assert.equal(quantize(flippedAlpha), 255, "the mirrored texel stays opaque")
+  local _, _, _, plainAlpha = data:getPixel(60, 20)
+  Assert.equal(quantize(plainAlpha), 0, "the mirrored-away edge stays transparent")
+  assets:dispose()
   envelope:dispose()
 end
 

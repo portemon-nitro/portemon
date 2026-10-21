@@ -1111,14 +1111,13 @@ end
 Handlers["create-parameterized-battler-effect"] = handleCreateParameterizedBattlerEffect
 
 local function handleCreateConfiguredSprite(exec, instruction, index)
-  for _, key in pairs(instruction.resourceKeys) do
-    if exec.lease(key) == nil then
-      return "done"
-    end
-  end
+  -- The spawned task owns every role in the semantic map: the
+  -- interpreter forwards the map unchanged and stages nothing
+  -- itself, so each occurrence lease has exactly one owner.
   local record = exec.spawn(instruction.taskKind, "raw", {
     taskContext = instruction.taskContext,
     parameters = instruction.parameters,
+    resourceKeys = instruction.resourceKeys,
   })
   if record == nil then
     return "done"

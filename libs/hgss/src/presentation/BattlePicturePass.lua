@@ -85,6 +85,11 @@ local function vertices(item)
   local xOffset, yOffset = item.xOffset or 0, item.yOffset or 0
   local xOffset2, yOffset2 = 0, 0
   local u0, v0, u1, v1 = 0, 0, 1, 1
+  -- Source cell bands crop their staged tile strip through an exact
+  -- pixel origin instead of the battler portrait frame: the rectangle
+  -- stays centered on the submitted native center while only the UV
+  -- window moves, with authored flips mirroring the sampled texels.
+  local hasStripCrop = item.kind == "effect" and (item.xOffset2 ~= nil or item.yOffset2 ~= nil)
   if item.kind == "shadow" then
     local region = assert(item.textureRegion, "shadow submissions select a staged native size region")
     u0, v0 = region.x / imageWidth, region.y / imageHeight
@@ -92,6 +97,25 @@ local function vertices(item)
     if item.shadowAffine then
       width = width * (item.affineWidth or 0x100) / 0x100
       height = height * (item.affineHeight or 0x100) / 0x100
+    end
+  elseif hasStripCrop then
+    xOffset2, yOffset2 = item.xOffset2 or 0, item.yOffset2 or 0
+    assert(
+      xOffset2 >= 0
+        and yOffset2 >= 0
+        and width > 0
+        and height > 0
+        and xOffset2 + width <= imageWidth
+        and yOffset2 + height <= imageHeight,
+      "effect sprite crop stays inside its staged strip"
+    )
+    u0, v0 = xOffset2 / imageWidth, yOffset2 / imageHeight
+    u1, v1 = (xOffset2 + width) / imageWidth, (yOffset2 + height) / imageHeight
+    if item.flipH == true then
+      u0, u1 = u1, u0
+    end
+    if item.flipV == true then
+      v0, v1 = v1, v0
     end
   elseif item.pictureVisible then
     xOffset2, yOffset2 = item.xOffset2 or 0, item.yOffset2 or 0
@@ -112,6 +136,11 @@ local function vertices(item)
   if item.kind == "shadow" then
     left, right = -width / 2 + (item.shadowOffsetX or 0), width / 2 + (item.shadowOffsetX or 0)
     top, bottom = -height / 2 + (item.shadowOffsetY or 0), height / 2 + (item.shadowOffsetY or 0)
+  elseif hasStripCrop then
+    -- Strip bands stay centered on the submitted native center: only
+    -- the UV window moves, never the rectangle.
+    left, right = left + xOffset, right + xOffset
+    top, bottom = top + yOffset, bottom + yOffset
   elseif item.pictureVisible then
     left, right = -40 + xOffset + xOffset2, -40 + xOffset + xOffset2 + width
     top, bottom = -40 + yOffset + yOffset2, -40 + yOffset + yOffset2 + height

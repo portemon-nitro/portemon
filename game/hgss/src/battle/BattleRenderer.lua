@@ -803,6 +803,9 @@ local function drawPicturePlanes(graphics, assets, view, players, enemies, singl
     if picture ~= nil then
       local assetKey = assert(picture.assetKey, "transient pictures carry their staged drawable key")
       local image = assert(assets:drawable(assetKey), "transient effect drawables are staged before submission")
+      -- Source cell bands crop their staged tile strip through an exact
+      -- pixel origin; whole-image pictures omit the origin and flips.
+      local hasCrop = picture.xOffset2 ~= nil or picture.yOffset2 ~= nil
       pictures[#pictures + 1] = {
         kind = "effect",
         image = image,
@@ -819,6 +822,11 @@ local function drawPicturePlanes(graphics, assets, view, players, enemies, singl
         tintG = picture.tintG or 1,
         tintB = picture.tintB or 1,
         paletteFade = picture.paletteFade,
+        pictureVisible = hasCrop,
+        xOffset2 = picture.xOffset2,
+        yOffset2 = picture.yOffset2,
+        flipH = picture.flipH,
+        flipV = picture.flipV,
       }
     end
   end
