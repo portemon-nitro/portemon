@@ -1492,4 +1492,82 @@ function T.shape_pages_prepare_while_invalid_subjects_still_fail()
   Assert.equal(pool:stats().outstandingLeases, 0, "failure and reopening return every owned interest")
 end
 
+-- Staged slider quantities resolve through the borrowed height and weight
+-- templates: the live browser projects physical source values with two
+-- preformatted fields, and preparation expands both markers without
+-- leaving step indexes or raw control codes in the prepared strings.
+function T.staged_slider_quantities_expand_through_their_borrowed_templates()
+  local Owner = requirePresent("borrowed measurement template expansion")
+  local pool = SharedImagePoolFake.new()
+  local monCatalog, catalog = Fixture.catalogs()
+  local dexOwner = Fixture.ownerWithHistory(monCatalog, catalog)
+  local controller = Fixture.openController(dexOwner, monCatalog, catalog)
+  drive(controller, { { type = "confirm" } })
+  settle(controller, 40)
+  Assert.equal(controller:view().page, "grid", "confirming the cover reaches the grid")
+  drive(controller, { { type = "y" } })
+  settle(controller, 2)
+  Assert.equal(controller:view().page, "search", "grid Y reaches the search criteria")
+  local staged = {}
+  for _, slot in ipairs(controller:view().text) do
+    if slot.role == "search.value-height-min" or slot.role == "search.value-height-max" then
+      staged[slot.role] = slot
+    end
+    if slot.role == "search.value-weight-min" or slot.role == "search.value-weight-max" then
+      staged[slot.role] = slot
+    end
+  end
+  Assert.notNil(staged["search.value-height-min"], "the criteria stages its height floor")
+  Assert.equal(staged["search.value-height-min"].kind, "ui", "staged quantities ride the native bank")
+  Assert.equal(staged["search.value-height-min"].messageId, 175, "the height floor uses its source template")
+  Assert.equal(staged["search.value-height-min"].fields[0], "0", "the height floor converts its major unit")
+  Assert.equal(staged["search.value-height-min"].fields[1], "00", "the height floor converts its minor unit")
+  Assert.equal(staged["search.value-height-max"].messageId, 175, "the height ceiling uses its source template")
+  Assert.equal(staged["search.value-height-max"].fields[0], "99", "the sentinel converts its major unit")
+  Assert.equal(staged["search.value-height-max"].fields[1], "00", "the sentinel converts its minor unit")
+  Assert.equal(staged["search.value-weight-min"].messageId, 38, "the weight floor uses its source template")
+  Assert.equal(staged["search.value-weight-min"].fields[0], "0", "the weight floor converts its major unit")
+  Assert.equal(staged["search.value-weight-max"].messageId, 38, "the weight ceiling uses its source template")
+  Assert.equal(staged["search.value-weight-max"].fields[0], "9999", "the sentinel converts its major unit")
+  local provider = stubMessageProvider({
+    [802] = {
+      [175] = "HT {STRVAR_1 52, 0, 0}ft {STRVAR_1 52, 1, 0}in",
+      [38] = "WT {STRVAR_1 52, 0, 0}.{STRVAR_1 52, 1, 0}lbs",
+    },
+  })
+  local args = closureOwnerArgs(pool)
+  args.messages = provider
+  local manifest = closureManifest()
+  manifest.pages["search.criteria"] =
+    { backgrounds = { information = {}, controls = {} }, cells = {}, sprites = {}, windows = {} }
+  args.cacheFs = {
+    loadLua = function(_)
+      return manifest
+    end,
+  }
+  local owner = Owner.new(args)
+  local lease = owner:acquire({ purpose = "browser" })
+  local demand = pageDemand("search.criteria", "pokedex-measure-templates")
+  demand.text = {
+    staged["search.value-height-min"],
+    staged["search.value-height-max"],
+    staged["search.value-weight-min"],
+    staged["search.value-weight-max"],
+  }
+  local ready = pumpReady(lease, demand)
+  Assert.equal(ready.assets.messages["search.value-height-min"], "HT 0ft 00in", "the floor expands both height fields")
+  Assert.equal(ready.assets.messages["search.value-height-max"], "HT 99ft 00in", "the ceiling expands its sentinel fields")
+  Assert.equal(ready.assets.messages["search.value-weight-min"], "WT 0.0lbs", "the floor expands both weight fields")
+  Assert.equal(ready.assets.messages["search.value-weight-max"], "WT 9999.0lbs", "the ceiling expands its sentinel fields")
+  for _, role in ipairs({ "search.value-height-min", "search.value-weight-min" }) do
+    local prepared = assert(ready.assets.messages[role], "the prepared window exists")
+    Assert.isTrue(prepared:find("{STRVAR", 1, true) == nil, "no raw marker survives preparation")
+    Assert.isTrue(prepared:find("152", 1, true) == nil, "no raw step index poses as a unit")
+  end
+  lease:release()
+  owner:release()
+  controller:dispose()
+  Assert.equal(pool:stats().outstandingLeases, 0, "measurement text returns every image interest")
+end
+
 return { tests = T }

@@ -2214,6 +2214,115 @@ local function appendFormNameSlot(slots, role, species, variant, language, formN
   appendUiSlot(slots, role, messageId, language)
 end
 
+-- One physical slider step behind a measurement window: integer step
+-- 0..152 indexes the borrowed catalog table at step + 1 and selects
+-- the height or weight physical field. Shared by staged text slots and
+-- sprite digits so both projections convert the same source value.
+---@param controller PokedexController browser controller under construction of its text slots
+---@param kind string height or weight measurement behind the window
+---@param step integer slider step behind the bound
+---@return integer physical decimetres or hectograms behind the step
+local function sliderPhysical(controller, kind, step)
+  if kind ~= "height" and kind ~= "weight" then
+    fail("slider measurements name a known kind", { kind = kind })
+  end
+  if type(step) ~= "number" or step % 1 ~= 0 or step < 0 or step > 152 then
+    fail("slider measurements read a bounded step", { kind = kind, step = step })
+  end
+  assert(type(step) == "number", "slider steps stay integral")
+  local catalog = controller._catalog
+  if type(catalog) ~= "table" then
+    fail("slider measurements need their generated catalog", {})
+  end
+  assert(type(catalog) == "table", "slider steps read their borrowed catalog")
+  local steps = checkTable(catalog.sliderSteps, "slider steps")
+  local row = steps[step + 1]
+  if type(row) ~= "table" then
+    fail("browser catalog is missing its slider step", { step = step + 1 })
+  end
+  assert(type(row) == "table", "slider steps carry their physical row")
+  local field = kind == "height" and "heightDm" or "weightHg"
+  local value = row[field]
+  if type(value) ~= "number" then
+    fail("browser catalog is missing its slider step", { step = step + 1 })
+  end
+  assert(type(value) == "number", "slider steps carry their physical value")
+  ---@cast value integer
+  return value
+end
+
+-- Source height conversion shared by text fields and sprite digits:
+-- decimetres to feet plus a zero-padded inch remainder through the
+-- original integer rounding. The 999 sentinel pins the 99'00" ceiling.
+---@param dm integer height decimetres behind the handle
+---@return integer feet behind the readout
+---@return integer inch remainder behind the readout
+local function heightParts(dm)
+  if type(dm) ~= "number" then
+    fail("height conversion reads its decimetres", {})
+  end
+  local inches = dm == 999 and 1188 or math.floor((math.floor(10000 * dm / 254) + 5) / 10)
+  return math.floor(inches / 12), inches % 12
+end
+
+-- Source weight conversion shared by text fields and sprite digits:
+-- hectograms to integer tenths of a pound through the original integer
+-- rounding. The 9999 sentinel pins the 9999.0 ceiling.
+---@param hg integer weight hectograms behind the handle
+---@return integer tenths of a pound behind the readout
+local function weightTenths(hg)
+  if type(hg) ~= "number" then
+    fail("weight conversion reads its hectograms", {})
+  end
+  if hg == 9999 then
+    return 99990
+  end
+  return math.floor((hg * 220462 + 50000) / 100000)
+end
+
+-- One staged measurement window behind a role: the physical source value
+-- for the step travels through the borrowed bank-802 height or weight
+-- template with major/minor fields in the selected game language.
+---@param controller PokedexController browser controller under construction of its text slots
+---@param slots table[] detached semantic text slot requests under construction
+---@param role string contracted window role
+---@param kind string height or weight measurement behind the window
+---@param step integer slider step behind the bound
+local function appendSliderUiSlot(controller, slots, role, kind, step)
+  local searchText = searchTextBindings(controller)
+  local templates = searchText.measureTemplates
+  if type(templates) ~= "table" then
+    fail("search text names no measurement templates", {})
+  end
+  assert(type(templates) == "table", "slider text reads its borrowed templates")
+  local messageId = templates[kind]
+  if type(messageId) ~= "number" then
+    fail("search text names no measurement template", { kind = kind })
+  end
+  assert(type(messageId) == "number", "slider text binds its source template")
+  local language = controller._nativeLanguage
+  local major, minor
+  if kind == "height" then
+    local feet, inchPart = heightParts(sliderPhysical(controller, kind, step))
+    major, minor = tostring(feet), string.format("%02d", inchPart)
+  elseif kind == "weight" then
+    local tenths = weightTenths(sliderPhysical(controller, kind, step))
+    major, minor = tostring(math.floor(tenths / 10)), tostring(tenths % 10)
+  else
+    fail("slider measurements name a known kind", { kind = kind })
+    error("unreachable slider kind", 0)
+  end
+  assert(type(major) == "string", "slider text formats its major unit")
+  assert(type(minor) == "string", "slider text formats its minor unit")
+  slots[#slots + 1] = {
+    role = role,
+    kind = "ui",
+    messageId = messageId,
+    language = language,
+    fields = { [0] = major, [1] = minor },
+  }
+end
+
 -- Shared staged search values behind a role prefix: the menu prefix
 -- paints the main-screen value windows while the summary prefix paints
 -- the return-slot recap on the results screen from the same staged
@@ -2239,8 +2348,8 @@ local function appendStagedValueSlots(controller, slots, prefix)
   for _, measure in ipairs({ "height", "weight" }) do
     local bounds = criteria[measure]
     assert(type(bounds) == "table", "search reads its slider bounds")
-    slots[#slots + 1] = { role = prefix .. measure .. "-min", kind = "numeric", value = tostring(bounds.min) }
-    slots[#slots + 1] = { role = prefix .. measure .. "-max", kind = "numeric", value = tostring(bounds.max) }
+    appendSliderUiSlot(controller, slots, prefix .. measure .. "-min", measure, bounds.min)
+    appendSliderUiSlot(controller, slots, prefix .. measure .. "-max", measure, bounds.max)
   end
   appendUiSlot(
     slots,
@@ -2320,8 +2429,8 @@ local function appendSearchSlots(controller, slots)
   if kind == "height" or kind == "weight" then
     local bounds = criteria[kind]
     assert(type(bounds) == "table", "search reads its slider bounds")
-    slots[#slots + 1] = { role = "search.current-" .. kind .. "-min", kind = "numeric", value = tostring(bounds.min) }
-    slots[#slots + 1] = { role = "search.current-" .. kind .. "-max", kind = "numeric", value = tostring(bounds.max) }
+    appendSliderUiSlot(controller, slots, "search.current-" .. kind .. "-min", kind, bounds.min)
+    appendSliderUiSlot(controller, slots, "search.current-" .. kind .. "-max", kind, bounds.max)
   elseif kind == "type" then
     local typeGroup = searchText.types
     local current1 = searchMessageIdOrNil(typeGroup, criteria.type1 or "unrestricted")
@@ -2367,7 +2476,7 @@ local function appendAreaRows(controller, slots, entryText, areaView)
   local language = controller._nativeLanguage
   local geometry = checkTable(controller._catalog.areaGeometry, "area geometry")
   for position = 1, 6 do
-    local row = areaView.rows[areaView.row + position - 2]
+    local row = areaView.rows[areaView.row + position - 1]
     if row ~= nil then
       local role = position == 1 and "area.location" or "area.row-" .. position
       if row.kind == "all" then
@@ -2525,7 +2634,7 @@ local function appendFormsSlots(controller, slots, entryText, formNames, species
     appendUiSlot(slots, "forms.caption", entryText.formsCaption, native)
   end
   for position = 1, 6 do
-    local variant = formsView.variants[formsView.row + position - 2]
+    local variant = formsView.variants[formsView.row + position - 1]
     if variant ~= nil then
       appendFormNameSlot(slots, "forms.row-" .. position, species, variant, language, formNames)
     end
@@ -2885,9 +2994,7 @@ end
 ---@param value integer height decimetres behind the handle
 ---@return integer[] four decimal digits behind the height readout
 local function heightDigits(value)
-  local inches = value == 999 and 1188 or math.floor((10000 * value / 254 + 5) / 10)
-  local feet = math.floor(inches / 12)
-  local remainder = inches % 12
+  local feet, remainder = heightParts(value)
   return {
     feet >= 10 and math.floor(feet / 10) or nil,
     feet % 10,
@@ -2899,12 +3006,12 @@ end
 ---@param value integer weight hectograms behind the handle
 ---@return (integer?)[] five decimal digits behind the weight readout, nil for hidden leading zeroes
 local function weightDigits(value)
-  local shown = value == 9999 and 99990 or math.floor((value * 220462 + 50000) / 100000)
+  local shown = weightTenths(value)
   local digits = {}
   local started, divisor = false, 10000
   for position = 1, 5 do
     local digit = math.floor(shown / divisor)
-    if digit ~= 0 or started or position == 3 then
+    if digit ~= 0 or started or position >= 4 then
       started = true
       digits[position] = digit
     else
@@ -2940,16 +3047,21 @@ local function projectSliderObjects(self, objects, pageKey, kind, bounds)
   emitIntent(objects, "slider-cursor", "active", "controls", maxX, 16, ageOf("slider-cursor", "active"))
   emitIntent(objects, "slider-max", kind, "controls", maxX, 68, ageOf("slider-max", kind))
   emitIntent(objects, "slider-min", kind, "controls", minX, 132, ageOf("slider-min", kind))
-  local maxDigits = kind == "height" and heightDigits(bounds.max) or weightDigits(bounds.max)
-  local minDigits = kind == "height" and heightDigits(bounds.min) or weightDigits(bounds.min)
+  local maxPhysical = sliderPhysical(self, kind, bounds.max)
+  local minPhysical = sliderPhysical(self, kind, bounds.min)
+  local maxDigits = kind == "height" and heightDigits(maxPhysical) or weightDigits(maxPhysical)
+  local minDigits = kind == "height" and heightDigits(minPhysical) or weightDigits(minPhysical)
   local offsets = kind == "height" and { -20, -12, 4, 12 } or { -20, -12, -4, 4, 20 }
-  for position, digit in ipairs(maxDigits) do
+  local digitCount = kind == "height" and 4 or 5
+  for position = 1, digitCount do
+    local digit = maxDigits[position]
     if digit ~= nil then
       local key = "digit-max-" .. position
       emitIntent(objects, key, "d" .. digit, "controls", maxX + offsets[position], 64, ageOf(key, "d" .. digit))
     end
   end
-  for position, digit in ipairs(minDigits) do
+  for position = 1, digitCount do
+    local digit = minDigits[position]
     if digit ~= nil then
       local key = "digit-min-" .. position
       emitIntent(objects, key, "d" .. digit, "controls", minX + offsets[position], 136, ageOf(key, "d" .. digit))

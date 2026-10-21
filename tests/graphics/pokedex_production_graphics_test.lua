@@ -4304,6 +4304,134 @@ function T.caught_results_paint_their_prepared_mark(scope)
   end)
 end
 
+-- Row labels and slider quantities paint their prepared source content:
+-- the first legal area window shows the region entry, staged slider
+-- windows carry physical quantities instead of step indexes, and short
+-- values keep their trailing digit sprites through the production draw.
+function T.entry_rows_and_slider_values_paint_their_prepared_source_content(scope)
+  local Renderer = requireRenderer("row and slider source content")
+  local Interface = requireInterface("paired native layout for row and slider content")
+  requireOwner("prepared bundles behind row and slider content")
+  local versionId = readyVersion()
+  local pool = SharedImagePoolFake.new()
+  withPool(pool, function()
+    local rig = graphicsRig(versionId, pool, scope)
+    seedIcon(pool, "CHIKORITA/f0", 1, 1, 1)
+    seedIcon(pool, "EEVEE/f0", 0, 0, 0)
+    seedIcon(pool, "TOTODILE/f0", 1, 0, 0)
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "cover")
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "grid")
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "search.criteria")
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "search.height")
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "search.weight")
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "entry.area")
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "entry.forms")
+    local dexOwner = Fixture.ownerWithHistory(rig.monCatalog, rig.catalog)
+    local controller = Fixture.openController(dexOwner, rig.monCatalog, rig.catalog)
+    openGrid(controller)
+    press(controller, { { type = "y" } })
+    idle(controller, 2)
+    Assert.equal(controller:view().page, "search", "the grid opens its search criteria")
+    local seeded = {}
+    local function drawCurrent(role)
+      local _ = role
+      local view = controller:view()
+      local demand = browserDemandFor(Renderer, view)
+      seedDemandPortraitsOnce(pool, rig.cacheFs, rig.monCatalog, demand, true, seeded)
+      local lease = rig.owner:acquire({ purpose = "browser" })
+      local assets = prepareReady(rig, lease, demand)
+      local measurement = measurementFor("dualDisplay")
+      local plan = resolvePlan(Interface.browser(), measurement, planViewOf(view))
+      local data = drawPlan(
+        scope,
+        plan,
+        { graphics = love.graphics, renderer = assets.renderer },
+        preparedBrowserView(view, assets),
+        measurement.width,
+        measurement.height
+      )
+      lease:release()
+      return assets, view, data
+    end
+    do
+      local assets = drawCurrent("search.criteria")
+      for _, role in ipairs({
+        "search.value-height-min",
+        "search.value-height-max",
+        "search.value-weight-min",
+        "search.value-weight-max",
+      }) do
+        local prepared = assert(assets.messages[role], "the criteria bundle carries " .. role)
+        Assert.isTrue(prepared ~= "0" and prepared ~= "152", "staged quantities never show raw steps (" .. role .. ")")
+        Assert.isTrue(prepared:find("{STRVAR", 1, true) == nil, "no raw marker survives " .. role)
+      end
+      local heightMax = assert(assets.messages["search.value-height-max"], "the height ceiling paints")
+      Assert.isTrue(heightMax:find("99", 1, true) ~= nil, "the sentinel height paints its physical feet")
+      local weightMax = assert(assets.messages["search.value-weight-max"], "the weight ceiling paints")
+      Assert.isTrue(weightMax:find("9999", 1, true) ~= nil, "the sentinel weight paints its physical pounds")
+      local heightMin = assert(assets.messages["search.value-height-min"], "the height floor paints")
+      Assert.isTrue(heightMin:find("\226\128\153", 1, true) ~= nil, "the height floor paints its foot mark")
+      Assert.isTrue(heightMin:find("\226\128\157", 1, true) ~= nil, "the height floor paints its inch mark")
+      local weightMin = assert(assets.messages["search.value-weight-min"], "the weight floor paints")
+      Assert.isTrue(weightMin:find(".", 1, true) ~= nil, "the weight floor paints its decimal mark")
+    end
+    press(controller, { { type = "activate", action = "criterion", value = "height" } })
+    idle(controller, 2)
+    do
+      local assets, view = drawCurrent("search.height")
+      local heightMin = assert(assets.messages["search.current-height-min"], "the height editor paints its floor")
+      Assert.isTrue(heightMin:find("\226\128\153", 1, true) ~= nil, "the editor floor paints its foot mark")
+      local found = {}
+      for _, intent in ipairs(assert(view.objects, "the height editor carries its intents")) do
+        if type(intent) == "table" and type(intent.subject) == "string" then
+          found[intent.subject] = intent
+        end
+      end
+      Assert.isNil(found["digit-min-1"], "a short height hides its foot tens on the production rig")
+      Assert.notNil(found["digit-min-2"], "a short height keeps its foot units on the production rig")
+      Assert.notNil(found["digit-min-4"], "a short height keeps its inch units on the production rig")
+      Assert.equal(assert(found["digit-max-1"], "the ceiling keeps its foot tens").choice, "d9", "the sentinel spells nine")
+    end
+    press(controller, { { type = "cancel" } })
+    idle(controller, 2)
+    press(controller, { { type = "activate", action = "criterion", value = "weight" } })
+    idle(controller, 2)
+    do
+      local assets, view = drawCurrent("search.weight")
+      local weightMax = assert(assets.messages["search.current-weight-max"], "the weight editor paints its ceiling")
+      Assert.isTrue(weightMax:find("9999", 1, true) ~= nil, "the editor ceiling paints its physical pounds")
+      local found = {}
+      for _, intent in ipairs(assert(view.objects, "the weight editor carries its intents")) do
+        if type(intent) == "table" and type(intent.subject) == "string" then
+          found[intent.subject] = intent
+        end
+      end
+      Assert.notNil(found["digit-min-4"], "a tiny weight keeps its ones on the production rig")
+      Assert.notNil(found["digit-min-5"], "a tiny weight keeps its tenths on the production rig")
+    end
+    press(controller, { { type = "cancel" } })
+    idle(controller, 2)
+    press(controller, { { type = "cancel" } })
+    idle(controller, 2)
+    selectSpecies(controller, "TOTODILE")
+    openEntry(controller)
+    do
+      local assets, view = drawCurrent("entry.area")
+      Assert.notNil(assets.messages["area.row-2"], "the first legal area window paints its region entry")
+      local compactPlan = resolvePlan(Interface.browser(), measurementFor("nativeLike"), planViewOf(view))
+      local compact = assert(compactPlan.content.pokedexCompact, "the area plan publishes its compact rows")
+      for _, row in ipairs(assert(compact.rows, "the compact record carries its rows")) do
+        if type(row) == "table" and type(row.labelRole) == "string" and row.labelRole:find("^area%.row%-", 1) ~= nil then
+          Assert.notNil(assets.messages[row.labelRole], "the compact row paints " .. row.labelRole)
+        end
+      end
+    end
+    controller:dispose()
+    rig.owner:release()
+    Assert.equal(pool:stats().outstandingLeases, 0, "the row and slider journey returns every interest")
+  end)
+end
+
 function T.native_japanese_presentation_stays_blocked_without_tokenizer_coverage(_, context)
   assert(context ~= nil, "blocked-language reporting needs its runner context")
   context:skip(

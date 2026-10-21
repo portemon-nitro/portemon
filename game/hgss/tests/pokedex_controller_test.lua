@@ -988,8 +988,19 @@ function T.search_criteria_page_lists_real_captions_values_and_buttons()
   Assert.equal(slots["search.value-type-1"].messageId, 64, "the unset first type stages the empty mark")
   Assert.equal(slots["search.value-type-2"].messageId, 64, "the unset second type stages the empty mark")
   Assert.equal(slots["search.value-area"].messageId, 68, "the unset area stages the empty mark")
-  Assert.equal(slots["search.value-height-min"].value, "0", "the height editor opens on its floor")
-  Assert.equal(slots["search.value-height-max"].value, "152", "the height editor opens on its ceiling")
+  Assert.equal(slots["search.value-height-min"].kind, "ui", "the height floor rides the native bank")
+  Assert.equal(slots["search.value-height-min"].messageId, 175, "the height floor uses its source template")
+  Assert.equal(slots["search.value-height-min"].fields[0], "0", "the height floor converts its major unit")
+  Assert.equal(slots["search.value-height-min"].fields[1], "00", "the height floor converts its minor unit")
+  Assert.equal(slots["search.value-height-max"].messageId, 175, "the height ceiling uses its source template")
+  Assert.equal(slots["search.value-height-max"].fields[0], "99", "the height ceiling converts its major unit")
+  Assert.equal(slots["search.value-height-max"].fields[1], "00", "the height ceiling converts its minor unit")
+  Assert.equal(slots["search.value-weight-min"].messageId, 38, "the weight floor uses its source template")
+  Assert.equal(slots["search.value-weight-min"].fields[0], "0", "the weight floor converts its major unit")
+  Assert.equal(slots["search.value-weight-min"].fields[1], "0", "the weight floor converts its minor unit")
+  Assert.equal(slots["search.value-weight-max"].messageId, 38, "the weight ceiling uses its source template")
+  Assert.equal(slots["search.value-weight-max"].fields[0], "9999", "the weight ceiling converts its major unit")
+  Assert.equal(slots["search.value-weight-max"].fields[1], "0", "the weight ceiling converts its minor unit")
   Assert.equal(slots["search.button-run"].messageId, 36, "the run button keeps its source entry")
   Assert.equal(slots["search.button-reset"].messageId, 35, "the reset button keeps its source entry")
   Assert.equal(slots["search.button-back"].messageId, 37, "the back button keeps its source entry")
@@ -1066,13 +1077,21 @@ function T.search_option_editors_list_their_source_choices()
   )
   closeEditor()
   local height = openEditor("height")
-  Assert.equal(height["search.current-height-min"].kind, "numeric", "the height floor stays an integer")
-  Assert.equal(height["search.current-height-max"].value, "152", "the height ceiling stays an integer")
+  Assert.equal(height["search.current-height-min"].kind, "ui", "the height floor rides the native bank")
+  Assert.equal(height["search.current-height-min"].messageId, 175, "the height floor uses its source template")
+  Assert.equal(height["search.current-height-min"].fields[0], "0", "the height floor converts its major unit")
+  Assert.equal(height["search.current-height-min"].fields[1], "00", "the height floor converts its minor unit")
+  Assert.equal(height["search.current-height-max"].messageId, 175, "the height ceiling uses its source template")
+  Assert.equal(height["search.current-height-max"].fields[0], "99", "the height ceiling converts its major unit")
   Assert.equal(height["search.button-ok"].messageId, 39, "the slider editor commits through its source entry")
   closeEditor()
   local weight = openEditor("weight")
-  Assert.equal(weight["search.current-weight-min"].value, "0", "the weight floor stays an integer")
-  Assert.equal(weight["search.current-weight-max"].value, "152", "the weight ceiling stays an integer")
+  Assert.equal(weight["search.current-weight-min"].kind, "ui", "the weight floor rides the native bank")
+  Assert.equal(weight["search.current-weight-min"].messageId, 38, "the weight floor uses its source template")
+  Assert.equal(weight["search.current-weight-min"].fields[0], "0", "the weight floor converts its major unit")
+  Assert.equal(weight["search.current-weight-min"].fields[1], "0", "the weight floor converts its minor unit")
+  Assert.equal(weight["search.current-weight-max"].messageId, 38, "the weight ceiling uses its source template")
+  Assert.equal(weight["search.current-weight-max"].fields[0], "9999", "the weight ceiling converts its major unit")
   closeEditor()
   local shape = openEditor("shape")
   Assert.notNil(shape["search.title-shape"], "the shape editor keeps its caption")
@@ -1150,7 +1169,6 @@ function T.entry_area_reports_its_daypart_region_and_return_actions()
   Assert.equal(area["area.time"].messageId, 129, "the fresh entry opens on the morning mark")
   Assert.isNil(area["area.location"], "the fresh entry leaves the first row window blank like the source")
   press(controller, { { type = "navigate", direction = "down" } })
-  press(controller, { { type = "navigate", direction = "down" } })
   local scrolled = {}
   for _, slot in ipairs(controller:view().text) do
     scrolled[slot.role] = slot
@@ -1215,15 +1233,19 @@ function T.entry_forms_reports_selected_rows_and_comparison_names()
   Assert.equal(resting["forms.header"].kind, "named_ui", "the species header names its specimen")
   Assert.equal(resting["forms.selected"].messageId, 114, "the first variant names the spiky-eared mark")
   Assert.equal(resting["forms.caption"].messageId, 168, "the multi-form list keeps its caption")
-  Assert.equal(resting["forms.row-3"].messageId, 114, "the centered cursor row names its variant")
-  Assert.equal(resting["forms.row-4"].messageId, 114, "the row below names the second variant")
-  Assert.equal(resting["forms.row-5"].messageId, 115, "the next row names the other form")
+  Assert.isNil(resting["forms.row-1"], "the window above the first variant stays blank")
+  Assert.equal(resting["forms.row-2"].messageId, 114, "the first window names the first variant")
+  Assert.equal(resting["forms.row-3"].messageId, 114, "the second window names the second variant")
+  Assert.equal(resting["forms.row-4"].messageId, 115, "the next row names the other form")
+  Assert.isNil(resting["forms.row-5"], "rows past the last variant stay blank")
   Assert.isNil(resting["forms.row-6"], "rows past the last variant stay blank")
   press(controller, { { type = "navigate", direction = "down" } })
   press(controller, { { type = "navigate", direction = "down" } })
   local moved = roles()
   Assert.equal(moved["forms.selected"].messageId, 115, "the moved cursor names the other form")
-  Assert.equal(moved["forms.row-3"].messageId, 115, "the centered row follows the cursor")
+  Assert.equal(moved["forms.row-1"].messageId, 114, "the scrolled top window names the second variant")
+  Assert.equal(moved["forms.row-2"].messageId, 115, "the centered row follows the cursor")
+  Assert.isNil(moved["forms.row-3"], "windows past the last variant stay blank")
   press(controller, { { type = "activate", action = "compare" } })
   local compared = roles()
   Assert.equal(compared["forms.compare-caption"].messageId, 170, "the comparison keeps its title")
@@ -1769,6 +1791,281 @@ function T.shape_icon_and_results_mark_follow_only_their_visible_pages()
   Assert.isNil(findObject(seenView.objects, "footprint"), "a seen-only result hides its footprint")
   Assert.isNil(findObject(seenView.objects, "type-1"), "a seen-only result hides its types")
   controller:dispose()
+end
+
+-- The six visible area rows name the same habitat the cursor selects:
+-- the first legal window shows the region entry, scrolling and direct
+-- row taps keep every visible label on its source row, and windows past
+-- the list stay blank instead of borrowing the neighbour name.
+function T.area_list_names_the_same_habitat_the_cursor_selects()
+  local PokedexController = requirePresent("area row label identity")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
+  observe(owner, monCatalog, { species = "EEVEE", personality = 31 }, "caught")
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  openEntry(controller, "EEVEE")
+  local function slotsByRole(view)
+    checkTextSlots(view)
+    local found = {}
+    for _, slot in ipairs(view.text) do
+      found[slot.role] = slot
+    end
+    return found
+  end
+  local function checkCursor(expectedRow)
+    local view = controller:view()
+    Assert.equal(view.page, "area", "the entry stays on its area list")
+    Assert.equal(view.area.row, expectedRow, "the cursor rests on the expected habitat row")
+    local found = slotsByRole(view)
+    local rows = assert(view.area.rows, "the area projects its rows")
+    local geometry = assert(catalog.areaGeometry, "the catalog carries its area geometry")
+    for position = 1, 6 do
+      local arrayIndex = view.area.row + position - 1
+      local role = position == 1 and "area.location" or ("area.row-" .. position)
+      if arrayIndex < 1 or arrayIndex > #rows then
+        Assert.isNil(found[role], "window past the list stays blank at cursor " .. expectedRow)
+      else
+        local row = assert(rows[arrayIndex], "the window row exists")
+        local slot = assert(found[role], "cursor " .. expectedRow .. " window " .. position .. " names its row")
+        if row.kind == "all" then
+          Assert.equal(slot.kind, "ui", "the region entry rides the native bank")
+          Assert.equal(slot.messageId, 134, "the johto region entry keeps its source entry")
+        else
+          Assert.equal(slot.kind, "area_name", "habitat rows resolve their landmark name")
+          local record = assert(geometry[row.mapKey], "the habitat row maps its geometry")
+          Assert.equal(slot.bankId, record.name.bankId, "the habitat row keeps its name bank")
+          Assert.equal(slot.messageId, record.name.messageId, "the habitat row keeps its name entry")
+        end
+      end
+    end
+  end
+  checkCursor(0)
+  Assert.notNil(slotsByRole(controller:view())["area.row-2"], "the first legal window shows the region entry")
+  press(controller, { { type = "navigate", direction = "down" } })
+  checkCursor(1)
+  press(controller, { { type = "navigate", direction = "down" } })
+  checkCursor(2)
+  Assert.equal(slotsByRole(controller:view())["area.location"].kind, "area_name", "the last window location names its habitat")
+  press(controller, { { type = "activate", action = "area-row", value = 0 } })
+  checkCursor(0)
+  controller:dispose()
+end
+
+-- The six visible form rows name the same variant the cursor selects:
+-- the first legal window shows the first variant, scrolling keeps every
+-- visible label on its source variant, and windows past the list stay
+-- blank while the comparison still pairs both sides.
+function T.forms_list_names_the_same_variant_the_cursor_selects()
+  local PokedexController = requirePresent("forms row label identity")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
+  local function recordForm(species, personality, form, kind)
+    local specimen = owner:describe(PokedexDexFixture.makeMon(monCatalog, {
+      species = species,
+      personality = personality,
+      form = form,
+    }))
+    owner:prepareChanges({ observations = { { kind = kind, specimen = specimen } } }):publish()
+  end
+  recordForm("PICHU", 127, 0, "seen")
+  recordForm("PICHU", 0, 0, "seen")
+  recordForm("PICHU", 0, 1, "caught")
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  openEntry(controller, "PICHU")
+  press(controller, { { type = "activate", action = "entry-tab", value = "forms" } })
+  Assert.equal(controller:view().page, "forms", "the entry tab reaches the forms list")
+  local function roles()
+    checkTextSlots(controller:view())
+    local found = {}
+    for _, slot in ipairs(controller:view().text) do
+      found[slot.role] = slot
+    end
+    return found
+  end
+  local resting = roles()
+  Assert.equal(resting["forms.selected"].messageId, 114, "the first variant names the spiky-eared mark")
+  Assert.notNil(resting["forms.row-2"], "the first legal window shows the first variant")
+  Assert.equal(resting["forms.row-2"].messageId, 114, "the first window names the first variant")
+  Assert.equal(resting["forms.row-3"].messageId, 114, "the second window names the second variant")
+  Assert.equal(resting["forms.row-4"].messageId, 115, "the third window names the other form")
+  Assert.isNil(resting["forms.row-5"], "windows past the variants stay blank")
+  press(controller, { { type = "navigate", direction = "down" } })
+  local middle = roles()
+  Assert.equal(middle["forms.selected"].messageId, 114, "the middle cursor names the second variant")
+  Assert.equal(middle["forms.row-1"].messageId, 114, "the scrolled top window follows the cursor")
+  Assert.equal(middle["forms.row-2"].messageId, 114, "the centered window follows the cursor")
+  Assert.equal(middle["forms.row-3"].messageId, 115, "the next window names the other form")
+  press(controller, { { type = "navigate", direction = "down" } })
+  local last = roles()
+  Assert.equal(last["forms.selected"].messageId, 115, "the last cursor names the other form")
+  Assert.equal(last["forms.row-1"].messageId, 114, "the last top window names the second variant")
+  Assert.equal(last["forms.row-2"].messageId, 115, "the last centered window names the other form")
+  Assert.isNil(last["forms.row-3"], "windows past the last variant stay blank")
+  press(controller, { { type = "activate", action = "compare" } })
+  local compared = roles()
+  Assert.equal(compared["forms.compare-left"].messageId, 115, "the comparison names the selected variant")
+  Assert.equal(compared["forms.compare-right"].messageId, 114, "the comparison names the other variant")
+  controller:dispose()
+end
+
+-- Every staged slider window shows the same physical source quantity
+-- through the native height and weight templates instead of the raw
+-- step index: root values, open editor values, and the results recap
+-- share one conversion from the catalog slider table.
+function T.slider_windows_show_physical_quantities_through_source_templates()
+  local PokedexController = requirePresent("slider physical text projection")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 }, "caught")
+  observe(owner, monCatalog, { species = "TOTODILE", personality = 0 }, "caught")
+  observe(owner, monCatalog, { species = "SPINDA", personality = 0 }, "caught")
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  press(controller, { { type = "y" } })
+  Assert.equal(controller:view().page, "search", "grid Y reaches the search criteria")
+  local function slots()
+    checkTextSlots(controller:view())
+    local found = {}
+    for _, slot in ipairs(controller:view().text) do
+      found[slot.role] = slot
+    end
+    return found
+  end
+  local root = slots()
+  local function checkPhysical(slot, messageId, first, second, what)
+    Assert.notNil(slot, "the staged window publishes " .. what)
+    Assert.equal(slot.kind, "ui", "staged quantities ride the native bank instead of raw steps")
+    Assert.equal(slot.messageId, messageId, "staged quantities use their source template")
+    Assert.equal(slot.fields[0], first, "the major unit matches the source conversion (" .. what .. ")")
+    Assert.equal(slot.fields[1], second, "the minor unit matches the source conversion (" .. what .. ")")
+  end
+  checkPhysical(root["search.value-height-min"], 175, "0", "00", "root height floor")
+  checkPhysical(root["search.value-height-max"], 175, "99", "00", "root height ceiling")
+  checkPhysical(root["search.value-weight-min"], 38, "0", "0", "root weight floor")
+  checkPhysical(root["search.value-weight-max"], 38, "9999", "0", "root weight ceiling")
+  press(controller, { { type = "activate", action = "criterion", value = "height" } })
+  local height = slots()
+  checkPhysical(height["search.current-height-min"], 175, "0", "00", "editor height floor")
+  checkPhysical(height["search.current-height-max"], 175, "99", "00", "editor height ceiling")
+  tick(controller, { { type = "drag", target = "height-min", phase = "begin", value = 10 } })
+  tick(controller, { { type = "drag", target = "height-min", phase = "end", value = 10 } })
+  checkPhysical(slots()["search.current-height-min"], 175, "3", "03", "a moved height bound follows its physical value")
+  press(controller, { { type = "activate", action = "editor-ok" } })
+  press(controller, { { type = "activate", action = "criterion", value = "weight" } })
+  local weight = slots()
+  checkPhysical(weight["search.current-weight-min"], 38, "0", "0", "editor weight floor")
+  checkPhysical(weight["search.current-weight-max"], 38, "9999", "0", "editor weight ceiling")
+  tick(controller, { { type = "drag", target = "weight-min", phase = "begin", value = 10 } })
+  tick(controller, { { type = "drag", target = "weight-min", phase = "end", value = 10 } })
+  checkPhysical(slots()["search.current-weight-min"], 38, "2", "2", "a moved weight bound follows its physical value")
+  press(controller, { { type = "activate", action = "editor-ok" } })
+  press(controller, { { type = "start" } })
+  idle(controller, 200)
+  Assert.equal(controller:view().page, "results", "the completed search lands on its recap")
+  press(controller, { { type = "navigate", direction = "left" } })
+  press(controller, { { type = "navigate", direction = "left" } })
+  press(controller, { { type = "navigate", direction = "left" } })
+  local recap = slots()
+  checkPhysical(assert(recap["search.summary-value-height-min"], "recap carries its height floor"), 175, "3", "03", "recap height floor")
+  checkPhysical(assert(recap["search.summary-value-weight-min"], "recap carries its weight floor"), 38, "2", "2", "recap weight floor")
+  controller:dispose()
+end
+
+-- Slider digits spell the same physical value as the staged text and
+-- keep trailing positions when leading slots stay hidden: a short
+-- height keeps its inch digits and a tiny weight keeps its last two
+-- digit sprites instead of stopping at the first hidden slot.
+function T.slider_digits_keep_trailing_positions_when_leading_slots_hide()
+  local PokedexController = requirePresent("slider digit visibility")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true })
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 })
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  press(controller, { { type = "y" } })
+  press(controller, { { type = "activate", action = "criterion", value = "height" } })
+  local view = controller:view()
+  Assert.notNil(view.search.editor, "the height editor opens on its floor and ceiling")
+  local function intents()
+    local found = {}
+    for _, intent in ipairs(assert(controller:view().objects, "the editor carries its intents")) do
+      if type(intent) == "table" and type(intent.subject) == "string" then
+        found[intent.subject] = intent
+      end
+    end
+    return found
+  end
+  local height = intents()
+  Assert.isNil(height["digit-min-1"], "a short height hides its foot tens")
+  Assert.equal(assert(height["digit-min-2"], "a short height keeps its foot units").choice, "d0", "the foot units spell zero")
+  Assert.equal(assert(height["digit-min-3"], "a short height keeps its inch tens").choice, "d0", "the inch tens spell zero")
+  Assert.equal(assert(height["digit-min-4"], "a short height keeps its inch units").choice, "d0", "the inch units spell zero")
+  Assert.equal(assert(height["digit-max-1"], "the ceiling spells its foot tens").choice, "d9", "the sentinel foot tens spell nine")
+  Assert.equal(assert(height["digit-max-2"], "the ceiling spells its foot units").choice, "d9", "the sentinel foot units spell nine")
+  Assert.equal(assert(height["digit-max-3"], "the ceiling spells its inch tens").choice, "d0", "the sentinel inch tens spell zero")
+  Assert.equal(assert(height["digit-max-4"], "the ceiling spells its inch units").choice, "d0", "the sentinel inch units spell zero")
+  press(controller, { { type = "cancel" } })
+  press(controller, { { type = "activate", action = "criterion", value = "weight" } })
+  local weight = intents()
+  Assert.isNil(weight["digit-min-1"], "a tiny weight hides its thousands")
+  Assert.isNil(weight["digit-min-2"], "a tiny weight hides its hundreds")
+  Assert.isNil(weight["digit-min-3"], "a tiny weight hides its tens when the value stays zero")
+  Assert.equal(assert(weight["digit-min-4"], "a tiny weight keeps its ones").choice, "d0", "the ones spell zero")
+  Assert.equal(assert(weight["digit-min-5"], "a tiny weight keeps its tenths").choice, "d0", "the tenths spell zero")
+  Assert.equal(assert(weight["digit-max-1"], "the ceiling spells its thousands").choice, "d9", "the sentinel thousands spell nine")
+  Assert.equal(assert(weight["digit-max-5"], "the ceiling spells its tenths").choice, "d0", "the sentinel tenths spell zero")
+  controller:dispose()
+end
+
+-- The display projection never changes what the search finds and never
+-- publishes a plausible unit when its source template is missing: the
+-- same slider steps resolve the same members before and after text
+-- projection, and a catalog without measurement templates fails closed.
+function T.slider_display_leaves_search_membership_and_failures_closed()
+  local PokedexController = requirePresent("slider search invariance")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true })
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 })
+  observe(owner, monCatalog, { species = "TOTODILE", personality = 0 })
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  press(controller, { { type = "y" } })
+  local before = controller._search:run()
+  Assert.isTrue(#before >= 1, "the default criteria resolve their members")
+  checkTextSlots(controller:view())
+  local after = controller._search:run()
+  Assert.deepEqual(after, before, "projecting the display text changes no member")
+  press(controller, { { type = "activate", action = "criterion", value = "height" } })
+  tick(controller, { { type = "drag", target = "height-min", phase = "begin", value = 10 } })
+  tick(controller, { { type = "drag", target = "height-min", phase = "end", value = 10 } })
+  local narrowed = controller._search:run()
+  Assert.isTrue(#narrowed <= #before, "narrowing the slider never invents members")
+  controller:dispose()
+  local _, goodCatalog = catalogs()
+  local badSearchText = {}
+  for key, value in pairs(goodCatalog.searchText) do
+    if key ~= "measureTemplates" then
+      badSearchText[key] = value
+    end
+  end
+  local badCatalog = {}
+  for key, value in pairs(goodCatalog) do
+    badCatalog[key] = value
+  end
+  badCatalog.searchText = badSearchText
+  local badOwner = ownerWithFlags(monCatalog, badCatalog, { dexEnabled = true })
+  observe(badOwner, monCatalog, { species = "CHIKORITA", personality = 0 })
+  local bad = PokedexController.new(baseArgs(badOwner, monCatalog, badCatalog))
+  openGrid(bad)
+  press(bad, { { type = "y" } })
+  local ok, failure = pcall(function()
+    return bad:view().text
+  end)
+  Assert.isFalse(ok, "a catalog without measurement templates fails closed instead of showing a step")
+  Assert.isTrue(type(failure) == "string" or type(failure) == "table", "the missing template reports its cause")
+  bad:dispose()
 end
 
 return { tests = T }
