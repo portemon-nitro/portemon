@@ -11,10 +11,9 @@
 -- ingress at full black, the destination door opens at the swap, the egress
 -- begins only after the destination opening finished, the close begins only
 -- after the egress movement finished, and input unlocks only when the close
--- and the fade-in are both finished. The fade runs orthogonally where HGSS
--- overlaps it: the source fade-out clamps at black until the ingress
--- completes (never overruns), and the fade-in ending early parks the
--- choreography in the choreo_hold phase -- fadeAlpha stays 0, input locked --
+-- and the fade-in are both finished. HGSS starts the source fade-out after
+-- the source door opening and ingress step finish. If fade-in ends early, the
+-- choreography parks in the choreo_hold phase -- fadeAlpha stays 0, input locked --
 -- until the close finishes. A static door (no animation instance) has
 -- isFinished() == nil, so nothing waits on it: the egress begins at the swap
 -- and the close resolves immediately. The source door never closes.
@@ -694,7 +693,6 @@ local function beginSourceChoreography(self)
       self.playSound(sound)
     end
     self.sourceChoreo = "wait_open"
-    startFade(self, "out", 0)
     return
   end
   if self.transitionMode == FieldTransitionProfile.MODE_PANEL then
@@ -1211,9 +1209,8 @@ function FieldTransition:updateFixed(inputSnapshot)
       end
       startFade(self, "out", family.fadeColor or 0)
     end
-    -- The ingress finishes after the 12-tick fade, so the fade clamps at
-    -- black and holds until the choreography completes -- the swap only ever
-    -- happens at full black.
+    -- HGSS starts fading only after the source door animation and ingress
+    -- step finish, keeping both visible before the map swap.
     if not self.fadeStarted then
       self.fadeAlpha = 0
     end

@@ -46,6 +46,13 @@ local PRIORITY = {
 }
 
 local MART_AUDIO_SEQUENCES = { "SEQ_SE_DP_SELECT", "SEQ_SE_GS_GEARCANCEL", "SEQ_SE_DP_BAG_004", 1603 }
+local PARTY_AUDIO_SEQUENCES = {
+  "SEQ_SE_DP_POKELIST_001",
+  "SEQ_SE_GS_GEARCANCEL",
+  "SEQ_SE_DP_SELECT",
+  "SEQ_SE_DP_CUSTOM06",
+  "SEQ_SE_DP_KAIFUKU",
+}
 
 ---@class ArtifactJobs.Descriptor
 ---@field size string worker lane behind this kind
@@ -578,6 +585,28 @@ end
 local function dependenciesApricornBox(key)
   assert(key == "global", "Apricorn Box family only has the global job")
   return { { kind = "message-bank", key = "21" } }, true
+end
+
+local function dependenciesParty(key, plans)
+  assert(key == "global", "party family only has the global job")
+  local jobs = { { kind = "audio-catalog", key = "global" } }
+  local audioPlan = plans.audioPlan
+  if audioPlan == nil then
+    return sortedJobs(jobs), false
+  end
+  local index = assert(audioPlan.index, "party audio closure requires the adopted audio index")
+  local seen = {}
+  for _, reference in ipairs(PARTY_AUDIO_SEQUENCES) do
+    local sequenceId =
+      assert(index.sequenceBySymbol[reference], "party audio reference has no adopted sequence: " .. reference)
+    local sequence = assert(index.sequences[sequenceId], "party audio reference has no sequence record: " .. reference)
+    local bankId = assert(sequence.bankId, "party audio sequence has no bank: " .. reference)
+    if not seen[bankId] then
+      seen[bankId] = true
+      jobs[#jobs + 1] = { kind = "audio-bank", key = tostring(bankId) }
+    end
+  end
+  return sortedJobs(jobs), true
 end
 
 local function dependenciesMart(key, plans)
@@ -1783,6 +1812,7 @@ DESCRIPTORS = {
   },
   party = {
     size = "normal",
+    dependencies = dependenciesParty,
     execute = executeParty,
     validate = validateParty,
   },
