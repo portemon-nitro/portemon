@@ -1708,15 +1708,53 @@ function BattleAnimationSources.resolveBattleAnimationCallback(operands)
     if spriteContextSlot > 4 then
       return nil, "mosaic transition sprite context slot is outside the source table"
     end
+    -- BattleAnimTask_SpriteMosaic steps both mosaic sizes by step each
+    -- tick until either reaches target (0 when step < 0, else 15), then
+    -- retires on the following tick; a zero step never reaches either
+    -- target, so the counted task would wedge the script wait forever.
+    local step = signed16(operands[4] or 0)
+    if step == 0 then
+      return nil, "mosaic transition step of zero never reaches its target"
+    end
+    local target = step < 0 and 0 or 15
+    local sizeH, sizeV = operands[5] or 0, operands[6] or 0
+    local durationTicks = 1
+    if sizeH ~= target and sizeV ~= target then
+      local writes = 0
+      while true do
+        if step < 0 then
+          if sizeH + step > 0 then
+            sizeH, sizeV = sizeH + step, sizeV + step
+          else
+            sizeH, sizeV = target, target
+          end
+        else
+          if sizeH + step < 15 then
+            sizeH, sizeV = sizeH + step, sizeV + step
+          else
+            sizeH, sizeV = target, target
+          end
+        end
+        writes = writes + 1
+        if writes > 64 then
+          return nil, "mosaic transition sizes never reach their target"
+        end
+        if sizeH == target or sizeV == target then
+          break
+        end
+      end
+      durationTicks = writes + 1
+    end
     return {
       callback = "battle-sprite-mosaic-transition",
       taskKind = "battle-sprite-mosaic-transition",
       context = "battle-sprite",
       parameters = {
         spriteContextSlot = spriteContextSlot,
-        step = signed16(operands[4] or 0),
+        step = step,
         initialHorizontal = operands[5] or 0,
         initialVertical = operands[6] or 0,
+        durationTicks = durationTicks,
       },
     }
   elseif selector == 72 then

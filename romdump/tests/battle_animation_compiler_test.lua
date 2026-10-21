@@ -326,7 +326,13 @@ function T.newly_observed_picture_callbacks_lower_to_typed_semantic_tasks()
       callback = "battle-sprite-mosaic-transition",
       taskKind = "battle-sprite-mosaic-transition",
       context = "battle-sprite",
-      parameters = { spriteContextSlot = 2, step = -2, initialHorizontal = 4, initialVertical = 12 },
+      parameters = {
+        spriteContextSlot = 2,
+        step = -2,
+        initialHorizontal = 4,
+        initialVertical = 12,
+        durationTicks = 3,
+      },
     },
   }
   for _, expected in ipairs(cases) do
@@ -342,6 +348,8 @@ function T.newly_observed_picture_callbacks_lower_to_typed_semantic_tasks()
   end
   local invalidMosaicSlot = Sources.resolveSourceSelection("battle-animation-callback", { 69, 1, 5 })
   Assert.isNil(invalidMosaicSlot, "native mosaic helper asserts for sprite context slots above four")
+  local invalidMosaicStep = Sources.resolveSourceSelection("battle-animation-callback", { 69, 4, 1, 0, 4, 4 })
+  Assert.isNil(invalidMosaicStep, "a zero mosaic step never terminates so the producer rejects it")
 
   local program = compiler().compile({
     key = "picture-callbacks",
@@ -406,6 +414,7 @@ function T.newly_observed_picture_callbacks_lower_to_typed_semantic_tasks()
     step = -2,
     initialHorizontal = 4,
     initialVertical = 12,
+    durationTicks = 3,
   })
   Assert.isNil(program.instructions[1].selector, "callback selector stays out of normalized IR")
 end
