@@ -1,0 +1,193 @@
+-- Focused presentation-test fixtures for the field Pokedex screen: compact
+-- synthetic catalogs, a knowledge owner with mixed seen/caught history, a
+-- real browser controller over that owner, and a synthetic detached
+-- registration demand that exercises the registration drawing path and its
+-- interface without a battle runtime. No renderer, GPU, audio device, ROM,
+-- or worker is touched; the registration snapshot carries only detached
+-- specimen facts the knowledge owner already describes.
+
+local PokedexDexFixture = require("libs.hgss.tests.mons.pokedex_dex_fixture")
+local PokedexKnowledge = require("libs.hgss.src.mons.PokedexKnowledge")
+
+-- The immutable sampler behind every pooled Pokedex interest. Seeds use
+-- this exact state so borrowed identities match the lease requests.
+local POOLED_SAMPLER = { wrapX = "clamp", wrapY = "clamp", minFilter = "nearest", magFilter = "nearest" }
+
+local PokedexPresentationFixture = {}
+
+--- Builds the synthetic mon and generated catalogs the presentation legs
+--- share: every policy family (genders, forms, Spinda, Unown, Giratina,
+--- custom inside/outside keys) with explicit display and completion sets.
+---@return table monCatalog resolved synthetic mon catalog
+---@return table catalog synthetic generated dex catalog
+function PokedexPresentationFixture.catalogs()
+  return PokedexDexFixture.makeCatalog(), PokedexDexFixture.buildPokedexCatalog()
+end
+
+--- Builds a knowledge owner carrying mixed seen/caught history: Chikorita
+--- and Eevee seen, Totodile and Spinda caught, with ownership
+--- and international/form flags enabled so every page family has content.
+---@param monCatalog table resolved synthetic mon catalog
+---@param catalog table synthetic generated dex catalog
+---@return table owner knowledge owner with staged history
+function PokedexPresentationFixture.ownerWithHistory(monCatalog, catalog)
+  local owner = PokedexKnowledge.new(PokedexDexFixture.refs(monCatalog, catalog))
+  owner:prepareChanges({ flags = { dexEnabled = true, nationalDex = true } }):publish()
+  local function observe(species, personality, kind)
+    local specimen = owner:describe(PokedexDexFixture.makeMon(monCatalog, {
+      species = species,
+      personality = personality,
+    }))
+    owner:prepareChanges({ observations = { { kind = kind, specimen = specimen } } }):publish()
+  end
+  observe("CHIKORITA", 0, "seen")
+  observe("EEVEE", 0, "seen")
+  observe("TOTODILE", 0, "caught")
+  observe("SPINDA", 16, "caught")
+  return owner
+end
+
+--- Opens the real browser controller over synthetic catalogs and history.
+---@param owner table knowledge owner under test
+---@param monCatalog table resolved synthetic mon catalog
+---@param catalog table synthetic generated dex catalog
+---@return table controller live browser controller
+function PokedexPresentationFixture.openController(owner, monCatalog, catalog)
+  local PokedexController = require("game.hgss.src.pokedex.PokedexController")
+  return PokedexController.new({
+    catalog = catalog,
+    monCatalog = monCatalog,
+    dex = owner,
+    playerGender = "male",
+    playerPosition = { mapX = 10, mapY = 10 },
+    nativeLanguage = "english",
+  })
+end
+
+--- Advances the controller one fixed update with readiness matching its
+--- current generation, so resource-gated motion is admitted.
+---@param controller table browser under test
+---@param events table|nil semantic batch for one fixed update
+function PokedexPresentationFixture.tick(controller, events)
+  controller:updateFixed(events or {}, { readyKey = controller:view().key })
+end
+
+--- Builds a synthetic detached first-catch snapshot: the display name and
+--- dex mode the announcement formats, plus the actual caught specimen
+--- facts described by the knowledge owner. No battle runtime or battle
+--- state contributes; the record is frozen before any publication.
+---@param owner table knowledge owner under test
+---@param monCatalog table resolved synthetic mon catalog
+---@param species string caught species key
+---@param personality integer caught personality
+---@return table snapshot detached registration facts
+function PokedexPresentationFixture.registrationSnapshot(owner, monCatalog, species, personality)
+  local specimen = owner:describe(PokedexDexFixture.makeMon(monCatalog, {
+    species = species,
+    personality = personality,
+  }))
+  assert(type(specimen.species) == "string", "the registration snapshot names its species")
+  return {
+    dexMode = "national",
+    displayName = specimen.species,
+    specimen = specimen,
+  }
+end
+
+--- Builds the exact registration demand the resource owner prepares: one
+--- fixed purpose, the registration page role, national numbering, native
+--- UI language, no icon keys, one actual-specimen picture slot, and the
+--- frozen snapshot as text with its cry identity.
+--- Publishes one realized image as the physical pair behind a pooled
+--- texture path, modelling worker-staged content the main thread
+--- realized. The pool owns the image afterwards; prune reclaims it once
+--- every lease returns.
+---@param pool table shared image pool double under test
+---@param path string logical texture path behind the identity
+---@param image table<string, unknown> realized source image adopted as the physical pair
+---@param kind "r8"|"rgba8"? payload representation, defaulting to straight RGBA
+---@param palette table<string, unknown>? exact palette image, required for indexed seeds
+function PokedexPresentationFixture.seedPhysical(pool, path, image, kind, palette)
+  pool:seedPhysical(path, POOLED_SAMPLER, {
+    image = image,
+    kind = kind or "rgba8",
+    palette = palette,
+    width = image:getWidth(),
+    height = image:getHeight(),
+  })
+end
+
+---@param snapshot table detached registration facts from registrationSnapshot
+---@param key string|nil resource generation key for the demand
+---@param monCatalog table? resolved mon catalog behind the card sprite intents
+---@return table demand immutable registration demand
+function PokedexPresentationFixture.registrationDemand(snapshot, key, monCatalog)
+  -- The card text slots mirror the battle-owned demand: the dex number
+  -- resolves in preparation from the demanded order, every other slot
+  -- through its source bank by stable species identity.
+  local species = assert(snapshot.specimen.species, "the registration demand names its species")
+  local profile = "base"
+  if species == "GIRATINA" and type(snapshot.specimen.form) == "number" and snapshot.specimen.form ~= 0 then
+    profile = "giratina_origin"
+  end
+  -- The card sprite closure stages with the demand under its frozen
+  -- specimen types, exactly like the battle-owned demand: callers that
+  -- draw the card pass the catalog so the bundle carries the icon and
+  -- footprint art the live view resolves.
+  local objects = {}
+  if type(monCatalog) == "table" then
+    local form = snapshot.specimen.form
+    local types = nil
+    local okForm, formRecord = pcall(monCatalog.form, monCatalog, species, form)
+    if okForm and type(formRecord) == "table" and type(formRecord.types) == "table" then
+      types = formRecord.types
+    else
+      types = assert(monCatalog:species(species).types, "the fixture species carries its types")
+    end
+    if type(types[1]) == "string" then
+      objects[#objects + 1] =
+        { subject = "type-1", choice = types[1], pane = "information", x = 168, y = 72, age = 0, visible = true }
+      if type(types[2]) == "string" and types[2] ~= types[1] then
+        objects[#objects + 1] =
+          { subject = "type-2", choice = types[2], pane = "information", x = 217, y = 72, age = 0, visible = true }
+      end
+    end
+    local originHidden = species == "GIRATINA" and form == 1
+    if not originHidden then
+      objects[#objects + 1] =
+        { subject = "footprint", choice = species, pane = "information", x = 120, y = 80, age = 0, visible = true }
+    end
+  end
+  return {
+    key = key or "registration-generation",
+    purpose = "registration",
+    pageRole = "registration",
+    dexMode = snapshot.dexMode,
+    language = "native",
+    profile = profile,
+    iconKeys = {},
+    pictures = {
+      {
+        slot = "registration",
+        specimen = snapshot.specimen,
+        facing = "front",
+        mode = "registration",
+      },
+    },
+    text = {
+      registration = snapshot,
+      slots = {
+        { role = "registration.dex-number", kind = "dex_number", species = species },
+        { role = "registration.species-name", kind = "species_name", species = species, language = "native" },
+        { role = "registration.category", kind = "category", species = species, language = "native" },
+        { role = "registration.flavor", kind = "flavor", species = species, language = "native" },
+        { role = "registration.height", kind = "height", species = species },
+        { role = "registration.weight", kind = "weight", species = species },
+      },
+    },
+    cry = { species = snapshot.specimen.species, form = 0 },
+    objects = objects,
+  }
+end
+
+return PokedexPresentationFixture

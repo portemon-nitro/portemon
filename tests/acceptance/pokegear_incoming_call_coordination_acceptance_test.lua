@@ -480,6 +480,9 @@ local function makeFieldSession(opts)
         return "menu"
       end,
       updateFixed = function() end,
+      activeUiInput = function()
+        return nil
+      end,
       requestOpen = function()
         controls.menuRequests = controls.menuRequests + 1
         return false
@@ -774,6 +777,14 @@ local function dexOwner(seenCount, caughtCount)
     end,
     isNationalDexComplete = function()
       return false
+    end,
+    -- Phone dex facts read the live owner counts, never the serialized
+    -- bucket arrays: the fixture answers the same narrow query surface.
+    countSeen = function()
+      return seenCount
+    end,
+    countCaught = function()
+      return caughtCount
     end,
   }
 end

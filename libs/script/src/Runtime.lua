@@ -667,6 +667,116 @@ do
   HANDLERS.pokemon_nickname_input = handleMonNicknameInput
 end
 
+-- Dex count, rating, grant, and alphabet operations. Each handler
+-- evaluates its semantic operands through the run semantics, calls
+-- exactly one named operation on the injected dex or mon service, and
+-- writes the source result convention to the result reference: counts
+-- and alphabet queries write exact integers, boolean queries write 1
+-- or 0, and evaluation writes the music value before an aliased
+-- message value. The Deoxys change and the alphabet check yield one
+-- tick after completing; the rest continue the same tick. A missing
+-- service is an attributed fault, never a silent skip.
+do
+  local function dexFor(run)
+    return requireService(run, "pokedex")
+  end
+
+  local function writeDexBool(node, run, value)
+    semanticsFor(run).writeRef(node.result, value and 1 or 0, run)
+  end
+
+  local function handlePokedexCount(node, run)
+    local count = dexFor(run):count(node.mode, node.kind)
+    semanticsFor(run).writeRef(node.result, count, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handlePokedexEvaluate(node, run)
+    local messageId, musicId = dexFor(run):evaluate(node.mode)
+    semanticsFor(run).writeRef(node.musicResult, musicId, run)
+    semanticsFor(run).writeRef(node.result, messageId, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleHasPokedex(node, run)
+    writeDexBool(node, run, dexFor(run):hasPokedex())
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleGivePokedex(node, run)
+    local _ = node
+    dexFor(run):givePokedex()
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handlePokedexComplete(node, run)
+    writeDexBool(node, run, dexFor(run):isComplete(node.mode))
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleEnablePokedexFormDetection(node, run)
+    local _ = node
+    dexFor(run):enableFormDetection()
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleNationalPokedex(node, run)
+    local result = dexFor(run):nationalAction(node.action)
+    semanticsFor(run).writeRef(node.result, result, run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleCaughtUnownCount(node, run)
+    semanticsFor(run).writeRef(node.result, dexFor(run):caughtUnownCount(), run)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleCaughtAllUnownLetters(node, run)
+    writeDexBool(node, run, dexFor(run):caughtAllUnownLetters())
+    return Runtime.OUTCOME_YIELD_TICK
+  end
+
+  local function handleObserveSpecies(node, run)
+    monsFor(run):markSpeciesSeen(semanticsFor(run).evaluateValue(node.species, run))
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleHasSeenSpecies(node, run)
+    local seen = monsFor(run):hasSeenSpecies(semanticsFor(run).evaluateValue(node.species, run))
+    writeDexBool(node, run, seen)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  local function handleSetPartyDeoxysForm(node, run)
+    monsFor(run):setPartyDeoxysForm(semanticsFor(run).evaluateValue(node.form, run))
+    return Runtime.OUTCOME_YIELD_TICK
+  end
+
+  local function handleUpdateRotomForm(node, run)
+    local semantics = semanticsFor(run)
+    local slot = semantics.evaluateValue(node.slot, run)
+    local defaultMoveSlot = semantics.evaluateValue(node.defaultMoveSlot, run)
+    local unused = semantics.evaluateValue(node.unused, run)
+    local form = semantics.evaluateValue(node.form, run)
+    monsFor(run):updateRotomForm(slot, defaultMoveSlot, unused, form)
+    return Runtime.OUTCOME_CONTINUE
+  end
+
+  HANDLERS.pokedex_count = handlePokedexCount
+  HANDLERS.pokedex_evaluate = handlePokedexEvaluate
+  HANDLERS.has_pokedex = handleHasPokedex
+  HANDLERS.give_pokedex = handleGivePokedex
+  HANDLERS.pokedex_complete = handlePokedexComplete
+  HANDLERS.enable_pokedex_form_detection = handleEnablePokedexFormDetection
+  HANDLERS.national_pokedex = handleNationalPokedex
+  HANDLERS.caught_unown_count = handleCaughtUnownCount
+  HANDLERS.caught_all_unown_letters = handleCaughtAllUnownLetters
+  HANDLERS.observe_species = handleObserveSpecies
+  HANDLERS.has_seen_species = handleHasSeenSpecies
+  HANDLERS.set_party_deoxys_form = handleSetPartyDeoxysForm
+  HANDLERS.update_rotom_form = handleUpdateRotomForm
+end
+
 local function handleReturnLoanMon(node, run)
   monsFor(run):returnLoanMon(evalField(node, run, "slot"))
   if node.result ~= nil then

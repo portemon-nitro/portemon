@@ -966,6 +966,49 @@ function M.pokemonNicknameInput(spec)
   return op("pokemon_nickname_input", spec)
 end
 
+-- Dex count, rating, grant, and alphabet constructors. Each takes the
+-- single canonical spec table named by the schema fields; the grant and
+-- form-detection operations take no operands.
+function M.pokedexCount(spec)
+  return op("pokedex_count", spec)
+end
+function M.pokedexEvaluate(spec)
+  return op("pokedex_evaluate", spec)
+end
+function M.hasPokedex(spec)
+  return op("has_pokedex", spec)
+end
+function M.givePokedex()
+  return op("give_pokedex")
+end
+function M.pokedexComplete(spec)
+  return op("pokedex_complete", spec)
+end
+function M.enablePokedexFormDetection()
+  return op("enable_pokedex_form_detection")
+end
+function M.nationalPokedex(spec)
+  return op("national_pokedex", spec)
+end
+function M.caughtUnownCount(spec)
+  return op("caught_unown_count", spec)
+end
+function M.caughtAllUnownLetters(spec)
+  return op("caught_all_unown_letters", spec)
+end
+function M.observeSpecies(spec)
+  return op("observe_species", spec)
+end
+function M.hasSeenSpecies(spec)
+  return op("has_seen_species", spec)
+end
+function M.setPartyDeoxysForm(spec)
+  return op("set_party_deoxys_form", spec)
+end
+function M.updateRotomForm(spec)
+  return op("update_rotom_form", spec)
+end
+
 -- Battle launch and result. The launch suspends the script on the battle
 -- task owned by the injected battle host; the result read answers from
 -- the host's latest committed outcome. Both take the single canonical

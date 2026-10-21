@@ -1811,9 +1811,8 @@ return {
     [243] = {
       name = "ScrCmd_CountJohtoDexSeen",
       feature = "mons",
-      disposition = "deferred",
-      deferredReason = "pokedex",
-      deferredNote = "dex counts need persisted seen/caught state",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
       },
@@ -1821,9 +1820,8 @@ return {
     [244] = {
       name = "ScrCmd_CountJohtoDexOwned",
       feature = "mons",
-      disposition = "deferred",
-      deferredReason = "pokedex",
-      deferredNote = "dex counts need persisted seen/caught state",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
       },
@@ -1831,9 +1829,8 @@ return {
     [245] = {
       name = "ScrCmd_CountNationalDexSeen",
       feature = "mons",
-      disposition = "deferred",
-      deferredReason = "pokedex",
-      deferredNote = "dex counts need persisted seen/caught state",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
       },
@@ -1841,9 +1838,8 @@ return {
     [246] = {
       name = "ScrCmd_CountNationalDexOwned",
       feature = "mons",
-      disposition = "deferred",
-      deferredReason = "pokedex",
-      deferredNote = "dex counts need persisted seen/caught state",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
       },
@@ -1855,9 +1851,8 @@ return {
     [248] = {
       name = "ScrCmd_GetDexEvalResult",
       feature = "mons",
-      disposition = "deferred",
-      deferredReason = "pokedex",
-      deferredNote = "dex evaluation needs persisted seen/caught state",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 1,
         [2] = 2,
@@ -2120,9 +2115,8 @@ return {
     [290] = {
       name = "ScrCmd_CheckPokedex",
       feature = "mons",
-      disposition = "deferred",
-      deferredReason = "pokedex",
-      deferredNote = "dex flags need persisted seen/caught state",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
       },
@@ -2130,9 +2124,8 @@ return {
     [291] = {
       name = "ScrCmd_GivePokedex",
       feature = "mons",
-      disposition = "deferred",
-      deferredReason = "pokedex",
-      deferredNote = "dex flags need persisted seen/caught state",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {},
     },
     [292] = {
@@ -3138,9 +3131,8 @@ return {
     [423] = {
       name = "ScrCmd_CheckJohtoDexComplete",
       feature = "mons",
-      disposition = "deferred",
-      deferredReason = "pokedex",
-      deferredNote = "dex completion needs persisted seen/caught state",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
       },
@@ -3148,9 +3140,8 @@ return {
     [424] = {
       name = "ScrCmd_CheckNationalDexComplete",
       feature = "mons",
-      disposition = "deferred",
-      deferredReason = "pokedex",
-      deferredNote = "dex completion needs persisted seen/caught state",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
       },
@@ -3558,17 +3549,15 @@ return {
     },
     [476] = {
       name = "ScrCmd_EnablePokedexFormDetection",
-      disposition = "deferred",
-      deferredReason = "pokedex",
-      deferredNote = "Pokedex form detection needs persisted dex state",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {},
     },
     [477] = {
       name = "ScrCmd_NatDexFlagAction",
       feature = "mons",
-      disposition = "deferred",
-      deferredReason = "pokedex",
-      deferredNote = "dex flags need persisted seen/caught state",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 1,
         [2] = 2,
@@ -3911,10 +3900,9 @@ return {
       },
     },
     [518] = {
-      name = "ScrCmd_518",
-      disposition = "deferred",
-      deferredReason = "party_special_application",
-      deferredNote = "the retail mon command remains opaque and unimplemented",
+      name = "ScrCmd_SetPartyDeoxysForm",
+      disposition = "supported",
+      classification = "native_wait",
       widths = {
         [1] = 2,
       },
@@ -4104,7 +4092,9 @@ return {
       },
     },
     [545] = {
-      name = "ScrCmd_545",
+      name = "ScrCmd_CountUnownLettersRegistered",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
       },
@@ -5081,9 +5071,8 @@ return {
     },
     [675] = {
       name = "ScrCmd_UpdateRotomForm",
-      disposition = "deferred",
-      deferredReason = "item_flow",
-      deferredNote = "Rotom form updates need the appliance item application",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -5169,10 +5158,9 @@ return {
       },
     },
     [687] = {
-      name = "ScrCmd_687",
-      disposition = "deferred",
-      deferredReason = "party_special_application",
-      deferredNote = "the retail mon command remains opaque and unimplemented",
+      name = "ScrCmd_SetMonSeenFlag",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
       },
@@ -5339,9 +5327,8 @@ return {
     [707] = {
       name = "ScrCmd_CheckMonSeen",
       feature = "mons",
-      disposition = "deferred",
-      deferredReason = "pokedex",
-      deferredNote = "seen flags need persisted seen/caught state",
+      disposition = "supported",
+      classification = "continue_same_tick",
       widths = {
         [1] = 2,
         [2] = 2,
@@ -5764,6 +5751,8 @@ return {
     },
     [770] = {
       name = "ScrCmd_CheckSeenAllLetterUnown",
+      disposition = "supported",
+      classification = "native_wait",
       widths = {
         [1] = 2,
       },

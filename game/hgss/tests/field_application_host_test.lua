@@ -430,6 +430,12 @@ function T.tests.normal_menu_presents_only_icon_backed_visual_actions()
     for _, flag in ipairs(UNLOCK_FLAGS) do
       game:setWorldState({ flag = flag })
     end
+    -- Start Menu visibility reads the composed dex owner, never the story
+    -- flag alone: the seeded grant publishes dexEnabled beside the flag so
+    -- the production ownership gate admits the pokedex entry.
+    local dex = assert(runtime.dexKnowledge, "field runtime owns the live dex knowledge")
+    dex:prepareChanges({ flags = { dexEnabled = true } }):publish()
+    Assert.isTrue(dex:hasPokedex(), "the seeded grant unlocks the pokedex menu entry")
     ensureTouchPlacement(game, 256, 192)
     openMenu(game)
     local menu = assert(runtime.applicationHost:status().menu, "the start menu must be open")

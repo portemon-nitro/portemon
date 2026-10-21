@@ -1271,7 +1271,7 @@ function FieldSession:updateFixed(inputSnapshot)
       not self.dialogue:isModal() and not self.signpost:isModal() and not self.menuHost:isModal(),
       "the application host owns the tick; no other modal may be active"
     )
-    local uiEvents = self.input:uiSnapshot(self.tick + 1)
+    local uiEvents = self.input:uiSnapshot(self.tick + 1, self.applicationHost:activeUiInput())
     -- While the Start Menu is active, the menu button has the same close
     -- semantics as HGSS X: a fresh menu edge becomes the controller's menu
     -- event. A child application's own input policy applies instead.

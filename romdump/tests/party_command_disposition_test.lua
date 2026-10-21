@@ -223,7 +223,7 @@ function T.interaction_and_shiny_leaf_commands_are_supported_with_source_timing(
 end
 
 function T.deferred_commands_lower_to_explicit_unsupported_nodes()
-  for _, opcode in ipairs({ 138, 290, 291, 470 }) do
+  for _, opcode in ipairs({ 138, 470 }) do
     local tagged = entry(opcode)
     Assert.equal(tagged.disposition, "deferred", "opcode " .. opcode .. " is deferred")
     local items = lowerSingle(opcode)

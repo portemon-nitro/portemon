@@ -563,13 +563,14 @@ local function rasterIconCombo(archive, colors, naix, palette)
   return rasterizeFrames(char.tiles, expansions, 4, 4, ICON_FRAMES, "icon " .. naix)
 end
 
--- Raster one portrait visual's two frames: the character member unscanned
--- through the visual's 16-color palette. Shared by whole-atlas reference
--- builds and bounded page compilation so one decode owns the pixels.
+-- Decode one portrait visual's indexed surface: the character member
+-- unscanned plus the visual's 16 decoded palette colors, without
+-- rasterizing. Shared by the RGBA raster path and the producer-only
+-- indexed export so both read one decode.
 ---@param archives table<string, Narc>
 ---@param combo { narc: string, charMemberId: integer, palMemberId: integer }
----@return table<integer, string>|nil, Errors.Error|nil
-local function rasterPortraitCombo(archives, combo)
+---@return { unscanned: string, colors: table<integer, table<string, integer>>, dependencies: table<string, unknown> }|nil, Errors.Error|nil
+local function decodeIndexedPortrait(archives, combo)
   local archive = archives[combo.narc]
   if archive == nil then
     return nil,
@@ -603,15 +604,34 @@ local function rasterPortraitCombo(archives, combo)
         available = #pal.colors,
       })
   end
-  local expansions, expansionsErr = byteExpansions(pal.colors, label)
-  if not expansions then
-    return nil, expansionsErr
-  end
   local unscanned, unscanErr = unscanPortraitBytes(char.tiles, label)
   if not unscanned then
     return nil, unscanErr
   end
-  return rasterizePortraitFrames(unscanned, expansions, label)
+  return {
+    unscanned = unscanned,
+    colors = pal.colors,
+    dependencies = { narc = combo.narc, charMemberId = combo.charMemberId, palMemberId = combo.palMemberId },
+  }
+end
+
+-- Raster one portrait visual's two frames: the character member unscanned
+-- through the visual's 16-color palette. Shared by whole-atlas reference
+-- builds and bounded page compilation so one decode owns the pixels.
+---@param archives table<string, Narc>
+---@param combo { narc: string, charMemberId: integer, palMemberId: integer }
+---@return table<integer, string>|nil, Errors.Error|nil
+local function rasterPortraitCombo(archives, combo)
+  local label = combo.narc .. " char " .. combo.charMemberId
+  local decoded, decodeErr = decodeIndexedPortrait(archives, combo)
+  if not decoded then
+    return nil, decodeErr
+  end
+  local expansions, expansionsErr = byteExpansions(decoded.colors, label)
+  if not expansions then
+    return nil, expansionsErr
+  end
+  return rasterizePortraitFrames(decoded.unscanned, expansions, label)
 end
 
 -- Compile every reachable party icon: one atlas entry per unique
@@ -835,6 +855,75 @@ end
 ---@return Errors.Error|nil
 function MonPresentationCompiler.compileBackFrames(romFs, speciesId, form, gender, shiny)
   return compileFacingFrames(romFs, speciesId, form, gender, shiny, BACK_FACING)
+end
+
+-- Compile one front-picture visual through the shared native portrait
+-- selection and the existing scan/unscan path, exposing the two authored
+-- 80x80 indexed frames plus the decoded sixteen-color palette instead of
+-- rasterizing RGBA. Producer-only: personalization compilers read indices
+-- and palette entries here; runtime pixels keep flowing through the
+-- existing RGBA/page path so both exports share one decode.
+---@param romFs RomFs
+---@param speciesId integer
+---@param form integer
+---@param gender string
+---@param shiny boolean
+---@return table<string, unknown>|nil frames
+---@return Errors.Error|nil
+function MonPresentationCompiler.compileFrontIndexedFrames(romFs, speciesId, form, gender, shiny)
+  local baseArchive, err = openArchive(romFs, "pokemon_graphics")
+  if not baseArchive then
+    return nil, err
+  end
+  local otherArchive
+  otherArchive, err = openArchive(romFs, "pokemon_graphics_other")
+  if not otherArchive then
+    return nil, err
+  end
+  local archives = { pokemon_graphics = baseArchive, pokemon_graphics_other = otherArchive }
+  local ok, result = pcall(function()
+    local ids = MonSources.portraitIds(speciesId, gender, FRONT_FACING, shiny, form)
+    local decoded = must(decodeIndexedPortrait(archives, {
+      narc = ids.narc,
+      charMemberId = ids.charMemberId,
+      palMemberId = ids.palMemberId,
+    }))
+    assert(#decoded.unscanned == PORTRAIT_BYTES, "indexed portrait bytes must be unscanned before unpacking")
+    local planes = {}
+    for frame = 0, PORTRAIT_FRAMES - 1 do
+      local indices = {}
+      for y = 0, PORTRAIT_CELL - 1 do
+        local frameBase = y * PORTRAIT_ROW_BYTES + frame * PORTRAIT_FRAME_ROW_BYTES
+        for byteX = 0, PORTRAIT_FRAME_ROW_BYTES - 1 do
+          local byte = string.byte(decoded.unscanned, frameBase + byteX + 1)
+          indices[#indices + 1] = string.char(byte % 16, math.floor(byte / 16))
+        end
+      end
+      planes[#planes + 1] = table.concat(indices)
+    end
+    local palette = {}
+    for index, color in ipairs(decoded.colors) do
+      if index == 1 then
+        palette[index] = { r = 0, g = 0, b = 0, a = 0 }
+      else
+        palette[index] = { r = color.r, g = color.g, b = color.b, a = 255 }
+      end
+    end
+    return {
+      frames = planes,
+      width = PORTRAIT_CELL,
+      height = PORTRAIT_CELL,
+      palette = palette,
+      dependencies = decoded.dependencies,
+    }
+  end)
+  if not ok then
+    if Errors.is(result) then
+      return nil, result
+    end
+    error(result, 0)
+  end
+  return result
 end
 
 -- Compile every reachable front and back portrait: one atlas entry per

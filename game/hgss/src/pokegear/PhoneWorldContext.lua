@@ -114,12 +114,12 @@ function PhoneWorldContext:callFacts(contact)
     facts.partyCount = party:partyCount()
   end
   local dex = runtime.dexKnowledge
-  if type(dex) == "table" and type(dex.bucket) == "function" then
-    local bucket = dex:bucket()
-    assert(type(bucket) == "table", "phone calls read the Dex bucket")
-    facts.dexSeen = #bucket.seen
-    facts.dexCaught = #bucket.caught
-    facts.nationalDex = dex:isNationalDexComplete()
+  if type(dex) == "table" and type(dex.countSeen) == "function" then
+    assert(type(dex.countCaught) == "function", "phone calls read explicit Dex counts")
+    assert(type(dex.hasNationalDex) == "function", "phone calls read Dex ownership")
+    facts.dexSeen = dex:countSeen("national")
+    facts.dexCaught = dex:countCaught("national")
+    facts.nationalDex = dex:hasNationalDex()
   end
   return facts
 end
@@ -368,12 +368,13 @@ function PhoneWorldContext:read(key)
   end
   if domain == "dex" then
     local dex = self:_domainOwner("dex")
-    if fact == "seen" or fact == "caught" then
-      local bucket = dex.bucket --[[@as fun(self: table<string, unknown>): table<string, unknown>]]
-      assert(type(bucket) == "function", "phone Dex reads its current knowledge bucket")
-      local data = bucket(dex)
-      assert(type(data) == "table" and type(data[fact]) == "table", "phone Dex reads sorted knowledge")
-      return #data[fact] --[[@as table<integer, unknown>]]
+    if fact == "seen" then
+      assert(type(dex.countSeen) == "function", "phone Dex reads its live knowledge counts")
+      return dex:countSeen("national")
+    end
+    if fact == "caught" then
+      assert(type(dex.countCaught) == "function", "phone Dex reads its live knowledge counts")
+      return dex:countCaught("national")
     end
     assert(false, "phone dex reads name a known dex fact")
   end

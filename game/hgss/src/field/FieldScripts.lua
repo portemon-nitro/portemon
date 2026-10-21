@@ -247,6 +247,7 @@ end
 ---@field playerAvatar table<string, unknown>|nil avatar transition owner wired into the player facade (required together with avatarApplier)
 ---@field avatarApplier (fun(): table<string, unknown>|nil)|nil pending-transition materializer wired into the player facade (required together with playerAvatar)
 ---@field mons table<string, unknown>|nil the live HGSS mon service for mon/party script operations and text (absent -> SCRIPT_SERVICE_MISSING on use)
+---@field pokedex table<string, unknown>|nil the narrow dex count and grant service for dex script operations (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field specialMonGifts table<string, unknown>|nil the game-side special-gift host for the Spiky-Ear Pichu opcode (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field items table<string, unknown>|nil the live HGSS Bag service for generic Bag/item script operations (absent -> SCRIPT_SERVICE_MISSING on use)
 ---@field itemCatalog table<string, unknown>|nil the shared item catalog for item/pocket/TM/berry text (absent -> SCRIPT_UNSUPPORTED_REACHABLE on use)
@@ -529,6 +530,7 @@ function FieldScripts.new(opts)
       effects = opts.effects,
       terrainEffects = opts.effects,
       mons = opts.mons,
+      pokedex = opts.pokedex,
       specialMonGifts = opts.specialMonGifts,
       items = opts.items,
       starterProvider = opts.starterProvider,

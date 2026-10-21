@@ -139,6 +139,9 @@ local DOMAINS = {
     "PartyCacheWriter",
     "PcAssetCompiler",
     "PcCacheWriter",
+    "PokedexAssetCompiler",
+    "PokedexCacheWriter",
+    "PokedexCatalogCompiler",
     "PokegearAssetCompiler",
     "PokegearCacheWriter",
     "PokegearCatalogCompiler",
@@ -191,6 +194,7 @@ local EXISTING_DOMAINS = {
     "lowering/FieldHandlers",
     "lowering/FieldServiceHandlers",
     "lowering/Operands",
+    "lowering/PokedexHandlers",
   },
 }
 

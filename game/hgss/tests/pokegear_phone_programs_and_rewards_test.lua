@@ -1166,8 +1166,11 @@ function T.tests.world_reads_distinguish_absent_owners_from_zero_counts()
     state = state,
     flags = FieldEventState.new(),
     dex = {
-      bucket = function()
-        return { seen = { "custom.cyndaquil" }, caught = {} }
+      countSeen = function(_, _)
+        return 1
+      end,
+      countCaught = function(_, _)
+        return 0
       end,
     },
   })

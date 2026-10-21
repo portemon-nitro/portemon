@@ -14,6 +14,7 @@ local FieldErrors = require("libs.hgss.src.field.FieldErrors")
 local SummaryCache = require("libs.assets.src.SummaryCache")
 local SummaryPresentationResources = require("game.hgss.src.field.SummaryPresentationResources")
 local SummaryRenderer = require("libs.hgss.src.ui.SummaryRenderer")
+local PokedexPresentationResources = require("game.hgss.src.pokedex.PokedexPresentationResources")
 local FieldPresentationConfig = require("game.hgss.src.field.FieldPresentationConfig")
 local FieldDialogueRenderer = require("libs.hgss.src.ui.FieldDialogueRenderer")
 local FieldWindowRenderer = require("libs.hgss.src.ui.FieldWindowRenderer")
@@ -46,6 +47,7 @@ local FieldAreaPreviewRenderer = require("game.hgss.src.field.FieldAreaPreviewRe
 ---@alias PartyIconPrepare fun(iconKeys: string[]): boolean, string?
 ---@alias PartyIconCancel fun()
 ---@alias SummaryPreparationAcquire fun(): table<string, unknown>
+---@alias PokedexPreparationAcquire fun(options: table<string, unknown>): table<string, unknown>
 
 ---@class FieldPresentationResourcesRuntime
 ---@field cacheFs CacheFs
@@ -56,6 +58,12 @@ local FieldAreaPreviewRenderer = require("game.hgss.src.field.FieldAreaPreviewRe
 ---@field unbindPartyIconPreparation fun(runtime: FieldPresentationResourcesRuntime, binding: integer)? runtime preparation unbinding in presented composition
 ---@field bindSummaryPreparation fun(runtime: FieldPresentationResourcesRuntime, acquire: SummaryPreparationAcquire): integer runtime summary preparation binding in presented composition
 ---@field unbindSummaryPreparation fun(runtime: FieldPresentationResourcesRuntime, binding: integer) runtime summary preparation unbinding in presented composition
+---@field bindPokedexPreparation fun(runtime: FieldPresentationResourcesRuntime, acquire: PokedexPreparationAcquire): integer runtime pokedex preparation binding in presented composition
+---@field unbindPokedexPreparation fun(runtime: FieldPresentationResourcesRuntime, binding: integer) runtime pokedex preparation unbinding in presented composition
+---@field monCatalog table<string, unknown>? the resolved mon catalog borrowed by pokedex composition
+---@field pokedexCatalog table<string, unknown>? the borrowed generated dex catalog behind pokedex composition
+---@field messageProvider table<string, unknown>? the borrowed field message provider
+---@field audio table<string, unknown>? the borrowed field audio owner
 ---@field uiManifest table<string, unknown>
 ---@field playerData table<string, unknown> the validated profile/options authority
 ---@field windowStyles FieldWindowStyles
@@ -91,6 +99,8 @@ local FieldAreaPreviewRenderer = require("game.hgss.src.field.FieldAreaPreviewRe
 ---@field _summaryBinding integer? installed summary preparation binding identity
 ---@field summaryResources SummaryPresentationResources? the one field-owned summary preparation leaf
 ---@field summaryRenderer SummaryRenderer? the one real summary pane renderer
+---@field _pokedexBinding integer? installed pokedex preparation binding identity
+---@field pokedexResources PokedexPresentationResources? the one lazily owned field pokedex preparation leaf
 ---@field itemIconProvider ItemIconAssetProvider the one shared bag item-icon atlas
 ---@field _apricornBoxRenderer ApricornBoxRenderer? owned source graphics and row renderer
 ---@field heroRenderer BagHeroRenderer the one bag hero model renderer borrowed by the bag renderer
@@ -402,10 +412,33 @@ local function buildPresenters(owner)
   local function drawBag(presentation, _)
     drawMenuFlow(presentation, FieldApplicationIds.BAG)
   end
+  -- The pokedex presenter draws the committed whole bundle through the
+  -- resolved plan: pending initial state keeps the existing host cover
+  -- and the failed state surfaces its cause. Drawing never prepares.
+  ---@param presentation table<string, unknown>?
+  local function drawPokedex(presentation, _)
+    local status = assert(presentation, "the pokedex application presents its status")
+    local plan = assert(status.presentation, "the pokedex application presents its plan")
+    local assets = status.assets
+    if assets == nil then
+      if status.preparationError ~= nil then
+        error("pokedex preparation failed: " .. tostring(status.preparationError), 0)
+      end
+      return
+    end
+    local hostGraphics = love and love.graphics
+    assert(type(hostGraphics) == "table", "pokedex drawing requires its host graphics namespace")
+    ApplicationPresentation.draw(hostGraphics, {
+      graphics = hostGraphics,
+      renderer = assert(assets.renderer, "the committed bundle carries its shared renderer"),
+    }, { view = status.view, assets = assets, compact = status.compact }, plan)
+    drawApplicationFrames(hostGraphics, owner, plan)
+  end
   return {
     [FieldApplicationIds.POKEMON] = drawPokemon,
     [FieldApplicationIds.TRAINER_CARD] = drawTrainerCard,
     [FieldApplicationIds.BAG] = drawBag,
+    [FieldApplicationIds.POKEDEX] = drawPokedex,
   }
 end
 
@@ -541,6 +574,15 @@ function FieldPresentationResources.new(runtime)
     local summaryOwner = assert(self.summaryResources, "summary preparation is unavailable")
     self._summaryBinding = bindSummaryPreparation(runtime, function()
       return summaryOwner:acquire()
+    end)
+    -- The pokedex acquisition binding stays late-bound through the
+    -- runtime because the preparation owner itself is lazy: the factory
+    -- resolves per pokedex open, when a screen is actually constructed.
+    -- Installing the binding acquires no images and loads no graphics.
+    local bindPokedexPreparation =
+      assert(runtime.bindPokedexPreparation, "presented pokedex preparation requires the runtime preparation binding")
+    self._pokedexBinding = bindPokedexPreparation(runtime, function(options)
+      return self:pokedex():acquire(options)
     end)
     -- Bag presentation resolves eagerly beside the party icons: field entry
     -- boots only when the compiled item/bag caches are present, and the
@@ -1168,9 +1210,11 @@ function FieldPresentationResources:dispose()
   end
   local partyIconBinding = self._partyIconBinding
   local summaryBinding = self._summaryBinding
+  local pokedexBinding = self._pokedexBinding
   local presentationRuntime = self._presentationRuntime
   self._partyIconBinding = nil
   self._summaryBinding = nil
+  self._pokedexBinding = nil
   self._presentationRuntime = nil
   if partyIconBinding ~= nil and presentationRuntime ~= nil then
     local unbindPreparation = assert(
@@ -1185,6 +1229,17 @@ function FieldPresentationResources:dispose()
       "the installed summary binding requires its runtime unbinding"
     )
     unbindSummary(presentationRuntime, summaryBinding)
+  end
+  if pokedexBinding ~= nil and presentationRuntime ~= nil then
+    local unbindPokedex = assert(
+      presentationRuntime.unbindPokedexPreparation,
+      "the installed pokedex binding requires its runtime unbinding"
+    )
+    unbindPokedex(presentationRuntime, pokedexBinding)
+  end
+  if self.pokedexResources then
+    self.pokedexResources:release()
+    self.pokedexResources = nil
   end
   if self.summaryResources then
     self.summaryResources:release()
@@ -1259,6 +1314,33 @@ function FieldPresentationResources:dispose()
     self.renderer:release()
     self.renderer = nil
   end
+end
+
+--- Returns the lazily owned field pokedex preparation leaf, creating it
+--- once from borrowed session services. The owner builds the one shared
+--- renderer and serves both the browser and registration lease purposes;
+--- the modal topology prevents ordinary overlap, but independent leases
+--- stay independently testable.
+---@return PokedexPresentationResources the one field-owned pokedex preparation leaf
+function FieldPresentationResources:pokedex()
+  local owned = self.pokedexResources
+  if owned ~= nil then
+    return owned
+  end
+  local runtime = assert(self._presentationRuntime, "pokedex preparation borrows the presented runtime")
+  local created = PokedexPresentationResources.new({
+    cacheFs = runtime.cacheFs,
+    graphics = love and love.graphics,
+    imagePool = assert(self._imagePool, "pokedex preparation borrows the shared image owner"),
+    derivedAssets = runtime.derivedAssets or {},
+    monCatalog = assert(runtime.monCatalog, "pokedex preparation borrows the shared mon catalog"),
+    catalog = assert(runtime.pokedexCatalog, "pokedex preparation borrows the generated dex catalog"),
+    text = self.textRenderer,
+    messages = runtime.messageProvider,
+    audio = runtime.audio,
+  })
+  self.pokedexResources = created
+  return created
 end
 
 ---@return ApricornBoxRenderer renderer owned by this field presentation lifetime

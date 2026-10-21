@@ -98,6 +98,12 @@ Schema.ENUMS = {
   -- Battle result read contexts: the ordinary won check and the static
   -- wild won-or-caught check.
   battle_result_context = { "battle_won", "static_wild_won_or_caught" },
+  -- Dex display modes: the explicit generated johto and national orders.
+  pokedex_mode = { "johto", "national" },
+  -- Dex count kinds: historical sightings or captures.
+  pokedex_count_kind = { "seen", "caught" },
+  -- National dex flag actions: publish ownership or read it.
+  national_pokedex_action = { "enable", "check" },
   prop_animation_direction = { "forward", "reverse" },
 }
 
@@ -1327,6 +1333,82 @@ Schema.OPERATIONS = {
     },
   },
   heal_party = { fields = {} },
+  -- Dex count, rating, grant, and alphabet operations. Every node names
+  -- one semantic behavior of the injected dex or mon service; no node
+  -- carries a source opcode. Counts read explicit display membership,
+  -- evaluation selects generated bands and gendered messages with the
+  -- music value written before an aliased message value, grants publish
+  -- the owner before their compatibility writes, synthetic sightings
+  -- preserve their specimen effects, and the specialized form operations
+  -- restage through the mon service. Only the Deoxys change and the
+  -- alphabet check yield one tick; the rest continue the same tick.
+  pokedex_count = {
+    fields = {
+      mode = { type = "enum:pokedex_mode", required = true },
+      kind = { type = "enum:pokedex_count_kind", required = true },
+      result = { type = "value", required = true },
+    },
+  },
+  pokedex_evaluate = {
+    fields = {
+      mode = { type = "enum:pokedex_mode", required = true },
+      result = { type = "value", required = true },
+      musicResult = { type = "value", required = true },
+    },
+  },
+  has_pokedex = {
+    fields = {
+      result = { type = "value", required = true },
+    },
+  },
+  give_pokedex = { fields = {} },
+  pokedex_complete = {
+    fields = {
+      mode = { type = "enum:pokedex_mode", required = true },
+      result = { type = "value", required = true },
+    },
+  },
+  enable_pokedex_form_detection = { fields = {} },
+  national_pokedex = {
+    fields = {
+      action = { type = "enum:national_pokedex_action", required = true },
+      result = { type = "value", required = true },
+    },
+  },
+  caught_unown_count = {
+    fields = {
+      result = { type = "value", required = true },
+    },
+  },
+  caught_all_unown_letters = {
+    fields = {
+      result = { type = "value", required = true },
+    },
+  },
+  observe_species = {
+    fields = {
+      species = { type = "scalar_or_value", required = true },
+    },
+  },
+  has_seen_species = {
+    fields = {
+      species = { type = "scalar_or_value", required = true },
+      result = { type = "value", required = true },
+    },
+  },
+  set_party_deoxys_form = {
+    fields = {
+      form = { type = "scalar_or_value", required = true },
+    },
+  },
+  update_rotom_form = {
+    fields = {
+      slot = { type = "scalar_or_value", required = true },
+      defaultMoveSlot = { type = "scalar_or_value", required = true },
+      unused = { type = "scalar_or_value", required = true },
+      form = { type = "scalar_or_value", required = true },
+    },
+  },
   -- Party-screen selection. The launch node blocks on the party_select
   -- task with the source selection context; the completed slot parks on
   -- the script instance for the companion result node, which copies it
@@ -2272,6 +2354,71 @@ Schema.CONSTRUCTORS = {
         notes = "spec={result}; result writes 1 or 0.",
       },
       { signature = "S.healParty(spec)", canonical = "op=heal_party", notes = "Restores the party to full health." },
+      {
+        signature = "S.pokedexCount(spec)",
+        canonical = "op=pokedex_count",
+        notes = "spec={mode, kind, result}; counts explicit display members.",
+      },
+      {
+        signature = "S.pokedexEvaluate(spec)",
+        canonical = "op=pokedex_evaluate",
+        notes = "spec={mode, result, musicResult}; music writes before an aliased message.",
+      },
+      {
+        signature = "S.hasPokedex(spec)",
+        canonical = "op=has_pokedex",
+        notes = "spec={result}; result writes 1 or 0.",
+      },
+      {
+        signature = "S.givePokedex()",
+        canonical = "op=give_pokedex",
+        notes = "Publishes the owner, then writes the story flag.",
+      },
+      {
+        signature = "S.pokedexComplete(spec)",
+        canonical = "op=pokedex_complete",
+        notes = "spec={mode, result}; result writes 1 or 0.",
+      },
+      {
+        signature = "S.enablePokedexFormDetection()",
+        canonical = "op=enable_pokedex_form_detection",
+        notes = "Enables only the form-detection owner flag.",
+      },
+      {
+        signature = "S.nationalPokedex(spec)",
+        canonical = "op=national_pokedex",
+        notes = "spec={action, result}; enable reports 0, check writes 1 or 0.",
+      },
+      {
+        signature = "S.caughtUnownCount(spec)",
+        canonical = "op=caught_unown_count",
+        notes = "spec={result}; counts caught alphabet letters only.",
+      },
+      {
+        signature = "S.caughtAllUnownLetters(spec)",
+        canonical = "op=caught_all_unown_letters",
+        notes = "spec={result}; yields one tick.",
+      },
+      {
+        signature = "S.observeSpecies(spec)",
+        canonical = "op=observe_species",
+        notes = "spec={species}; records the generated specimen sighting.",
+      },
+      {
+        signature = "S.hasSeenSpecies(spec)",
+        canonical = "op=has_seen_species",
+        notes = "spec={species, result}; result writes 1 or 0.",
+      },
+      {
+        signature = "S.setPartyDeoxysForm(spec)",
+        canonical = "op=set_party_deoxys_form",
+        notes = "spec={form}; yields one tick after completing.",
+      },
+      {
+        signature = "S.updateRotomForm(spec)",
+        canonical = "op=update_rotom_form",
+        notes = "spec={slot, defaultMoveSlot, unused, form}.",
+      },
       {
         signature = "S.chooseStarter(spec)",
         canonical = "op=choose_starter",

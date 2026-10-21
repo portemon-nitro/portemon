@@ -254,7 +254,7 @@ function ChooseStarterTask.poll(state, ctx)
   if state.phase == PHASE_PUBLISH then
     local index = assert(state.selectedIndex, "starter publication requires the confirmed candidate")
     local candidate = assert(state.candidates[index + 1], "starter publication requires the pre-created candidate")
-    if not mons:addMon(candidate) then
+    if not mons:receiveMon(candidate) then
       MonsErrors.raise(MonsErrors.SAVE_INVALID, "starter publication requires a free party slot", { slot = index })
     end
     starterBallsService(ctx):placeStarterBalls()

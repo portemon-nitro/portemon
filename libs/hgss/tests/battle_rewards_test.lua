@@ -37,7 +37,8 @@ function T.trainer_win_plans_money_through_the_player_owner_only()
 
   local Knowledge = requirePresent(KNOWLEDGE_MODULE, "minimal seen and caught knowledge")
   Assert.isTrue(type(Knowledge.new) == "function", "dex knowledge constructs explicitly")
-  local dex = Knowledge.new({ species = { CHIKORITA = true, EEVEE = true } })
+  local PokedexDexFixture = require("libs.hgss.tests.mons.pokedex_dex_fixture")
+  local dex = Knowledge.new(PokedexDexFixture.refsForSpecies({ "CHIKORITA", "EEVEE" }))
   local staged = dex:capture("EEVEE")
   Assert.isTrue(staged ~= nil, "a capture stages caught knowledge")
 
@@ -268,8 +269,9 @@ end
 
 function T.dex_knowledge_round_trips_through_its_save_bucket()
   local Knowledge = requirePresent(KNOWLEDGE_MODULE, "minimal seen and caught knowledge")
-  local refs = { species = { CHIKORITA = true, EEVEE = true } }
-  local dex = Knowledge.new({ species = refs.species })
+  local PokedexDexFixture = require("libs.hgss.tests.mons.pokedex_dex_fixture")
+  local refs = PokedexDexFixture.refsForSpecies({ "CHIKORITA", "EEVEE" })
+  local dex = Knowledge.new(refs)
   Assert.isFalse(dex:isCaught("EEVEE"), "new knowledge starts uncaught")
   local staged = dex:capture("EEVEE")
   Assert.isFalse(dex:isCaught("EEVEE"), "staging leaves live knowledge alone")

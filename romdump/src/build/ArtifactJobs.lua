@@ -246,6 +246,7 @@ local FIELD_RUNTIME_JOBS = {
   "party:global",
   "pc:global",
   "pokegear:global",
+  "pokedex-data:global",
   "mart:global",
   "summary:global",
   "spawns:global",
@@ -643,6 +644,70 @@ local function executePokegear(artifact, context)
     return PokegearAssetCompiler.compile(romFs, versionId)
   end, "pokegear")
   return PokegearCacheWriter.stage(artifact, bundle)
+end
+
+-- The semantic Pokedex data scope is a small field-runtime prerequisite:
+-- knowledge and scripts consume its immutable catalog before any browser
+-- opens, so it waits only for the resolved mon catalog behind it.
+---@param key string
+---@return { kind: string, key: string }[], boolean
+local function dependenciesPokedexData(key)
+  assert(key == "global", "pokedex-data family only has the global job")
+  return { { kind = "mon-catalog", key = "global" } }, true
+end
+
+local function executePokedexData(artifact, context)
+  local MonCache = require("libs.assets.src.MonCache")
+  local PokedexCatalogCompiler = require("romdump.src.digest.ui.PokedexCatalogCompiler")
+  local PokedexCacheWriter = require("romdump.src.digest.ui.PokedexCacheWriter")
+  local romFs = assert(context.romFs, "pokedex-data jobs require a source reader")
+  local versionId = assert(context.versionId, "pokedex-data jobs require a version")
+  local cacheFs = assert(context.cacheFs, "pokedex-data jobs require a cache filesystem")
+  local monCatalog = MonCache.loadCatalog(cacheFs)
+  local sink = {}
+  local catalog, catalogErr = PokedexCatalogCompiler.compile(romFs, versionId, monCatalog, sink)
+  if catalog == nil then
+    error(catalogErr, 0)
+  end
+  assert(type(sink.marker) == "string" and sink.marker ~= "", "pokedex-data bundle carries no marker")
+  assert(type(sink.provenance) == "table", "pokedex-data bundle carries no provenance")
+  return PokedexCacheWriter.stageData(artifact, {
+    marker = sink.marker,
+    catalog = catalog,
+    assets = {},
+    provenance = sink.provenance,
+  })
+end
+
+-- The Pokedex presentation scope prepares the complete bounded application
+-- closure on demand: it waits for data plus the shared mon layout/font
+-- and the exact named message banks the fixed text roles resolve through.
+---@param key string
+---@return { kind: string, key: string }[], boolean
+local function dependenciesPokedex(key)
+  assert(key == "global", "pokedex family only has the global job")
+  local PokedexAssetCompiler = require("romdump.src.digest.ui.PokedexAssetCompiler")
+  return PokedexAssetCompiler.presentationDependencies(), true
+end
+
+local function executePokedexPresentation(artifact, context)
+  local PokedexAssetCompiler = require("romdump.src.digest.ui.PokedexAssetCompiler")
+  local PokedexCache = require("libs.assets.src.PokedexCache")
+  local PokedexCacheWriter = require("romdump.src.digest.ui.PokedexCacheWriter")
+  local romFs = assert(context.romFs, "pokedex jobs require a source reader")
+  local versionId = assert(context.versionId, "pokedex jobs require a version")
+  local cacheFs = assert(context.cacheFs, "pokedex jobs require a cache filesystem")
+  local catalog = PokedexCache.loadCatalog(cacheFs)
+  local sink = {}
+  local manifest = compileOrRaise(function()
+    return PokedexAssetCompiler.compile(romFs, versionId, catalog, sink)
+  end, "pokedex")
+  return PokedexCacheWriter.stagePresentation(artifact, {
+    marker = assert(sink.marker, "pokedex presentation carries no marker"),
+    manifest = manifest,
+    assets = assert(sink.assets, "pokedex presentation carries no assets"),
+    provenance = sink.provenance or {},
+  })
 end
 
 -- The word-entry closure is statically bounded: the selector reads its
@@ -1230,6 +1295,20 @@ end
 
 ---@param check ArtifactJobs.ReadinessCheck
 ---@return boolean
+local function validatePokedexData(check)
+  local PokedexCache = require("libs.assets.src.PokedexCache")
+  return PokedexCache.isDataReady(check.cacheFs, check.marker)
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
+local function validatePokedex(check)
+  local PokedexCache = require("libs.assets.src.PokedexCache")
+  return PokedexCache.isReady(check.cacheFs, check.marker)
+end
+
+---@param check ArtifactJobs.ReadinessCheck
+---@return boolean
 local function validateSummary(check)
   local SummaryCache = require("libs.assets.src.SummaryCache")
   return SummaryCache.isReady(check.cacheFs, check.marker)
@@ -1726,6 +1805,21 @@ DESCRIPTORS = {
     execute = executePokegearWordEntry,
     validate = validatePokegearWordEntry,
   },
+  -- Pokedex scopes: semantic data for field boot plus on-demand
+  -- application presentation. Each owns its exact payload and marker
+  -- files, so one scope never erases the other.
+  ["pokedex-data"] = {
+    size = "normal",
+    dependencies = dependenciesPokedexData,
+    execute = executePokedexData,
+    validate = validatePokedexData,
+  },
+  pokedex = {
+    size = "normal",
+    dependencies = dependenciesPokedex,
+    execute = executePokedexPresentation,
+    validate = validatePokedex,
+  },
   -- Summary presentation: builds over the current mon catalog and
   -- layout families, never over paged portrait pixels.
   summary = {
@@ -1952,6 +2046,8 @@ local COMPLETE_STATIC_GLOBALS = {
   "party",
   "pc",
   "pokegear",
+  "pokedex-data",
+  "pokedex",
   "mart",
   "summary",
   "spawns",

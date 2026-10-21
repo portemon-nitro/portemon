@@ -71,7 +71,7 @@ local PartyMenuComposition = {}
 ---@field textPolicy table<string, unknown>? the copied player text-speed cadence for bag children
 ---@field summaryManifest table<string, unknown>? the borrowed summary family for summary children
 ---@field summaryContext fun(): table<string, unknown>? the explicit summary display context per refresh
----@field dexMode "regional"|"national"? the dex numbering the info panel prints
+---@field dexMode ("regional"|"national"|fun(): string)? the dex numbering the info panel prints; a provider observes unlocks after composition
 ---@field readSummaryNavigation fun(): table<string, unknown>? the read-only summary navigation sample
 ---@field acquireSummaryPreparation fun(): table<string, unknown>? the per-open summary lease factory
 ---@field makeApricornBox (fun(mode: string): table<string, unknown>)? the shared Box child factory
@@ -350,11 +350,26 @@ function PartyMenuComposition.create(deps)
       return child
     end
     -- The info panel's dex number follows the summary's dex mode and tables;
-    -- a composition without the summary family prints none.
+    -- a composition without the summary family prints none. A provider
+    -- value is read at each projection so a national unlock after
+    -- composition switches numbering without rebuilding; an invalid
+    -- provider result fails here instead of printing a fabricated number.
+    local function readDexMode()
+      local configured = deps.dexMode
+      if type(configured) == "function" then
+        configured = configured()
+      end
+      if configured == nil then
+        return nil
+      end
+      assert(configured == "regional" or configured == "national", "dex mode is regional or national")
+      return configured --[[@as string]]
+    end
     local function dexNumber(speciesKey)
       local manifest = deps.summaryManifest
-      local numbers = manifest ~= nil and deps.dexMode ~= nil and manifest.dexNumbers[speciesKey] or nil
-      return numbers ~= nil and numbers[deps.dexMode] or nil
+      local selected = readDexMode()
+      local numbers = manifest ~= nil and selected ~= nil and manifest.dexNumbers[speciesKey] or nil
+      return numbers ~= nil and numbers[selected] or nil
     end
     return StorageScreenState.new({
       mode = mode,

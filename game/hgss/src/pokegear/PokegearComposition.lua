@@ -23,6 +23,7 @@ local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
 ---@field scriptHost table<string, unknown>
 ---@field incoming table<string, unknown>
 ---@field radioEffects table<string, unknown>
+---@field mapContext fun(): table<string, unknown>
 ---@field dispose fun()
 local PokegearComposition = {}
 
@@ -662,11 +663,21 @@ function PokegearComposition.compose(runtime, owners)
     incoming:dispose()
   end
 
+  -- The read-only live map context closure over the existing resolver:
+  -- callers read the current field map, global outdoor position, and
+  -- profile gender afresh through the shared phone projection. The
+  -- closure adds no mutable position cache, no field update work, and no
+  -- ownership; it follows existing missing-context failure.
+  local function mapContext()
+    return liveMapContext(runtime, world, catalog)
+  end
+
   return {
     screenFactory = screenFactory,
     scriptHost = host,
     incoming = incoming,
     radioEffects = radioEffects,
+    mapContext = mapContext,
     dispose = dispose,
   }
 end

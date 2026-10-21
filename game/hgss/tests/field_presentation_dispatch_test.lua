@@ -462,6 +462,25 @@ local function compositionRuntime()
       runtime.summaryPreparation = nil
     end
   end
+  -- The recording pokedex seam mirrors the production runtime binding:
+  -- one live acquire callback with an identity, removed only by its own
+  -- identity so a stale unbind can never drop a replacement owner.
+  runtime.pokedexBindCalls = {}
+  runtime.pokedexUnbindCalls = {}
+  runtime.bindPokedexPreparation = function(_, acquire)
+    assert(type(acquire) == "function", "pokedex preparation binding requires its acquire function")
+    assert(runtime.pokedexPreparation == nil, "one pokedex preparation binding owns the presented lifetime")
+    runtime.pokedexBindCalls[#runtime.pokedexBindCalls + 1] = acquire
+    runtime.pokedexPreparation = { id = #runtime.pokedexBindCalls, acquire = acquire }
+    return runtime.pokedexPreparation.id
+  end
+  runtime.unbindPokedexPreparation = function(_, binding)
+    runtime.pokedexUnbindCalls[#runtime.pokedexUnbindCalls + 1] = binding
+    local current = runtime.pokedexPreparation
+    if current ~= nil and current.id == binding then
+      runtime.pokedexPreparation = nil
+    end
+  end
   return runtime
 end
 

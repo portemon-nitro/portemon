@@ -842,8 +842,9 @@ end
 local function giveMon(ins)
   -- ScrCmd_GiveMon species, level, held item, form, ability, result: the
   -- current map section resolves at the service before creation, creation
-  -- consumes its exact draws even when the party is full, and only the
-  -- Pokedex update is omitted.
+  -- consumes its exact draws even when the party is full, and explicit
+  -- receipt publishes the admitted mon with its caught fact when a dex
+  -- owner is wired.
   return {
     op = "give_mon",
     species = Operands.varRef(ins.operands[1]),
@@ -1980,5 +1981,26 @@ local FieldHandlers = {
   [834] = FieldServiceHandlers.martAthleteAvailable,
   [835] = FieldServiceHandlers.martCardPrefix,
 }
+
+-- The seventeen dex entries ride the cohesive PokedexHandlers leaf. This
+-- chunk sits at LuaJIT's 200-local budget, so the leaf is referenced
+-- through cached inline requires that declare no new locals.
+FieldHandlers[243] = require("romdump.src.digest.script.lowering.PokedexHandlers").countJohtoDexSeen
+FieldHandlers[244] = require("romdump.src.digest.script.lowering.PokedexHandlers").countJohtoDexOwned
+FieldHandlers[245] = require("romdump.src.digest.script.lowering.PokedexHandlers").countNationalDexSeen
+FieldHandlers[246] = require("romdump.src.digest.script.lowering.PokedexHandlers").countNationalDexOwned
+FieldHandlers[248] = require("romdump.src.digest.script.lowering.PokedexHandlers").getDexEvalResult
+FieldHandlers[290] = require("romdump.src.digest.script.lowering.PokedexHandlers").checkPokedex
+FieldHandlers[291] = require("romdump.src.digest.script.lowering.PokedexHandlers").givePokedex
+FieldHandlers[423] = require("romdump.src.digest.script.lowering.PokedexHandlers").checkJohtoDexComplete
+FieldHandlers[424] = require("romdump.src.digest.script.lowering.PokedexHandlers").checkNationalDexComplete
+FieldHandlers[476] = require("romdump.src.digest.script.lowering.PokedexHandlers").enablePokedexFormDetection
+FieldHandlers[477] = require("romdump.src.digest.script.lowering.PokedexHandlers").natDexFlagAction
+FieldHandlers[518] = require("romdump.src.digest.script.lowering.PokedexHandlers").setPartyDeoxysForm
+FieldHandlers[545] = require("romdump.src.digest.script.lowering.PokedexHandlers").countUnownLettersRegistered
+FieldHandlers[675] = require("romdump.src.digest.script.lowering.PokedexHandlers").updateRotomForm
+FieldHandlers[687] = require("romdump.src.digest.script.lowering.PokedexHandlers").setMonSeenFlag
+FieldHandlers[707] = require("romdump.src.digest.script.lowering.PokedexHandlers").checkMonSeen
+FieldHandlers[770] = require("romdump.src.digest.script.lowering.PokedexHandlers").checkSeenAllLetterUnown
 
 return FieldHandlers

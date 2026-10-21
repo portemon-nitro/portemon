@@ -384,6 +384,7 @@ function ApplicationPresentation:_mapDown(plan, view, event, out)
   local logical = copyEvent(event)
   logical.x = hitX
   logical.y = hitY
+  logical.paneId = pane.id
   local mapped = plan.mapInput(logical, view, plan)
   if mapped ~= nil then
     out[#out + 1] = mapped
@@ -423,6 +424,7 @@ function ApplicationPresentation:_mapMove(plan, view, event, out)
     local logical = copyEvent(event)
     logical.x = x
     logical.y = y
+    logical.paneId = pane.id
     local mapped = plan.mapInput(logical, view, plan)
     if mapped ~= nil then
       out[#out + 1] = mapped
@@ -442,6 +444,7 @@ function ApplicationPresentation:_mapMove(plan, view, event, out)
   local logical = copyEvent(event)
   logical.x = hitX
   logical.y = hitY
+  logical.paneId = pane.id
   local mapped = plan.mapInput(logical, view, plan)
   if mapped ~= nil then
     out[#out + 1] = mapped
@@ -467,6 +470,7 @@ function ApplicationPresentation:_mapUp(plan, view, event, out)
     local logical = copyEvent(event)
     logical.x = x
     logical.y = y
+    logical.paneId = pane.id
     local mapped = plan.mapInput(logical, view, plan)
     if mapped ~= nil then
       out[#out + 1] = mapped

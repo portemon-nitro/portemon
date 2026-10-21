@@ -20,6 +20,7 @@ local PngWriter = require("libs.assets.src.PngWriter")
 ---@field _text table<string, unknown> borrowed text services behind plan rendering
 ---@field _windows table<string, unknown> borrowed window services behind plan rendering
 ---@field _screenAudio table<string, unknown> semantic cue-audio boundary behind the screen
+---@field _pokedex table<string, unknown>? borrowed field presentation resource owner behind the registration card
 ---@field _itemCatalog table<string, unknown>? borrowed immutable item catalog behind battle bag grouping
 ---@field _monCatalog table<string, unknown>? borrowed immutable mon catalog behind machine display facts
 ---@field _imageFailures table<string, string> terminal upload failures by key, latched for the envelope lifetime
@@ -60,6 +61,7 @@ FieldBattlePresentation.MAX_CATCH_UP = 6
 ---@field windows table<string, unknown> borrowed window services behind plan rendering
 ---@field text table<string, unknown> borrowed text services behind plan rendering
 ---@field audio table<string, unknown>? semantic cue-audio boundary behind the screen
+---@field pokedex table<string, unknown>? borrowed field presentation resource owner behind the registration card
 ---@field measureDisplay fun(): table<string, unknown> live display facts
 ---@field derivedAssets table<string, function>? borrowed scene-demand host behind lazy scene waits
 ---@field graphics table<string, unknown>? host graphics namespace enabling GPU upload, nil for data descriptors
@@ -209,11 +211,16 @@ function FieldBattlePresentation.new(opts)
   if opts.derivedAssets ~= nil then
     assert(type(opts.derivedAssets) == "table", "the scene demand host arrives as a record")
   end
+  if opts.pokedex ~= nil then
+    assert(type(opts.pokedex) == "table", "the registration card borrows its presentation owner")
+    assert(type(opts.pokedex.acquire) == "function", "the borrowed owner acquires registration leases")
+  end
   local envelope = setmetatable({
     _cacheFs = opts.cacheFs,
     _text = opts.text,
     _windows = opts.windows,
     _screenAudio = opts.audio or nullAudio(),
+    _pokedex = opts.pokedex,
     _measureDisplay = opts.measureDisplay,
     _derivedAssets = opts.derivedAssets,
     _graphics = opts.graphics,
@@ -1005,6 +1012,55 @@ function FieldBattlePresentation:_screenAudioFor(launchId)
   return { play = play }
 end
 
+-- Adapts the shared audio controller behind the narrow registration
+-- audio seam: the card cries resolve their semantic species through the
+-- mon catalog and forward the numeric voice, completion forwards the
+-- true-when-finished query, and select plays the staged semantic role.
+-- Capabilities validate when a registration actually uses them, so old
+-- deliberate no-registration headless cue sinks keep composing; a
+-- missing required capability fails explicitly, never as no-op audio.
+---@param launchId string owning launch identity behind failure context
+---@return table<string, unknown> registration audio adapter with dot-call operations
+function FieldBattlePresentation:_registrationAudioFor(launchId)
+  local controller = self._screenAudio
+  local manifest = self._manifest
+  local monCatalog = self._monCatalog
+  local audio = {}
+  function audio.playCry(speciesKey, pattern, form)
+    assert(
+      type(speciesKey) == "string" and speciesKey ~= "",
+      "registration cries name their species for launch " .. launchId
+    )
+    assert(type(controller.playCry) == "function", "registration cries need their audio voice for launch " .. launchId)
+    assert(monCatalog ~= nil, "registration cries need their mon catalog for launch " .. launchId)
+    local facts = monCatalog:species(speciesKey)
+    assert(
+      type(facts) == "table" and type(facts.nativeId) == "number",
+      "registration cries name a cataloged species for launch " .. launchId .. ": " .. tostring(speciesKey)
+    )
+    return controller:playCry(facts.nativeId, pattern, form)
+  end
+  function audio.isCryFinished()
+    assert(
+      type(controller.isCryFinished) == "function",
+      "registration cries need their completion query for launch " .. launchId
+    )
+    return controller:isCryFinished()
+  end
+  function audio.select()
+    assert(type(controller.play) == "function", "registration select needs its audio sink for launch " .. launchId)
+    local audioRoles = type(manifest) == "table" and manifest.audioRoles or nil
+    assert(type(audioRoles) == "table", "registration sound needs its staged select role for launch " .. launchId)
+    local symbol = audioRoles.select
+    assert(
+      type(symbol) == "string" and symbol ~= "",
+      "registration sound needs its staged select role for launch " .. launchId
+    )
+    return controller:play(symbol)
+  end
+  return audio
+end
+
 ---@param descriptor table<string, unknown> admitted launch descriptor from the runtime
 ---@return table<string, unknown> fresh five-operation port behind a fresh screen
 function FieldBattlePresentation:_buildPort(descriptor)
@@ -1046,6 +1102,8 @@ function FieldBattlePresentation:_buildPort(descriptor)
     textSpeed = launchSpeed,
     submit = submit,
     measureDisplay = self._measureDisplay,
+    pokedex = self._pokedex,
+    registrationAudio = self:_registrationAudioFor(descriptor.launchId),
     assets = self._services,
     text = self._text,
     windows = self._windows,

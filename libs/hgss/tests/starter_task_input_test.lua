@@ -10,6 +10,8 @@ local Errors = require("libs.errors.src.Errors")
 local Lcrng = require("libs.mons.src.gen4.Lcrng")
 local MonsSave = require("libs.mons.src.MonsSave")
 local Party = require("libs.mons.src.Party")
+local PokedexDexFixture = require("libs.hgss.tests.mons.pokedex_dex_fixture")
+local PokedexKnowledge = require("libs.hgss.src.mons.PokedexKnowledge")
 
 local T = {}
 
@@ -39,6 +41,7 @@ local function openService(catalog, seed)
     balls = CatalogFixture.BALLS,
     mapSection = 7,
     date = CatalogFixture.metDate(),
+    dex = PokedexKnowledge.new(PokedexDexFixture.refsForSpecies(TRIO)),
   })
 end
 

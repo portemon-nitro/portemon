@@ -7,6 +7,7 @@
 local Assert = require("tests.support.Assert")
 local Errors = require("libs.errors.src.Errors")
 local EncounterSave = require("libs.hgss.src.save.EncounterSave")
+local PokedexDexFixture = require("libs.hgss.tests.mons.pokedex_dex_fixture")
 local PokedexSave = require("libs.hgss.src.save.PokedexSave")
 
 local T = {}
@@ -36,9 +37,16 @@ local function dexBucket()
   return {
     schema = PokedexSave.SCHEMA,
     stateVersion = PokedexSave.STATE_VERSION,
-    seen = { "CUSTOM_MON" },
+    seen = { "CUSTOM_OUT_A" },
     caught = {},
+    flags = { dexEnabled = false, nationalDex = false, enabledInternational = false, canDetectForms = false },
+    history = {},
+    resume = {},
   }
+end
+
+local function dexRefs()
+  return PokedexDexFixture.refsForSpecies({ "CHIKORITA", "CUSTOM_OUT_A" })
 end
 
 local CUSTOM_REFS = { species = { CHIKORITA = true, CUSTOM_MON = true }, maps = { [60] = true } }
@@ -46,8 +54,8 @@ local CUSTOM_REFS = { species = { CHIKORITA = true, CUSTOM_MON = true }, maps = 
 function T.selected_custom_content_resolves_through_composition_refs()
   local encounters = EncounterSave.validate(roamerBucket(), CUSTOM_REFS)
   Assert.equal(encounters.roamers.raikou.location, 60)
-  local dex = PokedexSave.validate(dexBucket(), { species = CUSTOM_REFS.species })
-  Assert.deepEqual(dex.seen, { "CUSTOM_MON" })
+  local dex = PokedexSave.validate(dexBucket(), dexRefs())
+  Assert.deepEqual(dex.seen, { "CUSTOM_OUT_A" })
 end
 
 function T.removed_references_fail_naming_their_bucket()
@@ -57,7 +65,8 @@ function T.removed_references_fail_naming_their_bucket()
   assert(Errors.is(err), "removed encounter references fail with a structured error")
   Assert.equal(err.code, "ENCOUNTER_SAVE_INVALID")
   Assert.equal(err.context.species, "CUSTOM_MON")
-  local dexInvalid, dexErr = pcall(PokedexSave.validate, dexBucket(), { species = refs.species })
+  local dexInvalid, dexErr =
+    pcall(PokedexSave.validate, dexBucket(), PokedexDexFixture.refsForSpecies({ "CHIKORITA" }))
   Assert.isFalse(dexInvalid)
   assert(Errors.is(dexErr), "removed dex references fail with a structured error")
   Assert.equal(dexErr.code, "POKEDEX_INVALID")

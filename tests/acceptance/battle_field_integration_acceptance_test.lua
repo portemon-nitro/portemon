@@ -180,7 +180,8 @@ end
 ---@return table dex knowledge over the acceptance species set
 local function newDexOwner()
   local PokedexKnowledge = require("libs.hgss.src.mons.PokedexKnowledge")
-  return PokedexKnowledge.new({ species = { CHIKORITA = true, TOTODILE = true } })
+  local PokedexDexFixture = require("libs.hgss.tests.mons.pokedex_dex_fixture")
+  return PokedexKnowledge.new(PokedexDexFixture.refsForSpecies({ "CHIKORITA", "TOTODILE" }))
 end
 
 ---@param money integer pocket money the player record carries
