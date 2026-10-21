@@ -2262,4 +2262,152 @@ function T.pointer_transition_during_dispatch_does_not_resolve_after_dispose()
   menu:keypressed("return")
 end
 
+function T.accepted_menu_gestures_emit_one_borrowed_cue_and_passive_inputs_stay_silent()
+  local cues = 0
+  local results = {}
+  local menu = state({
+    saveStore = {
+      listMetadata = function()
+        return {
+          catalogEntry("save-00000001", "Goldie", 60),
+          catalogEntry("save-00000002", "Silver", 120),
+        }
+      end,
+    },
+    audio = {
+      playMenuCue = function()
+        cues = cues + 1
+      end,
+    },
+    onResult = function(result)
+      results[#results + 1] = result
+    end,
+  })
+
+  menu:keypressed("down")
+  Assert.equal(cues, 1, "keyboard focus movement emits one cue")
+  menu:gamepadpressed(nil, "dpup")
+  Assert.equal(cues, 2, "gamepad focus movement emits the same semantic cue")
+  menu:wheelmoved(0, -1)
+  Assert.equal(cues, 3, "one wheel step emits one focus cue")
+
+  menu:keypressed("left")
+  Assert.equal(cues, 4, "moving focus onto New Game emits one cue")
+  menu:keypressed("return")
+  Assert.equal(cues, 5, "accepted keyboard activation emits one cue")
+  Assert.deepEqual(results, { { kind = "new_game" } }, "cue emission leaves menu actions intact")
+
+  local action = assert(menu:view().layout.global.actions["new-game"])
+  pressAt(menu, action.x + action.width / 2, action.y + action.height / 2)
+  Assert.equal(cues, 6, "pointer focus plus activation is one gesture and one cue")
+  local current = menu:view()
+  local placement = assert(current.presentation.panes[1].placement)
+  local touchX, touchY =
+    LayoutGeometry.logicalToHost(placement, action.x + action.width / 2, action.y + action.height / 2)
+  menu:touchpressed("finger", touchX, touchY)
+  menu:touchreleased("finger", touchX, touchY)
+  Assert.equal(cues, 7, "touch focus plus activation emits one cue, without a release duplicate")
+  menu:mousemoved(1, 1, 0, 0, false)
+  menu:mousereleased(1, 1, 1)
+  Assert.equal(cues, 7, "pointer movement and release alone are silent")
+
+  menu:keypressed("right")
+  Assert.equal(cues, 8, "moving back to a save card emits one focus cue")
+  menu:keypressed("right")
+  Assert.equal(cues, 9, "moving onto the overflow action emits one focus cue")
+  menu:keypressed("return")
+  Assert.notNil(menu:view().popup, "the accepted overflow action opens its popup")
+  Assert.equal(cues, 10, "opening the menu popup emits one activation cue")
+  menu:keypressed("escape")
+  Assert.isNil(menu:view().popup, "Back closes the popup")
+  Assert.equal(cues, 11, "accepted Back emits one semantic cue")
+  menu:keypressed("x")
+  Assert.equal(cues, 11, "an unsupported/no-op key is silent")
+end
+
+function T.continue_edit_delete_and_disabled_menu_gestures_cue_only_when_accepted()
+  local cues, results = 0, {}
+  local audio = {
+    playMenuCue = function()
+      cues = cues + 1
+    end,
+  }
+  local entries = {
+    catalogEntry("save-00000001", "Goldie", 60),
+    catalogEntry("save-00000002", "Silver", 120),
+  }
+  local function newMenu()
+    return state({
+      saveStore = { listMetadata = function() return entries end },
+      audio = audio,
+      onResult = function(result)
+        results[#results + 1] = result
+      end,
+    })
+  end
+  local menu = newMenu()
+
+  local card = assert(menu:view().layout.saves.cards["save-00000001"])
+  pressAt(menu, card.body.x + card.body.width / 2, card.body.y + card.body.height / 2)
+  Assert.equal(cues, 1, "clicking a Continue card emits one cue")
+  local published = menu:view()
+  local placement = assert(published.presentation.panes[1].placement)
+  local touchX, touchY = LayoutGeometry.logicalToHost(
+    placement,
+    card.body.x + card.body.width / 2,
+    card.body.y + card.body.height / 2
+  )
+  menu:touchpressed("continue", touchX, touchY)
+  menu:touchreleased("continue", touchX, touchY)
+  Assert.equal(cues, 2, "touching a Continue card emits one cue without a release duplicate")
+  Assert.deepEqual(results, {
+    { kind = "continue", saveId = "save-00000001" },
+    { kind = "continue", saveId = "save-00000001" },
+  })
+  menu:dispose()
+
+  cues, results = 0, {}
+  menu = newMenu()
+  card = assert(menu:view().layout.saves.cards["save-00000001"])
+  local overflow = assert(card.overflow)
+  pressAt(menu, overflow.x + overflow.width / 2, overflow.y + overflow.height / 2)
+  Assert.equal(cues, 1, "opening a save's pointer menu emits one cue")
+  local edit = assert(menu:view().layout.popup.actions.edit)
+  pressAt(menu, edit.x + edit.width / 2, edit.y + edit.height / 2)
+  Assert.equal(cues, 2, "choosing Edit emits one cue")
+  Assert.deepEqual(results, { { kind = "edit", saveId = "save-00000001" } })
+  menu:dispose()
+
+  cues, results = 0, {}
+  menu = newMenu()
+  menu:keypressed("right")
+  menu:keypressed("return")
+  Assert.equal(cues, 2, "keyboard focus and popup activation each emit one cue")
+  menu:keypressed("down")
+  Assert.equal(cues, 3, "choosing Delete in the popup emits one cue")
+  menu:keypressed("return")
+  Assert.equal(cues, 4, "opening the delete confirmation emits one cue")
+  Assert.notNil(menu:view().confirmation)
+  menu:keypressed("escape")
+  Assert.equal(cues, 5, "canceling confirmation emits one Back cue")
+  menu:keypressed("escape")
+  Assert.equal(cues, 6, "canceling the popup emits one Back cue")
+  Assert.deepEqual(results, {}, "canceling does not delete or route a save")
+  menu:dispose()
+
+  cues, results = 0, {}
+  menu = state({
+    saveStore = { listMetadata = function() return { catalogEntry("broken", "", 0) } end },
+    audio = audio,
+    onResult = function(result)
+      results[#results + 1] = result
+    end,
+  })
+  card = assert(menu:view().layout.saves.cards.broken)
+  pressAt(menu, card.body.x + card.body.width / 2, card.body.y + card.body.height / 2)
+  Assert.equal(cues, 0, "a disabled Continue action is silent")
+  Assert.deepEqual(results, {}, "a disabled Continue action does not route")
+  menu:dispose()
+end
+
 return { tests = T }

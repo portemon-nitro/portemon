@@ -15,6 +15,8 @@ local VersionSelectState = require("app.src.launcher.VersionSelectState")
 local NativeRomPicker = require("app.src.launcher.NativeRomPicker")
 local EditionPreference = require("app.src.launcher.EditionPreference")
 local StartupTitleState = require("app.src.launcher.StartupTitleState")
+local StartupAudioSession = require("app.src.audio.StartupAudioSession")
+local CacheFs = require("libs.storage.src.CacheFs")
 
 ---@class App
 ---@field opts AppOptions
@@ -31,7 +33,8 @@ local StartupTitleState = require("app.src.launcher.StartupTitleState")
 ---@field preferenceError string? last-played preference write diagnostic
 ---@field _startupWarmup { epoch: integer, versionId: string, preparation: table<string, function> }?|nil
 ---@field startupWarmupError string? background first-play diagnostic, never a menu gate
----@field startupAudio table<string, function>? optional App-owned audio event callbacks
+---@field startupAudioSession StartupAudioSession?|nil optional selected-version title/menu audio owner
+---@field startupAudioError string?|nil non-gating audio diagnostic
 ---@field _swallowedPointers table<string, boolean> pointer releases owned by startup during a transfer
 ---@field drawableWidth number?
 ---@field drawableHeight number?
@@ -90,6 +93,7 @@ end
 -- Retires the selected source interest without joining controller work.
 -- The process service is reused; stale results cannot publish afterwards.
 function App._retireSelection()
+  App._releaseStartupAudio()
   local warmup = App._startupWarmup
   App._startupWarmup = nil
   if warmup ~= nil then
@@ -102,13 +106,93 @@ function App._retireSelection()
   end
 end
 
+function App._releaseStartupAudio()
+  local session = App.startupAudioSession
+  App.startupAudioSession = nil
+  if session ~= nil then
+    session:dispose()
+  end
+end
+
+function App._recordStartupAudioError(failure)
+  local diagnostic = tostring(failure)
+  if App.startupAudioError == diagnostic then
+    return
+  end
+  App.startupAudioError = diagnostic
+  print("Startup audio disabled: " .. diagnostic)
+end
+
+---@param versionId string
+---@param epoch integer
+---@return StartupAudioSession|nil
+---@param titleRecord { crySpeciesId: integer }?
+function App._ensureStartupAudio(versionId, epoch, titleRecord)
+  if App.epoch ~= epoch or App.selectedVersionId ~= versionId then
+    return nil
+  end
+  if App.startupAudioSession ~= nil then
+    return App.startupAudioSession
+  end
+  local ok, sessionOrError = pcall(function()
+    return StartupAudioSession.new({
+      versionId = versionId,
+      cacheFs = CacheFs.forVersion(versionId),
+      titleRecord = titleRecord,
+    })
+  end)
+  if not ok then
+    App._recordStartupAudioError(sessionOrError)
+    return nil
+  end
+  local session = assert(sessionOrError)
+  App.startupAudioSession = session
+  return session
+end
+
+---@param versionId string
+---@param epoch integer
+---@return table<string, function> borrowed semantic callbacks
+local function startupAudioBorrow(versionId, epoch)
+  local function invoke(method, create, titleRecord, ...)
+    if App.epoch ~= epoch or App.selectedVersionId ~= versionId then
+      return
+    end
+    local session = create and App._ensureStartupAudio(versionId, epoch, titleRecord) or App.startupAudioSession
+    if session == nil then
+      return
+    end
+    local ok, failure = pcall(session[method], session, ...)
+    if not ok then
+      App._recordStartupAudioError(failure)
+      App._releaseStartupAudio()
+    end
+  end
+  return {
+    titleReady = function(titleRecord)
+      invoke("beginTitle", true, titleRecord)
+    end,
+    prompt = function()
+      invoke("notifySkip", false)
+    end,
+    skip = function()
+      invoke("beginFade", false)
+    end,
+    playMenuCue = function(kind)
+      invoke("playMenuCue", true, nil, kind)
+    end,
+  }
+end
+
 ---@param versionId string
 ---@return table<string, unknown> staged MainMenuState
 local function stageMenu(versionId)
+  local audio = App.epoch ~= nil and startupAudioBorrow(versionId, App.epoch) or nil
   local ok, menuOrError = pcall(MainMenuComposition.new, {
     versionId = versionId,
     width = App.drawableWidth,
     height = App.drawableHeight,
+    audio = audio,
     onResult = function(result)
       if result.kind == "new_game" then
         App._launchGameWithProvisioner(versionId, { kind = "new_game" })
@@ -231,6 +315,7 @@ end
 ---@param versionId string
 function App._restoreMenuWithProvisioner(versionId)
   assert(App.provisioner, "selection has no provisioner")
+  App._ensureStartupAudio(versionId, App.epoch)
   installMenu(versionId)
 end
 
@@ -238,6 +323,7 @@ end
 ---@param entry table<string, unknown>
 function App._launchGameWithProvisioner(versionId, entry)
   local provisioner = assert(App.provisioner, "selection has no provisioner")
+  App._releaseStartupAudio()
   local ok, gameOrError = pcall(HgssGame.new, {
     versionId = versionId,
     entry = entry,
@@ -436,6 +522,7 @@ function App._continueSelectedVersion(versionId, options)
   local provisioner = assert(App.provisioner, "boot continuation needs the selected provisioner")
   local freshImport = options ~= nil and options.freshImport == true
   local width, height = love.graphics.getDimensions()
+  local audio = startupAudioBorrow(versionId, epoch)
   App.setState(StartupTitleState.new({
     versionId = versionId,
     epoch = epoch,
@@ -443,7 +530,7 @@ function App._continueSelectedVersion(versionId, options)
     width = width,
     height = height,
     initialImport = freshImport,
-    audio = App.startupAudio,
+    audio = audio,
     isCurrent = function(selected)
       return App.epoch == selected and App.selectedVersionId == versionId
     end,
@@ -489,6 +576,8 @@ function App.load(opts)
   App.importPickerError = nil
   App._startupWarmup = nil
   App.startupWarmupError = nil
+  App.startupAudioSession = nil
+  App.startupAudioError = nil
   App.setState(nil)
   love.graphics.setBackgroundColor(unpack(WindowConfig.BACKGROUND_COLOR))
   App.saveDir = love.filesystem.getSaveDirectory()
@@ -799,6 +888,16 @@ function App.update(dt)
   App._updateStartupWarmup()
   if App.state and App.state.update then
     App.state:update(dt)
+  end
+  local audio = App.startupAudioSession
+  if audio ~= nil then
+    local ok, failure = pcall(audio.update, audio, dt)
+    if not ok then
+      App._recordStartupAudioError(failure)
+      App._releaseStartupAudio()
+    elseif audio.diagnostic ~= nil then
+      App._recordStartupAudioError(audio.diagnostic)
+    end
   end
 end
 

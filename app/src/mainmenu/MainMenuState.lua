@@ -37,6 +37,9 @@ local PlayerProgression = require("libs.hgss.src.save.PlayerProgression")
 ---@field _displayContext DisplayContext|nil shared actual-display owner from the product route
 ---@field _session ApplicationPresentation|nil the per-open presentation session
 ---@field _disposed boolean
+---@field audio { playMenuCue: fun(kind: string) }|nil borrowed App-owned cue callback
+---@field _cueBatchDepth integer
+---@field _cueBatchEmitted boolean
 local MainMenuState = {}
 MainMenuState.__index = MainMenuState
 
@@ -150,6 +153,23 @@ local function readySet(versions)
   return result
 end
 
+local function sameValue(left, right)
+  if type(left) ~= "table" or type(right) ~= "table" then
+    return left == right
+  end
+  for key, value in pairs(left) do
+    if not sameValue(value, right[key]) then
+      return false
+    end
+  end
+  for key in pairs(right) do
+    if left[key] == nil then
+      return false
+    end
+  end
+  return true
+end
+
 ---@param seconds number
 ---@return string
 function MainMenuState.formatPlayTime(seconds)
@@ -163,6 +183,10 @@ end
 function MainMenuState.new(options)
   assert(type(options) == "table" and options.saveStore, "Main Menu needs the global save store")
   assert(options.renderer, "Main Menu needs its renderer")
+  assert(
+    options.audio == nil or (type(options.audio) == "table" and type(options.audio.playMenuCue) == "function"),
+    "Main Menu audio needs its borrowed cue callback"
+  )
   local ready = readySet(options.readyVersions)
   local width, height = options.width, options.height
   if width == nil or height == nil then
@@ -181,6 +205,9 @@ function MainMenuState.new(options)
     catalogError = nil,
     scrollOffset = 0,
     _disposed = false,
+    audio = options.audio,
+    _cueBatchDepth = 0,
+    _cueBatchEmitted = false,
   }, MainMenuState)
   if options.displayMeasurement ~= nil then
     self._measurement = options.displayMeasurement --[[@as DisplayMeasurement]]
@@ -284,6 +311,39 @@ function MainMenuState:_emit(result)
   end
 end
 
+function MainMenuState:_emitCue()
+  if self.audio == nil or self._cueBatchEmitted then
+    return
+  end
+  self._cueBatchEmitted = true
+  self.audio.playMenuCue("select")
+end
+
+function MainMenuState:_withCueBatch(callback)
+  local outer = self._cueBatchDepth == 0
+  if outer then
+    self._cueBatchEmitted = false
+  end
+  self._cueBatchDepth = self._cueBatchDepth + 1
+  callback()
+  self._cueBatchDepth = self._cueBatchDepth - 1
+  if outer then
+    self._cueBatchEmitted = false
+  end
+end
+
+function MainMenuState:_emitCueIfChanged(before)
+  if not sameValue(before, self.controller:snapshot()) then
+    self:_emitCue()
+  end
+end
+
+function MainMenuState:_move(direction)
+  local before = self.controller:snapshot()
+  self.controller:move(direction)
+  self:_emitCueIfChanged(before)
+end
+
 function MainMenuState:_continue(saveId)
   local save = nil
   for _, candidate in ipairs(self.saves) do
@@ -323,9 +383,28 @@ function MainMenuState:_edit(saveId)
 end
 
 function MainMenuState:_activate()
+  local before = self.controller:snapshot()
   local intent = self.controller:activate()
+  local changed = not sameValue(before, self.controller:snapshot())
   if not intent then
+    if changed then
+      self:_emitCue()
+    end
     return
+  end
+  local accepted = intent.kind == "new_game"
+  if intent.kind == "continue" or intent.kind == "edit" or intent.kind == "delete" then
+    for _, save in ipairs(self.saves) do
+      if save.saveId == intent.saveId then
+        accepted = intent.kind == "continue" and save.canContinue == true
+          or intent.kind == "edit" and save.canEdit == true
+          or intent.kind == "delete" and save.canDelete == true
+        break
+      end
+    end
+  end
+  if accepted then
+    self:_emitCue()
   end
   if intent.kind == "new_game" then
     self:_emit({ kind = "new_game" })
@@ -341,7 +420,10 @@ function MainMenuState:_activate()
 end
 
 function MainMenuState:_backOrQuit()
-  if not self.controller:back() then
+  if self.controller:back() then
+    self:_emitCue()
+  else
+    self:_emitCue()
     self:_emit({ kind = "quit" })
   end
 end
@@ -350,7 +432,7 @@ end
 -- controller pathways. Confirmation buttons focus-then-act exactly as the
 -- keyboard flow does; anything else only clears presentation capture.
 ---@param hit table<string, string|nil>
-function MainMenuState:_dispatchHit(hit)
+function MainMenuState:_dispatchHitAction(hit)
   if hit.region == "confirmation" then
     if hit.lane == "delete" then
       self.controller:focusConfirmation("delete")
@@ -389,6 +471,12 @@ function MainMenuState:_dispatchHit(hit)
   end
 end
 
+function MainMenuState:_dispatchHit(hit)
+  local before = self.controller:snapshot()
+  self:_dispatchHitAction(hit)
+  self:_emitCueIfChanged(before)
+end
+
 -- Maps one ordered pointer batch through the current plan and dispatches
 -- the resulting semantic hits. Cancellation clears presentation capture
 -- only and never cancels or confirms a dialog semantically.
@@ -401,14 +489,16 @@ function MainMenuState:_dispatchPointer(events)
   self:_resolve(snapshot)
   local session = assert(self._session, "Main Menu session is disposed")
   local mapped = session:mapInput(events, snapshot)
-  for _, event in ipairs(mapped) do
-    if self._disposed then
-      return
+  self:_withCueBatch(function()
+    for _, event in ipairs(mapped) do
+      if self._disposed then
+        return
+      end
+      if type(event) == "table" and event.type ~= "pointer_cancel" and event.region ~= nil then
+        self:_dispatchHit(event)
+      end
     end
-    if type(event) == "table" and event.type ~= "pointer_cancel" and event.region ~= nil then
-      self:_dispatchHit(event)
-    end
-  end
+  end)
   if self._disposed then
     return
   end
@@ -434,11 +524,13 @@ function MainMenuState:_key(key)
     return
   end
   if key == "up" or key == "down" or key == "left" or key == "right" then
-    self.controller:move(key)
+    self:_move(key)
   elseif HgssInputBindings.isActionKey(key) then
     self:_activate()
   elseif HgssInputBindings.isMenuKey(key) then
-    self.controller:requestDelete()
+    if self.controller:requestDelete() then
+      self:_emitCue()
+    end
   end
 end
 
@@ -446,7 +538,9 @@ function MainMenuState:keypressed(key)
   if self._disposed then
     return
   end
-  self:_key(key)
+  self:_withCueBatch(function()
+    self:_key(key)
+  end)
 end
 
 function MainMenuState:gamepadpressed(_, button)
@@ -459,15 +553,19 @@ function MainMenuState:gamepadpressed(_, button)
     dpleft = "left",
     dpright = "right",
   }
-  if button == "b" then
-    self:_backOrQuit()
-  elseif button == "a" then
-    self:_activate()
-  elseif button == "x" then
-    self.controller:requestDelete()
-  elseif keys[button] then
-    self.controller:move(keys[button])
-  end
+  self:_withCueBatch(function()
+    if button == "b" then
+      self:_backOrQuit()
+    elseif button == "a" then
+      self:_activate()
+    elseif button == "x" then
+      if self.controller:requestDelete() then
+        self:_emitCue()
+      end
+    elseif keys[button] then
+      self:_move(keys[button])
+    end
+  end)
 end
 
 function MainMenuState:mousepressed(x, y, button)
@@ -522,8 +620,10 @@ function MainMenuState:wheelmoved(_, y)
   if self._disposed then
     return
   end
-  if not self.controller.popup and not self.controller.confirmation then
-    self.controller:move(y > 0 and "up" or "down")
+  if y ~= 0 and not self.controller.popup and not self.controller.confirmation then
+    self:_withCueBatch(function()
+      self:_move(y > 0 and "up" or "down")
+    end)
   end
 end
 
@@ -604,6 +704,7 @@ function MainMenuState:dispose()
     return
   end
   self._disposed = true
+  self.audio = nil
   if self._session ~= nil then
     self._session:dispose()
     self._session = nil

@@ -14,6 +14,7 @@ local MainMenuState = require("app.src.mainmenu.MainMenuState")
 ---@field onResult fun(result: table<string, unknown>)
 ---@field width number?
 ---@field height number?
+---@field audio { playMenuCue: fun(kind: string) }? borrowed App-owned cue callback
 
 local MainMenuComposition = {}
 
@@ -63,6 +64,7 @@ function MainMenuComposition.new(options)
     height = options.height,
     renderer = renderer,
     onResult = options.onResult,
+    audio = options.audio,
     displayContext = displayContext,
   })
   if not stateOk then
