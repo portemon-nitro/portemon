@@ -396,4 +396,28 @@ function T.stale_completion_demands_the_full_closure()
   end)
 end
 
+function T.near_warmup_uses_near_for_global_and_bedroom_demands()
+  local script = {
+    ready = readySet({ "bootstrap", "new-game-intro", "field-planning", "field-runtime" }),
+    failures = {},
+    locationReady = false,
+  }
+  withSpies(script, function(loaderState, _)
+    local host, calls = fakeHost(script)
+    local preparation = HgssGame.newFirstPlayCachePreparation({
+      versionId = "heartgold",
+      derivedAssets = host,
+      urgency = "near",
+    })
+    local ready, failure = preparation:poll()
+    Assert.isNil(failure, "pending background warmup has no failure")
+    Assert.isFalse(ready == true, "near-priority bedroom work remains pending")
+    for _, call in ipairs(calls) do
+      Assert.equal(call.urgency, "near", "global warmup work keeps its declared priority")
+    end
+    Assert.equal(loaderState.demands[1].urgency, "near", "bedroom warmup keeps the same priority")
+    preparation:dispose()
+  end)
+end
+
 return { tests = T }

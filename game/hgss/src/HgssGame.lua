@@ -259,7 +259,7 @@ end
 -- carries the durable attestation answers owned by the import
 -- orchestration boundary; the fresh-import path omits it and always
 -- compiles the closure.
----@param options { versionId: string, derivedAssets: table<string, function>, completion: table<string, function>? }
+---@param options { versionId: string, derivedAssets: table<string, function>, completion: table<string, function>?, urgency: "required"|"near"? }
 ---@return FirstPlayCachePreparation
 function HgssGame.newFirstPlayCachePreparation(options)
   return FirstPlayCachePreparation.new(options)

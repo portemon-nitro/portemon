@@ -38,6 +38,7 @@ local function capture(lg)
     color = { red, green, blue, alpha },
     blend = { blendMode, alphaMode },
     depth = { depthMode, depthWrite },
+    lineWidth = lg.getLineWidth(),
     wireframe = lg.isWireframe(),
     cullMode = lg.getMeshCullMode(),
     scissor = sx and { sx, sy, sw, sh } or nil,
@@ -52,6 +53,7 @@ local function restore(lg, state)
   lg.setColor(state.color[1], state.color[2], state.color[3], state.color[4])
   lg.setBlendMode(state.blend[1], state.blend[2])
   lg.setDepthMode(state.depth[1], state.depth[2])
+  lg.setLineWidth(state.lineWidth)
   lg.setWireframe(state.wireframe)
   lg.setMeshCullMode(state.cullMode)
   if state.scissor then

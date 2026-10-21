@@ -33,6 +33,7 @@ local milestoneNames = {
 ---@field versionId string selected game version, carried for diagnostics
 ---@field derivedAssets table<string, function>? borrowed semantic host, cleared on disposal
 ---@field completion FirstPlayCompletionGateway? durable attestation gateway, owned by the import orchestration boundary
+---@field urgency "required"|"near" demand priority for this closure
 ---@field loader table<string, unknown>? retained metadata-only planning loader, built once
 ---@field target { symbol: string, x: integer, z: integer }? retained globalized bedroom target
 ---@field failure unknown? latched terminal failure for this selection
@@ -40,7 +41,7 @@ local milestoneNames = {
 local FirstPlayCachePreparation = {}
 FirstPlayCachePreparation.__index = FirstPlayCachePreparation
 
----@param options { versionId: string, derivedAssets: table<string, function>, completion: FirstPlayCompletionGateway? }
+---@param options { versionId: string, derivedAssets: table<string, function>, completion: FirstPlayCompletionGateway?, urgency: "required"|"near"? }
 ---@return FirstPlayCachePreparation
 function FirstPlayCachePreparation.new(options)
   assert(type(options) == "table", "first-play preparation requires its composition")
@@ -61,10 +62,13 @@ function FirstPlayCachePreparation.new(options)
       "first-play completion must answer hasStored, isCurrent, and currentGeneration"
     )
   end
+  local urgency = options.urgency or "required"
+  assert(urgency == "required" or urgency == "near", "first-play urgency must be required or near")
   return setmetatable({
     versionId = versionId,
     derivedAssets = derivedAssets,
     completion = completion,
+    urgency = urgency,
     loader = nil,
     target = nil,
     failure = nil,
@@ -79,7 +83,7 @@ local function pollMilestone(self, name)
   -- Repeating the required interest re-affirms it; independent required
   -- work overlaps below the controller instead of serializing here.
   local host = assert(self.derivedAssets, "first-play preparation requires its borrowed derived host")
-  local ok, ready, failure = pcall(host.requestMilestone, name, "required")
+  local ok, ready, failure = pcall(host.requestMilestone, name, self.urgency)
   if not ok then
     self.failure = ready
     return false
@@ -157,7 +161,7 @@ local function pollLocation(self)
   local target = assert(self.target, "bedroom demand requires its globalized target")
   local loader = assert(self.loader, "bedroom demand requires the retained planning loader")
   local ok, ready, failure = pcall(function()
-    return loader:requestLocation(target.symbol, target.x, target.z, "required")
+    return loader:requestLocation(target.symbol, target.x, target.z, self.urgency)
   end)
   if not ok then
     self.failure = ready

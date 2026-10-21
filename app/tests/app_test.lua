@@ -136,6 +136,8 @@ local function withAppHarness(opts, ready, fn)
   local originalNew = HgssGame.new
   local MainMenuComposition = require("app.src.mainmenu.MainMenuComposition")
   local originalMenuNew = MainMenuComposition.new
+  local HgssTitleScene = require("libs.hgss.src.presentation.HgssTitleScene")
+  local originalTitleNew = HgssTitleScene.new
   local graphics = love.graphics
   local originalPrint = graphics.print
   local originalGetDimensions = graphics.getDimensions
@@ -176,6 +178,12 @@ local function withAppHarness(opts, ready, fn)
   function service:observe(_, selector)
     if selector.requestKind == "milestone" and selector.name == "bootstrap" then
       return true, nil
+    end
+    if selector.requestKind == "milestone" and selector.name == "startup-loader" then
+      return true, nil
+    end
+    if selector.requestKind == "milestone" and selector.name == "startup-title" then
+      return result.startupTitleReady == true, nil
     end
     return nil, nil
   end
@@ -241,8 +249,23 @@ local function withAppHarness(opts, ready, fn)
   MainMenuComposition.new = function(options)
     local menu = countingState()
     menu.options = options
+    function menu:draw() end
     result.menus[#result.menus + 1] = menu
     return menu
+  end
+  HgssTitleScene.new = function()
+    local title = { updates = 0, draws = 0, disposals = 0, bundle = { crySpeciesId = 25 } }
+    function title:updateFixed()
+      self.updates = self.updates + 1
+    end
+    function title:draw()
+      self.draws = self.draws + 1
+    end
+    function title:dispose()
+      self.disposals = self.disposals + 1
+    end
+    function title:resize() end
+    return title
   end
   graphics.print = function()
     result.prints = result.prints + 1
@@ -264,6 +287,7 @@ local function withAppHarness(opts, ready, fn)
   FirstPlayCompletion.publish = originalPublish
   HgssGame.new = originalNew
   MainMenuComposition.new = originalMenuNew
+  HgssTitleScene.new = originalTitleNew
   graphics.print = originalPrint
   graphics.getDimensions = originalGetDimensions
   graphics.getDPIScale = originalGetDPIScale
@@ -276,6 +300,43 @@ local function withAppHarness(opts, ready, fn)
     error(err, 0)
   end
   return result
+end
+
+local function assertStagedStartupMenu(result)
+  local StartupTitleState = require("app.src.launcher.StartupTitleState")
+  for _ = 1, 3 do
+    if getmetatable(App.state).__index == StartupTitleState and App.state.stagedMenu ~= nil then
+      break
+    end
+    App.update(1 / 30)
+  end
+  Assert.equal(getmetatable(App.state).__index, StartupTitleState, "selection remains under startup title ownership")
+  Assert.equal(App.state.stagedMenu, result.menus[#result.menus], "title stages the exact product menu")
+end
+
+local function finishStartupTitle(result)
+  result.startupTitleReady = true
+  assertStagedStartupMenu(result)
+  for _ = 1, 3 do
+    if App.state.title ~= nil then
+      break
+    end
+    App.update(1 / 30)
+  end
+  Assert.notNil(App.state.title, "title readiness adopts the renderer before skip")
+  App.keypressed("return")
+  for _ = 1, 80 do
+    local metatable = getmetatable(App.state)
+    if metatable == nil or metatable.__index ~= require("app.src.launcher.StartupTitleState") then
+      break
+    end
+    App.update(1 / 30)
+  end
+  Assert.equal(
+    App.state,
+    result.menus[#result.menus],
+    "skip transfers the same staged menu (phase " .. tostring(App.state.phase) .. ", frame " .. tostring(App.state.fadeFrame) .. ")"
+  )
 end
 
 ---@param appBackend fun(): ProducerSourceTree
@@ -839,19 +900,21 @@ function T.failed_game_composition_does_not_change_last_played_preference()
   end)
 end
 
-function T.boot_existing_with_one_ready_version_enters_the_main_menu()
+function T.boot_existing_with_one_ready_version_stages_the_menu_under_startup_title()
   withAppHarness({ dev = false }, function(id)
     return id == "heartgold"
   end, function(result)
     -- Only heartgold is installed and current; the sibling stays out.
     currentOnlyFor("heartgold")
     App._bootExisting()
-    -- The boot gate answers first: readiness continues into the menu.
+    -- The boot gate answers first; startup then stages the menu behind its title.
+    App.update(0.016)
     App.update(0.016)
     Assert.equal(#result.launches, 0, "selecting a version installs the product menu without starting retail")
-    Assert.equal(App.state, result.menus[1])
-    Assert.equal(result.provisionerDisposals, 0, "launch must not dispose its new provisioner")
-    Assert.equal(result.warmups, 1, "menu installation authorizes background completion once")
+    Assert.equal(App.state.phase, "loading", "missing title assets keep the loading presentation visible")
+    Assert.equal(App.state.stagedMenu, result.menus[1], "bootstrap constructs the product menu under title ownership")
+    Assert.equal(result.provisionerDisposals, 0, "staging does not dispose its selected provisioner")
+    Assert.equal(result.warmups, 0, "near-priority prewarm waits until title readiness")
   end)
 end
 
@@ -869,7 +932,9 @@ function T.cancelled_retail_entries_restore_the_product_menu_on_the_same_selecti
     MainMenuComposition.new = function(options)
       local menu = countingState()
       menu.options = options
+      function menu:draw() end
       menus[#menus + 1] = menu
+      result.menus[#result.menus + 1] = menu
       return menu
     end
     package.loaded[compositionPath] = MainMenuComposition
@@ -882,6 +947,7 @@ function T.cancelled_retail_entries_restore_the_product_menu_on_the_same_selecti
       App._bootExisting()
       -- The boot gate answers first: readiness continues into the menu.
       App.update(0.016)
+      finishStartupTitle(result)
       local provisioner = App.provisioner
       local epoch = App.epoch
       local activeState = App.state
@@ -934,6 +1000,7 @@ function T.boot_existing_with_two_ready_versions_uses_the_deterministic_first_ed
     Assert.equal(App.selectedVersionId, "heartgold")
     -- The boot gate answers first: readiness continues into the menu.
     App.update(0.016)
+      finishStartupTitle(result)
     Assert.equal(#result.launches, 0, "selecting a version installs the product menu")
     Assert.equal(result.menus[1].options.versionId, "heartgold")
     Assert.equal(App.state, result.menus[1])
@@ -961,7 +1028,7 @@ function T.completed_import_launches_the_imported_version_through_the_hgss_entry
       App.update(0.016)
       Assert.equal(#result.launches, 0, "import completion installs the product menu only")
       Assert.equal(result.menus[1].options.versionId, "heartgold")
-      Assert.equal(App.state, result.menus[1])
+      finishStartupTitle(result)
     end)
     HgssGame.newFirstPlayCachePreparation = original
     if not ok then
@@ -977,6 +1044,7 @@ function T.shell_exit_mapping_quits_only_for_a_hgss_quit_result()
     App._bootMainMenu({ "heartgold" })
     -- The boot gate answers first: readiness continues into the menu.
     App.update(0.016)
+    finishStartupTitle(result)
     result.menus[1].options.onResult({ kind = "new_game" })
     local launch = assert(result.launches[1])
     launch.onExit({ kind = "continue" })
@@ -1011,6 +1079,7 @@ function T.release_startup_passes_the_release_counter_without_reading_producer_s
       App._bootExisting()
       -- The boot gate answers first: readiness continues into the menu.
       App.update(0.016)
+      finishStartupTitle(result)
       local options = assert(result.selectOptions[1])
       Assert.keySet(options, "development,versionId")
       Assert.equal(options.versionId, "heartgold")
@@ -1043,6 +1112,7 @@ function T.release_startup_selects_the_per_game_release_counter()
       App._bootExisting()
       -- The boot gate answers first: readiness continues into the menu.
       App.update(0.016)
+      finishStartupTitle(result)
       local options = assert(result.selectOptions[1])
       Assert.keySet(options, "development,versionId")
       Assert.equal(options.versionId, "soulsilver")
@@ -1096,9 +1166,11 @@ function T.development_startup_passes_frozen_checkout_selectors_without_scanning
           checkoutRoot,
           "development selection passes the checkout root instead of a digest"
         )
+        finishStartupTitle(result)
         App._bootMainMenu({ "heartgold" })
         -- The boot gate answers first: readiness continues into the menu.
         App.update(0.016)
+        finishStartupTitle(result)
         local second = assert(result.selectOptions[2])
         Assert.equal(checkoutCalls, 0, "no checkout scan happens on the game thread")
         Assert.equal(appBackendCalls, 0)
@@ -1175,48 +1247,26 @@ local function requestedMilestones(requests)
   return names, urgencies
 end
 
--- A fresh import must not reach the menu while first-play preparation is
--- pending: the import transaction frontloads the existing global set plus
--- the initial bedroom closure through production App and preparation
--- composition, with bootstrap ready and everything else pending below.
-function T.fresh_import_waits_for_the_first_play_closure_before_the_menu()
+-- A fresh import stages the menu under the startup title; optional near
+-- work is deferred until the title assets become ready.
+function T.fresh_import_stages_menu_before_near_warmup()
   withAppHarness({ dev = false }, function(id)
     return id == "heartgold"
   end, function(result)
-    local requests = recordServiceRequests(result)
     App._onImported("heartgold")
-    for _ = 1, 3 do
-      App.update(0.016)
-    end
-    Assert.equal(#result.launches, 0, "a fresh import must not launch the menu while first-play preparation is pending")
-    Assert.equal(
-      getmetatable(App.state).__index,
-      CachePreparationState,
-      "the import waits through the visible preparation state"
-    )
-    local names, urgencies = requestedMilestones(requests)
-    Assert.deepEqual(
-      names,
-      { "bootstrap", "field-planning", "field-runtime", "new-game-intro" },
-      "fresh import requests exactly the existing first-play milestone set"
-    )
-    for _, name in ipairs(names) do
-      Assert.equal(urgencies[name], "required", "first-play milestone demand is required urgency")
-    end
-    for _, selector in ipairs(requests) do
-      Assert.isFalse(
-        selector.requestKind == "complete",
-        "mandatory import preparation never requests whole-corpus scope"
-      )
-    end
+    App.update(0.016)
+    assertStagedStartupMenu(result)
+    Assert.isTrue(App.state.initialImport, "the title knows this selection came from import")
+    Assert.equal(result.warmups, 0, "background sweep waits until menu handoff")
+    result.startupTitleReady = true
+    App.update(0.016)
+    Assert.equal(getmetatable(App.state).__index, require("app.src.launcher.StartupTitleState"))
+    Assert.equal(#result.launches, 0, "title readiness does not launch retail")
   end)
 end
 
--- Ordinary selection distinguishes raw-ready from first-play-complete: a
--- raw-ready version without a current attestation enters the same bounded
--- preparation a fresh import uses instead of launching the menu directly.
--- A fresh harness models a process restart: no prior selection survives.
-function T.existing_selection_after_restart_without_a_completion_enters_preparation()
+-- Existing selection opens the title before its optional near coordinator.
+function T.existing_selection_with_no_completion_stages_the_menu_under_title()
   withAppHarness({ dev = false }, function(id)
     return id == "heartgold"
   end, function(result)
@@ -1226,27 +1276,27 @@ function T.existing_selection_after_restart_without_a_completion_enters_preparat
     local original = installFirstPlayFactory(script)
     local ok, err = pcall(function()
       App._bootExisting()
-      -- The boot gate answers first: readiness continues into preparation.
+      -- The boot gate answers first; title readiness has not arrived yet.
       App.update(0.016)
+      assertStagedStartupMenu(result)
+      Assert.equal(script.constructions, nil, "near preparation waits for title readiness")
+      result.startupTitleReady = true
+      App.update(0.016)
+      Assert.equal(script.constructions, 1, "title readiness starts the near coordinator")
     end)
     HgssGame.newFirstPlayCachePreparation = original
     if not ok then
       error(err, 0)
     end
-    Assert.equal(#result.launches, 0, "an incomplete first-play closure never launches the menu directly")
-    Assert.equal(script.constructions, 1, "a restart with no completion prepares again")
-    Assert.equal(
-      getmetatable(App.state).__index,
-      CachePreparationState,
-      "the boot waits through the visible preparation state"
-    )
+    Assert.equal(#result.launches, 0, "title startup does not launch retail")
+    Assert.equal(getmetatable(App.state).__index, require("app.src.launcher.StartupTitleState"))
     Assert.notNil(script.captured.completion, "ordinary preparation carries the durable gateway")
   end)
 end
 
--- A stored but stale attestation prepares again: the current generation
--- ignores it exactly like a missing one.
-function T.existing_selection_with_a_stale_completion_prepares_again()
+-- A stale receipt has no effect on menu admission; readiness still starts
+-- only after the title has loaded.
+function T.existing_selection_with_a_stale_completion_stages_before_warmup()
   withAppHarness({ dev = false }, function(id)
     return id == "heartgold"
   end, function(result)
@@ -1256,21 +1306,25 @@ function T.existing_selection_with_a_stale_completion_prepares_again()
     local original = installFirstPlayFactory(script)
     local ok, err = pcall(function()
       App._bootExisting()
-      -- The boot gate answers first: readiness continues into preparation.
+      -- The boot gate answers first while title assets remain pending.
+      App.update(0.016)
+      assertStagedStartupMenu(result)
+      Assert.equal(script.constructions, nil, "stale receipt does not bypass title readiness")
+      result.startupTitleReady = true
       App.update(0.016)
     end)
     HgssGame.newFirstPlayCachePreparation = original
     if not ok then
       error(err, 0)
     end
-    Assert.equal(#result.launches, 0, "a stale completion never launches the menu directly")
-    Assert.equal(script.constructions, 1, "a stale completion prepares again")
+    Assert.equal(#result.launches, 0, "title startup does not launch retail")
+    Assert.equal(script.constructions, 1, "stale completion enters optional near preparation")
   end)
 end
 
--- Ordinary selection with a current attestation keeps the fast
--- bootstrap/menu path: no first-play preparation is constructed.
-function T.existing_selection_with_a_current_completion_keeps_the_bootstrap_path()
+-- Existing completion state does not bypass the title and needs no duplicate
+-- near coordinator after title assets are ready.
+function T.current_completion_waits_for_title_without_duplicate_warmup()
   withAppHarness({ dev = false }, function(id)
     return id == "heartgold"
   end, function(result)
@@ -1286,23 +1340,47 @@ function T.existing_selection_with_a_current_completion_keeps_the_bootstrap_path
     end
     local ok, err = pcall(function()
       App._bootExisting()
-      -- The boot gate answers first: readiness continues into the menu.
+      -- The boot gate answers first while title assets remain pending.
+      App.update(0.016)
+      assertStagedStartupMenu(result)
+      Assert.equal(factoryCalls, 0, "near preparation waits for title readiness")
+      result.startupTitleReady = true
       App.update(0.016)
     end)
     HgssGame.newFirstPlayCachePreparation = original
     if not ok then
       error(err, 0)
     end
-    Assert.equal(#result.launches, 0, "a completed first-play closure installs the product menu")
+    Assert.equal(#result.launches, 0, "title startup does not launch retail")
     Assert.equal(#result.menus, 1)
-    Assert.equal(factoryCalls, 0, "a current completion never reconstructs first-play preparation")
+    Assert.equal(factoryCalls, 0, "a current completion skips duplicate near preparation")
   end)
 end
 
--- Cancelling first-play preparation retires the selection without
--- publishing: reselecting the same raw-ready version prepares again and
--- the menu cannot launch directly.
-function T.cancelled_first_play_prepares_again_without_publishing()
+-- Cancelling the title retires its selection; reselecting starts a fresh
+-- title handoff without publishing a warmup receipt.
+function T.cancelled_title_retires_selection_without_publishing()
+  withAppHarness({ dev = false }, function(id)
+    return id == "heartgold"
+  end, function(result)
+    App._bootExisting()
+    App.update(0.016)
+    App.update(0.016)
+    assertStagedStartupMenu(result)
+    App.keypressed("escape")
+    Assert.equal(#result.firstPlayPublished, 0, "cancellation never publishes the completion")
+    local selector = App.state
+    Assert.equal(getmetatable(selector).__index, VersionSelectState, "cancellation returns to the version selector")
+    selector.onPick("heartgold")
+    App.update(0.016)
+    assertStagedStartupMenu(result)
+    Assert.equal(#result.firstPlayPublished, 0, "reselection alone publishes nothing")
+  end)
+end
+
+-- The optional near coordinator publishes only after its complete result;
+-- the title remains usable while the coordinator is pending.
+function T.first_play_near_completion_publishes_only_on_success()
   withAppHarness({ dev = false }, function(id)
     return id == "heartgold"
   end, function(result)
@@ -1311,51 +1389,25 @@ function T.cancelled_first_play_prepares_again_without_publishing()
     local script = { ready = false }
     local original = installFirstPlayFactory(script)
     local ok, err = pcall(function()
-      App._onImported("heartgold")
+      App._bootExisting()
       App.update(0.016)
-      Assert.equal(#result.launches, 0, "the menu waits while preparation is pending")
-      Assert.equal(script.constructions, 1, "the fresh import prepares once")
-      App.keypressed("escape")
-      Assert.equal(#result.firstPlayPublished, 0, "cancellation never publishes the completion")
-      local selector = App.state
-      Assert.equal(getmetatable(selector).__index, VersionSelectState, "cancellation returns to the version selector")
-      selector.onPick("heartgold")
+      assertStagedStartupMenu(result)
+      Assert.equal(script.constructions, nil, "near preparation waits until title readiness")
+      result.startupTitleReady = true
       App.update(0.016)
-      Assert.equal(script.constructions, 2, "reselecting the same version prepares again")
-      Assert.equal(#result.launches, 0, "the menu cannot launch directly after a cancel")
-      Assert.equal(#result.firstPlayPublished, 0, "reselection alone publishes nothing")
-    end)
-    HgssGame.newFirstPlayCachePreparation = original
-    if not ok then
-      error(err, 0)
-    end
-  end)
-end
-
--- The completion publishes only after the full closure succeeds: pending
--- preparation publishes nothing, and the success publishes the current
--- generation exactly once before the menu launches on the same epoch.
-function T.first_play_completion_publishes_only_on_success()
-  withAppHarness({ dev = false }, function(id)
-    return id == "heartgold"
-  end, function(result)
-    result.firstPlayCurrent = false
-    result.firstPlayStored = false
-    local script = { ready = false }
-    local original = installFirstPlayFactory(script)
-    local ok, err = pcall(function()
-      App._onImported("heartgold")
-      App.update(0.016)
+      Assert.equal(script.constructions, 1, "title readiness starts near preparation")
       Assert.equal(#result.firstPlayPublished, 0, "pending preparation publishes nothing")
       script.ready = true
       App.update(0.016)
-      Assert.equal(#result.launches, 0, "preparation readiness installs the app menu")
+      Assert.equal(#result.launches, 0, "near preparation never launches retail")
       Assert.equal(#result.menus, 1)
       Assert.deepEqual(
         result.firstPlayPublished,
         { { versionId = "heartgold", generationId = "test-generation" } },
         "success publishes the current generation exactly once"
       )
+      Assert.equal(getmetatable(App.state).__index, require("app.src.launcher.StartupTitleState"))
+      finishStartupTitle(result)
     end)
     HgssGame.newFirstPlayCachePreparation = original
     if not ok then
@@ -1364,11 +1416,9 @@ function T.first_play_completion_publishes_only_on_success()
   end)
 end
 
--- Unknown generation with a stored attestation waits without demands,
--- then transfers and publishes once the controller-derived generation
--- validates it: the full production gateway composition, not a scripted
--- preparation stand-in.
-function T.unknown_generation_waits_without_demands_then_transfers_on_validation()
+-- Unknown generation leaves the title usable and waits without closure
+-- requests; a later validated generation lets the near coordinator publish.
+function T.unknown_generation_waits_without_demands_during_title()
   withAppHarness({ dev = false }, function(id)
     return id == "heartgold"
   end, function(result)
@@ -1377,33 +1427,32 @@ function T.unknown_generation_waits_without_demands_then_transfers_on_validation
     result.firstPlayStored = true
     local requests = {}
     result.service.request = function(_, _, selector)
-      requests[#requests + 1] = selector
+      if selector.name == "new-game-intro" or selector.name == "field-planning" or selector.name == "field-runtime" then
+        requests[#requests + 1] = selector
+      end
     end
     App._bootExisting()
     App.update(0.016)
-    Assert.equal(#result.launches, 0, "an unvalidated completion never launches the menu")
+    assertStagedStartupMenu(result)
+    Assert.equal(#result.launches, 0, "title startup does not launch retail")
     Assert.equal(#requests, 0, "no closure demand issues while the generation is unknown")
-    Assert.equal(getmetatable(App.state).__index, CachePreparationState)
-    Assert.equal(App.state.kind, "first-play")
+    result.startupTitleReady = true
+    App.update(0.016)
+    Assert.equal(getmetatable(App.state).__index, require("app.src.launcher.StartupTitleState"))
     result.cannedGeneration = "test-generation"
     result.firstPlayCurrent = true
     App.update(0.016)
-    Assert.equal(#result.menus, 1, "the validated completion transfers to the app menu")
-    Assert.deepEqual(requests, {
-      { requestKind = "milestone", name = "new-game-intro", urgency = "near" },
-      { requestKind = "milestone", name = "field-planning", urgency = "near" },
-      { requestKind = "milestone", name = "field-runtime", urgency = "near" },
-    }, "menu installation requests its intro prefetch and both field closures")
+    Assert.equal(#result.menus, 1, "the title keeps its staged product menu")
     Assert.deepEqual(
       result.firstPlayPublished,
       { { versionId = "heartgold", generationId = "test-generation" } },
-      "the transfer publishes the validated generation"
+      "the near coordinator publishes the validated generation"
     )
   end)
 end
 
--- A failed preparation latches its error without publishing or launching.
-function T.failed_first_play_never_publishes()
+-- A failed optional coordinator stays off the menu admission path.
+function T.failed_first_play_warmup_does_not_block_title()
   withAppHarness({ dev = false }, function(id)
     return id == "heartgold"
   end, function(result)
@@ -1412,12 +1461,16 @@ function T.failed_first_play_never_publishes()
     local script = { ready = false, failure = "intro milestone failed in the fixture" }
     local original = installFirstPlayFactory(script)
     local ok, err = pcall(function()
-      App._onImported("heartgold")
+      App._bootExisting()
+      App.update(0.016)
+      assertStagedStartupMenu(result)
+      result.startupTitleReady = true
       App.update(0.016)
       App.update(0.016)
-      Assert.equal(#result.launches, 0, "a failed preparation never launches the menu")
-      Assert.equal(#result.firstPlayPublished, 0, "a failed preparation never publishes")
-      Assert.notNil(App.state.error, "the failure surfaces on the preparation state")
+      Assert.equal(#result.launches, 0, "a failed warmup never launches retail")
+      Assert.equal(#result.firstPlayPublished, 0, "a failed warmup never publishes")
+      Assert.notNil(App.startupWarmupError, "the warmup failure is retained for diagnostics")
+      finishStartupTitle(result)
     end)
     HgssGame.newFirstPlayCachePreparation = original
     if not ok then
@@ -1426,25 +1479,27 @@ function T.failed_first_play_never_publishes()
   end)
 end
 
--- One provisioner epoch spans mandatory preparation and gameplay: the
--- import selects once, never disposes or reselects before launch, and the
--- game inherits the preparation host.
-function T.fresh_import_hands_the_same_provisioner_epoch_to_the_game()
+-- The staged menu and near coordinator share the selected provisioner
+-- epoch, which the menu passes to the game launch.
+function T.fresh_import_menu_reuses_the_near_warmup_epoch()
   withAppHarness({ dev = false }, function(id)
     return id == "heartgold"
   end, function(result)
+    result.firstPlayCurrent = false
+    result.firstPlayStored = false
     local script = { ready = false }
     local original = installFirstPlayFactory(script)
     local ok, err = pcall(function()
       App._onImported("heartgold")
-      Assert.equal(#result.launches, 0, "the menu waits while first-play preparation is pending")
+      App.update(0.016)
+      assertStagedStartupMenu(result)
       local epoch = assert(App.epoch, "fresh import borrows a controller epoch")
       local selections = #result.selectOptions
-      script.ready = true
-      -- The boot gate answers first, then the ready closure installs the menu.
+      Assert.equal(script.constructions, nil, "near preparation waits for title readiness")
+      result.startupTitleReady = true
       App.update(0.016)
-      App.update(0.016)
-      Assert.equal(#result.launches, 0, "preparation readiness installs the app menu")
+      Assert.equal(script.constructions, 1, "title readiness starts the coordinator")
+      finishStartupTitle(result)
       Assert.equal(#result.menus, 1)
       result.menus[1].options.onResult({ kind = "new_game" })
       local launch = assert(result.launches[1], "the menu routes New Game to an explicit retail entry")
@@ -1455,9 +1510,9 @@ function T.fresh_import_hands_the_same_provisioner_epoch_to_the_game()
       Assert.equal(
         launch.derivedAssets,
         script.captured.derivedAssets,
-        "the game inherits the host preparation compiled against"
+        "the game inherits the same selected derived host"
       )
-      Assert.equal(script.captured.versionId, "heartgold", "preparation serves the imported version")
+      Assert.equal(script.captured.versionId, "heartgold", "near preparation serves the imported version")
     end)
     HgssGame.newFirstPlayCachePreparation = original
     if not ok then
@@ -1466,31 +1521,37 @@ function T.fresh_import_hands_the_same_provisioner_epoch_to_the_game()
   end)
 end
 
--- Mandatory import work never races whole-corpus warmup: no sweep
--- authorizes before the menu, and menu installation authorizes it exactly
--- once.
-function T.fresh_import_preparation_requests_no_corpus_work_or_early_sweep()
+-- The title starts near work only after readiness; the menu handoff starts
+-- the one-time corpus sweep.
+function T.fresh_import_defers_near_work_until_title_and_sweep_until_menu()
   withAppHarness({ dev = false }, function(id)
     return id == "heartgold"
   end, function(result)
+    result.firstPlayCurrent = false
+    result.firstPlayStored = false
     local requests = recordServiceRequests(result)
     local script = { ready = false }
     local original = installFirstPlayFactory(script)
     local ok, err = pcall(function()
       App._onImported("heartgold")
       App.update(0.016)
-      Assert.equal(result.warmups, 0, "no background sweep authorizes before the menu launches")
+      assertStagedStartupMenu(result)
+      Assert.equal(script.constructions, nil, "near coordinator waits for title readiness")
+      Assert.equal(result.warmups, 0, "background sweep waits until menu handoff")
       for _, selector in ipairs(requests) do
         Assert.isFalse(
           selector.requestKind == "complete",
           "mandatory import preparation never requests whole-corpus scope"
         )
       end
-      script.ready = true
+      result.startupTitleReady = true
       App.update(0.016)
-      Assert.equal(#result.launches, 0, "preparation readiness installs the app menu")
+      Assert.equal(script.constructions, 1, "title readiness starts near preparation")
+      Assert.equal(#result.launches, 0, "title readiness does not launch retail")
+      Assert.equal(result.warmups, 0, "near preparation does not authorize corpus sweep")
+      finishStartupTitle(result)
       Assert.equal(#result.menus, 1)
-      Assert.equal(result.warmups, 1, "menu installation authorizes background completion exactly once")
+      Assert.equal(result.warmups, 1, "menu handoff authorizes background completion exactly once")
       App.update(0.016)
       Assert.equal(result.warmups, 1, "sweep authorization never repeats")
     end)
@@ -1501,88 +1562,26 @@ function T.fresh_import_preparation_requests_no_corpus_work_or_early_sweep()
   end)
 end
 
--- A fresh import keeps the import visual surface through mandatory
--- first-play preparation: the handoff captures the final importer display
--- facts, the wait renders the import continuation with that identity, and
--- the menu still installs only on readiness. An ordinary stale-cache
--- first-play wait carries no continuation and keeps the generic surface.
-function T.fresh_import_first_play_stays_on_the_import_surface_until_the_menu()
+-- A fresh import uses the title loading surface until its title assets are
+-- available, with the product menu already staged underneath.
+function T.fresh_import_title_loading_keeps_the_staged_menu()
   withAppHarness({ dev = false }, function(id)
     return id == "heartgold"
   end, function(result)
-    result.firstPlayCurrent = false
-    result.firstPlayStored = false
-    local script = { ready = false }
-    local original = installFirstPlayFactory(script)
-    local ok, err = pcall(function()
-      -- Ordinary stale-cache first-play first: no importer identity exists,
-      -- so the wait must keep the generic preparation surface. The boot
-      -- gate answers first: readiness continues into preparation.
-      App._selectVersion("heartgold")
-      App.update(0.016)
-      Assert.equal(
-        getmetatable(App.state).__index,
-        CachePreparationState,
-        "the stale-cache wait still uses the preparation state"
-      )
-      Assert.equal(App.state.kind, "first-play", "the stale-cache wait still gates on the first-play closure")
-      Assert.isTrue(App.state.importContinuation == nil, "an ordinary stale-cache wait carries no import display facts")
-      -- Fresh import: the completed importer identity crosses the handoff
-      -- as display data while the importer itself is released.
-      App.saveDir = "test-save-root"
-      App.importer = {
-        status = function()
-          return { state = "complete", sourceName = "dropped.nds", displayName = "HeartGold" }
-        end,
-      }
-      App._onImported("heartgold")
-      Assert.isTrue(App.importer == nil, "the completed importer is released at the handoff")
-      -- The boot gate answers first: readiness continues into preparation.
-      App.update(0.016)
-      Assert.equal(
-        getmetatable(App.state).__index,
-        CachePreparationState,
-        "readiness still waits through the preparation state"
-      )
-      Assert.equal(App.state.kind, "first-play", "the handoff still waits on the first-play closure")
-      local continuation =
-        assert(App.state.importContinuation, "the fresh-import wait carries the captured import display facts")
-      Assert.equal(continuation.saveDir, "test-save-root", "the continuation keeps the save root")
-      local capturedSource = continuation.sourceName
-      if capturedSource == nil and continuation.status ~= nil then
-        capturedSource = continuation.status.sourceName
-      end
-      Assert.equal(capturedSource, "dropped.nds", "the continuation keeps the imported file identity")
-      Assert.equal(
-        type(ImportState.renderContinuation),
-        "function",
-        "the import surface owns a stateless continuation renderer"
-      )
-      local rendered = {}
-      local originalContinuation = ImportState.renderContinuation
-      ImportState.renderContinuation = function(facts, preparationStatus, failure)
-        rendered[#rendered + 1] = { facts = facts, preparationStatus = preparationStatus, failure = failure }
-      end
-      local drawOk, drawErr = pcall(function()
-        App.state:draw()
-      end)
-      ImportState.renderContinuation = originalContinuation
-      if not drawOk then
-        error(drawErr, 0)
-      end
-      Assert.equal(#rendered, 1, "the fresh-import wait draws the import continuation")
-      -- Readiness still gates the menu: pending work launches nothing, and
-      -- the ready closure installs the menu exactly once.
-      App.update(0.016)
-      Assert.equal(#result.launches, 0, "the menu waits while first-play preparation is pending")
-      script.ready = true
-      App.update(0.016)
-      Assert.equal(#result.menus, 1, "preparation readiness still installs the menu")
-    end)
-    HgssGame.newFirstPlayCachePreparation = original
-    if not ok then
-      error(err, 0)
-    end
+    App.saveDir = "test-save-root"
+    App.importer = {
+      status = function()
+        return { state = "complete", sourceName = "dropped.nds", displayName = "HeartGold" }
+      end,
+    }
+    App._onImported("heartgold")
+    Assert.isTrue(App.importer == nil, "the completed importer is released at handoff")
+    App.update(0.016)
+    assertStagedStartupMenu(result)
+    Assert.isTrue(App.state.initialImport, "the startup title retains the import context")
+    Assert.equal(App.state.phase, "loading", "title readiness keeps the loading surface visible")
+    Assert.equal(#result.launches, 0, "the title never launches retail")
+    finishStartupTitle(result)
   end)
 end
 
@@ -1596,17 +1595,19 @@ function T.menu_installation_requests_intro_and_field_closures_at_near_urgency()
     App._bootExisting()
     -- The boot gate answers first: readiness continues into the menu.
     App.update(0.016)
+    finishStartupTitle(result)
     Assert.equal(#result.menus, 1, "selection installs the product menu")
     local names, urgencies = requestedMilestones(requests)
     Assert.deepEqual(
       names,
-      { "bootstrap", "field-planning", "field-runtime", "new-game-intro" },
+      { "bootstrap", "field-planning", "field-runtime", "new-game-intro", "startup-loader", "startup-title" },
       "menu installation demands the intro and both field closures alongside the bootstrap check"
     )
     for _, name in ipairs({ "new-game-intro", "field-planning", "field-runtime" }) do
       Assert.equal(urgencies[name], "near", "idle menu demand stays speculative for " .. name)
     end
     Assert.equal(urgencies.bootstrap, "required", "the bootstrap check stays mandatory")
+    Assert.equal(urgencies["startup-title"], "required", "the title asset request stays mandatory")
     Assert.equal(result.warmups, 1, "menu installation still authorizes background completion once")
   end)
 end
@@ -1642,8 +1643,8 @@ function T.boot_existing_with_a_current_cache_and_no_source_skips_the_import()
       -- The boot gate answers first: readiness continues into the menu.
       App.update(0.016)
       Assert.isNil(App.importer, "a current derived cache never prompts for its ROM")
-      Assert.equal(App.state, result.menus[1], "boot enters the installed menu without source work")
-      Assert.equal(result.warmups, 1, "menu installation still authorizes background completion once")
+      assertStagedStartupMenu(result)
+      Assert.equal(result.warmups, 0, "near-priority preparation waits until title readiness")
       Assert.equal(#result.launches, 0, "selecting a version installs the menu without starting retail")
     end)
   end)

@@ -14,6 +14,7 @@ local ImportState = require("app.src.launcher.ImportState")
 local VersionSelectState = require("app.src.launcher.VersionSelectState")
 local NativeRomPicker = require("app.src.launcher.NativeRomPicker")
 local EditionPreference = require("app.src.launcher.EditionPreference")
+local StartupTitleState = require("app.src.launcher.StartupTitleState")
 
 ---@class App
 ---@field opts AppOptions
@@ -28,6 +29,10 @@ local EditionPreference = require("app.src.launcher.EditionPreference")
 ---@field _bootBlockedVersionId string? version a blocked boot refuses to switch away from
 ---@field importPickerError string? latest recoverable picker or preference detail
 ---@field preferenceError string? last-played preference write diagnostic
+---@field _startupWarmup { epoch: integer, versionId: string, preparation: table<string, function> }?|nil
+---@field startupWarmupError string? background first-play diagnostic, never a menu gate
+---@field startupAudio table<string, function>? optional App-owned audio event callbacks
+---@field _swallowedPointers table<string, boolean> pointer releases owned by startup during a transfer
 ---@field drawableWidth number?
 ---@field drawableHeight number?
 ---@field pixelRatio number?
@@ -85,6 +90,11 @@ end
 -- Retires the selected source interest without joining controller work.
 -- The process service is reused; stale results cannot publish afterwards.
 function App._retireSelection()
+  local warmup = App._startupWarmup
+  App._startupWarmup = nil
+  if warmup ~= nil then
+    warmup.preparation:dispose()
+  end
   local provisioner = App.provisioner
   App.provisioner = nil
   if provisioner then
@@ -93,7 +103,8 @@ function App._retireSelection()
 end
 
 ---@param versionId string
-local function installMenu(versionId)
+---@return table<string, unknown> staged MainMenuState
+local function stageMenu(versionId)
   local ok, menuOrError = pcall(MainMenuComposition.new, {
     versionId = versionId,
     width = App.drawableWidth,
@@ -129,23 +140,90 @@ local function installMenu(versionId)
     end,
   })
   if not ok then
-    App._showVersionSelector()
     error(menuOrError, 0)
   end
-  App.setState(assert(menuOrError))
+  return assert(menuOrError)
+end
+
+---@param versionId string
+---@return table<string, unknown> fully constructed menu, still owned by caller
+function App._stageMenu(versionId)
+  return stageMenu(versionId)
+end
+
+local function installMenu(versionId)
+  local ok, menu = pcall(stageMenu, versionId)
+  if not ok then
+    App._showVersionSelector()
+    error(menu, 0)
+  end
+  App.setState(assert(menu))
 end
 
 -- Installs the selected-version product menu and starts the one-time
 -- speculative work that is useful while it remains open.
 ---@param versionId string
-function App._launchMenuWithProvisioner(versionId)
+---@param stagedMenu table<string, unknown>?
+function App._launchMenuWithProvisioner(versionId, stagedMenu)
   local provisioner = assert(App.provisioner, "selection has no provisioner")
-  installMenu(versionId)
+  if stagedMenu == nil then
+    installMenu(versionId)
+  else
+    assert(type(stagedMenu) == "table" and type(stagedMenu.dispose) == "function")
+    App.setState(stagedMenu)
+  end
   local host = provisioner:gameHost()
   host.requestMilestone("new-game-intro", "near")
   host.requestMilestone("field-planning", "near")
   host.requestMilestone("field-runtime", "near")
   provisioner:startBackgroundWarmup()
+end
+
+-- Optional near-priority preparation runs beside the startup presentation;
+-- only the coordinator's complete answer can publish its durable receipt.
+---@param versionId string
+---@param epoch integer
+function App._maybeStartFirstPlayWarmup(versionId, epoch)
+  if App._startupWarmup ~= nil or App.epoch ~= epoch or App.selectedVersionId ~= versionId then
+    return
+  end
+  local generation = App._firstPlayGeneration(versionId)
+  if generation ~= nil and FirstPlayCompletion.isCurrent(versionId, generation) then
+    return
+  end
+  local provisioner = App.provisioner
+  if provisioner == nil then
+    return
+  end
+  local preparation = HgssGame.newFirstPlayCachePreparation({
+    versionId = versionId,
+    derivedAssets = provisioner:gameHost(),
+    completion = App._firstPlayGateway(versionId),
+    urgency = "near",
+  })
+  App._startupWarmup = { epoch = epoch, versionId = versionId, preparation = preparation }
+end
+
+function App._updateStartupWarmup()
+  local warmup = App._startupWarmup
+  if warmup == nil then
+    return
+  end
+  if warmup.epoch ~= App.epoch or warmup.versionId ~= App.selectedVersionId then
+    warmup.preparation:dispose()
+    App._startupWarmup = nil
+    return
+  end
+  local ok, ready, failure = pcall(warmup.preparation.poll, warmup.preparation)
+  if not ok or failure ~= nil then
+    App.startupWarmupError = tostring(ok and failure or ready)
+    warmup.preparation:dispose()
+    App._startupWarmup = nil
+  elseif ready then
+    App._publishFirstPlay(warmup.versionId)
+    warmup.preparation:dispose()
+    App._startupWarmup = nil
+  end
 end
 
 -- Cancellation restores only the menu state; the current selection and its
@@ -356,71 +434,43 @@ end
 function App._continueSelectedVersion(versionId, options)
   local epoch = App.epoch
   local provisioner = assert(App.provisioner, "boot continuation needs the selected provisioner")
-  local host = provisioner:gameHost()
   local freshImport = options ~= nil and options.freshImport == true
-  if not freshImport and FirstPlayCompletion.isCurrent(versionId, App._firstPlayGeneration(versionId)) then
-    local checkOk, ready = pcall(host.requestMilestone, "bootstrap", "required")
-    if checkOk and ready then
-      App._launchMenuWithProvisioner(versionId)
-      return
-    end
-    -- A pending bootstrap waits visibly; a thrown readiness check is latched
-    -- as the preparation state's visible error on its first update.
-    App.setState(CachePreparationState.new({
-      kind = "bootstrap",
-      epoch = epoch,
-      provisioner = host,
-      isCurrent = function(selected)
-        return App.epoch == selected
-      end,
-      onReady = function()
-        App._launchMenuWithProvisioner(versionId)
-      end,
-      onCancel = function()
-        App._showVersionSelector()
-      end,
-    }))
-    return
-  end
-  -- One provisioner epoch owns the mandatory preparation and the
-  -- launched game: no retirement or reselection happens between them.
-  -- The fresh-import path always compiles the closure (a new version has
-  -- no attestation yet) and carries no gateway; the ordinary path carries
-  -- the durable gateway so
-  -- preparation fast-transfers once the controller-derived generation
-  -- validates a stored attestation instead of recompiling the closure.
-  local gateway = nil
-  if not freshImport then
-    gateway = App._firstPlayGateway(versionId)
-  end
-  local preparation = HgssGame.newFirstPlayCachePreparation({
+  local width, height = love.graphics.getDimensions()
+  App.setState(StartupTitleState.new({
     versionId = versionId,
-    derivedAssets = host,
-    completion = gateway,
-  })
-  ---@type CachePreparationOptions
-  local waitOptions = {
-    kind = "first-play",
     epoch = epoch,
-    preparation = preparation,
-    provisioner = host,
+    derivedAssets = provisioner:gameHost(),
+    width = width,
+    height = height,
+    initialImport = freshImport,
+    audio = App.startupAudio,
     isCurrent = function(selected)
-      return App.epoch == selected
+      return App.epoch == selected and App.selectedVersionId == versionId
     end,
-    onReady = function()
-      App._publishFirstPlay(versionId)
-      App._launchMenuWithProvisioner(versionId)
+    stageMenu = function()
+      return App._stageMenu(versionId)
+    end,
+    onFinished = function(menu)
+      if App.epoch == epoch and App.selectedVersionId == versionId then
+        App._launchMenuWithProvisioner(versionId, menu)
+      else
+        menu:dispose()
+      end
+    end,
+    onSwitchEdition = function(otherVersionId)
+      if App.epoch == epoch and App.selectedVersionId == versionId then
+        App._switchEdition(otherVersionId)
+      end
     end,
     onCancel = function()
-      App._showVersionSelector()
+      if App.epoch == epoch and App.selectedVersionId == versionId then
+        App._showVersionSelector()
+      end
     end,
-  }
-  -- Only a fresh import carries the captured import display facts: the
-  -- ordinary stale-cache wait keeps the generic preparation surface.
-  if freshImport and options ~= nil and options.importContinuation ~= nil then
-    waitOptions.importContinuation = options.importContinuation
-  end
-  App.setState(CachePreparationState.new(waitOptions))
+    onTitleReady = function()
+      App._maybeStartFirstPlayWarmup(versionId, epoch)
+    end,
+  }))
 end
 
 function App.load(opts)
@@ -433,9 +483,12 @@ function App.load(opts)
   App.epoch = 0
   App.pendingQuiesce = nil
   App.selectedVersionId = nil
+  App._swallowedPointers = {}
   App._rebindVersionId = nil
   App._bootBlockedVersionId = nil
   App.importPickerError = nil
+  App._startupWarmup = nil
+  App.startupWarmupError = nil
   App.setState(nil)
   love.graphics.setBackgroundColor(unpack(WindowConfig.BACKGROUND_COLOR))
   App.saveDir = love.filesystem.getSaveDirectory()
@@ -743,6 +796,7 @@ function App.update(dt)
   if App.service then
     App.service:update()
   end
+  App._updateStartupWarmup()
   if App.state and App.state.update then
     App.state:update(dt)
   end
@@ -839,8 +893,13 @@ end
 
 function App.mousepressed(x, y, button, istouch, presses)
   App._syncDrawableSize()
-  if App.state and App.state.mousepressed then
-    App.state:mousepressed(x, y, button, istouch, presses)
+  local state = App.state
+  if state and state.mousepressed then
+    state:mousepressed(x, y, button, istouch, presses)
+    if getmetatable(state) == StartupTitleState and state.canceledPointers["mouse:" .. tostring(button)] then
+      App._swallowedPointers = App._swallowedPointers or {}
+      App._swallowedPointers["mouse:" .. tostring(button)] = true
+    end
   end
 end
 
@@ -853,6 +912,11 @@ end
 
 function App.mousereleased(x, y, button, istouch, presses)
   App._syncDrawableSize()
+  local pointerId = "mouse:" .. tostring(button)
+  if App._swallowedPointers ~= nil and App._swallowedPointers[pointerId] then
+    App._swallowedPointers[pointerId] = nil
+    return
+  end
   if App.state and App.state.mousereleased then
     App.state:mousereleased(x, y, button, istouch, presses)
   end
@@ -866,8 +930,13 @@ end
 
 function App.touchpressed(id, x, y, dx, dy, pressure)
   App._syncDrawableSize()
-  if App.state and App.state.touchpressed then
-    App.state:touchpressed(id, x, y, dx, dy, pressure)
+  local state = App.state
+  if state and state.touchpressed then
+    state:touchpressed(id, x, y, dx, dy, pressure)
+    if getmetatable(state) == StartupTitleState and state.canceledPointers["touch:" .. tostring(id)] then
+      App._swallowedPointers = App._swallowedPointers or {}
+      App._swallowedPointers["touch:" .. tostring(id)] = true
+    end
   end
 end
 
@@ -880,6 +949,11 @@ end
 
 function App.touchreleased(id, x, y, dx, dy, pressure)
   App._syncDrawableSize()
+  local pointerId = "touch:" .. tostring(id)
+  if App._swallowedPointers ~= nil and App._swallowedPointers[pointerId] then
+    App._swallowedPointers[pointerId] = nil
+    return
+  end
   if App.state and App.state.touchreleased then
     App.state:touchreleased(id, x, y, dx, dy, pressure)
   end
@@ -892,6 +966,9 @@ function App.textinput(text)
 end
 
 function App.focus(focused)
+  if not focused then
+    App._swallowedPointers = {}
+  end
   if App.state and App.state.focus then
     App.state:focus(focused)
   end

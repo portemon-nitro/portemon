@@ -10,6 +10,8 @@ local MainMenuComposition = require("app.src.mainmenu.MainMenuComposition")
 local RomImporter = require("romdump.src.source.RomImporter")
 local FirstPlayCompletion = require("romdump.src.FirstPlayCompletion")
 local ProducerFingerprint = require("romdump.src.ProducerFingerprint")
+local StartupTitleState = require("app.src.launcher.StartupTitleState")
+local FakeStartupTitleState = require("tests.support.FakeStartupTitleState")
 
 local T = {
   metadata = {
@@ -26,6 +28,7 @@ local function withApp(fn)
   local originalOpts = App.opts
   local originalNew = HgssGame.new
   local originalMenuNew = MainMenuComposition.new
+  local originalTitleNew = StartupTitleState.new
   local originalReady = RomImporter.isReady
   local originalDimensions = love.graphics.getDimensions
   local originalQuit = love.event.quit
@@ -88,6 +91,7 @@ local function withApp(fn)
     result.menuOptions = options
     return { dispose = function() end }
   end
+  StartupTitleState.new = FakeStartupTitleState.new
 
   local ok, err = pcall(fn, result)
 
@@ -98,6 +102,7 @@ local function withApp(fn)
   App.opts = originalOpts
   HgssGame.new = originalNew
   MainMenuComposition.new = originalMenuNew
+  StartupTitleState.new = originalTitleNew
   RomImporter.isReady = originalReady
   FirstPlayCompletion.isCurrent = originalIsCurrent
   FirstPlayCompletion.hasStored = originalHasStored
@@ -138,6 +143,7 @@ T.tests["the selected game receives only the semantic provisioning host"] = func
     function service:retire(_) end
     App.service = service
     App._bootMainMenu({ "heartgold" })
+    App.update(SourceTick.DT)
     App.update(SourceTick.DT)
     Assert.equal(#result.launches, 0, "selection installs the product menu before launching retail")
     local menuOptions = assert(result.menuOptions)
