@@ -633,4 +633,74 @@ function T.unknown_effect_image_keys_fail_loudly_without_substitutes()
   assets:dispose()
 end
 
+-- Active blend coefficients reach battler facts as slot-scoped alpha:
+-- the battler whose sprite-context slot appears in the effective patch
+-- takes clamp(EVA, 0, 16) / 16 while unmatched battlers keep base
+-- alpha, and removing the patch restores every fact. Slots follow
+-- retail battler order through sorted position order within each side,
+-- so the second player-side battler binds slot 2 in doubles.
+function T.blend_coefficients_map_to_slot_scoped_battler_alpha()
+  local BattleScreenState = require("game.hgss.src.battle.BattleScreenState")
+  local screen = BattleScreenState.new({
+    launchId = "blend-mapping-probe",
+    manifest = ManifestFixture.manifest(),
+    model = BattlePresentationModel,
+    submit = function(_)
+      return true
+    end,
+    measureDisplay = function()
+      return { width = 256, height = 384, pixelRatio = 1, signature = "blend-mapping-probe" }
+    end,
+    assets = {
+      prepare = function(_)
+        return true
+      end,
+      drawable = function(_)
+        return nil
+      end,
+      release = function(_, _) end,
+    },
+    text = {},
+    windows = {},
+    audio = {
+      play = function(_)
+        return true
+      end,
+    },
+  })
+  screen._timeline:reset({
+    own = {
+      { combatant = 1, activation = 1, side = 1, position = 0, active = true },
+      { combatant = 4, activation = 4, side = 1, position = 1, active = true },
+    },
+    foes = {
+      { combatant = 2, activation = 2, side = 2, position = 2, active = true },
+      { combatant = 3, activation = 3, side = 2, position = 3, active = true },
+    },
+  })
+  local owner = {}
+  screen._scene:applyTaskScalarPatch(owner, {
+    blendCoefficientA = 8,
+    blendCoefficientB = 8,
+    spriteSlots = { "sprite-context-slot-1", "sprite-context-slot-2" },
+  })
+  local byCombatant = {}
+  for _, battler in ipairs(screen:_snapshot().battlers) do
+    byCombatant[battler.combatant] = battler
+  end
+  Assert.equal(byCombatant[2].alpha, 0.5, "the foe in the first patched slot fades to half")
+  Assert.equal(byCombatant[4].alpha, 0.5, "the second ally in the other patched slot fades to half")
+  Assert.isNil(byCombatant[1].alpha, "the unpatched lead ally keeps base alpha")
+  Assert.isNil(byCombatant[3].alpha, "the unpatched second foe keeps base alpha")
+  screen._scene:removeTaskScalarPatch(owner)
+  local restored = {}
+  for _, battler in ipairs(screen:_snapshot().battlers) do
+    restored[battler.combatant] = battler
+  end
+  for combatant, battler in pairs(restored) do
+    Assert.isNil(battler.alpha, "combatant " .. tostring(combatant) .. " restores base alpha without a patch")
+  end
+  screen:dispose()
+end
+
 return { tests = T }

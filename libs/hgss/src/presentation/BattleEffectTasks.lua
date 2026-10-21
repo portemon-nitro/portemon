@@ -2633,8 +2633,9 @@ BattleBlendCoefficientTask.__index = BattleBlendCoefficientTask
 -- pairs interpolate linearly over the compiled duration and land in
 -- the task-owned register overlay the scene carries for source blend
 -- hardware. No invented pixels: the register values are the effect.
--- Known limitation: no renderer consumes the scalar overlay yet, so this
--- task proves coefficient interpolation and lifecycle, not visible pixels.
+-- Completion holds the final pair the way hardware holds BLDALPHA until
+-- teardown or reset overwrites it; the fact-enrichment layer consumes
+-- the overlay as per-sprite alpha, and cancel/dispose still restore.
 ---@param kind string task kind under construction
 ---@param args table<string, unknown> instruction-derived construction arguments
 ---@param services table<string, unknown> scene, audio, and resource collaborators
@@ -2718,7 +2719,6 @@ function BattleBlendCoefficientTask:stepSourceTick(tick)
   end
   if self._ticks >= self._duration then
     self._state = "complete"
-    teardownCoefficientBlend(self)
   end
 end
 

@@ -26,6 +26,8 @@
 ---@field _pictureStates table<string, { base: table<string, unknown>, current: table<string, unknown>, animation?: table<string, unknown> }> activation-scoped appearance, transform and animation snapshot
 ---@field _taskPicturePatches table<string, { owner: integer|table<string, unknown>, patch: table<string, unknown> }> task-owned transient picture overlays by activation
 ---@field _taskScalarPatches table<table<string, unknown>, table<string, unknown>> task-owned transient hardware register overlays by owning task
+---@field _taskScalarPatchClock integer publication order behind newest-overlay reads
+---@field _taskScalarPatchOrder table<table<string, unknown>, integer> publication order by owning task
 ---@field _gaugeTasks table<string, table<string, unknown>> source-ticked displayed gauge tasks
 ---@field _healthBoxModes table<string, { sideType: integer, mode: string }> double-player native health-box mode by activation
 ---@field _effects table<integer, { id: integer, sourceKey: string, age: integer, picture?: table<string, unknown> }> live transient effect records
@@ -82,6 +84,8 @@ function BattleScene.new()
     _pictureStates = {},
     _taskPicturePatches = {},
     _taskScalarPatches = {},
+    _taskScalarPatchClock = 0,
+    _taskScalarPatchOrder = {},
     _gaugeTasks = {},
     _healthBoxModes = {},
     _effects = {},
@@ -878,6 +882,8 @@ function BattleScene:applyTaskScalarPatch(owner, patch)
   )
   assert(type(patch) == "table", "scalar overlays read source register values")
   self._taskScalarPatches[owner] = checkedScalarPatch(patch)
+  self._taskScalarPatchClock = self._taskScalarPatchClock + 1
+  self._taskScalarPatchOrder[owner] = self._taskScalarPatchClock
 end
 
 -- Removes one task-owned register overlay only while the same task
@@ -892,6 +898,7 @@ function BattleScene:removeTaskScalarPatch(owner)
     return
   end
   self._taskScalarPatches[owner] = nil
+  self._taskScalarPatchOrder[owner] = nil
 end
 
 -- Returns a detached copy of one task-owned register overlay, if one is
@@ -905,6 +912,53 @@ function BattleScene:taskScalarPatch(owner)
     return nil
   end
   return checkedScalarPatch(patch)
+end
+
+-- Reports the effective blend coefficients behind the newest active
+-- scalar patch carrying both coefficient channels, or nil when no
+-- blend overlay is live. Hardware holds one BLDALPHA value regardless
+-- of which task wrote it last, so the newest publication wins and
+-- per-owner lifecycle (apply/remove/teardown) stays untouched.
+---@return table<string, unknown>? detached effective blend register view
+function BattleScene:blendCoefficients()
+  assert(not self._released, "released scenes expose no blend coefficients")
+  local newest = nil
+  local newestOrder = nil
+  for owner, patch in pairs(self._taskScalarPatches) do
+    if
+      type(patch) == "table"
+      and type(patch.blendCoefficientA) == "number"
+      and type(patch.blendCoefficientB) == "number"
+    then
+      local order = self._taskScalarPatchOrder[owner]
+      if newest == nil or (type(order) == "number" and (newestOrder == nil or order > newestOrder)) then
+        newest = patch
+        newestOrder = order
+      end
+    end
+  end
+  if newest == nil then
+    return nil
+  end
+  return checkedScalarPatch(newest)
+end
+
+-- Drops every active blend-coefficient overlay while leaving unrelated
+-- register overlays alone. This is the homologue of the retail blend
+-- reset for this task kind: render facts fall back to base alpha until
+-- the next blend publishes.
+function BattleScene:resetBlendCoefficients()
+  assert(not self._released, "released scenes reset no blend coefficients")
+  for owner, patch in pairs(self._taskScalarPatches) do
+    if
+      type(patch) == "table"
+      and type(patch.blendCoefficientA) == "number"
+      and type(patch.blendCoefficientB) == "number"
+    then
+      self._taskScalarPatches[owner] = nil
+      self._taskScalarPatchOrder[owner] = nil
+    end
+  end
 end
 
 -- Returns a detached per-activation presentation view, if one is active.
@@ -1848,6 +1902,8 @@ function BattleScene:release()
   self._pictureStates = {}
   self._taskPicturePatches = {}
   self._taskScalarPatches = {}
+  self._taskScalarPatchClock = 0
+  self._taskScalarPatchOrder = {}
   self._gaugeTasks = {}
   self._healthBoxModes = {}
 end

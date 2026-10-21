@@ -1466,8 +1466,12 @@ function T.blend_alpha_coefficients_interpolate_and_release()
     task:stepSourceTick({ tick = 1 })
   end
   Assert.equal(task:status(), "complete", "the blend completes at its compiled duration")
-  Assert.isNil(scene:taskScalarPatch(task), "completion releases the owned register state")
+  local held = scene:taskScalarPatch(task)
+  Assert.isTrue(held ~= nil, "completion holds the final register state instead of restoring")
+  Assert.equal(held.blendCoefficientA, 100, "the held sprite weight reaches its compiled target")
+  Assert.equal(held.blendCoefficientB, 200, "the held background weight reaches its compiled target")
   task:dispose()
+  Assert.isNil(scene:taskScalarPatch(task), "disposal releases the owned register state")
   Assert.equal(#journal.released, #journal.acquired, "the blend stages no leases")
 end
 

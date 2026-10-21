@@ -955,10 +955,55 @@ local function sceneSlotOrders(battlers)
   return foeOrder, allyOrder
 end
 
+-- Applies the effective blend-coefficient overlay to one battler: when
+-- the battler's sprite-context slot appears in the active patch, the
+-- per-item alpha takes the clamped sprite weight, exactly what the
+-- picture pass already consumes. Retail EVA is the sprite weight
+-- against the background at nominal full-strength 16, so
+-- alpha = clamp(EVA, 0, 16) / 16. EVB weights the background plane the
+-- composite always draws first and BLDCNT plane masks have no pixel
+-- expression for this task kind, so both stay out of the mapping.
+-- Sprite-context slots follow retail battler order: slot 0 names the
+-- first player-side battler, slot 1 the first foe-side battler, slot 2
+-- the second player-side battler, slot 3 the second foe-side battler.
+-- Left/right resolves by sorted position order within the side, the
+-- same order the slot geometry path trusts.
+---@param battler table<string, unknown> displayed battler fact under blending
+---@param order integer[] canonical claimed positions of the battler side in slot order
+---@param blendSlots table<string, boolean> active sprite-context slot names
+---@param coefficients table<string, unknown> effective blend register view
+local function applyBlendAlpha(battler, order, blendSlots, coefficients)
+  local sideBit = battler.side == 1 and 0 or 1
+  for index, slot in ipairs(order) do
+    if slot == battler.position then
+      local name = "sprite-context-slot-" .. ((index - 1) * 2 + sideBit)
+      if blendSlots[name] == true then
+        local eva = coefficients.blendCoefficientA
+        assert(type(eva) == "number", "blend overlays carry a numeric sprite weight")
+        if eva < 0 then
+          eva = 0
+        elseif eva > 16 then
+          eva = 16
+        end
+        battler.alpha = eva / 16
+      end
+      return
+    end
+  end
+end
+
 ---@param self BattleScreenState
 ---@param battlers table<integer, table<string, unknown>> displayed battler facts under enriching
 local function enrichScene(self, battlers)
   local foeOrder, allyOrder = sceneSlotOrders(battlers)
+  local coefficients = self._scene:blendCoefficients()
+  local blendSlots = nil
+  if coefficients ~= nil and type(coefficients.spriteSlots) == "table" then
+    blendSlots = {}
+    for _, slot in ipairs(coefficients.spriteSlots) do
+      blendSlots[slot] = true
+    end
+  end
   for _, battler in ipairs(battlers) do
     if type(battler) == "table" then
       local pictureState = self._scene:pictureState(battler)
@@ -981,6 +1026,9 @@ local function enrichScene(self, battlers)
       local order = nil
       if type(battler.position) == "number" then
         order = battler.side == 1 and allyOrder or foeOrder
+      end
+      if blendSlots ~= nil and coefficients ~= nil and order ~= nil then
+        applyBlendAlpha(battler, order, blendSlots, coefficients)
       end
       local row = BattleScene.slotRow(battler, order, self._manifest.battlefield.slots)
       battler.sideType = row.sideType

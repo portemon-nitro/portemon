@@ -1191,6 +1191,12 @@ end
 Handlers["set-blend-alpha"] = handleSetBlendAlpha
 
 local function handleResetBlendAlpha(exec, instruction, index)
+  -- The retail reset restores blend hardware inline when the script
+  -- stream reaches it; the held sprite-blend overlay drops here the
+  -- same way so facts fall back to base alpha. The journal entry stays
+  -- for observability, and the sub-screen set-blend-alpha half keeps
+  -- its journal-only form: it names no main-screen sprite state.
+  exec.resetBlendCoefficients()
   return noteVisual(exec, instruction, index)
 end
 Handlers["reset-blend-alpha"] = handleResetBlendAlpha

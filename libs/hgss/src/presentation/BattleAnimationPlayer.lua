@@ -401,6 +401,20 @@ function BattleAnimationPlayer:_exec(occurrence)
   function exec.fail(reason)
     failOccurrence(player, occurrence, reason)
   end
+  function exec.resetBlendCoefficients()
+    -- The player stays scene-agnostic by design and only requires a
+    -- table here; scenes without the blend seam (owner-test stubs and
+    -- non-battle hosts) carry no blend overlays, so the reset is
+    -- vacuous for them and only the production scene clears anything.
+    local scene = player._scene
+    local reset = scene.resetBlendCoefficients
+    if type(reset) == "function" then
+      local ok, err = pcall(reset, scene)
+      if not ok then
+        failOccurrence(player, occurrence, "blend reset failure: " .. tostring(err))
+      end
+    end
+  end
   function exec.spawn(kind, group, args)
     if type(kind) ~= "string" or kind == "" then
       failOccurrence(player, occurrence, "task construction names no task kind")
