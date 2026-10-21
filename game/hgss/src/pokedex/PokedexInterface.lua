@@ -33,95 +33,129 @@ local NATIVE_LIST = { x = 27, y = 4, step = 40, columns = 5, rows = 3 }
 local NATIVE_LIST_X1 = 227
 local NATIVE_LIST_Y1 = 124
 
--- Native page arrows beside the list.
+-- Native page arrows beside the list. The vertical scrollbar band
+-- between the two arrows pages nothing and keeps its own gesture.
 local NATIVE_ARROWS = {
-  prev = { x = 0, y = 44, width = 26, height = 40 },
-  next = { x = 230, y = 44, width = 26, height = 40 },
+  prev = { box = { top = 5, bottom = 20, left = 231, right = 252 } },
+  next = { box = { top = 131, bottom = 146, left = 231, right = 252 } },
 }
 
--- Native search footer strip at the bottom of the 192px controls pane:
--- run, reset, and back on the search page.
-local NATIVE_FOOTER_Y = 168
-local NATIVE_FOOTER_HEIGHT = 24
-
 -- Native search criteria menu on the controls pane, transcribed from the
--- source menu hitboxes in inclusive {top,bottom,left,right} form: the
--- first box spans x128..215/y8..23 and the second x56..127/y32..47, with
--- the remaining criteria continuing the same two-column rhythm. Entries
--- are matched in source order; the row under a tap never decides.
+-- source menu hitboxes in inclusive {top,bottom,left,right} form.
+-- Entries are matched in source order; the row under a tap never decides.
 local NATIVE_SEARCH_MENU = {
   { box = { top = 8, bottom = 23, left = 128, right = 215 }, value = "order" },
   { box = { top = 32, bottom = 47, left = 56, right = 127 }, value = "letter" },
-  { box = { top = 56, bottom = 71, left = 128, right = 215 }, value = "type" },
-  { box = { top = 80, bottom = 95, left = 56, right = 127 }, value = "shape" },
-  { box = { top = 104, bottom = 119, left = 128, right = 215 }, value = "area" },
-  { box = { top = 128, bottom = 143, left = 56, right = 127 }, value = "height" },
-  { box = { top = 128, bottom = 143, left = 128, right = 215 }, value = "weight" },
+  { box = { top = 56, bottom = 71, left = 56, right = 177 }, value = "type" },
+  { box = { top = 80, bottom = 95, left = 56, right = 183 }, value = "height" },
+  { box = { top = 104, bottom = 119, left = 56, right = 239 }, value = "weight" },
+  { box = { top = 128, bottom = 143, left = 56, right = 111 }, value = "area" },
+  { box = { top = 56, bottom = 87, left = 208, right = 239 }, value = "shape" },
 }
 
--- Native order-editor options behind the same two-column menu rhythm.
+-- Native search root bottom band: left reset, center run, right back.
+-- The gap between the three controls stays inert.
+local NATIVE_SEARCH_BOTTOM = {
+  { box = { top = 164, bottom = 187, left = 4, right = 75 }, action = "search-reset" },
+  { box = { top = 164, bottom = 187, left = 92, right = 163 }, action = "search-run" },
+  { box = { top = 164, bottom = 187, left = 180, right = 251 }, action = "cancel" },
+}
+
+-- Native option-editor bottom band: left commit, right cancel. The gap
+-- between the two controls stays inert.
+local NATIVE_EDITOR_BOTTOM = {
+  { box = { top = 164, bottom = 187, left = 4, right = 75 }, action = "editor-ok" },
+  { box = { top = 164, bottom = 187, left = 180, right = 251 }, action = "editor-cancel" },
+}
+
+-- Native order-editor options: six choices in row-major order over two
+-- columns and three rows. The first choice sorts numerically and the
+-- last sorts by shortest.
 local NATIVE_ORDER_EDITOR = {
-  { box = { top = 8, bottom = 23, left = 128, right = 215 }, value = "numerical" },
-  { box = { top = 32, bottom = 47, left = 56, right = 127 }, value = "alphabetical" },
-  { box = { top = 56, bottom = 71, left = 128, right = 215 }, value = "heaviest" },
-  { box = { top = 80, bottom = 95, left = 56, right = 127 }, value = "lightest" },
-  { box = { top = 104, bottom = 119, left = 128, right = 215 }, value = "tallest" },
-  { box = { top = 128, bottom = 143, left = 56, right = 127 }, value = "shortest" },
+  { box = { top = 48, bottom = 63, left = 24, right = 111 }, value = "numerical" },
+  { box = { top = 48, bottom = 63, left = 144, right = 231 }, value = "alphabetical" },
+  { box = { top = 80, bottom = 95, left = 24, right = 111 }, value = "heaviest" },
+  { box = { top = 80, bottom = 95, left = 144, right = 231 }, value = "lightest" },
+  { box = { top = 112, bottom = 127, left = 24, right = 111 }, value = "tallest" },
+  { box = { top = 112, bottom = 127, left = 144, right = 231 }, value = "shortest" },
 }
 
--- Native type-editor rows: one single-column list of option slots.
-local NATIVE_TYPE_ROWS = { x = 8, firstY = 8, width = 128, height = 12, count = 18 }
+-- Native type-editor grid: eighteen positional cells in row-major order
+-- over four columns; the final row holds only the first two cells.
+-- Positional indices 0..16 select the published type order and index 17
+-- clears the filter.
+local NATIVE_TYPE_COLUMNS = { { 3, 60 }, { 67, 124 }, { 131, 188 }, { 195, 252 } }
+local NATIVE_TYPE_ROWS = { { 40, 55 }, { 64, 79 }, { 88, 104 }, { 112, 127 } }
+local NATIVE_TYPE_LAST_ROW = { top = 136, bottom = 151 }
 
--- Native shape-editor grid: five columns over the option slots.
-local NATIVE_SHAPE_GRID = { x = 8, y = 40, columnWidth = 48, rowHeight = 40, columns = 5 }
+-- Native shape-editor grid: fifteen positional cells in row-major order
+-- over five columns and three rows. Positional indices 0..13 select the
+-- published shape order and index 14 clears the filter.
+local NATIVE_SHAPE_COLUMNS = { { 16, 47 }, { 64, 95 }, { 112, 143 }, { 160, 191 }, { 208, 239 } }
+local NATIVE_SHAPE_ROWS = { { 40, 71 }, { 80, 111 }, { 120, 151 } }
 
--- Native area-editor rows: the four scope choices in source order.
-local NATIVE_AREA_ROWS = {
-  { box = { top = 8, bottom = 23, left = 56, right = 167 }, value = "unrestricted" },
-  { box = { top = 32, bottom = 47, left = 56, right = 167 }, value = "johto" },
-  { box = { top = 56, bottom = 71, left = 56, right = 167 }, value = "kanto" },
-  { box = { top = 80, bottom = 95, left = 56, right = 167 }, value = "unknown" },
+-- Native area-editor grid: the four scope choices in row-major order
+-- over two columns and two rows. Positional indices select johto,
+-- kanto, unknown, then the clearing choice.
+local NATIVE_AREA_CELLS = {
+  { box = { top = 64, bottom = 79, left = 48, right = 103 }, index = 0 },
+  { box = { top = 64, bottom = 79, left = 152, right = 207 }, index = 1 },
+  { box = { top = 120, bottom = 135, left = 48, right = 103 }, index = 2 },
+  { box = { top = 120, bottom = 135, left = 152, right = 207 }, index = 3 },
 }
 
--- Native 27-letter editor grid: seven 32px columns and four 16px rows
--- from the source letter-cell selection order. Index zero clears the
--- filter; indices 1..26 hold A..Z; the final cell stays inert.
-local NATIVE_LETTER_GRID = { x = 8, y = 8, columnWidth = 32, rowHeight = 16, columns = 7, rows = 4 }
+-- Native 27-letter editor grid: the first three rows hold seven cells
+-- each and the last row holds six with the 184..199 slot missing.
+-- Positional indices 0..25 hold A..Z and index 26 clears the filter.
+local NATIVE_LETTER_COLUMNS =
+  { { 24, 39 }, { 56, 71 }, { 88, 103 }, { 120, 135 }, { 152, 167 }, { 184, 199 }, { 216, 231 } }
+local NATIVE_LETTER_ROWS = { { 40, 55 }, { 72, 87 }, { 104, 119 } }
+local NATIVE_LETTER_LAST_ROW = { top = 136, bottom = 151 }
 
--- Native browser footer behind the list grid: four bottom actions share
--- the source y152..187 band; the rows below it stay inert.
+-- Native browser footer behind the list grid: search, cry, entry, and
+-- exit share the source y152..187 band. The entry cell opens the entry
+-- on the area tab; the rows above and below the band stay inert.
 local NATIVE_LIST_FOOTER = {
-  { box = { top = 152, bottom = 187, left = 8, right = 63 }, action = "page-prev" },
-  { box = { top = 152, bottom = 187, left = 68, right = 123 }, action = "page-next" },
-  { box = { top = 152, bottom = 187, left = 128, right = 183 }, action = "search" },
-  { box = { top = 152, bottom = 187, left = 188, right = 243 }, action = "exit" },
+  { box = { top = 152, bottom = 187, left = 0, right = 63 }, action = "search" },
+  { box = { top = 152, bottom = 187, left = 64, right = 127 }, action = "cry" },
+  { box = { top = 152, bottom = 187, left = 128, right = 191 }, action = "entry-tab", value = "area" },
+  { box = { top = 152, bottom = 187, left = 192, right = 255 }, action = "cancel" },
 }
 
--- Native entry tabs: four 51px bands at x7, x71, x135, and x199 over the
--- footer strip. Gaps between the bands switch nothing.
+-- Native entry tabs: four source bands over the y168..183 strip. Gaps
+-- between the bands and the rows above and below switch nothing.
 local NATIVE_ENTRY_TABS = {
-  { box = { top = 168, bottom = 191, left = 7, right = 57 }, value = "area" },
-  { box = { top = 168, bottom = 191, left = 71, right = 121 }, value = "size" },
-  { box = { top = 168, bottom = 191, left = 135, right = 185 }, value = "forms" },
-  { box = { top = 168, bottom = 191, left = 199, right = 249 }, value = "return" },
+  { box = { top = 168, bottom = 183, left = 7, right = 57 }, value = "area" },
+  { box = { top = 168, bottom = 183, left = 71, right = 121 }, value = "size" },
+  { box = { top = 168, bottom = 183, left = 135, right = 185 }, value = "forms" },
+  { box = { top = 168, bottom = 183, left = 199, right = 249 }, value = "return" },
 }
 
 -- Native area daypart selectors: three circle targets carrying the
--- original center and radius. The first circle centers on (40, 32).
+-- original centers and radius on the controls pane.
 local NATIVE_AREA_CIRCLES = {
-  { cx = 40, cy = 32, radius = 14, value = 0 },
-  { cx = 80, cy = 32, radius = 14, value = 1 },
-  { cx = 120, cy = 32, radius = 14, value = 2 },
+  { cx = 77, cy = 33, radius = 13, value = 0 },
+  { cx = 109, cy = 33, radius = 13, value = 1 },
+  { cx = 141, cy = 33, radius = 13, value = 2 },
 }
 
--- Native search criteria rows and editor geometry on the controls pane.
-local NATIVE_SEARCH = {
-  runButton = { x = 204, y = 8, width = 44, height = 30 },
-  resetButton = { x = 204, y = 46, width = 44, height = 30 },
-  okButton = { x = 204, y = 140, width = 44, height = 20 },
-  cancelButton = { x = 204, y = 164, width = 44, height = 20 },
-  minTrack = { x = 8, y = 40, width = 180, height = 16 },
-  maxTrack = { x = 8, y = 80, width = 180, height = 16 },
+-- Native height/weight slider geometry on the controls pane: the upper
+-- track drives the maximum endpoint and the lower track drives the
+-- minimum endpoint. The authored step counts handle-center pixels from
+-- the x52 origin, clamped to 0..152, never a fraction of the hitbox.
+local NATIVE_SLIDER_TRACKS = {
+  max = { box = { top = 46, bottom = 73, left = 26, right = 229 } },
+  min = { box = { top = 118, bottom = 145, left = 26, right = 229 } },
+}
+local NATIVE_SLIDER_STEP_ORIGIN_X = 52
+
+-- Native slider step arrows beside each track: each arrow steps only its
+-- own endpoint in its own direction.
+local NATIVE_SLIDER_ARROWS = {
+  { box = { top = 49, bottom = 70, left = 10, right = 25 }, endpoint = "max", direction = -1 },
+  { box = { top = 49, bottom = 70, left = 230, right = 245 }, endpoint = "max", direction = 1 },
+  { box = { top = 121, bottom = 142, left = 10, right = 25 }, endpoint = "min", direction = -1 },
+  { box = { top = 121, bottom = 142, left = 230, right = 245 }, endpoint = "min", direction = 1 },
 }
 
 -- Native entry-page controls on the controls pane: the tab strip plus
@@ -208,6 +242,22 @@ local function sliderStep(x, track)
   return step
 end
 
+-- Converts one native slider-track position to the authored 0..152 drag
+-- step. The source counts handle-center pixels from the x52 origin,
+-- clamped to the valid range, never a fraction of the touch hitbox.
+---@param x number pane-local x
+---@return integer clamped author step
+local function nativeSliderStep(x)
+  local step = math.floor(x - NATIVE_SLIDER_STEP_ORIGIN_X + 0.5)
+  if step < 0 then
+    step = 0
+  end
+  if step > 152 then
+    step = 152
+  end
+  return step
+end
+
 -- Tests one pane-local point against one inclusive source rectangle.
 -- Source hitboxes include both ends, so the right and bottom edges
 -- belong to the box.
@@ -274,16 +324,19 @@ local function gridTap(event)
       + math.floor((x - NATIVE_LIST.x) / NATIVE_LIST.step)
     return { type = "activate", action = "grid-slot", value = slot }
   end
-  if inside(x, y, NATIVE_ARROWS.prev) then
+  if insideSourceRect(x, y, NATIVE_ARROWS.prev.box) then
     return { type = "activate", action = "page-prev" }
   end
-  if inside(x, y, NATIVE_ARROWS.next) then
+  if insideSourceRect(x, y, NATIVE_ARROWS.next.box) then
     return { type = "activate", action = "page-next" }
   end
   for _, button in ipairs(NATIVE_LIST_FOOTER) do
     if insideSourceRect(x, y, button.box) then
-      if button.action == "exit" then
+      if button.action == "cancel" then
         return { type = "cancel" }
+      end
+      if button.value ~= nil then
+        return { type = "activate", action = button.action, value = button.value }
       end
       return { type = "activate", action = button.action }
     end
@@ -309,14 +362,17 @@ local function openEditorOf(view)
   return editor
 end
 
--- Maps one pane-local slider-track position to its drag edge.
+-- Maps one pane-local slider-track position to its drag edge. Native
+-- tracks convert from the handle origin; compact tracks keep the
+-- proportional mapping behind their own drawn rectangles.
 ---@param eventType string pointer edge type
 ---@param criterion string height or weight criterion
 ---@param endpoint string min or max endpoint
 ---@param event table<string, unknown> pane-local pointer event
----@param track { x: number, y: number, width: number, height: number } slider track
+---@param track table<string, unknown> slider track behind the endpoint
+---@param native boolean true on the native source tracks
 ---@return table<string, unknown>? finite model command
-local function sliderEdge(eventType, criterion, endpoint, event, track)
+local function sliderEdge(eventType, criterion, endpoint, event, track, native)
   local phase = nil
   if eventType == "pointer_down" then
     phase = "begin"
@@ -328,7 +384,17 @@ local function sliderEdge(eventType, criterion, endpoint, event, track)
   if phase == nil then
     return nil
   end
-  return { type = "drag", target = criterion .. "-" .. endpoint, phase = phase, value = sliderStep(event.x, track) }
+  local value = nil
+  if native == true then
+    value = nativeSliderStep(event.x)
+  else
+    -- Compact tracks carry flat pane geometry; native tracks carry a source box.
+    if track.box ~= nil then
+      error("native slider tracks never reach the compact conversion", 0)
+    end
+    value = sliderStep(event.x, track)
+  end
+  return { type = "drag", target = criterion .. "-" .. endpoint, phase = phase, value = value }
 end
 
 -- Maps pointer edges on a height/weight slider editor behind its track
@@ -338,26 +404,52 @@ end
 -- move or release with no captured endpoint maps to nothing.
 ---@param event table<string, unknown> pane-local pointer event
 ---@param editor table<string, unknown> open slider editor
----@param minTrack { x: number, y: number, width: number, height: number } minimum track
----@param maxTrack { x: number, y: number, width: number, height: number } maximum track
----@param okRect { x: number, y: number, width: number, height: number } commit button
----@param cancelRect { x: number, y: number, width: number, height: number } cancel button
+---@param minTrack { x: number, y: number, width: number, height: number }|{ box: table<string, integer> } minimum track
+---@param maxTrack { x: number, y: number, width: number, height: number }|{ box: table<string, integer> } maximum track
+---@param okRect { x: number, y: number, width: number, height: number }|{ box: table<string, integer> } commit button
+---@param cancelRect { x: number, y: number, width: number, height: number }|{ box: table<string, integer> } cancel button
 ---@param captured string? in-flight captured slider target behind the gesture
+---@param native boolean true on the native source geometry with step arrows
 ---@return table<string, unknown>? finite model command
-local function sliderEditorInput(event, editor, minTrack, maxTrack, okRect, cancelRect, captured)
+local function sliderEditorInput(event, editor, minTrack, maxTrack, okRect, cancelRect, captured, native)
   local criterion = editor.kind
+  local function onTrack(x, y, track)
+    if native == true then
+      return insideSourceRect(x, y, track.box)
+    end
+    return inside(x, y, track)
+  end
+  local function onButton(x, y, button)
+    if native == true then
+      return insideSourceRect(x, y, button.box)
+    end
+    return inside(x, y, button)
+  end
   if event.type == "pointer_down" then
     local x, y = event.x, event.y
-    if inside(x, y, minTrack) then
-      return sliderEdge(event.type, criterion, "min", event, minTrack)
+    if native == true then
+      for _, arrow in ipairs(NATIVE_SLIDER_ARROWS) do
+        if insideSourceRect(x, y, arrow.box) then
+          return {
+            type = "activate",
+            action = "slider-step",
+            criterion = criterion,
+            endpoint = arrow.endpoint,
+            direction = arrow.direction,
+          }
+        end
+      end
     end
-    if inside(x, y, maxTrack) then
-      return sliderEdge(event.type, criterion, "max", event, maxTrack)
+    if onTrack(x, y, minTrack) then
+      return sliderEdge(event.type, criterion, "min", event, minTrack, native)
     end
-    if inside(x, y, okRect) then
+    if onTrack(x, y, maxTrack) then
+      return sliderEdge(event.type, criterion, "max", event, maxTrack, native)
+    end
+    if onButton(x, y, okRect) then
       return { type = "activate", action = "editor-ok" }
     end
-    if inside(x, y, cancelRect) then
+    if onButton(x, y, cancelRect) then
       return { type = "activate", action = "editor-cancel" }
     end
     return nil
@@ -378,7 +470,7 @@ local function sliderEditorInput(event, editor, minTrack, maxTrack, okRect, canc
   if endpoint == "max" then
     track = maxTrack
   end
-  return sliderEdge(event.type, criterion, endpoint, event, track)
+  return sliderEdge(event.type, criterion, endpoint, event, track, native)
 end
 
 -- Maps pointer edges on an option editor: one row per projected option
@@ -410,16 +502,29 @@ local function optionEditorInput(event, editor, rows, okRect, cancelRect)
 end
 
 -- Builds option rows behind one editor: a single column while eight or
--- fewer options fit, otherwise a three-column grid so all twenty-seven
--- letters stay reachable without clipping.
+-- fewer options fit, otherwise a three-column grid. The letter editor
+-- alone uses its own compact four-column grid so all twenty-seven
+-- choices stay above the commit/cancel row.
 ---@param options string[] projected editor options
 ---@param originX number list left edge in pane-local coordinates
 ---@param originY number list top edge in pane-local coordinates
 ---@param columnWidth number single-column row width
 ---@param rowHeight number single-column row height
+---@param kind string? open editor criterion behind the rows
 ---@return { rect: { x: number, y: number, width: number, height: number }, value: string }[] option rows
-local function optionRowsFor(options, originX, originY, columnWidth, rowHeight)
+local function optionRowsFor(options, originX, originY, columnWidth, rowHeight, kind)
   local rows = {}
+  if kind == "letter" then
+    for index, option in ipairs(options) do
+      local column = (index - 1) % 4
+      local row = math.floor((index - 1) / 4)
+      rows[#rows + 1] = {
+        rect = { x = 8 + column * 40, y = 8 + row * 16, width = 38, height = 16 },
+        value = option,
+      }
+    end
+    return rows
+  end
   if #options > 8 then
     for index, option in ipairs(options) do
       local column = (index - 1) % 3
@@ -445,27 +550,111 @@ local function optionRowsFor(options, originX, originY, columnWidth, rowHeight)
   return rows
 end
 
+-- Reads the positional option index behind one pane-local point in the
+-- native type grid. The final row holds only its first two cells.
+---@param x number pane-local x
+---@param y number pane-local y
+---@return integer? zero-based positional index behind the point
+local function nativeTypeIndex(x, y)
+  local column = nil
+  for position, range in ipairs(NATIVE_TYPE_COLUMNS) do
+    if x >= range[1] and x <= range[2] then
+      column = position - 1
+    end
+  end
+  if column == nil then
+    return nil
+  end
+  for position, range in ipairs(NATIVE_TYPE_ROWS) do
+    if y >= range[1] and y <= range[2] then
+      return (position - 1) * 4 + column
+    end
+  end
+  if y >= NATIVE_TYPE_LAST_ROW.top and y <= NATIVE_TYPE_LAST_ROW.bottom and column <= 1 then
+    return 16 + column
+  end
+  return nil
+end
+
+-- Reads the positional option index behind one pane-local point in the
+-- native shape grid.
+---@param x number pane-local x
+---@param y number pane-local y
+---@return integer? zero-based positional index behind the point
+local function nativeShapeIndex(x, y)
+  local column = nil
+  for position, range in ipairs(NATIVE_SHAPE_COLUMNS) do
+    if x >= range[1] and x <= range[2] then
+      column = position - 1
+    end
+  end
+  if column == nil then
+    return nil
+  end
+  for position, range in ipairs(NATIVE_SHAPE_ROWS) do
+    if y >= range[1] and y <= range[2] then
+      return (position - 1) * 5 + column
+    end
+  end
+  return nil
+end
+
 -- Reads the letter option behind one pane-local point in the native
--- 27-letter grid. The first cell clears the filter, the next
--- twenty-six hold A..Z in selection order, and the final cell is inert.
+-- 27-letter grid. The first three rows hold seven cells each and the
+-- last row holds six with the 184..199 slot missing; positional indices
+-- 0..25 hold A..Z and index 26 clears the filter. The letters are fixed
+-- source facts, so the mapper resolves them directly.
 ---@param x number pane-local x
 ---@param y number pane-local y
 ---@return string? letter option behind the point
 local function nativeLetterValue(x, y)
-  local grid = NATIVE_LETTER_GRID
-  local column = math.floor((x - grid.x) / grid.columnWidth)
-  local row = math.floor((y - grid.y) / grid.rowHeight)
-  if column < 0 or column >= grid.columns or row < 0 or row >= grid.rows then
+  local column = nil
+  for position, range in ipairs(NATIVE_LETTER_COLUMNS) do
+    if x >= range[1] and x <= range[2] then
+      column = position - 1
+    end
+  end
+  if column == nil then
     return nil
   end
-  local index = row * grid.columns + column
-  if index == 0 then
+  local index = nil
+  for position, range in ipairs(NATIVE_LETTER_ROWS) do
+    if y >= range[1] and y <= range[2] then
+      index = (position - 1) * 7 + column
+    end
+  end
+  if index == nil then
+    if y < NATIVE_LETTER_LAST_ROW.top or y > NATIVE_LETTER_LAST_ROW.bottom then
+      return nil
+    end
+    if column == 5 then
+      return nil
+    end
+    if column == 6 then
+      index = 26
+    else
+      index = 21 + column
+    end
+  end
+  if index == 26 then
     return "unrestricted"
   end
-  if index >= 1 and index <= 26 then
-    return string.char(string.byte("A") + index - 1)
+  return string.char(string.byte("A") + index)
+end
+
+-- Reads the enabled flag behind one native area scope: the locked scope
+-- stays inert like its blank native window.
+---@param editor table<string, unknown> open area editor with its scope flags
+---@param option string candidate scope key
+---@return boolean true when the scope stays selectable
+local function nativeAreaEnabled(editor, option)
+  if type(editor.choices) == "table" then
+    local scope = editor.choices[option]
+    if type(scope) == "table" then
+      return scope.enabled == true
+    end
   end
-  return nil
+  return true
 end
 
 -- Reads the captured slider target behind the projection, if any.
@@ -490,11 +679,12 @@ local function searchInput(event, view)
     local gesture = sliderEditorInput(
       event,
       editor,
-      NATIVE_SEARCH.minTrack,
-      NATIVE_SEARCH.maxTrack,
-      NATIVE_SEARCH.okButton,
-      NATIVE_SEARCH.cancelButton,
-      capturedTargetOf(view)
+      NATIVE_SLIDER_TRACKS.min,
+      NATIVE_SLIDER_TRACKS.max,
+      NATIVE_EDITOR_BOTTOM[1],
+      NATIVE_EDITOR_BOTTOM[2],
+      capturedTargetOf(view),
+      true
     )
     if gesture ~= nil then
       return gesture
@@ -505,58 +695,46 @@ local function searchInput(event, view)
     if event.type ~= "pointer_down" then
       return nil
     end
+    local options = nil
+    if type(editor.options) == "table" then
+      options = editor.options
+    end
     if editor.kind == "letter" then
       local value = nativeLetterValue(x, y)
       if value ~= nil then
         return { type = "activate", action = "editor-choice", value = value }
       end
-      if inside(x, y, NATIVE_SEARCH.okButton) then
-        return { type = "activate", action = "editor-ok" }
-      end
-      if inside(x, y, NATIVE_SEARCH.cancelButton) then
-        return { type = "activate", action = "editor-cancel" }
-      end
-      return nil
-    end
-    if editor.kind == "order" then
+    elseif editor.kind == "order" then
       for _, box in ipairs(NATIVE_ORDER_EDITOR) do
         if insideSourceRect(x, y, box.box) then
           return { type = "activate", action = "editor-choice", value = box.value }
         end
       end
-    elseif editor.kind == "type" then
-      local row = math.floor((y - NATIVE_TYPE_ROWS.firstY) / NATIVE_TYPE_ROWS.height)
-      if
-        row >= 0
-        and row < NATIVE_TYPE_ROWS.count
-        and x >= NATIVE_TYPE_ROWS.x
-        and x < NATIVE_TYPE_ROWS.x + NATIVE_TYPE_ROWS.width
-        and type(editor.options) == "table"
-        and type(editor.options[row + 1]) == "string"
-      then
-        return { type = "activate", action = "editor-choice", value = editor.options[row + 1] }
+    elseif editor.kind == "type" and options ~= nil then
+      local index = nativeTypeIndex(x, y)
+      if index ~= nil and type(options[index + 1]) == "string" then
+        return { type = "activate", action = "editor-choice", value = options[index + 1] }
       end
-    elseif editor.kind == "shape" then
-      local column = math.floor((x - NATIVE_SHAPE_GRID.x) / NATIVE_SHAPE_GRID.columnWidth)
-      local row = math.floor((y - NATIVE_SHAPE_GRID.y) / NATIVE_SHAPE_GRID.rowHeight)
-      if column >= 0 and column < NATIVE_SHAPE_GRID.columns and row >= 0 then
-        local index = row * NATIVE_SHAPE_GRID.columns + column
-        if type(editor.options) == "table" and type(editor.options[index + 1]) == "string" then
-          return { type = "activate", action = "editor-choice", value = editor.options[index + 1] }
-        end
+    elseif editor.kind == "shape" and options ~= nil then
+      local index = nativeShapeIndex(x, y)
+      if index ~= nil and type(options[index + 1]) == "string" then
+        return { type = "activate", action = "editor-choice", value = options[index + 1] }
       end
-    elseif editor.kind == "area" then
-      for _, box in ipairs(NATIVE_AREA_ROWS) do
-        if insideSourceRect(x, y, box.box) then
-          return { type = "activate", action = "editor-choice", value = box.value }
+    elseif editor.kind == "area" and options ~= nil then
+      for _, cell in ipairs(NATIVE_AREA_CELLS) do
+        if insideSourceRect(x, y, cell.box) then
+          local option = options[cell.index + 1]
+          if type(option) == "string" and nativeAreaEnabled(editor, option) then
+            return { type = "activate", action = "editor-choice", value = option }
+          end
+          return nil
         end
       end
     end
-    if inside(x, y, NATIVE_SEARCH.okButton) then
-      return { type = "activate", action = "editor-ok" }
-    end
-    if inside(x, y, NATIVE_SEARCH.cancelButton) then
-      return { type = "activate", action = "editor-cancel" }
+    for _, button in ipairs(NATIVE_EDITOR_BOTTOM) do
+      if insideSourceRect(x, y, button.box) then
+        return { type = "activate", action = button.action }
+      end
     end
     return nil
   end
@@ -568,19 +746,12 @@ local function searchInput(event, view)
       return { type = "activate", action = "criterion", value = entry.value }
     end
   end
-  if inside(x, y, NATIVE_SEARCH.runButton) then
-    return { type = "activate", action = "search-run" }
-  end
-  if inside(x, y, NATIVE_SEARCH.resetButton) then
-    return { type = "activate", action = "search-reset" }
-  end
-  if y >= NATIVE_FOOTER_Y and y < NATIVE_FOOTER_Y + NATIVE_FOOTER_HEIGHT then
-    if x >= 0 and x < 80 then
-      return { type = "activate", action = "search-run" }
-    elseif x >= 80 and x < 160 then
-      return { type = "activate", action = "search-reset" }
-    elseif x >= 160 and x < 256 then
-      return { type = "cancel" }
+  for _, button in ipairs(NATIVE_SEARCH_BOTTOM) do
+    if insideSourceRect(x, y, button.box) then
+      if button.action == "cancel" then
+        return { type = "cancel" }
+      end
+      return { type = "activate", action = button.action }
     end
   end
   return nil
@@ -957,7 +1128,7 @@ local function compactRowsFor(view, page)
       end
       if type(kind) == "string" and kind ~= "height" and kind ~= "weight" and type(editor.options) == "table" then
         local options =
-          optionRowsFor(editor.options, COMPACT_ROW.x, COMPACT_ROW.firstY, COMPACT_ROW.width, COMPACT_ROW.height)
+          optionRowsFor(editor.options, COMPACT_ROW.x, COMPACT_ROW.firstY, COMPACT_ROW.width, COMPACT_ROW.height, kind)
         for _, option in ipairs(options) do
           rows[#rows + 1] = {
             action = "editor-choice",
@@ -1344,7 +1515,7 @@ local function mapCompactInput(event, view, page, compact)
       assert(minTrack ~= nil, "the compact record carries the slider minimum")
       assert(maxTrack ~= nil, "the compact record carries the slider maximum")
       local okRect, cancelRect = dialogRectsOf(compact)
-      return sliderEditorInput(event, editor, minTrack, maxTrack, okRect, cancelRect, capturedTargetOf(view))
+      return sliderEditorInput(event, editor, minTrack, maxTrack, okRect, cancelRect, capturedTargetOf(view), false)
     end
     return nil
   end
@@ -1373,7 +1544,7 @@ local function mapCompactInput(event, view, page, compact)
       assert(minTrack ~= nil, "the compact record carries the slider minimum")
       assert(maxTrack ~= nil, "the compact record carries the slider maximum")
       local okRect, cancelRect = dialogRectsOf(compact)
-      return sliderEditorInput(event, editor, minTrack, maxTrack, okRect, cancelRect, capturedTargetOf(view))
+      return sliderEditorInput(event, editor, minTrack, maxTrack, okRect, cancelRect, capturedTargetOf(view), false)
     end
     if editor ~= nil then
       local rows = {}

@@ -28,7 +28,7 @@ PokedexSearch.SLIDER_OP_CAP = 24
 -- The authored arrow animation each accepted step waits out before the
 -- next operation may count; the step itself applies on acceptance.
 PokedexSearch.SLIDER_ANIM_TICKS = 10
-PokedexSearch.CRITERIA = { "order", "letter", "type", "shape", "area", "height", "weight" }
+PokedexSearch.CRITERIA = { "order", "letter", "type", "height", "weight", "area", "shape" }
 
 local function fail(message, context)
   Errors.raise("POKEDEX_INVALID", message, context)
@@ -224,8 +224,35 @@ function PokedexSearch:closeEditor(commit)
   self._drag = nil
 end
 
+---@param value unknown borrowed published option order behind one editor
+---@param what string option family behind the order
+---@return string[] detached option keys in the published order
+local function copyOptionOrder(value, what)
+  if type(value) ~= "table" then
+    fail("search needs the published " .. what .. " order", {})
+  end
+  assert(type(value) == "table", "search reads its published option order")
+  local options = {}
+  for index = 1, #value do
+    local option = value[index]
+    if type(option) ~= "string" then
+      fail("search needs a dense published " .. what .. " order", {})
+    end
+    options[#options + 1] = option
+  end
+  for key in pairs(value) do
+    if type(key) ~= "number" or key % 1 ~= 0 or key < 1 or key > #value then
+      fail("search needs a dense published " .. what .. " order", {})
+    end
+  end
+  if #options == 0 then
+    fail("search needs a nonempty published " .. what .. " order", {})
+  end
+  return options
+end
+
 ---@param kind string
----@return string[] option keys with unrestricted first
+---@return string[] option keys in source order with unrestricted last
 function PokedexSearch:editorOptions(kind)
   local catalog = self._catalog
   assert(type(catalog) == "table", "search reads its borrowed catalog")
@@ -237,42 +264,23 @@ function PokedexSearch:editorOptions(kind)
     return options
   end
   if kind == "letter" then
-    local options = { "unrestricted" }
+    local options = {}
     for code = string.byte("A"), string.byte("Z") do
       options[#options + 1] = string.char(code)
     end
+    options[#options + 1] = "unrestricted"
     return options
   end
   local criteria = catalog.criteria
   assert(type(criteria) == "table", "the catalog carries its search criteria")
   if kind == "type" then
-    local options = { "unrestricted" }
-    local types = checkTable(criteria.types, "type lists")
-    local keys = {}
-    for key in pairs(types) do
-      keys[#keys + 1] = key
-    end
-    table.sort(keys)
-    for _, key in ipairs(keys) do
-      options[#options + 1] = key
-    end
-    return options
+    return copyOptionOrder(criteria.typeOptionOrder, "type")
   end
   if kind == "shape" then
-    local options = { "unrestricted" }
-    local shapes = checkTable(criteria.shapes, "shape lists")
-    local keys = {}
-    for key in pairs(shapes) do
-      keys[#keys + 1] = key
-    end
-    table.sort(keys)
-    for _, key in ipairs(keys) do
-      options[#options + 1] = key
-    end
-    return options
+    return copyOptionOrder(criteria.shapeOptionOrder, "shape")
   end
   if kind == "area" then
-    return { "unrestricted", "johto", "kanto", "unknown" }
+    return { "johto", "kanto", "unknown", "unrestricted" }
   end
   fail("search names an unknown option editor", { editor = kind })
   error("unreachable", 0)

@@ -360,49 +360,148 @@ function T.native_search_menu_hitboxes_follow_source_order_and_edges()
   local criteria = viewOn(stubView(), "search")
   criteria.search = { criteria = {}, focus = "order", previousColumn = "criteria" }
   local plan = session:resolve(measurementFor("wide"), sessionView(criteria))
-  local function tapDown(lx, ly, pointerId)
+  local nextPointer = 30
+  local function tapDown(lx, ly)
+    nextPointer = nextPointer + 1
     local mapped =
-      session:mapInput({ hostTap(plan, "controls", "pointer_down", lx, ly, pointerId) }, sessionView(criteria))
-    session:mapInput({ hostTap(plan, "controls", "pointer_up", lx, ly, pointerId) }, sessionView(criteria))
+      session:mapInput({ hostTap(plan, "controls", "pointer_down", lx, ly, nextPointer) }, sessionView(criteria))
+    session:mapInput({ hostTap(plan, "controls", "pointer_up", lx, ly, nextPointer) }, sessionView(criteria))
     return mapped
   end
-  Assert.equal(#tapDown(20, 19, 30), 0, "the point outside every menu box opens no criterion")
-  Assert.equal(#tapDown(120, 15, 31), 0, "the gap left of the first box opens no criterion")
-  local first = tapDown(150, 15, 32)
-  Assert.equal(#first, 1, "the first menu box maps to exactly one command")
-  Assert.equal(first[1].type, "activate", "the first menu box activates")
-  Assert.equal(first[1].action, "criterion", "the first menu box opens its criterion")
-  Assert.equal(first[1].value, "order", "the first menu box opens the order criterion")
-  local second = tapDown(90, 40, 33)
-  Assert.equal(#second, 1, "the second menu box maps to exactly one command")
-  Assert.equal(second[1].value, "letter", "the second menu box opens the letter criterion")
-  local edge = tapDown(128, 8, 34)
-  Assert.equal(#edge, 1, "the inclusive top-left edge still belongs to the first box")
-  Assert.equal(edge[1].value, "order", "the inclusive edge keeps the first criterion")
-  local bottomEdge = tapDown(215, 23, 35)
-  Assert.equal(#bottomEdge, 1, "the inclusive bottom-right edge still belongs to the first box")
-  Assert.equal(bottomEdge[1].value, "order", "the inclusive edge keeps the first criterion")
-  Assert.equal(#tapDown(128, 24, 36), 0, "the row just below the first box opens no criterion")
-  local run = tapDown(226, 23, 37)
-  Assert.equal(#run, 1, "the run button maps to exactly one command")
-  Assert.equal(run[1].action, "search-run", "the run button starts the search")
+  -- Test-local transcription of the original criteria boxes: inclusive
+  -- bounds in original evaluation order, independent of the production
+  -- tables so the mapping is proved against external evidence.
+  local boxes = {
+    { left = 128, top = 8, right = 215, bottom = 23, value = "order" },
+    { left = 56, top = 32, right = 127, bottom = 47, value = "letter" },
+    { left = 56, top = 56, right = 177, bottom = 71, value = "type" },
+    { left = 56, top = 80, right = 183, bottom = 95, value = "height" },
+    { left = 56, top = 104, right = 239, bottom = 119, value = "weight" },
+    { left = 56, top = 128, right = 111, bottom = 143, value = "area" },
+    { left = 208, top = 56, right = 239, bottom = 87, value = "shape" },
+  }
+  for _, box in ipairs(boxes) do
+    local centerX = math.floor((box.left + box.right) / 2)
+    local centerY = math.floor((box.top + box.bottom) / 2)
+    local mapped = tapDown(centerX, centerY)
+    Assert.equal(#mapped, 1, "the " .. box.value .. " box maps to exactly one command")
+    Assert.equal(mapped[1].type, "activate", "the " .. box.value .. " box activates")
+    Assert.equal(mapped[1].action, "criterion", "the " .. box.value .. " box opens its criterion")
+    Assert.equal(mapped[1].value, box.value, "the " .. box.value .. " box opens its own criterion")
+    for _, corner in ipairs({
+      { box.left, box.top },
+      { box.right, box.top },
+      { box.left, box.bottom },
+      { box.right, box.bottom },
+    }) do
+      local edge = tapDown(corner[1], corner[2])
+      Assert.equal(#edge, 1, "the inclusive " .. box.value .. " corner still opens its criterion")
+      Assert.equal(edge[1].value, box.value, "the inclusive corner keeps the " .. box.value .. " criterion")
+    end
+    Assert.equal(#tapDown(box.left - 1, centerY), 0, "the pixel left of " .. box.value .. " opens no criterion")
+    Assert.equal(
+      #tapDown(centerX, box.bottom + 1),
+      0,
+      "the pixel below " .. box.value .. " opens no criterion"
+    )
+  end
+  Assert.equal(#tapDown(120, 15), 0, "the gap left of the order box opens no criterion")
+  Assert.equal(#tapDown(100, 150), 0, "the gap between the area row and the bottom band stays inert")
+  -- Original bottom band: left reset, center run, right back.
+  local reset = tapDown(40, 175)
+  Assert.equal(#reset, 1, "the left bottom control maps to exactly one command")
+  Assert.equal(reset[1].action, "search-reset", "the left bottom control resets the criteria")
+  for _, corner in ipairs({ { 4, 164 }, { 75, 164 }, { 4, 187 }, { 75, 187 } }) do
+    local edge = tapDown(corner[1], corner[2])
+    Assert.equal(#edge, 1, "the inclusive reset corner still resets")
+    Assert.equal(edge[1].action, "search-reset", "the inclusive corner keeps the reset action")
+  end
+  Assert.equal(#tapDown(3, 175), 0, "the pixel left of reset stays inert")
+  Assert.equal(#tapDown(76, 175), 0, "the gap between reset and run stays inert")
+  Assert.equal(#tapDown(40, 163), 0, "the row above the bottom band stays inert")
+  local run = tapDown(127, 175)
+  Assert.equal(#run, 1, "the center bottom control maps to exactly one command")
+  Assert.equal(run[1].action, "search-run", "the center bottom control starts the search")
+  for _, corner in ipairs({ { 92, 164 }, { 163, 164 }, { 92, 187 }, { 163, 187 } }) do
+    local edge = tapDown(corner[1], corner[2])
+    Assert.equal(#edge, 1, "the inclusive run corner still runs")
+    Assert.equal(edge[1].action, "search-run", "the inclusive corner keeps the run action")
+  end
+  Assert.equal(#tapDown(91, 175), 0, "the pixel left of run stays inert")
+  Assert.equal(#tapDown(164, 175), 0, "the gap between run and back stays inert")
+  local back = tapDown(215, 175)
+  Assert.equal(#back, 1, "the right bottom control maps to exactly one command")
+  Assert.equal(back[1].type, "cancel", "the right bottom control leaves the search")
+  for _, corner in ipairs({ { 180, 164 }, { 251, 164 }, { 180, 187 }, { 251, 187 } }) do
+    Assert.equal(#tapDown(corner[1], corner[2]), 1, "the inclusive back corner still leaves")
+  end
+  Assert.equal(#tapDown(179, 175), 0, "the pixel left of back stays inert")
+  Assert.equal(#tapDown(252, 175), 0, "the pixel right of back stays inert")
+  Assert.equal(#tapDown(215, 188), 0, "the row below the bottom band stays inert")
+end
+
+function T.native_grid_arrows_and_footer_follow_their_source_bands()
+  local Interface = requirePresent("native list hitboxes")
+  local set = Interface.browser()
+  local session = ApplicationPresentation.new(set)
   local grid = viewOn(stubView(), "grid")
   local gridPlan = session:resolve(measurementFor("wide"), sessionView(grid))
-  local function gridTap(lx, ly, pointerId)
-    local mapped =
-      session:mapInput({ hostTap(gridPlan, "controls", "pointer_down", lx, ly, pointerId) }, sessionView(grid))
-    session:mapInput({ hostTap(gridPlan, "controls", "pointer_up", lx, ly, pointerId) }, sessionView(grid))
+  local nextPointer = 100
+  local function gridTap(lx, ly)
+    nextPointer = nextPointer + 1
+    local mapped = session:mapInput(
+      { hostTap(gridPlan, "controls", "pointer_down", lx, ly, nextPointer) },
+      sessionView(grid)
+    )
+    session:mapInput({ hostTap(gridPlan, "controls", "pointer_up", lx, ly, nextPointer) }, sessionView(grid))
     return mapped
   end
-  local footer = gridTap(20, 160, 38)
-  Assert.equal(#footer, 1, "the list footer band maps to exactly one command")
-  Assert.equal(footer[1].action, "page-prev", "the left footer box pages back")
-  local footerEdge = gridTap(20, 187, 39)
-  Assert.equal(#footerEdge, 1, "the inclusive footer bottom still pages")
-  Assert.equal(footerEdge[1].action, "page-prev", "the inclusive edge keeps the footer action")
-  Assert.equal(#gridTap(20, 188, 40), 0, "the row below the footer band stays inert")
-  Assert.equal(#gridTap(65, 160, 41), 0, "the gap between footer boxes stays inert")
-  Assert.equal(#gridTap(200, 160, 42), 1, "the right footer box maps to exactly one command")
+  local prev = gridTap(241, 12)
+  Assert.equal(#prev, 1, "the upper arrow maps to exactly one command")
+  Assert.equal(prev[1].action, "page-prev", "the upper arrow pages back")
+  local next = gridTap(241, 138)
+  Assert.equal(#next, 1, "the lower arrow maps to exactly one command")
+  Assert.equal(next[1].action, "page-next", "the lower arrow pages forward")
+  for _, corner in ipairs({ { 231, 5 }, { 252, 20 }, { 231, 131 }, { 252, 146 } }) do
+    Assert.equal(#gridTap(corner[1], corner[2]), 1, "the inclusive arrow corner still pages")
+  end
+  Assert.equal(#gridTap(241, 75), 0, "the scrollbar strip between the arrows pages nothing")
+  Assert.equal(#gridTap(241, 21), 0, "the strip just below the upper arrow pages nothing")
+  Assert.equal(#gridTap(241, 130), 0, "the strip just above the lower arrow pages nothing")
+  Assert.equal(#gridTap(230, 12), 0, "the column left of the arrows pages nothing")
+  -- Original list footer: search, cry, entry, exit across y152..187.
+  local search = gridTap(31, 169)
+  Assert.equal(#search, 1, "the footer search cell maps to exactly one command")
+  Assert.equal(search[1].action, "search", "the footer search cell opens the search")
+  local cry = gridTap(95, 169)
+  Assert.equal(#cry, 1, "the footer cry cell maps to exactly one command")
+  Assert.equal(cry[1].action, "cry", "the footer cry cell cries")
+  local entry = gridTap(159, 169)
+  Assert.equal(#entry, 1, "the footer entry cell maps to exactly one command")
+  Assert.equal(entry[1].action, "entry-tab", "the footer entry cell opens the entry")
+  Assert.equal(entry[1].value, "area", "the footer entry cell opens on the area tab")
+  local exit = gridTap(223, 169)
+  Assert.equal(#exit, 1, "the footer exit cell maps to exactly one command")
+  Assert.equal(exit[1].type, "cancel", "the footer exit cell leaves the browser")
+  local boundaries = {
+    { lx = 63, action = "search" },
+    { lx = 64, action = "cry" },
+    { lx = 127, action = "cry" },
+    { lx = 128, action = "entry-tab" },
+    { lx = 191, action = "entry-tab" },
+    { lx = 192, type = "cancel" },
+  }
+  for _, edge in ipairs(boundaries) do
+    local mapped = gridTap(edge.lx, 169)
+    Assert.equal(#mapped, 1, "the footer boundary at " .. edge.lx .. " maps to exactly one command")
+    if edge.action ~= nil then
+      Assert.equal(mapped[1].action, edge.action, "the footer boundary at " .. edge.lx .. " keeps its cell")
+    else
+      Assert.equal(mapped[1].type, edge.type, "the footer boundary at " .. edge.lx .. " keeps its exit")
+    end
+  end
+  Assert.equal(#gridTap(31, 151), 0, "the row above the footer stays inert")
+  Assert.equal(#gridTap(31, 188), 0, "the row below the footer stays inert")
 end
 
 function T.native_entry_tabs_use_narrow_source_bands()
@@ -430,11 +529,19 @@ function T.native_entry_tabs_use_narrow_source_bands()
     Assert.equal(mapped[1].value, case.value, "the tab at " .. case.lx .. " selects its own page")
   end
   Assert.equal(#tapDown(7, 168, 51), 1, "the inclusive tab corner still switches")
-  Assert.equal(#tapDown(57, 191, 52), 1, "the inclusive tab edge still switches")
+  Assert.equal(#tapDown(57, 183, 52), 1, "the inclusive tab edge still switches")
   for _, lx in ipairs({ 60, 130, 190, 252 }) do
     Assert.equal(#tapDown(lx, 180, 53), 0, "the gap at " .. lx .. " switches no tab")
   end
-  Assert.equal(#tapDown(100, 191, 54), 1, "the inclusive tab bottom still switches")
+  Assert.equal(#tapDown(100, 183, 54), 1, "the inclusive tab bottom still switches")
+  for _, point in ipairs({ { 30, 184 }, { 100, 187 }, { 160, 190 }, { 220, 191 } }) do
+    Assert.equal(
+      #tapDown(point[1], point[2], 55),
+      0,
+      "the row at " .. point[2] .. " below the tab strip switches no tab"
+    )
+  end
+  Assert.equal(#tapDown(100, 167, 56), 0, "the row above the tab strip switches no tab")
 end
 
 function T.native_area_circles_and_letter_cells_match_source_selection()
@@ -451,17 +558,23 @@ function T.native_area_circles_and_letter_cells_match_source_selection()
     session:mapInput({ hostTap(areaPlan, "controls", "pointer_up", lx, ly, pointerId) }, sessionView(area))
     return mapped
   end
-  local circles = { { cx = 40, value = 0 }, { cx = 80, value = 1 }, { cx = 120, value = 2 } }
+  local circles = { { cx = 77, value = 0 }, { cx = 109, value = 1 }, { cx = 141, value = 2 } }
   for _, circle in ipairs(circles) do
-    local mapped = areaTap(circle.cx, 32, 60)
+    local mapped = areaTap(circle.cx, 33, 60)
     Assert.equal(#mapped, 1, "the daypart at " .. circle.cx .. " maps to exactly one command")
     Assert.equal(mapped[1].action, "area-time", "the daypart selects its time")
     Assert.equal(mapped[1].value, circle.value, "the daypart at " .. circle.cx .. " selects its own time")
-    local edge = areaTap(circle.cx + 14, 32, 61)
+    local edge = areaTap(circle.cx + 13, 33, 61)
     Assert.equal(#edge, 1, "the inclusive circle edge still selects its time")
     Assert.equal(edge[1].value, circle.value, "the circle edge keeps its own time")
+    Assert.equal(
+      #areaTap(circle.cx, 33 + 13, 62),
+      1,
+      "the inclusive circle bottom still selects its own time"
+    )
   end
-  Assert.equal(#areaTap(40 + 15, 32, 62), 0, "the pixel past the circle radius selects no time")
+  Assert.equal(#areaTap(77 + 14, 33, 63), 0, "the pixel past the circle radius selects no time")
+  Assert.equal(#areaTap(77, 33 + 14, 64), 0, "the pixel below the circle radius selects no time")
   local editor = viewOn(stubView(), "search")
   editor.search = {
     criteria = {},
@@ -478,23 +591,48 @@ function T.native_area_circles_and_letter_cells_match_source_selection()
     session:mapInput({ hostTap(editorPlan, "controls", "pointer_up", lx, ly, pointerId) }, sessionView(editor))
     return mapped
   end
-  local unrestricted = editorTap(8 + 16, 8 + 8, 63)
-  Assert.equal(#unrestricted, 1, "the first letter cell maps to exactly one command")
-  Assert.equal(unrestricted[1].action, "editor-choice", "the letter grid chooses")
-  Assert.equal(unrestricted[1].value, "unrestricted", "the first letter cell clears the filter")
-  local seventhColumn = editorTap(8 + 6 * 32 + 16, 8 + 8, 64)
+  -- Test-local transcription of the original letter cells: the first
+  -- three rows hold seven cells each, the last row holds six with the
+  -- 184..199 slot missing. Indices 0..25 hold A..Z, index 26 clears.
+  local firstCells = { 24, 56, 88, 120, 152, 184, 216 }
+  local first = editorTap(firstCells[1] + 7, 40 + 7, 63)
+  Assert.equal(#first, 1, "the first letter cell maps to exactly one command")
+  Assert.equal(first[1].action, "editor-choice", "the letter grid chooses")
+  Assert.equal(first[1].value, "A", "the first letter cell holds A")
+  local seventhColumn = editorTap(firstCells[7] + 7, 40 + 7, 64)
   Assert.equal(#seventhColumn, 1, "the seventh letter column maps to exactly one command")
-  Assert.equal(seventhColumn[1].value, "F", "the seventh column of the first row holds F")
-  local lastRow = editorTap(8 + 5 * 32 + 16, 8 + 3 * 16 + 8, 65)
-  Assert.equal(#lastRow, 1, "the last letter cell maps to exactly one command")
-  Assert.equal(lastRow[1].value, "Z", "the last letter cell holds Z")
+  Assert.equal(seventhColumn[1].value, "G", "the seventh column of the first row holds G")
+  local secondRow = editorTap(firstCells[1] + 7, 72 + 7, 65)
+  Assert.equal(#secondRow, 1, "the second row maps to exactly one command")
+  Assert.equal(secondRow[1].value, "H", "the second row starts with H")
+  local beforeLast = editorTap(152 + 7, 136 + 7, 66)
+  Assert.equal(#beforeLast, 1, "the fifth cell of the last row maps to exactly one command")
+  Assert.equal(beforeLast[1].value, "Z", "the fifth cell of the last row holds Z")
+  local lastCell = editorTap(216 + 7, 136 + 7, 67)
+  Assert.equal(#lastCell, 1, "the last letter cell maps to exactly one command")
+  Assert.equal(lastCell[1].value, "unrestricted", "the last letter cell clears the filter")
+  Assert.equal(#editorTap(184 + 7, 136 + 7, 68), 0, "the missing last-row slot chooses nothing")
+  Assert.equal(#editorTap(24, 40, 69), 1, "the inclusive first cell corner still holds A")
+  Assert.equal(#editorTap(231, 55, 70), 1, "the inclusive seventh column corner still holds G")
+  Assert.equal(#editorTap(23, 47, 71), 0, "the pixel left of the first row chooses nothing")
+  Assert.equal(#editorTap(232, 47, 72), 0, "the pixel right of the first row chooses nothing")
+  Assert.equal(#editorTap(31, 135, 73), 0, "the row between the third and last rows chooses nothing")
+  Assert.equal(#editorTap(31, 152, 74), 0, "the row below the last row chooses nothing")
+  local commit = editorTap(40, 175, 75)
+  Assert.equal(#commit, 1, "the left bottom control maps to exactly one command")
+  Assert.equal(commit[1].action, "editor-ok", "the left bottom control commits the editor")
+  local dismiss = editorTap(215, 175, 76)
+  Assert.equal(#dismiss, 1, "the right bottom control maps to exactly one command")
+  Assert.equal(dismiss[1].action, "editor-cancel", "the right bottom control cancels the editor")
+  Assert.equal(#editorTap(100, 175, 77), 0, "the gap between commit and cancel stays inert")
 end
 
 function T.native_option_editors_map_their_own_source_boxes()
   local Interface = requirePresent("native option editor hitboxes")
   local set = Interface.browser()
   local session = ApplicationPresentation.new(set)
-  local function editorTap(kind, lx, ly, pointerId)
+  local nextPointer = 70
+  local function editorTap(kind, options, lx, ly)
     local view = viewOn(stubView(), "search")
     view.search = {
       criteria = {},
@@ -504,28 +642,107 @@ function T.native_option_editors_map_their_own_source_boxes()
         criterion = kind,
         kind = kind,
         focus = nil,
-        options = { "unrestricted", "normal", "fire" },
+        options = options,
       },
     }
     local plan = session:resolve(measurementFor("wide"), sessionView(view))
-    local mapped =
-      session:mapInput({ hostTap(plan, "controls", "pointer_down", lx, ly, pointerId) }, sessionView(view))
-    session:mapInput({ hostTap(plan, "controls", "pointer_up", lx, ly, pointerId) }, sessionView(view))
+    nextPointer = nextPointer + 1
+    local mapped = session:mapInput(
+      { hostTap(plan, "controls", "pointer_down", lx, ly, nextPointer) },
+      sessionView(view)
+    )
+    session:mapInput({ hostTap(plan, "controls", "pointer_up", lx, ly, nextPointer) }, sessionView(view))
     return mapped
   end
-  local orderFirst = editorTap("order", 150, 15, 70)
-  Assert.equal(#orderFirst, 1, "the order editor maps its first box")
-  Assert.equal(orderFirst[1].value, "numerical", "the first order box holds the numerical sort")
-  Assert.equal(#editorTap("order", 20, 19, 71), 0, "the order editor leaves the menu gap inert")
-  local typeFirst = editorTap("type", 40, 16, 72)
-  Assert.equal(#typeFirst, 1, "the type editor maps its first box")
+  -- Original order editor: two columns over three rows, first
+  -- numerical and last shortest.
+  local orders = { "numerical", "alphabetical", "heaviest", "lightest", "tallest", "shortest" }
+  local orderCells = {
+    { lx = 67, ly = 55, value = "numerical" },
+    { lx = 187, ly = 55, value = "alphabetical" },
+    { lx = 67, ly = 87, value = "heaviest" },
+    { lx = 187, ly = 87, value = "lightest" },
+    { lx = 67, ly = 119, value = "tallest" },
+    { lx = 187, ly = 119, value = "shortest" },
+  }
+  for _, cell in ipairs(orderCells) do
+    local mapped = editorTap("order", orders, cell.lx, cell.ly)
+    Assert.equal(#mapped, 1, "the order cell for " .. cell.value .. " maps to exactly one command")
+    Assert.equal(mapped[1].action, "editor-choice", "the order editor chooses")
+    Assert.equal(mapped[1].value, cell.value, "the order cell holds " .. cell.value)
+  end
+  Assert.equal(#editorTap("order", orders, 24, 48), 1, "the inclusive order corner still chooses")
+  Assert.equal(#editorTap("order", orders, 111, 63), 1, "the inclusive order edge still chooses")
+  Assert.equal(#editorTap("order", orders, 23, 55), 0, "the pixel left of the order grid stays inert")
+  Assert.equal(#editorTap("order", orders, 128, 55), 0, "the gap between the order columns stays inert")
+  Assert.equal(#editorTap("order", orders, 67, 64), 0, "the row between order rows stays inert")
+  -- Original type editor: eighteen positional cells over four columns;
+  -- the final row holds only the last two cells.
+  local types = {}
+  for index = 0, 16 do
+    types[#types + 1] = "type-" .. string.format("%02d", index)
+  end
+  types[#types + 1] = "unrestricted"
+  local typeFirst = editorTap("type", types, 31, 47)
+  Assert.equal(#typeFirst, 1, "the type editor maps its first cell")
   Assert.equal(typeFirst[1].action, "editor-choice", "the type editor chooses")
-  local shapeFirst = editorTap("shape", 52, 72, 73)
+  Assert.equal(typeFirst[1].value, "type-00", "the first type cell holds the first option")
+  local typeMiddle = editorTap("type", types, 95, 71)
+  Assert.equal(#typeMiddle, 1, "a middle type cell maps to exactly one command")
+  Assert.equal(typeMiddle[1].value, "type-05", "the second row second column holds the sixth option")
+  local typeRowEnd = editorTap("type", types, 223, 119)
+  Assert.equal(#typeRowEnd, 1, "the last full-row type cell maps to exactly one command")
+  Assert.equal(typeRowEnd[1].value, "type-15", "the last full-row cell holds the sixteenth option")
+  local typeLast = editorTap("type", types, 95, 143)
+  Assert.equal(#typeLast, 1, "the final type cell maps to exactly one command")
+  Assert.equal(typeLast[1].value, "unrestricted", "the final type cell clears the filter")
+  Assert.equal(#editorTap("type", types, 3, 40), 1, "the inclusive type corner still chooses")
+  Assert.equal(#editorTap("type", types, 2, 47), 0, "the pixel left of the type grid stays inert")
+  Assert.equal(#editorTap("type", types, 61, 47), 0, "the gap after the first type column stays inert")
+  Assert.equal(#editorTap("type", types, 159, 143), 0, "the missing final-row type slot stays inert")
+  -- Original shape editor: fifteen positional cells over five columns.
+  local shapes = {}
+  for index = 0, 13 do
+    shapes[#shapes + 1] = "shape-" .. string.format("%02d", index)
+  end
+  shapes[#shapes + 1] = "unrestricted"
+  local shapeFirst = editorTap("shape", shapes, 31, 55)
   Assert.equal(#shapeFirst, 1, "the shape editor maps its first cell")
   Assert.equal(shapeFirst[1].action, "editor-choice", "the shape editor chooses")
-  local areaFirst = editorTap("area", 90, 16, 74)
-  Assert.equal(#areaFirst, 1, "the area editor maps its first box")
-  Assert.equal(areaFirst[1].action, "editor-choice", "the area editor chooses")
+  Assert.equal(shapeFirst[1].value, "shape-00", "the first shape cell holds the first option")
+  local shapeMiddle = editorTap("shape", shapes, 127, 95)
+  Assert.equal(#shapeMiddle, 1, "a middle shape cell maps to exactly one command")
+  Assert.equal(shapeMiddle[1].value, "shape-07", "the middle shape cell holds the eighth option")
+  local shapeLast = editorTap("shape", shapes, 223, 135)
+  Assert.equal(#shapeLast, 1, "the final shape cell maps to exactly one command")
+  Assert.equal(shapeLast[1].value, "unrestricted", "the final shape cell clears the filter")
+  Assert.equal(#editorTap("shape", shapes, 16, 40), 1, "the inclusive shape corner still chooses")
+  Assert.equal(#editorTap("shape", shapes, 60, 55), 0, "the gap after the first shape column stays inert")
+  -- Original area editor: johto, kanto, unknown, then unrestricted.
+  local areas = { "johto", "kanto", "unknown", "unrestricted" }
+  local areaCells = {
+    { lx = 75, ly = 71, value = "johto" },
+    { lx = 179, ly = 71, value = "kanto" },
+    { lx = 75, ly = 127, value = "unknown" },
+    { lx = 179, ly = 127, value = "unrestricted" },
+  }
+  for _, cell in ipairs(areaCells) do
+    local mapped = editorTap("area", areas, cell.lx, cell.ly)
+    Assert.equal(#mapped, 1, "the area cell for " .. cell.value .. " maps to exactly one command")
+    Assert.equal(mapped[1].action, "editor-choice", "the area editor chooses")
+    Assert.equal(mapped[1].value, cell.value, "the area cell holds " .. cell.value)
+  end
+  Assert.equal(#editorTap("area", areas, 48, 64), 1, "the inclusive area corner still chooses")
+  Assert.equal(#editorTap("area", areas, 47, 71), 0, "the pixel left of the area grid stays inert")
+  Assert.equal(#editorTap("area", areas, 128, 71), 0, "the gap between the area columns stays inert")
+  Assert.equal(#editorTap("area", areas, 75, 80), 0, "the row between area rows stays inert")
+  local ok = editorTap("type", types, 40, 175)
+  Assert.equal(#ok, 1, "the left editor bottom control maps to exactly one command")
+  Assert.equal(ok[1].action, "editor-ok", "the left editor bottom control commits")
+  local cancel = editorTap("type", types, 215, 175)
+  Assert.equal(#cancel, 1, "the right editor bottom control maps to exactly one command")
+  Assert.equal(cancel[1].action, "editor-cancel", "the right editor bottom control cancels")
+  Assert.equal(#editorTap("type", types, 100, 175), 0, "the gap between commit and cancel stays inert")
 end
 
 function T.captured_slider_target_survives_moves_outside_its_band()
@@ -547,18 +764,18 @@ function T.captured_slider_target_survives_moves_outside_its_band()
       sessionView(slider)
     )
   end
-  local begin = send("pointer_down", 20, 48, 80)
+  local begin = send("pointer_down", 100, 131, 80)
   Assert.equal(#begin, 1, "the press on the minimum track begins exactly one gesture")
   Assert.equal(begin[1].target, "height-min", "the press captures the minimum endpoint")
   Assert.equal(begin[1].phase, "begin", "the press begins the drag")
-  local otherBand = send("pointer_move", 100, 88, 80)
+  local otherBand = send("pointer_move", 100, 60, 80)
   Assert.equal(#otherBand, 1, "a move over the other band still reports the gesture")
   Assert.equal(otherBand[1].target, "height-min", "the move keeps the captured minimum")
   Assert.equal(otherBand[1].phase, "move", "the move keeps the move phase")
-  local emptyBand = send("pointer_move", 100, 120, 80)
+  local emptyBand = send("pointer_move", 100, 100, 80)
   Assert.equal(#emptyBand, 1, "a move over empty space still reports the gesture")
   Assert.equal(emptyBand[1].target, "height-min", "empty space keeps the captured minimum")
-  local release = send("pointer_up", 100, 120, 80)
+  local release = send("pointer_up", 100, 100, 80)
   Assert.equal(#release, 1, "a release over empty space ends exactly one gesture")
   Assert.equal(release[1].target, "height-min", "the release ends the captured minimum")
   Assert.equal(release[1].phase, "end", "the release ends the drag")
@@ -570,6 +787,169 @@ function T.captured_slider_target_survives_moves_outside_its_band()
     sessionView(fresh)
   )
   Assert.equal(#stray, 0, "a release with no capture maps to nothing")
+end
+
+function T.native_slider_tracks_convert_from_the_handle_origin_and_keep_their_endpoint()
+  local Interface = requirePresent("native slider hitboxes")
+  local set = Interface.browser()
+  local session = ApplicationPresentation.new(set)
+  local slider = viewOn(stubView(), "search")
+  slider.search = {
+    criteria = {},
+    focus = "height",
+    previousColumn = "criteria",
+    editor = { criterion = "height", kind = "height", endpoint = "min" },
+  }
+  local plan = session:resolve(measurementFor("wide"), sessionView(slider))
+  local nextPointer = 200
+  local function send(eventType, lx, ly)
+    nextPointer = nextPointer + 1
+    local mapped = session:mapInput(
+      { hostTap(plan, "controls", eventType, lx, ly, nextPointer) },
+      sessionView(slider)
+    )
+    -- Each press completes like a real tap: the shared session holds a
+    -- single content capture, so a release follows every down before the
+    -- next press begins. The release itself maps to nothing.
+    session:mapInput({ hostTap(plan, "controls", "pointer_up", lx, ly, nextPointer) }, sessionView(slider))
+    return mapped
+  end
+  -- Test-local transcription of the original slider geometry: the
+  -- upper track drives MAX, the lower track drives MIN, and the step
+  -- counts handle-center pixels from x52, clamped to 0..152.
+  local maxZero = send("pointer_down", 52, 60)
+  Assert.equal(#maxZero, 1, "the upper track press begins exactly one gesture")
+  Assert.equal(maxZero[1].target, "height-max", "the upper track captures the maximum endpoint")
+  Assert.equal(maxZero[1].phase, "begin", "the upper track press begins the drag")
+  Assert.equal(maxZero[1].value, 0, "the handle origin converts to step zero")
+  local maxFull = send("pointer_down", 204, 60)
+  Assert.equal(#maxFull, 1, "the far end of the upper track begins exactly one gesture")
+  Assert.equal(maxFull[1].target, "height-max", "the far end keeps the maximum endpoint")
+  Assert.equal(maxFull[1].value, 152, "the far handle pixel converts to the final step")
+  local maxMiddle = send("pointer_down", 128, 60)
+  Assert.equal(#maxMiddle, 1, "the middle of the upper track begins exactly one gesture")
+  Assert.equal(maxMiddle[1].value, 76, "the middle handle pixel converts to the middle step")
+  local minZero = send("pointer_down", 52, 131)
+  Assert.equal(#minZero, 1, "the lower track press begins exactly one gesture")
+  Assert.equal(minZero[1].target, "height-min", "the lower track captures the minimum endpoint")
+  Assert.equal(minZero[1].value, 0, "the lower handle origin converts to step zero")
+  local minFull = send("pointer_down", 204, 131)
+  Assert.equal(#minFull, 1, "the far end of the lower track begins exactly one gesture")
+  Assert.equal(minFull[1].value, 152, "the lower far handle pixel converts to the final step")
+  Assert.equal(#send("pointer_down", 26, 46), 1, "the inclusive upper track corner still begins")
+  Assert.equal(#send("pointer_down", 229, 145), 1, "the inclusive lower track corner still begins")
+  Assert.equal(#send("pointer_down", 26, 45), 0, "the row above the upper track begins nothing")
+  Assert.equal(#send("pointer_down", 100, 100), 0, "the row between the tracks begins nothing")
+  -- Original step arrows beside each track move only their endpoint.
+  local arrows = {
+    { lx = 17, ly = 60, endpoint = "max", direction = -1 },
+    { lx = 237, ly = 60, endpoint = "max", direction = 1 },
+    { lx = 17, ly = 131, endpoint = "min", direction = -1 },
+    { lx = 237, ly = 131, endpoint = "min", direction = 1 },
+  }
+  for _, arrow in ipairs(arrows) do
+    local stepped = send("pointer_down", arrow.lx, arrow.ly)
+    Assert.equal(#stepped, 1, "the step arrow maps to exactly one command")
+    Assert.equal(stepped[1].action, "slider-step", "the step arrow steps its endpoint")
+    Assert.equal(stepped[1].endpoint, arrow.endpoint, "the step arrow keeps its own endpoint")
+    Assert.equal(stepped[1].direction, arrow.direction, "the step arrow keeps its own direction")
+  end
+  Assert.equal(#send("pointer_down", 9, 60), 0, "the pixel left of the arrows steps nothing")
+  Assert.equal(#send("pointer_down", 246, 60), 0, "the pixel right of the arrows steps nothing")
+  Assert.equal(#send("pointer_down", 17, 48), 0, "the row above the upper arrows steps nothing")
+  Assert.equal(#send("pointer_down", 17, 71), 0, "the row below the upper arrows steps nothing")
+  -- A captured drag keeps its endpoint across bands through the same
+  -- handle-origin conversion.
+  local held = viewOn(stubView(), "search")
+  held.search = slider.search
+  held.capturedSliderTarget = "height-min"
+  local heldPlan = session:resolve(measurementFor("wide"), sessionView(held))
+  nextPointer = nextPointer + 1
+  local move = session:mapInput(
+    { hostTap(heldPlan, "controls", "pointer_move", 204, 60, nextPointer) },
+    sessionView(held)
+  )
+  Assert.equal(#move, 1, "a captured move over the other track reports exactly one gesture")
+  Assert.equal(move[1].target, "height-min", "the captured move keeps the minimum endpoint")
+  Assert.equal(move[1].phase, "move", "the captured move keeps the move phase")
+  Assert.equal(move[1].value, 152, "the captured move converts from the handle origin")
+end
+
+function T.compact_letter_choices_leave_the_confirmation_row_reachable()
+  local Interface = requirePresent("compact letter layout")
+  local set = Interface.browser()
+  local session = ApplicationPresentation.new(set)
+  local options = {}
+  for code = string.byte("A"), string.byte("Z") do
+    options[#options + 1] = string.char(code)
+  end
+  options[#options + 1] = "unrestricted"
+  local editor = viewOn(stubView(), "search")
+  editor.search = {
+    criteria = {},
+    focus = "letter",
+    previousColumn = "criteria",
+    editor = { criterion = "letter", kind = "letter", focus = "A", options = options },
+  }
+  local plan = session:resolve(measurementFor("compact"), sessionView(editor))
+  local compact = assert(plan.content.pokedexCompact, "the compact plan publishes its geometry record")
+  local choices = {}
+  local commit, cancel = nil, nil
+  for _, row in ipairs(compact.rows) do
+    if type(row) == "table" and type(row.rect) == "table" then
+      if row.action == "editor-choice" then
+        choices[#choices + 1] = row
+      elseif row.action == "editor-ok" then
+        commit = row
+      elseif row.action == "editor-cancel" then
+        cancel = row
+      end
+    end
+  end
+  Assert.equal(#choices, 27, "the compact letter editor stages every choice")
+  Assert.notNil(commit, "the compact editor stages its commit control")
+  Assert.notNil(cancel, "the compact editor stages its cancel control")
+  assert(commit ~= nil, "the compact editor stages its commit control")
+  assert(cancel ~= nil, "the compact editor stages its cancel control")
+  Assert.equal(commit.rect.y, 144, "the commit control keeps the dialog row")
+  Assert.equal(cancel.rect.y, 144, "the cancel control keeps the dialog row")
+  -- Test-local transcription of the reflowed choice grid: four columns
+  -- over seven rows, strictly above the dialog row.
+  local nextPointer = 300
+  local function tapInformation(lx, ly)
+    nextPointer = nextPointer + 1
+    local mapped = session:mapInput(
+      { hostTap(plan, "information", "pointer_down", lx, ly, nextPointer) },
+      sessionView(editor)
+    )
+    session:mapInput({ hostTap(plan, "information", "pointer_up", lx, ly, nextPointer) }, sessionView(editor))
+    return mapped
+  end
+  for index, row in ipairs(choices) do
+    local column = (index - 1) % 4
+    local gridRow = math.floor((index - 1) / 4)
+    Assert.equal(row.rect.x, 8 + column * 40, "choice " .. index .. " keeps its column")
+    Assert.equal(row.rect.y, 8 + gridRow * 16, "choice " .. index .. " keeps its row")
+    Assert.equal(row.rect.width, 38, "choice " .. index .. " keeps its width")
+    Assert.equal(row.rect.height, 16, "choice " .. index .. " keeps its height")
+    Assert.isTrue(
+      row.rect.y + row.rect.height <= 120,
+      "choice " .. index .. " stays above the dialog row"
+    )
+    Assert.isTrue(row.enabled ~= false, "choice " .. index .. " stays selectable")
+    local mapped = tapInformation(row.rect.x + 19, row.rect.y + 8)
+    Assert.equal(#mapped, 1, "choice " .. index .. " maps to exactly one command")
+    Assert.equal(mapped[1].action, "editor-choice", "choice " .. index .. " chooses")
+    Assert.equal(mapped[1].value, options[index], "choice " .. index .. " chooses its own option")
+  end
+  local committed = tapInformation(commit.rect.x + 38, commit.rect.y + 10)
+  Assert.equal(#committed, 1, "the commit control maps to exactly one command")
+  Assert.equal(committed[1].action, "editor-ok", "the commit control commits, never chooses")
+  local dismissed = tapInformation(cancel.rect.x + 38, cancel.rect.y + 10)
+  Assert.equal(#dismissed, 1, "the cancel control maps to exactly one command")
+  Assert.equal(dismissed[1].action, "editor-cancel", "the cancel control cancels, never chooses")
+  Assert.equal(#tapInformation(200, 60), 0, "the margin right of the choice grid chooses nothing")
+  Assert.equal(#tapInformation(47, 16), 0, "the gutter between choice columns chooses nothing")
 end
 
 ---@param width number host width behind the single-display measurement

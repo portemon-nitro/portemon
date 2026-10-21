@@ -7,8 +7,10 @@
 local Assert = require("tests.support.Assert")
 local PokedexDexFixture = require("libs.hgss.tests.mons.pokedex_dex_fixture")
 local PokedexKnowledge = require("libs.hgss.src.mons.PokedexKnowledge")
+local PokedexSources = require("romdump.src.config.PokedexSources")
 
 local CONTROLLER_MODULE = "game.hgss.src.pokedex.PokedexController"
+local SEARCH_MODULE = "game.hgss.src.pokedex.PokedexSearch"
 
 local T = {}
 
@@ -25,6 +27,38 @@ local function catalogs()
   local monCatalog = PokedexDexFixture.makeCatalog()
   local catalog = PokedexDexFixture.buildPokedexCatalog()
   return monCatalog, catalog
+end
+
+-- Attaches the published editor option order to a synthetic catalog and
+-- admits every ordered key, so the runtime can resolve each position to
+-- a declared option exactly like it does against generated data.
+local function withPublishedOptionOrder(catalog)
+  local criteria = assert(catalog.criteria, "the synthetic catalog carries its search criteria")
+  local typeOrder = {}
+  for _, name in ipairs(PokedexSources.typeOrder) do
+    typeOrder[#typeOrder + 1] = name
+  end
+  typeOrder[#typeOrder + 1] = "unrestricted"
+  local shapeOrder = {}
+  for _, name in ipairs(PokedexSources.shapeOrder) do
+    shapeOrder[#shapeOrder + 1] = name
+  end
+  shapeOrder[#shapeOrder + 1] = "unrestricted"
+  criteria.typeOptionOrder = typeOrder
+  criteria.shapeOptionOrder = shapeOrder
+  local types = assert(criteria.types, "the synthetic catalog carries its type lists")
+  for _, name in ipairs(PokedexSources.typeOrder) do
+    if types[name] == nil then
+      types[name] = { "CHIKORITA" }
+    end
+  end
+  local shapes = assert(criteria.shapes, "the synthetic catalog carries its shape lists")
+  for _, name in ipairs(PokedexSources.shapeOrder) do
+    if shapes[name] == nil then
+      shapes[name] = { "CHIKORITA" }
+    end
+  end
+  return catalog
 end
 
 local function enabledOwner(monCatalog, catalog)
@@ -158,6 +192,7 @@ function T.type_criteria_match_either_original_type_without_slot_bias()
     dual = { "CHIKORITA", "TOTODILE", "EEVEE" },
     single = { "TOTODILE", "PICHU" },
   }
+  withPublishedOptionOrder(catalog)
   local owner = enabledOwner(monCatalog, catalog)
   observe(owner, monCatalog, { species = "CHIKORITA", personality = 31 })
   observe(owner, monCatalog, { species = "TOTODILE", personality = 31 })
@@ -188,6 +223,7 @@ function T.type_editor_shifts_full_slots_and_treats_second_as_noop()
     second = { "TOTODILE" },
     third = { "EEVEE" },
   }
+  withPublishedOptionOrder(catalog)
   local owner = enabledOwner(monCatalog, catalog)
   observe(owner, monCatalog, { species = "CHIKORITA", personality = 31 })
   local controller = newBrowser(PokedexController, owner, monCatalog, catalog)
@@ -479,6 +515,68 @@ function T.open_editors_project_their_kind_alongside_the_criterion()
   idle(controller, 5)
   Assert.isNil(controller:view().search.editor, "cancel leaves the height editor")
   controller:dispose()
+end
+
+function T.editor_option_lists_follow_the_published_option_order()
+  local ok, PokedexSearch = pcall(require, SEARCH_MODULE)
+  Assert.isTrue(ok, "missing search criteria owner (" .. SEARCH_MODULE .. ")")
+  assert(PokedexSearch ~= nil, "the search module loads")
+  local monCatalog, catalog = catalogs()
+  withPublishedOptionOrder(catalog)
+  local owner = enabledOwner(monCatalog, catalog)
+  local search = PokedexSearch.new({ catalog = catalog, dex = owner })
+  Assert.deepEqual(
+    PokedexSearch.CRITERIA,
+    { "order", "letter", "type", "height", "weight", "area", "shape" },
+    "the criteria sequence keeps the visible order"
+  )
+  local expectedTypes = {}
+  for _, name in ipairs(PokedexSources.typeOrder) do
+    expectedTypes[#expectedTypes + 1] = name
+  end
+  expectedTypes[#expectedTypes + 1] = "unrestricted"
+  local types = search:editorOptions("type")
+  Assert.deepEqual(types, expectedTypes, "the type options keep the published order with Any last")
+  Assert.equal(#types, 18, "the type options stage every type plus the clearing choice")
+  types[1] = "tampered"
+  Assert.equal(
+    search:editorOptions("type")[1],
+    "normal",
+    "the type options detach from the borrowed catalog"
+  )
+  local expectedShapes = {}
+  for _, name in ipairs(PokedexSources.shapeOrder) do
+    expectedShapes[#expectedShapes + 1] = name
+  end
+  expectedShapes[#expectedShapes + 1] = "unrestricted"
+  local shapes = search:editorOptions("shape")
+  Assert.deepEqual(shapes, expectedShapes, "the shape options keep the published order with Any last")
+  Assert.equal(#shapes, 15, "the shape options stage every shape plus the clearing choice")
+  local expectedLetters = {}
+  for code = string.byte("A"), string.byte("Z") do
+    expectedLetters[#expectedLetters + 1] = string.char(code)
+  end
+  expectedLetters[#expectedLetters + 1] = "unrestricted"
+  Assert.deepEqual(search:editorOptions("letter"), expectedLetters, "the letter options end with the clearing choice")
+  Assert.deepEqual(
+    search:editorOptions("area"),
+    { "johto", "kanto", "unknown", "unrestricted" },
+    "the area options keep their scope order with Any last"
+  )
+  search:openEditor("letter")
+  search:choose("C")
+  Assert.equal(search:criteria().letter, "c", "choosing a letter stages its filter")
+  search:choose("unrestricted")
+  Assert.isNil(search:criteria().letter, "choosing the final letter choice clears the filter")
+  search:closeEditor(true)
+  search:openEditor("type")
+  search:choose("fighting")
+  search:closeEditor(true)
+  Assert.equal(search:criteria().type1, "fighting", "choosing a published type stages its filter")
+  search:openEditor("type")
+  search:choose("unrestricted")
+  search:closeEditor(true)
+  Assert.isNil(search:criteria().type1, "choosing the final type choice clears the filter")
 end
 
 return { tests = T }

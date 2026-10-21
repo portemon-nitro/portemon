@@ -7,6 +7,7 @@
 local Assert = require("tests.support.Assert")
 local PokedexDexFixture = require("libs.hgss.tests.mons.pokedex_dex_fixture")
 local PokedexKnowledge = require("libs.hgss.src.mons.PokedexKnowledge")
+local PokedexSources = require("romdump.src.config.PokedexSources")
 
 local CONTROLLER_MODULE = "game.hgss.src.pokedex.PokedexController"
 
@@ -25,6 +26,38 @@ local function catalogs()
   local monCatalog = PokedexDexFixture.makeCatalog()
   local catalog = PokedexDexFixture.buildPokedexCatalog()
   return monCatalog, catalog
+end
+
+-- Attaches the published editor option order to a synthetic catalog and
+-- admits every ordered key, so pointer cells and keyboard steps resolve
+-- the same declared option exactly like they do against generated data.
+local function withPublishedOptionOrder(catalog)
+  local criteria = assert(catalog.criteria, "the synthetic catalog carries its search criteria")
+  local typeOrder = {}
+  for _, name in ipairs(PokedexSources.typeOrder) do
+    typeOrder[#typeOrder + 1] = name
+  end
+  typeOrder[#typeOrder + 1] = "unrestricted"
+  local shapeOrder = {}
+  for _, name in ipairs(PokedexSources.shapeOrder) do
+    shapeOrder[#shapeOrder + 1] = name
+  end
+  shapeOrder[#shapeOrder + 1] = "unrestricted"
+  criteria.typeOptionOrder = typeOrder
+  criteria.shapeOptionOrder = shapeOrder
+  local types = assert(criteria.types, "the synthetic catalog carries its type lists")
+  for _, name in ipairs(PokedexSources.typeOrder) do
+    if types[name] == nil then
+      types[name] = { "CHIKORITA" }
+    end
+  end
+  local shapes = assert(criteria.shapes, "the synthetic catalog carries its shape lists")
+  for _, name in ipairs(PokedexSources.shapeOrder) do
+    if shapes[name] == nil then
+      shapes[name] = { "CHIKORITA" }
+    end
+  end
+  return catalog
 end
 
 local function ownerWithFlags(monCatalog, catalog, flags)
@@ -844,6 +877,13 @@ function T.search_keyboard_focus_traverses_criteria_and_confirms()
   press(controller, { { type = "y" } })
   Assert.equal(controller:view().page, "search", "grid Y reaches the criteria root")
   Assert.equal(controller:view().search.focus, "order", "search focus starts on the order criterion")
+  -- Keyboard focus walks the visible criteria in order, then run and
+  -- reset, before wrapping back to the start.
+  local traversal = { "letter", "type", "height", "weight", "area", "shape", "run", "reset", "order" }
+  for _, focus in ipairs(traversal) do
+    press(controller, { { type = "navigate", direction = "down" } })
+    Assert.equal(controller:view().search.focus, focus, "search focus steps to " .. focus)
+  end
   press(controller, { { type = "navigate", direction = "down" } })
   Assert.equal(controller:view().search.focus, "letter", "search focus steps to the letter criterion")
   press(controller, { { type = "confirm" } })
@@ -898,9 +938,89 @@ function T.search_editor_projects_its_option_list_for_touch_selection()
   local editor = controller:view().search.editor
   Assert.notNil(editor, "the letter editor opens")
   Assert.notNil(editor.options, "the editor projects its touch option list")
-  Assert.equal(editor.options[1], "unrestricted", "the option list starts unrestricted")
-  Assert.equal(editor.options[2], "A", "the option list carries the source letters")
+  Assert.equal(#editor.options, 27, "the option list stages every letter plus the clearing choice")
+  Assert.equal(editor.options[1], "A", "the option list starts with the first letter")
+  Assert.equal(editor.options[27], "unrestricted", "the option list ends with the clearing choice")
   controller:dispose()
+end
+
+function T.search_pointer_and_keyboard_choose_the_same_published_option()
+  local PokedexController = requirePresent("search editor option parity")
+  local monCatalog, catalog = catalogs()
+  withPublishedOptionOrder(catalog)
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 31 }, "caught")
+  observe(owner, monCatalog, { species = "TOTODILE", personality = 31 }, "caught")
+  observe(owner, monCatalog, { species = "CUSTOM_IN", personality = 31 }, "caught")
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  press(controller, { { type = "y" } })
+  Assert.equal(controller:view().page, "search", "grid Y reaches the criteria root")
+  -- A pointer-shaped choice of the first published type stages it.
+  press(controller, { { type = "activate", action = "criterion", value = "type" } })
+  local editor = controller:view().search.editor
+  Assert.notNil(editor, "the type editor opens")
+  Assert.notNil(editor.options, "the type editor projects its option list")
+  Assert.equal(#editor.options, 18, "the type editor stages every type plus the clearing choice")
+  Assert.equal(editor.options[1], "normal", "the first published type opens the list")
+  Assert.equal(editor.options[18], "unrestricted", "the clearing choice closes the list")
+  press(controller, { { type = "activate", action = "editor-choice", value = editor.options[1] } })
+  press(controller, { { type = "activate", action = "editor-ok" } })
+  Assert.equal(controller:view().search.criteria.type1, "normal", "the pointer choice stages the first type")
+  -- A keyboard step from that staged choice stages the next published type.
+  press(controller, { { type = "activate", action = "criterion", value = "type" } })
+  press(controller, { { type = "navigate", direction = "down" } })
+  Assert.equal(
+    controller:view().search.editor.focus,
+    "fighting",
+    "the keyboard step reaches the second published type"
+  )
+  press(controller, { { type = "confirm" } })
+  press(controller, { { type = "activate", action = "editor-ok" } })
+  local staged = controller:view().search.criteria
+  Assert.equal(staged.type1, "normal", "the pointer choice survives the keyboard staging")
+  Assert.equal(staged.type2, "fighting", "the keyboard choice stages the second type")
+  -- The last published shape clears its filter by pointer.
+  press(controller, { { type = "activate", action = "criterion", value = "shape" } })
+  local shapeEditor = controller:view().search.editor
+  Assert.notNil(shapeEditor, "the shape editor opens")
+  Assert.notNil(shapeEditor.options, "the shape editor projects its option list")
+  Assert.equal(#shapeEditor.options, 15, "the shape editor stages every shape plus the clearing choice")
+  Assert.equal(shapeEditor.options[1], "quadruped", "the first published shape opens the list")
+  press(controller, { { type = "activate", action = "editor-choice", value = shapeEditor.options[15] } })
+  press(controller, { { type = "activate", action = "editor-ok" } })
+  Assert.isNil(controller:view().search.criteria.shape, "the last shape choice clears the filter")
+  -- The search still runs through the unchanged evaluator for a staged letter.
+  press(controller, { { type = "activate", action = "search-reset" } })
+  press(controller, {
+    { type = "activate", action = "criterion", value = "letter" },
+    { type = "activate", action = "editor-choice", value = "C" },
+    { type = "activate", action = "editor-ok" },
+  })
+  press(controller, { { type = "start" } })
+  idle(controller, 250)
+  Assert.equal(controller:view().page, "results", "the staged search completes onto the result grid")
+  local species = {}
+  for _, entry in ipairs(controller:view().grid.buffers[1].entries) do
+    if entry.returnToSearch ~= true then
+      species[#species + 1] = entry.species
+    end
+  end
+  Assert.deepEqual(species, { "CHIKORITA", "CUSTOM_IN" }, "the letter search keeps its evaluator membership")
+  controller:dispose()
+  -- A locked scope never stages through the pointer path either.
+  local lockedOwner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true })
+  observe(lockedOwner, monCatalog, { species = "CHIKORITA", personality = 31 }, "caught")
+  local locked = PokedexController.new(baseArgs(lockedOwner, monCatalog, catalog))
+  openGrid(locked)
+  press(locked, { { type = "y" } })
+  press(locked, { { type = "activate", action = "criterion", value = "area" } })
+  press(locked, { { type = "activate", action = "editor-choice", value = "kanto" } })
+  Assert.isNil(locked:view().search.criteria.area, "the locked scope never stages through pointer input")
+  press(locked, { { type = "activate", action = "editor-choice", value = "unknown" } })
+  press(locked, { { type = "activate", action = "editor-ok" } })
+  Assert.equal(locked:view().search.criteria.area, "unknown", "an unlocked scope still stages")
+  locked:dispose()
 end
 
 -- The search feedback text follows the native result-count template
@@ -1014,6 +1134,7 @@ end
 function T.search_option_editors_list_their_source_choices()
   local PokedexController = requirePresent("search editor text demand")
   local monCatalog, catalog = catalogs()
+  withPublishedOptionOrder(catalog)
   local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true })
   observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 })
   local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
@@ -1719,6 +1840,7 @@ end
 function T.shape_icon_and_results_mark_follow_only_their_visible_pages()
   local PokedexController = requirePresent("shape and result sprite intents")
   local monCatalog, catalog = catalogs()
+  withPublishedOptionOrder(catalog)
   local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
   observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 })
   observe(owner, monCatalog, { species = "EEVEE", personality = 31 }, "caught")

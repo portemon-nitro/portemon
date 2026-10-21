@@ -7,6 +7,7 @@
 
 local Assert = require("tests.support.Assert")
 local Fixture = require("tests.support.PokedexPresentationFixture")
+local PokedexSources = require("romdump.src.config.PokedexSources")
 local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
 
 local OWNER_MODULE = "game.hgss.src.pokedex.PokedexPresentationResources"
@@ -1423,10 +1424,32 @@ end
 -- the shape editor converge, a demand naming the hidden icon on an
 -- unrelated editor fails naming its subject, the committed bundle
 -- survives, and close plus reopen plateaus at no outstanding interest.
+-- Attaches the published editor order arrays to a synthetic catalog so
+-- shape/type editors resolve each position exactly like they do against
+-- generated data.
+---@param catalog table synthetic generated dex catalog
+local function withPublishedOptionOrder(catalog)
+  local criteria = assert(catalog.criteria, "the synthetic catalog carries its search criteria")
+  local typeOrder = {}
+  for _, name in ipairs(PokedexSources.typeOrder) do
+    typeOrder[#typeOrder + 1] = name
+  end
+  typeOrder[#typeOrder + 1] = "unrestricted"
+  criteria.typeOptionOrder = typeOrder
+  local shapeOrder = {}
+  for _, name in ipairs(PokedexSources.shapeOrder) do
+    shapeOrder[#shapeOrder + 1] = name
+  end
+  shapeOrder[#shapeOrder + 1] = "unrestricted"
+  criteria.shapeOptionOrder = shapeOrder
+  return catalog
+end
+
 function T.shape_pages_prepare_while_invalid_subjects_still_fail()
   local Owner = requirePresent("sourced search closure and strict validation")
   local pool = SharedImagePoolFake.new()
   local monCatalog, catalog = Fixture.catalogs()
+  withPublishedOptionOrder(catalog)
   local controller = Fixture.openController(Fixture.ownerWithHistory(monCatalog, catalog), monCatalog, catalog)
   drive(controller, { { type = "confirm" } })
   settle(controller, 40)

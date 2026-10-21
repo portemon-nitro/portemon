@@ -65,7 +65,7 @@ PokedexController.FEED_TIMEOUT_TICKS = 60
 
 -- Ordered keyboard/gamepad focus graph across the search root: the
 -- seven source criteria followed by the run and reset actions.
-local SEARCH_FOCUSABLES = { "order", "letter", "type", "shape", "area", "height", "weight", "run", "reset" }
+local SEARCH_FOCUSABLES = { "order", "letter", "type", "height", "weight", "area", "shape", "run", "reset" }
 
 -- Scrollbar families: source thresholds map to authored thumb lengths.
 PokedexController.SCROLL_THRESHOLDS = { 15, 45, 90, 135, 180, 225, 270, 315, 360, 405, 450, 495 }

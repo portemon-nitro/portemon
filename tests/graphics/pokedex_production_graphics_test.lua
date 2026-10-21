@@ -21,6 +21,7 @@ local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local MonCache = require("libs.assets.src.MonCache")
 local PokedexCache = require("libs.assets.src.PokedexCache")
 local PokedexDexFixture = require("libs.hgss.tests.mons.pokedex_dex_fixture")
+local PokedexSources = require("romdump.src.config.PokedexSources")
 local RomImporter = require("romdump.src.source.RomImporter")
 local SharedImagePoolFake = require("tests.support.SharedImagePoolFake")
 
@@ -515,6 +516,24 @@ local function graphicsRig(versionId, pool, scope)
   local cacheFs = CacheFs.forVersion(versionId)
   Assert.notNil(cacheFs, "the ready version exposes its prepared cache")
   local monCatalog, catalog = Fixture.catalogs()
+  -- The runtime resolves type/shape editor positions through the
+  -- published source order, so the rig carries the same generated
+  -- order arrays as the derived catalog.
+  do
+    local criteria = assert(catalog.criteria, "the synthetic catalog carries its search criteria")
+    local typeOrder = {}
+    for _, name in ipairs(PokedexSources.typeOrder) do
+      typeOrder[#typeOrder + 1] = name
+    end
+    typeOrder[#typeOrder + 1] = "unrestricted"
+    criteria.typeOptionOrder = typeOrder
+    local shapeOrder = {}
+    for _, name in ipairs(PokedexSources.shapeOrder) do
+      shapeOrder[#shapeOrder + 1] = name
+    end
+    shapeOrder[#shapeOrder + 1] = "unrestricted"
+    criteria.shapeOptionOrder = shapeOrder
+  end
   -- Whole-view preparation resolves every visible text slot through its
   -- source bank, so the rig borrows the real message provider and the
   -- real body font renderer exactly like the field owner does; the
@@ -1077,8 +1096,9 @@ function T.grid_icon_pixels_share_their_generation_with_hit_targets(scope)
       0,
       "the caught icon draws its prepared art opaque"
     )
-    -- The same generation maps the icon center back to its slot and the
-    -- footer band to its bottom action; below the band nothing maps.
+    -- The same generation maps the icon center back to its slot and
+    -- each footer cell to its own bottom action; below the band and
+    -- above it nothing maps.
     local tapped = plan.mapInput({
       type = "pointer_down",
       x = rect.x + 16,
@@ -1091,16 +1111,36 @@ function T.grid_icon_pixels_share_their_generation_with_hit_targets(scope)
     Assert.equal(tapped.type, "activate", "the icon center activates")
     Assert.equal(tapped.action, "grid-slot", "the icon center selects its slot")
     Assert.equal(tapped.value, slot, "the icon center selects its own slot")
-    local footer = plan.mapInput({
+    local cells = {
+      { x = 31, action = "search" },
+      { x = 95, action = "cry" },
+      { x = 159, action = "entry-tab", value = "area" },
+    }
+    for _, cell in ipairs(cells) do
+      local footer = plan.mapInput({
+        type = "pointer_down",
+        x = cell.x,
+        y = 169,
+        paneId = "controls",
+        pointerId = 2,
+      }, planViewOf(view), plan)
+      Assert.notNil(footer, "the footer cell at " .. cell.x .. " maps to a command")
+      assert(footer ~= nil, "the footer cell at " .. cell.x .. " maps to a command")
+      Assert.equal(footer.action, cell.action, "the footer cell at " .. cell.x .. " keeps its own action")
+      if cell.value ~= nil then
+        Assert.equal(footer.value, cell.value, "the footer entry cell opens on the area tab")
+      end
+    end
+    local exit = plan.mapInput({
       type = "pointer_down",
-      x = 20,
-      y = 160,
+      x = 223,
+      y = 169,
       paneId = "controls",
       pointerId = 2,
     }, planViewOf(view), plan)
-    Assert.notNil(footer, "the footer band maps to a command")
-    assert(footer ~= nil, "the footer band maps to a command")
-    Assert.equal(footer.action, "page-prev", "the footer band pages back")
+    Assert.notNil(exit, "the footer exit cell maps to a command")
+    assert(exit ~= nil, "the footer exit cell maps to a command")
+    Assert.equal(exit.type, "cancel", "the footer exit cell leaves the browser")
     Assert.isNil(
       plan.mapInput({
         type = "pointer_down",
@@ -1110,6 +1150,16 @@ function T.grid_icon_pixels_share_their_generation_with_hit_targets(scope)
         pointerId = 3,
       }, planViewOf(view), plan),
       "below the footer band nothing maps"
+    )
+    Assert.isNil(
+      plan.mapInput({
+        type = "pointer_down",
+        x = 20,
+        y = 151,
+        paneId = "controls",
+        pointerId = 4,
+      }, planViewOf(view), plan),
+      "above the footer band nothing maps"
     )
     lease:release()
     controller:dispose()

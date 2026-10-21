@@ -566,13 +566,13 @@ function T.captured_slider_release_outside_bands_settles_under_pending_assets()
   local origin = controlsOrigin(screen:status())
   -- The press captures the minimum endpoint; the following generation
   -- stays pending behind the closed gate.
-  poke(screen, origin, "pointer_down", 20, 48, 9)
+  poke(screen, origin, "pointer_down", 130, 131, 9)
   Assert.isTrue(live:view().search.slider.captured, "the press captures the slider drag")
   gate.open = false
   -- Across the other track band and into empty space the gesture keeps
-  -- its captured minimum; the release lands at empty y120.
-  poke(screen, origin, "pointer_move", 100, 88, 9)
-  poke(screen, origin, "pointer_up", 100, 120, 9)
+  -- its captured minimum; the release lands between the track bands.
+  poke(screen, origin, "pointer_move", 130, 60, 9)
+  poke(screen, origin, "pointer_up", 130, 100, 9)
   screen:updateFixed({})
   local criteria = live:view().search.criteria
   Assert.equal(criteria.height.min, 78, "the release settles the captured minimum")
@@ -588,9 +588,9 @@ function T.captured_slider_release_outside_bands_settles_under_pending_assets()
   -- Readiness restores the ordinary path: a fresh press captures again.
   gate.open = true
   screen:updateFixed({})
-  poke(screen, origin, "pointer_down", 20, 48, 11)
+  poke(screen, origin, "pointer_down", 130, 131, 11)
   Assert.isTrue(live:view().search.slider.captured, "a fresh press captures again after readiness")
-  poke(screen, origin, "pointer_up", 100, 120, 11)
+  poke(screen, origin, "pointer_up", 130, 100, 11)
   screen:updateFixed({})
   Assert.isFalse(live:view().search.slider.captured, "the fresh gesture settles too")
   screen:dispose()
@@ -645,9 +645,9 @@ function T.display_reflow_cancels_the_active_drag_exactly_once()
   Assert.notNil(live:view().search.editor, "the height editor opens")
   local origin = controlsOrigin(screen:status())
   gate.open = false
-  poke(screen, origin, "pointer_down", 20, 88, 9)
+  poke(screen, origin, "pointer_down", 100, 60, 9)
   Assert.isTrue(live:view().search.slider.captured, "the press captures the maximum drag")
-  poke(screen, origin, "pointer_move", 150, 88, 9)
+  poke(screen, origin, "pointer_move", 172, 88, 9)
   Assert.equal(live:view().search.criteria.height.max, 120, "the move stages the maximum bound")
   local cancelStart = #batches
   -- The reflow drops the held press: the open transaction must roll
