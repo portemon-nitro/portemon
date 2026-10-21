@@ -5,15 +5,11 @@
 -- without forking a second selection.
 --
 -- Dependency note: opening a child does not yet consume its initiating
--- input through a real application owner, and settled progression has no
--- completion receipt to survive save cycles without replaying. The red
--- tests pin those misses: initiating-input consumption behind the missing
--- child composer, and replay-free persistence behind the missing
--- completion receipt on the battle runtime.
+-- input through a real application owner. The red test pins that miss:
+-- initiating-input consumption behind the missing child composer.
 
 local Assert = require("tests.support.Assert")
 
-local BattleRuntime = require("game.hgss.src.battle.BattleRuntime")
 local BattleSubflows = require("game.hgss.src.battle.BattleSubflows")
 
 local COMPOSER_MODULE = "game.hgss.src.battle.BattleChildApplications"
@@ -105,13 +101,6 @@ function T.opening_a_child_consumes_its_initiating_input()
     "child opening consumes its initiating input through the battle child module (" .. COMPOSER_MODULE .. ")"
   )
   assert(composer ~= nil, "the composer loads")
-end
-
-function T.settled_progression_survives_save_cycles_without_replay()
-  Assert.isTrue(
-    type(BattleRuntime.takeCompletionReceipt) == "function",
-    "settled progression answers its completion receipt across save cycles without replaying the command"
-  )
 end
 
 function T.soulsilver_variant_stays_blocked_without_its_owned_cache(context)

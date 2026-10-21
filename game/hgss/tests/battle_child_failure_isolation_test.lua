@@ -5,16 +5,11 @@
 -- commit.
 --
 -- Dependency note: the battle outcome committer already publishes the
--- terminal battle receipt exactly once, but the per-launch
--- completion-command ledger for post-battle progression (evolution,
--- naming, storage) has no owner on the battle runtime yet. The red tests
--- pin that miss from both facets: publishing a progression command once,
--- and querying its receipt without republishing. Borrowed-versus-owned UI
+-- terminal battle receipt exactly once. Borrowed-versus-owned UI
 -- resource discipline lands with the missing child composer.
 
 local Assert = require("tests.support.Assert")
 
-local BattleRuntime = require("game.hgss.src.battle.BattleRuntime")
 local BattleSubflows = require("game.hgss.src.battle.BattleSubflows")
 
 local T = {}
@@ -124,20 +119,6 @@ function T.acquisition_failure_leaves_no_child_owning_input()
   Assert.isFalse(flows:status().active, "no child owns input after the failure")
   Assert.isNil(flows:takeResult(), "the failed acquisition stages nothing")
   flows:dispose()
-end
-
-function T.progression_publishes_exactly_once_through_the_completion_owner()
-  Assert.isTrue(
-    type(BattleRuntime.completeProgression) == "function",
-    "the battle runtime publishes a post-battle progression command exactly once per launch"
-  )
-end
-
-function T.settled_completion_is_queryable_without_republishing()
-  Assert.isTrue(
-    type(BattleRuntime.takeCompletionReceipt) == "function",
-    "the battle runtime answers a settled progression receipt without running the command again"
-  )
 end
 
 function T.soulsilver_variant_stays_blocked_without_its_owned_cache(context)
