@@ -3959,4 +3959,31 @@ function T.wait_handlers_preserve_their_runtime_dependent_cursor_rules()
   end
 end
 
+-- Computed source-timing durations ride the normalized program: the
+-- mosaic and panel lowerings now emit durationTicks, and the callback
+-- schema admits it, so schema-validated compilation accepts them.
+---@return nil
+function T.computed_callback_durations_pass_the_normalized_callback_schema()
+  local Sources = require("romdump.src.config.BattleAnimationSources")
+  local Schema = require("libs.assets.src.battle.BattleAnimationSchema")
+  local function assertSchema(program, key)
+    Assert.isTrue(Schema.assertProgram({
+      entry = program.entry,
+      instructions = program.instructions,
+      subprograms = program.subprograms,
+      taskKinds = program.taskKinds,
+    }), key .. " with computed durationTicks passes the normalized callback schema")
+  end
+  local mosaic = assert(compiler().compile({
+    key = "mosaic-with-computed-duration",
+    stream = table.concat({ u32(45), u32(69), u32(4), u32(2), u32(0xFFFE), u32(4), u32(12) }),
+    resolveSourceInput = function(role, operands)
+      return Sources.resolveSourceSelection(role, operands)
+    end,
+  }))
+  Assert.equal(mosaic.instructions[1].callback, "battle-sprite-mosaic-transition")
+  Assert.equal(mosaic.instructions[1].parameters.durationTicks, 3)
+  assertSchema(mosaic, "mosaic")
+end
+
 return { tests = T }

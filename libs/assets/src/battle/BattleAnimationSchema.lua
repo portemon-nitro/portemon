@@ -1042,6 +1042,7 @@ local ANIMATION_CALLBACKS = {
       firstPanelOffsetY = { min = -0x8000, max = 0x7FFF },
       secondPanelOffsetX = { min = -0x8000, max = 0x7FFF },
       secondPanelOffsetY = { min = -0x8000, max = 0x7FFF },
+      durationTicks = { min = 1, max = 0xFFFFFFFF },
     },
   },
   ["battle-sprite-panel-slide-up"] = {
@@ -1052,6 +1053,7 @@ local ANIMATION_CALLBACKS = {
       firstPanelOffsetY = { min = -0x8000, max = 0x7FFF },
       secondPanelOffsetX = { min = -0x8000, max = 0x7FFF },
       secondPanelOffsetY = { min = -0x8000, max = 0x7FFF },
+      durationTicks = { min = 1, max = 0xFFFFFFFF },
     },
   },
   ["battle-sprite-panel-slide-far-up"] = {
@@ -1062,6 +1064,7 @@ local ANIMATION_CALLBACKS = {
       firstPanelOffsetY = { min = -0x8000, max = 0x7FFF },
       secondPanelOffsetX = { min = -0x8000, max = 0x7FFF },
       secondPanelOffsetY = { min = -0x8000, max = 0x7FFF },
+      durationTicks = { min = 1, max = 0xFFFFFFFF },
     },
   },
   ["pokemon-picture-randomized-position-motion-attacker"] = {
@@ -1208,6 +1211,7 @@ local ANIMATION_CALLBACKS = {
       step = { min = -0x8000, max = 0x7FFF },
       initialHorizontal = { min = 0, max = 0xFFFFFFFF },
       initialVertical = { min = 0, max = 0xFFFFFFFF },
+      durationTicks = { min = 1, max = 0xFFFFFFFF },
     },
   },
   ["battle-sprite-affine-appearance-transition"] = {
