@@ -49,4 +49,44 @@ function T.mouse_and_touch_entry_targets_open_the_injected_picker(_)
   Assert.equal(pickerCalls, 2, "each mouse or touch gesture opens the picker once")
 end
 
+function T.rom_verification_keeps_truthful_status_with_authored_loading_copy(_)
+  local importer = {
+    status = function()
+      return { state = "verifying" }
+    end,
+  }
+  local state = ImportState.new(importer, nil, { targetVersion = "heartgold" })
+  local lg = love.graphics
+  local originalPrint, originalPrintf = lg.print, lg.printf
+  local rendered = {}
+  local function record(value)
+    rendered[#rendered + 1] = tostring(value)
+  end
+  lg.print = function(value, ...)
+    record(value)
+    return originalPrint(value, ...)
+  end
+  lg.printf = function(value, ...)
+    record(value)
+    return originalPrintf(value, ...)
+  end
+  local ok, err = xpcall(function()
+    state:draw()
+  end, debug.traceback)
+  lg.print, lg.printf = originalPrint, originalPrintf
+  if not ok then
+    error(err, 0)
+  end
+
+  local copy = table.concat(rendered, "\n")
+  Assert.isTrue(
+    copy:find("Verifying cartridge identity", 1, true) ~= nil,
+    "the loader keeps the real verification state visible"
+  )
+  Assert.isTrue(
+    copy:find("Enraging the lake", 1, true) ~= nil,
+    "the ROM-independent loader uses its authored caption before verification completes"
+  )
+end
+
 return GraphicsSmoke.suite(T)

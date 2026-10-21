@@ -323,11 +323,18 @@ function T.continue_never_reapplies_fresh_startup_initialization()
       end,
     }
     context.store = store
+    local derivedAssets = readyHost()
+    derivedAssets.requestMilestone = function(name)
+      if name == "startup-loader" then
+        return false, "optional walking art unavailable"
+      end
+      return true
+    end
     local game = HgssGame.new({
       versionId = "heartgold",
       entry = { kind = "continue", saveId = clearedFlagGame.saveId },
       onExit = function() end,
-      derivedAssets = readyHost(),
+      derivedAssets = derivedAssets,
       fieldMapLoader = planningLoader(),
     })
     settle(game)

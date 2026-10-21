@@ -208,6 +208,10 @@ function T.tests.continue_loads_early_and_overlaps_geometry_before_transfer()
         -- must reach field on entry planning and runtime readiness alone.
         return false
       end
+      if name == "startup-loader" then
+        -- Optional loader art never joins Continue's field-entry gates.
+        return false
+      end
       Assert.isTrue(
         name == "field-planning" or name == "field-runtime",
         "Continue awaits only entry planning and the field runtime"

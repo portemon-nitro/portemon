@@ -25,6 +25,7 @@ local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 local ItemAssetSchema = require("libs.assets.src.ItemAssetSchema")
 local ModalStack = require("app.src.saveeditor.SaveEditorModalStack")
 local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
+local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentation")
 local MapCatalog = require("app.src.saveeditor.SaveEditorMapCatalog")
 local SaveEditorPreset = require("app.src.saveeditor.SaveEditorPreset")
 local SaveEditorPokegearDraft = require("app.src.saveeditor.SaveEditorPokegearDraft")
@@ -562,6 +563,7 @@ function State.new(options)
     end
     error(presentationOrError, 0)
   end
+  local displayContext = options.displayContext or DisplayContext.new({})
   ---@type SaveEditorState
   local self = setmetatable({
     versionId = options.versionId,
@@ -572,7 +574,7 @@ function State.new(options)
     repositoryRoot = options.repositoryRoot,
     onResult = options.onResult,
     navigationDebug = options.navigationDebug == true,
-    displayContext = options.displayContext or DisplayContext.new({}),
+    displayContext = displayContext,
     controller = Controller.new(),
     modalStack = ModalStack.new(),
     modalLayerSequence = 0,
@@ -581,6 +583,15 @@ function State.new(options)
     sessionImagePool = sessionPool,
     status = "opening",
     message = "Preparing save data",
+    loading = HgssLoadingPresentation.new({
+      purpose = "editor",
+      versionId = options.versionId,
+      width = width,
+      height = height,
+      displayContext = displayContext,
+    }),
+    loaderArtObserved = false,
+    loaderArtFailure = nil,
     session = nil,
     dependencies = nil,
     locationService = nil,
@@ -693,9 +704,31 @@ function State:_readyReadiness()
   return allReady
 end
 
+function State:_pollLoadingArt()
+  local loading = self.loading
+  if loading == nil or self.loaderArtObserved then
+    return
+  end
+  local ok, ready, failure = pcall(self.derivedAssets.requestMilestone, "startup-loader", "near")
+  if not ok or failure ~= nil then
+    self.loaderArtFailure = ok and failure or ready
+    self.loaderArtObserved = true
+  elseif ready then
+    local adopted, adoptionError = loading:adoptGeneratedAssets(CacheFs.forVersion(self.versionId))
+    if not adopted then
+      self.loaderArtFailure = adoptionError
+    end
+    self.loaderArtObserved = true
+  end
+end
+
 function State:update(dt)
   if self.disposed then
     return
+  end
+  if self.loading ~= nil then
+    self.loading:update(dt or 0)
+    self:_pollLoadingArt()
   end
   if
     self.locationService ~= nil
@@ -803,6 +836,10 @@ function State:update(dt)
     self:_syncScope()
     self._locationCatalogLocation = originalLocation
     self.status, self.errorMessage = "ready", nil
+    if self.loading ~= nil then
+      self.loading:dispose()
+      self.loading = nil
+    end
     self:_invalidatePublication()
     self:_settleScope()
   end
@@ -835,6 +872,10 @@ function State:_openingFailed(err)
     error(err, 0)
   end
   self.status = "error"
+  if self.loading ~= nil then
+    self.loading:dispose()
+    self.loading = nil
+  end
   self.errorMessage = message(err)
   self.controller.focus = "retry"
   self:_invalidatePublication()
@@ -3962,6 +4003,15 @@ local ACTIVATION_HANDLERS = {
   ["editor.retry-open"] = function(self)
     self.generation = self.generation + 1
     self.status, self.errorMessage = "opening", nil
+    self.loading = HgssLoadingPresentation.new({
+      purpose = "editor",
+      versionId = self.versionId,
+      width = self.width,
+      height = self.height,
+      displayContext = self.displayContext,
+    })
+    self.loaderArtObserved = false
+    self.loaderArtFailure = nil
   end,
   ["editor.close-open-error"] = function(self)
     self:_sendResult()
@@ -4303,6 +4353,10 @@ function State:draw()
   if self.disposed then
     return
   end
+  if self.status == "opening" and self.loading ~= nil then
+    self.loading:draw({ message = self.message, artFailure = self.loaderArtFailure })
+    return
+  end
   local view = assert(self._publishedView, "draw consumes the settled publication")
   local plan = assert(self._publishedPlan, "the settled publication owns its plan")
   ApplicationPresentation.draw(
@@ -4373,6 +4427,9 @@ function State:_drawNavigationDebug(view)
 end
 
 function State:resize(width, height)
+  if self.loading ~= nil then
+    self.loading:resize(width, height)
+  end
   self:_invalidatePublication()
   local numberEditor = self.valueEditor ~= nil and self.valueEditor:snapshot().kind == "number"
   local wasNumberTooSmall = numberEditor and self:_numberEditorTooSmall() or false
@@ -4864,6 +4921,10 @@ function State:dispose()
     return
   end
   self.disposed = true
+  if self.loading ~= nil then
+    self.loading:dispose()
+    self.loading = nil
+  end
   self._publishedView = nil
   self._publishedPlan = nil
   self._publishedDirty = true
