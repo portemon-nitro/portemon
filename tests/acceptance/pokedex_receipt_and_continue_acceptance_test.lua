@@ -40,6 +40,7 @@ local function validEntry(versionId)
     playerData = {
       profile = {
         name = "GOLD",
+        rivalName = "Silver",
         gender = 0,
         trainerId = 1,
         money = 3000,
