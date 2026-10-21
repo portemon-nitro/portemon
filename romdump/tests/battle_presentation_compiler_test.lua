@@ -819,4 +819,117 @@ function T.headerless_texture_without_unique_dimensions_fails()
   )
 end
 
+-- The vanished-picture callback is a direct picture operation, not a
+-- scheduled task: the mask selects exact battler sets and the trailing
+-- word is the vanished flag.
+function T.vanished_picture_callback_sets_exact_targets_and_flag()
+  local sources = require("romdump.src.config.BattleAnimationSources")
+  local all = assert(sources.resolveBattleAnimationCallback({ 40, 2, 0x40, 1 }))
+  Assert.equal(all.op, "set-pokemon-picture-vanished", "the vanished callback lowers as a direct operation")
+  Assert.deepEqual(all.pictureSets, { "all-battler-positions" }, "the full mask selects every battler")
+  Assert.isTrue(all.vanished == true, "a nonzero trailing word vanishes the pictures")
+  local split = assert(sources.resolveBattleAnimationCallback({ 40, 2, 0x02 + 0x08, 0 }))
+  Assert.deepEqual(
+    split.pictureSets,
+    { "active-battler", "opposing-battler" },
+    "split mask bits select their own battler sets"
+  )
+  Assert.isTrue(split.vanished == false, "a zero trailing word restores the pictures")
+end
+
+function T.vanished_picture_callback_rejects_malformed_frames()
+  local sources = require("romdump.src.config.BattleAnimationSources")
+  local truncated, truncatedReason = sources.resolveBattleAnimationCallback({ 40 })
+  Assert.isNil(truncated, "a truncated vanished frame resolves to no operation")
+  Assert.isTrue(
+    type(truncatedReason) == "string" and #truncatedReason > 0,
+    "a truncated vanished frame names its failure"
+  )
+  local short, countReason = sources.resolveBattleAnimationCallback({ 40, 1, 0x40 })
+  Assert.isNil(short, "a vanished frame with the wrong word count resolves to no operation")
+  Assert.isTrue(
+    type(countReason) == "string" and #countReason > 0,
+    "a vanished frame with the wrong word count names its failure"
+  )
+end
+
+-- An unmapped battler-state word on the cyclic picture callback is a
+-- source-proven no-op: the animation has no target, so lowering emits an
+-- explicit noop instead of inventing one.
+function T.unmapped_cyclic_picture_state_lowers_as_an_explicit_noop()
+  local sources = require("romdump.src.config.BattleAnimationSources")
+  local plan = assert(sources.resolveBattleAnimationCallback({ 42, 1, 0x999 }))
+  Assert.deepEqual(plan, { op = "noop" }, "an unmapped state word lowers as an explicit no-op")
+end
+
+function T.mapped_cyclic_picture_state_selects_its_position_transition()
+  local sources = require("romdump.src.config.BattleAnimationSources")
+  local plan = assert(
+    sources.resolveBattleAnimationCallback({ 42, 8, 0x102, 0, 10, 0, 20, 1, 0, 5 }),
+    "a mapped state word resolves its position transition"
+  )
+  Assert.equal(
+    plan.taskKind,
+    "pokemon-picture-cyclic-two-phase-position-transition",
+    "the mapped state selects the cyclic position task kind"
+  )
+  Assert.equal(plan.context, "pokemon-picture", "the transition stays in the picture context")
+  Assert.equal(plan.parameters.pictureTarget, "attacker", "the mapped state word names the attacker")
+end
+
+function T.zero_divisor_cyclic_picture_fails_closed()
+  local sources = require("romdump.src.config.BattleAnimationSources")
+  local plan, reason =
+    sources.resolveBattleAnimationCallback({ 42, 8, 0x102, 0, 10, 0, 20, 0, 0, 5 })
+  Assert.isNil(plan, "a zero interpolation divisor stages no transition")
+  Assert.isTrue(
+    type(reason) == "string" and reason:find("divisor", 1, true) ~= nil,
+    "a zero interpolation divisor names its failure: " .. tostring(reason)
+  )
+end
+
+-- Battler particle opcodes 48 (eight words) and 49 (six words) select
+-- per-battler-pair emitter resources at runtime; both must resolve through
+-- the same position-pair selection the producer consumes.
+function T.battler_particle_actions_select_position_pair_resources()
+  local sources = require("romdump.src.config.BattleAnimationSources")
+  local wide =
+    assert(sources.resolveSourceSelection("battler-particle-action", { 0, 10, 11, 12, 13, 14, 15, 0 }))
+  Assert.equal(
+    wide.runtimeSelection,
+    "battler-particle-position-pair",
+    "the eight-word action defers emitter choice to the battler pair"
+  )
+  Assert.equal(wide.taskKind, "battler-effect-continuation", "the wide action feeds the particle task body")
+  Assert.isTrue(
+    type(wide.sourceEmitterSelections) == "table"
+      and wide.sourceEmitterSelections["solo-player/solo-enemy"] ~= nil,
+    "the wide action maps every battler pair to an emitter selection"
+  )
+  local narrow = assert(sources.resolveSourceSelection("battler-particle-action", { 0, 20, 21, 22, 23, 0 }))
+  Assert.equal(
+    narrow.runtimeSelection,
+    "battler-particle-position-pair",
+    "the six-word action defers emitter choice to the battler pair"
+  )
+  Assert.equal(narrow.taskKind, "battler-effect-continuation", "the narrow action feeds the particle task body")
+end
+
+function T.battler_particle_actions_reject_malformed_shapes()
+  local sources = require("romdump.src.config.BattleAnimationSources")
+  local badShape, shapeReason = sources.resolveSourceSelection("battler-particle-action", { 0, 1, 2, 3, 4 })
+  Assert.isNil(badShape, "a five-word particle frame resolves to no action")
+  Assert.isTrue(
+    type(shapeReason) == "string" and #shapeReason > 0,
+    "a five-word particle frame names its shape failure"
+  )
+  local badProfile, profileReason =
+    sources.resolveSourceSelection("battler-particle-action", { 0, 10, 11, 12, 13, 14, 15, 99 })
+  Assert.isNil(badProfile, "an unknown emitter profile resolves to no action")
+  Assert.isTrue(
+    type(profileReason) == "string" and profileReason:find("pinned initializer table", 1, true) ~= nil,
+    "an unknown emitter profile names its failure: " .. tostring(profileReason)
+  )
+end
+
 return { tests = T }
