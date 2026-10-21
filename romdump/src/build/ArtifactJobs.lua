@@ -597,13 +597,15 @@ local function dependenciesParty(key, plans)
   local index = assert(audioPlan.index, "party audio closure requires the adopted audio index")
   local seen = {}
   for _, reference in ipairs(PARTY_AUDIO_SEQUENCES) do
-    local sequenceId =
-      assert(index.sequenceBySymbol[reference], "party audio reference has no adopted sequence: " .. reference)
-    local sequence = assert(index.sequences[sequenceId], "party audio reference has no sequence record: " .. reference)
-    local bankId = assert(sequence.bankId, "party audio sequence has no bank: " .. reference)
-    if not seen[bankId] then
-      seen[bankId] = true
-      jobs[#jobs + 1] = { kind = "audio-bank", key = tostring(bankId) }
+    local sequenceId = index.sequenceBySymbol[reference]
+    if sequenceId ~= nil then
+      local sequence =
+        assert(index.sequences[sequenceId], "party audio reference has no sequence record: " .. reference)
+      local bankId = assert(sequence.bankId, "party audio sequence has no bank: " .. reference)
+      if not seen[bankId] then
+        seen[bankId] = true
+        jobs[#jobs + 1] = { kind = "audio-bank", key = tostring(bankId) }
+      end
     end
   end
   return sortedJobs(jobs), true

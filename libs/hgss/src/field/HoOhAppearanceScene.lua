@@ -3,6 +3,7 @@
 local HoOhAppearanceScene = {}
 HoOhAppearanceScene.__index = HoOhAppearanceScene
 local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
+local LegendCutsceneRig = require("libs.hgss.src.field.LegendCutsceneRig")
 
 ---@class HoOhAppearanceScene.Summary
 ---@field frames table<string, integer> frame count by clip id
@@ -20,6 +21,11 @@ local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCac
 ---@field summary HoOhAppearanceScene.Summary?
 ---@field backdropRetained boolean
 ---@field setBirdAnimationAllowance fun(self: HoOhAppearanceScene, allowed: boolean)
+---@field resumeField fun()
+---@field lugiaClipsById table<string, integer>?
+---@field lugiaAnimationFrames integer?
+---@field eyeGlimmer table<string, unknown>?
+---@field arrives table<string, unknown>?
 ---@field new fun(options: table<string, unknown>): HoOhAppearanceScene
 ---@field command fun(self: HoOhAppearanceScene, op: string, destination: integer?)
 ---@field cameraPanTicks fun(self: HoOhAppearanceScene): integer
@@ -110,7 +116,33 @@ local CINEMATIC_FADE = {
   firstOut = { color = "black", direction = "out", duration = 6 },
   secondIn = { color = "black", direction = "in", duration = 6 },
   secondOut = { color = "white", direction = "out", duration = 10 },
+  lugiaIn = { color = "black", direction = "in", duration = 6 },
+  lugiaOut = { color = "black", direction = "out", duration = 6 },
 }
+local EYE_ANIMATION_IDS = { "eye.color", "eye.pattern", "eye.joint" }
+local EYE_SOUND_FRAME = 2
+local EYE_SOUND = "SEQ_SE_GS_RUGIA_MENOHIKARI"
+local ARRIVES_CAMERA_INDEX = 4
+local ARRIVES_PAN_TICKS = 30
+local ARRIVES_NEAR = 150 / 16
+local ARRIVES_FAR = 1700 / 16
+local LUGIA_CINEMATIC_CAMERA = {
+  target = { x = 0x00004DEC / 65536, y = 0x000803CD / 65536, z = 0x0002B2F5 / 65536 },
+  distance = 0x00153B51 / 4096 / 16,
+  angleX = 0x0982,
+  angleY = 0x1E20,
+  perspective = 0x0A01,
+  near = 0x0007B000 / 4096 / 16,
+  far = 0x006A4000 / 4096 / 16,
+}
+local LUGIA_WATERFALL = "SEQ_SE_GS_TAKI_RUGIADEMO"
+local LUGIA_CUES = {
+  [0] = { LUGIA_WATERFALL },
+  [115] = { "SEQ_SE_GS_RUGIA_TAKISHUTUGEN" },
+  [145] = { "cry" },
+}
+local LUGIA_CRY_SPECIES = 249
+local LUGIA_FADE_OUT_FRAME = 232
 ---@param options table<string, unknown>
 ---@return HoOhAppearanceScene
 function HoOhAppearanceScene.new(options)
@@ -123,8 +155,14 @@ function HoOhAppearanceScene.new(options)
   assert(type(options.revealBird) == "function", "Ho-Oh scene requires the legend actor reveal")
   assert(type(options.setBirdFlap) == "function", "Ho-Oh scene requires the legend actor flap writer")
   assert(type(options.setBirdAnimationAllowance) == "function", "Ho-Oh scene requires the legend animation allowance")
+  assert(type(options.resumeField) == "function", "legend scene requires the field resume")
   assert(
-    options.audio and options.audio.play and options.audio.playMusic and options.audio.playCry,
+    options.audio
+      and options.audio.play
+      and options.audio.playMusic
+      and options.audio.playCry
+      and options.audio.stop
+      and options.audio.moveSequenceVolume,
     "Ho-Oh scene requires the field audio"
   )
   assert(options.cacheFs and options.cacheFs.loadLua, "Ho-Oh scene requires the generated model cache")
@@ -138,12 +176,55 @@ function HoOhAppearanceScene.new(options)
     revealBird = options.revealBird,
     setBirdFlap = options.setBirdFlap,
     setBirdAnimationAllowance = options.setBirdAnimationAllowance,
+    resumeField = options.resumeField,
     backdropRetained = false,
     cacheFs = options.cacheFs,
     summary = nil,
+    lugiaClipsById = nil,
+    lugiaAnimationFrames = nil,
+    eyeGlimmer = nil,
+    arrives = nil,
     sequence = 0,
     state = nil,
   }, HoOhAppearanceScene)
+end
+
+-- Loads the Whirl Islands model clocks only when a Lugia scene needs them.
+---@param self HoOhAppearanceScene
+---@return table<string, integer> clipsById
+---@return integer lugiaAnimationFrames
+function HoOhAppearanceScene:lugiaClips()
+  if self.lugiaClipsById == nil then
+    local definition = assert(
+      self.cacheFs:loadLua(FieldEffectAssetCache.definitionPath("lugia_appearance")),
+      "Lugia appearance model asset is missing from the field-effect cache"
+    )
+    local clipsById = {}
+    for _, model in ipairs(assert(definition.models)) do
+      for _, clip in ipairs(model.animations) do
+        clipsById[clip.id] = clip.frameCount
+      end
+    end
+    self.lugiaClipsById = clipsById
+    self.lugiaAnimationFrames = math.max(
+      assert(clipsById["lugia.joint"]),
+      assert(clipsById["lugia.color"]),
+      assert(clipsById["lugia.srt"]),
+      assert(clipsById["lugia.pattern"]),
+      assert(clipsById["lugia.far.joint"])
+    )
+  end
+  return self.lugiaClipsById, assert(self.lugiaAnimationFrames)
+end
+
+---@return integer
+function HoOhAppearanceScene:eyeGlimmerTicks()
+  local clipsById = self:lugiaClips()
+  local ticks = 0
+  for _, id in ipairs(EYE_ANIMATION_IDS) do
+    ticks = math.max(ticks, assert(clipsById[id]))
+  end
+  return ticks
 end
 
 -- The core record's clip summary, loaded on first use: building the scene on
@@ -271,6 +352,11 @@ local function restoreCinematicCamera(scene, state)
   camera:collapseRenderInterpolation()
 end
 
+local function exitLugiaCinematic(scene, state)
+  restoreCinematicCamera(scene, state)
+  scene.resumeField()
+end
+
 local function startQueuedShimmer(state)
   if state.queuedShimmer == nil or state.bellStage ~= "idle" or state.loopFrame == nil then
     return
@@ -370,12 +456,97 @@ function HoOhAppearanceScene:command(op, destination)
     self.setBirdAnimationAllowance(true)
     self.revealBird()
     self.setBirdHeight(BIRD_DESCENT_TICKS[self.versionId] / BIRD_APPROACH_SOURCE_UNITS_PER_TILE)
+  elseif op == "legend_cutscene_lugia_eye_glimmer" then
+    assert(self.eyeGlimmer == nil, "Lugia eye glimmer is already active")
+    local player = assert(self.playerPosition(), "Lugia eye glimmer requires a live player")
+    self:lugiaClips()
+    self.eyeGlimmer = { frame = 0, origin = copyPosition(player) }
+  elseif op == "legend_cutscene_lugia_arrives_begin" then
+    assert(state == nil, "Lugia arrives cannot begin while the bell scene is active")
+    assert(self.arrives == nil, "Lugia arrives effect is already active")
+    local player = assert(self.playerPosition(), "Lugia arrives requires a live player")
+    local camera = assert(self.currentCamera(), "Lugia arrives requires a live camera")
+    local data = CAMERA_DATA.soulsilver
+    local offset = assert(data.offsets[ARRIVES_CAMERA_INDEX + 1], "Lugia arrives camera offset is unavailable")
+    local saved = snapshotCamera(camera)
+    local home = {
+      target = saved.target,
+      angle = camera.profile.angleXRaw,
+      perspective = saved.rawPerspective,
+    }
+    local pose = {
+      target = { x = saved.target.x + offset[1], y = saved.target.y + offset[2], z = saved.target.z + offset[3] },
+      angle = data.angles[ARRIVES_CAMERA_INDEX + 1],
+      perspective = data.perspective[ARRIVES_CAMERA_INDEX + 1],
+    }
+    self.arrives = {
+      camera = camera,
+      snapshot = saved,
+      home = home,
+      pose = pose,
+      transition = nil,
+      origin = copyPosition(player),
+    }
+    LegendCutsceneRig.applyPose(camera, player, pose.target, pose.angle, pose.perspective, {
+      near = ARRIVES_NEAR,
+      far = ARRIVES_FAR,
+    })
+  elseif op == "legend_cutscene_lugia_arrives_camera_pan" then
+    local arrives = assert(self.arrives, "Lugia arrives effect has not begun")
+    assert(arrives.transition == nil, "Lugia arrives camera is already panning")
+    arrives.transition = {
+      start = {
+        target = copyPosition(assert(self.currentCamera()).target),
+        angle = arrives.pose.angle,
+        perspective = arrives.camera:rawPerspective(),
+      },
+      frame = 0,
+      duration = ARRIVES_PAN_TICKS,
+    }
+  elseif op == "legend_cutscene_lugia_arrives_end" then
+    local arrives = assert(self.arrives, "Lugia arrives effect has not begun")
+    assert(arrives.transition == nil, "Lugia arrives camera is still panning")
+    local player = assert(self.playerPosition(), "Lugia arrives requires a live player")
+    local saved = arrives.snapshot
+    LegendCutsceneRig.applyPose(arrives.camera, player, saved.target, arrives.home.angle, saved.rawPerspective, {
+      distance = saved.distance,
+      near = saved.near,
+      far = saved.far,
+    })
+    self.arrives = nil
   elseif op == "legend_cinematic" then
     assert(state == nil, "Ho-Oh bird approach is still active")
-    assert(destination == 0, "unsupported Ho-Oh cinematic scene")
+    assert(destination == 0 or destination == 1, "unsupported legend cinematic scene")
     self.backdropRetained = false
     local player = assert(self.playerPosition(), "Ho-Oh cinematic requires a live player")
     local camera = assert(self.currentCamera(), "Ho-Oh cinematic requires a live camera")
+    if destination == 1 then
+      local _, lugiaFrames = self:lugiaClips()
+      self.sequence = self.sequence + 1
+      self.state = {
+        active = true,
+        sequence = self.sequence,
+        origin = copyPosition(player),
+        cinematicPhase = "lugia_fade_in",
+        cinematicShot = "lugia",
+        cinematicVariant = nil,
+        cinematicFrame = nil,
+        cinematicModelFrame = 0,
+        lugiaAnimationFrames = lugiaFrames,
+        motionBlur = false,
+        cameraRestore = self.fieldCamera or snapshotCamera(camera),
+        effectsActive = false,
+      }
+      startCinematicFade(self.state, CINEMATIC_FADE.lugiaIn)
+      local pose = LUGIA_CINEMATIC_CAMERA
+      LegendCutsceneRig.applyPose(camera, player, offsetPosition(player, pose.target), pose.angleX, pose.perspective, {
+        distance = pose.distance,
+        angleY = pose.angleY,
+        near = pose.near,
+        far = pose.far,
+      })
+      return
+    end
     local variant = self:currentVariant()
     local cinematic = summaryOf(self).cinematic
     local firstFrames = assert(cinematic.first[variant], "Ho-Oh first-shot model animation is missing")
@@ -464,14 +635,40 @@ function HoOhAppearanceScene:taskTicks(op)
     return math.max(1, self.state and self.state.cameraTransition and self:cameraPanRemainingTicks() or 0)
   elseif op == "legend_cutscene_bird_approach" then
     return self:birdApproachTicks()
+  elseif op == "legend_cutscene_lugia_eye_glimmer" then
+    return self:eyeGlimmerTicks()
+  elseif op == "legend_cutscene_lugia_arrives_camera_pan" then
+    assert(self.arrives, "Lugia arrives effect has not begun")
+    return ARRIVES_PAN_TICKS
   elseif op == "legend_cinematic" then
-    local state = assert(self.state and self.state.cinematicAnimationFrames, "Ho-Oh cinematic has not started")
-    return math.max(state.first, 141) + math.max(state.second, 206)
+    local state = assert(self.state, "legend cinematic has not started")
+    if state.cinematicShot == "lugia" then
+      return math.max(assert(state.lugiaAnimationFrames), LUGIA_FADE_OUT_FRAME + CINEMATIC_FADE.lugiaOut.duration)
+    end
+    local animations = assert(state.cinematicAnimationFrames, "Ho-Oh cinematic has not started")
+    return math.max(animations.first, 141) + math.max(animations.second, 206)
   end
   error("Ho-Oh scene has no blocking task for " .. op)
 end
 
 function HoOhAppearanceScene:updateFixed()
+  if self.eyeGlimmer ~= nil then
+    local eye = self.eyeGlimmer
+    eye.frame = eye.frame + 1
+    if eye.frame == EYE_SOUND_FRAME then
+      self.audio:play(EYE_SOUND)
+    end
+    if eye.frame >= self:eyeGlimmerTicks() then
+      self.eyeGlimmer = nil
+    end
+  end
+  if self.arrives ~= nil and self.arrives.transition ~= nil then
+    local arrives = self.arrives
+    local player = assert(self.playerPosition(), "Lugia arrives requires a live player")
+    if LegendCutsceneRig.tickTransition(arrives.camera, player, arrives.transition, arrives.home) then
+      arrives.transition = nil
+    end
+  end
   local state = self.state
   if state == nil then
     return
@@ -606,6 +803,31 @@ function HoOhAppearanceScene:updateFixed()
           startCinematicFade(state, CINEMATIC_FADE.secondOut)
         end
       end
+    elseif state.cinematicPhase == "lugia_fade_in" and state.cinematicFade == nil then
+      state.cinematicPhase = "lugia"
+      state.cinematicFrame = 0
+    elseif state.cinematicPhase == "lugia" then
+      if state.cinematicModelFrame >= state.lugiaAnimationFrames and state.cinematicFade == nil then
+        self.audio:stop(LUGIA_WATERFALL)
+        exitLugiaCinematic(self, state)
+        self.state = nil
+      else
+        for _, symbol in ipairs(LUGIA_CUES[state.cinematicFrame] or {}) do
+          if symbol == "cry" then
+            self.audio:playCry(LUGIA_CRY_SPECIES, 0)
+            state.motionBlur = true
+          elseif symbol == LUGIA_WATERFALL then
+            self.audio:play(symbol, 0)
+            self.audio:moveSequenceVolume(symbol, 30, 10)
+          else
+            self.audio:play(symbol)
+          end
+        end
+        state.cinematicFrame = state.cinematicFrame + 1
+        if state.cinematicFrame == LUGIA_FADE_OUT_FRAME then
+          startCinematicFade(state, CINEMATIC_FADE.lugiaOut)
+        end
+      end
     end
   end
 end
@@ -625,36 +847,40 @@ end
 ---@return HoOhAppearanceScene.Status
 function HoOhAppearanceScene:status()
   local state = self.state
-  if state == nil then
+  local eye, arrives = self.eyeGlimmer, self.arrives
+  if state == nil and eye == nil and arrives == nil then
     return { active = false, sequence = self.sequence, backdropRetained = self.backdropRetained }
   end
   local offsets = self.versionId == "heartgold" and HG_CORNER_OFFSETS or SS_CORNER_OFFSETS
+  local origin = state and state.origin or eye and eye.origin or assert(arrives).origin
   return {
-    active = state.active,
+    active = state == nil or state.active,
     backdropRetained = self.backdropRetained,
-    sequence = state.sequence,
+    sequence = self.sequence,
     versionId = self.versionId,
-    origin = copyPosition(state.origin),
-    bellStage = state.bellStage,
-    bellVisible = state.bellVisible,
-    bellFrame = state.bellFrame,
-    loopFrame = state.loopFrame,
-    shimmerFrame = state.shimmerFrame,
-    shimmerClearBellOnly = state.shimmerClearBellOnly,
+    origin = copyPosition(origin),
+    bellStage = state and state.bellStage or nil,
+    bellVisible = state and state.bellVisible or nil,
+    bellFrame = state and state.bellFrame or nil,
+    loopFrame = state and state.loopFrame or nil,
+    shimmerFrame = state and state.shimmerFrame or nil,
+    shimmerClearBellOnly = state and state.shimmerClearBellOnly or nil,
     cornerOffsets = offsets,
-    effectsActive = state.effectsActive,
-    effectFrame = state.effectFrame,
-    leavesActive = state.effectsActive and self.versionId == "heartgold",
-    leafFrame = state.leafFrame,
-    cameraDestination = state.cameraDestination,
-    birdFrame = state.birdFrame,
-    birdRingFrame = self:birdRingFrame(state),
-    cinematicFrame = state.cinematicFrame,
-    cinematicShot = state.cinematicShot,
-    cinematicVariant = state.cinematicVariant,
-    cinematicModelFrame = state.cinematicModelFrame,
-    cinematicFadeColor = state.cinematicFade and state.cinematicFade.color or nil,
-    cinematicFadeAlpha = state.cinematicFade and state.cinematicFade.alpha or nil,
+    effectsActive = state and state.effectsActive or false,
+    effectFrame = state and state.effectFrame or nil,
+    leavesActive = (state and state.effectsActive or false) and self.versionId == "heartgold",
+    leafFrame = state and state.leafFrame or nil,
+    cameraDestination = state and state.cameraDestination or nil,
+    birdFrame = state and state.birdFrame or nil,
+    birdRingFrame = state and self:birdRingFrame(state) or nil,
+    cinematicFrame = state and state.cinematicFrame or nil,
+    cinematicShot = state and state.cinematicShot or nil,
+    cinematicVariant = state and state.cinematicVariant or nil,
+    cinematicModelFrame = state and state.cinematicModelFrame or nil,
+    cinematicFadeColor = state and state.cinematicFade and state.cinematicFade.color or nil,
+    cinematicFadeAlpha = state and state.cinematicFade and state.cinematicFade.alpha or nil,
+    eyeGlimmerFrame = eye and eye.frame or nil,
+    arrivesActive = arrives ~= nil,
   }
 end
 

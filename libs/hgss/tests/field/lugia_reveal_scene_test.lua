@@ -88,6 +88,7 @@ local function newScene(versionId, camera, audio, resumes)
     audio = audio or newAudio(),
     revealBird = function() end,
     setBirdFlap = function() end,
+    setBirdAnimationAllowance = function() end,
     resumeField = function()
       if resumes then
         resumes.count = resumes.count + 1

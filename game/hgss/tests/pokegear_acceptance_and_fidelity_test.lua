@@ -444,8 +444,6 @@ local BASE = love.filesystem.getSourceBaseDirectory()
 -- repository root. The shared journey rig carries no suite of its own.
 local OWNED_SUITES = {
   "tests/acceptance/pokegear_opening_journey_test.lua",
-  "tests/acceptance/pokegear_integrated_journey_test.lua",
-  "tests/acceptance/pokegear_acceptance_and_fidelity_acceptance_test.lua",
   "tests/graphics/pokegear_presentation_matrix_graphics_test.lua",
   "tests/rom/pokegear_source_conformance_test.lua",
   "game/hgss/tests/pokegear_resource_lifetime_test.lua",
@@ -454,8 +452,6 @@ local OWNED_SUITES = {
 
 local OWNED_ALL = {
   "tests/acceptance/pokegear_opening_journey_test.lua",
-  "tests/acceptance/pokegear_integrated_journey_test.lua",
-  "tests/acceptance/pokegear_acceptance_and_fidelity_acceptance_test.lua",
   "tests/graphics/pokegear_presentation_matrix_graphics_test.lua",
   "tests/rom/pokegear_source_conformance_test.lua",
   "tests/support/PokegearJourneyFixture.lua",

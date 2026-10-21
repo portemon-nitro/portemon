@@ -103,7 +103,7 @@ function T.tests.production_editor_saves_an_edit()
 
   local ok, err = xpcall(function()
     state = State.new({
-      versionId = fixture.versionId,
+      versionId = fixture.initial.versionId,
       saveId = fixture.saveId,
       width = 640,
       height = 480,

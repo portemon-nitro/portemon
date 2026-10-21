@@ -273,6 +273,127 @@ end
 -- A failing draw callback propagates the original error without generic
 -- state restoration; the test rebalances its own leaked scope before the
 -- next draw paints cleanly.
+local function matrixPartyManifest()
+  local panels = {}
+  local origins = { { 0, 0 }, { 128, 8 }, { 0, 48 }, { 128, 56 }, { 0, 96 }, { 128, 104 } }
+  for slot, origin in ipairs(origins) do
+    local ox, oy = origin[1], origin[2]
+    panels[slot] = {
+      origin = { x = ox, y = oy },
+      iconAnchor = { x = ox + 30, y = oy + 16 },
+      ballAnchor = { x = ox + 16, y = oy + 14 },
+      heldAnchor = { x = ox + 38, y = oy + 24 },
+      capsuleAnchor = { x = ox + 46, y = oy + 24 },
+      statusRect = { x = ox + 24, y = oy + 40, width = 24, height = 8 },
+      cursorSequence = 1,
+      size = { width = 128, height = 48 },
+      chrome = {
+        normal = { image = "test/panel.png", width = 128, height = 48 },
+        selected = { image = "test/panel-selected.png", width = 128, height = 48 },
+        fainted = { image = "test/panel-fainted.png", width = 128, height = 48 },
+        selectedFainted = { image = "test/panel-selected-fainted.png", width = 128, height = 48 },
+        switchSelection = { image = "test/panel-switch-selection.png", width = 128, height = 48 },
+      },
+      text = {
+        name = { x = ox + 48, y = oy + 8, width = 72, height = 16 },
+        level = { x = ox + 0, y = oy + 32, width = 48, height = 16 },
+      },
+      hp = {
+        bar = { x = ox + 64, y = oy + 24, width = 48, height = 8 },
+        number = { x = ox + 56, y = oy + 32, width = 64, height = 16 },
+      },
+      compat = { x = ox + 48, y = oy + 32, width = 80, height = 16 },
+    }
+  end
+  local function dpadBox(up, down, leftNeighbor, rightNeighbor)
+    return {
+      left = 0,
+      top = 0,
+      width = 0,
+      height = 0,
+      up = up,
+      down = down,
+      leftNeighbor = leftNeighbor,
+      rightNeighbor = rightNeighbor,
+    }
+  end
+  local function touch(top, bottom, left, right)
+    return { top = top, bottom = bottom, left = left, right = right }
+  end
+  return {
+    panels = panels,
+    controls = {
+      cancel = {
+        anchor = { x = 232, y = 176 },
+        label = PartyPresentationFixture.manifest().controls.cancel.label,
+        textRect = { x = 200, y = 168, width = 48, height = 16 },
+        align = "center",
+      },
+    },
+    detail = {
+      iconAnchor = { x = 30, y = 200 },
+      statusAnchor = { x = 50, y = 220 },
+      nicknameTextOrigin = { x = 56, y = 192 },
+      heldItemLabelOrigin = { x = 138, y = 192 },
+      heldItemTextOrigin = { x = 138, y = 212 },
+    },
+    text = PartyPresentationFixture.manifest().text,
+    windows = {
+      message = { x = 16, y = 168, width = 160, height = 16 },
+      context = { x = 152, y = 120, width = 96, height = 64 },
+      browse = { x = 16, y = 168, width = 160, height = 16 },
+      action = { x = 8, y = 136, width = 176, height = 48 },
+      prompt = { x = 200, y = 80 },
+    },
+    navigation = {
+      dpad = {
+        default = {
+          dpadBox(7, 2, 7, 1),
+          dpadBox(7, 3, 0, 2),
+          dpadBox(0, 4, 1, 3),
+          dpadBox(1, 5, 2, 4),
+          dpadBox(2, 7, 3, 5),
+          dpadBox(3, 7, 4, 7),
+          dpadBox(0, 0, 0, 0),
+          dpadBox(5, 1, 5, 0),
+        },
+      },
+    },
+    hitboxes = {
+      touch = {
+        default = {
+          touch(0, 48, 0, 128),
+          touch(8, 56, 128, 0),
+          touch(48, 96, 0, 128),
+          touch(56, 104, 128, 0),
+          touch(96, 144, 0, 128),
+          touch(104, 152, 128, 0),
+          touch(152, 192, 200, 0),
+        },
+      },
+    },
+    iconAnimations = PartyPresentationFixture.manifest().iconAnimations,
+    contextMenu = {
+      topLevel = PartyPresentationFixture.manifest().contextMenu.topLevel,
+      subcontext = PartyPresentationFixture.manifest().contextMenu.subcontext,
+      textPalette = PartyPresentationFixture.manifest().contextMenu.textPalette,
+      fillPalette = PartyPresentationFixture.manifest().contextMenu.fillPalette,
+      frames = {
+        standard = {
+          raised = { image = "test/menu-standard-raised.png", width = 128, height = 32 },
+          selected = { image = "test/menu-standard-selected.png", width = 128, height = 32 },
+          pressed = { image = "test/menu-standard-pressed.png", width = 128, height = 32 },
+        },
+        cancel = {
+          raised = { image = "test/menu-cancel-raised.png", width = 56, height = 40 },
+          selected = { image = "test/menu-cancel-selected.png", width = 56, height = 40 },
+          pressed = { image = "test/menu-cancel-pressed.png", width = 56, height = 40 },
+        },
+      },
+    },
+  }
+end
+
 function T.all_interfaces_resolve_matched_geometry_across_matrix(scope)
   local _ = scope
   local startMenu = StartMenuInterface.defaults()

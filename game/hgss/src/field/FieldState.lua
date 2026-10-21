@@ -742,11 +742,13 @@ function FieldState:_worldParts(alpha)
       or hoOhStatus["effectsActive"] == true
     )
   if hoOhContent then
+    local activeStatus = assert(hoOhStatus, "active legend content carries its scene status")
     if self._hoOhAppearanceRenderer == nil then
       self._hoOhAppearanceRenderer = HoOhAppearanceRenderer.new(self.runtime.cacheFs, self.runtime.imageAssets)
     end
-    worldParts[13] = self._hoOhAppearanceRenderer:drawItems(hoOhStatus)
-    worldParts[14] = self._hoOhAppearanceRenderer:backdropCopies(worldParts[1], hoOhStatus["versionId"])
+    local versionId = assert(activeStatus["versionId"], "active legend appearance carries its game version")
+    worldParts[13] = self._hoOhAppearanceRenderer:drawItems(activeStatus)
+    worldParts[14] = self._hoOhAppearanceRenderer:backdropCopies(worldParts[1], versionId)
   elseif hoOhStatus and hoOhStatus["backdropRetained"] == true then
     local versionId = self.runtime.versionId
     assert(self._hoOhAppearanceRenderer):endScene()

@@ -299,6 +299,10 @@ Schema.MOVEMENT_ACTIONS = {
 -- The one asset the Bell Tower / Whirl Islands appearance scene needs; every
 -- legend cutscene op declares it (see AssetNeeds).
 local LEGEND_SCENE_ASSETS = { kind = "field-effect", id = "ho_oh_appearance" }
+local LUGIA_SCENE_ASSETS = { kind = "field-effect", id = "lugia_appearance" }
+local function cinematicAssets(step)
+  return { step.destination == 1 and LUGIA_SCENE_ASSETS or LEGEND_SCENE_ASSETS }
+end
 
 Schema.OPERATIONS = {
   noop = { fields = {} },
@@ -935,11 +939,11 @@ Schema.OPERATIONS = {
   legend_cutscene_bird_approach = { fields = {}, assets = LEGEND_SCENE_ASSETS },
   legend_cutscene_effect_begin = { fields = {}, assets = LEGEND_SCENE_ASSETS },
   legend_cutscene_effect_end = { fields = {}, assets = LEGEND_SCENE_ASSETS },
-  legend_cutscene_lugia_eye_glimmer = { fields = {} },
-  legend_cutscene_lugia_arrives_begin = { fields = {} },
-  legend_cutscene_lugia_arrives_end = { fields = {} },
-  legend_cutscene_lugia_arrives_camera_pan = { fields = {} },
-  legend_cinematic = { fields = { destination = { type = "integer", required = true } }, assets = LEGEND_SCENE_ASSETS },
+  legend_cutscene_lugia_eye_glimmer = { fields = {}, assets = LUGIA_SCENE_ASSETS },
+  legend_cutscene_lugia_arrives_begin = { fields = {}, assets = LUGIA_SCENE_ASSETS },
+  legend_cutscene_lugia_arrives_end = { fields = {}, assets = LUGIA_SCENE_ASSETS },
+  legend_cutscene_lugia_arrives_camera_pan = { fields = {}, assets = LUGIA_SCENE_ASSETS },
+  legend_cinematic = { fields = { destination = { type = "integer", required = true } }, assets = cinematicAssets },
   current_map_id = { fields = { result = { type = "id_or_var", required = true } } },
   player_state = { fields = { result = { type = "id_or_var", required = true } } },
   player_on_bike_check = { fields = { result = { type = "id_or_var", required = true } } },

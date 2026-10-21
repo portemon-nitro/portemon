@@ -33,12 +33,14 @@ function T.parse_rejects_missing_colon_empty_kind_or_empty_id()
   end, "id must not be empty")
 end
 
-function T.legend_ops_declare_the_ho_oh_need()
+function T.legend_ops_declare_their_appearance_need()
   local found = 0
   for name in pairs(Schema.OPERATIONS) do
     if name:match("^legend_cutscene_") or name == "legend_cinematic" then
       found = found + 1
-      Assert.deepEqual(AssetNeeds.forSteps({ { op = name } }), { HO_OH }, name)
+      local isLugia = name:match("^legend_cutscene_lugia_") ~= nil or name == "legend_cinematic"
+      local expected = isLugia and { "field-effect:lugia_appearance" } or { HO_OH }
+      Assert.deepEqual(AssetNeeds.forSteps({ { op = name, destination = 1 } }), expected, name)
     end
   end
   Assert.isTrue(found > 0, "the legend ops exist")

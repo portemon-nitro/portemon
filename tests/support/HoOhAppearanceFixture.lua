@@ -25,4 +25,25 @@ function HoOhAppearanceFixture.core()
   }
 end
 
+---@return table<string, unknown>
+function HoOhAppearanceFixture.definition()
+  local core = HoOhAppearanceFixture.core()
+  local models = {}
+  for id, frameCount in pairs(core.clips.frames) do
+    models[#models + 1] = {
+      key = "field-effect:ho-oh-appearance:" .. id,
+      animations = { { id = id, frameCount = frameCount } },
+    }
+  end
+  for shot, variants in pairs(core.clips.cinematic) do
+    for variant, frameCount in ipairs(variants) do
+      models[#models + 1] = {
+        key = "field-effect:ho-oh-appearance:cinematic." .. shot .. "." .. (variant - 1),
+        animations = { { id = shot .. ".joint", frameCount = frameCount } },
+      }
+    end
+  end
+  return { models = models }
+end
+
 return HoOhAppearanceFixture
