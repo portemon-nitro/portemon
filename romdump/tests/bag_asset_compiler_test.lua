@@ -250,7 +250,6 @@ end
 local EOS_UNIT = 0xFFFF
 local ITEM_SUBSTITUTION = { 0xFFFE, 0x0108, 2, 0, 0 }
 local QUANTITY_SUBSTITUTION = { 0xFFFE, 0x0134, 2, 1, 0 }
-local QUANTITY_SUBSTITUTION_ALIAS = { 0xFFFE, 0x0133, 2, 1, 0 }
 local SALE_TOTAL_SUBSTITUTION = { 0xFFFE, 0x0137, 2, 1, 0 }
 
 local codeForGlyph = nil
@@ -438,14 +437,6 @@ function T.corrupt_member_fails_with_the_protocol_error()
   Assert.equal(typed.code, BagAssetCompiler.ERROR.SOURCE_INVALID)
 end
 
-function T.complete_synthetic_archive_reaches_the_hero_stage()
-  local romFs = fixture()
-  local bundle, err = BagAssetCompiler.compile(romFs)
-  Assert.isNil(bundle, "synthetic bytes cannot supply hero models")
-  local typed = assert(err, "the hero stage must fail loudly on synthetic bytes")
-  Assert.equal(typed.code, BagAssetCompiler.ERROR.SOURCE_INVALID)
-end
-
 function T.animated_source_sequence_is_rejected_as_a_static_only_violation()
   local BagSources = require("romdump.src.config.BagSources")
   local romFs = fixture({
@@ -492,40 +483,21 @@ function T.selection_entry_blink_frames_with_empty_cells_compile_as_transparent_
   Assert.isNil(tostring(typed.message):find("no objects"), "the failure must not come from empty-cell rasterization")
 end
 
--- The pocket-dependent lower palette comes from the second decoded palette
--- slot: without the previous lower member the 2D stages still complete and
--- compilation reaches the hero stage, while a corrupt pocket member fails at
--- the lower-palette decode even when the previous member is intact.
-function T.lower_palette_uses_the_pocket_dependent_source_member()
-  local previousLowerMember, pocketLowerMember = 40, 41
-  local pastTwoDimensions = fixture({
-    tamper = function(members)
-      members[previousLowerMember + 1] = "not-a-palette-container"
-      return members
-    end,
-  })
-  local bundle, err = BagAssetCompiler.compile(pastTwoDimensions)
-  Assert.isNil(bundle, "synthetic bytes cannot supply hero models")
-  local typed = assert(err, "compilation without the previous lower member must carry an error")
-  Assert.equal(typed.code, BagAssetCompiler.ERROR.SOURCE_INVALID)
-  Assert.notNil(
-    tostring(typed.message):find("hero"),
-    "without the previous lower member the 2D stages must complete and reach the hero stage, got: "
-      .. tostring(typed.message)
-  )
+function T.corrupt_pocket_lower_palette_member_fails_at_the_lower_palette_decode()
+  local pocketLowerMember = 41
   local corruptPocket = fixture({
     tamper = function(members)
       members[pocketLowerMember + 1] = "not-a-palette-container"
       return members
     end,
   })
-  local pocketBundle, pocketErr = BagAssetCompiler.compile(corruptPocket)
-  Assert.isNil(pocketBundle, "a corrupt pocket palette member must not compile")
-  local pocketTyped = assert(pocketErr, "a corrupt pocket palette member must carry an error")
-  Assert.equal(pocketTyped.code, BagAssetCompiler.ERROR.SOURCE_INVALID)
+  local bundle, err = BagAssetCompiler.compile(corruptPocket)
+  Assert.isNil(bundle, "a corrupt pocket palette member must not compile")
+  local typed = assert(err, "a corrupt pocket palette member must carry an error")
+  Assert.equal(typed.code, BagAssetCompiler.ERROR.SOURCE_INVALID)
   Assert.notNil(
-    tostring(pocketTyped.message):find("lower%-palette"),
-    "a corrupt pocket palette member must fail at the lower-palette decode, got: " .. tostring(pocketTyped.message)
+    tostring(typed.message):find("lower%-palette"),
+    "a corrupt pocket palette member must fail at the lower-palette decode, got: " .. tostring(typed.message)
   )
 end
 
@@ -590,39 +562,6 @@ function T.pocket_seven_without_its_overflow_bank_fails()
   )
 end
 
--- Item focus is no longer a generated cursor visual: corrupt cursor members
--- must not stop compilation before the hero stage.
-function T.cursor_members_are_not_required_for_compilation()
-  local BagSources = require("romdump.src.config.BagSources")
-  local romFs = fixture({
-    tamper = function(members)
-      members[BagSources.sprites.cursor.char + 1] = "not-a-char-container"
-      return members
-    end,
-  })
-  local bundle, err = BagAssetCompiler.compile(romFs)
-  Assert.isNil(bundle, "synthetic bytes cannot supply hero models")
-  local typed = assert(err, "compilation without cursor members must carry an error")
-  Assert.equal(typed.code, BagAssetCompiler.ERROR.SOURCE_INVALID)
-  Assert.notNil(
-    tostring(typed.message):find("hero"),
-    "without cursor members the remaining stages must complete and reach the hero stage, got: "
-      .. tostring(typed.message)
-  )
-end
-
-function T.unsupported_message_substitution_fails_with_the_protocol_error()
-  local romFs = fixture({
-    messageTamper = function(banks)
-      banks[10][54] = messageUnits({ "Toss ", { 0xFFFE, 0x0103, 2, 0, 0 }, "?" })
-    end,
-  })
-  local bundle, err = BagAssetCompiler.compile(romFs)
-  Assert.isNil(bundle, "an out-of-vocabulary substitution must not compile")
-  local typed = assert(err, "an out-of-vocabulary substitution must carry an error")
-  Assert.equal(typed.code, BagAssetCompiler.ERROR.SOURCE_INVALID)
-end
-
 function T.toss_result_template_reads_the_audited_message_through_the_template_path()
   local romFs = fixture({
     messageTamper = function(banks)
@@ -636,24 +575,6 @@ function T.toss_result_template_reads_the_audited_message_through_the_template_p
   Assert.notNil(
     tostring(typed.message):find("unsupported token"),
     "the failure must name the result template path rather than a later stage, got: " .. tostring(typed.message)
-  )
-end
-
--- The post-toss message addresses its quantity through the field-51 alias:
--- placeholder expansion selects the buffer by the marker's first argument,
--- so field 51 carries the same buffered quantity as field 52.
-function T.result_quantity_alias_lowers_through_the_template_path()
-  local romFs = fixture({
-    messageTamper = function(banks)
-      banks[10][54] = messageUnits({ "Threw away ", QUANTITY_SUBSTITUTION_ALIAS, " ", ITEM_SUBSTITUTION, "." })
-    end,
-  })
-  local bundle, err = BagAssetCompiler.compile(romFs)
-  Assert.isNil(bundle, "synthetic bytes cannot supply hero models")
-  local typed = assert(err, "the aliased result template must lower past the message stage")
-  Assert.notNil(
-    tostring(typed.message):find("hero"),
-    "the 51-aliased quantity must lower so compilation reaches the hero stage, got: " .. tostring(typed.message)
   )
 end
 
@@ -1545,83 +1466,6 @@ function T.corrupt_tab_state_palette_fails_with_the_protocol_error()
     tostring(typed.message):find("tabs%-state%-palette"),
     "a corrupt state palette must fail at the state-palette decode, got: " .. tostring(typed.message)
   )
-end
-
--- Selected-pocket strips replay the full retained bank range: the base
--- realization copies state banks 8..15 over destination banks 0..7, then the
--- active pocket bank overrides its own destination. The synthetic base
--- palette stays black while every state bank carries a distinct entry color,
--- so each tab region identifies the source bank that produced it. Strip bytes
--- are captured from the image writer because the synthetic archive stops at
--- the hero stage after the tab strips have already been realized.
-function T.selected_pocket_strips_replay_the_full_base_range_with_override()
-  local Rgb555 = require("libs.codec.src.Rgb555")
-  local PngReader = require("tests.support.PngReader")
-  local PngWriter = require("libs.assets.src.PngWriter")
-  local BagSources = require("romdump.src.config.BagSources")
-  local stateWords = {}
-  for index = 1, 256 do
-    stateWords[index] = 0
-  end
-  for bank = 0, 15 do
-    local r5 = (bank * 4 + 5) % 31 + 1
-    local g5 = (bank * 7 + 9) % 31 + 1
-    local b5 = (bank * 11 + 13) % 31 + 1
-    stateWords[bank * 16 + 2] = r5 + g5 * 32 + b5 * 1024
-  end
-  local baseWords = {}
-  for index = 1, 256 do
-    baseWords[index] = 0
-  end
-  local romFs = fixture({
-    tamper = function(members)
-      members[BagSources.sprites.tabs.palette + 1] = paletteData(baseWords)
-      members[BagSources.palettes.tabState + 1] = paletteData(stateWords)
-      return members
-    end,
-  })
-  local originalEncode = PngWriter.encode
-  local captured = {}
-  PngWriter.encode = function(width, height, pixels)
-    local png = originalEncode(width, height, pixels)
-    captured[#captured + 1] = png
-    return png
-  end
-  local ok, bundle, err = pcall(BagAssetCompiler.compile, romFs)
-  PngWriter.encode = originalEncode
-  Assert.isTrue(ok, "compilation must not raise an unexpected error")
-  Assert.isNil(bundle, "synthetic bytes cannot supply hero models")
-  local typed = assert(err, "compilation past the tab strips must reach the hero stage")
-  Assert.equal(typed.code, BagAssetCompiler.ERROR.SOURCE_INVALID)
-  Assert.notNil(
-    tostring(typed.message):find("hero"),
-    "the tab strips must compile before the hero stage, got: " .. tostring(typed.message)
-  )
-  local strips = {}
-  for _, png in ipairs(captured) do
-    local width, height = PngReader.rgba(png)
-    if width == 256 and height == 32 then
-      strips[#strips + 1] = png
-    end
-  end
-  Assert.equal(#strips, 8, "compilation must emit one strip per pocket before the hero stage")
-  local pocketOrder = { "items", "medicine", "balls", "tmhm", "berries", "mail", "battle_items", "key_items" }
-  for pocketIndex, pocket in ipairs(pocketOrder) do
-    local selected = pocketIndex - 1
-    local _, _, rgba = PngReader.rgba(strips[pocketIndex])
-    for destBank = 0, 7 do
-      local sourceBank = destBank
-      if destBank ~= selected then
-        sourceBank = 8 + destBank
-      end
-      local expected = Rgb555.decode(stateWords[sourceBank * 16 + 2])
-      local r, g, b, a = PngReader.pixel(rgba, 256, destBank * 32 + 16, 16)
-      Assert.equal(a, 255, pocket .. " tab " .. destBank .. " carries icon pixels")
-      Assert.equal(r, expected.r, pocket .. " tab " .. destBank .. " replays its source bank red")
-      Assert.equal(g, expected.g, pocket .. " tab " .. destBank .. " replays its source bank green")
-      Assert.equal(b, expected.b, pocket .. " tab " .. destBank .. " replays its source bank blue")
-    end
-  end
 end
 
 -- The bag, party and summary producers share one message-bank

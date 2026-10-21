@@ -25,6 +25,10 @@ DerivedAssetProvisioner.__index = DerivedAssetProvisioner
 
 local VALID_URGENCIES = { required = true, near = true, sweep = true }
 
+-- Pump rounds, one millisecond apart, an emergency acquisition waits for the
+-- controller before it is reported as stalled.
+local EMERGENCY_WAIT_ROUNDS = 120000
+
 ---@param urgency unknown
 local function checkUrgency(urgency)
   assert(VALID_URGENCIES[urgency], "unknown cache urgency: " .. tostring(urgency))
@@ -104,7 +108,7 @@ function DerivedAssetProvisioner.new(options)
       assert(type(mapId) == "number" and mapId % 1 == 0 and mapId >= 0, "logical field readiness requires its map")
       local active = guard()
       local selector = { requestKind = "logical-field", urgency = "required", mapId = mapId }
-      while true do
+      for _ = 1, EMERGENCY_WAIT_ROUNDS do
         if active.service:request(active.epoch, selector) == nil then
           error("logical field " .. tostring(mapId) .. " is not ready", 0)
         end
@@ -118,6 +122,7 @@ function DerivedAssetProvisioner.new(options)
         active.service:update()
         love.timer.sleep(0.001)
       end
+      error("logical field " .. tostring(mapId) .. " stalled: the controller never answered", 0)
     end,
     requestCell = function(descriptor, urgency)
       assert(type(descriptor) == "table", "cell request requires its descriptor")

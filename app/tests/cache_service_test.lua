@@ -410,6 +410,39 @@ function T.logical_field_emergency_ensure_blocks_until_the_controller_answers()
   Assert.equal(err, "producer failed", "the failure carries its cause")
 end
 
+-- A controller that holds the request without ever answering must surface as
+-- a diagnosable failure, never as an endless wait on the game thread.
+function T.logical_field_emergency_ensure_raises_when_the_controller_never_answers()
+  local DerivedAssetProvisioner = require("app.src.DerivedAssetProvisioner")
+  local updates = 0
+  local service = {
+    select = function()
+      return 1
+    end,
+    request = function(_, epoch)
+      return epoch
+    end,
+    observe = function()
+      return nil, nil
+    end,
+    update = function()
+      updates = updates + 1
+      if updates > 10000000 then
+        error("the emergency ensure never gave up", 0)
+      end
+      return { ordinary = 0 }
+    end,
+  }
+  local provisioner = DerivedAssetProvisioner.new({ versionId = "heartgold", service = service })
+  local host = provisioner:gameHost()
+  local realSleep = love.timer.sleep
+  love.timer.sleep = function() end
+  local ok, err = pcall(host.ensureLogicalField, 48)
+  love.timer.sleep = realSleep
+  Assert.isFalse(ok, "an unanswered emergency ensure raises")
+  Assert.isTrue(tostring(err):find("logical field 48", 1, true) ~= nil, "the failure names the stalled field: " .. tostring(err))
+end
+
 function T.provisioner_exposes_the_selection_generation_without_scanning()
   local Service = requireService()
   local DerivedAssetProvisioner = require("app.src.DerivedAssetProvisioner")
