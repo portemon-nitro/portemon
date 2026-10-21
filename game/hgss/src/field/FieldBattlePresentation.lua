@@ -1372,6 +1372,30 @@ function FieldBattlePresentation:_admitLaunch(descriptor)
     end
     return acknowledged == true
   end
+  function facade.openCompletion(intent)
+    local inner = owned()
+    if inner == nil then
+      return false
+    end
+    local ok, accepted = pcall(inner.openCompletion, intent)
+    if not ok then
+      reportOpFailure("openCompletion", accepted)
+      return false
+    end
+    return accepted == true
+  end
+  function facade.takeCompletion()
+    local inner = owned()
+    if inner == nil then
+      return nil
+    end
+    local ok, result = pcall(inner.takeCompletion)
+    if not ok then
+      reportOpFailure("takeCompletion", result)
+      return nil
+    end
+    return result
+  end
   function facade.dispose()
     if self._launchId ~= launchId then
       return

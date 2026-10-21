@@ -15,6 +15,7 @@
 -- pipeline, which receives the validated player candidate through the
 -- receipt.
 
+local Boxes = require("libs.mons.src.Boxes")
 local Party = require("libs.mons.src.Party")
 local PlayerData = require("libs.hgss.src.save.PlayerData")
 
@@ -28,6 +29,72 @@ local function isPartyOwner(owner)
     and type(owner.partyCount) == "function"
     and type(owner.partyRevision) == "function"
     and type(owner.preparePartyBatch) == "function"
+end
+
+-- A spillover-capable owner stages the single PC candidate beside the
+-- party batch: box slot reads plus the revision-checked PC preparation.
+-- Party-only doubles stay valid where every capture fits the party.
+---@param owner unknown
+---@return boolean
+local function isBoxOwner(owner)
+  return type(owner) == "table"
+    and type(owner.partyMon) == "function"
+    and type(owner.boxCount) == "function"
+    and type(owner.activeBox) == "function"
+    and type(owner.boxMon) == "function"
+    and type(owner.boxRevision) == "function"
+    and type(owner.preparePcChanges) == "function"
+end
+
+-- Collects the first free box slots scanning forward from the active box
+-- cyclically through the configured boxes, slots ascending. Refuses with
+-- capacity context before any publication when storage cannot retain
+-- every capture.
+---@param owner table<string, unknown> spillover-capable party owner under scanning
+---@param partyFree integer free party slots already assigned
+---@param needed integer captures still needing a box slot
+---@param total integer successful captures under staging
+---@return { box: integer, slot: integer }[] free box slots in scan order
+local function collectFreeBoxSlots(owner, partyFree, needed, total)
+  local boxCount = owner:boxCount()
+  local active = owner:activeBox()
+  local function exhausted(free)
+    error(
+      "battle commit captures exceed free party and box storage (partyFree="
+        .. tostring(partyFree)
+        .. ", boxFree="
+        .. tostring(free)
+        .. ", captures="
+        .. tostring(total)
+        .. ")",
+      0
+    )
+  end
+  if
+    type(boxCount) ~= "number"
+    or boxCount % 1 ~= 0
+    or boxCount < 1
+    or type(active) ~= "number"
+    or active % 1 ~= 0
+    or active < 0
+    or active >= boxCount
+  then
+    exhausted(0)
+  end
+  local free = {}
+  for offset = 0, boxCount - 1 do
+    local box = (active + offset) % boxCount
+    for slot = 0, Boxes.SLOTS_PER_BOX - 1 do
+      if owner:boxMon(box, slot) == nil then
+        free[#free + 1] = { box = box, slot = slot }
+        if #free >= needed then
+          return free
+        end
+      end
+    end
+  end
+  exhausted(#free)
+  error("unreachable", 0)
 end
 
 ---@param preparation unknown
@@ -151,16 +218,20 @@ function HgssBattleCommitter.prepare(args)
     error("battle commit stages party updates and captures through one batch", 0)
   end
   local ownerBatch = nil
-  local fitting = {}
+  local ownerPc = nil
+  local destinations = {}
   if owner ~= nil then
-    -- Every successful capture needs a real party destination before any
-    -- publication exists: without a storage backend a batch that exceeds
-    -- live capacity fails here instead of committing a fitting prefix or
-    -- discarding the caught mon. Party updates never change the roster
-    -- size, so live capacity is the only bound. Every record's species
-    -- key is validated read-only here, before any publication; fitting
-    -- records pass full validation through the staged batch below.
+    -- Every successful capture needs a real destination before any
+    -- publication exists: free party slots take captures in input order
+    -- first, then the first empty box slots scanning forward from the
+    -- active box. Party updates never change the roster size, so live
+    -- capacity is the only party bound. Every record's species key is
+    -- validated read-only here, before any publication; staged records
+    -- pass full validation through the single batch below.
     local capacity = Party.MAX - owner:partyCount()
+    if capacity < 0 then
+      capacity = 0
+    end
     for _, entry in ipairs(captures) do
       local mon = entry.mon --[[@as table<string, unknown>]]
       if type(mon.species) ~= "string" then
@@ -169,21 +240,74 @@ function HgssBattleCommitter.prepare(args)
       -- Unknown species fail here, before any publication, through a
       -- read-only lookup that mutates nothing.
       owner:countSpecies(mon.species)
-      fitting[#fitting + 1] = entry
     end
-    if #fitting > capacity then
-      error("battle commit captures exceed free party slots without storage", 0)
-    end
-    local appends = {}
-    for _, entry in ipairs(fitting) do
-      appends[#appends + 1] = entry.mon
-    end
-    if #updates > 0 or #appends > 0 then
-      local batch, reason = owner:preparePartyBatch(owner:partyRevision(), updates, appends)
-      if batch == nil then
-        error("battle commit party batch went stale: " .. tostring(reason), 0)
+    if #captures <= capacity then
+      local appends = {}
+      for _, entry in ipairs(captures) do
+        appends[#appends + 1] = entry.mon
       end
-      ownerBatch = batch
+      if #updates > 0 or #appends > 0 then
+        local batch, reason = owner:preparePartyBatch(owner:partyRevision(), updates, appends)
+        if batch == nil then
+          error("battle commit party batch went stale: " .. tostring(reason), 0)
+        end
+        ownerBatch = batch
+      end
+      local baseSlot = owner:partyCount()
+      for index, entry in ipairs(captures) do
+        destinations[#destinations + 1] = {
+          captureId = entry.captureId,
+          destination = "party",
+          partySlot = baseSlot + index - 1,
+          mon = entry.mon,
+        }
+      end
+    else
+      -- Party-full or overflow: one PC staging carries the complete
+      -- candidate roster (live party plus battle updates plus the
+      -- party-destined appends) with explicit box updates, never
+      -- separate conflicting party and PC candidates.
+      if not isBoxOwner(owner) then
+        error("battle commit captures exceed free party slots without storage", 0)
+      end
+      local freeSlots = collectFreeBoxSlots(owner, capacity, #captures - capacity, #captures)
+      local roster = {}
+      for slot = 0, owner:partyCount() - 1 do
+        roster[#roster + 1] = owner:partyMon(slot)
+      end
+      for _, update in ipairs(updates) do
+        roster[update.slot + 1] = update.mon
+      end
+      for index = 1, capacity do
+        local mon = captures[index].mon
+        roster[#roster + 1] = mon
+        destinations[#destinations + 1] = {
+          captureId = captures[index].captureId,
+          destination = "party",
+          partySlot = owner:partyCount() + index - 1,
+          mon = mon,
+        }
+      end
+      local boxUpdates = {}
+      for position = capacity + 1, #captures do
+        local free = freeSlots[position - capacity]
+        boxUpdates[#boxUpdates + 1] = { box = free.box, slot = free.slot, mon = captures[position].mon }
+        destinations[#destinations + 1] = {
+          captureId = captures[position].captureId,
+          destination = "box",
+          box = free.box,
+          slot = free.slot,
+          mon = captures[position].mon,
+        }
+      end
+      local pc, reason = owner:preparePcChanges({
+        partyRevision = owner:partyRevision(),
+        boxRevision = owner:boxRevision(),
+      }, { party = roster, boxUpdates = boxUpdates })
+      if pc == nil then
+        error("battle commit party and box staging went stale: " .. tostring(reason), 0)
+      end
+      ownerPc = pc
     end
   end
   local playerCandidate = nil
@@ -228,8 +352,9 @@ function HgssBattleCommitter.prepare(args)
     pokegear = pokegearCandidate,
     owner = owner,
     ownerBatch = ownerBatch,
+    ownerPc = ownerPc,
     captures = captures,
-    fitting = fitting,
+    destinations = destinations,
     rewards = copyValue(args.rewards),
     scriptFlags = copyValue(args.scriptFlags) or {},
     playerCandidate = playerCandidate,
@@ -247,8 +372,9 @@ end
 ---@field pokegear { isCurrent: fun(): boolean, publish: fun(): table<string, unknown> }?
 ---@field owner HgssMonService?
 ---@field ownerBatch { isCurrent: fun(): boolean, publish: fun() }?
+---@field ownerPc { isCurrent: fun(): boolean, publish: fun() }?
 ---@field captures table<string, unknown>[]
----@field fitting table<string, unknown>[]
+---@field destinations table<string, unknown>[]
 ---@field rewards table<string, unknown>?
 ---@field scriptFlags table<string, unknown>
 ---@field playerCandidate table<string, unknown>?
@@ -284,6 +410,10 @@ function HgssBattleCommitter.commit(prepared)
   local publishBag = checkedPublish(staged.bag, "bag candidate")
   local publishDex = checkedPublish(staged.dex, "dex candidate")
   local publishBatch = checkedPublish(staged.ownerBatch, "party batch")
+  local publishPc = checkedPublish(staged.ownerPc, "party and box candidate")
+  if publishBatch ~= nil and publishPc ~= nil then
+    error("battle commit stages party updates and captures through one batch", 0)
+  end
   local publishPokegear = checkedPublish(staged.pokegear, "pokegear candidate")
   -- The fallible roamer writeback runs before any owner swap, so its
   -- rejection leaves every live owner on the last known-good state.
@@ -318,22 +448,32 @@ function HgssBattleCommitter.commit(prepared)
   if publishBatch ~= nil then
     publishBatch()
   end
+  if publishPc ~= nil then
+    publishPc()
+  end
   local placements = {}
-  local owner = staged.owner
-  if owner ~= nil then
-    -- Preparation proved every successful capture fits, so the staged
-    -- appends land as one contiguous tail in capture order and every
-    -- placement retains its mon in the party.
-    local recordSlot = owner:partyCount() - #staged.fitting
-    for _, entry in ipairs(staged.captures) do
+  -- Preparation assigned every successful capture its exact destination
+  -- in input order, so each placement keys its capture identity to the
+  -- party or box slot the single staged candidate published.
+  for _, assigned in ipairs(staged.destinations or {}) do
+    local record = assigned --[[@as table<string, unknown>]]
+    if record.destination == "box" then
       placements[#placements + 1] = {
-        captureId = entry.captureId,
+        captureId = record.captureId,
         retained = true,
-        destination = "party",
-        partySlot = recordSlot,
+        destination = "box",
+        box = record.box,
+        slot = record.slot,
         reason = "retained",
       }
-      recordSlot = recordSlot + 1
+    else
+      placements[#placements + 1] = {
+        captureId = record.captureId,
+        retained = true,
+        destination = "party",
+        partySlot = record.partySlot,
+        reason = "retained",
+      }
     end
   end
   local receipt = {

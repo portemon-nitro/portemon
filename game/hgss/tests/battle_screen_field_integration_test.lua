@@ -1444,4 +1444,287 @@ function T.tests.opening_walk_reaches_playable_battles()
   Assert.isTrue(unbound, "the opening run releases its factory binding")
 end
 
+-- The live completion port answers one nickname decision at a time:
+-- reopening the same decision stays idempotent, a concurrent or foreign
+-- decision never opens, an unanswered decision seals nothing, a permitted
+-- exit declines exactly once, a consumed decision never reopens, and
+-- disposal refuses late decisions and seals nothing late.
+function T.tests.completion_port_rejects_stale_and_replayed_results()
+  local BattleScreenState = require("game.hgss.src.battle.BattleScreenState")
+  local Model = require("game.hgss.src.battle.BattlePresentationModel")
+  local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+  local ManifestFixture = require("tests.support.BattlePresentationManifestFixture")
+  local Schema = require("libs.assets.src.battle.BattlePresentationSchema")
+  local manifest = ManifestFixture.manifest()
+  manifest.scenes = { { key = "general/plain/day", background = "general", terrain = "plain", time = "day" } }
+  Schema.assertManifest(manifest)
+  local assets = { images = {} }
+  function assets.prepare(_)
+    return true
+  end
+  function assets.drawable(key)
+    if assets.images[key] == nil then
+      assets.images[key] = { handle = key, width = 80, height = 80 }
+    end
+    return assets.images[key]
+  end
+  function assets.release(_) end
+  local text = {
+    measure = function(content)
+      return { width = 8 * #tostring(content), height = 16 }
+    end,
+    drawText = function(_, _, _) end,
+  }
+  local windows = {
+    drawWindow = function(_, _, _) end,
+    drawApplicationFrame = function(_, _) end,
+  }
+  local audio = {
+    play = function(_, _)
+      return true
+    end,
+  }
+  local measurement = dualMeasurement("completion-identity:dual")
+  local screen = BattleScreenState.new({
+    launchId = "launch-completion-identity",
+    manifest = manifest,
+    model = Model,
+    submit = function(_)
+      return false, { message = "no open request" }
+    end,
+    measureDisplay = function()
+      return measurement
+    end,
+    monCatalog = CatalogFixture.makeCatalog(),
+    assets = assets,
+    text = text,
+    windows = windows,
+    audio = audio,
+  })
+  local port = screen:presentationPort()
+  Assert.isTrue(type(port.openCompletion) == "function", "the live port opens nickname decisions")
+  Assert.isTrue(type(port.takeCompletion) == "function", "the live port reports nickname answers")
+  local catalog = CatalogFixture.makeCatalog()
+  local factory = CatalogFixture.makeFactory(0x1D000001, catalog)
+  local subject = factory:createNormal(CatalogFixture.normalRequest({ species = "EEVEE", level = 4 }))
+  local function intentFor(completionId, launchId)
+    return {
+      launchId = launchId or "launch-completion-identity",
+      completionId = completionId,
+      kind = "capture_nickname",
+      subject = subject,
+    }
+  end
+  -- The terminal capture narration plays first: the decision is stored
+  -- but unoffered until its page is acknowledged.
+  local view = {
+    own = {
+      {
+        combatant = 1,
+        activation = 1,
+        side = 1,
+        position = 1,
+        name = "LEAD",
+        species = "EEVEE",
+        level = 5,
+        hp = 20,
+        maxHp = 20,
+        active = true,
+      },
+    },
+    foes = {
+      {
+        combatant = 2,
+        activation = 1,
+        side = 2,
+        position = 2,
+        name = "Wild EEVEE",
+        species = "EEVEE",
+        level = 4,
+        hp = 0,
+        maxHp = 18,
+        active = true,
+      },
+    },
+  }
+  port.present({
+    launchId = "launch-completion-identity",
+    packetId = 1,
+    events = {},
+    before = view,
+    after = view,
+    result = { word = "capture" },
+  })
+  local settled = false
+  for _ = 1, 600 do
+    screen:updateFixed(TICK)
+    if screen:status().mode == "outcome" then
+      settled = true
+      break
+    end
+  end
+  Assert.isTrue(settled, "the terminal capture narration reaches its outcome")
+  Assert.isNil(screen:status().completion, "the unacknowledged terminal offers no nickname yet")
+  Assert.isTrue(port.openCompletion(intentFor("nickname-1")), "the live port stores its nickname decision")
+  Assert.isNil(screen:status().completion, "the stored decision waits for its acknowledgment")
+  -- The terminal page reveals then acknowledges through genuine edges.
+  local offered = nil
+  for _ = 1, 30 do
+    screen:input({ { type = "confirm" } })
+    screen:updateFixed(TICK)
+    if screen:status().completion ~= nil then
+      offered = screen:status().completion
+      break
+    end
+  end
+  Assert.notNil(offered, "the acknowledged terminal offers the nickname decision")
+  Assert.notNil(offered, "the acknowledged terminal offers the nickname decision")
+  assert(offered ~= nil, "the nickname decision is offered")
+  Assert.equal(offered.stage, "question", "the offered decision asks first")
+  Assert.isTrue(port.openCompletion(intentFor("nickname-1")), "reopening the same decision stays idempotent")
+  Assert.isFalse(
+    port.openCompletion(intentFor("nickname-2")),
+    "a concurrent decision never opens through the same port"
+  )
+  Assert.isFalse(
+    port.openCompletion(intentFor("nickname-1", "foreign-launch")),
+    "a foreign launch never opens through the bound port"
+  )
+  Assert.isNil(port.takeCompletion(), "the unanswered decision seals nothing")
+  screen:input({ { type = "cancel" } })
+  screen:updateFixed(TICK)
+  local declined = port.takeCompletion()
+  Assert.deepEqual(declined, {
+    launchId = "launch-completion-identity",
+    completionId = "nickname-1",
+    kind = "declined",
+  }, "the permitted exit declines exactly once")
+  Assert.isNil(port.takeCompletion(), "the consumed decision seals nothing more")
+  Assert.isFalse(port.openCompletion(intentFor("nickname-1")), "a consumed decision never reopens")
+  Assert.isTrue(port.openCompletion(intentFor("nickname-2")), "the next decision opens after consumption")
+  screen:dispose()
+  Assert.isFalse(port.openCompletion(intentFor("nickname-3")), "disposal refuses late decisions")
+  Assert.isNil(port.takeCompletion(), "disposal seals nothing late")
+end
+
+-- The deferred facade forwards both completion operations to the live
+-- screen once built and refuses them safely before the build and after
+-- disposal, without reporting a second failure.
+function T.tests.pending_facade_forwards_completion_through_the_live_screen()
+  local Presentation = requirePresentationOwner("the deferred facade forwards completion operations")
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
+  local versionId = AcceptanceHarness.defaultVersion()
+  local cacheFs = CacheFs.forVersion(versionId)
+  local manifest = BattlePresentationCache.load(cacheFs)
+  Assert.isTrue(
+    type(manifest) == "table" and type(manifest.scenes) == "table" and #manifest.scenes > 0,
+    "the staged manifest inventories its scenes"
+  )
+  local sceneKey = assert(manifest.scenes[1].key, "the staged manifest names its first scene")
+  local envelope = Presentation.new({
+    cacheFs = cacheFs,
+    windows = recordingWindows(),
+    text = recordingText(),
+    audio = recordingAudio(),
+    measureDisplay = function()
+      return dualMeasurement("completion-facade:dual")
+    end,
+  })
+  local host = {
+    submit = function(_)
+      return true
+    end,
+    notify = function(_, _) end,
+  }
+  local launchId = "launch-completion-facade"
+  local port = envelope:factory()({
+    launchId = launchId,
+    kind = "wild",
+    environment = { sceneKey = sceneKey },
+    host = host,
+  })
+  Assert.notNil(port, "the admitted launch owns its port")
+  assert(port ~= nil, "the facade port builds")
+  Assert.isTrue(type(port.openCompletion) == "function", "the facade forwards nickname decisions")
+  Assert.isTrue(type(port.takeCompletion) == "function", "the facade forwards nickname answers")
+  Assert.notNil(envelope:liveScreen(), "the direct admission builds its live screen")
+  local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+  local catalog = CatalogFixture.makeCatalog()
+  local factory = CatalogFixture.makeFactory(0xFA0E0001, catalog)
+  local subject = factory:createNormal(CatalogFixture.normalRequest({ species = "EEVEE", level = 4 }))
+  Assert.isTrue(port.openCompletion({
+    launchId = launchId,
+    completionId = "facade-1",
+    kind = "capture_nickname",
+    subject = subject,
+  }), "the facade forwards the decision to the live screen")
+  Assert.isNil(port.takeCompletion(), "the facade forwards the unanswered decision as nothing")
+  port.dispose()
+  Assert.isFalse(port.openCompletion({
+    launchId = launchId,
+    completionId = "facade-2",
+    kind = "capture_nickname",
+    subject = subject,
+  }), "the disposed facade refuses late decisions")
+  Assert.isNil(port.takeCompletion(), "the disposed facade seals nothing late")
+  envelope:dispose()
+  -- The deferred facade refuses the same operations safely while its
+  -- scene still builds: no screen, no answer, and no failure report.
+  local deferredNotifies = {}
+  local deferredHost = {
+    submit = function(_)
+      return true
+    end,
+    notify = function(event, reason)
+      deferredNotifies[#deferredNotifies + 1] = { event = event, reason = reason }
+    end,
+    status = function()
+      return { phase = "active" }
+    end,
+  }
+  local deferredEnvelope = Presentation.new({
+    cacheFs = cacheFs,
+    windows = recordingWindows(),
+    text = recordingText(),
+    audio = recordingAudio(),
+    measureDisplay = function()
+      return dualMeasurement("completion-deferred:dual")
+    end,
+    graphics = {},
+    derivedAssets = {
+      requestBattleScene = function(_, _)
+        return false, nil
+      end,
+    },
+  })
+  local deferredId = "launch-completion-deferred"
+  local deferred = deferredEnvelope:factory()({
+    launchId = deferredId,
+    kind = "wild",
+    environment = { sceneKey = sceneKey },
+    host = deferredHost,
+  })
+  Assert.notNil(deferred, "the deferred admission owns its facade")
+  assert(deferred ~= nil, "the deferred facade builds")
+  Assert.isNil(deferredEnvelope:liveScreen(), "the deferred launch holds no screen while its scene builds")
+  Assert.isFalse(deferred.openCompletion({
+    launchId = deferredId,
+    completionId = "deferred-1",
+    kind = "capture_nickname",
+    subject = subject,
+  }), "the pending facade refuses decisions without a screen")
+  Assert.isNil(deferred.takeCompletion(), "the pending facade seals nothing without a screen")
+  deferred.dispose()
+  Assert.isFalse(deferred.openCompletion({
+    launchId = deferredId,
+    completionId = "deferred-2",
+    kind = "capture_nickname",
+    subject = subject,
+  }), "the disposed deferred facade refuses late decisions")
+  Assert.isNil(deferred.takeCompletion(), "the disposed deferred facade seals nothing late")
+  Assert.equal(#deferredNotifies, 0, "safe refusals report no failure")
+  deferredEnvelope:dispose()
+end
+
 return T

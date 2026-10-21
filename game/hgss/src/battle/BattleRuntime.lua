@@ -59,10 +59,15 @@ local PlayerData = require("libs.hgss.src.save.PlayerData")
 ---@field ready fun(): boolean
 ---@field leave fun(plan: table<string, unknown>): boolean
 ---@field dispose fun()
+---@field openCompletion (fun(intent: table<string, unknown>): boolean)? bound capture-nickname completion under opening
+---@field takeCompletion (fun(): table<string, unknown>?)? one-shot bound completion answer
 
 ---@class BattlePartyOwner
 ---@field partyRevision fun(self: BattlePartyOwner): integer
 ---@field partyMon (fun(self: BattlePartyOwner, slot0: integer): table<string, unknown>)? reads the current live party slot record
+---@field boxRevision (fun(self: BattlePartyOwner): integer)? reads the current live box revision behind spillover
+---@field preparePartyChanges (fun(self: BattlePartyOwner, expectedRevision: integer, updates: table<integer, table<string, unknown>>): table<string, unknown>?, string?)? stages validated party replacements
+---@field preparePcChanges (fun(self: BattlePartyOwner, expected: table<string, integer>, changes: table<string, unknown>): table<string, unknown>?, string?)? stages the single party-and-box candidate
 
 ---@class BattleRuntimeArgs
 ---@field request table<string, unknown> launch request carrying its identity and kind
@@ -110,6 +115,10 @@ local PlayerData = require("libs.hgss.src.save.PlayerData")
 ---@field _sourceResult integer
 ---@field _postTicks integer
 ---@field _runTicks integer
+---@field _stagedCaptures table<integer, table<string, unknown>>? committer-shaped captures behind the completion queue
+---@field _completions table<integer, table<string, unknown>> pending nickname completions in receipt order
+---@field _activeCompletion table<string, unknown>? currently open nickname completion
+---@field _completionError string? last refused rename behind a drained completion
 ---@field _partyRevision integer?
 ---@field _bagRevision integer?
 ---@field _error string?
@@ -277,11 +286,69 @@ local function checkConsequenceInputs(args)
   end
 end
 
+---@param inner BattlePresentationPort presentation port under wrapping
+---@param launchId string owning launch identity behind the completion binding
+---@return BattlePresentationPort port with an explicit headless decline policy for both completion operations
+local function declineCompletionDriver(inner, launchId)
+  local active = nil
+  local consumed = {}
+  local port = {}
+  function port.enter(plan)
+    return inner.enter(plan)
+  end
+  function port.present(packet)
+    inner.present(packet)
+  end
+  function port.ready()
+    return inner.ready()
+  end
+  function port.leave(plan)
+    return inner.leave(plan)
+  end
+  function port.dispose()
+    inner.dispose()
+  end
+  ---@param intent table<string, unknown> bound completion intent under opening
+  ---@return boolean opened true while the decline driver owns the decision
+  function port.openCompletion(intent)
+    if type(intent) ~= "table" or intent.launchId ~= launchId then
+      return false
+    end
+    if type(intent.completionId) ~= "string" or intent.completionId == "" then
+      return false
+    end
+    if consumed[intent.completionId] then
+      return false
+    end
+    if active ~= nil and active.completionId ~= intent.completionId then
+      return false
+    end
+    active = intent
+    return true
+  end
+  ---@return table<string, unknown>? one-shot decline bound to the open decision
+  function port.takeCompletion()
+    if active == nil then
+      return nil
+    end
+    if consumed[active.completionId] then
+      active = nil
+      return nil
+    end
+    consumed[active.completionId] = true
+    local result = { launchId = active.launchId, completionId = active.completionId, kind = "declined" }
+    active = nil
+    return result
+  end
+  return port
+end
+
 ---@param presentation unknown
+---@param launchId string owning launch identity behind the completion binding
 ---@return BattlePresentationPort validated presentation port
-local function checkPresentation(presentation)
+local function checkPresentation(presentation, launchId)
   if presentation == nil then
-    return defaultPresentation()
+    return declineCompletionDriver(defaultPresentation(), launchId)
   end
   assert(type(presentation) == "table", "battle presentation stays a record")
   local port = presentation --[[@as BattlePresentationPort]]
@@ -290,6 +357,12 @@ local function checkPresentation(presentation)
   assert(type(port.ready) == "function", "battle presentation implements ready")
   assert(type(port.leave) == "function", "battle presentation implements leave")
   assert(type(port.dispose) == "function", "battle presentation implements dispose")
+  if type(port.openCompletion) ~= "function" or type(port.takeCompletion) ~= "function" then
+    -- Headless and legacy test drivers carry no nickname UI: they answer
+    -- every completion with an explicit decline instead of silently
+    -- skipping the required native screen the production port owns.
+    return declineCompletionDriver(port, launchId)
+  end
   return port
 end
 
@@ -312,7 +385,7 @@ function BattleRuntime.new(args)
   checkRequest(args.request)
   checkConsequenceInputs(args)
   local request = args.request --[[@as table<string, unknown>]]
-  local presentation = checkPresentation(args.presentation)
+  local presentation = checkPresentation(args.presentation, request.id --[[@as string]])
   if args.seed ~= nil then
     assert(
       type(args.seed) == "number" and args.seed % 1 == 0 and args.seed >= 0 and args.seed <= 0xFFFFFFFF,
@@ -356,6 +429,10 @@ function BattleRuntime.new(args)
     _sourceResult = BattleTask.SOURCE_NOT_WON,
     _postTicks = 0,
     _runTicks = 0,
+    _stagedCaptures = nil,
+    _completions = {},
+    _activeCompletion = nil,
+    _completionError = nil,
     _partyRevision = nil,
     _error = nil,
     _disposed = false,
@@ -1632,6 +1709,7 @@ function BattleRuntime:_prepareCommit()
   self._sourceResult = (result == "win" or result == "capture") and BattleTask.SOURCE_WON or BattleTask.SOURCE_NOT_WON
   local updates = self:_partyUpdates()
   local captures = self:_commitCaptures()
+  self._stagedCaptures = captures
   local rewards = self:_commitRewards(result)
   local args = {
     outcome = { id = self._request.id, result = result },
@@ -1758,13 +1836,171 @@ function BattleRuntime:_updateResolving()
     return
   end
   self._receipt = receipt --[[@as table<string, unknown>]]
+  self:_buildCompletions(receipt)
   self._phase = "postbattle"
   self._postTicks = 0
 end
 
+-- Binds one nickname completion per successful capture in receipt order:
+-- each completion carries its stable identity, its receipt placement, and
+-- the exact committed caught mon. Failed attempts stage no completion.
+---@param receipt table<string, unknown> committed battle receipt carrying its placements
+function BattleRuntime:_buildCompletions(receipt)
+  local queue = {}
+  self._activeCompletion = nil
+  self._completionError = nil
+  local placements = receipt.placements
+  if type(placements) ~= "table" then
+    self._completions = queue
+    return
+  end
+  local subjects = {}
+  for _, capture in ipairs(self._stagedCaptures or {}) do
+    local entry = capture --[[@as table<string, unknown>]]
+    if entry.success == true and type(entry.mon) == "table" then
+      subjects[#subjects + 1] = entry
+    end
+  end
+  -- The rename pins the owner revisions at commit: any live move before
+  -- the pending rename reads as stale against these instead of the
+  -- drifting current revision.
+  local party = self._party --[[@as BattlePartyOwner?]]
+  local partyRevision = nil
+  local boxRevision = nil
+  if party ~= nil then
+    partyRevision = party:partyRevision()
+    if type(party.boxRevision) == "function" then
+      boxRevision = party:boxRevision()
+    end
+  end
+  for index, placement in ipairs(placements) do
+    local capture = subjects[index]
+    local mon = capture ~= nil and capture.mon or nil
+    local spot = placement --[[@as table<string, unknown>]]
+    if type(mon) == "table" then
+      local key = spot.captureId ~= nil and tostring(spot.captureId) or tostring(index)
+      queue[#queue + 1] = {
+        completionId = self._request.id .. ":nickname:" .. key,
+        kind = "capture_nickname",
+        placement = copyValue(spot),
+        subject = copyValue(mon),
+        partyRevision = partyRevision,
+        boxRevision = boxRevision,
+      }
+    end
+  end
+  self._completions = queue
+end
+
+-- Applies one answered nickname at its receipt location through the
+-- revision-checked mon preparation: party catches rewrite the party slot,
+-- box catches rewrite the box slot. Never re-runs the battle commit.
+-- A stale owner or a malformed nickname raises; the caller preserves the
+-- committed mon and outcome instead of rolling back.
+---@param completion table<string, unknown> open completion carrying its receipt placement
+---@param nickname unknown answered nickname text under application
+function BattleRuntime:_applyNickname(completion, nickname)
+  if type(nickname) ~= "string" or nickname == "" then
+    error("capture renames carry their nickname text", 0)
+  end
+  local party = assert(self._party, "capture renames stage through their owner")
+  local placement = assert(completion.placement, "completions carry their receipt placement")
+  local updated = copyValue(completion.subject) --[[@as table<string, unknown>]]
+  updated.nickname = nickname
+  if placement.destination == "box" then
+    local prepare = assert(party.preparePcChanges, "box renames stage through the PC preparation")
+    local staged, reason = prepare(party, {
+      partyRevision = assert(completion.partyRevision, "completions pin their party revision"),
+      boxRevision = assert(completion.boxRevision, "box completions pin their box revision"),
+    }, {
+      boxUpdates = { { box = placement.box, slot = placement.slot, mon = updated } },
+    })
+    if staged == nil then
+      error("the capture rename went stale: " .. tostring(reason), 0)
+    end
+    local publish = assert(staged.publish, "capture renames publish once")
+    publish()
+    return
+  end
+  if placement.destination ~= "party" then
+    error("capture renames answer their receipt placement", 0)
+  end
+  local revise = assert(party.preparePartyChanges, "party renames stage through their owner")
+  local staged, reason = revise(party, assert(completion.partyRevision, "completions pin their party revision"), {
+    { slot = placement.partySlot, mon = updated },
+  })
+  if staged == nil then
+    error("the capture rename went stale: " .. tostring(reason), 0)
+  end
+  local publish = assert(staged.publish, "capture renames publish once")
+  publish()
+end
+
+-- Drains one nickname completion at a time behind the save gate: the
+-- intent opens exactly once, its answer is consumed once on a later tick,
+-- and only then does the queue advance toward returning.
+---@return boolean settled true when no completion work remains
+function BattleRuntime:_pollCompletion()
+  if self._activeCompletion == nil then
+    local pending = self._completions[1]
+    if pending == nil then
+      return true
+    end
+    local intent = {
+      launchId = self._request.id,
+      completionId = pending.completionId,
+      kind = pending.kind,
+      subject = copyValue(pending.subject),
+    }
+    local ok, accepted = pcall(self._presentation.openCompletion, intent)
+    if not ok then
+      self:_fail(tostring(accepted))
+      return false
+    end
+    if accepted ~= true then
+      return false
+    end
+    self._activeCompletion = pending
+    return false
+  end
+  local active = self._activeCompletion --[[@as table<string, unknown>]]
+  local ok, result = pcall(self._presentation.takeCompletion)
+  if not ok then
+    self:_fail(tostring(result))
+    return false
+  end
+  if result == nil then
+    return false
+  end
+  if
+    type(result) ~= "table"
+    or result.launchId ~= self._request.id
+    or result.completionId ~= active.completionId
+    or (result.kind ~= "named" and result.kind ~= "declined")
+  then
+    self:_fail("the completion answer mismatches its open decision")
+    return false
+  end
+  if result.kind == "named" then
+    local applied, applyErr = pcall(BattleRuntime._applyNickname, self, active, result.nickname)
+    if not applied then
+      -- The committed catch and outcome survive a refused rename: the
+      -- failure stays visible on the status while the queue drains.
+      self._completionError = tostring(applyErr)
+    end
+  end
+  table.remove(self._completions, 1)
+  self._activeCompletion = nil
+  return #self._completions == 0
+end
+
 function BattleRuntime:_updatePostbattle()
   -- The terminal outcome already shipped exactly once inside its
-  -- delivery packet; postbattle only paces the wait before returning.
+  -- delivery packet; postbattle first drains every nickname completion
+  -- behind the save gate, then paces the wait before returning.
+  if not self:_pollCompletion() then
+    return
+  end
   self._postTicks = self._postTicks + 1
   if self._postTicks >= 2 then
     self._phase = "returning"
@@ -1902,6 +2138,8 @@ function BattleRuntime:status()
     result = self._result,
     sourceResult = self._sourceResult,
     error = self._error,
+    completionPending = #self._completions,
+    completionError = self._completionError,
   }
   return status
 end
