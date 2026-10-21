@@ -1085,6 +1085,49 @@ function T.tests.configuration_accepts_all_source_skins_with_an_old_saved_subset
   pointer:dispose()
 end
 
+function T.tests.shell_prepares_the_active_cards_presentation_images()
+  local FieldState = require("game.hgss.src.field.FieldState")
+  local PokegearRenderer = require("libs.hgss.src.presentation.PokegearRenderer")
+  local path = "assets/generated/pokegear/phone-upper-skin-0.png"
+  local requested = {}
+  local pool = {
+    request = function(_, imagePath)
+      requested[imagePath] = true
+      return imagePath
+    end,
+    poll = function()
+      return "ready"
+    end,
+    acquire = function()
+      return { image = {} }
+    end,
+  }
+  local oldDraw = PokegearRenderer.draw
+  local oldLove = love
+  local observed
+  PokegearRenderer.draw = function(_, _, plan)
+    observed = plan
+  end
+  love = { graphics = {} }
+  local ok, err = pcall(FieldState._drawPokegearApplication, {
+    runtime = { imageAssets = pool },
+  }, {}, {
+    tab = "phone",
+    focus = "application",
+    presentation = { content = { slots = {} } },
+    child = {
+      presentation = {
+        content = { upper = path },
+      },
+    },
+  })
+  PokegearRenderer.draw = oldDraw
+  love = oldLove
+  assert(ok, tostring(err))
+  Assert.isTrue(requested[path], "the shell prepares the active phone card's upper image")
+  Assert.notNil(observed, "the shell publishes the resolved plan to its renderer")
+end
+
 -- Small resizes within and across the near-native hysteresis band change no
 -- logical state: card, focus, and remembered-card preference all hold.
 function T.tests.small_resizes_keep_logical_state()

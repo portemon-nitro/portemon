@@ -977,6 +977,11 @@ function FieldState:_drawPokegearApplication(resources, appStatus)
   end
   realize(plan.content)
   realize(plan.slots)
+  local child = appStatus.child
+  local childPresentation = type(child) == "table" and (child --[[@as table<string, unknown>]]).presentation or nil
+  if type(childPresentation) == "table" then
+    realize((childPresentation --[[@as table<string, unknown>]]).content)
+  end
   PokegearRenderer.draw({
     graphics = graphics,
     images = images,
