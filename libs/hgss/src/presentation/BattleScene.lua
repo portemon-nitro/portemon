@@ -25,6 +25,7 @@
 ---@field _pictureAnimations table<string, table<string, unknown>> native Pokepic tasks by activation
 ---@field _pictureStates table<string, { base: table<string, unknown>, current: table<string, unknown>, animation?: table<string, unknown> }> activation-scoped appearance, transform and animation snapshot
 ---@field _taskPicturePatches table<string, { owner: integer|table<string, unknown>, patch: table<string, unknown> }> task-owned transient picture overlays by activation
+---@field _taskScalarPatches table<table<string, unknown>, table<string, unknown>> task-owned transient hardware register overlays by owning task
 ---@field _gaugeTasks table<string, table<string, unknown>> source-ticked displayed gauge tasks
 ---@field _healthBoxModes table<string, { sideType: integer, mode: string }> double-player native health-box mode by activation
 ---@field _effects table<integer, { id: integer, sourceKey: string, age: integer, picture?: table<string, unknown> }> live transient effect records
@@ -80,6 +81,7 @@ function BattleScene.new()
     _pictureAnimations = {},
     _pictureStates = {},
     _taskPicturePatches = {},
+    _taskScalarPatches = {},
     _gaugeTasks = {},
     _healthBoxModes = {},
     _effects = {},
@@ -827,6 +829,82 @@ function BattleScene:removeTaskPicturePatch(owner, battler)
   if slot ~= nil and slot.owner == owner then
     self._taskPicturePatches[key] = nil
   end
+end
+
+-- Validates one task-owned hardware register overlay: blend/palette and
+-- window fields the native callbacks drive per tick stay scalar so the
+-- renderer never interprets source indexes. Arrays carry only semantic
+-- slot names; nested records are rejected instead of guessed.
+---@param patch table<string, unknown> register overlay under validation
+---@return table<string, unknown> detached validated overlay copy
+local function checkedScalarPatch(patch)
+  local overlay = {}
+  for field, value in pairs(patch) do
+    assert(type(field) == "string" and field ~= "", "scalar overlays name their register fields")
+    local kind = type(value)
+    if kind == "number" then
+      assert(value == value, "scalar overlays carry finite register values")
+      overlay[field] = value
+    elseif kind == "string" or kind == "boolean" then
+      overlay[field] = value
+    elseif kind == "table" then
+      assert(value[1] ~= nil, "scalar overlay lists carry their slot names")
+      local list = {}
+      for index, entry in ipairs(value) do
+        assert(type(entry) == "string" or type(entry) == "number", "scalar overlay lists carry slot identities")
+        list[index] = entry
+      end
+      overlay[field] = list
+    else
+      error("scalar overlays carry no nested records: " .. field, 0)
+    end
+  end
+  assert(next(overlay) ~= nil, "scalar overlays carry at least one register field")
+  return overlay
+end
+
+-- Applies one task-owned transient hardware register overlay: blend
+-- coefficients, mosaic, and window/palette mode live here while a
+-- source background task runs, exactly like picture overlays but
+-- without activation geometry. Removal drops only the slot still owned
+-- by the same task identity.
+---@param owner integer|table<string, unknown> transient owning task behind the overlay
+---@param patch table<string, unknown> source register values under overlay
+function BattleScene:applyTaskScalarPatch(owner, patch)
+  assert(not self._released, "released scenes apply no scalar overlay")
+  assert(
+    (type(owner) == "number" and owner % 1 == 0 and owner >= 1) or type(owner) == "table",
+    "scalar overlays name their owning task"
+  )
+  assert(type(patch) == "table", "scalar overlays read source register values")
+  self._taskScalarPatches[owner] = checkedScalarPatch(patch)
+end
+
+-- Removes one task-owned register overlay only while the same task
+-- still owns the slot; a newer overlay or an empty slot stays
+-- untouched. Silent by design, mirroring the picture overlay path.
+---@param owner integer|table<string, unknown> transient owning task behind the overlay
+function BattleScene:removeTaskScalarPatch(owner)
+  if self._released then
+    return
+  end
+  if type(owner) ~= "number" and type(owner) ~= "table" then
+    return
+  end
+  self._taskScalarPatches[owner] = nil
+end
+
+-- Returns a detached copy of one task-owned register overlay, if one is
+-- active for the owning task.
+---@param owner integer|table<string, unknown> transient owning task behind the overlay
+---@return table<string, unknown>? detached register overlay view
+function BattleScene:taskScalarPatch(owner)
+  assert(not self._released, "released scenes expose no scalar overlay")
+  local patch = self._taskScalarPatches[owner]
+  if patch == nil then
+    return nil
+  end
+  return checkedScalarPatch(patch)
 end
 
 -- Returns a detached per-activation presentation view, if one is active.
@@ -1769,6 +1847,7 @@ function BattleScene:release()
   self._pictureAnimations = {}
   self._pictureStates = {}
   self._taskPicturePatches = {}
+  self._taskScalarPatches = {}
   self._gaugeTasks = {}
   self._healthBoxModes = {}
 end

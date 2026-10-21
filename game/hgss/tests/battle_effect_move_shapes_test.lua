@@ -16,6 +16,7 @@ local Assert = require("tests.support.Assert")
 local BattleAnimationCompiler = require("romdump.src.digest.battle.BattleAnimationCompiler")
 local BattleAnimationSchema = require("libs.assets.src.battle.BattleAnimationSchema")
 local BattlePresentationModel = require("game.hgss.src.battle.BattlePresentationModel")
+local BattleAnimationSources = require("romdump.src.config.BattleAnimationSources")
 local BattleScene = require("libs.hgss.src.presentation.BattleScene")
 
 local T = {}
@@ -477,6 +478,84 @@ function T.attacker_dash_stages_timed_afterimages_and_settles()
   Assert.isNil(scene:pictureState(attacker), "completion restores the attacker picture")
   task:dispose()
   Assert.equal(#journal.released, #journal.acquired, "the dash run leaks no lease")
+end
+
+local function movePowerDigest(scene)
+  local function one(combatant, activation)
+    local state = scene:pictureState({ combatant = combatant, activation = activation })
+    if state == nil then
+      return "absent"
+    end
+    return string.format("%s|%s", tostring(state.pictureXOffset2), tostring(state.pictureYOffset))
+  end
+  return one(1, 1) .. "/" .. one(3, 3)
+end
+
+function T.move_power_profiles_diverge_through_player()
+  local program = lowered("run-move-power-profile", { 45, 28, 0 }, {
+    resolveSourceInput = function(role, operands)
+      Assert.equal(role, "battle-animation-callback", "the power word asks for its source callback")
+      return BattleAnimationSources.resolveBattleAnimationCallback(operands)
+    end,
+  })
+  Assert.equal(
+    program.instructions[1].taskKind,
+    "battle-background-four-picture-move-power-transition",
+    "the lowered program keeps its power-selected task kind"
+  )
+  local Player = playerModule()
+  local Factory = effectFactoryModule()
+  local function run(power)
+    local scene = sceneWithPair()
+    local audio = {}
+    function audio.play(_name) end
+    function audio.stop(_name) end
+    function audio.isFinished(_name)
+      return true
+    end
+    local resources = {}
+    function resources.resolve(key)
+      error("power-selected background transitions stage no leases: " .. tostring(key), 0)
+    end
+    function resources.release(_lease)
+      error("power-selected background transitions release no leases", 0)
+    end
+    local player = assert(Player.new({ scene = scene, audio = audio, resources = resources, tasks = Factory }))
+    local packet = playbackPacket()
+    packet.event.move = { power = power }
+    local handle = assert(player:start(packet, program))
+    local trace = {}
+    for _ = 1, 120 do
+      player:stepSourceTick({ tick = 1 })
+      trace[#trace + 1] = movePowerDigest(scene)
+      if player:status(handle) == "complete" then
+        break
+      end
+    end
+    Assert.equal(player:status(handle), "complete", "power " .. power .. " reaches its compiled completion")
+    Assert.isNil(
+      scene:pictureState({ combatant = 1, activation = 1 }),
+      "power " .. power .. " restores the attacker picture"
+    )
+    Assert.isNil(
+      scene:pictureState({ combatant = 3, activation = 3 }),
+      "power " .. power .. " restores the target picture"
+    )
+    Assert.equal(#scene:effectViews(), 0, "power " .. power .. " publishes no lingering drawable")
+    player:dispose()
+    return trace
+  end
+  local low = run(30)
+  local high = run(90)
+  Assert.isTrue(#low >= 10, "the low-power run spans its ten compiled ticks")
+  Assert.isTrue(#high >= 10, "the high-power run spans its ten compiled ticks")
+  local distinct = false
+  for index = 1, math.min(#low, #high) do
+    if low[index] ~= high[index] then
+      distinct = true
+    end
+  end
+  Assert.isTrue(distinct, "the two ladder powers paint distinct picture frames through the player")
 end
 
 return { tests = T }

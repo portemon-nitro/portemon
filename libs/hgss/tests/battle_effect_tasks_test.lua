@@ -1109,4 +1109,428 @@ function T.battler_motion_holds_keep_source_timing_without_invented_motion()
   Assert.equal(#journal.released, #journal.acquired, "holds and markers stage no leases")
 end
 
+local function movePowerParameters(overrides)
+  local parameters = {
+    backgroundLayer = "battle-background-layer-3",
+    pictureSets = { "all-battler-positions" },
+    durationTicks = 10,
+    defaultProfile = 0,
+    profileByMovePower = {
+      { movePower = 30, profile = 1 },
+      { movePower = 50, profile = 2 },
+      { movePower = 70, profile = 3 },
+      { movePower = 90, profile = 4 },
+      { movePower = 110, profile = 5 },
+      { movePower = 150, profile = 6 },
+    },
+  }
+  if overrides ~= nil then
+    for field, value in pairs(overrides) do
+      parameters[field] = value
+    end
+  end
+  return parameters
+end
+
+local function movePowerContext(power)
+  local context = occurrenceContext()
+  context.event = {
+    sequence = 1,
+    actionId = 1,
+    hitIndex = 1,
+    effectKey = "native-task-probe",
+    move = { power = power },
+  }
+  return context
+end
+
+local function movePowerArgs(parameters)
+  return {
+    callback = "battle-background-four-picture-move-power-transition",
+    taskContext = "battle-display",
+    parameters = parameters,
+  }
+end
+
+local function pictureDigest(scene, combatant, activation)
+  local state = scene:pictureState({ combatant = combatant, activation = activation })
+  if state == nil then
+    return "absent"
+  end
+  return string.format(
+    "%s|%s|%s|%s",
+    tostring(state.pictureXOffset2),
+    tostring(state.pictureYOffset),
+    tostring(state.rotationZ),
+    tostring(state.scaleX)
+  )
+end
+
+local function runProfileTrace(power)
+  local scene = sceneWithPair()
+  local services, journal = journalServices(scene)
+  local task = assert(
+    BattleEffectTasks.create(
+      "battle-background-four-picture-move-power-transition",
+      movePowerArgs(movePowerParameters()),
+      movePowerContext(power),
+      services
+    )
+  )
+  local trace = {}
+  for _ = 1, 40 do
+    task:stepSourceTick({ tick = 1 })
+    trace[#trace + 1] = pictureDigest(scene, 1, 1) .. "/" .. pictureDigest(scene, 3, 3)
+    if task:status() == "complete" then
+      break
+    end
+  end
+  Assert.equal(task:status(), "complete", "the power profile run reaches its compiled duration")
+  task:dispose()
+  return trace, scene, journal
+end
+
+function T.move_power_profile_selects_distinct_visible_frames()
+  local low, _, lowJournal = runProfileTrace(30)
+  local high, _, highJournal = runProfileTrace(90)
+  Assert.equal(#low, 10, "the low-power run spans its ten compiled ticks")
+  Assert.equal(#high, 10, "the high-power run spans its ten compiled ticks")
+  local moved = false
+  for _, frame in ipairs(low) do
+    if frame ~= low[1] then
+      moved = true
+    end
+  end
+  Assert.isTrue(moved, "the low-power run animates across its ticks instead of holding one frame")
+  local distinct = false
+  for index = 1, 10 do
+    if low[index] ~= high[index] then
+      distinct = true
+    end
+  end
+  Assert.isTrue(distinct, "the two ladder powers paint distinct visible frames")
+  Assert.equal(#lowJournal.released, #lowJournal.acquired, "the profile run stages no leases")
+end
+
+function T.move_power_profile_restores_both_pictures_on_completion()
+  local scene = sceneWithPair()
+  local services, journal = journalServices(scene)
+  local task = assert(
+    BattleEffectTasks.create(
+      "battle-background-four-picture-move-power-transition",
+      movePowerArgs(movePowerParameters()),
+      movePowerContext(30),
+      services
+    )
+  )
+  task:stepSourceTick({ tick = 1 })
+  Assert.isTrue(
+    scene:pictureState({ combatant = 1, activation = 1 }) ~= nil
+      or scene:pictureState({ combatant = 3, activation = 3 }) ~= nil,
+    "the running profile owns battler picture state instead of idling on a timer"
+  )
+  for _ = 1, 40 do
+    if task:status() == "complete" then
+      break
+    end
+    task:stepSourceTick({ tick = 1 })
+  end
+  Assert.equal(task:status(), "complete", "the profile run completes at its compiled duration")
+  Assert.isNil(
+    scene:pictureState({ combatant = 1, activation = 1 }),
+    "completion restores the attacker picture exactly"
+  )
+  Assert.isNil(
+    scene:pictureState({ combatant = 3, activation = 3 }),
+    "completion restores the target picture exactly"
+  )
+  task:dispose()
+  Assert.equal(#journal.released, #journal.acquired, "the profile run stages no leases")
+end
+
+function T.move_power_profile_cancels_without_stranding_pictures()
+  local scene = sceneWithPair()
+  local services, journal = journalServices(scene)
+  local task = assert(
+    BattleEffectTasks.create(
+      "battle-background-four-picture-move-power-transition",
+      movePowerArgs(movePowerParameters()),
+      movePowerContext(90),
+      services
+    )
+  )
+  task:stepSourceTick({ tick = 1 })
+  task:stepSourceTick({ tick = 1 })
+  task:cancel("superseded")
+  Assert.equal(task:status(), "cancelled", "cancellation lands on cancelled")
+  Assert.isNil(
+    scene:pictureState({ combatant = 1, activation = 1 }),
+    "cancellation restores the attacker picture"
+  )
+  Assert.isNil(
+    scene:pictureState({ combatant = 3, activation = 3 }),
+    "cancellation restores the target picture"
+  )
+  task:dispose()
+  Assert.equal(#journal.released, #journal.acquired, "cancellation stages no leases")
+end
+
+function T.move_power_profile_requires_the_executed_power()
+  local scene = sceneWithPair()
+  local services, _journal = journalServices(scene)
+  local ok, failure = pcall(
+    BattleEffectTasks.create,
+    "battle-background-four-picture-move-power-transition",
+    movePowerArgs(movePowerParameters()),
+    occurrenceContext(),
+    services
+  )
+  Assert.isTrue(not ok, "a missing executed power never yields a runnable profile")
+  Assert.isTrue(
+    type(failure) == "string"
+      and string.find(failure, "battle-background-four-picture-move-power-transition", 1, true) ~= nil,
+    "the missing power fails naming its kind"
+  )
+  local badContext = movePowerContext("strong")
+  local badOk = pcall(
+    BattleEffectTasks.create,
+    "battle-background-four-picture-move-power-transition",
+    movePowerArgs(movePowerParameters()),
+    badContext,
+    services
+  )
+  Assert.isTrue(not badOk, "a malformed executed power never yields a runnable profile")
+  Assert.equal(#scene:effectViews(), 0, "the rejected profile publishes no drawable picture")
+end
+
+function T.move_power_profile_rejects_unmatched_power_without_a_default()
+  local scene = sceneWithPair()
+  local services, _journal = journalServices(scene)
+  local parameters = movePowerParameters()
+  parameters.defaultProfile = nil
+  local ok, failure = pcall(
+    BattleEffectTasks.create,
+    "battle-background-four-picture-move-power-transition",
+    movePowerArgs(parameters),
+    movePowerContext(999),
+    services
+  )
+  Assert.isTrue(not ok, "an unmatched power without a default never yields a silent profile")
+  Assert.isTrue(
+    type(failure) == "string"
+      and string.find(failure, "battle-background-four-picture-move-power-transition", 1, true) ~= nil,
+    "the unmatched power fails naming its kind"
+  )
+  local defaulted = assert(
+    BattleEffectTasks.create(
+      "battle-background-four-picture-move-power-transition",
+      movePowerArgs(movePowerParameters()),
+      movePowerContext(999),
+      services
+    )
+  )
+  defaulted:stepSourceTick({ tick = 1 })
+  Assert.equal(defaulted:status(), "running", "the defaulted profile runs past its first tick")
+  defaulted:dispose()
+end
+
+function T.alternating_scroll_sweeps_both_directions_and_restores()
+  local scene = sceneWithPair()
+  local services, journal = journalServices(scene)
+  local task = assert(BattleEffectTasks.create("battle-background-alternating-scroll-transition", {
+    callback = "battle-background-alternating-scroll-transition",
+    taskContext = "battle-display",
+    parameters = {
+      backgroundLayer = "battle-background-layer-3",
+      directionChanges = 3,
+      ticksPerDirection = 2,
+      phaseIntervalTicks = 1,
+      horizontalOffset = 4,
+      verticalOffset = 8,
+    },
+  }, occurrenceContext(), services))
+  local seen = {}
+  for _ = 1, 20 do
+    task:stepSourceTick({ tick = 1 })
+    local scroll = scene:scroll()
+    seen[#seen + 1] = scroll.x .. "," .. scroll.y
+    if task:status() == "complete" then
+      break
+    end
+  end
+  Assert.equal(task:status(), "complete", "the alternating run completes on its direction product")
+  Assert.equal(#seen, 9, "the alternating run spans its phased nine compiled ticks")
+  local moved = false
+  for _, frame in ipairs(seen) do
+    if frame ~= "0,0" then
+      moved = true
+    end
+  end
+  Assert.isTrue(moved, "the alternating sweep owns a viewport change instead of idling on a timer")
+  local reversed = false
+  local lastX = 0
+  for _, frame in ipairs(seen) do
+    local comma = string.find(frame, ",", 1, true)
+    local x = tonumber(string.sub(frame, 1, comma - 1))
+    if x ~= nil and lastX ~= 0 and x ~= 0 and ((x > 0) ~= (lastX > 0)) then
+      reversed = true
+    end
+    if x ~= 0 then
+      lastX = x
+    end
+  end
+  Assert.isTrue(reversed, "the alternating sweep reverses direction across its phases")
+  local settled = scene:scroll()
+  Assert.equal(settled.x, 0, "completion restores the saved horizontal viewport")
+  Assert.equal(settled.y, 0, "completion restores the saved vertical viewport")
+  task:dispose()
+  Assert.equal(#journal.released, #journal.acquired, "the sweep stages no leases")
+end
+
+function T.alternating_scroll_without_compiled_phases_stays_loud()
+  local scene = sceneWithPair()
+  local services, _journal = journalServices(scene)
+  local ok, failure = pcall(
+    BattleEffectTasks.create,
+    "battle-background-alternating-scroll-transition",
+    { parameters = { backgroundLayer = "battle-background-layer-3" } },
+    occurrenceContext(),
+    services
+  )
+  Assert.isTrue(not ok, "a phaseless alternating sweep never yields a runnable task")
+  Assert.isTrue(
+    type(failure) == "string"
+      and string.find(failure, "battle-background-alternating-scroll-transition", 1, true) ~= nil,
+    "the phaseless sweep fails naming its kind"
+  )
+end
+
+function T.scanline_sine_sweep_moves_the_viewport_and_restores()
+  local scene = sceneWithPair()
+  local services, journal = journalServices(scene)
+  local task = assert(BattleEffectTasks.create("battle-background-scanline-sine-wave-transition", {
+    callback = "battle-background-scanline-sine-wave-transition",
+    taskContext = "battle-display",
+    parameters = { backgroundLayer = "battle-background-layer-3", durationTicks = 12 },
+  }, occurrenceContext(), services))
+  local seen = {}
+  for _ = 1, 40 do
+    task:stepSourceTick({ tick = 1 })
+    local scroll = scene:scroll()
+    seen[#seen + 1] = scroll.x .. "," .. scroll.y
+    if task:status() == "complete" then
+      break
+    end
+  end
+  Assert.equal(task:status(), "complete", "the sine sweep completes at its compiled duration")
+  Assert.equal(#seen, 12, "the sine sweep spans its twelve compiled ticks")
+  local moved = false
+  for _, frame in ipairs(seen) do
+    if frame ~= "0,0" then
+      moved = true
+    end
+  end
+  Assert.isTrue(moved, "the sine sweep owns a viewport change instead of idling on a timer")
+  local settled = scene:scroll()
+  Assert.equal(settled.x, 0, "completion restores the saved horizontal viewport")
+  Assert.equal(settled.y, 0, "completion restores the saved vertical viewport")
+  task:dispose()
+  task:cancel("late")
+  Assert.equal(task:status(), "complete", "completion survives late cancellation")
+  Assert.equal(#journal.released, #journal.acquired, "the sweep stages no leases")
+end
+
+function T.blend_alpha_coefficients_interpolate_and_release()
+  local scene = sceneWithPair()
+  local services, journal = journalServices(scene)
+  local task = assert(BattleEffectTasks.create("battle-sprite-blend-alpha-transition", {
+    callback = "battle-sprite-blend-alpha-transition",
+    taskContext = "battle-display",
+    parameters = {
+      durationTicks = 8,
+      oamModeSpriteSlots = { "sprite-context-slot-0", "sprite-context-slot-1" },
+      startCoefficientA = 16,
+      startCoefficientB = 16,
+      targetCoefficientA = 100,
+      targetCoefficientB = 200,
+    },
+  }, occurrenceContext(), services))
+  Assert.equal(task:status(), "pending", "blend coefficient runs open pending")
+  task:stepSourceTick({ tick = 1 })
+  local first = scene:taskScalarPatch(task)
+  Assert.isTrue(first ~= nil, "the running blend owns its register state")
+  for _ = 1, 40 do
+    if task:status() == "complete" then
+      break
+    end
+    task:stepSourceTick({ tick = 1 })
+  end
+  Assert.equal(task:status(), "complete", "the blend completes at its compiled duration")
+  Assert.isNil(scene:taskScalarPatch(task), "completion releases the owned register state")
+  task:dispose()
+  Assert.equal(#journal.released, #journal.acquired, "the blend stages no leases")
+end
+
+function T.blend_alpha_coefficients_reach_their_compiled_targets()
+  local scene = sceneWithPair()
+  local services, _journal = journalServices(scene)
+  local task = assert(BattleEffectTasks.create("battle-sprite-blend-alpha-transition", {
+    parameters = {
+      durationTicks = 8,
+      startCoefficientA = 16,
+      startCoefficientB = 16,
+      targetCoefficientA = 100,
+      targetCoefficientB = 200,
+    },
+  }, occurrenceContext(), services))
+  for _ = 1, 7 do
+    task:stepSourceTick({ tick = 1 })
+  end
+  Assert.isTrue(task:status() ~= "complete", "the compiled duration is not reached early")
+  task:stepSourceTick({ tick = 1 })
+  Assert.equal(task:status(), "complete", "the blend completes at its eighth tick")
+  task:dispose()
+end
+
+function T.overlapping_background_sweeps_restore_only_owned_viewport()
+  local scene = sceneWithPair()
+  local firstServices, firstJournal = journalServices(scene)
+  local secondServices, secondJournal = journalServices(scene)
+  local first = assert(BattleEffectTasks.create("battle-background-alternating-scroll-transition", {
+    parameters = {
+      backgroundLayer = "battle-background-layer-3",
+      directionChanges = 2,
+      ticksPerDirection = 2,
+      horizontalOffset = 6,
+      verticalOffset = 0,
+    },
+  }, occurrenceContext(), firstServices))
+  local second = assert(BattleEffectTasks.create("battle-background-scanline-sine-wave-transition", {
+    parameters = { backgroundLayer = "battle-background-layer-3", durationTicks = 4 },
+  }, occurrenceContext(), secondServices))
+  first:stepSourceTick({ tick = 1 })
+  second:stepSourceTick({ tick = 1 })
+  first:cancel("superseded")
+  Assert.equal(first:status(), "cancelled", "cancellation lands on cancelled")
+  local during = scene:scroll()
+  Assert.isTrue(
+    during.x ~= 0 or during.y ~= 0,
+    "cancelling the first sweep never restores away the live second sweep"
+  )
+  for _ = 1, 10 do
+    if second:status() == "complete" then
+      break
+    end
+    second:stepSourceTick({ tick = 1 })
+  end
+  Assert.equal(second:status(), "complete", "the surviving sweep completes on its own boundary")
+  local settled = scene:scroll()
+  Assert.equal(settled.x, 0, "the surviving completion restores the horizontal viewport")
+  Assert.equal(settled.y, 0, "the surviving completion restores the vertical viewport")
+  first:dispose()
+  second:dispose()
+  Assert.equal(#firstJournal.released, #firstJournal.acquired, "the cancelled sweep stages no leases")
+  Assert.equal(#secondJournal.released, #secondJournal.acquired, "the surviving sweep stages no leases")
+end
+
 return { tests = T }

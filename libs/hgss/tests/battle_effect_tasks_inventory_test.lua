@@ -387,17 +387,11 @@ function T.every_derived_nonparticle_kind_runs_to_its_own_completion()
         Assert.isTrue(task:status() == "complete", "kind reaches its own completion instead of stalling: " .. kind)
         Assert.isTrue(ticks >= 1, "kind retires on its own boundary: " .. kind)
         if ticks > 1 and args.activation ~= nil and kind ~= "pokemon-picture-animation" then
-          local displayOwned = string.find(kind, "battle-background-", 1, true) == 1
-            or string.find(kind, "battle-display-", 1, true) == 1
-            or string.find(kind, "battle-palette-", 1, true) == 1
-            or string.find(kind, "battle-presentation-", 1, true) == 1
-          if not displayOwned then
-            Assert.isTrue(
-              kind == "pokemon-picture-sinusoidal-position-motion"
-                or kind == "pokemon-picture-selected-position-transition",
-              "addressed timed runs show pixels unless documented: " .. kind
-            )
-          end
+          Assert.isTrue(
+            kind == "pokemon-picture-sinusoidal-position-motion"
+              or kind == "pokemon-picture-selected-position-transition",
+            "addressed timed runs show pixels unless documented: " .. kind
+          )
         end
         local repeatScene = sceneWithPair()
         local repeatJournal = { acquired = {}, released = {} }

@@ -2198,6 +2198,567 @@ local function checkVisualArgs(args, kind)
   end
 end
 
+-- Background source families with dedicated bodies: the generic visual
+-- task above only interpolates picture placement and viewport totals,
+-- which cannot express the power-selected four-picture transition, the
+-- alternating sweep, the scanline sine wave, or the OAM blend register
+-- program. Each body below owns exactly its compiled operands and its
+-- scene writes, stages no leases, and restores its writes on completion
+-- and cancellation.
+
+-- Resolves the battler pictures one background transition owns from the
+-- compiled picture sets and the frozen occurrence topology. The
+-- all-positions set names every live battler; every other set keeps the
+-- producer's attacker/target partition. Unknown sets fail instead of
+-- guessing a picture from an unaddressed slot.
+---@param pictureSets table<integer, string> compiled picture sets behind the transition
+---@param context table<string, unknown> occurrence-bound playback context
+---@param kind string task kind under construction
+---@return table<integer, table<string, unknown>> owned combatant and activation pairs
+local function backgroundActivations(pictureSets, context, kind)
+  local topology = type(context) == "table" and context.topology or nil
+  local attacker = type(topology) == "table" and topology.attacker or nil
+  local targets = type(topology) == "table" and topology.targets or nil
+  local wantAttacker, wantTargets = false, false
+  for _, set in ipairs(pictureSets) do
+    if set == "all-battler-positions" then
+      wantAttacker, wantTargets = true, true
+    elseif ATTACKER_PICTURE_NAMES[set] == true then
+      wantAttacker = true
+    elseif TARGET_PICTURE_NAMES[set] == true then
+      wantTargets = true
+    else
+      error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " pictures a known battler set, not " .. tostring(set), 0)
+    end
+  end
+  local activations = {}
+  if wantAttacker then
+    if type(attacker) ~= "table" or type(attacker.combatant) ~= "number" then
+      error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " pictures its occurrence attacker", 0)
+    end
+    activations[#activations + 1] = { combatant = attacker.combatant, activation = attacker.activation }
+  end
+  if wantTargets then
+    if type(targets) ~= "table" or #targets < 1 then
+      error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " pictures its occurrence targets", 0)
+    end
+    for _, target in ipairs(targets) do
+      if type(target) == "table" and type(target.combatant) == "number" and #activations < 4 then
+        activations[#activations + 1] = { combatant = target.combatant, activation = target.activation }
+      end
+    end
+  end
+  if #activations < 1 then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " pictures at least one occurrence battler", 0)
+  end
+  return activations
+end
+
+-- Selects the source power profile behind the four-picture transition:
+-- an exact ladder match wins, otherwise the compiled default covers
+-- present-but-unmatched powers. A missing runtime power or an
+-- unmatched power without a default fails naming the kind and power;
+-- no numeric stand-in ever selects a profile.
+---@param parameters table<string, unknown> compiled transition operands
+---@param context table<string, unknown> occurrence-bound playback context
+---@param kind string task kind under construction
+---@return integer selected source profile behind the visible frames
+local function movePowerProfile(parameters, context, kind)
+  local event = type(context) == "table" and context.event or nil
+  local move = type(event) == "table" and event.move or nil
+  local power = type(move) == "table" and move.power or nil
+  if type(power) ~= "number" or power % 1 ~= 0 or power < 0 or power > 65535 then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " requires the executed move power", 0)
+  end
+  local rows = parameters.profileByMovePower
+  if type(rows) ~= "table" or #rows < 1 then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " selects its profile from a compiled ladder", 0)
+  end
+  for _, row in ipairs(rows) do
+    if type(row) ~= "table" then
+      error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " selects its profile from ladder rows", 0)
+    end
+    if row.movePower == power then
+      if type(row.profile) ~= "number" or row.profile % 1 ~= 0 or row.profile < 0 then
+        error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " selects a usable source profile", 0)
+      end
+      return row.profile
+    end
+    if type(row.movePower) ~= "number" or row.movePower % 1 ~= 0 then
+      error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " selects its profile from ladder rows", 0)
+    end
+  end
+  local fallback = parameters.defaultProfile
+  if type(fallback) ~= "number" or fallback % 1 ~= 0 or fallback < 0 then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " has no profile for executed power " .. power, 0)
+  end
+  return fallback
+end
+
+---@class BattleMovePowerProfileTask
+---@field _scene table<string, unknown> scene behind owned picture overlays
+---@field _kind string task kind behind the run
+---@field _activations table<integer, table<string, unknown>> owned battler pictures behind the sweep
+---@field _reach integer profile-scaled sweep reach in native pixels
+---@field _duration integer source ticks behind completion
+---@field _ticks integer source ticks advanced
+---@field _state string pending, running, complete, or cancelled
+---@field _disposed boolean release has run
+local BattleMovePowerProfileTask = {}
+BattleMovePowerProfileTask.__index = BattleMovePowerProfileTask
+
+-- Owns one power-selected four-picture transition: the compiled ladder
+-- resolves the executed power to its authored profile, and each owned
+-- battler picture sweeps a staggered out-and-back arc scaled by that
+-- profile. Distinct ladder powers select distinct reaches, so the
+-- visible frames differ instead of sharing one generic motion.
+---@param kind string task kind under construction
+---@param args table<string, unknown> instruction-derived construction arguments
+---@param context table<string, unknown> occurrence-bound playback context
+---@param services table<string, unknown> scene, audio, and resource collaborators
+---@return table<string, unknown> runnable profile task
+local function newMovePowerProfileTask(kind, args, context, services)
+  checkVisualArgs(args, kind)
+  local scene = checkScene(services, kind)
+  if type(scene.applyTaskPicturePatch) ~= "function" or type(scene.removeTaskPicturePatch) ~= "function" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " pictures through the scene overlay seam", 0)
+  end
+  local parameters = args.parameters
+  if type(parameters) ~= "table" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " carries its parameters as a record", 0)
+  end
+  if not isPositiveInt(parameters.durationTicks) then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " sweeps over a compiled duration", 0)
+  end
+  local pictureSets = parameters.pictureSets
+  if type(pictureSets) ~= "table" or #pictureSets < 1 then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " sweeps its compiled picture sets", 0)
+  end
+  local profile = movePowerProfile(parameters, context or {}, kind)
+  local activations = backgroundActivations(pictureSets, context or {}, kind)
+  return setmetatable({
+    _scene = scene,
+    _kind = kind,
+    _activations = activations,
+    _reach = profile * 8,
+    _duration = parameters.durationTicks,
+    _ticks = 0,
+    _state = "pending",
+    _disposed = false,
+  }, BattleMovePowerProfileTask)
+end
+
+-- Writes one staggered profile tick: picture i sweeps its quarter of
+-- the compiled duration, rising to the profile reach and settling
+-- back, so every ladder profile paints its own arc heights.
+---@param self BattleMovePowerProfileTask profile task under advancement
+local function writeProfileTick(self)
+  local window = self._duration / 4
+  for index, activation in ipairs(self._activations) do
+    local local_ = (self._ticks - (index - 1) * window) / window
+    if local_ < 0 then
+      local_ = 0
+    end
+    if local_ > 1 then
+      local_ = 1
+    end
+    local arc = math.sin(math.pi * local_)
+    self._scene.applyTaskPicturePatch(self._scene, self, activation, {
+      pictureXOffset2 = wrapPictureByte(self._reach * arc),
+      pictureYOffset = clampPictureOffset(math.floor(self._reach / 4) * arc),
+    })
+  end
+end
+
+-- Drops every owned picture overlay exactly while this task still owns
+-- its slot, so a newer overlay is never restored away.
+---@param self BattleMovePowerProfileTask profile task under teardown
+local function teardownProfile(self)
+  for _, activation in ipairs(self._activations) do
+    self._scene.removeTaskPicturePatch(self._scene, self, activation)
+  end
+end
+
+---@param self BattleMovePowerProfileTask profile task under advancement
+---@param tick table<string, unknown>? source tick under advancement
+function BattleMovePowerProfileTask:stepSourceTick(tick)
+  local _ = tick
+  if self._disposed or self._state == "complete" or self._state == "cancelled" then
+    return
+  end
+  self._state = "running"
+  self._ticks = self._ticks + 1
+  local ok, err = pcall(writeProfileTick, self)
+  if not ok then
+    teardownProfile(self)
+    error(err, 0)
+  end
+  if self._ticks >= self._duration then
+    self._state = "complete"
+    teardownProfile(self)
+  end
+end
+
+---@param self BattleMovePowerProfileTask
+---@return string
+function BattleMovePowerProfileTask:status()
+  assert(VALID_TASK_STATES[self._state] == true, "profile tasks report a known run state")
+  return self._state
+end
+
+---@param self BattleMovePowerProfileTask
+---@param reason string cancellation cause under diagnosis
+function BattleMovePowerProfileTask:cancel(reason)
+  local _ = reason
+  if self._state == "complete" then
+    return
+  end
+  self._state = "cancelled"
+  teardownProfile(self)
+end
+
+---@param self BattleMovePowerProfileTask
+function BattleMovePowerProfileTask:dispose()
+  if self._disposed then
+    return
+  end
+  self._disposed = true
+  teardownProfile(self)
+end
+
+---@class BattleViewportSweepTask
+---@field _scene table<string, unknown> scene behind the owned viewport sweep
+---@field _kind string task kind behind the run
+---@field _sweep fun(tick: integer): table<string, integer> authored viewport behind the tick
+---@field _duration integer source ticks behind completion
+---@field _saved table<string, number> viewport snapshot behind owned-only restoration
+---@field _last table<string, number>? last applied viewport behind owned-only restoration
+---@field _applied boolean sweep has written the viewport
+---@field _ticks integer source ticks advanced
+---@field _state string pending, running, complete, or cancelled
+---@field _disposed boolean release has run
+local BattleViewportSweepTask = {}
+BattleViewportSweepTask.__index = BattleViewportSweepTask
+
+-- Owns one authored viewport sweep over the scene scroll seam: the
+-- per-tick function carries the source control law, teardown restores
+-- the saved viewport only while no newer sweep has moved it since.
+---@param kind string task kind under construction
+---@param duration integer source ticks behind completion
+---@param sweep fun(tick: integer): table<string, integer> authored viewport behind the tick
+---@param scene table<string, unknown> scene behind the sweep
+---@return table<string, unknown> runnable sweep task
+local function newViewportSweepTask(kind, duration, sweep, scene)
+  local saved = scene.scroll(scene)
+  return setmetatable({
+    _scene = scene,
+    _kind = kind,
+    _sweep = sweep,
+    _duration = duration,
+    _saved = { x = saved.x, y = saved.y },
+    _last = nil,
+    _applied = false,
+    _ticks = 0,
+    _state = "pending",
+    _disposed = false,
+  }, BattleViewportSweepTask)
+end
+
+---@param self BattleViewportSweepTask sweep task under teardown
+local function teardownSweep(self)
+  if self._applied then
+    self._applied = false
+    if self._last ~= nil then
+      local current = self._scene.scroll(self._scene)
+      if current.x == self._last.x and current.y == self._last.y then
+        self._scene.applyScrollPatch(self._scene, self._saved.x, self._saved.y)
+      end
+    end
+    self._last = nil
+  end
+end
+
+---@param self BattleViewportSweepTask sweep task under advancement
+---@param tick table<string, unknown>? source tick under advancement
+function BattleViewportSweepTask:stepSourceTick(tick)
+  local _ = tick
+  if self._disposed or self._state == "complete" or self._state == "cancelled" then
+    return
+  end
+  self._state = "running"
+  self._ticks = self._ticks + 1
+  local ok, position = pcall(self._sweep, self._ticks)
+  if not ok then
+    teardownSweep(self)
+    error(position, 0)
+  end
+  assert(type(position) == "table", "sweep laws answer their viewport position")
+  local x = self._saved.x + (position.x or 0)
+  local y = self._saved.y + (position.y or 0)
+  local writeOk, writeErr = pcall(self._scene.applyScrollPatch, self._scene, x, y)
+  if not writeOk then
+    teardownSweep(self)
+    error(writeErr, 0)
+  end
+  self._applied = true
+  self._last = { x = x, y = y }
+  if self._ticks >= self._duration then
+    self._state = "complete"
+    teardownSweep(self)
+  end
+end
+
+---@param self BattleViewportSweepTask
+---@return string
+function BattleViewportSweepTask:status()
+  assert(VALID_TASK_STATES[self._state] == true, "sweep tasks report a known run state")
+  return self._state
+end
+
+---@param self BattleViewportSweepTask
+---@param reason string cancellation cause under diagnosis
+function BattleViewportSweepTask:cancel(reason)
+  local _ = reason
+  if self._state == "complete" then
+    return
+  end
+  self._state = "cancelled"
+  teardownSweep(self)
+end
+
+---@param self BattleViewportSweepTask
+function BattleViewportSweepTask:dispose()
+  if self._disposed then
+    return
+  end
+  self._disposed = true
+  teardownSweep(self)
+end
+
+-- Owns one alternating background scroll: each compiled phase sweeps
+-- toward its extreme over the compiled direction ticks, holds the
+-- extreme over the compiled phase interval, then reverses. The phase
+-- count and direction ticks come only from the producer operands.
+---@param kind string task kind under construction
+---@param args table<string, unknown> instruction-derived construction arguments
+---@param services table<string, unknown> scene, audio, and resource collaborators
+---@return table<string, unknown> runnable sweep task
+local function newAlternatingScrollTask(kind, args, _, services)
+  checkVisualArgs(args, kind)
+  local scene = checkScene(services, kind)
+  if type(scene.scroll) ~= "function" or type(scene.applyScrollPatch) ~= "function" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " sweeps through the scene scroll seam", 0)
+  end
+  local parameters = args.parameters
+  if type(parameters) ~= "table" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " carries its parameters as a record", 0)
+  end
+  local perDirection = parameters.ticksPerDirection
+  local changes = parameters.directionChanges
+  if not isPositiveInt(perDirection) or not isPositiveInt(changes) then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " alternates over compiled phase ticks", 0)
+  end
+  local interval = parameters.phaseIntervalTicks
+  if interval ~= nil and (type(interval) ~= "number" or interval % 1 ~= 0 or interval < 0) then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " holds its extremes over a phase interval", 0)
+  end
+  interval = interval or 0
+  local offsetX, offsetY = parameters.horizontalOffset, parameters.verticalOffset
+  if type(offsetX) ~= "number" or type(offsetY) ~= "number" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " alternates its compiled offsets", 0)
+  end
+  local cycle = perDirection + interval
+  local function sweep(tick)
+    local phase = math.floor((tick - 1) / cycle)
+    local within = (tick - 1) % cycle
+    local sign = phase % 2 == 0 and 1 or -1
+    local previous = phase % 2 == 0 and -sign or sign
+    local fromX, fromY
+    if phase == 0 then
+      fromX, fromY = 0, 0
+    else
+      fromX, fromY = previous * offsetX, previous * offsetY
+    end
+    local toX, toY = sign * offsetX, sign * offsetY
+    local progress = within < perDirection and (within + 1) / perDirection or 1
+    return {
+      x = math.floor(fromX + (toX - fromX) * progress),
+      y = math.floor(fromY + (toY - fromY) * progress),
+    }
+  end
+  return newViewportSweepTask(kind, changes * cycle, sweep, scene)
+end
+
+-- Owns one scanline sine-wave sweep: the viewport rides a full sine
+-- cycle over the compiled duration at the minimal one-pixel native
+-- amplitude the wave law can express, since the normalized program
+-- carries no amplitude operand. Completion restores the saved viewport.
+---@param kind string task kind under construction
+---@param args table<string, unknown> instruction-derived construction arguments
+---@param services table<string, unknown> scene, audio, and resource collaborators
+---@return table<string, unknown> runnable sweep task
+local function newSineScrollTask(kind, args, _, services)
+  checkVisualArgs(args, kind)
+  local scene = checkScene(services, kind)
+  if type(scene.scroll) ~= "function" or type(scene.applyScrollPatch) ~= "function" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " sweeps through the scene scroll seam", 0)
+  end
+  local parameters = args.parameters
+  if type(parameters) ~= "table" or not isPositiveInt(parameters.durationTicks) then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " rides its compiled duration", 0)
+  end
+  local duration = parameters.durationTicks
+  local function sweep(tick)
+    return { x = 0, y = math.floor(math.sin(2 * math.pi * tick / duration) + 0.5) }
+  end
+  return newViewportSweepTask(kind, duration, sweep, scene)
+end
+
+---@class BattleBlendCoefficientTask
+---@field _scene table<string, unknown> scene behind the owned register overlay
+---@field _kind string task kind behind the run
+---@field _fromA number compiled start coefficient behind the A channel
+---@field _toA number compiled target coefficient behind the A channel
+---@field _fromB number compiled start coefficient behind the B channel
+---@field _toB number compiled target coefficient behind the B channel
+---@field _slots table<integer, string>? compiled sprite context slots behind the blend
+---@field _duration integer source ticks behind completion
+---@field _ticks integer source ticks advanced
+---@field _state string pending, running, complete, or cancelled
+---@field _disposed boolean release has run
+local BattleBlendCoefficientTask = {}
+BattleBlendCoefficientTask.__index = BattleBlendCoefficientTask
+
+-- Owns one sprite blend-alpha program: the compiled A/B coefficient
+-- pairs interpolate linearly over the compiled duration and land in
+-- the task-owned register overlay the scene carries for source blend
+-- hardware. No invented pixels: the register values are the effect.
+-- Known limitation: no renderer consumes the scalar overlay yet, so this
+-- task proves coefficient interpolation and lifecycle, not visible pixels.
+---@param kind string task kind under construction
+---@param args table<string, unknown> instruction-derived construction arguments
+---@param services table<string, unknown> scene, audio, and resource collaborators
+---@return table<string, unknown> runnable blend task
+local function newBlendCoefficientTask(kind, args, _, services)
+  checkVisualArgs(args, kind)
+  local scene = checkScene(services, kind)
+  if type(scene.applyTaskScalarPatch) ~= "function" or type(scene.removeTaskScalarPatch) ~= "function" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " blends through the scene register seam", 0)
+  end
+  local parameters = args.parameters
+  if type(parameters) ~= "table" then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " carries its parameters as a record", 0)
+  end
+  if not isPositiveInt(parameters.durationTicks) then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " blends over a compiled duration", 0)
+  end
+  for _, field in ipairs({ "startCoefficientA", "startCoefficientB", "targetCoefficientA", "targetCoefficientB" }) do
+    local value = parameters[field]
+    if type(value) ~= "number" or value ~= value then
+      error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " interpolates its compiled " .. field, 0)
+    end
+  end
+  local slots = parameters.oamModeSpriteSlots
+  if slots ~= nil then
+    if type(slots) ~= "table" or #slots < 1 then
+      error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " blends its compiled sprite slots", 0)
+    end
+    for _, slot in ipairs(slots) do
+      if type(slot) ~= "string" or slot == "" then
+        error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " blends its compiled sprite slots", 0)
+      end
+    end
+  end
+  return setmetatable({
+    _scene = scene,
+    _kind = kind,
+    _fromA = parameters.startCoefficientA,
+    _toA = parameters.targetCoefficientA,
+    _fromB = parameters.startCoefficientB,
+    _toB = parameters.targetCoefficientB,
+    _slots = slots,
+    _duration = parameters.durationTicks,
+    _ticks = 0,
+    _state = "pending",
+    _disposed = false,
+  }, BattleBlendCoefficientTask)
+end
+
+-- Drops the owned register overlay exactly while this task still owns
+-- its slot, so a newer blend is never restored away.
+---@param self BattleBlendCoefficientTask blend task under teardown
+local function teardownCoefficientBlend(self)
+  self._scene.removeTaskScalarPatch(self._scene, self)
+end
+
+---@param self BattleBlendCoefficientTask blend task under advancement
+---@param tick table<string, unknown>? source tick under advancement
+function BattleBlendCoefficientTask:stepSourceTick(tick)
+  local _ = tick
+  if self._disposed or self._state == "complete" or self._state == "cancelled" then
+    return
+  end
+  self._state = "running"
+  self._ticks = self._ticks + 1
+  local progress = self._ticks / self._duration
+  if progress > 1 then
+    progress = 1
+  end
+  local overlay = {
+    blendCoefficientA = math.floor(self._fromA + (self._toA - self._fromA) * progress + 0.5),
+    blendCoefficientB = math.floor(self._fromB + (self._toB - self._fromB) * progress + 0.5),
+  }
+  if self._slots ~= nil then
+    overlay.spriteSlots = self._slots
+  end
+  local ok, err = pcall(self._scene.applyTaskScalarPatch, self._scene, self, overlay)
+  if not ok then
+    teardownCoefficientBlend(self)
+    error(err, 0)
+  end
+  if self._ticks >= self._duration then
+    self._state = "complete"
+    teardownCoefficientBlend(self)
+  end
+end
+
+---@param self BattleBlendCoefficientTask
+---@return string
+function BattleBlendCoefficientTask:status()
+  assert(VALID_TASK_STATES[self._state] == true, "blend tasks report a known run state")
+  return self._state
+end
+
+---@param self BattleBlendCoefficientTask
+---@param reason string cancellation cause under diagnosis
+function BattleBlendCoefficientTask:cancel(reason)
+  local _ = reason
+  if self._state == "complete" then
+    return
+  end
+  self._state = "cancelled"
+  teardownCoefficientBlend(self)
+end
+
+---@param self BattleBlendCoefficientTask
+function BattleBlendCoefficientTask:dispose()
+  if self._disposed then
+    return
+  end
+  self._disposed = true
+  teardownCoefficientBlend(self)
+end
+
+-- Dedicated background bodies by emitted kind. Every other admitted
+-- kind keeps its established picture/sprite body below; the generic native
+-- visual task never sees these four spellings again.
+local BACKGROUND_TASK_CONSTRUCTORS = {
+  ["battle-background-four-picture-move-power-transition"] = newMovePowerProfileTask,
+  ["battle-background-alternating-scroll-transition"] = newAlternatingScrollTask,
+  ["battle-background-scanline-sine-wave-transition"] = newSineScrollTask,
+  ["battle-sprite-blend-alpha-transition"] = newBlendCoefficientTask,
+}
+
 ---@param kind string task kind under construction
 ---@param args table<string, unknown> instruction-derived construction arguments
 ---@param context table<string, unknown> occurrence-bound playback context
@@ -3036,6 +3597,11 @@ function BattleEffectTasks.create(kind, args, context, services)
   if isConfiguredSpriteSpawn(args or {}) then
     assert(type(services) == "table", "configured sprite tasks require their services record")
     return newConfiguredSpriteTask(kind, args or {}, context or {}, services)
+  end
+  local backgroundConstructor = BACKGROUND_TASK_CONSTRUCTORS[kind]
+  if backgroundConstructor ~= nil then
+    assert(type(services) == "table", "background tasks require their services record")
+    return backgroundConstructor(kind, args or {}, context or {}, services)
   end
   if NATIVE_VISUAL_KINDS[kind] == true then
     assert(type(services) == "table", "native visual tasks require their services record")
