@@ -8,6 +8,7 @@ local FirstPlayCompletion = require("romdump.src.FirstPlayCompletion")
 local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentation")
 local MainMenuComposition = require("app.src.mainmenu.MainMenuComposition")
 local HgssGame = require("game.hgss.src.HgssGame")
+local StartupAudioSession = require("app.src.audio.StartupAudioSession")
 
 local TITLE_SCENE_MODULE = "libs.hgss.src.presentation.HgssTitleScene"
 local titleSceneModule = require(TITLE_SCENE_MODULE)
@@ -81,10 +82,21 @@ local function withStartup(fn)
     romIsReady = require("romdump.src.source.RomImporter").isReady,
     titleSceneNew = titleSceneModule.new,
     firstPlayFactory = HgssGame.newFirstPlayCachePreparation,
-    startupAudio = App.startupAudio,
+    startupAudioFactory = HgssGame.newStartupAudio,
+    startupAudioNew = StartupAudioSession.new,
+    gameFactory = HgssGame.new,
+    recordPlayed = require("app.src.launcher.EditionPreference").recordPlayed,
   }
 
-  active = { requests = {}, scenes = {}, menus = {}, epochs = {}, drawEvents = {}, graphicsEvents = {} }
+  active = {
+    requests = {},
+    scenes = {},
+    menus = {},
+    epochs = {},
+    drawEvents = {},
+    graphicsEvents = {},
+    audioSessions = {},
+  }
   local nextEpoch = 0
   local service = {}
   function service:select(_)
@@ -99,7 +111,10 @@ local function withStartup(fn)
     if selector.requestKind ~= "milestone" then
       return nil, nil
     end
-    if selector.name == "startup-loader" or selector.name == "startup-title" then
+    if selector.name == "startup-title" then
+      return active.titleAssetsReady ~= false, nil
+    end
+    if selector.name == "startup-loader" then
       return true, nil
     end
     if selector.name == "bootstrap" then
@@ -134,13 +149,23 @@ local function withStartup(fn)
   App.epoch = 0
   App.pendingQuiesce = nil
   App.selectedVersionId = nil
-  App.startupAudio = nil
   App.opts = { dev = false }
   App.drawableWidth, App.drawableHeight, App.pixelRatio = 800, 600, 1
+  StartupAudioSession.new = function()
+    return {
+      beginTitle = function() end,
+      notifySkip = function() end,
+      beginFade = function() end,
+      playMenuCue = function() end,
+      update = function() end,
+      dispose = function() end,
+    }
+  end
   HgssLoadingPresentation.new = newLoadingPresentation
   titleSceneModule.new = function(options)
     local scene = {
       versionId = options.versionId,
+      bundle = { crySpeciesId = 25 },
       ticks = 0,
       draws = 0,
       disposed = 0,
@@ -235,7 +260,10 @@ local function withStartup(fn)
   require("romdump.src.source.RomImporter").isReady = saved.romIsReady
   titleSceneModule.new = saved.titleSceneNew
   HgssGame.newFirstPlayCachePreparation = saved.firstPlayFactory
-  App.startupAudio = saved.startupAudio
+  HgssGame.newStartupAudio = saved.startupAudioFactory
+  StartupAudioSession.new = saved.startupAudioNew
+  HgssGame.new = saved.gameFactory
+  require("app.src.launcher.EditionPreference").recordPlayed = saved.recordPlayed
   if not ok then
     error(err, 0)
   end
@@ -452,7 +480,7 @@ function T.tests.edition_switch_uses_the_opposite_safe_corner_and_missing_versio
     Assert.isTrue(isStartupTitle(state), "the current edition title remains active")
     App.mousepressed(790, 590, 1, false, 1)
     Assert.equal(App.selectedVersionId, "heartgold", "an unavailable alternate does not become the selected game")
-    Assert.equal(App.state.targetVersion, "soulsilver", "the unavailable edition opens D01 targeted import")
+    Assert.equal(App.state.targetVersion, "soulsilver", "the unavailable edition opens targeted import")
     Assert.isFalse(state.skipRequested, "the edition control is not also a title skip")
   end)
 end
@@ -559,17 +587,21 @@ end
 function T.tests.title_audio_events_use_the_bounded_borrowed_callbacks()
   withStartup(function()
     local events = { titleReady = 0, prompt = 0, skip = 0 }
-    App.startupAudio = {
-      titleReady = function()
-        events.titleReady = events.titleReady + 1
-      end,
-      prompt = function()
-        events.prompt = events.prompt + 1
-      end,
-      skip = function()
-        events.skip = events.skip + 1
-      end,
-    }
+    StartupAudioSession.new = function()
+      return {
+        beginTitle = function()
+          events.titleReady = events.titleReady + 1
+        end,
+        notifySkip = function()
+          events.prompt = events.prompt + 1
+        end,
+        beginFade = function()
+          events.skip = events.skip + 1
+        end,
+        update = function() end,
+        dispose = function() end,
+      }
+    end
 
     local state = startTitle()
     Assert.equal(events.titleReady, 1, "title readiness emits one bounded audio event")
@@ -584,6 +616,116 @@ function T.tests.title_audio_events_use_the_bounded_borrowed_callbacks()
     Assert.equal(events.prompt, 1, "repeat skip intent never replays the prompt event")
     Assert.equal(events.skip, 1, "the fade-start event is emitted once")
     Assert.isTrue(state.phase == "fadeOut" or state.phase == "fadeIn", "stub audio does not control title readiness")
+  end)
+end
+
+function T.tests.startup_audio_has_one_app_owner_through_title_menu_game_return_and_quit()
+  withStartup(function()
+    local function newSession(options)
+      Assert.isTrue(
+        options.versionId == "heartgold" or options.versionId == "soulsilver",
+        "the session is bound to the selected edition"
+      )
+      local session = { versionId = options.versionId, events = {}, updates = 0, disposals = 0 }
+      function session:beginTitle()
+        self.events[#self.events + 1] = "title"
+      end
+      function session:notifySkip()
+        self.events[#self.events + 1] = "cry"
+      end
+      function session:beginFade()
+        self.events[#self.events + 1] = "fade"
+      end
+      function session:playMenuCue()
+        self.events[#self.events + 1] = "menu"
+      end
+      function session:update()
+        self.updates = self.updates + 1
+      end
+      function session:dispose()
+        self.disposals = self.disposals + 1
+      end
+      active.audioSessions[#active.audioSessions + 1] = session
+      return session
+    end
+    StartupAudioSession.new = newSession
+
+    active.titleAssetsReady = false
+    local title = startTitle()
+    Assert.equal(#active.audioSessions, 0, "pending startup-title audio assets cannot construct a session")
+    active.titleAssetsReady = true
+    App.update(1 / 30)
+    Assert.isTrue(isStartupTitle(title), "the selected title remains the active App state")
+    Assert.equal(#active.audioSessions, 1, "title readiness creates one app-owned audio session")
+    local session = active.audioSessions[1]
+    Assert.deepEqual(session.events, { "title" }, "the title theme starts once after title readiness")
+    local menuUpdateCount = session.updates
+    App.update(1 / 60)
+    Assert.equal(session.updates, menuUpdateCount + 1, "each App host update pumps the one session once")
+
+    App.keypressed("return", "return", false)
+    Assert.deepEqual(session.events, { "title", "cry" }, "the first valid skip requests one legendary cry")
+    for _ = 1, 75 do
+      App.update(1 / 30)
+    end
+    Assert.deepEqual(
+      session.events,
+      { "title", "cry" },
+      "the title remains audible and unfaded while the menu is still pending"
+    )
+
+    active.bootstrapReady = true
+    App.update(1 / 30)
+    local stagedMenu = assert(title.stagedMenu)
+    local menuAudio = assert(stagedMenu.options.audio, "the staged menu receives a borrowed cue callback")
+    Assert.isTrue(type(menuAudio.playMenuCue) == "function", "the staged menu has only its semantic cue operation")
+    Assert.deepEqual(session.events, { "title", "cry", "fade" }, "staging alone emits no menu audio")
+    for _ = 1, 80 do
+      if App.state == stagedMenu then
+        break
+      end
+      App.update(1 / 30)
+    end
+    Assert.equal(App.state, stagedMenu, "the same staged menu receives the title handoff")
+    Assert.equal(#active.audioSessions, 1, "the title/menu handoff does not construct another sink")
+    Assert.equal(session.disposals, 0, "the transferred menu retains its borrowed session")
+    menuAudio.playMenuCue()
+    Assert.deepEqual(
+      session.events,
+      { "title", "cry", "fade", "menu" },
+      "the active menu routes its semantic cue through the original session"
+    )
+
+    local gameOptions
+    HgssGame.new = function(options)
+      gameOptions = options
+      Assert.equal(session.disposals, 1, "startup output closes before the retail game takes ownership")
+      return {
+        dispose = function() end,
+      }
+    end
+    require("app.src.launcher.EditionPreference").recordPlayed = function()
+      return true
+    end
+    App._launchGameWithProvisioner("heartgold", { kind = "new_game" })
+    Assert.equal(session.disposals, 1, "entering the game releases the startup session exactly once")
+    assert(gameOptions, "the production game handoff is composed")
+    gameOptions.onExit({ kind = "main_menu" })
+    Assert.equal(#active.audioSessions, 2, "returning to the menu creates an effects-capable session")
+    Assert.deepEqual(active.audioSessions[2].events, {}, "returning from gameplay does not replay title music or cry")
+
+    App._selectVersion("soulsilver")
+    Assert.equal(active.audioSessions[2].disposals, 1, "edition selection releases the previous menu session once")
+    App.update(1 / 30)
+    App.update(1 / 30)
+    Assert.equal(
+      #active.audioSessions,
+      3,
+      "the new selected edition obtains one audio session after its title is ready"
+    )
+    Assert.equal(active.audioSessions[3].versionId, "soulsilver")
+    App.quit()
+    Assert.equal(active.audioSessions[3].disposals, 1, "quit releases the current edition session once")
   end)
 end
 

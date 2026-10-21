@@ -209,7 +209,7 @@ function StartupTitleState:_notifyTitleReady()
   end
   self.titleReadyNotified = true
   if self.audio and type(self.audio.titleReady) == "function" then
-    self.audio.titleReady()
+    self.audio.titleReady({ crySpeciesId = self.title.bundle.crySpeciesId })
   end
   if self.onTitleReady ~= nil then
     self.onTitleReady()
@@ -538,6 +538,7 @@ function StartupTitleState:dispose()
   local menu, title, loading = self.stagedMenu, self.title, self.loading
   self.stagedMenu, self.title, self.loading = nil, nil, nil
   self.derivedAssets = nil
+  self.audio = nil
   if menu ~= nil then
     menu:dispose()
   end
