@@ -1974,6 +1974,26 @@ local function sportWeakenedPower(ctx, frame, power, moveTypeOverride)
   return power
 end
 
+-- Records the native strike power selected for this execution on the
+-- presentation-only scope beside the pinned move identities. The value
+-- is the pre-modifier selected power (the Magnitude ladder override or
+-- the compiled base): source animation profiles read the resolved
+-- movePower, never final damage. Ground-type Magnitude never meets the
+-- sport halving applied below to electric and fire strikes, so the
+-- recorded value already matches the source context for its program.
+---@param ctx BattleContext mechanics context under annotation
+---@param power integer native strike power selected for this execution
+local function annotateResolvedPower(ctx, power)
+  local scope = ctx:moveScope()
+  if type(scope) ~= "table" then
+    return
+  end
+  if type(power) ~= "number" or power % 1 ~= 0 or power < 0 or power > 65535 then
+    error(BattleErrors.invalidState("strikes resolve an integral unsigned power", { power = power }))
+  end
+  scope.animationPower = power --[[@as integer]]
+end
+
 ---@param ctx BattleContext mechanics context under execution
 ---@param frame table<string, unknown> move frame under execution
 ---@param params table<string, unknown> curated strike controls owning the hit; power stays
@@ -1994,6 +2014,7 @@ local function runStriker(ctx, frame, params)
   if owned.power ~= nil then
     power = owned.power --[[@as integer]]
   end
+  annotateResolvedPower(ctx, power)
   power = sportWeakenedPower(ctx, frame, power, owned.moveType --[[@as string?]])
   local accuracy = strike.accuracy
   if owned.accuracyOverride ~= nil then

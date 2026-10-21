@@ -225,6 +225,51 @@ function T.replacements_name_arrival_and_departure_apart()
   Assert.equal(event.flowKey, "switch", "replacements select their route")
 end
 
+-- A resolved variable power snapshots onto the playback move fact only
+-- for its own execution: the pinned scope value rides beside the move
+-- pair, scopes without a resolved value omit the fact, a stale scope
+-- never lends its value to another execution, and malformed values fail
+-- loudly instead of publishing a guess.
+function T.resolved_power_snapshots_only_for_its_own_execution()
+  local state = twoUpState()
+  local scope = {
+    actor = { combatant = 1, activation = 7 },
+    targets = { { combatant = 2 } },
+    requestedMove = "MAGNITUDE",
+    executingMove = "MAGNITUDE",
+    animationPower = 90,
+  }
+  local event = bareEvent("struck", { key = "MAGNITUDE" }, { target = 2, hitIndex = 1, damage = 4 }, 14)
+  PresentationFacts.decorate(state, event, scope)
+  Assert.equal(event.move.power, 90, "the resolved value rides beside the move pair")
+  scope.animationPower = 10
+  Assert.equal(event.move.power, 90, "later scope edits never rewrite the emitted fact")
+  local plain = bareEvent("struck", { key = "TACKLE" }, { target = 2, hitIndex = 1, damage = 4 }, 15)
+  PresentationFacts.decorate(state, plain, {
+    actor = { combatant = 1, activation = 7 },
+    targets = { { combatant = 2 } },
+    requestedMove = "TACKLE",
+    executingMove = "TACKLE",
+  })
+  Assert.isNil(plain.move.power, "scopes without a resolved value omit the fact")
+  local stale = bareEvent("struck", { key = "EMBER" }, { target = 2, hitIndex = 1, damage = 4 }, 16)
+  PresentationFacts.decorate(state, stale, scope)
+  Assert.isNil(stale.move.power, "a stale scope never lends its value to another execution")
+  for _, bad in ipairs({ 1.5, -1, 65536, "90" }) do
+    local broken = bareEvent("struck", { key = "MAGNITUDE" }, { target = 2, hitIndex = 1, damage = 4 }, 17)
+    local tainted = {
+      actor = { combatant = 1, activation = 7 },
+      targets = { { combatant = 2 } },
+      requestedMove = "MAGNITUDE",
+      executingMove = "MAGNITUDE",
+      animationPower = bad,
+    }
+    Assert.throws(function()
+      PresentationFacts.decorate(state, broken, tainted)
+    end, "a malformed resolved value fails loudly: " .. tostring(bad))
+  end
+end
+
 -- Move-ordered causes carry their typed kind while lifecycle causes keep
 -- theirs; decoration never rewrites an existing kind.
 function T.move_causes_carry_their_typed_kind()

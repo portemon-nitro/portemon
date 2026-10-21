@@ -665,6 +665,37 @@ function T.fainted_target_missing_from_after_view_keeps_event_slot_without_reser
   end
 end
 
+-- A resolved variable power rides the frozen occurrence detached from
+-- the sanitized event: the occurrence keeps the executed value, later
+-- event edits never reach it, and events without a resolved value omit
+-- the fact for effects that never require it.
+function T.resolved_power_rides_the_frozen_occurrence_detached()
+  local geometry = ManifestFixture.manifest().battlefield.slots
+  local before = {
+    own = { { combatant = 1, activation = 7, side = 1, position = 1 } },
+    foes = { { combatant = 2, activation = 9, side = 2, position = 2 } },
+  }
+  local packet = packetFor(before, before, {
+    strikeEvent(9, { { combatant = 1, activation = 7, side = 1, position = 1 } }, {
+      { combatant = 2, activation = 9, side = 2, position = 2 },
+    }, { actionId = 6, hitIndex = 1, effectKey = "variable-strike", visualSeed = 777 }),
+  }, "power-probe", 10)
+  packet.events[1].move = { selected = "MAGNITUDE", executed = "MAGNITUDE", phase = "direct", power = 90 }
+  local playback = BattlePresentationFlow.animationPlayback(packet, packet.events[1], geometry)
+  Assert.equal(playback.event.move.power, 90, "the occurrence keeps the executed value")
+  Assert.equal(playback.event.move.executed, "MAGNITUDE", "the occurrence keeps its executed identity")
+  packet.events[1].move.power = 10
+  Assert.equal(playback.event.move.power, 90, "later event edits never reach the occurrence")
+  local plainPacket = packetFor(before, before, {
+    strikeEvent(10, { { combatant = 1, activation = 7, side = 1, position = 1 } }, {
+      { combatant = 2, activation = 9, side = 2, position = 2 },
+    }, { actionId = 7, hitIndex = 1, effectKey = "plain-strike", visualSeed = 778 }),
+  }, "power-probe", 11)
+  plainPacket.events[1].move = { selected = "TACKLE", executed = "TACKLE", phase = "direct" }
+  local plainPlayback = BattlePresentationFlow.animationPlayback(plainPacket, plainPacket.events[1], geometry)
+  Assert.isNil(plainPlayback.event.move.power, "events without a resolved value omit the fact")
+end
+
 -- Event-time sides select the side branches: a player-side user takes
 -- the ordinary predicate target while a foe-side user takes the
 -- special one, and a cross-side pair falls through the equality

@@ -488,6 +488,32 @@ local function nativeEffectAdmit(screen, cue, effectKey)
       end
     end
   end
+  -- Required-context probe: a program declaring resolved move power
+  -- admits only a cue carrying the executed unsigned value. A missing
+  -- or malformed fact fails with launch, effect, packet, and event
+  -- provenance before anything stages; effects without the declaration
+  -- start exactly as before.
+  local required = record.requiredContext
+  if type(required) == "table" and required.movePower ~= nil then
+    local admitted = cue.event.move
+    local power = type(admitted) == "table" and admitted.power or nil
+    if type(power) ~= "number" or power % 1 ~= 0 or power < 0 or power > 65535 then
+      failNative(
+        screen,
+        "battle effect "
+          .. effectKey
+          .. " failed for launch "
+          .. screen._launchId
+          .. ": required movePower has no usable resolved value for packet "
+          .. tostring(cue.packetId)
+          .. " event "
+          .. tostring(cue.eventSequence)
+          .. " kind "
+          .. tostring(cue.event.kind)
+      )
+      return nil
+    end
+  end
   local slots = screen._manifest.battlefield.slots
   local enriched = enrichedEventForTopology(cue.event, cue.visualSeed)
   local ok, playback = pcall(BattlePresentationFlow.animationPlayback, {

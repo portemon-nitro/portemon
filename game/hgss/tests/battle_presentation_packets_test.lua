@@ -143,6 +143,30 @@ function T.hidden_records_never_ride_message_or_branch_facts()
   Assert.equal(public.actors[1].combatant, 9, "the identity itself still rides for later disclosure")
 end
 
+-- A resolved variable power survives sanitizing as a detached u16:
+-- the playback move keeps the executed value, later kernel edits never
+-- reach the packet, events without a resolved value omit the fact, and
+-- malformed values fail loudly instead of publishing a guess.
+function T.resolved_power_survives_sanitizing_detached()
+  local event = struckEvent()
+  event.cause = { kind = "move", key = "MAGNITUDE" }
+  event.move = { selected = "MAGNITUDE", executed = "MAGNITUDE", phase = "direct", power = 90 }
+  local public = Model.sanitizeEvent(event, views())
+  Assert.equal(public.move.power, 90, "the sanitized move keeps the executed value")
+  event.move.power = 10
+  Assert.equal(public.move.power, 90, "later kernel edits never reach the packet")
+  local plain = struckEvent()
+  local sanitizedPlain = Model.sanitizeEvent(plain, views())
+  Assert.isNil(sanitizedPlain.move.power, "events without a resolved value omit the fact")
+  for _, bad in ipairs({ 1.5, -1, 65536, "90" }) do
+    local broken = struckEvent()
+    broken.move.power = bad
+    Assert.throws(function()
+      Model.sanitizeEvent(broken, views())
+    end, "a malformed resolved value fails loudly: " .. tostring(bad))
+  end
+end
+
 -- Packets resolve names across their before/after views and stay
 -- detached from the kernel frame and the supplied views.
 function T.packets_resolve_names_and_stay_detached()

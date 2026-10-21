@@ -578,6 +578,123 @@ function T.unknown_program_task_kind_fails_the_live_screen_with_provenance()
   Assert.equal(screen:status().mode, "failed", "disposal keeps the diagnosed failure")
 end
 
+-- A selected effect declaring resolved move power refuses admission
+-- while the cue carries no usable value: a missing, fractional, or
+-- out-of-range fact each fail the screen with launch, effect, and power
+-- provenance before anything starts, while a matching resolved value
+-- admits and runs to its checkpoint with no failure.
+---@param screen table live screen under test driving
+---@param launchId string owning launch identity under test driving
+---@param move table<string, unknown> playback move fact under test driving
+local function presentStrikeCarryingMove(screen, launchId, move)
+  local port = screen:presentationPort()
+  port.present({
+    launchId = launchId,
+    packetId = 1,
+    events = {},
+    before = failingView(57),
+    after = failingView(57),
+  })
+  port.present({
+    launchId = launchId,
+    packetId = 2,
+    events = {
+      {
+        sequence = 1,
+        kind = "struck",
+        cause = { key = "MAGNITUDE" },
+        audience = "public",
+        actors = { { combatant = 1 } },
+        targets = { { combatant = 3 } },
+        move = move,
+        actionId = 61,
+        hitIndex = 1,
+        effectKey = "MAGNITUDE",
+        payload = { target = 3, damage = 14, hitIndex = 1 },
+        after = { hp = { [1] = 52, [3] = 43 } },
+      },
+    },
+    before = failingView(57),
+    after = failingView(43),
+  })
+end
+
+---@return table staged-effect fixture demanding resolved move power
+local function powerDemandingStaging(launchId)
+  local EffectStagingFixture = require("tests.support.EffectStagingFixture")
+  local staging = EffectStagingFixture.new({ launchId = launchId })
+  local program = lowered("MAGNITUDE", { 34, 1, 2, 3, 29, 50, 4 })
+  local record = EffectStagingFixture.effectRecord("MAGNITUDE", {})
+  record.program = {
+    entry = program.entry,
+    instructions = program.instructions,
+    subprograms = program.subprograms,
+    taskKinds = program.taskKinds,
+  }
+  record.requiredContext = { movePower = { type = "battle-animation-move-power-u16" } }
+  staging:stageEffect("MAGNITUDE", record, {})
+  return staging
+end
+
+function T.missing_or_malformed_move_power_refuses_admission_before_playback()
+  for _, move in ipairs({
+    { selected = "MAGNITUDE", executed = "MAGNITUDE", phase = "direct" },
+    { selected = "MAGNITUDE", executed = "MAGNITUDE", phase = "direct", power = 90.5 },
+    { selected = "MAGNITUDE", executed = "MAGNITUDE", phase = "direct", power = 70000 },
+  }) do
+    local launchId = "launch-move-power-refused-" .. tostring(move.power)
+    local screen = openFailingScreen(launchId, powerDemandingStaging(launchId))
+    presentStrikeCarryingMove(screen, launchId, move)
+    for _ = 1, 600 do
+      screen:updateFixed(1 / 30)
+    end
+    local status = screen:status()
+    Assert.equal(status.mode, "failed", "the missing value fails admission, never a silent hit")
+    Assert.isTrue(
+      tostring(status.error):find("MAGNITUDE", 1, true) ~= nil,
+      "the failure names its selected effect: " .. tostring(status.error)
+    )
+    Assert.isTrue(
+      tostring(status.error):find(launchId, 1, true) ~= nil,
+      "the failure names its launch: " .. tostring(status.error)
+    )
+    Assert.isTrue(
+      tostring(status.error):find("movePower", 1, true) ~= nil,
+      "the failure names the missing context: " .. tostring(status.error)
+    )
+    Assert.equal(failingDisplayedFoeHp(screen:view()), 57, "the refused cue applies no health early")
+    Assert.isNil(status.request, "the failed screen exposes no new decision")
+    Assert.equal(#screen:view().effectInstances, 0, "no refused effect record lingers in the live scene")
+    screen:dispose()
+    Assert.equal(screen:status().mode, "failed", "disposal keeps the diagnosed failure")
+  end
+end
+
+function T.matching_resolved_move_power_admits_and_runs_to_its_checkpoint()
+  local launchId = "launch-move-power-admitted"
+  local screen = openFailingScreen(launchId, powerDemandingStaging(launchId))
+  presentStrikeCarryingMove(screen, launchId, {
+    selected = "MAGNITUDE",
+    executed = "MAGNITUDE",
+    phase = "direct",
+    power = 90,
+  })
+  local settledHp = nil
+  for _ = 1, 1200 do
+    screen:updateFixed(1 / 30)
+    if screen:status().mode == "failed" then
+      break
+    end
+    if failingDisplayedFoeHp(screen:view()) == 43 and screen:status().ready then
+      settledHp = 43
+      break
+    end
+  end
+  Assert.equal(screen:status().mode ~= "failed", true, "the matching value passes admission")
+  Assert.equal(settledHp, 43, "the admitted effect runs to its checkpoint")
+  screen:dispose()
+end
+
 -- A still-staging effect parks instead of failing or settling: once the
 -- worker closure validates, the same cue admits and runs its program
 -- to the exact checkpoint with no new decision sealed.

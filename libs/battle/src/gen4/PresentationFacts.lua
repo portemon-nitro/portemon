@@ -339,6 +339,19 @@ local function moveFor(cause, kind, scope, state)
     executed = executed,
     phase = kind == "charged" and "charge" or "direct",
   } --[[@as table<string, unknown>]]
+  -- The resolved variable power snapshots only for its own execution:
+  -- the pinned scope already proved its executing identity above, so
+  -- the value rides beside the move pair as a detached number. Scopes
+  -- without a resolved value omit the fact; malformed values fail
+  -- loudly instead of publishing a guess.
+  if scope ~= nil and scope.animationPower ~= nil then
+    local resolved = scope.animationPower
+    assert(
+      type(resolved) == "number" and resolved % 1 == 0 and resolved >= 0 and resolved <= 65535,
+      "resolved move power stays an unsigned sixteen-bit integer"
+    )
+    move.power = resolved --[[@as integer]]
+  end
   if kind == "struck" then
     -- The turn-global strike tally is the occurrence identity: every
     -- hit of a multi-hit sequence and every recipient of a spread move

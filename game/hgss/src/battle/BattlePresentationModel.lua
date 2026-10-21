@@ -641,6 +641,16 @@ local function checkMove(move)
       detached[key] = record[key]
     end
   end
+  -- The resolved variable power crosses the projection detached from
+  -- the kernel outbox: present values keep their unsigned range while
+  -- absent values stay absent for effects that never require one.
+  if record.power ~= nil then
+    assert(
+      type(record.power) == "number" and record.power % 1 == 0 and record.power >= 0 and record.power <= 65535,
+      "playback move power stays an unsigned sixteen-bit integer"
+    )
+    detached.power = record.power
+  end
   return detached
 end
 

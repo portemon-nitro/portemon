@@ -312,6 +312,205 @@ function T.multi_hit_and_multi_level_gains_keep_every_checkpoint_in_order()
   session:dispose()
 end
 
+-- A variable-power strike snapshots the exact ladder value its own
+-- battle draw selected onto the playback move fact: two fixed native
+-- seeds resolve two distinct ladder values, each struck event carries
+-- the drawn value instead of the compiled base, the draw journal shows
+-- exactly one native roll per strike, and a same-seed replay agrees on
+-- power, damage, and draws without touching the world stream.
+local function probeFacts(move, power, moveType, nativeId)
+  return {
+    nativeId = nativeId,
+    name = move,
+    description = "",
+    effect = 0,
+    category = "physical",
+    power = power,
+    moveType = moveType,
+    accuracy = 100,
+    basePp = 10,
+    effectChance = 0,
+    range = 0,
+    priority = 0,
+    behavior = { key = "damage", params = {} },
+    target = "range_0",
+    flags = { dealsDamage = true, checksAccuracy = true },
+  }
+end
+
+local function probeChart()
+  local ContentBuilder = require("libs.content.src.ContentBuilder")
+  local BattleBehaviorBuilder = require("libs.battle.src.BattleBehaviorBuilder")
+  local BattleContent = require("libs.battle.src.BattleContent")
+  local NativeTypeChart = require("libs.battle.src.gen4.NativeTypeChart")
+  local Executor = executorOwner()
+  local builder = ContentBuilder.new()
+  NativeTypeChart.install(builder, "native-event-facts")
+  local behaviors = BattleBehaviorBuilder.new()
+  behaviors:registerRuleset(
+    Executor.RULESET,
+    { key = Executor.RULESET, chart = Executor.RULESET },
+    "native-event-facts"
+  )
+  local content = BattleContent.new(builder:freeze(), behaviors:freeze())
+  return assert(content:typeChart(Executor.RULESET), "the native chart resolves for the power probes")
+end
+
+---@param moveKey string strike identity under the probe
+---@param seed integer fixed battle stream seed under the probe
+---@return table terminal step, dealt damage, struck events, and labeled draw journal
+local function runPowerProbe(moveKey, seed)
+  local BattleRng = require("libs.battle.src.gen4.BattleRng")
+  local Execution = SessionFixture.requirePresent(
+    "libs.battle.src.gen4.MoveExecution",
+    "the shared move continuation owns native hit progression"
+  )
+  local state = SessionFixture.requirePresent("libs.battle.src.BattleState", "live battle state owns the probe")
+  local contracts = SessionFixture.sessionContracts()
+  local function sturdy(id, monSeed)
+    local mon = SessionFixture.makeMon(monSeed, { level = 100 })
+    return { id = id, mon = mon }
+  end
+  local scenario = SessionFixture.buildScenario({
+    sides = { SessionFixture.side(1, { 1 }), SessionFixture.side(2, { 2 }) },
+    participants = {
+      SessionFixture.participant(1, 1, "scripted", { sturdy(1, 11) }),
+      SessionFixture.participant(2, 2, "scripted", { sturdy(2, 23) }),
+    },
+    positions = {
+      SessionFixture.position(1, 1, { 1 }, 1),
+      SessionFixture.position(2, 2, { 2 }, 2),
+    },
+    inventories = {},
+  })
+  local live = state.create(contracts.Scenario.validate(scenario))
+  local Context = SessionFixture.requirePresent(
+    "libs.battle.src.BattleContext",
+    "the validated mutation surface owns mechanics writes"
+  )
+  local ctx = Context.wrap(live)
+  local journal = {}
+  local raw = BattleRng.new(seed)
+  local stream = {}
+  function stream:nextU16(label, cause)
+    journal[#journal + 1] = label
+    return raw:nextU16(label, cause)
+  end
+  function stream:capture()
+    return raw:capture()
+  end
+  local beforeFoe = ctx:damage(2, 0, { kind = "probe" }).before
+  local node = Execution.start({
+    actionId = 901,
+    actor = { combatant = 1 },
+    requestedMove = moveKey,
+    executingMove = moveKey,
+    ppOwnerSlot = 0,
+    selectedTarget = SessionFixture.positionTarget(2),
+    targets = { { combatant = 2 } },
+    moves = { { move = moveKey, pp = 10, ppUps = 0 } },
+    moveFacts = {
+      MAGNITUDE = probeFacts("MAGNITUDE", 1, "ground", 91),
+      TACKLE = probeFacts("TACKLE", 35, "normal", 92),
+    },
+    combat = {
+      level = 50,
+      attack = 120,
+      defense = 110,
+      rawAttack = 120,
+      rawDefense = 110,
+      attackStage = 0,
+      defenseStage = 0,
+    },
+    burned = false,
+    guts = false,
+    weather = "none",
+    weatherSuppressed = false,
+    abilities = { user = "NONE", foe = "NONE" },
+    attackerTypes = { "normal" },
+    defenderTypes = { [2] = { "normal" } },
+    typeChart = probeChart(),
+    stream = stream,
+  })
+  for _ = 1, 8 do
+    node = Execution.step(ctx, node)
+    local record = node --[[@as table<string, unknown>]]
+    if record.kind == "complete" and record.frame == nil then
+      break
+    end
+  end
+  local finished = node --[[@as table<string, unknown>]]
+  assert(finished.kind == "complete" and finished.frame == nil, "the strike settles")
+  local struck = {}
+  for _, event in ipairs(live.outbox) do
+    if event.kind == "struck" then
+      struck[#struck + 1] = event
+    end
+  end
+  return {
+    outcome = finished,
+    dealt = beforeFoe - ctx:damage(2, 0, { kind = "probe" }).before,
+    struck = struck,
+    journal = journal,
+  }
+end
+
+---@param seed integer fixed battle stream seed under replay
+---@return integer the ladder value the native roll selects
+local function replayLadderPower(seed)
+  local BattleRng = require("libs.battle.src.gen4.BattleRng")
+  local replay = BattleRng.new(seed)
+  local roll = replay:nextU16("magnitude", { kind = "probe" }) % 100
+  local ladder = { 10, 30, 50, 70, 90, 110, 150 }
+  local edges = { 5, 15, 35, 65, 85, 95, 100 }
+  for index, edge in ipairs(edges) do
+    if roll < edge then
+      return ladder[index]
+    end
+  end
+  return 150
+end
+
+function T.variable_power_strikes_snapshot_their_resolved_ladder_value()
+  local low = runPowerProbe("MAGNITUDE", 10)
+  Assert.equal(low.outcome.result, "hit", "the low roll connects")
+  Assert.equal(replayLadderPower(10), 30, "the low seed draws the 30 ladder value")
+  Assert.isTrue(#low.struck >= 1, "the low strike tells its hit")
+  Assert.equal(low.struck[1].move.power, 30, "the playback move carries the drawn ladder value")
+  Assert.isTrue(low.struck[1].move.power ~= 1, "the playback power never copies the compiled base")
+  local high = runPowerProbe("MAGNITUDE", 2)
+  Assert.equal(high.outcome.result, "hit", "the high roll connects")
+  Assert.equal(replayLadderPower(2), 90, "the high seed draws the 90 ladder value")
+  Assert.isTrue(#high.struck >= 1, "the high strike tells its hit")
+  Assert.equal(high.struck[1].move.power, 90, "the second playback move carries its own drawn value")
+  for _, probe in ipairs({ low, high }) do
+    local magnitudeDraws = 0
+    for _, label in ipairs(probe.journal) do
+      if label == "magnitude" then
+        magnitudeDraws = magnitudeDraws + 1
+      end
+    end
+    Assert.equal(magnitudeDraws, 1, "each strike rolls its variable power exactly once")
+  end
+  local replay = runPowerProbe("MAGNITUDE", 2)
+  Assert.equal(replay.struck[1].move.power, 90, "a same-seed replay resolves the same playback power")
+  Assert.equal(replay.dealt, high.dealt, "a same-seed replay deals the same damage")
+  Assert.deepEqual(replay.journal, high.journal, "a same-seed replay draws the same native sequence")
+end
+
+-- A later ordinary strike carries its own compiled value, never the
+-- earlier variable roll: each pinned execution annotates only its own
+-- hit, and the already emitted facts stay frozen behind later work.
+function T.later_strikes_never_reuse_an_earlier_resolved_value()
+  local first = runPowerProbe("MAGNITUDE", 2)
+  Assert.equal(first.struck[1].move.power, 90, "the variable strike resolves its ladder value")
+  local second = runPowerProbe("TACKLE", 2)
+  Assert.equal(second.outcome.result, "hit", "the ordinary strike connects")
+  Assert.isTrue(#second.struck >= 1, "the ordinary strike tells its hit")
+  Assert.equal(second.struck[1].move.power, 35, "the ordinary strike carries its own compiled value")
+  Assert.isTrue(first.struck[1].move.power == 90, "the earlier facts stay frozen behind later work")
+end
+
 -- Misses, immunities, charge and release phases, substitute breaks,
 -- and transforms each select a distinct visual request, while the
 -- effects-off capture keeps mandatory appearance changes and native

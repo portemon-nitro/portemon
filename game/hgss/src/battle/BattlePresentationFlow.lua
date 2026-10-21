@@ -391,7 +391,7 @@ function BattlePresentationFlow.animationPlayback(packet, event, slotGeometry)
       executed = move.executed,
       phase = move.phase,
     } ---@type table<string, unknown>
-    for _, key in ipairs({ "hitOrdinal", "hitCount" }) do
+    for _, key in ipairs({ "hitOrdinal", "hitCount", "power" }) do
       if move[key] ~= nil then
         detachedMove[key] = move[key]
       end
