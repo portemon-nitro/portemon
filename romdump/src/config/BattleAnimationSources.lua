@@ -1616,9 +1616,11 @@ function BattleAnimationSources.resolveBattleAnimationCallback(operands)
     }
   elseif selector == 59 then
     -- AttackerDashAfterimages (battle_anim_move_effects.c) never reads
-    -- its single source word; the out leg (eight ticks: the slowest of
-    -- the 3/6/8 motions) and the back leg (nine ticks: 3/6/9) plus the
-    -- two dispatch ticks run 20 ticks. The afterimage sprites and blend
+    -- its single source word; the linear-motion update reports TRUE
+    -- while moving (battle_anim_util.c), so the out leg (slowest of
+    -- the 3/6/8 motions) retires on its ninth update and the back leg
+    -- (slowest of 3/6/9) on its tenth, plus the two dispatch ticks and
+    -- the destroy tick run 22 ticks. The afterimage sprites and blend
     -- have no scene expression, so the run holds the boundary.
     if count ~= 1 then
       return nil, "attacker dash callback follows its source assertion path"
@@ -1628,7 +1630,7 @@ function BattleAnimationSources.resolveBattleAnimationCallback(operands)
       taskKind = "pokemon-picture-attacker-dash-afterimages",
       context = "pokemon-picture",
       battlerTarget = "attacker",
-      parameters = { durationTicks = 20 },
+      parameters = { durationTicks = 22 },
     }
   elseif selector == 61 then
     -- MoveBattlerLinear (battle_anim_funcs.c) slides the role's pictures
@@ -1785,6 +1787,14 @@ function BattleAnimationSources.resolveBattleAnimationCallback(operands)
       },
     }
   elseif selector >= 80 and selector <= 83 then
+    -- BattleAnimTask_ObjWindowBgScroll (battle_anim_effects.c) runs
+    -- every panel kind through the same boundary: one setup tick, one
+    -- blend-setup tick, twenty-two hold ticks (timer 0 through 21),
+    -- twelve blend-out ticks (blend 12/4 stepping to 0/16), and the
+    -- destroy tick, for 37 ticks. All four Func bodies hardcode the
+    -- same hold and blend; only the scroll velocity (the lowered
+    -- offsets) and the graphic/target selection vary, and none of
+    -- those gate completion, so no lowered operand can wedge the run.
     local offsetY = ({ [80] = 3, [81] = -3, [82] = 3, [83] = -6 })[selector]
     local callback = offsetY == 3 and "battle-sprite-panel-slide-down"
       or offsetY == -3 and "battle-sprite-panel-slide-up"
@@ -1798,6 +1808,7 @@ function BattleAnimationSources.resolveBattleAnimationCallback(operands)
         firstPanelOffsetY = offsetY,
         secondPanelOffsetX = 12,
         secondPanelOffsetY = 4,
+        durationTicks = 37,
       },
     }
   end

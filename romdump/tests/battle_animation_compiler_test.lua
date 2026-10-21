@@ -964,15 +964,17 @@ function T.battler_motion_callbacks_lower_to_their_native_tasks()
     parameters = { durationTicks = 29 },
   })
   -- AttackerDashAfterimages (SHADOW_PUNCH) carries one source word the
-  -- native body never reads; its out leg (eight ticks) and back leg
-  -- (nine ticks) plus the two dispatch ticks run 20 ticks.
+  -- native body never reads; the linear-motion update reports TRUE
+  -- while moving, so the out leg (slowest motion 8) retires on its
+  -- ninth update and the back leg (slowest motion 9) on its tenth;
+  -- the two dispatch ticks and the destroy tick run 22 ticks.
   local dash = Sources.resolveBattleAnimationCallback({ 59, 1, 0 })
   Assert.deepEqual(dash, {
     callback = "pokemon-picture-attacker-dash-afterimages",
     taskKind = "pokemon-picture-attacker-dash-afterimages",
     context = "pokemon-picture",
     battlerTarget = "attacker",
-    parameters = { durationTicks = 20 },
+    parameters = { durationTicks = 22 },
   })
   -- MoveBattlerLinear (WHIRLWIND, ROAR) slides the defender offscreen
   -- over its duration word; the foe exits toward its own side.
@@ -1035,6 +1037,7 @@ function T.battle_sprite_panel_callbacks_lower_to_typed_offsets()  local Sources
       firstPanelOffsetY = expected.offsetY,
       secondPanelOffsetX = 12,
       secondPanelOffsetY = 4,
+      durationTicks = 37,
     })
   end
 
@@ -1048,6 +1051,13 @@ function T.battle_sprite_panel_callbacks_lower_to_typed_offsets()  local Sources
   })
   Assert.equal(program.instructions[1].callback, "battle-sprite-panel-slide-down")
   Assert.equal(program.instructions[2].callback, "battle-sprite-panel-slide-down")
+  Assert.deepEqual(program.instructions[1].parameters, {
+    firstPanelOffsetX = 0,
+    firstPanelOffsetY = 3,
+    secondPanelOffsetX = 12,
+    secondPanelOffsetY = 4,
+    durationTicks = 37,
+  })
   Assert.isNil(program.instructions[1].selector, "callback selectors stay producer-only")
 end
 
@@ -3986,6 +3996,16 @@ function T.computed_callback_durations_pass_the_normalized_callback_schema()
   Assert.equal(mosaic.instructions[1].callback, "battle-sprite-mosaic-transition")
   Assert.equal(mosaic.instructions[1].parameters.durationTicks, 3)
   assertSchema(mosaic, "mosaic")
+  local panel = assert(compiler().compile({
+    key = "panel-with-computed-duration",
+    stream = table.concat({ u32(45), u32(80), u32(0) }),
+    resolveSourceInput = function(role, operands)
+      return Sources.resolveSourceSelection(role, operands)
+    end,
+  }))
+  Assert.equal(panel.instructions[1].callback, "battle-sprite-panel-slide-down")
+  Assert.equal(panel.instructions[1].parameters.durationTicks, 37)
+  assertSchema(panel, "panel")
 end
 
 return { tests = T }
