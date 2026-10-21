@@ -973,6 +973,119 @@ function T.presentation_feedback_sequences_carry_their_authored_timing(romFs, ve
   Assert.equal(total(roleFor("retract").animation, 5), 20, versionId .. " the retract matches its gate")
 end
 
+-- The compiled catalog carries the source editor orders, measurement
+-- templates, and per-dungeon marker adjustments on every owned dump:
+-- template ids and option positions match the transcribed source vectors,
+-- marker shapes/offsets follow the native map cases, and dungeon
+-- positions reproduce the raw geometry bytes unshifted.
+local SOURCE_TYPE_OPTION_ORDER = {
+  "normal",
+  "fighting",
+  "flying",
+  "poison",
+  "ground",
+  "rock",
+  "bug",
+  "ghost",
+  "steel",
+  "fire",
+  "water",
+  "grass",
+  "electric",
+  "psychic",
+  "ice",
+  "dragon",
+  "dark",
+  "unrestricted",
+}
+local SOURCE_SHAPE_OPTION_ORDER = {
+  "quadruped",
+  "bipedal without tail",
+  "bipedal with tail",
+  "serpentine",
+  "multiple wings",
+  "two wings",
+  "insectoid",
+  "head/torso",
+  "head/arms",
+  "head/legs",
+  "tentacles",
+  "fins",
+  "head only",
+  "multiple bodies",
+  "unrestricted",
+}
+local NARROW_MARKER_MAPS = {
+  [0x7C] = true,
+  [0xB2] = true,
+  [0xB3] = true,
+  [0x71] = true,
+  [0x13B] = true,
+  [0x1EA] = true,
+  [0x1EB] = true,
+  [0x1EC] = true,
+}
+local SHIFTED_MARKER_MAPS = { [0x60] = true, [0x1E7] = true }
+
+function T.compiled_catalog_carries_source_editor_orders_templates_and_dungeon_markers(romFs, versionId)
+  local PokedexCatalogCompiler = requireProducer()
+  local PokedexSources = require("romdump.src.config.PokedexSources")
+  local MapCatalog = require("romdump.src.digest.map.MapCatalog")
+  local catalog = compileCatalog(romFs, versionId, PokedexCatalogCompiler)
+  Assert.equal(catalog.schema, "g4-pokedex-catalog-v2", versionId .. " publishes the second catalog revision")
+  Assert.deepEqual(
+    catalog.searchText.measureTemplates,
+    { height = 175, weight = 38 },
+    versionId .. " projects the source height/weight message templates"
+  )
+  Assert.equal(
+    catalog.textBindings.ui.bankId,
+    802,
+    versionId .. " keeps the templates under the existing UI bank"
+  )
+  Assert.deepEqual(
+    catalog.criteria.typeOptionOrder,
+    SOURCE_TYPE_OPTION_ORDER,
+    versionId .. " keeps the source type declaration order"
+  )
+  Assert.deepEqual(
+    catalog.criteria.shapeOptionOrder,
+    SOURCE_SHAPE_OPTION_ORDER,
+    versionId .. " keeps the source shape declaration order"
+  )
+  Assert.equal(#catalog.sliderSteps, 153, versionId .. " keeps every physical slider row")
+  local habitat = openArchive(romFs, HABITAT_PATH, versionId)
+  local geometry = assert(habitat:readMember(0), versionId .. " exposes its dungeon geometry member")
+  Assert.equal(#geometry, 26 * 4, versionId .. " carries all dungeon geometry records")
+  local symbols = PokedexSources.areaMapSymbols().dungeon
+  for id = 1, 26 do
+    local key = "dex-dungeon-" .. id
+    local record = assert(catalog.areaGeometry[key], versionId .. " publishes " .. key)
+    Assert.deepEqual(
+      record.position,
+      { x = string.byte(geometry, (id - 1) * 4 + 1), y = string.byte(geometry, (id - 1) * 4 + 2) },
+      versionId .. " " .. key .. " keeps its unshifted source position"
+    )
+    local nativeMapId = nil
+    if symbols[id] ~= nil then
+      nativeMapId = MapCatalog.idForSymbol(symbols[id])
+      Assert.notNil(nativeMapId, versionId .. " " .. key .. " resolves its retail map " .. symbols[id])
+    end
+    local shape, offset = 0, { x = 0, y = 0 }
+    if nativeMapId ~= nil and NARROW_MARKER_MAPS[nativeMapId] then
+      shape, offset = 6, { x = 0, y = 4 }
+    elseif nativeMapId ~= nil and SHIFTED_MARKER_MAPS[nativeMapId] then
+      shape, offset = 0, { x = 4, y = 4 }
+    end
+    Assert.equal(record.markerShape, shape, versionId .. " " .. key .. " carries its source marker shape")
+    Assert.deepEqual(
+      record.markerOffsetPx,
+      offset,
+      versionId .. " " .. key .. " carries its source marker offset"
+    )
+  end
+end
+
 local suite = RomSuite.fromFacts(T)
 suite.metadata.capabilities = { "rom_dump" }
 suite.metadata.tags = { "pokedex" }

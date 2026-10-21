@@ -311,6 +311,117 @@ local function mutateCatalog(mutator)
   return catalog
 end
 
+-- Editor option orders transcribed from the original search declaration
+-- sequence: every source class in declaration order with the
+-- unrestricted choice last, never alphabetically sorted.
+local SOURCE_TYPE_SEQUENCE = {
+  "normal",
+  "fighting",
+  "flying",
+  "poison",
+  "ground",
+  "rock",
+  "bug",
+  "ghost",
+  "steel",
+  "fire",
+  "water",
+  "grass",
+  "electric",
+  "psychic",
+  "ice",
+  "dragon",
+  "dark",
+  "unrestricted",
+}
+local SOURCE_SHAPE_SEQUENCE = {
+  "quadruped",
+  "bipedal without tail",
+  "bipedal with tail",
+  "serpentine",
+  "multiple wings",
+  "two wings",
+  "insectoid",
+  "head/torso",
+  "head/arms",
+  "head/legs",
+  "tentacles",
+  "fins",
+  "head only",
+  "multiple bodies",
+  "unrestricted",
+}
+
+function T.editor_option_arrays_follow_source_declaration_order_with_unrestricted_last()
+  local catalog = compileCatalog()
+  Assert.deepEqual(
+    catalog.criteria.typeOptionOrder,
+    SOURCE_TYPE_SEQUENCE,
+    "the type editor keeps the source declaration order"
+  )
+  Assert.deepEqual(
+    catalog.criteria.shapeOptionOrder,
+    SOURCE_SHAPE_SEQUENCE,
+    "the shape editor keeps the source declaration order"
+  )
+  Assert.equal(catalog.criteria.typeOptionOrder[1], "normal", "the type editor does not sort alphabetically")
+  Assert.equal(
+    catalog.criteria.shapeOptionOrder[1],
+    "quadruped",
+    "the shape editor does not sort alphabetically"
+  )
+  for index = 1, 17 do
+    Assert.notNil(
+      catalog.criteria.types[SOURCE_TYPE_SEQUENCE[index]],
+      "every ordered type stays a search member: " .. SOURCE_TYPE_SEQUENCE[index]
+    )
+  end
+  for index = 1, 14 do
+    Assert.notNil(
+      catalog.criteria.shapes[SOURCE_SHAPE_SEQUENCE[index]],
+      "every ordered shape stays a search member: " .. SOURCE_SHAPE_SEQUENCE[index]
+    )
+  end
+end
+
+function T.malformed_editor_option_arrays_fail_closed_validation()
+  local monCatalog = fixtureMonCatalog()
+  local catalog = compileCatalog()
+  Assert.notNil(
+    catalog.criteria.typeOptionOrder,
+    "the compiled catalog carries source-ordered type options"
+  )
+  Assert.notNil(
+    catalog.criteria.shapeOptionOrder,
+    "the compiled catalog carries source-ordered shape options"
+  )
+  local fresh = compileCatalog()
+  fresh.criteria.typeOptionOrder[1], fresh.criteria.typeOptionOrder[2] =
+    fresh.criteria.typeOptionOrder[2], fresh.criteria.typeOptionOrder[1]
+  Assert.isNil(
+    PokedexAssetSchema.validateCatalog(fresh, monCatalog),
+    "a swapped type option order must not validate"
+  )
+  local duplicated = compileCatalog()
+  duplicated.criteria.typeOptionOrder[18] = duplicated.criteria.typeOptionOrder[1]
+  Assert.isNil(
+    PokedexAssetSchema.validateCatalog(duplicated, monCatalog),
+    "a duplicated type option must not validate"
+  )
+  local truncated = compileCatalog()
+  truncated.criteria.shapeOptionOrder[15] = nil
+  Assert.isNil(
+    PokedexAssetSchema.validateCatalog(truncated, monCatalog),
+    "a truncated shape option order must not validate"
+  )
+  local unknown = compileCatalog()
+  unknown.criteria.shapeOptionOrder[15] = "mystery"
+  Assert.isNil(
+    PokedexAssetSchema.validateCatalog(unknown, monCatalog),
+    "an unknown shape option must not validate"
+  )
+end
+
 function T.closed_catalog_rejects_unknown_fields_and_holes()
   local monCatalog = fixtureMonCatalog()
   local withExtra = mutateCatalog(function(catalog)

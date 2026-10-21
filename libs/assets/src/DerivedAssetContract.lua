@@ -508,7 +508,7 @@ DerivedAssetContract.pokegear = {
 -- a stale pre-change cache without that record must fail readiness.
 DerivedAssetContract.pokedex = {
   cacheFormat = "pokedex-cache-v1",
-  catalogSchema = "g4-pokedex-catalog-v1",
+  catalogSchema = "g4-pokedex-catalog-v2",
   schema = "g4-pokedex-assets-v2",
 }
 

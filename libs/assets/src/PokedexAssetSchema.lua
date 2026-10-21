@@ -705,6 +705,57 @@ local function checkCriteria(catalog)
   if type(criteria) ~= "table" then
     return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "catalog carries no search criteria", {})
   end
+  local function checkOptionOrder(value, expected, label)
+    if type(value) ~= "table" then
+      return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, label .. " must be a dense option list", { label = label })
+    end
+    if #value ~= #expected then
+      return fail(
+        PokedexAssetSchema.ERROR.SHAPE_INVALID,
+        label .. " carries an incomplete option order",
+        { label = label }
+      )
+    end
+    for index = 1, #expected do
+      if value[index] ~= expected[index] then
+        return fail(
+          PokedexAssetSchema.ERROR.SHAPE_INVALID,
+          label .. " breaks the source declaration order",
+          { label = label, index = index }
+        )
+      end
+    end
+    for key in pairs(value) do
+      if not isInteger(key) or key < 1 or key > #expected then
+        return fail(
+          PokedexAssetSchema.ERROR.SHAPE_INVALID,
+          label .. " has a non-sequence key",
+          { label = label, key = key }
+        )
+      end
+    end
+    return nil
+  end
+  local expectedTypes = {}
+  for index, name in ipairs(TYPE_KEYS) do
+    expectedTypes[index] = name
+  end
+  expectedTypes[#expectedTypes + 1] = "unrestricted"
+  local expectedShapes = {}
+  for index, name in ipairs(SHAPE_KEYS) do
+    expectedShapes[index] = name
+  end
+  expectedShapes[#expectedShapes + 1] = "unrestricted"
+  do
+    local err = checkOptionOrder(criteria.typeOptionOrder, expectedTypes, "criteria.typeOptionOrder")
+    if err then
+      return err
+    end
+    local shapeErr = checkOptionOrder(criteria.shapeOptionOrder, expectedShapes, "criteria.shapeOptionOrder")
+    if shapeErr then
+      return shapeErr
+    end
+  end
   local function resolve(key)
     return catalog.species[key] ~= nil
   end
@@ -767,7 +818,14 @@ local function checkCriteria(catalog)
     end
   end
   for field in pairs(criteria) do
-    if field ~= "letters" and field ~= "types" and field ~= "shapes" and field ~= "areas" then
+    if
+      field ~= "letters"
+      and field ~= "types"
+      and field ~= "shapes"
+      and field ~= "areas"
+      and field ~= "typeOptionOrder"
+      and field ~= "shapeOptionOrder"
+    then
       return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "criteria carry an unexpected field", { field = field })
     end
   end
@@ -856,6 +914,21 @@ local function checkAreaGeometryRecord(geometry, label)
       or not isInteger(geometry.position.y)
     then
       return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, label .. " carries no dungeon position", { label = label })
+    end
+    if not isInteger(geometry.markerShape) or geometry.markerShape < 0 or geometry.markerShape > 11 then
+      return fail(
+        PokedexAssetSchema.ERROR.SHAPE_INVALID,
+        label .. " carries an invalid marker shape",
+        { label = label }
+      )
+    end
+    local offset = geometry.markerOffsetPx
+    if type(offset) ~= "table" or not isInteger(offset.x) or not isInteger(offset.y) then
+      return fail(
+        PokedexAssetSchema.ERROR.SHAPE_INVALID,
+        label .. " carries an invalid marker offset",
+        { label = label }
+      )
     end
   end
   return nil
@@ -1061,6 +1134,18 @@ local function checkSearchText(search)
       return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "search text misses its " .. field, {})
     end
   end
+  local templates = search.measureTemplates
+  if type(templates) ~= "table" then
+    return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "search text misses its measure templates", {})
+  end
+  if templates.height ~= 175 or templates.weight ~= 38 then
+    return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "search text carries invalid measure templates", {})
+  end
+  for field in pairs(templates) do
+    if field ~= "height" and field ~= "weight" then
+      return fail(PokedexAssetSchema.ERROR.SHAPE_INVALID, "search text carries an unexpected template field", {})
+    end
+  end
   for field in pairs(search) do
     if
       field ~= "criteria"
@@ -1070,6 +1155,7 @@ local function checkSearchText(search)
       and field ~= "areas"
       and field ~= "buttons"
       and field ~= "editorButtons"
+      and field ~= "measureTemplates"
       and field ~= "timeBase"
       and field ~= "returnCancel"
       and field ~= "returnAction"

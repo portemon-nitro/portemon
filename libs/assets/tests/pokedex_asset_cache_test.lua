@@ -108,8 +108,18 @@ local function fixtureCatalog()
     habitats[key] = { morning = areaSet(), day = areaSet(), night = areaSet(), other = areaSet() }
   end
   local ordered = { "custom.alpha", "custom.beta" }
+  local typeOptionOrder = {}
+  for index, name in ipairs(PokedexSources.typeOrder) do
+    typeOptionOrder[index] = name
+  end
+  typeOptionOrder[#typeOptionOrder + 1] = "unrestricted"
+  local shapeOptionOrder = {}
+  for index, name in ipairs(PokedexSources.shapeOrder) do
+    shapeOptionOrder[index] = name
+  end
+  shapeOptionOrder[#shapeOptionOrder + 1] = "unrestricted"
   return {
-    schema = "g4-pokedex-catalog-v1",
+    schema = "g4-pokedex-catalog-v2",
     versionId = "heartgold",
     nativeLanguage = "english",
     species = species,
@@ -122,6 +132,8 @@ local function fixtureCatalog()
       types = { normal = ordered },
       shapes = { quadruped = ordered },
       areas = { johto = ordered, kanto = {}, unknown = {} },
+      typeOptionOrder = typeOptionOrder,
+      shapeOptionOrder = shapeOptionOrder,
     },
     sliderSteps = sliderSteps,
     areaGeometry = {
@@ -139,6 +151,8 @@ local function fixtureCatalog()
         mapKey = "custom.dark-cave",
         name = { bankId = 802, messageId = 66 },
         position = { x = 3, y = 4 },
+        markerShape = 0,
+        markerOffsetPx = { x = 0, y = 0 },
       },
     },
     areaOrder = { "custom.route-29", "custom.dark-cave" },
@@ -346,7 +360,7 @@ function T.separate_data_and_presentation_scopes_publish_and_read_independently(
   local PokedexCacheWriter, PokedexCache, DerivedAssetContract = requireProduction()
   Assert.deepEqual(
     DerivedAssetContract.pokedex,
-    { cacheFormat = "pokedex-cache-v1", catalogSchema = "g4-pokedex-catalog-v1", schema = "g4-pokedex-assets-v2" },
+    { cacheFormat = "pokedex-cache-v1", catalogSchema = "g4-pokedex-catalog-v2", schema = "g4-pokedex-assets-v2" },
     "the contract names the exact pokedex family identities"
   )
   Assert.equal(PokedexCache.dir(), "data/generated/pokedex", "the pokedex data directory is stable")
@@ -396,7 +410,7 @@ function T.separate_data_and_presentation_scopes_publish_and_read_independently(
   )
   Assert.equal(
     PokedexCache.loadCatalog(cacheFs).schema,
-    "g4-pokedex-catalog-v1",
+    "g4-pokedex-catalog-v2",
     "the loaded catalog keeps its schema identity"
   )
   Assert.equal(
@@ -530,6 +544,158 @@ function T.page_backgrounds_reject_non_native_layers_and_empty_palette_groups()
   Assert.isNil(
     PokedexAssetSchema.validateManifest(badCell, catalog),
     "a page referencing an unknown cell must not validate"
+  )
+end
+
+-- Source editor orders transcribed from the original search declaration
+-- sequence, with the unrestricted choice last in both lists.
+local SOURCE_TYPE_OPTION_ORDER = {
+  "normal",
+  "fighting",
+  "flying",
+  "poison",
+  "ground",
+  "rock",
+  "bug",
+  "ghost",
+  "steel",
+  "fire",
+  "water",
+  "grass",
+  "electric",
+  "psychic",
+  "ice",
+  "dragon",
+  "dark",
+  "unrestricted",
+}
+local SOURCE_SHAPE_OPTION_ORDER = {
+  "quadruped",
+  "bipedal without tail",
+  "bipedal with tail",
+  "serpentine",
+  "multiple wings",
+  "two wings",
+  "insectoid",
+  "head/torso",
+  "head/arms",
+  "head/legs",
+  "tentacles",
+  "fins",
+  "head only",
+  "multiple bodies",
+  "unrestricted",
+}
+
+local function secondRevisionCatalog()
+  local catalog = fixtureCatalog()
+  catalog.schema = "g4-pokedex-catalog-v2"
+  catalog.searchText.measureTemplates = { height = 175, weight = 38 }
+  catalog.criteria.typeOptionOrder = SOURCE_TYPE_OPTION_ORDER
+  catalog.criteria.shapeOptionOrder = SOURCE_SHAPE_OPTION_ORDER
+  local dungeon = assert(catalog.areaGeometry["custom.dark-cave"], "the fixture dungeon resolves")
+  dungeon.markerShape = 0
+  dungeon.markerOffsetPx = { x = 0, y = 0 }
+  return catalog
+end
+
+function T.versioned_catalog_identity_names_the_second_revision()
+  local _, PokedexCache, DerivedAssetContract = requireProduction()
+  Assert.deepEqual(
+    DerivedAssetContract.pokedex,
+    { cacheFormat = "pokedex-cache-v1", catalogSchema = "g4-pokedex-catalog-v2", schema = "g4-pokedex-assets-v2" },
+    "only the catalog schema advances to the second revision"
+  )
+  Assert.equal(
+    PokedexCache.CATALOG_SCHEMA,
+    "g4-pokedex-catalog-v2",
+    "the cache owner publishes under the second revision"
+  )
+  Assert.equal(
+    DerivedAssetContract.pokedex.cacheFormat,
+    "pokedex-cache-v1",
+    "the cache format stays on its existing identity"
+  )
+  Assert.equal(
+    DerivedAssetContract.pokedex.schema,
+    "g4-pokedex-assets-v2",
+    "the presentation schema stays on its existing identity"
+  )
+end
+
+function T.strict_catalog_accepts_only_complete_second_revision_payloads()
+  local PokedexAssetSchema = assert(require("libs.assets.src.PokedexAssetSchema"))
+  local valid = secondRevisionCatalog()
+  Assert.equal(#valid.sliderSteps, 153, "the strict payload keeps every physical slider row")
+  Assert.notNil(
+    PokedexAssetSchema.validateCatalog(valid, nil),
+    "a complete second-revision catalog validates"
+  )
+  local stale = secondRevisionCatalog()
+  stale.schema = "g4-pokedex-catalog-v1"
+  Assert.isNil(
+    PokedexAssetSchema.validateCatalog(stale, nil),
+    "a stale first-revision catalog must not validate"
+  )
+  local missingTemplates = secondRevisionCatalog()
+  missingTemplates.searchText.measureTemplates = nil
+  Assert.isNil(
+    PokedexAssetSchema.validateCatalog(missingTemplates, nil),
+    "a catalog without measurement templates must not validate"
+  )
+  local swappedTemplates = secondRevisionCatalog()
+  swappedTemplates.searchText.measureTemplates = { height = 38, weight = 175 }
+  Assert.isNil(
+    PokedexAssetSchema.validateCatalog(swappedTemplates, nil),
+    "a catalog with swapped measurement templates must not validate"
+  )
+  local reordered = secondRevisionCatalog()
+  reordered.criteria.typeOptionOrder = { "fighting", "normal" }
+  for index = 3, 18 do
+    reordered.criteria.typeOptionOrder[index] = SOURCE_TYPE_OPTION_ORDER[index]
+  end
+  Assert.isNil(
+    PokedexAssetSchema.validateCatalog(reordered, nil),
+    "a reordered type option array must not validate"
+  )
+  local duplicated = secondRevisionCatalog()
+  duplicated.criteria.typeOptionOrder = { "normal" }
+  for _ = 2, 18 do
+    duplicated.criteria.typeOptionOrder[#duplicated.criteria.typeOptionOrder + 1] = "normal"
+  end
+  Assert.isNil(
+    PokedexAssetSchema.validateCatalog(duplicated, nil),
+    "a duplicated type option array must not validate"
+  )
+  local missingOptions = secondRevisionCatalog()
+  missingOptions.criteria.shapeOptionOrder = nil
+  Assert.isNil(
+    PokedexAssetSchema.validateCatalog(missingOptions, nil),
+    "a catalog without shape option order must not validate"
+  )
+  local fractionalShape = secondRevisionCatalog()
+  fractionalShape.areaGeometry["custom.dark-cave"].markerShape = 6.5
+  Assert.isNil(
+    PokedexAssetSchema.validateCatalog(fractionalShape, nil),
+    "a fractional marker shape must not validate"
+  )
+  local outOfRangeShape = secondRevisionCatalog()
+  outOfRangeShape.areaGeometry["custom.dark-cave"].markerShape = 12
+  Assert.isNil(
+    PokedexAssetSchema.validateCatalog(outOfRangeShape, nil),
+    "an out-of-range marker shape must not validate"
+  )
+  local fractionalOffset = secondRevisionCatalog()
+  fractionalOffset.areaGeometry["custom.dark-cave"].markerOffsetPx = { x = 0.5, y = 0 }
+  Assert.isNil(
+    PokedexAssetSchema.validateCatalog(fractionalOffset, nil),
+    "a fractional marker offset must not validate"
+  )
+  local missingMarker = secondRevisionCatalog()
+  missingMarker.areaGeometry["custom.dark-cave"].markerShape = nil
+  Assert.isNil(
+    PokedexAssetSchema.validateCatalog(missingMarker, nil),
+    "a dungeon without a marker shape must not validate"
   )
 end
 

@@ -512,12 +512,32 @@ local function _compile(romFs, versionId, monCatalog, sink)
     local baseOffset = (id - 1) * 4 + 1
     local x = byteAt(dungeonGeometry, baseOffset)
     local y = byteAt(dungeonGeometry, baseOffset + 1)
+    local symbol = areaMapSymbols.dungeon[id]
+    local nativeMapId = nil
+    if symbol ~= nil then
+      nativeMapId = MapCatalog.idForSymbol(symbol)
+    end
+    local shape, offsetX, offsetY = 0, 0, 0
+    if
+      nativeMapId == 0x7C
+      or nativeMapId == 0xB2
+      or nativeMapId == 0xB3
+      or nativeMapId == 0x71
+      or nativeMapId == 0x13B
+      or (nativeMapId ~= nil and nativeMapId >= 0x1EA and nativeMapId <= 0x1EC)
+    then
+      shape, offsetY = 6, 4
+    elseif nativeMapId == 0x60 or nativeMapId == 0x1E7 then
+      offsetX, offsetY = 4, 4
+    end
     areaGeometry[dungeonKey(id)] = {
       kind = "dungeon",
       region = x < 22 and "johto" or "kanto",
       mapKey = dungeonKey(id),
       name = resolveAreaName("dungeon", id, dungeonKey(id)),
       position = { x = x, y = y },
+      markerShape = shape,
+      markerOffsetPx = { x = offsetX, y = offsetY },
     }
   end
 
@@ -932,6 +952,18 @@ local function _compile(romFs, versionId, monCatalog, sink)
     }
   end
 
+  -- The generated criterion option order. Uses copies, not shared config mutation.
+  local typeOptionOrder = {}
+  for index, name in ipairs(PokedexSources.typeOrder) do
+    typeOptionOrder[index] = name
+  end
+  typeOptionOrder[#typeOptionOrder + 1] = "unrestricted"
+  local shapeOptionOrder = {}
+  for index, name in ipairs(PokedexSources.shapeOrder) do
+    shapeOptionOrder[index] = name
+  end
+  shapeOptionOrder[#shapeOptionOrder + 1] = "unrestricted"
+
   local catalog = {
     schema = PokedexCache.CATALOG_SCHEMA,
     versionId = versionId,
@@ -941,7 +973,14 @@ local function _compile(romFs, versionId, monCatalog, sink)
     completionSets = completionSets,
     sortOrders = { alphabetical = alphabetical },
     measurementProfiles = measurementProfiles,
-    criteria = { letters = letters, types = types, shapes = shapeLists, areas = areas },
+    criteria = {
+      letters = letters,
+      types = types,
+      shapes = shapeLists,
+      areas = areas,
+      typeOptionOrder = typeOptionOrder,
+      shapeOptionOrder = shapeOptionOrder,
+    },
     sliderSteps = sliderSteps,
     areaGeometry = areaGeometry,
     areaOrder = areaOrder,

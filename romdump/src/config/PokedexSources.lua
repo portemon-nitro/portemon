@@ -613,6 +613,10 @@ function PokedexSources.searchText()
   for code = string.byte("A"), string.byte("Z") do
     letters[string.char(code)] = 68 + (code - string.byte("A") + 1)
   end
+  -- Height/weight summary templates behind the search editor: bank-802
+  -- entries 175 (height, feet and two-digit inches) and 38 (weight,
+  -- integer pounds and tenths), expanded with STRVAR fields 0 and 1.
+  local measureTemplates = { height = 175, weight = 38 }
   return {
     criteria = { order = 26, letter = 27, type = 28, height = 29, weight = 30, area = 31, shape = 32 },
     orders = { numerical = 41, alphabetical = 42, heaviest = 43, lightest = 44, tallest = 45, shortest = 46 },
@@ -621,6 +625,7 @@ function PokedexSources.searchText()
     areas = { johto = 65, kanto = 66, unknown = 67, unrestricted = 68 },
     buttons = { run = 36, reset = 35, back = 37 },
     editorButtons = { ok = 39, cancel = 40 },
+    measureTemplates = measureTemplates,
     timeBase = 129,
     returnCancel = 173,
     returnAction = 174,

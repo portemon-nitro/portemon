@@ -9,8 +9,10 @@
 local Assert = require("tests.support.Assert")
 local Narc = require("libs.nds.src.nitro.Narc")
 local NarcBuilder = require("tests.support.NarcBuilder")
+local MapCatalog = require("romdump.src.digest.map.MapCatalog")
 local MonSources = require("romdump.src.config.MonSources")
 local MonCache = require("libs.assets.src.MonCache")
+local PokedexSources = require("romdump.src.config.PokedexSources")
 
 local T = {}
 
@@ -359,9 +361,38 @@ local function fixtureRomFs(overrides)
   }
 end
 
-local function compileFixture(overrides)
+local function compileFixture(overrides, versionId)
   local PokedexCatalogCompiler = requireCompiler()
-  return PokedexCatalogCompiler.compile(fixtureRomFs(overrides), "heartgold", fixtureMonCatalog())
+  return PokedexCatalogCompiler.compile(fixtureRomFs(overrides), versionId or "heartgold", fixtureMonCatalog())
+end
+
+-- Native dungeon marker classes transcribed from the original area-sprite
+-- cases: the narrow-marker maps keep shape 6 with a (0, 4) shift, the
+-- diagonally shifted maps keep shape 0 with a (4, 4) shift, and every
+-- other map (including areas with no retail map) keeps zeros.
+local NARROW_MARKER_MAPS = {
+  [0x7C] = true,
+  [0xB2] = true,
+  [0xB3] = true,
+  [0x71] = true,
+  [0x13B] = true,
+  [0x1EA] = true,
+  [0x1EB] = true,
+  [0x1EC] = true,
+}
+local SHIFTED_MARKER_MAPS = { [0x60] = true, [0x1E7] = true }
+
+local function expectedMarker(nativeMapId)
+  if nativeMapId == nil then
+    return 0, { x = 0, y = 0 }
+  end
+  if NARROW_MARKER_MAPS[nativeMapId] then
+    return 6, { x = 0, y = 4 }
+  end
+  if SHIFTED_MARKER_MAPS[nativeMapId] then
+    return 0, { x = 4, y = 4 }
+  end
+  return 0, { x = 0, y = 0 }
 end
 
 function T.source_order_survives_without_host_resorting()
@@ -574,6 +605,57 @@ function T.johto_inverse_hole_fails_before_publication()
   )
   Assert.isNil(catalog, "a johto inverse with a hole must not compile")
   Assert.notNil(err, "a johto inverse hole must carry an error")
+end
+
+function T.compiled_catalog_projects_source_measurement_templates_with_full_slider_table()
+  for _, versionId in ipairs({ "heartgold", "soulsilver" }) do
+    local catalog = assert(compileFixture(nil, versionId))
+    Assert.deepEqual(
+      catalog.searchText.measureTemplates,
+      { height = 175, weight = 38 },
+      versionId .. " projects the source height/weight message templates"
+    )
+    Assert.equal(
+      catalog.textBindings.ui.bankId,
+      802,
+      versionId .. " keeps the templates under the existing UI bank"
+    )
+    Assert.equal(#catalog.sliderSteps, 153, versionId .. " keeps every physical slider row")
+    Assert.deepEqual(
+      catalog.sliderSteps[153],
+      { heightDm = 999, weightHg = 9999 },
+      versionId .. " keeps the terminal slider sentinel"
+    )
+  end
+end
+
+function T.dungeon_records_carry_source_marker_shapes_and_offsets_without_shifting_positions()
+  local symbols = PokedexSources.areaMapSymbols().dungeon
+  for _, versionId in ipairs({ "heartgold", "soulsilver" }) do
+    local catalog = assert(compileFixture(nil, versionId))
+    for id = 1, 26 do
+      local key = "dex-dungeon-" .. id
+      local record = assert(catalog.areaGeometry[key], versionId .. " publishes " .. key)
+      Assert.equal(record.kind, "dungeon", versionId .. " " .. key .. " stays a dungeon record")
+      Assert.deepEqual(
+        record.position,
+        { x = id - 1, y = id },
+        versionId .. " " .. key .. " keeps its unshifted source position"
+      )
+      local nativeMapId = nil
+      if symbols[id] ~= nil then
+        nativeMapId = MapCatalog.idForSymbol(symbols[id])
+        Assert.notNil(nativeMapId, versionId .. " " .. key .. " resolves its retail map " .. symbols[id])
+      end
+      local shape, offset = expectedMarker(nativeMapId)
+      Assert.equal(record.markerShape, shape, versionId .. " " .. key .. " carries its source marker shape")
+      Assert.deepEqual(
+        record.markerOffsetPx,
+        offset,
+        versionId .. " " .. key .. " carries its source marker offset"
+      )
+    end
+  end
 end
 
 return { tests = T }
