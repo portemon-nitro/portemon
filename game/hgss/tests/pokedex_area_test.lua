@@ -327,4 +327,144 @@ function T.player_and_habitat_thresholds_stay_distinct()
   kanto:dispose()
 end
 
+-- Dungeon markers carry their own silhouette and pixel shift: the tall
+-- hollow paints narrow and tall with a vertical nudge, the shifted hall
+-- paints square with both nudges, the plain burrow paints square with no
+-- nudge, and the kanto shaft subtracts twenty-two blocks before its own
+-- nudge. The outdoor road keeps its existing shape and center.
+function T.dungeon_markers_apply_their_own_shape_and_pixel_shift_in_both_regions()
+  local PokedexController = requirePresent("dungeon marker shape and position")
+  local monCatalog = PokedexDexFixture.makeCatalog()
+  local catalog = PokedexDexFixture.buildPokedexCatalog()
+  catalog.areaGeometry["custom.tall-hollow"] = {
+    kind = "dungeon",
+    region = "johto",
+    mapKey = "custom.tall-hollow",
+    name = { bankId = 1, messageId = 11 },
+    position = { x = 11, y = 6 },
+    markerShape = 6,
+    markerOffsetPx = { x = 0, y = 4 },
+  }
+  catalog.areaGeometry["custom.shifted-hall"] = {
+    kind = "dungeon",
+    region = "johto",
+    mapKey = "custom.shifted-hall",
+    name = { bankId = 1, messageId = 12 },
+    position = { x = 13, y = 6 },
+    markerShape = 0,
+    markerOffsetPx = { x = 4, y = 4 },
+  }
+  catalog.areaGeometry["custom.plain-burrow"] = {
+    kind = "dungeon",
+    region = "johto",
+    mapKey = "custom.plain-burrow",
+    name = { bankId = 1, messageId = 13 },
+    position = { x = 15, y = 6 },
+    markerShape = 0,
+    markerOffsetPx = { x = 0, y = 0 },
+  }
+  catalog.areaGeometry["custom.kanto-shaft"] = {
+    kind = "dungeon",
+    region = "kanto",
+    mapKey = "custom.kanto-shaft",
+    name = { bankId = 1, messageId = 14 },
+    position = { x = 30, y = 7 },
+    markerShape = 6,
+    markerOffsetPx = { x = 0, y = 4 },
+  }
+  catalog.areaGeometry["custom.plain-road"] = {
+    kind = "outdoor",
+    region = "johto",
+    mapKey = "custom.plain-road",
+    name = { bankId = 1, messageId = 15 },
+    rect = { x = 4, y = 2, width = 4, height = 2 },
+    markerMask = {},
+  }
+  catalog.areaOrder = {
+    "custom.plain-road",
+    "custom.tall-hollow",
+    "custom.shifted-hall",
+    "custom.plain-burrow",
+    "custom.kanto-shaft",
+  }
+  catalog.habitats["EEVEE"] = {
+    morning = {
+      outdoor = { "custom.plain-road" },
+      dungeon = { "custom.tall-hollow", "custom.shifted-hall", "custom.plain-burrow" },
+    },
+    day = { outdoor = {}, dungeon = {} },
+    night = { outdoor = {}, dungeon = {} },
+    other = { outdoor = {}, dungeon = { "custom.kanto-shaft" } },
+  }
+  local owner = enabledOwner(monCatalog, catalog, true)
+  catch(owner, monCatalog, { species = "EEVEE", personality = 31 })
+  local controller = newBrowser(PokedexController, owner, monCatalog, catalog)
+  openArea(controller, "EEVEE")
+  local area = controller:view().area
+  local keys = {}
+  for index = 2, #area.rows do
+    keys[#keys + 1] = area.rows[index].mapKey
+  end
+  Assert.deepEqual(keys, {
+    "custom.plain-road",
+    "custom.tall-hollow",
+    "custom.shifted-hall",
+    "custom.plain-burrow",
+    "custom.kanto-shaft",
+  }, "the fixture rows order the road, the three johto hollows and the other-season shaft")
+  local expectedJohto = {
+    { x = 112, y = 64 },
+    { x = 156, y = 96 },
+    { x = 176, y = 96 },
+    { x = 188, y = 92 },
+    { x = 308, y = 104 },
+  }
+  for index, want in ipairs(expectedJohto) do
+    local marker = area.markers[index]
+    Assert.notNil(marker, "every fixture row projects its marker")
+    Assert.equal(marker.position.x, want.x, "row marker " .. index .. " keeps its horizontal pixel center")
+    Assert.equal(marker.position.y, want.y, "row marker " .. index .. " keeps its vertical pixel center")
+  end
+  local objects = controller:view().objects
+  Assert.notNil(objects, "the area page projects its sprite intents")
+  local markers = {}
+  for _, intent in ipairs(assert(objects, "the area carries its intents")) do
+    if intent.subject == "marker" then
+      markers[#markers + 1] = intent
+    end
+  end
+  Assert.equal(#markers, 5, "every fixture row paints its marker")
+  local choices = {}
+  for _, marker in ipairs(markers) do
+    choices[#choices + 1] = marker.choice
+    Assert.equal(marker.pane, "information", "markers paint on the upper pane")
+  end
+  Assert.deepEqual(choices, { "shape3", "shape6", "shape0", "shape0", "shape6" }, "each marker paints its own silhouette")
+  for index, want in ipairs(expectedJohto) do
+    Assert.equal(markers[index].x, want.x, "painted marker " .. index .. " matches its projected column")
+    Assert.equal(markers[index].y, want.y, "painted marker " .. index .. " matches its projected row")
+  end
+  tick(controller, { { type = "r" } })
+  idle(controller, 60)
+  local kanto = controller:view().area
+  Assert.equal(kanto.region, "kanto", "the region selector travels")
+  Assert.equal(#kanto.rows, 2, "the kanto leg keeps the show-everything row and the other-season shaft")
+  Assert.equal(kanto.rows[2].mapKey, "custom.kanto-shaft", "the kanto leg lists the shaft")
+  Assert.equal(kanto.markers[1].position.x, 132, "the kanto shaft subtracts twenty-two blocks before its own shift")
+  Assert.equal(kanto.markers[1].position.y, 104, "the kanto shaft keeps its vertical shift")
+  local kantoObjects = controller:view().objects
+  Assert.notNil(kantoObjects, "the kanto leg projects its sprite intents")
+  local kantoMarkers = {}
+  for _, intent in ipairs(assert(kantoObjects, "the kanto leg carries its intents")) do
+    if intent.subject == "marker" then
+      kantoMarkers[#kantoMarkers + 1] = intent
+    end
+  end
+  Assert.equal(#kantoMarkers, 1, "the kanto leg paints only the shaft")
+  Assert.equal(kantoMarkers[1].choice, "shape6", "the kanto shaft keeps its tall silhouette")
+  Assert.equal(kantoMarkers[1].x, 132, "the painted kanto shaft matches its projected column")
+  Assert.equal(kantoMarkers[1].y, 104, "the painted kanto shaft matches its projected row")
+  controller:dispose()
+end
+
 return { tests = T }

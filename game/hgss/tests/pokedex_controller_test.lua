@@ -2068,4 +2068,88 @@ function T.slider_display_leaves_search_membership_and_failures_closed()
   bad:dispose()
 end
 
+-- The trainer pin agrees with the painted dungeon marker: a pin inside
+-- the shifted tall silhouette reports inside even though the old
+-- unshifted square would miss it, and a pin past the tall edge reports
+-- outside. The outdoor road keeps its existing silhouette and center.
+function T.trainer_inside_state_follows_the_painted_dungeon_marker()
+  local PokedexController = requirePresent("trainer within-marker classification")
+  local monCatalog, catalog = catalogs()
+  catalog.areaGeometry["custom.tall-hollow"] = {
+    kind = "dungeon",
+    region = "johto",
+    mapKey = "custom.tall-hollow",
+    name = { bankId = 1, messageId = 11 },
+    position = { x = 11, y = 6 },
+    markerShape = 6,
+    markerOffsetPx = { x = 0, y = 4 },
+  }
+  catalog.areaGeometry["custom.plain-road"] = {
+    kind = "outdoor",
+    region = "johto",
+    mapKey = "custom.plain-road",
+    name = { bankId = 1, messageId = 12 },
+    rect = { x = 4, y = 2, width = 4, height = 2 },
+    markerMask = {},
+  }
+  catalog.areaOrder = { "custom.plain-road", "custom.tall-hollow" }
+  catalog.habitats["EEVEE"] = {
+    morning = { outdoor = { "custom.plain-road" }, dungeon = { "custom.tall-hollow" } },
+    day = { outdoor = {}, dungeon = {} },
+    night = { outdoor = {}, dungeon = {} },
+    other = { outdoor = {}, dungeon = {} },
+  }
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
+  observe(owner, monCatalog, { species = "EEVEE", personality = 31 }, "caught")
+  local inside = PokedexController.new(baseArgs(owner, monCatalog, catalog, { playerPosition = { mapX = 11, mapY = 7 } }))
+  openGrid(inside)
+  openEntry(inside, "EEVEE")
+  local view = inside:view()
+  local markers = {}
+  local foundPlayer = nil
+  for _, intent in ipairs(assert(view.objects, "the area carries its intents")) do
+    if intent.subject == "marker" then
+      checkIntentShape(intent)
+      markers[#markers + 1] = intent
+    elseif intent.subject == "player" then
+      foundPlayer = intent
+    end
+  end
+  Assert.equal(#markers, 2, "the road and the hollow both paint")
+  Assert.equal(markers[1].choice, "shape3", "the road keeps its wide silhouette")
+  Assert.equal(markers[1].x, 112, "the road keeps its column")
+  Assert.equal(markers[1].y, 64, "the road keeps its row")
+  Assert.equal(markers[2].choice, "shape6", "the hollow paints its tall silhouette")
+  Assert.equal(markers[2].x, 156, "the hollow paints its shifted column")
+  Assert.equal(markers[2].y, 96, "the hollow paints its shifted row")
+  local player = assert(foundPlayer, "the area projects its trainer pin")
+  checkIntentShape(player)
+  Assert.equal(player.choice, "male-here", "the pin inside the shifted tall marker reports inside")
+  Assert.equal(player.x, 156, "the inside pin keeps its column")
+  Assert.equal(player.y, 100, "the inside pin keeps its row")
+  inside:dispose()
+  local outside = PokedexController.new(baseArgs(owner, monCatalog, catalog, { playerPosition = { mapX = 11, mapY = 8 } }))
+  openGrid(outside)
+  openEntry(outside, "EEVEE")
+  local farView = outside:view()
+  local foundFarMarker = nil
+  local foundFarPlayer = nil
+  for _, intent in ipairs(assert(farView.objects, "the far area carries its intents")) do
+    if intent.subject == "marker" and intent.instance == 2 then
+      foundFarMarker = intent
+    elseif intent.subject == "player" then
+      foundFarPlayer = intent
+    end
+  end
+  local farMarker = assert(foundFarMarker, "the far page still paints the hollow")
+  Assert.equal(farMarker.choice, "shape6", "the far page keeps the tall silhouette")
+  Assert.equal(farMarker.x, 156, "the far hollow keeps its shifted column")
+  Assert.equal(farMarker.y, 96, "the far hollow keeps its shifted row")
+  local farPlayer = assert(foundFarPlayer, "the far page projects its trainer pin")
+  Assert.equal(farPlayer.choice, "male", "the pin past the tall marker edge reports outside")
+  Assert.equal(farPlayer.x, 156, "the outside pin keeps its column")
+  Assert.equal(farPlayer.y, 108, "the outside pin keeps its row")
+  outside:dispose()
+end
+
 return { tests = T }

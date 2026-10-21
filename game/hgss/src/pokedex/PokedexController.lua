@@ -2891,7 +2891,19 @@ end
 ---@return integer 0-based native marker shape behind the row
 function PokedexController:_areaMarkerShape(mapKey, kind)
   if kind == "dungeon" then
-    return 0
+    if type(mapKey) ~= "string" then
+      fail("browser area needs its dungeon map key", {})
+    end
+    local dungeonGeometry = checkTable(self._catalog.areaGeometry, "area geometry")
+    local dungeonGeo = dungeonGeometry[mapKey]
+    if type(dungeonGeo) ~= "table" or dungeonGeo.kind ~= "dungeon" then
+      fail("browser area needs its dungeon geometry", { mapKey = mapKey })
+    end
+    local shape = dungeonGeo.markerShape
+    if type(shape) ~= "number" or shape % 1 ~= 0 or shape < 0 or shape > 11 then
+      fail("browser area needs its dungeon marker shape", { mapKey = mapKey })
+    end
+    return shape --[[@as integer]]
   end
   local geometry = self._catalog.areaGeometry
   if type(geometry) ~= "table" or type(mapKey) ~= "string" then

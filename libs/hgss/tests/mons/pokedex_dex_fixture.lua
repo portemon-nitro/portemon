@@ -408,6 +408,8 @@ function PokedexDexFixture.buildPokedexCatalog()
         mapKey = "custom.dark-cave",
         name = { bankId = 802, messageId = 66 },
         position = { x = 3, y = 4 },
+        markerShape = 0,
+        markerOffsetPx = { x = 0, y = 0 },
       },
     },
     areaOrder = { "custom.route-29", "custom.dark-cave" },

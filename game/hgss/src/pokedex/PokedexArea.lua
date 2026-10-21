@@ -323,7 +323,14 @@ function PokedexArea:_markerFor(mapKey)
   local position
   if geo.kind == "dungeon" then
     local at = checkTable(geo.position, "the dungeon placement")
-    position = { x = 8 * (at.x - regionOffset) + 68, y = 8 * at.y + 44 }
+    local offset = checkTable(geo.markerOffsetPx, "the dungeon marker pixel offset")
+    if type(offset.x) ~= "number" or offset.x % 1 ~= 0 then
+      fail("dungeon x offset is an integer", {})
+    end
+    if type(offset.y) ~= "number" or offset.y % 1 ~= 0 then
+      fail("dungeon y offset is an integer", {})
+    end
+    position = { x = 8 * (at.x - regionOffset) + 68 + offset.x, y = 8 * at.y + 44 + offset.y }
   else
     local rect = checkTable(geo.rect, "the outdoor rect")
     position = {
