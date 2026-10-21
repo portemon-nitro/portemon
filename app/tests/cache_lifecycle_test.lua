@@ -57,6 +57,19 @@ end
 local T = {}
 
 local VERSION = "heartgold"
+local FakeStartupTitleState = require("tests.support.FakeStartupTitleState")
+
+-- This suite owns App and provisioning transitions, while startup-title timing
+-- and asset readiness have their own focused state tests. Model that state at
+-- the App boundary and keep bootstrap readiness in the selected host.
+local function stubStartupTitleHandoff()
+  local StartupTitleState = require("app.src.launcher.StartupTitleState")
+  local originalNew = StartupTitleState.new
+  StartupTitleState.new = FakeStartupTitleState.new
+  return function()
+    StartupTitleState.new = originalNew
+  end
+end
 
 local function record(saveId, overrides)
   local value = {
@@ -363,6 +376,7 @@ local function withAppStubs(fn)
   end
   context.cannedGeneration = "test-generation"
   local completionOriginals = stubFirstPlayCompletion(context)
+  local restoreStartupTitle = stubStartupTitleHandoff()
   love.graphics.getDimensions = function()
     return 640, 480
   end
@@ -392,6 +406,7 @@ local function withAppStubs(fn)
     return menu
   end
   local ok, err = pcall(fn, App, context)
+  restoreStartupTitle()
   HgssGame.new = original.gameNew
   MainMenuComposition.new = original.menuNew
   RomImporter.isReady = original.isReady
@@ -416,7 +431,9 @@ function T.menu_reselection_retires_the_old_epoch_on_the_shared_process_service(
     local service = assert(App.service, "the application owns one process cache service")
     App._bootMainMenu({ VERSION })
     App.update(1 / 60)
+    App.update(1 / 60)
     App._bootMainMenu({ VERSION })
+    App.update(1 / 60)
     App.update(1 / 60)
     Assert.equal(App.service, service, "a switch reuses the service instead of spawning a second")
     Assert.deepEqual(context.epochs, { 1, 2 }, "returning to a game mints a new epoch even when the generation matches")
@@ -1138,6 +1155,7 @@ local function withLiveApp(context, fn)
   -- currency: stub the durable answers so no real file is read or
   -- written and ordinary selections keep their bootstrap paths.
   local completionOriginals = stubFirstPlayCompletion({})
+  local restoreStartupTitle = stubStartupTitleHandoff()
   HgssGame.new = function(options)
     harness.launches[#harness.launches + 1] = options
     local game = { disposed = 0 }
@@ -1189,6 +1207,7 @@ local function withLiveApp(context, fn)
     }, { __index = realLove })
   )
   local ok, err = pcall(fn, App, harness)
+  restoreStartupTitle()
   rawset(_G, "love", realLove)
   restoreFirstPlayCompletion(completionOriginals)
   HgssGame.new = original.gameNew
@@ -1325,11 +1344,7 @@ function T.same_version_reselection_reuses_one_service_with_fresh_interest(conte
     attachWorker(harness)
     pumpApp(App, harness, 4)
     Assert.equal(#harness.launches, 0, "a cold boot-menu entry must wait for preparation, not launch directly")
-    Assert.equal(
-      getmetatable(App.state).__index,
-      CachePreparationState,
-      "a cold boot-menu entry follows the same selection flow"
-    )
+    Assert.equal(App.state.kind, "startup-title", "a cold boot-menu entry waits in the title handoff")
     local pool = controllerPool(harness)
     local firstEpoch = assert(App.epoch, "selection must mint an epoch")
     local firstHost = assert(App.provisioner, "selection must attach a provisioner"):gameHost()
@@ -1505,7 +1520,9 @@ function T.selection_switch_to_another_version_reuses_the_service_with_a_fresh_e
     local service = assert(App.service, "the application owns one process cache service")
     App._selectVersion(VERSION)
     App.update(1 / 60)
+    App.update(1 / 60)
     App._selectVersion("soulsilver")
+    App.update(1 / 60)
     App.update(1 / 60)
     Assert.equal(App.service, service, "a switch reuses the service instead of spawning a second")
     Assert.deepEqual(context.epochs, { 1, 2 }, "switching versions mints a new epoch on the shared service")
@@ -1690,12 +1707,7 @@ function T.selection_waits_behind_source_closure_then_selects_once()
     -- bootstrap: the barrier acknowledgement alone must not launch.
     App.update(1 / 60)
     local survivorState = assert(App.state, "a cold surviving selection still waits visibly")
-    Assert.equal(
-      getmetatable(survivorState).__index,
-      CachePreparationState,
-      "a cold surviving selection still waits on bootstrap, never launches"
-    )
-    Assert.equal(survivorState.kind, "bootstrap", "the surviving selection waits on bootstrap readiness")
+    Assert.equal(survivorState.kind, "startup-title", "the surviving selection enters the title handoff")
   end)
 end
 
@@ -2037,6 +2049,7 @@ local function withBootGateApp(options, fn)
     firstPlayPublished = {},
   }
   local completionOriginals = stubFirstPlayCompletion(context)
+  local restoreStartupTitle = stubStartupTitleHandoff()
   context.firstPlayCurrent = options.firstPlayCurrent
   if context.firstPlayCurrent == nil then
     context.firstPlayCurrent = true
@@ -2116,6 +2129,7 @@ local function withBootGateApp(options, fn)
     context.prints[#context.prints + 1] = tostring(text)
   end
   local ok, err = pcall(fn, App, context)
+  restoreStartupTitle()
   HgssGame.new = original.gameNew
   HgssGame.newFirstPlayCachePreparation = original.preparationNew
   MainMenuComposition.new = original.menuNew
@@ -2319,10 +2333,10 @@ function T.incomplete_cache_with_a_ready_first_play_closure_stays_in_the_boot_wa
       local second = assert(App.epoch, "reselection must borrow a fresh epoch")
       Assert.isTrue(second > epoch, "reselection mints a fresh epoch")
       context.service:injectReply({ op = "boot-source-result", epoch = second, state = "ready" })
-      pumpBootGate(App, 2)
+      pumpBootGate(App, 3)
       local bootstrapId = assert(
         milestoneRequestId(context, second, "bootstrap"),
-        "readiness continues into the ordinary bootstrap check"
+        "the title requests ordinary bootstrap readiness"
       )
       context.service:injectReply({ op = "request-result", epoch = second, requestId = bootstrapId, state = "ready" })
       pumpBootGate(App, 2)
@@ -2339,10 +2353,9 @@ function T.incomplete_cache_with_a_ready_first_play_closure_stays_in_the_boot_wa
 end
 
 -- A fresh ephemeral import admits first play exactly once through one
--- epoch: the validated offer waits behind selection and ahead of the gate,
--- readiness continues into the bounded closure and the menu authorizes the
--- sweep once, gameplay never raises a source prompt, a restart without the
--- file blocks again, and a current attestation boots clean without the ROM.
+-- epoch: the validated offer precedes the source gate, title warmup runs
+-- beside bootstrap readiness, and the menu remains usable while that
+-- optional work is pending.
 function T.fresh_import_offer_reaches_the_controller_before_the_boot_check_on_one_epoch()
   withBootGateApp({ firstPlayCurrent = false, firstPlayStored = false }, function(App, context)
     local GameVersion = require("romdump.src.source.GameVersion")
@@ -2402,15 +2415,23 @@ function T.fresh_import_offer_reaches_the_controller_before_the_boot_check_on_on
       Assert.equal(waiting.kind, "boot-source", "a fresh import waits on its source gate before first play")
       Assert.equal(context.preparations, 0, "first-play preparation never starts before the gate answers")
       context.service:injectReply({ op = "boot-source-result", epoch = epoch, state = "ready" })
-      pumpBootGate(App, 2)
+      pumpBootGate(App, 3)
       Assert.equal(App.epoch, epoch, "readiness reuses the selected epoch")
       Assert.equal(context.preparations, 1, "readiness constructs first-play preparation exactly once")
-      local closure = assert(App.state, "readiness continues visibly")
-      Assert.equal(closure.kind, "first-play", "readiness continues into the bounded closure")
-      context.prepScript.ready = true
+      local title = assert(App.state, "readiness continues visibly")
+      Assert.equal(title.kind, "startup-title", "readiness continues into the title handoff")
+      Assert.equal(#context.menus, 0, "bootstrap remains the menu admission milestone")
+      local bootstrapId = assert(
+        milestoneRequestId(context, epoch, "bootstrap"),
+        "the title requests bootstrap while first-play warmup remains optional"
+      )
+      context.service:injectReply({ op = "request-result", epoch = epoch, requestId = bootstrapId, state = "ready" })
       pumpBootGate(App, 2)
-      Assert.equal(#context.menus, 1, "the admitted closure installs the menu")
-      Assert.equal(#context.firstPlayPublished, 1, "the admitted closure publishes its completion once")
+      Assert.equal(#context.menus, 1, "bootstrap installs the menu while first-play remains pending")
+      Assert.equal(#context.firstPlayPublished, 0, "pending background work publishes no completion")
+      context.prepScript.ready = true
+      pumpBootGate(App, 1)
+      Assert.equal(#context.firstPlayPublished, 1, "background success publishes its completion once")
       context.menus[1].options.onResult({ kind = "new_game" })
       local game = assert(App.state, "New Game enters retail")
       Assert.equal(#context.games, 1, "the menu routes New Game to exactly one retail entry")
@@ -2442,7 +2463,7 @@ function T.fresh_import_offer_reaches_the_controller_before_the_boot_check_on_on
       App._selectVersion(VERSION)
       local third = assert(App.epoch, "the attested boot must borrow a fresh epoch")
       context.service:injectReply({ op = "boot-source-result", epoch = third, state = "ready" })
-      pumpBootGate(App, 2)
+      pumpBootGate(App, 3)
       local bootstrapId = assert(
         milestoneRequestId(context, third, "bootstrap"),
         "attested readiness continues into the ordinary bootstrap check"
@@ -2583,6 +2604,12 @@ function T.blocked_boot_refuses_a_wrong_version_and_ignores_stale_replies()
       context.service:injectReply({ op = "boot-source-result", epoch = third, state = "ready" })
       context.prepScript.ready = true
       pumpBootGate(App, 3)
+      local bootstrapId = assert(
+        milestoneRequestId(context, third, "bootstrap"),
+        "the matching source reaches the title bootstrap request"
+      )
+      context.service:injectReply({ op = "request-result", epoch = third, requestId = bootstrapId, state = "ready" })
+      pumpBootGate(App, 2)
       Assert.equal(#context.menus, 1, "the matching source resumes preparation into the menu")
       Assert.equal(#context.games, 0, "recovery installs the menu without launching retail by itself")
     end
