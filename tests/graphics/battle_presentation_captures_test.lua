@@ -22,6 +22,7 @@ local FieldWindowRenderer = require("libs.hgss.src.ui.FieldWindowRenderer")
 local Utf8Glyphs = require("libs.assets.src.Utf8Glyphs")
 local GameVersion = require("romdump.src.source.GameVersion")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
+local ItemFixture = require("libs.items.tests.item_fixture")
 local MonCache = require("libs.assets.src.MonCache")
 local MoveIconCache = require("libs.assets.src.MoveIconCache")
 local PngWriter = require("libs.assets.src.PngWriter")
@@ -573,6 +574,9 @@ local function captureScreen(scope, cacheFs, versionId, measurement)
     measureDisplay = function()
       return measurement
     end,
+    -- The battle screen borrows the immutable item catalog so its bag
+    -- child can group stocked items by pocket, exactly like production.
+    itemCatalog = ItemFixture.makeCatalog(),
     assets = services,
     text = text,
     windows = windows,

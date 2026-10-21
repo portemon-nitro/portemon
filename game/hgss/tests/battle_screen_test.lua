@@ -406,6 +406,9 @@ local function openRig(modules, opts)
     measureDisplay = function()
       return rig.measurement
     end,
+    -- The battle screen borrows the immutable item catalog so its bag
+    -- child can group stocked items by pocket, exactly like production.
+    itemCatalog = ItemFixture.makeCatalog(),
     assets = rig.assets,
     text = rig.text,
     windows = rig.windows,

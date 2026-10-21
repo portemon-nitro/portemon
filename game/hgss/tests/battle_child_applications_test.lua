@@ -441,6 +441,145 @@ function T.naming_cancel_reports_once_without_sealing_text()
   child:dispose()
 end
 
+-- Native Bag authority behind the battle barrier: navigation edges wait for
+-- the accepted source tick, an empty-cell tap moves the native focus
+-- without staging, a ball binds its projected foe target, a refused item
+-- never consumes stock, and target cancel restores the resting browse.
+function T.native_bag_focus_and_target_continuation()
+  local catalog = ItemFixture.makeCatalog()
+  local BattleSubflows = require("game.hgss.src.battle.BattleSubflows")
+  local function healingIntent(inventory, actors)
+    return {
+      kind = "bag",
+      purpose = "bag",
+      launchId = "launch-native-bag",
+      requestId = 7,
+      epoch = 3,
+      controller = "player",
+      cancellable = true,
+      request = { requestId = 7, epoch = 3, controller = "player", kind = "action" },
+      options = {
+        requestId = 7,
+        epoch = 3,
+        controller = "player",
+        kind = "action",
+        actors = actors,
+      },
+      party = twoEeveeRoster(),
+      inventory = inventory,
+    }
+  end
+  local function healingActors()
+    return {
+      {
+        combatant = 1,
+        activation = 5,
+        kind = "action",
+        choices = { itemChoice("POTION", 1), itemChoice("POTION", 2) },
+      },
+    }
+  end
+  local flows = BattleSubflows.new({ launchId = "launch-native-bag", itemCatalog = catalog })
+  Assert.isTrue(flows:open(healingIntent({ POTION = 5 }, healingActors())), "the stocked bag opens")
+  local function step(events)
+    flows:update(events)
+    flows:tick()
+  end
+  local function focusId()
+    local view = flows:status().childView
+    Assert.notNil(view, "the open child projects its view")
+    return assert(view.focusId, "the bag projects its focus")
+  end
+  step({ { type = "navigate", direction = "up" } })
+  step({ { type = "navigate", direction = "right" } })
+  step({ { type = "navigate", direction = "down" } })
+  Assert.equal(flows:status().childView.currentPocket, "medicine", "keys reach the serving pocket")
+  Assert.equal(focusId(), "bag:0", "the serving cell owns the opening focus")
+  -- A bare input moves no focus: edges wait for the accepted tick.
+  flows:update({ { type = "navigate", direction = "down" } })
+  Assert.equal(focusId(), "bag:0", "the navigation edge waits for the accepted source tick")
+  flows:tick()
+  Assert.equal(focusId(), "bag:2", "the accepted tick applies the buffered edge once")
+  step({ { type = "navigate", direction = "up" } })
+  Assert.equal(focusId(), "bag:0", "the return edge restores the serving focus")
+  -- Tapping an empty cell moves the native focus without staging.
+  Assert.isTrue(flows:activateControl("bag:1"), "the empty cell tap belongs to the open child")
+  flows:tick()
+  Assert.equal(focusId(), "bag:1", "the tap moves the native focus onto the empty cell")
+  Assert.isNil(flows:takeResult(), "focusing the empty cell stages nothing")
+  Assert.isTrue(flows:activateControl("bag:0"), "the serving cell tap belongs to the open child")
+  flows:tick()
+  Assert.equal(focusId(), "bag:0", "the tap returns the native focus to the serving cell")
+  -- Staging then cancelling the target restores the resting browse.
+  step({ { type = "confirm" } })
+  Assert.isNil(flows:takeResult(), "staging the serving seals no reply")
+  Assert.equal(flows:status().kind, "target", "staging opens target selection")
+  step({ { type = "cancel" } })
+  Assert.equal(flows:status().kind, "bag", "target cancel reactivates the bag")
+  Assert.equal(
+    flows:status().childView.currentPocket,
+    "medicine",
+    "target cancel keeps the resting pocket"
+  )
+  Assert.equal(focusId(), "bag:0", "target cancel keeps the serving focus")
+  Assert.isNil(flows:takeResult(), "target cancel seals no reply")
+  step({ { type = "cancel" } })
+  local cancelled = flows:takeResult()
+  Assert.notNil(cancelled, "bag cancel answers")
+  assert(cancelled ~= nil, "the bag cancel seals")
+  Assert.equal(cancelled.kind, "cancelled", "bag cancel reports its navigation cancellation")
+  flows:dispose()
+  -- A ball binds its single projected foe target immediately.
+  local ballActors = {
+    {
+      combatant = 1,
+      activation = 5,
+      kind = "action",
+      choices = {
+        {
+          id = "item:POKE_BALL:9",
+          role = "item",
+          enabled = true,
+          reason = "refused",
+          display = { item = "POKE_BALL" },
+          choice = {
+            actor = { combatant = 1, activation = 5 },
+            kind = "item",
+            payload = { item = "POKE_BALL", target = { kind = "combatant", combatant = 9 } },
+          },
+        },
+      },
+    },
+  }
+  local thrown = BattleSubflows.new({ launchId = "launch-native-bag", itemCatalog = catalog })
+  Assert.isTrue(thrown:open(healingIntent({ POKE_BALL = 5 }, ballActors)), "the ball bag opens")
+  thrown:update({ { type = "navigate", direction = "up" } })
+  thrown:tick()
+  thrown:update({ { type = "navigate", direction = "right" } })
+  thrown:tick()
+  thrown:update({ { type = "navigate", direction = "right" } })
+  thrown:tick()
+  thrown:update({ { type = "navigate", direction = "down" } })
+  thrown:tick()
+  Assert.equal(
+    thrown:status().childView.currentPocket,
+    "balls",
+    "keys reach the ball pocket"
+  )
+  thrown:update({ { type = "confirm" } })
+  thrown:tick()
+  local ballResult = thrown:takeResult()
+  Assert.notNil(ballResult, "throwing the ball seals its reply")
+  assert(ballResult ~= nil, "the ball reply seals")
+  Assert.equal(ballResult.kind, "choice", "the throw stages a choice")
+  Assert.deepEqual(
+    ballResult.reply.choices[1],
+    ballActors[1].choices[1].choice,
+    "the throw binds its projected foe target"
+  )
+  Assert.isNil(thrown:takeResult(), "the throw reports exactly once")
+  thrown:dispose()
+end
 function T.target_picker_disposes_alone_behind_the_retained_browser()
   local catalog = ItemFixture.makeCatalog()
   local child, openErr = BattleChildApplications.open(bagIntent({ POTION = 5 }), { itemCatalog = catalog })

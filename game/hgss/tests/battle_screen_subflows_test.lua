@@ -2006,4 +2006,98 @@ function T.same_party_child_shares_wording_across_layouts_while_keeping_its_own_
   Assert.isTrue(pairedModal, "the paired child draws its lower-pane modal window")
 end
 
+-- Native focus authority for voluntary and forced party selection: keyboard
+-- edges wait for the accepted source tick instead of moving focus inside
+-- the input call, the accepted tick applies the buffered batch exactly
+-- once, and both keyboard and touch seal exactly the projected reserve
+-- fragment while a forced first Back stays denied.
+function T.native_party_focus_and_fragment_authority()
+  for _, layout in ipairs({ "paired", "compact" }) do
+    local tag = " (" .. layout .. ")"
+    -- Child rows paint from the same canonical row band the session
+    -- hit-tests, offset into the interaction pane per display case.
+    local yBase = layout == "paired" and 200 or 8
+    local rig = openRig({
+      layout = layout,
+      launchId = "launch-native-party-" .. layout,
+      party = {
+        { species = "EEVEE", level = 20, seed = 0x33333333 },
+        { species = "EEVEE", level = 5, seed = 0x44444444, ability = "RUN_AWAY" },
+      },
+      bag = {},
+    })
+    driveToMode(rig, "command")
+    local commandRequest = openScreenRequest(rig)
+    local _, expectedSwitch = projectedReserveSwitch(rig, commandRequest)
+    requireChildOwner("native party focus authority")
+    openPartyFromCommand(rig)
+    -- The lone reserve owns the opening focus through the native picker.
+    Assert.equal(focusedChildRow(drawnInk(rig)), 2, "the native focus starts on the reserve" .. tag)
+    -- A bare input moves no focus: edges wait for the accepted tick.
+    rig.screen:input({ { type = "navigate", direction = "down" } })
+    Assert.equal(
+      focusedChildRow(drawnInk(rig)),
+      2,
+      "the navigation edge waits for the accepted source tick" .. tag
+    )
+    rig.pump(1)
+    Assert.isNil(
+      focusedChildRow(drawnInk(rig)),
+      "the accepted tick applies the buffered edge once" .. tag
+    )
+    rig.screen:input({ { type = "navigate", direction = "up" } })
+    Assert.isNil(
+      focusedChildRow(drawnInk(rig)),
+      "the return edge waits for the accepted source tick" .. tag
+    )
+    rig.pump(1)
+    Assert.equal(
+      focusedChildRow(drawnInk(rig)),
+      2,
+      "the accepted tick restores the reserve focus" .. tag
+    )
+    -- A matched tap on the reserve row seals its projected fragment.
+    local reserveY = yBase + 32 + 1 * 20 + 10
+    rig.screen:input({ { type = "pointer_down", pointerId = "tap:reserve", x = 128, y = reserveY } })
+    rig.screen:input({ { type = "pointer_up", pointerId = "tap:reserve", x = 128, y = reserveY } })
+    rig.pump(1)
+    Assert.equal(#rig.submits, 1, "the tap seals exactly one reply" .. tag)
+    Assert.deepEqual(rig.submits[1].choices[1], expectedSwitch, "the tap names the stable reserve" .. tag)
+    rig.screen:dispose()
+    rig.battle:dispose()
+    -- Forced replacement denies the first Back and seals the reserve.
+    local forced = openRig({
+      layout = layout,
+      launchId = "launch-native-forced-" .. layout,
+      party = {
+        { species = "EEVEE", level = 5, seed = 0x55555555 },
+        { species = "EEVEE", level = 5, seed = 0x66666666 },
+      },
+      bag = {},
+      foe = { species = "EEVEE", level = 30, seed = 0x5EED0002 },
+    })
+    driveToMode(forced, "command")
+    waitForBattleDecision(forced, "replacement")
+    local replacementRequest = waitForScreenDecision(forced, "replacement")
+    local _, expectedReplacement = projectedReserveSwitch(forced, replacementRequest)
+    requireChildOwner("native forced replacement authority")
+    Assert.equal(
+      focusedChildRow(drawnInk(forced)),
+      2,
+      "the forced child focuses its eligible reserve" .. tag
+    )
+    press(forced, { type = "cancel" })
+    Assert.equal(#forced.submits, 0, "forced cancel seals nothing" .. tag)
+    Assert.equal(forced.screen:status().mode, "child", "forced cancel keeps the child" .. tag)
+    chooseReserveThroughChild(forced)
+    Assert.equal(#forced.submits, 1, "replacement seals exactly one reply" .. tag)
+    Assert.deepEqual(
+      forced.submits[1].choices[1],
+      expectedReplacement,
+      "replacement names the stable reserve" .. tag
+    )
+    forced.screen:dispose()
+    forced.battle:dispose()
+  end
+end
 return { tests = T }

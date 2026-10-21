@@ -94,6 +94,188 @@ function T.pointer_capture_cancel_never_seals_a_choice()
   flows:dispose()
 end
 
+-- Native learning authority behind the battle barrier: navigation edges wait
+-- for the accepted source tick, the native move picker stages an explicit
+-- keep-or-forget confirmation before anything seals, rejecting the
+-- confirmation returns to the native list, and expired requests seal nothing.
+function T.native_learning_seals_once_through_confirmation()
+  local function learnIntent(launchId, requestId)
+    local moves = {
+      { move = "TACKLE", pp = 35, ppUps = 0 },
+      { move = "TAIL_WHIP", pp = 30, ppUps = 0 },
+      { move = "GROWL", pp = 40, ppUps = 0 },
+      { move = "LEER", pp = 30, ppUps = 0 },
+    }
+    local choices = {}
+    for slot = 0, 3 do
+      choices[#choices + 1] = {
+        id = "learn:replace:" .. tostring(slot),
+        role = "learn",
+        enabled = true,
+        reason = "refused",
+        display = { move = "MOVE" .. tostring(slot) },
+        choice = {
+          actor = { combatant = 1 },
+          kind = "confirm",
+          payload = { decision = "replace", slot = slot },
+        },
+      }
+    end
+    choices[#choices + 1] = {
+      id = "learn:decline",
+      role = "learn",
+      enabled = true,
+      reason = "refused",
+      display = { decision = "decline" },
+      choice = {
+        actor = { combatant = 1 },
+        kind = "confirm",
+        payload = { decision = "decline" },
+      },
+    }
+    return {
+      kind = "learn",
+      purpose = "learn",
+      launchId = launchId,
+      requestId = requestId,
+      epoch = 4,
+      controller = "player",
+      cancellable = false,
+      request = {
+        requestId = requestId,
+        epoch = 4,
+        controller = "player",
+        kind = "learn_move",
+        incomingMove = "SAND_ATTACK",
+        currentMoves = moves,
+        actors = { { combatant = 1 } },
+      },
+      options = {
+        requestId = requestId,
+        epoch = 4,
+        controller = "player",
+        kind = "learn_move",
+        actors = {
+          {
+            combatant = 1,
+            kind = "learn_move",
+            incomingMove = "SAND_ATTACK",
+            currentMoves = moves,
+            choices = choices,
+          },
+        },
+      },
+      party = {},
+      inventory = {},
+    }
+  end
+  local function openLearned(launchId, requestId)
+    local flows = BattleSubflows.new({ launchId = launchId })
+    Assert.isTrue(flows:open(learnIntent(launchId, requestId)), "the learning prompt opens")
+    return flows
+  end
+  local function step(flows, events)
+    flows:update(events)
+    flows:tick()
+  end
+  local function focusId(flows)
+    local view = flows:status().childView
+    Assert.notNil(view, "the open child projects its view")
+    return assert(view.focusId, "the learning list projects its focus")
+  end
+  -- A bare input moves no focus: edges wait for the accepted tick.
+  local flows = openLearned("launch-learn-once", 11)
+  Assert.equal(focusId(flows), "learn:0", "the native list opens on its first row")
+  flows:update({ { type = "navigate", direction = "down" } })
+  Assert.equal(focusId(flows), "learn:0", "the navigation edge waits for the accepted source tick")
+  flows:tick()
+  Assert.equal(focusId(flows), "learn:1", "the accepted tick applies the buffered edge once")
+  -- Selecting a row stages its explicit confirmation without sealing.
+  step(flows, { { type = "confirm" } })
+  Assert.isNil(flows:takeResult(), "selecting a row seals no reply")
+  local confirmation = flows:status().childView.confirmation
+  Assert.notNil(confirmation, "selecting a row stages its confirmation")
+  assert(confirmation ~= nil, "the replace confirmation stages")
+  Assert.equal(confirmation.kind, "replace", "the confirmation replaces the focused row")
+  Assert.equal(confirmation.slot, 1, "the confirmation names the focused slot")
+  step(flows, { { type = "confirm" } })
+  local sealed = flows:takeResult()
+  Assert.notNil(sealed, "confirming the replace seals its reply")
+  assert(sealed ~= nil, "the replace reply seals")
+  Assert.equal(sealed.kind, "choice", "the replace seals a choice")
+  Assert.deepEqual(
+    sealed.reply.choices[1].payload,
+    { decision = "replace", slot = 1 },
+    "the replace binds the focused slot fragment"
+  )
+  Assert.isNil(flows:takeResult(), "the replace reports exactly once")
+  flows:dispose()
+  -- Rejecting the confirmation returns to the native list.
+  local rejected = openLearned("launch-learn-reject", 12)
+  step(rejected, { { type = "confirm" } })
+  Assert.isNil(rejected:takeResult(), "selecting a row seals no reply")
+  Assert.notNil(rejected:status().childView.confirmation, "the confirmation stages")
+  step(rejected, { { type = "cancel" } })
+  Assert.isNil(rejected:takeResult(), "rejecting the confirmation seals no reply")
+  Assert.isNil(
+    rejected:status().childView.confirmation,
+    "rejecting the confirmation returns to the list"
+  )
+  Assert.equal(focusId(rejected), "learn:0", "the returned list keeps its opening focus")
+  step(rejected, { { type = "confirm" } })
+  step(rejected, { { type = "confirm" } })
+  local resealed = rejected:takeResult()
+  Assert.notNil(resealed, "reselecting after the rejection seals")
+  assert(resealed ~= nil, "the reselected reply seals")
+  Assert.deepEqual(
+    resealed.reply.choices[1].payload,
+    { decision = "replace", slot = 0 },
+    "the reselection binds the opening row"
+  )
+  rejected:dispose()
+  -- The decline row asks its own confirmation before sealing.
+  local declined = openLearned("launch-learn-decline", 13)
+  for _ = 1, 4 do
+    step(declined, { { type = "navigate", direction = "down" } })
+  end
+  Assert.equal(focusId(declined), "learn:decline", "keys reach the decline row")
+  step(declined, { { type = "confirm" } })
+  Assert.isNil(declined:takeResult(), "selecting decline seals no reply")
+  local declineConfirm = declined:status().childView.confirmation
+  Assert.notNil(declineConfirm, "decline stages its confirmation")
+  assert(declineConfirm ~= nil, "the decline confirmation stages")
+  Assert.equal(declineConfirm.kind, "decline", "the confirmation declines without replacing")
+  step(declined, { { type = "confirm" } })
+  local declineSealed = declined:takeResult()
+  Assert.notNil(declineSealed, "confirming the decline seals its reply")
+  assert(declineSealed ~= nil, "the decline reply seals")
+  Assert.deepEqual(
+    declineSealed.reply.choices[1].payload,
+    { decision = "decline" },
+    "the decline binds its own fragment"
+  )
+  declined:dispose()
+  -- Backing out of the list asks the stop confirmation instead of declining.
+  local stopped = openLearned("launch-learn-stop", 14)
+  step(stopped, { { type = "cancel" } })
+  Assert.isNil(stopped:takeResult(), "backing out of the list never auto-declines")
+  local stopConfirm = stopped:status().childView.confirmation
+  Assert.notNil(stopConfirm, "backing out asks its stop confirmation")
+  assert(stopConfirm ~= nil, "the stop confirmation stages")
+  Assert.equal(stopConfirm.kind, "stop", "the stop confirmation names itself")
+  step(stopped, { { type = "cancel" } })
+  Assert.isNil(stopped:takeResult(), "rejecting the stop confirmation seals no reply")
+  Assert.isNil(stopped:status().childView.confirmation, "the rejection returns to the list")
+  Assert.equal(focusId(stopped), "learn:0", "the returned list keeps its opening focus")
+  stopped:dispose()
+  -- An expired request seals nothing, even replayed.
+  local expired = openLearned("launch-learn-stale", 15)
+  expired:closeChild()
+  expired:update({ { type = "confirm" } })
+  expired:tick()
+  Assert.isNil(expired:takeResult(), "the expired request seals nothing")
+  expired:dispose()
+end
 function T.opening_a_child_consumes_its_initiating_input()
   local ok, composer = pcall(require, COMPOSER_MODULE)
   Assert.isTrue(

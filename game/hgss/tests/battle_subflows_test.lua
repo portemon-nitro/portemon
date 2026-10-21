@@ -351,7 +351,18 @@ function T.bag_refused_rows_explain_themselves_without_sealing()
   drive(flows, { type = "confirm" })
   Assert.isNil(flows:takeResult(), "confirming a refused ball seals no reply")
   Assert.isTrue(flows:status().active, "the refusal keeps the child")
-  Assert.isTrue(type(flows:status().notice) == "string", "the refusal names its reason")
+  -- The native projection carries the refusal: the focused row stays
+  -- disabled and names its kernel-projected reason.
+  local refusedView = flows:status().childView --[[@as table<string, unknown>]]
+  Assert.equal(refusedView.focusId, "bag:0", "the refused cell keeps its focus")
+  local refusedRows = refusedView.rows --[[@as table<integer, table<string, unknown>>]]
+  Assert.equal(refusedRows[1].id, "bag:0", "the refused cell still lists first")
+  Assert.isFalse(refusedRows[1].enabled == true, "the refused cell stays disabled")
+  Assert.equal(
+    refusedRows[1].reason,
+    "the attendant blocks its use",
+    "the refused row names its kernel reason"
+  )
   flows:dispose()
 end
 
@@ -364,10 +375,12 @@ function T.bag_stock_without_a_catalog_fails_closed()
   flows:dispose()
 end
 
-function T.empty_bag_opens_and_cancels_without_a_catalog()
-  local flows = coordinator(nil)
+function T.empty_bag_opens_and_cancels()
+  -- The native bag application needs its catalog even to render the
+  -- empty browser; production always lends it, so the test lends it too.
+  local flows = coordinator(ItemFixture.makeCatalog())
   local options = itemOptions({})
-  Assert.isTrue(flows:open(bagIntent({}, options)), "the empty bag needs no catalog")
+  Assert.isTrue(flows:open(bagIntent({}, options)), "the empty bag opens")
   drive(flows, { type = "cancel" })
   local result = flows:takeResult()
   Assert.notNil(result, "bag cancel stages a result")
@@ -681,10 +694,14 @@ function T.party_child_lists_six_stable_rows_with_no_hidden_screens()
     Assert.equal(rows[slot + 1].id, "party:" .. tostring(slot), "slot keeps its stable row")
   end
   Assert.isTrue(type(view.focusId) == "string", "focus already rests somewhere meaningful")
-  -- Confirming with no clock step still seals a projected reserve.
+  -- Edges wait for the accepted source tick: the buffered confirm seals
+  -- only once the tick drains it through the native selection, which
+  -- rests on the eligible reserve.
   flows:update({ { type = "confirm" } })
+  Assert.isNil(flows:takeResult(), "the buffered edge seals nothing before its tick")
+  flows:tick()
   local result = flows:takeResult()
-  Assert.notNil(result, "confirming without any tick still seals")
+  Assert.notNil(result, "the accepted tick seals a projected reserve")
   assertSealedAmong(result.reply.choices[1], options.actors[1].choices, "the seal names a projected reserve")
   flows:dispose()
 end
@@ -698,17 +715,18 @@ function T.party_keys_and_taps_seal_the_same_projected_reserve()
     if view.focusId == "party:1" then
       break
     end
-    keyed:update({ { type = "navigate", direction = "down" } })
+    drive(keyed, { type = "navigate", direction = "down" })
   end
   local focused = keyed:status().childView --[[@as table<string, unknown>]]
   Assert.equal(focused.focusId, "party:1", "keys reach the first reserve row")
-  keyed:update({ { type = "confirm" } })
+  drive(keyed, { type = "confirm" })
   local keyedResult = keyed:takeResult()
   Assert.notNil(keyedResult, "keys seal the reserve")
   keyed:dispose()
   local tapped = coordinator()
   Assert.isTrue(tapped:open(partyIntent({ party = sixSlotRoster(), options = options })), "taps open the roster")
   Assert.isTrue(tapped:activateControl("party:1"), "the reserve row takes the tap")
+  tapped:tick()
   local tappedResult = tapped:takeResult()
   Assert.notNil(tappedResult, "the tap seals the reserve")
   Assert.deepEqual(
@@ -744,7 +762,7 @@ function T.bag_pocket_tabs_match_between_keys_and_pointer()
     if page.current == 2 then
       break
     end
-    keyed:update({ { type = "navigate", direction = "down" } })
+    drive(keyed, { type = "navigate", direction = "down" })
   end
   local scrolled = keyed:status().childView --[[@as table<string, unknown>]]
   local scrolledPage = scrolled.page --[[@as table<string, integer>]]
@@ -752,15 +770,16 @@ function T.bag_pocket_tabs_match_between_keys_and_pointer()
   keyed:closeChild()
   -- Keys hop one pocket over through the tabs.
   Assert.isTrue(keyed:open(bagIntent(variedStock(), twoTargetServingOptions())), "keys reopen the bag")
-  keyed:update({ { type = "navigate", direction = "up" } })
-  keyed:update({ { type = "navigate", direction = "right" } })
-  keyed:update({ { type = "navigate", direction = "down" } })
+  drive(keyed, { type = "navigate", direction = "up" })
+  drive(keyed, { type = "navigate", direction = "right" })
+  drive(keyed, { type = "navigate", direction = "down" })
   local keyedView = keyed:status().childView --[[@as table<string, unknown>]]
   keyed:dispose()
   -- Pointer takes the same hop through the next tab.
   local tapped = coordinator(catalog)
   Assert.isTrue(tapped:open(bagIntent(variedStock(), twoTargetServingOptions())), "taps open the bag")
   Assert.isTrue(tapped:activateControl("pocket_next"), "the next tab takes the tap")
+  tapped:tick()
   local tappedView = tapped:status().childView --[[@as table<string, unknown>]]
   Assert.equal(tappedView.currentPocket, keyedView.currentPocket, "both modes land in the same pocket")
   Assert.deepEqual(rowLabels(tappedView), rowLabels(keyedView), "both modes list the same cells")
@@ -777,15 +796,18 @@ function T.bag_target_cancel_restores_the_resting_browse_without_spending()
       break
     end
     Assert.isTrue(flows:activateControl("pocket_next"), "tabs keep answering")
+    flows:tick()
   end
   local resting = flows:status().childView --[[@as table<string, unknown>]]
   Assert.equal(resting.currentPocket, "medicine", "the browse reaches the serving pocket")
   local restingPage = resting.page --[[@as table<string, integer>]]
   -- The lone serving stages straight from its cell through the tap lane.
   Assert.isTrue(flows:activateControl("bag:0"), "the serving cell takes the tap")
+  flows:tick()
   Assert.equal(flows:status().stagedItem, "POTION", "the serving stages")
   Assert.isNil(flows:takeResult(), "staging seals no reply")
   flows:update({ { type = "cancel" } })
+  flows:tick()
   Assert.isNil(flows:takeResult(), "target cancel seals no reply")
   Assert.isNil(flows:status().stagedItem, "target cancel drops the staging")
   local returned = flows:status().childView --[[@as table<string, unknown>]]
@@ -806,14 +828,15 @@ function T.bag_target_cancel_restores_the_resting_browse_without_spending()
   Assert.isTrue(foundServing, "the serving still lists after cancel")
   -- Staging again and accepting seals the exact projected serving.
   Assert.isTrue(flows:activateControl("bag:0"), "the serving stages again")
+  flows:tick()
   for _ = 1, 10 do
     local view = flows:status().childView --[[@as table<string, unknown>]]
     if view.focusId == "party:0" then
       break
     end
-    flows:update({ { type = "navigate", direction = "down" } })
+    drive(flows, { type = "navigate", direction = "down" })
   end
-  flows:update({ { type = "confirm" } })
+  drive(flows, { type = "confirm" })
   local result = flows:takeResult()
   Assert.notNil(result, "accepting the serving seals its reply")
   Assert.deepEqual(
@@ -831,15 +854,25 @@ function T.refused_throws_and_empty_bags_close_without_hidden_screens()
   Assert.isTrue(flows:open(bagIntent({ POKE_BALL = 5 }, itemOptions({ refused }))), "the stocked bag opens")
   Assert.isTrue(flows:status().childView.interactive == true, "the bag answers with no waiting")
   walkToBalls(flows)
-  flows:update({ { type = "confirm" } })
+  drive(flows, { type = "confirm" })
   Assert.isNil(flows:takeResult(), "the refused throw seals no reply")
-  Assert.isTrue(type(flows:status().notice) == "string", "the refusal names its reason")
+  -- The native projection carries the refusal: the focused row stays
+  -- disabled and names its kernel-projected reason.
+  local thrownView = flows:status().childView --[[@as table<string, unknown>]]
+  Assert.equal(thrownView.focusId, "bag:0", "the refused cell keeps its focus")
+  local thrownRows = thrownView.rows --[[@as table<integer, table<string, unknown>>]]
+  Assert.isFalse(thrownRows[1].enabled == true, "the refused cell stays disabled")
+  Assert.equal(
+    thrownRows[1].reason,
+    "the attendant blocks its use",
+    "the refused row names its kernel reason"
+  )
   flows:closeChild()
   flows:dispose()
-  local empty = coordinator(nil)
-  Assert.isTrue(empty:open(bagIntent({}, itemOptions({}))), "the empty bag opens without a catalog")
+  local empty = coordinator(catalog)
+  Assert.isTrue(empty:open(bagIntent({}, itemOptions({}))), "the empty bag opens on its catalog browser")
   Assert.equal(empty:status().childView.focusId, "back", "the empty bag rests on its way out")
-  empty:update({ { type = "cancel" } })
+  drive(empty, { type = "cancel" })
   local result = empty:takeResult()
   Assert.notNil(result, "empty cancel stages a result")
   Assert.equal(result.kind, "cancelled", "empty cancel reports a navigation cancellation")
@@ -856,17 +889,19 @@ function T.forced_replacement_restages_whole_replies_after_close()
     cancellable = false,
   })
   Assert.isTrue(flows:open(intent), "forced replacement opens")
-  flows:update({ { type = "cancel" } })
+  drive(flows, { type = "cancel" })
   Assert.isNil(flows:takeResult(), "forced cancel seals nothing")
   for _ = 1, 10 do
     local view = flows:status().childView --[[@as table<string, unknown>]]
     if view.focusId == "party:1" then
       break
     end
-    flows:update({ { type = "navigate", direction = "down" } })
+    drive(flows, { type = "navigate", direction = "down" })
   end
-  -- A doubled confirm edge in one batch still stages exactly one reply.
+  -- A doubled confirm edge in one batch still stages exactly one reply:
+  -- the accepted tick drains both edges but the native seal reports once.
   flows:update({ { type = "confirm" }, { type = "confirm" } })
+  flows:tick()
   local first = flows:takeResult()
   Assert.notNil(first, "the doubled edge stages its reply")
   Assert.isNil(flows:takeResult(), "the doubled edge stages no second reply")
@@ -883,9 +918,9 @@ function T.forced_replacement_restages_whole_replies_after_close()
     if view.focusId == "party:4" then
       break
     end
-    flows:update({ { type = "navigate", direction = "down" } })
+    drive(flows, { type = "navigate", direction = "down" })
   end
-  flows:update({ { type = "confirm" } })
+  drive(flows, { type = "confirm" })
   local restaged = flows:takeResult()
   Assert.notNil(restaged, "the restaged child seals")
   Assert.deepEqual(
@@ -901,11 +936,11 @@ function T.learning_stages_every_held_choice_through_keys_and_taps()
     local flows = coordinator()
     Assert.isTrue(flows:open(learnIntent(1)), "learning opens for the held recipient")
     for _ = 1, slot do
-      flows:update({ { type = "navigate", direction = "down" } })
+      drive(flows, { type = "navigate", direction = "down" })
     end
-    flows:update({ { type = "confirm" } })
+    drive(flows, { type = "confirm" })
     Assert.isNil(flows:takeResult(), "staging seals no reply")
-    flows:update({ { type = "confirm" } })
+    drive(flows, { type = "confirm" })
     local result = flows:takeResult()
     Assert.notNil(result, "confirming seals the replace")
     Assert.equal(result.reply.choices[1].payload.decision, "replace", "the payload decides replace")
@@ -915,8 +950,10 @@ function T.learning_stages_every_held_choice_through_keys_and_taps()
   local tapped = coordinator()
   Assert.isTrue(tapped:open(learnIntent(1)), "learning opens for the pointer decline")
   Assert.isTrue(tapped:activateControl("learn:decline"), "the decline row takes the tap")
+  tapped:tick()
   Assert.isNil(tapped:takeResult(), "staging decline seals no reply yet")
   Assert.isTrue(tapped:activateControl("confirm"), "the confirmation takes the tap")
+  tapped:tick()
   local declined = tapped:takeResult()
   Assert.notNil(declined, "confirming seals the decline")
   Assert.equal(declined.reply.choices[1].payload.decision, "decline", "the tap confirms the decline")
