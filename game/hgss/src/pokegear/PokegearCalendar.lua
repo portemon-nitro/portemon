@@ -218,6 +218,7 @@ function PokegearCalendar:observeField(sample)
     type(group) == "number" and group % 1 == 0 and group >= 0 and group <= U32.MAX,
     "calendar observations step an unsigned daily seed"
   )
+  ---@cast group integer
   for _ = 1, dayAdvance do
     group = U32.add(U32.mul(group, PRANDOM_MULTIPLIER), 1)
   end

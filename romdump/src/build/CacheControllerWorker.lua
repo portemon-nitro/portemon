@@ -297,6 +297,8 @@ local function validateSelectors(params)
       and params.name ~= "new-game-intro"
       and params.name ~= "field-planning"
       and params.name ~= "field-runtime"
+      and params.name ~= "startup-loader"
+      and params.name ~= "startup-title"
     then
       return "unknown milestone: " .. tostring(params.name)
     end

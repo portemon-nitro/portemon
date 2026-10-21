@@ -121,6 +121,10 @@ function ArtifactJobs.bootstrapJobs()
   return { { kind = "field-font", key = "global" } }
 end
 
+function ArtifactJobs.startupLoaderJobs()
+  return { { kind = "source-plan", key = "global" }, { kind = "startup-loader", key = "global" } }
+end
+
 ---@param entries string[] fixed kind[:key] members, bare kinds read global
 ---@return { kind: string, key: string }[]
 local function fixedJobs(entries)
@@ -151,6 +155,7 @@ local NEW_GAME_AUDIO_SEQUENCES = {
 -- Cry playback resolves the species directly as a bank, never through
 -- sequence metadata, so the Marill species bank joins independently.
 local NEW_GAME_DIRECT_AUDIO_BANKS = { 184 }
+local STARTUP_TITLE_AUDIO_SEQUENCES = { "SEQ_GS_POKEMON_THEME", "SEQ_SE_DP_SELECT" }
 
 local NEW_GAME_INTRO_STATIC = {
   { kind = "source-plan", key = "global" },
@@ -207,6 +212,55 @@ function ArtifactJobs.newGameIntroJobs(audioPlan)
   end
   for _, bankId in ipairs(NEW_GAME_DIRECT_AUDIO_BANKS) do
     addBank(bankId, bankId)
+  end
+  return sortedJobs(jobs), true
+end
+
+---@param audioPlan table<string, unknown>|nil adopted normalized audio membership
+---@return { kind: string, key: string }[] roster
+---@return boolean complete true once source audio membership resolved the bank closures
+function ArtifactJobs.startupTitleJobs(audioPlan)
+  local jobs = {
+    { kind = "source-plan", key = "global" },
+    { kind = "audio-catalog", key = "global" },
+    { kind = "startup-title", key = "global" },
+  }
+  if audioPlan == nil then
+    return sortedJobs(jobs), false
+  end
+  local index = assert(audioPlan.index, "startup title requires the adopted audio index")
+  local sequenceBySymbol = assert(index.sequenceBySymbol, "startup title requires adopted sequence symbols")
+  local sequences = assert(index.sequences, "startup title requires adopted sequences")
+  local bankIds = {}
+  local seen = {}
+  local function addBank(bankId, reference)
+    assert(
+      type(bankId) == "number" and bankId % 1 == 0 and bankId >= 0,
+      "startup title reference resolves to no bank: " .. tostring(reference)
+    )
+    if not seen[bankId] then
+      seen[bankId] = true
+      bankIds[#bankIds + 1] = bankId
+    end
+  end
+  for _, symbol in ipairs(STARTUP_TITLE_AUDIO_SEQUENCES) do
+    local sequenceId = sequenceBySymbol[symbol]
+    if sequenceId == nil then
+      error("startup title has no adopted sequence: " .. symbol, 0)
+    end
+    local sequence = sequences[sequenceId]
+    if type(sequence) ~= "table" then
+      error("startup title has no adopted sequence: " .. symbol, 0)
+    end
+    addBank(sequence.bankId, symbol)
+  end
+  local versionId = index.version
+  local crySpeciesId = versionId == "heartgold" and 250 or versionId == "soulsilver" and 249 or nil
+  assert(crySpeciesId ~= nil, "startup title audio index has an unsupported edition")
+  addBank(crySpeciesId, "legendary cry")
+  table.sort(bankIds)
+  for _, bankId in ipairs(bankIds) do
+    jobs[#jobs + 1] = { kind = "audio-bank", key = tostring(bankId) }
   end
   return sortedJobs(jobs), true
 end
@@ -1402,6 +1456,21 @@ local function dependenciesOnSourcePlan()
   return { { kind = "source-plan", key = "global" } }, true
 end
 
+---@param key string
+---@param plans ArtifactJobs.Plans
+---@return { kind: string, key: string }[], boolean
+local function dependenciesStartupTitle(key, plans)
+  assert(key == "global", "startup title family only has the global job")
+  local roster, complete = ArtifactJobs.startupTitleJobs(plans.audioPlan)
+  local dependencies = {}
+  for _, member in ipairs(roster) do
+    if member.kind ~= "startup-title" then
+      dependencies[#dependencies + 1] = member
+    end
+  end
+  return dependencies, complete
+end
+
 ---@param artifact table<string, unknown>
 ---@param context table<string, unknown>
 ---@param job ArtifactJobs.Job
@@ -1646,6 +1715,40 @@ local function validateSourcePlan(check)
     return false
   end
   return true, plan
+end
+
+local function executeStartupLoader(artifact, context, job)
+  local compiler = require("romdump.src.digest.startup.StartupVisualCompiler")
+  local writer = require("romdump.src.digest.startup.StartupCacheWriter")
+  local bundle, err = compiler.compile(assert(context.romFs, "startup loader requires a source reader"))
+  if bundle == nil then
+    error(assert(err), 0)
+  end
+  return writer.stageLoader(artifact, bundle, job.generationId)
+end
+
+local function executeStartupTitle(artifact, context, job)
+  local compiler = require("romdump.src.digest.startup.TitleScreenCompiler")
+  local writer = require("romdump.src.digest.startup.StartupCacheWriter")
+  local romFs = assert(context.romFs, "startup title requires a source reader")
+  local edition = assert(context.versionId or romFs:version(), "startup title requires an edition")
+  local bundle, err = compiler.compile(romFs, edition)
+  if bundle == nil then
+    error(assert(err), 0)
+  end
+  return writer.stageTitle(artifact, bundle, job.generationId)
+end
+
+local function validateStartupLoader(check)
+  local cache = require("libs.assets.src.StartupAssetCache")
+  local bundle = cache.loadLoader(check.cacheFs)
+  return type(bundle) == "table" and bundle.generationId == check.generationId
+end
+
+local function validateStartupTitle(check)
+  local cache = require("libs.assets.src.StartupAssetCache")
+  local bundle = cache.loadTitle(check.cacheFs, check.cacheFs.versionId)
+  return type(bundle) == "table" and bundle.generationId == check.generationId
 end
 
 DESCRIPTORS = {
@@ -1934,6 +2037,18 @@ DESCRIPTORS = {
     execute = executeSourcePlan,
     validate = validateSourcePlan,
   },
+  ["startup-loader"] = {
+    size = "normal",
+    dependencies = dependenciesOnSourcePlan,
+    execute = executeStartupLoader,
+    validate = validateStartupLoader,
+  },
+  ["startup-title"] = {
+    size = "heavy",
+    dependencies = dependenciesStartupTitle,
+    execute = executeStartupTitle,
+    validate = validateStartupTitle,
+  },
 }
 
 -- The closed behavior table and the accepted vocabulary describe the same
@@ -2086,6 +2201,8 @@ local COMPLETE_STATIC_GLOBALS = {
   "mon-catalog",
   "mon-layout",
   "audio-catalog",
+  "startup-loader",
+  "startup-title",
 }
 
 -- Producer-internal generation source-plan memo for compiler-worker

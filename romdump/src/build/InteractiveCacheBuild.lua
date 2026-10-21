@@ -1,4 +1,4 @@
--- One generation session for explicitly demanded bootstrap, field core
+-- One generation session for explicitly demanded startup, bootstrap, field core
 -- and complete builds. Construction performs no source work: it validates
 -- its identity, recovers publication, selects the epoch and starts from
 -- empty retained state plus the two source-static membership lists and
@@ -136,12 +136,21 @@ local MILESTONE_FILES = {
   ["new-game-intro"] = "data/generated/new-game-intro.lua",
   ["field-planning"] = "data/generated/field-planning.lua",
   ["field-runtime"] = "data/generated/field-runtime.lua",
+  ["startup-loader"] = "data/generated/startup-loader.lua",
+  ["startup-title"] = "data/generated/startup-title.lua",
 }
 
 -- Fixed status observation order. Bootstrap stays observable without an
 -- explicit milestone request; every other name is observed only while
 -- requested. This is a closed traversal list, not an extension registry.
-local STATUS_MILESTONES = { "bootstrap", "new-game-intro", "field-planning", "field-runtime" }
+local STATUS_MILESTONES = {
+  "bootstrap",
+  "new-game-intro",
+  "field-planning",
+  "field-runtime",
+  "startup-loader",
+  "startup-title",
+}
 
 -- Restart trust: a persisted milestone record whose schema, generation,
 -- and name match the selected session proves its fixed scope without
@@ -1288,7 +1297,7 @@ function InteractiveCacheBuild:_requestDirect(kind, key, urgency)
   return entry
 end
 
----@param name string bootstrap, new-game-intro, field-planning, or field-runtime
+---@param name string bootstrap, new-game-intro, field-planning, field-runtime, startup-loader, or startup-title
 ---@param members { kind: string, key: string }[]
 ---@return boolean ready
 ---@return string|nil failure
@@ -1327,7 +1336,7 @@ function InteractiveCacheBuild:_milestoneAnswer(name, members)
   if self:_enrollmentPending(name) then
     return false, nil
   end
-  if name == "new-game-intro" and not self.sourceLoaded then
+  if (name == "new-game-intro" or name == "startup-title") and not self.sourceLoaded then
     return false, nil
   end
   -- Readiness is the cached scope accounting: the scope is ready exactly
@@ -1365,8 +1374,13 @@ function InteractiveCacheBuild:_milestoneMembers(name)
   -- The single membership construction site: only update and adoption
   -- transitions call it, never public requests, status or publication.
   assert(
-    name == "bootstrap" or name == "new-game-intro" or name == "field-planning" or name == "field-runtime",
-    "milestones accept only bootstrap, new-game-intro, field-planning, or field-runtime"
+    name == "bootstrap"
+      or name == "new-game-intro"
+      or name == "field-planning"
+      or name == "field-runtime"
+      or name == "startup-loader"
+      or name == "startup-title",
+    "unknown cache milestone: " .. tostring(name)
   )
   if name == "bootstrap" then
     return ArtifactJobs.bootstrapJobs()
@@ -1378,6 +1392,13 @@ function InteractiveCacheBuild:_milestoneMembers(name)
     return ArtifactJobs.fieldRuntimeJobs()
   end
   local audioPlan = self.adopted ~= nil and self.adopted.audioPlan or nil
+  if name == "startup-loader" then
+    return ArtifactJobs.startupLoaderJobs()
+  end
+  if name == "startup-title" then
+    local jobs = ArtifactJobs.startupTitleJobs(audioPlan)
+    return jobs
+  end
   local jobs = ArtifactJobs.newGameIntroJobs(audioPlan)
   return jobs
 end
@@ -1775,8 +1796,13 @@ end
 function InteractiveCacheBuild:requestMilestone(name, urgency)
   assert(not self.retired, "generation session is retired")
   assert(
-    name == "bootstrap" or name == "new-game-intro" or name == "field-planning" or name == "field-runtime",
-    "milestones accept only bootstrap, new-game-intro, field-planning, or field-runtime"
+    name == "bootstrap"
+      or name == "new-game-intro"
+      or name == "field-planning"
+      or name == "field-runtime"
+      or name == "startup-loader"
+      or name == "startup-title",
+    "milestones accept only bootstrap, new-game-intro, field-planning, field-runtime, startup-loader, or startup-title"
   )
   ArtifactJobs.priorityFor(urgency)
   local current = self.milestones[name]
@@ -1802,7 +1828,16 @@ function InteractiveCacheBuild:requestMilestone(name, urgency)
     -- inventory; the intro closure and the two bounded field milestones
     -- pull source knowledge. No milestone pulls page membership directly:
     -- page membership flows through explicit layout demand.
-    if not self.sourceLoaded and (name == "new-game-intro" or name == "field-planning" or name == "field-runtime") then
+    if
+      not self.sourceLoaded
+      and (
+        name == "new-game-intro"
+        or name == "field-planning"
+        or name == "field-runtime"
+        or name == "startup-loader"
+        or name == "startup-title"
+      )
+    then
       self:_request("source-plan", "global", urgency)
     end
     self:_enqueueControl("roster", 0, name)
@@ -2604,7 +2639,7 @@ end
 -- this transition see final membership, and newly known members enroll
 -- through the bounded cursor instead of a full re-enrollment loop.
 function InteractiveCacheBuild:_refreshAdoptionRosters()
-  for _, name in ipairs({ "bootstrap", "new-game-intro" }) do
+  for _, name in ipairs({ "bootstrap", "new-game-intro", "startup-title" }) do
     if self.roster[name] ~= nil then
       self:_refreshRoster(name, self.milestones[name] ~= nil)
     end
@@ -2751,6 +2786,8 @@ function InteractiveCacheBuild:update()
   self:_publishMilestone("new-game-intro")
   self:_publishMilestone("field-planning")
   self:_publishMilestone("field-runtime")
+  self:_publishMilestone("startup-loader")
+  self:_publishMilestone("startup-title")
   self.planningPending = self:_hasRunnablePlanning()
 end
 
@@ -2889,7 +2926,7 @@ function InteractiveCacheBuild:nextPlanningWakeDelay()
   return completion ~= nil and completion:nextPlanningWakeDelay() or nil
 end
 
----@param name string bootstrap, new-game-intro, field-planning, or field-runtime
+---@param name string bootstrap, new-game-intro, field-planning, field-runtime, startup-loader, or startup-title
 ---@param requested boolean an explicit milestone intent observes this scope
 ---@return string state ready, failed, or pending from retained readiness facts
 ---@return boolean failed the scope settles its requested work with a failure
@@ -3045,7 +3082,7 @@ function InteractiveCacheBuild:status()
   }
 end
 
----@param name string bootstrap, new-game-intro, field-planning, or field-runtime
+---@param name string bootstrap, new-game-intro, field-planning, field-runtime, startup-loader, or startup-title
 ---@return { state: string, ready: integer, total: integer|nil, failure: string|nil } read-only milestone-local progress snapshot
 function InteractiveCacheBuild:milestoneStatus(name)
   -- Read-only milestone-local progress projection. It inspects only the
@@ -3055,8 +3092,13 @@ function InteractiveCacheBuild:milestoneStatus(name)
   -- answer. A missing or not-yet-final roster reports pending without a
   -- denominator instead of inventing one.
   assert(
-    name == "bootstrap" or name == "new-game-intro" or name == "field-planning" or name == "field-runtime",
-    "milestones accept only bootstrap, new-game-intro, field-planning, or field-runtime"
+    name == "bootstrap"
+      or name == "new-game-intro"
+      or name == "field-planning"
+      or name == "field-runtime"
+      or name == "startup-loader"
+      or name == "startup-title",
+    "milestones accept only bootstrap, new-game-intro, field-planning, field-runtime, startup-loader, or startup-title"
   )
   local members = self.roster[name]
   local rosterFailure = self.rosterFailure[name]

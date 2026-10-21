@@ -162,6 +162,11 @@ local DOMAINS = {
     "StarterChoiceAssetCacheWriter",
     "StarterChoiceAssetCompiler",
   },
+  startup = {
+    "StartupCacheWriter",
+    "StartupVisualCompiler",
+    "TitleScreenCompiler",
+  },
 }
 
 local EXISTING_DOMAINS = {

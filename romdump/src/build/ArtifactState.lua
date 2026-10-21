@@ -105,6 +105,9 @@ ArtifactState.KINDS = {
   -- inventory every generation session and audit schedules against. It owns
   -- no gameplay payload and never reaches runtime code.
   ["source-plan"] = true,
+  -- Small, independently generated startup visuals and title scene.
+  ["startup-loader"] = true,
+  ["startup-title"] = true,
 }
 
 ArtifactState.RECEIPT_SCHEMA = "g4-derived-receipt-v1"
@@ -152,6 +155,10 @@ local function checkKey(kind, key)
   assert(type(key) == "string" and key ~= "", "artifact key must be a non-empty string")
   if kind == "pc" then
     assert(key == "global", "pc artifacts require the global key")
+    return
+  end
+  if kind == "startup-loader" or kind == "startup-title" then
+    assert(key == "global", kind .. " artifacts require the global key")
     return
   end
   if kind == "pokegear" then

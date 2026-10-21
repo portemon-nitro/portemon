@@ -105,6 +105,7 @@ local SHARED = {
   "ScriptIdentity",
   "ScriptOverrides",
   "StarterChoiceAssetCache",
+  "StartupAssetCache",
   "Utf8Glyphs",
   "Validate",
   "errors",

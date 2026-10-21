@@ -556,6 +556,14 @@ DerivedAssetContract.audio = {
   provenanceSchema = "g4-audio-provenance-v1",
 }
 
+DerivedAssetContract.startupLoader = {
+  schema = "g4-startup-loader-v1",
+}
+
+DerivedAssetContract.startupTitle = {
+  schema = "g4-startup-title-v1",
+}
+
 -- The mesh batch format constants (magic, version, stride, header size,
 -- index widths) have their own owner (G4MeshFormat); the vertex-layout
 -- version aliases that owner's version, so nothing mesh-shaped lives here.
