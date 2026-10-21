@@ -1566,6 +1566,7 @@ PokedexSources.nativeSpriteSubjects = {
     ["arrow-up"] = gridSubjects["arrow-up"],
     ["arrow-down"] = gridSubjects["arrow-down"],
     scrollbar = gridSubjects.scrollbar,
+    ["caught-mark"] = gridSubjects["caught-mark"],
     ["type-1"] = resultTypes["type-1"],
     ["type-2"] = resultTypes["type-2"],
   },

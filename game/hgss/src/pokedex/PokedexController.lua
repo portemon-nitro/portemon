@@ -2970,17 +2970,15 @@ local function projectSearchObjects(self, objects, pageKey)
     local choice = phase == "label" and "label" or (phase == "retract" and "retract" or "rise")
     emitIntent(objects, "feedback", choice, "information", 128, 80, self:_trackObjectAge(pageKey, "feedback", choice))
   end
+  local editor = self._search:editorView()
   local shape = self._search:criteria().shape
-  if shape ~= nil then
-    local editor = self._search:editorView()
-    local onShapePage = type(editor) == "table" and editor.kind == "shape"
+  if shape ~= nil and (editor == nil or editor.kind == "shape") then
     local x, y = 224, 72
-    if onShapePage then
+    if editor ~= nil then
       x, y = 152, 20
     end
     emitIntent(objects, "body-icon", shape, "controls", x, y, self:_trackObjectAge(pageKey, "body-icon", shape))
   end
-  local editor = self._search:editorView()
   if type(editor) == "table" and (editor.kind == "height" or editor.kind == "weight") then
     local slider = editor.slider
     if type(slider) == "table" and type(slider.bounds) == "table" then

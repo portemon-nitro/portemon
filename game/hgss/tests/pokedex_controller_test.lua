@@ -1688,4 +1688,87 @@ function T.search_feedback_projects_phased_subjects()
   controller:dispose()
 end
 
+-- A staged body shape shows its icon only where the source shows it:
+-- the criteria root and the shape editor carry the icon at their
+-- native origins while every other option editor hides it, and the
+-- icon follows the staged value back onto the root. A caught search
+-- result keeps the same mark art as the grid while a seen-only
+-- result hides every protected sprite.
+function T.shape_icon_and_results_mark_follow_only_their_visible_pages()
+  local PokedexController = requirePresent("shape and result sprite intents")
+  local monCatalog, catalog = catalogs()
+  local owner = ownerWithFlags(monCatalog, catalog, { dexEnabled = true, nationalDex = true })
+  observe(owner, monCatalog, { species = "CHIKORITA", personality = 0 })
+  observe(owner, monCatalog, { species = "EEVEE", personality = 31 }, "caught")
+  local controller = PokedexController.new(baseArgs(owner, monCatalog, catalog))
+  openGrid(controller)
+  press(controller, { { type = "y" } })
+  Assert.equal(controller:view().page, "search", "grid Y reaches the criteria root")
+  local function iconOf(view)
+    if type(view.objects) ~= "table" then
+      return nil
+    end
+    return findObject(view.objects, "body-icon")
+  end
+  Assert.isNil(iconOf(controller:view()), "no staged shape projects no icon")
+  press(controller, { { type = "activate", action = "criterion", value = "shape" } })
+  press(controller, { { type = "activate", action = "editor-choice", value = "quadruped" } })
+  press(controller, { { type = "activate", action = "editor-ok" } })
+  Assert.isNil(controller:view().search.editor, "confirming the shape choice returns to the root")
+  local rootIcon = assert(iconOf(controller:view()), "the root projects the staged shape")
+  checkIntentShape(rootIcon)
+  Assert.equal(rootIcon.choice, "quadruped", "the root icon names the staged shape")
+  Assert.equal(rootIcon.pane, "controls", "the root icon paints on the touch pane")
+  Assert.equal(rootIcon.x, 224, "the root icon keeps its native column")
+  Assert.equal(rootIcon.y, 72, "the root icon keeps its native row")
+  press(controller, { { type = "activate", action = "criterion", value = "shape" } })
+  local shapeIcon = assert(iconOf(controller:view()), "the shape editor keeps its icon")
+  checkIntentShape(shapeIcon)
+  Assert.equal(shapeIcon.choice, "quadruped", "the shape editor names the staged shape")
+  Assert.equal(shapeIcon.x, 152, "the shape editor keeps its native column")
+  Assert.equal(shapeIcon.y, 20, "the shape editor keeps its native row")
+  press(controller, { { type = "cancel" } })
+  Assert.isNil(controller:view().search.editor, "cancelling the shape editor returns to the root")
+  for _, kind in ipairs({ "order", "letter", "type", "height", "weight", "area" }) do
+    press(controller, { { type = "activate", action = "criterion", value = kind } })
+    Assert.notNil(controller:view().search.editor, "the " .. kind .. " editor opens")
+    Assert.isNil(iconOf(controller:view()), "the " .. kind .. " editor hides the staged shape")
+    press(controller, { { type = "cancel" } })
+    Assert.isNil(controller:view().search.editor, "cancelling the " .. kind .. " editor returns to the root")
+  end
+  local returned = assert(iconOf(controller:view()), "returning to the root restores the staged shape")
+  Assert.equal(returned.x, 224, "the restored icon keeps its native column")
+  Assert.equal(returned.y, 72, "the restored icon keeps its native row")
+  press(controller, { { type = "start" } })
+  idle(controller, 200)
+  Assert.equal(controller:view().page, "results", "the completed search lands on the result grid")
+  for _ = 1, 40 do
+    if controller:view().selection.species == "EEVEE" then
+      break
+    end
+    press(controller, { { type = "navigate", direction = "right" } })
+  end
+  local caughtView = controller:view()
+  Assert.equal(caughtView.selection.species, "EEVEE", "the walk reaches the caught result")
+  local mark = assert(findObject(caughtView.objects, "caught-mark"), "the caught result projects its mark")
+  checkIntentShape(mark)
+  Assert.equal(mark.choice, "shown", "the result mark uses the shown choice")
+  Assert.equal(mark.pane, "information", "the result mark paints on the upper pane")
+  Assert.equal(mark.x, 112, "the result mark keeps its native column")
+  Assert.equal(mark.y, 32, "the result mark keeps its native row")
+  Assert.notNil(findObject(caughtView.objects, "footprint"), "the caught result projects its footprint")
+  for _ = 1, 40 do
+    if controller:view().selection.species == "CHIKORITA" then
+      break
+    end
+    press(controller, { { type = "navigate", direction = "right" } })
+  end
+  local seenView = controller:view()
+  Assert.equal(seenView.selection.species, "CHIKORITA", "the walk reaches the seen-only result")
+  Assert.isNil(findObject(seenView.objects, "caught-mark"), "a seen-only result hides its mark")
+  Assert.isNil(findObject(seenView.objects, "footprint"), "a seen-only result hides its footprint")
+  Assert.isNil(findObject(seenView.objects, "type-1"), "a seen-only result hides its types")
+  controller:dispose()
+end
+
 return { tests = T }

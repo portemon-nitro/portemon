@@ -4221,6 +4221,89 @@ function T.compact_footer_and_rows_show_distinct_marks_without_new_realizations(
   end)
 end
 
+-- A caught search result paints its prepared mark: the real results
+-- demand prepares through the production lease, the bundle stages the
+-- mark viewport before drawing, and the mark inks its authored art at
+-- the projected information-pane position with no new realization.
+function T.caught_results_paint_their_prepared_mark(scope)
+  local Renderer = requireRenderer("live results mark pixels")
+  local Interface = requireInterface("paired native hit resolution")
+  requireOwner("prepared bundles behind the live leg")
+  local versionId = readyVersion()
+  local pool = SharedImagePoolFake.new()
+  withPool(pool, function()
+    local rig = graphicsRig(versionId, pool, scope)
+    seedIcon(pool, "CHIKORITA/f0", 1, 1, 1)
+    seedIcon(pool, "EEVEE/f0", 0, 0, 0)
+    seedIcon(pool, "TOTODILE/f0", 1, 0, 0)
+    seedIcon(pool, "SPINDA/f0", 0, 1, 0)
+    seedChromeFor(pool, rig.cacheFs, rig.manifest, "results")
+    local dexOwner = Fixture.ownerWithHistory(rig.monCatalog, rig.catalog)
+    local controller = Fixture.openController(dexOwner, rig.monCatalog, rig.catalog)
+    openGrid(controller)
+    press(controller, { { type = "y" } })
+    idle(controller, 2)
+    press(controller, { { type = "start" } })
+    idle(controller, 200)
+    Assert.equal(controller:view().page, "results", "the completed search lands on the result grid")
+    for _ = 1, 40 do
+      if controller:view().selection.caught == true then
+        break
+      end
+      press(controller, { { type = "navigate", direction = "right" } })
+      idle(controller, 2)
+    end
+    local view = controller:view()
+    Assert.isTrue(view.selection.caught == true, "the walk reaches a caught result")
+    local mark = nil
+    for _, intent in ipairs(assert(view.objects, "the results projection carries its sprite intents")) do
+      if type(intent) == "table" and intent.subject == "caught-mark" then
+        mark = intent
+      end
+    end
+    Assert.notNil(mark, "the caught result projects its mark")
+    local demand = browserDemandFor(Renderer, view)
+    Assert.equal(demand.pageRole, "results", "the results demand reads its own page role")
+    seedDemandPortraitsOnce(pool, rig.cacheFs, rig.monCatalog, demand, true, {})
+    local lease = rig.owner:acquire({ purpose = "browser" })
+    local assets = prepareReady(rig, lease, demand)
+    local page = assert(rig.manifest.pages.results, "the manifest closes the results page")
+    local subjects = assert(page.spriteSubjects, "the results page binds its live subjects")
+    local binding = assert(
+      assert(subjects["caught-mark"], "the results page binds its caught mark")[mark.choice],
+      "the results mark binds its shown choice"
+    )
+    local sprite = assert(rig.manifest.sprites[binding.sprite], "the mark resolves its sprite role")
+    local animation =
+      assert(rig.manifest.animations[sprite.animation], "the mark resolves its animation")
+    local cell = assert(rig.manifest.cells[animation.frames[1].cell], "the mark resolves its resting cell")
+    local part = assert(cell.parts[1], "the mark carries its first part")
+    local chromeEntry = assert(rig.manifest.chrome[part.chrome], "the manifest stages " .. part.chrome)
+    local baseData = decodePage(rig.cacheFs, chromeEntry.path)
+    local dx, dy = opaqueOffset(baseData, part.source.x, part.source.y, part.source.width, part.source.height)
+    local er, eg, eb = pixel(baseData, part.source.x + dx, part.source.y + dy)
+    local measurement = measurementFor("dualDisplay")
+    local plan = resolvePlan(Interface.browser(), measurement, planViewOf(view))
+    local resources = { graphics = love.graphics, renderer = assets.renderer }
+    local data =
+      drawPlan(scope, plan, resources, preparedBrowserView(view, assets), measurement.width, measurement.height)
+    local infoPane = placementOf(plan, "information")
+    assertPixel(
+      data,
+      infoPane.origin.x + mark.x + part.x + dx,
+      infoPane.origin.y + mark.y + part.y + dy,
+      er,
+      eg,
+      eb,
+      "the caught mark inks its authored art at its projected position"
+    )
+    lease:release()
+    controller:dispose()
+    rig.owner:release()
+    Assert.equal(pool:stats().outstandingLeases, 0, "the mark journey returns every borrowed interest")
+  end)
+end
+
 function T.native_japanese_presentation_stays_blocked_without_tokenizer_coverage(_, context)
   assert(context ~= nil, "blocked-language reporting needs its runner context")
   context:skip(

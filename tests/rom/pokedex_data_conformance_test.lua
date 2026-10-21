@@ -904,6 +904,40 @@ function T.presentation_subject_bindings_resolve_to_page_local_sprite_roles(romF
   end
 end
 
+-- The result grid shares the list grid's caught-mark art: the compiled
+-- manifest binds the same shown choice, source sprite family (shared
+-- resolved animation), and upper pane on both pages, so a caught
+-- selection stays preparable after running a search. Sprite roles stay
+-- page-namespaced and must differ across pages.
+function T.presentation_results_share_the_grid_caught_mark_binding(romFs, versionId)
+  local PokedexCatalogCompiler, PokedexAssetCompiler = requireProducer()
+  local catalog = compileCatalog(romFs, versionId, PokedexCatalogCompiler)
+  local manifest, err = PokedexAssetCompiler.compile(romFs, versionId, catalog)
+  Assert.notNil(manifest, versionId .. " must compile its presentation manifest")
+  Assert.isNil(err, versionId .. " compiles its presentation without error")
+  ---@param role string manifest page role behind the caught mark
+  ---@return table panel binding behind the shown caught mark
+  ---@return string animation role behind the resolved sprite
+  local function markBinding(role)
+    local page = assert(manifest.pages[role], versionId .. " closes the " .. role .. " page")
+    local subjects = assert(page.spriteSubjects, versionId .. " binds live subjects on " .. role)
+    local marks = assert(subjects["caught-mark"], versionId .. " binds the caught mark on " .. role)
+    local binding = assert(marks.shown, versionId .. " binds the shown caught mark on " .. role)
+    Assert.equal(binding.pane, "information", versionId .. " paints the mark on the upper pane")
+    local sprite = assert(manifest.sprites[binding.sprite], versionId .. " resolves " .. binding.sprite)
+    local animation = assert(manifest.animations[sprite.animation], versionId .. " resolves " .. sprite.animation)
+    Assert.isTrue(#animation.frames >= 1, versionId .. " stages art for the caught mark on " .. role)
+    return binding, sprite.animation
+  end
+  local _, gridAnimation = markBinding("grid")
+  local _, resultsAnimation = markBinding("results")
+  Assert.equal(
+    resultsAnimation,
+    gridAnimation,
+    versionId .. " shares one caught-mark animation across list pages"
+  )
+end
+
 -- Type and trainer art: every source type class and both trainer
 -- genders resolve through staged per-class tiles with their source
 -- palettes, and an unknown source association aborts compilation

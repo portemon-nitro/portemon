@@ -1218,4 +1218,278 @@ function T.search_criteria_demand_without_its_ui_bank_keeps_the_committed_view()
   Assert.equal(pool:stats().outstandingLeases, 0, "failure and disposal return every owned interest")
 end
 
+-- The live source page inventory mirrored into a lease manifest: every
+-- subject/choice the producer declares for the requested roles resolves
+-- to a distinct resting sprite role, so the lease validates the
+-- controller's real demanded membership instead of a hand-written
+-- permissive list. Footprint intents ride shared atlas entries behind
+-- an already-bound chrome role.
+---@param roles string[] page roles to close from the live source inventory
+---@param objects table[] real controller sprite intents behind the demands
+---@return table manifest lease manifest closing exactly the sourced subjects
+local function sourceClosureManifest(roles, objects)
+  local PokedexCache = require("libs.assets.src.PokedexCache")
+  local PokedexSources = require("romdump.src.config.PokedexSources")
+  local chrome, cells, animations, sprites, pages = {}, {}, {}, {}, {}
+  local firstChrome = nil
+  for _, role in ipairs(roles) do
+    local subjects = assert(PokedexSources.nativeSpriteSubjects[role], "the source inventory closes " .. role)
+    local bound = {}
+    for subject, choices in pairs(subjects) do
+      local boundChoices = {}
+      for choice, entry in pairs(choices) do
+        assert(type(entry) == "table", role .. " binds " .. subject .. "/" .. choice)
+        local pane = entry.pane
+        assert(pane == "controls" or pane == "information", role .. " panes " .. subject)
+        local art = "test-" .. role .. "-" .. subject .. "-" .. choice
+        chrome[art .. ".art"] = { path = "pokedex/test/" .. art, width = 8, height = 8 }
+        if firstChrome == nil then
+          firstChrome = art .. ".art"
+        end
+        cells[art .. ".cell"] = {
+          bounds = { x = 0, y = 0, width = 8, height = 8 },
+          parts = {
+            { chrome = art .. ".art", source = { x = 0, y = 0, width = 8, height = 8 }, x = 0, y = 0 },
+          },
+        }
+        animations[art .. ".anim"] = { frames = { { cell = art .. ".cell", duration = 1 } } }
+        sprites[art] = {
+          pane = pane,
+          animation = art .. ".anim",
+          x = 0,
+          y = 0,
+          priority = 0,
+          drawPriority = 0,
+          paletteGroup = "group",
+        }
+        boundChoices[choice] = { sprite = art, pane = pane }
+      end
+      bound[subject] = boundChoices
+    end
+    pages[role] = {
+      backgrounds = { information = {}, controls = {} },
+      cells = {},
+      sprites = {},
+      windows = {},
+      spriteSubjects = bound,
+    }
+  end
+  local footprints = {}
+  for _, intent in ipairs(objects or {}) do
+    if type(intent) == "table" and intent.subject == "footprint" and type(intent.choice) == "string" then
+      footprints[intent.choice] = { chrome = assert(firstChrome, "sourced pages bind chrome") }
+    end
+  end
+  return {
+    schema = PokedexCache.SCHEMA,
+    chrome = chrome,
+    cells = cells,
+    animations = animations,
+    sprites = sprites,
+    windows = {},
+    text = {
+      ui = { bankId = 802 },
+      entryByLanguage = { native = { nameBankId = 237, categoryBankId = 816, flavorBankId = 803 } },
+      measureByProfile = { base = { heightBankId = 815, weightBankId = 813 } },
+      registrationAnnouncement = { bankId = 197, messageId = 871 },
+    },
+    pages = pages,
+    footprints = footprints,
+  }
+end
+
+---@param pool table shared image pool double under test
+---@param manifest table<string, unknown> sourced page closure under test
+---@return table owner construction arguments over the sourced closure
+local function sourcedOwnerArgs(pool, manifest)
+  local args = ownerArgs(pool)
+  args.cacheFs = {
+    loadLua = function(_)
+      return manifest
+    end,
+  }
+  return args
+end
+
+-- Pumps one browser demand to its ready bundle: pending generations never
+-- publish, and a failed generation reports its attributed cause instead
+-- of silently converging.
+---@param lease table acquired per-open preparation lease under test
+---@param demand table<string, unknown> validated browser demand under preparation
+---@return table ready outcome behind the committed bundle
+local function pumpReady(lease, demand)
+  local ready = nil
+  for _ = 1, 64 do
+    local outcome = lease:prepare(demand)
+    if outcome.kind == "ready" then
+      ready = outcome
+      break
+    end
+    Assert.isTrue(
+      outcome.kind == "pending",
+      "preparation never fails a sourced demand: " .. tostring(outcome.error)
+    )
+  end
+  Assert.notNil(ready, "bounded preparation converges on the sourced bundle")
+  assert(ready ~= nil, "bounded preparation converges")
+  return ready
+end
+
+---@param controller table live browser controller under test
+---@param count integer fixed updates without input
+local function settle(controller, count)
+  for _ = 1, count do
+    Fixture.tick(controller, {})
+  end
+end
+
+---@param controller table live browser controller under test
+---@param events table semantic batch for one fixed update
+local function drive(controller, events)
+  Fixture.tick(controller, events)
+end
+
+---@param controller table live browser controller under test
+---@param species string selected species key
+local function walkTo(controller, species)
+  for _ = 1, 40 do
+    if controller:view().selection.species == species then
+      return
+    end
+    drive(controller, { { type = "navigate", direction = "right" } })
+  end
+  Assert.equal(controller:view().selection.species, species, "the walk reaches " .. species)
+end
+
+-- A caught search result carries the same mark art as its grid sibling:
+-- the real results demand, with its verbatim controller intents,
+-- prepares to ready against the sourced page closure, while a
+-- seen-only result demands no protected mark.
+function T.caught_search_results_prepare_their_full_page_closure()
+  local Owner = requirePresent("sourced results closure preparation")
+  local pool = SharedImagePoolFake.new()
+  local monCatalog, catalog = Fixture.catalogs()
+  local controller = Fixture.openController(Fixture.ownerWithHistory(monCatalog, catalog), monCatalog, catalog)
+  drive(controller, { { type = "confirm" } })
+  settle(controller, 40)
+  Assert.equal(controller:view().page, "grid", "confirming the cover reaches the grid")
+  drive(controller, { { type = "y" } })
+  drive(controller, { { type = "start" } })
+  settle(controller, 200)
+  Assert.equal(controller:view().page, "results", "the completed search lands on the result grid")
+  walkTo(controller, "TOTODILE")
+  local view = controller:view()
+  local mark = nil
+  for _, intent in ipairs(assert(view.objects, "the results projection carries its sprite intents")) do
+    if type(intent) == "table" and intent.subject == "caught-mark" then
+      mark = intent
+    end
+  end
+  Assert.notNil(mark, "the caught result projects its mark")
+  Assert.equal(mark.choice, "shown", "the result mark uses the shown choice")
+  local manifest = sourceClosureManifest({ "results" }, view.objects)
+  local owner = Owner.new(sourcedOwnerArgs(pool, manifest))
+  local lease = owner:acquire({ purpose = "browser" })
+  local demand = {
+    key = "results-caught",
+    purpose = "browser",
+    pageRole = "results",
+    dexMode = "johto",
+    language = "native",
+    iconKeys = {},
+    pictures = {},
+    text = {},
+    objects = view.objects,
+  }
+  local ready = pumpReady(lease, demand)
+  Assert.equal(ready.key, "results-caught", "the ready outcome carries its matching generation key")
+  lease:release()
+  walkTo(controller, "CHIKORITA")
+  local seenView = controller:view()
+  Assert.equal(seenView.selection.species, "CHIKORITA", "the walk reaches the seen-only result")
+  for _, intent in ipairs(assert(seenView.objects, "the seen-only projection carries its intents")) do
+    Assert.isTrue(
+      type(intent) ~= "table" or intent.subject ~= "caught-mark",
+      "a seen-only result demands no protected mark"
+    )
+  end
+  controller:dispose()
+  owner:release()
+  Assert.equal(pool:stats().outstandingLeases, 0, "the results journey returns every borrowed interest")
+end
+
+-- Valid shape-filtered search pages prepare across navigation while an
+-- explicitly invalid subject still fails with attribution: the root and
+-- the shape editor converge, a demand naming the hidden icon on an
+-- unrelated editor fails naming its subject, the committed bundle
+-- survives, and close plus reopen plateaus at no outstanding interest.
+function T.shape_pages_prepare_while_invalid_subjects_still_fail()
+  local Owner = requirePresent("sourced search closure and strict validation")
+  local pool = SharedImagePoolFake.new()
+  local monCatalog, catalog = Fixture.catalogs()
+  local controller = Fixture.openController(Fixture.ownerWithHistory(monCatalog, catalog), monCatalog, catalog)
+  drive(controller, { { type = "confirm" } })
+  settle(controller, 40)
+  drive(controller, { { type = "y" } })
+  Assert.equal(controller:view().page, "search", "grid Y reaches the criteria root")
+  drive(controller, { { type = "activate", action = "criterion", value = "shape" } })
+  drive(controller, { { type = "activate", action = "editor-choice", value = "quadruped" } })
+  drive(controller, { { type = "activate", action = "editor-ok" } })
+  Assert.isNil(controller:view().search.editor, "confirming the shape choice returns to the root")
+  local rootObjects = assert(controller:view().objects, "the root projects its sprite intents")
+  drive(controller, { { type = "activate", action = "criterion", value = "shape" } })
+  Assert.notNil(controller:view().search.editor, "the shape editor opens")
+  local shapeObjects = assert(controller:view().objects, "the shape editor projects its sprite intents")
+  drive(controller, { { type = "cancel" } })
+  local manifest = sourceClosureManifest({ "search.criteria", "search.shape", "search.type" }, rootObjects)
+  local owner = Owner.new(sourcedOwnerArgs(pool, manifest))
+  local lease = owner:acquire({ purpose = "browser" })
+  ---@param role string demanded page role
+  ---@param key string demand generation key
+  ---@param objects table[] real controller sprite intents
+  local function demandFor(role, key, objects)
+    return {
+      key = key,
+      purpose = "browser",
+      pageRole = role,
+      dexMode = "johto",
+      language = "native",
+      iconKeys = {},
+      pictures = {},
+      text = {},
+      objects = objects,
+    }
+  end
+  local shapeReady = pumpReady(lease, demandFor("search.shape", "shape-editor", shapeObjects))
+  local rootReady = pumpReady(lease, demandFor("search.criteria", "criteria-root", rootObjects))
+  Assert.isTrue(rootReady.assets ~= shapeReady.assets, "replacement publishes a new bundle identity")
+  local failed = nil
+  for _ = 1, 64 do
+    local outcome = lease:prepare(demandFor("search.type", "type-editor", shapeObjects))
+    if outcome.kind == "failed" then
+      failed = outcome
+      break
+    end
+    Assert.equal(outcome.kind, "pending", "the invalid generation never publishes")
+  end
+  Assert.notNil(failed, "an unrelated editor cannot borrow the hidden icon")
+  Assert.isTrue(
+    type(failed.error) == "string" and failed.error:find("body-icon", 1, true) ~= nil,
+    "the failure names its hidden subject"
+  )
+  local kept = lease:prepare(demandFor("search.criteria", "criteria-root", rootObjects))
+  Assert.equal(kept.kind, "ready", "the committed generation answers without new work")
+  Assert.isTrue(kept.assets == rootReady.assets, "the failed generation never mutates the committed bundle")
+  lease:release()
+  lease:release()
+  local reopened = owner:acquire({ purpose = "browser" })
+  local again = pumpReady(reopened, demandFor("search.shape", "shape-reopen", shapeObjects))
+  Assert.notNil(again.assets, "reopening prepares the valid page again")
+  reopened:release()
+  reopened:release()
+  owner:release()
+  controller:dispose()
+  Assert.equal(pool:stats().outstandingLeases, 0, "failure and reopening return every owned interest")
+end
+
 return { tests = T }
