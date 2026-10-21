@@ -266,11 +266,26 @@ function T.status_weather_item_and_restoration_effects_keep_their_own_traces()
       for _, voice in ipairs(audio.played) do
         audio.done[voice] = true
       end
-      if player:status(handle) == "complete" then
+      if player:status(handle) == "complete" or player:status(handle) == "failed" then
         break
       end
     end
-    Assert.equal(player:status(handle), "complete", name .. " reaches its own completion boundary")
+    if name == "status" then
+      -- The frozen shape schedules its blend without compiled timing
+      -- operands, so the run fails closed with instruction provenance
+      -- instead of retiring the spawn silently. Its opening voice still
+      -- plays before the malformed spawn.
+      Assert.equal(player:status(handle), "failed", name .. " fails closed on its timing-less spawn")
+      local fault = player:failure(handle)
+      Assert.isTrue(type(fault) == "table", name .. " carries its failure detail")
+      assert(type(fault) == "table", "the status failure stays available")
+      Assert.isTrue(
+        string.find(tostring(fault.reason), "BATTLE_EFFECT_TASK_MALFORMED", 1, true) ~= nil,
+        name .. " fails on the malformed timing-less spawn: " .. tostring(fault.reason)
+      )
+    else
+      Assert.equal(player:status(handle), "complete", name .. " reaches its own completion boundary")
+    end
     Assert.isTrue(#audio.played >= voicedBefore, name .. " never retracts an earlier voice")
     voicedBefore = #audio.played
   end

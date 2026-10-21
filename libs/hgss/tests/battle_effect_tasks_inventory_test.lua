@@ -373,15 +373,32 @@ function T.every_derived_nonparticle_kind_runs_to_its_own_completion()
       if not seen then
         -- Imageless runs prove their own boundary instead. Timing-less
         -- spawns retire synchronously as validated markers, timed
-        -- bodies retire at their compiled boundary, and both repeat
-        -- deterministically across seeded runs without publishing
-        -- pictures or staging leases.
+        -- bodies without an owned activation hold their boundary, and
+        -- both repeat deterministically across seeded runs without
+        -- publishing pictures or staging leases. An addressed timed run
+        -- that stays imageless is only accepted for the two documented
+        -- holds below: the sinusoidal motion carries cycles but no
+        -- amplitude operand, and the selected-position transition moves
+        -- between anchors with no magnitude operand.
         while task:status() ~= "complete" and ticks < 600 do
           task:stepSourceTick({ tick = 1 })
           ticks = ticks + 1
         end
         Assert.isTrue(task:status() == "complete", "kind reaches its own completion instead of stalling: " .. kind)
         Assert.isTrue(ticks >= 1, "kind retires on its own boundary: " .. kind)
+        if ticks > 1 and args.activation ~= nil and kind ~= "pokemon-picture-animation" then
+          local displayOwned = string.find(kind, "battle-background-", 1, true) == 1
+            or string.find(kind, "battle-display-", 1, true) == 1
+            or string.find(kind, "battle-palette-", 1, true) == 1
+            or string.find(kind, "battle-presentation-", 1, true) == 1
+          if not displayOwned then
+            Assert.isTrue(
+              kind == "pokemon-picture-sinusoidal-position-motion"
+                or kind == "pokemon-picture-selected-position-transition",
+              "addressed timed runs show pixels unless documented: " .. kind
+            )
+          end
+        end
         local repeatScene = sceneWithPair()
         local repeatJournal = { acquired = {}, released = {} }
         local repeatAudio = controllableAudio()
@@ -460,6 +477,72 @@ function T.direct_operations_resolve_without_factory_task_kinds()
   Assert.notNil(resolved, "the default branch resolves: " .. tostring(reason))
   assert(resolved ~= nil, "the default branch stays available")
   Assert.equal(resolved.op, "noop", "the unmatched branch is a proven no-op, not a silent task")
+end
+
+local function seededRandom(seed)
+  local state = seed
+  return function(bound)
+    assert(type(bound) == "number" and bound >= 1, "visual draws name a positive bound")
+    state = (state * 1103515245 + 12345) % 2147483648
+    return state % bound
+  end
+end
+
+function T.randomized_picture_motion_moves_with_the_seeded_stream()
+  local Factory = require("libs.hgss.src.presentation.BattleEffectTasks")
+  local parameters = {
+    pictureTarget = "attacker",
+    amplitude = 24,
+    durationTicks = 16,
+  }
+  local function runWithSeed(seed)
+    local scene = sceneWithPair()
+    local journal = { acquired = {}, released = {} }
+    local resources = {}
+    function resources.resolve(key)
+      journal.acquired[#journal.acquired + 1] = key
+      return { key = key, lease = key }
+    end
+    function resources.release(lease)
+      journal.released[#journal.released + 1] = lease
+    end
+    local context = occurrenceContext()
+    context.random = seededRandom(seed)
+    context.visualSeed = seed
+    local task = assert(Factory.create("pokemon-picture-randomized-position-motion", {
+      battlerTarget = "attacker",
+      activation = { combatant = 1, activation = 1 },
+      parameters = parameters,
+    }, context, { scene = scene, audio = {}, resources = resources }))
+    local positions = {}
+    for _ = 1, 8 do
+      task:stepSourceTick({ tick = 1 })
+      local patch =
+        assert(scene:pictureState({ combatant = 1, activation = 1 }), "the seeded run moves the picture every tick")
+      positions[#positions + 1] =
+        string.format("%s/%s", tostring(patch.pictureXOffset2), tostring(patch.pictureYOffset))
+    end
+    task:dispose()
+    return positions
+  end
+  local first = runWithSeed(4242)
+  local second = runWithSeed(4242)
+  Assert.deepEqual(second, first, "the same seed paints the same positions on every schedule")
+  local distinct = false
+  for _, position in ipairs(first) do
+    if position ~= first[1] then
+      distinct = true
+    end
+  end
+  Assert.isTrue(distinct, "the run moves across ticks instead of holding one offset")
+  local other = runWithSeed(777)
+  local varied = false
+  for index, position in ipairs(other) do
+    if position ~= first[index] then
+      varied = true
+    end
+  end
+  Assert.isTrue(varied, "a different seed paints a different motion")
 end
 
 function T.malformed_construction_fails_before_publishing_side_effects()

@@ -246,11 +246,25 @@ function T.shapes_execute_with_source_order_targets_completion_and_audio()
       for _, name in ipairs(audio.played) do
         audio.done[name] = true
       end
-      if player:status(handle) == "complete" then
+      if player:status(handle) == "complete" or player:status(handle) == "failed" then
         break
       end
     end
-    Assert.equal(player:status(handle), "complete", program.key .. " reaches its own completion boundary")
+    if program.key == "run-contact" then
+      -- The contact shape schedules its blend without compiled timing
+      -- operands (opcode 34), so the run fails closed with instruction
+      -- provenance instead of retiring the spawn silently.
+      Assert.equal(player:status(handle), "failed", program.key .. " fails closed on its timing-less spawn")
+      local fault = player:failure(handle)
+      Assert.isTrue(type(fault) == "table", program.key .. " carries its failure detail")
+      assert(type(fault) == "table", "the shape failure stays available")
+      Assert.isTrue(
+        string.find(tostring(fault.reason), "BATTLE_EFFECT_TASK_MALFORMED", 1, true) ~= nil,
+        program.key .. " fails on the malformed timing-less spawn: " .. tostring(fault.reason)
+      )
+    else
+      Assert.equal(player:status(handle), "complete", program.key .. " reaches its own completion boundary")
+    end
     Assert.isTrue(#audio.played >= voicedBefore, program.key .. " never retracts an earlier voice")
   end
   local sounded = 0
@@ -409,6 +423,60 @@ function T.position_pair_selects_only_its_matching_emitter_resource()
     "battle/particle-emitter/candidate-4",
     "the reverse emitter carries its own selected resource"
   )
+end
+
+function T.attacker_dash_stages_timed_afterimages_and_settles()
+  local Factory = require("libs.hgss.src.presentation.BattleEffectTasks")
+  local scene = sceneWithPair()
+  local journal = { acquired = {}, released = {} }
+  local resources = {}
+  function resources.resolve(key)
+    journal.acquired[#journal.acquired + 1] = key
+    return { key = key, lease = key }
+  end
+  function resources.release(lease)
+    journal.released[#journal.released + 1] = lease
+  end
+  local attacker = { combatant = 1, activation = 1 }
+  local context = {
+    launchId = "dash-probe",
+    visualSeed = 4242,
+    random = function(bound)
+      assert(type(bound) == "number" and bound >= 1, "visual draws name a positive bound")
+      return 0
+    end,
+    topology = {
+      attacker = { combatant = 1, activation = 1, slot = "solo-player", sideType = 0 },
+      targets = { { combatant = 3, activation = 3, slot = "solo-enemy", sideType = 1 } },
+    },
+  }
+  local task = assert(Factory.create("pokemon-picture-attacker-dash-afterimages", {
+    battlerTarget = "attacker",
+    activation = attacker,
+    parameters = { durationTicks = 20 },
+  }, context, { scene = scene, audio = {}, resources = resources }))
+  task:stepSourceTick({ tick = 1 })
+  task:stepSourceTick({ tick = 1 })
+  local early = assert(scene:pictureState(attacker), "the dash stages source coordinates instead of idling on a timer")
+  for _ = 1, 8 do
+    task:stepSourceTick({ tick = 1 })
+  end
+  Assert.isTrue(task:status() == "running", "the dash outlives its midpoint")
+  local mid = assert(scene:pictureState(attacker), "the mid-dash run keeps its coordinates")
+  Assert.isTrue(mid.pictureXOffset2 ~= early.pictureXOffset2, "the out leg advances the dash coordinates")
+  for _ = 1, 6 do
+    task:stepSourceTick({ tick = 1 })
+  end
+  local returning = assert(scene:pictureState(attacker), "the back leg keeps its coordinates")
+  Assert.isTrue(returning.pictureXOffset2 ~= mid.pictureXOffset2, "the back leg retreats from the out-leg reach")
+  for _ = 1, 4 do
+    task:stepSourceTick({ tick = 1 })
+  end
+  Assert.equal(task:status(), "complete", "the dash completes at its source duration")
+  Assert.equal(#scene:effectViews(), 0, "the dash publishes no orphan records")
+  Assert.isNil(scene:pictureState(attacker), "completion restores the attacker picture")
+  task:dispose()
+  Assert.equal(#journal.released, #journal.acquired, "the dash run leaks no lease")
 end
 
 return { tests = T }

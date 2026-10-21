@@ -131,7 +131,7 @@ function T.picture_state_stays_keyed_by_activation_across_replacement()
 end
 
 function T.overlapping_tasks_cancel_and_replace_without_stale_restores()
-  local firstProgram = lowered("overlap-first", { 34, 1, 2, 3, 50, 4 })
+  local firstProgram = lowered("overlap-first", { 51, 0, 27, 50, 4 })
   local secondProgram = lowered("overlap-second", { 51, 0, 27, 50, 4 })
   local Player = playerModule()
   local Factory = effectFactoryModule()
@@ -214,6 +214,73 @@ function T.overlapping_tasks_cancel_and_replace_without_stale_restores()
     end
   end
   Assert.equal(nextRunner:status(nextHandle), "complete", "the next valid occurrence still runs normally")
+end
+
+function T.pair_affine_transition_moves_both_activations_and_restores()
+  local Factory = effectFactoryModule()
+  local scene = BattleScene.new()
+  local attacker = { combatant = 1, activation = 1 }
+  local partner = { combatant = 3, activation = 3 }
+  scene:observe({
+    { combatant = 1, activation = 1, visible = true },
+    { combatant = 3, activation = 3, visible = true },
+  })
+  local journal = { acquired = {}, released = {} }
+  local resources = {}
+  function resources.resolve(key)
+    journal.acquired[#journal.acquired + 1] = key
+    return { key = key, lease = key }
+  end
+  function resources.release(lease)
+    journal.released[#journal.released + 1] = lease
+  end
+  local context = {
+    launchId = "pair-affine-probe",
+    visualSeed = 4242,
+    random = function(bound)
+      assert(type(bound) == "number" and bound >= 1, "visual draws name a positive bound")
+      return 0
+    end,
+    topology = {
+      attacker = { combatant = 1, activation = 1, slot = "solo-player", sideType = 0 },
+      targets = { { combatant = 3, activation = 3, slot = "solo-enemy", sideType = 1 } },
+    },
+  }
+  local services = { scene = scene, audio = {}, resources = resources }
+  local task = assert(Factory.create("pokemon-picture-battler-pair-scale-transition", {
+    battlerTarget = "attacker",
+    activation = attacker,
+    parameters = { durationTicks = 16, scaleStart = 256, scaleEnd = 384 },
+  }, context, services))
+  for _ = 1, 4 do
+    task:stepSourceTick({ tick = 1 })
+  end
+  local attackerPatch = scene:pictureState(attacker)
+  local partnerPatch = scene:pictureState(partner)
+  Assert.notNil(attackerPatch, "the running pair transition moves the attacker")
+  Assert.notNil(partnerPatch, "the running pair transition moves the pair partner too")
+  Assert.isTrue(attackerPatch.scaleX ~= nil and partnerPatch.scaleX ~= nil, "both activations carry the affine scale")
+  Assert.equal(attackerPatch.scaleX, partnerPatch.scaleX, "the pair scales together")
+  for _ = 1, 12 do
+    task:stepSourceTick({ tick = 1 })
+  end
+  Assert.equal(task:status(), "complete", "the pair transition completes at its duration")
+  Assert.isNil(scene:pictureState(attacker), "completion restores the attacker")
+  Assert.isNil(scene:pictureState(partner), "completion restores the partner")
+  task:dispose()
+  local cancelling = assert(Factory.create("pokemon-picture-battler-pair-scale-transition", {
+    battlerTarget = "attacker",
+    activation = attacker,
+    parameters = { durationTicks = 16, scaleStart = 256, scaleEnd = 384 },
+  }, context, services))
+  cancelling:stepSourceTick({ tick = 1 })
+  cancelling:stepSourceTick({ tick = 1 })
+  cancelling:cancel("superseded")
+  Assert.equal(cancelling:status(), "cancelled", "cancellation lands on cancelled")
+  Assert.isNil(scene:pictureState(attacker), "cancellation restores the attacker")
+  Assert.isNil(scene:pictureState(partner), "cancellation restores the partner without touching others")
+  cancelling:dispose()
+  Assert.equal(#journal.released, #journal.acquired, "the pair run leaks no lease")
 end
 
 return { tests = T }

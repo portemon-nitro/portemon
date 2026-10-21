@@ -43,7 +43,7 @@ end
 local function optionProbeProgram()
   local BattleAnimationCompiler = require("romdump.src.digest.battle.BattleAnimationCompiler")
   return assert(
-    BattleAnimationCompiler.compile({ key = "TACKLE", stream = optionStreamOf({ 34, 1, 2, 3, 29, 50, 4 }) })
+    BattleAnimationCompiler.compile({ key = "TACKLE", stream = optionStreamOf({ 29, 50, 4 }) })
   )
 end
 

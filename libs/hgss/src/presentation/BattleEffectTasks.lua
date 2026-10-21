@@ -15,9 +15,10 @@
 -- palette overlays) and publish no drawable picture of their own: only
 -- particle tasks and configured-sprite cell tasks draw, and only from
 -- staged dependency textures. Completion boundaries come only from
--- compiled source timing operands; well-formed spawns without one
--- retire synchronously as validated markers, and malformed shapes fail
--- closed. No fixed budget stands in for source timing anywhere.
+-- compiled source timing operands. A spawn whose instruction carries no compiled timing operand
+-- retires synchronously ONLY when its kind belongs to the verified synchronous-marker set below;
+-- every other timing-less spawn fails closed with BATTLE_EFFECT_TASK_MALFORMED instead of retiring
+-- silently, and malformed shapes fail closed. No fixed budget stands in for source timing anywhere.
 -- BattleEffectTasks.supportsKind is the narrow admission view over this
 -- same dispatch.
 
@@ -303,11 +304,12 @@ end
 
 -- Resolves the source-tick boundary from compiled timing operands.
 -- Explicit durations win, then two-phase sums, then per-step products,
--- then approach/settle sums and single-tick fields. Well-formed spawns
--- whose instruction carries no compiled timing operand resolve to no
--- boundary: the caller retires those synchronously instead of
--- inventing a fixed budget. Completion times come only from the source
--- parameters the producer emitted, never from a fixed budget.
+-- then approach/settle sums and single-tick fields. Spawns whose
+-- instruction carries no compiled timing operand resolve to no boundary:
+-- the constructing body retires those synchronously only for kinds in the
+-- verified synchronous-marker set, and fails every other kind closed.
+-- Completion times come only from the source parameters the producer
+-- emitted, never from a fixed budget.
 ---@param parameters table<string, unknown> compiled task parameters
 ---@return integer? source ticks behind completion, absent for timing-less spawns
 local function visualDuration(parameters)
@@ -603,11 +605,34 @@ local function stagedPicture(assetKey, selector, centerX, centerY, alpha, width,
   }
 end
 
+-- Kinds whose timing-less spawns retire synchronously, one entry per
+-- verified source-synchronous noop. Each entry carries its pinned source
+-- pointer, verified against the referenced source:
+-- * "pokemon-picture-animation": the animation compiler lowers
+--   show-pokemon-picture (romdump/src/digest/battle/BattleAnimationCompiler.lua,
+--   opcode 31) with only its battler selector and mode and no timing
+--   operands, and the player show handler
+--   (libs/hgss/src/presentation/BattleAnimationCommands.lua,
+--   handleShowPokemonPicture) spawns it with only battler selector, mode,
+--   and activation. The native show applies synchronously while
+--   program-level waits own the timing.
+-- * "pokemon-picture-reset-position-transition": the producer lowers the
+--   reset with no timing boundary
+--   (romdump/src/config/BattleAnimationSources.lua,
+--   resolveBattleAnimationCallback selector 62, ResetBattlerPosition in
+--   battle_anim_funcs.c), which snaps the role picture home at once.
+-- Timing-less spawns of every other kind fail closed at construction
+-- instead of retiring silently with zero writes.
+local SYNCHRONOUS_MARKER_KINDS = {
+  ["pokemon-picture-animation"] = true,
+  ["pokemon-picture-reset-position-transition"] = true,
+}
+
 -- Resolves the blend completion boundary from compiled timing operands:
--- an explicit duration wins, then the compiled per-step product.
--- Well-formed spawns without compiled timing resolve to no boundary:
--- the caller retires those synchronously instead of inventing a fixed
--- budget.
+-- an explicit duration wins, then the compiled per-step product. Spawns
+-- without compiled timing resolve to no boundary: the constructing body
+-- retires those synchronously only for kinds in the verified
+-- synchronous-marker set, and fails every other kind closed.
 ---@param args table<string, unknown> instruction-derived construction arguments
 ---@return integer? source ticks behind blend completion, absent for timing-less spawns
 local function blendDuration(args)
@@ -668,14 +693,21 @@ local function newBlendTransition(args, context, services)
     )
   end
   local duration = blendDuration(args)
+  if duration == nil and SYNCHRONOUS_MARKER_KINDS[BattleEffectTasks.BLEND_TRANSITION_KIND] ~= true then
+    error(
+      "BATTLE_EFFECT_TASK_MALFORMED: kind "
+        .. BattleEffectTasks.BLEND_TRANSITION_KIND
+        .. " retires only on compiled timing operands",
+      0
+    )
+  end
   local parameters = args.parameters
   if parameters == nil then
     parameters = {}
   end
-  -- Timing-less spawns carry a compiled scroll shape but no boundary:
-  -- those retire synchronously as validated markers instead of
-  -- sweeping on an invented budget. Only the source retail census
-  -- gates this path: timed spawns always take the sweep below.
+  -- Timing-less spawns retire synchronously only for verified marker
+  -- kinds; this body fails them closed above. Timed spawns always take
+  -- the sweep below.
   local sweep = nil
   if duration ~= nil then
     sweep = scrollSweepFor(parameters, duration)
@@ -712,8 +744,8 @@ end
 -- Advances one source tick toward the blend boundary: the background
 -- viewport follows the compiled sweep while the task holds it, and
 -- completion restores the exact snapshot it saved at construction.
--- Timing-less markers retire on their first tick: the validated spawn
--- carries no boundary to interpolate, so there is nothing to sweep.
+-- Marker-kind spawns without a boundary retire on their first tick: the
+-- spawn carries no boundary to interpolate, so there is nothing to sweep.
 ---@param self BattleBlendTransition
 ---@param tick table<string, unknown>? source tick under advancement
 function BattleBlendTransition:stepSourceTick(tick)
@@ -1337,10 +1369,9 @@ local function newPictureAnimation(args, context, services)
   local duration = nil
   local signedOffset = 0
   if type(parameters) == "table" then
-    -- A compiled duration drives the animated reveal; a well-formed
-    -- spawn without one retires synchronously as a validated marker.
-    -- Only the source retail census gates that path: timed reveals
-    -- always interpolate below.
+    -- A compiled duration drives the animated reveal; spawns without one
+    -- retire synchronously only for verified marker kinds, and fail every
+    -- other kind closed. Timed reveals always interpolate below.
     if isPositiveInt(parameters.durationTicks) then
       duration = parameters.durationTicks
     end
@@ -1354,6 +1385,9 @@ local function newPictureAnimation(args, context, services)
   local owned = nil
   if activation ~= nil then
     owned = { combatant = activation.combatant, activation = activation.activation }
+  end
+  if duration == nil and SYNCHRONOUS_MARKER_KINDS[kind] ~= true then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " retires only on compiled timing operands", 0)
   end
   return setmetatable({
     _scene = scene,
@@ -1383,9 +1417,9 @@ end
 
 -- Advances one source tick toward the picture boundary. The reveal
 -- interpolates its compiled signed offset onto the owned activation; a
--- zero source offset applies no shift at all. Show-marker spawns carry
+-- zero source offset applies no shift at all. Marker-kind show spawns carry
 -- no compiled timing at all: the native show applies synchronously and
--- program-level waits own the timing, so the validated marker retires
+-- program-level waits own the timing, so the marker retires
 -- on its first tick instead of inventing a duration or pixels. The
 -- temporary change stays owned by this occurrence's activation, so
 -- withdrawing or replacing the activation never lets a stale restore
@@ -1714,7 +1748,10 @@ local SOUND_TASK_KINDS = {
 ---@class BattleNativeVisualTask
 ---@field _scene table<string, unknown> scene behind owned visual state
 ---@field _kind string emitted task kind behind the run
+---@field _family string source control law behind per-tick writes
 ---@field _activation table<string, unknown>? combatant and activation pair behind the owned picture
+---@field _activations table<integer, table<string, unknown>> owned activations behind picture writes
+---@field _parameters table<string, unknown> copied compiled operands behind per-tick writes
 ---@field _picturePlan table<string, unknown>? compiled placement plan behind per-tick writes
 ---@field _canPatch boolean scene carries the task-owned overlay seam
 ---@field _patchActive boolean task-owned overlay is applied
@@ -1725,7 +1762,16 @@ local SOUND_TASK_KINDS = {
 ---@field _lastScroll table<string, number>? last applied viewport behind owned-only restoration
 ---@field _scrollApplied boolean sweep has written the viewport
 ---@field _random unknown occurrence-local visual draw behind a positive bound
----@field _jitter boolean run carries occurrence-local visual jitter
+---@field _amplitude integer? seeded motion pixels behind randomized writes
+---@field _centerX integer staged picture center behind randomized writes
+---@field _centerY integer staged picture center behind randomized writes
+---@field _dashReach integer? dash pixels behind the out-leg reach
+---@field _dashSign integer? dash direction behind sided motion
+---@field _phaseFirst integer? first phase ticks behind two-phase writes
+---@field _phaseReturn integer? return phase ticks behind two-phase writes
+---@field _repeatCount integer? compiled repeats behind palette pulses
+---@field _targetColor integer? compiled target color behind palette pulses
+---@field _vanishInterval integer? compiled interval ticks behind visibility toggles
 ---@field _ticks integer source ticks advanced
 ---@field _duration integer? source ticks behind completion, absent for synchronous markers
 ---@field _state string pending, running, complete, or cancelled
@@ -1746,6 +1792,119 @@ local OWN_SIDE_SIGNS = {
   [3] = 1,
   [5] = 1,
 }
+
+-- Picture/sprite task kinds owning both selected activations at once.
+-- Every other family owns the single planned activation, or nothing
+-- when the spawn resolves none.
+local PAIR_TASK_KINDS = {
+  ["pokemon-picture-battler-pair-scale-transition"] = true,
+  ["pokemon-picture-two-battler-crossing-motion"] = true,
+  ["pokemon-picture-selected-pair-transition"] = true,
+  ["pokemon-picture-managed-sprite-affine-pair-transition"] = true,
+}
+
+-- Selects the source control law behind a picture/sprite kind. The timed
+-- holds below keep their compiled boundary with no patch, each pinned to
+-- its producer shape (romdump/src/config/BattleAnimationSources.lua,
+-- resolveBattleAnimationCallback): the defender knockback hold is selector
+-- 48, DefenderKnockback in battle_anim_effects.c, which reads no source
+-- words and runs its 26 ticks; the sinusoidal hold is selector 10, which
+-- lowers oscillation cycles with a duration but no amplitude operand; the
+-- selected-position hold is selector 77, which lowers target, basis, and
+-- duration with no magnitude operand. Without compiled placement operands
+-- the shared motion body keeps those documented timing holds.
+---@param kind string task kind under classification
+---@return string family behind per-tick writes
+local function familyFor(kind)
+  if kind == "pokemon-picture-attacker-dash-afterimages" then
+    return "dash"
+  end
+  if PAIR_TASK_KINDS[kind] == true then
+    return "pair"
+  end
+  if kind == "pokemon-picture-cyclic-two-phase-position-transition" then
+    return "cyclic"
+  end
+  if kind == "pokemon-picture-repeated-palette-fade" then
+    return "palette-pulse"
+  end
+  if kind == "pokemon-picture-paired-position-interpolation" then
+    return "paired"
+  end
+  if kind == "pokemon-picture-repeated-vanish-transition" then
+    return "vanish"
+  end
+  if string.find(kind, "randomized", 1, true) ~= nil then
+    return "randomized"
+  end
+  if
+    string.find(kind, "affine", 1, true) ~= nil
+    or string.find(kind, "rotation", 1, true) ~= nil
+    or string.find(kind, "scale", 1, true) ~= nil
+  then
+    return "affine"
+  end
+  if
+    string.find(kind, "multi-sprite", 1, true) ~= nil
+    or string.find(kind, "four-sprite", 1, true) ~= nil
+    or string.find(kind, "three-sprite", 1, true) ~= nil
+    or string.find(kind, "double-sprite", 1, true) ~= nil
+    or string.find(kind, "oam-animation", 1, true) ~= nil
+    or string.find(kind, "sprite-animation-lifecycle", 1, true) ~= nil
+    or string.find(kind, "relative-sprite-path", 1, true) ~= nil
+  then
+    return "multi"
+  end
+  return "motion"
+end
+
+---@param kind string task kind under classification
+---@return boolean affine true for pair kinds driven by affine operands
+local function pairUsesAffine(kind)
+  return string.find(kind, "affine", 1, true) ~= nil
+    or string.find(kind, "rotation", 1, true) ~= nil
+    or string.find(kind, "scale", 1, true) ~= nil
+end
+
+-- Converts a compiled scale operand to the scene affine factor:
+-- integer source words ride 8.8 fixed point, floats pass through.
+---@param value unknown compiled scale operand under conversion
+---@return number? affine factor, absent for non-numeric operands
+local function affineScale(value)
+  if type(value) ~= "number" or value ~= value then
+    return nil
+  end
+  if value % 1 == 0 then
+    return value / 256
+  end
+  return value
+end
+
+-- Resolves the dash reach and direction from the occurrence slot
+-- geometry: the attacker dashes halfway toward its first target along
+-- the battlefield axis. Both slots are required; an unaddressed dash
+-- cannot aim and fails closed with its kind identity.
+---@param context table<string, unknown> occurrence-bound playback context
+---@param kind string task kind under construction
+---@return integer reach in native pixels, always positive
+---@return integer direction +1 toward increasing X, -1 otherwise
+local function dashVector(context, kind)
+  local topology = type(context) == "table" and context.topology or nil
+  local attacker = type(topology) == "table" and topology.attacker or nil
+  local targets = type(topology) == "table" and topology.targets or nil
+  local from = type(attacker) == "table" and EMITTER_CENTERS[attacker.slot] or nil
+  local first = type(targets) == "table" and targets[1] or nil
+  local onto = type(first) == "table" and EMITTER_CENTERS[first.slot] or nil
+  if from == nil or onto == nil then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " dashes between known occurrence slots", 0)
+  end
+  local span = onto.x - from.x
+  if span == 0 then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " dashes between distinct occurrence slots", 0)
+  end
+  local direction = span > 0 and 1 or -1
+  return math.max(1, math.floor(math.abs(span) / 2)), direction
+end
 
 -- Resolves a directed offscreen offset from the occurrence side type:
 -- the run slides its activation away from the battlefield center over
@@ -1798,6 +1957,216 @@ local function directedOffscreenParameters(parameters, activation, context, kind
   return directed
 end
 
+-- Interpolates the affine rotation/scale operands over one tick:
+-- rotation follows the compiled angle pair, scale follows the compiled
+-- start/end pair (8.8 fixed words or floats). Absent operands hold.
+---@param self BattleNativeVisualTask visual task under advancement
+---@param progress number completed fraction in 0..1
+---@return table<string, unknown>? picture overlay behind the tick
+local function affinePatchFor(self, progress)
+  local patch = {}
+  local parameters = self._parameters
+  local fromAngle = parameters.startAngle
+  local toAngle = parameters.targetAngle
+  if type(fromAngle) == "number" and type(toAngle) == "number" then
+    patch.rotationZ = clampRotationAngle(fromAngle + (toAngle - fromAngle) * progress)
+  end
+  local fromScale = affineScale(parameters.scaleStart)
+  local toScale = affineScale(parameters.scaleEnd)
+  if fromScale ~= nil and toScale ~= nil then
+    local first = self._phaseFirst
+    local second = self._phaseReturn
+    if first ~= nil and second ~= nil and (first > 0 or second > 0) then
+      local tick = self._ticks
+      if tick <= first then
+        local phase = first > 0 and tick / first or 1
+        patch.scaleX = fromScale + (toScale - fromScale) * phase
+        patch.scaleY = fromScale + (toScale - fromScale) * phase
+      else
+        local phase = second > 0 and (tick - first) / second or 1
+        if phase > 1 then
+          phase = 1
+        end
+        patch.scaleX = toScale + (fromScale - toScale) * phase
+        patch.scaleY = toScale + (fromScale - toScale) * phase
+      end
+    else
+      patch.scaleX = fromScale + (toScale - fromScale) * progress
+      patch.scaleY = fromScale + (toScale - fromScale) * progress
+    end
+  end
+  if next(patch) == nil then
+    return nil
+  end
+  return patch
+end
+
+-- Interpolates the cyclic two-phase offsets: the first leg runs from
+-- the compiled start to the end, the return leg runs back.
+---@param self BattleNativeVisualTask visual task under advancement
+---@return table<string, unknown>? picture overlay behind the tick
+local function cyclicPatchFor(self)
+  local parameters = self._parameters
+  if
+    type(parameters.startX) ~= "number"
+    or type(parameters.endX) ~= "number"
+    or type(parameters.startY) ~= "number"
+    or type(parameters.endY) ~= "number"
+  then
+    return nil
+  end
+  local first = self._phaseFirst or 0
+  local fromX = clampPictureOffset(parameters.startX)
+  local toX = clampPictureOffset(parameters.endX)
+  local fromY = clampPictureOffset(parameters.startY)
+  local toY = clampPictureOffset(parameters.endY)
+  local currentX, currentY = fromX + 0.0, fromY + 0.0
+  if self._ticks <= first then
+    local phase = first > 0 and self._ticks / first or 1
+    currentX = fromX + (toX - fromX) * phase
+    currentY = fromY + (toY - fromY) * phase
+  else
+    local second = self._phaseReturn or 0
+    local phase = second > 0 and (self._ticks - first) / second or 1
+    if phase > 1 then
+      phase = 1
+    end
+    currentX = toX + (fromX - toX) * phase
+    currentY = toY + (fromY - toY) * phase
+  end
+  return {
+    pictureXOffset2 = wrapPictureByte(currentX),
+    pictureYOffset = clampPictureOffset(currentY),
+  }
+end
+
+-- Pulses the palette overlay through one full-range triangle per
+-- compiled repeat: each slice rises from zero to the native maximum
+-- and back, carrying the compiled target color.
+---@param self BattleNativeVisualTask visual task under advancement
+---@return table<string, unknown>? picture overlay behind the tick
+local function pulsePatchFor(self)
+  local repeatCount = self._repeatCount
+  local targetColor = self._targetColor
+  local duration = self._duration
+  if repeatCount == nil or targetColor == nil or duration == nil or duration < 1 then
+    return nil
+  end
+  local slice = duration / repeatCount
+  if slice < 1 then
+    return nil
+  end
+  local position = ((self._ticks - 1) % slice) / slice * 2
+  local intensity = position <= 1 and position * 16 or (2 - position) * 16
+  return {
+    paletteFade = {
+      start = math.floor(intensity),
+      finish = math.floor(intensity),
+      framesPer = 1,
+      targetColor = targetColor,
+    },
+  }
+end
+
+-- Interpolates the paired picture from its origin to the compiled
+-- endpoint; the reversed source flag swaps the two ends.
+---@param self BattleNativeVisualTask visual task under advancement
+---@param progress number completed fraction in 0..1
+---@return table<string, unknown>? picture overlay behind the tick
+local function pairedPatchFor(self, progress)
+  local parameters = self._parameters
+  if type(parameters.endpointX) ~= "number" or type(parameters.endpointY) ~= "number" then
+    return nil
+  end
+  local fromX, toX = 0, clampPictureOffset(parameters.endpointX)
+  local fromY, toY = 0, clampPictureOffset(parameters.endpointY)
+  if parameters.reverseEndpoints == true then
+    fromX, toX, fromY, toY = toX, fromX, toY, fromY
+  end
+  if fromX == toX and fromY == toY then
+    return nil
+  end
+  local patch = {}
+  if fromX ~= toX then
+    patch.pictureXOffset2 = wrapPictureByte(fromX + (toX - fromX) * progress)
+  end
+  if fromY ~= toY then
+    patch.pictureYOffset = clampPictureOffset(fromY + (toY - fromY) * progress)
+  end
+  if next(patch) == nil then
+    return nil
+  end
+  return patch
+end
+
+-- Toggles picture visibility on the compiled interval.
+---@param self BattleNativeVisualTask visual task under advancement
+---@return table<string, unknown>? picture overlay behind the tick
+local function vanishPatchFor(self)
+  local interval = self._vanishInterval
+  if interval == nil or interval < 1 then
+    return nil
+  end
+  return { pictureVisible = (math.floor((self._ticks - 1) / interval) % 2 == 0) }
+end
+
+-- Advances the multi-sprite formation across its compiled endpoint;
+-- formations without a compiled endpoint hold their activation.
+---@param self BattleNativeVisualTask visual task under advancement
+---@param progress number completed fraction in 0..1
+---@return table<string, unknown>? picture overlay behind the tick
+local function multiPatchFor(self, progress)
+  local parameters = self._parameters
+  local endX = type(parameters.endpointX) == "number" and clampPictureOffset(parameters.endpointX) or nil
+  local endY = type(parameters.endpointY) == "number" and clampPictureOffset(parameters.endpointY) or nil
+  if endX == nil and type(parameters.spriteSpacingX) == "number" then
+    endX = clampPictureOffset(parameters.spriteSpacingX)
+  end
+  if endY == nil and type(parameters.spriteSpacingY) == "number" then
+    endY = clampPictureOffset(parameters.spriteSpacingY)
+  end
+  if endX == nil and endY == nil then
+    return nil
+  end
+  local patch = {}
+  if endX ~= nil and endX ~= 0 then
+    patch.pictureXOffset2 = wrapPictureByte(endX * progress)
+  end
+  if endY ~= nil and endY ~= 0 then
+    patch.pictureYOffset = clampPictureOffset(endY * progress)
+  end
+  if next(patch) == nil then
+    return nil
+  end
+  return patch
+end
+
+-- Interpolates the approach/settle offset pair: the first leg runs
+-- from the origin to the approach offset, the second settles onward.
+---@param self BattleNativeVisualTask visual task under advancement
+---@return table<string, unknown>? picture overlay behind the tick
+local function approachPatchFor(self)
+  local parameters = self._parameters
+  if type(parameters.approachOffset) ~= "number" or type(parameters.settleOffset) ~= "number" then
+    return nil
+  end
+  local approach = self._phaseFirst or 0
+  local approachX = clampPictureOffset(parameters.approachOffset)
+  local settleX = clampPictureOffset(parameters.settleOffset)
+  local current = approachX + 0.0
+  if self._ticks <= approach then
+    current = approach > 0 and approachX * (self._ticks / approach) or approachX
+  else
+    local settle = self._phaseReturn or 0
+    local phase = settle > 0 and (self._ticks - approach) / settle or 1
+    if phase > 1 then
+      phase = 1
+    end
+    current = approachX + (settleX - approachX) * phase
+  end
+  return { pictureXOffset2 = wrapPictureByte(current) }
+end
+
 ---@param args table<string, unknown> instruction-derived construction arguments
 ---@param kind string task kind under construction
 local function checkVisualArgs(args, kind)
@@ -1846,26 +2215,100 @@ local function newNativeVisualTask(kind, args, context, services)
   if parameters.exitOwnSide == true then
     parameters = directedOffscreenParameters(parameters, activation, context or {}, kind)
   end
+  local family = familyFor(kind)
+  local activations = {}
+  if activation ~= nil then
+    activations[#activations + 1] = activation
+  end
+  if family == "pair" then
+    local topology = context.topology
+    local targets = type(topology) == "table" and topology.targets or nil
+    local first = type(targets) == "table" and targets[1] or nil
+    if type(first) ~= "table" or type(first.combatant) ~= "number" then
+      error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " pairs two selected activations", 0)
+    end
+    local partner = { combatant = first.combatant, activation = first.activation }
+    if activation == nil then
+      activations[#activations + 1] = partner
+    elseif activation.combatant ~= partner.combatant or activation.activation ~= partner.activation then
+      activations[#activations + 1] = partner
+    end
+  end
   local canPatch = type(scene.applyTaskPicturePatch) == "function" and type(scene.removeTaskPicturePatch) == "function"
   local picturePlan = nil
   local canScroll = type(scene.scroll) == "function" and type(scene.applyScrollPatch) == "function"
   local scrollSweep = nil
-  local jitter = false
-  -- Timing-less spawns retire synchronously as validated markers:
-  -- without a source boundary there is no owned interpolation
-  -- lifetime, so the run owns no patch or sweep. Only the source
-  -- retail census gates this path: timed spawns always interpolate
-  -- below.
+  -- Timing-less spawns retire synchronously only for verified marker
+  -- kinds: without a source boundary there is no owned interpolation
+  -- lifetime, so the run owns no patch or sweep, and every other kind
+  -- fails closed below instead of retiring silently. Timed spawns always
+  -- interpolate below.
+  if duration == nil and SYNCHRONOUS_MARKER_KINDS[kind] ~= true then
+    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " retires only on compiled timing operands", 0)
+  end
   if duration ~= nil then
-    if activation ~= nil and canPatch then
+    if #activations > 0 and canPatch and (family == "motion" or (family == "pair" and not pairUsesAffine(kind))) then
       picturePlan = picturePlanFor(parameters)
     end
     if picturePlan == nil and canScroll then
       scrollSweep = scrollSweepFor(parameters, duration)
     end
-    jitter = string.find(kind, "randomized", 1, true) ~= nil
+  end
+  local copied = {}
+  if type(parameters) == "table" then
+    for field, value in pairs(parameters) do
+      copied[field] = value
+    end
   end
   local random = checkRandom(context or {}, kind)
+  local amplitude = nil
+  local centerX, centerY = 0, 0
+  if family == "randomized" and duration ~= nil then
+    if type(copied.amplitude) == "number" and copied.amplitude % 1 == 0 and copied.amplitude >= 1 then
+      amplitude = math.min(127, copied.amplitude)
+    end
+    if type(copied.centerX) == "number" then
+      centerX = clampPictureOffset(copied.centerX)
+    end
+    if type(copied.centerY) == "number" then
+      centerY = clampPictureOffset(copied.centerY)
+    end
+  end
+  local dashReach, dashSign = nil, nil
+  if family == "dash" then
+    if duration == nil then
+      error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " dashes over a compiled duration", 0)
+    end
+    if activation == nil then
+      error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " dashes its resolved activation", 0)
+    end
+    dashReach, dashSign = dashVector(context or {}, kind)
+  end
+  local phaseFirst, phaseReturn = nil, nil
+  if isPositiveInt(copied.firstDurationTicks) then
+    phaseFirst = copied.firstDurationTicks
+  elseif isPositiveInt(copied.approachTicks) then
+    phaseFirst = copied.approachTicks
+  end
+  if isPositiveInt(copied.returnDurationTicks) then
+    phaseReturn = copied.returnDurationTicks
+  elseif isPositiveInt(copied.secondDurationTicks) then
+    phaseReturn = copied.secondDurationTicks
+  elseif isPositiveInt(copied.settleTicks) then
+    phaseReturn = copied.settleTicks
+  end
+  local repeatCount = nil
+  if isPositiveInt(copied.repeatCount) then
+    repeatCount = copied.repeatCount
+  end
+  local targetColor = nil
+  if type(copied.targetColor) == "number" and copied.targetColor % 1 == 0 then
+    targetColor = clampPaletteColor(copied.targetColor)
+  end
+  local vanishInterval = nil
+  if isPositiveInt(copied.intervalTicks) then
+    vanishInterval = copied.intervalTicks
+  end
   local scrollSaved = { x = 0, y = 0 }
   if canScroll then
     local saved = scene.scroll(scene)
@@ -1874,7 +2317,10 @@ local function newNativeVisualTask(kind, args, context, services)
   return setmetatable({
     _scene = scene,
     _kind = kind,
+    _family = family,
     _activation = activation,
+    _activations = activations,
+    _parameters = copied,
     _picturePlan = picturePlan,
     _canPatch = canPatch,
     _patchActive = false,
@@ -1885,7 +2331,16 @@ local function newNativeVisualTask(kind, args, context, services)
     _lastScroll = nil,
     _scrollApplied = false,
     _random = random,
-    _jitter = jitter,
+    _amplitude = amplitude,
+    _centerX = centerX,
+    _centerY = centerY,
+    _dashReach = dashReach,
+    _dashSign = dashSign,
+    _phaseFirst = phaseFirst,
+    _phaseReturn = phaseReturn,
+    _repeatCount = repeatCount,
+    _targetColor = targetColor,
+    _vanishInterval = vanishInterval,
     _ticks = 0,
     _duration = duration,
     _state = "pending",
@@ -1894,11 +2349,52 @@ local function newNativeVisualTask(kind, args, context, services)
   }, BattleNativeVisualTask)
 end
 
+-- Writes the dash coordinate stages: a phased out leg, a back leg, and
+-- a settle tail over the compiled duration, from the slot-derived reach.
+-- Phase boundaries come only from the compiled duration.
+---@param self BattleNativeVisualTask visual task under advancement
+local function writeDashTick(self)
+  local duration = self._duration --[[@as integer]]
+  local out = math.max(1, math.floor(duration * 8 / 20))
+  local back = math.max(1, math.floor(duration * 9 / 20))
+  local reach = self._dashReach --[[@as integer]]
+  local sign = self._dashSign --[[@as integer]]
+  local offset = 0
+  if self._ticks <= out then
+    offset = reach * (self._ticks / out)
+  elseif self._ticks <= out + back then
+    offset = reach * (1 - (self._ticks - out) / back)
+  else
+    offset = 0
+  end
+  self._scene.applyTaskPicturePatch(self._scene, self, self._activation, {
+    pictureXOffset2 = wrapPictureByte(sign * offset),
+  })
+  self._patchActive = true
+end
+
+-- Writes seeded motion: two occurrence-local draws per tick become the
+-- picture offsets, so the same seed paints the same positions on every
+-- host schedule while another seed varies them.
+---@param self BattleNativeVisualTask visual task under advancement
+local function writeRandomizedTick(self)
+  local amplitude = self._amplitude --[[@as integer]]
+  local random = self._random --[[@as fun(bound: integer): integer]]
+  local span = amplitude * 2 + 1
+  local dx = random(span) - amplitude
+  local dy = random(span) - amplitude
+  self._scene.applyTaskPicturePatch(self._scene, self, self._activation, {
+    pictureXOffset2 = wrapPictureByte(self._centerX + dx),
+    pictureYOffset = clampPictureOffset(self._centerY + dy),
+  })
+  self._patchActive = true
+end
+
 -- Writes one tick of owned visual state: the scroll sweep interpolates
--- its compiled totals, the picture overlay interpolates its compiled
--- placement, and randomized runs draw their jitter from the
--- occurrence-local stream. Palette overlays apply once: the scene steps
--- them natively afterward. The run publishes no drawable picture.
+-- its compiled totals and the family writer interpolates its compiled
+-- placement from the occurrence-local stream when the family is seeded.
+-- Palette overlays apply once: the scene steps them natively afterward.
+-- The run publishes no drawable picture.
 ---@param self BattleNativeVisualTask
 ---@param progress number completed fraction in 0..1
 local function writeVisualTick(self, progress)
@@ -1910,44 +2406,76 @@ local function writeVisualTick(self, progress)
     self._scrollApplied = true
     self._lastScroll = { x = x, y = y }
   end
+  if self._family == "dash" then
+    writeDashTick(self)
+    return
+  end
+  if self._family == "randomized" and self._amplitude ~= nil and self._activation ~= nil and self._canPatch then
+    writeRandomizedTick(self)
+    return
+  end
+  local patch = nil
+  if self._family == "affine" or (self._family == "pair" and pairUsesAffine(self._kind)) then
+    patch = affinePatchFor(self, progress)
+  elseif self._family == "cyclic" then
+    patch = cyclicPatchFor(self)
+  elseif self._family == "palette-pulse" then
+    patch = pulsePatchFor(self)
+  elseif self._family == "paired" then
+    patch = pairedPatchFor(self, progress)
+  elseif self._family == "vanish" then
+    patch = vanishPatchFor(self)
+  elseif self._family == "multi" then
+    patch = multiPatchFor(self, progress)
+  elseif self._family == "motion" and self._parameters.approachOffset ~= nil then
+    patch = approachPatchFor(self)
+  end
+  if patch ~= nil and self._canPatch then
+    for _, activation in ipairs(self._activations) do
+      scene.applyTaskPicturePatch(scene, self, activation, patch)
+    end
+    self._patchActive = true
+    return
+  end
   local plan = self._picturePlan
-  if plan ~= nil and self._activation ~= nil and self._canPatch then
+  if plan ~= nil and self._canPatch then
     if plan.kind == "palette" then
       if not self._paletteApplied then
         self._paletteApplied = true
-        scene.applyTaskPicturePatch(scene, self, self._activation, {
-          paletteFade = {
-            start = plan.start,
-            finish = plan.finish,
-            framesPer = plan.framesPer,
-            targetColor = plan.targetColor,
-          },
-        })
+        for _, activation in ipairs(self._activations) do
+          scene.applyTaskPicturePatch(scene, self, activation, {
+            paletteFade = {
+              start = plan.start,
+              finish = plan.finish,
+              framesPer = plan.framesPer,
+              targetColor = plan.targetColor,
+            },
+          })
+        end
         self._patchActive = true
       end
     elseif plan.kind == "rotation" then
-      scene.applyTaskPicturePatch(scene, self, self._activation, {
-        rotationZ = clampRotationAngle(plan.from + (plan.to - plan.from) * progress),
-      })
+      for _, activation in ipairs(self._activations) do
+        scene.applyTaskPicturePatch(scene, self, activation, {
+          rotationZ = clampRotationAngle(plan.from + (plan.to - plan.from) * progress),
+        })
+      end
       self._patchActive = true
     else
-      local patch = {}
+      local offsetPatch = {}
       if plan.fromX ~= 0 or plan.toX ~= 0 then
-        patch.pictureXOffset2 = wrapPictureByte(plan.fromX + (plan.toX - plan.fromX) * progress)
+        offsetPatch.pictureXOffset2 = wrapPictureByte(plan.fromX + (plan.toX - plan.fromX) * progress)
       end
       if plan.fromY ~= 0 or plan.toY ~= 0 then
-        patch.pictureYOffset = clampPictureOffset(plan.fromY + (plan.toY - plan.fromY) * progress)
+        offsetPatch.pictureYOffset = clampPictureOffset(plan.fromY + (plan.toY - plan.fromY) * progress)
       end
-      if next(patch) ~= nil then
-        scene.applyTaskPicturePatch(scene, self, self._activation, patch)
+      if next(offsetPatch) ~= nil then
+        for _, activation in ipairs(self._activations) do
+          scene.applyTaskPicturePatch(scene, self, activation, offsetPatch)
+        end
         self._patchActive = true
       end
     end
-  end
-  if self._jitter then
-    local random = self._random --[[@as fun(bound: integer): integer]]
-    random(65)
-    random(65)
   end
 end
 
@@ -1959,8 +2487,10 @@ end
 local function teardownNativeVisual(self)
   if self._patchActive then
     self._patchActive = false
-    if self._activation ~= nil and self._canPatch then
-      self._scene.removeTaskPicturePatch(self._scene, self, self._activation)
+    if self._canPatch then
+      for _, activation in ipairs(self._activations) do
+        self._scene.removeTaskPicturePatch(self._scene, self, activation)
+      end
     end
   end
   if self._scrollApplied then
@@ -1978,7 +2508,7 @@ end
 -- Advances one source tick toward the compiled boundary. Mid-task scene
 -- failures restore the task's own partial visuals before the failure
 -- reaches the player, so a withdrawn activation never strands a patch.
--- Timing-less markers retire on their first tick: the validated spawn
+-- Timing-less marker-kind spawns retire on their first tick: the spawn
 -- carries no boundary to interpolate, so there is nothing to write.
 ---@param self BattleNativeVisualTask
 ---@param tick table<string, unknown>? source tick under advancement

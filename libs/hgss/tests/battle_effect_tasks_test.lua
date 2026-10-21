@@ -128,19 +128,21 @@ local function fixedRandom(draws)
 end
 
 function T.blend_transition_completes_and_releases_everything_once()
-  -- Blend completion comes only from compiled timing operands: a
-  -- well-formed spawn without any retires synchronously as a
-  -- validated marker, and a timed blend sweeps the background
-  -- viewport. Neither stages leases nor publishes drawable pictures.
+  -- Blend completion comes only from compiled timing operands: a spawn
+  -- without any fails closed with its kind identity instead of retiring
+  -- silently, and a timed blend sweeps the background viewport. Neither
+  -- stages leases nor publishes drawable pictures.
   local scene = sceneWithPair()
   local services, journal = journalServices(scene)
-  local marker = assert(BattleEffectTasks.create(BattleEffectTasks.BLEND_TRANSITION_KIND, {}, {}, services))
-  Assert.equal(marker:status(), "pending", "markers open pending")
-  marker:stepSourceTick({ tick = 1 })
-  Assert.equal(marker:status(), "complete", "the validated marker retires on its first tick")
-  Assert.equal(#scene:effectViews(), 0, "the marker publishes no drawable picture")
-  marker:dispose()
-  Assert.equal(#journal.released, #journal.acquired, "the marker stages no leases")
+  local ok, failure = pcall(BattleEffectTasks.create, BattleEffectTasks.BLEND_TRANSITION_KIND, {}, {}, services)
+  Assert.isFalse(ok, "a blend without compiled timing never yields a runnable task")
+  Assert.isTrue(
+    string.find(tostring(failure), BattleEffectTasks.BLEND_TRANSITION_KIND, 1, true) ~= nil
+      and string.find(tostring(failure), "BATTLE_EFFECT_TASK_MALFORMED", 1, true) ~= nil,
+    "the timing-less blend fails closed naming itself: " .. tostring(failure)
+  )
+  Assert.equal(#scene:effectViews(), 0, "the rejected construction publishes nothing")
+  Assert.equal(#journal.released, #journal.acquired, "the rejected construction stages no leases")
   local task = assert(BattleEffectTasks.create(BattleEffectTasks.BLEND_TRANSITION_KIND, {
     callback = "battle-background-position-transition",
     taskContext = "battle-display",
@@ -704,32 +706,34 @@ function T.visual_duration_prefers_compiled_ticks_over_the_fallback()
   Assert.equal(#journal.released, #journal.acquired, "parameterized runs borrow without acquiring")
 end
 
-function T.operand_less_visual_runs_retire_synchronously_as_markers()
-  -- Visual bodies whose well-formed spawn carries no compiled timing
-  -- operand retire on their first tick instead of retiring on a fixed
-  -- budget: completion times come only from the source parameters the
-  -- producer emitted, and timing-less spawns carry none. The
-  -- four-sprite wave below reaches real retail programs without
-  -- operands, so the marker keeps the routine move executable while
-  -- publishing nothing and staging nothing.
+function T.operand_less_visual_without_a_marker_citation_fails_closed()
+  -- Only verified synchronous-marker kinds retire without compiled timing
+  -- operands; every other timing-less spawn fails closed with its kind
+  -- identity instead of retiring silently with zero writes. The
+  -- four-sprite wave below carries no marker citation, so its
+  -- operand-less spawn never yields a runnable task, publishes nothing,
+  -- and stages nothing.
   local scene = sceneWithPair()
   local services, journal = journalServices(scene)
-  local task = assert(
-    BattleEffectTasks.create("pokemon-picture-four-sprite-wave-transition", {}, occurrenceContext(), services)
+  local ok, failure = pcall(
+    BattleEffectTasks.create,
+    "pokemon-picture-four-sprite-wave-transition",
+    {},
+    occurrenceContext(),
+    services
   )
-  Assert.equal(task:status(), "pending", "markers open pending")
-  task:stepSourceTick({ tick = 1 })
-  Assert.equal(task:status(), "complete", "the validated marker retires on its first tick")
-  Assert.equal(#scene:effectViews(), 0, "the marker publishes no drawable picture")
+  Assert.isFalse(ok, "a timing-less spawn outside the marker set never yields a runnable task")
+  Assert.isTrue(
+    string.find(tostring(failure), "pokemon-picture-four-sprite-wave-transition", 1, true) ~= nil
+      and string.find(tostring(failure), "BATTLE_EFFECT_TASK_MALFORMED", 1, true) ~= nil,
+    "the timing-less spawn fails closed naming itself: " .. tostring(failure)
+  )
+  Assert.equal(#scene:effectViews(), 0, "the rejected construction publishes no drawable picture")
   Assert.isNil(
     scene:pictureState({ combatant = 1, activation = 1 }),
-    "the marker owns no activation patch"
+    "the rejected construction owns no activation patch"
   )
-  task:dispose()
-  task:dispose()
-  task:cancel("late")
-  Assert.equal(task:status(), "complete", "completion survives late cancellation")
-  Assert.equal(#journal.released, #journal.acquired, "the marker stages no leases")
+  Assert.equal(#journal.released, #journal.acquired, "the rejected construction stages no leases")
 end
 
 function T.borrowed_player_leases_are_never_reacquired()
@@ -1045,11 +1049,12 @@ function T.directed_offscreen_motion_without_a_known_side_stays_loud()
 end
 
 function T.battler_motion_holds_keep_source_timing_without_invented_motion()
-  -- DefenderKnockback and AttackerDashAfterimages end where they start
-  -- (the knockback returns, the dash legs cancel), so their runs hold
-  -- the native boundary with no patch instead of inventing motion the
-  -- source never describes; ResetBattlerPosition snaps home at once and
-  -- retires as a validated marker.
+  -- DefenderKnockback ends where it starts (the knockback returns), so
+  -- its run holds the native boundary with no patch instead of inventing
+  -- motion the source operands never describe; AttackerDashAfterimages
+  -- stages its out/back coordinate legs from the occurrence slot geometry
+  -- instead, and ResetBattlerPosition snaps home at once and retires as
+  -- a validated marker.
   local scene = sceneWithPair()
   local services, journal = journalServices(scene)
   local knockback = assert(BattleEffectTasks.create("pokemon-picture-defender-knockback", {
@@ -1073,12 +1078,25 @@ function T.battler_motion_holds_keep_source_timing_without_invented_motion()
     activation = { combatant = 1, activation = 1 },
     parameters = { durationTicks = 20 },
   }, occurrenceContext(), services))
-  for _ = 1, 19 do
+  dash:stepSourceTick({ tick = 1 })
+  dash:stepSourceTick({ tick = 1 })
+  local early = assert(scene:pictureState({ combatant = 1, activation = 1 }), "the dash stages its out-leg coordinates")
+  for _ = 1, 8 do
     dash:stepSourceTick({ tick = 1 })
   end
   Assert.isTrue(dash:status() ~= "complete", "the dash boundary outlives its prefix")
-  dash:stepSourceTick({ tick = 1 })
+  local mid = assert(scene:pictureState({ combatant = 1, activation = 1 }), "the dash keeps its coordinates")
+  Assert.isTrue(mid.pictureXOffset2 ~= early.pictureXOffset2, "the out leg advances the dash")
+  for _ = 1, 6 do
+    dash:stepSourceTick({ tick = 1 })
+  end
+  local returning = assert(scene:pictureState({ combatant = 1, activation = 1 }), "the back leg keeps its stages")
+  Assert.isTrue(returning.pictureXOffset2 ~= mid.pictureXOffset2, "the back leg retreats from the reach")
+  for _ = 1, 4 do
+    dash:stepSourceTick({ tick = 1 })
+  end
   Assert.equal(dash:status(), "complete", "the dash completes at its native 20 ticks")
+  Assert.isNil(scene:pictureState({ combatant = 1, activation = 1 }), "the dash restores the attacker")
   dash:dispose()
   local reset = assert(BattleEffectTasks.create("pokemon-picture-reset-position-transition", {
     activation = { combatant = 3, activation = 3 },

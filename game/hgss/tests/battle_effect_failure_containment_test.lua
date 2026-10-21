@@ -628,7 +628,7 @@ end
 local function powerDemandingStaging(launchId)
   local EffectStagingFixture = require("tests.support.EffectStagingFixture")
   local staging = EffectStagingFixture.new({ launchId = launchId })
-  local program = lowered("MAGNITUDE", { 34, 1, 2, 3, 29, 50, 4 })
+  local program = lowered("MAGNITUDE", { 29, 50, 4 })
   local record = EffectStagingFixture.effectRecord("MAGNITUDE", {})
   record.program = {
     entry = program.entry,
@@ -715,7 +715,7 @@ function T.pending_effect_stages_and_runs_once_ready_without_new_demands()
   Assert.isTrue(screen:status().mode ~= "failed", "pending staging never fails fast")
   Assert.equal(failingDisplayedFoeHp(screen:view()), 57, "the parked cue applies no health early")
   Assert.isFalse(screen:status().ready, "the parked cue reports unready, never settled")
-  local program = lowered("TACKLE", { 34, 1, 2, 3, 29, 50, 4 })
+  local program = lowered("TACKLE", { 29, 50, 4 })
   local record = EffectStagingFixture.effectRecord("TACKLE", {})
   record.program = {
     entry = program.entry,

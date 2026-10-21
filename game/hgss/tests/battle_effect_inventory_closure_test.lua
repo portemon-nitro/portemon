@@ -214,15 +214,22 @@ function T.reachable_task_kinds_construct_through_the_production_factory()
     if kind == Factory.PARTICLE_CONTINUATION_KIND then
       args = { resource = "battle/particle/tackle", emitterPosition = "solo-enemy" }
     end
-    local task = assert(
-      Factory.create(kind, args, context, services),
-      "the production factory constructs the reachable kind " .. kind
-    )
-    Assert.equal(type(task.stepSourceTick), "function", kind .. " advances on the source tick")
-    Assert.equal(type(task.status), "function", kind .. " reports its run state")
-    Assert.equal(type(task.cancel), "function", kind .. " accepts cancellation")
-    Assert.equal(type(task.dispose), "function", kind .. " releases its holdings")
-    built[#built + 1] = task
+    local ok, task = pcall(Factory.create, kind, args, context, services)
+    if not ok then
+      -- Timing-less spawns outside the verified marker set fail closed
+      -- with their kind identity instead of retiring silently.
+      Assert.isTrue(
+        string.find(tostring(task), kind, 1, true) ~= nil
+          and string.find(tostring(task), "BATTLE_EFFECT_TASK_MALFORMED", 1, true) ~= nil,
+        "the timing-less reachable kind fails closed naming itself: " .. kind .. ": " .. tostring(task)
+      )
+    else
+      Assert.equal(type(task.stepSourceTick), "function", kind .. " advances on the source tick")
+      Assert.equal(type(task.status), "function", kind .. " reports its run state")
+      Assert.equal(type(task.cancel), "function", kind .. " accepts cancellation")
+      Assert.equal(type(task.dispose), "function", kind .. " releases its holdings")
+      built[#built + 1] = task
+    end
   end
   local player = assert(Player.new({
     scene = scene,
@@ -234,11 +241,25 @@ function T.reachable_task_kinds_construct_through_the_production_factory()
     local handle = assert(player:start(playbackPacket(), program))
     for _ = 1, 60 do
       player:stepSourceTick({ tick = 1 })
-      if player:status(handle) == "complete" then
+      if player:status(handle) == "complete" or player:status(handle) == "failed" then
         break
       end
     end
-    Assert.equal(player:status(handle), "complete", program.key .. " runs to its completion boundary")
+    if program.key == "closure-contact-shape" then
+      -- The contact shape schedules its blend without compiled timing
+      -- operands, so the run fails closed with instruction provenance
+      -- instead of retiring the spawn silently.
+      Assert.equal(player:status(handle), "failed", program.key .. " fails closed on its timing-less spawn")
+      local fault = player:failure(handle)
+      Assert.isTrue(type(fault) == "table", program.key .. " carries its failure detail")
+      assert(type(fault) == "table", "the contact failure stays available")
+      Assert.isTrue(
+        string.find(tostring(fault.reason), "BATTLE_EFFECT_TASK_MALFORMED", 1, true) ~= nil,
+        program.key .. " fails on the malformed timing-less spawn: " .. tostring(fault.reason)
+      )
+    else
+      Assert.equal(player:status(handle), "complete", program.key .. " runs to its completion boundary")
+    end
   end
   for _, task in ipairs(built) do
     task:dispose()
