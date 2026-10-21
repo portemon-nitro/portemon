@@ -202,6 +202,12 @@ function T.contract_pins_the_current_asset_identities()
       sampleSchema = "g4-audio-sample-v4",
       provenanceSchema = "g4-audio-provenance-v1",
     },
+    startupLoader = {
+      schema = "g4-startup-loader-v1",
+    },
+    startupTitle = {
+      schema = "g4-startup-title-v1",
+    },
   }
   for family, expected in pairs(expectedFamilies) do
     Assert.deepEqual(DerivedAssetContract[family], expected, family)

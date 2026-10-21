@@ -1418,7 +1418,7 @@ end
 local function warmingAdopted()
   return {
     messageBankIds = { 1, 2 },
-    audioBankIds = { 3 },
+    audioBankIds = { 3, 4, 250 },
     scriptMemberIds = { 4 },
     iconPageIds = { 0 },
     portraitPageIds = { 1 },
@@ -2629,6 +2629,54 @@ function T.persisted_milestone_answers_ready_without_worker_work()
   Assert.isNil(againFailure, "a trusted milestone keeps reporting no failure")
 end
 
+function T.persisted_startup_milestones_answer_ready_without_worker_work()
+  local backend = FakeCache.new()
+  local generation = "startup-milestone-restart-generation"
+  local cacheFs = CacheFs.forVersion("heartgold", backend)
+  for _, name in ipairs({ "startup-loader", "startup-title" }) do
+    cacheFs:writeLua("data/generated/" .. name .. ".lua", {
+      schema = ArtifactJobs.MILESTONE_SCHEMA,
+      generationId = generation,
+      name = name,
+      jobs = {},
+    })
+  end
+  local pool = recordingPool()
+  local session, _ = isolatedSession(generation, pool, backend)
+  for _, name in ipairs({ "startup-loader", "startup-title" }) do
+    local ready, failure = session:requestMilestone(name, "required")
+    Assert.isTrue(ready, name .. " returns its current persisted answer")
+    Assert.isNil(failure, name .. " has no failure")
+  end
+  for _ = 1, 4 do
+    session:update()
+  end
+  Assert.equal(#pool.submitted, 0, "trusted startup attestations enroll no worker work")
+  Assert.isNil(session.byKey["source-plan:global"], "trusted startup attestations do not request source inventory")
+  for _, name in ipairs({ "startup-loader", "startup-title" }) do
+    local ready, failure = session:requestMilestone(name, "required")
+    Assert.isTrue(ready, name .. " continues to report ready")
+    Assert.isNil(failure, name .. " continues to report no failure")
+  end
+end
+
+function T.unbuilt_startup_milestones_answer_pending_and_request_source_inventory()
+  local backend = FakeCache.new()
+  local pool = recordingPool()
+  local session, _ = isolatedSession("startup-milestone-pending-generation", pool, backend)
+  for _, name in ipairs({ "startup-loader", "startup-title" }) do
+    local ready, failure = session:requestMilestone(name, "required")
+    Assert.isFalse(ready, name .. " remains pending before its artifacts are ready")
+    Assert.isNil(failure, name .. " has no premature failure")
+  end
+  Assert.isTrue(
+    session.byKey["source-plan:global"] ~= nil,
+    "both startup closures register their source inventory dependency"
+  )
+  Assert.equal(session:milestoneStatus("startup-loader").state, "pending")
+  Assert.equal(session:milestoneStatus("startup-title").state, "pending")
+end
+
 -- A milestone file from a previous generation never answers ready: trust
 -- applies only to the selected generation.
 function T.stale_generation_milestone_falls_back_to_normal_planning()
@@ -3147,15 +3195,17 @@ local function driveComposedSweep(options)
         [100] = { id = 100, symbol = "SEQ_SE_DP_SELECT", bankId = 3 },
         [101] = { id = 101, symbol = "SEQ_SE_GS_GEARCANCEL", bankId = 3 },
         [102] = { id = 102, symbol = "SEQ_SE_DP_BAG_004", bankId = 3 },
+        [103] = { id = 103, symbol = "SEQ_GS_POKEMON_THEME", bankId = 4 },
         [1603] = { id = 1603, bankId = 3 },
       },
       sequenceBySymbol = {
         SEQ_SE_DP_SELECT = 100,
         SEQ_SE_GS_GEARCANCEL = 101,
         SEQ_SE_DP_BAG_004 = 102,
+        SEQ_GS_POKEMON_THEME = 103,
       },
     },
-    bankPlans = { { bankId = 3 } },
+    bankPlans = { { bankId = 3 }, { bankId = 4 }, { bankId = 250 } },
   }
   session:_adoptPublished(adopted)
   for _, kind in ipairs({ "source-plan", "mon-layout" }) do

@@ -23,26 +23,33 @@ local function finalizeMesh(batch)
   return data
 end
 
-local function patternVariants(clips)
-  local byMaterial = {}
+local function patternVariants(clips, materials)
+  local modelMaterials, byMaterial = {}, {}
+  for _, material in ipairs(materials) do
+    modelMaterials[material.name] = true
+  end
   for _, clip in ipairs(clips) do
     if clip.kind == AnimationClip.KINDS.PATTERN then
       local names = clip.compiled.textureNames
       local pltts = clip.compiled.paletteNames
       for _, target in ipairs(clip.compiled.targets) do
-        local set = byMaterial[target.name] or {}
-        for _, key in ipairs(target.keys) do
-          local texName = names[key.texIdx + 1]
-          local plttName
-          if key.plttIdx ~= 0xFF then
-            plttName = pltts[key.plttIdx + 1]
+        -- NNSi_G3dAnmObjInitNsBtp binds PAT0 target dictionary entries to
+        -- model material IDs by exact name and leaves absent names unmapped.
+        if modelMaterials[target.name] then
+          local set = byMaterial[target.name] or {}
+          for _, key in ipairs(target.keys) do
+            local texName = names[key.texIdx + 1]
+            local plttName
+            if key.plttIdx ~= 0xFF then
+              plttName = pltts[key.plttIdx + 1]
+            end
+            local variantName = plttName and (texName .. "+" .. plttName) or texName
+            if not set[variantName] then
+              set[variantName] = { texName = texName, plttName = plttName }
+            end
           end
-          local variantName = plttName and (texName .. "+" .. plttName) or texName
-          if not set[variantName] then
-            set[variantName] = { texName = texName, plttName = plttName }
-          end
+          byMaterial[target.name] = set
         end
-        byMaterial[target.name] = set
       end
     end
   end
@@ -175,7 +182,7 @@ function DynamicModelCompiler.compile(
   local unresolved = {}
   local variantsByName = {}
   local embeddedTex = buildingNsbmd.embeddedTextures
-  local variants = patternVariants(animResult.clips)
+  local variants = patternVariants(animResult.clips, buildingModel.materials)
   if embeddedTex then
     variantsByName = resolvePatternVariants(embeddedTex, variants, textures, unresolved, context)
   elseif next(variants) then
