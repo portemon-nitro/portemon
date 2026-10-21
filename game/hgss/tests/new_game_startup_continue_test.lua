@@ -323,11 +323,18 @@ function T.continue_never_reapplies_fresh_startup_initialization()
       end,
     }
     context.store = store
+    local derivedAssets = readyHost()
+    derivedAssets.requestMilestone = function(name)
+      if name == "startup-loader" then
+        return false, "optional walking art unavailable"
+      end
+      return true
+    end
     local game = HgssGame.new({
       versionId = "heartgold",
       entry = { kind = "continue", saveId = clearedFlagGame.saveId },
       onExit = function() end,
-      derivedAssets = readyHost(),
+      derivedAssets = derivedAssets,
       fieldMapLoader = planningLoader(),
     })
     settle(game)
@@ -465,7 +472,24 @@ local HANDOFF_MESSAGES = {
 }
 
 local HANDOFF_PLAYER_DATA_CONTEXT = {
-  charmap = { A = 1, B = 2, C = 3, D = 4, E = 5, F = 6, G = 7, O = 8, L = 9, [" "] = 10, S = 11, e = 12, i = 13, l = 14, r = 15, v = 16 },
+  charmap = {
+    A = 1,
+    B = 2,
+    C = 3,
+    D = 4,
+    E = 5,
+    F = 6,
+    G = 7,
+    O = 8,
+    L = 9,
+    [" "] = 10,
+    S = 11,
+    e = 12,
+    i = 13,
+    l = 14,
+    r = 15,
+    v = 16,
+  },
   frameIndexes = { [0] = true },
 }
 

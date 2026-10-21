@@ -5,6 +5,8 @@
 -- fires its completion callback.
 
 local ImportState = require("app.src.launcher.ImportState")
+local CacheFs = require("libs.storage.src.CacheFs")
+local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentation")
 
 ---@class CachePreparationOptions
 ---@field kind "bootstrap"|"quiescence"|"first-play"|"boot-source"
@@ -19,6 +21,7 @@ local ImportState = require("app.src.launcher.ImportState")
 ---@field isCurrent fun(epoch: integer): boolean owner liveness: the epoch is still selected
 ---@field onReady fun() exactly-once transfer on readiness
 ---@field onCancel fun() return to the owning selection
+---@field displayContext DisplayContext? host topology and safe-area provider
 
 ---@class CachePreparationState
 ---@field kind string
@@ -38,6 +41,9 @@ local ImportState = require("app.src.launcher.ImportState")
 ---@field fired boolean
 ---@field dead boolean
 ---@field error unknown?
+---@field loading table<string, function>
+---@field loaderArtObserved boolean
+---@field loaderArtFailure unknown?
 local CachePreparationState = {}
 CachePreparationState.__index = CachePreparationState
 
@@ -126,6 +132,7 @@ function CachePreparationState.new(options)
       "boot-source preparation mismatch must be a string"
     )
   end
+  local width, height = love.graphics.getDimensions()
   return setmetatable({
     kind = options.kind,
     epoch = options.epoch,
@@ -144,7 +151,43 @@ function CachePreparationState.new(options)
     fired = false,
     dead = false,
     error = nil,
+    loading = HgssLoadingPresentation.new({
+      purpose = "startup",
+      versionId = options.versionId,
+      width = width,
+      height = height,
+      displayContext = options.displayContext,
+    }),
+    loaderArtObserved = false,
+    loaderArtFailure = nil,
   }, CachePreparationState)
+end
+
+function CachePreparationState:_pollLoaderArt()
+  if self.loaderArtObserved or self.provisioner == nil or self.versionId == nil then
+    return
+  end
+  if self.kind ~= "bootstrap" and self.kind ~= "first-play" then
+    return
+  end
+  local host = assert(self.provisioner)
+  local ok, ready, failure = pcall(host.requestMilestone, "startup-loader", "near")
+  if not ok then
+    self.loaderArtFailure = ready
+    self.loaderArtObserved = true
+    return
+  end
+  if failure ~= nil then
+    self.loaderArtFailure = failure
+    self.loaderArtObserved = true
+  elseif ready then
+    local cacheFs = CacheFs.forVersion(self.versionId)
+    local adopted, adoptionError = self.loading:adoptGeneratedAssets(cacheFs)
+    self.loaderArtObserved = true
+    if not adopted then
+      self.loaderArtFailure = adoptionError
+    end
+  end
 end
 
 function CachePreparationState:_fire()
@@ -241,7 +284,8 @@ function CachePreparationState:_pollQuiescence()
   end
 end
 
-function CachePreparationState:update(_)
+function CachePreparationState:update(dt)
+  self.loading:update(dt or 0)
   if self.fired or self.dead then
     return
   end
@@ -251,6 +295,7 @@ function CachePreparationState:update(_)
     self.dead = true
     return
   end
+  self:_pollLoaderArt()
   if self.error ~= nil then
     return
   end
@@ -276,6 +321,12 @@ function CachePreparationState:_drawImportContinuation()
 end
 
 function CachePreparationState:draw()
+  local message = self.error and "Cache preparation failed"
+    or self.kind == "boot-source" and "Waiting for the verified game source"
+    or self.kind == "first-play" and "Preparing imported ROM for first play"
+    or self.kind == "bootstrap" and "Preparing derived cache"
+    or "Waiting for source readers to drain"
+  self.loading:draw({ message = message, artFailure = self.loaderArtFailure })
   local lg = love.graphics
   if self.importContinuation ~= nil then
     self:_drawImportContinuation()
@@ -348,6 +399,10 @@ function CachePreparationState:draw()
   lg.print("Press escape to cancel.", 24, 72)
 end
 
+function CachePreparationState:resize(width, height)
+  self.loading:resize(width, height)
+end
+
 ---@param key string
 function CachePreparationState:keypressed(key, _, _)
   if key == "escape" and not self.fired and not self.dead then
@@ -363,6 +418,7 @@ end
 
 function CachePreparationState:dispose()
   self.dead = true
+  self.loading:dispose()
   -- The opaque first-play object is released exactly once; selection
   -- retirement stays authoritative for the provisioner lifetime.
   local preparation = self.preparation

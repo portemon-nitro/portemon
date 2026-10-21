@@ -208,6 +208,10 @@ function T.tests.continue_loads_early_and_overlaps_geometry_before_transfer()
         -- must reach field on entry planning and runtime readiness alone.
         return false
       end
+      if name == "startup-loader" then
+        -- Optional loader art never joins Continue's field-entry gates.
+        return false
+      end
       Assert.isTrue(
         name == "field-planning" or name == "field-runtime",
         "Continue awaits only entry planning and the field runtime"
@@ -306,11 +310,7 @@ function T.tests.continue_loads_early_and_overlaps_geometry_before_transfer()
       Assert.equal(#fieldCalls, 1, "field entry commits once geometry and runtime are both ready")
       Assert.equal(fieldCalls[1].saveId, saveId, "field receives the early loaded record")
       Assert.equal(game.state, entered, "the committed field becomes the running state")
-      Assert.deepEqual(
-        store:listMetadata(),
-        listedBefore,
-        "Continue mutates neither the catalog nor any payload"
-      )
+      Assert.deepEqual(store:listMetadata(), listedBefore, "Continue mutates neither the catalog nor any payload")
       Assert.equal(loaderBuilds(), 1, "settling never rebuilds the production planning loader")
     end)
     game:dispose()
@@ -528,10 +528,7 @@ function T.tests.new_game_holds_the_finalized_handoff_until_readiness_and_geomet
               geometryReady = true
             end
           end
-          Assert.isTrue(
-            completeOak(game, oakState, onBlack),
-            "the real Oak intro finalizes its candidate"
-          )
+          Assert.isTrue(completeOak(game, oakState, onBlack), "the real Oak intro finalizes its candidate")
           Assert.isTrue(heldObserved, "the handoff reached black and proved the hold before release")
           Assert.equal(#applyCalls, 1, "finalization applies exactly once to the Oak candidate")
           local finalized = applyCalls[1]

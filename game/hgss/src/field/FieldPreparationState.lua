@@ -9,8 +9,12 @@
 -- already-composed field exactly once, only when the target and the
 -- runtime are both ready. The loader factory is total-or-throw: a
 -- factory failure raises directly with no invalid candidate or save
--- repaired or published, and preparation renders no failure screen.
+-- repaired or published, and the loading cover owns no readiness or
+-- failure policy.
 -- Cancellation remains available while pending and publishes nothing.
+
+local CacheFs = require("libs.storage.src.CacheFs")
+local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentation")
 
 ---@class FieldPreparationOptions
 ---@field kind "continue"|"newgame"
@@ -22,6 +26,14 @@
 ---@field createLoader fun(): table<string, unknown> loader factory owned by the HGSS composition
 ---@field enterField fun(record: table<string, unknown>, extraOptions: table<string, unknown>?) ownership transfer
 ---@field onCancel fun()? return to the owning menu
+---@field displayContext DisplayContext? host topology and safe-area provider
+
+---@class FieldPreparationLoading
+---@field adoptGeneratedAssets fun(self: FieldPreparationLoading, cacheFs: CacheFs): boolean, unknown?
+---@field update fun(self: FieldPreparationLoading, dt: number)
+---@field draw fun(self: FieldPreparationLoading, status: table<string, unknown>)
+---@field resize fun(self: FieldPreparationLoading, width: number, height: number)
+---@field dispose fun(self: FieldPreparationLoading)
 
 ---@class FieldPreparationState
 ---@field kind string
@@ -42,6 +54,9 @@
 ---@field target { idOrSymbol: integer|string, fieldX: integer, fieldZ: integer }?
 ---@field transferred boolean
 ---@field cancelled boolean
+---@field loading FieldPreparationLoading?
+---@field loaderArtObserved boolean
+---@field loaderArtFailure unknown?
 local FieldPreparationState = {}
 FieldPreparationState.__index = FieldPreparationState
 
@@ -79,7 +94,33 @@ function FieldPreparationState.new(options)
     target = nil,
     transferred = false,
     cancelled = false,
+    loading = options.kind == "continue" and HgssLoadingPresentation.new({
+      purpose = "continue",
+      versionId = options.versionId,
+      width = love.graphics.getWidth(),
+      height = love.graphics.getHeight(),
+      displayContext = options.displayContext,
+    }) or nil,
+    loaderArtObserved = false,
+    loaderArtFailure = nil,
   }, FieldPreparationState)
+end
+
+function FieldPreparationState:_pollLoaderArt()
+  if self.loaderArtObserved or self.loading == nil then
+    return
+  end
+  local ready, failure = self.derivedAssets.requestMilestone("startup-loader", "near")
+  if failure ~= nil then
+    self.loaderArtFailure = failure
+    self.loaderArtObserved = true
+  elseif ready then
+    local adopted, adoptionError = self.loading:adoptGeneratedAssets(CacheFs.forVersion(self.versionId))
+    if not adopted then
+      self.loaderArtFailure = adoptionError
+    end
+    self.loaderArtObserved = true
+  end
 end
 
 ---@param name string milestone interest to observe
@@ -171,12 +212,20 @@ function FieldPreparationState:_pollGeometry()
   end
   self.transferred = true
   self.phase = "done"
+  if self.loading ~= nil then
+    self.loading:dispose()
+    self.loading = nil
+  end
 end
 
-function FieldPreparationState:update(_)
+function FieldPreparationState:update(dt)
+  if self.loading ~= nil then
+    self.loading:update(dt or 0)
+  end
   if self.transferred or self.cancelled or self.phase == "done" then
     return
   end
+  self:_pollLoaderArt()
   if self.kind == "continue" and not self.loadAttempted then
     self:_loadContinue()
   end
@@ -208,13 +257,26 @@ function FieldPreparationState:update(_)
   self:_pollGeometry()
 end
 
--- Preparation shows nothing; the host presents only its cover.
-function FieldPreparationState:draw() end
+function FieldPreparationState:draw()
+  if self.loading ~= nil then
+    self.loading:draw({ message = "Loading your saved game", artFailure = self.loaderArtFailure })
+  end
+end
+
+function FieldPreparationState:resize(width, height)
+  if self.loading ~= nil then
+    self.loading:resize(width, height)
+  end
+end
 
 ---@param key string
 function FieldPreparationState:keypressed(key, _, _)
   if key == "escape" and not self.transferred and not self.cancelled then
     self.cancelled = true
+    if self.loading ~= nil then
+      self.loading:dispose()
+      self.loading = nil
+    end
     if self.onCancel then
       self.onCancel()
     end
@@ -227,6 +289,10 @@ function FieldPreparationState:dispose()
   -- store; only this state's references are dropped. The borrowed loader
   -- stays with its owner; this state acquires no entries through it.
   self.cancelled = true
+  if self.loading ~= nil then
+    self.loading:dispose()
+    self.loading = nil
+  end
   self.candidate = nil
   self.record = nil
   self.target = nil

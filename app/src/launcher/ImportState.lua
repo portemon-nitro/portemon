@@ -1,6 +1,7 @@
 -- ROM-independent import entry and progress presentation.
 
 local Errors = require("libs.errors.src.Errors")
+local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentation")
 local RomImporter = require("romdump.src.source.RomImporter")
 
 local ImportState = {}
@@ -12,6 +13,15 @@ end
 
 function ImportState.new(importer, saveDir, options)
   options = options or {}
+  local width, height = love.graphics.getDimensions()
+  local loading = options.loadingPresentation
+    or HgssLoadingPresentation.new({
+      purpose = "import",
+      versionId = options.targetVersion,
+      width = width,
+      height = height,
+      displayContext = options.displayContext,
+    })
   return setmetatable({
     importer = importer,
     saveDir = saveDir,
@@ -19,10 +29,21 @@ function ImportState.new(importer, saveDir, options)
     pickerError = options.pickerError,
     onPick = options.onPick,
     onSwitchEdition = options.onSwitchEdition,
+    loading = loading,
   }, ImportState)
 end
 
-function ImportState:update(_) end
+function ImportState:update(dt)
+  self.loading:update(dt or 0)
+end
+
+function ImportState:resize(width, height)
+  self.loading:resize(width, height)
+end
+
+function ImportState:dispose()
+  self.loading:dispose()
+end
 
 function ImportState:filedropped(file)
   self.importer:filedropped(file)
@@ -79,10 +100,18 @@ function ImportState:_pointerpressed(x, y)
 end
 
 function ImportState:draw()
+  local status = self.importer:status()
+  local statusText = status.state == RomImporter.STATES.VERIFYING and "Verifying cartridge identity…"
+    or status.state == RomImporter.STATES.READING and "Reading the selected file…"
+    or status.state == RomImporter.STATES.REGISTERING and (status.stageLabel or "Checking ROM")
+    or status.state == RomImporter.STATES.COMPLETE and "ROM accepted. Preparing the game…"
+    or nil
+  self.loading:draw({ message = statusText })
   ImportState.render(self.importer:status(), self.saveDir, {
     targetVersion = self.targetVersion,
     pickerError = self.pickerError,
     onSwitchEdition = self.onSwitchEdition ~= nil,
+    backgroundDrawn = true,
   })
 end
 
@@ -155,16 +184,18 @@ function ImportState.render(status, saveDir, options)
     or options.targetVersion == "soulsilver" and "Import SoulSilver ROM"
     or "Bring your Pokémon game"
 
-  lg.setColor(0.055, 0.09, 0.13, 1)
-  lg.rectangle("fill", 0, 0, width, height)
-  lg.setColor(0.13, 0.22, 0.28, 1)
-  lg.circle("fill", centerX, height * 0.2, math.min(width, height) * 0.19)
-  lg.setColor(0.86, 0.7, 0.38, 1)
-  lg.circle("line", centerX, height * 0.2, math.min(width, height) * 0.19)
-  lg.setColor(0.83, 0.88, 0.86, 1)
-  lg.setLineWidth(3)
-  lg.line(centerX - 34, height * 0.2, centerX + 34, height * 0.2)
-  lg.circle("fill", centerX, height * 0.2, 9)
+  if not options.backgroundDrawn then
+    lg.setColor(0.055, 0.09, 0.13, 1)
+    lg.rectangle("fill", 0, 0, width, height)
+    lg.setColor(0.13, 0.22, 0.28, 1)
+    lg.circle("fill", centerX, height * 0.2, math.min(width, height) * 0.19)
+    lg.setColor(0.86, 0.7, 0.38, 1)
+    lg.circle("line", centerX, height * 0.2, math.min(width, height) * 0.19)
+    lg.setColor(0.83, 0.88, 0.86, 1)
+    lg.setLineWidth(3)
+    lg.line(centerX - 34, height * 0.2, centerX + 34, height * 0.2)
+    lg.circle("fill", centerX, height * 0.2, 9)
+  end
 
   lg.setColor(0.94, 0.94, 0.9, 1)
   lg.printf(title, 20, height * 0.34, width - 40, "center")
