@@ -5,9 +5,10 @@
 -- boots the production field through the shared harness with the render
 -- trap armed, binds the real envelope behind recording host boundaries, and
 -- drives real movement: no step is injected, no encounter is prepared by
--- hand, and no draw call may fire. Flight closes the bout so the proof
--- covers admission and return without depending on native battle-effect
--- program execution.
+-- hand, and no draw call may fire. Flight closes the admission bouts while
+-- a separate fight bout answers one strike through the live screen so the
+-- proof also covers a genuine native move-effect execution gating its
+-- timeline cue before the return.
 
 local Assert = require("tests.support.Assert")
 local AcceptanceHarness = require("tests.acceptance.support.AcceptanceHarness")
@@ -341,6 +342,100 @@ local function walkUntilEncounter(game, envelope)
   return facts, observed
 end
 
+-- Settles one admitted presented battle by striking once through the live
+-- screen and then leaving: answers the opening decision with a TACKLE,
+-- pumps until the bout visibly advances past the strike (a new decision or
+-- a terminal outcome, which only follows the native effect cue reaching
+-- completion), then flees when the wild bout still stands. Either ending
+-- must publish its exact outcome words, release the owned lifetime, and
+-- hand input back to the field. A stuck launch or a failed native cue
+-- fails loudly with its phase instead of timing out silently.
+---@param game table live acceptance game under test driving
+---@param envelope table live presented-battle envelope under test driving
+---@return table stage facts carrying the encountered species and launch method
+local function fightThenLeave(game, envelope)
+  local runtime = game.runtime
+  local launch = assert(runtime.battleCoordinator._battleLaunch, "the strike settles an admitted presented launch")
+  local environment = assert(launch.environment, "the admitted launch captures its environment")
+  local prepared = assert(runtime.pendingEncounter, "the admitted launch holds its prepared encounter")
+  local wildMon = assert(prepared.mons[1].mon, "the prepared encounter carries its wild mon")
+  local species = assert(wildMon.species, "the prepared wild mon names its species")
+  Assert.isTrue(type(species) == "string" and species ~= "", "the encounter species comes from the source table")
+  local leadMoves = runtime.monService:partyMon(0).moves
+  local tackleSlot = nil
+  for index, entry in ipairs(leadMoves) do
+    if type(entry) == "table" and entry.move == "TACKLE" then
+      tackleSlot = index - 1
+      break
+    end
+  end
+  Assert.notNil(tackleSlot, "the walking lead carries its TACKLE into the bout")
+  local ppBefore = assert(leadMoves[tackleSlot + 1].pp, "the walked strike starts with readable power points")
+  local struck = false
+  local left = false
+  local ticks = 0
+  while
+    (runtime.battleCoordinator:activeBattle() ~= nil or runtime.battleCoordinator._battleLaunch ~= nil)
+    and ticks < SETTLE_BUDGET
+  do
+    local battle = runtime.battleCoordinator:activeBattle()
+    if battle ~= nil then
+      local current = battle:status()
+      if current.phase == "failed" then
+        error("the walking battle failed: " .. tostring(current.error), 0)
+      end
+      if current.phase == "running" and current.request ~= nil then
+        local actor = assert(current.request.actors[1], "each bout decision addresses its combatant")
+        if not struck then
+          local accepted, replyErr = battle:submit(
+            SessionFixture.replyFor(current.request, {
+              SessionFixture.attackChoice(actor, tackleSlot, SessionFixture.positionTarget(2)),
+            })
+          )
+          Assert.isTrue(accepted, "the walked strike is accepted: " .. tostring(replyErr))
+          struck = true
+        elseif admitsRun(current.request) then
+          Assert.isFalse(left, "flight answers the post-strike decision once")
+          local accepted, replyErr = battle:submit(
+            SessionFixture.replyFor(current.request, { { actor = actor, kind = "run", payload = {} } })
+          )
+          Assert.isTrue(accepted, "the post-strike flight is accepted: " .. tostring(replyErr))
+          left = true
+        else
+          error("the post-strike bout asks for nothing answerable", 0)
+        end
+      end
+    end
+    local pending = runtime.battleCoordinator._battleLaunch
+    if pending ~= nil and pending.phase == "failed" then
+      error("the presented launch failed: " .. tostring(pending.error or runtime.errorText), 0)
+    end
+    local screen = envelope:liveScreen()
+    if screen ~= nil then
+      local shown = screen:status()
+      if shown.mode == "intro" or shown.mode == "narration" or shown.mode == "outcome" then
+        envelope:input({ { type = "confirm" } })
+      end
+      Assert.isTrue(shown.mode ~= "failed", "the live screen never fails its walked strike")
+    end
+    game:step()
+    envelope:updateFixed(TICK)
+    ticks = ticks + 1
+  end
+  Assert.isTrue(struck, "the bout answers its opening decision with a strike")
+  Assert.isNil(runtime.battleCoordinator:activeBattle(), "the strike bout settles the owned lifetime")
+  Assert.isNil(runtime.battleCoordinator._battleLaunch, "the return publishes its receipt")
+  local words = assert(runtime:lastBattleResult(), "the strike bout publishes its outcome words")
+  if left then
+    Assert.equal(words.result, "flee", "the surviving bout reports its flight word")
+  else
+    Assert.equal(words.result, "win", "the decided bout reports its win word")
+  end
+  local ppAfter = runtime.monService:partyMon(0).moves[tackleSlot + 1].pp
+  Assert.equal(ppAfter, ppBefore - 1, "the walked strike consumes exactly one power point")
+  return { species = species, method = environment.method }
+end
+
 function T.tests.walking_grass_reaches_a_presented_battle_and_returns()
   local versionId = AcceptanceHarness.defaultVersion()
   local _, game = bootNewBark(versionId)
@@ -583,6 +678,87 @@ function T.tests.walking_cave_floor_reaches_a_presented_battle_and_returns()
     error(failure, 0)
   end
   Assert.notNil(facts, "the cave walk reports its stage facts")
+end
+
+function T.tests.walking_grass_strike_runs_its_native_effect_then_returns()
+  local versionId = AcceptanceHarness.defaultVersion()
+  local _, game = bootNewBark(versionId)
+  local runtime = game.runtime
+  local facts = nil
+  local ok, failure = xpcall(function()
+    OpeningLifecycle.seedNewBarkWestExitScene(game)
+    OpeningLifecycle.settleNewBarkFriendScene(game)
+    freezeActors(game)
+    local route = routeFacts(versionId)
+    walkToGrass(game, route)
+    Assert.isNil(runtime.battleCoordinator:activeBattle(), "the walk to the grass stays outside battle")
+    local envelope, binding = bindEnvelope(game, versionId)
+    local bound, boundFailure = xpcall(function()
+      facts, _ = (function()
+        local attempts = 0
+        local realAttempt = runtime.attemptEncounter
+        runtime.attemptEncounter = function(self, context)
+          attempts = attempts + 1
+          return realAttempt(self, context)
+        end
+        local paceOk, settled, observed = xpcall(function()
+          local anchor = playerCell(game)
+          for _ = 1, PACING_BUDGET do
+            if runtime.battleCoordinator._battleLaunch ~= nil then
+              break
+            end
+            if playerCell(game).fieldX >= anchor.fieldX then
+              game:move("west")
+            else
+              game:move("east")
+            end
+            envelope:updateFixed(TICK)
+            runtime:update(3 * TICK)
+            envelope:updateFixed(TICK)
+          end
+          Assert.notNil(runtime.battleCoordinator._battleLaunch, "an eligible walk admits its presented launch")
+          local struck = fightThenLeave(game, envelope)
+          return struck, attempts
+        end, debug.traceback)
+        runtime.attemptEncounter = realAttempt
+        if not paceOk then
+          error(settled, 0)
+        end
+        Assert.isTrue(observed > 0, "committed walking steps evaluate encounters")
+        return settled, observed
+      end)()
+    end, debug.traceback)
+    pcall(function()
+      runtime:unbindBattlePresentation(binding)
+    end)
+    if not bound then
+      error(boundFailure, 0)
+    end
+    Assert.equal(facts.method, "grass", "the strike walk selects the grass method")
+    Assert.isTrue(type(facts.species) == "string" and facts.species ~= "", "the strike bout names its wild species")
+    local before = playerCell(game)
+    game:face("west")
+    pump(game, envelope, 10)
+    Assert.isNil(runtime.battleCoordinator:activeBattle(), "turning after the strike return launches nothing")
+    game:move("west")
+    game:advanceUntil("the resumed step resolves", function(snapshot)
+      return snapshot.player.motion == "idle"
+    end, 120)
+    if runtime.battleCoordinator._battleLaunch ~= nil then
+      fleeAndReturn(game, envelope)
+    end
+    local after = playerCell(game)
+    Assert.isTrue(
+      after.fieldX ~= before.fieldX or after.fieldZ ~= before.fieldZ,
+      "ordinary input walks again after the strike return"
+    )
+    Assert.equal(game:renderAttempts(), 0, "the strike walk stops before GPU rendering")
+  end, debug.traceback)
+  game:close()
+  if not ok then
+    error(failure, 0)
+  end
+  Assert.notNil(facts, "the strike walk reports its stage facts")
 end
 
 return T
