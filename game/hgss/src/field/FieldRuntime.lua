@@ -3568,13 +3568,30 @@ function FieldRuntime:_stepEncounterMethod(map, player)
   if behavior == nil then
     return nil
   end
-  if MetatileBehavior.isTallGrass(behavior) or MetatileBehavior.isVeryTallGrass(behavior) then
+  if self:_isSurfing() then
+    if self:_isSurfEncounterWater(behavior) then
+      return "surf"
+    end
+    return nil
+  end
+  if self:_isSurfEncounterWater(behavior) then
+    return nil
+  end
+  if MetatileBehavior.canGenerateWalkingEncounters(behavior) then
     return "grass"
   end
-  if MetatileBehavior.isSurfableWater(behavior) and self:_isSurfing() then
-    return "surf"
-  end
   return nil
+end
+
+-- Whether one arrival behavior carries surf encounters: the river and sea
+-- tiles behind the shared surfable-water predicate plus the two further
+-- source surfable-encounter water behaviors (pokeheartgold
+-- src/metatile_behavior.c). Surfable water without the encounter flag
+-- never encounters, and water on foot never reads the grass tables.
+---@param behavior integer? arrival metatile behavior under inspection
+---@return boolean true for surf-encounter water
+function FieldRuntime:_isSurfEncounterWater(behavior)
+  return MetatileBehavior.isSurfableWater(behavior) or behavior == 18 or behavior == 42
 end
 
 ---@return boolean true while the avatar surfs
