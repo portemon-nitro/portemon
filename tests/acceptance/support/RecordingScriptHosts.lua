@@ -35,6 +35,10 @@ function RecordingScriptHosts.new(options)
     end
   end
 
+  function audio:moveSequenceVolume(sound, target, durationFrames)
+    effects[#effects + 1] = "volume:" .. sound .. ":" .. target .. ":" .. durationFrames
+  end
+
   function audio:isEffectPlaying()
     return false
   end

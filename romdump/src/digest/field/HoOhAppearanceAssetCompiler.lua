@@ -2,17 +2,12 @@
 -- Bell Tower roof cutscene.
 
 local Errors = require("libs.errors.src.Errors")
-local Nsbmd = require("libs.nds.src.nitro.g3d.Nsbmd")
-local NitroAnimation = require("libs.nds.src.nitro.g3d.NitroAnimation")
-local ModelAsset = require("libs.assets.src.model.ModelAsset")
 local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCache")
-local DynamicModelCompiler = require("romdump.src.digest.model.DynamicModelCompiler")
-local MapPropAnimCompiler = require("romdump.src.digest.model.MapPropAnimCompiler")
 local Hashing = require("romdump.src.digest.Hashing")
 local G2dDecoder = require("romdump.src.digest.ui.G2dDecoder")
 local G2dRasterizer = require("romdump.src.digest.ui.G2dRasterizer")
 local PngWriter = require("libs.assets.src.PngWriter")
-local Lz11 = require("romdump.src.digest.Lz11")
+local LegendAppearanceCompiler = require("romdump.src.digest.field.LegendAppearanceCompiler")
 
 local Compiler = {}
 local ARCHIVE = "NARC_demo_legend"
@@ -81,162 +76,12 @@ local CINEMATIC_MODELS = {
   },
 }
 
-local function readMember(archive, memberId, archiveName)
-  archiveName = archiveName or ARCHIVE
-  if memberId < 0 or memberId >= archive:memberCount() then
-    Errors.raise("FIELD_EFFECT_SOURCE_MISSING", "Ho-Oh legend model member is unavailable", {
-      archive = archiveName,
-      memberId = memberId,
-      count = archive:memberCount(),
-    })
+local function cinematicModelList()
+  local models = {}
+  for _, source in ipairs(MODELS) do
+    local entry = { id = source.id, memberId = source.memberId, animations = source.animations }
+    models[#models + 1] = entry
   end
-  local bytes, err = archive:readMember(memberId)
-  if bytes == nil then
-    Errors.raise("FIELD_EFFECT_SOURCE_MISSING", "Ho-Oh legend model member could not be read", {
-      archive = archiveName,
-      memberId = memberId,
-      error = tostring(err),
-    })
-  end
-  return assert(bytes)
-end
-
-local function decodeSourceMember(bytes, archiveName, memberId)
-  if archiveName ~= CINEMATIC_ARCHIVE then
-    return bytes
-  end
-  local decoded, err = Lz11.decode(bytes)
-  if decoded == nil then
-    Errors.raise("FIELD_EFFECT_SOURCE_INVALID", "Ho-Oh cinematic member could not be decompressed", {
-      archive = archiveName,
-      memberId = memberId,
-      error = tostring(err),
-    })
-  end
-  return assert(decoded)
-end
-
-local function compileAnimation(archive, source, hashes, archiveName)
-  archiveName = archiveName or ARCHIVE
-  local sourceBytes = readMember(archive, source.memberId, archiveName)
-  local bytes = decodeSourceMember(sourceBytes, archiveName, source.memberId)
-  local decoded, err = NitroAnimation.decode(bytes, { alias = archiveName, memberId = source.memberId })
-  if
-    not decoded
-    or decoded.format ~= source.format
-    or type(decoded.animations) ~= "table"
-    or #decoded.animations ~= 1
-  then
-    Errors.raise("FIELD_EFFECT_SOURCE_INVALID", "Ho-Oh legend animation has an unexpected Nitro format", {
-      archive = archiveName,
-      memberId = source.memberId,
-      expectedFormat = source.format,
-      actualFormat = decoded and decoded.format or "unreadable",
-      error = tostring(err),
-    })
-  end
-  decoded = assert(decoded)
-  local animation = assert(decoded.animations[1])
-  local clip = MapPropAnimCompiler.compileDecoded(decoded, {
-    name = animation.name,
-    id = source.id,
-    source = {
-      type = "nitro",
-      format = source.format,
-      archive = archiveName,
-      memberId = source.memberId,
-      sha1 = Hashing.sha1hex(sourceBytes),
-    },
-  })
-  clip.id = source.id
-  clip.semanticNames = { source.id }
-  clip.source = nil
-  assert(clip.category == source.category and clip.kind == source.kind, "Ho-Oh animation kind changed")
-  hashes[#hashes + 1] = {
-    archive = archiveName,
-    memberId = source.memberId,
-    sha1 = Hashing.sha1hex(sourceBytes),
-  }
-  return clip
-end
-
-local function rewritePaths(descriptor)
-  for _, batch in ipairs(descriptor.dynamic.batches) do
-    local sha1 = assert(batch.geometry:match("/([^/]+)%.g4mesh$"), "Ho-Oh model geometry path is malformed")
-    batch.geometry = FieldEffectAssetCache.geometryPath(sha1)
-  end
-  for _, material in ipairs(descriptor.materials) do
-    if material.texture then
-      local sha1 = assert(material.texture:match("/([^/]+)%.png$"), "Ho-Oh model texture path is malformed")
-      material.texture = FieldEffectAssetCache.texturePath(sha1)
-    end
-    for _, variant in ipairs(material.variants or {}) do
-      if variant.texture then
-        local sha1 = assert(variant.texture:match("/([^/]+)%.png$"), "Ho-Oh variant texture path is malformed")
-        variant.texture = FieldEffectAssetCache.texturePath(sha1)
-      end
-    end
-  end
-end
-
-local function compileModel(archive, source, meshes, textures, hashes, archiveName)
-  archiveName = archiveName or ARCHIVE
-  local sourceBytes = readMember(archive, source.memberId, archiveName)
-  local modelBytes = decodeSourceMember(sourceBytes, archiveName, source.memberId)
-  local decoded, err = Nsbmd.decode(modelBytes, { alias = archiveName, memberId = source.memberId })
-  if not decoded or not decoded.models[1] or not decoded.embeddedTextures then
-    Errors.raise("FIELD_EFFECT_SOURCE_INVALID", "Ho-Oh legend model has no geometry or embedded textures", {
-      archive = archiveName,
-      memberId = source.memberId,
-      error = tostring(err),
-    })
-  end
-  decoded = assert(decoded)
-  hashes[#hashes + 1] = { archive = archiveName, memberId = source.memberId, sha1 = Hashing.sha1hex(sourceBytes) }
-  local clips = {}
-  for _, animation in ipairs(source.animations) do
-    clips[#clips + 1] = compileAnimation(archive, animation, hashes, archiveName)
-  end
-  local model = assert(decoded.models[1])
-  local descriptor, unresolved = DynamicModelCompiler.compile(
-    model,
-    decoded,
-    decoded.embeddedTextures,
-    { clips = clips },
-    {
-      role = "field-effect-ho-oh-appearance",
-      modelArchive = archiveName,
-      modelMemberId = source.memberId,
-      modelName = model.name,
-      textureArchive = archiveName,
-      textureMemberId = source.memberId,
-    },
-    source.memberId,
-    textures,
-    meshes
-  )
-  if #unresolved > 0 then
-    Errors.raise("FIELD_EFFECT_SOURCE_INVALID", "Ho-Oh legend model has unresolved material resources", {
-      archive = archiveName,
-      memberId = source.memberId,
-      unresolved = unresolved,
-    })
-  end
-  descriptor.key = "field-effect:ho-oh-appearance:" .. source.id
-  rewritePaths(descriptor)
-  ModelAsset.validate(descriptor)
-  return descriptor
-end
-
-local function compileCinematicModels(romFs, meshes, textures, hashes, models)
-  local archive, err = romFs:openNarc(CINEMATIC_ARCHIVE)
-  if archive == nil then
-    Errors.raise("FIELD_EFFECT_SOURCE_MISSING", "Ho-Oh cinematic model archive is unavailable", {
-      archive = CINEMATIC_ARCHIVE,
-      error = tostring(err),
-    })
-  end
-  archive = assert(archive)
   for _, scene in ipairs(CINEMATIC_MODELS) do
     for variant, memberId in ipairs(scene.modelMembers) do
       local animations = {}
@@ -260,13 +105,34 @@ local function compileCinematicModels(romFs, meshes, textures, hashes, models)
           kind = kind,
         }
       end
-      models[#models + 1] = compileModel(archive, {
+      models[#models + 1] = {
         id = string.format("cinematic.%s.%d", scene.scene, variant - 1),
         memberId = memberId,
         animations = animations,
-      }, meshes, textures, hashes, CINEMATIC_ARCHIVE)
+        cinematic = true,
+      }
     end
   end
+  return models
+end
+
+local function readMember(archive, memberId)
+  if memberId < 0 or memberId >= archive:memberCount() then
+    Errors.raise("FIELD_EFFECT_SOURCE_MISSING", "Ho-Oh legend model member is unavailable", {
+      archive = ARCHIVE,
+      memberId = memberId,
+      count = archive:memberCount(),
+    })
+  end
+  local bytes, err = archive:readMember(memberId)
+  if bytes == nil then
+    Errors.raise("FIELD_EFFECT_SOURCE_MISSING", "Ho-Oh legend model member could not be read", {
+      archive = ARCHIVE,
+      memberId = memberId,
+      error = tostring(err),
+    })
+  end
+  return assert(bytes)
 end
 
 local function decodeG2d(archive, memberId, decoder, label)
@@ -329,6 +195,14 @@ end
 
 function Compiler.compile(romFs)
   assert(romFs and romFs.openNarc, "Ho-Oh appearance compiler requires RomFs")
+  local models, meshes, textures, hashes = LegendAppearanceCompiler.compileModels(romFs, {
+    archive = ARCHIVE,
+    cinematicArchive = CINEMATIC_ARCHIVE,
+    label = "Ho-Oh",
+    role = "field-effect-ho-oh-appearance",
+    keyPrefix = "field-effect:ho-oh-appearance:",
+    models = cinematicModelList(),
+  })
   local archive, err = romFs:openNarc(ARCHIVE)
   if archive == nil then
     Errors.raise("FIELD_EFFECT_SOURCE_MISSING", "Ho-Oh legend source archive is unavailable", {
@@ -336,12 +210,8 @@ function Compiler.compile(romFs)
       error = tostring(err),
     })
   end
-  local meshes, textures, hashes, models = {}, {}, {}, {}
-  for _, source in ipairs(MODELS) do
-    models[#models + 1] = compileModel(archive, source, meshes, textures, hashes)
-  end
-  compileCinematicModels(romFs, meshes, textures, hashes, models)
-  local leaves = romFs.version and romFs:version() == "heartgold" and compileLeaves(archive, textures, hashes) or nil
+  local leaves = romFs.version and romFs:version() == "heartgold" and compileLeaves(assert(archive), textures, hashes)
+    or nil
   return {
     definition = { models = models, leaves = leaves },
     meshes = meshes,

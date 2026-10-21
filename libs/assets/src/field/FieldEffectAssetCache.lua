@@ -393,23 +393,27 @@ local HOOH_MODELS = {
   { key = "field-effect:ho-oh-appearance:cinematic.second.2", clips = 3 },
 }
 
-local function validHoOhAppearanceDefinition(definition, _)
-  if type(definition) ~= "table" or type(definition.models) ~= "table" or #definition.models ~= #HOOH_MODELS then
+-- The Whirl Islands eye glimmer plus the single-shot Lugia cinematic. The
+-- role ids are asserted by the field scene; only the role list and clip
+-- counts are pinned here.
+local LUGIA_MODELS = {
+  { key = "field-effect:lugia-appearance:eyeGlimmer", clips = 3 },
+  { key = "field-effect:lugia-appearance:cinematic.lugia.0", clips = 4 },
+  { key = "field-effect:lugia-appearance:cinematic.lugia.1", clips = 1 },
+}
+
+local function validModelList(definition, expected)
+  if type(definition) ~= "table" or type(definition.models) ~= "table" or #definition.models ~= #expected then
     return false
   end
-  for key in pairs(definition) do
-    if key ~= "models" and key ~= "leaves" then
-      return false
-    end
-  end
-  for index, expected in ipairs(HOOH_MODELS) do
+  for index, spec in ipairs(expected) do
     local model = definition.models[index]
     if
       type(model) ~= "table"
       or model.kind ~= "nitro-dynamic"
-      or model.key ~= expected.key
+      or model.key ~= spec.key
       or type(model.animations) ~= "table"
-      or #model.animations ~= expected.clips
+      or #model.animations ~= spec.clips
     then
       return false
     end
@@ -418,6 +422,18 @@ local function validHoOhAppearanceDefinition(definition, _)
         return false
       end
     end
+  end
+  return true
+end
+
+local function validHoOhAppearanceDefinition(definition, _)
+  for key in pairs(definition) do
+    if key ~= "models" and key ~= "leaves" then
+      return false
+    end
+  end
+  if not validModelList(definition, HOOH_MODELS) then
+    return false
   end
   if definition.leaves ~= nil then
     local leaves = definition.leaves
@@ -460,6 +476,18 @@ local function validHoOhAppearanceDefinition(definition, _)
   return true
 end
 
+local function validLugiaAppearanceDefinition(definition, _)
+  if type(definition) ~= "table" then
+    return false
+  end
+  for key in pairs(definition) do
+    if key ~= "models" then
+      return false
+    end
+  end
+  return validModelList(definition, LUGIA_MODELS)
+end
+
 local function validWarpDefinition(definition, _)
   return type(definition.lifetime) == "number" and definition.lifetime > 0
 end
@@ -488,6 +516,7 @@ local FIELD_EFFECT_INVENTORY = {
   { key = "pokemon_center_heal", entryKind = "healing", validator = validPokemonCenterHealDefinition },
   { key = "celebi_time_travel", entryKind = "cinematic", validator = validCelebiTimeTravelDefinition },
   { key = "ho_oh_appearance", entryKind = "cinematic", validator = validHoOhAppearanceDefinition },
+  { key = "lugia_appearance", entryKind = "cinematic", validator = validLugiaAppearanceDefinition },
 }
 for selector = 1, 14 do
   FIELD_EFFECT_INVENTORY[#FIELD_EFFECT_INVENTORY + 1] = followerReactionEntry(selector)
@@ -558,6 +587,7 @@ function FieldEffectAssetCache.isReady(cacheFs, expectedMarker)
       kind ~= "follower_transition"
       and kind ~= "pokemon_center_heal"
       and kind ~= "ho_oh_appearance"
+      and kind ~= "lugia_appearance"
       and definition.models ~= nil
     then
       return false

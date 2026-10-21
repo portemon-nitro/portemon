@@ -204,7 +204,7 @@ DerivedAssetContract.fieldCells = {
 DerivedAssetContract.fieldActors = {
   cacheFormat = "field-actor-cache-v2",
   -- v5 adds Apricorn tree gesture clips and guarantees their colored source sprites.
-  -- v6 loops the legendary-bird idle sequence and adds their flap gesture.
+  -- v6 loops the legendary-bird idle sequence, keeps it running under script locks, and adds their flap gesture.
   schema = "g4-field-actor-v6",
   indexSchema = "g4-field-actor-index-v4",
 }
@@ -309,8 +309,8 @@ DerivedAssetContract.newGameInit = {
 }
 
 DerivedAssetContract.fieldEffects = {
-  -- v14 adds the source models and animation clips used by both Ho-Oh cinematic shots.
-  cacheFormat = "field-effect-cache-v14",
+  -- v15 adds the Whirl Islands eye glimmer and single-shot Lugia cinematic models.
+  cacheFormat = "field-effect-cache-v15",
   indexSchema = "g4-field-effect-index-v4",
 }
 

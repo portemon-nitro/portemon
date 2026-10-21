@@ -963,6 +963,29 @@ local function publishEffectFamily(cache)
     model.animations = { joint, pattern, srt }
     return model
   end
+  local function lugiaAppearance()
+    local specs = {
+      { "eyeGlimmer", 3 },
+      { "cinematic.lugia.0", 4 },
+      { "cinematic.lugia.1", 1 },
+    }
+    local models = {}
+    for index, spec in ipairs(specs) do
+      local model = dynamicModel("field-effect:lugia-appearance:" .. spec[1])
+      local template = model.animations[1]
+      model.animations = {}
+      for clip = 1, spec[2] do
+        local animation = {}
+        for field, value in pairs(template) do
+          animation[field] = value
+        end
+        animation.id = "lugia." .. index .. "." .. clip
+        model.animations[clip] = animation
+      end
+      models[index] = model
+    end
+    return { models = models }
+  end
   local function hoOhAppearance()
     local specs = {
       { "bellRising", 6 },
@@ -1045,6 +1068,11 @@ local function publishEffectFamily(cache)
           definition = "ho_oh_appearance",
           kind = "cinematic",
         },
+        lugia_appearance = {
+          path = EffectCache.definitionPath("lugia_appearance"),
+          definition = "lugia_appearance",
+          kind = "cinematic",
+        },
       },
     },
     effects = {
@@ -1100,6 +1128,7 @@ local function publishEffectFamily(cache)
       },
       celebi_time_travel = { model = celebiTimeTravelModel() },
       ho_oh_appearance = hoOhAppearance(),
+      lugia_appearance = lugiaAppearance(),
     },
     meshes = { ["mesh-key"] = {} },
     textures = { ["texture-key"] = { width = 1, height = 1, data = PngWriter.encode(1, 1, "rgba") } },

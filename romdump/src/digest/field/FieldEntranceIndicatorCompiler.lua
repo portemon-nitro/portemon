@@ -22,6 +22,7 @@ local LandData = require("romdump.src.digest.map.LandData")
 local BuildingModelCompiler = require("romdump.src.digest.map.BuildingModelCompiler")
 local CelebiTimeTravelAssetCompiler = require("romdump.src.digest.field.CelebiTimeTravelAssetCompiler")
 local HoOhAppearanceAssetCompiler = require("romdump.src.digest.field.HoOhAppearanceAssetCompiler")
+local LugiaAppearanceAssetCompiler = require("romdump.src.digest.field.LugiaAppearanceAssetCompiler")
 
 local Compiler = {}
 
@@ -865,6 +866,8 @@ function Compiler.compile(romFs, hashLua)
   sourceHashesByKind.celebi_time_travel = celebi.memberHashes
   local hoOhAppearance = HoOhAppearanceAssetCompiler.compile(romFs)
   sourceHashesByKind.ho_oh_appearance = hoOhAppearance.memberHashes
+  local lugiaAppearance = LugiaAppearanceAssetCompiler.compile(romFs)
+  sourceHashesByKind.lugia_appearance = lugiaAppearance.memberHashes
   for sha1, mesh in pairs(tallMeshes) do
     meshes[sha1] = mesh
   end
@@ -905,6 +908,12 @@ function Compiler.compile(romFs, hashLua)
     meshes[sha1] = mesh
   end
   for sha1, texture in pairs(hoOhAppearance.textures) do
+    textures[sha1] = texture
+  end
+  for sha1, mesh in pairs(lugiaAppearance.meshes) do
+    meshes[sha1] = mesh
+  end
+  for sha1, texture in pairs(lugiaAppearance.textures) do
     textures[sha1] = texture
   end
   local surfPresentation = assert(surfSelection.presentation, "surf attachment presentation is required")
@@ -973,6 +982,7 @@ function Compiler.compile(romFs, hashLua)
     pokemon_center_heal = centerHeal,
     celebi_time_travel = celebi.definition,
     ho_oh_appearance = hoOhAppearance.definition,
+    lugia_appearance = lugiaAppearance.definition,
   }
   local reactionMeshes, reactionTextures, reactionSha1s = {}, {}, {}
   for _, source in ipairs(FieldEffects.followerReactions) do
@@ -1040,6 +1050,11 @@ function Compiler.compile(romFs, hashLua)
         kind = "cinematic",
         definition = "ho_oh_appearance",
         path = FieldEffectAssetCache.definitionPath("ho_oh_appearance"),
+      },
+      lugia_appearance = {
+        kind = "cinematic",
+        definition = "lugia_appearance",
+        path = FieldEffectAssetCache.definitionPath("lugia_appearance"),
       },
     },
   }

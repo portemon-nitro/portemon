@@ -4209,6 +4209,7 @@ return {
       },
     },
     [561] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_ScreenShake",
       widths = {
         [1] = 2,
@@ -5704,6 +5705,7 @@ return {
       },
     },
     [759] = {
+      classification = "yield_to_task",
       name = "ScrCmd_LegendCutsceneLugiaEyeGlimmerEffect",
       widths = {},
     },
@@ -5746,14 +5748,17 @@ return {
       widths = {},
     },
     [767] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_LegendCutsceneLugiaArrivesEffectBegin",
       widths = {},
     },
     [768] = {
+      classification = "continue_same_tick",
       name = "ScrCmd_LegendCutsceneLugiaArrivesEffectEnd",
       widths = {},
     },
     [769] = {
+      classification = "yield_to_task",
       name = "ScrCmd_LegendCutsceneLugiaArrivesEffectCameraPan",
       widths = {},
     },

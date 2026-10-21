@@ -1072,6 +1072,40 @@ function T.an_out_of_range_volume_target_fails_before_mutating_state()
   player:render(250)
 end
 
+-- Retail PlaySE_SetVolume starts the effect at silence: the Lugia waterfall
+-- opens at volume 0, then a ten-frame generic move reaches 30 -- levels 3,
+-- 6, ..., 30 on frames 1..10 -- exactly the source's per-frame schedule
+-- (frame * 0x300 / 0x100, then 30).
+function T.effect_play_at_silence_then_ramps_ten_frames_to_thirty()
+  local sound, _, spy = newGameSound()
+  sound:play("SEQ_TEST_EFFECT", 0)
+  Assert.equal(#spy.faderWrites, 1, "playing at silence pushes one fader write")
+  Assert.equal(spy.faderWrites[1].level, 0, "playing at silence applies volume zero")
+  local ramped = #spy.faderWrites
+  sound:moveSequenceVolume("SEQ_TEST_EFFECT", 30, 10)
+  Assert.equal(spy.faderWrites[ramped + 1].level, 0, "the ramp starts from the silent level")
+  for frame = 1, 10 do
+    sound:updateSoundFrame()
+    Assert.equal(
+      spy.faderWrites[ramped + 1 + frame].level,
+      frame * 3,
+      "ramp frame " .. frame .. " plays the source volume"
+    )
+  end
+end
+
+-- An initial volume outside the source-backed domain is a
+-- programming-contract violation and fails before any state is mutated.
+function T.effect_play_rejects_an_initial_volume_outside_the_source_domain()
+  local sound, _, spy = newGameSound()
+  local err = Assert.throws(function()
+    sound:play("SEQ_TEST_EFFECT", 129)
+  end)
+  Assert.isTrue(err ~= nil, "a 129 initial volume is rejected")
+  Assert.equal(#spy.faderWrites, 0, "the rejected play pushes no fader write")
+  Assert.isFalse(sound:isEffectPlaying("SEQ_TEST_EFFECT"), "the rejected play starts no sequence")
+end
+
 -- Sequence replacement is a synchronization boundary: the new SequencePlayer
 -- instance starts at fader 127, so GameSound's record for the player must be
 -- reset to full and idle immediately, and a volume move on the replacement

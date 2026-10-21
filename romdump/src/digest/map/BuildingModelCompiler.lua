@@ -1,5 +1,6 @@
 -- Compiles placed building models, animations, placements, and dependencies.
 
+local BinaryReader = require("libs.codec.src.BinaryReader")
 local Nsbmd = require("libs.nds.src.nitro.g3d.Nsbmd")
 local Nsbtx = require("libs.nds.src.nitro.g3d.Nsbtx")
 local BuildingTransform = require("romdump.src.digest.map.BuildingTransform")
@@ -19,6 +20,21 @@ local function readMember(narc, alias, memberId)
     string.format("%s member %d out of range (count %d)", alias, memberId, count)
   )
   return assert(narc:readMember(memberId))
+end
+
+-- HGSS instantiates only the props the area's build config lists (a u16 count
+-- then the ids, the member of the area's prop pack id). A placement of any
+-- other model draws model 0, the dummy box, bound to its own embedded TEX0.
+local DUMMY_MEMBER = 0
+
+local function loadedPropIds(romFs, area)
+  local bytes = readMember(assert(romFs:openNarc("area_build_config")), "area_build_config", area.buildingTexturePackId)
+  local reader = BinaryReader.new(bytes, "area_build_config")
+  local loaded = {}
+  for index = 0, reader:u16le(0) - 1 do
+    loaded[reader:u16le(2 + index * 2)] = true
+  end
+  return loaded
 end
 
 local function sortedNumbers(set)
@@ -92,12 +108,17 @@ end
 function BuildingModelCompiler.compile(romFs, area, land, opts)
   assert(type(opts) == "table" and opts.meshes and opts.textures, "building compilation requires accumulators")
   local archiveAlias = archiveForArea(area)
+  local loadedProps = #land.buildings > 0 and loadedPropIds(romFs, area) or {}
+  local function placedMember(placement)
+    return loadedProps[placement.modelMemberId] and placement.modelMemberId or DUMMY_MEMBER
+  end
   local uniqueMembers, placementIndicesByMember = {}, {}
   for _, placement in ipairs(land.buildings) do
-    uniqueMembers[placement.modelMemberId] = true
-    local indices = placementIndicesByMember[placement.modelMemberId] or {}
+    local memberId = placedMember(placement)
+    uniqueMembers[memberId] = true
+    local indices = placementIndicesByMember[memberId] or {}
     indices[#indices + 1] = placement.index
-    placementIndicesByMember[placement.modelMemberId] = indices
+    placementIndicesByMember[memberId] = indices
   end
   for _, memberId in ipairs(opts.requiredModelMembers or {}) do
     uniqueMembers[memberId] = true
@@ -129,6 +150,10 @@ function BuildingModelCompiler.compile(romFs, area, land, opts)
     local buildingModel = buildingNsbmd.models[1]
     local context =
       modelContext(opts, area, archiveAlias, memberId, buildingNsbmd, buildingModel, placementIndicesByMember[memberId])
+    local texturePack = bldTexPack
+    if memberId == DUMMY_MEMBER then
+      texturePack = assert(buildingNsbmd.embeddedTextures, "the dummy box carries its own TEX0")
+    end
     local modelDescriptor
     local animated = false
     if memberId < animListNarc:memberCount() then
@@ -146,7 +171,7 @@ function BuildingModelCompiler.compile(romFs, area, land, opts)
         local descriptor, unresolved = DynamicModelCompiler.compile(
           buildingModel,
           buildingNsbmd,
-          bldTexPack,
+          texturePack,
           animResult,
           context,
           memberId,
@@ -160,7 +185,7 @@ function BuildingModelCompiler.compile(romFs, area, land, opts)
       end
     end
     if not animated then
-      local compiled = ModelAssetCompiler.compileModel(buildingModel, bldTexPack, opts.meshes, opts.textures, context)
+      local compiled = ModelAssetCompiler.compileModel(buildingModel, texturePack, opts.meshes, opts.textures, context)
       appendUnresolved(unresolvedMaterials, compiled)
       modelDescriptor = {
         schema = ModelAsset.SCHEMA,
@@ -183,7 +208,7 @@ function BuildingModelCompiler.compile(romFs, area, land, opts)
   for _, placement in ipairs(land.buildings) do
     buildingInstances[#buildingInstances + 1] = {
       placementIndex = placement.index,
-      modelKey = modelKeyOf[placement.modelMemberId],
+      modelKey = modelKeyOf[placedMember(placement)],
       transform = BuildingTransform.build(placement),
     }
   end

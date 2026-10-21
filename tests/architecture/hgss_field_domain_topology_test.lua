@@ -108,6 +108,7 @@ local FIELD_COORDINATION = {
   "FieldWindowStyles",
   "FollowingMonController",
   "FollowingMonTransitionController",
+  "LegendCutsceneRig",
   "MapInitScriptController",
   "MailActions",
   "PokemonCenterHealFlow",

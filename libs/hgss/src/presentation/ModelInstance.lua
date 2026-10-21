@@ -572,8 +572,12 @@ function ModelInstance:drawItems(renderMeshesById)
       for _, field in ipairs(DRAW_STATE_FIELDS) do
         item[field] = meshState[field]
       end
-      activeCount = activeCount + 1
-      items[activeCount] = item
+      -- Polygon alpha zero is the animations' hidden state; the GX renderer
+      -- would outline it as wireframe edges.
+      if item.polygonAlpha ~= 0 then
+        activeCount = activeCount + 1
+        items[activeCount] = item
+      end
     end
   end
   for i = activeCount + 1, #items do

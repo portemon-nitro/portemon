@@ -6,7 +6,7 @@ local FieldEffectAssetCache = require("libs.assets.src.field.FieldEffectAssetCac
 local ModelAsset = require("libs.assets.src.model.ModelAsset")
 
 local T = { tests = {} }
-local EXPECTED_MARKER = "field-effect-cache-v14:rom:dep"
+local EXPECTED_MARKER = "field-effect-cache-v15:rom:dep"
 
 local function validModel()
   return {
@@ -223,6 +223,32 @@ local function validHoOhDefinition()
   return { models = models }
 end
 
+local LUGIA_MODEL_CLIPS = {
+  { key = "eyeGlimmer", clips = 3 },
+  { key = "cinematic.lugia.0", clips = 4 },
+  { key = "cinematic.lugia.1", clips = 1 },
+}
+
+local function validLugiaDefinition()
+  local models = {}
+  for index, spec in ipairs(LUGIA_MODEL_CLIPS) do
+    local model = validDynamicModel()
+    model.key = "field-effect:lugia-appearance:" .. spec.key
+    local template = model.animations[1]
+    model.animations = {}
+    for clip = 1, spec.clips do
+      local animation = {}
+      for field, value in pairs(template) do
+        animation[field] = value
+      end
+      animation.id = "lugia." .. index .. "." .. clip
+      model.animations[clip] = animation
+    end
+    models[index] = model
+  end
+  return { models = models }
+end
+
 local function cache(model, present, marker, omitLifecycle, omitPlacement, extra)
   extra = extra or {}
   local index = {
@@ -239,12 +265,13 @@ local function cache(model, present, marker, omitLifecycle, omitPlacement, extra
     "pokemon_center_heal",
     "celebi_time_travel",
     "ho_oh_appearance",
+    "lugia_appearance",
   }) do
     index.effects[kind] = {
       kind = (kind == "warp_entrance" or kind == "surf_attachment") and "model"
         or kind == "follower_transition" and "transition"
         or kind == "pokemon_center_heal" and "healing"
-        or (kind == "celebi_time_travel" or kind == "ho_oh_appearance") and "cinematic"
+        or (kind == "celebi_time_travel" or kind == "ho_oh_appearance" or kind == "lugia_appearance") and "cinematic"
         or "animated_model",
       definition = kind,
       path = FieldEffectAssetCache.definitionPath(kind),
@@ -370,6 +397,9 @@ local function cache(model, present, marker, omitLifecycle, omitPlacement, extra
       if kind == "ho_oh_appearance" then
         return extra.hoOhDefinition or validHoOhDefinition()
       end
+      if kind == "lugia_appearance" then
+        return extra.lugiaDefinition or validLugiaDefinition()
+      end
       if kind == "trainer_reveal" then
         if extra.unknownLifecycleMode then
           return {
@@ -447,6 +477,46 @@ T.tests["requires all three Celebi clip selectors and their exact semantic bindi
   Assert.isFalse(ready)
 end
 
+T.tests["requires the Lugia reveal models with their exact roles"] = function()
+  local present = {
+    ["mesh-a"] = true,
+    ["texture-a"] = true,
+    ["texture-variant"] = true,
+    ["grass.mesh"] = true,
+  }
+  local ready, err = FieldEffectAssetCache.isReady(
+    cache(validModel(), present, nil, nil, nil, { lugiaDefinition = validLugiaDefinition() }),
+    EXPECTED_MARKER
+  )
+  Assert.isTrue(ready, tostring(err))
+
+  local missing = FieldEffectAssetCache.isReady(
+    cache(validModel(), present, EXPECTED_MARKER, false, false, { omitKinds = { "lugia_appearance" } }),
+    EXPECTED_MARKER
+  )
+  Assert.isFalse(missing, "a bundle without the Lugia index entry must not be ready")
+
+  local wrongKey = validLugiaDefinition()
+  wrongKey.models[2].key = "field-effect:lugia-appearance:cinematic.lugia.9"
+  Assert.isFalse(
+    FieldEffectAssetCache.isReady(
+      cache(validModel(), present, nil, nil, nil, { lugiaDefinition = wrongKey }),
+      EXPECTED_MARKER
+    ),
+    "a Lugia model with the wrong role must not be ready"
+  )
+
+  local wrongClips = validLugiaDefinition()
+  wrongClips.models[1].animations[3] = nil
+  Assert.isFalse(
+    FieldEffectAssetCache.isReady(
+      cache(validModel(), present, nil, nil, nil, { lugiaDefinition = wrongClips }),
+      EXPECTED_MARKER
+    ),
+    "a Lugia model with the wrong clip count must not be ready"
+  )
+end
+
 T.tests["accepts the current format and rejects the previous format"] = function()
   local present = {
     ["mesh-a"] = true,
@@ -463,10 +533,10 @@ T.tests["accepts the current format and rejects the previous format"] = function
       ["texture-a"] = true,
       ["texture-variant"] = true,
       ["grass.mesh"] = true,
-    }, "field-effect-cache-v11:rom:dep"),
+    }, "field-effect-cache-v14:rom:dep"),
     EXPECTED_MARKER
   )
-  Assert.isFalse(staleReady)
+  Assert.isFalse(staleReady, "the pre-Lugia cache format must not be ready")
   local oldIndexReady = FieldEffectAssetCache.isReady(
     cache(validModel(), {
       ["mesh-a"] = true,
@@ -619,7 +689,7 @@ T.tests["rejects trainer reveal with missing or malformed placement"] = function
   Assert.isFalse(malformed, "trainer reveal with non-finite placement must not be ready")
 end
 
-local SURF_MARKER = "field-effect-cache-v14:rom:dep"
+local SURF_MARKER = "field-effect-cache-v15:rom:dep"
 local SURF_INDEX_SCHEMA = "g4-field-effect-index-v4"
 T.tests["requires the complete generated Pokémon Center healing definition"] = function()
   local present = {
@@ -734,6 +804,11 @@ local function surfCache(surfDefinition, mutateIndex)
         definition = "ho_oh_appearance",
         path = FieldEffectAssetCache.definitionPath("ho_oh_appearance"),
       },
+      lugia_appearance = {
+        kind = "cinematic",
+        definition = "lugia_appearance",
+        path = FieldEffectAssetCache.definitionPath("lugia_appearance"),
+      },
     },
   }
   for selector = 1, 14 do
@@ -767,6 +842,9 @@ local function surfCache(surfDefinition, mutateIndex)
       end
       if kind == "ho_oh_appearance" then
         return validHoOhDefinition()
+      end
+      if kind == "lugia_appearance" then
+        return validLugiaDefinition()
       end
       if kind == "follower_transition" then
         return {

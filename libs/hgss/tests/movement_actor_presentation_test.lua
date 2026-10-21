@@ -489,6 +489,33 @@ function T.global_lock_freezes_animated_idle_and_resumes_from_held_phase()
   Assert.equal(actor:getPoseTick(), heldPoseTick + 1, "release resumes idle by one native tick from the held phase")
 end
 
+-- The legendary-bird objects animate their own sequence outside the object
+-- movement lock (LegendaryBirdObject_AnimateIdle advances unconditionally),
+-- so a script's global lock never freezes their idle loop.
+function T.global_lock_does_not_freeze_a_free_running_idle()
+  local visual = followerVisual()
+  visual.idlePresentation.freeRunning = true
+  local h = harness({ visual = visual })
+  local resource = S.script({
+    api = 1,
+    id = "test.global_lock_free_running_idle",
+    steps = { S.lockAll(), S.waitTicks({ ticks = 6 }), S.releaseAll(), S.stop() },
+  })
+  startForeground(h, resource, 100)
+  local actor = assert(h.mgr:getById(ACTOR_ID))
+  local tick = 100
+  while not h.scheduler:autonomousActorsLocked() do
+    tick = tick + 1
+    Assert.isTrue(tick < 120, "the global lock is acquired promptly")
+    stepWorld(h, tick)
+  end
+  local before = actor:getPoseTick()
+  tick = tick + 1
+  stepWorld(h, tick)
+  Assert.isTrue(h.scheduler:autonomousActorsLocked(), "the script still holds the global lock")
+  Assert.equal(actor:getPoseTick(), before + 1, "the free-running idle keeps advancing under the lock")
+end
+
 function T.scoped_lock_freezes_only_the_locked_actor()
   local h = harness({ visual = followerVisual(), secondActor = true })
   local target = assert(h.mgr:getById(ACTOR_ID))

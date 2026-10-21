@@ -2500,6 +2500,8 @@ local LEGEND_CUTSCENE_TASKS = {
   legend_cutscene_bell_shimmer = true,
   legend_cutscene_camera_wait = true,
   legend_cutscene_bird_approach = true,
+  legend_cutscene_lugia_eye_glimmer = true,
+  legend_cutscene_lugia_arrives_camera_pan = true,
   legend_cinematic = true,
 }
 local function handleLegendCutscene(node, run)
@@ -2526,6 +2528,10 @@ HANDLERS.legend_cutscene_camera_wait = handleLegendCutscene
 HANDLERS.legend_cutscene_bird_approach = handleLegendCutscene
 HANDLERS.legend_cutscene_effect_begin = handleLegendCutscene
 HANDLERS.legend_cutscene_effect_end = handleLegendCutscene
+HANDLERS.legend_cutscene_lugia_eye_glimmer = handleLegendCutscene
+HANDLERS.legend_cutscene_lugia_arrives_begin = handleLegendCutscene
+HANDLERS.legend_cutscene_lugia_arrives_end = handleLegendCutscene
+HANDLERS.legend_cutscene_lugia_arrives_camera_pan = handleLegendCutscene
 HANDLERS.legend_cinematic = handleLegendCutscene
 function HANDLERS.follower_reset_movement(_, run)
   requireService(run, "followingMon"):resetMovement()

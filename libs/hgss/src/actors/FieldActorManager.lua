@@ -1828,7 +1828,7 @@ function FieldActorManager:step(tick, context)
       if not movementLocked and context.actorLocked then
         movementLocked = context.actorLocked(actor.actorId) == true
       end
-      if not movementLocked then
+      if not movementLocked or actor:idleRunsWhileLocked() then
         actor:advancePresentationTick()
       end
       local autonomousAction = entry.autonomousActions[actor.actorId]

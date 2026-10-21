@@ -584,6 +584,25 @@ function T.reused_slots_reset_stale_billboard_and_material_state()
   Assert.deepEqual(reset[2].billboardScale, resetScale, "the billboard scale survives the material reset")
 end
 
+-- Polygon alpha zero is the source animations' hidden state (unrevealed
+-- rings, particles). The instance publishes no draw for it instead of the
+-- wireframe edges the GX renderer would outline.
+function T.polygon_alpha_zero_publishes_no_draw()
+  local instance = ModelInstance.new(mixedStaticBillboardDefinition({ fadeClip(32) }))
+  local renders = { stat = {}, bb = {} }
+  instance:play("fade")
+  instance:evaluatePose()
+  Assert.equal(#instance:drawItems(renders), 2, "the opaque start publishes both draws")
+  for _ = 1, 31 do
+    instance:updateFixed()
+  end
+  instance:evaluatePose()
+  Assert.equal(#instance:drawItems(renders), 0, "the faded-out material publishes no draw")
+  instance:stop("fade")
+  instance:evaluatePose()
+  Assert.equal(#instance:drawItems(renders), 2, "stopping the clip restores the draws")
+end
+
 -- The draw mapping is admitted at construction: a definition mesh without
 -- Backend coverage and stamped centers are verified once per slot on first
 -- draw instead of per mesh per frame, so construction admits definitions

@@ -107,6 +107,8 @@ local DOMAINS = {
     "HgssFieldMaterial",
     "HgssObjectMovement",
     "HgssPermissionGrid",
+    "LegendAppearanceCompiler",
+    "LugiaAppearanceAssetCompiler",
     "HgssSoundplate",
   },
   ui = {

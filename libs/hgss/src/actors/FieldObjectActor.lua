@@ -27,7 +27,7 @@ local MovementCalibration = require("libs.hgss.src.script.tasks.MovementCalibrat
 ---@field facing FieldDirection
 ---@field pose string
 ---@field private _visual table<string, unknown>
----@field private _idlePresentation { mode: "static"|"animated", cadence: integer }
+---@field private _idlePresentation { mode: "static"|"animated", cadence: integer, freeRunning: boolean? }
 ---@field private _gesturePose string?
 ---@field activeEmoteKind string? the active semantic emote (e.g. "exclamation") while an emote action is live, else nil
 ---@field movementType string
@@ -51,6 +51,7 @@ local MovementCalibration = require("libs.hgss.src.script.tasks.MovementCalibrat
 ---@field isScriptedMoving fun(self: FieldObjectActor): boolean
 ---@field heldOffsetFacing fun(self: FieldObjectActor): FieldDirection? facing whose draw offset an active presentation offset pins
 ---@field advancePresentationTick fun(self: FieldObjectActor)
+---@field idleRunsWhileLocked fun(self: FieldObjectActor): boolean
 ---@field settlePresentation fun(self: FieldObjectActor)
 ---@field currentAction fun(self: FieldObjectActor): string?
 ---@field presentationState fun(self: FieldObjectActor): FieldObjectActor.PresentationState
@@ -137,6 +138,11 @@ local function requireIdlePresentation(visual, idlePresentation)
     (idlePresentation.mode == "static" and idlePresentation.cadence == 0)
       or (idlePresentation.mode == "animated" and idlePresentation.cadence == 1),
     "field actor idle cadence does not match its mode"
+  )
+  assert(
+    idlePresentation.freeRunning == nil
+      or (idlePresentation.freeRunning == true and idlePresentation.mode == "animated"),
+    "only an animated field actor idle can run free"
   )
 end
 
@@ -823,6 +829,13 @@ end
 
 function FieldObjectActor:isScriptedMoving()
   return self._motion ~= nil and self._motion.owner == "script"
+end
+
+-- True when the idle sequence keeps running under a script's movement lock
+-- (the legendary-bird objects animate outside the object movement lock).
+---@return boolean
+function FieldObjectActor:idleRunsWhileLocked()
+  return self._idlePresentation.freeRunning == true
 end
 
 function FieldObjectActor:advancePresentationTick()

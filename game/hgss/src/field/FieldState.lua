@@ -16,6 +16,7 @@ local FieldApplicationIds = require("libs.hgss.src.field.FieldApplicationIds")
 local CelebiTimeTravelRenderer = require("libs.hgss.src.presentation.CelebiTimeTravelRenderer")
 local CelebiTimeTravelBlur = require("libs.hgss.src.presentation.CelebiTimeTravelBlur")
 local HoOhAppearanceRenderer = require("libs.hgss.src.presentation.HoOhAppearanceRenderer")
+local LugiaAppearanceRenderer = require("libs.hgss.src.presentation.LugiaAppearanceRenderer")
 
 local KEY_DIRECTIONS =
   { w = "north", up = "north", s = "south", down = "south", a = "west", left = "west", d = "east", right = "east" }
@@ -92,6 +93,7 @@ end
 ---@field _celebiRenderer table<string, unknown>? lazy field-scene model presenter
 ---@field _celebiBlur table<string, unknown>? lazy field-scene capture presenter
 ---@field _hoOhAppearanceRenderer table<string, unknown>? lazy Bell Tower cutscene model presenter
+---@field _lugiaAppearanceRenderer table<string, unknown>? lazy Whirl Islands cutscene model presenter
 ---@field actorPresentation FieldActorPresentation?
 ---@field _actorDesiredReady boolean? whether the current world admission is complete for its map identity
 ---@field _presentedRuntimeMap RuntimeFieldMap? borrowed identity of the runtime map already rendered successfully
@@ -698,18 +700,48 @@ function FieldState:_worldParts(alpha)
   end
   local hoOhScene = self.runtime.hoOhAppearanceScene
   local hoOhStatus = hoOhScene and hoOhScene:status() or nil
-  if hoOhStatus and hoOhStatus["active"] == true then
+  -- The merged legend status stays active across both effects; the Bell
+  -- Tower renderer only builds while its own layers have content.
+  local hoOhContent = hoOhStatus ~= nil
+    and hoOhStatus["active"] == true
+    and (
+      hoOhStatus["bellStage"] ~= nil
+      or hoOhStatus["birdFrame"] ~= nil
+      or hoOhStatus["cinematicShot"] == "first"
+      or hoOhStatus["cinematicShot"] == "second"
+      or hoOhStatus["effectsActive"] == true
+    )
+  if hoOhContent then
+    local status = assert(hoOhStatus)
     if self._hoOhAppearanceRenderer == nil then
       self._hoOhAppearanceRenderer = HoOhAppearanceRenderer.new(self.runtime.cacheFs, self.runtime.imageAssets)
     end
-    worldParts[13] = self._hoOhAppearanceRenderer:drawItems(hoOhStatus)
-    worldParts[14] = self._hoOhAppearanceRenderer:backdropCopies(worldParts[1], hoOhStatus["versionId"])
+    worldParts[13] = self._hoOhAppearanceRenderer:drawItems(status)
+    worldParts[14] = self._hoOhAppearanceRenderer:backdropCopies(worldParts[1], status["versionId"])
   else
     if self._hoOhAppearanceRenderer ~= nil then
       self._hoOhAppearanceRenderer:release()
     end
     worldParts[13] = NO_DRAWS
     worldParts[14] = NO_DRAWS
+  end
+  -- The Whirl Islands eye glimmer and Lugia cinematic draw beside the Bell
+  -- Tower models: the dance reuses the bell scene while the reveal adds
+  -- its own effect layer.
+  if
+    hoOhStatus
+    and hoOhStatus["active"] == true
+    and (hoOhStatus["eyeGlimmerFrame"] ~= nil or hoOhStatus["cinematicShot"] == "lugia")
+  then
+    if self._lugiaAppearanceRenderer == nil then
+      self._lugiaAppearanceRenderer = LugiaAppearanceRenderer.new(self.runtime.cacheFs, self.runtime.imageAssets)
+    end
+    worldParts[15] = self._lugiaAppearanceRenderer:drawItems(hoOhStatus)
+  else
+    if self._lugiaAppearanceRenderer ~= nil then
+      self._lugiaAppearanceRenderer:release()
+    end
+    worldParts[15] = NO_DRAWS
   end
   return worldParts
 end
@@ -1078,25 +1110,29 @@ function FieldState:draw()
   -- Runtimes without a lifecycle owner predate the overworld gate and
   -- keep the historical always-present behavior.
   local overworld = self.runtime.overworld
-  -- The Ho-Oh cinematic is its own application in retail: it replaces the
-  -- field and owns the screen, including its fades.
+  -- The legend cinematics are their own application in retail: the active
+  -- shot replaces the field and owns the screen, including its fades.
   local hoOhScene = self.runtime.hoOhAppearanceScene
-  local hoOhCinematic = hoOhScene ~= nil and hoOhScene:status().cinematicShot ~= nil
-  local overworldPresent = (overworld == nil or overworld:isPresent()) and not hoOhCinematic
+  local legendShot = hoOhScene ~= nil and hoOhScene:status().cinematicShot or nil
+  local legendCinematic = legendShot ~= nil
+  local overworldPresent = (overworld == nil or overworld:isPresent()) and not legendCinematic
   local visualHold = false
   if overworldPresent then
     visualHold = self:_newWorldVisualHold()
   end
   local alpha = self.runtime.session:renderAlpha()
-  local function drawHoOhCinematic()
+  local function drawLegendCinematic()
     local status = assert(hoOhScene):status()
     local worldParts = self:_worldParts(alpha)
-    local environment =
-      assert(self._hoOhAppearanceRenderer):cinematicEnvironment(self.runtime.runtimeMap.renderEnvironment)
+    local lugiaShot = status.cinematicShot == "lugia"
+    local renderer = lugiaShot
+        and assert(self._lugiaAppearanceRenderer, "Lugia scene renderer is ready before drawing its layers")
+      or assert(self._hoOhAppearanceRenderer, "Ho-Oh scene renderer is ready before drawing its layers")
+    local environment = renderer:cinematicEnvironment(self.runtime.runtimeMap.renderEnvironment)
     resources.renderer:draw(
       environment,
       self.runtime.camera,
-      { worldParts[13] },
+      { worldParts[lugiaShot and 15 or 13] },
       nil,
       self.runtime.viewport,
       alpha,
@@ -1119,7 +1155,7 @@ function FieldState:draw()
       self.runtime.fieldPixelScale:resolvedScale()
     )
     local hoOhStatus = hoOhScene and hoOhScene:status() or nil
-    if hoOhStatus and hoOhStatus["active"] == true then
+    if hoOhStatus and hoOhStatus["leavesActive"] == true then
       local renderer = assert(self._hoOhAppearanceRenderer, "Ho-Oh scene renderer is ready before drawing its layers")
       renderer:drawLeaves(hoOhStatus, self.runtime.viewport)
     end
@@ -1146,8 +1182,8 @@ function FieldState:draw()
       self._presentedRuntimeMap = self.runtime.runtimeMap
       self.runtime:acknowledgeDestinationPresentation()
     end
-  elseif hoOhCinematic then
-    local cinematicStatus = drawHoOhCinematic()
+  elseif legendCinematic then
+    local cinematicStatus = drawLegendCinematic()
     if cinematicStatus.cinematicFadeAlpha and cinematicStatus.cinematicFadeAlpha > 0 then
       local color = cinematicStatus.cinematicFadeColor == "white" and 1 or 0
       local bounds = self.runtime.viewport.worldViewport
@@ -1246,7 +1282,7 @@ function FieldState:draw()
     resources:drawApricornBox(assert(kurtBoxHost:status(), "active Kurt selector publishes presentation status"))
   end
   self:_drawEntryCoverIfNeeded(width, height)
-  if not hoOhCinematic then
+  if not legendCinematic then
     self:_drawScriptScreenFadeIfNeeded()
   end
   -- The script-owned starter modal draws over the restored field while the
@@ -1958,10 +1994,15 @@ function FieldState:dispose()
     self.worldParts[12] = nil
     self.worldParts[13] = nil
     self.worldParts[14] = nil
+    self.worldParts[15] = nil
   end
   if self._hoOhAppearanceRenderer then
     self._hoOhAppearanceRenderer:dispose()
     self._hoOhAppearanceRenderer = nil
+  end
+  if self._lugiaAppearanceRenderer then
+    self._lugiaAppearanceRenderer:dispose()
+    self._lugiaAppearanceRenderer = nil
   end
   self.worldActorItems = nil
   self.spriteItems = nil

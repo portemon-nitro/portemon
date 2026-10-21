@@ -114,11 +114,25 @@ local function installHoOhCompilerMock()
   }
 end
 
+local function installLugiaCompilerMock()
+  package.loaded["romdump.src.digest.field.LugiaAppearanceAssetCompiler"] = {
+    compile = function()
+      return {
+        definition = { models = {} },
+        meshes = {},
+        textures = {},
+        memberHashes = { { memberId = 2, sha1 = "lugia-model" } },
+      }
+    end,
+  }
+end
+
 T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
   local names = {
     "romdump.src.digest.field.FieldEntranceIndicatorCompiler",
     "romdump.src.digest.field.CelebiTimeTravelAssetCompiler",
     "romdump.src.digest.field.HoOhAppearanceAssetCompiler",
+    "romdump.src.digest.field.LugiaAppearanceAssetCompiler",
     "libs.nds.src.nitro.g3d.Nsbmd",
     "libs.nds.src.nitro.g3d.Nsbtx",
     "libs.nds.src.nitro.g3d.NitroAnimation",
@@ -209,6 +223,7 @@ T.tests["compiles source-derived renderer 8 and 12 resources"] = function()
   installCenterHealingMocks()
   installCelebiCompilerMock()
   installHoOhCompilerMock()
+  installLugiaCompilerMock()
   package.loaded["libs.nds.src.nitro.g3d.Nsbmd"] = {
     decode = function(_, context)
       assert(context and context.section, "Nsbmd.decode context.section is required")
@@ -486,6 +501,7 @@ T.tests["rewrites compiled geometry and texture references into the effect root"
     "romdump.src.digest.field.FieldEntranceIndicatorCompiler",
     "romdump.src.digest.field.CelebiTimeTravelAssetCompiler",
     "romdump.src.digest.field.HoOhAppearanceAssetCompiler",
+    "romdump.src.digest.field.LugiaAppearanceAssetCompiler",
     "libs.nds.src.nitro.g3d.Nsbmd",
     "libs.nds.src.nitro.g3d.Nsbtx",
     "libs.nds.src.nitro.g3d.NitroAnimation",
@@ -600,6 +616,7 @@ T.tests["rewrites compiled geometry and texture references into the effect root"
   installCenterHealingMocks()
   installCelebiCompilerMock()
   installHoOhCompilerMock()
+  installLugiaCompilerMock()
   package.loaded["romdump.src.digest.field.FieldEntranceIndicatorCompiler"] = nil
 
   local ok, result = pcall(function()

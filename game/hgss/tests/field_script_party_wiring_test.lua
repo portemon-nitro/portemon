@@ -118,7 +118,13 @@ local function stubOptions(partySelection, mart)
       return message
     end,
     fontDef = {},
-    audioService = { play = function() end, playMusic = function() end, playCry = function() end },
+    audioService = {
+      play = function() end,
+      playMusic = function() end,
+      playCry = function() end,
+      stop = function() end,
+      moveSequenceVolume = function() end,
+    },
     loadedGame = nil,
     mons = {},
     itemCatalog = {},

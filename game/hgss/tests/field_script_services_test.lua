@@ -354,7 +354,13 @@ function T.tests.production_trainer_card_service_counts_no_frontier_star()
         return message
       end,
       fontDef = {},
-      audioService = { play = function() end, playMusic = function() end, playCry = function() end },
+      audioService = {
+        play = function() end,
+        playMusic = function() end,
+        playCry = function() end,
+        stop = function() end,
+        moveSequenceVolume = function() end,
+      },
       followerInteractionCatalog = {},
       followerReactionTicks = {},
       mons = {},

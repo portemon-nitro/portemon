@@ -86,7 +86,7 @@ local FieldActorCache = {}
 ---@field spriteId integer
 ---@field render FieldActorCache.Render
 ---@field directions table<string, { idle: FieldActorCache.Pose, walk: FieldActorCache.Pose? }>
----@field idlePresentation { mode: "static"|"animated", cadence: integer, facingOffsets: table<string, { x: number, z: number }>? } animated mon idles also shift their drawn position per facing, in tiles
+---@field idlePresentation { mode: "static"|"animated", cadence: integer, freeRunning: boolean?, facingOffsets: table<string, { x: number, z: number }>? } animated mon idles also shift their drawn position per facing, in tiles
 ---@field gestures table<string, FieldActorCache.Gesture>
 
 local Validate = require("libs.assets.src.Validate")
@@ -474,6 +474,12 @@ function FieldActorCache.isValidVisual(visual, spriteId)
     or idlePresentation.cadence % 1 ~= 0
     or (idlePresentation.mode == "static" and idlePresentation.cadence ~= 0)
     or (idlePresentation.mode == "animated" and idlePresentation.cadence ~= 1)
+  then
+    return false
+  end
+  if
+    idlePresentation.freeRunning ~= nil
+    and (idlePresentation.freeRunning ~= true or idlePresentation.mode ~= "animated")
   then
     return false
   end

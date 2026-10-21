@@ -63,7 +63,7 @@ local PlayerFaderTimeline = require("libs.hgss.src.audio.PlayerFaderTimeline")
 ---@field private _faderTimeline PlayerFaderTimeline
 ---@field private _cryActive boolean
 ---@field new fun(opts: { provider: AudioAssetProvider, player: SequencePlayer, completionAvailable: boolean?, cry: table<string, unknown>?, mapMusic: fun(): integer|string|nil? }): GameSound
----@field play fun(self: GameSound, idOrSymbol: integer|string)
+---@field play fun(self: GameSound, idOrSymbol: integer|string, initialVolume: integer?)
 ---@field stop fun(self: GameSound, idOrSymbol: integer|string)
 ---@field isEffectPlaying fun(self: GameSound, idOrSymbol: integer|string): boolean
 ---@field isEffectWaitComplete fun(self: GameSound, idOrSymbol: integer|string): boolean
@@ -314,10 +314,30 @@ end
 -- `play` is the effect (SE) path: the sequence runs on its own player id,
 -- so a later effect on the same player reuses its canonical handle and
 -- replaces the earlier attachment while the player stays busy -- exactly
--- what an HGSS WaitSE observes through the player-state query.
+-- what an HGSS WaitSE observes through the player-state query. The
+-- optional source-domain starting level (0..128, normalized to the player
+-- 0..127 range at the boundary like every volume move) covers retail
+-- PlaySE_SetVolume: the voice starts at the level before any ramp owns it.
 ---@param idOrSymbol integer|string
-function GameSound:play(idOrSymbol)
-  self:_startSequence(idOrSymbol)
+---@param initialVolume integer?
+function GameSound:play(idOrSymbol, initialVolume)
+  if initialVolume ~= nil then
+    assert(
+      type(initialVolume) == "number"
+        and initialVolume % 1 == 0
+        and initialVolume >= 0
+        and initialVolume <= SOURCE_FULL_RESTORE,
+      "initial volume must be an integer in 0..128"
+    )
+  end
+  local sequence, accepted = self:_startSequence(idOrSymbol)
+  if accepted and initialVolume ~= nil then
+    local playerId = sequence.player.id
+    local fader = self:_faderFor(playerId)
+    fader.ramp = nil
+    fader.level = self:_applyFader(playerId, initialVolume)
+    self._faderTimeline:reset(playerId, fader.level)
+  end
 end
 
 -- Stops every instance of the requested sequence ID. Effect waits remain

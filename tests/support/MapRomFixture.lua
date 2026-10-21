@@ -31,6 +31,10 @@ MapRomFixture.AREA_DATA_MEMBER_ID = 25
 MapRomFixture.LAND_DATA_MEMBER_ID = 244
 MapRomFixture.BUILDING_MODEL_MEMBER_ID = 38
 MapRomFixture.STARTER_BALL_MODEL_MEMBER_ID = 141
+-- The dummy box every unloaded placement falls back to, and its embedded texture.
+MapRomFixture.DUMMY_MODEL_MEMBER_ID = 0
+MapRomFixture.DUMMY_TEXTURE = "hit_r"
+MapRomFixture.DUMMY_PALETTE = "hit_pal"
 MapRomFixture.MAP_TEXTURE_PACK_ID = 3
 MapRomFixture.BUILDING_TEXTURE_PACK_ID = 7
 
@@ -113,6 +117,8 @@ end
 -- opts (all optional):
 --   landModel           NSBMD bytes for the central terrain model
 --   buildingModel       NSBMD bytes for the placed building member
+--   loadedProps         the model ids the area's build config loads, default
+--                       the authored building and the starter ball
 --   buildings           the land member's raw placement records, default one
 --                       record referencing BUILDING_MODEL_MEMBER_ID
 --   mapPack             { textures, palettes } for the map texture pack
@@ -158,7 +164,27 @@ function MapRomFixture.build(opts)
       triangle = { { 0, 0, 0 }, { 1, 0, 0 }, { 0, 0, 1 } },
     })
 
+  local dummyModel = opts.dummyModel
+    or NsbmdFixture.build({
+      modelName = "dmybox00",
+      textureName = MapRomFixture.DUMMY_TEXTURE,
+      paletteName = MapRomFixture.DUMMY_PALETTE,
+      origHeight = 8,
+      triangle = { { 0, 0, 0 }, { 1, 0, 0 }, { 0, 0, 1 } },
+      embeddedTex0 = Tex0Fixture.block({
+        textures = { MapRomFixture.DUMMY_TEXTURE },
+        palettes = { MapRomFixture.DUMMY_PALETTE },
+      }),
+    })
+  local loadedProps = opts.loadedProps
+    or { MapRomFixture.BUILDING_MODEL_MEMBER_ID, MapRomFixture.STARTER_BALL_MODEL_MEMBER_ID }
+  local buildConfig = { NB.u16(#loadedProps) }
+  for _, id in ipairs(loadedProps) do
+    buildConfig[#buildConfig + 1] = NB.u16(id)
+  end
+
   local members = {
+    area_build_config = { [buildingTexturePackId] = table.concat(buildConfig) },
     map_matrices = { [MapRomFixture.MATRIX_MEMBER_ID] = matrixMember(MapRomFixture.LAND_DATA_MEMBER_ID) },
     area_data = {
       [MapRomFixture.AREA_DATA_MEMBER_ID] = areaMember({
@@ -190,6 +216,7 @@ function MapRomFixture.build(opts)
         }),
     },
     interior_build_models = {
+      [MapRomFixture.DUMMY_MODEL_MEMBER_ID] = dummyModel,
       [MapRomFixture.BUILDING_MODEL_MEMBER_ID] = buildingModel,
       [MapRomFixture.STARTER_BALL_MODEL_MEMBER_ID] = starterBallModel,
     },
@@ -197,6 +224,7 @@ function MapRomFixture.build(opts)
     -- default record carries no animations (first u16 0xFFFF). The shared
     -- animation archive is never read when no record references it.
     interior_build_anim_list = opts.interiorBuildAnimList or {
+      [MapRomFixture.DUMMY_MODEL_MEMBER_ID] = NB.u16(0xFFFF) .. string.rep("\0", 0x16),
       [MapRomFixture.BUILDING_MODEL_MEMBER_ID] = NB.u16(0xFFFF) .. string.rep("\0", 0x16),
       [MapRomFixture.STARTER_BALL_MODEL_MEMBER_ID] = NB.u16(0xFFFF) .. string.rep("\0", 0x16),
     },

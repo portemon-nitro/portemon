@@ -55,12 +55,17 @@ local BANZAI_DISPLAY_OFFSET_Z = BANZAI_FACING_Z_FX32 / (SOURCE_MODEL_UNITS_PER_T
 -- selects animation 4). Family 10 + descriptor 13
 -- (SPRITE_BANZAIHERO/HEROINE, 200/201 via PLAYER_STATE_HEAL)
 -- ranges 1 and 2 are give/receive (states 0/1 select animations 0/1, single-level).
--- Family 13 + descriptor 17 (SPRITE_HOU_OBJ01/LUG_OBJ01, the legendary-bird
--- objects) holds two looping sequences picked by the object's animation
--- number: range 1 is the idle loop, range 2 the flap.
-local LEGEND_BIRD_KEY = "13:17"
+-- Family 13 + descriptor 17/18 (SPRITE_HOU_OBJ01/SPRITE_LUG_OBJ01, the
+-- legendary-bird objects) holds two looping sequences picked by the
+-- object's animation number: range 1 is the idle loop, range 2 the flap.
+-- SoulSilver places LUG_OBJ01 on descriptor 18 while HOU_OBJ01 stays on 17,
+-- so both keys bind the same flap gesture.
+local LEGEND_BIRD_KEYS = { ["13:17"] = true, ["13:18"] = true }
 local GESTURE_BINDINGS = {
-  [LEGEND_BIRD_KEY] = {
+  ["13:17"] = {
+    { rangeIndex = 2, name = "legend_flap", displayOffset = { x = 0, y = 0, z = 0 } },
+  },
+  ["13:18"] = {
     { rangeIndex = 2, name = "legend_flap", displayOffset = { x = 0, y = 0, z = 0 } },
   },
   -- The 32-frame shake interval matches the looping 16-frame descriptor range;
@@ -300,6 +305,8 @@ local function idlePresentation(mode, modelKey, looping)
         or { x = shift.x / SOURCE_MODEL_UNITS_PER_TILE, z = shift.z / SOURCE_MODEL_UNITS_PER_TILE }
     end
     profile.facingOffsets = offsets
+    -- A plain sequence loop runs outside the object movement lock.
+    profile.freeRunning = looping and true or nil
   end
   return profile
 end
@@ -532,7 +539,7 @@ local function compileSprite(romFs, spriteId, graphics, archive, staticArchive)
     return compileStaticModel(spriteId, resolved.staticModelMemberId, staticArchive, context)
   end
   local descriptor = resolved.descriptor
-  local looping = record.actorFamily .. ":" .. record.visualDescriptor == LEGEND_BIRD_KEY
+  local looping = LEGEND_BIRD_KEYS[record.actorFamily .. ":" .. record.visualDescriptor] == true
   local idleMode = looping and "animated" or IDLE_MODE_BY_ACTOR_FAMILY[record.actorFamily]
   if not idleMode then
     Errors.raise(

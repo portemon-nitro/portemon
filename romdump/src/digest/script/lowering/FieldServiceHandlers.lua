@@ -49,6 +49,18 @@ end
 function FieldServiceHandlers.legendCutsceneBirdApproach(ins)
   return FieldServiceHandlers.legendCutscene("legend_cutscene_bird_approach", ins)
 end
+function FieldServiceHandlers.legendCutsceneLugiaEyeGlimmer(ins)
+  return FieldServiceHandlers.legendCutscene("legend_cutscene_lugia_eye_glimmer", ins)
+end
+function FieldServiceHandlers.legendCutsceneLugiaArrivesBegin(ins)
+  return FieldServiceHandlers.legendCutscene("legend_cutscene_lugia_arrives_begin", ins)
+end
+function FieldServiceHandlers.legendCutsceneLugiaArrivesEnd(ins)
+  return FieldServiceHandlers.legendCutscene("legend_cutscene_lugia_arrives_end", ins)
+end
+function FieldServiceHandlers.legendCutsceneLugiaArrivesCameraPan(ins)
+  return FieldServiceHandlers.legendCutscene("legend_cutscene_lugia_arrives_camera_pan", ins)
+end
 function FieldServiceHandlers.legendCutsceneEffectBegin(ins)
   return FieldServiceHandlers.legendCutscene("legend_cutscene_effect_begin", ins)
 end
@@ -57,6 +69,43 @@ function FieldServiceHandlers.legendCutsceneEffectEnd(ins)
 end
 function FieldServiceHandlers.legendCinematic(ins)
   return FieldServiceHandlers.legendCutscene("legend_cinematic", ins)
+end
+function FieldServiceHandlers.screenShake(ins)
+  -- ScrCmd_ScreenShake amplitudeX, amplitudeY, repeats, period: the source
+  -- returns TRUE at once while its shake task runs beside the script, so
+  -- the script-owned shake_camera operation is a pinned same-tick
+  -- passthrough and the caller's own waits cover the shake. Variable
+  -- operands stay explicit like the other value-or-variable lowerings.
+  local amplitudeX = Operands.varRef(ins.operands[1])
+  local amplitudeY = Operands.varRef(ins.operands[2])
+  local repeats = Operands.varRef(ins.operands[3])
+  local period = Operands.varRef(ins.operands[4])
+  if
+    type(amplitudeX) ~= "number"
+    or type(amplitudeY) ~= "number"
+    or type(repeats) ~= "number"
+    or type(period) ~= "number"
+  then
+    return {
+      op = "unsupported",
+      command = 561,
+      arguments = {
+        Operands.operandValue(ins.operands[1]),
+        Operands.operandValue(ins.operands[2]),
+        Operands.operandValue(ins.operands[3]),
+        Operands.operandValue(ins.operands[4]),
+      },
+      sourceOffset = ins.offset,
+      reason = "ScrCmd_561 variable shake operands are unsupported",
+    }
+  end
+  return {
+    op = "shake_camera",
+    amplitudeX = amplitudeX,
+    amplitudeY = amplitudeY,
+    intervalTicks = period,
+    count = repeats,
+  }
 end
 
 function FieldServiceHandlers.followMonResetMovement(_)

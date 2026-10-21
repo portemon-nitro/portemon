@@ -46,6 +46,10 @@ local function newAudio()
   function audio:playCry(species, pattern)
     self.cues[#self.cues + 1] = { kind = "cry", symbol = tostring(species) .. ":" .. tostring(pattern), tick = self.tick }
   end
+  function audio:stop(symbol)
+    self.cues[#self.cues + 1] = { kind = "stop", symbol = symbol }
+  end
+  function audio:moveSequenceVolume() end
   return audio
 end
 
@@ -79,6 +83,7 @@ local function newScene(versionId, camera, birdHeights, audio, bird)
         bird.heightsAtReveal = #(birdHeights or {})
       end
     end,
+    resumeField = function() end,
     setBirdFlap = function(tick)
       if bird then
         bird.flaps[#bird.flaps + 1] = tick == nil and "clear" or tick

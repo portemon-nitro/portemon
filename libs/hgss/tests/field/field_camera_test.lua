@@ -395,6 +395,55 @@ function T.view_interpolates_between_the_previous_and_current_states()
   Assert.deepEqual(camera:view(1.5), camera:view(1), "alpha clamps at one")
 end
 
+function T.screen_shake_rumbles_the_look_target_then_releases_it()
+  local camera = FieldCamera.new(profile({ targetOffsetTiles = { x = 0, y = 0, z = 0 } }), {
+    initialTarget = { x = 0, y = 0, z = 0 },
+  })
+  camera:updateFixed({ x = 0, y = 0, z = 10 })
+  camera:collapseRenderInterpolation()
+  local function plainView()
+    return Matrix4.lookAt({ camera.eye.x, camera.eye.y, camera.eye.z }, {
+      camera.target.x,
+      camera.target.y,
+      camera.target.z,
+    }, { 0, 1, 0 })
+  end
+  Assert.deepEqual(camera:view(1), plainView(), "no shake means no offset")
+  camera:startShake({ amplitudeX = 16, amplitudeY = 8, intervalTicks = 4, count = 1 })
+  -- Retail advances two source ticks per update: the first of two updates
+  -- in a repeat peaks, the second returns through zero.
+  camera:updateFixed({ x = 0, y = 0, z = 10 })
+  local first = Matrix4.lookAt({ camera.eye.x, camera.eye.y, camera.eye.z }, {
+    camera.target.x + 1,
+    camera.target.y + 0.5,
+    camera.target.z,
+  }, { 0, 1, 0 })
+  Assert.deepEqual(camera:view(1), first, "the first shake update peaks at full amplitude")
+  camera:updateFixed({ x = 0, y = 0, z = 10 })
+  Assert.deepEqual(camera:view(1), plainView(), "the shake releases the target once its count runs out")
+  camera:updateFixed({ x = 0, y = 0, z = 10 })
+  Assert.deepEqual(camera:view(1), plainView(), "a finished shake stays released")
+end
+
+function T.screen_shake_freezes_its_base_while_the_camera_tracks_on()
+  local camera = FieldCamera.new(profile({ targetOffsetTiles = { x = 0, y = 0, z = 0 } }), {
+    initialTarget = { x = 0, y = 0, z = 0 },
+  })
+  camera:updateFixed({ x = 0, y = 0, z = 10 })
+  camera:collapseRenderInterpolation()
+  -- The source copies the camera and shakes the copy: the oscillation
+  -- reference never follows the live camera afterwards.
+  camera:startShake({ amplitudeX = 16, amplitudeY = 8, intervalTicks = 4, count = 2 })
+  camera:updateFixed({ x = 5, y = 7, z = 10 })
+  local shaken = Matrix4.lookAt({ camera.eye.x, camera.eye.y, camera.eye.z }, { 1, 0.5, 10 }, { 0, 1, 0 })
+  Assert.deepEqual(camera:view(1), shaken, "the shake holds its captured base while the camera moves on")
+  camera:updateFixed({ x = 5, y = 7, z = 10 })
+  camera:updateFixed({ x = 5, y = 7, z = 10 })
+  camera:updateFixed({ x = 5, y = 7, z = 10 })
+  local released = Matrix4.lookAt({ camera.eye.x, camera.eye.y, camera.eye.z }, { 5, 7, 10 }, { 0, 1, 0 })
+  Assert.deepEqual(camera:view(1), released, "the shake restores the live camera after its count")
+end
+
 function T.new_bark_profile_uses_full_vertical_fov_and_exact_eye_orbit()
   local halfFov = angleIndexToRadians(0x05C1)
   local camera = FieldCamera.new(newBarkProfile(), { initialTarget = { x = 0, y = 0, z = 0 } })

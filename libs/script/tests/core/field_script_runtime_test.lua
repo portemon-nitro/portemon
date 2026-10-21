@@ -148,6 +148,32 @@ function T.celebi_time_travel_blocks_on_its_cutscene_task()
   Assert.equal(run.blockTaskId.type, "celebi_time_travel")
 end
 
+function T.lugia_reveal_ops_route_through_the_legend_cutscene()
+  local written = {}
+  local commands = {}
+  local run = runState({
+    legendCutscene = {
+      command = function(_, op, destination)
+        commands[#commands + 1] = { op = op, destination = destination }
+      end,
+      taskTicks = function(_, op)
+        Assert.equal(op, "legend_cutscene_lugia_eye_glimmer")
+        return 61
+      end,
+    },
+  }, written)
+  local outcome = Runtime.executeNode({ op = "legend_cutscene_lugia_eye_glimmer" }, run)
+  Assert.equal(outcome, Runtime.OUTCOME_BLOCK)
+  Assert.equal(run.blockTaskId.type, "wait_ticks")
+  Assert.equal(run.blockTaskId.spec.ticks, 61)
+  Assert.equal(commands[1].op, "legend_cutscene_lugia_eye_glimmer")
+  Assert.equal(
+    Runtime.executeNode({ op = "legend_cutscene_lugia_arrives_begin" }, run),
+    Runtime.OUTCOME_CONTINUE
+  )
+  Assert.equal(commands[2].op, "legend_cutscene_lugia_arrives_begin")
+end
+
 function T.trainer_card_stars_writes_the_live_save_result()
   local written = {}
   local run = runState({

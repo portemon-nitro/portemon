@@ -100,6 +100,19 @@ function MapInitScriptController:hasLifecycle(lifecycle)
   return false
 end
 
+-- The script a map binds to `lifecycle`, or nil when it has none.
+---@param lifecycle string
+---@return string|nil
+function MapInitScriptController:lifecycleScriptId(lifecycle)
+  assert(EVENT_TYPES[lifecycle], "unknown map lifecycle: " .. tostring(lifecycle))
+  for _, group in ipairs(self.rules) do
+    if group.type == lifecycle then
+      return group.scriptId
+    end
+  end
+  return nil
+end
+
 ---@param lifecycle string
 ---@param tick integer
 ---@return boolean claimed

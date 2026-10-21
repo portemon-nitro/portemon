@@ -207,6 +207,55 @@ function FieldCamera:updateFixed(playerTarget)
   sourceTarget.x, sourceTarget.y, sourceTarget.z = playerTarget.x, playerTarget.y, playerTarget.z
   self.cameraSourceY = playerTarget.y
   self.cameraAppliedY = target.y - self.profile.targetOffsetTiles.y
+  local shake = self.shake
+  if shake ~= nil then
+    shake.step = shake.clock % shake.updatesPerRepeat
+    shake.clock = shake.clock + 1
+    if shake.clock >= shake.updatesPerRepeat then
+      shake.clock = 0
+      shake.repeats = shake.repeats - 1
+      if shake.repeats <= 0 then
+        self.shake = nil
+      end
+    end
+  end
+end
+
+-- Starts a screen shake over `spec`: amplitudes are fx32 world units
+-- (sixteenths of a tile). The source copies the camera and shakes the copy,
+-- so the oscillation reference is frozen here and never follows the live
+-- camera afterwards. The source advances two shake ticks per update, so
+-- each repeat lasts ceil(intervalTicks / 2) updates and the offset follows
+-- sin(2 * pi * (2k + 1) / intervalTicks) within repeat update k.
+---@param spec { amplitudeX: number, amplitudeY: number, intervalTicks: integer, count: integer }
+function FieldCamera:startShake(spec)
+  assert(type(spec) == "table", "camera shake requires a spec")
+  assert(
+    type(spec.amplitudeX) == "number" and spec.amplitudeX == spec.amplitudeX,
+    "camera shake amplitudeX must be finite"
+  )
+  assert(
+    type(spec.amplitudeY) == "number" and spec.amplitudeY == spec.amplitudeY,
+    "camera shake amplitudeY must be finite"
+  )
+  assert(
+    type(spec.intervalTicks) == "number" and spec.intervalTicks % 1 == 0 and spec.intervalTicks >= 1,
+    "camera shake intervalTicks must be a positive integer"
+  )
+  assert(
+    type(spec.count) == "number" and spec.count % 1 == 0 and spec.count >= 1,
+    "camera shake count must be a positive integer"
+  )
+  self.shake = {
+    amplitudeX = spec.amplitudeX / 16,
+    amplitudeY = spec.amplitudeY / 16,
+    period = spec.intervalTicks,
+    updatesPerRepeat = math.ceil(spec.intervalTicks / 2),
+    repeats = spec.count,
+    step = 0,
+    clock = 0,
+    base = { x = self.target.x, y = self.target.y, z = self.target.z },
+  }
 end
 
 -- Applies a retail field cutscene camera pose while leaving the normal field
@@ -345,6 +394,15 @@ function FieldCamera:view(alpha)
   local targetX = previousTarget.x + (target.x - previousTarget.x) * alpha
   local targetY = previousTarget.y + (target.y - previousTarget.y) * alpha
   local targetZ = previousTarget.z + (target.z - previousTarget.z) * alpha
+  local shake = self.shake
+  if shake ~= nil then
+    -- The frozen base replaces the interpolated live target: the shake is a
+    -- hijacked camera copy, not a filter over the tracking camera.
+    local phase = 2 * math.pi * (2 * shake.step + 1) / shake.period
+    targetX = shake.base.x + math.sin(phase) * shake.amplitudeX
+    targetY = shake.base.y + math.sin(phase) * shake.amplitudeY
+    targetZ = shake.base.z
+  end
   local up = self.up
   Matrix4.lookAtInto(self._viewBuffer, eyeX, eyeY, eyeZ, targetX, targetY, targetZ, up.x, up.y, up.z)
   Matrix4.toArrayBufferInto(self._viewArray, self._viewBuffer)

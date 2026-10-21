@@ -445,6 +445,17 @@ function FieldScriptComposition.compose(runtime, options)
       actors:setGesturePresentation(actorId, "legend_flap", tick)
     end
   end
+  -- A legend cinematic is its own application in retail, so the field
+  -- resumes when it exits: the map's on_resume script runs beside the
+  -- script that launched the cinematic.
+  local function resumeField()
+    local scriptId = runtime.session.initController:lifecycleScriptId("on_resume")
+    if scriptId == nil then
+      return
+    end
+    local scheduler = runtime.scripts.scheduler
+    scheduler:createBackground(assert(scheduler:resolveComposition(scriptId)), nil, runtime.session.tick)
+  end
   local legendCutscene = HoOhAppearanceScene.new({
     versionId = runtime.versionId,
     playerPosition = currentPlayerPosition,
@@ -453,6 +464,7 @@ function FieldScriptComposition.compose(runtime, options)
     setBirdHeight = setLegendActorHeight,
     revealBird = revealLegendActor,
     setBirdFlap = setLegendActorFlap,
+    resumeField = resumeField,
     audio = options.audioService,
     cacheFs = options.cacheFs,
   })
@@ -515,7 +527,10 @@ function FieldScriptComposition.compose(runtime, options)
     audio = options.audioService,
     fieldAudio = runtime.audio or (runtime.scriptHosts and runtime.scriptHosts.fieldAudio),
     weather = { change = changeWeather },
-    camera = runtime.scriptHosts and runtime.scriptHosts.camera,
+    -- The script camera shakes a frozen copy of the live field camera unless
+    -- a test host overrides it: the shake is a view-only displacement the
+    -- real camera owns, so there is no separate shake backend to compose.
+    camera = (runtime.scriptHosts and runtime.scriptHosts.camera) or runtime.camera,
     screen = runtime.screenFade,
     events = runtime.scriptHosts and runtime.scriptHosts.events,
     auxiliaryUi = runtime.auxiliaryFieldUi,

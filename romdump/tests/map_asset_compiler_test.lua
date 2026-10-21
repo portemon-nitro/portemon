@@ -349,6 +349,23 @@ function T.building_ignores_its_own_embedded_tex0()
   Assert.equal(bundle.unresolvedMaterials[1].name, "embedded_tex")
 end
 
+-- HGSS instantiates only the props the area's build config loads; a placement
+-- of any other model draws model 0, the dummy box, bound to its own embedded
+-- TEX0 (the one model that binds there).
+function T.placement_of_an_unloaded_prop_draws_the_dummy_box()
+  local bundle = assert(compile({ loadedProps = {} }))
+  local placement = assert(bundle.scene.buildingInstances[1])
+  local model = assert(bundle.models[placement.modelKey])
+  Assert.equal(model.memberId, MapRomFixture.DUMMY_MODEL_MEMBER_ID, "the placement draws the dummy box")
+  Assert.notNil(model.materials[1].texture, "the dummy box binds its embedded texture")
+  Assert.equal(#bundle.unresolvedMaterials, 0)
+end
+
+function T.placement_of_a_loaded_prop_keeps_its_model()
+  local bundle = assert(compile())
+  Assert.equal(onlyModel(bundle).memberId, MapRomFixture.BUILDING_MODEL_MEMBER_ID)
+end
+
 function T.building_with_no_named_bindings_compiles_as_a_no_op()
   -- Building model 38 (`leage_o03`) has no embedded TEX0 and no named material
   -- bindings; Nitro's bind loops run zero times and succeed.
@@ -1023,6 +1040,7 @@ function T.pc_terminal_role_requires_the_source_building_archive()
   local romFs, members = MapRomFixture.build({
     areaTypeRaw = 1,
     buildings = LandDataBuilder.buildingRecord(terminalMemberId),
+    loadedProps = { terminalMemberId, MapRomFixture.STARTER_BALL_MODEL_MEMBER_ID },
   })
   members.exterior_build_models = {
     [terminalMemberId] = members.interior_build_models[MapRomFixture.BUILDING_MODEL_MEMBER_ID],
