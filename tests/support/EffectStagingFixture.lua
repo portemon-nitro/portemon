@@ -186,9 +186,10 @@ function Fixture.new(opts)
   -- Resolves one dependency of a loaded effect into a semantic lease.
   -- Texture leases share one immutable fake GPU handle across duplicate
   -- resolves and validate exact dimension/byte-length/content identity;
-  -- other kinds arrive as immutable typed descriptors with no pixels.
-  -- Upload failures latch the selected effect failed and release nothing
-  -- here: the holder rolls back what it acquired through release.
+  -- other kinds arrive as immutable decoded records beside their staged
+  -- path, mirroring the production holder contract. Upload failures
+  -- latch the selected effect failed and release nothing here: the
+  -- holder rolls back what it acquired through release.
   function services.resolveEffectResource(effect, resourceKey)
     if self.disposed then
       return nil, "battle effect resources are released for launch " .. self.launchId
@@ -278,8 +279,9 @@ function Fixture.new(opts)
     return {
       key = resourceKey,
       kind = descriptor.kind,
-      payload = descriptor.payload,
+      payloadPath = descriptor.payload,
       contentIdentity = descriptor.contentIdentity,
+      data = payload,
     }
   end
   -- Returns one lease: texture refcounts drop the shared handle at the

@@ -19,7 +19,9 @@ local Assert = require("tests.support.Assert")
 local BattleAnimationCompiler = require("romdump.src.digest.battle.BattleAnimationCompiler")
 local BattleAnimationSchema = require("libs.assets.src.battle.BattleAnimationSchema")
 local BattleAnimationSources = require("romdump.src.config.BattleAnimationSources")
+local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
 local BattleScene = require("libs.hgss.src.presentation.BattleScene")
+local EffectStagingFixture = require("tests.support.EffectStagingFixture")
 
 local T = {}
 
@@ -164,13 +166,17 @@ function T.particle_spawn_lifetime_and_render_match_source_measurements_under_a_
   }
   local services = { scene = scene, audio = {}, resources = {} }
   function services.resolve(key)
-    local _ = key
     local params = {}
     for index = 1, 42 do
       params[index] = 0
     end
     params[29], params[30], params[24], params[32] = 12, 12, 0, 1
-    return { features = { "alpha", "random" }, params = params }
+    return {
+      key = key,
+      kind = "particle-emitter",
+      payloadPath = "probe/particle-emitter",
+      data = { features = { "alpha", "random" }, params = params },
+    }
   end
   function services.release(_lease) end
   local task = assert(
@@ -191,13 +197,17 @@ function T.particle_spawn_lifetime_and_render_match_source_measurements_under_a_
   local rerunScene = sceneWithPair()
   local rerunServices = { scene = rerunScene, audio = {}, resources = {} }
   function rerunServices.resolve(key)
-    local _ = key
     local params = {}
     for index = 1, 42 do
       params[index] = 0
     end
     params[29], params[30], params[24], params[32] = 12, 12, 0, 1
-    return { features = { "alpha", "random" }, params = params }
+    return {
+      key = key,
+      kind = "particle-emitter",
+      payloadPath = "probe/particle-emitter",
+      data = { features = { "alpha", "random" }, params = params },
+    }
   end
   function rerunServices.release(_lease) end
   local rerunDraws = {}
@@ -380,7 +390,28 @@ local function particleServices(scene, bundle, journal)
     local descriptor = bundle.resources[key]
     Assert.notNil(descriptor, "the particle task borrows only staged semantic resources: " .. tostring(key))
     journal.acquired[#journal.acquired + 1] = key
-    return bundle.resourcePayloads[descriptor.payload]
+    local payload = bundle.resourcePayloads[descriptor.payload]
+    -- The bundle double mirrors the production holder: non-texture
+    -- payloads travel as decoded records beside their staged path,
+    -- textures as drawable leases.
+    if descriptor.kind == "texture" then
+      return {
+        key = key,
+        kind = "texture",
+        width = payload.width,
+        height = payload.height,
+        rgba8888 = payload.rgba8888,
+        payload = descriptor.payload,
+        contentIdentity = descriptor.contentIdentity,
+      }
+    end
+    return {
+      key = key,
+      kind = descriptor.kind,
+      payloadPath = descriptor.payload,
+      contentIdentity = descriptor.contentIdentity,
+      data = payload,
+    }
   end
   function resources.release(lease)
     journal.released[#journal.released + 1] = lease
@@ -835,6 +866,595 @@ function T.native_emitter_moves_with_signed_fixed_point_velocity()
   Assert.equal(task:status(), "running", "the velocity run is still mid-emission")
   task:cancel("velocity-probe-cancel")
   task:dispose()
+end
+
+-- Production lease proving ground: a synthetic striking effect staged
+-- through the real cache, resolved through the real field envelope
+-- services and the per-launch holder, then admitted through the live
+-- player and task factory. The archive and texture below stand in for
+-- one producer-normalized SPL member and its decoded image bytes.
+local PROBE_ARCHIVE_KEY = "battle/particle/tackle"
+local PROBE_TEXTURE_KEY = "battle/particle/tackle-texture"
+local PROBE_ARCHIVE_PATH = "effects/probe-tackle-archive.lua"
+local PROBE_TEXTURE_PATH = "effects/probe-tackle-texture.lua"
+local PROBE_TEXTURE_WIDTH = 8
+local PROBE_TEXTURE_HEIGHT = 8
+
+local function recordingProductionHost()
+  local host = { asks = {}, answers = {} }
+  local derived = {}
+  function derived.requestBattleEffect(key, urgency)
+    host.asks[#host.asks + 1] = { key = key, urgency = urgency }
+    if host.answers[key] ~= nil then
+      return true
+    end
+    return nil
+  end
+  host.derivedAssets = derived
+  return host
+end
+
+local function productionEnvelope(cache, host)
+  local FieldBattlePresentation = require("game.hgss.src.field.FieldBattlePresentation")
+  local ScreenTopology = require("libs.ui.src.ScreenTopology")
+  local text = {}
+  function text.measure(content)
+    return { width = 8 * #tostring(content), height = 16 }
+  end
+  function text.drawText(_) end
+  local windows = {}
+  function windows.drawWindow(_, _, _) end
+  return FieldBattlePresentation.new({
+    cacheFs = cache,
+    windows = windows,
+    text = text,
+    measureDisplay = function()
+      return {
+        width = 256,
+        height = 384,
+        topology = ScreenTopology.dualDisplay(
+          { id = "main", rect = { x = 0, y = 0, width = 256, height = 192 }, touch = false, role = "world" },
+          { id = "lower", rect = { x = 0, y = 192, width = 256, height = 192 }, touch = true, role = "auxiliary" }
+        ),
+        pixelRatio = 1,
+        signature = "production-lease-probe:dual",
+      }
+    end,
+    derivedAssets = host.derivedAssets,
+  })
+end
+
+local function productionHolder(services, launchId)
+  local BattlePresentationAssets = require("game.hgss.src.battle.BattlePresentationAssets")
+  local BattlePresentationManifestFixture = require("tests.support.BattlePresentationManifestFixture")
+  return BattlePresentationAssets.new({
+    assets = services,
+    launchId = launchId,
+    sceneKey = "probe/plain/day",
+    shadowRegions = BattlePresentationManifestFixture.manifest().pictures.shadow.regions,
+  })
+end
+
+local function probeArchivePayload(textureKey)
+  local emitter = customEmitter({ textureKey = textureKey, features = { "color", "random" } })
+  return {
+    emitters = { emitter },
+    resources = { { textureKey = textureKey, paletteKey = nil } },
+  }
+end
+
+local function probeEffectRecord(archivePath, texturePath, archiveIdentity, textureIdentity)
+  return {
+    schema = BattleAnimationSchema.EFFECT_SCHEMA,
+    key = "TACKLE",
+    catalogIdentity = "probe-catalog",
+    program = {
+      entry = "main",
+      instructions = {
+        {
+          op = "create-battler-effect",
+          resource = PROBE_ARCHIVE_KEY,
+          emitterPosition = "solo-enemy",
+          taskKind = "battler-effect-continuation",
+        },
+        { op = "wait-for-battler-effects", cursorRule = "advance-when-effects-finish" },
+      },
+      subprograms = {},
+      taskKinds = { "battler-effect-continuation" },
+    },
+    dependencies = { PROBE_ARCHIVE_KEY, PROBE_TEXTURE_KEY },
+    resources = {
+      [PROBE_ARCHIVE_KEY] = {
+        kind = "particle",
+        payload = archivePath,
+        contentIdentity = archiveIdentity,
+      },
+      [PROBE_TEXTURE_KEY] = {
+        kind = "texture",
+        payload = texturePath,
+        contentIdentity = textureIdentity,
+      },
+    },
+    requiredContext = {},
+  }
+end
+
+local function stageProductionTackle(cache, archivePayloadOverride, texturePayloadOverride)
+  local Hashing = require("romdump.src.digest.Hashing")
+  local textureBytes = EffectStagingFixture.rgba(PROBE_TEXTURE_WIDTH, PROBE_TEXTURE_HEIGHT)
+  local textureIdentity = Hashing.sha1hex(textureBytes)
+  local archivePayload = archivePayloadOverride or probeArchivePayload(PROBE_TEXTURE_KEY)
+  local archiveIdentity = Hashing.sha1hex(textureBytes .. "probe-tackle-archive")
+  local record = probeEffectRecord(PROBE_ARCHIVE_PATH, PROBE_TEXTURE_PATH, archiveIdentity, textureIdentity)
+  cache:writeLua(BattlePresentationCache.effectPath("TACKLE"), record)
+  cache:write(BattlePresentationCache.effectMarkerPath("TACKLE"), "probe-marker")
+  cache:writeLua(PROBE_ARCHIVE_PATH, archivePayload)
+  cache:writeLua(PROBE_TEXTURE_PATH, texturePayloadOverride or {
+    width = PROBE_TEXTURE_WIDTH,
+    height = PROBE_TEXTURE_HEIGHT,
+    rgba8888 = textureBytes,
+  })
+  return {
+    record = record,
+    archive = archivePayload,
+    textureBytes = textureBytes,
+    archiveIdentity = archiveIdentity,
+    textureIdentity = textureIdentity,
+  }
+end
+
+local function demandProductionTackle(launchId)
+  local FakeCache = require("tests.support.FakeCache")
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local cache = CacheFs.forVersion("probe-particle-production", FakeCache.new())
+  local staged = stageProductionTackle(cache)
+  local host = recordingProductionHost()
+  host.answers["TACKLE"] = true
+  local envelope = productionEnvelope(cache, host)
+  local services = envelope:_preparationServices()
+  local owned = productionHolder(services, launchId)
+  Assert.equal(owned:demandEffect("TACKLE"), true, "the closed staged effect reads ready")
+  local effect = owned:loadEffect("TACKLE")
+  Assert.notNil(effect, "the ready effect loads before resolving")
+  return { cache = cache, staged = staged, host = host, envelope = envelope, owned = owned, effect = effect }
+end
+
+local function journaledHolderServices(owned, effect, journal)
+  local services = {}
+  function services.resolve(key)
+    journal.acquired[#journal.acquired + 1] = key
+    return owned:resolveEffectResource(effect, key)
+  end
+  function services.release(lease)
+    journal.released[#journal.released + 1] = type(lease) == "table" and lease.key or lease
+    return owned:releaseEffectResource(lease)
+  end
+  return services
+end
+
+local function assertJournalBalanced(journal, what)
+  local released = {}
+  for _, key in ipairs(journal.released) do
+    released[key] = (released[key] or 0) + 1
+  end
+  local acquired = {}
+  for _, key in ipairs(journal.acquired) do
+    acquired[key] = (acquired[key] or 0) + 1
+  end
+  for key, count in pairs(acquired) do
+    Assert.equal(released[key] or 0, count, what .. " releases " .. tostring(key) .. " exactly once per acquire")
+  end
+  for key in pairs(released) do
+    Assert.notNil(acquired[key], what .. " never releases unacquired " .. tostring(key))
+  end
+end
+
+local function productionPlayback(effectKey)
+  return {
+    launchId = "production-lease-probe",
+    packetId = 1,
+    event = { sequence = 1, actionId = 1, hitIndex = 1, effectKey = effectKey },
+    visualSeed = 4242,
+    topology = {
+      attacker = { combatant = 1, activation = 1, slot = "solo-player", sideType = 0 },
+      targets = { { combatant = 3, activation = 3, slot = "solo-enemy", sideType = 1 } },
+    },
+  }
+end
+
+local function runPlayerToSettled(player, handle, limit)
+  for _ = 1, limit or 600 do
+    player:stepSourceTick({ tick = 1 })
+    local status = player:status(handle)
+    if status == "complete" or status == "failed" then
+      return status
+    end
+  end
+  return player:status(handle)
+end
+
+local function liveSpots(scene)
+  local spots = {}
+  for _, view in ipairs(scene:effectViews()) do
+    if view.picture ~= nil then
+      spots[#spots + 1] = view.picture
+    end
+  end
+  return spots
+end
+
+-- The production resolver decodes the staged archive instead of handing
+-- out its path: the particle task consumes the normalized emitters and
+-- the staged texture bytes, paints staged sprites through the live
+-- player, retires them at the source boundary, and releases every lease.
+function T.production_particle_lease_decodes_staged_records_and_completes()
+  local probe = demandProductionTackle("probe-particle-production")
+  local owned, effect = probe.owned, probe.effect
+  Assert.equal(
+    effect.resources[PROBE_ARCHIVE_KEY].payload,
+    PROBE_ARCHIVE_PATH,
+    "the generated descriptor keeps naming the staged path"
+  )
+  local lease = owned:resolveEffectResource(effect, PROBE_ARCHIVE_KEY)
+  Assert.notNil(lease, "the archive admits through the production holder")
+  Assert.equal(lease.kind, "particle", "the archive lease keeps its semantic kind")
+  Assert.equal(lease.payloadPath, PROBE_ARCHIVE_PATH, "the runtime lease names its staged path separately")
+  Assert.isNil(lease.payload, "the runtime lease never conflates the path field with decoded content")
+  Assert.equal(lease.contentIdentity, probe.staged.archiveIdentity, "the lease carries its content identity")
+  Assert.isTrue(type(lease.data) == "table", "the archive lease carries its decoded record")
+  Assert.deepEqual(lease.data, probe.staged.archive, "the decoded lease matches the staged archive")
+  local texture = owned:resolveEffectResource(effect, PROBE_TEXTURE_KEY)
+  Assert.notNil(texture, "the texture admits beside the archive")
+  Assert.equal(texture.width, PROBE_TEXTURE_WIDTH, "the texture lease carries its staged width")
+  Assert.equal(texture.height, PROBE_TEXTURE_HEIGHT, "the texture lease carries its staged height")
+  Assert.equal(texture.rgba8888, probe.staged.textureBytes, "the texture lease shares its exact staged bytes")
+  owned:releaseEffectResource(lease)
+  owned:releaseEffectResource(texture)
+  local Factory = effectFactoryModule()
+  local Player = require("libs.hgss.src.presentation.BattleAnimationPlayer")
+  local scene = sceneWithPair()
+  local audio = {}
+  function audio.play(_) end
+  function audio.stop(_) end
+  function audio.isFinished(_)
+    return true
+  end
+  local journal = { acquired = {}, released = {} }
+  local player = assert(Player.new({
+    scene = scene,
+    audio = audio,
+    resources = journaledHolderServices(owned, effect, journal),
+    tasks = Factory,
+  }))
+  local handle = assert(player:start(productionPlayback("TACKLE"), effect.program))
+  local maxLive = 0
+  for _ = 1, 600 do
+    player:stepSourceTick({ tick = 1 })
+    local live = liveSpots(scene)
+    if #live > maxLive then
+      maxLive = #live
+      for _, picture in ipairs(live) do
+        Assert.equal(picture.assetKey, PROBE_TEXTURE_KEY, "live sprites reference the staged texture key")
+        Assert.equal(picture.width, PROBE_TEXTURE_WIDTH, "live sprites carry the staged drawable width")
+        Assert.equal(picture.height, PROBE_TEXTURE_HEIGHT, "live sprites carry the staged drawable height")
+      end
+    end
+    if player:status(handle) == "complete" or player:status(handle) == "failed" then
+      break
+    end
+  end
+  Assert.equal(player:status(handle), "complete", "the production-fed run reaches its own completion")
+  Assert.isTrue(maxLive > 1, "sibling sprites coexist on the same source tick")
+  Assert.equal(#scene:effectViews(), 0, "retirement releases every owned sprite record")
+  player:dispose()
+  assertJournalBalanced(journal, "the settled production run")
+  Assert.deepEqual(probe.host.asks, { { key = "TACKLE", urgency = "required" } }, "only the selected effect is demanded")
+  owned:dispose()
+  owned:dispose()
+  local stale, staleErr = owned:resolveEffectResource(effect, PROBE_ARCHIVE_KEY)
+  Assert.isNil(stale, "a stale resolve after disposal publishes nothing")
+  Assert.isTrue(type(staleErr) == "string" and staleErr ~= "", "the stale resolve names its disposal")
+  probe.envelope:dispose()
+end
+
+-- A staged path that decodes to nothing is terminal with provenance: the
+-- resolver names the effect, the resource, and the path instead of
+-- handing the task a descriptor it will misread as data.
+function T.production_resolver_names_effect_key_and_path_for_broken_payloads()
+  local FakeCache = require("tests.support.FakeCache")
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local cache = CacheFs.forVersion("probe-broken-payload", FakeCache.new())
+  stageProductionTackle(cache)
+  cache:write(PROBE_ARCHIVE_PATH, "garbage-bytes-are-no-record")
+  local host = recordingProductionHost()
+  host.answers["TACKLE"] = true
+  local envelope = productionEnvelope(cache, host)
+  local owned = productionHolder(envelope:_preparationServices(), "probe-broken-payload")
+  Assert.equal(owned:demandEffect("TACKLE"), true, "a present path still reads ready before decoding")
+  local effect = owned:loadEffect("TACKLE")
+  Assert.notNil(effect, "the ready effect loads before resolving")
+  local lease, failure = owned:resolveEffectResource(effect, PROBE_ARCHIVE_KEY)
+  Assert.isNil(lease, "the undecodable archive hands out no lease")
+  Assert.isTrue(type(failure) == "string" and failure ~= "", "the undecodable archive carries its reason")
+  local reason = failure --[[@as string]]
+  Assert.isTrue(reason:find("TACKLE", 1, true) ~= nil, "the failure names its effect: " .. reason)
+  Assert.isTrue(
+    reason:find(PROBE_ARCHIVE_KEY, 1, true) ~= nil,
+    "the failure names its resource: " .. reason
+  )
+  Assert.isTrue(reason:find(PROBE_ARCHIVE_PATH, 1, true) ~= nil, "the failure names its path: " .. reason)
+  owned:dispose()
+  envelope:dispose()
+end
+
+-- A continuation staged against a non-particle lease fails at
+-- construction with the resource key: textures never masquerade as
+-- emitter records.
+function T.particle_continuation_rejects_non_particle_leases_with_provenance()
+  local probe = demandProductionTackle("probe-wrong-kind")
+  local Factory = effectFactoryModule()
+  local scene = sceneWithPair()
+  local context = occurrenceContext(4242)
+  local journal = { acquired = {}, released = {} }
+  local services = { scene = scene, audio = {}, resources = journaledHolderServices(probe.owned, probe.effect, journal) }
+  local built, failure = pcall(Factory.create, "battler-effect-continuation", {
+    resource = PROBE_TEXTURE_KEY,
+    emitterPosition = "solo-enemy",
+  }, context, services)
+  Assert.isFalse(built, "a texture lease never constructs a particle continuation")
+  Assert.isTrue(type(failure) == "string" and failure ~= "", "the refused construction names its cause")
+  Assert.isTrue(
+    tostring(failure):find(PROBE_TEXTURE_KEY, 1, true) ~= nil,
+    "the refusal names the offending resource: " .. tostring(failure)
+  )
+  Assert.equal(#scene:effectViews(), 0, "a refused construction publishes no visual records")
+  assertJournalBalanced(journal, "refused construction")
+  probe.owned:dispose()
+  probe.envelope:dispose()
+end
+
+-- Cancellation and repeated disposal release exactly once: the cancelled
+-- emission drops every sprite, every acquired lease returns once, and a
+-- second dispose never frees again.
+function T.cancelled_production_emission_releases_every_lease_exactly_once()
+  local probe = demandProductionTackle("probe-cancel-production")
+  local Factory = effectFactoryModule()
+  local scene = sceneWithPair()
+  local context = occurrenceContext(4242)
+  local journal = { acquired = {}, released = {} }
+  local services = { scene = scene, audio = {}, resources = journaledHolderServices(probe.owned, probe.effect, journal) }
+  local task = assert(Factory.create("battler-effect-continuation", {
+    resource = PROBE_ARCHIVE_KEY,
+    emitterPosition = "solo-enemy",
+  }, context, services), "the factory constructs the production-fed emitter")
+  local maxLive = 0
+  for tick = 1, 10 do
+    task:stepSourceTick({ tick = tick })
+    local live = #liveSpots(scene)
+    if live > maxLive then
+      maxLive = live
+    end
+  end
+  Assert.isTrue(maxLive > 1, "cancellation starts from a live multi-sprite emission")
+  task:cancel("production-probe-cancel")
+  Assert.equal(task:status(), "cancelled", "cancellation stays distinct from completion")
+  Assert.equal(#scene:effectViews(), 0, "cancellation releases every owned sprite record")
+  assertJournalBalanced(journal, "cancelled emission")
+  task:dispose()
+  task:dispose()
+  assertJournalBalanced(journal, "disposed emission")
+  probe.owned:dispose()
+  probe.owned:dispose()
+  probe.envelope:dispose()
+end
+
+-- A child texture that fails to stage fails the whole continuation:
+-- construction raises, no sprite record survives, and exactly the
+-- acquired leases return.
+function T.failed_child_texture_rolls_back_the_production_continuation()
+  local FakeCache = require("tests.support.FakeCache")
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local cache = CacheFs.forVersion("probe-child-failure", FakeCache.new())
+  stageProductionTackle(cache)
+  cache:write(PROBE_TEXTURE_PATH, "garbage-bytes-are-no-texture")
+  local host = recordingProductionHost()
+  host.answers["TACKLE"] = true
+  local envelope = productionEnvelope(cache, host)
+  local owned = productionHolder(envelope:_preparationServices(), "probe-child-failure")
+  Assert.equal(owned:demandEffect("TACKLE"), true, "a present path still reads ready before decoding")
+  local effect = owned:loadEffect("TACKLE")
+  Assert.notNil(effect, "the ready effect loads before resolving")
+  local Factory = effectFactoryModule()
+  local scene = sceneWithPair()
+  local context = occurrenceContext(4242)
+  local journal = { acquired = {}, released = {} }
+  local services = { scene = scene, audio = {}, resources = journaledHolderServices(owned, effect, journal) }
+  local built, failure = pcall(Factory.create, "battler-effect-continuation", {
+    resource = PROBE_ARCHIVE_KEY,
+    emitterPosition = "solo-enemy",
+  }, context, services)
+  Assert.isFalse(built, "a continuation with an unstaged texture never constructs")
+  Assert.isTrue(type(failure) == "string" and failure ~= "", "the refused construction names its cause")
+  Assert.isTrue(
+    tostring(failure):find(PROBE_TEXTURE_KEY, 1, true) ~= nil,
+    "the refusal names the failed texture resource: " .. tostring(failure)
+  )
+  Assert.equal(#scene:effectViews(), 0, "a refused continuation publishes no visual records")
+  assertJournalBalanced(journal, "rolled-back continuation")
+  owned:dispose()
+  envelope:dispose()
+end
+
+-- Runtime-selected emitters travel the same typed lease: one solo pair
+-- and one double-side pair each lease only their own published emitter
+-- and texture, render, complete, and release exactly once.
+local PAIR_EFFECT_KEY = "PAIR"
+local PAIR_LONE_KEY = "battle/particle-emitter/lone"
+local PAIR_PARTNER_KEY = "battle/particle-emitter/partner"
+local PAIR_LONE_TEXTURE = "probe/lone-texture"
+local PAIR_PARTNER_TEXTURE = "probe/partner-texture"
+local PAIR_POSITIONS = {
+  "solo-player",
+  "solo-enemy",
+  "player-side-slot-1",
+  "enemy-side-slot-1",
+  "player-side-slot-2",
+  "enemy-side-slot-2",
+}
+
+local function pairEffectRecord(loneArchive, partnerArchive, loneTextureBytes, partnerTextureBytes)
+  local Hashing = require("romdump.src.digest.Hashing")
+  local cases = {}
+  for _, attacker in ipairs(PAIR_POSITIONS) do
+    for _, target in ipairs(PAIR_POSITIONS) do
+      cases[attacker .. "/" .. target] = PAIR_LONE_KEY
+    end
+  end
+  cases["player-side-slot-1/enemy-side-slot-1"] = PAIR_PARTNER_KEY
+  return {
+    schema = BattleAnimationSchema.EFFECT_SCHEMA,
+    key = PAIR_EFFECT_KEY,
+    catalogIdentity = "probe-catalog",
+    program = {
+      entry = "main",
+      instructions = {
+        {
+          op = "create-parameterized-battler-effect",
+          taskKind = "battler-effect-continuation",
+          actionProfile = "particle-emitter-target-battler-relative",
+          emitterPosition = "solo-enemy",
+          runtimeSelection = "battler-particle-position-pair",
+          resourceCases = cases,
+        },
+        { op = "wait-for-battler-effects", cursorRule = "advance-when-effects-finish" },
+      },
+      subprograms = {},
+      taskKinds = { "battler-effect-continuation" },
+    },
+    dependencies = { PAIR_LONE_KEY, PAIR_PARTNER_KEY, PAIR_LONE_TEXTURE, PAIR_PARTNER_TEXTURE },
+    resources = {
+      [PAIR_LONE_KEY] = {
+        kind = "particle-emitter",
+        payload = "effects/probe-lone-emitter.lua",
+        contentIdentity = Hashing.sha1hex("probe-lone-emitter"),
+      },
+      [PAIR_PARTNER_KEY] = {
+        kind = "particle-emitter",
+        payload = "effects/probe-partner-emitter.lua",
+        contentIdentity = Hashing.sha1hex("probe-partner-emitter"),
+      },
+      [PAIR_LONE_TEXTURE] = {
+        kind = "texture",
+        payload = "effects/probe-lone-texture.lua",
+        contentIdentity = Hashing.sha1hex(loneTextureBytes),
+      },
+      [PAIR_PARTNER_TEXTURE] = {
+        kind = "texture",
+        payload = "effects/probe-partner-texture.lua",
+        contentIdentity = Hashing.sha1hex(partnerTextureBytes),
+      },
+    },
+    requiredContext = {},
+  }
+end
+
+local function runPairCase(attackerSlot, targetSlot, expectEmitter, expectTexture, expectWidth, launchId)
+  local FakeCache = require("tests.support.FakeCache")
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local cache = CacheFs.forVersion("probe-pair-selection", FakeCache.new())
+  local loneTextureBytes = EffectStagingFixture.rgba(8, 8)
+  local partnerTextureBytes = EffectStagingFixture.rgba(4, 4)
+  cache:writeLua(
+    BattlePresentationCache.effectPath(PAIR_EFFECT_KEY),
+    pairEffectRecord(nil, nil, loneTextureBytes, partnerTextureBytes)
+  )
+  cache:write(BattlePresentationCache.effectMarkerPath(PAIR_EFFECT_KEY), "probe-marker")
+  cache:writeLua("effects/probe-lone-emitter.lua", customEmitter({ textureKey = PAIR_LONE_TEXTURE }))
+  cache:writeLua("effects/probe-partner-emitter.lua", customEmitter({ textureKey = PAIR_PARTNER_TEXTURE }))
+  cache:writeLua("effects/probe-lone-texture.lua", { width = 8, height = 8, rgba8888 = loneTextureBytes })
+  cache:writeLua(
+    "effects/probe-partner-texture.lua",
+    { width = 4, height = 4, rgba8888 = partnerTextureBytes }
+  )
+  local host = recordingProductionHost()
+  host.answers[PAIR_EFFECT_KEY] = true
+  local envelope = productionEnvelope(cache, host)
+  local owned = productionHolder(envelope:_preparationServices(), launchId)
+  Assert.equal(owned:demandEffect(PAIR_EFFECT_KEY), true, "the paired closure reads ready")
+  local effect = owned:loadEffect(PAIR_EFFECT_KEY)
+  Assert.notNil(effect, "the paired effect loads before resolving")
+  local Factory = effectFactoryModule()
+  local Player = require("libs.hgss.src.presentation.BattleAnimationPlayer")
+  local scene = sceneWithPair()
+  local audio = {}
+  function audio.play(_) end
+  function audio.stop(_) end
+  function audio.isFinished(_)
+    return true
+  end
+  local journal = { acquired = {}, released = {} }
+  local player = assert(Player.new({
+    scene = scene,
+    audio = audio,
+    resources = journaledHolderServices(owned, effect, journal),
+    tasks = Factory,
+  }))
+  local packet = {
+    launchId = launchId,
+    packetId = 1,
+    event = { sequence = 1, actionId = 1, hitIndex = 1, effectKey = PAIR_EFFECT_KEY },
+    visualSeed = 777,
+    topology = {
+      attacker = { combatant = 1, activation = 1, slot = attackerSlot, sideType = 0 },
+      targets = { { combatant = 3, activation = 3, slot = targetSlot, sideType = 1 } },
+    },
+  }
+  local handle = assert(player:start(packet, effect.program))
+  local maxLive = 0
+  for _ = 1, 600 do
+    player:stepSourceTick({ tick = 1 })
+    local live = liveSpots(scene)
+    if #live > maxLive then
+      maxLive = #live
+      for _, picture in ipairs(live) do
+        Assert.equal(picture.assetKey, expectTexture, "paired sprites reference the selected texture")
+        Assert.equal(picture.width, expectWidth, "paired sprites carry the selected drawable width")
+        Assert.equal(picture.height, expectWidth, "paired sprites carry the selected drawable height")
+      end
+    end
+    local status = player:status(handle)
+    if status == "complete" or status == "failed" then
+      break
+    end
+  end
+  Assert.equal(player:status(handle), "complete", attackerSlot .. "/" .. targetSlot .. " reaches its completion")
+  Assert.isTrue(maxLive > 0, "the selected pair paints its emitter")
+  Assert.equal(#scene:effectViews(), 0, "retirement releases every owned sprite record")
+  player:dispose()
+  assertJournalBalanced(journal, "the paired run")
+  local acquired = {}
+  for _, key in ipairs(journal.acquired) do
+    acquired[#acquired + 1] = key
+  end
+  table.sort(acquired)
+  -- The occurrence journals one emitter lease while the spawned task
+  -- stages its own emitter and texture leases: exactly these three
+  -- acquisitions, nothing sibling-wide.
+  Assert.deepEqual(acquired, { expectEmitter, expectEmitter, expectTexture }, "the pair leases only its own emitter and texture")
+  owned:dispose()
+  envelope:dispose()
+end
+
+function T.runtime_selected_emitters_resolve_typed_leases_for_solo_and_paired_slots()
+  runPairCase("solo-player", "solo-enemy", PAIR_LONE_KEY, PAIR_LONE_TEXTURE, 8, "probe-pair-solo")
+  runPairCase(
+    "player-side-slot-1",
+    "enemy-side-slot-1",
+    PAIR_PARTNER_KEY,
+    PAIR_PARTNER_TEXTURE,
+    4,
+    "probe-pair-double"
+  )
 end
 
 return { tests = T }

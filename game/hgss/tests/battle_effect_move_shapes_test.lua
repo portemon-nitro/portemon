@@ -216,13 +216,17 @@ function T.shapes_execute_with_source_order_targets_completion_and_audio()
   end
   local resources = {}
   function resources.resolve(key)
-    local _ = key
     local params = {}
     for index = 1, 42 do
       params[index] = 0
     end
     params[29], params[30], params[24], params[32] = 12, 12, 0, 1
-    return { features = { "alpha", "random" }, params = params }
+    return {
+      key = key,
+      kind = "particle-emitter",
+      payloadPath = "probe/particle-emitter",
+      data = { features = { "alpha", "random" }, params = params },
+    }
   end
   function resources.release(_lease) end
   local player = assert(Player.new({

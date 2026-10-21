@@ -204,9 +204,15 @@ local function stageLease(kind, key, services, staged)
     )
   end
   local ok, lease = pcall(holder.resolve, key)
-  if not ok then
+  if not ok or lease == nil then
     rollbackStaged(staged, holder, key)
-    error("BATTLE_EFFECT_TASK_RESOURCE: kind " .. kind .. " requires resource " .. key .. ": " .. tostring(lease), 0)
+    local cause = nil
+    if ok then
+      cause = "no lease staged for key " .. key
+    else
+      cause = tostring(lease)
+    end
+    error("BATTLE_EFFECT_TASK_RESOURCE: kind " .. kind .. " requires resource " .. key .. ": " .. cause, 0)
   end
   staged[#staged + 1] = { holder = holder, lease = lease, released = false }
 end
@@ -916,11 +922,36 @@ local function newParticleContinuation(args, context, services)
   local staged = {}
   stageLease(kind, resource, services, staged)
   local random = checkRandom(context, kind)
-  local payload = staged[1].lease
+  -- Occurrence leases are typed: the holder returns the staged path
+  -- beside its decoded record for non-texture kinds, so only the
+  -- decoded record may be read as emitter state. A bare path or a
+  -- texture lease never masquerades as a particle archive here.
+  local lease = staged[1].lease --[[@as table<string, unknown>]]
+  local leaseKind = type(lease) == "table" and lease.kind or nil
+  if leaseKind ~= "particle" and leaseKind ~= "particle-emitter" then
+    releaseStaged(staged)
+    error(
+      "BATTLE_EFFECT_TASK_MALFORMED: kind "
+        .. kind
+        .. " stages a typed particle lease for resource "
+        .. resource
+        .. ", not "
+        .. tostring(leaseKind),
+      0
+    )
+  end
+  local payload = type(lease) == "table" and lease.data or nil
+  if payload == nil then
+    releaseStaged(staged)
+    error(
+      "BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " stages decoded particle records for resource " .. resource,
+      0
+    )
+  end
   local center = EMITTER_CENTERS[emitter]
   assert(center ~= nil, "particle emissions stage over a known effect slot")
   local streams = {}
-  if isNormalizedArchive(payload) then
+  if leaseKind == "particle" and isNormalizedArchive(payload) then
     for _, record in ipairs(payload.emitters) do
       if not isNormalizedEmitter(record) then
         releaseStaged(staged)
@@ -941,7 +972,7 @@ local function newParticleContinuation(args, context, services)
       end
       streams[#streams + 1] = particleStream(record, drawable, center)
     end
-  elseif isNormalizedEmitter(payload) then
+  elseif leaseKind == "particle-emitter" and isNormalizedEmitter(payload) then
     local drawable = nil
     if type(payload.textureKey) == "string" then
       stageLease(kind, payload.textureKey, services, staged)
@@ -958,7 +989,16 @@ local function newParticleContinuation(args, context, services)
     streams[#streams + 1] = particleStream(payload, drawable, center)
   else
     releaseStaged(staged)
-    error("BATTLE_EFFECT_TASK_MALFORMED: kind " .. kind .. " simulates staged particle records", 0)
+    error(
+      "BATTLE_EFFECT_TASK_MALFORMED: kind "
+        .. kind
+        .. " stages normalized particle records for resource "
+        .. resource
+        .. ", not "
+        .. tostring(leaseKind)
+        .. " data",
+      0
+    )
   end
   return setmetatable({
     _scene = scene,

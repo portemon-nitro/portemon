@@ -193,7 +193,12 @@ local function particleFixtureServices(scene)
   local resources = {}
   function resources.resolve(key)
     journal.acquired[#journal.acquired + 1] = key
-    return normalizedEmitterFixture()
+    return {
+      key = key,
+      kind = "particle-emitter",
+      payloadPath = "probe/particle-emitter",
+      data = normalizedEmitterFixture(),
+    }
   end
   function resources.release(lease)
     journal.released[#journal.released + 1] = lease

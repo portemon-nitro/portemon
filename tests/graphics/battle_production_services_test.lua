@@ -1655,6 +1655,189 @@ function T.staged_effect_texture_paints_native_pixels_through_production_service
   envelope:dispose()
 end
 
+-- A staged particle archive runs through the real player, factory,
+-- scene, holder, and renderer and paints native pixels: the production
+-- resolver hands the task its decoded emitters, the staged texture
+-- uploads to a real image, the live run publishes sprites mid-flight,
+-- one canvas frame carries staged ink, completion retires every sprite,
+-- and every lease returns exactly once.
+function T.production_particle_effect_paints_native_pixels_and_releases(scope, context)
+  local _ = context
+  local BattleAnimationPlayer = require("libs.hgss.src.presentation.BattleAnimationPlayer")
+  local BattleAnimationSchema = require("libs.assets.src.battle.BattleAnimationSchema")
+  local BattleEffectTasks = require("libs.hgss.src.presentation.BattleEffectTasks")
+  local BattleRenderer = require("game.hgss.src.battle.BattleRenderer")
+  local BattleScene = require("libs.hgss.src.presentation.BattleScene")
+  local EffectStagingFixture = require("tests.support.EffectStagingFixture")
+  local FakeCache = require("tests.support.FakeCache")
+  local Hashing = require("romdump.src.digest.Hashing")
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local archiveKey = "battle/particle/tackle"
+  local textureKey = "battle/particle/tackle-texture"
+  local archivePath = "effects/probe-pixel-archive.lua"
+  local texturePath = "effects/probe-pixel-texture.lua"
+  local textureBytes = EffectStagingFixture.rgba(8, 8)
+  local params = {}
+  for index = 1, 42 do
+    params[index] = 0
+  end
+  params[29], params[30], params[24], params[32] = 12, 12, 0, 1
+  local archive = {
+    emitters = {
+      { features = { "color", "random" }, params = params, textureSlot = 0, textureKey = textureKey },
+    },
+    resources = { { textureKey = textureKey, paletteKey = nil } },
+  }
+  local cache = CacheFs.forVersion("probe-particle-pixels", FakeCache.new())
+  cache:writeLua(BattlePresentationCache.effectPath("TACKLE"), {
+    schema = BattleAnimationSchema.EFFECT_SCHEMA,
+    key = "TACKLE",
+    catalogIdentity = "probe-catalog",
+    program = {
+      entry = "main",
+      instructions = {
+        {
+          op = "create-battler-effect",
+          resource = archiveKey,
+          emitterPosition = "solo-enemy",
+          taskKind = "battler-effect-continuation",
+        },
+        { op = "wait-for-battler-effects", cursorRule = "advance-when-effects-finish" },
+      },
+      subprograms = {},
+      taskKinds = { "battler-effect-continuation" },
+    },
+    dependencies = { archiveKey, textureKey },
+    resources = {
+      [archiveKey] = {
+        kind = "particle",
+        payload = archivePath,
+        contentIdentity = Hashing.sha1hex(textureBytes .. "probe-pixel-archive"),
+      },
+      [textureKey] = {
+        kind = "texture",
+        payload = texturePath,
+        contentIdentity = Hashing.sha1hex(textureBytes),
+      },
+    },
+    requiredContext = {},
+  })
+  cache:write(BattlePresentationCache.effectMarkerPath("TACKLE"), "probe-marker")
+  cache:writeLua(archivePath, archive)
+  cache:writeLua(texturePath, { width = 8, height = 8, rgba8888 = textureBytes })
+  local host = recordingGraphicsEffectHost()
+  host.answers["TACKLE"] = "ready"
+  local envelope = graphicsEffectEnvelope(cache, host, love.graphics)
+  local services = envelope:_preparationServices()
+  local assets = graphicsEffectHolder(services, "probe-particle-pixels")
+  Assert.equal(assets:demandEffect("TACKLE"), true, "the staged closure reads ready")
+  local effect = assets:loadEffect("TACKLE")
+  Assert.notNil(effect, "the ready effect loads before resolving")
+  local lease = assets:resolveEffectResource(effect, archiveKey)
+  Assert.notNil(lease, "the archive admits through production services")
+  Assert.isTrue(type(lease.data) == "table", "the archive lease carries its decoded record")
+  Assert.notNil(lease.data.emitters, "the decoded record stages its emitters")
+  local texture = assets:resolveEffectResource(effect, textureKey)
+  Assert.notNil(texture, "the texture admits beside the archive")
+  Assert.equal(texture.rgba8888, textureBytes, "the admitted lease shares its exact staged bytes")
+  local image = assets:drawable(textureKey)
+  Assert.notNil(image, "the admitted texture resolves to a real image")
+  Assert.equal(image:getWidth(), 8, "the uploaded image keeps its staged width")
+  assets:releaseEffectResource(lease)
+  assets:releaseEffectResource(texture)
+  local scene = BattleScene.new()
+  scene:observe({
+    { combatant = 1, activation = 1, visible = true },
+    { combatant = 3, activation = 3, visible = true },
+  })
+  local audio = {}
+  function audio.play(_) end
+  function audio.stop(_) end
+  function audio.isFinished(_)
+    return true
+  end
+  local journal = { acquired = {}, released = {} }
+  local holderServices = {}
+  function holderServices.resolve(key)
+    journal.acquired[#journal.acquired + 1] = key
+    return assets:resolveEffectResource(effect, key)
+  end
+  function holderServices.release(resolved)
+    journal.released[#journal.released + 1] = type(resolved) == "table" and resolved.key or resolved
+    return assets:releaseEffectResource(resolved)
+  end
+  local player = assert(BattleAnimationPlayer.new({
+    scene = scene,
+    audio = audio,
+    resources = holderServices,
+    tasks = BattleEffectTasks,
+  }))
+  local handle = assert(player:start({
+    launchId = "probe-particle-pixels",
+    packetId = 1,
+    event = { sequence = 1, actionId = 1, hitIndex = 1, effectKey = "TACKLE" },
+    visualSeed = 4242,
+    topology = {
+      attacker = { combatant = 1, activation = 1, slot = "solo-player", sideType = 0 },
+      targets = { { combatant = 3, activation = 3, slot = "solo-enemy", sideType = 1 } },
+    },
+  }, effect.program))
+  local canvas = scope:own(love.graphics.newCanvas(256, 192, { format = "rgba8", readable = true }))
+  local painted = false
+  for _ = 1, 600 do
+    player:stepSourceTick({ tick = 1 })
+    local live = 0
+    for _, view in ipairs(scene:effectViews()) do
+      if view.picture ~= nil then
+        live = live + 1
+      end
+    end
+    if live > 0 and not painted then
+      love.graphics.setCanvas(canvas)
+      love.graphics.clear(0, 0, 0, 0)
+      BattleRenderer.drawPane({
+        graphics = love.graphics,
+        text = {},
+        windows = {},
+        assets = assets,
+        frameKey = "default",
+        sceneImageKey = "scene:probe",
+      }, {
+        battlers = {},
+        effectInstances = scene:effectViews(),
+        hudPatchSpans = {},
+        hudSections = {},
+      }, "detail", {})
+      love.graphics.setCanvas()
+      local data = scope:own(canvas:newImageData())
+      painted = countInk(data, { x = 160, y = 48, width = 64, height = 64 }) > 0
+    end
+    local status = player:status(handle)
+    if status == "complete" or status == "failed" then
+      break
+    end
+  end
+  Assert.equal(player:status(handle), "complete", "the production-fed run reaches its own completion")
+  Assert.isTrue(painted, "a live frame of the run carries staged effect ink")
+  Assert.equal(#scene:effectViews(), 0, "retirement releases every owned sprite record")
+  player:dispose()
+  local acquired, released = {}, {}
+  for _, key in ipairs(journal.acquired) do
+    acquired[key] = (acquired[key] or 0) + 1
+  end
+  for _, key in ipairs(journal.released) do
+    released[key] = (released[key] or 0) + 1
+  end
+  for key, count in pairs(acquired) do
+    Assert.equal(released[key] or 0, count, "the settled run releases " .. tostring(key) .. " exactly once")
+  end
+  assets:dispose()
+  local stale, staleErr = assets:demandEffect("TACKLE")
+  Assert.isNil(stale, "a disposed launch publishes no stale readiness")
+  Assert.isTrue(type(staleErr) == "string" and staleErr ~= "", "the stale demand fails with context")
+  envelope:dispose()
+end
+
 -- A routine-move visual program runs through the real player, factory,
 -- scene, holder, and renderer without publishing proxy pictures. Visual
 -- task bodies that only move scene state (picture offsets, scrolls,

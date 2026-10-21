@@ -17,10 +17,12 @@ local Assert = require("tests.support.Assert")
 local BattleAnimationCompiler = require("romdump.src.digest.battle.BattleAnimationCompiler")
 local BattleAnimationSchema = require("libs.assets.src.battle.BattleAnimationSchema")
 local BattleAnimationSources = require("romdump.src.config.BattleAnimationSources")
+local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
 local BattlePresentationFlow = require("game.hgss.src.battle.BattlePresentationFlow")
 local BattlePresentationModel = require("game.hgss.src.battle.BattlePresentationModel")
 local BattleScene = require("libs.hgss.src.presentation.BattleScene")
 local ManifestFixture = require("tests.support.BattlePresentationManifestFixture")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = {}
 
@@ -245,13 +247,17 @@ function T.effect_runs_over_each_layer_class_restore_the_clean_scene_exactly()
   end
   local resources = {}
   function resources.resolve(key)
-    local _ = key
     local params = {}
     for index = 1, 42 do
       params[index] = 0
     end
     params[29], params[30], params[24], params[32] = 12, 12, 0, 1
-    return { features = { "alpha", "random" }, params = params }
+    return {
+      key = key,
+      kind = "particle-emitter",
+      payloadPath = "probe/particle-emitter",
+      data = { features = { "alpha", "random" }, params = params },
+    }
   end
   function resources.release(_lease) end
   local player = assert(Player.new({
@@ -321,13 +327,17 @@ function T.callback_program_mutates_scene_and_completes_at_its_source_boundary()
   end
   local resources = {}
   function resources.resolve(key)
-    local _ = key
     local params = {}
     for index = 1, 42 do
       params[index] = 0
     end
     params[29], params[30], params[24], params[32] = 12, 12, 0, 1
-    return { features = { "alpha", "random" }, params = params }
+    return {
+      key = key,
+      kind = "particle-emitter",
+      payloadPath = "probe/particle-emitter",
+      data = { features = { "alpha", "random" }, params = params },
+    }
   end
   function resources.release(_lease) end
   local player = assert(Player.new({
@@ -452,6 +462,139 @@ function T.staged_effect_texture_paints_through_production_renderer()
   BattleRenderer.drawPane(effectDetailResources(graphics, assets), effectDetailView(scene), "detail", {})
   Assert.isTrue(#graphics.draws >= 1, "the staged effect picture composes through the production renderer")
   assets:dispose()
+end
+
+-- Production texture proving ground: the resolver below pages the staged
+-- bytes through the real field envelope services and the per-launch
+-- holder, so the painted assertions exercise the production lease shape
+-- instead of the fixture double.
+local PROBE_PAINT_EFFECT = "TACKLE"
+local PROBE_PAINT_TEXTURE = "probe-spark"
+local PROBE_PAINT_PATH = "effects/probe-spark.lua"
+
+local function probePaintStaging(launchId)
+  local EffectStagingFixture = require("tests.support.EffectStagingFixture")
+  local FakeCache = require("tests.support.FakeCache")
+  local CacheFs = require("libs.storage.src.CacheFs")
+  local Hashing = require("romdump.src.digest.Hashing")
+  local textureBytes = EffectStagingFixture.rgba(4, 4)
+  local textureIdentity = Hashing.sha1hex(textureBytes)
+  local cache = CacheFs.forVersion("probe-layer-production", FakeCache.new())
+  cache:writeLua(BattlePresentationCache.effectPath(PROBE_PAINT_EFFECT), EffectStagingFixture.effectRecord(
+    PROBE_PAINT_EFFECT,
+    { { key = PROBE_PAINT_TEXTURE, kind = "texture", payload = PROBE_PAINT_PATH, contentIdentity = textureIdentity } }
+  ))
+  cache:write(BattlePresentationCache.effectMarkerPath(PROBE_PAINT_EFFECT), "probe-marker")
+  cache:writeLua(PROBE_PAINT_PATH, { width = 4, height = 4, rgba8888 = textureBytes })
+  local host = { asks = {}, answers = { [PROBE_PAINT_EFFECT] = true } }
+  local derived = {}
+  function derived.requestBattleEffect(key, _)
+    host.asks[#host.asks + 1] = key
+    if host.answers[key] ~= nil then
+      return true
+    end
+    return nil
+  end
+  local FieldBattlePresentation = require("game.hgss.src.field.FieldBattlePresentation")
+  local FakeGraphics = require("tests.support.FakeGraphics")
+  local graphics = FakeGraphics.new()
+  local text = {}
+  function text.measure(content)
+    return { width = 8 * #tostring(content), height = 16 }
+  end
+  function text.drawText(_) end
+  local windows = {}
+  function windows.drawWindow(_, _, _) end
+  local envelope = FieldBattlePresentation.new({
+    cacheFs = cache,
+    graphics = graphics,
+    windows = windows,
+    text = text,
+    measureDisplay = function()
+      return {
+        width = 256,
+        height = 384,
+        topology = ScreenTopology.dualDisplay(
+          { id = "main", rect = { x = 0, y = 0, width = 256, height = 192 }, touch = false, role = "world" },
+          { id = "lower", rect = { x = 0, y = 192, width = 256, height = 192 }, touch = true, role = "auxiliary" }
+        ),
+        pixelRatio = 1,
+        signature = "production-paint-probe:dual",
+      }
+    end,
+    derivedAssets = derived,
+  })
+  local BattlePresentationAssets = require("game.hgss.src.battle.BattlePresentationAssets")
+  local owned = BattlePresentationAssets.new({
+    assets = envelope:_preparationServices(),
+    launchId = launchId,
+    sceneKey = "probe/plain/day",
+    shadowRegions = ManifestFixture.manifest().pictures.shadow.regions,
+  })
+  return { cache = cache, envelope = envelope, owned = owned, textureBytes = textureBytes, graphics = graphics }
+end
+
+-- A staged effect texture admitted through the production resolver
+-- paints through the production renderer with its exact staged bytes.
+function T.production_texture_lease_paints_exact_bytes_through_renderer()
+  local probe = probePaintStaging("probe-layer-production-paint")
+  Assert.equal(probe.owned:demandEffect(PROBE_PAINT_EFFECT), true, "the staged closure reads ready")
+  local effect = probe.owned:loadEffect(PROBE_PAINT_EFFECT)
+  Assert.notNil(effect, "the ready effect loads before painting")
+  Assert.equal(
+    effect.resources[PROBE_PAINT_TEXTURE].payload,
+    PROBE_PAINT_PATH,
+    "the generated descriptor keeps naming the staged path"
+  )
+  local lease = probe.owned:resolveEffectResource(effect, PROBE_PAINT_TEXTURE)
+  Assert.notNil(lease, "the texture admits before painting")
+  Assert.equal(lease.width, 4, "the admitted lease carries its staged width")
+  Assert.equal(lease.height, 4, "the admitted lease carries its staged height")
+  Assert.equal(lease.rgba8888, probe.textureBytes, "the admitted lease shares its exact staged bytes")
+  Assert.isTrue(#probe.graphics.images >= 1, "admission uploads through the graphics namespace")
+  Assert.notNil(probe.owned:drawable(PROBE_PAINT_TEXTURE), "the admitted texture resolves to a drawable")
+  local scene = sceneWithPair()
+  local slot = scene:allocEffect("layer-production-paint-probe")
+  scene:setEffectPicture(slot.id, {
+    assetKey = PROBE_PAINT_TEXTURE,
+    selector = "spark",
+    centerX = 64,
+    centerY = 48,
+    zCenter = 0,
+    width = 4,
+    height = 4,
+    alpha = 1,
+  })
+  local FakeGraphics = require("tests.support.FakeGraphics")
+  local BattleRenderer = require("game.hgss.src.battle.BattleRenderer")
+  local graphics = FakeGraphics.new()
+  BattleRenderer.drawPane(effectDetailResources(graphics, probe.owned), effectDetailView(scene), "detail", {})
+  Assert.isTrue(#graphics.draws >= 1, "the staged effect picture composes through the production renderer")
+  probe.owned:dispose()
+  probe.envelope:dispose()
+end
+
+-- A texture payload that decodes to nothing fails at resolve time with
+-- the effect, the resource, and the path: no lease, no pixels, no
+-- silent pending.
+function T.corrupt_production_texture_payload_fails_closed_with_provenance()
+  local probe = probePaintStaging("probe-layer-production-corrupt")
+  probe.cache:write(PROBE_PAINT_PATH, "garbage-bytes-are-no-texture")
+  Assert.equal(probe.owned:demandEffect(PROBE_PAINT_EFFECT), true, "a present path still reads ready before decoding")
+  local effect = probe.owned:loadEffect(PROBE_PAINT_EFFECT)
+  Assert.notNil(effect, "the ready effect loads before resolving")
+  local lease, failure = probe.owned:resolveEffectResource(effect, PROBE_PAINT_TEXTURE)
+  Assert.isNil(lease, "the undecodable texture hands out no lease")
+  Assert.isTrue(type(failure) == "string" and failure ~= "", "the undecodable texture carries its reason")
+  local reason = failure --[[@as string]]
+  Assert.isTrue(reason:find(PROBE_PAINT_EFFECT, 1, true) ~= nil, "the failure names its effect: " .. reason)
+  Assert.isTrue(
+    reason:find(PROBE_PAINT_TEXTURE, 1, true) ~= nil,
+    "the failure names its resource: " .. reason
+  )
+  Assert.isTrue(reason:find(PROBE_PAINT_PATH, 1, true) ~= nil, "the failure names its path: " .. reason)
+  probe.owned:dispose()
+  probe.envelope:dispose()
 end
 
 -- An effect picture whose asset key has no staged drawable fails loudly

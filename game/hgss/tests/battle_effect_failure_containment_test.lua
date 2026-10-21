@@ -152,8 +152,13 @@ function T.mid_run_resource_and_voice_failures_fail_loudly_and_stay_live()
       end
       params[29], params[30], params[24], params[32] = 12, 12, 0, 1
       return {
-        emitters = {
-          { features = { "alpha" }, params = params, textureKey = "battle/particle/texture/missing" },
+        key = key,
+        kind = "particle",
+        payloadPath = "probe/particle-asleep",
+        data = {
+          emitters = {
+            { features = { "alpha" }, params = params, textureKey = "battle/particle/texture/missing" },
+          },
         },
       }
     end

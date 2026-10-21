@@ -1106,9 +1106,10 @@ function FieldBattlePresentation:_preparationServices()
   -- Texture descriptors validate exact dimensions and bytes, upload
   -- once through the host graphics namespace, and share the one owned
   -- image across duplicate resolves; other kinds arrive as immutable
-  -- typed descriptors with no pixels. Malformed payloads and driver
-  -- failures are terminal naming effect, resource, and path; nothing
-  -- is cached on failure so a retry never observes a half upload.
+  -- decoded records beside their staged path, never the path alone.
+  -- Malformed payloads and driver failures are terminal naming effect,
+  -- resource, and path; nothing is cached on failure so a retry never
+  -- observes a half upload.
   function services.resolveEffectResource(effect, resourceKey)
     if envelope._disposed then
       return nil, "battle effect resources are released: the presented battle envelope is disposed"
@@ -1129,11 +1130,22 @@ function FieldBattlePresentation:_preparationServices()
       if type(descriptor.payload) ~= "string" or not cacheFs:exists(descriptor.payload, "file") then
         return nil, "battle effect resource " .. tostring(resourceKey) .. " is not staged for effect " .. effectKey
       end
+      -- Non-texture payloads decode here, once per resolve: tasks only
+      -- ever read the decoded record and must never mistake the staged
+      -- path for data. The decoded table is borrowed immutable.
+      local data = cacheFs:loadLua(descriptor.payload)
+      if type(data) ~= "table" then
+        return nil,
+          "battle effect resource " .. tostring(resourceKey) .. " failed for effect " .. effectKey .. ": " .. tostring(
+            descriptor.payload
+          ) .. ": staged payload is not a normalized record"
+      end
       return {
         key = resourceKey,
         kind = descriptor.kind,
-        payload = descriptor.payload,
+        payloadPath = descriptor.payload,
         contentIdentity = descriptor.contentIdentity,
+        data = data,
       }
     end
     local payload = cacheFs:loadLua(descriptor.payload)
