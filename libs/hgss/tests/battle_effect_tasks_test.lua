@@ -1060,14 +1060,14 @@ function T.battler_motion_holds_keep_source_timing_without_invented_motion()
   local knockback = assert(BattleEffectTasks.create("pokemon-picture-defender-knockback", {
     battlerTarget = "target",
     activation = { combatant = 3, activation = 3 },
-    parameters = { durationTicks = 26 },
+    parameters = { durationTicks = 29 },
   }, occurrenceContext(), services))
-  for _ = 1, 25 do
+  for _ = 1, 28 do
     knockback:stepSourceTick({ tick = 1 })
     Assert.isTrue(knockback:status() ~= "complete", "the knockback boundary outlives its prefix")
   end
   knockback:stepSourceTick({ tick = 1 })
-  Assert.equal(knockback:status(), "complete", "the knockback completes at its native 26 ticks")
+  Assert.equal(knockback:status(), "complete", "the knockback completes at its native 29 ticks")
   Assert.isNil(
     scene:pictureState({ combatant = 3, activation = 3 }),
     "the hold stages no patch"

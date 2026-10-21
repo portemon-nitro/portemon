@@ -1808,7 +1808,7 @@ local PAIR_TASK_KINDS = {
 -- its producer shape (romdump/src/config/BattleAnimationSources.lua,
 -- resolveBattleAnimationCallback): the defender knockback hold is selector
 -- 48, DefenderKnockback in battle_anim_effects.c, which reads no source
--- words and runs its 26 ticks; the sinusoidal hold is selector 10, which
+-- words and runs its 29 ticks; the sinusoidal hold is selector 10, which
 -- lowers oscillation cycles with a duration but no amplitude operand; the
 -- selected-position hold is selector 77, which lowers target, basis, and
 -- duration with no magnitude operand. Without compiled placement operands

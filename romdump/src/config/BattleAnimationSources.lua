@@ -1597,9 +1597,10 @@ function BattleAnimationSources.resolveBattleAnimationCallback(operands)
     }
   elseif selector == 48 then
     -- DefenderKnockback (battle_anim_effects.c) reads no source words:
-    -- a four-tick linear displacement, a sixteen-tick shake
-    -- (InitShake interval 1, count 4: four phases per count), and a
-    -- four-tick return plus the snap tick run 26 ticks. The generic
+    -- a five-tick linear displacement (one dispatch tick plus four
+    -- motion ticks), a seventeen-tick shake (InitShake interval 1,
+    -- count 4: four phases per count, plus the transition tick), and a
+    -- five-tick return plus the snap tick run 29 ticks. The generic
     -- visual body holds that boundary with no patch: the side-directed
     -- jolt has no static expression, so the run stays timing-accurate
     -- instead of inventing motion.
@@ -1611,7 +1612,7 @@ function BattleAnimationSources.resolveBattleAnimationCallback(operands)
       taskKind = "pokemon-picture-defender-knockback",
       context = "pokemon-picture",
       battlerTarget = "target",
-      parameters = { durationTicks = 26 },
+      parameters = { durationTicks = 29 },
     }
   elseif selector == 59 then
     -- AttackerDashAfterimages (battle_anim_move_effects.c) never reads

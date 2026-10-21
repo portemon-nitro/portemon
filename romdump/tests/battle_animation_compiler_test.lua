@@ -950,16 +950,18 @@ end
 
 function T.battler_motion_callbacks_lower_to_their_native_tasks()
   local Sources = require("romdump.src.config.BattleAnimationSources")
-  -- DefenderKnockback (MEGAHORN) reads no source words: a four-tick
-  -- linear displacement, a sixteen-tick shake, and a four-tick return
-  -- plus the snap tick keep the defender's picture busy for 26 ticks.
+  -- DefenderKnockback (MEGAHORN) reads no source words: a five-tick
+  -- linear displacement (one dispatch tick plus four motion ticks), a
+  -- seventeen-tick shake (sixteen motion ticks plus the transition tick),
+  -- and a five-tick return plus the snap tick keep the defender's
+  -- picture busy for 29 ticks.
   local knockback = Sources.resolveBattleAnimationCallback({ 48, 0 })
   Assert.deepEqual(knockback, {
     callback = "pokemon-picture-defender-knockback",
     taskKind = "pokemon-picture-defender-knockback",
     context = "pokemon-picture",
     battlerTarget = "target",
-    parameters = { durationTicks = 26 },
+    parameters = { durationTicks = 29 },
   })
   -- AttackerDashAfterimages (SHADOW_PUNCH) carries one source word the
   -- native body never reads; its out leg (eight ticks) and back leg
