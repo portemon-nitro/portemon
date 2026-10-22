@@ -10,6 +10,7 @@ local GpuAssetPool = require("libs.hgss.src.presentation.GpuAssetPool")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local HoOhAppearanceRenderer = require("libs.hgss.src.presentation.HoOhAppearanceRenderer")
 local ImageAssetPool = require("libs.hgss.src.presentation.ImageAssetPool")
+local RomImporter = require("romdump.src.source.RomImporter")
 
 local VERSION = "heartgold"
 
@@ -159,6 +160,9 @@ local function withCounts(body)
 end
 
 local function testBuildsOnceAcrossSequences(scope)
+  if not RomImporter.isReady(VERSION) then
+    return
+  end
   withCounts(function(counts)
     local renderer = newRenderer(scope)
     drawAllPhases(renderer)
@@ -174,6 +178,9 @@ local function testBuildsOnceAcrossSequences(scope)
 end
 
 local function testPreparationIsIncrementalAndComplete(scope)
+  if not RomImporter.isReady(VERSION) then
+    return
+  end
   withCounts(function(counts)
     local renderer = newRenderer(scope)
     local steps = prepareFully(renderer, 1)
@@ -187,6 +194,9 @@ local function testPreparationIsIncrementalAndComplete(scope)
 end
 
 local function testDrawBeforePreparationMatchesPreparedOutput(scope)
+  if not RomImporter.isReady(VERSION) then
+    return
+  end
   local prepared = newRenderer(scope)
   prepareFully(prepared, 1)
   local direct = newRenderer(scope)
@@ -201,6 +211,9 @@ local function testDrawBeforePreparationMatchesPreparedOutput(scope)
 end
 
 local function testPreparationSlicesItsHeavyUnits(scope)
+  if not RomImporter.isReady(VERSION) then
+    return
+  end
   withCounts(function(counts)
     local renderer = newRenderer(scope)
     local steps, maxMeshes, maxImages = 0, 0, 0
@@ -220,6 +233,9 @@ local function testPreparationSlicesItsHeavyUnits(scope)
 end
 
 local function testDrawDrivenVariantChangeReleasesTheStaleVariant(scope)
+  if not RomImporter.isReady(VERSION) then
+    return
+  end
   withCounts(function(counts)
     local renderer = newRenderer(scope)
     prepareFully(renderer, 1)
@@ -232,6 +248,9 @@ local function testDrawDrivenVariantChangeReleasesTheStaleVariant(scope)
 end
 
 local function testCancelMidPreparationReleasesOnce(scope)
+  if not RomImporter.isReady(VERSION) then
+    return
+  end
   withCounts(function(counts)
     local renderer = newRenderer(scope)
     for _ = 1, 3 do
@@ -247,6 +266,9 @@ local function testCancelMidPreparationReleasesOnce(scope)
 end
 
 local function testVariantChangeReleasesTheStaleVariant(scope)
+  if not RomImporter.isReady(VERSION) then
+    return
+  end
   withCounts(function(counts)
     local renderer = newRenderer(scope)
     prepareFully(renderer, 1)
@@ -262,6 +284,9 @@ local function testVariantChangeReleasesTheStaleVariant(scope)
 end
 
 local function testSceneStartMidwayDoesNotDoubleBuild(scope)
+  if not RomImporter.isReady(VERSION) then
+    return
+  end
   withCounts(function(counts)
     local renderer = newRenderer(scope)
     Assert.isFalse(renderer:prepareStep(VERSION, 1))
@@ -275,6 +300,9 @@ local function testSceneStartMidwayDoesNotDoubleBuild(scope)
 end
 
 local function testDisposeReleasesEveryPoolOnce(scope)
+  if not RomImporter.isReady(VERSION) then
+    return
+  end
   withCounts(function(counts)
     local renderer = newRenderer(scope)
     prepareFully(renderer, 1)

@@ -3,6 +3,7 @@
 local Assert = require("tests.support.Assert")
 local DisplayContext = require("libs.ui.src.DisplayContext")
 local LayoutGeometry = require("libs.ui.src.LayoutGeometry")
+local RomImporter = require("romdump.src.source.RomImporter")
 local SaveFs = require("libs.storage.src.SaveFs")
 local Fixture = require("app.tests.support.SaveEditorFixture")
 
@@ -91,7 +92,13 @@ local function activateSave(state)
   state:mousereleased(hostX, hostY, 1)
 end
 
-function T.tests.production_editor_saves_an_edit()
+function T.tests.production_editor_saves_an_edit(context)
+  if not RomImporter.isReady("heartgold") then
+    if context ~= nil then
+      context:skip("heartgold dump not owned; the save editor smoke needs its fonts")
+    end
+    return
+  end
   local fixture = Fixture.new()
   local State = require("app.src.saveeditor.SaveEditorState")
   local originalGlobal = SaveFs.global

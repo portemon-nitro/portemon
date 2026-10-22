@@ -11,6 +11,7 @@ local FieldState = require("game.hgss.src.field.FieldState")
 local FieldStatePresentationFixture = require("tests.support.FieldStatePresentationFixture")
 local GraphicsSmoke = require("tests.support.GraphicsSmoke")
 local PlayTime = require("libs.hgss.src.save.PlayTime")
+local RomImporter = require("romdump.src.source.RomImporter")
 
 local VERSION = "heartgold"
 
@@ -84,6 +85,9 @@ local function withCounts(body)
 end
 
 local function testBellTowerPreloadsInTheBackground(scope)
+  if not RomImporter.isReady(VERSION) then
+    return
+  end
   withCounts(function(counts)
     local state = boot(scope, { mapSymbol = "MAP_BELL_TOWER_ROOF", fieldX = 15, fieldZ = 21, facing = "north" })
     local variant = assert(state.runtime.hoOhAppearanceScene):currentVariant()
@@ -111,6 +115,9 @@ local function testBellTowerPreloadsInTheBackground(scope)
 end
 
 local function testOtherMapsPrepareNothing(scope)
+  if not RomImporter.isReady(VERSION) then
+    return
+  end
   withCounts(function(counts)
     local state = boot(scope, { mapSymbol = "MAP_NEW_BARK", fieldX = 10, fieldZ = 10, facing = "south" })
     for _ = 1, 240 do
