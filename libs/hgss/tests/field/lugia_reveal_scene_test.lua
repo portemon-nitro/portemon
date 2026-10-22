@@ -67,7 +67,7 @@ local function newScene(versionId, camera, audio, resumes)
   local cacheFs = {
     loadLua = function(_, path)
       if path == FieldEffectAssetCache.definitionPath("ho_oh_appearance") then
-        return HoOhAppearanceFixture.definition()
+        return HoOhAppearanceFixture.core()
       end
       Assert.equal(path, FieldEffectAssetCache.definitionPath("lugia_appearance"), "scene loads its model definitions")
       return LugiaAppearanceFixture.definition()

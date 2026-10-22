@@ -1,4 +1,7 @@
--- Owns the Bell Tower appearance scene state and its source-tick clocks.
+-- Owns the Bell Tower and Whirl Islands legend appearance scene state and its
+-- source-tick clocks. The Bell Tower dance (both versions), the bird approach
+-- (Ho-Oh in HeartGold, Lugia in SoulSilver), and both legend cinematics run
+-- here because the field scripts drive them through one command surface.
 
 local HoOhAppearanceScene = {}
 HoOhAppearanceScene.__index = HoOhAppearanceScene
@@ -119,13 +122,20 @@ local CINEMATIC_FADE = {
   lugiaIn = { color = "black", direction = "in", duration = 6 },
   lugiaOut = { color = "black", direction = "out", duration = 6 },
 }
+-- The Whirl Islands eye glimmer: model 28 of the legend archive with its
+-- three material clips, drawn above and behind the player. Retail sounds
+-- its cue on the second tick and runs the clips to completion.
 local EYE_ANIMATION_IDS = { "eye.color", "eye.pattern", "eye.joint" }
 local EYE_SOUND_FRAME = 2
 local EYE_SOUND = "SEQ_SE_GS_RUGIA_MENOHIKARI"
+-- The Lugia-arrives platform-framing pose: the fifth retail camera entry.
+-- Retail only runs it on SoulSilver; HeartGold has no fifth entry, so the
+-- SoulSilver pose doubles for both versions if a mod ever invokes it there.
 local ARRIVES_CAMERA_INDEX = 4
 local ARRIVES_PAN_TICKS = 30
 local ARRIVES_NEAR = 150 / 16
 local ARRIVES_FAR = 1700 / 16
+-- The retail Lugia cinematic camera, in tiles.
 local LUGIA_CINEMATIC_CAMERA = {
   target = { x = 0x00004DEC / 65536, y = 0x000803CD / 65536, z = 0x0002B2F5 / 65536 },
   distance = 0x00153B51 / 4096 / 16,
@@ -135,7 +145,16 @@ local LUGIA_CINEMATIC_CAMERA = {
   near = 0x0007B000 / 4096 / 16,
   far = 0x006A4000 / 4096 / 16,
 }
+-- The retail Lugia cinematic's own sound cues, by frame of its single shot.
+-- Frame 0 starts the waterfall loop at zero volume and ramps it to 30 over
+-- the first ten frames (frame * 0x300 / 0x100, then 30); the scene drives
+-- that schedule through the field-audio volume contract. Frame 145 also
+-- starts the display-capture motion blur, which the software renderer does
+-- not reproduce: the cue timing stays exact, only the trails are missing.
 local LUGIA_WATERFALL = "SEQ_SE_GS_TAKI_RUGIADEMO"
+local LUGIA_WATERFALL_START_VOLUME = 0
+local LUGIA_WATERFALL_FULL_VOLUME = 30
+local LUGIA_WATERFALL_RAMP_FRAMES = 10
 local LUGIA_CUES = {
   [0] = { LUGIA_WATERFALL },
   [115] = { "SEQ_SE_GS_RUGIA_TAKISHUTUGEN" },
@@ -155,7 +174,7 @@ function HoOhAppearanceScene.new(options)
   assert(type(options.revealBird) == "function", "Ho-Oh scene requires the legend actor reveal")
   assert(type(options.setBirdFlap) == "function", "Ho-Oh scene requires the legend actor flap writer")
   assert(type(options.setBirdAnimationAllowance) == "function", "Ho-Oh scene requires the legend animation allowance")
-  assert(type(options.resumeField) == "function", "legend scene requires the field resume")
+  assert(type(options.resumeField) == "function", "Ho-Oh scene requires the field resume")
   assert(
     options.audio
       and options.audio.play
@@ -189,8 +208,8 @@ function HoOhAppearanceScene.new(options)
   }, HoOhAppearanceScene)
 end
 
--- Loads the Whirl Islands model clocks only when a Lugia scene needs them.
----@param self HoOhAppearanceScene
+-- Loads the Whirl Islands model clocks on first use: the Bell Tower dance
+-- never needs the Lugia bytes.
 ---@return table<string, integer> clipsById
 ---@return integer lugiaAnimationFrames
 function HoOhAppearanceScene:lugiaClips()
@@ -217,6 +236,7 @@ function HoOhAppearanceScene:lugiaClips()
   return self.lugiaClipsById, assert(self.lugiaAnimationFrames)
 end
 
+-- Ticks the eye-glimmer effect runs: its clips play to completion.
 ---@return integer
 function HoOhAppearanceScene:eyeGlimmerTicks()
   local clipsById = self:lugiaClips()
@@ -352,6 +372,8 @@ local function restoreCinematicCamera(scene, state)
   camera:collapseRenderInterpolation()
 end
 
+-- The retail Lugia cinematic is its own application: the field resumes (its
+-- map on_resume script runs) when it exits.
 local function exitLugiaCinematic(scene, state)
   restoreCinematicCamera(scene, state)
   scene.resumeField()
@@ -460,7 +482,7 @@ function HoOhAppearanceScene:command(op, destination)
     assert(self.eyeGlimmer == nil, "Lugia eye glimmer is already active")
     local player = assert(self.playerPosition(), "Lugia eye glimmer requires a live player")
     self:lugiaClips()
-    self.eyeGlimmer = { frame = 0, origin = copyPosition(player) }
+    self.eyeGlimmer = { frame = 0, origin = LegendCutsceneRig.copyPosition(player) }
   elseif op == "legend_cutscene_lugia_arrives_begin" then
     assert(state == nil, "Lugia arrives cannot begin while the bell scene is active")
     assert(self.arrives == nil, "Lugia arrives effect is already active")
@@ -468,35 +490,48 @@ function HoOhAppearanceScene:command(op, destination)
     local camera = assert(self.currentCamera(), "Lugia arrives requires a live camera")
     local data = CAMERA_DATA.soulsilver
     local offset = assert(data.offsets[ARRIVES_CAMERA_INDEX + 1], "Lugia arrives camera offset is unavailable")
-    local saved = snapshotCamera(camera)
-    local home = {
-      target = saved.target,
-      angle = camera.profile.angleXRaw,
-      perspective = saved.rawPerspective,
-    }
-    local pose = {
-      target = { x = saved.target.x + offset[1], y = saved.target.y + offset[2], z = saved.target.z + offset[3] },
-      angle = data.angles[ARRIVES_CAMERA_INDEX + 1],
-      perspective = data.perspective[ARRIVES_CAMERA_INDEX + 1],
-    }
+    local lease = LegendCutsceneRig.snapshotCamera(camera)
     self.arrives = {
       camera = camera,
-      snapshot = saved,
-      home = home,
-      pose = pose,
+      snapshot = lease,
+      -- The pan home shares the snapshot target: the transition only reads
+      -- its destination, and the snapshot target never moves after capture.
+      home = {
+        target = lease.target,
+        angle = camera.profile.angleXRaw,
+        perspective = lease.rawPerspective,
+      },
+      pose = {
+        target = {
+          x = lease.target.x + offset[1],
+          y = lease.target.y + offset[2],
+          z = lease.target.z + offset[3],
+        },
+        angle = data.angles[ARRIVES_CAMERA_INDEX + 1],
+        perspective = data.perspective[ARRIVES_CAMERA_INDEX + 1],
+      },
       transition = nil,
-      origin = copyPosition(player),
+      origin = LegendCutsceneRig.copyPosition(player),
     }
-    LegendCutsceneRig.applyPose(camera, player, pose.target, pose.angle, pose.perspective, {
-      near = ARRIVES_NEAR,
-      far = ARRIVES_FAR,
-    })
+    LegendCutsceneRig.applyPose(
+      camera,
+      player,
+      self.arrives.pose.target,
+      self.arrives.pose.angle,
+      self.arrives.pose.perspective,
+      {
+        near = ARRIVES_NEAR,
+        far = ARRIVES_FAR,
+      }
+    )
   elseif op == "legend_cutscene_lugia_arrives_camera_pan" then
     local arrives = assert(self.arrives, "Lugia arrives effect has not begun")
     assert(arrives.transition == nil, "Lugia arrives camera is already panning")
     arrives.transition = {
+      -- The pan starts from the applied arrives pose, not the field
+      -- profile the pose overrode.
       start = {
-        target = copyPosition(assert(self.currentCamera()).target),
+        target = LegendCutsceneRig.copyPosition(assert(self.currentCamera()).target),
         angle = arrives.pose.angle,
         perspective = arrives.camera:rawPerspective(),
       },
@@ -507,11 +542,11 @@ function HoOhAppearanceScene:command(op, destination)
     local arrives = assert(self.arrives, "Lugia arrives effect has not begun")
     assert(arrives.transition == nil, "Lugia arrives camera is still panning")
     local player = assert(self.playerPosition(), "Lugia arrives requires a live player")
-    local saved = arrives.snapshot
-    LegendCutsceneRig.applyPose(arrives.camera, player, saved.target, arrives.home.angle, saved.rawPerspective, {
-      distance = saved.distance,
-      near = saved.near,
-      far = saved.far,
+    local snapshot = arrives.snapshot
+    LegendCutsceneRig.applyPose(arrives.camera, player, snapshot.target, arrives.home.angle, snapshot.rawPerspective, {
+      distance = snapshot.distance,
+      near = snapshot.near,
+      far = snapshot.far,
     })
     self.arrives = nil
   elseif op == "legend_cinematic" then
@@ -526,7 +561,7 @@ function HoOhAppearanceScene:command(op, destination)
       self.state = {
         active = true,
         sequence = self.sequence,
-        origin = copyPosition(player),
+        origin = LegendCutsceneRig.copyPosition(player),
         cinematicPhase = "lugia_fade_in",
         cinematicShot = "lugia",
         cinematicVariant = nil,
@@ -534,17 +569,26 @@ function HoOhAppearanceScene:command(op, destination)
         cinematicModelFrame = 0,
         lugiaAnimationFrames = lugiaFrames,
         motionBlur = false,
-        cameraRestore = self.fieldCamera or snapshotCamera(camera),
+        -- The retail cinematic is its own application: the field comes back
+        -- with its ordinary camera, not the cutscene pose the script left.
+        cameraRestore = self.fieldCamera or LegendCutsceneRig.snapshotCamera(camera),
         effectsActive = false,
       }
       startCinematicFade(self.state, CINEMATIC_FADE.lugiaIn)
       local pose = LUGIA_CINEMATIC_CAMERA
-      LegendCutsceneRig.applyPose(camera, player, offsetPosition(player, pose.target), pose.angleX, pose.perspective, {
-        distance = pose.distance,
-        angleY = pose.angleY,
-        near = pose.near,
-        far = pose.far,
-      })
+      LegendCutsceneRig.applyPose(
+        camera,
+        player,
+        LegendCutsceneRig.offsetPosition(player, pose.target),
+        pose.angleX,
+        pose.perspective,
+        {
+          distance = pose.distance,
+          angleY = pose.angleY,
+          near = pose.near,
+          far = pose.far,
+        }
+      )
       return
     end
     local variant = self:currentVariant()
@@ -643,10 +687,11 @@ function HoOhAppearanceScene:taskTicks(op)
   elseif op == "legend_cinematic" then
     local state = assert(self.state, "legend cinematic has not started")
     if state.cinematicShot == "lugia" then
+      -- The waterfall fades the single shot out six ticks after frame 232.
       return math.max(assert(state.lugiaAnimationFrames), LUGIA_FADE_OUT_FRAME + CINEMATIC_FADE.lugiaOut.duration)
     end
-    local animations = assert(state.cinematicAnimationFrames, "Ho-Oh cinematic has not started")
-    return math.max(animations.first, 141) + math.max(animations.second, 206)
+    local frames = assert(state.cinematicAnimationFrames, "Ho-Oh cinematic has not started")
+    return math.max(frames.first, 141) + math.max(frames.second, 206)
   end
   error("Ho-Oh scene has no blocking task for " .. op)
 end
@@ -787,22 +832,6 @@ function HoOhAppearanceScene:updateFixed()
           startCinematicFade(state, CINEMATIC_FADE.firstOut)
         end
       end
-    elseif state.cinematicPhase == "second_fade_in" and state.cinematicFade == nil then
-      state.cinematicPhase = "second"
-      state.cinematicFrame = 0
-    elseif state.cinematicPhase == "second" then
-      if state.cinematicModelFrame >= state.cinematicAnimationFrames.second and state.cinematicFade == nil then
-        restoreCinematicCamera(self, state)
-        self.state = nil
-      else
-        if state.cinematicFrame % 64 == 0 then
-          self.audio:play("SEQ_SE_GS_HOUOUHABATAKI_APRI")
-        end
-        state.cinematicFrame = state.cinematicFrame + 1
-        if state.cinematicFrame == 190 then
-          startCinematicFade(state, CINEMATIC_FADE.secondOut)
-        end
-      end
     elseif state.cinematicPhase == "lugia_fade_in" and state.cinematicFade == nil then
       state.cinematicPhase = "lugia"
       state.cinematicFrame = 0
@@ -817,8 +846,8 @@ function HoOhAppearanceScene:updateFixed()
             self.audio:playCry(LUGIA_CRY_SPECIES, 0)
             state.motionBlur = true
           elseif symbol == LUGIA_WATERFALL then
-            self.audio:play(symbol, 0)
-            self.audio:moveSequenceVolume(symbol, 30, 10)
+            self.audio:play(symbol, LUGIA_WATERFALL_START_VOLUME)
+            self.audio:moveSequenceVolume(symbol, LUGIA_WATERFALL_FULL_VOLUME, LUGIA_WATERFALL_RAMP_FRAMES)
           else
             self.audio:play(symbol)
           end
@@ -826,6 +855,22 @@ function HoOhAppearanceScene:updateFixed()
         state.cinematicFrame = state.cinematicFrame + 1
         if state.cinematicFrame == LUGIA_FADE_OUT_FRAME then
           startCinematicFade(state, CINEMATIC_FADE.lugiaOut)
+        end
+      end
+    elseif state.cinematicPhase == "second_fade_in" and state.cinematicFade == nil then
+      state.cinematicPhase = "second"
+      state.cinematicFrame = 0
+    elseif state.cinematicPhase == "second" then
+      if state.cinematicModelFrame >= state.cinematicAnimationFrames.second and state.cinematicFade == nil then
+        restoreCinematicCamera(self, state)
+        self.state = nil
+      else
+        if state.cinematicFrame % 64 == 0 then
+          self.audio:play("SEQ_SE_GS_HOUOUHABATAKI_APRI")
+        end
+        state.cinematicFrame = state.cinematicFrame + 1
+        if state.cinematicFrame == 190 then
+          startCinematicFade(state, CINEMATIC_FADE.secondOut)
         end
       end
     end
@@ -847,6 +892,9 @@ end
 ---@return HoOhAppearanceScene.Status
 function HoOhAppearanceScene:status()
   local state = self.state
+  -- The eye glimmer and the arrives camera run beside the bell state, never
+  -- inside it: the glimmer starts before the bell scene ends, and the
+  -- arrives effect brackets the bird approach.
   local eye, arrives = self.eyeGlimmer, self.arrives
   if state == nil and eye == nil and arrives == nil then
     return { active = false, sequence = self.sequence, backdropRetained = self.backdropRetained }
@@ -854,7 +902,7 @@ function HoOhAppearanceScene:status()
   local offsets = self.versionId == "heartgold" and HG_CORNER_OFFSETS or SS_CORNER_OFFSETS
   local origin = state and state.origin or eye and eye.origin or assert(arrives).origin
   return {
-    active = state == nil or state.active,
+    active = true,
     backdropRetained = self.backdropRetained,
     sequence = self.sequence,
     versionId = self.versionId,
