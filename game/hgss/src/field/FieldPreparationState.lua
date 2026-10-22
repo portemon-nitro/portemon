@@ -95,7 +95,6 @@ function FieldPreparationState.new(options)
     transferred = false,
     cancelled = false,
     loading = options.kind == "continue" and HgssLoadingPresentation.new({
-      purpose = "continue",
       versionId = options.versionId,
       width = love.graphics.getWidth(),
       height = love.graphics.getHeight(),
@@ -110,16 +109,31 @@ function FieldPreparationState:_pollLoaderArt()
   if self.loaderArtObserved or self.loading == nil then
     return
   end
-  local ready, failure = self.derivedAssets.requestMilestone("startup-loader", "near")
+  -- The loading cover is decorative: any failure in this whole sequence
+  -- latches once as a cosmetic diagnostic and never blocks or cancels the
+  -- required preparation below. A pending milestone stays retryable.
+  local observed, ready, failure = pcall(self.derivedAssets.requestMilestone, "startup-loader", "near")
+  if not observed then
+    self.loaderArtFailure = ready
+    self.loaderArtObserved = true
+    return
+  end
   if failure ~= nil then
     self.loaderArtFailure = failure
     self.loaderArtObserved = true
-  elseif ready then
-    local adopted, adoptionError = self.loading:adoptGeneratedAssets(CacheFs.forVersion(self.versionId))
-    if not adopted then
-      self.loaderArtFailure = adoptionError
-    end
-    self.loaderArtObserved = true
+    return
+  end
+  if ready ~= true then
+    return
+  end
+  local adopted, adoptedResult, adoptionError = pcall(function()
+    return self.loading:adoptGeneratedAssets(CacheFs.forVersion(self.versionId))
+  end)
+  self.loaderArtObserved = true
+  if not adopted then
+    self.loaderArtFailure = adoptedResult
+  elseif not adoptedResult then
+    self.loaderArtFailure = adoptionError
   end
 end
 

@@ -584,7 +584,6 @@ function State.new(options)
     status = "opening",
     message = "Preparing save data",
     loading = HgssLoadingPresentation.new({
-      purpose = "editor",
       versionId = options.versionId,
       width = width,
       height = height,
@@ -709,16 +708,31 @@ function State:_pollLoadingArt()
   if loading == nil or self.loaderArtObserved then
     return
   end
+  -- The loading cover is decorative: any failure in this whole sequence
+  -- latches once as a cosmetic diagnostic and never blocks the required
+  -- editor opening. A pending milestone stays retryable.
   local ok, ready, failure = pcall(self.derivedAssets.requestMilestone, "startup-loader", "near")
-  if not ok or failure ~= nil then
-    self.loaderArtFailure = ok and failure or ready
+  if not ok then
+    self.loaderArtFailure = ready
     self.loaderArtObserved = true
-  elseif ready then
-    local adopted, adoptionError = loading:adoptGeneratedAssets(CacheFs.forVersion(self.versionId))
-    if not adopted then
-      self.loaderArtFailure = adoptionError
-    end
+    return
+  end
+  if failure ~= nil then
+    self.loaderArtFailure = failure
     self.loaderArtObserved = true
+    return
+  end
+  if ready ~= true then
+    return
+  end
+  local adopted, adoptedResult, adoptionError = pcall(function()
+    return loading:adoptGeneratedAssets(CacheFs.forVersion(self.versionId))
+  end)
+  self.loaderArtObserved = true
+  if not adopted then
+    self.loaderArtFailure = adoptedResult
+  elseif not adoptedResult then
+    self.loaderArtFailure = adoptionError
   end
 end
 
@@ -4004,7 +4018,6 @@ local ACTIVATION_HANDLERS = {
     self.generation = self.generation + 1
     self.status, self.errorMessage = "opening", nil
     self.loading = HgssLoadingPresentation.new({
-      purpose = "editor",
       versionId = self.versionId,
       width = self.width,
       height = self.height,
