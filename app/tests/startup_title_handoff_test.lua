@@ -64,6 +64,7 @@ local function withStartup(fn)
     provisioner = App.provisioner,
     service = App.service,
     epoch = App.epoch,
+    pairIndex = App.pairIndex,
     pendingQuiesce = App.pendingQuiesce,
     selectedVersionId = App.selectedVersionId,
     opts = App.opts,
@@ -147,6 +148,9 @@ local function withStartup(fn)
   App.provisioner = nil
   App.service = service
   App.epoch = 0
+  -- The harness stands in for the selection flow's chosen walking pair (the
+  -- selection flow owns the production assignment): the game handoff forwards it.
+  App.pairIndex = 1
   App.pendingQuiesce = nil
   App.selectedVersionId = nil
   App.opts = { dev = false }
@@ -242,6 +246,7 @@ local function withStartup(fn)
   App.provisioner = saved.provisioner
   App.service = saved.service
   App.epoch = saved.epoch
+  App.pairIndex = saved.pairIndex
   App.pendingQuiesce = saved.pendingQuiesce
   App.selectedVersionId = saved.selectedVersionId
   App.opts = saved.opts

@@ -25,6 +25,7 @@ local ItemCatalog = require("libs.items.src.ItemCatalog")
 
 ---@class HgssGameOptions
 ---@field versionId string
+---@field startupPairIndex integer selected 1..32 walking pair, forwarded to entry loading stages
 ---@field entry HgssGameEntry
 ---@field onExit fun(result: table<string, unknown>|nil)
 ---@field development boolean?
@@ -160,12 +161,21 @@ local function installRoutes(options, game, saveStore, versionId)
     )
     return FieldMapLoader.new(cacheFs, world, { derivedAssets = derivedAssets })
   end
+  local startupPairIndex = options.startupPairIndex
+  assert(
+    type(startupPairIndex) == "number"
+      and startupPairIndex % 1 == 0
+      and startupPairIndex >= 1
+      and startupPairIndex <= 32,
+    "HgssGame requires the selected walking pair 1..32"
+  )
   local function enterPreparation(preparationOptions)
     game:setState(FieldPreparationState.new({
       kind = preparationOptions.kind,
       saveId = preparationOptions.saveId,
       candidate = preparationOptions.candidate,
       versionId = versionId,
+      startupPairIndex = startupPairIndex,
       derivedAssets = derivedAssets,
       saveStore = saveStore,
       createLoader = entryLoader,
@@ -246,6 +256,8 @@ local function installRoutes(options, game, saveStore, versionId)
     -- Oak composition run only inside the ready transfer, so a cold
     -- partial cache shows preparation instead of missing-asset failure.
     game:setState(NewGamePreparationState.new({
+      versionId = versionId,
+      startupPairIndex = startupPairIndex,
       derivedAssets = derivedAssets,
       onReady = bootOakIntro,
       onCancel = returnToMainMenu,

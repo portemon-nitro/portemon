@@ -7,10 +7,17 @@ local NewGamePreparationState = require("game.hgss.src.newgame.NewGamePreparatio
 
 local T = {}
 
+local PAIR_INDEX = 32
+local VERSION_ID = "soulsilver"
+
 local function pendingHost()
   local calls = {}
   return {
     calls = calls,
+    requestStartupWalker = function(pairIndex, urgency)
+      calls[#calls + 1] = { pairIndex = pairIndex, urgency = urgency }
+      return false
+    end,
     requestMilestone = function(name, urgency)
       calls[#calls + 1] = { name = name, urgency = urgency }
       return false
@@ -21,24 +28,53 @@ local function pendingHost()
   }
 end
 
+local function entryOptions(host, overrides)
+  local options = {
+    versionId = VERSION_ID,
+    startupPairIndex = PAIR_INDEX,
+    derivedAssets = host,
+    onReady = function() end,
+    onCancel = function() end,
+  }
+  if overrides ~= nil then
+    for key, value in pairs(overrides) do
+      options[key] = value
+    end
+  end
+  return options
+end
+
 function T.pending_preparation_requests_the_intro_milestone_without_transferring()
   local host = pendingHost()
   local readyCalls = 0
-  local state = NewGamePreparationState.new({
-    derivedAssets = host,
+  local state = NewGamePreparationState.new(entryOptions(host, {
     onReady = function()
       readyCalls = readyCalls + 1
     end,
-    onCancel = function() end,
-  })
+  }))
   state:update(0)
   state:update(0)
-  Assert.equal(#host.calls, 2, "every update polls the semantic milestone")
+  local milestones = {}
   for _, call in ipairs(host.calls) do
+    if call.name ~= nil then
+      milestones[#milestones + 1] = call
+    end
+  end
+  Assert.equal(#milestones, 2, "every update polls the semantic milestone")
+  for _, call in ipairs(milestones) do
     Assert.equal(call.name, "new-game-intro")
     Assert.equal(call.urgency, "required")
   end
   Assert.equal(readyCalls, 0, "no candidate or Oak transfer happens while pending")
+  local pairDemands = 0
+  for _, call in ipairs(host.calls) do
+    if call.pairIndex ~= nil then
+      pairDemands = pairDemands + 1
+      Assert.equal(call.pairIndex, PAIR_INDEX, "the decorative demand names the selected pair")
+      Assert.equal(call.urgency, "near", "the decorative demand stays nonblocking")
+    end
+  end
+  Assert.isTrue(pairDemands >= 1, "pending entry keeps polling its selected pair decoratively")
 end
 
 function T.ready_preparation_transfers_exactly_once()
@@ -50,24 +86,28 @@ function T.ready_preparation_transfers_exactly_once()
     return ready
   end
   local readyCalls = 0
-  local state = NewGamePreparationState.new({
-    derivedAssets = host,
+  local state = NewGamePreparationState.new(entryOptions(host, {
     onReady = function()
       readyCalls = readyCalls + 1
     end,
-    onCancel = function() end,
-  })
+  }))
   state:update(0)
   Assert.equal(readyCalls, 0, "no transfer happens while pending")
   ready = true
   state:update(0)
+  Assert.equal(readyCalls, 0, "an otherwise-ready entry never transfers before its first loader draw")
+  state:draw()
   state:update(0)
   state:update(0)
-  Assert.equal(readyCalls, 1, "readiness transfers exactly once")
+  state:update(0)
+  Assert.equal(readyCalls, 1, "readiness transfers exactly once after the first loader draw")
 end
 
 function T.failed_preparation_raises_without_transferring()
   local host = {
+    requestStartupWalker = function()
+      return false
+    end,
     requestMilestone = function()
       return false, "intro milestone failed"
     end,
@@ -76,13 +116,11 @@ function T.failed_preparation_raises_without_transferring()
     end,
   }
   local readyCalls = 0
-  local state = NewGamePreparationState.new({
-    derivedAssets = host,
+  local state = NewGamePreparationState.new(entryOptions(host, {
     onReady = function()
       readyCalls = readyCalls + 1
     end,
-    onCancel = function() end,
-  })
+  }))
   local ok, err = pcall(function()
     state:update(0)
   end)
@@ -97,18 +135,18 @@ end
 function T.escape_cancels_back_to_menu_without_a_later_transfer()
   local host = pendingHost()
   local readyCalls, cancelCalls = 0, 0
-  local state = NewGamePreparationState.new({
-    derivedAssets = host,
+  local state = NewGamePreparationState.new(entryOptions(host, {
     onReady = function()
       readyCalls = readyCalls + 1
     end,
     onCancel = function()
       cancelCalls = cancelCalls + 1
     end,
-  })
+  }))
   state:update(0)
   state:keypressed("escape")
   Assert.equal(cancelCalls, 1, "cancellation returns to the menu once")
+  Assert.isNil(state.loading, "cancellation releases the entry stage")
   host.requestMilestone = function()
     return true
   end
@@ -122,13 +160,11 @@ end
 function T.disposed_preparation_never_transfers()
   local host = pendingHost()
   local readyCalls = 0
-  local state = NewGamePreparationState.new({
-    derivedAssets = host,
+  local state = NewGamePreparationState.new(entryOptions(host, {
     onReady = function()
       readyCalls = readyCalls + 1
     end,
-    onCancel = function() end,
-  })
+  }))
   state:dispose()
   host.requestMilestone = function()
     return true
@@ -148,40 +184,39 @@ function T.constructor_validates_its_composition()
     ---@diagnostic disable-next-line: param-type-mismatch -- the mistyped callback is the invalid input under test
     NewGamePreparationState.new(options)
   end)
+  Assert.throws(function()
+    NewGamePreparationState.new(entryOptions(pendingHost(), { versionId = "" }))
+  end, "a missing versionId is rejected")
+  Assert.throws(function()
+    local options = entryOptions(pendingHost())
+    options.startupPairIndex = nil
+    NewGamePreparationState.new(options)
+  end, "a missing walking pair is rejected, never generated")
+  Assert.throws(function()
+    NewGamePreparationState.new(entryOptions(pendingHost(), { startupPairIndex = 33 }))
+  end, "a pair outside 1..32 is rejected")
 end
 
-local function recordDraw(draw)
-  local calls = { rectangles = {} }
-  local previousLove = rawget(_G, "love")
-  rawset(_G, "love", {
-    graphics = {
-      setColor = function() end,
-      getWidth = function()
-        return 640
-      end,
-      rectangle = function(_, x, y, w, h)
-        calls.rectangles[#calls.rectangles + 1] = { x = x, y = y, w = w, h = h }
-      end,
-    },
-  })
-  local ok, err = pcall(draw)
-  rawset(_G, "love", previousLove)
-  return { ok = ok, err = err, rectangles = calls.rectangles }
-end
-
-local function widestFill(rectangles)
-  local widest = 0
-  for _, rect in ipairs(rectangles) do
-    if rect.w > widest and rect.w < 360 then
-      widest = rect.w
-    end
+-- Records the status payload the owned themed stage is drawn with, without
+-- changing what it paints: the wrapper calls through to the real
+-- presentation.
+local function captureStageStatus(state)
+  local seen = {}
+  local loading = assert(state.loading, "the entry owns its themed stage from creation")
+  local originalDraw = loading.draw
+  function loading.draw(self, status)
+    seen[#seen + 1] = status
+    return originalDraw(self, status)
   end
-  return widest
+  return seen
 end
 
 function T.preparation_renders_progress_from_the_intro_milestone_only()
   local snapshot = { state = "pending", ready = 3, total = 8 }
   local host = {
+    requestStartupWalker = function()
+      return false
+    end,
     requestMilestone = function(name, urgency)
       Assert.equal(name, "new-game-intro")
       Assert.equal(urgency, "required")
@@ -193,27 +228,27 @@ function T.preparation_renders_progress_from_the_intro_milestone_only()
     end,
   }
   local readyCalls = 0
-  local state = NewGamePreparationState.new({
-    derivedAssets = host,
+  local state = NewGamePreparationState.new(entryOptions(host, {
     onReady = function()
       readyCalls = readyCalls + 1
     end,
-    onCancel = function() end,
-  })
+  }))
   state:update(0)
   Assert.equal(state.phase, "pending")
   Assert.deepEqual(state.progress, snapshot, "the update retains the milestone-local snapshot")
   Assert.equal(readyCalls, 0, "progress observation never triggers the transfer")
-  local drawn = recordDraw(function()
-    state:draw()
-  end)
-  Assert.isTrue(drawn.ok, "drawing the progress bar never fails: " .. tostring(drawn.err))
-  local fill = widestFill(drawn.rectangles)
-  Assert.near(fill, 360 * 3 / 8, 1e-9, "the fill tracks ready over total")
+  local seen = captureStageStatus(state)
+  state:draw()
+  Assert.equal(#seen, 1, "the pending entry paints its themed stage")
+  Assert.equal(seen[1].message, "Preparing your adventure", "the stage carries the entry status line")
+  Assert.near(seen[1].fraction, 3 / 8, 1e-9, "the status fraction tracks ready over total")
 end
 
 function T.preparation_renders_an_empty_bar_while_membership_is_unknown()
   local host = {
+    requestStartupWalker = function()
+      return false
+    end,
     requestMilestone = function()
       return false
     end,
@@ -221,35 +256,20 @@ function T.preparation_renders_an_empty_bar_while_membership_is_unknown()
       return { state = "pending", ready = 0, total = nil }
     end,
   }
-  local state = NewGamePreparationState.new({
-    derivedAssets = host,
-    onReady = function() end,
-    onCancel = function() end,
-  })
+  local state = NewGamePreparationState.new(entryOptions(host))
   state:update(0)
   Assert.equal(state.phase, "pending")
-  local drawn = recordDraw(function()
-    state:draw()
-  end)
-  Assert.isTrue(drawn.ok, "an unknown denominator never breaks drawing: " .. tostring(drawn.err))
-  local background = false
-  for _, rect in ipairs(drawn.rectangles) do
-    if rect.w == 360 then
-      background = true
-    end
-  end
-  Assert.isTrue(background, "an unknown denominator still renders the empty bar")
-  local fill = 0
-  for _, rect in ipairs(drawn.rectangles) do
-    if rect.w ~= 360 and rect.w > fill then
-      fill = rect.w
-    end
-  end
-  Assert.equal(fill, 0, "an unknown denominator fills nothing")
+  local seen = captureStageStatus(state)
+  state:draw()
+  Assert.equal(#seen, 1, "an unknown denominator still paints the themed stage")
+  Assert.isNil(seen[1].fraction, "an unknown denominator carries no status fraction")
 end
 
 function T.preparation_failure_raises_before_any_draw()
   local host = {
+    requestStartupWalker = function()
+      return false
+    end,
     requestMilestone = function()
       return false, "intro milestone failed"
     end,
@@ -258,13 +278,11 @@ function T.preparation_failure_raises_before_any_draw()
     end,
   }
   local readyCalls = 0
-  local state = NewGamePreparationState.new({
-    derivedAssets = host,
+  local state = NewGamePreparationState.new(entryOptions(host, {
     onReady = function()
       readyCalls = readyCalls + 1
     end,
-    onCancel = function() end,
-  })
+  }))
   local ok = pcall(function()
     state:update(0)
   end)

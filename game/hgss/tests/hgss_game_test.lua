@@ -64,6 +64,9 @@ end
 
 local function readyHost()
   return {
+    requestStartupWalker = function()
+      return false
+    end,
     requestMilestone = function()
       return true
     end,
@@ -109,8 +112,12 @@ local function planningLoader()
 end
 
 local function settle(game)
+  -- The production frame loop draws every frame, so the settle helper
+  -- pumps the draw seam as well: readiness can only transfer after one
+  -- genuine loader frame.
   for _ = 1, 10 do
     game:update(1 / 60)
+    game:draw()
   end
 end
 
@@ -266,6 +273,7 @@ function T.explicit_entries_start_retail_preparation_and_reject_invalid_intents(
     local function construct(entry)
       local options = {
         versionId = READY_VERSION,
+        startupPairIndex = 1,
         onExit = function() end,
         development = false,
         derivedAssets = readyHost(),
@@ -330,6 +338,7 @@ function T.cold_new_game_waits_for_its_intro_milestone_before_oak()
     end
     local game = modules.hgssGame.new({
       versionId = READY_VERSION,
+      startupPairIndex = 1,
       entry = { kind = "new_game" },
       onExit = function() end,
       derivedAssets = host,
@@ -442,6 +451,7 @@ function T.cold_continue_defers_world_read_until_field_planning_is_ready()
         local game = modules.hgssGame.new({
           versionId = READY_VERSION,
           entry = { kind = "continue", saveId = continueRecord.saveId },
+          startupPairIndex = 1,
           onExit = function() end,
           derivedAssets = host,
         })
@@ -482,6 +492,7 @@ function T.oak_completion_with_a_diverging_location_fails_without_field()
     context.oakState = disposableState("oak")
     local game = modules.hgssGame.new({
       versionId = READY_VERSION,
+      startupPairIndex = 1,
       entry = { kind = "new_game" },
       onExit = function() end,
       derivedAssets = readyHost(),
@@ -537,6 +548,7 @@ function T.failed_field_construction_releases_the_unclaimed_transfer()
     context.fieldFailure = "injected field construction failure"
     local game = modules.hgssGame.new({
       versionId = READY_VERSION,
+      startupPairIndex = 1,
       entry = { kind = "new_game" },
       onExit = function() end,
       derivedAssets = readyHost(),
@@ -574,6 +586,7 @@ function T.missing_world_after_readiness_throws_the_original_cause()
       local game = modules.hgssGame.new({
         versionId = READY_VERSION,
         entry = { kind = "continue", saveId = continueRecord.saveId },
+        startupPairIndex = 1,
         onExit = function() end,
         derivedAssets = readyHost(),
       })
@@ -616,6 +629,7 @@ function T.field_receives_the_shared_display_context_and_copied_overrides()
     local overrides = { start_menu = { wide = wideFn } }
     local game = modules.hgssGame.new({
       versionId = READY_VERSION,
+      startupPairIndex = 1,
       entry = { kind = "continue", saveId = continueRecord.saveId },
       onExit = function() end,
       derivedAssets = readyHost(),
@@ -642,6 +656,7 @@ function T.field_receives_the_shared_display_context_and_copied_overrides()
 
     local plain = modules.hgssGame.new({
       versionId = READY_VERSION,
+      startupPairIndex = 1,
       entry = { kind = "continue", saveId = "save-00000004" },
       onExit = function() end,
       derivedAssets = readyHost(),
@@ -666,6 +681,7 @@ function T.invalid_presentation_overrides_fail_game_construction()
     context.stores[1] = fakeStore({})
     local okKey = pcall(modules.hgssGame.new, {
       versionId = READY_VERSION,
+      startupPairIndex = 1,
       entry = { kind = "new_game" },
       onExit = function() end,
       derivedAssets = readyHost(),
@@ -679,6 +695,7 @@ function T.invalid_presentation_overrides_fail_game_construction()
     Assert.isFalse(okKey, "an unknown override case fails construction")
     local okFn = pcall(modules.hgssGame.new, {
       versionId = READY_VERSION,
+      startupPairIndex = 1,
       entry = { kind = "new_game" },
       onExit = function() end,
       derivedAssets = readyHost(),
@@ -703,6 +720,7 @@ function T.cancelling_field_preparation_exits_to_the_product_menu_without_publis
     local exits = {}
     local game = modules.hgssGame.new({
       versionId = READY_VERSION,
+      startupPairIndex = 1,
       entry = { kind = "continue", saveId = continueRecord.saveId },
       onExit = function(result)
         exits[#exits + 1] = result
@@ -748,6 +766,7 @@ function T.oak_boot_stages_the_bedroom_entry_without_waiting_for_it()
     end
     local game = modules.hgssGame.new({
       versionId = READY_VERSION,
+      startupPairIndex = 1,
       entry = { kind = "new_game" },
       onExit = function() end,
       derivedAssets = readyHost(),
@@ -787,6 +806,7 @@ function T.oak_boot_survives_preparation_demand_failure()
     end
     local game = modules.hgssGame.new({
       versionId = READY_VERSION,
+      startupPairIndex = 1,
       entry = { kind = "new_game" },
       onExit = function() end,
       derivedAssets = host,
@@ -847,6 +867,7 @@ function T.oak_completion_enters_the_prepared_field_directly()
     end
     local game = modules.hgssGame.new({
       versionId = READY_VERSION,
+      startupPairIndex = 1,
       entry = { kind = "new_game" },
       onExit = function() end,
       derivedAssets = readyHost(),

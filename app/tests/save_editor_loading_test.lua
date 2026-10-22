@@ -27,15 +27,18 @@ function T.tests.pending_or_failed_loader_art_does_not_change_editor_readiness_o
   local state = setmetatable({
     status = "opening",
     message = "Preparing save data",
+    versionId = "soulsilver",
+    startupPairIndex = 32,
     loading = presentation,
     loaderArtObserved = false,
     derivedAssets = {
-      requestMilestone = function(name, priority)
-        if name == "startup-loader" then
-          artRequests = artRequests + 1
-          Assert.equal(priority, "near")
-          return false, "loader artwork unavailable"
-        end
+      requestStartupWalker = function(pairIndex, priority)
+        artRequests = artRequests + 1
+        Assert.equal(pairIndex, 32, "the decorative demand names the selected pair")
+        Assert.equal(priority, "near")
+        return false, "loader artwork unavailable"
+      end,
+      requestMilestone = function(_, priority)
         requiredRequests = requiredRequests + 1
         Assert.equal(priority, "required")
         return true
@@ -71,18 +74,20 @@ function T.tests.throwing_loader_adoption_leaves_editor_opening_authoritative()
   local state = setmetatable({
     status = "opening",
     versionId = "heartgold",
+    startupPairIndex = 32,
     loading = presentation,
     loaderArtObserved = false,
     controller = {},
     _invalidatePublication = function() end,
     _settleScope = function() end,
     derivedAssets = {
-      requestMilestone = function(name, priority)
-        if name == "startup-loader" then
-          artRequests = artRequests + 1
-          Assert.equal(priority, "near")
-          return true
-        end
+      requestStartupWalker = function(pairIndex, priority)
+        artRequests = artRequests + 1
+        Assert.equal(pairIndex, 32, "the decorative demand names the selected pair")
+        Assert.equal(priority, "near")
+        return true
+      end,
+      requestMilestone = function(_, priority)
         requiredRequests = requiredRequests + 1
         Assert.equal(priority, "required")
         return true
@@ -127,18 +132,20 @@ function T.tests.pending_loader_art_stays_retryable_then_adopts_successfully_onc
   local state = setmetatable({
     status = "opening",
     versionId = "soulsilver",
+    startupPairIndex = 32,
     loading = presentation,
     loaderArtObserved = false,
     controller = {},
     _invalidatePublication = function() end,
     _settleScope = function() end,
     derivedAssets = {
-      requestMilestone = function(name, priority)
-        if name == "startup-loader" then
-          artRequests = artRequests + 1
-          Assert.equal(priority, "near")
-          return artReady
-        end
+      requestStartupWalker = function(pairIndex, priority)
+        artRequests = artRequests + 1
+        Assert.equal(pairIndex, 32, "the decorative demand names the selected pair")
+        Assert.equal(priority, "near")
+        return artReady
+      end,
+      requestMilestone = function(_, priority)
         Assert.equal(priority, "required")
         return true
       end,
@@ -171,17 +178,19 @@ function T.tests.adopted_loader_art_is_released_once_on_opening_error()
   local state = setmetatable({
     status = "opening",
     versionId = "heartgold",
+    startupPairIndex = 32,
     loading = presentation,
     loaderArtObserved = false,
     controller = {},
     _invalidatePublication = function() end,
     _settleScope = function() end,
     derivedAssets = {
-      requestMilestone = function(name, priority)
-        if name == "startup-loader" then
-          Assert.equal(priority, "near")
-          return true
-        end
+      requestStartupWalker = function(pairIndex, priority)
+        Assert.equal(pairIndex, 32, "the decorative demand names the selected pair")
+        Assert.equal(priority, "near")
+        return true
+      end,
+      requestMilestone = function(_, priority)
         Assert.equal(priority, "required")
         return true
       end,

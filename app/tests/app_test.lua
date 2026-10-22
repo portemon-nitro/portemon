@@ -145,6 +145,11 @@ local function withAppHarness(opts, ready, fn)
   local originalGetDimensions = graphics.getDimensions
   local originalGetDPIScale = graphics.getDPIScale
   local originalQuit = love.event.quit
+  -- The harness stands in for the selection flow's chosen walking pair (the
+  -- selection flow owns the production assignment): game/editor entry forwards
+  -- this immutable choice without reselection.
+  local originalPairIndex = App.pairIndex
+  App.pairIndex = 1
   local harnessAppBackend = ProducerFingerprint.appBackend
   local harnessCheckoutBackend = ProducerFingerprint.checkoutBackend
   if harnessAppBackend == defaultAppBackend then
@@ -325,6 +330,7 @@ local function withAppHarness(opts, ready, fn)
   FirstPlayCompletion.hasStored = originalHasStored
   FirstPlayCompletion.publish = originalPublish
   HgssGame.new = originalNew
+  App.pairIndex = originalPairIndex
   MainMenuComposition.new = originalMenuNew
   HgssTitleScene.new = originalTitleNew
   HgssLoadingPresentation.new = originalLoadingNew
@@ -1008,6 +1014,11 @@ function T.cancelled_retail_entries_restore_the_product_menu_on_the_same_selecti
       Assert.equal(App.state, result.state, "New Game enters the retail application")
       gameOptions = assert(result.launches[1])
       Assert.equal(gameOptions.entry.kind, "new_game")
+      Assert.equal(
+        gameOptions.startupPairIndex,
+        App.pairIndex,
+        "New Game entry forwards the session-selected walking pair"
+      )
 
       gameOptions.onExit({ kind = "main_menu" })
       Assert.isTrue(App.state ~= activeState, "main_menu exit must publish an app-owned menu state")
@@ -1018,6 +1029,11 @@ function T.cancelled_retail_entries_restore_the_product_menu_on_the_same_selecti
       menus[2].options.onResult({ kind = "continue", saveId = "save-00000042" })
       Assert.equal(result.launches[2].entry.kind, "continue")
       Assert.equal(result.launches[2].entry.saveId, "save-00000042")
+      Assert.equal(
+        result.launches[2].startupPairIndex,
+        gameOptions.startupPairIndex,
+        "Continue reuses the same selected pair across the menu return, without reselection"
+      )
       result.launches[2].onExit({ kind = "main_menu" })
       Assert.equal(#menus, 3, "a second cancellation restores the product menu again")
       Assert.equal(App.provisioner, provisioner)
