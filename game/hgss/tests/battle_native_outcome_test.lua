@@ -11,7 +11,12 @@
 -- result-sequence gates stay red until the native playback lands.
 
 local Assert = require("tests.support.Assert")
+local BattlePresentationCache = require("libs.assets.src.battle.BattlePresentationCache")
+local BattlePresentationManifestFixture = require("tests.support.BattlePresentationManifestFixture")
 local BattleTimeline = require("game.hgss.src.battle.BattleTimeline")
+local FieldBattlePresentation = require("game.hgss.src.field.FieldBattlePresentation")
+local FieldStatePresentationFixture = require("tests.support.FieldStatePresentationFixture")
+local ScreenTopology = require("libs.ui.src.ScreenTopology")
 
 local T = {}
 local TICK = 1 / 30
@@ -188,6 +193,205 @@ function T.result_sequencing_is_owned_by_the_flow_owner()
   local ok, Flow = pcall(require, "game.hgss.src.battle.BattlePresentationFlow")
   Assert.isTrue(ok, "the ordered battle flow owner resolves through the battle boundary")
   Assert.notNil(Flow, "the flow owner loads")
+end
+
+---@return table caller-owned dual-surface display facts
+local function dualMeasurement()
+  return {
+    width = 256,
+    height = 384,
+    topology = ScreenTopology.dualDisplay(
+      { id = "main", rect = { x = 0, y = 0, width = 256, height = 192 }, touch = false, role = "world" },
+      { id = "lower", rect = { x = 0, y = 192, width = 256, height = 192 }, touch = true, role = "auxiliary" },
+      "outcome-music:dual"
+    ),
+    pixelRatio = 1,
+    signature = "outcome-music:dual",
+  }
+end
+
+---@return table recording text boundary keeping every drawn string
+local function recordingText()
+  local text = { draws = {} }
+  function text.measure(content)
+    return { width = 8 * #tostring(content), height = 16 }
+  end
+  function text.drawText(content, x, y)
+    text.draws[#text.draws + 1] = { content = tostring(content), x = x, y = y }
+  end
+  return text
+end
+
+---@return table recording window-frame boundary
+local function recordingWindows()
+  local windows = { calls = {} }
+  function windows.drawWindow(box, frameKey, background)
+    windows.calls[#windows.calls + 1] = { box = box, frame = frameKey, background = background }
+  end
+  function windows.drawApplicationFrame(box, frameKey)
+    windows.calls[#windows.calls + 1] = { box = box, frame = frameKey }
+  end
+  return windows
+end
+
+-- A strict method-faithful field audio double: the recorded BGM start
+-- answers true exactly when the production voice contract accepts it,
+-- so a silent or miscounted swap fails instead of passing quietly.
+---@return table recording field audio double with a strict playMusic port
+local function recordingFieldAudio()
+  local audio = { music = {} }
+  function audio:playMusic(symbol)
+    audio.music[#audio.music + 1] = symbol
+    return true
+  end
+  return audio
+end
+
+---@return table silent cue-audio boundary behind the live screen
+local function silentScreenAudio()
+  return {
+    play = function(_, _)
+      return true
+    end,
+  }
+end
+
+---@param launchId string owning launch identity under test driving
+---@return table stub launch host holding its phase with recorded notifications
+local function stubHost(launchId)
+  local host = { launchId = launchId, notifies = {} }
+  function host.status()
+    return { phase = "active" }
+  end
+  function host.advance() end
+  function host.submit(_)
+    return false, { message = "no open request" }
+  end
+  function host.notify(event, detail)
+    host.notifies[#host.notifies + 1] = { event = event, detail = detail }
+  end
+  return host
+end
+
+---@param kind string launch kind behind the BGM lookup
+---@param trainerClass string? trainer class key behind the class route
+---@return table live rig with the real envelope, screen, port, and recording audio
+local function openPresentedLaunch(kind, trainerClass)
+  local cache = FieldStatePresentationFixture.cache()
+  cache:writeLua(BattlePresentationCache.manifestPath(), BattlePresentationManifestFixture.manifest())
+  local fieldAudio = recordingFieldAudio()
+  local envelope = FieldBattlePresentation.new({
+    cacheFs = cache,
+    windows = recordingWindows(),
+    text = recordingText(),
+    audio = silentScreenAudio(),
+    measureDisplay = function()
+      return dualMeasurement()
+    end,
+  })
+  local launchId = "outcome-music-" .. kind .. "-" .. tostring(trainerClass or "wild")
+  local host = stubHost(launchId)
+  local port = envelope:factory()({
+    launchId = launchId,
+    environment = { sceneKey = "general/grass/day" },
+    host = host,
+    audio = fieldAudio,
+    kind = kind,
+    trainerClass = trainerClass,
+    textSpeed = "mid",
+  })
+  Assert.notNil(port, "the envelope admits its presented launch")
+  local screen = envelope:liveScreen()
+  Assert.notNil(screen, "the envelope owns its live screen")
+  return { envelope = envelope, screen = screen, port = port, host = host, fieldAudio = fieldAudio }
+end
+
+---@param word string terminal result word behind the fabricated delivery
+---@return table detached terminal delivery picturing the settled views
+local function terminalPacket(launchId, packetId, word)
+  local function side(records)
+    return records
+  end
+  local view = {
+    own = side({
+      {
+        combatant = 1,
+        activation = 1,
+        side = 1,
+        position = 1,
+        name = "LEAD",
+        species = "EEVEE",
+        level = 5,
+        hp = 20,
+        maxHp = 20,
+        active = true,
+      },
+    }),
+    foes = side({
+      {
+        combatant = 2,
+        activation = 1,
+        side = 2,
+        position = 2,
+        name = "Wild CHIKORITA",
+        species = "CHIKORITA",
+        level = 3,
+        hp = 0,
+        maxHp = 18,
+        active = true,
+      },
+    }),
+  }
+  return {
+    launchId = launchId,
+    packetId = packetId,
+    events = {},
+    before = view,
+    after = view,
+    result = { word = word },
+  }
+end
+
+---@param rig table live rig under test driving
+---@param word string terminal result word under test driving
+local function driveToOutcome(rig, word)
+  rig.port.present(terminalPacket(rig.host.launchId, 1, word))
+  for _ = 1, 900 do
+    rig.screen:updateFixed(TICK)
+    if rig.screen:status().mode == "outcome" then
+      return
+    end
+    Assert.isTrue(rig.screen:status().mode ~= "failed", "the presented screen never fails: " .. tostring(rig.screen:status().error))
+  end
+  error("the presented screen never reached its outcome for " .. tostring(word), 0)
+end
+
+-- Victory and capture BGM swaps fire on the terminal presentation beat:
+-- one class-correct track per winning launch before the terminal text
+-- is acknowledged, while the message stays open for its explicit ack.
+function T.won_and_captured_launches_swap_their_victory_bgm_before_ack()
+  local cases = {
+    { kind = "wild", trainerClass = nil, word = "capture", symbol = "SEQ_GS_WIN2" },
+    { kind = "wild", trainerClass = nil, word = "win", symbol = "SEQ_GS_WIN2" },
+    { kind = "trainer", trainerClass = nil, word = "win", symbol = "SEQ_GS_WIN1" },
+    { kind = "trainer", trainerClass = "LEADER_FALKNER", word = "win", symbol = "SEQ_GS_WIN3" },
+  }
+  for _, case in ipairs(cases) do
+    local rig = openPresentedLaunch(case.kind, case.trainerClass)
+    driveToOutcome(rig, case.word)
+    Assert.equal(#rig.fieldAudio.music, 1, case.word .. " voices exactly one victory BGM")
+    Assert.equal(rig.fieldAudio.music[1], case.symbol, case.word .. " keeps its source victory track")
+    Assert.isTrue(
+      type(rig.screen:view().message) == "string" and rig.screen:view().message ~= "",
+      "the terminal narration stays visible while the BGM already plays"
+    )
+    Assert.isFalse(rig.port.leave({}), "the terminal text still waits for its explicit acknowledgement")
+    for _ = 1, 30 do
+      rig.screen:updateFixed(TICK)
+    end
+    Assert.equal(#rig.fieldAudio.music, 1, "the unacknowledged terminal replays no BGM")
+    rig.envelope:dispose()
+  end
 end
 
 return { tests = T }

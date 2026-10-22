@@ -59,6 +59,8 @@ local FieldMessageText = require("libs.assets.src.field.FieldMessageText")
 ---@field _pendingFinal table<string, unknown>? retained final view behind playing cues
 ---@field _pendingRequest table<string, unknown>? retained request behind playing cues
 ---@field _pendingResult table<string, unknown>? retained terminal result behind playing cues
+---@field _onResultMusic fun(word: string): boolean? bound terminal-music beat behind the outcome narration
+---@field _resultMusicSent boolean true once the bound terminal-music beat fired for this screen
 ---@field _completion table<string, unknown>? open capture-nickname completion behind its bound identity
 ---@field _completionChild table<string, unknown>? composed native naming child behind the open completion
 ---@field _completionResult table<string, unknown>? sealed one-shot completion answer behind consumption
@@ -202,6 +204,7 @@ end
 ---@field manifest table<string, unknown> planning manifest behind the demand
 ---@field model table<string, unknown> detached opening and packet boundary
 ---@field submit fun(reply: table<string, unknown>): boolean, table<string, unknown>? accepted-choice boundary
+---@field onResultMusic fun(word: string): boolean? bound terminal-music beat behind the outcome narration
 ---@field measureDisplay fun(): table<string, unknown> live display facts
 ---@field assets BattlePresentationAssets.Services preparation services carrying prepare/drawable/release
 ---@field text table<string, unknown> borrowed text services
@@ -732,6 +735,9 @@ function BattleScreenState.new(opts)
   assert(type(opts.manifest) == "table", "the battle screen needs its planning manifest")
   assert(type(opts.model) == "table", "the battle screen needs its detached view boundary")
   assert(type(opts.submit) == "function", "the battle screen needs its accepted-choice boundary")
+  if opts.onResultMusic ~= nil then
+    assert(type(opts.onResultMusic) == "function", "the battle screen takes its terminal-music beat as a function")
+  end
   assert(type(opts.measureDisplay) == "function", "the battle screen needs its display facts")
   assert(type(opts.assets) == "table", "the battle screen needs its preparation services")
   assert(type(opts.text) == "table", "the battle screen borrows its text services")
@@ -800,6 +806,8 @@ function BattleScreenState.new(opts)
     _pendingFinal = nil,
     _pendingRequest = nil,
     _pendingResult = nil,
+    _onResultMusic = opts.onResultMusic,
+    _resultMusicSent = false,
     _completion = nil,
     _completionChild = nil,
     _completionResult = nil,
@@ -3800,6 +3808,32 @@ function BattleScreenState:_outcomeText()
   return "The battle ended."
 end
 
+-- Fires the bound terminal-music beat once at the outcome narration
+-- entry: wins and captures notify exactly once per screen, before any
+-- explicit acknowledgement; other terminal words notify nothing and a
+-- headless screen without a bound beat keeps its cue contract. A
+-- rejected beat fails the screen with its launch provenance while the
+-- already-committed result keeps its existing return path.
+---@param word unknown terminal result word under notification
+function BattleScreenState:_notifyResultMusic(word)
+  if self._resultMusicSent then
+    return
+  end
+  if word ~= "win" and word ~= "capture" then
+    return
+  end
+  local notify = self._onResultMusic
+  if notify == nil then
+    return
+  end
+  self._resultMusicSent = true
+  local ok, err = pcall(notify, word)
+  if not ok then
+    self._mode = "failed"
+    self._error = "result music failed for launch " .. self._launchId .. ": " .. tostring(err)
+  end
+end
+
 -- Applies the retained delivery once its cues drain: reconcile exact
 -- final facts, then expose the next request or the terminal result.
 -- Exposure waits for a fully settled tick so the finished frame
@@ -3818,7 +3852,9 @@ function BattleScreenState:_drain(settledTick)
     return
   end
   if self._pendingResult ~= nil then
+    local word = self._pendingResult.word
     self._timeline:announce(self:_outcomeText(), true)
+    self:_notifyResultMusic(word)
     self._pendingResult = nil
     self._pendingRequest = nil
     -- The terminal request identity stays behind for the completion

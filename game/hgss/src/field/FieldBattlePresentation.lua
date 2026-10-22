@@ -1589,6 +1589,10 @@ function FieldBattlePresentation:_buildPort(descriptor)
     return host.submit(reply)
   end
   local launchSpeed = descriptor.textSpeed or "mid"
+  local envelope = self
+  local function onResultMusic(word)
+    return envelope:_startResultMusic(word)
+  end
   local screen = BattleScreenState.new({
     launchId = descriptor.launchId,
     manifest = manifest,
@@ -1597,6 +1601,7 @@ function FieldBattlePresentation:_buildPort(descriptor)
     musicBanks = self:_musicBanks(),
     textSpeed = launchSpeed,
     submit = submit,
+    onResultMusic = onResultMusic,
     measureDisplay = self._measureDisplay,
     assets = self._services,
     text = self._text,
@@ -1977,7 +1982,6 @@ function FieldBattlePresentation:updateFixed(dt)
     if self._launchId ~= nil and host ~= nil then
       host.advance()
     end
-    self:_maybePlayResultMusic()
     local screen = self._screen
     if screen ~= nil then
       screen:updateFixed(FieldBattlePresentation.SOURCE_FRAME)
@@ -2175,51 +2179,53 @@ function FieldBattlePresentation:_failMusic(reason)
   self:_failPendingLaunch(reason)
 end
 
--- Swaps the victory BGM once behind the committed terminal words: wins
--- voice the class-routed victory track, captures voice the wild-win track
--- at the gotcha beat, losses/flees/draws voice nothing (native BGM swaps
--- at battle_command.c exp-gain/gotcha and battle_controller_player.c
--- class switch; battle exit fades the BGM instead). The swap rides the
--- launch voice operations so a rejected start fails through the host with
--- its identity while the committed words survive through the existing
+-- Swaps the victory BGM once on the screen terminal beat: wins voice
+-- the class-routed victory track, captures voice the wild-win track at
+-- the gotcha beat (native BGM swaps at battle_command.c exp-gain/gotcha
+-- and battle_controller_player.c class switch; battle exit fades the BGM
+-- instead). The bound screen invokes this at its outcome narration
+-- entry, before any explicit acknowledgement, so the outer result status
+-- is never consulted for music. The swap rides the launch voice
+-- operations so a rejected start fails through the host with its
+-- identity while the committed words survive through the existing
 -- committed path. A launch without a music port keeps its headless
--- test-sink contract.
-function FieldBattlePresentation:_maybePlayResultMusic()
+-- test-sink contract. Any other word or a missing admitted launch
+-- fails loudly with its provenance instead of guessing a track.
+---@param word string terminal result word behind the BGM swap
+---@return boolean started true once the beat was admitted for this launch
+function FieldBattlePresentation:_startResultMusic(word)
   if self._resultMusicPlayed then
-    return
+    return true
   end
-  local status = self._lastStatus
-  if type(status) ~= "table" then
-    return
-  end
+  self._resultMusicPlayed = true
+  local launchId = self._launchId
   local descriptor = self._descriptor
-  local kind = type(descriptor) == "table" and descriptor.kind or nil
+  if type(launchId) ~= "string" or launchId == "" or type(descriptor) ~= "table" then
+    error("result music needs its admitted launch for word " .. tostring(word), 0)
+  end
   local symbol = nil
-  if status.result == "win" then
-    local trainerClass = type(descriptor) == "table" and descriptor.trainerClass or nil
+  if word == "win" then
+    local kind = descriptor.kind
+    local trainerClass = descriptor.trainerClass
     symbol = BattleMusicSelection.victoryMusicSymbol(kind == "trainer" and "trainer" or "wild", trainerClass)
-  elseif status.result == "capture" then
+  elseif word == "capture" then
     -- The gotcha beat voices the wild victory even though captures never
     -- route by class; victoryMusicSymbol("wild") is that track by
     -- construction.
     symbol = BattleMusicSelection.victoryMusicSymbol("wild", nil)
   else
-    return
+    error("result music voices no track for word " .. tostring(word) .. " for launch " .. launchId, 0)
   end
-  self._resultMusicPlayed = true
-  local audio = descriptor ~= nil and descriptor.audio or nil
+  local audio = descriptor.audio
   if audio == nil or type(audio.playMusic) ~= "function" then
-    return
-  end
-  local launchId = self._launchId
-  if type(launchId) ~= "string" or launchId == "" then
-    return
+    return true
   end
   local voice = BattleAudio.new({ sink = audio, launchId = launchId })
   local ok, err = pcall(voice.startMusic, voice, symbol)
   if not ok then
     self:_failMusic(tostring(err))
   end
+  return true
 end
 
 -- Observes a failed screen and reports the launch through the runtime
