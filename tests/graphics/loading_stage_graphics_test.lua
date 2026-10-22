@@ -235,4 +235,73 @@ function T.startup_stage_opens_on_a_random_line_and_stays_animated(scope)
   )
 end
 
+-- The boot wait paints its animated themed stage from the very first frame,
+-- before the boot-source gate answers: two draws around one update already
+-- differ, and no plaintext preparing headline is ever the first frame.
+function T.boot_wait_paints_the_animated_stage_before_the_gate_answers(scope)
+  local CachePreparationState = require("app.src.launcher.CachePreparationState")
+  local script = { calls = 0 }
+  local service = {}
+  function service:bootSourceStatus(_)
+    script.calls = script.calls + 1
+    return "source-required", { code = "ROM_SOURCE_REQUIRED" }
+  end
+  local fired = 0
+  local state = CachePreparationState.new({
+    kind = "boot-source",
+    epoch = 7,
+    service = service,
+    versionId = "soulsilver",
+    pairIndex = 5,
+    isCurrent = function()
+      return true
+    end,
+    onReady = function()
+      fired = fired + 1
+    end,
+    onCancel = function() end,
+  })
+  local rendered = {}
+  local lg = love.graphics
+  local savedPrint, savedPrintf = lg.print, lg.printf
+  lg.print = function(value, ...)
+    rendered[#rendered + 1] = tostring(value)
+    return savedPrint(value, ...)
+  end
+  lg.printf = function(value, ...)
+    rendered[#rendered + 1] = tostring(value)
+    return savedPrintf(value, ...)
+  end
+  local first, second
+  local ok, err = xpcall(function()
+    local function render()
+      local canvas = scope:own(love.graphics.newCanvas(WIDTH, HEIGHT))
+      love.graphics.push("all")
+      love.graphics.setCanvas(canvas)
+      love.graphics.clear(0, 0, 0, 0)
+      state:draw()
+      love.graphics.setCanvas()
+      love.graphics.pop()
+      return scope:own(canvas:newImageData()):getString()
+    end
+    -- The first visible frame precedes every controller reply.
+    first = render()
+    Assert.equal(script.calls, 0, "the first draw never waits on the boot-source gate")
+    state:update(0.5)
+    second = render()
+  end, debug.traceback)
+  lg.print, lg.printf = savedPrint, savedPrintf
+  state:dispose()
+  if not ok then
+    error(err, 0)
+  end
+  Assert.equal(fired, 0, "a blocked gate never transfers")
+  Assert.isTrue(first ~= second, "the boot stage animates instead of sitting on static text")
+  local copy = table.concat(rendered, "\n")
+  Assert.isTrue(
+    copy:find("Preparing", 1, true) == nil,
+    "no plaintext preparing headline is the first frame, got: " .. copy
+  )
+end
+
 return GraphicsSmoke.suite(T, { tags = { "startup" } })

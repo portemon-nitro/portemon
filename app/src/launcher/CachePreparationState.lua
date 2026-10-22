@@ -4,6 +4,20 @@
 -- transfers exactly once on readiness. A disposed or stale state never
 -- fires its completion callback.
 
+local CacheFs = require("libs.storage.src.CacheFs")
+local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentation")
+local ImportState = require("app.src.launcher.ImportState")
+
+-- Structural loading contract shared with the startup owner receiving the
+-- transfer: the animated stage plus optional pair adoption. Declared first
+-- so the state class below keeps the binding to the module table.
+---@class BootLoadingPresentation
+---@field adoptGeneratedAssets fun(self: BootLoadingPresentation, cacheFs: unknown): boolean, unknown?
+---@field update fun(self: BootLoadingPresentation, dt: number?)
+---@field draw fun(self: BootLoadingPresentation, status: unknown?)
+---@field resize fun(self: BootLoadingPresentation, width: number, height: number)
+---@field dispose fun(self: BootLoadingPresentation)
+
 ---@class CachePreparationOptions
 ---@field kind "quiescence"|"boot-source"
 ---@field epoch integer selected source epoch guarded against stale completion
@@ -11,6 +25,10 @@
 ---@field barrier integer? quiescence only: the exact source-close barrier token
 ---@field versionId string? boot-source only: the selected game version shown in the blocked instruction
 ---@field mismatch string? boot-source only: wrong-version diagnostic shown while staying blocked
+---@field pairIndex integer? boot-source only: the selected-epoch walking pair 1..32
+---@field freshImport boolean? boot-source only: cold first import holds its card until the pair is drawable
+---@field importStatus { state: string?, progress: number?, versionId: string?, displayName: string?, sourceName: string? }? cold only: frozen verified importer snapshot behind the card
+---@field importReceipt string? cold only: received filename shown on the retained card
 ---@field isCurrent fun(epoch: integer): boolean owner liveness: the epoch is still selected
 ---@field onReady fun() exactly-once transfer on readiness
 ---@field onCancel fun() return to the owning selection
@@ -22,6 +40,10 @@
 ---@field barrier integer?
 ---@field versionId string?
 ---@field mismatch string?
+---@field pairIndex integer?
+---@field freshImport boolean
+---@field importStatus { state: string?, progress: number?, versionId: string?, displayName: string?, sourceName: string? }?
+---@field importReceipt string?
 ---@field sourceDetail unknown? boot-source only: last typed source-required detail
 ---@field isCurrent fun(epoch: integer): boolean
 ---@field onReady fun()
@@ -30,6 +52,14 @@
 ---@field fired boolean
 ---@field dead boolean
 ---@field error unknown?
+---@field loading BootLoadingPresentation? boot-source only: the owned themed presentation
+---@field bootAdmitted boolean boot-source only: the gate answered ready for this epoch
+---@field walkerReady boolean boot-source only: the selected pair job answered ready
+---@field artFailure unknown? cold only: adoption failure held visibly on the card
+---@field transferred boolean whether takeLoading detached the owned presentation
+---@field released boolean whether the owned presentation was already released
+--- Ownership note: `transferred` (no underscore) is the single detach flag.
+---@field _importView ImportState? cold only: the retained compact import card
 local CachePreparationState = {}
 CachePreparationState.__index = CachePreparationState
 
@@ -68,6 +98,30 @@ local function bootReasonText(detail)
   return nil
 end
 
+---@return number width
+---@return number height current drawable size, safe before the first love frame
+local function drawableSize()
+  if love ~= nil and love.graphics ~= nil and type(love.graphics.getDimensions) == "function" then
+    local ok, width, height = pcall(love.graphics.getDimensions)
+    if ok and type(width) == "number" and type(height) == "number" and width > 0 and height > 0 then
+      return width, height
+    end
+  end
+  return 800, 600
+end
+
+---@param pairIndex unknown
+---@return boolean whether the value names a selectable walking pair
+local function validPairIndex(pairIndex)
+  return type(pairIndex) == "number" and pairIndex % 1 == 0 and pairIndex >= 1 and pairIndex <= 32
+end
+
+---@param service table<string, function> the process cache service
+---@return boolean whether the service answers the selected-pair interest
+local function serviceSupportsWalker(service)
+  return type(service.request) == "function" and type(service.observe) == "function"
+end
+
 ---@param options CachePreparationOptions
 ---@return CachePreparationState
 function CachePreparationState.new(options)
@@ -95,14 +149,42 @@ function CachePreparationState.new(options)
       options.mismatch == nil or type(options.mismatch) == "string",
       "boot-source preparation mismatch must be a string"
     )
+    assert(
+      options.pairIndex == nil or validPairIndex(options.pairIndex),
+      "boot-source walking pair must be an integer 1..32"
+    )
+    assert(
+      options.freshImport == nil or type(options.freshImport) == "boolean",
+      "cold first import must be a boolean when present"
+    )
+    if options.freshImport == true then
+      assert(validPairIndex(options.pairIndex), "a cold first import must name its selected walking pair")
+    end
   end
-  return setmetatable({
+  -- The themed stage is installed at selection, before any controller
+  -- reply: the first visible warm frame already animates, and the cold
+  -- card keeps this same presentation ready for its later adoption.
+  local bootLoading = nil
+  if options.kind == "boot-source" then
+    local width, height = drawableSize()
+    bootLoading = HgssLoadingPresentation.new({
+      versionId = options.versionId,
+      pairIndex = options.pairIndex,
+      width = width,
+      height = height,
+    })
+  end
+  local self = setmetatable({
     kind = options.kind,
     epoch = options.epoch,
     service = options.service,
     barrier = options.barrier,
     versionId = options.versionId,
     mismatch = options.mismatch,
+    pairIndex = options.pairIndex,
+    freshImport = options.freshImport == true,
+    importStatus = options.importStatus,
+    importReceipt = options.importReceipt,
     sourceDetail = nil,
     isCurrent = options.isCurrent,
     onReady = options.onReady,
@@ -111,7 +193,47 @@ function CachePreparationState.new(options)
     fired = false,
     dead = false,
     error = nil,
+    loading = bootLoading,
+    bootAdmitted = false,
+    walkerReady = false,
+    artFailure = nil,
+    transferred = false,
+    released = false,
+    _importView = nil,
   }, CachePreparationState)
+  if options.kind == "boot-source" and self.freshImport then
+    self._importView = self:_coldImportView()
+  end
+  return self
+end
+
+-- The retained compact card for a cold first import: a frozen verified
+-- importer snapshot behind the same ImportState drawing the launcher used
+-- before admission, plus the selected artwork wait once verified.
+---@return ImportState
+function CachePreparationState:_coldImportView()
+  local snapshot = self.importStatus
+  if type(snapshot) ~= "table" then
+    snapshot = { state = "complete", progress = 1 }
+  end
+  local viewImporter = {
+    status = function()
+      return snapshot
+    end,
+    isBusy = function()
+      return false
+    end,
+    filedropped = function() end,
+  }
+  local view = ImportState.new(viewImporter, nil)
+  local receipt = self.importReceipt
+  if type(receipt) ~= "string" or receipt == "" then
+    receipt = type(snapshot.sourceName) == "string" and snapshot.sourceName or nil
+  end
+  if type(receipt) == "string" and receipt ~= "" then
+    view:markReceived(receipt)
+  end
+  return view
 end
 
 function CachePreparationState:_fire()
@@ -122,12 +244,83 @@ function CachePreparationState:_fire()
   self.onReady()
 end
 
+-- Releases the owned presentation exactly once. A detached presentation
+-- belongs to the transfer target and is never touched here.
+function CachePreparationState:_releaseLoading()
+  if self.transferred or self.released then
+    return
+  end
+  self.released = true
+  local loading = self.loading
+  self.loading = nil
+  if loading ~= nil then
+    loading:dispose()
+  end
+end
+
+-- Best-effort adoption of the selected pair once its keyed worker job is
+-- ready. Only a cold first import treats adoption as a handoff precondition;
+-- a warm boot keeps its animated static stage on any failure.
+---@return boolean adopted
+---@return unknown? failure
+function CachePreparationState:_adoptSelectedPair()
+  local loading = assert(self.loading, "boot-source preparation owns its presentation")
+  local cacheOk, cacheFs = pcall(CacheFs.forVersion, self.versionId)
+  if not cacheOk then
+    return false, cacheFs
+  end
+  return loading:adoptGeneratedAssets(cacheFs)
+end
+
+function CachePreparationState:_pollWalker()
+  -- An admitted warm boot always transfers: the selected pair is
+  -- requested as near interest and adopted best-effort when ready, but
+  -- pending or failed artwork never blocks the handoff. Only a cold
+  -- first import holds its card until the selected pair is adopted.
+  -- A failed cold adoption stays held until an explicit retry;
+  -- re-polling the same failure every frame would only churn the queue.
+  local cold = self.freshImport
+  if self.pairIndex ~= nil and serviceSupportsWalker(self.service) and not (cold and self.artFailure ~= nil) then
+    local urgency = cold and "required" or "near"
+    self.service:request(self.epoch, {
+      requestKind = "startup-walker",
+      pairIndex = self.pairIndex,
+      urgency = urgency,
+    })
+    local ready, failure = self.service:observe(self.epoch, {
+      requestKind = "startup-walker",
+      pairIndex = self.pairIndex,
+    })
+    if ready == true then
+      self.walkerReady = true
+      local adopted, adoptFailure = self:_adoptSelectedPair()
+      if adopted then
+        self.artFailure = nil
+        self:_fire()
+        return
+      end
+      if cold then
+        self.artFailure = adoptFailure
+        return
+      end
+    elseif failure ~= nil and cold then
+      self.artFailure = failure
+      return
+    end
+  end
+  if not cold then
+    self:_fire()
+  end
+end
+
 function CachePreparationState:_pollBootSource()
   -- The boot gate owns no compilation policy: readiness means the full
   -- corpus already attests current or its exact source is pinned below
   -- the controller. Source-required stays blocked with its typed detail,
   -- a genuine controller failure latches as a boot error, and a stale
-  -- epoch resolves through the liveness guard without firing.
+  -- epoch resolves through the liveness guard without firing. Only an
+  -- admitted source may request the selected pair; the pair answer and,
+  -- on a cold import, its GPU adoption are separate facts after that.
   local service = assert(self.service, "boot-source preparation requires the process cache service")
   local statusOk, status, detail = pcall(service.bootSourceStatus, service, self.epoch)
   if not statusOk then
@@ -135,7 +328,8 @@ function CachePreparationState:_pollBootSource()
     return
   end
   if status == "ready" then
-    self:_fire()
+    self.bootAdmitted = true
+    self:_pollWalker()
   elseif status == "source-required" then
     self.sourceDetail = detail
   elseif status == "failed" then
@@ -166,7 +360,7 @@ function CachePreparationState:_pollQuiescence()
   end
 end
 
-function CachePreparationState:update(_)
+function CachePreparationState:update(dt)
   if self.fired or self.dead then
     return
   end
@@ -175,6 +369,9 @@ function CachePreparationState:update(_)
   if not liveOk or not live then
     self.dead = true
     return
+  end
+  if self.kind == "boot-source" and self.loading ~= nil and not self.transferred then
+    self.loading:update(dt)
   end
   if self.error ~= nil then
     return
@@ -191,7 +388,12 @@ function CachePreparationState:draw()
   local width, height = lg.getDimensions()
   lg.setColor(0.055, 0.09, 0.13, 1)
   lg.rectangle("fill", 0, 0, width, height)
-  if self.error ~= nil then
+  -- A warm boot-source wait keeps its animated stage even after the gate
+  -- fails: the error overlays the loader instead of replacing it, so the
+  -- first visible frame stays themed while the failure stays actionable.
+  -- Quiescence and a cold first import keep the legacy error screen, whose
+  -- escape path returns to selection with a new epoch.
+  if self.error ~= nil and not (self.kind == "boot-source" and not self.freshImport) then
     lg.setColor(1, 0.5, 0.5)
     lg.print("Cache preparation failed:", 24, 24)
     lg.printf(tostring(self.error), 24, 48, lg.getWidth() - 48)
@@ -199,40 +401,94 @@ function CachePreparationState:draw()
     lg.print("Press escape to return.", 24, 96)
     return
   end
-  lg.setColor(1, 1, 1)
   if self.kind == "boot-source" then
-    -- Blocked boot instruction: names the selected game, tells the player
-    -- how to supply its matching file, and carries the typed reason and
-    -- any wrong-version diagnostic. This prompt exists only here, never
-    -- during gameplay.
-    lg.print("Preparing " .. bootVersionLabel(self.versionId) .. "...", 24, 24)
-    lg.setColor(0.7, 0.7, 0.75)
-    lg.print("Drop your matching .nds or .zip file onto this window to finish preparing.", 24, 48)
-    local line = 72
-    if self.mismatch ~= nil then
-      lg.print(tostring(self.mismatch), 24, line)
-      line = line + 24
-    end
-    local reason = bootReasonText(self.sourceDetail)
-    if reason ~= nil then
-      lg.print(reason, 24, line)
-      line = line + 24
-    end
-    lg.print("Press escape to cancel.", 24, line)
+    self:_drawBootSource()
     return
   end
+  lg.setColor(1, 1, 1)
   lg.print("Waiting for source readers to drain...", 24, 24)
   lg.setColor(0.7, 0.7, 0.75)
   lg.print("Press escape to cancel.", 24, 72)
 end
 
-function CachePreparationState:resize() end
+function CachePreparationState:_drawBootSource()
+  -- A cold first import stays on its compact card until the selected pair
+  -- is genuinely drawable. An ordinary warm boot instead paints the live
+  -- themed stage from its first frame and overlays only a compact
+  -- matching-ROM instruction while the source gate stays blocked.
+  if self.freshImport then
+    assert(self._importView ~= nil, "a cold first import retains its import card")
+    self._importView:draw({ stage = "artwork", failure = self.artFailure })
+    return
+  end
+  local loading = assert(self.loading, "boot-source preparation owns its presentation")
+  loading:draw()
+  if self.error ~= nil then
+    local lg = love.graphics
+    lg.setColor(1, 0.5, 0.5, 1)
+    lg.print("Cache preparation failed:", 24, 24)
+    lg.printf(tostring(self.error), 24, 48, lg.getWidth() - 48)
+    lg.setColor(0.7, 0.7, 0.75)
+    lg.print("Press escape to return.", 24, 96)
+    return
+  end
+  -- The matching-ROM remedy is drawn by the wait itself from the first
+  -- frame, before the gate answers, so it stays visible while the stage
+  -- animates underneath it; the typed reason joins once the gate replies.
+  local lg = love.graphics
+  lg.setColor(0.94, 0.94, 0.9, 1)
+  lg.print("Waiting for the matching " .. bootVersionLabel(self.versionId) .. " ROM", 24, 24)
+  lg.setColor(0.7, 0.78, 0.8, 1)
+  local line = 48
+  if self.mismatch ~= nil then
+    lg.print(self.mismatch, 24, line)
+    line = line + 24
+  end
+  -- The remedy stays visible beside any reported reason: a blocked boot
+  -- always tells the player how to supply the matching file.
+  lg.print("Drop your .nds or .zip file onto this window.", 24, line)
+  line = line + 24
+  local reason = bootReasonText(self.sourceDetail)
+  if reason ~= nil then
+    lg.print(reason, 24, line)
+    line = line + 24
+  end
+  lg.print("Press escape to cancel.", 24, line)
+end
+
+-- Detaches and returns the one owned presentation. Legal only after the
+-- boot gate answered ready and, on a cold first import, after the selected
+-- pair was adopted; exactly once. The old state never disposes detached
+-- art: ownership moves to the transfer target with this call.
+---@return BootLoadingPresentation the live loading presentation
+function CachePreparationState:takeLoading()
+  assert(self.kind == "boot-source", "only the boot-source wait owns a transferable presentation")
+  assert(not self.transferred, "the loading presentation was already transferred")
+  assert(self.fired, "the loading presentation is not ready for transfer")
+  local loading = assert(self.loading, "the loading presentation is no longer owned here")
+  self.transferred = true
+  return loading
+end
+
+function CachePreparationState:resize(width, height)
+  if self.kind == "boot-source" and self.loading ~= nil and not self.transferred then
+    self.loading:resize(width, height)
+  end
+end
 
 ---@param key string
 function CachePreparationState:keypressed(key, _, _)
-  if key == "escape" and not self.fired and not self.dead then
+  if self.fired or self.dead then
+    return
+  end
+  if key == "escape" then
     self.dead = true
+    self:_releaseLoading()
     self.onCancel()
+  elseif key == "r" and self.freshImport and self.artFailure ~= nil then
+    -- Bounded cold retry: re-request the selected pair and re-attempt its
+    -- adoption on the next update without re-verifying the source.
+    self.artFailure = nil
   end
 end
 
@@ -243,6 +499,7 @@ end
 
 function CachePreparationState:dispose()
   self.dead = true
+  self:_releaseLoading()
 end
 
 return CachePreparationState
