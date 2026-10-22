@@ -150,10 +150,14 @@ local function buildModel(self, descriptor, clips, key)
     if next(binding.map) ~= nil then
       instance:play(clip.id, { loopMode = "loop" })
     else
+      -- An unbound title material channel plays nothing: retail soulsilver's
+      -- sparkle pattern targets a material its untextured mesh does not
+      -- carry. Both title scenes (legend and sparkle) may skip such
+      -- channels; anything else binding nothing is a corrupt composition.
+      local isTitleScene = key == "startup-title:" .. self.versionId
+        or key == "startup-title-sparkle:" .. self.versionId
       assert(
-        key == "startup-title:" .. self.versionId
-          and clip.category == "material"
-          and (clip.kind == "color" or clip.kind == "pattern"),
+        isTitleScene and clip.category == "material" and (clip.kind == "color" or clip.kind == "pattern"),
         "title animation channel has no model binding: " .. clip.id
       )
     end

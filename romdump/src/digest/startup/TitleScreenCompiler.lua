@@ -407,6 +407,20 @@ local function compile(romFs, versionId)
     local bytes = readMember(archive, memberId, "title-" .. spec.field, dependencies)
     clips[spec.field] = compileClip(bytes, memberId, spec)
   end
+  -- Retail soulsilver's title PAT0 carries no texture targets, so that
+  -- edition has no pattern animation. The channel is omitted instead of
+  -- published as a trackless clip the model contract rejects; every other
+  -- title channel must stay animated.
+  local patternTracks = assert(clips.pattern).tracks
+  assert(type(patternTracks) == "table", "title pattern channel lost its tracks")
+  if #patternTracks == 0 then
+    clips.pattern = nil
+  end
+  local animationClips = { clips.joint, clips.srt }
+  if clips.pattern ~= nil then
+    animationClips[#animationClips + 1] = clips.pattern
+  end
+  animationClips[#animationClips + 1] = clips.color
 
   local modelData = assert(decodedModel.models[1])
   local modelTextures = assert(decodedModel.embeddedTextures)
@@ -416,7 +430,7 @@ local function compile(romFs, versionId)
     modelData,
     decodedModel,
     basePack,
-    { clips = { clips.joint, clips.srt, clips.pattern, clips.color } },
+    { clips = animationClips },
     {
       role = "startup-title-legendary",
       modelArchive = ARCHIVE,
@@ -451,9 +465,8 @@ local function compile(romFs, versionId)
     type(decodedSparkle) ~= "table"
     or type(decodedSparkle.models) ~= "table"
     or type(decodedSparkle.models[1]) ~= "table"
-    or type(decodedSparkle.embeddedTextures) ~= "table"
   then
-    sourceError("title sparkle member is not a textured NSBMD", {
+    sourceError("title sparkle member is not an NSBMD model", {
       archive = ARCHIVE,
       memberId = resources.sparkle.model,
       error = tostring(sparkleModelError),
@@ -473,7 +486,11 @@ local function compile(romFs, versionId)
     ),
   }
   local sparkleData = assert(decodedSparkle.models[1])
-  local sparkleTextures = assert(decodedSparkle.embeddedTextures)
+  -- Lugia's sparkle mesh is untextured (one lambert material, no texture
+  -- reference), so its NSBMD carries no embedded TEX0. An empty pack flows
+  -- through: a genuinely referenced texture still fails at the unresolved
+  -- check below.
+  local sparkleTextures = decodedSparkle.embeddedTextures or { textureByName = {} }
   local sparkleModel, sparkleUnresolved = DynamicModelCompiler.compile(
     sparkleData,
     decodedSparkle,
