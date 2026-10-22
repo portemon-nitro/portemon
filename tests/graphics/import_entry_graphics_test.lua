@@ -273,4 +273,53 @@ function T.verification_progress_names_the_real_stage_without_loader_flavor(_)
   )
 end
 
+-- The compact card acknowledges a dropped file on the very first frame:
+-- modest geometry around its copy plus a visible receipt naming the file,
+-- never a premature acceptance claim.
+function T.compact_card_acknowledges_the_dropped_file_on_the_first_frame(scope)
+  local importer = idleImporter()
+  local state = ImportState.new(importer, nil)
+  state:filedropped({
+    getFilename = function()
+      return "soulsilver.nds"
+    end,
+  })
+  Assert.equal(importer.drops, 1, "the drop still reaches the importer")
+  local width, height = 800, 600
+  local canvas = scope:own(love.graphics.newCanvas(width, height))
+  love.graphics.push("all")
+  love.graphics.setCanvas(canvas)
+  love.graphics.clear(0, 0, 0, 0)
+  state:draw()
+  love.graphics.setCanvas()
+  love.graphics.pop()
+  local image = scope:own(canvas:newImageData())
+  -- The card fill is the horizontal run of card pixels across the middle
+  -- row; the background fill covers the full drawable instead.
+  local middleY = math.floor(height / 2)
+  local cardRun = 0
+  for x = 0, width - 1 do
+    local red, green, blue = image:getPixel(x, middleY)
+    local isCard = math.abs(red - 0.10) < 0.02 and math.abs(green - 0.16) < 0.02
+      and math.abs(blue - 0.20) < 0.02
+    if isCard then
+      cardRun = cardRun + 1
+    end
+  end
+  Assert.isTrue(cardRun > 0, "the import view draws one card above its background")
+  Assert.isTrue(cardRun <= 400, "the import card stays compact, got run " .. tostring(cardRun))
+  local copy = renderedCopy(function()
+    state:draw()
+  end)
+  Assert.isTrue(
+    copy:find("File received", 1, true) ~= nil,
+    "the first post-input frame acknowledges the file, got: " .. copy
+  )
+  Assert.isTrue(copy:find("soulsilver.nds", 1, true) ~= nil, "the receipt names the dropped file")
+  Assert.isTrue(
+    copy:find("ROM accepted", 1, true) == nil,
+    "an unvalidated receipt never claims acceptance"
+  )
+end
+
 return GraphicsSmoke.suite(T)

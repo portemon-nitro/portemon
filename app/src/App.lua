@@ -26,6 +26,8 @@ local CacheFs = require("libs.storage.src.CacheFs")
 ---@field service CacheService|nil process-owned cache controller service shared by every selection
 ---@field epoch integer latest borrowed controller epoch, monotonically increasing
 ---@field pendingQuiesce table<string, integer>|nil unacknowledged source-close barrier for import
+---@field pairIndex integer? selected-epoch walking pair 1..32, chosen once per selection
+---@field _importReceipt string? received filename latched synchronously on drop/picker input
 ---@field selectedVersionId string? currently selected game version
 ---@field _rebindVersionId string? version a pending raw drop is expected to supply back
 ---@field _bootBlockedVersionId string? version a blocked boot refuses to switch away from
@@ -94,6 +96,8 @@ end
 -- The process service is reused; stale results cannot publish afterwards.
 function App._retireSelection()
   App._swallowedPointers = {}
+  App.pairIndex = nil
+  App._importReceipt = nil
   App._releaseStartupAudio()
   local warmup = App._startupWarmup
   App._startupWarmup = nil
@@ -413,7 +417,7 @@ end
 -- wait: no new session writes shared version roots before the controller
 -- acknowledges that every source reader closed successfully.
 ---@param versionId string newly selected game version
----@param options { freshImport: boolean?, sourceOffer: userdata?, bootMismatch: string? }? private selection mode
+---@param options { freshImport: boolean?, sourceOffer: userdata?, bootMismatch: string?, importStatus: { state: string?, progress: number?, versionId: string?, displayName: string?, sourceName: string? }?, importReceipt: string? }? private selection mode
 ---@return boolean
 function App._waitForQuiescence(versionId, options)
   local pending = App.pendingQuiesce
@@ -514,7 +518,7 @@ end
 -- first-play preparation, background sweep) runs before the gate answers
 -- ready for this exact epoch.
 ---@param versionId string newly selected game version
----@param options { freshImport: boolean?, sourceOffer: userdata?, bootMismatch: string? }? private selection mode, default ordinary
+---@param options { freshImport: boolean?, sourceOffer: userdata?, bootMismatch: string?, importStatus: { state: string?, progress: number?, versionId: string?, displayName: string?, sourceName: string? }?, importReceipt: string? }? private selection mode, default ordinary
 function App._selectVersion(versionId, options)
   if App._waitForQuiescence(versionId, options) then
     return
@@ -524,6 +528,10 @@ function App._selectVersion(versionId, options)
   local provisioner = DerivedAssetProvisioner.new(provisionerOptions(versionId))
   App.provisioner = provisioner
   App.epoch = assert(provisioner.epoch, "selection borrowed no epoch")
+  -- One walking pair per newly selected epoch: the App alone rolls the
+  -- source-independent 1..32 choice, and later journeys (menu returns,
+  -- New Game, Continue, editor, late GPU adoption) reuse it, never reroll.
+  App.pairIndex = math.floor(love.math.random(1, 32))
   local epoch = App.epoch
   local service = assert(App.service, "process cache service is unavailable")
   -- A newly imported verified source crosses on the same control stream
@@ -536,12 +544,19 @@ function App._selectVersion(versionId, options)
   end
   service:requestBootSource(epoch)
   local mismatch = options ~= nil and options.bootMismatch or nil
+  local freshImport = options ~= nil and options.freshImport == true
+  local importStatus = (freshImport and options ~= nil) and options.importStatus or nil
+  local importReceipt = (freshImport and options ~= nil) and options.importReceipt or nil
   App.setState(CachePreparationState.new({
     kind = "boot-source",
     epoch = epoch,
     service = service,
     versionId = versionId,
     mismatch = mismatch,
+    pairIndex = App.pairIndex,
+    freshImport = freshImport,
+    importStatus = importStatus,
+    importReceipt = importReceipt,
     isCurrent = function(selected)
       return App.epoch == selected
     end,
@@ -559,11 +574,23 @@ end
 -- the product menu and owns the transfer. Never reselects and never mints
 -- another epoch.
 ---@param versionId string newly selected game version
----@param options { freshImport: boolean?, sourceOffer: userdata?, bootMismatch: string? }? private selection mode, default ordinary
+---@param options { freshImport: boolean?, sourceOffer: userdata?, bootMismatch: string?, importStatus: { state: string?, progress: number?, versionId: string?, displayName: string?, sourceName: string? }?, importReceipt: string? }? private selection mode, default ordinary
 function App._continueSelectedVersion(versionId, options)
   local epoch = App.epoch
   local provisioner = assert(App.provisioner, "boot continuation needs the selected provisioner")
   local freshImport = options ~= nil and options.freshImport == true
+  -- Detach the single owned presentation before replacing the boot wait:
+  -- the old state's disposal must never free transferred art, and the
+  -- same selected pair index travels with it to the startup owner.
+  local previous = App.state
+  local loading = nil
+  if previous ~= nil and type(previous.takeLoading) == "function" then
+    loading = previous:takeLoading()
+  end
+  -- The normal App boot path always detaches the live C02 presentation
+  -- above; a missing transfer here would silently fall back to a default
+  -- inside the state constructor, so fail loudly instead.
+  assert(loading ~= nil, "boot continuation needs the transferred loading presentation")
   local width, height = love.graphics.getDimensions()
   local audio = startupAudioBorrow(versionId, epoch)
   App.setState(StartupTitleState.new({
@@ -573,6 +600,8 @@ function App._continueSelectedVersion(versionId, options)
     width = width,
     height = height,
     initialImport = freshImport,
+    loading = loading,
+    pairIndex = App.pairIndex,
     audio = audio,
     isCurrent = function(selected)
       return App.epoch == selected and App.selectedVersionId == versionId
@@ -612,6 +641,8 @@ function App.load(opts)
   App.service = nil
   App.epoch = 0
   App.pendingQuiesce = nil
+  App.pairIndex = nil
+  App._importReceipt = nil
   App.selectedVersionId = nil
   App._swallowedPointers = {}
   App._rebindVersionId = nil
@@ -735,6 +766,13 @@ function App._beginImportAttempt(kind, value, expectedVersionId)
   expectedVersionId = expectedVersionId or (currentState and currentState.targetVersion)
   local begin = function()
     App._startImport(expectedVersionId)
+    -- Acknowledge the file on the same input tick, before the importer
+    -- coroutine advances: the first draw already names the received file.
+    App._importReceipt = App._receiptName(kind, value)
+    local fresh = App.state
+    if App._importReceipt ~= nil and fresh ~= nil and type(fresh.markReceived) == "function" then
+      fresh:markReceived(App._importReceipt)
+    end
     if App.importer then
       if kind == "path" then
         App.importer:startPath(value)
@@ -779,6 +817,34 @@ function App._beginImportAttempt(kind, value, expectedVersionId)
   begin()
 end
 
+-- Sanitized basename for the synchronous file-received receipt: the card
+-- names the file without leaking paths and truncates to one card row.
+---@param kind string "drop" or "path"
+---@param value unknown dropped File or picked path
+---@return string? receipt basename, if one can be named
+function App._receiptName(kind, value)
+  local raw = nil
+  if kind == "path" and type(value) == "string" then
+    raw = value:match("([^/\\]+)$") or value
+  elseif kind == "drop" and value ~= nil and type(value.getFilename) == "function" then
+    local ok, name = pcall(value.getFilename, value)
+    if ok and type(name) == "string" then
+      raw = name:match("([^/\\]+)$") or name
+    end
+  end
+  if type(raw) ~= "string" or raw == "" then
+    return nil
+  end
+  local clean = raw:gsub("[%c]", "?")
+  if #clean > 48 then
+    clean = clean:sub(1, 47) .. "…"
+  end
+  if clean == "" then
+    return nil
+  end
+  return clean
+end
+
 ---@param versionId string
 ---@return string display label for the selected game version
 local function selectedVersionLabel(versionId)
@@ -806,6 +872,27 @@ function App._onImported(versionId)
     end
   end
   App.importer = nil
+  -- Freeze the final verified view for the cold fresh-import card and
+  -- prefer the live card receipt the import view latched on input.
+  local frozenStatus = nil
+  if importer ~= nil and type(importer.status) == "function" then
+    local statusOk, snapshot = pcall(importer.status, importer)
+    if statusOk and type(snapshot) == "table" then
+      frozenStatus = {
+        state = snapshot.state,
+        progress = snapshot.progress,
+        versionId = snapshot.versionId,
+        displayName = snapshot.displayName,
+        sourceName = snapshot.sourceName,
+      }
+    end
+  end
+  local receipt = App._importReceipt
+  App._importReceipt = nil
+  local currentView = App.state
+  if currentView ~= nil and type(currentView.receivedName) == "function" then
+    receipt = currentView:receivedName() or receipt
+  end
   local offeredBytes = nil
   if verifiedSource ~= nil then
     local bytesOk, byteData = pcall(verifiedSource.byteData, verifiedSource)
@@ -861,7 +948,11 @@ function App._onImported(versionId)
       App._selectVersion(versionId)
     end
   else
-    local selectOptions = { freshImport = true }
+    local selectOptions = {
+      freshImport = true,
+      importStatus = frozenStatus,
+      importReceipt = receipt,
+    }
     if offeredBytes ~= nil then
       selectOptions.sourceOffer = offeredBytes
     end

@@ -138,6 +138,8 @@ local function withAppHarness(opts, ready, fn)
   local originalMenuNew = MainMenuComposition.new
   local HgssTitleScene = require("libs.hgss.src.presentation.HgssTitleScene")
   local originalTitleNew = HgssTitleScene.new
+  local HgssLoadingPresentation = require("libs.hgss.src.ui.HgssLoadingPresentation")
+  local originalLoadingNew = HgssLoadingPresentation.new
   local graphics = love.graphics
   local originalPrint = graphics.print
   local originalGetDimensions = graphics.getDimensions
@@ -184,6 +186,15 @@ local function withAppHarness(opts, ready, fn)
     end
     if selector.requestKind == "milestone" and selector.name == "startup-title" then
       return result.startupTitleReady == true, nil
+    end
+    -- A cold first import gates on its selected walking pair: the harness
+    -- models a healthy worker by default, while tests set walkerReady to
+    -- false to hold the card on a still-pending pair.
+    if selector.requestKind == "startup-walker" and selector.pairIndex == App.pairIndex then
+      if result.walkerReady == false then
+        return nil, nil
+      end
+      return true, nil
     end
     return nil, nil
   end
@@ -253,6 +264,34 @@ local function withAppHarness(opts, ready, fn)
     result.menus[#result.menus + 1] = menu
     return menu
   end
+  -- The boot wait owns a themed presentation whose adoption needs
+  -- generated fixtures this harness never builds: model an instantly
+  -- drawable pair so cold flows exercise the real request/adopt/transfer
+  -- path instead of stalling on missing GPU art.
+  HgssLoadingPresentation.new = function(options)
+    local presentation = {
+      versionId = options and options.versionId,
+      pairIndex = options and options.pairIndex,
+      adopted = false,
+      adoptions = 0,
+      draws = 0,
+      disposals = 0,
+    }
+    function presentation:update() end
+    function presentation:resize() end
+    function presentation:draw()
+      self.draws = self.draws + 1
+    end
+    function presentation:dispose()
+      self.disposals = self.disposals + 1
+    end
+    function presentation:adoptGeneratedAssets()
+      self.adoptions = self.adoptions + 1
+      self.adopted = true
+      return true
+    end
+    return presentation
+  end
   HgssTitleScene.new = function()
     local title = { updates = 0, draws = 0, disposals = 0, bundle = { crySpeciesId = 25 } }
     function title:updateFixed()
@@ -288,6 +327,7 @@ local function withAppHarness(opts, ready, fn)
   HgssGame.new = originalNew
   MainMenuComposition.new = originalMenuNew
   HgssTitleScene.new = originalTitleNew
+  HgssLoadingPresentation.new = originalLoadingNew
   graphics.print = originalPrint
   graphics.getDimensions = originalGetDimensions
   graphics.getDPIScale = originalGetDPIScale
@@ -1272,6 +1312,59 @@ function T.fresh_import_stages_menu_before_near_warmup()
     App.update(0.016)
     Assert.equal(getmetatable(App.state).__index, require("app.src.launcher.StartupTitleState"))
     Assert.equal(#result.launches, 0, "title readiness does not launch retail")
+  end)
+end
+
+-- A cold first import holds its boot card while the selected pair is still
+-- pending, then transfers the exact owned presentation and the same pair
+-- index to the startup owner without reselecting.
+function T.cold_import_startup_hold_transfers_the_adopted_presenter()
+  withAppHarness({ dev = false }, function(id)
+    return id == "heartgold"
+  end, function(result)
+    result.firstPlayCurrent = false
+    result.firstPlayStored = false
+    result.walkerReady = false
+    App._onImported("heartgold")
+    local wait = assert(App.state, "the cold import waits visibly")
+    Assert.equal(
+      getmetatable(wait).__index,
+      CachePreparationState,
+      "the pending pair keeps the boot wait installed"
+    )
+    Assert.isTrue(wait.freshImport, "the fresh import holds its card")
+    local chosen = assert(App.pairIndex, "the selection chooses one walking pair")
+    Assert.isTrue(chosen >= 1 and chosen <= 32, "the chosen pair index names one of 32 pairs")
+    App.update(0.016)
+    Assert.equal(App.state, wait, "the admitted gate alone never leaves the cold card")
+    Assert.isNil(wait.artFailure, "a pending pair is not a failure")
+    result.walkerReady = true
+    local StartupTitleState = require("app.src.launcher.StartupTitleState")
+    local originalNew = StartupTitleState.new
+    local seen = {}
+    StartupTitleState.new = function(options)
+      seen.loading = options.loading
+      seen.pairIndex = options.pairIndex
+      return originalNew(options)
+    end
+    local ok, err = pcall(App.update, 0.016)
+    StartupTitleState.new = originalNew
+    if not ok then
+      error(err, 0)
+    end
+    Assert.equal(
+      getmetatable(App.state).__index,
+      StartupTitleState,
+      "the adopted pair continues into the startup owner"
+    )
+    Assert.isTrue(App.state.initialImport, "the title knows this selection came from import")
+    Assert.notNil(seen.loading, "the transfer hands over the owned presentation")
+    Assert.isTrue(seen.loading == wait.loading, "the transfer hands over the exact owned presentation")
+    Assert.equal(seen.pairIndex, chosen, "the transfer forwards the same selected pair")
+    for _ = 1, 3 do
+      App.update(0.016)
+    end
+    Assert.equal(App.pairIndex, chosen, "later updates never reselect the pair")
   end)
 end
 

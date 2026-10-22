@@ -9,25 +9,56 @@ local RomImporter = require("romdump.src.source.RomImporter")
 ---@field targetVersion string? expected edition for a targeted rebind, never rendered
 ---@field pickerAvailable boolean native bridge probed usable at construction
 ---@field onPick fun()? whole-card activation, present only when available
+---@field _received string? sanitized basename latched synchronously on input
+---@field _rejected string? concise rejection shown while the importer stays busy
 local ImportState = {}
 ImportState.__index = ImportState
 
+local CARD_MAX_WIDTH = 380
+local CARD_MAX_HEIGHT = 190
+local CARD_MARGIN = 16
+local LINE_HEIGHT = 20
+local RECEIPT_MAX_LENGTH = 48
+
 -- Single centered card geometry shared by drawing and hit-testing, derived
 -- from the current drawable size so both stay consistent across resizes.
+-- The card stays compact around its copy: one title row, the instruction
+-- rows, and reserved status and bar rows, never the oversized half-window
+-- frame it used to claim.
 ---@param width number current drawable width
 ---@param height number current drawable height
+---@param pickerAvailable boolean whether the two picker instruction rows draw
 ---@return number left
 ---@return number top
 ---@return number width
 ---@return number height
-local function cardBounds(width, height)
-  local cardWidth = math.min(width * 0.8, 480)
-  local cardHeight = math.min(height * 0.5, 260)
+local function cardBounds(width, height, pickerAvailable)
+  local cardWidth = math.min(CARD_MAX_WIDTH, math.max(160, width - CARD_MARGIN * 2))
+  local rows = 1 + (pickerAvailable and 2 or 1) + 2
+  local cardHeight = CARD_MARGIN * 2 + 24 + 8 + rows * LINE_HEIGHT + 12
+  cardHeight = math.min(CARD_MAX_HEIGHT, cardHeight)
+  cardHeight = math.min(cardHeight, math.max(80, height - CARD_MARGIN * 2))
   return (width - cardWidth) / 2, (height - cardHeight) / 2, cardWidth, cardHeight
 end
 
 local function hit(x, y, left, top, width, height)
   return x >= left and x <= left + width and y >= top and y <= top + height
+end
+
+---@param name unknown raw dropped or picked file label
+---@return string? sanitized basename truncated to one card row, never blank
+local function sanitizeName(name)
+  if type(name) ~= "string" or name == "" then
+    return nil
+  end
+  local clean = name:gsub("[%c]", "?")
+  if #clean > RECEIPT_MAX_LENGTH then
+    clean = clean:sub(1, RECEIPT_MAX_LENGTH - 1) .. "…"
+  end
+  if clean == "" then
+    return nil
+  end
+  return clean
 end
 
 ---@param importer RomImporter
@@ -44,6 +75,8 @@ function ImportState.new(importer, saveDir, options)
     targetVersion = options.targetVersion,
     pickerAvailable = options.pickerAvailable == true,
     onPick = options.onPick,
+    _received = nil,
+    _rejected = nil,
   }, ImportState)
 end
 
@@ -53,8 +86,67 @@ function ImportState:resize() end
 
 function ImportState:dispose() end
 
+-- One receipt seam shared by the drop and picker channels: the visible
+-- acknowledgement latches synchronously, before importer validation runs,
+-- and never claims the file is verified or accepted.
+---@param displayName string sanitized basename shown on the first frame
+function ImportState:markReceived(displayName)
+  local clean = sanitizeName(displayName)
+  if clean == nil then
+    return
+  end
+  self._received = clean
+  self._rejected = nil
+end
+
+---@return string? the latched receipt basename, or nil when nothing was received
+function ImportState:receivedName()
+  return self._received
+end
+
+---@param importer RomImporter the owned import session
+---@return boolean whether an import is already running
+local function importerBusy(importer)
+  if importer == nil or type(importer.isBusy) ~= "function" then
+    return false
+  end
+  local ok, busy = pcall(importer.isBusy, importer)
+  return ok and busy == true
+end
+
+---@param failure unknown importer or drop rejection
+---@return string concise one-line rejection reason
+local function rejectionReason(failure)
+  if Errors.is(failure) then
+    return tostring(failure.message or failure.code or "rejected")
+  end
+  return tostring(failure)
+end
+
 function ImportState:filedropped(file)
-  self.importer:filedropped(file)
+  local name = nil
+  if file ~= nil and type(file.getFilename) == "function" then
+    local ok, raw = pcall(file.getFilename, file)
+    if ok then
+      name = sanitizeName(raw)
+    end
+  end
+  -- A drop that lands while an import is running is rejected on the first
+  -- frame without touching the running session or resetting its progress.
+  if importerBusy(self.importer) then
+    self._received = nil
+    self._rejected = "an import is already in progress"
+    return
+  end
+  local ok, failure = pcall(self.importer.filedropped, self.importer, file)
+  if ok then
+    if name ~= nil then
+      self:markReceived(name)
+    end
+  else
+    self._received = nil
+    self._rejected = rejectionReason(failure)
+  end
 end
 
 -- The picker is armed only when the platform bridge probed usable at screen
@@ -64,8 +156,7 @@ function ImportState:_pickerArmed()
   if not self.pickerAvailable or self.onPick == nil then
     return false
   end
-  local importer = self.importer
-  if importer ~= nil and type(importer.isBusy) == "function" and importer:isBusy() then
+  if importerBusy(self.importer) then
     return false
   end
   return true
@@ -103,52 +194,63 @@ end
 
 function ImportState:_pointerpressed(x, y)
   local width, height = love.graphics.getDimensions()
-  local left, top, cardWidth, cardHeight = cardBounds(width, height)
+  local left, top, cardWidth, cardHeight = cardBounds(width, height, self.pickerAvailable)
   if hit(x, y, left, top, cardWidth, cardHeight) then
     self:_openPicker()
   end
 end
 
-function ImportState:draw()
+---@param fraction number? raw importer progress
+---@return number clamped determinate fraction
+local function clampProgress(fraction)
+  if type(fraction) ~= "number" or fraction ~= fraction then
+    return 0
+  end
+  if fraction < 0 then
+    return 0
+  end
+  if fraction > 1 then
+    return 1
+  end
+  return fraction
+end
+
+---@return number animated pulse position in seconds
+local function pulseNow()
+  if love ~= nil and love.timer ~= nil and type(love.timer.getTime) == "function" then
+    return love.timer.getTime()
+  end
+  return 0
+end
+
+function ImportState:draw(statusOverride)
   local lg = love.graphics
   local width, height = lg.getDimensions()
   lg.setColor(0.055, 0.09, 0.13, 1)
   lg.rectangle("fill", 0, 0, width, height)
 
-  local left, top, cardWidth, cardHeight = cardBounds(width, height)
+  local left, top, cardWidth, cardHeight = cardBounds(width, height, self.pickerAvailable)
   lg.setColor(0.10, 0.16, 0.20, 1)
   lg.rectangle("fill", left, top, cardWidth, cardHeight, 12, 12)
   lg.setColor(0.35, 0.55, 0.58, 1)
   lg.rectangle("line", left, top, cardWidth, cardHeight, 12, 12)
 
   local textX, textWidth = left + 16, cardWidth - 32
+  local y = top + CARD_MARGIN
   lg.setColor(0.94, 0.94, 0.9, 1)
-  lg.printf("Import a Pokémon ROM", textX, top + cardHeight * 0.14, textWidth, "center")
+  lg.printf("Import a Pokémon ROM", textX, y, textWidth, "center")
+  y = y + 24
   lg.setColor(0.7, 0.78, 0.8, 1)
   if self.pickerAvailable then
-    lg.printf(
-      "Drop a supported .nds or .zip file anywhere on this card.",
-      textX,
-      top + cardHeight * 0.32,
-      textWidth,
-      "center"
-    )
-    lg.printf(
-      "Click the card or press Return to browse for a file.",
-      textX,
-      top + cardHeight * 0.50,
-      textWidth,
-      "center"
-    )
+    lg.printf("Drop a supported .nds or .zip file anywhere on this card.", textX, y, textWidth, "center")
+    y = y + LINE_HEIGHT
+    lg.printf("Click the card or press Return to browse for a file.", textX, y, textWidth, "center")
+    y = y + LINE_HEIGHT
   else
-    lg.printf(
-      "Drop a supported .nds or .zip file onto this window to import it.",
-      textX,
-      top + cardHeight * 0.36,
-      textWidth,
-      "center"
-    )
+    lg.printf("Drop a supported .nds or .zip file onto this window to import it.", textX, y, textWidth, "center")
+    y = y + LINE_HEIGHT
   end
+  y = y + 8
 
   local status = self.importer:status()
   local s = RomImporter.STATES
@@ -157,28 +259,101 @@ function ImportState:draw()
     lg.printf(
       "Import failed [" .. tostring(status.errorCode or "ERROR") .. "]: " .. Errors.format(status.error),
       textX,
-      top + cardHeight * 0.72,
+      y,
       textWidth,
       "center"
     )
-  elseif status.state == s.REGISTERING then
+    return
+  end
+
+  -- A busy-drop rejection stays visible only while the running import still
+  -- owns the session; its progress bar below is untouched.
+  if self._rejected ~= nil and importerBusy(self.importer) then
+    lg.setColor(1, 0.58, 0.53, 1)
+    lg.printf("Drop rejected (" .. self._rejected .. ").", textX, y, textWidth, "center")
+    y = y + LINE_HEIGHT
+  elseif self._received ~= nil then
+    lg.setColor(0.94, 0.94, 0.9, 1)
+    lg.printf("File received " .. self._received, textX, y, textWidth, "center")
+    y = y + LINE_HEIGHT
+  end
+
+  -- Progress is a real determinate bar for importer verification within its
+  -- reported stage, then an honest indeterminate wait while the selected
+  -- walking pair is prepared. The two phases never merge into one faked
+  -- completion fraction, and internal registration wording never surfaces.
+  local trackX, trackWidth = left + 24, cardWidth - 48
+  local trackY, trackHeight = top + cardHeight - 30, 8
+  if status.state == s.READING then
     lg.setColor(0.8, 0.9, 0.78, 1)
-    lg.printf(
-      (status.stageLabel or "Checking ROM") .. "  " .. tostring(math.floor((status.progress or 0) * 100 + 0.5)) .. "%",
-      textX,
-      top + cardHeight * 0.72,
-      textWidth,
-      "center"
-    )
-  elseif status.state == s.READING then
+    lg.printf("Checking ROM", textX, y, textWidth, "center")
+    self:_drawBar(trackX, trackY, trackWidth, trackHeight, clampProgress(status.progress), false)
+  elseif status.state == s.VERIFYING or status.state == s.REGISTERING then
     lg.setColor(0.8, 0.9, 0.78, 1)
-    lg.printf("Reading the selected file…", textX, top + cardHeight * 0.72, textWidth, "center")
-  elseif status.state == s.VERIFYING then
-    lg.setColor(0.8, 0.9, 0.78, 1)
-    lg.printf("Verifying cartridge identity…", textX, top + cardHeight * 0.72, textWidth, "center")
+    lg.printf("Verifying ROM", textX, y, textWidth, "center")
+    y = y + LINE_HEIGHT
+    lg.setColor(0.7, 0.78, 0.8, 1)
+    lg.printf("Verifying cartridge identity…", textX, y, textWidth, "center")
+    self:_drawBar(trackX, trackY, trackWidth, trackHeight, clampProgress(status.progress), false)
+  elseif status.state == s.COMPLETE and type(statusOverride) == "table" and statusOverride.stage == "artwork" then
+    self:_drawArtworkWait(textX, y, textWidth, trackX, trackY, trackWidth, trackHeight, statusOverride.failure)
   elseif status.state == s.COMPLETE then
     lg.setColor(0.8, 0.9, 0.78, 1)
-    lg.printf("ROM accepted.", textX, top + cardHeight * 0.72, textWidth, "center")
+    lg.printf("ROM accepted.", textX, y, textWidth, "center")
+  end
+end
+
+-- The verified-source wait names its pending artwork step and animates an
+-- indeterminate bar: no completion fraction is shown before the selected
+-- pair is genuinely resident.
+---@param textX number card text origin x
+---@param y number current card text row y
+---@param textWidth number card text width
+---@param trackX number progress track origin x
+---@param trackY number progress track origin y
+---@param trackWidth number progress track width
+---@param trackHeight number progress track height
+---@param failure unknown? adoption failure surfaced with a retry path
+function ImportState:_drawArtworkWait(textX, y, textWidth, trackX, trackY, trackWidth, trackHeight, failure)
+  local lg = love.graphics
+  if failure ~= nil then
+    lg.setColor(1, 0.67, 0.53, 1)
+    lg.printf("Walking sprites hit an error.", textX, y, textWidth, "center")
+    y = y + LINE_HEIGHT
+    lg.setColor(0.7, 0.78, 0.8, 1)
+    local detail = tostring(rejectionReason(failure))
+    if #detail > 80 then
+      detail = detail:sub(1, 79) .. "…"
+    end
+    lg.printf(detail, textX, y, textWidth, "center")
+    y = y + LINE_HEIGHT
+    lg.printf("Press R to retry, or Esc to reselect.", textX, y, textWidth, "center")
+    return
+  end
+  lg.setColor(0.8, 0.9, 0.78, 1)
+  lg.printf("Preparing walking sprites", textX, y, textWidth, "center")
+  self:_drawBar(trackX, trackY, trackWidth, trackHeight, 0, true)
+end
+
+---@param trackX number
+---@param trackY number
+---@param trackWidth number
+---@param trackHeight number
+---@param fraction number determinate fill, ignored when indeterminate
+---@param indeterminate boolean pulse a block instead of filling a fraction
+function ImportState:_drawBar(trackX, trackY, trackWidth, trackHeight, fraction, indeterminate)
+  local lg = love.graphics
+  lg.setColor(0.22, 0.30, 0.32, 1)
+  lg.rectangle("fill", trackX, trackY, trackWidth, trackHeight)
+  lg.setColor(0.55, 0.85, 0.70, 1)
+  if indeterminate then
+    local blockWidth = math.min(56, trackWidth)
+    local span = math.max(1, trackWidth - blockWidth)
+    local phase = (pulseNow() * 1.2) % 2
+    local t = phase < 1 and phase or 2 - phase
+    lg.rectangle("fill", trackX + t * span, trackY, blockWidth, trackHeight)
+  else
+    lg.rectangle("fill", trackX, trackY, math.max(1, trackWidth * fraction), trackHeight)
   end
 end
 
