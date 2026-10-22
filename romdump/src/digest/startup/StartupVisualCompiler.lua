@@ -79,17 +79,15 @@ local function startupVisual(sourceVisual, spriteId, identity)
   }
 end
 
+-- Neutral gray luminance ramp. The loading view tints it with the selected
+-- edition theme at draw time, so the produced bytes stay edition-independent.
 local function authoredBackdrop()
   local width, height = 256, 192
   local pixels = {}
   for y = 0, height - 1 do
+    local level = 200 + math.floor(y * 32 / height)
     for _ = 0, width - 1 do
-      pixels[#pixels + 1] = string.char(
-        16 + math.floor(y * 24 / height),
-        28 + math.floor(y * 36 / height),
-        48 + math.floor(y * 48 / height),
-        255
-      )
+      pixels[#pixels + 1] = string.char(level, level, level, 255)
     end
   end
   return { width = width, height = height, pixels = table.concat(pixels) }

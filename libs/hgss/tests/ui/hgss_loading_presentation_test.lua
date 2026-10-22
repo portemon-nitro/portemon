@@ -25,10 +25,10 @@ local function visual()
   }
 end
 
-local function cache()
+local function cache(versionId)
   local record = {
     schema = Contract.startupLoader.schema,
-    versionId = "heartgold",
+    versionId = versionId or "heartgold",
     generationId = "test",
     heroes = {
       ethan = { atlasPath = "assets/generated/startup/loader/hero.png", visual = visual() },
@@ -60,6 +60,35 @@ local function cache()
       return path
     end,
   }
+end
+
+local function fillColors(host, from)
+  local colors = {}
+  for index = (from or 0) + 1, #host.rectangles do
+    local record = host.rectangles[index]
+    if record.mode == "fill" then
+      local color = record.color
+      colors[#colors + 1] = string.format("%.3f,%.3f,%.3f,%.3f", color[1], color[2], color[3], color[4])
+    end
+  end
+  return table.concat(colors, "|")
+end
+
+local function hasLineRectangle(host, from)
+  for index = (from or 0) + 1, #host.rectangles do
+    if host.rectangles[index].mode == "line" then
+      return true
+    end
+  end
+  return false
+end
+
+local function drawnCopy(host)
+  local lines = {}
+  for _, call in ipairs(host.printfCalls) do
+    lines[#lines + 1] = tostring(call.text)
+  end
+  return table.concat(lines, "\n")
 end
 
 local function graphics()
@@ -163,18 +192,130 @@ function T.mismatched_version_manifest_never_acquires_images()
   Assert.isFalse(presentation:adoptGeneratedAssets(cache()))
   Assert.equal(#graphics.images, 0, "a stale edition cannot authorize loader images")
   graphics.printfCalls = {}
+  local mark = #graphics.rectangles
   presentation:draw({ label = "Preparing destination" })
+  local copy = drawnCopy(graphics)
   Assert.isTrue(
-    graphics.printfCalls[#graphics.printfCalls].text:find("Walking art unavailable", 1, true) ~= nil,
-    "the static presentation reports the optional art failure"
+    copy:find("Walking art unavailable", 1, true) == nil,
+    "an optional art failure never becomes stage copy"
   )
+  Assert.isTrue(
+    copy:find("Preparing destination", 1, true) ~= nil,
+    "caller-supplied progress still renders over the fallback stage"
+  )
+  Assert.isTrue(#copy:gsub("Preparing destination", "") > 0, "the fallback stage keeps its flavor caption")
+  Assert.isFalse(hasLineRectangle(graphics, mark), "the fallback stage draws no outlined card")
   presentation:dispose()
 end
 
-function T.rejects_unknown_purpose()
-  Assert.throws(function()
-    Presentation.new({ purpose = "field", width = 1, height = 1 })
-  end)
+function T.ignores_legacy_purpose_option()
+  local host = graphics()
+  local presentation = Presentation.new({
+    purpose = "startup",
+    versionId = "heartgold",
+    width = 256,
+    height = 192,
+    graphics = host,
+    random = function()
+      return 0
+    end,
+  })
+  presentation:draw()
+  Assert.isFalse(hasLineRectangle(host), "a legacy purpose key never restores the outlined card")
+  Assert.isTrue(#drawnCopy(host) > 0, "a legacy purpose key keeps the flavor stage")
+  presentation:dispose()
+end
+
+function T.repeated_adoption_reuses_the_first_walking_pair()
+  local randomCalls = 0
+  local host = graphics()
+  local presentation = Presentation.new({
+    versionId = "heartgold",
+    width = 480,
+    height = 360,
+    graphics = host,
+    random = function()
+      randomCalls = randomCalls + 1
+      return 0
+    end,
+  })
+  Assert.isTrue(presentation:adoptGeneratedAssets(cache()))
+  Assert.equal(randomCalls, 2, "the first adoption draws hero and follower once")
+  Assert.isTrue(presentation:adoptGeneratedAssets(cache()))
+  Assert.equal(randomCalls, 2, "a repeated adoption never reselects the walking pair")
+  Assert.equal(#host.images, 3, "a repeated adoption acquires no additional images")
+  Assert.equal(presentation.heroId, "ethan")
+  Assert.equal(presentation.follower.speciesId, 1)
+  presentation:dispose()
+  for _, image in ipairs(host.images) do
+    Assert.equal(image.releaseCount, 1, "every owned image is released once")
+  end
+end
+
+function T.failed_adoption_keeps_the_same_stage_and_recovers_on_retry()
+  local randomCalls = 0
+  local host = FakeGraphics.new({
+    failOnImageCall = 3,
+    imageSizes = { { 256, 192 }, { 32, 16 }, { 256, 192 }, { 32, 16 }, { 32, 16 } },
+  })
+  host.getDimensions = function()
+    return 256, 192
+  end
+  host.getDPIScale = function()
+    return 1
+  end
+  host.printfCalls = {}
+  host.printf = function(text, x, y, width, align)
+    host.printfCalls[#host.printfCalls + 1] = { text = text, x = x, y = y, width = width, align = align }
+    host.print(text, x, y)
+  end
+  local presentation = Presentation.new({
+    versionId = "heartgold",
+    width = 256,
+    height = 192,
+    graphics = host,
+    random = function()
+      randomCalls = randomCalls + 1
+      return 0
+    end,
+  })
+  local function freshFills()
+    local other = graphics()
+    local view = Presentation.new({
+      versionId = "heartgold",
+      width = 256,
+      height = 192,
+      graphics = other,
+      random = function()
+        return 0
+      end,
+    })
+    view:draw()
+    local fills = fillColors(other)
+    view:dispose()
+    return fills
+  end
+  local expectedFills = freshFills()
+  Assert.isFalse(presentation:adoptGeneratedAssets(cache()))
+  Assert.equal(randomCalls, 2, "the failed adoption drew hero and follower before staging images")
+  Assert.equal(#host.images, 2, "the failed adoption staged two images before the failure")
+  for _, image in ipairs(host.images) do
+    Assert.equal(image.releaseCount, 1, "every staged image is released after the failure")
+  end
+  local mark = #host.rectangles
+  host.printfCalls = {}
+  presentation:draw()
+  Assert.equal(fillColors(host, mark), expectedFills, "the failed adoption keeps the same full-bleed stage")
+  Assert.isFalse(hasLineRectangle(host, mark), "the failed adoption draws no outlined card")
+  Assert.isTrue(#drawnCopy(host) > 0, "the failed adoption keeps the flavor caption")
+  Assert.isTrue(presentation:adoptGeneratedAssets(cache()), "retrying adoption recovers the walking pair")
+  Assert.equal(presentation.heroId, "ethan")
+  Assert.equal(presentation.follower.speciesId, 1)
+  Assert.equal(#host.images, 5, "the retry stages exactly its own backdrop and duo")
+  presentation:dispose()
+  for _, image in ipairs(host.images) do
+    Assert.equal(image.releaseCount, 1, "every owned image is released once")
+  end
 end
 
 function T.caption_cycle_contains_the_authored_examples_and_randomizes_actor_once()
@@ -310,6 +451,149 @@ function T.responsive_layout_uses_safe_regions_and_routes_dual_copy_to_auxiliary
   Assert.isNil(hidden.primaryBounds, "fully occupied displays are temporarily not presentable")
   hidden:draw({ label = "Waiting" })
   hidden:dispose()
+end
+
+function T.edition_themed_stages_stay_card_free_before_sprite_art()
+  local randomCalls = 0
+  local function fresh(versionId, width, height)
+    local host = graphics()
+    local presentation = Presentation.new({
+      versionId = versionId,
+      width = width,
+      height = height,
+      graphics = host,
+      random = function()
+        randomCalls = randomCalls + 1
+        return 0
+      end,
+    })
+    return host, presentation
+  end
+  for _, geometry in ipairs({ { 480, 360 }, { 1280, 720 }, { 360, 800 } }) do
+    local width, height = geometry[1], geometry[2]
+    local themes = {}
+    for _, versionId in ipairs({ "heartgold", "soulsilver" }) do
+      local host, presentation = fresh(versionId, width, height)
+      presentation:draw()
+      Assert.isFalse(hasLineRectangle(host), versionId .. " draws no outlined card before sprite art")
+      local copy = drawnCopy(host)
+      Assert.isTrue(copy:find("Preparing", 1, true) == nil, versionId .. " shows no generic headline")
+      Assert.isTrue(#copy > 0, versionId .. " keeps its flavor caption without sprite art")
+      themes[versionId] = fillColors(host)
+      presentation:dispose()
+    end
+    local neutralHost, neutral = fresh(nil, width, height)
+    neutral:draw()
+    Assert.isFalse(hasLineRectangle(neutralHost), "the neutral stage draws no outlined card")
+    themes.neutral = fillColors(neutralHost)
+    neutral:dispose()
+    Assert.isTrue(themes.heartgold ~= themes.soulsilver, "gold and silver stages differ before sprite art")
+    Assert.isTrue(themes.heartgold ~= themes.neutral, "the gold stage differs from the neutral stage")
+    Assert.isTrue(themes.soulsilver ~= themes.neutral, "the silver stage differs from the neutral stage")
+  end
+  local host, presentation = fresh("heartgold", 480, 360)
+  local mark = #host.rectangles
+  presentation:draw()
+  local firstCopy = drawnCopy(host)
+  local firstFills = fillColors(host, mark)
+  presentation:update(4.1)
+  host.printfCalls = {}
+  mark = #host.rectangles
+  presentation:draw()
+  Assert.isTrue(drawnCopy(host) ~= firstCopy, "flavor captions advance without sprite art")
+  Assert.isFalse(hasLineRectangle(host, mark), "caption ticks never introduce an outlined card")
+  mark = #host.rectangles
+  presentation:resize(1280, 720)
+  presentation:draw()
+  Assert.equal(fillColors(host, mark), firstFills, "resizing keeps the selected edition theme")
+  Assert.equal(randomCalls, 0, "drawing and resizing never consume the actor random source")
+  presentation:dispose()
+end
+
+function T.adopted_walking_pair_keeps_the_same_full_bleed_stage()
+  local randomCalls = 0
+  local host = graphics()
+  local presentation = Presentation.new({
+    versionId = "heartgold",
+    width = 480,
+    height = 360,
+    graphics = host,
+    random = function()
+      randomCalls = randomCalls + 1
+      if randomCalls == 1 then
+        return 0.9
+      end
+      return 0.5
+    end,
+  })
+  local mark = #host.rectangles
+  presentation:draw()
+  local preFills = fillColors(host, mark)
+  Assert.isTrue(drawnCopy(host):find("Preparing", 1, true) == nil, "the pre-art stage shows no generic headline")
+  Assert.isTrue(presentation:adoptGeneratedAssets(cache("heartgold")))
+  Assert.equal(presentation.heroId, "lyra", "the seeded random source selects the expected hero")
+  Assert.equal(presentation.follower.speciesId, 3, "the seeded random source selects one follower once")
+  Assert.equal(randomCalls, 2, "adoption consumes the actor random source exactly once per slot")
+  mark = #host.rectangles
+  local drawsMark = #host.draws
+  presentation:draw()
+  Assert.equal(fillColors(host, mark), preFills, "generated art upgrades the same full-bleed stage")
+  Assert.isFalse(hasLineRectangle(host, mark), "adopted art never introduces an outlined card")
+  local covers = false
+  for index = mark + 1, #host.rectangles do
+    local record = host.rectangles[index]
+    if record.mode == "fill" and record.x == 0 and record.y == 0 and record.w == 480 and record.h == 360 then
+      covers = true
+    end
+  end
+  Assert.isTrue(covers, "the adopted stage still paints the full drawable")
+  local sprites = {}
+  for index = drawsMark + 1, #host.draws do
+    local draw = host.draws[index]
+    if draw.quad ~= nil and draw.quad.w < 64 then
+      sprites[#sprites + 1] = draw
+    end
+  end
+  Assert.equal(#sprites, 2, "exactly one hero and one follower walk the adopted stage")
+  Assert.isTrue(sprites[1].x < sprites[2].x, "the follower walks behind and left of the hero")
+  for _, sprite in ipairs(sprites) do
+    local color = sprite.color
+    Assert.isTrue(
+      color[1] == 1 and color[2] == 1 and color[3] == 1 and color[4] == 1,
+      "walking sprites are never tinted"
+    )
+  end
+  local first = host.draws[#host.draws].quad.x
+  presentation:update(1 / 60)
+  presentation:draw()
+  Assert.equal(host.draws[#host.draws].quad.x, first, "walking cadence follows 30 Hz source ticks")
+  presentation:update(1 / 60)
+  presentation:draw()
+  Assert.isTrue(host.draws[#host.draws].quad.x ~= first, "clip ticks advance the hero frame")
+  presentation:update(8)
+  host.printfCalls = {}
+  presentation:draw()
+  Assert.equal(presentation.heroId, "lyra", "captions never reselect the walking pair")
+  Assert.equal(presentation.follower.speciesId, 3, "captions never reselect the walking pair")
+  Assert.equal(randomCalls, 2, "caption ticks never consume the actor random source")
+  presentation:dispose()
+  Assert.equal(#host.images, 3, "the stage owns exactly its backdrop and duo images")
+  for _, image in ipairs(host.images) do
+    Assert.equal(image.releaseCount, 1, "every owned image is released once")
+  end
+  presentation:dispose()
+  local titleHost = graphics()
+  local titleFirst = Presentation.new({
+    versionId = "heartgold",
+    width = 480,
+    height = 360,
+    graphics = titleHost,
+    random = function()
+      return 0
+    end,
+  })
+  titleFirst:dispose()
+  Assert.equal(#titleHost.images, 0, "a title-first handoff disposes the loader before any art arrives")
 end
 
 return { tests = T }

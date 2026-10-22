@@ -8,7 +8,41 @@ local LogicalSurface = require("libs.ui.src.LogicalSurface")
 local HgssLoadingPresentation = {}
 HgssLoadingPresentation.__index = HgssLoadingPresentation
 
-local PURPOSES = { import = true, startup = true, continue = true, editor = true }
+-- Edition stage themes. The generated backdrop is neutral gray so this runtime
+-- tint is the only edition color policy; hero and follower pixels stay untinted.
+local THEMES = {
+  heartgold = {
+    skyTop = { 0.30, 0.17, 0.08, 1 },
+    skyBottom = { 0.58, 0.40, 0.20, 1 },
+    ground = { 0.40, 0.27, 0.13, 1 },
+    spark = { 1.0, 0.88, 0.60, 0.55 },
+    mark = { 0.86, 0.66, 0.36, 0.8 },
+    accent = { 0.93, 0.71, 0.35, 1 },
+    caption = { 0.99, 0.95, 0.86, 1 },
+    backdropTint = { 1.0, 0.93, 0.78, 1 },
+  },
+  soulsilver = {
+    skyTop = { 0.07, 0.13, 0.21, 1 },
+    skyBottom = { 0.26, 0.39, 0.51, 1 },
+    ground = { 0.19, 0.27, 0.34, 1 },
+    spark = { 0.80, 0.90, 1.0, 0.55 },
+    mark = { 0.62, 0.74, 0.85, 0.8 },
+    accent = { 0.73, 0.85, 0.95, 1 },
+    caption = { 0.92, 0.96, 1.0, 1 },
+    backdropTint = { 0.88, 0.95, 1.0, 1 },
+  },
+  neutral = {
+    skyTop = { 0.10, 0.13, 0.15, 1 },
+    skyBottom = { 0.26, 0.31, 0.33, 1 },
+    ground = { 0.19, 0.23, 0.24, 1 },
+    spark = { 0.82, 0.86, 0.84, 0.55 },
+    mark = { 0.60, 0.66, 0.64, 0.8 },
+    accent = { 0.78, 0.82, 0.80, 1 },
+    caption = { 0.94, 0.95, 0.93, 1 },
+    backdropTint = { 1, 1, 1, 1 },
+  },
+}
+local SKY_BANDS = 4
 local CAPTIONS = {
   "Enraging the lake…",
   "Poisoning Amphy…",
@@ -43,7 +77,6 @@ local SKY_SPARKS = {
 ---@field quads table<integer, love.Quad>
 
 ---@class HgssLoadingPresentation
----@field purpose string
 ---@field versionId string?
 ---@field width number
 ---@field height number
@@ -63,7 +96,6 @@ local SKY_SPARKS = {
 ---@field artFailure unknown?
 ---@field disposed boolean
 ---@class HgssLoadingPresentation.Options
----@field purpose "import"|"startup"|"continue"|"editor"
 ---@field width number
 ---@field height number
 ---@field versionId string?
@@ -95,14 +127,14 @@ end
 ---@return HgssLoadingPresentation
 function HgssLoadingPresentation.new(options)
   assert(type(options) == "table", "loading presentation requires options")
-  assert(PURPOSES[options.purpose], "loading presentation purpose is invalid")
+  -- A legacy purpose key is accepted and ignored; the selected edition and
+  -- generated asset readiness drive the visuals.
   requireDimensions(options.width, options.height)
   local random = options.random or love.math.random
   assert(type(random) == "function", "loading presentation requires a random source")
   local graphics = options.graphics or love.graphics
   local displayContext = options.displayContext or DisplayContext.new({ graphics = graphics })
   local self = setmetatable({
-    purpose = options.purpose,
     versionId = options.versionId,
     width = options.width,
     height = options.height,
@@ -238,35 +270,77 @@ function HgssLoadingPresentation:update(dt)
     return
   end
   assert(type(dt) == "number" and dt >= 0, "loading presentation dt must be non-negative")
-  self.elapsed = self.elapsed + math.min(dt, 1)
+  self.elapsed = self.elapsed + dt
   self.captionIndex = (math.floor(self.elapsed / CAPTION_SECONDS) % #CAPTIONS) + 1
 end
 
-function HgssLoadingPresentation:_drawCopy(status, drawBackdrop)
+function HgssLoadingPresentation:_theme()
+  if self.versionId == "heartgold" then
+    return THEMES.heartgold
+  elseif self.versionId == "soulsilver" then
+    return THEMES.soulsilver
+  end
+  return THEMES.neutral
+end
+
+local function blendChannel(top, bottom, t)
+  return top + (bottom - top) * t
+end
+
+-- One full-bleed animated stage shared before and after generated art arrives,
+-- so adopting the walking pair never recomposes the scene.
+function HgssLoadingPresentation:_drawStage()
   local graphics = self.graphics
+  local theme = self:_theme()
+  local width, height = self.width, self.height
+  graphics.setColor(theme.skyTop[1], theme.skyTop[2], theme.skyTop[3], theme.skyTop[4])
+  graphics.rectangle("fill", 0, 0, width, height)
+  local horizon = height * 0.62
+  for band = 1, SKY_BANDS do
+    local t = (band - 0.5) / SKY_BANDS
+    graphics.setColor(
+      blendChannel(theme.skyTop[1], theme.skyBottom[1], t),
+      blendChannel(theme.skyTop[2], theme.skyBottom[2], t),
+      blendChannel(theme.skyTop[3], theme.skyBottom[3], t),
+      1
+    )
+    graphics.rectangle("fill", 0, horizon * (band - 1) / SKY_BANDS, width, horizon / SKY_BANDS + 1)
+  end
+  graphics.setColor(theme.ground[1], theme.ground[2], theme.ground[3], theme.ground[4])
+  graphics.rectangle("fill", 0, horizon, width, height - horizon)
+  local skyOffset = (self.elapsed * 5) % 272
+  graphics.setColor(theme.spark[1], theme.spark[2], theme.spark[3], theme.spark[4])
+  for _, spark in ipairs(SKY_SPARKS) do
+    local x = ((spark.x / STAGE_WIDTH) * width - skyOffset) % (width + 16) - 8
+    graphics.rectangle("fill", x, (spark.y / STAGE_HEIGHT) * height, 2, 2)
+  end
+  local dashOffset = (self.elapsed * 20) % 288
+  graphics.setColor(theme.mark[1], theme.mark[2], theme.mark[3], theme.mark[4])
+  for _, dash in ipairs(GROUND_DASHES) do
+    local x = ((dash.x / STAGE_WIDTH) * width - dashOffset) % (width + 32) - 16
+    graphics.rectangle("fill", x, (dash.y / STAGE_HEIGHT) * height, math.max(2, (dash.width / STAGE_WIDTH) * width), 2)
+  end
+end
+
+function HgssLoadingPresentation:_drawCopy(status)
+  local graphics = self.graphics
+  local theme = self:_theme()
   local bounds = self.secondaryBounds or self.primaryBounds
   if bounds == nil then
     return
   end
   local x, y, width, height = bounds.x, bounds.y, bounds.width, bounds.height
-  if drawBackdrop then
-    graphics.setColor(0.035, 0.075, 0.12, 1)
-    graphics.rectangle("fill", 0, 0, self.width, self.height)
-    graphics.setColor(0.08, 0.19, 0.24, 1)
-    graphics.rectangle("fill", x + width * 0.12, y + height * 0.2, width * 0.76, height * 0.42, 20, 20)
-    graphics.setColor(0.89, 0.71, 0.39, 0.8)
-    graphics.rectangle("line", x + width * 0.12, y + height * 0.2, width * 0.76, height * 0.42, 20, 20)
-  end
+  local caption = theme.caption
   local cycle = self.elapsed % CAPTION_SECONDS
   local fade = (cycle - (CAPTION_SECONDS - CAPTION_TRANSITION_SECONDS)) / CAPTION_TRANSITION_SECONDS
   fade = math.max(0, math.min(1, fade))
   local nextCaption = self.captionIndex % #CAPTIONS + 1
   local slide = 5 * fade
   local captionY = self.configuration == "tall" and 0.78 or 0.75
-  graphics.setColor(0.95, 0.94, 0.86, 1 - fade)
+  graphics.setColor(caption[1], caption[2], caption[3], 1 - fade)
   graphics.printf(CAPTIONS[self.captionIndex], x + width * 0.08, y + height * captionY - slide, width * 0.84, "center")
   if fade > 0 then
-    graphics.setColor(0.95, 0.94, 0.86, fade)
+    graphics.setColor(caption[1], caption[2], caption[3], fade)
     graphics.printf(
       CAPTIONS[nextCaption],
       x + width * 0.08,
@@ -305,21 +379,12 @@ function HgssLoadingPresentation:_drawCopy(status, drawBackdrop)
     end
     if type(status) == "table" and type(status.fraction) == "number" then
       assert(status.fraction >= 0 and status.fraction <= 1, "loading status fraction must be in [0,1]")
-      graphics.setColor(0.89, 0.71, 0.39, 1)
+      graphics.setColor(theme.accent[1], theme.accent[2], theme.accent[3], 1)
       graphics.rectangle("fill", x + width * 0.2, y + height * 0.975, width * 0.6 * status.fraction, 2)
     end
   end
-  local artFailure = type(status) == "table" and status.artFailure or self.artFailure
-  if artFailure ~= nil then
-    graphics.setColor(1, 0.67, 0.53, 1)
-    graphics.printf(
-      "Walking art unavailable: " .. tostring(artFailure),
-      x + width * 0.04,
-      y + height * 0.93,
-      width * 0.92,
-      "center"
-    )
-  end
+  -- An optional art failure never becomes stage copy: the fallback scene stays
+  -- usable and the diagnostic travels through the adoption return value.
 end
 
 function HgssLoadingPresentation:draw(status)
@@ -327,46 +392,35 @@ function HgssLoadingPresentation:draw(status)
   if self.disposed or maybeBounds == nil then
     return
   end
-  if self.hero == nil then
-    self:_drawCopy(status, true)
-    return
+  self:_drawStage()
+  if self.hero ~= nil then
+    local graphics = self.graphics
+    local theme = self:_theme()
+    local bounds = maybeBounds
+    local stageHeight = self.configuration == "tall" and bounds.height * 0.66 or bounds.height
+    local scale = math.max(1, math.floor(math.min(bounds.width / STAGE_WIDTH, stageHeight / STAGE_HEIGHT)))
+    local originX = math.floor(bounds.x + (bounds.width - STAGE_WIDTH * scale) / 2)
+    local originY = math.floor(bounds.y + (stageHeight - STAGE_HEIGHT * scale) / 2)
+    LogicalSurface.clip(graphics, bounds, function()
+      graphics.setColor(theme.backdropTint[1], theme.backdropTint[2], theme.backdropTint[3], theme.backdropTint[4])
+      local backgroundScale = self.configuration == "wide"
+          and math.max(bounds.width / STAGE_WIDTH, bounds.height / STAGE_HEIGHT)
+        or scale
+      local backgroundWidth = STAGE_WIDTH * backgroundScale
+      local backgroundX = bounds.x + (bounds.width - backgroundWidth) / 2
+      graphics.draw(self.backdrop, self.backdropQuad, backgroundX, originY, 0, backgroundScale, scale)
+      local followerFrame = self:_frameIndex("follower")
+      local heroFrame = self:_frameIndex("hero")
+      graphics.setColor(1, 1, 1, 1)
+      local function drawSprite(sprite, frameIndex, x, y)
+        local quad = assert(sprite.quads[frameIndex])
+        graphics.draw(sprite.image, quad, originX + x * scale, originY + y * scale, 0, scale, scale)
+      end
+      drawSprite(self.follower, followerFrame, 80, 96)
+      drawSprite(self.hero, heroFrame, 112, 80)
+    end)
   end
-  local graphics = self.graphics
-  local bounds = maybeBounds
-  local stageHeight = self.configuration == "tall" and bounds.height * 0.66 or bounds.height
-  local scale = math.max(1, math.floor(math.min(bounds.width / STAGE_WIDTH, stageHeight / STAGE_HEIGHT)))
-  local originX = math.floor(bounds.x + (bounds.width - STAGE_WIDTH * scale) / 2)
-  local originY = math.floor(bounds.y + (stageHeight - STAGE_HEIGHT * scale) / 2)
-  LogicalSurface.clip(graphics, bounds, function()
-    graphics.setColor(1, 1, 1, 1)
-    local backgroundScale = self.configuration == "wide"
-        and math.max(bounds.width / STAGE_WIDTH, bounds.height / STAGE_HEIGHT)
-      or scale
-    local backgroundWidth = STAGE_WIDTH * backgroundScale
-    local backgroundX = bounds.x + (bounds.width - backgroundWidth) / 2
-    graphics.draw(self.backdrop, self.backdropQuad, backgroundX, originY, 0, backgroundScale, scale)
-    local skyOffset = (self.elapsed * 5) % 272
-    graphics.setColor(0.82, 0.87, 0.8, 0.55)
-    for _, spark in ipairs(SKY_SPARKS) do
-      local x = (spark.x - skyOffset) % 272 - 8
-      graphics.rectangle("fill", originX + x * scale, originY + spark.y * scale, math.max(1, scale), math.max(1, scale))
-    end
-    local dashOffset = (self.elapsed * 20) % 288
-    graphics.setColor(0.74, 0.81, 0.67, 0.8)
-    for _, dash in ipairs(GROUND_DASHES) do
-      local x = (dash.x - dashOffset) % 288 - 16
-      graphics.rectangle("fill", originX + x * scale, originY + dash.y * scale, dash.width * scale, math.max(1, scale))
-    end
-    local followerFrame = self:_frameIndex("follower")
-    local heroFrame = self:_frameIndex("hero")
-    local function drawSprite(sprite, frameIndex, x, y)
-      local quad = assert(sprite.quads[frameIndex])
-      graphics.draw(sprite.image, quad, originX + x * scale, originY + y * scale, 0, scale, scale)
-    end
-    drawSprite(self.follower, followerFrame, 80, 96)
-    drawSprite(self.hero, heroFrame, 112, 80)
-  end)
-  self:_drawCopy(status, false)
+  self:_drawCopy(status)
 end
 
 function HgssLoadingPresentation:resize(width, height)
