@@ -413,7 +413,7 @@ end
 -- wait: no new session writes shared version roots before the controller
 -- acknowledges that every source reader closed successfully.
 ---@param versionId string newly selected game version
----@param options { freshImport: boolean?, importContinuation: table<string, unknown>?, sourceOffer: userdata?, bootMismatch: string? }? private selection mode
+---@param options { freshImport: boolean?, sourceOffer: userdata?, bootMismatch: string? }? private selection mode
 ---@return boolean
 function App._waitForQuiescence(versionId, options)
   local pending = App.pendingQuiesce
@@ -514,7 +514,7 @@ end
 -- first-play preparation, background sweep) runs before the gate answers
 -- ready for this exact epoch.
 ---@param versionId string newly selected game version
----@param options { freshImport: boolean?, importContinuation: table<string, unknown>?, sourceOffer: userdata?, bootMismatch: string? }? private selection mode, default ordinary
+---@param options { freshImport: boolean?, sourceOffer: userdata?, bootMismatch: string? }? private selection mode, default ordinary
 function App._selectVersion(versionId, options)
   if App._waitForQuiescence(versionId, options) then
     return
@@ -555,13 +555,11 @@ function App._selectVersion(versionId, options)
 end
 
 -- Continues the selected version once its boot gate answered ready for the
--- exact selected epoch. Runs the original downstream choice unchanged:
--- the menu immediately when bootstrap is already ready, otherwise a
--- visible bootstrap wait; a registered source with first-play attestation
--- missing or stale routes through the same bounded first-play preparation
--- a fresh import uses. Never reselects and never mints another epoch.
+-- exact selected epoch: installs the startup title directly, which stages
+-- the product menu and owns the transfer. Never reselects and never mints
+-- another epoch.
 ---@param versionId string newly selected game version
----@param options { freshImport: boolean?, importContinuation: table<string, unknown>?, sourceOffer: userdata?, bootMismatch: string? }? private selection mode, default ordinary
+---@param options { freshImport: boolean?, sourceOffer: userdata?, bootMismatch: string? }? private selection mode, default ordinary
 function App._continueSelectedVersion(versionId, options)
   local epoch = App.epoch
   local provisioner = assert(App.provisioner, "boot continuation needs the selected provisioner")
@@ -792,31 +790,7 @@ local function selectedVersionLabel(versionId)
 end
 
 function App._onImported(versionId)
-  -- Capture the final importer display facts before releasing the
-  -- importer: the fresh-import first-play wait renders them as an import
-  -- continuation while readiness still owns the transfer. Only immutable
-  -- scalar display fields cross the handoff; no live importer is kept.
   local importer = App.importer
-  local continuation = nil
-  if importer ~= nil then
-    local statusOk, status = pcall(importer.status, importer)
-    if statusOk and type(status) == "table" then
-      local snapshot = {}
-      for _, field in ipairs({
-        "state",
-        "versionId",
-        "displayName",
-        "sourceName",
-        "progress",
-        "stage",
-        "stageLabel",
-        "detail",
-      }) do
-        snapshot[field] = status[field]
-      end
-      continuation = { status = snapshot, saveDir = App.saveDir }
-    end
-  end
   -- Take the one verified source handoff before the importer is released.
   -- A dropped or freshly imported ROM carries no reopenable path yet, so
   -- this buffer is what lets the controller admit the selection; the
@@ -877,7 +851,7 @@ function App._onImported(versionId)
   -- A rebind that supplies the same ROM resumes the waiting version on
   -- the ordinary path: its receipts, assets, and saves survive instead of
   -- restarting as a fresh import. Only a genuinely new version takes the
-  -- fresh-import first-play path with the import continuation.
+  -- fresh-import path.
   local rebindId = App._rebindVersionId
   App._rebindVersionId = nil
   if rebindId ~= nil and versionId == rebindId then
@@ -887,7 +861,7 @@ function App._onImported(versionId)
       App._selectVersion(versionId)
     end
   else
-    local selectOptions = { freshImport = true, importContinuation = continuation }
+    local selectOptions = { freshImport = true }
     if offeredBytes ~= nil then
       selectOptions.sourceOffer = offeredBytes
     end
