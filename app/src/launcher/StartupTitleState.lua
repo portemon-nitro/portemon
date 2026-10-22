@@ -37,6 +37,10 @@ local HgssTitleScene = require("libs.hgss.src.presentation.HgssTitleScene")
 ---@field titleObserved boolean
 ---@field titleReadyNotified boolean
 ---@field bootstrapObserved boolean
+---@field audioObserved boolean
+---@field audioReady boolean
+---@field audioError unknown?
+---@field audioStarted boolean
 ---@field menuAttempted boolean
 ---@field accumulator number
 ---@field fadeFrame integer
@@ -95,7 +99,6 @@ function StartupTitleState.new(options)
     initialImport = options.initialImport == true,
     phase = "loading",
     loading = HgssLoadingPresentation.new({
-      purpose = "startup",
       versionId = options.versionId,
       width = options.width,
       height = options.height,
@@ -111,6 +114,10 @@ function StartupTitleState.new(options)
     titleObserved = false,
     titleReadyNotified = false,
     bootstrapObserved = false,
+    audioObserved = false,
+    audioReady = false,
+    audioError = nil,
+    audioStarted = false,
     menuAttempted = false,
     accumulator = 0,
     fadeFrame = 0,
@@ -128,8 +135,8 @@ function StartupTitleState:_live()
   return not self.disposed and self.isCurrent(self.epoch)
 end
 
-function StartupTitleState:_request(name)
-  local ok, ready, failure = pcall(self.derivedAssets.requestMilestone, name, "required")
+function StartupTitleState:_request(name, urgency)
+  local ok, ready, failure = pcall(self.derivedAssets.requestMilestone, name, urgency or "required")
   if not ok then
     return false, ready
   end
@@ -145,6 +152,7 @@ function StartupTitleState:_startRequests()
   end
   self.requested = true
   -- Request order preserves title priority ahead of broad menu/gameplay work.
+  -- Optional audio is an independent near demand: it never gates the visuals.
   for _, name in ipairs({ "startup-loader", "startup-title", "bootstrap" }) do
     local ready, failure = self:_request(name)
     if name == "startup-loader" and ready then
@@ -162,7 +170,16 @@ function StartupTitleState:_startRequests()
       end
     end
   end
+  local audioReady, audioFailure = self:_request("startup-audio", "near")
+  if audioReady then
+    self.audioObserved = true
+    self.audioReady = true
+  elseif audioFailure ~= nil then
+    self.audioObserved = true
+    self.audioError = audioFailure
+  end
   self:_notifyTitleReady()
+  self:_maybeStartAudio()
 end
 
 function StartupTitleState:_adoptLoader()
@@ -201,6 +218,7 @@ function StartupTitleState:_adoptTitle()
   end
   self.title = assert(result)
   self.phase = "title"
+  self:_maybeStartAudio()
 end
 
 function StartupTitleState:_notifyTitleReady()
@@ -208,12 +226,26 @@ function StartupTitleState:_notifyTitleReady()
     return
   end
   self.titleReadyNotified = true
-  if self.audio and type(self.audio.titleReady) == "function" then
-    self.audio.titleReady({ crySpeciesId = self.title.bundle.crySpeciesId })
-  end
   if self.onTitleReady ~= nil then
     self.onTitleReady()
   end
+end
+
+-- Starts the optional title theme exactly once, and only while the title
+-- is still visible and unskipped. Audio that arrives after the skip or
+-- during the fade stays silent; the menu stages cues lazily instead.
+function StartupTitleState:_maybeStartAudio()
+  if self.audioStarted or not self.audioReady or not self:_live() then
+    return
+  end
+  if self.phase ~= "title" or self.skipRequested or self.title == nil then
+    return
+  end
+  if self.audio == nil or type(self.audio.titleReady) ~= "function" then
+    return
+  end
+  self.audioStarted = true
+  self.audio.titleReady({ crySpeciesId = self.title.bundle.crySpeciesId })
 end
 
 function StartupTitleState:_stageMenu()
@@ -262,10 +294,21 @@ function StartupTitleState:_pollAssets()
       self.bootstrapObserved = true
     end
   end
+  if not self.audioObserved then
+    local ready, failure = self:_request("startup-audio", "near")
+    if failure ~= nil then
+      self.audioObserved = true
+      self.audioError = failure
+    elseif ready then
+      self.audioObserved = true
+      self.audioReady = true
+    end
+  end
   if self.bootstrapObserved then
     self:_stageMenu()
   end
   self:_notifyTitleReady()
+  self:_maybeStartAudio()
 end
 
 function StartupTitleState:_beginFade()
@@ -278,21 +321,18 @@ function StartupTitleState:_beginFade()
   end
 end
 
+-- Ownership order only: detach before callback, never restore once the
+-- callback starts. The App transfer installs the menu exactly once; a
+-- post-install optional failure is recorded there and never rolls back
+-- into this disposed owner.
 function StartupTitleState:_finish()
   if self.transferred or not self:_live() then
     return
   end
   local menu = self:takeStagedMenu()
   self.transferred = true
-  local ok, failure = pcall(self.onFinished, menu)
-  if not ok then
-    self.stagedMenu = menu
-    self.transferred = false
-    self.menuError = failure
-    self.phase = "title"
-    return
-  end
   self.phase = "transferred"
+  self.onFinished(menu)
 end
 
 function StartupTitleState:_tick()
@@ -334,14 +374,23 @@ function StartupTitleState:update(dt)
 end
 
 function StartupTitleState:_status()
-  local detail = self.menuError or self.bootstrapError or self.titleError
+  if self.titleError ~= nil or self.phase == "error" then
+    local detail = self.titleError or self.menuError or self.bootstrapError
+    return {
+      label = "Title unavailable",
+      error = tostring(detail),
+      detail = "Press Esc to return",
+    }
+  end
+  local detail = self.menuError or self.bootstrapError
   if detail ~= nil then
-    return { label = "Startup could not continue", error = tostring(detail) }
+    return {
+      label = "Menu unavailable",
+      error = tostring(detail),
+      detail = "Press R to retry",
+    }
   end
-  if self.initialImport and self.phase == "loading" then
-    return { label = "Preparing your game…" }
-  end
-  return { label = "Preparing startup…" }
+  return nil
 end
 
 function StartupTitleState:draw()
@@ -362,11 +411,7 @@ function StartupTitleState:draw()
       self.loading:draw({ label = "Title unavailable", error = self.titleError })
     end
   else
-    local status = self:_status()
-    if self.phase == "error" and self.titleError ~= nil then
-      status.label = "Title unavailable"
-    end
-    self.loading:draw(status)
+    self.loading:draw(self:_status())
   end
   local graphics = love.graphics
   if self.phase == "fadeOut" then
@@ -469,6 +514,29 @@ function StartupTitleState:_retryMenu()
   self:_beginFade()
 end
 
+-- Modifier-only keys never act: they carry no discrete press intent.
+local MODIFIER_KEYS = {
+  lshift = true,
+  rshift = true,
+  lctrl = true,
+  rctrl = true,
+  lalt = true,
+  ralt = true,
+  lgui = true,
+  rgui = true,
+}
+
+-- Releases one normalized pointer identity. Touch and mouse releases use
+-- the exact identity their press captured, never a doubly prefixed one.
+function StartupTitleState:_releasePointer(pointerId)
+  if self.canceledPointers[pointerId] then
+    self.canceledPointers[pointerId] = nil
+    if self.pointerCapture == pointerId then
+      self.pointerCapture = nil
+    end
+  end
+end
+
 function StartupTitleState:keypressed(key, _, isrepeat)
   if isrepeat then
     return
@@ -479,30 +547,29 @@ function StartupTitleState:keypressed(key, _, isrepeat)
       self.onCancel()
     end
   elseif key == "r" then
-    self:_retryMenu()
-  elseif key == "return" or key == "space" or key == "z" then
+    if self.menuError ~= nil or self.bootstrapError ~= nil then
+      self:_retryMenu()
+    else
+      self:_requestSkip()
+    end
+  elseif not MODIFIER_KEYS[key] then
     self:_requestSkip()
   end
 end
 
-function StartupTitleState:gamepadpressed(_, button)
-  if button == "a" or button == "start" then
-    self:_requestSkip()
-  end
+function StartupTitleState:gamepadpressed(_, _)
+  self:_requestSkip()
 end
 
 function StartupTitleState:mousepressed(x, y, button)
+  if button ~= 1 then
+    return
+  end
   self:_pressPointer("mouse:" .. tostring(button), x, y)
 end
 
 function StartupTitleState:mousereleased(_, _, button)
-  local pointerId = "mouse:" .. tostring(button)
-  if self.canceledPointers[pointerId] then
-    self.canceledPointers[pointerId] = nil
-    if self.pointerCapture == pointerId then
-      self.pointerCapture = nil
-    end
-  end
+  self:_releasePointer("mouse:" .. tostring(button))
 end
 
 function StartupTitleState:touchpressed(id, x, y)
@@ -510,7 +577,7 @@ function StartupTitleState:touchpressed(id, x, y)
 end
 
 function StartupTitleState:touchreleased(id)
-  self:mousereleased(nil, nil, "touch:" .. tostring(id))
+  self:_releasePointer("touch:" .. tostring(id))
 end
 
 function StartupTitleState:focus(focused)

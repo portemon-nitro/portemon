@@ -1614,16 +1614,21 @@ function T.menu_installation_requests_intro_and_field_closures_at_near_urgency()
     finishStartupTitle(result)
     Assert.equal(#result.menus, 1, "selection installs the product menu")
     local names, urgencies = requestedMilestones(requests)
-    Assert.deepEqual(
-      names,
-      { "bootstrap", "field-planning", "field-runtime", "new-game-intro", "startup-loader", "startup-title" },
-      "menu installation demands the intro and both field closures alongside the bootstrap check"
-    )
+    Assert.deepEqual(names, {
+      "bootstrap",
+      "field-planning",
+      "field-runtime",
+      "new-game-intro",
+      "startup-audio",
+      "startup-loader",
+      "startup-title",
+    }, "menu installation demands the intro and both field closures alongside the bootstrap check")
     for _, name in ipairs({ "new-game-intro", "field-planning", "field-runtime" }) do
       Assert.equal(urgencies[name], "near", "idle menu demand stays speculative for " .. name)
     end
     Assert.equal(urgencies.bootstrap, "required", "the bootstrap check stays mandatory")
     Assert.equal(urgencies["startup-title"], "required", "the title asset request stays mandatory")
+    Assert.equal(urgencies["startup-audio"], "near", "the optional audio request stays speculative")
     Assert.equal(result.warmups, 1, "menu installation still authorizes background completion once")
   end)
 end
