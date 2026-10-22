@@ -286,11 +286,9 @@ function T.evolution_child_wraps_the_native_presentation_state()
     controller = "player",
     cancellable = false,
     subject = mon,
-    trigger = { kind = "level" },
+    context = { trigger = { kind = "level" }, timeOfDay = "day", party = {}, inventory = {} },
     request = { requestId = 17, epoch = 7, controller = "player", kind = "evolution" },
     options = { requestId = 17, epoch = 7, controller = "player", kind = "evolution", actors = {} },
-    party = {},
-    inventory = {},
   }
   local child, openErr = BattleChildApplications.open(intent, { monCatalog = catalog })
   Assert.notNil(child, "evolution composes through its native state: " .. tostring(openErr))
@@ -301,6 +299,24 @@ function T.evolution_child_wraps_the_native_presentation_state()
   local missing, missingErr = BattleChildApplications.open(intent, {})
   Assert.isNil(missing, "evolution without its catalog composes nothing")
   Assert.isTrue(type(missingErr) == "string" and missingErr ~= "", "the boundary names the catalog")
+  local clockless = {
+    kind = "evolution",
+    purpose = "evolution",
+    launchId = "launch-composer-child",
+    requestId = 17,
+    epoch = 7,
+    controller = "player",
+    cancellable = false,
+    subject = mon,
+    context = { trigger = { kind = "level" }, party = {}, inventory = {} },
+    request = { requestId = 17, epoch = 7, controller = "player", kind = "evolution" },
+    options = { requestId = 17, epoch = 7, controller = "player", kind = "evolution", actors = {} },
+  }
+  local timeless, timelessErr =
+    BattleChildApplications.open(clockless, { monCatalog = catalog })
+  Assert.isNil(timeless, "evolution without its frozen clock composes nothing")
+  Assert.isTrue(type(timelessErr) == "string" and timelessErr ~= "", "the boundary names the clock")
+  child:dispose()
   child:dispose()
 end
 

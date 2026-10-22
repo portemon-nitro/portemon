@@ -1727,4 +1727,219 @@ function T.tests.pending_facade_forwards_completion_through_the_live_screen()
   deferredEnvelope:dispose()
 end
 
+-- Builds the lane catalog with one daytime level slot for the lane subject.
+---@return table mon catalog carrying the lane evolution slot
+local function evolutionLaneCatalog()
+  local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+  local ItemFixture = require("libs.items.tests.item_fixture")
+  local MonCatalog = require("libs.mons.src.MonCatalog")
+  local root = CatalogFixture.buildAssetRoot()
+  local species = root.species --[[@as table<string, table<string, unknown>>]]
+  local forms = species.EEVEE.forms --[[@as table<integer, table<string, unknown>>]]
+  forms[0].evolutions = {
+    { method = "level", level = 10, target = "TOTODILE", form = 0 },
+  }
+  return MonCatalog.new(root, ItemFixture.makeCatalog())
+end
+
+-- Builds the committed lane subject at its evolution level with a single
+-- held move, so the pending target learnset fills silently and the lane
+-- test observes the pure sequence without a learning pause.
+---@param screen table<string, unknown> live battle screen under test driving (owns no subject facts)
+---@return table<string, unknown> committed subject for the evolution lane
+local function evolutionLaneSubject(screen)
+  local _ = screen
+  local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+  local catalog = evolutionLaneCatalog()
+  local factory = CatalogFixture.makeFactory(0xE0010002, catalog)
+  local subject = factory:createNormal(CatalogFixture.normalRequest({ species = "EEVEE", level = 10 }))
+  subject.moves = { { move = "TACKLE", pp = 35, ppUps = 0 } }
+  return subject
+end
+
+-- The evolution decision crosses the same completion port as naming but
+-- in its own exclusive lane: the sequence auto-starts with no
+-- confirmation gate, a permitted B-cancel seals a cancellation, a
+-- completed run seals its staged domain result, and nothing ever enters
+-- the battle-action child poll. The terminal outcome view is restored
+-- after each decision and disposal releases the lane exactly once.
+function T.tests.evolution_completion_runs_its_exclusive_lane_to_terminal_restore()
+  local BattleScreenState = require("game.hgss.src.battle.BattleScreenState")
+  local Model = require("game.hgss.src.battle.BattlePresentationModel")
+  local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+  local ManifestFixture = require("tests.support.BattlePresentationManifestFixture")
+  local Schema = require("libs.assets.src.battle.BattlePresentationSchema")
+  local manifest = ManifestFixture.manifest()
+  manifest.scenes = { { key = "general/plain/day", background = "general", terrain = "plain", time = "day" } }
+  Schema.assertManifest(manifest)
+  local assets = { images = {} }
+  function assets.prepare(_)
+    return true
+  end
+  function assets.drawable(key)
+    if assets.images[key] == nil then
+      assets.images[key] = { handle = key, width = 80, height = 80 }
+    end
+    return assets.images[key]
+  end
+  function assets.release(_) end
+  local text = {
+    measure = function(content)
+      return { width = 8 * #tostring(content), height = 16 }
+    end,
+    drawText = function(_, _, _) end,
+  }
+  local windows = {
+    drawWindow = function(_, _, _) end,
+    drawApplicationFrame = function(_, _) end,
+  }
+  local audio = {
+    play = function(_, _)
+      return true
+    end,
+  }
+  local seals = 0
+  local screen = BattleScreenState.new({
+    launchId = "launch-evolution-lane",
+    manifest = manifest,
+    model = Model,
+    submit = function(_)
+      seals = seals + 1
+      return false, { message = "no open request" }
+    end,
+    measureDisplay = function()
+      return dualMeasurement("evolution-lane:dual")
+    end,
+    monCatalog = evolutionLaneCatalog(),
+    assets = assets,
+    text = text,
+    windows = windows,
+    audio = audio,
+  })
+  local port = screen:presentationPort()
+  local subject = evolutionLaneSubject(screen)
+  local function intentFor(completionId, kind)
+    return {
+      launchId = "launch-evolution-lane",
+      completionId = completionId,
+      kind = kind or "evolution",
+      subject = subject,
+      partySlot = 0,
+      context = { trigger = { kind = "level" }, timeOfDay = "day", party = {}, inventory = {} },
+    }
+  end
+  local view = {
+    own = {
+      {
+        combatant = 1,
+        activation = 1,
+        side = 1,
+        position = 1,
+        name = "LEAD",
+        species = "EEVEE",
+        level = 10,
+        hp = 30,
+        maxHp = 30,
+        active = true,
+      },
+    },
+    foes = {
+      {
+        combatant = 2,
+        activation = 1,
+        side = 2,
+        position = 2,
+        name = "Wild EEVEE",
+        species = "EEVEE",
+        level = 3,
+        hp = 0,
+        maxHp = 18,
+        active = true,
+      },
+    },
+  }
+  port.present({
+    launchId = "launch-evolution-lane",
+    packetId = 1,
+    events = {},
+    before = view,
+    after = view,
+    result = { word = "win" },
+  })
+  local settled = false
+  for _ = 1, 600 do
+    screen:updateFixed(TICK)
+    if screen:status().mode == "outcome" then
+      settled = true
+      break
+    end
+  end
+  Assert.isTrue(settled, "the terminal win narration reaches its outcome")
+  Assert.isTrue(port.openCompletion(intentFor("evolution-1")), "the live port stores its evolution decision")
+  Assert.isNil(screen:status().completion, "the stored decision waits for its acknowledgment")
+  local offered = nil
+  for _ = 1, 30 do
+    screen:input({ { type = "confirm" } })
+    screen:updateFixed(TICK)
+    if screen:status().completion ~= nil then
+      offered = screen:status().completion
+      break
+    end
+  end
+  Assert.notNil(offered, "the acknowledged terminal offers the evolution decision")
+  assert(offered ~= nil, "the evolution decision is offered")
+  Assert.equal(offered.kind, "evolution", "the offered decision names its evolution lane")
+  Assert.isFalse(
+    port.openCompletion(intentFor("nickname-1", "capture_nickname")),
+    "a concurrent nickname never opens beside the evolution lane"
+  )
+  Assert.isTrue(port.openCompletion(intentFor("evolution-1")), "reopening the same evolution stays idempotent")
+  Assert.isNil(port.takeCompletion(), "the unanswered evolution seals nothing")
+  -- No confirmation is ever sent: the native beats start on their own.
+  local answer = nil
+  for _ = 1, 600 do
+    screen:updateFixed(TICK)
+    answer = port.takeCompletion()
+    if answer ~= nil then
+      break
+    end
+  end
+  Assert.notNil(answer, "the unguided evolution seals its answer")
+  assert(answer ~= nil, "the evolution answer seals")
+  Assert.equal(answer.kind, "evolution_complete", "the completed run seals its staged result")
+  local staged = assert(answer.staged, "the completed answer carries its staged domain result")
+  Assert.equal(staged.mon.species, "TOTODILE", "the staged result names the evolved species")
+  Assert.isNil(port.takeCompletion(), "the consumed evolution seals nothing more")
+  Assert.isNil(screen:status().completion, "the sealed evolution restores the terminal view")
+  Assert.equal(seals, 0, "no evolution event ever enters the battle-action seal path")
+  -- A second decision cancels through the permitted exit instead.
+  Assert.isTrue(port.openCompletion(intentFor("evolution-2")), "the next evolution opens after consumption")
+  local secondOffered = false
+  for _ = 1, 30 do
+    screen:updateFixed(TICK)
+    if screen:status().completion ~= nil then
+      secondOffered = true
+      break
+    end
+  end
+  Assert.isTrue(secondOffered, "the terminal still holds the second decision")
+  screen:input({ { type = "cancel" } })
+  screen:updateFixed(TICK)
+  local cancelled = nil
+  for _ = 1, 60 do
+    screen:updateFixed(TICK)
+    cancelled = port.takeCompletion()
+    if cancelled ~= nil then
+      break
+    end
+  end
+  Assert.notNil(cancelled, "the permitted exit seals its cancellation")
+  assert(cancelled ~= nil, "the cancellation seals")
+  Assert.equal(cancelled.kind, "evolution_cancelled", "the permitted exit seals exactly one cancellation")
+  Assert.isNil(port.takeCompletion(), "the consumed cancellation seals nothing more")
+  screen:dispose()
+  Assert.isFalse(port.openCompletion(intentFor("evolution-3")), "disposal refuses late evolutions")
+  Assert.isNil(port.takeCompletion(), "disposal seals nothing late")
+end
+
 return T

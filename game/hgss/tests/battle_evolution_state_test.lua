@@ -1,114 +1,171 @@
--- Native evolution presentation sequencing: the state owns the source
--- entry, old-picture animation, cry/message, permitted cancel policy, and
--- transformation beats while the evolution domain owns eligibility and the
--- staged result. Publication never happens here; the staged domain records
--- ride the completion command. Only source-permitted input decides.
+-- Native post-battle evolution presentation: the state binds one staged
+-- domain flow for its committed subject, starts its entry, cry, and
+-- animation beats on its own without a confirmation gate, honors cancel
+-- only where the source method permits it, resolves each pending learned
+-- move through an explicit replace-or-decline answer, and settles exactly
+-- one typed result without ever writing mon fields itself.
 
 local Assert = require("tests.support.Assert")
 local CatalogFixture = require("libs.mons.tests.catalog_fixture")
+local ItemFixture = require("libs.items.tests.item_fixture")
+local Experience = require("libs.mons.src.gen4.Experience")
+local MonStats = require("libs.mons.src.gen4.MonStats")
 
 local BattleEvolutionState = require("game.hgss.src.battle.BattleEvolutionState")
-local Evolution = require("libs.mons.src.gen4.Evolution")
 
 local T = {}
 
----@return table<integer, integer> real medium-fast growth curve for level projection
-local function growthCurve()
-  local catalog = CatalogFixture.makeCatalog()
-  return catalog:growthCurve("medium_fast")
+---@param mutate fun(root: table<string, unknown>)|nil species edits for one vector
+---@return table mon catalog carrying exactly the vector slots
+local function evolutionCatalog(mutator)
+  local root = CatalogFixture.buildAssetRoot()
+  if mutator ~= nil then
+    mutator(root)
+  end
+  local MonCatalog = require("libs.mons.src.MonCatalog")
+  return MonCatalog.new(root, ItemFixture.makeCatalog())
 end
 
----@param slots table<integer, table<string, unknown>> ordered form slots under the test subject
----@param targets table<string, table<string, unknown>>? target form overrides by species
----@return table<string, unknown> battle-local mon catalog double
-local function testCatalog(slots, targets)
-  local curve = growthCurve()
-  local catalog = {}
-  function catalog:species(_)
-    return { growthCurve = "medium_fast", genderRatio = 31, baseExpYield = 60, evYield = {} }
-  end
-  function catalog:growthCurve(_)
-    return curve
-  end
-  function catalog:form(speciesKey, _)
-    if speciesKey == "TESTMON" then
-      return {
-        baseStats = { hp = 45, attack = 49, defense = 49, speed = 45, specialAttack = 65, specialDefense = 65 },
-        abilities = { "OVERGROW" },
-        levelUpMoves = {},
-        evolutions = slots,
-        types = { "grass" },
-      }
-    end
-    local override = targets ~= nil and targets[speciesKey] or nil
-    return {
-      baseStats = { hp = 60, attack = 62, defense = 63, speed = 60, specialAttack = 80, specialDefense = 80 },
-      abilities = { "OVERGROW" },
-      levelUpMoves = {},
-      evolutions = {},
-      types = { "grass" },
-      extra = override,
-    }
-  end
-  return catalog
-end
-
----@param level integer battle level under test preparation
----@return table<string, unknown> committed subject at the requested level
-local function subjectAt(level)
-  local curve = growthCurve()
-  local zeros = { hp = 0, attack = 0, defense = 0, speed = 0, specialAttack = 0, specialDefense = 0 }
-  return {
-    species = "TESTMON",
-    form = 0,
-    personality = 0,
-    experience = curve[level],
-    moves = {},
-    ivs = { hp = 0, attack = 0, defense = 0, speed = 0, specialAttack = 0, specialDefense = 0 },
-    evs = zeros,
-    condition = { currentHp = 20 },
-    heldItem = "NONE",
+---@param root table<string, unknown> mutable synthetic mon asset root under grafting
+local function graftLevelSlot(root)
+  local species = root.species --[[@as table<string, table<string, unknown>>]]
+  local forms = species.CHIKORITA.forms --[[@as table<integer, table<string, unknown>>]]
+  forms[0].evolutions = {
+    { method = "level", level = 16, target = "TOTODILE", form = 0 },
   }
 end
 
----@param context table<string, unknown>? trigger context overrides under test preparation
----@return table<string, unknown> level-trigger context for the test subject
-local function levelContext(context)
-  local record = { trigger = { kind = "level" }, party = {}, inventory = {} }
-  if context ~= nil then
-    for key, value in pairs(context) do
-      record[key] = value
-    end
-  end
-  return record
+---@param root table<string, unknown> mutable synthetic mon asset root under grafting
+local function graftTwoSlots(root)
+  local species = root.species --[[@as table<string, table<string, unknown>>]]
+  local forms = species.CHIKORITA.forms --[[@as table<integer, table<string, unknown>>]]
+  forms[0].evolutions = {
+    { method = "level", level = 16, target = "TOTODILE", form = 0 },
+    { method = "level", level = 10, target = "EEVEE", form = 0 },
+  }
 end
 
----@param slots table<integer, table<string, unknown>> ordered form slots under test preparation
----@param context table<string, unknown>? trigger context overrides under test preparation
----@return table<string, unknown> evolution presentation state at the requested level
-local function stateFor(slots, context)
+---@param root table<string, unknown> mutable synthetic mon asset root under grafting
+local function graftTradeSlot(root)
+  local species = root.species --[[@as table<string, table<string, unknown>>]]
+  local forms = species.CHIKORITA.forms --[[@as table<integer, table<string, unknown>>]]
+  forms[0].evolutions = {
+    { method = "trade", target = "TOTODILE", form = 0 },
+  }
+end
+
+---@param root table<string, unknown> mutable synthetic mon asset root under grafting
+local function graftNincadaLine(root)
+  local species = root.species --[[@as table<string, table<string, unknown>>]]
+  local function stats(hp, attack, defense, speed, specialAttack, specialDefense)
+    return {
+      hp = hp,
+      attack = attack,
+      defense = defense,
+      speed = speed,
+      specialAttack = specialAttack,
+      specialDefense = specialDefense,
+    }
+  end
+  local held = {
+    common = { item = "NONE", nativeId = 0 },
+    rare = { item = "NONE", nativeId = 0 },
+  }
+  species.NINCADA = {
+    nativeId = 290,
+    name = "NINCADA",
+    growthCurve = "erratic",
+    baseFriendship = 70,
+    genderRatio = 31,
+    eggCycles = 15,
+    eggGroups = { "bug", "bug" },
+    catchRate = 255,
+    baseExpYield = 65,
+    evYield = stats(0, 0, 1, 0, 0, 0),
+    heldItems = held,
+    color = 3,
+    flip = false,
+    forms = {
+      [0] = {
+        baseStats = stats(31, 45, 90, 40, 30, 30),
+        types = { "bug", "ground" },
+        abilities = { "OVERGROW" },
+        tmhm = {},
+        levelUpMoves = {
+          { level = 1, move = "SCRATCH" },
+          { level = 1, move = "HARDEN" },
+        },
+        evolutions = {
+          { method = "level_ninjask", level = 20, target = "NINJASK", form = 0 },
+          { method = "level_shedinja", level = 20, target = "SHEDINJA", form = 0 },
+        },
+        icon = "NINCADA/f0",
+        portrait = "NINCADA/f0/male/plain",
+      },
+    },
+  }
+  species.NINJASK = {
+    nativeId = 291,
+    name = "NINJASK",
+    growthCurve = "erratic",
+    baseFriendship = 70,
+    genderRatio = 31,
+    eggCycles = 15,
+    eggGroups = { "bug", "bug" },
+    catchRate = 120,
+    baseExpYield = 155,
+    evYield = stats(0, 0, 0, 2, 0, 0),
+    heldItems = held,
+    color = 3,
+    flip = false,
+    forms = {
+      [0] = {
+        baseStats = stats(61, 90, 45, 160, 50, 50),
+        types = { "bug", "flying" },
+        abilities = { "OVERGROW" },
+        tmhm = {},
+        levelUpMoves = {
+          { level = 1, move = "SCRATCH" },
+          { level = 1, move = "HARDEN" },
+        },
+        evolutions = {},
+        icon = "NINJASK/f0",
+        portrait = "NINJASK/f0/male/plain",
+      },
+    },
+  }
+end
+
+---@param catalog table mon catalog under test preparation
+---@param species string subject species key under test preparation
+---@param level integer pinned battle level under test preparation
+---@param moves table<integer, table<string, unknown>>|nil staged move set under preparation
+---@return table committed subject at the requested level with full health
+local function subjectAt(catalog, species, level, moves)
+  local factory = CatalogFixture.makeFactory(0xE0010001, catalog)
+  local mon = factory:createNormal(CatalogFixture.normalRequest({ species = species, level = level }))
+  if moves ~= nil then
+    mon.moves = moves
+  end
+  mon.condition.currentHp = MonStats.derive(mon, catalog).maxHp
+  return mon
+end
+
+---@param catalog table mon catalog under test preparation
+---@param mon table<string, unknown> test subject under construction
+---@return table evolution presentation state for the committed subject
+local function stateFor(catalog, mon)
   return BattleEvolutionState.new({
-    mon = subjectAt(20),
-    context = levelContext(context),
-    catalog = testCatalog(slots),
+    mon = mon,
+    context = { trigger = { kind = "level" }, timeOfDay = "day", party = {}, inventory = {} },
+    catalog = catalog,
   })
 end
 
----@param state table<string, unknown> evolution presentation state under driving
-local function runToPrompt(state)
-  for _ = 1, BattleEvolutionState.ENTRY_TICKS do
-    state:stepSourceTick(1)
-  end
-  for _ = 1, BattleEvolutionState.SEQUENCE_TICKS do
-    state:stepSourceTick(1)
-  end
-  Assert.equal(state:status().phase, "prompt", "the sequence offers its prompt")
-end
-
----@param level integer battle level under test preparation
----@return table<integer, table<string, unknown>> single eligible level slot
-local function singleSlot(level)
-  return { { method = "level", level = level, target = "TESTVOLVED", form = 0 } }
+---@param move string move identity under test preparation
+---@return table<string, unknown> staged move entry with full points
+local function moveEntry(move)
+  return { move = move, pp = 35, ppUps = 0 }
 end
 
 -- Copies one test subject without sharing mutable state.
@@ -130,78 +187,80 @@ local function copyMon(mon)
   return out
 end
 
+---@param state table<string, unknown> evolution presentation state under driving
+---@param ticks integer tick budget before the driver gives up
+local function runUntilSettled(state, ticks)
+  for _ = 1, ticks do
+    state:stepSourceTick(1)
+    local phase = state:status().phase
+    if phase == "settled" or phase == "learn" then
+      return
+    end
+  end
+  error("the evolution sequence never settled")
+end
+
 function T.ineligible_subjects_settle_without_effects_or_mutation()
-  local catalog = testCatalog({})
-  local mon = subjectAt(5)
+  local catalog = evolutionCatalog(nil)
+  local mon = subjectAt(catalog, "CHIKORITA", 5, { moveEntry("TACKLE") })
   local before = copyMon(mon)
-  local state = BattleEvolutionState.new({ mon = mon, context = levelContext(), catalog = catalog })
+  local state = stateFor(catalog, mon)
   Assert.equal(state:status().phase, "settled", "an ineligible subject settles at once")
   local result = state:takeResult()
   Assert.notNil(result, "the settled state answers its choice")
   assert(result ~= nil, "the ineligible choice seals")
   Assert.equal(result.kind, "choice", "ineligibility still reports a choice")
-  Assert.isFalse(result.choice.evolved, "nothing evolves without a candidate")
+  Assert.isFalse(result.choice.evolved, "nothing evolves without a matching rule")
   Assert.equal(result.choice.reason, "ineligible", "the choice names its reason")
   Assert.isNil(state:takeResult(), "the settled choice reports exactly once")
   Assert.deepEqual(mon, before, "sequencing never mutates its subject")
 end
 
-function T.success_runs_the_native_beats_in_order_then_settles()
-  local state = stateFor(singleSlot(15), nil)
+-- The native beats run with no confirmation gate: entry, cry, and the
+-- transformation follow ticks alone, and a lone free move slot fills
+-- silently behind the same run.
+function T.sequence_starts_without_confirmation_and_completes_alone()
+  local catalog = evolutionCatalog(graftLevelSlot)
+  local mon = subjectAt(catalog, "CHIKORITA", 16, { moveEntry("TACKLE") })
+  local state = stateFor(catalog, mon)
   Assert.equal(state:status().phase, "entry", "the sequence opens on its entry beat")
   state:input({ { type = "confirm" } })
-  Assert.equal(state:status().phase, "entry", "confirmation before the prompt decides nothing")
-  runToPrompt(state)
-  state:input({ { type = "confirm" } })
-  state:input({ { type = "confirm" } })
-  for _ = 1, BattleEvolutionState.TRANSFORMATION_TICKS do
-    state:stepSourceTick(1)
-  end
-  Assert.equal(state:status().phase, "settled", "the transformation beat settles the sequence")
+  runUntilSettled(state, 60)
   local result = state:takeResult()
-  Assert.notNil(result, "the settled sequence answers its choice")
+  Assert.notNil(result, "the unguided sequence answers its choice")
   assert(result ~= nil, "the evolved choice seals")
-  Assert.isTrue(result.choice.evolved, "the confirmed candidate evolves")
-  Assert.equal(#result.choice.outcomes, 1, "one candidate settles one outcome")
-  Assert.isTrue(result.choice.outcomes[1].evolved, "the outcome carries its transformation")
-  Assert.notNil(result.choice.outcomes[1].staged, "the outcome carries its staged domain result")
-  Assert.equal(result.choice.outcomes[1].staged.monAfter.species, "TESTVOLVED", "staging names the target")
+  Assert.isTrue(result.choice.evolved, "the sequence completes without any confirmation")
+  local staged = assert(result.choice.staged, "the outcome carries its staged domain result")
+  Assert.equal(staged.mon.species, "TOTODILE", "staging names the first matching target")
+  Assert.isNil(state:takeResult(), "the settled choice reports exactly once")
   local kinds = {}
   for _, effect in ipairs(state:effects()) do
     kinds[#kinds + 1] = effect.kind .. ":" .. effect.phase
   end
-  Assert.isTrue(#kinds >= 4, "entry, cry, prompt, and settled beats all sequence effects")
+  Assert.isTrue(#kinds >= 4, "entry, cry, transformation, and settlement all sequence effects")
   Assert.equal(kinds[1], "music:entry", "music opens the entry")
-  local cryAt, paletteAt, settledAt = 0, 0, 0
-  for index, kind in ipairs(kinds) do
-    if kind == "cry:sequence" and cryAt == 0 then
-      cryAt = index
-    end
-    if kind == "palette:transformation" and paletteAt == 0 then
-      paletteAt = index
-    end
-    if kind == "message:settled" and settledAt == 0 then
-      settledAt = index
-    end
-  end
-  Assert.isTrue(cryAt > 1, "the cry follows the entry music")
-  Assert.isTrue(paletteAt > cryAt, "the transformation palette follows the cry")
-  Assert.isTrue(settledAt > paletteAt, "settlement closes the sequence")
-  Assert.isNil(state:takeResult(), "the settled choice reports exactly once")
 end
 
+-- Cancel during the permitted animation window declines without staging:
+-- no transformation, no palette, and the input record stays untouched.
 function T.permitted_cancel_declines_without_applying()
-  local state = stateFor(singleSlot(15), nil)
-  runToPrompt(state)
+  local catalog = evolutionCatalog(graftLevelSlot)
+  local mon = subjectAt(catalog, "CHIKORITA", 16, { moveEntry("TACKLE") })
+  local before = copyMon(mon)
+  local state = stateFor(catalog, mon)
   Assert.isTrue(state:status().canCancel, "level evolutions stay cancellable")
+  for _ = 1, BattleEvolutionState.ENTRY_TICKS + 1 do
+    state:stepSourceTick(1)
+  end
   state:input({ { type = "cancel" } })
   Assert.equal(state:status().phase, "settled", "a permitted cancel settles the sequence")
   local result = state:takeResult()
   Assert.notNil(result, "the cancelled sequence answers its choice")
   assert(result ~= nil, "the declined choice seals")
   Assert.isFalse(result.choice.evolved, "a cancelled candidate never evolves")
-  Assert.equal(result.choice.outcomes[1].reason, "cancelled", "the outcome names its cancellation")
-  Assert.isNil(result.choice.outcomes[1].staged, "a declined candidate stages nothing")
+  Assert.equal(result.choice.reason, "cancelled", "the outcome names its cancellation")
+  Assert.isNil(result.choice.staged, "a declined candidate stages nothing")
+  Assert.deepEqual(mon, before, "a declined candidate leaves its subject untouched")
   local palette = false
   for _, effect in ipairs(state:effects()) do
     if effect.kind == "palette" then
@@ -211,89 +270,149 @@ function T.permitted_cancel_declines_without_applying()
   Assert.isFalse(palette, "a declined candidate sequences no transformation")
 end
 
-function T.trade_evolutions_hold_on_cancel()
-  local state = BattleEvolutionState.new({
-    mon = subjectAt(20),
-    context = { trigger = { kind = "trade" }, party = {}, inventory = {} },
-    catalog = testCatalog({ { method = "trade", target = "TESTVOLVED", form = 0 } }),
+-- A full move set pauses for explicit answers in learnset order: replace
+-- the first pending move, decline the second, and the staged set carries
+-- exactly those decisions.
+function T.full_moves_pause_for_replace_then_decline_in_order()
+  local catalog = evolutionCatalog(graftLevelSlot)
+  local mon = subjectAt(catalog, "CHIKORITA", 16, {
+    moveEntry("TACKLE"),
+    moveEntry("GROWL"),
+    moveEntry("RAZOR_LEAF"),
+    moveEntry("POISONPOWDER"),
   })
-  runToPrompt(state)
-  Assert.isFalse(state:status().canCancel, "trade evolutions refuse cancellation")
-  state:input({ { type = "cancel" } })
-  Assert.equal(state:status().phase, "prompt", "a refused cancel holds the prompt")
-  Assert.isNil(state:takeResult(), "a held prompt settles nothing")
-  state:input({ { type = "confirm" } })
-  for _ = 1, BattleEvolutionState.TRANSFORMATION_TICKS do
-    state:stepSourceTick(1)
-  end
+  local state = stateFor(catalog, mon)
+  runUntilSettled(state, 60)
+  Assert.equal(state:status().phase, "learn", "a full set pauses on its first pending move")
+  local first = state:learnPrompt()
+  Assert.notNil(first, "the paused sequence exposes its learning prompt")
+  assert(first ~= nil, "the first prompt stages")
+  Assert.equal(first.move, "SCRATCH", "pending moves follow target learnset order")
+  Assert.equal(#first.currentMoves, 4, "the prompt carries the four held moves")
+  state:answerLearn({ choice = "replace", slot = 3 })
+  Assert.equal(state:status().phase, "learn", "an answered prompt advances to the next pending move")
+  local second = state:learnPrompt()
+  Assert.notNil(second, "the second pending move pauses in turn")
+  assert(second ~= nil, "the second prompt stages")
+  Assert.equal(second.move, "LEER", "the second pending move keeps learnset order")
+  state:answerLearn({ choice = "decline" })
+  local third = state:learnPrompt()
+  Assert.notNil(third, "the third pending move pauses in turn")
+  assert(third ~= nil, "the third prompt stages")
+  Assert.equal(third.move, "WATER_GUN", "the third pending move keeps learnset order")
+  state:answerLearn({ choice = "replace", slot = 0 })
+  runUntilSettled(state, 60)
   local result = state:takeResult()
-  Assert.notNil(result, "the confirmed trade evolves")
-  assert(result ~= nil, "the trade choice seals")
-  Assert.isTrue(result.choice.evolved, "confirmation applies the held candidate")
+  Assert.notNil(result, "the answered sequence settles its choice")
+  assert(result ~= nil, "the learned choice seals")
+  Assert.isTrue(result.choice.evolved, "answered learning still evolves")
+  local staged = assert(result.choice.staged, "the outcome carries its staged domain result")
+  local names = {}
+  for _, entry in ipairs(staged.mon.moves) do
+    names[#names + 1] = entry.move
+  end
+  Assert.deepEqual(names, { "WATER_GUN", "GROWL", "RAZOR_LEAF", "SCRATCH" }, "replace and decline land exactly")
 end
 
-function T.multiple_candidates_walk_source_order_without_skipping()
-  local slots = {
-    { method = "level", level = 10, target = "TESTVOLVED", form = 0 },
-    { method = "level", level = 15, target = "TESTOTHER", form = 0 },
-  }
-  local catalog = testCatalog(slots)
-  Assert.equal(#Evolution.candidates(subjectAt(20), levelContext(), catalog), 2, "setup: both slots match")
-  local state = BattleEvolutionState.new({ mon = subjectAt(20), context = levelContext(), catalog = catalog })
-  Assert.equal(state:status().candidateCount, 2, "the state walks every candidate")
-  runToPrompt(state)
-  state:input({ { type = "cancel" } })
-  Assert.equal(state:status().phase, "entry", "declining the first candidate enters the second")
-  runToPrompt(state)
-  state:input({ { type = "confirm" } })
-  for _ = 1, BattleEvolutionState.TRANSFORMATION_TICKS do
+-- Learning answers outside the open prompt fail loudly instead of
+-- guessing: an unknown choice and an out-of-range slot both refuse.
+function T.learning_answers_outside_the_prompt_refuse()
+  local catalog = evolutionCatalog(graftLevelSlot)
+  local mon = subjectAt(catalog, "CHIKORITA", 16, {
+    moveEntry("TACKLE"),
+    moveEntry("GROWL"),
+    moveEntry("RAZOR_LEAF"),
+    moveEntry("POISONPOWDER"),
+  })
+  local state = stateFor(catalog, mon)
+  runUntilSettled(state, 60)
+  Assert.equal(state:status().phase, "learn", "setup: the sequence pauses on its pending move")
+  local okChoice = pcall(function()
+    state:answerLearn({ choice = "forget" })
+  end)
+  Assert.isFalse(okChoice, "an unknown learning choice refuses")
+  local okSlot = pcall(function()
+    state:answerLearn({ choice = "replace", slot = 9 })
+  end)
+  Assert.isFalse(okSlot, "an out-of-range replacement slot refuses")
+  local prompt = state:learnPrompt()
+  Assert.notNil(prompt, "refused answers leave the pending prompt open")
+end
+
+-- Two matching rules still stage one evolution: the first source match
+-- wins and no candidate walk reapplies a second transformation.
+function T.first_matching_rule_wins_and_applies_once()
+  local catalog = evolutionCatalog(graftTwoSlots)
+  local mon = subjectAt(catalog, "CHIKORITA", 16, { moveEntry("TACKLE") })
+  local state = stateFor(catalog, mon)
+  runUntilSettled(state, 120)
+  local result = state:takeResult()
+  Assert.notNil(result, "the single-rule sequence answers its choice")
+  assert(result ~= nil, "the first-match choice seals")
+  Assert.isTrue(result.choice.evolved, "the first matching rule evolves")
+  local staged = assert(result.choice.staged, "the outcome carries its staged domain result")
+  Assert.equal(staged.mon.species, "TOTODILE", "the earlier sixteen slot wins over the later ten slot")
+  Assert.equal(#staged.additionalMons, 0, "a plain rule stages no side product")
+end
+
+function T.trade_evolutions_hold_on_cancel()
+  local catalog = evolutionCatalog(graftTradeSlot)
+  local mon = subjectAt(catalog, "CHIKORITA", 16, { moveEntry("TACKLE") })
+  local state = BattleEvolutionState.new({
+    mon = mon,
+    context = { trigger = { kind = "trade" }, timeOfDay = "day", party = {}, inventory = {} },
+    catalog = catalog,
+  })
+  for _ = 1, BattleEvolutionState.ENTRY_TICKS + 1 do
     state:stepSourceTick(1)
   end
+  Assert.isFalse(state:status().canCancel, "trade evolutions refuse cancellation")
+  state:input({ { type = "cancel" } })
+  Assert.isTrue(state:status().active, "a refused cancel keeps the sequence alive")
+  Assert.isNil(state:takeResult(), "a held sequence settles nothing early")
+  runUntilSettled(state, 60)
   local result = state:takeResult()
-  Assert.notNil(result, "the walked sequence answers its choice")
-  assert(result ~= nil, "the walked choice seals")
-  Assert.isTrue(result.choice.evolved, "the confirmed second candidate evolves")
-  Assert.equal(#result.choice.outcomes, 2, "both candidates settle their outcome")
-  Assert.equal(result.choice.outcomes[1].ruleIndex, 1, "the first outcome keeps source order")
-  Assert.isFalse(result.choice.outcomes[1].evolved, "the first outcome stays declined")
-  Assert.equal(result.choice.outcomes[2].ruleIndex, 2, "the second outcome keeps source order")
-  Assert.isTrue(result.choice.outcomes[2].evolved, "the second outcome carries its transformation")
-  Assert.equal(
-    result.choice.outcomes[2].staged.monAfter.species,
-    "TESTOTHER",
-    "the second transformation names its own target"
-  )
+  Assert.notNil(result, "the held trade still completes on its own")
+  assert(result ~= nil, "the trade choice seals")
+  Assert.isTrue(result.choice.evolved, "the unguided trade applies its candidate")
 end
 
 function T.shedinja_side_product_rides_the_staged_result()
-  local slots = {
-    { method = "level_ninjask", level = 20, target = "TESTVOLVED", form = 0 },
-    { method = "level_shedinja", level = 20, target = "TESTSHED", form = 0 },
-  }
-  local state = stateFor(slots, { party = { subjectAt(20) }, inventory = { POKE_BALL = 1 } })
-  runToPrompt(state)
-  state:input({ { type = "confirm" } })
-  for _ = 1, BattleEvolutionState.TRANSFORMATION_TICKS do
-    state:stepSourceTick(1)
-  end
+  local catalog = evolutionCatalog(graftNincadaLine)
+  local mon = subjectAt(catalog, "NINCADA", 20, { moveEntry("SCRATCH") })
+  local state = BattleEvolutionState.new({
+    mon = mon,
+    context = {
+      trigger = { kind = "level" },
+      timeOfDay = "day",
+      party = { copyMon(mon) },
+      inventory = { POKE_BALL = 1 },
+    },
+    catalog = catalog,
+  })
+  runUntilSettled(state, 60)
   local result = state:takeResult()
   Assert.notNil(result, "the shed line answers its choice")
   assert(result ~= nil, "the shed choice seals")
-  local staged = result.choice.outcomes[1].staged
-  Assert.notNil(staged, "the outcome carries its staged domain result")
-  assert(staged ~= nil, "the staged shed result stages")
+  Assert.isTrue(result.choice.evolved, "the shed line evolves")
+  local staged = assert(result.choice.staged, "the outcome carries its staged domain result")
+  Assert.equal(staged.mon.species, "NINJASK", "the primary stages its evolved species")
   Assert.equal(#staged.additionalMons, 1, "room plus a ball stages exactly one extra mon")
-  Assert.equal(staged.additionalMons[1].species, "TESTSHED", "the extra mon is the shed side product")
+  Assert.equal(staged.additionalMons[1].species, "SHEDINJA", "the extra mon is the shed side product")
   Assert.equal(#staged.inventoryDeltas, 1, "the side product consumes its ball in the same operation")
 end
 
 function T.teardown_and_foreign_input_never_decide()
-  local state = stateFor(singleSlot(15), nil)
-  runToPrompt(state)
+  local catalog = evolutionCatalog(graftLevelSlot)
+  local mon = subjectAt(catalog, "CHIKORITA", 16, { moveEntry("TACKLE") })
+  local state = stateFor(catalog, mon)
+  for _ = 1, BattleEvolutionState.ENTRY_TICKS + 1 do
+    state:stepSourceTick(1)
+  end
   state:input({ { type = "pointer_down" } })
   state:input({ { type = "dismiss" } })
   state:dispose()
-  state:input({ { type = "confirm" } })
+  state:input({ { type = "cancel" } })
   state:stepSourceTick(9)
   Assert.isNil(state:takeResult(), "teardown ends the sequence without publishing")
   Assert.isFalse(state:status().active, "disposal releases the presentation lifetime")

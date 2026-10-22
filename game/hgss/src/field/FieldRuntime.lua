@@ -3513,6 +3513,17 @@ function FieldRuntime:_admitStepEncounter(encounter, method)
   self.battleCoordinator:launchPresentedBattle(launchId, request, method)
 end
 
+-- The encounter time of day behind step attempts and evolution gating:
+-- the encounter tables carry morning, day, and night slots, so the
+-- source band folds evening into day beside morning and day. Noon
+-- acceptance clocks read day. The result is one of the strings morning,
+-- day, or night. Battle composition reads this public operation frozen
+-- at launch; it never polls the live clock after return.
+---@return string
+function FieldRuntime:encounterTimeOfDay()
+  return self:_encounterTimeOfDay()
+end
+
 -- The encounter time of day behind step attempts: the encounter tables
 -- carry morning, day, and night slots, so the source band folds evening
 -- into day beside morning and day. Noon acceptance clocks read day. The

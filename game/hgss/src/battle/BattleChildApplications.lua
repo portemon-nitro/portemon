@@ -1094,16 +1094,18 @@ end
 -- held-move facts the presentation navigates; move_pick mode never
 -- reorders, so the held set cannot mutate through selection. Held-move
 -- detail facts stay readable through moveFacts for the barrier view.
----@param intent table<string, unknown> validated learning intent under composition
----@param services table<string, unknown> borrowed battle services under composition
----@return table<string, unknown>? composed learning child
+-- Composes the native summary/move-selection presentation in move-pick
+-- mode over one staged learning prompt. The facts model projects the
+-- same held-move facts the presentation navigates; move_pick mode never
+-- reorders, so the held set cannot mutate through selection. Shared by
+-- the battle-action learning child and the post-battle evolution child,
+-- which carries no kernel fragments and answers its own domain instead.
+---@param prompt table<string, unknown> staged learning prompt under composition
+---@return table<string, unknown>? composed move picker
 ---@return string? failure cause
-local function openLearnChild(intent, services)
-  local request = assert(intent.request, "learning children carry their staged prompt")
-  assert(type(request) == "table", "learning children carry their staged prompt")
-  assert(type(intent.options) == "table", "learning children carry their decision options")
-  local model, rows = battleSummaryModel(request --[[@as table<string, unknown>]])
-  local _ = services
+local function composeLearnPicker(prompt)
+  assert(type(prompt) == "table", "learning pickers carry their staged prompt")
+  local model, _ = battleSummaryModel(prompt)
   local function summaryLayout()
     return { hitTest = battleLearnHit }
   end
@@ -1123,12 +1125,48 @@ local function openLearnChild(intent, services)
     request = {
       kind = "learn",
       context = "replace_machine",
-      prospectiveMove = request.incomingMove,
-      incomingMove = request.incomingMove,
+      prospectiveMove = prompt.incomingMove,
+      incomingMove = prompt.incomingMove,
     },
   })
   if not ok then
     return nil, tostring(controller)
+  end
+  return controller
+end
+
+-- Drains one native move-picker outcome without sealing: a selected
+-- row reports its move slot while a cancelled picker reports the
+-- focused row it cancelled from. Exactly once per native seal.
+---@param result table<string, unknown>? drained native picker result under parsing
+---@param lastFocus integer focused move slot before the draining batch
+---@return table<string, unknown>? picker outcome, nil while the picker stays open
+local function parsePickerOutcome(result, lastFocus)
+  if type(result) ~= "table" then
+    return nil
+  end
+  if result.kind == "move_selected" and type(result.moveSlot) == "number" then
+    return { kind = "move_selected", moveSlot = result.moveSlot, focus = result.moveSlot }
+  end
+  if result.kind == "cancelled" then
+    return { kind = "cancelled", focus = lastFocus }
+  end
+  return nil
+end
+
+---@param intent table<string, unknown> validated learning intent under composition
+---@param services table<string, unknown> borrowed battle services under composition
+---@return table<string, unknown>? composed learning child
+---@return string? failure cause
+local function openLearnChild(intent, services)
+  local request = assert(intent.request, "learning children carry their staged prompt")
+  assert(type(request) == "table", "learning children carry their staged prompt")
+  assert(type(intent.options) == "table", "learning children carry their decision options")
+  local _, rows = battleSummaryModel(request --[[@as table<string, unknown>]])
+  local _ = services
+  local controller, controllerErr = composeLearnPicker(request --[[@as table<string, unknown>]])
+  if controller == nil then
+    return nil, controllerErr
   end
   local identity = childIdentity("learn", intent)
   local options = intent.options --[[@as table<string, unknown>]]
@@ -1172,16 +1210,7 @@ local function openLearnChild(intent, services)
     harvest(self, self._controller)
     local result = self._nativeResult
     self._nativeResult = nil
-    if type(result) ~= "table" then
-      return nil
-    end
-    if result.kind == "move_selected" and type(result.moveSlot) == "number" then
-      return { kind = "move_selected", moveSlot = result.moveSlot, focus = result.moveSlot }
-    end
-    if result.kind == "cancelled" then
-      return { kind = "cancelled", focus = self._lastFocus }
-    end
-    return nil
+    return parsePickerOutcome(result, self._lastFocus)
   end
   ---@param _ integer source ticks under stepping (event-stepped controllers keep no clock)
   function child:stepSourceTick(_) end
@@ -1404,9 +1433,49 @@ local function openNamingChild(intent, services)
   return child
 end
 
+-- Adapts one staged learned-move prompt into held-move fact rows for the
+-- native move picker: committed move points ride the subject record
+-- while silently filled slots carry their exact catalog base points.
+---@param prompt table<string, unknown> staged learned-move prompt under adaptation
+---@param subject table<string, unknown> committed subject carrying its held move points
+---@param catalog table<string, unknown> borrowed immutable mon catalog
+---@return table<string, unknown> picker-shaped prompt with fact rows and the incoming move
+local function learnFactsFor(prompt, subject, catalog)
+  assert(type(prompt.currentMoves) == "table", "learning prompts carry their held move set")
+  local held = {}
+  for _, entry in ipairs(subject.moves or {}) do
+    if type(entry) == "table" and type(entry.move) == "string" then
+      held[entry.move] = entry
+    end
+  end
+  local moveOf = catalog.move --[[@as fun(self: table<string, unknown>, key: string): table<string, unknown>]]
+  assert(type(moveOf) == "function", "learning facts resolve through the mon catalog")
+  local rows = {}
+  for _, key in
+    ipairs(prompt.currentMoves --[[@as table<integer, string>]])
+  do
+    assert(type(key) == "string" and key ~= "", "held moves name their move identity")
+    local known = held[key]
+    if known ~= nil then
+      rows[#rows + 1] = { move = key, pp = known.pp, ppUps = known.ppUps }
+    else
+      local definition = moveOf(catalog, key)
+      assert(type(definition) == "table", "filled moves resolve through the mon catalog")
+      rows[#rows + 1] = { move = key, pp = definition.basePp, ppUps = 0 }
+    end
+  end
+  return { currentMoves = rows, incomingMove = prompt.move }
+end
+
 -- Composes the native evolution presentation state for a committed
--- subject. Eligibility and transformation stay with the evolution domain;
--- the state owns the native animation/cry/message/input sequence.
+-- subject behind the full frozen trigger context: the detached subject,
+-- its party slot, and the launch-frozen clock, party, and inventory
+-- facts the domain needs. Eligibility, planning, and transformation
+-- stay with the evolution domain; the state owns the native
+-- animation/cry/message/input sequence, and each pending learned move
+-- pauses on the same native Summary picker the battle-action learning
+-- child uses. The child owns its state and picker leases and releases
+-- both exactly once; results report once as a typed completion answer.
 ---@param intent table<string, unknown> validated evolution intent under composition
 ---@param services table<string, unknown> borrowed battle services under composition
 ---@return table<string, unknown>? composed evolution child
@@ -1417,45 +1486,140 @@ local function openEvolutionChild(intent, services)
   if type(mon) ~= "table" then
     return nil, "evolution children carry their committed subject"
   end
-  local trigger = intent.trigger
-  if type(trigger) ~= "table" then
-    return nil, "evolution children carry their trigger context"
+  local triggerContext = intent.context
+  if type(triggerContext) ~= "table" then
+    return nil, "evolution children carry their full trigger context"
+  end
+  if type(triggerContext.trigger) ~= "table" then
+    return nil, "evolution children carry their trigger identity"
+  end
+  -- The frozen launch clock rides the context untouched: a missing
+  -- clock fails here instead of inventing a default behind the domain.
+  if type(triggerContext.timeOfDay) ~= "string" or triggerContext.timeOfDay == "" then
+    return nil, "evolution children carry their frozen time of day"
   end
   local catalog = services.monCatalog
   if catalog == nil then
     return nil, "evolution children need their mon catalog"
   end
+  local context = {}
+  for key, value in pairs(triggerContext) do
+    context[key] = copyValue(value)
+  end
+  if context.party == nil then
+    context.party = {}
+  end
+  if context.inventory == nil then
+    context.inventory = {}
+  end
   local ok, state = pcall(EvolutionState.new, {
-    mon = mon,
-    context = { trigger = trigger, party = intent.party or {}, inventory = intent.inventory or {} },
+    mon = copyValue(mon),
+    context = context,
     catalog = catalog,
   })
   if not ok then
     return nil, tostring(state)
   end
+  local subject = copyValue(mon) --[[@as table<string, unknown>]]
   local identity = childIdentity("evolution", intent)
   local child = {
     _kind = "evolution",
     _identity = identity,
     _application = BattleChildApplications.RECEIPTS.evolution,
     _state = state,
+    _subject = subject,
+    _catalog = catalog,
+    _picker = nil,
+    _lastFocus = 0,
+    _taken = false,
     _disposed = false,
   }
+  -- Opens the native Summary picker for the pending learned move. The
+  -- opening consumes its edge: the picker starts from its entry focus
+  -- with no armed press and no staged outcome.
+  ---@return string? failure cause, nil while the picker owns learning input
+  function child:_ensurePicker()
+    if self._picker ~= nil then
+      return nil
+    end
+    local prompt = self._state:learnPrompt()
+    if prompt == nil then
+      return nil
+    end
+    local adapted = learnFactsFor(prompt, self._subject, self._catalog)
+    local picker, pickerErr = composeLearnPicker(adapted)
+    if picker == nil then
+      return "evolution learning failed for launch " .. tostring(self._identity.launchId) .. ": " .. tostring(pickerErr)
+    end
+    self._picker = picker
+    return nil
+  end
+  -- Drains one sealed picker outcome into the staged learning answer: a
+  -- held row replaces its slot while any cancellation declines the
+  -- incoming move. Exactly once per native seal.
+  function child:_drainPicker()
+    local picker = self._picker
+    if picker == nil then
+      return
+    end
+    local drain = picker.takeResult --[[@as fun(self: table<string, unknown>): table<string, unknown>?]]
+    local outcome = parsePickerOutcome(drain(picker), self._lastFocus)
+    if outcome == nil then
+      return
+    end
+    if outcome.kind == "move_selected" then
+      self._state:answerLearn({ choice = "replace", slot = outcome.moveSlot })
+    else
+      self._state:answerLearn({ choice = "decline" })
+    end
+    picker:dispose()
+    self._picker = nil
+  end
   ---@param events table<integer, table<string, unknown>> semantic input batch under routing
   function child:input(events)
-    if not self._disposed then
-      self._state:input(events)
+    if self._disposed or self._taken then
+      return
     end
+    local pickerErr = self:_ensurePicker()
+    if pickerErr ~= nil then
+      error(pickerErr, 0)
+    end
+    local picker = self._picker
+    if picker ~= nil then
+      local before = picker:status()
+      if type(before) == "table" and before.open ~= false then
+        self._lastFocus = before.moveSlot
+      end
+      routeSemantic(picker, expandTaps("learn", events))
+      self:_drainPicker()
+      return
+    end
+    self._state:input(events)
   end
   ---@param tick integer source tick under stepping
   function child:stepSourceTick(tick)
-    if not self._disposed then
+    if self._disposed or self._taken then
+      return
+    end
+    local pickerErr = self:_ensurePicker()
+    if pickerErr ~= nil then
+      error(pickerErr, 0)
+    end
+    -- The picker is event-stepped and keeps no clock; only the
+    -- animation state advances on source ticks.
+    if self._picker == nil then
       self._state:stepSourceTick(tick)
     end
   end
   ---@param _ table<string, unknown>? borrowed display facts (the returned record is renderer-agnostic data)
-  ---@return table<string, unknown> drawable evolution record from the native presentation
+  ---@return table<string, unknown> drawable evolution record from the native presentation or picker
   function child:draw(_)
+    local picker = self._picker
+    if picker ~= nil then
+      local view = picker:status()
+      assert(type(view) == "table", "the native summary projects its drawable record")
+      return view
+    end
     return self._state:draw()
   end
   ---@return string native application receipt
@@ -1469,27 +1633,55 @@ local function openEvolutionChild(intent, services)
     inner.application = self._application
     return inner
   end
-  ---@return table<string, unknown>? bound result, exactly once
+  ---@return table<integer, table<string, unknown>> sequenced effect requests in order (read-only evidence)
+  function child:effects()
+    return self._state:effects()
+  end
+  ---@return table<string, unknown>? pending learned-move prompt, nil outside the learning pause
+  function child:learnPrompt()
+    return self._state:learnPrompt()
+  end
+  ---@return table<string, unknown>? bound typed result, exactly once
   function child:takeResult()
+    if self._taken then
+      return nil
+    end
     local settled = self._state:takeResult()
     if settled == nil then
       return nil
     end
     assert(type(settled) == "table", "the evolution state settles its result")
-    return {
-      kind = settled.kind,
+    self._taken = true
+    local choice = assert(settled.choice, "evolution results carry their choice")
+    local bound = {
       requestId = self._identity.requestId,
       epoch = self._identity.epoch,
       controller = self._identity.controller,
       launchId = self._identity.launchId,
-      choice = settled.choice,
-    }
+    } --[[@as table<string, unknown>]]
+    if choice.evolved == true then
+      bound.kind = "evolution_complete"
+      bound.staged = copyValue(assert(choice.staged, "completed evolutions carry their staged result"))
+    else
+      bound.kind = "evolution_cancelled"
+      bound.reason = choice.reason
+    end
+    return bound
   end
   function child:dispose()
-    if not self._disposed then
-      self._disposed = true
-      self._state:dispose()
+    if self._disposed then
+      return
     end
+    self._disposed = true
+    -- Disposal releases both leases exactly once: a disposed child owns
+    -- no input and seals nothing, so stale learning never reports
+    -- afterwards.
+    local picker = self._picker
+    self._picker = nil
+    if picker ~= nil then
+      picker:dispose()
+    end
+    self._state:dispose()
   end
   return child
 end

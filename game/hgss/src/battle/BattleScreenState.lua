@@ -1834,6 +1834,17 @@ function BattleScreenState:status()
       kind = open.kind,
       stage = open.stage,
     }
+    if open.kind == "evolution" and self._completionChild ~= nil then
+      local learnOf = self._completionChild.learnPrompt
+      if type(learnOf) == "function" then
+        local okLearn, pending = pcall(learnOf, self._completionChild)
+        if okLearn and pending ~= nil then
+          completion.stage = "learn"
+        else
+          completion.stage = "sequence"
+        end
+      end
+    end
     if open.stage == "naming" and self._completionChild ~= nil then
       local namingText = self._completionChild.namingText
       if type(namingText) == "function" then
@@ -1854,9 +1865,10 @@ function BattleScreenState:status()
   }
 end
 
--- Opens one bound capture-nickname completion. Idempotent for the same
--- current identity; a different, foreign, consumed, or concurrent
--- decision is refused without touching the open one.
+-- Opens one bound postbattle completion: capture-nickname or evolution.
+-- Idempotent for the same current identity; a different, foreign,
+-- consumed, or concurrent decision is refused without touching the open
+-- one. The lane stays exclusive: one completion at a time.
 ---@param intent table<string, unknown> bound completion intent under opening
 ---@return boolean opened true while this screen owns the decision
 function BattleScreenState:openCompletion(intent)
@@ -1872,8 +1884,19 @@ function BattleScreenState:openCompletion(intent)
   if type(intent.completionId) ~= "string" or intent.completionId == "" then
     return false
   end
-  if intent.kind ~= "capture_nickname" or type(intent.subject) ~= "table" then
+  if intent.kind ~= "capture_nickname" and intent.kind ~= "evolution" then
     return false
+  end
+  if type(intent.subject) ~= "table" then
+    return false
+  end
+  if intent.kind == "evolution" then
+    -- The evolution lane carries its committed party slot and the full
+    -- frozen trigger context beside the subject; anything less refuses
+    -- instead of planning behind invented facts.
+    if type(intent.partySlot) ~= "number" or type(intent.context) ~= "table" then
+      return false
+    end
   end
   if self._consumedCompletions[intent.completionId] then
     return false
@@ -1885,14 +1908,26 @@ function BattleScreenState:openCompletion(intent)
   if self._child ~= nil or self._subflows:status().active then
     return false
   end
-  self._completion = {
-    launchId = self._launchId,
-    completionId = intent.completionId,
-    kind = "capture_nickname",
-    subject = copyValue(intent.subject),
-    stage = "question",
-    answer = 1,
-  }
+  if intent.kind == "evolution" then
+    self._completion = {
+      launchId = self._launchId,
+      completionId = intent.completionId,
+      kind = "evolution",
+      subject = copyValue(intent.subject),
+      partySlot = intent.partySlot,
+      context = copyValue(intent.context),
+      stage = "sequence",
+    }
+  else
+    self._completion = {
+      launchId = self._launchId,
+      completionId = intent.completionId,
+      kind = "capture_nickname",
+      subject = copyValue(intent.subject),
+      stage = "question",
+      answer = 1,
+    }
+  end
   self._completionChild = nil
   self._completionResult = nil
   return true
@@ -2004,6 +2039,159 @@ function BattleScreenState:_openCompletionNaming()
   completion.stage = "naming"
 end
 
+-- Opens the native evolution controller for the open completion with
+-- its committed subject, party slot, and full frozen trigger context.
+-- A composition failure fails the screen loudly so the committed
+-- battle result survives instead of skipping a mandatory evolution.
+function BattleScreenState:_openCompletionEvolution()
+  local completion = assert(self._completion, "evolution opens for the open completion")
+  local terminal = self._terminalRequest or { requestId = 0, epoch = 0, controller = "player" }
+  local child, childErr = BattleChildApplications.open({
+    kind = "evolution",
+    purpose = "evolution",
+    launchId = self._launchId,
+    requestId = terminal.requestId,
+    epoch = terminal.epoch,
+    controller = terminal.controller,
+    cancellable = true,
+    subject = copyValue(completion.subject),
+    partySlot = completion.partySlot,
+    context = copyValue(completion.context),
+  }, { monCatalog = self._monCatalog })
+  if child == nil then
+    self._mode = "failed"
+    self._error = "postbattle evolution failed for launch " .. self._launchId .. ": " .. tostring(childErr)
+    return
+  end
+  self._completionChild = child
+  completion.stage = "sequence"
+  -- Edges that arrived before composition replay exactly once in order:
+  -- a cancel sent during the opening beat still meets its window.
+  local pending = completion.pendingInput
+  completion.pendingInput = nil
+  if type(pending) == "table" then
+    for _, event in ipairs(pending) do
+      if type(event) == "table" then
+        local ok, inputErr = pcall(function()
+          child:input({ event })
+        end)
+        if not ok then
+          self._mode = "failed"
+          self._error = "postbattle evolution failed for launch " .. self._launchId .. ": " .. tostring(inputErr)
+          return
+        end
+      end
+    end
+  end
+end
+
+-- Routes one mapped semantic input to the open evolution lane. The
+-- sequence owns confirm, cancel, and navigate ahead of the battle
+-- handlers: confirmation never gates the beats, cancellation decides
+-- only where the source method permits it, and navigation steers the
+-- pending learned-move picker. Anything the lane refuses falls through.
+---@param event table<string, unknown> mapped semantic input under routing
+---@return boolean consumed true while the evolution lane owned the input
+function BattleScreenState:_consumeEvolutionCompletion(event)
+  local completion = assert(self._completion, "evolution input binds the open completion")
+  if
+    event.type ~= "confirm"
+    and event.type ~= "cancel"
+    and event.type ~= "navigate"
+    and event.type ~= "pointer_cancel"
+  then
+    return false
+  end
+  local child = self._completionChild
+  if child == nil then
+    -- The lane owns its edges even before the controller composes on
+    -- the next drain: buffer the edge for exactly-once replay at
+    -- composition so a held button neither leaks into the battle
+    -- handlers nor misses the animation window behind it.
+    local buffered = completion.pendingInput
+    if buffered == nil then
+      buffered = {}
+      completion.pendingInput = buffered
+    end
+    if #buffered < 8 then
+      buffered[#buffered + 1] = event
+    end
+    return true
+  end
+  local _ = completion
+  local ok, inputErr = pcall(function()
+    child:input({ event })
+  end)
+  if not ok then
+    self._mode = "failed"
+    self._error = "postbattle evolution failed for launch " .. self._launchId .. ": " .. tostring(inputErr)
+  end
+  return true
+end
+
+-- Advances the open evolution lane once: the native child steps its
+-- presentation clock and its sealed typed answer translates into the
+-- bound completion identity. The typed answer never enters the action
+-- reply parser or the battle-action child poll.
+---@param completion table<string, unknown> open evolution completion under advancing
+function BattleScreenState:_drainEvolutionCompletion(completion)
+  if not self._outcomeAcked then
+    return
+  end
+  if self._completionChild == nil then
+    self:_openCompletionEvolution()
+    if self._completionChild == nil then
+      return
+    end
+  end
+  local child = assert(self._completionChild, "evolution drains its open child")
+  local okStep, stepErr = pcall(function()
+    child:stepSourceTick(1)
+  end)
+  if not okStep then
+    self._mode = "failed"
+    self._error = "postbattle evolution failed for launch " .. self._launchId .. ": " .. tostring(stepErr)
+    return
+  end
+  local promptOf = child.learnPrompt
+  if type(promptOf) == "function" then
+    local okPrompt, pending = pcall(promptOf, child)
+    if okPrompt and pending ~= nil then
+      completion.stage = "learn"
+    else
+      completion.stage = "sequence"
+    end
+  end
+  local okTake, result = pcall(function()
+    return child:takeResult()
+  end)
+  if not okTake then
+    self._mode = "failed"
+    self._error = "postbattle evolution failed for launch " .. self._launchId .. ": " .. tostring(result)
+    return
+  end
+  if result == nil then
+    return
+  end
+  if result.kind == "evolution_complete" then
+    self:_sealCompletion({
+      launchId = completion.launchId,
+      completionId = completion.completionId,
+      kind = "evolution_complete",
+      staged = copyValue(result.staged),
+    })
+    return
+  end
+  if result.kind == "evolution_cancelled" then
+    self:_sealCompletion({
+      launchId = completion.launchId,
+      completionId = completion.completionId,
+      kind = "evolution_cancelled",
+      reason = result.reason,
+    })
+  end
+end
+
 -- Routes one mapped semantic input to the open completion. The question
 -- answers Yes on confirm, toggles on navigate, and declines on cancel;
 -- the naming lane forwards its semantic edges to the native controller.
@@ -2015,10 +2203,13 @@ function BattleScreenState:_consumeCompletion(event)
   if completion == nil or self._completionResult ~= nil then
     return false
   end
-  -- The nickname choice runs only after the terminal narration page was
+  -- Postbattle choices run only after the terminal narration page was
   -- explicitly acknowledged.
   if not self._outcomeAcked then
     return false
+  end
+  if completion.kind == "evolution" then
+    return self:_consumeEvolutionCompletion(event)
   end
   if completion.stage == "question" then
     if event.type == "navigate" then
@@ -2063,6 +2254,10 @@ function BattleScreenState:_drainCompletion()
   if completion == nil or self._completionResult ~= nil then
     return
   end
+  if completion.kind == "evolution" then
+    self:_drainEvolutionCompletion(completion)
+    return
+  end
   if completion.stage ~= "naming" then
     return
   end
@@ -2094,11 +2289,35 @@ function BattleScreenState:_drainCompletion()
 end
 
 ---@param current table<string, unknown>? action child view under projection
----@return table<string, unknown>? action child view with the completion question or naming state
+---@return table<string, unknown>? action child view with the completion question, naming, or evolution state
 function BattleScreenState:_completionChildView(current)
   local completion = self._completion
   if completion == nil or not self._outcomeAcked then
     return current
+  end
+  if completion.kind == "evolution" then
+    local child = self._completionChild
+    if child == nil then
+      return {
+        kind = "evolution",
+        purpose = "evolution",
+        interactive = false,
+        cancellable = false,
+        application = "evolution",
+        phase = "sequence",
+      } --[[@as table<string, unknown>]]
+    end
+    local inner = child:status()
+    assert(type(inner) == "table", "the evolution child reports its status")
+    return {
+      kind = "evolution",
+      purpose = "evolution",
+      interactive = true,
+      cancellable = inner.canCancel == true,
+      application = "evolution",
+      phase = inner.phase,
+      learn = child:learnPrompt(),
+    } --[[@as table<string, unknown>]]
   end
   if completion.stage == "question" then
     local view = {
